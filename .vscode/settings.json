@@ -1,0 +1,11 @@
+{
+    "C_Cpp.default.includePath": [
+        "external\\cgns\\include",
+        "external\\eigen",
+        "external\\Gmsh\\include",
+        "external\\HDF5\\include",
+        "external\\metis\\include",
+        "external\\parmetis\\include",
+        "external\\TECIO\\include"
+    ]
+}
