@@ -1,5 +1,8 @@
 # building
 build*
 # external
-external
-
+/external
+# packages
+*.zip
+*.tar
+*.gz
