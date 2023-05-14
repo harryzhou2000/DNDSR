@@ -6,12 +6,14 @@
         "external\\HDF5\\include",
         "external\\metis\\include",
         "external\\parmetis\\include",
-        "external\\TECIO\\include"
+        "external\\TECIO\\include",
+        "src"
     ],
     "files.associations": {
         "*.cu": "cpp",
         "*.f90": "FortranFreeForm",
         "*.hypara": "csharp",
+        "*config*.json": "jsonc",
         "array": "cpp",
         "atomic": "cpp",
         "*.tcc": "cpp",
@@ -70,6 +72,10 @@
         "thread": "cpp",
         "cinttypes": "cpp",
         "typeinfo": "cpp",
-        "*.defs": "cpp"
-    }
+        "*.defs": "cpp",
+        "core": "cpp"
+    },
+    "cSpell.words": [
+        "rowsize"
+    ]
 }

@@ -1,9 +1,13 @@
-#include <cgnslib.h>
 #include <iostream>
 #include <vector>
 
+#include "cgnslib.h"
+#include "pcgnslib.h"
+#include "mpi.h"
+
 int main()
 {
+    
     int cgns_file;
     int cgerr;
     if (cg_open("test1.cgns", CG_MODE_WRITE, &cgns_file) != CG_OK)

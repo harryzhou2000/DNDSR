@@ -6,3 +6,6 @@ build*
 *.zip
 *.tar
 *.gz
+docs/html
+docs/latex
+
