@@ -1,6 +1,7 @@
 #pragma once
 
 #include <vector>
+#include <iostream>
 
 #include "Defines.hpp"
 
@@ -19,7 +20,7 @@ namespace DNDS
     {
     public:
         using value_type = T;
-        using self_type = Array<T, _row_size, _row_max, align>;
+        using self_type = Array<T, _row_size, _row_max, _align>;
         static const rowsize al = _align;
         static const rowsize rs = _row_size;
         static const rowsize rm = _row_max;
@@ -30,7 +31,7 @@ namespace DNDS
 
         static_assert(al == NoAlign || al >= 1, "Align bad");
 
-        static rowsize s_T = al == NoAlign ? sizeof_T : (sizeof_T / al + 1) * al;
+        static const rowsize s_T = al == NoAlign ? sizeof_T : (sizeof_T / al + 1) * al;
         static_assert(s_T >= sizeof_T && s_T - sizeof_T < (al == NoAlign ? 1 : al), "I1");
 
         enum DataLayout
@@ -103,27 +104,33 @@ namespace DNDS
         // read isze
         index Size() const { return _size; }
 
-        std::enable_if_t<
-            _dataLayout == TABLE_Fixed || _dataLayout == TABLE_StaticFixed,
-            rowsize>
-        RowSize(index iRow = 0) const // iRow is actually dummy here
+        rowsize
+        RowSize() const // iRow is actually dummy here
         {
             if constexpr (_dataLayout == TABLE_Fixed)
                 return _row_size_dynamic;
-            else
+            else if constexpr (_dataLayout == TABLE_StaticFixed)
                 return rs;
+            else
+            {
+                DNDS_assert_info(false, "invalid call");
+            }
         }
 
-        std::enable_if_t<_dataLayout == TABLE_Max || _dataLayout == TABLE_StaticMax || _dataLayout == CSR, rowsize>
+        rowsize
         RowSize(index iRow) const
         {
+            if constexpr (_dataLayout == TABLE_Fixed)
+                return _row_size_dynamic;
+            else if constexpr (_dataLayout == TABLE_StaticFixed)
+                return rs;
             DNDS_assert_info(iRow < _size && iRow >= 0, "query position out of range");
             if constexpr (_dataLayout == TABLE_Max || _dataLayout == TABLE_StaticMax) // TABLE with Max
             {
                 DNDS_assert_info(_pRowSizes, "_pRowSizes invalid"); // TABLE with Max must have a RowSizes
                 return _pRowSizes->at(iRow);
             }
-            else // CSR
+            else if constexpr (_dataLayout == CSR)
             {
                 if (IfCompressed())
                 {
@@ -134,41 +141,84 @@ namespace DNDS
                 else
                 {
                     auto rs_cur = _dataUncompressed.at(iRow).size();
-                    return static_cast<rowsize>();
+                    return static_cast<rowsize>(rs_cur);
                 }
             }
         }
 
-        std::enable_if_t<_dataLayout == TABLE_Max || _dataLayout == TABLE_StaticMax, rowsize>
+        rowsize
         RowSizeMax() const
         {
-            return _dataLayout == TABLE_Max ? _row_size_dynamic : rm;
+            if constexpr (_dataLayout == TABLE_Max || _dataLayout == TABLE_StaticMax)
+                return _dataLayout == TABLE_Max ? _row_size_dynamic : rm;
+            else
+                DNDS_assert_info(false, "invalid call");
         }
 
-        std::enable_if_t<_dataLayout == CSR, bool>
+        bool
         IfCompressed() const
         {
-            if (_size > 0)
+
+            if constexpr (_dataLayout == CSR)
             {
-                return bool(_pRowStart);
+                if (_size > 0)
+                {
+                    return bool(_pRowStart);
+                }
+                return false; // size 0 array is defined as un-compressed
             }
-            return false; // size 0 array is defined as un-compressed
+            else
+            {
+                DNDS_assert_info(false, "invalid call");
+                return false;
+            }
         }
 
-        std::enable_if_t<
-            _dataLayout == CSR,
-            void>
+        void
         CSRDecompress()
         {
-            // TODO
+            if (!IfCompressed())
+                return;
+            _dataUncompressed.resize(_size);
+            for (index i = 0; i < _size; i++)
+            {
+                // _dataUncompressed[i].resize( - _pRowStart->at(i));
+                auto iterStart = _data.begin() + _pRowStart->at(i);
+                auto iterEnd = _data.begin() + _pRowStart->at(i + 1);
+                _dataUncompressed[i].assign(iterStart, iterEnd);
+            }
+            _data.clear();
+            _pRowStart.reset();
         }
 
-        std::enable_if_t<
-            _dataLayout == CSR,
-            void>
+        void
         CSRCompress()
         {
-            // TODO
+            if (IfCompressed())
+                return;
+            _pRowStart = std::make_shared<
+                typename decltype(_pRowStart)::element_type>(_size + 1, 0);
+            _pRowStart->at(0) = 0;
+            for (index i = 0; i < _size; i++)
+            {
+                index rsI = _pRowStart->at(i);
+                index rsIP = rsI + static_cast<index>(_dataUncompressed.at(i).size());
+                DNDS_assert(rsIP >= rsI);
+                _pRowStart->at(i + 1) = rsIP;
+            }
+            _data.resize(_pRowStart->at(_size));
+            for (index i = 0; i < _size; i++)
+            {
+                // // _dataUncompressed[i].resize( - _pRowStart->at(i));
+                // auto iterStart = _data.begin() + _pRowStart->at(i);
+                // auto iterEnd = _data.begin() + _pRowStart->at(i + 1);
+                // _dataUncompressed[i].assign(iterStart, iterEnd);
+                // _data.push_back(data)
+                memcpy(_data.data() + _pRowStart->at(i), _dataUncompressed[i].data(), _dataUncompressed[i].size());
+                DNDS_assert(_pRowStart->at(i) + _dataUncompressed[i].size() <= _data.size());
+                //! any better way?
+            }
+            _dataUncompressed.clear();
         }
 
         void Compress()
@@ -194,14 +244,16 @@ namespace DNDS
          * _dataLayout == TABLE_StaticMax,
          * void>
          */
-        std::enable_if_t<
-            _dataLayout == TABLE_Fixed ||
-                _dataLayout == TABLE_StaticFixed ||
-                _dataLayout == TABLE_Max ||
-                _dataLayout == TABLE_StaticMax,
-            void>
+        void
         Resize(index nSize, rowsize nRow_size_dynamic)
         {
+            if constexpr (_dataLayout == CSR)
+            {
+                DNDS_assert_info(!IfCompressed(), "Need to decompress before auto resizing");
+                _size = nSize;
+                _dataUncompressed.resize(nSize, decltype(_dataUncompressed)::value_type(nRow_size_dynamic));
+            }
+
             _size = nSize;
             if constexpr (_dataLayout == TABLE_Fixed || _dataLayout == TABLE_Max)
                 _data.resize(nSize * nRow_size_dynamic), _row_size_dynamic = nRow_size_dynamic;
@@ -213,15 +265,43 @@ namespace DNDS
                 DNDS_assert(false);
 
             if constexpr (_dataLayout == TABLE_Max || _dataLayout == TABLE_StaticMax)
-                _pRowSizes = std::make_shared<decltype(_pRowSizes)::element_type>(nSize, 0);
+            {
+                if (_pRowSizes.use_count() == 1)
+                    _pRowSizes->resize(nSize, 0);
+                else
+                    _pRowSizes = std::make_shared<
+                        typename decltype(_pRowSizes)::element_type>(nSize, 0);
+            }
         }
 
-        std::enable_if_t<_dataLayout == CSR, void>
-        Resize(index nSize, rowsize nRow_size_Reserve = 0)
+        void
+        Resize(index nSize)
         {
-            DNDS_assert_info(!IfCompressed(), "Need to decompress before auto resizing");
-            _size = nSize;
-            _dataUncompressed.resize(nSize, decltype(_dataUncompressed)::value_type{nSize});
+            if constexpr (_dataLayout == CSR)
+            {
+                DNDS_assert_info(!IfCompressed(), "Need to decompress before auto resizing");
+                _size = nSize;
+                _dataUncompressed.resize(nSize);
+            }
+            else if constexpr (_dataLayout == TABLE_StaticFixed)
+            {
+                _size = nSize;
+                _data.resize(nSize * rs);
+            }
+            else if constexpr (_dataLayout == TABLE_StaticMax)
+            {
+                _size = nSize;
+                _data.resize(nSize * rm);
+                if (_pRowSizes.use_count() == 1)
+                    _pRowSizes->resize(nSize, 0);
+                else
+                    _pRowSizes = std::make_shared<
+                        typename decltype(_pRowSizes)::element_type>(nSize, 0);
+            }
+            else
+            {
+                DNDS_assert_info(false, "invalid call");
+            }
         }
 
         // TODO: A rowsizes known resize function for CSR
@@ -236,30 +316,95 @@ namespace DNDS
          * _dataLayout == TABLE_StaticMax,
          * void>
          */
-        std::enable_if_t<
-            _dataLayout == TABLE_Max ||
-                _dataLayout == TABLE_StaticMax,
-            void>
+        void
         ResizeRow(index iRow, rowsize nRowSize)
         {
-            DNDS_assert(nRowSize <= _dataLayout == TABLE_Max ? _row_size_dynamic : rm); //_row_size_dynamic is max now
-            DNDS_assert_info(iRow < _size && iRow >= 0, "query position out of range");
-            DNDS_assert_info(_pRowSizes, "_pRowSizes invalid");
-            if (_pRowSizes.use_count() > 1)                                                     // shared
-                _pRowSizes = std::make_shared<decltype(_pRowSizes)::element_type>(*_pRowSizes); // copy the row sizes
-            _pRowSizes->at(iRow) = nRowSize;                                                    // change
-        }
-
-        std::enable_if_t<_dataLayout == CSR, void>
-        ResizeRow(index iRow, rowsize nRowSize)
-        {
-            DNDS_assert_info(!IfCompressed(), "Need to decompress before auto resizing row");
-            DNDS_assert_info(iRow < _size && iRow >= 0, "query position out of range");
-            _dataUncompressed.at(iRow).resize(nRowSize);
+            if constexpr (_dataLayout == CSR)
+            {
+                DNDS_assert_info(!IfCompressed(), "Need to decompress before auto resizing row");
+                DNDS_assert_info(iRow < _size && iRow >= 0, "query position out of range");
+                _dataUncompressed.at(iRow).resize(nRowSize);
+            }
+            else if constexpr (_dataLayout == TABLE_Max ||
+                               _dataLayout == TABLE_StaticMax)
+            {
+                DNDS_assert(nRowSize <= _dataLayout == TABLE_Max ? _row_size_dynamic : rm); //_row_size_dynamic is max now
+                DNDS_assert_info(iRow < _size && iRow >= 0, "query position out of range");
+                DNDS_assert_info(_pRowSizes, "_pRowSizes invalid");
+                if (_pRowSizes.use_count() > 1) // shared
+                    _pRowSizes = std::make_shared<
+                        typename decltype(_pRowSizes)::element_type>(*_pRowSizes); // copy the row sizes
+                _pRowSizes->at(iRow) = nRowSize;                                   // change
+            }
+            else
+            {
+                DNDS_assert_info(false, "invalid call");
+            }
         }
 
         // TODO: Data reference query method and pointer query method
         // TODO: ? same-size compress for non-uniforms
+
+        T &operator()(index iRow, rowsize iCol)
+        {
+            DNDS_assert_info(iRow < _size && iRow >= 0, "query position i out of range");
+            DNDS_assert_info(iCol < RowSize(iRow) && iCol >= 0, "query position i out of range");
+            if constexpr (_dataLayout == TABLE_StaticFixed)
+                return _data.at(iRow * rs + iCol);
+            else if constexpr (_dataLayout == TABLE_StaticMax)
+                return _data.at(iRow * rm + iCol);
+            else if constexpr (_dataLayout == TABLE_Fixed)
+                return _data.at(iRow * _row_size_dynamic + iCol);
+            else if constexpr (_dataLayout == TABLE_Max)
+                return _data.at(iRow * _row_size_dynamic + iCol);
+            else if constexpr (_dataLayout == CSR)
+            {
+                if (IfCompressed())
+                    return _data.at(_pRowStart->at(iRow) + iCol);
+                else
+                    return _dataUncompressed.at(iRow).at(iCol);
+            }
+            else
+            {
+                DNDS_assert_info(false, "invalid call");
+            }
+        }
+
+        const T &operator()(index iRow, rowsize iCol) const
+        {
+            DNDS_assert_info(iRow < _size && iRow >= 0, "query position i out of range");
+            DNDS_assert_info(iCol < RowSize(iRow) && iCol >= 0, "query position i out of range");
+            if constexpr (_dataLayout == TABLE_StaticFixed)
+                return _data.at(iRow * rs + iCol);
+            else if constexpr (_dataLayout == TABLE_StaticMax)
+                return _data.at(iRow * rm + iCol);
+            else if constexpr (_dataLayout == TABLE_Fixed)
+                return _data.at(iRow * _row_size_dynamic + iCol);
+            else if constexpr (_dataLayout == TABLE_Max)
+                return _data.at(iRow * _row_size_dynamic + iCol);
+            else if constexpr (_dataLayout == CSR)
+            {
+                if (IfCompressed())
+                    return _data.at(_pRowStart->at(iRow) + iCol);
+                else
+                    return _dataUncompressed.at(iRow).at(iCol);
+            }
+            else
+            {
+                DNDS_assert_info(false, "invalid call");
+            }
+        }
+
+        friend std::ostream &operator<<(std::ostream &o, const Array<T, _row_size, _row_max, _align> &A)
+        {
+            for (index i = 0; i < A._size; i++)
+            {
+                for (index j = 0; j < A.RowSize(i); j++)
+                    o << A(i, j) << "\t";
+                o << std::endl;
+            }
+            return o;
+        }
     };
 
 }

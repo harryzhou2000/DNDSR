@@ -90,9 +90,20 @@ cgns_APITest
 eigen_Test
 )
 
+set(TESTS_DNDS
+array_Test
+)
+
 
 foreach(EXE ${TESTS_EXTERNAL})
     add_executable(${EXE} test/external/${EXE}.cpp)
+    target_link_libraries(${EXE} PUBLIC ${EXTERNAL_LIBS})
+    target_include_directories(${EXE} PUBLIC ${EXTERNAL_INCLUDES} PUBLIC ${INCLUDES})
+    set_target_properties(${EXE} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/test RUNTIME_OUTPUT_NAME ${EXE}.exe)
+endforeach()
+
+foreach(EXE ${TESTS_DNDS})
+    add_executable(${EXE} test/DNDS/${EXE}.cpp)
     target_link_libraries(${EXE} PUBLIC ${EXTERNAL_LIBS})
     target_include_directories(${EXE} PUBLIC ${EXTERNAL_INCLUDES} PUBLIC ${INCLUDES})
     set_target_properties(${EXE} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/test RUNTIME_OUTPUT_NAME ${EXE}.exe)
