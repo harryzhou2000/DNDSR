@@ -2,6 +2,7 @@
 build*
 # external
 /external
+/cfd_externals
 # packages
 *.zip
 *.tar
