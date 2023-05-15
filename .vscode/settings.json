@@ -73,7 +73,9 @@
         "cinttypes": "cpp",
         "typeinfo": "cpp",
         "*.defs": "cpp",
-        "core": "cpp"
+        "core": "cpp",
+        "bit": "cpp",
+        "random": "cpp"
     },
     "cSpell.words": [
         "rowsize"

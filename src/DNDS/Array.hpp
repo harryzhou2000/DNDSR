@@ -8,12 +8,14 @@
 namespace DNDS
 {
     static const rowsize NoAlign = -1;
+
     /**
-     * @brief Basic Serial 2-D Array class
+     * @brief
      *
      * @tparam T
      * @tparam _row_size
      * @tparam _row_max
+     * @tparam _align
      */
     template <class T, rowsize _row_size = 1, rowsize _row_max = _row_size, rowsize _align = NoAlign>
     class Array
@@ -214,7 +216,8 @@ namespace DNDS
                 // auto iterEnd = _data.begin() + _pRowStart->at(i + 1);
                 // _dataUncompressed[i].assign(iterStart, iterEnd);
                 // _data.push_back(data)
-                memcpy(_data.data() + _pRowStart->at(i), _dataUncompressed[i].data(), _dataUncompressed[i].size());
+                memcpy(_data.data() + _pRowStart->at(i), _dataUncompressed[i].data(),
+                       sizeof(T) * _dataUncompressed[i].size());
                 DNDS_assert(_pRowStart->at(i) + _dataUncompressed[i].size() <= _data.size());
                 //! any better way?
             }
@@ -306,15 +309,28 @@ namespace DNDS
 
         // TODO: A rowsizes known resize function for CSR
 
+        template <class TFRowSize>
+        void
+        Resize(index nSize, TFRowSize &&FRowSize)
+        {
+            _size = nSize;
+            _pRowSizes.reset(), _dataUncompressed.clear(); //*directly to compressed
+            _pRowStart = std::make_shared<typename decltype(_pRowStart)::element_type>(nSize + 1);
+            _pRowStart->operator[](0) = 0;
+            for (index i = 0; i < nSize; i++)
+                (*_pRowStart)[i + 1] = (*_pRowStart)[i] + FRowSize(i);
+            _data.resize(_pRowStart->at(nSize));
+
+            static_assert(_dataLayout == CSR, "Only CSR");
+            static_assert(std::is_invocable_r_v<rowsize, TFRowSize, index>, "Call invalid");
+        }
+
         /**
-         * @brief resizes only one row, does not disturb other rows
+         * @brief resize one row
+         * valid only for non-uniform
          *
          * @param iRow
          * @param nRowSize
-         * @return std::enable_if_t<
-         * _dataLayout == TABLE_Max ||
-         * _dataLayout == TABLE_StaticMax,
-         * void>
          */
         void
         ResizeRow(index iRow, rowsize nRowSize)
@@ -345,7 +361,7 @@ namespace DNDS
         // TODO: Data reference query method and pointer query method
         // TODO: ? same-size compress for non-uniforms
 
-        T &operator()(index iRow, rowsize iCol)
+        const T &at(index iRow, rowsize iCol) const
         {
             DNDS_assert_info(iRow < _size && iRow >= 0, "query position i out of range");
             DNDS_assert_info(iCol < RowSize(iRow) && iCol >= 0, "query position i out of range");
@@ -370,24 +386,33 @@ namespace DNDS
             }
         }
 
+        T &operator()(index iRow, rowsize iCol)
+        {
+            return const_cast<T &>(at(iRow, iCol));
+        }
+
         const T &operator()(index iRow, rowsize iCol) const
         {
+            return at(iRow, iCol);
+        }
+
+        T *operator[](index iRow)
+        {
             DNDS_assert_info(iRow < _size && iRow >= 0, "query position i out of range");
-            DNDS_assert_info(iCol < RowSize(iRow) && iCol >= 0, "query position i out of range");
             if constexpr (_dataLayout == TABLE_StaticFixed)
-                return _data.at(iRow * rs + iCol);
+                return _data.data() + iRow * rs;
             else if constexpr (_dataLayout == TABLE_StaticMax)
-                return _data.at(iRow * rm + iCol);
+                return _data.data() + iRow * rm;
             else if constexpr (_dataLayout == TABLE_Fixed)
-                return _data.at(iRow * _row_size_dynamic + iCol);
+                return _data.data() + iRow * _row_size_dynamic;
             else if constexpr (_dataLayout == TABLE_Max)
-                return _data.at(iRow * _row_size_dynamic + iCol);
+                return _data.data() + iRow * _row_size_dynamic;
             else if constexpr (_dataLayout == CSR)
             {
                 if (IfCompressed())
-                    return _data.at(_pRowStart->at(iRow) + iCol);
+                    return _data.data() + _pRowStart->at(iRow);
                 else
-                    return _dataUncompressed.at(iRow).at(iCol);
+                    return _dataUncompressed.at(iRow).data();
             }
             else
             {

@@ -94,16 +94,41 @@ set(TESTS_DNDS
 array_Test
 )
 
+# set(OBJS_DNDS
+# MPI
+# )
+
+# foreach(OBJ ${OBJS_DNDS})
+#     add_library(${OBJ} OBJECT src/DNDS/${OBJ}.cpp)
+#     target_link_libraries(${OBJ} PUBLIC ${EXTERNAL_LIBS})
+#     target_include_directories(${OBJ} PUBLIC ${EXTERNAL_INCLUDES} PUBLIC ${INCLUDES})
+# endforeach()
+
+# set(OBJS
+# ${OBJS_DNDS}
+# )
+
+set(CPPS_DNDS
+src/DNDS/MPI.cpp
+src/DNDS/Defines.cpp
+)
+
+set(CPPS
+${CPPS_DNDS}
+)
+
+
 
 foreach(EXE ${TESTS_EXTERNAL})
-    add_executable(${EXE} test/external/${EXE}.cpp)
+    # add_executable(${EXE} test/external/${EXE}.cpp $<TARGET_OBJECTS:${OBJS}>)
+    add_executable(${EXE} test/external/${EXE}.cpp ${CPPS})
     target_link_libraries(${EXE} PUBLIC ${EXTERNAL_LIBS})
     target_include_directories(${EXE} PUBLIC ${EXTERNAL_INCLUDES} PUBLIC ${INCLUDES})
     set_target_properties(${EXE} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/test RUNTIME_OUTPUT_NAME ${EXE}.exe)
 endforeach()
 
 foreach(EXE ${TESTS_DNDS})
-    add_executable(${EXE} test/DNDS/${EXE}.cpp)
+    add_executable(${EXE} test/DNDS/${EXE}.cpp ${CPPS})
     target_link_libraries(${EXE} PUBLIC ${EXTERNAL_LIBS})
     target_include_directories(${EXE} PUBLIC ${EXTERNAL_INCLUDES} PUBLIC ${INCLUDES})
     set_target_properties(${EXE} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/test RUNTIME_OUTPUT_NAME ${EXE}.exe)
