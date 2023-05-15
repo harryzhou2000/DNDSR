@@ -7,3 +7,14 @@ build*
 *.zip
 *.tar
 *.gz
+# building
+build*
+# external
+/external
+# packages
+*.zip
+*.tar
+*.gz
+docs/html
+docs/latex
+

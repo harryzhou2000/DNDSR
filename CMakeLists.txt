@@ -4,6 +4,10 @@ cmake_minimum_required(VERSION 3.1)
 # need CUDA project support ?
 # manual perferences
 set(CMAKE_VERBOSE_MAKEFILE ON)
+set(CMAKE_CXX_STANDARD_REQUIRED 17)
+set(CMAKE_CXX_STANDARD 17)
+
+
 set(DNDS_SUPRESS_INSERT_CHECK ON CACHE BOOL "close the inserted outputs")
 set(DNDS_USE_NDEBUG_MACRO OFF CACHE BOOL "use DEBUG macro for eigen output and cassert etc") # performance impact is small so off by default(without -DNDEBUG)
 
@@ -62,9 +66,68 @@ set(EXTERNAL_INCLUDES \\
     ${EXTERNAL_INCLUDE_TECIO}\\
     ${EXTERNAL_INCLUDE_EIGEN})
 
+set(DNDS_INCLUDES ${PROJECT_SOURCE_DIR}/src)
+
+if (DNDS_SUPRESS_INSERT_CHECK)
+    add_compile_definitions(NINSERT)
+endif()
+if (DNDS_USE_NDEBUG_MACRO)
+    add_compile_definitions(NDEBUG)
+endif()
+
 message(STATUS "EXTERNAL_LIBS ${EXTERNAL_LIBS}")
 message(STATUS "EXTERNAL_INCLUDES ${EXTERNAL_INCLUDES}")
 
-add_executable(cgns_APITest test/external/cgns_APITest.cpp)
-target_link_libraries(cgns_APITest PUBLIC ${EXTERNAL_LIBS})
-target_include_directories(cgns_APITest PUBLIC ${EXTERNAL_INCLUDES})
+set(INCLUDES \\
+${DNDS_INCLUDES})
+
+
+
+## test exes
+
+set(TESTS_EXTERNAL
+cgns_APITest
+eigen_Test
+)
+
+set(TESTS_DNDS
+array_Test
+)
+
+
+foreach(EXE ${TESTS_EXTERNAL})
+    add_executable(${EXE} test/external/${EXE}.cpp)
+    target_link_libraries(${EXE} PUBLIC ${EXTERNAL_LIBS})
+    target_include_directories(${EXE} PUBLIC ${EXTERNAL_INCLUDES} PUBLIC ${INCLUDES})
+    set_target_properties(${EXE} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/test RUNTIME_OUTPUT_NAME ${EXE}.exe)
+endforeach()
+
+foreach(EXE ${TESTS_DNDS})
+    add_executable(${EXE} test/DNDS/${EXE}.cpp)
+    target_link_libraries(${EXE} PUBLIC ${EXTERNAL_LIBS})
+    target_include_directories(${EXE} PUBLIC ${EXTERNAL_INCLUDES} PUBLIC ${INCLUDES})
+    set_target_properties(${EXE} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/test RUNTIME_OUTPUT_NAME ${EXE}.exe)
+endforeach()
+
+
+## doxygen
+find_package(Doxygen)
+if (DOXYGEN_FOUND)
+    message(STATUS "Doxygen Found") 
+    #! TODO: use automatic config Doxygen.in file
+    ##### using custom DOXYGEN
+    set(DOXYGEN_IN ${PROJECT_SOURCE_DIR}/docs/Doxyfile)
+    add_custom_target(docs ALL 
+        COMMAND ${DOXYGEN_EXECUTABLE} ${DOXYGEN_IN}
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+        COMMENT Doing Doxygen
+        VERBATIM
+    )
+    ##### using CMAKE convenient DOXYGEN!only in 3.9 +!!!
+    
+else(DOXYGEN_FOUND)
+    message("Doxygen Not Found")
+endif(DOXYGEN_FOUND)
+
+
+
