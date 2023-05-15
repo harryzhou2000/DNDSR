@@ -235,8 +235,8 @@ namespace DNDS
                 ghostStart[i + 1] = ghostStart[i] + ghostSizes[i];
             ghostIndex.resize(ghostStart[ghostSizes.size()]);
             MPI::Alltoallv(pushingIndexGlobal.data(), pushIndexSizes.data(), pushIndexStarts.data(), DNDS_MPI_INDEX,
-                          ghostIndex.data(), ghostSizes.data(), ghostStart.data(), DNDS_MPI_INDEX,
-                          mpi.comm); // inverse to the normal pulling
+                           ghostIndex.data(), ghostSizes.data(), ghostStart.data(), DNDS_MPI_INDEX,
+                           mpi.comm); // inverse to the normal pulling
 
             // !doesn't store pullingRequest
         }
@@ -351,8 +351,14 @@ namespace DNDS
         {
             if (rank == -1)
             {
-                DNDS_assert(val >= 0 && val < mainSize);
-                return val + mainOffset;
+                DNDS_assert(val >= 0);
+                if (val < mainSize)
+                    return val + mainOffset;
+                else
+                {
+                    DNDS_assert(val - mainSize < ghostStart.back());
+                    return ghostIndex.at(val - mainSize);
+                }
             }
             else
             {

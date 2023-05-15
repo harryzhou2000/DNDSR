@@ -33,13 +33,13 @@ static const std::string DNDS_Defines_state =
 
 inline void __DNDS_assert_false(const char *expr, const char *file, int line)
 {
-    std::cerr << "\033[91mDNDS DNDS_assertion failed\033[39m: \"" << expr << "\"  at [  " << file << ":" << line << "  ]" << std::endl;
+    std::cerr << "\033[91m DNDS_assertion failed\033[39m: \"" << expr << "\"  at [  " << file << ":" << line << "  ]" << std::endl;
     std::abort();
 }
 
 inline void __DNDS_assert_false_info(const char *expr, const char *file, int line, const char *info)
 {
-    std::cerr << "\033[91mDNDS DNDS_assertion failed\033[39m: \"" << expr << "\"  at [  " << file << ":" << line << "  ]\n"
+    std::cerr << "\033[91m DNDS_assertion failed\033[39m: \"" << expr << "\"  at [  " << file << ":" << line << "  ]\n"
               << info << std::endl;
     std::abort();
 }
