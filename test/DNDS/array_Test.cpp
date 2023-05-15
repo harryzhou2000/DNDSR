@@ -82,5 +82,7 @@ int main()
     e1[2][0] = e1[2][1] = e1[2][2] = 4;
     std::cout << e1 << std::endl;
 
+    //TODO: more tests on different types and function overloads
+
     return 0;
 }

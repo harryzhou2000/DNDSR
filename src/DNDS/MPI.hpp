@@ -80,7 +80,7 @@ namespace DNDS
 #endif
     }
 
-#define DNDS_MPI_InsertCheck(mpi, info)\
+#define DNDS_MPI_InsertCheck(mpi, info) \
     InsertCheck(mpi, info, _FUNCTION_, __FILE__, __LINE__)
 
     template <class F>
@@ -209,6 +209,35 @@ namespace DNDS
         }
     };
 
+}
+
+namespace DNDS
+{
+    namespace MPI
+    {
+        /// @brief dumb wrapper
+        template <class TData>
+        MPI_int Bcast(TData *buf, MPI_int num, MPI_Datatype type, MPI_int source_rank, MPI_Comm comm)
+        {
+            return MPI_Bcast(buf, num, type, source_rank, comm);
+        }
+
+        template <class TData>
+        MPI_int Alltoall(TData *send, MPI_int sendNum, MPI_Datatype typeSend, TData *recv, MPI_int recvNum, MPI_Datatype typeRecv, MPI_Comm comm)
+        {
+            return MPI_Alltoall(send, sendNum, typeSend, recv, recvNum, typeRecv, comm);
+        }
+
+        template <class TData>
+        MPI_int Alltoallv(
+            TData *send, MPI_int *sendSizes, MPI_int *sendStarts, MPI_Datatype sendType,
+            TData *recv, MPI_int *recvSizes, MPI_int *recvStarts, MPI_Datatype recvType, MPI_Comm comm)
+        {
+            return MPI_Alltoallv(
+                send, sendSizes, sendStarts, sendType,
+                recv, recvSizes, recvStarts, recvType, comm);
+        }
+    }
 }
 
 #ifdef NDEBUG_DISABLED

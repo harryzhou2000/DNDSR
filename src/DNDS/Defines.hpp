@@ -53,8 +53,8 @@ inline void __DNDS_assert_false_info(const char *expr, const char *file, int lin
          ? void(0)           \
          : __DNDS_assert_false(#expr, __FILE__, __LINE__))
 #define DNDS_assert_info(expr, info) \
-    (static_cast<bool>(expr)    \
-         ? void(0)              \
+    (static_cast<bool>(expr)         \
+         ? void(0)                   \
          : __DNDS_assert_false_info(#expr, __FILE__, __LINE__, info))
 #endif
 
@@ -67,6 +67,8 @@ namespace DNDS
     typedef double real;
     typedef int64_t index;
     typedef int32_t rowsize;
+
+#define DNDS_INDEX_MAX INT64_MAX
 
     static const char *outputDelim = "\t";
 
@@ -125,10 +127,14 @@ namespace DNDS
     template <class TtRowsizeVec, class TtIndexVec>
     inline void AccumulateRowSize(const TtRowsizeVec &rowsizes, TtIndexVec &rowstarts)
     {
+        static_assert(std::is_signed_v<typename TtIndexVec::value_type>, "row starts should be signed");
         rowstarts.resize(rowsizes.size() + 1);
         rowstarts[0] = 0;
         for (typename TtIndexVec::size_type i = 1; i < rowstarts.size(); i++)
+        {
             rowstarts[i] = rowstarts[i - 1] + rowsizes[i - 1];
+            DNDS_assert(rowstarts[i] >= 0);
+        }
     }
 
     template <class T>

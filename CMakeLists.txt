@@ -92,6 +92,7 @@ eigen_Test
 
 set(TESTS_DNDS
 array_Test
+arrayTrans_test
 )
 
 # set(OBJS_DNDS
@@ -111,6 +112,7 @@ array_Test
 set(CPPS_DNDS
 src/DNDS/MPI.cpp
 src/DNDS/Defines.cpp
+src/DNDS/Profiling.cpp
 )
 
 set(CPPS
