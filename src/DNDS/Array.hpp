@@ -445,6 +445,12 @@ namespace DNDS
             return at(iRow, iCol);
         }
 
+        /**
+         * @brief iRow could be past-the-end to query past-the-end position pointer
+         *
+         * @param iRow
+         * @return T*
+         */
         T *operator[](index iRow)
         {
             DNDS_assert_info(iRow <= _size && iRow >= 0, "query position i out of range");

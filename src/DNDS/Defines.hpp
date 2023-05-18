@@ -72,6 +72,9 @@ namespace DNDS
     static_assert(sizeof(real_sized_index) == sizeof(real) && sizeof(real_half_sized_index) == sizeof(real) / 2);
 
 #define DNDS_INDEX_MAX INT64_MAX
+#define DNDS_INDEX_MIN INT64_MIN
+#define DNDS_ROWSIZE_MAX INT32_MAX
+#define DNDS_ROWSIZE_MIN INT32_MIN
 
     static const char *outputDelim = "\t";
 
