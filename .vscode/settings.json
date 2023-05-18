@@ -79,7 +79,9 @@
         "random": "cpp",
         "adolcforward": "cpp",
         "dense": "cpp",
-        "eigenvalues": "cpp"
+        "eigenvalues": "cpp",
+        "unordered_set": "cpp",
+        "regex": "cpp"
     },
     "cSpell.words": [
         "rowsize"

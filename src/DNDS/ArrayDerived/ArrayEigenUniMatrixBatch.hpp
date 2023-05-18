@@ -64,7 +64,7 @@ namespace DNDS
             this->t_base::Resize(0);
         }
 
-        void Resize(index n_size, int r = -1, int c = -1)
+        void Resize(index n_size, int r, int c)
         {
             this->ResizeMatrix(r, c);
             this->t_base::Resize(n_size);
@@ -96,8 +96,17 @@ namespace DNDS
         t_EigenMap operator()(index i, rowsize j)
         {
             DNDS_assert(j >= 0 && j < this->BatchSize(i));
-            if constexpr (_n_row >= 0 && _n_col >= 0)
-                return t_EigenMap(this->t_base::operator[](i) + MSize() * j, Rows(), Cols());
+            // if constexpr (_n_row >= 0 && _n_col >= 0)
+            return t_EigenMap(this->t_base::operator[](i) + MSize() * j, Rows(), Cols());
+        }
+
+        std::vector<t_EigenMap> operator()(index i)
+        {
+            std::vector<t_EigenMap> ret;
+            ret.reserve(this->BatchSize(i));
+            for (rowsize j = 0; j < this->BatchSize(i); j++)
+                ret.emplace_back(this->t_base::operator[](i) + MSize() * j, Rows(), Cols());
+            return ret;
         }
 
         // TODO: getting sub matrix ?

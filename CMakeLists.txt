@@ -95,6 +95,7 @@ eigen_Test
 set(TESTS_DNDS
 array_Test
 arrayTrans_test
+arrayDerived_test
 )
 
 # set(OBJS_DNDS
@@ -121,18 +122,34 @@ set(CPPS
 ${CPPS_DNDS}
 )
 
+set(CPP_TARGETS
+)
+set(CPP_TARGETS_OBJ
+)
+
+foreach(CPP ${CPPS})
+
+    string(REPLACE "/" "___" CPP_NAME ${CPP})
+    # message(STATUS ${CPP_NAME})
+    string(REPLACE ".cpp" "_" CPP_NAME_A ${CPP_NAME})
+    add_library(${CPP_NAME_A} OBJECT ${CPP})
+    target_include_directories(${CPP_NAME_A} PUBLIC ${EXTERNAL_INCLUDES} PUBLIC ${INCLUDES})
+    list(APPEND CPP_TARGETS ${CPP_NAME_A})
+    list(APPEND CPP_TARGETS_OBJ $<TARGET_OBJECTS:${CPP_NAME_A}>)
+endforeach()
+
 
 
 foreach(EXE ${TESTS_EXTERNAL})
     # add_executable(${EXE} test/external/${EXE}.cpp $<TARGET_OBJECTS:${OBJS}>)
-    add_executable(${EXE} test/external/${EXE}.cpp ${CPPS})
+    add_executable(${EXE} test/external/${EXE}.cpp ${CPP_TARGETS_OBJ})
     target_link_libraries(${EXE} PUBLIC ${EXTERNAL_LIBS})
     target_include_directories(${EXE} PUBLIC ${EXTERNAL_INCLUDES} PUBLIC ${INCLUDES})
     set_target_properties(${EXE} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/test RUNTIME_OUTPUT_NAME ${EXE}.exe)
 endforeach()
 
 foreach(EXE ${TESTS_DNDS})
-    add_executable(${EXE} test/DNDS/${EXE}.cpp ${CPPS})
+    add_executable(${EXE} test/DNDS/${EXE}.cpp ${CPP_TARGETS_OBJ})
     target_link_libraries(${EXE} PUBLIC ${EXTERNAL_LIBS})
     target_include_directories(${EXE} PUBLIC ${EXTERNAL_INCLUDES} PUBLIC ${INCLUDES})
     set_target_properties(${EXE} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/test RUNTIME_OUTPUT_NAME ${EXE}.exe)

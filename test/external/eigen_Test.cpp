@@ -24,7 +24,16 @@ int main()
     std::cout << std::is_trivially_copyable_v<Eigen::Matrix3d> << std::endl;
     std::cout << std::is_trivially_copyable_v<Eigen::Matrix3Xd> << std::endl;
     std::cout << std::is_trivially_copyable_v<Eigen::Matrix<real, -1, -1, Eigen::ColMajor, 3, 3>> << std::endl;
-    std::cout << std::is_trivially_copyable_v<std::array<real,5>> << std::endl;
+    std::cout << std::is_trivially_copyable_v<std::array<real, 5>> << std::endl;
+    std::cout << "Test Size:\n";
+    std::cout << sizeof(Eigen::Matrix<double, 5, 5>) << std::endl;
+    std::cout << sizeof(Eigen::Matrix<double, 100, 100>) << std::endl;
+    std::cout << sizeof(Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic>) << std::endl;
+    std::cout << sizeof(Eigen::Matrix<double, 100, Eigen::Dynamic>) << std::endl;
+    std::cout << sizeof(Eigen::Matrix<double, 100, Eigen::Dynamic, Eigen::DontAlign, 100, 100>) << std::endl;
+    std::cout << sizeof(Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic, Eigen::DontAlign, 100, 100>) << std::endl;
+    std::cout << sizeof(Eigen::Map<Eigen::Matrix<double, 5, 5>>) << std::endl;
+    std::cout << sizeof(Eigen::Map<Eigen::Matrix<double, 100, 100>>) << std::endl;
 
     return 0;
 }
