@@ -31,6 +31,6 @@ namespace DNDS
     void PerformanceTimer::clearAllTimer()
     {
         for (int i = 0; i < Ntype; i++)
-            clearTimer(TimerType(i));
+            clearTimer(TimerType(i)); // TODO: optimization
     }
 }

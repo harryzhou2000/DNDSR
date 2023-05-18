@@ -67,6 +67,9 @@ namespace DNDS
     typedef double real;
     typedef int64_t index;
     typedef int32_t rowsize;
+    typedef int64_t real_sized_index;
+    typedef int32_t real_half_sized_index;
+    static_assert(sizeof(real_sized_index) == sizeof(real) && sizeof(real_half_sized_index) == sizeof(real) / 2);
 
 #define DNDS_INDEX_MAX INT64_MAX
 
@@ -96,6 +99,11 @@ namespace DNDS
     const rowsize DynamicSize = -1;
     const rowsize NonUniformSize = -2;
     static_assert(DynamicSize != NonUniformSize, "DynamicSize, NonUniformSize definition conflict");
+
+    inline constexpr int RowSize_To_EigenSize(rowsize rs)
+    {
+        return rs >= 0 ? static_cast<int>(rs) : (rs == DynamicSize || rs == NonUniformSize ? Eigen::Dynamic : INT_MIN);
+    }
 }
 
 namespace DNDS

@@ -7,6 +7,7 @@
         "external\\metis\\include",
         "external\\parmetis\\include",
         "external\\TECIO\\include",
+        "external\\rapidjson\\include",
         "src"
     ],
     "files.associations": {
@@ -75,7 +76,10 @@
         "*.defs": "cpp",
         "core": "cpp",
         "bit": "cpp",
-        "random": "cpp"
+        "random": "cpp",
+        "adolcforward": "cpp",
+        "dense": "cpp",
+        "eigenvalues": "cpp"
     },
     "cSpell.words": [
         "rowsize"

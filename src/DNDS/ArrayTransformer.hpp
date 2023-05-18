@@ -18,20 +18,22 @@ namespace DNDS
         static const DataLayout _dataLayout = TArray::_dataLayout;
 
         using Array<T, _row_size, _row_max, _align>::Array;
-        t_pLGlobalMapping pLGlobalMapping;
+        // TODO: privatize these
+        t_pLGlobalMapping pLGlobalMapping; 
         MPIInfo mpi;
 
         void setMPI(const MPIInfo &n_mpi)
         {
             mpi = n_mpi;
-            // checking if is uniform across all procs
         }
 
-        void AssertConsistent()
+        bool AssertConsistent()
         {
+            MPI_Barrier(mpi.comm); // must be globally existent
             if constexpr (_dataLayout == TABLE_Max ||
                           _dataLayout == TABLE_Fixed)
             {
+                // checking if is uniform across all procs
                 t_RowsizeVec uniformSizes(mpi.size);
                 MPI_int rowsizeC = this->RowSizeField();
                 static_assert(sizeof(MPI_int) == sizeof(rowsize));
@@ -39,6 +41,7 @@ namespace DNDS
                 for (auto i : uniformSizes)
                     DNDS_assert_info(i == rowsizeC, "sizes not uniform across procs");
             }
+            return true; // currently all errors aborts inside
         }
 
         void createGlobalMapping() // collective;
@@ -146,8 +149,9 @@ namespace DNDS
             DNDS_assert(bool(father) && bool(son));
             DNDS_assert(pLGlobalMapping && pLGhostMapping);
             father->Compress(); //! assure CSR is in compressed form
-            // TODO: support comm for uncompressed: add working mode
-            // TODO: support actual MAX arrays' size communicating: append comm types
+            // TODO: support comm for uncompressed: add in-situ packaging working mode
+            // TODO: support actual MAX arrays' size communicating: append comm types: ? needed?
+            // TODO: add manual packaging mode
             /*********************************************/ // starts to deal with actual byte sizes
 
             //*phase2.1: build push sizes and push disps
