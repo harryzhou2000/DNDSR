@@ -516,4 +516,11 @@ namespace DNDS
             clearPersistentPush();
         }
     };
+
+    template <class TArray>
+    struct ArrayTransformerType
+    {
+        using Type = ArrayTransformer<typename TArray::value_type, TArray::rs, TArray::rm, TArray::al>;
+    };
+
 }

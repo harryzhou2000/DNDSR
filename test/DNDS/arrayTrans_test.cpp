@@ -4,6 +4,13 @@
 #include <cstdlib>
 using namespace DNDS;
 
+std::vector<double> argD;
+
+/*
+running:
+mpirun -np 4 valgrind --suppressions=/usr/share/openmpi/openmpi-valgrind.supp --log-file=log_valgrind.log test/arrayTrans_test.exe 1000 1000 100
+*/
+
 // TODO: test large/ test other types/ test size renew
 void test_CSR()
 {
@@ -83,32 +90,46 @@ void test_CSR()
     // "
 }
 
-void test_CSR_LARGE()
+void test_CSR_MAX_LARGE()
 {
+    int localSiz = 2000;
+    int localSizB = 3000;
+    int pullSize = 100;
+    if(argD.size() == 3)
+        localSiz = argD[0];
+        localSizB = argD[1];
+        pullSize = argD[2];
     MPIInfo mpi;
     mpi.setWorld();
     // DNDS_assert(mpi.size <= 2);
     // Debug::MPIDebugHold(mpi);
+
     using tArray = ParArray<real, NonUniformSize>;
+    // using tArray = ParArray<real, NonUniformSize, 3>;
+    // using tArray = ParArray<real, NonUniformSize, DynamicSize>;
+    // using tArray = ParArray<real, DynamicSize>;
+    // using tArray = ParArray<real, 3>;
+
     std::shared_ptr<tArray> A = std::make_shared<tArray>();
     std::shared_ptr<tArray> A_Ghost = std::make_shared<tArray>();
     auto &Ar = *A;
     auto &Ar_Ghost = *A_Ghost;
-    ArrayTransformer<real, NonUniformSize> A_Trans;
+    ArrayTransformerType<tArray>::Type A_Trans;
     Ar.setMPI(mpi), Ar_Ghost.setMPI(mpi);
     std::cout << "C" << std::endl;
-    Ar.Resize(mpi.rank % 2 * 20000 + 30000);
-    DNDS_assert(Ar.IfCompressed() == false);
+    Ar.Resize(mpi.rank % 2 * localSiz + localSizB, 3); // max 3 or preallocate 3
+    DNDS_assert((Ar.GetDataLayout() == CSR && Ar.IfCompressed()) == false);
     Ar.createGlobalMapping();
     for (DNDS::index i = 0; i < Ar.Size(); i++)
     {
-        Ar.ResizeRow(i, i % 3 + 1);
+        if (tArray::rs == NonUniformSize)
+            Ar.ResizeRow(i, Ar.pLGlobalMapping->operator()(mpi.rank, i) % 3 + 1);
         for (rowsize j = 0; j < Ar.RowSize(i); j++)
             Ar(i, j) = Ar.pLGlobalMapping->operator()(mpi.rank, i);
     }
     std::vector<int> pullingIndexG;
     srand(mpi.rank);
-    for (int i = 0; i < 1000; i++)
+    for (int i = 0; i < pullSize; i++)
         pullingIndexG.push_back(rand() % Ar.pLGlobalMapping->globalSize());
     A_Trans.setFatherSon(A, A_Ghost);
     A_Trans.createGhostMapping(pullingIndexG);
@@ -130,17 +151,33 @@ void test_CSR_LARGE()
                             DNDS_assert(globalIndex == Ar_Ghost(i, j));
                         }
                         std::cout << std::endl;
-                        
                     }
                 });
+    // Expected (non uniform):
+    // rank 1:
+    // a: a a a
+    // b: b b
+    // c: c c
+    // d: d
+    // e: e e e
+    // ...
+    // rank 2:
+    // ...
 }
 
 int main(int argc, char *argv[])
 {
     MPI_Init(&argc, &argv);
 
+    
+    for(int i = 1; i < argc; i++)
+    {
+        double v = std::atof(argv[i]);
+        argD.push_back(v);
+    }
+
     // test_CSR();
-    test_CSR_LARGE();
+    test_CSR_MAX_LARGE();
 
     MPI_Finalize();
 
