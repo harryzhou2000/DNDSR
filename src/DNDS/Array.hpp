@@ -311,9 +311,9 @@ namespace DNDS
                 if constexpr (_dataLayout == TABLE_Fixed || _dataLayout == TABLE_Max)
                     _data.resize(nSize * nRow_size_dynamic), _row_size_dynamic = nRow_size_dynamic;
                 else if constexpr (_dataLayout == TABLE_StaticFixed)
-                    _data.resize(nSize * rs);
+                    _data.resize(nSize * rs), DNDS_assert(nRow_size_dynamic == rs);
                 else if constexpr (_dataLayout == TABLE_StaticMax)
-                    _data.resize(nSize * rm);
+                    _data.resize(nSize * rm), DNDS_assert(nRow_size_dynamic == rm);
 
                 if constexpr (_dataLayout == TABLE_Max || _dataLayout == TABLE_StaticMax)
                 {
@@ -496,6 +496,8 @@ namespace DNDS
             }
             return o;
         }
+
+        DataLayout GetDataLayout() { return _dataLayout; }
     };
 
 }
