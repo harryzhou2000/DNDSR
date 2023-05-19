@@ -1,6 +1,7 @@
 #include "DNDS/ArrayDerived/ArrayAdjacency.hpp"
 #include "DNDS/ArrayDerived/ArrayEigenVector.hpp"
 #include "DNDS/ArrayDerived/ArrayEigenUniMatrixBatch.hpp"
+#include "DNDS/ArrayDerived/ArrayEigenMatrixBatch.hpp"
 
 #include <cstdlib>
 using namespace DNDS;
@@ -91,10 +92,8 @@ void test_UniMatBatch()
     A_UMB.Resize(nRow, -1, -1);
 
     for (DNDS::index i = 0; i < A_UMB.Size(); i++)
-        A_UMB.ResizeBatch(i, i % 3 + 1);
-
-    for (DNDS::index i = 0; i < A_UMB.Size(); i++)
     {
+        A_UMB.ResizeBatch(i, i % 3 + 1);
         for (rowsize j = 0; j < A_UMB.BatchSize(i); j++)
             A_UMB(i, j).setIdentity(), A_UMB(i, j) *= i;
     }
@@ -102,9 +101,56 @@ void test_UniMatBatch()
     for (DNDS::index i = 0; i < A_UMB.Size(); i++)
     {
         std::cout << i << ": \n";
-        auto Batch = A_UMB(i);
+        auto Batch = A_UMB[i];
         for (auto &j : Batch)
             std::cout << j << std::endl;
+    }
+}
+
+void test_MatBatch()
+{
+    MatrixBatch::UInt32PairIn64 two_ints;
+    two_ints.setM(123321u);
+    two_ints.setN(321123u);
+    std::cout << two_ints.getM() << " " << two_ints.getN() << std::endl;
+    MatrixBatch::UInt16QuadIn64 four_shorts;
+    four_shorts.setA(1234);
+    four_shorts.setB(4321);
+    four_shorts.setC(4444);
+    four_shorts.setD(1111);
+    std::cout
+        << four_shorts.getA() << " "
+        << four_shorts.getB() << " "
+        << four_shorts.getC() << " "
+        << four_shorts.getD() << " " << std::endl;
+
+    int nRow = 1000;
+    if (argD.size() == 1)
+    {
+        nRow = int(argD[0]);
+    }
+
+    ArrayEigenMatrixBatch A_MB;
+
+    A_MB.Resize(nRow);
+
+    for (DNDS::index i = 0; i < A_MB.Size(); i++)
+    {
+        std::vector<Eigen::MatrixXd> mats;
+        for (int j = 0; j < i % 3 + 1; j++)
+            mats.emplace_back(), mats.back().setIdentity(j, j);
+        A_MB.InitializeWriteRow(i, mats);
+        // std::cout << MatrixBatch::getBufSize(mats) << std::endl;
+    }
+
+    A_MB.Compress();
+    for (DNDS::index i = 0; i < A_MB.Size(); i++)
+    {
+        std::cout << i << ": \n";
+        auto Batch = A_MB[i];
+        // std::cout << A_MB.RowSize(i) << " " << Batch.Size() << std::endl;
+        for (int j = 0; j < Batch.Size(); j++)
+            std::cout << Batch[j] << std::endl;
     }
 }
 
@@ -121,7 +167,8 @@ int main(int argc, char *argv[])
 
     // test_ADJ();
     // test_Vec();
-    test_UniMatBatch();
+    // test_UniMatBatch();
+    test_MatBatch();
 
     // MPI_Finalize();
 

@@ -100,7 +100,7 @@ namespace DNDS
             return t_EigenMap(this->t_base::operator[](i) + MSize() * j, Rows(), Cols());
         }
 
-        std::vector<t_EigenMap> operator()(index i)
+        std::vector<t_EigenMap> operator[](index i)
         {
             std::vector<t_EigenMap> ret;
             ret.reserve(this->BatchSize(i));
