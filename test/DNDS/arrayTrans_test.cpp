@@ -95,20 +95,31 @@ void test_CSR_MAX_LARGE()
     int localSiz = 2000;
     int localSizB = 3000;
     int pullSize = 100;
-    if(argD.size() == 3)
+    if (argD.size() == 3)
         localSiz = argD[0];
-        localSizB = argD[1];
-        pullSize = argD[2];
+    localSizB = argD[1];
+    pullSize = argD[2];
     MPIInfo mpi;
     mpi.setWorld();
-    // DNDS_assert(mpi.size <= 2);
-    // Debug::MPIDebugHold(mpi);
+// DNDS_assert(mpi.size <= 2);
+// Debug::MPIDebugHold(mpi);
 
-    using tArray = ParArray<real, NonUniformSize>;
-    // using tArray = ParArray<real, NonUniformSize, 3>;
-    // using tArray = ParArray<real, NonUniformSize, DynamicSize>;
-    // using tArray = ParArray<real, DynamicSize>;
-    // using tArray = ParArray<real, 3>;
+//
+#define TCOMP_N 2
+
+#if TCOMP_N == 0
+    using tComp = real;
+#elif TCOMP_N == 1
+    using tComp = std::array<real, 2>;
+#elif TCOMP_N == 2
+    using tComp = Eigen::Matrix<real, 3, 3>;
+#endif
+
+    // using tArray = ParArray<tComp, NonUniformSize>;
+    // using tArray = ParArray<tComp, NonUniformSize, 3>;
+    // using tArray = ParArray<tComp, NonUniformSize, DynamicSize>;
+    using tArray = ParArray<tComp, DynamicSize>;
+    // using tArray = ParArray<tComp, 3>;
 
     std::shared_ptr<tArray> A = std::make_shared<tArray>();
     std::shared_ptr<tArray> A_Ghost = std::make_shared<tArray>();
@@ -116,6 +127,7 @@ void test_CSR_MAX_LARGE()
     auto &Ar_Ghost = *A_Ghost;
     ArrayTransformerType<tArray>::Type A_Trans;
     Ar.setMPI(mpi), Ar_Ghost.setMPI(mpi);
+    Ar.AssertConsistent(), Ar_Ghost.AssertConsistent();
     std::cout << "C" << std::endl;
     Ar.Resize(mpi.rank % 2 * localSiz + localSizB, 3); // max 3 or preallocate 3
     DNDS_assert((Ar.GetDataLayout() == CSR && Ar.IfCompressed()) == false);
@@ -125,7 +137,13 @@ void test_CSR_MAX_LARGE()
         if (tArray::rs == NonUniformSize)
             Ar.ResizeRow(i, Ar.pLGlobalMapping->operator()(mpi.rank, i) % 3 + 1);
         for (rowsize j = 0; j < Ar.RowSize(i); j++)
+#if TCOMP_N == 0
             Ar(i, j) = Ar.pLGlobalMapping->operator()(mpi.rank, i);
+#elif TCOMP_N == 1
+            Ar(i, j)[0] = Ar(i, j)[1] = Ar.pLGlobalMapping->operator()(mpi.rank, i);
+#elif TCOMP_N == 2
+            Ar(i, j).setIdentity(), Ar(i, j) *= Ar.pLGlobalMapping->operator()(mpi.rank, i);
+#endif
     }
     std::vector<int> pullingIndexG;
     srand(mpi.rank);
@@ -147,8 +165,13 @@ void test_CSR_MAX_LARGE()
                         std::cout << globalIndex << ": ";
                         for (rowsize j = 0; j < Ar_Ghost.RowSize(i); j++)
                         {
-                            std::cout << Ar_Ghost(i, j) << "\t";
-                            DNDS_assert(globalIndex == Ar_Ghost(i, j));
+#if TCOMP_N == 0
+                            std::cout << Ar_Ghost(i, j) << "\t", DNDS_assert(globalIndex == Ar_Ghost(i, j));
+#elif TCOMP_N == 1
+                    std::cout << Ar_Ghost(i, j)[0] << ", " << Ar_Ghost(i, j)[1] << "\t", DNDS_assert(globalIndex == Ar_Ghost(i, j)[0]);
+#elif TCOMP_N == 2
+                    std::cout << Ar_Ghost(i, j) << "\n\n", DNDS_assert(globalIndex == Ar_Ghost(i, j)(1, 1));
+#endif
                         }
                         std::cout << std::endl;
                     }
@@ -167,10 +190,12 @@ void test_CSR_MAX_LARGE()
 
 int main(int argc, char *argv[])
 {
+    DNDS_assert_info(BasicType_To_MPIIntType<uint64_t[4][5]>().second == 20, "BasicType_To_MPIIntType() bad");
+    DNDS_assert_info(BasicType_To_MPIIntType<uint64_t[4][5]>().first == MPI_UINT64_T, "BasicType_To_MPIIntType() bad");
+
     MPI_Init(&argc, &argv);
 
-    
-    for(int i = 1; i < argc; i++)
+    for (int i = 1; i < argc; i++)
     {
         double v = std::atof(argv[i]);
         argD.push_back(v);

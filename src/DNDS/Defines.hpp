@@ -220,6 +220,84 @@ namespace DNDS
             val += b;
         return val;
     }
+
+    template <typename T>
+    inline constexpr T divide_ceil(T a, T b)
+    {
+        static_assert(std::is_integral<T>::value, "not legal mod type");
+        return a / b + (a % b ? 1 : 0);
+    }
+    // const int a = divide_ceil(23, 11);
+
+}
+
+/*-----------------------------------------*/
+// some meta-programming utilities
+namespace DNDS
+{
+    namespace Meta
+    {
+        template <class T>
+        struct is_std_array : std::false_type
+        {
+        };
+
+        template <class T, size_t N>
+        struct is_std_array<std::array<T, N>> : std::true_type
+        {
+        };
+
+        template <typename _Tp>
+        inline constexpr bool is_std_array_v = is_std_array<_Tp>::value;
+
+        static_assert(is_std_array_v<std::array<real, 5>> && (!is_std_array_v<std::vector<real>>)); // basic test
+
+        /**
+         * @brief see if the Actual valid data is in the struct scope (memcpy copyable)
+         * @details
+         * generally a fixed size Eigen::Matrix, but it seems std::is_trivially_copyable_v<> does not distinguish that,
+         * see https://eigen.tuxfamily.org/dox/classEigen_1_1Matrix.html, ABI part
+         * ```
+         * static_assert(!is_fixed_data_real_eigen_matrix_v<std::array<real, 10>> &&
+                         is_fixed_data_real_eigen_matrix_v<Eigen::Matrix<real, 2, 2>> &&
+                         !is_fixed_data_real_eigen_matrix_v<Eigen::Matrix<real, -1, 2>> &&
+                         is_fixed_data_real_eigen_matrix_v<Eigen::Vector2d> &&
+                         !is_fixed_data_real_eigen_matrix_v<Eigen::Vector2f> &&
+                         is_fixed_data_real_eigen_matrix_v<Eigen::Matrix<real, -1, -1, Eigen::DontAlign, 2, 2>> &&
+                         !is_fixed_data_real_eigen_matrix_v<Eigen::Matrix<real, -1, -1, Eigen::DontAlign, -1, 2>> &&
+                         !is_fixed_data_real_eigen_matrix_v<Eigen::MatrixXd>,
+                     "is_fixed_data_real_eigen_matrix_v bad");
+         * ```
+         *
+         * @tparam T
+         */
+        template <class T>
+        struct is_fixed_data_real_eigen_matrix
+        {
+            static constexpr bool value = false;
+        };
+
+        template <class T, int M, int N, int options, int max_m, int max_n>
+        struct is_fixed_data_real_eigen_matrix<Eigen::Matrix<T, M, N, options, max_m, max_n>>
+        {
+            static constexpr bool value = std::is_same_v<real, T> &&
+                                          ((M > 0 && N > 0) ||
+                                           (max_m > 0 && max_n > 0));
+        };
+
+        template <typename _Tp>
+        inline constexpr bool is_fixed_data_real_eigen_matrix_v = is_fixed_data_real_eigen_matrix<_Tp>::value;
+
+        static_assert(!is_fixed_data_real_eigen_matrix_v<std::array<real, 10>> &&
+                          is_fixed_data_real_eigen_matrix_v<Eigen::Matrix<real, 2, 2>> &&
+                          !is_fixed_data_real_eigen_matrix_v<Eigen::Matrix<real, -1, 2>> &&
+                          is_fixed_data_real_eigen_matrix_v<Eigen::Vector2d> &&
+                          !is_fixed_data_real_eigen_matrix_v<Eigen::Vector2f> &&
+                          is_fixed_data_real_eigen_matrix_v<Eigen::Matrix<real, -1, -1, Eigen::DontAlign, 2, 2>> &&
+                          !is_fixed_data_real_eigen_matrix_v<Eigen::Matrix<real, -1, -1, Eigen::DontAlign, -1, 2>> &&
+                          !is_fixed_data_real_eigen_matrix_v<Eigen::MatrixXd>,
+                      "is_fixed_data_real_eigen_matrix_v bad");
+    }
 }
 
 /*

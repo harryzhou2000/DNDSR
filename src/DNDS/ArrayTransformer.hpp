@@ -19,19 +19,46 @@ namespace DNDS
 
         using Array<T, _row_size, _row_max, _align>::Array;
         // TODO: privatize these
-        t_pLGlobalMapping pLGlobalMapping; 
+        t_pLGlobalMapping pLGlobalMapping;
         MPIInfo mpi;
 
+    private:
+        MPI_Datatype dataType = BasicType_To_MPIIntType<T>().first;
+        MPI_int typeMult = BasicType_To_MPIIntType<T>().second;
+
+    public:
+        MPI_Datatype getDataType() { return dataType; }
+        MPI_int getTypeMult() { return typeMult; }
+
+    public:
+        /**
+         * @brief allows using default constructor and set MPI after
+         *
+         * @param n_mpi
+         */
         void setMPI(const MPIInfo &n_mpi)
         {
             mpi = n_mpi;
         }
 
+        ParArray(const MPIInfo &n_mpi) : mpi(n_mpi) {}
+        ParArray(MPI_Datatype n_dType, MPI_int n_TypeMult, const MPIInfo &n_mpi)
+            : mpi(n_mpi), dataType(n_dType), typeMult(n_TypeMult) {}
+
+        /**
+         * @brief asserts on the consistencies
+         *
+         *
+         * @warning //! warning, complexity O(Nproc)
+         * @return true currently only true
+         * @return false
+         */
         bool AssertConsistent()
         {
+            DNDS_assert(mpi.comm != MPI_COMM_NULL);
             MPI_Barrier(mpi.comm); // must be globally existent
             if constexpr (_dataLayout == TABLE_Max ||
-                          _dataLayout == TABLE_Fixed)
+                          _dataLayout == TABLE_Fixed) // must have the same dynamic size
             {
                 // checking if is uniform across all procs
                 t_RowsizeVec uniformSizes(mpi.size);
@@ -41,6 +68,12 @@ namespace DNDS
                 for (auto i : uniformSizes)
                     DNDS_assert_info(i == rowsizeC, "sizes not uniform across procs");
             }
+
+            std::vector<MPI_int> uniform_typeMult(mpi.size);
+            MPI_Allgather(&typeMult, 1, MPI_INT, uniform_typeMult.data(), 1, MPI_INT, mpi.comm);
+            for (auto i : uniform_typeMult)
+                DNDS_assert_info(i == typeMult, "typeMults not uniform across procs");
+
             return true; // currently all errors aborts inside
         }
 
@@ -52,6 +85,9 @@ namespace DNDS
             pLGlobalMapping->setMPIAlignBcast(mpi, this->Size());
         }
     };
+    /********************************************************************************************************/
+
+    /********************************************************************************************************/
 
     template <class T, rowsize _row_size = 1, rowsize _row_max = _row_size, rowsize _align = NoAlign>
     class ArrayTransformer
@@ -85,6 +121,10 @@ namespace DNDS
             son = n_son;
             mpi = father->mpi;
             DNDS_assert_info(son->mpi == father->mpi, "MPI inconsistent between father & son");
+            DNDS_assert_info(father->getDataType() == son->getDataType(), "MPI datatype inconsistent between father & son");
+            DNDS_assert_info(father->getTypeMult() == son->getTypeMult(), "MPI datatype multiplication inconsistent between father & son");
+            DNDS_assert_info(father->getDataType() != MPI_DATATYPE_NULL, "MPI datatype invalid");
+            DNDS_assert_info(father->getTypeMult() > 0, "MPI datatype multiplication invalid");
             pLGhostMapping.reset();
             pLGlobalMapping.reset();
         }
@@ -156,7 +196,7 @@ namespace DNDS
 
             //*phase2.1: build push sizes and push disps
             index nSend = pLGhostMapping->pushingIndexGlobal.size();
-            tMPI_intVec pushingSizes(nSend); // pushing sizes in bytes
+            tMPI_intVec pushingSizes(nSend); // pushing sizes  xx in bytes xx now in num of remove_all_extents_t<T>
 #ifdef ARRAY_COMM_USE_TYPE_HINDEXED
             tMPI_AintVec pushingDisps(nSend); // pushing disps in bytes
 #else
@@ -169,14 +209,14 @@ namespace DNDS
                 MPI_int rank = -1;
                 index loc = -1;
                 bool found = pLGhostMapping->search(pLGhostMapping->pushingIndexGlobal[i], rank, loc);
-                DNDS_assert_info(found && rank == -1, "must be at local main"); // must be at local main
-                pushingDisps[i] = (father->operator[](loc) - father->operator[](0)) * sizeof(T);
+                DNDS_assert_info(found && rank == -1, "must be at local main");                  // must be at local main
+                pushingDisps[i] = (father->operator[](loc) - father->operator[](0)) * sizeof(T); //* in bytes
                 if constexpr (_dataLayout == CSR)
-                    pushingSizes[i] = father->RowSizeField(loc) * sizeof(T);
+                    pushingSizes[i] = father->RowSizeField(loc) * father->getTypeMult();
                 if constexpr (isTABLE_Max(_dataLayout)) //! init sizes
-                    pushingSizes[i] = father->RowSize(loc) * sizeof(T);
+                    pushingSizes[i] = father->RowSize(loc) * father->getTypeMult();
                 if constexpr (isTABLE_Fixed(_dataLayout))
-                    pushingSizes[i] = father->RowSizeField() * sizeof(T);
+                    pushingSizes[i] = father->RowSizeField() * father->getTypeMult();
             }
             // PrintVec(pushingSizes, std::cout);
             // std::cout << std::endl;
@@ -219,18 +259,18 @@ namespace DNDS
                 // std::cout << LGhostMapping.gStarts().size() << std::endl;
                 if constexpr (_dataLayout == CSR)
                     son->Resize(ghostArraySiz, [&](index i)
-                                { return pullingSizes[i] / sizeof(T); });
+                                { return pullingSizes[i] / father->getTypeMult(); });
                 if constexpr (_dataLayout == TABLE_Max)
                 {
                     son->Resize(ghostArraySiz, father->RowSizeMax());
                     for (index i = 0; i < son->Size(); i++)
-                        son->ResizeRow(i, pullingSizes[i] / sizeof(T));
+                        son->ResizeRow(i, pullingSizes[i] / father->getTypeMult());
                 }
                 if constexpr (_dataLayout == TABLE_StaticMax)
                 {
                     son->Resize(ghostArraySiz);
                     for (index i = 0; i < son->Size(); i++)
-                        son->ResizeRow(i, pullingSizes[i] / sizeof(T));
+                        son->ResizeRow(i, pullingSizes[i] / father->getTypeMult());
                 }
                 // is actually pulling disps, but is contiguous anyway
 
@@ -246,10 +286,10 @@ namespace DNDS
             do_son_resizing();
 
             // phase3: create and register MPI types of pushing and pulling
-            if constexpr (isTABLE_Max(_dataLayout)) // convert back to real pushing sizes
+            if constexpr (isTABLE_Max(_dataLayout)) // convert back to full pushing sizes
             {
                 for (auto &i : pushingSizes)
-                    i = son->RowSizeField() * sizeof(T);
+                    i = son->RowSizeField() * father->getTypeMult();
             }
             pPushTypeVec = std::make_shared<MPITypePairHolder>(0);
             pPullTypeVec = std::make_shared<MPITypePairHolder>(0);
@@ -284,9 +324,9 @@ namespace DNDS
 
                     MPI_Datatype dtype;
 #ifdef ARRAY_COMM_USE_TYPE_HINDEXED
-                    MPI_Type_create_hindexed(pushNumber, pPushSizes, pPushDisps, MPI_UINT8_T, &dtype);
+                    MPI_Type_create_hindexed(pushNumber, pPushSizes, pPushDisps, father->getDataType(), &dtype);
 #else
-                    MPI_Type_indexed(pushNumber, pPushSizes, pPushDisps, MPI_UINT8_T, &dtype);
+                    MPI_Type_indexed(pushNumber, pPushBytes, pPushDisps, MPI_UINT8_T, &dtype);
 #endif
 
                     MPI_Type_commit(&dtype);
@@ -299,21 +339,21 @@ namespace DNDS
 #else
                 MPI_int pullDisp[1];
 #endif
-                MPI_int pullBytes[1];
+                MPI_int pullSizes[1]; // same as pushSizes
                 auto gRPtr = son->operator[](index(pLGhostMapping->ghostStart[r + 1]));
                 auto gLPtr = son->operator[](index(pLGhostMapping->ghostStart[r]));
                 auto gStartPtr = son->operator[](index(0));
                 auto ghostSpan = gRPtr - gLPtr;
                 auto ghostStart = gLPtr - gStartPtr;
                 DNDS_assert(ghostSpan < INT_MAX && ghostStart < INT_MAX);
-                pullBytes[0] = MPI_int(ghostSpan) * sizeof(T);
+                pullSizes[0] = MPI_int(ghostSpan) * father->getTypeMult();
                 pullDisp[0] = ghostStart * sizeof(T);
-                if (pullBytes[0] > 0)
+                if (pullSizes[0] > 0)
                 {
                     // std::cout << "=== PULL TYPE : " << mpi.rank << " from " << r << std::endl;
                     MPI_Datatype dtype;
 #ifdef ARRAY_COMM_USE_TYPE_HINDEXED
-                    MPI_Type_create_hindexed(1, pullBytes, pullDisp, MPI_UINT8_T, &dtype); //! hindexed is wrong
+                    MPI_Type_create_hindexed(1, pullSizes, pullDisp, father->getDataType(), &dtype);
 #else
                     MPI_Type_indexed(1, pullBytes, pullDisp, MPI_UINT8_T, &dtype);
 #endif

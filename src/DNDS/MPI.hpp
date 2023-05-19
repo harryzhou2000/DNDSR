@@ -46,6 +46,44 @@ namespace DNDS
     const MPI_Datatype DNDS_MPI_INDEX = __DNDSToMPITypeInt<index>();
     const MPI_Datatype DNDS_MPI_REAL = __DNDSToMPITypeFloat<real>();
 
+    template <class T> // TODO: see if an array is bounded
+    //! Warning, not const-expr since OpenMPI disallows it
+    std::pair<MPI_Datatype, MPI_int> BasicType_To_MPIIntType()
+    {
+        static const auto badReturn = std::make_pair(MPI_Datatype(MPI_DATATYPE_NULL), MPI_int(-1));
+        if constexpr (std::is_scalar_v<T>)
+        {
+            if constexpr (sizeof(T) == 1)
+                return std::make_pair(MPI_Datatype(MPI_UINT8_T), MPI_int(1));
+            else if constexpr (sizeof(T) == 2)
+                return std::make_pair(MPI_Datatype(MPI_UINT16_T), MPI_int(1));
+            else if constexpr (sizeof(T) == 4)
+                return std::make_pair(MPI_Datatype(MPI_UINT32_T), MPI_int(1));
+            else if constexpr (sizeof(T) == 8)
+                return std::make_pair(MPI_Datatype(MPI_UINT64_T), MPI_int(1));
+            else
+                return badReturn;
+        }
+        else if constexpr (std::is_array_v<T>)
+        {
+            std::pair<MPI_Datatype, MPI_int> SizCom = BasicType_To_MPIIntType<std::remove_extent_t<T>>();
+            return std::make_pair(SizCom.first, SizCom.second * std::extent_v<T>);
+        }
+        else if constexpr (std::is_trivially_copyable_v<T>)
+        {
+            if constexpr (Meta::is_std_array_v<T>)
+                return std::make_pair(
+                    BasicType_To_MPIIntType<typename T::value_type>().first,
+                    BasicType_To_MPIIntType<typename T::value_type>().second * T().size());
+            else
+                return badReturn;
+        }
+        else if constexpr (Meta::is_fixed_data_real_eigen_matrix_v<T>)
+            return std::make_pair(DNDS_MPI_REAL, MPI_int(divide_ceil(sizeof(T), sizeof(real))));
+        else
+            return badReturn;
+    }
+
     struct MPIInfo
     {
         MPI_Comm comm = MPI_COMM_NULL;

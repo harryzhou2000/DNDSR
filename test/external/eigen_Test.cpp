@@ -22,9 +22,11 @@ int main()
     std::cout << std::is_trivial_v<Eigen::Matrix3Xd> << std::endl;
     std::cout << std::is_trivial_v<Eigen::Matrix<real, -1, -1, Eigen::ColMajor, 3, 3>> << std::endl;
     std::cout << std::is_trivially_copyable_v<Eigen::Matrix3d> << std::endl;
+    std::cout << std::is_pod_v<Eigen::Matrix3d> << std::endl;
     std::cout << std::is_trivially_copyable_v<Eigen::Matrix3Xd> << std::endl;
     std::cout << std::is_trivially_copyable_v<Eigen::Matrix<real, -1, -1, Eigen::ColMajor, 3, 3>> << std::endl;
     std::cout << std::is_trivially_copyable_v<std::array<real, 5>> << std::endl;
+    std::cout << std::is_trivially_copyable_v<real[5][5]> << std::endl;
     std::cout << "Test Size:\n";
     std::cout << sizeof(Eigen::Matrix<double, 5, 5>) << std::endl;
     std::cout << sizeof(Eigen::Matrix<double, 100, 100>) << std::endl;
@@ -34,6 +36,28 @@ int main()
     std::cout << sizeof(Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic, Eigen::DontAlign, 100, 100>) << std::endl;
     std::cout << sizeof(Eigen::Map<Eigen::Matrix<double, 5, 5>>) << std::endl;
     std::cout << sizeof(Eigen::Map<Eigen::Matrix<double, 100, 100>>) << std::endl;
+
+    std::cout << "Test Array:\n";
+    using T = real[3][4];
+    std::vector<T> Tarray(10);
+    std::cout << sizeof(T) << std::endl;
+    std::cout << (Tarray.data() + 1) << std::endl;
+    std::cout << (Tarray.data()) << std::endl;
+
+
+    struct Mat33Wrapper: public Eigen::Matrix3d
+    {
+        using t_base = Eigen::Matrix3d;
+        // using t_base::t_base;
+        Mat33Wrapper() = default;
+        Mat33Wrapper(const Mat33Wrapper& r) = default;
+        Mat33Wrapper(Mat33Wrapper&& r) = default;
+        
+    } w33_a, w33_b; 
+
+    std::cout << "Test Wrap:\n";
+    std::cout << std::is_trivially_copyable_v<Mat33Wrapper> << std::endl;
+
 
     return 0;
 }

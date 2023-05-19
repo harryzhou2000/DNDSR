@@ -40,6 +40,12 @@ namespace DNDS
         return lo == TABLE_Fixed || lo == TABLE_Max;
     }
 
+    template <class T>
+    inline constexpr bool array_comp_acceptable()
+    {
+        return std::is_trivially_copyable_v<T> || Meta::is_fixed_data_real_eigen_matrix_v<T>;
+    }
+
     /**
      * @brief 2D var-len data container template
      * @details
@@ -70,7 +76,7 @@ namespace DNDS
         static const unsigned sizeof_T = sizeof(value_type);
 
         static_assert(sizeof_T <= (1024ull * 1024ull * 1024ull), "Row size larger than 1G");
-        static_assert(std::is_trivially_copyable_v<value_type>, "Do not put in a non trivially copyable type");
+        static_assert(array_comp_acceptable<T>(), "Do not put in a non trivially copyable type ");
 
         static_assert(al == NoAlign || al >= 1, "Align bad");
 
@@ -303,7 +309,8 @@ namespace DNDS
             {
                 DNDS_assert_info(!IfCompressed(), "Need to decompress before auto resizing");
                 _size = nSize;
-                _dataUncompressed.resize(nSize, typename decltype(_dataUncompressed)::value_type(nRow_size_dynamic));
+                // _dataUncompressed.resize(nSize, typename decltype(_dataUncompressed)::value_type(nRow_size_dynamic));
+                _dataUncompressed.resize(nSize);
             }
             else
             {
