@@ -1,6 +1,7 @@
 {
     "C_Cpp.default.includePath": [
         "external\\cgns\\include",
+        "external\\eigen-3.4.0",
         "external\\eigen",
         "external\\Gmsh\\include",
         "external\\HDF5\\include",

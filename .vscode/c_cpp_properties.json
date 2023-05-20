@@ -31,6 +31,17 @@
             "cStandard": "c17",
             "intelliSenseMode": "windows-gcc-x86",
             "cppStandard": "c++17"
+        },
+        {
+            "name": "GS",
+            "includePath": [
+                "${default}",
+                "/usr/lib/x86_64-linux-gnu/openmpi/include"
+            ],
+            "defines": [],
+            "compilerPath": "/usr/bin/clang",
+            "cStandard": "c17",
+            "intelliSenseMode": "linux-clang-x64"
         }
     ],
     "version": 4

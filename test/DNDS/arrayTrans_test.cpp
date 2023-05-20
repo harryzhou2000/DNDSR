@@ -96,9 +96,11 @@ void test_CSR_MAX_LARGE()
     int localSizB = 3000;
     int pullSize = 100;
     if (argD.size() == 3)
+    {
         localSiz = argD[0];
-    localSizB = argD[1];
-    pullSize = argD[2];
+        localSizB = argD[1];
+        pullSize = argD[2];
+    }
     MPIInfo mpi;
     mpi.setWorld();
 // DNDS_assert(mpi.size <= 2);
