@@ -14,6 +14,7 @@
 #include "Macros.hpp"
 #include "Experimentals.hpp"
 #include "Eigen/Core"
+#include "Eigen/Dense"//?It seems Mat.determinant() would be undefined rather than undeclared...
 
 static const std::string DNDS_Defines_state =
     std::string("DNDS_Defines ") + DNDS_Macros_State + DNDS_Experimentals_State

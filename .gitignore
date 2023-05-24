@@ -3,6 +3,8 @@ build*
 # external
 /external
 /cfd_externals
+# matlab
+*.asv
 # packages
 *.zip
 *.tar

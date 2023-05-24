@@ -293,6 +293,7 @@ namespace Geom::Elem
             default:
                 return 0;
             }
+        return 0;
     }
 
     /**
@@ -300,7 +301,7 @@ namespace Geom::Elem
      * @warning pParam should be initialized (with 0)
      */
     template <class TPoint>
-    inline void GetQuadraturePoint(ParamSpace ps, t_index scheme, int iG, TPoint &pParam, t_real w)
+    inline void GetQuadraturePoint(ParamSpace ps, t_index scheme, int iG, TPoint &pParam, t_real &w)
     {
         int scheme_size = scheme;
         DNDS_assert(iG < scheme_size);
@@ -431,31 +432,31 @@ namespace Geom::Elem
 
         if (ps == QuadSpace)
         {
-            const t_real **GLData = nullptr;
+            const t_real *GLData = nullptr;
             int GLSize = 0;
             switch (scheme)
             {
             case INT_SCHEME_Quad_1:
             {
-                GLData = __GaussLegendre_1;
+                GLData = &(__GaussLegendre_1[0][0]);
                 GLSize = 1;
                 break;
             }
             case INT_SCHEME_Quad_4:
             {
-                GLData = __GaussLegendre_2;
+                GLData = &(__GaussLegendre_2[0][0]);
                 GLSize = 2;
                 break;
             }
             case INT_SCHEME_Quad_9:
             {
-                GLData = __GaussLegendre_3;
+                GLData = &(__GaussLegendre_3[0][0]);
                 GLSize = 3;
                 break;
             }
             case INT_SCHEME_Quad_16:
             {
-                GLData = __GaussLegendre_4;
+                GLData = &(__GaussLegendre_4[0][0]);
                 GLSize = 4;
                 break;
             }
@@ -465,39 +466,39 @@ namespace Geom::Elem
             }
             int iGi = iG % GLSize;
             int iGj = iG / GLSize;
-            pParam[0] = GLData[0][iGi];
-            pParam[1] = GLData[0][iGj];
-            w = GLData[1][iGi] * GLData[1][iGj];
+            pParam[0] = GLData[iGi];
+            pParam[1] = GLData[iGj];
+            w = GLData[GLSize + iGi] * GLData[GLSize + iGj];
             return;
         }
 
         if (ps == HexSpace)
         {
-            const t_real **GLData = nullptr;
+            const t_real *GLData = nullptr;
             int GLSize = 0;
             switch (scheme)
             {
             case INT_SCHEME_Hex_1:
             {
-                GLData = __GaussLegendre_1;
+                GLData = &(__GaussLegendre_1[0][0]);
                 GLSize = 1;
                 break;
             }
             case INT_SCHEME_Hex_8:
             {
-                GLData = __GaussLegendre_2;
+                GLData = &(__GaussLegendre_2[0][0]);
                 GLSize = 2;
                 break;
             }
             case INT_SCHEME_Hex_27:
             {
-                GLData = __GaussLegendre_3;
+                GLData = &(__GaussLegendre_3[0][0]);
                 GLSize = 3;
                 break;
             }
             case INT_SCHEME_Hex_64:
             {
-                GLData = __GaussLegendre_4;
+                GLData = &(__GaussLegendre_4[0][0]);
                 GLSize = 4;
                 break;
             }
@@ -509,45 +510,45 @@ namespace Geom::Elem
             int iGj = (iG / GLSize) % GLSize;
             int iGk = (iG / (GLSize * GLSize));
 
-            pParam[0] = GLData[0][iGi];
-            pParam[1] = GLData[0][iGj];
-            pParam[2] = GLData[0][iGk];
-            w = GLData[1][iGi] * GLData[1][iGj] * GLData[1][iGk];
+            pParam[0] = GLData[iGi];
+            pParam[1] = GLData[iGj];
+            pParam[2] = GLData[iGk];
+            w = GLData[GLSize + iGi] * GLData[GLSize + iGj] * GLData[GLSize + iGk];
             return;
         }
 
         if (ps == PyramidSpace)
         {
-            const t_real **GLData = nullptr;
-            const t_real **GJData = nullptr;
+            const t_real *GLData = nullptr;
+            const t_real *GJData = nullptr;
             int GLSize = 0; // == GJSize
             switch (scheme)
             {
             case INT_SCHEME_Pyramid_1:
             {
-                GLData = __GaussLegendre_1;
-                GJData = __GaussJacobi_01A2B0_1;
+                GLData = &(__GaussLegendre_1[0][0]);
+                GJData = &(__GaussJacobi_01A2B0_1[0][0]);
                 GLSize = 1;
                 break;
             }
             case INT_SCHEME_Pyramid_8:
             {
-                GLData = __GaussLegendre_2;
-                GJData = __GaussJacobi_01A2B0_2;
+                GLData = &(__GaussLegendre_2[0][0]);
+                GJData = &(__GaussJacobi_01A2B0_2[0][0]);
                 GLSize = 2;
                 break;
             }
             case INT_SCHEME_Pyramid_27:
             {
-                GLData = __GaussLegendre_3;
-                GJData = __GaussJacobi_01A2B0_3;
+                GLData = &(__GaussLegendre_3[0][0]);
+                GJData = &(__GaussJacobi_01A2B0_3[0][0]);
                 GLSize = 3;
                 break;
             }
             case INT_SCHEME_Pyramid_64:
             {
-                GLData = __GaussLegendre_4;
-                GJData = __GaussJacobi_01A2B0_4;
+                GLData = &(__GaussLegendre_4[0][0]);
+                GJData = &(__GaussJacobi_01A2B0_4[0][0]);
                 GLSize = 4;
                 break;
             }
@@ -559,58 +560,58 @@ namespace Geom::Elem
             int iGj = (iG / GLSize) % GLSize;
             int iGk = (iG / (GLSize * GLSize));
 
-            pParam[0] = GLData[0][iGi] * (1 - GJData[0][iGk]);
-            pParam[1] = GLData[0][iGj] * (1 - GJData[0][iGk]);
-            pParam[2] = GJData[0][iGk];
-            w = GLData[1][iGi] * GLData[1][iGj] * GJData[1][iGk];
+            pParam[0] = GLData[iGi] * (1 - GJData[iGk]);
+            pParam[1] = GLData[iGj] * (1 - GJData[iGk]);
+            pParam[2] = GJData[iGk];
+            w = GLData[GLSize + iGi] * GLData[GLSize + iGj] * GJData[GLSize + iGk];
             return;
         }
 
         if (ps == PrismSpace)
         {
-            const t_real **GLData = nullptr;
-            const t_real **HammerData = nullptr;
+            const t_real *GLData = nullptr;
+            const t_real *HammerData = nullptr;
             int GLSize = 0;
             int HammerSize = 0;
             switch (scheme)
             {
             case INT_SCHEME_Prism_1:
             {
-                GLData = __GaussLegendre_1;
+                GLData = &(__GaussLegendre_1[0][0]);
                 GLSize = 1;
-                HammerData = __HammerTri_1;
+                HammerData = &(__HammerTri_1[0][0]);
                 HammerSize = 1;
                 break;
             }
             case INT_SCHEME_Prism_6:
             {
-                GLData = __GaussLegendre_2;
+                GLData = &(__GaussLegendre_2[0][0]);
                 GLSize = 2;
-                HammerData = __HammerTri_3;
+                HammerData = &(__HammerTri_3[0][0]);
                 HammerSize = 3;
                 break;
             }
             case INT_SCHEME_Prism_18:
             {
-                GLData = __GaussLegendre_3;
+                GLData = &(__GaussLegendre_3[0][0]);
                 GLSize = 3;
-                HammerData = __HammerTri_6;
+                HammerData = &(__HammerTri_6[0][0]);
                 HammerSize = 6;
                 break;
             }
             case INT_SCHEME_Prism_21:
             {
-                GLData = __GaussLegendre_3;
+                GLData = &(__GaussLegendre_3[0][0]);
                 GLSize = 3;
-                HammerData = __HammerTri_7;
+                HammerData = &(__HammerTri_7[0][0]);
                 HammerSize = 7;
                 break;
             }
             case INT_SCHEME_Prism_48:
             {
-                GLData = __GaussLegendre_4;
+                GLData = &(__GaussLegendre_4[0][0]);
                 GLSize = 4;
-                HammerData = __HammerTri_12;
+                HammerData = &(__HammerTri_12[0][0]);
                 HammerSize = 12;
                 break;
             }
@@ -621,11 +622,11 @@ namespace Geom::Elem
             int iGi = iG % GLSize;
             int iGj = iG / GLSize;
 
-            pParam[0] = HammerData[0][iGj];
-            pParam[1] = HammerData[1][iGj];
-            pParam[2] = GLData[0][iGi];
+            pParam[0] = HammerData[0 * HammerSize + iGj];
+            pParam[1] = HammerData[1 * HammerSize + iGj];
+            pParam[2] = GLData[iGi];
 
-            w = GLData[1][iGi] * HammerData[3][iGj];
+            w = GLData[GLSize + iGi] * HammerData[2 * HammerSize + iGj];
             return;
         }
 
@@ -702,6 +703,9 @@ namespace Geom::Elem
             int_scheme = GetQuadratureScheme(ps, int_order);
         }
 
+        /**
+         * @param f  f(TAcc& inc, int iG, tPoint pParam, tD01Nj D01Nj)
+         */
         template <class TAcc, class TFunc>
         void Integration(TAcc &buf, TFunc &&f)
         {

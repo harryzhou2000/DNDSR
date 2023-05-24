@@ -85,7 +85,7 @@ endif()
 set (EXTERNAL_LIBS "")
 
 if(UNIX OR MINGW)
-    set(EXTERNAL_LIBS dl z)
+    set(EXTERNAL_LIBS dl z m stdc++)
 else()
     message(FATAL_ERROR "NOT YET IMPLEMENTED HERE")
 endif()
@@ -138,6 +138,10 @@ arrayTrans_test
 arrayDerived_test
 )
 
+set(TESTS_Geom
+elements_Test
+)
+
 # set(OBJS_DNDS
 # MPI
 # )
@@ -158,8 +162,13 @@ src/DNDS/Defines.cpp
 src/DNDS/Profiling.cpp
 )
 
+set(CPPS_Geom
+src/Geom/Elements.cpp
+)
+
 set(CPPS
 ${CPPS_DNDS}
+${CPPS_Geom}
 )
 
 set(CPP_TARGETS
@@ -190,6 +199,13 @@ endforeach()
 
 foreach(EXE ${TESTS_DNDS})
     add_executable(${EXE} test/DNDS/${EXE}.cpp ${CPP_TARGETS_OBJ})
+    target_link_libraries(${EXE} PUBLIC ${EXTERNAL_LIBS})
+    target_include_directories(${EXE} PUBLIC ${EXTERNAL_INCLUDES} PUBLIC ${INCLUDES})
+    set_target_properties(${EXE} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/test RUNTIME_OUTPUT_NAME ${EXE}.exe)
+endforeach()
+
+foreach(EXE ${TESTS_Geom})
+    add_executable(${EXE} test/Geom/${EXE}.cpp ${CPP_TARGETS_OBJ})
     target_link_libraries(${EXE} PUBLIC ${EXTERNAL_LIBS})
     target_include_directories(${EXE} PUBLIC ${EXTERNAL_INCLUDES} PUBLIC ${INCLUDES})
     set_target_properties(${EXE} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/test RUNTIME_OUTPUT_NAME ${EXE}.exe)

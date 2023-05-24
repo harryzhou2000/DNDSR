@@ -88,7 +88,8 @@
         "numbers": "cpp",
         "ranges": "cpp",
         "span": "cpp",
-        "stop_token": "cpp"
+        "stop_token": "cpp",
+        "semaphore": "cpp"
     },
     "cSpell.words": [
         "DNDS",

@@ -44,20 +44,23 @@ int main()
     std::cout << (Tarray.data() + 1) << std::endl;
     std::cout << (Tarray.data()) << std::endl;
 
-
-    struct Mat33Wrapper: public Eigen::Matrix3d
+    struct Mat33Wrapper : public Eigen::Matrix3d
     {
         using t_base = Eigen::Matrix3d;
         // using t_base::t_base;
         Mat33Wrapper() = default;
-        Mat33Wrapper(const Mat33Wrapper& r) = default;
-        Mat33Wrapper(Mat33Wrapper&& r) = default;
-        
-    } w33_a, w33_b; 
+        Mat33Wrapper(const Mat33Wrapper &r) = default;
+        Mat33Wrapper(Mat33Wrapper &&r) = default;
+
+    } w33_a, w33_b;
 
     std::cout << "Test Wrap:\n";
     std::cout << std::is_trivially_copyable_v<Mat33Wrapper> << std::endl;
 
+    Eigen::Matrix3d a;
+    a.setRandom();
+
+    std::cout << a.determinant() << std::endl;
 
     return 0;
 }
