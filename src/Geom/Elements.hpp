@@ -17,6 +17,7 @@ namespace Geom::Elem
     using t_index = int32_t;
     const t_index invalid_index = INT32_MAX;
     using t_real = double;
+    using tPoint = Eigen::Vector3d;
 
     static_assert(std::is_signed_v<t_index>);
 
@@ -822,8 +823,93 @@ namespace Geom::Elem
         DNDS_assert(false);
     }
 
+    using tNj = Eigen::RowVector<t_real, Eigen::Dynamic>;
+    using tD1Nj = Eigen::Matrix<t_real, 3, Eigen::Dynamic>;
+    using tD01Nj = Eigen::Matrix<t_real, 4, Eigen::Dynamic>;
+
     struct Element
     {
-        ElemType type;
+        ElemType type = UnknownElem;
+
+        constexpr ParamSpace GetParamSpace() const
+        {
+            return ElemType_to_ParamSpace(type);
+        }
+
+        constexpr t_index GetDim() const
+        {
+            return Dim_Order_NVNNNF[type][0];
+        }
+
+        constexpr t_index GetOrder() const
+        {
+            return Dim_Order_NVNNNF[type][1];
+        }
+
+        constexpr t_index GetNumVertices() const
+        {
+            return Dim_Order_NVNNNF[type][2];
+        }
+
+        constexpr t_index GetNumNodes() const
+        {
+            return Dim_Order_NVNNNF[type][3];
+        }
+
+        constexpr t_index GetNumFaces() const
+        {
+            return Dim_Order_NVNNNF[type][4];
+        }
+
+        constexpr Element ObtainFace(t_index iFace) const
+        {
+            DNDS_assert(iFace < this->GetNumFaces());
+            return Element{GetFaceType(type, iFace)};
+        }
+
+        /**
+         * @warning assuming Out has correct size
+         */
+        template <class TIn, class TOut>
+        void ExtractFaceNodes(t_index iFace, const TIn &nodes, TOut &faceNodes)
+        {
+            DNDS_assert(iFace < this->GetNumFaces());
+            for (t_index i = 0; i < ObtainFace(iFace).GetNumFaces(); i++)
+                faceNodes[i] = nodes[FaceNodeList[type][iFace][i]];
+        }
+
+        /**
+         * @warning Nj resized within
+         */
+        void GetNj(const tPoint &pParam, tNj &Nj)
+        {
+            Nj.resize(1, this->GetNumNodes());
+            ShapeFunc_DiNj<0>(type, pParam, Nj);
+        }
+
+        /**
+         * @warning D1Nj resized within
+         */
+        void GetD1Nj(const tPoint &pParam, tD1Nj &D1Nj)
+        {
+            D1Nj.resize(3, this->GetNumNodes());
+            ShapeFunc_DiNj<1>(type, pParam, D1Nj);
+        }
+
+        /**
+         * @warning DiNj resized within
+         */
+        void GetD01Nj(const tPoint &pParam, tD01Nj &D01Nj)
+        {
+            tNj Nj;
+            tD1Nj D1Nj;
+            this->GetNj(pParam, Nj);
+            this->GetD1Nj(pParam, D1Nj);
+
+            tD01Nj D01Nj;
+            D01Nj.resize(4, this->GetNumNodes());
+            D01Nj(0, Eigen::all) = Nj;
+            D01Nj({1, 2, 3}, Eigen::all) = D1Nj;
+        }
     };
 }

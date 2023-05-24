@@ -95,6 +95,8 @@ namespace DNDS
 
     const real pi = std::acos(-1);
 
+    typedef Eigen::Matrix<real, -1, -1, Eigen::RowMajor> tDiFj;
+
 } // namespace DNDS
 
 namespace DNDS
