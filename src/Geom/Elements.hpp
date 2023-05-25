@@ -6,6 +6,7 @@
 #include <array>
 
 #include "DNDS/Defines.hpp"
+#include "Geometric.hpp"
 
 namespace Geom::Elem
 {
@@ -14,12 +15,6 @@ namespace Geom::Elem
      *  !note that we use 0 based indexing (CGNS uses 1 based in the link)
      *
      */
-    using t_index = int32_t;
-    const t_index invalid_index = INT32_MAX;
-    using t_real = double;
-    using tPoint = Eigen::Vector3d;
-
-    static_assert(std::is_signed_v<t_index>);
 
     enum ElemType
     {
@@ -983,7 +978,7 @@ namespace Geom::Elem
         void ExtractFaceNodes(t_index iFace, const TIn &nodes, TOut &faceNodes)
         {
             DNDS_assert(iFace < this->GetNumFaces());
-            for (t_index i = 0; i < ObtainFace(iFace).GetNumFaces(); i++)
+            for (t_index i = 0; i < ObtainFace(iFace).GetNumNodes(); i++)
                 faceNodes[i] = nodes[FaceNodeList[type][iFace][i]];
         }
 

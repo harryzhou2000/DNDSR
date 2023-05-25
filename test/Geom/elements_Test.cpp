@@ -12,6 +12,7 @@ valgrind --log-file=log_valgrind.log
 
 void test_ShapeFunc_delta()
 {
+    using namespace Geom;
     using namespace Geom::Elem;
     for (int i = 1; i < ElemType_NUM; i++)
     {
@@ -34,6 +35,7 @@ void test_ShapeFunc_delta()
 
 void test_Standard_Elem()
 {
+    using namespace Geom;
     using namespace Geom::Elem;
     for (int i = 1; i < ElemType_NUM; i++)
     {
@@ -49,7 +51,7 @@ void test_Standard_Elem()
                 {
                     tPoint pP1 = NodePParams * DiNj(0, Eigen::all).transpose();
                     assert((pParam - pP1).norm() < 1e-15);
-                    Eigen::Matrix3d J = DiNj({1, 2, 3}, Eigen::all) * NodePParams.transpose();
+                    Eigen::Matrix3d J = NodePParams * DiNj({1, 2, 3}, Eigen::all).transpose();
                     Eigen::Vector3d EyeD;
                     EyeD.setZero();
                     auto SEQDIM = Eigen::seq(0, elem.GetDim() - 1);
@@ -70,6 +72,63 @@ void test_Standard_Elem()
     }
 }
 
+void test_Faces()
+{
+    using namespace Geom;
+    using namespace Geom::Elem;
+    for (int i = 1; i < ElemType_NUM; i++)
+    {
+        auto elem = Element{ElemType(i)};
+        auto NodePParams = GetStandardCoord(elem.type);
+        std::vector<t_index> nodeInds;
+        for (int in = 0; in < elem.GetNumNodes(); in++)
+            nodeInds.push_back(in);
+        for (int iFace = 0; iFace < elem.GetNumFaces(); iFace++)
+        {
+            tPoint NormVec;
+            bool NormGot = false;
+            auto f_elem = elem.ObtainFace(iFace);
+            std::vector<t_index> f_nodeInds(f_elem.GetNumNodes());
+            elem.ExtractFaceNodes(iFace, nodeInds, f_nodeInds);
+            Eigen::Matrix3Xd f_NodePParams = NodePParams(Eigen::all, f_nodeInds);
+            for (int order = 0; order <= INT_ORDER_MAX; order++)
+            {
+                auto quad = Quadrature(f_elem, order);
+                double vol = 0;
+                quad.Integration(
+                    vol,
+                    [&](double &inc, int iG, const tPoint &pParam, auto &DiNj)
+                    {
+                        tPoint pP1 = f_NodePParams * DiNj(0, Eigen::all).transpose();
+
+                        Eigen::Matrix3d J = f_NodePParams * DiNj({1, 2, 3}, Eigen::all).transpose();
+                        // std::cout << J << std::endl;
+                        tPoint normVec;
+                        if (elem.GetDim() == 3)
+                            normVec = Geom::FacialJacobianToNormVec<3>(J);
+                        if (elem.GetDim() == 2)
+                            normVec = Geom::FacialJacobianToNormVec<2>(J);
+
+                        double tol = 1e-14;
+                        if (elem.GetParamSpace() == PyramidSpace)
+                            tol *= elem.GetNumNodes();
+
+                        if (NormGot)
+                            assert((NormVec - normVec).norm() < tol);
+                        NormVec = normVec;
+                        NormGot = true;
+                        auto SEQDIM = Eigen::seq(0, elem.GetDim() - 1);
+                        auto D = J(SEQDIM, SEQDIM).determinant();
+                        inc = 1 * D;
+                    });
+            }
+            std::cout << "Norm at Elem " << elem.type
+                      << " Face " << iFace
+                      << ": " << NormVec.transpose().normalized() << std::endl;
+        }
+    }
+}
+
 int main(int argc, char *argv[])
 {
     // ! Disable MPI call to help serial mem check
@@ -83,6 +142,7 @@ int main(int argc, char *argv[])
 
     test_ShapeFunc_delta();
     test_Standard_Elem();
+    test_Faces();
 
     // MPI_Finalize();
 
