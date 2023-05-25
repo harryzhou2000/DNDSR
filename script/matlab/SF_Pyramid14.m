@@ -1,7 +1,7 @@
 function N = SF_Pyramid14(xi,et,zt)
 
-NB = SF_Quad9(xi, et, 0);
-NB_2 = SF_Quad4(xi / (1-0.5), et / (1-0.5), 0);
+NB = SF_Quad9(xi / (1-zt), et / (1-zt), 0);
+NB_2 = SF_Quad4(xi / (1-zt), et  / (1-zt), 0);
 
 Nz = SF_Line3(zt * 2 - 1, 0, 0);
 
