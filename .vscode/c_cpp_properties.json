@@ -36,12 +36,14 @@
             "name": "GS",
             "includePath": [
                 "${default}",
-                "/usr/lib/x86_64-linux-gnu/openmpi/include"
+                "/usr/lib/x86_64-linux-gnu/openmpi/include",
+                "${workspaceFolder}/external/Linux-x86_64/include"
             ],
             "defines": [],
             "compilerPath": "/usr/bin/clang",
             "cStandard": "c17",
-            "intelliSenseMode": "linux-clang-x64"
+            "intelliSenseMode": "linux-gcc-x64",
+            "cppStandard": "c++17"
         }
     ],
     "version": 4

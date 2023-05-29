@@ -25,6 +25,7 @@ void test_CSR()
     auto &Ar = *A;
     auto &Ar_Ghost = *A_Ghost;
     ArrayTransformer<real, NonUniformSize> A_Trans;
+    // ArrayTransformer<decltype(A)::element_type> A_Trans;
     Ar.setMPI(mpi), Ar_Ghost.setMPI(mpi);
     std::cout << "C" << std::endl;
     Ar.Resize(4, 3);

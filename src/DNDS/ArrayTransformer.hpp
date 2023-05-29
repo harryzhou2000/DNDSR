@@ -41,9 +41,15 @@ namespace DNDS
             mpi = n_mpi;
         }
 
-        ParArray(const MPIInfo &n_mpi) : mpi(n_mpi) {}
+        ParArray(const MPIInfo &n_mpi) : mpi(n_mpi)
+        {
+            DNDS_assert(dataType != MPI_DATATYPE_NULL);
+        }
         ParArray(MPI_Datatype n_dType, MPI_int n_TypeMult, const MPIInfo &n_mpi)
-            : mpi(n_mpi), dataType(n_dType), typeMult(n_TypeMult) {}
+            : mpi(n_mpi), dataType(n_dType), typeMult(n_TypeMult)
+        {
+            DNDS_assert(dataType != MPI_DATATYPE_NULL);
+        }
 
         /**
          * @brief asserts on the consistencies
@@ -84,16 +90,30 @@ namespace DNDS
             pLGlobalMapping = std::make_shared<GlobalOffsetsMapping>();
             pLGlobalMapping->setMPIAlignBcast(mpi, this->Size());
         }
+
+        index globalSize()
+        {
+            index gSize = 0;
+            index cSize = this->Size();
+            MPI_Allreduce(&cSize, &gSize, 1, DNDS_MPI_INDEX, MPI_SUM, mpi.comm);
+            return gSize;
+        }
     };
     /********************************************************************************************************/
 
     /********************************************************************************************************/
 
     template <class T, rowsize _row_size = 1, rowsize _row_max = _row_size, rowsize _align = NoAlign>
+    // template <class TArray>
     class ArrayTransformer
     {
     public:
         using TArray = ParArray<T, _row_size, _row_max, _align>;
+        // using T = TArray::value_type;
+        // static const rowsize _align = TArray::al;
+        // static const rowsize _row_size = TArray::rs;
+        // static const rowsize _row_max = TArray::rm;
+
         using t_pArray = std::shared_ptr<TArray>;
         static const DataLayout _dataLayout = TArray::_dataLayout;
 
@@ -563,4 +583,32 @@ namespace DNDS
         using Type = ArrayTransformer<typename TArray::value_type, TArray::rs, TArray::rm, TArray::al>;
     };
 
+    template <class TArray = ParArray<real, 1>>
+    struct ArrayPair
+    {
+        std::shared_ptr<TArray> father;
+        std::shared_ptr<TArray> son;
+        using TTrans = typename ArrayTransformerType<TArray>::Type;
+        TTrans trans;
+        auto operator[](index i)
+        {
+            if (i >= 0 && i < father->Size())
+                return father->operator[](i);
+            else
+                return son->operator[](i - father->Size());
+        }
+
+        auto operator()(index i, rowsize j)
+        {
+            if (i >= 0 && i < father->Size())
+                return father->operator()(i, j);
+            else
+                return son->operator()(i - father->Size(), j);
+        }
+
+        index Size()
+        {
+            return father->Size() + son->Size();
+        }
+    };
 }

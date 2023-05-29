@@ -31,4 +31,7 @@ namespace DNDS
             return AdjacencyRow(t_base::operator[](i), t_base::RowSize(i));
         }
     };
+
+    template <rowsize _row_size = 1, rowsize _row_max = _row_size, rowsize _align = NoAlign>
+    using ArrayAdjacencyPair = ArrayPair<ArrayAdjacency<_row_size, _row_max, _align>>;
 }

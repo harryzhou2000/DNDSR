@@ -14,7 +14,7 @@
 #include "Macros.hpp"
 #include "Experimentals.hpp"
 #include "Eigen/Core"
-#include "Eigen/Dense"//?It seems Mat.determinant() would be undefined rather than undeclared...
+#include "Eigen/Dense" //?It seems Mat.determinant() would be undefined rather than undeclared...
 
 static const std::string DNDS_Defines_state =
     std::string("DNDS_Defines ") + DNDS_Macros_State + DNDS_Experimentals_State
@@ -79,6 +79,8 @@ namespace DNDS
 
     static const char *outputDelim = "\t";
 
+    template <typename T>
+    using ssp = std::shared_ptr<T>;
     typedef std::vector<rowsize> t_RowsizeVec;
     typedef std::vector<index> t_IndexVec;
     typedef std::shared_ptr<t_IndexVec> t_pIndexVec;
@@ -88,6 +90,11 @@ namespace DNDS
     const index indexMin = INT64_MIN;
 
     const real UnInitReal = std::acos(-1) * 1e299 * std::sqrt(-1.0);
+
+    inline constexpr bool IsUnInitReal(real v)
+    {
+        return (*(int64_t *)(&v)) == (*(int64_t *)(&UnInitReal));
+    }
 
     const real veryLargeReal = 3e200;
     const real largeReal = 3e10;
