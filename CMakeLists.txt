@@ -75,11 +75,11 @@ if(UNIX)
         "${PROJECT_SOURCE_DIR}/external/eigen-3.4.0" 
         "${PROJECT_SOURCE_DIR}/external/eigen" 
         NO_DEFAULT_PATH)
-    find_path(EXTERNAL_INCLUDE_RAPIDJSON rapidjson 
-        PATHS 
-        "${PROJECT_SOURCE_DIR}/external/rapidjson/include" 
-        "${PROJECT_SOURCE_DIR}/external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}/include"
-        NO_DEFAULT_PATH)
+    # find_path(EXTERNAL_INCLUDE_RAPIDJSON rapidjson 
+    #     PATHS 
+    #     "${PROJECT_SOURCE_DIR}/external/rapidjson/include" 
+    #     "${PROJECT_SOURCE_DIR}/external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}/include"
+    #     NO_DEFAULT_PATH)
 endif()
 
 set (EXTERNAL_LIBS "")
@@ -105,7 +105,7 @@ set(EXTERNAL_INCLUDES
     ${EXTERNAL_INCLUDE_PARMETIS}
     # ${EXTERNAL_INCLUDE_TECIO}
     ${EXTERNAL_INCLUDE_EIGEN}
-    ${EXTERNAL_INCLUDE_RAPIDJSON}
+    # ${EXTERNAL_INCLUDE_RAPIDJSON}
     )
 
 set(DNDS_INCLUDES ${PROJECT_SOURCE_DIR}/src)
