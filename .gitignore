@@ -12,4 +12,6 @@ build*
 docs/html
 docs/latex
 data
-
+# doc
+*.pdf
+*.png
