@@ -35,10 +35,32 @@ namespace DNDS
 
         AdjacencyRow operator[](index i)
         {
+            DNDS_assert(i < this->Size()); //! disable past-end input
             return AdjacencyRow(t_base::operator[](i), t_base::RowSize(i));
         }
+
+        index *rowPtr(index i) { return t_base::operator[](i); }
     };
 
     template <rowsize _row_size = 1, rowsize _row_max = _row_size, rowsize _align = NoAlign>
     using ArrayAdjacencyPair = ArrayPair<ArrayAdjacency<_row_size, _row_max, _align>>;
+
+}
+
+namespace DNDS
+{
+    class ArrayIndex : public ParArray<index, 1, 1, -1>
+    {
+    public:
+        using t_base = ParArray<index, 1, 1, -1>;
+        using t_base::t_base;
+
+        index &operator[](index i)
+        {
+            DNDS_assert(i < this->Size()); //! disable past-end input
+            return t_base::operator()(i, 0);
+        }
+
+        index *rowPtr(index i) { return t_base::operator[](i); }
+    };
 }

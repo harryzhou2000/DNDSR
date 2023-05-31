@@ -16,6 +16,8 @@
         "*.f90": "FortranFreeForm",
         "*.hypara": "csharp",
         "*config*.json": "jsonc",
+        "*.h": "cpp",
+        "*.c": "cpp",
         "array": "cpp",
         "atomic": "cpp",
         "*.tcc": "cpp",
@@ -103,10 +105,12 @@
         "numericaldiff": "cpp",
         "openglsupport": "cpp",
         "specialfunctions": "cpp",
-        "splines": "cpp"
+        "splines": "cpp",
+        "valarray": "cpp"
     },
     "cSpell.words": [
         "DNDS",
         "rowsize"
-    ]
+    ],
+    // "C_Cpp.intelliSenseEngine": "Tag Parser"
 }

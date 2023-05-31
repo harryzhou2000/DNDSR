@@ -47,17 +47,30 @@ namespace Geom
     using tCoord = decltype(tCoordPair::father);
     using tElemInfoArrayPair = DNDS::ArrayPair<DNDS::ParArray<ElemInfo>>;
     using tElemInfoArray = DNDS::ssp<DNDS::ParArray<ElemInfo>>;
+    using tIndPair = DNDS::ArrayPair<DNDS::ArrayIndex>;
+    using tInd = decltype(tIndPair::father);
 
     struct UnstructuredMesh
     {
 
+        /// reader
         tCoordPair coords;
         tAdjPair cell2node;
+        tAdjPair bnd2node;
+        tAdj2Pair bnd2cell;
+        tAdjPair cell2cell;
+        tElemInfoArrayPair cellElemInfo;
+        tElemInfoArrayPair bndElemInfo;
+
+
+
+        /// interpolated
+
         tAdjPair cell2face;
         tAdjPair face2node;
         tAdj2Pair face2cell;
 
-        tAdj1Pair bndFaces; // no comm needed for now
+        // tAdj1Pair bndFaces; // no comm needed for now
 
         DNDS::MPIInfo mpi;
         int dim;
@@ -110,7 +123,11 @@ namespace Geom
         tAdj edge2edgeSerial; // not used for now
         tAdj edge2faceSerial; // not used for now
 
-        DNDS::MPI_int mRank;
+        std::vector<DNDS::MPI_int> cellPartition;
+        std::vector<DNDS::MPI_int> nodePartition;
+        std::vector<DNDS::MPI_int> bndPartition;
+
+        DNDS::MPI_int mRank{0}, cnPart{0};
 
         UnstructuredMeshSerialRW(const decltype(mesh) &n_mesh, DNDS::MPI_int n_mRank)
             : mesh(n_mesh), mRank(n_mRank) {}
@@ -130,14 +147,28 @@ namespace Geom
 
         // void InterpolateTopology();
 
-        
         /**
          * \brief build cell2cell topology, with node-neighbors included
          * \todo add support for only face-neighbors
-        */
+         */
         void BuildCell2Cell(); // For cell based purpose
 
         void BuildNode2Node(); // For node based purpose //!not yet implemented
+
+        void MeshPartitionCell2Cell();
+
+        void PartitionReorderToMeshCell2Cell();
+
+        void ClearSerial()
+        {
+            coordSerial.reset();
+            cell2nodeSerial.reset();
+            cell2cellSerial.reset();
+            cellElemInfoSerial.reset();
+            bnd2nodeSerial.reset();
+            bnd2cellSerial.reset();
+            bndElemInfoSerial.reset();
+        }
 
         // void WriteToCGNSSerial(const std::string &fName);
 

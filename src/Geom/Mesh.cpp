@@ -5,6 +5,11 @@
 #include <string>
 #include <map>
 #include <set>
+namespace _METIS
+{
+#include "metis.h"
+#include "parmetis.h"
+}
 
 namespace Geom
 {
@@ -561,7 +566,8 @@ namespace Geom
     //     }
     // }
 
-    void UnstructuredMeshSerialRW::BuildCell2Cell()
+    void UnstructuredMeshSerialRW::
+        BuildCell2Cell()
     {
         DNDS_MAKE_SSP(cell2cellSerial, mesh->mpi);
         // if (mRank != mesh->mpi.rank)
@@ -600,5 +606,373 @@ namespace Geom
             for (auto iCellOther : c_neighbors)
                 (*cell2cellSerial)(iCell, ic2c++) = iCellOther;
         }
+    }
+
+    void UnstructuredMeshSerialRW::
+        MeshPartitionCell2Cell()
+    {
+        //! preset hyper config, should be optional in the future
+        bool isSerial = true;
+        _METIS::idx_t nPart = mesh->mpi.size;
+        cnPart = nPart;
+
+        //! assuming all adj point to local numbers now
+        // * Tend to local-global issues putting into
+        cell2cellSerial->Compress();
+        cell2cellSerial->AssertConsistent();
+        cell2cellSerial->createGlobalMapping();
+
+        std::vector<_METIS::idx_t> vtxdist(mesh->mpi.size + 1);
+        for (DNDS::MPI_int r = 0; r <= mesh->mpi.size; r++)
+            vtxdist[r] = cell2cellSerial->pLGlobalMapping->ROffsets().at(r); //! warning: no check overflow
+        std::vector<_METIS::idx_t> xadj(cell2cellSerial->Size() + 1);
+        for (DNDS::index iCell = 0; iCell < xadj.size(); iCell++)
+            xadj[iCell] = (cell2cellSerial->rowPtr(iCell) - cell2cellSerial->rowPtr(0)); //! warning: no check overflow
+        std::vector<_METIS::idx_t> adjncy(xadj.back());
+        DNDS_assert(cell2cellSerial->DataSize() == xadj.back());
+        for (DNDS::index iAdj = 0; iAdj < xadj.back(); iAdj++)
+            adjncy[iAdj] = cell2cellSerial->data()[iAdj]; //! warning: no check overflow
+        if (adjncy.size() == 0)
+            adjncy.resize(1, -1); //*coping with zero sized data
+
+        _METIS::idx_t nCell = cell2cellSerial->Size(); //! warning: no check overflow
+        _METIS::idx_t nCon{1}, options[METIS_NOPTIONS];
+
+        {
+            options[_METIS::METIS_OPTION_OBJTYPE] = _METIS::METIS_OBJTYPE_CUT;
+            options[_METIS::METIS_OPTION_CTYPE] = _METIS::METIS_CTYPE_RM;
+            options[_METIS::METIS_OPTION_IPTYPE] = _METIS::METIS_IPTYPE_GROW;
+            options[_METIS::METIS_OPTION_RTYPE] = _METIS::METIS_RTYPE_FM;
+            // options[METIS_OPTION_NO2HOP] = 0; // only available in metis 5.1.0
+            options[_METIS::METIS_OPTION_NCUTS] = 1;
+            options[_METIS::METIS_OPTION_NITER] = 10;
+            options[_METIS::METIS_OPTION_UFACTOR] = 30;
+            options[_METIS::METIS_OPTION_MINCONN] = 0;
+            options[_METIS::METIS_OPTION_CONTIG] = 1; // ! forcing contigious partition now ? necessary?
+            options[_METIS::METIS_OPTION_SEED] = 0;   // ! seeding 0 for determined result
+            options[_METIS::METIS_OPTION_NUMBERING] = 0;
+            options[_METIS::METIS_OPTION_DBGLVL] = _METIS::METIS_DBG_TIME | _METIS::METIS_DBG_IPART;
+        }
+        std::vector<_METIS::idx_t> partOut(nCell);
+        if (nCell == 0)
+            partOut.resize(1, -1); //*coping with zero sized data
+        if (nPart > 1)
+        {
+            if (mesh->mpi.size == 1 || (isSerial && mesh->mpi.rank == mRank))
+            {
+                _METIS::idx_t objval;
+                int ret = _METIS::METIS_PartGraphKway(
+                    &nCell, &nCon, xadj.data(), adjncy.data(), NULL, NULL, NULL,
+                    &nPart, NULL, NULL, options, &objval, partOut.data());
+                if (ret != _METIS::METIS_OK)
+                {
+                    DNDS::log() << "METIS returned not OK: [" << ret << "]" << std::endl;
+                    DNDS_assert(false);
+                }
+            }
+            else if (mesh->mpi.size != 1 && (!isSerial))
+            {
+                ///@todo //TODO: parmetis needs testing!
+                for (int i = 0; i < vtxdist.size() - 1; i++)
+                    DNDS_assert_info(vtxdist[i + 1] - vtxdist[i] > 0, "need more than zero cells on each proc!");
+                std::vector<_METIS::real_t> tpWeights(nPart * nCon, 1.0 / nPart); //! assuming homogenous
+                _METIS::real_t ubVec[1]{1.05};
+                DNDS_assert(nCon == 1);
+                _METIS::idx_t optsC[3];
+                _METIS::idx_t wgtflag{0}, numflag{0};
+                optsC[0] = 1;
+                optsC[1] = 1;
+                optsC[2] = 0;
+                _METIS::idx_t objval;
+                int ret = _METIS::ParMETIS_V3_PartKway(
+                    vtxdist.data(), xadj.data(), adjncy.data(), NULL, NULL, &wgtflag, &numflag,
+                    &nCon, &nPart, tpWeights.data(), ubVec, optsC, &objval, partOut.data(),
+                    &mesh->mpi.comm);
+                if (ret != _METIS::METIS_OK)
+                {
+                    DNDS::log() << "METIS returned not OK: [" << ret << "]" << std::endl;
+                    DNDS_assert(false);
+                }
+            }
+        }
+        else
+        {
+            partOut.assign(partOut.size(), 0);
+        }
+        cellPartition.resize(cell2cellSerial->Size());
+        for (DNDS::index i = 0; i < cellPartition.size(); i++)
+            cellPartition[i] = partOut[i];
+    }
+
+    /*******************************************************************************************************************/
+    /*******************************************************************************************************************/
+    /*******************************************************************************************************************/
+
+    /**
+     * Used for generating pushing data structure
+     *  @todo: //TODO test on parallel re-distributing
+     */
+    // for one-shot usage, partition data corresponds to mpi
+
+    template <class TPartitionIdx>
+    void Partition2LocalIdx(
+        const std::vector<TPartitionIdx> &partition,
+        std::vector<DNDS::index> &localPush,
+        std::vector<DNDS::index> &localPushStart, const DNDS::MPIInfo &mpi)
+    {
+        // localPushStart.resize(mpi.size);
+        std::vector<DNDS::index> localPushSizes(mpi.size, 0);
+        for (auto r : partition)
+        {
+            DNDS_assert(r < mpi.size);
+            localPushSizes[r]++;
+        }
+        DNDS::AccumulateRowSize(localPushSizes, localPushStart);
+        localPush.resize(localPushStart[mpi.size]);
+        localPushSizes.assign(mpi.size, 0);
+        DNDS_assert(partition.size() == localPush.size());
+        for (DNDS::index i = 0; i < partition.size(); i++)
+            localPush[localPushStart[partition[i]] + (localPushSizes[partition[i]]++)] = i;
+    }
+
+    /**
+     * Serial2Global is used for converting adj data to point to reordered global
+     *  @todo: //TODO test on parallel re-distributing
+     */
+    template <class TPartitionIdx>
+    void Partition2Serial2Global(
+        const std::vector<TPartitionIdx> &partition,
+        std::vector<DNDS::index> &serial2Global, const DNDS::MPIInfo &mpi, DNDS::MPI_int nPart)
+    {
+        serial2Global.resize(partition.size());
+        /****************************************/
+        std::vector<DNDS::index> numberAtLocal(nPart, 0);
+        for (auto r : partition)
+            numberAtLocal[r]++;
+        std::vector<DNDS::index> numberTotal(nPart), numberPrev(nPart);
+        MPI_Allreduce(numberAtLocal.data(), numberTotal.data(), nPart, DNDS::DNDS_MPI_INDEX, MPI_SUM, mpi.comm);
+        MPI_Scan(numberAtLocal.data(), numberPrev.data(), nPart, DNDS::DNDS_MPI_INDEX, MPI_SUM, mpi.comm);
+        std::vector<DNDS::index> numberTotalPlc(nPart + 1);
+        numberTotalPlc[0] = 0;
+        for (DNDS::MPI_int r = 0; r < nPart; r++)
+            numberTotalPlc[r + 1] = numberTotalPlc[r] + numberTotal[r], numberPrev[r] -= numberAtLocal[r];
+        // 2 things here: accumulate total and subtract local from prev
+        /****************************************/
+        numberAtLocal.assign(numberAtLocal.size(), 0);
+        DNDS::index iFill = 0;
+        for (auto r : partition)
+            serial2Global[iFill++] = (numberAtLocal[r]++) + numberTotalPlc[r] + numberPrev[r];
+    }
+
+    /**
+     * In this section, Serial means un-reordered index, i-e
+     * pointing to the *serial data, cell2node then pointing to the
+     * cell2node global indices:
+     * 0 1; 2 3
+     *
+     * Global means the re-ordered data's global indices
+     * if partition ==
+     * 0 1; 0 1
+     * then Serial 2 Global is:
+     * 0 2; 1 3
+     *
+     * if in proc 0, a cell refers to node 2, then must be seen in JSG ghost, gets global output == 1
+     *
+     * comm complexity: same as data comm
+     * @todo: //TODO test on parallel re-distributing
+     */
+
+    template <class TAdj = tAdj1>
+    void ConvertAdjSerial2Global(TAdj &arraySerialAdj,
+                                 const std::vector<DNDS::index> &partitionJSerial2Global,
+                                 const DNDS::MPIInfo &mpi)
+    {
+        // IndexArray JSG(IndexArray::tContext(partitionJSerial2Global.size()), mpi);
+        // forEachInArray(
+        //     JSG, [&](IndexArray::tComponent &e, index i)
+        //     { e[0] = partitionJSerial2Global[i]; });
+        // JSGGhost.createGlobalMapping();
+        tAdj1 JSG, JSGGhost;
+        DNDS_MAKE_SSP(JSG, mpi);
+        DNDS_MAKE_SSP(JSGGhost, mpi);
+        JSG->Resize(partitionJSerial2Global.size());
+        for (DNDS::index i = 0; i < JSG->Size(); i++)
+            (*JSG)(i, 0) = partitionJSerial2Global[i];
+        JSG->createGlobalMapping();
+        std::vector<DNDS::index> ghostJSerialQuery;
+
+        // get ghost
+        DNDS::index nGhost = 0;
+        for (DNDS::index i = 0; i < arraySerialAdj->Size(); i++)
+        {
+            for (DNDS::rowsize j = 0; j < arraySerialAdj->RowSize(i); j++)
+            {
+                DNDS::index v = (*arraySerialAdj)(i, j);
+                if (v == DNDS::UnInitIndex)
+                    break;
+                DNDS::MPI_int rank = -1;
+                DNDS::index val = -1;
+                if (!JSG->pLGlobalMapping->search(v, rank, val))
+                    DNDS_assert_info(false, "search failed");
+                if (rank != mpi.rank) //! excluding self
+                    nGhost++;
+            }
+        }
+        ghostJSerialQuery.reserve(nGhost);
+        for (DNDS::index i = 0; i < arraySerialAdj->Size(); i++)
+        {
+            for (DNDS::rowsize j = 0; j < arraySerialAdj->RowSize(i); j++)
+            {
+                DNDS::index v = (*arraySerialAdj)(i, j);
+                if (v == DNDS::UnInitIndex)
+                    break;
+                DNDS::MPI_int rank = -1;
+                DNDS::index val = -1;
+                JSG->pLGlobalMapping->search(v, rank, val);
+                if (rank != mpi.rank) //! excluding self
+                    ghostJSerialQuery.push_back(v);
+            }
+        }
+        // PrintVec(ghostJSerialQuery, std::cout);
+        typename DNDS::ArrayTransformerType<tAdj1::element_type>::Type JSGTrans;
+        JSGTrans.setFatherSon(JSG, JSGGhost);
+        JSGTrans.createGhostMapping(ghostJSerialQuery);
+        JSGTrans.createMPITypes();
+        JSGTrans.pullOnce();
+
+        for (DNDS::index i = 0; i < arraySerialAdj->Size(); i++)
+        {
+            for (DNDS::rowsize j = 0; j < arraySerialAdj->RowSize(i); j++)
+            {
+                DNDS::index &v = (*arraySerialAdj)(i, j);
+                if (v == DNDS::UnInitIndex)
+                    break;
+                DNDS::MPI_int rank = -1;
+                DNDS::index val = -1;
+                if (!JSGTrans.pLGhostMapping->search(v, rank, val))
+                    DNDS_assert_info(false, "search failed");
+                if (rank == -1)
+                    v = (*JSG)(val, 0);
+                else
+                    v = (*JSGGhost)(val, 0);
+            }
+        }
+    }
+
+    template <class TArr = tAdj1>
+    void TransferDataSerial2Global(TArr &arraySerial,
+                                   TArr &arrayDist,
+                                   const std::vector<DNDS::index> &pushIndex,
+                                   const std::vector<DNDS::index> &pushIndexStart,
+                                   const DNDS::MPIInfo &mpi)
+    {
+        typename DNDS::ArrayTransformerType<typename TArr::element_type>::Type trans;
+        trans.setFatherSon(arraySerial, arrayDist);
+        trans.createFatherGlobalMapping();
+        trans.createGhostMapping(pushIndex, pushIndexStart);
+        trans.createMPITypes();
+        trans.pullOnce();
+    }
+
+    //! inefficient, use Partition2Serial2Global ! only used for convenient comparison
+    void PushInfo2Serial2Global(std::vector<DNDS::index> &serial2Global,
+                                DNDS::index localSize,
+                                const std::vector<DNDS::index> &pushIndex,
+                                const std::vector<DNDS::index> &pushIndexStart,
+                                const DNDS::MPIInfo &mpi)
+    {
+        tIndPair Serial2Global;
+        DNDS_MAKE_SSP(Serial2Global.father, mpi);
+        DNDS_MAKE_SSP(Serial2Global.son, mpi);
+        Serial2Global.father->Resize(localSize);
+        Serial2Global.TransAttach();
+        Serial2Global.trans.createFatherGlobalMapping();
+        Serial2Global.trans.createGhostMapping(pushIndex, pushIndexStart);
+        Serial2Global.trans.createMPITypes();
+        Serial2Global.son->createGlobalMapping();
+        // Set son to son's global
+        for (DNDS::index iSon = 0; iSon < Serial2Global.son->Size(); iSon++)
+            (*Serial2Global.son)[iSon] = Serial2Global.son->pLGlobalMapping->operator()(mpi.rank, iSon);
+        Serial2Global.trans.pushOnce();
+        serial2Global.resize(localSize);
+        for (DNDS::index iFat = 0; iFat < Serial2Global.father->Size(); iFat++)
+            serial2Global[iFat] = Serial2Global.father->operator[](iFat);
+    }
+
+    // template <class TAdj = tAdj1>
+    // void ConvertAdjSerial2Global(TAdj &arraySerialAdj,
+    //                              const std::vector<DNDS::index> &partitionJSerial2Global,
+    //                              const DNDS::MPIInfo &mpi)
+    // {
+    // }
+    /*******************************************************************************************************************/
+    /*******************************************************************************************************************/
+    /*******************************************************************************************************************/
+
+    void UnstructuredMeshSerialRW::
+        PartitionReorderToMeshCell2Cell()
+    {
+        DNDS_assert(cnPart == mesh->mpi.size);
+        // * 1: get the nodal partition
+        nodePartition.resize(coordSerial->Size(), static_cast<DNDS::MPI_int>(INT32_MAX));
+        for (DNDS::index iCell = 0; iCell < cell2nodeSerial->Size(); iCell++)
+            for (DNDS::rowsize ic2n = 0; ic2n < (*cell2nodeSerial).RowSize(iCell); ic2n++)
+                nodePartition[(*cell2nodeSerial)(iCell, ic2n)] = std::min(nodePartition[(*cell2nodeSerial)(iCell, ic2n)], cellPartition.at(iCell));
+        // * 1: get the bnd partition
+        bndPartition.resize(bnd2cellSerial->Size());
+        for (DNDS::index iBnd = 0; iBnd < bnd2cellSerial->Size(); iBnd++)
+            bndPartition[iBnd] = cellPartition[(*bnd2cellSerial)(iBnd, 0)];
+
+        std::vector<DNDS::index> cell_push, cell_pushStart, node_push, node_pushStart, bnd_push, bnd_pushStart;
+        Partition2LocalIdx(cellPartition, cell_push, cell_pushStart, mesh->mpi);
+        Partition2LocalIdx(nodePartition, node_push, node_pushStart, mesh->mpi);
+        Partition2LocalIdx(bndPartition, bnd_push, bnd_pushStart, mesh->mpi);
+        std::vector<DNDS::index> cell_Serial2Global, node_Serial2Global, bnd_Serial2Global;
+        Partition2Serial2Global(cellPartition, cell_Serial2Global, mesh->mpi, mesh->mpi.size);
+        Partition2Serial2Global(nodePartition, node_Serial2Global, mesh->mpi, mesh->mpi.size);
+        // Partition2Serial2Global(bndPartition, bnd_Serial2Global, mesh->mpi, mesh->mpi.size);//seems not needed for now
+        // PushInfo2Serial2Global(cell_Serial2Global, cellPartition.size(), cell_push, cell_pushStart, mesh->mpi);//*safe validation version
+        // PushInfo2Serial2Global(node_Serial2Global, nodePartition.size(), node_push, node_pushStart, mesh->mpi);//*safe validation version
+        // PushInfo2Serial2Global(bnd_Serial2Global, bndPartition.size(), bnd_push, bnd_pushStart, mesh->mpi);    //*safe validation version
+
+        ConvertAdjSerial2Global(cell2nodeSerial, node_Serial2Global, mesh->mpi);
+        ConvertAdjSerial2Global(cell2cellSerial, cell_Serial2Global, mesh->mpi);
+        ConvertAdjSerial2Global(bnd2nodeSerial, node_Serial2Global, mesh->mpi);
+        ConvertAdjSerial2Global(bnd2cellSerial, cell_Serial2Global, mesh->mpi);
+
+        DNDS_MAKE_SSP(mesh->coords.father, mesh->mpi);
+        DNDS_MAKE_SSP(mesh->coords.son, mesh->mpi);
+        DNDS_MAKE_SSP(mesh->cellElemInfo.father, ElemInfo::CommType(), ElemInfo::CommMult(), mesh->mpi);
+        DNDS_MAKE_SSP(mesh->cellElemInfo.son, ElemInfo::CommType(), ElemInfo::CommMult(), mesh->mpi);
+        DNDS_MAKE_SSP(mesh->bndElemInfo.father, ElemInfo::CommType(), ElemInfo::CommMult(), mesh->mpi);
+        DNDS_MAKE_SSP(mesh->bndElemInfo.son, ElemInfo::CommType(), ElemInfo::CommMult(), mesh->mpi);
+        DNDS_MAKE_SSP(mesh->cell2node.father, mesh->mpi);
+        DNDS_MAKE_SSP(mesh->cell2node.son, mesh->mpi);
+        DNDS_MAKE_SSP(mesh->cell2cell.father, mesh->mpi);
+        DNDS_MAKE_SSP(mesh->cell2cell.son, mesh->mpi);
+        DNDS_MAKE_SSP(mesh->bnd2node.father, mesh->mpi);
+        DNDS_MAKE_SSP(mesh->bnd2node.son, mesh->mpi);
+        DNDS_MAKE_SSP(mesh->bnd2cell.father, mesh->mpi);
+        DNDS_MAKE_SSP(mesh->bnd2cell.son, mesh->mpi);
+
+        // coord transferring
+        TransferDataSerial2Global(coordSerial, mesh->coords.father, node_push, node_pushStart, mesh->mpi);
+
+        // cells transferring
+        TransferDataSerial2Global(cell2cellSerial, mesh->cell2cell.father, cell_push, cell_pushStart, mesh->mpi);
+        TransferDataSerial2Global(cell2nodeSerial, mesh->cell2node.father, cell_push, cell_pushStart, mesh->mpi);
+        TransferDataSerial2Global(cellElemInfoSerial, mesh->cellElemInfo.father, cell_push, cell_pushStart, mesh->mpi);
+
+        // bnds transferring
+        TransferDataSerial2Global(bnd2cellSerial, mesh->bnd2cell.father, bnd_push, bnd_pushStart, mesh->mpi);
+        TransferDataSerial2Global(bnd2nodeSerial, mesh->bnd2node.father, bnd_push, bnd_pushStart, mesh->mpi);
+        TransferDataSerial2Global(bndElemInfoSerial, mesh->bndElemInfo.father, bnd_push, bnd_pushStart, mesh->mpi);
+
+        DNDS::MPISerialDo(mesh->mpi, [&]()
+                          { std::cout << "Rank " << mesh->mpi.rank << " : nCell " << mesh->cell2cell.father->Size() << std::endl; });
+        DNDS::MPISerialDo(mesh->mpi, [&]()
+                          { std::cout << "Rank " << mesh->mpi.rank << " : nNode " << mesh->coords.father->Size() << std::endl; });
+        DNDS::MPISerialDo(mesh->mpi, [&]()
+                          { std::cout << "Rank " << mesh->mpi.rank << " : nBnd " << mesh->bnd2node.father->Size() << std::endl; });
     }
 }

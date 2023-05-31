@@ -123,12 +123,13 @@ namespace DNDS
 
     template <class F>
     inline void MPISerialDo(const MPIInfo &mpi, F f)
-    {
+    { //!need some improvement: order could be bad?
         for (MPI_int i = 0; i < mpi.size; i++)
         {
             MPI_Barrier(mpi.comm);
             if (mpi.rank == i)
                 f();
+            MPI_Barrier(mpi.comm);
         }
     }
 

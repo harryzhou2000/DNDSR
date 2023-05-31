@@ -186,6 +186,12 @@ namespace DNDS
             father->createGlobalMapping();
         }
 
+        /** @brief create ghost by pulling data
+         * @details
+         * pulling data indicates the data put in son (received in pulling operation)
+         * pullingIndexGlobal is the global indices in son
+         * pullingIndexGlobal should be mutually different, otherwise behavior undefined
+         */
         template <class TPullSet>
         void createGhostMapping(TPullSet &&pullingIndexGlobal) // collective;
         {
@@ -202,6 +208,12 @@ namespace DNDS
                 mpi);
         }
 
+        /** @brief create ghost by pushing data
+         * @details
+         * pulling data indicates the data distributed in father (received in pushing operation)
+         * CSR(pushingIndexLocal,pushStarts) indicates the local indices in father, for each rank to push from or pull to
+         * CSR(pushingIndexLocal,pushStarts) is required to be mutually different entries of father, otherwise behavior undefined
+         */
         template <class TPushSet, class TPushStart>
         void createGhostMapping(TPushSet &&pushingIndexLocal, TPushStart &&pushStarts) // collective;
         {
@@ -211,7 +223,7 @@ namespace DNDS
             // phase1.2: calculate over pushing
             // counting could overflow
             pLGhostMapping = std::make_shared<OffsetAscendIndexMapping>(
-                (*pLGlobalMapping)(mpi.rank, 0), father->size(),
+                (*pLGlobalMapping)(mpi.rank, 0), father->Size(),
                 std::forward<TPushSet>(pushingIndexLocal),
                 std::forward<TPushStart>(pushStarts),
                 *pLGlobalMapping,
@@ -629,6 +641,12 @@ namespace DNDS
         index Size()
         {
             return father->Size() + son->Size();
+        }
+
+        void TransAttach()
+        {
+            DNDS_assert(bool(father) && bool(son));
+            trans.setFatherSon(father, son);
         }
     };
 }

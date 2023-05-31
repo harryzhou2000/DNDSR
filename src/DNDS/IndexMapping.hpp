@@ -27,6 +27,7 @@ namespace DNDS
 
     public:
         t_IndexVec &RLengths() { return RankLengths; }
+        t_IndexVec &ROffsets() { return RankOffsets; }
 
         index globalSize()
         {
@@ -170,7 +171,7 @@ namespace DNDS
                 // if (rank != mpi.rank)
                 ghostIndex.push_back(i);
             }
-            ghostIndex.shrink_to_fit(); // only for safety
+            // ghostIndex.shrink_to_fit(); // only for safety
             this->sort();
 
             // obtain pushIndexSizes and actual push indices
@@ -246,7 +247,13 @@ namespace DNDS
         // auto &gStarts() { return ghostStart; }
 
         // warning: using globally sorted condition
-        void sort() { std::sort(ghostIndex.begin(), ghostIndex.end()); };
+        void sort()
+        {
+            std::sort(ghostIndex.begin(), ghostIndex.end());
+            auto last = std::unique(ghostIndex.begin(), ghostIndex.end());
+            ghostIndex.erase(last, ghostIndex.end());
+            ghostIndex.shrink_to_fit();
+        };
 
         index &ghostAt(MPI_int rank, index ighost)
         {

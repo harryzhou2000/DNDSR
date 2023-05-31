@@ -90,7 +90,7 @@ namespace DNDS
     const real UnInitReal = std::acos(-1) * 1e299 * std::sqrt(-1.0);
     const index UnInitIndex = INT64_MIN;
 
-    inline constexpr bool IsUnInitReal(real v)
+    inline bool IsUnInitReal(real v)
     {
         return (*(int64_t *)(&v)) == (*(int64_t *)(&UnInitReal));
     }
@@ -241,6 +241,8 @@ namespace DNDS
         return a / b + (a % b ? 1 : 0);
     }
     // const int a = divide_ceil(23, 11);
+
+    ///@todo //TODO: overflow_assign_int64_to_32
 
 }
 

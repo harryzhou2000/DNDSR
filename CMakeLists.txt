@@ -4,9 +4,10 @@ cmake_minimum_required(VERSION 3.1)
 # need CUDA project support ?
 # manual perferences
 set(CMAKE_VERBOSE_MAKEFILE ON)
-set(CMAKE_CXX_STANDARD_REQUIRED 17)
-set(CMAKE_CXX_STANDARD 17)
+# set(CMAKE_CXX_STANDARD_REQUIRED 17)
+# set(CMAKE_CXX_STANDARD 17)
 
+find_package(MPI REQUIRED)
 
 set(DNDS_SUPRESS_INSERT_CHECK ON CACHE BOOL "close the inserted outputs")
 set(DNDS_USE_NDEBUG_MACRO OFF CACHE BOOL "use NDEBUG macro for eigen output and cassert etc") # performance impact is small so off by default(without -DNDEBUG)
@@ -87,6 +88,8 @@ set (EXTERNAL_LIBS "")
 
 if(UNIX OR MINGW)
     set(EXTERNAL_LIBS dl z pthread)
+    message(${CMAKE_CXX_COMPILER_ID})
+    add_compile_options(-std=c++17)
     if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang")
         # add_compile_options(-fopenmp)
         set(CMAKE_CXX_FLAGS ${CMAKE_CXX_FLAGS} "-fopenmp")

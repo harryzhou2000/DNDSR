@@ -13,14 +13,18 @@ void testCGNS()
 {
     auto mpi = DNDS::MPIInfo();
     mpi.setWorld();
+    // DNDS::Debug::MPIDebugHold(mpi);
     char buf[512];
     std::cout << getcwd(buf, 512) << std::endl;
-    auto mesh = std::make_shared<Geom::UnstructuredMesh>(mpi, 2);
+    auto mesh = std::make_shared<Geom::UnstructuredMesh>(mpi, 3);
     auto reader = Geom::UnstructuredMeshSerialRW(mesh, 0);
     // "../data/mesh/SC20714_MixedA.cgns"
     // "../data/mesh/UniformDM240_E120.cgns"
-    reader.ReadFromCGNSSerial("../data/mesh/SC20714_MixedA.cgns");
+    // "../data/mesh/Ball.cgns"
+    reader.ReadFromCGNSSerial("../data/mesh/Ball.cgns");
     reader.BuildCell2Cell();
+    reader.MeshPartitionCell2Cell();
+    reader.PartitionReorderToMeshCell2Cell();
     // char c;
     // std::cin >> c;
 }
@@ -29,6 +33,7 @@ int main(int argc, char *argv[])
 {
     // ! Disable MPI call to help serial mem check
     MPI_Init(&argc, &argv);
+    
 
     for (int i = 1; i < argc; i++)
     {

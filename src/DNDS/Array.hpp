@@ -473,6 +473,11 @@ namespace DNDS
             {
                 if (IfCompressed())
                     return _data.data() + _pRowStart->at(iRow);
+                else if (this->Size() == 0)
+                {
+                    static_assert(((T *)(NULL) - (T *)(NULL)) == 0);
+                    return (T*)(NULL); // used for past-the-end inquiry of size 0 array
+                }
                 else
                 {
                     DNDS_assert_info(iRow < _size, "past-the-end query forbidden for CSR uncompressed");
@@ -494,6 +499,8 @@ namespace DNDS
 
         size_t DataSize()
         {
+            if(this->Size() == 0)
+                return 0;
             if constexpr (_dataLayout == CSR)
                 DNDS_assert_info(this->IfCompressed(), "CSR must be compressed to get data pointer");
             return _data.size();
