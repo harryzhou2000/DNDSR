@@ -25,6 +25,9 @@ void testCGNS()
     reader.BuildCell2Cell();
     reader.MeshPartitionCell2Cell();
     reader.PartitionReorderToMeshCell2Cell();
+    mesh->BuildGhostPrimary();
+    mesh->AdjGlobal2LocalPrimary();
+    mesh->InterpolateFace();
     // char c;
     // std::cin >> c;
 }

@@ -569,14 +569,16 @@ namespace Geom
     void UnstructuredMeshSerialRW::
         BuildCell2Cell()
     {
+        if (mesh->mpi.rank == mRank)
+            DNDS::log() << "UnstructuredMeshSerialRW === Doing  BuildCell2Cell" << std::endl;
         DNDS_MAKE_SSP(cell2cellSerial, mesh->mpi);
         // if (mRank != mesh->mpi.rank)
         //     return;
-
         /// TODO: abstract these: invert cone (like node 2 cell -> cell 2 node) (also support operating on pair)
         /**********************************************************************************************************************/
         // getting node2cell // only primary vertices
-        std::vector<std::vector<DNDS::index>> node2cell(coordSerial->Size());
+        std::vector<std::vector<DNDS::index>>
+            node2cell(coordSerial->Size());
         std::vector<DNDS::rowsize> node2cellSz(coordSerial->Size(), 0);
         for (DNDS::index iCell = 0; iCell < cell2nodeSerial->Size(); iCell++)
             for (DNDS::rowsize iN = 0; iN < Elem::Element{(*cellElemInfoSerial)(iCell, 0).getElemType()}.GetNumVertices(); iN++)
@@ -588,29 +590,75 @@ namespace Geom
                 node2cell[(*cell2nodeSerial)(iCell, iN)].push_back(iCell);
         node2cellSz.clear();
         /**********************************************************************************************************************/
-
+        if (mesh->mpi.rank == mRank)
+            DNDS::log() << "UnstructuredMeshSerialRW === Doing  BuildCell2Cell Part 1" << std::endl;
         cell2cellSerial->Resize(cell2nodeSerial->Size());
         for (DNDS::index iCell = 0; iCell < cell2nodeSerial->Size(); iCell++)
         {
             auto CellElem = Elem::Element{(*cellElemInfoSerial)[iCell]->getElemType()};
-            std::vector<DNDS::index> cell2nodeRow{(*cell2nodeSerial)[iCell].begin(), (*cell2nodeSerial)[iCell].begin() + CellElem.GetNumVertices()};
+            std::vector<DNDS::index> cell2nodeRow{
+                (*cell2nodeSerial)[iCell].begin(),
+                (*cell2nodeSerial)[iCell].begin() + CellElem.GetNumVertices()};
+            std::sort(cell2nodeRow.begin(), cell2nodeRow.end());
             // only primary vertices
-            std::set<DNDS::index> c_neighbors; // could optimize?
+            // std::set<DNDS::index> c_neighbors; // could optimize?
+            std::vector<DNDS::index> c_neighbors;
+            c_neighbors.reserve(30);
+            /****/
+            if (iCell % 100000 == 0)
+            {
+                auto fmt = DNDS::log().flags();
+                DNDS::log() << "\r\033[K" << std::setw(5) << double(iCell) / cell2nodeSerial->Size() * 100 << "%";
+                DNDS::log().flush();
+                DNDS::log().setf(fmt);
+            }
+            if (iCell == cell2nodeSerial->Size() - 1)
+                DNDS::log() << std::endl;
+            /****/
+
             for (auto iNode : cell2nodeRow)
                 for (auto iCellOther : node2cell[iNode])
-                    c_neighbors.insert(iCellOther);
-            if (!c_neighbors.erase(iCell))
-                DNDS_assert_info(false, "neighbors should include myself now");
+                {
+                    auto CellElemO = Elem::Element{(*cellElemInfoSerial)[iCellOther]->getElemType()};
+                    std::vector<DNDS::index> cell2nodeRowO{
+                        (*cell2nodeSerial)[iCellOther].begin(),
+                        (*cell2nodeSerial)[iCellOther].begin() + CellElemO.GetNumVertices()};
+                    std::sort(cell2nodeRowO.begin(), cell2nodeRowO.end());
+                    std::vector<DNDS::index> interSect;
+                    std::set_intersection(cell2nodeRowO.begin(), cell2nodeRowO.end(), cell2nodeRow.begin(), cell2nodeRow.end(),
+                                          std::back_inserter(interSect));
+                    if ((iCellOther != iCell) && interSect.size() > 2)
+
+                        // (false ||
+                        //  Elem::cellsAreFaceConnected(
+                        //      cell2nodeSerial->operator[](iCell),
+                        //      cell2nodeSerial->operator[](iCellOther),
+                        //      CellElem,
+                        //      Elem::Element{(*cellElemInfoSerial)[iCellOther]->getElemType()}))
+                        // c_neighbors.insert(iCellOther);
+                        c_neighbors.push_back(iCellOther);
+                }
+            // if (!c_neighbors.erase(iCell))
+            //     DNDS_assert_info(false, "neighbors should include myself now");
+            std::sort(c_neighbors.begin(), c_neighbors.end());
+            auto last = std::unique(c_neighbors.begin(), c_neighbors.end());
+            c_neighbors.erase(last, c_neighbors.end());
+
             cell2cellSerial->ResizeRow(iCell, c_neighbors.size());
             DNDS::rowsize ic2c = 0;
             for (auto iCellOther : c_neighbors)
                 (*cell2cellSerial)(iCell, ic2c++) = iCellOther;
         }
+
+        if (mesh->mpi.rank == mRank)
+            DNDS::log() << "UnstructuredMeshSerialRW === Done  BuildCell2Cell" << std::endl;
     }
 
     void UnstructuredMeshSerialRW::
         MeshPartitionCell2Cell()
     {
+        if (mesh->mpi.rank == mRank)
+            DNDS::log() << "UnstructuredMeshSerialRW === Doing  MeshPartitionCell2Cell" << std::endl;
         //! preset hyper config, should be optional in the future
         bool isSerial = true;
         _METIS::idx_t nPart = mesh->mpi.size;
@@ -702,6 +750,8 @@ namespace Geom
         cellPartition.resize(cell2cellSerial->Size());
         for (DNDS::index i = 0; i < cellPartition.size(); i++)
             cellPartition[i] = partOut[i];
+        if (mesh->mpi.rank == mRank)
+            DNDS::log() << "UnstructuredMeshSerialRW === Done  MeshPartitionCell2Cell" << std::endl;
     }
 
     /*******************************************************************************************************************/
@@ -912,6 +962,8 @@ namespace Geom
     void UnstructuredMeshSerialRW::
         PartitionReorderToMeshCell2Cell()
     {
+        if (mesh->mpi.rank == mRank)
+            DNDS::log() << "UnstructuredMeshSerialRW === Doing  PartitionReorderToMeshCell2Cell" << std::endl;
         DNDS_assert(cnPart == mesh->mpi.size);
         // * 1: get the nodal partition
         nodePartition.resize(coordSerial->Size(), static_cast<DNDS::MPI_int>(INT32_MAX));
@@ -971,8 +1023,232 @@ namespace Geom
         DNDS::MPISerialDo(mesh->mpi, [&]()
                           { std::cout << "Rank " << mesh->mpi.rank << " : nCell " << mesh->cell2cell.father->Size() << std::endl; });
         DNDS::MPISerialDo(mesh->mpi, [&]()
-                          { std::cout << "Rank " << mesh->mpi.rank << " : nNode " << mesh->coords.father->Size() << std::endl; });
+                          { std::cout << " Rank " << mesh->mpi.rank << " : nNode " << mesh->coords.father->Size() << std::endl; });
         DNDS::MPISerialDo(mesh->mpi, [&]()
-                          { std::cout << "Rank " << mesh->mpi.rank << " : nBnd " << mesh->bnd2node.father->Size() << std::endl; });
+                          { std::cout << " Rank " << mesh->mpi.rank << " : nBnd " << mesh->bnd2node.father->Size() << std::endl; });
+        mesh->adjPrimaryState = Adj_PointToGlobal;
+        if (mesh->mpi.rank == mRank)
+            DNDS::log() << "UnstructuredMeshSerialRW === Done  PartitionReorderToMeshCell2Cell" << std::endl;
+    }
+}
+
+namespace Geom
+{
+    void UnstructuredMesh::
+        BuildGhostPrimary()
+    {
+        DNDS_assert(adjPrimaryState == Adj_PointToGlobal);
+        /********************************/
+        // cells
+        {
+            cell2cell.TransAttach();
+            cell2node.TransAttach();
+            cellElemInfo.TransAttach();
+
+            cell2cell.trans.createFatherGlobalMapping();
+
+            std::vector<DNDS::index> ghostCells;
+            for (DNDS::index iCell = 0; iCell < cell2cell.father->Size(); iCell++)
+            {
+                for (DNDS::rowsize ic2c = 0; ic2c < cell2cell.father->RowSize(iCell); ic2c++)
+                {
+                    auto iCellOther = (*cell2cell.father)(iCell, ic2c);
+                    DNDS::MPI_int rank;
+                    DNDS::index val;
+                    if (!cell2cell.trans.pLGlobalMapping->search(iCellOther, rank, val))
+                        DNDS_assert_info(false, "search failed");
+                    if (rank != mpi.rank)
+                        ghostCells.push_back(iCellOther);
+                }
+            }
+            cell2cell.trans.createGhostMapping(ghostCells);
+
+            cell2node.trans.BorrowGGIndexing(cell2cell.trans);
+            cellElemInfo.trans.BorrowGGIndexing(cell2cell.trans);
+
+            cell2cell.trans.createMPITypes();
+            cell2node.trans.createMPITypes();
+            cellElemInfo.trans.createMPITypes();
+
+            cell2cell.trans.pullOnce();
+            cell2node.trans.pullOnce();
+            cellElemInfo.trans.pullOnce();
+        }
+
+        /********************************/
+        // cells done, go on to nodes
+        {
+            coords.TransAttach();
+            coords.trans.createFatherGlobalMapping();
+
+            std::vector<DNDS::index> ghostNodes;
+            for (DNDS::index iCell = 0; iCell < cell2cell.Size(); iCell++) // note doing full (son + father) traverse
+            {
+                for (DNDS::rowsize ic2c = 0; ic2c < cell2node.RowSize(iCell); ic2c++)
+                {
+                    auto iNode = cell2node(iCell, ic2c);
+                    DNDS::MPI_int rank;
+                    DNDS::index val;
+                    if (!coords.trans.pLGlobalMapping->search(iNode, rank, val))
+                        DNDS_assert_info(false, "search failed");
+                    if (rank != mpi.rank)
+                        ghostNodes.push_back(iNode);
+                }
+            }
+            coords.trans.createGhostMapping(ghostNodes);
+            coords.trans.createMPITypes();
+            coords.trans.pullOnce();
+        }
+    }
+
+    void UnstructuredMesh::
+        AdjGlobal2LocalPrimary()
+    {
+        // needs results of BuildGhostPrimary()
+        DNDS_assert(adjPrimaryState == Adj_PointToGlobal);
+
+        auto CellIndexGlobal2Local = [&](DNDS::index &iCellOther)
+        {
+            DNDS::MPI_int rank;
+            DNDS::index val;
+            // if (!cell2cell.trans.pLGlobalMapping->search(iCellOther, rank, val))
+            //     DNDS_assert_info(false, "search failed");
+            // if (rank != mpi.rank)
+            //     iCellOther = -1 - iCellOther;
+            auto result = cell2cell.trans.pLGhostMapping->search_indexAppend(iCellOther, rank, val);
+            if (result)
+                iCellOther = val;
+            else
+                iCellOther = -1 - iCellOther; // mapping to un-found in father-son
+        };
+        auto NodeIndexGlobal2Local = [&](DNDS::index &iNodeOther)
+        {
+            DNDS::MPI_int rank;
+            DNDS::index val;
+            // if (!cell2cell.trans.pLGlobalMapping->search(iCellOther, rank, val))
+            //     DNDS_assert_info(false, "search failed");
+            // if (rank != mpi.rank)
+            //     iCellOther = -1 - iCellOther;
+            auto result = coords.trans.pLGhostMapping->search_indexAppend(iNodeOther, rank, val);
+            if (result)
+                iNodeOther = val;
+            else
+                iNodeOther = -1 - iNodeOther; // mapping to un-found in father-son
+        };
+
+        for (DNDS::index iCell = 0; iCell < cell2cell.Size(); iCell++)
+            for (DNDS::rowsize j = 0; j < cell2cell.RowSize(iCell); j++)
+                CellIndexGlobal2Local(cell2cell(iCell, j));
+
+        for (DNDS::index iBnd = 0; iBnd < bnd2cell.Size(); iBnd++)
+            for (DNDS::rowsize j = 0; j < bnd2cell.RowSize(iBnd); j++)
+                CellIndexGlobal2Local(bnd2cell(iBnd, j)), DNDS_assert(bnd2cell(iBnd, j) >= 0); // must be inside
+
+        for (DNDS::index iCell = 0; iCell < cell2node.Size(); iCell++)
+            for (DNDS::rowsize j = 0; j < cell2node.RowSize(iCell); j++)
+                NodeIndexGlobal2Local(cell2node(iCell, j)), DNDS_assert(cell2node(iCell, j) >= 0);
+
+        for (DNDS::index iBnd = 0; iBnd < bnd2node.Size(); iBnd++)
+            for (DNDS::rowsize j = 0; j < bnd2node.RowSize(iBnd); j++)
+                NodeIndexGlobal2Local(bnd2node(iBnd, j)), DNDS_assert(bnd2node(iBnd, j) >= 0);
+
+        adjPrimaryState = Adj_PointToLocal;
+    }
+
+    void UnstructuredMesh::
+        InterpolateFace()
+    {
+        DNDS_assert(adjPrimaryState == Adj_PointToLocal);
+
+        DNDS_MAKE_SSP(cell2face.father, mpi);
+        DNDS_MAKE_SSP(cell2face.son, mpi);
+        DNDS_MAKE_SSP(face2cell.father, mpi);
+        DNDS_MAKE_SSP(face2cell.son, mpi);
+        DNDS_MAKE_SSP(face2node.father, mpi);
+        DNDS_MAKE_SSP(face2node.son, mpi);
+        DNDS_MAKE_SSP(faceElemInfo.father, ElemInfo::CommType(), ElemInfo::CommMult(), mpi);
+        DNDS_MAKE_SSP(faceElemInfo.son, ElemInfo::CommType(), ElemInfo::CommMult(), mpi);
+
+        cell2face.father->Resize(cell2cell.father->Size()); //!
+        cell2face.son->Resize(cell2cell.son->Size());
+        std::vector<std::vector<DNDS::index>> node2face(coords.Size());
+        std::vector<std::vector<DNDS::index>> face2nodeV;
+        std::vector<std::pair<DNDS::index, DNDS::index>> face2cellV;
+        std::vector<ElemInfo> faceElemInfoV;
+
+        DNDS::index nFaces = 0;
+        for (DNDS::index iCell = 0; iCell < cell2cell.Size(); iCell++)
+        {
+            auto eCell = Elem::Element{cellElemInfo[iCell]->getElemType()};
+            cell2face.ResizeRow(iCell, eCell.GetNumFaces());
+            for (int ic2f = 0; ic2f < eCell.GetNumFaces(); ic2f++)
+            {
+                auto eFace = eCell.ObtainFace(ic2f);
+                std::vector<DNDS::index> faceNodes(eFace.GetNumNodes());
+                eCell.ExtractFaceNodes(ic2f, cell2node[iCell], faceNodes);
+                DNDS::index iFound = -1;
+                std::vector<DNDS::index> faceVerts(faceNodes.begin(), faceNodes.begin() + eFace.GetNumVertices());
+                std::sort(faceVerts.begin(), faceVerts.end());
+                for (auto iV : faceVerts)
+                    if (iFound < 0)
+                        for (auto iFOther : node2face[iV])
+                        {
+                            auto eFaceOther = Elem::Element{faceElemInfoV[iFOther].getElemType()};
+                            if (eFaceOther.type != eFace.type)
+                                continue;
+                            std::vector<DNDS::index> faceVertsOther(
+                                face2nodeV[iFOther].begin(),
+                                face2nodeV[iFOther].begin() + eFace.GetNumVertices());
+                            std::sort(faceVertsOther.begin(), faceVertsOther.end());
+                            if (std::equal(faceVerts.begin(), faceVerts.end(), faceVertsOther.begin(), faceVertsOther.end()))
+                            {
+                                iFound = iFOther;
+                            }
+                        }
+                if (iFound < 0)
+                {
+                    face2nodeV.emplace_back(std::move(faceVerts));
+                    face2cellV.emplace_back(std::make_pair(iCell, DNDS::UnInitIndex));
+                    faceElemInfoV.emplace_back(ElemInfo{eFace.type, 0});
+                    for (auto iV : faceVerts)
+                        node2face[iV].push_back(nFaces);
+                    cell2face(iCell, ic2f) = nFaces;
+                    nFaces++;
+                }
+                else
+                {
+                    DNDS_assert(face2cellV[iFound].second == DNDS::UnInitIndex);
+                    face2cellV[iFound].second = iCell;
+                    cell2face(iCell, ic2f) = iFound;
+                }
+            }
+        }
+        face2cell.father->Resize(nFaces);
+        face2node.father->Resize(nFaces);
+        faceElemInfo.father->Resize(nFaces); //! not considering globally duplicate faces
+        for (DNDS::index iFace = 0; iFace < nFaces; iFace++)
+        {
+            face2node.ResizeRow(iFace, face2nodeV[iFace].size());
+            for (DNDS::rowsize if2n = 0; if2n < face2node.RowSize(iFace); if2n++)
+                face2node(iFace, if2n) = face2nodeV[iFace][if2n];
+            face2cell(iFace, 0) = face2cellV[iFace].first;
+            face2cell(iFace, 1) = face2cellV[iFace].second;
+            faceElemInfo(iFace, 0) = faceElemInfoV[iFace];
+            if (faceElemInfo(iFace, 0).zone <= 0)
+            {                                                           // Assert has enough cell donors
+                if (face2cellV[iFace].first < cell2cell.father->Size()) // other side prime cell
+                    DNDS_assert(face2cellV[iFace].second == DNDS::UnInitIndex);
+            }
+            else // a BC
+                DNDS_assert(face2cellV[iFace].second != DNDS::UnInitIndex);
+        }
+        cell2face.father->Compress();
+        cell2face.son->Compress();
+        face2node.father->Compress(); // son is zero
+
+        DNDS::MPISerialDo(mpi, [&]()
+                          { std::cout << "Rank " << mpi.rank << " : nFace " << face2node.Size() << std::endl; });
+        DNDS::MPISerialDo(mpi, [&]()
+                          { std::cout << "Rank " << mpi.rank << " : nC2C " << cell2cell.father->DataSize() << std::endl; });
     }
 }

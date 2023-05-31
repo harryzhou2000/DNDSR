@@ -1,4 +1,6 @@
 #pragma once
+#ifndef DNDS_ARRAY_HPP
+#define DNDS_ARRAY_HPP
 
 #include <vector>
 #include <iostream>
@@ -521,3 +523,5 @@ namespace DNDS
     };
 
 }
+
+#endif

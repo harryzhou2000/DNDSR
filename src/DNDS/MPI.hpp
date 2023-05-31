@@ -17,6 +17,8 @@ namespace DNDS
     typedef int MPI_int;
     typedef MPI_Aint MPI_index;
 #define MAX_MPI_int INT32_MAX
+#define MAX_MPI_Aint INT64_MAX 
+    static_assert(sizeof(MPI_Aint) == 8);
 
     typedef std::vector<MPI_int> tMPI_sizeVec;
     typedef tMPI_sizeVec tMPI_intVec;
@@ -216,7 +218,7 @@ namespace DNDS
             DNDS_assert(buf.size() <= MAX_MPI_int);
             return buf.size();
         }
-        void claim(MPI_int cs, int reportRank = 0)
+        void claim(MPI_Aint cs, int reportRank = 0)
         {
             if (buf.size() - claimed < static_cast<size_type>(cs))
             {

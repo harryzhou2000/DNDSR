@@ -1018,3 +1018,39 @@ namespace Geom::Elem
 
     Eigen::Matrix<t_real, 3, Eigen::Dynamic> GetStandardCoord(ElemType t);
 }
+
+namespace Geom::Elem
+{
+    inline bool cellsAreFaceConnected(
+        const std::vector<DNDS::index> &nodes_A,
+        const std::vector<DNDS::index> &nodes_B,
+        Element eA,
+        Element eB)
+    {
+        DNDS_assert(nodes_A.size() >= eA.GetNumNodes());
+        DNDS_assert(nodes_B.size() >= eB.GetNumVertices());
+        std::vector<DNDS::index> nodes_B_Vert{nodes_B.begin(), nodes_B.begin() + eB.GetNumVertices()};
+        std::sort(nodes_B_Vert.begin(), nodes_B_Vert.end());
+        for (int iF = 0; iF < eA.GetNumFaces(); iF++)
+        {
+            auto eF = eA.ObtainFace(iF);
+            std::vector<DNDS::index> fNodes(eF.GetNumNodes());
+            eA.ExtractFaceNodes(iF, nodes_A, fNodes);
+            std::sort(fNodes.begin(), fNodes.begin() + eF.GetNumVertices());
+            if (std::includes(
+                    nodes_B_Vert.begin(), nodes_B_Vert.end(),
+                    fNodes.begin(), fNodes.begin() + eF.GetNumVertices()))
+                return true;
+        }
+        return false;
+    }
+
+    inline bool cellsAreFaceConnected(
+        const std::vector<DNDS::index> &verts_A,
+        const std::vector<DNDS::index> &nodes_B)
+    {
+        
+        return false;
+    }
+
+}

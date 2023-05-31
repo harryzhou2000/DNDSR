@@ -4,6 +4,7 @@
 #include "DNDS/ArrayDerived/ArrayAdjacency.hpp"
 #include "DNDS/ArrayDerived/ArrayEigenVector.hpp"
 #include "BoundaryCondition.hpp"
+#include "DNDS/ArrayPair.hpp"
 
 namespace Geom
 {
@@ -50,9 +51,16 @@ namespace Geom
     using tIndPair = DNDS::ArrayPair<DNDS::ArrayIndex>;
     using tInd = decltype(tIndPair::father);
 
+    enum MeshAdjState
+    {
+        Adj_Unknown = 0,
+        Adj_PointToLocal,
+        Adj_PointToGlobal,
+    };
+
     struct UnstructuredMesh
     {
-
+        MeshAdjState adjPrimaryState{Adj_Unknown};
         /// reader
         tCoordPair coords;
         tAdjPair cell2node;
@@ -62,13 +70,12 @@ namespace Geom
         tElemInfoArrayPair cellElemInfo;
         tElemInfoArrayPair bndElemInfo;
 
-
-
         /// interpolated
-
+        // *! currently assume all these are Adj_PointToLocal
         tAdjPair cell2face;
         tAdjPair face2node;
         tAdj2Pair face2cell;
+        tElemInfoArrayPair faceElemInfo;
 
         // tAdj1Pair bndFaces; // no comm needed for now
 
@@ -77,6 +84,20 @@ namespace Geom
 
         UnstructuredMesh(const DNDS::MPIInfo &n_mpi, int n_dim)
             : mpi(n_mpi), dim(n_dim) {}
+        /**
+         * @brief building ghost (son) from primary (currently only cell2cell)
+         * @details 
+         * the face and bnd parts are currently only local (no comm available)
+         * only builds comm data of cell and node
+         * cells: current-father and cell2cell neighbor (face or node neighbor)
+         * nodes: needed by all cells
+         * faces/bnds: needed by all father cells
+         * 
+         */
+        void BuildGhostPrimary();
+        void AdjGlobal2LocalPrimary();
+
+        void InterpolateFace();
     };
 
     using tFDataFieldName = std::function<std::string(int)>;

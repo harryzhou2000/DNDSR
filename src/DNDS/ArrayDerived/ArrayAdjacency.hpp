@@ -1,4 +1,6 @@
 #pragma once
+#ifndef DNDS_ARRAY_PAIR_HPP
+#define DNDS_ARRAY_PAIR_HPP
 
 #include "../ArrayTransformer.hpp"
 
@@ -13,6 +15,12 @@ namespace DNDS
         AdjacencyRow(index *ptr, rowsize siz) : __p_indices(ptr), __Row_size(siz) {} // default actually
 
         index &operator[](rowsize j)
+        {
+            DNDS_assert(j >= 0 && j < __Row_size);
+            return __p_indices[j];
+        }
+
+        index operator[](rowsize j) const
         {
             DNDS_assert(j >= 0 && j < __Row_size);
             return __p_indices[j];
@@ -42,9 +50,7 @@ namespace DNDS
         index *rowPtr(index i) { return t_base::operator[](i); }
     };
 
-    template <rowsize _row_size = 1, rowsize _row_max = _row_size, rowsize _align = NoAlign>
-    using ArrayAdjacencyPair = ArrayPair<ArrayAdjacency<_row_size, _row_max, _align>>;
-
+    
 }
 
 namespace DNDS
@@ -64,3 +70,4 @@ namespace DNDS
         index *rowPtr(index i) { return t_base::operator[](i); }
     };
 }
+#endif

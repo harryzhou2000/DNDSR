@@ -152,8 +152,8 @@ namespace DNDS
         MPIReqHolder PullReqVec;
         tMPI_statVec PushStatVec;
         tMPI_statVec PullStatVec;
-        MPI_int pushSendSize;
-        MPI_int pullSendSize;
+        MPI_Aint pushSendSize;
+        MPI_Aint pullSendSize;
 
         void setFatherSon(const t_pArray &n_father, const t_pArray &n_son)
         {
@@ -167,6 +167,7 @@ namespace DNDS
             DNDS_assert_info(father->getTypeMult() > 0, "MPI datatype multiplication invalid");
             pLGhostMapping.reset();
             pLGlobalMapping.reset();
+            pLGlobalMapping = father->pLGlobalMapping;
         }
 
         template <class TRArrayTrans>
@@ -175,7 +176,7 @@ namespace DNDS
             // DNDS_assert(father && Rarray.father); // Rarray's father is not visible...
             // DNDS_assert(father->obtainTotalSize() == Rarray.father->obtainTotalSize());
             DNDS_assert(RArrayTrans.pLGhostMapping && RArrayTrans.pLGlobalMapping);
-            DNDS_assert(RArrayTrans.father->size() == father->size());
+            DNDS_assert(RArrayTrans.father->Size() == father->Size());
             pLGhostMapping = RArrayTrans.pLGhostMapping;
             pLGlobalMapping = RArrayTrans.pLGlobalMapping;
             father->pLGlobalMapping = RArrayTrans.pLGlobalMapping;
@@ -184,6 +185,7 @@ namespace DNDS
         void createFatherGlobalMapping()
         {
             father->createGlobalMapping();
+            pLGlobalMapping = father->pLGlobalMapping;
         }
 
         /** @brief create ghost by pulling data
@@ -448,12 +450,12 @@ namespace DNDS
 
                 // cascade from father
 
-                // buffer calculate
-                MPI_int csize;
-                MPI_Pack_size(1, dtypeInfo.second, mpi.comm, &csize);
-                csize += MPI_BSEND_OVERHEAD;
-                DNDS_assert(MAX_MPI_int - pushSendSize >= csize && csize > 0);
-                pushSendSize += csize * 2;
+                // // buffer calculate //!deprecated because of size limit
+                // MPI_Aint csize;
+                // MPI_Pack_external_size(1, dtypeInfo.second, mpi.comm, &csize);
+                // csize += MPI_BSEND_OVERHEAD;
+                // DNDS_assert(MAX_MPI_Aint - pushSendSize >= csize && csize > 0);
+                // pushSendSize += csize * 2;
             }
             for (auto ip = 0; ip < pPushTypeVec->size(); ip++)
             {
@@ -509,12 +511,12 @@ namespace DNDS
                 // std::cout << *(real *)(data.data() + 8 * 1) << std::endl;
                 // cascade from father
 
-                // buffer calculate
-                MPI_int csize;
-                MPI_Pack_size(1, dtypeInfo.second, mpi.comm, &csize);
-                csize += MPI_BSEND_OVERHEAD * 8;
-                DNDS_assert(MAX_MPI_int - pullSendSize >= csize && csize > 0);
-                pullSendSize += csize * 2;
+                // // buffer calculate //!deprecated because of size limit
+                // MPI_Aint csize;
+                // MPI_Pack_external_size(1, dtypeInfo.second, mpi.comm, &csize);
+                // csize += MPI_BSEND_OVERHEAD * 8;
+                // DNDS_assert(MAX_MPI_Aint - pullSendSize >= csize && csize > 0);
+                // pullSendSize += csize * 2;
             }
 #ifdef ARRAY_COMM_USE_BUFFERED_SEND
             // MPIBufferHandler::Instance().claim(pullSendSize, mpi.rank);
@@ -615,38 +617,5 @@ namespace DNDS
         using Type = ArrayTransformer<typename TArray::value_type, TArray::rs, TArray::rm, TArray::al>;
     };
 
-    template <class TArray = ParArray<real, 1>>
-    struct ArrayPair
-    {
-        std::shared_ptr<TArray> father;
-        std::shared_ptr<TArray> son;
-        using TTrans = typename ArrayTransformerType<TArray>::Type;
-        TTrans trans;
-        auto operator[](index i)
-        {
-            if (i >= 0 && i < father->Size())
-                return father->operator[](i);
-            else
-                return son->operator[](i - father->Size());
-        }
-
-        auto operator()(index i, rowsize j)
-        {
-            if (i >= 0 && i < father->Size())
-                return father->operator()(i, j);
-            else
-                return son->operator()(i - father->Size(), j);
-        }
-
-        index Size()
-        {
-            return father->Size() + son->Size();
-        }
-
-        void TransAttach()
-        {
-            DNDS_assert(bool(father) && bool(son));
-            trans.setFatherSon(father, son);
-        }
-    };
+    
 }

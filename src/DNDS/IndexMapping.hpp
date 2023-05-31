@@ -146,7 +146,15 @@ namespace DNDS
             : mainOffset(nmainOffset),
               mainSize(nmainSize)
         {
+            ///*make sorted and unique!
+            std::sort(pullingIndexGlobal.begin(), pullingIndexGlobal.end());
+            auto last = std::unique(pullingIndexGlobal.begin(), pullingIndexGlobal.end());
+            pullingIndexGlobal.erase(last, pullingIndexGlobal.end());
+            pullingIndexGlobal.shrink_to_fit();
+            ///
+
             ghostSizes.assign(mpi.size, 0);
+
             for (auto i : pullingIndexGlobal)
             {
                 MPI_int rank = -1;
@@ -250,9 +258,6 @@ namespace DNDS
         void sort()
         {
             std::sort(ghostIndex.begin(), ghostIndex.end());
-            auto last = std::unique(ghostIndex.begin(), ghostIndex.end());
-            ghostIndex.erase(last, ghostIndex.end());
-            ghostIndex.shrink_to_fit();
         };
 
         index &ghostAt(MPI_int rank, index ighost)
@@ -314,7 +319,7 @@ namespace DNDS
             return false;
         }
 
-        /// \brief returns rank and place in ghost array, rank==-1 means main data
+        /// \brief returns rank and place in ghost array, rank==-1 means main data; 
         /// returned val is used for pair indexing
         bool search_indexAppend(index globalQuery, MPI_int &rank, index &val) const
         {
