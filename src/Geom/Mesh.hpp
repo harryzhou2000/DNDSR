@@ -11,8 +11,8 @@ namespace Geom
     struct ElemInfo
     {
         t_index type = static_cast<t_index>(Elem::UnknownElem);
-        /// @brief positive for Boundary Elems, negative for internal Elems
-        t_index zone = INTERNAL_ZONE; 
+        /// @brief positive for BVnum, 0 for internal Elems, Negative for ?
+        t_index zone = INTERNAL_ZONE;
 
         Elem::ElemType getElemType()
         {
@@ -73,9 +73,42 @@ namespace Geom
     {
         DNDS::ssp<UnstructuredMesh> mesh;
 
-        tCoord coordSerial;
-        tAdj cell2nodeSerial;
-        tAdj bnd2nodeSerial;
+        tCoord coordSerial;                // created through reading
+        tAdj cell2nodeSerial;              // created through reading
+        tAdj bnd2nodeSerial;               // created through reading
+        tElemInfoArray cellElemInfoSerial; // created through reading
+        tElemInfoArray bndElemInfoSerial;  // created through reading
+        tAdj2 bnd2cellSerial;              // created through reading
+        /***************************************************************/
+        // Current Method: R/W don't manage actually used interpolation,
+        // but manually get cell2cell or node2node
+        // because: currently only support node based or cell based
+        /***************************************************************/
+
+        // tAdj face2nodeSerial;    // created through InterpolateTopology
+        // tAdj2 face2cellSerial;   // created through InterpolateTopology
+        // tAdj cell2faceSerial;    // created through InterpolateTopology
+        // tElemInfoArray faceElemInfoSerial; // created through InterpolateTopology
+
+        tAdj cell2cellSerial; // optionally created with GetCell2Cell()
+        tAdj node2nodeSerial; // optionally created with GetNode2Node()
+
+        tAdj node2cellSerial; // not used for now
+        tAdj node2faceSerial; // not used for now
+        tAdj node2edgeSerial; // not used for now
+
+        tAdj cell2faceSerial; // not used for now
+        tAdj cell2edgeSerial; // not used for now
+
+        tAdj face2nodeSerial; // not used for now
+        tAdj face2faceSerial; // not used for now
+        tAdj face2edgeSerial; // not used for now
+        tAdj face2cellSerial; // not used for now
+
+        tAdj edge2nodeSerial; // not used for now
+        tAdj edge2cellSerial; // not used for now
+        tAdj edge2edgeSerial; // not used for now
+        tAdj edge2faceSerial; // not used for now
 
         DNDS::MPI_int mRank;
 
@@ -94,6 +127,17 @@ namespace Geom
         /// @todo //TODO Add some multi thread here!
         /// @param fName file name of .cgns file
         void ReadFromCGNSSerial(const std::string &fName, const t_FBCName_2_ID &FBCName_2_ID = FBC_Name_2_ID_Default);
+
+        // void InterpolateTopology();
+
+        
+        /**
+         * \brief build cell2cell topology, with node-neighbors included
+         * \todo add support for only face-neighbors
+        */
+        void BuildCell2Cell(); // For cell based purpose
+
+        void BuildNode2Node(); // For node based purpose //!not yet implemented
 
         // void WriteToCGNSSerial(const std::string &fName);
 

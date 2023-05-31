@@ -17,6 +17,13 @@ namespace DNDS
             DNDS_assert(j >= 0 && j < __Row_size);
             return __p_indices[j];
         }
+
+        operator std::vector<index>() const // copies to a new std::vector<index>
+        {
+            return std::vector<index>(__p_indices, __p_indices + __Row_size);
+        }
+
+        index *begin() { return __p_indices; }
     };
 
     template <rowsize _row_size = 1, rowsize _row_max = _row_size, rowsize _align = NoAlign>

@@ -39,16 +39,36 @@ namespace DNDS
         void setMPI(const MPIInfo &n_mpi)
         {
             mpi = n_mpi;
+            AssertDataType();
+        }
+
+        void setDataType(MPI_Datatype n_dType, MPI_int n_TypeMult)
+        {
+            dataType = n_dType;
+            typeMult = n_TypeMult;
+        }
+
+        ParArray()
+        {
         }
 
         ParArray(const MPIInfo &n_mpi) : mpi(n_mpi)
         {
-            DNDS_assert(dataType != MPI_DATATYPE_NULL);
+            AssertDataType();
         }
         ParArray(MPI_Datatype n_dType, MPI_int n_TypeMult, const MPIInfo &n_mpi)
             : mpi(n_mpi), dataType(n_dType), typeMult(n_TypeMult)
         {
+            AssertDataType();
+        }
+
+        void AssertDataType()
+        {
             DNDS_assert(dataType != MPI_DATATYPE_NULL);
+            MPI_Aint lb;
+            MPI_Aint extent;
+            MPI_Type_get_extent(dataType, &lb, &extent);
+            DNDS_assert(lb == 0 && extent * typeMult == sizeof(T));
         }
 
         /**

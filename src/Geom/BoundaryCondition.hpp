@@ -26,6 +26,7 @@ namespace Geom
     static const t_index BC_TYPE_DEFAULT_WALL = 2;
     static const t_index BC_TYPE_DEFAULT_FAR = 3;
     static const t_index BC_TYPE_DEFAULT_WALL_INVIS = 4;
+    static const t_index BC_TYPE_DEFAULT_SPECIAL_DMR_FAR = 101;
 
     using t_FBCName_2_ID = std::function<t_index(const std::string &)>;
 
@@ -37,6 +38,8 @@ namespace Geom
             return BC_TYPE_DEFAULT_FAR;
         if (name == "WALL_INVIS" || name == "bc-3")
             return BC_TYPE_DEFAULT_WALL_INVIS;
+        if (name == "bc-DMRFar")
+            return BC_TYPE_DEFAULT_SPECIAL_DMR_FAR;
         return BC_TYPE_NULL;
     };
 

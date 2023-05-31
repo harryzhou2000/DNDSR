@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <string>
 #include <map>
+#include <set>
 
 namespace Geom
 {
@@ -49,7 +50,15 @@ namespace Geom
         ReadFromCGNSSerial(const std::string &fName, const t_FBCName_2_ID &FBCName_2_ID)
     {
         int cgErr = CG_OK;
-        if (mRank != mesh->mpi.rank)
+
+        DNDS_MAKE_SSP(cell2nodeSerial, mesh->mpi);
+        DNDS_MAKE_SSP(bnd2nodeSerial, mesh->mpi);
+        DNDS_MAKE_SSP(coordSerial, mesh->mpi);
+        DNDS_MAKE_SSP(cellElemInfoSerial, ElemInfo::CommType(), ElemInfo::CommMult(), mesh->mpi);
+        DNDS_MAKE_SSP(bndElemInfoSerial, ElemInfo::CommType(), ElemInfo::CommMult(), mesh->mpi);
+        DNDS_MAKE_SSP(bnd2cellSerial, mesh->mpi);
+
+        if (mRank != mesh->mpi.rank) //! parallel done!!! now serial!!!
             return;
 
         int cgns_file = -1;
@@ -413,7 +422,6 @@ namespace Geom
         }
         DNDS::log() << "CGNS === Assembled Zones have NNodes " << cTop << std::endl;
 
-        coordSerial = std::make_shared<decltype(coordSerial)::element_type>();
         coordSerial->Resize(cTop);
         for (DNDS::index i = 0; i < coordSerial->Size(); i++)
             coordSerial->operator[](i).setConstant(DNDS::UnInitReal);
@@ -445,10 +453,11 @@ namespace Geom
                     nBndElem++;
             }
         }
-        cell2nodeSerial = std::make_shared<decltype(cell2nodeSerial)::element_type>();
+
         cell2nodeSerial->Resize(nVolElem);
-        bnd2nodeSerial = std::make_shared<decltype(bnd2nodeSerial)::element_type>();
         bnd2nodeSerial->Resize(nBndElem);
+        cellElemInfoSerial->Resize(nVolElem);
+        bndElemInfoSerial->Resize(nBndElem);
         nVolElem = 0;
         nBndElem = 0;
         for (int iGZ = 0; iGZ < ZoneNodeSizes.size(); iGZ++)
@@ -461,6 +470,7 @@ namespace Geom
                     cell2nodeSerial->ResizeRow(nVolElem, ZoneElems[iGZ]->RowSize(iElem));
                     for (DNDS::rowsize j = 0; j < ZoneElems[iGZ]->RowSize(iElem); j++)
                         cell2nodeSerial->operator()(nVolElem, j) = ZoneElems[iGZ]->operator()(iElem, j);
+                    cellElemInfoSerial->operator()(nVolElem, 0) = ZoneElemInfos[iGZ]->operator()(iElem, 0);
                     nVolElem++;
                 }
                 if (Elem.GetDim() == mesh->dim - 1 && ZoneElemInfos[iGZ]->operator()(iElem, 0).zone > 0)
@@ -468,6 +478,7 @@ namespace Geom
                     bnd2nodeSerial->ResizeRow(nBndElem, ZoneElems[iGZ]->RowSize(iElem));
                     for (DNDS::rowsize j = 0; j < ZoneElems[iGZ]->RowSize(iElem); j++)
                         bnd2nodeSerial->operator()(nBndElem, j) = ZoneElems[iGZ]->operator()(iElem, j);
+                    bndElemInfoSerial->operator()(nBndElem, 0) = ZoneElemInfos[iGZ]->operator()(iElem, 0);
                     nBndElem++;
                 }
             }
@@ -478,10 +489,116 @@ namespace Geom
 
         bnd2nodeSerial->Compress();
         cell2nodeSerial->Compress();
+        /***************************************************************************/
 
-        // TODO
+        /***************************************************************************/
+        // Get partial inverse info: bnd2cell
+
+        bnd2cellSerial->Resize(bnd2nodeSerial->Size());
+        for (DNDS::index iB = 0; iB < bnd2cellSerial->Size(); iB++)
+            (*bnd2cellSerial)[iB][0] = (*bnd2cellSerial)[iB][1] = DNDS::UnInitIndex;
+        // get node 2 bnd (for linear complexity)
+        std::vector<std::vector<DNDS::index>> node2bnd(coordSerial->Size());
+        std::vector<DNDS::rowsize> node2bndSiz(coordSerial->Size(), 0);
+        for (DNDS::index iBFace = 0; iBFace < bnd2nodeSerial->Size(); iBFace++)
+            for (DNDS::rowsize iN = 0; iN < Elem::Element{(*bndElemInfoSerial)(iBFace, 0).getElemType()}.GetNumVertices(); iN++)
+                node2bndSiz[(*bnd2nodeSerial)(iBFace, iN)]++;
+        for (DNDS::index iNode = 0; iNode < node2bnd.size(); iNode++)
+            node2bnd[iNode].reserve(node2bndSiz[iNode]);
+        for (DNDS::index iBFace = 0; iBFace < bnd2nodeSerial->Size(); iBFace++)
+            for (DNDS::rowsize iN = 0; iN < Elem::Element{(*bndElemInfoSerial)(iBFace, 0).getElemType()}.GetNumVertices(); iN++)
+                node2bnd[(*bnd2nodeSerial)(iBFace, iN)].push_back(iBFace); // Note that only primary vertices are included for computational cost
+
+        // search cell 2 bnd
+        for (DNDS::index iCell = 0; iCell < cell2nodeSerial->Size(); iCell++)
+        {
+            auto CellElem = Elem::Element{(*cellElemInfoSerial)[iCell]->getElemType()};
+            std::vector<DNDS::index> cell2nodeRow{(*cell2nodeSerial)[iCell].begin(), (*cell2nodeSerial)[iCell].begin() + CellElem.GetNumVertices()};
+            std::sort(cell2nodeRow.begin(), cell2nodeRow.end());
+            // Note that only primary vertices are included for computational cost
+            for (auto iNode : cell2nodeRow)
+            {
+                for (auto iB : node2bnd[iNode])
+                {
+                    auto BndElem = Elem::Element{(*bndElemInfoSerial)(iB, 0).getElemType()};
+                    std::vector<DNDS::index> bnd2nodeRow{(*bnd2nodeSerial)[iB].begin(), (*bnd2nodeSerial)[iB].begin() + BndElem.GetNumVertices()};
+                    std::sort(bnd2nodeRow.begin(), bnd2nodeRow.end());
+                    if (std::includes(cell2nodeRow.begin(), cell2nodeRow.end(), bnd2nodeRow.begin(), bnd2nodeRow.end()))
+                    {
+                        // found as bnd
+                        DNDS_assert_info(
+                            (*bnd2cellSerial)[iB][0] == DNDS::UnInitIndex || (*bnd2cellSerial)[iB][0] == iCell, "bnd2cell not untouched!");
+                        // DNDS_assert((*bnd2cellSerial)[iB][0] == DNDS::UnInitIndex);
+                        (*bnd2cellSerial)[iB][0] = iCell;
+                    }
+                }
+            }
+        }
+        for (DNDS::index iB = 0; iB < bnd2cellSerial->Size(); iB++)
+            DNDS_assert((*bnd2cellSerial)[iB][0] != DNDS::UnInitIndex); // check all bnds have a cell
 
         cg_close(cgns_file);
+
         std::cout << "CGNS === Serial Read Done" << std::endl;
+        // Memory with DM240-120 here: 18G ; after deconstruction done: 7.5G
+    }
+
+    // void UnstructuredMeshSerialRW::InterpolateTopology() //!could be useful for parallel?
+    // {
+    //     // count node 2 face
+    //     DNDS_MAKE_SSP(cell2faceSerial, mesh->mpi);
+    //     DNDS_MAKE_SSP(face2cellSerial, mesh->mpi);
+    //     DNDS_MAKE_SSP(face2nodeSerial, mesh->mpi);
+    //     DNDS_MAKE_SSP(faceElemInfoSerial, ElemInfo::CommType(), ElemInfo::CommMult(), mesh->mpi);
+
+    //     if (mRank != mesh->mpi.rank)
+    //         return;
+
+    //     for (DNDS::index iCell = 0; iCell <cell2nodeSerial->Size(); iCell++)
+    //     {
+
+    //         // TODO
+    //     }
+    // }
+
+    void UnstructuredMeshSerialRW::BuildCell2Cell()
+    {
+        DNDS_MAKE_SSP(cell2cellSerial, mesh->mpi);
+        // if (mRank != mesh->mpi.rank)
+        //     return;
+
+        /// TODO: abstract these: invert cone (like node 2 cell -> cell 2 node) (also support operating on pair)
+        /**********************************************************************************************************************/
+        // getting node2cell // only primary vertices
+        std::vector<std::vector<DNDS::index>> node2cell(coordSerial->Size());
+        std::vector<DNDS::rowsize> node2cellSz(coordSerial->Size(), 0);
+        for (DNDS::index iCell = 0; iCell < cell2nodeSerial->Size(); iCell++)
+            for (DNDS::rowsize iN = 0; iN < Elem::Element{(*cellElemInfoSerial)(iCell, 0).getElemType()}.GetNumVertices(); iN++)
+                node2cellSz[(*cell2nodeSerial)(iCell, iN)]++;
+        for (DNDS::index iNode = 0; iNode < node2cell.size(); iNode++)
+            node2cell[iNode].reserve(node2cellSz[iNode]);
+        for (DNDS::index iCell = 0; iCell < cell2nodeSerial->Size(); iCell++)
+            for (DNDS::rowsize iN = 0; iN < Elem::Element{(*cellElemInfoSerial)(iCell, 0).getElemType()}.GetNumVertices(); iN++)
+                node2cell[(*cell2nodeSerial)(iCell, iN)].push_back(iCell);
+        node2cellSz.clear();
+        /**********************************************************************************************************************/
+
+        cell2cellSerial->Resize(cell2nodeSerial->Size());
+        for (DNDS::index iCell = 0; iCell < cell2nodeSerial->Size(); iCell++)
+        {
+            auto CellElem = Elem::Element{(*cellElemInfoSerial)[iCell]->getElemType()};
+            std::vector<DNDS::index> cell2nodeRow{(*cell2nodeSerial)[iCell].begin(), (*cell2nodeSerial)[iCell].begin() + CellElem.GetNumVertices()};
+            // only primary vertices
+            std::set<DNDS::index> c_neighbors; // could optimize?
+            for (auto iNode : cell2nodeRow)
+                for (auto iCellOther : node2cell[iNode])
+                    c_neighbors.insert(iCellOther);
+            if (!c_neighbors.erase(iCell))
+                DNDS_assert_info(false, "neighbors should include myself now");
+            cell2cellSerial->ResizeRow(iCell, c_neighbors.size());
+            DNDS::rowsize ic2c = 0;
+            for (auto iCellOther : c_neighbors)
+                (*cell2cellSerial)(iCell, ic2c++) = iCellOther;
+        }
     }
 }

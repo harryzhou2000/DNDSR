@@ -9,7 +9,8 @@ set(CMAKE_CXX_STANDARD 17)
 
 
 set(DNDS_SUPRESS_INSERT_CHECK ON CACHE BOOL "close the inserted outputs")
-set(DNDS_USE_NDEBUG_MACRO OFF CACHE BOOL "use DEBUG macro for eigen output and cassert etc") # performance impact is small so off by default(without -DNDEBUG)
+set(DNDS_USE_NDEBUG_MACRO OFF CACHE BOOL "use NDEBUG macro for eigen output and cassert etc") # performance impact is small so off by default(without -DNDEBUG)
+set(DNDS_USE_PARALLEL_MACRO OFF CACHE BOOL "use PARALLEL macro for eigen output and cassert etc")
 
 if(UNIX OR MINGW)
     set(CMAKE_CXX_COMPILER mpicxx CACHE FILEPATH "compiler with your MPI wrapping")
@@ -85,7 +86,22 @@ endif()
 set (EXTERNAL_LIBS "")
 
 if(UNIX OR MINGW)
-    set(EXTERNAL_LIBS dl z m stdc++)
+    set(EXTERNAL_LIBS dl z pthread)
+    if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang")
+        # add_compile_options(-fopenmp)
+        set(CMAKE_CXX_FLAGS ${CMAKE_CXX_FLAGS} "-fopenmp")
+        if (DNDS_USE_PARALLEL_MACRO)
+            # add_compile_definitions(_GLIBCXX_PARALLEL)
+            # doesn't seem available
+        endif()
+    endif()
+    if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
+        # add_compile_options(-fopenmp)
+        set(CMAKE_CXX_FLAGS ${CMAKE_CXX_FLAGS} "-fopenmp")
+        if (DNDS_USE_PARALLEL_MACRO)
+            add_compile_definitions(_GLIBCXX_PARALLEL)
+        endif()
+    endif()
 else()
     message(FATAL_ERROR "NOT YET IMPLEMENTED HERE")
 endif()
@@ -116,6 +132,9 @@ endif()
 if (DNDS_USE_NDEBUG_MACRO)
     add_compile_definitions(NDEBUG)
 endif()
+# if (DNDS_USE_PARALLEL_MACRO)
+#     add_compile_definitions(PARALLEL)
+# endif()
 
 message(STATUS "EXTERNAL_LIBS ${EXTERNAL_LIBS}")
 message(STATUS "EXTERNAL_INCLUDES ${EXTERNAL_INCLUDES}")
@@ -130,6 +149,7 @@ ${DNDS_INCLUDES})
 set(TESTS_EXTERNAL
 cgns_APITest
 eigen_Test
+STL_Test
 )
 
 set(TESTS_DNDS

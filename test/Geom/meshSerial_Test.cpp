@@ -15,10 +15,14 @@ void testCGNS()
     mpi.setWorld();
     char buf[512];
     std::cout << getcwd(buf, 512) << std::endl;
-    auto mesh = std::make_shared<Geom::UnstructuredMesh>(mpi, 3);
+    auto mesh = std::make_shared<Geom::UnstructuredMesh>(mpi, 2);
     auto reader = Geom::UnstructuredMeshSerialRW(mesh, 0);
     // "../data/mesh/SC20714_MixedA.cgns"
-    reader.ReadFromCGNSSerial("../data/mesh/Ball.cgns");
+    // "../data/mesh/UniformDM240_E120.cgns"
+    reader.ReadFromCGNSSerial("../data/mesh/SC20714_MixedA.cgns");
+    reader.BuildCell2Cell();
+    // char c;
+    // std::cin >> c;
 }
 
 int main(int argc, char *argv[])

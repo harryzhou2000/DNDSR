@@ -79,8 +79,6 @@ namespace DNDS
 
     static const char *outputDelim = "\t";
 
-    template <typename T>
-    using ssp = std::shared_ptr<T>;
     typedef std::vector<rowsize> t_RowsizeVec;
     typedef std::vector<index> t_IndexVec;
     typedef std::shared_ptr<t_IndexVec> t_pIndexVec;
@@ -90,6 +88,7 @@ namespace DNDS
     const index indexMin = INT64_MIN;
 
     const real UnInitReal = std::acos(-1) * 1e299 * std::sqrt(-1.0);
+    const index UnInitIndex = INT64_MIN;
 
     inline constexpr bool IsUnInitReal(real v)
     {
@@ -104,6 +103,10 @@ namespace DNDS
     const real pi = std::acos(-1);
 
     typedef Eigen::Matrix<real, -1, -1, Eigen::RowMajor> tDiFj;
+
+    template <typename T>
+    using ssp = std::shared_ptr<T>;
+#define DNDS_MAKE_SSP(ssp, ...) (ssp = std::make_shared<decltype(ssp)::element_type>(__VA_ARGS__))
 
 } // namespace DNDS
 
