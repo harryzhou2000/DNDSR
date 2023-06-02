@@ -2,7 +2,7 @@
 
 #include "Elements.hpp"
 
-namespace Geom::Elem
+namespace DNDS::Geom::Elem
 {
     static const t_index INT_SCHEME_Line_1 = 1; // O1
     static const t_index INT_SCHEME_Line_2 = 2; // O3
@@ -635,7 +635,7 @@ namespace Geom::Elem
 
 }
 
-namespace Geom::Elem
+namespace DNDS::Geom::Elem
 {
     class SummationNoOp
     {

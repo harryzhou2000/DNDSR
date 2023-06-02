@@ -6,7 +6,7 @@
 #include "BoundaryCondition.hpp"
 #include "DNDS/ArrayPair.hpp"
 
-namespace Geom
+namespace DNDS::Geom
 {
     static const t_index INTERNAL_ZONE = -1;
     struct ElemInfo
@@ -98,6 +98,7 @@ namespace Geom
         void AdjGlobal2LocalPrimary();
 
         void InterpolateFace();
+        void AssertOnFaces();
     };
 
     using tFDataFieldName = std::function<std::string(int)>;

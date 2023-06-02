@@ -1,7 +1,7 @@
 #pragma once
 #include "DNDS/Defines.hpp"
 
-namespace Geom
+namespace DNDS::Geom
 {
     using t_index = int32_t;
     const t_index invalid_index = INT32_MAX;
@@ -13,7 +13,7 @@ namespace Geom
     static_assert(std::is_signed_v<t_index>);
 }
 
-namespace Geom
+namespace DNDS::Geom
 {
     /**
      * @brief get normal vector from facial jacobian

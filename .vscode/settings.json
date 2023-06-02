@@ -9,6 +9,7 @@
         "external\\parmetis\\include",
         "external\\TECIO\\include",
         "external\\rapidjson\\include",
+        "external\\nlohmann",
         "src"
     ],
     "files.associations": {

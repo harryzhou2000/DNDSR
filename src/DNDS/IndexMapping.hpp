@@ -319,7 +319,7 @@ namespace DNDS
             return false;
         }
 
-        /// \brief returns rank and place in ghost array, rank==-1 means main data; 
+        /// \brief returns rank and place in ghost array, rank==-1 means main data;
         /// returned val is used for pair indexing
         bool search_indexAppend(index globalQuery, MPI_int &rank, index &val) const
         {

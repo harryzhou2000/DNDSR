@@ -16,8 +16,8 @@ void testCGNS()
     // DNDS::Debug::MPIDebugHold(mpi);
     char buf[512];
     std::cout << getcwd(buf, 512) << std::endl;
-    auto mesh = std::make_shared<Geom::UnstructuredMesh>(mpi, 3);
-    auto reader = Geom::UnstructuredMeshSerialRW(mesh, 0);
+    auto mesh = std::make_shared<DNDS::Geom::UnstructuredMesh>(mpi, 3);
+    auto reader = DNDS::Geom::UnstructuredMeshSerialRW(mesh, 0);
     // "../data/mesh/FourTris_V1.pw.cgns"
     // "../data/mesh/SC20714_MixedA.cgns"
     // "../data/mesh/UniformDM240_E120.cgns"
@@ -30,6 +30,7 @@ void testCGNS()
     mesh->BuildGhostPrimary();
     mesh->AdjGlobal2LocalPrimary();
     mesh->InterpolateFace();
+    mesh->AssertOnFaces();
 
     reader.PrintSerialPartPltBinaryDataArray(
         "../data/out/debug",

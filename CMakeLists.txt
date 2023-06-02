@@ -77,6 +77,9 @@ if(UNIX)
         "${PROJECT_SOURCE_DIR}/external/eigen-3.4.0" 
         "${PROJECT_SOURCE_DIR}/external/eigen" 
         NO_DEFAULT_PATH)
+    find_path(EXTERNAL_INCLUDE_JSON json.hpp PATHS 
+        "${PROJECT_SOURCE_DIR}/external/nlohmann" 
+        NO_DEFAULT_PATH)
     # find_path(EXTERNAL_INCLUDE_RAPIDJSON rapidjson 
     #     PATHS 
     #     "${PROJECT_SOURCE_DIR}/external/rapidjson/include" 
@@ -124,6 +127,7 @@ set(EXTERNAL_INCLUDES
     ${EXTERNAL_INCLUDE_PARMETIS}
     # ${EXTERNAL_INCLUDE_TECIO}
     ${EXTERNAL_INCLUDE_EIGEN}
+    ${EXTERNAL_INCLUDE_JSON}
     # ${EXTERNAL_INCLUDE_RAPIDJSON}
     )
 

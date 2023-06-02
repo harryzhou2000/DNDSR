@@ -8,7 +8,7 @@
 #include "DNDS/Defines.hpp"
 #include "Geometric.hpp"
 
-namespace Geom::Elem
+namespace DNDS::Geom::Elem
 {
     /**
      * Complying to [CGNS Element standard](https://cgns.github.io/CGNS_docs_current/sids/conv.html)
@@ -1019,7 +1019,7 @@ namespace Geom::Elem
     Eigen::Matrix<t_real, 3, Eigen::Dynamic> GetStandardCoord(ElemType t);
 }
 
-namespace Geom::Elem
+namespace DNDS::Geom::Elem
 {
     inline bool cellsAreFaceConnected(
         const std::vector<DNDS::index> &nodes_A,

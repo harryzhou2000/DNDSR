@@ -4,7 +4,7 @@
 #include <map>
 #include <functional>
 
-namespace Geom
+namespace DNDS::Geom
 {
     class BCName_2_ID
     {

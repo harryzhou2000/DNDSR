@@ -32,6 +32,7 @@ namespace DNDS
         }
 
         index *begin() { return __p_indices; }
+        index *end() { return __p_indices + __Row_size; } // past-end
     };
 
     template <rowsize _row_size = 1, rowsize _row_max = _row_size, rowsize _align = NoAlign>
@@ -50,7 +51,6 @@ namespace DNDS
         index *rowPtr(index i) { return t_base::operator[](i); }
     };
 
-    
 }
 
 namespace DNDS

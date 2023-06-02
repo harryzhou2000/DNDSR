@@ -12,8 +12,8 @@ valgrind --log-file=log_valgrind.log
 
 void test_ShapeFunc_delta()
 {
-    using namespace Geom;
-    using namespace Geom::Elem;
+    using namespace DNDS::Geom;
+    using namespace DNDS::Geom::Elem;
     for (int i = 1; i < ElemType_NUM; i++)
     {
         auto elem = Element{ElemType(i)};
@@ -35,8 +35,8 @@ void test_ShapeFunc_delta()
 
 void test_Standard_Elem()
 {
-    using namespace Geom;
-    using namespace Geom::Elem;
+    using namespace DNDS::Geom;
+    using namespace DNDS::Geom::Elem;
     for (int i = 1; i < ElemType_NUM; i++)
     {
         auto elem = Element{ElemType(i)};
@@ -74,8 +74,8 @@ void test_Standard_Elem()
 
 void test_Faces()
 {
-    using namespace Geom;
-    using namespace Geom::Elem;
+    using namespace DNDS::Geom;
+    using namespace DNDS::Geom::Elem;
     for (int i = 1; i < ElemType_NUM; i++)
     {
         auto elem = Element{ElemType(i)};
