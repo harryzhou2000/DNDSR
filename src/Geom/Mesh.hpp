@@ -86,13 +86,13 @@ namespace Geom
             : mpi(n_mpi), dim(n_dim) {}
         /**
          * @brief building ghost (son) from primary (currently only cell2cell)
-         * @details 
+         * @details
          * the face and bnd parts are currently only local (no comm available)
          * only builds comm data of cell and node
          * cells: current-father and cell2cell neighbor (face or node neighbor)
          * nodes: needed by all cells
          * faces/bnds: needed by all father cells
-         * 
+         *
          */
         void BuildGhostPrimary();
         void AdjGlobal2LocalPrimary();
@@ -106,6 +106,16 @@ namespace Geom
     struct UnstructuredMeshSerialRW
     {
         DNDS::ssp<UnstructuredMesh> mesh;
+
+        enum Mode
+        {
+            UnknownMode,
+            SerialReadAndDistribute,
+            SerialOutput,
+        } mode{UnknownMode};
+
+        bool dataIsSerialOut = false;
+        bool dataIsSerialIn = false;
 
         tCoord coordSerial;                // created through reading
         tAdj cell2nodeSerial;              // created through reading
@@ -143,6 +153,12 @@ namespace Geom
         tAdj edge2cellSerial; // not used for now
         tAdj edge2edgeSerial; // not used for now
         tAdj edge2faceSerial; // not used for now
+
+        DNDS::ArrayTransformerType<tCoord::element_type>::Type coordSerialOutTrans;
+        DNDS::ArrayTransformerType<tAdj::element_type>::Type cell2nodeSerialOutTrans;
+        DNDS::ArrayTransformerType<tAdj::element_type>::Type bnd2nodeSerialOutTrans;
+        DNDS::ArrayTransformerType<tElemInfoArray::element_type>::Type cellElemInfoSerialOutTrans;
+        DNDS::ArrayTransformerType<tElemInfoArray::element_type>::Type bndElemInfoSerialOutTrans;
 
         std::vector<DNDS::MPI_int> cellPartition;
         std::vector<DNDS::MPI_int> nodePartition;
@@ -189,12 +205,32 @@ namespace Geom
             bnd2nodeSerial.reset();
             bnd2cellSerial.reset();
             bndElemInfoSerial.reset();
+            mode = UnknownMode;
+            dataIsSerialIn = dataIsSerialOut = false;
         }
+
+        /**
+         * @brief should be called to build data for serial out
+         */
+        void BuildSerialOut();
 
         // void WriteToCGNSSerial(const std::string &fName);
 
         // void WriteSolutionToTecBinary(const std::string &fName,
         //                               int nField, const tFDataFieldName &names, const tFDataFieldQuery &data,
         //                               int nFieldBnd, const tFDataFieldName &namesBnd, const tFDataFieldQuery &dataBnd);
+
+        /**
+         * @brief names(idata) data(idata, ivolume)
+         * https://tecplot.azureedge.net/products/360/current/360_data_format_guide.pdf
+         * @todo //TODO add support for bnd export
+         * @todo //TODO: switch to vtk!
+         */
+        void PrintSerialPartPltBinaryDataArray(
+            std::string fname,
+            int arraySiz,
+            const std::function<std::string(int)> &names,
+            const std::function<DNDS::real(int, DNDS::index)> &data,
+            double t, int flag = 0); //! supports 2/3d here
     };
 } // namespace geom
