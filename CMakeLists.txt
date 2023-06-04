@@ -11,7 +11,8 @@ find_package(MPI REQUIRED)
 
 set(DNDS_SUPRESS_INSERT_CHECK ON CACHE BOOL "close the inserted outputs")
 set(DNDS_USE_NDEBUG_MACRO OFF CACHE BOOL "use NDEBUG macro for eigen output and cassert etc") # performance impact is small so off by default(without -DNDEBUG)
-set(DNDS_USE_PARALLEL_MACRO OFF CACHE BOOL "use PARALLEL macro for eigen output and cassert etc")
+set(DNDS_USE_PARALLEL_MACRO OFF CACHE BOOL "for auto multi-thread?")
+set(DNDS_USE_OMP ON CACHE BOOL "for openmp enabling")
 
 if(UNIX OR MINGW)
     set(CMAKE_CXX_COMPILER mpicxx CACHE FILEPATH "compiler with your MPI wrapping")
@@ -95,7 +96,9 @@ if(UNIX OR MINGW)
     add_compile_options(-std=c++17)
     if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang")
         # add_compile_options(-fopenmp)
-        set(CMAKE_CXX_FLAGS ${CMAKE_CXX_FLAGS} "-fopenmp")
+        if (DNDS_USE_OMP)
+            set(CMAKE_CXX_FLAGS ${CMAKE_CXX_FLAGS} "-fopenmp")
+        endif()
         if (DNDS_USE_PARALLEL_MACRO)
             # add_compile_definitions(_GLIBCXX_PARALLEL)
             # doesn't seem available
@@ -103,7 +106,9 @@ if(UNIX OR MINGW)
     endif()
     if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
         # add_compile_options(-fopenmp)
-        set(CMAKE_CXX_FLAGS ${CMAKE_CXX_FLAGS} "-fopenmp")
+        if (DNDS_USE_OMP)
+            set(CMAKE_CXX_FLAGS ${CMAKE_CXX_FLAGS} "-fopenmp")
+        endif()
         if (DNDS_USE_PARALLEL_MACRO)
             add_compile_definitions(_GLIBCXX_PARALLEL)
         endif()
@@ -139,6 +144,9 @@ endif()
 if (DNDS_USE_NDEBUG_MACRO)
     add_compile_definitions(NDEBUG)
 endif()
+if (DNDS_USE_OMP)
+    add_compile_definitions(DNDS_USE_OMP)
+endif()
 # if (DNDS_USE_PARALLEL_MACRO)
 #     add_compile_definitions(PARALLEL)
 # endif()
@@ -170,6 +178,10 @@ elements_Test
 meshSerial_Test
 )
 
+set(TESTS_CFV
+vrBasic_Test
+)
+
 # set(OBJS_DNDS
 # MPI
 # )
@@ -195,9 +207,14 @@ src/Geom/Elements.cpp
 src/Geom/Mesh.cpp
 )
 
+set(CPPS_CFV
+src/CFV/VariationalReconstruction.cpp
+)
+
 set(CPPS
 ${CPPS_DNDS}
 ${CPPS_Geom}
+${CPPS_CFV}
 )
 
 set(CPP_TARGETS
@@ -230,29 +247,10 @@ endmacro(ADD_EXE_TEST)
 ADD_EXE_TEST("${TESTS_EXTERNAL}" "test/external")
 ADD_EXE_TEST("${TESTS_DNDS}" "test/DNDS")
 ADD_EXE_TEST("${TESTS_Geom}" "test/Geom")
+ADD_EXE_TEST("${TESTS_CFV}" "test/CFV")
 
 
-# foreach(EXE ${TESTS_EXTERNAL})
-#     # add_executable(${EXE} test/external/${EXE}.cpp $<TARGET_OBJECTS:${OBJS}>)
-#     add_executable(${EXE} test/external/${EXE}.cpp ${CPP_TARGETS_OBJ})
-#     target_link_libraries(${EXE} PUBLIC ${EXTERNAL_LIBS})
-#     target_include_directories(${EXE} PUBLIC ${EXTERNAL_INCLUDES} PUBLIC ${INCLUDES})
-#     set_target_properties(${EXE} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/test RUNTIME_OUTPUT_NAME ${EXE}.exe)
-# endforeach()
 
-# foreach(EXE ${TESTS_DNDS})
-#     add_executable(${EXE} test/DNDS/${EXE}.cpp ${CPP_TARGETS_OBJ})
-#     target_link_libraries(${EXE} PUBLIC ${EXTERNAL_LIBS})
-#     target_include_directories(${EXE} PUBLIC ${EXTERNAL_INCLUDES} PUBLIC ${INCLUDES})
-#     set_target_properties(${EXE} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/test RUNTIME_OUTPUT_NAME ${EXE}.exe)
-# endforeach()
-
-# foreach(EXE ${TESTS_Geom})
-#     add_executable(${EXE} test/Geom/${EXE}.cpp ${CPP_TARGETS_OBJ})
-#     target_link_libraries(${EXE} PUBLIC ${EXTERNAL_LIBS})
-#     target_include_directories(${EXE} PUBLIC ${EXTERNAL_INCLUDES} PUBLIC ${INCLUDES})
-#     set_target_properties(${EXE} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/test RUNTIME_OUTPUT_NAME ${EXE}.exe)
-# endforeach()
 
 
 ## doxygen

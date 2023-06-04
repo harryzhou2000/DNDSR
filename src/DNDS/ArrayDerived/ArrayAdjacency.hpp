@@ -33,6 +33,7 @@ namespace DNDS
 
         index *begin() { return __p_indices; }
         index *end() { return __p_indices + __Row_size; } // past-end
+        rowsize size() const { return __Row_size; }
     };
 
     template <rowsize _row_size = 1, rowsize _row_max = _row_size, rowsize _align = NoAlign>

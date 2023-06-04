@@ -1,6 +1,6 @@
-#include "Geom/Mesh.hpp"
-#include "stdio.h"
-#include "unistd.h"
+#include  "CFV/VariationalReconstruction.hpp"
+
+#include <cstdlib>
 
 std::vector<double> argD;
 
@@ -9,7 +9,7 @@ running:
 valgrind --log-file=log_valgrind.log
 */
 
-void testCGNS()
+void testConstruct()
 {
     auto mpi = DNDS::MPIInfo();
     mpi.setWorld();
@@ -22,7 +22,7 @@ void testCGNS()
     // "../data/mesh/SC20714_MixedA.cgns"
     // "../data/mesh/UniformDM240_E120.cgns"
     // "../data/mesh/Ball.cgns"
-    reader.ReadFromCGNSSerial("../data/mesh/Ball.cgns");
+    reader.ReadFromCGNSSerial("../data/mesh/Ball2.cgns");
     reader.BuildCell2Cell();
     reader.MeshPartitionCell2Cell();
     reader.PartitionReorderToMeshCell2Cell();
@@ -32,24 +32,8 @@ void testCGNS()
     mesh->InterpolateFace();
     mesh->AssertOnFaces();
 
-    reader.PrintSerialPartPltBinaryDataArray(
-        "../data/out/debug",
-        0, [](int)
-        { return ""; },
-        [](int, DNDS::index)
-        { return 1; },
-        0.0,
-        0);
-    reader.PrintSerialPartPltBinaryDataArray(
-        "../data/out/debug",
-        0, [](int)
-        { return ""; },
-        [](int, DNDS::index)
-        { return 1; },
-        0.0,
-        1);
-    // char c;
-    // std::cin >> c;
+    auto vr = DNDS::CFV::VariationalReconstruction<3>(mpi, mesh);
+    vr.ConstructMetrics();
 }
 
 int main(int argc, char *argv[])
@@ -62,7 +46,8 @@ int main(int argc, char *argv[])
         double v = std::atof(argv[i]);
         argD.push_back(v);
     }
-    testCGNS();
+
+    testConstruct();
 
     MPI_Finalize();
 

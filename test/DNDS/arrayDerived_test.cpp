@@ -1,5 +1,6 @@
 #include "DNDS/ArrayDerived/ArrayAdjacency.hpp"
 #include "DNDS/ArrayDerived/ArrayEigenVector.hpp"
+#include "DNDS/ArrayDerived/ArrayEigenMatirx.hpp"
 #include "DNDS/ArrayDerived/ArrayEigenUniMatrixBatch.hpp"
 #include "DNDS/ArrayDerived/ArrayEigenMatrixBatch.hpp"
 
@@ -41,6 +42,41 @@ void test_ADJ()
     }
     A_adj.Compress();
     std::cout << A_adj << std::endl;
+}
+
+void test_Mat()
+{
+    int nRow = 1000;
+    if (argD.size() == 1)
+    {
+        nRow = int(argD[0]);
+    }
+
+    //? these are incomplete anyway
+    // ArrayEigenMatrix<3, 3> A_v;
+    // ArrayEigenMatrix<DynamicSize, DynamicSize> A_v;
+    // ArrayEigenMatrix<3, DynamicSize> A_v;
+    // ArrayEigenMatrix<DynamicSize, 3> A_v;
+    // ArrayEigenMatrix<NonUniformSize, 3, 3, 3> A_v;
+    // ArrayEigenMatrix<NonUniformSize, NonUniformSize, 3, 3> A_v;
+    ArrayEigenMatrix<NonUniformSize, NonUniformSize> A_v;
+
+    A_v.Resize(nRow, 3, 3);
+
+    if (A_v._dataLayout == CSR || isTABLE_Max(A_v._dataLayout))
+    {
+        for (DNDS::index i = 0; i < A_v.Size(); i++)
+            A_v.ResizeMat(i, i % 3 + 1, 3);
+    }
+    for (DNDS::index i = 0; i < A_v.Size(); i++)
+    {
+        A_v[i].setIdentity();
+    }
+    A_v.Compress();
+    for (DNDS::index i = 0; i < A_v.Size(); i++)
+    {
+        std::cout << A_v[i].transpose() << std::endl;
+    }
 }
 
 void test_Vec()
@@ -167,8 +203,9 @@ int main(int argc, char *argv[])
 
     // test_ADJ();
     // test_Vec();
+    test_Mat();
     // test_UniMatBatch();
-    test_MatBatch();
+    // test_MatBatch();
 
     // MPI_Finalize();
 

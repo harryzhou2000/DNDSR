@@ -21,6 +21,7 @@ namespace DNDS
         // TODO: privatize these
         t_pLGlobalMapping pLGlobalMapping;
         MPIInfo mpi;
+        using t_pRowSizes = typename TArray::t_pRowSizes;
 
     private:
         MPI_Datatype dataType = BasicType_To_MPIIntType<T>().first;
@@ -75,7 +76,7 @@ namespace DNDS
          * @brief asserts on the consistencies
          *
          *
-         * @warning //! warning, complexity O(Nproc)
+         * @warning //! warning, complexity O(Nproc); must collectively call
          * @return true currently only true
          * @return false
          */
@@ -103,6 +104,7 @@ namespace DNDS
             return true; // currently all errors aborts inside
         }
 
+        /// @warning must collectively call
         void createGlobalMapping() // collective;
         {
             DNDS_assert_info(mpi.comm != MPI_COMM_NULL, "MPI unset");
@@ -111,6 +113,7 @@ namespace DNDS
             pLGlobalMapping->setMPIAlignBcast(mpi, this->Size());
         }
 
+        /// @warning must collectively call
         index globalSize()
         {
             index gSize = 0;
@@ -617,5 +620,4 @@ namespace DNDS
         using Type = ArrayTransformer<typename TArray::value_type, TArray::rs, TArray::rm, TArray::al>;
     };
 
-    
 }

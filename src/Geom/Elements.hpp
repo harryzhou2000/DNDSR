@@ -1049,8 +1049,14 @@ namespace DNDS::Geom::Elem
         const std::vector<DNDS::index> &verts_A,
         const std::vector<DNDS::index> &nodes_B)
     {
-        
+
         return false;
+    }
+
+    template <class tCoordsIn>
+    tJacobi ShapeJacobianCoordD01Nj(const tCoordsIn &cs, const tD01Nj &DiNj)
+    {
+        return cs * DiNj({1, 2, 3}, Eigen::all).transpose();
     }
 
 }

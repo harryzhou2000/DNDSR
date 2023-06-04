@@ -16,19 +16,24 @@ namespace DNDS::CFV
         uint8_t intOrder = 1;
     };
 
+    template <int dim>
     class VariationalReconstruction
     {
     public:
+        MPI_int mRank{0};
         MPIInfo mpi;
-        Geom::UnstructuredMesh *mesh;
+        std::shared_ptr<Geom::UnstructuredMesh> mesh;
 
         std::vector<real> volumeLocal;
         std::vector<real> faceArea;
 
-        VariationalReconstruction(MPIInfo nMpi, Geom::UnstructuredMesh *nMesh)
+        VariationalReconstruction(MPIInfo nMpi, std::shared_ptr<Geom::UnstructuredMesh> nMesh)
             : mpi(nMpi), mesh(nMesh)
         {
-            
+            DNDS_assert(dim == mesh->dim);
+            mRank = mesh->mRank;
         }
+
+        void ConstructMetrics();
     };
 }

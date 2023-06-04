@@ -105,9 +105,9 @@ void test_Faces()
                         // std::cout << J << std::endl;
                         tPoint normVec;
                         if (elem.GetDim() == 3)
-                            normVec = Geom::FacialJacobianToNormVec<3>(J);
+                            normVec = FacialJacobianToNormVec<3>(J);
                         if (elem.GetDim() == 2)
-                            normVec = Geom::FacialJacobianToNormVec<2>(J);
+                            normVec = FacialJacobianToNormVec<2>(J);
 
                         double tol = 1e-14;
                         if (elem.GetParamSpace() == PyramidSpace)
