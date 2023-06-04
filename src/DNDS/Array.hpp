@@ -129,7 +129,7 @@ namespace DNDS
         t_DataUncompressed _dataUncompressed;
 
         index _size = 0;             // in number of T
-        index _row_size_dynamic = 0; // in number of T
+        rowsize _row_size_dynamic = 0; // in number of T
     public:
         t_pRowStart getRowStart() { return _pRowStart; }
         t_pRowSizes getRowSizes() { return _pRowSizes; }

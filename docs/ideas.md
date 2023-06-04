@@ -110,3 +110,38 @@ C++ 17 standard!!!
     - object pool maps address in memory and references in restart file
     
 ## 3.Modular Design
+
+
+
+
+$$
+V(x) = a + bx + cx^2 + R(x)
+$$
+
+$$
+\mathcal{R}(x^2) = x^2
+$$
+
+$$
+\mathcal{R}(V(x)) = a + bx + cx^2 + \mathcal{R}(R(x))
+$$
+
+$$
+R(x) = O(h^3)
+$$
+
+$$
+\mathcal{R}(R(x)) ?= O(h^3)
+$$
+
+$$
+0 =(F\mathcal{R}(V)(-h/2)-F\mathcal{R}(V)(h/2))
+$$
+
+$$
+RHS(\overline{V}^*) = 0
+$$
+
+$$
+RHS(\overline{V}) = O(h^3)
+$$

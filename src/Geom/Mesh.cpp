@@ -1,10 +1,12 @@
 #include "Mesh.hpp"
 
 #include "cgnslib.h"
+
 #include <cstdlib>
 #include <string>
 #include <map>
 #include <set>
+#include <omp.h>
 namespace _METIS
 {
 #include "metis.h"
@@ -594,6 +596,12 @@ namespace DNDS::Geom
         if (mesh->mpi.rank == mRank)
             DNDS::log() << "UnstructuredMeshSerialRW === Doing  BuildCell2Cell Part 1" << std::endl;
         cell2cellSerial->Resize(cell2nodeSerial->Size());
+
+        index nCells = cell2nodeSerial->Size();
+        index nCellsDone = 0;
+#ifdef DNDS_USE_OMP
+#pragma omp parallel for
+#endif
         for (DNDS::index iCell = 0; iCell < cell2nodeSerial->Size(); iCell++)
         {
             auto CellElem = Elem::Element{(*cellElemInfoSerial)[iCell]->getElemType()};
@@ -603,18 +611,27 @@ namespace DNDS::Geom
             std::sort(cell2nodeRow.begin(), cell2nodeRow.end());
             // only primary vertices
             std::set<DNDS::index> c_neighbors; // could optimize?
-            // std::vector<DNDS::index> c_neighbors;
-            // c_neighbors.reserve(30);
-            /****/
-            if (iCell % 100000 == 0)
+                                               // std::vector<DNDS::index> c_neighbors;
+                                               // c_neighbors.reserve(30);
+                                               /****/
+#ifdef DNDS_USE_OMP
+            // #pragma omp single
+#pragma omp critical
+#endif
             {
-                auto fmt = DNDS::log().flags();
-                DNDS::log() << "\r\033[K" << std::setw(5) << double(iCell) / cell2nodeSerial->Size() * 100 << "%";
-                DNDS::log().flush();
-                DNDS::log().setf(fmt);
+                if (nCellsDone % (nCells / 1000 + 1) == 0)
+                {
+                    auto fmt = DNDS::log().flags();
+                    DNDS::log() << "\r\033[K" << std::setw(5) << double(nCellsDone) / nCells * 100 << "%";
+                    DNDS::log().flush();
+                    DNDS::log().setf(fmt);
+                }
+
+                if (nCellsDone == nCells - 1)
+                    DNDS::log()
+                        // << "\r\033[K"
+                        << std::endl;
             }
-            if (iCell == cell2nodeSerial->Size() - 1)
-                DNDS::log() << std::endl;
             /****/
 
             for (auto iNode : cell2nodeRow)
@@ -652,6 +669,10 @@ namespace DNDS::Geom
             DNDS::rowsize ic2c = 0;
             for (auto iCellOther : c_neighbors)
                 (*cell2cellSerial)(iCell, ic2c++) = iCellOther;
+#ifdef DNDS_USE_OMP
+#pragma omp atomic
+#endif
+            nCellsDone++;
         }
 
         // TODO: build periodic donor oct-trees

@@ -15,7 +15,7 @@ void testCGNS()
     mpi.setWorld();
     // DNDS::Debug::MPIDebugHold(mpi);
     char buf[512];
-    std::cout << getcwd(buf, 512) << std::endl;
+    // std::cout << getcwd(buf, 512) << std::endl;
     auto mesh = std::make_shared<DNDS::Geom::UnstructuredMesh>(mpi, 3);
     auto reader = DNDS::Geom::UnstructuredMeshSerialRW(mesh, 0);
     // "../data/mesh/FourTris_V1.pw.cgns"

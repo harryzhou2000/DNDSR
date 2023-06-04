@@ -45,7 +45,7 @@ namespace DNDS
     public:
         /**
          * @brief resizes all matrices to be used;
-         *
+         * -1 means no change
          * @param r
          * @param c
          */

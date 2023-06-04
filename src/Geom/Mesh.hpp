@@ -99,6 +99,23 @@ namespace DNDS::Geom
 
         void InterpolateFace();
         void AssertOnFaces();
+
+        index NumCell() { return cell2node.father->Size(); }
+        index NumCellProc() { return cell2node.Size(); }
+        index NumNode() { return coords.father->Size(); }
+        index NumNodeProc() { return coords.Size(); }
+        index NumFace() { return face2node.father->Size(); }
+        index NumFaceProc() { return face2node.Size(); }
+        index NumBnd() { return bnd2node.father->Size(); }
+
+        /// @warning must collectively call
+        index NumCellGlobal() { return cell2node.father->globalSize(); }
+        /// @warning must collectively call
+        index NumNodeGlobal() { return coords.father->globalSize(); }
+        /// @warning must collectively call
+        index NumFaceGlobal() { return face2node.father->globalSize(); }
+        /// @warning must collectively call
+        index NumBndGlobal() { return bnd2node.father->globalSize(); }
     };
 
     using tFDataFieldName = std::function<std::string(int)>;
