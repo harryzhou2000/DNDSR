@@ -178,6 +178,10 @@ elements_Test
 meshSerial_Test
 )
 
+set(TESTS_CFV
+vrBasic_Test
+)
+
 # set(OBJS_DNDS
 # MPI
 # )
@@ -203,9 +207,14 @@ src/Geom/Elements.cpp
 src/Geom/Mesh.cpp
 )
 
+set(CPPS_CFV
+src/CFV/VariationalReconstruction.cpp
+)
+
 set(CPPS
 ${CPPS_DNDS}
 ${CPPS_Geom}
+${CPPS_CFV}
 )
 
 set(CPP_TARGETS
@@ -238,29 +247,10 @@ endmacro(ADD_EXE_TEST)
 ADD_EXE_TEST("${TESTS_EXTERNAL}" "test/external")
 ADD_EXE_TEST("${TESTS_DNDS}" "test/DNDS")
 ADD_EXE_TEST("${TESTS_Geom}" "test/Geom")
+ADD_EXE_TEST("${TESTS_CFV}" "test/CFV")
 
 
-# foreach(EXE ${TESTS_EXTERNAL})
-#     # add_executable(${EXE} test/external/${EXE}.cpp $<TARGET_OBJECTS:${OBJS}>)
-#     add_executable(${EXE} test/external/${EXE}.cpp ${CPP_TARGETS_OBJ})
-#     target_link_libraries(${EXE} PUBLIC ${EXTERNAL_LIBS})
-#     target_include_directories(${EXE} PUBLIC ${EXTERNAL_INCLUDES} PUBLIC ${INCLUDES})
-#     set_target_properties(${EXE} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/test RUNTIME_OUTPUT_NAME ${EXE}.exe)
-# endforeach()
 
-# foreach(EXE ${TESTS_DNDS})
-#     add_executable(${EXE} test/DNDS/${EXE}.cpp ${CPP_TARGETS_OBJ})
-#     target_link_libraries(${EXE} PUBLIC ${EXTERNAL_LIBS})
-#     target_include_directories(${EXE} PUBLIC ${EXTERNAL_INCLUDES} PUBLIC ${INCLUDES})
-#     set_target_properties(${EXE} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/test RUNTIME_OUTPUT_NAME ${EXE}.exe)
-# endforeach()
-
-# foreach(EXE ${TESTS_Geom})
-#     add_executable(${EXE} test/Geom/${EXE}.cpp ${CPP_TARGETS_OBJ})
-#     target_link_libraries(${EXE} PUBLIC ${EXTERNAL_LIBS})
-#     target_include_directories(${EXE} PUBLIC ${EXTERNAL_INCLUDES} PUBLIC ${INCLUDES})
-#     set_target_properties(${EXE} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/test RUNTIME_OUTPUT_NAME ${EXE}.exe)
-# endforeach()
 
 
 ## doxygen

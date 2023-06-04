@@ -184,7 +184,7 @@ namespace DNDS::Geom
                         cgErr |= cg_section_read(cgns_file, iBase, iZone, iSection, sectionName, &etype, &start, &end, &nBnd, &parentFlag);
                         // cgsize_t elemDataSize{0};
                         // cgErr |= cg_ElementDataSize(cgns_file, iBase, iZone, iSection, &elemDataSize);
-                        DNDS_assert(cend == start - 1); //? testing
+                        // DNDS_assert(cend == start - 1); //? testing//!not valid!
                         cstart = start;
                         cend = end;
                         maxend = std::max(end, maxend);

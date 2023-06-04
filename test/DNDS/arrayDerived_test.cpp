@@ -54,12 +54,12 @@ void test_Mat()
 
     //? these are incomplete anyway
     // ArrayEigenMatrix<3, 3> A_v;
-    ArrayEigenMatrix<DynamicSize, DynamicSize> A_v;
+    // ArrayEigenMatrix<DynamicSize, DynamicSize> A_v;
     // ArrayEigenMatrix<3, DynamicSize> A_v;
     // ArrayEigenMatrix<DynamicSize, 3> A_v;
     // ArrayEigenMatrix<NonUniformSize, 3, 3, 3> A_v;
     // ArrayEigenMatrix<NonUniformSize, NonUniformSize, 3, 3> A_v;
-    // ArrayEigenMatrix<NonUniformSize, NonUniformSize> A_v;
+    ArrayEigenMatrix<NonUniformSize, NonUniformSize> A_v;
 
     A_v.Resize(nRow, 3, 3);
 

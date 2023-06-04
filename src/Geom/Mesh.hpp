@@ -51,6 +51,8 @@ namespace DNDS::Geom
     using tIndPair = DNDS::ArrayPair<DNDS::ArrayIndex>;
     using tInd = decltype(tIndPair::father);
 
+    using tSmallCoords = Eigen::Matrix<real, 3, Eigen::Dynamic>;
+
     enum MeshAdjState
     {
         Adj_Unknown = 0,
@@ -60,6 +62,9 @@ namespace DNDS::Geom
 
     struct UnstructuredMesh
     {
+        MPI_int mRank{0};
+        DNDS::MPIInfo mpi;
+        int dim;
         MeshAdjState adjPrimaryState{Adj_Unknown};
         /// reader
         tCoordPair coords;
@@ -79,9 +84,6 @@ namespace DNDS::Geom
 
         // tAdj1Pair bndFaces; // no comm needed for now
 
-        DNDS::MPIInfo mpi;
-        int dim;
-
         UnstructuredMesh(const DNDS::MPIInfo &n_mpi, int n_dim)
             : mpi(n_mpi), dim(n_dim) {}
         /**
@@ -100,13 +102,14 @@ namespace DNDS::Geom
         void InterpolateFace();
         void AssertOnFaces();
 
-        index NumCell() { return cell2node.father->Size(); }
-        index NumCellProc() { return cell2node.Size(); }
         index NumNode() { return coords.father->Size(); }
-        index NumNodeProc() { return coords.Size(); }
+        index NumCell() { return cell2node.father->Size(); }
         index NumFace() { return face2node.father->Size(); }
-        index NumFaceProc() { return face2node.Size(); }
         index NumBnd() { return bnd2node.father->Size(); }
+
+        index NumNodeProc() { return coords.Size(); }
+        index NumCellProc() { return cell2node.Size(); }
+        index NumFaceProc() { return face2node.Size(); }
 
         /// @warning must collectively call
         index NumCellGlobal() { return cell2node.father->globalSize(); }
@@ -116,6 +119,22 @@ namespace DNDS::Geom
         index NumFaceGlobal() { return face2node.father->globalSize(); }
         /// @warning must collectively call
         index NumBndGlobal() { return bnd2node.father->globalSize(); }
+
+        Elem::Element GetCellElement(index iC) { return Elem::Element{cellElemInfo(iC, 0).getElemType()}; }
+        Elem::Element GetFaceElement(index iF) { return Elem::Element{faceElemInfo(iF, 0).getElemType()}; }
+        Elem::Element GetBndElement(index iB) { return Elem::Element{bndElemInfo(iB, 0).getElemType()}; }
+
+        t_index GetCellZone(index iC) { return cellElemInfo(iC, 0).zone; }
+        t_index GetFaceZone(index iF) { return faceElemInfo(iF, 0).zone; }
+        t_index GetBndZone(index iB) { return bndElemInfo(iB, 0).zone; }
+
+        template <class tC2n>
+        void GetCoords(const tC2n &c2n, tSmallCoords &cs)
+        {
+            cs.resize(Eigen::NoChange, c2n.size());
+            for (rowsize i = 0; i < c2n.size(); i++)
+                cs(Eigen::all, i) = coords[c2n[i]];
+        }
     };
 
     using tFDataFieldName = std::function<std::string(int)>;
