@@ -64,13 +64,20 @@ namespace DNDS::CFV
     using t3MatPair = DNDS::ArrayPair<DNDS::ArrayEigenMatrix<3, 3>>;
     using t3Mat = decltype(t3MatPair::father);
 
-    // Corresponds to rec dofs
+    // Corresponds to mean/rec dofs
     using tVVecPair = DNDS::ArrayPair<DNDS::ArrayEigenVector<DynamicSize>>;
     using tVVec = decltype(tVVecPair::father);
     using tMatsPair = DNDS::ArrayPair<DNDS::ArrayEigenUniMatrixBatch<DynamicSize, DynamicSize>>;
     using tMats = decltype(tMatsPair::father);
+    using tVecsPair = DNDS::ArrayPair<DNDS::ArrayEigenUniMatrixBatch<DynamicSize, 1>>;
+    using tVecs = decltype(tVecsPair::father);
     using tVMatPair = DNDS::ArrayPair<DNDS::ArrayEigenMatrix<DynamicSize, DynamicSize>>;
     using tVMat = decltype(tVMatPair::father);
+
+    template <int nVarsFixed>
+    using tURec = DNDS::ArrayPair<DNDS::ArrayEigenMatrix<DynamicSize, nVarsFixed>>;
+    template <int nVarsFixed>
+    using tUDof = DNDS::ArrayPair<DNDS::ArrayEigenMatrix<nVarsFixed, 1>>;
 
     template <int dim>
     class VariationalReconstruction
@@ -98,11 +105,19 @@ namespace DNDS::CFV
         t3VecPair cellMajorHBox;       // ConstructMetrics() //TODO
         t3MatPair cellMajorCoord;      // ConstructMetrics() //TODO
 
-        t3VecPair faceAlignedScales; // ConstructBaseAndWeight()
-        tVVecPair cellBaseMoment;    // ConstructBaseAndWeight()
-        tVVecPair faceWeight;        // ConstructBaseAndWeight()
-        tMatsPair cellDiffBaseCache; // ConstructBaseAndWeight()
-        tMatsPair faceDiffBaseCache; // ConstructBaseAndWeight()
+        t3VecPair faceAlignedScales;     // ConstructBaseAndWeight()
+        tVVecPair cellBaseMoment;        // ConstructBaseAndWeight()
+        tVVecPair faceWeight;            // ConstructBaseAndWeight()
+        tMatsPair cellDiffBaseCache;     // ConstructBaseAndWeight()
+        tMatsPair faceDiffBaseCache;     // ConstructBaseAndWeight()
+        tVMatPair cellDiffBaseCacheCent; // ConstructBaseAndWeight()//TODO
+        tVMatPair faceDiffBaseCacheCent; // ConstructBaseAndWeight()//TODO
+
+        tMatsPair matrixAB;        // ConstructRecCoeff()
+        tVecsPair vectorB;         // ConstructRecCoeff()
+        tMatsPair matrixAAInvB;    // ConstructRecCoeff()
+        tMatsPair vectorAInvB;     // ConstructRecCoeff()
+        tVMatPair matrixSecondary; // ConstructRecCoeff()//TODO
 
         VariationalReconstruction(MPIInfo nMpi, std::shared_ptr<Geom::UnstructuredMesh> nMesh)
             : mpi(nMpi), mesh(nMesh)
@@ -117,6 +132,15 @@ namespace DNDS::CFV
         void ConstructBaseAndWeight();
 
         void ConstructRecCoeff();
+
+        template <int nVarsFixed, class TFBoundary>
+        void DoReconstructionIter(
+            tURec<nVarsFixed> &uRec,
+            tURec<nVarsFixed> &uRecNew,
+            tUDof<nVarsFixed> &u,
+            TFBoundary &&FBoundary)
+        {
+        }
 
         /**
          * @brief make pair with default MPI type, match cell layout
@@ -141,8 +165,6 @@ namespace DNDS::CFV
             aPair.father->Resize(mesh->NumFace(), others...);
             aPair.son->Resize(mesh->NumFaceGhost(), others...);
         }
-
-        
 
         Geom::Elem::Quadrature GetFaceQuad(index iFace)
         {
@@ -205,14 +227,23 @@ namespace DNDS::CFV
             return mesh->face2cell(iFace, 0) == iCell;
         }
 
+        index CellFaceOther(index iCell, index iFace)
+        {
+            return CellIsFaceBack(iCell, iFace)
+                       ? mesh->face2cell(iFace, 1)
+                       : mesh->face2cell(iFace, 0);
+        }
+
         /**
-         * @brief if if2c < 0, then calculated, if maxDiff > 1000, then seen as all diffs
+         * @brief if if2c < 0, then calculated, if maxDiff == 255, then seen as all diffs
          * if iFace < 0, then seen as cell int points
          */
         template <class TList>
-        auto GetIntPointDiffBaseValue(index iCell, index iFace, index if2c, index iG,
-                                      TList &&diffList = Eigen::all,
-                                      uint8_t maxDiff = UINT8_MAX)
+        Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic>
+        GetIntPointDiffBaseValue(
+            index iCell, index iFace, index if2c, index iG,
+            TList &&diffList = Eigen::all,
+            uint8_t maxDiff = UINT8_MAX)
         {
             if (if2c < 0)
                 if2c = CellIsFaceBack(iCell, iFace) ? 0 : 1;
@@ -223,14 +254,15 @@ namespace DNDS::CFV
                 {
                     // auto gFace = this->GetFaceQuad(iFace);
                     return faceDiffBaseCache(iFace, iG + (faceDiffBaseCache.RowSize(iFace) / 2) * if2c)(
-                        std::forward(diffList), Eigen::all);
+                        std::forward<TList>(diffList), Eigen::seq(Eigen::fix<1>, Eigen::last));
                 }
                 else
                 {
+                    // Actual computing: //TODO: take care of periodic case
                     Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic> dbv;
                     dbv.resize(std::min(maxDiff, faceAtr[iFace].NDIFF), cellAtr[iCell].NDOF);
                     FDiffBaseValue(dbv, faceIntPPhysics(iFace, iG), iCell, iFace, iG, 0);
-                    return dbv(std::forward(diffList), Eigen::all);
+                    return dbv(std::forward<TList>(diffList), Eigen::seq(Eigen::fix<1>, Eigen::last));
                 }
             }
             else
@@ -238,16 +270,108 @@ namespace DNDS::CFV
                 if (settings.cacheDiffBase)
                 {
                     return cellDiffBaseCache(iCell, iG)(
-                        std::forward(diffList), Eigen::all);
+                        std::forward<TList>(diffList), Eigen::seq(Eigen::fix<1>, Eigen::last));
                 }
                 else
                 {
                     Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic> dbv;
                     dbv.resize(std::min(maxDiff, cellAtr[iCell].NDIFF), cellAtr[iCell].NDOF);
                     FDiffBaseValue(dbv, cellIntPPhysics(iCell, iG), iCell, -1, iG, 0);
-                    return dbv(std::forward(diffList), Eigen::all);
+                    return dbv(std::forward<TList>(diffList), Eigen::seq(Eigen::fix<1>, Eigen::last));
                 }
             }
+        }
+
+        template <class TDiffI, class TDiffJ>
+        auto FFaceFunctional(
+            TDiffI &&DiffI, TDiffJ &&DiffJ,
+            index iFace, index iG)
+        {
+            Eigen::Vector<real, Eigen::Dynamic> wgd = faceWeight[iFace].array().square();
+            DNDS_assert(DiffI.rows() == DiffJ.rows());
+            int cnDiffs = DiffI.rows();
+
+            Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic> Conj;
+            Conj.resize(DiffI.cols(), DiffJ.cols());
+            Conj.setZero();
+
+            //* PJH - rotation invariant scheme
+            auto faceLV = faceAlignedScales[iFace];
+            real faceL = std::sqrt(faceLV.array().square().mean());
+
+            if constexpr (dim == 2)
+            {
+                DNDS_assert(cnDiffs == 10 || cnDiffs == 6 || cnDiffs == 3 || cnDiffs == 1);
+                for (int i = 0; i < DiffI.cols(); i++)
+                    for (int j = 0; j < DiffJ.cols(); j++)
+                    {
+                        switch (cnDiffs)
+                        {
+                        case 10:
+                            Conj(i, j) +=
+                                NormSymDiffOrderTensorV<2, 3>(
+                                    DiffI({6, 7, 8, 9}, {i}),
+                                    DiffJ({6, 7, 8, 9}, {j})) *
+                                wgd(3) * std::pow(faceL, 3 * 2);
+                        case 6:
+                            Conj(i, j) +=
+                                NormSymDiffOrderTensorV<2, 2>(
+                                    DiffI({3, 4, 5}, {i}),
+                                    DiffJ({3, 4, 5}, {j})) *
+                                wgd(2) * std::pow(faceL, 2 * 2);
+                        case 3:
+                            Conj(i, j) +=
+                                NormSymDiffOrderTensorV<2, 1>(
+                                    DiffI({1, 2}, {i}),
+                                    DiffJ({1, 2}, {j})) *
+                                wgd(1) * std::pow(faceL, 1 * 2);
+                        case 1:
+                            Conj(i, j) +=
+                                NormSymDiffOrderTensorV<2, 0>(
+                                    DiffI({0}, {i}),
+                                    DiffJ({0}, {j})) * //! i, j needed in {}!
+                                wgd(0);
+                            break;
+                        }
+                    }
+            }
+            else
+            {
+                DNDS_assert(cnDiffs == 20 || cnDiffs == 10 || cnDiffs == 4 || cnDiffs == 1);
+                for (int i = 0; i < DiffI.cols(); i++)
+                    for (int j = 0; j < DiffJ.cols(); j++)
+                    {
+                        switch (cnDiffs)
+                        {
+                        case 20:
+                            Conj(i, j) +=
+                                NormSymDiffOrderTensorV<3, 3>(
+                                    DiffI({10, 11, 12, 13, 14, 15, 16, 17, 18, 19}, {i}),
+                                    DiffJ({10, 11, 12, 13, 14, 15, 16, 17, 18, 19}, {j})) *
+                                wgd(3) * std::pow(faceL, 3 * 2);
+                        case 10:
+                            Conj(i, j) +=
+                                NormSymDiffOrderTensorV<3, 2>(
+                                    DiffI({4, 5, 6, 7, 8, 9}, {i}),
+                                    DiffJ({4, 5, 6, 7, 8, 9}, {j})) *
+                                wgd(2) * std::pow(faceL, 2 * 2);
+                        case 4:
+                            Conj(i, j) +=
+                                NormSymDiffOrderTensorV<3, 1>(
+                                    DiffI({1, 2, 3}, {i}),
+                                    DiffJ({1, 2, 3}, {j})) *
+                                wgd(1) * std::pow(faceL, 1 * 2);
+                        case 1:
+                            Conj(i, j) +=
+                                NormSymDiffOrderTensorV<3, 0>(
+                                    DiffI({0}, {i}),
+                                    DiffJ({0}, {j})) *
+                                wgd(0);
+                            break;
+                        }
+                    }
+            }
+            return Conj;
         }
     };
 }

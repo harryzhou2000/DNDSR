@@ -1662,6 +1662,9 @@ namespace DNDS::Geom
             }
         }
         MPI_Barrier(mpi.comm);
+#ifdef DNDS_USE_OMP
+#pragma omp parallel for
+#endif
         for (DNDS::index iCell = 0; iCell < cell2face.Size(); iCell++) // convert face indices pointers
         {
             for (rowsize ic2f = 0; ic2f < cell2face.RowSize(iCell); ic2f++)
@@ -1671,6 +1674,9 @@ namespace DNDS::Geom
         }
         /**********************************/
         // convert face2cell ptrs and face2node ptrs to global
+#ifdef DNDS_USE_OMP
+#pragma omp parallel for
+#endif
         for (DNDS::index iFace = 0; iFace < face2cell.father->Size(); iFace++)
         {
             for (rowsize if2n = 0; if2n < face2node.RowSize(iFace); if2n++)
@@ -1717,6 +1723,9 @@ namespace DNDS::Geom
 
         /**********************************/
         // convert face2cell ptrs and face2node ptrs global to local
+#ifdef DNDS_USE_OMP
+#pragma omp parallel for
+#endif
         for (DNDS::index iFace = 0; iFace < face2cell.Size(); iFace++)
         {
             for (rowsize if2n = 0; if2n < face2node.RowSize(iFace); if2n++)
@@ -1744,6 +1753,9 @@ namespace DNDS::Geom
 
         /**********************************/
         // tend to unattended cell2face with pointing to ghost
+#ifdef DNDS_USE_OMP
+#pragma omp parallel for
+#endif
         for (DNDS::index iFace = 0; iFace < face2cell.son->Size(); iFace++) // face2cell points to local now
         {
             // before: first points to inner, //!relies on the order of setting face2cell

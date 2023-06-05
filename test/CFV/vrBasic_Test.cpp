@@ -1,6 +1,7 @@
-#include  "CFV/VariationalReconstruction.hpp"
+#include "CFV/VariationalReconstruction.hpp"
 
 #include <cstdlib>
+#include <omp.h>
 
 std::vector<double> argD;
 
@@ -33,8 +34,13 @@ void testConstruct()
     mesh->AssertOnFaces();
 
     auto vr = DNDS::CFV::VariationalReconstruction<2>(mpi, mesh);
+#ifdef DNDS_USE_OMP
+    omp_set_num_threads(DNDS::MPIWorldSize() == 1 ? std::min(omp_get_num_procs(), omp_get_max_threads()) : 1);
+#endif
+    // omp_set_num_threads(1);
     vr.ConstructMetrics();
     vr.ConstructBaseAndWeight();
+    vr.ConstructRecCoeff();
 }
 
 int main(int argc, char *argv[])

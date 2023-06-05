@@ -200,6 +200,7 @@ set(CPPS_DNDS
 src/DNDS/MPI.cpp
 src/DNDS/Defines.cpp
 src/DNDS/Profiling.cpp
+src/DNDS/HardEigen.cpp
 )
 
 set(CPPS_Geom

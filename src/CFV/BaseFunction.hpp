@@ -32,17 +32,19 @@ namespace DNDS::CFV
             {2, 0, 1}, // 18
             {1, 1, 1}, // 19
     };
-    static const int diffOperatorOrderList2D[ndiffSiz2D][3] = {
-        {0, 0, 0}, // 00 00
-        {1, 0, 0}, // 01 01 0
-        {0, 1, 0}, // 02 02 1
-        {2, 0, 0}, // 03 04 00
-        {1, 1, 0}, // 04 05 01
-        {0, 2, 0}, // 05 07 11
-        {3, 0, 0}, // 06 10 000
-        {2, 1, 0}, // 07 11 001
-        {1, 2, 0}, // 08 13 011
-        {0, 3, 0}, // 09 16 111
+
+    static const int diffOperatorOrderList2D[ndiffSiz2D][3] =
+        {
+            {0, 0, 0}, // 00 00
+            {1, 0, 0}, // 01 01 0
+            {0, 1, 0}, // 02 02 1
+            {2, 0, 0}, // 03 04 00
+            {1, 1, 0}, // 04 05 01
+            {0, 2, 0}, // 05 07 11
+            {3, 0, 0}, // 06 10 000
+            {2, 1, 0}, // 07 11 001
+            {1, 2, 0}, // 08 13 011
+            {0, 3, 0}, // 09 16 111
     };
     static const int dFactorials[ndiff + 1][ndiff + 1] = {
         {1, 0, 0, 0},
@@ -64,6 +66,9 @@ namespace DNDS::CFV
     };
     static const int diffNCombs2D[ndiffSiz2D]{
         1, 1, 1, 1, 2, 1, 1, 3, 3, 1};
+
+    static const int diffNCombs[ndiffSiz]{
+        1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 1, 1, 1, 3, 3, 3, 3, 3, 3, 6};
 
     inline real iPow(int p, real x)
     {
@@ -132,5 +137,106 @@ namespace DNDS::CFV
         int c = dFactorials[px][dx] * dFactorials[py][dy] * dFactorials[pz][dz];
         return c ? c * iPow(px - dx, x) * iPow(py - dy, y) * iPow(pz - dz, z) : 0.;
         // return c ? c * std::pow(x, px - dx) * std::pow(y, py - dy) * std::pow(z, pz - dz) : 0.;
+    }
+
+    template <int dim, int rank, class VLe, class VRi>
+    real NormSymDiffOrderTensorV(VLe &&Le, VRi &&Ri)
+    {
+        real ret = 0;
+        if constexpr (dim == 3)
+        {
+            if constexpr (rank == 0)
+            {
+                ret += Le(0, 0) * Ri(0, 0) * diffNCombs[0];
+            }
+            else if constexpr (rank == 1)
+            {
+                ret += Le(0, 0) * Ri(0, 0) * diffNCombs[0 + 1];
+                ret += Le(1, 0) * Ri(1, 0) * diffNCombs[1 + 1];
+                ret += Le(2, 0) * Ri(2, 0) * diffNCombs[2 + 1];
+            }
+            else if constexpr (rank == 2)
+            {
+                ret += Le(0, 0) * Ri(0, 0) * diffNCombs[0 + 4];
+                ret += Le(1, 0) * Ri(1, 0) * diffNCombs[1 + 4];
+                ret += Le(2, 0) * Ri(2, 0) * diffNCombs[2 + 4];
+                ret += Le(3, 0) * Ri(3, 0) * diffNCombs[3 + 4];
+                ret += Le(4, 0) * Ri(4, 0) * diffNCombs[4 + 4];
+                ret += Le(5, 0) * Ri(5, 0) * diffNCombs[5 + 4];
+            }
+            else if constexpr (rank == 3)
+            {
+                ret += Le(0, 0) * Ri(0, 0) * diffNCombs[0 + 10];
+                ret += Le(1, 0) * Ri(1, 0) * diffNCombs[1 + 10];
+                ret += Le(2, 0) * Ri(2, 0) * diffNCombs[2 + 10];
+                ret += Le(3, 0) * Ri(3, 0) * diffNCombs[3 + 10];
+                ret += Le(4, 0) * Ri(4, 0) * diffNCombs[4 + 10];
+                ret += Le(5, 0) * Ri(5, 0) * diffNCombs[5 + 10];
+                ret += Le(6, 0) * Ri(6, 0) * diffNCombs[6 + 10];
+                ret += Le(7, 0) * Ri(7, 0) * diffNCombs[7 + 10];
+                ret += Le(8, 0) * Ri(8, 0) * diffNCombs[8 + 10];
+                ret += Le(9, 0) * Ri(9, 0) * diffNCombs[9 + 10];
+            }
+            else
+            {
+                DNDS_assert(false);
+            }
+        }
+        else
+        {
+            if constexpr (rank == 0)
+            {
+                ret += Le(0) * Ri(0) * diffNCombs2D[0];
+            }
+            else if constexpr (rank == 1)
+            {
+                ret += Le(0) * Ri(0) * diffNCombs2D[0 + 1];
+                ret += Le(1) * Ri(1) * diffNCombs2D[1 + 1];
+            }
+            else if constexpr (rank == 2)
+            {
+                ret += Le(0) * Ri(0) * diffNCombs2D[0 + 3];
+                ret += Le(1) * Ri(1) * diffNCombs2D[1 + 3];
+                ret += Le(2) * Ri(2) * diffNCombs2D[2 + 3];
+            }
+            else if constexpr (rank == 3)
+            {
+                ret += Le(0) * Ri(0) * diffNCombs2D[0 + 6];
+                ret += Le(1) * Ri(1) * diffNCombs2D[1 + 6];
+                ret += Le(2) * Ri(2) * diffNCombs2D[2 + 6];
+                ret += Le(3) * Ri(3) * diffNCombs2D[3 + 6];
+            }
+            else
+            {
+                DNDS_assert(false);
+            }
+        }
+        return ret;
+    }
+
+    template <int dim>
+    inline int GetNDof(int maxOrder)
+    {
+        int maxNDOF = -1;
+        switch (maxOrder)
+        {
+        case 0:
+            maxNDOF = PolynomialNDOF<dim, 0>();
+            break;
+        case 1:
+            maxNDOF = PolynomialNDOF<dim, 1>();
+            break;
+        case 2:
+            maxNDOF = PolynomialNDOF<dim, 2>();
+            break;
+        case 3:
+            maxNDOF = PolynomialNDOF<dim, 3>();
+            break;
+        default:
+        {
+            DNDS_assert_info(false, "maxNDOF invalid");
+        }
+        }
+        return maxNDOF;
     }
 }

@@ -1,6 +1,7 @@
 
 #include "VariationalReconstruction.hpp"
 #include "omp.h"
+#include "DNDS/HardEigen.hpp"
 
 namespace DNDS::CFV
 {
@@ -23,7 +24,6 @@ namespace DNDS::CFV
         this->MakePairDefaultOnCell(cellIntPPhysics);
         this->MakePairDefaultOnCell(cellAlignedHBox);
 #ifdef DNDS_USE_OMP
-        omp_set_num_threads(MPIWorldSize() == 1 ? omp_get_num_procs() : 1);
 #pragma omp parallel for
 #endif
         for (index iCell = 0; iCell < mesh->NumCellProc(); iCell++)
@@ -55,6 +55,9 @@ namespace DNDS::CFV
                 });
             volumeLocal[iCell] = v;
             if (iCell < mesh->NumCell()) // non-ghost
+#ifdef DNDS_USE_OMP
+#pragma omp critical
+#endif
                 sumVolume += v;
             //****** Get Int Point PPhy and Bary
             tPoint b{0, 0, 0};
@@ -101,9 +104,7 @@ namespace DNDS::CFV
         this->MakePairDefaultOnFace(faceIntPPhysics);
         this->MakePairDefaultOnFace(faceCent);
 
-        
 #ifdef DNDS_USE_OMP
-        omp_set_num_threads(MPIWorldSize() == 1 ? omp_get_num_procs() : 1);
 #pragma omp parallel for
 #endif
         for (index iFace = 0; iFace < mesh->NumFaceProc(); iFace++)
@@ -196,30 +197,12 @@ namespace DNDS::CFV
 
     template <int dim>
     void
-    VariationalReconstruction<dim>::ConstructBaseAndWeight()
+    VariationalReconstruction<dim>::
+        ConstructBaseAndWeight()
     {
         using namespace Geom;
         using namespace Geom::Elem;
-        int maxNDOF = -1;
-        switch (settings.maxOrder)
-        {
-        case 0:
-            maxNDOF = PolynomialNDOF<dim, 0>();
-            break;
-        case 1:
-            maxNDOF = PolynomialNDOF<dim, 1>();
-            break;
-        case 2:
-            maxNDOF = PolynomialNDOF<dim, 2>();
-            break;
-        case 3:
-            maxNDOF = PolynomialNDOF<dim, 3>();
-            break;
-        default:
-        {
-            DNDS_assert_info(false, "maxNDOF invalid");
-        }
-        }
+        int maxNDOF = GetNDof<dim>(settings.maxOrder);
         // for polynomial: ndiff = ndof
         int maxNDIFF = maxNDOF;
         /******************************/
@@ -230,7 +213,6 @@ namespace DNDS::CFV
             this->MakePairDefaultOnCell(cellDiffBaseCache, maxNDIFF, maxNDOF);
         }
 #ifdef DNDS_USE_OMP
-        omp_set_num_threads(MPIWorldSize() == 1 ? omp_get_num_procs() : 1);
 #pragma omp parallel for
 #endif
         for (index iCell = 0; iCell < mesh->NumCellProc(); iCell++)
@@ -280,7 +262,6 @@ namespace DNDS::CFV
             this->MakePairDefaultOnFace(faceDiffBaseCache, maxNDIFF, maxNDOF);
         }
 #ifdef DNDS_USE_OMP
-        omp_set_num_threads(MPIWorldSize() == 1 ? omp_get_num_procs() : 1);
 #pragma omp parallel for
 #endif
         for (index iFace = 0; iFace < mesh->NumFaceProc(); iFace++)
@@ -358,5 +339,106 @@ namespace DNDS::CFV
     VariationalReconstruction<3>::
         ConstructBaseAndWeight();
 
-    
+    template <int dim>
+    void
+    VariationalReconstruction<dim>::ConstructRecCoeff()
+    {
+        using namespace Geom;
+        using namespace Geom::Elem;
+        int maxNDOF = GetNDof<dim>(settings.maxOrder);
+        this->MakePairDefaultOnCell(matrixAB, maxNDOF - 1, maxNDOF - 1);
+        this->MakePairDefaultOnCell(matrixAAInvB, maxNDOF - 1, maxNDOF - 1);
+        this->MakePairDefaultOnCell(vectorB, maxNDOF - 1, 1);
+        this->MakePairDefaultOnCell(vectorAInvB, maxNDOF - 1, 1);
+#ifdef DNDS_USE_OMP
+#pragma omp parallel for
+#endif
+        for (index iCell = 0; iCell < mesh->NumCell(); iCell++) // only non-ghost
+        {
+            matrixAB.ResizeRow(iCell, mesh->cell2face.RowSize(iCell) + 1);
+            matrixAAInvB.ResizeRow(iCell, mesh->cell2face.RowSize(iCell) + 1);
+            vectorB.ResizeRow(iCell, mesh->cell2face.RowSize(iCell));
+            vectorAInvB.ResizeRow(iCell, mesh->cell2face.RowSize(iCell));
+
+            //*get A
+            Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic> A;
+            A.setZero(cellAtr[iCell].NDOF - 1, cellAtr[iCell].NDOF - 1);
+            for (int ic2f = 0; ic2f < mesh->cell2face.RowSize(iCell); ic2f++)
+            {
+                index iFace = mesh->cell2face(iCell, ic2f);
+                auto qFace = this->GetFaceQuad(iFace);
+                qFace.Integration(
+                    A,
+                    [&](auto &vInc, int iG, const tPoint &pParam, const Elem::tD01Nj &DiNj)
+                    {
+                        decltype(A) DiffI = this->GetIntPointDiffBaseValue(iCell, iFace, -1, iG, Eigen::all);
+                        vInc = this->FFaceFunctional(DiffI, DiffI, iFace, iG);
+                        vInc *= faceIntJacobiDet(iFace, iG);
+                    });
+            }
+            decltype(A) AInv;
+            HardEigen::EigenLeastSquareInverse(A, AInv);
+            matrixAB(iCell, 0) = A;
+            matrixAAInvB(iCell, 0) = AInv;
+
+            //*get B
+            for (int ic2f = 0; ic2f < mesh->cell2face.RowSize(iCell); ic2f++)
+            {
+                index iFace = mesh->cell2face(iCell, ic2f);
+                auto qFace = this->GetFaceQuad(iFace);
+                index iCellOther = CellFaceOther(iCell, iFace);
+                if (FaceIDIsExternalBC(mesh->GetFaceZone(iFace)))
+                {
+                    DNDS_assert(iCellOther == UnInitIndex);
+                    continue;
+                    // if is periodic, already handled correctly
+                }
+                Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic> B;
+                B.setZero(cellAtr[iCell].NDOF - 1, cellAtr[iCellOther].NDOF - 1);
+                qFace.Integration(
+                    B,
+                    [&](auto &vInc, int iG, const tPoint &pParam, const Elem::tD01Nj &DiNj)
+                    {
+                        decltype(B) DiffI = this->GetIntPointDiffBaseValue(iCell, iFace, -1, iG, Eigen::all);
+                        decltype(B) DiffJ = this->GetIntPointDiffBaseValue(iCellOther, iFace, -1, iG, Eigen::all);
+                        vInc = this->FFaceFunctional(DiffI, DiffJ, iFace, iG);
+                        vInc *= faceIntJacobiDet(iFace, iG);
+                    });
+                matrixAB(iCell, 1 + ic2f) = B;
+                matrixAAInvB(iCell, 1 + ic2f) = AInv * B;
+            }
+
+            //*get b
+            for (int ic2f = 0; ic2f < mesh->cell2face.RowSize(iCell); ic2f++)
+            {
+                index iFace = mesh->cell2face(iCell, ic2f);
+                auto qFace = this->GetFaceQuad(iFace);
+                Eigen::Matrix<real, Eigen::Dynamic, 1> b;
+                b.setZero(cellAtr[iCell].NDOF - 1, 1);
+                qFace.Integration(
+                    b,
+                    [&](auto &vInc, int iG, const tPoint &pParam, const Elem::tD01Nj &DiNj)
+                    {
+                        Eigen::RowVector<real, Eigen::Dynamic> DiffI = this->GetIntPointDiffBaseValue(iCell, iFace, -1, iG, std::array<int, 1>{0});
+                        vInc = this->FFaceFunctional(DiffI, Eigen::MatrixXd::Ones(1, 1), iFace, iG);
+                        vInc *= faceIntJacobiDet(iFace, iG);
+                    });
+                vectorB(iCell, ic2f) = b;
+                vectorAInvB(iCell, ic2f) = AInv * b;
+            }
+            DNDS_assert(AInv.allFinite());
+            // std::cout << "=============" << std::endl;
+            // std::cout << AInv << std::endl;
+        }
+        matrixAB.CompressBoth();
+        matrixAAInvB.CompressBoth();
+        vectorAInvB.CompressBoth();
+        vectorB.CompressBoth();
+    }
+
+    template void
+    VariationalReconstruction<2>::ConstructRecCoeff();
+
+    template void
+    VariationalReconstruction<3>::ConstructRecCoeff();
 }
