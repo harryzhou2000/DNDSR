@@ -17,7 +17,7 @@ namespace DNDS
     typedef int MPI_int;
     typedef MPI_Aint MPI_index;
 #define MAX_MPI_int INT32_MAX
-#define MAX_MPI_Aint INT64_MAX 
+#define MAX_MPI_Aint INT64_MAX
     static_assert(sizeof(MPI_Aint) == 8);
 
     typedef std::vector<MPI_int> tMPI_sizeVec;
@@ -106,6 +106,13 @@ namespace DNDS
         }
     };
 
+    inline MPI_int MPIWorldSize()
+    {
+        MPI_int ret{0};
+        MPI_Comm_size(MPI_COMM_WORLD, &ret);
+        return ret;
+    }
+
     std::string getTimeStamp(const MPIInfo &mpi);
 
     inline void InsertCheck(const MPIInfo &mpi, const std::string &info = "",
@@ -125,7 +132,7 @@ namespace DNDS
 
     template <class F>
     inline void MPISerialDo(const MPIInfo &mpi, F f)
-    { //!need some improvement: order could be bad?
+    { //! need some improvement: order could be bad?
         for (MPI_int i = 0; i < mpi.size; i++)
         {
             MPI_Barrier(mpi.comm);

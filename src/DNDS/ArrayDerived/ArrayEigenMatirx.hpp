@@ -67,15 +67,25 @@ namespace DNDS
             else if constexpr (_mat_ni == DynamicSize)
                 _mat_nRow_dynamic = nSizeRowDynamic;
 
-            t_base::Resize(nSize, nSizeRowDynamic * nSizeColDynamic);
+            this->t_base::Resize(nSize, nSizeRowDynamic * nSizeColDynamic);
         }
 
         void ResizeMat(index iMat, rowsize nSizeRow, rowsize nSizeCol)
         {
+            this->ResizeRow(iMat, nSizeRow, nSizeCol);
+        }
+
+        void ResizeRow(index iMat, rowsize nSizeRow, rowsize nSizeCol)
+        {
             if constexpr (_mat_ni == NonUniformSize)
-                t_base::ResizeRow(iMat, nSizeRow * nSizeCol), (*_mat_nRows)[iMat] = nSizeRow;
+                this->t_base::ResizeRow(iMat, nSizeRow * nSizeCol), (*_mat_nRows)[iMat] = nSizeRow;
             else if constexpr (_mat_ni == DynamicSize)
                 DNDS_assert_info(false, "Invalid call");
+        }
+
+        void operator()(index i, rowsize j)
+        {
+            // just don't call
         }
 
         t_EigenMap

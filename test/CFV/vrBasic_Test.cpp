@@ -34,6 +34,7 @@ void testConstruct()
 
     auto vr = DNDS::CFV::VariationalReconstruction<2>(mpi, mesh);
     vr.ConstructMetrics();
+    vr.ConstructBaseAndWeight();
 }
 
 int main(int argc, char *argv[])

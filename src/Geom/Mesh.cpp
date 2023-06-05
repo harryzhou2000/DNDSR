@@ -1559,6 +1559,7 @@ namespace DNDS::Geom
                 eCell.ExtractFaceNodes(ic2f, cell2node[iCell], faceNodes);
                 DNDS::index iFound = -1;
                 std::vector<DNDS::index> faceVerts(faceNodes.begin(), faceNodes.begin() + eFace.GetNumVertices());
+                std::vector<DNDS::index> faceVertsOrigin = faceVerts;
                 std::sort(faceVerts.begin(), faceVerts.end());
                 for (auto iV : faceVerts)
                     if (iFound < 0)
@@ -1579,7 +1580,7 @@ namespace DNDS::Geom
                 if (iFound < 0)
                 {
                     // * face not existent yet
-                    face2nodeV.emplace_back(faceVerts);
+                    face2nodeV.emplace_back(faceVertsOrigin); // note: faceverts sorted here!
                     face2cellV.emplace_back(std::make_pair(iCell, DNDS::UnInitIndex));
                     faceElemInfoV.emplace_back(ElemInfo{eFace.type, 0});
                     for (auto iV : faceVerts)
@@ -1745,7 +1746,8 @@ namespace DNDS::Geom
         // tend to unattended cell2face with pointing to ghost
         for (DNDS::index iFace = 0; iFace < face2cell.son->Size(); iFace++) // face2cell points to local now
         {
-            DNDS_assert((*face2cell.son)(iFace, 0) >= cell2node.father->Size()); // before: first points to inner, //!relies on the order of setting face2cell
+            // before: first points to inner, //!relies on the order of setting face2cell
+            DNDS_assert((*face2cell.son)(iFace, 0) >= cell2node.father->Size());
             auto eFace = Elem::Element{(*faceElemInfo.son)(iFace, 0).getElemType()};
             auto faceVerts = std::vector<index>((*face2node.son)[iFace].begin(), (*face2node.son)[iFace].begin() + eFace.GetNumVertices());
             std::sort(faceVerts.begin(), faceVerts.end()); //* do not forget to do set operation sort first
