@@ -107,6 +107,10 @@ namespace DNDS::Geom
         index NumFace() { return face2node.father->Size(); }
         index NumBnd() { return bnd2node.father->Size(); }
 
+        index NumNodeGhost() { return coords.son->Size(); }
+        index NumCellGhost() { return cell2node.son->Size(); }
+        index NumFaceGhost() { return face2node.son->Size(); }
+
         index NumNodeProc() { return coords.Size(); }
         index NumCellProc() { return cell2node.Size(); }
         index NumFaceProc() { return face2node.Size(); }

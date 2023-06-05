@@ -204,7 +204,7 @@ int main(int argc, char *argv[])
     // test_ADJ();
     // test_Vec();
     test_Mat();
-    // test_UniMatBatch();
+    test_UniMatBatch();
     // test_MatBatch();
 
     // MPI_Finalize();

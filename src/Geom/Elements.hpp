@@ -1059,4 +1059,9 @@ namespace DNDS::Geom::Elem
         return cs * DiNj({1, 2, 3}, Eigen::all).transpose();
     }
 
+    template <class tCoordsIn>
+    tPoint PPhysicsCoordD01Nj(const tCoordsIn &cs, const tD01Nj &DiNj)
+    {
+        return cs * DiNj(0, Eigen::all).transpose();
+    }
 }

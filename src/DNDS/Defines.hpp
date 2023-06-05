@@ -106,6 +106,7 @@ namespace DNDS
 
     template <typename T>
     using ssp = std::shared_ptr<T>;
+/// TODO: change to template:
 #define DNDS_MAKE_SSP(ssp, ...) (ssp = std::make_shared<typename decltype(ssp)::element_type>(__VA_ARGS__))
 
 } // namespace DNDS

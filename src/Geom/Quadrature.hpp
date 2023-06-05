@@ -719,5 +719,24 @@ namespace DNDS::Geom::Elem
                 buf += acc * w;
             }
         }
+
+        /**
+         * @param f  f(TAcc& inc, int iG)
+         */
+        template <class TAcc, class TFunc>
+        void IntegrationSimple(TAcc &buf, TFunc &&f)
+        {
+            for (t_index iG = 0; iG < int_scheme; iG++)
+            {
+                tPoint pParam{0, 0, 0};
+                t_real w;
+                GetQuadraturePoint(ps, int_scheme, iG, pParam, w);
+                TAcc acc;
+                f(acc, iG);
+                buf += acc * w;
+            }
+        }
+
+        t_index GetNumPoints() { return int_scheme; }
     };
 }

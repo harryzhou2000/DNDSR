@@ -54,6 +54,12 @@ namespace DNDS
             DNDS_assert(bool(father) && bool(son));
             trans.setFatherSon(father, son);
         }
+
+        void CompressBoth()
+        {
+            father->Compress();
+            son->Compress();
+        }
     };
 
     template <rowsize _row_size = 1, rowsize _row_max = _row_size, rowsize _align = NoAlign>

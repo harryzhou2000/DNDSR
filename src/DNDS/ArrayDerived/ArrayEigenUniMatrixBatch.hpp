@@ -70,6 +70,14 @@ namespace DNDS
             this->t_base::Resize(n_size);
         }
 
+        void Resize(index n_size)
+        {
+            if constexpr (_n_row > 0 && _n_col > 0)
+                this->Resize(n_size, -1, -1);
+            else
+                DNDS_assert_info(false, "invalid call");
+        }
+
     public:
         int Rows() { return _n_row > 0 ? _n_row : _row_dynamic; }
         int Cols() { return _n_col > 0 ? _n_col : _col_dynamic; }
@@ -83,10 +91,20 @@ namespace DNDS
 
         void ResizeBatch(index i, rowsize b_size)
         {
-            this->ResizeRow(i, b_size * MSize());
+            this->ResizeRow(i, b_size);
+        }
+
+        void ResizeRow(index i, rowsize b_size)
+        {
+            this->t_base::ResizeRow(i, b_size * MSize());
         }
 
         rowsize BatchSize(index i)
+        {
+            return this->RowSize(i);
+        }
+
+        rowsize RowSize(index i)
         {
             rowsize row_size_c = this->t_base::RowSize(i);
             DNDS_assert(row_size_c % MSize() == 0);

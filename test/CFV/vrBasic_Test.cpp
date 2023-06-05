@@ -16,13 +16,13 @@ void testConstruct()
     // DNDS::Debug::MPIDebugHold(mpi);
     char buf[512];
     // std::cout << getcwd(buf, 512) << std::endl;
-    auto mesh = std::make_shared<DNDS::Geom::UnstructuredMesh>(mpi, 3);
+    auto mesh = std::make_shared<DNDS::Geom::UnstructuredMesh>(mpi, 2);
     auto reader = DNDS::Geom::UnstructuredMeshSerialRW(mesh, 0);
     // "../data/mesh/FourTris_V1.pw.cgns"
     // "../data/mesh/SC20714_MixedA.cgns"
     // "../data/mesh/UniformDM240_E120.cgns"
     // "../data/mesh/Ball.cgns"
-    reader.ReadFromCGNSSerial("../data/mesh/Ball2.cgns");
+    reader.ReadFromCGNSSerial("../data/mesh/SC20714_MixedA.cgns");
     reader.BuildCell2Cell();
     reader.MeshPartitionCell2Cell();
     reader.PartitionReorderToMeshCell2Cell();
@@ -32,7 +32,7 @@ void testConstruct()
     mesh->InterpolateFace();
     mesh->AssertOnFaces();
 
-    auto vr = DNDS::CFV::VariationalReconstruction<3>(mpi, mesh);
+    auto vr = DNDS::CFV::VariationalReconstruction<2>(mpi, mesh);
     vr.ConstructMetrics();
 }
 

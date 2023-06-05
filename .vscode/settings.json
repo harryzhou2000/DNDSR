@@ -110,8 +110,10 @@
         "valarray": "cpp"
     },
     "cSpell.words": [
+        "Bary",
         "DNDS",
-        "rowsize"
+        "rowsize",
+        "Vecs"
     ],
     // "C_Cpp.intelliSenseEngine": "Tag Parser"
 }
