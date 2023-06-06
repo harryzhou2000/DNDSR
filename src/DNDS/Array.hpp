@@ -128,7 +128,7 @@ namespace DNDS
         t_Data _data;
         t_DataUncompressed _dataUncompressed;
 
-        index _size = 0;             // in number of T
+        index _size = 0;               // in number of T
         rowsize _row_size_dynamic = 0; // in number of T
     public:
         t_pRowStart getRowStart() { return _pRowStart; }
@@ -478,7 +478,7 @@ namespace DNDS
                 else if (this->Size() == 0)
                 {
                     static_assert(((T *)(NULL) - (T *)(NULL)) == 0);
-                    return (T*)(NULL); // used for past-the-end inquiry of size 0 array
+                    return (T *)(NULL); // used for past-the-end inquiry of size 0 array
                 }
                 else
                 {
@@ -501,7 +501,7 @@ namespace DNDS
 
         size_t DataSize()
         {
-            if(this->Size() == 0)
+            if (this->Size() == 0)
                 return 0;
             if constexpr (_dataLayout == CSR)
                 DNDS_assert_info(this->IfCompressed(), "CSR must be compressed to get data pointer");
@@ -520,6 +520,11 @@ namespace DNDS
         }
 
         DataLayout GetDataLayout() { return _dataLayout; }
+
+        void CopyData(const self_type &R)
+        {
+            this->operator=(R); // currently ok!
+        }
     };
 
 }

@@ -179,6 +179,7 @@ meshSerial_Test
 )
 
 set(TESTS_CFV
+vrStatic_Test
 vrBasic_Test
 )
 

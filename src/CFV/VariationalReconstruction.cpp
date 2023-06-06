@@ -219,6 +219,7 @@ namespace DNDS::CFV
         {
             cellAtr[iCell].NDIFF = maxNDIFF;
             cellAtr[iCell].NDOF = maxNDOF;
+            cellAtr[iCell].relax = settings.jacobiRelax;
             auto eCell = mesh->GetFaceElement(iCell);
             auto qCell = Quadrature{eCell, cellAtr[iCell].intOrder};
             if (settings.cacheDiffBase)
@@ -273,13 +274,13 @@ namespace DNDS::CFV
 
             // * get bdv cache
             SummationNoOp noOp;
-            for (int ic2f = 0; ic2f < 2; ic2f++)
+            for (int if2c = 0; if2c < 2; if2c++)
             {
-                index iCell = mesh->face2cell(iFace, ic2f);
+                index iCell = mesh->face2cell(iFace, if2c);
                 if (iCell == UnInitIndex)
                     continue;
                 if (FaceIDIsExternalBC(mesh->GetFaceZone(iFace)))
-                    DNDS_assert(ic2f == 0);
+                    DNDS_assert(if2c == 0);
                 else if (FaceIDIsPeriodic(mesh->GetFaceZone(iFace)))
                 {
                     // TODO: handle the case with periodic
@@ -294,7 +295,7 @@ namespace DNDS::CFV
                             Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic> dbv;
                             dbv.resize(faceAtr[iFace].NDIFF, cellAtr[iCell].NDOF);
                             this->FDiffBaseValue(dbv, faceIntPPhysics(iFace, iG), iCell, iFace, iG, 0);
-                            faceDiffBaseCache(iFace, ic2f * qFace.GetNumPoints() + iG) = dbv;
+                            faceDiffBaseCache(iFace, if2c * qFace.GetNumPoints() + iG) = dbv;
                         }
                     });
             }
@@ -302,13 +303,13 @@ namespace DNDS::CFV
             // *get face (derivatives) scale: cell average AlignedHBox mode
             tPoint faceScale{0, 0, 0};
             int nF2C{0};
-            for (int ic2f = 0; ic2f < 2; ic2f++)
+            for (int if2c = 0; if2c < 2; if2c++)
             {
-                index iCell = mesh->face2cell(iFace, ic2f);
+                index iCell = mesh->face2cell(iFace, if2c);
                 if (iCell == UnInitIndex)
                     continue;
                 if (FaceIDIsExternalBC(mesh->GetFaceZone(iFace)))
-                    DNDS_assert(ic2f == 0);
+                    DNDS_assert(if2c == 0);
                 else if (FaceIDIsPeriodic(mesh->GetFaceZone(iFace)))
                 {
                     // TODO: handle the case with periodic
@@ -321,7 +322,7 @@ namespace DNDS::CFV
             faceScale /= nF2C;
             faceAlignedScales[iFace] = faceScale;
 
-            // *get geom weight
+            // *get geom weight ic2f
             real wg = 1;
 
             // *get dir weight
@@ -329,6 +330,8 @@ namespace DNDS::CFV
             wd.resize(settings.maxOrder + 1);
             for (int p = 0; p < wd.size(); p++)
                 wd[p] = 1. / factorials[p];
+            if (FaceIDIsExternalBC(mesh->GetFaceZone(iFace))) // TODO: add customizable here
+                wd(Eigen::seq(1, Eigen::last)).setZero();
             faceWeight[iFace] = wd * wg;
         }
     }
@@ -419,7 +422,8 @@ namespace DNDS::CFV
                     b,
                     [&](auto &vInc, int iG, const tPoint &pParam, const Elem::tD01Nj &DiNj)
                     {
-                        Eigen::RowVector<real, Eigen::Dynamic> DiffI = this->GetIntPointDiffBaseValue(iCell, iFace, -1, iG, std::array<int, 1>{0});
+                        Eigen::RowVector<real, Eigen::Dynamic> DiffI =
+                            this->GetIntPointDiffBaseValue(iCell, iFace, -1, iG, std::array<int, 1>{0}, 1);
                         vInc = this->FFaceFunctional(DiffI, Eigen::MatrixXd::Ones(1, 1), iFace, iG);
                         vInc *= faceIntJacobiDet(iFace, iG);
                     });

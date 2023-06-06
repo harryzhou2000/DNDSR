@@ -23,6 +23,9 @@ namespace DNDS::CFV
         int intOrder{5}; // note this is actually reduced somewhat
         bool cacheDiffBase = true;
 
+        real jacobiRelax = 1.0;
+        bool SORInstead = true;
+
         VRSettings()
         {
             jsonSetting = json::object();
@@ -34,6 +37,8 @@ namespace DNDS::CFV
             jsonSetting["maxOrder"] = maxOrder;
             jsonSetting["intOrder"] = intOrder;
             jsonSetting["cacheDiffBase"] = cacheDiffBase;
+            jsonSetting["jacobiRelax"] = jacobiRelax;
+            jsonSetting["SORInstead"] = SORInstead;
         }
 
         void ParseFromJson()
@@ -41,6 +46,8 @@ namespace DNDS::CFV
             maxOrder = jsonSetting["maxOrder"];
             intOrder = jsonSetting["intOrder"];
             cacheDiffBase = jsonSetting["cacheDiffBase"];
+            jacobiRelax = jsonSetting["jacobiRelax"];
+            SORInstead = jsonSetting["SORInstead"];
         }
     };
 }
@@ -132,15 +139,6 @@ namespace DNDS::CFV
         void ConstructBaseAndWeight();
 
         void ConstructRecCoeff();
-
-        template <int nVarsFixed, class TFBoundary>
-        void DoReconstructionIter(
-            tURec<nVarsFixed> &uRec,
-            tURec<nVarsFixed> &uRecNew,
-            tUDof<nVarsFixed> &u,
-            TFBoundary &&FBoundary)
-        {
-        }
 
         /**
          * @brief make pair with default MPI type, match cell layout
@@ -372,6 +370,130 @@ namespace DNDS::CFV
                     }
             }
             return Conj;
+        }
+
+        template <int nVarsFixed = 1>
+        void BuildUDof(tUDof<nVarsFixed> &u, int nVars)
+        {
+            DNDS_MAKE_SSP(u.father, mpi);
+            DNDS_MAKE_SSP(u.son, mpi);
+            u.father->Resize(mesh->NumCell(), nVars, 1);
+            u.TransAttach();
+            u.trans.BorrowGGIndexing(mesh->cell2node.trans);
+            u.trans.createMPITypes();
+            u.trans.initPersistentPull();
+            u.trans.initPersistentPush();
+
+            for (index iCell = 0; iCell < mesh->NumCellProc(); iCell++)
+                u[iCell].setZero();
+        }
+
+        template <int nVarsFixed>
+        void BuildURec(tURec<nVarsFixed> &u, int nVars)
+        {
+            int maxNDOF = GetNDof<dim>(settings.maxOrder);
+            DNDS_MAKE_SSP(u.father, mpi);
+            DNDS_MAKE_SSP(u.son, mpi);
+            u.father->Resize(mesh->NumCell(), maxNDOF, nVars);
+            u.TransAttach();
+            u.trans.BorrowGGIndexing(mesh->cell2node.trans);
+            u.trans.createMPITypes();
+            u.trans.initPersistentPull();
+            u.trans.initPersistentPush();
+
+            for (index iCell = 0; iCell < mesh->NumCellProc(); iCell++)
+                u[iCell].setZero();
+        }
+
+        template <int nVarsFixed, class TFBoundary>
+        void DoReconstructionIter(
+            tURec<nVarsFixed> &uRec,
+            tURec<nVarsFixed> &uRecNew,
+            tUDof<nVarsFixed> &u,
+            TFBoundary &&FBoundary,
+            bool putIntoNew = false)
+        {
+            using namespace Geom;
+            using namespace Geom::Elem;
+            int maxNDOF = GetNDof<dim>(settings.maxOrder);
+            for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
+            {
+                real relax = cellAtr[iCell].relax;
+                if (settings.SORInstead)
+                    uRec[iCell] = uRec[iCell] * (1 - relax);
+                else
+                    uRecNew[iCell] = uRec[iCell] * (1 - relax);
+
+                auto c2f = mesh->cell2face[iCell];
+                auto matrixAAInvBRow = matrixAAInvB[iCell];
+                auto vectorAInvBRow = vectorAInvB[iCell];
+                for (int ic2f = 0; ic2f < c2f.size(); ic2f++)
+                {
+                    index iFace = c2f[ic2f];
+                    index iCellOther = CellFaceOther(iCell, iFace);
+                    if (iCellOther != UnInitIndex)
+                    {
+                        if (settings.SORInstead)
+                            uRec[iCell] +=
+                                relax *
+                                (matrixAAInvBRow[ic2f + 1] * uRec[iCellOther] +
+                                 vectorAInvBRow[ic2f] * (u[iCellOther] - u[iCell]).transpose());
+                        else
+                            uRecNew[iCell] +=
+                                relax *
+                                (matrixAAInvBRow[ic2f + 1] * uRec[iCellOther] +
+                                 vectorAInvBRow[ic2f] * (u[iCellOther] - u[iCell]).transpose());
+                    }
+                    else
+                    {
+                        auto faceID = mesh->GetFaceZone(iFace);
+                        DNDS_assert(FaceIDIsExternalBC(faceID));
+
+                        int nVars = u[iCell].size();
+
+                        Eigen::Matrix<real, Eigen::Dynamic, nVarsFixed> BCC;
+                        BCC.setZero(uRec[iCell].rows(), uRec[iCell].cols());
+
+                        auto qFace = this->GetFaceQuad(iFace);
+                        qFace.IntegrationSimple(
+                            BCC,
+                            [&](auto &vInc, int iG)
+                            {
+                                Eigen::Matrix<real, 1, Eigen::Dynamic> dbv =
+                                    this->GetIntPointDiffBaseValue(
+                                        iCell, iFace, -1, iG, std::array<int, 1>{1}, 1);
+                                Eigen::Vector<real, nVarsFixed> uBL =
+                                    (dbv *
+                                     uRec[iCell])
+                                        .transpose();
+                                uBL += u[iCell]; //! need fixing?
+                                Eigen::Vector<real, nVarsFixed> uBV =
+                                    FBoundary(
+                                        uBL,
+                                        faceUnitNorm(iFace, iG),
+                                        faceIntPPhysics(iFace, iG), faceID);
+                                //! need further maths here!
+                                Eigen::RowVector<real, nVarsFixed> uIncBV = (uBV - uBL).transpose();
+                                vInc =
+                                    this->FFaceFunctional(dbv, uIncBV, iFace, iG) * faceIntJacobiDet(iFace, iG);
+                            });
+                        BCC *= 0;
+                        if (settings.SORInstead)
+                            uRec[iCell] +=
+                                relax * matrixAAInvBRow[0] * BCC;
+                        else
+                            uRecNew[iCell] +=
+                                relax * matrixAAInvBRow[0] * BCC;
+                    }
+                }
+            }
+
+            if (putIntoNew && settings.SORInstead)
+                for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
+                    uRecNew[iCell].swap(uRec[iCell]);
+            if ((!putIntoNew) && (!settings.SORInstead))
+                for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
+                    uRec[iCell].swap(uRecNew[iCell]);
         }
     };
 }
