@@ -8,7 +8,8 @@
             "name": "(gdb) Attach",
             "type": "cppdbg",
             "request": "attach",
-            "program": "${workspaceFolder}/build/test/meshSerial_Test.exe",
+            // "program": "${workspaceFolder}/build/test/meshSerial_Test.exe",
+            "program": "${workspaceFolder}/build/test/vrStatic_Test.exe",
             "MIMode": "gdb",
             "setupCommands": [
                 {

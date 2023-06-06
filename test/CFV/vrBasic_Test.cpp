@@ -12,18 +12,20 @@ valgrind --log-file=log_valgrind.log
 
 void testConstruct()
 {
+    static const int dim = 3;
+
     auto mpi = DNDS::MPIInfo();
     mpi.setWorld();
     // DNDS::Debug::MPIDebugHold(mpi);
     char buf[512];
     // std::cout << getcwd(buf, 512) << std::endl;
-    auto mesh = std::make_shared<DNDS::Geom::UnstructuredMesh>(mpi, 2);
+    auto mesh = std::make_shared<DNDS::Geom::UnstructuredMesh>(mpi, dim);
     auto reader = DNDS::Geom::UnstructuredMeshSerialRW(mesh, 0);
     // "../data/mesh/FourTris_V1.pw.cgns"
     // "../data/mesh/SC20714_MixedA.cgns"
     // "../data/mesh/UniformDM240_E120.cgns"
     // "../data/mesh/Ball.cgns"
-    reader.ReadFromCGNSSerial("../data/mesh/SC20714_MixedA.cgns");
+    reader.ReadFromCGNSSerial("../data/mesh/Ball2_O2.cgns");
     reader.BuildCell2Cell();
     reader.MeshPartitionCell2Cell();
     reader.PartitionReorderToMeshCell2Cell();
@@ -33,7 +35,7 @@ void testConstruct()
     mesh->InterpolateFace();
     mesh->AssertOnFaces();
 
-    auto vr = DNDS::CFV::VariationalReconstruction<2>(mpi, mesh);
+    auto vr = DNDS::CFV::VariationalReconstruction<dim>(mpi, mesh);
 #ifdef DNDS_USE_OMP
     omp_set_num_threads(DNDS::MPIWorldSize() == 1 ? std::min(omp_get_num_procs(), omp_get_max_threads()) : 1);
 #endif

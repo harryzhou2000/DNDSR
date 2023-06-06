@@ -191,14 +191,14 @@ namespace DNDS::CFV
             for (int idiff = 0; idiff < DiBj.rows(); idiff++)
                 for (int ibase = 0; ibase < DiBj.cols(); ibase++)
                 {
-                    int px = diffOperatorOrderList2D[ibase][0];
-                    int py = diffOperatorOrderList2D[ibase][1];
-                    int pz = diffOperatorOrderList2D[ibase][2];
-                    int ndx = diffOperatorOrderList2D[idiff][0];
-                    int ndy = diffOperatorOrderList2D[idiff][1];
-                    int ndz = diffOperatorOrderList2D[idiff][2];
                     if constexpr (dim == 2)
                     {
+                        int px = diffOperatorOrderList2D[ibase][0];
+                        int py = diffOperatorOrderList2D[ibase][1];
+                        int pz = diffOperatorOrderList2D[ibase][2];
+                        int ndx = diffOperatorOrderList2D[idiff][0];
+                        int ndy = diffOperatorOrderList2D[idiff][1];
+                        int ndz = diffOperatorOrderList2D[idiff][2];
                         DiBj(idiff, ibase) =
                             FPolynomial3D(px, py, pz, ndx, ndy, ndz,
                                           pPhysicsCScaled(0), pPhysicsCScaled(1), pPhysicsCScaled(2)) /
@@ -206,6 +206,12 @@ namespace DNDS::CFV
                     }
                     else
                     {
+                        int px = diffOperatorOrderList[ibase][0];
+                        int py = diffOperatorOrderList[ibase][1];
+                        int pz = diffOperatorOrderList[ibase][2];
+                        int ndx = diffOperatorOrderList[idiff][0];
+                        int ndy = diffOperatorOrderList[idiff][1];
+                        int ndz = diffOperatorOrderList[idiff][2];
                         DiBj(idiff, ibase) =
                             FPolynomial3D(px, py, pz, ndx, ndy, ndz,
                                           pPhysicsCScaled(0), pPhysicsCScaled(1), pPhysicsCScaled(2)) /
@@ -243,11 +249,10 @@ namespace DNDS::CFV
             TList &&diffList = Eigen::all,
             uint8_t maxDiff = UINT8_MAX)
         {
-            if (if2c < 0)
-                if2c = CellIsFaceBack(iCell, iFace) ? 0 : 1;
-
             if (iFace >= 0)
             {
+                if (if2c < 0)
+                    if2c = CellIsFaceBack(iCell, iFace) ? 0 : 1;
                 if (settings.cacheDiffBase)
                 {
                     // auto gFace = this->GetFaceQuad(iFace);
@@ -295,7 +300,15 @@ namespace DNDS::CFV
 
             //* PJH - rotation invariant scheme
             auto faceLV = faceAlignedScales[iFace];
-            real faceL = std::sqrt(faceLV.array().square().mean());
+            real faceL = (faceLV.array().maxCoeff());
+            // faceL = std::sqrt(faceLV.array().square().mean());
+
+            // std::cout << DiffI.transpose() << "\n"
+            //           << DiffJ.transpose() << std::endl;
+            // std::cout << faceL << std::endl;
+            // std::cout << wgd.transpose() << std::endl;
+            // std::abort();
+            // std::cout << "old len " << std::sqrt(faceLV.array().square().mean()) << std::endl;
 
             if constexpr (dim == 2)
             {
@@ -369,6 +382,9 @@ namespace DNDS::CFV
                         }
                     }
             }
+            // std::cout << DiffI << std::endl << std::endl;
+            // std::cout << Conj << std::endl;
+            // std::abort();
             return Conj;
         }
 
@@ -378,6 +394,7 @@ namespace DNDS::CFV
             DNDS_MAKE_SSP(u.father, mpi);
             DNDS_MAKE_SSP(u.son, mpi);
             u.father->Resize(mesh->NumCell(), nVars, 1);
+            u.son->Resize(mesh->NumCellGhost(), nVars, 1);
             u.TransAttach();
             u.trans.BorrowGGIndexing(mesh->cell2node.trans);
             u.trans.createMPITypes();
@@ -394,7 +411,8 @@ namespace DNDS::CFV
             int maxNDOF = GetNDof<dim>(settings.maxOrder);
             DNDS_MAKE_SSP(u.father, mpi);
             DNDS_MAKE_SSP(u.son, mpi);
-            u.father->Resize(mesh->NumCell(), maxNDOF, nVars);
+            u.father->Resize(mesh->NumCell(), maxNDOF - 1, nVars);
+            u.son->Resize(mesh->NumCellGhost(), maxNDOF - 1, nVars);
             u.TransAttach();
             u.trans.BorrowGGIndexing(mesh->cell2node.trans);
             u.trans.createMPITypes();
@@ -405,6 +423,11 @@ namespace DNDS::CFV
                 u[iCell].setZero();
         }
 
+        /**
+         * @brief
+         * @param FBoundary Vec F(const Vec &uL, const tPoint &unitNorm, const tPoint &p, t_index faceID),
+         * with Vec == Eigen::Vector<real, nVarsFixed>
+         */
         template <int nVarsFixed, class TFBoundary>
         void DoReconstructionIter(
             tURec<nVarsFixed> &uRec,
@@ -461,7 +484,7 @@ namespace DNDS::CFV
                             {
                                 Eigen::Matrix<real, 1, Eigen::Dynamic> dbv =
                                     this->GetIntPointDiffBaseValue(
-                                        iCell, iFace, -1, iG, std::array<int, 1>{1}, 1);
+                                        iCell, iFace, -1, iG, std::array<int, 1>{0}, 1);
                                 Eigen::Vector<real, nVarsFixed> uBL =
                                     (dbv *
                                      uRec[iCell])
@@ -472,12 +495,11 @@ namespace DNDS::CFV
                                         uBL,
                                         faceUnitNorm(iFace, iG),
                                         faceIntPPhysics(iFace, iG), faceID);
-                                //! need further maths here!
-                                Eigen::RowVector<real, nVarsFixed> uIncBV = (uBV - uBL).transpose();
-                                vInc =
-                                    this->FFaceFunctional(dbv, uIncBV, iFace, iG) * faceIntJacobiDet(iFace, iG);
+                                Eigen::RowVector<real, nVarsFixed> uIncBV = (uBV - u[iCell]).transpose();
+                                vInc = this->FFaceFunctional(dbv, uIncBV, iFace, iG) * faceIntJacobiDet(iFace, iG);
+                                // std::cout << faceWeight[iFace].transpose() << std::endl;
                             });
-                        BCC *= 0;
+                        // BCC *= 0;
                         if (settings.SORInstead)
                             uRec[iCell] +=
                                 relax * matrixAAInvBRow[0] * BCC;

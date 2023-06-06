@@ -1559,7 +1559,6 @@ namespace DNDS::Geom
                 eCell.ExtractFaceNodes(ic2f, cell2node[iCell], faceNodes);
                 DNDS::index iFound = -1;
                 std::vector<DNDS::index> faceVerts(faceNodes.begin(), faceNodes.begin() + eFace.GetNumVertices());
-                std::vector<DNDS::index> faceVertsOrigin = faceVerts;
                 std::sort(faceVerts.begin(), faceVerts.end());
                 for (auto iV : faceVerts)
                     if (iFound < 0)
@@ -1580,7 +1579,7 @@ namespace DNDS::Geom
                 if (iFound < 0)
                 {
                     // * face not existent yet
-                    face2nodeV.emplace_back(faceVertsOrigin); // note: faceverts sorted here!
+                    face2nodeV.emplace_back(faceNodes); // note: faceverts sorted here!
                     face2cellV.emplace_back(std::make_pair(iCell, DNDS::UnInitIndex));
                     faceElemInfoV.emplace_back(ElemInfo{eFace.type, 0});
                     for (auto iV : faceVerts)

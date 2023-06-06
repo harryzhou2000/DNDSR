@@ -220,12 +220,12 @@ namespace DNDS::CFV
             cellAtr[iCell].NDIFF = maxNDIFF;
             cellAtr[iCell].NDOF = maxNDOF;
             cellAtr[iCell].relax = settings.jacobiRelax;
-            auto eCell = mesh->GetFaceElement(iCell);
-            auto qCell = Quadrature{eCell, cellAtr[iCell].intOrder};
+            auto qCell = this->GetCellQuad(iCell);
             if (settings.cacheDiffBase)
             {
                 cellDiffBaseCache.ResizeRow(iCell, qCell.GetNumPoints());
             }
+            // std::cout << "hare" << std::endl;
 
             Eigen::RowVector<real, Eigen::Dynamic> m;
             m.setZero(cellAtr[iCell].NDOF);
@@ -238,7 +238,8 @@ namespace DNDS::CFV
                     this->FDiffBaseValue(vv, cellIntPPhysics(iCell, iG), iCell, -1, iG, 1);
                     vInc = vv * cellIntJacobiDet(iCell, iG);
                 });
-            cellBaseMoment[iCell] = m.transpose();
+            // std::cout << m << std::endl;
+            cellBaseMoment[iCell] = m.transpose() / volumeLocal[iCell];
             SummationNoOp noOp;
             qCell.Integration(
                 noOp,
@@ -331,9 +332,12 @@ namespace DNDS::CFV
             for (int p = 0; p < wd.size(); p++)
                 wd[p] = 1. / factorials[p];
             if (FaceIDIsExternalBC(mesh->GetFaceZone(iFace))) // TODO: add customizable here
-                wd(Eigen::seq(1, Eigen::last)).setZero();
+                wd(Eigen::seq(1, Eigen::last)).setZero(), wd *= 1;
             faceWeight[iFace] = wd * wg;
         }
+
+        faceDiffBaseCache.CompressBoth();
+        cellDiffBaseCache.CompressBoth();
     }
     template void
     VariationalReconstruction<2>::
@@ -377,12 +381,18 @@ namespace DNDS::CFV
                         decltype(A) DiffI = this->GetIntPointDiffBaseValue(iCell, iFace, -1, iG, Eigen::all);
                         vInc = this->FFaceFunctional(DiffI, DiffI, iFace, iG);
                         vInc *= faceIntJacobiDet(iFace, iG);
+                        // std::cout << DiffI << std::endl;
                     });
+                // std::cout << faceAlignedScales[iFace] << std::endl;
+                // std::cout << "face "<< faceWeight[iFace].transpose() << std::endl;
             }
             decltype(A) AInv;
             HardEigen::EigenLeastSquareInverse(A, AInv);
             matrixAB(iCell, 0) = A;
             matrixAAInvB(iCell, 0) = AInv;
+
+            // std::cout << A << std::endl;
+            // std::abort();
 
             //*get B
             for (int ic2f = 0; ic2f < mesh->cell2face.RowSize(iCell); ic2f++)

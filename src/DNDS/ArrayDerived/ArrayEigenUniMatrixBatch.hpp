@@ -40,6 +40,7 @@ namespace DNDS
         using t_base::Resize;
         using t_base::ResizeRow; // privatize basic resizing
         using t_base::operator();
+        using t_base::RowSize;
         // void Resize(index, rowsize) = delete;
         // void ResizeRow(index iRow, rowsize nRowSize) = delete;
     public:
@@ -101,7 +102,7 @@ namespace DNDS
 
         rowsize BatchSize(index i)
         {
-            return this->RowSize(i);
+            return this->t_base::RowSize(i);
         }
 
         rowsize RowSize(index i)
@@ -113,7 +114,7 @@ namespace DNDS
 
         t_EigenMap operator()(index i, rowsize j)
         {
-            DNDS_assert(j >= 0 && j < this->BatchSize(i));
+            DNDS_assert(j >= 0 && j < this->RowSize(i));
             // if constexpr (_n_row >= 0 && _n_col >= 0)
             return t_EigenMap(this->t_base::operator[](i) + MSize() * j, Rows(), Cols());
         }

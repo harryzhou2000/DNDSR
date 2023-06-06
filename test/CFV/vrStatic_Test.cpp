@@ -16,6 +16,7 @@ void staticReconstruction()
     auto mpi = DNDS::MPIInfo();
     mpi.setWorld();
     // DNDS::Debug::MPIDebugHold(mpi);
+    // DNDS::Debug::MPIDebugHold(mpi);
     char buf[512];
     // std::cout << getcwd(buf, 512) << std::endl;
     auto mesh = std::make_shared<DNDS::Geom::UnstructuredMesh>(mpi, dim);
@@ -24,7 +25,8 @@ void staticReconstruction()
     // "../data/mesh/SC20714_MixedA.cgns"
     // "../data/mesh/UniformDM240_E120.cgns"
     // "../data/mesh/Ball.cgns"
-    reader.ReadFromCGNSSerial("../data/mesh/SC20714_MixedA.cgns");
+    // "../data/mesh/UniformSquare_10.cgns"
+    reader.ReadFromCGNSSerial("../data/mesh/UniformSquare_10.cgns");
 
     reader.BuildCell2Cell();
     reader.MeshPartitionCell2Cell();
@@ -41,8 +43,9 @@ void staticReconstruction()
 #endif
     // omp_set_num_threads(1);
 
-    vr.settings.maxOrder = 1;
+    vr.settings.maxOrder = 3;
     vr.settings.SORInstead = false;
+    vr.settings.cacheDiffBase = true;
 
     vr.ConstructMetrics();
     vr.ConstructBaseAndWeight();
@@ -56,7 +59,7 @@ void staticReconstruction()
         auto fScalar = [](const tPoint &p)
         {
             return Eigen::Vector<real, 4>{
-                std::cos(pi * p[0]) * std::cos(pi * p[1]) * std::cos(pi * p[2]) * 1,
+                std::cos(pi * p[0]) * std::cos(pi * p[1]) * std::cos(pi * p[2]),
                 -pi * std::sin(pi * p[0]) * std::cos(pi * p[1]) * std::cos(pi * p[2]),
                 -pi * std::sin(pi * p[1]) * std::cos(pi * p[2]) * std::cos(pi * p[0]),
                 -pi * std::sin(pi * p[2]) * std::cos(pi * p[0]) * std::cos(pi * p[1]),
@@ -77,7 +80,7 @@ void staticReconstruction()
                     vInc = fScalar(vr.cellIntPPhysics(iCell, iG))({0}) * vr.cellIntJacobiDet(iCell, iG);
                 });
             u[iCell] = uc / vr.volumeLocal[iCell];
-            // std::cout << u[iCell].transpose() << std::endl;
+            // std::cout << iCell << " " << u[iCell].transpose() << std::endl;
         }
         u.trans.startPersistentPull();
         u.trans.waitPersistentPull();
@@ -95,8 +98,9 @@ void staticReconstruction()
             uRecOld->CopyFather(*uRec);
             vr.DoReconstructionIter(
                 *uRec, *uRecNew, u,
-                [&](const auto &uL, const tPoint &p, const tPoint &unitNorm, t_index faceID)
+                [&](const auto &uL, const tPoint &unitNorm, const tPoint &p, t_index faceID)
                 {
+                    // std::cout << p.transpose() << " do bnd" << std::endl;
                     return Eigen::Vector<real, 1>(fScalar(p)({0}));
                 },
                 true);
@@ -115,6 +119,31 @@ void staticReconstruction()
             uRec->trans.startPersistentPull();
             uRec->trans.waitPersistentPull();
             // std::cout << (*uRec)[0].transpose() << std::endl;
+        }
+
+        {
+            Eigen::Vector<real, 4> err, errAll;
+            err.setZero();
+            for (DNDS::index iCell = 0; iCell < vr.mesh->NumCell(); iCell++)
+            {
+                auto qCell = vr.GetCellQuad(iCell);
+                decltype(err) errC;
+                errC.setZero();
+                qCell.IntegrationSimple(
+                    errC,
+                    [&](auto &vInc, int iG)
+                    {
+                        Eigen::VectorXd udu =
+                            (vr.GetIntPointDiffBaseValue(iCell, -1, -1, iG, std::array<int, 4>{0, 1, 2, 3}, 4) * (*uRec)[iCell]);
+                        // std::cout << udu.transpose() << std::endl;
+                        udu(0) += u[iCell](0);
+                        vInc = (udu - fScalar(vr.cellIntPPhysics(iCell, iG))).array().abs() * vr.cellIntJacobiDet(iCell, iG);
+                    });
+                err += errC;
+            }
+            MPI_Allreduce(err.data(), errAll.data(), 4, DNDS_MPI_REAL, MPI_SUM, mpi.comm);
+            if (mpi.rank == 0)
+                std::cout << "Err: [" << errAll.transpose() << "]" << std::endl;
         }
     }
 }
