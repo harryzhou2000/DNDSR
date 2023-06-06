@@ -81,6 +81,7 @@ namespace DNDS::Geom
         tAdjPair face2node;
         tAdj2Pair face2cell;
         tElemInfoArrayPair faceElemInfo;
+        std::vector<index> bnd2face;
 
         // tAdj1Pair bndFaces; // no comm needed for now
 
@@ -144,16 +145,18 @@ namespace DNDS::Geom
     using tFDataFieldName = std::function<std::string(int)>;
     using tFDataFieldQuery = std::function<DNDS::real(int, DNDS::index)>;
 
+    enum MeshReaderMode
+    {
+        UnknownMode,
+        SerialReadAndDistribute,
+        SerialOutput,
+    };
+
     struct UnstructuredMeshSerialRW
     {
         DNDS::ssp<UnstructuredMesh> mesh;
 
-        enum Mode
-        {
-            UnknownMode,
-            SerialReadAndDistribute,
-            SerialOutput,
-        } mode{UnknownMode};
+        MeshReaderMode mode{UnknownMode};
 
         bool dataIsSerialOut = false;
         bool dataIsSerialIn = false;

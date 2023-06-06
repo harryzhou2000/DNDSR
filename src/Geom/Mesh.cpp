@@ -1791,6 +1791,7 @@ namespace DNDS::Geom
 
         /**********************************/
         // put bnd elem info into faces
+        bnd2face.resize(bndElemInfo.Size());
         for (DNDS::index iBnd = 0; iBnd < bndElemInfo.Size(); iBnd++)
         {
             DNDS::index pCell = bnd2cell(iBnd, 0);
@@ -1804,8 +1805,9 @@ namespace DNDS::Geom
                 std::sort(f2nRow.begin(), f2nRow.end());
                 if (std::equal(b2nRow.begin(), b2nRow.end(), f2nRow.begin(), f2nRow.end()))
                 {
-                    nFound++;
+                    nFound++; // two things:
                     faceElemInfo(iFace, 0) = bndElemInfo(iBnd, 0);
+                    bnd2face[iBnd] = iFace;
                     DNDS_assert_info(FaceIDIsExternalBC(bndElemInfo(iBnd, 0).zone) ||
                                          FaceIDIsPeriodic(bndElemInfo(iBnd, 0).zone),
                                      "bnd elem should have a BC id not interior");

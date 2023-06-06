@@ -111,7 +111,10 @@
         "valarray": "cpp",
         "any": "cpp",
         "forward_list": "cpp",
-        "*.expression": "cpp"
+        "*.expression": "cpp",
+        "future": "cpp",
+        "tensorsymmetry": "cpp",
+        "nonlinearoptimization": "cpp"
     },
     "cSpell.words": [
         "Bary",

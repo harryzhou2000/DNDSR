@@ -92,7 +92,8 @@ namespace DNDS
 
     inline bool IsUnInitReal(real v)
     {
-        return (*(int64_t *)(&v)) == (*(int64_t *)(&UnInitReal));
+        // return (*(int64_t *)(&v)) == (*(int64_t *)(&UnInitReal));
+        return std::isnan(v);
     }
 
     const real veryLargeReal = 3e200;

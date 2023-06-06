@@ -402,7 +402,7 @@ namespace DNDS
             else if constexpr (_dataLayout == TABLE_Max ||
                                _dataLayout == TABLE_StaticMax)
             {
-                DNDS_assert(nRowSize <= _dataLayout == TABLE_Max ? _row_size_dynamic : rm); //_row_size_dynamic is max now
+                DNDS_assert(nRowSize <= (_dataLayout == TABLE_Max ? _row_size_dynamic : rm)); //_row_size_dynamic is max now
                 DNDS_assert_info(iRow < _size && iRow >= 0, "query position out of range");
                 DNDS_assert_info(_pRowSizes, "_pRowSizes invalid");
                 if (_pRowSizes.use_count() > 1) // shared

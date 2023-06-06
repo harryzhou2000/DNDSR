@@ -1,6 +1,5 @@
 #pragma once
 
-#include "json.hpp"
 
 #include "DNDS/Defines.hpp"
 #include "DNDS/MPI.hpp"
@@ -12,6 +11,9 @@
 
 #include "BaseFunction.hpp"
 #include "Limiters.hpp"
+
+#define JSON_ASSERT DNDS_assert
+#include "json.hpp"
 
 namespace DNDS::CFV
 {
@@ -595,6 +597,7 @@ namespace DNDS::CFV
                                 Eigen::Vector<real, nVarsFixed> uBV =
                                     FBoundary(
                                         uBL,
+                                        u[iCell],
                                         faceUnitNorm(iFace, iG),
                                         faceIntPPhysics(iFace, iG), faceID);
                                 Eigen::RowVector<real, nVarsFixed> uIncBV = (uBV - u[iCell]).transpose();
@@ -620,9 +623,9 @@ namespace DNDS::CFV
                     uRec[iCell].swap(uRecNew[iCell]);
         }
 
-        template <int nVarsFixed, int nVarsSee>
+        template <size_t nVarsSee, class TUREC, class TUDOF>
         void DoCalculateSmoothIndicator(
-            tScalarPair &si, tURec<nVarsFixed> &uRec, tUDof<nVarsFixed> &u,
+            tScalarPair &si, TUREC &uRec, TUDOF &u,
             const std::array<int, nVarsSee> &varsSee)
         {
             using namespace Geom;
@@ -689,12 +692,13 @@ namespace DNDS::CFV
          * @brief FM(uLeft,uRight,norm) gives vsize * vsize mat of Left Eigen Vectors
          *
          */
-        template <int nVarsFixed, typename TFM, typename TFMI>
+        template <class TEval, typename TFM, typename TFMI, class TUREC, class TUDOF>
         void DoLimiterWBAP_C(
-            tUDof<nVarsFixed> &u,
-            tURec<nVarsFixed> &uRec,
-            tURec<nVarsFixed> &uRecNew,
-            tURec<nVarsFixed> &uRecBuf,
+            const TEval &eval,
+            TUDOF &u,
+            TUREC &uRec,
+            TUREC &uRecNew,
+            TUREC &uRecBuf,
             tScalarPair &si,
             bool ifAll,
             TFM &&FM, TFMI &&FMI,
@@ -705,7 +709,7 @@ namespace DNDS::CFV
             static const int maxRecDOFBatch = dim == 2 ? 4 : 10;
             static const int maxRecDOF = dim == 2 ? 9 : 19;
             static const int maxNDiff = dim == 2 ? 10 : 20;
-            static const int nVars_Fixed = nVarsFixed;
+            static const int nVars_Fixed = TEval::nVars_Fixed;
 
             static const int maxNeighbour = 6;
 

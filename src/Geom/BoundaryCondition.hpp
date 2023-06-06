@@ -37,6 +37,9 @@ namespace DNDS::Geom
     static const t_index BC_ID_DEFAULT_WALL_INVIS = 4;
 
     static const t_index BC_ID_DEFAULT_SPECIAL_DMR_FAR = 101;
+    static const t_index BC_ID_DEFAULT_SPECIAL_RT_FAR = 102;
+    static const t_index BC_ID_DEFAULT_SPECIAL_IV_FAR = 103;
+    static const t_index BC_ID_DEFAULT_SPECIAL_2DRiemann_FAR = 104;
     static const t_index BC_ID_DEFAULT_MAX = 200;
 
     using t_FBCName_2_ID = std::function<t_index(const std::string &)>;
@@ -63,6 +66,12 @@ namespace DNDS::Geom
             return BC_ID_DEFAULT_WALL_INVIS;
         if (name == "bc-DMRFar")
             return BC_ID_DEFAULT_SPECIAL_DMR_FAR;
+        if (name == "bc-IVFar")
+            return BC_ID_DEFAULT_SPECIAL_IV_FAR;
+        if (name == "bc-RTFar")
+            return BC_ID_DEFAULT_SPECIAL_RT_FAR;
+        if (name == "bc-2DRiemannFar")
+            return BC_ID_DEFAULT_SPECIAL_2DRiemann_FAR;
         return BC_ID_NULL;
     };
 

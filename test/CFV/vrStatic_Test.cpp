@@ -9,7 +9,10 @@ std::vector<double> argD;
 running:
 valgrind --log-file=log_valgrind.log
 */
-
+struct TEvalDub
+{
+    static const int nVars_Fixed = 1;
+};
 void staticReconstruction()
 {
     static const int dim = 2;
@@ -92,6 +95,7 @@ void staticReconstruction()
         uRec = std::make_shared<tURec<1>>();
         uRecNew = std::make_shared<tURec<1>>();
         uRecOld = std::make_shared<tURec<1>>();
+
         vr.BuildURec(*uRec, 1);
         vr.BuildURec(*uRecNew, 1);
         vr.BuildURec(*uRecOld, 1);
@@ -101,7 +105,7 @@ void staticReconstruction()
             uRecOld->CopyFather(*uRec);
             vr.DoReconstructionIter(
                 *uRec, *uRecNew, u,
-                [&](const auto &uL, const tPoint &unitNorm, const tPoint &p, t_index faceID)
+                [&](const auto &uL, const auto &uMean, const tPoint &unitNorm, const tPoint &p, t_index faceID)
                 {
                     // std::cout << p.transpose() << " do bnd" << std::endl;
                     return Eigen::Vector<real, 1>(fScalar(p)({0}));
@@ -126,8 +130,10 @@ void staticReconstruction()
 
         tScalarPair si;
         vr.BuildScalar(si);
-        vr.DoCalculateSmoothIndicator<1, 1>(si, *uRec, u, std::array<int, 1>{0});
+        vr.DoCalculateSmoothIndicator(si, *uRec, u, std::array<int, 1>{0});
+        
         vr.DoLimiterWBAP_C(
+            TEvalDub{},
             u, *uRec, *uRecNew, *uRecOld, si, false,
             [](const auto &uL, const auto &uR, const auto &uNorm)
             { return 1; },

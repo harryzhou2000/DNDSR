@@ -39,4 +39,32 @@ namespace DNDS::Geom
             return J(Eigen::all, 0).cross(J(Eigen::all, 1));
         }
     }
+
+    /**
+     * @brief input uNorm should already be normalized
+     *
+     */
+    template <int dim>
+    inline Eigen::Matrix<real, dim, dim> NormBuildLocalBaseV(const Eigen::Vector<real, dim> &uNorm)
+    {
+        Eigen::Matrix<real, dim, dim> base;
+        static_assert(dim == 2 || dim == 3, "dim is bad");
+        if constexpr (dim == 3)
+        {
+            base({0, 1, 2}, 0) = uNorm;
+            if (std::abs(uNorm(2)) < 0.9)
+                base({0, 1, 2}, 1) = -uNorm.cross(tPoint{0, 0, 1}).normalized();
+            else
+                base({0, 1, 2}, 1) = -uNorm.cross(tPoint{0, 1, 0}).normalized();
+
+            base({0, 1, 2}, 2) = base({0, 1, 2}, 0).cross(base({0, 1, 2}, 1)).normalized();
+        }
+        else
+        {
+            base({0, 1}, 0) = uNorm;
+            base(0, 1) = -uNorm(1); // x2=-y1
+            base(1, 1) = uNorm(0);  // y2=x1
+        }
+        return base;
+    }
 }
