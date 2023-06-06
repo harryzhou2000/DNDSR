@@ -92,6 +92,7 @@ namespace DNDS::CFV
             std::cout
                 << "VariationalReconstruction<dim>::ConstructMetrics() === Sum Volume is ["
                 << std::setprecision(10) << sumVolumeAll << "] " << std::endl;
+        volGlobal = sumVolumeAll;
         cellIntJacobiDet.CompressBoth();
         cellIntPPhysics.CompressBoth();
         /***************************************/
@@ -211,6 +212,7 @@ namespace DNDS::CFV
         if (settings.cacheDiffBase)
         {
             this->MakePairDefaultOnCell(cellDiffBaseCache, maxNDIFF, maxNDOF);
+            this->MakePairDefaultOnCell(cellDiffBaseCacheCent, maxNDIFF, maxNDOF);
         }
 #ifdef DNDS_USE_OMP
 #pragma omp parallel for
@@ -221,6 +223,7 @@ namespace DNDS::CFV
             cellAtr[iCell].NDOF = maxNDOF;
             cellAtr[iCell].relax = settings.jacobiRelax;
             auto qCell = this->GetCellQuad(iCell);
+            auto qCellO1 = this->GetCellQuadO1(iCell);
             if (settings.cacheDiffBase)
             {
                 cellDiffBaseCache.ResizeRow(iCell, qCell.GetNumPoints());
@@ -253,6 +256,18 @@ namespace DNDS::CFV
                         cellDiffBaseCache(iCell, iG) = dbv;
                     }
                 });
+            qCellO1.Integration(
+                noOp,
+                [&](auto &vInc, int iG, const tPoint &pParam, const Elem::tD01Nj &DiNj)
+                {
+                    if (settings.cacheDiffBase)
+                    {
+                        Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic> dbv;
+                        dbv.resize(cellAtr[iCell].NDIFF, cellAtr[iCell].NDOF);
+                        this->FDiffBaseValue(dbv, cellCent[iCell], iCell, -1, -1, 0);
+                        cellDiffBaseCacheCent[iCell] = dbv;
+                    }
+                });
         }
 
         /******************************/
@@ -262,6 +277,7 @@ namespace DNDS::CFV
         if (settings.cacheDiffBase)
         {
             this->MakePairDefaultOnFace(faceDiffBaseCache, maxNDIFF, maxNDOF);
+            this->MakePairDefaultOnFace(faceDiffBaseCacheCent, maxNDIFF, maxNDOF * 2);
         }
 #ifdef DNDS_USE_OMP
 #pragma omp parallel for
@@ -269,7 +285,9 @@ namespace DNDS::CFV
         for (index iFace = 0; iFace < mesh->NumFaceProc(); iFace++)
         {
             faceAtr[iFace].NDIFF = maxNDIFF;
+            faceAtr[iFace].NDOF = 0;
             auto qFace = this->GetFaceQuad(iFace);
+            auto qFaceO1 = this->GetFaceQuadO1(iFace);
             if (settings.cacheDiffBase)
                 faceDiffBaseCache.ResizeRow(iFace, 2 * qFace.GetNumPoints());
 
@@ -297,6 +315,22 @@ namespace DNDS::CFV
                             dbv.resize(faceAtr[iFace].NDIFF, cellAtr[iCell].NDOF);
                             this->FDiffBaseValue(dbv, faceIntPPhysics(iFace, iG), iCell, iFace, iG, 0);
                             faceDiffBaseCache(iFace, if2c * qFace.GetNumPoints() + iG) = dbv;
+                        }
+                    });
+                qFaceO1.Integration(
+                    noOp,
+                    [&](auto &vInc, int iG, const tPoint &pParam, const Elem::tD01Nj &DiNj)
+                    {
+                        if (settings.cacheDiffBase)
+                        {
+                            Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic> dbv;
+                            dbv.resize(faceAtr[iFace].NDIFF, cellAtr[iCell].NDOF);
+                            this->FDiffBaseValue(dbv, faceCent[iFace], iCell, iFace, -1, 0);
+                            int maxNDOF = GetNDof<dim>(settings.maxOrder);
+                            faceDiffBaseCacheCent[iFace](
+                                Eigen::all,
+                                Eigen::seq(if2c * maxNDOF,
+                                           if2c * maxNDOF + maxNDOF - 1)) = dbv;
                         }
                     });
             }
@@ -336,8 +370,11 @@ namespace DNDS::CFV
             faceWeight[iFace] = wd * wg;
         }
 
-        faceDiffBaseCache.CompressBoth();
-        cellDiffBaseCache.CompressBoth();
+        if (settings.cacheDiffBase)
+        {
+            faceDiffBaseCache.CompressBoth();
+            cellDiffBaseCache.CompressBoth();
+        }
     }
     template void
     VariationalReconstruction<2>::
@@ -448,6 +485,42 @@ namespace DNDS::CFV
         matrixAAInvB.CompressBoth();
         vectorAInvB.CompressBoth();
         vectorB.CompressBoth();
+
+        // Get Secondary matrices
+        this->MakePairDefaultOnFace(matrixSecondary, maxNDOF - 1, (maxNDOF - 1) * 2);
+        for (index iFace = 0; iFace < mesh->NumFaceProc(); iFace++)
+        {
+            index iCellL = mesh->face2cell(iFace, 0);
+            index iCellR = mesh->face2cell(iFace, 1);
+            if (iCellR == UnInitIndex) // only for faces with two
+                continue;
+            // get dbv from 1st derivative to last
+            Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic> DiffI = this->GetIntPointDiffBaseValue(iCellL, iFace, 0, -1, Eigen::seq(1, Eigen::last)); 
+            Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic> DiffJ = this->GetIntPointDiffBaseValue(iCellR, iFace, 1, -1, Eigen::seq(1, Eigen::last));
+            Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic> M2_L2R, M2_R2L;
+            HardEigen::EigenLeastSquareSolve(DiffI, DiffJ, M2_R2L);
+            HardEigen::EigenLeastSquareSolve(DiffJ, DiffI, M2_L2R);
+            //TODO: cleanse M2s' lower triangle
+            int maxNDOFM1 = matrixSecondary[iFace].cols() / 2;
+            matrixSecondary[iFace](
+                Eigen::all, Eigen::seq(
+                                0 * maxNDOFM1 + 0,
+                                0 * maxNDOFM1 + maxNDOFM1 - 1)) = M2_R2L;
+            matrixSecondary[iFace](
+                Eigen::all, Eigen::seq(
+                                1 * maxNDOFM1 + 0,
+                                1 * maxNDOFM1 + maxNDOFM1 - 1)) = M2_L2R;
+            // std::cout << "DiffI\n"
+            //           << DiffI << std::endl;
+            // std::cout << "DiffJ\n"
+            //           << DiffJ << std::endl;
+
+            // std::cout << "M2_R2L\n";
+            // std::cout << this->GetMatrixSecondary(-1, iFace, 0) << std::endl;
+            // std::cout << "M2_L2R\n";
+            // std::cout << this->GetMatrixSecondary(-1, iFace, 1) << std::endl;
+            // std::abort();
+        }
     }
 
     template void

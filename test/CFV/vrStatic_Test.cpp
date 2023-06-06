@@ -13,6 +13,7 @@ valgrind --log-file=log_valgrind.log
 void staticReconstruction()
 {
     static const int dim = 2;
+
     auto mpi = DNDS::MPIInfo();
     mpi.setWorld();
     // DNDS::Debug::MPIDebugHold(mpi);
@@ -46,6 +47,8 @@ void staticReconstruction()
     vr.settings.maxOrder = 3;
     vr.settings.SORInstead = false;
     vr.settings.cacheDiffBase = true;
+
+    vr.settings.smoothThreshold = 1e100;
 
     vr.ConstructMetrics();
     vr.ConstructBaseAndWeight();
@@ -121,6 +124,16 @@ void staticReconstruction()
             // std::cout << (*uRec)[0].transpose() << std::endl;
         }
 
+        tScalarPair si;
+        vr.BuildScalar(si);
+        vr.DoCalculateSmoothIndicator<1, 1>(si, *uRec, u, std::array<int, 1>{0});
+        vr.DoLimiterWBAP_C(
+            u, *uRec, *uRecNew, *uRecOld, si, false,
+            [](const auto &uL, const auto &uR, const auto &uNorm)
+            { return 1; },
+            [](const auto &uL, const auto &uR, const auto &uNorm)
+            { return 1; });
+
         {
             Eigen::Vector<real, 4> err, errAll;
             err.setZero();
@@ -140,10 +153,11 @@ void staticReconstruction()
                         vInc = (udu - fScalar(vr.cellIntPPhysics(iCell, iG))).array().abs() * vr.cellIntJacobiDet(iCell, iG);
                     });
                 err += errC;
+                std::cout << si(iCell, 0) << std::endl;
             }
             MPI_Allreduce(err.data(), errAll.data(), 4, DNDS_MPI_REAL, MPI_SUM, mpi.comm);
             if (mpi.rank == 0)
-                std::cout << "Err: [" << errAll.transpose() << "]" << std::endl;
+                std::cout << "Err: [" << errAll.transpose() / vr.volGlobal << "]" << std::endl;
         }
     }
 }

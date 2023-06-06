@@ -110,7 +110,8 @@
         "splines": "cpp",
         "valarray": "cpp",
         "any": "cpp",
-        "forward_list": "cpp"
+        "forward_list": "cpp",
+        "*.expression": "cpp"
     },
     "cSpell.words": [
         "Bary",
