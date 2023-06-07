@@ -3,6 +3,7 @@
 #include "DNDS/MPI.hpp"
 #include <map>
 #include <functional>
+#include <unordered_map>
 
 namespace DNDS::Geom
 {
@@ -36,11 +37,11 @@ namespace DNDS::Geom
     static const t_index BC_ID_DEFAULT_FAR = 3;
     static const t_index BC_ID_DEFAULT_WALL_INVIS = 4;
 
-    static const t_index BC_ID_DEFAULT_SPECIAL_DMR_FAR = 101;
-    static const t_index BC_ID_DEFAULT_SPECIAL_RT_FAR = 102;
-    static const t_index BC_ID_DEFAULT_SPECIAL_IV_FAR = 103;
-    static const t_index BC_ID_DEFAULT_SPECIAL_2DRiemann_FAR = 104;
-    static const t_index BC_ID_DEFAULT_MAX = 200;
+    static const t_index BC_ID_DEFAULT_SPECIAL_DMR_FAR = 11;
+    static const t_index BC_ID_DEFAULT_SPECIAL_RT_FAR = 12;
+    static const t_index BC_ID_DEFAULT_SPECIAL_IV_FAR = 13;
+    static const t_index BC_ID_DEFAULT_SPECIAL_2DRiemann_FAR = 14;
+    static const t_index BC_ID_DEFAULT_MAX = 20;
 
     using t_FBCName_2_ID = std::function<t_index(const std::string &)>;
 
@@ -74,6 +75,28 @@ namespace DNDS::Geom
             return BC_ID_DEFAULT_SPECIAL_2DRiemann_FAR;
         return BC_ID_NULL;
     };
+
+    inline auto GetFaceName2IDDefault()
+    {
+        std::unordered_map<std::string, t_index> ret = {
+            {"PERIODIC_1", BC_ID_PERIODIC_1},
+            {"PERIODIC_2", BC_ID_PERIODIC_2},
+            {"PERIODIC_3", BC_ID_PERIODIC_3},
+            {"PERIODIC_1_DONOR", BC_ID_PERIODIC_1_DONOR},
+            {"PERIODIC_2_DONOR", BC_ID_PERIODIC_2_DONOR},
+            {"PERIODIC_3_DONOR", BC_ID_PERIODIC_3_DONOR},
+            {"WALL", BC_ID_DEFAULT_WALL},
+            {"bc-4", BC_ID_DEFAULT_WALL},
+            {"FAR", BC_ID_DEFAULT_FAR},
+            {"bc-2", BC_ID_DEFAULT_FAR},
+            {"WALL_INVIS", BC_ID_DEFAULT_WALL_INVIS},
+            {"bc-3", BC_ID_DEFAULT_WALL_INVIS},
+            {"bc-DMRFar", BC_ID_DEFAULT_SPECIAL_DMR_FAR},
+            {"bc-IVFar", BC_ID_DEFAULT_SPECIAL_IV_FAR},
+            {"bc-RTFar", BC_ID_DEFAULT_SPECIAL_RT_FAR},
+            {"bc-2DRiemannFar", BC_ID_DEFAULT_SPECIAL_2DRiemann_FAR}};
+        return ret;
+    }
 
     inline bool FaceIDIsExternalBC(t_index id)
     {
@@ -147,20 +170,5 @@ namespace DNDS::Geom
 
         ///@todo //TODO: add support for cartesian tensor transformation
     };
-
-    // enum BCType
-    // {
-    //     BcUnknown,
-    //     BcWall,
-    //     BcFar,
-    //     BcInviscid,
-    //     BcSpecial_DMR_FAR,
-    // };
-
-    // class BCManager
-    // {
-    //     std::vector<BCType> id_2_type;
-    //     std::vector<
-    // };
 
 } // namespace Geom

@@ -199,7 +199,7 @@ namespace DNDS::CFV
     template <int dim>
     void
     VariationalReconstruction<dim>::
-        ConstructBaseAndWeight()
+        ConstructBaseAndWeight(const std::function<real(Geom::t_index)> &id2faceDircWeight)
     {
         using namespace Geom;
         using namespace Geom::Elem;
@@ -365,8 +365,8 @@ namespace DNDS::CFV
             wd.resize(settings.maxOrder + 1);
             for (int p = 0; p < wd.size(); p++)
                 wd[p] = 1. / factorials[p];
-            if (FaceIDIsExternalBC(mesh->GetFaceZone(iFace))) // TODO: add customizable here
-                wd(Eigen::seq(1, Eigen::last)).setZero(), wd *= 1;
+            if (FaceIDIsExternalBC(mesh->GetFaceZone(iFace)))
+                wd(Eigen::seq(1, Eigen::last)).setZero(), wd *= id2faceDircWeight(mesh->GetFaceZone(iFace)); // customizable
             faceWeight[iFace] = wd * wg;
         }
 
@@ -378,10 +378,10 @@ namespace DNDS::CFV
     }
     template void
     VariationalReconstruction<2>::
-        ConstructBaseAndWeight();
+        ConstructBaseAndWeight(const std::function<real(Geom::t_index)> &id2faceDircWeight);
     template void
     VariationalReconstruction<3>::
-        ConstructBaseAndWeight();
+        ConstructBaseAndWeight(const std::function<real(Geom::t_index)> &id2faceDircWeight);
 
     template <int dim>
     void
