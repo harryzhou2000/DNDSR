@@ -102,7 +102,7 @@ namespace DNDS::Geom
 
             if (cg_base_read(cgns_file, iBase, basename, &celldim, &physdim))
                 cg_error_exit();
-            DNDS_assert(celldim == mesh->dim);
+            DNDS_assert_info(celldim == mesh->dim, "CGNS file need to be with correct dim");
             if (cg_nzones(cgns_file, iBase, &nzones))
                 cg_error_exit();
             for (int iZone = 1; iZone <= nzones; iZone++)

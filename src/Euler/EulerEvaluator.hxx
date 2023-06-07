@@ -1,3 +1,4 @@
+#pragma once
 #include "EulerEvaluator.hpp"
 #include "DNDS/HardEigen.hpp"
 
@@ -55,21 +56,7 @@ namespace DNDS::Euler
         }
         // exit(-1);
     }
-    template void EulerEvaluator<NS>::LUSGSMatrixInit(
-        std::vector<real> &dTau, real dt, real alphaDiag,
-        ArrayDOFV<nVars_Fixed> &u, ArrayRECV<nVars_Fixed> &uRec,
-        int jacobianCode,
-        real t);
-    template void EulerEvaluator<NS_SA>::LUSGSMatrixInit(
-        std::vector<real> &dTau, real dt, real alphaDiag,
-        ArrayDOFV<nVars_Fixed> &u, ArrayRECV<nVars_Fixed> &uRec,
-        int jacobianCode,
-        real t);
-    template void EulerEvaluator<NS_2D>::LUSGSMatrixInit(
-        std::vector<real> &dTau, real dt, real alphaDiag,
-        ArrayDOFV<nVars_Fixed> &u, ArrayRECV<nVars_Fixed> &uRec,
-        int jacobianCode,
-        real t);
+    
 
     template <EulerModel model>
     void EulerEvaluator<model>::LUSGSMatrixVec(real alphaDiag, ArrayDOFV<nVars_Fixed> &u, ArrayDOFV<nVars_Fixed> &uInc, ArrayDOFV<nVars_Fixed> &AuInc)
@@ -155,10 +142,6 @@ namespace DNDS::Euler
         InsertCheck(u.father->mpi, "LUSGSMatrixVec -1");
     }
 
-    template void EulerEvaluator<NS>::LUSGSMatrixVec(real alphaDiag, ArrayDOFV<nVars_Fixed> &u, ArrayDOFV<nVars_Fixed> &uInc, ArrayDOFV<nVars_Fixed> &AuInc);
-    template void EulerEvaluator<NS_SA>::LUSGSMatrixVec(real alphaDiag, ArrayDOFV<nVars_Fixed> &u, ArrayDOFV<nVars_Fixed> &uInc, ArrayDOFV<nVars_Fixed> &AuInc);
-    template void EulerEvaluator<NS_2D>::LUSGSMatrixVec(real alphaDiag, ArrayDOFV<nVars_Fixed> &u, ArrayDOFV<nVars_Fixed> &uInc, ArrayDOFV<nVars_Fixed> &AuInc);
-
     template <EulerModel model>
     void EulerEvaluator<model>::UpdateLUSGSForward(real alphaDiag,
                                                    ArrayDOFV<nVars_Fixed> &rhs, ArrayDOFV<nVars_Fixed> &u, ArrayDOFV<nVars_Fixed> &uInc, ArrayDOFV<nVars_Fixed> &uIncNew)
@@ -234,13 +217,6 @@ namespace DNDS::Euler
         // exit(-1);
     }
 
-    template void EulerEvaluator<NS>::UpdateLUSGSForward(real alphaDiag,
-                                                         ArrayDOFV<nVars_Fixed> &rhs, ArrayDOFV<nVars_Fixed> &u, ArrayDOFV<nVars_Fixed> &uInc, ArrayDOFV<nVars_Fixed> &uIncNew);
-    template void EulerEvaluator<NS_SA>::UpdateLUSGSForward(real alphaDiag,
-                                                            ArrayDOFV<nVars_Fixed> &rhs, ArrayDOFV<nVars_Fixed> &u, ArrayDOFV<nVars_Fixed> &uInc, ArrayDOFV<nVars_Fixed> &uIncNew);
-    template void EulerEvaluator<NS_2D>::UpdateLUSGSForward(real alphaDiag,
-                                                            ArrayDOFV<nVars_Fixed> &rhs, ArrayDOFV<nVars_Fixed> &u, ArrayDOFV<nVars_Fixed> &uInc, ArrayDOFV<nVars_Fixed> &uIncNew);
-
     template <EulerModel model>
     void EulerEvaluator<model>::UpdateLUSGSBackward(real alphaDiag,
                                                     ArrayDOFV<nVars_Fixed> &rhs, ArrayDOFV<nVars_Fixed> &u, ArrayDOFV<nVars_Fixed> &uInc, ArrayDOFV<nVars_Fixed> &uIncNew)
@@ -296,12 +272,6 @@ namespace DNDS::Euler
         InsertCheck(u.father->mpi, "UpdateLUSGSBackward -1");
     }
 
-    template void EulerEvaluator<NS>::UpdateLUSGSBackward(real alphaDiag,
-                                                          ArrayDOFV<nVars_Fixed> &rhs, ArrayDOFV<nVars_Fixed> &u, ArrayDOFV<nVars_Fixed> &uInc, ArrayDOFV<nVars_Fixed> &uIncNew);
-    template void EulerEvaluator<NS_SA>::UpdateLUSGSBackward(real alphaDiag,
-                                                             ArrayDOFV<nVars_Fixed> &rhs, ArrayDOFV<nVars_Fixed> &u, ArrayDOFV<nVars_Fixed> &uInc, ArrayDOFV<nVars_Fixed> &uIncNew);
-    template void EulerEvaluator<NS_2D>::UpdateLUSGSBackward(real alphaDiag,
-                                                             ArrayDOFV<nVars_Fixed> &rhs, ArrayDOFV<nVars_Fixed> &u, ArrayDOFV<nVars_Fixed> &uInc, ArrayDOFV<nVars_Fixed> &uIncNew);
 
     template <EulerModel model>
     void EulerEvaluator<model>::FixUMaxFilter(ArrayDOFV<nVars_Fixed> &u)
@@ -311,9 +281,6 @@ namespace DNDS::Euler
         return; // ! nofix shortcut
     }
 
-    template void EulerEvaluator<NS>::FixUMaxFilter(ArrayDOFV<nVars_Fixed> &u);
-    template void EulerEvaluator<NS_SA>::FixUMaxFilter(ArrayDOFV<nVars_Fixed> &u);
-    template void EulerEvaluator<NS_2D>::FixUMaxFilter(ArrayDOFV<nVars_Fixed> &u);
 
     template <EulerModel model>
     void EulerEvaluator<model>::EvaluateResidual(Eigen::Vector<real, -1> &res, ArrayDOFV<nVars_Fixed> &rhs, index P, bool volWise)
@@ -352,7 +319,4 @@ namespace DNDS::Euler
         }
     }
 
-    template void EulerEvaluator<NS>::EvaluateResidual(Eigen::Vector<real, -1> &res, ArrayDOFV<nVars_Fixed> &rhs, index P, bool volWise);
-    template void EulerEvaluator<NS_SA>::EvaluateResidual(Eigen::Vector<real, -1> &res, ArrayDOFV<nVars_Fixed> &rhs, index P, bool volWise);
-    template void EulerEvaluator<NS_2D>::EvaluateResidual(Eigen::Vector<real, -1> &res, ArrayDOFV<nVars_Fixed> &rhs, index P, bool volWise);
 }

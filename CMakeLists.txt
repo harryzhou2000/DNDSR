@@ -195,6 +195,7 @@ vrBasic_Test
 
 set(TESTS_Euler
 euler
+euler3D
 )
 
 # set(OBJS_DNDS
@@ -228,9 +229,18 @@ src/CFV/VariationalReconstruction.cpp
 )
 
 set(CPPS_Euler
-src/Euler/EulerEvaluator.cpp
-src/Euler/EulerEvaluator_EvaluateDt.cpp
-src/Euler/EulerEvaluator_EvaluateRHS.cpp
+src/Euler/EulerEvaluator_EvaluateDt_NS_2D.cpp
+src/Euler/EulerEvaluator_EvaluateDt_NS_3D.cpp
+src/Euler/EulerEvaluator_EvaluateDt_NS.cpp
+src/Euler/EulerEvaluator_EvaluateDt_NS_SA.cpp
+src/Euler/EulerEvaluator_EvaluateRHS_NS_2D.cpp
+src/Euler/EulerEvaluator_EvaluateRHS_NS_3D.cpp
+src/Euler/EulerEvaluator_EvaluateRHS_NS.cpp
+src/Euler/EulerEvaluator_EvaluateRHS_NS_SA.cpp
+src/Euler/EulerEvaluator_NS_2D.cpp
+src/Euler/EulerEvaluator_NS_3D.cpp
+src/Euler/EulerEvaluator_NS.cpp
+src/Euler/EulerEvaluator_NS_SA.cpp
 )
 
 set(CPPS_FAST
