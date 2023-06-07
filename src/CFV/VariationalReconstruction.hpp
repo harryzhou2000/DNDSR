@@ -714,8 +714,12 @@ namespace DNDS::CFV
 
             for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
             {
-                if (si(iCell, 0) < settings.smoothThreshold && (!ifAll))
+                if ((!ifAll) &&
+                    si(iCell, 0) < settings.smoothThreshold)
+                {
+                    uRecNew[iCell] = uRec[iCell]; //! no lim need to copy !!!!
                     continue;
+                }
                 index NRecDOF = cellAtr[iCell].NDOF - 1;
                 auto c2f = mesh->cell2face[iCell];
                 std::vector<Eigen::Matrix<real, Eigen::Dynamic, nVars_Fixed, 0, maxRecDOF>> uFaces(c2f.size());
