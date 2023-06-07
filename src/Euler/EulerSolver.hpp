@@ -11,6 +11,7 @@
 
 #define JSON_ASSERT DNDS_assert
 #include "json.hpp"
+#include "EulerBC.hpp"
 
 namespace DNDS::Euler
 {
@@ -52,6 +53,9 @@ namespace DNDS::Euler
 
         // std::vector<uint32_t> ifUseLimiter;
         CFV::tScalarPair ifUseLimiter;
+
+        BoundaryHandler<model>
+            BCHandler;
 
     public:
         EulerSolver(const MPIInfo &nmpi) : nVars(getNVars(model)), mpi(nmpi)
@@ -197,6 +201,8 @@ namespace DNDS::Euler
             DNDS_assert(config.eulerSettings.is_object());
             DNDS_assert(config.vfvSettings.is_object());
 
+            //TODO: BC settings
+
             if (mpi.rank == 0)
                 log() << "JSON: Parse Done ===" << std::endl;
 #undef __gs_to_config
@@ -231,7 +237,14 @@ namespace DNDS::Euler
             mesh->AssertOnFaces();
 
             vfv->ConstructMetrics();
-            vfv->ConstructBaseAndWeight();
+            vfv->ConstructBaseAndWeight(
+                [&](Geom::t_index id) -> real
+                {
+                    auto type = BCHandler.GetTypeFromID(id);
+                    if (type == BCFar || type == BCSpecial)
+                        return 0;
+                    return 1;
+                });
             vfv->ConstructRecCoeff();
 
             vfv->BuildUDof(u, nVars);

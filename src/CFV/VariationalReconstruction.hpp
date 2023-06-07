@@ -1,6 +1,5 @@
 #pragma once
 
-
 #include "DNDS/Defines.hpp"
 #include "DNDS/MPI.hpp"
 #include "Geom/Quadrature.hpp"
@@ -155,8 +154,8 @@ namespace DNDS::CFV
 
         void ConstructMetrics();
 
-        // TODO: add customizable bnd type processing
-        void ConstructBaseAndWeight();
+        void ConstructBaseAndWeight(const std::function<real(Geom::t_index)> &id2faceDircWeight = [](Geom::t_index id)
+                                    { return 1.0; });
 
         void ConstructRecCoeff();
 
@@ -876,9 +875,9 @@ namespace DNDS::CFV
             }
             uRecNew.trans.startPersistentPull();
             uRecNew.trans.waitPersistentPull();
-            if(!putIntoNew)
+            if (!putIntoNew)
             {
-                for (index iCell = 0; iCell < mesh->NumCellProc(); iCell++) //mind the edge
+                for (index iCell = 0; iCell < mesh->NumCellProc(); iCell++) // mind the edge
                     uRec[iCell] = uRecNew[iCell];
             }
         }
