@@ -1,3 +1,4 @@
+#pragma once
 #include "EulerEvaluator.hpp"
 
 namespace DNDS::Euler
@@ -150,19 +151,5 @@ namespace DNDS::Euler
         // if (uRec.father->mpi.rank == 0)
         // log() << "dt: " << dtMin << std::endl;
     }
-    template void EulerEvaluator<NS>::EvaluateDt(
-        std::vector<real> &dt,
-        ArrayDOFV<nVars_Fixed> &u,
-        real CFL, real &dtMinall, real MaxDt,
-        bool UseLocaldt);
-    template void EulerEvaluator<NS_SA>::EvaluateDt(
-        std::vector<real> &dt,
-        ArrayDOFV<nVars_Fixed> &u,
-        real CFL, real &dtMinall, real MaxDt,
-        bool UseLocaldt);
-    template void EulerEvaluator<NS_2D>::EvaluateDt(
-        std::vector<real> &dt,
-        ArrayDOFV<nVars_Fixed> &u,
-        real CFL, real &dtMinall, real MaxDt,
-        bool UseLocaldt);
+    
 }

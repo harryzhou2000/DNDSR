@@ -235,7 +235,9 @@ namespace DNDS::Euler
             mesh->AdjGlobal2LocalPrimary();
             mesh->InterpolateFace();
             mesh->AssertOnFaces();
-
+#ifdef DNDS_USE_OMP
+            omp_set_num_threads(DNDS::MPIWorldSize() == 1 ? std::min(omp_get_num_procs(), omp_get_max_threads()) : 1);
+#endif
             vfv->ConstructMetrics();
             vfv->ConstructBaseAndWeight(
                 [&](Geom::t_index id) -> real

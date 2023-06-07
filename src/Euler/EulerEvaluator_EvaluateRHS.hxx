@@ -1,3 +1,4 @@
+#pragma once
 #include "EulerEvaluator.hpp"
 
 namespace DNDS::Euler
@@ -267,7 +268,7 @@ namespace DNDS::Euler
             {
                 auto gCell = vfv->GetCellQuad(iCell);
 
-                Eigen::Vector<real, nvarsFixedMultipy<nVars_Fixed, 2>()> sourceV(cnvars * 2); // now includes sourcejacobian diag
+                Eigen::Vector<real, nvarsFixedMultiply<nVars_Fixed, 2>()> sourceV(cnvars * 2); // now includes sourcejacobian diag
                 sourceV.setZero();
 
                 Geom::Elem::SummationNoOp noOp;
@@ -381,14 +382,4 @@ namespace DNDS::Euler
         }
         InsertCheck(u.father->mpi, "EvaluateRHS -1");
     }
-
-    template void EulerEvaluator<NS>::EvaluateRHS(
-        ArrayDOFV<nVars_Fixed> &rhs, ArrayDOFV<nVars_Fixed> &u,
-        ArrayRECV<nVars_Fixed> &uRec, real t);
-    template void EulerEvaluator<NS_SA>::EvaluateRHS(
-        ArrayDOFV<nVars_Fixed> &rhs, ArrayDOFV<nVars_Fixed> &u,
-        ArrayRECV<nVars_Fixed> &uRec, real t);
-    template void EulerEvaluator<NS_2D>::EvaluateRHS(
-        ArrayDOFV<nVars_Fixed> &rhs, ArrayDOFV<nVars_Fixed> &u,
-        ArrayRECV<nVars_Fixed> &uRec, real t);
 }

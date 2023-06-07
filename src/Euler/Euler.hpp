@@ -74,12 +74,13 @@ namespace DNDS::Euler
     {
         NS = 0,
         NS_SA = 1,
-        NS_2D = 2
+        NS_2D = 2,
+        NS_3D = 3,
     };
 
     constexpr static inline int getNVars_Fixed(const EulerModel model)
     {
-        if (model == NS)
+        if (model == NS || model == NS_3D)
             return 5;
         else if (model == NS_SA)
             return 6;
@@ -90,7 +91,7 @@ namespace DNDS::Euler
 
     constexpr static inline int getDim_Fixed(const EulerModel model)
     {
-        if (model == NS)
+        if (model == NS || model == NS_3D)
             return 3;
         else if (model == NS_SA)
             return 3;
@@ -107,6 +108,8 @@ namespace DNDS::Euler
             return 2;
         else if (model == NS_2D)
             return 2;
+        else if (model == NS_3D)
+            return 3;
         return Eigen::Dynamic;
     }
 
@@ -127,7 +130,7 @@ namespace DNDS::Euler
     }
 
     template <int nvars_Fixed, int mul>
-    constexpr static inline int nvarsFixedMultipy()
+    constexpr static inline int nvarsFixedMultiply()
     {
         return nvars_Fixed != Eigen::Dynamic ? nvars_Fixed * mul : Eigen::Dynamic;
     }

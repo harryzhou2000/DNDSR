@@ -72,7 +72,7 @@ namespace DNDS::Euler
         // todo: improve to contiguous
 
         std::vector<Eigen::Vector<real, nVars_Fixed>> jacobianCellSourceDiag;
-        std::vector<Eigen::Matrix<real, nvarsFixedMultipy<nVars_Fixed, 2>(), nVars_Fixed>> jacobianFace;
+        std::vector<Eigen::Matrix<real, nvarsFixedMultiply<nVars_Fixed, 2>(), nVars_Fixed>> jacobianFace;
         std::vector<Eigen::Matrix<real, nVars_Fixed, nVars_Fixed>> jacobianCell;
         std::vector<Eigen::Matrix<real, nVars_Fixed, nVars_Fixed>> jacobianCellInv;
         std::vector<real> jacobianCell_Scalar;
@@ -598,7 +598,7 @@ namespace DNDS::Euler
             ret.setZero();
             return ret;
 #endif
-            if constexpr (model == NS || model == NS_2D)
+            if constexpr (model == NS || model == NS_2D || model == NS_3D)
             {
                 TU ret;
                 ret.resizeLike(UMeanXy);
@@ -735,7 +735,7 @@ namespace DNDS::Euler
             ret.setZero();
             return ret;
 #endif
-            if constexpr (model == NS || model == NS_2D)
+            if constexpr (model == NS || model == NS_2D || model == NS_3D)
             {
             }
             else if constexpr (model == NS_SA)
