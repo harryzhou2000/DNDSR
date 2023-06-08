@@ -1,10 +1,10 @@
 {
-    "steadyQuit": false,
+    "steadyQuit": true,
     "odeCode": 1,
-    "recOrder": 3,
+    "recOrder": 1,
     "nInternalRecStep": 1,
-    "nTimeStep": 5000,
-    "nTimeStepInternal": 20,
+    "nTimeStep": 1,
+    "nTimeStepInternal": 20000,
     "nSGSIterationInternal": 0,
     "gmresCode": 0,
     "nGmresSpace": 10,
@@ -21,7 +21,7 @@
     "tDataOut": 1e100,
     "tEnd": 100e100,
     "CFL": 10,
-    "dtImplicit": 1e-4,
+    "dtImplicit": 1e100,
     "rhsThresholdInternal": 1e-3,
     "useLocalDt": true,
     "useLimiter": true,
@@ -35,10 +35,10 @@
     "nCFLRampLength": 10000,
     "CFLRampEnd": 2,
     "meshRotZ": 0,
-    "meshFile": "../data/mesh/Uniform64_3D.cgns",
+    "meshFile": "../data/mesh/Ball2_O2.cgns",
     "comment_meshFileList": [],
-    "outPltName": "../data/outUnsteady/Uniform64_3D",
-    "outLogName": "../data/outUnsteady/Uniform64_3D",
+    "outPltName": "../data/outUnsteady/Ball2_O2",
+    "outLogName": "../data/outUnsteady/Ball2_O2",
     "uniqueStamps": true,
     "err_dMax": 0.00,
     "res_base": 0,
@@ -49,12 +49,12 @@
         "cacheDiffBase": true,
         "jacobiRelax": 1.0,
         "SORInstead": true,
-        "smoothThreshold": 1e-3,
+        "smoothThreshold": 1e-1,
         "WBAP_nStd": 10.0,
         "normWBAP": false
     },
     "eulerSettings": {
-        "riemannSolverType": "HLLEP",
+        "riemannSolverType": "Roe_M4",
         "nTimeFilterPass": 0,
         "idealGasProperty": {
             "gamma": 1.4,
@@ -66,31 +66,22 @@
         },
         "ignoreSourceTerm": false,
         "useScalarJacobian": false,
+        "visScale": 8,
+        "visScaleIn": 4,
+        "isiScale": 4,
+        "isiScaleIn": 2,
+        "ekCutDown": 0.5,
+        "isiCutDown": 0.5,
         "farFieldStaticValue": [
             1,
+            0.965925826289068,
+            0.258819045102521,
             0,
-            0,
-            0,
-            2.5
+            79.8650793650794
         ],
-        "boxInitializers": [
-            {
-                "x0": 0.25,
-                "x1": 0.75,
-                "y0": 0.25,
-                "y1": 0.75,
-                "z0": 0.25,
-                "z1": 0.75,
-                "v": [
-                    0.5,
-                    0,
-                    0,
-                    0,
-                    4
-                ]
-            }
+        "boxInitializers": [],
+        "planeInitializers": [
         ],
-        "planeInitializers": [],
         "specialBuiltinInitializer": 0,
         "comment_farSatic": [
             [
