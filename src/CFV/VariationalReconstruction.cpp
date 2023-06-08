@@ -418,7 +418,11 @@ namespace DNDS::CFV
                         decltype(A) DiffI = this->GetIntPointDiffBaseValue(iCell, iFace, -1, iG, Eigen::all);
                         vInc = this->FFaceFunctional(DiffI, DiffI, iFace, iG);
                         vInc *= faceIntJacobiDet(iFace, iG);
-                        // std::cout << DiffI << std::endl;
+                        // if (iCell == 71)
+                        // {
+                        //     std::cout << "DI\n"
+                        //               << DiffI << std::endl;
+                        // }
                     });
                 // std::cout << faceAlignedScales[iFace] << std::endl;
                 // std::cout << "face "<< faceWeight[iFace].transpose() << std::endl;
@@ -428,9 +432,12 @@ namespace DNDS::CFV
             matrixAB(iCell, 0) = A;
             matrixAAInvB(iCell, 0) = AInv;
 
-            // std::cout << A << std::endl;
-            // std::abort();
-
+            // if (iCell == 71)
+            // {
+            //     std::cout << A << std::endl;
+            //     std::cout << cellCent[iCell] << std::endl;
+            //     std::abort();
+            // }
             //*get B
             for (int ic2f = 0; ic2f < mesh->cell2face.RowSize(iCell); ic2f++)
             {
@@ -495,12 +502,12 @@ namespace DNDS::CFV
             if (iCellR == UnInitIndex) // only for faces with two
                 continue;
             // get dbv from 1st derivative to last
-            Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic> DiffI = this->GetIntPointDiffBaseValue(iCellL, iFace, 0, -1, Eigen::seq(1, Eigen::last)); 
+            Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic> DiffI = this->GetIntPointDiffBaseValue(iCellL, iFace, 0, -1, Eigen::seq(1, Eigen::last));
             Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic> DiffJ = this->GetIntPointDiffBaseValue(iCellR, iFace, 1, -1, Eigen::seq(1, Eigen::last));
             Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic> M2_L2R, M2_R2L;
             HardEigen::EigenLeastSquareSolve(DiffI, DiffJ, M2_R2L);
             HardEigen::EigenLeastSquareSolve(DiffJ, DiffI, M2_L2R);
-            //TODO: cleanse M2s' lower triangle
+            // TODO: cleanse M2s' lower triangle
             int maxNDOFM1 = matrixSecondary[iFace].cols() / 2;
             matrixSecondary[iFace](
                 Eigen::all, Eigen::seq(

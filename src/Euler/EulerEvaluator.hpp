@@ -1449,69 +1449,71 @@ namespace DNDS::Euler
             {
             case 1: // for RT problem
                 DNDS_assert(model == NS || model == NS_2D);
-                for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
-                {
-                    Geom::tPoint pos = vfv->cellBary[iCell];
-                    real gamma = settings.idealGasProperty.gamma;
-                    real rho = 2;
-                    real p = 1 + 2 * pos(1);
-                    if (pos(1) >= 0.5)
+                if constexpr( model == NS || model == NS_2D)
+                    for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
                     {
-                        rho = 1;
-                        p = 1.5 + pos(1);
+                        Geom::tPoint pos = vfv->cellBary[iCell];
+                        real gamma = settings.idealGasProperty.gamma;
+                        real rho = 2;
+                        real p = 1 + 2 * pos(1);
+                        if (pos(1) >= 0.5)
+                        {
+                            rho = 1;
+                            p = 1.5 + pos(1);
+                        }
+                        real v = -0.025 * sqrt(gamma * p / rho) * std::cos(8 * pi * pos(0));
+                        if constexpr (dim == 3)
+                            u[iCell] = Eigen::Vector<real, 5>{rho, 0, rho * v, 0, 0.5 * rho * sqr(v) + p / (gamma - 1)};
+                        else
+                            u[iCell] = Eigen::Vector<real, 4>{rho, 0, rho * v, 0.5 * rho * sqr(v) + p / (gamma - 1)};
                     }
-                    real v = -0.025 * sqrt(gamma * p / rho) * std::cos(8 * pi * pos(0));
-                    if constexpr (dim == 3)
-                        u[iCell] = Eigen::Vector<real, 5>{rho, 0, rho * v, 0, 0.5 * rho * sqr(v) + p / (gamma - 1)};
-                    else
-                        u[iCell] = Eigen::Vector<real, 4>{rho, 0, rho * v, 0.5 * rho * sqr(v) + p / (gamma - 1)};
-                }
                 break;
             case 2: // for IV10 problem
                 DNDS_assert(model == NS || model == NS_2D);
-                for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
-                {
-                    Geom::tPoint pos = vfv->cellBary[iCell];
-                    real chi = 5;
-                    real gamma = settings.idealGasProperty.gamma;
-                    auto c2n = mesh->cell2node[iCell];
-                    auto gCell = vfv->GetCellQuad(iCell);
-                    TU um;
-                    um.setZero();
-                    // Eigen::MatrixXd coords;
-                    // mesh->GetCoords(c2n, coords);
-                    gCell.IntegrationSimple(
-                        um,
-                        [&](TU &inc, int ig)
-                        {
-                            // std::cout << coords<< std::endl << std::endl;
-                            // std::cout << DiNj << std::endl;
-                            Geom::tPoint pPhysics = vfv->cellIntPPhysics(iCell, ig);
-                            real rm = 8;
-                            real r = std::sqrt(sqr(pPhysics(0) - 5) + sqr(pPhysics(1) - 5));
-                            real dT = -(gamma - 1) / (8 * gamma * sqr(pi)) * sqr(chi) * std::exp(1 - sqr(r)) * (1 - 1. / std::exp(std::max(sqr(rm) - sqr(r), 0.0)));
-                            real dux = chi / 2 / pi * std::exp((1 - sqr(r)) / 2) * -(pPhysics(1) - 5) * (1 - 1. / std::exp(std::max(sqr(rm) - sqr(r), 0.0)));
-                            real duy = chi / 2 / pi * std::exp((1 - sqr(r)) / 2) * +(pPhysics(0) - 5) * (1 - 1. / std::exp(std::max(sqr(rm) - sqr(r), 0.0)));
-                            real T = dT + 1;
-                            real ux = dux + 1;
-                            real uy = duy + 1;
-                            real S = 1;
-                            real rho = std::pow(T / S, 1 / (gamma - 1));
-                            real p = T * rho;
+                if constexpr (model == NS || model == NS_2D)
+                    for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
+                    {
+                        Geom::tPoint pos = vfv->cellBary[iCell];
+                        real chi = 5;
+                        real gamma = settings.idealGasProperty.gamma;
+                        auto c2n = mesh->cell2node[iCell];
+                        auto gCell = vfv->GetCellQuad(iCell);
+                        TU um;
+                        um.setZero();
+                        // Eigen::MatrixXd coords;
+                        // mesh->GetCoords(c2n, coords);
+                        gCell.IntegrationSimple(
+                            um,
+                            [&](TU &inc, int ig)
+                            {
+                                // std::cout << coords<< std::endl << std::endl;
+                                // std::cout << DiNj << std::endl;
+                                Geom::tPoint pPhysics = vfv->cellIntPPhysics(iCell, ig);
+                                real rm = 8;
+                                real r = std::sqrt(sqr(pPhysics(0) - 5) + sqr(pPhysics(1) - 5));
+                                real dT = -(gamma - 1) / (8 * gamma * sqr(pi)) * sqr(chi) * std::exp(1 - sqr(r)) * (1 - 1. / std::exp(std::max(sqr(rm) - sqr(r), 0.0)));
+                                real dux = chi / 2 / pi * std::exp((1 - sqr(r)) / 2) * -(pPhysics(1) - 5) * (1 - 1. / std::exp(std::max(sqr(rm) - sqr(r), 0.0)));
+                                real duy = chi / 2 / pi * std::exp((1 - sqr(r)) / 2) * +(pPhysics(0) - 5) * (1 - 1. / std::exp(std::max(sqr(rm) - sqr(r), 0.0)));
+                                real T = dT + 1;
+                                real ux = dux + 1;
+                                real uy = duy + 1;
+                                real S = 1;
+                                real rho = std::pow(T / S, 1 / (gamma - 1));
+                                real p = T * rho;
 
-                            real E = 0.5 * (sqr(ux) + sqr(uy)) * rho + p / (gamma - 1);
+                                real E = 0.5 * (sqr(ux) + sqr(uy)) * rho + p / (gamma - 1);
 
-                            // std::cout << T << " " << rho << std::endl;
-                            inc.setZero();
-                            inc(0) = rho;
-                            inc(1) = rho * ux;
-                            inc(2) = rho * uy;
-                            inc(dim + 1) = E;
+                                // std::cout << T << " " << rho << std::endl;
+                                inc.setZero();
+                                inc(0) = rho;
+                                inc(1) = rho * ux;
+                                inc(2) = rho * uy;
+                                inc(dim + 1) = E;
 
-                            inc *= vfv->cellIntJacobiDet(iCell, ig); // don't forget this
-                        });
-                    u[iCell] = um / vfv->volumeLocal[iCell]; // mean value
-                }
+                                inc *= vfv->cellIntJacobiDet(iCell, ig); // don't forget this
+                            });
+                        u[iCell] = um / vfv->volumeLocal[iCell]; // mean value
+                    }
             case 0:
                 break;
             default:

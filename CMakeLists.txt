@@ -241,6 +241,10 @@ src/Euler/EulerEvaluator_NS_2D.cpp
 src/Euler/EulerEvaluator_NS_3D.cpp
 src/Euler/EulerEvaluator_NS.cpp
 src/Euler/EulerEvaluator_NS_SA.cpp
+src/Euler/EulerSolver_NS_2D.cpp
+src/Euler/EulerSolver_NS_3D.cpp
+src/Euler/EulerSolver_NS.cpp
+src/Euler/EulerSolver_NS_SA.cpp
 )
 
 set(CPPS_FAST
