@@ -1,10 +1,10 @@
 {
-    "steadyQuit": false,
+    "steadyQuit": true,
     "odeCode": 1,
-    "recOrder": 3,
+    "recOrder": 1,
     "nInternalRecStep": 1,
-    "nTimeStep": 3200,
-    "nTimeStepInternal": 20,
+    "nTimeStep": 1,
+    "nTimeStepInternal": 20000,
     "nSGSIterationInternal": 0,
     "gmresCode": 0,
     "nGmresSpace": 10,
@@ -12,7 +12,7 @@
     "jacobianTypeCode": 0,
     "nFreezePassiveInner": 0,
     "nConsoleCheck": 1,
-    "nConsoleCheckInternal": 10,
+    "nConsoleCheckInternal": 1,
     "consoleOutputMode": 0,
     "nDataOutC": 100,
     "nDataOut": 200,
@@ -21,7 +21,7 @@
     "tDataOut": 1e100,
     "tEnd": 100e100,
     "CFL": 10,
-    "dtImplicit": 6.25e-5,
+    "dtImplicit": 1e100,
     "rhsThresholdInternal": 1e-3,
     "useLocalDt": true,
     "useLimiter": true,
@@ -35,11 +35,11 @@
     "nCFLRampLength": 10000,
     "CFLRampEnd": 2,
     "meshRotZ": 0,
-    "meshFile": "../data/mesh/UniformDM240_E120.cgns",
+    "meshFile": "../data/mesh/Ball2_O2.cgns",
     "comment_meshFileList": [],
-    "outPltName": "../data/outUnsteady/UniformDM240_E120",
-    "outLogName": "../data/outUnsteady/UniformDM240_E120",
-    "uniqueStamps": false,
+    "outPltName": "../data/outUnsteady/Ball2_O2",
+    "outLogName": "../data/outUnsteady/Ball2_O2",
+    "uniqueStamps": true,
     "err_dMax": 0.00,
     "res_base": 0,
     "useVolWiseResidual": true,
@@ -54,12 +54,12 @@
         "normWBAP": false
     },
     "eulerSettings": {
-        "riemannSolverType": "HLLEP",
+        "riemannSolverType": "Roe_M4",
         "nTimeFilterPass": 0,
         "idealGasProperty": {
             "gamma": 1.4,
-            "Rgas": 289,
-            "muGas": 1e-200,
+            "Rgas": 0.116221972344982,
+            "muGas": 1e-2,
             "prGas": 0.72,
             "TRef": 273.15,
             "CSutherland": 110.4
@@ -73,27 +73,14 @@
         "ekCutDown": 0.5,
         "isiCutDown": 0.5,
         "farFieldStaticValue": [
-            1.4,
+            1,
+            0.965925826289068,
+            0.258819045102521,
             0,
-            0,
-            0,
-            2.5
+            79.8650793650794
         ],
         "boxInitializers": [],
         "planeInitializers": [
-            {
-                "a": -1,
-                "b": 0.577350269189626,
-                "c": 0,
-                "h": 0.166666666666667,
-                "v": [
-                    8,
-                    57.157676649772960,
-                    -33,
-                    0,
-                    5.635e2
-                ]
-            }
         ],
         "specialBuiltinInitializer": 0,
         "comment_farSatic": [

@@ -641,26 +641,34 @@ namespace DNDS::CFV
                 {
                     index iFace = c2f[ic2f];
                     index iCellOther = this->CellFaceOther(iCell, iFace);
-                    auto gFace = this->GetFaceQuadO1(iFace);
+                    auto gFace = this->GetFaceQuad(iFace);
                     decltype(IJIISIsum) IJIISI;
+                    // if (iCellOther != UnInitIndex)
+                    // {
+                    //     uRec[iCell].setConstant(1);
+                    //     uRec[iCellOther].setConstant(0);
+                    //     u[iCell].setConstant(1);
+                    //     u[iCellOther].setConstant(0);
+                    // }
                     IJIISI.setZero();
                     gFace.IntegrationSimple(
                         IJIISI,
                         [&](auto &finc, int ig)
                         {
                             int nDiff = faceAtr[iFace].NDIFF;
+                            // int nDiff = 1;
                             tPoint unitNorm = faceMeanNorm[iFace];
 
-                            Eigen::Matrix<real, Eigen::Dynamic, nVarsSee, 0, maxNDiff>
+                            Eigen::Matrix<real, Eigen::Dynamic, nVarsSee, Eigen::DontAlign, maxNDiff, nVarsSee>
                                 uRecVal(nDiff, nVarsSee), uRecValL(nDiff, nVarsSee), uRecValR(nDiff, nVarsSee), uRecValJump(nDiff, nVarsSee);
                             uRecVal.setZero(), uRecValJump.setZero();
-                            uRecValL = this->GetIntPointDiffBaseValue(iCell, iFace, -1, -1, Eigen::all) *
+                            uRecValL = this->GetIntPointDiffBaseValue(iCell, iFace, -1, ig, Eigen::seq(0, nDiff - 1)) *
                                        uRec[iCell](Eigen::all, varsSee);
                             uRecValL(0, Eigen::all) += u[iCell](varsSee).transpose();
 
                             if (iCellOther != UnInitIndex)
                             {
-                                uRecValR = this->GetIntPointDiffBaseValue(iCellOther, iFace, -1, -1, Eigen::all) *
+                                uRecValR = this->GetIntPointDiffBaseValue(iCellOther, iFace, -1, ig, Eigen::seq(0, nDiff - 1)) *
                                            uRec[iCellOther](Eigen::all, varsSee);
                                 uRecValR(0, Eigen::all) += u[iCellOther](varsSee).transpose();
                                 uRecVal = (uRecValL + uRecValR) * 0.5;
@@ -674,9 +682,27 @@ namespace DNDS::CFV
                             finc(Eigen::all, 0) = IJI.diagonal();
                             finc(Eigen::all, 1) = ISI.diagonal();
 
-                            finc *= faceArea[iFace]; // don't forget this
+                            // finc *= faceArea[iFace]; // don't forget this
+                            finc *= faceIntJacobiDet(iFace, ig);
+
+                            // if (iCell == 12517)
+                            // {
+                            //     std::cout << "   === Face:   ";
+                            //     std::cout << uRecValL << std::endl;
+                            //     std::cout << uRecValR << std::endl;
+                            //     std::cout << IJI << std::endl;
+                            //     std::cout << ISI << std::endl;
+                            //     std::cout << uRec[iCell] << std::endl;
+                            //     std::cout << uRec[iCellOther] << std::endl;
+                            //     std::cout << this->GetIntPointDiffBaseValue(iCellOther, iFace, -1, ig, Eigen::all) << std::endl;
+                            // }
                         });
                     IJIISIsum += IJIISI;
+                    // if (iCell == 12517)
+                    // {
+                    //     std::cout << "iFace " << iFace << " iCellOther " << iCellOther << std::endl;
+                    //     std::cout << IJIISI << std::endl;
+                    // }
                 }
                 Eigen::Vector<real, nVarsSee> smoothIndicator =
                     (IJIISIsum(Eigen::all, 0).array() /
@@ -684,6 +710,12 @@ namespace DNDS::CFV
                         .matrix();
                 real sImax = smoothIndicator.array().abs().maxCoeff();
                 si(iCell, 0) = std::sqrt(sImax) * sqr(settings.maxOrder);
+                // if (iCell == 12517)
+                // {
+                //     std::cout << "SUM:\n";
+                //     std::cout << IJIISIsum << std::endl;
+                //     std::abort();
+                // }
             }
         }
 
@@ -762,8 +794,8 @@ namespace DNDS::CFV
                         switch (cPOrder)
                         {
                         case 3:
-                            LimStart = 18;
-                            LimEnd = 9;
+                            LimStart = 9;
+                            LimEnd = 18;
                             break;
                         case 2:
                             LimStart = 3;
@@ -806,7 +838,7 @@ namespace DNDS::CFV
                             // if (!(ifUseLimiter[iCell] & 0x0000000FU))
                             //     continue;
 
-                            tPoint unitNorm = faceMeanNorm[iFace].stableNormalized();
+                            tPoint unitNorm = faceMeanNorm[iFace];
 
                             const auto &matrixSecondary =
                                 this->GetMatrixSecondary(iCell, iFace, -1);
