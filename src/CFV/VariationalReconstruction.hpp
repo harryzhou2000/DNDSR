@@ -660,7 +660,7 @@ namespace DNDS::CFV
 
                             if (iCellOther != UnInitIndex)
                             {
-                                uRecValR = this->GetIntPointDiffBaseValue(iCellOther, iFace, -1, -1, Eigen::all) *
+                                uRecValR = this->GetIntPointDiffBaseValue(iCellOther, iFace, -1, =1, Eigen::all) *
                                            uRec[iCellOther](Eigen::all, varsSee);
                                 uRecValR(0, Eigen::all) += u[iCellOther](varsSee).transpose();
                                 uRecVal = (uRecValL + uRecValR) * 0.5;
@@ -762,8 +762,8 @@ namespace DNDS::CFV
                         switch (cPOrder)
                         {
                         case 3:
-                            LimStart = 18;
-                            LimEnd = 9;
+                            LimStart = 9;
+                            LimEnd = 18;
                             break;
                         case 2:
                             LimStart = 3;
