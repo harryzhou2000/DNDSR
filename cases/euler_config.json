@@ -3,7 +3,7 @@
     "odeCode": 1,
     "recOrder": 3,
     "nInternalRecStep": 1,
-    "nTimeStep": 5000,
+    "nTimeStep": 4000,
     "nTimeStepInternal": 20,
     "nSGSIterationInternal": 0,
     "gmresCode": 0,
@@ -45,7 +45,7 @@
     "useVolWiseResidual": true,
     "vfvSettings": {
         "maxOrder": 3,
-        "intOrder": 5,
+        "intOrder": 3,
         "cacheDiffBase": true,
         "jacobiRelax": 1.0,
         "SORInstead": true,

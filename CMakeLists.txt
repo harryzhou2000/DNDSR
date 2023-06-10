@@ -175,12 +175,14 @@ set(TESTS_EXTERNAL
 cgns_APITest
 eigen_Test
 STL_Test
+json_Test
 )
 
 set(TESTS_DNDS
 array_Test
 arrayTrans_test
 arrayDerived_test
+serializerJSON_Test
 )
 
 set(TESTS_Geom
@@ -217,6 +219,7 @@ src/DNDS/MPI.cpp
 src/DNDS/Defines.cpp
 src/DNDS/Profiling.cpp
 src/DNDS/HardEigen.cpp
+src/DNDS/SerializerJSON.cpp
 )
 
 set(CPPS_Geom
@@ -278,7 +281,9 @@ foreach(CPP ${CPPS_FAST})
     string(REPLACE ".cpp" "_" CPP_NAME_A ${CPP_NAME})
     add_library(${CPP_NAME_A} OBJECT ${CPP})
     target_include_directories(${CPP_NAME_A} PUBLIC ${EXTERNAL_INCLUDES} PUBLIC ${INCLUDES})
-    target_compile_options(${CPP_NAME_A} PUBLIC -O3)
+    if(DNDS_FAST_BUILD_FAST)
+        target_compile_options(${CPP_NAME_A} PUBLIC -O3)
+    endif()
     list(APPEND CPP_TARGETS ${CPP_NAME_A})
     list(APPEND CPP_TARGETS_OBJ $<TARGET_OBJECTS:${CPP_NAME_A}>)
 endforeach()
