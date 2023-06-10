@@ -1525,6 +1525,71 @@ namespace DNDS::Geom
         adjPrimaryState = Adj_PointToLocal;
     }
 
+    void UnstructuredMesh::
+        AdjGlobal2LocalFacial()
+    {
+        DNDS_assert(adjFacialState == Adj_PointToGlobal);
+        /**********************************/
+        // convert face2cell ptrs and face2node ptrs global to local
+#ifdef DNDS_USE_OMP
+#pragma omp parallel for
+#endif
+        for (DNDS::index iFace = 0; iFace < face2cell.Size(); iFace++)
+        {
+            for (rowsize if2n = 0; if2n < face2node.RowSize(iFace); if2n++)
+            {
+                index &iNode = face2node(iFace, if2n);
+                index val;
+                MPI_int rank;
+                auto ret = coords.trans.pLGhostMapping->search_indexAppend(iNode, rank, val);
+                DNDS_assert(ret);
+                iNode = val;
+            }
+            for (rowsize if2c = 0; if2c < 2; if2c++)
+            {
+                index &iCell = face2cell(iFace, if2c);
+                if (iCell != UnInitIndex) // is not a bnd
+                {
+                    index val;
+                    MPI_int rank;
+                    auto ret = cell2node.trans.pLGhostMapping->search_indexAppend(iCell, rank, val);
+                    DNDS_assert(ret);
+                    iCell = val;
+                }
+            }
+        }
+        /**********************************/
+        adjFacialState = Adj_PointToLocal;
+    }
+
+    void UnstructuredMesh::
+        AdjLocal2GlobalFacial()
+    {
+        DNDS_assert(adjFacialState == Adj_PointToLocal);
+        /**********************************/
+        // convert face2cell ptrs and face2node ptrs to global
+#ifdef DNDS_USE_OMP
+#pragma omp parallel for
+#endif
+        for (DNDS::index iFace = 0; iFace < face2cell.father->Size(); iFace++)
+        {
+            for (rowsize if2n = 0; if2n < face2node.RowSize(iFace); if2n++)
+            {
+                index &iNode = face2node(iFace, if2n);
+                iNode = coords.trans.pLGhostMapping->operator()(-1, iNode);
+            }
+            for (rowsize if2c = 0; if2c < 2; if2c++)
+            {
+                index &iCell = face2cell(iFace, if2c);
+                if (iCell != UnInitIndex) // is not a bnd
+                    iCell = cell2node.trans.pLGhostMapping->operator()(-1, iCell);
+            }
+        }
+        // MPI_Barrier(mpi.comm);
+        /**********************************/
+        adjFacialState = Adj_PointToGlobal;
+    }
+
     /// @todo //TODO: handle periodic cases
     void UnstructuredMesh::
         InterpolateFace()
@@ -1660,6 +1725,7 @@ namespace DNDS::Geom
                 nFacesNew++;
             }
         }
+
         MPI_Barrier(mpi.comm);
 #ifdef DNDS_USE_OMP
 #pragma omp parallel for
@@ -1671,27 +1737,9 @@ namespace DNDS::Geom
                 cell2face(iCell, ic2f) = iFaceAllToCollected[cell2face(iCell, ic2f)]; // Uninit if to discard
             }
         }
-        /**********************************/
-        // convert face2cell ptrs and face2node ptrs to global
-#ifdef DNDS_USE_OMP
-#pragma omp parallel for
-#endif
-        for (DNDS::index iFace = 0; iFace < face2cell.father->Size(); iFace++)
-        {
-            for (rowsize if2n = 0; if2n < face2node.RowSize(iFace); if2n++)
-            {
-                index &iNode = face2node(iFace, if2n);
-                iNode = coords.trans.pLGhostMapping->operator()(-1, iNode);
-            }
-            for (rowsize if2c = 0; if2c < 2; if2c++)
-            {
-                index &iCell = face2cell(iFace, if2c);
-                if (iCell != UnInitIndex) // is not a bnd
-                    iCell = cell2node.trans.pLGhostMapping->operator()(-1, iCell);
-            }
-        }
-        MPI_Barrier(mpi.comm);
-        /**********************************/
+        adjFacialState = Adj_PointToLocal;
+        this->AdjLocal2GlobalFacial();
+
         // comm on the faces
         std::vector<index> faceSendLocalsIdx;
         std::vector<index> faceSendLocalsStarts(mpi.size + 1);
@@ -1720,35 +1768,7 @@ namespace DNDS::Geom
         face2node.trans.pullOnce();
         faceElemInfo.trans.pullOnce();
 
-        /**********************************/
-        // convert face2cell ptrs and face2node ptrs global to local
-#ifdef DNDS_USE_OMP
-#pragma omp parallel for
-#endif
-        for (DNDS::index iFace = 0; iFace < face2cell.Size(); iFace++)
-        {
-            for (rowsize if2n = 0; if2n < face2node.RowSize(iFace); if2n++)
-            {
-                index &iNode = face2node(iFace, if2n);
-                index val;
-                MPI_int rank;
-                auto ret = coords.trans.pLGhostMapping->search_indexAppend(iNode, rank, val);
-                DNDS_assert(ret);
-                iNode = val;
-            }
-            for (rowsize if2c = 0; if2c < 2; if2c++)
-            {
-                index &iCell = face2cell(iFace, if2c);
-                if (iCell != UnInitIndex) // is not a bnd
-                {
-                    index val;
-                    MPI_int rank;
-                    auto ret = cell2node.trans.pLGhostMapping->search_indexAppend(iCell, rank, val);
-                    DNDS_assert(ret);
-                    iCell = val;
-                }
-            }
-        }
+        this->AdjGlobal2LocalFacial();
 
         /**********************************/
         // tend to unattended cell2face with pointing to ghost

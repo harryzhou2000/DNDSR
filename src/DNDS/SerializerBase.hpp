@@ -10,6 +10,7 @@ namespace DNDS
         virtual void CloseFile() = 0;
         virtual void CreatePath(const std::string &p) = 0;
         virtual void GoToPath(const std::string &p) = 0;
+        virtual std::string GetCurrentPath() = 0;
 
         virtual void WriteInt(const std::string &name, int v) = 0;
         virtual void WriteIndex(const std::string &name, index v) = 0;
@@ -28,8 +29,6 @@ namespace DNDS
         virtual void ReadRealVector(const std::string &name, std::vector<real> &v) = 0;
         virtual void ReadString(const std::string &name, std::string &v) = 0;
         virtual void ReadSharedIndexVector(const std::string &name, ssp<std::vector<index>> &v) = 0;
-
-        
     };
 
 }
