@@ -38,27 +38,27 @@ PROJECT_NAME           = "DNDSR"
 # could be handy for archiving the generated documentation or if some version
 # control system is used.
 
-PROJECT_NUMBER         =
+PROJECT_NUMBER         = 0.0
 
 # Using the PROJECT_BRIEF tag one can provide an optional one line description
 # for a project that appears at the top of each page and should give viewer a
 # quick idea about the purpose of the project. Keep the description short.
 
-PROJECT_BRIEF          =
+PROJECT_BRIEF          = Distributed Numeric Data Structure for CFV
 
 # With the PROJECT_LOGO tag one can specify a logo or an icon that is included
 # in the documentation. The maximum height of the logo should not exceed 55
 # pixels and the maximum width should not exceed 200 pixels. Doxygen will copy
 # the logo to the output directory.
 
-PROJECT_LOGO           =
+PROJECT_LOGO           = 
 
 # The OUTPUT_DIRECTORY tag is used to specify the (relative or absolute) path
 # into which the generated documentation will be written. If a relative path is
 # entered, it will be relative to the location where doxygen was started. If
 # left blank the current directory will be used.
 
-OUTPUT_DIRECTORY       =
+OUTPUT_DIRECTORY       = docs
 
 # If the CREATE_SUBDIRS tag is set to YES then doxygen will create 4096 sub-
 # directories (in 2 levels) under the output directory of each output format and
@@ -830,10 +830,10 @@ WARN_LOGFILE           =
 # Note: If this tag is empty the current directory is searched.
 
 INPUT                  = \
-    ../src \
-    ../docs \
-    ../test \
-    ../README.md \
+    @CMAKE_CURRENT_LIST_DIR@/src \
+    @CMAKE_CURRENT_LIST_DIR@/docs \
+    @CMAKE_CURRENT_LIST_DIR@/test \
+    @CMAKE_CURRENT_LIST_DIR@/README.md \
     
 
 # This tag can be used to specify the character encoding of the source files
@@ -1238,7 +1238,7 @@ HTML_FOOTER            =
 # obsolete.
 # This tag requires that the tag GENERATE_HTML is set to YES.
 
-HTML_STYLESHEET        =
+HTML_STYLESHEET        = 
 
 # The HTML_EXTRA_STYLESHEET tag can be used to specify additional user-defined
 # cascading style sheets that are included after the standard style sheets
@@ -1251,7 +1251,7 @@ HTML_STYLESHEET        =
 # list). For an example see the documentation.
 # This tag requires that the tag GENERATE_HTML is set to YES.
 
-HTML_EXTRA_STYLESHEET  =
+HTML_EXTRA_STYLESHEET  = @EXTERNAL_DOXYGEN_AWESOME@/doxygen-awesome.css
 
 # The HTML_EXTRA_FILES tag can be used to specify one or more extra images or
 # other source files which should be copied to the HTML output directory. Note
@@ -1262,9 +1262,11 @@ HTML_EXTRA_STYLESHEET  =
 # This tag requires that the tag GENERATE_HTML is set to YES.
 
 HTML_EXTRA_FILES       = \ 
-    ../docs/Variational_Reconstruction.pdf \
-    ../docs/Shape_Functions.pdf \
-    ../docs/*.png \
+    @CMAKE_CURRENT_LIST_DIR@/docs/Variational_Reconstruction.pdf \
+    @CMAKE_CURRENT_LIST_DIR@/docs/Shape_Functions.pdf \
+    @CMAKE_CURRENT_LIST_DIR@/docs/CurrentTests.pdf \
+    @CMAKE_CURRENT_LIST_DIR@/docs/*.png \
+    @CMAKE_CURRENT_LIST_DIR@/docs/images/*.png \
 
 # The HTML_COLORSTYLE_HUE tag controls the color of the HTML output. Doxygen
 # will adjust the colors in the style sheet and background images according to
@@ -1295,6 +1297,13 @@ HTML_COLORSTYLE_SAT    = 100
 # This tag requires that the tag GENERATE_HTML is set to YES.
 
 HTML_COLORSTYLE_GAMMA  = 80
+
+# HTML_COLORSTYLE for doxygen > 1.9.5
+HTML_COLORSTYLE        = LIGHT
+# ! required by doxygen-awesome
+GENERATE_TREEVIEW      = YES # optional. Also works without treeview
+DISABLE_INDEX = NO
+FULL_SIDEBAR = NO
 
 # If the HTML_TIMESTAMP tag is set to YES then the footer of each generated HTML
 # page will contain the date and time when the page was generated. Setting this
@@ -1736,7 +1745,7 @@ EXTERNAL_SEARCH_ID     =
 # EXTRA_SEARCH_MAPPINGS = tagname1=loc1 tagname2=loc2 ...
 # This tag requires that the tag SEARCHENGINE is set to YES.
 
-EXTRA_SEARCH_MAPPINGS  =
+EXTRA_SEARCH_MAPPINGS  = 
 
 #---------------------------------------------------------------------------
 # Configuration options related to the LaTeX output

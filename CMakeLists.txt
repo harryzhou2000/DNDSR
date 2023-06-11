@@ -7,7 +7,8 @@ set(CMAKE_VERBOSE_MAKEFILE ON)
 # set(CMAKE_CXX_STANDARD_REQUIRED 17)
 # set(CMAKE_CXX_STANDARD 17)
 
-find_package(MPI REQUIRED)
+#! why?
+# find_package(MPI REQUIRED)
 
 set(DNDS_SUPRESS_INSERT_CHECK ON CACHE BOOL "close the inserted outputs")
 set(DNDS_USE_NDEBUG_MACRO OFF CACHE BOOL "use NDEBUG macro for eigen output and cassert etc") # performance impact is small so off by default(without -DNDEBUG)
@@ -88,6 +89,10 @@ if(UNIX)
     #     "${PROJECT_SOURCE_DIR}/external/rapidjson/include" 
     #     "${PROJECT_SOURCE_DIR}/external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}/include"
     #     NO_DEFAULT_PATH)
+
+    find_path(EXTERNAL_DOXYGEN_AWESOME doxygen-awesome.css PATHS 
+        "${PROJECT_SOURCE_DIR}/external/doxygen-awesome-css-2.2.1" 
+        NO_DEFAULT_PATH)
 endif()
 
 set (EXTERNAL_LIBS "")
@@ -314,8 +319,12 @@ if (DOXYGEN_FOUND)
     #! TODO: use automatic config Doxygen.in file
     ##### using custom DOXYGEN
     set(DOXYGEN_IN ${PROJECT_SOURCE_DIR}/docs/Doxyfile)
+    set(DOXYGEN_OUT ${CMAKE_CURRENT_BINARY_DIR}/Doxyfile)
+
+    configure_file(${DOXYGEN_IN} ${DOXYGEN_OUT} @ONLY)
+
     add_custom_target(docs ALL 
-        COMMAND ${DOXYGEN_EXECUTABLE} ${DOXYGEN_IN}
+        COMMAND ${DOXYGEN_EXECUTABLE} ${DOXYGEN_OUT}
         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
         COMMENT Doing Doxygen
         VERBATIM

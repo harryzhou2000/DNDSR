@@ -16,21 +16,27 @@
 
 namespace DNDS::CFV
 {
+    /**
+     * @brief 
+     * A means to translate nlohmann json into c++ primitive data types and back;
+     * and stores then during computation.
+     *
+     */
     struct VRSettings
     {
         using json = nlohmann::json;
         json jsonSetting;
 
-        int maxOrder{3}; // P degree
-        int intOrder{5}; // note this is actually reduced somewhat
-        bool cacheDiffBase = true;
+        int maxOrder{3};           /// @brief polynomial degree of reconstruction
+        int intOrder{5};           /// @brief integration order globally set @note this is actually reduced somewhat
+        bool cacheDiffBase = true; /// @brief if cache the base function values on each of the quadrature points
 
-        real jacobiRelax = 1.0;
-        bool SORInstead = true;
+        real jacobiRelax = 1.0; /// @brief VR SOR/Jacobi iteration relaxation factor
+        bool SORInstead = true; /// @brief use SOR instead of relaxed Jacobi iteration
 
-        real smoothThreshold = 0.01;
-        real WBAP_nStd = 10;
-        bool normWBAP = false;
+        real smoothThreshold = 0.01; /// @brief limiter's smooth indicator threshold
+        real WBAP_nStd = 10;         /// @brief n used in WBAP limiters
+        bool normWBAP = false;       /// @brief if switch to normWBAP
 
         VRSettings()
         {
@@ -38,6 +44,10 @@ namespace DNDS::CFV
             WriteIntoJson();
         }
 
+        /**
+         * @brief write any data into jsonSetting member
+         * 
+         */
         void WriteIntoJson()
         {
             jsonSetting["maxOrder"] = maxOrder;
@@ -52,6 +62,10 @@ namespace DNDS::CFV
             jsonSetting["normWBAP"] = normWBAP;
         }
 
+        /**
+         * @brief read any data from jsonSetting member
+         *
+         */
         void ParseFromJson()
         {
             maxOrder = jsonSetting["maxOrder"];
@@ -104,6 +118,15 @@ namespace DNDS::CFV
     using tScalarPair = DNDS::ArrayPair<DNDS::ParArray<real, 1>>;
     using tScalar = decltype(tScalarPair::father);
 
+    /**
+     * @brief 
+     * The VR class that provides any information needed in high-order CFV
+     * 
+     * @details
+     * VR holds a primitive mesh and any needed derived information about geometry and 
+     * general reconstruction coefficients 
+     * 
+     */
     template <int dim>
     class VariationalReconstruction
     {
@@ -113,37 +136,37 @@ namespace DNDS::CFV
         VRSettings settings;
         std::shared_ptr<Geom::UnstructuredMesh> mesh;
 
-        real volGlobal{0};             // ConstructMetrics()
-        std::vector<real> volumeLocal; // ConstructMetrics()
-        std::vector<real> faceArea;    // ConstructMetrics()
-        std::vector<RecAtr> cellAtr;   // ConstructMetrics()
-        std::vector<RecAtr> faceAtr;   // ConstructMetrics()
-        tCoeffPair cellIntJacobiDet;   // ConstructMetrics()
-        tCoeffPair faceIntJacobiDet;   // ConstructMetrics()
-        t3VecsPair faceUnitNorm;       // ConstructMetrics()
-        t3VecPair faceMeanNorm;        // ConstructMetrics()
-        t3VecPair cellBary;            // ConstructMetrics()
-        t3VecPair faceCent;            // ConstructMetrics()
-        t3VecPair cellCent;            // ConstructMetrics()
-        t3VecsPair cellIntPPhysics;    // ConstructMetrics()
-        t3VecsPair faceIntPPhysics;    // ConstructMetrics()
-        t3VecPair cellAlignedHBox;     // ConstructMetrics()
-        t3VecPair cellMajorHBox;       // ConstructMetrics() //TODO
-        t3MatPair cellMajorCoord;      // ConstructMetrics() //TODO
+        real volGlobal{0};             /// @brief constructed using ConstructMetrics()
+        std::vector<real> volumeLocal; /// @brief constructed using ConstructMetrics()
+        std::vector<real> faceArea;    /// @brief constructed using ConstructMetrics()
+        std::vector<RecAtr> cellAtr;   /// @brief constructed using ConstructMetrics()
+        std::vector<RecAtr> faceAtr;   /// @brief constructed using ConstructMetrics()
+        tCoeffPair cellIntJacobiDet;   /// @brief constructed using ConstructMetrics()
+        tCoeffPair faceIntJacobiDet;   /// @brief constructed using ConstructMetrics()
+        t3VecsPair faceUnitNorm;       /// @brief constructed using ConstructMetrics()
+        t3VecPair faceMeanNorm;        /// @brief constructed using ConstructMetrics()
+        t3VecPair cellBary;            /// @brief constructed using ConstructMetrics()
+        t3VecPair faceCent;            /// @brief constructed using ConstructMetrics()
+        t3VecPair cellCent;            /// @brief constructed using ConstructMetrics()
+        t3VecsPair cellIntPPhysics;    /// @brief constructed using ConstructMetrics()
+        t3VecsPair faceIntPPhysics;    /// @brief constructed using ConstructMetrics()
+        t3VecPair cellAlignedHBox;     /// @brief constructed using ConstructMetrics()
+        t3VecPair cellMajorHBox;       /// @brief constructed using ConstructMetrics() //TODO
+        t3MatPair cellMajorCoord;      /// @brief constructed using ConstructMetrics() //TODO
 
-        t3VecPair faceAlignedScales;     // ConstructBaseAndWeight()
-        tVVecPair cellBaseMoment;        // ConstructBaseAndWeight()
-        tVVecPair faceWeight;            // ConstructBaseAndWeight()
-        tMatsPair cellDiffBaseCache;     // ConstructBaseAndWeight()
-        tMatsPair faceDiffBaseCache;     // ConstructBaseAndWeight()
-        tVMatPair cellDiffBaseCacheCent; // ConstructBaseAndWeight()//TODO *test
-        tVMatPair faceDiffBaseCacheCent; // ConstructBaseAndWeight()//TODO *test
+        t3VecPair faceAlignedScales;     /// @brief constructed using ConstructBaseAndWeight()
+        tVVecPair cellBaseMoment;        /// @brief constructed using ConstructBaseAndWeight()
+        tVVecPair faceWeight;            /// @brief constructed using ConstructBaseAndWeight()
+        tMatsPair cellDiffBaseCache;     /// @brief constructed using ConstructBaseAndWeight()
+        tMatsPair faceDiffBaseCache;     /// @brief constructed using ConstructBaseAndWeight()
+        tVMatPair cellDiffBaseCacheCent; /// @brief constructed using ConstructBaseAndWeight()//TODO *test
+        tVMatPair faceDiffBaseCacheCent; /// @brief constructed using ConstructBaseAndWeight()//TODO *test
 
-        tMatsPair matrixAB;        // ConstructRecCoeff()
-        tVecsPair vectorB;         // ConstructRecCoeff()
-        tMatsPair matrixAAInvB;    // ConstructRecCoeff()
-        tMatsPair vectorAInvB;     // ConstructRecCoeff()
-        tVMatPair matrixSecondary; // ConstructRecCoeff()//TODO
+        tMatsPair matrixAB;        /// @brief constructed using ConstructRecCoeff()
+        tVecsPair vectorB;         /// @brief constructed using ConstructRecCoeff()
+        tMatsPair matrixAAInvB;    /// @brief constructed using ConstructRecCoeff()
+        tMatsPair vectorAInvB;     /// @brief constructed using ConstructRecCoeff()
+        tVMatPair matrixSecondary; /// @brief constructed using ConstructRecCoeff()//TODO
 
         VariationalReconstruction(MPIInfo nMpi, std::shared_ptr<Geom::UnstructuredMesh> nMesh)
             : mpi(nMpi), mesh(nMesh)
@@ -160,7 +183,12 @@ namespace DNDS::CFV
         void ConstructRecCoeff();
 
         /**
-         * @brief make pair with default MPI type, match cell layout
+         * @brief make pair with default MPI type, match **cell** layout
+         *
+         * @tparam TArrayPair ArrayPair's type
+         * @tparam TOthers A list of additional resizing parameter types
+         * @param aPair the pair to be constructed
+         * @param others additional resizing parameters
          */
         template <class TArrayPair, class... TOthers>
         void MakePairDefaultOnCell(TArrayPair &aPair, TOthers... others)
@@ -172,7 +200,12 @@ namespace DNDS::CFV
         }
 
         /**
-         * @brief make pair with default MPI type, match face layout
+         * @brief make pair with default MPI type, match **face** layout
+         *
+         * @tparam TArrayPair ArrayPair's type
+         * @tparam TOthers A list of additional resizing parameter types
+         * @param aPair the pair to be constructed
+         * @param others additional resizing parameters
          */
         template <class TArrayPair, class... TOthers>
         void MakePairDefaultOnFace(TArrayPair &aPair, TOthers... others)
@@ -182,6 +215,7 @@ namespace DNDS::CFV
             aPair.father->Resize(mesh->NumFace(), others...);
             aPair.son->Resize(mesh->NumFaceGhost(), others...);
         }
+
 
         Geom::Elem::Quadrature GetFaceQuad(index iFace)
         {
