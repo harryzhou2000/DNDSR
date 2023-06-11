@@ -111,7 +111,8 @@ set(EXTERNAL_LIBS ${EXTERNAL_LIBS}
 if(UNIX OR MINGW)
     set(EXTERNAL_LIBS ${EXTERNAL_LIBS}
     dl 
-    z)
+    z
+    stdc++fs)
     message(${CMAKE_CXX_COMPILER_ID})
     add_compile_options(-std=c++17)
     if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang")
