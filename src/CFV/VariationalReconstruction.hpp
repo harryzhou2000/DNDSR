@@ -17,7 +17,7 @@
 namespace DNDS::CFV
 {
     /**
-     * @brief 
+     * @brief
      * A means to translate nlohmann json into c++ primitive data types and back;
      * and stores then during computation.
      *
@@ -46,7 +46,7 @@ namespace DNDS::CFV
 
         /**
          * @brief write any data into jsonSetting member
-         * 
+         *
          */
         void WriteIntoJson()
         {
@@ -119,13 +119,13 @@ namespace DNDS::CFV
     using tScalar = decltype(tScalarPair::father);
 
     /**
-     * @brief 
+     * @brief
      * The VR class that provides any information needed in high-order CFV
-     * 
+     *
      * @details
-     * VR holds a primitive mesh and any needed derived information about geometry and 
-     * general reconstruction coefficients 
-     * 
+     * VR holds a primitive mesh and any needed derived information about geometry and
+     * general reconstruction coefficients
+     *
      */
     template <int dim>
     class VariationalReconstruction
@@ -215,7 +215,6 @@ namespace DNDS::CFV
             aPair.father->Resize(mesh->NumFace(), others...);
             aPair.son->Resize(mesh->NumFaceGhost(), others...);
         }
-
 
         Geom::Elem::Quadrature GetFaceQuad(index iFace)
         {
@@ -675,7 +674,7 @@ namespace DNDS::CFV
                 {
                     index iFace = c2f[ic2f];
                     index iCellOther = this->CellFaceOther(iCell, iFace);
-                    auto gFace = this->GetFaceQuad(iFace);
+                    auto gFace = this->GetFaceQuadO1(iFace);
                     decltype(IJIISIsum) IJIISI;
                     // if (iCellOther != UnInitIndex)
                     // {
@@ -696,13 +695,13 @@ namespace DNDS::CFV
                             Eigen::Matrix<real, Eigen::Dynamic, nVarsSee, Eigen::DontAlign, maxNDiff, nVarsSee>
                                 uRecVal(nDiff, nVarsSee), uRecValL(nDiff, nVarsSee), uRecValR(nDiff, nVarsSee), uRecValJump(nDiff, nVarsSee);
                             uRecVal.setZero(), uRecValJump.setZero();
-                            uRecValL = this->GetIntPointDiffBaseValue(iCell, iFace, -1, ig, Eigen::seq(0, nDiff - 1)) *
+                            uRecValL = this->GetIntPointDiffBaseValue(iCell, iFace, -1, -1, Eigen::seq(0, nDiff - 1)) *
                                        uRec[iCell](Eigen::all, varsSee);
                             uRecValL(0, Eigen::all) += u[iCell](varsSee).transpose();
 
                             if (iCellOther != UnInitIndex)
                             {
-                                uRecValR = this->GetIntPointDiffBaseValue(iCellOther, iFace, -1, ig, Eigen::seq(0, nDiff - 1)) *
+                                uRecValR = this->GetIntPointDiffBaseValue(iCellOther, iFace, -1, -1, Eigen::seq(0, nDiff - 1)) *
                                            uRec[iCellOther](Eigen::all, varsSee);
                                 uRecValR(0, Eigen::all) += u[iCellOther](varsSee).transpose();
                                 uRecVal = (uRecValL + uRecValR) * 0.5;
@@ -737,6 +736,87 @@ namespace DNDS::CFV
                     //     std::cout << "iFace " << iFace << " iCellOther " << iCellOther << std::endl;
                     //     std::cout << IJIISI << std::endl;
                     // }
+                }
+                Eigen::Vector<real, nVarsSee> smoothIndicator =
+                    (IJIISIsum(Eigen::all, 0).array() /
+                     (IJIISIsum(Eigen::all, 1).array() + verySmallReal))
+                        .matrix();
+                real sImax = smoothIndicator.array().abs().maxCoeff();
+                si(iCell, 0) = std::sqrt(sImax) * sqr(settings.maxOrder);
+                // if (iCell == 12517)
+                // {
+                //     std::cout << "SUM:\n";
+                //     std::cout << IJIISIsum << std::endl;
+                //     std::abort();
+                // }
+            }
+        }
+
+        template <size_t nVarsSee, class TUREC, class TUDOF, class TFPost>
+        void DoCalculateSmoothIndicatorV1(
+            tScalarPair &si, TUREC &uRec, TUDOF &u,
+            const std::array<int, nVarsSee> &varsSee,
+            TFPost &&FPost)
+        {
+            using namespace Geom;
+            static const int maxNDiff = dim == 2 ? 10 : 20;
+
+            for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
+            {
+                // int NRecDOF = cellAtr[iCell].NDOF - 1; // ! not good ! TODO
+
+                auto c2f = mesh->cell2face[iCell];
+                Eigen::Matrix<real, nVarsSee, 2> IJIISIsum;
+                IJIISIsum.setZero();
+                for (int ic2f = 0; ic2f < c2f.size(); ic2f++)
+                {
+                    index iFace = c2f[ic2f];
+                    index iCellOther = this->CellFaceOther(iCell, iFace);
+                    auto gFace = this->GetFaceQuadO1(iFace);
+                    decltype(IJIISIsum) IJIISI;
+                    // if (iCellOther != UnInitIndex)
+                    // {
+                    //     uRec[iCell].setConstant(1);
+                    //     uRec[iCellOther].setConstant(0);
+                    //     u[iCell].setConstant(1);
+                    //     u[iCellOther].setConstant(0);
+                    // }
+                    IJIISI.setZero();
+                    gFace.IntegrationSimple(
+                        IJIISI,
+                        [&](auto &finc, int ig)
+                        {
+                            tPoint unitNorm = faceMeanNorm[iFace];
+
+                            Eigen::Matrix<real, 1, nVarsSee>
+                                uRecVal(1, nVarsSee), uRecValL(1, nVarsSee), uRecValR(1, nVarsSee), uRecValJump(1, nVarsSee);
+                            uRecVal.setZero(), uRecValJump.setZero();
+                            uRecValL = this->GetIntPointDiffBaseValue(iCell, iFace, -1, -1, std::array<int, 1>{0}) *
+                                       uRec[iCell](Eigen::all, varsSee);
+                            uRecValL(0, Eigen::all) += u[iCell](varsSee).transpose();
+                            FPost(uRecValL);
+
+                            if (iCellOther != UnInitIndex)
+                            {
+                                uRecValR = this->GetIntPointDiffBaseValue(iCellOther, iFace, -1, -1, std::array<int, 1>{0}) *
+                                           uRec[iCellOther](Eigen::all, varsSee);
+                                uRecValR(0, Eigen::all) += u[iCellOther](varsSee).transpose();
+                                FPost(uRecValR);
+                                uRecVal = (uRecValL + uRecValR) * 0.5;
+                                uRecValJump = (uRecValL - uRecValR) * 0.5;
+                            }
+
+                            Eigen::Matrix<real, nVarsSee, nVarsSee> IJI, ISI;
+                            IJI = FFaceFunctional(uRecValJump, uRecValJump, iFace, -1);
+                            ISI = FFaceFunctional(uRecVal, uRecVal, iFace, -1);
+
+                            finc(Eigen::all, 0) = IJI.diagonal();
+                            finc(Eigen::all, 1) = ISI.diagonal();
+
+                            // finc *= faceArea[iFace]; // don't forget this
+                            finc *= faceIntJacobiDet(iFace, ig);
+                        });
+                    IJIISIsum += IJIISI;
                 }
                 Eigen::Vector<real, nVarsSee> smoothIndicator =
                     (IJIISIsum(Eigen::all, 0).array() /

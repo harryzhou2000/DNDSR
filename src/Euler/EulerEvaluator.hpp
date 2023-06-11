@@ -22,7 +22,6 @@
 
 namespace DNDS::Euler
 {
-    
 
     template <EulerModel model>
     class EulerEvaluator
@@ -961,7 +960,7 @@ namespace DNDS::Euler
             bool fixUL = false)
         {
             DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
-            
+
             TU URxy;
 
             if (btype == Geom::BC_ID_DEFAULT_FAR ||
@@ -1448,8 +1447,8 @@ namespace DNDS::Euler
             switch (settings.specialBuiltinInitializer)
             {
             case 1: // for RT problem
-                DNDS_assert(model == NS || model == NS_2D);
-                if constexpr( model == NS || model == NS_2D)
+                DNDS_assert(model == NS || model == NS_2D || model == NS_3D);
+                if constexpr (model == NS || model == NS_2D)
                     for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
                     {
                         Geom::tPoint pos = vfv->cellBary[iCell];
@@ -1466,6 +1465,21 @@ namespace DNDS::Euler
                             u[iCell] = Eigen::Vector<real, 5>{rho, 0, rho * v, 0, 0.5 * rho * sqr(v) + p / (gamma - 1)};
                         else
                             u[iCell] = Eigen::Vector<real, 4>{rho, 0, rho * v, 0.5 * rho * sqr(v) + p / (gamma - 1)};
+                    }
+                else if constexpr (model == NS_3D)
+                    for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
+                    {
+                        Geom::tPoint pos = vfv->cellBary[iCell];
+                        real gamma = settings.idealGasProperty.gamma;
+                        real rho = 2;
+                        real p = 1 + 2 * pos(1);
+                        if (pos(1) >= 0.5)
+                        {
+                            rho = 1;
+                            p = 1.5 + pos(1);
+                        }
+                        real v = -0.025 * sqrt(gamma * p / rho) * std::cos(8 * pi * pos(0)) * std::cos(8 * pi * pos(2));
+                        u[iCell] = Eigen::Vector<real, 5>{rho, 0, rho * v, 0, 0.5 * rho * sqr(v) + p / (gamma - 1)};
                     }
                 break;
             case 2: // for IV10 problem

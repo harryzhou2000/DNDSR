@@ -25,6 +25,7 @@
     "rhsThresholdInternal": 1e-3,
     "useLocalDt": true,
     "useLimiter": true,
+    "smoothIndicatorProcedure": 0,
     "limiterProcedure": 1, //1 == CWBAP
     "nPartialLimiterStart": 10000,
     "nPartialLimiterStartLocal": 10000,
@@ -39,6 +40,8 @@
     "comment_meshFileList": [],
     "outPltName": "../data/outUnsteady/UniformDM240",
     "outLogName": "../data/outUnsteady/UniformDM240",
+    "readMeshMode": 0,
+    "outPltMode": 0,
     "uniqueStamps": false,
     "err_dMax": 0.00,
     "res_base": 0,

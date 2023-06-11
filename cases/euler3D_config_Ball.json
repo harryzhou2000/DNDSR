@@ -25,6 +25,7 @@
     "rhsThresholdInternal": 1e-3,
     "useLocalDt": true,
     "useLimiter": true,
+    "smoothIndicatorProcedure": 0,
     "limiterProcedure": 1, //1 == CWBAP
     "nPartialLimiterStart": 0,
     "nPartialLimiterStartLocal": 0,
@@ -39,6 +40,8 @@
     "comment_meshFileList": [],
     "outPltName": "../data/outUnsteady/Ball2_O2",
     "outLogName": "../data/outUnsteady/Ball2_O2",
+    "readMeshMode": 0,
+    "outPltMode": 0,
     "uniqueStamps": true,
     "err_dMax": 0.00,
     "res_base": 0,

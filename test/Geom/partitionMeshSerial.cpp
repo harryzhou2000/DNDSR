@@ -8,8 +8,9 @@
 std::vector<double> argD;
 
 /*
-running:
-valgrind --log-file=log_valgrind.log
+running: with openmpi:
+mpirun --mca threads_pthreads_yield_strategy nanosleep --mca threads_pthreads_nanosleep_time 1000000000  --ove
+rsubscribe -np 512 test/partitionMeshSerial.exe
 */
 
 void doPartitioning(const std::string &meshName, int dim)

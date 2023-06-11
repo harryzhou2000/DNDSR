@@ -173,9 +173,43 @@ namespace DNDS::Euler
                     return ret;
                     // return real(1);
                 };
-                vfv->DoCalculateSmoothIndicator(
-                    ifUseLimiter, (uRec), (u),
-                    std::array<int, 2>{0, I4});
+                if (config.smoothIndicatorProcedure == 0)
+                    vfv->DoCalculateSmoothIndicator(
+                        ifUseLimiter, (uRec), (u),
+                        std::array<int, 2>{0, I4});
+                else if (config.smoothIndicatorProcedure == 1)
+                {
+                    if constexpr (dim == 2)
+                        vfv->DoCalculateSmoothIndicatorV1(
+                            ifUseLimiter, (uRec), (u),
+                            std::array<int, 4>{0, 1, 2, 3},
+                            [&](auto &v)
+                            {
+                                TU prim;
+                                TU cons;
+                                cons.setZero();
+                                cons(Seq01234) = v.transpose();
+                                Gas::IdealGasThermalConservative2Primitive<dim>(cons, prim, eval.settings.idealGasProperty.gamma);
+                                v.setConstant(prim(I4));
+                            });
+                    else
+                        vfv->DoCalculateSmoothIndicatorV1(
+                            ifUseLimiter, (uRec), (u),
+                            std::array<int, 5>{0, 1, 2, 3, 4},
+                            [&](auto &v)
+                            {
+                                TU prim;
+                                TU cons;
+                                cons.setZero();
+                                cons(Seq01234) = v.transpose();
+                                Gas::IdealGasThermalConservative2Primitive<dim>(cons, prim, eval.settings.idealGasProperty.gamma);
+                                v.setConstant(prim(I4));
+                            });
+                }
+                else
+                {
+                    DNDS_assert(false);
+                }
                 if (config.limiterProcedure == 1)
                     vfv->DoLimiterWBAP_C(
                         eval,

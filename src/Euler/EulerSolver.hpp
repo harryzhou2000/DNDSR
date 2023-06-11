@@ -13,6 +13,9 @@
 #include "json.hpp"
 #include "EulerBC.hpp"
 
+#include "DNDS/SerializerJSON.hpp"
+#include <filesystem>
+
 namespace DNDS::Euler
 {
 
@@ -91,6 +94,8 @@ namespace DNDS::Euler
             std::string meshFile = "data/mesh/NACA0012_WIDE_H3.msh";
             std::string outPltName = "data/out/debugData_";
             std::string outLogName = "data/out/debugData_";
+            int outPltMode = 0;   // 0 = serial, 1 = dist plt
+            int readMeshMode = 0; // 0 = serial cgns, 1 = dist json
             bool uniqueStamps = true;
             real err_dMax = 0.1;
 
@@ -110,6 +115,7 @@ namespace DNDS::Euler
             bool useLocalDt = true;
 
             bool useLimiter = true;
+            int smoothIndicatorProcedure = 0;
             int limiterProcedure = 0; // 0 for V2==3WBAP, 1 for V3==CWBAP
 
             int nPartialLimiterStart = 2;
@@ -176,12 +182,15 @@ namespace DNDS::Euler
             __gs_to_config(meshFile);
             __gs_to_config(outLogName);
             __gs_to_config(outPltName);
+            __gs_to_config(outPltMode);
+            __gs_to_config(readMeshMode);
             __gs_to_config(uniqueStamps);
             __gs_to_config(err_dMax);
             __gs_to_config(res_base);
             __gs_to_config(useVolWiseResidual);
             __gs_to_config(useLocalDt);
             __gs_to_config(useLimiter);
+            __gs_to_config(smoothIndicatorProcedure);
             __gs_to_config(limiterProcedure);
             __gs_to_config(nPartialLimiterStart);
             __gs_to_config(nPartialLimiterStartLocal);
@@ -201,7 +210,7 @@ namespace DNDS::Euler
             DNDS_assert(config.eulerSettings.is_object());
             DNDS_assert(config.vfvSettings.is_object());
 
-            //TODO: BC settings
+            // TODO: BC settings
 
             if (mpi.rank == 0)
                 log() << "JSON: Parse Done ===" << std::endl;
@@ -225,14 +234,44 @@ namespace DNDS::Euler
             vfv->settings.ParseFromJson();
 
             DNDS_MAKE_SSP(reader, mesh, 0);
-            reader->ReadFromCGNSSerial(config.meshFile); // TODO: add bnd mapping here
+            DNDS_assert(config.readMeshMode == 0 || config.readMeshMode == 1);
+            DNDS_assert(config.outPltMode == 0 || config.outPltMode == 1);
 
-            reader->BuildCell2Cell();
-            reader->MeshPartitionCell2Cell();
-            reader->PartitionReorderToMeshCell2Cell();
-            reader->BuildSerialOut();
-            mesh->BuildGhostPrimary();
-            mesh->AdjGlobal2LocalPrimary();
+            if (config.readMeshMode == 0)
+            {
+                reader->ReadFromCGNSSerial(config.meshFile); // TODO: add bnd mapping here
+                reader->BuildCell2Cell();
+                reader->MeshPartitionCell2Cell();
+                reader->PartitionReorderToMeshCell2Cell();
+                if (config.outPltMode == 0)
+                {
+                    reader->BuildSerialOut();
+                    mesh->BuildGhostPrimary();
+                    mesh->AdjGlobal2LocalPrimary();
+                }
+            }
+            else
+            {
+                std::filesystem::path meshPath{config.meshFile};
+                auto meshOutName = std::string(config.meshFile) + "_part_" + std::to_string(mpi.size) + ".dir";
+                std::filesystem::path meshOutDir{meshOutName};
+                // std::filesystem::create_directories(meshOutDir); // reading not writing
+                std::string meshPartPath = std::string(meshOutDir / (std::string("part_") + std::to_string(mpi.rank) + ".json"));
+
+                SerializerJSON serializerJSON;
+                serializerJSON.SetUseCodecOnUint8(true);
+                SerializerBase *serializer = &serializerJSON;
+                serializer->OpenFile(meshPartPath, true);
+                mesh->ReadSerialize(serializer, "meshPart");
+                serializer->CloseFile();
+                if (config.outPltMode == 0)
+                {
+                    mesh->AdjLocal2GlobalPrimary();
+                    reader->BuildSerialOut();
+                    mesh->AdjGlobal2LocalPrimary();
+                }
+            }
+            // std::cout << "here" << std::endl;
             mesh->InterpolateFace();
             mesh->AssertOnFaces();
 #ifdef DNDS_USE_OMP
@@ -244,8 +283,8 @@ namespace DNDS::Euler
                 {
                     auto type = BCHandler.GetTypeFromID(id);
                     if (type == BCFar || type == BCSpecial)
-                        return 0; //far weight
-                    return 1; //wall weight
+                        return 0; // far weight
+                    return 1;     // wall weight
                 });
             vfv->ConstructRecCoeff();
 
@@ -260,20 +299,21 @@ namespace DNDS::Euler
             vfv->BuildURec(uOld, nVars);
             vfv->BuildScalar(ifUseLimiter);
 
-            //! serial mesh specific output method
-
             DNDS_MAKE_SSP(outDist, mpi);
-            DNDS_MAKE_SSP(outSerial, mpi);
             outDist->Resize(mesh->NumCell(), nOUTS);
-            outDist2SerialTrans.setFatherSon(outDist, outSerial);
-            DNDS_assert(reader->mode == Geom::MeshReaderMode::SerialOutput);
-            outDist2SerialTrans.BorrowGGIndexing(reader->cell2nodeSerialOutTrans);
-            outDist2SerialTrans.createMPITypes();
-            outDist2SerialTrans.initPersistentPull();
+            if (config.outPltMode == 0)
+            {
+                //! serial mesh specific output method
+                DNDS_MAKE_SSP(outSerial, mpi);
+                outDist2SerialTrans.setFatherSon(outDist, outSerial);
+                DNDS_assert(reader->mode == Geom::MeshReaderMode::SerialOutput);
+                outDist2SerialTrans.BorrowGGIndexing(reader->cell2nodeSerialOutTrans);
+                outDist2SerialTrans.createMPITypes();
+                outDist2SerialTrans.initPersistentPull();
+            }
         }
 
         void RunImplicitEuler();
-        
 
         template <typename tODE, typename tEval>
         void PrintData(const std::string &fname, tODE &ode, tEval &eval)
@@ -313,8 +353,12 @@ namespace DNDS::Euler
                     (*outDist)[iCell][4 + i] = recu(i) / recu(0); // 4 is additional amount offset, not Index of last flow variable (I4)
                 }
             }
-            outDist2SerialTrans.startPersistentPull();
-            outDist2SerialTrans.waitPersistentPull();
+
+            if (config.outPltMode == 0)
+            {
+                outDist2SerialTrans.startPersistentPull();
+                outDist2SerialTrans.waitPersistentPull();
+            }
             std::vector<std::string> names;
             if constexpr (dim == 2)
                 names = {
@@ -326,16 +370,36 @@ namespace DNDS::Euler
             {
                 names.push_back("V" + std::to_string(i - I4));
             }
-            reader->PrintSerialPartPltBinaryDataArray(
-                fname, nOUTS, //! oprank = 0
-                [&](int idata)
-                { return names[idata]; },
-                [&](int idata, index iv)
-                {
-                    return (*outSerial)[iv][idata];
-                },
-                0,
-                0); // todo: change this flag for dist output
+            if (config.outPltMode == 0)
+            {
+                reader->PrintSerialPartPltBinaryDataArray(
+                    fname, nOUTS, //! oprank = 0
+                    [&](int idata)
+                    { return names[idata]; },
+                    [&](int idata, index iv)
+                    {
+                        return (*outSerial)[iv][idata];
+                    },
+                    0.0,
+                    0);
+            }
+            else if (config.outPltMode == 1)
+            {
+                reader->PrintSerialPartPltBinaryDataArray(
+                    fname, nOUTS, //! oprank = 0
+                    [&](int idata)
+                    { return names[idata]; },
+                    [&](int idata, index iv)
+                    {
+                        return (*outDist)[iv][idata];
+                    },
+                    0.0,
+                    1);
+            }
+            else
+            {
+                DNDS_assert(false);
+            }
         }
     };
 

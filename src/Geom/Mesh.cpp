@@ -7,6 +7,7 @@
 #include <map>
 #include <set>
 #include <omp.h>
+#include <filesystem>
 namespace _METIS
 {
 #include "metis.h"
@@ -1098,6 +1099,13 @@ namespace DNDS::Geom
             for (DNDS::index i = 0; i < numBndGlobal; i++)
                 serialPullBnd[i] = i;
         }
+        DNDS_MAKE_SSP(cell2nodeSerial, mesh->mpi);
+        DNDS_MAKE_SSP(bnd2nodeSerial, mesh->mpi);
+        DNDS_MAKE_SSP(coordSerial, mesh->mpi);
+        DNDS_MAKE_SSP(cellElemInfoSerial, ElemInfo::CommType(), ElemInfo::CommMult(), mesh->mpi);
+        DNDS_MAKE_SSP(bndElemInfoSerial, ElemInfo::CommType(), ElemInfo::CommMult(), mesh->mpi);
+        // DNDS_MAKE_SSP(bnd2cellSerial, mesh->mpi);// not needed yet
+
         coordSerialOutTrans.setFatherSon(mesh->coords.father, coordSerial);
         cell2nodeSerialOutTrans.setFatherSon(mesh->cell2node.father, cell2nodeSerial);
         bnd2nodeSerialOutTrans.setFatherSon(mesh->bnd2node.father, bnd2nodeSerial);
@@ -1128,6 +1136,10 @@ namespace DNDS::Geom
         bnd2nodeSerialOutTrans.pullOnce();
         cellElemInfoSerialOutTrans.pullOnce();
         bndElemInfoSerialOutTrans.pullOnce();
+        if (mesh->mpi.rank == mRank)
+        {
+            std::cout << "UnstructuredMeshSerialRW === BuildSerialOut Done " << std::endl;
+        }
     }
 
     void UnstructuredMeshSerialRW::
@@ -1138,18 +1150,24 @@ namespace DNDS::Geom
                                           double t, int flag) //! supports 2d here
     {
         auto mpi = mesh->mpi;
-        DNDS_assert(mode == SerialOutput && dataIsSerialOut);
+        
 
         if (mpi.rank != mRank && flag == 0) //* now only operating on mRank if serial
             return;
 
         if (flag == 0)
+        {
             fname += ".plt";
+            DNDS_assert(mode == SerialOutput && dataIsSerialOut);
+        }
         if (flag == 1)
         {
+
+            std::filesystem::path outPath{fname + ".dir"};
+            std::filesystem::create_directories(outPath);
             char BUF[512];
             std::sprintf(BUF, "%04d", mpi.rank);
-            fname += BUF + std::string(".plt");
+            fname = outPath / (std::string(BUF) + ".plt");
         }
 
         std::ofstream fout(fname, std::ios::binary);
