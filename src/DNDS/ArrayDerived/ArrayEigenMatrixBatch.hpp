@@ -157,6 +157,9 @@ namespace DNDS
         {
             return this->operator[](i)[j];
         }
+
+        using t_base::ReadSerializer;
+        using t_base::WriteSerializer; //! because no extra data than Array<>
     };
 
 }

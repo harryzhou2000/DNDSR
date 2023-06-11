@@ -1,11 +1,9 @@
-#include "CFV/VariationalReconstruction.hpp"
-
-#include <cstdlib>
-#include <omp.h>
-
+#include "Geom/Mesh.hpp"
 #include "DNDS/SerializerJSON.hpp"
+#include "stdio.h"
 
 #include <filesystem>
+#include <unistd.h>
 
 std::vector<double> argD;
 
@@ -14,10 +12,8 @@ running:
 valgrind --log-file=log_valgrind.log
 */
 
-void testConstruct()
+void doPartitioning(const std::string &meshName, int dim)
 {
-    static const int dim = 3;
-
     auto mpi = DNDS::MPIInfo();
     mpi.setWorld();
     // DNDS::Debug::MPIDebugHold(mpi);
@@ -29,19 +25,29 @@ void testConstruct()
     // "../data/mesh/SC20714_MixedA.cgns"
     // "../data/mesh/UniformDM240_E120.cgns"
     // "../data/mesh/Ball.cgns"
-    auto meshName = "../data/mesh/Ball2_O2.cgns";
     reader.ReadFromCGNSSerial(meshName);
+
     reader.BuildCell2Cell();
+    // MPI_Request bReq{MPI_REQUEST_NULL};
+    // MPI_Ibarrier(mpi.comm, &bReq);
+    // bool barrierOk = false;
+    // MPI_Start(&bReq);
+    // while (!barrierOk)
+    // {
+    //     int flag{0};
+    //     MPI_Status stat;
+    //     MPI_Test(&bReq, &flag, &stat);
+    //     barrierOk = flag != 0;
+    //     // sleep(5);
+    // }
+
     reader.MeshPartitionCell2Cell();
     reader.PartitionReorderToMeshCell2Cell();
-    reader.BuildSerialOut();
     mesh->BuildGhostPrimary();
     mesh->AdjGlobal2LocalPrimary();
-    mesh->InterpolateFace();
-    mesh->AssertOnFaces();
 
     /**************************/
-    // about serializer: test the coherence of mesh serializer
+    // about serializer:
     std::filesystem::path meshPath{meshName};
     auto meshOutName = std::string(meshName) + "_part_" + std::to_string(mpi.size) + ".dir";
     std::filesystem::path meshOutDir{meshOutName};
@@ -56,36 +62,16 @@ void testConstruct()
     mesh->WriteSerialize(serializer, "meshPart");
     serializer->CloseFile();
 
-    serializer->OpenFile(meshPartPath, true);
-    mesh->ReadSerialize(serializer, "meshPart");
-    serializer->CloseFile();
-
     /**************************/
-    mesh->InterpolateFace();
-    mesh->AssertOnFaces();
-
-    auto vr = DNDS::CFV::VariationalReconstruction<dim>(mpi, mesh);
-#ifdef DNDS_USE_OMP
-    omp_set_num_threads(DNDS::MPIWorldSize() == 1 ? std::min(omp_get_num_procs(), omp_get_max_threads()) : 1);
-#endif
-    // omp_set_num_threads(1);
-    vr.ConstructMetrics();
-    vr.ConstructBaseAndWeight();
-    vr.ConstructRecCoeff();
 }
 
 int main(int argc, char *argv[])
 {
     // ! Disable MPI call to help serial mem check
     MPI_Init(&argc, &argv);
+    DNDS_assert_info(argc == 3, "need 2 arguments of [mesh file] and [dim]");
 
-    for (int i = 1; i < argc; i++)
-    {
-        double v = std::atof(argv[i]);
-        argD.push_back(v);
-    }
-
-    testConstruct();
+    doPartitioning(argv[1], std::stoi(argv[2]));
 
     MPI_Finalize();
 

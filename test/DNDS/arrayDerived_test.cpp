@@ -3,6 +3,7 @@
 #include "DNDS/ArrayDerived/ArrayEigenMatirx.hpp"
 #include "DNDS/ArrayDerived/ArrayEigenUniMatrixBatch.hpp"
 #include "DNDS/ArrayDerived/ArrayEigenMatrixBatch.hpp"
+#include "DNDS/SerializerJSON.hpp"
 
 #include <cstdlib>
 using namespace DNDS;
@@ -41,6 +42,22 @@ void test_ADJ()
             A_adj[i][j] = i;
     }
     A_adj.Compress();
+
+    /**************************/
+    // serializing
+    SerializerJSON serializerJSON;
+    serializerJSON.SetUseCodecOnUint8(true);
+    SerializerBase *serializer = &serializerJSON;
+
+    serializer->OpenFile("test_ArrayAdjacency.json", false);
+    A_adj.WriteSerializer(serializer, "arrayAdj");
+    serializer->CloseFile();
+
+    serializer->OpenFile("test_ArrayAdjacency.json", true);
+    A_adj.ReadSerializer(serializer, "arrayAdj");
+    serializer->CloseFile();
+    /**************************/
+
     std::cout << A_adj << std::endl;
 }
 
@@ -73,6 +90,22 @@ void test_Mat()
         A_v[i].setIdentity();
     }
     A_v.Compress();
+
+    /**************************/
+    // serializing
+    SerializerJSON serializerJSON;
+    serializerJSON.SetUseCodecOnUint8(true);
+    SerializerBase *serializer = &serializerJSON;
+
+    serializer->OpenFile("test_ArrayMatrix.json", false);
+    A_v.WriteSerializer(serializer, "arrayMat");
+    serializer->CloseFile();
+
+    serializer->OpenFile("test_ArrayMatrix.json", true);
+    A_v.ReadSerializer(serializer, "arrayMat");
+    serializer->CloseFile();
+    /**************************/
+
     for (DNDS::index i = 0; i < A_v.Size(); i++)
     {
         std::cout << A_v[i].transpose() << std::endl;
@@ -105,6 +138,22 @@ void test_Vec()
         A_v[i].setLinSpaced(i, i + 0.5);
     }
     A_v.Compress();
+
+    /**************************/
+    // serializing
+    SerializerJSON serializerJSON;
+    serializerJSON.SetUseCodecOnUint8(true);
+    SerializerBase *serializer = &serializerJSON;
+
+    serializer->OpenFile("test_ArrayVector.json", false);
+    A_v.WriteSerializer(serializer, "arrayVec");
+    serializer->CloseFile();
+
+    serializer->OpenFile("test_ArrayVector.json", true);
+    A_v.ReadSerializer(serializer, "arrayVec");
+    serializer->CloseFile();
+    /**************************/
+
     for (DNDS::index i = 0; i < A_v.Size(); i++)
     {
         std::cout << A_v[i].transpose() << std::endl;
@@ -119,10 +168,10 @@ void test_UniMatBatch()
         nRow = int(argD[0]);
     }
 
-    // ArrayEigenUniMatrixBatch<Eigen::Dynamic, Eigen::Dynamic> A_UMB;
+    ArrayEigenUniMatrixBatch<Eigen::Dynamic, Eigen::Dynamic> A_UMB;
     // ArrayEigenUniMatrixBatch<3, Eigen::Dynamic> A_UMB;
     // ArrayEigenUniMatrixBatch<Eigen::Dynamic, 4> A_UMB;
-    ArrayEigenUniMatrixBatch<3, 4> A_UMB;
+    // ArrayEigenUniMatrixBatch<3, 4> A_UMB;
 
     A_UMB.ResizeMatrix(3, 4);
     A_UMB.Resize(nRow, -1, -1);
@@ -134,6 +183,22 @@ void test_UniMatBatch()
             A_UMB(i, j).setIdentity(), A_UMB(i, j) *= i;
     }
     A_UMB.Compress();
+
+    /**************************/
+    // serializing
+    SerializerJSON serializerJSON;
+    serializerJSON.SetUseCodecOnUint8(true);
+    SerializerBase *serializer = &serializerJSON;
+
+    serializer->OpenFile("test_ArrayUMB.json", false);
+    A_UMB.WriteSerializer(serializer, "arrayUMB");
+    serializer->CloseFile();
+
+    serializer->OpenFile("test_ArrayUMB.json", true);
+    A_UMB.ReadSerializer(serializer, "arrayUMB");
+    serializer->CloseFile();
+    /**************************/
+
     for (DNDS::index i = 0; i < A_UMB.Size(); i++)
     {
         std::cout << i << ": \n";
@@ -180,6 +245,22 @@ void test_MatBatch()
     }
 
     A_MB.Compress();
+
+    /**************************/
+    // serializing
+    SerializerJSON serializerJSON;
+    serializerJSON.SetUseCodecOnUint8(true);
+    SerializerBase *serializer = &serializerJSON;
+
+    serializer->OpenFile("test_ArrayMB.json", false);
+    A_MB.WriteSerializer(serializer, "arrayMB");
+    serializer->CloseFile();
+
+    serializer->OpenFile("test_ArrayMB.json", true);
+    A_MB.ReadSerializer(serializer, "arrayMB");
+    serializer->CloseFile();
+    /**************************/
+
     for (DNDS::index i = 0; i < A_MB.Size(); i++)
     {
         std::cout << i << ": \n";
@@ -204,7 +285,7 @@ int main(int argc, char *argv[])
     // test_ADJ();
     // test_Vec();
     test_Mat();
-    test_UniMatBatch();
+    // test_UniMatBatch();
     // test_MatBatch();
 
     // MPI_Finalize();

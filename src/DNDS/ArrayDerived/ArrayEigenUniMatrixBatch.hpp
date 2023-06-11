@@ -34,7 +34,7 @@ namespace DNDS
     private:
         int _row_dynamic = _n_row > 0 ? _n_row : 0;
         int _col_dynamic = _n_col > 0 ? _n_col : 0;
-        int _m_size = this->Rows() * this->Cols();
+        int _m_size = this->Rows() * this->Cols(); //!extra data!
 
     private:
         using t_base::Resize;
@@ -92,7 +92,7 @@ namespace DNDS
 
         void ResizeBatch(index i, rowsize b_size)
         {
-            this->ResizeRow(i, b_size);
+            this->ResizeRow(i, b_size * MSize());
         }
 
         void ResizeRow(index i, rowsize b_size)
@@ -102,7 +102,7 @@ namespace DNDS
 
         rowsize BatchSize(index i)
         {
-            return this->t_base::RowSize(i);
+            return this->RowSize(i);
         }
 
         rowsize RowSize(index i)
@@ -129,5 +129,43 @@ namespace DNDS
         }
 
         // TODO: getting sub matrix ?
+
+        static std::string GetDerivedArraySignature()
+        {
+            return "ArrayEigenUniMatrixBatch__" + std::to_string(_n_row) +
+                   "_" + std::to_string(_n_col);
+        }
+
+        void WriteSerializer(SerializerBase *serializer, const std::string &name)
+        {
+            auto cwd = serializer->GetCurrentPath();
+            serializer->CreatePath(name);
+            serializer->GoToPath(name);
+
+            serializer->WriteString("DerivedType", this->GetDerivedArraySignature());
+            serializer->WriteInt("row_dynamic", _row_dynamic);
+            serializer->WriteInt("col_dynamic", _col_dynamic);
+            serializer->WriteInt("m_size", _m_size);
+            this->t_base::WriteSerializer(serializer, "array");
+
+            serializer->GoToPath(cwd);
+        }
+
+        void ReadSerializer(SerializerBase *serializer, const std::string &name)
+        {
+            auto cwd = serializer->GetCurrentPath();
+            // serializer->CreatePath(name); //!remember no create path
+            serializer->GoToPath(name);
+
+            std::string readDerivedType;
+            serializer->ReadString("DerivedType", readDerivedType);
+            DNDS_assert(readDerivedType == this->GetDerivedArraySignature());
+            serializer->ReadInt("row_dynamic", _row_dynamic);
+            serializer->ReadInt("col_dynamic", _col_dynamic);
+            serializer->ReadInt("m_size", _m_size);
+            this->t_base::ReadSerializer(serializer, "array");
+
+            serializer->GoToPath(cwd);
+        }
     };
 }

@@ -66,6 +66,7 @@ namespace DNDS::Geom
         DNDS::MPIInfo mpi;
         int dim;
         MeshAdjState adjPrimaryState{Adj_Unknown};
+        MeshAdjState adjFacialState{Adj_Unknown};
         /// reader
         tCoordPair coords;
         tAdjPair cell2node;
@@ -99,6 +100,10 @@ namespace DNDS::Geom
          */
         void BuildGhostPrimary();
         void AdjGlobal2LocalPrimary();
+        void AdjLocal2GlobalPrimary();
+
+        void AdjGlobal2LocalFacial();
+        void AdjLocal2GlobalFacial();
 
         void InterpolateFace();
         void AssertOnFaces();
@@ -140,8 +145,14 @@ namespace DNDS::Geom
             for (rowsize i = 0; i < c2n.size(); i++)
                 cs(Eigen::all, i) = coords[c2n[i]];
         }
+
+        void WriteSerialize(SerializerBase *serializer, const std::string &name);
+        void ReadSerialize(SerializerBase *serializer, const std::string &name);
     };
 
+}
+namespace DNDS::Geom
+{
     using tFDataFieldName = std::function<std::string(int)>;
     using tFDataFieldQuery = std::function<DNDS::real(int, DNDS::index)>;
 
