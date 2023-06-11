@@ -330,21 +330,42 @@ namespace DNDS::Euler::Gas
         real sqrtRhoR = std::sqrt(UR(0));
 
         TVec veloRoe = (sqrtRhoL * veloL + sqrtRhoR * veloR) / (sqrtRhoL + sqrtRhoR);
+        real vsqrRoe = veloRoe.squaredNorm();
+        real HRoe = (sqrtRhoL * HL + sqrtRhoR * HR) / (sqrtRhoL + sqrtRhoR);
+        real asqrRoe = (gamma - 1) * (HRoe - 0.5 * vsqrRoe);
+        real rhoRoe = sqrtRhoL * sqrtRhoR;
+
+        if (!(asqrRoe > 0 && asqrL > 0 && asqrR > 0))
+        {
+            dumpInfo();
+        }
+        DNDS_assert((asqrRoe > 0 && asqrL > 0 && asqrR > 0));
+        real aRoe = std::sqrt(asqrRoe);
 
         // real lam0 = veloRoe(0) - aRoe;
         // real lam123 = veloRoe(0);
         // real lam4 = veloRoe(0) + aRoe;
         // Eigen::Vector<real, 5> lam = {lam0, lam123, lam123, lam123, lam4};
 
-        real eta2 = 0.5 * (sqrtRhoL * sqrtRhoR) / sqr(sqrtRhoL + sqrtRhoR);
-        real dsqr = (asqrL * sqrtRhoL + asqrR * sqrtRhoR) / (sqrtRhoL + sqrtRhoR) + eta2 * sqr(veloR(0) - veloL(0));
-        if (!(dsqr > 0))
+        // real eta2 = 0.5 * (sqrtRhoL * sqrtRhoR) / sqr(sqrtRhoL + sqrtRhoR);
+        // real dsqr = (asqrL * sqrtRhoL + asqrR * sqrtRhoR) / (sqrtRhoL + sqrtRhoR) + eta2 * sqr(veloR(0) - veloL(0));
+        // if (!(dsqr > 0))
+        // {
+        //     dumpInfo();
+        // }
+        // DNDS_assert(dsqr > 0);
+        auto HLLCq = [&](real p, real pS)
         {
-            dumpInfo();
-        }
-        DNDS_assert(dsqr > 0);
-        real SL = veloRoe(0) - sqrt(dsqr);
-        real SR = veloRoe(0) + sqrt(dsqr);
+            real q = std::sqrt(1 + (gamma + 1) / 2 / gamma * (pS / p - 1));
+            if (pS <= p)
+                q = 1;
+            return q;
+        };
+        real pS = 0.5 * (pL + pR) - 0.5 * (veloR(0) - veloL(0)) * rhoRoe * aRoe;
+        pS = std::max(0.0, pS);
+        real SL = veloRoe(0) - std::sqrt(asqrL) * HLLCq(pL, pS);
+        real SR = veloRoe(0) + std::sqrt(asqrR) * HLLCq(pR, pS);
+
         dLambda += verySmallReal;
         dLambda *= 2.0;
 
