@@ -192,6 +192,7 @@ serializerJSON_Test
 set(TESTS_Geom
 elements_Test
 meshSerial_Test
+partitionMeshSerial
 )
 
 set(TESTS_CFV

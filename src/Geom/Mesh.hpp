@@ -145,6 +145,9 @@ namespace DNDS::Geom
             for (rowsize i = 0; i < c2n.size(); i++)
                 cs(Eigen::all, i) = coords[c2n[i]];
         }
+
+        void WriteSerialize(SerializerBase *serializer, const std::string &name);
+        void ReadSerialize(SerializerBase *serializer, const std::string &name);
     };
 
 }

@@ -1469,6 +1469,31 @@ namespace DNDS::Geom
             coords.trans.createMPITypes();
             coords.trans.pullOnce();
         }
+
+        /********************************/
+        // bnds: dummy now, no actual comm
+        {
+
+            bnd2cell.TransAttach();
+            bnd2node.TransAttach();
+            bndElemInfo.TransAttach();
+
+            bnd2cell.trans.createFatherGlobalMapping();
+
+            std::vector<DNDS::index> ghostBnds; // no ghosted bnds now
+            bnd2cell.trans.createGhostMapping(ghostBnds);
+
+            bnd2node.trans.BorrowGGIndexing(bnd2cell.trans);
+            bndElemInfo.trans.BorrowGGIndexing(bnd2cell.trans);
+
+            bnd2cell.trans.createMPITypes();
+            bnd2node.trans.createMPITypes();
+            bndElemInfo.trans.createMPITypes();
+
+            bnd2cell.trans.pullOnce();
+            bnd2node.trans.pullOnce();
+            bndElemInfo.trans.pullOnce();
+        }
     }
 
     void UnstructuredMesh::
@@ -1477,8 +1502,12 @@ namespace DNDS::Geom
         // needs results of BuildGhostPrimary()
         DNDS_assert(adjPrimaryState == Adj_PointToGlobal);
 
+        /**********************************/
+        // convert bnd2cell, bnd2node, cell2cell, cell2node ptrs global to local
         auto CellIndexGlobal2Local = [&](DNDS::index &iCellOther)
         {
+            if (iCellOther == UnInitIndex)
+                return;
             DNDS::MPI_int rank;
             DNDS::index val;
             // if (!cell2cell.trans.pLGlobalMapping->search(iCellOther, rank, val))
@@ -1493,6 +1522,8 @@ namespace DNDS::Geom
         };
         auto NodeIndexGlobal2Local = [&](DNDS::index &iNodeOther)
         {
+            if (iNodeOther == UnInitIndex)
+                return;
             DNDS::MPI_int rank;
             DNDS::index val;
             // if (!cell2cell.trans.pLGlobalMapping->search(iCellOther, rank, val))
@@ -1512,7 +1543,7 @@ namespace DNDS::Geom
 
         for (DNDS::index iBnd = 0; iBnd < bnd2cell.Size(); iBnd++)
             for (DNDS::rowsize j = 0; j < bnd2cell.RowSize(iBnd); j++)
-                CellIndexGlobal2Local(bnd2cell(iBnd, j)), DNDS_assert(bnd2cell(iBnd, j) >= 0); // must be inside
+                CellIndexGlobal2Local(bnd2cell(iBnd, j)), DNDS_assert(j == 0 ? bnd2cell(iBnd, j) >= 0 : true); // must be inside
 
         for (DNDS::index iCell = 0; iCell < cell2node.Size(); iCell++)
             for (DNDS::rowsize j = 0; j < cell2node.RowSize(iCell); j++)
@@ -1521,8 +1552,56 @@ namespace DNDS::Geom
         for (DNDS::index iBnd = 0; iBnd < bnd2node.Size(); iBnd++)
             for (DNDS::rowsize j = 0; j < bnd2node.RowSize(iBnd); j++)
                 NodeIndexGlobal2Local(bnd2node(iBnd, j)), DNDS_assert(bnd2node(iBnd, j) >= 0);
+        /**********************************/
 
         adjPrimaryState = Adj_PointToLocal;
+    }
+
+    void UnstructuredMesh::
+        AdjLocal2GlobalPrimary()
+    {
+        DNDS_assert(adjPrimaryState == Adj_PointToLocal);
+        /**********************************/
+        // convert bnd2cell, bnd2node, cell2cell, cell2node ptrs local to global
+        /**********************************/
+        // convert bnd2cell, bnd2node, cell2cell, cell2node ptrs global to local
+        auto CellIndexLocal2Global = [&](DNDS::index &iCellOther)
+        {
+            if (iCellOther == UnInitIndex)
+                return;
+            if (iCellOther < 0) // mapping to un-found in father-son
+                iCellOther = -1 - iCellOther;
+            else
+                iCellOther = cell2cell.trans.pLGhostMapping->operator()(-1, iCellOther);
+        };
+        auto NodeIndexLocal2Global = [&](DNDS::index &iNodeOther)
+        {
+            if (iNodeOther == UnInitIndex)
+                return;
+            if (iNodeOther < 0) // mapping to un-found in father-son
+                iNodeOther = -1 - iNodeOther;
+            else
+                iNodeOther = coords.trans.pLGhostMapping->operator()(-1, iNodeOther);
+        };
+
+        for (DNDS::index iCell = 0; iCell < cell2cell.Size(); iCell++)
+            for (DNDS::rowsize j = 0; j < cell2cell.RowSize(iCell); j++)
+                CellIndexLocal2Global(cell2cell(iCell, j));
+
+        for (DNDS::index iBnd = 0; iBnd < bnd2cell.Size(); iBnd++)
+            for (DNDS::rowsize j = 0; j < bnd2cell.RowSize(iBnd); j++)
+                CellIndexLocal2Global(bnd2cell(iBnd, j)), DNDS_assert(j == 0 ? bnd2cell(iBnd, j) >= 0 : true); // must be inside
+
+        for (DNDS::index iCell = 0; iCell < cell2node.Size(); iCell++)
+            for (DNDS::rowsize j = 0; j < cell2node.RowSize(iCell); j++)
+                NodeIndexLocal2Global(cell2node(iCell, j)), DNDS_assert(cell2node(iCell, j) >= 0);
+
+        for (DNDS::index iBnd = 0; iBnd < bnd2node.Size(); iBnd++)
+            for (DNDS::rowsize j = 0; j < bnd2node.RowSize(iBnd); j++)
+                NodeIndexLocal2Global(bnd2node(iBnd, j)), DNDS_assert(bnd2node(iBnd, j) >= 0);
+        /**********************************/
+        /**********************************/
+        adjPrimaryState = Adj_PointToGlobal;
     }
 
     void UnstructuredMesh::
@@ -1571,7 +1650,7 @@ namespace DNDS::Geom
 #ifdef DNDS_USE_OMP
 #pragma omp parallel for
 #endif
-        for (DNDS::index iFace = 0; iFace < face2cell.father->Size(); iFace++)
+        for (DNDS::index iFace = 0; iFace < face2cell.Size(); iFace++)
         {
             for (rowsize if2n = 0; if2n < face2node.RowSize(iFace); if2n++)
             {
@@ -1904,4 +1983,93 @@ namespace DNDS::Geom
         }
     }
 
+    void UnstructuredMesh::
+        WriteSerialize(SerializerBase *serializer, const std::string &name)
+    {
+        DNDS_assert(adjPrimaryState == Adj_PointToLocal);
+
+        auto cwd = serializer->GetCurrentPath();
+        serializer->CreatePath(name);
+        serializer->GoToPath(name);
+
+        serializer->WriteString("mesh", "UnstructuredMesh");
+        serializer->WriteIndex("dim", dim);
+        serializer->WriteIndex("MPIRank", mpi.rank);
+        serializer->WriteIndex("MPISize", mpi.size);
+
+        coords.WriteSerialize(serializer, "coords");
+        cell2node.WriteSerialize(serializer, "cell2node");
+        cell2cell.WriteSerialize(serializer, "cell2cell");
+        cellElemInfo.WriteSerialize(serializer, "cellElemInfo");
+        bnd2node.WriteSerialize(serializer, "bnd2node");
+        bnd2cell.WriteSerialize(serializer, "bnd2cell");
+        bndElemInfo.WriteSerialize(serializer, "bndElemInfo");
+
+        serializer->GoToPath(cwd);
+    }
+
+    void UnstructuredMesh::
+        ReadSerialize(SerializerBase *serializer, const std::string &name)
+    {
+        auto cwd = serializer->GetCurrentPath();
+        // serializer->CreatePath(name);//! remember no create!
+        serializer->GoToPath(name);
+
+        std::string meshRead;
+        index dimRead, rankRead, sizeRead;
+        serializer->ReadString("mesh", meshRead);
+        serializer->ReadIndex("dim", dimRead);
+        serializer->ReadIndex("MPIRank", rankRead);
+        serializer->ReadIndex("MPISize", sizeRead);
+        DNDS_assert(meshRead == "UnstructuredMesh");
+        DNDS_assert(dimRead == dim);
+        DNDS_assert(rankRead == mpi.rank && sizeRead == mpi.size);
+
+        // make the empty arrays
+        auto mesh = this;
+        DNDS_MAKE_SSP(mesh->coords.father, mesh->mpi);
+        DNDS_MAKE_SSP(mesh->coords.son, mesh->mpi);
+        DNDS_MAKE_SSP(mesh->cellElemInfo.father, ElemInfo::CommType(), ElemInfo::CommMult(), mesh->mpi);
+        DNDS_MAKE_SSP(mesh->cellElemInfo.son, ElemInfo::CommType(), ElemInfo::CommMult(), mesh->mpi);
+        DNDS_MAKE_SSP(mesh->bndElemInfo.father, ElemInfo::CommType(), ElemInfo::CommMult(), mesh->mpi);
+        DNDS_MAKE_SSP(mesh->bndElemInfo.son, ElemInfo::CommType(), ElemInfo::CommMult(), mesh->mpi);
+        DNDS_MAKE_SSP(mesh->cell2node.father, mesh->mpi);
+        DNDS_MAKE_SSP(mesh->cell2node.son, mesh->mpi);
+        DNDS_MAKE_SSP(mesh->cell2cell.father, mesh->mpi);
+        DNDS_MAKE_SSP(mesh->cell2cell.son, mesh->mpi);
+        DNDS_MAKE_SSP(mesh->bnd2node.father, mesh->mpi);
+        DNDS_MAKE_SSP(mesh->bnd2node.son, mesh->mpi);
+        DNDS_MAKE_SSP(mesh->bnd2cell.father, mesh->mpi);
+        DNDS_MAKE_SSP(mesh->bnd2cell.son, mesh->mpi);
+
+        coords.ReadSerialize(serializer, "coords");
+        cell2node.ReadSerialize(serializer, "cell2node");
+        cell2cell.ReadSerialize(serializer, "cell2cell");
+        cellElemInfo.ReadSerialize(serializer, "cellElemInfo");
+        bnd2node.ReadSerialize(serializer, "bnd2node");
+        bnd2cell.ReadSerialize(serializer, "bnd2cell");
+        bndElemInfo.ReadSerialize(serializer, "bndElemInfo");
+
+        // after matters:
+        coords.trans.createMPITypes();
+        cell2node.trans.createMPITypes();
+        cell2cell.trans.createMPITypes();
+        cellElemInfo.trans.createMPITypes();
+        bnd2node.trans.createMPITypes();
+        bnd2cell.trans.createMPITypes();
+        bndElemInfo.trans.createMPITypes();
+        adjPrimaryState = Adj_PointToLocal; // the file is pointing to local
+
+        index nCellG = this->NumCellGlobal(); // collective call!
+        index nNodeG = this->NumNodeGlobal(); // collective call!
+        if (mpi.rank == mRank)
+        {
+            log() << "UnstructuredMesh === ReadSerialize "
+                  << "Global NumCell [ " << nCellG << " ]" << std::endl;
+            log() << "UnstructuredMesh === ReadSerialize "
+                  << "Global NumNode [ " << nNodeG << " ]" << std::endl;
+        }
+
+        serializer->GoToPath(cwd);
+    }
 }
