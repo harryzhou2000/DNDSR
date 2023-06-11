@@ -7,7 +7,7 @@
 namespace DNDS
 {
     using t_pLGlobalMapping = std::shared_ptr<GlobalOffsetsMapping>;
-    using t_pLGhostMapping = std::shared_ptr<OffsetAscendIndexMapping>;
+    using t_pLGhostMapping = std::shared_ptr<OffsetAscendIndexMapping>; //TODO: change to unique_ptr and modify corresponding copy constructor/assigner
 
     template <class T, rowsize _row_size = 1, rowsize _row_max = _row_size, rowsize _align = NoAlign>
     class ParArray : public Array<T, _row_size, _row_max, _align>
@@ -17,11 +17,15 @@ namespace DNDS
         using t_pArray = std::shared_ptr<TArray>;
         static const DataLayout _dataLayout = TArray::_dataLayout;
 
-        using Array<T, _row_size, _row_max, _align>::Array;
+        using TArray::Array;
         // TODO: privatize these
         t_pLGlobalMapping pLGlobalMapping;
         MPIInfo mpi;
         using t_pRowSizes = typename TArray::t_pRowSizes;
+
+    public: //!use this with caution
+        using TArray::WriteSerializer;
+        using TArray::ReadSerializer;
 
     private:
         MPI_Datatype dataType = BasicType_To_MPIIntType<T>().first;

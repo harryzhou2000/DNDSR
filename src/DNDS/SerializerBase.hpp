@@ -24,6 +24,8 @@ namespace DNDS
         virtual void WriteSharedIndexVector(const std::string &name, const ssp<std::vector<index>> &v) = 0;
         virtual void WriteSharedRowsizeVector(const std::string &name, const ssp<std::vector<rowsize>> &v) = 0;
 
+        virtual void WriteUint8Array(const std::string &name, const uint8_t *data, index size) = 0;
+
         virtual void ReadInt(const std::string &name, int &v) = 0;
         virtual void ReadIndex(const std::string &name, index &v) = 0;
         virtual void ReadReal(const std::string &name, real &v) = 0;
@@ -33,6 +35,11 @@ namespace DNDS
         virtual void ReadString(const std::string &name, std::string &v) = 0;
         virtual void ReadSharedIndexVector(const std::string &name, ssp<std::vector<index>> &v) = 0;
         virtual void ReadSharedRowsizeVector(const std::string &name, ssp<std::vector<rowsize>> &v) = 0;
+        /**
+         * @brief 
+         * @param data if data == nullptr, only get the size not reading any data
+        */
+        virtual void ReadUint8Array(const std::string &name, uint8_t *data, index &size) = 0;
     };
 
 }

@@ -47,8 +47,8 @@ namespace DNDS
         using t_base::Resize;
         using t_base::ResizeRow;
         using t_base::operator();
-        t_pRowSizes _mat_nRows;
-        rowsize _mat_nRow_dynamic = 0;
+        t_pRowSizes _mat_nRows;        //! extra data
+        rowsize _mat_nRow_dynamic = 0; //! extra data
 
     public:
         void Resize(index nSize, rowsize nSizeRowDynamic, rowsize nSizeColDynamic)
@@ -100,6 +100,46 @@ namespace DNDS
                 c_nRow = _mat_ni;
 
             return t_EigenMap(t_base::operator[](i), c_nRow, t_base::RowSize(i) / c_nRow); // need static dispatch?
+        }
+
+        static std::string GetDerivedArraySignature()
+        {
+            return "ArrayEigenMatrix__" + std::to_string(_mat_ni) +
+                   "_" + std::to_string(_mat_nj) +
+                   "_" + std::to_string(_mat_ni_max) +
+                   "_" + std::to_string(_mat_nj_max);
+        }
+
+        void WriteSerializer(SerializerBase *serializer, const std::string &name)
+        {
+            auto cwd = serializer->GetCurrentPath();
+            serializer->CreatePath(name);
+            serializer->GoToPath(name);
+
+            serializer->WriteString("DerivedType", this->GetDerivedArraySignature());
+            serializer->WriteInt("mat_nRow_dynamic", _mat_nRow_dynamic);
+            if constexpr (_mat_ni == NonUniformSize)
+                serializer->WriteSharedRowsizeVector("mat_nRows", _mat_nRows);
+            this->t_base::WriteSerializer(serializer, "array");
+
+            serializer->GoToPath(cwd);
+        }
+
+        void ReadSerializer(SerializerBase *serializer, const std::string &name)
+        {
+            auto cwd = serializer->GetCurrentPath();
+            // serializer->CreatePath(name); //!remember no create path
+            serializer->GoToPath(name);
+
+            std::string readDerivedType;
+            serializer->ReadString("DerivedType", readDerivedType);
+            DNDS_assert(readDerivedType == this->GetDerivedArraySignature());
+            serializer->ReadInt("mat_nRow_dynamic", _mat_nRow_dynamic);
+            if constexpr (_mat_ni == NonUniformSize)
+                serializer->ReadSharedRowsizeVector("mat_nRows", _mat_nRows);
+            this->t_base::ReadSerializer(serializer, "array");
+
+            serializer->GoToPath(cwd);
         }
     };
 }

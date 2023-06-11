@@ -1,6 +1,7 @@
 #include "SerializerJSON.hpp"
 #include <algorithm>
 #include <string>
+#include "base64_rfc4648.hpp"
 
 namespace DNDS
 {
@@ -67,6 +68,7 @@ namespace DNDS
         cPathSplit.clear();
         ptr_2_pth.clear();
         pth_2_ssp.clear();
+        jObj.clear();
     }
     void SerializerJSON::CreatePath(const std::string &p)
     {
@@ -77,7 +79,7 @@ namespace DNDS
         if (isAbs)
             jObj[nlohmann::json::json_pointer(constructPath(pth))] = nlohmann::json::object();
         else
-            jObj[nlohmann::json::json_pointer((cP.size() ? "/" : "") + cP + constructPath(pth))] = nlohmann::json::object();
+            jObj[nlohmann::json::json_pointer(cP + constructPath(pth))] = nlohmann::json::object();
     }
     void SerializerJSON::GoToPath(const std::string &p)
     {
@@ -246,6 +248,46 @@ namespace DNDS
             DNDS_assert(jObj[nlohmann::json::json_pointer(refPath)].is_array());
             v = std::make_shared<tValue>(jObj[nlohmann::json::json_pointer(refPath)].get<tValue>()); // vector's copy constructor
             pth_2_ssp[refPath] = &v;
+        }
+    }
+    void SerializerJSON::WriteUint8Array(const std::string &name, const uint8_t *data, index size)
+    {
+        auto cPointer = nlohmann::json::json_pointer(cP);
+        if (!useCodecOnUint8)
+            jObj[cPointer][name] = std::vector<uint8_t>(data, data + size);
+        else
+        {
+            jObj[cPointer][name]["size"] = size;
+            jObj[cPointer][name]["encoded"] = cppcodec::base64_rfc4648::encode(data, size);
+        }
+    }
+    void SerializerJSON::ReadUint8Array(const std::string &name, uint8_t *data, index &size)
+    {
+        auto cPointer = nlohmann::json::json_pointer(cP);
+        DNDS_assert(jObj[cPointer][name].is_object() || jObj[cPointer][name].is_array());
+        if (jObj[cPointer][name].is_array())
+        {
+            size = jObj[cPointer][name].size();
+            if (data != nullptr)
+                std::copy(jObj[cPointer][name].begin(), jObj[cPointer][name].end(), data);
+        }
+        else if (jObj[cPointer][name].is_object() &&
+                 jObj[cPointer][name]["size"].is_number_integer() &&
+                 jObj[cPointer][name]["encoded"].is_string())
+        {
+            size = jObj[cPointer][name]["size"];
+            auto &dataIn = jObj[cPointer][name]["encoded"].get_ref<nlohmann::json::string_t &>();
+            if (data != nullptr)
+            {
+                std::vector<uint8_t> decodedData;
+                cppcodec::base64_rfc4648::decode(decodedData, dataIn);
+                DNDS_assert(decodedData.size() == size);
+                std::copy(decodedData.begin(), decodedData.end(), data);
+            }
+        }
+        else
+        {
+            DNDS_assert(false);
         }
     }
 }

@@ -69,6 +69,9 @@ namespace DNDS
         }
 
         index *rowPtr(index i) { return t_base::operator[](i); }
+
+        using t_base::ReadSerializer;
+        using t_base::WriteSerializer; //!because no extra data than Array<>
     };
 }
 #endif

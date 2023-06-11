@@ -83,6 +83,59 @@ namespace DNDS
         {
             father->CopyData(*R.father);
         }
+
+        void WriteSerialize(SerializerBase *serializer, const std::string &name)
+        {
+            DNDS_assert_info(trans.pLGlobalMapping && trans.pLGhostMapping, "pair's trans not having ghost info");
+
+            auto cwd = serializer->GetCurrentPath();
+            serializer->CreatePath(name);
+            serializer->GoToPath(name);
+
+            serializer->WriteIndex("MPIRank", father->mpi.rank);
+            serializer->WriteIndex("MPISize", father->mpi.size);
+            father->WriteSerializer(serializer, "father");
+            son->WriteSerializer(serializer, "son");
+            /***************************/
+            // ghost info
+            // static_assert(std::is_same_v<rowsize, MPI_int>);
+            // *writing pullingIndexGlobal, trusting the GlobalMapping to remain the same
+            serializer->WriteIndexVector("pullingIndexGlobal", trans.pLGhostMapping->ghostIndex);
+            /***************************/
+
+            serializer->GoToPath(cwd);
+        }
+
+        /**
+         * @warning need to createMPITypes after this
+        */
+        void ReadSerialize(SerializerBase *serializer, const std::string &name)
+        {
+            DNDS_assert(father && son);
+            this->TransAttach();
+
+            auto cwd = serializer->GetCurrentPath();
+            // serializer->CreatePath(name); //!remember no create!
+            serializer->GoToPath(name);
+
+            index readRank, readSize;
+            serializer->ReadIndex("MPIRank", readRank);
+            serializer->ReadIndex("MPISize", readSize);
+            DNDS_assert(readRank == father->mpi.rank && readSize == father->mpi.size);
+            father->ReadSerializer(serializer, "father");
+            son->ReadSerializer(serializer, "son");
+            /***************************/
+            // ghost info
+            // static_assert(std::is_same_v<rowsize, MPI_int>);
+            // *writing pullingIndexGlobal, trusting the GlobalMapping to remain the same
+            std::vector<index> pullingIndexGlobal;
+            serializer->ReadIndexVector("pullingIndexGlobal", pullingIndexGlobal);
+            trans.createFatherGlobalMapping();
+            trans.createGhostMapping(pullingIndexGlobal);
+            /***************************/
+
+            serializer->GoToPath(cwd);
+        }
     };
 
     template <rowsize _row_size = 1, rowsize _row_max = _row_size, rowsize _align = NoAlign>

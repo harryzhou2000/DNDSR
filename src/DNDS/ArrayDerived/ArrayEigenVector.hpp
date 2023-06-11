@@ -21,5 +21,8 @@ namespace DNDS
         {
             return t_EigenMap(t_base::operator[](i), t_base::RowSize(i)); // need static dispatch?
         }
+
+        using t_base::ReadSerializer;
+        using t_base::WriteSerializer; //! because no extra data than Array<>
     };
 }

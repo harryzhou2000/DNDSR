@@ -1,5 +1,8 @@
 #include "DNDS/Array.hpp"
 
+#include "DNDS/SerializerBase.hpp"
+#include "DNDS/SerializerJSON.hpp"
+
 int main()
 {
     using namespace DNDS;
@@ -64,13 +67,13 @@ int main()
     e1.Resize(3, [](DNDS::index ir)
               { return ir + 1; });
 
-    e1(0,0 ) = 3;
+    e1(0, 0) = 3;
     e1(1, 0) = e1(1, 1) = 1;
     e1(2, 0) = e1(2, 1) = e1(2, 2) = 2;
     std::cout << e1 << std::endl;
 
     e1.Decompress();
-    e1.ResizeRow(1,4);
+    e1.ResizeRow(1, 4);
     e1(1, 0) = e1(1, 1) = e1(1, 2) = e1(1, 3) = 0.1;
     std::cout << e1 << std::endl;
 
@@ -82,7 +85,30 @@ int main()
     e1[2][0] = e1[2][1] = e1[2][2] = 4;
     std::cout << e1 << std::endl;
 
-    //TODO: more tests on different types and function overloads
+    // TODO: more tests on different types and function overloads
+
+    // serializer test:
+    DNDS::SerializerJSON serializerJSON;
+    serializerJSON.SetUseCodecOnUint8(true);
+    DNDS::SerializerBase *serializer = &serializerJSON;
+
+    serializer->OpenFile("test_arraysOut.json", false);
+    serializer->CreatePath("/main");
+    serializer->GoToPath("/main");
+    serializer->CreatePath("array1");
+    e1.WriteSerializer(serializer, "e1");
+    b1.WriteSerializer(serializer, "b1");
+    serializer->CloseFile();
+
+    serializer->OpenFile("test_arraysOut1.json", true);
+    serializer->GoToPath("/main");
+    e1.ReadSerializer(serializer, "e1");
+    b1.ReadSerializer(serializer, "b1");
+    serializer->CloseFile();
+
+    std::cout << "read data:" << std::endl;
+    std::cout << e1 << std::endl;
+    std::cout << b1 << std::endl;
 
     return 0;
 }

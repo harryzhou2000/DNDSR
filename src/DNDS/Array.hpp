@@ -4,8 +4,10 @@
 
 #include <vector>
 #include <iostream>
+#include <typeinfo>
 
 #include "Defines.hpp"
+#include "SerializerBase.hpp"
 
 namespace DNDS
 {
@@ -524,6 +526,100 @@ namespace DNDS
         void CopyData(const self_type &R)
         {
             this->operator=(R); // currently ok!
+        }
+
+        static std::string GetArraySignature()
+        {
+            std::string Layout;
+            if constexpr (_dataLayout == CSR)
+                Layout = "CSR";
+            if constexpr (_dataLayout == TABLE_StaticFixed)
+                Layout = "TABLE_StaticFixed";
+            if constexpr (_dataLayout == TABLE_Fixed)
+                Layout = "TABLE_Fixed";
+            if constexpr (_dataLayout == TABLE_StaticMax)
+                Layout = "TABLE_StaticMax";
+            if constexpr (_dataLayout == TABLE_Max)
+                Layout = "TABLE_Max";
+            return Layout + "__" + std::to_string(sizeof_T) + "_" + std::to_string(_row_size) +
+                   "_" + std::to_string(_row_max) +
+                   "_" + std::to_string(_align);
+        }
+
+        void __WriteSerializerData(SerializerBase *serializer)
+        {
+            serializer->WriteUint8Array("data", (uint8_t *)_data.data(), _data.size() * sizeof_T);
+        }
+
+        void __ReadSerializerData(SerializerBase *serializer)
+        {
+            index bufferSize;
+            serializer->ReadUint8Array("data", nullptr, bufferSize);
+            DNDS_assert(bufferSize % sizeof_T == 0);
+            _data.resize(bufferSize / sizeof_T);
+            serializer->ReadUint8Array("data", (uint8_t *)_data.data(), bufferSize);
+        }
+
+        void WriteSerializer(SerializerBase *serializer, const std::string& name)
+        {
+            auto cwd = serializer->GetCurrentPath();
+            serializer->CreatePath(name);
+            serializer->GoToPath(name);
+
+            serializer->WriteString("array_sig", this->GetArraySignature());
+            serializer->WriteString("array_type", typeid(self_type).name());
+            serializer->WriteIndex("size", _size);
+            serializer->WriteInt("row_size_dynamic", _row_size_dynamic);
+            if (_size == 0)
+                return;
+            if constexpr (_dataLayout == CSR)
+            {
+                if (!this->IfCompressed())
+                    this->Compress();
+                serializer->WriteSharedIndexVector("pRowStart", _pRowStart);
+            }
+            else if constexpr (_dataLayout == TABLE_Max || _dataLayout == TABLE_StaticMax)
+            {
+                serializer->WriteSharedRowsizeVector("pRowSizes", _pRowSizes);
+            }
+            else // fixed
+            {
+            }
+            // doing data
+            this->__WriteSerializerData(serializer);
+
+            serializer->GoToPath(cwd);
+        }
+
+        void ReadSerializer(SerializerBase *serializer, const std::string &name)
+        {
+            auto cwd = serializer->GetCurrentPath();
+            // serializer->CreatePath(name); //! if you create, all data will be erased
+            serializer->GoToPath(name);
+
+            std::string array_sigRead;
+            serializer->ReadString("array_sig", array_sigRead);
+            DNDS_assert(array_sigRead == this->GetArraySignature());
+            serializer->ReadIndex("size", _size);
+            serializer->ReadInt("row_size_dynamic", _row_size_dynamic);
+            if (_size == 0)
+                return;
+            if constexpr (_dataLayout == CSR)
+            {
+                serializer->ReadSharedIndexVector("pRowStart", _pRowStart);
+            }
+            else if constexpr (_dataLayout == TABLE_Max || _dataLayout == TABLE_StaticMax)
+            {
+                serializer->ReadSharedRowsizeVector("pRowSizes", _pRowSizes);
+            }
+            else // fixed
+            {
+            }
+            // doing data
+            this->__ReadSerializerData(serializer);
+            //TODO: check data validity
+
+            serializer->GoToPath(cwd);
         }
     };
 

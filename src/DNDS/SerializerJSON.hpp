@@ -17,7 +17,11 @@ namespace DNDS
         std::map<void *, std::string> ptr_2_pth;
         std::map<std::string, void *> pth_2_ssp;
 
+        bool useCodecOnUint8{false};
+
     public:
+        void SetUseCodecOnUint8(bool v) { useCodecOnUint8 = v; }
+
         void OpenFile(const std::string &fName, bool read) override;
         void CloseFile() override;
         void CreatePath(const std::string &p) override;
@@ -34,6 +38,8 @@ namespace DNDS
         void WriteSharedIndexVector(const std::string &name, const ssp<std::vector<index>> &v) override;
         void WriteSharedRowsizeVector(const std::string &name, const ssp<std::vector<rowsize>> &v) override;
 
+        void WriteUint8Array(const std::string &name, const uint8_t *data, index size) override;
+
         void ReadInt(const std::string &name, int &v) override;
         void ReadIndex(const std::string &name, index &v) override;
         void ReadReal(const std::string &name, real &v) override;
@@ -43,6 +49,8 @@ namespace DNDS
         void ReadString(const std::string &name, std::string &v) override;
         void ReadSharedIndexVector(const std::string &name, ssp<std::vector<index>> &v) override;
         void ReadSharedRowsizeVector(const std::string &name, ssp<std::vector<rowsize>> &v) override;
+
+        void ReadUint8Array(const std::string &name, uint8_t *data, index &size) override;
 
         ~SerializerJSON() override {}
     };

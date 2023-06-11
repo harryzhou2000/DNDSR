@@ -83,6 +83,9 @@ if(UNIX)
     find_path(EXTERNAL_INCLUDE_JSON json.hpp PATHS 
         "${PROJECT_SOURCE_DIR}/external/nlohmann" 
         NO_DEFAULT_PATH REQUIRED)
+    find_path(EXTERNAL_INCLUDE_CPPCODEC base32_hex.hpp PATHS
+        "${PROJECT_SOURCE_DIR}/external/cppcodec" 
+        NO_DEFAULT_PATH REQUIRED)
     # find_path(EXTERNAL_INCLUDE_RAPIDJSON rapidjson 
     #     PATHS 
     #     "${PROJECT_SOURCE_DIR}/external/rapidjson/include" 
@@ -140,6 +143,7 @@ set(EXTERNAL_INCLUDES
     ${EXTERNAL_INCLUDE_EIGEN}
     ${EXTERNAL_INCLUDE_JSON}
     # ${EXTERNAL_INCLUDE_RAPIDJSON}
+    ${EXTERNAL_INCLUDE_CPPCODEC}
     )
 
 set(DNDS_INCLUDES ${PROJECT_SOURCE_DIR}/src)
