@@ -415,13 +415,13 @@ namespace DNDS::Euler
             if (iter % config.nDataOutInternal == 0)
             {
                 eval.FixUMaxFilter(u);
-                PrintData(config.outPltName + "_" + output_stamp + "_" + std::to_string(step) + "_" + std::to_string(iter) + ".plt", ode, eval);
+                PrintData(config.outPltName + "_" + output_stamp + "_" + std::to_string(step) + "_" + std::to_string(iter), ode, eval);
                 nextStepOut += config.nDataOut;
             }
             if (iter % config.nDataOutCInternal == 0)
             {
                 eval.FixUMaxFilter(u);
-                PrintData(config.outPltName + "_" + output_stamp + "_" + "C" + ".plt", ode, eval);
+                PrintData(config.outPltName + "_" + output_stamp + "_" + "C", ode, eval);
                 nextStepOutC += config.nDataOutC;
             }
             if (iter >= config.nCFLRampStart && iter <= config.nCFLRampLength + config.nCFLRampStart)
@@ -482,19 +482,19 @@ namespace DNDS::Euler
             if (step == nextStepOut)
             {
                 eval.FixUMaxFilter(u);
-                PrintData(config.outPltName + "_" + output_stamp + "_" + std::to_string(step) + ".plt", ode, eval);
+                PrintData(config.outPltName + "_" + output_stamp + "_" + std::to_string(step), ode, eval);
                 nextStepOut += config.nDataOut;
             }
             if (step == nextStepOutC)
             {
                 eval.FixUMaxFilter(u);
-                PrintData(config.outPltName + "_" + output_stamp + "_" + "C" + ".plt", ode, eval);
+                PrintData(config.outPltName + "_" + output_stamp + "_" + "C", ode, eval);
                 nextStepOutC += config.nDataOutC;
             }
             if (ifOutT)
             {
                 eval.FixUMaxFilter(u);
-                PrintData(config.outPltName + "_" + output_stamp + "_" + "t_" + std::to_string(nextTout) + ".plt", ode, eval);
+                PrintData(config.outPltName + "_" + output_stamp + "_" + "t_" + std::to_string(nextTout), ode, eval);
                 nextTout += config.tDataOut;
                 if (nextTout > config.tEnd)
                     nextTout = config.tEnd;

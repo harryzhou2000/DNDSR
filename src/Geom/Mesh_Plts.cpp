@@ -80,11 +80,11 @@ namespace DNDS::Geom
         writeString("X");
         writeString("Y");
         writeString("Z");
+        for (int idata = 0; idata < arraySizPoint; idata++)
+            writeString(namesPoint(idata));
         for (int idata = 0; idata < arraySiz; idata++)
             writeString(names(idata));
         writeString("iPart");
-        for (int idata = 0; idata < arraySizPoint; idata++)
-            writeString(namesPoint(idata));
 
         /********************************/
         // cellZone in header
@@ -105,11 +105,11 @@ namespace DNDS::Geom
 
         for (int idim = 0; idim < 3; idim++)
             writeInt(0); // xyz at node
+        for (int idata = 0; idata < arraySizPoint; idata++)
+            writeInt(0); // data at point
         for (int idata = 0; idata < arraySiz; idata++)
             writeInt(1); // data at center
         writeInt(1);     // iPart
-        for (int idata = 0; idata < arraySizPoint; idata++)
-            writeInt(0); // data at point
 
         writeInt(0); // Are raw local 1-to-1 face neighbors supplied?
         writeInt(0); // Number of miscellaneous user-defined face
@@ -169,11 +169,11 @@ namespace DNDS::Geom
 
         for (int idim = 0; idim < 3; idim++)
             writeInt(2); // double for node
+        for (int idata = 0; idata < arraySizPoint; idata++)
+            writeInt(2); // double for data pint
         for (int idata = 0; idata < arraySiz; idata++)
             writeInt(2); // double for data
         writeInt(2);     // double for iPart
-        for (int idata = 0; idata < arraySizPoint; idata++)
-            writeInt(2); // double for data pint
 
         writeInt(0);  // no passive
         writeInt(0);  // no sharing
@@ -182,7 +182,7 @@ namespace DNDS::Geom
         std::vector<double_t> minVal(3 + arraySiz, DNDS::veryLargeReal);
         std::vector<double_t> maxVal(3 + arraySiz, -DNDS::veryLargeReal); // for all non-shared non-passive
         std::vector<double_t> minValPoint(arraySizPoint, DNDS::veryLargeReal);
-        std::vector<double_t> maxValPoint(arraySizPoint, DNDS::veryLargeReal);
+        std::vector<double_t> maxValPoint(arraySizPoint, -DNDS::veryLargeReal); //! Tecplot is sensitive to the correctness of min/max val
         for (int idim = 0; idim < 3; idim++)
             for (DNDS::index i = 0; i < nNode; i++)
             {
@@ -209,6 +209,11 @@ namespace DNDS::Geom
             writeDouble(minVal[idim]);
             writeDouble(maxVal[idim]);
         }
+        for (int idata = 0; idata < arraySizPoint; idata++)
+        {
+            writeDouble(minValPoint[idata]);
+            writeDouble(maxValPoint[idata]);
+        }
         for (int idata = 0; idata < arraySiz; idata++)
         {
             writeDouble(minVal[3 + idata]);
@@ -216,11 +221,6 @@ namespace DNDS::Geom
         }
         writeDouble(0);
         writeDouble(mpi.size);
-        for (int idata = 0; idata < arraySizPoint; idata++)
-        {
-            writeDouble(minValPoint[3 + idata]);
-            writeDouble(maxValPoint[3 + idata]);
-        }
 
         for (int idim = 0; idim < 3; idim++)
             for (DNDS::index i = 0; i < nNode; i++)
@@ -228,6 +228,12 @@ namespace DNDS::Geom
                 writeDouble(coordOut[i](idim));
                 // std::cout << (*coordSerial)[i](idim) << std::endl;
             };
+
+        for (int idata = 0; idata < arraySizPoint; idata++)
+            for (DNDS::index in = 0; in < nNode; in++)
+            {
+                writeDouble(dataPoint(idata, in));
+            }
 
         for (int idata = 0; idata < arraySiz; idata++)
             for (DNDS::index iv = 0; iv < nCell; iv++)
@@ -245,12 +251,6 @@ namespace DNDS::Geom
                 r = mesh->mpi.rank;
             writeDouble(r);
         }
-
-        for (int idata = 0; idata < arraySizPoint; idata++)
-            for (DNDS::index in = 0; in < nNode; in++)
-            {
-                writeDouble(data(idata, in));
-            }
 
         for (DNDS::index iv = 0; iv < nCell; iv++)
         {
@@ -610,11 +610,11 @@ namespace DNDS::Geom
                             [&](auto &out, int level)
                             {
                                 for (index ii = 0; ii < nNode; ii++)
-                                    out << std::setprecision(16) << data(i, ii) << " ";
+                                    out << std::setprecision(16) << dataPoint(i, ii) << " ";
                                 out << newlineV;
                             });
                     }
-                    for (int i = 0; i < vecArraySiz; i++)
+                    for (int i = 0; i < vecArraySizPoint; i++)
                     {
                         writeXMLEntity(
                             out, level, "DataArray",
@@ -626,9 +626,9 @@ namespace DNDS::Geom
                             {
                                 for (index ii = 0; ii < nNode; ii++)
                                 {
-                                    out << std::setprecision(16) << vectorData(i, ii, 0) << " ";
-                                    out << std::setprecision(16) << vectorData(i, ii, 1) << " ";
-                                    out << std::setprecision(16) << vectorData(i, ii, 2) << " ";
+                                    out << std::setprecision(16) << vectorDataPoint(i, ii, 0) << " ";
+                                    out << std::setprecision(16) << vectorDataPoint(i, ii, 1) << " ";
+                                    out << std::setprecision(16) << vectorDataPoint(i, ii, 2) << " ";
                                 }
                                 out << newlineV;
                             });

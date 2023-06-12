@@ -49,10 +49,16 @@ namespace DNDS::Euler
         ArrayRECV<nVars_Fixed> uRec, uRecNew, uRecNew1, uOld;
 
         int nOUTS = {-1};
+        int nOUTSPoint{-1};
         // rho u v w p T M ifUseLimiter RHS
         ssp<ArrayEigenVector<Eigen::Dynamic>> outDist;
         ssp<ArrayEigenVector<Eigen::Dynamic>> outSerial;
+        ssp<ArrayEigenVector<Eigen::Dynamic>> outDistPoint;
+        ssp<ArrayEigenVector<Eigen::Dynamic>> outGhostPoint;
+        ssp<ArrayEigenVector<Eigen::Dynamic>> outSerialPoint;
         ArrayTransformerType<ArrayEigenVector<Eigen::Dynamic>>::Type outDist2SerialTrans;
+        ArrayTransformerType<ArrayEigenVector<Eigen::Dynamic>>::Type outDist2SerialTransPoint;
+        ArrayPair<ArrayEigenVector<Eigen::Dynamic>> outDistPointPair;
 
         // std::vector<uint32_t> ifUseLimiter;
         CFV::tScalarPair ifUseLimiter;
@@ -64,6 +70,7 @@ namespace DNDS::Euler
         EulerSolver(const MPIInfo &nmpi) : nVars(getNVars(model)), mpi(nmpi)
         {
             nOUTS = nVars + 4;
+            nOUTSPoint = nVars + 2;
         }
 
         nlohmann::json gSetting;
@@ -97,6 +104,11 @@ namespace DNDS::Euler
             bool zeroGrads = false;
             int outPltMode = 0;   // 0 = serial, 1 = dist plt
             int readMeshMode = 0; // 0 = serial cgns, 1 = dist json
+            bool outPltTecplotFormat = true;
+            bool outPltVTKFormat = true;
+            bool outAtPointData = true;
+            bool outAtCellData = false;
+
             bool uniqueStamps = true;
             real err_dMax = 0.1;
 
@@ -186,6 +198,11 @@ namespace DNDS::Euler
             __gs_to_config(zeroGrads);
             __gs_to_config(outPltMode);
             __gs_to_config(readMeshMode);
+            __gs_to_config(outPltTecplotFormat);
+            __gs_to_config(outPltVTKFormat);
+            __gs_to_config(outAtPointData);
+            __gs_to_config(outAtCellData);
+
             __gs_to_config(uniqueStamps);
             __gs_to_config(err_dMax);
             __gs_to_config(res_base);
@@ -209,6 +226,7 @@ namespace DNDS::Euler
             __gs_to_config(odeCode);
             __gs_to_config(eulerSettings);
             __gs_to_config(vfvSettings);
+
             DNDS_assert(config.eulerSettings.is_object());
             DNDS_assert(config.vfvSettings.is_object());
 
@@ -248,9 +266,9 @@ namespace DNDS::Euler
                 if (config.outPltMode == 0)
                 {
                     reader->BuildSerialOut();
-                    mesh->BuildGhostPrimary();
-                    mesh->AdjGlobal2LocalPrimary();
                 }
+                mesh->BuildGhostPrimary();
+                mesh->AdjGlobal2LocalPrimary();
             }
             else
             {
@@ -301,17 +319,48 @@ namespace DNDS::Euler
             vfv->BuildURec(uOld, nVars);
             vfv->BuildScalar(ifUseLimiter);
 
-            DNDS_MAKE_SSP(outDist, mpi);
-            outDist->Resize(mesh->NumCell(), nOUTS);
+            DNDS_assert(config.outAtCellData || config.outAtPointData);
+            DNDS_assert(config.outPltVTKFormat || config.outPltTecplotFormat);
+            if (config.outAtCellData)
+            {
+                DNDS_MAKE_SSP(outDist, mpi);
+                outDist->Resize(mesh->NumCell(), nOUTS);
+            }
+            if (config.outAtPointData)
+            {
+                DNDS_MAKE_SSP(outDistPoint, mpi);
+                outDistPoint->Resize(mesh->NumNode(), nOUTSPoint);
+                DNDS_assert(nOUTSPoint >= nVars);
+
+                outDistPointPair.father = outDistPoint;
+                DNDS_MAKE_SSP(outDistPointPair.son, mpi);
+                outDistPointPair.TransAttach();
+                outDistPointPair.trans.BorrowGGIndexing(mesh->coords.trans);
+                outDistPointPair.trans.createMPITypes();
+                outDistPointPair.trans.initPersistentPull();
+            }
+
             if (config.outPltMode == 0)
             {
                 //! serial mesh specific output method
-                DNDS_MAKE_SSP(outSerial, mpi);
-                outDist2SerialTrans.setFatherSon(outDist, outSerial);
-                DNDS_assert(reader->mode == Geom::MeshReaderMode::SerialOutput);
-                outDist2SerialTrans.BorrowGGIndexing(reader->cell2nodeSerialOutTrans);
-                outDist2SerialTrans.createMPITypes();
-                outDist2SerialTrans.initPersistentPull();
+                if (config.outAtCellData)
+                {
+                    DNDS_MAKE_SSP(outSerial, mpi);
+                    outDist2SerialTrans.setFatherSon(outDist, outSerial);
+                    DNDS_assert(reader->mode == Geom::MeshReaderMode::SerialOutput);
+                    outDist2SerialTrans.BorrowGGIndexing(reader->cell2nodeSerialOutTrans);
+                    outDist2SerialTrans.createMPITypes();
+                    outDist2SerialTrans.initPersistentPull();
+                }
+                if (config.outAtPointData)
+                {
+                    DNDS_MAKE_SSP(outSerialPoint, mpi);
+                    outDist2SerialTransPoint.setFatherSon(outDistPoint, outSerialPoint);
+                    DNDS_assert(reader->mode == Geom::MeshReaderMode::SerialOutput);
+                    outDist2SerialTransPoint.BorrowGGIndexing(reader->coordSerialOutTrans);
+                    outDist2SerialTransPoint.createMPITypes();
+                    outDist2SerialTransPoint.initPersistentPull();
+                }
             }
         }
 
@@ -320,47 +369,131 @@ namespace DNDS::Euler
         template <typename tODE, typename tEval>
         void PrintData(const std::string &fname, tODE &ode, tEval &eval)
         {
-
-            for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
-            {
-                DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
-                // TU recu =
-                //     vfv->GetIntPointDiffBaseValue(iCell, -1, -1, -1, std::array<int, 1>{0}, 1) *
-                //     uRec[iCell];
-                // recu += u[iCell];
-                // recu = EulerEvaluator::CompressRecPart(u[iCell], recu);
-                TU recu = u[iCell];
-                TVec velo = (recu(Seq123).array() / recu(0)).matrix();
-                real vsqr = velo.squaredNorm();
-                real asqr, p, H;
-                Gas::IdealGasThermal(recu(I4), recu(0), vsqr, eval.settings.idealGasProperty.gamma, p, asqr, H);
-                // DNDS_assert(asqr > 0);
-                real M = std::sqrt(vsqr / asqr);
-                real T = p / recu(0) / eval.settings.idealGasProperty.Rgas;
-
-                (*outDist)[iCell][0] = recu(0);
-                for (int i = 0; i < dim; i++)
-                    (*outDist)[iCell][i + 1] = velo(i);
-                (*outDist)[iCell][I4 + 0] = p;
-                (*outDist)[iCell][I4 + 1] = T;
-                (*outDist)[iCell][I4 + 2] = M;
-                // (*outDist)[iCell][7] = (bool)(ifUseLimiter[iCell] & 0x0000000FU);
-                (*outDist)[iCell][I4 + 3] = ifUseLimiter[iCell][0] / (vfv->settings.smoothThreshold + verySmallReal);
-                // std::cout << iCell << ode.rhsbuf[0][iCell] << std::endl;
-                (*outDist)[iCell][I4 + 4] = ode->getLatestRHS()[iCell][0];
-                // (*outDist)[iCell][8] = (*vfv->SOR_iCell2iScan)[iCell];//!using SOR rb seq instead
-
-                for (int i = I4 + 1; i < nVars; i++)
+            DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
+            if (config.outAtCellData)
+                for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
                 {
-                    (*outDist)[iCell][4 + i] = recu(i) / recu(0); // 4 is additional amount offset, not Index of last flow variable (I4)
+                    // TU recu =
+                    //     vfv->GetIntPointDiffBaseValue(iCell, -1, -1, -1, std::array<int, 1>{0}, 1) *
+                    //     uRec[iCell];
+                    // recu += u[iCell];
+                    // recu = EulerEvaluator::CompressRecPart(u[iCell], recu);
+                    TU recu = u[iCell];
+                    TVec velo = (recu(Seq123).array() / recu(0)).matrix();
+                    real vsqr = velo.squaredNorm();
+                    real asqr, p, H;
+                    Gas::IdealGasThermal(recu(I4), recu(0), vsqr, eval.settings.idealGasProperty.gamma, p, asqr, H);
+                    // DNDS_assert(asqr > 0);
+                    real M = std::sqrt(std::abs(vsqr / asqr));
+                    real T = p / recu(0) / eval.settings.idealGasProperty.Rgas;
+
+                    (*outDist)[iCell][0] = recu(0);
+                    for (int i = 0; i < dim; i++)
+                        (*outDist)[iCell][i + 1] = velo(i);
+                    (*outDist)[iCell][I4 + 0] = p;
+                    (*outDist)[iCell][I4 + 1] = T;
+                    (*outDist)[iCell][I4 + 2] = M;
+                    // (*outDist)[iCell][7] = (bool)(ifUseLimiter[iCell] & 0x0000000FU);
+                    (*outDist)[iCell][I4 + 3] = ifUseLimiter[iCell][0] / (vfv->settings.smoothThreshold + verySmallReal);
+                    // std::cout << iCell << ode.rhsbuf[0][iCell] << std::endl;
+                    (*outDist)[iCell][I4 + 4] = ode->getLatestRHS()[iCell][0];
+                    // (*outDist)[iCell][8] = (*vfv->SOR_iCell2iScan)[iCell];//!using SOR rb seq instead
+
+                    for (int i = I4 + 1; i < nVars; i++)
+                    {
+                        (*outDist)[iCell][4 + i] = recu(i) / recu(0); // 4 is additional amount offset, not Index of last flow variable (I4)
+                    }
                 }
+
+            if (config.outAtPointData)
+            {
+                if (config.useLimiter)
+                {
+                    uRecNew.trans.startPersistentPull();
+                    uRecNew.trans.waitPersistentPull();
+                }
+                else
+                {
+                    uRec.trans.startPersistentPull();
+                    uRec.trans.waitPersistentPull();
+                }
+
+                u.trans.startPersistentPull();
+                u.trans.waitPersistentPull();
+
+                for (index iN = 0; iN < mesh->NumNodeProc(); iN++)
+                    outDistPointPair[iN].setZero();
+                std::vector<int> nN2C(mesh->NumNodeProc(), 0);
+                DNDS_assert(outDistPointPair.father->Size() == mesh->NumNode());
+                DNDS_assert(outDistPointPair.son->Size() == mesh->NumNodeGhost());
+                for (index iCell = 0; iCell < mesh->NumCellProc(); iCell++) //! all cells
+                {
+                    for (int ic2n = 0; ic2n < mesh->cell2node.RowSize(iCell); ic2n++)
+                    {
+                        auto iNode = mesh->cell2node(iCell, ic2n);
+                        nN2C.at(iNode)++;
+                        auto pPhy = mesh->coords[iNode];
+
+                        Eigen::Matrix<real, 1, Eigen::Dynamic> DiBj;
+                        DiBj.resize(1, uRecNew[iCell].rows() + 1);
+                        // std::cout << uRecNew[iCell].rows() << std::endl;
+                        vfv->FDiffBaseValue(DiBj, pPhy, iCell, -2, -2);
+
+                        TU vRec = (DiBj(Eigen::all, Eigen::seq(1, Eigen::last)) * (config.useLimiter ? uRecNew[iCell] : uRec[iCell])).transpose() + u[iCell];
+                        if (iNode < mesh->NumNode())
+                            outDistPointPair[iNode](Eigen::seq(0, nVars - 1)) += vRec;
+                    }
+                }
+
+                for (index iN = 0; iN < mesh->NumNode(); iN++)
+                {
+                    TU recu = outDistPointPair[iN](Eigen::seq(0, nVars - 1)) / (nN2C.at(iN) + verySmallReal);
+                    DNDS_assert(nN2C.at(iN) > 0);
+
+                    TVec velo = (recu(Seq123).array() / recu(0)).matrix();
+                    real vsqr = velo.squaredNorm();
+                    real asqr, p, H;
+                    Gas::IdealGasThermal(recu(I4), recu(0), vsqr, eval.settings.idealGasProperty.gamma, p, asqr, H);
+                    // DNDS_assert(asqr > 0);
+                    real M = std::sqrt(std::abs(vsqr / asqr));
+                    real T = p / recu(0) / eval.settings.idealGasProperty.Rgas;
+
+                    outDistPointPair[iN][0] = recu(0);
+                    for (int i = 0; i < dim; i++)
+                        outDistPointPair[iN][i + 1] = velo(i);
+                    outDistPointPair[iN][I4 + 0] = p;
+                    outDistPointPair[iN][I4 + 1] = T;
+                    outDistPointPair[iN][I4 + 2] = M;
+
+                    for (int i = I4 + 1; i < nVars; i++)
+                    {
+                        outDistPointPair[iN][2 + i] = recu(i) / recu(0); // 2 is additional amount offset
+                    }
+                }
+                outDistPointPair.trans.startPersistentPull();
+                outDistPointPair.trans.waitPersistentPull();
             }
+
+            int NOUTS_C{0}, NOUTSPoint_C{0};
+            if (config.outAtCellData)
+                NOUTS_C = nOUTS;
+            if (config.outAtPointData)
+                NOUTSPoint_C = nOUTSPoint;
 
             if (config.outPltMode == 0)
             {
-                outDist2SerialTrans.startPersistentPull();
-                outDist2SerialTrans.waitPersistentPull();
+                if (config.outAtCellData)
+                {
+                    outDist2SerialTrans.startPersistentPull();
+                    outDist2SerialTrans.waitPersistentPull();
+                }
+                if (config.outAtPointData)
+                {
+                    outDist2SerialTransPoint.startPersistentPull();
+                    outDist2SerialTransPoint.waitPersistentPull();
+                }
             }
+
             std::vector<std::string> names;
             if constexpr (dim == 2)
                 names = {
@@ -372,45 +505,142 @@ namespace DNDS::Euler
             {
                 names.push_back("V" + std::to_string(i - I4));
             }
-            if (config.outPltMode == 0)
+
+            if (config.outPltTecplotFormat)
             {
-                reader->PrintSerialPartPltBinaryDataArray(
-                    fname,
-                    nOUTS, 0,
-                    [&](int idata)
-                    { return names[idata]; },
-                    [&](int idata, index iv)
-                    {
-                        return (*outSerial)[iv][idata];
-                    },
-                    [&](int)
-                    { return ""; },
-                    [&](int, index)
-                    { return 0.0; },
-                    0.0,
-                    0);
+                if (config.outPltMode == 0)
+                {
+                    reader->PrintSerialPartPltBinaryDataArray(
+                        fname,
+                        NOUTS_C, NOUTSPoint_C,
+                        [&](int idata)
+                        { return names[idata]; }, // cellNames
+                        [&](int idata, index iv)
+                        {
+                            return (*outSerial)[iv][idata]; // cellData
+                        },
+                        [&](int idata)
+                        { return names[idata] + "p"; }, // pointNames
+                        [&](int idata, index in)
+                        { return (*outSerialPoint)[in][idata]; }, // pointData
+                        0.0,
+                        0);
+                }
+                else if (config.outPltMode == 1)
+                {
+
+                    reader->PrintSerialPartPltBinaryDataArray(
+                        fname,
+                        NOUTS_C, NOUTSPoint_C,
+                        [&](int idata)
+                        { return names[idata]; }, // cellNames
+                        [&](int idata, index iv)
+                        {
+                            return (*outDist)[iv][idata]; // cellData
+                        },
+                        [&](int idata)
+                        { return names[idata] + "_p"; }, // pointNames
+                        [&](int idata, index in)
+                        { return outDistPointPair[in][idata]; }, // pointData
+                        0.0,
+                        1);
+                }
             }
-            else if (config.outPltMode == 1)
+
+            const int cDim = dim;
+            if (config.outPltVTKFormat)
             {
-                reader->PrintSerialPartPltBinaryDataArray(
-                    fname,
-                    nOUTS, 0,
-                    [&](int idata)
-                    { return names[idata]; },
-                    [&](int idata, index iv)
-                    {
-                        return (*outDist)[iv][idata];
-                    },
-                    [&](int)
-                    { return ""; },
-                    [&](int, index)
-                    { return 0.0; },
-                    0.0,
-                    1);
-            }
-            else
-            {
-                DNDS_assert(false);
+                if (config.outPltMode == 0)
+                {
+                    reader->PrintSerialPartVTKDataArray(
+                        fname,
+                        std::max(NOUTS_C - cDim, 0), std::min(NOUTS_C, 1),
+                        std::max(NOUTSPoint_C - cDim, 0), std::min(NOUTSPoint_C, 1), //! vectors number is not cDim but 1
+                        [&](int idata)
+                        {
+                            idata = idata > 0 ? idata + cDim : 0;
+                            return names[idata]; // cellNames
+                        },
+                        [&](int idata, index iv)
+                        {
+                            idata = idata > 0 ? idata + cDim : 0;
+                            return (*outSerial)[iv][idata]; // cellData
+                        },
+                        [&](int idata)
+                        {
+                            return "Velo"; // cellVecNames
+                        },
+                        [&](int idata, index iv, int idim)
+                        {
+                            return (*outSerial)[iv][1 + idim]; // cellVecData
+                        },
+                        [&](int idata)
+                        {
+                            idata = idata > 0 ? idata + cDim : 0;
+                            return names[idata]; // pointNames
+                        },
+                        [&](int idata, index iv)
+                        {
+                            idata = idata > 0 ? idata + cDim : 0;
+                            return (*outSerialPoint)[iv][idata]; // pointData
+                        },
+                        [&](int idata)
+                        {
+                            return "Velo"; // pointVecNames
+                        },
+                        [&](int idata, index iv, int idim)
+                        {
+                            idata += 1;
+                            return (*outSerialPoint)[iv][1 + idim]; // pointVecData
+                        },
+                        0.0,
+                        0);
+                }
+                else if (config.outPltMode == 1)
+                {
+                    reader->PrintSerialPartVTKDataArray(
+                        fname,
+                        std::max(NOUTS_C - cDim, 0), std::min(NOUTS_C, 1),
+                        std::max(NOUTSPoint_C - cDim, 0), std::min(NOUTSPoint_C, 1), //! vectors number is not cDim but 1
+                        [&](int idata)
+                        {
+                            idata = idata > 0 ? idata + cDim : 0;
+                            return names[idata]; // cellNames
+                        },
+                        [&](int idata, index iv)
+                        {
+                            idata = idata > 0 ? idata + cDim : 0;
+                            return (*outDist)[iv][idata]; // cellData
+                        },
+                        [&](int idata)
+                        {
+                            return "Velo"; // cellVecNames
+                        },
+                        [&](int idata, index iv, int idim)
+                        {
+                            return (*outDist)[iv][1 + idim]; // cellVecData
+                        },
+                        [&](int idata)
+                        {
+                            idata = idata > 0 ? idata + cDim : 0;
+                            return names[idata]; // pointNames
+                        },
+                        [&](int idata, index iv)
+                        {
+                            idata = idata > 0 ? idata + cDim : 0;
+                            return outDistPointPair[iv][idata]; // pointData
+                        },
+                        [&](int idata)
+                        {
+                            return "Velo"; // pointVecNames
+                        },
+                        [&](int idata, index iv, int idim)
+                        {
+                            return outDistPointPair[iv][1 + idim]; // pointVecData
+                        },
+                        0.0,
+                        1);
+                }
             }
         }
     };

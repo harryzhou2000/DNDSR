@@ -242,7 +242,7 @@ namespace DNDS
         /******************************************************************************************************************************/
         /**
          * \brief get real element byte info into account, with ghost indexer and comm types built, need two mappings
-         * \pre has pLGlobalMapping pLGhostMapping
+         * \pre has pLGlobalMapping pLGhostMapping, and resize the son
          * \post my indexer pPullTypeVec pPushTypeVec established
          */
         void createMPITypes() // collective;
