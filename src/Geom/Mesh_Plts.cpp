@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include "base64_rfc4648.hpp"
+#include <zlib.h>
 
 namespace DNDS::Geom
 {
@@ -402,11 +403,23 @@ namespace DNDS::Geom
         std::string indentV = "  ";
         std::string newlineV = "\n";
 
-        auto writeXMLEntity =
-            [&](
-                std::ostream &out, int level, const auto &name,
-                const std::vector<std::pair<std::string, std::string>> &attr,
-                auto &&writeContent) -> void
+        auto zlibCompressedSize = [&](index size)
+        {
+            return size + (size + 999) / 1000 + 12; // form vtk
+        };
+        int compressLevel = 5;
+        auto zlibCompressData = [&](uint8_t *buf, index size)
+        {
+            std::vector<uint8_t> ret(zlibCompressedSize(size));
+            uLongf retSize = ret.size();
+            auto v = compress2(ret.data(), &retSize, buf, size, compressLevel);
+            if (v != Z_OK)
+                DNDS_assert_info(false, "compression failed");
+            ret.resize(retSize);
+            return ret;
+        };
+
+        auto writeXMLEntity = [&](std::ostream &out, int level, const auto &name, const std::vector<std::pair<std::string, std::string>> &attr, auto &&writeContent) -> void
         {
             for (int i = 0; i < level; i++)
                 out << indentV;
@@ -549,9 +562,8 @@ namespace DNDS::Geom
                                 std::vector<double> dataOutC(nCell);
                                 for (index iCell = 0; iCell < nCell; iCell++)
                                     dataOutC[iCell] = data(i, iCell);
-                                // out << cppcodec::base64_rfc4648::encode(
-                                //     (uint8_t *)dataOutC.data(),
-                                //     dataOutC.size() * sizeof(double));
+                                // auto dataOutCompressed = zlibCompressData((uint8_t *)dataOutC.data(), dataOutC.size() * sizeof(double));
+                                // out << cppcodec::base64_rfc4648::encode(dataOutCompressed);
                                 for (auto v : dataOutC)
                                     out << std::setprecision(16) << v << " ";
                                 out << newlineV;
@@ -646,7 +658,8 @@ namespace DNDS::Geom
         writeXMLEntity(
             fout, 0, "VTKFile",
             {{"type", "UnstructuredGrid"},
-             {"byte_order", endianName}},
+             {"byte_order", endianName},
+             {"compressor", "vtkZLibDataCompressor"}},
             [&](auto &out, int level)
             {
                 writeXMLEntity(

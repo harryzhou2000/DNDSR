@@ -716,13 +716,22 @@ namespace DNDS::Geom
         cell2cellSerial->createGlobalMapping();
 
         std::vector<_METIS::idx_t> vtxdist(mesh->mpi.size + 1);
+#ifdef DNDS_USE_OMP
+#pragma omp parallel for
+#endif
         for (DNDS::MPI_int r = 0; r <= mesh->mpi.size; r++)
             vtxdist[r] = cell2cellSerial->pLGlobalMapping->ROffsets().at(r); //! warning: no check overflow
         std::vector<_METIS::idx_t> xadj(cell2cellSerial->Size() + 1);
+#ifdef DNDS_USE_OMP
+#pragma omp parallel for
+#endif
         for (DNDS::index iCell = 0; iCell < xadj.size(); iCell++)
             xadj[iCell] = (cell2cellSerial->rowPtr(iCell) - cell2cellSerial->rowPtr(0)); //! warning: no check overflow
         std::vector<_METIS::idx_t> adjncy(xadj.back());
         DNDS_assert(cell2cellSerial->DataSize() == xadj.back());
+#ifdef DNDS_USE_OMP
+#pragma omp parallel for
+#endif
         for (DNDS::index iAdj = 0; iAdj < xadj.back(); iAdj++)
             adjncy[iAdj] = cell2cellSerial->data()[iAdj]; //! warning: no check overflow
         if (adjncy.size() == 0)

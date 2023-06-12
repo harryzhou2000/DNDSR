@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <string>
 #include "base64_rfc4648.hpp"
+#include <zlib.h>
 
 namespace DNDS
 {
@@ -252,17 +253,35 @@ namespace DNDS
     }
     void SerializerJSON::WriteUint8Array(const std::string &name, const uint8_t *data, index size)
     {
+        auto zlibCompressedSize = [&](index sizeC)
+        {
+            return sizeC + (sizeC + 999) / 1000 + 12; // form vtk
+        };
+        int compressLevel = 5;
+        auto zlibCompressData = [&](const uint8_t *buf, index sizeC)
+        {
+            std::vector<uint8_t> ret(zlibCompressedSize(sizeC));
+            uLongf retSize = ret.size();
+            auto v = compress2(ret.data(), &retSize, buf, sizeC, compressLevel);
+            if (v != Z_OK)
+                DNDS_assert_info(false, "compression failed");
+            ret.resize(retSize);
+            return ret;
+        };
+
         auto cPointer = nlohmann::json::json_pointer(cP);
         if (!useCodecOnUint8)
             jObj[cPointer][name] = std::vector<uint8_t>(data, data + size);
         else
         {
             jObj[cPointer][name]["size"] = size;
-            jObj[cPointer][name]["encoded"] = cppcodec::base64_rfc4648::encode(data, size);
+            jObj[cPointer][name]["encoded"] = cppcodec::base64_rfc4648::encode(
+                zlibCompressData(data, size));
         }
     }
     void SerializerJSON::ReadUint8Array(const std::string &name, uint8_t *data, index &size)
     {
+
         auto cPointer = nlohmann::json::json_pointer(cP);
         DNDS_assert(jObj[cPointer][name].is_object() || jObj[cPointer][name].is_array());
         if (jObj[cPointer][name].is_array())
@@ -281,8 +300,13 @@ namespace DNDS
             {
                 std::vector<uint8_t> decodedData;
                 cppcodec::base64_rfc4648::decode(decodedData, dataIn);
-                DNDS_assert(decodedData.size() == size);
-                std::copy(decodedData.begin(), decodedData.end(), data);
+                std::vector<uint8_t> decodedDataUncompress(size);
+                uLongf sizeU{(size_t)size};
+                auto ret = uncompress(decodedDataUncompress.data(), &sizeU, decodedData.data(), decodedData.size());
+                DNDS_assert_info(ret == Z_OK, "zlib uncompress failed");
+                DNDS_assert_info(sizeU == size, "zlib uncompress failed");
+                // DNDS_assert(decodedData.size() == size);
+                std::copy(decodedDataUncompress.begin(), decodedDataUncompress.end(), data);
             }
         }
         else
