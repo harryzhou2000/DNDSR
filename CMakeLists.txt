@@ -240,6 +240,7 @@ src/DNDS/SerializerJSON.cpp
 set(CPPS_Geom
 src/Geom/Elements.cpp
 src/Geom/Mesh.cpp
+src/Geom/Mesh_Plts.cpp
 )
 
 set(CPPS_CFV

@@ -40,6 +40,7 @@
     "comment_meshFileList": [],
     "outPltName": "../data/outUnsteady/Ball2_O2",
     "outLogName": "../data/outUnsteady/Ball2_O2",
+    "zeroGrads": true,
     "readMeshMode": 0,
     "outPltMode": 0,
     "uniqueStamps": true,

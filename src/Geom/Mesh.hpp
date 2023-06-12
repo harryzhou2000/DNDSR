@@ -60,6 +60,8 @@ namespace DNDS::Geom
         Adj_PointToGlobal,
     };
 
+    struct UnstructuredMesh;
+
     struct UnstructuredMesh
     {
         MPI_int mRank{0};
@@ -84,6 +86,10 @@ namespace DNDS::Geom
         tElemInfoArrayPair faceElemInfo;
         std::vector<index> bnd2face;
 
+        /// parent built
+        std::vector<index> node2parentNode;
+        std::vector<index> node2bndNode;
+
         // tAdj1Pair bndFaces; // no comm needed for now
 
         UnstructuredMesh(const DNDS::MPIInfo &n_mpi, int n_dim)
@@ -101,12 +107,16 @@ namespace DNDS::Geom
         void BuildGhostPrimary();
         void AdjGlobal2LocalPrimary();
         void AdjLocal2GlobalPrimary();
+        void AdjGlobal2LocalPrimaryForBnd();
+        void AdjLocal2GlobalPrimaryForBnd();
 
         void AdjGlobal2LocalFacial();
         void AdjLocal2GlobalFacial();
 
         void InterpolateFace();
         void AssertOnFaces();
+
+        void ConstructBndMesh(UnstructuredMesh &bMesh);
 
         index NumNode() { return coords.father->Size(); }
         index NumCell() { return cell2node.father->Size(); }
@@ -279,13 +289,31 @@ namespace DNDS::Geom
          * @brief names(idata) data(idata, ivolume)
          * https://tecplot.azureedge.net/products/360/current/360_data_format_guide.pdf
          * @todo //TODO add support for bnd export
-         * @todo //TODO: switch to vtk!
          */
         void PrintSerialPartPltBinaryDataArray(
             std::string fname,
-            int arraySiz,
+            int arraySiz, int arraySizPoint,
             const std::function<std::string(int)> &names,
             const std::function<DNDS::real(int, DNDS::index)> &data,
-            double t, int flag = 0); //! supports 2/3d here
+            const std::function<std::string(int)> &namesPoint,
+            const std::function<DNDS::real(int, DNDS::index)> &dataPoint,
+            double t, int flag);
+
+        /**
+         * @brief names(idata) data(idata, ivolume)
+         * @todo //TODO add support for bnd export
+         */
+        void PrintSerialPartVTKDataArray(
+            std::string fname,
+            int arraySiz, int vecArraySiz, int arraySizPoint, int vecArraySizPoint,
+            const std::function<std::string(int)> &names,
+            const std::function<DNDS::real(int, DNDS::index)> &data,
+            const std::function<std::string(int)> &vectorNames,
+            const std::function<DNDS::real(int, DNDS::index, DNDS::rowsize)> &vectorData,
+            const std::function<std::string(int)> &namesPoint,
+            const std::function<DNDS::real(int, DNDS::index)> &dataPoint,
+            const std::function<std::string(int)> &vectorNamesPoint,
+            const std::function<DNDS::real(int, DNDS::index, DNDS::rowsize)> &vectorDataPoint,
+            double t, int flag = 0);
     };
 } // namespace geom

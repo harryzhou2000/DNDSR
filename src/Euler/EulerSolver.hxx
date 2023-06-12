@@ -89,6 +89,7 @@ namespace DNDS::Euler
         real curDtMin;
         real curDtImplicit = config.dtImplicit;
         int step;
+        bool gradIsZero = true;
 
         InsertCheck(mpi, "Implicit 2 nvars " + std::to_string(nVars));
         /*******************************************************/
@@ -104,7 +105,8 @@ namespace DNDS::Euler
             //     uOld[iCell].m() = uRec[iCell].m();
 
             InsertCheck(mpi, " Lambda RHS: StartRec");
-            for (int iRec = 0; iRec < config.nInternalRecStep; iRec++)
+            int nRec = (gradIsZero ? 5 : 1) * config.nInternalRecStep;
+            for (int iRec = 0; iRec < nRec; iRec++)
             {
                 double tstartA = MPI_Wtime();
                 vfv->DoReconstructionIter(
@@ -127,6 +129,7 @@ namespace DNDS::Euler
                 uRec.trans.startPersistentPull();
                 uRec.trans.waitPersistentPull();
             }
+            gradIsZero = false;
             double tstartH = MPI_Wtime();
 
             // for (index iCell = 0; iCell < uOld.size(); iCell++)
@@ -558,6 +561,8 @@ namespace DNDS::Euler
                     log() << "=== Mean Error IV: [" << std::scientific << std::setprecision(5) << sumErrRhoSum << ", " << sumErrRhoSum / sumVolSum << "]" << std::endl;
                 }
             }
+            if (config.zeroGrads)
+                uRec.setConstant(0.0), gradIsZero = true;
 
             stepCount++;
 

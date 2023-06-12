@@ -94,6 +94,7 @@ namespace DNDS::Euler
             std::string meshFile = "data/mesh/NACA0012_WIDE_H3.msh";
             std::string outPltName = "data/out/debugData_";
             std::string outLogName = "data/out/debugData_";
+            bool zeroGrads = false;
             int outPltMode = 0;   // 0 = serial, 1 = dist plt
             int readMeshMode = 0; // 0 = serial cgns, 1 = dist json
             bool uniqueStamps = true;
@@ -182,6 +183,7 @@ namespace DNDS::Euler
             __gs_to_config(meshFile);
             __gs_to_config(outLogName);
             __gs_to_config(outPltName);
+            __gs_to_config(zeroGrads);
             __gs_to_config(outPltMode);
             __gs_to_config(readMeshMode);
             __gs_to_config(uniqueStamps);
@@ -373,26 +375,36 @@ namespace DNDS::Euler
             if (config.outPltMode == 0)
             {
                 reader->PrintSerialPartPltBinaryDataArray(
-                    fname, nOUTS, //! oprank = 0
+                    fname,
+                    nOUTS, 0,
                     [&](int idata)
                     { return names[idata]; },
                     [&](int idata, index iv)
                     {
                         return (*outSerial)[iv][idata];
                     },
+                    [&](int)
+                    { return ""; },
+                    [&](int, index)
+                    { return 0.0; },
                     0.0,
                     0);
             }
             else if (config.outPltMode == 1)
             {
                 reader->PrintSerialPartPltBinaryDataArray(
-                    fname, nOUTS, //! oprank = 0
+                    fname,
+                    nOUTS, 0,
                     [&](int idata)
                     { return names[idata]; },
                     [&](int idata, index iv)
                     {
                         return (*outDist)[iv][idata];
                     },
+                    [&](int)
+                    { return ""; },
+                    [&](int, index)
+                    { return 0.0; },
                     0.0,
                     1);
             }

@@ -1064,4 +1064,108 @@ namespace DNDS::Geom::Elem
     {
         return cs * DiNj(0, Eigen::all).transpose();
     }
+
+    template <class TIn>
+    std::pair<int, std::vector<index>> ToVTKVertsAndData(Element e, const TIn &vin)
+    {
+        std::pair<int, std::vector<index>> ret;
+        switch (e.type)
+        {
+        case Line2:
+        {
+            ret.first = 3;
+            ret.second = {vin[0], vin[1]};
+        }
+        break;
+        case Line3:
+        {
+            ret.first = 4;
+            ret.second = {vin[0], vin[2], vin[1]};
+        }
+        break;
+        case Tri3:
+        {
+            ret.first = 5;
+            ret.second = {vin[0], vin[1], vin[2]};
+        }
+        break;
+        case Tri6:
+        {
+            ret.first = 22;
+            ret.second = {vin[0], vin[1], vin[2], vin[3], vin[4], vin[5]};
+        }
+        break;
+        case Quad4:
+        {
+            ret.first = 9;
+            ret.second = {vin[0], vin[1], vin[2], vin[3]};
+        }
+        break;
+        case Quad9:
+        {
+            ret.first = 23;
+            ret.second = {vin[0], vin[1], vin[2], vin[3], vin[4], vin[5], vin[6], vin[7]};
+        }
+        break;
+        case Tet4:
+        {
+            ret.first = 10;
+            ret.second = {vin[0], vin[1], vin[2], vin[3]};
+        }
+        break;
+        case Tet10:
+        {
+            ret.first = 24;
+            ret.second = {vin[0], vin[1], vin[2], vin[3], vin[4], vin[5], vin[6], vin[7], vin[8], vin[9]};
+        }
+        break;
+        case Hex8:
+        {
+            ret.first = 12;
+            ret.second = {vin[0], vin[1], vin[2], vin[3], vin[4], vin[5], vin[6], vin[7]};
+        }
+        break;
+        case Hex27:
+        {
+            ret.first = 25;
+            ret.second = {vin[0], vin[1], vin[2], vin[3], vin[4], vin[5], vin[6], vin[7],
+                          vin[8], vin[9], vin[10], vin[11],
+                          vin[16], vin[17], vin[18], vin[19],
+                          vin[12], vin[13], vin[14], vin[15]};
+        }
+        break;
+        case Prism6:
+        {
+            ret.first = 13;
+            ret.second = {vin[0], vin[1], vin[2], vin[3], vin[4], vin[5]};
+        }
+        break;
+        case Prism18:
+        {
+            ret.first = 26;
+            ret.second = {vin[0], vin[1], vin[2], vin[3], vin[4], vin[5],
+                          vin[6], vin[7], vin[8],
+                          vin[12], vin[13], vin[14],
+                          vin[9], vin[10], vin[11]};
+        }
+        break;
+        case Pyramid5:
+        {
+            ret.first = 14;
+            ret.second = {vin[0], vin[1], vin[2], vin[3], vin[4]};
+        }
+        break;
+        case Pyramid14:
+        {
+            ret.first = 27;
+            ret.second = {vin[0], vin[1], vin[2], vin[3], vin[4],
+                          vin[5], vin[6], vin[7], vin[8],
+                          vin[9], vin[10], vin[11], vin[12]};
+        }
+        break;
+        default:
+            DNDS_assert(false);
+        }
+        return ret;
+    }
 }

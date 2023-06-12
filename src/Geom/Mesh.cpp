@@ -640,6 +640,11 @@ namespace DNDS::Geom
                 {
                     if (iCellOther == iCell || c_neighbors.count(iCellOther) == 1)
                         continue;
+                    //! ** override: point-complete cell2cell info!
+                    c_neighbors.insert(iCellOther);
+                    continue;
+                    //! ** override: point-complete cell2cell info!
+
                     auto CellElemO = Elem::Element{(*cellElemInfoSerial)[iCellOther]->getElemType()};
                     std::vector<DNDS::index> cell2nodeRowO{
                         (*cell2nodeSerial)[iCellOther].begin(),
@@ -1081,343 +1086,67 @@ namespace DNDS::Geom
 
         std::vector<DNDS::index> serialPullCell;
         std::vector<DNDS::index> serialPullNode;
-        std::vector<DNDS::index> serialPullBnd;
+        // std::vector<DNDS::index> serialPullBnd;
 
         DNDS::index numCellGlobal = mesh->cellElemInfo.father->globalSize();
-        DNDS::index numBndGlobal = mesh->bndElemInfo.father->globalSize();
+        // DNDS::index numBndGlobal = mesh->bndElemInfo.father->globalSize();
         DNDS::index numNodeGlobal = mesh->coords.father->globalSize();
 
         if (mesh->mpi.rank == mRank)
         {
             serialPullCell.resize(numCellGlobal);
             serialPullNode.resize(numNodeGlobal);
-            serialPullBnd.reserve(numBndGlobal);
+            // serialPullBnd.reserve(numBndGlobal);
             for (DNDS::index i = 0; i < numCellGlobal; i++)
                 serialPullCell[i] = i;
             for (DNDS::index i = 0; i < numNodeGlobal; i++)
                 serialPullNode[i] = i;
-            for (DNDS::index i = 0; i < numBndGlobal; i++)
-                serialPullBnd[i] = i;
+            // for (DNDS::index i = 0; i < numBndGlobal; i++)
+            //     serialPullBnd[i] = i;
         }
         DNDS_MAKE_SSP(cell2nodeSerial, mesh->mpi);
-        DNDS_MAKE_SSP(bnd2nodeSerial, mesh->mpi);
+        // DNDS_MAKE_SSP(bnd2nodeSerial, mesh->mpi);
         DNDS_MAKE_SSP(coordSerial, mesh->mpi);
         DNDS_MAKE_SSP(cellElemInfoSerial, ElemInfo::CommType(), ElemInfo::CommMult(), mesh->mpi);
-        DNDS_MAKE_SSP(bndElemInfoSerial, ElemInfo::CommType(), ElemInfo::CommMult(), mesh->mpi);
+        // DNDS_MAKE_SSP(bndElemInfoSerial, ElemInfo::CommType(), ElemInfo::CommMult(), mesh->mpi);
         // DNDS_MAKE_SSP(bnd2cellSerial, mesh->mpi);// not needed yet
 
         coordSerialOutTrans.setFatherSon(mesh->coords.father, coordSerial);
         cell2nodeSerialOutTrans.setFatherSon(mesh->cell2node.father, cell2nodeSerial);
-        bnd2nodeSerialOutTrans.setFatherSon(mesh->bnd2node.father, bnd2nodeSerial);
+        // bnd2nodeSerialOutTrans.setFatherSon(mesh->bnd2node.father, bnd2nodeSerial);
         cellElemInfoSerialOutTrans.setFatherSon(mesh->cellElemInfo.father, cellElemInfoSerial);
-        bndElemInfoSerialOutTrans.setFatherSon(mesh->bndElemInfo.father, bndElemInfoSerial);
+        // bndElemInfoSerialOutTrans.setFatherSon(mesh->bndElemInfo.father, bndElemInfoSerial);
 
         // Father could already have global mapping, result should be the same
         coordSerialOutTrans.createFatherGlobalMapping();
         cell2nodeSerialOutTrans.createFatherGlobalMapping();
-        bnd2nodeSerialOutTrans.createFatherGlobalMapping();
+        // bnd2nodeSerialOutTrans.createFatherGlobalMapping();
         cellElemInfoSerialOutTrans.createFatherGlobalMapping();
-        bndElemInfoSerialOutTrans.createFatherGlobalMapping();
+        // bndElemInfoSerialOutTrans.createFatherGlobalMapping();
 
         coordSerialOutTrans.createGhostMapping(serialPullNode);
         cell2nodeSerialOutTrans.createGhostMapping(serialPullCell);
-        bnd2nodeSerialOutTrans.createGhostMapping(serialPullBnd);
+        // bnd2nodeSerialOutTrans.createGhostMapping(serialPullBnd);
         cellElemInfoSerialOutTrans.BorrowGGIndexing(cell2nodeSerialOutTrans); // accidentally rewrites mesh->cellElemInfo.father's global mapping but ok
-        bndElemInfoSerialOutTrans.BorrowGGIndexing(bnd2nodeSerialOutTrans);
+        // bndElemInfoSerialOutTrans.BorrowGGIndexing(bnd2nodeSerialOutTrans);
 
         coordSerialOutTrans.createMPITypes();
         cell2nodeSerialOutTrans.createMPITypes();
-        bnd2nodeSerialOutTrans.createMPITypes();
+        // bnd2nodeSerialOutTrans.createMPITypes();
         cellElemInfoSerialOutTrans.createMPITypes();
-        bndElemInfoSerialOutTrans.createMPITypes();
+        // bndElemInfoSerialOutTrans.createMPITypes();
 
         coordSerialOutTrans.pullOnce();
         cell2nodeSerialOutTrans.pullOnce();
-        bnd2nodeSerialOutTrans.pullOnce();
+        // bnd2nodeSerialOutTrans.pullOnce();
         cellElemInfoSerialOutTrans.pullOnce();
-        bndElemInfoSerialOutTrans.pullOnce();
+        // bndElemInfoSerialOutTrans.pullOnce();
         if (mesh->mpi.rank == mRank)
         {
             std::cout << "UnstructuredMeshSerialRW === BuildSerialOut Done " << std::endl;
         }
     }
 
-    void UnstructuredMeshSerialRW::
-        PrintSerialPartPltBinaryDataArray(std::string fname,
-                                          int arraySiz,
-                                          const std::function<std::string(int)> &names,
-                                          const std::function<DNDS::real(int, DNDS::index)> &data,
-                                          double t, int flag) //! supports 2d here
-    {
-        auto mpi = mesh->mpi;
-        
-
-        if (mpi.rank != mRank && flag == 0) //* now only operating on mRank if serial
-            return;
-
-        if (flag == 0)
-        {
-            fname += ".plt";
-            DNDS_assert(mode == SerialOutput && dataIsSerialOut);
-        }
-        if (flag == 1)
-        {
-
-            std::filesystem::path outPath{fname + ".dir"};
-            std::filesystem::create_directories(outPath);
-            char BUF[512];
-            std::sprintf(BUF, "%04d", mpi.rank);
-            fname = outPath / (std::string(BUF) + ".plt");
-        }
-
-        std::ofstream fout(fname, std::ios::binary);
-        if (!fout)
-        {
-            DNDS::log() << "Error: WriteMeshDebugTecASCII open \"" << fname << "\" failure" << std::endl;
-            DNDS_assert(false);
-        }
-        const char magic_word[] = "#!TDV112";
-        const int b_magic_word = sizeof(magic_word) - 1;
-        int32_t intBuf;
-        double_t doubleBuf;
-        float_t floatBuf;
-
-        auto writeInt = [&](int d) -> void
-        {
-            intBuf = d;
-            fout.write((char *)(&intBuf), sizeof(intBuf));
-        };
-        auto writeFloat = [&](float_t d) -> void
-        {
-            floatBuf = d;
-            fout.write((char *)(&floatBuf), sizeof(floatBuf));
-        };
-        auto writeDouble = [&](double_t d) -> void
-        {
-            doubleBuf = d;
-            fout.write((char *)(&doubleBuf), sizeof(doubleBuf));
-        };
-        auto writeString = [&](const std::string &title) -> void
-        {
-            for (auto i : title)
-            {
-                intBuf = i;
-                fout.write((char *)(&intBuf), sizeof(intBuf));
-            }
-            intBuf = 0;
-            fout.write((char *)(&intBuf), sizeof(intBuf));
-        };
-        fout.write(magic_word, b_magic_word);
-        writeInt(1);
-        writeInt(0); //! full: write both grid and data
-        writeString("TitleHahaha");
-        writeInt(arraySiz + 3 + 1); // nvars
-        writeString("X");
-        writeString("Y");
-        writeString("Z");
-        for (int idata = 0; idata < arraySiz; idata++)
-            writeString(names(idata));
-        writeString("iPart");
-
-        /********************************/
-        // cellZone in header
-        /********************************/
-        writeFloat(299.0f); // 299.0 indicates a v112 zone header, available in v191
-        writeString("zone_0");
-        writeInt(-1);   // ParentZone: No longer used.
-        writeInt(-1);   // StrandID: static strand ID
-        writeDouble(t); // solution time
-        writeInt(-1);   // default zone color
-        if (mesh->dim == 2)
-            writeInt(3); // 2d: quad zone
-        else
-            writeInt(5); // 3d: brick zone
-        writeInt(1);     // specifyVarLocation
-
-        for (int idim = 0; idim < 3; idim++)
-            writeInt(0); // xyz at node
-        for (int idata = 0; idata < arraySiz; idata++)
-            writeInt(1); // data at center
-        writeInt(1);     // iPart
-
-        writeInt(0); // Are raw local 1-to-1 face neighbors supplied?
-        writeInt(0); // Number of miscellaneous user-defined face
-        tCoord coordSerialDummy;
-        tAdj cell2nodeSerialDummy;
-        tElemInfoArray cellElemInfoSerialDummy;
-        DNDS_MAKE_SSP(coordSerialDummy, mesh->mpi);
-        DNDS_MAKE_SSP(cell2nodeSerialDummy, mesh->mpi);
-        DNDS_MAKE_SSP(cellElemInfoSerialDummy, ElemInfo::CommType(), ElemInfo::CommMult(), mesh->mpi);
-        tCoordPair coordOut;
-        tAdjPair cell2nodeOut;
-        tElemInfoArrayPair cellElemInfoOut;
-        DNDS::index nCell = 0;
-        DNDS::index nNode = 0;
-        if (flag == 0)
-        {
-            coordOut.father = coordSerial;
-            coordOut.son = coordSerialDummy;
-            cell2nodeOut.father = cell2nodeSerial;
-            cell2nodeOut.son = cell2nodeSerialDummy;
-            cellElemInfoOut.father = cellElemInfoSerial;
-            cellElemInfoOut.son = cellElemInfoSerialDummy;
-            nCell = cell2nodeOut.Size();
-            nNode = coordOut.Size();
-        }
-        else if (flag == 1)
-        {
-            coordOut.father = mesh->coords.father;
-            coordOut.son = mesh->coords.son;
-            cell2nodeOut.father = mesh->cell2node.father;
-            cell2nodeOut.son = mesh->cell2node.son;
-            cellElemInfoOut.father = mesh->cellElemInfo.father;
-            cellElemInfoOut.son = mesh->cellElemInfo.son;
-            nCell = cell2nodeOut.father->Size(); //! only non-ghost cells are output
-            nNode = coordOut.Size();             //! need all the nodes with ghost
-        }
-        writeInt(nNode); // node number
-        writeInt(nCell); // cell number
-
-        writeInt(0); // I dim
-        writeInt(0); // J dim
-        writeInt(0); // K dim
-        writeInt(0); // No more Auxiliary name/value pairs.
-
-        writeFloat(357.0f); // end of header, EOH marker
-
-        writeFloat(299.0f); // 299.0 indicates a v112 zone header, available in v191
-
-        /********************************/
-        // cellZone data
-        /********************************/
-
-        for (int idim = 0; idim < 3; idim++)
-            writeInt(2); // double for node
-        for (int idata = 0; idata < arraySiz; idata++)
-            writeInt(2); // double for data
-        writeInt(2);     // double for iPart
-
-        writeInt(0);  // no passive
-        writeInt(0);  // no sharing
-        writeInt(-1); // no sharing
-
-        std::vector<double_t> minVal(3 + arraySiz, DNDS::veryLargeReal);
-        std::vector<double_t> maxVal(3 + arraySiz, -DNDS::veryLargeReal); // for all non-shared non-passive
-        for (int idim = 0; idim < 3; idim++)
-            for (DNDS::index i = 0; i < nNode; i++)
-            {
-                minVal[idim] = std::min(coordOut[i](idim), minVal[idim]);
-                maxVal[idim] = std::max(coordOut[i](idim), maxVal[idim]);
-            };
-
-        for (int idata = 0; idata < arraySiz; idata++)
-            for (DNDS::index iv = 0; iv < nCell; iv++)
-            {
-                minVal[3 + idata] = std::min(data(idata, iv), minVal[3 + idata]);
-                maxVal[3 + idata] = std::max(data(idata, iv), maxVal[3 + idata]);
-            }
-
-        for (int idim = 0; idim < 3; idim++)
-        {
-            writeDouble(minVal[idim]);
-            writeDouble(maxVal[idim]);
-        }
-        for (int idata = 0; idata < arraySiz; idata++)
-        {
-            writeDouble(minVal[3 + idata]);
-            writeDouble(maxVal[3 + idata]);
-        }
-        writeDouble(0);
-        writeDouble(mpi.size);
-
-        for (int idim = 0; idim < 3; idim++)
-            for (DNDS::index i = 0; i < nNode; i++)
-            {
-                writeDouble(coordOut[i](idim));
-                // std::cout << (*coordSerial)[i](idim) << std::endl;
-            };
-
-        for (int idata = 0; idata < arraySiz; idata++)
-            for (DNDS::index iv = 0; iv < nCell; iv++)
-            {
-                writeDouble(data(idata, iv));
-            }
-
-        for (DNDS::index iv = 0; iv < nCell; iv++)
-        {
-            DNDS::MPI_int r = -1;
-            DNDS::index v = -1;
-            if (flag == 0)
-                cell2nodeSerialOutTrans.pLGlobalMapping->search(iv, r, v);
-            else if (flag == 1)
-                r = mesh->mpi.rank;
-            writeDouble(r);
-        }
-
-        for (DNDS::index iv = 0; iv < nCell; iv++)
-        {
-            auto elem = Elem::Element{cellElemInfoOut[iv]->getElemType()};
-            auto c2n = cell2nodeOut[iv];
-            switch (elem.GetParamSpace())
-            {
-            case Elem::ParamSpace::TriSpace:
-                writeInt(c2n[0] + 0);
-                writeInt(c2n[1] + 0);
-                writeInt(c2n[2] + 0);
-                writeInt(c2n[2] + 0);
-                break;
-            case Elem::ParamSpace::QuadSpace:
-                writeInt(c2n[0] + 0);
-                writeInt(c2n[1] + 0);
-                writeInt(c2n[2] + 0);
-                writeInt(c2n[3] + 0); // ! note that tis is zero based
-                break;
-            case Elem::ParamSpace::TetSpace:
-                writeInt(c2n[0] + 0);
-                writeInt(c2n[1] + 0);
-                writeInt(c2n[2] + 0);
-                writeInt(c2n[2] + 0);
-                writeInt(c2n[3] + 0);
-                writeInt(c2n[3] + 0);
-                writeInt(c2n[3] + 0);
-                writeInt(c2n[3] + 0);
-                break;
-            case Elem::ParamSpace::HexSpace:
-                writeInt(c2n[0] + 0);
-                writeInt(c2n[1] + 0);
-                writeInt(c2n[2] + 0);
-                writeInt(c2n[3] + 0);
-                writeInt(c2n[4] + 0);
-                writeInt(c2n[5] + 0);
-                writeInt(c2n[6] + 0);
-                writeInt(c2n[7] + 0);
-                break;
-            case Elem::ParamSpace::PrismSpace:
-                writeInt(c2n[0] + 0);
-                writeInt(c2n[1] + 0);
-                writeInt(c2n[2] + 0);
-                writeInt(c2n[2] + 0);
-                writeInt(c2n[3] + 0);
-                writeInt(c2n[4] + 0);
-                writeInt(c2n[5] + 0);
-                writeInt(c2n[5] + 0);
-                break;
-            case Elem::ParamSpace::PyramidSpace:
-                writeInt(c2n[0] + 0);
-                writeInt(c2n[1] + 0);
-                writeInt(c2n[2] + 0);
-                writeInt(c2n[3] + 0);
-                writeInt(c2n[4] + 0);
-                writeInt(c2n[4] + 0);
-                writeInt(c2n[4] + 0);
-                writeInt(c2n[4] + 0);
-                break;
-            default:
-                DNDS_assert(false); //! 2d or 3d elems
-            }
-        };
-        fout.close();
-    }
 }
 
 namespace DNDS::Geom
@@ -1617,6 +1346,62 @@ namespace DNDS::Geom
         for (DNDS::index iBnd = 0; iBnd < bnd2node.Size(); iBnd++)
             for (DNDS::rowsize j = 0; j < bnd2node.RowSize(iBnd); j++)
                 NodeIndexLocal2Global(bnd2node(iBnd, j)), DNDS_assert(bnd2node(iBnd, j) >= 0);
+        /**********************************/
+        /**********************************/
+        adjPrimaryState = Adj_PointToGlobal;
+    }
+
+    void UnstructuredMesh::
+        AdjGlobal2LocalPrimaryForBnd() // a reduction of primary version
+    {
+        // needs results of BuildGhostPrimary()
+        DNDS_assert(adjPrimaryState == Adj_PointToGlobal);
+
+        /**********************************/
+        // convert cell2node ptrs global to local
+        auto NodeIndexGlobal2Local = [&](DNDS::index &iNodeOther)
+        {
+            if (iNodeOther == UnInitIndex)
+                return;
+            DNDS::MPI_int rank;
+            DNDS::index val;
+            // if (!cell2cell.trans.pLGlobalMapping->search(iCellOther, rank, val))
+            //     DNDS_assert_info(false, "search failed");
+            // if (rank != mpi.rank)
+            //     iCellOther = -1 - iCellOther;
+            auto result = coords.trans.pLGhostMapping->search_indexAppend(iNodeOther, rank, val);
+            if (result)
+                iNodeOther = val;
+            else
+                iNodeOther = -1 - iNodeOther; // mapping to un-found in father-son
+        };
+
+        for (DNDS::index iCell = 0; iCell < cell2node.Size(); iCell++)
+            for (DNDS::rowsize j = 0; j < cell2node.RowSize(iCell); j++)
+                NodeIndexGlobal2Local(cell2node(iCell, j)), DNDS_assert(cell2node(iCell, j) >= 0);
+        /**********************************/
+
+        adjPrimaryState = Adj_PointToLocal;
+    }
+
+    void UnstructuredMesh::
+        AdjLocal2GlobalPrimaryForBnd() // a reduction of primary version
+    {
+        DNDS_assert(adjPrimaryState == Adj_PointToLocal);
+        /**********************************/
+        // convert cell2node ptrs local to global
+        auto NodeIndexLocal2Global = [&](DNDS::index &iNodeOther)
+        {
+            if (iNodeOther == UnInitIndex)
+                return;
+            if (iNodeOther < 0) // mapping to un-found in father-son
+                iNodeOther = -1 - iNodeOther;
+            else
+                iNodeOther = coords.trans.pLGhostMapping->operator()(-1, iNodeOther);
+        };
+        for (DNDS::index iCell = 0; iCell < cell2node.Size(); iCell++)
+            for (DNDS::rowsize j = 0; j < cell2node.RowSize(iCell); j++)
+                NodeIndexLocal2Global(cell2node(iCell, j)), DNDS_assert(cell2node(iCell, j) >= 0);
         /**********************************/
         /**********************************/
         adjPrimaryState = Adj_PointToGlobal;
@@ -2089,5 +1874,52 @@ namespace DNDS::Geom
         }
 
         serializer->GoToPath(cwd);
+    }
+
+    void UnstructuredMesh::ConstructBndMesh(UnstructuredMesh &bMesh)
+    {
+        DNDS_assert(bMesh.dim == dim - 1 && bMesh.mpi == mpi);
+        DNDS_MAKE_SSP(bMesh.cell2node.father, mpi);
+        DNDS_MAKE_SSP(bMesh.cell2node.son, mpi);
+        DNDS_MAKE_SSP(bMesh.coords.father, mpi);
+        DNDS_MAKE_SSP(bMesh.coords.son, mpi);
+
+        bMesh.cellElemInfo.father = bndElemInfo.father;
+        bMesh.cellElemInfo.son = bndElemInfo.son;
+
+        node2bndNode.resize(this->NumNodeProc(), -1);
+        index bndNodeCount{0};
+        for (index iBnd = 0; iBnd < this->NumBnd(); iBnd++) //! bnd has no ghost!
+            for (auto iNode : bnd2node.father->operator[](iBnd))
+                if (node2bndNode.at(iNode) == -1)
+                    node2bndNode.at(iNode) = bndNodeCount++;
+        bMesh.node2parentNode.resize(bndNodeCount);
+        for (index iNode = 0; iNode < node2bndNode.size(); iNode++)
+            if (node2bndNode[iNode] >= 0)
+                bMesh.node2parentNode.at(node2bndNode[iNode]) = iNode;
+        bMesh.coords.father->Resize(bndNodeCount);
+        // std::cout << bndNodeCount << std::endl;
+        for (index iBNode = 0; iBNode < bndNodeCount; iBNode++)
+            bMesh.coords[iBNode] = coords[bMesh.node2parentNode[iBNode]];
+        bMesh.cell2node.father->Resize(this->NumBnd());
+        for (index iB = 0; iB < this->NumBnd(); iB++)
+        {
+            bMesh.cell2node.ResizeRow(iB, bnd2node.father->RowSize(iB));
+            for (rowsize ib2n = 0; ib2n < bnd2node.father->RowSize(iB); ib2n++)
+                bMesh.cell2node[iB][ib2n] = node2bndNode.at(bnd2node[iB][ib2n]),
+                DNDS_assert(node2bndNode.at(bnd2node[iB][ib2n]) >= 0);
+        }
+
+        bMesh.cell2node.father->Compress();
+
+        bMesh.coords.father->createGlobalMapping();
+        bMesh.cell2node.father->createGlobalMapping();
+
+        bMesh.coords.TransAttach();
+        bMesh.cell2node.TransAttach();
+        bMesh.coords.trans.createGhostMapping(std::vector<int>{});
+        bMesh.cell2node.trans.createGhostMapping(std::vector<int>{});
+
+        bMesh.adjPrimaryState = Adj_PointToLocal;
     }
 }

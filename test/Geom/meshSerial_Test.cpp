@@ -16,13 +16,14 @@ void testCGNS()
     // DNDS::Debug::MPIDebugHold(mpi);
     char buf[512];
     // std::cout << getcwd(buf, 512) << std::endl;
-    auto mesh = std::make_shared<DNDS::Geom::UnstructuredMesh>(mpi, 2);
+    int dim = 3;
+    auto mesh = std::make_shared<DNDS::Geom::UnstructuredMesh>(mpi, dim);
     auto reader = DNDS::Geom::UnstructuredMeshSerialRW(mesh, 0);
     // "../data/mesh/FourTris_V1.pw.cgns"
     // "../data/mesh/SC20714_MixedA.cgns"
     // "../data/mesh/UniformDM240_E120.cgns"
     // "../data/mesh/Ball.cgns"
-    reader.ReadFromCGNSSerial("../data/mesh/SC20714_MixedA.cgns");
+    reader.ReadFromCGNSSerial("../data/mesh/Ball2_O2.cgns");
     reader.BuildCell2Cell();
     reader.MeshPartitionCell2Cell();
     reader.PartitionReorderToMeshCell2Cell();
@@ -31,31 +32,157 @@ void testCGNS()
     mesh->AdjGlobal2LocalPrimary();
     mesh->InterpolateFace();
     mesh->AssertOnFaces();
-    
+
+    auto meshBnd = std::make_shared<DNDS::Geom::UnstructuredMesh>(mpi, dim-1);
+    auto readerBnd = DNDS::Geom::UnstructuredMeshSerialRW(meshBnd, 0);
+    mesh->ConstructBndMesh(*meshBnd);
+    meshBnd->AdjLocal2GlobalPrimaryForBnd();
+    readerBnd.BuildSerialOut();
+    meshBnd->AdjGlobal2LocalPrimaryForBnd();
 
     for (int i = 0; i < 4; i++)
     {
         mesh->AdjLocal2GlobalFacial();
         mesh->AdjGlobal2LocalFacial();
         mesh->AdjLocal2GlobalPrimary();
-        mesh->AdjGlobal2LocalPrimary(); //test on the ptr mapping completeness
+        mesh->AdjGlobal2LocalPrimary(); // test on the ptr mapping completeness
     }
-
 
     reader.PrintSerialPartPltBinaryDataArray(
         "../data/out/debug",
-        0, [](int)
-        { return ""; },
+        1, 1,
+        [](int)
+        { return "vCell"; },
+        [](int, DNDS::index) 
+        { return 1; },
+        [](int)
+        { return "vPoint"; },
         [](int, DNDS::index)
         { return 1; },
         0.0,
         0);
     reader.PrintSerialPartPltBinaryDataArray(
         "../data/out/debug",
-        0, [](int)
-        { return ""; },
+        1, 1,
+        [](int)
+        { return "vCell"; },
         [](int, DNDS::index)
         { return 1; },
+        [](int)
+        { return "vPoint"; },
+        [](int, DNDS::index)
+        { return 1; },
+        0.0,
+        1);
+    reader.PrintSerialPartVTKDataArray(
+        "../data/out/debug",
+        1, 1, 1, 1,
+        [](int)
+        { return "aScalar"; },
+        [](int, DNDS::index iCell)
+        { return iCell; },
+        [](int)
+        { return "aVector"; },
+        [](int, DNDS::index iCell, DNDS::rowsize idim)
+        { return idim; },
+        [](int)
+        { return "aScalarP"; },
+        [](int, DNDS::index iCell)
+        { return iCell; },
+        [](int)
+        { return "aVectorP"; },
+        [](int, DNDS::index iCell, DNDS::rowsize idim)
+        { return idim; },
+        0.0,
+        0);
+    reader.PrintSerialPartVTKDataArray(
+        "../data/out/debug",
+        1, 1, 1, 1,
+        [](int)
+        { return "aScalar"; },
+        [](int, DNDS::index iCell)
+        { return iCell; },
+        [](int)
+        { return "aVector"; },
+        [](int, DNDS::index iCell, DNDS::rowsize idim)
+        { return idim; },
+        [](int)
+        { return "aScalarP"; },
+        [](int, DNDS::index iCell)
+        { return iCell; },
+        [](int)
+        { return "aVectorP"; },
+        [](int, DNDS::index iCell, DNDS::rowsize idim)
+        { return idim; },
+        0.0,
+        1);
+
+    readerBnd.PrintSerialPartPltBinaryDataArray(
+        "../data/out/debugBnd",
+        1, 1,
+        [](int)
+        { return "vCell"; },
+        [](int, DNDS::index)
+        { return 1; },
+        [](int)
+        { return "vPoint"; },
+        [](int, DNDS::index)
+        { return 1; },
+        0.0,
+        0);
+    readerBnd.PrintSerialPartPltBinaryDataArray(
+        "../data/out/debugBnd",
+        1, 1,
+        [](int)
+        { return "vCell"; },
+        [](int, DNDS::index)
+        { return 1; },
+        [](int)
+        { return "vPoint"; },
+        [](int, DNDS::index)
+        { return 1; },
+        0.0,
+        0);
+    readerBnd.PrintSerialPartVTKDataArray(
+        "../data/out/debugBnd",
+        1, 1, 1, 1,
+        [](int)
+        { return "aScalar"; },
+        [](int, DNDS::index iCell)
+        { return iCell; },
+        [](int)
+        { return "aVector"; },
+        [](int, DNDS::index iCell, DNDS::rowsize idim)
+        { return idim; },
+        [](int)
+        { return "aScalarP"; },
+        [](int, DNDS::index iCell)
+        { return iCell; },
+        [](int)
+        { return "aVectorP"; },
+        [](int, DNDS::index iCell, DNDS::rowsize idim)
+        { return idim; },
+        0.0,
+        0);
+    readerBnd.PrintSerialPartVTKDataArray(
+        "../data/out/debugBnd",
+        1, 1, 1, 1,
+        [](int)
+        { return "aScalar"; },
+        [](int, DNDS::index iCell)
+        { return iCell; },
+        [](int)
+        { return "aVector"; },
+        [](int, DNDS::index iCell, DNDS::rowsize idim)
+        { return idim; },
+        [](int)
+        { return "aScalarP"; },
+        [](int, DNDS::index iCell)
+        { return iCell; },
+        [](int)
+        { return "aVectorP"; },
+        [](int, DNDS::index iCell, DNDS::rowsize idim)
+        { return idim; },
         0.0,
         1);
     // char c;

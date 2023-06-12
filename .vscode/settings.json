@@ -121,6 +121,8 @@
         "Bary",
         "DNDS",
         "rowsize",
+        "SDIRK",
+        "Tecplot",
         "Vecs"
     ],
     // "C_Cpp.intelliSenseEngine": "Tag Parser"
