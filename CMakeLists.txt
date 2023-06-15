@@ -246,6 +246,8 @@ src/Geom/Elements.cpp
 src/Geom/Mesh.cpp
 src/Geom/Mesh_Plts.cpp
 src/Geom/Mesh_Serial_BuildCell2Cell.cpp
+src/Geom/Mesh_Serial_ReadFormCGNS.cpp
+src/Geom/Mesh_Serial_Partition.cpp
 )
 
 set(CPPS_CFV
