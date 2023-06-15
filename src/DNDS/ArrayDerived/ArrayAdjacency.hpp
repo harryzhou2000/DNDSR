@@ -31,6 +31,12 @@ namespace DNDS
             return std::vector<index>(__p_indices, __p_indices + __Row_size);
         }
 
+        void operator=(const std::vector<index> &r)
+        {
+            DNDS_assert(__Row_size == r.size());
+            std::copy(r.begin(), r.end(), __p_indices);
+        }
+
         index *begin() { return __p_indices; }
         index *end() { return __p_indices + __Row_size; } // past-end
         rowsize size() const { return __Row_size; }
@@ -71,7 +77,7 @@ namespace DNDS
         index *rowPtr(index i) { return t_base::operator[](i); }
 
         using t_base::ReadSerializer;
-        using t_base::WriteSerializer; //!because no extra data than Array<>
+        using t_base::WriteSerializer; //! because no extra data than Array<>
     };
 }
 #endif

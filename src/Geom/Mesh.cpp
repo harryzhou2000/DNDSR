@@ -458,7 +458,7 @@ namespace DNDS::Geom
                 auto Elem = Elem::Element{ZoneElemInfos[iGZ]->operator()(iElem, 0).getElemType()};
                 if (Elem.GetDim() == mesh->dim)
                     nVolElem++;
-                if (Elem.GetDim() == mesh->dim - 1 && ZoneElemInfos[iGZ]->operator()(iElem, 0).zone > 0)
+                if (Elem.GetDim() == mesh->dim - 1 && !FaceIDIsTrueInternal(ZoneElemInfos[iGZ]->operator()(iElem, 0).zone))
                     nBndElem++;
             }
         }
@@ -482,7 +482,7 @@ namespace DNDS::Geom
                     cellElemInfoSerial->operator()(nVolElem, 0) = ZoneElemInfos[iGZ]->operator()(iElem, 0);
                     nVolElem++;
                 }
-                if (Elem.GetDim() == mesh->dim - 1 && ZoneElemInfos[iGZ]->operator()(iElem, 0).zone > 0)
+                if (Elem.GetDim() == mesh->dim - 1 && !FaceIDIsTrueInternal(ZoneElemInfos[iGZ]->operator()(iElem, 0).zone)) //! periodic ones are also recorded
                 {
                     bnd2nodeSerial->ResizeRow(nBndElem, ZoneElems[iGZ]->RowSize(iElem));
                     for (DNDS::rowsize j = 0; j < ZoneElems[iGZ]->RowSize(iElem); j++)
@@ -571,135 +571,6 @@ namespace DNDS::Geom
     // }
 
     void UnstructuredMeshSerialRW::
-        BuildCell2Cell()
-    {
-        if (mesh->mpi.rank == mRank)
-            DNDS::log() << "UnstructuredMeshSerialRW === Doing  BuildCell2Cell" << std::endl;
-        DNDS_MAKE_SSP(cell2cellSerial, mesh->mpi);
-        // if (mRank != mesh->mpi.rank)
-        //     return;
-        /// TODO: abstract these: invert cone (like node 2 cell -> cell 2 node) (also support operating on pair)
-        /**********************************************************************************************************************/
-        // getting node2cell // only primary vertices
-        std::vector<std::vector<DNDS::index>>
-            node2cell(coordSerial->Size());
-        std::vector<DNDS::rowsize> node2cellSz(coordSerial->Size(), 0);
-        for (DNDS::index iCell = 0; iCell < cell2nodeSerial->Size(); iCell++)
-            for (DNDS::rowsize iN = 0; iN < Elem::Element{(*cellElemInfoSerial)(iCell, 0).getElemType()}.GetNumVertices(); iN++)
-                node2cellSz[(*cell2nodeSerial)(iCell, iN)]++;
-        for (DNDS::index iNode = 0; iNode < node2cell.size(); iNode++)
-            node2cell[iNode].reserve(node2cellSz[iNode]);
-        for (DNDS::index iCell = 0; iCell < cell2nodeSerial->Size(); iCell++)
-            for (DNDS::rowsize iN = 0; iN < Elem::Element{(*cellElemInfoSerial)(iCell, 0).getElemType()}.GetNumVertices(); iN++)
-                node2cell[(*cell2nodeSerial)(iCell, iN)].push_back(iCell);
-        node2cellSz.clear();
-        /**********************************************************************************************************************/
-        if (mesh->mpi.rank == mRank)
-            DNDS::log() << "UnstructuredMeshSerialRW === Doing  BuildCell2Cell Part 1" << std::endl;
-        cell2cellSerial->Resize(cell2nodeSerial->Size());
-
-        index nCells = cell2nodeSerial->Size();
-        index nCellsDone = 0;
-#ifdef DNDS_USE_OMP
-#pragma omp parallel for
-#endif
-        for (DNDS::index iCell = 0; iCell < cell2nodeSerial->Size(); iCell++)
-        {
-            auto CellElem = Elem::Element{(*cellElemInfoSerial)[iCell]->getElemType()};
-            std::vector<DNDS::index> cell2nodeRow{
-                (*cell2nodeSerial)[iCell].begin(),
-                (*cell2nodeSerial)[iCell].begin() + CellElem.GetNumVertices()};
-            std::sort(cell2nodeRow.begin(), cell2nodeRow.end());
-            // only primary vertices
-            std::set<DNDS::index> c_neighbors; // could optimize?
-                                               // std::vector<DNDS::index> c_neighbors;
-                                               // c_neighbors.reserve(30);
-                                               /****/
-#ifdef DNDS_USE_OMP
-            // #pragma omp single
-#pragma omp critical
-#endif
-            {
-                if (nCellsDone % (nCells / 1000 + 1) == 0)
-                {
-                    auto fmt = DNDS::log().flags();
-                    DNDS::log() << "\r\033[K" << std::setw(5) << double(nCellsDone) / nCells * 100 << "%";
-                    DNDS::log().flush();
-                    DNDS::log().setf(fmt);
-                }
-
-                if (nCellsDone == nCells - 1)
-                    DNDS::log()
-                        // << "\r\033[K"
-                        << std::endl;
-            }
-            /****/
-
-            for (auto iNode : cell2nodeRow)
-                for (auto iCellOther : node2cell[iNode])
-                {
-                    if (iCellOther == iCell || c_neighbors.count(iCellOther) == 1)
-                        continue;
-                    //! ** override: point-complete cell2cell info!
-                    c_neighbors.insert(iCellOther);
-                    continue;
-                    //! ** override: point-complete cell2cell info!
-
-                    auto CellElemO = Elem::Element{(*cellElemInfoSerial)[iCellOther]->getElemType()};
-                    std::vector<DNDS::index> cell2nodeRowO{
-                        (*cell2nodeSerial)[iCellOther].begin(),
-                        (*cell2nodeSerial)[iCellOther].begin() + CellElemO.GetNumVertices()};
-                    std::sort(cell2nodeRowO.begin(), cell2nodeRowO.end());
-                    std::vector<DNDS::index> interSect;
-                    interSect.reserve(32);
-                    std::set_intersection(cell2nodeRowO.begin(), cell2nodeRowO.end(), cell2nodeRow.begin(), cell2nodeRow.end(),
-                                          std::back_inserter(interSect));
-                    if ((iCellOther != iCell) && interSect.size() > (mesh->dim - 1)) //! mesh->dim - 1 is a simple method
-
-                        // (false ||
-                        //  Elem::cellsAreFaceConnected(
-                        //      cell2nodeSerial->operator[](iCell),
-                        //      cell2nodeSerial->operator[](iCellOther),
-                        //      CellElem,
-                        //      Elem::Element{(*cellElemInfoSerial)[iCellOther]->getElemType()}))
-                        c_neighbors.insert(iCellOther);
-                    // c_neighbors.push_back(iCellOther);
-                }
-            // if (!c_neighbors.erase(iCell))
-            //     DNDS_assert_info(false, "neighbors should include myself now");
-            // std::sort(c_neighbors.begin(), c_neighbors.end());
-            // auto last = std::unique(c_neighbors.begin(), c_neighbors.end());
-            // c_neighbors.erase(last, c_neighbors.end());
-
-            cell2cellSerial->ResizeRow(iCell, c_neighbors.size());
-            DNDS::rowsize ic2c = 0;
-            for (auto iCellOther : c_neighbors)
-                (*cell2cellSerial)(iCell, ic2c++) = iCellOther;
-#ifdef DNDS_USE_OMP
-#pragma omp atomic
-#endif
-            nCellsDone++;
-        }
-
-        // TODO: build periodic donor oct-trees
-        // TODO: search in donors if periodic main and connect cell2cell
-        for (DNDS::index iBnd = 0; iBnd < bnd2cellSerial->Size(); iBnd++)
-        {
-            if (FaceIDIsPeriodicMain(bndElemInfoSerial->operator()(iBnd, 0).type))
-            {
-                DNDS_assert(false);
-            }
-            if (FaceIDIsPeriodicDonor(bndElemInfoSerial->operator()(iBnd, 0).type))
-            {
-                DNDS_assert(false);
-            }
-        }
-
-        if (mesh->mpi.rank == mRank)
-            DNDS::log() << "UnstructuredMeshSerialRW === Done  BuildCell2Cell" << std::endl;
-    }
-
-    void UnstructuredMeshSerialRW::
         MeshPartitionCell2Cell()
     {
         if (mesh->mpi.rank == mRank)
@@ -711,33 +582,36 @@ namespace DNDS::Geom
 
         //! assuming all adj point to local numbers now
         // * Tend to local-global issues putting into
-        cell2cellSerial->Compress();
-        cell2cellSerial->AssertConsistent();
-        cell2cellSerial->createGlobalMapping();
+        // cell2cellSerial->Compress();
+        // cell2cellSerial->AssertConsistent();
+        // cell2cellSerial->createGlobalMapping();
+        cell2cellSerialFacial->Compress();
+        cell2cellSerialFacial->AssertConsistent();
+        cell2cellSerialFacial->createGlobalMapping();
 
-        std::vector<_METIS::idx_t> vtxdist(mesh->mpi.size + 1);
+               std::vector<_METIS::idx_t> vtxdist(mesh->mpi.size + 1);
 #ifdef DNDS_USE_OMP
 #pragma omp parallel for
 #endif
         for (DNDS::MPI_int r = 0; r <= mesh->mpi.size; r++)
-            vtxdist[r] = cell2cellSerial->pLGlobalMapping->ROffsets().at(r); //! warning: no check overflow
-        std::vector<_METIS::idx_t> xadj(cell2cellSerial->Size() + 1);
+            vtxdist[r] = cell2cellSerialFacial->pLGlobalMapping->ROffsets().at(r); //! warning: no check overflow
+        std::vector<_METIS::idx_t> xadj(cell2cellSerialFacial->Size() + 1);
 #ifdef DNDS_USE_OMP
 #pragma omp parallel for
 #endif
         for (DNDS::index iCell = 0; iCell < xadj.size(); iCell++)
-            xadj[iCell] = (cell2cellSerial->rowPtr(iCell) - cell2cellSerial->rowPtr(0)); //! warning: no check overflow
+            xadj[iCell] = (cell2cellSerialFacial->rowPtr(iCell) - cell2cellSerialFacial->rowPtr(0)); //! warning: no check overflow
         std::vector<_METIS::idx_t> adjncy(xadj.back());
-        DNDS_assert(cell2cellSerial->DataSize() == xadj.back());
+        DNDS_assert(cell2cellSerialFacial->DataSize() == xadj.back());
 #ifdef DNDS_USE_OMP
 #pragma omp parallel for
 #endif
         for (DNDS::index iAdj = 0; iAdj < xadj.back(); iAdj++)
-            adjncy[iAdj] = cell2cellSerial->data()[iAdj]; //! warning: no check overflow
+            adjncy[iAdj] = cell2cellSerialFacial->data()[iAdj]; //! warning: no check overflow
         if (adjncy.size() == 0)
             adjncy.resize(1, -1); //*coping with zero sized data
 
-        _METIS::idx_t nCell = cell2cellSerial->Size(); //! warning: no check overflow
+        _METIS::idx_t nCell = cell2cellSerialFacial->Size(); //! warning: no check overflow
         _METIS::idx_t nCon{1}, options[METIS_NOPTIONS];
 
         {
@@ -801,7 +675,7 @@ namespace DNDS::Geom
         {
             partOut.assign(partOut.size(), 0);
         }
-        cellPartition.resize(cell2cellSerial->Size());
+        cellPartition.resize(cell2cellSerialFacial->Size());
         for (DNDS::index i = 0; i < cellPartition.size(); i++)
             cellPartition[i] = partOut[i];
         if (mesh->mpi.rank == mRank)
@@ -1768,10 +1642,16 @@ namespace DNDS::Geom
         std::vector<uint16_t> cCont(cell2cell.Size(), 0); // simulate flux
         for (DNDS::index iFace = 0; iFace < faceElemInfo.Size(); iFace++)
         {
-            if (faceElemInfo(iFace, 0).zone <= 0)
+            auto faceID = faceElemInfo(iFace, 0).zone;
+            if (faceID <= 0)
             {
+                if (FaceIDIsPeriodic(faceID))
+                {
+                    // TODO: tend to the case of face is PeriodicDonor with Main in same proc
+                    continue;
+                }
                 // if (face2cell[iFace][0] < cell2cell.father->Size()) // other side prime cell, periodic also
-                DNDS_assert(face2cell[iFace][1] != DNDS::UnInitIndex); // Assert has enough cell donors //TODO: tend to the case of face is PeriodicDonor with Main in same proc
+                DNDS_assert(face2cell[iFace][1] != DNDS::UnInitIndex); // Assert has enough cell donors
                 DNDS_assert(face2cell[iFace][0] >= 0 && face2cell[iFace][0] < cell2cell.Size());
                 DNDS_assert(face2cell[iFace][1] >= 0 && face2cell[iFace][1] < cell2cell.Size());
                 cCont[face2cell[iFace][0]]++;

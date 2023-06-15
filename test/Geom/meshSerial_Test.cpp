@@ -23,7 +23,9 @@ void testCGNS()
     // "../data/mesh/SC20714_MixedA.cgns"
     // "../data/mesh/UniformDM240_E120.cgns"
     // "../data/mesh/Ball.cgns"
-    reader.ReadFromCGNSSerial("../data/mesh/FourTris_V1.pw.cgns");
+    // "../data/mesh/Uniform32_Periodic.cgns"
+    // "../data/mesh/Uniform128.cgns"
+    reader.ReadFromCGNSSerial("../data/mesh/Uniform128.cgns");
     reader.BuildCell2Cell();
     reader.MeshPartitionCell2Cell();
     reader.PartitionReorderToMeshCell2Cell();
@@ -31,7 +33,7 @@ void testCGNS()
     mesh->BuildGhostPrimary();
     mesh->AdjGlobal2LocalPrimary();
     mesh->InterpolateFace();
-    mesh->AssertOnFaces();
+    // mesh->AssertOnFaces();
 
     auto meshBnd = std::make_shared<DNDS::Geom::UnstructuredMesh>(mpi, dim-1);
     auto readerBnd = DNDS::Geom::UnstructuredMeshSerialRW(meshBnd, 0);

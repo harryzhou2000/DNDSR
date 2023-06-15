@@ -92,6 +92,9 @@ if(UNIX)
     #     "${PROJECT_SOURCE_DIR}/external/rapidjson/include" 
     #     "${PROJECT_SOURCE_DIR}/external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}/include"
     #     NO_DEFAULT_PATH)
+    find_path(EXTERNAL_INCLUDE_NANOFLANN nanoflann.hpp PATHS
+        "${PROJECT_SOURCE_DIR}/external/nanoflann-1.4.3" 
+        NO_DEFAULT_PATH REQUIRED)
 
     find_path(EXTERNAL_DOXYGEN_AWESOME doxygen-awesome.css PATHS 
         "${PROJECT_SOURCE_DIR}/external/doxygen-awesome-css-2.2.1" 
@@ -151,6 +154,7 @@ set(EXTERNAL_INCLUDES
     ${EXTERNAL_INCLUDE_JSON}
     # ${EXTERNAL_INCLUDE_RAPIDJSON}
     ${EXTERNAL_INCLUDE_CPPCODEC}
+    ${EXTERNAL_INCLUDE_NANOFLANN}
     )
 
 set(DNDS_INCLUDES ${PROJECT_SOURCE_DIR}/src)
@@ -241,6 +245,7 @@ set(CPPS_Geom
 src/Geom/Elements.cpp
 src/Geom/Mesh.cpp
 src/Geom/Mesh_Plts.cpp
+src/Geom/Mesh_Serial_BuildCell2Cell.cpp
 )
 
 set(CPPS_CFV

@@ -92,6 +92,9 @@ namespace DNDS::Geom
 
         // tAdj1Pair bndFaces; // no comm needed for now
 
+
+        Periodicity periodicInfo;
+
         UnstructuredMesh(const DNDS::MPIInfo &n_mpi, int n_dim)
             : mpi(n_mpi), dim(n_dim) {}
         /**
@@ -201,6 +204,8 @@ namespace DNDS::Geom
 
         tAdj cell2cellSerial; // optionally created with GetCell2Cell()
         tAdj node2nodeSerial; // optionally created with GetNode2Node()
+
+        tAdj cell2cellSerialFacial; // optionally created with
 
         tAdj node2cellSerial; // not used for now
         tAdj node2faceSerial; // not used for now
