@@ -108,7 +108,7 @@ namespace DNDS
 
         /**
          * @warning need to createMPITypes after this
-        */
+         */
         void ReadSerialize(SerializerBase *serializer, const std::string &name)
         {
             DNDS_assert(father && son);

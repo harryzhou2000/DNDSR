@@ -137,38 +137,4 @@ namespace DNDS::Geom
                id == BC_ID_PERIODIC_3_DONOR;
     }
 
-    struct Periodicity
-    {
-        std::array<tGPoint, 4> rotation;
-        std::array<tPoint, 4> translation;
-        std::array<tPoint, 4> rotationCenter;
-        Periodicity()
-        {
-            for (auto &r : rotation)
-                r.setIdentity();
-            for (auto &r : rotationCenter)
-                r.setZero();
-            translation[0].setZero();
-            translation[1] = tPoint{1, 0, 0};
-            translation[2] = tPoint{0, 1, 0};
-            translation[3] = tPoint{0, 0, 1};
-        }
-
-        tPoint TransCoord(const tPoint &c, t_index id) const
-        {
-            DNDS_assert(FaceIDIsPeriodicMain(id));
-            t_index i = -id;
-            return rotation[i] * (c - rotationCenter[i]) + rotationCenter[i] + translation[i];
-        }
-
-        tPoint TransCoordBack(const tPoint &c, t_index id) const
-        {
-            DNDS_assert(FaceIDIsPeriodicDonor(id));
-            t_index i = -id - 3;
-            return rotation[i].transpose() * ((c + translation[i]) - rotationCenter[i]) + rotationCenter[i];
-        }
-
-        ///@todo //TODO: add support for cartesian tensor transformation
-    };
-
 } // namespace Geom

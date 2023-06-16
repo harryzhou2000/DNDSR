@@ -28,7 +28,7 @@ namespace DNDS::Euler
             for (int ic2f = 0; ic2f < c2f.size(); ic2f++)
             {
                 index iFace = c2f[ic2f];
-                fpDivisor += (0.5 * alphaDiag) * vfv->faceArea[iFace] * lambdaFace[iFace] / vfv->volumeLocal[iCell];
+                fpDivisor += (0.5 * alphaDiag) * vfv->GetFaceArea(iFace) * lambdaFace[iFace] / vfv->GetCellVol(iCell);
             }
             if (!(settings.ignoreSourceTerm && settings.useScalarJacobian))
                 jacobianCell[iCell] *= fpDivisor; //! all passive vars use same diag for flux part
@@ -56,7 +56,6 @@ namespace DNDS::Euler
         }
         // exit(-1);
     }
-    
 
     template <EulerModel model>
     void EulerEvaluator<model>::LUSGSMatrixVec(real alphaDiag, ArrayDOFV<nVars_Fixed> &u, ArrayDOFV<nVars_Fixed> &uInc, ArrayDOFV<nVars_Fixed> &AuInc)
@@ -95,7 +94,7 @@ namespace DNDS::Euler
                         auto uj = u[iCellOther];
                         TU fInc;
                         {
-                            TVec unitNorm = vfv->faceMeanNorm[iFace](Seq012).normalized() *
+                            TVec unitNorm = vfv->GetFaceNormFromCell(iFace, iCellOther, iCellAtFace, -1)(Seq012) *
                                             (iCellAtFace ? -1 : 1); // faces out
 
                             // fInc = fluxJacobian0_Right(
@@ -109,7 +108,7 @@ namespace DNDS::Euler
                                 Geom::BC_ID_INTERNAL, uINCj, lambdaFace[iFace], lambdaFaceC[iFace]); //! always inner here
                         }
 
-                        uIncNewBuf -= (0.5 * alphaDiag) * vfv->faceArea[iFace] / vfv->volumeLocal[iCell] *
+                        uIncNewBuf -= (0.5 * alphaDiag) * vfv->GetFaceArea(iFace) / vfv->GetCellVol(iCell) *
                                       (fInc);
                         if (uIncNewBuf.hasNaN() || (!uIncNewBuf.allFinite()))
                         {
@@ -177,7 +176,7 @@ namespace DNDS::Euler
                         auto uINCj = uInc[iCellOther];
 
                         {
-                            TVec unitNorm = vfv->faceMeanNorm[iFace](Seq012).normalized() *
+                            TVec unitNorm = vfv->GetFaceNormFromCell(iFace, iCellOther, iCellAtFace, -1)(Seq012) *
                                             (iCellAtFace ? -1 : 1); // faces out
 
                             fInc = fluxJacobian0_Right_Times_du(
@@ -186,7 +185,7 @@ namespace DNDS::Euler
                                 Geom::BC_ID_INTERNAL, uINCj, lambdaFace[iFace], lambdaFaceC[iFace]); //! always inner here
                         }
 
-                        uIncNewBuf -= (0.5 * alphaDiag) * vfv->faceArea[iFace] / vfv->volumeLocal[iCell] *
+                        uIncNewBuf -= (0.5 * alphaDiag) * vfv->GetFaceArea(iFace) / vfv->GetCellVol(iCell) *
                                       (fInc);
 
                         if ((!uIncNewBuf.allFinite()))
@@ -249,7 +248,7 @@ namespace DNDS::Euler
                         TU fInc;
 
                         {
-                            TVec unitNorm = vfv->faceMeanNorm[iFace](Seq012).normalized() *
+                            TVec unitNorm = vfv->GetFaceNormFromCell(iFace, iCellOther, iCellAtFace, -1)(Seq012) *
                                             (iCellAtFace ? -1 : 1); // faces out
 
                             fInc = fluxJacobian0_Right_Times_du(
@@ -258,7 +257,7 @@ namespace DNDS::Euler
                                 Geom::BC_ID_INTERNAL, uInc[iCellOther], lambdaFace[iFace], lambdaFaceC[iFace]); //! always inner here
                         }
 
-                        uIncNewBuf -= (0.5 * alphaDiag) * vfv->faceArea[iFace] / vfv->volumeLocal[iCell] *
+                        uIncNewBuf -= (0.5 * alphaDiag) * vfv->GetFaceArea(iFace) / vfv->GetCellVol(iCell) *
                                       (fInc);
                     }
                 }
@@ -272,7 +271,6 @@ namespace DNDS::Euler
         InsertCheck(u.father->mpi, "UpdateLUSGSBackward -1");
     }
 
-
     template <EulerModel model>
     void EulerEvaluator<model>::FixUMaxFilter(ArrayDOFV<nVars_Fixed> &u)
     {
@@ -280,7 +278,6 @@ namespace DNDS::Euler
         // TODO: make spacial filter jacobian
         return; // ! nofix shortcut
     }
-
 
     template <EulerModel model>
     void EulerEvaluator<model>::EvaluateResidual(Eigen::Vector<real, -1> &res, ArrayDOFV<nVars_Fixed> &rhs, index P, bool volWise)
@@ -300,7 +297,7 @@ namespace DNDS::Euler
                     DNDS_assert(false);
                 }
                 if (volWise)
-                    resc += rhs[iCell].array().abs().pow(P).matrix() * vfv->volumeLocal[iCell];
+                    resc += rhs[iCell].array().abs().pow(P).matrix() * vfv->GetCellVol(iCell);
                 else
                     resc += rhs[iCell].array().abs().pow(P).matrix();
             }

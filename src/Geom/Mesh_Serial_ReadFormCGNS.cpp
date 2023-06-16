@@ -45,6 +45,8 @@ namespace DNDS::Geom
         ReadFromCGNSSerial(const std::string &fName, const t_FBCName_2_ID &FBCName_2_ID)
     {
         mode = SerialReadAndDistribute;
+        this->dataIsSerialIn = true;
+        
         int cgErr = CG_OK;
 
         DNDS_MAKE_SSP(cell2nodeSerial, mesh->mpi);
@@ -537,5 +539,6 @@ namespace DNDS::Geom
 
         std::cout << "CGNS === Serial Read Done" << std::endl;
         // Memory with DM240-120 here: 18G ; after deconstruction done: 7.5G
+       
     }
 }

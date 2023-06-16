@@ -136,6 +136,7 @@ namespace DNDS::CFV
         VRSettings settings;
         std::shared_ptr<Geom::UnstructuredMesh> mesh;
 
+    private:
         real volGlobal{0};             /// @brief constructed using ConstructMetrics()
         std::vector<real> volumeLocal; /// @brief constructed using ConstructMetrics()
         std::vector<real> faceArea;    /// @brief constructed using ConstructMetrics()
@@ -166,8 +167,9 @@ namespace DNDS::CFV
         tVecsPair vectorB;         /// @brief constructed using ConstructRecCoeff()
         tMatsPair matrixAAInvB;    /// @brief constructed using ConstructRecCoeff()
         tMatsPair vectorAInvB;     /// @brief constructed using ConstructRecCoeff()
-        tVMatPair matrixSecondary; /// @brief constructed using ConstructRecCoeff()//TODO
+        tVMatPair matrixSecondary; /// @brief constructed using ConstructRecCoeff()
 
+    public:
         VariationalReconstruction(MPIInfo nMpi, std::shared_ptr<Geom::UnstructuredMesh> nMesh)
             : mpi(nMpi), mesh(nMesh)
         {
@@ -216,32 +218,126 @@ namespace DNDS::CFV
             aPair.son->Resize(mesh->NumFaceGhost(), others...);
         }
 
-        Geom::Elem::Quadrature GetFaceQuad(index iFace)
+        Geom::Elem::Quadrature GetFaceQuad(index iFace) const
         {
             auto e = mesh->GetFaceElement(iFace);
             return Geom::Elem::Quadrature{e, faceAtr[iFace].intOrder};
         }
 
-        Geom::Elem::Quadrature GetFaceQuadO1(index iFace)
+        Geom::Elem::Quadrature GetFaceQuadO1(index iFace) const
         {
             auto e = mesh->GetFaceElement(iFace);
             return Geom::Elem::Quadrature{e, 1};
         }
 
-        Geom::Elem::Quadrature GetCellQuad(index iCell)
+        Geom::Elem::Quadrature GetCellQuad(index iCell) const
         {
             auto e = mesh->GetCellElement(iCell);
             return Geom::Elem::Quadrature{e, cellAtr[iCell].intOrder};
         }
 
-        Geom::Elem::Quadrature GetCellQuadO1(index iCell)
+        Geom::Elem::Quadrature GetCellQuadO1(index iCell) const
         {
             auto e = mesh->GetCellElement(iCell);
             return Geom::Elem::Quadrature{e, 1};
         }
 
+        bool CellIsFaceBack(index iCell, index iFace) const
+        {
+            DNDS_assert(mesh->face2cell(iFace, 0) == iCell || mesh->face2cell(iFace, 1) == iCell);
+            return mesh->face2cell(iFace, 0) == iCell;
+        }
+
+        index CellFaceOther(index iCell, index iFace)
+        {
+            return CellIsFaceBack(iCell, iFace)
+                       ? mesh->face2cell(iFace, 1)
+                       : mesh->face2cell(iFace, 0);
+        }
+
+        Geom::tPoint GetFaceNorm(index iFace, int iG)
+        {
+            if (iG >= 0)
+                return faceUnitNorm(iFace, iG);
+            else
+                return faceMeanNorm[iFace];
+        }
+
+        auto GetFaceAtr(index iFace)
+        {
+            return faceAtr.at(iFace);
+        }
+
+        auto GetCellAtr(index iCell)
+        {
+            return cellAtr.at(iCell);
+        }
+
+        Geom::tPoint GetFaceNormFromCell(index iFace, index iCell, rowsize if2c, int iG)
+        {
+            if (!mesh->isPeriodic)
+                return GetFaceNorm(iFace, iG);
+            auto faceID = mesh->faceElemInfo[iFace]->zone;
+            if (!Geom::FaceIDIsPeriodic(faceID))
+                return GetFaceNorm(iFace, iG);
+            if (if2c < 0)
+                if2c = CellIsFaceBack(iCell, iFace) ? 0 : 1;
+            if (if2c == 1 && Geom ::FaceIDIsPeriodicMain(faceID))
+                return mesh->periodicInfo.TransVector(GetFaceNorm(iFace, iG), faceID);
+            if (if2c == 1 && Geom::FaceIDIsPeriodicDonor(faceID))
+                return mesh->periodicInfo.TransVectorBack(GetFaceNorm(iFace, iG), faceID);
+            return GetFaceNorm(iFace, iG);
+        }
+
+        Geom::tPoint GetFaceQuadraturePPhys(index iFace, int iG)
+        {
+            if (iG >= 0)
+                return faceIntPPhysics(iFace, iG);
+            else
+                return faceCent[iFace];
+        }
+
+        Geom::tPoint GetFaceQuadraturePPhysFromCell(index iFace, index iCell, rowsize if2c, int iG)
+        {
+            if (!mesh->isPeriodic)
+                return GetFaceQuadraturePPhys(iFace, iG);
+            auto faceID = mesh->faceElemInfo[iFace]->zone;
+            if (!Geom::FaceIDIsPeriodic(faceID))
+                return GetFaceQuadraturePPhys(iFace, iG);
+            if (if2c < 0)
+                if2c = CellIsFaceBack(iCell, iFace) ? 0 : 1;
+            if (if2c == 1 && Geom ::FaceIDIsPeriodicMain(faceID))
+            {
+                // std::cout << iFace <<" " << iCell << " " <<if2c << std::endl;
+                // std::cout << GetFaceQuadraturePPhys(iFace, iG).transpose() << std::endl;
+                // std::cout << mesh->periodicInfo.TransCoord(GetFaceQuadraturePPhys(iFace, iG), faceID).transpose() << std::endl;
+                // std::abort();
+                return mesh->periodicInfo.TransCoord(GetFaceQuadraturePPhys(iFace, iG), faceID);
+            }
+            if (if2c == 1 && Geom::FaceIDIsPeriodicDonor(faceID))
+                return mesh->periodicInfo.TransCoordBack(GetFaceQuadraturePPhys(iFace, iG), faceID);
+            return GetFaceQuadraturePPhys(iFace, iG);
+        }
+
+        Geom::tPoint GetCellQuadraturePPhys(index iCell, int iG)
+        {
+            if (iG >= 0)
+                return cellIntPPhysics(iCell, iG);
+            else
+                return cellCent[iCell];
+        }
+
+        Geom::tPoint GetCellBary(index iCell) { return cellBary[iCell]; }
+
+        real GetCellVol(index iCell) { return volumeLocal[iCell]; }
+        real GetFaceArea(index iFace) { return faceArea[iFace]; }
+
+        real GetCellJacobiDet(index iCell, rowsize iG) { return cellIntJacobiDet(iCell, iG); }
+        real GetFaceJacobiDet(index iFace, rowsize iG) { return faceIntJacobiDet(iFace, iG); }
+
         /**
          * @brief flag = 0 means use moment data, or else use no moment (as 0)
+         * pPhy must be relative to cell
          * if iFace < 0, means anywhere
          * if iFace > 0, iG == -1, means center; iG < -1, then anywhere
          */
@@ -291,19 +387,6 @@ namespace DNDS::CFV
             }
         }
 
-        bool CellIsFaceBack(index iCell, index iFace)
-        {
-            DNDS_assert(mesh->face2cell(iFace, 0) == iCell || mesh->face2cell(iFace, 1) == iCell);
-            return mesh->face2cell(iFace, 0) == iCell;
-        }
-
-        index CellFaceOther(index iCell, index iFace)
-        {
-            return CellIsFaceBack(iCell, iFace)
-                       ? mesh->face2cell(iFace, 1)
-                       : mesh->face2cell(iFace, 0);
-        }
-
         /**
          * @brief if if2c < 0, then calculated, if maxDiff == 255, then seen as all diffs
          * if iFace < 0, then seen as cell int points; if iG < 1, then seen as center
@@ -312,7 +395,7 @@ namespace DNDS::CFV
         template <class TList>
         Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic>
         GetIntPointDiffBaseValue(
-            index iCell, index iFace, index if2c, index iG,
+            index iCell, index iFace, rowsize if2c, index iG,
             TList &&diffList = Eigen::all,
             uint8_t maxDiff = UINT8_MAX)
         {
@@ -320,75 +403,55 @@ namespace DNDS::CFV
             {
                 if (if2c < 0)
                     if2c = CellIsFaceBack(iCell, iFace) ? 0 : 1;
-                if (iG >= 0)
+                if (settings.cacheDiffBase)
                 {
-                    if (settings.cacheDiffBase)
+                    // auto gFace = this->GetFaceQuad(iFace);
+
+                    if (iG >= 0)
                     {
-                        // auto gFace = this->GetFaceQuad(iFace);
                         return faceDiffBaseCache(iFace, iG + (faceDiffBaseCache.RowSize(iFace) / 2) * if2c)(
                             std::forward<TList>(diffList), Eigen::seq(Eigen::fix<1>, Eigen::last));
                     }
                     else
                     {
-                        // Actual computing: //TODO: take care of periodic case
-                        Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic> dbv;
-                        dbv.resize(std::min(maxDiff, faceAtr[iFace].NDIFF), cellAtr[iCell].NDOF);
-                        FDiffBaseValue(dbv, faceIntPPhysics(iFace, iG), iCell, iFace, iG, 0);
-                        return dbv(std::forward<TList>(diffList), Eigen::seq(Eigen::fix<1>, Eigen::last));
-                    }
-                }
-                else
-                {
-                    if (settings.cacheDiffBase)
-                    {
-                        // auto gFace = this->GetFaceQuad(iFace);
                         int maxNDOF = faceDiffBaseCacheCent[iFace].cols() / 2;
                         return faceDiffBaseCacheCent[iFace](
                             std::forward<TList>(diffList),
                             Eigen::seq(if2c * maxNDOF + 1,
                                        if2c * maxNDOF + maxNDOF - 1));
                     }
-                    else
-                    {
-                        // Actual computing: //TODO: take care of periodic case
-                        Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic> dbv;
-                        dbv.resize(std::min(maxDiff, faceAtr[iFace].NDIFF), cellAtr[iCell].NDOF);
-                        FDiffBaseValue(dbv, faceCent[iFace], iCell, iFace, -1, 0);
-                        return dbv(std::forward<TList>(diffList), Eigen::seq(Eigen::fix<1>, Eigen::last));
-                    }
+                }
+                else
+                {
+                    // Actual computing: //TODO: take care of periodic case
+                    Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic> dbv;
+                    dbv.resize(std::min(maxDiff, faceAtr[iFace].NDIFF), cellAtr[iCell].NDOF);
+                    FDiffBaseValue(dbv, GetFaceQuadraturePPhysFromCell(iFace, iCell, if2c, iG), iCell, iFace, iG, 0);
+                    return dbv(std::forward<TList>(diffList), Eigen::seq(Eigen::fix<1>, Eigen::last));
                 }
             }
             else
             {
-                if (iG >= 0)
+
+                if (settings.cacheDiffBase)
                 {
-                    if (settings.cacheDiffBase)
+                    if (iG >= 0)
                     {
                         return cellDiffBaseCache(iCell, iG)(
                             std::forward<TList>(diffList), Eigen::seq(Eigen::fix<1>, Eigen::last));
                     }
                     else
                     {
-                        Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic> dbv;
-                        dbv.resize(std::min(maxDiff, cellAtr[iCell].NDIFF), cellAtr[iCell].NDOF);
-                        FDiffBaseValue(dbv, cellIntPPhysics(iCell, iG), iCell, -1, iG, 0);
-                        return dbv(std::forward<TList>(diffList), Eigen::seq(Eigen::fix<1>, Eigen::last));
+                        return cellDiffBaseCacheCent[iCell](
+                            std::forward<TList>(diffList), Eigen::seq(Eigen::fix<1>, Eigen::last));
                     }
                 }
                 else
                 {
-                    if (settings.cacheDiffBase)
-                    {
-                        return cellDiffBaseCacheCent[iCell](
-                            std::forward<TList>(diffList), Eigen::seq(Eigen::fix<1>, Eigen::last));
-                    }
-                    else
-                    {
-                        Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic> dbv;
-                        dbv.resize(std::min(maxDiff, cellAtr[iCell].NDIFF), cellAtr[iCell].NDOF);
-                        FDiffBaseValue(dbv, cellCent[iCell], iCell, -1, -1, 0);
-                        return dbv(std::forward<TList>(diffList), Eigen::seq(Eigen::fix<1>, Eigen::last));
-                    }
+                    Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic> dbv;
+                    dbv.resize(std::min(maxDiff, cellAtr[iCell].NDIFF), cellAtr[iCell].NDOF);
+                    FDiffBaseValue(dbv, GetCellQuadraturePPhys(iCell, iG), iCell, -1, iG, 0);
+                    return dbv(std::forward<TList>(diffList), Eigen::seq(Eigen::fix<1>, Eigen::last));
                 }
             }
         }
@@ -633,7 +696,7 @@ namespace DNDS::CFV
                                         faceUnitNorm(iFace, iG),
                                         faceIntPPhysics(iFace, iG), faceID);
                                 Eigen::RowVector<real, nVarsFixed> uIncBV = (uBV - u[iCell]).transpose();
-                                vInc = this->FFaceFunctional(dbv, uIncBV, iFace, iG) * faceIntJacobiDet(iFace, iG);
+                                vInc = this->FFaceFunctional(dbv, uIncBV, iFace, iG) * this->GetFaceJacobiDet(iFace, iG);
                                 // std::cout << faceWeight[iFace].transpose() << std::endl;
                             });
                         // BCC *= 0;
@@ -715,8 +778,7 @@ namespace DNDS::CFV
                             finc(Eigen::all, 0) = IJI.diagonal();
                             finc(Eigen::all, 1) = ISI.diagonal();
 
-                            // finc *= faceArea[iFace]; // don't forget this
-                            finc *= faceIntJacobiDet(iFace, ig);
+                            finc *= GetFaceArea(iFace); // don't forget this
 
                             // if (iCell == 12517)
                             // {
@@ -813,8 +875,7 @@ namespace DNDS::CFV
                             finc(Eigen::all, 0) = IJI.diagonal();
                             finc(Eigen::all, 1) = ISI.diagonal();
 
-                            // finc *= faceArea[iFace]; // don't forget this
-                            finc *= faceIntJacobiDet(iFace, ig);
+                            finc *= GetFaceArea(iFace); // don't forget this
                         });
                     IJIISIsum += IJIISI;
                 }

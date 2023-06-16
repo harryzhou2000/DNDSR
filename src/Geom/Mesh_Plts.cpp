@@ -6,6 +6,61 @@
 
 namespace DNDS::Geom
 {
+
+    void UnstructuredMeshSerialRW::
+        GetCurrentOutputArrays(int flag,
+                               tCoordPair &coordOut,
+                               tAdjPair &cell2nodeOut,
+                               tPbiPair &cell2nodePbiOut,
+                               tElemInfoArrayPair &cellElemInfoOut,
+                               index &nCell, index &nNode)
+    {
+        /*************************************************/
+        // get the output arrays: serial or parallel
+        tCoord coordSerialDummy;
+        tAdj cell2nodeSerialDummy;
+        tPbi cell2nodePbiSerialDummy;
+        tElemInfoArray cellElemInfoSerialDummy;
+        DNDS_MAKE_SSP(coordSerialDummy, mesh->mpi);
+        DNDS_MAKE_SSP(cell2nodeSerialDummy, mesh->mpi);
+        DNDS_MAKE_SSP(cell2nodePbiSerialDummy, NodePeriodicBits::CommType(), NodePeriodicBits::CommMult(), mesh->mpi);
+        DNDS_MAKE_SSP(cellElemInfoSerialDummy, ElemInfo::CommType(), ElemInfo::CommMult(), mesh->mpi);
+
+        if (flag == 0)
+        {
+            coordOut.father = coordSerial;
+            coordOut.son = coordSerialDummy;
+            cell2nodeOut.father = cell2nodeSerial;
+            cell2nodeOut.son = cell2nodeSerialDummy;
+            if (mesh->isPeriodic)
+            {
+                cell2nodePbiOut.father = cell2nodePbiSerial;
+                cell2nodePbiOut.son = cell2nodePbiSerialDummy;
+            }
+            cellElemInfoOut.father = cellElemInfoSerial;
+            cellElemInfoOut.son = cellElemInfoSerialDummy;
+            nCell = cell2nodeOut.Size();
+            nNode = coordOut.Size();
+        }
+        else if (flag == 1)
+        {
+            coordOut.father = mesh->coords.father;
+            coordOut.son = mesh->coords.son;
+            cell2nodeOut.father = mesh->cell2node.father;
+            cell2nodeOut.son = mesh->cell2node.son;
+            if (mesh->isPeriodic)
+            {
+                cell2nodePbiOut.father = mesh->cell2nodePbi.father;
+                cell2nodePbiOut.son = mesh->cell2nodePbi.son;
+            }
+            cellElemInfoOut.father = mesh->cellElemInfo.father;
+            cellElemInfoOut.son = mesh->cellElemInfo.son;
+            nCell = cell2nodeOut.father->Size(); //! only non-ghost cells are output
+            nNode = coordOut.Size();             //! need all the nodes with ghost
+        }
+        /*************************************************/
+    }
+
     void UnstructuredMeshSerialRW::
         PrintSerialPartPltBinaryDataArray(std::string fname,
                                           int arraySiz, int arraySizPoint,
@@ -115,45 +170,40 @@ namespace DNDS::Geom
         writeInt(0); // Are raw local 1-to-1 face neighbors supplied?
         writeInt(0); // Number of miscellaneous user-defined face
 
-        /*************************************************/
-        // get the output arrays: serial or parallel
-        tCoord coordSerialDummy;
-        tAdj cell2nodeSerialDummy;
-        tElemInfoArray cellElemInfoSerialDummy;
-        DNDS_MAKE_SSP(coordSerialDummy, mesh->mpi);
-        DNDS_MAKE_SSP(cell2nodeSerialDummy, mesh->mpi);
-        DNDS_MAKE_SSP(cellElemInfoSerialDummy, ElemInfo::CommType(), ElemInfo::CommMult(), mesh->mpi);
+        /*******************************************************/
+        // output preparation
         tCoordPair coordOut;
         tAdjPair cell2nodeOut;
+        tPbiPair cell2nodePbiOut;
         tElemInfoArrayPair cellElemInfoOut;
-        DNDS::index nCell = 0;
-        DNDS::index nNode = 0;
-        if (flag == 0)
-        {
-            coordOut.father = coordSerial;
-            coordOut.son = coordSerialDummy;
-            cell2nodeOut.father = cell2nodeSerial;
-            cell2nodeOut.son = cell2nodeSerialDummy;
-            cellElemInfoOut.father = cellElemInfoSerial;
-            cellElemInfoOut.son = cellElemInfoSerialDummy;
-            nCell = cell2nodeOut.Size();
-            nNode = coordOut.Size();
-        }
-        else if (flag == 1)
-        {
-            coordOut.father = mesh->coords.father;
-            coordOut.son = mesh->coords.son;
-            cell2nodeOut.father = mesh->cell2node.father;
-            cell2nodeOut.son = mesh->cell2node.son;
-            cellElemInfoOut.father = mesh->cellElemInfo.father;
-            cellElemInfoOut.son = mesh->cellElemInfo.son;
-            nCell = cell2nodeOut.father->Size(); //! only non-ghost cells are output
-            nNode = coordOut.Size();             //! need all the nodes with ghost
-        }
-        /*************************************************/
+        index nCell{-1}, nNode{-1};
+        this->GetCurrentOutputArrays(flag, coordOut, cell2nodeOut, cell2nodePbiOut, cellElemInfoOut,
+                                     nCell, nNode);
 
-        writeInt(nNode); // node number
-        writeInt(nCell); // cell number
+        std::vector<Geom::tPoint>
+            nodesExtra;
+        std::vector<index> nodesExtraAtOriginal;
+        if (mesh->isPeriodic)
+        {
+            for (index iCell = 0; iCell < nCell; iCell++)
+                for (rowsize ic2n = 0; ic2n < cell2nodePbiOut.RowSize(iCell); ic2n++)
+                    if (cell2nodePbiOut[iCell][ic2n])
+                        nodesExtra.push_back(mesh->periodicInfo.GetCoordByBits(coordOut[cell2nodeOut[iCell][ic2n]], cell2nodePbiOut[iCell][ic2n])),
+                            nodesExtraAtOriginal.push_back(cell2nodeOut(iCell, ic2n));
+        }
+        // if (mpi.rank == mRank)
+        //     std::cout << "PrintSerialPartPltBinaryDataArray === " << std::endl;
+        // auto printSize = [&]()
+        // { std::cout << "Rank [" << mpi.rank << "]"
+        //             << " Size: " << nNode << " " << nCell << " " << nodesExtra.size() << std::endl; };
+        // if (flag == 1)
+        //     MPISerialDo(mpi, printSize);
+        // else
+        //     printSize();
+        /*******************************************************/
+
+        writeInt(nNode + nodesExtra.size()); // node number
+        writeInt(nCell);                     // cell number
 
         writeInt(0); // I dim
         writeInt(0); // J dim
@@ -187,8 +237,21 @@ namespace DNDS::Geom
         for (int idim = 0; idim < 3; idim++)
             for (DNDS::index i = 0; i < nNode; i++)
             {
-                minVal[idim] = std::min(coordOut[i](idim), minVal[idim]);
-                maxVal[idim] = std::max(coordOut[i](idim), maxVal[idim]);
+                if (i < nNode)
+                {
+                    minVal[idim] = std::min(coordOut[i](idim), minVal[idim]);
+                    maxVal[idim] = std::max(coordOut[i](idim), maxVal[idim]);
+                }
+            };
+
+        for (int idim = 0; idim < 3; idim++)
+            for (DNDS::index i = 0; i < nodesExtra.size(); i++)
+            {
+                if (i < nNode)
+                {
+                    minVal[idim] = std::min(nodesExtra[i](idim), minVal[idim]);
+                    maxVal[idim] = std::max(nodesExtra[i](idim), maxVal[idim]);
+                }
             };
 
         for (int idata = 0; idata < arraySiz; idata++)
@@ -224,17 +287,34 @@ namespace DNDS::Geom
         writeDouble(mpi.size);
 
         for (int idim = 0; idim < 3; idim++)
+        {
             for (DNDS::index i = 0; i < nNode; i++)
             {
                 writeDouble(coordOut[i](idim));
                 // std::cout << (*coordSerial)[i](idim) << std::endl;
-            };
+            }
+            for (DNDS::index i = 0; i < nodesExtra.size(); i++)
+            {
+                writeDouble(nodesExtra[i](idim));
+                // std::cout << (*coordSerial)[i](idim) << std::endl;
+            }
+        }
 
         for (int idata = 0; idata < arraySizPoint; idata++)
+        {
             for (DNDS::index in = 0; in < nNode; in++)
             {
                 writeDouble(dataPoint(idata, in));
             }
+            index nExtra{0};
+            // if (mesh->isPeriodic)
+            //     for (DNDS::index iv = 0; iv < nCell; iv++)
+            //         for (rowsize ic2n = 0; ic2n < cell2nodeOut.RowSize(iv); ic2n++)
+            //             if (cell2nodePbiOut[iv][ic2n])
+            //                 writeDouble(dataPoint(idata, cell2nodeOut(iv, ic2n)));
+            for (auto i : nodesExtraAtOriginal)
+                writeDouble(dataPoint(idata, i));
+        }
 
         for (int idata = 0; idata < arraySiz; idata++)
             for (DNDS::index iv = 0; iv < nCell; iv++)
@@ -253,10 +333,18 @@ namespace DNDS::Geom
             writeDouble(r);
         }
 
+        index nExtra{0};
+
         for (DNDS::index iv = 0; iv < nCell; iv++)
         {
             auto elem = Elem::Element{cellElemInfoOut[iv]->getElemType()};
-            auto c2n = cell2nodeOut[iv];
+            std::vector<index> c2n = cell2nodeOut[iv];
+            if (mesh->isPeriodic)
+                for (rowsize ic2n = 0; ic2n < c2n.size(); ic2n++)
+                {
+                    if (cell2nodePbiOut[iv][ic2n])
+                        c2n[ic2n] = (nExtra++) + nNode;
+                }
             switch (elem.GetParamSpace())
             {
             case Elem::ParamSpace::LineSpace:
@@ -363,42 +451,37 @@ namespace DNDS::Geom
             DNDS_assert(false);
         }
 
-        /*************************************************/
-        // get the output arrays: serial or parallel
-        tCoord coordSerialDummy;
-        tAdj cell2nodeSerialDummy;
-        tElemInfoArray cellElemInfoSerialDummy;
-        DNDS_MAKE_SSP(coordSerialDummy, mesh->mpi);
-        DNDS_MAKE_SSP(cell2nodeSerialDummy, mesh->mpi);
-        DNDS_MAKE_SSP(cellElemInfoSerialDummy, ElemInfo::CommType(), ElemInfo::CommMult(), mesh->mpi);
+        /*******************************************************/
+        // output preparation
         tCoordPair coordOut;
         tAdjPair cell2nodeOut;
+        tPbiPair cell2nodePbiOut;
         tElemInfoArrayPair cellElemInfoOut;
-        DNDS::index nCell = 0;
-        DNDS::index nNode = 0;
-        if (flag == 0)
+        index nCell{-1}, nNode{-1};
+        this->GetCurrentOutputArrays(flag, coordOut, cell2nodeOut, cell2nodePbiOut, cellElemInfoOut,
+                                     nCell, nNode);
+
+        std::vector<Geom::tPoint>
+            nodesExtra;
+        std::vector<index> nodesExtraAtOriginal;
+        if (mesh->isPeriodic)
         {
-            coordOut.father = coordSerial;
-            coordOut.son = coordSerialDummy;
-            cell2nodeOut.father = cell2nodeSerial;
-            cell2nodeOut.son = cell2nodeSerialDummy;
-            cellElemInfoOut.father = cellElemInfoSerial;
-            cellElemInfoOut.son = cellElemInfoSerialDummy;
-            nCell = cell2nodeOut.Size();
-            nNode = coordOut.Size();
+            for (index iCell = 0; iCell < nCell; iCell++)
+                for (rowsize ic2n = 0; ic2n < cell2nodePbiOut.RowSize(iCell); ic2n++)
+                    if (cell2nodePbiOut[iCell][ic2n])
+                        nodesExtra.push_back(mesh->periodicInfo.GetCoordByBits(coordOut[cell2nodeOut[iCell][ic2n]], cell2nodePbiOut[iCell][ic2n])),
+                            nodesExtraAtOriginal.push_back(cell2nodeOut(iCell, ic2n));
         }
-        else if (flag == 1)
-        {
-            coordOut.father = mesh->coords.father;
-            coordOut.son = mesh->coords.son;
-            cell2nodeOut.father = mesh->cell2node.father;
-            cell2nodeOut.son = mesh->cell2node.son;
-            cellElemInfoOut.father = mesh->cellElemInfo.father;
-            cellElemInfoOut.son = mesh->cellElemInfo.son;
-            nCell = cell2nodeOut.father->Size(); //! only non-ghost cells are output
-            nNode = coordOut.Size();             //! need all the nodes with ghost
-        }
-        /*************************************************/
+        // if (mpi.rank == mRank)
+        //     std::cout << "PrintSerialPartVTKDataArray === " << std::endl;
+        // auto printSize = [&]()
+        // { std::cout << "Rank [" << mpi.rank << "]"
+        //             << " Size: " << nNode << " " << nCell << " " << nodesExtra.size() << std::endl; };
+        // if (flag == 1)
+        //     MPISerialDo(mpi, printSize);
+        // else
+        //     printSize();
+        /*******************************************************/
 
         std::string indentV = "  ";
         std::string newlineV = "\n";
@@ -449,18 +532,24 @@ namespace DNDS::Geom
                          {"format", "ascii"}},
                         [&](auto &out, int level)
                         {
-                            std::vector<double> coordsOutData(nNode * 3);
+                            std::vector<double> coordsOutData((nNode + nodesExtra.size()) * 3);
                             for (index i = 0; i < nNode; i++)
                             {
                                 coordsOutData[i * 3 + 0] = coordOut[i](0);
                                 coordsOutData[i * 3 + 1] = coordOut[i](1);
                                 coordsOutData[i * 3 + 2] = coordOut[i](2);
                             }
+                            for (index i = 0; i < nodesExtra.size(); i++)
+                            {
+                                coordsOutData[(i + nNode) * 3 + 0] = nodesExtra[i](0);
+                                coordsOutData[(i + nNode) * 3 + 1] = nodesExtra[i](1);
+                                coordsOutData[(i + nNode) * 3 + 2] = nodesExtra[i](2);
+                            }
                             // out << cppcodec::base64_rfc4648::encode(
                             //     (uint8_t *)coordsOutData.data(),
                             //     nNode * 3 * sizeof(double));
                             for (auto v : coordsOutData)
-                                out << std::setprecision(16) << v << " ";
+                                out << std::setprecision(ascii_precision) << v << " ";
                             out << newlineV;
                         });
                 });
@@ -471,10 +560,15 @@ namespace DNDS::Geom
         std::vector<int64_t> cell2nodeOffsetData(nCell);
         std::vector<uint8_t> cellTypeData(nCell);
         index cellEnd = 0;
+        index nNodeExtra{0};
         for (index iCell = 0; iCell < nCell; iCell++)
         {
             auto elem = Elem::Element{cellElemInfoOut[iCell]->getElemType()};
-            auto c2n = cell2nodeOut[iCell];
+            std::vector<index> c2n = cell2nodeOut[iCell];
+            if (mesh->isPeriodic) // alter the pointing
+                for (rowsize ic2n = 0; ic2n < c2n.size(); ic2n++)
+                    if (cell2nodePbiOut(iCell, ic2n))
+                        c2n[ic2n] = (nNodeExtra++) + nNode;
             auto vtkCell = Elem::ToVTKVertsAndData(elem, c2n);
             cellTypeData[iCell] = vtkCell.first;
             for (auto in : vtkCell.second)
@@ -565,7 +659,7 @@ namespace DNDS::Geom
                                 // auto dataOutCompressed = zlibCompressData((uint8_t *)dataOutC.data(), dataOutC.size() * sizeof(double));
                                 // out << cppcodec::base64_rfc4648::encode(dataOutCompressed);
                                 for (auto v : dataOutC)
-                                    out << std::setprecision(16) << v << " ";
+                                    out << std::setprecision(ascii_precision) << v << " ";
                                 out << newlineV;
                             });
                     }
@@ -590,7 +684,7 @@ namespace DNDS::Geom
                                 //     (uint8_t *)dataOutC.data(),
                                 //     dataOutC.size() * sizeof(double));
                                 for (auto v : dataOutC)
-                                    out << std::setprecision(16) << v << " ";
+                                    out << std::setprecision(ascii_precision) << v << " ";
                                 out << newlineV;
                             });
                     }
@@ -621,8 +715,16 @@ namespace DNDS::Geom
                              {"format", "ascii"}},
                             [&](auto &out, int level)
                             {
+                                out << std::setprecision(ascii_precision);
                                 for (index ii = 0; ii < nNode; ii++)
-                                    out << std::setprecision(16) << dataPoint(i, ii) << " ";
+                                    out << dataPoint(i, ii) << " ";
+                                // if (mesh->isPeriodic)
+                                //     for (index iCell = 0; iCell < nCell; iCell++)
+                                //         for (rowsize ic2n = 0; ic2n < cell2nodeOut.RowSize(iCell); ic2n++)
+                                //             if (cell2nodePbiOut(iCell, ic2n))
+                                //                 out << std::setprecision(ascii_precision) << dataPoint(i, cell2nodeOut(iCell, ic2n)) << " ";
+                                for (auto ii : nodesExtraAtOriginal)
+                                    out << dataPoint(i, ii) << " ";
                                 out << newlineV;
                             });
                     }
@@ -636,11 +738,28 @@ namespace DNDS::Geom
                              {"format", "ascii"}},
                             [&](auto &out, int level)
                             {
+                                out << std::setprecision(ascii_precision);
                                 for (index ii = 0; ii < nNode; ii++)
                                 {
-                                    out << std::setprecision(16) << vectorDataPoint(i, ii, 0) << " ";
-                                    out << std::setprecision(16) << vectorDataPoint(i, ii, 1) << " ";
-                                    out << std::setprecision(16) << vectorDataPoint(i, ii, 2) << " ";
+                                    out << vectorDataPoint(i, ii, 0) << " ";
+                                    out << vectorDataPoint(i, ii, 1) << " ";
+                                    out << vectorDataPoint(i, ii, 2) << " ";
+                                }
+                                // std::cout << "print vec" << std::endl;
+                                // if (mesh->isPeriodic)
+                                //     for (index iCell = 0; iCell < nCell; iCell++)
+                                //         for (rowsize ic2n = 0; ic2n < cell2nodeOut.RowSize(iCell); ic2n++)
+                                //             if (cell2nodePbiOut(iCell, ic2n))
+                                //             {
+                                //                 out << std::setprecision(ascii_precision) << vectorDataPoint(i, cell2nodeOut(iCell, ic2n), 0) << " ";
+                                //                 out << std::setprecision(ascii_precision) << vectorDataPoint(i, cell2nodeOut(iCell, ic2n), 1) << " ";
+                                //                 out << std::setprecision(ascii_precision) << vectorDataPoint(i, cell2nodeOut(iCell, ic2n), 2) << " ";
+                                //             }
+                                for (auto ii : nodesExtraAtOriginal)
+                                {
+                                    out << vectorDataPoint(i, ii, 0) << " ";
+                                    out << vectorDataPoint(i, ii, 1) << " ";
+                                    out << vectorDataPoint(i, ii, 2) << " ";
                                 }
                                 out << newlineV;
                             });
@@ -669,16 +788,20 @@ namespace DNDS::Geom
                     {
                         writeXMLEntity(
                             out, level, "Piece",
-                            {{"NumberOfPoints", std::to_string(nNode)},
+                            {{"NumberOfPoints", std::to_string(nNode + nodesExtra.size())},
                              {"NumberOfCells", std::to_string(nCell)}},
                             [&](auto &out, int level)
                             {
                                 /************************/
                                 // coord data
                                 writeCoords(out, level);
+                                // std::cout << "CoordDone" << std::endl;
                                 writeCells(out, level);
+                                // std::cout << "CellDone" << std::endl;
                                 writeCellData(out, level);
+                                // std::cout << "CellDataDone" << std::endl;
                                 writePointData(out, level);
+                                // std::cout << "PointDataDone" << std::endl;
                             });
                     });
             });

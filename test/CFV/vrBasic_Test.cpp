@@ -16,7 +16,14 @@ valgrind --log-file=log_valgrind.log
 
 void testConstruct()
 {
-    static const int dim = 3;
+    // "../data/mesh/FourTris_V1.pw.cgns"
+    // "../data/mesh/SC20714_MixedA.cgns"
+    // "../data/mesh/UniformDM240_E120.cgns"
+    // "../data/mesh/Ball.cgns"
+    // "../data/mesh/Uniform32_Periodic.cgns"
+    // "../data/mesh/RotPeriodicA.cgns";
+    auto meshName = "../data/mesh/Uniform32_Periodic.cgns";
+    static const int dim = 2;
 
     auto mpi = DNDS::MPIInfo();
     mpi.setWorld();
@@ -25,12 +32,9 @@ void testConstruct()
     // std::cout << getcwd(buf, 512) << std::endl;
     auto mesh = std::make_shared<DNDS::Geom::UnstructuredMesh>(mpi, dim);
     auto reader = DNDS::Geom::UnstructuredMeshSerialRW(mesh, 0);
-    // "../data/mesh/FourTris_V1.pw.cgns"
-    // "../data/mesh/SC20714_MixedA.cgns"
-    // "../data/mesh/UniformDM240_E120.cgns"
-    // "../data/mesh/Ball.cgns"
-    auto meshName = "../data/mesh/Ball2_O2.cgns";
+    
     reader.ReadFromCGNSSerial(meshName);
+    reader.Deduplicate1to1Periodic();
     reader.BuildCell2Cell();
     reader.MeshPartitionCell2Cell();
     reader.PartitionReorderToMeshCell2Cell();

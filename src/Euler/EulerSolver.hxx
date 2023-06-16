@@ -510,7 +510,7 @@ namespace DNDS::Euler
                 real sumVolSum = 0.0 / 0.0;
                 for (index iCell = 0; iCell < u.father->Size(); iCell++)
                 {
-                    Geom::tPoint pos = vfv->cellBary[iCell];
+                    Geom::tPoint pos = vfv->GetCellBary(iCell);
                     real chi = 5;
                     real gamma = eval.settings.idealGasProperty.gamma;
                     auto c2n = mesh->cell2node[iCell];
@@ -523,7 +523,7 @@ namespace DNDS::Euler
                         {
                             // std::cout << coords<< std::endl << std::endl;
                             // std::cout << DiNj << std::endl;
-                            Geom::tPoint pPhysics = vfv->cellIntPPhysics(iCell, ig);
+                            Geom::tPoint pPhysics = vfv->GetCellQuadraturePPhys(iCell, ig);
                             real r = std::sqrt(sqr(pPhysics(0) - xyc) + sqr(pPhysics(1) - xyc));
                             real dT = -(gamma - 1) / (8 * gamma * sqr(pi)) * sqr(chi) * std::exp(1 - sqr(r));
                             real dux = chi / 2 / pi * std::exp((1 - sqr(r)) / 2) * -(pPhysics(1) - xyc);
@@ -544,14 +544,16 @@ namespace DNDS::Euler
                             inc(2) = rho * uy;
                             inc(dim + 1) = E;
 
-                            inc *= vfv->cellIntJacobiDet(iCell, ig); // don't forget this
+                            inc *= vfv->GetCellJacobiDet(iCell, ig); // don't forget this
                         });
-                    if (vfv->cellBary[iCell](0) > xymin && vfv->cellBary[iCell](0) < xymax && vfv->cellBary[iCell](1) > xymin && vfv->cellBary[iCell](1) < xymax)
+                    auto cP = vfv->GetCellBary(iCell);
+
+                    if (cP(0) > xymin && cP(0) < xymax && cP(1) > xymin && cP(1) < xymax)
                     {
-                        um /= vfv->volumeLocal[iCell]; // mean value
+                        um /= vfv->GetCellVol(iCell); // mean value
                         real errRhoMean = u[iCell](0) - um(0);
-                        sumErrRho += std::abs(errRhoMean) * vfv->volumeLocal[iCell];
-                        sumVol += vfv->volumeLocal[iCell];
+                        sumErrRho += std::abs(errRhoMean) * vfv->GetCellVol(iCell);
+                        sumVol += vfv->GetCellVol(iCell);
                     }
                 }
                 MPI_Allreduce(&sumErrRho, &sumErrRhoSum, 1, DNDS_MPI_REAL, MPI_SUM, mpi.comm);

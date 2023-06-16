@@ -31,6 +31,7 @@ void staticReconstruction()
     // "../data/mesh/Ball.cgns"
     // "../data/mesh/UniformSquare_10.cgns"
     reader.ReadFromCGNSSerial("../data/mesh/UniformSquare_10.cgns");
+    reader.Deduplicate1to1Periodic();
 
     reader.BuildCell2Cell();
     reader.MeshPartitionCell2Cell();
@@ -83,9 +84,9 @@ void staticReconstruction()
                 uc,
                 [&](auto &vInc, int iG)
                 {
-                    vInc = fScalar(vr.cellIntPPhysics(iCell, iG))({0}) * vr.cellIntJacobiDet(iCell, iG);
+                    vInc = fScalar(vr.GetCellQuadraturePPhys(iCell, ig);)({0}) * vr.GetCellJacobiDet(iCell, iG);
                 });
-            u[iCell] = uc / vr.volumeLocal[iCell];
+            u[iCell] = uc / vr.GetCellVol(iCell);
             // std::cout << iCell << " " << u[iCell].transpose() << std::endl;
         }
         u.trans.startPersistentPull();
@@ -156,7 +157,7 @@ void staticReconstruction()
                             (vr.GetIntPointDiffBaseValue(iCell, -1, -1, iG, std::array<int, 4>{0, 1, 2, 3}, 4) * (*uRec)[iCell]);
                         // std::cout << udu.transpose() << std::endl;
                         udu(0) += u[iCell](0);
-                        vInc = (udu - fScalar(vr.cellIntPPhysics(iCell, iG))).array().abs() * vr.cellIntJacobiDet(iCell, iG);
+                        vInc = (udu - fScalar(vr.GetCellQuadraturePPhys(iCell, ig);)).array().abs() * vr.GetCellJacobiDet(iCell, iG);
                     });
                 err += errC;
                 std::cout << si(iCell, 0) << std::endl;

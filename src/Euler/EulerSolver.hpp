@@ -260,6 +260,7 @@ namespace DNDS::Euler
             if (config.readMeshMode == 0)
             {
                 reader->ReadFromCGNSSerial(config.meshFile); // TODO: add bnd mapping here
+                reader->Deduplicate1to1Periodic();
                 reader->BuildCell2Cell();
                 reader->MeshPartitionCell2Cell();
                 reader->PartitionReorderToMeshCell2Cell();
@@ -432,7 +433,7 @@ namespace DNDS::Euler
                     {
                         auto iNode = mesh->cell2node(iCell, ic2n);
                         nN2C.at(iNode)++;
-                        auto pPhy = mesh->coords[iNode];
+                        auto pPhy = mesh->GetCoordNodeOnCell(iCell, ic2n);
 
                         Eigen::Matrix<real, 1, Eigen::Dynamic> DiBj;
                         DiBj.resize(1, uRecNew[iCell].rows() + 1);

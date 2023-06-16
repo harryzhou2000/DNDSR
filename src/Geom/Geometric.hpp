@@ -11,6 +11,36 @@ namespace DNDS::Geom
     using tGPoint = Eigen::Matrix3d;
 
     static_assert(std::is_signed_v<t_index>);
+
+    inline std::vector<real> JacobiToSTDVector(const tJacobi &j)
+    {
+        std::vector<real> ret(9);
+        for (int i = 0; i < 9; i++)
+            ret[i] = j(i);
+        return ret; // TODO this is bullshit code
+    }
+
+    inline tJacobi STDVectorToJacobi(const std::vector<real> &v)
+    {
+        tJacobi ret;
+        DNDS_assert(v.size() == 9);
+        for (int i = 0; i < 9; i++)
+            ret(i) = v[i];
+        return ret; //  TODO this is bullshit code
+    }
+
+    inline std::vector<real> VectorToSTDVector(const Eigen::VectorXd &v)
+    {
+        return std::vector<real>(v.begin(), v.end()); //  TODO this is bullshit code
+    }
+
+    inline Eigen::VectorXd STDVectorToVector(const std::vector<real> &v)
+    {
+        auto ret = Eigen::VectorXd(v.size());
+        for (size_t i = 0; i < v.size(); i++)
+            ret[i] = v[i]; //  TODO this is bullshit code
+        return ret;
+    }
 }
 
 namespace DNDS::Geom

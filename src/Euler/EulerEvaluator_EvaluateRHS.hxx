@@ -77,8 +77,8 @@ namespace DNDS::Euler
                 fluxEs,
                 [&](decltype(fluxEs) &finc, int iG)
                 {
-                    int nDiff = vfv->faceAtr[iFace].NDIFF;
-                    TVec unitNorm = vfv->faceUnitNorm(iFace, iG)(Seq012);
+                    int nDiff = vfv->GetFaceAtr(iFace).NDIFF;
+                    TVec unitNorm = vfv->GetFaceNorm(iFace, iG)(Seq012);
                     TMat normBase = Geom::NormBuildLocalBaseV(unitNorm);
                     PerformanceTimer::Instance().StartTimer(PerformanceTimer::LimiterB);
 
@@ -96,8 +96,10 @@ namespace DNDS::Euler
                                 IF_NOT_NOREC,
                             pointOrderReducedL);
                     }
+                    this->UFromCell2Face(ULxy, iFace, f2c[0], 0);
 
                     TU ULMeanXy = u[f2c[0]];
+                    this->UFromCell2Face(ULMeanXy, iFace, f2c[0], 0);
                     TU URMeanXy;
 
                     TU URxy;
@@ -115,14 +117,16 @@ namespace DNDS::Euler
                         GradULxy({0, 1, 2}, Eigen::all) =
                             vfv->GetIntPointDiffBaseValue(f2c[0], iFace, 0, iG, std::array<int, 3>{1, 2, 3}, 3) *
                             uRec[f2c[0]] * IF_NOT_NOREC; // 3d here
+                    this->DiffUFromCell2Face(GradULxy, iFace, f2c[0], 0);
 
 #endif
-                    real minVol = vfv->volumeLocal[f2c[0]];
+                    real minVol = vfv->GetCellVol(f2c[0]);
                     // InsertCheck(u.father->mpi, "RHS inner 2");
 
                     if (f2c[1] != UnInitIndex)
                     {
                         URxy = u[f2c[1]];
+                        this->UFromCell2Face(URxy, iFace, f2c[1], 1);
                         if (!faceOrderReducedR)
                         {
                             URxy = CompressRecPart(
@@ -135,6 +139,7 @@ namespace DNDS::Euler
                         }
 
                         URMeanXy = u[f2c[1]];
+                        this->UFromCell2Face(URMeanXy, iFace, f2c[1], 1);
 #ifndef DNDS_FV_EULEREVALUATOR_IGNORE_VISCOUS_TERM
                         if constexpr (gDim == 2)
                             GradURxy({0, 1}, Eigen::all) =
@@ -144,10 +149,11 @@ namespace DNDS::Euler
                             GradURxy({0, 1, 2}, Eigen::all) =
                                 vfv->GetIntPointDiffBaseValue(f2c[1], iFace, 1, iG, std::array<int, 3>{1, 2, 3}, 3) *
                                 uRec[f2c[1]] * IF_NOT_NOREC; // 3d here
+                        this->DiffUFromCell2Face(GradURxy, iFace, f2c[1], 1);
 
 #endif
 
-                        minVol = std::min(minVol, vfv->volumeLocal[f2c[1]]);
+                        minVol = std::min(minVol, vfv->GetCellVol(f2c[1]));
                     }
                     else if (true)
                     {
@@ -155,17 +161,17 @@ namespace DNDS::Euler
                             ULxy,
                             unitNorm,
                             normBase,
-                            vfv->faceCent[iFace](Seq012),
+                            vfv->GetFaceQuadraturePPhys(iFace, -1)(Seq012),
                             t,
                             mesh->GetFaceZone(iFace), true);
 #ifndef DNDS_FV_EULEREVALUATOR_IGNORE_VISCOUS_TERM
-                        GradURxy = GradULxy;
+                        GradURxy = GradULxy; //! generated boundary value couldn't use any periodic conversion?
 #endif
                         URMeanXy = generateBoundaryValue(
                             ULMeanXy,
                             unitNorm,
                             normBase,
-                            vfv->faceCent[iFace](Seq012),
+                            vfv->GetFaceQuadraturePPhys(iFace, -1)(Seq012),
                             t,
                             mesh->GetFaceZone(iFace), false);
                     }
@@ -174,7 +180,7 @@ namespace DNDS::Euler
                     // UL = ULxy;
                     // UR({1, 2, 3}) = normBase.transpose() * UR({1, 2, 3});
                     // UL({1, 2, 3}) = normBase.transpose() * UL({1, 2, 3});
-                    real distGRP = minVol / vfv->faceArea[iFace] * 2;
+                    real distGRP = minVol / vfv->GetFaceArea(iFace) * 2;
 #ifdef USE_DISABLE_DIST_GRP_FIX_AT_WALL
                     distGRP +=
                         (mesh->GetFaceZone(iFace) == Geom::BC_ID_DEFAULT_WALL || mesh->GetFaceZone(iFace) == Geom::BC_ID_DEFAULT_WALL_INVIS
@@ -220,7 +226,7 @@ namespace DNDS::Euler
                     finc(Eigen::all, 2) = FRFix;
 #endif
 
-                    finc *= vfv->faceIntJacobiDet(iFace, iG); // don't forget this
+                    finc *= vfv->GetFaceJacobiDet(iFace, iG); // don't forget this
 
                     if (pointOrderReducedL)
                         nFaceReducedOrder++, faceOrderReducedL = false;
@@ -239,14 +245,18 @@ namespace DNDS::Euler
             //     // exit(-1);
             // }
 
-            rhs[f2c[0]] += fluxEs(Eigen::all, 0) / vfv->volumeLocal[f2c[0]];
-            if (f2c[1] != UnInitIndex)
-                rhs[f2c[1]] -= fluxEs(Eigen::all, 0) / vfv->volumeLocal[f2c[1]];
+            TU fluxIncL = fluxEs(Eigen::all, 0);
+            TU fluxIncR = -fluxEs(Eigen::all, 0);
 #ifdef USE_FLUX_BALANCE_TERM
-            rhs[f2c[0]] -= fluxEs(Eigen::all, 1) / vfv->volumeLocal[f2c[0]];
-            if (f2c[1] != UnInitIndex)
-                rhs[f2c[1]] += fluxEs(Eigen::all, 2) / vfv->volumeLocal[f2c[1]];
+            fluxIncL -= fluxEs(Eigen::all, 1);
+            fluxIncR += fluxEs(Eigen::all, 2);
 #endif
+            this->UFromFace2Cell(fluxIncL, iFace, f2c[0], 0);
+            this->UFromFace2Cell(fluxIncR, iFace, f2c[1], 1); // periodic back to cell
+
+            rhs[f2c[0]] += fluxIncL / vfv->GetCellVol(f2c[0]);
+            if (f2c[1] != UnInitIndex)
+                rhs[f2c[1]] += fluxIncR / vfv->GetCellVol(f2c[1]);
 
             if (mesh->GetFaceZone(iFace) == Geom::BC_ID_DEFAULT_WALL ||
                 mesh->GetFaceZone(iFace) == Geom::BC_ID_DEFAULT_WALL_INVIS)
@@ -254,8 +264,6 @@ namespace DNDS::Euler
                 fluxWallSumLocal -= fluxEs(Eigen::all, 0);
             }
         }
-        // quick aux: reduce the wall flux sum
-        MPI_Allreduce(fluxWallSumLocal.data(), fluxWallSum.data(), fluxWallSum.size(), DNDS_MPI_REAL, MPI_SUM, u.father->mpi.comm);
 
         InsertCheck(u.father->mpi, "EvaluateRHS After Flux");
 
@@ -355,7 +363,7 @@ namespace DNDS::Euler
                                     iCell, iG);
                         }
 
-                        finc *= vfv->cellIntJacobiDet(iCell, iG); // don't forget this
+                        finc *= vfv->GetCellJacobiDet(iCell, iG); // don't forget this
                         if (finc.hasNaN() || (!finc.allFinite()))
                         {
                             std::cout << finc.transpose() << std::endl;
@@ -366,13 +374,13 @@ namespace DNDS::Euler
                     });
                 if constexpr (nVars_Fixed > 0)
                 {
-                    rhs[iCell] += sourceV(Eigen::seq(Eigen::fix<0>, Eigen::fix<nVars_Fixed - 1>)) / vfv->volumeLocal[iCell];
-                    jacobianCellSourceDiag[iCell] = sourceV(Eigen::seq(Eigen::fix<nVars_Fixed>, Eigen::fix<2 * nVars_Fixed - 1>)) / vfv->volumeLocal[iCell];
+                    rhs[iCell] += sourceV(Eigen::seq(Eigen::fix<0>, Eigen::fix<nVars_Fixed - 1>)) / vfv->GetCellVol(iCell);
+                    jacobianCellSourceDiag[iCell] = sourceV(Eigen::seq(Eigen::fix<nVars_Fixed>, Eigen::fix<2 * nVars_Fixed - 1>)) / vfv->GetCellVol(iCell);
                 }
                 else
                 {
-                    rhs[iCell] += sourceV(Eigen::seq(0, cnvars - 1)) / vfv->volumeLocal[iCell];
-                    jacobianCellSourceDiag[iCell] = sourceV(Eigen::seq(cnvars, 2 * cnvars - 1)) / vfv->volumeLocal[iCell];
+                    rhs[iCell] += sourceV(Eigen::seq(0, cnvars - 1)) / vfv->GetCellVol(iCell);
+                    jacobianCellSourceDiag[iCell] = sourceV(Eigen::seq(cnvars, 2 * cnvars - 1)) / vfv->GetCellVol(iCell);
                 }
                 // if (iCell == 18195)
                 // {
@@ -380,6 +388,9 @@ namespace DNDS::Euler
                 // }
             }
         }
+        // quick aux: reduce the wall flux sum
+        MPI_Allreduce(fluxWallSumLocal.data(), fluxWallSum.data(), fluxWallSum.size(), DNDS_MPI_REAL, MPI_SUM, u.father->mpi.comm);
+
         InsertCheck(u.father->mpi, "EvaluateRHS -1");
     }
 }

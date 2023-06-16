@@ -214,6 +214,61 @@ namespace DNDS::CFV
         return ret;
     }
 
+    // #include <unsupported/Eigen/CXX11/TensorSymmetry>
+    
+
+    template <int dim, int rank, class VLe>
+    void TransSymDiffOrderTensorV(VLe &&Le, const Geom::tGPoint &trans)
+    {
+        // TODO!
+        DNDS_assert(false);
+        if constexpr (dim == 3)
+        {
+            if constexpr (rank == 0)
+            {
+            }
+            else if constexpr (rank == 1)
+            {
+                Le = trans * Le;
+            }
+            else if constexpr (rank == 2)
+            {
+                
+            }
+            else if constexpr (rank == 3)
+            {
+               
+            }
+            else
+            {
+                DNDS_assert(false);
+            }
+        }
+        else
+        {
+            if constexpr (rank == 0)
+            {
+               
+            }
+            else if constexpr (rank == 1)
+            {
+                
+            }
+            else if constexpr (rank == 2)
+            {
+               
+            }
+            else if constexpr (rank == 3)
+            {
+               
+            }
+            else
+            {
+                DNDS_assert(false);
+            }
+        }
+    }
+
     template <int dim>
     inline int GetNDof(int maxOrder)
     {

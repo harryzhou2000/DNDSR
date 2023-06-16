@@ -58,7 +58,7 @@ namespace DNDS::Euler
     private:
     public:
         ssp<Geom::UnstructuredMesh> mesh;
-        ssp<CFV::VariationalReconstruction<gDim>> vfv; //! gDim = 3 for intellisense
+        ssp<CFV::VariationalReconstruction<gDim>> vfv; //! gDim -> 3 for intellisense
         int kAv = 0;
 
         std::vector<real> lambdaCell;
@@ -358,9 +358,63 @@ namespace DNDS::Euler
 
         /******************************************************/
 
-        real muEff(const TU &U)
+        real muEff(const TU &U) // TODO: more than sutherland law
         {
             return 0. / 0.;
+        }
+
+        void UFromCell2Face(TU &u, index iFace, index iCell, rowsize if2c)
+        {
+            DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
+            if (!mesh->isPeriodic)
+                return;
+            auto faceID = mesh->GetFaceZone(iFace);
+            if (!Geom::FaceIDIsPeriodic(faceID))
+                return;
+            if (if2c < 0)
+                if2c = vfv->CellIsFaceBack(iCell, iFace) ? 0 : 1;
+            if (if2c == 1 && Geom::FaceIDIsPeriodicMain(faceID))
+                u(Seq123) = mesh->periodicInfo.TransVectorBack(Eigen::Vector<real, dim>{u(Seq123)}, faceID);
+            if (if2c == 1 && Geom::FaceIDIsPeriodicDonor(faceID))
+                u(Seq123) = mesh->periodicInfo.TransVector(Eigen::Vector<real, dim>{u(Seq123)}, faceID);
+        }
+
+        void UFromFace2Cell(TU &u, index iFace, index iCell, rowsize if2c)
+        {
+            DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
+            if (!mesh->isPeriodic)
+                return;
+            auto faceID = mesh->GetFaceZone(iFace);
+            if (!Geom::FaceIDIsPeriodic(faceID))
+                return;
+            if (if2c < 0)
+                if2c = vfv->CellIsFaceBack(iCell, iFace) ? 0 : 1;
+            if (if2c == 1 && Geom::FaceIDIsPeriodicMain(faceID))
+                u(Seq123) = mesh->periodicInfo.TransVector(Eigen::Vector<real, dim>{u(Seq123)}, faceID);
+            if (if2c == 1 && Geom::FaceIDIsPeriodicDonor(faceID))
+                u(Seq123) = mesh->periodicInfo.TransVectorBack(Eigen::Vector<real, dim>{u(Seq123)}, faceID);
+        }
+
+        void DiffUFromCell2Face(TDiffU &u, index iFace, index iCell, rowsize if2c)
+        {
+            DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
+            if (!mesh->isPeriodic)
+                return;
+            auto faceID = mesh->GetFaceZone(iFace);
+            if (!Geom::FaceIDIsPeriodic(faceID))
+                return;
+            if (if2c < 0)
+                if2c = vfv->CellIsFaceBack(iCell, iFace) ? 0 : 1;
+            if (if2c == 1 && Geom::FaceIDIsPeriodicMain(faceID))
+            {
+                u(Seq012, Eigen::all) = mesh->periodicInfo.TransVectorBack<dim, nVars_Fixed>(u(Seq012, Eigen::all), faceID);
+                u(Eigen::all, Seq123) = mesh->periodicInfo.TransVectorBack<dim, dim>(u(Eigen::all, Seq123).transpose(), faceID).transpose();
+            }
+            if (if2c == 1 && Geom::FaceIDIsPeriodicDonor(faceID))
+            {
+                u(Seq012, Eigen::all) = mesh->periodicInfo.TransVector<dim, nVars_Fixed>(u(Seq012, Eigen::all), faceID);
+                u(Eigen::all, Seq123) = mesh->periodicInfo.TransVector<dim, dim>(u(Eigen::all, Seq123).transpose(), faceID).transpose();
+            }
         }
 
         TU fluxFace(
@@ -502,7 +556,7 @@ namespace DNDS::Euler
 
             auto exitFun = [&]()
             {
-                std::cout << "face at" << vfv->faceCent[iFace].transpose() << '\n';
+                std::cout << "face at" << vfv->GetFaceQuadraturePPhys(iFace, -1) << '\n';
                 std::cout << "UL" << UL.transpose() << '\n';
                 std::cout << "UR" << UR.transpose() << std::endl;
             };
@@ -1419,7 +1473,7 @@ namespace DNDS::Euler
             {
                 for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
                 {
-                    Geom::tPoint pos = vfv->cellBary[iCell];
+                    Geom::tPoint pos = vfv->GetCellBary(iCell);
                     if (pos(0) > i.x0 && pos(0) < i.x1 &&
                         pos(1) > i.y0 && pos(1) < i.y1 &&
                         pos(2) > i.z0 && pos(2) < i.z1)
@@ -1434,7 +1488,7 @@ namespace DNDS::Euler
             {
                 for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
                 {
-                    Geom::tPoint pos = vfv->cellBary[iCell];
+                    Geom::tPoint pos = vfv->GetCellBary(iCell);
                     if (pos(0) * i.a + pos(1) * i.b + pos(2) * i.c + i.h > 0)
                     {
                         // std::cout << pos << std::endl << i.a << i.b << std::endl << i.h <<std::endl;
@@ -1451,7 +1505,7 @@ namespace DNDS::Euler
                 if constexpr (model == NS || model == NS_2D)
                     for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
                     {
-                        Geom::tPoint pos = vfv->cellBary[iCell];
+                        Geom::tPoint pos = vfv->GetCellBary(iCell);
                         real gamma = settings.idealGasProperty.gamma;
                         real rho = 2;
                         real p = 1 + 2 * pos(1);
@@ -1469,7 +1523,7 @@ namespace DNDS::Euler
                 else if constexpr (model == NS_3D)
                     for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
                     {
-                        Geom::tPoint pos = vfv->cellBary[iCell];
+                        Geom::tPoint pos = vfv->GetCellBary(iCell);
                         real gamma = settings.idealGasProperty.gamma;
                         real rho = 2;
                         real p = 1 + 2 * pos(1);
@@ -1487,7 +1541,7 @@ namespace DNDS::Euler
                 if constexpr (model == NS || model == NS_2D)
                     for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
                     {
-                        Geom::tPoint pos = vfv->cellBary[iCell];
+                        Geom::tPoint pos = vfv->GetCellBary(iCell);
                         real chi = 5;
                         real gamma = settings.idealGasProperty.gamma;
                         auto c2n = mesh->cell2node[iCell];
@@ -1502,7 +1556,7 @@ namespace DNDS::Euler
                             {
                                 // std::cout << coords<< std::endl << std::endl;
                                 // std::cout << DiNj << std::endl;
-                                Geom::tPoint pPhysics = vfv->cellIntPPhysics(iCell, ig);
+                                Geom::tPoint pPhysics = vfv->GetCellQuadraturePPhys(iCell, ig);
                                 real rm = 8;
                                 real r = std::sqrt(sqr(pPhysics(0) - 5) + sqr(pPhysics(1) - 5));
                                 real dT = -(gamma - 1) / (8 * gamma * sqr(pi)) * sqr(chi) * std::exp(1 - sqr(r)) * (1 - 1. / std::exp(std::max(sqr(rm) - sqr(r), 0.0)));
@@ -1524,9 +1578,9 @@ namespace DNDS::Euler
                                 inc(2) = rho * uy;
                                 inc(dim + 1) = E;
 
-                                inc *= vfv->cellIntJacobiDet(iCell, ig); // don't forget this
+                                inc *= vfv->GetCellJacobiDet(iCell, ig); // don't forget this
                             });
-                        u[iCell] = um / vfv->volumeLocal[iCell]; // mean value
+                        u[iCell] = um / vfv->GetCellVol(iCell); // mean value
                     }
             case 0:
                 break;

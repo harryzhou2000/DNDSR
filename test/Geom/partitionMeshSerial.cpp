@@ -27,6 +27,7 @@ void doPartitioning(const std::string &meshName, int dim)
     // "../data/mesh/UniformDM240_E120.cgns"
     // "../data/mesh/Ball.cgns"
     reader.ReadFromCGNSSerial(meshName);
+    reader.Deduplicate1to1Periodic();
 
     reader.BuildCell2Cell();
     // MPI_Request bReq{MPI_REQUEST_NULL};

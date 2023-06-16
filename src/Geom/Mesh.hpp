@@ -5,6 +5,7 @@
 #include "DNDS/ArrayDerived/ArrayEigenVector.hpp"
 #include "BoundaryCondition.hpp"
 #include "DNDS/ArrayPair.hpp"
+#include "PeriodicInfo.hpp"
 
 namespace DNDS::Geom
 {
@@ -40,6 +41,8 @@ namespace DNDS::Geom
 
     using tAdjPair = DNDS::ArrayAdjacencyPair<DNDS::NonUniformSize>;
     using tAdj = decltype(tAdjPair::father);
+    using tPbiPair = ArrayPair<ArrayNodePeriodicBits<DNDS::NonUniformSize>>;
+    using tPbi = decltype(tPbiPair::father);
     using tAdj2Pair = DNDS::ArrayAdjacencyPair<2>;
     using tAdj2 = decltype(tAdj2Pair::father);
     using tAdj1Pair = DNDS::ArrayAdjacencyPair<1>;
@@ -67,6 +70,7 @@ namespace DNDS::Geom
         MPI_int mRank{0};
         DNDS::MPIInfo mpi;
         int dim;
+        bool isPeriodic{false};
         MeshAdjState adjPrimaryState{Adj_Unknown};
         MeshAdjState adjFacialState{Adj_Unknown};
         /// reader
@@ -77,6 +81,8 @@ namespace DNDS::Geom
         tAdjPair cell2cell;
         tElemInfoArrayPair cellElemInfo;
         tElemInfoArrayPair bndElemInfo;
+        /// periodic only, after reader
+        tPbiPair cell2nodePbi;
 
         /// interpolated
         // *! currently assume all these are Adj_PointToLocal
@@ -85,13 +91,14 @@ namespace DNDS::Geom
         tAdj2Pair face2cell;
         tElemInfoArrayPair faceElemInfo;
         std::vector<index> bnd2face;
+        /// periodic only, after interpolated
+        tPbiPair face2nodePbi;
 
         /// parent built
         std::vector<index> node2parentNode;
         std::vector<index> node2bndNode;
 
         // tAdj1Pair bndFaces; // no comm needed for now
-
 
         Periodicity periodicInfo;
 
@@ -151,12 +158,56 @@ namespace DNDS::Geom
         t_index GetFaceZone(index iF) { return faceElemInfo(iF, 0).zone; }
         t_index GetBndZone(index iB) { return bndElemInfo(iB, 0).zone; }
 
+        /**
+         * @brief directly load coords; gets faulty if isPeriodic!
+         */
         template <class tC2n>
-        void GetCoords(const tC2n &c2n, tSmallCoords &cs)
+        void __GetCoords(const tC2n &c2n, tSmallCoords &cs)
         {
             cs.resize(Eigen::NoChange, c2n.size());
             for (rowsize i = 0; i < c2n.size(); i++)
                 cs(Eigen::all, i) = coords[c2n[i]];
+        }
+
+        /**
+         * @brief specially for periodicity
+         */
+        template <class tC2n, class tC2nPbi>
+        void __GetCoordsOnElem(const tC2n &c2n, const tC2nPbi &c2nPbi, tSmallCoords &cs)
+        {
+            cs.resize(Eigen::NoChange, c2n.size());
+            for (rowsize i = 0; i < c2n.size(); i++)
+                cs(Eigen::all, i) = periodicInfo.GetCoordByBits(coords[c2n[i]], c2nPbi[i]);
+        }
+
+        void GetCoordsOnCell(index iCell, tSmallCoords &cs)
+        {
+            if (!isPeriodic)
+                __GetCoords(cell2node[iCell], cs);
+            else
+                __GetCoordsOnElem(cell2node[iCell], cell2nodePbi[iCell], cs);
+        }
+
+        void GetCoordsOnFace(index iFace, tSmallCoords &cs)
+        {
+            if (!isPeriodic)
+                __GetCoords(face2node[iFace], cs);
+            else
+                __GetCoordsOnElem(face2node[iFace], face2nodePbi[iFace], cs);
+        }
+
+        tPoint GetCoordNodeOnCell(index iCell, rowsize ic2n)
+        {
+            if (!isPeriodic)
+                return coords[cell2node(iCell, ic2n)];
+            return periodicInfo.GetCoordByBits(coords[cell2node(iCell, ic2n)], cell2nodePbi(iCell, ic2n));
+        }
+
+        tPoint GetCoordNodeOnFace(index iFace, rowsize if2n)
+        {
+            if (!isPeriodic)
+                return coords[face2node(iFace, if2n)];
+            return periodicInfo.GetCoordByBits(coords[face2node(iFace, if2n)], face2nodePbi(iFace, if2n));
         }
 
         void WriteSerialize(SerializerBase *serializer, const std::string &name);
@@ -178,6 +229,10 @@ namespace DNDS::Geom
 
     struct UnstructuredMeshSerialRW
     {
+    private:
+        int ascii_precision{16};
+
+    public:
         DNDS::ssp<UnstructuredMesh> mesh;
 
         MeshReaderMode mode{UnknownMode};
@@ -191,6 +246,7 @@ namespace DNDS::Geom
         tElemInfoArray cellElemInfoSerial; // created through reading
         tElemInfoArray bndElemInfoSerial;  // created through reading
         tAdj2 bnd2cellSerial;              // created through reading
+        tPbi cell2nodePbiSerial;           // created through reading-Deduplicate
         /***************************************************************/
         // Current Method: R/W don't manage actually used interpolation,
         // but manually get cell2cell or node2node
@@ -205,7 +261,7 @@ namespace DNDS::Geom
         tAdj cell2cellSerial; // optionally created with GetCell2Cell()
         tAdj node2nodeSerial; // optionally created with GetNode2Node()
 
-        tAdj cell2cellSerialFacial; // optionally created with
+        tAdj cell2cellSerialFacial; // optionally created with GetCell2Cell()
 
         tAdj node2cellSerial; // not used for now
         tAdj node2faceSerial; // not used for now
@@ -224,11 +280,12 @@ namespace DNDS::Geom
         tAdj edge2edgeSerial; // not used for now
         tAdj edge2faceSerial; // not used for now
 
-        DNDS::ArrayTransformerType<tCoord::element_type>::Type coordSerialOutTrans;
-        DNDS::ArrayTransformerType<tAdj::element_type>::Type cell2nodeSerialOutTrans;
-        DNDS::ArrayTransformerType<tAdj::element_type>::Type bnd2nodeSerialOutTrans;
-        DNDS::ArrayTransformerType<tElemInfoArray::element_type>::Type cellElemInfoSerialOutTrans;
-        DNDS::ArrayTransformerType<tElemInfoArray::element_type>::Type bndElemInfoSerialOutTrans;
+        DNDS::ArrayTransformerType<tCoord::element_type>::Type coordSerialOutTrans;                // used in serial out mode
+        DNDS::ArrayTransformerType<tAdj::element_type>::Type cell2nodeSerialOutTrans;              // used in serial out mode
+        DNDS::ArrayTransformerType<tPbi::element_type>::Type cell2nodePbiSerialOutTrans;           // used in serial out mode
+        DNDS::ArrayTransformerType<tAdj::element_type>::Type bnd2nodeSerialOutTrans;               // used in serial out mode
+        DNDS::ArrayTransformerType<tElemInfoArray::element_type>::Type cellElemInfoSerialOutTrans; // used in serial out mode
+        DNDS::ArrayTransformerType<tElemInfoArray::element_type>::Type bndElemInfoSerialOutTrans;  // used in serial out mode
 
         std::vector<DNDS::MPI_int> cellPartition;
         std::vector<DNDS::MPI_int> nodePartition;
@@ -251,6 +308,8 @@ namespace DNDS::Geom
         /// @todo //TODO Add some multi thread here!
         /// @param fName file name of .cgns file
         void ReadFromCGNSSerial(const std::string &fName, const t_FBCName_2_ID &FBCName_2_ID = FBC_Name_2_ID_Default);
+
+        void Deduplicate1to1Periodic();
 
         // void InterpolateTopology();
 
@@ -283,6 +342,13 @@ namespace DNDS::Geom
          * @brief should be called to build data for serial out
          */
         void BuildSerialOut();
+
+        void GetCurrentOutputArrays(int flag,
+                                    tCoordPair &coordOut,
+                                    tAdjPair &cell2nodeOut,
+                                    tPbiPair &cell2nodePbiOut,
+                                    tElemInfoArrayPair &cellElemInfoOut,
+                                    index &nCell, index &nNode);
 
         // void WriteToCGNSSerial(const std::string &fName);
 
@@ -320,5 +386,7 @@ namespace DNDS::Geom
             const std::function<std::string(int)> &vectorNamesPoint,
             const std::function<DNDS::real(int, DNDS::index, DNDS::rowsize)> &vectorDataPoint,
             double t, int flag = 0);
+
+        void SetASCIIPrecision(int n) { ascii_precision = n; }
     };
 } // namespace geom

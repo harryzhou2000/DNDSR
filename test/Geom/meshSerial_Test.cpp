@@ -25,7 +25,8 @@ void testCGNS()
     // "../data/mesh/Ball.cgns"
     // "../data/mesh/Uniform32_Periodic.cgns"
     // "../data/mesh/Uniform128.cgns"
-    reader.ReadFromCGNSSerial("../data/mesh/Uniform128.cgns");
+    reader.ReadFromCGNSSerial("../data/mesh/RotPeriodicA.cgns");
+    reader.Deduplicate1to1Periodic();
     reader.BuildCell2Cell();
     reader.MeshPartitionCell2Cell();
     reader.PartitionReorderToMeshCell2Cell();

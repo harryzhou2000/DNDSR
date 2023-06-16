@@ -23,10 +23,11 @@ namespace DNDS::Euler
         for (index iFace = 0; iFace < mesh->NumFaceProc(); iFace++)
         {
             auto f2c = mesh->face2cell[iFace];
-            TVec unitNorm = vfv->faceMeanNorm[iFace](Seq012).normalized();
+            TVec unitNorm = vfv->GetFaceNorm(iFace, -1)(Seq012);
 
             index iCellL = f2c[0];
-            auto UL = u[iCellL];
+            TU UL = u[iCellL];
+            this->UFromCell2Face(UL, iFace, f2c[0], 0);
             TU uMean = UL;
             real pL, asqrL, HL, pR, asqrR, HR;
             TVec vL = UL(Seq123) / UL(0);
@@ -37,13 +38,15 @@ namespace DNDS::Euler
             pR = pL, HR = HL, asqrR = asqrL;
             if (f2c[1] != UnInitIndex)
             {
-                auto UR = u[f2c[1]];
+                TU UR = u[f2c[1]];
+                this->UFromCell2Face(UR, iFace, f2c[1], 1);
                 uMean = (uMean + UR) * 0.5;
                 vR = UR(Seq123) / UR(0);
                 Gas::IdealGasThermal(UR(I4), UR(0), vR.squaredNorm(),
                                      settings.idealGasProperty.gamma,
                                      pR, asqrR, HR);
             }
+           
             DNDS_assert(uMean(0) > 0);
             TVec veloMean = (uMean(Seq123).array() / uMean(0)).matrix();
             // real veloNMean = veloMean.dot(unitNorm); // original
@@ -97,19 +100,19 @@ namespace DNDS::Euler
             real lamVis = muf / uMean(0) *
                           std::max(4. / 3., gamma / settings.idealGasProperty.prGas);
 
-            real lamFace = lambdaConvection * vfv->faceArea[iFace];
+            real lamFace = lambdaConvection * vfv->GetFaceArea(iFace);
 
-            real area = vfv->faceArea[iFace];
+            real area = vfv->GetFaceArea(iFace);
             real areaSqr = area * area;
-            real volR = vfv->volumeLocal[iCellL];
-            // lambdaCell[iCellL] += lamFace + 2 * lamVis * areaSqr / fv->volumeLocal[iCellL];
+            real volR = vfv->GetCellVol(iCellL);
+            // lambdaCell[iCellL] += lamFace + 2 * lamVis * areaSqr / fv->GetCellVol(iCellL);
             if (f2c[1] != UnInitIndex) // can't be non local
                                        // lambdaCell[f2c[1]] += lamFace + 2 * lamVis * areaSqr / fv->volumeLocal[f2c[1]],
-                volR = vfv->volumeLocal[f2c[1]];
+                volR = vfv->GetCellVol(f2c[1]);
 
-            lambdaFace[iFace] = lambdaConvection + lamVis * area * (1. / vfv->volumeLocal[iCellL] + 1. / volR);
-            lambdaFaceC[iFace] = std::abs(veloNMean) + lamVis * area * (1. / vfv->volumeLocal[iCellL] + 1. / volR); // passive part
-            lambdaFaceVis[iFace] = lamVis * area * (1. / vfv->volumeLocal[iCellL] + 1. / volR);
+            lambdaFace[iFace] = lambdaConvection + lamVis * area * (1. / vfv->GetCellVol(iCellL) + 1. / volR);
+            lambdaFaceC[iFace] = std::abs(veloNMean) + lamVis * area * (1. / vfv->GetCellVol(iCellL) + 1. / volR); // passive part
+            lambdaFaceVis[iFace] = lamVis * area * (1. / vfv->GetCellVol(iCellL) + 1. / volR);
 
             // if (f2c[0] == 10756)
             // {
@@ -120,18 +123,18 @@ namespace DNDS::Euler
             //     std::cout << gamma << " " << pMean << " " << uMean(0) << std::endl;
             // }
 
-            lambdaCell[iCellL] += lambdaFace[iFace] * vfv->faceArea[iFace];
+            lambdaCell[iCellL] += lambdaFace[iFace] * vfv->GetFaceArea(iFace);
             if (f2c[1] != UnInitIndex) // can't be non local
-                lambdaCell[f2c[1]] += lambdaFace[iFace] * vfv->faceArea[iFace];
+                lambdaCell[f2c[1]] += lambdaFace[iFace] * vfv->GetFaceArea(iFace);
 
             deltaLambdaFace[iFace] = std::abs((vR - vL).dot(unitNorm)) + std::sqrt(std::abs(asqrR - asqrL)) * 0.7071;
         }
         real dtMin = veryLargeReal;
         for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
         {
-            // std::cout << fv->volumeLocal[iCell] << " " << (lambdaCell[iCell]) << " " << CFL << std::endl;
+            // std::cout << fv->GetCellVol(iCell) << " " << (lambdaCell[iCell]) << " " << CFL << std::endl;
             // exit(0);
-            dt[iCell] = std::min(CFL * vfv->volumeLocal[iCell] / (lambdaCell[iCell] + 1e-100), MaxDt);
+            dt[iCell] = std::min(CFL * vfv->GetCellVol(iCell) / (lambdaCell[iCell] + 1e-100), MaxDt);
             dtMin = std::min(dtMin, dt[iCell]);
             // if (iCell == 10756)
             // {
@@ -151,5 +154,5 @@ namespace DNDS::Euler
         // if (uRec.father->mpi.rank == 0)
         // log() << "dt: " << dtMin << std::endl;
     }
-    
+
 }
