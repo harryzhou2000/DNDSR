@@ -46,7 +46,7 @@ namespace DNDS::Euler
         ssp<Geom::UnstructuredMeshSerialRW> reader;
 
         ArrayDOFV<nVars_Fixed> u, uInc, uIncRHS, uTemp;
-        ArrayRECV<nVars_Fixed> uRec, uRecNew, uRecNew1, uOld;
+        ArrayRECV<nVars_Fixed> uRec, uRecNew, uRecNew1, uRecOld;
 
         int nOUTS = {-1};
         int nOUTSPoint{-1};
@@ -317,7 +317,7 @@ namespace DNDS::Euler
             vfv->BuildURec(uRec, nVars);
             vfv->BuildURec(uRecNew, nVars);
             vfv->BuildURec(uRecNew1, nVars);
-            vfv->BuildURec(uOld, nVars);
+            vfv->BuildURec(uRecOld, nVars);
             vfv->BuildScalar(ifUseLimiter);
 
             DNDS_assert(config.outAtCellData || config.outAtPointData);

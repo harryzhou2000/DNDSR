@@ -63,7 +63,8 @@ namespace DNDS::Linear
                     break;
                 Vs[0] *= -1.0 / beta; // Vs[0] = r/norm2(r)
 
-                for (uint32_t j = 0; j < kSubspace; j++) // Arnoldi
+                uint32_t j = 0;
+                for (; j < kSubspace; j++) // Arnoldi
                 {
                     FA(Vs[j], V_temp);      // V_temp = A * Vs[j]
                     FML(V_temp, Vs[j + 1]); // Vs[j + 1] = ML * A * Vs[j]
@@ -78,27 +79,48 @@ namespace DNDS::Linear
                         Vs[j + 1].addTo(Vs[i], -h(i, j)); // Vs[j + 1] = ML * A * Vs[j] - sum_{i=0,1,...j}(h(i,j) *  Vs[i])
                     }
                     h(j + 1, j) = Vs[j + 1].norm2(); //
-                    Vs[j + 1] *= 1.0 / h(j + 1, j);  // normalize
+                    if (h(j + 1, j) < scale_MLb * 1e-32)
+                    {
+                        std::cout << "early stop" << std::endl;
+                        break;
+                    }
+                    Vs[j + 1] *= 1.0 / h(j + 1, j); // normalize
                 }
                 // std::cout << beta << std::endl;
 
                 Eigen::VectorXd eBeta;
-                eBeta.resize(kSubspace + 1);
+                eBeta.resize(j + 1);
                 eBeta.setZero();
                 eBeta(0) = beta; // eBeta = e_1 * beta
-                Eigen::VectorXd y = h.colPivHouseholderQr().solve(eBeta);
+
+                { // the QR method
+                  //  auto QR = h.colPivHouseholderQr();
+                  //  QR.setThreshold(std::sqrt(scale_MLb) * 1e-32);
+                  //  if (QR.rank() != h.rows())
+                  //      DNDS_assert_info(false, "GMRES not good");
+                  //  Eigen::VectorXd y = QR.solve(eBeta);
+                }
+
+                // auto sol = h(Eigen::seq(0, j + 1 - 1), Eigen::seq(0, j - 1)).bdcSvd(Eigen::ComputeThinU | Eigen::ComputeThinV);
+                // Eigen::VectorXd y = sol.solve(eBeta); //! warning: this gmres is dumb and do not lucky stop
+                Eigen::MatrixXd y;
+                auto rank = HardEigen::EigenLeastSquareSolve(h(Eigen::seq(0, j + 1 - 1), Eigen::seq(0, j - 1)), eBeta, y);
+
                 // int rank;
                 // MPI_Comm_rank(MPI_COMM_WORLD, &rank);
                 // if (rank == 0)
                 //     std::cout << h << std::endl;
 
-                // Eigen::MatrixXd y;
-                // HardEigen::EigenLeastSquareSolve(h, eBeta, y);
 
                 for (uint32_t j = 0; j < kSubspace; j++) // x = V(:, 0,1,2,...kSubspace-1) * y
                 {
                     x.addTo(Vs[j], y(j));
                     // std::cout << iRestart << "::" << Vs[j].transpose() << "::" << y(j) << std::endl;
+                }
+                if (rank < h.cols())
+                {
+                    FStop(iRestart, beta, scale_MLb);
+                    break; // do not restart
                 }
             }
         }

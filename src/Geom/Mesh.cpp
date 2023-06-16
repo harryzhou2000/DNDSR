@@ -61,6 +61,7 @@ namespace DNDS::Geom
 
     /**
      * Serial2Global is used for converting adj data to point to reordered global
+     * @todo: //TODO: get fully serial version
      *  @todo: //TODO test on parallel re-distributing
      */
     template <class TPartitionIdx>
@@ -104,6 +105,7 @@ namespace DNDS::Geom
      *
      * comm complexity: same as data comm
      * @todo: //TODO test on parallel re-distributing
+     * @todo: //TODO: fully serial emulator 
      */
 
     template <class TAdj = tAdj1>
@@ -183,6 +185,9 @@ namespace DNDS::Geom
         }
     }
 
+    /**
+     * @todo: //TODO: fully serial emulator
+     */
     template <class TArr = tAdj1>
     void TransferDataSerial2Global(TArr &arraySerial,
                                    TArr &arrayDist,

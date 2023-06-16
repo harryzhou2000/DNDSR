@@ -229,7 +229,7 @@ namespace DNDS::Geom
             for (auto &ii : (*bnd2nodeSerial)[i])
                 ii = track(ii);
 
-        // some assertions:
+        // some assertions:65
         // for (index iBnd = 0; iBnd < bnd2nodeSerial->Size(); iBnd++)
         // {
         //     auto faceID = bndElemInfoSerial->operator()(iBnd, 0).zone;

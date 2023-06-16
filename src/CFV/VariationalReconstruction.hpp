@@ -273,6 +273,8 @@ namespace DNDS::CFV
             return cellAtr.at(iCell);
         }
 
+        real GetGlobalVol() { return volGlobal; }
+
         Geom::tPoint GetFaceNormFromCell(index iFace, index iCell, rowsize if2c, int iG)
         {
             if (!mesh->isPeriodic)
@@ -423,7 +425,8 @@ namespace DNDS::CFV
                 }
                 else
                 {
-                    // Actual computing: //TODO: take care of periodic case
+                    // Actual computing:
+                    ///@todo //!!!!TODO: take care of periodic case
                     Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic> dbv;
                     dbv.resize(std::min(maxDiff, faceAtr[iFace].NDIFF), cellAtr[iCell].NDOF);
                     FDiffBaseValue(dbv, GetFaceQuadraturePPhysFromCell(iFace, iCell, if2c, iG), iCell, iFace, iG, 0);
@@ -626,6 +629,7 @@ namespace DNDS::CFV
          * @brief
          * @param FBoundary Vec F(const Vec &uL, const tPoint &unitNorm, const tPoint &p, t_index faceID),
          * with Vec == Eigen::Vector<real, nVarsFixed>
+         *  mind that uRec could be overwritten
          */
         template <int nVarsFixed, class TFBoundary>
         void DoReconstructionIter(
@@ -633,7 +637,8 @@ namespace DNDS::CFV
             tURec<nVarsFixed> &uRecNew,
             tUDof<nVarsFixed> &u,
             TFBoundary &&FBoundary,
-            bool putIntoNew = false)
+            bool putIntoNew = false,
+            bool recordInc = false)
         {
             using namespace Geom;
             using namespace Geom::Elem;
@@ -642,9 +647,9 @@ namespace DNDS::CFV
             {
                 real relax = cellAtr[iCell].relax;
                 if (settings.SORInstead)
-                    uRec[iCell] = uRec[iCell] * (1 - relax);
+                    uRec[iCell] = uRec[iCell] * ((recordInc ? 0 : 1) - relax);
                 else
-                    uRecNew[iCell] = uRec[iCell] * (1 - relax);
+                    uRecNew[iCell] = uRec[iCell] * ((recordInc ? 0 : 1) - relax);
 
                 auto c2f = mesh->cell2face[iCell];
                 auto matrixAAInvBRow = matrixAAInvB[iCell];
@@ -717,6 +722,100 @@ namespace DNDS::CFV
                 for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
                     uRec[iCell].swap(uRecNew[iCell]);
         }
+        /***********************************************************/
+
+        /**
+         * @brief
+         * @param FBoundary Vec F(const Vec &uL, const Vec& dUL, const tPoint &unitNorm, const tPoint &p, t_index faceID),
+         * with Vec == Eigen::Vector<real, nVarsFixed>
+         * uRecDiff should be untouched
+         */
+        template <int nVarsFixed, class TFBoundaryDiff>
+        void DoReconstructionIterDiff(
+            tURec<nVarsFixed> &uRec,
+            tURec<nVarsFixed> &uRecDiff,
+            tURec<nVarsFixed> &uRecNew,
+            tUDof<nVarsFixed> &u,
+            TFBoundaryDiff &&FBoundaryDiff)
+        {
+            using namespace Geom;
+            using namespace Geom::Elem;
+            int maxNDOF = GetNDof<dim>(settings.maxOrder);
+            if (settings.SORInstead)
+                for (index iCell = 0; iCell < uRecNew.Size(); iCell++)
+                    uRecNew[iCell] = uRecDiff[iCell];
+            for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
+            {
+                real relax = cellAtr[iCell].relax;
+                if (settings.SORInstead)
+                    uRecNew[iCell] = relax * uRecNew[iCell];
+                else
+                    uRecNew[iCell] = relax * uRecDiff[iCell];
+
+                auto c2f = mesh->cell2face[iCell];
+                auto matrixAAInvBRow = matrixAAInvB[iCell];
+                for (int ic2f = 0; ic2f < c2f.size(); ic2f++)
+                {
+                    index iFace = c2f[ic2f];
+                    index iCellOther = CellFaceOther(iCell, iFace);
+                    if (iCellOther != UnInitIndex)
+                    {
+                        if (settings.SORInstead)
+                            uRecNew[iCell] -= relax * matrixAAInvBRow[ic2f + 1] * uRecNew[iCellOther]; // mind the sign
+                        else
+                            uRecNew[iCell] -= relax * matrixAAInvBRow[ic2f + 1] * uRecDiff[iCellOther]; // mind the sign
+                    }
+                    else
+                    {
+                        auto faceID = mesh->GetFaceZone(iFace);
+                        DNDS_assert(FaceIDIsExternalBC(faceID));
+
+                        int nVars = u[iCell].size();
+
+                        Eigen::Matrix<real, Eigen::Dynamic, nVarsFixed> BCC;
+                        BCC.setZero(uRec[iCell].rows(), uRec[iCell].cols());
+
+                        auto qFace = this->GetFaceQuad(iFace);
+                        qFace.IntegrationSimple(
+                            BCC,
+                            [&](auto &vInc, int iG)
+                            {
+                                Eigen::Matrix<real, 1, Eigen::Dynamic> dbv =
+                                    this->GetIntPointDiffBaseValue(
+                                        iCell, iFace, -1, iG, std::array<int, 1>{0}, 1);
+                                Eigen::Vector<real, nVarsFixed> uBL =
+                                    (dbv *
+                                     uRec[iCell])
+                                        .transpose();
+                                uBL += u[iCell]; //! need fixing?
+                                Eigen::Vector<real, nVarsFixed> uBLDiff =
+                                    (dbv *
+                                     uRecDiff[iCell])
+                                        .transpose();
+                                Eigen::Vector<real, nVarsFixed>
+                                    uBV =
+                                        FBoundaryDiff(
+                                            uBL,
+                                            uBLDiff,
+                                            u[iCell],
+                                            faceUnitNorm(iFace, iG),
+                                            faceIntPPhysics(iFace, iG), faceID);
+                                Eigen::RowVector<real, nVarsFixed> uIncBV = uBV.transpose();
+                                vInc = this->FFaceFunctional(dbv, uIncBV, iFace, iG) * this->GetFaceJacobiDet(iFace, iG);
+                                // std::cout << faceWeight[iFace].transpose() << std::endl;
+                            });
+                        // BCC *= 0;
+                        if (settings.SORInstead)
+                            uRecNew[iCell] -= relax * matrixAAInvBRow[0] * BCC;
+                        else
+                            uRecNew[iCell] -= relax * matrixAAInvBRow[0] * BCC; // mind the sign
+                    }
+                }
+            }
+        }
+        /***********************************************************/
+
+        /***********************************************************/
 
         template <size_t nVarsSee, class TUREC, class TUDOF>
         void DoCalculateSmoothIndicator(

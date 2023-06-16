@@ -48,10 +48,11 @@ namespace DNDS::HardEigen
         return ret;
     }
 
-    void EigenLeastSquareSolve(const Eigen::MatrixXd &A, const Eigen::MatrixXd &B, Eigen::MatrixXd &AIB)
+    Eigen::Index EigenLeastSquareSolve(const Eigen::MatrixXd &A, const Eigen::MatrixXd &B, Eigen::MatrixXd &AIB)
     {
         auto SVDResult = A.jacobiSvd(Eigen::ComputeThinU | Eigen::ComputeThinV);
         AIB = SVDResult.solve(B);
+        return SVDResult.rank();
     }
 
 }

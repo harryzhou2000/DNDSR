@@ -1,4 +1,6 @@
 #include "CFV/VariationalReconstruction.hpp"
+#include "Solver/Linear.hpp"
+#include "Euler/Euler.hpp"
 
 #include <cstdlib>
 #include <omp.h>
@@ -84,7 +86,7 @@ void staticReconstruction()
                 uc,
                 [&](auto &vInc, int iG)
                 {
-                    vInc = fScalar(vr.GetCellQuadraturePPhys(iCell, ig);)({0}) * vr.GetCellJacobiDet(iCell, iG);
+                    vInc = fScalar(vr.GetCellQuadraturePPhys(iCell, iG))({0}) * vr.GetCellJacobiDet(iCell, iG);
                 });
             u[iCell] = uc / vr.GetCellVol(iCell);
             // std::cout << iCell << " " << u[iCell].transpose() << std::endl;
@@ -92,16 +94,16 @@ void staticReconstruction()
         u.trans.startPersistentPull();
         u.trans.waitPersistentPull();
 
-        ssp<tURec<1>> uRec, uRecNew, uRecOld;
-        uRec = std::make_shared<tURec<1>>();
-        uRecNew = std::make_shared<tURec<1>>();
-        uRecOld = std::make_shared<tURec<1>>();
+        ssp<Euler::ArrayRECV<1>> uRec, uRecNew, uRecOld;
+        uRec = std::make_shared<Euler::ArrayRECV<1>>();
+        uRecNew = std::make_shared<Euler::ArrayRECV<1>>();
+        uRecOld = std::make_shared<Euler::ArrayRECV<1>>();
 
         vr.BuildURec(*uRec, 1);
         vr.BuildURec(*uRecNew, 1);
         vr.BuildURec(*uRecOld, 1);
 
-        for (int iter = 1; iter <= 100; iter++)
+        for (int iter = 1; iter <= 0; iter++)
         {
             uRecOld->CopyFather(*uRec);
             vr.DoReconstructionIter(
@@ -129,10 +131,82 @@ void staticReconstruction()
             // std::cout << (*uRec)[0].transpose() << std::endl;
         }
 
+        Linear::GMRES_LeftPreconditioned<std::remove_reference_t<decltype(*uRec)>> gmresRec(
+            10,
+            [&](decltype(*uRec) &data)
+            {
+                vr.BuildURec(data, 1);
+            });
+        {
+            for (int iRec = 1; iRec <= 1; iRec++)
+            {
+                if (mpi.rank == 0)
+                    std::cout << "GMRESOut: " << std::endl;
+                for (DNDS::index iCell = 0; iCell < uRec->Size(); iCell++)
+                {
+                    (*uRecOld)[iCell] = (*uRecNew)[iCell];
+                }
+                vr.DoReconstructionIter(
+                    *uRec, *uRecNew, u,
+                    // FBoundary
+                    [&](const auto &uL, const auto &uMean, const tPoint &unitNorm, const tPoint &p, t_index faceID)
+                    {
+                        // std::cout << p.transpose() << " do bnd" << std::endl;
+                        return Eigen::Vector<real, 1>(fScalar(p)({0}));
+                    },
+                    true, true);
+                uRecNew->trans.startPersistentPull();
+                uRecNew->trans.waitPersistentPull();
+                for (DNDS::index iCell = 0; iCell < uRec->Size(); iCell++)
+                {
+                    (*uRecNew)[iCell] *= -1;
+                    (*uRec)[iCell].setZero();
+                }
+                gmresRec.solve(
+                    [&](decltype(*uRec) &x, decltype(*uRec) &Ax)
+                    {
+                        vr.DoReconstructionIterDiff(
+                            *uRecOld,
+                            x, Ax,
+                            u,
+                            [&](const auto &uL, const auto &duL, const auto &uMean, const tPoint &unitNorm, const tPoint &p, t_index faceID)
+                            {
+                                return Eigen::Vector<real, 1>::Zero();
+                            });
+                        Ax.trans.startPersistentPull();
+                        Ax.trans.waitPersistentPull();
+                    },
+                    [&](decltype(*uRec) &x, decltype(*uRec) &MLx)
+                    {
+                        for (DNDS::index iCell = 0; iCell < uRec->Size(); iCell++)
+                        {
+                            MLx[iCell] = x[iCell];
+                        }
+                    },
+                    *uRecNew, *uRec, 10,
+                    [&](uint32_t i, real res, real resB) -> bool
+                    {
+                        if (i > 0)
+                        {
+                            if (mpi.rank == 0)
+                            {
+                                log() << std::scientific;
+                                log() << "GMRES for Rec: " << i << " " << resB << " -> " << res << std::endl;
+                            }
+                        }
+                        return false;
+                    });
+                for (DNDS::index iCell = 0; iCell < uRec->Size(); iCell++)
+                {
+                    (*uRec)[iCell] = (*uRecOld)[iCell] - (*uRec)[iCell];
+                }
+            }
+        }
+
         tScalarPair si;
         vr.BuildScalar(si);
         vr.DoCalculateSmoothIndicator(si, *uRec, u, std::array<int, 1>{0});
-        
+
         vr.DoLimiterWBAP_C(
             TEvalDub{},
             u, *uRec, *uRecNew, *uRecOld, si, false,
@@ -157,14 +231,14 @@ void staticReconstruction()
                             (vr.GetIntPointDiffBaseValue(iCell, -1, -1, iG, std::array<int, 4>{0, 1, 2, 3}, 4) * (*uRec)[iCell]);
                         // std::cout << udu.transpose() << std::endl;
                         udu(0) += u[iCell](0);
-                        vInc = (udu - fScalar(vr.GetCellQuadraturePPhys(iCell, ig);)).array().abs() * vr.GetCellJacobiDet(iCell, iG);
+                        vInc = (udu - fScalar(vr.GetCellQuadraturePPhys(iCell, iG))).array().abs() * vr.GetCellJacobiDet(iCell, iG);
                     });
                 err += errC;
                 std::cout << si(iCell, 0) << std::endl;
             }
             MPI_Allreduce(err.data(), errAll.data(), 4, DNDS_MPI_REAL, MPI_SUM, mpi.comm);
             if (mpi.rank == 0)
-                std::cout << "Err: [" << errAll.transpose() / vr.volGlobal << "]" << std::endl;
+                std::cout << "Err: [" << errAll.transpose() / vr.GetGlobalVol() << "]" << std::endl;
         }
     }
 }

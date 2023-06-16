@@ -11,6 +11,7 @@
 #include "DNDS/JsonUtil.hpp"
 
 #include "Euler.hpp"
+#include "DNDS/SerializerBase.hpp"
 
 // #define DNDS_FV_EULEREVALUATOR_SOURCE_TERM_ZERO
 // // #define DNDS_FV_EULEREVALUATOR_IGNORE_SOURCE_TERM
@@ -138,6 +139,19 @@ namespace DNDS::Euler
 
             bool ignoreSourceTerm = false;
             bool useScalarJacobian = false;
+
+            void ReadWriteSerializer(bool read, SerializerBase *serializer, const std::string &name)
+            {
+                auto cwd = serializer->GetCurrentPath();
+                if(!read)
+                    serializer->CreatePath(name);
+                serializer->GoToPath(name);
+                //TODO: find some convenient solution
+
+
+
+                serializer->GoToPath(cwd);
+            }
 
             void ParseFromJson(int nVars)
             {
