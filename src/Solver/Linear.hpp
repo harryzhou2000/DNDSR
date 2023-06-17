@@ -111,7 +111,6 @@ namespace DNDS::Linear
                 // if (rank == 0)
                 //     std::cout << h << std::endl;
 
-
                 for (uint32_t j = 0; j < kSubspace; j++) // x = V(:, 0,1,2,...kSubspace-1) * y
                 {
                     x.addTo(Vs[j], y(j));

@@ -113,9 +113,40 @@ namespace DNDS::Euler
 
             InsertCheck(mpi, " Lambda RHS: StartRec");
             int nRec = (gradIsZero ? 5 : 1) * config.nInternalRecStep;
-            for (int iRec = 0; iRec < 0; iRec++)
+            real recIncBase = 0;
+            double tstartA = MPI_Wtime();
+            auto FBoundary = [&](const TU &UL, const TU &UMean, const Geom::tPoint &normOut, const Geom::tPoint &pPhy, const Geom::t_index bType) -> TU
             {
-                double tstartA = MPI_Wtime();
+                TVec normOutV = normOut(Seq012);
+                auto normBase = Geom::NormBuildLocalBaseV(normOutV);
+                bool compressed = false;
+                TU ULfixed = eval.CompressRecPart(
+                    UMean,
+                    UL - UMean,
+                    compressed);
+                return eval.generateBoundaryValue(ULfixed, normOutV, normBase, pPhy(Seq012), tSimu + ct * curDtImplicit, bType, true);
+            };
+            auto FBoundaryDiff = [&](const TU &UL, const TU &dU, const TU &UMean, const Geom::tPoint &normOut, const Geom::tPoint &pPhy, const Geom::t_index bType) -> TU
+            {
+                TVec normOutV = normOut(Seq012);
+                auto normBase = Geom::NormBuildLocalBaseV(normOutV);
+                bool compressed = false;
+                TU ULfixed = eval.CompressRecPart(
+                    UMean,
+                    UL - UMean,
+                    compressed);
+                TU ULfixedPlus = eval.CompressRecPart(
+                    UMean,
+                    UL - UMean + dU,
+                    compressed);
+                return eval.generateBoundaryValue(ULfixedPlus, normOutV, normBase, pPhy(Seq012), tSimu + ct * curDtImplicit, bType, true) -
+                       eval.generateBoundaryValue(ULfixed, normOutV, normBase, pPhy(Seq012), tSimu + ct * curDtImplicit, bType, true);
+            };
+            for (int iRec = 1; iRec <= 300 * 0; iRec++)
+            {
+
+                uRecNew1 = uRec;
+
                 vfv->DoReconstructionIter(
                     uRec, uRecNew, cx,
                     // FBoundary
@@ -131,65 +162,49 @@ namespace DNDS::Euler
                         return eval.generateBoundaryValue(ULfixed, normOutV, normBase, pPhy(Seq012), tSimu + ct * curDtImplicit, bType, true);
                     },
                     false);
-                trec += MPI_Wtime() - tstartA;
 
                 uRec.trans.startPersistentPull();
                 uRec.trans.waitPersistentPull();
+
+                uRecNew1 -= uRec;
+                real recInc = uRecNew1.norm2();
+                if (iRec == 1)
+                    recIncBase = recInc;
+
+                if (recInc < recIncBase * 1e-6)
+                {
+                    if (mpi.rank == 0)
+                        std::cout << iRec << " Rec inc: " << recIncBase << " -> " << recInc << std::endl;
+                    break;
+                }
             }
-            
 
             for (int iRec = 1; iRec <= 1; iRec++)
             {
                 uRecNew1 = uRec; // old value
                 vfv->DoReconstructionIter(
                     uRec, uRecNew, cx,
-                    // FBoundary
-                    [&](const TU &UL, const TU &UMean, const Geom::tPoint &normOut, const Geom::tPoint &pPhy, const Geom::t_index bType) -> TU
-                    {
-                        TVec normOutV = normOut(Seq012);
-                        auto normBase = Geom::NormBuildLocalBaseV(normOutV);
-                        bool compressed = false;
-                        TU ULfixed = eval.CompressRecPart(
-                            UMean,
-                            UL - UMean,
-                            compressed);
-                        return eval.generateBoundaryValue(ULfixed, normOutV, normBase, pPhy(Seq012), tSimu + ct * curDtImplicit, bType, true);
-                    },
+                    FBoundary,
                     true, true);
                 uRecNew.trans.startPersistentPull();
                 uRecNew.trans.waitPersistentPull();
                 uRec.setConstant(0.0);
+
                 gmresRec.solve(
                     [&](decltype(uRec) &x, decltype(uRec) &Ax)
                     {
-                        vfv->DoReconstructionIterDiff(
-                            uRecNew1,
-                            x, Ax,
-                            cx,
-                            [&](const TU &UL, const TU &dU, const TU &UMean, const Geom::tPoint &normOut, const Geom::tPoint &pPhy, const Geom::t_index bType) -> TU
-                            {
-                                TVec normOutV = normOut(Seq012);
-                                auto normBase = Geom::NormBuildLocalBaseV(normOutV);
-                                bool compressed = false;
-                                TU ULfixed = eval.CompressRecPart(
-                                    UMean,
-                                    UL - UMean,
-                                    compressed);
-                                TU ULfixedPlus = eval.CompressRecPart(
-                                    UMean,
-                                    UL - UMean + dU,
-                                    compressed);
-                                return eval.generateBoundaryValue(ULfixedPlus, normOutV, normBase, pPhy(Seq012), tSimu + ct * curDtImplicit, bType, true) -
-                                       eval.generateBoundaryValue(ULfixed, normOutV, normBase, pPhy(Seq012), tSimu + ct * curDtImplicit, bType, true);
-                            });
+                        vfv->DoReconstructionIterDiff(uRecNew1, x, Ax, cx, FBoundaryDiff);
                         Ax.trans.startPersistentPull();
                         Ax.trans.waitPersistentPull();
                     },
                     [&](decltype(uRec) &x, decltype(uRec) &MLx)
                     {
-                        MLx = x; // no precond
+                        MLx = x; // initial value; for the input is mostly a good estimation
+                        MLx.trans.startPersistentPull();
+                        MLx.trans.waitPersistentPull();
+                        vfv->DoReconstructionIterSOR(uRecNew1, x, MLx, cx, FBoundaryDiff);
                     },
-                    uRecNew, uRec, 10,
+                    uRecNew, uRec, 20,
                     [&](uint32_t i, real res, real resB) -> bool
                     {
                         if (i > 0)
@@ -202,8 +217,10 @@ namespace DNDS::Euler
                         }
                         return res < resB * 1e-6;
                     });
-                uRec.addTo(uRecNew1, 1);
+                uRecNew1.addTo(uRec, -1);
+                uRec = uRecNew1;
             }
+            trec += MPI_Wtime() - tstartA;
             gradIsZero = false;
             double tstartH = MPI_Wtime();
 

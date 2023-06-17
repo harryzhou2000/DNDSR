@@ -626,10 +626,16 @@ namespace DNDS::CFV
         }
 
         /**
-         * @brief
+         * @brief do reconstruction iteration
+         * if recordInc, value in the output array is actually defined as :
+         * $$
+         * -(A_{i}^{-1}B_{ij}ur_j +  A_{i}^{-1}b_{i}) + ur_i
+         * $$
+         * which is the RHS of Block-Jacobi preconditioned system
+         *
          * @param FBoundary Vec F(const Vec &uL, const tPoint &unitNorm, const tPoint &p, t_index faceID),
          * with Vec == Eigen::Vector<real, nVarsFixed>
-         *  mind that uRec could be overwritten
+         * @warning mind that uRec could be overwritten
          */
         template <int nVarsFixed, class TFBoundary>
         void DoReconstructionIter(
@@ -643,10 +649,15 @@ namespace DNDS::CFV
             using namespace Geom;
             using namespace Geom::Elem;
             int maxNDOF = GetNDof<dim>(settings.maxOrder);
+            if (recordInc)
+                DNDS_assert_info(putIntoNew, "the -RHS must be put into uRecNew");
             for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
             {
                 real relax = cellAtr[iCell].relax;
-                if (settings.SORInstead)
+
+                if (recordInc)
+                    uRecNew[iCell] = uRec[iCell];
+                else if (settings.SORInstead)
                     uRec[iCell] = uRec[iCell] * ((recordInc ? 0 : 1) - relax);
                 else
                     uRecNew[iCell] = uRec[iCell] * ((recordInc ? 0 : 1) - relax);
@@ -660,7 +671,11 @@ namespace DNDS::CFV
                     index iCellOther = CellFaceOther(iCell, iFace);
                     if (iCellOther != UnInitIndex)
                     {
-                        if (settings.SORInstead)
+                        if (recordInc)
+                            uRecNew[iCell] -=
+                                (matrixAAInvBRow[ic2f + 1] * uRec[iCellOther] +
+                                 vectorAInvBRow[ic2f] * (u[iCellOther] - u[iCell]).transpose());
+                        else if (settings.SORInstead)
                             uRec[iCell] +=
                                 relax *
                                 (matrixAAInvBRow[ic2f + 1] * uRec[iCellOther] +
@@ -705,7 +720,10 @@ namespace DNDS::CFV
                                 // std::cout << faceWeight[iFace].transpose() << std::endl;
                             });
                         // BCC *= 0;
-                        if (settings.SORInstead)
+                        if (recordInc)
+                            uRecNew[iCell] -=
+                                matrixAAInvBRow[0] * BCC;
+                        else if (settings.SORInstead && !recordInc)
                             uRec[iCell] +=
                                 relax * matrixAAInvBRow[0] * BCC;
                         else
@@ -715,17 +733,23 @@ namespace DNDS::CFV
                 }
             }
 
-            if (putIntoNew && settings.SORInstead)
-                for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
-                    uRecNew[iCell].swap(uRec[iCell]);
-            if ((!putIntoNew) && (!settings.SORInstead))
-                for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
-                    uRec[iCell].swap(uRecNew[iCell]);
+            if (!recordInc)
+            {
+                if (putIntoNew && settings.SORInstead)
+                    for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
+                        uRecNew[iCell].swap(uRec[iCell]);
+                if ((!putIntoNew) && (!settings.SORInstead))
+                    for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
+                        uRec[iCell].swap(uRecNew[iCell]);
+            }
         }
         /***********************************************************/
 
         /**
-         * @brief
+         * @brief puts into uRecNew with Mat * uRecDiff; uses the Block-jacobi preconditioned reconstruction system as Mat:
+         * $$
+         * ur_i = A_{i}^{-1}B_{ij}ur_j +  A_{i}^{-1}b_{i}
+         * $$
          * @param FBoundary Vec F(const Vec &uL, const Vec& dUL, const tPoint &unitNorm, const tPoint &p, t_index faceID),
          * with Vec == Eigen::Vector<real, nVarsFixed>
          * uRecDiff should be untouched
@@ -741,16 +765,9 @@ namespace DNDS::CFV
             using namespace Geom;
             using namespace Geom::Elem;
             int maxNDOF = GetNDof<dim>(settings.maxOrder);
-            if (settings.SORInstead)
-                for (index iCell = 0; iCell < uRecNew.Size(); iCell++)
-                    uRecNew[iCell] = uRecDiff[iCell];
             for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
             {
-                real relax = cellAtr[iCell].relax;
-                if (settings.SORInstead)
-                    uRecNew[iCell] = relax * uRecNew[iCell];
-                else
-                    uRecNew[iCell] = relax * uRecDiff[iCell];
+                uRecNew[iCell] = uRecDiff[iCell];
 
                 auto c2f = mesh->cell2face[iCell];
                 auto matrixAAInvBRow = matrixAAInvB[iCell];
@@ -760,10 +777,8 @@ namespace DNDS::CFV
                     index iCellOther = CellFaceOther(iCell, iFace);
                     if (iCellOther != UnInitIndex)
                     {
-                        if (settings.SORInstead)
-                            uRecNew[iCell] -= relax * matrixAAInvBRow[ic2f + 1] * uRecNew[iCellOther]; // mind the sign
-                        else
-                            uRecNew[iCell] -= relax * matrixAAInvBRow[ic2f + 1] * uRecDiff[iCellOther]; // mind the sign
+
+                        uRecNew[iCell] -= matrixAAInvBRow[ic2f + 1] * uRecDiff[iCellOther]; // mind the sign
                     }
                     else
                     {
@@ -805,10 +820,84 @@ namespace DNDS::CFV
                                 // std::cout << faceWeight[iFace].transpose() << std::endl;
                             });
                         // BCC *= 0;
-                        if (settings.SORInstead)
-                            uRecNew[iCell] -= relax * matrixAAInvBRow[0] * BCC;
-                        else
-                            uRecNew[iCell] -= relax * matrixAAInvBRow[0] * BCC; // mind the sign
+                        uRecNew[iCell] -= matrixAAInvBRow[0] * BCC; // mind the sign
+                    }
+                }
+            }
+        }
+        /***********************************************************/
+
+        /**
+         * @brief do a SOR iteration from uRecNew, with uRecInc as the RHSterm of Block-Jacobi preconditioned system
+         */
+        template <int nVarsFixed, class TFBoundaryDiff>
+        void DoReconstructionIterSOR(
+            tURec<nVarsFixed> &uRec,
+            tURec<nVarsFixed> &uRecInc,
+            tURec<nVarsFixed> &uRecNew,
+            tUDof<nVarsFixed> &u,
+            TFBoundaryDiff &&FBoundaryDiff)
+        {
+            using namespace Geom;
+            using namespace Geom::Elem;
+            int maxNDOF = GetNDof<dim>(settings.maxOrder);
+            for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
+            {
+                real relax = cellAtr[iCell].relax;
+
+                uRecNew[iCell] = (1 - relax) * uRecNew[iCell] + uRecInc[iCell];
+
+                auto c2f = mesh->cell2face[iCell];
+                auto matrixAAInvBRow = matrixAAInvB[iCell];
+                for (int ic2f = 0; ic2f < c2f.size(); ic2f++)
+                {
+                    index iFace = c2f[ic2f];
+                    index iCellOther = CellFaceOther(iCell, iFace);
+                    if (iCellOther != UnInitIndex)
+                    {
+                        uRecNew[iCell] += relax * matrixAAInvBRow[ic2f + 1] * uRecNew[iCellOther]; // mind the sign
+                    }
+                    else
+                    {
+                        auto faceID = mesh->GetFaceZone(iFace);
+                        DNDS_assert(FaceIDIsExternalBC(faceID));
+
+                        int nVars = u[iCell].size();
+
+                        Eigen::Matrix<real, Eigen::Dynamic, nVarsFixed> BCC;
+                        BCC.setZero(uRec[iCell].rows(), uRec[iCell].cols());
+
+                        auto qFace = this->GetFaceQuad(iFace);
+                        qFace.IntegrationSimple(
+                            BCC,
+                            [&](auto &vInc, int iG)
+                            {
+                                Eigen::Matrix<real, 1, Eigen::Dynamic> dbv =
+                                    this->GetIntPointDiffBaseValue(
+                                        iCell, iFace, -1, iG, std::array<int, 1>{0}, 1);
+                                Eigen::Vector<real, nVarsFixed> uBL =
+                                    (dbv *
+                                     uRec[iCell])
+                                        .transpose();
+                                uBL += u[iCell]; //! need fixing?
+                                Eigen::Vector<real, nVarsFixed> uBLDiff =
+                                    (dbv *
+                                     uRecNew[iCell])
+                                        .transpose();
+                                Eigen::Vector<real, nVarsFixed>
+                                    uBV =
+                                        FBoundaryDiff(
+                                            uBL,
+                                            uBLDiff,
+                                            u[iCell],
+                                            faceUnitNorm(iFace, iG),
+                                            faceIntPPhysics(iFace, iG), faceID);
+                                Eigen::RowVector<real, nVarsFixed> uIncBV = uBV.transpose();
+                                vInc = this->FFaceFunctional(dbv, uIncBV, iFace, iG) * this->GetFaceJacobiDet(iFace, iG);
+                                // std::cout << faceWeight[iFace].transpose() << std::endl;
+                            });
+                        // BCC *= 0;
+                        uRecNew[iCell] += relax * matrixAAInvBRow[0] * BCC; // mind the sign
                     }
                 }
             }
