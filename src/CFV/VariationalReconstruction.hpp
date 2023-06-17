@@ -24,8 +24,7 @@ namespace DNDS::CFV
      */
     struct VRSettings
     {
-        using json = nlohmann::json;
-        json jsonSetting;
+        using json = nlohmann::ordered_json;
 
         int maxOrder{3};           /// @brief polynomial degree of reconstruction
         int intOrder{5};           /// @brief integration order globally set @note this is actually reduced somewhat
@@ -40,15 +39,13 @@ namespace DNDS::CFV
 
         VRSettings()
         {
-            jsonSetting = json::object();
-            WriteIntoJson();
         }
 
         /**
          * @brief write any data into jsonSetting member
          *
          */
-        void WriteIntoJson()
+        void WriteIntoJson(json &jsonSetting) const
         {
             jsonSetting["maxOrder"] = maxOrder;
             jsonSetting["intOrder"] = intOrder;
@@ -66,9 +63,9 @@ namespace DNDS::CFV
          * @brief read any data from jsonSetting member
          *
          */
-        void ParseFromJson()
+        void ParseFromJson(const json &jsonSetting)
         {
-            maxOrder = jsonSetting["maxOrder"];
+            maxOrder = jsonSetting["maxOrder"]; ///@todo //TODO: update to better
             intOrder = jsonSetting["intOrder"];
             cacheDiffBase = jsonSetting["cacheDiffBase"];
             jacobiRelax = jsonSetting["jacobiRelax"];
@@ -77,6 +74,16 @@ namespace DNDS::CFV
             smoothThreshold = jsonSetting["smoothThreshold"];
             WBAP_nStd = jsonSetting["WBAP_nStd"];
             normWBAP = jsonSetting["normWBAP"];
+        }
+
+        friend void from_json(const json &j, VRSettings &s)
+        {
+            s.ParseFromJson(j);
+        }
+
+        friend void to_json(json &j, const VRSettings &s)
+        {
+            s.WriteIntoJson(j);
         }
     };
 }

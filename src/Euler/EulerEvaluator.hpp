@@ -93,19 +93,9 @@ namespace DNDS::Euler
 
         struct Setting
         {
-            nlohmann::json jsonSettings;
-            enum RiemannSolverType
-            {
-                UnknownRS = 0,
-                Roe = 1,
-                HLLC = 2,
-                HLLEP = 3,
-                Roe_M1 = 11,
-                Roe_M2 = 12,
-                Roe_M3 = 13,
-                Roe_M4 = 14,
-                Roe_M5 = 15,
-            } rsType = Roe;
+            nlohmann::ordered_json jsonSettings;
+            Gas::RiemannSolverType rsType = Gas::Roe;
+
             struct IdealGasProperty
             {
                 real gamma = 1.4;
@@ -115,6 +105,17 @@ namespace DNDS::Euler
                 real CpGas = Rgas * gamma / (gamma - 1);
                 real TRef = 273.15;
                 real CSutherland = 110.4;
+
+                void ReadWriteJSON(nlohmann::ordered_json &jsonObj, bool read)
+                {
+                    __DNDS__json_to_config(gamma);
+                    __DNDS__json_to_config(Rgas);
+                    __DNDS__json_to_config(muGas);
+                    __DNDS__json_to_config(prGas);
+                    __DNDS__json_to_config(TRef);
+                    __DNDS__json_to_config(CSutherland);
+                    CpGas = Rgas * gamma / (gamma - 1);
+                }
             } idealGasProperty;
 
             Eigen::Vector<real, -1> farFieldStaticValue = Eigen::Vector<real, 5>{1, 0, 0, 0, 2.5};
@@ -123,6 +124,23 @@ namespace DNDS::Euler
             {
                 real x0, x1, y0, y1, z0, z1;
                 Eigen::Vector<real, -1> v;
+                void ReadWriteJSON(nlohmann::ordered_json &jsonObj, int nVars, bool read)
+                {
+                    __DNDS__json_to_config(x0);
+                    __DNDS__json_to_config(x1);
+                    __DNDS__json_to_config(y0);
+                    __DNDS__json_to_config(y1);
+                    __DNDS__json_to_config(z0);
+                    __DNDS__json_to_config(z1);
+                    __DNDS__json_to_config(v);
+                    // std::cout << "here2" << std::endl;
+                    if (read)
+                        DNDS_assert(v.size() == nVars);
+                    // if (read)
+                    //     v = JsonGetEigenVector(jsonObj["v"]), DNDS_assert(v.size() == nVars);
+                    // else
+                    //     jsonObj["v"] = EigenVectorGetJson(v);
+                }
             };
             std::vector<BoxInitializer> boxInitializers;
 
@@ -130,7 +148,22 @@ namespace DNDS::Euler
             {
                 real a, b, c, h;
                 Eigen::Vector<real, -1> v;
+                void ReadWriteJSON(nlohmann::ordered_json &jsonObj, int nVars, bool read)
+                {
+                    __DNDS__json_to_config(a);
+                    __DNDS__json_to_config(b);
+                    __DNDS__json_to_config(c);
+                    __DNDS__json_to_config(h);
+                    __DNDS__json_to_config(v);
+                    if (read)
+                        DNDS_assert(v.size() == nVars);
+                    // if (read)
+                    //     v = JsonGetEigenVector(jsonObj["v"]), DNDS_assert(v.size() == nVars);
+                    // else
+                    //     jsonObj["v"] = EigenVectorGetJson(v);
+                }
             };
+
             std::vector<PlaneInitializer> planeInitializers;
 
             int specialBuiltinInitializer = 0;
@@ -140,131 +173,91 @@ namespace DNDS::Euler
             bool ignoreSourceTerm = false;
             bool useScalarJacobian = false;
 
+            /***************************************************************************************************/
+            /***************************************************************************************************/
+
             void ReadWriteSerializer(bool read, SerializerBase *serializer, const std::string &name)
             {
                 auto cwd = serializer->GetCurrentPath();
-                if(!read)
+                if (!read)
                     serializer->CreatePath(name);
                 serializer->GoToPath(name);
-                //TODO: find some convenient solution
-
-
+                // TODO: find some convenient solution
 
                 serializer->GoToPath(cwd);
             }
 
-            void ParseFromJson(int nVars)
+            void ReadWriteJSON(nlohmann::ordered_json &jsonObj, int nVars, bool read)
             {
-                nlohmann::json &gS = jsonSettings;
-                std::string str;
-                try
-                {
-                    str = gS["riemannSolverType"].get<std::string>();
-                }
-                catch (...)
-                {
-                    DNDS_assert_info(false, "riemannSolverType");
-                }
-
-                //********* rsType
-                rsType = RiemannSolverType::UnknownRS;
-#define __str_to_rsType(name)                   \
-    if (str == #name)                           \
-    {                                           \
-        this->rsType = RiemannSolverType::name; \
-    }
-                __str_to_rsType(Roe);
-                __str_to_rsType(HLLC);
-                __str_to_rsType(HLLEP);
-                __str_to_rsType(Roe_M1);
-                __str_to_rsType(Roe_M2);
-                __str_to_rsType(Roe_M3);
-                __str_to_rsType(Roe_M4);
-                __str_to_rsType(Roe_M5);
-#undef __str_to_rsType
-                DNDS_assert(rsType);
 
                 //********* root entries
 
-#define __gs_to_config(name)                                    \
-    {                                                           \
-        try                                                     \
-        {                                                       \
-            this->name = gS[#name].get<decltype(this->name)>(); \
-        }                                                       \
-        catch (...)                                             \
-        {                                                       \
-            DNDS_assert_info(false, #name);                     \
-        }                                                       \
-    }
-                __gs_to_config(useScalarJacobian);
-                __gs_to_config(ignoreSourceTerm);
-                __gs_to_config(specialBuiltinInitializer);
-#undef __gs_to_config
-
-                farFieldStaticValue = jsonGetEigenVector(gS["farFieldStaticValue"]);
-                DNDS_assert(farFieldStaticValue.size() == nVars);
+                __DNDS__json_to_config(useScalarJacobian);
+                __DNDS__json_to_config(ignoreSourceTerm);
+                __DNDS__json_to_config(specialBuiltinInitializer);
+                Gas::RiemannSolverType riemannSolverType = rsType;
+                __DNDS__json_to_config(riemannSolverType);
+                rsType = riemannSolverType;
+                // std::cout << rsType << std::endl;
+                __DNDS__json_to_config(constMassForce);
+                if (read)
+                    DNDS_assert(constMassForce.size() == 3);
+                __DNDS__json_to_config(farFieldStaticValue);
+                if (read)
+                    DNDS_assert(farFieldStaticValue.size() == nVars);
 
                 //********* box entries
-                boxInitializers.clear();
-                DNDS_assert(gS["boxInitializers"].is_array());
-                for (auto &boxJson : gS["boxInitializers"])
+                if (read)
                 {
-                    DNDS_assert(boxJson.is_object());
-                    BoxInitializer box;
-#define __gs_to_config(name) (box.name = boxJson[#name].get<decltype(box.name)>())
-                    __gs_to_config(x0);
-                    __gs_to_config(x1);
-                    __gs_to_config(y0);
-                    __gs_to_config(y1);
-                    __gs_to_config(z0);
-                    __gs_to_config(z1);
-#undef __gs_to_config
-                    box.v = jsonGetEigenVector(boxJson["v"]);
-                    DNDS_assert(box.v.size() == nVars);
-                    boxInitializers.push_back(box);
+                    boxInitializers.clear();
+                    DNDS_assert(jsonObj["boxInitializers"].is_array());
+                    for (auto &boxJson : jsonObj["boxInitializers"])
+                    {
+                        DNDS_assert(boxJson.is_object());
+                        BoxInitializer box;
+                        box.ReadWriteJSON(boxJson, nVars, read);
+                        boxInitializers.push_back(box);
+                    }
+                }
+                else
+                {
+                    jsonObj["boxInitializers"] = nlohmann::ordered_json::array();
+                    for (auto &b : boxInitializers)
+                    {
+                        nlohmann::ordered_json j;
+                        b.ReadWriteJSON(j, nVars, read);
+                        jsonObj["boxInitializers"].push_back(j);
+                    }
                 }
 
                 //********* plane entries
-                planeInitializers.clear();
-                DNDS_assert(gS["planeInitializers"].is_array());
-                for (auto &planeJson : gS["planeInitializers"])
+                if (read)
                 {
-                    DNDS_assert(planeJson.is_object());
-                    PlaneInitializer plane;
-#define __gs_to_config(name) (plane.name = planeJson[#name].get<decltype(plane.name)>())
-                    __gs_to_config(a);
-                    __gs_to_config(b);
-                    __gs_to_config(c);
-                    __gs_to_config(h);
-#undef __gs_to_config
-                    plane.v = jsonGetEigenVector(planeJson["v"]);
-                    DNDS_assert(plane.v.size() == nVars);
-                    planeInitializers.push_back(plane);
+                    planeInitializers.clear();
+                    DNDS_assert(jsonObj["planeInitializers"].is_array());
+                    for (auto &planeJson : jsonObj["planeInitializers"])
+                    {
+                        DNDS_assert(planeJson.is_object());
+                        PlaneInitializer p;
+                        p.ReadWriteJSON(planeJson, nVars, read);
+                        planeInitializers.push_back(p);
+                    }
+                }
+                else
+                {
+                    jsonObj["planeInitializers"] = nlohmann::ordered_json::array();
+                    for (auto &p : planeInitializers)
+                    {
+                        nlohmann::ordered_json j;
+                        p.ReadWriteJSON(j, nVars, read);
+                        jsonObj["planeInitializers"].push_back(j);
+                    }
                 }
 
                 //********* idealGasProperty
-                DNDS_assert(gS["idealGasProperty"].is_object());
-#define __gs_to_config(name)                                                                              \
-    {                                                                                                     \
-        try                                                                                               \
-        {                                                                                                 \
-            idealGasProperty.name = gS["idealGasProperty"][#name].get<decltype(idealGasProperty.name)>(); \
-        }                                                                                                 \
-        catch (...)                                                                                       \
-        {                                                                                                 \
-            DNDS_assert_info(false, #name);                                                               \
-        }                                                                                                 \
-    }
-                __gs_to_config(gamma);
-                __gs_to_config(Rgas);
-                __gs_to_config(muGas);
-                __gs_to_config(prGas);
-                __gs_to_config(TRef);
-                __gs_to_config(CSutherland);
-#undef __gs_to_config
-                auto gamma = this->idealGasProperty.gamma;
-                this->idealGasProperty.CpGas = idealGasProperty.Rgas * gamma / (gamma - 1);
+                if (read)
+                    DNDS_assert(jsonObj["idealGasProperty"].is_object());
+                idealGasProperty.ReadWriteJSON(jsonObj["idealGasProperty"], read);
             }
 
         } settings;
@@ -442,7 +435,7 @@ namespace DNDS::Euler
             TU &FLfix,
             TU &FRfix,
             Geom::t_index btype,
-            typename Setting::RiemannSolverType rsType,
+            typename Gas::RiemannSolverType rsType,
             index iFace, int ig)
         {
             DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
@@ -579,35 +572,35 @@ namespace DNDS::Euler
             lam123 = std::abs(UL(1) / UL(0) + UR(1) / UR(0)) * 0.5;
 
             // std::cout << "HERE" << std::endl;
-            if (rsType == Setting::RiemannSolverType::HLLEP)
+            if (rsType == Gas::RiemannSolverType::HLLEP)
                 Gas::HLLEPFlux_IdealGas<dim>(
                     UL, UR, settings.idealGasProperty.gamma, finc, deltaLambdaFace[iFace],
                     exitFun);
-            else if (rsType == Setting::RiemannSolverType::HLLC)
+            else if (rsType == Gas::RiemannSolverType::HLLC)
                 Gas::HLLCFlux_IdealGas_HartenYee<dim>(
                     UL, UR, settings.idealGasProperty.gamma, finc, deltaLambdaFace[iFace],
                     exitFun);
-            else if (rsType == Setting::RiemannSolverType::Roe)
+            else if (rsType == Gas::RiemannSolverType::Roe)
                 Gas::RoeFlux_IdealGas_HartenYee<dim>(
                     UL, UR, settings.idealGasProperty.gamma, finc, deltaLambdaFace[iFace],
                     exitFun, lam0, lam123, lam4);
-            else if (rsType == Setting::RiemannSolverType::Roe_M1)
+            else if (rsType == Gas::RiemannSolverType::Roe_M1)
                 Gas::RoeFlux_IdealGas_HartenYee<dim, 1>(
                     UL, UR, settings.idealGasProperty.gamma, finc, deltaLambdaFace[iFace],
                     exitFun, lam0, lam123, lam4);
-            else if (rsType == Setting::RiemannSolverType::Roe_M2)
+            else if (rsType == Gas::RiemannSolverType::Roe_M2)
                 Gas::RoeFlux_IdealGas_HartenYee<dim, 2>(
                     UL, UR, settings.idealGasProperty.gamma, finc, deltaLambdaFace[iFace],
                     exitFun, lam0, lam123, lam4);
-            else if (rsType == Setting::RiemannSolverType::Roe_M3)
+            else if (rsType == Gas::RiemannSolverType::Roe_M3)
                 Gas::RoeFlux_IdealGas_HartenYee<dim, 3>(
                     UL, UR, settings.idealGasProperty.gamma, finc, deltaLambdaFace[iFace],
                     exitFun, lam0, lam123, lam4);
-            else if (rsType == Setting::RiemannSolverType::Roe_M4)
+            else if (rsType == Gas::RiemannSolverType::Roe_M4)
                 Gas::RoeFlux_IdealGas_HartenYee<dim, 4>(
                     UL, UR, settings.idealGasProperty.gamma, finc, deltaLambdaFace[iFace],
                     exitFun, lam0, lam123, lam4);
-            else if (rsType == Setting::RiemannSolverType::Roe_M5)
+            else if (rsType == Gas::RiemannSolverType::Roe_M5)
                 Gas::RoeFlux_IdealGas_HartenYee<dim, 5>(
                     UL, UR, settings.idealGasProperty.gamma, finc, deltaLambdaFace[iFace],
                     exitFun, lam0, lam123, lam4);

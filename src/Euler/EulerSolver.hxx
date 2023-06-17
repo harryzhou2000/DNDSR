@@ -10,14 +10,14 @@ namespace DNDS::Euler
 
         std::shared_ptr<ODE::ImplicitDualTimeStep<decltype(u)>> ode;
 
-        if (config.steadyQuit)
+        if (config.timeMarchControl.steadyQuit)
         {
             if (mpi.rank == 0)
                 log() << "Using steady!" << std::endl;
-            config.odeCode = 1; // To bdf;
-            config.nTimeStep = 1;
+            config.timeMarchControl.odeCode = 1; // To bdf;
+            config.timeMarchControl.nTimeStep = 1;
         }
-        switch (config.odeCode)
+        switch (config.timeMarchControl.odeCode)
         {
         case 0: // sdirk4
             if (mpi.rank == 0)
@@ -43,7 +43,7 @@ namespace DNDS::Euler
         }
 
         Linear::GMRES_LeftPreconditioned<decltype(u)> gmres(
-            config.nGmresSpace,
+            config.linearSolverControl.nGmresSpace,
             [&](decltype(u) &data)
             {
                 vfv->BuildUDof(data, nVars);
@@ -58,21 +58,21 @@ namespace DNDS::Euler
 
         EulerEvaluator<model> eval(mesh, vfv);
         eval.settings.jsonSettings = config.eulerSettings;
-        eval.settings.ParseFromJson(nVars);
+        eval.settings.ReadWriteJSON(eval.settings.jsonSettings, nVars, true);
 
         eval.InitializeUDOF(u);
 
         /************* Files **************/
         if (mpi.rank == 0)
         {
-            std::ofstream logConfig(config.outLogName + "_" + output_stamp + ".config.json");
+            std::ofstream logConfig(config.dataIOControl.outLogName + "_" + output_stamp + ".config.json");
             gSetting["___Compile_Time_Defines"] = DNDS_Defines_state;
             gSetting["___Runtime_PartitionNumber"] = mpi.size;
             logConfig << std::setw(4) << gSetting;
             logConfig.close();
         }
 
-        std::ofstream logErr(config.outLogName + "_" + output_stamp + ".log");
+        std::ofstream logErr(config.dataIOControl.outLogName + "_" + output_stamp + ".log");
         /************* Files **************/
 
         double tstart = MPI_Wtime();
@@ -82,19 +82,19 @@ namespace DNDS::Euler
         Eigen::Vector<real, -1> resBaseCInternal;
         resBaseC.resize(nVars);
         resBaseCInternal.resize(nVars);
-        resBaseC.setConstant(config.res_base);
+        resBaseC.setConstant(config.convergenceControl.res_base);
 
         real tSimu = 0.0;
-        real nextTout = config.tDataOut;
-        int nextStepOut = config.nDataOut;
-        int nextStepOutC = config.nDataOutC;
+        real nextTout = config.outputControl.tDataOut;
+        int nextStepOut = config.outputControl.nDataOut;
+        int nextStepOutC = config.outputControl.nDataOutC;
         PerformanceTimer::Instance().clearAllTimer();
 
         // *** Loop variables
-        real CFLNow = config.CFL;
+        real CFLNow = config.implicitCFLControl.CFL;
         bool ifOutT = false;
         real curDtMin;
-        real curDtImplicit = config.dtImplicit;
+        real curDtImplicit = config.timeMarchControl.dtImplicit;
         int step;
         bool gradIsZero = true;
 
@@ -112,7 +112,7 @@ namespace DNDS::Euler
             //     uOld[iCell].m() = uRec[iCell].m();
 
             InsertCheck(mpi, " Lambda RHS: StartRec");
-            int nRec = (gradIsZero ? 5 : 1) * config.nInternalRecStep;
+            int nRec = (gradIsZero ? 5 : 1) * config.implicitReconstructionControl.nInternalRecStep;
             real recIncBase = 0;
             double tstartA = MPI_Wtime();
             auto FBoundary = [&](const TU &UL, const TU &UMean, const Geom::tPoint &normOut, const Geom::tPoint &pPhy, const Geom::t_index bType) -> TU
@@ -228,7 +228,7 @@ namespace DNDS::Euler
             //     uRec[iCell].m() -= uOld[iCell].m();
 
             InsertCheck(mpi, " Lambda RHS: StartLim");
-            if (config.useLimiter)
+            if (config.limiterControl.useLimiter)
             {
                 // vfv->ReconstructionWBAPLimitFacial(
                 //     cx, uRec, uRecNew, uF0, uF1, ifUseLimiter,
@@ -268,11 +268,11 @@ namespace DNDS::Euler
                     return ret;
                     // return real(1);
                 };
-                if (config.smoothIndicatorProcedure == 0)
+                if (config.limiterControl.smoothIndicatorProcedure == 0)
                     vfv->DoCalculateSmoothIndicator(
                         ifUseLimiter, (uRec), (u),
                         std::array<int, 2>{0, I4});
-                else if (config.smoothIndicatorProcedure == 1)
+                else if (config.limiterControl.smoothIndicatorProcedure == 1)
                 {
                     if constexpr (dim == 2)
                         vfv->DoCalculateSmoothIndicatorV1(
@@ -305,7 +305,7 @@ namespace DNDS::Euler
                 {
                     DNDS_assert(false);
                 }
-                if (config.limiterProcedure == 1)
+                if (config.limiterControl.limiterProcedure == 1)
                     vfv->DoLimiterWBAP_C(
                         eval,
                         (cx),
@@ -313,7 +313,7 @@ namespace DNDS::Euler
                         (uRecNew),
                         (uRecNew1),
                         ifUseLimiter,
-                        iter < config.nPartialLimiterStartLocal && step < config.nPartialLimiterStart,
+                        iter < config.limiterControl.nPartialLimiterStartLocal && step < config.limiterControl.nPartialLimiterStart,
                         fML, fMR, true);
                 else
                 {
@@ -332,11 +332,11 @@ namespace DNDS::Euler
             InsertCheck(mpi, " Lambda RHS: StartEval");
             double tstartE = MPI_Wtime();
             eval.setPassiveDiscardSource(iter <= 0);
-            if (config.useLimiter)
+            if (config.limiterControl.useLimiter)
                 eval.EvaluateRHS(crhs, cx, uRecNew, tSimu + ct * curDtImplicit);
             else
                 eval.EvaluateRHS(crhs, cx, uRec, tSimu + ct * curDtImplicit);
-            if (getNVars(model) > (I4 + 1) && iter <= config.nFreezePassiveInner)
+            if (getNVars(model) > (I4 + 1) && iter <= config.others.nFreezePassiveInner)
             {
                 for (int i = 0; i < crhs.Size(); i++)
                     crhs[i](Eigen::seq(I4 + 1, Eigen::last)).setZero();
@@ -356,7 +356,7 @@ namespace DNDS::Euler
             // uRec.trans.startPersistentPull();
             // uRec.trans.waitPersistentPull();
 
-            eval.EvaluateDt(dTau, u, CFLNow, curDtMin, 1e100, config.useLocalDt);
+            eval.EvaluateDt(dTau, u, CFLNow, curDtMin, 1e100, config.implicitCFLControl.useLocalDt);
             for (auto &i : dTau)
                 i /= alphaDiag;
         };
@@ -366,15 +366,15 @@ namespace DNDS::Euler
         {
             cxInc.setConstant(0.0);
 
-            if (config.useLimiter) // uses urec value
+            if (config.limiterControl.useLimiter) // uses urec value
                 eval.LUSGSMatrixInit(dTau, dt, alphaDiag,
                                      cx, uRecNew,
-                                     config.jacobianTypeCode,
+                                     0,
                                      tSimu);
             else
                 eval.LUSGSMatrixInit(dTau, dt, alphaDiag,
                                      cx, uRec,
-                                     config.jacobianTypeCode,
+                                     0,
                                      tSimu);
 
             for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
@@ -382,7 +382,7 @@ namespace DNDS::Euler
                 crhs[iCell] = eval.CompressInc(cx[iCell], crhs[iCell] * dTau[iCell], crhs[iCell]) / dTau[iCell];
             }
 
-            if (config.gmresCode == 0 || config.gmresCode == 2)
+            if (config.linearSolverControl.gmresCode == 0 || config.linearSolverControl.gmresCode == 2)
             {
                 // //! LUSGS
 
@@ -396,7 +396,7 @@ namespace DNDS::Euler
                     cxInc[iCell] = eval.CompressInc(cx[iCell], cxInc[iCell], crhs[iCell]);
             }
 
-            if (config.gmresCode != 0)
+            if (config.linearSolverControl.gmresCode != 0)
             {
                 // !  GMRES
                 // !  for gmres solver: A * uinc = rhsinc, rhsinc is average value insdead of cumulated on vol
@@ -410,18 +410,14 @@ namespace DNDS::Euler
                     [&](decltype(u) &x, decltype(u) &MLx)
                     {
                         // x as rhs, and MLx as uinc
-
-                        if (config.jacobianTypeCode == 0)
-                        {
-                            eval.UpdateLUSGSForward(alphaDiag, x, cx, MLx, MLx);
-                            MLx.trans.startPersistentPull();
-                            MLx.trans.waitPersistentPull();
-                            eval.UpdateLUSGSBackward(alphaDiag, x, cx, MLx, MLx);
-                            MLx.trans.startPersistentPull();
-                            MLx.trans.waitPersistentPull();
-                        }
+                        eval.UpdateLUSGSForward(alphaDiag, x, cx, MLx, MLx);
+                        MLx.trans.startPersistentPull();
+                        MLx.trans.waitPersistentPull();
+                        eval.UpdateLUSGSBackward(alphaDiag, x, cx, MLx, MLx);
+                        MLx.trans.startPersistentPull();
+                        MLx.trans.waitPersistentPull();
                     },
-                    crhs, cxInc, config.nGmresIter,
+                    crhs, cxInc, config.linearSolverControl.nGmresIter,
                     [&](uint32_t i, real res, real resB) -> bool
                     {
                         if (i > 0)
@@ -438,7 +434,7 @@ namespace DNDS::Euler
                     cxInc[iCell] = eval.CompressInc(cx[iCell], cxInc[iCell], crhs[iCell]); // manually add fixing for gmres results
             }
             // !freeze something
-            if (getNVars(model) > I4 + 1 && iter <= config.nFreezePassiveInner)
+            if (getNVars(model) > I4 + 1 && iter <= config.others.nFreezePassiveInner)
             {
                 for (int i = 0; i < crhs.Size(); i++)
                     cxInc[i](Eigen::seq(I4 + 1, Eigen::last)).setZero();
@@ -450,15 +446,15 @@ namespace DNDS::Euler
         auto fstop = [&](int iter, ArrayDOFV<nVars_Fixed> &cxinc, int iStep) -> bool
         {
             Eigen::Vector<real, -1> res(nVars);
-            eval.EvaluateResidual(res, cxinc, 1, config.useVolWiseResidual);
+            eval.EvaluateResidual(res, cxinc, 1, config.convergenceControl.useVolWiseResidual);
             // if (iter == 1 && iStep == 1) // * using 1st rk step for reference
             if (iter == 1)
                 resBaseCInternal = res;
             else
                 resBaseCInternal = resBaseCInternal.array().max(res.array()); //! using max !
             Eigen::Vector<real, -1> resRel = (res.array() / resBaseCInternal.array()).matrix();
-            bool ifStop = resRel(0) < config.rhsThresholdInternal; // ! using only rho's residual
-            if (iter % config.nConsoleCheckInternal == 0 || iter > config.nTimeStepInternal || ifStop)
+            bool ifStop = resRel(0) < config.convergenceControl.rhsThresholdInternal; // ! using only rho's residual
+            if (iter % config.outputControl.nConsoleCheckInternal == 0 || iter > config.convergenceControl.nTimeStepInternal || ifStop)
             {
                 double telapsed = MPI_Wtime() - tstart;
                 if (mpi.rank == 0)
@@ -478,7 +474,7 @@ namespace DNDS::Euler
                           << tLim << "]  limtimeA ["
                           << PerformanceTimer::Instance().getTimer(PerformanceTimer::LimiterA) << "]  limtimeB ["
                           << PerformanceTimer::Instance().getTimer(PerformanceTimer::LimiterB) << "]  ";
-                    if (config.consoleOutputMode == 1)
+                    if (config.outputControl.consoleOutputMode == 1)
                     {
                         log() << std::setprecision(4) << std::setw(10) << std::scientific
                               << "Wall Flux \033[93m[" << eval.fluxWallSum.transpose() << "]\033[39m";
@@ -504,25 +500,25 @@ namespace DNDS::Euler
                 PerformanceTimer::Instance().clearAllTimer();
             }
 
-            if (iter % config.nDataOutInternal == 0)
+            if (iter % config.outputControl.nDataOutInternal == 0)
             {
                 eval.FixUMaxFilter(u);
-                PrintData(config.outPltName + "_" + output_stamp + "_" + std::to_string(step) + "_" + std::to_string(iter), ode, eval);
-                nextStepOut += config.nDataOut;
+                PrintData(config.dataIOControl.outPltName + "_" + output_stamp + "_" + std::to_string(step) + "_" + std::to_string(iter), ode, eval);
+                nextStepOut += config.outputControl.nDataOut;
             }
-            if (iter % config.nDataOutCInternal == 0)
+            if (iter % config.outputControl.nDataOutCInternal == 0)
             {
                 eval.FixUMaxFilter(u);
-                PrintData(config.outPltName + "_" + output_stamp + "_" + "C", ode, eval);
-                nextStepOutC += config.nDataOutC;
+                PrintData(config.dataIOControl.outPltName + "_" + output_stamp + "_" + "C", ode, eval);
+                nextStepOutC += config.outputControl.nDataOutC;
             }
-            if (iter >= config.nCFLRampStart && iter <= config.nCFLRampLength + config.nCFLRampStart)
+            if (iter >= config.implicitCFLControl.nCFLRampStart && iter <= config.implicitCFLControl.nCFLRampLength + config.implicitCFLControl.nCFLRampStart)
             {
-                real inter = real(iter - config.nCFLRampStart) / config.nCFLRampLength;
-                real logCFL = std::log(config.CFL) + (std::log(config.CFLRampEnd / config.CFL) * inter);
+                real inter = real(iter - config.implicitCFLControl.nCFLRampStart) / config.implicitCFLControl.nCFLRampLength;
+                real logCFL = std::log(config.implicitCFLControl.CFL) + (std::log(config.implicitCFLControl.CFLRampEnd / config.implicitCFLControl.CFL) * inter);
                 CFLNow = std::exp(logCFL);
             }
-            // return resRel.maxCoeff() < config.rhsThresholdInternal;
+            // return resRel.maxCoeff() < config.convergenceControl.rhsThresholdInternal;
             return ifStop;
         };
 
@@ -536,11 +532,11 @@ namespace DNDS::Euler
             if (ifOutT)
                 tSimu = nextTout;
             Eigen::Vector<real, -1> res(nVars);
-            eval.EvaluateResidual(res, ode->getLatestRHS(), 1, config.useVolWiseResidual);
+            eval.EvaluateResidual(res, ode->getLatestRHS(), 1, config.convergenceControl.useVolWiseResidual);
             if (stepCount == 0 && resBaseC.norm() == 0)
                 resBaseC = res;
 
-            if (step % config.nConsoleCheck == 0)
+            if (step % config.outputControl.nConsoleCheck == 0)
             {
                 double telapsed = MPI_Wtime() - tstart;
                 if (mpi.rank == 0)
@@ -574,24 +570,24 @@ namespace DNDS::Euler
             if (step == nextStepOut)
             {
                 eval.FixUMaxFilter(u);
-                PrintData(config.outPltName + "_" + output_stamp + "_" + std::to_string(step), ode, eval);
-                nextStepOut += config.nDataOut;
+                PrintData(config.dataIOControl.outPltName + "_" + output_stamp + "_" + std::to_string(step), ode, eval);
+                nextStepOut += config.outputControl.nDataOut;
             }
             if (step == nextStepOutC)
             {
                 eval.FixUMaxFilter(u);
-                PrintData(config.outPltName + "_" + output_stamp + "_" + "C", ode, eval);
-                nextStepOutC += config.nDataOutC;
+                PrintData(config.dataIOControl.outPltName + "_" + output_stamp + "_" + "C", ode, eval);
+                nextStepOutC += config.outputControl.nDataOutC;
             }
             if (ifOutT)
             {
                 eval.FixUMaxFilter(u);
-                PrintData(config.outPltName + "_" + output_stamp + "_" + "t_" + std::to_string(nextTout), ode, eval);
-                nextTout += config.tDataOut;
-                if (nextTout > config.tEnd)
-                    nextTout = config.tEnd;
+                PrintData(config.dataIOControl.outPltName + "_" + output_stamp + "_" + "t_" + std::to_string(nextTout), ode, eval);
+                nextTout += config.outputControl.tDataOut;
+                if (nextTout > config.timeMarchControl.tEnd)
+                    nextTout = config.timeMarchControl.tEnd;
             }
-            if (eval.settings.specialBuiltinInitializer == 2 && (step % config.nConsoleCheck == 0)) // IV problem special: reduction on solution
+            if (eval.settings.specialBuiltinInitializer == 2 && (step % config.outputControl.nConsoleCheck == 0)) // IV problem special: reduction on solution
             {
                 real xymin = 5 + tSimu - 2;
                 real xymax = 5 + tSimu + 2;
@@ -655,35 +651,35 @@ namespace DNDS::Euler
                     log() << "=== Mean Error IV: [" << std::scientific << std::setprecision(5) << sumErrRhoSum << ", " << sumErrRhoSum / sumVolSum << "]" << std::endl;
                 }
             }
-            if (config.zeroGrads)
+            if (config.implicitReconstructionControl.zeroGrads)
                 uRec.setConstant(0.0), gradIsZero = true;
 
             stepCount++;
 
-            return tSimu >= config.tEnd;
+            return tSimu >= config.timeMarchControl.tEnd;
         };
 
         /**********************************/
         /*           MAIN LOOP            */
         /**********************************/
 
-        for (step = 1; step <= config.nTimeStep; step++)
+        for (step = 1; step <= config.timeMarchControl.nTimeStep; step++)
         {
             InsertCheck(mpi, "Implicit Step");
             ifOutT = false;
-            curDtImplicit = config.dtImplicit; //* could add CFL driven dt here
+            curDtImplicit = config.timeMarchControl.dtImplicit; //* could add CFL driven dt here
             if (tSimu + curDtImplicit > nextTout)
             {
                 ifOutT = true;
                 curDtImplicit = (nextTout - tSimu);
             }
-            CFLNow = config.CFL;
+            CFLNow = config.implicitCFLControl.CFL;
             ode->Step(
                 u, uInc,
                 frhs,
                 fdtau,
                 fsolve,
-                config.nTimeStepInternal,
+                config.convergenceControl.nTimeStepInternal,
                 fstop,
                 curDtImplicit + verySmallReal);
 

@@ -1,7 +1,7 @@
 {
     "timeMarchControl": {
-        "dtImplicit": 5e-4,
-        "nTimeStep": 2000,
+        "dtImplicit": 1e+100,
+        "nTimeStep": 1000000,
         "steadyQuit": false,
         "odeCode": 0,
         "tEnd": 3e+200
@@ -14,10 +14,10 @@
         "nConsoleCheck": 1,
         "nConsoleCheckInternal": 1,
         "consoleOutputMode": 0,
-        "nDataOutC": 20,
-        "nDataOut": 100,
-        "nDataOutCInternal": 200,
-        "nDataOutInternal": 1000000000,
+        "nDataOut": 10000,
+        "nDataOutC": 50,
+        "nDataOutInternal": 1,
+        "nDataOutCInternal": 1,
         "tDataOut": 3e+200
     },
     "implicitCFLControl": {
@@ -30,16 +30,16 @@
     },
     "convergenceControl": {
         "nTimeStepInternal": 20,
-        "rhsThresholdInternal": 1e-3,
+        "rhsThresholdInternal": 1e-10,
         "res_base": 0.0,
-        "useVolWiseResidual": true
+        "useVolWiseResidual": false
     },
     "dataIOControl": {
         "uniqueStamps": true,
         "meshRotZ": 0.0,
-        "meshFile": "../data/mesh/Uniform32_3D_Periodic.cgns",
-        "outPltName": "../data/outUnsteady/Uniform32_3D_Periodic",
-        "outLogName": "../data/outUnsteady/Uniform32_3D_Periodic",
+        "meshFile": "data/mesh/NACA0012_WIDE_H3.cgns",
+        "outPltName": "data/out/debugData_",
+        "outLogName": "data/out/debugData_",
         "outPltMode": 0,
         "readMeshMode": 0,
         "outPltTecplotFormat": true,
@@ -50,7 +50,7 @@
     "limiterControl": {
         "useLimiter": true,
         "smoothIndicatorProcedure": 0,
-        "limiterProcedure": 1, //1 == CWBAP
+        "limiterProcedure": 0,
         "nPartialLimiterStart": 0,
         "nPartialLimiterStartLocal": 0
     },
@@ -63,9 +63,10 @@
         "nFreezePassiveInner": 0
     },
     "eulerSettings": {
-        "ignoreSourceTerm": true,
-        "useScalarJacobian": true,
-        "riemannSolverType": "HLLC",
+        "useScalarJacobian": false,
+        "ignoreSourceTerm": false,
+        "specialBuiltinInitializer": 0,
+        "riemannSolverType": "Roe",
         "constMassForce": [
             0.0,
             0.0,
@@ -78,27 +79,12 @@
             0.0,
             2.5
         ],
-        "boxInitializers": [
-            {
-                "x0": 0.25,
-                "x1": 0.75,
-                "y0": 0.25,
-                "y1": 0.75,
-                "z0": 0.25,
-                "z1": 0.75,
-                "v": [
-                    0.5,
-                    1,
-                    0,
-                    0,
-                    4
-                ]
-            }
-        ],
+        "boxInitializers": [],
+        "planeInitializers": [],
         "idealGasProperty": {
             "gamma": 1.4,
-            "Rgas": 289,
-            "muGas": 1e-200,
+            "Rgas": 1.0,
+            "muGas": 1.0,
             "prGas": 0.72,
             "TRef": 273.15,
             "CSutherland": 110.4
@@ -106,11 +92,11 @@
     },
     "vfvSettings": {
         "maxOrder": 3,
-        "intOrder": 3,
+        "intOrder": 5,
         "cacheDiffBase": true,
         "jacobiRelax": 1.0,
         "SORInstead": true,
-        "smoothThreshold": 1e-3,
+        "smoothThreshold": 0.01,
         "WBAP_nStd": 10.0,
         "normWBAP": false
     }

@@ -276,10 +276,10 @@ src/Euler/EulerSolver_NS_SA.cpp
 set(CPPS_FAST
 ${CPPS_DNDS}
 ${CPPS_Geom}
+${CPPS_CFV}
 )
 
 set(CPPS
-${CPPS_CFV}
 ${CPPS_Euler}
 )
 

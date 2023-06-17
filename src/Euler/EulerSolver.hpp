@@ -5,6 +5,7 @@
 #include "Solver/ODE.hpp"
 #include "Solver/Linear.hpp"
 #include "EulerEvaluator.hpp"
+#include "DNDS/JsonUtil.hpp"
 
 #include <iomanip>
 #include <functional>
@@ -38,11 +39,12 @@ namespace DNDS::Euler
         typedef typename TEval::TJacobianU TJacobianU;
         typedef typename TEval::TVec TVec;
         typedef typename TEval::TMat TMat;
+        typedef ssp<CFV::VariationalReconstruction<gDim>> TVFV;
 
     private:
         MPIInfo mpi;
         ssp<Geom::UnstructuredMesh> mesh;
-        ssp<CFV::VariationalReconstruction<gDim>> vfv; // ! gDim -> 3 for intellisense
+        TVFV vfv; // ! gDim -> 3 for intellisense
         ssp<Geom::UnstructuredMeshSerialRW> reader;
 
         ArrayDOFV<nVars_Fixed> u, uInc, uIncRHS, uTemp;
@@ -73,174 +75,225 @@ namespace DNDS::Euler
             nOUTSPoint = nVars + 2;
         }
 
-        nlohmann::json gSetting;
+        nlohmann::ordered_json gSetting;
         std::string output_stamp = "";
 
         struct Configuration
         {
-            int recOrder = 2;
-            int nInternalRecStep = 1;
-            int nTimeStep = 1000;
-            int nConsoleCheck = 10;
-            int nConsoleCheckInternal = 1;
-            int consoleOutputMode = 0; // 0 for basic, 1 for wall force out
-            int nSGSIterationInternal = 0;
-            int nDataOut = 10000;
-            int nDataOutC = 50;
-            int nDataOutInternal = 1;
-            int nDataOutCInternal = 1;
-            int nTimeStepInternal = 1000;
-            real tDataOut = veryLargeReal;
-            real tEnd = veryLargeReal;
 
-            real CFL = 0.2;
-            real dtImplicit = 1e100;
-            real rhsThresholdInternal = 1e-10;
+            struct TimeMarchControl
+            {
+                real dtImplicit = 1e100;
+                int nTimeStep = 1000000;
+                bool steadyQuit = false;
+                int odeCode = 0;
+                real tEnd = veryLargeReal;
+                DNDS_NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_ORDERED_JSON(
+                    TimeMarchControl,
+                    dtImplicit, nTimeStep, steadyQuit, odeCode, tEnd)
+            } timeMarchControl;
 
-            real meshRotZ = 0;
-            std::string meshFile = "data/mesh/NACA0012_WIDE_H3.msh";
-            std::string outPltName = "data/out/debugData_";
-            std::string outLogName = "data/out/debugData_";
-            bool zeroGrads = false;
-            int outPltMode = 0;   // 0 = serial, 1 = dist plt
-            int readMeshMode = 0; // 0 = serial cgns, 1 = dist json
-            bool outPltTecplotFormat = true;
-            bool outPltVTKFormat = true;
-            bool outAtPointData = true;
-            bool outAtCellData = false;
+            struct ImplicitReconstructionControl
+            {
+                int nInternalRecStep = 1;
+                bool zeroGrads = false;
+                DNDS_NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_ORDERED_JSON(
+                    ImplicitReconstructionControl,
+                    nInternalRecStep,zeroGrads)
+            } implicitReconstructionControl;
 
-            bool uniqueStamps = true;
-            real err_dMax = 0.1;
+            struct OutputControl
+            {
+                int nConsoleCheck = 1;
+                int nConsoleCheckInternal = 1;
+                int consoleOutputMode = 0; // 0 for basic, 1 for wall force out
+                int nDataOut = 10000;
+                int nDataOutC = 50;
+                int nDataOutInternal = 1;
+                int nDataOutCInternal = 1;
+                real tDataOut = veryLargeReal;
 
-            real res_base = 0;
-            bool useVolWiseResidual = false;
+                DNDS_NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_ORDERED_JSON(
+                    OutputControl,
+                    nConsoleCheck,
+                    nConsoleCheckInternal,
+                    consoleOutputMode,
+                    nDataOut,
+                    nDataOutC,
+                    nDataOutInternal,
+                    nDataOutCInternal,
+                    tDataOut)
+            } outputControl;
 
-            int nDropVisScale;
-            real vDropVisScale;
+            struct ImplicitCFLControl
+            {
+                real CFL = 10;
+                int nForceLocalStartStep = INT_MAX;
+                int nCFLRampStart = INT_MAX;
+                int nCFLRampLength = INT_MAX;
+                real CFLRampEnd = 0;
+                bool useLocalDt = true;
+                DNDS_NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_ORDERED_JSON(
+                    ImplicitCFLControl,
+                    CFL,
+                    nForceLocalStartStep,
+                    nCFLRampStart,
+                    nCFLRampLength,
+                    CFLRampEnd,
+                    useLocalDt)
+            } implicitCFLControl;
 
-            int curvilinearOneStep = 500;
-            int curvilinearRepeatInterval = 500;
-            int curvilinearRepeatNum = 10;
+            struct ConvergenceControl
+            {
+                int nTimeStepInternal = 20;
+                real rhsThresholdInternal = 1e-10;
+                real res_base = 0;
+                bool useVolWiseResidual = false;
+                DNDS_NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_ORDERED_JSON(
+                    ConvergenceControl,
+                    nTimeStepInternal,
+                    rhsThresholdInternal,
+                    res_base,
+                    useVolWiseResidual)
+            } convergenceControl;
 
-            int curvilinearRestartNstep = 100;
-            real curvilinearRange = 0.1;
+            struct DataIOControl
+            {
+                bool uniqueStamps = true;
+                real meshRotZ = 0;
+                std::string meshFile = "data/mesh/NACA0012_WIDE_H3.cgns";
+                std::string outPltName = "data/out/debugData_";
+                std::string outLogName = "data/out/debugData_";
 
-            bool useLocalDt = true;
+                int outPltMode = 0;   // 0 = serial, 1 = dist plt
+                int readMeshMode = 0; // 0 = serial cgns, 1 = dist json
+                bool outPltTecplotFormat = true;
+                bool outPltVTKFormat = true;
+                bool outAtPointData = true;
+                bool outAtCellData = true;
 
-            bool useLimiter = true;
-            int smoothIndicatorProcedure = 0;
-            int limiterProcedure = 0; // 0 for V2==3WBAP, 1 for V3==CWBAP
+                DNDS_NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_ORDERED_JSON(
+                    DataIOControl,
+                    uniqueStamps,
+                    meshRotZ,
+                    meshFile,
+                    outPltName,
+                    outLogName,
+                    outPltMode,
+                    readMeshMode,
+                    outPltTecplotFormat,
+                    outPltVTKFormat,
+                    outAtPointData,
+                    outAtCellData)
+            } dataIOControl;
 
-            int nPartialLimiterStart = 2;
-            int nPartialLimiterStartLocal = 500;
-            int nForceLocalStartStep = -1;
-            int nCFLRampStart = 1000;
-            int nCFLRampLength = 10000;
-            real CFLRampEnd = 10;
+            struct LimiterControl
+            {
+                bool useLimiter = true;
+                int smoothIndicatorProcedure = 0;
+                int limiterProcedure = 0; // 0 for V2==3WBAP, 1 for V3==CWBAP
+                int nPartialLimiterStart = 0;
+                int nPartialLimiterStartLocal = 0;
+                DNDS_NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_ORDERED_JSON(
+                    LimiterControl,
+                    useLimiter, smoothIndicatorProcedure, limiterProcedure,
+                    nPartialLimiterStart, nPartialLimiterStartLocal)
+            } limiterControl;
 
-            int gmresCode = 0; // 0 for lusgs, 1 for gmres, 2 for lusgs started gmres
-            int nGmresSpace = 10;
-            int nGmresIter = 2;
+            struct LinearSolverControl
+            {
+                int gmresCode = 0; // 0 for lusgs, 1 for gmres, 2 for lusgs started gmres
+                int nGmresSpace = 10;
+                int nGmresIter = 2;
+                DNDS_NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_ORDERED_JSON(
+                    LinearSolverControl,
+                    gmresCode, nGmresSpace, nGmresIter)
+            } linearSolverControl;
 
-            int jacobianTypeCode = 0; // 0 for original LUSGS jacobian, 1 for ad roe, 2 for ad roe ad vis
+            struct Others
+            {
+                int nFreezePassiveInner = 0;
+                DNDS_NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_ORDERED_JSON(
+                    Others,
+                    nFreezePassiveInner)
+            } others;
 
-            int nFreezePassiveInner = 0;
+            nlohmann::ordered_json eulerSettings = nlohmann::ordered_json::object();
+            nlohmann::ordered_json vfvSettings = nlohmann::ordered_json::object();
 
-            bool steadyQuit = false;
+            void ReadWriteJson(nlohmann::ordered_json &jsonObj, int nVars, bool read)
+            {
 
-            int odeCode = 0;
+                __DNDS__json_to_config(timeMarchControl);
+                __DNDS__json_to_config(implicitReconstructionControl);
+                __DNDS__json_to_config(outputControl);
+                __DNDS__json_to_config(implicitCFLControl);
+                __DNDS__json_to_config(convergenceControl);
+                __DNDS__json_to_config(dataIOControl);
+                __DNDS__json_to_config(limiterControl);
+                __DNDS__json_to_config(linearSolverControl);
+                __DNDS__json_to_config(others);
 
-            nlohmann::json eulerSettings;
-            nlohmann::json vfvSettings;
+                if (!read)
+                    typename TEval::Setting().ReadWriteJSON(eulerSettings, nVars, false);
+                __DNDS__json_to_config(eulerSettings);
+                __DNDS__json_to_config(vfvSettings);
+                if (read)
+                {
+                    DNDS_assert(eulerSettings.is_object());
+                    DNDS_assert(vfvSettings.is_object());
+                }
+
+                // TODO: BC settings
+            }
+
+            Configuration()
+            {
+                vfvSettings = CFV::VRSettings();
+            }
 
         } config;
 
-        void ConfigureFromJson(const std::string &jsonName)
+        void ConfigureFromJson(const std::string &jsonName, bool read = false, const std::string &jsonMergeName = "")
         {
 
-            auto fIn = std::ifstream(jsonName);
-            DNDS_assert_info(fIn, "config file not existent");
-            gSetting = nlohmann::json::parse(fIn, nullptr, true, true);
-            nlohmann::json &gS = gSetting;
+            if (read)
+            {
+                auto fIn = std::ifstream(jsonName);
+                DNDS_assert_info(fIn, "config file not existent");
+                gSetting = nlohmann::ordered_json::parse(fIn, nullptr, true, true);
 
-#define __gs_to_config(name)                                                  \
-    {                                                                         \
-        try                                                                   \
-        {                                                                     \
-            config.name = gS[#name].get<decltype(config.name)>();             \
-        }                                                                     \
-        catch (...)                                                           \
-        {                                                                     \
-            DNDS_assert_info(false && "config root not given field:", #name); \
-        }                                                                     \
-    }
-            __gs_to_config(nInternalRecStep);
-            __gs_to_config(recOrder);
-            __gs_to_config(nTimeStep);
-            __gs_to_config(nTimeStepInternal);
-            __gs_to_config(nSGSIterationInternal);
-            __gs_to_config(nConsoleCheck);
-            __gs_to_config(nConsoleCheckInternal);
-            __gs_to_config(consoleOutputMode);
-            __gs_to_config(nDataOutC);
-            __gs_to_config(nDataOut);
-            __gs_to_config(nDataOutCInternal);
-            __gs_to_config(nDataOutInternal);
-            __gs_to_config(tDataOut);
-            __gs_to_config(tEnd);
-            __gs_to_config(CFL);
-            __gs_to_config(dtImplicit);
-            __gs_to_config(rhsThresholdInternal);
-            __gs_to_config(meshRotZ);
-            __gs_to_config(meshFile);
-            __gs_to_config(outLogName);
-            __gs_to_config(outPltName);
-            __gs_to_config(zeroGrads);
-            __gs_to_config(outPltMode);
-            __gs_to_config(readMeshMode);
-            __gs_to_config(outPltTecplotFormat);
-            __gs_to_config(outPltVTKFormat);
-            __gs_to_config(outAtPointData);
-            __gs_to_config(outAtCellData);
-
-            __gs_to_config(uniqueStamps);
-            __gs_to_config(err_dMax);
-            __gs_to_config(res_base);
-            __gs_to_config(useVolWiseResidual);
-            __gs_to_config(useLocalDt);
-            __gs_to_config(useLimiter);
-            __gs_to_config(smoothIndicatorProcedure);
-            __gs_to_config(limiterProcedure);
-            __gs_to_config(nPartialLimiterStart);
-            __gs_to_config(nPartialLimiterStartLocal);
-            __gs_to_config(nForceLocalStartStep);
-            __gs_to_config(nCFLRampStart);
-            __gs_to_config(nCFLRampLength);
-            __gs_to_config(CFLRampEnd);
-            __gs_to_config(gmresCode);
-            __gs_to_config(nGmresSpace);
-            __gs_to_config(nGmresIter);
-            __gs_to_config(jacobianTypeCode);
-            __gs_to_config(nFreezePassiveInner);
-            __gs_to_config(steadyQuit);
-            __gs_to_config(odeCode);
-            __gs_to_config(eulerSettings);
-            __gs_to_config(vfvSettings);
-
-            DNDS_assert(config.eulerSettings.is_object());
-            DNDS_assert(config.vfvSettings.is_object());
-
-            // TODO: BC settings
+                if(read && !jsonMergeName.empty())
+                {
+                    fIn = std::ifstream(jsonMergeName);
+                    DNDS_assert_info(fIn, "config file patch not existent");
+                    auto gSettingAdd = nlohmann::ordered_json::parse(fIn, nullptr, true, true);
+                    gSetting.merge_patch(gSettingAdd);
+                }
+                config.ReadWriteJson(gSetting, nVars, read);
+            }
+            else
+            {
+                gSetting = nlohmann::ordered_json::object();
+                config.ReadWriteJson(gSetting, nVars, read);
+                if(mpi.rank == 0) // single call for output
+                {
+                    auto fIn = std::ofstream(jsonName);
+                    fIn << std::setw(4) << gSetting;
+                }
+                MPI_Barrier(mpi.comm); // no go until output done
+            }
 
             if (mpi.rank == 0)
-                log() << "JSON: Parse Done ===" << std::endl;
-#undef __gs_to_config
+                log() << "JSON: Parse " << (read ? "read" : "write")
+                      << " Done ===" << std::endl;
+#undef __DNDS__json_to_config
         }
 
         void ReadMeshAndInitialize()
         {
             output_stamp = getTimeStamp(mpi);
-            if (!config.uniqueStamps)
+            if (!config.convergenceControl.useVolWiseResidual)
                 output_stamp = "";
             if (mpi.rank == 0)
                 log() << "=== Got Time Stamp: [" << output_stamp << "] ===" << std::endl;
@@ -250,21 +303,20 @@ namespace DNDS::Euler
             DNDS_MAKE_SSP(mesh, mpi, gDimLocal);
 
             DNDS_MAKE_SSP(vfv, mpi, mesh);
-            vfv->settings.jsonSetting = config.vfvSettings;
-            vfv->settings.ParseFromJson();
+            vfv->settings.ParseFromJson(config.vfvSettings);
 
             DNDS_MAKE_SSP(reader, mesh, 0);
-            DNDS_assert(config.readMeshMode == 0 || config.readMeshMode == 1);
-            DNDS_assert(config.outPltMode == 0 || config.outPltMode == 1);
+            DNDS_assert(config.dataIOControl.readMeshMode == 0 || config.dataIOControl.readMeshMode == 1);
+            DNDS_assert(config.dataIOControl.outPltMode == 0 || config.dataIOControl.outPltMode == 1);
 
-            if (config.readMeshMode == 0)
+            if (config.dataIOControl.readMeshMode == 0)
             {
-                reader->ReadFromCGNSSerial(config.meshFile); // TODO: add bnd mapping here
+                reader->ReadFromCGNSSerial(config.dataIOControl.meshFile); // TODO: add bnd mapping here
                 reader->Deduplicate1to1Periodic();
                 reader->BuildCell2Cell();
                 reader->MeshPartitionCell2Cell();
                 reader->PartitionReorderToMeshCell2Cell();
-                if (config.outPltMode == 0)
+                if (config.dataIOControl.outPltMode == 0)
                 {
                     reader->BuildSerialOut();
                 }
@@ -273,8 +325,8 @@ namespace DNDS::Euler
             }
             else
             {
-                std::filesystem::path meshPath{config.meshFile};
-                auto meshOutName = std::string(config.meshFile) + "_part_" + std::to_string(mpi.size) + ".dir";
+                std::filesystem::path meshPath{config.dataIOControl.meshFile};
+                auto meshOutName = std::string(config.dataIOControl.meshFile) + "_part_" + std::to_string(mpi.size) + ".dir";
                 std::filesystem::path meshOutDir{meshOutName};
                 // std::filesystem::create_directories(meshOutDir); // reading not writing
                 std::string meshPartPath = std::string(meshOutDir / (std::string("part_") + std::to_string(mpi.rank) + ".json"));
@@ -285,7 +337,7 @@ namespace DNDS::Euler
                 serializer->OpenFile(meshPartPath, true);
                 mesh->ReadSerialize(serializer, "meshPart");
                 serializer->CloseFile();
-                if (config.outPltMode == 0)
+                if (config.dataIOControl.outPltMode == 0)
                 {
                     mesh->AdjLocal2GlobalPrimary();
                     reader->BuildSerialOut();
@@ -320,14 +372,14 @@ namespace DNDS::Euler
             vfv->BuildURec(uRecOld, nVars);
             vfv->BuildScalar(ifUseLimiter);
 
-            DNDS_assert(config.outAtCellData || config.outAtPointData);
-            DNDS_assert(config.outPltVTKFormat || config.outPltTecplotFormat);
-            if (config.outAtCellData)
+            DNDS_assert(config.dataIOControl.outAtCellData || config.dataIOControl.outAtPointData);
+            DNDS_assert(config.dataIOControl.outPltVTKFormat || config.dataIOControl.outPltTecplotFormat);
+            if (config.dataIOControl.outAtCellData)
             {
                 DNDS_MAKE_SSP(outDist, mpi);
                 outDist->Resize(mesh->NumCell(), nOUTS);
             }
-            if (config.outAtPointData)
+            if (config.dataIOControl.outAtPointData)
             {
                 DNDS_MAKE_SSP(outDistPoint, mpi);
                 outDistPoint->Resize(mesh->NumNode(), nOUTSPoint);
@@ -341,10 +393,10 @@ namespace DNDS::Euler
                 outDistPointPair.trans.initPersistentPull();
             }
 
-            if (config.outPltMode == 0)
+            if (config.dataIOControl.outPltMode == 0)
             {
                 //! serial mesh specific output method
-                if (config.outAtCellData)
+                if (config.dataIOControl.outAtCellData)
                 {
                     DNDS_MAKE_SSP(outSerial, mpi);
                     outDist2SerialTrans.setFatherSon(outDist, outSerial);
@@ -353,7 +405,7 @@ namespace DNDS::Euler
                     outDist2SerialTrans.createMPITypes();
                     outDist2SerialTrans.initPersistentPull();
                 }
-                if (config.outAtPointData)
+                if (config.dataIOControl.outAtPointData)
                 {
                     DNDS_MAKE_SSP(outSerialPoint, mpi);
                     outDist2SerialTransPoint.setFatherSon(outDistPoint, outSerialPoint);
@@ -371,7 +423,7 @@ namespace DNDS::Euler
         void PrintData(const std::string &fname, tODE &ode, tEval &eval)
         {
             DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
-            if (config.outAtCellData)
+            if (config.dataIOControl.outAtCellData)
                 for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
                 {
                     // TU recu =
@@ -406,9 +458,9 @@ namespace DNDS::Euler
                     }
                 }
 
-            if (config.outAtPointData)
+            if (config.dataIOControl.outAtPointData)
             {
-                if (config.useLimiter)
+                if (config.limiterControl.useLimiter)
                 {
                     uRecNew.trans.startPersistentPull();
                     uRecNew.trans.waitPersistentPull();
@@ -440,7 +492,7 @@ namespace DNDS::Euler
                         // std::cout << uRecNew[iCell].rows() << std::endl;
                         vfv->FDiffBaseValue(DiBj, pPhy, iCell, -2, -2);
 
-                        TU vRec = (DiBj(Eigen::all, Eigen::seq(1, Eigen::last)) * (config.useLimiter ? uRecNew[iCell] : uRec[iCell])).transpose() + u[iCell];
+                        TU vRec = (DiBj(Eigen::all, Eigen::seq(1, Eigen::last)) * (config.limiterControl.useLimiter ? uRecNew[iCell] : uRec[iCell])).transpose() + u[iCell];
                         if (iNode < mesh->NumNode())
                             outDistPointPair[iNode](Eigen::seq(0, nVars - 1)) += vRec;
                     }
@@ -476,19 +528,19 @@ namespace DNDS::Euler
             }
 
             int NOUTS_C{0}, NOUTSPoint_C{0};
-            if (config.outAtCellData)
+            if (config.dataIOControl.outAtCellData)
                 NOUTS_C = nOUTS;
-            if (config.outAtPointData)
+            if (config.dataIOControl.outAtPointData)
                 NOUTSPoint_C = nOUTSPoint;
 
-            if (config.outPltMode == 0)
+            if (config.dataIOControl.outPltMode == 0)
             {
-                if (config.outAtCellData)
+                if (config.dataIOControl.outAtCellData)
                 {
                     outDist2SerialTrans.startPersistentPull();
                     outDist2SerialTrans.waitPersistentPull();
                 }
-                if (config.outAtPointData)
+                if (config.dataIOControl.outAtPointData)
                 {
                     outDist2SerialTransPoint.startPersistentPull();
                     outDist2SerialTransPoint.waitPersistentPull();
@@ -507,9 +559,9 @@ namespace DNDS::Euler
                 names.push_back("V" + std::to_string(i - I4));
             }
 
-            if (config.outPltTecplotFormat)
+            if (config.dataIOControl.outPltTecplotFormat)
             {
-                if (config.outPltMode == 0)
+                if (config.dataIOControl.outPltMode == 0)
                 {
                     reader->PrintSerialPartPltBinaryDataArray(
                         fname,
@@ -527,7 +579,7 @@ namespace DNDS::Euler
                         0.0,
                         0);
                 }
-                else if (config.outPltMode == 1)
+                else if (config.dataIOControl.outPltMode == 1)
                 {
 
                     reader->PrintSerialPartPltBinaryDataArray(
@@ -549,9 +601,9 @@ namespace DNDS::Euler
             }
 
             const int cDim = dim;
-            if (config.outPltVTKFormat)
+            if (config.dataIOControl.outPltVTKFormat)
             {
-                if (config.outPltMode == 0)
+                if (config.dataIOControl.outPltMode == 0)
                 {
                     reader->PrintSerialPartVTKDataArray(
                         fname,
@@ -597,7 +649,7 @@ namespace DNDS::Euler
                         0.0,
                         0);
                 }
-                else if (config.outPltMode == 1)
+                else if (config.dataIOControl.outPltMode == 1)
                 {
                     reader->PrintSerialPartVTKDataArray(
                         fname,

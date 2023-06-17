@@ -2,10 +2,38 @@
 #include "DNDS/Defines.hpp"
 #include "Eigen/Dense"
 
+#include <json.hpp>
+
 namespace DNDS::Euler::Gas
 {
     typedef Eigen::Vector3d tVec;
     typedef Eigen::Vector2d tVec2;
+
+    enum RiemannSolverType
+    {
+        UnknownRS = 0,
+        Roe = 1,
+        HLLC = 2,
+        HLLEP = 3,
+        Roe_M1 = 11,
+        Roe_M2 = 12,
+        Roe_M3 = 13,
+        Roe_M4 = 14,
+        Roe_M5 = 15,
+    };
+
+    NLOHMANN_JSON_SERIALIZE_ENUM(
+        RiemannSolverType, {
+                                {UnknownRS, nullptr},
+                                {Roe, "Roe"},
+                                {HLLC, "HLLC"},
+                                {HLLEP, "HLLEP"},
+                                {Roe_M1, "Roe_M1"},
+                                {Roe_M2, "Roe_M2"},
+                                {Roe_M3, "Roe_M3"},
+                                {Roe_M4, "Roe_M4"},
+                                {Roe_M5, "Roe_M5"},
+                            })
 
     /**
      * @brief 3D only warning: ReV should be already initialized

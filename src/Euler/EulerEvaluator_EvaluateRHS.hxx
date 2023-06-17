@@ -13,7 +13,7 @@ namespace DNDS::Euler
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
         InsertCheck(u.father->mpi, "EvaluateRHS 1");
         int cnvars = nVars;
-        typename Setting::RiemannSolverType rsType = settings.rsType;
+        auto rsType = settings.rsType;
         for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
         {
             rhs[iCell].setZero();
