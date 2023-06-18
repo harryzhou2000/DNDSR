@@ -718,6 +718,7 @@ namespace DNDS
             PerformanceTimer::Instance().StartTimer(PerformanceTimer::TimerType::Comm);
             if (MPI::CommStrategy::Instance().GetUseStrongSyncWait())
                 MPI_Barrier(mpi.comm);
+            PushStatVec.resize(PushReqVec.size());
             if (PushReqVec.size())
                 MPI_Waitall(PushReqVec.size(), PushReqVec.data(), PushStatVec.data());
 #ifdef ARRAY_COMM_USE_BUFFERED_SEND
@@ -769,6 +770,7 @@ namespace DNDS
         void waitPersistentPull() // collective;
         {
             PerformanceTimer::Instance().StartTimer(PerformanceTimer::TimerType::Comm);
+            PullStatVec.resize(PullReqVec.size());
             if (PullReqVec.size())
                 MPI_Waitall(PullReqVec.size(), PullReqVec.data(), PullStatVec.data());
                 // std::cout << "waiting DONE" << std::endl;
