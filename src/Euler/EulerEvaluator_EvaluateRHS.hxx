@@ -111,11 +111,11 @@ namespace DNDS::Euler
 
                     if constexpr (gDim == 2)
                         GradULxy({0, 1}, Eigen::all) =
-                            vfv->GetIntPointDiffBaseValue(f2c[0], iFace, 0, iG, std::array<int, 2>{1, 2}, 2) *
+                            vfv->GetIntPointDiffBaseValue(f2c[0], iFace, 0, iG, std::array<int, 2>{1, 2}, 3) *
                             uRec[f2c[0]] * IF_NOT_NOREC; // 2d here
                     else
                         GradULxy({0, 1, 2}, Eigen::all) =
-                            vfv->GetIntPointDiffBaseValue(f2c[0], iFace, 0, iG, std::array<int, 3>{1, 2, 3}, 3) *
+                            vfv->GetIntPointDiffBaseValue(f2c[0], iFace, 0, iG, std::array<int, 3>{1, 2, 3}, 4) *
                             uRec[f2c[0]] * IF_NOT_NOREC; // 3d here
                     this->DiffUFromCell2Face(GradULxy, iFace, f2c[0], 0);
 
@@ -143,11 +143,11 @@ namespace DNDS::Euler
 #ifndef DNDS_FV_EULEREVALUATOR_IGNORE_VISCOUS_TERM
                         if constexpr (gDim == 2)
                             GradURxy({0, 1}, Eigen::all) =
-                                vfv->GetIntPointDiffBaseValue(f2c[1], iFace, 1, iG, std::array<int, 2>{1, 2}, 2) *
+                                vfv->GetIntPointDiffBaseValue(f2c[1], iFace, 1, iG, std::array<int, 2>{1, 2}, 3) *
                                 uRec[f2c[1]] * IF_NOT_NOREC; // 2d here
                         else
                             GradURxy({0, 1, 2}, Eigen::all) =
-                                vfv->GetIntPointDiffBaseValue(f2c[1], iFace, 1, iG, std::array<int, 3>{1, 2, 3}, 3) *
+                                vfv->GetIntPointDiffBaseValue(f2c[1], iFace, 1, iG, std::array<int, 3>{1, 2, 3}, 4) *
                                 uRec[f2c[1]] * IF_NOT_NOREC; // 3d here
                         this->DiffUFromCell2Face(GradURxy, iFace, f2c[1], 1);
 
@@ -206,7 +206,15 @@ namespace DNDS::Euler
 
                     TU FLFix, FRFix;
                     FLFix.setZero(), FRFix.setZero();
-
+                    if (!GradUMeanXy.allFinite())
+                    {
+                        std::cout << GradURxy << std::endl;
+                        std::cout << GradULxy << std::endl;
+                        std::cout << distGRP << std::endl;
+                        std::cout << f2c[0] << " " << f2c[1] << " " << mesh->NumCell() << " " << mesh->NumCellProc() << std::endl;
+                        std::cout << uRec[f2c[0]] << std::endl;
+                        DNDS_assert(false);
+                    }
                     TU fincC = fluxFace(
                         ULxy,
                         URxy,
@@ -309,11 +317,11 @@ namespace DNDS::Euler
                         PerformanceTimer::Instance().StartTimer(PerformanceTimer::LimiterB);
                         if constexpr (gDim == 2)
                             GradU({0, 1}, Eigen::all) =
-                                vfv->GetIntPointDiffBaseValue(iCell, -1, -1, iG, std::array<int, 2>{1, 2}, 2) *
+                                vfv->GetIntPointDiffBaseValue(iCell, -1, -1, iG, std::array<int, 2>{1, 2}, 3) *
                                 uRec[iCell] * IF_NOT_NOREC; // 2d specific
                         else
                             GradU({0, 1, 2}, Eigen::all) =
-                                vfv->GetIntPointDiffBaseValue(iCell, -1, -1, iG, std::array<int, 3>{1, 2, 3}, 3) *
+                                vfv->GetIntPointDiffBaseValue(iCell, -1, -1, iG, std::array<int, 3>{1, 2, 3}, 4) *
                                 uRec[iCell] * IF_NOT_NOREC; // 3d specific
 
                         bool pointOrderReduced;

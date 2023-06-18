@@ -36,7 +36,7 @@ namespace DNDS::Geom
             return true;
         auto v0 = a[0] ^ b[0];
         for (size_t i = 1; i < n; i++)
-            if ((a[i] ^ b[i]) != v0)
+            if ((a.at(i) ^ b.at(i)) != v0)
                 return false;
         return true;
     }
@@ -123,9 +123,9 @@ namespace DNDS::Geom
 
             for (int i = 1; i <= 3; i++)
             {
-                serializer->WriteRealVector("rotation" + std::to_string(i), Geom::JacobiToSTDVector(rotation[i]));
-                serializer->WriteRealVector("rotationCenter" + std::to_string(i), Geom::VectorToSTDVector(rotationCenter[i]));
-                serializer->WriteRealVector("translation" + std::to_string(i), Geom::VectorToSTDVector(translation[i]));
+                serializer->WriteRealVector("rotation" + std::to_string(i), Geom::JacobiToSTDVector(rotation.at(i)));
+                serializer->WriteRealVector("rotationCenter" + std::to_string(i), Geom::VectorToSTDVector(rotationCenter.at(i)));
+                serializer->WriteRealVector("translation" + std::to_string(i), Geom::VectorToSTDVector(translation.at(i)));
             }
 
             serializer->GoToPath(cwd);
@@ -143,9 +143,9 @@ namespace DNDS::Geom
                 serializer->ReadRealVector("rotation" + std::to_string(i), rotRead);
                 serializer->ReadRealVector("rotationCenter" + std::to_string(i), rotCRead);
                 serializer->ReadRealVector("translation" + std::to_string(i), transRead);
-                rotation[i] = Geom::STDVectorToJacobi(rotRead);
-                rotationCenter[i] = Geom::STDVectorToVector(rotCRead);
-                translation[i] = Geom::STDVectorToVector(transRead);
+                rotation.at(i) = Geom::STDVectorToJacobi(rotRead);
+                rotationCenter.at(i) = Geom::STDVectorToVector(rotCRead);
+                translation.at(i) = Geom::STDVectorToVector(transRead);
             }
 
             serializer->GoToPath(cwd);
@@ -159,7 +159,7 @@ namespace DNDS::Geom
                 i = -id - 3;
             else
                 i = -id;
-            return rotation[i] * (c - rotationCenter[i]) + rotationCenter[i] + translation[i];
+            return rotation.at(i) * (c - rotationCenter.at(i)) + rotationCenter.at(i) + translation.at(i);
         }
 
         tPoint TransCoordBack(const tPoint &c, t_index id) const
@@ -170,7 +170,7 @@ namespace DNDS::Geom
                 i = -id - 3;
             else
                 i = -id;
-            return rotation[i].transpose() * ((c - translation[i]) - rotationCenter[i]) + rotationCenter[i];
+            return rotation.at(i).transpose() * ((c - translation.at(i)) - rotationCenter.at(i)) + rotationCenter.at(i);
         }
 
         ///@todo //TODO: add support for cartesian tensor transformation
@@ -185,9 +185,9 @@ namespace DNDS::Geom
             else
                 i = -id;
             if constexpr (dim == 3)
-                return rotation[i] * v;
+                return rotation.at(i) * v;
             else
-                return rotation[i]({0, 1}, {0, 1}) * v;
+                return rotation.at(i)({0, 1}, {0, 1}) * v;
         }
 
         template <int dim, int nVec>
@@ -200,9 +200,9 @@ namespace DNDS::Geom
             else
                 i = -id;
             if constexpr (dim == 3)
-                return rotation[i].transpose() * v;
+                return rotation.at(i).transpose() * v;
             else
-                return rotation[i]({0, 1}, {0, 1}).transpose() * v;
+                return rotation.at(i)({0, 1}, {0, 1}).transpose() * v;
         }
 
         tPoint GetCoordByBits(const tPoint &c, const NodePeriodicBits &bits)

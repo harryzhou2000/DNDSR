@@ -133,7 +133,7 @@ namespace DNDS::Euler
             //     uOld[iCell].m() = uRec[iCell].m();
 
             InsertCheck(mpi, " Lambda RHS: StartRec");
-            int nRec = (gradIsZero ? 16 : 1) * config.implicitReconstructionControl.nInternalRecStep;
+            int nRec = (gradIsZero ? 5 : 1) * config.implicitReconstructionControl.nInternalRecStep;
             real recIncBase = 0;
             double tstartA = MPI_Wtime();
             auto FBoundary = [&](const TU &UL, const TU &UMean, const Geom::tPoint &normOut, const Geom::tPoint &pPhy, const Geom::t_index bType) -> TU

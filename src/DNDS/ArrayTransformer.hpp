@@ -619,9 +619,11 @@ namespace DNDS
                     if (pullSize > 0)
                     {
                         PushReqVec.emplace_back(MPI_REQUEST_NULL);
-                        MPI_Isend(gLPtr, pullSize * father->getTypeMult(), father->getDataType(), r, r + mpi.rank, mpi.comm, &PushReqVec.back());
+                        MPI_Issend(gLPtr, pullSize * father->getTypeMult(), father->getDataType(), r, r + mpi.rank, mpi.comm, &PushReqVec.back());
                     }
                 }
+                
+                
             }
             else
             {
@@ -645,6 +647,22 @@ namespace DNDS
             }
             else if (commTypeCurrent == MPI::CommStrategy::CommStrategy::InSituPack)
             {
+                for (MPI_int r = 0; r < mpi.size; r++)
+                {
+                    // pull
+                    MPI_Aint pullDisp;
+                    MPI_int pullSize; // same as pushSizes
+                    auto gRPtr = son->operator[](index(pLGhostMapping->ghostStart[r + 1]));
+                    auto gLPtr = son->operator[](index(pLGhostMapping->ghostStart[r]));
+                    auto ghostSpan = gRPtr - gLPtr;
+                    pullSize = MPI_int(ghostSpan);
+
+                    if (pullSize > 0)
+                    {
+                        PullReqVec.emplace_back(MPI_REQUEST_NULL);
+                        MPI_Irecv(gLPtr, pullSize * father->getTypeMult(), father->getDataType(), r, r + mpi.rank, mpi.comm, &PullReqVec.back());
+                    }
+                }
                 for (MPI_int r = 0; r < mpi.size; r++)
                 {
                     // push
@@ -681,26 +699,11 @@ namespace DNDS
                             nPushData += nPush;
                         }
                         PullReqVec.emplace_back(MPI_REQUEST_NULL);
-                        MPI_Isend(inSituBuffer.back().data(), nPushData * father->getTypeMult(), father->getDataType(),
-                                  r, mpi.rank + r, mpi.comm, &PullReqVec.back());
+                        MPI_Issend(inSituBuffer.back().data(), nPushData * father->getTypeMult(), father->getDataType(),
+                                   r, mpi.rank + r, mpi.comm, &PullReqVec.back());
                     }
                 }
-                for (MPI_int r = 0; r < mpi.size; r++)
-                {
-                    // pull
-                    MPI_Aint pullDisp;
-                    MPI_int pullSize; // same as pushSizes
-                    auto gRPtr = son->operator[](index(pLGhostMapping->ghostStart[r + 1]));
-                    auto gLPtr = son->operator[](index(pLGhostMapping->ghostStart[r]));
-                    auto ghostSpan = gRPtr - gLPtr;
-                    pullSize = MPI_int(ghostSpan);
-
-                    if (pullSize > 0)
-                    {
-                        PullReqVec.emplace_back(MPI_REQUEST_NULL);
-                        MPI_Irecv(gLPtr, pullSize * father->getTypeMult(), father->getDataType(), r, r + mpi.rank, mpi.comm, &PullReqVec.back());
-                    }
-                }
+                
             }
             else
             {
