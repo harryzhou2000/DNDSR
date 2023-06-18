@@ -288,6 +288,36 @@ namespace DNDS
     }
 }
 
+namespace DNDS::MPI
+{
+    class CommStrategy // cxx11 + thread-safe singleton
+    {
+    public:
+        enum ArrayCommType
+        {
+            UnknownArrayCommType = 0,
+            HIndexed = 1,
+            InSituPack = 2,
+        };
+
+        static const int Ntype = 10;
+
+    private:
+        ArrayCommType _array_strategy = HIndexed;
+        bool _use_strong_sync_wait = false;
+
+        CommStrategy();
+        CommStrategy(const CommStrategy &);
+        CommStrategy &operator=(const CommStrategy &);
+
+    public:
+        static CommStrategy &Instance();
+        ArrayCommType GetArrayStrategy();
+        void SetArrayStrategy(ArrayCommType t);
+        bool GetUseStrongSyncWait();
+    };
+}
+
 #ifdef NDEBUG_DISABLED
 #define NDEBUG
 #undef NDEBUG_DISABLED

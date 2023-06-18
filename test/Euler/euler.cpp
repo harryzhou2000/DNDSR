@@ -7,6 +7,7 @@ int main(int argc, char* argv[])
     {
         DNDS::MPIInfo mpi;
         mpi.setWorld();
+        auto strategy = DNDS::MPI::CommStrategy::Instance().GetArrayStrategy();
         DNDS::Euler::EulerSolver<DNDS::Euler::EulerModel::NS> solver(mpi);
         solver.ConfigureFromJson("../cases/euler_default_config.json", false);
         solver.ConfigureFromJson("../cases/euler_default_config.json", true, "../cases/euler_config.json");

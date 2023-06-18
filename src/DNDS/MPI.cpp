@@ -1,6 +1,7 @@
 
 #include <ctime>
 #include <cstdio>
+#include <cstdlib>
 
 #include "MPI.hpp"
 
@@ -117,6 +118,59 @@ namespace DNDS
         std::sprintf(buf, "%s_%ld", bufTime, pidc);
 
         return std::string(buf);
+    }
+}
+
+namespace DNDS::MPI
+{
+    CommStrategy::CommStrategy()
+    {
+        {
+            auto ret = std::getenv("DNDS_ARRAY_STRATEGY_USE_IN_SITU");
+            if (ret != NULL && (std::stoi(ret) != 0))
+            {
+                _array_strategy = InSituPack;
+                auto mpi = MPIInfo();
+                mpi.setWorld();
+                if (mpi.rank == 0)
+                    log() << "Detected DNDS_ARRAY_STRATEGY_USE_IN_SITU, setting" << std::endl;
+                MPI_Barrier(mpi.comm);
+            }
+        }
+
+        {
+            auto ret = std::getenv("DNDS_USE_STRONG_SYNC_WAIT");
+            if (ret != NULL && (std::stoi(ret) != 0))
+            {
+                _use_strong_sync_wait = true;
+                auto mpi = MPIInfo();
+                mpi.setWorld();
+                if (mpi.rank == 0)
+                    log() << "Detected DNDS_USE_STRONG_SYNC_WAIT, setting" << std::endl;
+                MPI_Barrier(mpi.comm);
+            }
+        }
+    }
+
+    CommStrategy &CommStrategy::Instance()
+    {
+        static CommStrategy strategy;
+        return strategy;
+    }
+
+    CommStrategy::ArrayCommType CommStrategy::GetArrayStrategy()
+    {
+        return _array_strategy;
+    }
+
+    void CommStrategy::SetArrayStrategy(CommStrategy::ArrayCommType t)
+    {
+        _array_strategy = t;
+    }
+
+    bool CommStrategy::GetUseStrongSyncWait()
+    {
+        return _use_strong_sync_wait;
     }
 }
 

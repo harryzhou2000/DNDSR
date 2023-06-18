@@ -7,7 +7,7 @@
 namespace DNDS
 {
     using t_pLGlobalMapping = std::shared_ptr<GlobalOffsetsMapping>;
-    using t_pLGhostMapping = std::shared_ptr<OffsetAscendIndexMapping>; //TODO: change to unique_ptr and modify corresponding copy constructor/assigner
+    using t_pLGhostMapping = std::shared_ptr<OffsetAscendIndexMapping>; // TODO: change to unique_ptr and modify corresponding copy constructor/assigner
 
     template <class T, rowsize _row_size = 1, rowsize _row_max = _row_size, rowsize _align = NoAlign>
     class ParArray : public Array<T, _row_size, _row_max, _align>
@@ -23,9 +23,9 @@ namespace DNDS
         MPIInfo mpi;
         using t_pRowSizes = typename TArray::t_pRowSizes;
 
-    public: //!use this with caution
-        using TArray::WriteSerializer;
+    public: //! use this with caution
         using TArray::ReadSerializer;
+        using TArray::WriteSerializer;
 
     private:
         MPI_Datatype dataType = BasicType_To_MPIIntType<T>().first;
@@ -134,6 +134,8 @@ namespace DNDS
     // template <class TArray>
     class ArrayTransformer
     {
+        MPI::CommStrategy::ArrayCommType commTypeCurrent = MPI::CommStrategy::UnknownArrayCommType;
+
     public:
         using TArray = ParArray<T, _row_size, _row_max, _align>;
         // using T = TArray::value_type;
@@ -162,7 +164,14 @@ namespace DNDS
         MPI_Aint pushSendSize;
         MPI_Aint pullSendSize;
 
-        void setFatherSon(const t_pArray &n_father, const t_pArray &n_son)
+        tMPI_intVec pushingSizes;
+        tMPI_AintVec pushingDisps;
+        std::vector<index> pushingIndexLocal;
+
+        std::vector<std::vector<T>> inSituBuffer;
+
+        void
+        setFatherSon(const t_pArray &n_father, const t_pArray &n_son)
         {
             father = n_father;
             son = n_son;
@@ -238,7 +247,6 @@ namespace DNDS
                 *pLGlobalMapping,
                 mpi);
         }
-#define ARRAY_COMM_USE_TYPE_HINDEXED
         /******************************************************************************************************************************/
         /**
          * \brief get real element byte info into account, with ghost indexer and comm types built, need two mappings
@@ -249,23 +257,26 @@ namespace DNDS
         {
             DNDS_assert(bool(father) && bool(son));
             DNDS_assert(pLGlobalMapping && pLGhostMapping);
-            father->Compress(); //! assure CSR is in compressed form
+            commTypeCurrent = MPI::CommStrategy::Instance().GetArrayStrategy();
+            if (commTypeCurrent == MPI::CommStrategy::HIndexed)
+                father->Compress(); //! assure CSR is in compressed form
             // TODO: support comm for uncompressed: add in-situ packaging working mode
             // TODO: support actual MAX arrays' size communicating: append comm types: ? needed?
             // TODO: add manual packaging mode
+
             /*********************************************/ // starts to deal with actual byte sizes
 
             //*phase2.1: build push sizes and push disps
             index nSend = pLGhostMapping->pushingIndexGlobal.size();
-            tMPI_intVec pushingSizes(nSend); // pushing sizes  xx in bytes xx now in num of remove_all_extents_t<T>
-#ifdef ARRAY_COMM_USE_TYPE_HINDEXED
-            tMPI_AintVec pushingDisps(nSend); // pushing disps in bytes
-#else
-            tMPI_intVec pushingDisps(nSend); // pushing disps in bytes  //!hindexed is wrong
-#endif
-            DNDS_assert(pLGhostMapping->pushingIndexGlobal.size() < DNDS_INDEX_MAX);
+            pushingSizes.resize(nSend); // pushing sizes  xx in bytes xx now in num of remove_all_extents_t<T>
+
+            pushingDisps.resize(nSend); // pushing disps in bytes
+
+            DNDS_assert(nSend < DNDS_INDEX_MAX);
             auto fatherDataStart = father->operator[](0);
-            for (index i = 0; i < index(pLGhostMapping->pushingIndexGlobal.size()); i++)
+            if (commTypeCurrent == MPI::CommStrategy::InSituPack)
+                pushingIndexLocal.resize(nSend);
+            for (index i = 0; i < index(nSend); i++)
             {
                 MPI_int rank = -1;
                 index loc = -1;
@@ -278,6 +289,9 @@ namespace DNDS
                     pushingSizes[i] = father->RowSize(loc) * father->getTypeMult();
                 if constexpr (isTABLE_Fixed(_dataLayout))
                     pushingSizes[i] = father->RowSizeField() * father->getTypeMult();
+
+                if (commTypeCurrent == MPI::CommStrategy::InSituPack)
+                    pushingIndexLocal[i] = loc;
             }
             // PrintVec(pushingSizes, std::cout);
             // std::cout << std::endl;
@@ -352,79 +366,82 @@ namespace DNDS
                 for (auto &i : pushingSizes)
                     i = son->RowSizeField() * father->getTypeMult();
             }
-            pPushTypeVec = std::make_shared<MPITypePairHolder>(0);
-            pPullTypeVec = std::make_shared<MPITypePairHolder>(0);
-            for (MPI_int r = 0; r < mpi.size; r++)
+
+            if (commTypeCurrent == MPI::CommStrategy::HIndexed) // record types
             {
-                // push
-                MPI_int pushNumber = pLGhostMapping->pushIndexSizes[r];
-                // std::cout << "PN" << pushNumber << std::endl;
-                if (pushNumber > 0)
+                pPushTypeVec = std::make_shared<MPITypePairHolder>(0);
+                pPullTypeVec = std::make_shared<MPITypePairHolder>(0);
+                for (MPI_int r = 0; r < mpi.size; r++)
                 {
+                    // push
+                    MPI_int pushNumber = pLGhostMapping->pushIndexSizes[r];
+                    // std::cout << "PN" << pushNumber << std::endl;
+                    if (pushNumber > 0)
+                    {
 
-#ifdef ARRAY_COMM_USE_TYPE_HINDEXED
-                    MPI_Aint
-#else
-                    MPI_int
-#endif
-                        *pPushDisps;
-                    MPI_int *pPushSizes;
-                    pPushDisps = pushingDisps.data() + pLGhostMapping->pushIndexStarts[r];
-                    pPushSizes = pushingSizes.data() + pLGhostMapping->pushIndexStarts[r];
-                    // std::cout <<mpi.rank<< " pushSlice " << pPushDisps[0] << outputDelim << pPushSizes[0] << std::endl;
+                        MPI_Aint *pPushDisps;
+                        MPI_int *pPushSizes;
+                        pPushDisps = pushingDisps.data() + pLGhostMapping->pushIndexStarts[r];
+                        pPushSizes = pushingSizes.data() + pLGhostMapping->pushIndexStarts[r];
+                        // std::cout <<mpi.rank<< " pushSlice " << pPushDisps[0] << outputDelim << pPushSizes[0] << std::endl;
 
-                    // if (mpi.rank == 0)
-                    // {
-                    //     std::cout << "pushing to " << r << "  size" << pushNumber << "\n";
-                    //     for (int i = 0; i < pushNumber; i++)
-                    //         std::cout << "b[" << i << "] = " << pPushSizes[i] << std::endl;
-                    //     for (int i = 0; i < pushNumber; i++)
-                    //         std::cout << "d[" << i << "] = " << pPushDisps[i] << std::endl;
-                    // }
-                    // std::cout << "=== PUSH TYPE : " << mpi.rank << " from " << r << std::endl;
+                        // if (mpi.rank == 0)
+                        // {
+                        //     std::cout << "pushing to " << r << "  size" << pushNumber << "\n";
+                        //     for (int i = 0; i < pushNumber; i++)
+                        //         std::cout << "b[" << i << "] = " << pPushSizes[i] << std::endl;
+                        //     for (int i = 0; i < pushNumber; i++)
+                        //         std::cout << "d[" << i << "] = " << pPushDisps[i] << std::endl;
+                        // }
+                        // std::cout << "=== PUSH TYPE : " << mpi.rank << " from " << r << std::endl;
 
-                    MPI_Datatype dtype;
-#ifdef ARRAY_COMM_USE_TYPE_HINDEXED
-                    MPI_Type_create_hindexed(pushNumber, pPushSizes, pPushDisps, father->getDataType(), &dtype);
-#else
-                    MPI_Type_indexed(pushNumber, pPushBytes, pPushDisps, MPI_UINT8_T, &dtype);
-#endif
+                        MPI_Datatype dtype;
 
-                    MPI_Type_commit(&dtype);
-                    pPushTypeVec->push_back(std::make_pair(r, dtype));
-                    // OPT: could use MPI_Type_create_hindexed_block to save some space
+                        MPI_Type_create_hindexed(pushNumber, pPushSizes, pPushDisps, father->getDataType(), &dtype);
+
+                        MPI_Type_commit(&dtype);
+                        pPushTypeVec->push_back(std::make_pair(r, dtype));
+                        // OPT: could use MPI_Type_create_hindexed_block to save some space
+                    }
+                    // pull
+                    MPI_Aint pullDisp[1];
+
+                    MPI_int pullSizes[1]; // same as pushSizes
+                    auto gRPtr = son->operator[](index(pLGhostMapping->ghostStart[r + 1]));
+                    auto gLPtr = son->operator[](index(pLGhostMapping->ghostStart[r]));
+                    auto gStartPtr = son->operator[](index(0));
+                    auto ghostSpan = gRPtr - gLPtr;
+                    auto ghostStart = gLPtr - gStartPtr;
+                    DNDS_assert(ghostSpan < INT_MAX && ghostStart < INT_MAX);
+                    pullSizes[0] = MPI_int(ghostSpan) * father->getTypeMult();
+                    pullDisp[0] = ghostStart * sizeof(T);
+                    if (pullSizes[0] > 0)
+                    {
+                        // std::cout << "=== PULL TYPE : " << mpi.rank << " from " << r << std::endl;
+                        MPI_Datatype dtype;
+
+                        MPI_Type_create_hindexed(1, pullSizes, pullDisp, father->getDataType(), &dtype);
+
+                        // std::cout << mpi.rank << " pullSlice " << pullDisp[0] << outputDelim << pullBytes[0] << std::endl;
+                        MPI_Type_commit(&dtype);
+                        pPullTypeVec->push_back(std::make_pair(r, dtype));
+                    }
                 }
-// pull
-#ifdef ARRAY_COMM_USE_TYPE_HINDEXED
-                MPI_Aint pullDisp[1];
-#else
-                MPI_int pullDisp[1];
-#endif
-                MPI_int pullSizes[1]; // same as pushSizes
-                auto gRPtr = son->operator[](index(pLGhostMapping->ghostStart[r + 1]));
-                auto gLPtr = son->operator[](index(pLGhostMapping->ghostStart[r]));
-                auto gStartPtr = son->operator[](index(0));
-                auto ghostSpan = gRPtr - gLPtr;
-                auto ghostStart = gLPtr - gStartPtr;
-                DNDS_assert(ghostSpan < INT_MAX && ghostStart < INT_MAX);
-                pullSizes[0] = MPI_int(ghostSpan) * father->getTypeMult();
-                pullDisp[0] = ghostStart * sizeof(T);
-                if (pullSizes[0] > 0)
-                {
-                    // std::cout << "=== PULL TYPE : " << mpi.rank << " from " << r << std::endl;
-                    MPI_Datatype dtype;
-#ifdef ARRAY_COMM_USE_TYPE_HINDEXED
-                    MPI_Type_create_hindexed(1, pullSizes, pullDisp, father->getDataType(), &dtype);
-#else
-                    MPI_Type_indexed(1, pullBytes, pullDisp, MPI_UINT8_T, &dtype);
-#endif
-                    // std::cout << mpi.rank << " pullSlice " << pullDisp[0] << outputDelim << pullBytes[0] << std::endl;
-                    MPI_Type_commit(&dtype);
-                    pPullTypeVec->push_back(std::make_pair(r, dtype));
-                }
+                pPullTypeVec->shrink_to_fit();
+                pPushTypeVec->shrink_to_fit();
+
+                pushingDisps.clear();
+                pushingSizes.clear(); // no need
             }
-            pPullTypeVec->shrink_to_fit();
-            pPushTypeVec->shrink_to_fit();
+            else if (commTypeCurrent == MPI::CommStrategy::CommStrategy::InSituPack)
+            {
+                // could simplify some info on sparse comm?
+                pushingDisps.clear();
+            }
+            else
+            {
+                DNDS_assert(false);
+            }
         }
         /******************************************************************************************************************************/
 
@@ -437,44 +454,55 @@ namespace DNDS
          */
         void initPersistentPush() // collective;
         {
-            // DNDS_assert(pPullTypeVec && pPushTypeVec);
-            DNDS_assert(pPullTypeVec.use_count() > 0 && pPushTypeVec.use_count() > 0);
-            pushSendSize = 0;
-            auto nReqs = pPullTypeVec->size() + pPushTypeVec->size();
-            // DNDS_assert(nReqs > 0);
-            PushReqVec.resize(nReqs, (MPI_REQUEST_NULL)), PushStatVec.resize(nReqs);
-            for (auto ip = 0; ip < pPullTypeVec->size(); ip++)
+            if (commTypeCurrent == MPI::CommStrategy::HIndexed)
             {
-                auto dtypeInfo = (*pPullTypeVec)[ip];
-                MPI_int rankOther = dtypeInfo.first;
-                MPI_int tag = rankOther + mpi.rank;
+                // DNDS_assert(pPullTypeVec && pPushTypeVec);
+                DNDS_assert(pPullTypeVec.use_count() > 0 && pPushTypeVec.use_count() > 0);
+                pushSendSize = 0;
+                auto nReqs = pPullTypeVec->size() + pPushTypeVec->size();
+                // DNDS_assert(nReqs > 0);
+                PushReqVec.resize(nReqs, (MPI_REQUEST_NULL)), PushStatVec.resize(nReqs);
+                for (auto ip = 0; ip < pPullTypeVec->size(); ip++)
+                {
+                    auto dtypeInfo = (*pPullTypeVec)[ip];
+                    MPI_int rankOther = dtypeInfo.first;
+                    MPI_int tag = rankOther + mpi.rank;
 #ifndef ARRAY_COMM_USE_BUFFERED_SEND
-                MPI_Send_init
+                    MPI_Send_init
 #else
-                MPI_Bsend_init
+                    MPI_Bsend_init
 #endif
-                    (son->data(), 1, dtypeInfo.second, rankOther, tag, mpi.comm, PushReqVec.data() + ip);
+                        (son->data(), 1, dtypeInfo.second, rankOther, tag, mpi.comm, PushReqVec.data() + ip);
 
-                // cascade from father
+                    // cascade from father
 
-                // // buffer calculate //!deprecated because of size limit
-                // MPI_Aint csize;
-                // MPI_Pack_external_size(1, dtypeInfo.second, mpi.comm, &csize);
-                // csize += MPI_BSEND_OVERHEAD;
-                // DNDS_assert(MAX_MPI_Aint - pushSendSize >= csize && csize > 0);
-                // pushSendSize += csize * 2;
-            }
-            for (auto ip = 0; ip < pPushTypeVec->size(); ip++)
-            {
-                auto dtypeInfo = (*pPushTypeVec)[ip];
-                MPI_int rankOther = dtypeInfo.first;
-                MPI_int tag = rankOther + mpi.rank;
-                MPI_Recv_init(father->data(), 1, dtypeInfo.second, rankOther, tag, mpi.comm, PushReqVec.data() + pPullTypeVec->size() + ip);
-                // cascade from father
-            }
+                    // // buffer calculate //!deprecated because of size limit
+                    // MPI_Aint csize;
+                    // MPI_Pack_external_size(1, dtypeInfo.second, mpi.comm, &csize);
+                    // csize += MPI_BSEND_OVERHEAD;
+                    // DNDS_assert(MAX_MPI_Aint - pushSendSize >= csize && csize > 0);
+                    // pushSendSize += csize * 2;
+                }
+                for (auto ip = 0; ip < pPushTypeVec->size(); ip++)
+                {
+                    auto dtypeInfo = (*pPushTypeVec)[ip];
+                    MPI_int rankOther = dtypeInfo.first;
+                    MPI_int tag = rankOther + mpi.rank;
+                    MPI_Recv_init(father->data(), 1, dtypeInfo.second, rankOther, tag, mpi.comm, PushReqVec.data() + pPullTypeVec->size() + ip);
+                    // cascade from father
+                }
 #ifdef ARRAY_COMM_USE_BUFFERED_SEND
-            // MPIBufferHandler::Instance().claim(pushSendSize, mpi.rank);
+                // MPIBufferHandler::Instance().claim(pushSendSize, mpi.rank);
 #endif
+            }
+            else if (commTypeCurrent == MPI::CommStrategy::CommStrategy::InSituPack)
+            {
+                // could simplify some info on sparse comm?
+            }
+            else
+            {
+                DNDS_assert(false);
+            }
         }
         /******************************************************************************************************************************/
 
@@ -487,79 +515,255 @@ namespace DNDS
          */
         void initPersistentPull() // collective;
         {
-            // DNDS_assert(pPullTypeVec && pPushTypeVec);
-            DNDS_assert(pPullTypeVec.use_count() > 0 && pPushTypeVec.use_count() > 0);
-            auto nReqs = pPullTypeVec->size() + pPushTypeVec->size();
-            pullSendSize = 0;
-            // DNDS_assert(nReqs > 0);
-            PullReqVec.resize(nReqs, (MPI_REQUEST_NULL)), PullStatVec.resize(nReqs);
-            for (typename decltype(pPullTypeVec)::element_type::size_type ip = 0; ip < pPullTypeVec->size(); ip++)
+            if (commTypeCurrent == MPI::CommStrategy::HIndexed)
             {
-                auto dtypeInfo = (*pPullTypeVec)[ip];
-                MPI_int rankOther = dtypeInfo.first;
-                MPI_int tag = rankOther + mpi.rank; //! receives a lot of messages, this distinguishes them
-                // std::cout << mpi.rank << " Recv " << rankOther << std::endl;
-                MPI_Recv_init(son->data(), 1, dtypeInfo.second, rankOther, tag, mpi.comm, PullReqVec.data() + ip);
-                // std::cout << *(real *)(dataGhost.data() + 8 * 0) << std::endl;
-                // cascade from father
-            }
-            for (typename decltype(pPullTypeVec)::element_type::size_type ip = 0; ip < pPushTypeVec->size(); ip++)
-            {
-                auto dtypeInfo = (*pPushTypeVec)[ip];
-                MPI_int rankOther = dtypeInfo.first;
-                MPI_int tag = rankOther + mpi.rank;
-                // std::cout << mpi.rank << " Send " << rankOther << std::endl;
+                // DNDS_assert(pPullTypeVec && pPushTypeVec);
+                DNDS_assert(pPullTypeVec.use_count() > 0 && pPushTypeVec.use_count() > 0);
+                auto nReqs = pPullTypeVec->size() + pPushTypeVec->size();
+                pullSendSize = 0;
+                // DNDS_assert(nReqs > 0);
+                PullReqVec.resize(nReqs, (MPI_REQUEST_NULL)), PullStatVec.resize(nReqs);
+                for (typename decltype(pPullTypeVec)::element_type::size_type ip = 0; ip < pPullTypeVec->size(); ip++)
+                {
+                    auto dtypeInfo = (*pPullTypeVec)[ip];
+                    MPI_int rankOther = dtypeInfo.first;
+                    MPI_int tag = rankOther + mpi.rank; //! receives a lot of messages, this distinguishes them
+                    // std::cout << mpi.rank << " Recv " << rankOther << std::endl;
+                    MPI_Recv_init(son->data(), 1, dtypeInfo.second, rankOther, tag, mpi.comm, PullReqVec.data() + ip);
+                    // std::cout << *(real *)(dataGhost.data() + 8 * 0) << std::endl;
+                    // cascade from father
+                }
+                for (typename decltype(pPullTypeVec)::element_type::size_type ip = 0; ip < pPushTypeVec->size(); ip++)
+                {
+                    auto dtypeInfo = (*pPushTypeVec)[ip];
+                    MPI_int rankOther = dtypeInfo.first;
+                    MPI_int tag = rankOther + mpi.rank;
+                    // std::cout << mpi.rank << " Send " << rankOther << std::endl;
 #ifndef ARRAY_COMM_USE_BUFFERED_SEND
-                MPI_Send_init
+                    MPI_Send_init
 #else
-                MPI_Bsend_init
+                    MPI_Bsend_init
 #endif
-                    (father->data(), 1, dtypeInfo.second, rankOther, tag, mpi.comm, PullReqVec.data() + pPullTypeVec->size() + ip);
-                // std::cout << *(real *)(data.data() + 8 * 1) << std::endl;
-                // cascade from father
+                        (father->data(), 1, dtypeInfo.second, rankOther, tag, mpi.comm, PullReqVec.data() + pPullTypeVec->size() + ip);
+                    // std::cout << *(real *)(data.data() + 8 * 1) << std::endl;
+                    // cascade from father
 
-                // // buffer calculate //!deprecated because of size limit
-                // MPI_Aint csize;
-                // MPI_Pack_external_size(1, dtypeInfo.second, mpi.comm, &csize);
-                // csize += MPI_BSEND_OVERHEAD * 8;
-                // DNDS_assert(MAX_MPI_Aint - pullSendSize >= csize && csize > 0);
-                // pullSendSize += csize * 2;
-            }
+                    // // buffer calculate //!deprecated because of size limit
+                    // MPI_Aint csize;
+                    // MPI_Pack_external_size(1, dtypeInfo.second, mpi.comm, &csize);
+                    // csize += MPI_BSEND_OVERHEAD * 8;
+                    // DNDS_assert(MAX_MPI_Aint - pullSendSize >= csize && csize > 0);
+                    // pullSendSize += csize * 2;
+                }
 #ifdef ARRAY_COMM_USE_BUFFERED_SEND
-            // MPIBufferHandler::Instance().claim(pullSendSize, mpi.rank);
+                // MPIBufferHandler::Instance().claim(pullSendSize, mpi.rank);
 #endif
+            }
+            else if (commTypeCurrent == MPI::CommStrategy::CommStrategy::InSituPack)
+            {
+                // could simplify some info on sparse comm?
+            }
+            else
+            {
+                DNDS_assert(false);
+            }
         }
         /******************************************************************************************************************************/
 
         void startPersistentPush() // collective;
         {
+            if (commTypeCurrent == MPI::CommStrategy::CommStrategy::HIndexed)
+            {
+                // req already ready
+                if (PushReqVec.size())
+                    MPI_Startall(PushReqVec.size(), PushReqVec.data());
+            }
+            else if (commTypeCurrent == MPI::CommStrategy::CommStrategy::InSituPack)
+            {
+                for (MPI_int r = 0; r < mpi.size; r++)
+                {
+                    // push
+                    MPI_int pushNumber = pLGhostMapping->pushIndexSizes[r];
+                    // std::cout << "PN" << pushNumber << std::endl;
+                    if (pushNumber > 0)
+                    {
+                        index nPushData{0};
+                        for (index i = 0; i < pushNumber; i++)
+                        {
+                            auto loc = pushingIndexLocal.at(pLGhostMapping->pushIndexStarts[r] + i);
+                            index nPush = 0;
+                            if constexpr (_dataLayout == CSR)
+                                nPush = father->RowSizeField(loc);
+                            if constexpr (isTABLE_Max(_dataLayout)) //! init sizes
+                                nPush = father->RowSize(loc);
+                            if constexpr (isTABLE_Fixed(_dataLayout))
+                                nPush = father->RowSizeField();
+                            nPushData += nPush;
+                        }
+                        inSituBuffer.emplace_back(nPushData);
+                        PushReqVec.emplace_back(MPI_REQUEST_NULL);
+                        MPI_Irecv(inSituBuffer.back().data(), nPushData * father->getTypeMult(), father->getDataType(),
+                                  r, mpi.rank + r, mpi.comm, &PushReqVec.back());
+                    }
+                }
+                for (MPI_int r = 0; r < mpi.size; r++)
+                {
+                    // pull
+                    MPI_Aint pullDisp;
+                    MPI_int pullSize; // same as pushSizes
+                    auto gRPtr = son->operator[](index(pLGhostMapping->ghostStart[r + 1]));
+                    auto gLPtr = son->operator[](index(pLGhostMapping->ghostStart[r]));
+                    auto ghostSpan = gRPtr - gLPtr;
+                    pullSize = MPI_int(ghostSpan);
+
+                    if (pullSize > 0)
+                    {
+                        PushReqVec.emplace_back(MPI_REQUEST_NULL);
+                        MPI_Isend(gLPtr, pullSize * father->getTypeMult(), father->getDataType(), r, r + mpi.rank, mpi.comm, &PushReqVec.back());
+                    }
+                }
+            }
+            else
+            {
+                DNDS_assert(false);
+            }
             PerformanceTimer::Instance().StartTimer(PerformanceTimer::TimerType::Comm);
 #ifdef ARRAY_COMM_USE_BUFFERED_SEND
             MPIBufferHandler::Instance().claim(pushSendSize, mpi.rank);
 #endif
-            if (PushReqVec.size())
-                MPI_Startall(PushReqVec.size(), PushReqVec.data());
+
             PerformanceTimer::Instance().EndTimer(PerformanceTimer::TimerType::Comm);
         }
         void startPersistentPull() // collective;
         {
             PerformanceTimer::Instance().StartTimer(PerformanceTimer::TimerType::Comm);
+            if (commTypeCurrent == MPI::CommStrategy::CommStrategy::HIndexed)
+            {
+                // req already ready
+                if (PullReqVec.size())
+                    MPI_Startall(PullReqVec.size(), PullReqVec.data());
+            }
+            else if (commTypeCurrent == MPI::CommStrategy::CommStrategy::InSituPack)
+            {
+                for (MPI_int r = 0; r < mpi.size; r++)
+                {
+                    // push
+                    MPI_int pushNumber = pLGhostMapping->pushIndexSizes[r];
+                    // std::cout << "PN" << pushNumber << std::endl;
+                    if (pushNumber > 0)
+                    {
+                        index nPushData{0};
+                        for (index i = 0; i < pushNumber; i++)
+                        {
+                            auto loc = pushingIndexLocal.at(pLGhostMapping->pushIndexStarts[r] + i);
+                            index nPush = 0;
+                            if constexpr (_dataLayout == CSR)
+                                nPush = father->RowSizeField(loc);
+                            if constexpr (isTABLE_Max(_dataLayout)) //! init sizes
+                                nPush = father->RowSize(loc);
+                            if constexpr (isTABLE_Fixed(_dataLayout))
+                                nPush = father->RowSizeField();
+                            nPushData += nPush;
+                        }
+                        inSituBuffer.emplace_back(nPushData);
+                        nPushData = 0;
+                        for (index i = 0; i < pushNumber; i++)
+                        {
+                            auto loc = pushingIndexLocal.at(pLGhostMapping->pushIndexStarts[r] + i);
+                            index nPush = 0;
+                            if constexpr (_dataLayout == CSR)
+                                nPush = father->RowSizeField(loc);
+                            if constexpr (isTABLE_Max(_dataLayout)) //! init sizes
+                                nPush = father->RowSize(loc);
+                            if constexpr (isTABLE_Fixed(_dataLayout))
+                                nPush = father->RowSizeField();
+                            std::copy((*father)[loc], (*father)[loc] + nPush, inSituBuffer.back().begin() + nPushData);
+                            nPushData += nPush;
+                        }
+                        PullReqVec.emplace_back(MPI_REQUEST_NULL);
+                        MPI_Isend(inSituBuffer.back().data(), nPushData * father->getTypeMult(), father->getDataType(),
+                                  r, mpi.rank + r, mpi.comm, &PullReqVec.back());
+                    }
+                }
+                for (MPI_int r = 0; r < mpi.size; r++)
+                {
+                    // pull
+                    MPI_Aint pullDisp;
+                    MPI_int pullSize; // same as pushSizes
+                    auto gRPtr = son->operator[](index(pLGhostMapping->ghostStart[r + 1]));
+                    auto gLPtr = son->operator[](index(pLGhostMapping->ghostStart[r]));
+                    auto ghostSpan = gRPtr - gLPtr;
+                    pullSize = MPI_int(ghostSpan);
+
+                    if (pullSize > 0)
+                    {
+                        PullReqVec.emplace_back(MPI_REQUEST_NULL);
+                        MPI_Irecv(gLPtr, pullSize * father->getTypeMult(), father->getDataType(), r, r + mpi.rank, mpi.comm, &PullReqVec.back());
+                    }
+                }
+            }
+            else
+            {
+                DNDS_assert(false);
+            }
 #ifdef ARRAY_COMM_USE_BUFFERED_SEND
             MPIBufferHandler::Instance().claim(pullSendSize, mpi.rank);
 #endif
-            if (PullReqVec.size())
-                MPI_Startall(PullReqVec.size(), PullReqVec.data());
+
             PerformanceTimer::Instance().EndTimer(PerformanceTimer::TimerType::Comm);
         }
 
         void waitPersistentPush() // collective;
         {
             PerformanceTimer::Instance().StartTimer(PerformanceTimer::TimerType::Comm);
+            if (MPI::CommStrategy::Instance().GetUseStrongSyncWait())
+                MPI_Barrier(mpi.comm);
             if (PushReqVec.size())
                 MPI_Waitall(PushReqVec.size(), PushReqVec.data(), PushStatVec.data());
 #ifdef ARRAY_COMM_USE_BUFFERED_SEND
             MPIBufferHandler::Instance().unclaim(pushSendSize);
 #endif
+            if (commTypeCurrent == MPI::CommStrategy::CommStrategy::HIndexed)
+            {
+                // data alright
+            }
+            else if (commTypeCurrent == MPI::CommStrategy::CommStrategy::InSituPack)
+            {
+                auto bufferVec = inSituBuffer.begin();
+                for (MPI_int r = 0; r < mpi.size; r++)
+                {
+                    // push
+                    DNDS_assert(bufferVec < inSituBuffer.end());
+                    MPI_int pushNumber = pLGhostMapping->pushIndexSizes[r];
+                    // std::cout << "PN" << pushNumber << std::endl;
+                    if (pushNumber > 0)
+                    {
+                        index nPushData = 0;
+                        for (index i = 0; i < pushNumber; i++)
+                        {
+                            auto loc = pushingIndexLocal.at(pLGhostMapping->pushIndexStarts[r] + i);
+                            index nPush = 0;
+                            if constexpr (_dataLayout == CSR)
+                                nPush = father->RowSizeField(loc);
+                            if constexpr (isTABLE_Max(_dataLayout)) //! init sizes
+                                nPush = father->RowSize(loc);
+                            if constexpr (isTABLE_Fixed(_dataLayout))
+                                nPush = father->RowSizeField();
+                            std::copy(bufferVec->begin() + nPushData, bufferVec->begin() + nPushData + nPush, (*father)[loc]);
+                            nPushData += nPush;
+                        }
+                        bufferVec++;
+                    }
+                }
+                inSituBuffer.clear();
+                PushReqVec.clear();
+            }
+            else
+            {
+                DNDS_assert(false);
+            }
+            if (MPI::CommStrategy::Instance().GetUseStrongSyncWait())
+                MPI_Barrier(mpi.comm);
             PerformanceTimer::Instance().EndTimer(PerformanceTimer::TimerType::Comm);
         }
         void waitPersistentPull() // collective;
@@ -571,6 +775,19 @@ namespace DNDS
 #ifdef ARRAY_COMM_USE_BUFFERED_SEND
             MPIBufferHandler::Instance().unclaim(pullSendSize);
 #endif
+            if (commTypeCurrent == MPI::CommStrategy::CommStrategy::HIndexed)
+            {
+                // data alright
+            }
+            else if (commTypeCurrent == MPI::CommStrategy::CommStrategy::InSituPack)
+            {
+                inSituBuffer.clear();
+                PullReqVec.clear();
+            }
+            else
+            {
+                DNDS_assert(false);
+            }
             PerformanceTimer::Instance().EndTimer(PerformanceTimer::TimerType::Comm);
         }
 

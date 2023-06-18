@@ -51,7 +51,9 @@
         "outPltTecplotFormat": true,
         "outPltVTKFormat": true,
         "outAtPointData": true,
-        "outAtCellData": true
+        "outAtCellData": true,
+        "nASCIIPrecision": 5,
+        "serializerSaveURec": false
     },
     "limiterControl": {
         "useLimiter": true,

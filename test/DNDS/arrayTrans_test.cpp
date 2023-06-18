@@ -155,7 +155,7 @@ void test_CSR_MAX_LARGE()
     A_Trans.setFatherSon(A, A_Ghost);
     A_Trans.createGhostMapping(pullingIndexG);
     A_Trans.createMPITypes();
-    DNDS_assert(A_Trans.pPullTypeVec);
+    // DNDS_assert(A_Trans.pPullTypeVec);
     A_Trans.pullOnce();
     MPISerialDo(mpi,
                 [&]()
