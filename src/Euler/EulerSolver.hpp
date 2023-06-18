@@ -180,6 +180,7 @@ namespace DNDS::Euler
                 bool outPltVTKFormat = true;
                 bool outAtPointData = true;
                 bool outAtCellData = true;
+                int nASCIIPrecision = 5;
 
                 bool serializerSaveURec = false;
 
@@ -196,7 +197,9 @@ namespace DNDS::Euler
                     outPltTecplotFormat,
                     outPltVTKFormat,
                     outAtPointData,
-                    outAtCellData)
+                    outAtCellData,
+                    nASCIIPrecision,
+                    serializerSaveURec)
             } dataIOControl;
 
             struct LimiterControl
@@ -400,7 +403,7 @@ namespace DNDS::Euler
                     i *= scale;
             }
             /// @todo //todo: upgrade to optional
-            if (config.dataIOControl.outPltMode == 0) 
+            if (config.dataIOControl.outPltMode == 0)
                 reader->coordSerialOutTrans.pullOnce();
             vfv->ConstructMetrics();
             vfv->ConstructBaseAndWeight(
@@ -475,6 +478,7 @@ namespace DNDS::Euler
         void PrintData(const std::string &fname, tODE &ode, tEval &eval)
         {
             DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
+            reader->SetASCIIPrecision(config.dataIOControl.nASCIIPrecision);
             if (config.dataIOControl.outAtCellData)
                 for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
                 {
