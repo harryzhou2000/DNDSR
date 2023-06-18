@@ -1475,36 +1475,6 @@ namespace DNDS::Euler
                 }
             }
 
-            // Box
-            for (auto &i : settings.boxInitializers)
-            {
-                for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
-                {
-                    Geom::tPoint pos = vfv->GetCellBary(iCell);
-                    if (pos(0) > i.x0 && pos(0) < i.x1 &&
-                        pos(1) > i.y0 && pos(1) < i.y1 &&
-                        pos(2) > i.z0 && pos(2) < i.z1)
-                    {
-                        u[iCell] = i.v;
-                    }
-                }
-            }
-
-            // Plane
-            for (auto &i : settings.planeInitializers)
-            {
-                for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
-                {
-                    Geom::tPoint pos = vfv->GetCellBary(iCell);
-                    if (pos(0) * i.a + pos(1) * i.b + pos(2) * i.c + i.h > 0)
-                    {
-                        // std::cout << pos << std::endl << i.a << i.b << std::endl << i.h <<std::endl;
-                        // DNDS_assert(false);
-                        u[iCell] = i.v;
-                    }
-                }
-            }
-
             switch (settings.specialBuiltinInitializer)
             {
             case 1: // for RT problem
@@ -1589,12 +1559,84 @@ namespace DNDS::Euler
                             });
                         u[iCell] = um / vfv->GetCellVol(iCell); // mean value
                     }
+            case 3: // for taylor-green vortex problem
+                DNDS_assert(model == NS_3D);
+                if constexpr (model == NS_3D)
+                {
+                    for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
+                    {
+                        Geom::tPoint pos = vfv->GetCellBary(iCell);
+                        real M0 = 0.1;
+                        real gamma = settings.idealGasProperty.gamma;
+                        auto c2n = mesh->cell2node[iCell];
+                        auto gCell = vfv->GetCellQuad(iCell);
+                        TU um;
+                        um.setZero();
+                        // Eigen::MatrixXd coords;
+                        // mesh->GetCoords(c2n, coords);
+                        gCell.IntegrationSimple(
+                            um,
+                            [&](TU &inc, int ig)
+                            {
+                                // std::cout << coords<< std::endl << std::endl;
+                                // std::cout << DiNj << std::endl;
+                                Geom::tPoint pPhysics = vfv->GetCellQuadraturePPhys(iCell, ig);
+                                real x{pPhysics(0)}, y{pPhysics(1)}, z{pPhysics(2)};
+                                real ux = std::sin(x) * std::cos(y) * std::cos(z);
+                                real uy = -std::cos(x) * std::sin(y) * std::cos(z);
+                                real p = 1. / (gamma * sqr(M0)) + 1. / 16 * ((std::cos(2 * x) + std::cos(2 * y)) * (2 + std::cos(2 * z)));
+                                real rho = gamma * sqr(M0) * p;
+                                real E = 0.5 * (sqr(ux) + sqr(uy)) * rho + p / (gamma - 1);
+
+                                // std::cout << T << " " << rho << std::endl;
+                                inc.setZero();
+                                inc(0) = rho;
+                                inc(1) = rho * ux;
+                                inc(2) = rho * uy;
+                                inc(dim + 1) = E;
+
+                                inc *= vfv->GetCellJacobiDet(iCell, ig); // don't forget this
+                            });
+                        u[iCell] = um / vfv->GetCellVol(iCell); // mean value
+                    }
+                }
+                break;
             case 0:
                 break;
             default:
                 log() << "Wrong specialBuiltinInitializer" << std::endl;
                 DNDS_assert(false);
                 break;
+            }
+
+            // Box
+            for (auto &i : settings.boxInitializers)
+            {
+                for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
+                {
+                    Geom::tPoint pos = vfv->GetCellBary(iCell);
+                    if (pos(0) > i.x0 && pos(0) < i.x1 &&
+                        pos(1) > i.y0 && pos(1) < i.y1 &&
+                        pos(2) > i.z0 && pos(2) < i.z1)
+                    {
+                        u[iCell] = i.v;
+                    }
+                }
+            }
+
+            // Plane
+            for (auto &i : settings.planeInitializers)
+            {
+                for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
+                {
+                    Geom::tPoint pos = vfv->GetCellBary(iCell);
+                    if (pos(0) * i.a + pos(1) * i.b + pos(2) * i.c + i.h > 0)
+                    {
+                        // std::cout << pos << std::endl << i.a << i.b << std::endl << i.h <<std::endl;
+                        // DNDS_assert(false);
+                        u[iCell] = i.v;
+                    }
+                }
             }
         }
     };

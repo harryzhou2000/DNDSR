@@ -8,7 +8,12 @@
     },
     "implicitReconstructionControl": {
         "nInternalRecStep": 1,
-        "zeroGrads": false
+        "zeroGrads": false,
+        "recLinearScheme": 0,
+        "nGmresSpace": 5,
+        "nGmresIter": 10,
+        "recThreshold": 1e-05,
+        "nRecConsolCheck": 1
     },
     "outputControl": {
         "nConsoleCheck": 1,
@@ -37,6 +42,7 @@
     "dataIOControl": {
         "uniqueStamps": true,
         "meshRotZ": 0.0,
+        "meshScale": 1.0,
         "meshFile": "data/mesh/NACA0012_WIDE_H3.cgns",
         "outPltName": "data/out/debugData_",
         "outLogName": "data/out/debugData_",
@@ -61,6 +67,11 @@
     },
     "others": {
         "nFreezePassiveInner": 0
+    },
+    "_restartState": {
+        "iStep": -1,
+        "iStepInternal": -1,
+        "odeCodePrev": -1
     },
     "eulerSettings": {
         "useScalarJacobian": false,

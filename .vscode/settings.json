@@ -116,13 +116,16 @@
         "*.expression": "cpp",
         "future": "cpp",
         "tensorsymmetry": "cpp",
-        "nonlinearoptimization": "cpp"
+        "nonlinearoptimization": "cpp",
+        "iterativelinearsolvers": "cpp",
+        "matrixfunctions": "cpp"
     },
     "cSpell.words": [
         "Bary",
         "DNDS",
         "rowsize",
         "SDIRK",
+        "SSPRK",
         "Tecplot",
         "Vecs"
     ],

@@ -95,11 +95,19 @@ namespace DNDS::Euler
 
             struct ImplicitReconstructionControl
             {
+
                 int nInternalRecStep = 1;
                 bool zeroGrads = false;
+                int recLinearScheme = 0; // 0 for original SOR, 1 for GMRES
+                int nGmresSpace = 5;
+                int nGmresIter = 10;
+                real recThreshold = 1e-5;
+                int nRecConsolCheck = 1;
                 DNDS_NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_ORDERED_JSON(
                     ImplicitReconstructionControl,
-                    nInternalRecStep,zeroGrads)
+                    nInternalRecStep, zeroGrads,
+                    recLinearScheme, nGmresSpace, nGmresIter,
+                    recThreshold, nRecConsolCheck)
             } implicitReconstructionControl;
 
             struct OutputControl
@@ -161,6 +169,7 @@ namespace DNDS::Euler
             {
                 bool uniqueStamps = true;
                 real meshRotZ = 0;
+                real meshScale = 1.0;
                 std::string meshFile = "data/mesh/NACA0012_WIDE_H3.cgns";
                 std::string outPltName = "data/out/debugData_";
                 std::string outLogName = "data/out/debugData_";
@@ -172,10 +181,13 @@ namespace DNDS::Euler
                 bool outAtPointData = true;
                 bool outAtCellData = true;
 
+                bool serializerSaveURec = false;
+
                 DNDS_NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_ORDERED_JSON(
                     DataIOControl,
                     uniqueStamps,
                     meshRotZ,
+                    meshScale,
                     meshFile,
                     outPltName,
                     outLogName,
@@ -210,6 +222,16 @@ namespace DNDS::Euler
                     gmresCode, nGmresSpace, nGmresIter)
             } linearSolverControl;
 
+            struct RestartState
+            {
+                int iStep = -1;
+                int iStepInternal = -1;
+                int odeCodePrev = -1;
+                DNDS_NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_ORDERED_JSON(
+                    RestartState,
+                    iStep, iStepInternal, odeCodePrev)
+            } _restartState;
+
             struct Others
             {
                 int nFreezePassiveInner = 0;
@@ -233,6 +255,7 @@ namespace DNDS::Euler
                 __DNDS__json_to_config(limiterControl);
                 __DNDS__json_to_config(linearSolverControl);
                 __DNDS__json_to_config(others);
+                __DNDS__json_to_config(_restartState);
 
                 if (!read)
                     typename TEval::Setting().ReadWriteJSON(eulerSettings, nVars, false);
@@ -263,7 +286,7 @@ namespace DNDS::Euler
                 DNDS_assert_info(fIn, "config file not existent");
                 gSetting = nlohmann::ordered_json::parse(fIn, nullptr, true, true);
 
-                if(read && !jsonMergeName.empty())
+                if (read && !jsonMergeName.empty())
                 {
                     fIn = std::ifstream(jsonMergeName);
                     DNDS_assert_info(fIn, "config file patch not existent");
@@ -271,12 +294,15 @@ namespace DNDS::Euler
                     gSetting.merge_patch(gSettingAdd);
                 }
                 config.ReadWriteJson(gSetting, nVars, read);
+                if (mpi.rank == 0)
+                    log() << "JSON: read value:" << std::endl
+                          << std::setw(4) << gSetting << std::endl;
             }
             else
             {
                 gSetting = nlohmann::ordered_json::object();
                 config.ReadWriteJson(gSetting, nVars, read);
-                if(mpi.rank == 0) // single call for output
+                if (mpi.rank == 0) // single call for output
                 {
                     auto fIn = std::ofstream(jsonName);
                     fIn << std::setw(4) << gSetting;
@@ -293,7 +319,7 @@ namespace DNDS::Euler
         void ReadMeshAndInitialize()
         {
             output_stamp = getTimeStamp(mpi);
-            if (!config.convergenceControl.useVolWiseResidual)
+            if (!config.dataIOControl.uniqueStamps)
                 output_stamp = "";
             if (mpi.rank == 0)
                 log() << "=== Got Time Stamp: [" << output_stamp << "] ===" << std::endl;
@@ -350,6 +376,32 @@ namespace DNDS::Euler
 #ifdef DNDS_USE_OMP
             omp_set_num_threads(DNDS::MPIWorldSize() == 1 ? std::min(omp_get_num_procs(), omp_get_max_threads()) : 1);
 #endif
+
+            if (config.dataIOControl.meshRotZ != 0.0)
+            {
+                real rz = config.dataIOControl.meshRotZ / 180.0 * pi;
+                mesh->TransformCoords(
+                    [&](const Geom::tPoint &p)
+                    { return Geom::tPoint{
+                          p(0) * std::cos(rz) - p(1) * sin(rz),
+                          p(1) * cos(rz) + p(0) * sin(rz),
+                          p(2)}; });
+                ///@todo  //! todo: alter the rotation and translation in  periodicInfo mesh->periodicInfo
+            }
+            if (config.dataIOControl.meshScale != 1.0)
+            {
+                auto scale = config.dataIOControl.meshScale;
+                mesh->TransformCoords(
+                    [&](const Geom::tPoint &p)
+                    { return p * scale; });
+                for (auto &i : mesh->periodicInfo.translation)
+                    i *= scale;
+                for (auto &i : mesh->periodicInfo.rotationCenter)
+                    i *= scale;
+            }
+            /// @todo //todo: upgrade to optional
+            if (config.dataIOControl.outPltMode == 0) 
+                reader->coordSerialOutTrans.pullOnce();
             vfv->ConstructMetrics();
             vfv->ConstructBaseAndWeight(
                 [&](Geom::t_index id) -> real
@@ -695,6 +747,29 @@ namespace DNDS::Euler
                         1);
                 }
             }
+        }
+
+        void WriteSerializer(SerializerBase *serializer, const std::string &name)
+        {
+            auto cwd = serializer->GetCurrentPath();
+            serializer->CreatePath(name);
+            serializer->GoToPath(name);
+
+            u.WriteSerialize(serializer, "meanValue");
+
+            serializer->GoToPath(cwd);
+
+            nlohmann::ordered_json configJson;
+            config.ReadWriteJson(configJson, nVars, false);
+            serializer->WriteString("lastConfig", configJson.dump());
+
+            if (config.dataIOControl.serializerSaveURec)
+            {
+                serializer->WriteInt("hasReconstructionValue", 1);
+                uRec.WriteSerialize(serializer, "recValue");
+            }
+            else
+                serializer->WriteInt("hasReconstructionValue", 0);
         }
     };
 

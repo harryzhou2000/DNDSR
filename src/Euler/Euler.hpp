@@ -46,10 +46,17 @@ namespace DNDS::Euler
                 this->operator[](i) += R.operator[](i) * r;
         }
 
+        void operator*=(std::vector<real> R)
+        {
+            DNDS_assert(R.size() >= this->father->Size());
+            for (index i = 0; i < this->father->Size(); i++)
+                this->operator[](i) *= R[i];
+        }
+
         real norm2()
         {
             real sqrSum{0}, sqrSumAll{0};
-            for (index i = 0; i < this->Size(); i++)
+            for (index i = 0; i < this->father->Size(); i++) //*note that only father is included
                 sqrSum += this->operator[](i).squaredNorm();
             MPI_Allreduce(&sqrSum, &sqrSumAll, 1, DNDS_MPI_REAL, MPI_SUM, this->father->mpi.comm);
             // std::cout << "norm2is " << std::scientific << sqrSumAll << std::endl;
@@ -59,7 +66,7 @@ namespace DNDS::Euler
         real dot(const t_self &R)
         {
             real sqrSum{0}, sqrSumAll;
-            for (index i = 0; i < this->Size(); i++)
+            for (index i = 0; i < this->father->Size(); i++) //*note that only father is included
                 sqrSum += this->operator[](i).dot(R.operator[](i));
             MPI_Allreduce(&sqrSum, &sqrSumAll, 1, DNDS_MPI_REAL, MPI_SUM, this->father->mpi.comm);
             return sqrSumAll;

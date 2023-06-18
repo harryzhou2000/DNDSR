@@ -508,4 +508,85 @@ namespace DNDS::ODE
         {6. / 11., 18. / 11., -9. / 11., 2. / 11., 0. / 0.},
         {12. / 25., 48. / 25., -36. / 25., 16. / 25., -3. / 25.}};
 
+    template <class TDATA>
+    class ExplicitSSPRK3TimeStepAsImplicitDualTimeStep : public ImplicitDualTimeStep<TDATA>
+    {
+    public:
+        using Frhs = typename ImplicitDualTimeStep<TDATA>::Frhs;
+        using Fdt = typename ImplicitDualTimeStep<TDATA>::Fdt;
+        using Fsolve = typename ImplicitDualTimeStep<TDATA>::Fsolve;
+        using Fstop = typename ImplicitDualTimeStep<TDATA>::Fstop;
+        std::vector<real> dTau;
+        std::vector<TDATA> rhsbuf;
+        TDATA rhs;
+        TDATA xLast;
+        TDATA xInc;
+        index DOF;
+        bool localDtStepping{false};
+
+        template <class Finit>
+        ExplicitSSPRK3TimeStepAsImplicitDualTimeStep(
+            index NDOF, Finit &&finit = [](TDATA &) {}, bool nLocalDtStepping = false)
+            : DOF(NDOF), localDtStepping(nLocalDtStepping)
+        {
+
+            dTau.resize(NDOF);
+            rhsbuf.resize(3);
+            for (auto &i : rhsbuf)
+                finit(i);
+            finit(rhs);
+            finit(xLast);
+            finit(xInc);
+        }
+
+        /*!
+
+
+        @brief fsolve, maxIter, fstop are omitted here
+        */
+        virtual void Step(TDATA &x, TDATA &xinc, const Frhs &frhs, const Fdt &fdt, const Fsolve &fsolve,
+                          int maxIter, const Fstop &fstop, real dt) override
+        {
+
+            fdt(dTau, 1.0); // always gets dTau for CFL evaluation
+            xLast = x;
+            MPI_Barrier(MPI_COMM_WORLD);
+            // std::cout << "fucked" << std::endl;
+
+            frhs(rhs, x, 1, 0.5);
+            rhsbuf[0] = rhs;
+            if (localDtStepping)
+                rhs *= dTau;
+            else
+                rhs *= dt;
+
+            x += rhs;
+
+            frhs(rhs, x, 1, 1);
+            rhsbuf[1] = rhs;
+            if (localDtStepping)
+                rhs *= dTau;
+            else
+                rhs *= dt;
+            x *= 0.25;
+            x.addTo(xLast, 0.75);
+            x.addTo(rhs, 0.25);
+
+            frhs(rhs, x, 1, 0.25);
+            rhsbuf[2] = rhs;
+            if (localDtStepping)
+                rhs *= dTau;
+            else
+                rhs *= dt;
+            x *= 2./3.;
+            x.addTo(xLast, 1./3.);
+            x.addTo(rhs, 2./3.);
+
+        }
+
+        virtual TDATA &getLatestRHS() override
+        {
+            return rhsbuf[0];
+        }
+    };
 }

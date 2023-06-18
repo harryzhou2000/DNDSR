@@ -8,6 +8,19 @@ namespace DNDS::Euler
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
         InsertCheck(mpi, "Implicit 1 nvars " + std::to_string(nVars));
 
+        /************* Files **************/
+        if (mpi.rank == 0)
+        {
+            std::ofstream logConfig(config.dataIOControl.outLogName + "_" + output_stamp + ".config.json");
+            gSetting["___Compile_Time_Defines"] = DNDS_Defines_state;
+            gSetting["___Runtime_PartitionNumber"] = mpi.size;
+            logConfig << std::setw(4) << gSetting;
+            logConfig.close();
+        }
+
+        std::ofstream logErr(config.dataIOControl.outLogName + "_" + output_stamp + ".log");
+        /************* Files **************/
+
         std::shared_ptr<ODE::ImplicitDualTimeStep<decltype(u)>> ode;
 
         if (config.timeMarchControl.steadyQuit)
@@ -40,40 +53,48 @@ namespace DNDS::Euler
                 },
                 2);
             break;
+        case 2: // SSPRK4
+            if (mpi.rank == 0)
+                log() << "=== ODE: SSPRK4 " << std::endl;
+            ode = std::make_shared<ODE::ExplicitSSPRK3TimeStepAsImplicitDualTimeStep<decltype(u)>>(
+                mesh->NumCell(),
+                [&](decltype(u) &data)
+                {
+                    vfv->BuildUDof(data, nVars);
+                },
+                false); // TODO: add local stepping options
+            break;
+        default:
+            DNDS_assert_info(false, "no such ode code");
         }
 
-        Linear::GMRES_LeftPreconditioned<decltype(u)> gmres(
-            config.linearSolverControl.nGmresSpace,
-            [&](decltype(u) &data)
-            {
-                vfv->BuildUDof(data, nVars);
-            });
+        using tGMRES_u = Linear::GMRES_LeftPreconditioned<decltype(u)>;
+        using tGMRES_uRec = Linear::GMRES_LeftPreconditioned<decltype(uRec)>;
+        std::unique_ptr<tGMRES_u> gmres;
+        std::unique_ptr<tGMRES_uRec> gmresRec;
 
-        Linear::GMRES_LeftPreconditioned<decltype(uRec)> gmresRec(
-            5,
-            [&](decltype(uRec) &data)
-            {
-                vfv->BuildURec(data, nVars);
-            });
+        if (config.linearSolverControl.gmresCode == 1 ||
+            config.linearSolverControl.gmresCode == 2)
+            gmres = std::make_unique<tGMRES_u>(
+                config.linearSolverControl.nGmresSpace,
+                [&](decltype(u) &data)
+                {
+                    vfv->BuildUDof(data, nVars);
+                });
+
+        if (config.implicitReconstructionControl.recLinearScheme == 1)
+            gmresRec = std::make_unique<tGMRES_uRec>(
+                config.implicitReconstructionControl.nGmresSpace,
+                [&](decltype(uRec) &data)
+                {
+                    vfv->BuildURec(data, nVars);
+                });
 
         EulerEvaluator<model> eval(mesh, vfv);
         eval.settings.jsonSettings = config.eulerSettings;
         eval.settings.ReadWriteJSON(eval.settings.jsonSettings, nVars, true);
 
         eval.InitializeUDOF(u);
-
-        /************* Files **************/
-        if (mpi.rank == 0)
-        {
-            std::ofstream logConfig(config.dataIOControl.outLogName + "_" + output_stamp + ".config.json");
-            gSetting["___Compile_Time_Defines"] = DNDS_Defines_state;
-            gSetting["___Runtime_PartitionNumber"] = mpi.size;
-            logConfig << std::setw(4) << gSetting;
-            logConfig.close();
-        }
-
-        std::ofstream logErr(config.dataIOControl.outLogName + "_" + output_stamp + ".log");
-        /************* Files **************/
 
         double tstart = MPI_Wtime();
         double trec{0}, tcomm{0}, trhs{0}, tLim{0};
@@ -112,7 +133,7 @@ namespace DNDS::Euler
             //     uOld[iCell].m() = uRec[iCell].m();
 
             InsertCheck(mpi, " Lambda RHS: StartRec");
-            int nRec = (gradIsZero ? 5 : 1) * config.implicitReconstructionControl.nInternalRecStep;
+            int nRec = (gradIsZero ? 16 : 1) * config.implicitReconstructionControl.nInternalRecStep;
             real recIncBase = 0;
             double tstartA = MPI_Wtime();
             auto FBoundary = [&](const TU &UL, const TU &UMean, const Geom::tPoint &normOut, const Geom::tPoint &pPhy, const Geom::t_index bType) -> TU
@@ -142,84 +163,102 @@ namespace DNDS::Euler
                 return eval.generateBoundaryValue(ULfixedPlus, normOutV, normBase, pPhy(Seq012), tSimu + ct * curDtImplicit, bType, true) -
                        eval.generateBoundaryValue(ULfixed, normOutV, normBase, pPhy(Seq012), tSimu + ct * curDtImplicit, bType, true);
             };
-            for (int iRec = 1; iRec <= 300 * 0; iRec++)
-            {
-
-                uRecNew1 = uRec;
-
-                vfv->DoReconstructionIter(
-                    uRec, uRecNew, cx,
-                    // FBoundary
-                    [&](const TU &UL, const TU &UMean, const Geom::tPoint &normOut, const Geom::tPoint &pPhy, const Geom::t_index bType) -> TU
-                    {
-                        TVec normOutV = normOut(Seq012);
-                        auto normBase = Geom::NormBuildLocalBaseV(normOutV);
-                        bool compressed = false;
-                        TU ULfixed = eval.CompressRecPart(
-                            UMean,
-                            UL - UMean,
-                            compressed);
-                        return eval.generateBoundaryValue(ULfixed, normOutV, normBase, pPhy(Seq012), tSimu + ct * curDtImplicit, bType, true);
-                    },
-                    false);
-
-                uRec.trans.startPersistentPull();
-                uRec.trans.waitPersistentPull();
-
-                uRecNew1 -= uRec;
-                real recInc = uRecNew1.norm2();
-                if (iRec == 1)
-                    recIncBase = recInc;
-
-                if (recInc < recIncBase * 1e-6)
+            if (config.implicitReconstructionControl.recLinearScheme == 0)
+                for (int iRec = 1; iRec <= nRec; iRec++)
                 {
-                    if (mpi.rank == 0)
-                        std::cout << iRec << " Rec inc: " << recIncBase << " -> " << recInc << std::endl;
-                    break;
-                }
-            }
+                    if (nRec > 1)
+                        uRecNew1 = uRec;
 
-            for (int iRec = 1; iRec <= 1; iRec++)
-            {
-                uRecNew1 = uRec; // old value
-                vfv->DoReconstructionIter(
-                    uRec, uRecNew, cx,
-                    FBoundary,
-                    true, true);
-                uRecNew.trans.startPersistentPull();
-                uRecNew.trans.waitPersistentPull();
-                uRec.setConstant(0.0);
+                    vfv->DoReconstructionIter(
+                        uRec, uRecNew, cx,
+                        // FBoundary
+                        [&](const TU &UL, const TU &UMean, const Geom::tPoint &normOut, const Geom::tPoint &pPhy, const Geom::t_index bType) -> TU
+                        {
+                            TVec normOutV = normOut(Seq012);
+                            auto normBase = Geom::NormBuildLocalBaseV(normOutV);
+                            bool compressed = false;
+                            TU ULfixed = eval.CompressRecPart(
+                                UMean,
+                                UL - UMean,
+                                compressed);
+                            return eval.generateBoundaryValue(ULfixed, normOutV, normBase, pPhy(Seq012), tSimu + ct * curDtImplicit, bType, true);
+                        },
+                        false);
 
-                gmresRec.solve(
-                    [&](decltype(uRec) &x, decltype(uRec) &Ax)
+                    uRec.trans.startPersistentPull();
+                    uRec.trans.waitPersistentPull();
+
+                    if (nRec > 1)
                     {
-                        vfv->DoReconstructionIterDiff(uRecNew1, x, Ax, cx, FBoundaryDiff);
-                        Ax.trans.startPersistentPull();
-                        Ax.trans.waitPersistentPull();
-                    },
-                    [&](decltype(uRec) &x, decltype(uRec) &MLx)
-                    {
-                        MLx = x; // initial value; for the input is mostly a good estimation
-                        MLx.trans.startPersistentPull();
-                        MLx.trans.waitPersistentPull();
-                        vfv->DoReconstructionIterSOR(uRecNew1, x, MLx, cx, FBoundaryDiff);
-                    },
-                    uRecNew, uRec, 20,
-                    [&](uint32_t i, real res, real resB) -> bool
-                    {
-                        if (i > 0)
+                        uRecNew1 -= uRec;
+                        real recInc = uRecNew1.norm2();
+                        if (iRec == 1)
+                            recIncBase = recInc;
+
+                        if (iRec % config.implicitReconstructionControl.nRecConsolCheck == 0)
                         {
                             if (mpi.rank == 0)
-                            {
-                                log() << std::scientific;
-                                log() << "GMRES for Rec: " << i << " " << resB << " -> " << res << std::endl;
-                            }
+                                std::cout << iRec << " Rec inc: " << recIncBase << " -> " << recInc << std::endl;
                         }
-                        return res < resB * 1e-6;
-                    });
-                uRecNew1.addTo(uRec, -1);
-                uRec = uRecNew1;
+                        if (recInc < recIncBase * config.implicitReconstructionControl.recThreshold)
+                            break;
+                    }
+                }
+            else if (config.implicitReconstructionControl.recLinearScheme == 1)
+            {
+                int nGMRESrestartAll{0};
+                real gmresResidualB = 0;
+                for (int iRec = 1; iRec <= nRec; iRec++)
+                {
+                    vfv->DoReconstructionIter(
+                        uRec, uRecNew, cx,
+                        FBoundary,
+                        true, true);
+                    uRecNew.trans.startPersistentPull();
+                    uRecNew.trans.waitPersistentPull();
+                    // uRec.setConstant(0.0);
+                    uRecNew1 = uRecNew;
+                    if(iRec == 1)
+                    gmresResidualB = uRecNew1.norm2();
+
+                    bool gmresConverge =
+                        gmresRec->solve(
+                            [&](decltype(uRec) &x, decltype(uRec) &Ax)
+                            {
+                                vfv->DoReconstructionIterDiff(uRec, x, Ax, cx, FBoundaryDiff);
+                                Ax.trans.startPersistentPull();
+                                Ax.trans.waitPersistentPull();
+                            },
+                            [&](decltype(uRec) &x, decltype(uRec) &MLx)
+                            {
+                                MLx = x; // initial value; for the input is mostly a good estimation
+                                // MLx no need to comm
+                                vfv->DoReconstructionIterSOR(uRec, x, MLx, cx, FBoundaryDiff, false);
+                            },
+                            uRecNew, uRecNew1, config.implicitReconstructionControl.nGmresIter,
+                            [&](uint32_t i, real res, real resB) -> bool
+                            {
+                                if (i > 0)
+                                {
+                                    nGMRESrestartAll++;
+                                    if (mpi.rank == 0 &&
+                                        (nGMRESrestartAll % config.implicitReconstructionControl.nRecConsolCheck == 0))
+                                    {
+                                        auto fmt = log().flags();
+                                        log() << std::scientific;
+                                        log() << "GMRES for Rec: " << iRec << " Restart " << i << " " << resB << " -> " << res << std::endl;
+                                        log().setf(fmt);
+                                    }
+                                }
+                                return res < gmresResidualB * config.implicitReconstructionControl.recThreshold;
+                            });
+                    uRec.addTo(uRecNew1, -1);
+                    if (gmresConverge)
+                        break;
+                }
             }
+            else
+                DNDS_assert_info(false, "no such recLinearScheme");
             trec += MPI_Wtime() - tstartA;
             gradIsZero = false;
             double tstartH = MPI_Wtime();
@@ -400,7 +439,7 @@ namespace DNDS::Euler
             {
                 // !  GMRES
                 // !  for gmres solver: A * uinc = rhsinc, rhsinc is average value insdead of cumulated on vol
-                gmres.solve(
+                gmres->solve(
                     [&](decltype(u) &x, decltype(u) &Ax)
                     {
                         eval.LUSGSMatrixVec(alphaDiag, cx, x, Ax);

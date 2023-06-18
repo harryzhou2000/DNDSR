@@ -25,7 +25,7 @@ void testCGNS()
     // "../data/mesh/Ball.cgns"
     // "../data/mesh/Uniform32_Periodic.cgns"
     // "../data/mesh/Uniform128.cgns"
-    reader.ReadFromCGNSSerial("../data/mesh/RotPeriodicA.cgns");
+    reader.ReadFromCGNSSerial("../data/mesh/Uniform32_Periodic.cgns");
     reader.Deduplicate1to1Periodic();
     reader.BuildCell2Cell();
     reader.MeshPartitionCell2Cell();
@@ -36,7 +36,7 @@ void testCGNS()
     mesh->InterpolateFace();
     // mesh->AssertOnFaces();
 
-    auto meshBnd = std::make_shared<DNDS::Geom::UnstructuredMesh>(mpi, dim-1);
+    auto meshBnd = std::make_shared<DNDS::Geom::UnstructuredMesh>(mpi, dim - 1);
     auto readerBnd = DNDS::Geom::UnstructuredMeshSerialRW(meshBnd, 0);
     mesh->ConstructBndMesh(*meshBnd);
     meshBnd->AdjLocal2GlobalPrimaryForBnd();
@@ -51,12 +51,18 @@ void testCGNS()
         mesh->AdjGlobal2LocalPrimary(); // test on the ptr mapping completeness
     }
 
+    mesh->TransformCoords(
+        [&](const DNDS::Geom::tPoint p)
+        { 
+            
+            return p * 2; });
+
     reader.PrintSerialPartPltBinaryDataArray(
         "../data/out/debug",
         1, 1,
         [](int)
         { return "vCell"; },
-        [](int, DNDS::index) 
+        [](int, DNDS::index)
         { return 1; },
         [](int)
         { return "vPoint"; },

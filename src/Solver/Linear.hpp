@@ -43,7 +43,7 @@ namespace DNDS::Linear
          * @param FStop bool FStop(iRestart, res, resB)
          */
         template <class TFA, class TFML, class TFstop>
-        void solve(TFA &&FA, TFML &&FML, TDATA &b, TDATA &x, uint32_t nRestart, TFstop &&FStop)
+        bool solve(TFA &&FA, TFML &&FML, TDATA &b, TDATA &x, uint32_t nRestart, TFstop &&FStop)
         {
             FML(b, MLb); // MLb = ML * b
             real scale_MLb = MLb.norm2();
@@ -118,10 +118,11 @@ namespace DNDS::Linear
                 }
                 if (rank < h.cols())
                 {
-                    FStop(iRestart, beta, scale_MLb);
+                   
                     break; // do not restart
                 }
             }
+            return iRestart < nRestart;
         }
     };
 }

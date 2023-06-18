@@ -843,13 +843,17 @@ namespace DNDS::CFV
             tURec<nVarsFixed> &uRecInc,
             tURec<nVarsFixed> &uRecNew,
             tUDof<nVarsFixed> &u,
-            TFBoundaryDiff &&FBoundaryDiff)
+            TFBoundaryDiff &&FBoundaryDiff,
+            bool reverse = false)
         {
             using namespace Geom;
             using namespace Geom::Elem;
             int maxNDOF = GetNDof<dim>(settings.maxOrder);
-            for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
+            for (index iScan = 0; iScan < mesh->NumCell(); iScan++)
             {
+                index iCell = iScan;
+                if (reverse)
+                    iCell = mesh->NumCell() - 1 - iCell;
                 real relax = cellAtr[iCell].relax;
 
                 uRecNew[iCell] = (1 - relax) * uRecNew[iCell] + uRecInc[iCell];
@@ -860,6 +864,7 @@ namespace DNDS::CFV
                 {
                     index iFace = c2f[ic2f];
                     index iCellOther = CellFaceOther(iCell, iFace);
+
                     if (iCellOther != UnInitIndex)
                     {
                         uRecNew[iCell] += relax * matrixAAInvBRow[ic2f + 1] * uRecNew[iCellOther]; // mind the sign

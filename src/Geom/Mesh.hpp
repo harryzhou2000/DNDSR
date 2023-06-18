@@ -212,6 +212,13 @@ namespace DNDS::Geom
 
         void WriteSerialize(SerializerBase *serializer, const std::string &name);
         void ReadSerialize(SerializerBase *serializer, const std::string &name);
+
+        template <class TFTrans>
+        void TransformCoords(TFTrans &&FTrans)
+        {
+            for (index iNode = 0; iNode < coords.Size(); iNode++)
+                coords[iNode] = FTrans(coords[iNode]);
+        }
     };
 
 }
