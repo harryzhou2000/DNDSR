@@ -105,7 +105,7 @@ namespace DNDS::Geom
      *
      * comm complexity: same as data comm
      * @todo: //TODO test on parallel re-distributing
-     * @todo: //TODO: fully serial emulator 
+     * @todo: //TODO: fully serial emulator
      */
 
     template <class TAdj = tAdj1>
@@ -1242,6 +1242,10 @@ namespace DNDS::Geom
             log() << "UnstructuredMesh === ReadSerialize "
                   << "Global NumNode [ " << nNodeG << " ]" << std::endl;
         }
+        MPISerialDo(mpi, [&]()
+                    { log() << "    Rank: " << mpi.rank << " nCell " << this->NumCell() << " nCellGhost " << this->NumCellGhost() << std::endl; });
+        MPISerialDo(mpi, [&]()
+                    { log() << "    Rank: " << mpi.rank << " nNode " << this->NumNode() << " nNodeGhost " << this->NumNodeGhost() << std::endl; });
 
         serializer->GoToPath(cwd);
     }
