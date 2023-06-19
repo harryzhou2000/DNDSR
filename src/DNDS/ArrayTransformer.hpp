@@ -159,6 +159,8 @@ namespace DNDS
         // ** comm aux info: comm running structures **
         MPIReqHolder PushReqVec;
         MPIReqHolder PullReqVec;
+        MPI_int nRecvPushReq{-1};
+        MPI_int nRecvPullReq{-1};
         tMPI_statVec PushStatVec;
         tMPI_statVec PullStatVec;
         MPI_Aint pushSendSize;
@@ -462,13 +464,23 @@ namespace DNDS
                 auto nReqs = pPullTypeVec->size() + pPushTypeVec->size();
                 // DNDS_assert(nReqs > 0);
                 PushReqVec.resize(nReqs, (MPI_REQUEST_NULL)), PushStatVec.resize(nReqs);
+                nRecvPushReq = 0;
+                for (auto ip = 0; ip < pPushTypeVec->size(); ip++)
+                {
+                    auto dtypeInfo = (*pPushTypeVec)[ip];
+                    MPI_int rankOther = dtypeInfo.first;
+                    MPI_int tag = rankOther + mpi.rank;
+                    MPI_Recv_init(father->data(), 1, dtypeInfo.second, rankOther, tag, mpi.comm, PushReqVec.data() + pPullTypeVec->size() + ip);
+                    // cascade from father
+                    nRecvPushReq++;
+                }
                 for (auto ip = 0; ip < pPullTypeVec->size(); ip++)
                 {
                     auto dtypeInfo = (*pPullTypeVec)[ip];
                     MPI_int rankOther = dtypeInfo.first;
                     MPI_int tag = rankOther + mpi.rank;
 #ifndef ARRAY_COMM_USE_BUFFERED_SEND
-                    MPI_Send_init
+                    MPI_SSend_init
 #else
                     MPI_Bsend_init
 #endif
@@ -482,14 +494,6 @@ namespace DNDS
                     // csize += MPI_BSEND_OVERHEAD;
                     // DNDS_assert(MAX_MPI_Aint - pushSendSize >= csize && csize > 0);
                     // pushSendSize += csize * 2;
-                }
-                for (auto ip = 0; ip < pPushTypeVec->size(); ip++)
-                {
-                    auto dtypeInfo = (*pPushTypeVec)[ip];
-                    MPI_int rankOther = dtypeInfo.first;
-                    MPI_int tag = rankOther + mpi.rank;
-                    MPI_Recv_init(father->data(), 1, dtypeInfo.second, rankOther, tag, mpi.comm, PushReqVec.data() + pPullTypeVec->size() + ip);
-                    // cascade from father
                 }
 #ifdef ARRAY_COMM_USE_BUFFERED_SEND
                 // MPIBufferHandler::Instance().claim(pushSendSize, mpi.rank);
@@ -523,6 +527,7 @@ namespace DNDS
                 pullSendSize = 0;
                 // DNDS_assert(nReqs > 0);
                 PullReqVec.resize(nReqs, (MPI_REQUEST_NULL)), PullStatVec.resize(nReqs);
+                nRecvPullReq = 0;
                 for (typename decltype(pPullTypeVec)::element_type::size_type ip = 0; ip < pPullTypeVec->size(); ip++)
                 {
                     auto dtypeInfo = (*pPullTypeVec)[ip];
@@ -530,6 +535,7 @@ namespace DNDS
                     MPI_int tag = rankOther + mpi.rank; //! receives a lot of messages, this distinguishes them
                     // std::cout << mpi.rank << " Recv " << rankOther << std::endl;
                     MPI_Recv_init(son->data(), 1, dtypeInfo.second, rankOther, tag, mpi.comm, PullReqVec.data() + ip);
+                    nRecvPullReq++;
                     // std::cout << *(real *)(dataGhost.data() + 8 * 0) << std::endl;
                     // cascade from father
                 }
@@ -540,7 +546,7 @@ namespace DNDS
                     MPI_int tag = rankOther + mpi.rank;
                     // std::cout << mpi.rank << " Send " << rankOther << std::endl;
 #ifndef ARRAY_COMM_USE_BUFFERED_SEND
-                    MPI_Send_init
+                    MPI_SSend_init
 #else
                     MPI_Bsend_init
 #endif
@@ -570,60 +576,72 @@ namespace DNDS
         }
         /******************************************************************************************************************************/
 
+        void __InSituPackStartPush()
+        {
+            nRecvPushReq = 0;
+            for (MPI_int r = 0; r < mpi.size; r++)
+            {
+                // push
+                MPI_int pushNumber = pLGhostMapping->pushIndexSizes[r];
+                // std::cout << "PN" << pushNumber << std::endl;
+                if (pushNumber > 0)
+                {
+                    index nPushData{0};
+                    for (index i = 0; i < pushNumber; i++)
+                    {
+                        auto loc = pushingIndexLocal.at(pLGhostMapping->pushIndexStarts[r] + i);
+                        index nPush = 0;
+                        if constexpr (_dataLayout == CSR)
+                            nPush = father->RowSizeField(loc);
+                        if constexpr (isTABLE_Max(_dataLayout)) //! init sizes
+                            nPush = father->RowSize(loc);
+                        if constexpr (isTABLE_Fixed(_dataLayout))
+                            nPush = father->RowSizeField();
+                        nPushData += nPush;
+                    }
+                    inSituBuffer.emplace_back(nPushData);
+                    PushReqVec.emplace_back(MPI_REQUEST_NULL);
+                    MPI_Irecv(inSituBuffer.back().data(), nPushData * father->getTypeMult(), father->getDataType(),
+                              r, mpi.rank + r, mpi.comm, &PushReqVec.back());
+                    nRecvPushReq++;
+                }
+            }
+            for (MPI_int r = 0; r < mpi.size; r++)
+            {
+                // pull
+                MPI_Aint pullDisp;
+                MPI_int pullSize; // same as pushSizes
+                auto gRPtr = son->operator[](index(pLGhostMapping->ghostStart[r + 1]));
+                auto gLPtr = son->operator[](index(pLGhostMapping->ghostStart[r]));
+                auto ghostSpan = gRPtr - gLPtr;
+                pullSize = MPI_int(ghostSpan);
+
+                if (pullSize > 0)
+                {
+                    PushReqVec.emplace_back(MPI_REQUEST_NULL);
+                    MPI_Issend(gLPtr, pullSize * father->getTypeMult(), father->getDataType(), r, r + mpi.rank, mpi.comm, &PushReqVec.back());
+                }
+            }
+        }
+
         void startPersistentPush() // collective;
         {
-            if (commTypeCurrent == MPI::CommStrategy::CommStrategy::HIndexed)
+            if (commTypeCurrent == MPI::CommStrategy::HIndexed)
             {
                 // req already ready
+                DNDS_assert(nRecvPushReq <= PushReqVec.size());
                 if (PushReqVec.size())
-                    MPI_Startall(PushReqVec.size(), PushReqVec.data());
+                {
+                    if (MPI::CommStrategy::Instance().GetUseAsyncOneByOne())
+                    {
+                    }
+                    else
+                        MPI_Startall(PushReqVec.size(), PushReqVec.data());
+                }
             }
-            else if (commTypeCurrent == MPI::CommStrategy::CommStrategy::InSituPack)
+            else if (commTypeCurrent == MPI::CommStrategy::InSituPack)
             {
-                for (MPI_int r = 0; r < mpi.size; r++)
-                {
-                    // push
-                    MPI_int pushNumber = pLGhostMapping->pushIndexSizes[r];
-                    // std::cout << "PN" << pushNumber << std::endl;
-                    if (pushNumber > 0)
-                    {
-                        index nPushData{0};
-                        for (index i = 0; i < pushNumber; i++)
-                        {
-                            auto loc = pushingIndexLocal.at(pLGhostMapping->pushIndexStarts[r] + i);
-                            index nPush = 0;
-                            if constexpr (_dataLayout == CSR)
-                                nPush = father->RowSizeField(loc);
-                            if constexpr (isTABLE_Max(_dataLayout)) //! init sizes
-                                nPush = father->RowSize(loc);
-                            if constexpr (isTABLE_Fixed(_dataLayout))
-                                nPush = father->RowSizeField();
-                            nPushData += nPush;
-                        }
-                        inSituBuffer.emplace_back(nPushData);
-                        PushReqVec.emplace_back(MPI_REQUEST_NULL);
-                        MPI_Irecv(inSituBuffer.back().data(), nPushData * father->getTypeMult(), father->getDataType(),
-                                  r, mpi.rank + r, mpi.comm, &PushReqVec.back());
-                    }
-                }
-                for (MPI_int r = 0; r < mpi.size; r++)
-                {
-                    // pull
-                    MPI_Aint pullDisp;
-                    MPI_int pullSize; // same as pushSizes
-                    auto gRPtr = son->operator[](index(pLGhostMapping->ghostStart[r + 1]));
-                    auto gLPtr = son->operator[](index(pLGhostMapping->ghostStart[r]));
-                    auto ghostSpan = gRPtr - gLPtr;
-                    pullSize = MPI_int(ghostSpan);
-
-                    if (pullSize > 0)
-                    {
-                        PushReqVec.emplace_back(MPI_REQUEST_NULL);
-                        MPI_Issend(gLPtr, pullSize * father->getTypeMult(), father->getDataType(), r, r + mpi.rank, mpi.comm, &PushReqVec.back());
-                    }
-                }
-                
-                
+                __InSituPackStartPush();
             }
             else
             {
@@ -636,74 +654,88 @@ namespace DNDS
 
             PerformanceTimer::Instance().EndTimer(PerformanceTimer::TimerType::Comm);
         }
+
+        void __InSituPackStartPull()
+        {
+            nRecvPullReq = 0;
+            for (MPI_int r = 0; r < mpi.size; r++)
+            {
+                // pull
+                MPI_Aint pullDisp;
+                MPI_int pullSize; // same as pushSizes
+                auto gRPtr = son->operator[](index(pLGhostMapping->ghostStart[r + 1]));
+                auto gLPtr = son->operator[](index(pLGhostMapping->ghostStart[r]));
+                auto ghostSpan = gRPtr - gLPtr;
+                pullSize = MPI_int(ghostSpan);
+
+                if (pullSize > 0)
+                {
+                    PullReqVec.emplace_back(MPI_REQUEST_NULL);
+                    MPI_Irecv(gLPtr, pullSize * father->getTypeMult(), father->getDataType(), r, r + mpi.rank, mpi.comm, &PullReqVec.back());
+                    nRecvPullReq++;
+                }
+            }
+            for (MPI_int r = 0; r < mpi.size; r++)
+            {
+                // push
+                MPI_int pushNumber = pLGhostMapping->pushIndexSizes[r];
+                // std::cout << "PN" << pushNumber << std::endl;
+                if (pushNumber > 0)
+                {
+                    index nPushData{0};
+                    for (index i = 0; i < pushNumber; i++)
+                    {
+                        auto loc = pushingIndexLocal.at(pLGhostMapping->pushIndexStarts[r] + i);
+                        index nPush = 0;
+                        if constexpr (_dataLayout == CSR)
+                            nPush = father->RowSizeField(loc);
+                        if constexpr (isTABLE_Max(_dataLayout)) //! init sizes
+                            nPush = father->RowSize(loc);
+                        if constexpr (isTABLE_Fixed(_dataLayout))
+                            nPush = father->RowSizeField();
+                        nPushData += nPush;
+                    }
+                    inSituBuffer.emplace_back(nPushData);
+                    nPushData = 0;
+                    for (index i = 0; i < pushNumber; i++)
+                    {
+                        auto loc = pushingIndexLocal.at(pLGhostMapping->pushIndexStarts[r] + i);
+                        index nPush = 0;
+                        if constexpr (_dataLayout == CSR)
+                            nPush = father->RowSizeField(loc);
+                        if constexpr (isTABLE_Max(_dataLayout)) //! init sizes
+                            nPush = father->RowSize(loc);
+                        if constexpr (isTABLE_Fixed(_dataLayout))
+                            nPush = father->RowSizeField();
+                        std::copy((*father)[loc], (*father)[loc] + nPush, inSituBuffer.back().begin() + nPushData);
+                        nPushData += nPush;
+                    }
+                    PullReqVec.emplace_back(MPI_REQUEST_NULL);
+                    MPI_Issend(inSituBuffer.back().data(), nPushData * father->getTypeMult(), father->getDataType(),
+                               r, mpi.rank + r, mpi.comm, &PullReqVec.back());
+                }
+            }
+        }
+
         void startPersistentPull() // collective;
         {
             PerformanceTimer::Instance().StartTimer(PerformanceTimer::TimerType::Comm);
-            if (commTypeCurrent == MPI::CommStrategy::CommStrategy::HIndexed)
+            if (commTypeCurrent == MPI::CommStrategy::HIndexed)
             {
+                DNDS_assert(nRecvPullReq <= PullReqVec.size());
                 // req already ready
                 if (PullReqVec.size())
-                    MPI_Startall(PullReqVec.size(), PullReqVec.data());
+                {
+                    if (MPI::CommStrategy::Instance().GetUseAsyncOneByOne())
+                    {
+                    }
+                    else
+                        MPI_Startall(PullReqVec.size(), PullReqVec.data());
+                }
             }
-            else if (commTypeCurrent == MPI::CommStrategy::CommStrategy::InSituPack)
+            else if (commTypeCurrent == MPI::CommStrategy::InSituPack)
             {
-                for (MPI_int r = 0; r < mpi.size; r++)
-                {
-                    // pull
-                    MPI_Aint pullDisp;
-                    MPI_int pullSize; // same as pushSizes
-                    auto gRPtr = son->operator[](index(pLGhostMapping->ghostStart[r + 1]));
-                    auto gLPtr = son->operator[](index(pLGhostMapping->ghostStart[r]));
-                    auto ghostSpan = gRPtr - gLPtr;
-                    pullSize = MPI_int(ghostSpan);
-
-                    if (pullSize > 0)
-                    {
-                        PullReqVec.emplace_back(MPI_REQUEST_NULL);
-                        MPI_Irecv(gLPtr, pullSize * father->getTypeMult(), father->getDataType(), r, r + mpi.rank, mpi.comm, &PullReqVec.back());
-                    }
-                }
-                for (MPI_int r = 0; r < mpi.size; r++)
-                {
-                    // push
-                    MPI_int pushNumber = pLGhostMapping->pushIndexSizes[r];
-                    // std::cout << "PN" << pushNumber << std::endl;
-                    if (pushNumber > 0)
-                    {
-                        index nPushData{0};
-                        for (index i = 0; i < pushNumber; i++)
-                        {
-                            auto loc = pushingIndexLocal.at(pLGhostMapping->pushIndexStarts[r] + i);
-                            index nPush = 0;
-                            if constexpr (_dataLayout == CSR)
-                                nPush = father->RowSizeField(loc);
-                            if constexpr (isTABLE_Max(_dataLayout)) //! init sizes
-                                nPush = father->RowSize(loc);
-                            if constexpr (isTABLE_Fixed(_dataLayout))
-                                nPush = father->RowSizeField();
-                            nPushData += nPush;
-                        }
-                        inSituBuffer.emplace_back(nPushData);
-                        nPushData = 0;
-                        for (index i = 0; i < pushNumber; i++)
-                        {
-                            auto loc = pushingIndexLocal.at(pLGhostMapping->pushIndexStarts[r] + i);
-                            index nPush = 0;
-                            if constexpr (_dataLayout == CSR)
-                                nPush = father->RowSizeField(loc);
-                            if constexpr (isTABLE_Max(_dataLayout)) //! init sizes
-                                nPush = father->RowSize(loc);
-                            if constexpr (isTABLE_Fixed(_dataLayout))
-                                nPush = father->RowSizeField();
-                            std::copy((*father)[loc], (*father)[loc] + nPush, inSituBuffer.back().begin() + nPushData);
-                            nPushData += nPush;
-                        }
-                        PullReqVec.emplace_back(MPI_REQUEST_NULL);
-                        MPI_Issend(inSituBuffer.back().data(), nPushData * father->getTypeMult(), father->getDataType(),
-                                   r, mpi.rank + r, mpi.comm, &PullReqVec.back());
-                    }
-                }
-                
+                __InSituPackStartPull();
             }
             else
             {
@@ -722,17 +754,33 @@ namespace DNDS
             if (MPI::CommStrategy::Instance().GetUseStrongSyncWait())
                 MPI_Barrier(mpi.comm);
             PushStatVec.resize(PushReqVec.size());
-            if (PushReqVec.size())
-                MPI_Waitall(PushReqVec.size(), PushReqVec.data(), PushStatVec.data());
 #ifdef ARRAY_COMM_USE_BUFFERED_SEND
             MPIBufferHandler::Instance().unclaim(pushSendSize);
 #endif
-            if (commTypeCurrent == MPI::CommStrategy::CommStrategy::HIndexed)
+            if (commTypeCurrent == MPI::CommStrategy::HIndexed)
             {
                 // data alright
+                if (PushReqVec.size())
+                {
+                    DNDS_assert(nRecvPushReq <= PushReqVec.size());
+                    if (MPI::CommStrategy::Instance().GetUseAsyncOneByOne())
+                    {
+                        MPI_Startall(nRecvPushReq, PushReqVec.data(), MPI_STATUSES_IGNORE);
+                        for (int iReq = nRecvPushReq, iReq < PushReqVec.size(); iReq++)
+                        {
+                            MPI_Start(&PushReqVec[i]);
+                            MPI_Wait(&PushReqVec[i], MPI_STATUS_IGNORE);
+                        }
+                        MPI_Waitall(nRecvPushReq, PushReqVec.data(), MPI_STATUSES_IGNORE);
+                    }
+                    else
+                        MPI_Waitall(PushReqVec.size(), PushReqVec.data(), MPI_STATUSES_IGNORE);
+                }
             }
-            else if (commTypeCurrent == MPI::CommStrategy::CommStrategy::InSituPack)
+            else if (commTypeCurrent == MPI::CommStrategy::InSituPack)
             {
+                if (PushReqVec.size())
+                    MPI_Waitall(PushReqVec.size(), PushReqVec.data(), PushStatVec.data());
                 auto bufferVec = inSituBuffer.begin();
                 for (MPI_int r = 0; r < mpi.size; r++)
                 {
@@ -774,18 +822,35 @@ namespace DNDS
         {
             PerformanceTimer::Instance().StartTimer(PerformanceTimer::TimerType::Comm);
             PullStatVec.resize(PullReqVec.size());
-            if (PullReqVec.size())
-                MPI_Waitall(PullReqVec.size(), PullReqVec.data(), PullStatVec.data());
-                // std::cout << "waiting DONE" << std::endl;
+
 #ifdef ARRAY_COMM_USE_BUFFERED_SEND
             MPIBufferHandler::Instance().unclaim(pullSendSize);
 #endif
-            if (commTypeCurrent == MPI::CommStrategy::CommStrategy::HIndexed)
+            if (commTypeCurrent == MPI::CommStrategy::HIndexed)
             {
                 // data alright
+                if (PullReqVec.size())
+                {
+                    DNDS_assert(nRecvPullReq <= PullReqVec.size());
+                    if (MPI::CommStrategy::Instance().GetUseAsyncOneByOne())
+                    {
+                        MPI_Startall(nRecvPullReq, PullReqVec.data(), MPI_STATUSES_IGNORE);
+                        for (int iReq = nRecvPullReq, iReq < PullReqVec.size(); iReq++)
+                        {
+                            MPI_Start(&PullReqVec[i]);
+                            MPI_Wait(&PullReqVec[i], MPI_STATUS_IGNORE);
+                        }
+                        MPI_Waitall(nRecvPullReq, PullReqVec.data(), MPI_STATUSES_IGNORE);
+                    }
+                    else
+                        MPI_Waitall(PullReqVec.size(), PullReqVec.data(), MPI_STATUSES_IGNORE);
+                }
             }
-            else if (commTypeCurrent == MPI::CommStrategy::CommStrategy::InSituPack)
+            else if (commTypeCurrent == MPI::CommStrategy::InSituPack)
             {
+                if (PullReqVec.size())
+                    MPI_Waitall(PullReqVec.size(), PullReqVec.data(), PullStatVec.data());
+                // std::cout << "waiting DONE" << std::endl;
                 inSituBuffer.clear();
                 PullReqVec.clear();
             }

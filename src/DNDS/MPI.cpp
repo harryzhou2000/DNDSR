@@ -150,6 +150,18 @@ namespace DNDS::MPI
                 MPI_Barrier(mpi.comm);
             }
         }
+        {
+            auto ret = std::getenv("DNDS_USE_ASYNC_ONE_BY_ONE");
+            if (ret != NULL && (std::stoi(ret) != 0))
+            {
+                _use_async_one_by_one = true;
+                auto mpi = MPIInfo();
+                mpi.setWorld();
+                if (mpi.rank == 0)
+                    log() << "Detected DNDS_USE_ASYNC_ONE_BY_ONE, setting" << std::endl;
+                MPI_Barrier(mpi.comm);
+            }
+        }
     }
 
     CommStrategy &CommStrategy::Instance()
@@ -171,6 +183,11 @@ namespace DNDS::MPI
     bool CommStrategy::GetUseStrongSyncWait()
     {
         return _use_strong_sync_wait;
+    }
+
+    bool CommStrategy::GetUseAsyncOneByOne()
+    {
+        return _use_async_one_by_one;
     }
 }
 

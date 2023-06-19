@@ -305,6 +305,8 @@ namespace DNDS::MPI
     private:
         ArrayCommType _array_strategy = HIndexed;
         bool _use_strong_sync_wait = false;
+        bool _use_async_one_by_one = false;
+        
 
         CommStrategy();
         CommStrategy(const CommStrategy &);
@@ -315,6 +317,7 @@ namespace DNDS::MPI
         ArrayCommType GetArrayStrategy();
         void SetArrayStrategy(ArrayCommType t);
         bool GetUseStrongSyncWait();
+        bool GetUseAsyncOneByOne();
     };
 }
 
