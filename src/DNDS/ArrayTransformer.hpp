@@ -480,7 +480,7 @@ namespace DNDS
                     MPI_int rankOther = dtypeInfo.first;
                     MPI_int tag = rankOther + mpi.rank;
 #ifndef ARRAY_COMM_USE_BUFFERED_SEND
-                    MPI_SSend_init
+                    MPI_Ssend_init
 #else
                     MPI_Bsend_init
 #endif
@@ -546,7 +546,7 @@ namespace DNDS
                     MPI_int tag = rankOther + mpi.rank;
                     // std::cout << mpi.rank << " Send " << rankOther << std::endl;
 #ifndef ARRAY_COMM_USE_BUFFERED_SEND
-                    MPI_SSend_init
+                    MPI_Ssend_init
 #else
                     MPI_Bsend_init
 #endif
@@ -765,11 +765,11 @@ namespace DNDS
                     DNDS_assert(nRecvPushReq <= PushReqVec.size());
                     if (MPI::CommStrategy::Instance().GetUseAsyncOneByOne())
                     {
-                        MPI_Startall(nRecvPushReq, PushReqVec.data(), MPI_STATUSES_IGNORE);
-                        for (int iReq = nRecvPushReq, iReq < PushReqVec.size(); iReq++)
+                        MPI_Startall(nRecvPushReq, PushReqVec.data());
+                        for (int iReq = nRecvPushReq; iReq < PushReqVec.size(); iReq++)
                         {
-                            MPI_Start(&PushReqVec[i]);
-                            MPI_Wait(&PushReqVec[i], MPI_STATUS_IGNORE);
+                            MPI_Start(&PushReqVec[iReq]);
+                            MPI_Wait(&PushReqVec[iReq], MPI_STATUS_IGNORE);
                         }
                         MPI_Waitall(nRecvPushReq, PushReqVec.data(), MPI_STATUSES_IGNORE);
                     }
@@ -834,11 +834,13 @@ namespace DNDS
                     DNDS_assert(nRecvPullReq <= PullReqVec.size());
                     if (MPI::CommStrategy::Instance().GetUseAsyncOneByOne())
                     {
-                        MPI_Startall(nRecvPullReq, PullReqVec.data(), MPI_STATUSES_IGNORE);
-                        for (int iReq = nRecvPullReq, iReq < PullReqVec.size(); iReq++)
+                        MPI_Startall(nRecvPullReq, PullReqVec.data());
+                        for (int iReq = nRecvPullReq; iReq < PullReqVec.size(); iReq++)
                         {
-                            MPI_Start(&PullReqVec[i]);
-                            MPI_Wait(&PullReqVec[i], MPI_STATUS_IGNORE);
+                            MPI_Start(&PullReqVec[iReq]);
+                            MPI_Wait(&PullReqVec[iReq], MPI_STATUS_IGNORE);
+                            // if (mpi.rank == 0)
+                            //     log() << "waited a req" << std::endl;
                         }
                         MPI_Waitall(nRecvPullReq, PullReqVec.data(), MPI_STATUSES_IGNORE);
                     }
