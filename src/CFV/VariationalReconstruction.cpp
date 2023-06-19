@@ -87,7 +87,7 @@ namespace DNDS::CFV
             cellAlignedHBox[iCell] = hBox;
         }
         real sumVolumeAll{0};
-        MPI_Allreduce(&sumVolume, &sumVolumeAll, 1, DNDS_MPI_REAL, MPI_SUM, mpi.comm);
+        MPI::Allreduce(&sumVolume, &sumVolumeAll, 1, DNDS_MPI_REAL, MPI_SUM, mpi.comm);
         if (mpi.rank == mRank)
             std::cout
                 << "VariationalReconstruction<dim>::ConstructMetrics() === Sum Volume is ["

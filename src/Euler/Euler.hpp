@@ -58,7 +58,7 @@ namespace DNDS::Euler
             real sqrSum{0}, sqrSumAll{0};
             for (index i = 0; i < this->father->Size(); i++) //*note that only father is included
                 sqrSum += this->operator[](i).squaredNorm();
-            MPI_Allreduce(&sqrSum, &sqrSumAll, 1, DNDS_MPI_REAL, MPI_SUM, this->father->mpi.comm);
+            MPI::Allreduce(&sqrSum, &sqrSumAll, 1, DNDS_MPI_REAL, MPI_SUM, this->father->mpi.comm);
             // std::cout << "norm2is " << std::scientific << sqrSumAll << std::endl;
             return std::sqrt(sqrSumAll);
         }
@@ -68,7 +68,7 @@ namespace DNDS::Euler
             real sqrSum{0}, sqrSumAll;
             for (index i = 0; i < this->father->Size(); i++) //*note that only father is included
                 sqrSum += this->operator[](i).dot(R.operator[](i));
-            MPI_Allreduce(&sqrSum, &sqrSumAll, 1, DNDS_MPI_REAL, MPI_SUM, this->father->mpi.comm);
+            MPI::Allreduce(&sqrSum, &sqrSumAll, 1, DNDS_MPI_REAL, MPI_SUM, this->father->mpi.comm);
             return sqrSumAll;
         }
     };
@@ -122,7 +122,7 @@ namespace DNDS::Euler
             real sqrSum{0}, sqrSumAll{0};
             for (index i = 0; i < this->father->Size(); i++) //*note that only father is included
                 sqrSum += this->operator[](i).squaredNorm();
-            MPI_Allreduce(&sqrSum, &sqrSumAll, 1, DNDS_MPI_REAL, MPI_SUM, this->father->mpi.comm);
+            MPI::Allreduce(&sqrSum, &sqrSumAll, 1, DNDS_MPI_REAL, MPI_SUM, this->father->mpi.comm);
             // std::cout << "norm2is " << std::scientific << sqrSumAll << std::endl;
             return std::sqrt(sqrSumAll);
         }
@@ -132,7 +132,7 @@ namespace DNDS::Euler
             real sqrSum{0}, sqrSumAll;
             for (index i = 0; i < this->father->Size(); i++) //*note that only father is included
                 sqrSum += (this->operator[](i).array() * R.operator[](i).array()).sum();
-            MPI_Allreduce(&sqrSum, &sqrSumAll, 1, DNDS_MPI_REAL, MPI_SUM, this->father->mpi.comm);
+            MPI::Allreduce(&sqrSum, &sqrSumAll, 1, DNDS_MPI_REAL, MPI_SUM, this->father->mpi.comm);
             return sqrSumAll;
         }
     };

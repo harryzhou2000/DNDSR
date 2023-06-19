@@ -301,7 +301,7 @@ namespace DNDS::Euler
                 else
                     resc += rhs[iCell].array().abs().pow(P).matrix();
             }
-            MPI_Allreduce(resc.data(), res.data(), res.size(), DNDS_MPI_REAL, MPI_SUM, rhs.father->mpi.comm);
+            MPI::Allreduce(resc.data(), res.data(), res.size(), DNDS_MPI_REAL, MPI_SUM, rhs.father->mpi.comm);
             res = res.array().pow(1.0 / P).matrix();
             // std::cout << res << std::endl;
         }
@@ -312,7 +312,7 @@ namespace DNDS::Euler
             resc.setZero();
             for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
                 resc = resc.array().max(rhs[iCell].array().abs()).matrix();
-            MPI_Allreduce(resc.data(), res.data(), res.size(), DNDS_MPI_REAL, MPI_MAX, rhs.father->mpi.comm);
+            MPI::Allreduce(resc.data(), res.data(), res.size(), DNDS_MPI_REAL, MPI_MAX, rhs.father->mpi.comm);
         }
     }
 

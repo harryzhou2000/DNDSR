@@ -218,8 +218,8 @@ namespace DNDS::Euler
                     uRecNew.trans.waitPersistentPull();
                     // uRec.setConstant(0.0);
                     uRecNew1 = uRecNew;
-                    if(iRec == 1)
-                    gmresResidualB = uRecNew1.norm2();
+                    if (iRec == 1)
+                        gmresResidualB = uRecNew1.norm2();
 
                     bool gmresConverge =
                         gmresRec->solve(
@@ -285,7 +285,7 @@ namespace DNDS::Euler
                     Eigen::Matrix<real, nVars_Fixed, nVars_Fixed> ret(nVars, nVars);
                     ret.setIdentity();
                     ret(Seq01234, Seq01234) = M;
-                    PerformanceTimer::Instance().EndTimer(PerformanceTimer::LimiterA);
+                    PerformanceTimer::Instance().StopTimer(PerformanceTimer::LimiterA);
                     return ret;
                     // return real(1);
                 };
@@ -303,7 +303,7 @@ namespace DNDS::Euler
                     ret.setIdentity();
                     ret(Seq01234, Seq01234) = M;
 
-                    PerformanceTimer::Instance().EndTimer(PerformanceTimer::LimiterA);
+                    PerformanceTimer::Instance().StopTimer(PerformanceTimer::LimiterA);
                     return ret;
                     // return real(1);
                 };
@@ -496,9 +496,11 @@ namespace DNDS::Euler
             if (iter % config.outputControl.nConsoleCheckInternal == 0 || iter > config.convergenceControl.nTimeStepInternal || ifStop)
             {
                 double telapsed = MPI_Wtime() - tstart;
+                tcomm = PerformanceTimer::Instance().getTimerCollective(PerformanceTimer::Comm, mpi);
+                real tLimiterA = PerformanceTimer::Instance().getTimerCollective(PerformanceTimer::LimiterA, mpi);
+                real tLimiterB = PerformanceTimer::Instance().getTimerCollective(PerformanceTimer::LimiterB, mpi);
                 if (mpi.rank == 0)
                 {
-                    tcomm = PerformanceTimer::Instance().getTimer(PerformanceTimer::Comm);
                     auto fmt = log().flags();
                     log() << std::setprecision(3) << std::scientific
                           << "\t Internal === Step [" << iStep << ", " << iter << "]   "
@@ -510,9 +512,8 @@ namespace DNDS::Euler
                           << trec << "]   rhsTime ["
                           << trhs << "]   commTime ["
                           << tcomm << "]  limTime ["
-                          << tLim << "]  limtimeA ["
-                          << PerformanceTimer::Instance().getTimer(PerformanceTimer::LimiterA) << "]  limtimeB ["
-                          << PerformanceTimer::Instance().getTimer(PerformanceTimer::LimiterB) << "]  ";
+                          << tLim << "]  limtimeA [" << tLimiterA << "]  limtimeB ["
+                          << tLimiterB << "]  ";
                     if (config.outputControl.consoleOutputMode == 1)
                     {
                         log() << std::setprecision(4) << std::setw(10) << std::scientific
@@ -578,9 +579,9 @@ namespace DNDS::Euler
             if (step % config.outputControl.nConsoleCheck == 0)
             {
                 double telapsed = MPI_Wtime() - tstart;
+                tcomm = PerformanceTimer::Instance().getTimerCollective(PerformanceTimer::Comm, mpi);
                 if (mpi.rank == 0)
                 {
-                    tcomm = PerformanceTimer::Instance().getTimer(PerformanceTimer::Comm);
                     auto fmt = log().flags();
                     log() << std::setprecision(3) << std::scientific
                           << "=== Step [" << step << "]   "
@@ -683,8 +684,8 @@ namespace DNDS::Euler
                         sumVol += vfv->GetCellVol(iCell);
                     }
                 }
-                MPI_Allreduce(&sumErrRho, &sumErrRhoSum, 1, DNDS_MPI_REAL, MPI_SUM, mpi.comm);
-                MPI_Allreduce(&sumVol, &sumVolSum, 1, DNDS_MPI_REAL, MPI_SUM, mpi.comm);
+                MPI::Allreduce(&sumErrRho, &sumErrRhoSum, 1, DNDS_MPI_REAL, MPI_SUM, mpi.comm);
+                MPI::Allreduce(&sumVol, &sumVolSum, 1, DNDS_MPI_REAL, MPI_SUM, mpi.comm);
                 if (mpi.rank == 0)
                 {
                     log() << "=== Mean Error IV: [" << std::scientific << std::setprecision(5) << sumErrRhoSum << ", " << sumErrRhoSum / sumVolSum << "]" << std::endl;

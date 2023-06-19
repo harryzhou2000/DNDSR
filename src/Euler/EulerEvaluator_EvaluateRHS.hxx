@@ -175,7 +175,7 @@ namespace DNDS::Euler
                             t,
                             mesh->GetFaceZone(iFace), false);
                     }
-                    PerformanceTimer::Instance().EndTimer(PerformanceTimer::LimiterB);
+                    PerformanceTimer::Instance().StopTimer(PerformanceTimer::LimiterB);
                     // UR = URxy;
                     // UL = ULxy;
                     // UR({1, 2, 3}) = normBase.transpose() * UR({1, 2, 3});
@@ -338,7 +338,7 @@ namespace DNDS::Euler
                                     IF_NOT_NOREC,
                                 pointOrderReduced);
                         }
-                        PerformanceTimer::Instance().EndTimer(PerformanceTimer::LimiterB);
+                        PerformanceTimer::Instance().StopTimer(PerformanceTimer::LimiterB);
 
                         // bool compressed = false;
                         // ULxy = CompressRecPart(u[iCell], ULxy, compressed); //! do not forget the mean value
@@ -397,7 +397,7 @@ namespace DNDS::Euler
             }
         }
         // quick aux: reduce the wall flux sum
-        MPI_Allreduce(fluxWallSumLocal.data(), fluxWallSum.data(), fluxWallSum.size(), DNDS_MPI_REAL, MPI_SUM, u.father->mpi.comm);
+        MPI::Allreduce(fluxWallSumLocal.data(), fluxWallSum.data(), fluxWallSum.size(), DNDS_MPI_REAL, MPI_SUM, u.father->mpi.comm);
 
         InsertCheck(u.father->mpi, "EvaluateRHS -1");
     }

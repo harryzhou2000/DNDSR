@@ -142,7 +142,7 @@ namespace DNDS::Euler
             // }
         }
 
-        MPI_Allreduce(&dtMin, &dtMinall, 1, DNDS_MPI_REAL, MPI_MIN, u.father->mpi.comm);
+        MPI::Allreduce(&dtMin, &dtMinall, 1, DNDS_MPI_REAL, MPI_MIN, u.father->mpi.comm);
 
         // if (uRec.father->mpi.rank == 0)
         //     std::cout << "dt min is " << dtMinall << std::endl;

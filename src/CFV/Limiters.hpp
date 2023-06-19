@@ -401,7 +401,7 @@ namespace DNDS::CFV
         //         uOut(irec, idof) = u0 * sumLocal1 / (sumLocal2 + 1e-12);
         //     }
 
-        // PerformanceTimer::Instance().EndTimer(PerformanceTimer::LimiterA);
+        // PerformanceTimer::Instance().StopTimer(PerformanceTimer::LimiterA);
     }
 
     /**
@@ -445,7 +445,7 @@ namespace DNDS::CFV
         //         real theta2 = std::pow(frac, p);
         //         uOut(irec, idof) = u1c * (n + theta1) / (n + theta2);
         //     }
-        // PerformanceTimer::Instance().EndTimer(PerformanceTimer::LimiterA);
+        // PerformanceTimer::Instance().StopTimer(PerformanceTimer::LimiterA);
     }
 
     template <typename Tin1, typename Tin2, typename Tout>

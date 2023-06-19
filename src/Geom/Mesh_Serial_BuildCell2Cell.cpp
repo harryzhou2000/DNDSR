@@ -53,7 +53,7 @@ namespace DNDS::Geom
                        periodicDonorCenter2.pts.size() +
                        periodicDonorCenter3.pts.size();
         index nDonorAll{0};
-        MPI_Allreduce(&nDonor, &nDonorAll, 1, DNDS_MPI_INDEX, MPI_SUM, mesh->mpi.comm);
+        MPI::Allreduce(&nDonor, &nDonorAll, 1, DNDS_MPI_INDEX, MPI_SUM, mesh->mpi.comm);
         if (nDonorAll)
             mesh->isPeriodic = true; //! below are all periodic code
         else

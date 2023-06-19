@@ -259,33 +259,22 @@ namespace DNDS
 
 }
 
-namespace DNDS
+namespace DNDS::MPI
 {
-    namespace MPI
-    {
-        /// @brief dumb wrapper
-        template <class TData>
-        MPI_int Bcast(TData *buf, MPI_int num, MPI_Datatype type, MPI_int source_rank, MPI_Comm comm)
-        {
-            return MPI_Bcast(buf, num, type, source_rank, comm);
-        }
+    MPI_int Bcast(void *buf, MPI_int num, MPI_Datatype type, MPI_int source_rank, MPI_Comm comm);
 
-        template <class TData>
-        MPI_int Alltoall(TData *send, MPI_int sendNum, MPI_Datatype typeSend, TData *recv, MPI_int recvNum, MPI_Datatype typeRecv, MPI_Comm comm)
-        {
-            return MPI_Alltoall(send, sendNum, typeSend, recv, recvNum, typeRecv, comm);
-        }
+    MPI_int Alltoall(void *send, MPI_int sendNum, MPI_Datatype typeSend, void *recv, MPI_int recvNum, MPI_Datatype typeRecv, MPI_Comm comm);
 
-        template <class TData>
-        MPI_int Alltoallv(
-            TData *send, MPI_int *sendSizes, MPI_int *sendStarts, MPI_Datatype sendType,
-            TData *recv, MPI_int *recvSizes, MPI_int *recvStarts, MPI_Datatype recvType, MPI_Comm comm)
-        {
-            return MPI_Alltoallv(
-                send, sendSizes, sendStarts, sendType,
-                recv, recvSizes, recvStarts, recvType, comm);
-        }
-    }
+    MPI_int Alltoallv(
+        void *send, MPI_int *sendSizes, MPI_int *sendStarts, MPI_Datatype sendType,
+        void *recv, MPI_int *recvSizes, MPI_int *recvStarts, MPI_Datatype recvType, MPI_Comm comm);
+
+    MPI_int Allreduce(const void *sendbuf, void *recvbuf, MPI_int count,
+                      MPI_Datatype datatype, MPI_Op op, MPI_Comm comm);
+
+    MPI_int Allgather(const void *sendbuf, MPI_int sendcount, MPI_Datatype sendtype,
+                      void *recvbuf, MPI_int recvcount,
+                      MPI_Datatype recvtype, MPI_Comm comm);
 }
 
 namespace DNDS::MPI
@@ -306,7 +295,6 @@ namespace DNDS::MPI
         ArrayCommType _array_strategy = HIndexed;
         bool _use_strong_sync_wait = false;
         bool _use_async_one_by_one = false;
-        
 
         CommStrategy();
         CommStrategy(const CommStrategy &);

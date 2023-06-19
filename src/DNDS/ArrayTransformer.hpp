@@ -95,13 +95,13 @@ namespace DNDS
                 t_RowsizeVec uniformSizes(mpi.size);
                 MPI_int rowsizeC = this->RowSizeField();
                 static_assert(sizeof(MPI_int) == sizeof(rowsize));
-                MPI_Allgather(&rowsizeC, 1, MPI_INT, uniformSizes.data(), 1, MPI_INT, mpi.comm);
+                MPI::Allgather(&rowsizeC, 1, MPI_INT, uniformSizes.data(), 1, MPI_INT, mpi.comm);
                 for (auto i : uniformSizes)
                     DNDS_assert_info(i == rowsizeC, "sizes not uniform across procs");
             }
 
             std::vector<MPI_int> uniform_typeMult(mpi.size);
-            MPI_Allgather(&typeMult, 1, MPI_INT, uniform_typeMult.data(), 1, MPI_INT, mpi.comm);
+            MPI::Allgather(&typeMult, 1, MPI_INT, uniform_typeMult.data(), 1, MPI_INT, mpi.comm);
             for (auto i : uniform_typeMult)
                 DNDS_assert_info(i == typeMult, "typeMults not uniform across procs");
 
@@ -122,7 +122,7 @@ namespace DNDS
         {
             index gSize = 0;
             index cSize = this->Size();
-            MPI_Allreduce(&cSize, &gSize, 1, DNDS_MPI_INDEX, MPI_SUM, mpi.comm);
+            MPI::Allreduce(&cSize, &gSize, 1, DNDS_MPI_INDEX, MPI_SUM, mpi.comm);
             return gSize;
         }
     };
@@ -652,7 +652,7 @@ namespace DNDS
             MPIBufferHandler::Instance().claim(pushSendSize, mpi.rank);
 #endif
 
-            PerformanceTimer::Instance().EndTimer(PerformanceTimer::TimerType::Comm);
+            PerformanceTimer::Instance().StopTimer(PerformanceTimer::TimerType::Comm);
         }
 
         void __InSituPackStartPull()
@@ -745,7 +745,7 @@ namespace DNDS
             MPIBufferHandler::Instance().claim(pullSendSize, mpi.rank);
 #endif
 
-            PerformanceTimer::Instance().EndTimer(PerformanceTimer::TimerType::Comm);
+            PerformanceTimer::Instance().StopTimer(PerformanceTimer::TimerType::Comm);
         }
 
         void waitPersistentPush() // collective;
@@ -816,7 +816,7 @@ namespace DNDS
             }
             if (MPI::CommStrategy::Instance().GetUseStrongSyncWait())
                 MPI_Barrier(mpi.comm);
-            PerformanceTimer::Instance().EndTimer(PerformanceTimer::TimerType::Comm);
+            PerformanceTimer::Instance().StopTimer(PerformanceTimer::TimerType::Comm);
         }
         void waitPersistentPull() // collective;
         {
@@ -860,7 +860,7 @@ namespace DNDS
             {
                 DNDS_assert(false);
             }
-            PerformanceTimer::Instance().EndTimer(PerformanceTimer::TimerType::Comm);
+            PerformanceTimer::Instance().StopTimer(PerformanceTimer::TimerType::Comm);
         }
 
         void clearPersistentPush() // collective;

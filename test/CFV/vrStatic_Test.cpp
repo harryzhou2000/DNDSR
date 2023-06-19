@@ -128,7 +128,7 @@ void staticReconstruction()
                 err += errC;
                 // std::cout << si(iCell, 0) << std::endl;
             }
-            MPI_Allreduce(err.data(), errAll.data(), 4, DNDS_MPI_REAL, MPI_SUM, mpi.comm);
+            DNDS::MPI::Allreduce(err.data(), errAll.data(), 4, DNDS_MPI_REAL, MPI_SUM, mpi.comm);
             if (mpi.rank == 0)
             {
                 // std::cout << "Err: [";
@@ -159,7 +159,7 @@ void staticReconstruction()
             for (DNDS::index iCell = 0; iCell < vr.mesh->NumCell(); iCell++)
                 duRecSum += ((*uRecNew)[iCell] - (*uRecOld)[iCell]).array().square().sum();
             real duRecSumAll = 0;
-            MPI_Allreduce(&duRecSum, &duRecSumAll, 1, DNDS_MPI_REAL, MPI_SUM, vr.mpi.comm);
+            DNDS::MPI::Allreduce(&duRecSum, &duRecSumAll, 1, DNDS_MPI_REAL, MPI_SUM, vr.mpi.comm);
             duRecSumAll /= vr.mesh->NumCellGlobal();
 
             std::swap(uRec, uRecNew);

@@ -4,6 +4,7 @@
 #include <cstdlib>
 
 #include "MPI.hpp"
+#include "Profiling.hpp"
 
 #ifdef NDEBUG
 #define NDEBUG_DISABLED
@@ -119,6 +120,60 @@ namespace DNDS
 
         return std::string(buf);
     }
+}
+
+namespace DNDS::MPI
+{
+
+#define __start_timer PerformanceTimer::Instance().StartTimer(PerformanceTimer::Comm)
+#define __stop_timer PerformanceTimer::Instance().StopTimer(PerformanceTimer::Comm)
+    /// @brief dumb wrapper
+    MPI_int Bcast(void *buf, MPI_int num, MPI_Datatype type, MPI_int source_rank, MPI_Comm comm)
+    {
+        __start_timer;
+
+        return MPI_Bcast(buf, num, type, source_rank, comm);
+        __stop_timer;
+    }
+
+    MPI_int Alltoall(void *send, MPI_int sendNum, MPI_Datatype typeSend, void *recv, MPI_int recvNum, MPI_Datatype typeRecv, MPI_Comm comm)
+    {
+        __start_timer;
+        return MPI_Alltoall(send, sendNum, typeSend, recv, recvNum, typeRecv, comm);
+        __stop_timer;
+    }
+
+    MPI_int Alltoallv(
+        void *send, MPI_int *sendSizes, MPI_int *sendStarts, MPI_Datatype sendType,
+        void *recv, MPI_int *recvSizes, MPI_int *recvStarts, MPI_Datatype recvType, MPI_Comm comm)
+    {
+        __start_timer;
+        return MPI_Alltoallv(
+            send, sendSizes, sendStarts, sendType,
+            recv, recvSizes, recvStarts, recvType, comm);
+        __stop_timer;
+    }
+
+    MPI_int Allreduce(const void *sendbuf, void *recvbuf, MPI_int count,
+                      MPI_Datatype datatype, MPI_Op op, MPI_Comm comm)
+    {
+        __start_timer;
+        return MPI_Allreduce(sendbuf, recvbuf, count, datatype, op, comm);
+        __stop_timer;
+    }
+
+    MPI_int Allgather(const void *sendbuf, MPI_int sendcount, MPI_Datatype sendtype,
+                      void *recvbuf, MPI_int recvcount,
+                      MPI_Datatype recvtype, MPI_Comm comm)
+    {
+        __start_timer;
+        return MPI_Allgather(sendbuf, sendcount, sendtype, recvbuf, recvcount, recvtype, comm);
+        __stop_timer;
+    }
+
+#undef __start_timer
+#undef __stop_timer
+
 }
 
 namespace DNDS::MPI

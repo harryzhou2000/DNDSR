@@ -33,8 +33,9 @@ namespace DNDS
     public:
         static PerformanceTimer &Instance();
         void StartTimer(TimerType t);
-        void EndTimer(TimerType t);
+        void StopTimer(TimerType t);
         real getTimer(TimerType t);
+        real getTimerCollective(TimerType t, const MPIInfo &mpi);
         void clearTimer(TimerType t);
         void clearAllTimer();
     };
