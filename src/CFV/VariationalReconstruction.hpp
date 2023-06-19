@@ -359,36 +359,12 @@ namespace DNDS::CFV
             auto simpleScale = cellAlignedHBox[iCell];
             auto pCen = cellCent[iCell];
             tPoint pPhysicsCScaled = (pPhy - pCen).array() / simpleScale.array();
-            for (int idiff = 0; idiff < DiBj.rows(); idiff++)
-                for (int ibase = 0; ibase < DiBj.cols(); ibase++)
-                {
-                    if constexpr (dim == 2)
-                    {
-                        int px = diffOperatorOrderList2D[ibase][0];
-                        int py = diffOperatorOrderList2D[ibase][1];
-                        int pz = diffOperatorOrderList2D[ibase][2];
-                        int ndx = diffOperatorOrderList2D[idiff][0];
-                        int ndy = diffOperatorOrderList2D[idiff][1];
-                        int ndz = diffOperatorOrderList2D[idiff][2];
-                        DiBj(idiff, ibase) =
-                            FPolynomial3D(px, py, pz, ndx, ndy, ndz,
-                                          pPhysicsCScaled(0), pPhysicsCScaled(1), pPhysicsCScaled(2)) /
-                            (std::pow(simpleScale(0), ndx) * std::pow(simpleScale(1), ndy) * std::pow(1, ndz));
-                    }
-                    else
-                    {
-                        int px = diffOperatorOrderList[ibase][0];
-                        int py = diffOperatorOrderList[ibase][1];
-                        int pz = diffOperatorOrderList[ibase][2];
-                        int ndx = diffOperatorOrderList[idiff][0];
-                        int ndy = diffOperatorOrderList[idiff][1];
-                        int ndz = diffOperatorOrderList[idiff][2];
-                        DiBj(idiff, ibase) =
-                            FPolynomial3D(px, py, pz, ndx, ndy, ndz,
-                                          pPhysicsCScaled(0), pPhysicsCScaled(1), pPhysicsCScaled(2)) /
-                            (std::pow(simpleScale(0), ndx) * std::pow(simpleScale(1), ndy) * std::pow(simpleScale(2), ndz));
-                    }
-                }
+           
+            if constexpr (dim == 2)
+                FPolynomialFill2D(DiBj, pPhysicsCScaled(0), pPhysicsCScaled(1), pPhysicsCScaled(2), simpleScale(0), simpleScale(1), simpleScale(2), DiBj.rows(), DiBj.cols());
+            else
+                FPolynomialFill3D(DiBj, pPhysicsCScaled(0), pPhysicsCScaled(1), pPhysicsCScaled(2), simpleScale(0), simpleScale(1), simpleScale(2), DiBj.rows(), DiBj.cols());
+
             if (flag == 0)
             {
                 auto baseMoment = cellBaseMoment[iCell];

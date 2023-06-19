@@ -139,6 +139,434 @@ namespace DNDS::CFV
         // return c ? c * std::pow(x, px - dx) * std::pow(y, py - dy) * std::pow(z, pz - dz) : 0.;
     }
 
+    template <class TDIBJ>
+    void FPolynomialFill2D(TDIBJ &T, real x, real y, real z, real lx, real ly, real lz, int rows, int cols)
+    {
+        T.setZero();
+        if (rows == 10 && cols == 10)
+        {
+            T(0, 0) = 1.0;
+            T(0, 1) = x;
+            T(0, 2) = y;
+            T(0, 3) = x * x;
+            T(0, 4) = x * y;
+            T(0, 5) = y * y;
+            T(0, 6) = x * x * x;
+            T(0, 7) = (x * x) * y;
+            T(0, 8) = x * (y * y);
+            T(0, 9) = y * y * y;
+            T(1, 1) = 1.0 / lx;
+            T(1, 3) = (x * 2.0) / lx;
+            T(1, 4) = y / lx;
+            T(1, 6) = ((x * x) * 3.0) / lx;
+            T(1, 7) = (x * y * 2.0) / lx;
+            T(1, 8) = (y * y) / lx;
+            T(2, 2) = 1.0 / ly;
+            T(2, 4) = x / ly;
+            T(2, 5) = (y * 2.0) / ly;
+            T(2, 7) = (x * x) / ly;
+            T(2, 8) = (x * y * 2.0) / ly;
+            T(2, 9) = ((y * y) * 3.0) / ly;
+            T(3, 3) = 1.0 / (lx * lx) * 2.0;
+            T(3, 6) = 1.0 / (lx * lx) * x * 6.0;
+            T(3, 7) = 1.0 / (lx * lx) * y * 2.0;
+            T(4, 4) = 1.0 / (lx * ly);
+            T(4, 7) = (x * 2.0) / (lx * ly);
+            T(4, 8) = (y * 2.0) / (lx * ly);
+            T(5, 5) = 1.0 / (ly * ly) * 2.0;
+            T(5, 8) = 1.0 / (ly * ly) * x * 2.0;
+            T(5, 9) = 1.0 / (ly * ly) * y * 6.0;
+            T(6, 6) = 1.0 / (lx * lx * lx) * 6.0;
+            T(7, 7) = (1.0 / (lx * lx) * 2.0) / ly;
+            T(8, 8) = (1.0 / (ly * ly) * 2.0) / lx;
+            T(9, 9) = 1.0 / (ly * ly * ly) * 6.0;
+        }
+        else if (rows == 3 && cols == 10)
+        {
+            T(0, 0) = 1.0;
+            T(0, 1) = x;
+            T(0, 2) = y;
+            T(0, 3) = x * x;
+            T(0, 4) = x * y;
+            T(0, 5) = y * y;
+            T(0, 6) = x * x * x;
+            T(0, 7) = (x * x) * y;
+            T(0, 8) = x * (y * y);
+            T(0, 9) = y * y * y;
+            T(1, 1) = 1.0 / lx;
+            T(1, 3) = (x * 2.0) / lx;
+            T(1, 4) = y / lx;
+            T(1, 6) = ((x * x) * 3.0) / lx;
+            T(1, 7) = (x * y * 2.0) / lx;
+            T(1, 8) = (y * y) / lx;
+            T(2, 2) = 1.0 / ly;
+            T(2, 4) = x / ly;
+            T(2, 5) = (y * 2.0) / ly;
+            T(2, 7) = (x * x) / ly;
+            T(2, 8) = (x * y * 2.0) / ly;
+            T(2, 9) = ((y * y) * 3.0) / ly;
+        }
+        else if (rows == 1 && cols == 10)
+        {
+            T(0, 0) = 1.0;
+            T(0, 1) = x;
+            T(0, 2) = y;
+            T(0, 3) = x * x;
+            T(0, 4) = x * y;
+            T(0, 5) = y * y;
+            T(0, 6) = x * x * x;
+            T(0, 7) = (x * x) * y;
+            T(0, 8) = x * (y * y);
+            T(0, 9) = y * y * y;
+        }
+        else if (rows == 6 && cols == 6)
+        {
+            T(0, 0) = 1.0;
+            T(0, 1) = x;
+            T(0, 2) = y;
+            T(0, 3) = x * x;
+            T(0, 4) = x * y;
+            T(0, 5) = y * y;
+            T(1, 1) = 1.0 / lx;
+            T(1, 3) = (x * 2.0) / lx;
+            T(1, 4) = y / lx;
+            T(2, 2) = 1.0 / ly;
+            T(2, 4) = x / ly;
+            T(2, 5) = (y * 2.0) / ly;
+            T(3, 3) = 1.0 / (lx * lx) * 2.0;
+            T(4, 4) = 1.0 / (lx * ly);
+            T(5, 5) = 1.0 / (ly * ly) * 2.0;
+        }
+        else if (rows == 3 && cols == 6)
+        {
+            T(0, 0) = 1.0;
+            T(0, 1) = x;
+            T(0, 2) = y;
+            T(0, 3) = x * x;
+            T(0, 4) = x * y;
+            T(0, 5) = y * y;
+            T(1, 1) = 1.0 / lx;
+            T(1, 3) = (x * 2.0) / lx;
+            T(1, 4) = y / lx;
+            T(2, 2) = 1.0 / ly;
+            T(2, 4) = x / ly;
+            T(2, 5) = (y * 2.0) / ly;
+        }
+        else if (rows == 1 && cols == 6)
+        {
+            T(0, 0) = 1.0;
+            T(0, 1) = x;
+            T(0, 2) = y;
+            T(0, 3) = x * x;
+            T(0, 4) = x * y;
+            T(0, 5) = y * y;
+        }
+        else if (rows == 3 && cols == 3)
+        {
+            T(0, 0) = 1.0;
+            T(0, 1) = x;
+            T(0, 2) = y;
+            T(1, 1) = 1.0 / lx;
+            T(2, 2) = 1.0 / ly;
+        }
+        else if (rows == 1 && cols == 3)
+        {
+            T(0, 0) = 1.0;
+            T(0, 1) = x;
+            T(0, 2) = y;
+        }
+        else
+        {
+            for (int idiff = 0; idiff < rows; idiff++)
+                for (int ibase = 0; ibase < cols; ibase++)
+                {
+
+                    int px = diffOperatorOrderList2D[ibase][0];
+                    int py = diffOperatorOrderList2D[ibase][1];
+                    int pz = diffOperatorOrderList2D[ibase][2];
+                    int ndx = diffOperatorOrderList2D[idiff][0];
+                    int ndy = diffOperatorOrderList2D[idiff][1];
+                    int ndz = diffOperatorOrderList2D[idiff][2];
+                    T(idiff, ibase) =
+                        FPolynomial3D(px, py, pz, ndx, ndy, ndz,
+                                      x, y, z / 1.) /
+                        (iPow(lx, ndx) * iPow(ly, ndy) * iPow(1, ndz));
+                }
+        }
+    }
+
+    template <class TDIBJ>
+    void FPolynomialFill3D(TDIBJ &T, real x, real y, real z, real lx, real ly, real lz, int rows, int cols)
+    {
+        T.setZero();
+        if (rows == 20 && cols == 20)
+        {
+            T(0, 0) = 1.0;
+            T(0, 1) = x;
+            T(0, 2) = y;
+            T(0, 3) = z;
+            T(0, 4) = x * x;
+            T(0, 5) = y * y;
+            T(0, 6) = z * z;
+            T(0, 7) = x * y;
+            T(0, 8) = y * z;
+            T(0, 9) = x * z;
+            T(0, 10) = x * x * x;
+            T(0, 11) = y * y * y;
+            T(0, 12) = z * z * z;
+            T(0, 13) = (x * x) * y;
+            T(0, 14) = x * (y * y);
+            T(0, 15) = (y * y) * z;
+            T(0, 16) = y * (z * z);
+            T(0, 17) = x * (z * z);
+            T(0, 18) = (x * x) * z;
+            T(0, 19) = x * y * z;
+            T(1, 1) = 1.0 / lx;
+            T(1, 4) = (x * 2.0) / lx;
+            T(1, 7) = y / lx;
+            T(1, 9) = z / lx;
+            T(1, 10) = ((x * x) * 3.0) / lx;
+            T(1, 13) = (x * y * 2.0) / lx;
+            T(1, 14) = (y * y) / lx;
+            T(1, 17) = (z * z) / lx;
+            T(1, 18) = (x * z * 2.0) / lx;
+            T(1, 19) = (y * z) / lx;
+            T(2, 2) = 1.0 / ly;
+            T(2, 5) = (y * 2.0) / ly;
+            T(2, 7) = x / ly;
+            T(2, 8) = z / ly;
+            T(2, 11) = ((y * y) * 3.0) / ly;
+            T(2, 13) = (x * x) / ly;
+            T(2, 14) = (x * y * 2.0) / ly;
+            T(2, 15) = (y * z * 2.0) / ly;
+            T(2, 16) = (z * z) / ly;
+            T(2, 19) = (x * z) / ly;
+            T(3, 3) = 1.0 / lz;
+            T(3, 6) = (z * 2.0) / lz;
+            T(3, 8) = y / lz;
+            T(3, 9) = x / lz;
+            T(3, 12) = ((z * z) * 3.0) / lz;
+            T(3, 15) = (y * y) / lz;
+            T(3, 16) = (y * z * 2.0) / lz;
+            T(3, 17) = (x * z * 2.0) / lz;
+            T(3, 18) = (x * x) / lz;
+            T(3, 19) = (x * y) / lz;
+            T(4, 4) = 1.0 / (lx * lx) * 2.0;
+            T(4, 10) = 1.0 / (lx * lx) * x * 6.0;
+            T(4, 13) = 1.0 / (lx * lx) * y * 2.0;
+            T(4, 18) = 1.0 / (lx * lx) * z * 2.0;
+            T(5, 5) = 1.0 / (ly * ly) * 2.0;
+            T(5, 11) = 1.0 / (ly * ly) * y * 6.0;
+            T(5, 14) = 1.0 / (ly * ly) * x * 2.0;
+            T(5, 15) = 1.0 / (ly * ly) * z * 2.0;
+            T(6, 6) = 1.0 / (lz * lz) * 2.0;
+            T(6, 12) = 1.0 / (lz * lz) * z * 6.0;
+            T(6, 16) = 1.0 / (lz * lz) * y * 2.0;
+            T(6, 17) = 1.0 / (lz * lz) * x * 2.0;
+            T(7, 7) = 1.0 / (lx * ly);
+            T(7, 13) = (x * 2.0) / (lx * ly);
+            T(7, 14) = (y * 2.0) / (lx * ly);
+            T(7, 19) = z / (lx * ly);
+            T(8, 8) = 1.0 / (ly * lz);
+            T(8, 15) = (y * 2.0) / (ly * lz);
+            T(8, 16) = (z * 2.0) / (ly * lz);
+            T(8, 19) = x / (ly * lz);
+            T(9, 9) = 1.0 / (lx * lz);
+            T(9, 17) = (z * 2.0) / (lx * lz);
+            T(9, 18) = (x * 2.0) / (lx * lz);
+            T(9, 19) = y / (lx * lz);
+            T(10, 10) = 1.0 / (lx * lx * lx) * 6.0;
+            T(11, 11) = 1.0 / (ly * ly * ly) * 6.0;
+            T(12, 12) = 1.0 / (lz * lz * lz) * 6.0;
+            T(13, 13) = (1.0 / (lx * lx) * 2.0) / ly;
+            T(14, 14) = (1.0 / (ly * ly) * 2.0) / lx;
+            T(15, 15) = (1.0 / (ly * ly) * 2.0) / lz;
+            T(16, 16) = (1.0 / (lz * lz) * 2.0) / ly;
+            T(17, 17) = (1.0 / (lz * lz) * 2.0) / lx;
+            T(18, 18) = (1.0 / (lx * lx) * 2.0) / lz;
+            T(19, 19) = 1.0 / (lx * ly * lz);
+        }
+        else if (rows == 4 && cols == 20)
+        {
+            T(0, 0) = 1.0;
+            T(0, 1) = x;
+            T(0, 2) = y;
+            T(0, 3) = z;
+            T(0, 4) = x * x;
+            T(0, 5) = y * y;
+            T(0, 6) = z * z;
+            T(0, 7) = x * y;
+            T(0, 8) = y * z;
+            T(0, 9) = x * z;
+            T(0, 10) = x * x * x;
+            T(0, 11) = y * y * y;
+            T(0, 12) = z * z * z;
+            T(0, 13) = (x * x) * y;
+            T(0, 14) = x * (y * y);
+            T(0, 15) = (y * y) * z;
+            T(0, 16) = y * (z * z);
+            T(0, 17) = x * (z * z);
+            T(0, 18) = (x * x) * z;
+            T(0, 19) = x * y * z;
+            T(1, 1) = 1.0 / lx;
+            T(1, 4) = (x * 2.0) / lx;
+            T(1, 7) = y / lx;
+            T(1, 9) = z / lx;
+            T(1, 10) = ((x * x) * 3.0) / lx;
+            T(1, 13) = (x * y * 2.0) / lx;
+            T(1, 14) = (y * y) / lx;
+            T(1, 17) = (z * z) / lx;
+            T(1, 18) = (x * z * 2.0) / lx;
+            T(1, 19) = (y * z) / lx;
+            T(2, 2) = 1.0 / ly;
+            T(2, 5) = (y * 2.0) / ly;
+            T(2, 7) = x / ly;
+            T(2, 8) = z / ly;
+            T(2, 11) = ((y * y) * 3.0) / ly;
+            T(2, 13) = (x * x) / ly;
+            T(2, 14) = (x * y * 2.0) / ly;
+            T(2, 15) = (y * z * 2.0) / ly;
+            T(2, 16) = (z * z) / ly;
+            T(2, 19) = (x * z) / ly;
+            T(3, 3) = 1.0 / lz;
+            T(3, 6) = (z * 2.0) / lz;
+            T(3, 8) = y / lz;
+            T(3, 9) = x / lz;
+            T(3, 12) = ((z * z) * 3.0) / lz;
+            T(3, 15) = (y * y) / lz;
+            T(3, 16) = (y * z * 2.0) / lz;
+            T(3, 17) = (x * z * 2.0) / lz;
+            T(3, 18) = (x * x) / lz;
+            T(3, 19) = (x * y) / lz;
+        }
+        else if (rows == 1 && cols == 20)
+        {
+            T(0, 0) = 1.0;
+            T(0, 1) = x;
+            T(0, 2) = y;
+            T(0, 3) = z;
+            T(0, 4) = x * x;
+            T(0, 5) = y * y;
+            T(0, 6) = z * z;
+            T(0, 7) = x * y;
+            T(0, 8) = y * z;
+            T(0, 9) = x * z;
+            T(0, 10) = x * x * x;
+            T(0, 11) = y * y * y;
+            T(0, 12) = z * z * z;
+            T(0, 13) = (x * x) * y;
+            T(0, 14) = x * (y * y);
+            T(0, 15) = (y * y) * z;
+            T(0, 16) = y * (z * z);
+            T(0, 17) = x * (z * z);
+            T(0, 18) = (x * x) * z;
+            T(0, 19) = x * y * z;
+        }
+        else if (rows == 10 && cols == 10)
+        {
+            T(0, 0) = 1.0;
+            T(0, 1) = x;
+            T(0, 2) = y;
+            T(0, 3) = z;
+            T(0, 4) = x * x;
+            T(0, 5) = y * y;
+            T(0, 6) = z * z;
+            T(0, 7) = x * y;
+            T(0, 8) = y * z;
+            T(0, 9) = x * z;
+            T(1, 1) = 1.0 / lx;
+            T(1, 4) = (x * 2.0) / lx;
+            T(1, 7) = y / lx;
+            T(1, 9) = z / lx;
+            T(2, 2) = 1.0 / ly;
+            T(2, 5) = (y * 2.0) / ly;
+            T(2, 7) = x / ly;
+            T(2, 8) = z / ly;
+            T(3, 3) = 1.0 / lz;
+            T(3, 6) = (z * 2.0) / lz;
+            T(3, 8) = y / lz;
+            T(3, 9) = x / lz;
+            T(4, 4) = 1.0 / (lx * lx) * 2.0;
+            T(5, 5) = 1.0 / (ly * ly) * 2.0;
+            T(6, 6) = 1.0 / (lz * lz) * 2.0;
+            T(7, 7) = 1.0 / (lx * ly);
+            T(8, 8) = 1.0 / (ly * lz);
+            T(9, 9) = 1.0 / (lx * lz);
+        }
+        else if (rows == 4 && cols == 10)
+        {
+            T(0, 0) = 1.0;
+            T(0, 1) = x;
+            T(0, 2) = y;
+            T(0, 3) = z;
+            T(0, 4) = x * x;
+            T(0, 5) = y * y;
+            T(0, 6) = z * z;
+            T(0, 7) = x * y;
+            T(0, 8) = y * z;
+            T(0, 9) = x * z;
+            T(1, 1) = 1.0 / lx;
+            T(1, 4) = (x * 2.0) / lx;
+            T(1, 7) = y / lx;
+            T(1, 9) = z / lx;
+            T(2, 2) = 1.0 / ly;
+            T(2, 5) = (y * 2.0) / ly;
+            T(2, 7) = x / ly;
+            T(2, 8) = z / ly;
+            T(3, 3) = 1.0 / lz;
+            T(3, 6) = (z * 2.0) / lz;
+            T(3, 8) = y / lz;
+            T(3, 9) = x / lz;
+        }
+        else if (rows == 1 && cols == 10)
+        {
+            T(0, 0) = 1.0;
+            T(0, 1) = x;
+            T(0, 2) = y;
+            T(0, 3) = z;
+            T(0, 4) = x * x;
+            T(0, 5) = y * y;
+            T(0, 6) = z * z;
+            T(0, 7) = x * y;
+            T(0, 8) = y * z;
+            T(0, 9) = x * z;
+        }
+        else if (rows == 4 && cols == 4)
+        {
+            T(0, 0) = 1.0;
+            T(0, 1) = x;
+            T(0, 2) = y;
+            T(0, 3) = z;
+            T(1, 1) = 1.0 / lx;
+            T(2, 2) = 1.0 / ly;
+            T(3, 3) = 1.0 / lz;
+        }
+        else if (rows == 1 && cols == 4)
+        {
+            T(0, 0) = 1.0;
+            T(0, 1) = x;
+            T(0, 2) = y;
+            T(0, 3) = z;
+        }
+        else
+        {
+            for (int idiff = 0; idiff < rows; idiff++)
+                for (int ibase = 0; ibase < cols; ibase++)
+                {
+                    int px = diffOperatorOrderList[ibase][0];
+                    int py = diffOperatorOrderList[ibase][1];
+                    int pz = diffOperatorOrderList[ibase][2];
+                    int ndx = diffOperatorOrderList[idiff][0];
+                    int ndy = diffOperatorOrderList[idiff][1];
+                    int ndz = diffOperatorOrderList[idiff][2];
+                    T(idiff, ibase) =
+                        FPolynomial3D(px, py, pz, ndx, ndy, ndz,
+                                      x, y, z) /
+                        (iPow(lx, ndx) * iPow(ly, ndy) * iPow(lz, ndz));
+                }
+        }
+    }
+
     template <int dim, int rank, class VLe, class VRi>
     real NormSymDiffOrderTensorV(VLe &&Le, VRi &&Ri)
     {
@@ -215,7 +643,6 @@ namespace DNDS::CFV
     }
 
     // #include <unsupported/Eigen/CXX11/TensorSymmetry>
-    
 
     template <int dim, int rank, class VLe>
     void TransSymDiffOrderTensorV(VLe &&Le, const Geom::tGPoint &trans)
@@ -233,11 +660,9 @@ namespace DNDS::CFV
             }
             else if constexpr (rank == 2)
             {
-                
             }
             else if constexpr (rank == 3)
             {
-               
             }
             else
             {
@@ -248,19 +673,15 @@ namespace DNDS::CFV
         {
             if constexpr (rank == 0)
             {
-               
             }
             else if constexpr (rank == 1)
             {
-                
             }
             else if constexpr (rank == 2)
             {
-               
             }
             else if constexpr (rank == 3)
             {
-               
             }
             else
             {
