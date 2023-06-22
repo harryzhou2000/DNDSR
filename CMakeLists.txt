@@ -330,8 +330,10 @@ ADD_EXE_TEST("${TESTS_Euler}" "test/Euler")
 
 
 
-
+#######################################################
 ## doxygen
+#######################################################
+
 find_package(Doxygen)
 if (DOXYGEN_FOUND)
     message(STATUS "Doxygen Found") 
@@ -348,6 +350,11 @@ if (DOXYGEN_FOUND)
         COMMENT Doing Doxygen
         VERBATIM
     )
+    execute_process(COMMAND python ${CMAKE_SOURCE_DIR}/docs/getAllAttachForDox.py 
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/docs")
+
+    # find_file(DOXYGEN_PDF_FILES docs/*.pdf NO_DEFAULT_PATH)
+    # message(STATUS ${DOXYGEN_PDF_FILES})
     ##### using CMAKE convenient DOXYGEN!only in 3.9 +!!!
     
 else(DOXYGEN_FOUND)

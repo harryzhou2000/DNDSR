@@ -1,0 +1,73 @@
+\begin{thebibliography}{10}
+
+\bibitem{petsc-web-page}
+Satish Balay, Shrirang Abhyankar, Mark~F. Adams, Steven Benson, Jed Brown,
+  Peter Brune, Kris Buschelman, Emil~M. Constantinescu, Lisandro Dalcin, Alp
+  Dener, Victor Eijkhout, Jacob Faibussowitsch, William~D. Gropp, V\'{a}clav
+  Hapla, Tobin Isaac, Pierre Jolivet, Dmitry Karpeev, Dinesh Kaushik,
+  Matthew~G. Knepley, Fande Kong, Scott Kruger, Dave~A. May, Lois~Curfman
+  McInnes, Richard~Tran Mills, Lawrence Mitchell, Todd Munson, Jose~E. Roman,
+  Karl Rupp, Patrick Sanan, Jason Sarich, Barry~F. Smith, Stefano Zampini, Hong
+  Zhang, Hong Zhang, and Junchao Zhang.
+\newblock {PETS}c {W}eb page.
+\newblock \url{https://petsc.org/}, 2023.
+
+\bibitem{wang2016compact}
+Qian Wang, Yu-Xin Ren, and Wanai Li.
+\newblock Compact high order finite volume method on unstructured grids i:
+  basic formulations and one-dimensional schemes.
+\newblock {\em Journal of Computational Physics}, 314:863--882, 2016.
+
+\bibitem{wang2016compact2}
+Qian Wang, Yu-Xin Ren, and Wanai Li.
+\newblock Compact high order finite volume method on unstructured grids ii:
+  Extension to two-dimensional euler equations.
+\newblock {\em Journal of Computational Physics}, 314:883--908, 2016.
+
+\bibitem{wang2017compact3}
+Qian Wang, Yu-Xin Ren, Jianhua Pan, and Wanai Li.
+\newblock Compact high order finite volume method on unstructured grids iii:
+  Variational reconstruction.
+\newblock {\em Journal of Computational physics}, 337:1--26, 2017.
+
+\bibitem{jianhua2018high}
+Jianhua Pan, Qian Wang, Yusi Zhang, and Yuxin Ren.
+\newblock High-order compact finite volume methods on unstructured grids with
+  adaptive mesh refinement for solving inviscid and viscous flows.
+\newblock {\em Chinese Journal of Aeronautics}, 31(9):1829--1841, 2018.
+
+\bibitem{huang2022high}
+Qian-Min Huang, Yu-Xin Ren, Qian Wang, and Jian-Hua Pan.
+\newblock High-order compact finite volume schemes for solving the reynolds
+  averaged navier-stokes equations on the unstructured mixed grids with a large
+  aspect ratio.
+\newblock {\em Journal of Computational Physics}, 467:111458, 2022.
+
+\bibitem{li2011multi}
+Wanai Li, Yu-Xin Ren, Guodong Lei, and Hong Luo.
+\newblock The multi-dimensional limiters for solving hyperbolic conservation
+  laws on unstructured grids.
+\newblock {\em Journal of Computational Physics}, 230(21):7775--7795, 2011.
+
+\bibitem{li2012multi}
+Wanai Li and Yu-Xin Ren.
+\newblock The multi-dimensional limiters for solving hyperbolic conservation
+  laws on unstructured grids ii: extension to high order finite volume schemes.
+\newblock {\em Journal of Computational Physics}, 231(11):4053--4077, 2012.
+
+\bibitem{toro2013Riemann}
+E.~F. Toro.
+\newblock {\em Riemann Solvers and Numerical Methods for Fluid Dynamics}.
+\newblock Springer Berlin Heidelberg, 2013.
+
+\bibitem{fleischmann2020low}
+Nico Fleischmann, Stefan Adami, Xiangyu~Y Hu, and Nikolaus~A Adams.
+\newblock A low dissipation method to cure the grid-aligned shock instability.
+\newblock {\em Journal of Computational Physics}, 401:109004, 2020.
+
+\bibitem{ferracina2008strong}
+Luca Ferracina and MN~Spijker.
+\newblock Strong stability of singly-diagonally-implicit runge--kutta methods.
+\newblock {\em Applied Numerical Mathematics}, 58(11):1675--1686, 2008.
+
+\end{thebibliography}

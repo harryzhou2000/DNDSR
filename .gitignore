@@ -17,3 +17,9 @@ data
 # doc
 *.pdf
 *.png
+*.jpg
+# tex
+*.aux
+*.log
+*.out
+*.toc

@@ -1,16 +1,19 @@
 # Variational Reconstruction
 
 
-<!-- @import "[TOC]" {cmd="toc" depthFrom=2 depthTo=6 orderedList=false} -->
+<!-- @import "[TOC]" {cmd="toc" depthFrom=1 depthTo=6 orderedList=false} -->
 
 <!-- code_chunk_output -->
 
-- [Functional Design:](#functional-design)
-  - [Selecting Inner Product](#selecting-inner-product)
-  - [Other Forms](#other-forms)
-- [Reconstruction Matrices](#reconstruction-matrices)
+- [Variational Reconstruction](#variational-reconstruction)
+  - [Functional Design:](#functional-design)
+    - [Selecting Inner Product](#selecting-inner-product)
+    - [Other Forms](#other-forms)
+  - [Reconstruction Matrices](#reconstruction-matrices)
 
 <!-- /code_chunk_output -->
+
+
 
 **[PDF version of this page](Variational_Reconstruction.pdf)**
 
