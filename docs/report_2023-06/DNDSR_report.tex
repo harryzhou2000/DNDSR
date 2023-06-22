@@ -857,6 +857,8 @@ $$
         \left(d_f^3 D_{yyy}u_j\right)
     \end{aligned}
 $$
+其中$d_f$选取的是两侧\verb|cellAlignedHBox|
+平均的最大分量。
 这与潘建华格式最为接近，
 实验表明，其在正交笛卡尔网格上计算激波管等
 较强间断的性能与潘建华格式差别非常小。
@@ -874,8 +876,8 @@ CWBAP的限制过程见吴卓航文章，本文不赘述。
 
 记$i,j$单元的基函数在一点$\x$的值及其导数为：
 $$
-\mathfrak{D}_m{\varphi_i^l}\equiv [D_i]_{ml}
-, \mathfrak{D}_m{\varphi_j^l}\equiv [D_j]_{ml}
+    \mathfrak{D}_m{\varphi_i^l}\equiv [D_i]_{ml}
+    , \mathfrak{D}_m{\varphi_j^l}\equiv [D_j]_{ml}
 $$
 其中$\mathfrak{D}_m$也是偏微分算符，
 只不过将所有偏微分算子的分量依次排列，
@@ -895,8 +897,8 @@ $\mathfrak{D}_3,\mathfrak{D}_4,\mathfrak{D}_5$
 $[D_i]_{ml},[D_j]_{ml}$都是对角线非零的上三角阵）。
 因此，只要求解方程（二维三次重构为例）
 $$
-\sum_{l=1}^{9}[D_i]_{ml}u_i^l = 
-\sum_{l=1}^{9}[D_j]_{ml}u_j^l, \ \ m=1,...,9
+    \sum_{l=1}^{9}[D_i]_{ml}u_i^l =
+    \sum_{l=1}^{9}[D_j]_{ml}u_j^l, \ \ m=1,...,9
 $$
 即可得到二次重构。
 这样，无论基函数经历多么复杂的线性变换，
@@ -966,18 +968,250 @@ DNDS的\verb|Euler|系列求解器
 线性求解步的求解。
 未来考虑将非线性求解器单独抽象，
 实施非线性GMRES等非线性求解方案。
-    
+% [3979, 4938, 1337, 2872, 127]
+% ["DNDS", "Geom", "CFV", "Euler", "Solver"]
 \section{统计与测试}
 
-\subsection{代码量}
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=12cm]{lines.png}  %需调整
+    \caption{行数统计
+        }
+    \label{fig:lines}
+\end{figure}
 
 \subsection{效率与扩展性}
+为了与VES程序进行直接对比，
+采用双马赫反射算例LU-SGS迭代
+作为评价指标。采用$h=1/480$的网格，
+在TH-2B机器上使用4节点（96核）
+进行计算，统计10次LU-SGS迭代的平均时间。
+
+计算中忽略粘性项、源项，LU-SGS采用
+标量Jacobian对角项进行计算，3次重构，5次积分精度。
+限制器都是CWBAP，分别测试全部限制和全部不限制的方案。
+%TODO
 
 \subsection{双马赫反射}
 
+采用吴卓航文章描述的双马赫反射算例配置，
+采用笛卡尔
+计算网格$h=1/240$，BDF2时间推进3200步到t=0.2，
+黎曼求解器是HLLE+，采用CWBAP限制器。导数权为阶乘型，
+泛函为各向同性泛函。
+
+$t=0.2$时绘制密度从$1.41$到$22.1$的等值线30条，
+如图\ref{fig:DMR}与图\ref{fig:DMR_SD}。
+\ref{fig:DMR_SD}是采用间断探测器限制的结果。
+图中可见，间断探测器方案与吴卓航给出的结果基本吻合。
+
+\begin{figure}[H]
+    \begin{minipage}[c]{0.45\linewidth}  %需调整
+        \centering
+        \includegraphics[width=8cm]{DMR.png}
+        \caption{双马赫反射密度等值线，全场限制}
+        \label{fig:DMR}
+    \end{minipage}
+    \hfill %弹性长度
+    \begin{minipage}[c]{0.45\linewidth}  %需调整
+        \centering
+        \includegraphics[width=8cm]{DMR_SD.png}
+        \caption{双马赫反射密度等值线，间断探测器限制}
+        \label{fig:DMR_SD}
+    \end{minipage}
+\end{figure}
+
+
+
 \subsection{三维盒子冲击}
 
+定义三维盒子冲击问题为无粘Euler方程在
+$[0,1]^3$求解，其中初始条件为盒子$[0.25,0.75]^3$
+内为守恒量$(0.5,1,0,0,4)\trans$
+其余为守恒量$(1,0,0,0,2.5)\trans$，计算域
+边缘都是无穿透壁面。计算到$t=1$。
+根据二维计算的结果，二维截面上定义的问题，
+在网格尺度约小于
+$1/256$时，可以明显观察到滑移面的K-H不稳定性，
+其与反射的正激波作用会出现较小的涡结构。
+现讨论其三维计算。
+
+选取笛卡尔网格数$256^3$，
+SDIRK4格式选用时间步$5\times10^{-4}$共2000步。
+无粘通量为HLLC，施加间断探测器和限制器。
+为了节省计算时间，采用3次精度的积分计算通量和重构矩阵。
+由于泛函是各向同性的，
+此时的重构矩阵并不会因为减少积分点而出现奇异性。
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=12cm]{Uniform256_3D_400_5.png}  %需调整
+    \caption{三维盒子冲击问题$t=0.2$，
+        曲面为$Q=0$等值面速度大小染色，
+        平面为$z=0.5$密度染色}
+    \label{fig:Uniform256_3D_400_5}
+\end{figure}
+
+根据特征线的限制，$t=0.2$时对称截面上的解
+与二维基本一致，如图
+\ref{fig:Uniform256_3D_400_5}
+。
+其中可见方块头尾出现明显的涡核，
+而滑移面虽然还没有出现明显的
+剪切失稳，Q判据已经认为三维空间中
+出现一定的涡核。在经过初始的弱激波
+后，涡核明显变多。
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=12cm]{Uniform256_3D_900_4.png}  %需调整
+    \caption{三维盒子冲击问题$t=0.45$，
+        曲面为$Q=0$等值面速度大小染色，
+        平面为$z=0.5$密度染色}
+    \label{fig:Uniform256_3D_900_4}
+\end{figure}
+
+在$t=0.45$时，如图\ref{fig:Uniform256_3D_900_4}，
+反射激波已经经过了滑移面的间断，
+这个间断上出现了明显的二维卷起，
+与二维计算基本一致。Q判据给出这几个小
+卷起在三维下是条形的涡核，
+与初始的大涡环平行。
+此时，初始的大涡环已经在四角附近
+拉伸出流向的小涡。
+
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=8cm]{Uniform256_3D_2000_1.png}  %需调整
+    \caption{三维盒子冲击问题$t=1$，
+        曲面为$Q=0$等值面速度大小染色，
+        平面为$z=0.5$密度染色}
+    \label{fig:Uniform256_3D_2000_1}
+\end{figure}
+
+\begin{figure}[htbp]
+    \centering
+    \subfloat[视角1]{
+        \includegraphics[width=7cm]{Uniform256_3D_2000.png}
+    }
+    \subfloat[视角2]{
+        \includegraphics[width=7cm]{Uniform256_3D_2000_2.png}
+    }
+    \caption{三维盒子冲击问题$t=1$，
+        曲面为$Q=0$等值面速度大小染色，
+        平面为$z=0.5$密度染色}
+    \label{fig:Uniform256_3D_2000_2}
+\end{figure}
+
+达到$t=1$后，反射激波已经再次
+在后部的壁面反射，如图\ref{fig:Uniform256_3D_2000_1}。
+前面环状的涡结构围绕初始的大涡环
+形成，已经发展出更多的流向涡。
+图\ref{fig:Uniform256_3D_2000_2}可见
+涡环附近更多的细节。
+可见涡核似乎主要被限制在低密度区。
+原本垂直于对称面的二维卷起涡核
+已经被扭曲为三维结构。
+
+图\ref{fig:Uniform256_3D_400_3}，\ref{fig:Uniform256_3D_900_3}，
+\ref{fig:Uniform256_3D_1500_3}，\ref{fig:Uniform256_3D_2000_3}
+在同一视角绘制了$t=0.2,0.45,0.75,1$的
+涡结构和密度分布。
+
+整体上看，三维计算中计算结果确实满足三维特征，
+变分重构有限体积配合限制器可以有效分辨
+流动中的间断和多尺度流动结构。
+
+
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=12cm]{Uniform256_3D_400_3.png}  %需调整
+    \caption{三维盒子冲击问题$t=0.2$，
+        曲面为$Q=0$等值面速度大小染色，
+        平面为$z=0.5$密度染色}
+    \label{fig:Uniform256_3D_400_3}
+\end{figure}
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=12cm]{Uniform256_3D_900_3.png}  %需调整
+    \caption{三维盒子冲击问题$t=0.45$，
+        曲面为$Q=0$等值面速度大小染色，
+        平面为$z=0.5$密度染色}
+    \label{fig:Uniform256_3D_900_3}
+\end{figure}
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=12cm]{Uniform256_3D_1500_3.png}  %需调整
+    \caption{三维盒子冲击问题$t=0.75$，
+        曲面为$Q=0$等值面速度大小染色，
+        平面为$z=0.5$密度染色}
+    \label{fig:Uniform256_3D_1500_3}
+\end{figure}
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=12cm]{Uniform256_3D_2000_3.png}  %需调整
+    \caption{三维盒子冲击问题$t=1$，
+        曲面为$Q=0$等值面速度大小染色，
+        平面为$z=0.5$密度染色}
+    \label{fig:Uniform256_3D_2000_3}
+\end{figure}
+
+
 \subsection{泰勒-格林涡}
+
+泰勒-格林涡一般认为是不可压流动，
+此处采用计算域$[0,2\pi]^3$周期边界条件，初始条件
+$$
+    \left\{
+    \begin{array}{l}
+        u = \sin(x) \cos(y) \cos(z)  \\
+        v = -\cos(x) \sin(y) \cos(z) \\
+        w = 0                        \\
+        p = \frac{1}{\gamma M_0^2} + \frac{1}{16}\left[
+            (\cos(2x) + \cos(2y)) (2 + \cos(2z))
+        \right]                      \\
+        \rho = \gamma M_0^2 p         \\
+    \end{array}
+    \right.
+$$
+并取$M_0=0.1$，即可近似不可压状态。
+计算不加限制器，SDIRK4计算5000步到$t=10$。
+
+在$128^3$网格计算，绘制不同时刻的涡结构如
+图\ref{fig:Uniform128_3D_Periodic_TGV_5000}
+。
+
+\begin{figure}[htbp]
+    \centering
+    \subfloat[$t=4.6$]{
+        \includegraphics[width=7cm]{Uniform128_3D_Periodic_TGV_2300.png}
+    }
+    \subfloat[$t=7.2$]{
+        \includegraphics[width=7cm]{Uniform128_3D_Periodic_TGV_3600.png}
+    }\\
+    \subfloat[$t=8.0$]{
+        \includegraphics[width=7cm]{Uniform128_3D_Periodic_TGV_4000.png}
+    }
+    \subfloat[$t=10$]{
+        \includegraphics[width=7cm]{Uniform128_3D_Periodic_TGV_5000.png}
+    }
+    \caption{泰勒格林涡，
+        曲面为$Q=0$等值面速度大小染色}
+    \label{fig:Uniform128_3D_Periodic_TGV_5000}
+\end{figure}
+
+%TODO statistics
+
+
+
+
+
+\newpage
 
 \section*{附录}
 
