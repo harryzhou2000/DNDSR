@@ -19,7 +19,7 @@ It seems concerning basic data arrangement, the OpenFOAM and SU2 both require th
 
 [OpenFOAM's gradient calculation](https://github.com/OpenFOAM/OpenFOAM-dev/blob/master/src/finiteVolume/finiteVolume/gradSchemes/LeastSquaresGrad/LeastSquaresGrad.C):
 
-```c++
+```cpp
 forAll(vtf, celli)
     {
         flatVtf[celli] = vtf[celli];
@@ -28,7 +28,7 @@ forAll(vtf, celli)
 
 [SU2's gradient calculation](https://github.com/su2code/SU2/blob/master/SU2_CFD/include/gradients/computeGradientsGreenGauss.hpp):
 
-```c++
+```cpp
 for (size_t iVertex = 0; iVertex < geometry.GetnVertex(iMarker); ++iVertex)
       {
         //... code
@@ -41,14 +41,14 @@ And their directly operating data objects seem to be defined on a whole (zone of
 
 [OpenFOAM's gradient calculation](https://github.com/OpenFOAM/OpenFOAM-dev/blob/master/src/finiteVolume/finiteVolume/gradSchemes/LeastSquaresGrad/LeastSquaresGrad.C):
 
-```c++
+```cpp
 const List<List<label>>& stencilAddr = stencil.stencil();
 const List<List<vector>>& lsvs = lsv.vectors();
 ```
 
 [SU2's gradient calculation](https://github.com/su2code/SU2/blob/master/SU2_CFD/include/gradients/computeGradientsGreenGauss.hpp):
 
-```c++
+```cpp
 size_t iPoint = geometry.vertex[iMarker][iVertex]->GetNode();
 //
 su2double volume = nodes->GetVolume(iPoint) + nodes->GetPeriodicVolume(iPoint);
@@ -56,7 +56,7 @@ su2double volume = nodes->GetVolume(iPoint) + nodes->GetPeriodicVolume(iPoint);
 
 Actually, SU2's [CVertex](https://github.com/su2code/SU2/blob/master/Common/include/geometry/dual_grid/CVertex.hpp) is a polymorphic class:
 
-```c++
+```cpp
 class CVertex : public CDualGrid {
 protected:
   unsigned long Nodes[1];               /*!< \brief Vector to store the global nodes of an element. */
@@ -78,7 +78,7 @@ CDualGrid stores the adjacency information, geometric information and auxiliary 
 However, OpenFOAM seems to maintain a primitive data array for mesh topology and geometry in [primitiveMesh](https://github.com/OpenFOAM/OpenFOAM-dev/blob/master/src/OpenFOAM/meshes/primitiveMesh/primitiveMesh.H) class:
 
 
-```c++
+```cpp
 class primitiveMesh
 {
     // Permanent data
@@ -121,7 +121,7 @@ DNDS does not intend to directly apply such methods at first, but intend to simp
 The first application of DNDS, the simple CFV *euler* solver, does only invoke basic type communications in `ArrayTransformer`, and has yet to come up with any MPI-related bug (data corruption, dead lock...) since no hard MPI operation is needed outside the DNDS wrapping.
 
 Also, DNDS recommends the user to put different kinds of data in different arrays instead of combining them at first, like in OpenFOAM:
-```c++
+```cpp
 std::vector<real> faceArea;
 std::vector<vec>  faceCent;
 
@@ -138,7 +138,7 @@ Using DNDS provided data structure, one can consider `std::vector<simple_type>` 
 
 The reasoning behind this, is to separate different data genres, which may need different arrangements of communication, access and combination. For example, if one uses combined data:
 
-```c++
+```cpp
 class Solution{
     real rho, ru, rv, rw, E, u, v, w, p, T;
 public:
@@ -150,7 +150,7 @@ std::vector<Solution> solutions;
 
 then Write and Read would only involve the conserved variables. However, if one extends this to:
 
-```c++
+```cpp
 class Solution{
     real rho, ru, rv, rw, E, u, v, w, p, T;
     real rho_1, ru_1, rv_1, rw_1, E_1;
@@ -166,7 +166,7 @@ Therefore, in DNDS, it is recommended that the abstraction is delayed out of the
 
 <!-- [OpenFOAM's gradient calculation](https://github.com/OpenFOAM/OpenFOAM-dev/blob/master/src/finiteVolume/finiteVolume/gradSchemes/LeastSquaresGrad/LeastSquaresGrad.C):
 
-```c++
+```cpp
 
 template<class Type, class Stencil>
 Foam::tmp
@@ -264,7 +264,7 @@ Foam::fv::LeastSquaresGrad<Type, Stencil>::calcGrad
 
 [SU2's gradient calculation](https://github.com/su2code/SU2/blob/master/SU2_CFD/include/gradients/computeGradientsGreenGauss.hpp):
 
-```c++
+```cpp
 
 template<size_t nDim, class FieldType, class GradientType>
 void computeGradientsGreenGauss(CSolver* solver,

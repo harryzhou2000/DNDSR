@@ -980,6 +980,14 @@ DNDS的\verb|Euler|系列求解器
     \label{fig:lines}
 \end{figure}
 
+图\ref{fig:lines}给出了不同模块中的代码体积。
+其中DNDS模块主要包含基础的\verb|Array|等数据结构、相关通信设施以及
+一般性辅助组件。Geom模块主要包含网格和单元的实现。CFV模块是变分重构的实现。
+Euler模块实现了\verb|Euler|系列求解器。
+Solver模块含有泛型的ODE积分器和线性求解器。
+图中可见，超过一半的代码属于基础设施代码，而具体的求解器代码只有五分之一，
+重构相关代码不到五分之一。
+
 \subsection{效率与扩展性}
 为了与VES程序进行直接对比，
 采用双马赫反射算例LU-SGS迭代
@@ -990,7 +998,34 @@ DNDS的\verb|Euler|系列求解器
 计算中忽略粘性项、源项，LU-SGS采用
 标量Jacobian对角项进行计算，3次重构，5次积分精度。
 限制器都是CWBAP，分别测试全部限制和全部不限制的方案。
-%TODO
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=12cm]{perfVES_nolim.png}  %需调整
+    \caption{无限制器性能对比}
+    \label{fig:perfVES_nolim}
+\end{figure}
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=12cm]{perfVES_fulllim.png}  %需调整
+    \caption{限制器全开性能对比}
+    \label{fig:perfVES_fulllim}
+\end{figure}
+
+性能对比结果见图\ref{fig:perfVES_nolim}，
+\ref{fig:perfVES_fulllim}，
+DNDS2D为旧程序\verb|Euler2D|求解器，
+DNDSR为重写后的求解器。
+1-by-1代表\verb|ASYNC_ONE_BY_ONE|通信策略，
+VES为原有c++程序。
+
+可见，新求解器即使是采用三维物理场（二维重构场），计算效率也不低于
+原有VES程序和二维旧DNDS程序。在4节点96核的规模上，开启\verb|ASYNC_ONE_BY_ONE|
+通信策略有一定的性能提升。
+\verb|ASYNC_ONE_BY_ONE|策略是\verb|ArrayTransformer|
+内部实现的一种通信策略，
+其在超算上应当开启，尤其是超过10节点并行应当总是开启。
 
 \subsection{双马赫反射}
 
@@ -1205,7 +1240,18 @@ $$
     \label{fig:Uniform128_3D_Periodic_TGV_5000}
 \end{figure}
 
-%TODO statistics
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=12cm]{EkSpec128.png}  %需调整
+    \caption{泰勒格林涡能谱}
+    \label{fig:EkSpec128}
+\end{figure}
+
+$t=10$能谱如图\ref{fig:EkSpec128}，基本满足幂律关系，
+而且末端动能下降的数量级与UW5相当。
+与MDCD、MDAD相比，当前格式依然耗散较大。
+
+
 
 
 
@@ -1215,6 +1261,10 @@ $$
 
 \section*{附录}
 
+
+程序的文档为\href{../../build/docs/html/index.html}{Doxygen生成（点击前往）}
+% 程序的文档为\href{./build/docs/html/index.html}{Doxygen生成（点击前往）}
+
 \bibliography{refs}{}
 \bibliographystyle{unsrt}
 
@@ -1223,7 +1273,6 @@ $$
 
 % 本文使用的计算代码都在
 % \href{https://github.com/harryzhou2000/HW_ACFD}{Github的Git Repo（点击前往）}。
-
 
 
 
