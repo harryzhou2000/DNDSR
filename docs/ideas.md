@@ -21,6 +21,9 @@
 - [ ] serialization of euler solver
 - [ ] restarting of euler solver
 - [ ] data post-process utility (with VTK?)
+- [ ] wrap the mesh and vfv into iterator or range based for
+- [ ] wrap array into iterator or range based for
+- [ ] wrap derived arrays into iterator or range based for
 
 
 ## About Periodic:

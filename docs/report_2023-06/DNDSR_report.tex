@@ -175,16 +175,16 @@ MSWordLineSpacingMultiple=1.5
 
 DNDS的首要设计目标，是针对这类通信需求，
 在数值设计层面尽量隐藏具体的MPI层面通信操作。
-事实上，如果读者对Pestc比较熟悉，就会发现原则上这些
+事实上，如果读者对PETSc\cite{petsc-web-page}比较熟悉，就会发现原则上这些
 通信需求都可以通过Vec与IS的一些API完成。
 但是在高阶格式使用中，
-Petsc并不能方便地直接索引分块数据，因此就潜在地会造成
+PETSc并不能方便地直接索引分块数据，因此就潜在地会造成
 接近两倍的内存占用以及显著更大的索引开销。
 例如，DNDS希望能够直接从分块稀疏矩阵中索引得到
 稠密矩阵，同时方便直接操作其内存布局。
-这是调用中层、上层Petsc的API不方便实现的。
+这是调用中层、上层PETSc的API不方便实现的。
 
-%! 或许研究一下Petsc可以代替DNDS
+%! 或许研究一下PETSc可以代替DNDS
 
 
 
@@ -453,28 +453,28 @@ $n_{trans}$是本地需要收发的编号量。
 
 \section{非结构网格}
 
-\href{https://petsc.org/release/manual/dmplex/}
-{Petsc的DMPlex}对非结构网格的拓扑解释为
+\href{https://PETSc.org/release/manual/dmplex/}
+{PETSc的DMPlex}对非结构网格的拓扑解释为
 \href{https://en.wikipedia.org/wiki/Hasse_diagram}{Hasse图}，
 或者说是分层的有向无环图（DAG）。
 虽然说这一表示足够一般且灵活性很高，原则上
-Pestc提供的\verb|DMPlex|对象即
+PETSc提供的\verb|DMPlex|对象即
 可以实现任何非结构网格的拓扑与场存储、转换等。
-但是DNDS的实现希望其网格实现方式独立于Petsc，并且
+但是DNDS的实现希望其网格实现方式独立于PETSc，并且
 基于具体问题能确保有最高效的索引方式。
 
-%!说实话不一定有Petsc高效
+%!说实话不一定有PETSc高效
 
 \subsection{网格拓扑}
 
 DNDS对非结构网格的实现是同时实现2、3维网格。
 2维网格中的拓扑可以表示为：
 $$
-Node\mapsto Face\mapsto Cell
+    Node\mapsto Face\mapsto Cell
 $$
 3维网格为：
 $$
-Node\mapsto Edge \mapsto Face\mapsto Cell
+    Node\mapsto Edge \mapsto Face\mapsto Cell
 $$
 DNDS的网格实现对所有网格层级硬编码为以上的名称，
 注意2维下的边被称作$Face$，面被称作$Cell$，
@@ -505,7 +505,7 @@ DNDS非结构网格默认存储\verb|Cell2Cell_node|、
 
 \begin{figure}[htbp]
     \centering
-    \includegraphics[width=12cm]{mesh_A.pdf} 
+    \includegraphics[width=12cm]{mesh_A.pdf}
     \caption{网格示意}
     \label{fig:mesh_A}
 \end{figure}
@@ -517,14 +517,12 @@ DNDS非结构网格默认存储\verb|Cell2Cell_node|、
 存储在不同的\verb|Array|中。这样的好处是方便实现
 有阶段、有选择地存储不同层级数据。
 
-%! 或许，Petsc那种统一编号存储，也可以实现选择性构建？
+%! 或许，PETSc那种统一编号存储，也可以实现选择性构建？
 
 以上非结构网格定义的实现在
 \verb|DNDS::Geom::UnstructuredMesh|中。
 
 \subsection{网格区域分解}
-
-
 
 网格的任何一级都需要区域分解，
 DNDS规定网格的任何一级都在全局是唯一的。
@@ -543,7 +541,7 @@ $Face$都有足够的$Node$，但是只有本地$Cell$采用足够的$Face$。
 
 \begin{figure}[htbp]
     \centering
-    \includegraphics[width=12cm]{mesh_A_Part.pdf} 
+    \includegraphics[width=12cm]{mesh_A_Part.pdf}
     \caption{网格剖分示意}
     \label{fig:mesh_A_Part}
 \end{figure}
@@ -604,25 +602,376 @@ DNDS目前的单元管理器\verb|DNDS::Element|
 
 \section{紧致有限体积变分重构}
 
+
 \subsection{基于内积的变分重构表达}
+\renewcommand*{\mean}[1]
+{\overline{#1}}
+\newcommand*{\x}[0]
+{\symbf{x}}
+\newcommand*{\D}[0]
+{\mathcal{D}}
+\newcommand*{\inner}[1]
+{\left\langle#1\right\rangle}
+
+变分重构是一个纯几何的重构过程，
+与控制方程无关，可以看成一个插值算子。
+
+单元内多项式插值为：
+\begin{equation}
+    \label{eq:base2rec}
+    u_i(\x)=\mean{u}_i + \sum_{l=1}^{N_{base}}{u_i^l\varphi_i^l(\x)}
+\end{equation}
+
+为了求解这个多项式的待定系数，定义
+一个全局泛函
+\begin{equation}
+    I=\sum_{F}{I_f}
+\end{equation}
+其中$f$是面下标。
+单元界面泛函的定义是：
+\begin{equation}\label{eq:IJI}
+    I_f = w_g(f) \int_f{\sum_{p=0}^k{
+    w_d(p)^2 \inner{\D_p(u_L)-\D_p(u_R),\D_p(u_L)-\D_p(u_R)}_{f,p}
+    } d\Gamma}
+\end{equation}
+其中$\D_p$是一个微分算子，
+将一侧的标量场$u_L, u_R$映射为
+其$p$阶偏导数。这些同阶偏导数
+组成的对称高维数组可以称作一系列
+“准张量”，因为其在笛卡尔坐标以及
+其线性变换之间满足张量的变换关系，
+但在曲线坐标不满足（因此下文
+给出的$\D_p$的分量都是在笛卡尔坐标或者
+其线性变换内的）。可以发现，
+给定多项式分布\eqref{eq:base2rec}
+的标量场，$\D_p$
+的分量都是$u^l_L$的线性组合。
+
+算子$\inner{\cdot,\cdot}_{f,p}$指的是某种
+对于准张量的内积，也就是说，其是准张量的一个标量函数
+且对准张量的分量满足内积定义。这个内积的定义
+不同可以极大影响泛函的性质。
+
+额外的标量$w_g,w_d$分别是几何权和无量纲导数权，
+分别控制不同面之间和不同导数之间权的大小变化。
+
+这样，求解最小问题：
+\begin{equation}
+    [u_i^l] = \text{argmin}(I)
+\end{equation}
+即可得到重构系数。$[u_i^l]$指的是
+逻辑上全局组装的重构系数向量。
+根据$I_f$的定义，可知其一定是
+$[u_i^l]$的一个多项式
+\begin{equation}
+    I = [u_i^l]\trans [A] [u_i^l]\trans
+    - [u_i^l]\trans [b][\mean{u}_i]
+\end{equation}
+且全局矩阵$[A]$至少是半正定的。
+假设能够保证二次项正定，存在
+唯一的重构解满足线性系统：
+\begin{equation} \label{eq:VREQ}
+    [A] [u_i^l]\trans
+    =[b][\mean{u}_i]
+\end{equation}
+根据泛函的具体形式，展开为局部表达就是：
+\begin{equation} \label{eq:VREQ_local}
+    A_{mn}^i u_i^n = \sum_{j\in S_i}{
+        \left(B_{mn}^{i-j} u_j^n
+        +
+        b_{m}^{i-j}(\mean{u}_j - \mean{u}_i)
+        \right)}
+\end{equation}
+其中$n$指标遵循爱因斯坦求和，$i-j$指两个单元的界面，
+局部的重构系数展开为：
+\begin{equation}
+    \begin{aligned} \label{eq:VRCoefs}
+        A_{mn}^i     & = \sum_{j\in S_i} {
+        w_g(f_{i-j}) \int_{f_{i-j}}{\sum_{p=0}^k{
+        w_d(p)^2 \inner{\D_p(\varphi^m_i),\D_p(\varphi^n_i)}_{f_{i-j},p}
+        } d\Gamma}}                        \\
+        B_{mn}^{i-j} & = {
+        w_g(f_{i-j}) \int_{f_{i-j}}{\sum_{p=0}^k{
+        w_d(p)^2 \inner{\D_p(\varphi^m_i),\D_p(\varphi^n_j)}_{f_{i-j},p}
+        } d\Gamma}}                        \\
+        b_{m}^{i-j}  & = {
+        w_g(f_{i-j}) \int_{f_{i-j}}{{
+        w_d(0)^2 \inner{\varphi^m_i,1}_{f_{i-j},p}
+        } d\Gamma}}
+    \end{aligned}
+\end{equation}
+这就是可以直接在程序中写入的
+计算公式。
+
+关于上述重构系统的求解，
+王乾
+\cite{wang2016compact,wang2016compact2,wang2017compact3}
+已经充分讨论，DNDS中默认的求解重构系统方式
+即为Block-Jacobi或者Block-SOR方法。
+
+\subsection{基函数}
+
+在代数的意义上（指不考虑系统的病态性和浮点系统的近似性），
+任何完备$k$次多项式空间总是等价的。
+但是计算时必须考虑系统的病态性。
+多项式基的选取就需要格外注意。
+在各向同性网格中，计算最简单的一种是沿轴缩放的泰勒基，
+例如二维：
+\begin{equation}
+    [\phi_i^l] = \begin{bmatrix}
+        \frac{x_1-x_{c1}}{\inc x_1}                                \\
+        \frac{x_2-x_{c2}}{\inc x_2}                                \\
+        (\frac{x_1-x_{c1}}{\inc x_1})^2                            \\
+        (\frac{x_1-x_{c1}}{\inc x_1})(\frac{x_2-x_{c2}}{\inc x_2}) \\
+        (\frac{x_2-x_{c2}}{\inc x_2})^2
+    \end{bmatrix}
+    -\mean{
+        \begin{bmatrix}
+            \frac{x_1-x_{c1}}{\inc x_1}                                \\
+            \frac{x_2-x_{c2}}{\inc x_2}                                \\
+            (\frac{x_1-x_{c1}}{\inc x_1})^2                            \\
+            (\frac{x_1-x_{c1}}{\inc x_1})(\frac{x_2-x_{c2}}{\inc x_2}) \\
+            (\frac{x_2-x_{c2}}{\inc x_2})^2
+        \end{bmatrix}}
+\end{equation}
+注意这里的“泰勒基”是指零均值化后的泰勒基，或者说与零次基函数正交。
+DNDS默认采用这样的基函数，其中$\inc x_i$选择的是
+$\inc x_m = \max(|\{x_m\}_{node}-x_{cm}|)$，
+也就是每个方向上单元节点坐标与中心最大的差距，
+同时$x_{cm}=x_{bm}$，即基函数的中心取单元形心。
+这种方案称作\verb|cellAlignedHBox|缩放的基函数。
+
+DNDS原版程序有更多基函数选择，将会在需要的时候移植
+到新的DNDS程序内。
 
 \subsection{不同内积形式与尺度选取方案}
 
+\subsubsection{王乾格式}
+
+王乾格式\cite{wang2017compact3}选取：
+$$
+    \omega_g = \frac{1}{d_f},\ \ \omega_d(p) =  \frac{1}{p!}
+$$
+这个形式的无量纲导数权
+将被称作阶乘导数权。
+内积形式为：
+$$
+    \inner{\D_p(u_i),\D_p(u_j)}_{f,p}
+    =d_f^{2p}
+    \left([\D_p(u_i)]_{m...n}N_m... N_n\right)
+    \left([\D_p(u_j)]_{m...n}N_m... N_n\right)
+$$
+其中$d_f$是跨界面单元中心距离，
+$N_m$是面的单位法向量，
+$d_f^{2p}$确保了内积的输出是无量纲的。
+$[\D_p(u_j)]_{m...n}$是全局笛卡尔坐标的
+导数分量。$m...n$下标使用爱因斯坦求和约定。
+
+\subsubsection{潘建华格式}
+
+潘建华格式\cite{jianhua2018high}选用
+另外一种内积（以二维下三阶导数为例）：
+$$
+    \begin{aligned}
+        \inner{\D_3(u_i),\D_3(u_j)}_{f,3}
+         & = \\
+         &
+        \left(\inc_{f,x}^3 D_{xxx}u_i\right)
+        \left(\inc_{f,x}^3 D_{xxx}u_j\right)
+        +    \\
+         &
+        \left(3\inc_{f,x}^2\inc_{f,y} D_{xxy}u_i\right)
+        \left(3\inc_{f,x}^2\inc_{f,y} D_{xxy}u_j\right)
+        +    \\
+         &
+        \left(3\inc_{f,y}^2\inc_{f,x} D_{xyy}u_i\right)
+        \left(3\inc_{f,y}^2\inc_{f,x} D_{xyy}u_j\right)
+        +    \\
+         &
+        \left(\inc_{f,y}^3 D_{yyy}u_i\right)
+        \left(\inc_{f,y}^3 D_{yyy}u_j\right)
+    \end{aligned}
+$$
+其中$D_{xxx}\equiv \pd{^3}{x\partial x\partial x}$。
+注意$\inc_{f,x}, \inc_{f,y}$是
+界面上的长度尺度选取，其选择了两边\verb|cellAlignedHBox|
+向量中更大的分量作为界面的尺度。
+无量纲导数权和几何权与王乾格式类似。
+
+\subsubsection{黄乾旻格式}
+
+黄乾旻格式\cite{huang2022high}
+优化了导数权和几何权：
+$$
+    \omega_g = \left(\frac{S_f}{d_f}\right)^{0.5},
+    \ \ \omega_d(p) =  [1, 0.5295, 0.2117, 0.2117]
+$$
+但是其内积形式改为了（以二维下三阶导数为例）：
+$$
+    \begin{aligned}
+        \inner{\D_3(u_i),\D_3(u_j)}_{f,3}
+         & = \\
+         &
+        \left(d_f^3 D_{xxx}u_i\right)
+        \left(d_f^3 D_{xxx}u_j\right)
+        +    \\
+         &
+        \left(d_f^3 D_{xxy}u_i\right)
+        \left(d_f^3 D_{xxy}u_j\right)
+        +    \\
+         &
+        \left(d_f^3 D_{xyy}u_i\right)
+        \left(d_f^3 D_{xyy}u_j\right)
+        +    \\
+         &
+        \left(d_f^3 D_{yyy}u_i\right)
+        \left(d_f^3 D_{yyy}u_j\right)
+    \end{aligned}
+$$
+
+\subsubsection{DNDS中使用的各向同性泛函格式}
+
+DNDS默认的各向同性泛函形式，
+采用几何权为1，导数权为阶乘型，
+且泛函内积为（以二维下三阶导数为例）：
+$$
+    \begin{aligned}
+        \inner{\D_3(u_i),\D_3(u_j)}_{f,3}
+         & = \\
+         &
+        \left(d_f^3 D_{xxx}u_i\right)
+        \left(d_f^3 D_{xxx}u_j\right)
+        +    \\
+         &
+        3
+        \left(d_f^3 D_{xxy}u_i\right)
+        \left(d_f^3 D_{xxy}u_j\right)
+        +    \\
+         &
+        3
+        \left(d_f^3 D_{xyy}u_i\right)
+        \left(d_f^3 D_{xyy}u_j\right)
+        +    \\
+         &
+        \left(d_f^3 D_{yyy}u_i\right)
+        \left(d_f^3 D_{yyy}u_j\right)
+    \end{aligned}
+$$
+这与潘建华格式最为接近，
+实验表明，其在正交笛卡尔网格上计算激波管等
+较强间断的性能与潘建华格式差别非常小。
+
 \subsection{限制器与间断探测器}
 
-\subsection{实现情况}
+吴卓航（引用）给出了CWBAP型限制器，其在李万爱\cite{li2011multi,li2012multi}
+的WBAP逐级限制方案上进行了改进。吴卓航CWBAP限制器
+是在潘建华重构格式上实验的，
+本文的DNDS各向同性格式与之相仿。
+
+CWBAP的限制过程见吴卓航文章，本文不赘述。
+本文仅指出对于一般基函数
+进行二次重构的方法。
+
+记$i,j$单元的基函数在一点$\x$的值及其导数为：
+$$
+\mathfrak{D}_m{\varphi_i^l}\equiv [D_i]_{ml}
+, \mathfrak{D}_m{\varphi_j^l}\equiv [D_j]_{ml}
+$$
+其中$\mathfrak{D}_m$也是偏微分算符，
+只不过将所有偏微分算子的分量依次排列，
+例如二维下$\mathfrak{D}_1,\mathfrak{D}_2$
+就是$\mathcal{D}_1$的分量，
+$\mathfrak{D}_3,\mathfrak{D}_4,\mathfrak{D}_5$
+就是$\mathcal{D}_2$的分量（排除对称部分）。
+这样，基函数的各个导数就组成了矩阵。
+
+二次重构的本质要求，
+是多项式延拓并剔除零次部分，
+其实等价于要求多项式延拓后，1阶导数
+以及更高阶导数在某一点相等。
+完全多项式空间的性质容易证明在某一点
+各阶导数相等即可确定一个唯一的多项式变换
+（首先变换为笛卡尔积和笛卡尔坐标的导数分量，则
+$[D_i]_{ml},[D_j]_{ml}$都是对角线非零的上三角阵）。
+因此，只要求解方程（二维三次重构为例）
+$$
+\sum_{l=1}^{9}[D_i]_{ml}u_i^l = 
+\sum_{l=1}^{9}[D_j]_{ml}u_j^l, \ \ m=1,...,9
+$$
+即可得到二次重构。
+这样，无论基函数经历多么复杂的线性变换，
+二次重构的过程是统一的。
+
+实际程序中预先存储
+$[D_i]^{-1}[D_j]$作为$j\rightarrow i$的
+二次重构系数，反之亦然。
+这个二次重构系数一定是上三角阵，
+这也是逐次重构的理论基础。
+
+
 
 \section{基于变分重构的NS方程求解器}
 
 \subsection{气体力学}
 
+DNDS的\verb|Euler|系列
+求解器是理想气体NS方程求解器，
+其热力学模型相当于是内置的理想气体模型，
+粘性为牛顿本构。
+
+DNDS在无粘通量方面实现了
+Roe与HLLC通量\cite{toro2013Riemann}，
+其中Roe格式可选择\cite{fleischmann2020low}
+中提到的大熵修正形式以及退化为Lax格式的
+熵修正形式。
+吴卓航使用的熵修正HLLE+通量也有实现。
+
+粘性通量统一使用王乾
+的方案\cite{wang2016compact2}。
+
 \subsection{时间积分}
+
+DNDS的\verb|Euler|系列求解器
+调用的是泛型且多态的双时间步隐式求解器，
+包括SSP-SDIRK4\cite{ferracina2008strong}，
+不同的BDF（包括隐式欧拉）方法，以及
+显式的SSPRK3方法。
+\verb|Euler|的隐式时间推进计算框架在进行显式计算时，
+就要求使用者有意识地对于每一次重构迭代设置为
+迭代收敛。如果进行定常计算，就退回隐式欧拉方法，
+并且物理时间步是无穷大，且不进行时间推进只进行内迭代。
+
+后续添加任何双时间步ODE方法都非常简单，
+仅需进行少量代码增加。事实上，DNDS的ODE求解器
+不依赖于基础数据结构\verb|Array|，
+以及网格、重构和\verb|Euler|求解器的定义，
+原则上任何计算问题经过适配
+都可以调用DNDS的ODE求解器系列。
+未来计划加入ESDIRK4方案。
 
 \subsection{隐式方案}
 
-\subsection{其他求解器}
+DNDS的\verb|Euler|系列求解器
+基于双时间步隐式时间推进，隐式时间步
+都是基于只有一个未知的右手项的隐式格式。
+这意味着如果一定要采用全隐式RK方法，
+需要对ODE的界面进行扩展。
 
-\section{测试算例}
+隐式过程求解非线性代数方程组，
+框架内是基于CFL松弛的牛顿法，
+牛顿法中的Jacobian通过零阶重构近似取得，
+并且采用LU-SGS近似求解。
+非定常问题中这样一般足够高效。
+在定常问题中，目前DNDS可以使用线性GMRES进行
+线性求解步的求解。
+未来考虑将非线性求解器单独抽象，
+实施非线性GMRES等非线性求解方案。
+    
+\section{统计与测试}
+
+\subsection{代码量}
+
+\subsection{效率与扩展性}
 
 \subsection{双马赫反射}
 
@@ -632,8 +981,8 @@ DNDS目前的单元管理器\verb|DNDS::Element|
 
 \section*{附录}
 
-% \bibliography{refs}{}
-% \bibliographystyle{unsrt}
+\bibliography{refs}{}
+\bibliographystyle{unsrt}
 
 
 % \section*{附录}

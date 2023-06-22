@@ -1,0 +1,33 @@
+\begin{thebibliography}{1}
+
+\bibitem{petsc-web-page}
+Satish Balay, Shrirang Abhyankar, Mark~F. Adams, Steven Benson, Jed Brown,
+  Peter Brune, Kris Buschelman, Emil~M. Constantinescu, Lisandro Dalcin, Alp
+  Dener, Victor Eijkhout, Jacob Faibussowitsch, William~D. Gropp, V\'{a}clav
+  Hapla, Tobin Isaac, Pierre Jolivet, Dmitry Karpeev, Dinesh Kaushik,
+  Matthew~G. Knepley, Fande Kong, Scott Kruger, Dave~A. May, Lois~Curfman
+  McInnes, Richard~Tran Mills, Lawrence Mitchell, Todd Munson, Jose~E. Roman,
+  Karl Rupp, Patrick Sanan, Jason Sarich, Barry~F. Smith, Stefano Zampini, Hong
+  Zhang, Hong Zhang, and Junchao Zhang.
+\newblock {PETS}c {W}eb page.
+\newblock \url{https://petsc.org/}, 2023.
+
+\bibitem{wang2016compact}
+Qian Wang, Yu-Xin Ren, and Wanai Li.
+\newblock Compact high order finite volume method on unstructured grids i:
+  basic formulations and one-dimensional schemes.
+\newblock {\em Journal of Computational Physics}, 314:863--882, 2016.
+
+\bibitem{wang2016compact2}
+Qian Wang, Yu-Xin Ren, and Wanai Li.
+\newblock Compact high order finite volume method on unstructured grids ii:
+  Extension to two-dimensional euler equations.
+\newblock {\em Journal of Computational Physics}, 314:883--908, 2016.
+
+\bibitem{wang2017compact3}
+Qian Wang, Yu-Xin Ren, Jianhua Pan, and Wanai Li.
+\newblock Compact high order finite volume method on unstructured grids iii:
+  Variational reconstruction.
+\newblock {\em Journal of Computational physics}, 337:1--26, 2017.
+
+\end{thebibliography}
