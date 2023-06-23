@@ -217,7 +217,7 @@ namespace DNDS::Geom
                                     ZoneElems.back()->operator()(start - 1 + i, iNode) =
                                         elemsRead.at(elemStarts[i] + 1 + iNode) - 1; //! convert to 0 based; pointing to zonal index
                                 ZoneElemInfos.back()->operator()(start - 1 + i, 0).setElemType(ct);
-                                ZoneElemInfos.back()->operator()(start - 1 + i, 0).zone = -1 - iZone; //! bnd database here
+                                ZoneElemInfos.back()->operator()(start - 1 + i, 0).zone = Geom::BC_ID_INTERNAL; //! initialized as inner
                             }
                             /// @todo //TODO: TEST with actual data (MIXED TYPE) !!!!!!
                         }
@@ -234,7 +234,7 @@ namespace DNDS::Geom
                                     ZoneElems.back()->operator()(start - 1 + i, iNode) =
                                         elemsRead.at(Elem::Element{ct}.GetNumNodes() * i + iNode) - 1; //! convert to 0 based; pointing to zonal index
                                 ZoneElemInfos.back()->operator()(start - 1 + i, 0).setElemType(ct);
-                                ZoneElemInfos.back()->operator()(start - 1 + i, 0).zone = -1 - iZone; //! bnd database here
+                                ZoneElemInfos.back()->operator()(start - 1 + i, 0).zone = Geom::BC_ID_INTERNAL; //! initialized as inner
                             }
                         }
                         else
