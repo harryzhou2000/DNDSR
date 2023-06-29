@@ -42,6 +42,7 @@
     "dataIOControl": {
         "uniqueStamps": true,
         "meshRotZ": 0.0,
+        "meshScale": 1.0,
         "meshFile": "data/mesh/NACA0012_WIDE_H3.cgns",
         "outPltName": "data/out/debugData_",
         "outLogName": "data/out/debugData_",
@@ -50,7 +51,9 @@
         "outPltTecplotFormat": true,
         "outPltVTKFormat": true,
         "outAtPointData": true,
-        "outAtCellData": true
+        "outAtCellData": true,
+        "nASCIIPrecision": 5,
+        "serializerSaveURec": false
     },
     "limiterControl": {
         "useLimiter": true,
@@ -66,6 +69,11 @@
     },
     "others": {
         "nFreezePassiveInner": 0
+    },
+    "_restartState": {
+        "iStep": -1,
+        "iStepInternal": -1,
+        "odeCodePrev": -1
     },
     "eulerSettings": {
         "useScalarJacobian": false,
