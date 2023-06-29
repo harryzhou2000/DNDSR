@@ -10,8 +10,8 @@
         "nConsoleCheck": 1,
         "nConsoleCheckInternal": 10,
         "consoleOutputMode": 0,
-        "nDataOutC": 50,
-        "nDataOut": 100,
+        "nDataOutC": 100,
+        "nDataOut": 200,
         "nDataOutCInternal": 200,
         "nDataOutInternal": 1000000000,
         "tDataOut": 3e+200
@@ -31,15 +31,15 @@
         "useVolWiseResidual": true
     },
     "dataIOControl": {
-        "uniqueStamps": true,
+        "uniqueStamps": false,
         "meshRotZ": 0.0,
-        "meshFile": "../data/mesh/UniformDM120.cgns",
-        "outPltName": "../data/outUnsteady/UniformDM120",
-        "outLogName": "../data/outUnsteady/UniformDM120",
+        "meshFile": "../data/mesh/UniformDM240.cgns",
+        "outPltName": "../data/outUnsteady/UniformDM240",
+        "outLogName": "../data/outUnsteady/UniformDM240",
         "outPltMode": 0,
         "readMeshMode": 0,
         "outPltTecplotFormat": true,
-        "outPltVTKFormat": true,
+        "outPltVTKFormat": false,
         "outAtPointData": true,
         "outAtCellData": true
     },
@@ -56,13 +56,13 @@
         "useLimiter": true,
         "smoothIndicatorProcedure": 0,
         "limiterProcedure": 1, //1 == CWBAP
-        "nPartialLimiterStart": 0,
-        "nPartialLimiterStartLocal": 0
+        "nPartialLimiterStart": 1000000,
+        "nPartialLimiterStartLocal": 1000000
     },
     "vfvSettings": {
         "maxOrder": 3,
-        "intOrder": 6,
-        "cacheDiffBase": true,
+        "intOrder": 5,
+        "cacheDiffBase": false,
         "jacobiRelax": 1.0,
         "SORInstead": true,
         "smoothThreshold": 1e-3,
@@ -87,7 +87,7 @@
             0.0
         ],
         "farFieldStaticValue": [
-            1.0,
+            1.4,
             0.0,
             0.0,
             0.0,
