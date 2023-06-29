@@ -146,9 +146,26 @@ MSWordLineSpacingMultiple=1.5
 
 \begin{document}
 
+%% magical code for centered 
+\null  % Empty line
+\nointerlineskip  % No skip for prev line
+\vfill
+\let\snewpage \newpage
+\let\newpage \relax
+%% magical code
 \maketitle
+%% magical code
+\let \newpage \snewpage
+\vfill 
+\break % page break
+%% magical code
+
+
 \thispagestyle{empty}
 \newpage
+
+
+
 
 \begin{center}
     \rmfamily
@@ -976,7 +993,7 @@ DNDS的\verb|Euler|系列求解器
     \centering
     \includegraphics[width=12cm]{lines.png}  %需调整
     \caption{行数统计
-        }
+    }
     \label{fig:lines}
 \end{figure}
 
@@ -1027,6 +1044,26 @@ VES为原有c++程序。
 内部实现的一种通信策略，
 其在超算上应当开启，尤其是超过10节点并行应当总是开启。
 
+
+同时，在TH-2B机器进行扩展性对比，采用之后详述的泰勒-格林涡算例计算无限制LU-SGS迭代10步的时间$t_{10}$，
+效率定义为$\frac{\text{N}_{Grid}}{t_{10}\text{N}_{Proc}}$，也就是每个核每秒算多少网格的10步迭代。
+在PC机器（参考性能：AMD Ryzen 9 7900X 在 WSL2 环境 12 进程计算 $64^3$网格，
+效率为39010，Intel Xeon 6326 16 进程计算 $64^3$网格，效率为34000） 
+由于机器内存限制，
+采用$64^3,128^3,256^3$三种网格计算效率。
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=12cm]{scaleEff.png}  %需调整
+    \caption{扩展效率，其中误差条为3倍标准差}
+    \label{fig:scaleEff}
+\end{figure}
+
+如图\ref{fig:scaleEff}可见，在24-1920核的范围内，并行效率累计下降为约87\%，
+其中应当有\verb|ASYNC_ONE_BY_ONE|的影响。在48核时并行效率反而很高，应该是
+集群性能的正常波动范围。
+
+
 \subsection{双马赫反射}
 
 采用吴卓航文章描述的双马赫反射算例配置，
@@ -1055,6 +1092,35 @@ $t=0.2$时绘制密度从$1.41$到$22.1$的等值线30条，
         \label{fig:DMR_SD}
     \end{minipage}
 \end{figure}
+
+\subsection{球体绕流}
+
+绘制半径为$1$的球体外流网格，包含四面体、六面体、三棱柱、金字塔网格共109,056个，
+以验证非结构单元的正确性。来流为单位长度雷诺数$Re_L=1000$，$Ma0.15$，
+有$15^\circ$攻角。
+三次重构，三次积分，无限制器，HLLC通量。
+采用定常计算LU-SGS迭代，$CFL=50$，残差可以下降接近4.5数量级，在5000步后变化不大。
+
+\begin{figure}[htbp]
+    \centering
+    \subfloat[$t=4.6$]{
+        \includegraphics[width=7cm]{BallMesh_Ball4.png}
+    }
+    \subfloat[$t=7.2$]{
+        \includegraphics[width=7cm]{BallRe1000_A.png}
+    }\\
+    \subfloat[$t=8.0$]{
+        \includegraphics[width=7cm]{BallRe1000_B.png}
+    }
+    \subfloat[$t=10$]{
+        \includegraphics[width=7cm]{BallRe1000_C.png}
+    }
+    \caption{球体绕流网格、流线与马赫数分布示意}
+    \label{fig:BallRe1000_C}
+\end{figure}
+
+图\ref{fig:BallRe1000_C}给出了球体绕流的网格情况和计算的结果，
+由于壁面网格很密且长宽比较大，残差没有下降足够多但流场基本稳定。
 
 
 
@@ -1210,11 +1276,12 @@ $$
         p = \frac{1}{\gamma M_0^2} + \frac{1}{16}\left[
             (\cos(2x) + \cos(2y)) (2 + \cos(2z))
         \right]                      \\
-        \rho = \gamma M_0^2 p         \\
+        \rho = \gamma M_0^2 p        \\
     \end{array}
     \right.
 $$
-并取$M_0=0.1$，即可近似不可压状态。
+并取$M_0=0.1$，即可近似不可压状态。采用三次重构、三次积分
+计算，HLLC通量。
 计算不加限制器，SDIRK4计算5000步到$t=10$。
 
 在$128^3$网格计算，绘制不同时刻的涡结构如
@@ -1235,23 +1302,49 @@ $$
     \subfloat[$t=10$]{
         \includegraphics[width=7cm]{Uniform128_3D_Periodic_TGV_5000.png}
     }
-    \caption{泰勒格林涡，
+    \caption{泰勒格林涡$128^3$，
         曲面为$Q=0$等值面速度大小染色}
     \label{fig:Uniform128_3D_Periodic_TGV_5000}
 \end{figure}
 
+同时，加密为$256^3$计算，得到$t=10$的涡结构如
+图\ref{fig:Uniform256_3D_Periodic_TGV_5000}。
+
 \begin{figure}[htbp]
     \centering
-    \includegraphics[width=12cm]{EkSpec128.png}  %需调整
+    \includegraphics[width=12cm]{Uniform256_3D_Periodic_TGV_5000.png}  
+    \caption{泰勒格林涡$256^3$，
+    曲面为$Q=0$等值面速度大小染色}
+    \label{fig:Uniform256_3D_Periodic_TGV_5000}
+\end{figure}
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=12cm]{EkSpec128.png} 
     \caption{泰勒格林涡能谱}
     \label{fig:EkSpec128}
 \end{figure}
 
 $t=10$能谱如图\ref{fig:EkSpec128}，基本满足幂律关系，
-而且末端动能下降的数量级与UW5相当。
-与MDCD、MDAD相比，当前格式依然耗散较大。
+而且大波数末端动能密度下降的数量级与UW5相当。
+网格加密为$256^3$后，能谱基本是沿波数比例增大。
+与MDCD、MDAD相比，当前格式在高波数耗散较大。
 
 
+\section{尚未完成的工作}
+
+目前DNDS重写后的代码还有一些未完成的功能，包括：
+\begin{itemize}
+    \item DNDS模块：HDF5格式的序列化方法
+    \item Geom模块：纯串行分区（用于超大网格）
+    \item Euler模块：重启功能和持久化流场数据
+    \item Euler模块：求解器输出面网格
+    \item Euler模块：后处理组件
+    \item Euler模块：高阶网格与三维的壁面距离计算
+    \item Euler模块：动态和自定义边界条件
+\end{itemize}
+
+当然，保正、时间推进方法、非线性GMRES、自动微分的Jacobian甚至离散伴随求解等算法层面的功能也可以加入。
 
 
 
@@ -1261,8 +1354,19 @@ $t=10$能谱如图\ref{fig:EkSpec128}，基本满足幂律关系，
 
 \section*{附录}
 
+DNDS目前直接引用的开源项目：
 
-程序的文档为\href{../../build/docs/html/index.html}{Doxygen生成（点击前往）}
+\begin{itemize}
+    \item \href{https://github.com/KarypisLab/METIS}{Metis}，(5.0.1 版本)，图剖分
+    \item \href{https://eigen.tuxfamily.org/index.php?title=Main_Page}{Eigen}，稠密矩阵基础运算和分解算法
+    \item \href{https://www.hdfgroup.org/solutions/hdf5/}{HDF5}，目前仅用于CGNS
+    \item \href{http://cgns.github.io/}{CGNS}，网格文件
+    \item \href{https://github.com/nlohmann/json}{nlohmann json}，配置读写和数据读写
+    \item \href{https://github.com/jlblancoc/nanoflann}{nanoflann}，KD-Tree搜索
+    \item 具体编译时引用的libstdc++、libz等基础库
+\end{itemize}
+
+% 程序的文档为\href{../../build/docs/html/index.html}{Doxygen生成（点击前往）}
 % 程序的文档为\href{./build/docs/html/index.html}{Doxygen生成（点击前往）}
 
 \bibliography{refs}{}
