@@ -553,6 +553,7 @@ namespace DNDS::Euler::Gas
             lam0 = std::abs(uStar - aRoe);
             lam123 = std::abs(uStar);
             lam4 = std::abs(uStar + aRoe);
+            // std::cout << "here" << std::endl;
 
             // real thresholdHartenYee = std::max(scaleLD * (std::sqrt(vsqrRoe) + aRoe), 0);
             // real thresholdHartenYeeS = thresholdHartenYee * thresholdHartenYee;
