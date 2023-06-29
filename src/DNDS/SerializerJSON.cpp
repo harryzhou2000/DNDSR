@@ -301,7 +301,7 @@ namespace DNDS
                 std::vector<uint8_t> decodedData;
                 cppcodec::base64_rfc4648::decode(decodedData, dataIn);
                 std::vector<uint8_t> decodedDataUncompress(size);
-                uLongf sizeU{(size_t)size};
+                uLongf sizeU{(uLongf)size};
                 auto ret = uncompress(decodedDataUncompress.data(), &sizeU, decodedData.data(), decodedData.size());
                 DNDS_assert_info(ret == Z_OK, "zlib uncompress failed");
                 DNDS_assert_info(sizeU == size, "zlib uncompress failed");

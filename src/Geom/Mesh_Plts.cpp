@@ -88,7 +88,7 @@ namespace DNDS::Geom
             std::filesystem::create_directories(outPath);
             char BUF[512];
             std::sprintf(BUF, "%06d", mpi.rank);
-            fname = outPath / (std::string(BUF) + ".plt");
+            fname = getStringForcePath(outPath / (std::string(BUF) + ".plt"));
         }
 
         std::ofstream fout(fname, std::ios::binary);
@@ -441,7 +441,7 @@ namespace DNDS::Geom
             std::filesystem::create_directories(outPath);
             char BUF[512];
             std::sprintf(BUF, "%04d", mpi.rank);
-            fname = outPath / (std::string(BUF) + ".vtu");
+            fname = getStringForcePath(outPath / (std::string(BUF) + ".vtu"));
         }
 
         std::ofstream fout(fname);
@@ -911,8 +911,8 @@ namespace DNDS::Geom
                             {
                                 char BUF[512];
                                 std::sprintf(BUF, "%04d", iRank);
-                                std::string cFileName = outPath / (std::string(BUF) + ".vtu");
-                                std::string cFileNameRelPVTU = outPath.lexically_relative(outPath.parent_path()) / (std::string(BUF) + ".vtu");
+                                std::string cFileName = getStringForcePath(outPath / (std::string(BUF) + ".vtu"));
+                                std::string cFileNameRelPVTU = getStringForcePath(outPath.lexically_relative(outPath.parent_path()) / (std::string(BUF) + ".vtu"));
                                 writeXMLEntity(
                                     out, level, "Piece",
                                     {{"Source", cFileNameRelPVTU}},

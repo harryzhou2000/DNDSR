@@ -2,6 +2,7 @@
 running
 # building
 build*
+*.exe
 # external
 /external
 /cfd_externals

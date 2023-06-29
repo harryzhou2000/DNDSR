@@ -1,4 +1,5 @@
 #pragma once
+
 // #define NDEBUG
 #include <assert.h>
 #include <stdint.h>
@@ -10,6 +11,10 @@
 #include <iomanip>
 #include <string>
 #include <type_traits>
+#include <filesystem>
+#ifdef DNDS_USE_OMP
+#include <omp.h>
+#endif
 
 #include "Macros.hpp"
 #include "Experimentals.hpp"
@@ -245,6 +250,22 @@ namespace DNDS
     // const int a = divide_ceil(23, 11);
 
     ///@todo //TODO: overflow_assign_int64_to_32
+
+    inline std::string getStringForceWString(const std::wstring& v)
+    {
+        std::vector<char> buf(v.size());
+        std::wcstombs(buf.data(), v.data(), v.size());
+        return std::string{buf.data()};
+    }
+
+    inline std::string getStringForcePath(const std::filesystem::path::string_type & v)
+    {
+#ifdef _WIN32
+        return getStringForceWString(v);
+#else
+        return std::string{v};
+#endif
+    }
 
 }
 

@@ -54,7 +54,7 @@ void doPartitioning(const std::string &meshName, int dim)
     auto meshOutName = std::string(meshName) + "_part_" + std::to_string(mpi.size) + ".dir";
     std::filesystem::path meshOutDir{meshOutName};
     std::filesystem::create_directories(meshOutDir);
-    std::string meshPartPath = std::string(meshOutDir / (std::string("part_") + std::to_string(mpi.rank) + ".json"));
+    std::string meshPartPath = DNDS::getStringForcePath(meshOutDir / (std::string("part_") + std::to_string(mpi.rank) + ".json"));
 
     DNDS::SerializerJSON serializerJSON;
     serializerJSON.SetUseCodecOnUint8(true);

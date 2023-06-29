@@ -238,7 +238,7 @@ namespace DNDS::ODE
             xLast = x;
             for (int iter = 1; iter <= maxIter; iter++)
             {
-                fdt(dTau);
+                fdt(dTau, 1);
 
                 frhs(rhs, x, iter, 1);
                 rhsbuf[0] = rhs;
@@ -503,9 +503,9 @@ namespace DNDS::ODE
 
     template <class TDATA>
     const Eigen::Matrix<real, 4, 5> ImplicitBDFDualTimeStep<TDATA>::BDFCoefs{
-        {1. / 1., 1. / 1., 0. / 0., 0. / 0., 0. / 0.},
-        {2. / 3., 4. / 3., -1. / 3., 0. / 0., 0. / 0.},
-        {6. / 11., 18. / 11., -9. / 11., 2. / 11., 0. / 0.},
+        {1. / 1., 1. / 1., std::nan("1"), std::nan("1"), std::nan("1")},
+        {2. / 3., 4. / 3., -1. / 3., std::nan("1"), std::nan("1")},
+        {6. / 11., 18. / 11., -9. / 11., 2. / 11., std::nan("1")},
         {12. / 25., 48. / 25., -36. / 25., 16. / 25., -3. / 25.}};
 
     template <class TDATA>

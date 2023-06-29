@@ -33,9 +33,9 @@
     "dataIOControl": {
         "uniqueStamps": false,
         "meshScale": 6.28318530717958647692528676,
-        "meshFile": "../data/mesh/Uniform128_3D_Periodic.cgns",
-        "outPltName": "../data/outUnsteady/Uniform128_3D_Periodic_TGV",
-        "outLogName": "../data/outUnsteady/Uniform128_3D_Periodic_TGV",
+        "meshFile": "../data/mesh/Uniform64_3D_Periodic.cgns",
+        "outPltName": "../data/outUnsteady/Uniform64_3D_Periodic_TGV",
+        "outLogName": "../data/outUnsteady/Uniform64_3D_Periodic_TGV",
         "outPltMode": 0,
         "readMeshMode": 0,
         "outPltTecplotFormat": true,

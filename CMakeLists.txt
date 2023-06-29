@@ -1,5 +1,13 @@
+if(UNIX OR MINGW)
+    cmake_minimum_required(VERSION 3.1)
+else()
+    cmake_minimum_required(VERSION 3.20)
+endif()
 
-cmake_minimum_required(VERSION 3.1)
+# ##########################################
+project(DNDSR LANGUAGES CXX) #! need to be in front of find_package(MPI)
+
+
 
 # need CUDA project support ?
 # manual perferences
@@ -17,9 +25,18 @@ set(DNDS_USE_OMP ON CACHE BOOL "for openmp enabling")
 set(DNDS_FAST_BUILD_FAST ON CACHE BOOL "don't -g on basic modules")
 
 
-if(UNIX OR MINGW)
+
+if(UNIX )
     set(CMAKE_CXX_COMPILER mpicxx CACHE FILEPATH "compiler with your MPI wrapping")
     set(CMAKE_FIND_LIBRARY_SUFFIXES ".a") # ! using static libs
+elseif(MSVC OR WIN32 OR MINGW)
+    # nothing
+    find_package(MPI REQUIRED)
+    if(MPI_CXX_FOUND)
+        set (CMAKE_EXE_LINKER_FLAGS "${MPI_C_LINK_FLAGS} ${CMAKE_EXE_LINKER_FLAGS}")
+    else()
+        message((FATAL_ERROR "MPI NOT FOUND"))
+    endif()
 else()
     message(FATAL_ERROR "NOT YET IMPLEMENTED HERE")
 endif()
@@ -31,91 +48,102 @@ set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS
     "Release" "Debug" "RelWithDebInfo" "MinSizeRel")
 set(CMAKE_USE_RELATIVE_PATHS ON)
 
-# ##########################################
-project(DNDSR LANGUAGES CXX)
+message("external install hard guess at: external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}")
 
 # ##########################################
-if(UNIX)
-    find_library(EXTERNAL_LIB_HDF5 hdf5 PATHS 
-        "${PROJECT_SOURCE_DIR}/external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}" 
-        "${PROJECT_SOURCE_DIR}/external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}/lib"
+find_library(EXTERNAL_LIB_ZLIB z z_D REQUIRED)
+find_library(EXTERNAL_LIB_HDF5 hdf5 PATHS 
+    "${PROJECT_SOURCE_DIR}/external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}" 
+    "${PROJECT_SOURCE_DIR}/external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}/lib"
+    NO_DEFAULT_PATH REQUIRED)
+find_library(EXTERNAL_LIB_CGNS cgns PATHS 
+    "${PROJECT_SOURCE_DIR}/external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}" 
+    "${PROJECT_SOURCE_DIR}/external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}/lib"
+    NO_DEFAULT_PATH REQUIRED)
+find_library(EXTERNAL_LIB_METIS metis PATHS 
+    "${PROJECT_SOURCE_DIR}/external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}"
+    "${PROJECT_SOURCE_DIR}/external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}/lib"
         NO_DEFAULT_PATH REQUIRED)
-    find_library(EXTERNAL_LIB_CGNS cgns PATHS 
-        "${PROJECT_SOURCE_DIR}/external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}" 
-        "${PROJECT_SOURCE_DIR}/external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}/lib"
-        NO_DEFAULT_PATH REQUIRED)
-    find_library(EXTERNAL_LIB_METIS metis PATHS 
-        "${PROJECT_SOURCE_DIR}/external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}"
-        "${PROJECT_SOURCE_DIR}/external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}/lib"
-         NO_DEFAULT_PATH REQUIRED)
-    find_library(EXTERNAL_LIB_PARMETIS parmetis PATHS 
-        "${PROJECT_SOURCE_DIR}/external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}" 
-        "${PROJECT_SOURCE_DIR}/external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}/lib"
-        NO_DEFAULT_PATH REQUIRED)
-    # find_library(EXTERNAL_LIB_TECIO tecio PATHS 
-        # "${PROJECT_SOURCE_DIR}/external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}" 
-        # "${PROJECT_SOURCE_DIR}/external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}/lib"
-        # NO_DEFAULT_PATH) #not needed for now
-    
-    find_path(EXTERNAL_INCLUDE_HDF5 hdf5.h PATHS 
-        "${PROJECT_SOURCE_DIR}/external/HDF5/include"
-        "${PROJECT_SOURCE_DIR}/external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}/include"
-        NO_DEFAULT_PATH REQUIRED)
-    find_path(EXTERNAL_INCLUDE_CGNS cgnslib.h PATHS 
-        "${PROJECT_SOURCE_DIR}/external/cgns/include" 
-        "${PROJECT_SOURCE_DIR}/external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}/include"
-        NO_DEFAULT_PATH REQUIRED)
-    find_path(EXTERNAL_INCLUDE_METIS metis.h PATHS 
-        "${PROJECT_SOURCE_DIR}/external/metis/include" 
-        "${PROJECT_SOURCE_DIR}/external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}/include"
-        NO_DEFAULT_PATH REQUIRED)
-    find_path(EXTERNAL_INCLUDE_PARMETIS parmetis.h PATHS 
-        "${PROJECT_SOURCE_DIR}/external/parmetis/include" 
-        "${PROJECT_SOURCE_DIR}/external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}/include"
-        NO_DEFAULT_PATH REQUIRED)
-    # find_path(EXTERNAL_INCLUDE_TECIO TECIO.h PATHS 
-    #     "${PROJECT_SOURCE_DIR}/external/tecio/include" 
-    #     "${PROJECT_SOURCE_DIR}/external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}/include"
-    #     NO_DEFAULT_PATH) #!not needed for now
-    find_path(EXTERNAL_INCLUDE_EIGEN eigen3.pc.in PATHS 
-        "${PROJECT_SOURCE_DIR}/external/eigen-3.4.0" 
-        "${PROJECT_SOURCE_DIR}/external/eigen" 
-        NO_DEFAULT_PATH REQUIRED)
-    find_path(EXTERNAL_INCLUDE_JSON json.hpp PATHS 
-        "${PROJECT_SOURCE_DIR}/external/nlohmann" 
-        NO_DEFAULT_PATH REQUIRED)
-    find_path(EXTERNAL_INCLUDE_CPPCODEC base32_hex.hpp PATHS
-        "${PROJECT_SOURCE_DIR}/external/cppcodec" 
-        NO_DEFAULT_PATH REQUIRED)
-    # find_path(EXTERNAL_INCLUDE_RAPIDJSON rapidjson 
-    #     PATHS 
-    #     "${PROJECT_SOURCE_DIR}/external/rapidjson/include" 
-    #     "${PROJECT_SOURCE_DIR}/external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}/include"
-    #     NO_DEFAULT_PATH)
-    find_path(EXTERNAL_INCLUDE_NANOFLANN nanoflann.hpp PATHS
-        "${PROJECT_SOURCE_DIR}/external/nanoflann-1.4.3" 
-        NO_DEFAULT_PATH REQUIRED)
+find_library(EXTERNAL_LIB_PARMETIS parmetis PATHS 
+    "${PROJECT_SOURCE_DIR}/external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}" 
+    "${PROJECT_SOURCE_DIR}/external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}/lib"
+    NO_DEFAULT_PATH REQUIRED)
+# find_library(EXTERNAL_LIB_TECIO tecio PATHS 
+    # "${PROJECT_SOURCE_DIR}/external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}" 
+    # "${PROJECT_SOURCE_DIR}/external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}/lib"
+    # NO_DEFAULT_PATH) #not needed for now
 
-    find_path(EXTERNAL_DOXYGEN_AWESOME doxygen-awesome.css PATHS 
-        "${PROJECT_SOURCE_DIR}/external/doxygen-awesome-css-2.2.1" 
-        NO_DEFAULT_PATH)
-endif()
+find_path(EXTERNAL_INCLUDE_ZLIB zlib.h REQUIRED)
+find_path(EXTERNAL_INCLUDE_HDF5 hdf5.h PATHS 
+    "${PROJECT_SOURCE_DIR}/external/HDF5/include"
+    "${PROJECT_SOURCE_DIR}/external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}/include"
+    NO_DEFAULT_PATH REQUIRED)
+find_path(EXTERNAL_INCLUDE_CGNS cgnslib.h PATHS 
+    "${PROJECT_SOURCE_DIR}/external/cgns/include" 
+    "${PROJECT_SOURCE_DIR}/external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}/include"
+    NO_DEFAULT_PATH REQUIRED)
+find_path(EXTERNAL_INCLUDE_METIS metis.h PATHS 
+    "${PROJECT_SOURCE_DIR}/external/metis/include" 
+    "${PROJECT_SOURCE_DIR}/external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}/include"
+    NO_DEFAULT_PATH REQUIRED)
+find_path(EXTERNAL_INCLUDE_PARMETIS parmetis.h PATHS 
+    "${PROJECT_SOURCE_DIR}/external/parmetis/include" 
+    "${PROJECT_SOURCE_DIR}/external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}/include"
+    NO_DEFAULT_PATH REQUIRED)
+# find_path(EXTERNAL_INCLUDE_TECIO TECIO.h PATHS 
+#     "${PROJECT_SOURCE_DIR}/external/tecio/include" 
+#     "${PROJECT_SOURCE_DIR}/external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}/include"
+#     NO_DEFAULT_PATH) #!not needed for now
+find_path(EXTERNAL_INCLUDE_EIGEN eigen3.pc.in PATHS 
+    "${PROJECT_SOURCE_DIR}/external/eigen-3.4.0" 
+    "${PROJECT_SOURCE_DIR}/external/eigen" 
+    NO_DEFAULT_PATH REQUIRED)
+find_path(EXTERNAL_INCLUDE_JSON json.hpp PATHS 
+    "${PROJECT_SOURCE_DIR}/external/nlohmann" 
+    NO_DEFAULT_PATH REQUIRED)
+find_path(EXTERNAL_INCLUDE_CPPCODEC base32_hex.hpp PATHS
+    "${PROJECT_SOURCE_DIR}/external/cppcodec" 
+    NO_DEFAULT_PATH REQUIRED)
+# find_path(EXTERNAL_INCLUDE_RAPIDJSON rapidjson 
+#     PATHS 
+#     "${PROJECT_SOURCE_DIR}/external/rapidjson/include" 
+#     "${PROJECT_SOURCE_DIR}/external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}/include"
+#     NO_DEFAULT_PATH)
+find_path(EXTERNAL_INCLUDE_NANOFLANN nanoflann.hpp PATHS
+    "${PROJECT_SOURCE_DIR}/external/nanoflann-1.4.3" 
+    NO_DEFAULT_PATH REQUIRED)
+
+find_path(EXTERNAL_DOXYGEN_AWESOME doxygen-awesome.css PATHS 
+    "${PROJECT_SOURCE_DIR}/external/doxygen-awesome-css-2.2.1" 
+    NO_DEFAULT_PATH)
 
 set (EXTERNAL_LIBS "")
 
+if (MPI_CXX_FOUND)
+    set(EXTERNAL_LIBS ${MPI_CXX_LIBRARIES})
+    message("MPI_CXX_LIBRARIES" ${MPI_CXX_LIBRARIES})
+endif()
+
 set(EXTERNAL_LIBS ${EXTERNAL_LIBS}
+    ${EXTERNAL_LIB_ZLIB}
     ${EXTERNAL_LIB_CGNS}
     ${EXTERNAL_LIB_HDF5}
     ${EXTERNAL_LIB_METIS}
     ${EXTERNAL_LIB_PARMETIS}
     # ${EXTERNAL_LIB_TECIO}
     )
+message("EXTERNAL_LIBS  " ${EXTERNAL_LIBS})
 
 if(UNIX OR MINGW)
     set(EXTERNAL_LIBS ${EXTERNAL_LIBS}
-    dl 
-    z
     stdc++fs)
+    if(UNIX)
+        set(EXTERNAL_LIBS ${EXTERNAL_LIBS}
+        dl)
+    endif()
+    if(MINGW)
+        add_compile_options(-Wa,-mbig-obj) # too many sections
+    endif()
     message(${CMAKE_CXX_COMPILER_ID})
     add_compile_options(-std=c++17)
     if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang")
@@ -138,6 +166,28 @@ if(UNIX OR MINGW)
             add_definitions(-D_GLIBCXX_PARALLEL)
         endif()
     endif()
+    ### set warnings
+    add_compile_options(-Wall -Wno-unused-but-set-variable -Wno-unused-variable -Wno-sign-compare)
+
+elseif(WIN32 OR MSVC)
+    set(EXTERNAL_LIBS ${EXTERNAL_LIBS} # no dl
+    stdc++fs)
+    message(${CMAKE_CXX_COMPILER_ID})
+    add_compile_options(/std:c++17 /IGNORE:C2124) # cl is buggy in c++17 mode ...
+    if (DNDS_USE_OMP)
+        find_package(OpenMP REQUIRED)
+        if(OpenMP_CXX_FLAGS)
+            set(CMAKE_CXX_FLAGS ${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS})
+        else()
+            message(FATAL_ERROR "OMP not found")
+        endif()
+    endif()
+    if (DNDS_USE_PARALLEL_MACRO)
+        # ! to be tested
+    endif()
+
+    ### set warnings
+    add_compile_options(-Wall)
 else()
     message(FATAL_ERROR "NOT YET IMPLEMENTED HERE")
 endif()
@@ -145,6 +195,7 @@ endif()
 
 
 set(EXTERNAL_INCLUDES 
+    ${EXTERNAL_INCLUDE_ZLIB}
     ${EXTERNAL_INCLUDE_HDF5}
     ${EXTERNAL_INCLUDE_CGNS}
     ${EXTERNAL_INCLUDE_METIS}
@@ -157,9 +208,16 @@ set(EXTERNAL_INCLUDES
     ${EXTERNAL_INCLUDE_NANOFLANN}
     )
 
+if (MPI_CXX_FOUND)
+    set(EXTERNAL_INCLUDES ${MPI_CXX_INCLUDE_DIRS} ${EXTERNAL_INCLUDES})
+endif()
+
 set(DNDS_INCLUDES ${PROJECT_SOURCE_DIR}/src)
 
+if (UNIX)
 add_compile_options(-Wall -Wno-unused-but-set-variable -Wno-unused-variable -Wno-sign-compare)
+endif()
+
 if (DNDS_SUPRESS_INSERT_CHECK)
     # add_compile_definitions(NINSERT)
     add_definitions(-DNINSERT)
@@ -305,7 +363,13 @@ foreach(CPP ${CPPS_FAST})
     add_library(${CPP_NAME_A} OBJECT ${CPP})
     target_include_directories(${CPP_NAME_A} PUBLIC ${EXTERNAL_INCLUDES} PUBLIC ${INCLUDES})
     if(DNDS_FAST_BUILD_FAST)
-        target_compile_options(${CPP_NAME_A} PUBLIC -O3)
+        if(MINGW OR UNIX)
+            target_compile_options(${CPP_NAME_A} PUBLIC -O3)
+        elseif(WIN32 OR MSVC)
+            target_compile_options(${CPP_NAME_A} PUBLIC /O2)
+        else()
+            message(FATAL_ERROR "NOT YET IMPLEMENTED HERE")
+        endif()
     endif()
     list(APPEND CPP_TARGETS ${CPP_NAME_A})
     list(APPEND CPP_TARGETS_OBJ $<TARGET_OBJECTS:${CPP_NAME_A}>)

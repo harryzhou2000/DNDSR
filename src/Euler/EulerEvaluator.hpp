@@ -367,7 +367,7 @@ namespace DNDS::Euler
 
         real muEff(const TU &U) // TODO: more than sutherland law
         {
-            return 0. / 0.;
+            return std::nan("1");
         }
 
         void UFromCell2Face(TU &u, index iFace, index iCell, rowsize if2c)
@@ -1290,7 +1290,7 @@ namespace DNDS::Euler
                     }
                     else
                     {
-                        rho = u = v = pre = 0. / 0.;
+                        rho = u = v = pre = std::nan("1");
                         DNDS_assert(false); // not valid boundary pos
                     }
                     farPrimitive(0) = rho;

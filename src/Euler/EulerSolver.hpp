@@ -358,7 +358,7 @@ namespace DNDS::Euler
                 auto meshOutName = std::string(config.dataIOControl.meshFile) + "_part_" + std::to_string(mpi.size) + ".dir";
                 std::filesystem::path meshOutDir{meshOutName};
                 // std::filesystem::create_directories(meshOutDir); // reading not writing
-                std::string meshPartPath = std::string(meshOutDir / (std::string("part_") + std::to_string(mpi.rank) + ".json"));
+                std::string meshPartPath = getStringForcePath(meshOutDir / (std::string("part_") + std::to_string(mpi.rank) + ".json"));
 
                 SerializerJSON serializerJSON;
                 serializerJSON.SetUseCodecOnUint8(true);

@@ -139,7 +139,7 @@ namespace DNDS::Euler
             auto FBoundary = [&](const TU &UL, const TU &UMean, const Geom::tPoint &normOut, const Geom::tPoint &pPhy, const Geom::t_index bType) -> TU
             {
                 TVec normOutV = normOut(Seq012);
-                auto normBase = Geom::NormBuildLocalBaseV(normOutV);
+                Eigen::Matrix<real, dim, dim> normBase = Geom::NormBuildLocalBaseV<dim>(normOutV);
                 bool compressed = false;
                 TU ULfixed = eval.CompressRecPart(
                     UMean,
@@ -150,7 +150,7 @@ namespace DNDS::Euler
             auto FBoundaryDiff = [&](const TU &UL, const TU &dU, const TU &UMean, const Geom::tPoint &normOut, const Geom::tPoint &pPhy, const Geom::t_index bType) -> TU
             {
                 TVec normOutV = normOut(Seq012);
-                auto normBase = Geom::NormBuildLocalBaseV(normOutV);
+                Eigen::Matrix<real, dim, dim> normBase = Geom::NormBuildLocalBaseV<dim>(normOutV);
                 bool compressed = false;
                 TU ULfixed = eval.CompressRecPart(
                     UMean,
@@ -175,7 +175,7 @@ namespace DNDS::Euler
                         [&](const TU &UL, const TU &UMean, const Geom::tPoint &normOut, const Geom::tPoint &pPhy, const Geom::t_index bType) -> TU
                         {
                             TVec normOutV = normOut(Seq012);
-                            auto normBase = Geom::NormBuildLocalBaseV(normOutV);
+                            Eigen::Matrix<real, dim, dim> normBase = Geom::NormBuildLocalBaseV<dim>(normOutV);
                             bool compressed = false;
                             TU ULfixed = eval.CompressRecPart(
                                 UMean,
@@ -276,7 +276,7 @@ namespace DNDS::Euler
                 {
                     PerformanceTimer::Instance().StartTimer(PerformanceTimer::LimiterA);
                     Eigen::Vector<real, I4 + 1> UC = (UL + UR)(Seq01234)*0.5;
-                    auto normBase = Geom::NormBuildLocalBaseV<dim>(n(Seq012));
+                    Eigen::Matrix<real, dim, dim> normBase = Geom::NormBuildLocalBaseV<dim>(n(Seq012));
                     UC(Seq123) = normBase.transpose() * UC(Seq123);
 
                     auto M = Gas::IdealGas_EulerGasLeftEigenVector<dim>(UC, eval.settings.idealGasProperty.gamma);
@@ -293,7 +293,7 @@ namespace DNDS::Euler
                 {
                     PerformanceTimer::Instance().StartTimer(PerformanceTimer::LimiterA);
                     Eigen::Vector<real, I4 + 1> UC = (UL + UR)(Seq01234)*0.5;
-                    auto normBase = Geom::NormBuildLocalBaseV<dim>(n(Seq012));
+                    Eigen::Matrix<real, dim, dim> normBase = Geom::NormBuildLocalBaseV<dim>(n(Seq012));
                     UC(Seq123) = normBase.transpose() * UC(Seq123);
 
                     auto M = Gas::IdealGas_EulerGasRightEigenVector<dim>(UC, eval.settings.idealGasProperty.gamma);
@@ -633,9 +633,9 @@ namespace DNDS::Euler
                 real xymax = 5 + tSimu + 2;
                 real xyc = 5 + tSimu;
                 real sumErrRho = 0.0;
-                real sumErrRhoSum = 0.0 / 0.0;
+                real sumErrRhoSum = std::nan("1");
                 real sumVol = 0.0;
-                real sumVolSum = 0.0 / 0.0;
+                real sumVolSum = std::nan("1");
                 for (index iCell = 0; iCell < u.father->Size(); iCell++)
                 {
                     Geom::tPoint pos = vfv->GetCellBary(iCell);
