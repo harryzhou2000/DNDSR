@@ -1559,6 +1559,7 @@ namespace DNDS::Euler
                             });
                         u[iCell] = um / vfv->GetCellVol(iCell); // mean value
                     }
+                break;
             case 3: // for taylor-green vortex problem
                 DNDS_assert(model == NS_3D);
                 if constexpr (model == NS_3D)

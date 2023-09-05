@@ -181,7 +181,7 @@ namespace DNDS::ODE
     {
     public:
         using Frhs = std::function<void(TDATA &, TDATA &, int, real)>;
-        using Fdt = std::function<void(std::vector<real> &, real)>;
+        using Fdt = std::function<void(TDATA &, std::vector<real> &, real)>;
         using Fsolve = std::function<void(TDATA &, TDATA &, std::vector<real> &, real, real, TDATA &, int)>;
         using Fstop = std::function<bool(int, TDATA &, int)>;
 
@@ -238,7 +238,7 @@ namespace DNDS::ODE
             xLast = x;
             for (int iter = 1; iter <= maxIter; iter++)
             {
-                fdt(dTau, 1);
+                fdt(x, dTau, 1);
 
                 frhs(rhs, x, iter, 1);
                 rhsbuf[0] = rhs;
@@ -319,7 +319,7 @@ namespace DNDS::ODE
                 int iter = 1;
                 for (; iter <= maxIter; iter++)
                 {
-                    fdt(dTau, butcherA(iB, iB));
+                    fdt(x, dTau, butcherA(iB, iB));
 
                     frhs(rhsbuf[iB], x, iter, butcherC(iB));
 
@@ -451,7 +451,7 @@ namespace DNDS::ODE
             int iter = 1;
             for (; iter <= maxIter; iter++)
             {
-                fdt(dTau, BDFCoefs(kCurrent - 1, 0));
+                fdt(x, dTau, BDFCoefs(kCurrent - 1, 0));
 
                 frhs(rhsbuf[0], x, iter, 1.0);
 
@@ -508,6 +508,164 @@ namespace DNDS::ODE
         {6. / 11., 18. / 11., -9. / 11., 2. / 11., std::nan("1")},
         {12. / 25., 48. / 25., -36. / 25., 16. / 25., -3. / 25.}};
 
+    /*******************************************************************************************/
+    /*                                                                                         */
+    /*                                                                                         */
+    /*                                                                                         */
+    /*******************************************************************************************/
+
+    template <class TDATA>
+    class ImplicitHermite3SimpleJacobianDualStep : public ImplicitDualTimeStep<TDATA>
+    {
+
+    public:
+        using Frhs = typename ImplicitDualTimeStep<TDATA>::Frhs;
+        using Fdt = typename ImplicitDualTimeStep<TDATA>::Fdt;
+        using Fsolve = typename ImplicitDualTimeStep<TDATA>::Fsolve;
+        using Fstop = typename ImplicitDualTimeStep<TDATA>::Fstop;
+
+        std::vector<real> dTau;
+        TDATA xMid, rhsMid, rhsFull;
+        std::vector<TDATA> rhsbuf;
+        TDATA xLast;
+        TDATA xIncPrev;
+        index DOF;
+        index cnPrev;
+
+        Eigen::Vector<real, 4> cInter;
+        Eigen::Vector<real, 3> wInteg;
+
+        /**
+         * @brief mind that NDOF is the dof of dt
+         * finit(TDATA& data)
+         */
+        template <class Finit>
+        ImplicitHermite3SimpleJacobianDualStep(
+            index NDOF, Finit &&finit = [](TDATA &) {},
+            real alpha = 0.51) : DOF(NDOF), cnPrev(0)
+        {
+
+            dTau.resize(NDOF);
+            rhsbuf.resize(2);
+            finit(rhsbuf[0]);
+            finit(rhsbuf[1]);
+            finit(xMid);
+            finit(rhsMid);
+            finit(rhsFull);
+            finit(xLast);
+            finit(xIncPrev);
+
+            SetCoefs(alpha);
+        }
+
+        void SetCoefs(real alpha)
+        {
+            assert(alpha > 0 && alpha < 1);
+            cInter[0] = (alpha * alpha) * -3.0 + (alpha * alpha * alpha) * 2.0 + 1.0;
+            cInter[1] = (alpha * alpha) * 3.0 - (alpha * alpha * alpha) * 2.0;
+            cInter[2] = alpha - (alpha * alpha) * 2.0 + alpha * alpha * alpha;
+            cInter[3] = -alpha * alpha + alpha * alpha * alpha;
+            wInteg[0] = (-1.0 / 6.0) / alpha + 1.0 / 2.0;
+            wInteg[1] = (-1.0 / 6.0) / (alpha * (alpha - 1.0));
+            wInteg[2] = 1.0 / (alpha * 6.0 - 6.0) + 1.0 / 2.0;
+        }
+
+        /**
+         * @brief
+         * frhs(TDATA &rhs, TDATA &x)
+         * fdt(std::vector<real>& dTau)
+         * fsolve(TDATA &x, TDATA &rhs, std::vector<real>& dTau, real dt, real alphaDiag, TDATA &xinc)
+         * bool fstop(int iter, TDATA &xinc, int iInternal)
+         */
+        virtual void Step(TDATA &x, TDATA &xinc, const Frhs &frhs, const Fdt &fdt, const Fsolve &fsolve,
+                          int maxIter, const Fstop &fstop, real dt) override
+        {
+            xLast = x;
+            frhs(rhsbuf[0], x, 0, 1.0);
+
+            xIncPrev.setConstant(0.0);
+            int iter = 1;
+            for (; iter <= maxIter; iter++)
+            {
+                fdt(x, dTau, 1.0);
+
+                frhs(rhsbuf[1], x, iter, 1.0);
+                xMid.setConstant(0.0);
+                xMid.addTo(xLast, cInter[0]);
+                xMid.addTo(x, cInter[1]);
+                xMid.addTo(rhsbuf[0], cInter[2] * dt);
+                xMid.addTo(rhsbuf[1], cInter[3] * dt);
+                frhs(rhsMid, xMid, iter, 1.0);
+                rhsFull.setConstant(0.0);
+                rhsFull.addTo(rhsbuf[0], wInteg[0]);
+                rhsFull.addTo(rhsMid, wInteg[1]);
+                rhsFull.addTo(rhsbuf[1], wInteg[2]);
+                rhsFull.addTo(x, -1. / dt);
+                rhsFull.addTo(xLast, 1. / dt);
+
+                {
+                    // fdt(x, dTau, 1.0); // TODO: use "update spectral radius" procedure? or force update in fsolve
+                    // for(auto &v : dTau)
+                    //     v *= -cInter[3] / cInter[1];
+                    // fsolve(x, rhsFull, dTau, -dt * cInter[3] / cInter[1],
+                    //        1.0, xinc, iter);
+                    // rhsFull = xinc;
+                    // fdt(xMid, dTau, 1.0);
+                    // for (auto &v : dTau)
+                    //     v = veryLargeReal;
+                    // fsolve(xMid, rhsFull, dTau, -dt * cInter[3] * wInteg[1] / wInteg[2],
+                    //        1.0, xinc, iter);
+                    // xinc *= -1. / (2 * dt * cInter[3] * wInteg[1]);
+                }
+                {
+                    // fdt(x, dTau, 1.0); // TODO: use "update spectral radius" procedure? or force update in fsolve
+                    // for (auto &v : dTau)
+                    //     v *= 1;
+                    // fsolve(x, rhsFull, dTau, dt,
+                    //        1.0, xinc, iter);
+                    // rhsFull = xinc;
+                    // fdt(xMid, dTau, 1.0);
+                    // for (auto &v : dTau)
+                    //     v = veryLargeReal;
+                    // fsolve(xMid, rhsFull, dTau, dt,
+                    //        1.0, xinc, iter);
+                    // xinc *= 1. / (dt);
+                }
+
+                {
+                    fdt(xMid, dTau, 1.0);
+                    fsolve(xMid, rhsFull, dTau, dt, 1.0, xinc, iter);
+                }
+
+                //**    xinc = (I/dtau-A*alphaDiag)\rhs
+
+                // x += xinc;
+                x.addTo(xinc, 1.0);
+                // x.addTo(xIncPrev, -0.5);
+
+                xIncPrev = xinc;
+
+                if (fstop(iter, xinc, 1))
+                    break;
+            }
+            if (iter > maxIter)
+                fstop(iter, xinc, 1);
+        }
+
+        virtual TDATA &getLatestRHS() override
+        {
+            return rhsbuf[1];
+        }
+
+        virtual ~ImplicitHermite3SimpleJacobianDualStep() {}
+    };
+
+    /*******************************************************************************************/
+    /*                                                                                         */
+    /*                                                                                         */
+    /*                                                                                         */
+    /*******************************************************************************************/
+
     template <class TDATA>
     class ExplicitSSPRK3TimeStepAsImplicitDualTimeStep : public ImplicitDualTimeStep<TDATA>
     {
@@ -548,7 +706,7 @@ namespace DNDS::ODE
                           int maxIter, const Fstop &fstop, real dt) override
         {
 
-            fdt(dTau, 1.0); // always gets dTau for CFL evaluation
+            fdt(x, dTau, 1.0); // always gets dTau for CFL evaluation
             xLast = x;
             MPI_Barrier(MPI_COMM_WORLD);
             // std::cout << "fucked" << std::endl;
@@ -578,10 +736,9 @@ namespace DNDS::ODE
                 rhs *= dTau;
             else
                 rhs *= dt;
-            x *= 2./3.;
-            x.addTo(xLast, 1./3.);
-            x.addTo(rhs, 2./3.);
-
+            x *= 2. / 3.;
+            x.addTo(xLast, 1. / 3.);
+            x.addTo(rhs, 2. / 3.);
         }
 
         virtual TDATA &getLatestRHS() override
