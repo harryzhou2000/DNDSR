@@ -1,11 +1,134 @@
 #pragma once
 #include "EulerEvaluator.hpp"
+#include <CGAL/Simple_cartesian.h>
+#include <CGAL/AABB_tree.h>
+#include <CGAL/AABB_traits.h>
+#include <CGAL/AABB_triangle_primitive.h>
 
 namespace DNDS::Euler
 {
+
+    template <EulerModel model>
+    void EulerEvaluator<model>::GetWallDist()
+    {
+        using TriArray = ArrayEigenMatrix<3, 3>;
+        ssp<TriArray> TrianglesLocal, TrianglesFull;
+        DNDS_MAKE_SSP(TrianglesLocal, mesh->mpi);
+        DNDS_MAKE_SSP(TrianglesFull, mesh->mpi);
+        std::vector<Eigen::Matrix<real, 3, 3>> Triangles;
+        for (index iBnd = 0; iBnd < mesh->NumBnd(); iBnd++)
+        {
+            if (mesh->GetBndZone(iBnd) == Geom::BC_ID_DEFAULT_WALL)
+            {
+                index iFace = mesh->bnd2face[iBnd];
+                auto elem = mesh->GetFaceElement(iFace);
+                if (elem.type == Geom::Elem::ElemType::Line2)
+                {
+                    Eigen::Matrix<real, 3, 3> tri;
+                    tri(Eigen::all, 0) = mesh->coords[mesh->face2node[iFace][0]];
+                    tri(Eigen::all, 1) = mesh->coords[mesh->face2node[iFace][1]];
+                    tri(Eigen::all, 2) = mesh->coords[mesh->face2node[iFace][1]] + Geom::tPoint{0., 0., vfv->GetFaceArea(iFace)};
+                    Triangles.push_back(tri);
+                }
+                else if (elem.type == Geom::Elem::ElemType::Tri3)
+                {
+                    Eigen::Matrix<real, 3, 3> tri;
+                    tri(Eigen::all, 0) = mesh->coords[mesh->face2node[iFace][0]];
+                    tri(Eigen::all, 1) = mesh->coords[mesh->face2node[iFace][1]];
+                    tri(Eigen::all, 2) = mesh->coords[mesh->face2node[iFace][2]];
+                    Triangles.push_back(tri);
+                }
+                else if (elem.type == Geom::Elem::ElemType::Quad4)
+                {
+                    Eigen::Matrix<real, 3, 3> tri;
+                    tri(Eigen::all, 0) = mesh->coords[mesh->face2node[iFace][0]];
+                    tri(Eigen::all, 1) = mesh->coords[mesh->face2node[iFace][1]];
+                    tri(Eigen::all, 2) = mesh->coords[mesh->face2node[iFace][2]];
+                    Triangles.push_back(tri);
+                    tri(Eigen::all, 0) = mesh->coords[mesh->face2node[iFace][0]];
+                    tri(Eigen::all, 1) = mesh->coords[mesh->face2node[iFace][2]];
+                    tri(Eigen::all, 2) = mesh->coords[mesh->face2node[iFace][3]];
+                    Triangles.push_back(tri);
+                }
+                else
+                {
+                    DNDS_assert_info(false, "This elem not implemented yet for GetWallDist()");
+                }
+            }
+        }
+        TrianglesLocal->Resize(Triangles.size(), 3, 3);
+        for (index i = 0; i < TrianglesLocal->Size(); i++)
+            (*TrianglesLocal)[i] = Triangles[i];
+        Triangles.clear();
+        ArrayTransformerType<TriArray>::Type TrianglesTransformer;
+        TrianglesTransformer.setFatherSon(TrianglesLocal, TrianglesFull);
+        TrianglesTransformer.createFatherGlobalMapping();
+
+        std::vector<index> pullingSet;
+        pullingSet.resize(TrianglesTransformer.pLGlobalMapping->globalSize());
+        for (index i = 0; i < pullingSet.size(); i++)
+            pullingSet[i] = i;
+        TrianglesTransformer.createGhostMapping(pullingSet);
+        TrianglesTransformer.createMPITypes();
+        TrianglesTransformer.pullOnce();
+        std::cout << "To search in " << TrianglesFull->Size() << std::endl;
+
+        typedef CGAL::Simple_cartesian<double> K;
+        typedef K::FT FT;
+        // typedef K::Ray_3 Ray;
+        // typedef K::Line_3 Line;
+        typedef K::Point_3 Point;
+        typedef K::Triangle_3 Triangle;
+        typedef std::vector<Triangle>::iterator Iterator;
+        typedef CGAL::AABB_triangle_primitive<K, Iterator> Primitive;
+        typedef CGAL::AABB_traits<K, Primitive> AABB_triangle_traits;
+        typedef CGAL::AABB_tree<AABB_triangle_traits> Tree;
+
+        std::vector<Triangle> triangles;
+        triangles.reserve(TrianglesFull->Size());
+
+        for (index i = 0; i < TrianglesFull->Size(); i++)
+        {
+            Point p0((*TrianglesFull)[i](0, 0), (*TrianglesFull)[i](1, 0), (*TrianglesFull)[i](2, 0));
+            Point p1((*TrianglesFull)[i](0, 1), (*TrianglesFull)[i](1, 1), (*TrianglesFull)[i](2, 1));
+            Point p2((*TrianglesFull)[i](0, 2), (*TrianglesFull)[i](1, 2), (*TrianglesFull)[i](2, 2));
+            triangles.push_back(Triangle(p0, p1, p2));
+        }
+        TrianglesLocal->Resize(0, 3, 3);
+        TrianglesFull->Resize(0, 3, 3);
+
+        // std::cout << "tree building" << std::endl;
+        Tree tree(triangles.begin(), triangles.end());
+
+        // std::cout << "tree built" << std::endl;
+        // search
+        this->dWall.resize(mesh->NumCellProc());
+        double minDist = veryLargeReal;
+        for (index iCell = 0; iCell < mesh->NumCellProc(); iCell++)
+        {
+            // std::cout << "iCell " << iCell << std::endl;
+            auto quadCell = vfv->GetCellQuad(iCell);
+            dWall[iCell].resize(quadCell.GetNumPoints());
+            for (int ig = 0; ig < quadCell.GetNumPoints(); ig++)
+            {
+                // std::cout << "iG " << ig << std::endl;
+                auto p = vfv->GetCellQuadraturePPhys(iCell, ig);
+                Point pQ(p[0], p[1], p[2]);
+                // std::cout << "pQ " << pQ << std::endl;
+                // Point closest_point = tree.closest_point(pQ);
+                FT sqd = tree.squared_distance(pQ);
+                // std::cout << "sqd" << sqd << std::endl;
+                dWall[iCell][ig] = std::max(std::sqrt(sqd), 1e-12);
+                if (dWall[iCell][ig] < minDist)
+                    minDist = dWall[iCell][ig];
+            }
+        }
+        std::cout << "MinDist: " << minDist << std::endl;
+    }
+
     // Eigen::Vector<real, -1> EulerEvaluator::CompressRecPart(
     //     const Eigen::Vector<real, -1> &umean,
-    //     const Eigen::Vector<real, -1> &uRecInc)
+    //     const Eigen::Vector<real, -1> &uRecInc)1
 
     //! evaluates dt and facial spectral radius
     template <EulerModel model>
@@ -46,7 +169,7 @@ namespace DNDS::Euler
                                      settings.idealGasProperty.gamma,
                                      pR, asqrR, HR);
             }
-           
+
             DNDS_assert(uMean(0) > 0);
             TVec veloMean = (uMean(Seq123).array() / uMean(0)).matrix();
             // real veloNMean = veloMean.dot(unitNorm); // original
@@ -85,7 +208,7 @@ namespace DNDS::Euler
                        std::pow(T / settings.idealGasProperty.TRef, 1.5) *
                        (settings.idealGasProperty.TRef + settings.idealGasProperty.CSutherland) /
                        (T + settings.idealGasProperty.CSutherland);
-            if constexpr (model == NS_SA)
+            if constexpr (model == NS_SA || model == NS_SA_3D)
             {
                 real cnu1 = 7.1;
                 real Chi = uMean(I4 + 1) * muRef / muf;

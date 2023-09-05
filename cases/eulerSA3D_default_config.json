@@ -1,0 +1,135 @@
+{
+    "timeMarchControl": {
+        "dtImplicit": 1e+100,
+        "nTimeStep": 1000000,
+        "steadyQuit": false,
+        "odeCode": 0,
+        "tEnd": 3e+200
+    },
+    "implicitReconstructionControl": {
+        "nInternalRecStep": 1,
+        "zeroGrads": false,
+        "recLinearScheme": 0,
+        "nGmresSpace": 5,
+        "nGmresIter": 10,
+        "recThreshold": 1e-05,
+        "nRecConsolCheck": 1
+    },
+    "outputControl": {
+        "nConsoleCheck": 1,
+        "nConsoleCheckInternal": 1,
+        "consoleOutputMode": 0,
+        "nDataOut": 10000,
+        "nDataOutC": 50,
+        "nDataOutInternal": 1,
+        "nDataOutCInternal": 1,
+        "tDataOut": 3e+200
+    },
+    "implicitCFLControl": {
+        "CFL": 10.0,
+        "nForceLocalStartStep": 2147483647,
+        "nCFLRampStart": 2147483647,
+        "nCFLRampLength": 2147483647,
+        "CFLRampEnd": 0.0,
+        "useLocalDt": true
+    },
+    "convergenceControl": {
+        "nTimeStepInternal": 20,
+        "rhsThresholdInternal": 1e-10,
+        "res_base": 0.0,
+        "useVolWiseResidual": false
+    },
+    "dataIOControl": {
+        "uniqueStamps": true,
+        "meshRotZ": 0.0,
+        "meshScale": 1.0,
+        "meshFile": "data/mesh/NACA0012_WIDE_H3.cgns",
+        "outPltName": "data/out/debugData_",
+        "outLogName": "data/out/debugData_",
+        "outPltMode": 0,
+        "readMeshMode": 0,
+        "outPltTecplotFormat": true,
+        "outPltVTKFormat": true,
+        "outAtPointData": true,
+        "outAtCellData": true,
+        "nASCIIPrecision": 5,
+        "outVolumeData": true,
+        "outBndData": false,
+        "serializerSaveURec": false
+    },
+    "boundaryDefinition": {
+        "PeriodicTranslation1": [
+            1.0,
+            0.0,
+            0.0
+        ],
+        "PeriodicTranslation2": [
+            0.0,
+            1.0,
+            0.0
+        ],
+        "PeriodicTranslation3": [
+            0.0,
+            0.0,
+            1.0
+        ]
+    },
+    "limiterControl": {
+        "useLimiter": true,
+        "smoothIndicatorProcedure": 0,
+        "limiterProcedure": 0,
+        "nPartialLimiterStart": 0,
+        "nPartialLimiterStartLocal": 0
+    },
+    "linearSolverControl": {
+        "gmresCode": 0,
+        "nGmresSpace": 10,
+        "nGmresIter": 2
+    },
+    "others": {
+        "nFreezePassiveInner": 0
+    },
+    "_restartState": {
+        "iStep": -1,
+        "iStepInternal": -1,
+        "odeCodePrev": -1
+    },
+    "eulerSettings": {
+        "useScalarJacobian": false,
+        "ignoreSourceTerm": false,
+        "specialBuiltinInitializer": 0,
+        "riemannSolverType": "Roe",
+        "constMassForce": [
+            0.0,
+            0.0,
+            0.0
+        ],
+        "farFieldStaticValue": [
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            2.5
+        ],
+        "boxInitializers": [],
+        "planeInitializers": [],
+        "idealGasProperty": {
+            "gamma": 1.4,
+            "Rgas": 1.0,
+            "muGas": 1.0,
+            "prGas": 0.72,
+            "TRef": 273.15,
+            "CSutherland": 110.4
+        }
+    },
+    "vfvSettings": {
+        "maxOrder": 3,
+        "intOrder": 5,
+        "cacheDiffBase": true,
+        "jacobiRelax": 1.0,
+        "SORInstead": true,
+        "smoothThreshold": 0.01,
+        "WBAP_nStd": 10.0,
+        "normWBAP": false
+    }
+}

@@ -12,6 +12,8 @@
         "external\\nlohmann",
         "external\\cppcodec",
         "external/nanoflann-1.4.3",
+        "external/CGAL-5.6/include",
+        "external/boost_1_82_0",
         "src"
     ],
     "files.associations": {
@@ -140,7 +142,9 @@
         "xstring": "cpp",
         "xtr1common": "cpp",
         "xtree": "cpp",
-        "xutility": "cpp"
+        "xutility": "cpp",
+        "*.ipp": "cpp",
+        "slist": "cpp"
     },
     "cSpell.words": [
         "Bary",

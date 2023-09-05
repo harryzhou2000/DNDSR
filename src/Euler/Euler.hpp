@@ -143,6 +143,7 @@ namespace DNDS::Euler
         NS_SA = 1,
         NS_2D = 2,
         NS_3D = 3,
+        NS_SA_3D = 4,
     };
 
     constexpr static inline int getNVars_Fixed(const EulerModel model)
@@ -150,6 +151,8 @@ namespace DNDS::Euler
         if (model == NS || model == NS_3D)
             return 5;
         else if (model == NS_SA)
+            return 6;
+        else if (model == NS_SA_3D)
             return 6;
         else if (model == NS_2D)
             return 4;
@@ -161,6 +164,8 @@ namespace DNDS::Euler
         if (model == NS || model == NS_3D)
             return 3;
         else if (model == NS_SA)
+            return 3;
+        else if (model == NS_SA_3D)
             return 3;
         else if (model == NS_2D)
             return 2;
@@ -176,6 +181,8 @@ namespace DNDS::Euler
         else if (model == NS_2D)
             return 2;
         else if (model == NS_3D)
+            return 3;
+        else if (model == NS_SA_3D)
             return 3;
         return Eigen::Dynamic;
     }

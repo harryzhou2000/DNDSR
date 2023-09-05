@@ -300,8 +300,10 @@ namespace DNDS::Euler
             //! wall dist code!!!
             ///@todo implement wall dist
             real maxD = 0.1;
-            dWall.resize(mesh->NumCellProc(), std::vector<real>{UnInitReal});
+            this->GetWallDist();
         }
+
+        void GetWallDist();
 
         /******************************************************/
         void EvaluateDt(
@@ -472,7 +474,7 @@ namespace DNDS::Euler
                            (T + settings.idealGasProperty.CSutherland);
 #ifndef DNDS_FV_EULEREVALUATOR_IGNORE_VISCOUS_TERM
             real fnu1 = 0.;
-            if constexpr (model == NS_SA)
+            if constexpr (model == NS_SA || model == NS_SA_3D)
             {
                 real cnu1 = 7.1;
                 real Chi = UMeanXy(I4 + 1) * muRef / mufPhy;
@@ -521,7 +523,7 @@ namespace DNDS::Euler
             //     exit(-1);
 
             // }
-            if constexpr (model == NS_SA)
+            if constexpr (model == NS_SA || model == NS_SA_3D)
             {
                 real sigma = 2. / 3.;
                 Eigen::Matrix<real, dim, 1> diffRhoNu = DiffUxy(Seq012, {I4 + 1}) * muRef;
@@ -556,7 +558,7 @@ namespace DNDS::Euler
                 Gas::GasInviscidFlux<dim>(URMean, wRMean(Seq123), wRMean(I4), FRfix);
                 FLfix(Seq123) = normBase * FLfix(Seq123);
                 FRfix(Seq123) = normBase * FRfix(Seq123);
-                if (model == NS_SA)
+                if (model == NS_SA || model == NS_SA_3D)
                 {
                     FLfix(I4 + 1) = wLMean(1) * ULMean(I4 + 1);
                     FRfix(I4 + 1) = wRMean(1) * URMean(I4 + 1); // F_5 = rhoNut * un
@@ -619,7 +621,7 @@ namespace DNDS::Euler
                                                                                 // lam123 = std::abs(UL(1) / UL(0) + UR(1) / UR(0)) * 0.5; //! low fix
 #endif
 
-            if constexpr (model == NS_SA)
+            if constexpr (model == NS_SA || model == NS_SA_3D)
             {
                 // real lambdaFaceCC = sqrt(std::abs(asqrMean)) + std::abs(UL(1) / UL(0) + UR(1) / UR(0)) * 0.5;
                 real lambdaFaceCC = lam123; //! using velo instead of velo + a
@@ -670,7 +672,7 @@ namespace DNDS::Euler
                 ret(Seq123) = settings.constMassForce(Seq012) * UMeanXy(0);
                 return ret;
             }
-            else if constexpr (model == NS_SA)
+            else if constexpr (model == NS_SA || model == NS_SA_3D)
             {
                 real d = std::min(dWall[iCell][ig], std::pow(veryLargeReal, 1. / 6.));
                 real cb1 = 0.1355;
@@ -802,7 +804,7 @@ namespace DNDS::Euler
             if constexpr (model == NS || model == NS_2D || model == NS_3D)
             {
             }
-            else if constexpr (model == NS_SA)
+            else if constexpr (model == NS_SA || model == NS_SA_3D)
             {
                 real d = std::min(dWall[iCell][ig], std::pow(veryLargeReal, 1. / 6.));
                 real cb1 = 0.1355;
@@ -970,7 +972,7 @@ namespace DNDS::Euler
 
             real un = rhoun / U(0);
 
-            if constexpr (model == NS_SA)
+            if constexpr (model == NS_SA || model == NS_SA_3D)
             {
                 subFdU(5, 5) = un;
                 subFdU(5, 0) = -un * U(5) / U(0);
@@ -1007,7 +1009,7 @@ namespace DNDS::Euler
                 dp, p,
                 dF);
             dF(Seq01234) -= lambdaMain * dU(Seq01234);
-            if constexpr (model == NS_SA)
+            if constexpr (model == NS_SA || model == NS_SA_3D)
             {
                 dF(I4 + 1) = dU(I4 + 1) * n.dot(velo) + U(I4 + 1) * n.dot(dVelo);
                 dF(I4 + 1) -= dU(I4 + 1) * lambdaMain;
@@ -1314,7 +1316,7 @@ namespace DNDS::Euler
             {
                 URxy = ULxy;
                 URxy(Seq123) *= -1;
-                if (model == NS_SA)
+                if (model == NS_SA || model == NS_SA_3D)
                 {
                     URxy(I4 + 1) *= -1;
 #ifdef USE_FIX_ZERO_SA_NUT_AT_WALL
@@ -1371,7 +1373,7 @@ namespace DNDS::Euler
             // real e = ret(I4) - eK;
             // if (e <= 0 || ret(0) <= 0)
             //     ret = umean, compressed = true;
-            // if constexpr (model == NS_SA)
+            // if constexpr (model == NS_SA || model == NS_SA_3D)
             //     if (ret(I4 + 1) < 0)
             //         ret = umean, compressed = true;
 
@@ -1407,7 +1409,7 @@ namespace DNDS::Euler
             }
 
 #ifdef USE_NS_SA_NUT_REDUCED_ORDER
-            if constexpr (model == NS_SA)
+            if constexpr (model == NS_SA || model == NS_SA_3D)
                 if (ret(I4 + 1) < 0)
                     ret(I4 + 1) = umean(I4 + 1), compressed = true;
 #endif
@@ -1442,7 +1444,7 @@ namespace DNDS::Euler
             // }
             /** A intuitive fix **/
 
-            if constexpr (model == NS_SA)
+            if constexpr (model == NS_SA || model == NS_SA_3D)
             {
                 if (u(I4 + 1) + ret(I4 + 1) < 0)
                 {
@@ -1465,7 +1467,7 @@ namespace DNDS::Euler
         {
             Eigen::VectorXd initConstVal = this->settings.farFieldStaticValue;
             u.setConstant(initConstVal);
-            if (model == EulerModel::NS_SA)
+            if (model == EulerModel::NS_SA || model == NS_SA_3D)
             {
                 for (int iCell = 0; iCell < mesh->NumCell(); iCell++)
                 {

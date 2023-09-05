@@ -2,6 +2,8 @@
 
 namespace DNDS::Euler
 {
+    template void EulerEvaluator<NS>::GetWallDist();
+
     template void EulerEvaluator<NS>::EvaluateDt(
         std::vector<real> &dt,
         ArrayDOFV<nVars_Fixed> &u,

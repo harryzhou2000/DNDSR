@@ -183,7 +183,7 @@ namespace DNDS::Euler
                     real distGRP = minVol / vfv->GetFaceArea(iFace) * 2;
 #ifdef USE_DISABLE_DIST_GRP_FIX_AT_WALL
                     distGRP +=
-                        (mesh->GetFaceZone(iFace) == Geom::BC_ID_DEFAULT_WALL || mesh->GetFaceZone(iFace) == Geom::BC_ID_DEFAULT_WALL_INVIS
+                        (mesh->GetFaceZone(iFace) == Geom::BC_ID_DEFAULT_WALL || mesh->GetFaceZone(iFace) == Geom::BC_ID_DEFAULT_WALL_INVIS //! todo: update to general determination of if a wall
                              ? veryLargeReal
                              : 0.0);
 #endif

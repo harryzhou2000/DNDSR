@@ -2,9 +2,9 @@
 
 namespace DNDS::Euler
 {
-    template void EulerEvaluator<NS_SA>::GetWallDist();
+    template void EulerEvaluator<NS_SA_3D>::GetWallDist();
 
-    template void EulerEvaluator<NS_SA>::EvaluateDt(
+    template void EulerEvaluator<NS_SA_3D>::EvaluateDt(
         std::vector<real> &dt,
         ArrayDOFV<nVars_Fixed> &u,
         real CFL, real &dtMinall, real MaxDt,

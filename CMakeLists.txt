@@ -98,6 +98,13 @@ find_path(EXTERNAL_INCLUDE_EIGEN eigen3.pc.in PATHS
     "${PROJECT_SOURCE_DIR}/external/eigen-3.4.0" 
     "${PROJECT_SOURCE_DIR}/external/eigen" 
     NO_DEFAULT_PATH REQUIRED)
+find_path(EXTERNAL_INCLUDE_BOOST boost PATHS 
+    "${PROJECT_SOURCE_DIR}/external/boost_1_82_0" 
+    NO_DEFAULT_PATH REQUIRED)
+find_path(EXTERNAL_INCLUDE_CGAL CGAL PATHS 
+    "${PROJECT_SOURCE_DIR}/external/CGAL-5.6/include" 
+    "${PROJECT_SOURCE_DIR}/external/CGAL-5.6" 
+    NO_DEFAULT_PATH REQUIRED)
 find_path(EXTERNAL_INCLUDE_JSON json.hpp PATHS 
     "${PROJECT_SOURCE_DIR}/external/nlohmann" 
     NO_DEFAULT_PATH REQUIRED)
@@ -207,6 +214,8 @@ set(EXTERNAL_INCLUDES
     # ${EXTERNAL_INCLUDE_RAPIDJSON}
     ${EXTERNAL_INCLUDE_CPPCODEC}
     ${EXTERNAL_INCLUDE_NANOFLANN}
+    ${EXTERNAL_INCLUDE_BOOST}
+    ${EXTERNAL_INCLUDE_CGAL}
     )
 
 if (MPI_CXX_FOUND)
@@ -253,6 +262,7 @@ cgns_APITest
 eigen_Test
 STL_Test
 json_Test
+cgal_AABBTest
 )
 
 set(TESTS_DNDS
@@ -276,6 +286,7 @@ vrBasic_Test
 set(TESTS_Euler
 euler
 euler3D
+eulerSA3D
 )
 
 # set(OBJS_DNDS
@@ -318,18 +329,22 @@ src/Euler/EulerEvaluator_EvaluateDt_NS_2D.cpp
 src/Euler/EulerEvaluator_EvaluateDt_NS_3D.cpp
 src/Euler/EulerEvaluator_EvaluateDt_NS.cpp
 src/Euler/EulerEvaluator_EvaluateDt_NS_SA.cpp
+src/Euler/EulerEvaluator_EvaluateDt_NS_SA_3D.cpp
 src/Euler/EulerEvaluator_EvaluateRHS_NS_2D.cpp
 src/Euler/EulerEvaluator_EvaluateRHS_NS_3D.cpp
 src/Euler/EulerEvaluator_EvaluateRHS_NS.cpp
 src/Euler/EulerEvaluator_EvaluateRHS_NS_SA.cpp
+src/Euler/EulerEvaluator_EvaluateRHS_NS_SA_3D.cpp
 src/Euler/EulerEvaluator_NS_2D.cpp
 src/Euler/EulerEvaluator_NS_3D.cpp
 src/Euler/EulerEvaluator_NS.cpp
 src/Euler/EulerEvaluator_NS_SA.cpp
+src/Euler/EulerEvaluator_NS_SA_3D.cpp
 src/Euler/EulerSolver_NS_2D.cpp
 src/Euler/EulerSolver_NS_3D.cpp
 src/Euler/EulerSolver_NS.cpp
 src/Euler/EulerSolver_NS_SA.cpp
+src/Euler/EulerSolver_NS_SA_3D.cpp
 )
 
 set(CPPS_FAST
