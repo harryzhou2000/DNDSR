@@ -89,6 +89,7 @@ namespace DNDS::Euler
         // ArrayVDOF<25> dRdb;
 
         Eigen::Vector<real, -1> fluxWallSum;
+        std::vector<Eigen::Vector<real, nVars_Fixed>> fluxBnd;
         index nFaceReducedOrder = 0;
 
         struct Setting
@@ -283,6 +284,9 @@ namespace DNDS::Euler
             jacobianCell_Scalar.resize(lambdaCell.size());
             jacobianCellInv_Scalar.resize(lambdaCell.size());
 
+            fluxBnd.resize(mesh->NumBnd());
+            for (auto &v : fluxBnd)
+                v.resize(nVars);
             // jacobianFace_Fixed.resize(lambdaFace.size());
             // jacobianCell_Fixed.resize(lambdaCell.size());
             // jacobianCellInv_Fixed.resize(lambdaCell.size());

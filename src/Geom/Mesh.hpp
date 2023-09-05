@@ -91,6 +91,7 @@ namespace DNDS::Geom
         tAdj2Pair face2cell;
         tElemInfoArrayPair faceElemInfo;
         std::vector<index> bnd2face;
+        std::unordered_map<index, index> face2bnd;
         /// periodic only, after interpolated
         tPbiPair face2nodePbi;
 

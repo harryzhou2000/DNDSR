@@ -271,6 +271,11 @@ namespace DNDS::Euler
             {
                 fluxWallSumLocal -= fluxEs(Eigen::all, 0);
             }
+            if (f2c[1] == UnInitIndex)
+            {
+                DNDS_assert(mesh->face2bnd.find(iFace) != mesh->face2bnd.end());
+                fluxBnd.at(mesh->face2bnd[iFace]) = fluxEs(Eigen::all, 0) / vfv->GetFaceArea(iFace);
+            }
         }
 
         InsertCheck(u.father->mpi, "EvaluateRHS After Flux");

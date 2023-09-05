@@ -12,7 +12,7 @@
         "consoleOutputMode": 1,
         "nDataOutC": 20,
         "nDataOut": 100,
-        "nDataOutCInternal": 20,
+        "nDataOutCInternal": 200,
         "nDataOutInternal": 1000000000,
         "tDataOut": 3e+200
     },
@@ -38,9 +38,10 @@
         "outPltMode": 0,
         "readMeshMode": 1,
         "outPltTecplotFormat": true,
-        "outPltVTKFormat": false,
+        "outPltVTKFormat": true,
         "outAtPointData": true,
-        "outAtCellData": true
+        "outAtCellData": true,
+        "outBndData": true
     },
     "implicitReconstructionControl": {
         "nInternalRecStep": 1,
@@ -95,7 +96,7 @@
         "idealGasProperty": {
             "gamma": 1.4,
             "Rgas": 0.003486659170349,
-            "muGas": 1e-3,
+            "muGas": 1e-6,
             "prGas": 0.72,
             "TRef": 273.15,
             "CSutherland": 110.4

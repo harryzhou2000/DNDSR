@@ -942,6 +942,7 @@ namespace DNDS::Geom
         /**********************************/
         // put bnd elem info into faces
         bnd2face.resize(bndElemInfo.Size(), -1);
+        face2bnd.reserve(bndElemInfo.Size());
         std::unordered_map<index, index> iFace2iBnd;
         for (DNDS::index iBnd = 0; iBnd < bndElemInfo.Size(); iBnd++)
         {
@@ -977,6 +978,7 @@ namespace DNDS::Geom
                     // if is external bc, then must be non-ghost face
                     faceElemInfo(iFace, 0) = bndElemInfo(iBnd, 0);
                     bnd2face[iBnd] = iFace;
+                    face2bnd[iFace] = iBnd;
                     DNDS_assert_info(FaceIDIsExternalBC(faceID) ||
                                          FaceIDIsPeriodic(faceID),
                                      "bnd elem should have a BC id not interior");

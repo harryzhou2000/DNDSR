@@ -53,6 +53,8 @@
         "outAtPointData": true,
         "outAtCellData": true,
         "nASCIIPrecision": 5,
+        "outVolumeData": true,
+        "outBndData": false,
         "serializerSaveURec": false
     },
     "boundaryDefinition": {
