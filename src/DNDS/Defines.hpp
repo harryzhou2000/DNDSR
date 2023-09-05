@@ -249,6 +249,14 @@ namespace DNDS
     }
     // const int a = divide_ceil(23, 11);
 
+    /**
+     * \param b should be positive
+    */
+    inline constexpr real float_mod(real a, real b)
+    {
+        return a - std::floor(a / b) * b;
+    }
+
     ///@todo //TODO: overflow_assign_int64_to_32
 
     inline std::string getStringForceWString(const std::wstring& v)

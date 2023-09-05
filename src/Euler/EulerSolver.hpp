@@ -202,6 +202,28 @@ namespace DNDS::Euler
                     serializerSaveURec)
             } dataIOControl;
 
+            struct BoundaryDefinition
+            {
+                Eigen::Vector<real, -1> PeriodicTranslation1;
+                Eigen::Vector<real, -1> PeriodicTranslation2;
+                Eigen::Vector<real, -1> PeriodicTranslation3;
+                BoundaryDefinition()
+                {
+                    PeriodicTranslation1.resize(3);
+                    PeriodicTranslation2.resize(3);
+                    PeriodicTranslation3.resize(3);
+                    PeriodicTranslation1 << 1, 0, 0;
+                    PeriodicTranslation2 << 0, 1, 0;
+                    PeriodicTranslation3 << 0, 0, 1;
+                }
+
+                DNDS_NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_ORDERED_JSON(
+                    BoundaryDefinition,
+                    PeriodicTranslation1,
+                    PeriodicTranslation2,
+                    PeriodicTranslation3)
+            } boundaryDefinition;
+
             struct LimiterControl
             {
                 bool useLimiter = true;
@@ -255,6 +277,7 @@ namespace DNDS::Euler
                 __DNDS__json_to_config(implicitCFLControl);
                 __DNDS__json_to_config(convergenceControl);
                 __DNDS__json_to_config(dataIOControl);
+                __DNDS__json_to_config(boundaryDefinition);
                 __DNDS__json_to_config(limiterControl);
                 __DNDS__json_to_config(linearSolverControl);
                 __DNDS__json_to_config(others);
@@ -337,6 +360,9 @@ namespace DNDS::Euler
             DNDS_MAKE_SSP(reader, mesh, 0);
             DNDS_assert(config.dataIOControl.readMeshMode == 0 || config.dataIOControl.readMeshMode == 1);
             DNDS_assert(config.dataIOControl.outPltMode == 0 || config.dataIOControl.outPltMode == 1);
+            mesh->periodicInfo.translation[1] = config.boundaryDefinition.PeriodicTranslation1;
+            mesh->periodicInfo.translation[2] = config.boundaryDefinition.PeriodicTranslation2;
+            mesh->periodicInfo.translation[3] = config.boundaryDefinition.PeriodicTranslation3;
 
             if (config.dataIOControl.readMeshMode == 0)
             {

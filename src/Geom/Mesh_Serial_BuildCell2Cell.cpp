@@ -34,7 +34,7 @@ namespace DNDS::Geom
                 for (rowsize ib2n = 0; ib2n < bnd2nodeSerial->RowSize(iBnd); ib2n++)
                     coordBnd(Eigen::all, ib2n) = coordSerial->operator[]((*bnd2nodeSerial)(iBnd, ib2n));
             }
-            tPoint faceCent = coordBnd.rowwise().maxCoeff();
+            tPoint faceCent = coordBnd.rowwise().mean();
 
             if (FaceIDIsPeriodicMain(faceID))
             {
@@ -88,7 +88,7 @@ namespace DNDS::Geom
                 for (rowsize ib2n = 0; ib2n < bnd2nodeSerial->RowSize(iBnd); ib2n++)
                     coordBnd(Eigen::all, ib2n) = coordSerial->operator[]((*bnd2nodeSerial)(iBnd, ib2n));
             }
-            tPoint faceCent = coordBnd.rowwise().maxCoeff();
+            tPoint faceCent = coordBnd.rowwise().mean();
 
             if (FaceIDIsPeriodicMain(faceID))
             {
@@ -105,6 +105,7 @@ namespace DNDS::Geom
                     nResults = periodicDonorTree3.knnSearch(faceCentTrans.data(), 1, outIndices.data(), outDistancesSqr.data());
                 DNDS_assert_info(nResults == 1, "Tree Search of periodic result number not 1");
 
+                // std::cout << outDistancesSqr[0] << std::endl;
                 DNDS_assert_info(outDistancesSqr[0] < sqr(search_eps), "nearest neighbour not matching under the threshold");
                 index donorIBnd{-1};
                 if (faceID == BC_ID_PERIODIC_1)

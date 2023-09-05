@@ -53,7 +53,7 @@ namespace DNDS::Euler
                 },
                 2);
             break;
-        case 2: // SSPRK4
+        case 2: // SSPRK
             if (mpi.rank == 0)
                 log() << "=== ODE: SSPRK4 " << std::endl;
             ode = std::make_shared<ODE::ExplicitSSPRK3TimeStepAsImplicitDualTimeStep<decltype(u)>>(
@@ -63,6 +63,17 @@ namespace DNDS::Euler
                     vfv->BuildUDof(data, nVars);
                 },
                 false); // TODO: add local stepping options
+            break;
+        case 401: // H3S
+            if (mpi.rank == 0)
+                log() << "=== ODE: Hermite3 (simple jacobian) " << std::endl;
+            ode = std::make_shared<ODE::ImplicitHermite3SimpleJacobianDualStep<decltype(u)>>(
+                mesh->NumCell(),
+                [&](decltype(u) &data)
+                {
+                    vfv->BuildUDof(data, nVars);
+                },
+                0.51);
             break;
         default:
             DNDS_assert_info(false, "no such ode code");
@@ -125,6 +136,9 @@ namespace DNDS::Euler
         /*******************************************************/
         auto frhs = [&](ArrayDOFV<nVars_Fixed> &crhs, ArrayDOFV<nVars_Fixed> &cx, int iter, real ct)
         {
+            cx.trans.startPersistentPull();
+            cx.trans.waitPersistentPull(); //for hermite3
+
             eval.FixUMaxFilter(cx);
             // cx.trans.startPersistentPull();
             // cx.trans.waitPersistentPull();
@@ -387,15 +401,15 @@ namespace DNDS::Euler
             InsertCheck(mpi, " Lambda RHS: End");
         };
 
-        auto fdtau = [&](std::vector<real> &dTau, real alphaDiag)
+        auto fdtau = [&](ArrayDOFV<nVars_Fixed> &cx, std::vector<real> &dTau, real alphaDiag)
         {
-            eval.FixUMaxFilter(u);
-            u.trans.startPersistentPull(); //! this also need to update!
-            u.trans.waitPersistentPull();
+            eval.FixUMaxFilter(cx);
+            cx.trans.startPersistentPull(); //! this also need to update!
+            cx.trans.waitPersistentPull();
             // uRec.trans.startPersistentPull();
             // uRec.trans.waitPersistentPull();
 
-            eval.EvaluateDt(dTau, u, CFLNow, curDtMin, 1e100, config.implicitCFLControl.useLocalDt);
+            eval.EvaluateDt(dTau, cx, CFLNow, curDtMin, 1e100, config.implicitCFLControl.useLocalDt);
             for (auto &i : dTau)
                 i /= alphaDiag;
         };
@@ -629,9 +643,11 @@ namespace DNDS::Euler
             }
             if (eval.settings.specialBuiltinInitializer == 2 && (step % config.outputControl.nConsoleCheck == 0)) // IV problem special: reduction on solution
             {
-                real xymin = 5 + tSimu - 2;
-                real xymax = 5 + tSimu + 2;
-                real xyc = 5 + tSimu;
+                real xymin = 5 - 2;
+                real xymax = 5  + 2;
+                real xyc = 5;
+
+
                 real sumErrRho = 0.0;
                 real sumErrRhoSum = std::nan("1");
                 real sumVol = 0.0;
@@ -652,6 +668,8 @@ namespace DNDS::Euler
                             // std::cout << coords<< std::endl << std::endl;
                             // std::cout << DiNj << std::endl;
                             Geom::tPoint pPhysics = vfv->GetCellQuadraturePPhys(iCell, ig);
+                            pPhysics[0] = float_mod(pPhysics[0] - tSimu, 10);
+                            pPhysics[1] = float_mod(pPhysics[1] - tSimu, 10);
                             real r = std::sqrt(sqr(pPhysics(0) - xyc) + sqr(pPhysics(1) - xyc));
                             real dT = -(gamma - 1) / (8 * gamma * sqr(pi)) * sqr(chi) * std::exp(1 - sqr(r));
                             real dux = chi / 2 / pi * std::exp((1 - sqr(r)) / 2) * -(pPhysics(1) - xyc);
@@ -675,6 +693,8 @@ namespace DNDS::Euler
                             inc *= vfv->GetCellJacobiDet(iCell, ig); // don't forget this
                         });
                     auto cP = vfv->GetCellBary(iCell);
+                    cP[0] = float_mod(cP[0] - tSimu, 10);
+                    cP[1] = float_mod(cP[1] - tSimu, 10);
 
                     if (cP(0) > xymin && cP(0) < xymax && cP(1) > xymin && cP(1) < xymax)
                     {

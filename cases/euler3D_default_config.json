@@ -55,6 +55,23 @@
         "nASCIIPrecision": 5,
         "serializerSaveURec": false
     },
+    "boundaryDefinition": {
+        "PeriodicTranslation1": [
+            1.0,
+            0.0,
+            0.0
+        ],
+        "PeriodicTranslation2": [
+            0.0,
+            1.0,
+            0.0
+        ],
+        "PeriodicTranslation3": [
+            0.0,
+            0.0,
+            1.0
+        ]
+    },
     "limiterControl": {
         "useLimiter": true,
         "smoothIndicatorProcedure": 0,
