@@ -537,6 +537,7 @@ namespace DNDS::Euler
         {
             DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
             reader->SetASCIIPrecision(config.dataIOControl.nASCIIPrecision);
+            const int cDim = dim;
 
             if (config.dataIOControl.outVolumeData)
             {
@@ -690,7 +691,7 @@ namespace DNDS::Euler
                                 return (*outSerial)[iv][idata]; // cellData
                             },
                             [&](int idata)
-                            { return names[idata] + "p"; }, // pointNames
+                            { return names[idata] + "_p"; }, // pointNames
                             [&](int idata, index in)
                             { return (*outSerialPoint)[in][idata]; }, // pointData
                             0.0,
@@ -709,7 +710,7 @@ namespace DNDS::Euler
                                 return (*outDist)[iv][idata]; // cellData
                             },
                             [&](int idata)
-                            { return names[idata] + "_p"; }, // pointNames
+                            { return names[idata < cDim + 4 ? idata : idata + 2] + "_p"; }, // pointNames
                             [&](int idata, index in)
                             { return outDistPointPair[in][idata]; }, // pointData
                             0.0,
@@ -717,7 +718,7 @@ namespace DNDS::Euler
                     }
                 }
 
-                const int cDim = dim;
+                
                 if (config.dataIOControl.outPltVTKFormat)
                 {
                     if (config.dataIOControl.outPltMode == 0)
@@ -747,6 +748,8 @@ namespace DNDS::Euler
                             [&](int idata)
                             {
                                 idata = idata > 0 ? idata + cDim : 0;
+                                if(idata >= 4)
+                                    idata += 2;
                                 return names[idata]; // pointNames
                             },
                             [&](int idata, index iv)
@@ -843,7 +846,7 @@ namespace DNDS::Euler
                     (*outDistBnd)[iBnd][I4 + 2] = M;
                     for (int i = I4 + 1; i < nVars; i++)
                     {
-                        (*outDist)[iCell][2 + i] = recu(i) / recu(0); // 4 is additional amount offset, not Index of last flow variable (I4)
+                        (*outDistBnd)[iCell][2 + i] = recu(i) / recu(0); // 4 is additional amount offset, not Index of last flow variable (I4)
                     }
 
                     (*outDistBnd)[iBnd](Eigen::seq(nVars + 2, nOUTSBnd - 5)) = eval.fluxBnd.at(iBnd);
@@ -949,7 +952,7 @@ namespace DNDS::Euler
                             [&](int idata, index iv, int idim)
                             {
                                 if (idata == 0)
-                                    return (*outSerialBnd)[iv][1 + idim]; // cellVecData
+                                    return idim < cDim ? (*outSerialBnd)[iv][1 + idim] : 0; // cellVecData
                                 else
                                     return (*outSerialBnd)[iv][nOUTSBnd - 3 + idim];
                             },
@@ -995,7 +998,7 @@ namespace DNDS::Euler
                             [&](int idata, index iv, int idim)
                             {
                                 if (idata == 0)
-                                    return (*outDistBnd)[iv][1 + idim]; // cellVecData
+                                    return idim < cDim ? (*outDistBnd)[iv][1 + idim] : 0; // cellVecData
                                 else
                                     return (*outDistBnd)[iv][nOUTSBnd - 3 + idim];
                             },
