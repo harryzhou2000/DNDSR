@@ -96,31 +96,44 @@ namespace DNDS::Euler
         }
         TrianglesLocal->Resize(0, 3, 3);
         TrianglesFull->Resize(0, 3, 3);
-
-        // std::cout << "tree building" << std::endl;
-        Tree tree(triangles.begin(), triangles.end());
-
-        // std::cout << "tree built" << std::endl;
-        // search
-        this->dWall.resize(mesh->NumCellProc());
         double minDist = veryLargeReal;
-        for (index iCell = 0; iCell < mesh->NumCellProc(); iCell++)
+        this->dWall.resize(mesh->NumCellProc());
+        
+        if (!triangles.empty())
         {
-            // std::cout << "iCell " << iCell << std::endl;
-            auto quadCell = vfv->GetCellQuad(iCell);
-            dWall[iCell].resize(quadCell.GetNumPoints());
-            for (int ig = 0; ig < quadCell.GetNumPoints(); ig++)
+            // std::cout << "tree building" << std::endl;
+            Tree tree(triangles.begin(), triangles.end());
+
+            // std::cout << "tree built" << std::endl;
+            // search
+            
+            for (index iCell = 0; iCell < mesh->NumCellProc(); iCell++)
             {
-                // std::cout << "iG " << ig << std::endl;
-                auto p = vfv->GetCellQuadraturePPhys(iCell, ig);
-                Point pQ(p[0], p[1], p[2]);
-                // std::cout << "pQ " << pQ << std::endl;
-                // Point closest_point = tree.closest_point(pQ);
-                FT sqd = tree.squared_distance(pQ);
-                // std::cout << "sqd" << sqd << std::endl;
-                dWall[iCell][ig] = std::max(std::sqrt(sqd), 1e-12);
-                if (dWall[iCell][ig] < minDist)
-                    minDist = dWall[iCell][ig];
+                // std::cout << "iCell " << iCell << std::endl;
+                auto quadCell = vfv->GetCellQuad(iCell);
+                dWall[iCell].resize(quadCell.GetNumPoints());
+                for (int ig = 0; ig < quadCell.GetNumPoints(); ig++)
+                {
+                    // std::cout << "iG " << ig << std::endl;
+                    auto p = vfv->GetCellQuadraturePPhys(iCell, ig);
+                    Point pQ(p[0], p[1], p[2]);
+                    // std::cout << "pQ " << pQ << std::endl;
+                    // Point closest_point = tree.closest_point(pQ);
+                    FT sqd = tree.squared_distance(pQ);
+                    // std::cout << "sqd" << sqd << std::endl;
+                    dWall[iCell][ig] = std::max(std::sqrt(sqd), 1e-12);
+                    if (dWall[iCell][ig] < minDist)
+                        minDist = dWall[iCell][ig];
+                }
+            }
+        }
+        else
+        {
+            for (index iCell = 0; iCell < mesh->NumCellProc(); iCell++)
+            {
+                // std::cout << "iCell " << iCell << std::endl;
+                auto quadCell = vfv->GetCellQuad(iCell);
+                dWall[iCell].resize(quadCell.GetNumPoints(), std::pow(veryLargeReal, 1. / 4.));
             }
         }
         std::cout << "MinDist: " << minDist << std::endl;

@@ -286,6 +286,7 @@ vrBasic_Test
 set(TESTS_Euler
 euler
 euler3D
+eulerSA
 eulerSA3D
 )
 

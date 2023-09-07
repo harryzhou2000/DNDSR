@@ -53,6 +53,8 @@
         "outAtPointData": true,
         "outAtCellData": true,
         "nASCIIPrecision": 5,
+        "outVolumeData": true,
+        "outBndData": false,
         "serializerSaveURec": false
     },
     "boundaryDefinition": {
@@ -128,6 +130,7 @@
         "SORInstead": true,
         "smoothThreshold": 0.01,
         "WBAP_nStd": 10.0,
-        "normWBAP": false
+        "normWBAP": false,
+        "subs2ndOrder": 0
     }
 }

@@ -846,7 +846,7 @@ namespace DNDS::Euler
                     (*outDistBnd)[iBnd][I4 + 2] = M;
                     for (int i = I4 + 1; i < nVars; i++)
                     {
-                        (*outDistBnd)[iCell][2 + i] = recu(i) / recu(0); // 4 is additional amount offset, not Index of last flow variable (I4)
+                        (*outDistBnd)[iBnd][2 + i] = recu(i) / recu(0); // 4 is additional amount offset, not Index of last flow variable (I4)
                     }
 
                     (*outDistBnd)[iBnd](Eigen::seq(nVars + 2, nOUTSBnd - 5)) = eval.fluxBnd.at(iBnd);

@@ -14,6 +14,8 @@
 #define JSON_ASSERT DNDS_assert
 #include "json.hpp"
 
+#include "Eigen/Dense"
+
 namespace DNDS::CFV
 {
     /**
@@ -36,6 +38,7 @@ namespace DNDS::CFV
         real smoothThreshold = 0.01; /// @brief limiter's smooth indicator threshold
         real WBAP_nStd = 10;         /// @brief n used in WBAP limiters
         bool normWBAP = false;       /// @brief if switch to normWBAP
+        int subs2ndOrder = 0;        /// @brief 0: vfv; 1: gauss rule; 2: least square
 
         VRSettings()
         {
@@ -57,6 +60,7 @@ namespace DNDS::CFV
             jsonSetting["smoothThreshold"] = smoothThreshold;
             jsonSetting["WBAP_nStd"] = WBAP_nStd;
             jsonSetting["normWBAP"] = normWBAP;
+            jsonSetting["subs2ndOrder"] = subs2ndOrder;
         }
 
         /**
@@ -74,6 +78,7 @@ namespace DNDS::CFV
             smoothThreshold = jsonSetting["smoothThreshold"];
             WBAP_nStd = jsonSetting["WBAP_nStd"];
             normWBAP = jsonSetting["normWBAP"];
+            subs2ndOrder = jsonSetting["subs2ndOrder"];
         }
 
         friend void from_json(const json &j, VRSettings &s)
@@ -359,7 +364,7 @@ namespace DNDS::CFV
             auto simpleScale = cellAlignedHBox[iCell];
             auto pCen = cellCent[iCell];
             tPoint pPhysicsCScaled = (pPhy - pCen).array() / simpleScale.array();
-           
+
             if constexpr (dim == 2)
                 FPolynomialFill2D(DiBj, pPhysicsCScaled(0), pPhysicsCScaled(1), pPhysicsCScaled(2), simpleScale(0), simpleScale(1), simpleScale(2), DiBj.rows(), DiBj.cols());
             else
@@ -376,6 +381,7 @@ namespace DNDS::CFV
          * @brief if if2c < 0, then calculated, if maxDiff == 255, then seen as all diffs
          * if iFace < 0, then seen as cell int points; if iG < 1, then seen as center
          * @todo : divide GetIntPointDiffBaseValue into different calls
+         * @warning maxDiff is max(diffList) + 1 not len(difflist)
          */
         template <class TList>
         Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic>
@@ -608,6 +614,167 @@ namespace DNDS::CFV
             u.trans.initPersistentPush();
         }
 
+        template <int nVarsFixed, class TFBoundary>
+        void DoReconstruction2nd(
+            tURec<nVarsFixed> &uRec,
+            tUDof<nVarsFixed> &u,
+            TFBoundary &&FBoundary,
+            int method)
+        {
+            using namespace Geom;
+            using namespace Geom::Elem;
+
+            if (method == 1)
+            {
+                // simple gauss rule
+                for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
+                {
+
+                    auto c2f = mesh->cell2face[iCell];
+                    Eigen::Matrix<real, nVarsFixed, dim> grad;
+                    grad.setZero();
+
+                    for (int ic2f = 0; ic2f < c2f.size(); ic2f++)
+                    {
+                        index iFace = c2f[ic2f];
+                        index iCellOther = CellFaceOther(iCell, iFace);
+
+                        if (iCellOther != UnInitIndex)
+                        {
+                            grad += (u[iCellOther] - u[iCell]) * 0.5 *
+                                    this->GetFaceNorm(iFace, -1)(Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>)).transpose() *
+                                    this->GetFaceArea(iFace) * (CellIsFaceBack(iCell, iFace) ? 1. : -1.);
+                        }
+                        else
+                        {
+                            auto faceID = mesh->GetFaceZone(iFace);
+                            DNDS_assert(FaceIDIsExternalBC(faceID));
+
+                            int nVars = u[iCell].size();
+
+                            Eigen::Matrix<real, 1, Eigen::Dynamic> dbv =
+                                this->GetIntPointDiffBaseValue(
+                                    iCell, iFace, -1, -1, std::array<int, 1>{0}, 1);
+                            Eigen::Vector<real, nVarsFixed> uBL =
+                                (dbv *
+                                 uRec[iCell])
+                                    .transpose();
+                            uBL += u[iCell]; //! need fixing?
+                            Eigen::Vector<real, nVarsFixed> uBV =
+                                FBoundary(
+                                    uBL,
+                                    u[iCell],
+                                    this->GetFaceNorm(iFace, -1),
+                                    this->GetFaceQuadraturePPhysFromCell(iFace, iCell, -1, -1), faceID);
+                            grad += (uBV - u[iCell]) * 0.5 *
+                                    this->GetFaceNorm(iFace, -1)(Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>)).transpose() *
+                                    this->GetFaceArea(iFace);
+                        }
+                    }
+
+                    grad /= GetCellVol(iCell);
+                    Eigen::Matrix<real, dim, dim> d1bv;
+                    if constexpr (dim == 2)
+                        d1bv =
+                            this->GetIntPointDiffBaseValue(
+                                iCell, -1, -1, -1, std::array<int, 2>{1, 2}, 3);
+                    if constexpr (dim == 3)
+                        d1bv =
+                            this->GetIntPointDiffBaseValue(
+                                iCell, -1, -1, -1, std::array<int, 3>{1, 2, 3}, 4);
+                    Eigen::Matrix3d m;
+                    auto lud1bv = d1bv.partialPivLu();
+                    if (lud1bv.rcond() > 1e9)
+                        std::cout << "Large Cond " << lud1bv.rcond() << std::endl;
+                    uRec[iCell] = lud1bv.solve(grad.transpose());
+                    // std::cout << " g " << std::endl;
+                    // std::cout << grad << std::endl;
+                    // std::cout << uRec[iCell] << std::endl;
+                    // std::cout << d1bv << std::endl;
+                    // std::cout << lud1bv.inverse() << std::endl;
+                    // std::abort();
+                }
+            }
+            else if (method == 2)
+            {
+                for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
+                {
+
+                    auto c2f = mesh->cell2face[iCell];
+                    Eigen::Matrix<real, nVarsFixed, dim> grad;
+                    grad.setZero();
+                    Eigen::Matrix<real, Eigen::Dynamic, dim> dcs;
+                    Eigen::Matrix<real, Eigen::Dynamic, nVarsFixed> dus;
+                    dcs.resize(c2f.size(), dim);
+                    dus.resize(c2f.size(), nVarsFixed);
+
+                    for (int ic2f = 0; ic2f < c2f.size(); ic2f++)
+                    {
+                        index iFace = c2f[ic2f];
+                        index iCellOther = CellFaceOther(iCell, iFace);
+
+                        if (iCellOther != UnInitIndex)
+                        {
+                            dcs(ic2f, Eigen::all) = (GetCellBary(iCellOther) - GetCellBary(iCell))(Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>))
+                                                        .transpose();
+                            dus(ic2f, Eigen::all) = (u[iCellOther] - u[iCell]).transpose();
+                        }
+                        else
+                        {
+                            auto faceID = mesh->GetFaceZone(iFace);
+                            DNDS_assert(FaceIDIsExternalBC(faceID));
+
+                            int nVars = u[iCell].size();
+
+                            Eigen::Matrix<real, 1, Eigen::Dynamic> dbv =
+                                this->GetIntPointDiffBaseValue(
+                                    iCell, iFace, -1, -1, std::array<int, 1>{0}, 1);
+                            Eigen::Vector<real, nVarsFixed> uBL =
+                                (dbv *
+                                 uRec[iCell])
+                                    .transpose();
+                            uBL += u[iCell]; //! need fixing?
+                            Eigen::Vector<real, nVarsFixed> uBV =
+                                FBoundary(
+                                    uBL,
+                                    u[iCell],
+                                    this->GetFaceNorm(iFace, -1),
+                                    this->GetFaceQuadraturePPhysFromCell(iFace, iCell, -1, -1), faceID);
+                            dus(ic2f, Eigen::all) = (uBV - u[iCell]).transpose();
+
+                            dcs(ic2f, Eigen::all) =
+                                ((GetCellBary(iCell) - GetFaceQuadraturePPhys(iFace, -1)).dot(GetFaceNorm(iFace, -1)) * (-2.) * GetFaceNorm(iFace, -1))(
+                                    Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>))
+                                    .transpose();
+                        }
+                    }
+                    // Eigen::MatrixXd m;
+                    // m.bdcSvd(Eigen::ComputeThinU | Eigen::ComputeThinV).solve()
+                    auto svd = dcs.bdcSvd(Eigen::ComputeFullU | Eigen::ComputeFullV);
+                    grad = svd.solve(dus).transpose();
+
+                    Eigen::Matrix<real, dim, dim> d1bv;
+                    if constexpr (dim == 2)
+                        d1bv =
+                            this->GetIntPointDiffBaseValue(
+                                iCell, -1, -1, -1, std::array<int, 2>{1, 2}, 3);
+                    if constexpr (dim == 3)
+                        d1bv =
+                            this->GetIntPointDiffBaseValue(
+                                iCell, -1, -1, -1, std::array<int, 3>{1, 2, 3}, 4);
+                    Eigen::Matrix3d m;
+                    auto lud1bv = d1bv.partialPivLu();
+                    if (lud1bv.rcond() > 1e9)
+                        std::cout << "Large Cond " << lud1bv.rcond() << std::endl;
+                    uRec[iCell] = lud1bv.solve(grad.transpose());
+                }
+            }
+            else
+            {
+                DNDS_assert_info(false, "NO SUCH 2nd rec METHOD");
+            }
+        }
+
         /**
          * @brief do reconstruction iteration
          * if recordInc, value in the output array is actually defined as :
@@ -634,6 +801,16 @@ namespace DNDS::CFV
             int maxNDOF = GetNDof<dim>(settings.maxOrder);
             if (recordInc)
                 DNDS_assert_info(putIntoNew, "the -RHS must be put into uRecNew");
+            if (settings.maxOrder == 1 && settings.subs2ndOrder != 0)
+            {
+                if (recordInc)
+                    this->DoReconstruction2nd(uRecNew, u, std::forward<TFBoundary>(FBoundary), settings.subs2ndOrder);
+                else if (putIntoNew)
+                    this->DoReconstruction2nd(uRecNew, u, std::forward<TFBoundary>(FBoundary), settings.subs2ndOrder);
+                else
+                    this->DoReconstruction2nd(uRec, u, std::forward<TFBoundary>(FBoundary), settings.subs2ndOrder);
+                return;
+            }
             for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
             {
                 real relax = cellAtr[iCell].relax;
@@ -696,8 +873,8 @@ namespace DNDS::CFV
                                     FBoundary(
                                         uBL,
                                         u[iCell],
-                                        faceUnitNorm(iFace, iG),
-                                        faceIntPPhysics(iFace, iG), faceID);
+                                        this->GetFaceNorm(iFace, iG),
+                                        this->GetFaceQuadraturePPhysFromCell(iFace, iCell, -1, iG), faceID);
                                 Eigen::RowVector<real, nVarsFixed> uIncBV = (uBV - u[iCell]).transpose();
                                 vInc = this->FFaceFunctional(dbv, uIncBV, iFace, iG) * this->GetFaceJacobiDet(iFace, iG);
                                 // std::cout << faceWeight[iFace].transpose() << std::endl;
@@ -748,6 +925,12 @@ namespace DNDS::CFV
             using namespace Geom;
             using namespace Geom::Elem;
             int maxNDOF = GetNDof<dim>(settings.maxOrder);
+            if (settings.maxOrder == 1 && settings.subs2ndOrder != 0)
+            {
+                for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
+                    uRecNew[iCell].setZero();
+                return;
+            }
             for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
             {
                 uRecNew[iCell] = uRecDiff[iCell];
@@ -796,8 +979,8 @@ namespace DNDS::CFV
                                             uBL,
                                             uBLDiff,
                                             u[iCell],
-                                            faceUnitNorm(iFace, iG),
-                                            faceIntPPhysics(iFace, iG), faceID);
+                                            this->GetFaceNorm(iFace, iG),
+                                            this->GetFaceQuadraturePPhysFromCell(iFace, iCell, -1, iG), faceID);
                                 Eigen::RowVector<real, nVarsFixed> uIncBV = uBV.transpose();
                                 vInc = this->FFaceFunctional(dbv, uIncBV, iFace, iG) * this->GetFaceJacobiDet(iFace, iG);
                                 // std::cout << faceWeight[iFace].transpose() << std::endl;
@@ -878,8 +1061,8 @@ namespace DNDS::CFV
                                             uBL,
                                             uBLDiff,
                                             u[iCell],
-                                            faceUnitNorm(iFace, iG),
-                                            faceIntPPhysics(iFace, iG), faceID);
+                                            this->GetFaceNorm(iFace, iG),
+                                            this->GetFaceQuadraturePPhysFromCell(iFace, iCell, -1, iG), faceID);
                                 Eigen::RowVector<real, nVarsFixed> uIncBV = uBV.transpose();
                                 vInc = this->FFaceFunctional(dbv, uIncBV, iFace, iG) * this->GetFaceJacobiDet(iFace, iG);
                                 // std::cout << faceWeight[iFace].transpose() << std::endl;

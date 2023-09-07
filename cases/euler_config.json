@@ -77,14 +77,15 @@
         "nPartialLimiterStartLocal": 1000000
     },
     "vfvSettings": {
-        "maxOrder": 3,
-        "intOrder": 5,
+        "maxOrder": 1,
+        "intOrder": 1,
         "cacheDiffBase": false,
         "jacobiRelax": 1.0,
         "SORInstead": true,
         "smoothThreshold": 1e-3,
         "WBAP_nStd": 10.0,
-        "normWBAP": false
+        "normWBAP": false,
+        "subs2ndOrder": 1
     },
     "linearSolverControl": {
         "gmresCode": 0,
