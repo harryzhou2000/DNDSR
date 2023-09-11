@@ -1,8 +1,9 @@
-#include "EulerEvaluator_EvaluateRHS.hxx"
+#include "../EulerEvaluator_EvaluateRHS.hxx"
 
 namespace DNDS::Euler
 {
-    template void EulerEvaluator<NS_2D>::EvaluateRHS(
+
+    template void EulerEvaluator<NS_3D>::EvaluateRHS(
         ArrayDOFV<nVars_Fixed> &rhs, ArrayDOFV<nVars_Fixed> &u,
         ArrayRECV<nVars_Fixed> &uRec, real t);
 }

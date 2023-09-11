@@ -1,4 +1,4 @@
-#include "EulerSolver.hxx"
+#include "../EulerSolver.hxx"
 
 namespace DNDS::Euler
 {

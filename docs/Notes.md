@@ -71,3 +71,10 @@ MPI_Waitall(commSize, sendReqs, ...);
 which is receiving one-by-one. Sending one-by-one is also ok for solving network race. 
 
 Actually, chunk-by-chunk should be used on a sparse machine, with the knowledge of local network capacity. But since sparse decomposed 3-d meshes generally have very small communication overhead, optimization on this is delayed.
+
+
+### Dynamic-Reforming: Loss of Performance
+
+For DLR case used for eulerSA3D in `3fbff8fa7224a86cab7b5de1aaf3f9580861ecb4`, on GS machine, times is: 2.1582/it
+
+

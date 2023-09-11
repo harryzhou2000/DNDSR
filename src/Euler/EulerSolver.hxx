@@ -137,7 +137,7 @@ namespace DNDS::Euler
         auto frhs = [&](ArrayDOFV<nVars_Fixed> &crhs, ArrayDOFV<nVars_Fixed> &cx, int iter, real ct)
         {
             cx.trans.startPersistentPull();
-            cx.trans.waitPersistentPull(); //for hermite3
+            cx.trans.waitPersistentPull(); // for hermite3
 
             eval.FixUMaxFilter(cx);
             // cx.trans.startPersistentPull();
@@ -150,7 +150,8 @@ namespace DNDS::Euler
             int nRec = (gradIsZero ? 1 : 1) * config.implicitReconstructionControl.nInternalRecStep;
             real recIncBase = 0;
             double tstartA = MPI_Wtime();
-            auto FBoundary = [&](const TU &UL, const TU &UMean, const Geom::tPoint &normOut, const Geom::tPoint &pPhy, const Geom::t_index bType) -> TU
+            typename TVFV::element_type::TFBoundary<nVars_Fixed>
+                FBoundary = [&](const TU &UL, const TU &UMean, const Geom::tPoint &normOut, const Geom::tPoint &pPhy, const Geom::t_index bType) -> TU
             {
                 TVec normOutV = normOut(Seq012);
                 Eigen::Matrix<real, dim, dim> normBase = Geom::NormBuildLocalBaseV<dim>(normOutV);
@@ -161,7 +162,8 @@ namespace DNDS::Euler
                     compressed);
                 return eval.generateBoundaryValue(ULfixed, normOutV, normBase, pPhy(Seq012), tSimu + ct * curDtImplicit, bType, true);
             };
-            auto FBoundaryDiff = [&](const TU &UL, const TU &dU, const TU &UMean, const Geom::tPoint &normOut, const Geom::tPoint &pPhy, const Geom::t_index bType) -> TU
+            typename TVFV::element_type::TFBoundaryDiff<nVars_Fixed>
+                FBoundaryDiff = [&](const TU &UL, const TU &dU, const TU &UMean, const Geom::tPoint &normOut, const Geom::tPoint &pPhy, const Geom::t_index bType) -> TU
             {
                 TVec normOutV = normOut(Seq012);
                 Eigen::Matrix<real, dim, dim> normBase = Geom::NormBuildLocalBaseV<dim>(normOutV);
@@ -185,18 +187,7 @@ namespace DNDS::Euler
 
                     vfv->DoReconstructionIter(
                         uRec, uRecNew, cx,
-                        // FBoundary
-                        [&](const TU &UL, const TU &UMean, const Geom::tPoint &normOut, const Geom::tPoint &pPhy, const Geom::t_index bType) -> TU
-                        {
-                            TVec normOutV = normOut(Seq012);
-                            Eigen::Matrix<real, dim, dim> normBase = Geom::NormBuildLocalBaseV<dim>(normOutV);
-                            bool compressed = false;
-                            TU ULfixed = eval.CompressRecPart(
-                                UMean,
-                                UL - UMean,
-                                compressed);
-                            return eval.generateBoundaryValue(ULfixed, normOutV, normBase, pPhy(Seq012), tSimu + ct * curDtImplicit, bType, true);
-                        },
+                        FBoundary,
                         false);
 
                     uRec.trans.startPersistentPull();
@@ -289,7 +280,7 @@ namespace DNDS::Euler
                 auto fML = [&](const auto &UL, const auto &UR, const auto &n) -> auto
                 {
                     PerformanceTimer::Instance().StartTimer(PerformanceTimer::LimiterA);
-                    Eigen::Vector<real, I4 + 1> UC = (UL + UR)(Seq01234)*0.5;
+                    Eigen::Vector<real, I4 + 1> UC = (UL + UR)(Seq01234) * 0.5;
                     Eigen::Matrix<real, dim, dim> normBase = Geom::NormBuildLocalBaseV<dim>(n(Seq012));
                     UC(Seq123) = normBase.transpose() * UC(Seq123);
 
@@ -306,7 +297,7 @@ namespace DNDS::Euler
                 auto fMR = [&](const auto &UL, const auto &UR, const auto &n) -> auto
                 {
                     PerformanceTimer::Instance().StartTimer(PerformanceTimer::LimiterA);
-                    Eigen::Vector<real, I4 + 1> UC = (UL + UR)(Seq01234)*0.5;
+                    Eigen::Vector<real, I4 + 1> UC = (UL + UR)(Seq01234) * 0.5;
                     Eigen::Matrix<real, dim, dim> normBase = Geom::NormBuildLocalBaseV<dim>(n(Seq012));
                     UC(Seq123) = normBase.transpose() * UC(Seq123);
 
@@ -645,9 +636,8 @@ namespace DNDS::Euler
             if (eval.settings.specialBuiltinInitializer == 2 && (step % config.outputControl.nConsoleCheck == 0)) // IV problem special: reduction on solution
             {
                 real xymin = 5 - 2;
-                real xymax = 5  + 2;
+                real xymax = 5 + 2;
                 real xyc = 5;
-
 
                 real sumErrRho = 0.0;
                 real sumErrRhoSum = std::nan("1");

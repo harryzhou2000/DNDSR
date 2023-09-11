@@ -1,10 +1,10 @@
-#include "EulerEvaluator_EvaluateDt.hxx"
+#include "../EulerEvaluator_EvaluateDt.hxx"
 
 namespace DNDS::Euler
 {
-    template void EulerEvaluator<NS_SA_3D>::GetWallDist();
+    template void EulerEvaluator<NS_SA>::GetWallDist();
 
-    template void EulerEvaluator<NS_SA_3D>::EvaluateDt(
+    template void EulerEvaluator<NS_SA>::EvaluateDt(
         std::vector<real> &dt,
         ArrayDOFV<nVars_Fixed> &u,
         real CFL, real &dtMinall, real MaxDt,

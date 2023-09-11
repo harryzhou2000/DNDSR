@@ -323,29 +323,36 @@ src/Geom/Mesh_Serial_Partition.cpp
 
 set(CPPS_CFV
 src/CFV/VariationalReconstruction.cpp
+src/CFV/_explicit_instantiation/VariationalReconstruction_Reconstruction_2_4.cpp
+src/CFV/_explicit_instantiation/VariationalReconstruction_Reconstruction_2_5.cpp
+src/CFV/_explicit_instantiation/VariationalReconstruction_Reconstruction_2_6.cpp
+src/CFV/_explicit_instantiation/VariationalReconstruction_Reconstruction_2_D.cpp
+src/CFV/_explicit_instantiation/VariationalReconstruction_Reconstruction_3_5.cpp
+src/CFV/_explicit_instantiation/VariationalReconstruction_Reconstruction_3_6.cpp
+src/CFV/_explicit_instantiation/VariationalReconstruction_Reconstruction_3_D.cpp
 )
 
 set(CPPS_Euler
-src/Euler/EulerEvaluator_EvaluateDt_NS_2D.cpp
-src/Euler/EulerEvaluator_EvaluateDt_NS_3D.cpp
-src/Euler/EulerEvaluator_EvaluateDt_NS.cpp
-src/Euler/EulerEvaluator_EvaluateDt_NS_SA.cpp
-src/Euler/EulerEvaluator_EvaluateDt_NS_SA_3D.cpp
-src/Euler/EulerEvaluator_EvaluateRHS_NS_2D.cpp
-src/Euler/EulerEvaluator_EvaluateRHS_NS_3D.cpp
-src/Euler/EulerEvaluator_EvaluateRHS_NS.cpp
-src/Euler/EulerEvaluator_EvaluateRHS_NS_SA.cpp
-src/Euler/EulerEvaluator_EvaluateRHS_NS_SA_3D.cpp
-src/Euler/EulerEvaluator_NS_2D.cpp
-src/Euler/EulerEvaluator_NS_3D.cpp
-src/Euler/EulerEvaluator_NS.cpp
-src/Euler/EulerEvaluator_NS_SA.cpp
-src/Euler/EulerEvaluator_NS_SA_3D.cpp
-src/Euler/EulerSolver_NS_2D.cpp
-src/Euler/EulerSolver_NS_3D.cpp
-src/Euler/EulerSolver_NS.cpp
-src/Euler/EulerSolver_NS_SA.cpp
-src/Euler/EulerSolver_NS_SA_3D.cpp
+src/Euler/_explicit_instantiation/EulerEvaluator_EvaluateDt_NS_2D.cpp
+src/Euler/_explicit_instantiation/EulerEvaluator_EvaluateDt_NS_3D.cpp
+src/Euler/_explicit_instantiation/EulerEvaluator_EvaluateDt_NS.cpp
+src/Euler/_explicit_instantiation/EulerEvaluator_EvaluateDt_NS_SA.cpp
+src/Euler/_explicit_instantiation/EulerEvaluator_EvaluateDt_NS_SA_3D.cpp
+src/Euler/_explicit_instantiation/EulerEvaluator_EvaluateRHS_NS_2D.cpp
+src/Euler/_explicit_instantiation/EulerEvaluator_EvaluateRHS_NS_3D.cpp
+src/Euler/_explicit_instantiation/EulerEvaluator_EvaluateRHS_NS.cpp
+src/Euler/_explicit_instantiation/EulerEvaluator_EvaluateRHS_NS_SA.cpp
+src/Euler/_explicit_instantiation/EulerEvaluator_EvaluateRHS_NS_SA_3D.cpp
+src/Euler/_explicit_instantiation/EulerEvaluator_NS_2D.cpp
+src/Euler/_explicit_instantiation/EulerEvaluator_NS_3D.cpp
+src/Euler/_explicit_instantiation/EulerEvaluator_NS.cpp
+src/Euler/_explicit_instantiation/EulerEvaluator_NS_SA.cpp
+src/Euler/_explicit_instantiation/EulerEvaluator_NS_SA_3D.cpp
+src/Euler/_explicit_instantiation/EulerSolver_NS_2D.cpp
+src/Euler/_explicit_instantiation/EulerSolver_NS_3D.cpp
+src/Euler/_explicit_instantiation/EulerSolver_NS.cpp
+src/Euler/_explicit_instantiation/EulerSolver_NS_SA.cpp
+src/Euler/_explicit_instantiation/EulerSolver_NS_SA_3D.cpp
 )
 
 set(CPPS_FAST
@@ -362,16 +369,6 @@ set(CPP_TARGETS
 )
 set(CPP_TARGETS_OBJ
 )
-
-foreach(CPP ${CPPS})
-    string(REPLACE "/" "___" CPP_NAME ${CPP})
-    # message(STATUS ${CPP_NAME})
-    string(REPLACE ".cpp" "_" CPP_NAME_A ${CPP_NAME})
-    add_library(${CPP_NAME_A} OBJECT ${CPP})
-    target_include_directories(${CPP_NAME_A} PUBLIC ${EXTERNAL_INCLUDES} PUBLIC ${INCLUDES})
-    list(APPEND CPP_TARGETS ${CPP_NAME_A})
-    list(APPEND CPP_TARGETS_OBJ $<TARGET_OBJECTS:${CPP_NAME_A}>)
-endforeach()
 
 foreach(CPP ${CPPS_FAST})
     string(REPLACE "/" "___" CPP_NAME ${CPP})
@@ -392,6 +389,18 @@ foreach(CPP ${CPPS_FAST})
     list(APPEND CPP_TARGETS ${CPP_NAME_A})
     list(APPEND CPP_TARGETS_OBJ $<TARGET_OBJECTS:${CPP_NAME_A}>)
 endforeach()
+
+foreach(CPP ${CPPS})
+    string(REPLACE "/" "___" CPP_NAME ${CPP})
+    # message(STATUS ${CPP_NAME})
+    string(REPLACE ".cpp" "_" CPP_NAME_A ${CPP_NAME})
+    add_library(${CPP_NAME_A} OBJECT ${CPP})
+    target_include_directories(${CPP_NAME_A} PUBLIC ${EXTERNAL_INCLUDES} PUBLIC ${INCLUDES})
+    list(APPEND CPP_TARGETS ${CPP_NAME_A})
+    list(APPEND CPP_TARGETS_OBJ $<TARGET_OBJECTS:${CPP_NAME_A}>)
+endforeach()
+
+
 
 macro(ADD_EXE_TEST EXES MAIN_DIR)
     message(STATUS ${EXES})
