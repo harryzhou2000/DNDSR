@@ -46,11 +46,59 @@ namespace DNDS::Euler
                 this->operator[](i) += R.operator[](i) * r;
         }
 
-        void operator*=(std::vector<real> R)
+        void operator*=(std::vector<real> &R)
         {
             DNDS_assert(R.size() >= this->father->Size());
             for (index i = 0; i < this->father->Size(); i++)
                 this->operator[](i) *= R[i];
+        }
+
+        void operator+=(const Eigen::Vector<real, nVars_Fixed> &R)
+        {
+            for (index i = 0; i < this->Size(); i++)
+                this->operator[](i) += R;
+        }
+
+        void operator+=(real R)
+        {
+            for (index i = 0; i < this->Size(); i++)
+                this->operator[](i).array() += R;
+        }
+
+        void operator*=(const Eigen::Vector<real, nVars_Fixed> &R)
+        {
+            for (index i = 0; i < this->Size(); i++)
+                this->operator[](i).array() *= R.array();
+        }
+
+        void operator*=(t_self &R)
+        {
+            for (index i = 0; i < this->Size(); i++)
+                this->operator[](i).array() *= R.operator[](i).array();
+        }
+
+        void operator/=(t_self &R)
+        {
+            for (index i = 0; i < this->Size(); i++)
+                this->operator[](i).array() /= R.operator[](i).array();
+        }
+
+        void setAbs()
+        {
+            for (index i = 0; i < this->Size(); i++)
+                this->operator[](i).array() = this->operator[](i).array().abs();
+        }
+
+        Eigen::Vector<real, nVars_Fixed> normInc()
+        {
+            Eigen::Vector<real, nVars_Fixed> ret, retAll;
+            ret.resize(this->RowSize());
+            retAll.resize(this->RowSize());
+            ret.setZero();
+            for (index i = 0; i < this->father->Size(); i++) //*note that only father is included
+                ret += this->operator[](i).array().abs();
+            MPI::Allreduce(ret.data(), retAll.data(), this->RowSize(), DNDS_MPI_REAL, MPI_SUM, this->father->mpi.comm);
+            return retAll;
         }
 
         real norm2()

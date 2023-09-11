@@ -12,7 +12,7 @@
         "consoleOutputMode": 1,
         "nDataOutC": 20,
         "nDataOut": 100,
-        "nDataOutCInternal": 100,
+        "nDataOutCInternal": 1000,
         "nDataOutInternal": 1000000000,
         "tDataOut": 3e+200
     },
@@ -33,8 +33,8 @@
     "dataIOControl": {
         "uniqueStamps": true,
         "meshFile": "../data/mesh/DPW3_hybrid_ANSYS_DLR-F6_Ver1_coarse.cgns",
-        "outPltName": "../data/out/DPW3_hybrid_ANSYS_DLR-F6_Ver1_coarse",
-        "outLogName": "../data/out/DPW3_hybrid_ANSYS_DLR-F6_Ver1_coarse",
+        "outPltName": "../data/out/DPW3_hybrid_ANSYS_DLR-F6_Ver1_coarse_RE",
+        "outLogName": "../data/out/DPW3_hybrid_ANSYS_DLR-F6_Ver1_coarse_RE",
         "outPltMode": 0,
         "readMeshMode": 1,
         "outPltTecplotFormat": true,
@@ -98,7 +98,7 @@
         "idealGasProperty": {
             "gamma": 1.4,
             "Rgas": 0.003486659170349,
-            "muGas": 1e-6,
+            "muGas": 4.706666666666667e-08,
             "prGas": 0.72,
             "TRef": 273.15,
             "CSutherland": 110.4

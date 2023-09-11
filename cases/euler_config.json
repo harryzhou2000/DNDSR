@@ -1,6 +1,6 @@
 {
     "timeMarchControl": {
-        "dtImplicit": 1e-1,
+        "dtImplicit": 10e-1,
         "nTimeStep": 100,
         "steadyQuit": false,
         "odeCode": 401,
@@ -25,8 +25,8 @@
         "useLocalDt": true
     },
     "convergenceControl": {
-        "nTimeStepInternal": 20,
-        "rhsThresholdInternal": 1e-3,
+        "nTimeStepInternal": 4000,
+        "rhsThresholdInternal": 1e-30,
         "res_base": 0.0,
         "useVolWiseResidual": true
     },
@@ -89,8 +89,8 @@
     },
     "linearSolverControl": {
         "gmresCode": 0,
-        "nGmresSpace": 10,
-        "nGmresIter": 5
+        "nGmresSpace": 5,
+        "nGmresIter": 10
     },
     "others": {
         "nFreezePassiveInner": 0
@@ -98,7 +98,7 @@
     "eulerSettings": {
         "ignoreSourceTerm": true,
         "useScalarJacobian": true,
-        "riemannSolverType": "HLLEP",
+        "riemannSolverType": "Roe",
         "specialBuiltinInitializer": 2,
         "constMassForce": [
             0.0,

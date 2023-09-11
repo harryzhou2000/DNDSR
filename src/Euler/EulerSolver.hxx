@@ -73,7 +73,7 @@ namespace DNDS::Euler
                 {
                     vfv->BuildUDof(data, nVars);
                 },
-                0.51);
+                0.66666666666);
             break;
         default:
             DNDS_assert_info(false, "no such ode code");
@@ -615,6 +615,7 @@ namespace DNDS::Euler
                         << res.transpose() << delimC
                         << tSimu << delimC
                         << curDtMin << delimC
+                        << real(eval.nFaceReducedOrder) << delimC
                         << eval.fluxWallSum.transpose() << std::endl;
                 }
                 tstart = MPI_Wtime();

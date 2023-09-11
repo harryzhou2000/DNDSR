@@ -267,7 +267,7 @@ namespace DNDS::Euler
                 rhs[f2c[1]] += fluxIncR / vfv->GetCellVol(f2c[1]);
 
             if (mesh->GetFaceZone(iFace) == Geom::BC_ID_DEFAULT_WALL ||
-                mesh->GetFaceZone(iFace) == Geom::BC_ID_DEFAULT_WALL_INVIS)
+                (mesh->GetFaceZone(iFace) == Geom::BC_ID_DEFAULT_WALL_INVIS && settings.idealGasProperty.muGas < 1e-99))
             {
                 fluxWallSumLocal -= fluxEs(Eigen::all, 0);
             }
