@@ -23,10 +23,10 @@ namespace DNDS
                 // simple gauss rule
                 for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
                 {
-
+                    int nVars = u[iCell].size();
                     auto c2f = mesh->cell2face[iCell];
                     Eigen::Matrix<real, nVarsFixed, dim> grad;
-                    grad.setZero();
+                    grad.setZero(nVars, dim);
 
                     for (int ic2f = 0; ic2f < c2f.size(); ic2f++)
                     {
@@ -44,7 +44,7 @@ namespace DNDS
                             auto faceID = mesh->GetFaceZone(iFace);
                             DNDS_assert(FaceIDIsExternalBC(faceID));
 
-                            int nVars = u[iCell].size();
+                            
 
                             Eigen::Matrix<real, 1, Eigen::Dynamic> dbv =
                                 this->GetIntPointDiffBaseValue(
@@ -93,14 +93,14 @@ namespace DNDS
             {
                 for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
                 {
-
+                    int nVars = u[iCell].size();
                     auto c2f = mesh->cell2face[iCell];
                     Eigen::Matrix<real, nVarsFixed, dim> grad;
-                    grad.setZero();
+                    grad.setZero(nVars, dim);
                     Eigen::Matrix<real, Eigen::Dynamic, dim> dcs;
                     Eigen::Matrix<real, Eigen::Dynamic, nVarsFixed> dus;
                     dcs.resize(c2f.size(), dim);
-                    dus.resize(c2f.size(), nVarsFixed);
+                    dus.resize(c2f.size(), nVars);
 
                     for (int ic2f = 0; ic2f < c2f.size(); ic2f++)
                     {
@@ -118,7 +118,7 @@ namespace DNDS
                             auto faceID = mesh->GetFaceZone(iFace);
                             DNDS_assert(FaceIDIsExternalBC(faceID));
 
-                            int nVars = u[iCell].size();
+                            
 
                             Eigen::Matrix<real, 1, Eigen::Dynamic> dbv =
                                 this->GetIntPointDiffBaseValue(

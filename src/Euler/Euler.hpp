@@ -246,7 +246,16 @@ namespace DNDS::Euler
     {
         int nVars = getNVars_Fixed(model);
         if (nVars < 0)
-        { // *** handle variable nVars
+        {
+            if (model == NS || model == NS_3D)
+                return 5;
+            else if (model == NS_SA)
+                return 6;
+            else if (model == NS_SA_3D)
+                return 6;
+            else if (model == NS_2D)
+                return 4;
+            // *** handle variable nVars
         }
         return nVars;
     }

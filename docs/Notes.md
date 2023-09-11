@@ -75,6 +75,10 @@ Actually, chunk-by-chunk should be used on a sparse machine, with the knowledge 
 
 ### Dynamic-Reforming: Loss of Performance
 
-For DLR case used for eulerSA3D in `3fbff8fa7224a86cab7b5de1aaf3f9580861ecb4`, on GS machine, times is: 2.1582/it
+For DLR case used for eulerSA3D in `99770b46ebabaa7c5eb39ff341bee3fcbb419d30`, on GS machine, times is: 2.1582/it
+
+If using nVars_Fixed = -1  (original 6), time is: 3.3944/1t
+
+
 
 

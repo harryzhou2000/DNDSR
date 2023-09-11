@@ -32,7 +32,6 @@ namespace DNDS::Euler
 #else
             Eigen::Matrix<real, nVars_Fixed, 1, Eigen::ColMajor> fluxEs(cnvars, 1);
 #endif
-
             fluxEs.setZero();
 
             // auto f2n = mesh->face2node[iFace];
@@ -72,11 +71,13 @@ namespace DNDS::Euler
                     }
                 });
 #endif
+            
 
             gFace.IntegrationSimple(
                 fluxEs,
                 [&](decltype(fluxEs) &finc, int iG)
                 {
+                    finc.resizeLike(fluxEs);
                     int nDiff = vfv->GetFaceAtr(iFace).NDIFF;
                     TVec unitNorm = vfv->GetFaceNorm(iFace, iG)(Seq012);
                     TMat normBase = Geom::NormBuildLocalBaseV(unitNorm);
@@ -205,7 +206,7 @@ namespace DNDS::Euler
 #endif
 
                     TU FLFix, FRFix;
-                    FLFix.setZero(), FRFix.setZero();
+                    FLFix.setZero(cnvars), FRFix.setZero(cnvars);
                     if (!GradUMeanXy.allFinite())
                     {
                         std::cout << GradURxy << std::endl;

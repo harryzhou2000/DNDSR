@@ -1029,6 +1029,7 @@ namespace DNDS::Euler
             DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
 
             TU URxy;
+            URxy.resizeLike(ULxy);
 
             if (btype == Geom::BC_ID_DEFAULT_FAR ||
                 btype == Geom::BC_ID_DEFAULT_SPECIAL_DMR_FAR ||
@@ -1057,6 +1058,8 @@ namespace DNDS::Euler
                     else if (un > 0) //  1 sonic outflow, 1 sonic inflow, other outflow (subsonic out)
                     {
                         TU farPrimitive, ULxyPrimitive;
+                        farPrimitive.resizeLike(ULxy);
+                        ULxyPrimitive.resizeLike(URxy);
                         Gas::IdealGasThermalConservative2Primitive<dim>(far, farPrimitive, gamma);
                         Gas::IdealGasThermalConservative2Primitive<dim>(ULxy, ULxyPrimitive, gamma);
                         ULxyPrimitive(I4) = farPrimitive(I4); // using far pressure
@@ -1065,6 +1068,8 @@ namespace DNDS::Euler
                     else if (un + a > 0) //  1 sonic outflow, 1 sonic inflow, other inflow (subsonic in)
                     {
                         TU farPrimitive, ULxyPrimitive;
+                        farPrimitive.resizeLike(ULxy);
+                        ULxyPrimitive.resizeLike(URxy);
                         Gas::IdealGasThermalConservative2Primitive<dim>(far, farPrimitive, gamma);
                         Gas::IdealGasThermalConservative2Primitive<dim>(ULxy, ULxyPrimitive, gamma);
                         // farPrimitive(0) = ULxyPrimitive(0); // using inner density
@@ -1140,6 +1145,8 @@ namespace DNDS::Euler
                     else if (un > 0) //  1 sonic outflow, 1 sonic inflow, other outflow (subsonic out)
                     {
                         TU farPrimitive, ULxyPrimitive;
+                        farPrimitive.resizeLike(ULxy);
+                        ULxyPrimitive.resizeLike(URxy);
                         Gas::IdealGasThermalConservative2Primitive<dim>(far, farPrimitive, gamma);
                         Gas::IdealGasThermalConservative2Primitive<dim>(ULxy, ULxyPrimitive, gamma);
                         ULxyPrimitive(I4) = farPrimitive(I4); // using far pressure
@@ -1148,6 +1155,8 @@ namespace DNDS::Euler
                     else if (un + a > 0) //  1 sonic outflow, 1 sonic inflow, other inflow (subsonic in)
                     {
                         TU farPrimitive, ULxyPrimitive;
+                        farPrimitive.resizeLike(ULxy);
+                        ULxyPrimitive.resizeLike(URxy);
                         Gas::IdealGasThermalConservative2Primitive<dim>(far, farPrimitive, gamma);
                         Gas::IdealGasThermalConservative2Primitive<dim>(ULxy, ULxyPrimitive, gamma);
                         // farPrimitive(0) = ULxyPrimitive(0); // using inner density
@@ -1201,6 +1210,7 @@ namespace DNDS::Euler
                     real p2 = location + phi2 * t;
                     real rho, u, v, pre;
                     TU ULxyPrimitive;
+                    ULxyPrimitive.resizeLike(ULxy);
 
                     Gas::IdealGasThermalConservative2Primitive<dim>(ULxy, ULxyPrimitive, gamma);
                     real rhoL = ULxyPrimitive(0);
@@ -1530,6 +1540,7 @@ namespace DNDS::Euler
                         auto c2n = mesh->cell2node[iCell];
                         auto gCell = vfv->GetCellQuad(iCell);
                         TU um;
+                        um.resizeLike(u[iCell]);
                         um.setZero();
                         // Eigen::MatrixXd coords;
                         // mesh->GetCoords(c2n, coords);
@@ -1578,6 +1589,7 @@ namespace DNDS::Euler
                         auto c2n = mesh->cell2node[iCell];
                         auto gCell = vfv->GetCellQuad(iCell);
                         TU um;
+                        um.resizeLike(u[iCell]);
                         um.setZero();
                         // Eigen::MatrixXd coords;
                         // mesh->GetCoords(c2n, coords);
