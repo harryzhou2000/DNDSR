@@ -3,6 +3,9 @@
 namespace DNDS::Euler
 {
     template void EulerEvaluator<NS_SA_3D>::EvaluateRHS(
-        ArrayDOFV<nVars_Fixed> &rhs, ArrayDOFV<nVars_Fixed> &u,
-        ArrayRECV<nVars_Fixed> &uRec, real t);
+        ArrayDOFV<nVars_Fixed> &rhs,
+        ArrayDOFV<nVars_Fixed> &JSource,
+        ArrayDOFV<nVars_Fixed> &u,
+        ArrayRECV<nVars_Fixed> &uRec,
+        real t);
 }

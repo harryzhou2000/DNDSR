@@ -134,10 +134,12 @@ namespace DNDS::Euler
         /*******************************************************/
         /*                   DEFINE LAMBDAS                    */
         /*******************************************************/
-        auto frhs = [&](ArrayDOFV<nVars_Fixed> &crhs, ArrayDOFV<nVars_Fixed> &cx, int iter, real ct)
+        auto frhs = [&](ArrayDOFV<nVars_Fixed> &crhs, ArrayDOFV<nVars_Fixed> &cx, int iter, real ct, int uPos)
         {
             cx.trans.startPersistentPull();
             cx.trans.waitPersistentPull(); // for hermite3
+            auto &uRecC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? uRec1 : uRec;
+            auto &JSourceC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? JSource1 : JSource;
 
             eval.FixUMaxFilter(cx);
             // cx.trans.startPersistentPull();
@@ -183,19 +185,19 @@ namespace DNDS::Euler
                 for (int iRec = 1; iRec <= nRec; iRec++)
                 {
                     if (nRec > 1)
-                        uRecNew1 = uRec;
+                        uRecNew1 = uRecC;
 
                     vfv->DoReconstructionIter(
-                        uRec, uRecNew, cx,
+                        uRecC, uRecNew, cx,
                         FBoundary,
                         false);
 
-                    uRec.trans.startPersistentPull();
-                    uRec.trans.waitPersistentPull();
+                    uRecC.trans.startPersistentPull();
+                    uRecC.trans.waitPersistentPull();
 
                     if (nRec > 1)
                     {
-                        uRecNew1 -= uRec;
+                        uRecNew1 -= uRecC;
                         real recInc = uRecNew1.norm2();
                         if (iRec == 1)
                             recIncBase = recInc;
@@ -216,7 +218,7 @@ namespace DNDS::Euler
                 for (int iRec = 1; iRec <= nRec; iRec++)
                 {
                     vfv->DoReconstructionIter(
-                        uRec, uRecNew, cx,
+                        uRecC, uRecNew, cx,
                         FBoundary,
                         true, true);
                     uRecNew.trans.startPersistentPull();
@@ -228,17 +230,17 @@ namespace DNDS::Euler
 
                     bool gmresConverge =
                         gmresRec->solve(
-                            [&](decltype(uRec) &x, decltype(uRec) &Ax)
+                            [&](decltype(uRecC) &x, decltype(uRecC) &Ax)
                             {
                                 vfv->DoReconstructionIterDiff(uRec, x, Ax, cx, FBoundaryDiff);
                                 Ax.trans.startPersistentPull();
                                 Ax.trans.waitPersistentPull();
                             },
-                            [&](decltype(uRec) &x, decltype(uRec) &MLx)
+                            [&](decltype(uRecC) &x, decltype(uRecC) &MLx)
                             {
                                 MLx = x; // initial value; for the input is mostly a good estimation
                                 // MLx no need to comm
-                                vfv->DoReconstructionIterSOR(uRec, x, MLx, cx, FBoundaryDiff, false);
+                                vfv->DoReconstructionIterSOR(uRecC, x, MLx, cx, FBoundaryDiff, false);
                             },
                             uRecNew, uRecNew1, config.implicitReconstructionControl.nGmresIter,
                             [&](uint32_t i, real res, real resB) -> bool
@@ -257,7 +259,7 @@ namespace DNDS::Euler
                                 }
                                 return res < gmresResidualB * config.implicitReconstructionControl.recThreshold;
                             });
-                    uRec.addTo(uRecNew1, -1);
+                    uRecC.addTo(uRecNew1, -1);
                     if (gmresConverge)
                         break;
                 }
@@ -269,13 +271,13 @@ namespace DNDS::Euler
             double tstartH = MPI_Wtime();
 
             // for (index iCell = 0; iCell < uOld.size(); iCell++)
-            //     uRec[iCell].m() -= uOld[iCell].m();
+            //     uRecC[iCell].m() -= uOld[iCell].m();
 
             InsertCheck(mpi, " Lambda RHS: StartLim");
             if (config.limiterControl.useLimiter)
             {
                 // vfv->ReconstructionWBAPLimitFacial(
-                //     cx, uRec, uRecNew, uF0, uF1, ifUseLimiter,
+                //     cx, uRecC, uRecNew, uF0, uF1, ifUseLimiter,
 
                 auto fML = [&](const auto &UL, const auto &UR, const auto &n) -> auto
                 {
@@ -314,13 +316,13 @@ namespace DNDS::Euler
                 };
                 if (config.limiterControl.smoothIndicatorProcedure == 0)
                     vfv->DoCalculateSmoothIndicator(
-                        ifUseLimiter, (uRec), (u),
+                        ifUseLimiter, (uRecC), (u),
                         std::array<int, 2>{0, I4});
                 else if (config.limiterControl.smoothIndicatorProcedure == 1)
                 {
                     if constexpr (dim == 2)
                         vfv->DoCalculateSmoothIndicatorV1(
-                            ifUseLimiter, (uRec), (u),
+                            ifUseLimiter, (uRecC), (u),
                             std::array<int, 4>{0, 1, 2, 3},
                             [&](auto &v)
                             {
@@ -333,7 +335,7 @@ namespace DNDS::Euler
                             });
                     else
                         vfv->DoCalculateSmoothIndicatorV1(
-                            ifUseLimiter, (uRec), (u),
+                            ifUseLimiter, (uRecC), (u),
                             std::array<int, 5>{0, 1, 2, 3, 4},
                             [&](auto &v)
                             {
@@ -353,7 +355,7 @@ namespace DNDS::Euler
                     vfv->DoLimiterWBAP_C(
                         eval,
                         (cx),
-                        (uRec),
+                        (uRecC),
                         (uRecNew),
                         (uRecNew1),
                         ifUseLimiter,
@@ -368,8 +370,8 @@ namespace DNDS::Euler
             }
             tLim += MPI_Wtime() - tstartH;
 
-            // uRec.trans.startPersistentPull(); //! this also need to update!
-            // uRec.trans.waitPersistentPull();
+            // uRecC.trans.startPersistentPull(); //! this also need to update!
+            // uRecC.trans.waitPersistentPull();
 
             // }
 
@@ -377,9 +379,9 @@ namespace DNDS::Euler
             double tstartE = MPI_Wtime();
             eval.setPassiveDiscardSource(iter <= 0);
             if (config.limiterControl.useLimiter)
-                eval.EvaluateRHS(crhs, cx, uRecNew, tSimu + ct * curDtImplicit);
+                eval.EvaluateRHS(crhs, JSourceC, cx, uRecNew, tSimu + ct * curDtImplicit);
             else
-                eval.EvaluateRHS(crhs, cx, uRec, tSimu + ct * curDtImplicit);
+                eval.EvaluateRHS(crhs, JSourceC, cx, uRecC, tSimu + ct * curDtImplicit);
             if (getNVars(model) > (I4 + 1) && iter <= config.others.nFreezePassiveInner)
             {
                 for (int i = 0; i < crhs.Size(); i++)
@@ -392,7 +394,7 @@ namespace DNDS::Euler
             InsertCheck(mpi, " Lambda RHS: End");
         };
 
-        auto fdtau = [&](ArrayDOFV<nVars_Fixed> &cx, std::vector<real> &dTau, real alphaDiag)
+        auto fdtau = [&](ArrayDOFV<nVars_Fixed> &cx, std::vector<real> &dTau, real alphaDiag, int uPos)
         {
             eval.FixUMaxFilter(cx);
             cx.trans.startPersistentPull(); //! this also need to update!
@@ -406,17 +408,21 @@ namespace DNDS::Euler
         };
 
         auto fsolve = [&](ArrayDOFV<nVars_Fixed> &cx, ArrayDOFV<nVars_Fixed> &crhs, std::vector<real> &dTau,
-                          real dt, real alphaDiag, ArrayDOFV<nVars_Fixed> &cxInc, int iter)
+                          real dt, real alphaDiag, ArrayDOFV<nVars_Fixed> &cxInc, int iter, int uPos)
         {
             cxInc.setConstant(0.0);
+            auto &JDC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? JD1 : JD;
+            auto &JSourceC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? JSource1 : JSource;
 
             if (config.limiterControl.useLimiter) // uses urec value
-                eval.LUSGSMatrixInit(dTau, dt, alphaDiag,
+                eval.LUSGSMatrixInit(JDC, JSourceC,
+                                     dTau, dt, alphaDiag,
                                      cx, uRecNew,
                                      0,
                                      tSimu);
             else
-                eval.LUSGSMatrixInit(dTau, dt, alphaDiag,
+                eval.LUSGSMatrixInit(JDC, JSourceC,
+                                     dTau, dt, alphaDiag,
                                      cx, uRec,
                                      0,
                                      tSimu);
@@ -430,10 +436,10 @@ namespace DNDS::Euler
             {
                 // //! LUSGS
 
-                eval.UpdateLUSGSForward(alphaDiag, crhs, cx, cxInc, cxInc);
+                eval.UpdateLUSGSForward(alphaDiag, crhs, cx, cxInc, JDC, cxInc);
                 cxInc.trans.startPersistentPull();
                 cxInc.trans.waitPersistentPull();
-                eval.UpdateLUSGSBackward(alphaDiag, crhs, cx, cxInc, cxInc);
+                eval.UpdateLUSGSBackward(alphaDiag, crhs, cx, cxInc, JDC, cxInc);
                 cxInc.trans.startPersistentPull();
                 cxInc.trans.waitPersistentPull();
                 for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
@@ -447,17 +453,17 @@ namespace DNDS::Euler
                 gmres->solve(
                     [&](decltype(u) &x, decltype(u) &Ax)
                     {
-                        eval.LUSGSMatrixVec(alphaDiag, cx, x, Ax);
+                        eval.LUSGSMatrixVec(alphaDiag, cx, x, JDC, Ax);
                         Ax.trans.startPersistentPull();
                         Ax.trans.waitPersistentPull();
                     },
                     [&](decltype(u) &x, decltype(u) &MLx)
                     {
                         // x as rhs, and MLx as uinc
-                        eval.UpdateLUSGSForward(alphaDiag, x, cx, MLx, MLx);
+                        eval.UpdateLUSGSForward(alphaDiag, x, cx, MLx, JDC, MLx);
                         MLx.trans.startPersistentPull();
                         MLx.trans.waitPersistentPull();
-                        eval.UpdateLUSGSBackward(alphaDiag, x, cx, MLx, MLx);
+                        eval.UpdateLUSGSBackward(alphaDiag, x, cx, MLx, JDC, MLx);
                         MLx.trans.startPersistentPull();
                         MLx.trans.waitPersistentPull();
                     },

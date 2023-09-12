@@ -62,26 +62,12 @@ namespace DNDS::Euler
         ssp<CFV::VariationalReconstruction<gDim>> vfv; //! gDim -> 3 for intellisense
         int kAv = 0;
 
+        // buffer for fdtau
         std::vector<real> lambdaCell;
         std::vector<real> lambdaFace;
         std::vector<real> lambdaFaceC;
         std::vector<real> lambdaFaceVis;
         std::vector<real> deltaLambdaFace;
-        std::vector<Eigen::Matrix<real, 10, 5>> dFdUFace;
-
-        // todo: improve to contiguous
-
-        std::vector<Eigen::Vector<real, nVars_Fixed>> jacobianCellSourceDiag;
-        std::vector<Eigen::Matrix<real, nvarsFixedMultiply<nVars_Fixed, 2>(), nVars_Fixed>> jacobianFace;
-        std::vector<Eigen::Matrix<real, nVars_Fixed, nVars_Fixed>> jacobianCell;
-        std::vector<Eigen::Matrix<real, nVars_Fixed, nVars_Fixed>> jacobianCellInv;
-        std::vector<real> jacobianCell_Scalar;
-        std::vector<real> jacobianCellInv_Scalar;
-
-        // std::vector<Eigen::Vector<real, nVars_Fixed>> jacobianCellSourceDiag_Fixed;
-        // std::vector<Eigen::Matrix<real, nVars_Fixed, nVars_Fixed>> jacobianFace_Fixed;
-        // std::vector<Eigen::Matrix<real, nVars_Fixed, nVars_Fixed>> jacobianCell_Fixed;
-        // std::vector<Eigen::Matrix<real, nVars_Fixed, nVars_Fixed>> jacobianCellInv_Fixed;
 
         std::vector<std::vector<real>> dWall;
 
@@ -274,31 +260,11 @@ namespace DNDS::Euler
             lambdaFaceVis.resize(lambdaFace.size());
             deltaLambdaFace.resize(lambdaFace.size());
 
-            dFdUFace.resize(lambdaFace.size());
-
-            jacobianFace.resize(lambdaFace.size(), typename decltype(jacobianFace)::value_type(nVars * 2, nVars));
-            jacobianCell.resize(lambdaCell.size(), typename decltype(jacobianCell)::value_type(nVars, nVars));
-            jacobianCellInv.resize(lambdaCell.size(), typename decltype(jacobianCellInv)::value_type(nVars, nVars));
-            using jacobianCellSourceDiagElemType = typename decltype(jacobianCellSourceDiag)::value_type;
-            jacobianCellSourceDiag.resize(lambdaCell.size(), jacobianCellSourceDiagElemType::Zero(nVars)); // zeroed
-            jacobianCell_Scalar.resize(lambdaCell.size());
-            jacobianCellInv_Scalar.resize(lambdaCell.size());
 
             fluxBnd.resize(mesh->NumBnd());
             for (auto &v : fluxBnd)
                 v.resize(nVars);
-            // jacobianFace_Fixed.resize(lambdaFace.size());
-            // jacobianCell_Fixed.resize(lambdaCell.size());
-            // jacobianCellInv_Fixed.resize(lambdaCell.size());
-            // jacobianCellSourceDiag_Fixed.resize(lambdaCell.size()); // zeroed
-            // for (auto &i : jacobianCellSourceDiag_Fixed)
-            //     i.setZero();
 
-            // vfv->BuildRec(dRdUrec);
-            // vfv->BuildRec(dRdb);
-
-            //! wall dist code!!!
-            ///@todo implement wall dist
             real maxD = 0.1;
             this->GetWallDist();
         }
@@ -318,11 +284,14 @@ namespace DNDS::Euler
          */
         void EvaluateRHS(
             ArrayDOFV<nVars_Fixed> &rhs,
+            ArrayDOFV<nVars_Fixed> &JSource,
             ArrayDOFV<nVars_Fixed> &u,
             ArrayRECV<nVars_Fixed> &uRec,
             real t);
 
         void LUSGSMatrixInit(
+            ArrayDOFV<nVars_Fixed> &JDiag,
+            ArrayDOFV<nVars_Fixed> &JSource,
             std::vector<real> &dTau, real dt, real alphaDiag,
             ArrayDOFV<nVars_Fixed> &u,
             ArrayRECV<nVars_Fixed> &uRec,
@@ -333,6 +302,7 @@ namespace DNDS::Euler
             real alphaDiag,
             ArrayDOFV<nVars_Fixed> &u,
             ArrayDOFV<nVars_Fixed> &uInc,
+            ArrayDOFV<nVars_Fixed> &JDiag,
             ArrayDOFV<nVars_Fixed> &AuInc);
 
         /**
@@ -348,6 +318,7 @@ namespace DNDS::Euler
             ArrayDOFV<nVars_Fixed> &rhs,
             ArrayDOFV<nVars_Fixed> &u,
             ArrayDOFV<nVars_Fixed> &uInc,
+            ArrayDOFV<nVars_Fixed> &JDiag,
             ArrayDOFV<nVars_Fixed> &uIncNew);
 
         /**
@@ -360,6 +331,7 @@ namespace DNDS::Euler
             ArrayDOFV<nVars_Fixed> &rhs,
             ArrayDOFV<nVars_Fixed> &u,
             ArrayDOFV<nVars_Fixed> &uInc,
+            ArrayDOFV<nVars_Fixed> &JDiag,
             ArrayDOFV<nVars_Fixed> &uIncNew);
 
         void FixUMaxFilter(ArrayDOFV<nVars_Fixed> &u);

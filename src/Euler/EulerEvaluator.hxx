@@ -7,6 +7,8 @@ namespace DNDS::Euler
 
     template <EulerModel model>
     void EulerEvaluator<model>::LUSGSMatrixInit(
+        ArrayDOFV<nVars_Fixed> &JDiag,
+        ArrayDOFV<nVars_Fixed> &JSource,
         std::vector<real> &dTau, real dt, real alphaDiag,
         ArrayDOFV<nVars_Fixed> &u,
         ArrayRECV<nVars_Fixed> &uRec,
@@ -20,9 +22,6 @@ namespace DNDS::Euler
         {
             auto c2f = mesh->cell2face[iCell];
 
-            if (!(settings.ignoreSourceTerm && settings.useScalarJacobian))
-                jacobianCell[iCell].setIdentity();
-
             // LUSGS diag part
             real fpDivisor = 1.0 / dTau[iCell] + 1.0 / dt;
             for (int ic2f = 0; ic2f < c2f.size(); ic2f++)
@@ -30,23 +29,14 @@ namespace DNDS::Euler
                 index iFace = c2f[ic2f];
                 fpDivisor += (0.5 * alphaDiag) * vfv->GetFaceArea(iFace) * lambdaFace[iFace] / vfv->GetCellVol(iCell);
             }
-            if (!(settings.ignoreSourceTerm && settings.useScalarJacobian))
-                jacobianCell[iCell] *= fpDivisor; //! all passive vars use same diag for flux part
-            else
-                jacobianCell_Scalar[iCell] = fpDivisor;
+            JDiag[iCell].setConstant(fpDivisor);
 
             // std::cout << fpDivisor << std::endl;
 
             // jacobian diag
 
             if (!settings.ignoreSourceTerm)
-                jacobianCell[iCell] += alphaDiag * jacobianCellSourceDiag[iCell].asDiagonal();
-
-            //! assuming diagonal here!
-            if (!(settings.ignoreSourceTerm && settings.useScalarJacobian))
-                jacobianCellInv[iCell] = jacobianCell[iCell].diagonal().array().inverse().matrix().asDiagonal();
-            else
-                jacobianCellInv_Scalar[iCell] = 1. / fpDivisor;
+                JDiag[iCell] += alphaDiag * JSource[iCell];
 
             // jacobianCellInv[iCell] = jacobianCell[iCell].partialPivLu().inverse();
 
@@ -58,7 +48,12 @@ namespace DNDS::Euler
     }
 
     template <EulerModel model>
-    void EulerEvaluator<model>::LUSGSMatrixVec(real alphaDiag, ArrayDOFV<nVars_Fixed> &u, ArrayDOFV<nVars_Fixed> &uInc, ArrayDOFV<nVars_Fixed> &AuInc)
+    void EulerEvaluator<model>::LUSGSMatrixVec(
+        real alphaDiag,
+        ArrayDOFV<nVars_Fixed> &u,
+        ArrayDOFV<nVars_Fixed> &uInc,
+        ArrayDOFV<nVars_Fixed> &JDiag,
+        ArrayDOFV<nVars_Fixed> &AuInc)
     {
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
         InsertCheck(u.father->mpi, "LUSGSMatrixVec 1");
@@ -123,17 +118,14 @@ namespace DNDS::Euler
             // uIncNewBuf /= fpDivisor;
             // uIncNew[iCell] = uIncNewBuf;
             auto AuIncI = AuInc[iCell];
-            if (!(settings.ignoreSourceTerm && settings.useScalarJacobian))
-                AuIncI = jacobianCell[iCell] * uInc[iCell] - uIncNewBuf;
-            else
-                AuIncI = jacobianCell_Scalar[iCell] * uInc[iCell] - uIncNewBuf;
+            AuIncI = JDiag[iCell].array() * uInc[iCell].array() - uIncNewBuf.array();
 
             if (AuIncI.hasNaN())
             {
                 std::cout << AuIncI.transpose() << std::endl
                           << uINCi.transpose() << std::endl
                           << u[iCell].transpose() << std::endl
-                          << jacobianCell[iCell] << std::endl
+                          << JDiag[iCell] << std::endl
                           << iCell << std::endl;
                 DNDS_assert(!AuInc[iCell].hasNaN());
             }
@@ -142,8 +134,13 @@ namespace DNDS::Euler
     }
 
     template <EulerModel model>
-    void EulerEvaluator<model>::UpdateLUSGSForward(real alphaDiag,
-                                                   ArrayDOFV<nVars_Fixed> &rhs, ArrayDOFV<nVars_Fixed> &u, ArrayDOFV<nVars_Fixed> &uInc, ArrayDOFV<nVars_Fixed> &uIncNew)
+    void EulerEvaluator<model>::UpdateLUSGSForward(
+        real alphaDiag,
+        ArrayDOFV<nVars_Fixed> &rhs,
+        ArrayDOFV<nVars_Fixed> &u,
+        ArrayDOFV<nVars_Fixed> &uInc,
+        ArrayDOFV<nVars_Fixed> &JDiag,
+        ArrayDOFV<nVars_Fixed> &uIncNew)
     {
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
         InsertCheck(u.father->mpi, "UpdateLUSGSForward 1");
@@ -199,15 +196,12 @@ namespace DNDS::Euler
                 }
             }
             auto uIncNewI = uIncNew[iCell];
-            if (!(settings.ignoreSourceTerm && settings.useScalarJacobian))
-                uIncNewI = jacobianCellInv[iCell] * uIncNewBuf;
-            else
-                uIncNewI = jacobianCellInv_Scalar[iCell] * uIncNewBuf;
+            uIncNewI.array() = JDiag[iCell].array().inverse() * uIncNewBuf.array();
 
             if (uIncNewI.hasNaN())
             {
                 std::cout << uIncNewI.transpose() << std::endl
-                          << jacobianCellInv[iCell] << std::endl
+                          << JDiag[iCell] << std::endl
                           << iCell << std::endl;
                 DNDS_assert(!uIncNew[iCell].hasNaN());
             }
@@ -217,8 +211,13 @@ namespace DNDS::Euler
     }
 
     template <EulerModel model>
-    void EulerEvaluator<model>::UpdateLUSGSBackward(real alphaDiag,
-                                                    ArrayDOFV<nVars_Fixed> &rhs, ArrayDOFV<nVars_Fixed> &u, ArrayDOFV<nVars_Fixed> &uInc, ArrayDOFV<nVars_Fixed> &uIncNew)
+    void EulerEvaluator<model>::UpdateLUSGSBackward(
+        real alphaDiag,
+        ArrayDOFV<nVars_Fixed> &rhs,
+        ArrayDOFV<nVars_Fixed> &u,
+        ArrayDOFV<nVars_Fixed> &uInc,
+        ArrayDOFV<nVars_Fixed> &JDiag,
+        ArrayDOFV<nVars_Fixed> &uIncNew)
     {
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
         InsertCheck(u.father->mpi, "UpdateLUSGSBackward 1");
@@ -263,10 +262,7 @@ namespace DNDS::Euler
                 }
             }
             auto uIncNewI = uIncNew[iCell];
-            if (!(settings.ignoreSourceTerm && settings.useScalarJacobian))
-                uIncNewI += jacobianCellInv[iCell] * uIncNewBuf; // backward
-            else
-                uIncNewI += jacobianCellInv_Scalar[iCell] * uIncNewBuf; // backward
+            uIncNewI.array() += JDiag[iCell].array().inverse() * uIncNewBuf.array();
         }
         InsertCheck(u.father->mpi, "UpdateLUSGSBackward -1");
     }

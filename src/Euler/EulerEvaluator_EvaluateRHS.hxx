@@ -7,8 +7,10 @@ namespace DNDS::Euler
     template <EulerModel model>
     void EulerEvaluator<model>::EvaluateRHS(
         ArrayDOFV<nVars_Fixed> &rhs,
+        ArrayDOFV<nVars_Fixed> &JSource,
         ArrayDOFV<nVars_Fixed> &u,
-        ArrayRECV<nVars_Fixed> &uRec, real t)
+        ArrayRECV<nVars_Fixed> &uRec,
+        real t)
     {
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
         InsertCheck(u.father->mpi, "EvaluateRHS 1");
@@ -283,8 +285,8 @@ namespace DNDS::Euler
 
         if (!settings.ignoreSourceTerm)
         {
-            for (index iCell = 0; iCell < jacobianCellSourceDiag.size(); iCell++) // force zero source jacobian
-                jacobianCellSourceDiag[iCell].setZero();
+            for (index iCell = 0; iCell < mesh->NumCellProc(); iCell++) // force zero source jacobian
+                JSource[iCell].setZero();
 
             for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
             {
@@ -389,12 +391,12 @@ namespace DNDS::Euler
                 if constexpr (nVars_Fixed > 0)
                 {
                     rhs[iCell] += sourceV(Eigen::seq(Eigen::fix<0>, Eigen::fix<nVars_Fixed - 1>)) / vfv->GetCellVol(iCell);
-                    jacobianCellSourceDiag[iCell] = sourceV(Eigen::seq(Eigen::fix<nVars_Fixed>, Eigen::fix<2 * nVars_Fixed - 1>)) / vfv->GetCellVol(iCell);
+                    JSource[iCell] = sourceV(Eigen::seq(Eigen::fix<nVars_Fixed>, Eigen::fix<2 * nVars_Fixed - 1>)) / vfv->GetCellVol(iCell);
                 }
                 else
                 {
                     rhs[iCell] += sourceV(Eigen::seq(0, cnvars - 1)) / vfv->GetCellVol(iCell);
-                    jacobianCellSourceDiag[iCell] = sourceV(Eigen::seq(cnvars, 2 * cnvars - 1)) / vfv->GetCellVol(iCell);
+                    JSource[iCell] = sourceV(Eigen::seq(cnvars, 2 * cnvars - 1)) / vfv->GetCellVol(iCell);
                 }
                 // if (iCell == 18195)
                 // {

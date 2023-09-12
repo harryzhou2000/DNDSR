@@ -48,7 +48,8 @@ namespace DNDS::Euler
         ssp<Geom::UnstructuredMeshSerialRW> reader, readerBnd;
 
         ArrayDOFV<nVars_Fixed> u, uInc, uIncRHS, uTemp;
-        ArrayRECV<nVars_Fixed> uRec, uRecNew, uRecNew1, uRecOld;
+        ArrayRECV<nVars_Fixed> uRec, uRecNew, uRecNew1, uRecOld, uRec1;
+        ArrayDOFV<nVars_Fixed> JD, JD1, JSource, JSource1;
 
         int nOUTS = {-1};
         int nOUTSPoint{-1};
@@ -470,10 +471,17 @@ namespace DNDS::Euler
             vfv->BuildUDof(uTemp, nVars);
 
             vfv->BuildURec(uRec, nVars);
+            if (config.timeMarchControl.odeCode == 401)
+                vfv->BuildURec(uRec1, nVars);
             vfv->BuildURec(uRecNew, nVars);
             vfv->BuildURec(uRecNew1, nVars);
             vfv->BuildURec(uRecOld, nVars);
             vfv->BuildScalar(ifUseLimiter);
+
+            vfv->BuildUDof(JD, nVars);
+            vfv->BuildUDof(JSource, nVars);
+            if (config.timeMarchControl.odeCode == 401)
+                vfv->BuildUDof(JD1, nVars), vfv->BuildUDof(JSource1, nVars);
 
             DNDS_assert(config.dataIOControl.outAtCellData || config.dataIOControl.outAtPointData);
             DNDS_assert(config.dataIOControl.outPltVTKFormat || config.dataIOControl.outPltTecplotFormat);
@@ -718,7 +726,6 @@ namespace DNDS::Euler
                     }
                 }
 
-                
                 if (config.dataIOControl.outPltVTKFormat)
                 {
                     if (config.dataIOControl.outPltMode == 0)
@@ -748,7 +755,7 @@ namespace DNDS::Euler
                             [&](int idata)
                             {
                                 idata = idata > 0 ? idata + cDim : 0;
-                                if(idata >= 4)
+                                if (idata >= 4)
                                     idata += 2;
                                 return names[idata]; // pointNames
                             },

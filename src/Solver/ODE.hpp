@@ -5,184 +5,13 @@
 
 namespace DNDS::ODE
 {
-    /**
-     * @brief
-     * \tparam TDATA vec data, need operator*=(std::vector<real>), operator+=(TDATA), operator*=(scalar)
-     */
-    template <class TDATA>
-    class ExplicitSSPRK4LocalDt
-    {
-        constexpr static real Coef[4] = {
-            0.5, 0.5, 1., 1. / 6.};
-
-    public:
-        std::vector<real> dt;
-        std::vector<TDATA> rhsbuf;
-        TDATA rhs;
-        TDATA xLast;
-        TDATA xInc;
-        index DOF;
-
-        /**
-         * @brief mind that NDOF is the dof of dt
-         * finit(TDATA& data)
-         */
-        template <class Finit>
-        ExplicitSSPRK4LocalDt(
-            index NDOF, Finit &&finit = [](TDATA &) {}) : DOF(NDOF)
-        {
-            dt.resize(NDOF);
-            rhsbuf.resize(3);
-            for (auto &i : rhsbuf)
-                finit(i);
-            finit(rhs);
-            finit(xLast);
-            finit(xInc);
-        }
-
-        /**
-         * @brief
-         * frhs(TDATA&rhs, TDATA&x)
-         * fdt(std::vector<real>& dt)
-         */
-        template <class Frhs, class Fdt>
-        void Step(TDATA &x, Frhs &&frhs, Fdt &&fdt)
-        {
-            fdt(dt);
-            xLast = x;
-
-            frhs(rhs, x, 1, 0.5);
-            rhsbuf[0] = rhs;
-            rhs *= dt;
-            x += rhs;
-            // x *= Coef[0] / (1-Coef[0]);
-            x += xLast;
-            x *= 1 - Coef[0];
-
-            frhs(rhs, x, 1, 0.5);
-            rhsbuf[1] = rhs;
-            rhs *= dt;
-            x += rhs;
-            // x *= Coef[1] / (1 - Coef[1]);
-            x += xLast;
-            x *= 1 - Coef[1];
-
-            frhs(rhs, x, 1, 1);
-            rhsbuf[2] = rhs;
-            rhs *= dt;
-            x += rhs;
-            // x *= Coef[2] / (1 - Coef[2]);
-            // x += xLast;
-            // x *= 1 - Coef[2];
-
-            frhs(rhs, x, 1, 1. / 6.);
-            rhs += rhsbuf[0];
-            rhsbuf[1] *= 2.0;
-            rhs += rhsbuf[1];
-            rhsbuf[2] *= 2.0;
-            rhs += rhsbuf[2];
-
-            rhs *= dt;
-            rhs *= Coef[3];
-
-            x = xLast;
-            x += rhs;
-        }
-    };
-
-    template <class TDATA>
-    class ExplicitSSPRK3LocalDt
-    {
-        constexpr static real Coef[3] = {
-            1.0, 0.25, 2.0 / 3.0};
-
-    public:
-        std::vector<real> dt;
-        std::vector<TDATA> rhsbuf;
-        TDATA rhs;
-        TDATA xLast;
-        TDATA xInc;
-        index DOF;
-
-        /**
-         * @brief mind that NDOF is the dof of dt
-         * finit(TDATA& data)
-         */
-        template <class Finit>
-        ExplicitSSPRK3LocalDt(
-            index NDOF, Finit &&finit = [](TDATA &) {}) : DOF(NDOF)
-        {
-            dt.resize(NDOF);
-            rhsbuf.resize(2);
-            for (auto &i : rhsbuf)
-                finit(i);
-            finit(rhs);
-            finit(xLast);
-            finit(xInc);
-        }
-
-        /**
-         * @brief
-         * frhs(TDATA&rhs, TDATA&x)
-         * fdt(std::vector<real>& dt)
-         */
-        template <class Frhs, class Fdt>
-        void Step(TDATA &x, Frhs &&frhs, Fdt &&fdt)
-        {
-            fdt(dt);
-            xLast = x;
-
-            //* /////////////////
-            frhs(rhs, x, 1, 1);
-            rhsbuf[0] = rhs;
-            rhs *= dt;
-            x += rhs;
-
-            frhs(rhs, x, 1, 0.25);
-            rhsbuf[1] = rhs;
-            rhs *= dt;
-            x += rhs;
-            x *= Coef[1] / (1 - Coef[1]);
-            x += xLast;
-            x *= 1 - Coef[1];
-
-            frhs(rhs, x, 1, 2. / 3.);
-            // rhsbuf[2] = rhs;
-            rhs *= dt;
-            x += rhs;
-            x *= Coef[2] / (1 - Coef[2]);
-            x += xLast;
-            x *= 1 - Coef[2];
-            //* /////////////////
-
-            // for (int i = 0; i < 10; i++)
-            // {
-            //     frhs(rhs, x);
-            //     if(i == 0)
-            //         rhsbuf[0] = rhs;
-            //     rhs *= dt;
-            //     x += rhs;
-            //     x *= 0.2 / (1 - 0.2);
-            //     x += xLast;
-            //     x *= (1 - 0.2);
-            // }
-
-            // * /////////////////
-            // frhs(rhs, x);
-            // rhsbuf[0] = rhs;
-            // rhs *= dt;
-            // x += rhs;
-            // * /////////////////
-        }
-    };
-
     template <class TDATA>
     class ImplicitDualTimeStep
     {
     public:
-        using Frhs = std::function<void(TDATA &, TDATA &, int, real)>;
-        using Fdt = std::function<void(TDATA &, std::vector<real> &, real)>;
-        using Fsolve = std::function<void(TDATA &, TDATA &, std::vector<real> &, real, real, TDATA &, int)>;
+        using Frhs = std::function<void(TDATA &, TDATA &, int, real, int)>;
+        using Fdt = std::function<void(TDATA &, std::vector<real> &, real, int)>;
+        using Fsolve = std::function<void(TDATA &, TDATA &, std::vector<real> &, real, real, TDATA &, int, int)>;
         using Fstop = std::function<bool(int, TDATA &, int)>;
 
         virtual void Step(TDATA &x, TDATA &xinc, const Frhs &frhs, const Fdt &fdt, const Fsolve &fsolve,
@@ -238,16 +67,16 @@ namespace DNDS::ODE
             xLast = x;
             for (int iter = 1; iter <= maxIter; iter++)
             {
-                fdt(x, dTau, 1);
+                fdt(x, dTau, 1, 0);
 
-                frhs(rhs, x, iter, 1);
+                frhs(rhs, x, iter, 1, 0);
                 rhsbuf[0] = rhs;
                 rhs = xLast;
                 rhs -= x;
                 rhs *= 1.0 / dt;
                 rhs += rhsbuf[0]; // crhs = rhs + (x_i - x_j) / dt
 
-                fsolve(x, rhs, dTau, dt, 1.0, xinc, iter);
+                fsolve(x, rhs, dTau, dt, 1.0, xinc, iter, 0);
                 x += xinc;
 
                 if (fstop(iter, xinc, 1))
@@ -319,9 +148,9 @@ namespace DNDS::ODE
                 int iter = 1;
                 for (; iter <= maxIter; iter++)
                 {
-                    fdt(x, dTau, butcherA(iB, iB));
+                    fdt(x, dTau, butcherA(iB, iB), 0);
 
-                    frhs(rhsbuf[iB], x, iter, butcherC(iB));
+                    frhs(rhsbuf[iB], x, iter, butcherC(iB), 0);
 
                     // //!test explicit
                     // rhs = rhsbuf[iB];
@@ -340,7 +169,7 @@ namespace DNDS::ODE
                     for (int jB = 0; jB <= iB; jB++)
                         rhs.addTo(rhsbuf[jB], butcherA(iB, jB)); // crhs = rhs + (x_i - x_j) / dt
 
-                    fsolve(x, rhs, dTau, dt, butcherA(iB, iB), xinc, iter);
+                    fsolve(x, rhs, dTau, dt, butcherA(iB, iB), xinc, iter, 0);
                     // x += xinc;
                     x.addTo(xinc, 1.0);
                     // x.addTo(xIncPrev, -0.5);
@@ -451,9 +280,9 @@ namespace DNDS::ODE
             int iter = 1;
             for (; iter <= maxIter; iter++)
             {
-                fdt(x, dTau, BDFCoefs(kCurrent - 1, 0));
+                fdt(x, dTau, BDFCoefs(kCurrent - 1, 0), 0);
 
-                frhs(rhsbuf[0], x, iter, 1.0);
+                frhs(rhsbuf[0], x, iter, 1.0, 0);
 
                 rhsbuf[0] *= BDFCoefs(kCurrent - 1, 0);
                 rhsbuf[0].addTo(x, -1. / dt);
@@ -466,7 +295,7 @@ namespace DNDS::ODE
                         rhsbuf[0].addTo(xPrevs[mod(iPrev + prevStart, prevSiz)], BDFCoefs(kCurrent - 1, 2 + iPrev) / dt);
                     }
 
-                fsolve(x, rhsbuf[0], dTau, dt, BDFCoefs(kCurrent - 1, 0), xinc, iter);
+                fsolve(x, rhsbuf[0], dTau, dt, BDFCoefs(kCurrent - 1, 0), xinc, iter, 0);
                 //* xinc = (I/dtau-A*alphaDiag)\rhs
 
                 // std::cout << "BDF::\n";
@@ -536,7 +365,7 @@ namespace DNDS::ODE
 
         Eigen::Vector<real, 4> cInter;
         Eigen::Vector<real, 3> wInteg;
-        int nStartIter = 10;
+        int nStartIter = 0;
 
         /**
          * @brief mind that NDOF is the dof of dt
@@ -586,7 +415,7 @@ namespace DNDS::ODE
                           int maxIter, const Fstop &fstop, real dt) override
         {
             xLast = x;
-            frhs(rhsbuf[0], x, 0, 1.0);
+            frhs(rhsbuf[0], x, 0, 1.0, 0);
 
             xIncPrev.setConstant(0.0);
             int iter = 1;
@@ -595,24 +424,24 @@ namespace DNDS::ODE
 
                 if (iter < nStartIter)
                 {
-                    fdt(x, dTau, 1.0);
-                    frhs(rhsbuf[1], x, iter, 1.0);
+                    fdt(x, dTau, 1.0, 0);
+                    frhs(rhsbuf[1], x, iter, 1.0, 0);
                     rhsFull = rhsbuf[1];
                     rhsFull.addTo(xLast, 1. / dt);
                     rhsFull.addTo(x, -1. / dt);
-                    fsolve(x, rhsFull, dTau, dt, 1.0, xinc, iter);
+                    fsolve(x, rhsFull, dTau, dt, 1.0, xinc, iter, 0);
                 }
                 else
                 {
-                    fdt(x, dTau, 1.0);
+                    fdt(x, dTau, 1.0, 0);
 
-                    frhs(rhsbuf[1], x, iter, 1.0);
+                    frhs(rhsbuf[1], x, iter, 1.0, 0);
                     xMid.setConstant(0.0);
                     xMid.addTo(xLast, cInter[0]);
                     xMid.addTo(x, cInter[1]);
                     xMid.addTo(rhsbuf[0], cInter[2] * dt);
                     xMid.addTo(rhsbuf[1], cInter[3] * dt);
-                    frhs(rhsMid, xMid, iter, 1.0);
+                    frhs(rhsMid, xMid, iter, 1.0, 1);
                     rhsFull.setConstant(0.0);
                     rhsFull.addTo(rhsbuf[0], wInteg[0]);
                     rhsFull.addTo(rhsMid, wInteg[1]);
@@ -646,41 +475,41 @@ namespace DNDS::ODE
                         // xinc *= -1. / (2 * dt * cInter[3] * wInteg[1]);
                     }
                     {
-                        // fdt(x, dTau, 1.0); // TODO: use "update spectral radius" procedure? or force update in fsolve
-                        // for (auto &v : dTau)
-                        //     v *= 1;
-                        // fsolve(x, rhsFull, dTau, dt,
-                        //        1.0, xinc, iter);
-                        // rhsFull = xinc;
-                        // fdt(xMid, dTau, 1.0);
-                        // for (auto &v : dTau)
-                        //     v = veryLargeReal;
-                        // fsolve(xMid, rhsFull, dTau, dt,
-                        //        1.0, xinc, iter);
-                        // xinc *= 1. / (dt);
+                        fdt(x, dTau, 1.0, 0); // TODO: use "update spectral radius" procedure? or force update in fsolve
+                        for (auto &v : dTau)
+                            v *= 1;
+                        fsolve(x, rhsFull, dTau, dt,
+                               1.0, xinc, iter, 0);
+                        rhsFull = xinc;
+                        fdt(xMid, dTau, 1.0,1);
+                        for (auto &v : dTau)
+                            v = veryLargeReal;
+                        fsolve(xMid, rhsFull, dTau, dt,
+                               1.0, xinc, iter,1);
+                        xinc *= 1. / (dt);
                     }
                     {
                         /**
                         Embedded Symmetric Nested Implicit Runge–Kutta Methods
                      of Gauss and Lobatto Types for Solving Stiff Ordinary
                      Differential Equations and Hamiltonian Systems*/
-                        fdt(x, dTau, 1.0); // TODO: use "update spectral radius" procedure? or force update in fsolve
-                        for (auto &v : dTau)
-                            v *= 1;
-                        fsolve(x, rhsFull, dTau, dt / 4.,
-                               1.0, xinc, iter);
-                        rhsFull = xinc;
-                        // fdt(xMid, dTau, 1.0);
-                        for (auto &v : dTau)
-                            v = veryLargeReal;
-                        fsolve(xMid, rhsFull, dTau, dt / 4.,
-                               1.0, xinc, iter);
-                        xinc *= 1. / dt;
+                        // fdt(x, dTau, 1.0, 0); // TODO: use "update spectral radius" procedure? or force update in fsolve
+                        // for (auto &v : dTau)
+                        //     v *= 1;
+                        // fsolve(x, rhsFull, dTau, dt / 4.,
+                        //        1.0, xinc, iter, 0);
+                        // rhsFull = xinc;
+                        // fdt(xMid, dTau, 1.0, 1);
+                        // for (auto &v : dTau)
+                        //     v = veryLargeReal;
+                        // fsolve(xMid, rhsFull, dTau, dt / 4.,
+                        //        1.0, xinc, iter, 1);
+                        // xinc *= 1. / dt;
                     }
 
                     {
-                        // fdt(xMid, dTau, 1.0);
-                        // fsolve(xMid, rhsFull, dTau, dt, 1.0, xinc, iter);
+                        // fdt(xMid, dTau, 1.0,0);
+                        // fsolve(xMid, rhsFull, dTau, dt, 1.0, xinc, iter,0);
                     }
                 }
 
@@ -766,12 +595,12 @@ namespace DNDS::ODE
                           int maxIter, const Fstop &fstop, real dt) override
         {
 
-            fdt(x, dTau, 1.0); // always gets dTau for CFL evaluation
+            fdt(x, dTau, 1.0, 0); // always gets dTau for CFL evaluation
             xLast = x;
-            MPI_Barrier(MPI_COMM_WORLD);
+            // MPI_Barrier(MPI_COMM_WORLD);
             // std::cout << "fucked" << std::endl;
 
-            frhs(rhs, x, 1, 0.5);
+            frhs(rhs, x, 1, 0.5, 0);
             rhsbuf[0] = rhs;
             if (localDtStepping)
                 rhs *= dTau;
@@ -780,7 +609,7 @@ namespace DNDS::ODE
 
             x += rhs;
 
-            frhs(rhs, x, 1, 1);
+            frhs(rhs, x, 1, 1, 0);
             rhsbuf[1] = rhs;
             if (localDtStepping)
                 rhs *= dTau;
@@ -790,7 +619,7 @@ namespace DNDS::ODE
             x.addTo(xLast, 0.75);
             x.addTo(rhs, 0.25);
 
-            frhs(rhs, x, 1, 0.25);
+            frhs(rhs, x, 1, 0.25, 0);
             rhsbuf[2] = rhs;
             if (localDtStepping)
                 rhs *= dTau;

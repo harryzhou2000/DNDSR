@@ -3,18 +3,36 @@
 namespace DNDS::Euler
 {
     template void EulerEvaluator<NS_SA_3D>::LUSGSMatrixInit(
+        ArrayDOFV<nVars_Fixed> &JDiag,
+        ArrayDOFV<nVars_Fixed> &JSource,
         std::vector<real> &dTau, real dt, real alphaDiag,
-        ArrayDOFV<nVars_Fixed> &u, ArrayRECV<nVars_Fixed> &uRec,
+        ArrayDOFV<nVars_Fixed> &u,
+        ArrayRECV<nVars_Fixed> &uRec,
         int jacobianCode,
         real t);
 
-    template void EulerEvaluator<NS_SA_3D>::LUSGSMatrixVec(real alphaDiag, ArrayDOFV<nVars_Fixed> &u, ArrayDOFV<nVars_Fixed> &uInc, ArrayDOFV<nVars_Fixed> &AuInc);
+    template void EulerEvaluator<NS_SA_3D>::LUSGSMatrixVec(
+        real alphaDiag,
+        ArrayDOFV<nVars_Fixed> &u,
+        ArrayDOFV<nVars_Fixed> &uInc,
+        ArrayDOFV<nVars_Fixed> &JDiag,
+        ArrayDOFV<nVars_Fixed> &AuInc);
 
-    template void EulerEvaluator<NS_SA_3D>::UpdateLUSGSForward(real alphaDiag,
-                                                         ArrayDOFV<nVars_Fixed> &rhs, ArrayDOFV<nVars_Fixed> &u, ArrayDOFV<nVars_Fixed> &uInc, ArrayDOFV<nVars_Fixed> &uIncNew);
+    template void EulerEvaluator<NS_SA_3D>::UpdateLUSGSForward(
+        real alphaDiag,
+        ArrayDOFV<nVars_Fixed> &rhs,
+        ArrayDOFV<nVars_Fixed> &u,
+        ArrayDOFV<nVars_Fixed> &uInc,
+        ArrayDOFV<nVars_Fixed> &JDiag,
+        ArrayDOFV<nVars_Fixed> &uIncNew);
 
-    template void EulerEvaluator<NS_SA_3D>::UpdateLUSGSBackward(real alphaDiag,
-                                                          ArrayDOFV<nVars_Fixed> &rhs, ArrayDOFV<nVars_Fixed> &u, ArrayDOFV<nVars_Fixed> &uInc, ArrayDOFV<nVars_Fixed> &uIncNew);
+    template void EulerEvaluator<NS_SA_3D>::UpdateLUSGSBackward(
+        real alphaDiag,
+        ArrayDOFV<nVars_Fixed> &rhs,
+        ArrayDOFV<nVars_Fixed> &u,
+        ArrayDOFV<nVars_Fixed> &uInc,
+        ArrayDOFV<nVars_Fixed> &JDiag,
+        ArrayDOFV<nVars_Fixed> &uIncNew);
 
     template void EulerEvaluator<NS_SA_3D>::FixUMaxFilter(ArrayDOFV<nVars_Fixed> &u);
 
