@@ -3,10 +3,10 @@
         "dtImplicit": 10e-1,
         "nTimeStep": 100,
         "steadyQuit": false,
-        "odeCode": 401,
+        "odeCode": 0,
         "tEnd": 3e+200,
         "odeSetting1": 0.5,
-        "odeSetting2": 10
+        "odeSetting2": 5
     },
     "outputControl": {
         "nConsoleCheck": 1,
@@ -27,8 +27,8 @@
         "useLocalDt": true
     },
     "convergenceControl": {
-        "nTimeStepInternal": 40,
-        "rhsThresholdInternal": 1e-3,
+        "nTimeStepInternal": 400,
+        "rhsThresholdInternal": 1e-4,
         "res_base": 0.0,
         "useVolWiseResidual": true
     },
@@ -69,8 +69,8 @@
         "nGmresSpace": 5,
         "nGmresIter": 10,
         "recThreshold": 1e-010,
-        "nRecConsolCheck": 100,
-        "nRecMultiplyForZeroedGrad": 10000000
+        "nRecConsolCheck": 1,
+        "nRecMultiplyForZeroedGrad": 1000
     },
     "limiterControl": {
         "useLimiter": false,
@@ -103,7 +103,7 @@
         "useScalarJacobian": true,
         "riemannSolverType": "Roe",
         "specialBuiltinInitializer": 2,
-        "nCentralSmoothStep": 10,
+        "nCentralSmoothStep": 20,
         "constMassForce": [
             0.0,
             0.0,

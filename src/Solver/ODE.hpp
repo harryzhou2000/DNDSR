@@ -495,24 +495,25 @@ namespace DNDS::ODE
                         fdt(x, dTau, 1.0, 0);
                         for (auto &v : dTau)
                             v = veryLargeReal;
-                        fsolve(x, rhsFull, dTau, dt / 4,
+                        fsolve(x, rhsFull, dTau, dt / 2,
                                1.0, xinc, iter, 0);
 
-                        xinc *= 1. / (dt);
-                        rhsFull = xinc;
-                        fdt(x, dTau, 1.0, 0);
-                        for (auto &v : dTau)
-                            v = veryLargeReal;
-                        fsolve(x, rhsFull, dTau, dt / 4,
-                               1.0, xinc, iter, 0);
-
-                        xinc *= 1. / (dt);
+                        xinc *= 1 / (dt);
                         rhsFull = xinc;
                         fdt(x, dTau, 1.0, 0);
                         for (auto &v : dTau)
                             v *= 1;
-                        fsolve(x, rhsFull, dTau, dt / 4,
+                        fsolve(x, rhsFull, dTau, dt / 2,
                                1.0, xinc, iter, 0);
+
+                        xinc *= 1 / (dt);
+                        rhsFull = xinc;
+                        fdt(x, dTau, 1.0, 0);
+                        for (auto &v : dTau)
+                            v *= 1;
+                        fsolve(x, rhsFull, dTau, dt / 2, 
+                               1.0, xinc, iter, 0);
+                        // note: dt/n helps delay the stagnation and res-rise
                     }
                     {
                         /**
