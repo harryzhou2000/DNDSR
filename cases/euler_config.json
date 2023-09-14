@@ -3,7 +3,7 @@
         "dtImplicit": 10e-1,
         "nTimeStep": 100,
         "steadyQuit": false,
-        "odeCode": 0,
+        "odeCode": 401,
         "tEnd": 3e+200,
         "odeSetting1": 0.5,
         "odeSetting2": 5
@@ -27,8 +27,8 @@
         "useLocalDt": true
     },
     "convergenceControl": {
-        "nTimeStepInternal": 400,
-        "rhsThresholdInternal": 1e-4,
+        "nTimeStepInternal": 400000,
+        "rhsThresholdInternal": 1e-40,
         "res_base": 0.0,
         "useVolWiseResidual": true
     },

@@ -495,7 +495,7 @@ namespace DNDS::ODE
                         fdt(x, dTau, 1.0, 0);
                         for (auto &v : dTau)
                             v = veryLargeReal;
-                        fsolve(x, rhsFull, dTau, dt / 2,
+                        fsolve(x, rhsFull, dTau, dt ,
                                1.0, xinc, iter, 0);
 
                         xinc *= 1 / (dt);
@@ -503,7 +503,7 @@ namespace DNDS::ODE
                         fdt(x, dTau, 1.0, 0);
                         for (auto &v : dTau)
                             v *= 1;
-                        fsolve(x, rhsFull, dTau, dt / 2,
+                        fsolve(x, rhsFull, dTau, dt ,
                                1.0, xinc, iter, 0);
 
                         xinc *= 1 / (dt);
@@ -511,9 +511,10 @@ namespace DNDS::ODE
                         fdt(x, dTau, 1.0, 0);
                         for (auto &v : dTau)
                             v *= 1;
-                        fsolve(x, rhsFull, dTau, dt / 2, 
+                        fsolve(x, rhsFull, dTau, dt , 
                                1.0, xinc, iter, 0);
-                        // note: dt/n helps delay the stagnation and res-rise
+                        // note: dt/n hinders precision
+                        // note: using enough smoothing delays res-re-rise
                     }
                     {
                         /**
