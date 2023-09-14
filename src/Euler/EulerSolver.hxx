@@ -73,7 +73,8 @@ namespace DNDS::Euler
                 {
                     vfv->BuildUDof(data, nVars);
                 },
-                0.66666666666);
+                config.timeMarchControl.odeSetting1 == 0 ? 0.51 : config.timeMarchControl.odeSetting1,
+                std::round(config.timeMarchControl.odeSetting2));
             break;
         default:
             DNDS_assert_info(false, "no such ode code");
@@ -410,6 +411,11 @@ namespace DNDS::Euler
         auto fsolve = [&](ArrayDOFV<nVars_Fixed> &cx, ArrayDOFV<nVars_Fixed> &crhs, std::vector<real> &dTau,
                           real dt, real alphaDiag, ArrayDOFV<nVars_Fixed> &cxInc, int iter, int uPos)
         {
+            crhs.trans.startPersistentPull();
+            crhs.trans.waitPersistentPull();
+            rhsTemp = crhs;
+            eval.CentralSmoothResidual(rhsTemp, crhs, uTemp);
+
             cxInc.setConstant(0.0);
             auto &JDC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? JD1 : JD;
             auto &JSourceC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? JSource1 : JSource;
@@ -466,6 +472,130 @@ namespace DNDS::Euler
                         eval.UpdateLUSGSBackward(alphaDiag, x, cx, MLx, JDC, MLx);
                         MLx.trans.startPersistentPull();
                         MLx.trans.waitPersistentPull();
+                    },
+                    crhs, cxInc, config.linearSolverControl.nGmresIter,
+                    [&](uint32_t i, real res, real resB) -> bool
+                    {
+                        if (i > 0)
+                        {
+                            if (mpi.rank == 0)
+                            {
+                                // log() << std::scientific;
+                                // log() << "GMRES: " << i << " " << resB << " -> " << res << std::endl;
+                            }
+                        }
+                        return false;
+                    });
+                for (index iCell = 0; iCell < cxInc.Size(); iCell++)
+                    cxInc[iCell] = eval.CompressInc(cx[iCell], cxInc[iCell], crhs[iCell]); // manually add fixing for gmres results
+            }
+            // !freeze something
+            if (getNVars(model) > I4 + 1 && iter <= config.others.nFreezePassiveInner)
+            {
+                for (int i = 0; i < crhs.Size(); i++)
+                    cxInc[i](Eigen::seq(I4 + 1, Eigen::last)).setZero();
+                // if (mpi.rank == 0)
+                //     std::cout << "Freezing all passive" << std::endl;
+            }
+        };
+
+        auto fsolveNest = [&](
+                              ArrayDOFV<nVars_Fixed> &cx,
+                              ArrayDOFV<nVars_Fixed> &cx1,
+                              ArrayDOFV<nVars_Fixed> &crhs,
+                              std::vector<real> &dTau,
+                              const std::vector<real> &Coefs, // coefs are dU * c[0] + dt * c[1] * (I/(dt * c[2]) - JMid) * (I/(dt * c[3]) - J)
+                              real dt, real alphaDiag, ArrayDOFV<nVars_Fixed> &cxInc, int iter, int uPos)
+        {
+            crhs.trans.startPersistentPull();
+            crhs.trans.waitPersistentPull();
+            rhsTemp = crhs;
+            eval.CentralSmoothResidual(rhsTemp, crhs, uTemp);
+
+            cxInc.setConstant(0.0);
+            auto &JDC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? JD1 : JD;
+            auto &JSourceC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? JSource1 : JSource;
+
+            // TODO: use "update spectral radius" procedure? or force update in fsolve
+            eval.EvaluateDt(dTau, cx1, CFLNow, curDtMin, 1e100, config.implicitCFLControl.useLocalDt);
+            for (auto &v : dTau)
+                v *= Coefs[2];
+            eval.LUSGSMatrixInit(JD1, JSource1,
+                                 dTau, dt * Coefs[2], alphaDiag,
+                                 cx1, uRec,
+                                 0,
+                                 tSimu);
+            eval.EvaluateDt(dTau, cx, CFLNow, curDtMin, 1e100, config.implicitCFLControl.useLocalDt);
+            for (auto &v : dTau)
+                v *= Coefs[3] * veryLargeReal;
+            eval.LUSGSMatrixInit(JD, JSource,
+                                 dTau, dt * Coefs[3], alphaDiag,
+                                 cx, uRec,
+                                 0,
+                                 tSimu);
+
+            // for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
+            // {
+            //     crhs[iCell] = eval.CompressInc(cx[iCell], crhs[iCell] * dTau[iCell], crhs[iCell]) / dTau[iCell];
+            // }
+
+            if (config.linearSolverControl.gmresCode == 0 || config.linearSolverControl.gmresCode == 2)
+            {
+                // //! LUSGS
+
+                eval.UpdateLUSGSForward(alphaDiag, crhs, cx1, cxInc, JD1, cxInc);
+                cxInc.trans.startPersistentPull();
+                cxInc.trans.waitPersistentPull();
+                eval.UpdateLUSGSBackward(alphaDiag, crhs, cx1, cxInc, JD1, cxInc);
+                cxInc.trans.startPersistentPull();
+                cxInc.trans.waitPersistentPull();
+                uTemp = cxInc;
+                eval.UpdateLUSGSForward(alphaDiag, uTemp, cx, cxInc, JD, cxInc);
+                cxInc.trans.startPersistentPull();
+                cxInc.trans.waitPersistentPull();
+                eval.UpdateLUSGSBackward(alphaDiag, uTemp, cx, cxInc, JD, cxInc);
+                cxInc.trans.startPersistentPull();
+                cxInc.trans.waitPersistentPull();
+                cxInc *= 1. / (dt * Coefs[1]);
+
+                for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
+                    cxInc[iCell] = eval.CompressInc(cx[iCell], cxInc[iCell], crhs[iCell]);
+            }
+
+            if (config.linearSolverControl.gmresCode != 0)
+            {
+                // !  GMRES
+                // !  for gmres solver: A * uinc = rhsinc, rhsinc is average value insdead of cumulated on vol
+                gmres->solve(
+                    [&](decltype(u) &x, decltype(u) &Ax)
+                    {
+                        eval.LUSGSMatrixVec(alphaDiag, cx, x, JD, Ax);
+                        Ax.trans.startPersistentPull();
+                        Ax.trans.waitPersistentPull();
+                        uTemp = Ax;
+                        eval.LUSGSMatrixVec(alphaDiag, cx1, uTemp, JD1, Ax);
+                        Ax.trans.startPersistentPull();
+                        Ax.trans.waitPersistentPull();
+                        Ax *= dt * Coefs[1];
+                        Ax.addTo(x, Coefs[0]);
+                    },
+                    [&](decltype(u) &x, decltype(u) &MLx)
+                    {
+                        // x as rhs, and MLx as uinc
+                        eval.UpdateLUSGSForward(alphaDiag, x, cx1, MLx, JD1, MLx);
+                        MLx.trans.startPersistentPull();
+                        MLx.trans.waitPersistentPull();
+                        eval.UpdateLUSGSBackward(alphaDiag, x, cx1, MLx, JD1, MLx);
+                        MLx.trans.startPersistentPull();
+                        MLx.trans.waitPersistentPull();
+                        uTemp = MLx;
+                        eval.UpdateLUSGSForward(alphaDiag, uTemp, cx, MLx, JD, MLx);
+                        MLx.trans.startPersistentPull();
+                        MLx.trans.waitPersistentPull();
+                        eval.UpdateLUSGSBackward(alphaDiag, uTemp, cx, MLx, JD, MLx);
+                        MLx.trans.startPersistentPull();
+                        MLx.trans.waitPersistentPull();
+                        MLx *= 1. / (dt * Coefs[1]);
                     },
                     crhs, cxInc, config.linearSolverControl.nGmresIter,
                     [&](uint32_t i, real res, real resB) -> bool
@@ -731,14 +861,26 @@ namespace DNDS::Euler
                 curDtImplicit = (nextTout - tSimu);
             }
             CFLNow = config.implicitCFLControl.CFL;
-            ode->Step(
-                u, uInc,
-                frhs,
-                fdtau,
-                fsolve,
-                config.convergenceControl.nTimeStepInternal,
-                fstop,
-                curDtImplicit + verySmallReal);
+            if (config.timeMarchControl.odeCode == 401 && false)
+                std::dynamic_pointer_cast<ODE::ImplicitHermite3SimpleJacobianDualStep<ArrayDOFV<nVars_Fixed>>>(ode)
+                    ->StepNested(
+                        u, uInc,
+                        frhs,
+                        fdtau,
+                        fsolve, fsolveNest,
+                        config.convergenceControl.nTimeStepInternal,
+                        fstop,
+                        curDtImplicit + verySmallReal);
+            else
+                ode
+                    ->Step(
+                        u, uInc,
+                        frhs,
+                        fdtau,
+                        fsolve,
+                        config.convergenceControl.nTimeStepInternal,
+                        fstop,
+                        curDtImplicit + verySmallReal);
 
             if (fmainloop())
                 break;

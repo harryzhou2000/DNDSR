@@ -4,7 +4,10 @@
         "nTimeStep": 1000000,
         "steadyQuit": false,
         "odeCode": 0,
-        "tEnd": 3e+200
+        "tEnd": 3e+200,
+        "odeSetting1": 0.0,
+        "odeSetting2": 0.0,
+        "odeSetting3": 0.0
     },
     "implicitReconstructionControl": {
         "nInternalRecStep": 1,
@@ -99,6 +102,7 @@
         "ignoreSourceTerm": false,
         "specialBuiltinInitializer": 0,
         "riemannSolverType": "Roe",
+        "nCentralSmoothStep": 0,
         "constMassForce": [
             0.0,
             0.0,

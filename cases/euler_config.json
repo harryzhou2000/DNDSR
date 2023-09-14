@@ -4,14 +4,16 @@
         "nTimeStep": 100,
         "steadyQuit": false,
         "odeCode": 401,
-        "tEnd": 3e+200
+        "tEnd": 3e+200,
+        "odeSetting1": 0.66,
+        "odeSetting2": 10
     },
     "outputControl": {
         "nConsoleCheck": 1,
         "nConsoleCheckInternal": 1,
         "consoleOutputMode": 0,
         "nDataOutC": 100,
-        "nDataOut": 10,
+        "nDataOut": 1,
         "nDataOutCInternal": 200,
         "nDataOutInternal": 1000000000,
         "tDataOut": 3e+200
@@ -26,7 +28,7 @@
     },
     "convergenceControl": {
         "nTimeStepInternal": 4000,
-        "rhsThresholdInternal": 1e-30,
+        "rhsThresholdInternal": 1e-300,
         "res_base": 0.0,
         "useVolWiseResidual": true
     },
@@ -66,8 +68,8 @@
         "recLinearScheme": 0,
         "nGmresSpace": 5,
         "nGmresIter": 10,
-        "recThreshold": 1e-05,
-        "nRecConsolCheck": 1
+        "recThreshold": 1e-06,
+        "nRecConsolCheck": 100
     },
     "limiterControl": {
         "useLimiter": false,
@@ -77,20 +79,20 @@
         "nPartialLimiterStartLocal": 1000000
     },
     "vfvSettings": {
-        "maxOrder": 2,
-        "intOrder": 2,
+        "maxOrder": 3,
+        "intOrder": 3,
         "cacheDiffBase": false,
-        "jacobiRelax": 1.0,
-        "SORInstead": true,
+        "jacobiRelax": 1,
+        "SORInstead": false,
         "smoothThreshold": 1e-3,
         "WBAP_nStd": 10.0,
         "normWBAP": false,
         "subs2ndOrder": 1
     },
     "linearSolverControl": {
-        "gmresCode": 0,
+        "gmresCode": 1,
         "nGmresSpace": 5,
-        "nGmresIter": 10
+        "nGmresIter": 2
     },
     "others": {
         "nFreezePassiveInner": 0
@@ -100,6 +102,7 @@
         "useScalarJacobian": true,
         "riemannSolverType": "Roe",
         "specialBuiltinInitializer": 2,
+        "nCentralSmoothStep": 3,
         "constMassForce": [
             0.0,
             0.0,

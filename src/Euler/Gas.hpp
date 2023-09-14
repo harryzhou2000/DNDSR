@@ -23,17 +23,18 @@ namespace DNDS::Euler::Gas
     };
 
     NLOHMANN_JSON_SERIALIZE_ENUM(
-        RiemannSolverType, {
-                                {UnknownRS, nullptr},
-                                {Roe, "Roe"},
-                                {HLLC, "HLLC"},
-                                {HLLEP, "HLLEP"},
-                                {Roe_M1, "Roe_M1"},
-                                {Roe_M2, "Roe_M2"},
-                                {Roe_M3, "Roe_M3"},
-                                {Roe_M4, "Roe_M4"},
-                                {Roe_M5, "Roe_M5"},
-                            })
+        RiemannSolverType,
+        {
+            {UnknownRS, nullptr},
+            {Roe, "Roe"},
+            {HLLC, "HLLC"},
+            {HLLEP, "HLLEP"},
+            {Roe_M1, "Roe_M1"},
+            {Roe_M2, "Roe_M2"},
+            {Roe_M3, "Roe_M3"},
+            {Roe_M4, "Roe_M4"},
+            {Roe_M5, "Roe_M5"},
+        })
 
     /**
      * @brief 3D only warning: ReV should be already initialized

@@ -138,6 +138,8 @@ set(EXTERNAL_LIBS ${EXTERNAL_LIBS}
     ${EXTERNAL_LIB_METIS}
     ${EXTERNAL_LIB_PARMETIS}
     # ${EXTERNAL_LIB_TECIO}
+    CACHE INTERNAL
+    "Project Public External Lib Dependencies"
     )
 message("EXTERNAL_LIBS  " ${EXTERNAL_LIBS})
 
@@ -216,7 +218,7 @@ set(EXTERNAL_INCLUDES
     ${EXTERNAL_INCLUDE_NANOFLANN}
     ${EXTERNAL_INCLUDE_BOOST}
     ${EXTERNAL_INCLUDE_CGAL}
-    )
+    CACHE INTERNAL "Project External Includes")
 
 if (MPI_CXX_FOUND)
     set(EXTERNAL_INCLUDES ${MPI_CXX_INCLUDE_DIRS} ${EXTERNAL_INCLUDES})
@@ -251,13 +253,13 @@ message(STATUS "EXTERNAL_LIBS ${EXTERNAL_LIBS}")
 message(STATUS "EXTERNAL_INCLUDES ${EXTERNAL_INCLUDES}")
 
 set(INCLUDES \\
-${DNDS_INCLUDES})
+${DNDS_INCLUDES} CACHE INTERNAL "Project Public Includes")
 
 
 
-## test exes
+## app exes
 
-set(TESTS_EXTERNAL
+set(APPS_EXTERNAL
 cgns_APITest
 eigen_Test
 STL_Test
@@ -265,159 +267,65 @@ json_Test
 cgal_AABBTest
 )
 
-set(TESTS_DNDS
+set(APPS_DNDS
 array_Test
 arrayTrans_test
 arrayDerived_test
 serializerJSON_Test
 )
 
-set(TESTS_Geom
+set(APPS_Geom
 elements_Test
 meshSerial_Test
 partitionMeshSerial
 )
 
-set(TESTS_CFV
+set(APPS_CFV
 vrStatic_Test
 vrBasic_Test
 )
 
-set(TESTS_Euler
+set(APPS_Euler
 euler
 euler3D
 eulerSA
 eulerSA3D
 )
 
-# set(OBJS_DNDS
-# MPI
-# )
 
-# foreach(OBJ ${OBJS_DNDS})
-#     add_library(${OBJ} OBJECT src/DNDS/${OBJ}.cpp)
-#     target_link_libraries(${OBJ} PUBLIC ${EXTERNAL_LIBS})
-#     target_include_directories(${OBJ} PUBLIC ${EXTERNAL_INCLUDES} PUBLIC ${INCLUDES})
-# endforeach()
+add_subdirectory(src/DNDS)
+add_subdirectory(src/Geom)
+add_subdirectory(src/CFV)
+add_subdirectory(src/Euler)
 
-# set(OBJS
-# ${OBJS_DNDS}
-# )
-
-set(CPPS_DNDS
-src/DNDS/MPI.cpp
-src/DNDS/Defines.cpp
-src/DNDS/Profiling.cpp
-src/DNDS/HardEigen.cpp
-src/DNDS/SerializerJSON.cpp
+set(LIBS
+euler_library
+cfv
+geom
+dnds
+CACHE INTERNAL
+"Public Project Internal Static Libs"
 )
 
-set(CPPS_Geom
-src/Geom/Elements.cpp
-src/Geom/Mesh.cpp
-src/Geom/Mesh_Plts.cpp
-src/Geom/Mesh_Serial_BuildCell2Cell.cpp
-src/Geom/Mesh_Serial_ReadFromCGNS.cpp
-src/Geom/Mesh_Serial_Partition.cpp
-)
-
-set(CPPS_CFV
-src/CFV/VariationalReconstruction.cpp
-src/CFV/_explicit_instantiation/VariationalReconstruction_Reconstruction_2_4.cpp
-src/CFV/_explicit_instantiation/VariationalReconstruction_Reconstruction_2_5.cpp
-src/CFV/_explicit_instantiation/VariationalReconstruction_Reconstruction_2_6.cpp
-src/CFV/_explicit_instantiation/VariationalReconstruction_Reconstruction_2_D.cpp
-src/CFV/_explicit_instantiation/VariationalReconstruction_Reconstruction_3_5.cpp
-src/CFV/_explicit_instantiation/VariationalReconstruction_Reconstruction_3_6.cpp
-src/CFV/_explicit_instantiation/VariationalReconstruction_Reconstruction_3_D.cpp
-)
-
-set(CPPS_Euler
-src/Euler/_explicit_instantiation/EulerEvaluator_EvaluateDt_NS_2D.cpp
-src/Euler/_explicit_instantiation/EulerEvaluator_EvaluateDt_NS_3D.cpp
-src/Euler/_explicit_instantiation/EulerEvaluator_EvaluateDt_NS.cpp
-src/Euler/_explicit_instantiation/EulerEvaluator_EvaluateDt_NS_SA.cpp
-src/Euler/_explicit_instantiation/EulerEvaluator_EvaluateDt_NS_SA_3D.cpp
-src/Euler/_explicit_instantiation/EulerEvaluator_EvaluateRHS_NS_2D.cpp
-src/Euler/_explicit_instantiation/EulerEvaluator_EvaluateRHS_NS_3D.cpp
-src/Euler/_explicit_instantiation/EulerEvaluator_EvaluateRHS_NS.cpp
-src/Euler/_explicit_instantiation/EulerEvaluator_EvaluateRHS_NS_SA.cpp
-src/Euler/_explicit_instantiation/EulerEvaluator_EvaluateRHS_NS_SA_3D.cpp
-src/Euler/_explicit_instantiation/EulerEvaluator_NS_2D.cpp
-src/Euler/_explicit_instantiation/EulerEvaluator_NS_3D.cpp
-src/Euler/_explicit_instantiation/EulerEvaluator_NS.cpp
-src/Euler/_explicit_instantiation/EulerEvaluator_NS_SA.cpp
-src/Euler/_explicit_instantiation/EulerEvaluator_NS_SA_3D.cpp
-src/Euler/_explicit_instantiation/EulerSolver_NS_2D.cpp
-src/Euler/_explicit_instantiation/EulerSolver_NS_3D.cpp
-src/Euler/_explicit_instantiation/EulerSolver_NS.cpp
-src/Euler/_explicit_instantiation/EulerSolver_NS_SA.cpp
-src/Euler/_explicit_instantiation/EulerSolver_NS_SA_3D.cpp
-)
-
-set(CPPS_FAST
-${CPPS_DNDS}
-${CPPS_Geom}
-${CPPS_CFV}
-)
-
-set(CPPS
-${CPPS_Euler}
-)
-
-set(CPP_TARGETS
-)
-set(CPP_TARGETS_OBJ
-)
-
-foreach(CPP ${CPPS_FAST})
-    string(REPLACE "/" "___" CPP_NAME ${CPP})
-    # message(STATUS ${CPP_NAME})
-    string(REPLACE ".cpp" "_" CPP_NAME_A ${CPP_NAME})
-    add_library(${CPP_NAME_A} OBJECT ${CPP})
-    target_include_directories(${CPP_NAME_A} PUBLIC ${EXTERNAL_INCLUDES} PUBLIC ${INCLUDES})
-    if(DNDS_FAST_BUILD_FAST)
-        if(LLVM OR MINGW OR UNIX)
-            target_compile_options(${CPP_NAME_A} PUBLIC -O3)
-        elseif(WIN32 OR MSVC)
-            # target_compile_options(${CPP_NAME_A} PUBLIC /O2)
-            target_compile_options(${CPP_NAME_A} PUBLIC -O3)
-        else()
-            message(FATAL_ERROR "NOT YET IMPLEMENTED HERE")
-        endif()
-    endif()
-    list(APPEND CPP_TARGETS ${CPP_NAME_A})
-    list(APPEND CPP_TARGETS_OBJ $<TARGET_OBJECTS:${CPP_NAME_A}>)
-endforeach()
-
-foreach(CPP ${CPPS})
-    string(REPLACE "/" "___" CPP_NAME ${CPP})
-    # message(STATUS ${CPP_NAME})
-    string(REPLACE ".cpp" "_" CPP_NAME_A ${CPP_NAME})
-    add_library(${CPP_NAME_A} OBJECT ${CPP})
-    target_include_directories(${CPP_NAME_A} PUBLIC ${EXTERNAL_INCLUDES} PUBLIC ${INCLUDES})
-    list(APPEND CPP_TARGETS ${CPP_NAME_A})
-    list(APPEND CPP_TARGETS_OBJ $<TARGET_OBJECTS:${CPP_NAME_A}>)
-endforeach()
 
 
-
-macro(ADD_EXE_TEST EXES MAIN_DIR)
+macro(ADD_EXE_APP EXES MAIN_DIR)
     message(STATUS ${EXES})
     foreach(EXE ${EXES})
-        # add_executable(${EXE} test/external/${EXE}.cpp $<TARGET_OBJECTS:${OBJS}>)
-        add_executable(${EXE} ${MAIN_DIR}/${EXE}.cpp ${CPP_TARGETS_OBJ})
+        # add_executable(${EXE} app/external/${EXE}.cpp $<TARGET_OBJECTS:${OBJS}>)
+        add_executable(${EXE} ${MAIN_DIR}/${EXE}.cpp)
+        target_link_libraries(${EXE} PUBLIC ${LIBS})
         target_link_libraries(${EXE} PUBLIC ${EXTERNAL_LIBS})
         target_include_directories(${EXE} PUBLIC ${EXTERNAL_INCLUDES} PUBLIC ${INCLUDES})
-        set_target_properties(${EXE} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/test RUNTIME_OUTPUT_NAME ${EXE}.exe)
+        set_target_properties(${EXE} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/app RUNTIME_OUTPUT_NAME ${EXE}.exe)
     endforeach()
-endmacro(ADD_EXE_TEST)
+endmacro(ADD_EXE_APP)
 
-ADD_EXE_TEST("${TESTS_EXTERNAL}" "test/external")
-ADD_EXE_TEST("${TESTS_DNDS}" "test/DNDS")
-ADD_EXE_TEST("${TESTS_Geom}" "test/Geom")
-ADD_EXE_TEST("${TESTS_CFV}" "test/CFV")
-ADD_EXE_TEST("${TESTS_Euler}" "test/Euler")
+ADD_EXE_APP("${APPS_EXTERNAL}" "app/external")
+ADD_EXE_APP("${APPS_DNDS}" "app/DNDS")
+ADD_EXE_APP("${APPS_Geom}" "app/Geom")
+ADD_EXE_APP("${APPS_CFV}" "app/CFV")
+ADD_EXE_APP("${APPS_Euler}" "app/Euler")
 
 
 

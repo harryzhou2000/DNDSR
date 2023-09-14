@@ -1,0 +1,25 @@
+cmake_minimum_required(VERSION 3.1)
+
+# message("source dir is ${PROJECT_SOURCE_DIR}")
+include("${PROJECT_SOURCE_DIR}/cmakeCommonUtils.cmake") # from father
+
+# project(GEOM LANGUAGES CXX)
+
+set(LIBNAME geom)
+
+set(LINKS
+# dnds
+# ${EXTERNAL_LIBS}
+)
+
+set(CPPS
+Elements.cpp
+Mesh.cpp
+Mesh_Plts.cpp
+Mesh_Serial_BuildCell2Cell.cpp
+Mesh_Serial_ReadFromCGNS.cpp
+Mesh_Serial_Partition.cpp
+)
+
+dnds_add_lib_fast(${LIBNAME} "${CPPS}" "${LINKS}")
+

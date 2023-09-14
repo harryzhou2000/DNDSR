@@ -1,0 +1,28 @@
+cmake_minimum_required(VERSION 3.1)
+
+# message("source dir is ${PROJECT_SOURCE_DIR}")
+include("${PROJECT_SOURCE_DIR}/cmakeCommonUtils.cmake") # from father
+
+# project(CFV LANGUAGES CXX)
+
+set(LIBNAME cfv)
+
+set(LINKS
+# geom
+# dnds
+# ${EXTERNAL_LIBS}
+)
+
+set(CPPS
+VariationalReconstruction.cpp
+_explicit_instantiation/VariationalReconstruction_Reconstruction_2_4.cpp
+_explicit_instantiation/VariationalReconstruction_Reconstruction_2_5.cpp
+_explicit_instantiation/VariationalReconstruction_Reconstruction_2_6.cpp
+_explicit_instantiation/VariationalReconstruction_Reconstruction_2_D.cpp
+_explicit_instantiation/VariationalReconstruction_Reconstruction_3_5.cpp
+_explicit_instantiation/VariationalReconstruction_Reconstruction_3_6.cpp
+_explicit_instantiation/VariationalReconstruction_Reconstruction_3_D.cpp
+)
+
+dnds_add_lib(${LIBNAME} "${CPPS}" "${LINKS}")
+

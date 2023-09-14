@@ -352,6 +352,10 @@ namespace DNDS::ODE
         using Fdt = typename ImplicitDualTimeStep<TDATA>::Fdt;
         using Fsolve = typename ImplicitDualTimeStep<TDATA>::Fsolve;
         using Fstop = typename ImplicitDualTimeStep<TDATA>::Fstop;
+        using FsolveNest = std::function<void(
+            TDATA &, TDATA &, TDATA &,
+            std::vector<real> &, const std::vector<real> &,
+            real, real, TDATA &, int, int)>;
 
         std::vector<real> dTau;
         TDATA xMid, rhsMid, rhsFull;
@@ -374,7 +378,7 @@ namespace DNDS::ODE
         template <class Finit>
         ImplicitHermite3SimpleJacobianDualStep(
             index NDOF, Finit &&finit = [](TDATA &) {},
-            real alpha = 0.51) : DOF(NDOF), cnPrev(0)
+            real alpha = 0.51, int nnStartIter = 2) : DOF(NDOF), cnPrev(0), nStartIter(nnStartIter)
         {
 
             dTau.resize(NDOF);
@@ -395,10 +399,17 @@ namespace DNDS::ODE
         void SetCoefs(real alpha)
         {
             assert(alpha > 0 && alpha < 1);
+            cInter.setZero();
             cInter[0] = (alpha * alpha) * -3.0 + (alpha * alpha * alpha) * 2.0 + 1.0;
             cInter[1] = (alpha * alpha) * 3.0 - (alpha * alpha * alpha) * 2.0;
             cInter[2] = alpha - (alpha * alpha) * 2.0 + alpha * alpha * alpha;
             cInter[3] = -alpha * alpha + alpha * alpha * alpha;
+
+            // cInter[0] = alpha * -2.0 + alpha * alpha + 1.0;
+            // cInter[1] = alpha * 2.0 - alpha * alpha;
+            // cInter[3] = -alpha + alpha * alpha;
+
+
             wInteg[0] = (-1.0 / 6.0) / alpha + 1.0 / 2.0;
             wInteg[1] = (-1.0 / 6.0) / (alpha * (alpha - 1.0));
             wInteg[2] = 1.0 / (alpha * 6.0 - 6.0) + 1.0 / 2.0;
@@ -413,6 +424,146 @@ namespace DNDS::ODE
          */
         virtual void Step(TDATA &x, TDATA &xinc, const Frhs &frhs, const Fdt &fdt, const Fsolve &fsolve,
                           int maxIter, const Fstop &fstop, real dt) override
+        {
+            xLast = x;
+            for (int i = 0; i < 100; i++)
+                frhs(rhsbuf[0], xLast, 0, 1.0, 0);
+
+            xIncPrev.setConstant(0.0);
+            int iter = 1;
+            for (; iter <= maxIter; iter++)
+            {
+
+                if (iter < nStartIter)
+                {
+                    fdt(x, dTau, 1.0, 0);
+                    frhs(rhsbuf[1], x, iter, 1.0, 0);
+                    rhsFull = rhsbuf[1];
+                    rhsFull.addTo(xLast, 1. / dt);
+                    rhsFull.addTo(x, -1. / dt);
+                    fsolve(x, rhsFull, dTau, dt, 1.0, xinc, iter, 0);
+                }
+                else
+                {
+                    fdt(x, dTau, 1.0, 0);
+
+                    frhs(rhsbuf[1], x, iter, 1.0, 0);
+                    xMid.setConstant(0.0);
+                    xMid.addTo(xLast, cInter[0]);
+                    xMid.addTo(x, cInter[1]);
+                    xMid.addTo(rhsbuf[0], cInter[2] * dt);
+                    xMid.addTo(rhsbuf[1], cInter[3] * dt);
+                    frhs(rhsMid, xMid, iter, 1.0, 1);
+                    rhsFull.setConstant(0.0);
+                    rhsFull.addTo(rhsbuf[0], wInteg[0]);
+                    rhsFull.addTo(rhsMid, wInteg[1]);
+                    rhsFull.addTo(rhsbuf[1], wInteg[2]);
+                    rhsFull.addTo(x, -1. / dt);
+                    rhsFull.addTo(xLast, 1. / dt);
+
+                    { // damping
+                      // xIncDamper = xLast;
+                      // xIncDamper.addTo(x, -1.);
+                      // xIncDamper.setAbs();
+                      // xIncDamper += 1e-100;
+                      // xIncDamper2 = xIncPrev;
+                      // xIncDamper2.setAbs();
+                      // xIncDamper2 += xIncDamper;
+                      // xIncDamper /= xIncDamper2;
+                      // rhsFull *= xIncDamper;
+                    }
+                    {
+                        // fdt(x, dTau, 1.0); // TODO: use "update spectral radius" procedure? or force update in fsolve
+                        // for(auto &v : dTau)
+                        //     v *= -cInter[3] / cInter[1];
+                        // fsolve(x, rhsFull, dTau, -dt * cInter[3] / cInter[1],
+                        //        1.0, xinc, iter);
+                        // rhsFull = xinc;
+                        // fdt(xMid, dTau, 1.0);
+                        // for (auto &v : dTau)
+                        //     v = veryLargeReal;
+                        // fsolve(xMid, rhsFull, dTau, -dt * cInter[3] * wInteg[1] / wInteg[2],
+                        //        1.0, xinc, iter);
+                        // xinc *= -1. / (2 * dt * cInter[3] * wInteg[1]);
+                    }
+                    {
+                        fdt(xMid, dTau, 1.0, 1); // TODO: use "update spectral radius" procedure? or force update in fsolve
+                        for (auto &v : dTau)
+                            v = veryLargeReal;
+                        fsolve(xMid, rhsFull, dTau, dt / 4,
+                               1.0, xinc, iter, 1);
+
+                        xinc *= 1. / (dt);
+                        rhsFull = xinc;
+                        fdt(x, dTau, 1.0, 0);
+                        for (auto &v : dTau)
+                            v = veryLargeReal;
+                        fsolve(x, rhsFull, dTau, dt / 4,
+                               1.0, xinc, iter, 0);
+
+                        xinc *= 1. / (dt);
+                        rhsFull = xinc;
+                        fdt(x, dTau, 1.0, 0);
+                        for (auto &v : dTau)
+                            v *= 1;
+                        fsolve(x, rhsFull, dTau, dt / 4,
+                               1.0, xinc, iter, 0);
+                    }
+                    {
+                        /**
+                        Embedded Symmetric Nested Implicit Runge–Kutta Methods
+                     of Gauss and Lobatto Types for Solving Stiff Ordinary
+                     Differential Equations and Hamiltonian Systems*/
+                        // fdt(x, dTau, 1.0, 0); // TODO: use "update spectral radius" procedure? or force update in fsolve
+                        // for (auto &v : dTau)
+                        //     v *= 1;
+                        // fsolve(x, rhsFull, dTau, dt / 4.,
+                        //        1.0, xinc, iter, 0);
+                        // rhsFull = xinc;
+                        // // fdt(xMid, dTau, 1.0, 1);
+                        // // for (auto &v : dTau)
+                        // //     v = veryLargeReal;
+                        // fsolve(x, rhsFull, dTau, dt / 4.,
+                        //        1.0, xinc, iter, 1);
+                        // xinc *= 1. / dt;
+                    }
+
+                    {
+                        // fdt(xMid, dTau, 1.0,0);
+                        // fsolve(xMid, rhsFull, dTau, dt, 1.0, xinc, iter,0);
+                    }
+                }
+
+                //**    xinc = (I/dtau-A*alphaDiag)\rhs
+
+                // x += xinc;
+                {
+                    // xIncDamper = xLast;
+                    // xIncDamper.addTo(x, -1.);
+                    // xIncDamper.setAbs();
+                    // xIncDamper += 1e-100;
+                    // xIncDamper2 = xIncPrev;
+                    // xIncDamper2.setAbs();
+                    // xIncDamper2 += xIncDamper;
+                    // xIncDamper /= xIncDamper2;
+                    // xinc *= xIncDamper;
+                }
+
+                x.addTo(xinc, 1.0);
+                // x.addTo(xIncPrev, -0.5);
+
+                xIncPrev = xinc;
+
+                if (fstop(iter, xinc, 1))
+                    if (iter >= nStartIter)
+                        break;
+            }
+            if (iter > maxIter)
+                fstop(iter, xinc, 1);
+        }
+
+        void StepNested(TDATA &x, TDATA &xinc, const Frhs &frhs, const Fdt &fdt, const Fsolve &fsolve, const FsolveNest &fsolveN,
+                        int maxIter, const Fstop &fstop, real dt)
         {
             xLast = x;
             frhs(rhsbuf[0], x, 0, 1.0, 0);
@@ -473,43 +624,18 @@ namespace DNDS::ODE
                         // fsolve(xMid, rhsFull, dTau, -dt * cInter[3] * wInteg[1] / wInteg[2],
                         //        1.0, xinc, iter);
                         // xinc *= -1. / (2 * dt * cInter[3] * wInteg[1]);
-                    }
-                    {
-                        fdt(x, dTau, 1.0, 0); // TODO: use "update spectral radius" procedure? or force update in fsolve
-                        for (auto &v : dTau)
-                            v *= 1;
-                        fsolve(x, rhsFull, dTau, dt,
-                               1.0, xinc, iter, 0);
-                        rhsFull = xinc;
-                        fdt(xMid, dTau, 1.0,1);
-                        for (auto &v : dTau)
-                            v = veryLargeReal;
-                        fsolve(xMid, rhsFull, dTau, dt,
-                               1.0, xinc, iter,1);
-                        xinc *= 1. / (dt);
-                    }
-                    {
-                        /**
-                        Embedded Symmetric Nested Implicit Runge–Kutta Methods
-                     of Gauss and Lobatto Types for Solving Stiff Ordinary
-                     Differential Equations and Hamiltonian Systems*/
-                        // fdt(x, dTau, 1.0, 0); // TODO: use "update spectral radius" procedure? or force update in fsolve
-                        // for (auto &v : dTau)
-                        //     v *= 1;
-                        // fsolve(x, rhsFull, dTau, dt / 4.,
-                        //        1.0, xinc, iter, 0);
-                        // rhsFull = xinc;
-                        // fdt(xMid, dTau, 1.0, 1);
-                        // for (auto &v : dTau)
-                        //     v = veryLargeReal;
-                        // fsolve(xMid, rhsFull, dTau, dt / 4.,
-                        //        1.0, xinc, iter, 1);
-                        // xinc *= 1. / dt;
-                    }
-
-                    {
-                        // fdt(xMid, dTau, 1.0,0);
-                        // fsolve(xMid, rhsFull, dTau, dt, 1.0, xinc, iter,0);
+                        fsolveN(x, xMid, rhsFull, dTau,
+                                std::vector<real>{
+                                    //    cInter[1] * wInteg[2] / (cInter[3] * dt),
+                                    //    -(cInter[3] * wInteg[1]),
+                                    //    -cInter[3] * wInteg[1] / wInteg[2],
+                                    //    -cInter[3] / cInter[1],
+                                    0. / dt,
+                                    1,
+                                    1,
+                                    1,
+                                },
+                                dt, 1.0, xinc, iter, 0);
                     }
                 }
 

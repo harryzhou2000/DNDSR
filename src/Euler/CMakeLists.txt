@@ -1,0 +1,41 @@
+cmake_minimum_required(VERSION 3.1)
+
+# message("source dir is ${PROJECT_SOURCE_DIR}")
+include("${PROJECT_SOURCE_DIR}/cmakeCommonUtils.cmake") # from father
+
+# project(Euler LANGUAGES CXX)
+
+set(LIBNAME euler_library)
+
+set(LINKS
+# cfv
+# geom
+# dnds
+# ${EXTERNAL_LIBS}
+)
+
+set(CPPS
+_explicit_instantiation/EulerEvaluator_EvaluateDt_NS_2D.cpp
+_explicit_instantiation/EulerEvaluator_EvaluateDt_NS_3D.cpp
+_explicit_instantiation/EulerEvaluator_EvaluateDt_NS.cpp
+_explicit_instantiation/EulerEvaluator_EvaluateDt_NS_SA.cpp
+_explicit_instantiation/EulerEvaluator_EvaluateDt_NS_SA_3D.cpp
+_explicit_instantiation/EulerEvaluator_EvaluateRHS_NS_2D.cpp
+_explicit_instantiation/EulerEvaluator_EvaluateRHS_NS_3D.cpp
+_explicit_instantiation/EulerEvaluator_EvaluateRHS_NS.cpp
+_explicit_instantiation/EulerEvaluator_EvaluateRHS_NS_SA.cpp
+_explicit_instantiation/EulerEvaluator_EvaluateRHS_NS_SA_3D.cpp
+_explicit_instantiation/EulerEvaluator_NS_2D.cpp
+_explicit_instantiation/EulerEvaluator_NS_3D.cpp
+_explicit_instantiation/EulerEvaluator_NS.cpp
+_explicit_instantiation/EulerEvaluator_NS_SA.cpp
+_explicit_instantiation/EulerEvaluator_NS_SA_3D.cpp
+_explicit_instantiation/EulerSolver_NS_2D.cpp
+_explicit_instantiation/EulerSolver_NS_3D.cpp
+_explicit_instantiation/EulerSolver_NS.cpp
+_explicit_instantiation/EulerSolver_NS_SA.cpp
+_explicit_instantiation/EulerSolver_NS_SA_3D.cpp
+)
+
+dnds_add_lib(${LIBNAME} "${CPPS}" "${LINKS}")
+

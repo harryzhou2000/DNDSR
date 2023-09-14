@@ -81,7 +81,9 @@ namespace DNDS::Euler
         struct Setting
         {
             nlohmann::ordered_json jsonSettings;
+
             Gas::RiemannSolverType rsType = Gas::Roe;
+            int nCentralSmoothStep = 0;
 
             struct IdealGasProperty
             {
@@ -186,6 +188,7 @@ namespace DNDS::Euler
                 __DNDS__json_to_config(riemannSolverType);
                 rsType = riemannSolverType;
                 // std::cout << rsType << std::endl;
+                __DNDS__json_to_config(nCentralSmoothStep);
                 __DNDS__json_to_config(constMassForce);
                 if (read)
                     DNDS_assert(constMassForce.size() == 3);
@@ -259,7 +262,6 @@ namespace DNDS::Euler
             lambdaFaceC.resize(mesh->NumFaceProc());
             lambdaFaceVis.resize(lambdaFace.size());
             deltaLambdaFace.resize(lambdaFace.size());
-
 
             fluxBnd.resize(mesh->NumBnd());
             for (auto &v : fluxBnd)
@@ -1443,6 +1445,31 @@ namespace DNDS::Euler
             }
 
             return ret;
+        }
+
+        void CentralSmoothResidual(ArrayDOFV<nVars_Fixed> &r, ArrayDOFV<nVars_Fixed> &rs, ArrayDOFV<nVars_Fixed> &rtemp)
+        {
+            for (int iterS = 1; iterS <= settings.nCentralSmoothStep; iterS++)
+            {
+                real epsC = 0.5;
+                for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
+                {
+                    real div = 1.;
+                    TU vC = r[iCell];
+                    auto c2f = mesh->cell2face[iCell];
+                    for (int ic2f = 0; ic2f < c2f.size(); ic2f++)
+                    {
+                        index iFace = c2f[ic2f];
+                        index iCellOther = vfv->CellFaceOther(iCell, iFace);
+                        div += epsC;
+                        vC += epsC * rs[iCellOther];
+                    }
+                    rtemp[iCell] = vC / div;
+                }
+                rs = rtemp;
+                rs.trans.startPersistentPull();
+                rs.trans.waitPersistentPull();
+            }
         }
 
         void InitializeUDOF(ArrayDOFV<nVars_Fixed> &u)

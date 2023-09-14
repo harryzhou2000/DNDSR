@@ -47,7 +47,7 @@ namespace DNDS::Euler
         TVFV vfv; // ! gDim -> 3 for intellisense
         ssp<Geom::UnstructuredMeshSerialRW> reader, readerBnd;
 
-        ArrayDOFV<nVars_Fixed> u, uInc, uIncRHS, uTemp;
+        ArrayDOFV<nVars_Fixed> u, uInc, uIncRHS, uTemp, rhsTemp;
         ArrayRECV<nVars_Fixed> uRec, uRecNew, uRecNew1, uRecOld, uRec1;
         ArrayDOFV<nVars_Fixed> JD, JD1, JSource, JSource1;
 
@@ -98,9 +98,12 @@ namespace DNDS::Euler
                 bool steadyQuit = false;
                 int odeCode = 0;
                 real tEnd = veryLargeReal;
+                real odeSetting1 = 0;
+                real odeSetting2 = 0;
+                real odeSetting3 = 0;
                 DNDS_NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_ORDERED_JSON(
                     TimeMarchControl,
-                    dtImplicit, nTimeStep, steadyQuit, odeCode, tEnd)
+                    dtImplicit, nTimeStep, steadyQuit, odeCode, tEnd,odeSetting1,odeSetting2,odeSetting3)
             } timeMarchControl;
 
             struct ImplicitReconstructionControl
@@ -469,6 +472,7 @@ namespace DNDS::Euler
             vfv->BuildUDof(uInc, nVars);
             vfv->BuildUDof(uIncRHS, nVars);
             vfv->BuildUDof(uTemp, nVars);
+            vfv->BuildUDof(rhsTemp, nVars);
 
             vfv->BuildURec(uRec, nVars);
             if (config.timeMarchControl.odeCode == 401)
