@@ -116,11 +116,13 @@ namespace DNDS::Euler
                 int nGmresIter = 10;
                 real recThreshold = 1e-5;
                 int nRecConsolCheck = 1;
+                int nRecMultiplyForZeroedGrad = 1;
                 DNDS_NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_ORDERED_JSON(
                     ImplicitReconstructionControl,
                     nInternalRecStep, zeroGrads,
                     recLinearScheme, nGmresSpace, nGmresIter,
-                    recThreshold, nRecConsolCheck)
+                    recThreshold, nRecConsolCheck,
+                    nRecMultiplyForZeroedGrad)
             } implicitReconstructionControl;
 
             struct OutputControl

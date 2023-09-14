@@ -150,7 +150,8 @@ namespace DNDS::Euler
             //     uOld[iCell].m() = uRec[iCell].m();
 
             InsertCheck(mpi, " Lambda RHS: StartRec");
-            int nRec = (gradIsZero ? 1 : 1) * config.implicitReconstructionControl.nInternalRecStep;
+            int nRec = (gradIsZero ? config.implicitReconstructionControl.nRecMultiplyForZeroedGrad : 1) *
+                       config.implicitReconstructionControl.nInternalRecStep;
             real recIncBase = 0;
             double tstartA = MPI_Wtime();
             typename TVFV::element_type::TFBoundary<nVars_Fixed>

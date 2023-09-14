@@ -94,3 +94,18 @@ faceAtr are got from the first cell, (for de-duplicated faces, could be periodic
 to query face-coords in cell, check is is periodic, if donor, face2cell[1] needs the face to trans-back; if main, face2cell[1] needs the face to trans; face2cell[0] is always good
 
 to query other cell-coord through face, if face is periodic main, if cell is face2cell[0] then other cell needs trans back; cell is face2cell[1] then other cell needs trans 
+
+
+## About Exporting Static Interfaces
+
+Use pybind11? 
+
+Array objects for exporting:
+
+- MPI Top interface
+- Adj array (non uniform)
+- 3d coord array
+- UDof array
+- URec array
+- Eigen Vec / Mat / Mats array ?
+- Rec Matrices array ?

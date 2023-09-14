@@ -92,6 +92,8 @@ namespace DNDS::Linear
                 eBeta.resize(j + 1);
                 eBeta.setZero();
                 eBeta(0) = beta; // eBeta = e_1 * beta
+                if(j < 1)
+                    break;
 
                 { // the QR method
                   //  auto QR = h.colPivHouseholderQr();
@@ -111,9 +113,9 @@ namespace DNDS::Linear
                 // if (rank == 0)
                 //     std::cout << h << std::endl;
 
-                for (uint32_t j = 0; j < kSubspace; j++) // x = V(:, 0,1,2,...kSubspace-1) * y
+                for (uint32_t jj = 0; jj < j; jj++) // x = V(:, 0,1,2,...kSubspace-1) * y
                 {
-                    x.addTo(Vs[j], y(j));
+                    x.addTo(Vs[jj], y(jj));
                     // std::cout << iRestart << "::" << Vs[j].transpose() << "::" << y(j) << std::endl;
                 }
                 if (rank < h.cols())

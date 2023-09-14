@@ -5,7 +5,7 @@
         "steadyQuit": false,
         "odeCode": 401,
         "tEnd": 3e+200,
-        "odeSetting1": 0.66,
+        "odeSetting1": 0.5,
         "odeSetting2": 10
     },
     "outputControl": {
@@ -27,8 +27,8 @@
         "useLocalDt": true
     },
     "convergenceControl": {
-        "nTimeStepInternal": 4000,
-        "rhsThresholdInternal": 1e-300,
+        "nTimeStepInternal": 40,
+        "rhsThresholdInternal": 1e-3,
         "res_base": 0.0,
         "useVolWiseResidual": true
     },
@@ -68,8 +68,9 @@
         "recLinearScheme": 0,
         "nGmresSpace": 5,
         "nGmresIter": 10,
-        "recThreshold": 1e-06,
-        "nRecConsolCheck": 100
+        "recThreshold": 1e-010,
+        "nRecConsolCheck": 100,
+        "nRecMultiplyForZeroedGrad": 10000000
     },
     "limiterControl": {
         "useLimiter": false,
@@ -92,7 +93,7 @@
     "linearSolverControl": {
         "gmresCode": 1,
         "nGmresSpace": 5,
-        "nGmresIter": 2
+        "nGmresIter": 1
     },
     "others": {
         "nFreezePassiveInner": 0
@@ -102,7 +103,7 @@
         "useScalarJacobian": true,
         "riemannSolverType": "Roe",
         "specialBuiltinInitializer": 2,
-        "nCentralSmoothStep": 3,
+        "nCentralSmoothStep": 10,
         "constMassForce": [
             0.0,
             0.0,

@@ -426,8 +426,7 @@ namespace DNDS::ODE
                           int maxIter, const Fstop &fstop, real dt) override
         {
             xLast = x;
-            for (int i = 0; i < 100; i++)
-                frhs(rhsbuf[0], xLast, 0, 1.0, 0);
+            frhs(rhsbuf[0], xLast, 0, 1.0, 0);
 
             xIncPrev.setConstant(0.0);
             int iter = 1;
@@ -487,11 +486,17 @@ namespace DNDS::ODE
                         // xinc *= -1. / (2 * dt * cInter[3] * wInteg[1]);
                     }
                     {
-                        fdt(xMid, dTau, 1.0, 1); // TODO: use "update spectral radius" procedure? or force update in fsolve
+                        // fdt(xMid, dTau, 1.0, 1); // TODO: use "update spectral radius" procedure? or force update in fsolve
+                        // for (auto &v : dTau)
+                        //     v = veryLargeReal;
+                        // fsolve(xMid, rhsFull, dTau, dt / 4,
+                        //        1.0, xinc, iter, 1);
+
+                        fdt(x, dTau, 1.0, 0);
                         for (auto &v : dTau)
                             v = veryLargeReal;
-                        fsolve(xMid, rhsFull, dTau, dt / 4,
-                               1.0, xinc, iter, 1);
+                        fsolve(x, rhsFull, dTau, dt / 4,
+                               1.0, xinc, iter, 0);
 
                         xinc *= 1. / (dt);
                         rhsFull = xinc;

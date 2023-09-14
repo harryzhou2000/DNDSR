@@ -16,7 +16,8 @@
         "nGmresSpace": 5,
         "nGmresIter": 10,
         "recThreshold": 1e-05,
-        "nRecConsolCheck": 1
+        "nRecConsolCheck": 1,
+        "nRecMultiplyForZeroedGrad": 1
     },
     "outputControl": {
         "nConsoleCheck": 1,
