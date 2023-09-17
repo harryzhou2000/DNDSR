@@ -201,6 +201,7 @@ namespace DNDS::Euler
             if (uIncNewI.hasNaN())
             {
                 std::cout << uIncNewI.transpose() << std::endl
+                          << uIncNewBuf.transpose() << std::endl
                           << JDiag[iCell] << std::endl
                           << iCell << std::endl;
                 DNDS_assert(!uIncNew[iCell].hasNaN());

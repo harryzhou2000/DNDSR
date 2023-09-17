@@ -1,9 +1,9 @@
 {
     "timeMarchControl": {
-        "dtImplicit": 10e-1,
-        "nTimeStep": 100,
+        "dtImplicit": 2e-1,
+        "nTimeStep": 500,
         "steadyQuit": false,
-        "odeCode": 401,
+        "odeCode": 1,
         "tEnd": 3e+200,
         "odeSetting1": 0.5,
         "odeSetting2": 5
@@ -13,7 +13,7 @@
         "nConsoleCheckInternal": 1,
         "consoleOutputMode": 0,
         "nDataOutC": 100,
-        "nDataOut": 1,
+        "nDataOut": 100,
         "nDataOutCInternal": 200,
         "nDataOutInternal": 1000000000,
         "tDataOut": 3e+200
@@ -27,8 +27,8 @@
         "useLocalDt": true
     },
     "convergenceControl": {
-        "nTimeStepInternal": 400000,
-        "rhsThresholdInternal": 1e-40,
+        "nTimeStepInternal": 400,
+        "rhsThresholdInternal": 1e-4,
         "res_base": 0.0,
         "useVolWiseResidual": true
     },
@@ -80,7 +80,7 @@
         "nPartialLimiterStartLocal": 1000000
     },
     "vfvSettings": {
-        "maxOrder": 3,
+        "maxOrder": 1,
         "intOrder": 3,
         "cacheDiffBase": false,
         "jacobiRelax": 1,

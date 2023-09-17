@@ -40,7 +40,8 @@ namespace DNDS::Euler
                 [&](decltype(u) &data)
                 {
                     vfv->BuildUDof(data, nVars);
-                });
+                },
+                1); // 1 for esdirk
             break;
         case 1: // BDF2
             if (mpi.rank == 0)
@@ -633,7 +634,7 @@ namespace DNDS::Euler
                 resBaseCInternal = res;
             else
                 resBaseCInternal = resBaseCInternal.array().max(res.array()); //! using max !
-            Eigen::Vector<real, -1> resRel = (res.array() / resBaseCInternal.array()).matrix();
+            Eigen::Vector<real, -1> resRel = (res.array() / (resBaseCInternal.array() + verySmallReal)).matrix();
             bool ifStop = resRel(0) < config.convergenceControl.rhsThresholdInternal; // ! using only rho's residual
             if (iter % config.outputControl.nConsoleCheckInternal == 0 || iter > config.convergenceControl.nTimeStepInternal || ifStop)
             {

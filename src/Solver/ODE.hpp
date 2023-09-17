@@ -96,9 +96,11 @@ namespace DNDS::ODE
     class ImplicitSDIRK4DualTimeStep : public ImplicitDualTimeStep<TDATA>
     {
 
-        static const Eigen::Matrix<real, 3, 3> butcherA;
-        static const Eigen::Vector<real, 3> butcherC;
-        static const Eigen::RowVector<real, 3> butcherB;
+        Eigen::Matrix<real, -1, -1> butcherA;
+        Eigen::Vector<real, -1> butcherC;
+        Eigen::RowVector<real, -1> butcherB;
+        int nInnerStage = 3;
+        int schemeC = 0;
 
     public:
         using Frhs = typename ImplicitDualTimeStep<TDATA>::Frhs;
@@ -119,10 +121,52 @@ namespace DNDS::ODE
          */
         template <class Finit>
         ImplicitSDIRK4DualTimeStep(
-            index NDOF, Finit &&finit = [](TDATA &) {}) : DOF(NDOF)
+            index NDOF, Finit &&finit = [](TDATA &) {}, int schemeCode = 0) : DOF(NDOF)
         {
+            
+
+            schemeC = schemeCode;
+
+            if (schemeCode == 0)
+            {
+#define _zeta 0.128886400515
+                nInnerStage = 3;
+                butcherA.resize(nInnerStage, nInnerStage);
+                butcherC.resize(nInnerStage);
+                butcherB.resize(nInnerStage);
+
+                butcherA << _zeta, 0, 0,
+                    0.5 - _zeta, _zeta, 0,
+                    2 * _zeta, 1 - 4 * _zeta, _zeta;
+                butcherC << _zeta, 0.5, 1 - _zeta;
+                butcherB << 1. / (6 * sqr(2 * _zeta - 1)),
+                    (4 * sqr(_zeta) - 4 * _zeta + 2. / 3.) / sqr(2 * _zeta - 1),
+                    1. / (6 * sqr(2 * _zeta - 1));
+#undef _zeta
+            }
+            else if (schemeCode == 1)
+            {
+                nInnerStage = 6;
+                butcherA.resize(nInnerStage, nInnerStage);
+                butcherC.resize(nInnerStage);
+                butcherB.resize(nInnerStage);
+
+                butcherA << verySmallReal, 0, 0, 0, 0, 0,
+                    0.25, 0.25, 0, 0, 0, 0,
+                    0.137776, -0.055776, 0.25, 0, 0, 0,
+                    0.1446368660269822, -0.2239319076133447, 0.4492950415863626, 0.25, 0, 0,
+                    0.09825878328356477, -0.5915442428196704, 0.8101210205756877, 0.283164405707806, 0.25, 0,
+                    0.1579162951616714, 0, 0.1867589405240008, 0.6805652953093346, -0.2752405309950067, 0.25;
+                butcherB = butcherA(Eigen::last, Eigen::all);
+                butcherC << 0, 0.5, 0.332, 0.62, 0.849999966747388, 1;
+            }
+            else
+            {
+                DNDS_assert(false);
+            }
+
             dTau.resize(NDOF);
-            rhsbuf.resize(3);
+            rhsbuf.resize(nInnerStage);
             for (auto &i : rhsbuf)
                 finit(i);
             finit(rhs);
@@ -141,7 +185,7 @@ namespace DNDS::ODE
                           int maxIter, const Fstop &fstop, real dt) override
         {
             xLast = x;
-            for (int iB = 0; iB < 3; iB++)
+            for (int iB = 0; iB < nInnerStage; iB++)
             {
                 x = xLast;
                 xIncPrev.setConstant(0.0);
@@ -184,8 +228,10 @@ namespace DNDS::ODE
                 if (iter > maxIter)
                     fstop(iter, xinc, iB + 1);
             }
+            if (schemeC == 1)
+                return;
             x = xLast;
-            for (int jB = 0; jB < 3; jB++)
+            for (int jB = 0; jB < nInnerStage; jB++)
                 x.addTo(rhsbuf[jB], butcherB(jB) * dt);
         }
 
@@ -196,24 +242,6 @@ namespace DNDS::ODE
 
         virtual ~ImplicitSDIRK4DualTimeStep() {}
     };
-
-#define _zeta 0.128886400515
-    template <class TDATA>
-    const Eigen::Matrix<real, 3, 3> ImplicitSDIRK4DualTimeStep<TDATA>::butcherA{
-        {_zeta, 0, 0},
-        {0.5 - _zeta, _zeta, 0},
-        {2 * _zeta, 1 - 4 * _zeta, _zeta}};
-
-    template <class TDATA>
-    const Eigen::Vector<real, 3> ImplicitSDIRK4DualTimeStep<TDATA>::butcherC{
-        _zeta, 0.5, 1 - _zeta};
-
-    template <class TDATA>
-    const Eigen::RowVector<real, 3> ImplicitSDIRK4DualTimeStep<TDATA>::butcherB{
-        1. / (6 * sqr(2 * _zeta - 1)),
-        (4 * sqr(_zeta) - 4 * _zeta + 2. / 3.) / sqr(2 * _zeta - 1),
-        1. / (6 * sqr(2 * _zeta - 1))};
-#undef _zeta
 
     template <class TDATA>
     class ImplicitBDFDualTimeStep : public ImplicitDualTimeStep<TDATA>
@@ -409,7 +437,6 @@ namespace DNDS::ODE
             // cInter[1] = alpha * 2.0 - alpha * alpha;
             // cInter[3] = -alpha + alpha * alpha;
 
-
             wInteg[0] = (-1.0 / 6.0) / alpha + 1.0 / 2.0;
             wInteg[1] = (-1.0 / 6.0) / (alpha * (alpha - 1.0));
             wInteg[2] = 1.0 / (alpha * 6.0 - 6.0) + 1.0 / 2.0;
@@ -495,7 +522,7 @@ namespace DNDS::ODE
                         fdt(x, dTau, 1.0, 0);
                         for (auto &v : dTau)
                             v = veryLargeReal;
-                        fsolve(x, rhsFull, dTau, dt ,
+                        fsolve(x, rhsFull, dTau, dt,
                                1.0, xinc, iter, 0);
 
                         xinc *= 1 / (dt);
@@ -503,7 +530,7 @@ namespace DNDS::ODE
                         fdt(x, dTau, 1.0, 0);
                         for (auto &v : dTau)
                             v *= 1;
-                        fsolve(x, rhsFull, dTau, dt ,
+                        fsolve(x, rhsFull, dTau, dt,
                                1.0, xinc, iter, 0);
 
                         xinc *= 1 / (dt);
@@ -511,7 +538,7 @@ namespace DNDS::ODE
                         fdt(x, dTau, 1.0, 0);
                         for (auto &v : dTau)
                             v *= 1;
-                        fsolve(x, rhsFull, dTau, dt , 
+                        fsolve(x, rhsFull, dTau, dt,
                                1.0, xinc, iter, 0);
                         // note: dt/n hinders precision
                         // note: using enough smoothing delays res-re-rise

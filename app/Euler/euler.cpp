@@ -1,9 +1,18 @@
 #include "Euler/EulerSolver.hpp"
 
-
-int main(int argc, char* argv[])
+int main(int argc, char *argv[])
 {
+    // std::cout << "====================\n";
+    // std::cout << argc << std::endl;
+    // for (int i = 0; i < argc; i++)
+    //     std::cout << argv[i] << "\n";
     MPI_Init(&argc, &argv);
+    // std::cout << "====================\n";
+    // std::cout << argc << std::endl;
+    // for (int i = 0; i < argc; i++)
+    //     std::cout << argv[i] << "\n";
+    // return 0;
+
     {
         DNDS::MPIInfo mpi;
         mpi.setWorld();

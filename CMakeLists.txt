@@ -1,5 +1,5 @@
 if(UNIX OR MINGW)
-    cmake_minimum_required(VERSION 3.1)
+    cmake_minimum_required(VERSION 3.6 FATAL_ERROR)
 else()
     cmake_minimum_required(VERSION 3.20)
 endif()
@@ -120,9 +120,15 @@ find_path(EXTERNAL_INCLUDE_NANOFLANN nanoflann.hpp PATHS
     "${PROJECT_SOURCE_DIR}/external/nanoflann-1.4.3" 
     NO_DEFAULT_PATH REQUIRED)
 
+find_path(EXTERNAL_INCLUDE_PYBIND11 pybind11 PATHS
+    "${PROJECT_SOURCE_DIR}/external/pybind11-2.11.1/include" 
+    NO_DEFAULT_PATH REQUIRED)
+
 find_path(EXTERNAL_DOXYGEN_AWESOME doxygen-awesome.css PATHS 
     "${PROJECT_SOURCE_DIR}/external/doxygen-awesome-css-2.2.1" 
     NO_DEFAULT_PATH)
+
+add_subdirectory("${EXTERNAL_INCLUDE_PYBIND11}/..")
 
 set (EXTERNAL_LIBS "")
 
@@ -142,6 +148,23 @@ set(EXTERNAL_LIBS ${EXTERNAL_LIBS}
     "Project Public External Lib Dependencies"
     )
 message("EXTERNAL_LIBS  " ${EXTERNAL_LIBS})
+
+set(EXTERNAL_INCLUDES 
+    ${EXTERNAL_INCLUDE_ZLIB}
+    ${EXTERNAL_INCLUDE_HDF5}
+    ${EXTERNAL_INCLUDE_CGNS}
+    ${EXTERNAL_INCLUDE_METIS}
+    ${EXTERNAL_INCLUDE_PARMETIS}
+    # ${EXTERNAL_INCLUDE_TECIO}
+    ${EXTERNAL_INCLUDE_EIGEN}
+    ${EXTERNAL_INCLUDE_JSON}
+    # ${EXTERNAL_INCLUDE_RAPIDJSON}
+    ${EXTERNAL_INCLUDE_CPPCODEC}
+    ${EXTERNAL_INCLUDE_NANOFLANN}
+    ${EXTERNAL_INCLUDE_BOOST}
+    ${EXTERNAL_INCLUDE_CGAL}
+    ${EXTERNAL_INCLUDE_PYBIND11}
+    CACHE INTERNAL "Project External Includes")
 
 if(UNIX OR MINGW)
     set(EXTERNAL_LIBS ${EXTERNAL_LIBS}
@@ -202,23 +225,6 @@ else()
     message(FATAL_ERROR "NOT YET IMPLEMENTED HERE")
 endif()
 
-
-
-set(EXTERNAL_INCLUDES 
-    ${EXTERNAL_INCLUDE_ZLIB}
-    ${EXTERNAL_INCLUDE_HDF5}
-    ${EXTERNAL_INCLUDE_CGNS}
-    ${EXTERNAL_INCLUDE_METIS}
-    ${EXTERNAL_INCLUDE_PARMETIS}
-    # ${EXTERNAL_INCLUDE_TECIO}
-    ${EXTERNAL_INCLUDE_EIGEN}
-    ${EXTERNAL_INCLUDE_JSON}
-    # ${EXTERNAL_INCLUDE_RAPIDJSON}
-    ${EXTERNAL_INCLUDE_CPPCODEC}
-    ${EXTERNAL_INCLUDE_NANOFLANN}
-    ${EXTERNAL_INCLUDE_BOOST}
-    ${EXTERNAL_INCLUDE_CGAL}
-    CACHE INTERNAL "Project External Includes")
 
 if (MPI_CXX_FOUND)
     set(EXTERNAL_INCLUDES ${MPI_CXX_INCLUDE_DIRS} ${EXTERNAL_INCLUDES})
@@ -326,6 +332,30 @@ ADD_EXE_APP("${APPS_DNDS}" "app/DNDS")
 ADD_EXE_APP("${APPS_Geom}" "app/Geom")
 ADD_EXE_APP("${APPS_CFV}" "app/CFV")
 ADD_EXE_APP("${APPS_Euler}" "app/Euler")
+
+
+
+set(PYEXTS_EXTERNAL
+pybind11_basicTest
+)
+
+function(add_python_ext EXT_NAME CPPS)
+    pybind11_add_module(${EXT_NAME} ${CPPS})
+endfunction(add_python_ext)
+
+function(ADD_EXT_APP PYEXTS PREFIX)
+    foreach(PYEXT ${PYEXTS})
+        add_python_ext(${PYEXT} "${PREFIX}/${PYEXT}.cpp")
+        target_link_libraries(${PYEXT} PUBLIC ${LIBS})
+        target_link_libraries(${PYEXT} PUBLIC ${EXTERNAL_LIBS})
+        target_include_directories(${PYEXT} PUBLIC ${EXTERNAL_INCLUDES} PUBLIC ${INCLUDES})
+    endforeach(PYEXT)
+endfunction(ADD_EXT_APP)
+
+ADD_EXT_APP("${PYEXTS_EXTERNAL}" "app/external")
+
+
+
 
 
 

@@ -3,6 +3,7 @@ running
 # building
 build*
 *.exe
+*.so
 # external
 /external
 /cfd_externals
@@ -25,3 +26,5 @@ data
 *.out
 *.toc
 *.bbl
+# python
+*.pyc
