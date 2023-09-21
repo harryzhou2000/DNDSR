@@ -1,9 +1,9 @@
 {
     "timeMarchControl": {
-        "dtImplicit": 2e-3,
+        "dtImplicit": 2e30,
         "nTimeStep": 1,
-        "steadyQuit": false,
-        "odeCode": 0, //0 = SDIRK4, 1 = BDF2, 2 = SSPRK3
+        "steadyQuit": true,
+        "odeCode": 1, //0 = SDIRK4, 1 = BDF2, 2 = SSPRK3
         "tEnd": 3e+200
     },
     "outputControl": {
@@ -17,7 +17,7 @@
         "tDataOut": 3e+200
     },
     "implicitCFLControl": {
-        "CFL": 10.0,
+        "CFL": 50.0,
         "nForceLocalStartStep": 2147483647,
         "nCFLRampStart": 2147483647,
         "nCFLRampLength": 2147483647,
@@ -25,23 +25,23 @@
         "useLocalDt": true
     },
     "convergenceControl": {
-        "nTimeStepInternal": 200,
-        "rhsThresholdInternal": 1e-30,
+        "nTimeStepInternal": 20000,
+        "rhsThresholdInternal": 1e-60,
         "res_base": 0.0,
-        "useVolWiseResidual": true
+        "useVolWiseResidual": false
     },
     "dataIOControl": {
         "uniqueStamps": false,
-        "meshScale": 6.28318530717958647692528676,
-        "meshFile": "../data/mesh/Uniform64_3D_Periodic.cgns",
-        "outPltName": "../data/outUnsteady/Uniform64_3D_Periodic_TGV",
-        "outLogName": "../data/outUnsteady/Uniform64_3D_Periodic_TGV",
+        "meshFile": "../data/mesh/DPW3_hybrid_ANSYS_DLR-F6_Ver1_coarse.cgns",
+        "outPltName": "../data/out/DPW3_hybrid_ANSYS_DLR-F6_Ver1_coarse",
+        "outLogName": "../data/out/DPW3_hybrid_ANSYS_DLR-F6_Ver1_coarse",
         "outPltMode": 0,
-        "readMeshMode": 0,
+        "readMeshMode": 1,
         "outPltTecplotFormat": true,
         "outPltVTKFormat": true,
         "outAtPointData": true,
-        "outAtCellData": true
+        "outAtCellData": true,
+        "outBndData": true
     },
     "implicitReconstructionControl": {
         "nInternalRecStep": 1,
@@ -60,8 +60,8 @@
         "nPartialLimiterStartLocal": 2147483647
     },
     "vfvSettings": {
-        "maxOrder": 3,
-        "intOrder": 3,
+        "maxOrder": 1,
+        "intOrder": 1,
         "cacheDiffBase": false,
         "jacobiRelax": 1.0,
         "SORInstead": true,
@@ -87,17 +87,16 @@
             0.0
         ],
         "farFieldStaticValue": [
-            1.0,
-            0.0,
-            0.0,
-            0.0,
-            2.5
+            1,
+            1,
+            0,
+            0,
+            2.880952380952381 //M 0.75
         ],
-        "specialBuiltinInitializer": 3,
         "idealGasProperty": {
             "gamma": 1.4,
-            "Rgas": 289,
-            "muGas": 1e-200,
+            "Rgas": 0.003486659170349,
+            "muGas": 1e-6,
             "prGas": 0.72,
             "TRef": 273.15,
             "CSutherland": 110.4

@@ -24,14 +24,17 @@ set(DNDS_USE_PARALLEL_MACRO OFF CACHE BOOL "for auto multi-thread?")
 set(DNDS_USE_OMP ON CACHE BOOL "for openmp enabling")
 set(DNDS_FAST_BUILD_FAST ON CACHE BOOL "don't -g on basic modules")
 
+set(DNDS_EIGEN_USE_BLAS OFF CACHE BOOL "use blas in eigen")
+set(DNDS_EIGEN_USE_LAPACK OFF CACHE BOOL "use lapack in eigen")
 
 
-if(UNIX )
-    set(CMAKE_CXX_COMPILER mpicxx CACHE FILEPATH "compiler with your MPI wrapping")
+find_package(MPI REQUIRED)
+if(UNIX)
+    # set(CMAKE_CXX_COMPILER mpicxx CACHE FILEPATH "compiler with your MPI wrapping")
     set(CMAKE_FIND_LIBRARY_SUFFIXES ".a") # ! using static libs
 elseif(MSVC OR WIN32 OR MINGW)
     # nothing
-    find_package(MPI REQUIRED)
+    
     if(MPI_CXX_FOUND)
         set (CMAKE_EXE_LINKER_FLAGS "${MPI_C_LINK_FLAGS} ${CMAKE_EXE_LINKER_FLAGS}")
     else()
@@ -49,6 +52,7 @@ set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS
 set(CMAKE_USE_RELATIVE_PATHS ON)
 
 message("external install hard guess at: external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}")
+
 
 # ##########################################
 find_library(EXTERNAL_LIB_ZLIB z z_D REQUIRED)
@@ -72,6 +76,9 @@ find_library(EXTERNAL_LIB_PARMETIS parmetis PATHS
     # "${PROJECT_SOURCE_DIR}/external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}" 
     # "${PROJECT_SOURCE_DIR}/external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}/lib"
     # NO_DEFAULT_PATH) #not needed for now
+find_library(EXTERNAL_LIB_BLAS openblas blas)
+find_library(EXTERNAL_LIB_LAPACK lapack)
+find_library(EXTERNAL_LIB_LAPACKE lapacke)
 
 find_path(EXTERNAL_INCLUDE_ZLIB zlib.h REQUIRED)
 find_path(EXTERNAL_INCLUDE_HDF5 hdf5.h PATHS 
@@ -147,6 +154,15 @@ set(EXTERNAL_LIBS ${EXTERNAL_LIBS}
     CACHE INTERNAL
     "Project Public External Lib Dependencies"
     )
+if (DNDS_EIGEN_USE_BLAS)
+    set(EXTERNAL_LIBS ${EXTERNAL_LIBS}
+    ${EXTERNAL_LIB_BLAS})
+endif()
+if (DNDS_EIGEN_USE_LAPACK)
+    set(EXTERNAL_LIBS ${EXTERNAL_LIBS}
+    ${EXTERNAL_LIB_LAPACK}
+    ${EXTERNAL_LIB_LAPACKE})
+endif()
 message("EXTERNAL_LIBS  " ${EXTERNAL_LIBS})
 
 set(EXTERNAL_INCLUDES 
@@ -165,6 +181,14 @@ set(EXTERNAL_INCLUDES
     ${EXTERNAL_INCLUDE_CGAL}
     ${EXTERNAL_INCLUDE_PYBIND11}
     CACHE INTERNAL "Project External Includes")
+
+if(DNDS_EIGEN_USE_BLAS)
+    add_compile_options(-DEIGEN_USE_BLAS)
+endif()
+
+if(DNDS_EIGEN_USE_LAPACK)
+    add_compile_options(-DEIGEN_USE_LAPACKE_STRICT)
+endif()
 
 if(UNIX OR MINGW)
     set(EXTERNAL_LIBS ${EXTERNAL_LIBS}
