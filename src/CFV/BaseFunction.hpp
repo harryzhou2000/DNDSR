@@ -1,6 +1,7 @@
 #pragma once
 
 #include "DNDS/Defines.hpp"
+#include "Geom/EigenTensor.hpp"
 
 namespace DNDS::CFV
 {
@@ -15,22 +16,22 @@ namespace DNDS::CFV
             {1, 0, 0}, // 01
             {0, 1, 0}, // 02
             {0, 0, 1}, // 03
-            {2, 0, 0}, // 04
-            {0, 2, 0}, // 05
-            {0, 0, 2}, // 06
-            {1, 1, 0}, // 07
-            {0, 1, 1}, // 08
-            {1, 0, 1}, // 09
-            {3, 0, 0}, // 10
-            {0, 3, 0}, // 11
-            {0, 0, 3}, // 12
-            {2, 1, 0}, // 13
-            {1, 2, 0}, // 14
-            {0, 2, 1}, // 15
-            {0, 1, 2}, // 16
-            {1, 0, 2}, // 17
-            {2, 0, 1}, // 18
-            {1, 1, 1}, // 19
+            {2, 0, 0}, // 04  00
+            {0, 2, 0}, // 05  11
+            {0, 0, 2}, // 06  22
+            {1, 1, 0}, // 07  01
+            {0, 1, 1}, // 08  12
+            {1, 0, 1}, // 09  02
+            {3, 0, 0}, // 10  000
+            {0, 3, 0}, // 11  111
+            {0, 0, 3}, // 12  222
+            {2, 1, 0}, // 13  001
+            {1, 2, 0}, // 14  011
+            {0, 2, 1}, // 15  112
+            {0, 1, 2}, // 16  122
+            {1, 0, 2}, // 17  022
+            {2, 0, 1}, // 18  002
+            {1, 1, 1}, // 19  012
     };
 
     static const int diffOperatorOrderList2D[ndiffSiz2D][3] =
@@ -642,13 +643,12 @@ namespace DNDS::CFV
         return ret;
     }
 
-    // #include <unsupported/Eigen/CXX11/TensorSymmetry>
+// #include <unsupported/Eigen/CXX11/TensorSymmetry>
 
-    template <int dim, int rank, class VLe>
-    void TransSymDiffOrderTensorV(VLe &&Le, const Geom::tGPoint &trans)
+
+    template <int dim, int rank, class VLe, class Trans>
+    void TransSymDiffOrderTensorV(VLe &&Le, Trans &&trans)
     {
-        // TODO!
-        DNDS_assert(false);
         if constexpr (dim == 3)
         {
             if constexpr (rank == 0)
@@ -660,34 +660,161 @@ namespace DNDS::CFV
             }
             else if constexpr (rank == 2)
             {
+                /*
+                00
+                11
+                22
+                01
+                12
+                02*/
+                Eigen::Matrix3d symTensorR2{
+                    {Le(0), Le(3), Le(5)},
+                    {Le(3), Le(1), Le(4)},
+                    {Le(5), Le(4), Le(2)}};
+                symTensorR2 = trans * symTensorR2 * trans.transpose();
+                Le(0) = symTensorR2(0, 0), Le(1) = symTensorR2(1, 1), Le(2) = symTensorR2(2, 2);
+                Le(3) = symTensorR2(0, 1), Le(4) = symTensorR2(1, 2), Le(5) = symTensorR2(0, 2);
             }
             else if constexpr (rank == 3)
             {
+
+                /*
+                000
+                111
+                222
+                001
+                011
+                112
+                122
+                022
+                002
+                012*/
+                DNDS::ETensor::ETensorR3<real, 3, 3, 3> symTensorR3;
+                symTensorR3(0, 0, 0) = Le(0);
+                symTensorR3(1, 1, 1) = Le(1);
+                symTensorR3(2, 2, 2) = Le(2);
+
+                symTensorR3(0, 0, 1) = symTensorR3(0, 1, 0) = symTensorR3(1, 0, 0) = Le(3);
+                symTensorR3(0, 1, 1) = symTensorR3(1, 1, 0) = symTensorR3(1, 0, 1) = Le(4);
+                symTensorR3(1, 1, 2) = symTensorR3(1, 2, 1) = symTensorR3(2, 1, 1) = Le(5);
+                symTensorR3(1, 2, 2) = symTensorR3(2, 2, 1) = symTensorR3(2, 1, 2) = Le(6);
+                symTensorR3(0, 2, 2) = symTensorR3(2, 2, 0) = symTensorR3(2, 0, 2) = Le(7);
+                symTensorR3(0, 0, 2) = symTensorR3(0, 2, 0) = symTensorR3(2, 0, 0) = Le(8);
+
+                symTensorR3(0, 1, 2) = symTensorR3(1, 2, 0) = symTensorR3(2, 0, 1) =
+                    symTensorR3(0, 2, 1) = symTensorR3(2, 1, 0) = symTensorR3(1, 0, 2) = Le(9);
+
+                symTensorR3.MatTransform0(trans.transpose());
+                symTensorR3.MatTransform1(trans.transpose());
+                symTensorR3.MatTransform2(trans.transpose());
+                Le(0) = symTensorR3(0, 0, 0);
+                Le(1) = symTensorR3(1, 1, 1);
+                Le(2) = symTensorR3(2, 2, 2);
+                Le(3) = symTensorR3(0, 0, 1);
+                Le(4) = symTensorR3(0, 1, 1);
+                Le(5) = symTensorR3(1, 1, 2);
+                Le(6) = symTensorR3(1, 2, 2);
+                Le(7) = symTensorR3(0, 2, 2);
+                Le(8) = symTensorR3(0, 0, 2);
+                Le(9) = symTensorR3(0, 1, 2);
             }
             else
             {
                 DNDS_assert(false);
             }
         }
-        else
+        else // 2-d tensor
         {
             if constexpr (rank == 0)
             {
             }
             else if constexpr (rank == 1)
             {
+                Le = trans * Le;
             }
             else if constexpr (rank == 2)
             {
+                Eigen::Matrix2d symTensorR2{{Le(0), Le(1)},
+                                            {Le(1), Le(2)}};
+                symTensorR2 = trans * symTensorR2 * trans.transpose();
+                Le(0) = symTensorR2(0, 0), Le(1) = symTensorR2(0, 1), Le(2) = symTensorR2(1, 1);
             }
             else if constexpr (rank == 3)
             {
+
+                DNDS::ETensor::ETensorR3<real, 2, 2, 2> symTensorR3;
+                symTensorR3(0, 0, 0) = Le(0);
+                symTensorR3(0, 0, 1) = symTensorR3(0, 1, 0) = symTensorR3(1, 0, 0) = Le(1);
+                symTensorR3(0, 1, 1) = symTensorR3(1, 0, 1) = symTensorR3(1, 1, 0) = Le(2);
+                symTensorR3(1, 1, 1) = Le(3);
+                symTensorR3.MatTransform0(trans.transpose());
+                symTensorR3.MatTransform1(trans.transpose());
+                symTensorR3.MatTransform2(trans.transpose());
+                Le(0) = symTensorR3(0, 0, 0);
+                Le(1) = symTensorR3(0, 0, 1);
+                Le(2) = symTensorR3(0, 1, 1);
+                Le(3) = symTensorR3(1, 1, 1);
             }
             else
             {
                 DNDS_assert(false);
             }
         }
+    }
+
+    template <int dim, class TMat>
+    inline void ConvertDiffsLinMap(TMat &&mat, const Geom::tGPoint &dXijdXi)
+    {
+        if constexpr (dim == 2)
+            switch (mat.rows())
+            {
+            case 10:
+                for (int iB = 0; iB < mat.cols(); iB++)
+                {
+                    TransSymDiffOrderTensorV<2, 3>(
+                        mat(Eigen::seq(Eigen::fix<6>, Eigen::fix<9>), iB),
+                        dXijdXi({0, 1}, {0, 1}));
+                }
+            case 6:
+                for (int iB = 0; iB < mat.cols(); iB++)
+                    TransSymDiffOrderTensorV<2, 2>(
+                        mat(Eigen::seq(Eigen::fix<3>, Eigen::fix<5>), iB),
+                        dXijdXi({0, 1}, {0, 1}));
+
+            case 3:
+                mat({1, 2}, Eigen::all) = dXijdXi({0, 1}, {0, 1}) * mat({1, 2}, Eigen::all);
+            case 1:
+                break;
+
+            default:
+                DNDS_assert(false);
+                break;
+            }
+        else // dim ==3
+            switch (mat.rows())
+            {
+            case 20:
+                for (int iB = 0; iB < mat.cols(); iB++)
+                {
+                    TransSymDiffOrderTensorV<3, 3>(
+                        mat(Eigen::seq(Eigen::fix<10>, Eigen::fix<19>), iB),
+                        dXijdXi);
+                }
+            case 10:
+                for (int iB = 0; iB < mat.cols(); iB++)
+                    TransSymDiffOrderTensorV<3, 2>(
+                        mat(Eigen::seq(Eigen::fix<4>, Eigen::fix<9>), iB),
+                        dXijdXi);
+
+            case 4:
+                mat({1, 2, 3}, Eigen::all) = dXijdXi * mat({1, 2, 3}, Eigen::all);
+            case 1:
+                break;
+
+            default:
+                DNDS_assert(false);
+                break;
+            }
     }
 
     template <int dim>

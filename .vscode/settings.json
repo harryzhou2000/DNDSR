@@ -146,7 +146,8 @@
         "xutility": "cpp",
         "*.ipp": "cpp",
         "slist": "cpp",
-        "rope": "cpp"
+        "rope": "cpp",
+        "tensor": "cpp"
     },
     "cSpell.words": [
         "Bary",

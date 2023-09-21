@@ -6,6 +6,12 @@
         "odeCode": 0,
         "tEnd": 3e+200
     },
+    "convergenceControl": {
+        "nTimeStepInternal": 100000,
+        "rhsThresholdInternal": 1e-30,
+        "res_base": 0.0,
+        "useVolWiseResidual": true
+    },
     "outputControl": {
         "nConsoleCheck": 1,
         "nConsoleCheckInternal": 1,
@@ -23,12 +29,6 @@
         "nCFLRampLength": 2147483647,
         "CFLRampEnd": 0.0,
         "useLocalDt": true
-    },
-    "convergenceControl": {
-        "nTimeStepInternal": 100000,
-        "rhsThresholdInternal": 1e-30,
-        "res_base": 0.0,
-        "useVolWiseResidual": true
     },
     "dataIOControl": {
         "uniqueStamps": false,
@@ -69,7 +69,11 @@
         "smoothThreshold": 1e-3,
         "WBAP_nStd": 10.0,
         "normWBAP": false,
-        "subs2ndOrder": 1
+        "subs2ndOrder": 0,
+        "baseSettings": {
+            "localOrientation": true,
+            "anisotropicLengths": true
+        }
     },
     "linearSolverControl": {
         "gmresCode": 0,

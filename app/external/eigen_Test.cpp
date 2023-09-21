@@ -1,5 +1,6 @@
 #include "Eigen/Dense"
 #include "DNDS/Defines.hpp"
+#include <unsupported/Eigen/CXX11/TensorSymmetry>
 
 int main()
 {
@@ -61,6 +62,8 @@ int main()
     a.setRandom();
 
     std::cout << a.determinant() << std::endl;
+    
 
+    
     return 0;
 }

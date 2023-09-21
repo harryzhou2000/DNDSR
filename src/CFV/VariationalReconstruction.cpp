@@ -23,6 +23,8 @@ namespace DNDS::CFV
         this->MakePairDefaultOnCell(cellCent);
         this->MakePairDefaultOnCell(cellIntPPhysics);
         this->MakePairDefaultOnCell(cellAlignedHBox);
+        this->MakePairDefaultOnCell(cellMajorHBox);
+        this->MakePairDefaultOnCell(cellMajorCoord, 3, 3);
 #ifdef DNDS_USE_OMP
 #pragma omp parallel for
 #endif
@@ -84,7 +86,37 @@ namespace DNDS::CFV
             tSmallCoords coordsCellC = coordsCell.colwise() - this->GetCellBary(iCell);
             DNDS_assert(coordsCellC.cols() == coordsCell.cols());
             tPoint hBox = coordsCellC.array().abs().rowwise().maxCoeff();
+            if constexpr (dim == 2)
+                hBox(2) = 1;
             cellAlignedHBox[iCell] = hBox;
+
+            //****** Get Major Axis
+            tJacobi inertia;
+            inertia.setZero();
+            qCell.Integration(
+                inertia,
+                [&](auto &vInc, int iG, const tPoint &pParam, const Elem::tD01Nj &DiNj)
+                {
+                    tPoint pPhy = Elem::PPhysicsCoordD01Nj(coordsCell, DiNj);
+                    tPoint pPhyC = (pPhy - cellBary[iCell]);
+                    vInc = (pPhyC * pPhyC.transpose()) * cellIntJacobiDet(iCell, iG);
+                });
+            inertia /= this->GetCellVol(iCell);
+            real inerNorm = inertia.norm();
+            inertia(0, 0) += inerNorm * 1e-6;
+            inertia(1, 1) += inerNorm * 1e-8;
+            tJacobi decRet;
+            decRet.setIdentity();
+            if constexpr (dim == 3)
+                decRet = HardEigen::Eigen3x3RealSymEigenDecompositionNormalized(inertia);
+            else
+                decRet({0, 1}, {0, 1}) = HardEigen::Eigen2x2RealSymEigenDecompositionNormalized(inertia({0, 1}, {0, 1}));
+            cellMajorCoord[iCell] = decRet;
+            tSmallCoords coordsCellM = cellMajorCoord[iCell].transpose() * coordsCellC;
+            tPoint hBoxM = coordsCellM.array().abs().rowwise().maxCoeff();
+            if constexpr (dim == 2)
+                hBoxM(2) = 1;
+            cellMajorHBox[iCell] = hBoxM;
         }
         real sumVolumeAll{0};
         MPI::Allreduce(&sumVolume, &sumVolumeAll, 1, DNDS_MPI_REAL, MPI_SUM, mpi.comm);

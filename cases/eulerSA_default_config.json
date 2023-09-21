@@ -4,7 +4,10 @@
         "nTimeStep": 1000000,
         "steadyQuit": false,
         "odeCode": 0,
-        "tEnd": 3e+200
+        "tEnd": 3e+200,
+        "odeSetting1": 0.0,
+        "odeSetting2": 0.0,
+        "odeSetting3": 0.0
     },
     "implicitReconstructionControl": {
         "nInternalRecStep": 1,
@@ -13,7 +16,8 @@
         "nGmresSpace": 5,
         "nGmresIter": 10,
         "recThreshold": 1e-05,
-        "nRecConsolCheck": 1
+        "nRecConsolCheck": 1,
+        "nRecMultiplyForZeroedGrad": 1
     },
     "outputControl": {
         "nConsoleCheck": 1,
@@ -82,6 +86,8 @@
         "nPartialLimiterStartLocal": 0
     },
     "linearSolverControl": {
+        "sgsIter": 0,
+        "sgsWithRec": 0,
         "gmresCode": 0,
         "nGmresSpace": 10,
         "nGmresIter": 2
@@ -99,6 +105,7 @@
         "ignoreSourceTerm": false,
         "specialBuiltinInitializer": 0,
         "riemannSolverType": "Roe",
+        "nCentralSmoothStep": 0,
         "constMassForce": [
             0.0,
             0.0,
@@ -131,6 +138,10 @@
         "smoothThreshold": 0.01,
         "WBAP_nStd": 10.0,
         "normWBAP": false,
-        "subs2ndOrder": 0
+        "subs2ndOrder": 0,
+        "baseSettings": {
+            "localOrientation": false,
+            "anisotropicLengths": false
+        }
     }
 }

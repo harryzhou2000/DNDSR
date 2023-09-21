@@ -6,6 +6,12 @@
         "odeCode": 1, //0 = SDIRK4, 1 = BDF2, 2 = SSPRK3
         "tEnd": 3e+200
     },
+    "convergenceControl": {
+        "nTimeStepInternal": 20000,
+        "rhsThresholdInternal": 1e-60,
+        "res_base": 0.0,
+        "useVolWiseResidual": false
+    },
     "outputControl": {
         "nConsoleCheck": 1,
         "nConsoleCheckInternal": 1,
@@ -23,12 +29,6 @@
         "nCFLRampLength": 2147483647,
         "CFLRampEnd": 0.0,
         "useLocalDt": true
-    },
-    "convergenceControl": {
-        "nTimeStepInternal": 20000,
-        "rhsThresholdInternal": 1e-60,
-        "res_base": 0.0,
-        "useVolWiseResidual": false
     },
     "dataIOControl": {
         "uniqueStamps": true,
@@ -68,7 +68,11 @@
         "smoothThreshold": 1e-3,
         "WBAP_nStd": 10.0,
         "normWBAP": false,
-        "subs2ndOrder": 1
+        "subs2ndOrder": 0,
+        "baseSettings": {
+            "localOrientation": true,
+            "anisotropicLengths": true
+        }
     },
     "linearSolverControl": {
         "gmresCode": 0,

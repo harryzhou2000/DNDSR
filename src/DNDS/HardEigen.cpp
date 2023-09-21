@@ -48,6 +48,37 @@ namespace DNDS::HardEigen
         return ret;
     }
 
+    Eigen::Matrix3d Eigen3x3RealSymEigenDecompositionNormalized(const Eigen::Matrix3d &A)
+    {
+        Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> solver;
+        solver.computeDirect(A);
+        // if (!(solver.eigenvalues()(1) <= solver.eigenvalues()(2)))
+        // {
+        //     std::cout << solver.eigenvalues() << std::endl;
+        //     std::exit(-1);
+        // }
+        Eigen::Matrix3d ret = (solver.eigenvectors())(Eigen::all, {2, 1, 0});
+        // ret(Eigen::all, 0) *= signP(ret(0, 0));
+        // ret(Eigen::all, 1) *= signP(ret(1, 1));
+        // ret(Eigen::all, 2) *= ret.determinant();
+        return ret;
+    }
+
+    Eigen::Matrix2d Eigen2x2RealSymEigenDecompositionNormalized(const Eigen::Matrix2d &A)
+    {
+        Eigen::SelfAdjointEigenSolver<Eigen::Matrix2d> solver;
+        solver.computeDirect(A);
+        // if (!(solver.eigenvalues()(0) <= solver.eigenvalues()(1)))
+        // {
+        //     std::cout << solver.eigenvalues() << std::endl;
+        //     std::exit(-1);
+        // }
+        Eigen::Matrix2d ret = (solver.eigenvectors())(Eigen::all, {1, 0});
+        // ret(Eigen::all, 0) *= signP(ret(0, 0));
+        // ret(Eigen::all, 1) *= ret.determinant();
+        return ret;
+    }
+
     Eigen::Index EigenLeastSquareSolve(const Eigen::MatrixXd &A, const Eigen::MatrixXd &B, Eigen::MatrixXd &AIB)
     {
         auto SVDResult = A.jacobiSvd(Eigen::ComputeThinU | Eigen::ComputeThinV);

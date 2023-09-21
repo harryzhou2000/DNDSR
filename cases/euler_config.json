@@ -88,7 +88,11 @@
         "smoothThreshold": 1e-3,
         "WBAP_nStd": 10.0,
         "normWBAP": false,
-        "subs2ndOrder": 0
+        "subs2ndOrder": 0,
+        "baseSettings": {
+            "localOrientation": true,
+            "anisotropicLengths": true
+        }
     },
     "linearSolverControl": {
         "sgsIter": 10,

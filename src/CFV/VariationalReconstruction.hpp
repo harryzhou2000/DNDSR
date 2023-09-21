@@ -16,6 +16,8 @@
 
 #include "Eigen/Dense"
 
+#include "DNDS/JsonUtil.hpp"
+
 namespace DNDS::CFV
 {
     /**
@@ -40,6 +42,16 @@ namespace DNDS::CFV
         bool normWBAP = false;       /// @brief if switch to normWBAP
         int subs2ndOrder = 0;        /// @brief 0: vfv; 1: gauss rule; 2: least square
 
+        struct BaseSettings
+        {
+            bool localOrientation = false;
+            bool anisotropicLengths = false;
+            DNDS_NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_ORDERED_JSON(
+                BaseSettings,
+                localOrientation,
+                anisotropicLengths)
+        } baseSettings;
+
         VRSettings()
         {
         }
@@ -61,6 +73,7 @@ namespace DNDS::CFV
             jsonSetting["WBAP_nStd"] = WBAP_nStd;
             jsonSetting["normWBAP"] = normWBAP;
             jsonSetting["subs2ndOrder"] = subs2ndOrder;
+            jsonSetting["baseSettings"] = baseSettings;
         }
 
         /**
@@ -79,6 +92,7 @@ namespace DNDS::CFV
             WBAP_nStd = jsonSetting["WBAP_nStd"];
             normWBAP = jsonSetting["normWBAP"];
             subs2ndOrder = jsonSetting["subs2ndOrder"];
+            baseSettings = jsonSetting["baseSettings"];
         }
 
         friend void from_json(const json &j, VRSettings &s)
@@ -113,7 +127,7 @@ namespace DNDS::CFV
     using t3Mat = decltype(t3MatPair::father);
 
     // Corresponds to mean/rec dofs
-    using tVVecPair = DNDS::ArrayPair<DNDS::ArrayEigenVector<DynamicSize>>;
+    using tVVecPair = ::DNDS::ArrayPair<DNDS::ArrayEigenVector<DynamicSize>>;
     using tVVec = decltype(tVVecPair::father);
     using tMatsPair = DNDS::ArrayPair<DNDS::ArrayEigenUniMatrixBatch<DynamicSize, DynamicSize>>;
     using tMats = decltype(tMatsPair::father);
@@ -361,14 +375,35 @@ namespace DNDS::CFV
                             index iCell, index iFace, int iG, int flag = 0)
         {
             using namespace Geom;
-            auto simpleScale = cellAlignedHBox[iCell];
-            auto pCen = cellCent[iCell];
-            tPoint pPhysicsCScaled = (pPhy - pCen).array() / simpleScale.array();
 
-            if constexpr (dim == 2)
-                FPolynomialFill2D(DiBj, pPhysicsCScaled(0), pPhysicsCScaled(1), pPhysicsCScaled(2), simpleScale(0), simpleScale(1), simpleScale(2), DiBj.rows(), DiBj.cols());
+            auto pCen = cellCent[iCell];
+            tPoint pPhysicsC = pPhy - pCen;
+
+            if (!settings.baseSettings.localOrientation)
+            {
+                tPoint simpleScale = cellAlignedHBox[iCell];
+                if (!settings.baseSettings.anisotropicLengths)
+                    simpleScale.setConstant(simpleScale.array().maxCoeff());
+                tPoint pPhysicsCScaled = pPhysicsC.array() / simpleScale.array();
+                if constexpr (dim == 2)
+                    FPolynomialFill2D(DiBj, pPhysicsCScaled(0), pPhysicsCScaled(1), pPhysicsCScaled(2), simpleScale(0), simpleScale(1), simpleScale(2), DiBj.rows(), DiBj.cols());
+                else
+                    FPolynomialFill3D(DiBj, pPhysicsCScaled(0), pPhysicsCScaled(1), pPhysicsCScaled(2), simpleScale(0), simpleScale(1), simpleScale(2), DiBj.rows(), DiBj.cols());
+            }
             else
-                FPolynomialFill3D(DiBj, pPhysicsCScaled(0), pPhysicsCScaled(1), pPhysicsCScaled(2), simpleScale(0), simpleScale(1), simpleScale(2), DiBj.rows(), DiBj.cols());
+            {
+                tPoint simpleScale = cellMajorHBox[iCell];
+                if (!settings.baseSettings.anisotropicLengths)
+                    simpleScale.setConstant(simpleScale.array().maxCoeff());
+                tPoint pPhysicsCMajor = cellMajorCoord[iCell].transpose() * pPhysicsC;
+                tPoint pPhysicsCScaled = pPhysicsCMajor.array() / simpleScale.array();
+                if constexpr (dim == 2)
+                    FPolynomialFill2D(DiBj, pPhysicsCScaled(0), pPhysicsCScaled(1), pPhysicsCScaled(2), simpleScale(0), simpleScale(1), simpleScale(2), DiBj.rows(), DiBj.cols());
+                else
+                    FPolynomialFill3D(DiBj, pPhysicsCScaled(0), pPhysicsCScaled(1), pPhysicsCScaled(2), simpleScale(0), simpleScale(1), simpleScale(2), DiBj.rows(), DiBj.cols());
+                tGPoint dXijdxi = cellMajorCoord[iCell];
+                ConvertDiffsLinMap<dim>(DiBj, dXijdxi);
+            }
 
             if (flag == 0)
             {
@@ -639,7 +674,6 @@ namespace DNDS::CFV
             tUDof<nVarsFixed> &u,
             const TFBoundary<nVarsFixed> &FBoundary,
             int method);
-        
 
         /**
          * @brief do reconstruction iteration
@@ -692,7 +726,7 @@ namespace DNDS::CFV
             tUDof<nVarsFixed> &u,
             const TFBoundaryDiff<nVarsFixed> &FBoundaryDiff,
             bool reverse = false);
-        
+
         /***********************************************************/
 
         /***********************************************************/

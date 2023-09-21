@@ -21,6 +21,8 @@ parser.add_argument("--normalize", action="store_true", default=False)
 parser.add_argument("--nlogy", action="store_true", default=False)
 parser.add_argument("--force", action="store_true", default=False)
 parser.add_argument("--ylim", default="", type=str)
+parser.add_argument("--xlim", default="", type=str)
+
 
 args = parser.parse_args()
 print(args)
@@ -113,6 +115,10 @@ else:
 if len(args.ylim):
     lims = eval(args.ylim)
     ax.set_ylim(lims[0], lims[1])
+
+if len(args.xlim):
+    lims = eval(args.xlim)
+    ax.set_xlim(lims[0], lims[1])
 
 dataPlotY = dataInInner[:, isee]
 if args.normalize:

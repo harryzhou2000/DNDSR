@@ -138,6 +138,10 @@
         "smoothThreshold": 0.01,
         "WBAP_nStd": 10.0,
         "normWBAP": false,
-        "subs2ndOrder": 0
+        "subs2ndOrder": 0,
+        "baseSettings": {
+            "localOrientation": false,
+            "anisotropicLengths": false
+        }
     }
 }
