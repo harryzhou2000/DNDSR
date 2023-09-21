@@ -136,12 +136,15 @@ namespace DNDS::Euler
         /*******************************************************/
         /*                   DEFINE LAMBDAS                    */
         /*******************************************************/
+
         auto frhs = [&](ArrayDOFV<nVars_Fixed> &crhs, ArrayDOFV<nVars_Fixed> &cx, int iter, real ct, int uPos)
         {
             cx.trans.startPersistentPull();
             cx.trans.waitPersistentPull(); // for hermite3
             auto &uRecC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? uRec1 : uRec;
             auto &JSourceC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? JSource1 : JSource;
+            // if (mpi.rank == 0)
+            //     std::cout << uRecC.father.get() << std::endl;
 
             eval.FixUMaxFilter(cx);
             // cx.trans.startPersistentPull();
@@ -421,6 +424,15 @@ namespace DNDS::Euler
             cxInc.setConstant(0.0);
             auto &JDC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? JD1 : JD;
             auto &JSourceC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? JSource1 : JSource;
+            auto &uRecC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? uRec1 : uRec;
+
+            typename TVFV::element_type::TFBoundary<nVars_Fixed>
+                FBoundary = [&](const TU &UL, const TU &UMean, const Geom::tPoint &normOut, const Geom::tPoint &pPhy, const Geom::t_index bType) -> TU
+            {
+                TU UR = UL;
+                UR.setZero();
+                return UR;
+            };
 
             if (config.limiterControl.useLimiter) // uses urec value
                 eval.LUSGSMatrixInit(JDC, JSourceC,
@@ -440,6 +452,8 @@ namespace DNDS::Euler
                 crhs[iCell] = eval.CompressInc(cx[iCell], crhs[iCell] * dTau[iCell], crhs[iCell]) / dTau[iCell];
             }
 
+            TU sgsRes(nVars), sgsRes0(nVars);
+
             if (config.linearSolverControl.gmresCode == 0 || config.linearSolverControl.gmresCode == 2)
             {
                 // //! LUSGS
@@ -450,6 +464,43 @@ namespace DNDS::Euler
                 eval.UpdateLUSGSBackward(alphaDiag, crhs, cx, cxInc, JDC, cxInc);
                 cxInc.trans.startPersistentPull();
                 cxInc.trans.waitPersistentPull();
+
+                if (config.linearSolverControl.sgsWithRec != 0)
+                    uRecNew.setConstant(0.0);
+                for (int iterSGS = 1; iterSGS <= config.linearSolverControl.sgsIter; iterSGS++)
+                {
+                    if (config.linearSolverControl.sgsWithRec != 0)
+                    {
+                        vfv->DoReconstructionIter(
+                            uRecNew, uRecNew1, cxInc,
+                            FBoundary,
+                            false);
+                        uRecNew.trans.startPersistentPull();
+                        uRecNew.trans.waitPersistentPull();
+                        eval.UpdateSGSWithRec(alphaDiag, crhs, cx, uRecC, cxInc, uRecNew, JDC, true, sgsRes);
+                        cxInc.trans.startPersistentPull();
+                        cxInc.trans.waitPersistentPull();
+                        eval.UpdateSGSWithRec(alphaDiag, crhs, cx, uRecC, cxInc, uRecNew, JDC, false, sgsRes);
+                        cxInc.trans.startPersistentPull();
+                        cxInc.trans.waitPersistentPull();
+                    }
+                    else
+                    {
+                        eval.UpdateSGS(alphaDiag, crhs, cx, cxInc, JDC, true, sgsRes);
+                        cxInc.trans.startPersistentPull();
+                        cxInc.trans.waitPersistentPull();
+                        eval.UpdateSGS(alphaDiag, crhs, cx, cxInc, JDC, false, sgsRes);
+                        cxInc.trans.startPersistentPull();
+                        cxInc.trans.waitPersistentPull();
+                    }
+                    if (iterSGS == 1)
+                        sgsRes0 = sgsRes;
+
+                    if (mpi.rank == 0 && iterSGS % config.linearSolverControl.nSgsConsoleCheck == 0)
+                        log() << std::scientific << "SGS1 " << std::to_string(iterSGS)
+                              << " [" << sgsRes0.transpose() << "] ->"
+                              << " [" << sgsRes.transpose() << "] " << std::endl;
+                }
                 for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
                     cxInc[iCell] = eval.CompressInc(cx[iCell], cxInc[iCell], crhs[iCell]);
             }
@@ -474,16 +525,25 @@ namespace DNDS::Euler
                         eval.UpdateLUSGSBackward(alphaDiag, x, cx, MLx, JDC, MLx);
                         MLx.trans.startPersistentPull();
                         MLx.trans.waitPersistentPull();
+                        for (int i = 0; i < config.linearSolverControl.sgsIter; i++)
+                        {
+                            eval.UpdateSGS(alphaDiag, crhs, cx, cxInc, JDC, true, sgsRes);
+                            cxInc.trans.startPersistentPull();
+                            cxInc.trans.waitPersistentPull();
+                            eval.UpdateSGS(alphaDiag, crhs, cx, cxInc, JDC, false, sgsRes);
+                            cxInc.trans.startPersistentPull();
+                            cxInc.trans.waitPersistentPull();
+                        }
                     },
                     crhs, cxInc, config.linearSolverControl.nGmresIter,
                     [&](uint32_t i, real res, real resB) -> bool
                     {
-                        if (i > 0)
+                        if (i > 0 && i % config.linearSolverControl.nGmresConsoleCheck == 0)
                         {
                             if (mpi.rank == 0)
                             {
-                                // log() << std::scientific;
-                                // log() << "GMRES: " << i << " " << resB << " -> " << res << std::endl;
+                                log() << std::scientific;
+                                log() << "GMRES: " << i << " " << resB << " -> " << res << std::endl;
                             }
                         }
                         return false;

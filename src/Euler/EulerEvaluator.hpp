@@ -336,6 +336,34 @@ namespace DNDS::Euler
             ArrayDOFV<nVars_Fixed> &JDiag,
             ArrayDOFV<nVars_Fixed> &uIncNew);
 
+        void UpdateSGS(
+            real alphaDiag,
+            ArrayDOFV<nVars_Fixed> &rhs,
+            ArrayDOFV<nVars_Fixed> &u,
+            ArrayDOFV<nVars_Fixed> &uInc,
+            ArrayDOFV<nVars_Fixed> &JDiag,
+            bool forward, TU &sumInc);
+
+        void UpdateSGSWithRec(
+            real alphaDiag,
+            ArrayDOFV<nVars_Fixed> &rhs,
+            ArrayDOFV<nVars_Fixed> &u,
+            ArrayRECV<nVars_Fixed> &uRec,
+            ArrayDOFV<nVars_Fixed> &uInc,
+            ArrayRECV<nVars_Fixed> &uRecInc,
+            ArrayDOFV<nVars_Fixed> &JDiag,
+            bool forward, TU &sumInc);
+
+        // void UpdateLUSGSForwardWithRec(
+        //     real alphaDiag,
+        //     ArrayDOFV<nVars_Fixed> &rhs,
+        //     ArrayDOFV<nVars_Fixed> &u,
+        //     ArrayRECV<nVars_Fixed> &uRec,
+        //     ArrayDOFV<nVars_Fixed> &uInc,
+        //     ArrayRECV<nVars_Fixed> &uRecInc,
+        //     ArrayDOFV<nVars_Fixed> &JDiag,
+        //     ArrayDOFV<nVars_Fixed> &uIncNew);
+
         void FixUMaxFilter(ArrayDOFV<nVars_Fixed> &u);
 
         void EvaluateResidual(
@@ -991,7 +1019,36 @@ namespace DNDS::Euler
             return dF;
         }
 
-        TU generateBoundaryValue(
+        TU fluxJacobianC_Right_Times_du(
+            const TU &U,
+            const TVec &n,
+            Geom::t_index btype,
+            const TU &dU)
+        {
+            DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
+            real gamma = settings.idealGasProperty.gamma;
+            TVec velo = U(Seq123) / U(0);
+            real p, H, asqr;
+            Gas::IdealGasThermal(U(I4), U(0), velo.squaredNorm(), gamma, p, asqr, H);
+            TVec dVelo;
+            real dp;
+            Gas::IdealGasUIncrement<dim>(U, dU, velo, gamma, dVelo, dp);
+            TU dF(U.size());
+            Gas::GasInviscidFluxFacialIncrement<dim>(
+                U, dU,
+                n,
+                velo, dVelo,
+                dp, p,
+                dF);
+            if constexpr (model == NS_SA || model == NS_SA_3D)
+            {
+                dF(I4 + 1) = dU(I4 + 1) * n.dot(velo) + U(I4 + 1) * n.dot(dVelo);
+            }
+            return dF;
+        }
+
+        TU
+        generateBoundaryValue(
             TU &ULxy, //! warning, possible that UL is also modified
             const TVec &uNorm,
             const TMat &normBase,

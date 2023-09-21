@@ -123,7 +123,6 @@ namespace DNDS::ODE
         ImplicitSDIRK4DualTimeStep(
             index NDOF, Finit &&finit = [](TDATA &) {}, int schemeCode = 0) : DOF(NDOF)
         {
-            
 
             schemeC = schemeCode;
 
@@ -220,15 +219,17 @@ namespace DNDS::ODE
 
                     xIncPrev = xinc;
 
-                    if (fstop(iter, xinc, iB + 1))
+                    if (fstop(iter, rhs, iB + 1))
+                        break;
+                    if (schemeC == 1 && iB == 0) // for esdirk
                         break;
 
                     // TODO: add time dependent rhs
                 }
                 if (iter > maxIter)
-                    fstop(iter, xinc, iB + 1);
+                    fstop(iter, rhs, iB + 1);
             }
-            if (schemeC == 1)
+            if (schemeC == 1) // for esdirk
                 return;
             x = xLast;
             for (int jB = 0; jB < nInnerStage; jB++)
@@ -467,6 +468,7 @@ namespace DNDS::ODE
                     rhsFull = rhsbuf[1];
                     rhsFull.addTo(xLast, 1. / dt);
                     rhsFull.addTo(x, -1. / dt);
+                    rhsMid = rhsFull; // * warning: rhsMid now holds residual;
                     fsolve(x, rhsFull, dTau, dt, 1.0, xinc, iter, 0);
                 }
                 else
@@ -486,17 +488,19 @@ namespace DNDS::ODE
                     rhsFull.addTo(rhsbuf[1], wInteg[2]);
                     rhsFull.addTo(x, -1. / dt);
                     rhsFull.addTo(xLast, 1. / dt);
+                    rhsMid = rhsFull; // * warning: rhsMid now holds residual;
 
-                    { // damping
-                      // xIncDamper = xLast;
-                      // xIncDamper.addTo(x, -1.);
-                      // xIncDamper.setAbs();
-                      // xIncDamper += 1e-100;
-                      // xIncDamper2 = xIncPrev;
-                      // xIncDamper2.setAbs();
-                      // xIncDamper2 += xIncDamper;
-                      // xIncDamper /= xIncDamper2;
-                      // rhsFull *= xIncDamper;
+                    {
+                        // damping
+                        // xIncDamper = xLast;
+                        // xIncDamper.addTo(x, -1.);
+                        // xIncDamper.setAbs();
+                        // xIncDamper += 1e-100;
+                        // xIncDamper2 = xIncPrev;
+                        // xIncDamper2.setAbs();
+                        // xIncDamper2 += xIncDamper;
+                        // xIncDamper /= xIncDamper2;
+                        // rhsFull *= xIncDamper;
                     }
                     {
                         // fdt(x, dTau, 1.0); // TODO: use "update spectral radius" procedure? or force update in fsolve
@@ -519,13 +523,20 @@ namespace DNDS::ODE
                         // fsolve(xMid, rhsFull, dTau, dt / 4,
                         //        1.0, xinc, iter, 1);
 
+                        //* 0
                         fdt(x, dTau, 1.0, 0);
                         for (auto &v : dTau)
                             v = veryLargeReal;
                         fsolve(x, rhsFull, dTau, dt,
                                1.0, xinc, iter, 0);
 
+                        //* 1
                         xinc *= 1 / (dt);
+                        {
+                            for (auto &v : dTau)
+                                v = (v + dt) / v; // 1 / beta
+                            xinc *= dTau;
+                        }
                         rhsFull = xinc;
                         fdt(x, dTau, 1.0, 0);
                         for (auto &v : dTau)
@@ -533,13 +544,34 @@ namespace DNDS::ODE
                         fsolve(x, rhsFull, dTau, dt,
                                1.0, xinc, iter, 0);
 
-                        xinc *= 1 / (dt);
-                        rhsFull = xinc;
-                        fdt(x, dTau, 1.0, 0);
-                        for (auto &v : dTau)
-                            v *= 1;
-                        fsolve(x, rhsFull, dTau, dt,
-                               1.0, xinc, iter, 0);
+                        // //* 2
+                        // xinc *= 1 / (dt);
+                        // {
+                        //     for (auto &v : dTau)
+                        //         v = (v + dt) / v; // 1 / beta
+                        //     xinc *= dTau;
+                        // }
+                        // rhsFull = xinc;
+                        // fdt(x, dTau, 1.0, 0);
+                        // for (auto &v : dTau)
+                        //     v *= 1;
+                        // fsolve(x, rhsFull, dTau, dt,
+                        //        1.0, xinc, iter, 0);
+
+                        //* 3
+                        // xinc *= 1 / (dt);
+                        // {
+                        // for (auto &v : dTau)
+                        //     v = (v + dt) / v; // 1 / beta
+                        // xinc *= dTau;
+                        // }
+                        // rhsFull = xinc;
+                        // fdt(x, dTau, 1.0, 0);
+                        // for (auto &v : dTau)
+                        //     v *= 1;
+                        // fsolve(x, rhsFull, dTau, dt,
+                        //        1.0, xinc, iter, 0);
+
                         // note: dt/n hinders precision
                         // note: using enough smoothing delays res-re-rise
                     }
@@ -588,7 +620,7 @@ namespace DNDS::ODE
 
                 xIncPrev = xinc;
 
-                if (fstop(iter, xinc, 1))
+                if (fstop(iter, rhsMid, 1))
                     if (iter >= nStartIter)
                         break;
             }

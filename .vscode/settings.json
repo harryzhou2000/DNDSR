@@ -145,7 +145,8 @@
         "xtree": "cpp",
         "xutility": "cpp",
         "*.ipp": "cpp",
-        "slist": "cpp"
+        "slist": "cpp",
+        "rope": "cpp"
     },
     "cSpell.words": [
         "Bary",

@@ -269,6 +269,186 @@ namespace DNDS::Euler
     }
 
     template <EulerModel model>
+    void EulerEvaluator<model>::UpdateSGS(
+        real alphaDiag,
+        ArrayDOFV<nVars_Fixed> &rhs,
+        ArrayDOFV<nVars_Fixed> &u,
+        ArrayDOFV<nVars_Fixed> &uInc,
+        ArrayDOFV<nVars_Fixed> &JDiag,
+        bool forward, TU &sumInc)
+    {
+        DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
+        InsertCheck(u.father->mpi, "UpdateSGS 1");
+        int cnvars = nVars;
+        index nCellDist = mesh->NumCell();
+        sumInc.setZero(cnvars);
+        for (index iScan = 0; iScan < nCellDist; iScan++)
+        {
+            index iCell = iScan;
+            iCell = forward ? iScan : nCellDist - 1 - iScan; // TODO: add rb-sor
+
+            auto c2f = mesh->cell2face[iCell];
+            TU uIncNewBuf(nVars);
+            auto RHSI = rhs[iCell];
+            // std::cout << rhs[iCell](0) << std::endl;
+            uIncNewBuf = RHSI;
+
+            for (int ic2f = 0; ic2f < c2f.size(); ic2f++)
+            {
+                index iFace = c2f[ic2f];
+                auto f2c = mesh->face2cell[iFace];
+                index iCellOther = f2c[0] == iCell ? f2c[1] : f2c[0];
+                index iCellAtFace = f2c[0] == iCell ? 0 : 1;
+                if (iCellOther != UnInitIndex)
+                {
+                    index iScanOther = iCellOther; // TODO: add rb-sor
+                    if (true)
+                    {
+                        TU fInc;
+                        auto uINCj = uInc[iCellOther];
+
+                        {
+                            TVec unitNorm = vfv->GetFaceNormFromCell(iFace, iCellOther, iCellAtFace, -1)(Seq012) *
+                                            (iCellAtFace ? -1 : 1); // faces out
+
+                            fInc = fluxJacobian0_Right_Times_du(
+                                u[iCellOther],
+                                unitNorm,
+                                Geom::BC_ID_INTERNAL, uINCj, lambdaFace[iFace], lambdaFaceC[iFace]); //! always inner here
+                        }
+
+                        uIncNewBuf -= (0.5 * alphaDiag) * vfv->GetFaceArea(iFace) / vfv->GetCellVol(iCell) *
+                                      (fInc);
+
+                        if ((!uIncNewBuf.allFinite()))
+                        {
+                            std::cout << RHSI.transpose() << std::endl
+                                      << fInc.transpose() << std::endl
+                                      << uINCj.transpose() << std::endl;
+                            DNDS_assert(false);
+                        }
+                    }
+                }
+            }
+            auto uIncNewI = uInc[iCell];
+            TU uIncOld = uIncNewI;
+
+            uIncNewI.array() = JDiag[iCell].array().inverse() * uIncNewBuf.array();
+            sumInc.array() += (uIncNewI - uIncOld).array().abs();
+
+            if (uIncNewI.hasNaN())
+            {
+                std::cout << uIncNewI.transpose() << std::endl
+                          << uIncNewBuf.transpose() << std::endl
+                          << JDiag[iCell] << std::endl
+                          << iCell << std::endl;
+                DNDS_assert(!uInc[iCell].hasNaN());
+            }
+        }
+        TU sumIncAll(cnvars);
+        MPI::Allreduce(sumInc.data(), sumIncAll.data(), sumInc.size(), DNDS_MPI_REAL, MPI_SUM, rhs.father->mpi.comm);
+        InsertCheck(u.father->mpi, "UpdateSGS -1");
+        // exit(-1);
+    }
+
+    template <EulerModel model>
+    void EulerEvaluator<model>::UpdateSGSWithRec(
+        real alphaDiag,
+        ArrayDOFV<nVars_Fixed> &rhs,
+        ArrayDOFV<nVars_Fixed> &u,
+        ArrayRECV<nVars_Fixed> &uRec,
+        ArrayDOFV<nVars_Fixed> &uInc,
+        ArrayRECV<nVars_Fixed> &uRecInc,
+        ArrayDOFV<nVars_Fixed> &JDiag,
+        bool forward, TU &sumInc)
+    {
+        DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
+        InsertCheck(u.father->mpi, "UpdateSGS 1");
+        int cnvars = nVars;
+        index nCellDist = mesh->NumCell();
+        sumInc.setZero(cnvars);
+        for (index iScan = 0; iScan < nCellDist; iScan++)
+        {
+            index iCell = iScan;
+            iCell = forward ? iScan : nCellDist - 1 - iScan; // TODO: add rb-sor
+
+            auto c2f = mesh->cell2face[iCell];
+            TU uIncNewBuf(nVars);
+            auto RHSI = rhs[iCell];
+            // std::cout << rhs[iCell](0) << std::endl;
+            uIncNewBuf = RHSI;
+
+            for (int ic2f = 0; ic2f < c2f.size(); ic2f++)
+            {
+                index iFace = c2f[ic2f];
+                auto f2c = mesh->face2cell[iFace];
+                index iCellOther = f2c[0] == iCell ? f2c[1] : f2c[0];
+                index iCellAtFace = f2c[0] == iCell ? 0 : 1;
+                if (iCellOther != UnInitIndex)
+                {
+                    index iScanOther = iCellOther; // TODO: add rb-sor
+                    if (true)
+                    {
+                        TU fInc, fIncS;
+                        auto uINCj = uInc[iCellOther];
+                        TVec unitNorm = vfv->GetFaceNormFromCell(iFace, iCellOther, iCellAtFace, -1)(Seq012) *
+                                        (iCellAtFace ? -1 : 1); // faces out
+                        {
+                            fInc = fluxJacobian0_Right_Times_du(
+                                u[iCellOther],
+                                unitNorm,
+                                Geom::BC_ID_INTERNAL, uINCj, lambdaFace[iFace], lambdaFaceC[iFace]); //! always inner here
+                        }
+                        {
+                            TU uRecSLInc =
+                                (vfv->GetIntPointDiffBaseValue(iCell, iFace, iCellAtFace, -1, std::array<int, 1>{0}, 1) *
+                                 uRecInc[iCell])
+                                    .transpose();
+                            TU uRecSRInc =
+                                (vfv->GetIntPointDiffBaseValue(iCellOther, iFace, 1 - iCellAtFace, -1, std::array<int, 1>{0}, 1) *
+                                 uRecInc[iCellOther])
+                                    .transpose();
+                            TU fIncSL = fluxJacobianC_Right_Times_du(u[iCell], unitNorm, Geom::BC_ID_INTERNAL, uRecSLInc);
+                            TU fIncSR = fluxJacobianC_Right_Times_du(u[iCellOther], unitNorm, Geom::BC_ID_INTERNAL, uRecSRInc);
+                            fIncS = fIncSL + fIncSR + lambdaFaceC[iFace] * (uRecSLInc - uRecSRInc);
+                        }
+
+                        uIncNewBuf -= (0.5 * alphaDiag) * vfv->GetFaceArea(iFace) / vfv->GetCellVol(iCell) *
+                                      (fInc);
+                        uIncNewBuf -= (0.5 * alphaDiag) * vfv->GetFaceArea(iFace) / vfv->GetCellVol(iCell) *
+                                      (fIncS);
+
+                        if ((!uIncNewBuf.allFinite()))
+                        {
+                            std::cout << RHSI.transpose() << std::endl
+                                      << fInc.transpose() << std::endl
+                                      << uINCj.transpose() << std::endl;
+                            DNDS_assert(false);
+                        }
+                    }
+                }
+            }
+            auto uIncNewI = uInc[iCell];
+            TU uIncOld = uIncNewI;
+
+            uIncNewI.array() = JDiag[iCell].array().inverse() * uIncNewBuf.array();
+            sumInc.array() += (uIncNewI - uIncOld).array().abs();
+
+            if (uIncNewI.hasNaN())
+            {
+                std::cout << uIncNewI.transpose() << std::endl
+                          << uIncNewBuf.transpose() << std::endl
+                          << JDiag[iCell] << std::endl
+                          << iCell << std::endl;
+                DNDS_assert(!uInc[iCell].hasNaN());
+            }
+        }
+        TU sumIncAll(cnvars);
+        MPI::Allreduce(sumInc.data(), sumIncAll.data(), sumInc.size(), DNDS_MPI_REAL, MPI_SUM, rhs.father->mpi.comm);
+        InsertCheck(u.father->mpi, "UpdateSGS -1");
+    }
+
+    template <EulerModel model>
     void EulerEvaluator<model>::FixUMaxFilter(ArrayDOFV<nVars_Fixed> &u)
     {
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
@@ -283,8 +463,7 @@ namespace DNDS::Euler
         if (P < 3)
         {
             TU resc;
-            resc.resizeLike(rhs[0]);
-            resc.setZero();
+            resc.setZero(nVars);
 
             for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
             {

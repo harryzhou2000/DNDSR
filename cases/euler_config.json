@@ -1,19 +1,19 @@
 {
     "timeMarchControl": {
-        "dtImplicit": 2e-1,
-        "nTimeStep": 500,
+        "dtImplicit": 10e-1,
+        "nTimeStep": 100,
         "steadyQuit": false,
-        "odeCode": 1,
+        "odeCode": 401,
         "tEnd": 3e+200,
-        "odeSetting1": 0.5,
-        "odeSetting2": 5
+        "odeSetting1": 0.66,
+        "odeSetting2": 1
     },
     "outputControl": {
         "nConsoleCheck": 1,
         "nConsoleCheckInternal": 1,
         "consoleOutputMode": 0,
-        "nDataOutC": 100,
-        "nDataOut": 100,
+        "nDataOutC": 1,
+        "nDataOut": 1,
         "nDataOutCInternal": 200,
         "nDataOutInternal": 1000000000,
         "tDataOut": 3e+200
@@ -27,8 +27,8 @@
         "useLocalDt": true
     },
     "convergenceControl": {
-        "nTimeStepInternal": 400,
-        "rhsThresholdInternal": 1e-4,
+        "nTimeStepInternal": 400000,
+        "rhsThresholdInternal": 1e-300,
         "res_base": 0.0,
         "useVolWiseResidual": true
     },
@@ -69,7 +69,7 @@
         "nGmresSpace": 5,
         "nGmresIter": 10,
         "recThreshold": 1e-010,
-        "nRecConsolCheck": 1,
+        "nRecConsolCheck": 10,
         "nRecMultiplyForZeroedGrad": 1000
     },
     "limiterControl": {
@@ -80,18 +80,21 @@
         "nPartialLimiterStartLocal": 1000000
     },
     "vfvSettings": {
-        "maxOrder": 1,
+        "maxOrder": 3,
         "intOrder": 3,
         "cacheDiffBase": false,
         "jacobiRelax": 1,
-        "SORInstead": false,
+        "SORInstead": true,
         "smoothThreshold": 1e-3,
         "WBAP_nStd": 10.0,
         "normWBAP": false,
-        "subs2ndOrder": 1
+        "subs2ndOrder": 0
     },
     "linearSolverControl": {
-        "gmresCode": 1,
+        "sgsIter": 10,
+        "sgsWithRec": 1,
+        "nSgsConsoleCheck": 100,
+        "gmresCode": 0,
         "nGmresSpace": 5,
         "nGmresIter": 1
     },
@@ -103,7 +106,7 @@
         "useScalarJacobian": true,
         "riemannSolverType": "Roe",
         "specialBuiltinInitializer": 2,
-        "nCentralSmoothStep": 20,
+        "nCentralSmoothStep": 0,
         "constMassForce": [
             0.0,
             0.0,

@@ -86,6 +86,8 @@
         "nPartialLimiterStartLocal": 0
     },
     "linearSolverControl": {
+        "sgsIter": 0,
+        "sgsWithRec": 0,
         "gmresCode": 0,
         "nGmresSpace": 10,
         "nGmresIter": 2

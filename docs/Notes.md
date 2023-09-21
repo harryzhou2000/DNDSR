@@ -80,5 +80,12 @@ For DLR case used for eulerSA3D in `d082620525d1d9a07889c9e8c1a9bede70ebe236`, o
 If using nVars_Fixed = -1  (original 6), time is: 3.3944/1t
 
 
+### Note on HM3: 
+
+must use residual instead of uinc for convergence monitoring!!!
+
+
+
+
 
 

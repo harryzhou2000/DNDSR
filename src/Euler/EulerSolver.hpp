@@ -103,7 +103,7 @@ namespace DNDS::Euler
                 real odeSetting3 = 0;
                 DNDS_NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_ORDERED_JSON(
                     TimeMarchControl,
-                    dtImplicit, nTimeStep, steadyQuit, odeCode, tEnd,odeSetting1,odeSetting2,odeSetting3)
+                    dtImplicit, nTimeStep, steadyQuit, odeCode, tEnd, odeSetting1, odeSetting2, odeSetting3)
             } timeMarchControl;
 
             struct ImplicitReconstructionControl
@@ -258,12 +258,17 @@ namespace DNDS::Euler
 
             struct LinearSolverControl
             {
+                int sgsIter = 0;
+                int sgsWithRec = 0;
                 int gmresCode = 0; // 0 for lusgs, 1 for gmres, 2 for lusgs started gmres
                 int nGmresSpace = 10;
                 int nGmresIter = 2;
+                int nSgsConsoleCheck = 100;
+                int nGmresConsoleCheck = 100;
                 DNDS_NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_ORDERED_JSON(
                     LinearSolverControl,
-                    gmresCode, nGmresSpace, nGmresIter)
+                    sgsIter, sgsWithRec, gmresCode,
+                    nGmresSpace, nGmresIter)
             } linearSolverControl;
 
             struct RestartState
