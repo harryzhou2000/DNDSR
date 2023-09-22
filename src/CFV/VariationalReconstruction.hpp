@@ -584,7 +584,11 @@ namespace DNDS::CFV
             }
 
             // real faceL = (faceLV.array().maxCoeff());
-            real faceL = std::sqrt(faceLV.array().square().mean());
+            real faceL = 0;
+            if (settings.functionalSettings.scaleType == VRSettings::FunctionalSettings::MeanAACBB)
+                faceL = std::sqrt(faceLV.array().square().mean());
+            if (settings.functionalSettings.scaleType == VRSettings::FunctionalSettings::BaryDiff)
+                faceL = faceLV.norm();
 
             // std::cout << DiffI.transpose() << "\n"
             //           << DiffJ.transpose() << std::endl;
