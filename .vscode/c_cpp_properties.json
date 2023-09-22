@@ -41,7 +41,19 @@
                 "/usr/include/python3.10/"
             ],
             "defines": [],
-            "compilerPath": "/usr/bin/gcc",
+            "cStandard": "c17",
+            "intelliSenseMode": "linux-gcc-x64",
+            "cppStandard": "c++17"
+        },
+        {
+            "name": "BSSC-T",
+            "includePath": [
+                "${default}",
+                "/public1/soft/openmpi/3.1.6-gcc9.3.0/include",
+                "~/tools/cfd_externals/install/include/",
+                "/public1/soft/hdf5/1.10.6-openmpi-gcc9.3.0/include"
+            ],
+            "defines": [],
             "cStandard": "c17",
             "intelliSenseMode": "linux-gcc-x64",
             "cppStandard": "c++17"

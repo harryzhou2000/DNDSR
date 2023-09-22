@@ -52,6 +52,28 @@ namespace DNDS::CFV
                 anisotropicLengths)
         } baseSettings;
 
+        struct FunctionalSettings
+        {
+            enum ScaleType
+            {
+                UnknownScale = -1,
+                MeanAACBB = 0,
+                BaryDiff = 1,
+            } scaleType = MeanAACBB;
+
+            enum DirWeightScheme
+            {
+                UnknownDirWeight = -1,
+                Factorial = 0,
+                HQM_OPT = 1,
+            } dirWeightScheme = Factorial;
+
+            DNDS_NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_ORDERED_JSON(
+                FunctionalSettings,
+                scaleType,
+                dirWeightScheme)
+        } functionalSettings;
+
         VRSettings()
         {
         }
@@ -74,6 +96,7 @@ namespace DNDS::CFV
             jsonSetting["normWBAP"] = normWBAP;
             jsonSetting["subs2ndOrder"] = subs2ndOrder;
             jsonSetting["baseSettings"] = baseSettings;
+            jsonSetting["functionalSettings"] = functionalSettings;
         }
 
         /**
@@ -93,6 +116,7 @@ namespace DNDS::CFV
             normWBAP = jsonSetting["normWBAP"];
             subs2ndOrder = jsonSetting["subs2ndOrder"];
             baseSettings = jsonSetting["baseSettings"];
+            functionalSettings = jsonSetting["functionalSettings"];
         }
 
         friend void from_json(const json &j, VRSettings &s)
@@ -105,6 +129,18 @@ namespace DNDS::CFV
             s.WriteIntoJson(j);
         }
     };
+
+    NLOHMANN_JSON_SERIALIZE_ENUM(
+        VRSettings::FunctionalSettings::ScaleType,
+        {{VRSettings::FunctionalSettings::UnknownScale, nullptr},
+         {VRSettings::FunctionalSettings::MeanAACBB, "MeanAACBB"},
+         {VRSettings::FunctionalSettings::BaryDiff, "BaryDiff"}})
+
+    NLOHMANN_JSON_SERIALIZE_ENUM(
+        VRSettings::FunctionalSettings::DirWeightScheme,
+        {{VRSettings::FunctionalSettings::UnknownDirWeight, nullptr},
+         {VRSettings::FunctionalSettings::Factorial, "Factorial"},
+         {VRSettings::FunctionalSettings::HQM_OPT, "HQM_OPT"}})
 }
 
 namespace DNDS::CFV
@@ -310,7 +346,7 @@ namespace DNDS::CFV
                 return GetFaceNorm(iFace, iG);
             if (if2c < 0)
                 if2c = CellIsFaceBack(iCell, iFace) ? 0 : 1;
-            if (if2c == 1 && Geom ::FaceIDIsPeriodicMain(faceID))
+            if (if2c == 1 && Geom::FaceIDIsPeriodicMain(faceID))
                 return mesh->periodicInfo.TransVector(GetFaceNorm(iFace, iG), faceID);
             if (if2c == 1 && Geom::FaceIDIsPeriodicDonor(faceID))
                 return mesh->periodicInfo.TransVectorBack(GetFaceNorm(iFace, iG), faceID);
@@ -334,7 +370,7 @@ namespace DNDS::CFV
                 return GetFaceQuadraturePPhys(iFace, iG);
             if (if2c < 0)
                 if2c = CellIsFaceBack(iCell, iFace) ? 0 : 1;
-            if (if2c == 1 && Geom ::FaceIDIsPeriodicMain(faceID))
+            if (if2c == 1 && Geom ::FaceIDIsPeriodicMain(faceID)) // I am donor
             {
                 // std::cout << iFace <<" " << iCell << " " <<if2c << std::endl;
                 // std::cout << GetFaceQuadraturePPhys(iFace, iG).transpose() << std::endl;
@@ -342,9 +378,29 @@ namespace DNDS::CFV
                 // std::abort();
                 return mesh->periodicInfo.TransCoord(GetFaceQuadraturePPhys(iFace, iG), faceID);
             }
-            if (if2c == 1 && Geom::FaceIDIsPeriodicDonor(faceID))
+            if (if2c == 1 && Geom::FaceIDIsPeriodicDonor(faceID)) // I am main
                 return mesh->periodicInfo.TransCoordBack(GetFaceQuadraturePPhys(iFace, iG), faceID);
             return GetFaceQuadraturePPhys(iFace, iG);
+        }
+
+        Geom::tPoint GetOtherCellBaryFromCell(
+            index iCell, index iCellOther,
+            index iFace)
+        {
+            if (!mesh->isPeriodic)
+                return GetCellBary(iCellOther);
+
+            auto faceID = mesh->faceElemInfo[iFace]->zone;
+            if (!Geom::FaceIDIsPeriodic(faceID))
+                return GetCellBary(iCellOther);
+            rowsize if2c = CellIsFaceBack(iCell, iFace) ? 0 : 1;
+            if ((if2c == 1 && Geom::FaceIDIsPeriodicMain(faceID)) ||
+                (if2c == 0 && Geom::FaceIDIsPeriodicDonor(faceID))) // I am donor
+                return mesh->periodicInfo.TransCoord(GetCellBary(iCellOther), faceID);
+            if ((if2c == 1 && Geom::FaceIDIsPeriodicDonor(faceID)) ||
+                (if2c == 0 && Geom::FaceIDIsPeriodicMain(faceID))) // I am main
+                return mesh->periodicInfo.TransCoordBack(GetCellBary(iCellOther), faceID);
+            return GetCellBary(iCellOther);
         }
 
         Geom::tPoint GetCellQuadraturePPhys(index iCell, int iG)
@@ -417,6 +473,7 @@ namespace DNDS::CFV
          * if iFace < 0, then seen as cell int points; if iG < 1, then seen as center
          * @todo : divide GetIntPointDiffBaseValue into different calls
          * @warning maxDiff is max(diffList) + 1 not len(difflist)
+         * @todo:  //TODO add support for rotational periodic boundary!
          */
         template <class TList>
         Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic>
@@ -503,6 +560,7 @@ namespace DNDS::CFV
             TDiffI &&DiffI, TDiffJ &&DiffJ,
             index iFace, index iG)
         {
+            using namespace Geom;
             Eigen::Vector<real, Eigen::Dynamic> wgd = faceWeight[iFace].array().square();
             DNDS_assert(DiffI.rows() == DiffJ.rows());
             int cnDiffs = DiffI.rows();
@@ -512,9 +570,21 @@ namespace DNDS::CFV
             Conj.setZero();
 
             //* PJH - rotation invariant scheme
-            auto faceLV = faceAlignedScales[iFace];
-            real faceL = (faceLV.array().maxCoeff());
-            // faceL = std::sqrt(faceLV.array().square().mean());
+            tPoint faceLV;
+            switch (settings.functionalSettings.scaleType)
+            {
+            case VRSettings::FunctionalSettings::BaryDiff:
+                faceLV = faceAlignedScales[iFace];
+                break;
+            case VRSettings::FunctionalSettings::MeanAACBB:
+                faceLV = faceAlignedScales[iFace];
+                break;
+            default:
+                DNDS_assert(false);
+            }
+
+            // real faceL = (faceLV.array().maxCoeff());
+            real faceL = std::sqrt(faceLV.array().square().mean());
 
             // std::cout << DiffI.transpose() << "\n"
             //           << DiffJ.transpose() << std::endl;

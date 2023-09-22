@@ -142,6 +142,10 @@
         "baseSettings": {
             "localOrientation": false,
             "anisotropicLengths": false
+        },
+        "functionalSettings": {
+            "scaleType": "MeanAACBB",
+            "dirWeightScheme": "Factorial"
         }
     }
 }

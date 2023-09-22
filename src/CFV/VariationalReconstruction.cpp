@@ -391,6 +391,33 @@ namespace DNDS::CFV
             DNDS_assert(nF2C > 0);
             faceScale /= nF2C;
             faceAlignedScales[iFace] = faceScale;
+            if (settings.functionalSettings.scaleType == VRSettings::FunctionalSettings::BaryDiff)
+            {
+                if (mesh->face2cell(iFace, 1) != UnInitIndex)
+                {
+                    faceAlignedScales[iFace] =
+                        this->GetOtherCellBaryFromCell(mesh->face2cell(iFace, 0),
+                                                       mesh->face2cell(iFace, 1), iFace) -
+                        this->GetCellBary(mesh->face2cell(iFace, 0));
+                }
+                else
+                {
+                    Geom::tPoint vCB = this->GetFaceQuadraturePPhysFromCell(
+                                           iFace,
+                                           mesh->face2cell(iFace, 0), 0, -1) -
+                                       this->GetCellBary(mesh->face2cell(iFace, 0));
+                    auto uNorm = this->GetFaceNormFromCell(
+                        iFace,
+                        mesh->face2cell(iFace, 0), 0, -1);
+                    faceAlignedScales[iFace] =
+                        2 * vCB.dot(uNorm) *
+                        this->GetFaceNorm(iFace, -1);
+                }
+                // std::cout << faceAlignedScales[iFace].transpose() << std::endl;
+                // std::cout << faceAlignedScales[iFace].norm() << std::endl;
+                if constexpr (dim == 2)
+                    faceAlignedScales[iFace](2) = 1;
+            }
 
             // *get geom weight ic2f
             real wg = 1;
@@ -398,8 +425,35 @@ namespace DNDS::CFV
             // *get dir weight
             Eigen::Vector<real, Eigen::Dynamic> wd;
             wd.resize(settings.maxOrder + 1);
-            for (int p = 0; p < wd.size(); p++)
-                wd[p] = 1. / factorials[p];
+            switch (settings.functionalSettings.dirWeightScheme)
+            {
+            case VRSettings::FunctionalSettings::Factorial:
+                for (int p = 0; p < wd.size(); p++)
+                    wd[p] = 1. / factorials[p];
+                break;
+            case VRSettings::FunctionalSettings::HQM_OPT:
+                switch (settings.maxOrder)
+                {
+                case 1:
+                    wd[0] = wd[1] = 1;
+                    break;
+                case 2:
+                    wd[0] = 1, wd[1] = 0.4643, wd[2] = 0.1559;
+                    break;
+                case 3:
+                    wd[0] = 1, wd[1] = .5295, wd[2] = wd[3] = .2117;
+                    break;
+                default:
+                    DNDS_assert(false);
+                    break;
+                }
+                break;
+
+            default:
+                DNDS_assert(false);
+                break;
+            }
+
             if (FaceIDIsExternalBC(mesh->GetFaceZone(iFace)))
                 wd(Eigen::seq(1, Eigen::last)).setZero(), wd *= id2faceDircWeight(mesh->GetFaceZone(iFace)); // customizable
             faceWeight[iFace] = wd * wg;

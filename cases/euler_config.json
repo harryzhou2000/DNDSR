@@ -92,6 +92,10 @@
         "baseSettings": {
             "localOrientation": true,
             "anisotropicLengths": true
+        },
+        "functionalSettings": {
+            "scaleType": "BaryDiff",
+            "dirWeightScheme": "HQM_OPT"
         }
     },
     "linearSolverControl": {

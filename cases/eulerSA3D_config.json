@@ -60,8 +60,8 @@
         "nPartialLimiterStartLocal": 2147483647
     },
     "vfvSettings": {
-        "maxOrder": 1,
-        "intOrder": 1,
+        "maxOrder": 3,
+        "intOrder": 3,
         "cacheDiffBase": false,
         "jacobiRelax": 1.0,
         "SORInstead": true,
@@ -72,6 +72,10 @@
         "baseSettings": {
             "localOrientation": true,
             "anisotropicLengths": true
+        },
+        "functionalSettings": {
+            "scaleType": "BaryDiff",
+            "dirWeightScheme": "HQM_OPT"
         }
     },
     "linearSolverControl": {

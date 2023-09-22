@@ -147,7 +147,20 @@
         "*.ipp": "cpp",
         "slist": "cpp",
         "rope": "cpp",
-        "tensor": "cpp"
+        "tensor": "cpp",
+        "pointers": "cpp",
+        "csignal": "cpp",
+        "strstream": "cpp",
+        "barrier": "cpp",
+        "cfenv": "cpp",
+        "coroutine": "cpp",
+        "source_location": "cpp",
+        "latch": "cpp",
+        "scoped_allocator": "cpp",
+        "shared_mutex": "cpp",
+        "syncstream": "cpp",
+        "typeindex": "cpp",
+        "variant": "cpp"
     },
     "cSpell.words": [
         "Bary",
@@ -162,5 +175,6 @@
         "editor.defaultFormatter": "ms-python.black-formatter"
     },
     "python.formatting.provider": "none",
+    "C_Cpp.default.compilerPath": "/public1/soft/gcc/11.2/bin/g++",
     // "C_Cpp.intelliSenseEngine": "Tag Parser"
 }
