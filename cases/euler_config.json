@@ -1,20 +1,26 @@
 {
     "timeMarchControl": {
-        "dtImplicit": 10e-1,
+        "dtImplicit": 1e-1,
         "nTimeStep": 100,
         "steadyQuit": false,
-        "odeCode": 401,
+        "odeCode": 1,
         "tEnd": 3e+200,
-        "odeSetting1": 0.66,
-        "odeSetting2": 1
+        "odeSetting1": 0.5,
+        "odeSetting2": 100
+    },
+    "convergenceControl": {
+        "nTimeStepInternal": 40,
+        "rhsThresholdInternal": 1e-4,
+        "res_base": 0.0,
+        "useVolWiseResidual": true
     },
     "outputControl": {
         "nConsoleCheck": 1,
         "nConsoleCheckInternal": 1,
         "consoleOutputMode": 0,
         "nDataOutC": 1,
-        "nDataOut": 1,
-        "nDataOutCInternal": 200,
+        "nDataOut": 10,
+        "nDataOutCInternal": 2000,
         "nDataOutInternal": 1000000000,
         "tDataOut": 3e+200
     },
@@ -26,41 +32,18 @@
         "CFLRampEnd": 0.0,
         "useLocalDt": true
     },
-    "convergenceControl": {
-        "nTimeStepInternal": 400000,
-        "rhsThresholdInternal": 1e-300,
-        "res_base": 0.0,
-        "useVolWiseResidual": true
-    },
     "dataIOControl": {
         "uniqueStamps": false,
         "meshRotZ": 0.0,
-        "meshFile": "../data/mesh/IV10_40.cgns",
-        "outPltName": "../data/outUnsteady/IV10_40",
-        "outLogName": "../data/outUnsteady/IV10_40",
+        "meshFile": "../data/mesh/CylinderA1.cgns",
+        "outPltName": "../data/outUnsteady/CylinderA1",
+        "outLogName": "../data/outUnsteady/CylinderA1",
         "outPltMode": 0,
         "readMeshMode": 0,
         "outPltTecplotFormat": true,
         "outPltVTKFormat": false,
         "outAtPointData": true,
         "outAtCellData": true
-    },
-    "boundaryDefinition": {
-        "PeriodicTranslation1": [
-            10.0,
-            0.0,
-            0.0
-        ],
-        "PeriodicTranslation2": [
-            0.0,
-            10.0,
-            0.0
-        ],
-        "PeriodicTranslation3": [
-            0.0,
-            0.0,
-            10.0
-        ]
     },
     "implicitReconstructionControl": {
         "nInternalRecStep": 1,
@@ -80,26 +63,26 @@
         "nPartialLimiterStartLocal": 1000000
     },
     "vfvSettings": {
-        "maxOrder": 3,
-        "intOrder": 3,
+        "maxOrder": 2,
+        "intOrder": 2,
         "cacheDiffBase": false,
         "jacobiRelax": 1,
         "SORInstead": true,
         "smoothThreshold": 1e-3,
         "WBAP_nStd": 10.0,
         "normWBAP": false,
-        "subs2ndOrder": 0,
+        "subs2ndOrder": 1,
         "baseSettings": {
-            "localOrientation": true,
-            "anisotropicLengths": true
+            "localOrientation": false,
+            "anisotropicLengths": false
         },
         "functionalSettings": {
-            "scaleType": "BaryDiff",
-            "dirWeightScheme": "HQM_OPT"
+            // "scaleType": "BaryDiff",
+            // "dirWeightScheme": "HQM_OPT"
         }
     },
     "linearSolverControl": {
-        "sgsIter": 10,
+        "sgsIter": 0,
         "sgsWithRec": 1,
         "nSgsConsoleCheck": 100,
         "gmresCode": 0,
@@ -113,7 +96,6 @@
         "ignoreSourceTerm": true,
         "useScalarJacobian": true,
         "riemannSolverType": "Roe",
-        "specialBuiltinInitializer": 2,
         "nCentralSmoothStep": 0,
         "constMassForce": [
             0.0,
@@ -123,14 +105,31 @@
         "farFieldStaticValue": [
             1,
             1,
-            1,
             0,
-            3.5
+            0,
+            79.8650793650794
+        ],
+        "boxInitializers": [
+            // {
+            //     "x0": -0.5,
+            //     "x1": 1,
+            //     "y0": -0.5,
+            //     "y1": 0.5,
+            //     "z0": -1,
+            //     "z1": 1,
+            //     "v": [
+            //         1,
+            //         0,
+            //         1,
+            //         0,
+            //         79.8650793650794
+            //     ]
+            // }
         ],
         "idealGasProperty": {
             "gamma": 1.4,
-            "Rgas": 289,
-            "muGas": 1e-200,
+            "Rgas": 0.116221972344982,
+            "muGas": 1e-3,
             "prGas": 0.72,
             "TRef": 273.15,
             "CSutherland": 110.4
