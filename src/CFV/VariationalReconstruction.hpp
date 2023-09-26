@@ -59,7 +59,9 @@ namespace DNDS::CFV
                 UnknownScale = -1,
                 MeanAACBB = 0,
                 BaryDiff = 1,
-            } scaleType = MeanAACBB;
+            } scaleType = BaryDiff;
+
+            real scaleMultiplier = 0.5;
 
             enum DirWeightScheme
             {
@@ -71,6 +73,7 @@ namespace DNDS::CFV
             DNDS_NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_ORDERED_JSON(
                 FunctionalSettings,
                 scaleType,
+                scaleMultiplier,
                 dirWeightScheme)
         } functionalSettings;
 
@@ -584,11 +587,12 @@ namespace DNDS::CFV
             }
 
             // real faceL = (faceLV.array().maxCoeff());
+            // * warning component_3 of the scale vector in 2D is forced to 1! not 0!
             real faceL = 0;
             if (settings.functionalSettings.scaleType == VRSettings::FunctionalSettings::MeanAACBB)
-                faceL = std::sqrt(faceLV.array().square().mean());
+                faceL = std::sqrt(faceLV(Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>)).array().square().mean());
             if (settings.functionalSettings.scaleType == VRSettings::FunctionalSettings::BaryDiff)
-                faceL = faceLV.norm();
+                faceL = faceLV(Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>)).norm();
 
             // std::cout << DiffI.transpose() << "\n"
             //           << DiffJ.transpose() << std::endl;
