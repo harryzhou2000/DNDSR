@@ -1,12 +1,12 @@
 {
     "timeMarchControl": {
         "dtImplicit": 1e-1,
-        "nTimeStep": 100,
+        "nTimeStep": 2000,
         "steadyQuit": false,
-        "odeCode": 1,
+        "odeCode": 401,
         "tEnd": 3e+200,
         "odeSetting1": 0.5,
-        "odeSetting2": 100
+        "odeSetting2": 20
     },
     "convergenceControl": {
         "nTimeStepInternal": 40,
@@ -53,7 +53,7 @@
         "nGmresIter": 10,
         "recThreshold": 1e-010,
         "nRecConsolCheck": 10,
-        "nRecMultiplyForZeroedGrad": 1000
+        "nRecMultiplyForZeroedGrad": 1
     },
     "limiterControl": {
         "useLimiter": false,
@@ -63,22 +63,23 @@
         "nPartialLimiterStartLocal": 1000000
     },
     "vfvSettings": {
-        "maxOrder": 2,
-        "intOrder": 2,
-        "cacheDiffBase": false,
-        "jacobiRelax": 1,
+        "maxOrder": 3,
+        "intOrder": 3,
+        "cacheDiffBase": true,
+        "jacobiRelax": 0,
         "SORInstead": true,
         "smoothThreshold": 1e-3,
         "WBAP_nStd": 10.0,
         "normWBAP": false,
         "subs2ndOrder": 1,
         "baseSettings": {
-            "localOrientation": false,
-            "anisotropicLengths": false
+            "localOrientation": true,
+            "anisotropicLengths": true
         },
         "functionalSettings": {
-            // "scaleType": "BaryDiff",
-            // "dirWeightScheme": "HQM_OPT"
+            "scaleType": "BaryDiff",
+            "scaleMultiplier": 1.0,
+            "dirWeightScheme": "HQM_OPT"
         }
     },
     "linearSolverControl": {
@@ -129,7 +130,7 @@
         "idealGasProperty": {
             "gamma": 1.4,
             "Rgas": 0.116221972344982,
-            "muGas": 1e-3,
+            "muGas": 5e-3,
             "prGas": 0.72,
             "TRef": 273.15,
             "CSutherland": 110.4

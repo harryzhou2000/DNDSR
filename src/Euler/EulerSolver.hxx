@@ -447,10 +447,10 @@ namespace DNDS::Euler
                                      0,
                                      tSimu);
 
-            for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
-            {
-                crhs[iCell] = eval.CompressInc(cx[iCell], crhs[iCell] * dTau[iCell], crhs[iCell]) / dTau[iCell];
-            }
+            // for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
+            // {
+            //     crhs[iCell] = eval.CompressInc(cx[iCell], crhs[iCell] * dTau[iCell]) / dTau[iCell];
+            // }
 
             TU sgsRes(nVars), sgsRes0(nVars);
 
@@ -501,8 +501,6 @@ namespace DNDS::Euler
                               << " [" << sgsRes0.transpose() << "] ->"
                               << " [" << sgsRes.transpose() << "] " << std::endl;
                 }
-                for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
-                    cxInc[iCell] = eval.CompressInc(cx[iCell], cxInc[iCell], crhs[iCell]);
             }
 
             if (config.linearSolverControl.gmresCode != 0)
@@ -548,9 +546,8 @@ namespace DNDS::Euler
                         }
                         return false;
                     });
-                for (index iCell = 0; iCell < cxInc.Size(); iCell++)
-                    cxInc[iCell] = eval.CompressInc(cx[iCell], cxInc[iCell], crhs[iCell]); // manually add fixing for gmres results
             }
+            // eval.FixIncrement(cx, cxInc);
             // !freeze something
             if (getNVars(model) > I4 + 1 && iter <= config.others.nFreezePassiveInner)
             {
@@ -598,7 +595,7 @@ namespace DNDS::Euler
 
             // for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
             // {
-            //     crhs[iCell] = eval.CompressInc(cx[iCell], crhs[iCell] * dTau[iCell], crhs[iCell]) / dTau[iCell];
+            //     crhs[iCell] = eval.CompressInc(cx[iCell], crhs[iCell] * dTau[iCell]) / dTau[iCell];
             // }
 
             if (config.linearSolverControl.gmresCode == 0 || config.linearSolverControl.gmresCode == 2)
@@ -619,9 +616,6 @@ namespace DNDS::Euler
                 cxInc.trans.startPersistentPull();
                 cxInc.trans.waitPersistentPull();
                 cxInc *= 1. / (dt * Coefs[1]);
-
-                for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
-                    cxInc[iCell] = eval.CompressInc(cx[iCell], cxInc[iCell], crhs[iCell]);
             }
 
             if (config.linearSolverControl.gmresCode != 0)
@@ -672,9 +666,8 @@ namespace DNDS::Euler
                         }
                         return false;
                     });
-                for (index iCell = 0; iCell < cxInc.Size(); iCell++)
-                    cxInc[iCell] = eval.CompressInc(cx[iCell], cxInc[iCell], crhs[iCell]); // manually add fixing for gmres results
             }
+            // eval.FixIncrement(cx, cxInc);
             // !freeze something
             if (getNVars(model) > I4 + 1 && iter <= config.others.nFreezePassiveInner)
             {
@@ -683,6 +676,14 @@ namespace DNDS::Euler
                 // if (mpi.rank == 0)
                 //     std::cout << "Freezing all passive" << std::endl;
             }
+        };
+
+        auto fincrement = [&](
+                              ArrayDOFV<nVars_Fixed> &cx,
+                              ArrayDOFV<nVars_Fixed> &cxInc,
+                              real alpha)
+        {
+            eval.AddFixedIncrement(cx, cxInc, alpha);
         };
 
         auto fstop = [&](int iter, ArrayDOFV<nVars_Fixed> &cxinc, int iStep) -> bool
@@ -931,7 +932,7 @@ namespace DNDS::Euler
                         fdtau,
                         fsolve, fsolveNest,
                         config.convergenceControl.nTimeStepInternal,
-                        fstop,
+                        fstop, fincrement,
                         curDtImplicit + verySmallReal);
             else
                 ode
@@ -941,7 +942,7 @@ namespace DNDS::Euler
                         fdtau,
                         fsolve,
                         config.convergenceControl.nTimeStepInternal,
-                        fstop,
+                        fstop, fincrement,
                         curDtImplicit + verySmallReal);
 
             if (fmainloop())

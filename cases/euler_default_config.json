@@ -144,7 +144,8 @@
             "anisotropicLengths": false
         },
         "functionalSettings": {
-            "scaleType": "MeanAACBB",
+            "scaleType": "BaryDiff",
+            "scaleMultiplier": 0.5,
             "dirWeightScheme": "Factorial"
         }
     }

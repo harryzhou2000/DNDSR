@@ -174,7 +174,6 @@
     "[python]": {
         "editor.defaultFormatter": "ms-python.black-formatter"
     },
-    "python.formatting.provider": "none",
-    "C_Cpp.default.compilerPath": "/public1/soft/gcc/11.2/bin/g++",
+    "C_Cpp.dimInactiveRegions": true,
     // "C_Cpp.intelliSenseEngine": "Tag Parser"
 }

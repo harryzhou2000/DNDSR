@@ -13,9 +13,10 @@ namespace DNDS::ODE
         using Fdt = std::function<void(TDATA &, std::vector<real> &, real, int)>;
         using Fsolve = std::function<void(TDATA &, TDATA &, std::vector<real> &, real, real, TDATA &, int, int)>;
         using Fstop = std::function<bool(int, TDATA &, int)>;
+        using Fincrement = std::function<void(TDATA &, TDATA &, real)>;
 
         virtual void Step(TDATA &x, TDATA &xinc, const Frhs &frhs, const Fdt &fdt, const Fsolve &fsolve,
-                          int maxIter, const Fstop &fstop, real dt) = 0;
+                          int maxIter, const Fstop &fstop, const Fincrement &fincrement, real dt) = 0;
         virtual ~ImplicitDualTimeStep() {}
 
         virtual TDATA &getLatestRHS() = 0;
@@ -29,6 +30,7 @@ namespace DNDS::ODE
         using Fdt = typename ImplicitDualTimeStep<TDATA>::Fdt;
         using Fsolve = typename ImplicitDualTimeStep<TDATA>::Fsolve;
         using Fstop = typename ImplicitDualTimeStep<TDATA>::Fstop;
+        using Fincrement = typename ImplicitDualTimeStep<TDATA>::Fincrement;
 
         std::vector<real> dTau;
         std::vector<TDATA> rhsbuf;
@@ -62,7 +64,7 @@ namespace DNDS::ODE
          * bool fstop(int iter, TDATA &xinc, int iInternal)
          */
         virtual void Step(TDATA &x, TDATA &xinc, const Frhs &frhs, const Fdt &fdt, const Fsolve &fsolve,
-                          int maxIter, const Fstop &fstop, real dt) override
+                          int maxIter, const Fstop &fstop, const Fincrement &fincrement, real dt) override
         {
             xLast = x;
             for (int iter = 1; iter <= maxIter; iter++)
@@ -77,7 +79,7 @@ namespace DNDS::ODE
                 rhs += rhsbuf[0]; // crhs = rhs + (x_i - x_j) / dt
 
                 fsolve(x, rhs, dTau, dt, 1.0, xinc, iter, 0);
-                x += xinc;
+                fincrement(x, xinc, 1.0);
 
                 if (fstop(iter, xinc, 1))
                     break;
@@ -107,6 +109,7 @@ namespace DNDS::ODE
         using Fdt = typename ImplicitDualTimeStep<TDATA>::Fdt;
         using Fsolve = typename ImplicitDualTimeStep<TDATA>::Fsolve;
         using Fstop = typename ImplicitDualTimeStep<TDATA>::Fstop;
+        using Fincrement = typename ImplicitDualTimeStep<TDATA>::Fincrement;
 
         std::vector<real> dTau;
         std::vector<TDATA> rhsbuf;
@@ -181,7 +184,7 @@ namespace DNDS::ODE
          * bool fstop(int iter, TDATA &xinc, int iInternal)
          */
         virtual void Step(TDATA &x, TDATA &xinc, const Frhs &frhs, const Fdt &fdt, const Fsolve &fsolve,
-                          int maxIter, const Fstop &fstop, real dt) override
+                          int maxIter, const Fstop &fstop, const Fincrement &fincrement, real dt) override
         {
             xLast = x;
             for (int iB = 0; iB < nInnerStage; iB++)
@@ -214,7 +217,7 @@ namespace DNDS::ODE
 
                     fsolve(x, rhs, dTau, dt, butcherA(iB, iB), xinc, iter, 0);
                     // x += xinc;
-                    x.addTo(xinc, 1.0);
+                    fincrement(x, xinc, 1.0);
                     // x.addTo(xIncPrev, -0.5);
 
                     xIncPrev = xinc;
@@ -233,7 +236,7 @@ namespace DNDS::ODE
                 return;
             x = xLast;
             for (int jB = 0; jB < nInnerStage; jB++)
-                x.addTo(rhsbuf[jB], butcherB(jB) * dt);
+                fincrement(x, rhsbuf[jB], butcherB(jB) * dt);
         }
 
         virtual TDATA &getLatestRHS() override
@@ -255,6 +258,7 @@ namespace DNDS::ODE
         using Fdt = typename ImplicitDualTimeStep<TDATA>::Fdt;
         using Fsolve = typename ImplicitDualTimeStep<TDATA>::Fsolve;
         using Fstop = typename ImplicitDualTimeStep<TDATA>::Fstop;
+        using Fincrement = typename ImplicitDualTimeStep<TDATA>::Fincrement;
 
         std::vector<real> dTau;
         std::vector<TDATA> xPrevs;
@@ -296,7 +300,7 @@ namespace DNDS::ODE
          * bool fstop(int iter, TDATA &xinc, int iInternal)
          */
         virtual void Step(TDATA &x, TDATA &xinc, const Frhs &frhs, const Fdt &fdt, const Fsolve &fsolve,
-                          int maxIter, const Fstop &fstop, real dt) override
+                          int maxIter, const Fstop &fstop, const Fincrement &fincrement, real dt) override
         {
             index kCurrent = cnPrev + 1;
             index prevSiz = kBDF - 1;
@@ -331,7 +335,7 @@ namespace DNDS::ODE
                 // std::cout << kCurrent << " " << cnPrev<<" " << BDFCoefs(kCurrent - 1, 0) << std::endl;
 
                 // x += xinc;
-                x.addTo(xinc, 1.0);
+                fincrement(x, xinc, 1.0);
                 // x.addTo(xIncPrev, -0.5);
 
                 xIncPrev = xinc;
@@ -381,6 +385,7 @@ namespace DNDS::ODE
         using Fdt = typename ImplicitDualTimeStep<TDATA>::Fdt;
         using Fsolve = typename ImplicitDualTimeStep<TDATA>::Fsolve;
         using Fstop = typename ImplicitDualTimeStep<TDATA>::Fstop;
+        using Fincrement = typename ImplicitDualTimeStep<TDATA>::Fincrement;
         using FsolveNest = std::function<void(
             TDATA &, TDATA &, TDATA &,
             std::vector<real> &, const std::vector<real> &,
@@ -451,7 +456,7 @@ namespace DNDS::ODE
          * bool fstop(int iter, TDATA &xinc, int iInternal)
          */
         virtual void Step(TDATA &x, TDATA &xinc, const Frhs &frhs, const Fdt &fdt, const Fsolve &fsolve,
-                          int maxIter, const Fstop &fstop, real dt) override
+                          int maxIter, const Fstop &fstop, const Fincrement &fincrement, real dt) override
         {
             xLast = x;
             frhs(rhsbuf[0], xLast, 0, 1.0, 0);
@@ -479,8 +484,16 @@ namespace DNDS::ODE
                     xMid.setConstant(0.0);
                     xMid.addTo(xLast, cInter[0]);
                     xMid.addTo(x, cInter[1]);
-                    xMid.addTo(rhsbuf[0], cInter[2] * dt);
-                    xMid.addTo(rhsbuf[1], cInter[3] * dt);
+                    {
+                        // xMid.addTo(rhsbuf[0], cInter[2] * dt);
+                        // xMid.addTo(rhsbuf[1], cInter[3] * dt);
+                    }
+                    {
+                        rhsMid = rhsbuf[0];
+                        rhsMid *= cInter[2] * dt;
+                        rhsMid.addTo(rhsbuf[1], cInter[3] * dt);
+                        fincrement(xMid, rhsMid, 1.0);
+                    }
                     frhs(rhsMid, xMid, iter, 1.0, 1);
                     rhsFull.setConstant(0.0);
                     rhsFull.addTo(rhsbuf[0], wInteg[0]);
@@ -526,16 +539,16 @@ namespace DNDS::ODE
                         //* 0
                         fdt(x, dTau, 1.0, 0);
                         for (auto &v : dTau)
-                            v = veryLargeReal;
+                            v *= 1;
                         fsolve(x, rhsFull, dTau, dt,
                                1.0, xinc, iter, 0);
 
                         //* 1
                         xinc *= 1 / (dt);
                         {
-                            for (auto &v : dTau)
-                                v = (v + dt) / v; // 1 / beta
-                            xinc *= dTau;
+                            // for (auto &v : dTau)
+                            //     v = (v + dt) / v; // 1 / beta
+                            // xinc *= dTau;
                         }
                         rhsFull = xinc;
                         fdt(x, dTau, 1.0, 0);
@@ -543,6 +556,7 @@ namespace DNDS::ODE
                             v *= 1;
                         fsolve(x, rhsFull, dTau, dt,
                                1.0, xinc, iter, 0);
+                        // std::cout << "solved " << iter << std::endl;
 
                         // //* 2
                         // xinc *= 1 / (dt);
@@ -615,7 +629,7 @@ namespace DNDS::ODE
                     // xinc *= xIncDamper;
                 }
 
-                x.addTo(xinc, 1.0);
+                fincrement(x, xinc, 1.0);
                 // x.addTo(xIncPrev, -0.5);
 
                 xIncPrev = xinc;
@@ -625,11 +639,11 @@ namespace DNDS::ODE
                         break;
             }
             if (iter > maxIter)
-                fstop(iter, xinc, 1);
+                fstop(iter, rhsMid, 1);
         }
 
         void StepNested(TDATA &x, TDATA &xinc, const Frhs &frhs, const Fdt &fdt, const Fsolve &fsolve, const FsolveNest &fsolveN,
-                        int maxIter, const Fstop &fstop, real dt)
+                        int maxIter, const Fstop &fstop, const Fincrement &fincrement, real dt)
         {
             xLast = x;
             frhs(rhsbuf[0], x, 0, 1.0, 0);
@@ -656,8 +670,8 @@ namespace DNDS::ODE
                     xMid.setConstant(0.0);
                     xMid.addTo(xLast, cInter[0]);
                     xMid.addTo(x, cInter[1]);
-                    xMid.addTo(rhsbuf[0], cInter[2] * dt);
-                    xMid.addTo(rhsbuf[1], cInter[3] * dt);
+                    fincrement(xMid, rhsbuf[0], cInter[2] * dt);
+                    fincrement(xMid, rhsbuf[1], cInter[3] * dt);
                     frhs(rhsMid, xMid, iter, 1.0, 1);
                     rhsFull.setConstant(0.0);
                     rhsFull.addTo(rhsbuf[0], wInteg[0]);
@@ -720,7 +734,7 @@ namespace DNDS::ODE
                     // xinc *= xIncDamper;
                 }
 
-                x.addTo(xinc, 1.0);
+                fincrement(x, xinc, 1.0);
                 // x.addTo(xIncPrev, -0.5);
 
                 xIncPrev = xinc;
@@ -755,6 +769,8 @@ namespace DNDS::ODE
         using Fdt = typename ImplicitDualTimeStep<TDATA>::Fdt;
         using Fsolve = typename ImplicitDualTimeStep<TDATA>::Fsolve;
         using Fstop = typename ImplicitDualTimeStep<TDATA>::Fstop;
+        using Fincrement = typename ImplicitDualTimeStep<TDATA>::Fincrement;
+
         std::vector<real> dTau;
         std::vector<TDATA> rhsbuf;
         TDATA rhs;
@@ -784,7 +800,7 @@ namespace DNDS::ODE
         @brief fsolve, maxIter, fstop are omitted here
         */
         virtual void Step(TDATA &x, TDATA &xinc, const Frhs &frhs, const Fdt &fdt, const Fsolve &fsolve,
-                          int maxIter, const Fstop &fstop, real dt) override
+                          int maxIter, const Fstop &fstop, const Fincrement &fincrement, real dt) override
         {
 
             fdt(x, dTau, 1.0, 0); // always gets dTau for CFL evaluation
@@ -799,7 +815,8 @@ namespace DNDS::ODE
             else
                 rhs *= dt;
 
-            x += rhs;
+            // x += rhs;
+            fincrement(x, rhs, 1.0);
 
             frhs(rhs, x, 1, 1, 0);
             rhsbuf[1] = rhs;
@@ -809,7 +826,8 @@ namespace DNDS::ODE
                 rhs *= dt;
             x *= 0.25;
             x.addTo(xLast, 0.75);
-            x.addTo(rhs, 0.25);
+            // x.addTo(rhs, 0.25);
+            fincrement(x, rhs, 0.25);
 
             frhs(rhs, x, 1, 0.25, 0);
             rhsbuf[2] = rhs;
@@ -819,7 +837,8 @@ namespace DNDS::ODE
                 rhs *= dt;
             x *= 2. / 3.;
             x.addTo(xLast, 1. / 3.);
-            x.addTo(rhs, 2. / 3.);
+            // x.addTo(rhs, 2. / 3.);
+            fincrement(x, rhs, 2. / 3.);
         }
 
         virtual TDATA &getLatestRHS() override

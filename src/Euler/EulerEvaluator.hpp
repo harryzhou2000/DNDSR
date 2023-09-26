@@ -1460,29 +1460,44 @@ namespace DNDS::Euler
 
         inline TU CompressInc(
             const TU &u,
-            const TU &uInc,
-            const TU &rhs)
+            const TU &uInc)
         {
             DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
             TU ret = uInc;
 
             /** A intuitive fix **/ //! need positive perserving technique!
-            // DNDS_assert(u(0) > 0);
-            // if (u(0) + ret(0) <= 0)
-            // {
-            //     real declineV = ret(0) / (u(0) + verySmallReal);
-            //     real newrho = u(0) * std::exp(declineV);
-            //     ret(0) = newrho - u(0);
-            // }
-            // real rhoEinternal = u(I4) - 0.5 * u(Seq123).squaredNorm() / u(0);
-            // real ek = 0.5 * (u(Seq123) + ret(Seq123)).squaredNorm() / (u(0) + ret(0));
-            // real rhoEinternalNew = u(I4) + ret(I4) - ek;
-            // if (rhoEinternalNew <= 0)
-            // {
-            //     real declineV = (rhoEinternalNew - rhoEinternal) / (rhoEinternal + verySmallReal);
-            //     real newrhoEinteralNew = std::exp(declineV) * rhoEinternal;
-            //     ret(I4) = newrhoEinteralNew + ek;
-            // }
+            DNDS_assert(u(0) > 0);
+            if (u(0) + ret(0) <= 0)
+            {
+                real declineV = ret(0) / (u(0) + verySmallReal);
+                real newrho = u(0) * std::exp(declineV);
+                ret *= (newrho - u(0)) / (ret(0) + verySmallReal);
+                // DNDS_assert(false);
+            }
+            real ekOld = 0.5 * u(Seq123).squaredNorm() / (u(0) + verySmallReal);
+            real rhoEinternal = u(I4) - ekOld;
+            DNDS_assert(rhoEinternal > 0);
+            real ek = 0.5 * (u(Seq123) + ret(Seq123)).squaredNorm() / (u(0) + ret(0) + verySmallReal);
+            real rhoEinternalNew = u(I4) + ret(I4) - ek;
+            if (rhoEinternalNew <= 0)
+            {
+                real declineV = (rhoEinternalNew - rhoEinternal) / (rhoEinternal + verySmallReal);
+                real newrhoEinteralNew = (std::exp(declineV) + verySmallReal) * rhoEinternal;
+                real newI4Inc = newrhoEinteralNew + ek - u(I4) + u(I4) * (smallReal);
+                ret(I4) *= newI4Inc / (ret(I4) + verySmallReal * signP(ret(I4)));
+
+                if (ret(I4) + u(I4) - ek < 0)
+                {
+                    std::cout << std::scientific << std::setprecision(5);
+                    std::cout << u(0) << " " << ret(0) << std::endl;
+                    std::cout << rhoEinternalNew << " " << rhoEinternal << std::endl;
+                    std::cout << declineV << std::endl;
+                    std::cout << newrhoEinteralNew << std::endl;
+                    std::cout << ret(I4) + u(I4) - ek << std::endl;
+                    DNDS_assert(false);
+                }
+            }
+
             /** A intuitive fix **/
 
             if constexpr (model == NS_SA || model == NS_SA_3D)
@@ -1491,7 +1506,7 @@ namespace DNDS::Euler
                 {
                     // std::cout << "Fixing SA inc " << std::endl;
 
-                    DNDS_assert(u(I4 + 1) >= 0); //! might be bad using gmeres, add this to gmres inc!
+                    DNDS_assert(u(I4 + 1) >= 0); //! might be bad using gmres, add this to gmres inc!
                     real declineV = ret(I4 + 1) / (u(I4 + 1) + 1e-6);
                     real newu5 = u(I4 + 1) * std::exp(declineV);
                     // ! refvalue:
@@ -1502,6 +1517,32 @@ namespace DNDS::Euler
             }
 
             return ret;
+        }
+
+        void FixIncrement(
+            ArrayDOFV<nVars_Fixed> &cx,
+            ArrayDOFV<nVars_Fixed> &cxInc, real alpha = 1.0)
+        {
+            for (index iCell = 0; iCell < cxInc.Size(); iCell++)
+                cxInc[iCell] = this->CompressInc(cx[iCell], cxInc[iCell] * alpha);
+        }
+
+        void AddFixedIncrement(
+            ArrayDOFV<nVars_Fixed> &cx,
+            ArrayDOFV<nVars_Fixed> &cxInc, real alpha = 1.0)
+        {
+            real alpha_fix_min = 1.0;
+            for (index iCell = 0; iCell < cxInc.Size(); iCell++)
+                alpha_fix_min = std::min(
+                    alpha_fix_min,
+                    std::abs(this->CompressInc(cx[iCell], cxInc[iCell] * alpha)(0)) /
+                        (std::abs((cxInc[iCell] * alpha)(0)) + verySmallReal));
+            if (alpha_fix_min < 1.0)
+                if (cx.father->mpi.rank == 0)
+                    std::cout << "fixed " << std::scientific << std::setprecision(5) << alpha_fix_min << std::endl;
+
+            for (index iCell = 0; iCell < cxInc.Size(); iCell++)
+                cx[iCell] += this->CompressInc(cx[iCell], cxInc[iCell] * alpha);
         }
 
         void CentralSmoothResidual(ArrayDOFV<nVars_Fixed> &r, ArrayDOFV<nVars_Fixed> &rs, ArrayDOFV<nVars_Fixed> &rtemp)
@@ -1518,8 +1559,11 @@ namespace DNDS::Euler
                     {
                         index iFace = c2f[ic2f];
                         index iCellOther = vfv->CellFaceOther(iCell, iFace);
-                        div += epsC;
-                        vC += epsC * rs[iCellOther];
+                        if (iCellOther != UnInitIndex)
+                        {
+                            div += epsC;
+                            vC += epsC * rs[iCellOther];
+                        }
                     }
                     rtemp[iCell] = vC / div;
                 }
