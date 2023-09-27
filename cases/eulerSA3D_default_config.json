@@ -145,7 +145,8 @@
         },
         "functionalSettings": {
             "scaleType": "MeanAACBB",
-            "dirWeightScheme": "Factorial"
+            "dirWeightScheme": "Factorial",
+            "geomWeightScheme": "GWNone"
         }
     }
 }

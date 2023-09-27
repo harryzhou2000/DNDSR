@@ -7,7 +7,7 @@
         "tEnd": 3e+200
     },
     "convergenceControl": {
-        "nTimeStepInternal": 20000,
+        "nTimeStepInternal": 40000,
         "rhsThresholdInternal": 1e-60,
         "res_base": 0.0,
         "useVolWiseResidual": false
@@ -61,7 +61,7 @@
     },
     "vfvSettings": {
         "maxOrder": 3,
-        "intOrder": 3,
+        "intOrder": 5,
         "cacheDiffBase": false,
         "jacobiRelax": 1.0,
         "SORInstead": true,
@@ -71,14 +71,17 @@
         "subs2ndOrder": 0,
         "baseSettings": {
             "localOrientation": true,
-            "anisotropicLengths": true
+            "anisotropicLengths": false
         },
         "functionalSettings": {
             "scaleType": "BaryDiff",
-            "dirWeightScheme": "HQM_OPT"
+            "dirWeightScheme": "HQM_OPT",
+            "geomWeightScheme": "HQM_SD"
         }
     },
     "linearSolverControl": {
+        "sgsIter": 0,
+        "sgsWithRec": 1,
         "gmresCode": 0,
         "nGmresSpace": 10,
         "nGmresIter": 2
