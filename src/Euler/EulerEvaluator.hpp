@@ -1501,7 +1501,18 @@ namespace DNDS::Euler
                 alpha = std::max(0., alpha);
                 ret *= alpha * (1 - 1e-12);
 
+                real decay = 1 - 1e-2;
+                for (int iter = 0; iter < 1000; iter++)
+                {
+                    ek = 0.5 * (u(Seq123) + ret(Seq123)).squaredNorm() / (u(0) + ret(0) + verySmallReal);
+                    if (ret(I4) + u(I4) - ek < 0)
+                        ret *= decay, alpha *= decay;
+                    else
+                        break;
+                }
+
                 ek = 0.5 * (u(Seq123) + ret(Seq123)).squaredNorm() / (u(0) + ret(0) + verySmallReal);
+
                 if (ret(I4) + u(I4) - ek < 0)
                 {
                     std::cout << std::scientific << std::setprecision(5);
@@ -1510,6 +1521,7 @@ namespace DNDS::Euler
                     std::cout << declineV << std::endl;
                     std::cout << newrhoEinteralNew << std::endl;
                     std::cout << ret(I4) + u(I4) - ek << std::endl;
+                    std::cout << alpha << std::endl;
                     DNDS_assert(false);
                 }
             }

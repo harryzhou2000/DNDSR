@@ -137,12 +137,18 @@ namespace DNDS::Euler
         /*                   DEFINE LAMBDAS                    */
         /*******************************************************/
 
-        auto frhs = [&](ArrayDOFV<nVars_Fixed> &crhs, ArrayDOFV<nVars_Fixed> &cx, int iter, real ct, int uPos)
+        auto frhs =
+            [&](
+                ArrayDOFV<nVars_Fixed> &crhs,
+                ArrayDOFV<nVars_Fixed> &cx,
+                std::vector<real> &dTau,
+                int iter, real ct, int uPos)
         {
             cx.trans.startPersistentPull();
             cx.trans.waitPersistentPull(); // for hermite3
             auto &uRecC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? uRec1 : uRec;
             auto &JSourceC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? JSource1 : JSource;
+            auto &uRecIncC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? uRecInc1 : uRecInc;
             // if (mpi.rank == 0)
             //     std::cout << uRecC.father.get() << std::endl;
 
@@ -187,7 +193,10 @@ namespace DNDS::Euler
                 return eval.generateBoundaryValue(ULfixedPlus, normOutV, normBase, pPhy(Seq012), tSimu + ct * curDtImplicit, bType, true) -
                        eval.generateBoundaryValue(ULfixed, normOutV, normBase, pPhy(Seq012), tSimu + ct * curDtImplicit, bType, true);
             };
+            if (config.implicitReconstructionControl.storeRecInc)
+                uRecOld = uRecC;
             if (config.implicitReconstructionControl.recLinearScheme == 0)
+            {
                 for (int iRec = 1; iRec <= nRec; iRec++)
                 {
                     if (nRec > 1)
@@ -217,6 +226,7 @@ namespace DNDS::Euler
                             break;
                     }
                 }
+            }
             else if (config.implicitReconstructionControl.recLinearScheme == 1)
             {
                 int nGMRESrestartAll{0};
@@ -375,6 +385,20 @@ namespace DNDS::Euler
                 // uRecNew.trans.waitPersistentPull();
             }
             tLim += MPI_Wtime() - tstartH;
+            if (config.implicitReconstructionControl.storeRecInc)
+            {
+                uRecIncC = uRecC;
+                uRecIncC -= uRecOld; //! uRecNew1 now stores uRecIncrement
+            }
+            if (config.implicitReconstructionControl.storeRecInc && config.implicitReconstructionControl.dampRecIncDTau)
+            {
+                std::vector<real> damper = dTau;
+                for (auto &v : damper)
+                    v = v / (curDtImplicit + v); //! warning: teleported value here
+                uRecIncC *= damper;
+                uRecC = uRecOld;
+                uRecC += uRecIncC;
+            }
 
             // uRecC.trans.startPersistentPull(); //! this also need to update!
             // uRecC.trans.waitPersistentPull();
@@ -425,6 +449,7 @@ namespace DNDS::Euler
             auto &JDC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? JD1 : JD;
             auto &JSourceC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? JSource1 : JSource;
             auto &uRecC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? uRec1 : uRec;
+            auto &uRecIncC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? uRecInc1 : uRecInc;
 
             typename TVFV::element_type::TFBoundary<nVars_Fixed>
                 FBoundary = [&](const TU &UL, const TU &UMean, const Geom::tPoint &normOut, const Geom::tPoint &pPhy, const Geom::t_index bType) -> TU
@@ -458,12 +483,25 @@ namespace DNDS::Euler
             {
                 // //! LUSGS
 
-                eval.UpdateLUSGSForward(alphaDiag, crhs, cx, cxInc, JDC, cxInc);
-                cxInc.trans.startPersistentPull();
-                cxInc.trans.waitPersistentPull();
-                eval.UpdateLUSGSBackward(alphaDiag, crhs, cx, cxInc, JDC, cxInc);
-                cxInc.trans.startPersistentPull();
-                cxInc.trans.waitPersistentPull();
+                if (config.linearSolverControl.initWithLastURecInc)
+                {
+                    DNDS_assert(config.implicitReconstructionControl.storeRecInc);
+                    eval.UpdateSGSWithRec(alphaDiag, crhs, cx, uRecC, cxInc, uRecIncC, JDC, true, sgsRes);
+                    cxInc.trans.startPersistentPull();
+                    cxInc.trans.waitPersistentPull();
+                    eval.UpdateSGSWithRec(alphaDiag, crhs, cx, uRecC, cxInc, uRecIncC, JDC, false, sgsRes);
+                    cxInc.trans.startPersistentPull();
+                    cxInc.trans.waitPersistentPull();
+                }
+                else
+                {
+                    eval.UpdateLUSGSForward(alphaDiag, crhs, cx, cxInc, JDC, cxInc);
+                    cxInc.trans.startPersistentPull();
+                    cxInc.trans.waitPersistentPull();
+                    eval.UpdateLUSGSBackward(alphaDiag, crhs, cx, cxInc, JDC, cxInc);
+                    cxInc.trans.startPersistentPull();
+                    cxInc.trans.waitPersistentPull();
+                }
 
                 if (config.linearSolverControl.sgsWithRec != 0)
                     uRecNew.setConstant(0.0);

@@ -48,7 +48,7 @@ namespace DNDS::Euler
         ssp<Geom::UnstructuredMeshSerialRW> reader, readerBnd;
 
         ArrayDOFV<nVars_Fixed> u, uInc, uIncRHS, uTemp, rhsTemp;
-        ArrayRECV<nVars_Fixed> uRec, uRecNew, uRecNew1, uRecOld, uRec1;
+        ArrayRECV<nVars_Fixed> uRec, uRecNew, uRecNew1, uRecOld, uRec1, uRecInc, uRecInc1;
         ArrayDOFV<nVars_Fixed> JD, JD1, JSource, JSource1;
 
         int nOUTS = {-1};
@@ -117,12 +117,15 @@ namespace DNDS::Euler
                 real recThreshold = 1e-5;
                 int nRecConsolCheck = 1;
                 int nRecMultiplyForZeroedGrad = 1;
+                bool storeRecInc = false;
+                bool dampRecIncDTau = false;
                 DNDS_NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_ORDERED_JSON(
                     ImplicitReconstructionControl,
                     nInternalRecStep, zeroGrads,
                     recLinearScheme, nGmresSpace, nGmresIter,
                     recThreshold, nRecConsolCheck,
-                    nRecMultiplyForZeroedGrad)
+                    nRecMultiplyForZeroedGrad,
+                    storeRecInc, dampRecIncDTau)
             } implicitReconstructionControl;
 
             struct OutputControl
@@ -265,10 +268,11 @@ namespace DNDS::Euler
                 int nGmresIter = 2;
                 int nSgsConsoleCheck = 100;
                 int nGmresConsoleCheck = 100;
+                bool initWithLastURecInc = false;
                 DNDS_NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_ORDERED_JSON(
                     LinearSolverControl,
                     sgsIter, sgsWithRec, gmresCode,
-                    nGmresSpace, nGmresIter)
+                    nGmresSpace, nGmresIter, initWithLastURecInc)
             } linearSolverControl;
 
             struct RestartState
@@ -488,6 +492,12 @@ namespace DNDS::Euler
             vfv->BuildURec(uRecNew1, nVars);
             vfv->BuildURec(uRecOld, nVars);
             vfv->BuildScalar(ifUseLimiter);
+            if (config.implicitReconstructionControl.storeRecInc)
+            {
+                vfv->BuildURec(uRecInc, nVars);
+                if (config.timeMarchControl.odeCode == 401)
+                    vfv->BuildURec(uRecInc1, nVars);
+            }
 
             vfv->BuildUDof(JD, nVars);
             vfv->BuildUDof(JSource, nVars);

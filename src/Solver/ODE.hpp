@@ -9,7 +9,7 @@ namespace DNDS::ODE
     class ImplicitDualTimeStep
     {
     public:
-        using Frhs = std::function<void(TDATA &, TDATA &, int, real, int)>;
+        using Frhs = std::function<void(TDATA &, TDATA &, std::vector<real> &, int, real, int)>;
         using Fdt = std::function<void(TDATA &, std::vector<real> &, real, int)>;
         using Fsolve = std::function<void(TDATA &, TDATA &, std::vector<real> &, real, real, TDATA &, int, int)>;
         using Fstop = std::function<bool(int, TDATA &, int)>;
@@ -71,7 +71,7 @@ namespace DNDS::ODE
             {
                 fdt(x, dTau, 1, 0);
 
-                frhs(rhs, x, iter, 1, 0);
+                frhs(rhs, x, dTau, iter, 1, 0);
                 rhsbuf[0] = rhs;
                 rhs = xLast;
                 rhs -= x;
@@ -196,7 +196,7 @@ namespace DNDS::ODE
                 {
                     fdt(x, dTau, butcherA(iB, iB), 0);
 
-                    frhs(rhsbuf[iB], x, iter, butcherC(iB), 0);
+                    frhs(rhsbuf[iB], x, dTau, iter, butcherC(iB), 0);
 
                     // //!test explicit
                     // rhs = rhsbuf[iB];
@@ -315,7 +315,7 @@ namespace DNDS::ODE
             {
                 fdt(x, dTau, BDFCoefs(kCurrent - 1, 0), 0);
 
-                frhs(rhsbuf[0], x, iter, 1.0, 0);
+                frhs(rhsbuf[0], x, dTau, iter, 1.0, 0);
 
                 rhsbuf[0] *= BDFCoefs(kCurrent - 1, 0);
                 rhsbuf[0].addTo(x, -1. / dt);
@@ -459,7 +459,7 @@ namespace DNDS::ODE
                           int maxIter, const Fstop &fstop, const Fincrement &fincrement, real dt) override
         {
             xLast = x;
-            frhs(rhsbuf[0], xLast, 0, 1.0, 0);
+            frhs(rhsbuf[0], xLast, dTau, 0, 1.0, 0);
 
             xIncPrev.setConstant(0.0);
             int iter = 1;
@@ -469,7 +469,7 @@ namespace DNDS::ODE
                 if (iter < nStartIter)
                 {
                     fdt(x, dTau, 1.0, 0);
-                    frhs(rhsbuf[1], x, iter, 1.0, 0);
+                    frhs(rhsbuf[1], x, dTau, iter, 1.0, 0);
                     rhsFull = rhsbuf[1];
                     rhsFull.addTo(xLast, 1. / dt);
                     rhsFull.addTo(x, -1. / dt);
@@ -480,7 +480,7 @@ namespace DNDS::ODE
                 {
                     fdt(x, dTau, 1.0, 0);
 
-                    frhs(rhsbuf[1], x, iter, 1.0, 0);
+                    frhs(rhsbuf[1], x, dTau, iter, 1.0, 0);
                     xMid.setConstant(0.0);
                     xMid.addTo(xLast, cInter[0]);
                     xMid.addTo(x, cInter[1]);
@@ -494,7 +494,7 @@ namespace DNDS::ODE
                         rhsMid.addTo(rhsbuf[1], cInter[3] * dt);
                         fincrement(xMid, rhsMid, 1.0);
                     }
-                    frhs(rhsMid, xMid, iter, 1.0, 1);
+                    frhs(rhsMid, xMid, dTau, iter, 1.0, 1);
                     rhsFull.setConstant(0.0);
                     rhsFull.addTo(rhsbuf[0], wInteg[0]);
                     rhsFull.addTo(rhsMid, wInteg[1]);
@@ -646,7 +646,7 @@ namespace DNDS::ODE
                         int maxIter, const Fstop &fstop, const Fincrement &fincrement, real dt)
         {
             xLast = x;
-            frhs(rhsbuf[0], x, 0, 1.0, 0);
+            frhs(rhsbuf[0], x, dTau, 0, 1.0, 0);
 
             xIncPrev.setConstant(0.0);
             int iter = 1;
@@ -656,7 +656,7 @@ namespace DNDS::ODE
                 if (iter < nStartIter)
                 {
                     fdt(x, dTau, 1.0, 0);
-                    frhs(rhsbuf[1], x, iter, 1.0, 0);
+                    frhs(rhsbuf[1], x, dTau, iter, 1.0, 0);
                     rhsFull = rhsbuf[1];
                     rhsFull.addTo(xLast, 1. / dt);
                     rhsFull.addTo(x, -1. / dt);
@@ -666,13 +666,13 @@ namespace DNDS::ODE
                 {
                     fdt(x, dTau, 1.0, 0);
 
-                    frhs(rhsbuf[1], x, iter, 1.0, 0);
+                    frhs(rhsbuf[1], x, dTau, iter, 1.0, 0);
                     xMid.setConstant(0.0);
                     xMid.addTo(xLast, cInter[0]);
                     xMid.addTo(x, cInter[1]);
                     fincrement(xMid, rhsbuf[0], cInter[2] * dt);
                     fincrement(xMid, rhsbuf[1], cInter[3] * dt);
-                    frhs(rhsMid, xMid, iter, 1.0, 1);
+                    frhs(rhsMid, xMid, dTau, iter, 1.0, 1);
                     rhsFull.setConstant(0.0);
                     rhsFull.addTo(rhsbuf[0], wInteg[0]);
                     rhsFull.addTo(rhsMid, wInteg[1]);
@@ -808,7 +808,7 @@ namespace DNDS::ODE
             // MPI_Barrier(MPI_COMM_WORLD);
             // std::cout << "fucked" << std::endl;
 
-            frhs(rhs, x, 1, 0.5, 0);
+            frhs(rhs, x, dTau, 1, 0.5, 0);
             rhsbuf[0] = rhs;
             if (localDtStepping)
                 rhs *= dTau;
@@ -818,7 +818,7 @@ namespace DNDS::ODE
             // x += rhs;
             fincrement(x, rhs, 1.0);
 
-            frhs(rhs, x, 1, 1, 0);
+            frhs(rhs, x, dTau, 1, 1, 0);
             rhsbuf[1] = rhs;
             if (localDtStepping)
                 rhs *= dTau;
@@ -829,7 +829,7 @@ namespace DNDS::ODE
             // x.addTo(rhs, 0.25);
             fincrement(x, rhs, 0.25);
 
-            frhs(rhs, x, 1, 0.25, 0);
+            frhs(rhs, x, dTau, 1, 0.25, 0);
             rhsbuf[2] = rhs;
             if (localDtStepping)
                 rhs *= dTau;
