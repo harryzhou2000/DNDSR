@@ -102,7 +102,7 @@
     },
     "linearSolverControl": {
         "sgsIter": 0,
-        "sgsWithRec": 0,
+        "sgsWithRec": 1,
         "nSgsConsoleCheck": 100,
         "gmresCode": 0,
         "nGmresSpace": 5,

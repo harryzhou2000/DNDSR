@@ -479,7 +479,8 @@ namespace DNDS::ODE
                 else
                 {
                     fdt(x, dTau, 1.0, 0);
-
+                    for (auto &v : dTau)
+                        v = veryLargeReal;
                     frhs(rhsbuf[1], x, dTau, iter, 1.0, 0);
                     xMid.setConstant(0.0);
                     xMid.addTo(xLast, cInter[0]);
@@ -494,6 +495,7 @@ namespace DNDS::ODE
                         rhsMid.addTo(rhsbuf[1], cInter[3] * dt);
                         fincrement(xMid, rhsMid, 1.0);
                     }
+                    fdt(xMid, dTau, 1.0, 0);
                     frhs(rhsMid, xMid, dTau, iter, 1.0, 1);
                     rhsFull.setConstant(0.0);
                     rhsFull.addTo(rhsbuf[0], wInteg[0]);
@@ -539,7 +541,7 @@ namespace DNDS::ODE
                         //* 0
                         fdt(x, dTau, 1.0, 0);
                         for (auto &v : dTau)
-                            v *= 1;
+                            v = veryLargeReal;
                         fsolve(x, rhsFull, dTau, dt,
                                1.0, xinc, iter, 0);
 
