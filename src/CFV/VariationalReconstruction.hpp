@@ -70,11 +70,19 @@ namespace DNDS::CFV
                 HQM_OPT = 1,
             } dirWeightScheme = Factorial;
 
+            enum GeomWeightScheme
+            {
+                UnknownGeomWeight = -1,
+                GWNone = 0,
+                HQM_SD = 1,
+            } geomWeightScheme = GWNone;
+
             DNDS_NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_ORDERED_JSON(
                 FunctionalSettings,
                 scaleType,
                 scaleMultiplier,
-                dirWeightScheme)
+                dirWeightScheme,
+                geomWeightScheme)
         } functionalSettings;
 
         VRSettings()
@@ -144,6 +152,12 @@ namespace DNDS::CFV
         {{VRSettings::FunctionalSettings::UnknownDirWeight, nullptr},
          {VRSettings::FunctionalSettings::Factorial, "Factorial"},
          {VRSettings::FunctionalSettings::HQM_OPT, "HQM_OPT"}})
+
+    NLOHMANN_JSON_SERIALIZE_ENUM(
+        VRSettings::FunctionalSettings::GeomWeightScheme,
+        {{VRSettings::FunctionalSettings::UnknownGeomWeight, nullptr},
+         {VRSettings::FunctionalSettings::GWNone, "GWNone"},
+         {VRSettings::FunctionalSettings::HQM_SD, "HQM_SD"}})
 }
 
 namespace DNDS::CFV

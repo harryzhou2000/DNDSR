@@ -391,36 +391,40 @@ namespace DNDS::CFV
             DNDS_assert(nF2C > 0);
             faceScale /= nF2C;
             faceAlignedScales[iFace] = faceScale;
+            Geom::tPoint faceBaryDiffV;
+            if (mesh->face2cell(iFace, 1) != UnInitIndex)
+            {
+                faceBaryDiffV =
+                    this->GetOtherCellBaryFromCell(mesh->face2cell(iFace, 0),
+                                                   mesh->face2cell(iFace, 1), iFace) -
+                    this->GetCellBary(mesh->face2cell(iFace, 0));
+            }
+            else
+            {
+                Geom::tPoint vCB = this->GetFaceQuadraturePPhysFromCell(
+                                       iFace,
+                                       mesh->face2cell(iFace, 0), 0, -1) -
+                                   this->GetCellBary(mesh->face2cell(iFace, 0));
+                auto uNorm = this->GetFaceNormFromCell(
+                    iFace,
+                    mesh->face2cell(iFace, 0), 0, -1);
+                faceBaryDiffV =
+                    2 * vCB.dot(uNorm) *
+                    this->GetFaceNorm(iFace, -1);
+            }
+            // std::cout << faceBaryDiffV.transpose() << std::endl;
+            // std::cout << faceBaryDiffV.norm() << std::endl;
+            if constexpr (dim == 2)
+                faceBaryDiffV(2) = 1;
             if (settings.functionalSettings.scaleType == VRSettings::FunctionalSettings::BaryDiff)
             {
-                if (mesh->face2cell(iFace, 1) != UnInitIndex)
-                {
-                    faceAlignedScales[iFace] =
-                        this->GetOtherCellBaryFromCell(mesh->face2cell(iFace, 0),
-                                                       mesh->face2cell(iFace, 1), iFace) -
-                        this->GetCellBary(mesh->face2cell(iFace, 0));
-                }
-                else
-                {
-                    Geom::tPoint vCB = this->GetFaceQuadraturePPhysFromCell(
-                                           iFace,
-                                           mesh->face2cell(iFace, 0), 0, -1) -
-                                       this->GetCellBary(mesh->face2cell(iFace, 0));
-                    auto uNorm = this->GetFaceNormFromCell(
-                        iFace,
-                        mesh->face2cell(iFace, 0), 0, -1);
-                    faceAlignedScales[iFace] =
-                        2 * vCB.dot(uNorm) *
-                        this->GetFaceNorm(iFace, -1);
-                }
-                // std::cout << faceAlignedScales[iFace].transpose() << std::endl;
-                // std::cout << faceAlignedScales[iFace].norm() << std::endl;
-                if constexpr (dim == 2)
-                    faceAlignedScales[iFace](2) = 1;
+                faceAlignedScales[iFace] = faceBaryDiffV;
             }
 
             // *get geom weight ic2f
             real wg = 1;
+            if (settings.functionalSettings.geomWeightScheme == VRSettings::FunctionalSettings::HQM_SD)
+                wg = std::pow(std::pow(this->GetFaceArea(iFace), 1. / real(dim - 1)) / faceBaryDiffV.norm(), 0.5 * 0.5);
 
             // *get dir weight
             Eigen::Vector<real, Eigen::Dynamic> wd;
