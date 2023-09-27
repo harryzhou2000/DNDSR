@@ -275,6 +275,8 @@ namespace DNDS::MPI
     MPI_int Allgather(const void *sendbuf, MPI_int sendcount, MPI_Datatype sendtype,
                       void *recvbuf, MPI_int recvcount,
                       MPI_Datatype recvtype, MPI_Comm comm);
+
+    
 }
 
 namespace DNDS::MPI

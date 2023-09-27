@@ -1472,6 +1472,7 @@ namespace DNDS::Euler
                 real declineV = ret(0) / (u(0) + verySmallReal);
                 real newrho = u(0) * std::exp(declineV);
                 ret *= (newrho - u(0)) / (ret(0) + verySmallReal);
+                // std::cout << (newrho - u(0)) / (ret(0) + verySmallReal) << std::endl;
                 // DNDS_assert(false);
             }
             real ekOld = 0.5 * u(Seq123).squaredNorm() / (u(0) + verySmallReal);
@@ -1483,9 +1484,24 @@ namespace DNDS::Euler
             {
                 real declineV = (rhoEinternalNew - rhoEinternal) / (rhoEinternal + verySmallReal);
                 real newrhoEinteralNew = (std::exp(declineV) + verySmallReal) * rhoEinternal;
-                real newI4Inc = newrhoEinteralNew + ek - u(I4) + u(I4) * (smallReal);
-                ret(I4) *= newI4Inc / (ret(I4) + verySmallReal * signP(ret(I4)));
+                real c0 = 2 * u(I4) * u(0) - u(Seq123).squaredNorm() - 2 * u(0) * newrhoEinteralNew;
+                real c1 = 2 * u(I4) * ret(0) + 2 * u(0) * ret(I4) - 2 * u(Seq123).dot(ret(Seq123)) - 2 * ret(0) * newrhoEinteralNew;
+                real c2 = 2 * ret(I4) * ret(0) - ret(Seq123).squaredNorm();
+                real deltaC = sqr(c1) - 4 * c0 * c2;
+                DNDS_assert(deltaC > 0);
+                real alphaL = (-std::sqrt(deltaC) - c1) / (2 * c2);
+                real alphaR = (std::sqrt(deltaC) - c1) / (2 * c2);
+                // if (c2 > 0)
+                //     DNDS_assert(alphaL > 0);
+                // DNDS_assert(alphaR > 0);
+                // DNDS_assert(alphaL < 1);
+                // if (c2 < 0)
+                //     DNDS_assert(alphaR < 1);
+                real alpha = std::min((c2 > 0 ? alphaL : alphaR), 1.);
+                alpha = std::max(0., alpha);
+                ret *= alpha * (1 - 1e-12);
 
+                ek = 0.5 * (u(Seq123) + ret(Seq123)).squaredNorm() / (u(0) + ret(0) + verySmallReal);
                 if (ret(I4) + u(I4) - ek < 0)
                 {
                     std::cout << std::scientific << std::setprecision(5);
@@ -1533,10 +1549,22 @@ namespace DNDS::Euler
         {
             real alpha_fix_min = 1.0;
             for (index iCell = 0; iCell < cxInc.Size(); iCell++)
+            {
+                real newAlpha = std::abs(this->CompressInc(cx[iCell], cxInc[iCell] * alpha)(0)) /
+                                (std::abs((cxInc[iCell] * alpha)(0)));
+                if (std::abs((cxInc[iCell] * alpha)(0)) < verySmallReal)
+                    newAlpha = 1.; //! old inc could be zero, so compresion alpha is always 1
                 alpha_fix_min = std::min(
                     alpha_fix_min,
-                    std::abs(this->CompressInc(cx[iCell], cxInc[iCell] * alpha)(0)) /
-                        (std::abs((cxInc[iCell] * alpha)(0)) + verySmallReal));
+                    newAlpha);
+                // if (newAlpha < 1.0 - 1e-14)
+                //     std::cout << "KL\n"
+                //               << std::scientific << std::setprecision(5)
+                //               << this->CompressInc(cx[iCell], cxInc[iCell] * alpha).transpose() << "\n"
+                //               << cxInc[iCell].transpose() * alpha << std::endl;
+            }
+            real alpha_fix_min_c = alpha_fix_min;
+            MPI::Allreduce(&alpha_fix_min_c, &alpha_fix_min, 1, DNDS_MPI_REAL, MPI_MIN, cx.father->mpi.comm);
             if (alpha_fix_min < 1.0)
                 if (cx.father->mpi.rank == 0)
                     std::cout << "fixed " << std::scientific << std::setprecision(5) << alpha_fix_min << std::endl;

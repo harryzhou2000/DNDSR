@@ -6,11 +6,11 @@
         "odeCode": 401,
         "tEnd": 3e+200,
         "odeSetting1": 0.5,
-        "odeSetting2": 20
+        "odeSetting2": 0
     },
     "convergenceControl": {
-        "nTimeStepInternal": 40,
-        "rhsThresholdInternal": 1e-4,
+        "nTimeStepInternal": 400000,
+        "rhsThresholdInternal": 1e-40,
         "res_base": 0.0,
         "useVolWiseResidual": true
     },
@@ -18,7 +18,7 @@
         "nConsoleCheck": 1,
         "nConsoleCheckInternal": 1,
         "consoleOutputMode": 0,
-        "nDataOutC": 1,
+        "nDataOutC": 10,
         "nDataOut": 10,
         "nDataOutCInternal": 2000,
         "nDataOutInternal": 1000000000,
@@ -66,7 +66,7 @@
         "maxOrder": 3,
         "intOrder": 3,
         "cacheDiffBase": true,
-        "jacobiRelax": 0,
+        "jacobiRelax": 1,
         "SORInstead": true,
         "smoothThreshold": 1e-3,
         "WBAP_nStd": 10.0,
@@ -83,7 +83,7 @@
         }
     },
     "linearSolverControl": {
-        "sgsIter": 0,
+        "sgsIter": 10,
         "sgsWithRec": 1,
         "nSgsConsoleCheck": 100,
         "gmresCode": 0,
