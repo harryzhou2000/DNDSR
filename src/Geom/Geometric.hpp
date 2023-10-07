@@ -75,7 +75,7 @@ namespace DNDS::Geom
      *
      */
     template <int dim>
-    inline Eigen::Matrix<real, dim, dim> NormBuildLocalBaseV(const Eigen::Vector<real, dim> &uNorm)
+    inline Eigen::Matrix<real, dim, dim> NormBuildLocalBaseV(const Eigen::Ref<const Eigen::Vector<real, dim>> &uNorm)
     {
         Eigen::Matrix<real, dim, dim> base;
         static_assert(dim == 2 || dim == 3, "dim is bad");

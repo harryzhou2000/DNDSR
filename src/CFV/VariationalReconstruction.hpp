@@ -205,6 +205,10 @@ namespace DNDS::CFV
      * VR holds a primitive mesh and any needed derived information about geometry and
      * general reconstruction coefficients
      *
+     * The (differentiable) input of VR is merely: geometry (mesh),
+     * and the weight inputs if using distributed weight;
+     * output are all values derived using construct* method
+     *
      */
     template <int dim>
     class VariationalReconstruction
@@ -231,16 +235,18 @@ namespace DNDS::CFV
         t3VecsPair cellIntPPhysics;    /// @brief constructed using ConstructMetrics()
         t3VecsPair faceIntPPhysics;    /// @brief constructed using ConstructMetrics()
         t3VecPair cellAlignedHBox;     /// @brief constructed using ConstructMetrics()
-        t3VecPair cellMajorHBox;       /// @brief constructed using ConstructMetrics() //TODO
-        t3MatPair cellMajorCoord;      /// @brief constructed using ConstructMetrics() //TODO
+        t3VecPair cellMajorHBox;       /// @brief constructed using ConstructMetrics()
+        t3MatPair cellMajorCoord;      /// @brief constructed using ConstructMetrics()
+        t3MatPair cellInertia;         /// @brief constructed using ConstructMetrics()
 
         t3VecPair faceAlignedScales;     /// @brief constructed using ConstructBaseAndWeight()
+        t3MatPair faceMajorCoordScale;   /// @brief constructed using ConstructBaseAndWeight() //TODO
         tVVecPair cellBaseMoment;        /// @brief constructed using ConstructBaseAndWeight()
         tVVecPair faceWeight;            /// @brief constructed using ConstructBaseAndWeight()
         tMatsPair cellDiffBaseCache;     /// @brief constructed using ConstructBaseAndWeight()
         tMatsPair faceDiffBaseCache;     /// @brief constructed using ConstructBaseAndWeight()
-        tVMatPair cellDiffBaseCacheCent; /// @brief constructed using ConstructBaseAndWeight()//TODO *test
-        tVMatPair faceDiffBaseCacheCent; /// @brief constructed using ConstructBaseAndWeight()//TODO *test
+        tVMatPair cellDiffBaseCacheCent; /// @brief constructed using ConstructBaseAndWeight() //TODO *test
+        tVMatPair faceDiffBaseCacheCent; /// @brief constructed using ConstructBaseAndWeight() //TODO *test
 
         tMatsPair matrixAB;        /// @brief constructed using ConstructRecCoeff()
         tVecsPair vectorB;         /// @brief constructed using ConstructRecCoeff()
@@ -418,6 +424,26 @@ namespace DNDS::CFV
                 (if2c == 0 && Geom::FaceIDIsPeriodicMain(faceID))) // I am main
                 return mesh->periodicInfo.TransCoordBack(GetCellBary(iCellOther), faceID);
             return GetCellBary(iCellOther);
+        }
+
+        Geom::tGPoint GetOtherCellInertiaFromCell(
+            index iCell, index iCellOther,
+            index iFace)
+        { // structure copy of GetOtherCellBaryFromCell
+            if (!mesh->isPeriodic)
+                return cellInertia[iCellOther];
+
+            auto faceID = mesh->faceElemInfo[iFace]->zone;
+            if (!Geom::FaceIDIsPeriodic(faceID))
+                return cellInertia[iCellOther];
+            rowsize if2c = CellIsFaceBack(iCell, iFace) ? 0 : 1;
+            if ((if2c == 1 && Geom::FaceIDIsPeriodicMain(faceID)) ||
+                (if2c == 0 && Geom::FaceIDIsPeriodicDonor(faceID))) // I am donor
+                return mesh->periodicInfo.TransMat<3>(cellInertia[iCellOther], faceID);
+            if ((if2c == 1 && Geom::FaceIDIsPeriodicDonor(faceID)) ||
+                (if2c == 0 && Geom::FaceIDIsPeriodicMain(faceID))) // I am main
+                return mesh->periodicInfo.TransMatBack<3>(cellInertia[iCellOther], faceID);
+            return cellInertia[iCellOther];
         }
 
         Geom::tPoint GetCellQuadraturePPhys(index iCell, int iG)

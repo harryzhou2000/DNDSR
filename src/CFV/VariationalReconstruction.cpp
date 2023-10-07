@@ -25,6 +25,7 @@ namespace DNDS::CFV
         this->MakePairDefaultOnCell(cellAlignedHBox);
         this->MakePairDefaultOnCell(cellMajorHBox);
         this->MakePairDefaultOnCell(cellMajorCoord, 3, 3);
+        this->MakePairDefaultOnCell(cellInertia, 3, 3);
 #ifdef DNDS_USE_OMP
 #pragma omp parallel for
 #endif
@@ -105,6 +106,7 @@ namespace DNDS::CFV
             real inerNorm = inertia.norm();
             inertia(0, 0) += inerNorm * 1e-6;
             inertia(1, 1) += inerNorm * 1e-8;
+            cellInertia[iCell] = inertia;
             tJacobi decRet;
             decRet.setIdentity();
             if constexpr (dim == 3)
@@ -308,6 +310,7 @@ namespace DNDS::CFV
         // *face's weight and cache
         this->MakePairDefaultOnFace(faceWeight, settings.maxOrder + 1);
         this->MakePairDefaultOnFace(faceAlignedScales);
+        this->MakePairDefaultOnFace(faceMajorCoordScale, 3, 3);
         if (settings.cacheDiffBase)
         {
             this->MakePairDefaultOnFace(faceDiffBaseCache, maxNDIFF, maxNDOF);
@@ -412,13 +415,40 @@ namespace DNDS::CFV
                     2 * vCB.dot(uNorm) *
                     this->GetFaceNorm(iFace, -1);
             }
+            Geom::tPoint faceBaryDiffL, faceBaryDiffR;
+            faceBaryDiffL =
+                this->GetCellBary(mesh->face2cell(iFace, 0)) -
+                this->GetFaceQuadraturePPhysFromCell(iFace, mesh->face2cell(iFace, 0), 0, -1);
+            faceBaryDiffR = faceBaryDiffV + faceBaryDiffL;
             // std::cout << faceBaryDiffV.transpose() << std::endl;
             // std::cout << faceBaryDiffV.norm() << std::endl;
-            if constexpr (dim == 2)
-                faceBaryDiffV(2) = 1;
+            Geom::tGPoint cellInertiaL = cellInertia[mesh->face2cell(iFace, 0)] * GetCellVol(mesh->face2cell(iFace, 0));
+            Geom::tGPoint cellInertiaR = cellInertiaL;
+            real volL, volR;
+            volL = volR = GetCellVol(mesh->face2cell(iFace, 0));
+            if (mesh->face2cell(iFace, 1) != UnInitIndex)
+                cellInertiaR = this->GetOtherCellInertiaFromCell(
+                                   mesh->face2cell(iFace, 0),
+                                   mesh->face2cell(iFace, 1), iFace) *
+                               GetCellVol(mesh->face2cell(iFace, 1)),
+                volR = GetCellVol(mesh->face2cell(iFace, 1));
+            Geom::tGPoint faceInertiaC =
+                (cellInertiaL + cellInertiaR) / (volL + volR);
+
+            Geom::tGPoint faceCoord;
+            faceCoord.setIdentity();
+            if constexpr (dim == 3)
+                faceCoord = HardEigen::Eigen3x3RealSymEigenDecomposition(faceInertiaC);
+            else
+                faceCoord({0, 1}, {0, 1}) = HardEigen::Eigen2x2RealSymEigenDecomposition(faceInertiaC({0, 1}, {0, 1}));
+            faceMajorCoordScale[iFace] = faceCoord;
+            // std::cout << faceCoord << "\n"
+            //           << std::endl;
             if (settings.functionalSettings.scaleType == VRSettings::FunctionalSettings::BaryDiff)
             {
                 faceAlignedScales[iFace] = faceBaryDiffV;
+                if constexpr (dim == 2)
+                    faceAlignedScales[iFace](2) = 1;
             }
 
             // *get geom weight ic2f
@@ -467,8 +497,16 @@ namespace DNDS::CFV
         {
             faceDiffBaseCache.CompressBoth();
             cellDiffBaseCache.CompressBoth();
+
+            // faceDiffBaseCache.trans.pullOnce(); //!err: need adding comm preparation first
+            // faceDiffBaseCacheCent.trans.pullOnce(); //!err: need adding comm preparation first
         }
+
+        // faceWeight.trans.pullOnce(); //!err: need adding comm preparation first
+        // faceAlignedScales.trans.pullOnce(); //!err: need adding comm preparation first
+        // faceMajorCoordScale.trans.pullOnce(); //!err: need adding comm preparation first
     }
+
     template void
     VariationalReconstruction<2>::
         ConstructBaseAndWeight(const std::function<real(Geom::t_index)> &id2faceDircWeight);

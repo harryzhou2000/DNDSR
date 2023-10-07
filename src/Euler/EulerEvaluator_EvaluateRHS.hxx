@@ -82,7 +82,7 @@ namespace DNDS::Euler
                     finc.resizeLike(fluxEs);
                     int nDiff = vfv->GetFaceAtr(iFace).NDIFF;
                     TVec unitNorm = vfv->GetFaceNorm(iFace, iG)(Seq012);
-                    TMat normBase = Geom::NormBuildLocalBaseV(unitNorm);
+                    TMat normBase = Geom::NormBuildLocalBaseV<dim>(unitNorm);
                     PerformanceTimer::Instance().StartTimer(PerformanceTimer::LimiterB);
 
                     TU ULxy = u[f2c[0]];
