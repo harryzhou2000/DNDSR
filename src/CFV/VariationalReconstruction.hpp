@@ -30,9 +30,9 @@ namespace DNDS::CFV
     {
         using json = nlohmann::ordered_json;
 
-        int maxOrder{3};           /// @brief polynomial degree of reconstruction
-        int intOrder{5};           /// @brief integration order globally set @note this is actually reduced somewhat
-        bool cacheDiffBase = true; /// @brief if cache the base function values on each of the quadrature points
+        int maxOrder{3};            /// @brief polynomial degree of reconstruction
+        int intOrder{5};            /// @brief integration order globally set @note this is actually reduced somewhat
+        bool cacheDiffBase = false; /// @brief if cache the base function values on each of the quadrature points
 
         real jacobiRelax = 1.0; /// @brief VR SOR/Jacobi iteration relaxation factor
         bool SORInstead = true; /// @brief use SOR instead of relaxed Jacobi iteration
@@ -61,7 +61,7 @@ namespace DNDS::CFV
                 BaryDiff = 1,
             } scaleType = BaryDiff;
 
-            real scaleMultiplier = 0.5;
+            real scaleMultiplier = 1.0;
 
             enum DirWeightScheme
             {
@@ -75,14 +75,32 @@ namespace DNDS::CFV
                 UnknownGeomWeight = -1,
                 GWNone = 0,
                 HQM_SD = 1,
+                SD_Power = 2,
             } geomWeightScheme = GWNone;
+
+            real geomWeightPower = 0.5;
+
+            bool useAnisotropicFunctional = false;
+
+            enum AnisotropicType
+            {
+                UnknownAnisotropic = -1,
+                InertiaCoord = 0,
+                InertiaCoordBB = 1,
+            } anisotropicType = InertiaCoord;
+
+            real inertiaWeightPower = 1.0;
 
             DNDS_NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_ORDERED_JSON(
                 FunctionalSettings,
                 scaleType,
                 scaleMultiplier,
                 dirWeightScheme,
-                geomWeightScheme)
+                geomWeightScheme,
+                geomWeightPower,
+                useAnisotropicFunctional,
+                anisotropicType,
+                inertiaWeightPower)
         } functionalSettings;
 
         VRSettings()
@@ -157,7 +175,14 @@ namespace DNDS::CFV
         VRSettings::FunctionalSettings::GeomWeightScheme,
         {{VRSettings::FunctionalSettings::UnknownGeomWeight, nullptr},
          {VRSettings::FunctionalSettings::GWNone, "GWNone"},
-         {VRSettings::FunctionalSettings::HQM_SD, "HQM_SD"}})
+         {VRSettings::FunctionalSettings::HQM_SD, "HQM_SD"},
+         {VRSettings::FunctionalSettings::SD_Power, "SD_Power"}})
+
+    NLOHMANN_JSON_SERIALIZE_ENUM(
+        VRSettings::FunctionalSettings::AnisotropicType,
+        {{VRSettings::FunctionalSettings::UnknownAnisotropic, nullptr},
+         {VRSettings::FunctionalSettings::InertiaCoord, "InertiaCoord"},
+         {VRSettings::FunctionalSettings::InertiaCoordBB, "InertiaCoordBB"}})
 }
 
 namespace DNDS::CFV
@@ -205,6 +230,10 @@ namespace DNDS::CFV
      * VR holds a primitive mesh and any needed derived information about geometry and
      * general reconstruction coefficients
      *
+     * The (differentiable) input of VR is merely: geometry (mesh),
+     * and the weight inputs if using distributed weight;
+     * output are all values derived using construct* method
+     *
      */
     template <int dim>
     class VariationalReconstruction
@@ -231,16 +260,18 @@ namespace DNDS::CFV
         t3VecsPair cellIntPPhysics;    /// @brief constructed using ConstructMetrics()
         t3VecsPair faceIntPPhysics;    /// @brief constructed using ConstructMetrics()
         t3VecPair cellAlignedHBox;     /// @brief constructed using ConstructMetrics()
-        t3VecPair cellMajorHBox;       /// @brief constructed using ConstructMetrics() //TODO
-        t3MatPair cellMajorCoord;      /// @brief constructed using ConstructMetrics() //TODO
+        t3VecPair cellMajorHBox;       /// @brief constructed using ConstructMetrics()
+        t3MatPair cellMajorCoord;      /// @brief constructed using ConstructMetrics()
+        t3MatPair cellInertia;         /// @brief constructed using ConstructMetrics()
 
         t3VecPair faceAlignedScales;     /// @brief constructed using ConstructBaseAndWeight()
+        t3MatPair faceMajorCoordScale;   /// @brief constructed using ConstructBaseAndWeight() //TODO
         tVVecPair cellBaseMoment;        /// @brief constructed using ConstructBaseAndWeight()
         tVVecPair faceWeight;            /// @brief constructed using ConstructBaseAndWeight()
         tMatsPair cellDiffBaseCache;     /// @brief constructed using ConstructBaseAndWeight()
         tMatsPair faceDiffBaseCache;     /// @brief constructed using ConstructBaseAndWeight()
-        tVMatPair cellDiffBaseCacheCent; /// @brief constructed using ConstructBaseAndWeight()//TODO *test
-        tVMatPair faceDiffBaseCacheCent; /// @brief constructed using ConstructBaseAndWeight()//TODO *test
+        tVMatPair cellDiffBaseCacheCent; /// @brief constructed using ConstructBaseAndWeight() //TODO *test
+        tVMatPair faceDiffBaseCacheCent; /// @brief constructed using ConstructBaseAndWeight() //TODO *test
 
         tMatsPair matrixAB;        /// @brief constructed using ConstructRecCoeff()
         tVecsPair vectorB;         /// @brief constructed using ConstructRecCoeff()
@@ -420,6 +451,26 @@ namespace DNDS::CFV
             return GetCellBary(iCellOther);
         }
 
+        Geom::tGPoint GetOtherCellInertiaFromCell(
+            index iCell, index iCellOther,
+            index iFace)
+        { // structure copy of GetOtherCellBaryFromCell
+            if (!mesh->isPeriodic)
+                return cellInertia[iCellOther];
+
+            auto faceID = mesh->faceElemInfo[iFace]->zone;
+            if (!Geom::FaceIDIsPeriodic(faceID))
+                return cellInertia[iCellOther];
+            rowsize if2c = CellIsFaceBack(iCell, iFace) ? 0 : 1;
+            if ((if2c == 1 && Geom::FaceIDIsPeriodicMain(faceID)) ||
+                (if2c == 0 && Geom::FaceIDIsPeriodicDonor(faceID))) // I am donor
+                return mesh->periodicInfo.TransMat<3>(cellInertia[iCellOther], faceID);
+            if ((if2c == 1 && Geom::FaceIDIsPeriodicDonor(faceID)) ||
+                (if2c == 0 && Geom::FaceIDIsPeriodicMain(faceID))) // I am main
+                return mesh->periodicInfo.TransMatBack<3>(cellInertia[iCellOther], faceID);
+            return cellInertia[iCellOther];
+        }
+
         Geom::tPoint GetCellQuadraturePPhys(index iCell, int iG)
         {
             if (iG >= 0)
@@ -456,7 +507,12 @@ namespace DNDS::CFV
             {
                 tPoint simpleScale = cellAlignedHBox[iCell];
                 if (!settings.baseSettings.anisotropicLengths)
-                    simpleScale.setConstant(simpleScale.array().maxCoeff());
+                {
+                    if constexpr (dim == 2)
+                        simpleScale({0, 1}).setConstant(simpleScale({0, 1}).array().maxCoeff());
+                    else
+                        simpleScale.setConstant(simpleScale.array().maxCoeff());
+                }
                 tPoint pPhysicsCScaled = pPhysicsC.array() / simpleScale.array();
                 if constexpr (dim == 2)
                     FPolynomialFill2D(DiBj, pPhysicsCScaled(0), pPhysicsCScaled(1), pPhysicsCScaled(2), simpleScale(0), simpleScale(1), simpleScale(2), DiBj.rows(), DiBj.cols());
@@ -467,7 +523,13 @@ namespace DNDS::CFV
             {
                 tPoint simpleScale = cellMajorHBox[iCell];
                 if (!settings.baseSettings.anisotropicLengths)
-                    simpleScale.setConstant(simpleScale.array().maxCoeff());
+                {
+                    if constexpr (dim == 2)
+                        simpleScale({0, 1}).setConstant(simpleScale({0, 1}).array().maxCoeff());
+                    else
+                        simpleScale.setConstant(simpleScale.array().maxCoeff());
+                }
+                // std::cout << simpleScale.transpose() << std::endl;
                 tPoint pPhysicsCMajor = cellMajorCoord[iCell].transpose() * pPhysicsC;
                 tPoint pPhysicsCScaled = pPhysicsCMajor.array() / simpleScale.array();
                 if constexpr (dim == 2)
@@ -607,6 +669,7 @@ namespace DNDS::CFV
                 faceL = std::sqrt(faceLV(Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>)).array().square().mean());
             if (settings.functionalSettings.scaleType == VRSettings::FunctionalSettings::BaryDiff)
                 faceL = faceLV(Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>)).norm();
+            faceL *= settings.functionalSettings.scaleMultiplier;
 
             // std::cout << DiffI.transpose() << "\n"
             //           << DiffJ.transpose() << std::endl;
@@ -615,81 +678,167 @@ namespace DNDS::CFV
             // std::abort();
             // std::cout << "old len " << std::sqrt(faceLV.array().square().mean()) << std::endl;
 
-            if constexpr (dim == 2)
+            if (!settings.functionalSettings.useAnisotropicFunctional)
             {
-                DNDS_assert(cnDiffs == 10 || cnDiffs == 6 || cnDiffs == 3 || cnDiffs == 1);
-                for (int i = 0; i < DiffI.cols(); i++)
-                    for (int j = 0; j < DiffJ.cols(); j++)
-                    {
-                        switch (cnDiffs)
+                if constexpr (dim == 2)
+                {
+                    DNDS_assert(cnDiffs == 10 || cnDiffs == 6 || cnDiffs == 3 || cnDiffs == 1);
+                    for (int i = 0; i < DiffI.cols(); i++)
+                        for (int j = 0; j < DiffJ.cols(); j++)
                         {
-                        case 10:
-                            Conj(i, j) +=
-                                NormSymDiffOrderTensorV<2, 3>(
-                                    DiffI({6, 7, 8, 9}, {i}),
-                                    DiffJ({6, 7, 8, 9}, {j})) *
-                                wgd(3) * std::pow(faceL, 3 * 2);
-                        case 6:
-                            Conj(i, j) +=
-                                NormSymDiffOrderTensorV<2, 2>(
-                                    DiffI({3, 4, 5}, {i}),
-                                    DiffJ({3, 4, 5}, {j})) *
-                                wgd(2) * std::pow(faceL, 2 * 2);
-                        case 3:
-                            Conj(i, j) +=
-                                NormSymDiffOrderTensorV<2, 1>(
-                                    DiffI({1, 2}, {i}),
-                                    DiffJ({1, 2}, {j})) *
-                                wgd(1) * std::pow(faceL, 1 * 2);
-                        case 1:
-                            Conj(i, j) +=
-                                NormSymDiffOrderTensorV<2, 0>(
-                                    DiffI({0}, {i}),
-                                    DiffJ({0}, {j})) * //! i, j needed in {}!
-                                wgd(0);
-                            break;
+                            switch (cnDiffs)
+                            {
+                            case 10:
+                                Conj(i, j) +=
+                                    NormSymDiffOrderTensorV<2, 3>(
+                                        DiffI({6, 7, 8, 9}, {i}),
+                                        DiffJ({6, 7, 8, 9}, {j})) *
+                                    wgd(3) * std::pow(faceL, 3 * 2);
+                            case 6:
+                                Conj(i, j) +=
+                                    NormSymDiffOrderTensorV<2, 2>(
+                                        DiffI({3, 4, 5}, {i}),
+                                        DiffJ({3, 4, 5}, {j})) *
+                                    wgd(2) * std::pow(faceL, 2 * 2);
+                            case 3:
+                                Conj(i, j) +=
+                                    NormSymDiffOrderTensorV<2, 1>(
+                                        DiffI({1, 2}, {i}),
+                                        DiffJ({1, 2}, {j})) *
+                                    wgd(1) * std::pow(faceL, 1 * 2);
+                            case 1:
+                                Conj(i, j) +=
+                                    NormSymDiffOrderTensorV<2, 0>(
+                                        DiffI({0}, {i}),
+                                        DiffJ({0}, {j})) * //! i, j needed in {}!
+                                    wgd(0);
+                                break;
+                            }
                         }
-                    }
+                }
+                else
+                {
+                    DNDS_assert(cnDiffs == 20 || cnDiffs == 10 || cnDiffs == 4 || cnDiffs == 1);
+                    for (int i = 0; i < DiffI.cols(); i++)
+                        for (int j = 0; j < DiffJ.cols(); j++)
+                        {
+                            switch (cnDiffs)
+                            {
+                            case 20:
+                                Conj(i, j) +=
+                                    NormSymDiffOrderTensorV<3, 3>(
+                                        DiffI({10, 11, 12, 13, 14, 15, 16, 17, 18, 19}, {i}),
+                                        DiffJ({10, 11, 12, 13, 14, 15, 16, 17, 18, 19}, {j})) *
+                                    wgd(3) * std::pow(faceL, 3 * 2);
+                            case 10:
+                                Conj(i, j) +=
+                                    NormSymDiffOrderTensorV<3, 2>(
+                                        DiffI({4, 5, 6, 7, 8, 9}, {i}),
+                                        DiffJ({4, 5, 6, 7, 8, 9}, {j})) *
+                                    wgd(2) * std::pow(faceL, 2 * 2);
+                            case 4:
+                                Conj(i, j) +=
+                                    NormSymDiffOrderTensorV<3, 1>(
+                                        DiffI({1, 2, 3}, {i}),
+                                        DiffJ({1, 2, 3}, {j})) *
+                                    wgd(1) * std::pow(faceL, 1 * 2);
+                            case 1:
+                                Conj(i, j) +=
+                                    NormSymDiffOrderTensorV<3, 0>(
+                                        DiffI({0}, {i}),
+                                        DiffJ({0}, {j})) *
+                                    wgd(0);
+                                break;
+                            }
+                        }
+                }
+                // std::cout << DiffI << std::endl << std::endl;
+                // std::cout << Conj << std::endl;
+                // std::abort();
             }
             else
             {
-                DNDS_assert(cnDiffs == 20 || cnDiffs == 10 || cnDiffs == 4 || cnDiffs == 1);
-                for (int i = 0; i < DiffI.cols(); i++)
-                    for (int j = 0; j < DiffJ.cols(); j++)
-                    {
-                        switch (cnDiffs)
+                using TMatCopy = Eigen::Matrix<real, DiffI.RowsAtCompileTime, DiffI.ColsAtCompileTime>;
+                TMatCopy DiffI_Norm = DiffI;
+                TMatCopy DiffJ_Norm = DiffJ;
+                tGPoint coordTrans = faceMajorCoordScale[iFace].transpose() *
+                                     settings.functionalSettings.scaleMultiplier;
+                ConvertDiffsLinMap<dim>(DiffI_Norm, coordTrans);
+                ConvertDiffsLinMap<dim>(DiffJ_Norm, coordTrans);
+
+                if constexpr (dim == 2)
+                {
+                    DNDS_assert(cnDiffs == 10 || cnDiffs == 6 || cnDiffs == 3 || cnDiffs == 1);
+                    for (int i = 0; i < DiffI.cols(); i++)
+                        for (int j = 0; j < DiffJ.cols(); j++)
                         {
-                        case 20:
-                            Conj(i, j) +=
-                                NormSymDiffOrderTensorV<3, 3>(
-                                    DiffI({10, 11, 12, 13, 14, 15, 16, 17, 18, 19}, {i}),
-                                    DiffJ({10, 11, 12, 13, 14, 15, 16, 17, 18, 19}, {j})) *
-                                wgd(3) * std::pow(faceL, 3 * 2);
-                        case 10:
-                            Conj(i, j) +=
-                                NormSymDiffOrderTensorV<3, 2>(
-                                    DiffI({4, 5, 6, 7, 8, 9}, {i}),
-                                    DiffJ({4, 5, 6, 7, 8, 9}, {j})) *
-                                wgd(2) * std::pow(faceL, 2 * 2);
-                        case 4:
-                            Conj(i, j) +=
-                                NormSymDiffOrderTensorV<3, 1>(
-                                    DiffI({1, 2, 3}, {i}),
-                                    DiffJ({1, 2, 3}, {j})) *
-                                wgd(1) * std::pow(faceL, 1 * 2);
-                        case 1:
-                            Conj(i, j) +=
-                                NormSymDiffOrderTensorV<3, 0>(
-                                    DiffI({0}, {i}),
-                                    DiffJ({0}, {j})) *
-                                wgd(0);
-                            break;
+                            switch (cnDiffs)
+                            {
+                            case 10:
+                                Conj(i, j) +=
+                                    NormSymDiffOrderTensorV<2, 3>(
+                                        DiffI_Norm({6, 7, 8, 9}, {i}),
+                                        DiffJ_Norm({6, 7, 8, 9}, {j})) *
+                                    wgd(3);
+                            case 6:
+                                Conj(i, j) +=
+                                    NormSymDiffOrderTensorV<2, 2>(
+                                        DiffI_Norm({3, 4, 5}, {i}),
+                                        DiffJ_Norm({3, 4, 5}, {j})) *
+                                    wgd(2);
+                            case 3:
+                                Conj(i, j) +=
+                                    NormSymDiffOrderTensorV<2, 1>(
+                                        DiffI_Norm({1, 2}, {i}),
+                                        DiffJ_Norm({1, 2}, {j})) *
+                                    wgd(1);
+                            case 1:
+                                Conj(i, j) +=
+                                    NormSymDiffOrderTensorV<2, 0>(
+                                        DiffI_Norm({0}, {i}),
+                                        DiffJ_Norm({0}, {j})) * //! i, j needed in {}!
+                                    wgd(0);
+                                break;
+                            }
                         }
-                    }
+                }
+                else
+                {
+                    DNDS_assert(cnDiffs == 20 || cnDiffs == 10 || cnDiffs == 4 || cnDiffs == 1);
+                    for (int i = 0; i < DiffI.cols(); i++)
+                        for (int j = 0; j < DiffJ.cols(); j++)
+                        {
+                            switch (cnDiffs)
+                            {
+                            case 20:
+                                Conj(i, j) +=
+                                    NormSymDiffOrderTensorV<3, 3>(
+                                        DiffI_Norm({10, 11, 12, 13, 14, 15, 16, 17, 18, 19}, {i}),
+                                        DiffJ_Norm({10, 11, 12, 13, 14, 15, 16, 17, 18, 19}, {j})) *
+                                    wgd(3);
+                            case 10:
+                                Conj(i, j) +=
+                                    NormSymDiffOrderTensorV<3, 2>(
+                                        DiffI_Norm({4, 5, 6, 7, 8, 9}, {i}),
+                                        DiffJ_Norm({4, 5, 6, 7, 8, 9}, {j})) *
+                                    wgd(2);
+                            case 4:
+                                Conj(i, j) +=
+                                    NormSymDiffOrderTensorV<3, 1>(
+                                        DiffI_Norm({1, 2, 3}, {i}),
+                                        DiffJ_Norm({1, 2, 3}, {j})) *
+                                    wgd(1);
+                            case 1:
+                                Conj(i, j) +=
+                                    NormSymDiffOrderTensorV<3, 0>(
+                                        DiffI_Norm({0}, {i}),
+                                        DiffJ_Norm({0}, {j})) *
+                                    wgd(0);
+                                break;
+                            }
+                        }
+                }
             }
-            // std::cout << DiffI << std::endl << std::endl;
-            // std::cout << Conj << std::endl;
-            // std::abort();
             return Conj;
         }
 

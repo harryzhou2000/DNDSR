@@ -1,7 +1,7 @@
 {
     "timeMarchControl": {
         "dtImplicit": 10e-1,
-        "nTimeStep": 100,
+        "nTimeStep": 10,
         "steadyQuit": false,
         "odeCode": 401,
         "tEnd": 3e+200,
@@ -19,7 +19,7 @@
         "tDataOut": 3e+200
     },
     "implicitCFLControl": {
-        "CFL": 10.0,
+        "CFL": 100.0,
         "nForceLocalStartStep": 2147483647,
         "nCFLRampStart": 2147483647,
         "nCFLRampLength": 2147483647,
@@ -27,8 +27,8 @@
         "useLocalDt": true
     },
     "convergenceControl": {
-        "nTimeStepInternal": 400000,
-        "rhsThresholdInternal": 1e-300,
+        "nTimeStepInternal": 4000,
+        "rhsThresholdInternal": 1e-4,
         "res_base": 0.0,
         "useVolWiseResidual": true
     },
@@ -72,7 +72,7 @@
         "nRecConsolCheck": 10,
         "nRecMultiplyForZeroedGrad": 1000,
         "storeRecInc": true,
-        "dampRecIncDTau": true
+        "dampRecIncDTau": false
     },
     "limiterControl": {
         "useLimiter": false,
@@ -93,11 +93,14 @@
         "subs2ndOrder": 0,
         "baseSettings": {
             "localOrientation": true,
-            "anisotropicLengths": true
+            "anisotropicLengths": false
         },
         "functionalSettings": {
             "scaleType": "BaryDiff",
-            "dirWeightScheme": "HQM_OPT"
+            // "dirWeightScheme": "HQM_OPT"
+            // "useAnisotropicFunctional": true,
+            // "scaleMultiplier": 3.464101615137754,
+            "_tail": 0
         }
     },
     "linearSolverControl": {

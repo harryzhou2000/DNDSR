@@ -205,6 +205,36 @@ namespace DNDS::Geom
                 return rotation.at(i)({0, 1}, {0, 1}).transpose() * v;
         }
 
+        template <int dim>
+        Eigen::Matrix<real, dim, dim> TransMat(const Eigen::Matrix<real, dim, dim> &m, t_index id)
+        {
+            DNDS_assert(FaceIDIsPeriodic(id));
+            t_index i{0};
+            if (FaceIDIsPeriodicDonor(id))
+                i = -id - 3;
+            else
+                i = -id;
+            if constexpr (dim == 3)
+                return rotation.at(i) * m * rotation.at(i).transpose();
+            else
+                return rotation.at(i)({0, 1}, {0, 1}) * m * rotation.at(i)({0, 1}, {0, 1}).transpose();
+        }
+
+        template <int dim>
+        Eigen::Matrix<real, dim, dim> TransMatBack(const Eigen::Matrix<real, dim, dim> &m, t_index id)
+        {
+            DNDS_assert(FaceIDIsPeriodic(id));
+            t_index i{0};
+            if (FaceIDIsPeriodicDonor(id))
+                i = -id - 3;
+            else
+                i = -id;
+            if constexpr (dim == 3)
+                return rotation.at(i).transpose() * m * rotation.at(i);
+            else
+                return rotation.at(i)({0, 1}, {0, 1}).transpose() * m * rotation.at(i)({0, 1}, {0, 1});
+        }
+
         tPoint GetCoordByBits(const tPoint &c, const NodePeriodicBits &bits)
         {
             if (!bool(bits))
