@@ -38,7 +38,7 @@
         "outPltMode": 0,
         "readMeshMode": 1,
         "outPltTecplotFormat": true,
-        "outPltVTKFormat": true,
+        "outPltVTKFormat": false,
         "outAtPointData": true,
         "outAtCellData": true,
         "outBndData": true
@@ -71,7 +71,7 @@
         "subs2ndOrder": 0,
         "baseSettings": {
             "localOrientation": true,
-            "anisotropicLengths": false
+            "anisotropicLengths": true
         },
         "functionalSettings": {
             "scaleType": "BaryDiff",
