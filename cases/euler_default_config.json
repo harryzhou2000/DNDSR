@@ -148,9 +148,10 @@
         },
         "functionalSettings": {
             "scaleType": "BaryDiff",
-            "scaleMultiplier": 0.5,
+            "scaleMultiplier": 1.0,
             "dirWeightScheme": "Factorial",
-            "geomWeightScheme": "GWNone"
+            "geomWeightScheme": "GWNone",
+            "useAnisotropicFunctional": false
         }
     }
 }

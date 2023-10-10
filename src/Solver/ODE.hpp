@@ -81,7 +81,7 @@ namespace DNDS::ODE
                 fsolve(x, rhs, dTau, dt, 1.0, xinc, iter, 0);
                 fincrement(x, xinc, 1.0);
 
-                if (fstop(iter, xinc, 1))
+                if (fstop(iter, rhs, 1))
                     break;
             }
         }
@@ -340,11 +340,11 @@ namespace DNDS::ODE
 
                 xIncPrev = xinc;
 
-                if (fstop(iter, xinc, 1))
+                if (fstop(iter, rhsbuf[0], 1))
                     break;
             }
             if (iter > maxIter)
-                fstop(iter, xinc, 1);
+                fstop(iter, rhsbuf[0], 1);
             if (prevSiz)
             {
                 prevStart = mod(prevStart - 1, prevSiz);

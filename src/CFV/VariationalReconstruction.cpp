@@ -422,16 +422,18 @@ namespace DNDS::CFV
             faceBaryDiffR = faceBaryDiffV + faceBaryDiffL;
             // std::cout << faceBaryDiffV.transpose() << std::endl;
             // std::cout << faceBaryDiffV.norm() << std::endl;
-            Geom::tGPoint cellInertiaL = cellInertia[mesh->face2cell(iFace, 0)] * GetCellVol(mesh->face2cell(iFace, 0));
-            Geom::tGPoint cellInertiaR = cellInertiaL;
             real volL, volR;
-            volL = volR = GetCellVol(mesh->face2cell(iFace, 0));
+            volL = volR = std::pow(GetCellVol(mesh->face2cell(iFace, 0)) + verySmallReal, settings.functionalSettings.inertiaWeightPower);
+            Geom::tGPoint cellInertiaL = cellInertia[mesh->face2cell(iFace, 0)] * volL;
+            Geom::tGPoint cellInertiaR = cellInertiaL;
             if (mesh->face2cell(iFace, 1) != UnInitIndex)
+            {
+                volR = std::pow(GetCellVol(mesh->face2cell(iFace, 1)) + verySmallReal, settings.functionalSettings.inertiaWeightPower);
                 cellInertiaR = this->GetOtherCellInertiaFromCell(
                                    mesh->face2cell(iFace, 0),
                                    mesh->face2cell(iFace, 1), iFace) *
-                               GetCellVol(mesh->face2cell(iFace, 1)),
-                volR = GetCellVol(mesh->face2cell(iFace, 1));
+                               volR;
+            }
             Geom::tGPoint faceInertiaC =
                 (cellInertiaL + cellInertiaR) / (volL + volR);
 
@@ -442,8 +444,28 @@ namespace DNDS::CFV
             else
                 faceCoord({0, 1}, {0, 1}) = HardEigen::Eigen2x2RealSymEigenDecomposition(faceInertiaC({0, 1}, {0, 1}));
             faceMajorCoordScale[iFace] = faceCoord;
-            // std::cout << faceCoord << "\n"
-            //           << std::endl;
+            if (settings.functionalSettings.anisotropicType == VRSettings::FunctionalSettings::InertiaCoordBB)
+            {
+                Geom::tGPoint faceCoordNorm = faceCoord.colwise().normalized();
+                tSmallCoords coords, coordsL, coordsR;
+                mesh->GetCoordsOnFace(iFace, coords);
+                coords.colwise() -= faceCent[iFace];
+                coordsL = coords.colwise() - faceBaryDiffL;
+                coordsR = coords.colwise() - faceBaryDiffR;
+                coordsL = faceCoordNorm.transpose() * coordsL;
+                coordsR = faceCoordNorm.transpose() * coordsR;
+                Geom::tPoint faceCoordBB =
+                    coordsL.array().abs().rowwise().maxCoeff().max(
+                        coordsR.array().abs().rowwise().maxCoeff());
+
+                faceMajorCoordScale[iFace] = faceCoordNorm * faceCoordBB.asDiagonal();
+            }
+            // std::cout << "Face scale: ";
+            // std::cout << faceCent[iFace] << std::endl;
+            // std::cout << faceInertiaC << std::endl;
+            // std::cout
+            //     << faceCoord << "\n"
+            //     << std::endl;
             if (settings.functionalSettings.scaleType == VRSettings::FunctionalSettings::BaryDiff)
             {
                 faceAlignedScales[iFace] = faceBaryDiffV;
@@ -454,7 +476,10 @@ namespace DNDS::CFV
             // *get geom weight ic2f
             real wg = 1;
             if (settings.functionalSettings.geomWeightScheme == VRSettings::FunctionalSettings::HQM_SD)
-                wg = std::pow(std::pow(this->GetFaceArea(iFace), 1. / real(dim - 1)) / faceBaryDiffV.norm(), 0.5 * 0.5);
+                wg = std::pow(std::pow(this->GetFaceArea(iFace), 1. / real(dim - 1)) / faceBaryDiffV.norm(), settings.functionalSettings.geomWeightPower * 0.5);
+            if (settings.functionalSettings.geomWeightScheme == VRSettings::FunctionalSettings::SD_Power)
+                wg = std::pow(this->GetFaceArea(iFace) / faceBaryDiffV.norm(), settings.functionalSettings.geomWeightPower * 0.5);
+
 
             // *get dir weight
             Eigen::Vector<real, Eigen::Dynamic> wd;
@@ -495,8 +520,8 @@ namespace DNDS::CFV
 
         if (settings.cacheDiffBase)
         {
-            faceDiffBaseCache.CompressBoth();
-            cellDiffBaseCache.CompressBoth();
+            // faceDiffBaseCache.CompressBoth();
+            // cellDiffBaseCache.CompressBoth();
 
             // faceDiffBaseCache.trans.pullOnce(); //!err: need adding comm preparation first
             // faceDiffBaseCacheCent.trans.pullOnce(); //!err: need adding comm preparation first
@@ -525,6 +550,7 @@ namespace DNDS::CFV
         this->MakePairDefaultOnCell(matrixAAInvB, maxNDOF - 1, maxNDOF - 1);
         this->MakePairDefaultOnCell(vectorB, maxNDOF - 1, 1);
         this->MakePairDefaultOnCell(vectorAInvB, maxNDOF - 1, 1);
+        real maxCond = 0.0;
 #ifdef DNDS_USE_OMP
 #pragma omp parallel for
 #endif
@@ -559,9 +585,11 @@ namespace DNDS::CFV
                 // std::cout << "face "<< faceWeight[iFace].transpose() << std::endl;
             }
             decltype(A) AInv;
-            HardEigen::EigenLeastSquareInverse(A, AInv);
+            real aCond = HardEigen::EigenLeastSquareInverse(A, AInv);
             matrixAB(iCell, 0) = A;
             matrixAAInvB(iCell, 0) = AInv;
+
+            maxCond = std::max(aCond, maxCond);
 
             // if (iCell == 71)
             // {
@@ -664,6 +692,11 @@ namespace DNDS::CFV
             // std::cout << this->GetMatrixSecondary(-1, iFace, 1) << std::endl;
             // std::abort();
         }
+        real maxCondAll = 0;
+        MPI::Allreduce(&maxCond, &maxCondAll, 1, DNDS_MPI_REAL, MPI_MAX, mesh->mpi.comm);
+        if (mesh->mpi.rank == 0)
+            log() << std::scientific << std::setprecision(3)
+                  << "VariationalReconstruction<dim>::ConstructRecCoeff() === A cond Max: [ " << maxCondAll << "] " << std::endl;
     }
 
     template void

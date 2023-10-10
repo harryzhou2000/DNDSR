@@ -17,7 +17,9 @@
         "nGmresIter": 10,
         "recThreshold": 1e-05,
         "nRecConsolCheck": 1,
-        "nRecMultiplyForZeroedGrad": 1
+        "nRecMultiplyForZeroedGrad": 1,
+        "storeRecInc": false,
+        "dampRecIncDTau": false
     },
     "outputControl": {
         "nConsoleCheck": 1,
@@ -90,7 +92,8 @@
         "sgsWithRec": 0,
         "gmresCode": 0,
         "nGmresSpace": 10,
-        "nGmresIter": 2
+        "nGmresIter": 2,
+        "initWithLastURecInc": false
     },
     "others": {
         "nFreezePassiveInner": 0
@@ -132,7 +135,7 @@
     "vfvSettings": {
         "maxOrder": 3,
         "intOrder": 5,
-        "cacheDiffBase": true,
+        "cacheDiffBase": false,
         "jacobiRelax": 1.0,
         "SORInstead": true,
         "smoothThreshold": 0.01,
@@ -142,6 +145,16 @@
         "baseSettings": {
             "localOrientation": false,
             "anisotropicLengths": false
+        },
+        "functionalSettings": {
+            "scaleType": "BaryDiff",
+            "scaleMultiplier": 1.0,
+            "dirWeightScheme": "Factorial",
+            "geomWeightScheme": "GWNone",
+            "geomWeightPower": 0.5,
+            "useAnisotropicFunctional": false,
+            "anisotropicType": "InertiaCoord",
+            "inertiaWeightPower": 1.0
         }
     }
 }

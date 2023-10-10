@@ -5,15 +5,17 @@ namespace DNDS::HardEigen
 {
     /// @todo test these eigen solvers !!
     // #define EIGEN_USE_LAPACKE
-    void EigenLeastSquareInverse(const Eigen::MatrixXd &A, Eigen::MatrixXd &AI)
+    real EigenLeastSquareInverse(const Eigen::MatrixXd &A, Eigen::MatrixXd &AI)
     {
         // static const double sVmin = 1e-12;
         // auto SVDResult = A.bdcSvd(Eigen::ComputeThinU | Eigen::ComputeThinV);
         auto SVDResult = A.jacobiSvd(Eigen::ComputeThinU | Eigen::ComputeThinV);
         AI = SVDResult.solve(Eigen::MatrixXd::Identity(A.rows(), A.rows()));
+        Eigen::VectorXd svs = SVDResult.singularValues().array().abs();
+        return svs.maxCoeff() / (svs.minCoeff() + verySmallReal);
     }
 
-    void EigenLeastSquareInverse_Filtered(const Eigen::MatrixXd &A, Eigen::MatrixXd &AI)
+    real EigenLeastSquareInverse_Filtered(const Eigen::MatrixXd &A, Eigen::MatrixXd &AI)
     {
         static const double sVmin = 1e-12;
         auto SVDResult = A.bdcSvd(Eigen::ComputeThinU | Eigen::ComputeThinV);
@@ -28,7 +30,8 @@ namespace DNDS::HardEigen
             else
                 i = 0.;
         AI = SVDResult.matrixV() * sVs.asDiagonal() * SVDResult.matrixU().transpose();
-
+        Eigen::VectorXd svs = SVDResult.singularValues().array().abs();
+        return svs.maxCoeff() / (svs.minCoeff() + verySmallReal);
         // std::cout << AI * A << std::endl;
     }
 

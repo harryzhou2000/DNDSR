@@ -3,6 +3,9 @@
 
 namespace DNDS::Euler
 {
+    /**
+     * 
+    */
 #define IF_NOT_NOREC (1)
     template <EulerModel model>
     void EulerEvaluator<model>::EvaluateRHS(
