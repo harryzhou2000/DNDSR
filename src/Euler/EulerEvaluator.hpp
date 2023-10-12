@@ -579,6 +579,22 @@ namespace DNDS::Euler
             real lam0{0}, lam123{0}, lam4{0};
             lam123 = std::abs(UL(1) / UL(0) + UR(1) / UR(0)) * 0.5;
 
+#ifdef USE_NO_RIEMANN_ON_WALL
+            if (btype == Geom::BC_ID_DEFAULT_WALL)
+            {
+                TU UL_Prim, UR_Prim;
+                UL_Prim.resizeLike(UL);
+                UL_Prim.resizeLike(UR);
+                Gas::IdealGasThermalConservative2Primitive<dim>(UL, UL_Prim, gamma);
+                Gas::IdealGasThermalConservative2Primitive<dim>(UR, UR_Prim, gamma);
+                UL_Prim(Seq123).setZero();
+                UR_Prim(Seq123).setZero();
+                Gas::IdealGasThermalPrimitive2Conservative<dim>(UL_Prim, UL, gamma);
+                // Gas::IdealGasThermalPrimitive2Conservative<dim>(UR_Prim, UR, gamma);
+                UR = UL;
+            }
+#endif
+
             // std::cout << "HERE" << std::endl;
             if (rsType == Gas::RiemannSolverType::HLLEP)
                 Gas::HLLEPFlux_IdealGas<dim>(

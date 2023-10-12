@@ -74,27 +74,18 @@
         "subs2ndOrder": 0,
         "baseSettings": {
             "localOrientation": true,
-            "anisotropicLengths": false
+            "anisotropicLengths": true
         },
         "functionalSettings": {
             // "scaleType": "MeanAACBB",
             // "dirWeightScheme": "HQM_OPT",
-            // "dirWeightScheme": "ManualDirWeight",
-            // "manualDirWeights": [
-            //     1.0,
-            //     1.0,
-            //     0.5,
-            //     0.16666666666666666
-            // ],
             // "geomWeightScheme": "HQM_SD",
+            // "geomWeightScheme": "SD_Power",
             // "geomWeightPower": 0.5,
-            "geomWeightScheme": "SD_Power",
-            "geomWeightPower1": -0.5,
-            "geomWeightPower2": 0.5,
-            // "useAnisotropicFunctional": true,
-            // // "anisotropicType": "InertiaCoordBB",
-            // "inertiaWeightPower": 0,
-            // "scaleMultiplier": 3.464101615137754,
+            "useAnisotropicFunctional": true,
+            // "anisotropicType": "InertiaCoordBB",
+            "inertiaWeightPower": -2,
+            "scaleMultiplier": 3.464101615137754,
             "_tail": 0
         }
     },

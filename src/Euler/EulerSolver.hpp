@@ -446,13 +446,22 @@ namespace DNDS::Euler
             if (config.dataIOControl.meshRotZ != 0.0)
             {
                 real rz = config.dataIOControl.meshRotZ / 180.0 * pi;
+                Eigen::Matrix3d Rz{
+                    {std::cos(rz), -std::sin(rz), 0},
+                    {std::sin(rz), std::cos(rz), 0},
+                    {0, 0, 1},
+                };
                 mesh->TransformCoords(
                     [&](const Geom::tPoint &p)
-                    { return Geom::tPoint{
-                          p(0) * std::cos(rz) - p(1) * sin(rz),
-                          p(1) * cos(rz) + p(0) * sin(rz),
-                          p(2)}; });
-                ///@todo  //! todo: alter the rotation and translation in  periodicInfo mesh->periodicInfo
+                    { return Rz * p; });
+
+                for (auto &r : mesh->periodicInfo.rotation)
+                    r = Rz * r * Rz.transpose();
+                for (auto &p : mesh->periodicInfo.rotationCenter)
+                    p = Rz * p;
+                for (auto &p : mesh->periodicInfo.translation)
+                    p = Rz * p;
+                // @todo  //! todo: alter the rotation and translation in  periodicInfo mesh->periodicInfo
             }
             if (config.dataIOControl.meshScale != 1.0)
             {
@@ -597,6 +606,12 @@ namespace DNDS::Euler
                         (*outDist)[iCell][I4 + 3] = ifUseLimiter[iCell][0] / (vfv->settings.smoothThreshold + verySmallReal);
                         // std::cout << iCell << ode.rhsbuf[0][iCell] << std::endl;
                         (*outDist)[iCell][I4 + 4] = ode->getLatestRHS()[iCell][0];
+                        // { // see the cond
+                        //     auto A = vfv->GetCellRecMatA(iCell);
+                        //     Eigen::MatrixXd AInv = A;
+                        //     real aCond = HardEigen::EigenLeastSquareInverse(A, AInv);
+                        //     (*outDist)[iCell][I4 + 4] = aCond;
+                        // }
                         // (*outDist)[iCell][8] = (*vfv->SOR_iCell2iScan)[iCell];//!using SOR rb seq instead
 
                         for (int i = I4 + 1; i < nVars; i++)
@@ -1076,5 +1091,4 @@ namespace DNDS::Euler
                 serializer->WriteInt("hasReconstructionValue", 0);
         }
     };
-
 }

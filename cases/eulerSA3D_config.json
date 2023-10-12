@@ -18,7 +18,7 @@
         "consoleOutputMode": 1,
         "nDataOutC": 20,
         "nDataOut": 100,
-        "nDataOutCInternal": 1000,
+        "nDataOutCInternal": 100,
         "nDataOutInternal": 1000000000,
         "tDataOut": 3e+200
     },
@@ -38,7 +38,7 @@
         "outPltMode": 0,
         "readMeshMode": 1,
         "outPltTecplotFormat": true,
-        "outPltVTKFormat": true,
+        "outPltVTKFormat": false,
         "outAtPointData": true,
         "outAtCellData": true,
         "outBndData": true
@@ -53,22 +53,22 @@
         "nRecConsolCheck": 1
     },
     "limiterControl": {
-        "useLimiter": false,
+        "useLimiter": true,
         "smoothIndicatorProcedure": 0,
         "limiterProcedure": 1, //1 == CWBAP
-        "nPartialLimiterStart": 2147483647,
-        "nPartialLimiterStartLocal": 2147483647
+        "nPartialLimiterStart": 10,
+        "nPartialLimiterStartLocal": 10
     },
     "vfvSettings": {
-        "maxOrder": 3,
-        "intOrder": 5,
+        "maxOrder": 1,
+        "intOrder": 1,
         "cacheDiffBase": false,
         "jacobiRelax": 1.0,
         "SORInstead": true,
         "smoothThreshold": 1e-3,
         "WBAP_nStd": 10.0,
         "normWBAP": false,
-        "subs2ndOrder": 0,
+        "subs2ndOrder": 1,
         "baseSettings": {
             "localOrientation": true,
             "anisotropicLengths": false

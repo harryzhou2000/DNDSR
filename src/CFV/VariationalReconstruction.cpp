@@ -104,8 +104,18 @@ namespace DNDS::CFV
                 });
             inertia /= this->GetCellVol(iCell);
             real inerNorm = inertia.norm();
-            inertia(0, 0) += inerNorm * 1e-6;
-            inertia(1, 1) += inerNorm * 1e-8;
+            real inerCond = 1;
+            if constexpr (dim == 2)
+                inerCond = HardEigen::Eigen2x2RealSymEigenDecompositionGetCond(inertia({0, 1}, {0, 1}));
+            else
+                inerCond = HardEigen::Eigen3x3RealSymEigenDecompositionGetCond(inertia);
+
+            if (inerCond < 1 + smallReal)
+            {
+                inertia(0, 0) += inerNorm * smallReal * 10;
+                inertia(1, 1) += inerNorm * smallReal;
+            }
+
             cellInertia[iCell] = inertia;
             tJacobi decRet;
             decRet.setIdentity();
@@ -478,8 +488,8 @@ namespace DNDS::CFV
             if (settings.functionalSettings.geomWeightScheme == VRSettings::FunctionalSettings::HQM_SD)
                 wg = std::pow(std::pow(this->GetFaceArea(iFace), 1. / real(dim - 1)) / faceBaryDiffV.norm(), settings.functionalSettings.geomWeightPower * 0.5);
             if (settings.functionalSettings.geomWeightScheme == VRSettings::FunctionalSettings::SD_Power)
-                wg = std::pow(this->GetFaceArea(iFace) / faceBaryDiffV.norm(), settings.functionalSettings.geomWeightPower * 0.5);
-
+                wg = std::pow(this->GetFaceArea(iFace), settings.functionalSettings.geomWeightPower1 * 0.5) *
+                     std::pow(faceBaryDiffV.norm(), settings.functionalSettings.geomWeightPower2 * 0.5);
 
             // *get dir weight
             Eigen::Vector<real, Eigen::Dynamic> wd;
@@ -507,7 +517,22 @@ namespace DNDS::CFV
                     break;
                 }
                 break;
-
+            case VRSettings::FunctionalSettings::ManualDirWeight:
+                switch (settings.maxOrder)
+                {
+                case 3:
+                    wd[3] = settings.functionalSettings.manualDirWeights(3);
+                case 2:
+                    wd[2] = settings.functionalSettings.manualDirWeights(2);
+                case 1:
+                    wd[1] = settings.functionalSettings.manualDirWeights(1);
+                    wd[0] = settings.functionalSettings.manualDirWeights(0);
+                    break;
+                default:
+                    DNDS_assert(false);
+                    break;
+                }
+                break;
             default:
                 DNDS_assert(false);
                 break;

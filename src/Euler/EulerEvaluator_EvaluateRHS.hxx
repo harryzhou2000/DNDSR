@@ -4,7 +4,12 @@
 namespace DNDS::Euler
 {
     /**
-     * 
+     * @details
+     * about RHS:
+     * with topology fixed, RHS is dependent on:
+     * flux: 
+     *      dofs:  u_L u_R, urec_L, urec_R, 
+     *      geoms: dbv_l, dbv_r, detJacobian_f, uNorm_f,  
     */
 #define IF_NOT_NOREC (1)
     template <EulerModel model>
@@ -302,14 +307,14 @@ namespace DNDS::Euler
                 bool cellOrderReduced = false;
 
 #ifdef USE_TOTAL_REDUCED_ORDER_CELL
-                eCell.IntegrationSimple(
+                gCell.IntegrationSimple(
                     noOp,
                     [&](decltype(noOp) &finc, int ig)
                     {
                         if (!cellOrderReduced)
                         {
                             TU ULxy =
-                                (vfv->GetIntPointDiffBaseValue(iCell, -1, -1, iG, std::array<int, 1>{0}, 1) *
+                                (vfv->GetIntPointDiffBaseValue(iCell, -1, -1, ig, std::array<int, 1>{0}, 1) *
                                  uRec[iCell])
                                     .transpose() *
                                 IF_NOT_NOREC;

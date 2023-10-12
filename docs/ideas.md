@@ -109,3 +109,14 @@ Array objects for exporting:
 - URec array
 - Eigen Vec / Mat / Mats array ?
 - Rec Matrices array ?
+
+## About Increasing Performance:
+
+- using vectorized Riemann solver / face flux
+- using face - single - dissipation Riemann Solver
+- 4-cached DBV
+  
+- SGS init with last du
+- start with lower order
+- CFL adapt
+- RCM? reordering

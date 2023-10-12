@@ -14,9 +14,11 @@
 
 #define USE_FIX_ZERO_SA_NUT_AT_WALL
 
-// #define USE_TOTAL_REDUCED_ORDER_CELL
+#define USE_TOTAL_REDUCED_ORDER_CELL
 
-// #define USE_DISABLE_DIST_GRP_FIX_AT_WALL
+#define USE_DISABLE_DIST_GRP_FIX_AT_WALL
+
+#define USE_NO_RIEMANN_ON_WALL
 
 // #define USE_SIGN_MINUS_AT_ROE_M4_FLUX
 
@@ -59,6 +61,9 @@ static const std::string DNDS_Experimentals_State = std::string("DNDS_Experiment
 #endif
 #ifdef USE_DISABLE_DIST_GRP_FIX_AT_WALL
                                                     + " USE_DISABLE_DIST_GRP_FIX_AT_WALL "
+#endif
+#ifdef USE_NO_RIEMANN_ON_WALL
+                                                    + " USE_NO_RIEMANN_ON_WALL "
 #endif
 #ifdef USE_SIGN_MINUS_AT_ROE_M4_FLUX
                                                     + " USE_SIGN_MINUS_AT_ROE_M4_FLUX "

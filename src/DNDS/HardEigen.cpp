@@ -67,6 +67,22 @@ namespace DNDS::HardEigen
         return ret;
     }
 
+    real Eigen2x2RealSymEigenDecompositionGetCond(const Eigen::Matrix2d &A)
+    {
+        Eigen::SelfAdjointEigenSolver<Eigen::Matrix2d> solver;
+        solver.computeDirect(A);
+        Eigen::Vector2d ev = solver.eigenvalues().array().abs();
+        return ev.maxCoeff() / (ev.minCoeff() + verySmallReal);
+    }
+
+    real Eigen3x3RealSymEigenDecompositionGetCond(const Eigen::Matrix3d &A)
+    {
+        Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> solver;
+        solver.computeDirect(A);
+        Eigen::Vector3d ev = solver.eigenvalues().array().abs();
+        return ev.maxCoeff() / (ev.minCoeff() + verySmallReal);
+    }
+
     Eigen::Matrix3d Eigen3x3RealSymEigenDecompositionNormalized(const Eigen::Matrix3d &A)
     {
         Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> solver;

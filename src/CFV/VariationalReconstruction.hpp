@@ -68,7 +68,10 @@ namespace DNDS::CFV
                 UnknownDirWeight = -1,
                 Factorial = 0,
                 HQM_OPT = 1,
+                ManualDirWeight = 999,
             } dirWeightScheme = Factorial;
+
+            Eigen::VectorXd manualDirWeights;
 
             enum GeomWeightScheme
             {
@@ -79,6 +82,8 @@ namespace DNDS::CFV
             } geomWeightScheme = GWNone;
 
             real geomWeightPower = 0.5;
+            real geomWeightPower1 = 0;
+            real geomWeightPower2 = 0;
 
             bool useAnisotropicFunctional = false;
 
@@ -95,12 +100,19 @@ namespace DNDS::CFV
                 FunctionalSettings,
                 scaleType,
                 scaleMultiplier,
-                dirWeightScheme,
+                dirWeightScheme, manualDirWeights,
                 geomWeightScheme,
-                geomWeightPower,
+                geomWeightPower, geomWeightPower1, geomWeightPower2,
                 useAnisotropicFunctional,
                 anisotropicType,
                 inertiaWeightPower)
+            FunctionalSettings()
+            {
+                manualDirWeights.resize(5);
+                manualDirWeights
+                    << 1,
+                    1, 0.5, 1. / 6, 1. / 24;
+            }
         } functionalSettings;
 
         VRSettings()
@@ -169,7 +181,8 @@ namespace DNDS::CFV
         VRSettings::FunctionalSettings::DirWeightScheme,
         {{VRSettings::FunctionalSettings::UnknownDirWeight, nullptr},
          {VRSettings::FunctionalSettings::Factorial, "Factorial"},
-         {VRSettings::FunctionalSettings::HQM_OPT, "HQM_OPT"}})
+         {VRSettings::FunctionalSettings::HQM_OPT, "HQM_OPT"},
+         {VRSettings::FunctionalSettings::ManualDirWeight, "ManualDirWeight"}})
 
     NLOHMANN_JSON_SERIALIZE_ENUM(
         VRSettings::FunctionalSettings::GeomWeightScheme,
@@ -487,6 +500,11 @@ namespace DNDS::CFV
         real GetCellJacobiDet(index iCell, rowsize iG) { return cellIntJacobiDet(iCell, iG); }
         real GetFaceJacobiDet(index iFace, rowsize iG) { return faceIntJacobiDet(iFace, iG); }
 
+        auto GetCellRecMatA(index iCell)
+        {
+            return matrixAB(iCell, 0);
+        }
+
         /**
          * @brief flag = 0 means use moment data, or else use no moment (as 0)
          * pPhy must be relative to cell
@@ -763,6 +781,12 @@ namespace DNDS::CFV
                 TMatCopy DiffJ_Norm = DiffJ;
                 tGPoint coordTrans = faceMajorCoordScale[iFace].transpose() *
                                      settings.functionalSettings.scaleMultiplier;
+                tPoint norm = this->GetFaceNorm(iFace, -1);
+                real normScale = (coordTrans * norm).norm();
+                coordTrans(0, Eigen::all) = norm.transpose() * faceL;
+                coordTrans({1, 2}, Eigen::all).setZero();
+                // std::cout << "face " << iFace << std::endl;
+                // std::cout << coordTrans << std::endl;
                 ConvertDiffsLinMap<dim>(DiffI_Norm, coordTrans);
                 ConvertDiffsLinMap<dim>(DiffJ_Norm, coordTrans);
 
