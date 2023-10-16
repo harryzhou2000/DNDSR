@@ -71,7 +71,7 @@
         "subs2ndOrder": 1,
         "baseSettings": {
             "localOrientation": true,
-            "anisotropicLengths": false
+            "anisotropicLengths": true
         },
         "functionalSettings": {
             "scaleType": "BaryDiff",
