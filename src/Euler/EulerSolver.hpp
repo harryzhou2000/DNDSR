@@ -78,13 +78,6 @@ namespace DNDS::Euler
             BCHandler;
 
     public:
-        EulerSolver(const MPIInfo &nmpi) : nVars(getNVars(model)), mpi(nmpi)
-        {
-            nOUTS = nVars + 4;
-            nOUTSPoint = nVars + 2;
-            nOUTSBnd = nVars * 2 + 1 + 2 + 3;
-        }
-
         nlohmann::ordered_json gSetting;
         std::string output_stamp = "";
 
@@ -96,6 +89,7 @@ namespace DNDS::Euler
                 real dtImplicit = 1e100;
                 int nTimeStep = 1000000;
                 bool steadyQuit = false;
+                bool useRestart = false;
                 int odeCode = 0;
                 real tEnd = veryLargeReal;
                 real odeSetting1 = 0;
@@ -103,7 +97,9 @@ namespace DNDS::Euler
                 real odeSetting3 = 0;
                 DNDS_NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_ORDERED_JSON(
                     TimeMarchControl,
-                    dtImplicit, nTimeStep, steadyQuit, odeCode, tEnd, odeSetting1, odeSetting2, odeSetting3)
+                    dtImplicit, nTimeStep,
+                    steadyQuit, useRestart,
+                    odeCode, tEnd, odeSetting1, odeSetting2, odeSetting3)
             } timeMarchControl;
 
             struct ImplicitReconstructionControl
@@ -135,8 +131,12 @@ namespace DNDS::Euler
                 int consoleOutputMode = 0; // 0 for basic, 1 for wall force out
                 int nDataOut = 10000;
                 int nDataOutC = 50;
-                int nDataOutInternal = 1;
+                int nDataOutInternal = 10000;
                 int nDataOutCInternal = 1;
+                int nRestartOut = 10000;
+                int nRestartOutC = 50;
+                int nRestartOutInternal = 10000;
+                int nRestartOutCInternal = 1;
                 real tDataOut = veryLargeReal;
 
                 DNDS_NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_ORDERED_JSON(
@@ -148,6 +148,10 @@ namespace DNDS::Euler
                     nDataOutC,
                     nDataOutInternal,
                     nDataOutCInternal,
+                    nRestartOut,
+                    nRestartOutC,
+                    nRestartOutInternal,
+                    nRestartOutCInternal,
                     tDataOut)
             } outputControl;
 
@@ -191,6 +195,7 @@ namespace DNDS::Euler
                 std::string meshFile = "data/mesh/NACA0012_WIDE_H3.cgns";
                 std::string outPltName = "data/out/debugData_";
                 std::string outLogName = "data/out/debugData_";
+                std::string outRestartName = "data/out/debugData_";
 
                 int outPltMode = 0;   // 0 = serial, 1 = dist plt
                 int readMeshMode = 0; // 0 = serial cgns, 1 = dist json
@@ -212,6 +217,7 @@ namespace DNDS::Euler
                     meshFile,
                     outPltName,
                     outLogName,
+                    outRestartName,
                     outPltMode,
                     readMeshMode,
                     outPltTecplotFormat,
@@ -280,10 +286,12 @@ namespace DNDS::Euler
                 int iStep = -1;
                 int iStepInternal = -1;
                 int odeCodePrev = -1;
+                std::string lastRestartFile = "";
                 DNDS_NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_ORDERED_JSON(
                     RestartState,
-                    iStep, iStepInternal, odeCodePrev)
-            } _restartState;
+                    iStep, iStepInternal, odeCodePrev,
+                    lastRestartFile)
+            } restartState;
 
             struct Others
             {
@@ -309,10 +317,8 @@ namespace DNDS::Euler
                 __DNDS__json_to_config(limiterControl);
                 __DNDS__json_to_config(linearSolverControl);
                 __DNDS__json_to_config(others);
-                __DNDS__json_to_config(_restartState);
+                __DNDS__json_to_config(restartState);
 
-                if (!read)
-                    typename TEval::Setting().ReadWriteJSON(eulerSettings, nVars, false);
                 __DNDS__json_to_config(eulerSettings);
                 __DNDS__json_to_config(vfvSettings);
                 if (read)
@@ -326,14 +332,30 @@ namespace DNDS::Euler
 
             Configuration()
             {
-                vfvSettings = CFV::VRSettings();
             }
 
-        } config;
+            Configuration(int nVars)
+            {
+                vfvSettings = CFV::VRSettings{gDim};
+                typename TEval::Setting().ReadWriteJSON(eulerSettings, nVars, false);
+            }
 
+        } config = Configuration{};
+
+    public:
+        EulerSolver(const MPIInfo &nmpi) : nVars(getNVars(model)), mpi(nmpi)
+        {
+            nOUTS = nVars + 4;
+            nOUTSPoint = nVars + 2;
+            nOUTSBnd = nVars * 2 + 1 + 2 + 3;
+
+            config = Configuration(nVars); //* important to initialize using nVars
+        }
+
+        /**
+         */
         void ConfigureFromJson(const std::string &jsonName, bool read = false, const std::string &jsonMergeName = "")
         {
-
             if (read)
             {
                 auto fIn = std::ifstream(jsonName);
@@ -348,6 +370,7 @@ namespace DNDS::Euler
                     gSetting.merge_patch(gSettingAdd);
                 }
                 config.ReadWriteJson(gSetting, nVars, read);
+                PrintConfig();
                 if (mpi.rank == 0)
                     log() << "JSON: read value:" << std::endl
                           << std::setw(4) << gSetting << std::endl;
@@ -570,6 +593,59 @@ namespace DNDS::Euler
 
         void RunImplicitEuler();
 
+        void PrintConfig()
+        {
+            config.ReadWriteJson(gSetting, nVars, false);
+            if (mpi.rank == 0)
+            {
+                std::ofstream logConfig(config.dataIOControl.outLogName + "_" + output_stamp + ".config.json");
+                gSetting["___Compile_Time_Defines"] = DNDS_Defines_state;
+                gSetting["___Runtime_PartitionNumber"] = mpi.size;
+                logConfig << std::setw(4) << gSetting;
+                logConfig.close();
+            }
+        }
+        void ReadRestart(std::string fname)
+        {
+            std::filesystem::path outPath;
+            // outPath = {fname + "_p" + std::to_string(mpi.size) + "_restart.dir"};
+            outPath = fname;
+            // std::filesystem::create_directories(outPath);
+            char BUF[512];
+            std::sprintf(BUF, "%04d", mpi.rank);
+            fname = getStringForcePath(outPath / (std::string(BUF) + ".json"));
+            fname = getStringForcePath(outPath / (std::string(BUF) + ".json"));
+
+            SerializerJSON serializerJSON;
+            serializerJSON.SetUseCodecOnUint8(true);
+            SerializerBase *serializer = &serializerJSON;
+            serializer->OpenFile(fname, true);
+            u.ReadSerialize(serializer, "u");
+            serializer->CloseFile();
+            // config.restartState.lastRestartFile = outPath;
+            // PrintConfig();
+        }
+
+        void PrintRestart(std::string fname)
+        {
+            std::filesystem::path outPath;
+            outPath = {fname + "_p" + std::to_string(mpi.size) + "_restart.dir"};
+            std::filesystem::create_directories(outPath);
+            char BUF[512];
+            std::sprintf(BUF, "%04d", mpi.rank);
+            fname = getStringForcePath(outPath / (std::string(BUF) + ".json"));
+
+            SerializerJSON serializerJSON;
+            serializerJSON.SetUseCodecOnUint8(true);
+            SerializerBase *serializer = &serializerJSON;
+            serializer->OpenFile(fname, false);
+            u.WriteSerialize(serializer, "u");
+            serializer->CloseFile();
+            config.restartState.lastRestartFile = outPath;
+            PrintConfig();
+        }
+
+        
         template <typename tODE, typename tEval>
         void PrintData(const std::string &fname, tODE &ode, tEval &eval)
         {

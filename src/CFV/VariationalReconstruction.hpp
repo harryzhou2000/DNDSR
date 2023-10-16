@@ -11,192 +11,9 @@
 #include "BaseFunction.hpp"
 #include "Limiters.hpp"
 
-#define JSON_ASSERT DNDS_assert
-#include "json.hpp"
+#include "VRSettings.hpp"
 
 #include "Eigen/Dense"
-
-#include "DNDS/JsonUtil.hpp"
-
-namespace DNDS::CFV
-{
-    /**
-     * @brief
-     * A means to translate nlohmann json into c++ primitive data types and back;
-     * and stores then during computation.
-     *
-     */
-    struct VRSettings
-    {
-        using json = nlohmann::ordered_json;
-
-        int maxOrder{3};            /// @brief polynomial degree of reconstruction
-        int intOrder{5};            /// @brief integration order globally set @note this is actually reduced somewhat
-        bool cacheDiffBase = false; /// @brief if cache the base function values on each of the quadrature points
-
-        real jacobiRelax = 1.0; /// @brief VR SOR/Jacobi iteration relaxation factor
-        bool SORInstead = true; /// @brief use SOR instead of relaxed Jacobi iteration
-
-        real smoothThreshold = 0.01; /// @brief limiter's smooth indicator threshold
-        real WBAP_nStd = 10;         /// @brief n used in WBAP limiters
-        bool normWBAP = false;       /// @brief if switch to normWBAP
-        int subs2ndOrder = 0;        /// @brief 0: vfv; 1: gauss rule; 2: least square
-
-        struct BaseSettings
-        {
-            bool localOrientation = false;
-            bool anisotropicLengths = false;
-            DNDS_NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_ORDERED_JSON(
-                BaseSettings,
-                localOrientation,
-                anisotropicLengths)
-        } baseSettings;
-
-        struct FunctionalSettings
-        {
-            enum ScaleType
-            {
-                UnknownScale = -1,
-                MeanAACBB = 0,
-                BaryDiff = 1,
-            } scaleType = BaryDiff;
-
-            real scaleMultiplier = 1.0;
-
-            enum DirWeightScheme
-            {
-                UnknownDirWeight = -1,
-                Factorial = 0,
-                HQM_OPT = 1,
-                ManualDirWeight = 999,
-            } dirWeightScheme = Factorial;
-
-            Eigen::VectorXd manualDirWeights;
-
-            enum GeomWeightScheme
-            {
-                UnknownGeomWeight = -1,
-                GWNone = 0,
-                HQM_SD = 1,
-                SD_Power = 2,
-            } geomWeightScheme = GWNone;
-
-            real geomWeightPower = 0.5;
-            real geomWeightPower1 = 0;
-            real geomWeightPower2 = 0;
-
-            bool useAnisotropicFunctional = false;
-
-            enum AnisotropicType
-            {
-                UnknownAnisotropic = -1,
-                InertiaCoord = 0,
-                InertiaCoordBB = 1,
-            } anisotropicType = InertiaCoord;
-
-            real inertiaWeightPower = 1.0;
-
-            DNDS_NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_ORDERED_JSON(
-                FunctionalSettings,
-                scaleType,
-                scaleMultiplier,
-                dirWeightScheme, manualDirWeights,
-                geomWeightScheme,
-                geomWeightPower, geomWeightPower1, geomWeightPower2,
-                useAnisotropicFunctional,
-                anisotropicType,
-                inertiaWeightPower)
-            FunctionalSettings()
-            {
-                manualDirWeights.resize(5);
-                manualDirWeights
-                    << 1,
-                    1, 0.5, 1. / 6, 1. / 24;
-            }
-        } functionalSettings;
-
-        VRSettings()
-        {
-        }
-
-        /**
-         * @brief write any data into jsonSetting member
-         *
-         */
-        void WriteIntoJson(json &jsonSetting) const
-        {
-            jsonSetting["maxOrder"] = maxOrder;
-            jsonSetting["intOrder"] = intOrder;
-
-            jsonSetting["cacheDiffBase"] = cacheDiffBase;
-            jsonSetting["jacobiRelax"] = jacobiRelax;
-            jsonSetting["SORInstead"] = SORInstead;
-
-            jsonSetting["smoothThreshold"] = smoothThreshold;
-            jsonSetting["WBAP_nStd"] = WBAP_nStd;
-            jsonSetting["normWBAP"] = normWBAP;
-            jsonSetting["subs2ndOrder"] = subs2ndOrder;
-            jsonSetting["baseSettings"] = baseSettings;
-            jsonSetting["functionalSettings"] = functionalSettings;
-        }
-
-        /**
-         * @brief read any data from jsonSetting member
-         *
-         */
-        void ParseFromJson(const json &jsonSetting)
-        {
-            maxOrder = jsonSetting["maxOrder"]; ///@todo //TODO: update to better
-            intOrder = jsonSetting["intOrder"];
-            cacheDiffBase = jsonSetting["cacheDiffBase"];
-            jacobiRelax = jsonSetting["jacobiRelax"];
-            SORInstead = jsonSetting["SORInstead"];
-
-            smoothThreshold = jsonSetting["smoothThreshold"];
-            WBAP_nStd = jsonSetting["WBAP_nStd"];
-            normWBAP = jsonSetting["normWBAP"];
-            subs2ndOrder = jsonSetting["subs2ndOrder"];
-            baseSettings = jsonSetting["baseSettings"];
-            functionalSettings = jsonSetting["functionalSettings"];
-        }
-
-        friend void from_json(const json &j, VRSettings &s)
-        {
-            s.ParseFromJson(j);
-        }
-
-        friend void to_json(json &j, const VRSettings &s)
-        {
-            s.WriteIntoJson(j);
-        }
-    };
-
-    NLOHMANN_JSON_SERIALIZE_ENUM(
-        VRSettings::FunctionalSettings::ScaleType,
-        {{VRSettings::FunctionalSettings::UnknownScale, nullptr},
-         {VRSettings::FunctionalSettings::MeanAACBB, "MeanAACBB"},
-         {VRSettings::FunctionalSettings::BaryDiff, "BaryDiff"}})
-
-    NLOHMANN_JSON_SERIALIZE_ENUM(
-        VRSettings::FunctionalSettings::DirWeightScheme,
-        {{VRSettings::FunctionalSettings::UnknownDirWeight, nullptr},
-         {VRSettings::FunctionalSettings::Factorial, "Factorial"},
-         {VRSettings::FunctionalSettings::HQM_OPT, "HQM_OPT"},
-         {VRSettings::FunctionalSettings::ManualDirWeight, "ManualDirWeight"}})
-
-    NLOHMANN_JSON_SERIALIZE_ENUM(
-        VRSettings::FunctionalSettings::GeomWeightScheme,
-        {{VRSettings::FunctionalSettings::UnknownGeomWeight, nullptr},
-         {VRSettings::FunctionalSettings::GWNone, "GWNone"},
-         {VRSettings::FunctionalSettings::HQM_SD, "HQM_SD"},
-         {VRSettings::FunctionalSettings::SD_Power, "SD_Power"}})
-
-    NLOHMANN_JSON_SERIALIZE_ENUM(
-        VRSettings::FunctionalSettings::AnisotropicType,
-        {{VRSettings::FunctionalSettings::UnknownAnisotropic, nullptr},
-         {VRSettings::FunctionalSettings::InertiaCoord, "InertiaCoord"},
-         {VRSettings::FunctionalSettings::InertiaCoordBB, "InertiaCoordBB"}})
-}
 
 namespace DNDS::CFV
 {
@@ -254,7 +71,7 @@ namespace DNDS::CFV
     public:
         MPI_int mRank{0};
         MPIInfo mpi;
-        VRSettings settings;
+        VRSettings settings = VRSettings{dim};
         std::shared_ptr<Geom::UnstructuredMesh> mesh;
 
     private:
@@ -579,11 +396,12 @@ namespace DNDS::CFV
             TList &&diffList = Eigen::all,
             uint8_t maxDiff = UINT8_MAX)
         {
+            maxDiff = std::min(maxDiff, faceAtr[iFace].NDIFF);
             if (iFace >= 0)
             {
                 if (if2c < 0)
                     if2c = CellIsFaceBack(iCell, iFace) ? 0 : 1;
-                if (settings.cacheDiffBase)
+                if (settings.cacheDiffBase && maxDiff <= settings.cacheDiffBaseSize)
                 {
                     // auto gFace = this->GetFaceQuad(iFace);
 
@@ -606,7 +424,7 @@ namespace DNDS::CFV
                     // Actual computing:
                     ///@todo //!!!!TODO: take care of periodic case
                     Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic> dbv;
-                    dbv.resize(std::min(maxDiff, faceAtr[iFace].NDIFF), cellAtr[iCell].NDOF);
+                    dbv.resize(maxDiff, cellAtr[iCell].NDOF);
                     FDiffBaseValue(dbv, GetFaceQuadraturePPhysFromCell(iFace, iCell, if2c, iG), iCell, iFace, iG, 0);
                     return dbv(std::forward<TList>(diffList), Eigen::seq(Eigen::fix<1>, Eigen::last));
                 }
@@ -614,7 +432,7 @@ namespace DNDS::CFV
             else
             {
 
-                if (settings.cacheDiffBase)
+                if (settings.cacheDiffBase && maxDiff <= settings.cacheDiffBaseSize)
                 {
                     if (iG >= 0)
                     {
@@ -630,7 +448,7 @@ namespace DNDS::CFV
                 else
                 {
                     Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic> dbv;
-                    dbv.resize(std::min(maxDiff, cellAtr[iCell].NDIFF), cellAtr[iCell].NDOF);
+                    dbv.resize(maxDiff, cellAtr[iCell].NDOF);
                     FDiffBaseValue(dbv, GetCellQuadraturePPhys(iCell, iG), iCell, -1, iG, 0);
                     return dbv(std::forward<TList>(diffList), Eigen::seq(Eigen::fix<1>, Eigen::last));
                 }
@@ -655,7 +473,7 @@ namespace DNDS::CFV
         template <class TDiffI, class TDiffJ>
         auto FFaceFunctional(
             TDiffI &&DiffI, TDiffJ &&DiffJ,
-            index iFace, index iG)
+            index iFace, index iG, index iCellL, index iCellR)
         {
             using namespace Geom;
             Eigen::Vector<real, Eigen::Dynamic> wgd = faceWeight[iFace].array().square();
@@ -687,6 +505,7 @@ namespace DNDS::CFV
                 faceL = std::sqrt(faceLV(Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>)).array().square().mean());
             if (settings.functionalSettings.scaleType == VRSettings::FunctionalSettings::BaryDiff)
                 faceL = faceLV(Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>)).norm();
+            real faceLOrig = faceL;
             faceL *= settings.functionalSettings.scaleMultiplier;
 
             // std::cout << DiffI.transpose() << "\n"
@@ -781,10 +600,67 @@ namespace DNDS::CFV
                 TMatCopy DiffJ_Norm = DiffJ;
                 tGPoint coordTrans = faceMajorCoordScale[iFace].transpose() *
                                      settings.functionalSettings.scaleMultiplier;
-                tPoint norm = this->GetFaceNorm(iFace, -1);
-                real normScale = (coordTrans * norm).norm();
-                coordTrans(0, Eigen::all) = norm.transpose() * faceL;
-                coordTrans({1, 2}, Eigen::all).setZero();
+                {
+                    // tPoint norm = this->GetFaceNorm(iFace, -1);
+                    // real normScale = (coordTrans * norm).norm();
+                    // coordTrans(0, Eigen::all) = norm.transpose() * faceL;
+                    // coordTrans({1, 2}, Eigen::all).setZero();
+                }
+                { // coordTrans = Geom::NormBuildLocalBaseV<3>(norm).transpose() * faceL;
+                }
+                {
+                    // coordTrans *=  (2 * std::sqrt(3));
+                    // tPoint lengths = coordTrans.rowwise().norm();
+                    // // tPoint lengthsNew = lengths.array() * faceL / (faceL + lengths.array());
+                    // tPoint lengthsNew = lengths.array().min(faceL);
+                    // coordTrans.array().colwise() *= lengthsNew.array() / (lengths.array() + verySmallReal);
+
+                    // // if (lengths(0) > 1e2 * lengths(1) || lengths(1) > 1e2 * lengths(0))
+                    // // {
+                    // //     std::cout << "FACE " << iFace << std::endl;
+                    // //     std::cout << lengths << std::endl;
+                    // //     std::cout << faceL << std::endl;
+                    // // }
+                }
+                {
+                    // tPoint norm = this->GetFaceNorm(iFace, -1);
+                    // auto getCellFaceMajorPNorm = [&](index iCell) -> tPoint
+                    // {
+                    //     tGPoint cellMajorCoordTrans = this->cellMajorCoord[iCell].transpose().rowwise().normalized();
+                    //     tPoint normCos = (cellMajorCoordTrans * norm).array().abs();
+                    //     tPoint pNorm;
+                    //     if (normCos(0) < normCos(1))
+                    //         pNorm = cellMajorCoordTrans(1, Eigen::all).transpose();
+                    //     else
+                    //         pNorm = cellMajorCoordTrans(0, Eigen::all).transpose();
+                    //     return pNorm;
+                    // };
+                    // tPoint pNormL = getCellFaceMajorPNorm(iCellL);
+                    // tPoint pNormR = getCellFaceMajorPNorm(iCellR);
+                    // auto getProjection = [](tPoint n) -> tGPoint
+                    // {
+                    //     tGPoint U = Geom::NormBuildLocalBaseV<3>(n).transpose();
+                    //     return U.transpose() * Eigen::Vector3d{1, 0, 0}.asDiagonal() * U;
+                    // };
+                    // ConvertDiffsLinMap<dim>(DiffI_Norm, getProjection(pNormL));
+                    // ConvertDiffsLinMap<dim>(DiffJ_Norm, getProjection(pNormR));
+
+                    // coordTrans(0, Eigen::all) = norm.transpose() * faceL;
+                    // coordTrans({1, 2}, Eigen::all).setZero();
+                }
+                {
+                    tPoint norm = this->GetFaceNorm(iFace, -1);
+                    real areaL = this->GetFaceArea(iFace);
+                    if constexpr (dim == 3)
+                        areaL = std::sqrt(areaL);
+                    // real tw = 1. / std::max({1.0, areaL / (faceLOrig + 0.001 * areaL)});
+                    real tw = 1. / std::min({1.0, faceLOrig / (areaL + 0.001 * faceLOrig)});
+                    // std::cout << tw << std::endl;
+
+                    coordTrans = Geom::NormBuildLocalBaseV<3>(norm).transpose() * faceL;
+                    coordTrans({1, 2}, Eigen::all) *= tw;
+                }
+
                 // std::cout << "face " << iFace << std::endl;
                 // std::cout << coordTrans << std::endl;
                 ConvertDiffsLinMap<dim>(DiffI_Norm, coordTrans);
@@ -1050,8 +926,8 @@ namespace DNDS::CFV
                             }
 
                             Eigen::Matrix<real, nVarsSee, nVarsSee> IJI, ISI;
-                            IJI = FFaceFunctional(uRecValJump, uRecValJump, iFace, -1);
-                            ISI = FFaceFunctional(uRecVal, uRecVal, iFace, -1);
+                            IJI = FFaceFunctional(uRecValJump, uRecValJump, iFace, -1, iCell, iCellOther);
+                            ISI = FFaceFunctional(uRecVal, uRecVal, iFace, -1, iCell, iCellOther);
 
                             finc(Eigen::all, 0) = IJI.diagonal();
                             finc(Eigen::all, 1) = ISI.diagonal();
@@ -1147,8 +1023,8 @@ namespace DNDS::CFV
                             }
 
                             Eigen::Matrix<real, nVarsSee, nVarsSee> IJI, ISI;
-                            IJI = FFaceFunctional(uRecValJump, uRecValJump, iFace, -1);
-                            ISI = FFaceFunctional(uRecVal, uRecVal, iFace, -1);
+                            IJI = FFaceFunctional(uRecValJump, uRecValJump, iFace, -1, iCell, iCellOther);
+                            ISI = FFaceFunctional(uRecVal, uRecVal, iFace, -1, iCell, iCellOther);
 
                             finc(Eigen::all, 0) = IJI.diagonal();
                             finc(Eigen::all, 1) = ISI.diagonal();

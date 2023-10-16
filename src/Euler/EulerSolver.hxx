@@ -9,15 +9,6 @@ namespace DNDS::Euler
         InsertCheck(mpi, "Implicit 1 nvars " + std::to_string(nVars));
 
         /************* Files **************/
-        if (mpi.rank == 0)
-        {
-            std::ofstream logConfig(config.dataIOControl.outLogName + "_" + output_stamp + ".config.json");
-            gSetting["___Compile_Time_Defines"] = DNDS_Defines_state;
-            gSetting["___Runtime_PartitionNumber"] = mpi.size;
-            logConfig << std::setw(4) << gSetting;
-            logConfig.close();
-        }
-
         std::ofstream logErr(config.dataIOControl.outLogName + "_" + output_stamp + ".log");
         /************* Files **************/
 
@@ -108,6 +99,15 @@ namespace DNDS::Euler
         eval.settings.ReadWriteJSON(eval.settings.jsonSettings, nVars, true);
 
         eval.InitializeUDOF(u);
+        if (config.timeMarchControl.useRestart)
+        {
+            DNDS_assert(config.restartState.iStep >= 1);
+            ReadRestart(config.restartState.lastRestartFile);
+        }
+
+        /*******************************************************/
+        /*                 SOLVER MAJOR START                  */
+        /*******************************************************/
 
         double tstart = MPI_Wtime();
         double trec{0}, tcomm{0}, trhs{0}, tLim{0};
@@ -122,6 +122,8 @@ namespace DNDS::Euler
         real nextTout = config.outputControl.tDataOut;
         int nextStepOut = config.outputControl.nDataOut;
         int nextStepOutC = config.outputControl.nDataOutC;
+        int nextStepRestart = config.outputControl.nRestartOut;
+        int nextStepRestartC = config.outputControl.nRestartOutC;
         PerformanceTimer::Instance().clearAllTimer();
 
         // *** Loop variables
@@ -786,13 +788,23 @@ namespace DNDS::Euler
             {
                 eval.FixUMaxFilter(u);
                 PrintData(config.dataIOControl.outPltName + "_" + output_stamp + "_" + std::to_string(step) + "_" + std::to_string(iter), ode, eval);
-                nextStepOut += config.outputControl.nDataOut;
             }
             if (iter % config.outputControl.nDataOutCInternal == 0)
             {
                 eval.FixUMaxFilter(u);
                 PrintData(config.dataIOControl.outPltName + "_" + output_stamp + "_" + "C", ode, eval);
-                nextStepOutC += config.outputControl.nDataOutC;
+            }
+            if (iter % config.outputControl.nRestartOutInternal == 0)
+            {
+                config.restartState.iStep = step;
+                config.restartState.iStepInternal = iter;
+                PrintRestart(config.dataIOControl.outRestartName + "_" + output_stamp + "_" + std::to_string(step) + "_" + std::to_string(iter));
+            }
+            if (iter % config.outputControl.nRestartOutCInternal == 0)
+            {
+                config.restartState.iStep = step;
+                config.restartState.iStepInternal = iter;
+                PrintRestart(config.dataIOControl.outRestartName + "_" + output_stamp + "_" + "C");
             }
             if (iter >= config.implicitCFLControl.nCFLRampStart && iter <= config.implicitCFLControl.nCFLRampLength + config.implicitCFLControl.nCFLRampStart)
             {
@@ -861,6 +873,20 @@ namespace DNDS::Euler
                 eval.FixUMaxFilter(u);
                 PrintData(config.dataIOControl.outPltName + "_" + output_stamp + "_" + "C", ode, eval);
                 nextStepOutC += config.outputControl.nDataOutC;
+            }
+            if (step == nextStepRestart)
+            {
+                config.restartState.iStep = step;
+                config.restartState.iStepInternal = -1;
+                PrintRestart(config.dataIOControl.outRestartName + "_" + output_stamp + "_" + std::to_string(step));
+                nextStepRestart += config.outputControl.nRestartOut;
+            }
+            if (step == nextStepRestartC)
+            {
+                config.restartState.iStep = step;
+                config.restartState.iStepInternal = -1;
+                PrintRestart(config.dataIOControl.outRestartName + "_" + output_stamp + "_" + "C");
+                nextStepRestartC += config.outputControl.nRestartOutC;
             }
             if (ifOutT)
             {

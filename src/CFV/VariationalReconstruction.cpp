@@ -257,8 +257,12 @@ namespace DNDS::CFV
         this->MakePairDefaultOnCell(cellBaseMoment, maxNDOF);
         if (settings.cacheDiffBase)
         {
-            this->MakePairDefaultOnCell(cellDiffBaseCache, maxNDIFF, maxNDOF);
-            this->MakePairDefaultOnCell(cellDiffBaseCacheCent, maxNDIFF, maxNDOF);
+            this->MakePairDefaultOnCell(
+                cellDiffBaseCache,
+                std::min(maxNDIFF, static_cast<int>(settings.cacheDiffBaseSize)), maxNDOF);
+            this->MakePairDefaultOnCell(
+                cellDiffBaseCacheCent,
+                std::min(maxNDIFF, static_cast<int>(settings.cacheDiffBaseSize)), maxNDOF);
         }
 #ifdef DNDS_USE_OMP
 #pragma omp parallel for
@@ -297,7 +301,9 @@ namespace DNDS::CFV
                     if (settings.cacheDiffBase)
                     {
                         Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic> dbv;
-                        dbv.resize(cellAtr[iCell].NDIFF, cellAtr[iCell].NDOF);
+                        dbv.resize(
+                            std::min(cellAtr[iCell].NDIFF, settings.cacheDiffBaseSize),
+                            cellAtr[iCell].NDOF);
                         this->FDiffBaseValue(dbv, this->GetCellQuadraturePPhys(iCell, iG), iCell, -1, iG, 0);
                         cellDiffBaseCache(iCell, iG) = dbv;
                     }
@@ -309,7 +315,9 @@ namespace DNDS::CFV
                     if (settings.cacheDiffBase)
                     {
                         Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic> dbv;
-                        dbv.resize(cellAtr[iCell].NDIFF, cellAtr[iCell].NDOF);
+                        dbv.resize(
+                            std::min(cellAtr[iCell].NDIFF, settings.cacheDiffBaseSize),
+                            cellAtr[iCell].NDOF);
                         this->FDiffBaseValue(dbv, this->GetCellQuadraturePPhys(iCell, -1), iCell, -1, -1, 0);
                         cellDiffBaseCacheCent[iCell] = dbv;
                     }
@@ -323,8 +331,12 @@ namespace DNDS::CFV
         this->MakePairDefaultOnFace(faceMajorCoordScale, 3, 3);
         if (settings.cacheDiffBase)
         {
-            this->MakePairDefaultOnFace(faceDiffBaseCache, maxNDIFF, maxNDOF);
-            this->MakePairDefaultOnFace(faceDiffBaseCacheCent, maxNDIFF, maxNDOF * 2);
+            this->MakePairDefaultOnFace(
+                faceDiffBaseCache,
+                std::min(maxNDIFF, static_cast<int>(settings.cacheDiffBaseSize)), maxNDOF);
+            this->MakePairDefaultOnFace(
+                faceDiffBaseCacheCent,
+                std::min(maxNDIFF, static_cast<int>(settings.cacheDiffBaseSize)), maxNDOF * 2);
         }
 #ifdef DNDS_USE_OMP
 #pragma omp parallel for
@@ -359,7 +371,9 @@ namespace DNDS::CFV
                         if (settings.cacheDiffBase)
                         {
                             Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic> dbv;
-                            dbv.resize(faceAtr[iFace].NDIFF, cellAtr[iCell].NDOF);
+                            dbv.resize(
+                                std::min(faceAtr[iFace].NDIFF, settings.cacheDiffBaseSize),
+                                cellAtr[iCell].NDOF);
                             this->FDiffBaseValue(dbv, this->GetFaceQuadraturePPhysFromCell(iFace, iCell, if2c, iG), iCell, iFace, iG, 0);
                             faceDiffBaseCache(iFace, if2c * qFace.GetNumPoints() + iG) = dbv;
                         }
@@ -371,7 +385,9 @@ namespace DNDS::CFV
                         if (settings.cacheDiffBase)
                         {
                             Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic> dbv;
-                            dbv.resize(faceAtr[iFace].NDIFF, cellAtr[iCell].NDOF);
+                            dbv.resize(
+                                std::min(faceAtr[iFace].NDIFF, settings.cacheDiffBaseSize),
+                                cellAtr[iCell].NDOF);
                             this->FDiffBaseValue(dbv, this->GetFaceQuadraturePPhysFromCell(iFace, iCell, if2c, -1), iCell, iFace, -1, 0);
                             int maxNDOF = GetNDof<dim>(settings.maxOrder);
                             faceDiffBaseCacheCent[iFace](
@@ -545,8 +561,8 @@ namespace DNDS::CFV
 
         if (settings.cacheDiffBase)
         {
-            // faceDiffBaseCache.CompressBoth();
-            // cellDiffBaseCache.CompressBoth();
+            faceDiffBaseCache.CompressBoth();
+            cellDiffBaseCache.CompressBoth();
 
             // faceDiffBaseCache.trans.pullOnce(); //!err: need adding comm preparation first
             // faceDiffBaseCacheCent.trans.pullOnce(); //!err: need adding comm preparation first
@@ -598,7 +614,7 @@ namespace DNDS::CFV
                     [&](auto &vInc, int iG, const tPoint &pParam, const Elem::tD01Nj &DiNj)
                     {
                         decltype(A) DiffI = this->GetIntPointDiffBaseValue(iCell, iFace, -1, iG, Eigen::all);
-                        vInc = this->FFaceFunctional(DiffI, DiffI, iFace, iG);
+                        vInc = this->FFaceFunctional(DiffI, DiffI, iFace, iG, iCell, iCell);
                         vInc *= this->GetFaceJacobiDet(iFace, iG);
                         // if (iCell == 71)
                         // {
@@ -610,7 +626,7 @@ namespace DNDS::CFV
                 // std::cout << "face "<< faceWeight[iFace].transpose() << std::endl;
             }
             decltype(A) AInv;
-            real aCond = HardEigen::EigenLeastSquareInverse(A, AInv);
+            real aCond = HardEigen::EigenLeastSquareInverse_Filtered(A, AInv);
             matrixAB(iCell, 0) = A;
             matrixAAInvB(iCell, 0) = AInv;
 
@@ -646,7 +662,7 @@ namespace DNDS::CFV
                     {
                         decltype(B) DiffI = this->GetIntPointDiffBaseValue(iCell, iFace, -1, iG, Eigen::all);
                         decltype(B) DiffJ = this->GetIntPointDiffBaseValue(iCellOther, iFace, -1, iG, Eigen::all);
-                        vInc = this->FFaceFunctional(DiffI, DiffJ, iFace, iG);
+                        vInc = this->FFaceFunctional(DiffI, DiffJ, iFace, iG, iCell, iCellOther);
                         vInc *= this->GetFaceJacobiDet(iFace, iG);
                     });
                 matrixAB(iCell, 1 + ic2f) = B;
@@ -666,7 +682,7 @@ namespace DNDS::CFV
                     {
                         Eigen::RowVector<real, Eigen::Dynamic> DiffI =
                             this->GetIntPointDiffBaseValue(iCell, iFace, -1, iG, std::array<int, 1>{0}, 1);
-                        vInc = this->FFaceFunctional(DiffI, Eigen::MatrixXd::Ones(1, 1), iFace, iG);
+                        vInc = this->FFaceFunctional(DiffI, Eigen::MatrixXd::Ones(1, 1), iFace, iG, iCell, iCell);
                         vInc *= this->GetFaceJacobiDet(iFace, iG);
                     });
                 vectorB(iCell, ic2f) = b;

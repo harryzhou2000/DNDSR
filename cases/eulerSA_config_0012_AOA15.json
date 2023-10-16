@@ -23,7 +23,7 @@
         "tDataOut": 3e+200
     },
     "implicitCFLControl": {
-        "CFL": 50.0,
+        "CFL": 50,
         "nForceLocalStartStep": 2147483647,
         "nCFLRampStart": 2147483647,
         "nCFLRampLength": 2147483647,
@@ -79,12 +79,21 @@
         "functionalSettings": {
             // "scaleType": "MeanAACBB",
             // "dirWeightScheme": "HQM_OPT",
+            // "dirWeightScheme": "ManualDirWeight",
+            // "manualDirWeights": [
+            //     1.0,
+            //     1,
+            //     0,
+            //     0
+            // ],
             // "geomWeightScheme": "HQM_SD",
-            // "geomWeightScheme": "SD_Power",
-            // "geomWeightPower": 0.5,
+            // // "geomWeightPower": 0.5,
+            "geomWeightScheme": "SD_Power",
+            "geomWeightPower1": -1,
+            // "geomWeightPower2": 0.5,
             "useAnisotropicFunctional": true,
             // "anisotropicType": "InertiaCoordBB",
-            "inertiaWeightPower": -2,
+            "inertiaWeightPower": 0,
             "scaleMultiplier": 3.464101615137754,
             "_tail": 0
         }

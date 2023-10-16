@@ -25,7 +25,7 @@ namespace DNDS::HardEigen
         auto sVs = SVDResult.singularValues();
         real sVsMax = SVDResult.singularValues().array().abs().maxCoeff();
         for (auto &i : sVs)
-            if (std::fabs(i) > sVmin) //! note this filtering!
+            if (std::fabs(i) > sVmin * sVsMax) //! note this filtering!
                 i = 1. / i;
             else
                 i = 0.;

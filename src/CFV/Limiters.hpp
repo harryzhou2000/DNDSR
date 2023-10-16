@@ -1,3 +1,4 @@
+#pragma once
 #include "DNDS/Defines.hpp"
 #include "Eigen/Dense"
 

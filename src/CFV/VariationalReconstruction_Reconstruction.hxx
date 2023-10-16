@@ -259,7 +259,7 @@ namespace DNDS
                                         this->GetFaceNorm(iFace, iG),
                                         this->GetFaceQuadraturePPhysFromCell(iFace, iCell, -1, iG), faceID);
                                 Eigen::RowVector<real, nVarsFixed> uIncBV = (uBV - u[iCell]).transpose();
-                                vInc = this->FFaceFunctional(dbv, uIncBV, iFace, iG) * this->GetFaceJacobiDet(iFace, iG);
+                                vInc = this->FFaceFunctional(dbv, uIncBV, iFace, iG, iCell, iCell) * this->GetFaceJacobiDet(iFace, iG);
                                 // std::cout << faceWeight[iFace].transpose() << std::endl;
                             });
                         // BCC *= 0;
@@ -356,7 +356,7 @@ namespace DNDS
                                             this->GetFaceNorm(iFace, iG),
                                             this->GetFaceQuadraturePPhysFromCell(iFace, iCell, -1, iG), faceID);
                                 Eigen::RowVector<real, nVarsFixed> uIncBV = uBV.transpose();
-                                vInc = this->FFaceFunctional(dbv, uIncBV, iFace, iG) * this->GetFaceJacobiDet(iFace, iG);
+                                vInc = this->FFaceFunctional(dbv, uIncBV, iFace, iG, iCell, iCell) * this->GetFaceJacobiDet(iFace, iG);
                                 // std::cout << faceWeight[iFace].transpose() << std::endl;
                             });
                         // BCC *= 0;
@@ -436,7 +436,7 @@ namespace DNDS
                                             this->GetFaceNorm(iFace, iG),
                                             this->GetFaceQuadraturePPhysFromCell(iFace, iCell, -1, iG), faceID);
                                 Eigen::RowVector<real, nVarsFixed> uIncBV = uBV.transpose();
-                                vInc = this->FFaceFunctional(dbv, uIncBV, iFace, iG) * this->GetFaceJacobiDet(iFace, iG);
+                                vInc = this->FFaceFunctional(dbv, uIncBV, iFace, iG, iCell, iCell) * this->GetFaceJacobiDet(iFace, iG);
                                 // std::cout << faceWeight[iFace].transpose() << std::endl;
                             });
                         // BCC *= 0;

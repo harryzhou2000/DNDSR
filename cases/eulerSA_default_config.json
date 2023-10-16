@@ -3,6 +3,7 @@
         "dtImplicit": 1e+100,
         "nTimeStep": 1000000,
         "steadyQuit": false,
+        "useRestart": false,
         "odeCode": 0,
         "tEnd": 3e+200,
         "odeSetting1": 0.0,
@@ -27,8 +28,12 @@
         "consoleOutputMode": 0,
         "nDataOut": 10000,
         "nDataOutC": 50,
-        "nDataOutInternal": 1,
+        "nDataOutInternal": 10000,
         "nDataOutCInternal": 1,
+        "nRestartOut": 10000,
+        "nRestartOutC": 50,
+        "nRestartOutInternal": 10000,
+        "nRestartOutCInternal": 1,
         "tDataOut": 3e+200
     },
     "implicitCFLControl": {
@@ -52,6 +57,7 @@
         "meshFile": "data/mesh/NACA0012_WIDE_H3.cgns",
         "outPltName": "data/out/debugData_",
         "outLogName": "data/out/debugData_",
+        "outRestartName": "data/out/debugData_",
         "outPltMode": 0,
         "readMeshMode": 0,
         "outPltTecplotFormat": true,
@@ -98,10 +104,11 @@
     "others": {
         "nFreezePassiveInner": 0
     },
-    "_restartState": {
+    "restartState": {
         "iStep": -1,
         "iStepInternal": -1,
-        "odeCodePrev": -1
+        "odeCodePrev": -1,
+        "lastRestartFile": ""
     },
     "eulerSettings": {
         "useScalarJacobian": false,
@@ -136,6 +143,7 @@
         "maxOrder": 3,
         "intOrder": 5,
         "cacheDiffBase": false,
+        "cacheDiffBaseSize": 3,
         "jacobiRelax": 1.0,
         "SORInstead": true,
         "smoothThreshold": 0.01,

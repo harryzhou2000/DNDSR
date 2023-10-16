@@ -202,6 +202,7 @@ if(UNIX OR MINGW)
     endif()
     message(${CMAKE_CXX_COMPILER_ID})
     add_compile_options(-std=c++17)
+    # add_compile_options(-mtune=native -march=native) # !warning, only x86 here
     if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang")
         # add_compile_options(-fopenmp)
         if (DNDS_USE_OMP)
