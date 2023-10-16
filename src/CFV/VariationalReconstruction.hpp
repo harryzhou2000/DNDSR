@@ -396,9 +396,9 @@ namespace DNDS::CFV
             TList &&diffList = Eigen::all,
             uint8_t maxDiff = UINT8_MAX)
         {
-            maxDiff = std::min(maxDiff, faceAtr[iFace].NDIFF);
             if (iFace >= 0)
             {
+                maxDiff = std::min(maxDiff, faceAtr[iFace].NDIFF);
                 if (if2c < 0)
                     if2c = CellIsFaceBack(iCell, iFace) ? 0 : 1;
                 if (settings.cacheDiffBase && maxDiff <= settings.cacheDiffBaseSize)
@@ -431,7 +431,7 @@ namespace DNDS::CFV
             }
             else
             {
-
+                maxDiff = std::min(maxDiff, cellAtr[iCell].NDIFF);
                 if (settings.cacheDiffBase && maxDiff <= settings.cacheDiffBaseSize)
                 {
                     if (iG >= 0)
@@ -1007,14 +1007,14 @@ namespace DNDS::CFV
                             Eigen::Matrix<real, 1, nVarsSee>
                                 uRecVal(1, nVarsSee), uRecValL(1, nVarsSee), uRecValR(1, nVarsSee), uRecValJump(1, nVarsSee);
                             uRecVal.setZero(), uRecValJump.setZero();
-                            uRecValL = this->GetIntPointDiffBaseValue(iCell, iFace, -1, -1, std::array<int, 1>{0}) *
+                            uRecValL = this->GetIntPointDiffBaseValue(iCell, iFace, -1, -1, std::array<int, 1>{0}, 1) *
                                        uRec[iCell](Eigen::all, varsSee);
                             uRecValL(0, Eigen::all) += u[iCell](varsSee).transpose();
                             FPost(uRecValL);
 
                             if (iCellOther != UnInitIndex)
                             {
-                                uRecValR = this->GetIntPointDiffBaseValue(iCellOther, iFace, -1, -1, std::array<int, 1>{0}) *
+                                uRecValR = this->GetIntPointDiffBaseValue(iCellOther, iFace, -1, -1, std::array<int, 1>{0}, 1) *
                                            uRec[iCellOther](Eigen::all, varsSee);
                                 uRecValR(0, Eigen::all) += u[iCellOther](varsSee).transpose();
                                 FPost(uRecValR);

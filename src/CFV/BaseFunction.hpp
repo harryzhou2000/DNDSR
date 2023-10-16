@@ -812,6 +812,7 @@ namespace DNDS::CFV
                 break;
 
             default:
+                std::cerr << mat.rows() << std::endl;
                 DNDS_assert(false);
                 break;
             }
