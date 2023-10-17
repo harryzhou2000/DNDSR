@@ -7,10 +7,10 @@ namespace DNDS::Euler
      * @details
      * about RHS:
      * with topology fixed, RHS is dependent on:
-     * flux: 
-     *      dofs:  u_L u_R, urec_L, urec_R, 
-     *      geoms: dbv_l, dbv_r, detJacobian_f, uNorm_f,  
-    */
+     * flux:
+     *      dofs:  u_L u_R, urec_L, urec_R,
+     *      geoms: dbv_l, dbv_r, detJacobian_f, uNorm_f,
+     */
 #define IF_NOT_NOREC (1)
     template <EulerModel model>
     void EulerEvaluator<model>::EvaluateRHS(
@@ -18,6 +18,9 @@ namespace DNDS::Euler
         ArrayDOFV<nVars_Fixed> &JSource,
         ArrayDOFV<nVars_Fixed> &u,
         ArrayRECV<nVars_Fixed> &uRec,
+        ArrayDOFV<1> &uRecBeta,
+        ArrayRECV<1> &cellRHSAlpha,
+        bool onlyOnHalfAlpha,
         real t)
     {
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
@@ -33,6 +36,22 @@ namespace DNDS::Euler
         fluxWallSum.setZero(cnvars);
         nFaceReducedOrder = 0;
 
+        auto cellIsHalfAlpha = [&](index iCell) -> bool // iCell should be internal
+        {
+            bool ret = false;
+            if (cellRHSAlpha[iCell](0) == 1.0)
+            {
+                auto c2f = mesh->cell2face(iCell);
+                for (int ic2f = 0; ic2f < f2c.size(); ic2f++)
+                {
+                    index iCellOther = vfv->CellFaceOther(iCell, c2f[ic2f]);
+                    if (cellRHSAlpha[iCellOther](0) != 1.0)
+                        ret = true;
+                }
+            }
+            return ret;
+        };
+
         for (index iFace = 0; iFace < mesh->NumFaceProc(); iFace++)
         {
             auto f2c = mesh->face2cell[iFace];
@@ -42,6 +61,17 @@ namespace DNDS::Euler
 #else
             Eigen::Matrix<real, nVars_Fixed, 1, Eigen::ColMajor> fluxEs(cnvars, 1);
 #endif
+            if (onlyOnHalfAlpha)
+            {
+                bool lIsHalfAlpha = cellIsHalfAlpha(f2c[0]);
+                bool rIsHalfAlpha =
+                    (f2c[1] != UninitIndex && f2c[1] < mesh->NumCell()) // must be owned cell!
+                        ? cellIsHalfAlpha(f2c[0])
+                        : false;
+                if (!(lIsHalfAlpha || rIsHalfAlpha))
+                    continue;
+            }
+
             fluxEs.setZero();
 
             // auto f2n = mesh->face2node[iFace];
@@ -63,7 +93,7 @@ namespace DNDS::Euler
                             (vfv->GetIntPointDiffBaseValue(f2c[0], iFace, 0, iG, std::array<int, 1>{0}, 1) *
                              uRec[f2c[0]])
                                 .transpose() *
-                            IF_NOT_NOREC;
+                            IF_NOT_NOREC * uRecBeta[f2c[0]](0);
                         ULxy = CompressRecPart(u[f2c[0]], ULxy, faceOrderReducedL);
                     }
 
@@ -75,13 +105,12 @@ namespace DNDS::Euler
                                 (vfv->GetIntPointDiffBaseValue(f2c[1], iFace, 1, iG, std::array<int, 1>{0}, 1) *
                                  uRec[f2c[1]])
                                     .transpose() *
-                                IF_NOT_NOREC;
+                                IF_NOT_NOREC * uRecBeta[f2c[1]](0);
                             URxy = CompressRecPart(u[f2c[1]], URxy, faceOrderReducedR);
                         }
                     }
                 });
 #endif
-            
 
             gFace.IntegrationSimple(
                 fluxEs,
@@ -104,7 +133,7 @@ namespace DNDS::Euler
                             (vfv->GetIntPointDiffBaseValue(f2c[0], iFace, 0, iG, std::array<int, 1>{0}, 1) *
                              uRec[f2c[0]])
                                     .transpose() *
-                                IF_NOT_NOREC,
+                                IF_NOT_NOREC * uRecBeta[f2c[0]](0),
                             pointOrderReducedL);
                     }
                     this->UFromCell2Face(ULxy, iFace, f2c[0], 0);
@@ -123,11 +152,11 @@ namespace DNDS::Euler
                     if constexpr (gDim == 2)
                         GradULxy({0, 1}, Eigen::all) =
                             vfv->GetIntPointDiffBaseValue(f2c[0], iFace, 0, iG, std::array<int, 2>{1, 2}, 3) *
-                            uRec[f2c[0]] * IF_NOT_NOREC; // 2d here
+                            uRec[f2c[0]] * IF_NOT_NOREC * uRecBeta[f2c[0]](0); // 2d here
                     else
                         GradULxy({0, 1, 2}, Eigen::all) =
                             vfv->GetIntPointDiffBaseValue(f2c[0], iFace, 0, iG, std::array<int, 3>{1, 2, 3}, 4) *
-                            uRec[f2c[0]] * IF_NOT_NOREC; // 3d here
+                            uRec[f2c[0]] * IF_NOT_NOREC * uRecBeta[f2c[0]](0); // 3d here
                     this->DiffUFromCell2Face(GradULxy, iFace, f2c[0], 0);
 
 #endif
@@ -145,7 +174,7 @@ namespace DNDS::Euler
                                 (vfv->GetIntPointDiffBaseValue(f2c[1], iFace, 1, iG, std::array<int, 1>{0}, 1) *
                                  uRec[f2c[1]])
                                         .transpose() *
-                                    IF_NOT_NOREC,
+                                    IF_NOT_NOREC * uRecBeta[f2c[1]](0),
                                 pointOrderReducedR);
                         }
 
@@ -155,11 +184,11 @@ namespace DNDS::Euler
                         if constexpr (gDim == 2)
                             GradURxy({0, 1}, Eigen::all) =
                                 vfv->GetIntPointDiffBaseValue(f2c[1], iFace, 1, iG, std::array<int, 2>{1, 2}, 3) *
-                                uRec[f2c[1]] * IF_NOT_NOREC; // 2d here
+                                uRec[f2c[1]] * IF_NOT_NOREC * uRecBeta[f2c[1]](0); // 2d here
                         else
                             GradURxy({0, 1, 2}, Eigen::all) =
                                 vfv->GetIntPointDiffBaseValue(f2c[1], iFace, 1, iG, std::array<int, 3>{1, 2, 3}, 4) *
-                                uRec[f2c[1]] * IF_NOT_NOREC; // 3d here
+                                uRec[f2c[1]] * IF_NOT_NOREC * uRecBeta[f2c[1]](0); // 3d here
                         this->DiffUFromCell2Face(GradURxy, iFace, f2c[1], 1);
 
 #endif
@@ -169,7 +198,7 @@ namespace DNDS::Euler
                     else if (true)
                     {
                         URxy = generateBoundaryValue(
-                            ULxy,
+                            ULxy, ULMeanXy, f2c[0], iFace,
                             unitNorm,
                             normBase,
                             vfv->GetFaceQuadraturePPhys(iFace, -1)(Seq012),
@@ -179,7 +208,7 @@ namespace DNDS::Euler
                         GradURxy = GradULxy; //! generated boundary value couldn't use any periodic conversion?
 #endif
                         URMeanXy = generateBoundaryValue(
-                            ULMeanXy,
+                            ULMeanXy, ULMeanXy, f2c[0], iFace,
                             unitNorm,
                             normBase,
                             vfv->GetFaceQuadraturePPhys(iFace, -1)(Seq012),
@@ -255,6 +284,12 @@ namespace DNDS::Euler
                         nFaceReducedOrder++;
                     if (faceOrderReducedR)
                         nFaceReducedOrder++;
+
+                    // if (iFace == 0)
+                    // {
+                    //     std::cout << finc.transpose() << std::endl;
+                    //     DNDS_assert(false);
+                    // }
                 });
 
             // if (f2c[0] == 10756)
@@ -271,7 +306,11 @@ namespace DNDS::Euler
             fluxIncR += fluxEs(Eigen::all, 2);
 #endif
             this->UFromFace2Cell(fluxIncL, iFace, f2c[0], 0);
-            this->UFromFace2Cell(fluxIncR, iFace, f2c[1], 1); // periodic back to cell
+            if (f2c[1] != UnInitIndex)
+                this->UFromFace2Cell(fluxIncR, iFace, f2c[1], 1); // periodic back to cell
+            real alphaFace = cellRHSAlpha[f2c[0]](0);
+            if (f2c[1] != UnInitIndex)
+                alphaFace = std::min(alphaFace, cellRHSAlpha[f2c[1]](0));
 
             rhs[f2c[0]] += fluxIncL / vfv->GetCellVol(f2c[0]);
             if (f2c[1] != UnInitIndex)
@@ -298,6 +337,11 @@ namespace DNDS::Euler
 
             for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
             {
+                if (onlyOnHalfAlpha)
+                {
+                    if (!cellIsHalfAlpha(iCell))
+                        continue;
+                }
                 auto gCell = vfv->GetCellQuad(iCell);
 
                 Eigen::Vector<real, nvarsFixedMultiply<nVars_Fixed, 2>()> sourceV(cnvars * 2); // now includes sourcejacobian diag
@@ -317,7 +361,7 @@ namespace DNDS::Euler
                                 (vfv->GetIntPointDiffBaseValue(iCell, -1, -1, ig, std::array<int, 1>{0}, 1) *
                                  uRec[iCell])
                                     .transpose() *
-                                IF_NOT_NOREC;
+                                IF_NOT_NOREC * uRecBeta[iCell](0);
                             ULxy = CompressRecPart(u[iCell], ULxy, cellOrderReduced);
                         }
                     });
@@ -334,11 +378,11 @@ namespace DNDS::Euler
                         if constexpr (gDim == 2)
                             GradU({0, 1}, Eigen::all) =
                                 vfv->GetIntPointDiffBaseValue(iCell, -1, -1, iG, std::array<int, 2>{1, 2}, 3) *
-                                uRec[iCell] * IF_NOT_NOREC; // 2d specific
+                                uRec[iCell] * IF_NOT_NOREC * uRecBeta[iCell](0); // 2d specific
                         else
                             GradU({0, 1, 2}, Eigen::all) =
                                 vfv->GetIntPointDiffBaseValue(iCell, -1, -1, iG, std::array<int, 3>{1, 2, 3}, 4) *
-                                uRec[iCell] * IF_NOT_NOREC; // 3d specific
+                                uRec[iCell] * IF_NOT_NOREC * uRecBeta[iCell](0); // 3d specific
 
                         bool pointOrderReduced;
                         TU ULxy = u[iCell];
@@ -351,7 +395,7 @@ namespace DNDS::Euler
                                 (vfv->GetIntPointDiffBaseValue(iCell, -1, -1, iG, std::array<int, 1>{0}, 1) *
                                  uRec[iCell])
                                         .transpose() *
-                                    IF_NOT_NOREC,
+                                    IF_NOT_NOREC * uRecBeta[iCell](0),
                                 pointOrderReduced);
                         }
                         PerformanceTimer::Instance().StopTimer(PerformanceTimer::LimiterB);
@@ -396,6 +440,7 @@ namespace DNDS::Euler
                             DNDS_assert(false);
                         }
                     });
+                sourceV *= cellRHSAlpha[iCell](0);
                 if constexpr (nVars_Fixed > 0)
                 {
                     rhs[iCell] += sourceV(Eigen::seq(Eigen::fix<0>, Eigen::fix<nVars_Fixed - 1>)) / vfv->GetCellVol(iCell);

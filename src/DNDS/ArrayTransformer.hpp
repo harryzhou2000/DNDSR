@@ -47,6 +47,11 @@ namespace DNDS
             AssertDataType();
         }
 
+        MPIInfo getMPI()
+        {
+            return mpi;
+        }
+
         void setDataType(MPI_Datatype n_dType, MPI_int n_TypeMult)
         {
             dataType = n_dType;

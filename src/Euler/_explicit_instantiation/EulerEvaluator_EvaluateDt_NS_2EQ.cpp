@@ -1,3 +1,3 @@
 #include "EulerEvaluator_EvaluateDt_insTmp.hpp"
 
-DNDS_EulerEvaluator_EvaluateDt_INS(NS_SA)
+DNDS_EulerEvaluator_EvaluateDt_INS(NS_2EQ)

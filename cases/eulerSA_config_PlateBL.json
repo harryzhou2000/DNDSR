@@ -69,7 +69,7 @@
         "smoothThreshold": 1e-3,
         "WBAP_nStd": 10.0,
         "normWBAP": false,
-        "subs2ndOrder": 0,
+        "subs2ndOrder": 1,
         "baseSettings": {
             "localOrientation": true,
             "anisotropicLengths": true
@@ -97,7 +97,7 @@
             1,
             0,
             0,
-            2.971576866040534,
+            79.8650793650794,
             1.3
         ],
         "Comment": {
@@ -126,7 +126,7 @@
         },
         "idealGasProperty": {
             "gamma": 1.4,
-            "Rgas": 0.003338277043445,
+            "Rgas": 0.116221972344982,
             "muGas": 1e-6,
             "prGas": 0.72,
             "TRef": 273.15,

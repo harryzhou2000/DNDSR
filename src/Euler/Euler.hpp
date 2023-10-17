@@ -111,6 +111,18 @@ namespace DNDS::Euler
             return std::sqrt(sqrSumAll);
         }
 
+        Eigen::Vector<real, nVars_Fixed> min()
+        {
+            Eigen::Vector<real, nVars_Fixed> minLocal, min;
+            minLocal.resize(this->RowSize());
+            minLocal.setConstant(veryLargeReal);
+            min = minLocal;
+            for (index i = 0; i < this->father->Size(); i++) //*note that only father is included
+                minLocal = minLocal.array().min(this->operator[](i).array());
+            MPI::Allreduce(&minLocal.data(), &min.data(), minLocal.size(), DNDS_MPI_REAL, MPI_MIN, this->father->mpi.comm);
+            return min;
+        }
+
         real dot(const t_self &R)
         {
             real sqrSum{0}, sqrSumAll;
@@ -191,6 +203,47 @@ namespace DNDS::Euler
         }
     };
 
+    template <int nVars_Fixed>
+    class JacobianValue
+    {
+    public:
+        enum Type
+        {
+            Diagonal = 0,
+            DiagonalBlock = 1,
+            Full = 2,
+        };
+        ArrayDOFV<nVars_Fixed> diag, diagInv;
+        ArrayEigenMatrix<nVars_Fixed, nVars_Fixed> diagBlock, diagBlockInv;
+        ArrayRECV<nVars_Fixed> offDiagBlock;
+
+        void SetDiagonal(ArrayDOFV<nVars_Fixed> &uDof)
+        {
+            type = Diagonal;
+            // todo ! allocate square blocks!
+        }
+
+        void SetDiagonalBlock(ArrayDOFV<nVars_Fixed> &uDof)
+        {
+            type = DiagonalBlock;
+            // todo ! allocate square blocks!
+        }
+
+        void SetFull(ArrayDOFV<nVars_Fixed> &uDof, Geom::tAdjPair &cell2cell)
+        {
+            type = Full;
+            // todo ! allocate with adjacency!
+        }
+
+        void InverseDiag()
+        {
+            // todo get inverse!
+        }
+
+    private:
+        Type type = Diagonal;
+    };
+
     enum EulerModel
     {
         NS = 0,
@@ -198,6 +251,8 @@ namespace DNDS::Euler
         NS_2D = 2,
         NS_3D = 3,
         NS_SA_3D = 4,
+        NS_2EQ = 5,
+        NS_2EQ_3D = 6,
     };
 
     constexpr static inline int getNVars_Fixed(const EulerModel model)
@@ -210,7 +265,29 @@ namespace DNDS::Euler
             return 6;
         else if (model == NS_2D)
             return 4;
+        else if (model == NS_2EQ || model == NS_2EQ_3D)
+            return 7;
         return Eigen::Dynamic;
+    }
+
+    constexpr static inline int getNVars(EulerModel model)
+    {
+        int nVars = getNVars_Fixed(model);
+        if (nVars < 0)
+        {
+            if (model == NS || model == NS_3D)
+                return 5;
+            else if (model == NS_SA)
+                return 6;
+            else if (model == NS_SA_3D)
+                return 6;
+            else if (model == NS_2D)
+                return 4;
+            else if (model == NS_2EQ || model == NS_2EQ_3D)
+                return 7;
+            // *** handle variable nVars
+        }
+        return nVars;
     }
 
     constexpr static inline int getDim_Fixed(const EulerModel model)
@@ -223,6 +300,8 @@ namespace DNDS::Euler
             return 3;
         else if (model == NS_2D)
             return 2;
+        else if (model == NS_2EQ || model == NS_2EQ_3D)
+            return 3;
         return Eigen::Dynamic;
     }
 
@@ -238,6 +317,10 @@ namespace DNDS::Euler
             return 3;
         else if (model == NS_SA_3D)
             return 3;
+        else if (model == NS_2EQ)
+            return 2;
+        else if (model == NS_2EQ_3D)
+            return 3;
         return Eigen::Dynamic;
     }
 
@@ -247,24 +330,6 @@ namespace DNDS::Euler
     //         model == NS ||
     //         model == NS_SA);
     // } // use +/- is ok
-
-    constexpr static inline int getNVars(EulerModel model)
-    {
-        int nVars = getNVars_Fixed(model);
-        if (nVars < 0)
-        {
-            if (model == NS || model == NS_3D)
-                return 5;
-            else if (model == NS_SA)
-                return 6;
-            else if (model == NS_SA_3D)
-                return 6;
-            else if (model == NS_2D)
-                return 4;
-            // *** handle variable nVars
-        }
-        return nVars;
-    }
 
     template <int nvars_Fixed, int mul>
     constexpr static inline int nvarsFixedMultiply()

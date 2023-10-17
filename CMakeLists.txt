@@ -321,6 +321,7 @@ euler
 euler3D
 eulerSA
 eulerSA3D
+euler2EQ
 )
 
 

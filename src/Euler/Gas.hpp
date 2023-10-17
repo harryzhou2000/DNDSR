@@ -738,4 +738,48 @@ namespace DNDS::Euler::Gas
         Flux(Seq012, dim + 1) = Flux(Seq012, Seq123) * velo + k * GradT;
         // std::cout << "FUCK A.B" << std::endl;
     }
+
+    /**
+     * TODO: vectorize
+     * newrhoEinteralNew is the desired fixed-to-positive e = p / (gamma -1)
+     */
+    template <int dim = 3, typename TU, typename TUInc>
+    real IdealGasGetCompressionRatioPressure(const TU &u, const TUInc &uInc, real newrhoEinteralNew)
+    {
+        static const auto Seq01234 = Eigen::seq(Eigen::fix<0>, Eigen::fix<dim + 1>);
+        static const auto Seq012 = Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>);
+        static const auto Seq123 = Eigen::seq(Eigen::fix<1>, Eigen::fix<dim>);
+        static const auto I4 = dim + 1;
+
+        Eigen::Vector<real, ret.SizeAtCompileTime> ret = uInc;
+
+        real c0 = 2 * u(I4) * u(0) - u(Seq123).squaredNorm() - 2 * u(0) * newrhoEinteralNew;
+        real c1 = 2 * u(I4) * ret(0) + 2 * u(0) * ret(I4) - 2 * u(Seq123).dot(ret(Seq123)) - 2 * ret(0) * newrhoEinteralNew;
+        real c2 = 2 * ret(I4) * ret(0) - ret(Seq123).squaredNorm();
+        real deltaC = sqr(c1) - 4 * c0 * c2;
+        DNDS_assert(deltaC > 0);
+        real alphaL = (-std::sqrt(deltaC) - c1) / (2 * c2);
+        real alphaR = (std::sqrt(deltaC) - c1) / (2 * c2);
+        // if (c2 > 0)
+        //     DNDS_assert(alphaL > 0);
+        // DNDS_assert(alphaR > 0);
+        // DNDS_assert(alphaL < 1);
+        // if (c2 < 0)
+        //     DNDS_assert(alphaR < 1);
+        real alpha = std::min((c2 > 0 ? alphaL : alphaR), 1.);
+        alpha = std::max(0., alpha);
+        ret *= alpha;
+
+        real decay = 1 - 1e-2;
+        for (int iter = 0; iter < 1000; iter++)
+        {
+            real ek = 0.5 * (u(Seq123) + ret(Seq123)).squaredNorm() / (u(0) + ret(0) + verySmallReal);
+            if (ret(I4) + u(I4) - ek < 0)
+                ret *= decay, alpha *= decay;
+            else
+                break;
+        }
+
+        return alpha;
+    }
 }

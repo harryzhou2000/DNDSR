@@ -492,4 +492,192 @@ namespace DNDS::Euler
         }
     }
 
+    template <EulerModel model>
+    void EulerEvaluator<model>::EvaluateURecBeta(
+        ArrayDOFV<nVars_Fixed> &u,
+        ArrayRECV<nVars_Fixed> &uRec,
+        ArrayRECV<1> &uRecBeta, index &nLim, real &betaMin)
+    {
+        DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
+        real rhoEps = smallReal * settings.refUPrim(0);
+        real pEps = smallReal * settings.refUPrim(I4);
+
+        index nLimLocal = 0;
+        real minBetaLocal = 1;
+        for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
+        {
+            auto gCell = vfv->GetCellQuad(iCell);
+            int nPoint = gCell.GetNumPoints();
+            auto c2f = mesh->cell2face[iCell];
+            for (int ic2f = 0; ic2f < c2f.size(); ic2f++)
+            {
+                auto gFace = vfv->GetFaceQuad(c2f[ic2f]);
+                nPoint += gFace.GetNumPoints();
+            }
+            /***********/
+            Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic> quadBase;
+            quadBase.resize(nPoint, vfv->GetCellAtr(iCell).NDOF - 1);
+            for (int iG = 0; iG < gCell.GetNumPoints(); iG++)
+                quadBase(iG, Eigen::all) = vfv->GetIntPointDiffBaseValue(iCell, -1, -1, iG, 0, 1);
+            nPoint = gCell.GetNumPoints();
+            for (int ic2f = 0; ic2f < c2f.size(); ic2f++)
+            {
+                auto gFace = vfv->GetFaceQuad(c2f[ic2f]);
+                for (int iG = 0; iG < gFace.GetNumPoints(); iG++)
+                    quadBase(nPoint + iG, Eigen::all) = vfv->GetIntPointDiffBaseValue(iCell, c2f[ic2f], -1, iG, 0, 1);
+                nPoint += gFace.GetNumPoints();
+            }
+            /***********/
+
+            Eigen::Matrix<real, Eigen::Dynamic, nVars_Fixed> recInc = quadBase * uRec[iCell];
+            Eigen::Vector<real, Eigen::Dynamic> rhoS = recInc(Eigen::all, 0) + u[iCell](0);
+            real rhoMin = rhoS.minCoeff();
+            real theta1 = std::min(
+                1.,
+                ((rhoS.array() - rhoEps) / (rhoS.array() - rhoMin + verySmallReal)).minCoeff());
+            // recInc *= theta1;
+            Eigen::Matrix<real, Eigen::Dynamic, nVars_Fixed> recVRhoG = recInc.rowwise() + u[iCell].transpose();
+
+            real gamma = settings.idealGasProperty.gamma;
+            Eigen::Vector<real, Eigen::Dynamic> pS =
+                (gamma - 1) *
+                (recVRhoG(Eigen::all, I4) -
+                 0.5 * (recVRhoG.rowwise()(Seq123).squaredNorm()).array() / recVRhoG(Eigen::all, 0).array());
+            real thetaP = 1.0;
+            for (int iG = 0; iG < pS.size(); iG++)
+            {
+                if (pS < pEps)
+                {
+                    real thetaThis = IdealGasGetCompressionRatioPressure<dim>(
+                        u[iCell], recInc(iG, Eigen::all).transpose(), pEps / (gamma - 1));
+                    thetaP = std::min(thetaP, thetaThis);
+                }
+            }
+
+            // uRecBeta[iCell](0) = theta1 * thetaP;
+            uRecBeta[iCell](0) = std::min(theta1, thetaP);
+            if (uRecBeta[iCell](0) < 1)
+                nLimLocal++, betaMin = std::min(uRecBeta[iCell](0), minBetaLocal);
+        }
+        MPI::Allreduce(&nLimLocal, &nLim, 1, DNDS_MPI_INDEX, MPI_SUM, u->father.getMPI().comm);
+        MPI::Allreduce(&minBetaLocal, &betaMin, 1, DNDS_MPI_REAL, MPI_MIN, u->father.getMPI().comm);
+    }
+
+    template <EulerModel model>
+    void EulerEvaluator<model>::EvaluateCellRHSAlpha(
+        ArrayDOFV<nVars_Fixed> &u,
+        ArrayRECV<nVars_Fixed> &uRec,
+        ArrayRECV<1> &uRecBeta,
+        ArrayDOFV<nVars_Fixed> &res,
+        std::vector<real> &dTau,
+        ArrayRECV<1> &cellRHSAlpha, index &nLim, real &alphaMin)
+    {
+        DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
+        real rhoEps = smallReal * settings.refUPrim(0);
+        real pEps = smallReal * settings.refUPrim(I4);
+
+        index nLimLocal = 0;
+        real alphaMinLocal = 1;
+        for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
+        {
+            real gamma = settings.idealGasProperty.gamma;
+            real alphaRho = 1;
+            TU inc = res[iCell] * dTau[iCell];
+            DNDS_assert(u[iCell](0) >= rhoEps);
+            if (inc(0) < 0)
+                alphaRho = std::min(1.0, (u[iCell](0) - rhoEps) / (-inc(0)));
+
+            // inc *= alphaRho;
+
+            TU uNew = u[iCell] + inc;
+            real pNew = (uNew(I4) - 0.5 * uNew(Seq123).squaredNorm() / uNew(0)) * (gamma - 1);
+
+            real alphaP = 1;
+            if (pNew < pEps)
+            {
+                // todo: use high order accurate
+                real alphaC = IdealGasGetCompressionRatioPressure<dim>(
+                    u[iCell], inc, pEps / (gamma - 1));
+                alphaP = std::min(alphaP, alphaC);
+            }
+            // cellRHSAlpha[iCell](0) = alphaRho * alphaP;
+            cellRHSAlpha[iCell](0) = std::min(alphaRho, alphaP);
+            if (cellRHSAlpha[iCell](0) < 1)
+                nLimLocal++, alphaMinLocal = std::min(alphaMinLocal, cellRHSAlpha[iCell](0));
+        }
+        MPI::Allreduce(&nLimLocal, &nLim, 1, DNDS_MPI_INDEX, MPI_SUM, u->father.getMPI().comm);
+        MPI::Allreduce(&alphaMinLocal, &alphaMin, 1, DNDS_MPI_REAL, MPI_MIN, u->father.getMPI().comm);
+        for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
+        {
+            if (cellRHSAlpha[iCell](0) < 1)
+                cellRHSAlpha[iCell](0) = alphaMin;
+        }
+    }
+
+    template <EulerModel model>
+    void EulerEvaluator<model>::EvaluateCellRHSAlphaExpansion(
+        ArrayDOFV<nVars_Fixed> &u,
+        ArrayRECV<nVars_Fixed> &uRec,
+        ArrayRECV<1> &uRecBeta,
+        ArrayDOFV<nVars_Fixed> &res,
+        std::vector<real> &dTau,
+        ArrayRECV<1> &cellRHSAlpha, index &nLim, real &alphaMin)
+    {
+        DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
+        real rhoEps = smallReal * settings.refUPrim(0);
+        real pEps = smallReal * settings.refUPrim(I4);
+
+        auto cellIsHalfAlpha = [&](index iCell) -> bool // iCell should be internal
+        {
+            bool ret = false;
+            if (cellRHSAlpha[iCell](0) == 1.0)
+            {
+                auto c2f = mesh->cell2face(iCell);
+                for (int ic2f = 0; ic2f < f2c.size(); ic2f++)
+                {
+                    index iCellOther = vfv->CellFaceOther(iCell, c2f[ic2f]);
+                    if (cellRHSAlpha[iCellOther](0) != 1.0)
+                        ret = true;
+                }
+            }
+            return ret;
+        };
+
+        auto cellAdjAlphaMin = [&](index iCell) -> real // iCell should be internal
+        {
+            real ret = 1;
+            auto c2f = mesh->cell2face(iCell);
+            for (int ic2f = 0; ic2f < f2c.size(); ic2f++)
+            {
+                index iCellOther = vfv->CellFaceOther(iCell, c2f[ic2f]);
+                ret = std::min(ret, cellRHSAlpha[iCellOther](0));
+            }
+            return ret;
+        };
+
+        std::vector<index> InterCells;
+
+        for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
+            if (cellIsHalfAlpha(iCell))
+                InterCells.emplace_back(iCell);
+
+        index nLimLocal = 0;
+        index nLimAdd = 0;
+        for (index iCell : InterCells)
+        {
+            real gamma = settings.idealGasProperty.gamma;
+            TU inc = res[iCell] * dTau[iCell];
+
+            TU uNew = u[iCell] + inc;
+            real pNew = (uNew(I4) - 0.5 * uNew(Seq123).squaredNorm() / uNew(0)) * (gamma - 1);
+
+            if (pNew < pEps || uNew(0) < rhoEps)
+            {
+                cellRHSAlpha[iCell](0) = cellAdjAlphaMin(iCell);
+                DNDS_assert(cellRHSAlpha[iCell](0) == alphaMin);
+            }
+        }
+        MPI::Allreduce(&nLimLocal, &nLimAdd, 1, DNDS_MPI_INDEX, MPI_SUM, u->father.getMPI().comm);
+        nLim += nLimAdd;
+    }
 }

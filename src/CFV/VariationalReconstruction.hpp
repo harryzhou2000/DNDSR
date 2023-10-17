@@ -794,6 +794,7 @@ namespace DNDS::CFV
         using TFBoundary = std::function<Eigen::Vector<real, nVarsFixed>(
             const Eigen::Vector<real, nVarsFixed> &, // UBL
             const Eigen::Vector<real, nVarsFixed> &, // UMEAN
+            index, index, // iCell, iFace
             const Geom::tPoint &,                    // Norm
             const Geom::tPoint &,                    // pPhy
             Geom::t_index fType                      // fCode
@@ -804,6 +805,7 @@ namespace DNDS::CFV
             const Eigen::Vector<real, nVarsFixed> &, // UBL
             const Eigen::Vector<real, nVarsFixed> &, // dUMEAN
             const Eigen::Vector<real, nVarsFixed> &, // UMEAN
+            index, index,                            // iCell, iFace
             const Geom::tPoint &,                    // Norm
             const Geom::tPoint &,                    // pPhy
             Geom::t_index fType                      // fCode

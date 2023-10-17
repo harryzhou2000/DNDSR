@@ -12,6 +12,7 @@
 #include <string>
 #include <type_traits>
 #include <filesystem>
+#include <functional>
 #ifdef DNDS_USE_OMP
 #include <omp.h>
 #endif
@@ -251,7 +252,7 @@ namespace DNDS
 
     /**
      * \param b should be positive
-    */
+     */
     inline constexpr real float_mod(real a, real b)
     {
         return a - std::floor(a / b) * b;
@@ -259,14 +260,14 @@ namespace DNDS
 
     ///@todo //TODO: overflow_assign_int64_to_32
 
-    inline std::string getStringForceWString(const std::wstring& v)
+    inline std::string getStringForceWString(const std::wstring &v)
     {
         std::vector<char> buf(v.size());
         std::wcstombs(buf.data(), v.data(), v.size());
         return std::string{buf.data()};
     }
 
-    inline std::string getStringForcePath(const std::filesystem::path::string_type & v)
+    inline std::string getStringForcePath(const std::filesystem::path::string_type &v)
     {
 #ifdef _WIN32
         return getStringForceWString(v);
@@ -345,6 +346,40 @@ namespace DNDS
                       "is_fixed_data_real_eigen_matrix_v bad");
     }
 }
+
+namespace DNDS
+{
+
+    
+
+}
+template <typename T>
+struct std::hash<std::vector<T>>
+{
+    std::size_t operator()(const std::vector<T> &v) const noexcept
+    {
+        std::size_t r = 0;
+        for (auto i : v)
+        {
+            r = r ^ std::hash<decltype(i)>()(i);
+        }
+        return r;
+    }
+};
+
+template <typename T, std::size_t s>
+struct std::hash<std::array<T, s>>
+{
+    std::size_t operator()(const std::array<T, s> &v) const noexcept
+    {
+        std::size_t r = 0;
+        for (auto i : v)
+        {
+            r = r ^ std::hash<decltype(i)>()(i);
+        }
+        return r;
+    }
+};
 
 /*
 

@@ -510,6 +510,26 @@ namespace DNDS
             return _data.size();
         }
 
+        std::size_t hash()
+        {
+            std::size_t hashData;
+            if constexpr (_dataLayout == CSR)
+            {
+                if (IfCompressed())
+                    hashData = std::hash<decltype(_data)>()(_data);
+                else
+                    hashData = std::hash<decltype(_dataUncompressed)>()(_dataUncompressed);
+            }
+            else
+                hashData = std::hash<decltype(_data)>()(_data);
+            std::size_t hashSize = 0;
+            if (_pRowSizes)
+                hashSize = std::hash<typename decltype(_pRowSizes)::element_type>()(*_pRowSizes);
+            if (_pRowStart)
+                hashSize = std::hash<typename decltype(_pRowStart)::element_type>()(*_pRowStart);
+            return std::hash<std::array<std::size_t, 3>>()(std::array<std::size_t, 3>{std::size_t(_size), hashSize, hashData});
+        }
+
         friend std::ostream &operator<<(std::ostream &o, const Array<T, _row_size, _row_max, _align> &A)
         {
             for (index i = 0; i < A._size; i++)
@@ -560,7 +580,7 @@ namespace DNDS
             serializer->ReadUint8Array("data", (uint8_t *)_data.data(), bufferSize);
         }
 
-        void WriteSerializer(SerializerBase *serializer, const std::string& name)
+        void WriteSerializer(SerializerBase *serializer, const std::string &name)
         {
             auto cwd = serializer->GetCurrentPath();
             serializer->CreatePath(name);
@@ -617,7 +637,7 @@ namespace DNDS
             }
             // doing data
             this->__ReadSerializerData(serializer);
-            //TODO: check data validity
+            // TODO: check data validity
 
             serializer->GoToPath(cwd);
         }

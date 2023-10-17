@@ -11,6 +11,7 @@
 #include "DNDS/JsonUtil.hpp"
 
 #include "Euler.hpp"
+#include "RANS_ke.hpp"
 #include "DNDS/SerializerBase.hpp"
 
 // #define DNDS_FV_EULEREVALUATOR_SOURCE_TERM_ZERO
@@ -24,7 +25,7 @@
 namespace DNDS::Euler
 {
 
-    template <EulerModel model>
+    template <EulerModel model = NS>
     class EulerEvaluator
     {
     public:
@@ -59,7 +60,7 @@ namespace DNDS::Euler
     private:
     public:
         ssp<Geom::UnstructuredMesh> mesh;
-        ssp<CFV::VariationalReconstruction<gDim>> vfv; //! gDim -> 3 for intellisense
+        ssp<CFV::VariationalReconstruction<3>> vfv; //! gDim -> 3 for intellisense //!tmptmp
         int kAv = 0;
 
         // buffer for fdtau
@@ -162,6 +163,9 @@ namespace DNDS::Euler
             bool ignoreSourceTerm = false;
             bool useScalarJacobian = false;
 
+            Eigen::Vector<real, -1> refU;
+            Eigen::Vector<real, -1> refUPrim;
+
             /***************************************************************************************************/
             /***************************************************************************************************/
 
@@ -248,6 +252,16 @@ namespace DNDS::Euler
                 if (read)
                     DNDS_assert(jsonObj["idealGasProperty"].is_object());
                 idealGasProperty.ReadWriteJSON(jsonObj["idealGasProperty"], read);
+
+                if (read)
+                {
+                    DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
+                    refU = farFieldStaticValue;
+                    refUPrim = refU;
+                    Gas::IdealGasThermalConservative2Primitive(refU, refUPrim, gamma);
+                    refU(Seq123).setConstant(refU(Seq123).norm());
+                    refUPrim(Seq123).setConstant(refUPrim(Seq123).norm());
+                }
             }
 
         } settings;
@@ -277,6 +291,7 @@ namespace DNDS::Euler
         void EvaluateDt(
             std::vector<real> &dt,
             ArrayDOFV<nVars_Fixed> &u,
+            ArrayRECV<nVars_Fixed> &uRec,
             real CFL, real &dtMinall, real MaxDt = 1,
             bool UseLocaldt = false);
         /**
@@ -289,6 +304,9 @@ namespace DNDS::Euler
             ArrayDOFV<nVars_Fixed> &JSource,
             ArrayDOFV<nVars_Fixed> &u,
             ArrayRECV<nVars_Fixed> &uRec,
+            ArrayDOFV<1> &uRecBeta,
+            ArrayRECV<1> &cellRHSAlpha,
+            bool onlyOnHalfAlpha,
             real t);
 
         void LUSGSMatrixInit(
@@ -370,6 +388,34 @@ namespace DNDS::Euler
             Eigen::Vector<real, -1> &res,
             ArrayDOFV<nVars_Fixed> &rhs,
             index P = 1, bool volWise = false);
+
+        void EvaluateURecBeta(
+            ArrayDOFV<nVars_Fixed> &u,
+            ArrayRECV<nVars_Fixed> &uRec,
+            ArrayRECV<1> &uRecBeta, index &nLim, real &betaMin);
+
+        /**
+         * @param res is linear problem residual
+         */
+        void EvaluateCellRHSAlpha(
+            ArrayDOFV<nVars_Fixed> &u,
+            ArrayRECV<nVars_Fixed> &uRec,
+            ArrayRECV<1> &uRecBeta,
+            ArrayDOFV<nVars_Fixed> &res,
+            std::vector<real> &dTau,
+            ArrayRECV<1> &cellRHSAlpha, index &nLim, real &alphaMin);
+
+        /**
+         * @param res is linear problem residual which is fixed previously
+         * @param cellRHSAlpha is limiting factor evaluated previously
+         */
+        void EvaluateCellRHSAlphaExpansion(
+            ArrayDOFV<nVars_Fixed> &u,
+            ArrayRECV<nVars_Fixed> &uRec,
+            ArrayRECV<1> &uRecBeta,
+            ArrayDOFV<nVars_Fixed> &res,
+            std::vector<real> &dTau,
+            ArrayRECV<1> &cellRHSAlpha, index &nLim, real &alphaMin);
 
         /******************************************************/
 
@@ -488,6 +534,11 @@ namespace DNDS::Euler
                 fnu1 = Chi3 / (Chi3 + std::pow(cnu1, 3));
                 muf *= std::max((1 + Chi * fnu1), 1.0);
             }
+            if constexpr (model == NS_2EQ || model == NS_2EQ_3D)
+            {
+                real mut = RANS::GetMut_RealizableKe<dim>(UMeanXy, DiffUxy, muf);
+                muf = muf + mut;
+            }
 
             real k = settings.idealGasProperty.CpGas * (muf - mufPhy) / 0.9 +
                      settings.idealGasProperty.CpGas * mufPhy / settings.idealGasProperty.prGas;
@@ -543,6 +594,10 @@ namespace DNDS::Euler
 #endif
                 VisFlux(Seq012, {I4 + 1}) = diffNu * (mufPhy + UMeanXy(I4 + 1) * muRef * fn) / sigma / muRef;
             }
+            if constexpr (model == NS_2EQ || model == NS_2EQ_3D)
+            {
+                RANS::GetVisFlux_RealizableKe<dim>(UMeanXy, DiffUxy, muf - mufPhy, mufPhy, VisFlux);
+            }
 #endif
 
             TU finc;
@@ -564,6 +619,11 @@ namespace DNDS::Euler
                 {
                     FLfix(I4 + 1) = wLMean(1) * ULMean(I4 + 1);
                     FRfix(I4 + 1) = wRMean(1) * URMean(I4 + 1); // F_5 = rhoNut * un
+                }
+                if constexpr (model == NS_2EQ || model == NS_2EQ_3D)
+                {
+                    FLfix({I4 + 1, I4 + 2}) = wLMean(1) * ULMean({I4 + 1, I4 + 2});
+                    FRfix({I4 + 1, I4 + 2}) = wRMean(1) * URMean({I4 + 1, I4 + 2}); // F_5 = rhoNut * un
                 }
                 // FLfix *= 0;
                 // FRfix *= 0;
@@ -643,11 +703,19 @@ namespace DNDS::Euler
             {
                 // real lambdaFaceCC = sqrt(std::abs(asqrMean)) + std::abs(UL(1) / UL(0) + UR(1) / UR(0)) * 0.5;
                 real lambdaFaceCC = lam123; //! using velo instead of velo + a
-                finc(I4 + 1) = ((UL(1) / UL(0) * UL(I4 + 1) + UR(1) / UR(0) * UR(I4 + 1)) -
-                                (UR(I4 + 1) - UL(I4 + 1)) * lambdaFaceCC) *
-                               0.5;
+                finc(I4 + 1) =
+                    ((UL(1) / UL(0) * UL(I4 + 1) + UR(1) / UR(0) * UR(I4 + 1)) -
+                     (UR(I4 + 1) - UL(I4 + 1)) * lambdaFaceCC) *
+                    0.5;
             }
-
+            if constexpr (model == NS_2EQ || model == NS_2EQ_3D)
+            {
+                real lambdaFaceCC = lam123; //! using velo instead of velo + a
+                finc({I4 + 1, I4 + 2}) =
+                    ((UL(1) / UL(0) * UL({I4 + 1, I4 + 2}) + UR(1) / UR(0) * UR({I4 + 1, I4 + 2})) -
+                     (UR({I4 + 1, I4 + 2}) - UL({I4 + 1, I4 + 2})) * lambdaFaceCC) *
+                    0.5;
+            }
             finc(Seq123) = normBase * finc(Seq123);
 #ifndef DNDS_FV_EULEREVALUATOR_IGNORE_VISCOUS_TERM
             finc -= VisFlux.transpose() * unitNorm * 1;
@@ -800,6 +868,29 @@ namespace DNDS::Euler
                 //     ret(Eigen::seq(5, Eigen::last)).setZero();
                 return ret;
             }
+            else if constexpr (model == NS_2EQ || model == NS_2EQ_3D)
+            {
+                TU ret;
+                ret.resizeLike(UMeanXy);
+                ret.setZero();
+                ret(Seq123) = settings.constMassForce * UMeanXy(0);
+
+                real pMean, asqrMean, Hmean;
+                real gamma = settings.idealGasProperty.gamma;
+                Gas::IdealGasThermal(UMeanXy(I4), UMeanXy(0), (UMeanXy(Seq123) / UMeanXy(0)).squaredNorm(),
+                                     gamma, pMean, asqrMean, Hmean);
+                // ! refvalue:
+                real muRef = settings.idealGasProperty.muGas;
+                real T = pMean / ((gamma - 1) / gamma * settings.idealGasProperty.CpGas * UMeanXy(0));
+
+                real mufPhy, muf;
+                mufPhy = muf = settings.idealGasProperty.muGas *
+                               std::pow(T / settings.idealGasProperty.TRef, 1.5) *
+                               (settings.idealGasProperty.TRef + settings.idealGasProperty.CSutherland) /
+                               (T + settings.idealGasProperty.CSutherland);
+                RANS::GetSource_RealizableKe<dim>(UMeanXy, DiffUxy, mufPhy, ret);
+                return ret;
+            }
             else
             {
                 DNDS_assert(false);
@@ -932,6 +1023,28 @@ namespace DNDS::Euler
                 //     ret(Eigen::seq(5, Eigen::last)).setZero();
                 return ret;
             }
+            else if constexpr (model == NS_2EQ || model == NS_2EQ_3D)
+            {
+                TU ret;
+                ret.resizeLike(UMeanXy);
+                ret.setZero();
+
+                real pMean, asqrMean, Hmean;
+                real gamma = settings.idealGasProperty.gamma;
+                Gas::IdealGasThermal(UMeanXy(I4), UMeanXy(0), (UMeanXy(Seq123) / UMeanXy(0)).squaredNorm(),
+                                     gamma, pMean, asqrMean, Hmean);
+                // ! refvalue:
+                real muRef = settings.idealGasProperty.muGas;
+                real T = pMean / ((gamma - 1) / gamma * settings.idealGasProperty.CpGas * UMeanXy(0));
+
+                real mufPhy, muf;
+                mufPhy = muf = settings.idealGasProperty.muGas *
+                               std::pow(T / settings.idealGasProperty.TRef, 1.5) *
+                               (settings.idealGasProperty.TRef + settings.idealGasProperty.CSutherland) /
+                               (T + settings.idealGasProperty.CSutherland);
+                RANS::GetSourceJacobianDiag_RealizableKe<dim>(UMeanXy, DiffUxy, mufPhy, ret);
+                return ret;
+            }
             else
             {
                 DNDS_assert(false);
@@ -998,6 +1111,19 @@ namespace DNDS::Euler
                 subFdU(5, 2) = n(1) * U(5) / U(0);
                 subFdU(5, 3) = n(2) * U(5) / U(0);
             }
+            if constexpr (model == NS_2EQ || model == NS_2EQ_3D)
+            {
+                subFdU(5, 5) = un;
+                subFdU(5, 0) = -un * U(5) / U(0);
+                subFdU(5, 1) = n(0) * U(5) / U(0);
+                subFdU(5, 2) = n(1) * U(5) / U(0);
+                subFdU(5, 3) = n(2) * U(5) / U(0);
+                subFdU(6, 6) = un;
+                subFdU(6, 0) = -un * U(6) / U(0);
+                subFdU(6, 1) = n(0) * U(6) / U(0);
+                subFdU(6, 2) = n(1) * U(6) / U(0);
+                subFdU(6, 3) = n(2) * U(6) / U(0);
+            }
             return subFdU;
         }
 
@@ -1032,6 +1158,13 @@ namespace DNDS::Euler
                 dF(I4 + 1) = dU(I4 + 1) * n.dot(velo) + U(I4 + 1) * n.dot(dVelo);
                 dF(I4 + 1) -= dU(I4 + 1) * lambdaMain;
             }
+            if constexpr (model == NS_2EQ || model == NS_2EQ_3D)
+            {
+                dF(I4 + 1) = dU(I4 + 1) * n.dot(velo) + U(I4 + 1) * n.dot(dVelo);
+                dF(I4 + 1) -= dU(I4 + 1) * lambdaMain;
+                dF(I4 + 2) = dU(I4 + 2) * n.dot(velo) + U(I4 + 2) * n.dot(dVelo);
+                dF(I4 + 2) -= dU(I4 + 2) * lambdaMain;
+            }
             return dF;
         }
 
@@ -1060,12 +1193,19 @@ namespace DNDS::Euler
             {
                 dF(I4 + 1) = dU(I4 + 1) * n.dot(velo) + U(I4 + 1) * n.dot(dVelo);
             }
+            if constexpr (model == NS_2EQ || model == NS_2EQ_3D)
+            {
+                dF(I4 + 1) = dU(I4 + 1) * n.dot(velo) + U(I4 + 1) * n.dot(dVelo);
+                dF(I4 + 2) = dU(I4 + 2) * n.dot(velo) + U(I4 + 2) * n.dot(dVelo);
+            }
             return dF;
         }
 
         TU
         generateBoundaryValue(
             TU &ULxy, //! warning, possible that UL is also modified
+            const TU &ULMeanXy,
+            index iCell, index iFace,
             const TVec &uNorm,
             const TMat &normBase,
             const TVec &pPhysics,
@@ -1127,7 +1267,7 @@ namespace DNDS::Euler
                     {
                         URxy = settings.farFieldStaticValue;
                     }
-                    // URxy = settings.farFieldStaticValue; //!override
+                    URxy = settings.farFieldStaticValue; //! override
                 }
                 else if (btype == Geom::BC_ID_DEFAULT_SPECIAL_DMR_FAR)
                 {
@@ -1381,6 +1521,35 @@ namespace DNDS::Euler
                         ULxy(I4 + 1) = URxy(I4 + 1) = 0; //! modifing UL
 #endif
                 }
+                if (model == NS_2EQ || model == NS_2EQ_3D)
+                {
+                    URxy({I4 + 1, I4 + 2}) *= -1;
+#ifdef USE_FIX_ZERO_SA_NUT_AT_WALL
+                    if (fixUL)
+                        ULxy({I4 + 1, I4 + 2}).setZero(), URxy({I4 + 1, I4 + 2}).setZero(); //! modifing UL
+#endif
+                    TVec v = (vfv->GetFaceQuadraturePPhysFromCell(iFace, iCell, -1, -1) - vfv->GetCellBary(iCell))(Seq012);
+                    real d1 = std::abs(v.dot(uNorm)); //! warning! first wall could be bad
+                    real k1 = ULMeanXy(I4 + 1) / ULMeanXy(0);
+
+                    real pMean, asqrMean, Hmean;
+                    real gamma = settings.idealGasProperty.gamma;
+                    Gas::IdealGasThermal(ULMeanXy(I4), ULMeanXy(0), (ULMeanXy(Seq123) / ULMeanXy(0)).squaredNorm(),
+                                         gamma, pMean, asqrMean, Hmean);
+                    // ! refvalue:
+                    real muRef = settings.idealGasProperty.muGas;
+                    real T = pMean / ((gamma - 1) / gamma * settings.idealGasProperty.CpGas * ULMeanXy(0));
+                    real mufPhy1;
+                    mufPhy1 = settings.idealGasProperty.muGas *
+                              std::pow(T / settings.idealGasProperty.TRef, 1.5) *
+                              (settings.idealGasProperty.TRef + settings.idealGasProperty.CSutherland) /
+                              (T + settings.idealGasProperty.CSutherland);
+                    real epsWall = 2 * mufPhy1 / ULMeanXy(0) * k1 / sqr(d1);
+                    URxy(I4 + 2) = 2 * epsWall * ULxy(0) - ULxy(I4 + 2);
+                    if (fixUL)
+                        ULxy(I4 + 2) = URxy(I4 + 2) = epsWall * ULxy(0);
+                    // std::cout << "d1" <<d1 << std::endl;
+                }
             }
             else
             {
@@ -1470,6 +1639,13 @@ namespace DNDS::Euler
                 if (ret(I4 + 1) < 0)
                     ret(I4 + 1) = umean(I4 + 1), compressed = true;
 #endif
+            if constexpr (model == NS_2EQ || model == NS_2EQ_3D)
+            {
+                if (ret(I4 + 1) < 0)
+                    ret(I4 + 1) = umean(I4 + 1), compressed = true;
+                if (ret(I4 + 2) < 0)
+                    ret(I4 + 2) = umean(I4 + 2), compressed = true;
+            }
 
             return ret;
         }
@@ -1557,6 +1733,34 @@ namespace DNDS::Euler
                     real muRef = settings.idealGasProperty.muGas;
                     newu5 = std::max(1e-6, newu5);
                     ret(I4 + 1) = newu5 - u(I4 + 1);
+                }
+            }
+            if constexpr (model == NS_2EQ || model == NS_2EQ_3D)
+            {
+                if (u(I4 + 1) + ret(I4 + 1) < 0)
+                {
+                    // std::cout << "Fixing KE inc " << std::endl;
+
+                    DNDS_assert(u(I4 + 1) >= 0); //! might be bad using gmres, add this to gmres inc!
+                    real declineV = ret(I4 + 1) / (u(I4 + 1) + 1e-6);
+                    real newu5 = u(I4 + 1) * std::exp(declineV);
+                    // ! refvalue:
+                    real muRef = settings.idealGasProperty.muGas;
+                    newu5 = std::max(1e-6, newu5);
+                    ret(I4 + 1) = newu5 - u(I4 + 1);
+                }
+
+                if (u(I4 + 2) + ret(I4 + 2) < 0)
+                {
+                    // std::cout << "Fixing KE inc " << std::endl;
+
+                    DNDS_assert(u(I4 + 2) >= 0); //! might be bad using gmres, add this to gmres inc!
+                    real declineV = ret(I4 + 2) / (u(I4 + 2) + 1e-6);
+                    real newu5 = u(I4 + 2) * std::exp(declineV);
+                    // ! refvalue:
+                    real muRef = settings.idealGasProperty.muGas;
+                    newu5 = std::max(1e-6, newu5);
+                    ret(I4 + 2) = newu5 - u(I4 + 2);
                 }
             }
 

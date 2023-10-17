@@ -1,7 +1,3 @@
-#include "../EulerSolver.hxx"
+#include "EulerSolver_insTmp.hxx"
 
-namespace DNDS::Euler
-{
-    template
-    void EulerSolver<NS_2D>::RunImplicitEuler();
-}
+DNDS_EULERSOLVER_INS(NS_2D)

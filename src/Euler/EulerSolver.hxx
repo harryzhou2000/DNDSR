@@ -14,6 +14,12 @@ namespace DNDS::Euler
 
         std::shared_ptr<ODE::ImplicitDualTimeStep<decltype(u)>> ode;
 
+        auto hashCoord = mesh->coords.hash();
+        if (mpi.rank == 0)
+        {
+            log() << "Mesh coord hash is: [" << std::hex << hashCoord << std::dec << "]" << std::endl;
+        }
+
         if (config.timeMarchControl.steadyQuit)
         {
             if (mpi.rank == 0)
@@ -167,7 +173,8 @@ namespace DNDS::Euler
             real recIncBase = 0;
             double tstartA = MPI_Wtime();
             typename TVFV::element_type::TFBoundary<nVars_Fixed>
-                FBoundary = [&](const TU &UL, const TU &UMean, const Geom::tPoint &normOut, const Geom::tPoint &pPhy, const Geom::t_index bType) -> TU
+                FBoundary = [&](const TU &UL, const TU &UMean, index iCell, index iFace,
+                                const Geom::tPoint &normOut, const Geom::tPoint &pPhy, const Geom::t_index bType) -> TU
             {
                 TVec normOutV = normOut(Seq012);
                 Eigen::Matrix<real, dim, dim> normBase = Geom::NormBuildLocalBaseV<dim>(normOutV);
@@ -176,10 +183,11 @@ namespace DNDS::Euler
                     UMean,
                     UL - UMean,
                     compressed);
-                return eval.generateBoundaryValue(ULfixed, normOutV, normBase, pPhy(Seq012), tSimu + ct * curDtImplicit, bType, true);
+                return eval.generateBoundaryValue(ULfixed, UMean, iCell, iFace, normOutV, normBase, pPhy(Seq012), tSimu + ct * curDtImplicit, bType, true);
             };
             typename TVFV::element_type::TFBoundaryDiff<nVars_Fixed>
-                FBoundaryDiff = [&](const TU &UL, const TU &dU, const TU &UMean, const Geom::tPoint &normOut, const Geom::tPoint &pPhy, const Geom::t_index bType) -> TU
+                FBoundaryDiff = [&](const TU &UL, const TU &dU, const TU &UMean, index iCell, index iFace,
+                                    const Geom::tPoint &normOut, const Geom::tPoint &pPhy, const Geom::t_index bType) -> TU
             {
                 TVec normOutV = normOut(Seq012);
                 Eigen::Matrix<real, dim, dim> normBase = Geom::NormBuildLocalBaseV<dim>(normOutV);
@@ -192,8 +200,8 @@ namespace DNDS::Euler
                     UMean,
                     UL - UMean + dU,
                     compressed);
-                return eval.generateBoundaryValue(ULfixedPlus, normOutV, normBase, pPhy(Seq012), tSimu + ct * curDtImplicit, bType, true) -
-                       eval.generateBoundaryValue(ULfixed, normOutV, normBase, pPhy(Seq012), tSimu + ct * curDtImplicit, bType, true);
+                return eval.generateBoundaryValue(ULfixedPlus, UMean, iCell, iFace, normOutV, normBase, pPhy(Seq012), tSimu + ct * curDtImplicit, bType, true) -
+                       eval.generateBoundaryValue(ULfixed, UMean, iCell, iFace, normOutV, normBase, pPhy(Seq012), tSimu + ct * curDtImplicit, bType, true);
             };
             if (config.implicitReconstructionControl.storeRecInc)
                 uRecOld = uRecC;
@@ -410,10 +418,11 @@ namespace DNDS::Euler
             InsertCheck(mpi, " Lambda RHS: StartEval");
             double tstartE = MPI_Wtime();
             eval.setPassiveDiscardSource(iter <= 0);
+
             if (config.limiterControl.useLimiter)
-                eval.EvaluateRHS(crhs, JSourceC, cx, uRecNew, tSimu + ct * curDtImplicit);
+                eval.EvaluateRHS(crhs, JSourceC, cx, uRecNew, betaPP, alphaPP, false, tSimu + ct * curDtImplicit);
             else
-                eval.EvaluateRHS(crhs, JSourceC, cx, uRecC, tSimu + ct * curDtImplicit);
+                eval.EvaluateRHS(crhs, JSourceC, cx, uRecC, betaPP, alphaPP, false, tSimu + ct * curDtImplicit);
             if (getNVars(model) > (I4 + 1) && iter <= config.others.nFreezePassiveInner)
             {
                 for (int i = 0; i < crhs.Size(); i++)
@@ -433,8 +442,8 @@ namespace DNDS::Euler
             cx.trans.waitPersistentPull();
             // uRec.trans.startPersistentPull();
             // uRec.trans.waitPersistentPull();
-
-            eval.EvaluateDt(dTau, cx, CFLNow, curDtMin, 1e100, config.implicitCFLControl.useLocalDt);
+            auto &uRecC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? uRec1 : uRec;
+            eval.EvaluateDt(dTau, cx, uRecC, CFLNow, curDtMin, 1e100, config.implicitCFLControl.useLocalDt);
             for (auto &i : dTau)
                 i /= alphaDiag;
         };
@@ -454,7 +463,8 @@ namespace DNDS::Euler
             auto &uRecIncC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? uRecInc1 : uRecInc;
 
             typename TVFV::element_type::TFBoundary<nVars_Fixed>
-                FBoundary = [&](const TU &UL, const TU &UMean, const Geom::tPoint &normOut, const Geom::tPoint &pPhy, const Geom::t_index bType) -> TU
+                FBoundary = [&](const TU &UL, const TU &UMean, index iCell, index iFace,
+                                const Geom::tPoint &normOut, const Geom::tPoint &pPhy, const Geom::t_index bType) -> TU
             {
                 TU UR = UL;
                 UR.setZero();
@@ -614,9 +624,9 @@ namespace DNDS::Euler
             cxInc.setConstant(0.0);
             auto &JDC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? JD1 : JD;
             auto &JSourceC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? JSource1 : JSource;
-
+            auto &uRecC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? uRec1 : uRec;
             // TODO: use "update spectral radius" procedure? or force update in fsolve
-            eval.EvaluateDt(dTau, cx1, CFLNow, curDtMin, 1e100, config.implicitCFLControl.useLocalDt);
+            eval.EvaluateDt(dTau, cx1, uRecC, CFLNow, curDtMin, 1e100, config.implicitCFLControl.useLocalDt);
             for (auto &v : dTau)
                 v *= Coefs[2];
             eval.LUSGSMatrixInit(JD1, JSource1,
@@ -624,7 +634,7 @@ namespace DNDS::Euler
                                  cx1, uRec,
                                  0,
                                  tSimu);
-            eval.EvaluateDt(dTau, cx, CFLNow, curDtMin, 1e100, config.implicitCFLControl.useLocalDt);
+            eval.EvaluateDt(dTau, cx, uRecC, CFLNow, curDtMin, 1e100, config.implicitCFLControl.useLocalDt);
             for (auto &v : dTau)
                 v *= Coefs[3] * veryLargeReal;
             eval.LUSGSMatrixInit(JD, JSource,

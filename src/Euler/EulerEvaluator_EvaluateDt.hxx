@@ -98,7 +98,7 @@ namespace DNDS::Euler
         TrianglesFull->Resize(0, 3, 3);
         double minDist = veryLargeReal;
         this->dWall.resize(mesh->NumCellProc());
-        
+
         if (!triangles.empty())
         {
             // std::cout << "tree building" << std::endl;
@@ -106,7 +106,7 @@ namespace DNDS::Euler
 
             // std::cout << "tree built" << std::endl;
             // search
-            
+
             for (index iCell = 0; iCell < mesh->NumCellProc(); iCell++)
             {
                 // std::cout << "iCell " << iCell << std::endl;
@@ -148,6 +148,7 @@ namespace DNDS::Euler
     void EulerEvaluator<model>::EvaluateDt(
         std::vector<real> &dt,
         ArrayDOFV<nVars_Fixed> &u,
+        ArrayRECV<nVars_Fixed> &uRec,
         real CFL, real &dtMinall, real MaxDt,
         bool UseLocaldt)
     {
@@ -182,6 +183,33 @@ namespace DNDS::Euler
                                      settings.idealGasProperty.gamma,
                                      pR, asqrR, HR);
             }
+            TDiffU GradULxy, GradURxy;
+            GradULxy.resize(Eigen::NoChange, nVars);
+            GradURxy.resize(Eigen::NoChange, nVars);
+            GradULxy.setZero(), GradURxy.setZero();
+            if constexpr (gDim == 2)
+                GradULxy({0, 1}, Eigen::all) =
+                    vfv->GetIntPointDiffBaseValue(f2c[0], iFace, 0, -1, std::array<int, 2>{1, 2}, 3) *
+                    uRec[f2c[0]]; // 2d here
+            else
+                GradULxy({0, 1, 2}, Eigen::all) =
+                    vfv->GetIntPointDiffBaseValue(f2c[0], iFace, 0, -1, std::array<int, 3>{1, 2, 3}, 4) *
+                    uRec[f2c[0]]; // 3d here
+            this->DiffUFromCell2Face(GradULxy, iFace, f2c[0], 0);
+            GradURxy = GradULxy;
+            if (f2c[1] != UnInitIndex)
+            {
+                if constexpr (gDim == 2)
+                    GradURxy({0, 1}, Eigen::all) =
+                        vfv->GetIntPointDiffBaseValue(f2c[1], iFace, 1, -1, std::array<int, 2>{1, 2}, 3) *
+                        uRec[f2c[1]]; // 2d here
+                else
+                    GradURxy({0, 1, 2}, Eigen::all) =
+                        vfv->GetIntPointDiffBaseValue(f2c[1], iFace, 1, -1, std::array<int, 3>{1, 2, 3}, 4) *
+                        uRec[f2c[1]]; // 3d here
+                this->DiffUFromCell2Face(GradURxy, iFace, f2c[1], 1);
+            }
+            TDiffU GradUMeanXY = (GradURxy + GradULxy) / 2;
 
             DNDS_assert(uMean(0) > 0);
             TVec veloMean = (uMean(Seq123).array() / uMean(0)).matrix();
@@ -232,6 +260,11 @@ namespace DNDS::Euler
                 real Chi3 = std::pow(Chi, 3);
                 real fnu1 = Chi3 / (Chi3 + std::pow(cnu1, 3));
                 muf *= std::max((1 + Chi * fnu1), 1.0);
+            }
+            if constexpr (model == NS_2EQ || model == NS_2EQ_3D)
+            {
+                real mut = RANS::GetMut_RealizableKe<dim>(uMean, GradUMeanXY, muf);
+                muf = muf + mut;
             }
             real lamVis = muf / uMean(0) *
                           std::max(4. / 3., gamma / settings.idealGasProperty.prGas);

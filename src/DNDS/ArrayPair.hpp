@@ -84,6 +84,18 @@ namespace DNDS
             father->CopyData(*R.father);
         }
 
+        std::size_t hash()
+        {
+            auto fatherHash = father->hash();
+            auto sonHash = son->hash();
+            index localHash = std::hash<std::array<std::size_t, 2>>()({fatherHash, sonHash});
+            MPIInfo mpi = father->getMPI();
+            std::vector<index> hashes;
+            hashes.resize(mpi.size);
+            MPI::Allgather(&localHash, 1, DNDS_MPI_INDEX, hashes.data(), 1, DNDS_MPI_INDEX, mpi.comm);
+            return std::hash<decltype(hashes)>()(hashes);
+        }
+
         void WriteSerialize(SerializerBase *serializer, const std::string &name)
         {
             DNDS_assert_info(trans.pLGlobalMapping && trans.pLGhostMapping, "pair's trans not having ghost info");

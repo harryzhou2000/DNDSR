@@ -3,6 +3,7 @@
         "dtImplicit": 1e100,
         "nTimeStep": 1,
         "steadyQuit": true,
+        "useRestart": true,
         "odeCode": 0,
         "tEnd": 3e+200
     },
@@ -20,6 +21,10 @@
         "nDataOut": 10,
         "nDataOutCInternal": 200,
         "nDataOutInternal": 1000000000,
+        "nRestartOut": 100,
+        "nRestartOutC": 10,
+        "nRestartOutCInternal": 200,
+        "nRestartOutInternal": 1000000000,
         "tDataOut": 3e+200
     },
     "implicitCFLControl": {
@@ -36,6 +41,7 @@
         "meshFile": "../data/mesh/NACA0012_H2.cgns",
         "outPltName": "../data/out/NACA0012_H2",
         "outLogName": "../data/out/NACA0012_H2",
+        "outRestartName": "../data/out/NACA0012_H2",
         "outPltMode": 0,
         "readMeshMode": 0,
         "outPltTecplotFormat": true,
@@ -52,7 +58,7 @@
         "nGmresIter": 10,
         "recThreshold": 1e-05,
         "nRecConsolCheck": 1,
-        "storeRecInc": false,
+        "storeRecInc": true,
         "dampRecIncDTau": false
     },
     "limiterControl": {
@@ -63,22 +69,22 @@
         "nPartialLimiterStartLocal": 1000000
     },
     "vfvSettings": {
-        "maxOrder": 3,
-        "intOrder": 3,
+        "maxOrder": 1,
+        "intOrder": 1,
         "cacheDiffBase": true,
         "jacobiRelax": 1.0,
         "SORInstead": true,
         "smoothThreshold": 1e-3,
         "WBAP_nStd": 10.0,
         "normWBAP": false,
-        "subs2ndOrder": 0,
+        "subs2ndOrder": 1,
         "baseSettings": {
             "localOrientation": true,
-            "anisotropicLengths": true
+            "anisotropicLengths": false
         },
         "functionalSettings": {
             // "scaleType": "MeanAACBB",
-            // "dirWeightScheme": "HQM_OPT",
+            "dirWeightScheme": "HQM_OPT",
             // "dirWeightScheme": "ManualDirWeight",
             // "manualDirWeights": [
             //     1.0,
@@ -86,15 +92,15 @@
             //     0,
             //     0
             // ],
-            // "geomWeightScheme": "HQM_SD",
-            // // "geomWeightPower": 0.5,
-            "geomWeightScheme": "SD_Power",
-            "geomWeightPower1": -1,
+            "geomWeightScheme": "HQM_SD",
+            "geomWeightPower": -0.5,
+            // "geomWeightScheme": "SD_Power",
+            // "geomWeightPower1": -0.5,
             // "geomWeightPower2": 0.5,
-            "useAnisotropicFunctional": true,
-            // "anisotropicType": "InertiaCoordBB",
-            "inertiaWeightPower": 0,
-            "scaleMultiplier": 3.464101615137754,
+            // "useAnisotropicFunctional": true,
+            // // "anisotropicType": "InertiaCoordBB",
+            // "inertiaWeightPower": 0,
+            // "scaleMultiplier": 1,
             "_tail": 0
         }
     },
@@ -157,5 +163,11 @@
             "TRef": 273.15,
             "CSutherland": 110.4
         }
+    },
+    "restartState": {
+        "iStep": 1,
+        "iStepInternal": 15000,
+        "odeCodePrev": -1,
+        "lastRestartFile": "../data/out/NACA0012_H2__C_p16_restart_test1.dir"
     }
 }

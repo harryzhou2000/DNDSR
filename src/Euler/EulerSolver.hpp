@@ -50,6 +50,7 @@ namespace DNDS::Euler
         ArrayDOFV<nVars_Fixed> u, uInc, uIncRHS, uTemp, rhsTemp;
         ArrayRECV<nVars_Fixed> uRec, uRecNew, uRecNew1, uRecOld, uRec1, uRecInc, uRecInc1;
         ArrayDOFV<nVars_Fixed> JD, JD1, JSource, JSource1;
+        ArrayDOFV<1> alphaPP, betaPP;
 
         int nOUTS = {-1};
         int nOUTSPoint{-1};
@@ -524,6 +525,10 @@ namespace DNDS::Euler
             vfv->BuildURec(uRecNew1, nVars);
             vfv->BuildURec(uRecOld, nVars);
             vfv->BuildScalar(ifUseLimiter);
+            vfv->BuildURec(betaPP, 1);
+            vfv->BuildURec(alphaPP, 1);
+            betaPP.setConstant(1.0);
+            alphaPP.setConstant(1.0);
             if (config.implicitReconstructionControl.storeRecInc)
             {
                 vfv->BuildURec(uRecInc, nVars);
@@ -645,8 +650,7 @@ namespace DNDS::Euler
             PrintConfig();
         }
 
-        
-        template <typename tODE, typename tEval>
+                template <typename tODE, typename tEval>
         void PrintData(const std::string &fname, tODE &ode, tEval &eval)
         {
             DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
