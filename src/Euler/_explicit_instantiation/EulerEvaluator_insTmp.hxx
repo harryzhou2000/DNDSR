@@ -61,21 +61,19 @@
         template void EulerEvaluator<model>::EvaluateURecBeta(                                 \
             ArrayDOFV<nVars_Fixed> &u,                                                         \
             ArrayRECV<nVars_Fixed> &uRec,                                                      \
-            ArrayRECV<1> &uRecBeta, index &nLim, real &betaMin);                               \
+            ArrayDOFV<1> &uRecBeta, index &nLim, real &betaMin);                               \
                                                                                                \
         template void EulerEvaluator<model>::EvaluateCellRHSAlpha(                             \
             ArrayDOFV<nVars_Fixed> &u,                                                         \
             ArrayRECV<nVars_Fixed> &uRec,                                                      \
-            ArrayRECV<1> &uRecBeta,                                                            \
+            ArrayDOFV<1> &uRecBeta,                                                            \
             ArrayDOFV<nVars_Fixed> &rhs,                                                       \
-            std::vector<real> &dTau,                                                           \
-            ArrayRECV<1> &cellRHSAlpha, index &nLim, real &alphaMin);                          \
+            ArrayDOFV<1> &cellRHSAlpha, index &nLim, real &alphaMin);                          \
                                                                                                \
         template void EulerEvaluator<model>::EvaluateCellRHSAlphaExpansion(                    \
             ArrayDOFV<nVars_Fixed> &u,                                                         \
             ArrayRECV<nVars_Fixed> &uRec,                                                      \
-            ArrayRECV<1> &uRecBeta,                                                            \
+            ArrayDOFV<1> &uRecBeta,                                                            \
             ArrayDOFV<nVars_Fixed> &res,                                                       \
-            std::vector<real> &dTau,                                                           \
-            ArrayRECV<1> &cellRHSAlpha, index &nLim, real &alphaMin)                           \
+            ArrayDOFV<1> &cellRHSAlpha, index &nLim, real &alphaMin);                          \
     }

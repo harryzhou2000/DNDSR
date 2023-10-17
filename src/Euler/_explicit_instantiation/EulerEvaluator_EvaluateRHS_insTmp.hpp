@@ -9,7 +9,7 @@
             ArrayDOFV<nVars_Fixed> &u,                    \
             ArrayRECV<nVars_Fixed> &uRec,                 \
             ArrayDOFV<1> &uRecBeta,                       \
-            ArrayRECV<1> &cellRHSAlpha,                   \
+            ArrayDOFV<1> &cellRHSAlpha,                   \
             bool onlyOnHalfAlpha,                         \
             real t);                                      \
     }

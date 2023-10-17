@@ -50,7 +50,7 @@ namespace DNDS::Euler
         ArrayDOFV<nVars_Fixed> u, uInc, uIncRHS, uTemp, rhsTemp;
         ArrayRECV<nVars_Fixed> uRec, uRecNew, uRecNew1, uRecOld, uRec1, uRecInc, uRecInc1;
         ArrayDOFV<nVars_Fixed> JD, JD1, JSource, JSource1;
-        ArrayDOFV<1> alphaPP, betaPP;
+        ArrayDOFV<1> alphaPP, alphaPP1, betaPP, betaPP1;
 
         int nOUTS = {-1};
         int nOUTSPoint{-1};
@@ -91,6 +91,7 @@ namespace DNDS::Euler
                 int nTimeStep = 1000000;
                 bool steadyQuit = false;
                 bool useRestart = false;
+                bool useImplicitPP = false;
                 int odeCode = 0;
                 real tEnd = veryLargeReal;
                 real odeSetting1 = 0;
@@ -99,7 +100,7 @@ namespace DNDS::Euler
                 DNDS_NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_ORDERED_JSON(
                     TimeMarchControl,
                     dtImplicit, nTimeStep,
-                    steadyQuit, useRestart,
+                    steadyQuit, useRestart, useImplicitPP,
                     odeCode, tEnd, odeSetting1, odeSetting2, odeSetting3)
             } timeMarchControl;
 
@@ -256,13 +257,15 @@ namespace DNDS::Euler
             struct LimiterControl
             {
                 bool useLimiter = true;
+                bool usePPRecLimiter = true;
                 int smoothIndicatorProcedure = 0;
                 int limiterProcedure = 0; // 0 for V2==3WBAP, 1 for V3==CWBAP
                 int nPartialLimiterStart = 0;
                 int nPartialLimiterStartLocal = 0;
                 DNDS_NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_ORDERED_JSON(
                     LimiterControl,
-                    useLimiter, smoothIndicatorProcedure, limiterProcedure,
+                    useLimiter, usePPRecLimiter,
+                    smoothIndicatorProcedure, limiterProcedure,
                     nPartialLimiterStart, nPartialLimiterStartLocal)
             } limiterControl;
 
@@ -525,10 +528,17 @@ namespace DNDS::Euler
             vfv->BuildURec(uRecNew1, nVars);
             vfv->BuildURec(uRecOld, nVars);
             vfv->BuildScalar(ifUseLimiter);
-            vfv->BuildURec(betaPP, 1);
-            vfv->BuildURec(alphaPP, 1);
+            vfv->BuildUDof(betaPP, 1);
+            vfv->BuildUDof(alphaPP, 1);
             betaPP.setConstant(1.0);
             alphaPP.setConstant(1.0);
+            if (config.timeMarchControl.odeCode == 401)
+            {
+                vfv->BuildUDof(betaPP1, 1);
+                vfv->BuildUDof(alphaPP1, 1);
+                betaPP1.setConstant(1.0);
+                alphaPP1.setConstant(1.0);
+            }
             if (config.implicitReconstructionControl.storeRecInc)
             {
                 vfv->BuildURec(uRecInc, nVars);
@@ -650,7 +660,7 @@ namespace DNDS::Euler
             PrintConfig();
         }
 
-                template <typename tODE, typename tEval>
+        template <typename tODE, typename tEval>
         void PrintData(const std::string &fname, tODE &ode, tEval &eval)
         {
             DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS

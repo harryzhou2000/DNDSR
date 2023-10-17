@@ -19,7 +19,7 @@ namespace DNDS::Euler
         ArrayDOFV<nVars_Fixed> &u,
         ArrayRECV<nVars_Fixed> &uRec,
         ArrayDOFV<1> &uRecBeta,
-        ArrayRECV<1> &cellRHSAlpha,
+        ArrayDOFV<1> &cellRHSAlpha,
         bool onlyOnHalfAlpha,
         real t)
     {
@@ -41,8 +41,8 @@ namespace DNDS::Euler
             bool ret = false;
             if (cellRHSAlpha[iCell](0) == 1.0)
             {
-                auto c2f = mesh->cell2face(iCell);
-                for (int ic2f = 0; ic2f < f2c.size(); ic2f++)
+                auto c2f = mesh->cell2face[iCell];
+                for (int ic2f = 0; ic2f < c2f.size(); ic2f++)
                 {
                     index iCellOther = vfv->CellFaceOther(iCell, c2f[ic2f]);
                     if (cellRHSAlpha[iCellOther](0) != 1.0)
@@ -65,7 +65,7 @@ namespace DNDS::Euler
             {
                 bool lIsHalfAlpha = cellIsHalfAlpha(f2c[0]);
                 bool rIsHalfAlpha =
-                    (f2c[1] != UninitIndex && f2c[1] < mesh->NumCell()) // must be owned cell!
+                    (f2c[1] != UnInitIndex && f2c[1] < mesh->NumCell()) // must be owned cell!
                         ? cellIsHalfAlpha(f2c[0])
                         : false;
                 if (!(lIsHalfAlpha || rIsHalfAlpha))

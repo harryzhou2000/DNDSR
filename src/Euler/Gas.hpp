@@ -751,7 +751,7 @@ namespace DNDS::Euler::Gas
         static const auto Seq123 = Eigen::seq(Eigen::fix<1>, Eigen::fix<dim>);
         static const auto I4 = dim + 1;
 
-        Eigen::Vector<real, ret.SizeAtCompileTime> ret = uInc;
+        Eigen::Vector<real, uInc.SizeAtCompileTime> ret = uInc;
 
         real c0 = 2 * u(I4) * u(0) - u(Seq123).squaredNorm() - 2 * u(0) * newrhoEinteralNew;
         real c1 = 2 * u(I4) * ret(0) + 2 * u(0) * ret(I4) - 2 * u(Seq123).dot(ret(Seq123)) - 2 * ret(0) * newrhoEinteralNew;

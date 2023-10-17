@@ -60,7 +60,7 @@ namespace DNDS::Euler
     private:
     public:
         ssp<Geom::UnstructuredMesh> mesh;
-        ssp<CFV::VariationalReconstruction<3>> vfv; //! gDim -> 3 for intellisense //!tmptmp
+        ssp<CFV::VariationalReconstruction<gDim>> vfv; //! gDim -> 3 for intellisense //!tmptmp
         int kAv = 0;
 
         // buffer for fdtau
@@ -258,7 +258,7 @@ namespace DNDS::Euler
                     DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
                     refU = farFieldStaticValue;
                     refUPrim = refU;
-                    Gas::IdealGasThermalConservative2Primitive(refU, refUPrim, gamma);
+                    Gas::IdealGasThermalConservative2Primitive<dim>(refU, refUPrim, idealGasProperty.gamma);
                     refU(Seq123).setConstant(refU(Seq123).norm());
                     refUPrim(Seq123).setConstant(refUPrim(Seq123).norm());
                 }
@@ -305,7 +305,7 @@ namespace DNDS::Euler
             ArrayDOFV<nVars_Fixed> &u,
             ArrayRECV<nVars_Fixed> &uRec,
             ArrayDOFV<1> &uRecBeta,
-            ArrayRECV<1> &cellRHSAlpha,
+            ArrayDOFV<1> &cellRHSAlpha,
             bool onlyOnHalfAlpha,
             real t);
 
@@ -392,30 +392,28 @@ namespace DNDS::Euler
         void EvaluateURecBeta(
             ArrayDOFV<nVars_Fixed> &u,
             ArrayRECV<nVars_Fixed> &uRec,
-            ArrayRECV<1> &uRecBeta, index &nLim, real &betaMin);
+            ArrayDOFV<1> &uRecBeta, index &nLim, real &betaMin);
 
         /**
-         * @param res is linear problem residual
+         * @param res is incremental residual
          */
         void EvaluateCellRHSAlpha(
             ArrayDOFV<nVars_Fixed> &u,
             ArrayRECV<nVars_Fixed> &uRec,
-            ArrayRECV<1> &uRecBeta,
+            ArrayDOFV<1> &uRecBeta,
             ArrayDOFV<nVars_Fixed> &res,
-            std::vector<real> &dTau,
-            ArrayRECV<1> &cellRHSAlpha, index &nLim, real &alphaMin);
+            ArrayDOFV<1> &cellRHSAlpha, index &nLim, real &alphaMin);
 
         /**
-         * @param res is linear problem residual which is fixed previously
+         * @param res is incremental residual fixed previously
          * @param cellRHSAlpha is limiting factor evaluated previously
          */
         void EvaluateCellRHSAlphaExpansion(
             ArrayDOFV<nVars_Fixed> &u,
             ArrayRECV<nVars_Fixed> &uRec,
-            ArrayRECV<1> &uRecBeta,
+            ArrayDOFV<1> &uRecBeta,
             ArrayDOFV<nVars_Fixed> &res,
-            std::vector<real> &dTau,
-            ArrayRECV<1> &cellRHSAlpha, index &nLim, real &alphaMin);
+            ArrayDOFV<1> &cellRHSAlpha, index &nLim, real &alphaMin);
 
         /******************************************************/
 

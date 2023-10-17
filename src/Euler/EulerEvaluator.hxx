@@ -496,7 +496,7 @@ namespace DNDS::Euler
     void EulerEvaluator<model>::EvaluateURecBeta(
         ArrayDOFV<nVars_Fixed> &u,
         ArrayRECV<nVars_Fixed> &uRec,
-        ArrayRECV<1> &uRecBeta, index &nLim, real &betaMin)
+        ArrayDOFV<1> &uRecBeta, index &nLim, real &betaMin)
     {
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
         real rhoEps = smallReal * settings.refUPrim(0);
@@ -530,7 +530,7 @@ namespace DNDS::Euler
             /***********/
 
             Eigen::Matrix<real, Eigen::Dynamic, nVars_Fixed> recInc = quadBase * uRec[iCell];
-            Eigen::Vector<real, Eigen::Dynamic> rhoS = recInc(Eigen::all, 0) + u[iCell](0);
+            Eigen::Vector<real, Eigen::Dynamic> rhoS = recInc(Eigen::all, 0).array() + u[iCell](0);
             real rhoMin = rhoS.minCoeff();
             real theta1 = std::min(
                 1.,
@@ -539,16 +539,18 @@ namespace DNDS::Euler
             Eigen::Matrix<real, Eigen::Dynamic, nVars_Fixed> recVRhoG = recInc.rowwise() + u[iCell].transpose();
 
             real gamma = settings.idealGasProperty.gamma;
+            Eigen::Vector<real, Eigen::Dynamic> ek =
+                0.5 * (recVRhoG(Eigen::all, Seq123).array().square().rowwise().sum()) / recVRhoG(Eigen::all, 0).array();
             Eigen::Vector<real, Eigen::Dynamic> pS =
                 (gamma - 1) *
                 (recVRhoG(Eigen::all, I4) -
-                 0.5 * (recVRhoG.rowwise()(Seq123).squaredNorm()).array() / recVRhoG(Eigen::all, 0).array());
+                 ek);
             real thetaP = 1.0;
             for (int iG = 0; iG < pS.size(); iG++)
             {
-                if (pS < pEps)
+                if (pS(iG) < pEps)
                 {
-                    real thetaThis = IdealGasGetCompressionRatioPressure<dim>(
+                    real thetaThis = Gas::IdealGasGetCompressionRatioPressure<dim>(
                         u[iCell], recInc(iG, Eigen::all).transpose(), pEps / (gamma - 1));
                     thetaP = std::min(thetaP, thetaThis);
                 }
@@ -559,18 +561,17 @@ namespace DNDS::Euler
             if (uRecBeta[iCell](0) < 1)
                 nLimLocal++, betaMin = std::min(uRecBeta[iCell](0), minBetaLocal);
         }
-        MPI::Allreduce(&nLimLocal, &nLim, 1, DNDS_MPI_INDEX, MPI_SUM, u->father.getMPI().comm);
-        MPI::Allreduce(&minBetaLocal, &betaMin, 1, DNDS_MPI_REAL, MPI_MIN, u->father.getMPI().comm);
+        MPI::Allreduce(&nLimLocal, &nLim, 1, DNDS_MPI_INDEX, MPI_SUM, u.father->getMPI().comm);
+        MPI::Allreduce(&minBetaLocal, &betaMin, 1, DNDS_MPI_REAL, MPI_MIN, u.father->getMPI().comm);
     }
 
     template <EulerModel model>
     void EulerEvaluator<model>::EvaluateCellRHSAlpha(
         ArrayDOFV<nVars_Fixed> &u,
         ArrayRECV<nVars_Fixed> &uRec,
-        ArrayRECV<1> &uRecBeta,
+        ArrayDOFV<1> &uRecBeta,
         ArrayDOFV<nVars_Fixed> &res,
-        std::vector<real> &dTau,
-        ArrayRECV<1> &cellRHSAlpha, index &nLim, real &alphaMin)
+        ArrayDOFV<1> &cellRHSAlpha, index &nLim, real &alphaMin)
     {
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
         real rhoEps = smallReal * settings.refUPrim(0);
@@ -582,7 +583,7 @@ namespace DNDS::Euler
         {
             real gamma = settings.idealGasProperty.gamma;
             real alphaRho = 1;
-            TU inc = res[iCell] * dTau[iCell];
+            TU inc = res[iCell];
             DNDS_assert(u[iCell](0) >= rhoEps);
             if (inc(0) < 0)
                 alphaRho = std::min(1.0, (u[iCell](0) - rhoEps) / (-inc(0)));
@@ -596,7 +597,7 @@ namespace DNDS::Euler
             if (pNew < pEps)
             {
                 // todo: use high order accurate
-                real alphaC = IdealGasGetCompressionRatioPressure<dim>(
+                real alphaC = Gas::IdealGasGetCompressionRatioPressure<dim>(
                     u[iCell], inc, pEps / (gamma - 1));
                 alphaP = std::min(alphaP, alphaC);
             }
@@ -605,8 +606,8 @@ namespace DNDS::Euler
             if (cellRHSAlpha[iCell](0) < 1)
                 nLimLocal++, alphaMinLocal = std::min(alphaMinLocal, cellRHSAlpha[iCell](0));
         }
-        MPI::Allreduce(&nLimLocal, &nLim, 1, DNDS_MPI_INDEX, MPI_SUM, u->father.getMPI().comm);
-        MPI::Allreduce(&alphaMinLocal, &alphaMin, 1, DNDS_MPI_REAL, MPI_MIN, u->father.getMPI().comm);
+        MPI::Allreduce(&nLimLocal, &nLim, 1, DNDS_MPI_INDEX, MPI_SUM, u.father->getMPI().comm);
+        MPI::Allreduce(&alphaMinLocal, &alphaMin, 1, DNDS_MPI_REAL, MPI_MIN, u.father->getMPI().comm);
         for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
         {
             if (cellRHSAlpha[iCell](0) < 1)
@@ -618,10 +619,9 @@ namespace DNDS::Euler
     void EulerEvaluator<model>::EvaluateCellRHSAlphaExpansion(
         ArrayDOFV<nVars_Fixed> &u,
         ArrayRECV<nVars_Fixed> &uRec,
-        ArrayRECV<1> &uRecBeta,
+        ArrayDOFV<1> &uRecBeta,
         ArrayDOFV<nVars_Fixed> &res,
-        std::vector<real> &dTau,
-        ArrayRECV<1> &cellRHSAlpha, index &nLim, real &alphaMin)
+        ArrayDOFV<1> &cellRHSAlpha, index &nLim, real &alphaMin)
     {
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
         real rhoEps = smallReal * settings.refUPrim(0);
@@ -632,8 +632,8 @@ namespace DNDS::Euler
             bool ret = false;
             if (cellRHSAlpha[iCell](0) == 1.0)
             {
-                auto c2f = mesh->cell2face(iCell);
-                for (int ic2f = 0; ic2f < f2c.size(); ic2f++)
+                auto c2f = mesh->cell2face[iCell];
+                for (int ic2f = 0; ic2f < c2f.size(); ic2f++)
                 {
                     index iCellOther = vfv->CellFaceOther(iCell, c2f[ic2f]);
                     if (cellRHSAlpha[iCellOther](0) != 1.0)
@@ -646,8 +646,8 @@ namespace DNDS::Euler
         auto cellAdjAlphaMin = [&](index iCell) -> real // iCell should be internal
         {
             real ret = 1;
-            auto c2f = mesh->cell2face(iCell);
-            for (int ic2f = 0; ic2f < f2c.size(); ic2f++)
+            auto c2f = mesh->cell2face[iCell];
+            for (int ic2f = 0; ic2f < c2f.size(); ic2f++)
             {
                 index iCellOther = vfv->CellFaceOther(iCell, c2f[ic2f]);
                 ret = std::min(ret, cellRHSAlpha[iCellOther](0));
@@ -666,7 +666,7 @@ namespace DNDS::Euler
         for (index iCell : InterCells)
         {
             real gamma = settings.idealGasProperty.gamma;
-            TU inc = res[iCell] * dTau[iCell];
+            TU inc = res[iCell];
 
             TU uNew = u[iCell] + inc;
             real pNew = (uNew(I4) - 0.5 * uNew(Seq123).squaredNorm() / uNew(0)) * (gamma - 1);
@@ -677,7 +677,7 @@ namespace DNDS::Euler
                 DNDS_assert(cellRHSAlpha[iCell](0) == alphaMin);
             }
         }
-        MPI::Allreduce(&nLimLocal, &nLimAdd, 1, DNDS_MPI_INDEX, MPI_SUM, u->father.getMPI().comm);
+        MPI::Allreduce(&nLimLocal, &nLimAdd, 1, DNDS_MPI_INDEX, MPI_SUM, u.father->getMPI().comm);
         nLim += nLimAdd;
     }
 }
