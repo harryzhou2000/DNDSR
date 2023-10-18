@@ -46,11 +46,12 @@ namespace DNDS::Euler
         ssp<Geom::UnstructuredMesh> mesh, meshBnd;
         TVFV vfv; // ! gDim -> 3 for intellisense
         ssp<Geom::UnstructuredMeshSerialRW> reader, readerBnd;
+        ssp<EulerEvaluator<model>> pEval;
 
         ArrayDOFV<nVars_Fixed> u, uInc, uIncRHS, uTemp, rhsTemp;
         ArrayRECV<nVars_Fixed> uRec, uRecNew, uRecNew1, uRecOld, uRec1, uRecInc, uRecInc1;
         ArrayDOFV<nVars_Fixed> JD, JD1, JSource, JSource1;
-        ArrayDOFV<1> alphaPP, alphaPP1, betaPP, betaPP1;
+        ArrayDOFV<1> alphaPP, alphaPP1, betaPP, betaPP1, alphaPP_tmp;
 
         int nOUTS = {-1};
         int nOUTSPoint{-1};
@@ -75,8 +76,7 @@ namespace DNDS::Euler
         // std::vector<uint32_t> ifUseLimiter;
         CFV::tScalarPair ifUseLimiter;
 
-        BoundaryHandler<model>
-            BCHandler;
+        ssp<BoundaryHandler<model>> pBCHandler;
 
     public:
         nlohmann::ordered_json gSetting;
@@ -135,10 +135,10 @@ namespace DNDS::Euler
                 int nDataOutC = 50;
                 int nDataOutInternal = 10000;
                 int nDataOutCInternal = 1;
-                int nRestartOut = 10000;
-                int nRestartOutC = 50;
-                int nRestartOutInternal = 10000;
-                int nRestartOutCInternal = 1;
+                int nRestartOut = INT_MAX;
+                int nRestartOutC = INT_MAX;
+                int nRestartOutInternal = INT_MAX;
+                int nRestartOutCInternal = INT_MAX;
                 real tDataOut = veryLargeReal;
 
                 DNDS_NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_ORDERED_JSON(
@@ -307,8 +307,10 @@ namespace DNDS::Euler
 
             nlohmann::ordered_json eulerSettings = nlohmann::ordered_json::object();
             nlohmann::ordered_json vfvSettings = nlohmann::ordered_json::object();
+            nlohmann::ordered_json bcSettings = nlohmann::ordered_json::object();
 
-            void ReadWriteJson(nlohmann::ordered_json &jsonObj, int nVars, bool read)
+            void
+            ReadWriteJson(nlohmann::ordered_json &jsonObj, int nVars, bool read)
             {
 
                 __DNDS__json_to_config(timeMarchControl);
@@ -325,10 +327,12 @@ namespace DNDS::Euler
 
                 __DNDS__json_to_config(eulerSettings);
                 __DNDS__json_to_config(vfvSettings);
+                __DNDS__json_to_config(bcSettings);
                 if (read)
                 {
                     DNDS_assert(eulerSettings.is_object());
                     DNDS_assert(vfvSettings.is_object());
+                    DNDS_assert(bcSettings.is_array());
                 }
 
                 // TODO: BC settings
@@ -342,6 +346,7 @@ namespace DNDS::Euler
             {
                 vfvSettings = CFV::VRSettings{gDim};
                 typename TEval::Setting().ReadWriteJSON(eulerSettings, nVars, false);
+                bcSettings = BoundaryHandler<model>();
             }
 
         } config = Configuration{};
@@ -394,11 +399,11 @@ namespace DNDS::Euler
             if (mpi.rank == 0)
                 log() << "JSON: Parse " << (read ? "read" : "write")
                       << " Done ===" << std::endl;
-#undef __DNDS__json_to_config
         }
 
         void ReadMeshAndInitialize()
         {
+            InsertCheck(mpi, "ReadMeshAndInitialize 1 nvars " + std::to_string(nVars));
             output_stamp = getTimeStamp(mpi);
             if (!config.dataIOControl.uniqueStamps)
                 output_stamp = "";
@@ -407,6 +412,12 @@ namespace DNDS::Euler
             // Debug::MPIDebugHold(mpi);
 
             int gDimLocal = gDim; //! or else the linker breaks down here (with clang++ or g++, -g -O0,2; c++ non-optimizer bug?)
+
+            DNDS_MAKE_SSP(pBCHandler);
+            auto &BCHandler = *pBCHandler;
+            // using tBC = typename BoundaryHandler<model>;
+            BCHandler = config.bcSettings;
+
             DNDS_MAKE_SSP(mesh, mpi, gDimLocal);
             DNDS_MAKE_SSP(meshBnd, mpi, gDimLocal - 1);
 
@@ -423,7 +434,9 @@ namespace DNDS::Euler
 
             if (config.dataIOControl.readMeshMode == 0)
             {
-                reader->ReadFromCGNSSerial(config.dataIOControl.meshFile); // TODO: add bnd mapping here
+                reader->ReadFromCGNSSerial(config.dataIOControl.meshFile,
+                                           [&](const std::string &name) -> Geom::t_index
+                                           { return BCHandler.GetIDFromName(name); });
                 reader->Deduplicate1to1Periodic();
                 reader->BuildCell2Cell();
                 reader->MeshPartitionCell2Cell();
@@ -530,6 +543,7 @@ namespace DNDS::Euler
             vfv->BuildScalar(ifUseLimiter);
             vfv->BuildUDof(betaPP, 1);
             vfv->BuildUDof(alphaPP, 1);
+            vfv->BuildUDof(alphaPP_tmp, 1);
             betaPP.setConstant(1.0);
             alphaPP.setConstant(1.0);
             if (config.timeMarchControl.odeCode == 401)
@@ -550,6 +564,18 @@ namespace DNDS::Euler
             vfv->BuildUDof(JSource, nVars);
             if (config.timeMarchControl.odeCode == 401)
                 vfv->BuildUDof(JD1, nVars), vfv->BuildUDof(JSource1, nVars);
+
+            InsertCheck(mpi, "ReadMeshAndInitialize 2 nvars " + std::to_string(nVars));
+            /*******************************/
+            // initialize pEval
+            DNDS_MAKE_SSP(pEval, mesh, vfv, pBCHandler);
+            EulerEvaluator<model> &eval = *pEval;
+            eval.settings.jsonSettings = config.eulerSettings;
+            eval.settings.ReadWriteJSON(eval.settings.jsonSettings, nVars, true);
+            /*******************************/
+            // initialize output Array
+
+            InsertCheck(mpi, "ReadMeshAndInitialize 3 nvars " + std::to_string(nVars));
 
             DNDS_assert(config.dataIOControl.outAtCellData || config.dataIOControl.outAtPointData);
             DNDS_assert(config.dataIOControl.outPltVTKFormat || config.dataIOControl.outPltTecplotFormat);
@@ -604,12 +630,22 @@ namespace DNDS::Euler
                     outDist2SerialTransPoint.initPersistentPull();
                 }
             }
+            InsertCheck(mpi, "ReadMeshAndInitialize -1 nvars " + std::to_string(nVars));
         }
 
         void RunImplicitEuler();
 
         void PrintConfig()
         {
+            /***********************************************************/
+            // if these objects are existent, extract settings from them
+            if (vfv)
+                config.vfvSettings = vfv->settings;
+            if (pEval)
+                pEval->settings.ReadWriteJSON(config.eulerSettings, nVars, false);
+            if (pBCHandler)
+                config.bcSettings = *pBCHandler;
+            /***********************************************************/
             config.ReadWriteJson(gSetting, nVars, false);
             if (mpi.rank == 0)
             {

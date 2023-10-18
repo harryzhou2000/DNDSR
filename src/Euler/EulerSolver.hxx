@@ -104,9 +104,8 @@ namespace DNDS::Euler
                     vfv->BuildURec(data, nVars);
                 });
 
-        EulerEvaluator<model> eval(mesh, vfv);
-        eval.settings.jsonSettings = config.eulerSettings;
-        eval.settings.ReadWriteJSON(eval.settings.jsonSettings, nVars, true);
+        // fmt::print("pEval is {}", (void*)(pEval.get()));
+        EulerEvaluator<model> &eval = *pEval;
 
         eval.InitializeUDOF(u);
         if (config.timeMarchControl.useRestart)
@@ -166,7 +165,7 @@ namespace DNDS::Euler
             auto &uRecC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? uRec1 : uRec;
             auto &JSourceC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? JSource1 : JSource;
             auto &uRecIncC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? uRecInc1 : uRecInc;
-            auto &alphaPPC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? alphaPP : alphaPP1;
+            auto &alphaPPC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? alphaPP1 : alphaPP;
             auto &betaPPC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? betaPP1 : betaPP;
             // if (mpi.rank == 0)
             //     std::cout << uRecC.father.get() << std::endl;
@@ -330,8 +329,8 @@ namespace DNDS::Euler
                     ret.setIdentity();
                     ret(Seq01234, Seq01234) = M;
                     PerformanceTimer::Instance().StopTimer(PerformanceTimer::LimiterA);
-                    return ret;
-                    // return real(1);
+                    // return ret;
+                    return real(1);
                 };
                 auto fMR = [&](const auto &UL, const auto &UR, const auto &n) -> auto
                 {
@@ -348,8 +347,8 @@ namespace DNDS::Euler
                     ret(Seq01234, Seq01234) = M;
 
                     PerformanceTimer::Instance().StopTimer(PerformanceTimer::LimiterA);
-                    return ret;
-                    // return real(1);
+                    // return ret;
+                    return real(1);
                 };
                 if (config.limiterControl.smoothIndicatorProcedure == 0)
                     vfv->DoCalculateSmoothIndicator(
@@ -409,7 +408,7 @@ namespace DNDS::Euler
             if (config.implicitReconstructionControl.storeRecInc)
             {
                 uRecIncC = uRecC;
-                uRecIncC -= uRecOld; //! uRecNew1 now stores uRecIncrement
+                uRecIncC -= uRecOld; //! uRecIncC now stores uRecIncrement
             }
             if (config.implicitReconstructionControl.storeRecInc && config.implicitReconstructionControl.dampRecIncDTau)
             {
@@ -430,7 +429,9 @@ namespace DNDS::Euler
             double tstartE = MPI_Wtime();
             eval.setPassiveDiscardSource(iter <= 0);
 
-            alphaPP.setConstant(1.0); // make RHS un-disturbed
+            if (iter == 1)
+                alphaPPC.setConstant(1.0); // make RHS un-disturbed
+            alphaPP_tmp.setConstant(1.0);  // make RHS un-disturbed
             if (config.limiterControl.usePPRecLimiter)
             {
                 nLimBeta = 0;
@@ -442,7 +443,8 @@ namespace DNDS::Euler
                 if (nLimBeta)
                     if (mpi.rank == 0)
                     {
-                        log() << "PPRecLimiter: nLimBeta [" << nLimBeta << "]"
+                        log() << std::scientific << std::setprecision(3)
+                              << "PPRecLimiter: nLimBeta [" << nLimBeta << "]"
                               << " minBeta[" << minBeta << "]" << std::endl;
                     }
                 betaPPC.trans.startPersistentPull();
@@ -450,9 +452,9 @@ namespace DNDS::Euler
             }
 
             if (config.limiterControl.useLimiter)
-                eval.EvaluateRHS(crhs, JSourceC, cx, uRecNew, betaPPC, alphaPPC, false, tSimu + ct * curDtImplicit);
+                eval.EvaluateRHS(crhs, JSourceC, cx, uRecNew, betaPPC, alphaPP_tmp, false, tSimu + ct * curDtImplicit);
             else
-                eval.EvaluateRHS(crhs, JSourceC, cx, uRecC, betaPPC, alphaPPC, false, tSimu + ct * curDtImplicit);
+                eval.EvaluateRHS(crhs, JSourceC, cx, uRecC, betaPPC, alphaPP_tmp, false, tSimu + ct * curDtImplicit);
             crhs.trans.startPersistentPull();
             crhs.trans.waitPersistentPull();
             if (getNVars(model) > (I4 + 1) && iter <= config.others.nFreezePassiveInner)
@@ -476,6 +478,8 @@ namespace DNDS::Euler
             // uRec.trans.waitPersistentPull();
             auto &uRecC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? uRec1 : uRec;
             eval.EvaluateDt(dTau, cx, uRecC, CFLNow, curDtMin, 1e100, config.implicitCFLControl.useLocalDt);
+            // for (auto &i: dTau)
+            //     i = std::min({i, curDtMin * 1000, curDtImplicit * 100});
             for (auto &i : dTau)
                 i /= alphaDiag;
         };
@@ -491,6 +495,25 @@ namespace DNDS::Euler
             auto &JSourceC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? JSource1 : JSource;
             auto &uRecC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? uRec1 : uRec;
             auto &uRecIncC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? uRecInc1 : uRecInc;
+            auto &alphaPPC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? alphaPP1 : alphaPP;
+            auto &betaPPC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? betaPP1 : betaPP;
+
+            {
+                //! experimental: bad now
+                // rhsTemp = crhs;
+                // rhsTemp *= dTau;
+                // index nLimFRes = 0;
+                // real alphaMinFRes = 1;
+                // eval.EvaluateCellRHSAlpha(cx, uRecC, betaPPC, rhsTemp, alphaPP_tmp, nLimFRes, alphaMinFRes);
+                // if (nLimFRes)
+                //     if (mpi.rank == 0)
+                //     {
+                //         std::cout << std::scientific << std::setw(3);
+                //         std::cout << "PPFResLimiter: nLimFRes[" << nLimFRes << "] minAlpha [" << alphaMinFRes << "]" << std::endl;
+                //     }
+                
+                // crhs *= alphaPP_tmp; 
+            }
 
             typename TVFV::element_type::TFBoundary<nVars_Fixed>
                 FBoundary = [&](const TU &UL, const TU &UMean, index iCell, index iFace,
@@ -529,6 +552,9 @@ namespace DNDS::Euler
                 {
                     DNDS_assert(config.implicitReconstructionControl.storeRecInc);
                     eval.UpdateSGSWithRec(alphaDiag, crhs, cx, uRecC, cxInc, uRecIncC, JDC, true, sgsRes);
+                    // for (index iCell = 0; iCell < uRecIncC.Size(); iCell++)
+                    //     std::cout << "-------\n"
+                    //               << uRecIncC[iCell] << std::endl;
                     cxInc.trans.startPersistentPull();
                     cxInc.trans.waitPersistentPull();
                     eval.UpdateSGSWithRec(alphaDiag, crhs, cx, uRecC, cxInc, uRecIncC, JDC, false, sgsRes);
@@ -537,12 +563,18 @@ namespace DNDS::Euler
                 }
                 else
                 {
-                    eval.UpdateLUSGSForward(alphaDiag, crhs, cx, cxInc, JDC, cxInc);
+                    eval.UpdateSGS(alphaDiag, crhs, cx, cxInc, JDC, true, sgsRes);
                     cxInc.trans.startPersistentPull();
                     cxInc.trans.waitPersistentPull();
-                    eval.UpdateLUSGSBackward(alphaDiag, crhs, cx, cxInc, JDC, cxInc);
+                    eval.UpdateSGS(alphaDiag, crhs, cx, cxInc, JDC, false, sgsRes);
                     cxInc.trans.startPersistentPull();
                     cxInc.trans.waitPersistentPull();
+                    // eval.UpdateLUSGSForward(alphaDiag, crhs, cx, cxInc, JDC, cxInc);
+                    // cxInc.trans.startPersistentPull();
+                    // cxInc.trans.waitPersistentPull();
+                    // eval.UpdateLUSGSBackward(alphaDiag, crhs, cx, cxInc, JDC, cxInc);
+                    // cxInc.trans.startPersistentPull();
+                    // cxInc.trans.waitPersistentPull();
                 }
 
                 if (config.linearSolverControl.sgsWithRec != 0)
@@ -762,7 +794,7 @@ namespace DNDS::Euler
                                    ArrayDOFV<nVars_Fixed> &v,
                                    int uPos)
         {
-            auto &alphaPPC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? alphaPP : alphaPP1;
+            auto &alphaPPC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? alphaPP1 : alphaPP;
             for (index i = 0; i < v.Size(); i++)
                 v[i] *= alphaPPC[i](0);
         };
@@ -776,44 +808,48 @@ namespace DNDS::Euler
                                   real ct,
                                   int uPos)
         {
-            auto &alphaPPC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? alphaPP : alphaPP1;
+            auto &alphaPPC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? alphaPP1 : alphaPP;
             auto &betaPPC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? betaPP1 : betaPP;
             auto &uRecC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? uRec1 : uRec;
             auto &JSourceC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? JSource1 : JSource;
-            renewRhsIncPart();
+            renewRhsIncPart(); // un-fixed now
             // rhsIncPart.trans.startPersistentPull();
             // rhsIncPart.trans.waitPersistentPull(); //seems not needed
-            eval.EvaluateCellRHSAlpha(xPrev, uRecC, betaPPC, rhsIncPart, alphaPPC, nLimAlpha, minAlpha);
-            alphaPPC.trans.startPersistentPull();
-            alphaPPC.trans.waitPersistentPull();
+            eval.EvaluateCellRHSAlpha(xPrev, uRecC, betaPPC, rhsIncPart, alphaPP_tmp, nLimAlpha, minAlpha);
+            alphaPP_tmp.trans.startPersistentPull();
+            alphaPP_tmp.trans.waitPersistentPull();
             if (nLimAlpha)
                 if (mpi.rank == 0)
                 {
-                    log() << "PPRecLimiter: nLimAlpha [" << nLimAlpha << "]"
+                    log() << std::scientific << std::setprecision(3)
+                          << "PPResidualLimiter: nLimAlpha [" << nLimAlpha << "]"
                           << " minAlpha[" << minAlpha << "]" << std::endl;
                 }
             if (config.limiterControl.useLimiter)
                 eval.EvaluateRHS(crhs, JSourceC, cx, uRecNew, betaPPC, alphaPPC, false, tSimu + ct * curDtImplicit);
             else
                 eval.EvaluateRHS(crhs, JSourceC, cx, uRecC, betaPPC, alphaPPC, false, tSimu + ct * curDtImplicit);
+            // rhs now last-fixed
             crhs.trans.startPersistentPull();
             crhs.trans.waitPersistentPull();
 
             /********************************************/
             // first fix
             {
-                renewRhsIncPart();
+                renewRhsIncPart(); // now last-fixed
                 // rhsIncPart.trans.startPersistentPull();
                 // rhsIncPart.trans.waitPersistentPull(); //seems not needed
-                eval.EvaluateCellRHSAlphaExpansion(xPrev, uRecC, betaPPC, rhsIncPart, alphaPPC, nLimAlpha, minAlpha);
-                alphaPPC.trans.startPersistentPull();
-                alphaPPC.trans.waitPersistentPull();
+                eval.EvaluateCellRHSAlphaExpansion(xPrev, uRecC, betaPPC, rhsIncPart, alphaPP_tmp, nLimAlpha, minAlpha);
+                alphaPP_tmp.trans.startPersistentPull();
+                alphaPP_tmp.trans.waitPersistentPull();
                 if (nLimAlpha)
                     if (mpi.rank == 0)
                     {
-                        log() << "PPRecLimiter: nLimAlpha [" << nLimAlpha << "]"
+                        log() << std::scientific << std::setprecision(3)
+                              << "PPResidualLimiter - first expand: nLimAlpha [" << nLimAlpha << "]"
                               << " minAlpha[" << minAlpha << "]" << std::endl;
                     }
+                alphaPPC = alphaPP_tmp;
                 if (config.limiterControl.useLimiter)
                     eval.EvaluateRHS(crhs, JSourceC, cx, uRecNew, betaPPC, alphaPPC, false, tSimu + ct * curDtImplicit);
                 else
@@ -826,15 +862,32 @@ namespace DNDS::Euler
         auto fincrement = [&](
                               ArrayDOFV<nVars_Fixed> &cx,
                               ArrayDOFV<nVars_Fixed> &cxInc,
-                              real alpha)
+                              real alpha, int uPos)
         {
-            eval.AddFixedIncrement(cx, cxInc, alpha);
+            // eval.AddFixedIncrement(cx, cxInc, alpha);
+            auto &alphaPPC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? alphaPP1 : alphaPP;
+            auto &betaPPC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? betaPP1 : betaPP;
+            auto &uRecC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? uRec1 : uRec;
+            auto &JSourceC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? JSource1 : JSource;
+            index nLimInc = 0;
+            real alphaMinInc = 1;
+            eval.EvaluateCellRHSAlpha(cx, uRecC, betaPPC, cxInc, alphaPP_tmp, nLimInc, alphaMinInc);
+            if (nLimInc)
+                if (mpi.rank == 0)
+                {
+                    std::cout << std::scientific << std::setw(3);
+                    std::cout << "PPIncrementLimiter: nIncrementRes[" << nLimInc << "] minAlpha [" << alphaMinInc << "]" << std::endl;
+                }
+
+            uTemp = cxInc;
+            uTemp *= alphaPP_tmp;
+            cx += uTemp;
         };
 
         auto fstop = [&](int iter, ArrayDOFV<nVars_Fixed> &cxinc, int iStep) -> bool
         {
             Eigen::Vector<real, -1> res(nVars);
-            eval.EvaluateResidual(res, cxinc, 1, config.convergenceControl.useVolWiseResidual);
+            eval.EvaluateNorm(res, cxinc, 1, config.convergenceControl.useVolWiseResidual);
             // if (iter == 1 && iStep == 1) // * using 1st rk step for reference
             if (iter == 1)
                 resBaseCInternal = res;
@@ -852,7 +905,7 @@ namespace DNDS::Euler
                 {
                     auto fmt = log().flags();
                     log() << std::setprecision(3) << std::scientific
-                          << "\t Internal === Step [" << iStep << ", " << iter << "]   "
+                          << "\t Internal === Step [" << step << ", " << iStep << ", " << iter << "]   "
                           << "res \033[91m[" << resRel.transpose() << "]\033[39m   "
                           << "t,dTaumin,CFL,nFix \033[92m["
                           << tSimu << ", " << curDtMin << ", " << CFLNow << ", " << eval.nFaceReducedOrder << "]\033[39m   "
@@ -931,7 +984,7 @@ namespace DNDS::Euler
             if (ifOutT)
                 tSimu = nextTout;
             Eigen::Vector<real, -1> res(nVars);
-            eval.EvaluateResidual(res, ode->getLatestRHS(), 1, config.convergenceControl.useVolWiseResidual);
+            eval.EvaluateNorm(res, ode->getLatestRHS(), 1, config.convergenceControl.useVolWiseResidual);
             if (stepCount == 0 && resBaseC.norm() == 0)
                 resBaseC = res;
 

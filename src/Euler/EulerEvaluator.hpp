@@ -11,8 +11,10 @@
 #include "DNDS/JsonUtil.hpp"
 
 #include "Euler.hpp"
+#include "EulerBC.hpp"
 #include "RANS_ke.hpp"
 #include "DNDS/SerializerBase.hpp"
+#include "fmt/core.h"
 
 // #define DNDS_FV_EULEREVALUATOR_SOURCE_TERM_ZERO
 // // #define DNDS_FV_EULEREVALUATOR_IGNORE_SOURCE_TERM
@@ -61,6 +63,7 @@ namespace DNDS::Euler
     public:
         ssp<Geom::UnstructuredMesh> mesh;
         ssp<CFV::VariationalReconstruction<gDim>> vfv; //! gDim -> 3 for intellisense //!tmptmp
+        ssp<BoundaryHandler<model>> pBCHandler;
         int kAv = 0;
 
         // buffer for fdtau
@@ -266,8 +269,8 @@ namespace DNDS::Euler
 
         } settings;
 
-        EulerEvaluator(const decltype(mesh) &Nmesh, const decltype(vfv) &Nvfv)
-            : mesh(Nmesh), vfv(Nvfv), kAv(Nvfv->settings.maxOrder + 1)
+        EulerEvaluator(const decltype(mesh) &Nmesh, const decltype(vfv) &Nvfv, const decltype(pBCHandler) &npBCHandler)
+            : mesh(Nmesh), vfv(Nvfv), pBCHandler(npBCHandler), kAv(Nvfv->settings.maxOrder + 1)
         {
             nVars = getNVars(model);
 
@@ -282,7 +285,7 @@ namespace DNDS::Euler
                 v.resize(nVars);
 
             real maxD = 0.1;
-            this->GetWallDist();
+            this->GetWallDist(); // TODO: put this after settings is set
         }
 
         void GetWallDist();
@@ -384,7 +387,7 @@ namespace DNDS::Euler
 
         void FixUMaxFilter(ArrayDOFV<nVars_Fixed> &u);
 
-        void EvaluateResidual(
+        void EvaluateNorm(
             Eigen::Vector<real, -1> &res,
             ArrayDOFV<nVars_Fixed> &rhs,
             index P = 1, bool volWise = false);
@@ -544,7 +547,7 @@ namespace DNDS::Euler
             VisFlux.resizeLike(DiffUxy);
             VisFlux.setZero();
             Gas::ViscousFlux_IdealGas<dim>(
-                UMeanXy, DiffUxy, unitNorm, btype == Geom::BC_ID_DEFAULT_WALL,
+                UMeanXy, DiffUxy, unitNorm, pBCHandler->GetTypeFromID(btype) == EulerBCType::BCWall,
                 settings.idealGasProperty.gamma,
                 muf,
                 k,
@@ -638,7 +641,7 @@ namespace DNDS::Euler
             lam123 = std::abs(UL(1) / UL(0) + UR(1) / UR(0)) * 0.5;
 
 #ifdef USE_NO_RIEMANN_ON_WALL
-            if (btype == Geom::BC_ID_DEFAULT_WALL)
+            if (pBCHandler->GetTypeFromID(btype) == EulerBCType::BCWall)
             {
                 TU UL_Prim, UR_Prim;
                 UL_Prim.resizeLike(UL);
@@ -1199,8 +1202,7 @@ namespace DNDS::Euler
             return dF;
         }
 
-        TU
-        generateBoundaryValue(
+        TU generateBoundaryValue(
             TU &ULxy, //! warning, possible that UL is also modified
             const TU &ULMeanXy,
             index iCell, index iFace,
@@ -1220,12 +1222,18 @@ namespace DNDS::Euler
                 btype == Geom::BC_ID_DEFAULT_SPECIAL_DMR_FAR ||
                 btype == Geom::BC_ID_DEFAULT_SPECIAL_RT_FAR ||
                 btype == Geom::BC_ID_DEFAULT_SPECIAL_IV_FAR ||
-                btype == Geom::BC_ID_DEFAULT_SPECIAL_2DRiemann_FAR)
+                btype == Geom::BC_ID_DEFAULT_SPECIAL_2DRiemann_FAR ||
+                pBCHandler->GetTypeFromID(btype) == EulerBCType::BCFar)
             {
                 DNDS_assert(ULxy(0) > 0);
-                if (btype == Geom::BC_ID_DEFAULT_FAR)
+                if (btype == Geom::BC_ID_DEFAULT_FAR ||
+                    pBCHandler->GetTypeFromID(btype) == EulerBCType::BCFar)
                 {
-                    const TU &far = settings.farFieldStaticValue;
+                    const TU &far = btype >= Geom::BC_ID_DEFAULT_MAX
+                                        ? pBCHandler->GetValueFromID(btype)
+                                        : TU(settings.farFieldStaticValue);
+                    // fmt::print("far id: {}\n", btype);
+                    // std::cout << far.transpose() << std::endl;
 
                     real un = ULxy(Seq123).dot(uNorm) / ULxy(0);
                     real vsqr = (ULxy(Seq123) / ULxy(0)).squaredNorm();
@@ -1263,9 +1271,9 @@ namespace DNDS::Euler
                     }
                     else // full inflow
                     {
-                        URxy = settings.farFieldStaticValue;
+                        URxy = far;
                     }
-                    URxy = settings.farFieldStaticValue; //! override
+                    URxy = far; //! override
                 }
                 else if (btype == Geom::BC_ID_DEFAULT_SPECIAL_DMR_FAR)
                 {
@@ -1352,7 +1360,7 @@ namespace DNDS::Euler
                     {
                         URxy = far;
                     }
-                    URxy = far; //! override
+                    // URxy = far; //! override
                 }
                 else if (btype == Geom::BC_ID_DEFAULT_SPECIAL_IV_FAR)
                 {
@@ -1502,12 +1510,12 @@ namespace DNDS::Euler
                 else
                     DNDS_assert(false);
             }
-            else if (btype == Geom::BC_ID_DEFAULT_WALL_INVIS)
+            else if (pBCHandler->GetTypeFromID(btype) == EulerBCType::BCWallInvis)
             {
                 URxy = ULxy;
                 URxy(Seq123) -= URxy(Seq123).dot(uNorm) * uNorm;
             }
-            else if (btype == Geom::BC_ID_DEFAULT_WALL)
+            else if (pBCHandler->GetTypeFromID(btype) == EulerBCType::BCWall)
             {
                 URxy = ULxy;
                 URxy(Seq123) *= -1;
@@ -1653,15 +1661,20 @@ namespace DNDS::Euler
             const TU &uInc)
         {
             DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
+            real rhoEps = smallReal * settings.refUPrim(0);
+            real pEps = smallReal * settings.refUPrim(I4);
+
             TU ret = uInc;
 
             /** A intuitive fix **/ //! need positive perserving technique!
             DNDS_assert(u(0) > 0);
-            if (u(0) + ret(0) <= 0)
+            if (u(0) + ret(0) <= rhoEps)
             {
                 real declineV = ret(0) / (u(0) + verySmallReal);
                 real newrho = u(0) * std::exp(declineV);
-                ret *= (newrho - u(0)) / (ret(0) + verySmallReal);
+                // newrho = std::max(newrho, rhoEps);
+                newrho = rhoEps;
+                ret *= (newrho - u(0)) / (ret(0) - verySmallReal);
                 // std::cout << (newrho - u(0)) / (ret(0) + verySmallReal) << std::endl;
                 // DNDS_assert(false);
             }
@@ -1670,10 +1683,13 @@ namespace DNDS::Euler
             DNDS_assert(rhoEinternal > 0);
             real ek = 0.5 * (u(Seq123) + ret(Seq123)).squaredNorm() / (u(0) + ret(0) + verySmallReal);
             real rhoEinternalNew = u(I4) + ret(I4) - ek;
-            if (rhoEinternalNew <= 0)
+            if (rhoEinternalNew <= pEps)
             {
                 real declineV = (rhoEinternalNew - rhoEinternal) / (rhoEinternal + verySmallReal);
                 real newrhoEinteralNew = (std::exp(declineV) + verySmallReal) * rhoEinternal;
+                real gamma = settings.idealGasProperty.gamma;
+                // newrhoEinteralNew = std::max(pEps / (gamma - 1), newrhoEinteralNew);
+                newrhoEinteralNew = pEps / (gamma - 1);
                 real c0 = 2 * u(I4) * u(0) - u(Seq123).squaredNorm() - 2 * u(0) * newrhoEinteralNew;
                 real c1 = 2 * u(I4) * ret(0) + 2 * u(0) * ret(I4) - 2 * u(Seq123).dot(ret(Seq123)) - 2 * ret(0) * newrhoEinteralNew;
                 real c2 = 2 * ret(I4) * ret(0) - ret(Seq123).squaredNorm();
@@ -1691,11 +1707,11 @@ namespace DNDS::Euler
                 alpha = std::max(0., alpha);
                 ret *= alpha * (1 - 1e-12);
 
-                real decay = 1 - 1e-2;
+                real decay = 1 - 1e-1;
                 for (int iter = 0; iter < 1000; iter++)
                 {
                     ek = 0.5 * (u(Seq123) + ret(Seq123)).squaredNorm() / (u(0) + ret(0) + verySmallReal);
-                    if (ret(I4) + u(I4) - ek < 0)
+                    if (ret(I4) + u(I4) - ek < newrhoEinteralNew)
                         ret *= decay, alpha *= decay;
                     else
                         break;
@@ -1703,7 +1719,7 @@ namespace DNDS::Euler
 
                 ek = 0.5 * (u(Seq123) + ret(Seq123)).squaredNorm() / (u(0) + ret(0) + verySmallReal);
 
-                if (ret(I4) + u(I4) - ek < 0)
+                if (ret(I4) + u(I4) - ek < newrhoEinteralNew)
                 {
                     std::cout << std::scientific << std::setprecision(5);
                     std::cout << u(0) << " " << ret(0) << std::endl;
@@ -1773,6 +1789,53 @@ namespace DNDS::Euler
                 cxInc[iCell] = this->CompressInc(cx[iCell], cxInc[iCell] * alpha);
         }
 
+        // void AddFixedIncrement(
+        //     ArrayDOFV<nVars_Fixed> &cx,
+        //     ArrayDOFV<nVars_Fixed> &cxInc, real alpha = 1.0)
+        // {
+        //     real alpha_fix_min = 1.0;
+        //     for (index iCell = 0; iCell < cxInc.Size(); iCell++)
+        //     {
+        //         TU compressedInc = this->CompressInc(cx[iCell], cxInc[iCell] * alpha);
+        //         real newAlpha = std::abs(compressedInc(0)) /
+        //                         (std::abs((cxInc[iCell] * alpha)(0)));
+        //         if (std::abs((cxInc[iCell] * alpha)(0)) < verySmallReal)
+        //             newAlpha = 1.; //! old inc could be zero, so compresion alpha is always 1
+        //         alpha_fix_min = std::min(
+        //             alpha_fix_min,
+        //             newAlpha);
+        //         // if (newAlpha < 1.0 - 1e-14)
+        //         //     std::cout << "KL\n"
+        //         //               << std::scientific << std::setprecision(5)
+        //         //               << this->CompressInc(cx[iCell], cxInc[iCell] * alpha).transpose() << "\n"
+        //         //               << cxInc[iCell].transpose() * alpha << std::endl;
+        //         // cx[iCell] += compressedInc;
+        //     }
+        //     real alpha_fix_min_c = alpha_fix_min;
+        //     MPI::Allreduce(&alpha_fix_min_c, &alpha_fix_min, 1, DNDS_MPI_REAL, MPI_MIN, cx.father->getMPI().comm);
+        //     if (alpha_fix_min < 1.0)
+        //         if (cx.father->getMPI().rank == 0)
+        //             std::cout << "Increment fixed " << std::scientific << std::setprecision(5) << alpha_fix_min << std::endl;
+
+        //     // for (index iCell = 0; iCell < cxInc.Size(); iCell++)
+        //     //     cx[iCell] += alpha_fix_min * alpha * cxInc[iCell];
+        //     for (index iCell = 0; iCell < cxInc.Size(); iCell++)
+        //     {
+        //         TU compressedInc = this->CompressInc(cx[iCell], cxInc[iCell] * alpha);
+        //         real newAlpha = std::abs(compressedInc(0)) /
+        //                         (std::abs((cxInc[iCell] * alpha)(0)));
+        //         if (std::abs((cxInc[iCell] * alpha)(0)) < verySmallReal)
+        //             newAlpha = 1.; //! old inc could be zero, so compresion alpha is always 1
+
+        //         // if (newAlpha < 1.0 - 1e-14)
+        //         //     std::cout << "KL\n"
+        //         //               << std::scientific << std::setprecision(5)
+        //         //               << this->CompressInc(cx[iCell], cxInc[iCell] * alpha).transpose() << "\n"
+        //         //               << cxInc[iCell].transpose() * alpha << std::endl;
+        //         cx[iCell] += (newAlpha < 1 ? alpha_fix_min : 1) * alpha * cxInc[iCell];
+        //     }
+        // }
+
         void AddFixedIncrement(
             ArrayDOFV<nVars_Fixed> &cx,
             ArrayDOFV<nVars_Fixed> &cxInc, real alpha = 1.0)
@@ -1780,7 +1843,8 @@ namespace DNDS::Euler
             real alpha_fix_min = 1.0;
             for (index iCell = 0; iCell < cxInc.Size(); iCell++)
             {
-                real newAlpha = std::abs(this->CompressInc(cx[iCell], cxInc[iCell] * alpha)(0)) /
+                TU compressedInc = this->CompressInc(cx[iCell], cxInc[iCell] * alpha);
+                real newAlpha = std::abs(compressedInc(0)) /
                                 (std::abs((cxInc[iCell] * alpha)(0)));
                 if (std::abs((cxInc[iCell] * alpha)(0)) < verySmallReal)
                     newAlpha = 1.; //! old inc could be zero, so compresion alpha is always 1
@@ -1792,15 +1856,37 @@ namespace DNDS::Euler
                 //               << std::scientific << std::setprecision(5)
                 //               << this->CompressInc(cx[iCell], cxInc[iCell] * alpha).transpose() << "\n"
                 //               << cxInc[iCell].transpose() * alpha << std::endl;
+                // cx[iCell] += compressedInc;
             }
             real alpha_fix_min_c = alpha_fix_min;
-            MPI::Allreduce(&alpha_fix_min_c, &alpha_fix_min, 1, DNDS_MPI_REAL, MPI_MIN, cx.father->mpi.comm);
+            MPI::Allreduce(&alpha_fix_min_c, &alpha_fix_min, 1, DNDS_MPI_REAL, MPI_MIN, cx.father->getMPI().comm);
             if (alpha_fix_min < 1.0)
-                if (cx.father->mpi.rank == 0)
-                    std::cout << "fixed " << std::scientific << std::setprecision(5) << alpha_fix_min << std::endl;
+                if (cx.father->getMPI().rank == 0)
+                    std::cout << "Increment fixed " << std::scientific << std::setprecision(5) << alpha_fix_min << std::endl;
 
+            // for (index iCell = 0; iCell < cxInc.Size(); iCell++)
+            //     cx[iCell] += alpha_fix_min * alpha * cxInc[iCell];
+            index nFixed = 0;
             for (index iCell = 0; iCell < cxInc.Size(); iCell++)
-                cx[iCell] += this->CompressInc(cx[iCell], cxInc[iCell] * alpha);
+            {
+                TU compressedInc = this->CompressInc(cx[iCell], cxInc[iCell] * alpha);
+                real newAlpha = std::abs(compressedInc(0)) /
+                                (std::abs((cxInc[iCell] * alpha)(0)));
+                if (std::abs((cxInc[iCell] * alpha)(0)) < verySmallReal)
+                    newAlpha = 1.; //! old inc could be zero, so compresion alpha is always 1
+
+                // if (newAlpha < 1.0 - 1e-14)
+                //     std::cout << "KL\n"
+                //               << std::scientific << std::setprecision(5)
+                //               << this->CompressInc(cx[iCell], cxInc[iCell] * alpha).transpose() << "\n"
+                //               << cxInc[iCell].transpose() * alpha << std::endl;
+                cx[iCell] += (newAlpha < 1 ? nFixed ++,alpha_fix_min : 1) * alpha * cxInc[iCell];
+            }
+            index nFixed_c = nFixed;
+            MPI::Allreduce(&nFixed_c, &nFixed, 1, DNDS_MPI_INDEX, MPI_SUM, cx.father->getMPI().comm);
+            if (alpha_fix_min < 1.0)
+                if (cx.father->getMPI().rank == 0)
+                    std::cout << "Increment fixed number " << nFixed_c << std::endl;
         }
 
         void CentralSmoothResidual(ArrayDOFV<nVars_Fixed> &r, ArrayDOFV<nVars_Fixed> &rs, ArrayDOFV<nVars_Fixed> &rtemp)
@@ -1843,7 +1929,7 @@ namespace DNDS::Euler
                     for (int ic2f = 0; ic2f < c2f.size(); ic2f++)
                     {
                         index iFace = c2f[ic2f];
-                        if (mesh->GetFaceZone(iFace) == Geom::BC_ID_DEFAULT_WALL)
+                        if (pBCHandler->GetTypeFromID(mesh->GetFaceZone(iFace)) == EulerBCType::BCWall)
                             u[iCell](I4 + 1) *= 1.0; // ! not fixing first layer!
                     }
                 }

@@ -1,45 +1,43 @@
 {
     "timeMarchControl": {
-        "dtImplicit": 10e-6,
-        "nTimeStep": 100,
+        "dtImplicit": 10e-1,
+        "nTimeStep": 10,
         "steadyQuit": false,
-        "useImplicitPP": true,
-        "odeCode": 1,
+        "odeCode": 401,
         "tEnd": 3e+200,
         "odeSetting1": 0.5,
         "odeSetting2": 1
-    },
-    "convergenceControl": {
-        "nTimeStepInternal": 100,
-        "rhsThresholdInternal": 1e-4,
-        "res_base": 0.0,
-        "useVolWiseResidual": true
     },
     "outputControl": {
         "nConsoleCheck": 1,
         "nConsoleCheckInternal": 1,
         "consoleOutputMode": 0,
         "nDataOutC": 1,
-        "nDataOut": 100,
-        "nDataOutCInternal": 100,
+        "nDataOut": 1,
+        "nDataOutCInternal": 200,
         "nDataOutInternal": 1000000000,
         "tDataOut": 3e+200
     },
     "implicitCFLControl": {
-        "CFL": 10,
+        "CFL": 100.0,
         "nForceLocalStartStep": 2147483647,
         "nCFLRampStart": 2147483647,
         "nCFLRampLength": 2147483647,
         "CFLRampEnd": 0.0,
-        "useLocalDt": false
+        "useLocalDt": true
     },
-    
+    "convergenceControl": {
+        "nTimeStepInternal": 4000,
+        "rhsThresholdInternal": 1e-4,
+        "res_base": 0.0,
+        "useVolWiseResidual": true
+    },
     "dataIOControl": {
         "uniqueStamps": false,
         "meshRotZ": 0.0,
-        "meshFile": "../data/mesh/Unifrom_1DSedov5EM3.cgns",
-        "outPltName": "../data/outUnsteady/Unifrom_1DSedov5EM3",
-        "outLogName": "../data/outUnsteady/Unifrom_1DSedov5EM3",
+        "meshFile": "../data/mesh/IV10_40.cgns",
+        "outPltName": "../data/outUnsteady/IV10_40",
+        "outLogName": "../data/outUnsteady/IV10_40",
         "outPltMode": 0,
         "readMeshMode": 0,
         "outPltTecplotFormat": true,
@@ -48,10 +46,20 @@
         "outAtCellData": true
     },
     "boundaryDefinition": {
+        "PeriodicTranslation1": [
+            10.0,
+            0.0,
+            0.0
+        ],
         "PeriodicTranslation2": [
             0.0,
-            0.01,
+            10.0,
             0.0
+        ],
+        "PeriodicTranslation3": [
+            0.0,
+            0.0,
+            10.0
         ]
     },
     "implicitReconstructionControl": {
@@ -62,12 +70,12 @@
         "nGmresIter": 10,
         "recThreshold": 1e-010,
         "nRecConsolCheck": 10,
-        "nRecMultiplyForZeroedGrad": 1,
+        "nRecMultiplyForZeroedGrad": 1000,
         "storeRecInc": true,
         "dampRecIncDTau": false
     },
     "limiterControl": {
-        "useLimiter": true,
+        "useLimiter": false,
         "smoothIndicatorProcedure": 0,
         "limiterProcedure": 1, //1 == CWBAP
         "nPartialLimiterStart": 1000000,
@@ -82,9 +90,9 @@
         "smoothThreshold": 1e-3,
         "WBAP_nStd": 10.0,
         "normWBAP": false,
-        "subs2ndOrder": 1,
+        "subs2ndOrder": 0,
         "baseSettings": {
-            "localOrientation": false,
+            "localOrientation": true,
             "anisotropicLengths": false
         },
         "functionalSettings": {
@@ -97,12 +105,12 @@
     },
     "linearSolverControl": {
         "sgsIter": 0,
-        "sgsWithRec": 0,
+        "sgsWithRec": 1,
         "nSgsConsoleCheck": 100,
         "gmresCode": 0,
         "nGmresSpace": 5,
         "nGmresIter": 1,
-        "initWithLastURecInc": false
+        "initWithLastURecInc": true
     },
     "others": {
         "nFreezePassiveInner": 0
@@ -110,7 +118,8 @@
     "eulerSettings": {
         "ignoreSourceTerm": true,
         "useScalarJacobian": true,
-        "riemannSolverType": "HLLEP",
+        "riemannSolverType": "Roe",
+        "specialBuiltinInitializer": 2,
         "nCentralSmoothStep": 0,
         "constMassForce": [
             0.0,
@@ -120,41 +129,9 @@
         "farFieldStaticValue": [
             1,
             1,
+            1,
             0,
-            0,
-            2.5
-        ],
-        "boxInitializers": [
-            {
-                "x0": -5,
-                "x1": 5,
-                "y0": -100,
-                "y1": 100,
-                "z0": -100,
-                "z1": 100,
-                "v": [
-                    1,
-                    0,
-                    0,
-                    0,
-                    1e-9
-                ]
-            },
-            {
-                "x0": -5e-3,
-                "x1": 5e-3,
-                "y0": -100,
-                "y1": 100,
-                "z0": -100,
-                "z1": 100,
-                "v": [
-                    1,
-                    0,
-                    0,
-                    0,
-                    320000000
-                ]
-            }
+            3.5
         ],
         "idealGasProperty": {
             "gamma": 1.4,

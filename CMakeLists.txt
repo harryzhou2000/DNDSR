@@ -131,11 +131,16 @@ find_path(EXTERNAL_INCLUDE_PYBIND11 pybind11 PATHS
     "${PROJECT_SOURCE_DIR}/external/pybind11-2.11.1/include" 
     NO_DEFAULT_PATH REQUIRED)
 
+find_path(EXTERNAL_INCLUDE_FMT fmt PATHS
+    "${PROJECT_SOURCE_DIR}/external/fmt-10.1.1/include" 
+    NO_DEFAULT_PATH REQUIRED)
+
 find_path(EXTERNAL_DOXYGEN_AWESOME doxygen-awesome.css PATHS 
     "${PROJECT_SOURCE_DIR}/external/doxygen-awesome-css-2.2.1" 
     NO_DEFAULT_PATH)
 
 add_subdirectory("${EXTERNAL_INCLUDE_PYBIND11}/..")
+add_subdirectory("${EXTERNAL_INCLUDE_FMT}/..")
 
 set (EXTERNAL_LIBS "")
 
@@ -143,6 +148,12 @@ if (MPI_CXX_FOUND)
     set(EXTERNAL_LIBS ${MPI_CXX_LIBRARIES})
     message("MPI_CXX_LIBRARIES" ${MPI_CXX_LIBRARIES})
 endif()
+
+set(EXTERNAL_LIBS ${EXTERNAL_LIBS}
+    fmt::fmt
+    CACHE INTERNAL
+    "Project Public External Lib Dependencies"
+    )
 
 set(EXTERNAL_LIBS ${EXTERNAL_LIBS}
     ${EXTERNAL_LIB_ZLIB}
@@ -180,6 +191,7 @@ set(EXTERNAL_INCLUDES
     ${EXTERNAL_INCLUDE_BOOST}
     ${EXTERNAL_INCLUDE_CGAL}
     ${EXTERNAL_INCLUDE_PYBIND11}
+    ${EXTERNAL_INCLUDE_FMT}
     CACHE INTERNAL "Project External Includes")
 
 if(DNDS_EIGEN_USE_BLAS)

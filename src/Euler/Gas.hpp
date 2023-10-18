@@ -3,6 +3,7 @@
 #include "Eigen/Dense"
 
 #include <json.hpp>
+#include <fmt/core.h>
 
 namespace DNDS::Euler::Gas
 {
@@ -755,9 +756,18 @@ namespace DNDS::Euler::Gas
 
         real c0 = 2 * u(I4) * u(0) - u(Seq123).squaredNorm() - 2 * u(0) * newrhoEinteralNew;
         real c1 = 2 * u(I4) * ret(0) + 2 * u(0) * ret(I4) - 2 * u(Seq123).dot(ret(Seq123)) - 2 * ret(0) * newrhoEinteralNew;
-        real c2 = 2 * ret(I4) * ret(0) - ret(Seq123).squaredNorm();
+        real c2 = 2 * ret(I4) * ret(0) - ret(Seq123).squaredNorm() + verySmallReal;
         real deltaC = sqr(c1) - 4 * c0 * c2;
-        DNDS_assert(deltaC > 0);
+        if (deltaC <= 0)
+        {
+            std::cout << std::scientific << std::setprecision(5);
+            std::cout << u.transpose() << std::endl;
+            std::cout << uInc.transpose() << std::endl;
+            std::cout << newrhoEinteralNew << std::endl;
+            std::cout << fmt::format("{} {} {}", c0, c1, c2) << std::endl;
+
+            DNDS_assert(false);
+        }
         real alphaL = (-std::sqrt(deltaC) - c1) / (2 * c2);
         real alphaR = (std::sqrt(deltaC) - c1) / (2 * c2);
         // if (c2 > 0)

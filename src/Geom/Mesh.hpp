@@ -159,6 +159,8 @@ namespace DNDS::Geom
         t_index GetFaceZone(index iF) { return faceElemInfo(iF, 0).zone; }
         t_index GetBndZone(index iB) { return bndElemInfo(iB, 0).zone; }
 
+        MPIInfo &getMPI() { return mpi; }
+
         /**
          * @brief directly load coords; gets faulty if isPeriodic!
          */

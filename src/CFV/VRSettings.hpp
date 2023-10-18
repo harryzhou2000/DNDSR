@@ -167,7 +167,6 @@ namespace DNDS::CFV
             baseSettings = jsonSetting["baseSettings"];
             functionalSettings = jsonSetting["functionalSettings"];
         }
-
         friend void from_json(const json &j, VRSettings &s)
         {
             s.ParseFromJson(j);

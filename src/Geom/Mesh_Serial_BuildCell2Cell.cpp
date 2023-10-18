@@ -53,7 +53,7 @@ namespace DNDS::Geom
                        periodicDonorCenter2.pts.size() +
                        periodicDonorCenter3.pts.size();
         index nDonorAll{0};
-        MPI::Allreduce(&nDonor, &nDonorAll, 1, DNDS_MPI_INDEX, MPI_SUM, mesh->mpi.comm);
+        MPI::Allreduce(&nDonor, &nDonorAll, 1, DNDS_MPI_INDEX, MPI_SUM, mesh->getMPI().comm);
         if (nDonorAll)
             mesh->isPeriodic = true; //! below are all periodic code
         else
@@ -161,7 +161,7 @@ namespace DNDS::Geom
             }
         /**********************************************************************************************************************/
 
-        DNDS_MAKE_SSP(cell2nodePbiSerial, NodePeriodicBits::CommType(), NodePeriodicBits::CommMult(), mesh->mpi);
+        DNDS_MAKE_SSP(cell2nodePbiSerial, NodePeriodicBits::CommType(), NodePeriodicBits::CommMult(), mesh->getMPI());
         cell2nodePbiSerial->Resize(cell2nodeSerial->Size());
         for (index iCell = 0; iCell < cell2nodeSerial->Size(); iCell++)
             cell2nodePbiSerial->ResizeRow(iCell, cell2nodeSerial->RowSize(iCell));
@@ -243,7 +243,7 @@ namespace DNDS::Geom
         cell2nodePbiSerial->Compress();
 
         decltype(coordSerial) coordSerialOld = coordSerial;
-        DNDS_MAKE_SSP(coordSerial, mesh->mpi);
+        DNDS_MAKE_SSP(coordSerial, mesh->getMPI());
         coordSerial->Resize(nNodeNew);
         for (index i = 0; i < coordSerialOld->Size(); i++)
             if (iNodeOld2New[i] >= 0)
@@ -255,10 +255,10 @@ namespace DNDS::Geom
         BuildCell2Cell() // currently does not handle parallel input mode
     {
         DNDS_assert(this->dataIsSerialIn);
-        if (mesh->mpi.rank == mRank)
+        if (mesh->getMPI().rank == mRank)
             DNDS::log() << "UnstructuredMeshSerialRW === Doing  BuildCell2Cell" << std::endl;
-        DNDS_MAKE_SSP(cell2cellSerial, mesh->mpi);
-        // if (mRank != mesh->mpi.rank)
+        DNDS_MAKE_SSP(cell2cellSerial, mesh->getMPI());
+        // if (mRank != mesh->getMPI().rank)
         //     return;
         /// TODO: abstract these: invert cone (like node 2 cell -> cell 2 node) (also support operating on pair)
         /**********************************************************************************************************************/
@@ -276,7 +276,7 @@ namespace DNDS::Geom
                 node2cell[(*cell2nodeSerial)(iCell, iN)].push_back(iCell);
         // node2cellSz.clear();
         /**********************************************************************************************************************/
-        if (mesh->mpi.rank == mRank)
+        if (mesh->getMPI().rank == mRank)
             DNDS::log() << "UnstructuredMeshSerialRW === Doing  BuildCell2Cell Part 1" << std::endl;
         cell2cellSerial->Resize(cell2nodeSerial->Size());
 
@@ -364,8 +364,8 @@ namespace DNDS::Geom
         }
 
         /*************************************************************************************************/
-        DNDS_MAKE_SSP(cell2cellSerialFacial, mesh->mpi);
-        if (mesh->mpi.rank == mRank)
+        DNDS_MAKE_SSP(cell2cellSerialFacial, mesh->getMPI());
+        if (mesh->getMPI().rank == mRank)
             DNDS::log() << "UnstructuredMeshSerialRW === Doing  BuildCell2Cell Part 2" << std::endl;
         cell2cellSerialFacial->Resize(cell2cellSerial->Size());
         nCellsDone = 0;
@@ -418,7 +418,7 @@ namespace DNDS::Geom
         }
         /*************************************************************************************************/
 
-        if (mesh->mpi.rank == mRank)
+        if (mesh->getMPI().rank == mRank)
             DNDS::log() << "UnstructuredMeshSerialRW === Done  BuildCell2Cell" << std::endl;
     }
 }

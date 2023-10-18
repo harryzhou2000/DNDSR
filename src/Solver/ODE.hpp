@@ -13,7 +13,7 @@ namespace DNDS::ODE
         using Fdt = std::function<void(TDATA &, std::vector<real> &, real, int)>;
         using Fsolve = std::function<void(TDATA &, TDATA &, std::vector<real> &, real, real, TDATA &, int, int)>;
         using Fstop = std::function<bool(int, TDATA &, int)>;
-        using Fincrement = std::function<void(TDATA &, TDATA &, real)>;
+        using Fincrement = std::function<void(TDATA &, TDATA &, real, int)>;
 
         virtual void Step(TDATA &x, TDATA &xinc, const Frhs &frhs, const Fdt &fdt, const Fsolve &fsolve,
                           int maxIter, const Fstop &fstop, const Fincrement &fincrement, real dt) = 0;
@@ -79,7 +79,7 @@ namespace DNDS::ODE
                 rhs += rhsbuf[0]; // crhs = rhs + (x_i - x_j) / dt
 
                 fsolve(x, rhs, dTau, dt, 1.0, xinc, iter, 0);
-                fincrement(x, xinc, 1.0);
+                fincrement(x, xinc, 1.0, 0);
 
                 if (fstop(iter, rhs, 1))
                     break;
@@ -217,7 +217,7 @@ namespace DNDS::ODE
 
                     fsolve(x, rhs, dTau, dt, butcherA(iB, iB), xinc, iter, 0);
                     // x += xinc;
-                    fincrement(x, xinc, 1.0);
+                    fincrement(x, xinc, 1.0, 0);
                     // x.addTo(xIncPrev, -0.5);
 
                     xIncPrev = xinc;
@@ -236,7 +236,7 @@ namespace DNDS::ODE
                 return;
             x = xLast;
             for (int jB = 0; jB < nInnerStage; jB++)
-                fincrement(x, rhsbuf[jB], butcherB(jB) * dt);
+                fincrement(x, rhsbuf[jB], butcherB(jB) * dt, 0);
         }
 
         virtual TDATA &getLatestRHS() override
@@ -341,7 +341,7 @@ namespace DNDS::ODE
                 // std::cout << kCurrent << " " << cnPrev<<" " << BDFCoefs(kCurrent - 1, 0) << std::endl;
 
                 // x += xinc;
-                fincrement(x, xinc, 1.0);
+                fincrement(x, xinc, 1.0, 0);
                 // x.addTo(xIncPrev, -0.5);
 
                 xIncPrev = xinc;
@@ -416,18 +416,20 @@ namespace DNDS::ODE
                     0);
 
                 rhsbuf[0].setConstant(0.0);
-                rhsbuf[0].addTo(x, -1. / dt);
-                rhsbuf[0].addTo(xLast, (BDFCoefs(kCurrent - 1, 1)) / dt);
+                // rhsbuf[0].addTo(x, -1. / dt);
+                rhsbuf[0].addTo(xLast, (BDFCoefs(kCurrent - 1, 1) - 1) / dt);
                 // std::cout << "add " << BDFCoefs(kCurrent - 1, 1) << " " << "last" << std::endl;
                 if (prevSiz)
                     for (index iPrev = 0; iPrev < cnPrev; iPrev++)
                     {
                         // std::cout << "add " << BDFCoefs(kCurrent - 1, 2 + iPrev) <<" " << mod(iPrev + prevStart, prevSiz) << std::endl;
-                        resInc.addTo(xPrevs[mod(iPrev + prevStart, prevSiz)], BDFCoefs(kCurrent - 1, 2 + iPrev) / dt);
+                        rhsbuf[0].addTo(xPrevs[mod(iPrev + prevStart, prevSiz)], BDFCoefs(kCurrent - 1, 2 + iPrev) / dt);
                     }
-                falphaLimSource(resInc, 0); // non-rhs part of residual, fixed with alpha too
+                falphaLimSource(rhsbuf[0], 0); // non-rhs part of residual, fixed with alpha too
                 rhsbuf[0].addTo(rhs, BDFCoefs(kCurrent - 1, 0));
 
+                rhsbuf[0].addTo(x, -1. / dt);
+                rhsbuf[0].addTo(xLast, 1 / dt);
 
                 fsolve(x, rhsbuf[0], dTau, dt, BDFCoefs(kCurrent - 1, 0), xinc, iter, 0);
                 //* xinc = (I/dtau-A*alphaDiag)\rhs
@@ -436,7 +438,7 @@ namespace DNDS::ODE
                 // std::cout << kCurrent << " " << cnPrev<<" " << BDFCoefs(kCurrent - 1, 0) << std::endl;
 
                 // x += xinc;
-                fincrement(x, xinc, 1.0);
+                fincrement(x, xinc, 1.0, 0);
                 // x.addTo(xIncPrev, -0.5);
 
                 xIncPrev = xinc;
@@ -594,7 +596,7 @@ namespace DNDS::ODE
                         rhsMid = rhsbuf[0];
                         rhsMid *= cInter[2] * dt;
                         rhsMid.addTo(rhsbuf[1], cInter[3] * dt);
-                        fincrement(xMid, rhsMid, 1.0);
+                        fincrement(xMid, rhsMid, 1.0, 1);
                     }
                     fdt(xMid, dTau, 1.0, 0);
                     frhs(rhsMid, xMid, dTau, iter, 1.0, 1);
@@ -732,7 +734,7 @@ namespace DNDS::ODE
                     // xinc *= xIncDamper;
                 }
 
-                fincrement(x, xinc, 1.0);
+                fincrement(x, xinc, 1.0, 0);
                 // x.addTo(xIncPrev, -0.5);
 
                 xIncPrev = xinc;
@@ -773,8 +775,8 @@ namespace DNDS::ODE
                     xMid.setConstant(0.0);
                     xMid.addTo(xLast, cInter[0]);
                     xMid.addTo(x, cInter[1]);
-                    fincrement(xMid, rhsbuf[0], cInter[2] * dt);
-                    fincrement(xMid, rhsbuf[1], cInter[3] * dt);
+                    fincrement(xMid, rhsbuf[0], cInter[2] * dt, 1);
+                    fincrement(xMid, rhsbuf[1], cInter[3] * dt, 1);
                     frhs(rhsMid, xMid, dTau, iter, 1.0, 1);
                     rhsFull.setConstant(0.0);
                     rhsFull.addTo(rhsbuf[0], wInteg[0]);
@@ -837,7 +839,7 @@ namespace DNDS::ODE
                     // xinc *= xIncDamper;
                 }
 
-                fincrement(x, xinc, 1.0);
+                fincrement(x, xinc, 1.0, 0);
                 // x.addTo(xIncPrev, -0.5);
 
                 xIncPrev = xinc;
@@ -919,7 +921,7 @@ namespace DNDS::ODE
                 rhs *= dt;
 
             // x += rhs;
-            fincrement(x, rhs, 1.0);
+            fincrement(x, rhs, 1.0, 0);
 
             frhs(rhs, x, dTau, 1, 1, 0);
             rhsbuf[1] = rhs;
@@ -930,7 +932,7 @@ namespace DNDS::ODE
             x *= 0.25;
             x.addTo(xLast, 0.75);
             // x.addTo(rhs, 0.25);
-            fincrement(x, rhs, 0.25);
+            fincrement(x, rhs, 0.25, 0);
 
             frhs(rhs, x, dTau, 1, 0.25, 0);
             rhsbuf[2] = rhs;
@@ -941,7 +943,7 @@ namespace DNDS::ODE
             x *= 2. / 3.;
             x.addTo(xLast, 1. / 3.);
             // x.addTo(rhs, 2. / 3.);
-            fincrement(x, rhs, 2. / 3.);
+            fincrement(x, rhs, 2. / 3., 0);
         }
 
         virtual TDATA &getLatestRHS() override

@@ -17,6 +17,16 @@ namespace DNDS::Euler
         BCSpecial,
     };
 
+    NLOHMANN_JSON_SERIALIZE_ENUM(
+        EulerBCType,
+        {
+            {BCUnknown, nullptr},
+            {BCFar, "BCFar"},
+            {BCWall, "BCWall"},
+            {BCWallInvis, "BCWallInvis"},
+            {BCSpecial, "BCSpecial"},
+        });
+
     template <EulerModel model>
     class BoundaryHandler
     {
@@ -25,10 +35,10 @@ namespace DNDS::Euler
         using TU = Eigen::Vector<real, NVars_Fixed>;
 
     private:
-        std::vector<nlohmann::json> BCSettings;
         std::vector<TU> BCValues;
         std::vector<EulerBCType> BCTypes;
         std::unordered_map<std::string, Geom::t_index> name2ID;
+        std::unordered_map<Geom::t_index, std::string> ID2name;
 
     public:
         BoundaryHandler()
@@ -46,11 +56,77 @@ namespace DNDS::Euler
             BCTypes[Geom::BC_ID_DEFAULT_WALL] = BCWall;
             BCTypes[Geom::BC_ID_DEFAULT_WALL_INVIS] = BCWallInvis;
             BCTypes[Geom::BC_ID_NULL] = BCUnknown;
+            RenewID2name();
         }
 
-        void PushBCWithJson(const nlohmann::json &gS)
+        void RenewID2name()
+        {
+            ID2name.clear();
+            for (auto &p : name2ID)
+                ID2name[p.second] = p.first;
+        }
+
+        using json = nlohmann::ordered_json;
+        void PushBCWithJson(const json &gS)
         {
             // TODO
+        }
+
+        friend void from_json(const json &j, BoundaryHandler<model> &bc)
+        {
+            DNDS_assert(j.is_array());
+            for (auto &item : j)
+            {
+                EulerBCType bcType = item["type"].get<EulerBCType>();
+                switch (bcType)
+                {
+                case EulerBCType::BCFar:
+                case EulerBCType::BCWall:
+                case EulerBCType::BCWallInvis:
+                {
+                    std::string bcName = item["name"];
+                    Eigen::VectorXd bcValue = item["value"];
+
+                    bc.BCTypes.push_back(bcType);
+                    bc.BCValues.push_back(bcValue);
+                    DNDS_assert(bc.name2ID.count(bcName) == 0);
+                    bc.name2ID[bcName] = bc.BCValues.size() - 1;
+                }
+                break;
+
+                default:
+                    DNDS_assert(false);
+                    break;
+                }
+            }
+            bc.RenewID2name();
+        }
+
+        friend void to_json(json &j, const BoundaryHandler<model> &bc)
+        {
+            j = json::array();
+            for (Geom::t_index i = Geom::BC_ID_DEFAULT_MAX; i < bc.BCTypes.size(); i++)
+            {
+                json item;
+                EulerBCType bcType = bc.BCTypes[i];
+                switch (bcType)
+                {
+                case EulerBCType::BCFar:
+                case EulerBCType::BCWall:
+                case EulerBCType::BCWallInvis:
+                {
+                    item["type"] = bcType;
+                    item["name"] = bc.ID2name.at(i);
+                    item["value"] = bc.BCValues.at(i);
+                }
+                break;
+
+                default:
+                    DNDS_assert(false);
+                    break;
+                }
+                j.push_back(item);
+            }
         }
 
         /**
@@ -67,7 +143,16 @@ namespace DNDS::Euler
         EulerBCType GetTypeFromID(Geom::t_index id)
         {
             // std::cout << "id " << std::endl;
+            if (!Geom::FaceIDIsExternalBC(id))
+                return BCUnknown;
             return BCTypes.at(id);
+        }
+
+        TU GetValueFromID(Geom::t_index id)
+        {
+            if (!Geom::FaceIDIsExternalBC(id))
+                return BCValues.at(0);
+            return BCValues.at(id);
         }
     };
 }

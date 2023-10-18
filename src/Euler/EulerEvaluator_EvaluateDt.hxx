@@ -13,12 +13,12 @@ namespace DNDS::Euler
     {
         using TriArray = ArrayEigenMatrix<3, 3>;
         ssp<TriArray> TrianglesLocal, TrianglesFull;
-        DNDS_MAKE_SSP(TrianglesLocal, mesh->mpi);
-        DNDS_MAKE_SSP(TrianglesFull, mesh->mpi);
+        DNDS_MAKE_SSP(TrianglesLocal, mesh->getMPI());
+        DNDS_MAKE_SSP(TrianglesFull, mesh->getMPI());
         std::vector<Eigen::Matrix<real, 3, 3>> Triangles;
         for (index iBnd = 0; iBnd < mesh->NumBnd(); iBnd++)
         {
-            if (mesh->GetBndZone(iBnd) == Geom::BC_ID_DEFAULT_WALL)
+            if (pBCHandler->GetTypeFromID(mesh->GetBndZone(iBnd)) == EulerBCType::BCWall)
             {
                 index iFace = mesh->bnd2face[iBnd];
                 auto elem = mesh->GetFaceElement(iFace);
@@ -153,7 +153,7 @@ namespace DNDS::Euler
         bool UseLocaldt)
     {
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
-        InsertCheck(u.father->mpi, "EvaluateDt 1");
+        InsertCheck(u.father->getMPI(), "EvaluateDt 1");
         for (auto &i : lambdaCell)
             i = 0.0;
 
@@ -311,16 +311,16 @@ namespace DNDS::Euler
             // }
         }
 
-        MPI::Allreduce(&dtMin, &dtMinall, 1, DNDS_MPI_REAL, MPI_MIN, u.father->mpi.comm);
+        MPI::Allreduce(&dtMin, &dtMinall, 1, DNDS_MPI_REAL, MPI_MIN, u.father->getMPI().comm);
 
-        // if (uRec.father->mpi.rank == 0)
+        // if (uRec.father->getMPI().rank == 0)
         //     std::cout << "dt min is " << dtMinall << std::endl;
         if (!UseLocaldt)
         {
             for (auto &i : dt)
                 i = dtMinall;
         }
-        // if (uRec.father->mpi.rank == 0)
+        // if (uRec.father->getMPI().rank == 0)
         // log() << "dt: " << dtMin << std::endl;
     }
 

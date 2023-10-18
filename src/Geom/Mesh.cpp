@@ -13,12 +13,12 @@ namespace DNDS::Geom
     // void UnstructuredMeshSerialRW::InterpolateTopology() //!could be useful for parallel?
     // {
     //     // count node 2 face
-    //     DNDS_MAKE_SSP(cell2faceSerial, mesh->mpi);
-    //     DNDS_MAKE_SSP(face2cellSerial, mesh->mpi);
-    //     DNDS_MAKE_SSP(face2nodeSerial, mesh->mpi);
-    //     DNDS_MAKE_SSP(faceElemInfoSerial, ElemInfo::CommType(), ElemInfo::CommMult(), mesh->mpi);
+    //     DNDS_MAKE_SSP(cell2faceSerial, mesh->getMPI());
+    //     DNDS_MAKE_SSP(face2cellSerial, mesh->getMPI());
+    //     DNDS_MAKE_SSP(face2nodeSerial, mesh->getMPI());
+    //     DNDS_MAKE_SSP(faceElemInfoSerial, ElemInfo::CommType(), ElemInfo::CommMult(), mesh->getMPI());
 
-    //     if (mRank != mesh->mpi.rank)
+    //     if (mRank != mesh->getMPI().rank)
     //         return;
 
     //     for (DNDS::index iCell = 0; iCell <cell2nodeSerial->Size(); iCell++)
@@ -241,9 +241,9 @@ namespace DNDS::Geom
     void UnstructuredMeshSerialRW::
         PartitionReorderToMeshCell2Cell()
     {
-        if (mesh->mpi.rank == mRank)
+        if (mesh->getMPI().rank == mRank)
             DNDS::log() << "UnstructuredMeshSerialRW === Doing  PartitionReorderToMeshCell2Cell" << std::endl;
-        DNDS_assert(cnPart == mesh->mpi.size);
+        DNDS_assert(cnPart == mesh->getMPI().size);
         // * 1: get the nodal partition
         nodePartition.resize(coordSerial->Size(), static_cast<DNDS::MPI_int>(INT32_MAX));
         for (DNDS::index iCell = 0; iCell < cell2nodeSerial->Size(); iCell++)
@@ -255,65 +255,65 @@ namespace DNDS::Geom
             bndPartition[iBnd] = cellPartition[(*bnd2cellSerial)(iBnd, 0)];
 
         std::vector<DNDS::index> cell_push, cell_pushStart, node_push, node_pushStart, bnd_push, bnd_pushStart;
-        Partition2LocalIdx(cellPartition, cell_push, cell_pushStart, mesh->mpi);
-        Partition2LocalIdx(nodePartition, node_push, node_pushStart, mesh->mpi);
-        Partition2LocalIdx(bndPartition, bnd_push, bnd_pushStart, mesh->mpi);
+        Partition2LocalIdx(cellPartition, cell_push, cell_pushStart, mesh->getMPI());
+        Partition2LocalIdx(nodePartition, node_push, node_pushStart, mesh->getMPI());
+        Partition2LocalIdx(bndPartition, bnd_push, bnd_pushStart, mesh->getMPI());
         std::vector<DNDS::index> cell_Serial2Global, node_Serial2Global, bnd_Serial2Global;
-        Partition2Serial2Global(cellPartition, cell_Serial2Global, mesh->mpi, mesh->mpi.size);
-        Partition2Serial2Global(nodePartition, node_Serial2Global, mesh->mpi, mesh->mpi.size);
-        // Partition2Serial2Global(bndPartition, bnd_Serial2Global, mesh->mpi, mesh->mpi.size);//seems not needed for now
-        // PushInfo2Serial2Global(cell_Serial2Global, cellPartition.size(), cell_push, cell_pushStart, mesh->mpi);//*safe validation version
-        // PushInfo2Serial2Global(node_Serial2Global, nodePartition.size(), node_push, node_pushStart, mesh->mpi);//*safe validation version
-        // PushInfo2Serial2Global(bnd_Serial2Global, bndPartition.size(), bnd_push, bnd_pushStart, mesh->mpi);    //*safe validation version
+        Partition2Serial2Global(cellPartition, cell_Serial2Global, mesh->getMPI(), mesh->getMPI().size);
+        Partition2Serial2Global(nodePartition, node_Serial2Global, mesh->getMPI(), mesh->getMPI().size);
+        // Partition2Serial2Global(bndPartition, bnd_Serial2Global, mesh->getMPI(), mesh->getMPI().size);//seems not needed for now
+        // PushInfo2Serial2Global(cell_Serial2Global, cellPartition.size(), cell_push, cell_pushStart, mesh->getMPI());//*safe validation version
+        // PushInfo2Serial2Global(node_Serial2Global, nodePartition.size(), node_push, node_pushStart, mesh->getMPI());//*safe validation version
+        // PushInfo2Serial2Global(bnd_Serial2Global, bndPartition.size(), bnd_push, bnd_pushStart, mesh->getMPI());    //*safe validation version
 
-        ConvertAdjSerial2Global(cell2nodeSerial, node_Serial2Global, mesh->mpi);
-        ConvertAdjSerial2Global(cell2cellSerial, cell_Serial2Global, mesh->mpi);
-        ConvertAdjSerial2Global(bnd2nodeSerial, node_Serial2Global, mesh->mpi);
-        ConvertAdjSerial2Global(bnd2cellSerial, cell_Serial2Global, mesh->mpi);
+        ConvertAdjSerial2Global(cell2nodeSerial, node_Serial2Global, mesh->getMPI());
+        ConvertAdjSerial2Global(cell2cellSerial, cell_Serial2Global, mesh->getMPI());
+        ConvertAdjSerial2Global(bnd2nodeSerial, node_Serial2Global, mesh->getMPI());
+        ConvertAdjSerial2Global(bnd2cellSerial, cell_Serial2Global, mesh->getMPI());
 
-        DNDS_MAKE_SSP(mesh->coords.father, mesh->mpi);
-        DNDS_MAKE_SSP(mesh->coords.son, mesh->mpi);
-        DNDS_MAKE_SSP(mesh->cellElemInfo.father, ElemInfo::CommType(), ElemInfo::CommMult(), mesh->mpi);
-        DNDS_MAKE_SSP(mesh->cellElemInfo.son, ElemInfo::CommType(), ElemInfo::CommMult(), mesh->mpi);
-        DNDS_MAKE_SSP(mesh->bndElemInfo.father, ElemInfo::CommType(), ElemInfo::CommMult(), mesh->mpi);
-        DNDS_MAKE_SSP(mesh->bndElemInfo.son, ElemInfo::CommType(), ElemInfo::CommMult(), mesh->mpi);
-        DNDS_MAKE_SSP(mesh->cell2node.father, mesh->mpi);
-        DNDS_MAKE_SSP(mesh->cell2node.son, mesh->mpi);
+        DNDS_MAKE_SSP(mesh->coords.father, mesh->getMPI());
+        DNDS_MAKE_SSP(mesh->coords.son, mesh->getMPI());
+        DNDS_MAKE_SSP(mesh->cellElemInfo.father, ElemInfo::CommType(), ElemInfo::CommMult(), mesh->getMPI());
+        DNDS_MAKE_SSP(mesh->cellElemInfo.son, ElemInfo::CommType(), ElemInfo::CommMult(), mesh->getMPI());
+        DNDS_MAKE_SSP(mesh->bndElemInfo.father, ElemInfo::CommType(), ElemInfo::CommMult(), mesh->getMPI());
+        DNDS_MAKE_SSP(mesh->bndElemInfo.son, ElemInfo::CommType(), ElemInfo::CommMult(), mesh->getMPI());
+        DNDS_MAKE_SSP(mesh->cell2node.father, mesh->getMPI());
+        DNDS_MAKE_SSP(mesh->cell2node.son, mesh->getMPI());
         if (mesh->isPeriodic)
         {
-            DNDS_MAKE_SSP(mesh->cell2nodePbi.father, NodePeriodicBits::CommType(), NodePeriodicBits::CommMult(), mesh->mpi);
-            DNDS_MAKE_SSP(mesh->cell2nodePbi.son, NodePeriodicBits::CommType(), NodePeriodicBits::CommMult(), mesh->mpi);
+            DNDS_MAKE_SSP(mesh->cell2nodePbi.father, NodePeriodicBits::CommType(), NodePeriodicBits::CommMult(), mesh->getMPI());
+            DNDS_MAKE_SSP(mesh->cell2nodePbi.son, NodePeriodicBits::CommType(), NodePeriodicBits::CommMult(), mesh->getMPI());
         }
-        DNDS_MAKE_SSP(mesh->cell2cell.father, mesh->mpi);
-        DNDS_MAKE_SSP(mesh->cell2cell.son, mesh->mpi);
-        DNDS_MAKE_SSP(mesh->bnd2node.father, mesh->mpi);
-        DNDS_MAKE_SSP(mesh->bnd2node.son, mesh->mpi);
-        DNDS_MAKE_SSP(mesh->bnd2cell.father, mesh->mpi);
-        DNDS_MAKE_SSP(mesh->bnd2cell.son, mesh->mpi);
+        DNDS_MAKE_SSP(mesh->cell2cell.father, mesh->getMPI());
+        DNDS_MAKE_SSP(mesh->cell2cell.son, mesh->getMPI());
+        DNDS_MAKE_SSP(mesh->bnd2node.father, mesh->getMPI());
+        DNDS_MAKE_SSP(mesh->bnd2node.son, mesh->getMPI());
+        DNDS_MAKE_SSP(mesh->bnd2cell.father, mesh->getMPI());
+        DNDS_MAKE_SSP(mesh->bnd2cell.son, mesh->getMPI());
 
         // coord transferring
-        TransferDataSerial2Global(coordSerial, mesh->coords.father, node_push, node_pushStart, mesh->mpi);
+        TransferDataSerial2Global(coordSerial, mesh->coords.father, node_push, node_pushStart, mesh->getMPI());
 
         // cells transferring
-        TransferDataSerial2Global(cell2cellSerial, mesh->cell2cell.father, cell_push, cell_pushStart, mesh->mpi);
-        TransferDataSerial2Global(cell2nodeSerial, mesh->cell2node.father, cell_push, cell_pushStart, mesh->mpi);
+        TransferDataSerial2Global(cell2cellSerial, mesh->cell2cell.father, cell_push, cell_pushStart, mesh->getMPI());
+        TransferDataSerial2Global(cell2nodeSerial, mesh->cell2node.father, cell_push, cell_pushStart, mesh->getMPI());
         if (mesh->isPeriodic)
-            TransferDataSerial2Global(cell2nodePbiSerial, mesh->cell2nodePbi.father, cell_push, cell_pushStart, mesh->mpi);
-        TransferDataSerial2Global(cellElemInfoSerial, mesh->cellElemInfo.father, cell_push, cell_pushStart, mesh->mpi);
+            TransferDataSerial2Global(cell2nodePbiSerial, mesh->cell2nodePbi.father, cell_push, cell_pushStart, mesh->getMPI());
+        TransferDataSerial2Global(cellElemInfoSerial, mesh->cellElemInfo.father, cell_push, cell_pushStart, mesh->getMPI());
 
         // bnds transferring
-        TransferDataSerial2Global(bnd2cellSerial, mesh->bnd2cell.father, bnd_push, bnd_pushStart, mesh->mpi);
-        TransferDataSerial2Global(bnd2nodeSerial, mesh->bnd2node.father, bnd_push, bnd_pushStart, mesh->mpi);
-        TransferDataSerial2Global(bndElemInfoSerial, mesh->bndElemInfo.father, bnd_push, bnd_pushStart, mesh->mpi);
+        TransferDataSerial2Global(bnd2cellSerial, mesh->bnd2cell.father, bnd_push, bnd_pushStart, mesh->getMPI());
+        TransferDataSerial2Global(bnd2nodeSerial, mesh->bnd2node.father, bnd_push, bnd_pushStart, mesh->getMPI());
+        TransferDataSerial2Global(bndElemInfoSerial, mesh->bndElemInfo.father, bnd_push, bnd_pushStart, mesh->getMPI());
 
-        DNDS::MPISerialDo(mesh->mpi, [&]()
-                          { std::cout << "Rank " << mesh->mpi.rank << " : nCell " << mesh->cell2cell.father->Size() << std::endl; });
-        DNDS::MPISerialDo(mesh->mpi, [&]()
-                          { std::cout << " Rank " << mesh->mpi.rank << " : nNode " << mesh->coords.father->Size() << std::endl; });
-        DNDS::MPISerialDo(mesh->mpi, [&]()
-                          { std::cout << " Rank " << mesh->mpi.rank << " : nBnd " << mesh->bnd2node.father->Size() << std::endl; });
+        DNDS::MPISerialDo(mesh->getMPI(), [&]()
+                          { std::cout << "Rank " << mesh->getMPI().rank << " : nCell " << mesh->cell2cell.father->Size() << std::endl; });
+        DNDS::MPISerialDo(mesh->getMPI(), [&]()
+                          { std::cout << " Rank " << mesh->getMPI().rank << " : nNode " << mesh->coords.father->Size() << std::endl; });
+        DNDS::MPISerialDo(mesh->getMPI(), [&]()
+                          { std::cout << " Rank " << mesh->getMPI().rank << " : nBnd " << mesh->bnd2node.father->Size() << std::endl; });
         mesh->adjPrimaryState = Adj_PointToGlobal;
-        if (mesh->mpi.rank == mRank)
+        if (mesh->getMPI().rank == mRank)
             DNDS::log() << "UnstructuredMeshSerialRW === Done  PartitionReorderToMeshCell2Cell" << std::endl;
     }
 
@@ -333,7 +333,7 @@ namespace DNDS::Geom
         // DNDS::index numBndGlobal = mesh->bndElemInfo.father->globalSize();
         DNDS::index numNodeGlobal = mesh->coords.father->globalSize();
 
-        if (mesh->mpi.rank == mRank)
+        if (mesh->getMPI().rank == mRank)
         {
             serialPullCell.resize(numCellGlobal);
             serialPullNode.resize(numNodeGlobal);
@@ -345,14 +345,14 @@ namespace DNDS::Geom
             // for (DNDS::index i = 0; i < numBndGlobal; i++)
             //     serialPullBnd[i] = i;
         }
-        DNDS_MAKE_SSP(cell2nodeSerial, mesh->mpi);
+        DNDS_MAKE_SSP(cell2nodeSerial, mesh->getMPI());
         if (mesh->isPeriodic)
-            DNDS_MAKE_SSP(cell2nodePbiSerial, NodePeriodicBits::CommType(), NodePeriodicBits::CommMult(), mesh->mpi);
-        // DNDS_MAKE_SSP(bnd2nodeSerial, mesh->mpi);
-        DNDS_MAKE_SSP(coordSerial, mesh->mpi);
-        DNDS_MAKE_SSP(cellElemInfoSerial, ElemInfo::CommType(), ElemInfo::CommMult(), mesh->mpi);
-        // DNDS_MAKE_SSP(bndElemInfoSerial, ElemInfo::CommType(), ElemInfo::CommMult(), mesh->mpi);
-        // DNDS_MAKE_SSP(bnd2cellSerial, mesh->mpi);// not needed yet
+            DNDS_MAKE_SSP(cell2nodePbiSerial, NodePeriodicBits::CommType(), NodePeriodicBits::CommMult(), mesh->getMPI());
+        // DNDS_MAKE_SSP(bnd2nodeSerial, mesh->getMPI());
+        DNDS_MAKE_SSP(coordSerial, mesh->getMPI());
+        DNDS_MAKE_SSP(cellElemInfoSerial, ElemInfo::CommType(), ElemInfo::CommMult(), mesh->getMPI());
+        // DNDS_MAKE_SSP(bndElemInfoSerial, ElemInfo::CommType(), ElemInfo::CommMult(), mesh->getMPI());
+        // DNDS_MAKE_SSP(bnd2cellSerial, mesh->getMPI());// not needed yet
 
         coordSerialOutTrans.setFatherSon(mesh->coords.father, coordSerial);
         cell2nodeSerialOutTrans.setFatherSon(mesh->cell2node.father, cell2nodeSerial);
@@ -394,7 +394,7 @@ namespace DNDS::Geom
         // bnd2nodeSerialOutTrans.pullOnce();
         cellElemInfoSerialOutTrans.pullOnce();
         // bndElemInfoSerialOutTrans.pullOnce();
-        if (mesh->mpi.rank == mRank)
+        if (mesh->getMPI().rank == mRank)
         {
             std::cout << "UnstructuredMeshSerialRW === BuildSerialOut Done " << std::endl;
         }
@@ -984,7 +984,7 @@ namespace DNDS::Geom
                                      "bnd elem should have a BC id not interior");
                 }
             }
-            DNDS_assert(nFound == 1 || (FaceIDIsPeriodic(faceID) && nFound == 0)); // periodic could miss the face
+            DNDS_assert(nFound > 0 || (FaceIDIsPeriodic(faceID) && nFound == 0)); // periodic could miss the face
         }
 
         /**********************************/
@@ -1190,25 +1190,25 @@ namespace DNDS::Geom
 
         // make the empty arrays
         auto mesh = this;
-        DNDS_MAKE_SSP(mesh->coords.father, mesh->mpi);
-        DNDS_MAKE_SSP(mesh->coords.son, mesh->mpi);
-        DNDS_MAKE_SSP(mesh->cellElemInfo.father, ElemInfo::CommType(), ElemInfo::CommMult(), mesh->mpi);
-        DNDS_MAKE_SSP(mesh->cellElemInfo.son, ElemInfo::CommType(), ElemInfo::CommMult(), mesh->mpi);
-        DNDS_MAKE_SSP(mesh->bndElemInfo.father, ElemInfo::CommType(), ElemInfo::CommMult(), mesh->mpi);
-        DNDS_MAKE_SSP(mesh->bndElemInfo.son, ElemInfo::CommType(), ElemInfo::CommMult(), mesh->mpi);
-        DNDS_MAKE_SSP(mesh->cell2node.father, mesh->mpi);
-        DNDS_MAKE_SSP(mesh->cell2node.son, mesh->mpi);
+        DNDS_MAKE_SSP(mesh->coords.father, mesh->getMPI());
+        DNDS_MAKE_SSP(mesh->coords.son, mesh->getMPI());
+        DNDS_MAKE_SSP(mesh->cellElemInfo.father, ElemInfo::CommType(), ElemInfo::CommMult(), mesh->getMPI());
+        DNDS_MAKE_SSP(mesh->cellElemInfo.son, ElemInfo::CommType(), ElemInfo::CommMult(), mesh->getMPI());
+        DNDS_MAKE_SSP(mesh->bndElemInfo.father, ElemInfo::CommType(), ElemInfo::CommMult(), mesh->getMPI());
+        DNDS_MAKE_SSP(mesh->bndElemInfo.son, ElemInfo::CommType(), ElemInfo::CommMult(), mesh->getMPI());
+        DNDS_MAKE_SSP(mesh->cell2node.father, mesh->getMPI());
+        DNDS_MAKE_SSP(mesh->cell2node.son, mesh->getMPI());
         if (isPeriodic)
         {
-            DNDS_MAKE_SSP(mesh->cell2nodePbi.father, NodePeriodicBits::CommType(), NodePeriodicBits::CommMult(), mesh->mpi);
-            DNDS_MAKE_SSP(mesh->cell2nodePbi.son, NodePeriodicBits::CommType(), NodePeriodicBits::CommMult(), mesh->mpi);
+            DNDS_MAKE_SSP(mesh->cell2nodePbi.father, NodePeriodicBits::CommType(), NodePeriodicBits::CommMult(), mesh->getMPI());
+            DNDS_MAKE_SSP(mesh->cell2nodePbi.son, NodePeriodicBits::CommType(), NodePeriodicBits::CommMult(), mesh->getMPI());
         }
-        DNDS_MAKE_SSP(mesh->cell2cell.father, mesh->mpi);
-        DNDS_MAKE_SSP(mesh->cell2cell.son, mesh->mpi);
-        DNDS_MAKE_SSP(mesh->bnd2node.father, mesh->mpi);
-        DNDS_MAKE_SSP(mesh->bnd2node.son, mesh->mpi);
-        DNDS_MAKE_SSP(mesh->bnd2cell.father, mesh->mpi);
-        DNDS_MAKE_SSP(mesh->bnd2cell.son, mesh->mpi);
+        DNDS_MAKE_SSP(mesh->cell2cell.father, mesh->getMPI());
+        DNDS_MAKE_SSP(mesh->cell2cell.son, mesh->getMPI());
+        DNDS_MAKE_SSP(mesh->bnd2node.father, mesh->getMPI());
+        DNDS_MAKE_SSP(mesh->bnd2node.son, mesh->getMPI());
+        DNDS_MAKE_SSP(mesh->bnd2cell.father, mesh->getMPI());
+        DNDS_MAKE_SSP(mesh->bnd2cell.son, mesh->getMPI());
 
         coords.ReadSerialize(serializer, "coords");
         cell2node.ReadSerialize(serializer, "cell2node");

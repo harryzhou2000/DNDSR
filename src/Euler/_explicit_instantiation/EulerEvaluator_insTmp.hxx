@@ -55,7 +55,7 @@
         template void EulerEvaluator<model>::FixUMaxFilter(                                    \
             ArrayDOFV<nVars_Fixed> &u);                                                        \
                                                                                                \
-        template void EulerEvaluator<model>::EvaluateResidual(                                 \
+        template void EulerEvaluator<model>::EvaluateNorm(                                 \
             Eigen::Vector<real, -1> &res, ArrayDOFV<nVars_Fixed> &rhs, index P, bool volWise); \
                                                                                                \
         template void EulerEvaluator<model>::EvaluateURecBeta(                                 \

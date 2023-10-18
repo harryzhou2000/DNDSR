@@ -11,11 +11,11 @@ namespace DNDS::Geom
     void UnstructuredMeshSerialRW::
         MeshPartitionCell2Cell()
     {
-        if (mesh->mpi.rank == mRank)
+        if (mesh->getMPI().rank == mRank)
             DNDS::log() << "UnstructuredMeshSerialRW === Doing  MeshPartitionCell2Cell" << std::endl;
         //! preset hyper config, should be optional in the future
         bool isSerial = true;
-        _METIS::idx_t nPart = mesh->mpi.size;
+        _METIS::idx_t nPart = mesh->getMPI().size;
         cnPart = nPart;
 
         //! assuming all adj point to local numbers now
@@ -27,11 +27,11 @@ namespace DNDS::Geom
         cell2cellSerialFacial->AssertConsistent();
         cell2cellSerialFacial->createGlobalMapping();
 
-        std::vector<_METIS::idx_t> vtxdist(mesh->mpi.size + 1);
+        std::vector<_METIS::idx_t> vtxdist(mesh->getMPI().size + 1);
 #ifdef DNDS_USE_OMP
 #pragma omp parallel for
 #endif
-        for (DNDS::MPI_int r = 0; r <= mesh->mpi.size; r++)
+        for (DNDS::MPI_int r = 0; r <= mesh->getMPI().size; r++)
             vtxdist[r] = cell2cellSerialFacial->pLGlobalMapping->ROffsets().at(r); //! warning: no check overflow
         std::vector<_METIS::idx_t> xadj(cell2cellSerialFacial->Size() + 1);
 #ifdef DNDS_USE_OMP
@@ -72,7 +72,7 @@ namespace DNDS::Geom
             partOut.resize(1, -1); //*coping with zero sized data
         if (nPart > 1)
         {
-            if (mesh->mpi.size == 1 || (isSerial && mesh->mpi.rank == mRank))
+            if (mesh->getMPI().size == 1 || (isSerial && mesh->getMPI().rank == mRank))
             {
                 _METIS::idx_t objval;
                 int ret = _METIS::METIS_PartGraphKway(
@@ -84,7 +84,7 @@ namespace DNDS::Geom
                     DNDS_assert(false);
                 }
             }
-            else if (mesh->mpi.size != 1 && (!isSerial))
+            else if (mesh->getMPI().size != 1 && (!isSerial))
             {
                 ///@todo //TODO: parmetis needs testing!
                 for (int i = 0; i < vtxdist.size() - 1; i++)
@@ -101,7 +101,7 @@ namespace DNDS::Geom
                 int ret = _METIS::ParMETIS_V3_PartKway(
                     vtxdist.data(), xadj.data(), adjncy.data(), NULL, NULL, &wgtflag, &numflag,
                     &nCon, &nPart, tpWeights.data(), ubVec, optsC, &objval, partOut.data(),
-                    &mesh->mpi.comm);
+                    &mesh->getMPI().comm);
                 if (ret != _METIS::METIS_OK)
                 {
                     DNDS::log() << "METIS returned not OK: [" << ret << "]" << std::endl;
@@ -116,7 +116,7 @@ namespace DNDS::Geom
         cellPartition.resize(cell2cellSerialFacial->Size());
         for (DNDS::index i = 0; i < cellPartition.size(); i++)
             cellPartition[i] = partOut[i];
-        if (mesh->mpi.rank == mRank)
+        if (mesh->getMPI().rank == mRank)
             DNDS::log() << "UnstructuredMeshSerialRW === Done  MeshPartitionCell2Cell" << std::endl;
     }
 }

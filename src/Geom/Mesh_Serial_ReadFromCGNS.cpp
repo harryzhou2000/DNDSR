@@ -1,4 +1,5 @@
 #include "Mesh.hpp"
+#include <fmt/core.h>
 
 #include <cgnslib.h>
 
@@ -46,17 +47,17 @@ namespace DNDS::Geom
     {
         mode = SerialReadAndDistribute;
         this->dataIsSerialIn = true;
-        
+
         int cgErr = CG_OK;
 
-        DNDS_MAKE_SSP(cell2nodeSerial, mesh->mpi);
-        DNDS_MAKE_SSP(bnd2nodeSerial, mesh->mpi);
-        DNDS_MAKE_SSP(coordSerial, mesh->mpi);
-        DNDS_MAKE_SSP(cellElemInfoSerial, ElemInfo::CommType(), ElemInfo::CommMult(), mesh->mpi);
-        DNDS_MAKE_SSP(bndElemInfoSerial, ElemInfo::CommType(), ElemInfo::CommMult(), mesh->mpi);
-        DNDS_MAKE_SSP(bnd2cellSerial, mesh->mpi);
+        DNDS_MAKE_SSP(cell2nodeSerial, mesh->getMPI());
+        DNDS_MAKE_SSP(bnd2nodeSerial, mesh->getMPI());
+        DNDS_MAKE_SSP(coordSerial, mesh->getMPI());
+        DNDS_MAKE_SSP(cellElemInfoSerial, ElemInfo::CommType(), ElemInfo::CommMult(), mesh->getMPI());
+        DNDS_MAKE_SSP(bndElemInfoSerial, ElemInfo::CommType(), ElemInfo::CommMult(), mesh->getMPI());
+        DNDS_MAKE_SSP(bnd2cellSerial, mesh->getMPI());
 
-        if (mRank != mesh->mpi.rank) //! parallel done!!! now serial!!!
+        if (mRank != mesh->getMPI().rank) //! parallel done!!! now serial!!!
             return;
 
         int cgns_file = -1;
@@ -278,8 +279,7 @@ namespace DNDS::Geom
                         t_index BCCode = FBCName_2_ID(std::string(boconame));
                         if (BCCode == BC_ID_NULL)
                         {
-                            DNDS::log() << "CGNS: [  " << boconame << "  ]     " << std::endl;
-                            DNDS_assert_info(false, "BC NAME NOT FOUND IN DATABASE");
+                            DNDS_assert_info(false, fmt::format("BC NAME [{}] NOT FOUND IN DATABASE", boconame));
                         }
                         for (DNDS::index i = pts[0] - 1; i < pts[1]; i++)
                         {
@@ -539,6 +539,5 @@ namespace DNDS::Geom
 
         std::cout << "CGNS === Serial Read Done" << std::endl;
         // Memory with DM240-120 here: 18G ; after deconstruction done: 7.5G
-       
     }
 }

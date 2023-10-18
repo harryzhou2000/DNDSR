@@ -104,8 +104,8 @@ namespace DNDS
             serializer->CreatePath(name);
             serializer->GoToPath(name);
 
-            serializer->WriteIndex("MPIRank", father->mpi.rank);
-            serializer->WriteIndex("MPISize", father->mpi.size);
+            serializer->WriteIndex("MPIRank", father->getMPI().rank);
+            serializer->WriteIndex("MPISize", father->getMPI().size);
             father->WriteSerializer(serializer, "father");
             son->WriteSerializer(serializer, "son");
             /***************************/
@@ -133,7 +133,7 @@ namespace DNDS
             index readRank, readSize;
             serializer->ReadIndex("MPIRank", readRank);
             serializer->ReadIndex("MPISize", readSize);
-            DNDS_assert(readRank == father->mpi.rank && readSize == father->mpi.size);
+            DNDS_assert(readRank == father->getMPI().rank && readSize == father->getMPI().size);
             father->ReadSerializer(serializer, "father");
             son->ReadSerializer(serializer, "son");
             /***************************/

@@ -1,7 +1,7 @@
 {
     "timeMarchControl": {
-        "dtImplicit": 10e-6,
-        "nTimeStep": 100,
+        "dtImplicit": 5e-4,
+        "nTimeStep": 200,
         "steadyQuit": false,
         "useImplicitPP": true,
         "odeCode": 1,
@@ -21,25 +21,24 @@
         "consoleOutputMode": 0,
         "nDataOutC": 1,
         "nDataOut": 100,
-        "nDataOutCInternal": 100,
+        "nDataOutCInternal": 1,
         "nDataOutInternal": 1000000000,
         "tDataOut": 3e+200
     },
     "implicitCFLControl": {
-        "CFL": 10,
+        "CFL": 10.0,
         "nForceLocalStartStep": 2147483647,
         "nCFLRampStart": 2147483647,
         "nCFLRampLength": 2147483647,
         "CFLRampEnd": 0.0,
-        "useLocalDt": false
+        "useLocalDt": true
     },
-    
     "dataIOControl": {
         "uniqueStamps": false,
         "meshRotZ": 0.0,
-        "meshFile": "../data/mesh/Unifrom_1DSedov5EM3.cgns",
-        "outPltName": "../data/outUnsteady/Unifrom_1DSedov5EM3",
-        "outLogName": "../data/outUnsteady/Unifrom_1DSedov5EM3",
+        "meshFile": "../data/mesh/Unifrom_1D400.cgns",
+        "outPltName": "../data/outUnsteady/Unifrom_1D400",
+        "outLogName": "../data/outUnsteady/Unifrom_1D400",
         "outPltMode": 0,
         "readMeshMode": 0,
         "outPltTecplotFormat": true,
@@ -48,10 +47,20 @@
         "outAtCellData": true
     },
     "boundaryDefinition": {
+        "PeriodicTranslation1": [
+            10.0,
+            0.0,
+            0.0
+        ],
         "PeriodicTranslation2": [
             0.0,
-            0.01,
+            10.0,
             0.0
+        ],
+        "PeriodicTranslation3": [
+            0.0,
+            0.0,
+            10.0
         ]
     },
     "implicitReconstructionControl": {
@@ -62,7 +71,7 @@
         "nGmresIter": 10,
         "recThreshold": 1e-010,
         "nRecConsolCheck": 10,
-        "nRecMultiplyForZeroedGrad": 1,
+        "nRecMultiplyForZeroedGrad": 1000,
         "storeRecInc": true,
         "dampRecIncDTau": false
     },
@@ -82,9 +91,9 @@
         "smoothThreshold": 1e-3,
         "WBAP_nStd": 10.0,
         "normWBAP": false,
-        "subs2ndOrder": 1,
+        "subs2ndOrder": 0,
         "baseSettings": {
-            "localOrientation": false,
+            "localOrientation": true,
             "anisotropicLengths": false
         },
         "functionalSettings": {
@@ -97,12 +106,12 @@
     },
     "linearSolverControl": {
         "sgsIter": 0,
-        "sgsWithRec": 0,
+        "sgsWithRec": 1,
         "nSgsConsoleCheck": 100,
         "gmresCode": 0,
         "nGmresSpace": 5,
         "nGmresIter": 1,
-        "initWithLastURecInc": false
+        "initWithLastURecInc": true
     },
     "others": {
         "nFreezePassiveInner": 0
@@ -119,40 +128,40 @@
         ],
         "farFieldStaticValue": [
             1,
-            1,
+            -2,
             0,
             0,
-            2.5
+            2.2500
         ],
         "boxInitializers": [
             {
-                "x0": -5,
-                "x1": 5,
+                "x0": -1,
+                "x1": 0.5,
                 "y0": -100,
                 "y1": 100,
                 "z0": -100,
                 "z1": 100,
                 "v": [
                     1,
+                    -2,
                     0,
                     0,
-                    0,
-                    1e-9
+                    2.2500
                 ]
             },
             {
-                "x0": -5e-3,
-                "x1": 5e-3,
+                "x0": 0.5,
+                "x1": 2,
                 "y0": -100,
                 "y1": 100,
                 "z0": -100,
                 "z1": 100,
                 "v": [
                     1,
+                    2,
                     0,
                     0,
-                    0,
-                    320000000
+                    2.2500
                 ]
             }
         ],
@@ -164,5 +173,18 @@
             "TRef": 273.15,
             "CSutherland": 110.4
         }
-    }
+    },
+    "bcSettings": [
+        {
+            "type": "BCFar",
+            "name": "FAR_R",
+            "value": [
+                1,
+                2,
+                0,
+                0,
+                2.2500
+            ]
+        }
+    ]
 }

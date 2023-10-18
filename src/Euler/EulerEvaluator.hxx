@@ -56,7 +56,7 @@ namespace DNDS::Euler
         ArrayDOFV<nVars_Fixed> &AuInc)
     {
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
-        InsertCheck(u.father->mpi, "LUSGSMatrixVec 1");
+        InsertCheck(u.father->getMPI(), "LUSGSMatrixVec 1");
         int cnvars = nVars;
         for (index iScan = 0; iScan < mesh->NumCell(); iScan++)
         {
@@ -130,7 +130,7 @@ namespace DNDS::Euler
                 DNDS_assert(!AuInc[iCell].hasNaN());
             }
         }
-        InsertCheck(u.father->mpi, "LUSGSMatrixVec -1");
+        InsertCheck(u.father->getMPI(), "LUSGSMatrixVec -1");
     }
 
     template <EulerModel model>
@@ -143,7 +143,7 @@ namespace DNDS::Euler
         ArrayDOFV<nVars_Fixed> &uIncNew)
     {
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
-        InsertCheck(u.father->mpi, "UpdateLUSGSForward 1");
+        InsertCheck(u.father->getMPI(), "UpdateLUSGSForward 1");
         int cnvars = nVars;
         index nCellDist = mesh->NumCell();
         for (index iScan = 0; iScan < nCellDist; iScan++)
@@ -207,7 +207,7 @@ namespace DNDS::Euler
                 DNDS_assert(!uIncNew[iCell].hasNaN());
             }
         }
-        InsertCheck(u.father->mpi, "UpdateLUSGSForward -1");
+        InsertCheck(u.father->getMPI(), "UpdateLUSGSForward -1");
         // exit(-1);
     }
 
@@ -221,7 +221,7 @@ namespace DNDS::Euler
         ArrayDOFV<nVars_Fixed> &uIncNew)
     {
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
-        InsertCheck(u.father->mpi, "UpdateLUSGSBackward 1");
+        InsertCheck(u.father->getMPI(), "UpdateLUSGSBackward 1");
         int cnvars = nVars;
         index nCellDist = mesh->NumCell();
         for (index iScan = nCellDist - 1; iScan >= 0; iScan--)
@@ -265,7 +265,7 @@ namespace DNDS::Euler
             auto uIncNewI = uIncNew[iCell];
             uIncNewI.array() += JDiag[iCell].array().inverse() * uIncNewBuf.array();
         }
-        InsertCheck(u.father->mpi, "UpdateLUSGSBackward -1");
+        InsertCheck(u.father->getMPI(), "UpdateLUSGSBackward -1");
     }
 
     template <EulerModel model>
@@ -278,7 +278,7 @@ namespace DNDS::Euler
         bool forward, TU &sumInc)
     {
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
-        InsertCheck(u.father->mpi, "UpdateSGS 1");
+        InsertCheck(u.father->getMPI(), "UpdateSGS 1");
         int cnvars = nVars;
         index nCellDist = mesh->NumCell();
         sumInc.setZero(cnvars);
@@ -301,8 +301,8 @@ namespace DNDS::Euler
                 index iCellAtFace = f2c[0] == iCell ? 0 : 1;
                 if (iCellOther != UnInitIndex)
                 {
-                    index iScanOther = iCellOther; // TODO: add rb-sor
-                    if (true)
+                    index iScanOther = forward ? iCellOther : nCellDist - 1 - iCellOther; // TODO: add rb-sor
+                    if (iCell != iCellOther)
                     {
                         TU fInc;
                         auto uINCj = uInc[iCellOther];
@@ -344,10 +344,12 @@ namespace DNDS::Euler
                           << iCell << std::endl;
                 DNDS_assert(!uInc[iCell].hasNaN());
             }
+            // if (iScan == 100)
         }
         TU sumIncAll(cnvars);
-        MPI::Allreduce(sumInc.data(), sumIncAll.data(), sumInc.size(), DNDS_MPI_REAL, MPI_SUM, rhs.father->mpi.comm);
-        InsertCheck(u.father->mpi, "UpdateSGS -1");
+        // std::abort();
+        MPI::Allreduce(sumInc.data(), sumIncAll.data(), sumInc.size(), DNDS_MPI_REAL, MPI_SUM, rhs.father->getMPI().comm);
+        InsertCheck(u.father->getMPI(), "UpdateSGS -1");
         // exit(-1);
     }
 
@@ -363,7 +365,7 @@ namespace DNDS::Euler
         bool forward, TU &sumInc)
     {
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
-        InsertCheck(u.father->mpi, "UpdateSGS 1");
+        InsertCheck(u.father->getMPI(), "UpdateSGS 1");
         int cnvars = nVars;
         index nCellDist = mesh->NumCell();
         sumInc.setZero(cnvars);
@@ -386,8 +388,8 @@ namespace DNDS::Euler
                 index iCellAtFace = f2c[0] == iCell ? 0 : 1;
                 if (iCellOther != UnInitIndex)
                 {
-                    index iScanOther = iCellOther; // TODO: add rb-sor
-                    if (true)
+                    index iScanOther = forward ? iCellOther : nCellDist - 1 - iCellOther; // TODO: add rb-sor
+                    if (iCell != iCellOther)
                     {
                         TU fInc, fIncS;
                         auto uINCj = uInc[iCellOther];
@@ -444,8 +446,8 @@ namespace DNDS::Euler
             }
         }
         TU sumIncAll(cnvars);
-        MPI::Allreduce(sumInc.data(), sumIncAll.data(), sumInc.size(), DNDS_MPI_REAL, MPI_SUM, rhs.father->mpi.comm);
-        InsertCheck(u.father->mpi, "UpdateSGS -1");
+        MPI::Allreduce(sumInc.data(), sumIncAll.data(), sumInc.size(), DNDS_MPI_REAL, MPI_SUM, rhs.father->getMPI().comm);
+        InsertCheck(u.father->getMPI(), "UpdateSGS -1");
     }
 
     template <EulerModel model>
@@ -457,7 +459,7 @@ namespace DNDS::Euler
     }
 
     template <EulerModel model>
-    void EulerEvaluator<model>::EvaluateResidual(Eigen::Vector<real, -1> &res, ArrayDOFV<nVars_Fixed> &rhs, index P, bool volWise)
+    void EulerEvaluator<model>::EvaluateNorm(Eigen::Vector<real, -1> &res, ArrayDOFV<nVars_Fixed> &rhs, index P, bool volWise)
     {
         res.resize(nVars);
         if (P < 3)
@@ -477,7 +479,7 @@ namespace DNDS::Euler
                 else
                     resc += rhs[iCell].array().abs().pow(P).matrix();
             }
-            MPI::Allreduce(resc.data(), res.data(), res.size(), DNDS_MPI_REAL, MPI_SUM, rhs.father->mpi.comm);
+            MPI::Allreduce(resc.data(), res.data(), res.size(), DNDS_MPI_REAL, MPI_SUM, rhs.father->getMPI().comm);
             res = res.array().pow(1.0 / P).matrix();
             // std::cout << res << std::endl;
         }
@@ -488,7 +490,7 @@ namespace DNDS::Euler
             resc.setZero();
             for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
                 resc = resc.array().max(rhs[iCell].array().abs()).matrix();
-            MPI::Allreduce(resc.data(), res.data(), res.size(), DNDS_MPI_REAL, MPI_MAX, rhs.father->mpi.comm);
+            MPI::Allreduce(resc.data(), res.data(), res.size(), DNDS_MPI_REAL, MPI_MAX, rhs.father->getMPI().comm);
         }
     }
 
@@ -532,11 +534,14 @@ namespace DNDS::Euler
             Eigen::Matrix<real, Eigen::Dynamic, nVars_Fixed> recInc = quadBase * uRec[iCell];
             Eigen::Vector<real, Eigen::Dynamic> rhoS = recInc(Eigen::all, 0).array() + u[iCell](0);
             real rhoMin = rhoS.minCoeff();
-            real theta1 = std::min(
-                1.,
-                ((rhoS.array() - rhoEps) / (rhoS.array() - rhoMin + verySmallReal)).minCoeff());
-            // recInc *= theta1;
-            Eigen::Matrix<real, Eigen::Dynamic, nVars_Fixed> recVRhoG = recInc.rowwise() + u[iCell].transpose();
+            real theta1 = 1;
+            DNDS_assert(u[iCell](0) >= rhoEps);
+            if (rhoMin < rhoEps)
+                theta1 = std::min(1.0, (u[iCell](0) - rhoEps) / (u[iCell](0) - rhoMin));
+
+            recInc *= theta1;
+            Eigen::Matrix<real, Eigen::Dynamic, nVars_Fixed>
+                recVRhoG = recInc.rowwise() + u[iCell].transpose();
 
             real gamma = settings.idealGasProperty.gamma;
             Eigen::Vector<real, Eigen::Dynamic> ek =
@@ -556,10 +561,18 @@ namespace DNDS::Euler
                 }
             }
 
-            // uRecBeta[iCell](0) = theta1 * thetaP;
-            uRecBeta[iCell](0) = std::min(theta1, thetaP);
+            uRecBeta[iCell](0) = theta1 * thetaP;
             if (uRecBeta[iCell](0) < 1)
-                nLimLocal++, betaMin = std::min(uRecBeta[iCell](0), minBetaLocal);
+                uRecBeta[iCell](0) *= 1 - 1e-8;
+            // uRecBeta[iCell](0) = std::min(theta1, thetaP);
+            if (uRecBeta[iCell](0) < 1)
+                nLimLocal++,
+                    minBetaLocal = std::min(uRecBeta[iCell](0), minBetaLocal);
+            if (uRecBeta[iCell](0) < 0)
+            {
+                std::cout << fmt::format("theta1 {}, thetaP {}", theta1, thetaP) << std::endl;
+                DNDS_assert(false);
+            }
         }
         MPI::Allreduce(&nLimLocal, &nLim, 1, DNDS_MPI_INDEX, MPI_SUM, u.father->getMPI().comm);
         MPI::Allreduce(&minBetaLocal, &betaMin, 1, DNDS_MPI_REAL, MPI_MIN, u.father->getMPI().comm);
@@ -588,7 +601,7 @@ namespace DNDS::Euler
             if (inc(0) < 0)
                 alphaRho = std::min(1.0, (u[iCell](0) - rhoEps) / (-inc(0)));
 
-            // inc *= alphaRho;
+            inc *= alphaRho;
 
             TU uNew = u[iCell] + inc;
             real pNew = (uNew(I4) - 0.5 * uNew(Seq123).squaredNorm() / uNew(0)) * (gamma - 1);
@@ -601,8 +614,8 @@ namespace DNDS::Euler
                     u[iCell], inc, pEps / (gamma - 1));
                 alphaP = std::min(alphaP, alphaC);
             }
-            // cellRHSAlpha[iCell](0) = alphaRho * alphaP;
-            cellRHSAlpha[iCell](0) = std::min(alphaRho, alphaP);
+            cellRHSAlpha[iCell](0) = alphaRho * alphaP;
+            // cellRHSAlpha[iCell](0) = std::min(alphaRho, alphaP);
             if (cellRHSAlpha[iCell](0) < 1)
                 nLimLocal++, alphaMinLocal = std::min(alphaMinLocal, cellRHSAlpha[iCell](0));
         }
@@ -636,8 +649,9 @@ namespace DNDS::Euler
                 for (int ic2f = 0; ic2f < c2f.size(); ic2f++)
                 {
                     index iCellOther = vfv->CellFaceOther(iCell, c2f[ic2f]);
-                    if (cellRHSAlpha[iCellOther](0) != 1.0)
-                        ret = true;
+                    if (iCellOther != UnInitIndex)
+                        if (cellRHSAlpha[iCellOther](0) != 1.0)
+                            ret = true;
                 }
             }
             return ret;
@@ -650,20 +664,22 @@ namespace DNDS::Euler
             for (int ic2f = 0; ic2f < c2f.size(); ic2f++)
             {
                 index iCellOther = vfv->CellFaceOther(iCell, c2f[ic2f]);
-                ret = std::min(ret, cellRHSAlpha[iCellOther](0));
+                if (iCellOther != UnInitIndex)
+                    ret = std::min(ret, cellRHSAlpha[iCellOther](0));
             }
             return ret;
         };
 
-        std::vector<index> InterCells;
+        // std::vector<index> InterCells;
 
-        for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
-            if (cellIsHalfAlpha(iCell))
-                InterCells.emplace_back(iCell);
+        // for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
+        //     if (cellIsHalfAlpha(iCell))
+        //         InterCells.emplace_back(iCell);
 
         index nLimLocal = 0;
         index nLimAdd = 0;
-        for (index iCell : InterCells)
+        // for (index iCell : InterCells)
+        for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
         {
             real gamma = settings.idealGasProperty.gamma;
             TU inc = res[iCell];
@@ -673,8 +689,9 @@ namespace DNDS::Euler
 
             if (pNew < pEps || uNew(0) < rhoEps)
             {
-                cellRHSAlpha[iCell](0) = cellAdjAlphaMin(iCell);
-                DNDS_assert(cellRHSAlpha[iCell](0) == alphaMin);
+                // cellRHSAlpha[iCell](0) = cellAdjAlphaMin(iCell);
+                // DNDS_assert(cellRHSAlpha[iCell](0) == alphaMin);
+                cellRHSAlpha[iCell](0) = alphaMin;
             }
         }
         MPI::Allreduce(&nLimLocal, &nLimAdd, 1, DNDS_MPI_INDEX, MPI_SUM, u.father->getMPI().comm);

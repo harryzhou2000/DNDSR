@@ -182,8 +182,8 @@ namespace DNDS
         {
             father = n_father;
             son = n_son;
-            mpi = father->mpi;
-            DNDS_assert_info(son->mpi == father->mpi, "MPI inconsistent between father & son");
+            mpi = father->getMPI();
+            DNDS_assert_info(son->getMPI() == father->getMPI(), "MPI inconsistent between father & son");
             DNDS_assert_info(father->getDataType() == son->getDataType(), "MPI datatype inconsistent between father & son");
             DNDS_assert_info(father->getTypeMult() == son->getTypeMult(), "MPI datatype multiplication inconsistent between father & son");
             DNDS_assert_info(father->getDataType() != MPI_DATATYPE_NULL, "MPI datatype invalid");

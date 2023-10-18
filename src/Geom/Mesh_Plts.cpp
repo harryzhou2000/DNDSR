@@ -21,10 +21,10 @@ namespace DNDS::Geom
         tAdj cell2nodeSerialDummy;
         tPbi cell2nodePbiSerialDummy;
         tElemInfoArray cellElemInfoSerialDummy;
-        DNDS_MAKE_SSP(coordSerialDummy, mesh->mpi);
-        DNDS_MAKE_SSP(cell2nodeSerialDummy, mesh->mpi);
-        DNDS_MAKE_SSP(cell2nodePbiSerialDummy, NodePeriodicBits::CommType(), NodePeriodicBits::CommMult(), mesh->mpi);
-        DNDS_MAKE_SSP(cellElemInfoSerialDummy, ElemInfo::CommType(), ElemInfo::CommMult(), mesh->mpi);
+        DNDS_MAKE_SSP(coordSerialDummy, mesh->getMPI());
+        DNDS_MAKE_SSP(cell2nodeSerialDummy, mesh->getMPI());
+        DNDS_MAKE_SSP(cell2nodePbiSerialDummy, NodePeriodicBits::CommType(), NodePeriodicBits::CommMult(), mesh->getMPI());
+        DNDS_MAKE_SSP(cellElemInfoSerialDummy, ElemInfo::CommType(), ElemInfo::CommMult(), mesh->getMPI());
 
         if (flag == 0)
         {
@@ -70,7 +70,7 @@ namespace DNDS::Geom
                                           const std::function<DNDS::real(int, DNDS::index)> &dataPoint,
                                           double t, int flag)
     {
-        auto mpi = mesh->mpi;
+        auto mpi = mesh->getMPI();
         std::string fnameIn = fname;
 
         if (mpi.rank != mRank && flag == 0) //* now only operating on mRank if serial
@@ -329,7 +329,7 @@ namespace DNDS::Geom
             if (flag == 0)
                 cell2nodeSerialOutTrans.pLGlobalMapping->search(iv, r, v);
             else if (flag == 1)
-                r = mesh->mpi.rank;
+                r = mesh->getMPI().rank;
             writeDouble(r);
         }
 
@@ -423,7 +423,7 @@ namespace DNDS::Geom
         const std::function<DNDS::real(int, DNDS::index, DNDS::rowsize)> &vectorDataPoint,
         double t, int flag)
     {
-        auto mpi = mesh->mpi;
+        auto mpi = mesh->getMPI();
         std::string fnameIN = fname;
 
         if (mpi.rank != mRank && flag == 0) //* now only operating on mRank if serial

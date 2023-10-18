@@ -24,7 +24,7 @@ namespace DNDS::Euler
         real t)
     {
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
-        InsertCheck(u.father->mpi, "EvaluateRHS 1");
+        InsertCheck(u.father->getMPI(), "EvaluateRHS 1");
         int cnvars = nVars;
         auto rsType = settings.rsType;
         for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
@@ -45,8 +45,9 @@ namespace DNDS::Euler
                 for (int ic2f = 0; ic2f < c2f.size(); ic2f++)
                 {
                     index iCellOther = vfv->CellFaceOther(iCell, c2f[ic2f]);
-                    if (cellRHSAlpha[iCellOther](0) != 1.0)
-                        ret = true;
+                    if (iCellOther != UnInitIndex)
+                        if (cellRHSAlpha[iCellOther](0) != 1.0)
+                            ret = true;
                 }
             }
             return ret;
@@ -63,13 +64,13 @@ namespace DNDS::Euler
 #endif
             if (onlyOnHalfAlpha)
             {
-                bool lIsHalfAlpha = cellIsHalfAlpha(f2c[0]);
-                bool rIsHalfAlpha =
-                    (f2c[1] != UnInitIndex && f2c[1] < mesh->NumCell()) // must be owned cell!
-                        ? cellIsHalfAlpha(f2c[0])
-                        : false;
-                if (!(lIsHalfAlpha || rIsHalfAlpha))
-                    continue;
+                // bool lIsHalfAlpha = cellIsHalfAlpha(f2c[0]);
+                // bool rIsHalfAlpha =
+                //     (f2c[1] != UnInitIndex && f2c[1] < mesh->NumCell()) // must be owned cell!
+                //         ? cellIsHalfAlpha(f2c[0])
+                //         : false;
+                // if (!(lIsHalfAlpha || rIsHalfAlpha))
+                //     continue;
             }
 
             fluxEs.setZero();
@@ -81,6 +82,8 @@ namespace DNDS::Euler
             Geom::Elem::SummationNoOp noOp;
             bool faceOrderReducedL = false;
             bool faceOrderReducedR = false;
+            auto faceBndID = mesh->GetFaceZone(iFace);
+            auto faceBCType = pBCHandler->GetTypeFromID(faceBndID);
 
 #ifdef USE_TOTAL_REDUCED_ORDER_CELL
             gFace.IntegrationSimple(
@@ -161,7 +164,7 @@ namespace DNDS::Euler
 
 #endif
                     real minVol = vfv->GetCellVol(f2c[0]);
-                    // InsertCheck(u.father->mpi, "RHS inner 2");
+                    // InsertCheck(u.father->getMPI(), "RHS inner 2");
 
                     if (f2c[1] != UnInitIndex)
                     {
@@ -223,16 +226,17 @@ namespace DNDS::Euler
                     real distGRP = minVol / vfv->GetFaceArea(iFace) * 2;
 #ifdef USE_DISABLE_DIST_GRP_FIX_AT_WALL
                     distGRP +=
-                        (mesh->GetFaceZone(iFace) == Geom::BC_ID_DEFAULT_WALL || mesh->GetFaceZone(iFace) == Geom::BC_ID_DEFAULT_WALL_INVIS //! todo: update to general determination of if a wall
-                             ? veryLargeReal
-                             : 0.0);
+                        (faceBCType == EulerBCType::BCWall ||
+                         faceBCType == EulerBCType::BCWallInvis)
+                            ? veryLargeReal
+                            : 0.0;
 #endif
                     // real distGRP = (vfv->cellBaries[f2c[0]] -
                     //                 (f2c[1] != FACE_2_VOL_EMPTY
                     //                      ? vfv->cellBaries[f2c[1]]
                     //                      : 2 * vfv->faceCenters[iFace] - vfv->cellBaries[f2c[0]]))
                     //                    .norm();
-                    // InsertCheck(u.father->mpi, "RHS inner 1");
+                    // InsertCheck(u.father->getMPI(), "RHS inner 1");
                     TU UMeanXy = 0.5 * (ULxy + URxy);
 
 #ifndef DNDS_FV_EULEREVALUATOR_IGNORE_VISCOUS_TERM
@@ -253,6 +257,13 @@ namespace DNDS::Euler
                         std::cout << distGRP << std::endl;
                         std::cout << f2c[0] << " " << f2c[1] << " " << mesh->NumCell() << " " << mesh->NumCellProc() << std::endl;
                         std::cout << uRec[f2c[0]] << std::endl;
+                        std::cout << "-----------------------------------\n";
+                        if (f2c[1] != UnInitIndex)
+                            std::cout << uRec[f2c[1]] << std::endl;
+                        std::cout << "-----------------------------------\n";
+                        std::cout << u[f2c[0]].transpose() << std::endl;
+                        if (f2c[1] != UnInitIndex)
+                            std::cout << u[f2c[1]].transpose() << std::endl;
                         DNDS_assert(false);
                     }
                     TU fincC = fluxFace(
@@ -316,8 +327,8 @@ namespace DNDS::Euler
             if (f2c[1] != UnInitIndex)
                 rhs[f2c[1]] += fluxIncR / vfv->GetCellVol(f2c[1]);
 
-            if (mesh->GetFaceZone(iFace) == Geom::BC_ID_DEFAULT_WALL ||
-                (mesh->GetFaceZone(iFace) == Geom::BC_ID_DEFAULT_WALL_INVIS && settings.idealGasProperty.muGas < 1e-99))
+            if (faceBCType == EulerBCType::BCWall || // TODO: update to general
+                (faceBCType == EulerBCType::BCWallInvis && settings.idealGasProperty.muGas < 1e-99))
             {
                 fluxWallSumLocal -= fluxEs(Eigen::all, 0);
             }
@@ -328,7 +339,7 @@ namespace DNDS::Euler
             }
         }
 
-        InsertCheck(u.father->mpi, "EvaluateRHS After Flux");
+        InsertCheck(u.father->getMPI(), "EvaluateRHS After Flux");
 
         if (!settings.ignoreSourceTerm)
         {
@@ -339,8 +350,8 @@ namespace DNDS::Euler
             {
                 if (onlyOnHalfAlpha)
                 {
-                    if (!cellIsHalfAlpha(iCell))
-                        continue;
+                    //     if (!cellIsHalfAlpha(iCell))
+                    //         continue;
                 }
                 auto gCell = vfv->GetCellQuad(iCell);
 
@@ -458,8 +469,8 @@ namespace DNDS::Euler
             }
         }
         // quick aux: reduce the wall flux sum
-        MPI::Allreduce(fluxWallSumLocal.data(), fluxWallSum.data(), fluxWallSum.size(), DNDS_MPI_REAL, MPI_SUM, u.father->mpi.comm);
+        MPI::Allreduce(fluxWallSumLocal.data(), fluxWallSum.data(), fluxWallSum.size(), DNDS_MPI_REAL, MPI_SUM, u.father->getMPI().comm);
 
-        InsertCheck(u.father->mpi, "EvaluateRHS -1");
+        InsertCheck(u.father->getMPI(), "EvaluateRHS -1");
     }
 }

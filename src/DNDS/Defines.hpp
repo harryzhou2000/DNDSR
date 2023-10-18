@@ -44,7 +44,7 @@ inline void __DNDS_assert_false(const char *expr, const char *file, int line)
     std::abort();
 }
 
-inline void __DNDS_assert_false_info(const char *expr, const char *file, int line, const char *info)
+inline void __DNDS_assert_false_info(const char *expr, const char *file, int line, const std::string &info)
 {
     std::cerr << "\033[91m DNDS_assertion failed\033[39m: \"" << expr << "\"  at [  " << file << ":" << line << "  ]\n"
               << info << std::endl;
@@ -349,8 +349,6 @@ namespace DNDS
 
 namespace DNDS
 {
-
-    
 
 }
 template <typename T>

@@ -734,8 +734,8 @@ namespace DNDS::CFV
             // std::abort();
         }
         real maxCondAll = 0;
-        MPI::Allreduce(&maxCond, &maxCondAll, 1, DNDS_MPI_REAL, MPI_MAX, mesh->mpi.comm);
-        if (mesh->mpi.rank == 0)
+        MPI::Allreduce(&maxCond, &maxCondAll, 1, DNDS_MPI_REAL, MPI_MAX, mesh->getMPI().comm);
+        if (mesh->getMPI().rank == 0)
             log() << std::scientific << std::setprecision(3)
                   << "VariationalReconstruction<dim>::ConstructRecCoeff() === A cond Max: [ " << maxCondAll << "] " << std::endl;
     }
