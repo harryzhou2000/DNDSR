@@ -537,7 +537,35 @@ namespace DNDS::Euler
             real theta1 = 1;
             DNDS_assert(u[iCell](0) >= rhoEps);
             if (rhoMin < rhoEps)
-                theta1 = std::min(1.0, (u[iCell](0) - rhoEps) / (u[iCell](0) - rhoMin));
+                theta1 = std::min(1.0, (u[iCell](0) - rhoEps) / (u[iCell](0) - rhoMin + verySmallReal));
+#ifdef USE_NS_SA_NUT_REDUCED_ORDER
+            if constexpr (model == NS_SA || model == NS_SA_3D)
+            {
+                static real v1Eps = smallReal * settings.refUPrim(I4 + 1);
+                Eigen::Vector<real, Eigen::Dynamic> v1S = recInc(Eigen::all, I4 + 1).array() + u[iCell](I4 + 1);
+                real v1Min = v1S.minCoeff();
+                if (v1Min < v1Eps)
+                    theta1 = std::min(theta1,
+                                      (u[iCell](I4 + 1) - v1Eps) / (u[iCell](I4 + 1) - v1Min + verySmallReal))
+                        // * 0 // to gain fully reduced order
+                        ;
+            }
+#endif
+            if constexpr (model == NS_2EQ || model == NS_2EQ_3D)
+            {
+                static real v1Eps = smallReal * settings.refUPrim(I4 + 1);
+                static real v2Eps = smallReal * settings.refUPrim(I4 + 2);
+                Eigen::Vector<real, Eigen::Dynamic> v1S = recInc(Eigen::all, I4 + 1).array() + u[iCell](I4 + 1);
+                real v1Min = v1S.minCoeff();
+                if (v1Min < v1Eps)
+                    theta1 = std::min(theta1,
+                                      (u[iCell](I4 + 1) - v1Eps) / (u[iCell](I4 + 1) - v1Min + verySmallReal));
+                Eigen::Vector<real, Eigen::Dynamic> v2S = recInc(Eigen::all, I4 + 2).array() + u[iCell](I4 + 2);
+                real v2Min = v2S.minCoeff();
+                if (v2Min < v2Eps)
+                    theta1 = std::min(theta1,
+                                      (u[iCell](I4 + 2) - v2Eps) / (u[iCell](I4 + 2) - v2Min + verySmallReal));
+            }
 
             recInc *= theta1;
             Eigen::Matrix<real, Eigen::Dynamic, nVars_Fixed>
@@ -599,7 +627,35 @@ namespace DNDS::Euler
             TU inc = res[iCell];
             DNDS_assert(u[iCell](0) >= rhoEps);
             if (inc(0) < 0)
-                alphaRho = std::min(1.0, (u[iCell](0) - rhoEps) / (-inc(0)));
+                alphaRho = std::min(1.0, (u[iCell](0) - rhoEps) / (-inc(0) - smallReal * inc(0)));
+            if constexpr (model == NS_SA || model == NS_SA_3D)
+            {
+                // currently do not mass - fix for SA
+                // static real v1Eps = smallReal * settings.refUPrim(I4 + 1);
+                // if (inc(I4 + 1) < 0)
+                //     alphaRho = std::min(alphaRho,
+                //                         (u[iCell](I4 + 1) - v1Eps) / (-inc(I4 + 1) - smallReal * inc(I4 + 1)));
+                // // use exp down:
+                // if (inc(I4 + 1) + u[iCell](I4 + 1) < v1Eps)
+                // {
+                //     DNDS_assert(inc(I4 + 1) < 0);
+                //     real declineV = inc(I4 + 1) / (u[iCell](I4 + 1) + 1e-6);
+                //     real newu5 = u[iCell](I4 + 1) * std::exp(declineV);
+                //     alphaRho = std::min(alphaRho,
+                //                         (u[iCell](I4 + 1) - newu5) / (-inc(I4 + 1) - smallReal * inc(I4 + 1)));
+                // }
+            }
+            if constexpr (model == NS_2EQ || model == NS_2EQ_3D)
+            {
+                static real v1Eps = smallReal * settings.refUPrim(I4 + 1);
+                static real v2Eps = smallReal * settings.refUPrim(I4 + 2);
+                if (inc(I4 + 1) < 0)
+                    alphaRho = std::min(alphaRho,
+                                        (u[iCell](I4 + 1) - v1Eps) / (-inc(I4 + 1) - smallReal * inc(I4 + 1)));
+                if (inc(I4 + 2) < 0)
+                    alphaRho = std::min(alphaRho,
+                                        (u[iCell](I4 + 2) - v2Eps) / (-inc(I4 + 2) - smallReal * inc(I4 + 2)));
+            }
 
             inc *= alphaRho;
 
@@ -634,7 +690,7 @@ namespace DNDS::Euler
         ArrayRECV<nVars_Fixed> &uRec,
         ArrayDOFV<1> &uRecBeta,
         ArrayDOFV<nVars_Fixed> &res,
-        ArrayDOFV<1> &cellRHSAlpha, index &nLim, real &alphaMin)
+        ArrayDOFV<1> &cellRHSAlpha, index &nLim, real alphaMin)
     {
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
         real rhoEps = smallReal * settings.refUPrim(0);
@@ -692,6 +748,21 @@ namespace DNDS::Euler
                 // cellRHSAlpha[iCell](0) = cellAdjAlphaMin(iCell);
                 // DNDS_assert(cellRHSAlpha[iCell](0) == alphaMin);
                 cellRHSAlpha[iCell](0) = alphaMin;
+            }
+            if constexpr (model == NS_SA || model == NS_SA_3D)
+            {
+                static real v1Eps = smallReal * settings.refUPrim(I4 + 1);
+                if (uNew(I4 + 1) < v1Eps)
+                    cellRHSAlpha[iCell](0) = alphaMin;
+            }
+            if constexpr (model == NS_2EQ || model == NS_2EQ_3D)
+            {
+                static real v1Eps = smallReal * settings.refUPrim(I4 + 1);
+                static real v2Eps = smallReal * settings.refUPrim(I4 + 2);
+                if (uNew(I4 + 1) < v1Eps)
+                    cellRHSAlpha[iCell](0) = alphaMin;
+                if (uNew(I4 + 2) < v2Eps)
+                    cellRHSAlpha[iCell](0) = alphaMin;
             }
         }
         MPI::Allreduce(&nLimLocal, &nLimAdd, 1, DNDS_MPI_INDEX, MPI_SUM, u.father->getMPI().comm);

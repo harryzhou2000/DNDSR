@@ -3,6 +3,7 @@
         "dtImplicit": 1e100,
         "nTimeStep": 1,
         "steadyQuit": true,
+        "useRestart": true,
         "odeCode": 0,
         "tEnd": 3e+200
     },
@@ -14,16 +15,20 @@
     },
     "outputControl": {
         "nConsoleCheck": 1,
-        "nConsoleCheckInternal": 1,
+        "nConsoleCheckInternal": 10,
         "consoleOutputMode": 1,
         "nDataOutC": 100,
         "nDataOut": 10,
         "nDataOutCInternal": 200,
         "nDataOutInternal": 1000000000,
+        "nRestartOut": 100,
+        "nRestartOutC": 10,
+        "nRestartOutCInternal": 200,
+        "nRestartOutInternal": 1000000000,
         "tDataOut": 3e+200
     },
     "implicitCFLControl": {
-        "CFL": 100.0,
+        "CFL": 50,
         "nForceLocalStartStep": 2147483647,
         "nCFLRampStart": 2147483647,
         "nCFLRampLength": 2147483647,
@@ -33,9 +38,10 @@
     "dataIOControl": {
         "uniqueStamps": false,
         "meshRotZ": 0.0,
-        "meshFile": "../data/mesh/BL_1EM5.cgns",
-        "outPltName": "../data/outUnsteady/BL_1EM5",
-        "outLogName": "../data/outUnsteady/BL_1EM5",
+        "meshFile": "../data/mesh/NACA0012_H2.cgns",
+        "outPltName": "../data/out/NACA0012_H2",
+        "outLogName": "../data/out/NACA0012_H2",
+        "outRestartName": "../data/out/NACA0012_H2",
         "outPltMode": 0,
         "readMeshMode": 0,
         "outPltTecplotFormat": true,
@@ -51,7 +57,9 @@
         "nGmresSpace": 5,
         "nGmresIter": 10,
         "recThreshold": 1e-05,
-        "nRecConsolCheck": 1
+        "nRecConsolCheck": 1,
+        "storeRecInc": true,
+        "dampRecIncDTau": false
     },
     "limiterControl": {
         "useLimiter": false,
@@ -63,7 +71,7 @@
     "vfvSettings": {
         "maxOrder": 1,
         "intOrder": 1,
-        "cacheDiffBase": false,
+        "cacheDiffBase": true,
         "jacobiRelax": 1.0,
         "SORInstead": true,
         "smoothThreshold": 1e-3,
@@ -72,13 +80,36 @@
         "subs2ndOrder": 1,
         "baseSettings": {
             "localOrientation": true,
-            "anisotropicLengths": true
+            "anisotropicLengths": false
+        },
+        "functionalSettings": {
+            // "scaleType": "MeanAACBB",
+            "dirWeightScheme": "HQM_OPT",
+            // "dirWeightScheme": "ManualDirWeight",
+            // "manualDirWeights": [
+            //     1.0,
+            //     1,
+            //     0,
+            //     0
+            // ],
+            "geomWeightScheme": "HQM_SD",
+            "geomWeightPower": -0.5,
+            // "geomWeightScheme": "SD_Power",
+            // "geomWeightPower1": -0.5,
+            // "geomWeightPower2": 0.5,
+            // "useAnisotropicFunctional": true,
+            // // "anisotropicType": "InertiaCoordBB",
+            // "inertiaWeightPower": 0,
+            // "scaleMultiplier": 1,
+            "_tail": 0
         }
     },
     "linearSolverControl": {
         "gmresCode": 0,
         "nGmresSpace": 10,
-        "nGmresIter": 5
+        "nGmresIter": 5,
+        "sgsWithRec": 0,
+        "initWithLastURecInc": false
     },
     "others": {
         "nFreezePassiveInner": 0
@@ -86,7 +117,7 @@
     "eulerSettings": {
         "ignoreSourceTerm": false,
         "useScalarJacobian": false,
-        "riemannSolverType": "Roe_M2",
+        "riemannSolverType": "Roe",
         "constMassForce": [
             0.0,
             0.0,
@@ -94,8 +125,8 @@
         ],
         "farFieldStaticValue": [
             1,
-            1,
-            0,
+            0.965925826289068,
+            0.258819045102521,
             0,
             79.8650793650794,
             1.3
@@ -127,10 +158,16 @@
         "idealGasProperty": {
             "gamma": 1.4,
             "Rgas": 0.116221972344982,
-            "muGas": 1e-6,
+            "muGas": 3.472222222222222e-7,
             "prGas": 0.72,
             "TRef": 273.15,
             "CSutherland": 110.4
         }
+    },
+    "restartState": {
+        "iStep": 1,
+        "iStepInternal": 15000,
+        "odeCodePrev": -1,
+        "lastRestartFile": "../data/out/NACA0012_H2__C_p16_restart_test1.dir"
     }
 }

@@ -85,36 +85,6 @@ namespace DNDS::Euler
             auto faceBndID = mesh->GetFaceZone(iFace);
             auto faceBCType = pBCHandler->GetTypeFromID(faceBndID);
 
-#ifdef USE_TOTAL_REDUCED_ORDER_CELL
-            gFace.IntegrationSimple(
-                noOp,
-                [&](auto &finc, int iG)
-                {
-                    if (!faceOrderReducedL)
-                    {
-                        TU ULxy =
-                            (vfv->GetIntPointDiffBaseValue(f2c[0], iFace, 0, iG, std::array<int, 1>{0}, 1) *
-                             uRec[f2c[0]])
-                                .transpose() *
-                            IF_NOT_NOREC * uRecBeta[f2c[0]](0);
-                        ULxy = CompressRecPart(u[f2c[0]], ULxy, faceOrderReducedL);
-                    }
-
-                    if (f2c[1] != UnInitIndex)
-                    {
-                        if (!faceOrderReducedR)
-                        {
-                            TU URxy =
-                                (vfv->GetIntPointDiffBaseValue(f2c[1], iFace, 1, iG, std::array<int, 1>{0}, 1) *
-                                 uRec[f2c[1]])
-                                    .transpose() *
-                                IF_NOT_NOREC * uRecBeta[f2c[1]](0);
-                            URxy = CompressRecPart(u[f2c[1]], URxy, faceOrderReducedR);
-                        }
-                    }
-                });
-#endif
-
             gFace.IntegrationSimple(
                 fluxEs,
                 [&](decltype(fluxEs) &finc, int iG)
@@ -131,13 +101,11 @@ namespace DNDS::Euler
                     if (!faceOrderReducedL)
                     {
 
-                        ULxy = CompressRecPart(
-                            ULxy,
+                        ULxy +=
                             (vfv->GetIntPointDiffBaseValue(f2c[0], iFace, 0, iG, std::array<int, 1>{0}, 1) *
                              uRec[f2c[0]])
-                                    .transpose() *
-                                IF_NOT_NOREC * uRecBeta[f2c[0]](0),
-                            pointOrderReducedL);
+                                .transpose() *
+                            IF_NOT_NOREC * uRecBeta[f2c[0]](0);
                     }
                     this->UFromCell2Face(ULxy, iFace, f2c[0], 0);
 
@@ -172,13 +140,11 @@ namespace DNDS::Euler
                         this->UFromCell2Face(URxy, iFace, f2c[1], 1);
                         if (!faceOrderReducedR)
                         {
-                            URxy = CompressRecPart(
-                                URxy,
+                            URxy +=
                                 (vfv->GetIntPointDiffBaseValue(f2c[1], iFace, 1, iG, std::array<int, 1>{0}, 1) *
                                  uRec[f2c[1]])
-                                        .transpose() *
-                                    IF_NOT_NOREC * uRecBeta[f2c[1]](0),
-                                pointOrderReducedR);
+                                    .transpose() *
+                                IF_NOT_NOREC * uRecBeta[f2c[1]](0);
                         }
 
                         URMeanXy = u[f2c[1]];
@@ -361,23 +327,6 @@ namespace DNDS::Euler
                 Geom::Elem::SummationNoOp noOp;
                 bool cellOrderReduced = false;
 
-#ifdef USE_TOTAL_REDUCED_ORDER_CELL
-                gCell.IntegrationSimple(
-                    noOp,
-                    [&](decltype(noOp) &finc, int ig)
-                    {
-                        if (!cellOrderReduced)
-                        {
-                            TU ULxy =
-                                (vfv->GetIntPointDiffBaseValue(iCell, -1, -1, ig, std::array<int, 1>{0}, 1) *
-                                 uRec[iCell])
-                                    .transpose() *
-                                IF_NOT_NOREC * uRecBeta[iCell](0);
-                            ULxy = CompressRecPart(u[iCell], ULxy, cellOrderReduced);
-                        }
-                    });
-#endif
-
                 gCell.IntegrationSimple(
                     sourceV,
                     [&](decltype(sourceV) &finc, int iG)
@@ -401,13 +350,11 @@ namespace DNDS::Euler
                         {
                             // ULxy += cellDiBjGaussBatchElemVR.m(ig).row(0).rightCols(uRec[iCell].rows()) *
                             //         uRec[iCell] * IF_NOT_NOREC;
-                            ULxy = CompressRecPart(
-                                ULxy,
+                            ULxy +=
                                 (vfv->GetIntPointDiffBaseValue(iCell, -1, -1, iG, std::array<int, 1>{0}, 1) *
                                  uRec[iCell])
-                                        .transpose() *
-                                    IF_NOT_NOREC * uRecBeta[iCell](0),
-                                pointOrderReduced);
+                                    .transpose() *
+                                IF_NOT_NOREC * uRecBeta[iCell](0);
                         }
                         PerformanceTimer::Instance().StopTimer(PerformanceTimer::LimiterB);
 

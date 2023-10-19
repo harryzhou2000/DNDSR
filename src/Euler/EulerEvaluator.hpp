@@ -416,7 +416,7 @@ namespace DNDS::Euler
             ArrayRECV<nVars_Fixed> &uRec,
             ArrayDOFV<1> &uRecBeta,
             ArrayDOFV<nVars_Fixed> &res,
-            ArrayDOFV<1> &cellRHSAlpha, index &nLim, real &alphaMin);
+            ArrayDOFV<1> &cellRHSAlpha, index &nLim, real alphaMin);
 
         /******************************************************/
 
@@ -1789,6 +1789,35 @@ namespace DNDS::Euler
                 cxInc[iCell] = this->CompressInc(cx[iCell], cxInc[iCell] * alpha);
         }
 
+        void AddFixedIncrement(
+            ArrayDOFV<nVars_Fixed> &cx,
+            ArrayDOFV<nVars_Fixed> &cxInc, real alpha = 1.0)
+        {
+            real alpha_fix_min = 1.0;
+            for (index iCell = 0; iCell < cxInc.Size(); iCell++)
+            {
+                TU compressedInc = this->CompressInc(cx[iCell], cxInc[iCell] * alpha);
+                real newAlpha = std::abs(compressedInc(0)) /
+                                (std::abs((cxInc[iCell] * alpha)(0)));
+                if (std::abs((cxInc[iCell] * alpha)(0)) < verySmallReal)
+                    newAlpha = 1.; //! old inc could be zero, so compresion alpha is always 1
+                alpha_fix_min = std::min(
+                    alpha_fix_min,
+                    newAlpha);
+                // if (newAlpha < 1.0 - 1e-14)
+                //     std::cout << "KL\n"
+                //               << std::scientific << std::setprecision(5)
+                //               << this->CompressInc(cx[iCell], cxInc[iCell] * alpha).transpose() << "\n"
+                //               << cxInc[iCell].transpose() * alpha << std::endl;
+                cx[iCell] += compressedInc;
+            }
+            real alpha_fix_min_c = alpha_fix_min;
+            MPI::Allreduce(&alpha_fix_min_c, &alpha_fix_min, 1, DNDS_MPI_REAL, MPI_MIN, cx.father->getMPI().comm);
+            if (alpha_fix_min < 1.0)
+                if (cx.father->getMPI().rank == 0)
+                    std::cout << "Increment fixed " << std::scientific << std::setprecision(5) << alpha_fix_min << std::endl;
+        }
+
         // void AddFixedIncrement(
         //     ArrayDOFV<nVars_Fixed> &cx,
         //     ArrayDOFV<nVars_Fixed> &cxInc, real alpha = 1.0)
@@ -1819,6 +1848,7 @@ namespace DNDS::Euler
 
         //     // for (index iCell = 0; iCell < cxInc.Size(); iCell++)
         //     //     cx[iCell] += alpha_fix_min * alpha * cxInc[iCell];
+        //     index nFixed = 0;
         //     for (index iCell = 0; iCell < cxInc.Size(); iCell++)
         //     {
         //         TU compressedInc = this->CompressInc(cx[iCell], cxInc[iCell] * alpha);
@@ -1832,62 +1862,14 @@ namespace DNDS::Euler
         //         //               << std::scientific << std::setprecision(5)
         //         //               << this->CompressInc(cx[iCell], cxInc[iCell] * alpha).transpose() << "\n"
         //         //               << cxInc[iCell].transpose() * alpha << std::endl;
-        //         cx[iCell] += (newAlpha < 1 ? alpha_fix_min : 1) * alpha * cxInc[iCell];
+        //         cx[iCell] += (newAlpha < 1 ? nFixed ++,alpha_fix_min : 1) * alpha * cxInc[iCell];
         //     }
+        //     index nFixed_c = nFixed;
+        //     MPI::Allreduce(&nFixed_c, &nFixed, 1, DNDS_MPI_INDEX, MPI_SUM, cx.father->getMPI().comm);
+        //     if (alpha_fix_min < 1.0)
+        //         if (cx.father->getMPI().rank == 0)
+        //             std::cout << "Increment fixed number " << nFixed_c << std::endl;
         // }
-
-        void AddFixedIncrement(
-            ArrayDOFV<nVars_Fixed> &cx,
-            ArrayDOFV<nVars_Fixed> &cxInc, real alpha = 1.0)
-        {
-            real alpha_fix_min = 1.0;
-            for (index iCell = 0; iCell < cxInc.Size(); iCell++)
-            {
-                TU compressedInc = this->CompressInc(cx[iCell], cxInc[iCell] * alpha);
-                real newAlpha = std::abs(compressedInc(0)) /
-                                (std::abs((cxInc[iCell] * alpha)(0)));
-                if (std::abs((cxInc[iCell] * alpha)(0)) < verySmallReal)
-                    newAlpha = 1.; //! old inc could be zero, so compresion alpha is always 1
-                alpha_fix_min = std::min(
-                    alpha_fix_min,
-                    newAlpha);
-                // if (newAlpha < 1.0 - 1e-14)
-                //     std::cout << "KL\n"
-                //               << std::scientific << std::setprecision(5)
-                //               << this->CompressInc(cx[iCell], cxInc[iCell] * alpha).transpose() << "\n"
-                //               << cxInc[iCell].transpose() * alpha << std::endl;
-                // cx[iCell] += compressedInc;
-            }
-            real alpha_fix_min_c = alpha_fix_min;
-            MPI::Allreduce(&alpha_fix_min_c, &alpha_fix_min, 1, DNDS_MPI_REAL, MPI_MIN, cx.father->getMPI().comm);
-            if (alpha_fix_min < 1.0)
-                if (cx.father->getMPI().rank == 0)
-                    std::cout << "Increment fixed " << std::scientific << std::setprecision(5) << alpha_fix_min << std::endl;
-
-            // for (index iCell = 0; iCell < cxInc.Size(); iCell++)
-            //     cx[iCell] += alpha_fix_min * alpha * cxInc[iCell];
-            index nFixed = 0;
-            for (index iCell = 0; iCell < cxInc.Size(); iCell++)
-            {
-                TU compressedInc = this->CompressInc(cx[iCell], cxInc[iCell] * alpha);
-                real newAlpha = std::abs(compressedInc(0)) /
-                                (std::abs((cxInc[iCell] * alpha)(0)));
-                if (std::abs((cxInc[iCell] * alpha)(0)) < verySmallReal)
-                    newAlpha = 1.; //! old inc could be zero, so compresion alpha is always 1
-
-                // if (newAlpha < 1.0 - 1e-14)
-                //     std::cout << "KL\n"
-                //               << std::scientific << std::setprecision(5)
-                //               << this->CompressInc(cx[iCell], cxInc[iCell] * alpha).transpose() << "\n"
-                //               << cxInc[iCell].transpose() * alpha << std::endl;
-                cx[iCell] += (newAlpha < 1 ? nFixed ++,alpha_fix_min : 1) * alpha * cxInc[iCell];
-            }
-            index nFixed_c = nFixed;
-            MPI::Allreduce(&nFixed_c, &nFixed, 1, DNDS_MPI_INDEX, MPI_SUM, cx.father->getMPI().comm);
-            if (alpha_fix_min < 1.0)
-                if (cx.father->getMPI().rank == 0)
-                    std::cout << "Increment fixed number " << nFixed_c << std::endl;
-        }
 
         void CentralSmoothResidual(ArrayDOFV<nVars_Fixed> &r, ArrayDOFV<nVars_Fixed> &rs, ArrayDOFV<nVars_Fixed> &rtemp)
         {

@@ -147,6 +147,8 @@ namespace DNDS::Euler
         index nLimAlpha = 0;
         real minAlpha = 1;
         real minBeta = 1;
+        index nLimInc = 0;
+        real alphaMinInc = 1;
 
         InsertCheck(mpi, "Implicit 2 nvars " + std::to_string(nVars));
         /*******************************************************/
@@ -441,7 +443,7 @@ namespace DNDS::Euler
                 else
                     eval.EvaluateURecBeta(u, uRecC, betaPPC, nLimBeta, minBeta);
                 if (nLimBeta)
-                    if (mpi.rank == 0)
+                    if (mpi.rank == 0 && config.outputControl.consoleOutputEveryFix != 0)
                     {
                         log() << std::scientific << std::setprecision(3)
                               << "PPRecLimiter: nLimBeta [" << nLimBeta << "]"
@@ -511,8 +513,8 @@ namespace DNDS::Euler
                 //         std::cout << std::scientific << std::setw(3);
                 //         std::cout << "PPFResLimiter: nLimFRes[" << nLimFRes << "] minAlpha [" << alphaMinFRes << "]" << std::endl;
                 //     }
-                
-                // crhs *= alphaPP_tmp; 
+
+                // crhs *= alphaPP_tmp;
             }
 
             typename TVFV::element_type::TFBoundary<nVars_Fixed>
@@ -819,7 +821,7 @@ namespace DNDS::Euler
             alphaPP_tmp.trans.startPersistentPull();
             alphaPP_tmp.trans.waitPersistentPull();
             if (nLimAlpha)
-                if (mpi.rank == 0)
+                if (mpi.rank == 0 && config.outputControl.consoleOutputEveryFix != 0)
                 {
                     log() << std::scientific << std::setprecision(3)
                           << "PPResidualLimiter: nLimAlpha [" << nLimAlpha << "]"
@@ -843,7 +845,7 @@ namespace DNDS::Euler
                 alphaPP_tmp.trans.startPersistentPull();
                 alphaPP_tmp.trans.waitPersistentPull();
                 if (nLimAlpha)
-                    if (mpi.rank == 0)
+                    if (mpi.rank == 0 && config.outputControl.consoleOutputEveryFix != 0)
                     {
                         log() << std::scientific << std::setprecision(3)
                               << "PPResidualLimiter - first expand: nLimAlpha [" << nLimAlpha << "]"
@@ -864,16 +866,15 @@ namespace DNDS::Euler
                               ArrayDOFV<nVars_Fixed> &cxInc,
                               real alpha, int uPos)
         {
-            // eval.AddFixedIncrement(cx, cxInc, alpha);
             auto &alphaPPC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? alphaPP1 : alphaPP;
             auto &betaPPC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? betaPP1 : betaPP;
             auto &uRecC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? uRec1 : uRec;
             auto &JSourceC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? JSource1 : JSource;
-            index nLimInc = 0;
-            real alphaMinInc = 1;
+            nLimInc = 0;
+            alphaMinInc = 1;
             eval.EvaluateCellRHSAlpha(cx, uRecC, betaPPC, cxInc, alphaPP_tmp, nLimInc, alphaMinInc);
             if (nLimInc)
-                if (mpi.rank == 0)
+                if (mpi.rank == 0 && config.outputControl.consoleOutputEveryFix != 0)
                 {
                     std::cout << std::scientific << std::setw(3);
                     std::cout << "PPIncrementLimiter: nIncrementRes[" << nLimInc << "] minAlpha [" << alphaMinInc << "]" << std::endl;
@@ -881,7 +882,9 @@ namespace DNDS::Euler
 
             uTemp = cxInc;
             uTemp *= alphaPP_tmp;
-            cx += uTemp;
+            // cx += uTemp;
+            eval.AddFixedIncrement(cx, uTemp, alpha);
+            // eval.AddFixedIncrement(cx, cxInc, alpha);
         };
 
         auto fstop = [&](int iter, ArrayDOFV<nVars_Fixed> &cxinc, int iStep) -> bool
@@ -908,7 +911,10 @@ namespace DNDS::Euler
                           << "\t Internal === Step [" << step << ", " << iStep << ", " << iter << "]   "
                           << "res \033[91m[" << resRel.transpose() << "]\033[39m   "
                           << "t,dTaumin,CFL,nFix \033[92m["
-                          << tSimu << ", " << curDtMin << ", " << CFLNow << ", " << eval.nFaceReducedOrder << "]\033[39m   "
+                          << tSimu << ", " << curDtMin << ", " << CFLNow << ", "
+                          << fmt::format("[alphaInc({},{}), betaRec({},{}), alphaRes({},{})]",
+                                         nLimInc, alphaMinInc, nLimBeta, minBeta, nLimAlpha, minAlpha)
+                          << "]\033[39m   "
                           << std::setprecision(3) << std::fixed
                           << "Time [" << telapsed << "]   recTime ["
                           << trec << "]   rhsTime ["
@@ -935,7 +941,11 @@ namespace DNDS::Euler
                         << tSimu << delimC
                         << curDtMin << delimC
                         << real(eval.nFaceReducedOrder) << delimC
-                        << eval.fluxWallSum.transpose() << std::endl;
+                        << eval.fluxWallSum.transpose() << delimC
+                        << (nLimInc) << delimC << (alphaMinInc) << delimC
+                        << (nLimBeta) << delimC << (minBeta) << delimC
+                        << (nLimAlpha) << delimC << (minAlpha) << delimC
+                        << std::endl;
                 }
                 tstart = MPI_Wtime();
                 trec = tcomm = trhs = tLim = 0.;
@@ -1014,7 +1024,11 @@ namespace DNDS::Euler
                         << tSimu << delimC
                         << curDtMin << delimC
                         << real(eval.nFaceReducedOrder) << delimC
-                        << eval.fluxWallSum.transpose() << std::endl;
+                        << eval.fluxWallSum.transpose() << delimC
+                        << (nLimInc) << delimC << (alphaMinInc) << delimC
+                        << (nLimBeta) << delimC << (minBeta) << delimC
+                        << (nLimAlpha) << delimC << (minAlpha) << delimC
+                        << std::endl;
                 }
                 tstart = MPI_Wtime();
                 trec = tcomm = trhs = tLim = 0.;

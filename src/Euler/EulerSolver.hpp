@@ -131,6 +131,7 @@ namespace DNDS::Euler
                 int nConsoleCheck = 1;
                 int nConsoleCheckInternal = 1;
                 int consoleOutputMode = 0; // 0 for basic, 1 for wall force out
+                int consoleOutputEveryFix = 0;
                 int nDataOut = 10000;
                 int nDataOutC = 50;
                 int nDataOutInternal = 10000;
@@ -146,7 +147,8 @@ namespace DNDS::Euler
                     nConsoleCheck,
                     nConsoleCheckInternal,
                     consoleOutputMode,
-                    nDataOut,
+                    consoleOutputEveryFix,
+                        nDataOut,
                     nDataOutC,
                     nDataOutInternal,
                     nDataOutCInternal,
@@ -658,6 +660,8 @@ namespace DNDS::Euler
         }
         void ReadRestart(std::string fname)
         {
+            if (mpi.rank == 0)
+                log() << fmt::format("=== Reading Restart From [{}]", fname) << std::endl;
             std::filesystem::path outPath;
             // outPath = {fname + "_p" + std::to_string(mpi.size) + "_restart.dir"};
             outPath = fname;
@@ -675,6 +679,8 @@ namespace DNDS::Euler
             serializer->CloseFile();
             // config.restartState.lastRestartFile = outPath;
             // PrintConfig();
+            if (mpi.rank == 0)
+                log() << fmt::format("=== Read Restart") << std::endl;
         }
 
         void PrintRestart(std::string fname)

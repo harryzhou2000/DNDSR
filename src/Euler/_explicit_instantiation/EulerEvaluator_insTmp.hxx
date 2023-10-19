@@ -75,5 +75,5 @@
             ArrayRECV<nVars_Fixed> &uRec,                                                      \
             ArrayDOFV<1> &uRecBeta,                                                            \
             ArrayDOFV<nVars_Fixed> &res,                                                       \
-            ArrayDOFV<1> &cellRHSAlpha, index &nLim, real &alphaMin);                          \
+            ArrayDOFV<1> &cellRHSAlpha, index &nLim, real alphaMin);                          \
     }
