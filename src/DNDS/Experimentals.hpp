@@ -30,6 +30,8 @@
 
 // #define USE_NS_SA_NUT_REDUCED_ORDER
 
+#define USE_NS_SA_ALLOW_NEGATIVE_MEAN
+
 /*-------------------------------------------------------------------------------------------------*/
 /*-------------------------------------------------------------------------------------------------*/
 /*-------------------------------------------------------------------------------------------------*/
@@ -79,6 +81,9 @@ static const std::string DNDS_Experimentals_State = std::string("DNDS_Experiment
 #endif
 #ifdef USE_NS_SA_NUT_REDUCED_ORDER
                                                     + " USE_NS_SA_NUT_REDUCED_ORDER "
+#endif
+#ifdef USE_NS_SA_ALLOW_NEGATIVE_MEAN
+                                                    + " USE_NS_SA_ALLOW_NEGATIVE_MEANs "
 #endif
 #ifdef USE_ISOTROPIC_OPTHQM
                                                     + " USE_ISOTROPIC_OPTHQM "

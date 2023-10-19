@@ -1733,7 +1733,7 @@ namespace DNDS::Euler
             }
 
             /** A intuitive fix **/
-
+#ifndef USE_NS_SA_ALLOW_NEGATIVE_MEAN
             if constexpr (model == NS_SA || model == NS_SA_3D)
             {
                 if (u(I4 + 1) + ret(I4 + 1) < 0)
@@ -1749,6 +1749,7 @@ namespace DNDS::Euler
                     ret(I4 + 1) = newu5 - u(I4 + 1);
                 }
             }
+#endif
             if constexpr (model == NS_2EQ || model == NS_2EQ_3D)
             {
                 if (u(I4 + 1) + ret(I4 + 1) < 0)
