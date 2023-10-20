@@ -3,7 +3,7 @@
         "dtImplicit": 1e100,
         "nTimeStep": 1,
         "steadyQuit": true,
-        "useRestart": true,
+        "useRestart": false,
         "odeCode": 0,
         "tEnd": 3e+200
     },
@@ -69,8 +69,8 @@
         "nPartialLimiterStartLocal": 1000000
     },
     "vfvSettings": {
-        "maxOrder": 1,
-        "intOrder": 1,
+        "maxOrder": 3,
+        "intOrder": 3,
         "cacheDiffBase": true,
         "jacobiRelax": 1.0,
         "SORInstead": true,
@@ -117,7 +117,7 @@
     "eulerSettings": {
         "ignoreSourceTerm": false,
         "useScalarJacobian": false,
-        "riemannSolverType": "Roe",
+        "riemannSolverType": "Roe_M2",
         "constMassForce": [
             0.0,
             0.0,

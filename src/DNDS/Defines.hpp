@@ -13,8 +13,15 @@
 #include <type_traits>
 #include <filesystem>
 #include <functional>
+#include <locale>
+#include <codecvt>
 #ifdef DNDS_USE_OMP
 #include <omp.h>
+#endif
+
+#if defined(_WIN32) || defined(__WINDOWS_)
+#include <Windows.h>
+#include <process.h>
 #endif
 
 #include "Macros.hpp"
@@ -262,9 +269,11 @@ namespace DNDS
 
     inline std::string getStringForceWString(const std::wstring &v)
     {
-        std::vector<char> buf(v.size());
-        std::wcstombs(buf.data(), v.data(), v.size());
-        return std::string{buf.data()};
+        // std::vector<char> buf(v.size());
+        // std::wcstombs(buf.data(), v.data(), v.size());
+        // return std::string{buf.data()};
+        std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> converter;
+        return converter.to_bytes(v); // TODO: on windows use WideCharToMultiByte()
     }
 
     inline std::string getStringForcePath(const std::filesystem::path::string_type &v)

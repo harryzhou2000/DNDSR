@@ -239,11 +239,19 @@ if(UNIX OR MINGW)
     add_compile_options(-Wall -Wno-unused-but-set-variable -Wno-unused-variable -Wno-sign-compare)
 
 elseif(WIN32 OR MSVC)
+    if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang")
+        add_compile_options(-Wall -Wno-unused-but-set-variable -Wno-unused-variable -Wno-sign-compare)
+        add_compile_options(-std=c++17 )
+        # add_compile_options(--target=x86_64-pc-windows-gnu)
+        # add_link_options(--target=x86_64-pc-windows-gnu)
+        add_compile_options(-D_CRT_SECURE_NO_WARNINGS -DCOMPILER_MSC)
+    endif()
     set(EXTERNAL_LIBS ${EXTERNAL_LIBS} # no dl
     )
     message(${CMAKE_CXX_COMPILER_ID})
     # add_compile_options(/std:c++17 /IGNORE:C2124) # cl is buggy in c++17 mode ...
-    add_compile_options(-std=c++17 --target=x86_64-pc-windows-gnu)
+    
+    
     if (DNDS_USE_OMP)
         find_package(OpenMP REQUIRED)
         if(OpenMP_CXX_FLAGS)

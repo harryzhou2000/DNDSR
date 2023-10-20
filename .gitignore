@@ -20,6 +20,8 @@ data
 *.pdf
 *.png
 *.jpg
+~*.doc*
+~*.tmp
 # tex
 *.aux
 *.log

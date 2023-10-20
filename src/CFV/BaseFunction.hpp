@@ -765,8 +765,9 @@ namespace DNDS::CFV
     template <int dim, class TMat>
     inline void ConvertDiffsLinMap(TMat &&mat, const Geom::tGPoint &dXijdXi)
     {
+        int rows = mat.rows();
         if constexpr (dim == 2)
-            switch (mat.rows())
+            switch (rows)
             {
             case 10:
                 for (int iB = 0; iB < mat.cols(); iB++)
@@ -791,7 +792,7 @@ namespace DNDS::CFV
                 break;
             }
         else // dim ==3
-            switch (mat.rows())
+            switch (rows)
             {
             case 20:
                 for (int iB = 0; iB < mat.cols(); iB++)

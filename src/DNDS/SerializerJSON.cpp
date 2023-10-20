@@ -3,6 +3,7 @@
 #include <string>
 #include "base64_rfc4648.hpp"
 #include <zlib.h>
+#include <fmt/core.h>
 
 namespace DNDS
 {
@@ -54,7 +55,7 @@ namespace DNDS
             fileStream.open(fName, std::ios::in);
         else
             fileStream.open(fName, std::ios::out);
-        DNDS_assert(fileStream.is_open());
+        DNDS_assert_info(fileStream.is_open(), fmt::format(" attempted to {} file [{}]", read ? "read" : "write", fName));
 
         if (reading)
             fileStream >> jObj;

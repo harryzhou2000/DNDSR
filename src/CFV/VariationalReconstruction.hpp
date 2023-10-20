@@ -470,9 +470,9 @@ namespace DNDS::CFV
                                 if2c * maxNDOFM1 + maxNDOFM1 - 1));
         }
 
-        template <class TDiffI, class TDiffJ>
+        template <class TDiffIDerived, class TDiffJDerived>
         auto FFaceFunctional(
-            TDiffI &&DiffI, TDiffJ &&DiffJ,
+            const Eigen::MatrixBase<TDiffIDerived> &DiffI, const Eigen::MatrixBase<TDiffJDerived> &DiffJ,
             index iFace, index iG, index iCellL, index iCellR)
         {
             using namespace Geom;
@@ -595,7 +595,10 @@ namespace DNDS::CFV
             }
             else
             {
-                using TMatCopy = Eigen::Matrix<real, DiffI.RowsAtCompileTime, DiffI.ColsAtCompileTime>;
+                using TMatCopy = Eigen::Matrix<
+                    real,
+                    Eigen::MatrixBase<TDiffIDerived>::RowsAtCompileTime,
+                    Eigen::MatrixBase<TDiffIDerived>::ColsAtCompileTime>;
                 TMatCopy DiffI_Norm = DiffI;
                 TMatCopy DiffJ_Norm = DiffJ;
                 tGPoint coordTrans = faceMajorCoordScale[iFace].transpose() *
@@ -605,10 +608,9 @@ namespace DNDS::CFV
                     // real normScale = (coordTrans * norm).norm();
                     // coordTrans(0, Eigen::all) = norm.transpose() * faceL;
                     // coordTrans({1, 2}, Eigen::all).setZero();
-                }
-                { // coordTrans = Geom::NormBuildLocalBaseV<3>(norm).transpose() * faceL;
-                }
-                {
+                } {
+                    // coordTrans = Geom::NormBuildLocalBaseV<3>(norm).transpose() * faceL;
+                } {
                     // coordTrans *=  (2 * std::sqrt(3));
                     // tPoint lengths = coordTrans.rowwise().norm();
                     // // tPoint lengthsNew = lengths.array() * faceL / (faceL + lengths.array());
@@ -621,8 +623,7 @@ namespace DNDS::CFV
                     // //     std::cout << lengths << std::endl;
                     // //     std::cout << faceL << std::endl;
                     // // }
-                }
-                {
+                } {
                     // tPoint norm = this->GetFaceNorm(iFace, -1);
                     // auto getCellFaceMajorPNorm = [&](index iCell) -> tPoint
                     // {
@@ -647,8 +648,7 @@ namespace DNDS::CFV
 
                     // coordTrans(0, Eigen::all) = norm.transpose() * faceL;
                     // coordTrans({1, 2}, Eigen::all).setZero();
-                }
-                {
+                } {
                     tPoint norm = this->GetFaceNorm(iFace, -1);
                     real areaL = this->GetFaceArea(iFace);
                     if constexpr (dim == 3)
@@ -794,7 +794,7 @@ namespace DNDS::CFV
         using TFBoundary = std::function<Eigen::Vector<real, nVarsFixed>(
             const Eigen::Vector<real, nVarsFixed> &, // UBL
             const Eigen::Vector<real, nVarsFixed> &, // UMEAN
-            index, index, // iCell, iFace
+            index, index,                            // iCell, iFace
             const Geom::tPoint &,                    // Norm
             const Geom::tPoint &,                    // pPhy
             Geom::t_index fType                      // fCode

@@ -698,7 +698,7 @@ namespace DNDS::Euler
             serializer->OpenFile(fname, false);
             u.WriteSerialize(serializer, "u");
             serializer->CloseFile();
-            config.restartState.lastRestartFile = outPath;
+            config.restartState.lastRestartFile = getStringForcePath(outPath);
             PrintConfig();
         }
 

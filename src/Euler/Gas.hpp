@@ -744,7 +744,7 @@ namespace DNDS::Euler::Gas
      * TODO: vectorize
      * newrhoEinteralNew is the desired fixed-to-positive e = p / (gamma -1)
      */
-    template <int dim = 3, typename TU, typename TUInc>
+    template <int dim = 3, int nVars_Fixed, typename TU, typename TUInc>
     real IdealGasGetCompressionRatioPressure(const TU &u, const TUInc &uInc, real newrhoEinteralNew)
     {
         static const auto Seq01234 = Eigen::seq(Eigen::fix<0>, Eigen::fix<dim + 1>);
@@ -752,7 +752,7 @@ namespace DNDS::Euler::Gas
         static const auto Seq123 = Eigen::seq(Eigen::fix<1>, Eigen::fix<dim>);
         static const auto I4 = dim + 1;
 
-        Eigen::Vector<real, uInc.SizeAtCompileTime> ret = uInc;
+        Eigen::Vector<real, nVars_Fixed> ret = uInc;
 
         real c0 = 2 * u(I4) * u(0) - u(Seq123).squaredNorm() - 2 * u(0) * newrhoEinteralNew;
         real c1 = 2 * u(I4) * ret(0) + 2 * u(0) * ret(I4) - 2 * u(Seq123).dot(ret(Seq123)) - 2 * ret(0) * newrhoEinteralNew;
