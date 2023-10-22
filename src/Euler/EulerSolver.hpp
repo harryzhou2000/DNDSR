@@ -524,7 +524,7 @@ namespace DNDS::Euler
                 [&](Geom::t_index id) -> real
                 {
                     auto type = BCHandler.GetTypeFromID(id);
-                    if (type == BCFar || type == BCSpecial)
+                    if (type == BCFar || type == BCSpecial || type == BCOut)
                         return 0; // far weight
                     return 1;     // wall weight
                 });

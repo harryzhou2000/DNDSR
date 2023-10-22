@@ -57,6 +57,24 @@
             "cStandard": "c17",
             "intelliSenseMode": "linux-gcc-x64",
             "cppStandard": "c++17"
+        },
+        {
+            "name": "HZAU",
+            "includePath": [
+                "${default}",
+                "external\\Windows-AMD64\\include",
+                "C:\\Program Files (x86)\\Microsoft SDKs\\MPI\\Include"
+            ],
+            "defines": [
+                "_DEBUG",
+                "UNICODE",
+                "_UNICODE"
+            ],
+            "windowsSdkVersion": "10.0.22000.0",
+            "compilerPath": "cl.exe",
+            "cStandard": "c17",
+            "intelliSenseMode": "windows-msvc-x64",
+            "cppStandard": "c++17"
         }
     ],
     "version": 4

@@ -1273,7 +1273,7 @@ namespace DNDS::Euler
                     {
                         URxy = far;
                     }
-                    URxy = far; //! override
+                    // URxy = far; //! override
                 }
                 else if (btype == Geom::BC_ID_DEFAULT_SPECIAL_DMR_FAR)
                 {
@@ -1556,6 +1556,10 @@ namespace DNDS::Euler
                         ULxy(I4 + 2) = URxy(I4 + 2) = epsWall * ULxy(0);
                     // std::cout << "d1" <<d1 << std::endl;
                 }
+            }
+            else if (pBCHandler->GetTypeFromID(btype) == EulerBCType::BCOut)
+            {
+                URxy = ULxy;
             }
             else
             {

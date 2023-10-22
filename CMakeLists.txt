@@ -248,8 +248,15 @@ elseif(WIN32 OR MSVC)
     endif()
     set(EXTERNAL_LIBS ${EXTERNAL_LIBS} # no dl
     )
+    if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "MSVC")
+        add_compile_options(-Wall)
+        add_compile_options(/std:c++17 /IGNORE:C2124) # cl is buggy in c++17 mode ...
+        
+    endif()
+    set(EXTERNAL_LIBS ${EXTERNAL_LIBS} # no dl
+    )
     message(${CMAKE_CXX_COMPILER_ID})
-    # add_compile_options(/std:c++17 /IGNORE:C2124) # cl is buggy in c++17 mode ...
+    
     
     
     if (DNDS_USE_OMP)

@@ -187,11 +187,11 @@ namespace DNDS
             if (settings.maxOrder == 1 && settings.subs2ndOrder != 0)
             {
                 if (recordInc)
-                    this->DoReconstruction2nd(uRecNew, u, (FBoundary), settings.subs2ndOrder);
+                    this->DoReconstruction2nd<nVarsFixed>(uRecNew, u, (FBoundary), settings.subs2ndOrder);
                 else if (putIntoNew)
-                    this->DoReconstruction2nd(uRecNew, u, (FBoundary), settings.subs2ndOrder);
+                    this->DoReconstruction2nd<nVarsFixed>(uRecNew, u, (FBoundary), settings.subs2ndOrder);
                 else
-                    this->DoReconstruction2nd(uRec, u, (FBoundary), settings.subs2ndOrder);
+                    this->DoReconstruction2nd<nVarsFixed>(uRec, u, (FBoundary), settings.subs2ndOrder);
                 return;
             }
             for (index iCell = 0; iCell < mesh->NumCell(); iCell++)

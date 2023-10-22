@@ -162,7 +162,10 @@
         "syncstream": "cpp",
         "typeindex": "cpp",
         "variant": "cpp",
-        "*.inc": "cpp"
+        "*.inc": "cpp",
+        "csetjmp": "cpp",
+        "execution": "cpp",
+        "stack": "cpp"
     },
     "cSpell.words": [
         "Bary",
