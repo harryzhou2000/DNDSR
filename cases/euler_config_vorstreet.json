@@ -3,13 +3,13 @@
         "dtImplicit": 1e-1,
         "nTimeStep": 2000,
         "steadyQuit": false,
-        "odeCode": 0,
+        "odeCode": 401,
         "tEnd": 3e+200,
-        "odeSetting1": 0.5,
-        "odeSetting2": 100
+        "odeSetting1": 0.55,
+        "odeSetting2": 0
     },
     "convergenceControl": {
-        "nTimeStepInternal": 40,
+        "nTimeStepInternal": 400,
         "rhsThresholdInternal": 1e-4,
         "res_base": 0.0,
         "useVolWiseResidual": true
@@ -65,7 +65,7 @@
     "vfvSettings": {
         "maxOrder": 3,
         "intOrder": 3,
-        "cacheDiffBase": true,
+        "cacheDiffBase": false,
         "jacobiRelax": 1,
         "SORInstead": true,
         "smoothThreshold": 1e-3,
@@ -79,7 +79,8 @@
         "functionalSettings": {
             "scaleType": "BaryDiff",
             "scaleMultiplier": 1.0,
-            "dirWeightScheme": "HQM_OPT"
+            "dirWeightScheme": "HQM_OPT",
+            "geomWeightScheme": "HQM_SD"
         }
     },
     "linearSolverControl": {
@@ -135,5 +136,6 @@
             "TRef": 273.15,
             "CSutherland": 110.4
         }
-    }
+    },
+    "__commit": "e3dc0776c79c9b4878561aaec16b012a4b1be994(base)"
 }

@@ -84,7 +84,7 @@
         },
         "functionalSettings": {
             // "scaleType": "MeanAACBB",
-            "dirWeightScheme": "HQM_OPT",
+            // "dirWeightScheme": "HQM_OPT",
             // "dirWeightScheme": "ManualDirWeight",
             // "manualDirWeights": [
             //     1.0,
@@ -93,7 +93,7 @@
             //     0
             // ],
             "geomWeightScheme": "HQM_SD",
-            "geomWeightPower": -0.5,
+            // "geomWeightPower": -0.5,
             // "geomWeightScheme": "SD_Power",
             // "geomWeightPower1": -0.5,
             // "geomWeightPower2": 0.5,
@@ -101,6 +101,7 @@
             // // "anisotropicType": "InertiaCoordBB",
             // "inertiaWeightPower": 0,
             // "scaleMultiplier": 1,
+            "greenGauss1Weight": 1,
             "_tail": 0
         }
     },

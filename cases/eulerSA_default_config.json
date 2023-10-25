@@ -174,7 +174,8 @@
             "geomWeightPower2": 0.0,
             "useAnisotropicFunctional": false,
             "anisotropicType": "InertiaCoord",
-            "inertiaWeightPower": 1.0
+            "inertiaWeightPower": 1.0,
+            "greenGauss1Weight": 0.0
         }
     },
     "bcSettings": []

@@ -1,12 +1,12 @@
 {
     "timeMarchControl": {
-        "dtImplicit": 10e-1,
-        "nTimeStep": 10,
+        "dtImplicit": 1e-1,
+        "nTimeStep": 100,
         "steadyQuit": false,
         "odeCode": 401,
         "tEnd": 3e+200,
-        "odeSetting1": 0.5,
-        "odeSetting2": 1
+        "odeSetting1": 0.55,
+        "odeSetting2": 0
     },
     "outputControl": {
         "nConsoleCheck": 1,
@@ -14,7 +14,7 @@
         "consoleOutputMode": 0,
         "nDataOutC": 1,
         "nDataOut": 1,
-        "nDataOutCInternal": 200,
+        "nDataOutCInternal": 100,
         "nDataOutInternal": 1000000000,
         "tDataOut": 3e+200
     },
@@ -92,7 +92,7 @@
         "normWBAP": false,
         "subs2ndOrder": 0,
         "baseSettings": {
-            "localOrientation": true,
+            "localOrientation": false,
             "anisotropicLengths": false
         },
         "functionalSettings": {
@@ -100,6 +100,7 @@
             // "dirWeightScheme": "HQM_OPT"
             // "useAnisotropicFunctional": true,
             // "scaleMultiplier": 3.464101615137754,
+            "greenGauss1Weight": 1,
             "_tail": 0
         }
     },
@@ -110,7 +111,7 @@
         "gmresCode": 0,
         "nGmresSpace": 5,
         "nGmresIter": 1,
-        "initWithLastURecInc": true
+        "initWithLastURecInc": false
     },
     "others": {
         "nFreezePassiveInner": 0

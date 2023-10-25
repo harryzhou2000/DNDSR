@@ -41,7 +41,8 @@ fileDirs = {}
 for name in names:
     namefull = os.path.join(args.prefix, name)
     stat = os.stat(namefull)
-    fileDirs[namefull] = stat.st_ctime  # sort with mtime or ctime
+    fileDirs[namefull] = stat.st_mtime  # sort with mtime or ctime
+    print(stat)
 
 fileDirsSorted = sorted(
     fileDirs.items(), key=lambda x: x[1], reverse=True

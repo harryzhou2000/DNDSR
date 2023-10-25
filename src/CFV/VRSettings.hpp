@@ -96,6 +96,8 @@ namespace DNDS::CFV
             } anisotropicType = InertiaCoord;
 
             real inertiaWeightPower = 1.0;
+            
+            real greenGauss1Weight = 0.0;
 
             DNDS_NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_ORDERED_JSON(
                 FunctionalSettings,
@@ -106,7 +108,8 @@ namespace DNDS::CFV
                 geomWeightPower, geomWeightPower1, geomWeightPower2,
                 useAnisotropicFunctional,
                 anisotropicType,
-                inertiaWeightPower)
+                inertiaWeightPower,
+                greenGauss1Weight)
             FunctionalSettings()
             {
                 manualDirWeights.resize(5);

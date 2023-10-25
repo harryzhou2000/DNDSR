@@ -84,8 +84,10 @@ If using nVars_Fixed = -1  (original 6), time is: 3.3944/1t
 
 must use residual instead of uinc for convergence monitoring!!!
 
+### HM3 testing:
 
-
+237m14.899s for hm3 run on HZAU
+121m49.267s for ESDIRK4
 
 
 

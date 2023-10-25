@@ -177,7 +177,7 @@
         "Vecs"
     ],
     "[python]": {
-        "editor.defaultFormatter": "ms-python.black-formatter"
+        "editor.defaultFormatter": "ms-python.python"
     },
     "C_Cpp.dimInactiveRegions": true,
     // "C_Cpp.intelliSenseEngine": "Tag Parser"

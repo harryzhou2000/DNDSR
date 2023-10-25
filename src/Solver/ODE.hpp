@@ -741,19 +741,19 @@ namespace DNDS::ODE
                         frhs(rhsbuf[1], x, dTau, iter, 1.0, 0);
                         rhsFull.setConstant(0.0);
                         {
-                            // rhsFull.addTo(xLast, 1. / dt);
-                            // rhsFull.addTo(x, -1. / dt);
-                            // rhsFull.addTo(rhsbuf[0], wInteg(0));
-                            // rhsFull.addTo(rhsbuf[2], wInteg(1));
-                            // rhsFull.addTo(rhsbuf[1], wInteg(2));
-                            // fsolve(x, rhsFull, dTau, dt, wInteg(2), xinc, iter, 0);
-                        } { 
-                            rhsFull.addTo(xLast, -cInter(0) / (cInter(1) * dt));
-                            rhsFull.addTo(xMid, -1. / (cInter(1) * dt));
+                            rhsFull.addTo(xLast, 1. / dt);
                             rhsFull.addTo(x, -1. / dt);
-                            rhsFull.addTo(rhsbuf[0], -cInter(2) / cInter(1));
-                            rhsFull.addTo(rhsbuf[1], -cInter(3) / cInter(1));
-                            fsolve(x, rhsFull, dTau, dt, std::abs(-cInter(3) / cInter(1)), xinc, iter, 0);
+                            rhsFull.addTo(rhsbuf[0], wInteg(0));
+                            rhsFull.addTo(rhsbuf[2], wInteg(1));
+                            rhsFull.addTo(rhsbuf[1], wInteg(2));
+                            fsolve(x, rhsFull, dTau, dt, wInteg(2), xinc, iter, 0);
+                        } { 
+                            // rhsFull.addTo(xLast, -cInter(0) / (cInter(1) * dt));
+                            // rhsFull.addTo(xMid, -1. / (cInter(1) * dt));
+                            // rhsFull.addTo(x, -1. / dt);
+                            // rhsFull.addTo(rhsbuf[0], -cInter(2) / cInter(1));
+                            // rhsFull.addTo(rhsbuf[1], -cInter(3) / cInter(1));
+                            // fsolve(x, rhsFull, dTau, dt, std::abs(-cInter(3) / cInter(1)), xinc, iter, 0);
                         }
                     }
                     else

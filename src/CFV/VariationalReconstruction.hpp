@@ -108,6 +108,7 @@ namespace DNDS::CFV
         tMatsPair matrixAAInvB;    /// @brief constructed using ConstructRecCoeff()
         tMatsPair vectorAInvB;     /// @brief constructed using ConstructRecCoeff()
         tVMatPair matrixSecondary; /// @brief constructed using ConstructRecCoeff()
+        tVMatPair matrixAHalf_GG; /// @brief constructed using ConstructRecCoeff()
 
     public:
         VariationalReconstruction(MPIInfo nMpi, std::shared_ptr<Geom::UnstructuredMesh> nMesh)

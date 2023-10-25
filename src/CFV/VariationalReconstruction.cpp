@@ -584,6 +584,7 @@ namespace DNDS::CFV
     void
     VariationalReconstruction<dim>::ConstructRecCoeff()
     {
+        static const auto Seq012 = Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>);
         using namespace Geom;
         using namespace Geom::Elem;
         int maxNDOF = GetNDof<dim>(settings.maxOrder);
@@ -591,6 +592,8 @@ namespace DNDS::CFV
         this->MakePairDefaultOnCell(matrixAAInvB, maxNDOF - 1, maxNDOF - 1);
         this->MakePairDefaultOnCell(vectorB, maxNDOF - 1, 1);
         this->MakePairDefaultOnCell(vectorAInvB, maxNDOF - 1, 1);
+        if (settings.functionalSettings.greenGauss1Weight)
+            this->MakePairDefaultOnCell(matrixAHalf_GG, dim, (maxNDOF - 1));
         real maxCond = 0.0;
 #ifdef DNDS_USE_OMP
 #pragma omp parallel for
@@ -625,8 +628,52 @@ namespace DNDS::CFV
                 // std::cout << faceAlignedScales[iFace] << std::endl;
                 // std::cout << "face "<< faceWeight[iFace].transpose() << std::endl;
             }
+            Eigen::Matrix<real, dim, Eigen::Dynamic> AHalf_GG;
+            if (settings.functionalSettings.greenGauss1Weight != 0)
+            {
+                //* reduced functional on compact stencil
+                AHalf_GG.resize(Eigen::NoChange, A.cols());
+                AHalf_GG.setZero();
+                // AHalf's central part:
+                auto qCell = this->GetCellQuad(iCell);
+                qCell.IntegrationSimple(
+                    AHalf_GG,
+                    [&](decltype(AHalf_GG) &inc, int iG)
+                    {
+                        inc = this->GetIntPointDiffBaseValue(
+                            iCell, -1, -1, iG,
+                            Eigen::seq(Eigen::fix<1>, Eigen::fix<dim>), dim + 1);
+                        // using no scaling here
+                        inc *= this->GetCellJacobiDet(iCell, iG);
+                    });
+                for (int ic2f = 0; ic2f < mesh->cell2face.RowSize(iCell); ic2f++)
+                {
+                    index iFace = mesh->cell2face(iCell, ic2f);
+                    auto qFace = this->GetFaceQuad(iFace);
+                    int if2c = CellIsFaceBack(iCell, iFace) ? 0 : 1;
+                    qFace.IntegrationSimple(
+                        AHalf_GG,
+                        [&](decltype(AHalf_GG) &inc, int iG)
+                        {
+                            inc = this->GetFaceNormFromCell(iFace, iCell, if2c, iG)(Seq012) *
+                                  (if2c ? -1 : 1) *
+                                  this->GetIntPointDiffBaseValue(
+                                      iCell, iFace, -1, iG,
+                                      0, 1);
+                            inc *= (-0.5) * this->GetFaceJacobiDet(iFace, iG);
+                        });
+                }
+                // std::cout << "-------------\n";
+                // std::cout << AHalf_GG << std::endl;
+                // std::cout << "A\n"
+                //           << A << std::endl;
+                // std::cout << "IncA\n"
+                //           << (AHalf_GG.transpose() * AHalf_GG) << std::endl;
+                A += (AHalf_GG.transpose() * AHalf_GG) * settings.functionalSettings.greenGauss1Weight;
+                matrixAHalf_GG[iCell] = AHalf_GG;
+            }
             decltype(A) AInv;
-            real aCond = HardEigen::EigenLeastSquareInverse_Filtered(A, AInv);
+            real aCond = HardEigen::EigenLeastSquareInverse(A, AInv);
             matrixAB(iCell, 0) = A;
             matrixAAInvB(iCell, 0) = AInv;
 
@@ -648,11 +695,12 @@ namespace DNDS::CFV
                 index iFace = mesh->cell2face(iCell, ic2f);
                 auto qFace = this->GetFaceQuad(iFace);
                 index iCellOther = CellFaceOther(iCell, iFace);
+                int if2c = CellIsFaceBack(iCell, iFace) ? 0 : 1;
                 if (FaceIDIsExternalBC(mesh->GetFaceZone(iFace)))
                 {
                     DNDS_assert(iCellOther == UnInitIndex);
                     continue;
-                    // if is periodic, already handled correctly
+                    // if is periodic, then use internal //TODO!
                 }
                 Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic> B;
                 B.setZero(cellAtr[iCell].NDOF - 1, cellAtr[iCellOther].NDOF - 1);
@@ -665,6 +713,28 @@ namespace DNDS::CFV
                         vInc = this->FFaceFunctional(DiffI, DiffJ, iFace, iG, iCell, iCellOther);
                         vInc *= this->GetFaceJacobiDet(iFace, iG);
                     });
+                if (settings.functionalSettings.greenGauss1Weight != 0)
+                {
+                    decltype(AHalf_GG) BHalf_GG;
+                    BHalf_GG.resize(Eigen::NoChange, B.cols());
+                    BHalf_GG.setZero();
+                    qFace.IntegrationSimple(
+                        BHalf_GG,
+                        [&](decltype(BHalf_GG) &inc, int iG)
+                        {
+                            inc = this->GetFaceNormFromCell(iFace, iCell, if2c, iG)(Seq012) *
+                                  (if2c ? -1 : 1) *
+                                  this->GetIntPointDiffBaseValue(iCellOther, iFace, 1 - if2c, iG, 0, 1); // need 1-if2c!!if2c is for iCell!
+                            inc *= 0.5 * this->GetFaceJacobiDet(iFace, iG);
+                        });
+                    // std::cout << " BH " << ic2f << " " << iFace << "\n"
+                    //           << BHalf_GG << std::endl;
+                    // std::cout << "B\n"
+                    //           << B << std::endl;
+                    // std::cout << "IncB\n"
+                    //           << AHalf_GG.transpose() * BHalf_GG << std::endl;
+                    B += AHalf_GG.transpose() * BHalf_GG * settings.functionalSettings.greenGauss1Weight;
+                }
                 matrixAB(iCell, 1 + ic2f) = B;
                 matrixAAInvB(iCell, 1 + ic2f) = AInv * B;
             }
@@ -673,6 +743,7 @@ namespace DNDS::CFV
             for (int ic2f = 0; ic2f < mesh->cell2face.RowSize(iCell); ic2f++)
             {
                 index iFace = mesh->cell2face(iCell, ic2f);
+                int if2c = CellIsFaceBack(iCell, iFace) ? 0 : 1;
                 auto qFace = this->GetFaceQuad(iFace);
                 Eigen::Matrix<real, Eigen::Dynamic, 1> b;
                 b.setZero(cellAtr[iCell].NDOF - 1, 1);
@@ -685,6 +756,26 @@ namespace DNDS::CFV
                         vInc = this->FFaceFunctional(DiffI, Eigen::MatrixXd::Ones(1, 1), iFace, iG, iCell, iCell);
                         vInc *= this->GetFaceJacobiDet(iFace, iG);
                     });
+                if (settings.functionalSettings.greenGauss1Weight != 0)
+                {
+                    Eigen::Matrix<real, dim, 1> bHalf_GG;
+                    bHalf_GG.setZero();
+                    qFace.IntegrationSimple(
+                        bHalf_GG,
+                        [&](auto &inc, int iG)
+                        {
+                            inc = this->GetFaceNormFromCell(iFace, iCell, -1, iG)(Seq012) *
+                                  (if2c ? -1 : 1);
+                            inc *= 0.5 * this->GetFaceJacobiDet(iFace, iG);
+                        });
+                    // std::cout << " bH " << ic2f << " " << iFace << "\n"
+                    //           << bHalf_GG << std::endl;
+                    // std::cout << "b\n"
+                    //           << b << std::endl;
+                    // std::cout << "Incb\n"
+                    //           << AHalf_GG.transpose() * bHalf_GG << std::endl;
+                    b += AHalf_GG.transpose() * bHalf_GG * settings.functionalSettings.greenGauss1Weight;
+                }
                 vectorB(iCell, ic2f) = b;
                 vectorAInvB(iCell, ic2f) = AInv * b;
             }
@@ -697,6 +788,7 @@ namespace DNDS::CFV
         matrixAAInvB.CompressBoth();
         vectorAInvB.CompressBoth();
         vectorB.CompressBoth();
+        matrixAHalf_GG.CompressBoth();
 
         // Get Secondary matrices
         this->MakePairDefaultOnFace(matrixSecondary, maxNDOF - 1, (maxNDOF - 1) * 2);
@@ -733,6 +825,8 @@ namespace DNDS::CFV
             // std::cout << this->GetMatrixSecondary(-1, iFace, 1) << std::endl;
             // std::abort();
         }
+        matrixSecondary.CompressBoth();
+
         real maxCondAll = 0;
         MPI::Allreduce(&maxCond, &maxCondAll, 1, DNDS_MPI_REAL, MPI_MAX, mesh->getMPI().comm);
         if (mesh->getMPI().rank == 0)
