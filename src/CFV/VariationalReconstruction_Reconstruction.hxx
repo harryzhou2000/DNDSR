@@ -260,7 +260,7 @@ namespace DNDS
                                 if (settings.functionalSettings.greenGauss1Weight != 0)
                                 {
                                     // DNDS_assert(false); // not yet implemented
-                                    vInc += (0.5 * settings.functionalSettings.greenGauss1Weight *
+                                    vInc += (settings.functionalSettings.greenGauss1Bias * this->GetGreenGauss1WeightOnCell(iCell) *
                                              this->matrixAHalf_GG[iCell].transpose() * this->GetFaceNorm(iFace, iG)(Seq012)) *
                                             uIncBV;
                                 }
@@ -308,6 +308,8 @@ namespace DNDS
             using namespace Geom;
             using namespace Geom::Elem;
             int maxNDOF = GetNDof<dim>(settings.maxOrder);
+            static const auto Seq012 = Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>);
+
             if (settings.maxOrder == 1 && settings.subs2ndOrder != 0)
             {
                 for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
@@ -367,6 +369,13 @@ namespace DNDS
                                 Eigen::RowVector<real, nVarsFixed> uIncBV = uBV.transpose();
                                 vInc = this->FFaceFunctional(dbv, uIncBV, iFace, iG, iCell, iCell) * this->GetFaceJacobiDet(iFace, iG);
                                 // std::cout << faceWeight[iFace].transpose() << std::endl;
+                                if (settings.functionalSettings.greenGauss1Weight != 0)
+                                {
+                                    // DNDS_assert(false); // not yet implemented
+                                    vInc += (settings.functionalSettings.greenGauss1Bias * this->GetGreenGauss1WeightOnCell(iCell) *
+                                             this->matrixAHalf_GG[iCell].transpose() * this->GetFaceNorm(iFace, iG)(Seq012)) *
+                                            uIncBV;
+                                }
                             });
                         // BCC *= 0;
                         uRecNew[iCell] -= matrixAAInvBRow[0] * BCC; // mind the sign
@@ -389,6 +398,8 @@ namespace DNDS
             using namespace Geom;
             using namespace Geom::Elem;
             int maxNDOF = GetNDof<dim>(settings.maxOrder);
+            static const auto Seq012 = Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>);
+
             for (index iScan = 0; iScan < mesh->NumCell(); iScan++)
             {
                 index iCell = iScan;
@@ -447,6 +458,13 @@ namespace DNDS
                                 Eigen::RowVector<real, nVarsFixed> uIncBV = uBV.transpose();
                                 vInc = this->FFaceFunctional(dbv, uIncBV, iFace, iG, iCell, iCell) * this->GetFaceJacobiDet(iFace, iG);
                                 // std::cout << faceWeight[iFace].transpose() << std::endl;
+                                if (settings.functionalSettings.greenGauss1Weight != 0)
+                                {
+                                    // DNDS_assert(false); // not yet implemented
+                                    vInc += (settings.functionalSettings.greenGauss1Bias * this->GetGreenGauss1WeightOnCell(iCell) *
+                                             this->matrixAHalf_GG[iCell].transpose() * this->GetFaceNorm(iFace, iG)(Seq012)) *
+                                            uIncBV;
+                                }
                             });
                         // BCC *= 0;
                         uRecNew[iCell] += relax * matrixAAInvBRow[0] * BCC; // mind the sign

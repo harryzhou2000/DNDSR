@@ -175,7 +175,8 @@
             "useAnisotropicFunctional": false,
             "anisotropicType": "InertiaCoord",
             "inertiaWeightPower": 1.0,
-            "greenGauss1Weight": 0.0
+            "greenGauss1Weight": 0.0,
+            "greenGauss1Bias": 0.5
         }
     },
     "bcSettings": []

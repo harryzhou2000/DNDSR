@@ -86,7 +86,7 @@
         "intOrder": 3,
         "cacheDiffBase": false,
         "jacobiRelax": 1,
-        "SORInstead": false,
+        "SORInstead": true,
         "smoothThreshold": 1e-3,
         "WBAP_nStd": 10.0,
         "normWBAP": false,

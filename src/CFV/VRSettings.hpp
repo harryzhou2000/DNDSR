@@ -98,6 +98,8 @@ namespace DNDS::CFV
             real inertiaWeightPower = 1.0;
             
             real greenGauss1Weight = 0.0;
+            real greenGauss1Bias = 0.5;
+            int greenGaussSpacial = 0; //1 for uniform weight
 
             DNDS_NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_ORDERED_JSON(
                 FunctionalSettings,
@@ -109,7 +111,9 @@ namespace DNDS::CFV
                 useAnisotropicFunctional,
                 anisotropicType,
                 inertiaWeightPower,
-                greenGauss1Weight)
+                greenGauss1Weight,
+                greenGauss1Bias,
+                greenGaussSpacial)
             FunctionalSettings()
             {
                 manualDirWeights.resize(5);

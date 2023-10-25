@@ -84,7 +84,7 @@
         },
         "functionalSettings": {
             // "scaleType": "MeanAACBB",
-            // "dirWeightScheme": "HQM_OPT",
+            "dirWeightScheme": "HQM_OPT",
             // "dirWeightScheme": "ManualDirWeight",
             // "manualDirWeights": [
             //     1.0,
@@ -101,7 +101,7 @@
             // // "anisotropicType": "InertiaCoordBB",
             // "inertiaWeightPower": 0,
             // "scaleMultiplier": 1,
-            "greenGauss1Weight": 1,
+            "greenGauss1Weight": 0,
             "_tail": 0
         }
     },
@@ -118,7 +118,7 @@
     "eulerSettings": {
         "ignoreSourceTerm": false,
         "useScalarJacobian": false,
-        "riemannSolverType": "Roe_M2",
+        "riemannSolverType": "Roe_M4",
         "constMassForce": [
             0.0,
             0.0,

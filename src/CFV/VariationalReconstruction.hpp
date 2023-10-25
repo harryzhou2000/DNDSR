@@ -108,7 +108,7 @@ namespace DNDS::CFV
         tMatsPair matrixAAInvB;    /// @brief constructed using ConstructRecCoeff()
         tMatsPair vectorAInvB;     /// @brief constructed using ConstructRecCoeff()
         tVMatPair matrixSecondary; /// @brief constructed using ConstructRecCoeff()
-        tVMatPair matrixAHalf_GG; /// @brief constructed using ConstructRecCoeff()
+        tVMatPair matrixAHalf_GG;  /// @brief constructed using ConstructRecCoeff()
 
     public:
         VariationalReconstruction(MPIInfo nMpi, std::shared_ptr<Geom::UnstructuredMesh> nMesh)
@@ -741,6 +741,28 @@ namespace DNDS::CFV
                 }
             }
             return Conj;
+        }
+
+        real GetGreenGauss1WeightOnCell(index iCell)
+        {
+            if (settings.functionalSettings.greenGaussSpacial == 0)
+            {
+                real AR = GetCellAR(iCell);
+                real v = std::max(0.0, std::log(AR));
+                return settings.functionalSettings.greenGauss1Weight *
+                       std::pow(std::tanh(v / 4), 3);
+            }
+            else
+            {
+                return settings.functionalSettings.greenGauss1Weight;
+            }
+        }
+
+        real GetCellAR(index iCell)
+        {
+            static const auto Seq012 = Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>);
+            auto lens = this->cellMajorHBox[iCell](Seq012);
+            return (lens.maxCoeff() + verySmallReal) / (lens.minCoeff() + verySmallReal);
         }
 
         template <int nVarsFixed = 1>

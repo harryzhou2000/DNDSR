@@ -592,7 +592,7 @@ namespace DNDS::CFV
         this->MakePairDefaultOnCell(matrixAAInvB, maxNDOF - 1, maxNDOF - 1);
         this->MakePairDefaultOnCell(vectorB, maxNDOF - 1, 1);
         this->MakePairDefaultOnCell(vectorAInvB, maxNDOF - 1, 1);
-        if (settings.functionalSettings.greenGauss1Weight)
+        if (settings.functionalSettings.greenGauss1Weight != 0)
             this->MakePairDefaultOnCell(matrixAHalf_GG, dim, (maxNDOF - 1));
         real maxCond = 0.0;
 #ifdef DNDS_USE_OMP
@@ -660,7 +660,7 @@ namespace DNDS::CFV
                                   this->GetIntPointDiffBaseValue(
                                       iCell, iFace, -1, iG,
                                       0, 1);
-                            inc *= (-0.5) * this->GetFaceJacobiDet(iFace, iG);
+                            inc *= (-(1 - settings.functionalSettings.greenGauss1Bias)) * this->GetFaceJacobiDet(iFace, iG);
                         });
                 }
                 // std::cout << "-------------\n";
@@ -669,7 +669,7 @@ namespace DNDS::CFV
                 //           << A << std::endl;
                 // std::cout << "IncA\n"
                 //           << (AHalf_GG.transpose() * AHalf_GG) << std::endl;
-                A += (AHalf_GG.transpose() * AHalf_GG) * settings.functionalSettings.greenGauss1Weight;
+                A += (AHalf_GG.transpose() * AHalf_GG) * this->GetGreenGauss1WeightOnCell(iCell);
                 matrixAHalf_GG[iCell] = AHalf_GG;
             }
             decltype(A) AInv;
@@ -725,7 +725,7 @@ namespace DNDS::CFV
                             inc = this->GetFaceNormFromCell(iFace, iCell, if2c, iG)(Seq012) *
                                   (if2c ? -1 : 1) *
                                   this->GetIntPointDiffBaseValue(iCellOther, iFace, 1 - if2c, iG, 0, 1); // need 1-if2c!!if2c is for iCell!
-                            inc *= 0.5 * this->GetFaceJacobiDet(iFace, iG);
+                            inc *= settings.functionalSettings.greenGauss1Bias * this->GetFaceJacobiDet(iFace, iG);
                         });
                     // std::cout << " BH " << ic2f << " " << iFace << "\n"
                     //           << BHalf_GG << std::endl;
@@ -733,7 +733,7 @@ namespace DNDS::CFV
                     //           << B << std::endl;
                     // std::cout << "IncB\n"
                     //           << AHalf_GG.transpose() * BHalf_GG << std::endl;
-                    B += AHalf_GG.transpose() * BHalf_GG * settings.functionalSettings.greenGauss1Weight;
+                    B += AHalf_GG.transpose() * BHalf_GG * this->GetGreenGauss1WeightOnCell(iCell);
                 }
                 matrixAB(iCell, 1 + ic2f) = B;
                 matrixAAInvB(iCell, 1 + ic2f) = AInv * B;
@@ -766,7 +766,7 @@ namespace DNDS::CFV
                         {
                             inc = this->GetFaceNormFromCell(iFace, iCell, -1, iG)(Seq012) *
                                   (if2c ? -1 : 1);
-                            inc *= 0.5 * this->GetFaceJacobiDet(iFace, iG);
+                            inc *= settings.functionalSettings.greenGauss1Bias * this->GetFaceJacobiDet(iFace, iG);
                         });
                     // std::cout << " bH " << ic2f << " " << iFace << "\n"
                     //           << bHalf_GG << std::endl;
@@ -774,7 +774,7 @@ namespace DNDS::CFV
                     //           << b << std::endl;
                     // std::cout << "Incb\n"
                     //           << AHalf_GG.transpose() * bHalf_GG << std::endl;
-                    b += AHalf_GG.transpose() * bHalf_GG * settings.functionalSettings.greenGauss1Weight;
+                    b += AHalf_GG.transpose() * bHalf_GG * this->GetGreenGauss1WeightOnCell(iCell);
                 }
                 vectorB(iCell, ic2f) = b;
                 vectorAInvB(iCell, ic2f) = AInv * b;
