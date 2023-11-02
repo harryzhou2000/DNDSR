@@ -36,10 +36,11 @@ namespace DNDS::Euler
         static const int gDim = getGeomDim_Fixed(model);
         static const auto I4 = dim + 1;
 
-#define DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS                            \
-    static const auto Seq012 = Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>); \
-    static const auto Seq123 = Eigen::seq(Eigen::fix<1>, Eigen::fix<dim>);     \
-    static const auto Seq01234 = Eigen::seq(Eigen::fix<0>, Eigen::fix<dim + 1>);
+#define DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS                              \
+    static const auto Seq012 = Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>);   \
+    static const auto Seq123 = Eigen::seq(Eigen::fix<1>, Eigen::fix<dim>);       \
+    static const auto Seq01234 = Eigen::seq(Eigen::fix<0>, Eigen::fix<dim + 1>); \
+    static const auto I4 = dim + 1;
 
         typedef Eigen::Vector<real, dim> TVec;
         typedef Eigen::Matrix<real, dim, dim> TMat;
@@ -1273,7 +1274,7 @@ namespace DNDS::Euler
                     {
                         URxy = far;
                     }
-                    URxy = far; //! override
+                    // URxy = far; //! override
                 }
                 else if (btype == Geom::BC_ID_DEFAULT_SPECIAL_DMR_FAR)
                 {
@@ -1556,6 +1557,10 @@ namespace DNDS::Euler
                         ULxy(I4 + 2) = URxy(I4 + 2) = epsWall * ULxy(0);
                     // std::cout << "d1" <<d1 << std::endl;
                 }
+            }
+            else if (pBCHandler->GetTypeFromID(btype) == EulerBCType::BCOut)
+            {
+                URxy = ULxy;
             }
             else
             {

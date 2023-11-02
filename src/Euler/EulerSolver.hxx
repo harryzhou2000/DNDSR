@@ -184,7 +184,7 @@ namespace DNDS::Euler
                        config.implicitReconstructionControl.nInternalRecStep;
             real recIncBase = 0;
             double tstartA = MPI_Wtime();
-            typename TVFV::element_type::TFBoundary<nVars_Fixed>
+            typename TVFV::element_type::template TFBoundary<nVars_Fixed>
                 FBoundary = [&](const TU &UL, const TU &UMean, index iCell, index iFace,
                                 const Geom::tPoint &normOut, const Geom::tPoint &pPhy, const Geom::t_index bType) -> TU
             {
@@ -197,7 +197,7 @@ namespace DNDS::Euler
                     compressed);
                 return eval.generateBoundaryValue(ULfixed, UMean, iCell, iFace, normOutV, normBase, pPhy(Seq012), tSimu + ct * curDtImplicit, bType, true);
             };
-            typename TVFV::element_type::TFBoundaryDiff<nVars_Fixed>
+            typename TVFV::element_type::template TFBoundaryDiff<nVars_Fixed>
                 FBoundaryDiff = [&](const TU &UL, const TU &dU, const TU &UMean, index iCell, index iFace,
                                     const Geom::tPoint &normOut, const Geom::tPoint &pPhy, const Geom::t_index bType) -> TU
             {
@@ -517,7 +517,7 @@ namespace DNDS::Euler
                 // crhs *= alphaPP_tmp;
             }
 
-            typename TVFV::element_type::TFBoundary<nVars_Fixed>
+            typename TVFV::element_type::template TFBoundary<nVars_Fixed>
                 FBoundary = [&](const TU &UL, const TU &UMean, index iCell, index iFace,
                                 const Geom::tPoint &normOut, const Geom::tPoint &pPhy, const Geom::t_index bType) -> TU
             {

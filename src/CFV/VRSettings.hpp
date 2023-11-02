@@ -72,6 +72,8 @@ namespace DNDS::CFV
                 ManualDirWeight = 999,
             } dirWeightScheme = Factorial;
 
+            int dirWeightCombPowV = 1;
+
             Eigen::VectorXd manualDirWeights;
 
             enum GeomWeightScheme
@@ -82,6 +84,7 @@ namespace DNDS::CFV
                 SD_Power = 2,
             } geomWeightScheme = GWNone;
 
+            real geomWeightBias = 0;
             real geomWeightPower = 0.5;
             real geomWeightPower1 = 0;
             real geomWeightPower2 = 0;
@@ -97,16 +100,26 @@ namespace DNDS::CFV
 
             real inertiaWeightPower = 1.0;
 
+            real greenGauss1Weight = 0.0;
+            real greenGauss1Bias = 0.5;
+            real greenGauss1Penalty = 0.0;
+            int greenGaussSpacial = 0; // 1 for uniform weight
+
             DNDS_NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_ORDERED_JSON(
                 FunctionalSettings,
                 scaleType,
                 scaleMultiplier,
-                dirWeightScheme, manualDirWeights,
+                dirWeightScheme, dirWeightCombPowV, manualDirWeights,
                 geomWeightScheme,
                 geomWeightPower, geomWeightPower1, geomWeightPower2,
                 useAnisotropicFunctional,
                 anisotropicType,
-                inertiaWeightPower)
+                inertiaWeightPower,
+                geomWeightBias,
+                greenGauss1Weight,
+                greenGauss1Bias,
+                greenGauss1Penalty,
+                greenGaussSpacial)
             FunctionalSettings()
             {
                 manualDirWeights.resize(5);

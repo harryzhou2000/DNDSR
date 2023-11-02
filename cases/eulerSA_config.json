@@ -3,7 +3,7 @@
         "dtImplicit": 1e100,
         "nTimeStep": 1,
         "steadyQuit": true,
-        "useRestart": true,
+        "useRestart": false,
         "odeCode": 0,
         "tEnd": 3e+200
     },
@@ -69,8 +69,8 @@
         "nPartialLimiterStartLocal": 1000000
     },
     "vfvSettings": {
-        "maxOrder": 1,
-        "intOrder": 1,
+        "maxOrder": 3,
+        "intOrder": 3,
         "cacheDiffBase": true,
         "jacobiRelax": 1.0,
         "SORInstead": true,
@@ -87,13 +87,14 @@
             "dirWeightScheme": "HQM_OPT",
             // "dirWeightScheme": "ManualDirWeight",
             // "manualDirWeights": [
-            //     1.0,
             //     1,
-            //     0,
-            //     0
+            //     0.435,
+            //     0.1007,
+            //     0.0305
             // ],
             "geomWeightScheme": "HQM_SD",
-            "geomWeightPower": -0.5,
+            "geomWeightBias": 0,
+            "geomWeightPower": 0.5,
             // "geomWeightScheme": "SD_Power",
             // "geomWeightPower1": -0.5,
             // "geomWeightPower2": 0.5,
@@ -101,6 +102,9 @@
             // // "anisotropicType": "InertiaCoordBB",
             // "inertiaWeightPower": 0,
             // "scaleMultiplier": 1,
+            "greenGauss1Weight": 100,
+            "greenGauss1Penalty": 1,
+            "greenGaussSpacial": 1,
             "_tail": 0
         }
     },
@@ -117,7 +121,7 @@
     "eulerSettings": {
         "ignoreSourceTerm": false,
         "useScalarJacobian": false,
-        "riemannSolverType": "Roe",
+        "riemannSolverType": "Roe_M4",
         "constMassForce": [
             0.0,
             0.0,

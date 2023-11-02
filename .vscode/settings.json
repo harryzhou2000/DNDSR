@@ -162,7 +162,10 @@
         "syncstream": "cpp",
         "typeindex": "cpp",
         "variant": "cpp",
-        "*.inc": "cpp"
+        "*.inc": "cpp",
+        "csetjmp": "cpp",
+        "execution": "cpp",
+        "stack": "cpp"
     },
     "cSpell.words": [
         "Bary",
@@ -174,7 +177,7 @@
         "Vecs"
     ],
     "[python]": {
-        "editor.defaultFormatter": "ms-python.black-formatter"
+        "editor.defaultFormatter": "ms-python.python"
     },
     "C_Cpp.dimInactiveRegions": true,
     // "C_Cpp.intelliSenseEngine": "Tag Parser"

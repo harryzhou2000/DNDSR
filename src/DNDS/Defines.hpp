@@ -13,8 +13,15 @@
 #include <type_traits>
 #include <filesystem>
 #include <functional>
+#include <locale>
+
 #ifdef DNDS_USE_OMP
 #include <omp.h>
+#endif
+
+#if defined(_WIN32) || defined(__WINDOWS_)
+// #include <Windows.h>
+// #include <process.h>
 #endif
 
 #include "Macros.hpp"
@@ -253,19 +260,15 @@ namespace DNDS
     /**
      * \param b should be positive
      */
-    inline constexpr real float_mod(real a, real b)
+    inline real float_mod(real a, real b)
     {
         return a - std::floor(a / b) * b;
     }
 
     ///@todo //TODO: overflow_assign_int64_to_32
 
-    inline std::string getStringForceWString(const std::wstring &v)
-    {
-        std::vector<char> buf(v.size());
-        std::wcstombs(buf.data(), v.data(), v.size());
-        return std::string{buf.data()};
-    }
+    std::string getStringForceWString(const std::wstring &v);
+    
 
     inline std::string getStringForcePath(const std::filesystem::path::string_type &v)
     {
@@ -402,6 +405,7 @@ struct std::hash<std::array<T, s>>
 
 #define DISABLE_WARNING_UNREFERENCED_FORMAL_PARAMETER DISABLE_WARNING(4100)
 #define DISABLE_WARNING_UNREFERENCED_FUNCTION DISABLE_WARNING(4505)
+#define DISABLE_WARNING_DEPRECATED_DECLARATIONS
 // other warnings you want to deactivate...
 
 #elif defined(__GNUC__) || defined(__clang__)

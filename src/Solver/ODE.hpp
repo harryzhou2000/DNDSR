@@ -367,7 +367,7 @@ namespace DNDS::ODE
             TDATA &,                       // crhs
             TDATA &,                       // rhsIncPart,
             const std::function<void()> &, // renewRhsIncPart
-            real, //ct
+            real,                          // ct
             int                            // uPos
             )>;
         using FalphaLimSource = std::function<void(
@@ -519,9 +519,10 @@ namespace DNDS::ODE
         {
 
             dTau.resize(NDOF);
-            rhsbuf.resize(2);
+            rhsbuf.resize(3);
             finit(rhsbuf[0]);
             finit(rhsbuf[1]);
+            finit(rhsbuf[2]);
             finit(xMid);
             finit(rhsMid);
             finit(rhsFull);
@@ -562,10 +563,16 @@ namespace DNDS::ODE
                           int maxIter, const Fstop &fstop, const Fincrement &fincrement, real dt) override
         {
             xLast = x;
+            xMid = x;
             frhs(rhsbuf[0], xLast, dTau, 0, 1.0, 0);
+            rhsbuf[1] = rhsbuf[0];
+            rhsbuf[2] = rhsbuf[0];
 
             xIncPrev.setConstant(0.0);
             int iter = 1;
+
+            int method = 1;
+
             for (; iter <= maxIter; iter++)
             {
 
@@ -581,141 +588,195 @@ namespace DNDS::ODE
                 }
                 else
                 {
-                    fdt(x, dTau, 1.0, 0);
-                    for (auto &v : dTau)
-                        v = veryLargeReal;
-                    frhs(rhsbuf[1], x, dTau, iter, 1.0, 0);
-                    xMid.setConstant(0.0);
-                    xMid.addTo(xLast, cInter[0]);
-                    xMid.addTo(x, cInter[1]);
-                    {
-                        // xMid.addTo(rhsbuf[0], cInter[2] * dt);
-                        // xMid.addTo(rhsbuf[1], cInter[3] * dt);
-                    }
-                    {
-                        rhsMid = rhsbuf[0];
-                        rhsMid *= cInter[2] * dt;
-                        rhsMid.addTo(rhsbuf[1], cInter[3] * dt);
-                        fincrement(xMid, rhsMid, 1.0, 1);
-                    }
-                    fdt(xMid, dTau, 1.0, 0);
-                    frhs(rhsMid, xMid, dTau, iter, 1.0, 1);
-                    rhsFull.setConstant(0.0);
-                    rhsFull.addTo(rhsbuf[0], wInteg[0]);
-                    rhsFull.addTo(rhsMid, wInteg[1]);
-                    rhsFull.addTo(rhsbuf[1], wInteg[2]);
-                    rhsFull.addTo(x, -1. / dt);
-                    rhsFull.addTo(xLast, 1. / dt);
-                    rhsMid = rhsFull; // * warning: rhsMid now holds residual;
 
+                    if (method == 0)
                     {
-                        // damping
-                        // xIncDamper = xLast;
-                        // xIncDamper.addTo(x, -1.);
-                        // xIncDamper.setAbs();
-                        // xIncDamper += 1e-100;
-                        // xIncDamper2 = xIncPrev;
-                        // xIncDamper2.setAbs();
-                        // xIncDamper2 += xIncDamper;
-                        // xIncDamper /= xIncDamper2;
-                        // rhsFull *= xIncDamper;
-                    }
-                    {
-                        // fdt(x, dTau, 1.0); // TODO: use "update spectral radius" procedure? or force update in fsolve
-                        // for(auto &v : dTau)
-                        //     v *= -cInter[3] / cInter[1];
-                        // fsolve(x, rhsFull, dTau, -dt * cInter[3] / cInter[1],
-                        //        1.0, xinc, iter);
-                        // rhsFull = xinc;
-                        // fdt(xMid, dTau, 1.0);
-                        // for (auto &v : dTau)
-                        //     v = veryLargeReal;
-                        // fsolve(xMid, rhsFull, dTau, -dt * cInter[3] * wInteg[1] / wInteg[2],
-                        //        1.0, xinc, iter);
-                        // xinc *= -1. / (2 * dt * cInter[3] * wInteg[1]);
-                    }
-                    {
-                        // fdt(xMid, dTau, 1.0, 1); // TODO: use "update spectral radius" procedure? or force update in fsolve
-                        // for (auto &v : dTau)
-                        //     v = veryLargeReal;
-                        // fsolve(xMid, rhsFull, dTau, dt / 4,
-                        //        1.0, xinc, iter, 1);
-
-                        //* 0
                         fdt(x, dTau, 1.0, 0);
                         for (auto &v : dTau)
                             v = veryLargeReal;
-                        fsolve(x, rhsFull, dTau, dt,
-                               1.0, xinc, iter, 0);
-
-                        //* 1
-                        xinc *= 1 / (dt);
+                        frhs(rhsbuf[1], x, dTau, iter, 1.0, 0);
+                        xMid.setConstant(0.0);
+                        xMid.addTo(xLast, cInter[0]);
+                        xMid.addTo(x, cInter[1]);
                         {
+                            // xMid.addTo(rhsbuf[0], cInter[2] * dt);
+                            // xMid.addTo(rhsbuf[1], cInter[3] * dt);
+                        }
+                        {
+                            rhsMid = rhsbuf[0];
+                            rhsMid *= cInter[2] * dt;
+                            rhsMid.addTo(rhsbuf[1], cInter[3] * dt);
+                            fincrement(xMid, rhsMid, 1.0, 1);
+                        }
+                        fdt(xMid, dTau, 1.0, 0);
+                        frhs(rhsMid, xMid, dTau, iter, 1.0, 1);
+                        rhsFull.setConstant(0.0);
+                        rhsFull.addTo(rhsbuf[0], wInteg[0]);
+                        rhsFull.addTo(rhsMid, wInteg[1]);
+                        rhsFull.addTo(rhsbuf[1], wInteg[2]);
+                        rhsFull.addTo(x, -1. / dt);
+                        rhsFull.addTo(xLast, 1. / dt);
+                        rhsMid = rhsFull; // * warning: rhsMid now holds residual;
+
+                        {
+                            // damping
+                            // xIncDamper = xLast;
+                            // xIncDamper.addTo(x, -1.);
+                            // xIncDamper.setAbs();
+                            // xIncDamper += 1e-100;
+                            // xIncDamper2 = xIncPrev;
+                            // xIncDamper2.setAbs();
+                            // xIncDamper2 += xIncDamper;
+                            // xIncDamper /= xIncDamper2;
+                            // rhsFull *= xIncDamper;
+                        }
+                        {
+                            // fdt(x, dTau, 1.0); // TODO: use "update spectral radius" procedure? or force update in fsolve
+                            // for(auto &v : dTau)
+                            //     v *= -cInter[3] / cInter[1];
+                            // fsolve(x, rhsFull, dTau, -dt * cInter[3] / cInter[1],
+                            //        1.0, xinc, iter);
+                            // rhsFull = xinc;
+                            // fdt(xMid, dTau, 1.0);
+                            // for (auto &v : dTau)
+                            //     v = veryLargeReal;
+                            // fsolve(xMid, rhsFull, dTau, -dt * cInter[3] * wInteg[1] / wInteg[2],
+                            //        1.0, xinc, iter);
+                            // xinc *= -1. / (2 * dt * cInter[3] * wInteg[1]);
+                        }
+                        {
+                            // fdt(xMid, dTau, 1.0, 1); // TODO: use "update spectral radius" procedure? or force update in fsolve
+                            // for (auto &v : dTau)
+                            //     v = veryLargeReal;
+                            // fsolve(xMid, rhsFull, dTau, dt / 4,
+                            //        1.0, xinc, iter, 1);
+
+                            //* 0
+                            fdt(x, dTau, 1.0, 0);
+                            for (auto &v : dTau)
+                                v = veryLargeReal;
+                            fsolve(x, rhsFull, dTau, dt,
+                                   1.0, xinc, iter, 0);
+
+                            //* 1
+                            xinc *= 1 / (dt);
+                            {
+                                // for (auto &v : dTau)
+                                //     v = (v + dt) / v; // 1 / beta
+                                // xinc *= dTau;
+                            }
+                            rhsFull = xinc;
+                            fdt(x, dTau, 1.0, 0);
+                            for (auto &v : dTau)
+                                v *= 1;
+                            fsolve(x, rhsFull, dTau, dt,
+                                   1.0, xinc, iter, 0);
+                            // std::cout << "solved " << iter << std::endl;
+
+                            // //* 2
+                            // xinc *= 1 / (dt);
+                            // {
+                            //     for (auto &v : dTau)
+                            //         v = (v + dt) / v; // 1 / beta
+                            //     xinc *= dTau;
+                            // }
+                            // rhsFull = xinc;
+                            // fdt(x, dTau, 1.0, 0);
+                            // for (auto &v : dTau)
+                            //     v *= 1;
+                            // fsolve(x, rhsFull, dTau, dt,
+                            //        1.0, xinc, iter, 0);
+
+                            //* 3
+                            // xinc *= 1 / (dt);
+                            // {
                             // for (auto &v : dTau)
                             //     v = (v + dt) / v; // 1 / beta
                             // xinc *= dTau;
+                            // }
+                            // rhsFull = xinc;
+                            // fdt(x, dTau, 1.0, 0);
+                            // for (auto &v : dTau)
+                            //     v *= 1;
+                            // fsolve(x, rhsFull, dTau, dt,
+                            //        1.0, xinc, iter, 0);
+
+                            // note: dt/n hinders precision
+                            // note: using enough smoothing delays res-re-rise
                         }
-                        rhsFull = xinc;
+                        {
+                            /**
+                            Embedded Symmetric Nested Implicit Runge–Kutta Methods
+                         of Gauss and Lobatto Types for Solving Stiff Ordinary
+                         Differential Equations and Hamiltonian Systems*/
+                            // fdt(x, dTau, 1.0, 0); // TODO: use "update spectral radius" procedure? or force update in fsolve
+                            // for (auto &v : dTau)
+                            //     v *= 1;
+                            // fsolve(x, rhsFull, dTau, dt / 4.,
+                            //        1.0, xinc, iter, 0);
+                            // rhsFull = xinc;
+                            // // fdt(xMid, dTau, 1.0, 1);
+                            // // for (auto &v : dTau)
+                            // //     v = veryLargeReal;
+                            // fsolve(x, rhsFull, dTau, dt / 4.,
+                            //        1.0, xinc, iter, 1);
+                            // xinc *= 1. / dt;
+                        }
+
+                        {
+                            // fdt(xMid, dTau, 1.0,0);
+                            // fsolve(xMid, rhsFull, dTau, dt, 1.0, xinc, iter,0);
+                        }
+                    }
+                    else if (method == 1)
+                    {
                         fdt(x, dTau, 1.0, 0);
-                        for (auto &v : dTau)
-                            v *= 1;
-                        fsolve(x, rhsFull, dTau, dt,
-                               1.0, xinc, iter, 0);
-                        // std::cout << "solved " << iter << std::endl;
 
-                        // //* 2
-                        // xinc *= 1 / (dt);
-                        // {
-                        //     for (auto &v : dTau)
-                        //         v = (v + dt) / v; // 1 / beta
-                        //     xinc *= dTau;
-                        // }
-                        // rhsFull = xinc;
-                        // fdt(x, dTau, 1.0, 0);
-                        // for (auto &v : dTau)
-                        //     v *= 1;
-                        // fsolve(x, rhsFull, dTau, dt,
-                        //        1.0, xinc, iter, 0);
+                        frhs(rhsbuf[1], x, dTau, iter, 1.0, 0);
 
-                        //* 3
-                        // xinc *= 1 / (dt);
-                        // {
-                        // for (auto &v : dTau)
-                        //     v = (v + dt) / v; // 1 / beta
-                        // xinc *= dTau;
-                        // }
-                        // rhsFull = xinc;
-                        // fdt(x, dTau, 1.0, 0);
-                        // for (auto &v : dTau)
-                        //     v *= 1;
-                        // fsolve(x, rhsFull, dTau, dt,
-                        //        1.0, xinc, iter, 0);
+                        rhsMid.setConstant(0.0);
+                        {
+                            rhsMid.addTo(xMid, -1. / dt);
+                            rhsMid.addTo(xLast, cInter(0) / dt - cInter(3) / wInteg(2) / dt);
+                            rhsMid.addTo(x, cInter(1) / dt + cInter(3) / wInteg(2) / dt);
+                            rhsMid.addTo(rhsbuf[0], -(cInter(3) * wInteg(0) / wInteg(2) - cInter(2)));
+                            rhsMid.addTo(rhsbuf[2], -(cInter(3) * wInteg(1) / wInteg(2)));
+                            fsolve(xMid, rhsMid, dTau, dt, std::abs(-(cInter(3) * wInteg(1) / wInteg(2))), xinc, iter, 1);
+                        }
+                        {
+                            // rhsMid.addTo(xMid, -1. / dt);
+                            // rhsMid.addTo(xLast, (cInter(0) + cInter(1)) / dt);
+                            // rhsMid.addTo(rhsbuf[0], (cInter(2) + cInter(1) * wInteg(0)));
+                            // rhsMid.addTo(rhsbuf[1], (cInter(3) + cInter(1) * wInteg(2)));
+                            // rhsMid.addTo(rhsbuf[2], (cInter(1) * wInteg(1)));
+                            // fsolve(xMid, rhsMid, dTau, dt, (cInter(1) * wInteg(1)), xinc, iter, 1);
+                        }
 
-                        // note: dt/n hinders precision
-                        // note: using enough smoothing delays res-re-rise
+                        fincrement(xMid, xinc, 1.0, 1);
+
+                        frhs(rhsbuf[2], xMid, dTau, iter, 1.0, 1);
+
+                        rhsFull.setConstant(0.0);
+                        {
+                            rhsFull.addTo(xLast, 1. / dt);
+                            rhsFull.addTo(x, -1. / dt);
+                            rhsFull.addTo(rhsbuf[0], wInteg(0));
+                            rhsFull.addTo(rhsbuf[2], wInteg(1));
+                            rhsFull.addTo(rhsbuf[1], wInteg(2));
+                            fsolve(x, rhsFull, dTau, dt, wInteg(2), xinc, iter, 0);
+                        }
+                        {
+                            // rhsFull.addTo(xLast, -cInter(0) / (cInter(1) * dt));
+                            // rhsFull.addTo(xMid, -1. / (cInter(1) * dt));
+                            // rhsFull.addTo(x, -1. / dt);
+                            // rhsFull.addTo(rhsbuf[0], -cInter(2) / cInter(1));
+                            // rhsFull.addTo(rhsbuf[1], -cInter(3) / cInter(1));
+                            // fsolve(x, rhsFull, dTau, dt, std::abs(-cInter(3) / cInter(1)), xinc, iter, 0);
+                        }
                     }
+                    else
                     {
-                        /**
-                        Embedded Symmetric Nested Implicit Runge–Kutta Methods
-                     of Gauss and Lobatto Types for Solving Stiff Ordinary
-                     Differential Equations and Hamiltonian Systems*/
-                        // fdt(x, dTau, 1.0, 0); // TODO: use "update spectral radius" procedure? or force update in fsolve
-                        // for (auto &v : dTau)
-                        //     v *= 1;
-                        // fsolve(x, rhsFull, dTau, dt / 4.,
-                        //        1.0, xinc, iter, 0);
-                        // rhsFull = xinc;
-                        // // fdt(xMid, dTau, 1.0, 1);
-                        // // for (auto &v : dTau)
-                        // //     v = veryLargeReal;
-                        // fsolve(x, rhsFull, dTau, dt / 4.,
-                        //        1.0, xinc, iter, 1);
-                        // xinc *= 1. / dt;
-                    }
-
-                    {
-                        // fdt(xMid, dTau, 1.0,0);
-                        // fsolve(xMid, rhsFull, dTau, dt, 1.0, xinc, iter,0);
+                        DNDS_assert(false);
                     }
                 }
 
@@ -739,12 +800,12 @@ namespace DNDS::ODE
 
                 xIncPrev = xinc;
 
-                if (fstop(iter, rhsMid, 1))
+                if (fstop(iter, method == 0 ? rhsMid : rhsFull, 1))
                     if (iter >= nStartIter)
                         break;
             }
             if (iter > maxIter)
-                fstop(iter, rhsMid, 1);
+                fstop(iter, method == 0 ? rhsMid : rhsFull, 1);
         }
 
         void StepNested(TDATA &x, TDATA &xinc, const Frhs &frhs, const Fdt &fdt, const Fsolve &fsolve, const FsolveNest &fsolveN,
@@ -785,16 +846,17 @@ namespace DNDS::ODE
                     rhsFull.addTo(x, -1. / dt);
                     rhsFull.addTo(xLast, 1. / dt);
 
-                    { // damping
-                      // xIncDamper = xLast;
-                      // xIncDamper.addTo(x, -1.);
-                      // xIncDamper.setAbs();
-                      // xIncDamper += 1e-100;
-                      // xIncDamper2 = xIncPrev;
-                      // xIncDamper2.setAbs();
-                      // xIncDamper2 += xIncDamper;
-                      // xIncDamper /= xIncDamper2;
-                      // rhsFull *= xIncDamper;
+                    {
+                        // damping
+                        // xIncDamper = xLast;
+                        // xIncDamper.addTo(x, -1.);
+                        // xIncDamper.setAbs();
+                        // xIncDamper += 1e-100;
+                        // xIncDamper2 = xIncPrev;
+                        // xIncDamper2.setAbs();
+                        // xIncDamper2 += xIncDamper;
+                        // xIncDamper /= xIncDamper2;
+                        // rhsFull *= xIncDamper;
                     }
                     {
                         // fdt(x, dTau, 1.0); // TODO: use "update spectral radius" procedure? or force update in fsolve

@@ -108,6 +108,7 @@ namespace DNDS::CFV
         tMatsPair matrixAAInvB;    /// @brief constructed using ConstructRecCoeff()
         tMatsPair vectorAInvB;     /// @brief constructed using ConstructRecCoeff()
         tVMatPair matrixSecondary; /// @brief constructed using ConstructRecCoeff()
+        tVMatPair matrixAHalf_GG;  /// @brief constructed using ConstructRecCoeff()
 
     public:
         VariationalReconstruction(MPIInfo nMpi, std::shared_ptr<Geom::UnstructuredMesh> nMesh)
@@ -470,9 +471,9 @@ namespace DNDS::CFV
                                 if2c * maxNDOFM1 + maxNDOFM1 - 1));
         }
 
-        template <class TDiffI, class TDiffJ>
+        template <class TDiffIDerived, class TDiffJDerived>
         auto FFaceFunctional(
-            TDiffI &&DiffI, TDiffJ &&DiffJ,
+            const Eigen::MatrixBase<TDiffIDerived> &DiffI, const Eigen::MatrixBase<TDiffJDerived> &DiffJ,
             index iFace, index iG, index iCellL, index iCellR)
         {
             using namespace Geom;
@@ -517,6 +518,11 @@ namespace DNDS::CFV
 
             if (!settings.functionalSettings.useAnisotropicFunctional)
             {
+#ifdef USE_ECCENTRIC_COMB_POW_2
+#define __POWV 2
+#else
+#define __POWV 1
+#endif
                 if constexpr (dim == 2)
                 {
                     DNDS_assert(cnDiffs == 10 || cnDiffs == 6 || cnDiffs == 3 || cnDiffs == 1);
@@ -527,25 +533,25 @@ namespace DNDS::CFV
                             {
                             case 10:
                                 Conj(i, j) +=
-                                    NormSymDiffOrderTensorV<2, 3>(
+                                    NormSymDiffOrderTensorV<2, 3, __POWV>(
                                         DiffI({6, 7, 8, 9}, {i}),
                                         DiffJ({6, 7, 8, 9}, {j})) *
                                     wgd(3) * std::pow(faceL, 3 * 2);
                             case 6:
                                 Conj(i, j) +=
-                                    NormSymDiffOrderTensorV<2, 2>(
+                                    NormSymDiffOrderTensorV<2, 2, __POWV>(
                                         DiffI({3, 4, 5}, {i}),
                                         DiffJ({3, 4, 5}, {j})) *
                                     wgd(2) * std::pow(faceL, 2 * 2);
                             case 3:
                                 Conj(i, j) +=
-                                    NormSymDiffOrderTensorV<2, 1>(
+                                    NormSymDiffOrderTensorV<2, 1, __POWV>(
                                         DiffI({1, 2}, {i}),
                                         DiffJ({1, 2}, {j})) *
                                     wgd(1) * std::pow(faceL, 1 * 2);
                             case 1:
                                 Conj(i, j) +=
-                                    NormSymDiffOrderTensorV<2, 0>(
+                                    NormSymDiffOrderTensorV<2, 0, __POWV>(
                                         DiffI({0}, {i}),
                                         DiffJ({0}, {j})) * //! i, j needed in {}!
                                     wgd(0);
@@ -563,25 +569,25 @@ namespace DNDS::CFV
                             {
                             case 20:
                                 Conj(i, j) +=
-                                    NormSymDiffOrderTensorV<3, 3>(
+                                    NormSymDiffOrderTensorV<3, 3, __POWV>(
                                         DiffI({10, 11, 12, 13, 14, 15, 16, 17, 18, 19}, {i}),
                                         DiffJ({10, 11, 12, 13, 14, 15, 16, 17, 18, 19}, {j})) *
                                     wgd(3) * std::pow(faceL, 3 * 2);
                             case 10:
                                 Conj(i, j) +=
-                                    NormSymDiffOrderTensorV<3, 2>(
+                                    NormSymDiffOrderTensorV<3, 2, __POWV>(
                                         DiffI({4, 5, 6, 7, 8, 9}, {i}),
                                         DiffJ({4, 5, 6, 7, 8, 9}, {j})) *
                                     wgd(2) * std::pow(faceL, 2 * 2);
                             case 4:
                                 Conj(i, j) +=
-                                    NormSymDiffOrderTensorV<3, 1>(
+                                    NormSymDiffOrderTensorV<3, 1, __POWV>(
                                         DiffI({1, 2, 3}, {i}),
                                         DiffJ({1, 2, 3}, {j})) *
                                     wgd(1) * std::pow(faceL, 1 * 2);
                             case 1:
                                 Conj(i, j) +=
-                                    NormSymDiffOrderTensorV<3, 0>(
+                                    NormSymDiffOrderTensorV<3, 0, __POWV>(
                                         DiffI({0}, {i}),
                                         DiffJ({0}, {j})) *
                                     wgd(0);
@@ -589,13 +595,17 @@ namespace DNDS::CFV
                             }
                         }
                 }
+
                 // std::cout << DiffI << std::endl << std::endl;
                 // std::cout << Conj << std::endl;
                 // std::abort();
             }
             else
             {
-                using TMatCopy = Eigen::Matrix<real, DiffI.RowsAtCompileTime, DiffI.ColsAtCompileTime>;
+                using TMatCopy = Eigen::Matrix<
+                    real,
+                    Eigen::MatrixBase<TDiffIDerived>::RowsAtCompileTime,
+                    Eigen::MatrixBase<TDiffIDerived>::ColsAtCompileTime>;
                 TMatCopy DiffI_Norm = DiffI;
                 TMatCopy DiffJ_Norm = DiffJ;
                 tGPoint coordTrans = faceMajorCoordScale[iFace].transpose() *
@@ -606,7 +616,8 @@ namespace DNDS::CFV
                     // coordTrans(0, Eigen::all) = norm.transpose() * faceL;
                     // coordTrans({1, 2}, Eigen::all).setZero();
                 }
-                { // coordTrans = Geom::NormBuildLocalBaseV<3>(norm).transpose() * faceL;
+                {
+                    // coordTrans = Geom::NormBuildLocalBaseV<3>(norm).transpose() * faceL;
                 }
                 {
                     // coordTrans *=  (2 * std::sqrt(3));
@@ -676,25 +687,25 @@ namespace DNDS::CFV
                             {
                             case 10:
                                 Conj(i, j) +=
-                                    NormSymDiffOrderTensorV<2, 3>(
+                                    NormSymDiffOrderTensorV<2, 3, __POWV>(
                                         DiffI_Norm({6, 7, 8, 9}, {i}),
                                         DiffJ_Norm({6, 7, 8, 9}, {j})) *
                                     wgd(3);
                             case 6:
                                 Conj(i, j) +=
-                                    NormSymDiffOrderTensorV<2, 2>(
+                                    NormSymDiffOrderTensorV<2, 2, __POWV>(
                                         DiffI_Norm({3, 4, 5}, {i}),
                                         DiffJ_Norm({3, 4, 5}, {j})) *
                                     wgd(2);
                             case 3:
                                 Conj(i, j) +=
-                                    NormSymDiffOrderTensorV<2, 1>(
+                                    NormSymDiffOrderTensorV<2, 1, __POWV>(
                                         DiffI_Norm({1, 2}, {i}),
                                         DiffJ_Norm({1, 2}, {j})) *
                                     wgd(1);
                             case 1:
                                 Conj(i, j) +=
-                                    NormSymDiffOrderTensorV<2, 0>(
+                                    NormSymDiffOrderTensorV<2, 0, __POWV>(
                                         DiffI_Norm({0}, {i}),
                                         DiffJ_Norm({0}, {j})) * //! i, j needed in {}!
                                     wgd(0);
@@ -712,25 +723,25 @@ namespace DNDS::CFV
                             {
                             case 20:
                                 Conj(i, j) +=
-                                    NormSymDiffOrderTensorV<3, 3>(
+                                    NormSymDiffOrderTensorV<3, 3, __POWV>(
                                         DiffI_Norm({10, 11, 12, 13, 14, 15, 16, 17, 18, 19}, {i}),
                                         DiffJ_Norm({10, 11, 12, 13, 14, 15, 16, 17, 18, 19}, {j})) *
                                     wgd(3);
                             case 10:
                                 Conj(i, j) +=
-                                    NormSymDiffOrderTensorV<3, 2>(
+                                    NormSymDiffOrderTensorV<3, 2, __POWV>(
                                         DiffI_Norm({4, 5, 6, 7, 8, 9}, {i}),
                                         DiffJ_Norm({4, 5, 6, 7, 8, 9}, {j})) *
                                     wgd(2);
                             case 4:
                                 Conj(i, j) +=
-                                    NormSymDiffOrderTensorV<3, 1>(
+                                    NormSymDiffOrderTensorV<3, 1, __POWV>(
                                         DiffI_Norm({1, 2, 3}, {i}),
                                         DiffJ_Norm({1, 2, 3}, {j})) *
                                     wgd(1);
                             case 1:
                                 Conj(i, j) +=
-                                    NormSymDiffOrderTensorV<3, 0>(
+                                    NormSymDiffOrderTensorV<3, 0, __POWV>(
                                         DiffI_Norm({0}, {i}),
                                         DiffJ_Norm({0}, {j})) *
                                     wgd(0);
@@ -738,8 +749,33 @@ namespace DNDS::CFV
                             }
                         }
                 }
+#ifdef __POWV
+#undef __POWV
+#endif
             }
             return Conj;
+        }
+
+        real GetGreenGauss1WeightOnCell(index iCell)
+        {
+            if (settings.functionalSettings.greenGaussSpacial == 0)
+            {
+                real AR = GetCellAR(iCell);
+                real v = std::max(0.0, std::log(AR));
+                return settings.functionalSettings.greenGauss1Weight *
+                       std::pow(std::tanh(v / 4), 3);
+            }
+            else
+            {
+                return settings.functionalSettings.greenGauss1Weight;
+            }
+        }
+
+        real GetCellAR(index iCell)
+        {
+            static const auto Seq012 = Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>);
+            auto lens = this->cellMajorHBox[iCell](Seq012);
+            return (lens.maxCoeff() + verySmallReal) / (lens.minCoeff() + verySmallReal);
         }
 
         template <int nVarsFixed = 1>
@@ -794,7 +830,7 @@ namespace DNDS::CFV
         using TFBoundary = std::function<Eigen::Vector<real, nVarsFixed>(
             const Eigen::Vector<real, nVarsFixed> &, // UBL
             const Eigen::Vector<real, nVarsFixed> &, // UMEAN
-            index, index, // iCell, iFace
+            index, index,                            // iCell, iFace
             const Geom::tPoint &,                    // Norm
             const Geom::tPoint &,                    // pPhy
             Geom::t_index fType                      // fCode

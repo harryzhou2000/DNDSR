@@ -161,6 +161,7 @@
             "scaleType": "BaryDiff",
             "scaleMultiplier": 1.0,
             "dirWeightScheme": "Factorial",
+            "dirWeightCombPowV": 1,
             "manualDirWeights": [
                 1.0,
                 1.0,
@@ -174,7 +175,12 @@
             "geomWeightPower2": 0.0,
             "useAnisotropicFunctional": false,
             "anisotropicType": "InertiaCoord",
-            "inertiaWeightPower": 1.0
+            "inertiaWeightPower": 1.0,
+            "geomWeightBias": 0.0,
+            "greenGauss1Weight": 0.0,
+            "greenGauss1Bias": 0.5,
+            "greenGauss1Penalty": 0.0,
+            "greenGaussSpacial": 0
         }
     },
     "bcSettings": []

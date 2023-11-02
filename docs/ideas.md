@@ -7,20 +7,20 @@
 - [x] start CFV methods
 - [x] check on general json parsing
 - [x] octree and periodic bc ~~(using CGAL)~~ using nanoflann
-- [ ] mesh reader: CGNS abutting interface with 1-to-1 face
+- [x] mesh reader: CGNS abutting interface with 1-to-1 face
 - [x] CFV limiters
 - [x] Euler Solver
-- [ ] Facial Value output in Euler Solver
-- [ ] kdtree for euler solver's wall dist finding
+- [x] Facial Value output in Euler Solver
+- [x] kdtree for euler solver's wall dist finding
 - [ ] mesh: automatic global refinement
 - [ ] reorganize comm strategy and communication callings
-- [ ] more bases in CFV
-- [ ] more functional in CFV
-- [ ] fully serial mesh partitioning
+- [x] more bases in CFV
+- [x] more functional in CFV
+- [x] fully serial mesh partitioning
 - [ ] try scotch?
-- [ ] serialization of euler solver
-- [ ] restarting of euler solver
-- [ ] data post-process utility (with VTK?)
+- [x] serialization of euler solver
+- [x] restarting of euler solver
+- [x] data post-process utility (with VTK?)
 - [ ] wrap the mesh and vfv into iterator or range based for
 - [ ] wrap array into iterator or range based for
 - [ ] wrap derived arrays into iterator or range based for
