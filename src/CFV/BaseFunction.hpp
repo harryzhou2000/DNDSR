@@ -568,83 +568,156 @@ namespace DNDS::CFV
         }
     }
 
-    template <int dim, int rank, class VLe, class VRi>
+    template <int dim = 3, int rank = 0, int powV = 1, class VLe, class VRi>
     real NormSymDiffOrderTensorV(VLe &&Le, VRi &&Ri)
     {
         real ret = 0;
         if constexpr (dim == 3)
         {
-            if constexpr (rank == 0)
+            if constexpr (powV == 1)
             {
-                ret += Le(0, 0) * Ri(0, 0) * diffNCombs[0];
-            }
-            else if constexpr (rank == 1)
-            {
-                ret += Le(0, 0) * Ri(0, 0) * diffNCombs[0 + 1];
-                ret += Le(1, 0) * Ri(1, 0) * diffNCombs[1 + 1];
-                ret += Le(2, 0) * Ri(2, 0) * diffNCombs[2 + 1];
-            }
-            else if constexpr (rank == 2)
-            {
-                ret += Le(0, 0) * Ri(0, 0) * diffNCombs[0 + 4];
-                ret += Le(1, 0) * Ri(1, 0) * diffNCombs[1 + 4];
-                ret += Le(2, 0) * Ri(2, 0) * diffNCombs[2 + 4];
-                ret += Le(3, 0) * Ri(3, 0) * diffNCombs[3 + 4];
-                ret += Le(4, 0) * Ri(4, 0) * diffNCombs[4 + 4];
-                ret += Le(5, 0) * Ri(5, 0) * diffNCombs[5 + 4];
-            }
-            else if constexpr (rank == 3)
-            {
-                ret += Le(0, 0) * Ri(0, 0) * diffNCombs[0 + 10];
-                ret += Le(1, 0) * Ri(1, 0) * diffNCombs[1 + 10];
-                ret += Le(2, 0) * Ri(2, 0) * diffNCombs[2 + 10];
-                ret += Le(3, 0) * Ri(3, 0) * diffNCombs[3 + 10];
-                ret += Le(4, 0) * Ri(4, 0) * diffNCombs[4 + 10];
-                ret += Le(5, 0) * Ri(5, 0) * diffNCombs[5 + 10];
-                ret += Le(6, 0) * Ri(6, 0) * diffNCombs[6 + 10];
-                ret += Le(7, 0) * Ri(7, 0) * diffNCombs[7 + 10];
-                ret += Le(8, 0) * Ri(8, 0) * diffNCombs[8 + 10];
-                ret += Le(9, 0) * Ri(9, 0) * diffNCombs[9 + 10];
+                if constexpr (rank == 0)
+                {
+                    ret += Le(0, 0) * Ri(0, 0) * diffNCombs[0];
+                }
+                else if constexpr (rank == 1)
+                {
+                    ret += Le(0, 0) * Ri(0, 0) * diffNCombs[0 + 1];
+                    ret += Le(1, 0) * Ri(1, 0) * diffNCombs[1 + 1];
+                    ret += Le(2, 0) * Ri(2, 0) * diffNCombs[2 + 1];
+                }
+                else if constexpr (rank == 2)
+                {
+                    ret += Le(0, 0) * Ri(0, 0) * diffNCombs[0 + 4];
+                    ret += Le(1, 0) * Ri(1, 0) * diffNCombs[1 + 4];
+                    ret += Le(2, 0) * Ri(2, 0) * diffNCombs[2 + 4];
+                    ret += Le(3, 0) * Ri(3, 0) * diffNCombs[3 + 4];
+                    ret += Le(4, 0) * Ri(4, 0) * diffNCombs[4 + 4];
+                    ret += Le(5, 0) * Ri(5, 0) * diffNCombs[5 + 4];
+                }
+                else if constexpr (rank == 3)
+                {
+                    ret += Le(0, 0) * Ri(0, 0) * diffNCombs[0 + 10];
+                    ret += Le(1, 0) * Ri(1, 0) * diffNCombs[1 + 10];
+                    ret += Le(2, 0) * Ri(2, 0) * diffNCombs[2 + 10];
+                    ret += Le(3, 0) * Ri(3, 0) * diffNCombs[3 + 10];
+                    ret += Le(4, 0) * Ri(4, 0) * diffNCombs[4 + 10];
+                    ret += Le(5, 0) * Ri(5, 0) * diffNCombs[5 + 10];
+                    ret += Le(6, 0) * Ri(6, 0) * diffNCombs[6 + 10];
+                    ret += Le(7, 0) * Ri(7, 0) * diffNCombs[7 + 10];
+                    ret += Le(8, 0) * Ri(8, 0) * diffNCombs[8 + 10];
+                    ret += Le(9, 0) * Ri(9, 0) * diffNCombs[9 + 10];
+                }
+                else
+                {
+                    DNDS_assert(false);
+                }
             }
             else
             {
-                DNDS_assert(false);
+                if constexpr (rank == 0)
+                {
+                    ret += Le(0, 0) * Ri(0, 0) * std::pow(diffNCombs[0], powV);
+                }
+                else if constexpr (rank == 1)
+                {
+                    ret += Le(0, 0) * Ri(0, 0) * std::pow(diffNCombs[0 + 1], powV);
+                    ret += Le(1, 0) * Ri(1, 0) * std::pow(diffNCombs[1 + 1], powV);
+                    ret += Le(2, 0) * Ri(2, 0) * std::pow(diffNCombs[2 + 1], powV);
+                }
+                else if constexpr (rank == 2)
+                {
+                    ret += Le(0, 0) * Ri(0, 0) * std::pow(diffNCombs[0 + 4], powV);
+                    ret += Le(1, 0) * Ri(1, 0) * std::pow(diffNCombs[1 + 4], powV);
+                    ret += Le(2, 0) * Ri(2, 0) * std::pow(diffNCombs[2 + 4], powV);
+                    ret += Le(3, 0) * Ri(3, 0) * std::pow(diffNCombs[3 + 4], powV);
+                    ret += Le(4, 0) * Ri(4, 0) * std::pow(diffNCombs[4 + 4], powV);
+                    ret += Le(5, 0) * Ri(5, 0) * std::pow(diffNCombs[5 + 4], powV);
+                }
+                else if constexpr (rank == 3)
+                {
+                    ret += Le(0, 0) * Ri(0, 0) * std::pow(diffNCombs[0 + 10], powV);
+                    ret += Le(1, 0) * Ri(1, 0) * std::pow(diffNCombs[1 + 10], powV);
+                    ret += Le(2, 0) * Ri(2, 0) * std::pow(diffNCombs[2 + 10], powV);
+                    ret += Le(3, 0) * Ri(3, 0) * std::pow(diffNCombs[3 + 10], powV);
+                    ret += Le(4, 0) * Ri(4, 0) * std::pow(diffNCombs[4 + 10], powV);
+                    ret += Le(5, 0) * Ri(5, 0) * std::pow(diffNCombs[5 + 10], powV);
+                    ret += Le(6, 0) * Ri(6, 0) * std::pow(diffNCombs[6 + 10], powV);
+                    ret += Le(7, 0) * Ri(7, 0) * std::pow(diffNCombs[7 + 10], powV);
+                    ret += Le(8, 0) * Ri(8, 0) * std::pow(diffNCombs[8 + 10], powV);
+                    ret += Le(9, 0) * Ri(9, 0) * std::pow(diffNCombs[9 + 10], powV);
+                }
+                else
+                {
+                    DNDS_assert(false);
+                }
             }
         }
         else
         {
-            if constexpr (rank == 0)
+            if constexpr (powV == 1)
             {
-                ret += Le(0) * Ri(0) * diffNCombs2D[0];
-            }
-            else if constexpr (rank == 1)
-            {
-                ret += Le(0) * Ri(0) * diffNCombs2D[0 + 1];
-                ret += Le(1) * Ri(1) * diffNCombs2D[1 + 1];
-            }
-            else if constexpr (rank == 2)
-            {
-                ret += Le(0) * Ri(0) * diffNCombs2D[0 + 3];
-                ret += Le(1) * Ri(1) * diffNCombs2D[1 + 3];
-                ret += Le(2) * Ri(2) * diffNCombs2D[2 + 3];
-            }
-            else if constexpr (rank == 3)
-            {
-                ret += Le(0) * Ri(0) * diffNCombs2D[0 + 6];
-                ret += Le(1) * Ri(1) * diffNCombs2D[1 + 6];
-                ret += Le(2) * Ri(2) * diffNCombs2D[2 + 6];
-                ret += Le(3) * Ri(3) * diffNCombs2D[3 + 6];
+                if constexpr (rank == 0)
+                {
+                    ret += Le(0) * Ri(0) * diffNCombs2D[0];
+                }
+                else if constexpr (rank == 1)
+                {
+                    ret += Le(0) * Ri(0) * diffNCombs2D[0 + 1];
+                    ret += Le(1) * Ri(1) * diffNCombs2D[1 + 1];
+                }
+                else if constexpr (rank == 2)
+                {
+                    ret += Le(0) * Ri(0) * diffNCombs2D[0 + 3];
+                    ret += Le(1) * Ri(1) * diffNCombs2D[1 + 3];
+                    ret += Le(2) * Ri(2) * diffNCombs2D[2 + 3];
+                }
+                else if constexpr (rank == 3)
+                {
+                    ret += Le(0) * Ri(0) * diffNCombs2D[0 + 6];
+                    ret += Le(1) * Ri(1) * diffNCombs2D[1 + 6];
+                    ret += Le(2) * Ri(2) * diffNCombs2D[2 + 6];
+                    ret += Le(3) * Ri(3) * diffNCombs2D[3 + 6];
+                }
+                else
+                {
+                    DNDS_assert(false);
+                }
             }
             else
             {
-                DNDS_assert(false);
+                if constexpr (rank == 0)
+                {
+                    ret += Le(0) * Ri(0) * std::pow(diffNCombs2D[0], powV);
+                }
+                else if constexpr (rank == 1)
+                {
+                    ret += Le(0) * Ri(0) * std::pow(diffNCombs2D[0 + 1], powV);
+                    ret += Le(1) * Ri(1) * std::pow(diffNCombs2D[1 + 1], powV);
+                }
+                else if constexpr (rank == 2)
+                {
+                    ret += Le(0) * Ri(0) * std::pow(diffNCombs2D[0 + 3], powV);
+                    ret += Le(1) * Ri(1) * std::pow(diffNCombs2D[1 + 3], powV);
+                    ret += Le(2) * Ri(2) * std::pow(diffNCombs2D[2 + 3], powV);
+                }
+                else if constexpr (rank == 3)
+                {
+                    ret += Le(0) * Ri(0) * std::pow(diffNCombs2D[0 + 6], powV);
+                    ret += Le(1) * Ri(1) * std::pow(diffNCombs2D[1 + 6], powV);
+                    ret += Le(2) * Ri(2) * std::pow(diffNCombs2D[2 + 6], powV);
+                    ret += Le(3) * Ri(3) * std::pow(diffNCombs2D[3 + 6], powV);
+                }
+                else
+                {
+                    DNDS_assert(false);
+                }
             }
         }
         return ret;
     }
 
-// #include <unsupported/Eigen/CXX11/TensorSymmetry>
-
+    // #include <unsupported/Eigen/CXX11/TensorSymmetry>
 
     template <int dim, int rank, class VLe, class Trans>
     void TransSymDiffOrderTensorV(VLe &&Le, Trans &&trans)

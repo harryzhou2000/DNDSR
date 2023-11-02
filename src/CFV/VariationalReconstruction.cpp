@@ -502,7 +502,8 @@ namespace DNDS::CFV
             // *get geom weight ic2f
             real wg = 1;
             if (settings.functionalSettings.geomWeightScheme == VRSettings::FunctionalSettings::HQM_SD)
-                wg = std::pow(std::pow(this->GetFaceArea(iFace), 1. / real(dim - 1)) / faceBaryDiffV.norm(), settings.functionalSettings.geomWeightPower * 0.5);
+                wg = settings.functionalSettings.geomWeightBias +
+                     std::pow(std::pow(this->GetFaceArea(iFace), 1. / real(dim - 1)) / faceBaryDiffV.norm(), settings.functionalSettings.geomWeightPower * 0.5);
             if (settings.functionalSettings.geomWeightScheme == VRSettings::FunctionalSettings::SD_Power)
                 wg = std::pow(this->GetFaceArea(iFace), settings.functionalSettings.geomWeightPower1 * 0.5) *
                      std::pow(faceBaryDiffV.norm(), settings.functionalSettings.geomWeightPower2 * 0.5);
@@ -585,6 +586,7 @@ namespace DNDS::CFV
     VariationalReconstruction<dim>::ConstructRecCoeff()
     {
         static const auto Seq012 = Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>);
+        static const auto Seq123 = Eigen::seq(Eigen::fix<1>, Eigen::fix<dim>);
         using namespace Geom;
         using namespace Geom::Elem;
         int maxNDOF = GetNDof<dim>(settings.maxOrder);
@@ -649,18 +651,30 @@ namespace DNDS::CFV
                 for (int ic2f = 0; ic2f < mesh->cell2face.RowSize(iCell); ic2f++)
                 {
                     index iFace = mesh->cell2face(iCell, ic2f);
+                    index iCellOther = this->CellFaceOther(iCell, iFace);
                     auto qFace = this->GetFaceQuad(iFace);
                     int if2c = CellIsFaceBack(iCell, iFace) ? 0 : 1;
                     qFace.IntegrationSimple(
                         AHalf_GG,
                         [&](decltype(AHalf_GG) &inc, int iG)
                         {
-                            inc = this->GetFaceNormFromCell(iFace, iCell, if2c, iG)(Seq012) *
-                                  (if2c ? -1 : 1) *
+                            tPoint normOut = this->GetFaceNormFromCell(iFace, iCell, if2c, iG) *
+                                             (if2c ? -1 : 1);
+                            inc = normOut(Seq012) *
                                   this->GetIntPointDiffBaseValue(
                                       iCell, iFace, -1, iG,
                                       0, 1);
-                            inc *= (-(1 - settings.functionalSettings.greenGauss1Bias)) * this->GetFaceJacobiDet(iFace, iG);
+                            inc *= (1 - settings.functionalSettings.greenGauss1Bias);
+                            if (iCellOther != UnInitIndex)
+                            {
+                                real dLR = (GetOtherCellBaryFromCell(iCell, iCellOther, iFace) - GetCellBary(iCell)).norm();
+                                inc -= normOut(Seq012) *
+                                       (normOut(Seq012).transpose() *
+                                        this->GetIntPointDiffBaseValue(iCell, iFace, -1, iG, Seq123, dim + 1)) * dLR *
+                                       settings.functionalSettings.greenGauss1Penalty;
+                            }
+
+                            inc *= (-1) * this->GetFaceJacobiDet(iFace, iG);
                         });
                 }
                 // std::cout << "-------------\n";
@@ -722,10 +736,17 @@ namespace DNDS::CFV
                         BHalf_GG,
                         [&](decltype(BHalf_GG) &inc, int iG)
                         {
-                            inc = this->GetFaceNormFromCell(iFace, iCell, if2c, iG)(Seq012) *
-                                  (if2c ? -1 : 1) *
+                            tPoint normOut = this->GetFaceNormFromCell(iFace, iCell, if2c, iG) *
+                                             (if2c ? -1 : 1);
+                            inc = normOut(Seq012) *
                                   this->GetIntPointDiffBaseValue(iCellOther, iFace, 1 - if2c, iG, 0, 1); // need 1-if2c!!if2c is for iCell!
-                            inc *= settings.functionalSettings.greenGauss1Bias * this->GetFaceJacobiDet(iFace, iG);
+                            inc *= settings.functionalSettings.greenGauss1Bias;
+                            real dLR = (GetOtherCellBaryFromCell(iCell, iCellOther, iFace) - GetCellBary(iCell)).norm();
+                            inc += normOut(Seq012) *
+                                   (normOut(Seq012).transpose() *
+                                    this->GetIntPointDiffBaseValue(iCellOther, iFace, 1 - if2c, iG, Seq123, dim + 1)) * dLR *
+                                   settings.functionalSettings.greenGauss1Penalty;
+                            inc *= this->GetFaceJacobiDet(iFace, iG);
                         });
                     // std::cout << " BH " << ic2f << " " << iFace << "\n"
                     //           << BHalf_GG << std::endl;

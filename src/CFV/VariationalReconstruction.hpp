@@ -518,6 +518,11 @@ namespace DNDS::CFV
 
             if (!settings.functionalSettings.useAnisotropicFunctional)
             {
+#ifdef USE_ECCENTRIC_COMB_POW_2
+#define __POWV 2
+#else
+#define __POWV 1
+#endif
                 if constexpr (dim == 2)
                 {
                     DNDS_assert(cnDiffs == 10 || cnDiffs == 6 || cnDiffs == 3 || cnDiffs == 1);
@@ -528,25 +533,25 @@ namespace DNDS::CFV
                             {
                             case 10:
                                 Conj(i, j) +=
-                                    NormSymDiffOrderTensorV<2, 3>(
+                                    NormSymDiffOrderTensorV<2, 3, __POWV>(
                                         DiffI({6, 7, 8, 9}, {i}),
                                         DiffJ({6, 7, 8, 9}, {j})) *
                                     wgd(3) * std::pow(faceL, 3 * 2);
                             case 6:
                                 Conj(i, j) +=
-                                    NormSymDiffOrderTensorV<2, 2>(
+                                    NormSymDiffOrderTensorV<2, 2, __POWV>(
                                         DiffI({3, 4, 5}, {i}),
                                         DiffJ({3, 4, 5}, {j})) *
                                     wgd(2) * std::pow(faceL, 2 * 2);
                             case 3:
                                 Conj(i, j) +=
-                                    NormSymDiffOrderTensorV<2, 1>(
+                                    NormSymDiffOrderTensorV<2, 1, __POWV>(
                                         DiffI({1, 2}, {i}),
                                         DiffJ({1, 2}, {j})) *
                                     wgd(1) * std::pow(faceL, 1 * 2);
                             case 1:
                                 Conj(i, j) +=
-                                    NormSymDiffOrderTensorV<2, 0>(
+                                    NormSymDiffOrderTensorV<2, 0, __POWV>(
                                         DiffI({0}, {i}),
                                         DiffJ({0}, {j})) * //! i, j needed in {}!
                                     wgd(0);
@@ -564,25 +569,25 @@ namespace DNDS::CFV
                             {
                             case 20:
                                 Conj(i, j) +=
-                                    NormSymDiffOrderTensorV<3, 3>(
+                                    NormSymDiffOrderTensorV<3, 3, __POWV>(
                                         DiffI({10, 11, 12, 13, 14, 15, 16, 17, 18, 19}, {i}),
                                         DiffJ({10, 11, 12, 13, 14, 15, 16, 17, 18, 19}, {j})) *
                                     wgd(3) * std::pow(faceL, 3 * 2);
                             case 10:
                                 Conj(i, j) +=
-                                    NormSymDiffOrderTensorV<3, 2>(
+                                    NormSymDiffOrderTensorV<3, 2, __POWV>(
                                         DiffI({4, 5, 6, 7, 8, 9}, {i}),
                                         DiffJ({4, 5, 6, 7, 8, 9}, {j})) *
                                     wgd(2) * std::pow(faceL, 2 * 2);
                             case 4:
                                 Conj(i, j) +=
-                                    NormSymDiffOrderTensorV<3, 1>(
+                                    NormSymDiffOrderTensorV<3, 1, __POWV>(
                                         DiffI({1, 2, 3}, {i}),
                                         DiffJ({1, 2, 3}, {j})) *
                                     wgd(1) * std::pow(faceL, 1 * 2);
                             case 1:
                                 Conj(i, j) +=
-                                    NormSymDiffOrderTensorV<3, 0>(
+                                    NormSymDiffOrderTensorV<3, 0, __POWV>(
                                         DiffI({0}, {i}),
                                         DiffJ({0}, {j})) *
                                     wgd(0);
@@ -590,6 +595,7 @@ namespace DNDS::CFV
                             }
                         }
                 }
+
                 // std::cout << DiffI << std::endl << std::endl;
                 // std::cout << Conj << std::endl;
                 // std::abort();
@@ -609,9 +615,11 @@ namespace DNDS::CFV
                     // real normScale = (coordTrans * norm).norm();
                     // coordTrans(0, Eigen::all) = norm.transpose() * faceL;
                     // coordTrans({1, 2}, Eigen::all).setZero();
-                } {
+                }
+                {
                     // coordTrans = Geom::NormBuildLocalBaseV<3>(norm).transpose() * faceL;
-                } {
+                }
+                {
                     // coordTrans *=  (2 * std::sqrt(3));
                     // tPoint lengths = coordTrans.rowwise().norm();
                     // // tPoint lengthsNew = lengths.array() * faceL / (faceL + lengths.array());
@@ -624,7 +632,8 @@ namespace DNDS::CFV
                     // //     std::cout << lengths << std::endl;
                     // //     std::cout << faceL << std::endl;
                     // // }
-                } {
+                }
+                {
                     // tPoint norm = this->GetFaceNorm(iFace, -1);
                     // auto getCellFaceMajorPNorm = [&](index iCell) -> tPoint
                     // {
@@ -649,7 +658,8 @@ namespace DNDS::CFV
 
                     // coordTrans(0, Eigen::all) = norm.transpose() * faceL;
                     // coordTrans({1, 2}, Eigen::all).setZero();
-                } {
+                }
+                {
                     tPoint norm = this->GetFaceNorm(iFace, -1);
                     real areaL = this->GetFaceArea(iFace);
                     if constexpr (dim == 3)
@@ -677,25 +687,25 @@ namespace DNDS::CFV
                             {
                             case 10:
                                 Conj(i, j) +=
-                                    NormSymDiffOrderTensorV<2, 3>(
+                                    NormSymDiffOrderTensorV<2, 3, __POWV>(
                                         DiffI_Norm({6, 7, 8, 9}, {i}),
                                         DiffJ_Norm({6, 7, 8, 9}, {j})) *
                                     wgd(3);
                             case 6:
                                 Conj(i, j) +=
-                                    NormSymDiffOrderTensorV<2, 2>(
+                                    NormSymDiffOrderTensorV<2, 2, __POWV>(
                                         DiffI_Norm({3, 4, 5}, {i}),
                                         DiffJ_Norm({3, 4, 5}, {j})) *
                                     wgd(2);
                             case 3:
                                 Conj(i, j) +=
-                                    NormSymDiffOrderTensorV<2, 1>(
+                                    NormSymDiffOrderTensorV<2, 1, __POWV>(
                                         DiffI_Norm({1, 2}, {i}),
                                         DiffJ_Norm({1, 2}, {j})) *
                                     wgd(1);
                             case 1:
                                 Conj(i, j) +=
-                                    NormSymDiffOrderTensorV<2, 0>(
+                                    NormSymDiffOrderTensorV<2, 0, __POWV>(
                                         DiffI_Norm({0}, {i}),
                                         DiffJ_Norm({0}, {j})) * //! i, j needed in {}!
                                     wgd(0);
@@ -713,25 +723,25 @@ namespace DNDS::CFV
                             {
                             case 20:
                                 Conj(i, j) +=
-                                    NormSymDiffOrderTensorV<3, 3>(
+                                    NormSymDiffOrderTensorV<3, 3, __POWV>(
                                         DiffI_Norm({10, 11, 12, 13, 14, 15, 16, 17, 18, 19}, {i}),
                                         DiffJ_Norm({10, 11, 12, 13, 14, 15, 16, 17, 18, 19}, {j})) *
                                     wgd(3);
                             case 10:
                                 Conj(i, j) +=
-                                    NormSymDiffOrderTensorV<3, 2>(
+                                    NormSymDiffOrderTensorV<3, 2, __POWV>(
                                         DiffI_Norm({4, 5, 6, 7, 8, 9}, {i}),
                                         DiffJ_Norm({4, 5, 6, 7, 8, 9}, {j})) *
                                     wgd(2);
                             case 4:
                                 Conj(i, j) +=
-                                    NormSymDiffOrderTensorV<3, 1>(
+                                    NormSymDiffOrderTensorV<3, 1, __POWV>(
                                         DiffI_Norm({1, 2, 3}, {i}),
                                         DiffJ_Norm({1, 2, 3}, {j})) *
                                     wgd(1);
                             case 1:
                                 Conj(i, j) +=
-                                    NormSymDiffOrderTensorV<3, 0>(
+                                    NormSymDiffOrderTensorV<3, 0, __POWV>(
                                         DiffI_Norm({0}, {i}),
                                         DiffJ_Norm({0}, {j})) *
                                     wgd(0);
@@ -739,6 +749,9 @@ namespace DNDS::CFV
                             }
                         }
                 }
+#ifdef __POWV
+#undef __POWV
+#endif
             }
             return Conj;
         }

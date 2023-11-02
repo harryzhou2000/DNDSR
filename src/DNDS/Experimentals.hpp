@@ -3,6 +3,9 @@
 
 #define USE_NORM_FUNCTIONAL
 // #define USE_THIN_NORM_FUNCTIONAL
+
+// #define USE_ECCENTRIC_COMB_POW_2
+
 // #define USE_LOCAL_COORD_CURVILINEAR
 // #define PRINT_EVERY_VR_JACOBI_ITER_INCREMENT
 
@@ -42,6 +45,9 @@ static const std::string DNDS_Experimentals_State = std::string("DNDS_Experiment
 #endif
 #ifdef USE_THIN_NORM_FUNCTIONAL
                                                     + " USE_THIN_NORM_FUNCTIONAL "
+#endif
+#ifdef USE_ECCENTRIC_COMB_POW_2
+                                                    + " USE_ECCENTRIC_COMB_POW_2 "
 #endif
 #ifdef USE_LOCAL_COORD_CURVILINEAR
                                                     + " USE_LOCAL_COORD_CURVILINEAR "
@@ -83,7 +89,7 @@ static const std::string DNDS_Experimentals_State = std::string("DNDS_Experiment
                                                     + " USE_NS_SA_NUT_REDUCED_ORDER "
 #endif
 #ifdef USE_NS_SA_ALLOW_NEGATIVE_MEAN
-                                                    + " USE_NS_SA_ALLOW_NEGATIVE_MEANs "
+                                                    + " USE_NS_SA_ALLOW_NEGATIVE_MEAN "
 #endif
 #ifdef USE_ISOTROPIC_OPTHQM
                                                     + " USE_ISOTROPIC_OPTHQM "
