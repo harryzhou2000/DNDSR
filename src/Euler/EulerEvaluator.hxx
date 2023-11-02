@@ -594,8 +594,11 @@ namespace DNDS::Euler
                 uRecBeta[iCell](0) *= 1 - 1e-8;
             // uRecBeta[iCell](0) = std::min(theta1, thetaP);
             if (uRecBeta[iCell](0) < 1)
-                nLimLocal++,
-                    minBetaLocal = std::min(uRecBeta[iCell](0), minBetaLocal);
+            {
+                nLimLocal++;
+                uRecBeta[iCell](0) *= 0.9; //! for safety
+                minBetaLocal = std::min(uRecBeta[iCell](0), minBetaLocal);
+            }
             if (uRecBeta[iCell](0) < 0)
             {
                 std::cout << fmt::format("theta1 {}, thetaP {}", theta1, thetaP) << std::endl;
@@ -681,7 +684,7 @@ namespace DNDS::Euler
         for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
         {
             if (cellRHSAlpha[iCell](0) < 1)
-                cellRHSAlpha[iCell](0) = alphaMin;
+                cellRHSAlpha[iCell](0) = alphaMin * (0.8); //! for safety
         }
     }
 

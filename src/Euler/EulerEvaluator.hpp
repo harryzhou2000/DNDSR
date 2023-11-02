@@ -1724,7 +1724,7 @@ namespace DNDS::Euler
 
                 ek = 0.5 * (u(Seq123) + ret(Seq123)).squaredNorm() / (u(0) + ret(0) + verySmallReal);
 
-                if (ret(I4) + u(I4) - ek < newrhoEinteralNew)
+                if (ret(I4) + u(I4) - ek < newrhoEinteralNew * 0.5)
                 {
                     std::cout << std::scientific << std::setprecision(5);
                     std::cout << u(0) << " " << ret(0) << std::endl;
