@@ -626,8 +626,9 @@ namespace DNDS::Euler
             real alphaRho = 1;
             TU inc = res[iCell];
             DNDS_assert(u[iCell](0) >= rhoEps);
-            if (inc(0) < rhoEps)
+            if (inc(0) < 0) // not < rhoEps!!!
                 alphaRho = std::min(1.0, (u[iCell](0) - rhoEps) / (-inc(0) - smallReal * inc(0)));
+            DNDS_assert(alphaRho >= 0 && alphaRho <= 1);
             if constexpr (model == NS_SA || model == NS_SA_3D)
             {
                 // ** ! currently do not mass - fix for SA

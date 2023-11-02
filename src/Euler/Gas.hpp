@@ -779,7 +779,6 @@ namespace DNDS::Euler::Gas
         // if (c2 < 0)
         //     DNDS_assert(alphaR < 1);
         real alpha = std::min((c2 > 0 ? alphaR : alphaL), 1.);
-        if(alphaL < 0)
         alpha = std::max(0., alpha);
         ret *= alpha;
 
@@ -792,7 +791,7 @@ namespace DNDS::Euler::Gas
             else
                 break;
         }
-        std::cout << fmt::format("{} {} {} {} {}", c0, c1, c2, alphaL, alphaR) << std::endl;
+        // std::cout << fmt::format("{} {} {} {} {}", c0, c1, c2, alphaL, alphaR) << std::endl;
 
         return alpha;
     }
