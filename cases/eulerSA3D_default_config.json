@@ -4,6 +4,7 @@
         "nTimeStep": 1000000,
         "steadyQuit": false,
         "useRestart": false,
+        "useImplicitPP": false,
         "odeCode": 0,
         "tEnd": 3e+200,
         "odeSetting1": 0.0,
@@ -26,14 +27,15 @@
         "nConsoleCheck": 1,
         "nConsoleCheckInternal": 1,
         "consoleOutputMode": 0,
+        "consoleOutputEveryFix": 0,
         "nDataOut": 10000,
         "nDataOutC": 50,
         "nDataOutInternal": 10000,
         "nDataOutCInternal": 1,
-        "nRestartOut": 10000,
-        "nRestartOutC": 50,
-        "nRestartOutInternal": 10000,
-        "nRestartOutCInternal": 1,
+        "nRestartOut": 2147483647,
+        "nRestartOutC": 2147483647,
+        "nRestartOutInternal": 2147483647,
+        "nRestartOutCInternal": 2147483647,
         "tDataOut": 3e+200
     },
     "implicitCFLControl": {
@@ -88,6 +90,7 @@
     },
     "limiterControl": {
         "useLimiter": true,
+        "usePPRecLimiter": true,
         "smoothIndicatorProcedure": 0,
         "limiterProcedure": 0,
         "nPartialLimiterStart": 0,
@@ -173,5 +176,6 @@
             "anisotropicType": "InertiaCoord",
             "inertiaWeightPower": 1.0
         }
-    }
+    },
+    "bcSettings": []
 }

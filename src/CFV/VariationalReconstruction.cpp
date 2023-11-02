@@ -626,7 +626,7 @@ namespace DNDS::CFV
                 // std::cout << "face "<< faceWeight[iFace].transpose() << std::endl;
             }
             decltype(A) AInv;
-            real aCond = HardEigen::EigenLeastSquareInverse_Filtered(A, AInv);
+            real aCond = HardEigen::EigenLeastSquareInverse(A, AInv);
             matrixAB(iCell, 0) = A;
             matrixAAInvB(iCell, 0) = AInv;
 

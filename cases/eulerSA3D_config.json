@@ -3,7 +3,7 @@
         "dtImplicit": 2e30,
         "nTimeStep": 1,
         "steadyQuit": true,
-        "useRestart": true,
+        "useRestart": false,
         "odeCode": 1, //0 = SDIRK4, 1 = BDF2, 2 = SSPRK3
         "tEnd": 3e+200
     },
@@ -23,7 +23,7 @@
         "nDataOutInternal": 1000000000,
         "nRestartOutC": 10,
         "nRestartOut": 100,
-        "nRestartOutCInternal": 100,
+        "nRestartOutCInternal": 10000,
         "nRestartOutInternal": 1000000000,
         "tDataOut": 3e+200
     },
@@ -80,8 +80,13 @@
             "anisotropicLengths": false
         },
         "functionalSettings": {
-            "dirWeightScheme": "HQM_OPT",
+            // "dirWeightScheme": "HQM_OPT",
             "geomWeightScheme": "HQM_SD",
+            // "geomWeightScheme": "SD_Power",
+            "geomWeightPower1": 0.5,
+            "geomWeightPower2": -0.5,
+            // "useAnisotropicFunctional": true,
+            "anisotropicType": "InertiaCoord",
             "_tail": 0
         }
     },
