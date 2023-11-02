@@ -754,7 +754,7 @@ namespace DNDS::ODE
 
                         fincrement(xMid, xinc, 1.0, 1);
 
-                        frhs(rhsbuf[2], xMid, dTau, iter, 1.0, 1);
+                        frhs(rhsbuf[2], xMid, dTau, iter, 0.5, 1);
 
                         rhsFull.setConstant(0.0);
                         {

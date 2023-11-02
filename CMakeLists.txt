@@ -344,6 +344,7 @@ vrBasic_Test
 )
 
 set(APPS_Euler
+gasTest
 euler
 euler3D
 eulerSA
