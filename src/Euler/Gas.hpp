@@ -756,9 +756,10 @@ namespace DNDS::Euler::Gas
 
         real c0 = 2 * u(I4) * u(0) - u(Seq123).squaredNorm() - 2 * u(0) * newrhoEinteralNew;
         real c1 = 2 * u(I4) * ret(0) + 2 * u(0) * ret(I4) - 2 * u(Seq123).dot(ret(Seq123)) - 2 * ret(0) * newrhoEinteralNew;
-        real c2 = 2 * ret(I4) * ret(0) - ret(Seq123).squaredNorm() + verySmallReal;
+        real c2 = 2 * ret(I4) * ret(0) - ret(Seq123).squaredNorm();
+        c2 += signP(c2) * verySmallReal;
         real deltaC = sqr(c1) - 4 * c0 * c2;
-        if (deltaC <= 0)
+        if (deltaC <= -sqr(c0) * smallReal)
         {
             std::cout << std::scientific << std::setprecision(5);
             std::cout << u.transpose() << std::endl;
@@ -768,6 +769,7 @@ namespace DNDS::Euler::Gas
 
             DNDS_assert(false);
         }
+        deltaC = std::max(0., deltaC);
         real alphaL = (-std::sqrt(deltaC) - c1) / (2 * c2);
         real alphaR = (std::sqrt(deltaC) - c1) / (2 * c2);
         // if (c2 > 0)
@@ -776,7 +778,8 @@ namespace DNDS::Euler::Gas
         // DNDS_assert(alphaL < 1);
         // if (c2 < 0)
         //     DNDS_assert(alphaR < 1);
-        real alpha = std::min((c2 > 0 ? alphaL : alphaR), 1.);
+        real alpha = std::min((c2 > 0 ? alphaR : alphaL), 1.);
+        if(alphaL < 0)
         alpha = std::max(0., alpha);
         ret *= alpha;
 
@@ -789,6 +792,7 @@ namespace DNDS::Euler::Gas
             else
                 break;
         }
+        std::cout << fmt::format("{} {} {} {} {}", c0, c1, c2, alphaL, alphaR) << std::endl;
 
         return alpha;
     }

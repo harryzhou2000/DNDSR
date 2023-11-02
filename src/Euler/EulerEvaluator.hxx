@@ -626,11 +626,11 @@ namespace DNDS::Euler
             real alphaRho = 1;
             TU inc = res[iCell];
             DNDS_assert(u[iCell](0) >= rhoEps);
-            if (inc(0) < 0)
+            if (inc(0) < rhoEps)
                 alphaRho = std::min(1.0, (u[iCell](0) - rhoEps) / (-inc(0) - smallReal * inc(0)));
             if constexpr (model == NS_SA || model == NS_SA_3D)
             {
-                // currently do not mass - fix for SA
+                // ** ! currently do not mass - fix for SA
                 // static real v1Eps = smallReal * settings.refUPrim(I4 + 1);
                 // if (inc(I4 + 1) < 0)
                 //     alphaRho = std::min(alphaRho,
