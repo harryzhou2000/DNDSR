@@ -778,8 +778,13 @@ namespace DNDS::Euler::Gas
         // DNDS_assert(alphaL < 1);
         // if (c2 < 0)
         //     DNDS_assert(alphaR < 1);
-        real alpha = std::min((c2 > 0 ? alphaL : alphaL), 1.);
+        real alpha;
+        if (std::abs(c2) < 1e-5 * c0)
+            alpha = std::min(-c0 / c1, 1.);
+        else
+            alpha = std::min((c2 > 0 ? alphaL : alphaL), 1.);
         alpha = std::max(0., alpha);
+
         ret *= alpha;
 
         real decay = 1 - 1e-1;
