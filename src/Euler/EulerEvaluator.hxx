@@ -600,7 +600,7 @@ namespace DNDS::Euler
             if (uRecBeta[iCell](0) < 1)
             {
                 nLimLocal++;
-                uRecBeta[iCell](0) *= 0.8; //! for safety
+                uRecBeta[iCell](0) *= 0.99; //! for safety
                 minBetaLocal = std::min(uRecBeta[iCell](0), minBetaLocal);
             }
             if (uRecBeta[iCell](0) < 0)
@@ -710,7 +710,7 @@ namespace DNDS::Euler
         for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
         {
             if (cellRHSAlpha[iCell](0) < 1)
-                cellRHSAlpha[iCell](0) = alphaMin * (0.8); //! for safety
+                cellRHSAlpha[iCell](0) = alphaMin * (0.99); //! for safety
         }
     }
 

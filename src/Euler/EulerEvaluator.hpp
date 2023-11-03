@@ -1708,9 +1708,9 @@ namespace DNDS::Euler
                 // DNDS_assert(alphaL < 1);
                 // if (c2 < 0)
                 //     DNDS_assert(alphaR < 1);
-                real alpha = std::min((c2 > 0 ? alphaR : alphaL), 1.);
+                real alpha = std::min((c2 > 0 ? alphaL : alphaL), 1.);
                 alpha = std::max(0., alpha);
-                ret *= alpha * (1 - 1e-12);
+                ret *= alpha * (0.99);
 
                 real decay = 1 - 1e-1;
                 for (int iter = 0; iter < 1000; iter++)
