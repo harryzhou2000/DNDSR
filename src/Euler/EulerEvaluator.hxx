@@ -579,15 +579,19 @@ namespace DNDS::Euler
                 (recVRhoG(Eigen::all, I4) -
                  ek);
             real thetaP = 1.0;
-            for (int iG = 0; iG < pS.size(); iG++)
-            {
-                if (pS(iG) < pEps)
+            real pCent = (gamma - 1) * (u[iCell](I4) - 0.5 * u[iCell](Seq123).squaredNorm() / u[iCell](0));
+            if (pCent <= 2 * pEps)
+                thetaP = 0;
+            else
+                for (int iG = 0; iG < pS.size(); iG++)
                 {
-                    real thetaThis = Gas::IdealGasGetCompressionRatioPressure<dim, nVars_Fixed>(
-                        u[iCell], recInc(iG, Eigen::all).transpose(), pEps / (gamma - 1));
-                    thetaP = std::min(thetaP, thetaThis);
+                    if (pS(iG) < 2 * pEps)
+                    {
+                        real thetaThis = Gas::IdealGasGetCompressionRatioPressure<dim, nVars_Fixed>(
+                            u[iCell], recInc(iG, Eigen::all).transpose(), 2 * pEps / (gamma - 1));
+                        thetaP = std::min(thetaP, thetaThis);
+                    }
                 }
-            }
 
             uRecBeta[iCell](0) = theta1 * thetaP;
             if (uRecBeta[iCell](0) < 1)
@@ -596,13 +600,35 @@ namespace DNDS::Euler
             if (uRecBeta[iCell](0) < 1)
             {
                 nLimLocal++;
-                uRecBeta[iCell](0) *= 0.9; //! for safety
+                uRecBeta[iCell](0) *= 0.8; //! for safety
                 minBetaLocal = std::min(uRecBeta[iCell](0), minBetaLocal);
             }
             if (uRecBeta[iCell](0) < 0)
             {
                 std::cout << fmt::format("theta1 {}, thetaP {}", theta1, thetaP) << std::endl;
                 DNDS_assert(false);
+            }
+
+            // validation:
+            recInc = quadBase * uRec[iCell] * uRecBeta[iCell](0);
+            recVRhoG = recInc.rowwise() + u[iCell].transpose();
+            ek =
+                0.5 * (recVRhoG(Eigen::all, Seq123).array().square().rowwise().sum()) / recVRhoG(Eigen::all, 0).array();
+            pS =
+                (gamma - 1) *
+                (recVRhoG(Eigen::all, I4) -
+                 ek);
+            for (int iG = 0; iG < pS.size(); iG++)
+            {
+                if (pS(iG) < pEps)
+                {
+                    // std::cout << std::scientific;
+                    // std::cout << pS.transpose() << std::endl;
+                    // std::cout << fmt::format("{} {} {}", theta1, thetaP, uRecBeta[iCell](0)) << std::endl;
+                    // std::cout << u[iCell] << std::endl;
+                    // std::cout << recInc.transpose() << std::endl;
+                    // DNDS_assert(false);
+                }
             }
         }
         MPI::Allreduce(&nLimLocal, &nLim, 1, DNDS_MPI_INDEX, MPI_SUM, u.father->getMPI().comm);

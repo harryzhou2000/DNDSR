@@ -501,20 +501,20 @@ namespace DNDS::Euler
             auto &betaPPC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? betaPP1 : betaPP;
 
             {
-                //! experimental: bad now
-                // rhsTemp = crhs;
-                // rhsTemp *= dTau;
-                // index nLimFRes = 0;
-                // real alphaMinFRes = 1;
-                // eval.EvaluateCellRHSAlpha(cx, uRecC, betaPPC, rhsTemp, alphaPP_tmp, nLimFRes, alphaMinFRes);
-                // if (nLimFRes)
-                //     if (mpi.rank == 0)
-                //     {
-                //         std::cout << std::scientific << std::setw(3);
-                //         std::cout << "PPFResLimiter: nLimFRes[" << nLimFRes << "] minAlpha [" << alphaMinFRes << "]" << std::endl;
-                //     }
+                // ! experimental: bad now
+                rhsTemp = crhs;
+                rhsTemp *= dTau;
+                index nLimFRes = 0;
+                real alphaMinFRes = 1;
+                eval.EvaluateCellRHSAlpha(cx, uRecC, betaPPC, rhsTemp, alphaPP_tmp, nLimFRes, alphaMinFRes);
+                if (nLimFRes)
+                    if (mpi.rank == 0)
+                    {
+                        std::cout << std::scientific << std::setw(3);
+                        std::cout << "PPFResLimiter: nLimFRes[" << nLimFRes << "] minAlpha [" << alphaMinFRes << "]" << std::endl;
+                    }
 
-                // crhs *= alphaPP_tmp;
+                crhs *= alphaPP_tmp;
             }
 
             typename TVFV::element_type::template TFBoundary<nVars_Fixed>

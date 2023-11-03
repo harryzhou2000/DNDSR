@@ -782,7 +782,7 @@ namespace DNDS::Euler::Gas
         alpha = std::max(0., alpha);
         ret *= alpha;
 
-        real decay = 1 - 1e-2;
+        real decay = 1 - 1e-1;
         for (int iter = 0; iter < 1000; iter++)
         {
             real ek = 0.5 * (u(Seq123) + ret(Seq123)).squaredNorm() / (u(0) + ret(0) + verySmallReal);
