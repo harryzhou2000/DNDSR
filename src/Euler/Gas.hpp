@@ -753,6 +753,8 @@ namespace DNDS::Euler::Gas
         static const auto I4 = dim + 1;
 
         Eigen::Vector<real, nVars_Fixed> ret = uInc;
+        real rhoEOld = u(I4) - u(Seq123).squaredNorm() / (u(0) + verySmallReal) * 0.5;
+        newrhoEinteralNew = std::max(smallReal * rhoEOld, newrhoEinteralNew);
 
         real c0 = 2 * u(I4) * u(0) - u(Seq123).squaredNorm() - 2 * u(0) * newrhoEinteralNew;
         real c1 = 2 * u(I4) * ret(0) + 2 * u(0) * ret(I4) - 2 * u(Seq123).dot(ret(Seq123)) - 2 * ret(0) * newrhoEinteralNew;
@@ -779,22 +781,56 @@ namespace DNDS::Euler::Gas
         // if (c2 < 0)
         //     DNDS_assert(alphaR < 1);
         real alpha;
-        if (std::abs(c2) < 1e-5 * c0)
-            alpha = std::min(-c0 / c1, 1.);
+        if (std::abs(c2) < 1e-10 * c0)
+        {
+            if (std::abs(c1) < 1e-10 * c0)
+            {
+                alpha = 0;
+            }
+            else
+            {
+                alpha = std::min(-c0 / c1, 1.);
+            }
+        }
         else
+        {
             alpha = std::min((c2 > 0 ? alphaL : alphaL), 1.);
+        }
         alpha = std::max(0., alpha);
+        alpha *= (1 - 1e-5);
+        if(alpha < smallReal)
+            alpha = 0;
 
         ret *= alpha;
 
-        real decay = 1 - 1e-1;
-        for (int iter = 0; iter < 1000; iter++)
+        // Eigen::Vector<real, nVars_Fixed> uNew = u + ret;
+        // real eNew = uNew(I4) - 0.5 * uNew(Seq123).squaredNorm() / uNew(0);
+
+        real decay = 1 - 1e-2;
+        int iter;
+        for (iter = 0; iter < 1000; iter++)
         {
             real ek = 0.5 * (u(Seq123) + ret(Seq123)).squaredNorm() / (u(0) + ret(0) + verySmallReal);
-            if (ret(I4) + u(I4) - ek < 0)
+            if (ret(I4) + u(I4) - ek < newrhoEinteralNew)
+            {
+                
                 ret *= decay, alpha *= decay;
+            }
             else
                 break;
+        }
+        if(iter >= 1000)
+        {
+            real ek = 0.5 * (u(Seq123) + ret(Seq123)).squaredNorm() / (u(0) + ret(0) + verySmallReal);
+            {
+                std::cout << std::scientific << std::setprecision(5);
+                std::cout << fmt::format("alphas: {}, {}, {}\n", alpha, alphaL, alphaR);
+                std::cout << fmt::format("ABC: {}, {}, {}\n", c2, c1, c0);
+                std::cout << u.transpose() << std::endl;
+                std::cout << uInc.transpose() << std::endl;
+                std::cout << fmt::format("eks: {} {}\n", ret(I4) + u(I4) - ek, newrhoEinteralNew);
+                DNDS_assert(false);
+            }
         }
         // std::cout << fmt::format("{} {} {} {} {}", c0, c1, c2, alphaL, alphaR) << std::endl;
 

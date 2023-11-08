@@ -19,6 +19,7 @@
         "nConsoleCheck": 1,
         "nConsoleCheckInternal": 1,
         "consoleOutputMode": 0,
+        "consoleOutputEveryFix": 1,
         "nDataOutC": 1,
         "nDataOut": 100,
         "nDataOutCInternal": 100,

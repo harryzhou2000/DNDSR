@@ -120,7 +120,9 @@ namespace DNDS::CFV
 
         void ConstructMetrics();
 
-        void ConstructBaseAndWeight(const std::function<real(Geom::t_index)> &id2faceDircWeight = [](Geom::t_index id)
+        using tFGetBoundaryWeight = std::function<real(Geom::t_index, int)>;
+
+        void ConstructBaseAndWeight(const tFGetBoundaryWeight &id2faceDircWeight = [](Geom::t_index id, int iOrder)
                                     { return 1.0; });
 
         void ConstructRecCoeff();

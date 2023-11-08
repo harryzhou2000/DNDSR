@@ -88,6 +88,7 @@ must use residual instead of uinc for convergence monitoring!!!
 
 237m14.899s for hm3 run on HZAU
 121m49.267s for ESDIRK4
+90m18.275s for BDF2 (3x)
 
 
 

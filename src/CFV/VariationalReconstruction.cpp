@@ -245,7 +245,7 @@ namespace DNDS::CFV
     template <int dim>
     void
     VariationalReconstruction<dim>::
-        ConstructBaseAndWeight(const std::function<real(Geom::t_index)> &id2faceDircWeight)
+        ConstructBaseAndWeight(const tFGetBoundaryWeight &id2faceDircWeight)
     {
         using namespace Geom;
         using namespace Geom::Elem;
@@ -556,7 +556,10 @@ namespace DNDS::CFV
             }
 
             if (FaceIDIsExternalBC(mesh->GetFaceZone(iFace)))
-                wd(Eigen::seq(1, Eigen::last)).setZero(), wd *= id2faceDircWeight(mesh->GetFaceZone(iFace)); // customizable
+            {
+                for (int iOrder = 0; iOrder <= settings.maxOrder; iOrder++)
+                    wd(iOrder) *= id2faceDircWeight(mesh->GetFaceZone(iFace), iOrder);
+            }
             faceWeight[iFace] = wd * wg;
         }
 
@@ -576,10 +579,10 @@ namespace DNDS::CFV
 
     template void
     VariationalReconstruction<2>::
-        ConstructBaseAndWeight(const std::function<real(Geom::t_index)> &id2faceDircWeight);
+        ConstructBaseAndWeight(const tFGetBoundaryWeight &id2faceDircWeight);
     template void
     VariationalReconstruction<3>::
-        ConstructBaseAndWeight(const std::function<real(Geom::t_index)> &id2faceDircWeight);
+        ConstructBaseAndWeight(const tFGetBoundaryWeight &id2faceDircWeight);
 
     template <int dim>
     void
@@ -670,7 +673,8 @@ namespace DNDS::CFV
                                 real dLR = (GetOtherCellBaryFromCell(iCell, iCellOther, iFace) - GetCellBary(iCell)).norm();
                                 inc -= normOut(Seq012) *
                                        (normOut(Seq012).transpose() *
-                                        this->GetIntPointDiffBaseValue(iCell, iFace, -1, iG, Seq123, dim + 1)) * dLR *
+                                        this->GetIntPointDiffBaseValue(iCell, iFace, -1, iG, Seq123, dim + 1)) *
+                                       dLR *
                                        settings.functionalSettings.greenGauss1Penalty;
                             }
 
@@ -744,7 +748,8 @@ namespace DNDS::CFV
                             real dLR = (GetOtherCellBaryFromCell(iCell, iCellOther, iFace) - GetCellBary(iCell)).norm();
                             inc += normOut(Seq012) *
                                    (normOut(Seq012).transpose() *
-                                    this->GetIntPointDiffBaseValue(iCellOther, iFace, 1 - if2c, iG, Seq123, dim + 1)) * dLR *
+                                    this->GetIntPointDiffBaseValue(iCellOther, iFace, 1 - if2c, iG, Seq123, dim + 1)) *
+                                   dLR *
                                    settings.functionalSettings.greenGauss1Penalty;
                             inc *= this->GetFaceJacobiDet(iFace, iG);
                         });

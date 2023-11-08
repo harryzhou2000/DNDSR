@@ -148,7 +148,7 @@ namespace DNDS::Euler
                     nConsoleCheckInternal,
                     consoleOutputMode,
                     consoleOutputEveryFix,
-                        nDataOut,
+                    nDataOut,
                     nDataOutC,
                     nDataOutInternal,
                     nDataOutCInternal,
@@ -521,12 +521,27 @@ namespace DNDS::Euler
                 reader->coordSerialOutTrans.pullOnce();
             vfv->ConstructMetrics();
             vfv->ConstructBaseAndWeight(
-                [&](Geom::t_index id) -> real
+                [&](Geom::t_index id, int iOrder) -> real
                 {
                     auto type = BCHandler.GetTypeFromID(id);
-                    if (type == BCFar || type == BCSpecial || type == BCOut)
-                        return 0; // far weight
-                    return 1;     // wall weight
+                    if (type == BCSpecial || type == BCOut)
+                        return 0;
+                    if (type == BCFar)
+                    {
+                        // use Dirichlet type
+                        if (iOrder > 0)
+                            return 0;
+                        return 1;
+                    }
+                    if (type == BCWallInvis)
+                    {
+                        // suppress higher order
+                        return 1;
+                    }
+                    // others: use Dirichlet type
+                    if (iOrder > 0)
+                        return 0;
+                    return 1;
                 });
             vfv->ConstructRecCoeff();
 
