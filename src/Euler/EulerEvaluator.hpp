@@ -363,6 +363,7 @@ namespace DNDS::Euler
             ArrayDOFV<nVars_Fixed> &rhs,
             ArrayDOFV<nVars_Fixed> &u,
             ArrayDOFV<nVars_Fixed> &uInc,
+            ArrayDOFV<nVars_Fixed> &uIncNew,
             ArrayDOFV<nVars_Fixed> &JDiag,
             bool forward, TU &sumInc);
 
@@ -406,7 +407,8 @@ namespace DNDS::Euler
             ArrayRECV<nVars_Fixed> &uRec,
             ArrayDOFV<1> &uRecBeta,
             ArrayDOFV<nVars_Fixed> &res,
-            ArrayDOFV<1> &cellRHSAlpha, index &nLim, real &alphaMin);
+            ArrayDOFV<1> &cellRHSAlpha, index &nLim, real &alphaMin,
+            int flag = 0);
 
         /**
          * @param res is incremental residual fixed previously

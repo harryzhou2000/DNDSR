@@ -320,7 +320,7 @@ namespace DNDS::Euler
                 auto fML = [&](const auto &UL, const auto &UR, const auto &n) -> auto
                 {
                     PerformanceTimer::Instance().StartTimer(PerformanceTimer::LimiterA);
-                    Eigen::Vector<real, I4 + 1> UC = (UL + UR)(Seq01234) * 0.5;
+                    Eigen::Vector<real, I4 + 1> UC = (UL + UR)(Seq01234)*0.5;
                     Eigen::Matrix<real, dim, dim> normBase = Geom::NormBuildLocalBaseV<dim>(n(Seq012));
                     UC(Seq123) = normBase.transpose() * UC(Seq123);
 
@@ -337,7 +337,7 @@ namespace DNDS::Euler
                 auto fMR = [&](const auto &UL, const auto &UR, const auto &n) -> auto
                 {
                     PerformanceTimer::Instance().StartTimer(PerformanceTimer::LimiterA);
-                    Eigen::Vector<real, I4 + 1> UC = (UL + UR)(Seq01234) * 0.5;
+                    Eigen::Vector<real, I4 + 1> UC = (UL + UR)(Seq01234)*0.5;
                     Eigen::Matrix<real, dim, dim> normBase = Geom::NormBuildLocalBaseV<dim>(n(Seq012));
                     UC(Seq123) = normBase.transpose() * UC(Seq123);
 
@@ -502,19 +502,19 @@ namespace DNDS::Euler
 
             {
                 // ! experimental: bad now
-                // rhsTemp = crhs;
-                // rhsTemp *= dTau;
-                // index nLimFRes = 0;
-                // real alphaMinFRes = 1;
-                // eval.EvaluateCellRHSAlpha(cx, uRecC, betaPPC, rhsTemp, alphaPP_tmp, nLimFRes, alphaMinFRes);
-                // if (nLimFRes)
-                //     if (mpi.rank == 0)
-                //     {
-                //         std::cout << std::scientific << std::setw(3);
-                //         std::cout << "PPFResLimiter: nLimFRes[" << nLimFRes << "] minAlpha [" << alphaMinFRes << "]" << std::endl;
-                //     }
+                rhsTemp = crhs;
+                rhsTemp *= dTau;
+                index nLimFRes = 0;
+                real alphaMinFRes = 1;
+                eval.EvaluateCellRHSAlpha(cx, uRecC, betaPPC, rhsTemp, alphaPP_tmp, nLimFRes, alphaMinFRes, 1);
+                if (nLimFRes)
+                    if (mpi.rank == 0)
+                    {
+                        std::cout << std::scientific << std::setw(3);
+                        std::cout << "PPFResLimiter: nLimFRes[" << nLimFRes << "] minAlpha [" << alphaMinFRes << "]" << std::endl;
+                    }
 
-                // crhs *= alphaPP_tmp;
+                crhs *= alphaPP_tmp;
             }
 
             typename TVFV::element_type::template TFBoundary<nVars_Fixed>
@@ -565,10 +565,15 @@ namespace DNDS::Euler
                 }
                 else
                 {
-                    eval.UpdateSGS(alphaDiag, crhs, cx, cxInc, JDC, true, sgsRes);
+                    bool useJacobi = config.linearSolverControl.jacobiCode == 0;
+                    eval.UpdateSGS(alphaDiag, crhs, cx, cxInc, useJacobi ? uTemp : cxInc, JDC, true, sgsRes);
+                    if (useJacobi)
+                        cxInc = uTemp;
                     cxInc.trans.startPersistentPull();
                     cxInc.trans.waitPersistentPull();
-                    eval.UpdateSGS(alphaDiag, crhs, cx, cxInc, JDC, false, sgsRes);
+                    eval.UpdateSGS(alphaDiag, crhs, cx, cxInc, useJacobi ? uTemp : cxInc, JDC, false, sgsRes);
+                    if (useJacobi)
+                        cxInc = uTemp;
                     cxInc.trans.startPersistentPull();
                     cxInc.trans.waitPersistentPull();
                     // eval.UpdateLUSGSForward(alphaDiag, crhs, cx, cxInc, JDC, cxInc);
@@ -600,10 +605,15 @@ namespace DNDS::Euler
                     }
                     else
                     {
-                        eval.UpdateSGS(alphaDiag, crhs, cx, cxInc, JDC, true, sgsRes);
+                        bool useJacobi = config.linearSolverControl.jacobiCode == 0;
+                        eval.UpdateSGS(alphaDiag, crhs, cx, cxInc, useJacobi ? uTemp : cxInc, JDC, true, sgsRes);
+                        if (useJacobi)
+                            cxInc = uTemp;
                         cxInc.trans.startPersistentPull();
                         cxInc.trans.waitPersistentPull();
-                        eval.UpdateSGS(alphaDiag, crhs, cx, cxInc, JDC, false, sgsRes);
+                        eval.UpdateSGS(alphaDiag, crhs, cx, cxInc, useJacobi ? uTemp : cxInc, JDC, false, sgsRes);
+                        if (useJacobi)
+                            cxInc = uTemp;
                         cxInc.trans.startPersistentPull();
                         cxInc.trans.waitPersistentPull();
                     }
@@ -639,10 +649,15 @@ namespace DNDS::Euler
                         MLx.trans.waitPersistentPull();
                         for (int i = 0; i < config.linearSolverControl.sgsIter; i++)
                         {
-                            eval.UpdateSGS(alphaDiag, crhs, cx, cxInc, JDC, true, sgsRes);
+                            bool useJacobi = config.linearSolverControl.jacobiCode == 0;
+                            eval.UpdateSGS(alphaDiag, crhs, cx, cxInc, useJacobi ? uTemp : cxInc, JDC, true, sgsRes);
+                            if (useJacobi)
+                                cxInc = uTemp;
                             cxInc.trans.startPersistentPull();
                             cxInc.trans.waitPersistentPull();
-                            eval.UpdateSGS(alphaDiag, crhs, cx, cxInc, JDC, false, sgsRes);
+                            eval.UpdateSGS(alphaDiag, crhs, cx, cxInc, useJacobi ? uTemp : cxInc, JDC, false, sgsRes);
+                            if (useJacobi)
+                                cxInc = uTemp;
                             cxInc.trans.startPersistentPull();
                             cxInc.trans.waitPersistentPull();
                         }
@@ -817,7 +832,7 @@ namespace DNDS::Euler
             renewRhsIncPart(); // un-fixed now
             // rhsIncPart.trans.startPersistentPull();
             // rhsIncPart.trans.waitPersistentPull(); //seems not needed
-            eval.EvaluateCellRHSAlpha(xPrev, uRecC, betaPPC, rhsIncPart, alphaPP_tmp, nLimAlpha, minAlpha);
+            eval.EvaluateCellRHSAlpha(xPrev, uRecC, betaPPC, rhsIncPart, alphaPP_tmp, nLimAlpha, minAlpha, 1);
             alphaPP_tmp.trans.startPersistentPull();
             alphaPP_tmp.trans.waitPersistentPull();
             if (nLimAlpha)
@@ -872,7 +887,7 @@ namespace DNDS::Euler
             auto &JSourceC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? JSource1 : JSource;
             nLimInc = 0;
             alphaMinInc = 1;
-            eval.EvaluateCellRHSAlpha(cx, uRecC, betaPPC, cxInc, alphaPP_tmp, nLimInc, alphaMinInc);
+            eval.EvaluateCellRHSAlpha(cx, uRecC, betaPPC, cxInc, alphaPP_tmp, nLimInc, alphaMinInc, 1);
             if (nLimInc)
                 if (mpi.rank == 0 && config.outputControl.consoleOutputEveryFix != 0)
                 {

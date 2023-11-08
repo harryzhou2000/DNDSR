@@ -10,7 +10,7 @@
         "odeSetting2": 1
     },
     "convergenceControl": {
-        "nTimeStepInternal": 100,
+        "nTimeStepInternal": 1000,
         "rhsThresholdInternal": 1e-4,
         "res_base": 0.0,
         "useVolWiseResidual": true
@@ -21,23 +21,23 @@
         "consoleOutputMode": 0,
         "consoleOutputEveryFix": 1,
         "nDataOutC": 1,
-        "nDataOut": 100,
+        "nDataOut": 1,
         "nDataOutCInternal": 100,
         "nDataOutInternal": 1000000000,
         "tDataOut": 3e+200
     },
     "implicitCFLControl": {
-        "CFL": 10,
+        "CFL": 0.01,
         "nForceLocalStartStep": 2147483647,
-        "nCFLRampStart": 2147483647,
-        "nCFLRampLength": 2147483647,
-        "CFLRampEnd": 0.0,
-        "useLocalDt": false
+        "nCFLRampStart": 0,
+        "nCFLRampLength": 20,
+        "CFLRampEnd": 10.0,
+        "useLocalDt": true
     },
     "dataIOControl": {
         "uniqueStamps": false,
         "meshRotZ": 0.0,
-        "meshFile": "../data/mesh/Unifrom_1DSedov5EM3.cgns",
+        "meshFile": "../data/mesh/Unifrom_1DSedov5EM3_Wall4L.cgns",
         "outPltName": "../data/outUnsteady/Unifrom_1DSedov5EM3",
         "outLogName": "../data/outUnsteady/Unifrom_1DSedov5EM3",
         "outPltMode": 0,
@@ -76,7 +76,7 @@
     "vfvSettings": {
         "maxOrder": 3,
         "intOrder": 3,
-        "cacheDiffBase": false,
+        "cacheDiffBase": true,
         "jacobiRelax": 1,
         "SORInstead": true,
         "smoothThreshold": 1e-3,
@@ -110,7 +110,7 @@
     "eulerSettings": {
         "ignoreSourceTerm": true,
         "useScalarJacobian": true,
-        "riemannSolverType": "HLLEP",
+        "riemannSolverType": "Roe_M2",
         "nCentralSmoothStep": 0,
         "constMassForce": [
             0.0,
@@ -137,7 +137,7 @@
                     0,
                     0,
                     0,
-                    1e-9
+                    1e-8
                 ]
             },
             {

@@ -40,6 +40,7 @@
             ArrayDOFV<nVars_Fixed> &rhs,                                                       \
             ArrayDOFV<nVars_Fixed> &u,                                                         \
             ArrayDOFV<nVars_Fixed> &uInc,                                                      \
+            ArrayDOFV<nVars_Fixed> &uIncNew,                                                   \
             ArrayDOFV<nVars_Fixed> &JDiag,                                                     \
             bool forward, TU &sumInc);                                                         \
         template void EulerEvaluator<model>::UpdateSGSWithRec(                                 \
@@ -55,7 +56,7 @@
         template void EulerEvaluator<model>::FixUMaxFilter(                                    \
             ArrayDOFV<nVars_Fixed> &u);                                                        \
                                                                                                \
-        template void EulerEvaluator<model>::EvaluateNorm(                                 \
+        template void EulerEvaluator<model>::EvaluateNorm(                                     \
             Eigen::Vector<real, -1> &res, ArrayDOFV<nVars_Fixed> &rhs, index P, bool volWise); \
                                                                                                \
         template void EulerEvaluator<model>::EvaluateURecBeta(                                 \
@@ -68,12 +69,13 @@
             ArrayRECV<nVars_Fixed> &uRec,                                                      \
             ArrayDOFV<1> &uRecBeta,                                                            \
             ArrayDOFV<nVars_Fixed> &rhs,                                                       \
-            ArrayDOFV<1> &cellRHSAlpha, index &nLim, real &alphaMin);                          \
+            ArrayDOFV<1> &cellRHSAlpha, index &nLim, real &alphaMin,                           \
+            int flag);                                                                         \
                                                                                                \
         template void EulerEvaluator<model>::EvaluateCellRHSAlphaExpansion(                    \
             ArrayDOFV<nVars_Fixed> &u,                                                         \
             ArrayRECV<nVars_Fixed> &uRec,                                                      \
             ArrayDOFV<1> &uRecBeta,                                                            \
             ArrayDOFV<nVars_Fixed> &res,                                                       \
-            ArrayDOFV<1> &cellRHSAlpha, index &nLim, real alphaMin);                          \
+            ArrayDOFV<1> &cellRHSAlpha, index &nLim, real alphaMin);                           \
     }

@@ -1,7 +1,7 @@
 {
     "timeMarchControl": {
-        "dtImplicit": 1e-6,
-        "nTimeStep": 1000,
+        "dtImplicit": 10e-6,
+        "nTimeStep": 100,
         "steadyQuit": false,
         "useImplicitPP": true,
         "odeCode": 1,
@@ -31,15 +31,15 @@
         "nForceLocalStartStep": 2147483647,
         "nCFLRampStart": 0,
         "nCFLRampLength": 20,
-        "CFLRampEnd": 2.0,
+        "CFLRampEnd": 10.0,
         "useLocalDt": true
     },
     "dataIOControl": {
         "uniqueStamps": false,
         "meshRotZ": 0.0,
-        "meshFile": "../data/mesh/Unifrom_2DSedov5EM3_WallCent.cgns",
-        "outPltName": "../data/outUnsteady/Unifrom_2DSedov5EM3",
-        "outLogName": "../data/outUnsteady/Unifrom_2DSedov5EM3",
+        "meshFile": "../data/mesh/Unifrom_2DSedov5EM3_Wall.cgns",
+        "outPltName": "../data/outUnsteady/Unifrom_1DSedov5EM3",
+        "outLogName": "../data/outUnsteady/Unifrom_1DSedov5EM3",
         "outPltMode": 0,
         "readMeshMode": 0,
         "outPltTecplotFormat": true,
@@ -77,10 +77,10 @@
         "maxOrder": 3,
         "intOrder": 3,
         "cacheDiffBase": true,
-        "jacobiRelax": 0.8,
-        "SORInstead": false,
+        "jacobiRelax": 1,
+        "SORInstead": true,
         "smoothThreshold": 1e-3,
-        "WBAP_nStd": 3.0,
+        "WBAP_nStd": 10.0,
         "normWBAP": false,
         "subs2ndOrder": 1,
         "baseSettings": {
@@ -89,7 +89,6 @@
         },
         "functionalSettings": {
             "scaleType": "BaryDiff",
-            "scaleMultiplier": 0.5,
             // "dirWeightScheme": "HQM_OPT"
             // "useAnisotropicFunctional": true,
             // "scaleMultiplier": 3.464101615137754,

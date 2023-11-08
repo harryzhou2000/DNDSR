@@ -273,6 +273,7 @@ namespace DNDS::Euler
 
             struct LinearSolverControl
             {
+                int jacobiCode = 1; // 0 for jacobi, 1 for gs
                 int sgsIter = 0;
                 int sgsWithRec = 0;
                 int gmresCode = 0; // 0 for lusgs, 1 for gmres, 2 for lusgs started gmres
@@ -282,7 +283,8 @@ namespace DNDS::Euler
                 int nGmresConsoleCheck = 100;
                 bool initWithLastURecInc = false;
                 DNDS_NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_ORDERED_JSON(
-                    LinearSolverControl,
+                    LinearSolverControl, 
+                    jacobiCode,
                     sgsIter, sgsWithRec, gmresCode,
                     nGmresSpace, nGmresIter, initWithLastURecInc)
             } linearSolverControl;
@@ -535,7 +537,11 @@ namespace DNDS::Euler
                     }
                     if (type == BCWallInvis)
                     {
-                        // suppress higher order
+                        // // suppress higher order
+                        // return 1;
+                        // use Dirichlet type
+                        if (iOrder > 0)
+                            return 0;
                         return 1;
                     }
                     // others: use Dirichlet type

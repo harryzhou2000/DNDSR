@@ -274,6 +274,7 @@ namespace DNDS::Euler
         ArrayDOFV<nVars_Fixed> &rhs,
         ArrayDOFV<nVars_Fixed> &u,
         ArrayDOFV<nVars_Fixed> &uInc,
+        ArrayDOFV<nVars_Fixed> &uIncNew,
         ArrayDOFV<nVars_Fixed> &JDiag,
         bool forward, TU &sumInc)
     {
@@ -330,7 +331,7 @@ namespace DNDS::Euler
                     }
                 }
             }
-            auto uIncNewI = uInc[iCell];
+            auto uIncNewI = uIncNew[iCell];
             TU uIncOld = uIncNewI;
 
             uIncNewI.array() = JDiag[iCell].array().inverse() * uIncNewBuf.array();
@@ -641,7 +642,8 @@ namespace DNDS::Euler
         ArrayRECV<nVars_Fixed> &uRec,
         ArrayDOFV<1> &uRecBeta,
         ArrayDOFV<nVars_Fixed> &res,
-        ArrayDOFV<1> &cellRHSAlpha, index &nLim, real &alphaMin)
+        ArrayDOFV<1> &cellRHSAlpha, index &nLim, real &alphaMin,
+        int flag)
     {
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
         real rhoEps = smallReal * settings.refUPrim(0);
@@ -703,15 +705,17 @@ namespace DNDS::Euler
             cellRHSAlpha[iCell](0) = alphaRho * alphaP;
             // cellRHSAlpha[iCell](0) = std::min(alphaRho, alphaP);
             if (cellRHSAlpha[iCell](0) < 1)
-                nLimLocal++, alphaMinLocal = std::min(alphaMinLocal, cellRHSAlpha[iCell](0));
+                nLimLocal++, alphaMinLocal = std::min(alphaMinLocal, cellRHSAlpha[iCell](0)),
+                             cellRHSAlpha[iCell] *= (0.99); //! for safety
         }
         MPI::Allreduce(&nLimLocal, &nLim, 1, DNDS_MPI_INDEX, MPI_SUM, u.father->getMPI().comm);
         MPI::Allreduce(&alphaMinLocal, &alphaMin, 1, DNDS_MPI_REAL, MPI_MIN, u.father->getMPI().comm);
-        for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
-        {
-            if (cellRHSAlpha[iCell](0) < 1)
-                cellRHSAlpha[iCell](0) = alphaMin * (0.99); //! for safety
-        }
+        if (flag == 0)
+            for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
+            {
+                if (cellRHSAlpha[iCell](0) < 1)
+                    cellRHSAlpha[iCell](0) = alphaMin;
+            }
     }
 
     template <EulerModel model>
