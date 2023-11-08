@@ -617,11 +617,9 @@ namespace DNDS::CFV
                     // real normScale = (coordTrans * norm).norm();
                     // coordTrans(0, Eigen::all) = norm.transpose() * faceL;
                     // coordTrans({1, 2}, Eigen::all).setZero();
-                }
-                {
+                } {
                     // coordTrans = Geom::NormBuildLocalBaseV<3>(norm).transpose() * faceL;
-                }
-                {
+                } {
                     // coordTrans *=  (2 * std::sqrt(3));
                     // tPoint lengths = coordTrans.rowwise().norm();
                     // // tPoint lengthsNew = lengths.array() * faceL / (faceL + lengths.array());
@@ -634,8 +632,7 @@ namespace DNDS::CFV
                     // //     std::cout << lengths << std::endl;
                     // //     std::cout << faceL << std::endl;
                     // // }
-                }
-                {
+                } {
                     // tPoint norm = this->GetFaceNorm(iFace, -1);
                     // auto getCellFaceMajorPNorm = [&](index iCell) -> tPoint
                     // {
@@ -660,8 +657,7 @@ namespace DNDS::CFV
 
                     // coordTrans(0, Eigen::all) = norm.transpose() * faceL;
                     // coordTrans({1, 2}, Eigen::all).setZero();
-                }
-                {
+                } {
                     tPoint norm = this->GetFaceNorm(iFace, -1);
                     real areaL = this->GetFaceArea(iFace);
                     if constexpr (dim == 3)
@@ -1111,7 +1107,7 @@ namespace DNDS::CFV
             static const int maxNDiff = dim == 2 ? 10 : 20;
             static const int nVars_Fixed = TEval::nVars_Fixed;
 
-            static const int maxNeighbour = 6;
+            static const int maxNeighbour = 7;
 
             for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
             {
@@ -1126,7 +1122,7 @@ namespace DNDS::CFV
                 std::vector<Eigen::Matrix<real, Eigen::Dynamic, nVars_Fixed, 0, maxRecDOF>> uFaces(c2f.size());
                 for (int ic2f = 0; ic2f < c2f.size(); ic2f++)
                 {
-                    // * safty initialization
+                    // * safety initialization
                     index iFace = c2f[ic2f];
                     index iCellOther = this->CellFaceOther(iCell, iFace);
                     if (iCellOther != UnInitIndex)
@@ -1143,40 +1139,32 @@ namespace DNDS::CFV
                         switch (cPOrder)
                         {
                         case 3:
-                            LimStart = 5;
-                            LimEnd = 8;
+                            LimStart = 5, LimEnd = 8;
                             break;
                         case 2:
-                            LimStart = 2;
-                            LimEnd = 4;
+                            LimStart = 2, LimEnd = 4;
                             break;
                         case 1:
-                            LimStart = 0;
-                            LimEnd = 1;
+                            LimStart = 0, LimEnd = 1;
                             break;
                         default:
-                            LimStart = -200;
-                            LimEnd = -100;
+                            LimStart = -200, LimEnd = -100;
                             DNDS_assert(false);
                         }
                     else
                         switch (cPOrder)
                         {
                         case 3:
-                            LimStart = 9;
-                            LimEnd = 18;
+                            LimStart = 9, LimEnd = 18;
                             break;
                         case 2:
-                            LimStart = 3;
-                            LimEnd = 8;
+                            LimStart = 3, LimEnd = 8;
                             break;
                         case 1:
-                            LimStart = 0;
-                            LimEnd = 2;
+                            LimStart = 0, LimEnd = 2;
                             break;
                         default:
-                            LimStart = -200;
-                            LimEnd = -100;
+                            LimStart = -200, LimEnd = -100;
                             DNDS_assert(false);
                         }
 
@@ -1280,6 +1268,200 @@ namespace DNDS::CFV
             }
             uRecNew.trans.startPersistentPull();
             uRecNew.trans.waitPersistentPull();
+            if (!putIntoNew)
+            {
+                for (index iCell = 0; iCell < mesh->NumCellProc(); iCell++) // mind the edge
+                    uRec[iCell] = uRecNew[iCell];
+            }
+        }
+
+        /**
+         * @brief FM(uLeft,uRight,norm) gives vsize * vsize mat of Left Eigen Vectors
+         *
+         */
+        template <class TEval, typename TFM, typename TFMI, class TUREC, class TUDOF>
+        void DoLimiterWBAP_3(
+            const TEval &eval,
+            TUDOF &u,
+            TUREC &uRec,
+            TUREC &uRecNew,
+            TUREC &uRecBuf,
+            tScalarPair &si,
+            bool ifAll,
+            TFM &&FM, TFMI &&FMI,
+            bool putIntoNew = false)
+        {
+            using namespace Geom;
+
+            static const int maxRecDOFBatch = dim == 2 ? 4 : 10;
+            static const int maxRecDOF = dim == 2 ? 9 : 19;
+            static const int maxNDiff = dim == 2 ? 10 : 20;
+            static const int nVars_Fixed = TEval::nVars_Fixed;
+
+            static const int maxNeighbour = 7;
+
+            int cPOrder = settings.maxOrder;
+            for (index iCell = 0; iCell < mesh->NumCellProc(); iCell++) // mind the edge
+                uRecNew[iCell] = uRec[iCell];
+            for (; cPOrder >= 1; cPOrder--)
+            {
+                int LimStart, LimEnd; // End is inclusive
+                if constexpr (dim == 2)
+                    switch (cPOrder)
+                    {
+                    case 3:
+                        LimStart = 5, LimEnd = 8;
+                        break;
+                    case 2:
+                        LimStart = 2, LimEnd = 4;
+                        break;
+                    case 1:
+                        LimStart = 0, LimEnd = 1;
+                        break;
+                    default:
+                        LimStart = -200, LimEnd = -100;
+                        DNDS_assert(false);
+                    }
+                else
+                    switch (cPOrder)
+                    {
+                    case 3:
+                        LimStart = 9, LimEnd = 18;
+                        break;
+                    case 2:
+                        LimStart = 3, LimEnd = 8;
+                        break;
+                    case 1:
+                        LimStart = 0, LimEnd = 2;
+                        break;
+                    default:
+                        LimStart = -200, LimEnd = -100;
+                        DNDS_assert(false);
+                    }
+                for (index iCell = 0; iCell < mesh->NumCellProc(); iCell++) // mind the edge
+                    uRecBuf[iCell] = uRecNew[iCell];
+                for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
+                {
+                    if ((!ifAll) &&
+                        si(iCell, 0) < settings.smoothThreshold)
+                    {
+                        // uRecNew[iCell] = uRecBuf[iCell]; //! no copy for 3wbap!
+                        continue;
+                    }
+                    index NRecDOF = cellAtr[iCell].NDOF - 1;
+                    auto c2f = mesh->cell2face[iCell];
+                    // std::vector<Eigen::Matrix<real, Eigen::Dynamic, nVars_Fixed, 0, maxRecDOF>> uFaces(c2f.size());
+                    for (int ic2f = 0; ic2f < c2f.size(); ic2f++)
+                    {
+                        // * safety initialization
+                        index iFace = c2f[ic2f];
+                        index iCellOther = this->CellFaceOther(iCell, iFace);
+                        if (iCellOther != UnInitIndex)
+                        {
+                            // uFaces[ic2f].resizeLike(uRec[iCellOther]);
+                        }
+                    }
+
+                    std::vector<Eigen::Array<real, Eigen::Dynamic, nVars_Fixed, 0, maxRecDOFBatch>>
+                        uOthers;
+                    Eigen::Array<real, Eigen::Dynamic, nVars_Fixed, 0, maxRecDOFBatch>
+                        uC = uRecBuf[iCell](
+                            Eigen::seq(
+                                LimStart,
+                                LimEnd),
+                            Eigen::all);
+                    uOthers.reserve(maxNeighbour);
+                    uOthers.push_back(uC); // using uC centered
+                    // InsertCheck(mpi, "HereAAC");
+                    for (int ic2f = 0; ic2f < c2f.size(); ic2f++)
+                    {
+                        index iFace = c2f[ic2f];
+                        auto f2c = mesh->face2cell[iFace];
+                        index iCellOther = this->CellFaceOther(iCell, iFace);
+                        index iCellAtFace = f2c[0] == iCell ? 0 : 1;
+
+                        if (iCellOther != UnInitIndex)
+                        {
+                            index NRecDOFOther = cellAtr[iCellOther].NDOF - 1;
+                            index NRecDOFLim = std::min(NRecDOFOther, NRecDOF);
+                            if (NRecDOFLim < (LimEnd + 1))
+                                continue; // reserved for p-adaption
+                            // if (!(ifUseLimiter[iCell] & 0x0000000FU))
+                            //     continue;
+
+                            tPoint unitNorm = faceMeanNorm[iFace];
+
+                            const auto &matrixSecondary =
+                                this->GetMatrixSecondary(iCell, iFace, -1);
+
+                            const auto &matrixSecondaryOther =
+                                this->GetMatrixSecondary(iCellOther, iFace, -1);
+
+                            // std::cout << "A"<<std::endl;
+                            Eigen::Matrix<real, Eigen::Dynamic, nVars_Fixed, 0, maxRecDOF>
+                                uOtherOther = uRecBuf[iCellOther](Eigen::seq(0, NRecDOFLim - 1), Eigen::all);
+
+                            // if (LimEnd < uOtherOther.rows() - 1) // successive SR
+                            //     uOtherOther(Eigen::seq(LimEnd + 1, NRecDOFLim - 1), Eigen::all) =
+                            //         matrixSecondaryOther(Eigen::seq(LimEnd + 1, NRecDOFLim - 1), Eigen::seq(LimEnd + 1, NRecDOFLim - 1)) *
+                            //         uFaces[ic2f](Eigen::seq(LimEnd + 1, NRecDOFLim - 1), Eigen::all);
+
+                            // std::cout << "B" << std::endl;
+                            Eigen::Matrix<real, Eigen::Dynamic, nVars_Fixed, 0, maxRecDOFBatch>
+                                uOtherIn =
+                                    matrixSecondary(Eigen::seq(LimStart, LimEnd), Eigen::all) * uOtherOther;
+
+                            Eigen::Matrix<real, Eigen::Dynamic, nVars_Fixed, 0, maxRecDOFBatch>
+                                uThisIn =
+                                    uC.matrix();
+
+                            // 2 char space :
+                            auto uR = iCellAtFace ? u[iCell] : u[iCellOther];
+                            auto uL = iCellAtFace ? u[iCellOther] : u[iCell];
+                            auto M = FM(uL, uR, unitNorm);
+
+                            uOtherIn = (M * uOtherIn.transpose()).transpose();
+                            uThisIn = (M * uThisIn.transpose()).transpose();
+
+                            Eigen::Array<real, Eigen::Dynamic, nVars_Fixed, 0, maxRecDOFBatch>
+                                uLimOutArray;
+
+                            real n = settings.WBAP_nStd;
+                            if (settings.normWBAP)
+                                FWBAP_L2_Biway_Polynomial2D(uThisIn.array(), uOtherIn.array(), uLimOutArray, 1);
+                            else
+                                FWBAP_L2_Biway(uThisIn.array(), uOtherIn.array(), uLimOutArray, 1);
+
+                            // to phys space
+                            auto MI = FMI(uL, uR, unitNorm);
+                            uLimOutArray = (MI * uLimOutArray.matrix().transpose()).transpose().array();
+
+                            // uFaces[ic2f](Eigen::seq(LimStart, LimEnd), Eigen::all) = uLimOutArray.matrix();
+                            uOthers.push_back(uLimOutArray);
+                        }
+                        else
+                        {
+                        }
+                    }
+                    Eigen::Array<real, Eigen::Dynamic, nVars_Fixed, 0, maxRecDOFBatch>
+                        uLimOutArray;
+
+                    real n = settings.WBAP_nStd;
+                    if (settings.normWBAP)
+                        FWBAP_L2_Multiway_Polynomial2D(uOthers, uOthers.size(), uLimOutArray, n);
+
+                    else
+                        FWBAP_L2_Multiway(uOthers, uOthers.size(), uLimOutArray, n);
+
+                    uRecNew[iCell](
+                        Eigen::seq(
+                            LimStart,
+                            LimEnd),
+                        Eigen::all) = uLimOutArray.matrix();
+                }
+                uRecNew.trans.startPersistentPull();
+                uRecNew.trans.waitPersistentPull();
+            }
             if (!putIntoNew)
             {
                 for (index iCell = 0; iCell < mesh->NumCellProc(); iCell++) // mind the edge

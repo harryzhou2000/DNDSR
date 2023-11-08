@@ -1,7 +1,7 @@
 {
     "timeMarchControl": {
-        "dtImplicit": 1e-6,
-        "nTimeStep": 1000,
+        "dtImplicit": 10e-6,
+        "nTimeStep": 100,
         "steadyQuit": false,
         "useImplicitPP": true,
         "odeCode": 1,
@@ -10,7 +10,7 @@
         "odeSetting2": 1
     },
     "convergenceControl": {
-        "nTimeStepInternal": 100,
+        "nTimeStepInternal": 200,
         "rhsThresholdInternal": 1e-4,
         "res_base": 0.0,
         "useVolWiseResidual": true
@@ -69,7 +69,7 @@
     "limiterControl": {
         "useLimiter": true,
         "smoothIndicatorProcedure": 0,
-        "limiterProcedure": 1, //1 == CWBAP
+        "limiterProcedure": 0, //1 == CWBAP
         "nPartialLimiterStart": 1000000,
         "nPartialLimiterStartLocal": 1000000
     },
@@ -77,7 +77,7 @@
         "maxOrder": 3,
         "intOrder": 3,
         "cacheDiffBase": true,
-        "jacobiRelax": 0.8,
+        "jacobiRelax": 0.5,
         "SORInstead": false,
         "smoothThreshold": 1e-3,
         "WBAP_nStd": 3.0,
@@ -89,14 +89,15 @@
         },
         "functionalSettings": {
             "scaleType": "BaryDiff",
-            "scaleMultiplier": 0.5,
-            // "dirWeightScheme": "HQM_OPT"
+            "scaleMultiplier": 1,
+            // "dirWeightScheme": "HQM_OPT",
             // "useAnisotropicFunctional": true,
             // "scaleMultiplier": 3.464101615137754,
             "_tail": 0
         }
     },
     "linearSolverControl": {
+        "jacobiCode": 0,
         "sgsIter": 0,
         "sgsWithRec": 0,
         "nSgsConsoleCheck": 100,

@@ -601,7 +601,7 @@ namespace DNDS::Euler
             if (uRecBeta[iCell](0) < 1)
             {
                 nLimLocal++;
-                uRecBeta[iCell](0) *= 0.99; //! for safety
+                uRecBeta[iCell](0) *= 0.5; //! for safety
                 minBetaLocal = std::min(uRecBeta[iCell](0), minBetaLocal);
             }
             if (uRecBeta[iCell](0) < 0)

@@ -399,6 +399,16 @@ namespace DNDS::Euler
                         ifUseLimiter,
                         iter < config.limiterControl.nPartialLimiterStartLocal && step < config.limiterControl.nPartialLimiterStart,
                         fML, fMR, true);
+                else if (config.limiterControl.limiterProcedure == 0)
+                    vfv->DoLimiterWBAP_3(
+                        eval,
+                        (cx),
+                        (uRecC),
+                        (uRecNew),
+                        (uRecNew1),
+                        ifUseLimiter,
+                        iter < config.limiterControl.nPartialLimiterStartLocal && step < config.limiterControl.nPartialLimiterStart,
+                        fML, fMR, true);
                 else
                 {
                     DNDS_assert(false);
@@ -832,7 +842,7 @@ namespace DNDS::Euler
             renewRhsIncPart(); // un-fixed now
             // rhsIncPart.trans.startPersistentPull();
             // rhsIncPart.trans.waitPersistentPull(); //seems not needed
-            eval.EvaluateCellRHSAlpha(xPrev, uRecC, betaPPC, rhsIncPart, alphaPP_tmp, nLimAlpha, minAlpha, 1);
+            eval.EvaluateCellRHSAlpha(xPrev, uRecC, betaPPC, rhsIncPart, alphaPP_tmp, nLimAlpha, minAlpha, 0);
             alphaPP_tmp.trans.startPersistentPull();
             alphaPP_tmp.trans.waitPersistentPull();
             if (nLimAlpha)

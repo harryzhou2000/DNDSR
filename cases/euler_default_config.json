@@ -97,6 +97,7 @@
         "nPartialLimiterStartLocal": 0
     },
     "linearSolverControl": {
+        "jacobiCode": 1,
         "sgsIter": 0,
         "sgsWithRec": 0,
         "gmresCode": 0,
