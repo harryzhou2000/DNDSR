@@ -589,19 +589,20 @@ namespace DNDS::Euler
                     if (pS(iG) < 2 * pEps)
                     {
                         real thetaThis = Gas::IdealGasGetCompressionRatioPressure<dim, nVars_Fixed>(
-                            u[iCell], recInc(iG, Eigen::all).transpose(), 2 * pEps / (gamma - 1));
+                            u[iCell], recInc(iG, Eigen::all).transpose(), 1 * pEps / (gamma - 1));
                         thetaP = std::min(thetaP, thetaThis);
                     }
                 }
 
             uRecBeta[iCell](0) = theta1 * thetaP;
-            if (uRecBeta[iCell](0) < 1)
-                uRecBeta[iCell](0) *= 1 - 1e-8;
+            // if (uRecBeta[iCell](0) < 1)
+            //     uRecBeta[iCell](0) *= 1 - 1e-8;
             // uRecBeta[iCell](0) = std::min(theta1, thetaP);
             if (uRecBeta[iCell](0) < 1)
             {
                 nLimLocal++;
-                uRecBeta[iCell](0) *= 0.5; //! for safety
+                // uRecBeta[iCell](0) *= uRecBeta[iCell](0) < 0.99 ? 0. : 0.99; //! for safety
+                uRecBeta[iCell](0) *= std::pow(uRecBeta[iCell](0), 11) * 0.99;
                 minBetaLocal = std::min(uRecBeta[iCell](0), minBetaLocal);
             }
             if (uRecBeta[iCell](0) < 0)

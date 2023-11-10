@@ -331,8 +331,8 @@ namespace DNDS::Euler
                     ret.setIdentity();
                     ret(Seq01234, Seq01234) = M;
                     PerformanceTimer::Instance().StopTimer(PerformanceTimer::LimiterA);
-                    // return ret;
-                    return real(1);
+                    return ret;
+                    // return real(1);
                 };
                 auto fMR = [&](const auto &UL, const auto &UR, const auto &n) -> auto
                 {
@@ -349,8 +349,8 @@ namespace DNDS::Euler
                     ret(Seq01234, Seq01234) = M;
 
                     PerformanceTimer::Instance().StopTimer(PerformanceTimer::LimiterA);
-                    // return ret;
-                    return real(1);
+                    return ret;
+                    // return real(1);
                 };
                 if (config.limiterControl.smoothIndicatorProcedure == 0)
                     vfv->DoCalculateSmoothIndicator(

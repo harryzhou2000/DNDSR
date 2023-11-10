@@ -62,8 +62,16 @@ int main()
     a.setRandom();
 
     std::cout << a.determinant() << std::endl;
-    
+
+    Eigen::Matrix3d b;
+    b.setIdentity();
+    std::cout << b.array().sign() << std::endl;
+    for (int i = 0; i < b.size(); i++)
+        std::cout << b(i) << std::endl;
+
 
     
+
+
     return 0;
 }

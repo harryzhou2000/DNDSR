@@ -80,7 +80,7 @@
         "jacobiRelax": 0.5,
         "SORInstead": false,
         "smoothThreshold": 1e-3,
-        "WBAP_nStd": 3.0,
+        "WBAP_nStd": 10.0,
         "normWBAP": false,
         "subs2ndOrder": 1,
         "baseSettings": {

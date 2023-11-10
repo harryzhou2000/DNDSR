@@ -350,6 +350,7 @@ namespace DNDS::CFV
         uUp.resizeLike(uOthers[0]);
         uUp.setZero();
         Tout uDown = uUp; //* copy!
+        Tout uCent = uOthers[0];
         // Tout uMax = uDown + verySmallReal;
 
         // for (int iOther = 0; iOther < Nother; iOther++)
@@ -361,8 +362,9 @@ namespace DNDS::CFV
             Tout thetaInverse = uOthers[0] / (uOthers[iOther].abs() + verySmallReal_pDiP) * uOthers[iOther].sign();
             uDown += thetaInverse.square() * thetaInverse.square();
             uUp += thetaInverse.cube();
+            uCent *= uOthers[iOther].sign().abs();
         }
-        uOut = uOthers[0] * (uUp + n1) / (uDown + n1); // currently fast version
+        uOut = uCent * (uUp + n1) / (uDown + n1); // currently fast version
 
         // if (uOut.hasNaN())
         // {
@@ -413,6 +415,7 @@ namespace DNDS::CFV
     {
         // PerformanceTimer::Instance().StartTimer(PerformanceTimer::LimiterA);
         static const int p = 4;
+        static const real verySmallReal_pDiP = std::pow(verySmallReal, 1.0 / p);
         // // static const real n = 10.0;
         // static const real verySmallReal_pDiP = std::pow(verySmallReal, 1.0 / p);
         // auto uMax = u1.abs().max(u2.abs()) + verySmallReal_pDiP;
@@ -425,7 +428,15 @@ namespace DNDS::CFV
         // // std::cout << u2 << std::endl;
 
         ///////////
-        Tout frac = (u1 / (u2.abs() + 1e-12) * u2.sign());
+        Tout frac = (u1 / (u2.abs() + verySmallReal_pDiP) * u2.sign());
+
+        // for (index i = 0; i < frac.size(); i++)
+        // {
+        //     auto &v = frac(i);
+        //     if (v == 0.)
+        //         v = 1. / verySmallReal_pDiP;
+        // }
+
         // auto theta1 = frac.pow(p - 1);
         // auto theta2 = frac.pow(p);
 
@@ -433,6 +444,7 @@ namespace DNDS::CFV
         auto theta2 = frac.square() * frac.square();
 
         uOut = u1 * (n + theta1) / (n + theta2); // currently fast version
+        uOut *= u2.sign().abs();
         ///////////
         /************************/ //! safe version
         // uOut.resizeLike(u1);
