@@ -510,10 +510,12 @@ namespace DNDS::Euler
             auto &alphaPPC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? alphaPP1 : alphaPP;
             auto &betaPPC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? betaPP1 : betaPP;
 
+            if (config.timeMarchControl.useRHSfPP)
             {
-                // ! experimental: bad now
+                // ! experimental: bad now ?
                 rhsTemp = crhs;
                 rhsTemp *= dTau;
+                rhsTemp *= config.timeMarchControl.rhsfPPScale;
                 index nLimFRes = 0;
                 real alphaMinFRes = 1;
                 eval.EvaluateCellRHSAlpha(cx, uRecC, betaPPC, rhsTemp, alphaPP_tmp, nLimFRes, alphaMinFRes, 1);

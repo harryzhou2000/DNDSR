@@ -5,6 +5,8 @@
         "steadyQuit": false,
         "useRestart": false,
         "useImplicitPP": false,
+        "useRHSfPP": false,
+        "rhsfPPScale": 1.0,
         "odeCode": 0,
         "tEnd": 3e+200,
         "odeSetting1": 0.0,
@@ -97,6 +99,7 @@
         "nPartialLimiterStartLocal": 0
     },
     "linearSolverControl": {
+        "jacobiCode": 1,
         "sgsIter": 0,
         "sgsWithRec": 0,
         "gmresCode": 0,

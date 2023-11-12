@@ -92,6 +92,8 @@ namespace DNDS::Euler
                 bool steadyQuit = false;
                 bool useRestart = false;
                 bool useImplicitPP = false;
+                bool useRHSfPP = false;
+                real rhsfPPScale = 1.0;
                 int odeCode = 0;
                 real tEnd = veryLargeReal;
                 real odeSetting1 = 0;
@@ -100,7 +102,8 @@ namespace DNDS::Euler
                 DNDS_NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_ORDERED_JSON(
                     TimeMarchControl,
                     dtImplicit, nTimeStep,
-                    steadyQuit, useRestart, useImplicitPP,
+                    steadyQuit, useRestart, 
+                    useImplicitPP,useRHSfPP,rhsfPPScale,
                     odeCode, tEnd, odeSetting1, odeSetting2, odeSetting3)
             } timeMarchControl;
 
@@ -498,6 +501,9 @@ namespace DNDS::Euler
                 mesh->TransformCoords(
                     [&](const Geom::tPoint &p)
                     { return Rz * p; });
+                meshBnd->TransformCoords(
+                    [&](const Geom::tPoint &p)
+                    { return Rz * p; });    
 
                 for (auto &r : mesh->periodicInfo.rotation)
                     r = Rz * r * Rz.transpose();
