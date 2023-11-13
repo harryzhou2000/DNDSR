@@ -916,6 +916,9 @@ namespace DNDS::Euler
 
         auto fstop = [&](int iter, ArrayDOFV<nVars_Fixed> &cxinc, int iStep) -> bool
         {
+
+            // auto &uRecC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? uRec1 : uRec;
+
             Eigen::Vector<real, -1> res(nVars);
             eval.EvaluateNorm(res, cxinc, 1, config.convergenceControl.useVolWiseResidual);
             // if (iter == 1 && iStep == 1) // * using 1st rk step for reference

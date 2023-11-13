@@ -503,7 +503,7 @@ namespace DNDS::Euler
                     { return Rz * p; });
                 meshBnd->TransformCoords(
                     [&](const Geom::tPoint &p)
-                    { return Rz * p; });    
+                    { return Rz * p; });   
 
                 for (auto &r : mesh->periodicInfo.rotation)
                     r = Rz * r * Rz.transpose();
@@ -519,6 +519,10 @@ namespace DNDS::Euler
                 mesh->TransformCoords(
                     [&](const Geom::tPoint &p)
                     { return p * scale; });
+                meshBnd->TransformCoords(
+                    [&](const Geom::tPoint &p)
+                    { return p * scale; });  
+
                 for (auto &i : mesh->periodicInfo.translation)
                     i *= scale;
                 for (auto &i : mesh->periodicInfo.rotationCenter)
@@ -526,7 +530,8 @@ namespace DNDS::Euler
             }
             /// @todo //todo: upgrade to optional
             if (config.dataIOControl.outPltMode == 0)
-                reader->coordSerialOutTrans.pullOnce();
+                reader->coordSerialOutTrans.pullOnce(),
+                readerBnd->coordSerialOutTrans.pullOnce();
             vfv->ConstructMetrics();
             vfv->ConstructBaseAndWeight(
                 [&](Geom::t_index id, int iOrder) -> real
