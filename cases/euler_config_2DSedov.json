@@ -4,6 +4,8 @@
         "nTimeStep": 100,
         "steadyQuit": false,
         "useImplicitPP": true,
+        "useRHSfPP": true,
+        "rhsfPPScale": 1,
         "odeCode": 1,
         "tEnd": 3e+200,
         "odeSetting1": 0.5,
@@ -45,7 +47,11 @@
         "outPltTecplotFormat": true,
         "outPltVTKFormat": false,
         "outAtPointData": true,
-        "outAtCellData": true
+        "outAtCellData": true,
+        "outCellScalarNames": [
+            "betaPP"
+        ],
+        "_tail": 0
     },
     "boundaryDefinition": {
         "PeriodicTranslation2": [
@@ -69,7 +75,7 @@
     "limiterControl": {
         "useLimiter": true,
         "smoothIndicatorProcedure": 0,
-        "limiterProcedure": 1, //1 == CWBAP
+        "limiterProcedure": 0, //1 == CWBAP
         "nPartialLimiterStart": 1000000,
         "nPartialLimiterStartLocal": 1000000
     },
@@ -80,7 +86,7 @@
         "jacobiRelax": 0.5,
         "SORInstead": false,
         "smoothThreshold": 1e-3,
-        "WBAP_nStd": 3.0,
+        "WBAP_nStd": 10.0,
         "normWBAP": false,
         "subs2ndOrder": 1,
         "baseSettings": {
@@ -90,7 +96,7 @@
         "functionalSettings": {
             "scaleType": "BaryDiff",
             "scaleMultiplier": 1,
-            // "dirWeightScheme": "HQM_OPT"
+            // "dirWeightScheme": "HQM_OPT",
             // "useAnisotropicFunctional": true,
             // "scaleMultiplier": 3.464101615137754,
             "_tail": 0

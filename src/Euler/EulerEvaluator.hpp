@@ -1564,6 +1564,10 @@ namespace DNDS::Euler
             {
                 URxy = ULxy;
             }
+            else if (pBCHandler->GetTypeFromID(btype) == EulerBCType::BCIn)
+            {
+                URxy = pBCHandler->GetValueFromID(btype);
+            }
             else
             {
                 DNDS_assert(false);

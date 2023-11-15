@@ -15,6 +15,7 @@ namespace DNDS::Euler
         BCWall,
         BCWallInvis,
         BCOut,
+        BCIn,
         BCSpecial,
     };
 
@@ -27,6 +28,7 @@ namespace DNDS::Euler
             {BCWallInvis, "BCWallInvis"},
             {BCSpecial, "BCSpecial"},
             {BCOut, "BCOut"},
+            {BCIn, "BCIn"},
         });
 
     template <EulerModel model>
@@ -86,6 +88,7 @@ namespace DNDS::Euler
                 case EulerBCType::BCWall:
                 case EulerBCType::BCWallInvis:
                 case EulerBCType::BCOut:
+                case EulerBCType::BCIn:
                 {
                     std::string bcName = item["name"];
                     Eigen::VectorXd bcValue = item["value"];
@@ -118,6 +121,7 @@ namespace DNDS::Euler
                 case EulerBCType::BCWall:
                 case EulerBCType::BCWallInvis:
                 case EulerBCType::BCOut:
+                case EulerBCType::BCIn:
                 {
                     item["type"] = bcType;
                     item["name"] = bc.ID2name.at(i);
