@@ -4,6 +4,11 @@ namespace DNDS::Euler
 {
     template <EulerModel model>
     void EulerSolver<model>::RunImplicitEuler()
+    // /***************/ // IDE mode:
+    // static const auto model = NS_SA;
+    // template <>
+    // void EulerSolver<model>::RunImplicitEuler()
+    // /***************/ // IDE mode;
     {
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
         InsertCheck(mpi, "Implicit 1 nvars " + std::to_string(nVars));
@@ -86,6 +91,34 @@ namespace DNDS::Euler
         using tGMRES_uRec = Linear::GMRES_LeftPreconditioned<decltype(uRec)>;
         std::unique_ptr<tGMRES_u> gmres;
         std::unique_ptr<tGMRES_uRec> gmresRec;
+
+        OutputPicker outputPicker;
+        {
+            OutputPicker::tMap outMap;
+            outMap["R"] = [&](index iCell)
+            { return u[iCell](0); };
+            outMap["RU"] = [&](index iCell)
+            { return u[iCell](1); };
+            outMap["RV"] = [&](index iCell)
+            { return u[iCell](2); };
+            outMap["RV"] = [&](index iCell)
+            { return u[iCell](I4 - 1); };
+            outMap["RE"] = [&](index iCell)
+            { return u[iCell](I4); };
+            outMap["R_REC_1"] = [&](index iCell)
+            { return uRec[iCell](0, 0); };
+            outMap["RU_REC_1"] = [&](index iCell)
+            { return uRec[iCell](1, 0); }; // TODO: to be continued to...
+
+            // pps:
+            outMap["betaPP"] = [&](index iCell)
+            { return betaPP[iCell](0); };
+            outMap["alphaPP"] = [&](index iCell)
+            { return alphaPP[iCell](0); };
+
+            outputPicker.setMap(outMap);
+        }
+        tAdditionalCellScalarList addOutList = outputPicker.getSubsetList(config.dataIOControl.outCellScalarNames);
 
         if (config.linearSolverControl.gmresCode == 1 ||
             config.linearSolverControl.gmresCode == 2)
@@ -916,7 +949,6 @@ namespace DNDS::Euler
 
         auto fstop = [&](int iter, ArrayDOFV<nVars_Fixed> &cxinc, int iStep) -> bool
         {
-
             // auto &uRecC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? uRec1 : uRec;
 
             Eigen::Vector<real, -1> res(nVars);
@@ -985,12 +1017,22 @@ namespace DNDS::Euler
             if (iter % config.outputControl.nDataOutInternal == 0)
             {
                 eval.FixUMaxFilter(u);
-                PrintData(config.dataIOControl.outPltName + "_" + output_stamp + "_" + std::to_string(step) + "_" + std::to_string(iter), ode, eval);
+                PrintData(
+                    config.dataIOControl.outPltName + "_" + output_stamp + "_" + std::to_string(step) + "_" + std::to_string(iter),
+                    [&](index iCell)
+                    { return ode->getLatestRHS()[iCell](0); },
+                    addOutList,
+                    eval);
             }
             if (iter % config.outputControl.nDataOutCInternal == 0)
             {
                 eval.FixUMaxFilter(u);
-                PrintData(config.dataIOControl.outPltName + "_" + output_stamp + "_" + "C", ode, eval);
+                PrintData(
+                    config.dataIOControl.outPltName + "_" + output_stamp + "_" + "C",
+                    [&](index iCell)
+                    { return ode->getLatestRHS()[iCell](0); },
+                    addOutList,
+                    eval);
             }
             if (iter % config.outputControl.nRestartOutInternal == 0)
             {
@@ -1067,13 +1109,23 @@ namespace DNDS::Euler
             if (step == nextStepOut)
             {
                 eval.FixUMaxFilter(u);
-                PrintData(config.dataIOControl.outPltName + "_" + output_stamp + "_" + std::to_string(step), ode, eval);
+                PrintData(
+                    config.dataIOControl.outPltName + "_" + output_stamp + "_" + std::to_string(step),
+                    [&](index iCell)
+                    { return ode->getLatestRHS()[iCell](0); },
+                    addOutList,
+                    eval);
                 nextStepOut += config.outputControl.nDataOut;
             }
             if (step == nextStepOutC)
             {
                 eval.FixUMaxFilter(u);
-                PrintData(config.dataIOControl.outPltName + "_" + output_stamp + "_" + "C", ode, eval);
+                PrintData(
+                    config.dataIOControl.outPltName + "_" + output_stamp + "_" + "C",
+                    [&](index iCell)
+                    { return ode->getLatestRHS()[iCell](0); },
+                    addOutList,
+                    eval);
                 nextStepOutC += config.outputControl.nDataOutC;
             }
             if (step == nextStepRestart)
@@ -1093,7 +1145,12 @@ namespace DNDS::Euler
             if (ifOutT)
             {
                 eval.FixUMaxFilter(u);
-                PrintData(config.dataIOControl.outPltName + "_" + output_stamp + "_" + "t_" + std::to_string(nextTout), ode, eval);
+                PrintData(
+                    config.dataIOControl.outPltName + "_" + output_stamp + "_" + "t_" + std::to_string(nextTout),
+                    [&](index iCell)
+                    { return ode->getLatestRHS()[iCell](0); },
+                    addOutList,
+                    eval);
                 nextTout += config.outputControl.tDataOut;
                 if (nextTout > config.timeMarchControl.tEnd)
                     nextTout = config.timeMarchControl.tEnd;

@@ -39,6 +39,12 @@ _explicit_instantiation/EulerSolver_NS.cpp
 _explicit_instantiation/EulerSolver_NS_SA.cpp
 _explicit_instantiation/EulerSolver_NS_SA_3D.cpp
 _explicit_instantiation/EulerSolver_NS_2EQ.cpp
+_explicit_instantiation/EulerSolver_PrintData_NS_2D.cpp
+_explicit_instantiation/EulerSolver_PrintData_NS_3D.cpp
+_explicit_instantiation/EulerSolver_PrintData_NS.cpp
+_explicit_instantiation/EulerSolver_PrintData_NS_SA.cpp
+_explicit_instantiation/EulerSolver_PrintData_NS_SA_3D.cpp
+_explicit_instantiation/EulerSolver_PrintData_NS_2EQ.cpp
 )
 
 dnds_add_lib(${LIBNAME} "${CPPS}" "${LINKS}")

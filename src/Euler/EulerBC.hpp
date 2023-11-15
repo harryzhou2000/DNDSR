@@ -159,4 +159,38 @@ namespace DNDS::Euler
             return BCValues.at(id);
         }
     };
+
+    using tCellScalarFGet = std::function<real(
+        index // iCell which is [0, mesh->NumCell)
+        )>;
+    using tCellScalarList = std::vector<std::tuple<std::string, const tCellScalarFGet>>;
+
+    class OutputPicker
+    {
+    public:
+        using tMap = std::map<std::string, tCellScalarFGet>;
+
+    private:
+        tMap cellOutRegMap;
+
+    public:
+        void setMap(const tMap &v)
+        {
+            cellOutRegMap = v;
+        }
+
+        tCellScalarList getSubsetList(const std::vector<std::string> &names)
+        {
+            tCellScalarList ret;
+            for (auto &name : names)
+            {
+                DNDS_assert(cellOutRegMap.count(name) == 1);
+                ret.push_back(std::make_tuple(
+                    name,
+                    cellOutRegMap[name]));
+            }
+            return ret;
+        }
+    };
+
 }

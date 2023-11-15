@@ -27,7 +27,7 @@ vidWriter = VideoWriter(prefix + "/" + namePrefix + ".mp4","MPEG-4");
 vidWriter.Quality = 95;
 vidWriter.FrameRate = 10;
 vidWriter.open()
-
+ 
 for ifile = 1 : numel(fileNeed)
     pic = imread(fileNeed(ifile));
     vidWriter.writeVideo(pic);
