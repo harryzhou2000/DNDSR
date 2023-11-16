@@ -7,7 +7,7 @@
         "tEnd": 3e+200,
         "odeSetting1": 0.5,
         "odeSetting2": 0,
-        "odeSetting3": 0.9
+        "odeSetting3": 0.75
     },
     "outputControl": {
         "nConsoleCheck": 1,
@@ -85,9 +85,9 @@
     "vfvSettings": {
         "maxOrder": 3,
         "intOrder": 3,
-        "cacheDiffBase": true,
+        "cacheDiffBase": false,
         "jacobiRelax": 1,
-        "SORInstead": false,
+        "SORInstead": true,
         "smoothThreshold": 1e-3,
         "WBAP_nStd": 10.0,
         "normWBAP": false,
@@ -107,7 +107,7 @@
     },
     "linearSolverControl": {
         "jacobiCode": 0,
-        "sgsIter": 0,
+        "sgsIter": 10,
         "sgsWithRec": 0,
         "nSgsConsoleCheck": 100,
         "gmresCode": 0,
@@ -144,9 +144,5 @@
             "TRef": 273.15,
             "CSutherland": 110.4
         }
-        }
-        }
-    ]
     }
-    ]
 }
