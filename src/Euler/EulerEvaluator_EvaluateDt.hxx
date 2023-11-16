@@ -244,7 +244,7 @@ namespace DNDS::Euler
             lambdaConvection = std::max(std::sqrt(asqrL) + std::abs(veloNL), std::sqrt(asqrR) + std::abs(veloNR));
             DNDS_assert_info(
                 asqrL >= 0 && asqrR >= 0,
-                std::format(" mean value violates PP! asqr: [{} {}]", asqrL, asqrR)
+                fmt::format(" mean value violates PP! asqr: [{} {}]", asqrL, asqrR)
             );
 
             // ! refvalue:

@@ -76,8 +76,9 @@ namespace DNDS::Euler
                 {
                     vfv->BuildUDof(data, nVars);
                 },
-                config.timeMarchControl.odeSetting1 == 0 ? 0.51 : config.timeMarchControl.odeSetting1,
-                std::round(config.timeMarchControl.odeSetting2));
+                config.timeMarchControl.odeSetting1 == 0 ? 0.55 : config.timeMarchControl.odeSetting1,
+                std::round(config.timeMarchControl.odeSetting2),
+                config.timeMarchControl.odeSetting3 == 0 ? 0.9146 : config.timeMarchControl.odeSetting3);
             break;
         default:
             DNDS_assert_info(false, "no such ode code");
