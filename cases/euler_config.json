@@ -119,6 +119,7 @@
         "ignoreSourceTerm": true,
         "useScalarJacobian": true,
         "riemannSolverType": "Roe_M2",
+        "rsMeanValueChar": 1,
         "nCentralSmoothStep": 0,
         "constMassForce": [
             0.0,

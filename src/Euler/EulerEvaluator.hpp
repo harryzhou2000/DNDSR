@@ -88,6 +88,7 @@ namespace DNDS::Euler
             nlohmann::ordered_json jsonSettings;
 
             Gas::RiemannSolverType rsType = Gas::Roe;
+            int rsMeanValueEig = 0;
             int nCentralSmoothStep = 0;
 
             struct IdealGasProperty
@@ -196,6 +197,7 @@ namespace DNDS::Euler
                 __DNDS__json_to_config(riemannSolverType);
                 rsType = riemannSolverType;
                 // std::cout << rsType << std::endl;
+                __DNDS__json_to_config(rsMeanValueEig);
                 __DNDS__json_to_config(nCentralSmoothStep);
                 __DNDS__json_to_config(constMassForce);
                 if (read)
@@ -502,6 +504,10 @@ namespace DNDS::Euler
             TU UL = ULxy;
             UR(Seq123) = normBase(Seq012, Seq012).transpose() * UR(Seq123);
             UL(Seq123) = normBase(Seq012, Seq012).transpose() * UL(Seq123);
+            TU ULMean = ULMeanXy;
+            TU URMean = URMeanXy;
+            ULMean(Seq123) = normBase(Seq012, Seq012).transpose() * ULMean(Seq123);
+            URMean(Seq123) = normBase(Seq012, Seq012).transpose() * URMean(Seq123);
             // if (btype == BoundaryType::Wall_NoSlip)
             //     UR(Seq123) = -UL(Seq123);
             // if (btype == BoundaryType::Wall_Euler)
@@ -609,10 +615,6 @@ namespace DNDS::Euler
 
             {
                 TU wLMean, wRMean;
-                TU ULMean = ULMeanXy;
-                TU URMean = URMeanXy;
-                ULMean(Seq123) = normBase(Seq012, Seq012).transpose() * ULMean(Seq123);
-                URMean(Seq123) = normBase(Seq012, Seq012).transpose() * URMean(Seq123);
                 Gas::IdealGasThermalConservative2Primitive<dim>(ULMean, wLMean, gamma);
                 Gas::IdealGasThermalConservative2Primitive<dim>(URMean, wRMean, gamma);
                 Gas::GasInviscidFlux<dim>(ULMean, wLMean(Seq123), wLMean(I4), FLfix);
@@ -658,6 +660,8 @@ namespace DNDS::Euler
                 UR = UL;
             }
 #endif
+            TU &ULm = settings.rsMeanValueEig == 1 ? ULMean : UL;
+            TU &URm = settings.rsMeanValueEig == 1 ? URMean : UR;
 
             // std::cout << "HERE" << std::endl;
             if (rsType == Gas::RiemannSolverType::HLLEP)
@@ -670,27 +674,27 @@ namespace DNDS::Euler
                     exitFun);
             else if (rsType == Gas::RiemannSolverType::Roe)
                 Gas::RoeFlux_IdealGas_HartenYee<dim>(
-                    UL, UR, settings.idealGasProperty.gamma, finc, deltaLambdaFace[iFace],
+                    UL, UR, ULm, URm, settings.idealGasProperty.gamma, finc, deltaLambdaFace[iFace],
                     exitFun, lam0, lam123, lam4);
             else if (rsType == Gas::RiemannSolverType::Roe_M1)
                 Gas::RoeFlux_IdealGas_HartenYee<dim, 1>(
-                    UL, UR, settings.idealGasProperty.gamma, finc, deltaLambdaFace[iFace],
+                    UL, UR, ULm, URm , settings.idealGasProperty.gamma, finc, deltaLambdaFace[iFace],
                     exitFun, lam0, lam123, lam4);
             else if (rsType == Gas::RiemannSolverType::Roe_M2)
                 Gas::RoeFlux_IdealGas_HartenYee<dim, 2>(
-                    UL, UR, settings.idealGasProperty.gamma, finc, deltaLambdaFace[iFace],
+                    UL, UR, ULm, URm , settings.idealGasProperty.gamma, finc, deltaLambdaFace[iFace],
                     exitFun, lam0, lam123, lam4);
             else if (rsType == Gas::RiemannSolverType::Roe_M3)
                 Gas::RoeFlux_IdealGas_HartenYee<dim, 3>(
-                    UL, UR, settings.idealGasProperty.gamma, finc, deltaLambdaFace[iFace],
+                    UL, UR, ULm, URm , settings.idealGasProperty.gamma, finc, deltaLambdaFace[iFace],
                     exitFun, lam0, lam123, lam4);
             else if (rsType == Gas::RiemannSolverType::Roe_M4)
                 Gas::RoeFlux_IdealGas_HartenYee<dim, 4>(
-                    UL, UR, settings.idealGasProperty.gamma, finc, deltaLambdaFace[iFace],
+                    UL, UR, ULm, URm, settings.idealGasProperty.gamma, finc, deltaLambdaFace[iFace],
                     exitFun, lam0, lam123, lam4);
             else if (rsType == Gas::RiemannSolverType::Roe_M5)
                 Gas::RoeFlux_IdealGas_HartenYee<dim, 5>(
-                    UL, UR, settings.idealGasProperty.gamma, finc, deltaLambdaFace[iFace],
+                    UL, UR, ULm, URm, settings.idealGasProperty.gamma, finc, deltaLambdaFace[iFace],
                     exitFun, lam0, lam123, lam4);
             else
                 DNDS_assert(false);

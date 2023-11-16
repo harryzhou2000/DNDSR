@@ -122,6 +122,7 @@
         "ignoreSourceTerm": false,
         "specialBuiltinInitializer": 0,
         "riemannSolverType": "Roe",
+        "rsMeanValueEig": 0,
         "nCentralSmoothStep": 0,
         "constMassForce": [
             0.0,

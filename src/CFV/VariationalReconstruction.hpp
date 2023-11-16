@@ -1221,7 +1221,7 @@ namespace DNDS::CFV
                                 uThisIn =
                                     uC.matrix();
 
-                            // 2 char space :
+                            // 2 eig space :
                             auto uR = iCellAtFace ? u[iCell] : u[iCellOther];
                             auto uL = iCellAtFace ? u[iCellOther] : u[iCell];
                             auto M = FM(uL, uR, unitNorm);
@@ -1415,7 +1415,7 @@ namespace DNDS::CFV
                                 uThisIn =
                                     uC.matrix();
 
-                            // 2 char space :
+                            // 2 eig space :
                             auto uR = iCellAtFace ? u[iCell] : u[iCellOther];
                             auto uL = iCellAtFace ? u[iCellOther] : u[iCell];
                             auto M = FM(uL, uR, unitNorm);
