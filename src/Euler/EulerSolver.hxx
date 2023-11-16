@@ -464,6 +464,9 @@ namespace DNDS::Euler
                 uRecC = uRecOld;
                 uRecC += uRecIncC;
             }
+            if (config.limiterControl.preserveLimited && config.limiterControl.useLimiter)
+                uRecC = uRecNew;
+            
 
             // uRecC.trans.startPersistentPull(); //! this also need to update!
             // uRecC.trans.waitPersistentPull();
@@ -500,6 +503,7 @@ namespace DNDS::Euler
                 eval.EvaluateRHS(crhs, JSourceC, cx, uRecNew, betaPPC, alphaPP_tmp, false, tSimu + ct * curDtImplicit);
             else
                 eval.EvaluateRHS(crhs, JSourceC, cx, uRecC, betaPPC, alphaPP_tmp, false, tSimu + ct * curDtImplicit);
+
             crhs.trans.startPersistentPull();
             crhs.trans.waitPersistentPull();
             if (getNVars(model) > (I4 + 1) && iter <= config.others.nFreezePassiveInner)

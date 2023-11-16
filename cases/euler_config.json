@@ -12,8 +12,8 @@
         "odeSetting2": 1
     },
     "convergenceControl": {
-        "nTimeStepInternal": 200,
-        "rhsThresholdInternal": 1e-4,
+        "nTimeStepInternal": 100,
+        "rhsThresholdInternal": 1e-3,
         "res_base": 0.0,
         "useVolWiseResidual": true
     },
@@ -75,9 +75,11 @@
     "limiterControl": {
         "useLimiter": true,
         "smoothIndicatorProcedure": 0,
-        "limiterProcedure": 0, //1 == CWBAP
+        "limiterProcedure": 1, //1 == CWBAP
         "nPartialLimiterStart": 1000000,
-        "nPartialLimiterStartLocal": 1000000
+        "nPartialLimiterStartLocal": 1000000,
+        "preserveLimited": false,
+        "_tail": 0
     },
     "vfvSettings": {
         "maxOrder": 3,
@@ -157,7 +159,7 @@
             ]
         },
         {
-            "type": "BCIn",
+            "type": "BCFar",
             "name": "InFar",
             "value": [
                 0.5,

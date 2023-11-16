@@ -39,10 +39,11 @@
     "dataIOControl": {
         "uniqueStamps": false,
         "meshRotZ": -16.0,
-        "meshFile": "../data/mesh/30P30N_Tri1_BLV2.cgns",
-        "outPltName": "../data/out/30P30N_Tri1_BLV2_HLLC_SQRTSD",
-        "outLogName": "../data/out/30P30N_Tri1_BLV2_HLLC_SQRTSD",
-        "outRestartName": "../data/out/30P30N_Tri1_BLV2_HLLC_SQRTSD",
+        "meshScale": 1.789823574533367,
+        "meshFile": "../data/mesh/30p30n_HT1.cgns",
+        "outPltName": "../data/out/30P30N_HT1_RM4_BIAS",
+        "outLogName": "../data/out/30P30N_HT1_RM4_BIAS",
+        "outRestartName": "../data/out/30P30N_HT1_RM4_BIAS",
         "outPltMode": 0,
         "readMeshMode": 0,
         "outPltTecplotFormat": true,
@@ -64,11 +65,11 @@
         "dampRecIncDTau": false
     },
     "limiterControl": {
-        "useLimiter": false,
+        "useLimiter": true,
         "smoothIndicatorProcedure": 0,
         "limiterProcedure": 1, //1 == CWBAP
-        "nPartialLimiterStart": 1000000,
-        "nPartialLimiterStartLocal": 1000000
+        "nPartialLimiterStart": 0,
+        "nPartialLimiterStartLocal": 1000
     },
     "vfvSettings": {
         "maxOrder": 3,
@@ -95,7 +96,7 @@
             //     0.0305
             // ],
             "geomWeightScheme": "HQM_SD",
-            "geomWeightBias": 1,
+            "geomWeightBias": 0,
             "geomWeightPower": 0.5,
             // "geomWeightScheme": "SD_Power",
             // "geomWeightPower1": -0.5,
@@ -123,7 +124,8 @@
     "eulerSettings": {
         "ignoreSourceTerm": false,
         "useScalarJacobian": false,
-        "riemannSolverType": "HLLC",
+        "riemannSolverType": "Roe_M1",
+        "rsMeanValueChar": 1,
         "constMassForce": [
             0.0,
             0.0,
@@ -160,8 +162,7 @@
                     "Rgas": 0.003338277043445
                 }
             ],
-            "M0.2":
-            [
+            "M0.2": [
                 1,
                 1,
                 0,
@@ -169,7 +170,7 @@
                 45.142857142857140,
                 1.3,
                 {
-                    "Rgas":0.065374859444052
+                    "Rgas": 0.065374859444052
                 }
             ]
         },

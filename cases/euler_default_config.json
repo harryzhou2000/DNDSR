@@ -97,7 +97,8 @@
         "smoothIndicatorProcedure": 0,
         "limiterProcedure": 0,
         "nPartialLimiterStart": 0,
-        "nPartialLimiterStartLocal": 0
+        "nPartialLimiterStartLocal": 0,
+        "preserveLimited": false
     },
     "linearSolverControl": {
         "jacobiCode": 1,

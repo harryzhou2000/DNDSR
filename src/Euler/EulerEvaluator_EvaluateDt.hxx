@@ -215,6 +215,8 @@ namespace DNDS::Euler
             TVec veloMean = (uMean(Seq123).array() / uMean(0)).matrix();
             // real veloNMean = veloMean.dot(unitNorm); // original
             real veloNMean = 0.5 * (vL + vR).dot(unitNorm); // paper
+            real veloNL = vL.dot(unitNorm);
+            real veloNR = vR.dot(unitNorm);
 
             // real ekFixRatio = 0.001;
             // Eigen::Vector3d velo = uMean({1, 2, 3}) / uMean(0);
@@ -239,6 +241,11 @@ namespace DNDS::Euler
             // DNDS_assert(asqrMean >= 0);
             // real aMean = std::sqrt(asqrMean); // original
             real lambdaConvection = std::abs(veloNMean) + aMean;
+            lambdaConvection = std::max(std::sqrt(asqrL) + std::abs(veloNL), std::sqrt(asqrR) + std::abs(veloNR));
+            DNDS_assert_info(
+                asqrL >= 0 && asqrR >= 0,
+                std::format(" mean value violates PP! asqr: [{} {}]", asqrL, asqrR)
+            );
 
             // ! refvalue:
             real muRef = settings.idealGasProperty.muGas;

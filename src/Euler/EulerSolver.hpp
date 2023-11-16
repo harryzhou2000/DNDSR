@@ -271,11 +271,13 @@ namespace DNDS::Euler
                 int limiterProcedure = 0; // 0 for V2==3WBAP, 1 for V3==CWBAP
                 int nPartialLimiterStart = 0;
                 int nPartialLimiterStartLocal = 0;
+                bool preserveLimited = false;
                 DNDS_NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_ORDERED_JSON(
                     LimiterControl,
                     useLimiter, usePPRecLimiter,
                     smoothIndicatorProcedure, limiterProcedure,
-                    nPartialLimiterStart, nPartialLimiterStartLocal)
+                    nPartialLimiterStart, nPartialLimiterStartLocal,
+                    preserveLimited)
             } limiterControl;
 
             struct LinearSolverControl
