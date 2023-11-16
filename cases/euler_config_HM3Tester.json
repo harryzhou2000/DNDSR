@@ -1,17 +1,22 @@
 {
     "timeMarchControl": {
-        "dtImplicit": 1e-1,
-        "nTimeStep": 100,
+        "dtImplicit": 100e-1,
+        "nTimeStep": 1,
         "steadyQuit": false,
         "odeCode": 401,
         "tEnd": 3e+200,
-        "odeSetting1": 0.55,
-        "odeSetting2": 0
+        "odeSetting1": 0.5,
+        "odeSetting2": 0,
+        "odeSetting3": 0.75,
+        // "useRHSfPP": true,
+        // "rhsfPPScale": 0.01
+        "_tail": 0
     },
     "outputControl": {
         "nConsoleCheck": 1,
         "nConsoleCheckInternal": 1,
         "consoleOutputMode": 0,
+        "consoleOutputEveryFix": 0,
         "nDataOutC": 1,
         "nDataOut": 1,
         "nDataOutCInternal": 100,
@@ -76,6 +81,7 @@
     },
     "limiterControl": {
         "useLimiter": false,
+        "usePPRecLimiter": true,
         "smoothIndicatorProcedure": 0,
         "limiterProcedure": 1, //1 == CWBAP
         "nPartialLimiterStart": 1000000,
@@ -105,8 +111,9 @@
         }
     },
     "linearSolverControl": {
-        "sgsIter": 0,
-        "sgsWithRec": 1,
+        "jacobiCode": 0,
+        "sgsIter": 10,
+        "sgsWithRec": 0,
         "nSgsConsoleCheck": 100,
         "gmresCode": 0,
         "nGmresSpace": 5,

@@ -706,8 +706,9 @@ namespace DNDS::Euler
             cellRHSAlpha[iCell](0) = alphaRho * alphaP;
             // cellRHSAlpha[iCell](0) = std::min(alphaRho, alphaP);
             if (cellRHSAlpha[iCell](0) < 1)
-                nLimLocal++, alphaMinLocal = std::min(alphaMinLocal, cellRHSAlpha[iCell](0)),
-                             cellRHSAlpha[iCell] *= (0.99); //! for safety
+                nLimLocal++,
+                    cellRHSAlpha[iCell] *= (0.9), 
+                    alphaMinLocal = std::min(alphaMinLocal, cellRHSAlpha[iCell](0)); //! for safety
         }
         MPI::Allreduce(&nLimLocal, &nLim, 1, DNDS_MPI_INDEX, MPI_SUM, u.father->getMPI().comm);
         MPI::Allreduce(&alphaMinLocal, &alphaMin, 1, DNDS_MPI_REAL, MPI_MIN, u.father->getMPI().comm);

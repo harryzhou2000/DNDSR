@@ -486,9 +486,9 @@ namespace DNDS::Euler
                 nLimBeta = 0;
                 minBeta = 1;
                 if (config.limiterControl.useLimiter)
-                    eval.EvaluateURecBeta(u, uRecNew, betaPPC, nLimBeta, minBeta);
+                    eval.EvaluateURecBeta(cx, uRecNew, betaPPC, nLimBeta, minBeta); //*cx instead of u! 
                 else
-                    eval.EvaluateURecBeta(u, uRecC, betaPPC, nLimBeta, minBeta);
+                    eval.EvaluateURecBeta(cx, uRecC, betaPPC, nLimBeta, minBeta);
                 if (nLimBeta)
                     if (mpi.rank == 0 && config.outputControl.consoleOutputEveryFix != 0)
                     {
@@ -937,7 +937,7 @@ namespace DNDS::Euler
             auto &JSourceC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? JSource1 : JSource;
             nLimInc = 0;
             alphaMinInc = 1;
-            eval.EvaluateCellRHSAlpha(cx, uRecC, betaPPC, cxInc, alphaPP_tmp, nLimInc, alphaMinInc, 1);
+            eval.EvaluateCellRHSAlpha(cx, uRecC, betaPPC, cxInc, alphaPP_tmp, nLimInc, alphaMinInc, 0);
             if (nLimInc)
                 if (mpi.rank == 0 && config.outputControl.consoleOutputEveryFix != 0)
                 {
