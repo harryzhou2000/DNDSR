@@ -691,25 +691,39 @@ namespace DNDS::Euler
                     [&](decltype(u) &x, decltype(u) &MLx)
                     {
                         // x as rhs, and MLx as uinc
-                        eval.UpdateLUSGSForward(alphaDiag, x, cx, MLx, JDC, MLx);
+                        // eval.UpdateLUSGSForward(alphaDiag, x, cx, MLx, JDC, MLx);
+                        // MLx.trans.startPersistentPull();
+                        // MLx.trans.waitPersistentPull();
+                        // eval.UpdateLUSGSBackward(alphaDiag, x, cx, MLx, JDC, MLx);
+                        // MLx.trans.startPersistentPull();
+                        // MLx.trans.waitPersistentPull();
+
+                        MLx.setConstant(0.0);//! start as zero
+                        bool useJacobi = config.linearSolverControl.jacobiCode == 0;
+                        eval.UpdateSGS(alphaDiag, x, cx, MLx, useJacobi ? uTemp : MLx, JDC, true, sgsRes);
+                        if (useJacobi)
+                            MLx = uTemp;
                         MLx.trans.startPersistentPull();
                         MLx.trans.waitPersistentPull();
-                        eval.UpdateLUSGSBackward(alphaDiag, x, cx, MLx, JDC, MLx);
+                        eval.UpdateSGS(alphaDiag, x, cx, MLx, useJacobi ? uTemp : MLx, JDC, false, sgsRes);
+                        if (useJacobi)
+                            MLx = uTemp;
                         MLx.trans.startPersistentPull();
                         MLx.trans.waitPersistentPull();
+
                         for (int i = 0; i < config.linearSolverControl.sgsIter; i++)
                         {
                             bool useJacobi = config.linearSolverControl.jacobiCode == 0;
-                            eval.UpdateSGS(alphaDiag, crhs, cx, cxInc, useJacobi ? uTemp : cxInc, JDC, true, sgsRes);
+                            eval.UpdateSGS(alphaDiag, x, cx, MLx, useJacobi ? uTemp : MLx, JDC, true, sgsRes);
                             if (useJacobi)
-                                cxInc = uTemp;
-                            cxInc.trans.startPersistentPull();
-                            cxInc.trans.waitPersistentPull();
-                            eval.UpdateSGS(alphaDiag, crhs, cx, cxInc, useJacobi ? uTemp : cxInc, JDC, false, sgsRes);
+                                MLx = uTemp;
+                            MLx.trans.startPersistentPull();
+                            MLx.trans.waitPersistentPull();
+                            eval.UpdateSGS(alphaDiag, x, cx, MLx, useJacobi ? uTemp : MLx, JDC, false, sgsRes);
                             if (useJacobi)
-                                cxInc = uTemp;
-                            cxInc.trans.startPersistentPull();
-                            cxInc.trans.waitPersistentPull();
+                                MLx = uTemp;
+                            MLx.trans.startPersistentPull();
+                            MLx.trans.waitPersistentPull();
                         }
                     },
                     crhs, cxInc, config.linearSolverControl.nGmresIter,

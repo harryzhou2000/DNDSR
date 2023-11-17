@@ -71,6 +71,7 @@
         "nASCIIPrecision": 5,
         "outVolumeData": true,
         "outBndData": false,
+        "outCellScalarNames": [],
         "serializerSaveURec": false
     },
     "boundaryDefinition": {
@@ -96,7 +97,8 @@
         "smoothIndicatorProcedure": 0,
         "limiterProcedure": 0,
         "nPartialLimiterStart": 0,
-        "nPartialLimiterStartLocal": 0
+        "nPartialLimiterStartLocal": 0,
+        "preserveLimited": false
     },
     "linearSolverControl": {
         "jacobiCode": 1,
@@ -121,6 +123,7 @@
         "ignoreSourceTerm": false,
         "specialBuiltinInitializer": 0,
         "riemannSolverType": "Roe",
+        "rsMeanValueEig": 0,
         "nCentralSmoothStep": 0,
         "constMassForce": [
             0.0,

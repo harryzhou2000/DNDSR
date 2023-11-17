@@ -3,7 +3,7 @@
         "dtImplicit": 1e100,
         "nTimeStep": 1,
         "steadyQuit": true,
-        "useRestart": false,
+        "useRestart": true,
         "useRHSfPP": false,
         "odeCode": 0,
         "tEnd": 3e+200
@@ -41,9 +41,9 @@
         "meshRotZ": -16.0,
         "meshScale": 1.789823574533367,
         "meshFile": "../data/mesh/30p30n_HT1.cgns",
-        "outPltName": "../data/out/30P30N_HT1_RM4_BIAS",
-        "outLogName": "../data/out/30P30N_HT1_RM4_BIAS",
-        "outRestartName": "../data/out/30P30N_HT1_RM4_BIAS",
+        "outPltName": "../data/out/30P30N_HT1_HLLC_BIAS_ZOPT",
+        "outLogName": "../data/out/30P30N_HT1_HLLC_BIAS_ZOPT",
+        "outRestartName": "../data/out/30P30N_HT1_HLLC_BIAS_ZOPT",
         "outPltMode": 0,
         "readMeshMode": 0,
         "outPltTecplotFormat": true,
@@ -67,9 +67,9 @@
     "limiterControl": {
         "useLimiter": true,
         "smoothIndicatorProcedure": 0,
-        "limiterProcedure": 1, //1 == CWBAP
+        "limiterProcedure": 0, //1 == CWBAP
         "nPartialLimiterStart": 0,
-        "nPartialLimiterStartLocal": 1000
+        "nPartialLimiterStartLocal": 20000
     },
     "vfvSettings": {
         "maxOrder": 3,
@@ -77,7 +77,7 @@
         "cacheDiffBase": true,
         "jacobiRelax": 1.0,
         "SORInstead": true,
-        "smoothThreshold": 1e-3,
+        "smoothThreshold": 1e-30,
         "WBAP_nStd": 10.0,
         "normWBAP": false,
         "subs2ndOrder": 1,
@@ -87,16 +87,16 @@
         },
         "functionalSettings": {
             // "scaleType": "MeanAACBB",
-            "dirWeightScheme": "HQM_OPT",
-            // "dirWeightScheme": "ManualDirWeight",
-            // "manualDirWeights": [
-            //     1,
-            //     0.435,
-            //     0.1007,
-            //     0.0305
-            // ],
+            // "dirWeightScheme": "HQM_OPT",
+            "dirWeightScheme": "ManualDirWeight",
+            "manualDirWeights": [
+                1,
+                0.435,
+                0.1,
+                0.03
+            ],
             "geomWeightScheme": "HQM_SD",
-            "geomWeightBias": 0,
+            "geomWeightBias": 1,
             "geomWeightPower": 0.5,
             // "geomWeightScheme": "SD_Power",
             // "geomWeightPower1": -0.5,
@@ -105,14 +105,16 @@
             // // "anisotropicType": "InertiaCoordBB",
             // "inertiaWeightPower": 0,
             // "scaleMultiplier": 1,
-            "greenGauss1Weight": 0,
+            "greenGauss1Weight": 10,
             "greenGauss1Penalty": 1,
             "greenGaussSpacial": 1,
             "_tail": 0
         }
     },
     "linearSolverControl": {
-        "gmresCode": 0,
+        "sgsIter": 0,
+        "nSgsConsoleCheck": 100,
+        "gmresCode": 1,
         "nGmresSpace": 10,
         "nGmresIter": 5,
         "sgsWithRec": 0,
@@ -124,7 +126,7 @@
     "eulerSettings": {
         "ignoreSourceTerm": false,
         "useScalarJacobian": false,
-        "riemannSolverType": "Roe_M1",
+        "riemannSolverType": "HLLC",
         "rsMeanValueChar": 1,
         "constMassForce": [
             0.0,
@@ -185,8 +187,8 @@
     },
     "restartState": {
         "iStep": 1,
-        "iStepInternal": 15000,
+        "iStepInternal": 2400,
         "odeCodePrev": -1,
-        "lastRestartFile": "../data/out/NACA0012_H2__C_p16_restart_test1.dir"
+        "lastRestartFile": "../data/out/30P30N_HT1_HLLC_BIAS_ZOPTA1__C_p32_restart.dir"
     }
 }
