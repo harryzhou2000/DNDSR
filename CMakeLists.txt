@@ -235,6 +235,18 @@ if(UNIX OR MINGW)
             add_definitions(-D_GLIBCXX_PARALLEL)
         endif()
     endif()
+    if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Intel")
+        # add_compile_options(-fopenmp)
+        if (DNDS_USE_OMP)
+            set(CMAKE_CXX_FLAGS ${CMAKE_CXX_FLAGS} "-fopenmp")
+        endif()
+        if (DNDS_USE_PARALLEL_MACRO)
+            # add_compile_definitions(_GLIBCXX_PARALLEL)
+            # add_definitions(-D_GLIBCXX_PARALLEL) #! not yet found 
+        endif()
+        add_compile_options(-diag-disable=1011) # branch no return 
+        add_compile_options(-diag-disable=2196) # both inline and no inline
+    endif()
     ### set warnings
     add_compile_options(-Wall -Wno-unused-but-set-variable -Wno-unused-variable -Wno-sign-compare)
 

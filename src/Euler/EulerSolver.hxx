@@ -309,13 +309,13 @@ namespace DNDS::Euler
 
                     bool gmresConverge =
                         gmresRec->solve(
-                            [&](decltype(uRecC) &x, decltype(uRecC) &Ax)
+                            [&](ArrayRECV<nVars_Fixed> &x, ArrayRECV<nVars_Fixed> &Ax)
                             {
                                 vfv->DoReconstructionIterDiff(uRec, x, Ax, cx, FBoundaryDiff);
                                 Ax.trans.startPersistentPull();
                                 Ax.trans.waitPersistentPull();
                             },
-                            [&](decltype(uRecC) &x, decltype(uRecC) &MLx)
+                            [&](ArrayRECV<nVars_Fixed> &x, ArrayRECV<nVars_Fixed> &MLx)
                             {
                                 MLx = x; // initial value; for the input is mostly a good estimation
                                 // MLx no need to comm
