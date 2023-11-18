@@ -107,7 +107,7 @@ namespace DNDS
 
                         if (iCellOther != UnInitIndex)
                         {
-                            dcs(ic2f, Eigen::all) = (GetCellBary(iCellOther) - GetCellBary(iCell))(Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>))
+                            dcs(ic2f, Eigen::all) = (GetOtherCellBaryFromCell(iCell, iCellOther, iFace) - GetCellBary(iCell))(Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>))
                                                         .transpose();
                             dus(ic2f, Eigen::all) = (u[iCellOther] - u[iCell]).transpose();
                         }

@@ -116,6 +116,13 @@ namespace DNDS::Euler
             { return betaPP[iCell](0); };
             outMap["alphaPP"] = [&](index iCell)
             { return alphaPP[iCell](0); };
+            outMap["ACond"] = [&](index iCell)
+            {
+                auto A = vfv->GetCellRecMatA(iCell);
+                Eigen::MatrixXd AInv = A;
+                real aCond = HardEigen::EigenLeastSquareInverse(A, AInv);
+                return aCond;
+            };
 
             outputPicker.setMap(outMap);
         }

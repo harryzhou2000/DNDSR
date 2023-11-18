@@ -599,8 +599,8 @@ namespace DNDS::Euler::Gas
         // std::cout << ReVRoe << std::endl;
 
         Eigen::Vector<real, dim + 2> incU =
-            URm(Eigen::seq(Eigen::fix<0>, Eigen::fix<dim + 1>)) -
-            ULm(Eigen::seq(Eigen::fix<0>, Eigen::fix<dim + 1>));
+            UR(Eigen::seq(Eigen::fix<0>, Eigen::fix<dim + 1>)) -
+            UL(Eigen::seq(Eigen::fix<0>, Eigen::fix<dim + 1>)); //!not using m, for this is accuracy-limited!
         real incP = pRm - pLm;
         TVec incVelo = veloRm - veloLm;
 
