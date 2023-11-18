@@ -9,19 +9,20 @@
             ArrayDOFV<nVars_Fixed> &u,                      \
             ArrayRECV<nVars_Fixed> &uRec,                   \
             real CFL, real &dtMinall, real MaxDt,           \
-            bool UseLocaldt);                              \
-            template\
-    typename EulerEvaluator<model>::TU EulerEvaluator<model>::fluxFace(\
-            const TU &ULxy,\
-            const TU &URxy,\
-            const TU &ULMeanXy,\
-            const TU &URMeanXy,\
-            const TDiffU &DiffUxy,\
-            const TVec &unitNorm,\
-            const TMat &normBase,\
-            TU &FLfix,\
-            TU &FRfix,\
-            Geom::t_index btype,\
-            typename Gas::RiemannSolverType rsType,\
-            index iFace, int ig);\
+            bool UseLocaldt);                               \
+        template                                            \
+            typename EulerEvaluator<model>::TU              \
+            EulerEvaluator<model>::fluxFace(                \
+                const TU &ULxy,                             \
+                const TU &URxy,                             \
+                const TU &ULMeanXy,                         \
+                const TU &URMeanXy,                         \
+                const TDiffU &DiffUxy,                      \
+                const TVec &unitNorm,                       \
+                const TMat &normBase,                       \
+                TU &FLfix,                                  \
+                TU &FRfix,                                  \
+                Geom::t_index btype,                        \
+                typename Gas::RiemannSolverType rsType,     \
+                index iFace, int ig);                       \
     }

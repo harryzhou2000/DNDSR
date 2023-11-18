@@ -1,12 +1,16 @@
 {
     "timeMarchControl": {
-        "dtImplicit": 1e-1,
-        "nTimeStep": 2000,
+        "dtImplicit": 0.25e-1,
+        "nTimeStep": 8000,
         "steadyQuit": false,
-        "odeCode": 401,
+        "odeCode": 1,
         "tEnd": 3e+200,
         "odeSetting1": 0.55,
-        "odeSetting2": 0
+        "odeSetting2": 0,
+        "odeSetting3": 1.333,
+        "useRHSfPP": true,
+        "rhsfPPScale": 1,
+        "_tail": 0
     },
     "convergenceControl": {
         "nTimeStepInternal": 400,
@@ -36,8 +40,8 @@
         "uniqueStamps": false,
         "meshRotZ": 0.0,
         "meshFile": "../data/mesh/CylinderA1.cgns",
-        "outPltName": "../data/outUnsteady/CylinderA1",
-        "outLogName": "../data/outUnsteady/CylinderA1",
+        "outPltName": "../data/outUnsteady/CylinderA1_RE2000",
+        "outLogName": "../data/outUnsteady/CylinderA1_RE2000",
         "outPltMode": 0,
         "readMeshMode": 0,
         "outPltTecplotFormat": true,
@@ -131,11 +135,11 @@
         "idealGasProperty": {
             "gamma": 1.4,
             "Rgas": 0.116221972344982,
-            "muGas": 5e-3,
+            "muGas": 5e-4,
             "prGas": 0.72,
             "TRef": 273.15,
             "CSutherland": 110.4
         }
     },
-    "__commit": "e3dc0776c79c9b4878561aaec16b012a4b1be994(base)"
+    "__commit": "b0dca3a8d7613426c65ad2396e32a1097aaae34e(base)"
 }
