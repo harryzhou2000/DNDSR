@@ -265,7 +265,8 @@ namespace DNDS::Geom
         // PushInfo2Serial2Global(cell_Serial2Global, cellPartition.size(), cell_push, cell_pushStart, mesh->getMPI());//*safe validation version
         // PushInfo2Serial2Global(node_Serial2Global, nodePartition.size(), node_push, node_pushStart, mesh->getMPI());//*safe validation version
         // PushInfo2Serial2Global(bnd_Serial2Global, bndPartition.size(), bnd_push, bnd_pushStart, mesh->getMPI());    //*safe validation version
-
+        if (mesh->getMPI().rank == mRank)
+            DNDS::log() << "UnstructuredMeshSerialRW === Doing PartitionReorderToMeshCell2Cell ConvertAdjSerial2Global" << std::endl;
         ConvertAdjSerial2Global(cell2nodeSerial, node_Serial2Global, mesh->getMPI());
         ConvertAdjSerial2Global(cell2cellSerial, cell_Serial2Global, mesh->getMPI());
         ConvertAdjSerial2Global(bnd2nodeSerial, node_Serial2Global, mesh->getMPI());
@@ -292,15 +293,20 @@ namespace DNDS::Geom
         DNDS_MAKE_SSP(mesh->bnd2cell.son, mesh->getMPI());
 
         // coord transferring
+        if (mesh->getMPI().rank == mRank)
+            DNDS::log() << "UnstructuredMeshSerialRW === Doing PartitionReorderToMeshCell2Cell Trasfer Data Coord" << std::endl;
         TransferDataSerial2Global(coordSerial, mesh->coords.father, node_push, node_pushStart, mesh->getMPI());
 
+        if (mesh->getMPI().rank == mRank)
+            DNDS::log() << "UnstructuredMeshSerialRW === Doing PartitionReorderToMeshCell2Cell Trasfer Data Cell" << std::endl;
         // cells transferring
         TransferDataSerial2Global(cell2cellSerial, mesh->cell2cell.father, cell_push, cell_pushStart, mesh->getMPI());
         TransferDataSerial2Global(cell2nodeSerial, mesh->cell2node.father, cell_push, cell_pushStart, mesh->getMPI());
         if (mesh->isPeriodic)
             TransferDataSerial2Global(cell2nodePbiSerial, mesh->cell2nodePbi.father, cell_push, cell_pushStart, mesh->getMPI());
         TransferDataSerial2Global(cellElemInfoSerial, mesh->cellElemInfo.father, cell_push, cell_pushStart, mesh->getMPI());
-
+        if (mesh->getMPI().rank == mRank)
+            DNDS::log() << "UnstructuredMeshSerialRW === Doing PartitionReorderToMeshCell2Cell Doing Trasfer Data Bnd" << std::endl;
         // bnds transferring
         TransferDataSerial2Global(bnd2cellSerial, mesh->bnd2cell.father, bnd_push, bnd_pushStart, mesh->getMPI());
         TransferDataSerial2Global(bnd2nodeSerial, mesh->bnd2node.father, bnd_push, bnd_pushStart, mesh->getMPI());

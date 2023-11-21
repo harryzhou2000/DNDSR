@@ -49,7 +49,8 @@
             "name": "BSSC-T",
             "includePath": [
                 "${default}",
-                "/public1/soft/openmpi/3.1.6-gcc9.3.0/include",
+                "/public1/soft/oneAPI/2022.1/mpi/latest/include",
+                // "/public1/soft/openmpi/3.1.6-gcc9.3.0/include",
                 "~/tools/cfd_externals/install/include/",
                 "/public1/soft/hdf5/1.10.6-openmpi-gcc9.3.0/include"
             ],

@@ -100,12 +100,14 @@ namespace DNDS::Euler
                 real odeSetting1 = 0;
                 real odeSetting2 = 0;
                 real odeSetting3 = 0;
+                bool partitonMeshOnly = false;
                 DNDS_NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_ORDERED_JSON(
                     TimeMarchControl,
                     dtImplicit, nTimeStep,
                     steadyQuit, useRestart,
                     useImplicitPP, useRHSfPP, rhsfPPScale,
-                    odeCode, tEnd, odeSetting1, odeSetting2, odeSetting3)
+                    odeCode, tEnd, odeSetting1, odeSetting2, odeSetting3,
+                    partitonMeshOnly)
             } timeMarchControl;
 
             struct ImplicitReconstructionControl
@@ -485,6 +487,25 @@ namespace DNDS::Euler
             // std::cout << "here" << std::endl;
             mesh->InterpolateFace();
             mesh->AssertOnFaces();
+
+            if (config.timeMarchControl.partitonMeshOnly)
+            {
+                auto meshOutName = std::string(config.dataIOControl.meshFile) + "_part_" + std::to_string(mpi.size) + ".dir";
+                std::filesystem::path meshOutDir{meshOutName};
+                std::filesystem::create_directories(meshOutDir);
+                std::string meshPartPath = DNDS::getStringForcePath(meshOutDir / (std::string("part_") + std::to_string(mpi.rank) + ".json"));
+
+                DNDS::SerializerJSON serializerJSON;
+                serializerJSON.SetUseCodecOnUint8(true);
+                DNDS::SerializerBase *serializer = &serializerJSON;
+
+                serializer->OpenFile(meshPartPath, false);
+                mesh->WriteSerialize(serializer, "meshPart");
+                serializer->CloseFile();
+                return; //** mesh preprocess only (without transformation)
+            }
+
+
 #ifdef DNDS_USE_OMP
             omp_set_num_threads(DNDS::MPIWorldSize() == 1 ? std::min(omp_get_num_procs(), omp_get_max_threads()) : 1);
 #endif

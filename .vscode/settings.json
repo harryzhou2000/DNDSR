@@ -165,7 +165,9 @@
         "*.inc": "cpp",
         "csetjmp": "cpp",
         "execution": "cpp",
-        "stack": "cpp"
+        "stack": "cpp",
+        "cstdatomic": "cpp",
+        "hashtable": "cpp"
     },
     "cSpell.words": [
         "Bary",

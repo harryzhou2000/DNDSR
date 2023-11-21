@@ -26,7 +26,8 @@ set(DNDS_FAST_BUILD_FAST ON CACHE BOOL "don't -g on basic modules")
 
 set(DNDS_EIGEN_USE_BLAS OFF CACHE BOOL "use blas in eigen")
 set(DNDS_EIGEN_USE_LAPACK OFF CACHE BOOL "use lapack in eigen")
-
+set(DNDS_UNSAFE_MATH_OPT OFF CACHE BOOL "use -funsafe-math-optimizations")
+set(DNDS_NATIVE_ARCH     OFF CACHE BOOL "use -march=native")
 
 find_package(MPI REQUIRED)
 if(UNIX)
@@ -214,7 +215,18 @@ if(UNIX OR MINGW)
     endif()
     message(${CMAKE_CXX_COMPILER_ID})
     add_compile_options(-std=c++17)
-    # add_compile_options(-mtune=native -march=native) # !warning, only x86 here
+    if(DNDS_NATIVE_ARCH)
+        add_compile_options(-march=native)
+        message(WARNING "using -march=native")
+    endif()
+    if(DNDS_UNSAFE_MATH_OPT)
+        add_compile_options(-funsafe-math-optimizations)
+        message(WARNING "using -funsafe-math-optimization")
+    endif()
+    
+    ### set warnings
+    add_compile_options(-Wall -Wno-unused-but-set-variable -Wno-unused-variable -Wno-sign-compare)
+
     if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang")
         # add_compile_options(-fopenmp)
         if (DNDS_USE_OMP)
@@ -223,6 +235,7 @@ if(UNIX OR MINGW)
         if (DNDS_USE_PARALLEL_MACRO)
             # add_compile_definitions(_GLIBCXX_PARALLEL)
             # doesn't seem available
+            message(WARNING "${CMAKE_CXX_COMPILER_ID} compliler not using DNDS_USE_PARALLEL_MACRO")
         endif()
     endif()
     if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
@@ -233,22 +246,35 @@ if(UNIX OR MINGW)
         if (DNDS_USE_PARALLEL_MACRO)
             # add_compile_definitions(_GLIBCXX_PARALLEL)
             add_definitions(-D_GLIBCXX_PARALLEL)
+            message(WARNING "${CMAKE_CXX_COMPILER_ID} compliler not using DNDS_USE_PARALLEL_MACRO")
         endif()
     endif()
     if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Intel")
         # add_compile_options(-fopenmp)
         if (DNDS_USE_OMP)
-            set(CMAKE_CXX_FLAGS ${CMAKE_CXX_FLAGS} "-fopenmp")
+            set(CMAKE_CXX_FLAGS ${CMAKE_CXX_FLAGS} "-fiopenmp")
         endif()
         if (DNDS_USE_PARALLEL_MACRO)
             # add_compile_definitions(_GLIBCXX_PARALLEL)
             # add_definitions(-D_GLIBCXX_PARALLEL) #! not yet found 
+            message(WARNING "${CMAKE_CXX_COMPILER_ID} compliler not using DNDS_USE_PARALLEL_MACRO")
         endif()
         add_compile_options(-diag-disable=1011) # branch no return 
         add_compile_options(-diag-disable=2196) # both inline and no inline
     endif()
-    ### set warnings
-    add_compile_options(-Wall -Wno-unused-but-set-variable -Wno-unused-variable -Wno-sign-compare)
+    if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "IntelLLVM")
+        if (DNDS_USE_OMP)
+            set(CMAKE_CXX_FLAGS ${CMAKE_CXX_FLAGS} "-fiopenmp")
+        endif()
+        if (DNDS_USE_PARALLEL_MACRO)
+            # add_compile_definitions(_GLIBCXX_PARALLEL)
+            # add_definitions(-D_GLIBCXX_PARALLEL) #! not yet found 
+            message(WARNING "${CMAKE_CXX_COMPILER_ID} compliler not using DNDS_USE_PARALLEL_MACRO")
+        endif()
+        add_compile_options(-Wno-tautological-constant-compare) # ! is this risky or not
+        message(WARNING "${CMAKE_CXX_COMPILER_ID} using -Wno-tautological-constant-compare")
+    endif()
+    
 
 elseif(WIN32 OR MSVC)
     if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang")
@@ -257,6 +283,14 @@ elseif(WIN32 OR MSVC)
         # add_compile_options(--target=x86_64-pc-windows-gnu)
         # add_link_options(--target=x86_64-pc-windows-gnu)
         add_compile_options(-D_CRT_SECURE_NO_WARNINGS -DCOMPILER_MSC)
+        if(DNDS_UNSAFE_MATH_OPT)
+            add_compile_options(-funsafe-math-optimizations)
+            message(WARNING "using -funsafe-math-optimization")
+        endif()
+        if(DNDS_NATIVE_ARCH)
+            add_compile_options(-march=native)
+            message(WARNING "using -march=native")
+        endif()
     endif()
     set(EXTERNAL_LIBS ${EXTERNAL_LIBS} # no dl
     )
@@ -335,6 +369,7 @@ eigen_Test
 STL_Test
 json_Test
 cgal_AABBTest
+mpi_test
 )
 
 set(APPS_DNDS
@@ -342,6 +377,7 @@ array_Test
 arrayTrans_test
 arrayDerived_test
 serializerJSON_Test
+stdPowerTest
 )
 
 set(APPS_Geom

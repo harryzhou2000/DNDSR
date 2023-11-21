@@ -12,18 +12,25 @@ namespace DNDS::Euler
     {
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
         InsertCheck(mpi, "Implicit 1 nvars " + std::to_string(nVars));
+        auto hashCoord = mesh->coords.hash();
+        if (mpi.rank == 0)
+        {
+            log() << "Mesh coord hash is: [" << std::hex << hashCoord << std::dec << "]" << std::endl << std::scientific;
+        }
+        if (config.timeMarchControl.partitonMeshOnly)
+        {
+            if (mpi.rank == 0)
+            {
+                log() << "Mesh Is not altered; partitioning done";
+            }
+            return;
+        }
 
         /************* Files **************/
         std::ofstream logErr(config.dataIOControl.outLogName + "_" + output_stamp + ".log");
         /************* Files **************/
 
         std::shared_ptr<ODE::ImplicitDualTimeStep<decltype(u)>> ode;
-
-        auto hashCoord = mesh->coords.hash();
-        if (mpi.rank == 0)
-        {
-            log() << "Mesh coord hash is: [" << std::hex << hashCoord << std::dec << "]" << std::endl;
-        }
 
         if (config.timeMarchControl.steadyQuit)
         {
@@ -342,11 +349,19 @@ namespace DNDS::Euler
                     if (gmresConverge)
                         break;
                 }
+                uRecC.trans.startPersistentPull();
+                uRecC.trans.waitPersistentPull();
             }
             else
                 DNDS_assert_info(false, "no such recLinearScheme");
             trec += MPI_Wtime() - tstartA;
-            gradIsZero = false;
+            if (gradIsZero)
+            {
+                uRec = uRecC;
+                if (config.timeMarchControl.odeCode == 401)
+                    uRec1 = uRecC;
+                gradIsZero = false;
+            }
             double tstartH = MPI_Wtime();
 
             // for (index iCell = 0; iCell < uOld.size(); iCell++)
@@ -361,7 +376,7 @@ namespace DNDS::Euler
                 auto fML = [&](const auto &UL, const auto &UR, const auto &n) -> auto
                 {
                     PerformanceTimer::Instance().StartTimer(PerformanceTimer::LimiterA);
-                    Eigen::Vector<real, I4 + 1> UC = (UL + UR)(Seq01234)*0.5;
+                    Eigen::Vector<real, I4 + 1> UC = (UL + UR)(Seq01234) * 0.5;
                     Eigen::Matrix<real, dim, dim> normBase = Geom::NormBuildLocalBaseV<dim>(n(Seq012));
                     UC(Seq123) = normBase.transpose() * UC(Seq123);
 
@@ -378,7 +393,7 @@ namespace DNDS::Euler
                 auto fMR = [&](const auto &UL, const auto &UR, const auto &n) -> auto
                 {
                     PerformanceTimer::Instance().StartTimer(PerformanceTimer::LimiterA);
-                    Eigen::Vector<real, I4 + 1> UC = (UL + UR)(Seq01234)*0.5;
+                    Eigen::Vector<real, I4 + 1> UC = (UL + UR)(Seq01234) * 0.5;
                     Eigen::Matrix<real, dim, dim> normBase = Geom::NormBuildLocalBaseV<dim>(n(Seq012));
                     UC(Seq123) = normBase.transpose() * UC(Seq123);
 
@@ -474,7 +489,6 @@ namespace DNDS::Euler
             }
             if (config.limiterControl.preserveLimited && config.limiterControl.useLimiter)
                 uRecC = uRecNew;
-            
 
             // uRecC.trans.startPersistentPull(); //! this also need to update!
             // uRecC.trans.waitPersistentPull();
@@ -493,7 +507,7 @@ namespace DNDS::Euler
                 nLimBeta = 0;
                 minBeta = 1;
                 if (config.limiterControl.useLimiter)
-                    eval.EvaluateURecBeta(cx, uRecNew, betaPPC, nLimBeta, minBeta); //*cx instead of u! 
+                    eval.EvaluateURecBeta(cx, uRecNew, betaPPC, nLimBeta, minBeta); //*cx instead of u!
                 else
                     eval.EvaluateURecBeta(cx, uRecC, betaPPC, nLimBeta, minBeta);
                 if (nLimBeta)
@@ -705,7 +719,7 @@ namespace DNDS::Euler
                         // MLx.trans.startPersistentPull();
                         // MLx.trans.waitPersistentPull();
 
-                        MLx.setConstant(0.0);//! start as zero
+                        MLx.setConstant(0.0); //! start as zero
                         bool useJacobi = config.linearSolverControl.jacobiCode == 0;
                         eval.UpdateSGS(alphaDiag, x, cx, MLx, useJacobi ? uTemp : MLx, JDC, true, sgsRes);
                         if (useJacobi)

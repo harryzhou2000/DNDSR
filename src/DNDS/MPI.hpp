@@ -55,6 +55,22 @@ namespace DNDS
         static const auto badReturn = std::make_pair(MPI_Datatype(MPI_DATATYPE_NULL), MPI_int(-1));
         if constexpr (std::is_scalar_v<T>)
         {
+            if constexpr (std::is_same_v<T, float>)
+                return std::make_pair(MPI_Datatype(MPI_FLOAT), MPI_int(1));
+            if constexpr (std::is_same_v<T, double>)
+                return std::make_pair(MPI_Datatype(MPI_DOUBLE), MPI_int(1));
+            if constexpr (std::is_same_v<T, long double>)
+                return std::make_pair(MPI_Datatype(MPI_LONG_DOUBLE), MPI_int(1));
+
+            if constexpr (std::is_same_v<T, int8_t>)
+                return std::make_pair(MPI_Datatype(MPI_INT8_T), MPI_int(1));
+            if constexpr (std::is_same_v<T, int16_t>)
+                return std::make_pair(MPI_Datatype(MPI_INT16_T), MPI_int(1));
+            if constexpr (std::is_same_v<T, int32_t>)
+                return std::make_pair(MPI_Datatype(MPI_INT32_T), MPI_int(1));
+            if constexpr (std::is_same_v<T, int64_t>)
+                return std::make_pair(MPI_Datatype(MPI_INT64_T), MPI_int(1));
+
             if constexpr (sizeof(T) == 1)
                 return std::make_pair(MPI_Datatype(MPI_UINT8_T), MPI_int(1));
             else if constexpr (sizeof(T) == 2)
@@ -138,7 +154,6 @@ namespace DNDS
             MPI_Barrier(mpi.comm);
             if (mpi.rank == i)
                 f();
-            MPI_Barrier(mpi.comm);
         }
     }
 

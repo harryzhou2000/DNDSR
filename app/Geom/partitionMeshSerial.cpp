@@ -25,6 +25,7 @@ void doPartitioning(const std::string &meshName, int dim)
     // "../data/mesh/SC20714_MixedA.cgns"
     // "../data/mesh/UniformDM240_E120.cgns"
     // "../data/mesh/Ball.cgns"
+    mesh->periodicInfo.translation[3] *= 10;
     reader.ReadFromCGNSSerial(meshName);
     reader.Deduplicate1to1Periodic();
 

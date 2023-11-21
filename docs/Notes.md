@@ -90,5 +90,35 @@ must use residual instead of uinc for convergence monitoring!!!
 121m49.267s for ESDIRK4
 90m18.275s for BDF2 (3x)
 
+## on running with bssct:
 
+ompi 3.x seems ungood (module load mpi/openmpi/3.1.6-gcc-9.3.0), for large mesh partition at least; MPI_Barrier even takes 1 sec each!
+
+note that when switching mpi (or other libs), best check entries in cmake, (safest: restart vscode or in standalone terminal), could be unchanged
+
+## building hdf5 and cgns
+```
+ ../configure   --enable-fortran=yes --enable-parallel=yes --with-zlib=yes --prefix=$(realpath ../../install) 
+```
+
+```
+(only in path: src)
+export CC=mpicc
+export CXX=mpicxx
+export LIBS="-ldl"
+export CPPFLAGS="-I/usr/include/tk"
+export CFLAGS="-I/usr/include/tk"
+
+./configure --prefix=$(realpath ../../install) --with-hdf5=$(realpath ../../install) --enable-parallel --enable-lfs --enable-64bit   --enable-cgnstools=no
+```
+
+```
+make config prefix=$(realpath ../install) cc=gcc
+```
+
+```
+make config prefix=$(realpath ../install) cc=mpicc cxx=mpicxx
+```
+
+using a v110 api to enable the use by cgns 4.3.0 ? not working?
 

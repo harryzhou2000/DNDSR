@@ -11,7 +11,8 @@
         "tEnd": 3e+200,
         "odeSetting1": 0.0,
         "odeSetting2": 0.0,
-        "odeSetting3": 0.0
+        "odeSetting3": 0.0,
+        "partitonMeshOnly": false
     },
     "implicitReconstructionControl": {
         "nInternalRecStep": 1,
