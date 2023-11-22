@@ -760,7 +760,7 @@ namespace DNDS::ODE
                             rhsMid.addTo(rhsbuf[0], cInter(2) + thetaM1 * wInteg(0));
                             rhsMid.addTo(rhsbuf[1], cInter(3) + thetaM1 * wInteg(2));
                             rhsMid.addTo(rhsbuf[2], thetaM1 * wInteg(1));
-                            fsolve(xMid, rhsMid, dTau, dt, std::abs(-(cInter(3) * wInteg(1) / wInteg(2))), xinc, iter, 1);
+                            fsolve(xMid, rhsMid, dTau, dt, std::abs(thetaM1 * wInteg(1)), xinc, iter, 1);
                         }
 
                         fincrement(xMid, xinc, 1.0, 1);

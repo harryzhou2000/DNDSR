@@ -32,7 +32,7 @@ set(DNDS_NATIVE_ARCH     OFF CACHE BOOL "use -march=native")
 find_package(MPI REQUIRED)
 if(UNIX)
     # set(CMAKE_CXX_COMPILER mpicxx CACHE FILEPATH "compiler with your MPI wrapping")
-    set(CMAKE_FIND_LIBRARY_SUFFIXES ".a") # ! using static libs
+    # set(CMAKE_FIND_LIBRARY_SUFFIXES ".a") # ! using static libs
 elseif(MSVC OR WIN32 OR MINGW)
     # nothing
     
@@ -56,48 +56,48 @@ message("external install hard guess at: external/${CMAKE_SYSTEM_NAME}-${CMAKE_S
 
 
 # ##########################################
-find_library(EXTERNAL_LIB_ZLIB z z_D REQUIRED)
-find_library(EXTERNAL_LIB_HDF5 hdf5 PATHS 
+find_library(EXTERNAL_LIB_ZLIB NAMES z z_D REQUIRED)
+find_library(EXTERNAL_LIB_HDF5 NAMES libhdf5.a hdf5 PATHS 
     "${PROJECT_SOURCE_DIR}/external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}" 
     "${PROJECT_SOURCE_DIR}/external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}/lib"
-    NO_DEFAULT_PATH REQUIRED)
-find_library(EXTERNAL_LIB_CGNS cgns PATHS 
+     REQUIRED)
+find_library(EXTERNAL_LIB_CGNS NAMES libcgns.a cgns PATHS 
     "${PROJECT_SOURCE_DIR}/external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}" 
     "${PROJECT_SOURCE_DIR}/external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}/lib"
-    NO_DEFAULT_PATH REQUIRED)
-find_library(EXTERNAL_LIB_METIS metis PATHS 
+     REQUIRED)
+find_library(EXTERNAL_LIB_METIS NAMES libmetis.a metis PATHS 
     "${PROJECT_SOURCE_DIR}/external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}"
     "${PROJECT_SOURCE_DIR}/external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}/lib"
-        NO_DEFAULT_PATH REQUIRED)
-find_library(EXTERNAL_LIB_PARMETIS parmetis PATHS 
+         REQUIRED)
+find_library(EXTERNAL_LIB_PARMETIS NAMES libparmetis.a parmetis PATHS 
     "${PROJECT_SOURCE_DIR}/external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}" 
     "${PROJECT_SOURCE_DIR}/external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}/lib"
-    NO_DEFAULT_PATH REQUIRED)
+     REQUIRED)
 # find_library(EXTERNAL_LIB_TECIO tecio PATHS 
     # "${PROJECT_SOURCE_DIR}/external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}" 
     # "${PROJECT_SOURCE_DIR}/external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}/lib"
     # NO_DEFAULT_PATH) #not needed for now
-find_library(EXTERNAL_LIB_BLAS openblas blas)
-find_library(EXTERNAL_LIB_LAPACK lapack)
-find_library(EXTERNAL_LIB_LAPACKE lapacke)
+find_library(EXTERNAL_LIB_BLAS NAMES openblas blas )
+find_library(EXTERNAL_LIB_LAPACK NAMES lapack )
+find_library(EXTERNAL_LIB_LAPACKE NAMES lapacke)
 
 find_path(EXTERNAL_INCLUDE_ZLIB zlib.h REQUIRED)
 find_path(EXTERNAL_INCLUDE_HDF5 hdf5.h PATHS 
     "${PROJECT_SOURCE_DIR}/external/HDF5/include"
     "${PROJECT_SOURCE_DIR}/external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}/include"
-    NO_DEFAULT_PATH REQUIRED)
+    REQUIRED)
 find_path(EXTERNAL_INCLUDE_CGNS cgnslib.h PATHS 
     "${PROJECT_SOURCE_DIR}/external/cgns/include" 
     "${PROJECT_SOURCE_DIR}/external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}/include"
-    NO_DEFAULT_PATH REQUIRED)
+    REQUIRED)
 find_path(EXTERNAL_INCLUDE_METIS metis.h PATHS 
     "${PROJECT_SOURCE_DIR}/external/metis/include" 
     "${PROJECT_SOURCE_DIR}/external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}/include"
-    NO_DEFAULT_PATH REQUIRED)
+    REQUIRED)
 find_path(EXTERNAL_INCLUDE_PARMETIS parmetis.h PATHS 
     "${PROJECT_SOURCE_DIR}/external/parmetis/include" 
     "${PROJECT_SOURCE_DIR}/external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}/include"
-    NO_DEFAULT_PATH REQUIRED)
+    REQUIRED)
 # find_path(EXTERNAL_INCLUDE_TECIO TECIO.h PATHS 
 #     "${PROJECT_SOURCE_DIR}/external/tecio/include" 
 #     "${PROJECT_SOURCE_DIR}/external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}/include"
