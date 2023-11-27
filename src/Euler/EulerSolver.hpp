@@ -394,7 +394,7 @@ namespace DNDS::Euler
                     gSetting.merge_patch(gSettingAdd);
                 }
                 config.ReadWriteJson(gSetting, nVars, read);
-                PrintConfig();
+                PrintConfig(true);
                 if (mpi.rank == 0)
                     log() << "JSON: read value:" << std::endl
                           << std::setw(4) << gSetting << std::endl;
@@ -504,7 +504,6 @@ namespace DNDS::Euler
                 serializer->CloseFile();
                 return; //** mesh preprocess only (without transformation)
             }
-
 
 #ifdef DNDS_USE_OMP
             omp_set_num_threads(DNDS::MPIWorldSize() == 1 ? std::min(omp_get_num_procs(), omp_get_max_threads()) : 1);
@@ -700,7 +699,7 @@ namespace DNDS::Euler
 
         void RunImplicitEuler();
 
-        void PrintConfig()
+        void PrintConfig(bool updateCommit = false)
         {
             /***********************************************************/
             // if these objects are existent, extract settings from them
@@ -717,6 +716,16 @@ namespace DNDS::Euler
                 std::ofstream logConfig(config.dataIOControl.outLogName + "_" + output_stamp + ".config.json");
                 gSetting["___Compile_Time_Defines"] = DNDS_Defines_state;
                 gSetting["___Runtime_PartitionNumber"] = mpi.size;
+                if (updateCommit)
+                {
+                    std::ifstream commitIDFile("commitID.txt");
+                    if (commitIDFile)
+                    {
+                        std::string commitHash;
+                        commitIDFile >> commitHash;
+                        gSetting["___Commit_ID"] = commitHash;
+                    }
+                }
                 logConfig << std::setw(4) << gSetting;
                 logConfig.close();
             }
