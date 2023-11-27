@@ -35,6 +35,7 @@ namespace DNDS::CFV
             auto eCell = mesh->GetCellElement(iCell);
             auto qCell = Quadrature{eCell, cellAtr[iCell].intOrder};
             auto qCellO1 = Quadrature{eCell, 1};
+            auto qCellMax = Quadrature{eCell, INT_ORDER_MAX};
             DNDS_assert(qCellO1.GetNumPoints() == 1);
             cellIntJacobiDet.ResizeRow(iCell, qCell.GetNumPoints());
             cellIntPPhysics.ResizeRow(iCell, qCell.GetNumPoints());
@@ -94,13 +95,19 @@ namespace DNDS::CFV
             //****** Get Major Axis
             tJacobi inertia;
             inertia.setZero();
-            qCell.Integration(
+            qCellMax.Integration(
                 inertia,
                 [&](auto &vInc, int iG, const tPoint &pParam, const Elem::tD01Nj &DiNj)
                 {
                     tPoint pPhy = Elem::PPhysicsCoordD01Nj(coordsCell, DiNj);
+                    tJacobi J = Elem::ShapeJacobianCoordD01Nj(coordsCell, DiNj);
+                    real JDet;
+                    if constexpr (dim == 2)
+                        JDet = J(Eigen::all, 0).cross(J(Eigen::all, 1)).stableNorm();
+                    else
+                        JDet = J.determinant();
                     tPoint pPhyC = (pPhy - cellBary[iCell]);
-                    vInc = (pPhyC * pPhyC.transpose()) * cellIntJacobiDet(iCell, iG);
+                    vInc = (pPhyC * pPhyC.transpose()) * JDet;
                 });
             inertia /= this->GetCellVol(iCell);
             real inerNorm = inertia.norm();
@@ -133,7 +140,7 @@ namespace DNDS::CFV
         real sumVolumeAll{0};
         MPI::Allreduce(&sumVolume, &sumVolumeAll, 1, DNDS_MPI_REAL, MPI_SUM, mpi.comm);
         if (mpi.rank == mRank)
-            std::cout
+            log()
                 << "VariationalReconstruction<dim>::ConstructMetrics() === Sum Volume is ["
                 << std::setprecision(10) << sumVolumeAll << "] " << std::endl;
         volGlobal = sumVolumeAll;
@@ -274,22 +281,32 @@ namespace DNDS::CFV
             cellAtr[iCell].relax = settings.jacobiRelax;
             auto qCell = this->GetCellQuad(iCell);
             auto qCellO1 = this->GetCellQuadO1(iCell);
+            auto qCellMax = Quadrature{mesh->GetCellElement(iCell), INT_ORDER_MAX};
             if (settings.cacheDiffBase)
             {
                 cellDiffBaseCache.ResizeRow(iCell, qCell.GetNumPoints());
             }
             // std::cout << "hare" << std::endl;
+            tSmallCoords coordsCell;
+            mesh->GetCoordsOnCell(iCell, coordsCell);
 
             Eigen::RowVector<real, Eigen::Dynamic> m;
             m.setZero(cellAtr[iCell].NDOF);
-            qCell.Integration(
+            qCellMax.Integration(
                 m,
                 [&](auto &vInc, int iG, const tPoint &pParam, const Elem::tD01Nj &DiNj)
                 {
+                    tPoint pPhy = Elem::PPhysicsCoordD01Nj(coordsCell, DiNj);
+                    tJacobi J = Elem::ShapeJacobianCoordD01Nj(coordsCell, DiNj);
+                    real JDet;
+                    if constexpr (dim == 2)
+                        JDet = J(Eigen::all, 0).cross(J(Eigen::all, 1)).stableNorm();
+                    else
+                        JDet = J.determinant();
                     Eigen::RowVector<real, Eigen::Dynamic> vv;
                     vv.resizeLike(m);
-                    this->FDiffBaseValue(vv, this->GetCellQuadraturePPhys(iCell, iG), iCell, -1, iG, 1);
-                    vInc = vv * this->GetCellJacobiDet(iCell, iG);
+                    this->FDiffBaseValue(vv, pPhy, iCell, -1, -2, 1); // un-dispatched call
+                    vInc = vv * JDet;
                 });
             // std::cout << m << std::endl;
             cellBaseMoment[iCell] = m.transpose() / this->GetCellVol(iCell);
@@ -574,6 +591,10 @@ namespace DNDS::CFV
         // faceWeight.trans.pullOnce(); //!err: need adding comm preparation first
         // faceAlignedScales.trans.pullOnce(); //!err: need adding comm preparation first
         // faceMajorCoordScale.trans.pullOnce(); //!err: need adding comm preparation first
+
+        if (mpi.rank == mRank)
+            log()
+                << "VariationalReconstruction<dim>::ConstructBaseAndWeight() done" << std::endl;
     }
 
     template void
