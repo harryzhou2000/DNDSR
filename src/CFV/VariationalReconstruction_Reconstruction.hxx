@@ -179,6 +179,8 @@ namespace DNDS
             bool putIntoNew,
             bool recordInc)
         {
+            DNDS_MPI_InsertCheck(mpi, " DoReconstructionIter 0 ");
+
             using namespace Geom;
             using namespace Geom::Elem;
             static const auto Seq012 = Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>);
@@ -262,6 +264,7 @@ namespace DNDS
                                         this->GetFaceNorm(iFace, iG),
                                         this->GetFaceQuadraturePPhysFromCell(iFace, iCell, -1, iG), faceID);
                                 Eigen::RowVector<real, nVarsFixed> uIncBV = (uBV - u[iCell]).transpose();
+                                vInc.resizeLike(BCC);
                                 vInc(seqRecRange, Eigen::all) = this->FFaceFunctional(dbv, uIncBV, iFace, iG, iCell, iCell);
                                 if (settings.functionalSettings.greenGauss1Weight != 0)
                                 {
@@ -306,6 +309,8 @@ namespace DNDS
                     for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
                         uRec[iCell].swap(uRecNew[iCell]);
             }
+
+            DNDS_MPI_InsertCheck(mpi, " DoReconstructionIter -1 ");
         }
 
         template <int dim>
@@ -381,6 +386,7 @@ namespace DNDS
                                             this->GetFaceNorm(iFace, iG),
                                             this->GetFaceQuadraturePPhysFromCell(iFace, iCell, -1, iG), faceID);
                                 Eigen::RowVector<real, nVarsFixed> uIncBV = uBV.transpose();
+                                vInc.resizeLike(BCC);
                                 vInc(seqRecRange, Eigen::all) = this->FFaceFunctional(dbv, uIncBV, iFace, iG, iCell, iCell) * this->GetFaceJacobiDet(iFace, iG);
                                 // std::cout << faceWeight[iFace].transpose() << std::endl;
                                 if (settings.functionalSettings.greenGauss1Weight != 0)
@@ -478,7 +484,8 @@ namespace DNDS
                                             this->GetFaceNorm(iFace, iG),
                                             this->GetFaceQuadraturePPhysFromCell(iFace, iCell, -1, iG), faceID);
                                 Eigen::RowVector<real, nVarsFixed> uIncBV = uBV.transpose();
-                                vInc = this->FFaceFunctional(dbv, uIncBV, iFace, iG, iCell, iCell) * this->GetFaceJacobiDet(iFace, iG);
+                                vInc.resizeLike(BCC);
+                                vInc(seqRecRange, Eigen::all) = this->FFaceFunctional(dbv, uIncBV, iFace, iG, iCell, iCell) * this->GetFaceJacobiDet(iFace, iG);
                                 // std::cout << faceWeight[iFace].transpose() << std::endl;
                                 if (settings.functionalSettings.greenGauss1Weight != 0)
                                 {
