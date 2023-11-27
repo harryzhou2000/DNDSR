@@ -716,16 +716,17 @@ namespace DNDS::Euler
                 std::ofstream logConfig(config.dataIOControl.outLogName + "_" + output_stamp + ".config.json");
                 gSetting["___Compile_Time_Defines"] = DNDS_Defines_state;
                 gSetting["___Runtime_PartitionNumber"] = mpi.size;
-                if (updateCommit)
-                {
-                    std::ifstream commitIDFile("commitID.txt");
-                    if (commitIDFile)
-                    {
-                        std::string commitHash;
-                        commitIDFile >> commitHash;
-                        gSetting["___Commit_ID"] = commitHash;
-                    }
-                }
+                gSetting["___Commit_ID"] = DNDS_MACRO_TO_STRING(DNDS_CURRENT_COMMIT_HASH);
+                // if (updateCommit)
+                // {
+                //     std::ifstream commitIDFile("commitID.txt");
+                //     if (commitIDFile)
+                //     {
+                //         std::string commitHash;
+                //         commitIDFile >> commitHash;
+                //         gSetting["___Commit_ID"] = commitHash;
+                //     }
+                // }
                 logConfig << std::setw(4) << gSetting;
                 logConfig.close();
             }
