@@ -619,7 +619,7 @@ namespace DNDS::CFV
         this->MakePairDefaultOnCell(vectorB, solvedNDOF - 1, 1);
         this->MakePairDefaultOnCell(vectorAInvB, solvedNDOF - 1, 1);
         if (settings.functionalSettings.greenGauss1Weight != 0)
-            this->MakePairDefaultOnCell(matrixAHalf_GG, dim, (solvedNDOF - 1));
+            this->MakePairDefaultOnCell(matrixAHalf_GG, dim, (maxNDOF - 1));
         real maxCond = 0.0;
 #ifdef DNDS_USE_OMP
 #pragma omp parallel for
