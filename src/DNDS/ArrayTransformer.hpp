@@ -356,11 +356,11 @@ namespace DNDS
                 }
                 // is actually pulling disps, but is contiguous anyway
 
-                // InsertCheck(mpi);
+                // DNDS_MPI_InsertCheck(mpi);
                 // std::cout << mpi.rank << " VEC ";
                 // PrintVec(pullingSizes, std::cout);
                 // std::cout << std::endl;
-                // InsertCheck(mpi);
+                // DNDS_MPI_InsertCheck(mpi);
 
                 // note that Rowstart and pullingSizes are in bytes
                 // pullingSizes is actual but Rowstart is before indexModder(), use indexModder[] to invert

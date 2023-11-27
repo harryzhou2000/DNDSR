@@ -389,7 +389,6 @@ namespace DNDS::CFV
                                 std::min(faceAtr[iFace].NDIFF, settings.cacheDiffBaseSize),
                                 cellAtr[iCell].NDOF);
                             this->FDiffBaseValue(dbv, this->GetFaceQuadraturePPhysFromCell(iFace, iCell, if2c, -1), iCell, iFace, -1, 0);
-                            int maxNDOF = GetNDof<dim>(settings.maxOrder);
                             faceDiffBaseCacheCent[iFace](
                                 Eigen::all,
                                 Eigen::seq(if2c * maxNDOF,
@@ -593,12 +592,13 @@ namespace DNDS::CFV
         using namespace Geom;
         using namespace Geom::Elem;
         int maxNDOF = GetNDof<dim>(settings.maxOrder);
-        this->MakePairDefaultOnCell(matrixAB, maxNDOF - 1, maxNDOF - 1);
-        this->MakePairDefaultOnCell(matrixAAInvB, maxNDOF - 1, maxNDOF - 1);
-        this->MakePairDefaultOnCell(vectorB, maxNDOF - 1, 1);
-        this->MakePairDefaultOnCell(vectorAInvB, maxNDOF - 1, 1);
+        int solvedNDOF = settings.functionalSettings.greenGaussLM1Weight != 0 ? maxNDOF + dim : maxNDOF;
+        this->MakePairDefaultOnCell(matrixAB, solvedNDOF - 1, solvedNDOF - 1);
+        this->MakePairDefaultOnCell(matrixAAInvB, solvedNDOF - 1, solvedNDOF - 1);
+        this->MakePairDefaultOnCell(vectorB, solvedNDOF - 1, 1);
+        this->MakePairDefaultOnCell(vectorAInvB, solvedNDOF - 1, 1);
         if (settings.functionalSettings.greenGauss1Weight != 0)
-            this->MakePairDefaultOnCell(matrixAHalf_GG, dim, (maxNDOF - 1));
+            this->MakePairDefaultOnCell(matrixAHalf_GG, dim, (solvedNDOF - 1));
         real maxCond = 0.0;
 #ifdef DNDS_USE_OMP
 #pragma omp parallel for
@@ -634,7 +634,8 @@ namespace DNDS::CFV
                 // std::cout << "face "<< faceWeight[iFace].transpose() << std::endl;
             }
             Eigen::Matrix<real, dim, Eigen::Dynamic> AHalf_GG;
-            if (settings.functionalSettings.greenGauss1Weight != 0)
+            if (settings.functionalSettings.greenGauss1Weight != 0 ||
+                settings.functionalSettings.greenGaussLM1Weight != 0)
             {
                 //* reduced functional on compact stencil
                 AHalf_GG.resize(Eigen::NoChange, A.cols());
@@ -688,9 +689,20 @@ namespace DNDS::CFV
                 // std::cout << "IncA\n"
                 //           << (AHalf_GG.transpose() * AHalf_GG) << std::endl;
                 A += (AHalf_GG.transpose() * AHalf_GG) * this->GetGreenGauss1WeightOnCell(iCell);
-                matrixAHalf_GG[iCell] = AHalf_GG;
+                if (settings.functionalSettings.greenGauss1Weight != 0)
+                    matrixAHalf_GG[iCell] = AHalf_GG;
             }
-            decltype(A) AInv;
+            Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic> AInv;
+            Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic> AFull;
+            if (settings.functionalSettings.greenGaussLM1Weight != 0)
+            {
+                AFull.resize(A.rows() + dim, A.cols() + dim);
+                AFull.setZero();
+                AFull.topLeftCorner(A.rows(), A.cols()) = A;
+                AFull.bottomLeftCorner(dim, A.cols()) = AHalf_GG * settings.functionalSettings.greenGaussLM1Weight;
+                AFull.topRightCorner(A.rows(), dim) = AHalf_GG.transpose() * settings.functionalSettings.greenGaussLM1Weight;
+                A = AFull;
+            }
             real aCond = HardEigen::EigenLeastSquareInverse(A, AInv);
             matrixAB(iCell, 0) = A;
             matrixAAInvB(iCell, 0) = AInv;
@@ -731,9 +743,10 @@ namespace DNDS::CFV
                         vInc = this->FFaceFunctional(DiffI, DiffJ, iFace, iG, iCell, iCellOther);
                         vInc *= this->GetFaceJacobiDet(iFace, iG);
                     });
-                if (settings.functionalSettings.greenGauss1Weight != 0)
+                decltype(AHalf_GG) BHalf_GG, BHalf_GG_Other;
+                if (settings.functionalSettings.greenGauss1Weight != 0 ||
+                    settings.functionalSettings.greenGaussLM1Weight != 0)
                 {
-                    decltype(AHalf_GG) BHalf_GG;
                     BHalf_GG.resize(Eigen::NoChange, B.cols());
                     BHalf_GG.setZero();
                     qFace.IntegrationSimple(
@@ -761,6 +774,38 @@ namespace DNDS::CFV
                     //           << AHalf_GG.transpose() * BHalf_GG << std::endl;
                     B += AHalf_GG.transpose() * BHalf_GG * this->GetGreenGauss1WeightOnCell(iCell);
                 }
+                if (settings.functionalSettings.greenGaussLM1Weight != 0)
+                {
+                    BHalf_GG_Other.resize(Eigen::NoChange, B.rows());
+                    BHalf_GG_Other.setZero();
+                    qFace.IntegrationSimple(
+                        BHalf_GG_Other,
+                        [&](decltype(BHalf_GG_Other) &inc, int iG)
+                        {
+                            tPoint normOut = this->GetFaceNormFromCell(iFace, iCell, if2c, iG) *
+                                             (if2c ? -1 : 1) * (-1); // * from the other side
+                            inc = normOut(Seq012) *
+                                  this->GetIntPointDiffBaseValue(iCell, iFace, if2c, iG, 0, 1);
+                            inc *= settings.functionalSettings.greenGauss1Bias;
+                            real dLR = (GetOtherCellBaryFromCell(iCell, iCellOther, iFace) - GetCellBary(iCell)).norm();
+                            inc += normOut(Seq012) *
+                                   (normOut(Seq012).transpose() *
+                                    this->GetIntPointDiffBaseValue(iCell, iFace, if2c, iG, Seq123, dim + 1)) *
+                                   dLR *
+                                   settings.functionalSettings.greenGauss1Penalty;
+                            inc *= this->GetFaceJacobiDet(iFace, iG);
+                        });
+                }
+                Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic> BFull;
+                if (settings.functionalSettings.greenGaussLM1Weight != 0)
+                {
+                    BFull.resize(B.rows() + dim, B.cols() + dim);
+                    BFull.setZero();
+                    BFull.topLeftCorner(B.rows(), B.cols()) = B;
+                    BFull.bottomLeftCorner(dim, B.cols()) = BHalf_GG * settings.functionalSettings.greenGaussLM1Weight;
+                    BFull.topRightCorner(B.rows(), dim) = BHalf_GG_Other.transpose() * settings.functionalSettings.greenGaussLM1Weight;
+                    B = BFull;
+                }
                 matrixAB(iCell, 1 + ic2f) = B;
                 matrixAAInvB(iCell, 1 + ic2f) = AInv * B;
             }
@@ -782,9 +827,10 @@ namespace DNDS::CFV
                         vInc = this->FFaceFunctional(DiffI, Eigen::MatrixXd::Ones(1, 1), iFace, iG, iCell, iCell);
                         vInc *= this->GetFaceJacobiDet(iFace, iG);
                     });
-                if (settings.functionalSettings.greenGauss1Weight != 0)
+                Eigen::Matrix<real, dim, 1> bHalf_GG;
+                if (settings.functionalSettings.greenGauss1Weight != 0 ||
+                    settings.functionalSettings.greenGaussLM1Weight != 0)
                 {
-                    Eigen::Matrix<real, dim, 1> bHalf_GG;
                     bHalf_GG.setZero();
                     qFace.IntegrationSimple(
                         bHalf_GG,
@@ -801,6 +847,15 @@ namespace DNDS::CFV
                     // std::cout << "Incb\n"
                     //           << AHalf_GG.transpose() * bHalf_GG << std::endl;
                     b += AHalf_GG.transpose() * bHalf_GG * this->GetGreenGauss1WeightOnCell(iCell);
+                }
+                Eigen::Matrix<real, Eigen::Dynamic, 1> bFull;
+                if (settings.functionalSettings.greenGaussLM1Weight != 0)
+                {
+                    bFull.resize(b.rows() + dim);
+                    bFull.setZero();
+                    bFull.head(b.rows()) = b;
+                    bFull.tail(dim) = bHalf_GG * settings.functionalSettings.greenGaussLM1Weight;
+                    b = bFull;
                 }
                 vectorB(iCell, ic2f) = b;
                 vectorAInvB(iCell, ic2f) = AInv * b;

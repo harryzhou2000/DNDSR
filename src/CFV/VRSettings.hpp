@@ -105,6 +105,8 @@ namespace DNDS::CFV
             real greenGauss1Penalty = 0.0;
             int greenGaussSpacial = 0; // 1 for uniform weight
 
+            real greenGaussLM1Weight = 0.0;
+
             DNDS_NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_ORDERED_JSON(
                 FunctionalSettings,
                 scaleType,
@@ -119,7 +121,8 @@ namespace DNDS::CFV
                 greenGauss1Weight,
                 greenGauss1Bias,
                 greenGauss1Penalty,
-                greenGaussSpacial)
+                greenGaussSpacial,
+                greenGaussLM1Weight)
             FunctionalSettings()
             {
                 manualDirWeights.resize(5);

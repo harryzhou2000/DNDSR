@@ -11,7 +11,7 @@ namespace DNDS::Euler
     // /***************/ // IDE mode;
     {
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
-        InsertCheck(mpi, "Implicit 1 nvars " + std::to_string(nVars));
+        DNDS_MPI_InsertCheck(mpi, "Implicit 1 nvars " + std::to_string(nVars));
         auto hashCoord = mesh->coords.hash();
         if (mpi.rank == 0)
         {
@@ -198,7 +198,7 @@ namespace DNDS::Euler
         index nLimInc = 0;
         real alphaMinInc = 1;
 
-        InsertCheck(mpi, "Implicit 2 nvars " + std::to_string(nVars));
+        DNDS_MPI_InsertCheck(mpi, "Implicit 2 nvars " + std::to_string(nVars));
         /*******************************************************/
         /*                   DEFINE LAMBDAS                    */
         /*******************************************************/
@@ -227,7 +227,7 @@ namespace DNDS::Euler
             // for (index iCell = 0; iCell < uOld.size(); iCell++)
             //     uOld[iCell].m() = uRec[iCell].m();
 
-            InsertCheck(mpi, " Lambda RHS: StartRec");
+            DNDS_MPI_InsertCheck(mpi, " Lambda RHS: StartRec");
             int nRec = (gradIsZero ? config.implicitReconstructionControl.nRecMultiplyForZeroedGrad : 1) *
                        config.implicitReconstructionControl.nInternalRecStep;
             real recIncBase = 0;
@@ -367,7 +367,7 @@ namespace DNDS::Euler
             // for (index iCell = 0; iCell < uOld.size(); iCell++)
             //     uRecC[iCell].m() -= uOld[iCell].m();
 
-            InsertCheck(mpi, " Lambda RHS: StartLim");
+            DNDS_MPI_InsertCheck(mpi, " Lambda RHS: StartLim");
             if (config.limiterControl.useLimiter)
             {
                 // vfv->ReconstructionWBAPLimitFacial(
@@ -495,7 +495,7 @@ namespace DNDS::Euler
 
             // }
 
-            InsertCheck(mpi, " Lambda RHS: StartEval");
+            DNDS_MPI_InsertCheck(mpi, " Lambda RHS: StartEval");
             double tstartE = MPI_Wtime();
             eval.setPassiveDiscardSource(iter <= 0);
 
@@ -537,7 +537,7 @@ namespace DNDS::Euler
             }
             trhs += MPI_Wtime() - tstartE;
 
-            InsertCheck(mpi, " Lambda RHS: End");
+            DNDS_MPI_InsertCheck(mpi, " Lambda RHS: End");
         };
 
         auto fdtau = [&](ArrayDOFV<nVars_Fixed> &cx, std::vector<real> &dTau, real alphaDiag, int uPos)
@@ -1278,7 +1278,7 @@ namespace DNDS::Euler
 
         for (step = 1; step <= config.timeMarchControl.nTimeStep; step++)
         {
-            InsertCheck(mpi, "Implicit Step");
+            DNDS_MPI_InsertCheck(mpi, "Implicit Step");
             ifOutT = false;
             curDtImplicit = config.timeMarchControl.dtImplicit; //* could add CFL driven dt here
             if (tSimu + curDtImplicit > nextTout)

@@ -144,7 +144,7 @@ namespace DNDS
     }
 
 #define DNDS_MPI_InsertCheck(mpi, info) \
-    InsertCheck(mpi, info, _FUNCTION_, __FILE__, __LINE__)
+    InsertCheck(mpi, info, __FUNCTION__, __FILE__, __LINE__)
 
     template <class F>
     inline void MPISerialDo(const MPIInfo &mpi, F f)

@@ -18,6 +18,8 @@ namespace DNDS::Euler
             if (config.dataIOControl.outAtCellData)
                 for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
                 {
+                    int nDofs = vfv->GetCellAtr(iCell).NDOF;
+                    auto seqRecRange = Eigen::seq(0, nDofs - 1 - 1);
                     // TU recu =
                     //     vfv->GetIntPointDiffBaseValue(iCell, -1, -1, -1, std::array<int, 1>{0}, 1) *
                     //     uRec[iCell];
@@ -84,6 +86,8 @@ namespace DNDS::Euler
                 DNDS_assert(outDistPointPair.son->Size() == mesh->NumNodeGhost());
                 for (index iCell = 0; iCell < mesh->NumCellProc(); iCell++) //! all cells
                 {
+                    int nDofs = vfv->GetCellAtr(iCell).NDOF;
+                    auto seqRecRange = Eigen::seq(0, nDofs - 1 - 1);
                     for (int ic2n = 0; ic2n < mesh->cell2node.RowSize(iCell); ic2n++)
                     {
                         auto iNode = mesh->cell2node(iCell, ic2n);
@@ -91,11 +95,16 @@ namespace DNDS::Euler
                         auto pPhy = mesh->GetCoordNodeOnCell(iCell, ic2n);
 
                         Eigen::Matrix<real, 1, Eigen::Dynamic> DiBj;
-                        DiBj.resize(1, uRecNew[iCell].rows() + 1);
+                        DiBj.resize(1, nDofs);
                         // std::cout << uRecNew[iCell].rows() << std::endl;
                         vfv->FDiffBaseValue(DiBj, pPhy, iCell, -2, -2);
 
-                        TU vRec = (DiBj(Eigen::all, Eigen::seq(1, Eigen::last)) * (config.limiterControl.useLimiter ? uRecNew[iCell] : uRec[iCell])).transpose() + u[iCell];
+                        TU vRec = (DiBj(Eigen::all, Eigen::seq(1, Eigen::last)) *
+                                   (config.limiterControl.useLimiter
+                                        ? uRecNew[iCell](seqRecRange, Eigen::all)
+                                        : uRec[iCell](seqRecRange, Eigen::all)))
+                                      .transpose() +
+                                  u[iCell];
                         if (iNode < mesh->NumNode())
                             outDistPointPair[iNode](Eigen::seq(0, nVars - 1)) += vRec;
                     }
