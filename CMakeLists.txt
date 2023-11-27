@@ -40,6 +40,13 @@ set(DNDS_EIGEN_USE_BLAS OFF CACHE BOOL "use blas in eigen")
 set(DNDS_EIGEN_USE_LAPACK OFF CACHE BOOL "use lapack in eigen")
 set(DNDS_UNSAFE_MATH_OPT OFF CACHE BOOL "use -funsafe-math-optimizations")
 set(DNDS_NATIVE_ARCH     OFF CACHE BOOL "use -march=native")
+set(DNDS_RECORD_COMMIT ON CACHE BOOL "record commit id for each cmake configure")
+
+if(DNDS_RECORD_COMMIT)
+    execute_process(COMMAND git rev-parse HEAD OUTPUT_FILE commitID.txt WORKING_DIRECTORY ${CMAKE_BINARY_DIR} TIMEOUT 120)
+    message(STATUS "current commit id: ")
+    execute_process(COMMAND cat commitID.txt WORKING_DIRECTORY ${CMAKE_BINARY_DIR} TIMEOUT 10)
+endif()
 
 
 find_package(MPI REQUIRED)
@@ -425,6 +432,11 @@ CACHE INTERNAL
 "Public Project Internal Static Libs"
 )
 
+set(EXE_SUFFIX "")
+if (UNIX)
+    set(EXE_SUFFIX ".exe")
+endif()
+
 
 
 macro(ADD_EXE_APP EXES MAIN_DIR)
@@ -435,7 +447,7 @@ macro(ADD_EXE_APP EXES MAIN_DIR)
         target_link_libraries(${EXE} PUBLIC ${LIBS})
         target_link_libraries(${EXE} PUBLIC ${EXTERNAL_LIBS})
         target_include_directories(${EXE} PUBLIC ${EXTERNAL_INCLUDES} PUBLIC ${INCLUDES})
-        set_target_properties(${EXE} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/app RUNTIME_OUTPUT_NAME ${EXE}.exe)
+        set_target_properties(${EXE} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/app RUNTIME_OUTPUT_NAME "${EXE}${EXE_SUFFIX}")
     endforeach()
 endmacro(ADD_EXE_APP)
 
