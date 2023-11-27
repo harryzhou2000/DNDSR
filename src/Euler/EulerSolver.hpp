@@ -418,7 +418,7 @@ namespace DNDS::Euler
 
         void ReadMeshAndInitialize()
         {
-            InsertCheck(mpi, "ReadMeshAndInitialize 1 nvars " + std::to_string(nVars));
+            DNDS_MPI_InsertCheck(mpi, "ReadMeshAndInitialize 1 nvars " + std::to_string(nVars));
             output_stamp = getTimeStamp(mpi);
             if (!config.dataIOControl.uniqueStamps)
                 output_stamp = "";
@@ -626,7 +626,7 @@ namespace DNDS::Euler
             if (config.timeMarchControl.odeCode == 401)
                 vfv->BuildUDof(JD1, nVars), vfv->BuildUDof(JSource1, nVars);
 
-            InsertCheck(mpi, "ReadMeshAndInitialize 2 nvars " + std::to_string(nVars));
+            DNDS_MPI_InsertCheck(mpi, "ReadMeshAndInitialize 2 nvars " + std::to_string(nVars));
             /*******************************/
             // initialize pEval
             DNDS_MAKE_SSP(pEval, mesh, vfv, pBCHandler);
@@ -636,7 +636,7 @@ namespace DNDS::Euler
             /*******************************/
             // ** initialize output Array
 
-            InsertCheck(mpi, "ReadMeshAndInitialize 3 nvars " + std::to_string(nVars));
+            DNDS_MPI_InsertCheck(mpi, "ReadMeshAndInitialize 3 nvars " + std::to_string(nVars));
 
             // update output number
             DNDS_assert(config.dataIOControl.outCellScalarNames.size() < 128);
@@ -695,7 +695,7 @@ namespace DNDS::Euler
                     outDist2SerialTransPoint.initPersistentPull();
                 }
             }
-            InsertCheck(mpi, "ReadMeshAndInitialize -1 nvars " + std::to_string(nVars));
+            DNDS_MPI_InsertCheck(mpi, "ReadMeshAndInitialize -1 nvars " + std::to_string(nVars));
         }
 
         void RunImplicitEuler();

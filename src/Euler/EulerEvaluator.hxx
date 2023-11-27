@@ -56,7 +56,7 @@ namespace DNDS::Euler
         ArrayDOFV<nVars_Fixed> &AuInc)
     {
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
-        InsertCheck(u.father->getMPI(), "LUSGSMatrixVec 1");
+        DNDS_MPI_InsertCheck(u.father->getMPI(), "LUSGSMatrixVec 1");
         int cnvars = nVars;
         for (index iScan = 0; iScan < mesh->NumCell(); iScan++)
         {
@@ -130,7 +130,7 @@ namespace DNDS::Euler
                 DNDS_assert(!AuInc[iCell].hasNaN());
             }
         }
-        InsertCheck(u.father->getMPI(), "LUSGSMatrixVec -1");
+        DNDS_MPI_InsertCheck(u.father->getMPI(), "LUSGSMatrixVec -1");
     }
 
     template <EulerModel model>
@@ -143,7 +143,7 @@ namespace DNDS::Euler
         ArrayDOFV<nVars_Fixed> &uIncNew)
     {
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
-        InsertCheck(u.father->getMPI(), "UpdateLUSGSForward 1");
+        DNDS_MPI_InsertCheck(u.father->getMPI(), "UpdateLUSGSForward 1");
         int cnvars = nVars;
         index nCellDist = mesh->NumCell();
         for (index iScan = 0; iScan < nCellDist; iScan++)
@@ -207,7 +207,7 @@ namespace DNDS::Euler
                 DNDS_assert(!uIncNew[iCell].hasNaN());
             }
         }
-        InsertCheck(u.father->getMPI(), "UpdateLUSGSForward -1");
+        DNDS_MPI_InsertCheck(u.father->getMPI(), "UpdateLUSGSForward -1");
         // exit(-1);
     }
 
@@ -221,7 +221,7 @@ namespace DNDS::Euler
         ArrayDOFV<nVars_Fixed> &uIncNew)
     {
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
-        InsertCheck(u.father->getMPI(), "UpdateLUSGSBackward 1");
+        DNDS_MPI_InsertCheck(u.father->getMPI(), "UpdateLUSGSBackward 1");
         int cnvars = nVars;
         index nCellDist = mesh->NumCell();
         for (index iScan = nCellDist - 1; iScan >= 0; iScan--)
@@ -265,7 +265,7 @@ namespace DNDS::Euler
             auto uIncNewI = uIncNew[iCell];
             uIncNewI.array() += JDiag[iCell].array().inverse() * uIncNewBuf.array();
         }
-        InsertCheck(u.father->getMPI(), "UpdateLUSGSBackward -1");
+        DNDS_MPI_InsertCheck(u.father->getMPI(), "UpdateLUSGSBackward -1");
     }
 
     template <EulerModel model>
@@ -279,7 +279,7 @@ namespace DNDS::Euler
         bool forward, TU &sumInc)
     {
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
-        InsertCheck(u.father->getMPI(), "UpdateSGS 1");
+        DNDS_MPI_InsertCheck(u.father->getMPI(), "UpdateSGS 1");
         int cnvars = nVars;
         index nCellDist = mesh->NumCell();
         sumInc.setZero(cnvars);
@@ -350,7 +350,7 @@ namespace DNDS::Euler
         TU sumIncAll(cnvars);
         // std::abort();
         MPI::Allreduce(sumInc.data(), sumIncAll.data(), sumInc.size(), DNDS_MPI_REAL, MPI_SUM, rhs.father->getMPI().comm);
-        InsertCheck(u.father->getMPI(), "UpdateSGS -1");
+        DNDS_MPI_InsertCheck(u.father->getMPI(), "UpdateSGS -1");
         // exit(-1);
     }
 
@@ -366,7 +366,7 @@ namespace DNDS::Euler
         bool forward, TU &sumInc)
     {
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
-        InsertCheck(u.father->getMPI(), "UpdateSGS 1");
+        DNDS_MPI_InsertCheck(u.father->getMPI(), "UpdateSGS 1");
         int cnvars = nVars;
         index nCellDist = mesh->NumCell();
         sumInc.setZero(cnvars);
@@ -448,7 +448,7 @@ namespace DNDS::Euler
         }
         TU sumIncAll(cnvars);
         MPI::Allreduce(sumInc.data(), sumIncAll.data(), sumInc.size(), DNDS_MPI_REAL, MPI_SUM, rhs.father->getMPI().comm);
-        InsertCheck(u.father->getMPI(), "UpdateSGS -1");
+        DNDS_MPI_InsertCheck(u.father->getMPI(), "UpdateSGS -1");
     }
 
     template <EulerModel model>

@@ -4,10 +4,22 @@ else()
     cmake_minimum_required(VERSION 3.20)
 endif()
 
+set(CMAKE_INSTALL_PREFIX build/bin CACHE FILEPATH "install place")
+
+set(CMAKE_BUILD_TYPE Release CACHE STRING "Release or Debug")
+set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS
+    "Release" "Debug" "RelWithDebInfo" "MinSizeRel")
+
+
 # ##########################################
 project(DNDSR LANGUAGES CXX) #! need to be in front of find_package(MPI)
 
 
+message("external install hard guess at: external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}")
+set(HARD_GUESS_PATH external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR})
+
+# First Hard Guess
+set(CMAKE_PREFIX_PATH ${HARD_GUESS_PATH})
 
 # need CUDA project support ?
 # manual perferences
@@ -29,6 +41,7 @@ set(DNDS_EIGEN_USE_LAPACK OFF CACHE BOOL "use lapack in eigen")
 set(DNDS_UNSAFE_MATH_OPT OFF CACHE BOOL "use -funsafe-math-optimizations")
 set(DNDS_NATIVE_ARCH     OFF CACHE BOOL "use -march=native")
 
+
 find_package(MPI REQUIRED)
 if(UNIX)
     # set(CMAKE_CXX_COMPILER mpicxx CACHE FILEPATH "compiler with your MPI wrapping")
@@ -45,14 +58,11 @@ else()
     message(FATAL_ERROR "NOT YET IMPLEMENTED HERE")
 endif()
 
-set(CMAKE_INSTALL_PREFIX build/bin CACHE FILEPATH "install place")
 
-set(CMAKE_BUILD_TYPE Release CACHE STRING "Release or Debug")
-set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS
-    "Release" "Debug" "RelWithDebInfo" "MinSizeRel")
+
 set(CMAKE_USE_RELATIVE_PATHS ON)
 
-message("external install hard guess at: external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}")
+
 
 
 # ##########################################
@@ -147,7 +157,7 @@ set (EXTERNAL_LIBS "")
 
 if (MPI_CXX_FOUND)
     set(EXTERNAL_LIBS ${MPI_CXX_LIBRARIES})
-    message("MPI_CXX_LIBRARIES" ${MPI_CXX_LIBRARIES})
+    message(STATUS "MPI_CXX_LIBRARIES ${MPI_CXX_LIBRARIES}")
 endif()
 
 set(EXTERNAL_LIBS ${EXTERNAL_LIBS}

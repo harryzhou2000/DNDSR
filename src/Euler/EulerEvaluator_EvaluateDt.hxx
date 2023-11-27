@@ -153,7 +153,7 @@ namespace DNDS::Euler
         bool UseLocaldt)
     {
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
-        InsertCheck(u.father->getMPI(), "EvaluateDt 1");
+        DNDS_MPI_InsertCheck(u.father->getMPI(), "EvaluateDt 1");
         for (auto &i : lambdaCell)
             i = 0.0;
 

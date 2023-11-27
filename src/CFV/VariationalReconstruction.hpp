@@ -1179,7 +1179,7 @@ namespace DNDS::CFV
                             Eigen::all);
                     uOthers.reserve(maxNeighbour);
                     uOthers.push_back(uC); // using uC centered
-                    // InsertCheck(mpi, "HereAAC");
+                    // DNDS_MPI_InsertCheck(mpi, "HereAAC");
                     for (int ic2f = 0; ic2f < c2f.size(); ic2f++)
                     {
                         index iFace = c2f[ic2f];
@@ -1373,7 +1373,7 @@ namespace DNDS::CFV
                             Eigen::all);
                     uOthers.reserve(maxNeighbour);
                     uOthers.push_back(uC); // using uC centered
-                    // InsertCheck(mpi, "HereAAC");
+                    // DNDS_MPI_InsertCheck(mpi, "HereAAC");
                     for (int ic2f = 0; ic2f < c2f.size(); ic2f++)
                     {
                         index iFace = c2f[ic2f];

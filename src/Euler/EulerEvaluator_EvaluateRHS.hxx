@@ -24,7 +24,7 @@ namespace DNDS::Euler
         real t)
     {
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
-        InsertCheck(u.father->getMPI(), "EvaluateRHS 1");
+        DNDS_MPI_InsertCheck(u.father->getMPI(), "EvaluateRHS 1");
         int cnvars = nVars;
         auto rsType = settings.rsType;
         for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
@@ -132,7 +132,7 @@ namespace DNDS::Euler
 
 #endif
                     real minVol = vfv->GetCellVol(f2c[0]);
-                    // InsertCheck(u.father->getMPI(), "RHS inner 2");
+                    // DNDS_MPI_InsertCheck(u.father->getMPI(), "RHS inner 2");
 
                     if (f2c[1] != UnInitIndex)
                     {
@@ -202,7 +202,7 @@ namespace DNDS::Euler
                     //                      ? vfv->cellBaries[f2c[1]]
                     //                      : 2 * vfv->faceCenters[iFace] - vfv->cellBaries[f2c[0]]))
                     //                    .norm();
-                    // InsertCheck(u.father->getMPI(), "RHS inner 1");
+                    // DNDS_MPI_InsertCheck(u.father->getMPI(), "RHS inner 1");
                     TU UMeanXy = 0.5 * (ULxy + URxy);
 
 #ifndef DNDS_FV_EULEREVALUATOR_IGNORE_VISCOUS_TERM
@@ -305,7 +305,7 @@ namespace DNDS::Euler
             }
         }
 
-        InsertCheck(u.father->getMPI(), "EvaluateRHS After Flux");
+        DNDS_MPI_InsertCheck(u.father->getMPI(), "EvaluateRHS After Flux");
 
         if (!settings.ignoreSourceTerm)
         {
@@ -418,6 +418,6 @@ namespace DNDS::Euler
         // quick aux: reduce the wall flux sum
         MPI::Allreduce(fluxWallSumLocal.data(), fluxWallSum.data(), fluxWallSum.size(), DNDS_MPI_REAL, MPI_SUM, u.father->getMPI().comm);
 
-        InsertCheck(u.father->getMPI(), "EvaluateRHS -1");
+        DNDS_MPI_InsertCheck(u.father->getMPI(), "EvaluateRHS -1");
     }
 }
