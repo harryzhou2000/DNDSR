@@ -44,8 +44,11 @@ set(DNDS_RECORD_COMMIT ON CACHE BOOL "record commit id for each cmake configure"
 
 if(DNDS_RECORD_COMMIT)
     execute_process(COMMAND git rev-parse HEAD OUTPUT_FILE commitID.txt WORKING_DIRECTORY ${CMAKE_BINARY_DIR} TIMEOUT 120)
-    message(STATUS "current commit id: ")
-    execute_process(COMMAND cat commitID.txt WORKING_DIRECTORY ${CMAKE_BINARY_DIR} TIMEOUT 10)
+    # message(STATUS "current commit id: ")
+    # execute_process(COMMAND cat commitID.txt WORKING_DIRECTORY ${CMAKE_BINARY_DIR} TIMEOUT 10)
+    file(READ "${CMAKE_BINARY_DIR}/commitID.txt" DNDS_RECORDED_COMMIT_HASH)
+    string(STRIP ${DNDS_RECORDED_COMMIT_HASH} DNDS_RECORDED_COMMIT_HASH)
+    message(STATUS "current commit id: ${DNDS_RECORDED_COMMIT_HASH}")
 endif()
 
 
@@ -213,11 +216,14 @@ set(EXTERNAL_INCLUDES
     CACHE INTERNAL "Project External Includes")
 
 if(DNDS_EIGEN_USE_BLAS)
-    add_compile_options(-DEIGEN_USE_BLAS)
+    add_compile_definitions(EIGEN_USE_BLAS)
 endif()
 
 if(DNDS_EIGEN_USE_LAPACK)
-    add_compile_options(-DEIGEN_USE_LAPACKE_STRICT)
+    add_compile_definitions(EIGEN_USE_LAPACKE_STRICT)
+endif()
+if(DNDS_RECORD_COMMIT)
+    add_compile_definitions(DNDS_CURRENT_COMMIT_HASH=${DNDS_RECORDED_COMMIT_HASH})
 endif()
 
 if(UNIX OR MINGW)
@@ -243,6 +249,7 @@ if(UNIX OR MINGW)
     
     ### set warnings
     add_compile_options(-Wall -Wno-unused-but-set-variable -Wno-unused-variable -Wno-sign-compare)
+    
 
     if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang")
         # add_compile_options(-fopenmp)
