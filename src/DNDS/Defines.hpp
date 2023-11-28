@@ -43,6 +43,13 @@ static const std::string DNDS_Defines_state =
 #endif
     ;
 
+#ifndef DNDS_CURRENT_COMMIT_HASH
+#define DNDS_CURRENT_COMMIT_HASH UNKNOWN
+#endif
+
+#define DNDS_MACRO_TO_STRING(V) __DNDS_str(V)
+#define __DNDS_str(V) #V
+
 /***************/ // DNDS_assertS
 
 inline void __DNDS_assert_false(const char *expr, const char *file, int line)
