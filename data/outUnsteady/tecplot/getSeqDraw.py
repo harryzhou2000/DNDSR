@@ -3,8 +3,8 @@ import os
 import re
 import os.path
 
-prefix = ".."
-namePrefix = "CylinderA1__"
+prefix = "../CylinderA1_RE2000_BDF2_8000x"
+namePrefix = "CylinderA1_RE2000__"
 mcrIn = "GetCURL2D.mcr"
 mcrOut = "GetCURL2D_Seq.mcr"
 

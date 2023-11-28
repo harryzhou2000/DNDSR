@@ -1,7 +1,7 @@
 
 
-prefix = ".."
-namePrefix = "CylinderA1__"
+prefix = "../CylinderA1_RE2000_BDF2_8000x"
+namePrefix = "CylinderA1_RE2000__"
 
 files = dir(prefix);
 fileNeed = strings(0);
@@ -10,7 +10,7 @@ fileNum = [];
 
 for ifile = 1 : numel(files)
     file = files(ifile);
-    match = regexp(file.name, prefix + "(\d+).png",'tokens');
+    match = regexp(file.name, namePrefix + "(\d+).png",'tokens');
     if numel(match) == 1
 
         fileNum(end + 1) = str2double(match{1});
@@ -25,7 +25,7 @@ fileNeed = fileNeed(sortedI);
 
 vidWriter = VideoWriter(prefix + "/" + namePrefix + ".mp4","MPEG-4");
 vidWriter.Quality = 95;
-vidWriter.FrameRate = 10;
+vidWriter.FrameRate = 40;
 vidWriter.open()
  
 for ifile = 1 : numel(fileNeed)
