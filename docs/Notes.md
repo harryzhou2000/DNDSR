@@ -96,6 +96,13 @@ ompi 3.x seems ungood (module load mpi/openmpi/3.1.6-gcc-9.3.0), for large mesh 
 
 note that when switching mpi (or other libs), best check entries in cmake, (safest: restart vscode or in standalone terminal), could be unchanged
 
+### curious performance issue on bssct
+
+with the std::pow in faceFlux function, step time for CylinderA1_L's vorstreet case, is **~5s**, reduces to **~0.2s** at *ts 80 (internal 40x80)*
+with std::pow replaced with std::sqrt, step time starts as **~1.3s**, reduces to **~0.2s** at *ts 80 (internal 40x80)*
+with std::pow not replaced, but using intel icpc,  step time starts as **~0.4s**
+with replaced with std::sqrt and using intel icpc, step time starts as **~0.4s**
+
 ## building hdf5 and cgns
 ```
  ../configure   --enable-fortran=yes --enable-parallel=yes --with-zlib=yes --prefix=$(realpath ../../install) 
