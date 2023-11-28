@@ -49,7 +49,7 @@ namespace DNDS::Euler
         ssp<Geom::UnstructuredMeshSerialRW> reader, readerBnd;
         ssp<EulerEvaluator<model>> pEval;
 
-        ArrayDOFV<nVars_Fixed> u, uInc, uIncRHS, uTemp, rhsTemp;
+        ArrayDOFV<nVars_Fixed> u, uInc, uIncRHS, uTemp, rhsTemp, wAveraged, uAveraged;
         ArrayRECV<nVars_Fixed> uRec, uRecNew, uRecNew1, uRecOld, uRec1, uRecInc, uRecInc1;
         ArrayDOFV<nVars_Fixed> JD, JD1, JSource, JSource1;
         ArrayDOFV<1> alphaPP, alphaPP1, betaPP, betaPP1, alphaPP_tmp;
@@ -146,6 +146,8 @@ namespace DNDS::Euler
                 int nRestartOutC = INT_MAX;
                 int nRestartOutInternal = INT_MAX;
                 int nRestartOutCInternal = INT_MAX;
+                int nTimeAverageOut = INT_MAX;
+                int nTimeAverageOutC = INT_MAX;
                 real tDataOut = veryLargeReal;
 
                 DNDS_NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_ORDERED_JSON(
@@ -154,14 +156,11 @@ namespace DNDS::Euler
                     nConsoleCheckInternal,
                     consoleOutputMode,
                     consoleOutputEveryFix,
-                    nDataOut,
-                    nDataOutC,
-                    nDataOutInternal,
-                    nDataOutCInternal,
-                    nRestartOut,
-                    nRestartOutC,
-                    nRestartOutInternal,
-                    nRestartOutCInternal,
+                    nDataOut, nDataOutC,
+                    nDataOutInternal, nDataOutCInternal,
+                    nRestartOut, nRestartOutC,
+                    nRestartOutInternal, nRestartOutCInternal,
+                    nTimeAverageOut, nTimeAverageOutC,
                     tDataOut)
             } outputControl;
 
@@ -312,6 +311,14 @@ namespace DNDS::Euler
                     lastRestartFile)
             } restartState;
 
+            struct TimeAverageControl
+            {
+                bool enabled = false;
+                DNDS_NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_ORDERED_JSON(
+                    TimeAverageControl,
+                    enabled)
+            } timeAverageControl;
+
             struct Others
             {
                 int nFreezePassiveInner = 0;
@@ -337,6 +344,7 @@ namespace DNDS::Euler
                 __DNDS__json_to_config(boundaryDefinition);
                 __DNDS__json_to_config(limiterControl);
                 __DNDS__json_to_config(linearSolverControl);
+                __DNDS__json_to_config(timeAverageControl);
                 __DNDS__json_to_config(others);
                 __DNDS__json_to_config(restartState);
 
@@ -593,6 +601,11 @@ namespace DNDS::Euler
             vfv->BuildUDof(uIncRHS, nVars);
             vfv->BuildUDof(uTemp, nVars);
             vfv->BuildUDof(rhsTemp, nVars);
+            if (config.timeAverageControl.enabled)
+            {
+                vfv->BuildUDof(wAveraged, nVars);
+                vfv->BuildUDof(uAveraged, nVars);
+            }
 
             vfv->BuildURec(uRec, nVars);
             if (config.timeMarchControl.odeCode == 401)
@@ -777,10 +790,16 @@ namespace DNDS::Euler
 
         using tAdditionalCellScalarList = tCellScalarList;
 
+        enum PrintDataMode
+        {
+            PrintDataLatest = 0,
+            PrintDataTimeAverage = 1,
+        };
+
         void PrintData(const std::string &fname,
                        const tCellScalarFGet &odeResidualF,
                        tAdditionalCellScalarList &additionalCellScalars,
-                       TEval &eval);
+                       TEval &eval, PrintDataMode mode = PrintDataLatest);
 
         void WriteSerializer(SerializerBase *serializer, const std::string &name)
         {

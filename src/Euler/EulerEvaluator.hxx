@@ -465,6 +465,38 @@ namespace DNDS::Euler
     }
 
     template <EulerModel model>
+    void EulerEvaluator<model>::TimeAverageAddition(ArrayDOFV<nVars_Fixed> &w, ArrayDOFV<nVars_Fixed> &wAveraged, real dt, real &tCur)
+    {
+        wAveraged *= (tCur / (tCur + dt + verySmallReal));
+        wAveraged.addTo(w, (dt + verySmallReal) / (tCur + dt + verySmallReal));
+        tCur += dt + verySmallReal;
+    }
+
+    template <EulerModel model>
+    void EulerEvaluator<model>::MeanValueCons2Prim(ArrayDOFV<nVars_Fixed> &u, ArrayDOFV<nVars_Fixed> &w)
+    {
+        for (index iCell = 0; iCell < u.Size(); iCell++)
+        {
+            real gamma = settings.idealGasProperty.gamma;
+            TU out;
+            Gas::IdealGasThermalConservative2Primitive(u[iCell], out, gamma);
+            w[iCell] = out;
+        }
+    }
+
+    template <EulerModel model>
+    void EulerEvaluator<model>::MeanValuePrim2Cons(ArrayDOFV<nVars_Fixed> &w, ArrayDOFV<nVars_Fixed> &u)
+    {
+        for (index iCell = 0; iCell < w.Size(); iCell++)
+        {
+            real gamma = settings.idealGasProperty.gamma;
+            TU out;
+            Gas::IdealGasThermalPrimitive2Conservative(w[iCell], out, gamma);
+            u[iCell] = out;
+        }
+    }
+
+    template <EulerModel model>
     void EulerEvaluator<model>::EvaluateNorm(Eigen::Vector<real, -1> &res, ArrayDOFV<nVars_Fixed> &rhs, index P, bool volWise)
     {
         res.resize(nVars);

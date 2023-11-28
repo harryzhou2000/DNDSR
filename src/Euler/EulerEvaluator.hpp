@@ -391,6 +391,11 @@ namespace DNDS::Euler
 
         void FixUMaxFilter(ArrayDOFV<nVars_Fixed> &u);
 
+        void TimeAverageAddition(ArrayDOFV<nVars_Fixed> &w, ArrayDOFV<nVars_Fixed> &wAveraged, real dt, real &tCur);
+
+        void MeanValueCons2Prim(ArrayDOFV<nVars_Fixed> &u, ArrayDOFV<nVars_Fixed> &w);
+        void MeanValuePrim2Cons(ArrayDOFV<nVars_Fixed> &w, ArrayDOFV<nVars_Fixed> &u);
+
         void EvaluateNorm(
             Eigen::Vector<real, -1> &res,
             ArrayDOFV<nVars_Fixed> &rhs,
