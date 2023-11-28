@@ -11,8 +11,7 @@
         "tEnd": 3e+200,
         "odeSetting1": 0.0,
         "odeSetting2": 0.0,
-        "odeSetting3": 0.0,
-        "partitonMeshOnly": false
+        "odeSetting3": 0.0
     },
     "implicitReconstructionControl": {
         "nInternalRecStep": 1,
@@ -187,8 +186,7 @@
             "greenGauss1Weight": 0.0,
             "greenGauss1Bias": 0.5,
             "greenGauss1Penalty": 0.0,
-            "greenGaussSpacial": 0,
-            "greenGaussLM1Weight": 0.0
+            "greenGaussSpacial": 0
         }
     },
     "bcSettings": []

@@ -40,7 +40,6 @@
                 "${workspaceFolder}/external/Linux-x86_64/include",
                 "/usr/include/python3.10/"
             ],
-            "compilerArgs": ["-std=c++17"],
             "defines": [],
             "cStandard": "c17",
             "intelliSenseMode": "linux-gcc-x64",

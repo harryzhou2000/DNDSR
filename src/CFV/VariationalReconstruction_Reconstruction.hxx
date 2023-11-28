@@ -24,8 +24,6 @@ namespace DNDS
                 for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
                 {
                     int nVars = u[iCell].size();
-                    int nDofs = this->cellAtr[iCell].NDOF;
-                    auto seqRecRange = Eigen::seq(0, nDofs - 1 - 1);
                     auto c2f = mesh->cell2face[iCell];
                     Eigen::Matrix<real, nVarsFixed, dim> grad;
                     grad.setZero(nVars, dim);
@@ -51,7 +49,7 @@ namespace DNDS
                                     iCell, iFace, -1, -1, std::array<int, 1>{0}, 1);
                             Eigen::Vector<real, nVarsFixed> uBL =
                                 (dbv *
-                                 uRec[iCell](seqRecRange, Eigen::all))
+                                 uRec[iCell])
                                     .transpose();
                             uBL += u[iCell]; //! need fixing?
                             Eigen::Vector<real, nVarsFixed> uBV =
@@ -80,7 +78,7 @@ namespace DNDS
                     auto lud1bv = d1bv.partialPivLu();
                     if (lud1bv.rcond() > 1e9)
                         std::cout << "Large Cond " << lud1bv.rcond() << std::endl;
-                    uRec[iCell](seqRecRange, Eigen::all) = lud1bv.solve(grad.transpose());
+                    uRec[iCell] = lud1bv.solve(grad.transpose());
                     // std::cout << " g " << std::endl;
                     // std::cout << grad << std::endl;
                     // std::cout << uRec[iCell] << std::endl;
@@ -94,8 +92,6 @@ namespace DNDS
                 for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
                 {
                     int nVars = u[iCell].size();
-                    int nDofs = this->cellAtr[iCell].NDOF;
-                    auto seqRecRange = Eigen::seq(0, nDofs - 1 - 1);
                     auto c2f = mesh->cell2face[iCell];
                     Eigen::Matrix<real, nVarsFixed, dim> grad;
                     grad.setZero(nVars, dim);
@@ -125,7 +121,7 @@ namespace DNDS
                                     iCell, iFace, -1, -1, std::array<int, 1>{0}, 1);
                             Eigen::Vector<real, nVarsFixed> uBL =
                                 (dbv *
-                                 uRec[iCell](seqRecRange, Eigen::all))
+                                 uRec[iCell])
                                     .transpose();
                             uBL += u[iCell]; //! need fixing?
                             Eigen::Vector<real, nVarsFixed> uBV =
@@ -160,7 +156,7 @@ namespace DNDS
                     auto lud1bv = d1bv.partialPivLu();
                     if (lud1bv.rcond() > 1e9)
                         std::cout << "Large Cond " << lud1bv.rcond() << std::endl;
-                    uRec[iCell](seqRecRange, Eigen::all) = lud1bv.solve(grad.transpose());
+                    uRec[iCell] = lud1bv.solve(grad.transpose());
                 }
             }
             else
@@ -179,8 +175,6 @@ namespace DNDS
             bool putIntoNew,
             bool recordInc)
         {
-            DNDS_MPI_InsertCheck(mpi, " DoReconstructionIter 0 ");
-
             using namespace Geom;
             using namespace Geom::Elem;
             static const auto Seq012 = Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>);
@@ -199,8 +193,6 @@ namespace DNDS
             }
             for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
             {
-                int nDofs = this->cellAtr[iCell].NDOF;
-                auto seqRecRange = Eigen::seq(0, nDofs - 1 - 1);
                 real relax = cellAtr[iCell].relax;
 
                 if (recordInc)
@@ -254,7 +246,7 @@ namespace DNDS
                                         iCell, iFace, -1, iG, std::array<int, 1>{0}, 1);
                                 Eigen::Vector<real, nVarsFixed> uBL =
                                     (dbv *
-                                     uRec[iCell](seqRecRange, Eigen::all))
+                                     uRec[iCell])
                                         .transpose();
                                 uBL += u[iCell]; //! need fixing?
                                 Eigen::Vector<real, nVarsFixed> uBV =
@@ -264,20 +256,13 @@ namespace DNDS
                                         this->GetFaceNorm(iFace, iG),
                                         this->GetFaceQuadraturePPhysFromCell(iFace, iCell, -1, iG), faceID);
                                 Eigen::RowVector<real, nVarsFixed> uIncBV = (uBV - u[iCell]).transpose();
-                                vInc.resizeLike(BCC);
-                                vInc(seqRecRange, Eigen::all) = this->FFaceFunctional(dbv, uIncBV, iFace, iG, iCell, iCell);
+                                vInc = this->FFaceFunctional(dbv, uIncBV, iFace, iG, iCell, iCell);
                                 if (settings.functionalSettings.greenGauss1Weight != 0)
                                 {
                                     // DNDS_assert(false); // not yet implemented
-                                    vInc(seqRecRange, Eigen::all) +=
-                                        (settings.functionalSettings.greenGauss1Bias * this->GetGreenGauss1WeightOnCell(iCell) *
-                                         this->matrixAHalf_GG[iCell].transpose() * this->GetFaceNorm(iFace, iG)(Seq012)) *
-                                        uIncBV;
-                                }
-                                if (settings.functionalSettings.greenGaussLM1Weight != 0)
-                                {
-                                    vInc(Eigen::seq(nDofs - 1, nDofs - 1 + dim - 1), Eigen::all) =
-                                        this->GetFaceNorm(iFace, iG)(Seq012) * uIncBV * settings.functionalSettings.greenGaussLM1Weight;
+                                    vInc += (settings.functionalSettings.greenGauss1Bias * this->GetGreenGauss1WeightOnCell(iCell) *
+                                             this->matrixAHalf_GG[iCell].transpose() * this->GetFaceNorm(iFace, iG)(Seq012)) *
+                                            uIncBV;
                                 }
                                 vInc *= this->GetFaceJacobiDet(iFace, iG);
                                 // std::cout << faceWeight[iFace].transpose() << std::endl;
@@ -309,8 +294,6 @@ namespace DNDS
                     for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
                         uRec[iCell].swap(uRecNew[iCell]);
             }
-
-            DNDS_MPI_InsertCheck(mpi, " DoReconstructionIter -1 ");
         }
 
         template <int dim>
@@ -335,8 +318,6 @@ namespace DNDS
             }
             for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
             {
-                int nDofs = this->cellAtr[iCell].NDOF;
-                auto seqRecRange = Eigen::seq(0, nDofs - 1 - 1);
                 uRecNew[iCell] = uRecDiff[iCell];
 
                 auto c2f = mesh->cell2face[iCell];
@@ -370,12 +351,12 @@ namespace DNDS
                                         iCell, iFace, -1, iG, std::array<int, 1>{0}, 1);
                                 Eigen::Vector<real, nVarsFixed> uBL =
                                     (dbv *
-                                     uRec[iCell](seqRecRange, Eigen::all))
+                                     uRec[iCell])
                                         .transpose();
                                 uBL += u[iCell]; //! need fixing?
                                 Eigen::Vector<real, nVarsFixed> uBLDiff =
                                     (dbv *
-                                     uRecDiff[iCell](seqRecRange, Eigen::all))
+                                     uRecDiff[iCell])
                                         .transpose();
                                 Eigen::Vector<real, nVarsFixed>
                                     uBV =
@@ -386,21 +367,14 @@ namespace DNDS
                                             this->GetFaceNorm(iFace, iG),
                                             this->GetFaceQuadraturePPhysFromCell(iFace, iCell, -1, iG), faceID);
                                 Eigen::RowVector<real, nVarsFixed> uIncBV = uBV.transpose();
-                                vInc.resizeLike(BCC);
-                                vInc(seqRecRange, Eigen::all) = this->FFaceFunctional(dbv, uIncBV, iFace, iG, iCell, iCell) * this->GetFaceJacobiDet(iFace, iG);
+                                vInc = this->FFaceFunctional(dbv, uIncBV, iFace, iG, iCell, iCell) * this->GetFaceJacobiDet(iFace, iG);
                                 // std::cout << faceWeight[iFace].transpose() << std::endl;
                                 if (settings.functionalSettings.greenGauss1Weight != 0)
                                 {
                                     // DNDS_assert(false); // not yet implemented
-                                    vInc(seqRecRange, Eigen::all) +=
-                                        (settings.functionalSettings.greenGauss1Bias * this->GetGreenGauss1WeightOnCell(iCell) *
-                                         this->matrixAHalf_GG[iCell].transpose() * this->GetFaceNorm(iFace, iG)(Seq012)) *
-                                        uIncBV;
-                                }
-                                if (settings.functionalSettings.greenGaussLM1Weight != 0)
-                                {
-                                    vInc(Eigen::seq(nDofs - 1, nDofs - 1 + dim - 1), Eigen::all) =
-                                        this->GetFaceNorm(iFace, iG)(Seq012) * uIncBV * settings.functionalSettings.greenGaussLM1Weight;
+                                    vInc += (settings.functionalSettings.greenGauss1Bias * this->GetGreenGauss1WeightOnCell(iCell) *
+                                             this->matrixAHalf_GG[iCell].transpose() * this->GetFaceNorm(iFace, iG)(Seq012)) *
+                                            uIncBV;
                                 }
                             });
                         // BCC *= 0;
@@ -431,8 +405,6 @@ namespace DNDS
                 index iCell = iScan;
                 if (reverse)
                     iCell = mesh->NumCell() - 1 - iCell;
-                int nDofs = this->cellAtr[iCell].NDOF;
-                auto seqRecRange = Eigen::seq(0, nDofs - 1 - 1);
                 real relax = cellAtr[iCell].relax;
 
                 uRecNew[iCell] = (1 - relax) * uRecNew[iCell] + uRecInc[iCell];
@@ -468,12 +440,12 @@ namespace DNDS
                                         iCell, iFace, -1, iG, std::array<int, 1>{0}, 1);
                                 Eigen::Vector<real, nVarsFixed> uBL =
                                     (dbv *
-                                     uRec[iCell](seqRecRange, Eigen::all))
+                                     uRec[iCell])
                                         .transpose();
                                 uBL += u[iCell]; //! need fixing?
                                 Eigen::Vector<real, nVarsFixed> uBLDiff =
                                     (dbv *
-                                     uRecNew[iCell](seqRecRange, Eigen::all))
+                                     uRecNew[iCell])
                                         .transpose();
                                 Eigen::Vector<real, nVarsFixed>
                                     uBV =
@@ -484,21 +456,14 @@ namespace DNDS
                                             this->GetFaceNorm(iFace, iG),
                                             this->GetFaceQuadraturePPhysFromCell(iFace, iCell, -1, iG), faceID);
                                 Eigen::RowVector<real, nVarsFixed> uIncBV = uBV.transpose();
-                                vInc.resizeLike(BCC);
-                                vInc(seqRecRange, Eigen::all) = this->FFaceFunctional(dbv, uIncBV, iFace, iG, iCell, iCell) * this->GetFaceJacobiDet(iFace, iG);
+                                vInc = this->FFaceFunctional(dbv, uIncBV, iFace, iG, iCell, iCell) * this->GetFaceJacobiDet(iFace, iG);
                                 // std::cout << faceWeight[iFace].transpose() << std::endl;
                                 if (settings.functionalSettings.greenGauss1Weight != 0)
                                 {
                                     // DNDS_assert(false); // not yet implemented
-                                    vInc(seqRecRange, Eigen::all) +=
-                                        (settings.functionalSettings.greenGauss1Bias * this->GetGreenGauss1WeightOnCell(iCell) *
-                                         this->matrixAHalf_GG[iCell].transpose() * this->GetFaceNorm(iFace, iG)(Seq012)) *
-                                        uIncBV;
-                                }
-                                if (settings.functionalSettings.greenGaussLM1Weight != 0)
-                                {
-                                    vInc(Eigen::seq(nDofs - 1, nDofs - 1 + dim - 1), Eigen::all) =
-                                        this->GetFaceNorm(iFace, iG)(Seq012) * uIncBV * settings.functionalSettings.greenGaussLM1Weight;
+                                    vInc += (settings.functionalSettings.greenGauss1Bias * this->GetGreenGauss1WeightOnCell(iCell) *
+                                             this->matrixAHalf_GG[iCell].transpose() * this->GetFaceNorm(iFace, iG)(Seq012)) *
+                                            uIncBV;
                                 }
                             });
                         // BCC *= 0;

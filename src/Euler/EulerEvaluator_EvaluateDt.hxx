@@ -163,9 +163,6 @@ namespace DNDS::Euler
             TVec unitNorm = vfv->GetFaceNorm(iFace, -1)(Seq012);
 
             index iCellL = f2c[0];
-            int nDofsL = vfv->GetCellAtr(iCellL).NDOF;
-            auto seqRecRangeL = Eigen::seq(0, nDofsL - 1 - 1);
-
             TU UL = u[iCellL];
             this->UFromCell2Face(UL, iFace, f2c[0], 0);
             TU uMean = UL;
@@ -178,9 +175,6 @@ namespace DNDS::Euler
             pR = pL, HR = HL, asqrR = asqrL;
             if (f2c[1] != UnInitIndex)
             {
-                index iCellR = f2c[1];
-                int nDofsR = vfv->GetCellAtr(iCellR).NDOF;
-                auto seqRecRangeR = Eigen::seq(0, nDofsR - 1 - 1);
                 TU UR = u[f2c[1]];
                 this->UFromCell2Face(UR, iFace, f2c[1], 1);
                 uMean = (uMean + UR) * 0.5;
@@ -196,26 +190,23 @@ namespace DNDS::Euler
             if constexpr (gDim == 2)
                 GradULxy({0, 1}, Eigen::all) =
                     vfv->GetIntPointDiffBaseValue(f2c[0], iFace, 0, -1, std::array<int, 2>{1, 2}, 3) *
-                    uRec[f2c[0]](seqRecRangeL, Eigen::all); // 2d here
+                    uRec[f2c[0]]; // 2d here
             else
                 GradULxy({0, 1, 2}, Eigen::all) =
                     vfv->GetIntPointDiffBaseValue(f2c[0], iFace, 0, -1, std::array<int, 3>{1, 2, 3}, 4) *
-                    uRec[f2c[0]](seqRecRangeL, Eigen::all); // 3d here
+                    uRec[f2c[0]]; // 3d here
             this->DiffUFromCell2Face(GradULxy, iFace, f2c[0], 0);
             GradURxy = GradULxy;
             if (f2c[1] != UnInitIndex)
             {
-                index iCellR = f2c[1];
-                int nDofsR = vfv->GetCellAtr(iCellR).NDOF;
-                auto seqRecRangeR = Eigen::seq(0, nDofsR - 1 - 1);
                 if constexpr (gDim == 2)
                     GradURxy({0, 1}, Eigen::all) =
                         vfv->GetIntPointDiffBaseValue(f2c[1], iFace, 1, -1, std::array<int, 2>{1, 2}, 3) *
-                        uRec[f2c[1]](seqRecRangeR, Eigen::all); // 2d here
+                        uRec[f2c[1]]; // 2d here
                 else
                     GradURxy({0, 1, 2}, Eigen::all) =
                         vfv->GetIntPointDiffBaseValue(f2c[1], iFace, 1, -1, std::array<int, 3>{1, 2, 3}, 4) *
-                        uRec[f2c[1]](seqRecRangeR, Eigen::all); // 3d here
+                        uRec[f2c[1]]; // 3d here
                 this->DiffUFromCell2Face(GradURxy, iFace, f2c[1], 1);
             }
             TDiffU GradUMeanXY = (GradURxy + GradULxy) / 2;
