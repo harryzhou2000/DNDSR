@@ -618,9 +618,11 @@ namespace DNDS::CFV
                     // real normScale = (coordTrans * norm).norm();
                     // coordTrans(0, Eigen::all) = norm.transpose() * faceL;
                     // coordTrans({1, 2}, Eigen::all).setZero();
-                } {
+                }
+                {
                     // coordTrans = Geom::NormBuildLocalBaseV<3>(norm).transpose() * faceL;
-                } {
+                }
+                {
                     // coordTrans *=  (2 * std::sqrt(3));
                     // tPoint lengths = coordTrans.rowwise().norm();
                     // // tPoint lengthsNew = lengths.array() * faceL / (faceL + lengths.array());
@@ -633,7 +635,8 @@ namespace DNDS::CFV
                     // //     std::cout << lengths << std::endl;
                     // //     std::cout << faceL << std::endl;
                     // // }
-                } {
+                }
+                {
                     // tPoint norm = this->GetFaceNorm(iFace, -1);
                     // auto getCellFaceMajorPNorm = [&](index iCell) -> tPoint
                     // {
@@ -658,7 +661,8 @@ namespace DNDS::CFV
 
                     // coordTrans(0, Eigen::all) = norm.transpose() * faceL;
                     // coordTrans({1, 2}, Eigen::all).setZero();
-                } {
+                }
+                {
                     tPoint norm = this->GetFaceNorm(iFace, -1);
                     real areaL = this->GetFaceArea(iFace);
                     if constexpr (dim == 3)
@@ -798,10 +802,11 @@ namespace DNDS::CFV
         void BuildURec(tURec<nVarsFixed> &u, int nVars)
         {
             int maxNDOF = GetNDof<dim>(settings.maxOrder);
+            int solvedNDOF = settings.functionalSettings.greenGaussLM1Weight != 0 ? maxNDOF + dim : maxNDOF;
             DNDS_MAKE_SSP(u.father, mpi);
             DNDS_MAKE_SSP(u.son, mpi);
-            u.father->Resize(mesh->NumCell(), maxNDOF - 1, nVars);
-            u.son->Resize(mesh->NumCellGhost(), maxNDOF - 1, nVars);
+            u.father->Resize(mesh->NumCell(), solvedNDOF - 1, nVars);
+            u.son->Resize(mesh->NumCellGhost(), solvedNDOF - 1, nVars);
             u.TransAttach();
             u.trans.BorrowGGIndexing(mesh->cell2node.trans);
             u.trans.createMPITypes();
@@ -920,6 +925,8 @@ namespace DNDS::CFV
             for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
             {
                 // int NRecDOF = cellAtr[iCell].NDOF - 1; // ! not good ! TODO
+                int nDofs = this->cellAtr[iCell].NDOF;
+                auto seqRecRange = Eigen::seq(0, nDofs - 1 - 1);
 
                 auto c2f = mesh->cell2face[iCell];
                 Eigen::Matrix<real, nVarsSee, 2> IJIISIsum;
@@ -928,6 +935,8 @@ namespace DNDS::CFV
                 {
                     index iFace = c2f[ic2f];
                     index iCellOther = this->CellFaceOther(iCell, iFace);
+                    int nDofsOther = this->cellAtr[iCellOther].NDOF;
+                    auto seqRecRangeOther = Eigen::seq(0, nDofsOther - 1 - 1);
                     auto gFace = this->GetFaceQuadO1(iFace);
                     decltype(IJIISIsum) IJIISI;
                     // if (iCellOther != UnInitIndex)
@@ -950,13 +959,13 @@ namespace DNDS::CFV
                                 uRecVal(nDiff, nVarsSee), uRecValL(nDiff, nVarsSee), uRecValR(nDiff, nVarsSee), uRecValJump(nDiff, nVarsSee);
                             uRecVal.setZero(), uRecValJump.setZero();
                             uRecValL = this->GetIntPointDiffBaseValue(iCell, iFace, -1, -1, Eigen::seq(0, nDiff - 1)) *
-                                       uRec[iCell](Eigen::all, varsSee);
+                                       uRec[iCell](seqRecRange, varsSee);
                             uRecValL(0, Eigen::all) += u[iCell](varsSee).transpose();
 
                             if (iCellOther != UnInitIndex)
                             {
                                 uRecValR = this->GetIntPointDiffBaseValue(iCellOther, iFace, -1, -1, Eigen::seq(0, nDiff - 1)) *
-                                           uRec[iCellOther](Eigen::all, varsSee);
+                                           uRec[iCellOther](seqRecRangeOther, varsSee);
                                 uRecValR(0, Eigen::all) += u[iCellOther](varsSee).transpose();
                                 uRecVal = (uRecValL + uRecValR) * 0.5;
                                 uRecValJump = (uRecValL - uRecValR) * 0.5;
@@ -1017,6 +1026,8 @@ namespace DNDS::CFV
             for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
             {
                 // int NRecDOF = cellAtr[iCell].NDOF - 1; // ! not good ! TODO
+                int nDofs = this->cellAtr[iCell].NDOF;
+                auto seqRecRange = Eigen::seq(0, nDofs - 1 - 1);
 
                 auto c2f = mesh->cell2face[iCell];
                 Eigen::Matrix<real, nVarsSee, 2> IJIISIsum;
@@ -1025,6 +1036,8 @@ namespace DNDS::CFV
                 {
                     index iFace = c2f[ic2f];
                     index iCellOther = this->CellFaceOther(iCell, iFace);
+                    int nDofsOther = this->cellAtr[iCellOther].NDOF;
+                    auto seqRecRangeOther = Eigen::seq(0, nDofsOther - 1 - 1);
                     auto gFace = this->GetFaceQuadO1(iFace);
                     decltype(IJIISIsum) IJIISI;
                     // if (iCellOther != UnInitIndex)
@@ -1045,14 +1058,14 @@ namespace DNDS::CFV
                                 uRecVal(1, nVarsSee), uRecValL(1, nVarsSee), uRecValR(1, nVarsSee), uRecValJump(1, nVarsSee);
                             uRecVal.setZero(), uRecValJump.setZero();
                             uRecValL = this->GetIntPointDiffBaseValue(iCell, iFace, -1, -1, std::array<int, 1>{0}, 1) *
-                                       uRec[iCell](Eigen::all, varsSee);
+                                       uRec[iCell](seqRecRange, varsSee);
                             uRecValL(0, Eigen::all) += u[iCell](varsSee).transpose();
                             FPost(uRecValL);
 
                             if (iCellOther != UnInitIndex)
                             {
                                 uRecValR = this->GetIntPointDiffBaseValue(iCellOther, iFace, -1, -1, std::array<int, 1>{0}, 1) *
-                                           uRec[iCellOther](Eigen::all, varsSee);
+                                           uRec[iCellOther](seqRecRangeOther, varsSee);
                                 uRecValR(0, Eigen::all) += u[iCellOther](varsSee).transpose();
                                 FPost(uRecValR);
                                 uRecVal = (uRecValL + uRecValR) * 0.5;
@@ -1112,12 +1125,17 @@ namespace DNDS::CFV
 
             for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
             {
+
+                int nDofs = this->cellAtr[iCell].NDOF;
+                auto seqRecRange = Eigen::seq(0, nDofs - 1 - 1);
                 if ((!ifAll) &&
                     si(iCell, 0) < settings.smoothThreshold)
                 {
                     uRecNew[iCell] = uRec[iCell]; //! no lim need to copy !!!!
                     continue;
                 }
+                uRecNew[iCell](Eigen::seq(nDofs - 1 - 1, Eigen::last), Eigen::all) =
+                    uRec[iCell](Eigen::seq(nDofs - 1 - 1, Eigen::last), Eigen::all); // copy LM extra dofs if exist
                 index NRecDOF = cellAtr[iCell].NDOF - 1;
                 auto c2f = mesh->cell2face[iCell];
                 std::vector<Eigen::Matrix<real, Eigen::Dynamic, nVars_Fixed, 0, maxRecDOF>> uFaces(c2f.size());

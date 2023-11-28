@@ -303,7 +303,7 @@ namespace DNDS::Euler
                 if (iCellOther != UnInitIndex)
                 {
                     index iScanOther = forward ? iCellOther : nCellDist - 1 - iCellOther; // TODO: add rb-sor
-                    if (iCell != iCellOther)
+                    // if (iCell != iCellOther)
                     {
                         TU fInc;
                         auto uINCj = uInc[iCellOther];
@@ -375,6 +375,9 @@ namespace DNDS::Euler
             index iCell = iScan;
             iCell = forward ? iScan : nCellDist - 1 - iScan; // TODO: add rb-sor
 
+            int nDofs = vfv->GetCellAtr(iCell).NDOF;
+            auto seqRecRange = Eigen::seq(0, nDofs - 1 - 1);
+
             auto c2f = mesh->cell2face[iCell];
             TU uIncNewBuf(nVars);
             auto RHSI = rhs[iCell];
@@ -390,7 +393,9 @@ namespace DNDS::Euler
                 if (iCellOther != UnInitIndex)
                 {
                     index iScanOther = forward ? iCellOther : nCellDist - 1 - iCellOther; // TODO: add rb-sor
-                    if (iCell != iCellOther)
+                    int nDofsOther = vfv->GetCellAtr(iCellOther).NDOF;
+                    auto seqRecRangeOther = Eigen::seq(0, nDofsOther - 1 - 1);
+                    // if (iCell != iCellOther)//not using
                     {
                         TU fInc, fIncS;
                         auto uINCj = uInc[iCellOther];
@@ -405,11 +410,11 @@ namespace DNDS::Euler
                         {
                             TU uRecSLInc =
                                 (vfv->GetIntPointDiffBaseValue(iCell, iFace, iCellAtFace, -1, std::array<int, 1>{0}, 1) *
-                                 uRecInc[iCell])
+                                 uRecInc[iCell](seqRecRange, Eigen::all))
                                     .transpose();
                             TU uRecSRInc =
                                 (vfv->GetIntPointDiffBaseValue(iCellOther, iFace, 1 - iCellAtFace, -1, std::array<int, 1>{0}, 1) *
-                                 uRecInc[iCellOther])
+                                 uRecInc[iCellOther](seqRecRangeOther, Eigen::all))
                                     .transpose();
                             TU fIncSL = fluxJacobianC_Right_Times_du(u[iCell], unitNorm, Geom::BC_ID_INTERNAL, uRecSLInc);
                             TU fIncSR = fluxJacobianC_Right_Times_du(u[iCellOther], unitNorm, Geom::BC_ID_INTERNAL, uRecSRInc);
@@ -501,6 +506,8 @@ namespace DNDS::Euler
         ArrayRECV<nVars_Fixed> &uRec,
         ArrayDOFV<1> &uRecBeta, index &nLim, real &betaMin)
     {
+        DNDS_MPI_InsertCheck(u.father->getMPI(), "EvaluateURecBeta: 0");
+
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
         real rhoEps = smallReal * settings.refUPrim(0);
         real pEps = smallReal * settings.refUPrim(I4);
@@ -509,6 +516,9 @@ namespace DNDS::Euler
         real minBetaLocal = 1;
         for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
         {
+            int nDofs = vfv->GetCellAtr(iCell).NDOF;
+            auto seqRecRange = Eigen::seq(0, nDofs - 1 - 1);
+
             auto gCell = vfv->GetCellQuad(iCell);
             int nPoint = gCell.GetNumPoints();
             auto c2f = mesh->cell2face[iCell];
@@ -532,7 +542,7 @@ namespace DNDS::Euler
             }
             /***********/
 
-            Eigen::Matrix<real, Eigen::Dynamic, nVars_Fixed> recInc = quadBase * uRec[iCell];
+            Eigen::Matrix<real, Eigen::Dynamic, nVars_Fixed> recInc = quadBase * uRec[iCell](seqRecRange, Eigen::all);
             Eigen::Vector<real, Eigen::Dynamic> rhoS = recInc(Eigen::all, 0).array() + u[iCell](0);
             real rhoMin = rhoS.minCoeff();
             real theta1 = 1;
@@ -612,7 +622,7 @@ namespace DNDS::Euler
             }
 
             // validation:
-            recInc = quadBase * uRec[iCell] * uRecBeta[iCell](0);
+            recInc = quadBase * uRec[iCell](seqRecRange, Eigen::all) * uRecBeta[iCell](0);
             recVRhoG = recInc.rowwise() + u[iCell].transpose();
             ek =
                 0.5 * (recVRhoG(Eigen::all, Seq123).array().square().rowwise().sum()) / recVRhoG(Eigen::all, 0).array();
@@ -635,6 +645,8 @@ namespace DNDS::Euler
         }
         MPI::Allreduce(&nLimLocal, &nLim, 1, DNDS_MPI_INDEX, MPI_SUM, u.father->getMPI().comm);
         MPI::Allreduce(&minBetaLocal, &betaMin, 1, DNDS_MPI_REAL, MPI_MIN, u.father->getMPI().comm);
+
+        DNDS_MPI_InsertCheck(u.father->getMPI(), "EvaluateURecBeta: -1");
     }
 
     template <EulerModel model>
@@ -707,7 +719,7 @@ namespace DNDS::Euler
             // cellRHSAlpha[iCell](0) = std::min(alphaRho, alphaP);
             if (cellRHSAlpha[iCell](0) < 1)
                 nLimLocal++,
-                    cellRHSAlpha[iCell] *= (0.9), 
+                    cellRHSAlpha[iCell] *= (0.9),
                     alphaMinLocal = std::min(alphaMinLocal, cellRHSAlpha[iCell](0)); //! for safety
         }
         MPI::Allreduce(&nLimLocal, &nLim, 1, DNDS_MPI_INDEX, MPI_SUM, u.father->getMPI().comm);

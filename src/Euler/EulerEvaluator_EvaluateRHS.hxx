@@ -57,6 +57,9 @@ namespace DNDS::Euler
         {
             auto f2c = mesh->face2cell[iFace];
             auto gFace = vfv->GetFaceQuad(iFace);
+            index iCellL =  f2c[0];
+            int nDofsL = vfv->GetCellAtr(iCellL).NDOF;
+            auto seqRecRangeL = Eigen::seq(0, nDofsL - 1 - 1);
 #ifdef USE_FLUX_BALANCE_TERM
             Eigen::Matrix<real, nVars_Fixed, 3, Eigen::ColMajor> fluxEs(cnvars, 3);
 #else
@@ -100,10 +103,9 @@ namespace DNDS::Euler
                     bool pointOrderReducedR = false;
                     if (!faceOrderReducedL)
                     {
-
                         ULxy +=
                             (vfv->GetIntPointDiffBaseValue(f2c[0], iFace, 0, iG, std::array<int, 1>{0}, 1) *
-                             uRec[f2c[0]])
+                             uRec[f2c[0]](seqRecRangeL, Eigen::all))
                                 .transpose() *
                             IF_NOT_NOREC * uRecBeta[f2c[0]](0);
                     }
@@ -123,11 +125,11 @@ namespace DNDS::Euler
                     if constexpr (gDim == 2)
                         GradULxy({0, 1}, Eigen::all) =
                             vfv->GetIntPointDiffBaseValue(f2c[0], iFace, 0, iG, std::array<int, 2>{1, 2}, 3) *
-                            uRec[f2c[0]] * IF_NOT_NOREC * uRecBeta[f2c[0]](0); // 2d here
+                            uRec[f2c[0]](seqRecRangeL, Eigen::all) * IF_NOT_NOREC * uRecBeta[f2c[0]](0); // 2d here
                     else
                         GradULxy({0, 1, 2}, Eigen::all) =
                             vfv->GetIntPointDiffBaseValue(f2c[0], iFace, 0, iG, std::array<int, 3>{1, 2, 3}, 4) *
-                            uRec[f2c[0]] * IF_NOT_NOREC * uRecBeta[f2c[0]](0); // 3d here
+                            uRec[f2c[0]](seqRecRangeL, Eigen::all) * IF_NOT_NOREC * uRecBeta[f2c[0]](0); // 3d here
                     this->DiffUFromCell2Face(GradULxy, iFace, f2c[0], 0);
 
 #endif
@@ -136,13 +138,17 @@ namespace DNDS::Euler
 
                     if (f2c[1] != UnInitIndex)
                     {
+                        index iCellR = f2c[1];
+                        int nDofsR = vfv->GetCellAtr(iCellR).NDOF;
+                        auto seqRecRangeR = Eigen::seq(0, nDofsR - 1 - 1);
+
                         URxy = u[f2c[1]];
                         this->UFromCell2Face(URxy, iFace, f2c[1], 1);
                         if (!faceOrderReducedR)
                         {
                             URxy +=
                                 (vfv->GetIntPointDiffBaseValue(f2c[1], iFace, 1, iG, std::array<int, 1>{0}, 1) *
-                                 uRec[f2c[1]])
+                                 uRec[f2c[1]](seqRecRangeR, Eigen::all))
                                     .transpose() *
                                 IF_NOT_NOREC * uRecBeta[f2c[1]](0);
                         }
@@ -153,11 +159,11 @@ namespace DNDS::Euler
                         if constexpr (gDim == 2)
                             GradURxy({0, 1}, Eigen::all) =
                                 vfv->GetIntPointDiffBaseValue(f2c[1], iFace, 1, iG, std::array<int, 2>{1, 2}, 3) *
-                                uRec[f2c[1]] * IF_NOT_NOREC * uRecBeta[f2c[1]](0); // 2d here
+                                uRec[f2c[1]](seqRecRangeR, Eigen::all) * IF_NOT_NOREC * uRecBeta[f2c[1]](0); // 2d here
                         else
                             GradURxy({0, 1, 2}, Eigen::all) =
                                 vfv->GetIntPointDiffBaseValue(f2c[1], iFace, 1, iG, std::array<int, 3>{1, 2, 3}, 4) *
-                                uRec[f2c[1]] * IF_NOT_NOREC * uRecBeta[f2c[1]](0); // 3d here
+                                uRec[f2c[1]](seqRecRangeR, Eigen::all) * IF_NOT_NOREC * uRecBeta[f2c[1]](0); // 3d here
                         this->DiffUFromCell2Face(GradURxy, iFace, f2c[1], 1);
 
 #endif
@@ -319,6 +325,8 @@ namespace DNDS::Euler
                     //     if (!cellIsHalfAlpha(iCell))
                     //         continue;
                 }
+                int nDofs = vfv->GetCellAtr(iCell).NDOF;
+                auto seqRecRange = Eigen::seq(0, nDofs - 1 - 1);
                 auto gCell = vfv->GetCellQuad(iCell);
 
                 Eigen::Vector<real, nvarsFixedMultiply<nVars_Fixed, 2>()> sourceV(cnvars * 2); // now includes sourcejacobian diag
@@ -338,11 +346,11 @@ namespace DNDS::Euler
                         if constexpr (gDim == 2)
                             GradU({0, 1}, Eigen::all) =
                                 vfv->GetIntPointDiffBaseValue(iCell, -1, -1, iG, std::array<int, 2>{1, 2}, 3) *
-                                uRec[iCell] * IF_NOT_NOREC * uRecBeta[iCell](0); // 2d specific
+                                uRec[iCell](seqRecRange, Eigen::all) * IF_NOT_NOREC * uRecBeta[iCell](0); // 2d specific
                         else
                             GradU({0, 1, 2}, Eigen::all) =
                                 vfv->GetIntPointDiffBaseValue(iCell, -1, -1, iG, std::array<int, 3>{1, 2, 3}, 4) *
-                                uRec[iCell] * IF_NOT_NOREC * uRecBeta[iCell](0); // 3d specific
+                                uRec[iCell](seqRecRange, Eigen::all) * IF_NOT_NOREC * uRecBeta[iCell](0); // 3d specific
 
                         bool pointOrderReduced;
                         TU ULxy = u[iCell];
@@ -352,7 +360,7 @@ namespace DNDS::Euler
                             //         uRec[iCell] * IF_NOT_NOREC;
                             ULxy +=
                                 (vfv->GetIntPointDiffBaseValue(iCell, -1, -1, iG, std::array<int, 1>{0}, 1) *
-                                 uRec[iCell])
+                                 uRec[iCell](seqRecRange, Eigen::all))
                                     .transpose() *
                                 IF_NOT_NOREC * uRecBeta[iCell](0);
                         }

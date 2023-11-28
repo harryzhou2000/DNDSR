@@ -112,6 +112,8 @@ void staticReconstruction()
             err.setZero();
             for (DNDS::index iCell = 0; iCell < vr.mesh->NumCell(); iCell++)
             {
+                int nDofs = vr.GetCellAtr(iCell).NDOF;
+                auto seqRecRange = Eigen::seq(0, nDofs - 1 - 1);
                 auto qCell = vr.GetCellQuad(iCell);
                 decltype(err) errC;
                 errC.setZero();
@@ -120,7 +122,7 @@ void staticReconstruction()
                     [&](auto &vInc, int iG)
                     {
                         Eigen::VectorXd udu =
-                            (vr.GetIntPointDiffBaseValue(iCell, -1, -1, iG, std::array<int, 4>{0, 1, 2, 3}, 4) * uRecC[iCell]);
+                            (vr.GetIntPointDiffBaseValue(iCell, -1, -1, iG, std::array<int, 4>{0, 1, 2, 3}, 4) * uRecC[iCell](seqRecRange, Eigen::all));
                         // std::cout << udu.transpose() << std::endl;
                         udu(0) += u[iCell](0);
                         vInc = (udu - fScalar(vr.GetCellQuadraturePPhys(iCell, iG))).array().abs() * vr.GetCellJacobiDet(iCell, iG);
