@@ -7,23 +7,26 @@ namespace DNDS::Euler
         const std::string &fname,
         const tCellScalarFGet &odeResidualF,
         tAdditionalCellScalarList &additionalCellScalars,
-        TEval &eval)
+        TEval &eval,
+        PrintDataMode mode)
     {
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
         reader->SetASCIIPrecision(config.dataIOControl.nASCIIPrecision);
         const int cDim = dim;
 
+        ArrayDOFV<nVars_Fixed> &uOut = mode == PrintDataTimeAverage ? uAveraged : u;
+
         if (config.dataIOControl.outVolumeData)
         {
-            if (config.dataIOControl.outAtCellData)
+            if (config.dataIOControl.outAtCellData || mode == PrintDataTimeAverage)
                 for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
                 {
                     // TU recu =
                     //     vfv->GetIntPointDiffBaseValue(iCell, -1, -1, -1, std::array<int, 1>{0}, 1) *
                     //     uRec[iCell];
-                    // recu += u[iCell];
-                    // recu = EulerEvaluator::CompressRecPart(u[iCell], recu);
-                    TU recu = u[iCell];
+                    // recu += uOut[iCell];
+                    // recu = EulerEvaluator::CompressRecPart(uOut[iCell], recu);
+                    TU recu = uOut[iCell];
                     TVec velo = (recu(Seq123).array() / recu(0)).matrix();
                     real vsqr = velo.squaredNorm();
                     real asqr, p, H;
@@ -74,8 +77,8 @@ namespace DNDS::Euler
                     uRec.trans.waitPersistentPull();
                 }
 
-                u.trans.startPersistentPull();
-                u.trans.waitPersistentPull();
+                uOut.trans.startPersistentPull();
+                uOut.trans.waitPersistentPull();
 
                 for (index iN = 0; iN < mesh->NumNodeProc(); iN++)
                     outDistPointPair[iN].setZero();
@@ -95,7 +98,10 @@ namespace DNDS::Euler
                         // std::cout << uRecNew[iCell].rows() << std::endl;
                         vfv->FDiffBaseValue(DiBj, pPhy, iCell, -2, -2);
 
-                        TU vRec = (DiBj(Eigen::all, Eigen::seq(1, Eigen::last)) * (config.limiterControl.useLimiter ? uRecNew[iCell] : uRec[iCell])).transpose() + u[iCell];
+                        TU vRec = (DiBj(Eigen::all, Eigen::seq(1, Eigen::last)) * (config.limiterControl.useLimiter ? uRecNew[iCell] : uRec[iCell])).transpose() +
+                                  uOut[iCell];
+                        if (mode == PrintDataTimeAverage)
+                            vRec = uOut[iCell];
                         if (iNode < mesh->NumNode())
                             outDistPointPair[iNode](Eigen::seq(0, nVars - 1)) += vRec;
                     }
@@ -131,14 +137,14 @@ namespace DNDS::Euler
             }
 
             int NOUTS_C{0}, NOUTSPoint_C{0};
-            if (config.dataIOControl.outAtCellData)
+            if (config.dataIOControl.outAtCellData || mode == PrintDataTimeAverage)
                 NOUTS_C = nOUTS;
             if (config.dataIOControl.outAtPointData)
                 NOUTSPoint_C = nOUTSPoint;
 
             if (config.dataIOControl.outPltMode == 0)
             {
-                if (config.dataIOControl.outAtCellData)
+                if (config.dataIOControl.outAtCellData || mode == PrintDataTimeAverage)
                 {
                     outDist2SerialTrans.startPersistentPull();
                     outDist2SerialTrans.waitPersistentPull();
@@ -321,12 +327,12 @@ namespace DNDS::Euler
                 // TU recu =
                 //     vfv->GetIntPointDiffBaseValue(iCell, -1, -1, -1, std::array<int, 1>{0}, 1) *
                 //     uRec[iCell];
-                // recu += u[iCell];
-                // recu = EulerEvaluator::CompressRecPart(u[iCell], recu);
+                // recu += uOut[iCell];
+                // recu = EulerEvaluator::CompressRecPart(uOut[iCell], recu);
                 index iCell = mesh->bnd2cell[iBnd][0];
                 index iFace = mesh->bnd2face[iBnd];
 
-                TU recu = u[iCell];
+                TU recu = uOut[iCell];
                 TVec velo = (recu(Seq123).array() / recu(0)).matrix();
                 real vsqr = velo.squaredNorm();
                 real asqr, p, H;

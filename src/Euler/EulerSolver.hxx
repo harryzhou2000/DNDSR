@@ -15,7 +15,8 @@ namespace DNDS::Euler
         auto hashCoord = mesh->coords.hash();
         if (mpi.rank == 0)
         {
-            log() << "Mesh coord hash is: [" << std::hex << hashCoord << std::dec << "]" << std::endl << std::scientific;
+            log() << "Mesh coord hash is: [" << std::hex << hashCoord << std::dec << "]" << std::endl
+                  << std::scientific;
         }
         if (config.timeMarchControl.partitonMeshOnly)
         {
@@ -156,6 +157,8 @@ namespace DNDS::Euler
         EulerEvaluator<model> &eval = *pEval;
 
         eval.InitializeUDOF(u);
+        if (config.timeAverageControl.enabled)
+            wAveraged.setConstant(0.0);
         if (config.timeMarchControl.useRestart)
         {
             DNDS_assert(config.restartState.iStep >= 1);
@@ -176,11 +179,14 @@ namespace DNDS::Euler
         resBaseC.setConstant(config.convergenceControl.res_base);
 
         real tSimu = 0.0;
+        real tAverage = 0.0;
         real nextTout = config.outputControl.tDataOut;
         int nextStepOut = config.outputControl.nDataOut;
         int nextStepOutC = config.outputControl.nDataOutC;
         int nextStepRestart = config.outputControl.nRestartOut;
         int nextStepRestartC = config.outputControl.nRestartOutC;
+        int nextStepOutAverage = config.outputControl.nTimeAverageOut;
+        int nextStepOutAverageC = config.outputControl.nTimeAverageOutC;
         PerformanceTimer::Instance().clearAllTimer();
 
         // *** Loop variables
@@ -1110,6 +1116,12 @@ namespace DNDS::Euler
             if (stepCount == 0 && resBaseC.norm() == 0)
                 resBaseC = res;
 
+            if (config.timeAverageControl.enabled)
+            {
+                eval.MeanValueCons2Prim(u, uTemp); // could use time-step-mean-u instead of latest-u
+                eval.TimeAverageAddition(uTemp, wAveraged, curDtImplicit, tAverage);
+            }
+
             if (step % config.outputControl.nConsoleCheck == 0)
             {
                 double telapsed = MPI_Wtime() - tstart;
@@ -1167,6 +1179,34 @@ namespace DNDS::Euler
                     addOutList,
                     eval);
                 nextStepOutC += config.outputControl.nDataOutC;
+            }
+            if (step == nextStepOutAverage)
+            {
+                DNDS_assert(config.timeAverageControl.enabled);
+                eval.MeanValuePrim2Cons(wAveraged, uAveraged);
+                eval.FixUMaxFilter(uAveraged);
+                PrintData(
+                    config.dataIOControl.outPltName + "_TimeAveraged_" + output_stamp + "_" + std::to_string(step),
+                    [&](index iCell)
+                    { return ode->getLatestRHS()[iCell](0); },
+                    addOutList,
+                    eval,
+                    PrintDataTimeAverage);
+                nextStepOutAverage += config.outputControl.nTimeAverageOut;
+            }
+            if (step == nextStepOutAverageC)
+            {
+                DNDS_assert(config.timeAverageControl.enabled);
+                eval.MeanValuePrim2Cons(wAveraged, uAveraged);
+                eval.FixUMaxFilter(uAveraged);
+                PrintData(
+                    config.dataIOControl.outPltName + "_TimeAveraged_" + output_stamp + "_" + "C",
+                    [&](index iCell)
+                    { return ode->getLatestRHS()[iCell](0); },
+                    addOutList,
+                    eval,
+                    PrintDataTimeAverage);
+                nextStepOutAverageC += config.outputControl.nTimeAverageOutC;
             }
             if (step == nextStepRestart)
             {

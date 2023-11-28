@@ -7,5 +7,6 @@
             const std::string &fname,                         \
             const tCellScalarFGet &odeResidualF,              \
             tAdditionalCellScalarList &additionalCellScalars, \
-            TEval &eval);                                     \
+            TEval &eval,                                      \
+            PrintDataMode mode);                              \
     }
