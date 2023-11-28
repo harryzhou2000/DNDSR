@@ -42,9 +42,9 @@ namespace DNDS::Euler
         }
         switch (config.timeMarchControl.odeCode)
         {
-        case 0: // sdirk4
+        case 0: // esdirk4
             if (mpi.rank == 0)
-                log() << "=== ODE: SDIRK4 " << std::endl;
+                log() << "=== ODE: ESDIRK4 " << std::endl;
             ode = std::make_shared<ODE::ImplicitSDIRK4DualTimeStep<decltype(u)>>(
                 mesh->NumCell(),
                 [&](decltype(u) &data)
@@ -52,6 +52,17 @@ namespace DNDS::Euler
                     vfv->BuildUDof(data, nVars);
                 },
                 1); // 1 for esdirk
+            break;
+        case 101: // sdirk4
+            if (mpi.rank == 0)
+                log() << "=== ODE: SSP-SDIRK4 " << std::endl;
+            ode = std::make_shared<ODE::ImplicitSDIRK4DualTimeStep<decltype(u)>>(
+                mesh->NumCell(),
+                [&](decltype(u) &data)
+                {
+                    vfv->BuildUDof(data, nVars);
+                },
+                0);
             break;
         case 1: // BDF2
             if (mpi.rank == 0)
@@ -1283,6 +1294,11 @@ namespace DNDS::Euler
                             inc(2) = rho * uy;
                             inc(dim + 1) = E;
 
+                            TU upoint = u[iCell] + (vfv->GetIntPointDiffBaseValue(iCell, -1, -1, ig, 0, 1) * uRec[iCell]).transpose();
+                            inc -= upoint;
+                            TU abserr = inc.array().abs();
+                            inc = abserr;
+
                             inc *= vfv->GetCellJacobiDet(iCell, ig); // don't forget this
                         });
                     auto cP = vfv->GetCellBary(iCell);
@@ -1291,8 +1307,8 @@ namespace DNDS::Euler
 
                     if (cP(0) > xymin && cP(0) < xymax && cP(1) > xymin && cP(1) < xymax)
                     {
-                        um /= vfv->GetCellVol(iCell); // mean value
-                        real errRhoMean = u[iCell](0) - um(0);
+                        um /= vfv->GetCellVol(iCell); // mean value (now mean value of error)
+                        real errRhoMean = u[iCell](0) * 0 - um(0);
                         sumErrRho += std::abs(errRhoMean) * vfv->GetCellVol(iCell);
                         sumVol += vfv->GetCellVol(iCell);
                     }
