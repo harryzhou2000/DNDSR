@@ -1258,6 +1258,9 @@ namespace DNDS::Euler
                 real sumVolSum = std::nan("1");
                 for (index iCell = 0; iCell < u.father->Size(); iCell++)
                 {
+                    int nDofs = vfv->GetCellAtr(iCell).NDOF;
+                    auto seqRecRange = Eigen::seq(0, nDofs - 1 - 1);
+
                     Geom::tPoint pos = vfv->GetCellBary(iCell);
                     real chi = 5;
                     real gamma = eval.settings.idealGasProperty.gamma;
@@ -1294,7 +1297,7 @@ namespace DNDS::Euler
                             inc(2) = rho * uy;
                             inc(dim + 1) = E;
 
-                            TU upoint = u[iCell] + (vfv->GetIntPointDiffBaseValue(iCell, -1, -1, ig, 0, 1) * uRec[iCell]).transpose();
+                            TU upoint = u[iCell] + (vfv->GetIntPointDiffBaseValue(iCell, -1, -1, ig, 0, 1) * uRec[iCell](seqRecRange, Eigen::all)).transpose();
                             inc -= upoint;
                             TU abserr = inc.array().abs();
                             inc = abserr;
