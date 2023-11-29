@@ -163,6 +163,8 @@ namespace DNDS::Euler
 
             int specialBuiltinInitializer = 0;
 
+            real uRecBetaCompressPower = 11;
+
             Eigen::Vector<real, 3> constMassForce = Eigen::Vector<real, 3>{0, 0, 0};
 
             bool ignoreSourceTerm = false;
@@ -193,6 +195,7 @@ namespace DNDS::Euler
                 __DNDS__json_to_config(useScalarJacobian);
                 __DNDS__json_to_config(ignoreSourceTerm);
                 __DNDS__json_to_config(specialBuiltinInitializer);
+                __DNDS__json_to_config(uRecBetaCompressPower);
                 Gas::RiemannSolverType riemannSolverType = rsType;
                 __DNDS__json_to_config(riemannSolverType);
                 rsType = riemannSolverType;

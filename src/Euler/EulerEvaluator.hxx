@@ -634,7 +634,7 @@ namespace DNDS::Euler
             {
                 nLimLocal++;
                 // uRecBeta[iCell](0) *= uRecBeta[iCell](0) < 0.99 ? 0. : 0.99; //! for safety
-                uRecBeta[iCell](0) *= std::pow(uRecBeta[iCell](0), 11) * 0.99;
+                uRecBeta[iCell](0) *= std::pow(uRecBeta[iCell](0), static_cast<int>(std::round(settings.uRecBetaCompressPower))) * 0.99;
                 minBetaLocal = std::min(uRecBeta[iCell](0), minBetaLocal);
             }
             if (uRecBeta[iCell](0) < 0)
