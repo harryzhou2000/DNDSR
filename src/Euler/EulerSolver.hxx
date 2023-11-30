@@ -944,6 +944,7 @@ namespace DNDS::Euler
                           << "PPResidualLimiter: nLimAlpha [" << nLimAlpha << "]"
                           << " minAlpha[" << minAlpha << "]" << std::endl;
                 }
+            alphaPPC = alphaPP_tmp;
             if (config.limiterControl.useLimiter)
                 eval.EvaluateRHS(crhs, JSourceC, cx, uRecNew, betaPPC, alphaPPC, false, tSimu + ct * curDtImplicit);
             else
@@ -1108,6 +1109,10 @@ namespace DNDS::Euler
                 real inter = real(iter - config.implicitCFLControl.nCFLRampStart) / config.implicitCFLControl.nCFLRampLength;
                 real logCFL = std::log(config.implicitCFLControl.CFL) + (std::log(config.implicitCFLControl.CFLRampEnd / config.implicitCFLControl.CFL) * inter);
                 CFLNow = std::exp(logCFL);
+            }
+            if (ifStop || iter > config.convergenceControl.nTimeStepInternal) //! TODO: reconstruct the framework of ODE-top-level-control 
+            {
+                CFLNow = config.implicitCFLControl.CFL;
             }
             // return resRel.maxCoeff() < config.convergenceControl.rhsThresholdInternal;
             return ifStop;
