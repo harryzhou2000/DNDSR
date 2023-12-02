@@ -203,8 +203,8 @@ namespace DNDS::Euler::Gas
     }
 
 #define DNDS_GAS_HLLEP_USE_V1
-    template <int dim = 3, typename TUL, typename TUR, typename TF, typename TFdumpInfo>
-    void HLLEPFlux_IdealGas(const TUL &UL, const TUR &UR, real gamma, TF &F, real dLambda,
+    template <int dim = 3, typename TUL, typename TUR, typename TULm, typename TURm, typename TF, typename TFdumpInfo>
+    void HLLEPFlux_IdealGas(const TUL &UL, const TUR &UR, const TULm &ULm, const TURm &URm, real gamma, TF &F, real dLambda,
                             const TFdumpInfo &dumpInfo)
     {
         static real scaleHartenYee = 0.05;
@@ -217,20 +217,28 @@ namespace DNDS::Euler::Gas
         DNDS_assert(UL(0) > 0 && UR(0) > 0);
         TVec veloL = (UL(Eigen::seq(Eigen::fix<1>, Eigen::fix<dim>)).array() / UL(0)).matrix();
         TVec veloR = (UR(Eigen::seq(Eigen::fix<1>, Eigen::fix<dim>)).array() / UR(0)).matrix();
+        TVec veloLm = (ULm(Eigen::seq(Eigen::fix<1>, Eigen::fix<dim>)).array() / ULm(0)).matrix();
+        TVec veloRm = (URm(Eigen::seq(Eigen::fix<1>, Eigen::fix<dim>)).array() / URm(0)).matrix();
 
         real asqrL, asqrR, pL, pR, HL, HR;
         real vsqrL = veloL.squaredNorm();
         real vsqrR = veloR.squaredNorm();
         IdealGasThermal(UL(dim + 1), UL(0), vsqrL, gamma, pL, asqrL, HL);
         IdealGasThermal(UR(dim + 1), UR(0), vsqrR, gamma, pR, asqrR, HR);
-        real sqrtRhoL = std::sqrt(UL(0));
-        real sqrtRhoR = std::sqrt(UR(0));
+        real asqrLm, asqrRm, pLm, pRm, HLm, HRm;
+        real vsqrLm = veloLm.squaredNorm();
+        real vsqrRm = veloRm.squaredNorm();
+        IdealGasThermal(ULm(dim + 1), ULm(0), vsqrLm, gamma, pLm, asqrLm, HLm);
+        IdealGasThermal(URm(dim + 1), URm(0), vsqrRm, gamma, pRm, asqrRm, HRm);
 
-        TVec veloRoe = (sqrtRhoL * veloL + sqrtRhoR * veloR) / (sqrtRhoL + sqrtRhoR);
+        real sqrtRhoLm = std::sqrt(ULm(0));
+        real sqrtRhoRm = std::sqrt(URm(0));
+
+        TVec veloRoe = (sqrtRhoLm * veloLm + sqrtRhoRm * veloRm) / (sqrtRhoLm + sqrtRhoRm);
         real vsqrRoe = veloRoe.squaredNorm();
-        real HRoe = (sqrtRhoL * HL + sqrtRhoR * HR) / (sqrtRhoL + sqrtRhoR);
+        real HRoe = (sqrtRhoLm * HLm + sqrtRhoRm * HRm) / (sqrtRhoLm + sqrtRhoRm);
         real asqrRoe = (gamma - 1) * (HRoe - 0.5 * vsqrRoe);
-        real rhoRoe = sqrtRhoL * sqrtRhoR;
+        real rhoRoe = sqrtRhoLm * sqrtRhoRm;
 
         if (!(asqrRoe > 0 && asqrL > 0 && asqrR > 0))
         {
@@ -600,7 +608,7 @@ namespace DNDS::Euler::Gas
 
         Eigen::Vector<real, dim + 2> incU =
             UR(Eigen::seq(Eigen::fix<0>, Eigen::fix<dim + 1>)) -
-            UL(Eigen::seq(Eigen::fix<0>, Eigen::fix<dim + 1>)); //!not using m, for this is accuracy-limited!
+            UL(Eigen::seq(Eigen::fix<0>, Eigen::fix<dim + 1>)); //! not using m, for this is accuracy-limited!
         real incP = pRm - pLm;
         TVec incVelo = veloRm - veloLm;
 
