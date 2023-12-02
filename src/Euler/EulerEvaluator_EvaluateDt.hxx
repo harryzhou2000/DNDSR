@@ -521,7 +521,7 @@ namespace DNDS::Euler
         // std::cout << "HERE" << std::endl;
         if (rsType == Gas::RiemannSolverType::HLLEP)
             Gas::HLLEPFlux_IdealGas<dim>(
-                UL, UR, settings.idealGasProperty.gamma, finc, deltaLambdaFace[iFace],
+                UL, UR, ULm, URm, settings.idealGasProperty.gamma, finc, deltaLambdaFace[iFace],
                 exitFun);
         else if (rsType == Gas::RiemannSolverType::HLLC)
             Gas::HLLCFlux_IdealGas_HartenYee<dim>(
