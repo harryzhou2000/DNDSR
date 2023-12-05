@@ -6,6 +6,7 @@
 #include <omp.h>
 #include <filesystem>
 #include <unordered_map>
+#include <fmt/core.h>
 
 namespace DNDS::Geom
 {
@@ -1119,7 +1120,15 @@ namespace DNDS::Geom
                 //     continue;
                 // }
                 // if (face2cell[iFace][0] < cell2cell.father->Size()) // other side prime cell, periodic also
-                DNDS_assert(face2cell[iFace][1] != DNDS::UnInitIndex); // Assert has enough cell donors
+                DNDS_assert_info(face2cell[iFace][1] != DNDS::UnInitIndex,
+                                 fmt::format(
+                                     "Face {} is internal, but f2c[1] is null, at {},{},{} - {},{},{}", iFace,
+                                     coords[face2node[iFace][0]](0),
+                                     coords[face2node[iFace][0]](1),
+                                     coords[face2node[iFace][0]](2),
+                                     face2node[iFace].size() > 1 ? coords[face2node[iFace][1]](0) : 0.,
+                                     face2node[iFace].size() > 1 ? coords[face2node[iFace][1]](1) : 0.,
+                                     face2node[iFace].size() > 1 ? coords[face2node[iFace][1]](2) : 0.)); // Assert has enough cell donors
                 DNDS_assert(face2cell[iFace][0] >= 0 && face2cell[iFace][0] < cell2cell.Size());
                 DNDS_assert(face2cell[iFace][1] >= 0 && face2cell[iFace][1] < cell2cell.Size());
                 cCont[face2cell[iFace][0]]++;

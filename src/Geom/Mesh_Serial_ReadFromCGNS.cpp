@@ -3,6 +3,8 @@
 
 #include <cgnslib.h>
 
+#include <set>
+
 namespace DNDS::Geom
 {
     constexpr Elem::ElemType __getElemTypeFromCGNSType(ElementType_t cgns_et)
@@ -394,12 +396,29 @@ namespace DNDS::Geom
 
         std::vector<DNDS::index> NodeOld2New(ZoneNodeStarts.back(), -1);
         DNDS::index cTop = 0;
+        // !using graph traversing to delete the 1-to-1 interface points, otherwise could omit duplication (say, a point being shared by 3 or more zones)
+       
+        std::set<int> zonesLeft; //* assuming nZones < ~ 1<<20=1M  // ! a dfs:
         for (int iGZ = 0; iGZ < ZoneNodeSizes.size(); iGZ++)
+            zonesLeft.insert(iGZ);
+        std::vector<int> zonesFront;
+        zonesFront.push_back(0); // ! a dfs, use a queue to change to bfs
+        DNDS_assert(ZoneNodeSizes.size() >= 1);
+
+        while (zonesFront.size())
         {
+            int iGZ = zonesFront.back();
+            zonesFront.pop_back();
+            zonesLeft.erase(iGZ);
             for (int iOther = 0; iOther < ZoneConnect.at(iGZ).size(); iOther++)
             {
                 int iGZOther = ZoneConnectTargetIZone.at(iGZ).at(iOther);
-                if (iGZOther < iGZ) // that has been set
+                
+                if (zonesLeft.count(iGZOther)) // unaccounted for, then put into stack
+                {
+                    zonesFront.push_back(iGZOther);
+                }
+                else // already counted, then de-duplicate
                 {
                     for (DNDS::index iNode = 0; iNode < ZoneConnect.at(iGZ).at(iOther).size(); iNode++)
                     {
