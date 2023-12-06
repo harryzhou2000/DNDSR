@@ -562,10 +562,10 @@ namespace DNDS::Euler
             TU &URm = settings.rsMeanValueEig == 1 ? URMean : UR;
             RSWrapper(rsType, UL, UR, ULm, URm, settings.idealGasProperty.gamma, finc, deltaLambdaFace[iFace]);
         }
-        else if (settings.rsRotateScheme == 1)
+        else if (settings.rsRotateScheme)
         {
-            TVec veloL = UL(Seq123) / UL(0);
-            TVec veloR = UR(Seq123) / UR(0);
+            TVec veloL = settings.rsRotateScheme == 1 ? UL(Seq123) / UL(0) : ULMean(Seq123) / ULMean(0);
+            TVec veloR = settings.rsRotateScheme == 1 ? UR(Seq123) / UR(0) : URMean(Seq123) / URMean(0) ;
             TVec diffVelo = veloR - veloL;
             real diffVeloN = diffVelo.norm();
             real veloLN = veloL.norm();
