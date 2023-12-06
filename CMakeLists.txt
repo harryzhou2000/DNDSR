@@ -23,7 +23,6 @@ set(CMAKE_PREFIX_PATH ${HARD_GUESS_PATH})
 
 # need CUDA project support ?
 # manual perferences
-set(CMAKE_VERBOSE_MAKEFILE ON)
 # set(CMAKE_CXX_STANDARD_REQUIRED 17)
 # set(CMAKE_CXX_STANDARD 17)
 
@@ -35,12 +34,15 @@ set(DNDS_USE_NDEBUG_MACRO OFF CACHE BOOL "use NDEBUG macro for eigen output and 
 set(DNDS_USE_PARALLEL_MACRO OFF CACHE BOOL "for auto multi-thread?")
 set(DNDS_USE_OMP ON CACHE BOOL "for openmp enabling")
 set(DNDS_FAST_BUILD_FAST ON CACHE BOOL "don't -g on basic modules")
+set(DNDS_UNSAFE_MATH_OPT OFF CACHE BOOL "use -funsafe-math-optimizations")
+set(DNDS_NATIVE_ARCH     OFF CACHE BOOL "use -march=native")
+set(DNDS_LTO OFF CACHE BOOL "use -flto")
 
 set(DNDS_EIGEN_USE_BLAS OFF CACHE BOOL "use blas in eigen")
 set(DNDS_EIGEN_USE_LAPACK OFF CACHE BOOL "use lapack in eigen")
-set(DNDS_UNSAFE_MATH_OPT OFF CACHE BOOL "use -funsafe-math-optimizations")
-set(DNDS_NATIVE_ARCH     OFF CACHE BOOL "use -march=native")
+
 set(DNDS_RECORD_COMMIT ON CACHE BOOL "record commit id for each cmake configure")
+set(DNDS_VERBOSE_BUILDING ON CACHE BOOL "make the makefile verbose, overrides CMAKE_VERBOSE_MAKEFILE")
 
 if(DNDS_RECORD_COMMIT)
     execute_process(COMMAND git rev-parse HEAD OUTPUT_FILE commitID.txt WORKING_DIRECTORY ${CMAKE_BINARY_DIR} TIMEOUT 120)
@@ -50,6 +52,17 @@ if(DNDS_RECORD_COMMIT)
     string(STRIP ${DNDS_RECORDED_COMMIT_HASH} DNDS_RECORDED_COMMIT_HASH)
     set(DNDS_RECORDED_COMMIT_HASH ${DNDS_RECORDED_COMMIT_HASH} CACHE INTERNAL  "Project Public Current Commit Hash")
     message(STATUS "current commit id: ${DNDS_RECORDED_COMMIT_HASH}")
+endif()
+
+if(DNDS_VERBOSE_BUILDING)
+    set(CMAKE_VERBOSE_MAKEFILE ON)
+else()
+    set(CMAKE_VERBOSE_MAKEFILE OFF)
+endif()
+
+if(DNDS_LTO)
+    string(APPEND CMAKE_CXX_FLAGS_RELEASE " -flto")
+    # ! todo: add changing to gcc-ar gcc-ranlib gcc-nm
 endif()
 
 
@@ -68,6 +81,8 @@ elseif(MSVC OR WIN32 OR MINGW)
 else()
     message(FATAL_ERROR "NOT YET IMPLEMENTED HERE")
 endif()
+
+
 
 
 
