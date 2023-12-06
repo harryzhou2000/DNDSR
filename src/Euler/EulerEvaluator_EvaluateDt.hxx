@@ -244,8 +244,7 @@ namespace DNDS::Euler
             lambdaConvection = std::max(std::sqrt(asqrL) + std::abs(veloNL), std::sqrt(asqrR) + std::abs(veloNR));
             DNDS_assert_info(
                 asqrL >= 0 && asqrR >= 0,
-                fmt::format(" mean value violates PP! asqr: [{} {}]", asqrL, asqrR)
-            );
+                fmt::format(" mean value violates PP! asqr: [{} {}]", asqrL, asqrR));
 
             // ! refvalue:
             real muRef = settings.idealGasProperty.muGas;
@@ -333,18 +332,18 @@ namespace DNDS::Euler
 
     template <EulerModel model>
     typename EulerEvaluator<model>::TU EulerEvaluator<model>::fluxFace(
-            const TU &ULxy,
-            const TU &URxy,
-            const TU &ULMeanXy,
-            const TU &URMeanXy,
-            const TDiffU &DiffUxy,
-            const TVec &unitNorm,
-            const TMat &normBase,
-            TU &FLfix,
-            TU &FRfix,
-            Geom::t_index btype,
-            typename Gas::RiemannSolverType rsType,
-            index iFace, int ig)
+        const TU &ULxy,
+        const TU &URxy,
+        const TU &ULMeanXy,
+        const TU &URMeanXy,
+        const TDiffU &DiffUxy,
+        const TVec &unitNorm,
+        const TMat &normBase,
+        TU &FLfix,
+        TU &FRfix,
+        Geom::t_index btype,
+        typename Gas::RiemannSolverType rsType,
+        index iFace, int ig)
     {
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
 
@@ -366,7 +365,7 @@ namespace DNDS::Euler
         real pMean, asqrMean, Hmean;
         real gamma = settings.idealGasProperty.gamma;
         Gas::IdealGasThermal(UMeanXy(I4), UMeanXy(0), (UMeanXy(Seq123) / UMeanXy(0)).squaredNorm(),
-                                gamma, pMean, asqrMean, Hmean);
+                             gamma, pMean, asqrMean, Hmean);
 
         // ! refvalue:
         // PerformanceTimer::Instance().StartTimer(PerformanceTimer::LimiterB);
@@ -386,7 +385,7 @@ namespace DNDS::Euler
         mufPhy = muf;
         // PerformanceTimer::Instance().StopTimer(PerformanceTimer::LimiterB);
 #ifndef DNDS_FV_EULEREVALUATOR_IGNORE_VISCOUS_TERM
-        real fnu1 = 0.; 
+        real fnu1 = 0.;
         if constexpr (model == NS_SA || model == NS_SA_3D)
         {
             real cnu1 = 7.1;
@@ -406,7 +405,7 @@ namespace DNDS::Euler
         }
 
         real k = settings.idealGasProperty.CpGas * (muf - mufPhy) / 0.9 +
-                    settings.idealGasProperty.CpGas * mufPhy / settings.idealGasProperty.prGas;
+                 settings.idealGasProperty.CpGas * mufPhy / settings.idealGasProperty.prGas;
         TDiffU VisFlux;
         VisFlux.resizeLike(DiffUxy);
         VisFlux.setZero();
@@ -465,9 +464,6 @@ namespace DNDS::Euler
         }
 #endif
 
-        TU finc;
-        finc.resizeLike(ULxy);
-
         {
             TU wLMean, wRMean;
             Gas::IdealGasThermalConservative2Primitive<dim>(ULMean, wLMean, gamma);
@@ -515,47 +511,173 @@ namespace DNDS::Euler
             UR = UL;
         }
 #endif
-        TU &ULm = settings.rsMeanValueEig == 1 ? ULMean : UL;
-        TU &URm = settings.rsMeanValueEig == 1 ? URMean : UR;
 
-        // std::cout << "HERE" << std::endl;
-        if (rsType == Gas::RiemannSolverType::HLLEP)
-            Gas::HLLEPFlux_IdealGas<dim>(
-                UL, UR, ULm, URm, settings.idealGasProperty.gamma, finc, deltaLambdaFace[iFace],
-                exitFun);
-        else if (rsType == Gas::RiemannSolverType::HLLC)
-            Gas::HLLCFlux_IdealGas_HartenYee<dim>(
-                UL, UR, settings.idealGasProperty.gamma, finc, deltaLambdaFace[iFace],
-                exitFun);
-        else if (rsType == Gas::RiemannSolverType::Roe)
-            Gas::RoeFlux_IdealGas_HartenYee<dim>(
-                UL, UR, ULm, URm, settings.idealGasProperty.gamma, finc, deltaLambdaFace[iFace],
-                exitFun, lam0, lam123, lam4);
-        else if (rsType == Gas::RiemannSolverType::Roe_M1)
-            Gas::RoeFlux_IdealGas_HartenYee<dim, 1>(
-                UL, UR, ULm, URm , settings.idealGasProperty.gamma, finc, deltaLambdaFace[iFace],
-                exitFun, lam0, lam123, lam4);
-        else if (rsType == Gas::RiemannSolverType::Roe_M2)
-            Gas::RoeFlux_IdealGas_HartenYee<dim, 2>(
-                UL, UR, ULm, URm , settings.idealGasProperty.gamma, finc, deltaLambdaFace[iFace],
-                exitFun, lam0, lam123, lam4);
-        else if (rsType == Gas::RiemannSolverType::Roe_M3)
-            Gas::RoeFlux_IdealGas_HartenYee<dim, 3>(
-                UL, UR, ULm, URm , settings.idealGasProperty.gamma, finc, deltaLambdaFace[iFace],
-                exitFun, lam0, lam123, lam4);
-        else if (rsType == Gas::RiemannSolverType::Roe_M4)
-            Gas::RoeFlux_IdealGas_HartenYee<dim, 4>(
-                UL, UR, ULm, URm, settings.idealGasProperty.gamma, finc, deltaLambdaFace[iFace],
-                exitFun, lam0, lam123, lam4);
-        else if (rsType == Gas::RiemannSolverType::Roe_M5)
-            Gas::RoeFlux_IdealGas_HartenYee<dim, 5>(
-                UL, UR, ULm, URm, settings.idealGasProperty.gamma, finc, deltaLambdaFace[iFace],
-                exitFun, lam0, lam123, lam4);
-        else
-            DNDS_assert(false);
+        auto RSWrapper = [&](Gas::RiemannSolverType rsType, auto &UL, auto &UR, auto &ULm, auto &URm, real gamma, auto &finc, real dLambda)
+        {
+            if (rsType == Gas::RiemannSolverType::HLLEP)
+                Gas::HLLEPFlux_IdealGas<dim>(
+                    UL, UR, ULm, URm, gamma, finc, dLambda,
+                    exitFun);
+            else if (rsType == Gas::RiemannSolverType::HLLC)
+                Gas::HLLCFlux_IdealGas_HartenYee<dim>(
+                    UL, UR, gamma, finc, dLambda,
+                    exitFun);
+            else if (rsType == Gas::RiemannSolverType::Roe)
+                Gas::RoeFlux_IdealGas_HartenYee<dim>(
+                    UL, UR, ULm, URm, gamma, finc, dLambda,
+                    exitFun, lam0, lam123, lam4);
+            else if (rsType == Gas::RiemannSolverType::Roe_M1)
+                Gas::RoeFlux_IdealGas_HartenYee<dim, 1>(
+                    UL, UR, ULm, URm, gamma, finc, dLambda,
+                    exitFun, lam0, lam123, lam4);
+            else if (rsType == Gas::RiemannSolverType::Roe_M2)
+                Gas::RoeFlux_IdealGas_HartenYee<dim, 2>(
+                    UL, UR, ULm, URm, gamma, finc, dLambda,
+                    exitFun, lam0, lam123, lam4);
+            else if (rsType == Gas::RiemannSolverType::Roe_M3)
+                Gas::RoeFlux_IdealGas_HartenYee<dim, 3>(
+                    UL, UR, ULm, URm, gamma, finc, dLambda,
+                    exitFun, lam0, lam123, lam4);
+            else if (rsType == Gas::RiemannSolverType::Roe_M4)
+                Gas::RoeFlux_IdealGas_HartenYee<dim, 4>(
+                    UL, UR, ULm, URm, gamma, finc, dLambda,
+                    exitFun, lam0, lam123, lam4);
+            else if (rsType == Gas::RiemannSolverType::Roe_M5)
+                Gas::RoeFlux_IdealGas_HartenYee<dim, 5>(
+                    UL, UR, ULm, URm, gamma, finc, dLambda,
+                    exitFun, lam0, lam123, lam4);
+            else
+                DNDS_assert(false);
             // std::cout << "HERE2" << std::endl;
             // if (btype == BoundaryType::Wall_NoSlip || btype == BoundaryType::Wall_Euler)
             //     finc(0) = 0; //! enforce mass leak = 0
+        };
+
+        TU finc;
+        finc.resizeLike(ULxy);
+        // std::cout << "HERE" << std::endl;
+        if (settings.rsRotateScheme == 0)
+        {
+            TU &ULm = settings.rsMeanValueEig == 1 ? ULMean : UL;
+            TU &URm = settings.rsMeanValueEig == 1 ? URMean : UR;
+            RSWrapper(rsType, UL, UR, ULm, URm, settings.idealGasProperty.gamma, finc, deltaLambdaFace[iFace]);
+        }
+        else if (settings.rsRotateScheme == 1)
+        {
+            TVec veloL = UL(Seq123) / UL(0);
+            TVec veloR = UR(Seq123) / UR(0);
+            TVec diffVelo = veloR - veloL;
+            real diffVeloN = diffVelo.norm();
+            real veloLN = veloL.norm();
+            real veloRN = veloR.norm();
+            if (diffVeloN < (smallReal * 10) * (veloLN + veloRN) || diffVeloN < verySmallReal)
+            {
+                TU &ULm = settings.rsMeanValueEig == 1 ? ULMean : UL;
+                TU &URm = settings.rsMeanValueEig == 1 ? URMean : UR;
+                RSWrapper(rsType, UL, UR, ULm, URm, settings.idealGasProperty.gamma, finc, deltaLambdaFace[iFace]);
+            }
+            else // use rotate
+            {
+                TVec N1 = diffVelo / diffVeloN;
+                DNDS_assert_info(std::abs(N1.norm() -1) < 1e-5,
+                                     fmt::format("{}", diffVeloN));
+
+                real N1Proj = N1(0);
+                TVec N2 = -N1 * N1Proj;
+                N2(0) += 1;
+                real N2Proj = N2.norm();
+                if (N2Proj < 10 * smallReal) // N is fully N1
+                {
+                    Gas::RiemannSolverType rsTypeAux = settings.rsTypeAux;
+                    TU &ULm = settings.rsMeanValueEig == 1 ? ULMean : UL;
+                    TU &URm = settings.rsMeanValueEig == 1 ? URMean : UR;
+                    RSWrapper(rsTypeAux ? rsTypeAux : Gas::RiemannSolverType::Roe_M2,
+                              UL, UR, ULm, URm, settings.idealGasProperty.gamma, finc, deltaLambdaFace[iFace]);
+                }
+                else
+                {
+                    N2 /= N2Proj;
+                    DNDS_assert_info(std::abs(N1.norm() -1) < 1e-5 && std::abs(N2.norm() - 1) < 1e-5,
+                                     fmt::format("{},{}", N1Proj, N2Proj));
+                    auto fullN = N1 * N1Proj + N2 * N2Proj;
+                    DNDS_assert_info(std::abs(fullN(0) - 1) < 1e-5 && std::abs(fullN.norm() - 1) < 1e-5 && std::abs(N1.dot(N2)) < 1e-5,
+                                     fmt::format("{},{}", N1Proj, N2Proj));
+                    if(N2Proj < 0)
+                        N2 *= -1, N2Proj *= -1;
+                    if(N1Proj < 0)
+                        N1 *= -1, N1Proj *= -1; //! riemann solver should distinguish L & R, if n is inverted, then L-R is inconsistent
+
+                    // {std::cout << N1.transpose() << ", ";
+                    // std::cout << N2.transpose() << ", ";
+                    // std::cout << N1Proj << " " << N2Proj <<std::endl;}
+
+                    TMat normBaseN1 = Geom::NormBuildLocalBaseV<dim>(N1);
+                    TMat normBaseN2 = Geom::NormBuildLocalBaseV<dim>(N2);
+
+                    TU ULMeanN1 = ULMean;
+                    TU URMeanN1 = URMean;
+                    ULMeanN1(Seq123) = normBaseN1.transpose() * ULMeanN1(Seq123);
+                    URMeanN1(Seq123) = normBaseN1.transpose() * URMeanN1(Seq123);
+                    TU ULN1 = UL;
+                    TU URN1 = UR;
+                    ULN1(Seq123) = normBaseN1.transpose() * ULN1(Seq123);
+                    URN1(Seq123) = normBaseN1.transpose() * URN1(Seq123);
+
+                    TU ULMeanN2 = ULMean;
+                    TU URMeanN2 = URMean;
+                    ULMeanN2(Seq123) = normBaseN2.transpose() * ULMeanN2(Seq123);
+                    URMeanN2(Seq123) = normBaseN2.transpose() * URMeanN2(Seq123);
+                    TU ULN2 = UL;
+                    TU URN2 = UR;
+                    ULN2(Seq123) = normBaseN2.transpose() * ULN2(Seq123);
+                    URN2(Seq123) = normBaseN2.transpose() * URN2(Seq123);
+
+                    TU fincN1;
+                    fincN1.resizeLike(ULxy);
+                    TU fincN2;
+                    fincN2.resizeLike(ULxy);
+
+                    TU &ULmN1 = settings.rsMeanValueEig == 1 ? ULMeanN1 : ULN1;
+                    TU &URmN1 = settings.rsMeanValueEig == 1 ? URMeanN1 : URN1;
+                    TU &ULmN2 = settings.rsMeanValueEig == 1 ? ULMeanN2 : ULN2;
+                    TU &URmN2 = settings.rsMeanValueEig == 1 ? URMeanN2 : URN2;
+
+                    RSWrapper(rsType,
+                              ULN2, URN2, ULmN2, URmN2, settings.idealGasProperty.gamma, fincN2, deltaLambdaFace[iFace]);
+                    Gas::RiemannSolverType rsTypeAux = settings.rsTypeAux;
+                    RSWrapper(rsTypeAux ? rsTypeAux : Gas::RiemannSolverType::Roe_M2,
+                              ULN1, URN1, ULmN1, URmN1, settings.idealGasProperty.gamma, fincN1, deltaLambdaFace[iFace]);
+                              
+
+                    fincN1(Seq123) = normBaseN1 * fincN1(Seq123);
+                    fincN2(Seq123) = normBaseN2 * fincN2(Seq123);
+
+                    { // display rotation diff
+                        // TU &ULm = settings.rsMeanValueEig == 1 ? ULMean : UL;
+                        // TU &URm = settings.rsMeanValueEig == 1 ? URMean : UR;
+                        // RSWrapper(rsType, UL, UR, UL, UR, settings.idealGasProperty.gamma, finc, deltaLambdaFace[iFace]);
+                        // {
+                        //     std::cout << N1.transpose() << "\n" << N2.transpose() << "\n";
+                        //     std::cout << N1Proj <<" " <<N2Proj << std::endl;
+                        //     std::cout << ULN1.transpose() <<" ---- " << URN1.transpose() << std::endl;
+                        //     std::cout << fincN1.transpose() << std::endl;
+                        //     std::cout << ULN2.transpose() <<" ---- " << URN2.transpose() << std::endl;
+                        //     std::cout << fincN2.transpose() << std::endl;
+                        //     std::cout << "---\n" << normBaseN1 << "\n---\n";
+                        //     std::cout << "---\n" << normBaseN2 << "\n---\n";
+
+
+                        //     std::cout << (N1Proj * fincN1 + N2Proj * fincN2).transpose() << std::endl;
+                        //     std::cout << finc.transpose() << std::endl;
+                        //     std::abort();
+                        // }
+                    }
+                    finc = N1Proj * fincN1 + N2Proj * fincN2;
+                }
+            }
+        }
+        else
+            DNDS_assert(false);
 
 #ifndef USE_ENTROPY_FIXED_LAMBDA_IN_SA
         lam123 = (std::abs(UL(1) / UL(0)) + std::abs(UR(1) / UR(0))) * 0.5; //! high fix
@@ -568,7 +690,7 @@ namespace DNDS::Euler
             real lambdaFaceCC = lam123; //! using velo instead of velo + a
             finc(I4 + 1) =
                 ((UL(1) / UL(0) * UL(I4 + 1) + UR(1) / UR(0) * UR(I4 + 1)) -
-                    (UR(I4 + 1) - UL(I4 + 1)) * lambdaFaceCC) *
+                 (UR(I4 + 1) - UL(I4 + 1)) * lambdaFaceCC) *
                 0.5;
         }
         if constexpr (model == NS_2EQ || model == NS_2EQ_3D)
@@ -576,7 +698,7 @@ namespace DNDS::Euler
             real lambdaFaceCC = lam123; //! using velo instead of velo + a
             finc({I4 + 1, I4 + 2}) =
                 ((UL(1) / UL(0) * UL({I4 + 1, I4 + 2}) + UR(1) / UR(0) * UR({I4 + 1, I4 + 2})) -
-                    (UR({I4 + 1, I4 + 2}) - UL({I4 + 1, I4 + 2})) * lambdaFaceCC) *
+                 (UR({I4 + 1, I4 + 2}) - UL({I4 + 1, I4 + 2})) * lambdaFaceCC) *
                 0.5;
         }
         finc(Seq123) = normBase * finc(Seq123);

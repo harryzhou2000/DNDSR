@@ -40,7 +40,7 @@ namespace DNDS::Euler
     static const auto Seq012 = Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>);   \
     static const auto Seq123 = Eigen::seq(Eigen::fix<1>, Eigen::fix<dim>);       \
     static const auto Seq01234 = Eigen::seq(Eigen::fix<0>, Eigen::fix<dim + 1>); \
-    static const auto I4 = dim + 1;
+    static const auto I4 = dim + 1; 
 
         typedef Eigen::Vector<real, dim> TVec;
         typedef Eigen::Matrix<real, dim, dim> TMat;
@@ -88,8 +88,10 @@ namespace DNDS::Euler
             nlohmann::ordered_json jsonSettings;
 
             Gas::RiemannSolverType rsType = Gas::Roe;
+            Gas::RiemannSolverType rsTypeAux = Gas::UnknownRS;
             int rsMeanValueEig = 0;
             int nCentralSmoothStep = 0;
+            int rsRotateScheme = 0;
 
             struct IdealGasProperty
             {
@@ -199,8 +201,12 @@ namespace DNDS::Euler
                 Gas::RiemannSolverType riemannSolverType = rsType;
                 __DNDS__json_to_config(riemannSolverType);
                 rsType = riemannSolverType;
+                Gas::RiemannSolverType riemannSolverTypeAux = rsTypeAux;
+                __DNDS__json_to_config(riemannSolverTypeAux);
+                rsTypeAux = riemannSolverTypeAux;
                 // std::cout << rsType << std::endl;
                 __DNDS__json_to_config(rsMeanValueEig);
+                __DNDS__json_to_config(rsRotateScheme);
                 __DNDS__json_to_config(nCentralSmoothStep);
                 __DNDS__json_to_config(constMassForce);
                 if (read)
