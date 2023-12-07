@@ -454,8 +454,15 @@ namespace DNDS::Euler
                                 TU cons;
                                 cons.setZero();
                                 cons(Seq01234) = v.transpose();
-                                Gas::IdealGasThermalConservative2Primitive<dim>(cons, prim, eval.settings.idealGasProperty.gamma);
-                                v.setConstant(prim(I4));
+                                if (cons(0) < verySmallReal)
+                                {
+                                    v.setConstant(-veryLargeReal * v(I4));
+                                } // to make the values absurd
+                                else // could get a p
+                                {
+                                    Gas::IdealGasThermalConservative2Primitive<dim>(cons, prim, eval.settings.idealGasProperty.gamma);
+                                    v.setConstant(prim(I4));
+                                }
                             });
                 }
                 else
@@ -1110,7 +1117,7 @@ namespace DNDS::Euler
                 real logCFL = std::log(config.implicitCFLControl.CFL) + (std::log(config.implicitCFLControl.CFLRampEnd / config.implicitCFLControl.CFL) * inter);
                 CFLNow = std::exp(logCFL);
             }
-            if (ifStop || iter > config.convergenceControl.nTimeStepInternal) //! TODO: reconstruct the framework of ODE-top-level-control 
+            if (ifStop || iter > config.convergenceControl.nTimeStepInternal) //! TODO: reconstruct the framework of ODE-top-level-control
             {
                 CFLNow = config.implicitCFLControl.CFL;
             }
