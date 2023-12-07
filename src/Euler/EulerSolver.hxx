@@ -490,8 +490,12 @@ namespace DNDS::Euler
             }
             if (config.implicitReconstructionControl.storeRecInc && config.implicitReconstructionControl.dampRecIncDTau)
             {
-                ArrayDOFV<1> damper = dTau;
-                ArrayDOFV<1> damper1 = dTau;
+                ArrayDOFV<1> damper;
+                ArrayDOFV<1> damper1;
+                vfv->BuildUDof(damper, 1);
+                vfv->BuildUDof(damper1, 1);
+                damper = dTau;
+                damper1 = dTau;
                 damper1 += curDtImplicit;
                 damper /= damper1;
                 // for (auto &v : damper)
@@ -565,6 +569,17 @@ namespace DNDS::Euler
             eval.EvaluateDt(dTau, cx, uRecC, CFLNow, curDtMin, 1e100, config.implicitCFLControl.useLocalDt);
             // for (auto &i: dTau)
             //     i = std::min({i, curDtMin * 1000, curDtImplicit * 100});
+            for (int iS = 1; iS <= config.implicitCFLControl.nSmoothDTau ; iS++)
+            {
+                // ArrayDOFV<1> dTauNew = dTau; //TODO: copying is still unusable; consider doing copiers on the level of ArrayDOFV and ArrayRecV
+                ArrayDOFV<1> dTauNew;
+                vfv->BuildUDof(dTauNew, 1);
+                dTauNew = dTau;
+                dTau.trans.startPersistentPull();
+                dTau.trans.waitPersistentPull();
+                eval.MinSmoothDTau(dTau, dTauNew);
+                dTau = dTauNew;
+            }
 
             dTau *= 1. / alphaDiag;
         };

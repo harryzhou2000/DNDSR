@@ -172,6 +172,7 @@ namespace DNDS::Euler
                 int nCFLRampLength = INT_MAX;
                 real CFLRampEnd = 0;
                 bool useLocalDt = true;
+                int nSmoothDTau = 0;
                 DNDS_NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_ORDERED_JSON(
                     ImplicitCFLControl,
                     CFL,
@@ -179,7 +180,8 @@ namespace DNDS::Euler
                     nCFLRampStart,
                     nCFLRampLength,
                     CFLRampEnd,
-                    useLocalDt)
+                    useLocalDt,
+                    nSmoothDTau)
             } implicitCFLControl;
 
             struct ConvergenceControl

@@ -836,4 +836,29 @@ namespace DNDS::Euler
         MPI::Allreduce(&nLimLocal, &nLimAdd, 1, DNDS_MPI_INDEX, MPI_SUM, u.father->getMPI().comm);
         nLim += nLimAdd;
     }
+
+    template <EulerModel model>
+    void EulerEvaluator<model>::MinSmoothDTau(
+        ArrayDOFV<1> &dTau, ArrayDOFV<1> &dTauNew)
+    {
+        real smootherCentWeight = 1;
+        for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
+        {
+            auto c2f = mesh->cell2face[iCell];
+            real nAdj = 0.;
+            real dTMean = 0.;
+            for (index iFace : c2f)
+            {
+                index iCellOther = vfv->CellFaceOther(iCell, iFace);
+                if (iCellOther != UnInitIndex)
+                {
+                    nAdj += 1.;
+                    dTMean += dTau[iCellOther](0);
+                }
+            }
+            dTMean += nAdj * smootherCentWeight * dTau[iCell](0);
+            dTMean /= nAdj * (1 + smootherCentWeight);
+            dTauNew[iCell](0) = std::min(dTau[iCell](0), dTMean);
+        }
+    }
 }

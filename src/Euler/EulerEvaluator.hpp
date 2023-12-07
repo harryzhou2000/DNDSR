@@ -437,6 +437,9 @@ namespace DNDS::Euler
             ArrayDOFV<nVars_Fixed> &res,
             ArrayDOFV<1> &cellRHSAlpha, index &nLim, real alphaMin);
 
+        void MinSmoothDTau(
+            ArrayDOFV<1> &dTau, ArrayDOFV<1> &dTauNew);
+
         /******************************************************/
 
         real muEff(const TU &U) // TODO: more than sutherland law

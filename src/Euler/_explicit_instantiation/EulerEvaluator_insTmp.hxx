@@ -6,7 +6,7 @@
         template void EulerEvaluator<model>::LUSGSMatrixInit(                                   \
             ArrayDOFV<nVars_Fixed> &JDiag,                                                      \
             ArrayDOFV<nVars_Fixed> &JSource,                                                    \
-            ArrayDOFV<1> &dTau, real dt, real alphaDiag,                              \
+            ArrayDOFV<1> &dTau, real dt, real alphaDiag,                                        \
             ArrayDOFV<nVars_Fixed> &u,                                                          \
             ArrayRECV<nVars_Fixed> &uRec,                                                       \
             int jacobianCode,                                                                   \
@@ -85,4 +85,6 @@
             ArrayDOFV<1> &uRecBeta,                                                             \
             ArrayDOFV<nVars_Fixed> &res,                                                        \
             ArrayDOFV<1> &cellRHSAlpha, index &nLim, real alphaMin);                            \
+        template void EulerEvaluator<model>::MinSmoothDTau(                                     \
+            ArrayDOFV<1> &dTau, ArrayDOFV<1> &dTauNew);                                         \
     }
