@@ -16,6 +16,7 @@ namespace DNDS::Euler::Gas
         Roe = 1,
         HLLC = 2,
         HLLEP = 3,
+        HLLEP_V1 = 21,
         Roe_M1 = 11,
         Roe_M2 = 12,
         Roe_M3 = 13,
@@ -26,10 +27,11 @@ namespace DNDS::Euler::Gas
     NLOHMANN_JSON_SERIALIZE_ENUM(
         RiemannSolverType,
         {
-            {UnknownRS, nullptr},
+            {UnknownRS, "UnknownRS"},
             {Roe, "Roe"},
             {HLLC, "HLLC"},
             {HLLEP, "HLLEP"},
+            {HLLEP_V1, "HLLEP_V1"},
             {Roe_M1, "Roe_M1"},
             {Roe_M2, "Roe_M2"},
             {Roe_M3, "Roe_M3"},
@@ -202,8 +204,8 @@ namespace DNDS::Euler::Gas
         return LeV;
     }
 
-#define DNDS_GAS_HLLEP_USE_V1
-    template <int dim = 3, typename TUL, typename TUR, typename TULm, typename TURm, typename TF, typename TFdumpInfo>
+// #define DNDS_GAS_HLLEP_USE_V1
+    template <int dim = 3, int type=0, typename TUL, typename TUR, typename TULm, typename TURm, typename TF, typename TFdumpInfo>
     void HLLEPFlux_IdealGas(const TUL &UL, const TUR &UR, const TULm &ULm, const TURm &URm, real gamma, TF &F, real dLambda,
                             const TFdumpInfo &dumpInfo)
     {
@@ -288,10 +290,11 @@ namespace DNDS::Euler::Gas
                    (incU(0) * (HRoe - veloRoe(0) * veloRoe(0)) +
                     veloRoe(0) * incU(1) - incU4b);
         // ? HLLEP V1
-#ifdef DNDS_GAS_HLLEP_USE_V1
-        alpha(0) = (incU(0) * lam4 - incU(1) - aRoe * alpha(1)) / (2 * aRoe);
-        alpha(dim + 1) = incU(0) - (alpha(0) + alpha(1)); // * HLLEP doesn't need
-#endif
+        if constexpr (type == 1)
+        {
+            alpha(0) = (incU(0) * lam4 - incU(1) - aRoe * alpha(1)) / (2 * aRoe);
+            alpha(dim + 1) = incU(0) - (alpha(0) + alpha(1)); // * HLLEP doesn't need
+        }
 
         // std::cout << alpha.transpose() << std::endl;
         // std::cout << std::endl;
@@ -308,40 +311,43 @@ namespace DNDS::Euler::Gas
         real SP = std::max(SR, 0.0);
         real SM = std::min(SL, 0.0);
 
-#ifndef DNDS_GAS_HLLEP_USE_V1
-        real div = SP - SM;
-        div += signP(div) * verySmallReal;
+if constexpr (type != 1)
+        {
+            real div = SP - SM;
+            div += signP(div) * verySmallReal;
 
-        // F = (SP * FL - SM * FR) / div + (SP * SM / div) * (UR - UL - dfix * ReVRoe(Eigen::all, {1, 2, 3}) * alpha({1, 2, 3}));
-        F(Eigen::seq(Eigen::fix<0>, Eigen::fix<dim + 1>)) =
-            (SP * FL - SM * FR) / div +
-            (SP * SM / div) *
-                (UR(Eigen::seq(Eigen::fix<0>, Eigen::fix<dim + 1>)) -
-                 UL(Eigen::seq(Eigen::fix<0>, Eigen::fix<dim + 1>)) -
-                 dfix * ReVRoe(Eigen::all, {1}) * alpha({1}));
-#else
-        // ? HLLEP V1
-        real aSound = aRoe;
-        real un_abs = aRoe;
-        real Sp = SP;
-        real Sn = SM;
-        real delta1 = aSound / (un_abs + aSound + verySmallReal);
-        real delta2 = 0.0;
-        real delta3 = 0.0;
-        real un = veloRoe(0);
+            // F = (SP * FL - SM * FR) / div + (SP * SM / div) * (UR - UL - dfix * ReVRoe(Eigen::all, {1, 2, 3}) * alpha({1, 2, 3}));
+            F(Eigen::seq(Eigen::fix<0>, Eigen::fix<dim + 1>)) =
+                (SP * FL - SM * FR) / div +
+                (SP * SM / div) *
+                    (UR(Eigen::seq(Eigen::fix<0>, Eigen::fix<dim + 1>)) -
+                    UL(Eigen::seq(Eigen::fix<0>, Eigen::fix<dim + 1>)) -
+                    dfix * ReVRoe(Eigen::all, {1}) * alpha({1}));
+        }
+        else
+        {
+            // ? HLLEP V1
+            real aSound = aRoe;
+            real un_abs = aRoe;
+            real Sp = SP;
+            real Sn = SM;
+            real delta1 = aSound / (un_abs + aSound + verySmallReal);
+            real delta2 = 0.0;
+            real delta3 = 0.0;
+            real un = veloRoe(0);
 
-        real eV1 = ((Sp + Sn) * un - 2.0 * (1.0 - delta1) * (Sp * Sn)) / (Sp - Sn);
-        real eV2 = ((Sp + Sn) * (un + aSound) - 2.0 * (1.0 - delta2) * (Sp * Sn)) / (Sp - Sn);
-        real eV3 = ((Sp + Sn) * (un - aSound) - 2.0 * (1.0 - delta3) * (Sp * Sn)) / (Sp - Sn);
+            real eV1 = ((Sp + Sn) * un - 2.0 * (1.0 - delta1) * (Sp * Sn)) / (Sp - Sn);
+            real eV2 = ((Sp + Sn) * (un + aSound) - 2.0 * (1.0 - delta2) * (Sp * Sn)) / (Sp - Sn);
+            real eV3 = ((Sp + Sn) * (un - aSound) - 2.0 * (1.0 - delta3) * (Sp * Sn)) / (Sp - Sn);
 
-        lam(0) = eV3;
-        lam(dim + 1) = eV2;
-        lam(Eigen::seq(Eigen::fix<1>, Eigen::fix<dim>)).setConstant(eV1);
-        lam = lam.array().abs();
+            lam(0) = eV3;
+            lam(dim + 1) = eV2;
+            lam(Eigen::seq(Eigen::fix<1>, Eigen::fix<dim>)).setConstant(eV1);
+            lam = lam.array().abs();
 
-        Eigen::Vector<real, dim + 2> incF = ReVRoe * (lam.array() * alpha.array()).matrix();
-        F(Eigen::seq(Eigen::fix<0>, Eigen::fix<dim + 1>)) = (FL + FR) * 0.5 - 0.5 * incF;
-#endif
+            Eigen::Vector<real, dim + 2> incF = ReVRoe * (lam.array() * alpha.array()).matrix();
+            F(Eigen::seq(Eigen::fix<0>, Eigen::fix<dim + 1>)) = (FL + FR) * 0.5 - 0.5 * incF;
+        }
     }
 
     template <int dim = 3, typename TUL, typename TUR, typename TF, typename TFdumpInfo>

@@ -515,7 +515,11 @@ namespace DNDS::Euler
         auto RSWrapper = [&](Gas::RiemannSolverType rsType, auto &UL, auto &UR, auto &ULm, auto &URm, real gamma, auto &finc, real dLambda)
         {
             if (rsType == Gas::RiemannSolverType::HLLEP)
-                Gas::HLLEPFlux_IdealGas<dim>(
+                Gas::HLLEPFlux_IdealGas<dim, 0>(
+                    UL, UR, ULm, URm, gamma, finc, dLambda,
+                    exitFun);
+            else if (rsType == Gas::RiemannSolverType::HLLEP_V1)
+                Gas::HLLEPFlux_IdealGas<dim, 1>(
                     UL, UR, ULm, URm, gamma, finc, dLambda,
                     exitFun);
             else if (rsType == Gas::RiemannSolverType::HLLC)
@@ -570,7 +574,7 @@ namespace DNDS::Euler
             real diffVeloN = diffVelo.norm();
             real veloLN = veloL.norm();
             real veloRN = veloR.norm();
-            if (diffVeloN < (smallReal * 10) * (veloLN + veloRN) || diffVeloN < verySmallReal)
+            if (diffVeloN < (smallReal * 10) * (veloLN + veloRN) || diffVeloN < std::sqrt(verySmallReal))
             {
                 TU &ULm = settings.rsMeanValueEig == 1 ? ULMean : UL;
                 TU &URm = settings.rsMeanValueEig == 1 ? URMean : UR;
