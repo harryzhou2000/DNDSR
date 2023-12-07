@@ -2,6 +2,7 @@
 #include "DNDS/Defines.hpp"
 #include "DNDS/MPI.hpp"
 #include "Eigen/Dense"
+#include "Scalar.hpp"
 
 namespace DNDS::ODE
 {
@@ -478,6 +479,311 @@ namespace DNDS::ODE
         {2. / 3., 4. / 3., -1. / 3., std::nan("1"), std::nan("1")},
         {6. / 11., 18. / 11., -9. / 11., 2. / 11., std::nan("1")},
         {12. / 25., 48. / 25., -36. / 25., 16. / 25., -3. / 25.}};
+
+    template <class TDATA, class TDTAU>
+    class ImplicitVBDFDualTimeStep : public ImplicitDualTimeStep<TDATA, TDTAU>
+    {
+
+    public:
+        using tBase = ImplicitDualTimeStep<TDATA, TDTAU>;
+        using Frhs = typename tBase::Frhs;
+        using Fdt = typename tBase::Fdt;
+        using Fsolve = typename tBase::Fsolve;
+        using Fstop = typename tBase::Fstop;
+        using Fincrement = typename tBase::Fincrement;
+
+        TDTAU dTau;
+        std::vector<TDATA> xPrevs;
+        Eigen::VectorXd dtPrevs;
+        std::vector<TDATA> rhsbuf;
+        TDATA rhs;
+        TDATA xLast;
+        TDATA xBase;
+        TDATA xIncPrev;
+        TDATA resInc;
+
+        index DOF;
+        index cnPrev;
+        index prevStart;
+        index kBDF;
+
+    private:
+        index kCurrent = 1;
+        index prevSiz = 0;
+        Eigen::Vector<real, Eigen::Dynamic> BDFCoefs;
+
+    public:
+        /**
+         * @brief mind that NDOF is the dof of dt
+         * finit(TDATA& data)
+         */
+        template <class Finit, class FinitDtau>
+        ImplicitVBDFDualTimeStep(
+            index NDOF, Finit &&finit = [](TDATA &) {}, FinitDtau &&finitDtau = [](TDTAU &) {},
+            index k = 2) : DOF(NDOF), cnPrev(0), prevStart(k - 2), kBDF(k)
+        {
+            assert(k > 0 && k <= 4);
+            
+            xPrevs.resize(k - 1);
+            dtPrevs.resize(k - 1);
+            for (auto &i : xPrevs)
+                finit(i);
+            rhsbuf.resize(1);
+            finit(rhsbuf[0]);
+            finit(rhs);
+            finit(resInc);
+            finit(xLast);
+            finit(xBase);
+            finit(xIncPrev);
+            finitDtau(dTau);
+            DNDS_assert(k <= 2);
+        }
+
+        void VBDFFrontMatters(real dt)
+        {
+            kCurrent = cnPrev + 1;
+            prevSiz = kBDF - 1;
+            // for (index iPrev = 0; iPrev < cnPrev; iPrev++)
+            //     assert(prevSiz && std::abs(dtPrevs[mod(iPrev + prevStart, prevSiz)] - dt) < dt * 1e-8);
+            BDFCoefs.resize(kCurrent + 1);
+
+            switch (kCurrent)
+            {
+            case 1:
+                BDFCoefs(0) = BDFCoefs(1) = 1;
+                break;
+            case 2:
+            {
+                real phi = dt / (dtPrevs[mod(0 + prevStart, prevSiz)] + dt);
+                real Rt = dt / dtPrevs[mod(0 + prevStart, prevSiz)];
+                BDFCoefs(0) = 1 / (1 + phi);            // C
+                BDFCoefs(1) = 1 + Rt * phi / (1 + phi); // -A
+                BDFCoefs(2) = -Rt * phi / (1 + phi);    // -B
+            }
+            break;
+
+            default:
+                DNDS_assert(false);
+                break;
+            }
+        }
+
+        /**
+         * @brief
+         * frhs(TDATA &rhs, TDATA &x)
+         * fdt(std::vector<real>& dTau)
+         * fsolve(TDATA &x, TDATA &rhs, std::vector<real>& dTau, real dt, real alphaDiag, TDATA &xinc)
+         * bool fstop(int iter, TDATA &xinc, int iInternal)
+         */
+        virtual void Step(TDATA &x, TDATA &xinc, const Frhs &frhs, const Fdt &fdt, const Fsolve &fsolve,
+                          int maxIter, const Fstop &fstop, const Fincrement &fincrement, real dt) override
+        {
+            VBDFFrontMatters(dt);
+            xLast = x;
+            // x = xLast;
+            xIncPrev.setConstant(0.0);
+            int iter = 1;
+            for (; iter <= maxIter; iter++)
+            {
+                fdt(x, dTau, BDFCoefs(0), 0);
+
+                frhs(rhs, x, dTau, iter, 1.0, 0);
+                rhsbuf[0] = rhs;
+
+                rhsbuf[0] *= BDFCoefs(0);
+                rhsbuf[0].addTo(x, -1. / dt);
+                rhsbuf[0].addTo(xLast, BDFCoefs(1) / dt);
+                // std::cout << "add " << BDFCoefs(1) << " " << "last" << std::endl;
+                if (prevSiz)
+                    for (index iPrev = 0; iPrev < cnPrev; iPrev++)
+                    {
+                        // std::cout << "add " << BDFCoefs(2 + iPrev) <<" " << mod(iPrev + prevStart, prevSiz) << std::endl;
+                        rhsbuf[0].addTo(xPrevs[mod(iPrev + prevStart, prevSiz)], BDFCoefs(2 + iPrev) / dt);
+                    }
+
+                fsolve(x, rhsbuf[0], dTau, dt, BDFCoefs(0), xinc, iter, 0);
+                //* xinc = (I/dtau-A*alphaDiag)\rhs
+
+                // std::cout << "BDF::\n";
+                // std::cout << kCurrent << " " << cnPrev<<" " << BDFCoefs(0) << std::endl;
+
+                // x += xinc;
+                fincrement(x, xinc, 1.0, 0);
+                // x.addTo(xIncPrev, -0.5);
+
+                xIncPrev = xinc;
+
+                if (fstop(iter, rhsbuf[0], 1))
+                    break;
+            }
+            if (iter > maxIter)
+                fstop(iter, rhsbuf[0], 1);
+            if (prevSiz)
+            {
+                prevStart = mod(prevStart - 1, prevSiz);
+                // std::cout << dtPrevs.size() << " " << prevStart << std::endl;
+                xPrevs[prevStart] = xLast;
+                dtPrevs[prevStart] = dt;
+                cnPrev = std::min(cnPrev + 1, prevSiz);
+            }
+        }
+
+        using FresidualIncPP = std::function<void(
+            TDATA &,                       // cx
+            TDATA &,                       // xPrev
+            TDATA &,                       // crhs
+            TDATA &,                       // rhsIncPart,
+            const std::function<void()> &, // renewRhsIncPart
+            real,                          // ct
+            int                            // uPos
+            )>;
+        using FalphaLimSource = std::function<void(
+            TDATA &, // source
+            int      // uPos
+            )>;
+        using FlimitDtBDF = std::function<real(
+            TDATA &, // base u,
+            TDATA &  // to be limited incu
+            )>;
+
+        void LimitDt_StepPPV2(TDATA &xIn, const FlimitDtBDF &flimitDtBDF, real &dtOut)
+        {
+            VBDFFrontMatters(dtOut); // using a wished dt
+            switch (kCurrent)
+            {
+            case 1:
+                // nothing
+                break;
+            case 2:
+            {
+                DNDS_assert(prevSiz == 1);
+                xLast = xIn;
+                xLast.addTo(xPrevs[mod(0 + prevStart, prevSiz)], -1.0);
+                xLast *= -BDFCoefs(2); // max value
+                real limitingV = flimitDtBDF(xIn, xLast);
+                std::cout << fmt::format("limitingV {}, B {}", limitingV, -BDFCoefs(2)) << std::endl;
+                if (limitingV >= 1)
+                    break;
+                DNDS_assert(limitingV >= 0);
+                real dtm1 = dtPrevs[mod(0 + prevStart, prevSiz)];
+                auto fB = [=](real dt)
+                {
+                    real Rt = dt / dtm1;
+                    real phi = dt / (dt + dtm1);
+                    return Rt * phi / (1 + phi);
+                };
+                real dtNew = Scalar::BisectSolveLower(fB, 0., dtm1, limitingV * -BDFCoefs(2), 20);
+                dtOut = std::min(dtNew, dtOut);
+            }
+            break;
+
+            default:
+                DNDS_assert(false);
+                break;
+            }
+        }
+
+        void StepPP(TDATA &x, TDATA &xinc, const Frhs &frhs, const Fdt &fdt, const Fsolve &fsolve,
+                    int maxIter, const Fstop &fstop, const Fincrement &fincrement, real dt,
+                    const FalphaLimSource &falphaLimSource,
+                    const FresidualIncPP &fresidualIncPP)
+        {
+            this->VBDFFrontMatters(dt);
+
+            xLast = x;
+            // x = xLast;
+            xIncPrev.setConstant(0.0);
+            int iter = 1;
+            for (; iter <= maxIter; iter++)
+            {
+                fdt(x, dTau, BDFCoefs(0), 0);
+
+                frhs(rhs, x, dTau, iter, 1.0, 0);
+
+                xBase.setConstant(0.0);
+                xBase.addTo(xLast, (BDFCoefs(1) - 0) / dt); // 0 because xBase includes xLast/dt part
+                if (prevSiz)
+                    for (index iPrev = 0; iPrev < cnPrev; iPrev++)
+                    {
+                        // std::cout << "add " << BDFCoefs(2 + iPrev) <<" " << mod(iPrev + prevStart, prevSiz) << std::endl;
+                        xBase.addTo(xPrevs[mod(iPrev + prevStart, prevSiz)], BDFCoefs(2 + iPrev) / dt);
+                    }
+                fresidualIncPP(
+                    x, xBase, rhs, resInc,
+                    [&]()
+                    {
+                        resInc.setConstant(0.0);
+                        // ***** excluded with VBDF's ts limiting
+                        // // resInc.addTo(x, -1. / dt);
+                        // resInc.addTo(xLast, (BDFCoefs(1) - 1) / dt);
+                        // // std::cout << "add " << BDFCoefs( 1) << " " << "last" << std::endl;
+                        // if (prevSiz)
+                        //     for (index iPrev = 0; iPrev < cnPrev; iPrev++)
+                        //     {
+                        //         // std::cout << "add " << BDFCoefs(2 + iPrev) <<" " << mod(iPrev + prevStart, prevSiz) << std::endl;
+                        //         resInc.addTo(xPrevs[mod(iPrev + prevStart, prevSiz)], BDFCoefs(2 + iPrev) / dt);
+                        //     }
+                        // falphaLimSource(resInc, 0); // non-rhs part of residual, fixed with alpha too
+                        // *****
+                        resInc.addTo(rhs, BDFCoefs(0));
+                        resInc *= dt; // so that equation is resInc == x - xLast
+                    },
+                    1.0,
+                    0);
+
+                rhsbuf[0] = xBase;
+                // rhsbuf[0].setConstant(0.0);
+                // ***** excluded with VBDF's ts limiting
+                // // rhsbuf[0].addTo(x, -1. / dt);
+                // rhsbuf[0].addTo(xLast, (BDFCoefs(1) - 1) / dt);
+                // // std::cout << "add " << BDFCoefs(1) << " " << "last" << std::endl;
+                // if (prevSiz)
+                //     for (index iPrev = 0; iPrev < cnPrev; iPrev++)
+                //     {
+                //         // std::cout << "add " << BDFCoefs(2 + iPrev) <<" " << mod(iPrev + prevStart, prevSiz) << std::endl;
+                //         rhsbuf[0].addTo(xPrevs[mod(iPrev + prevStart, prevSiz)], BDFCoefs(2 + iPrev) / dt);
+                //     }
+                // falphaLimSource(rhsbuf[0], 0); // non-rhs part of residual, fixed with alpha too
+                // *****
+                rhsbuf[0].addTo(rhs, BDFCoefs(0));
+
+                rhsbuf[0].addTo(x, -1. / dt);
+                // rhsbuf[0].addTo(xLast, 1 / dt); // 0 because xBase includes xLast/dt part
+
+                fsolve(x, rhsbuf[0], dTau, dt, BDFCoefs(0), xinc, iter, 0);
+                //* xinc = (I/dtau-A*alphaDiag)\rhs
+
+                // std::cout << "BDF::\n";
+                // std::cout << kCurrent << " " << cnPrev<<" " << BDFCoefs(0) << std::endl;
+
+                // x += xinc;
+                fincrement(x, xinc, 1.0, 0);
+                // x.addTo(xIncPrev, -0.5);
+
+                xIncPrev = xinc;
+
+                if (fstop(iter, rhsbuf[0], 1))
+                    break;
+            }
+            if (iter > maxIter)
+                fstop(iter, rhsbuf[0], 1);
+            if (prevSiz)
+            {
+                prevStart = mod(prevStart - 1, prevSiz);
+                // std::cout << dtPrevs.size() << " " << prevStart << std::endl;
+                xPrevs[prevStart] = xLast;
+                dtPrevs[prevStart] = dt;
+                cnPrev = std::min(cnPrev + 1, prevSiz);
+            }
+        }
+
+        virtual TDATA &getLatestRHS() override
+        {
+            return rhs;
+        }
+
+        virtual ~ImplicitVBDFDualTimeStep() {}
+    };
 
     /*******************************************************************************************/
     /*                                                                                         */

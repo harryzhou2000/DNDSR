@@ -74,6 +74,14 @@ namespace DNDS::Euler
                 buildDOF, buildScalar,
                 2);
             break;
+        case 102: // VBDF2
+            if (mpi.rank == 0)
+                log() << "=== ODE: VBDF2 " << std::endl;
+            ode = std::make_shared<ODE::ImplicitVBDFDualTimeStep<ArrayDOFV<nVars_Fixed>, ArrayDOFV<1>>>(
+                mesh->NumCell(),
+                buildDOF, buildScalar,
+                2);
+            break;
         case 2: // SSPRK
             if (mpi.rank == 0)
                 log() << "=== ODE: SSPRK4 " << std::endl;
@@ -97,7 +105,7 @@ namespace DNDS::Euler
         }
         if (config.timeMarchControl.useImplicitPP)
         {
-            DNDS_assert(config.timeMarchControl.odeCode == 1);
+            DNDS_assert(config.timeMarchControl.odeCode == 1 || config.timeMarchControl.odeCode == 102);
         }
 
         using tGMRES_u = Linear::GMRES_LeftPreconditioned<decltype(u)>;
@@ -450,7 +458,7 @@ namespace DNDS::Euler
                                 if (cons(0) < verySmallReal)
                                 {
                                     v.setConstant(-veryLargeReal * v(I4));
-                                } // to make the values absurd
+                                }    // to make the values absurd
                                 else // could get a p
                                 {
                                     Gas::IdealGasThermalConservative2Primitive<dim>(cons, prim, eval.settings.idealGasProperty.gamma);
@@ -576,7 +584,7 @@ namespace DNDS::Euler
             eval.EvaluateDt(dTau, cx, uRecC, CFLNow, curDtMin, 1e100, config.implicitCFLControl.useLocalDt);
             // for (auto &i: dTau)
             //     i = std::min({i, curDtMin * 1000, curDtImplicit * 100});
-            for (int iS = 1; iS <= config.implicitCFLControl.nSmoothDTau ; iS++)
+            for (int iS = 1; iS <= config.implicitCFLControl.nSmoothDTau; iS++)
             {
                 // ArrayDOFV<1> dTauNew = dTau; //TODO: copying is still unusable; consider doing copiers on the level of ArrayDOFV and ArrayRecV
                 ArrayDOFV<1> dTauNew;
@@ -1366,8 +1374,42 @@ namespace DNDS::Euler
             }
             CFLNow = config.implicitCFLControl.CFL;
             if (config.timeMarchControl.useImplicitPP)
-                std::dynamic_pointer_cast<ODE::ImplicitBDFDualTimeStep<ArrayDOFV<nVars_Fixed>, ArrayDOFV<1>>>(ode)
-                    ->StepPP(
+            {
+                switch (config.timeMarchControl.odeCode)
+                {
+                case 1:
+                    std::dynamic_pointer_cast<ODE::ImplicitBDFDualTimeStep<ArrayDOFV<nVars_Fixed>, ArrayDOFV<1>>>(ode)
+                        ->StepPP(
+                            u, uInc,
+                            frhs,
+                            fdtau,
+                            fsolve,
+                            config.convergenceControl.nTimeStepInternal,
+                            fstop, fincrement,
+                            curDtImplicit + verySmallReal,
+                            falphaLimSource,
+                            fresidualIncPP);
+                    break;
+                case 102:
+                {
+                    index nLimAlpha;
+                    real minAlpha;
+                    auto odeVBDF = std::dynamic_pointer_cast<ODE::ImplicitVBDFDualTimeStep<ArrayDOFV<nVars_Fixed>, ArrayDOFV<1>>>(ode);
+                    odeVBDF->LimitDt_StepPPV2(
+                        u, [&](ArrayDOFV<nVars_Fixed> &u, ArrayDOFV<nVars_Fixed> &uInc) -> real
+                        {
+                            eval.EvaluateCellRHSAlpha(u, uRec, betaPP, uInc, alphaPP_tmp, nLimAlpha, minAlpha, 0);
+                            return minAlpha; },
+                        curDtImplicit); // curDtImplicit modified
+                    if (mpi.rank == 0 && minAlpha < 1)
+                    {
+                        log() << "##################################################################" << std::endl;
+                        log() << std::endl;
+                        log() << fmt::format("Changing dt to {}", curDtImplicit) << std::endl;
+                        log() << std::endl;
+                        log() << "##################################################################" << std::endl;
+                    }
+                    odeVBDF->StepPP(
                         u, uInc,
                         frhs,
                         fdtau,
@@ -1377,6 +1419,14 @@ namespace DNDS::Euler
                         curDtImplicit + verySmallReal,
                         falphaLimSource,
                         fresidualIncPP);
+                }
+                break;
+
+                default:
+                    DNDS_assert_info(false, "unsupported odeCode for PP!");
+                    break;
+                }
+            }
             else if (config.timeMarchControl.odeCode == 401 && false)
                 std::dynamic_pointer_cast<ODE::ImplicitHermite3SimpleJacobianDualStep<ArrayDOFV<nVars_Fixed>, ArrayDOFV<1>>>(ode)
                     ->StepNested(
@@ -1387,16 +1437,15 @@ namespace DNDS::Euler
                         config.convergenceControl.nTimeStepInternal,
                         fstop, fincrement,
                         curDtImplicit + verySmallReal);
-            else
-                ode
-                    ->Step(
-                        u, uInc,
-                        frhs,
-                        fdtau,
-                        fsolve,
-                        config.convergenceControl.nTimeStepInternal,
-                        fstop, fincrement,
-                        curDtImplicit + verySmallReal);
+            else ode
+                ->Step(
+                    u, uInc,
+                    frhs,
+                    fdtau,
+                    fsolve,
+                    config.convergenceControl.nTimeStepInternal,
+                    fstop, fincrement,
+                    curDtImplicit + verySmallReal);
 
             if (fmainloop())
                 break;

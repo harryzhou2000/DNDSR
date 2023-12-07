@@ -730,7 +730,7 @@ namespace DNDS::Euler
             real alphaP = 1;
             if (pNew < pEps)
             {
-                // todo: use high order accurate
+                // todo: use high order accurate (add control switch)
                 real alphaC = Gas::IdealGasGetCompressionRatioPressure<dim, nVars_Fixed>(
                     u[iCell], inc, pEps / (gamma - 1));
                 alphaP = std::min(alphaP, alphaC);
