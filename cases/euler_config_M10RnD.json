@@ -1,0 +1,181 @@
+{
+    "timeMarchControl": {
+        "dtImplicit": 1e-4,
+        "nTimeStep": 2500,
+        "steadyQuit": false,
+        "useImplicitPP": true, //!
+        "useRHSfPP": false,
+        "rhsfPPScale": 1,
+        "odeCode": 1,
+        "tEnd": 0.25e10,
+        "odeSetting1": 0.5,
+        "odeSetting2": 1
+    },
+    "convergenceControl": {
+        "nTimeStepInternal": 100,
+        "rhsThresholdInternal": 1e-3,
+        "res_base": 0.0,
+        "useVolWiseResidual": true
+    },
+    "outputControl": {
+        "nConsoleCheck": 1,
+        "nConsoleCheckInternal": 1,
+        "consoleOutputMode": 0,
+        "consoleOutputEveryFix": 1,
+        "nDataOutC": 10,
+        "nDataOut": 100,
+        "nDataOutCInternal": 100,
+        "nDataOutInternal": 1000000000,
+        "tDataOut": 3e+200
+    },
+    "implicitCFLControl": {
+        "CFL": 0.01,
+        "nForceLocalStartStep": 2147483647,
+        "nCFLRampStart": 0,
+        "nCFLRampLength": 10,
+        "CFLRampEnd": 10.0,
+        "useLocalDt": true
+    },
+    "dataIOControl": {
+        "uniqueStamps": false,
+        "meshRotZ": 0.0,
+        "meshFile": "../data/mesh/Wedge30_200_H1.cgns",
+        "outPltName": "../data/outUnsteady/Wedge30_200_H1_HLLEP_V1_Rot2_BDF2_Nolim",
+        "outLogName": "../data/outUnsteady/Wedge30_200_H1_HLLEP_V1_Rot2_BDF2_Nolim",
+        "outPltMode": 0,
+        "readMeshMode": 0,
+        "outPltTecplotFormat": true,
+        "outPltVTKFormat": false,
+        "outAtPointData": true,
+        "outAtCellData": true,
+        "outCellScalarNames": [
+            "betaPP"
+        ],
+        "_tail": 0
+    },
+    "boundaryDefinition": {
+        "PeriodicTranslation2": [
+            0.0,
+            0.01,
+            0.0
+        ]
+    },
+    "implicitReconstructionControl": {
+        "nInternalRecStep": 1,
+        "zeroGrads": false,
+        "recLinearScheme": 0,
+        "nGmresSpace": 5,
+        "nGmresIter": 10,
+        "recThreshold": 1e-010,
+        "nRecConsolCheck": 10,
+        "nRecMultiplyForZeroedGrad": 1,
+        "storeRecInc": true,
+        "dampRecIncDTau": false
+    },
+    "limiterControl": {
+        "useLimiter": false,
+        "smoothIndicatorProcedure": 1, //1 = pressure only
+        "limiterProcedure": 1, //1 == CWBAP
+        "nPartialLimiterStart": 500,
+        "nPartialLimiterStartLocal": 1000000,
+        "preserveLimited": false,
+        "_tail": 0
+    },
+    "vfvSettings": {
+        "maxOrder": 3,
+        "intOrder": 3,
+        "cacheDiffBase": true,
+        "jacobiRelax": 1,
+        "SORInstead": false,
+        "smoothThreshold": 1e-2,
+        "WBAP_nStd": 10.0,
+        "normWBAP": false,
+        "subs2ndOrder": 1,
+        "baseSettings": {
+            "localOrientation": false,
+            "anisotropicLengths": false
+        },
+        "functionalSettings": {
+            "scaleType": "BaryDiff",
+            // "scaleMultiplier": 0.5,
+            // "dirWeightScheme": "Factorial",
+            "dirWeightScheme": "HQM_OPT",
+            "geomWeightScheme": "HQM_SD",
+            // "useAnisotropicFunctional": true,
+            // "scaleMultiplier": 3.464101615137754,
+            "_tail": 0
+        }
+    },
+    "linearSolverControl": {
+        "jacobiCode": 0,
+        "sgsIter": 0,
+        "sgsWithRec": 0,
+        "nSgsConsoleCheck": 100,
+        "gmresCode": 0,
+        "nGmresSpace": 5,
+        "nGmresIter": 1,
+        "initWithLastURecInc": false
+    },
+    "others": {
+        "nFreezePassiveInner": 0
+    },
+    "eulerSettings": {
+        "ignoreSourceTerm": true,
+        "useScalarJacobian": true,
+        "riemannSolverType": "HLLEP_V1",
+        "riemannSolverTypeAux": "Roe_M2",
+        "rsMeanValueEig": 1,
+        "rsRotateScheme": 2,
+        "nCentralSmoothStep": 0,
+        "constMassForce": [
+            0.0,
+            0.0,
+            0.0
+        ],
+        "farFieldStaticValue": [
+            8,
+            66,
+            0,
+            0,
+            5.635e2
+        ],
+        "boxInitializers": [
+            {
+                "x0": 0.2,
+                "x1": 100,
+                "y0": -100,
+                "y1": 100,
+                "z0": -100,
+                "z1": 100,
+                "v": [
+                    1.4,
+                    0,
+                    0,
+                    0,
+                    2.5
+                ]
+            }
+        ],
+        "idealGasProperty": {
+            "gamma": 1.4,
+            "Rgas": 289,
+            "muGas": 1e-200,
+            "prGas": 0.72,
+            "TRef": 273.15,
+            "CSutherland": 110.4
+        }
+    },
+    "bcSettings": [
+        {
+            "type": "BCFar",
+            "name": "FAR_R",
+            "value": [
+                1.4,
+                0,
+                0,
+                0,
+                2.5
+            ]
+        }
+    ]
+}
