@@ -191,12 +191,9 @@ namespace DNDS::Euler
                     // UL({1, 2, 3}) = normBase.transpose() * UL({1, 2, 3});
                     real distGRP = minVol / vfv->GetFaceArea(iFace) * 2;
 #ifdef USE_DISABLE_DIST_GRP_FIX_AT_WALL
-                    distGRP +=
-                        (faceBCType == EulerBCType::BCWall ||
-                         faceBCType == EulerBCType::BCWallInvis)
-                            ? veryLargeReal
-                            : 0.0;
+                    distGRP += faceBCType == EulerBCType::BCWall ? veryLargeReal : 0.0;
 #endif
+                    distGRP += faceBCType == EulerBCType::BCWallInvis ? veryLargeReal : 0.0;
                     // real distGRP = (vfv->cellBaries[f2c[0]] -
                     //                 (f2c[1] != FACE_2_VOL_EMPTY
                     //                      ? vfv->cellBaries[f2c[1]]
@@ -211,8 +208,10 @@ namespace DNDS::Euler
                                              (unitNorm * (URxy - ULxy).transpose());
 
 #else
-                    TDiffU GradUMeanXy;
+                    TDiffU GradUMeanXy; 
 #endif
+                    if (faceBCType == EulerBCType::BCWallInvis)
+                        GradUMeanXy *= 0; // force no viscid flux
 
                     TU FLFix, FRFix;
                     FLFix.setZero(cnvars), FRFix.setZero(cnvars);
