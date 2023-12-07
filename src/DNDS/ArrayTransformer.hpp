@@ -143,6 +143,7 @@ namespace DNDS
 
     public:
         using TArray = ParArray<T, _row_size, _row_max, _align>;
+        using TSelf = ArrayTransformer<T, _row_size, _row_max, _align>;
         // using T = TArray::value_type;
         // static const rowsize _align = TArray::al;
         // static const rowsize _row_size = TArray::rs;
@@ -150,6 +151,10 @@ namespace DNDS
 
         using t_pArray = std::shared_ptr<TArray>;
         static const DataLayout _dataLayout = TArray::_dataLayout;
+
+        /*********************************/
+        /*          MEMBER               */
+        /*********************************/
 
         MPIInfo mpi;
         t_pLGhostMapping pLGhostMapping;
@@ -162,8 +167,8 @@ namespace DNDS
         std::shared_ptr<tMPI_typePairVec> pPullTypeVec;
 
         // ** comm aux info: comm running structures **
-        MPIReqHolder PushReqVec;
-        MPIReqHolder PullReqVec;
+        ssp<MPIReqHolder> PushReqVec;
+        ssp<MPIReqHolder> PullReqVec;
         MPI_int nRecvPushReq{-1};
         MPI_int nRecvPullReq{-1};
         tMPI_statVec PushStatVec;
@@ -177,8 +182,11 @@ namespace DNDS
 
         std::vector<std::vector<T>> inSituBuffer;
 
-        void
-        setFatherSon(const t_pArray &n_father, const t_pArray &n_son)
+        /*********************************/
+        /*          MEMBER               */
+        /*********************************/
+
+        void setFatherSon(const t_pArray &n_father, const t_pArray &n_son)
         {
             father = n_father;
             son = n_son;
@@ -468,14 +476,15 @@ namespace DNDS
                 pushSendSize = 0;
                 auto nReqs = pPullTypeVec->size() + pPushTypeVec->size();
                 // DNDS_assert(nReqs > 0);
-                PushReqVec.resize(nReqs, (MPI_REQUEST_NULL)), PushStatVec.resize(nReqs);
+                DNDS_MAKE_SSP(PushReqVec);
+                PushReqVec->resize(nReqs, (MPI_REQUEST_NULL)), PushStatVec.resize(nReqs);
                 nRecvPushReq = 0;
                 for (auto ip = 0; ip < pPushTypeVec->size(); ip++)
                 {
                     auto dtypeInfo = (*pPushTypeVec)[ip];
                     MPI_int rankOther = dtypeInfo.first;
                     MPI_int tag = rankOther + mpi.rank;
-                    MPI_Recv_init(father->data(), 1, dtypeInfo.second, rankOther, tag, mpi.comm, PushReqVec.data() + pPullTypeVec->size() + ip);
+                    MPI_Recv_init(father->data(), 1, dtypeInfo.second, rankOther, tag, mpi.comm, PushReqVec->data() + pPullTypeVec->size() + ip);
                     // cascade from father
                     nRecvPushReq++;
                 }
@@ -489,7 +498,7 @@ namespace DNDS
 #else
                     MPI_Bsend_init
 #endif
-                        (son->data(), 1, dtypeInfo.second, rankOther, tag, mpi.comm, PushReqVec.data() + ip);
+                        (son->data(), 1, dtypeInfo.second, rankOther, tag, mpi.comm, PushReqVec->data() + ip);
 
                     // cascade from father
 
@@ -531,7 +540,8 @@ namespace DNDS
                 auto nReqs = pPullTypeVec->size() + pPushTypeVec->size();
                 pullSendSize = 0;
                 // DNDS_assert(nReqs > 0);
-                PullReqVec.resize(nReqs, (MPI_REQUEST_NULL)), PullStatVec.resize(nReqs);
+                DNDS_MAKE_SSP(PullReqVec);
+                PullReqVec->resize(nReqs, (MPI_REQUEST_NULL)), PullStatVec.resize(nReqs);
                 nRecvPullReq = 0;
                 for (typename decltype(pPullTypeVec)::element_type::size_type ip = 0; ip < pPullTypeVec->size(); ip++)
                 {
@@ -539,7 +549,7 @@ namespace DNDS
                     MPI_int rankOther = dtypeInfo.first;
                     MPI_int tag = rankOther + mpi.rank; //! receives a lot of messages, this distinguishes them
                     // std::cout << mpi.rank << " Recv " << rankOther << std::endl;
-                    MPI_Recv_init(son->data(), 1, dtypeInfo.second, rankOther, tag, mpi.comm, PullReqVec.data() + ip);
+                    MPI_Recv_init(son->data(), 1, dtypeInfo.second, rankOther, tag, mpi.comm, PullReqVec->data() + ip);
                     nRecvPullReq++;
                     // std::cout << *(real *)(dataGhost.data() + 8 * 0) << std::endl;
                     // cascade from father
@@ -555,7 +565,7 @@ namespace DNDS
 #else
                     MPI_Bsend_init
 #endif
-                        (father->data(), 1, dtypeInfo.second, rankOther, tag, mpi.comm, PullReqVec.data() + pPullTypeVec->size() + ip);
+                        (father->data(), 1, dtypeInfo.second, rankOther, tag, mpi.comm, PullReqVec->data() + pPullTypeVec->size() + ip);
                     // std::cout << *(real *)(data.data() + 8 * 1) << std::endl;
                     // cascade from father
 
@@ -605,9 +615,9 @@ namespace DNDS
                         nPushData += nPush;
                     }
                     inSituBuffer.emplace_back(nPushData);
-                    PushReqVec.emplace_back(MPI_REQUEST_NULL);
+                    PushReqVec->emplace_back(MPI_REQUEST_NULL);
                     MPI_Irecv(inSituBuffer.back().data(), nPushData * father->getTypeMult(), father->getDataType(),
-                              r, mpi.rank + r, mpi.comm, &PushReqVec.back());
+                              r, mpi.rank + r, mpi.comm, &PushReqVec->back());
                     nRecvPushReq++;
                 }
             }
@@ -623,8 +633,8 @@ namespace DNDS
 
                 if (pullSize > 0)
                 {
-                    PushReqVec.emplace_back(MPI_REQUEST_NULL);
-                    MPI_Issend(gLPtr, pullSize * father->getTypeMult(), father->getDataType(), r, r + mpi.rank, mpi.comm, &PushReqVec.back());
+                    PushReqVec->emplace_back(MPI_REQUEST_NULL);
+                    MPI_Issend(gLPtr, pullSize * father->getTypeMult(), father->getDataType(), r, r + mpi.rank, mpi.comm, &PushReqVec->back());
                 }
             }
         }
@@ -634,14 +644,14 @@ namespace DNDS
             if (commTypeCurrent == MPI::CommStrategy::HIndexed)
             {
                 // req already ready
-                DNDS_assert(nRecvPushReq <= PushReqVec.size());
-                if (PushReqVec.size())
+                DNDS_assert(nRecvPushReq <= PushReqVec->size());
+                if (PushReqVec->size())
                 {
                     if (MPI::CommStrategy::Instance().GetUseAsyncOneByOne())
                     {
                     }
                     else
-                        MPI_Startall(PushReqVec.size(), PushReqVec.data());
+                        MPI_Startall(PushReqVec->size(), PushReqVec->data());
                 }
             }
             else if (commTypeCurrent == MPI::CommStrategy::InSituPack)
@@ -675,8 +685,8 @@ namespace DNDS
 
                 if (pullSize > 0)
                 {
-                    PullReqVec.emplace_back(MPI_REQUEST_NULL);
-                    MPI_Irecv(gLPtr, pullSize * father->getTypeMult(), father->getDataType(), r, r + mpi.rank, mpi.comm, &PullReqVec.back());
+                    PullReqVec->emplace_back(MPI_REQUEST_NULL);
+                    MPI_Irecv(gLPtr, pullSize * father->getTypeMult(), father->getDataType(), r, r + mpi.rank, mpi.comm, &PullReqVec->back());
                     nRecvPullReq++;
                 }
             }
@@ -715,9 +725,9 @@ namespace DNDS
                         std::copy((*father)[loc], (*father)[loc] + nPush, inSituBuffer.back().begin() + nPushData);
                         nPushData += nPush;
                     }
-                    PullReqVec.emplace_back(MPI_REQUEST_NULL);
+                    PullReqVec->emplace_back(MPI_REQUEST_NULL);
                     MPI_Issend(inSituBuffer.back().data(), nPushData * father->getTypeMult(), father->getDataType(),
-                               r, mpi.rank + r, mpi.comm, &PullReqVec.back());
+                               r, mpi.rank + r, mpi.comm, &PullReqVec->back());
                 }
             }
         }
@@ -727,15 +737,15 @@ namespace DNDS
             PerformanceTimer::Instance().StartTimer(PerformanceTimer::TimerType::Comm);
             if (commTypeCurrent == MPI::CommStrategy::HIndexed)
             {
-                DNDS_assert(nRecvPullReq <= PullReqVec.size());
+                DNDS_assert(nRecvPullReq <= PullReqVec->size());
                 // req already ready
-                if (PullReqVec.size())
+                if (PullReqVec->size())
                 {
                     if (MPI::CommStrategy::Instance().GetUseAsyncOneByOne())
                     {
                     }
                     else
-                        MPI_Startall(PullReqVec.size(), PullReqVec.data());
+                        MPI_Startall(PullReqVec->size(), PullReqVec->data());
                 }
             }
             else if (commTypeCurrent == MPI::CommStrategy::InSituPack)
@@ -758,34 +768,34 @@ namespace DNDS
             PerformanceTimer::Instance().StartTimer(PerformanceTimer::TimerType::Comm);
             if (MPI::CommStrategy::Instance().GetUseStrongSyncWait())
                 MPI_Barrier(mpi.comm);
-            PushStatVec.resize(PushReqVec.size());
+            PushStatVec.resize(PushReqVec->size());
 #ifdef ARRAY_COMM_USE_BUFFERED_SEND
             MPIBufferHandler::Instance().unclaim(pushSendSize);
 #endif
             if (commTypeCurrent == MPI::CommStrategy::HIndexed)
             {
                 // data alright
-                if (PushReqVec.size())
+                if (PushReqVec->size())
                 {
-                    DNDS_assert(nRecvPushReq <= PushReqVec.size());
+                    DNDS_assert(nRecvPushReq <= PushReqVec->size());
                     if (MPI::CommStrategy::Instance().GetUseAsyncOneByOne())
                     {
-                        MPI_Startall(nRecvPushReq, PushReqVec.data());
-                        for (int iReq = nRecvPushReq; iReq < PushReqVec.size(); iReq++)
+                        MPI_Startall(nRecvPushReq, PushReqVec->data());
+                        for (int iReq = nRecvPushReq; iReq < PushReqVec->size(); iReq++)
                         {
-                            MPI_Start(&PushReqVec[iReq]);
-                            MPI_Wait(&PushReqVec[iReq], MPI_STATUS_IGNORE);
+                            MPI_Start(&PushReqVec->operator[](iReq));
+                            MPI_Wait(&PushReqVec->operator[](iReq), MPI_STATUS_IGNORE);
                         }
-                        MPI_Waitall(nRecvPushReq, PushReqVec.data(), MPI_STATUSES_IGNORE);
+                        MPI_Waitall(nRecvPushReq, PushReqVec->data(), MPI_STATUSES_IGNORE);
                     }
                     else
-                        MPI_Waitall(PushReqVec.size(), PushReqVec.data(), MPI_STATUSES_IGNORE);
+                        MPI_Waitall(PushReqVec->size(), PushReqVec->data(), MPI_STATUSES_IGNORE);
                 }
             }
             else if (commTypeCurrent == MPI::CommStrategy::InSituPack)
             {
-                if (PushReqVec.size())
-                    MPI_Waitall(PushReqVec.size(), PushReqVec.data(), PushStatVec.data());
+                if (PushReqVec->size())
+                    MPI_Waitall(PushReqVec->size(), PushReqVec->data(), PushStatVec.data());
                 auto bufferVec = inSituBuffer.begin();
                 for (MPI_int r = 0; r < mpi.size; r++)
                 {
@@ -813,7 +823,7 @@ namespace DNDS
                     }
                 }
                 inSituBuffer.clear();
-                PushReqVec.clear();
+                PushReqVec->clear();
             }
             else
             {
@@ -826,7 +836,7 @@ namespace DNDS
         void waitPersistentPull() // collective;
         {
             PerformanceTimer::Instance().StartTimer(PerformanceTimer::TimerType::Comm);
-            PullStatVec.resize(PullReqVec.size());
+            PullStatVec.resize(PullReqVec->size());
 
 #ifdef ARRAY_COMM_USE_BUFFERED_SEND
             MPIBufferHandler::Instance().unclaim(pullSendSize);
@@ -834,32 +844,32 @@ namespace DNDS
             if (commTypeCurrent == MPI::CommStrategy::HIndexed)
             {
                 // data alright
-                if (PullReqVec.size())
+                if (PullReqVec->size())
                 {
-                    DNDS_assert(nRecvPullReq <= PullReqVec.size());
+                    DNDS_assert(nRecvPullReq <= PullReqVec->size());
                     if (MPI::CommStrategy::Instance().GetUseAsyncOneByOne())
                     {
-                        MPI_Startall(nRecvPullReq, PullReqVec.data());
-                        for (int iReq = nRecvPullReq; iReq < PullReqVec.size(); iReq++)
+                        MPI_Startall(nRecvPullReq, PullReqVec->data());
+                        for (int iReq = nRecvPullReq; iReq < PullReqVec->size(); iReq++)
                         {
-                            MPI_Start(&PullReqVec[iReq]);
-                            MPI_Wait(&PullReqVec[iReq], MPI_STATUS_IGNORE);
+                            MPI_Start(&PullReqVec->operator[](iReq));
+                            MPI_Wait(&PullReqVec->operator[](iReq), MPI_STATUS_IGNORE);
                             // if (mpi.rank == 0)
                             //     log() << "waited a req" << std::endl;
                         }
-                        MPI_Waitall(nRecvPullReq, PullReqVec.data(), MPI_STATUSES_IGNORE);
+                        MPI_Waitall(nRecvPullReq, PullReqVec->data(), MPI_STATUSES_IGNORE);
                     }
                     else
-                        MPI_Waitall(PullReqVec.size(), PullReqVec.data(), MPI_STATUSES_IGNORE);
+                        MPI_Waitall(PullReqVec->size(), PullReqVec->data(), MPI_STATUSES_IGNORE);
                 }
             }
             else if (commTypeCurrent == MPI::CommStrategy::InSituPack)
             {
-                if (PullReqVec.size())
-                    MPI_Waitall(PullReqVec.size(), PullReqVec.data(), PullStatVec.data());
+                if (PullReqVec->size())
+                    MPI_Waitall(PullReqVec->size(), PullReqVec->data(), PullStatVec.data());
                 // std::cout << "waiting DONE" << std::endl;
                 inSituBuffer.clear();
-                PullReqVec.clear();
+                PullReqVec->clear();
             }
             else
             {
@@ -871,12 +881,12 @@ namespace DNDS
         void clearPersistentPush() // collective;
         {
             waitPersistentPush();
-            PushReqVec.clear(); // stat vec is left untouched here
+            PushReqVec->clear(); // stat vec is left untouched here
         }
         void clearPersistentPull() // collective;
         {
             waitPersistentPull();
-            PullReqVec.clear();
+            PullReqVec->clear();
         }
 
         void clearMPITypes() // collective;
