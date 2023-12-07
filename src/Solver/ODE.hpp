@@ -672,7 +672,13 @@ namespace DNDS::ODE
                     real phi = dt / (dt + dtm1);
                     return Rt * phi / (1 + phi);
                 };
-                real dtNew = Scalar::BisectSolveLower(fB, 0., dtm1, limitingV * -BDFCoefs(2), 20);
+                real targetB = limitingV * -BDFCoefs(2);
+                real dtNew = dtm1;
+                if (targetB >= 16./9. )
+                    dtNew = dtm1 * 4; // max increase value
+                else
+                    dtNew = Scalar::BisectSolveLower(fB, 0., dtm1 * 4, targetB * 0.5, 20);
+
                 dtOut = std::min(dtNew, dtOut);
             }
             break;
