@@ -31,7 +31,15 @@ namespace DNDS::Euler
         std::ofstream logErr(config.dataIOControl.outLogName + "_" + output_stamp + ".log");
         /************* Files **************/
 
-        std::shared_ptr<ODE::ImplicitDualTimeStep<decltype(u)>> ode;
+        std::shared_ptr<ODE::ImplicitDualTimeStep<ArrayDOFV<nVars_Fixed>, ArrayDOFV<1>>> ode;
+        auto buildDOF = [&](ArrayDOFV<nVars_Fixed> &data)
+        {
+            vfv->BuildUDof(data, nVars);
+        };
+        auto buildScalar = [&](ArrayDOFV<1> &data)
+        {
+            vfv->BuildUDof(data, 1);
+        };
 
         if (config.timeMarchControl.steadyQuit)
         {
@@ -45,56 +53,41 @@ namespace DNDS::Euler
         case 0: // esdirk4
             if (mpi.rank == 0)
                 log() << "=== ODE: ESDIRK4 " << std::endl;
-            ode = std::make_shared<ODE::ImplicitSDIRK4DualTimeStep<decltype(u)>>(
+            ode = std::make_shared<ODE::ImplicitSDIRK4DualTimeStep<ArrayDOFV<nVars_Fixed>, ArrayDOFV<1>>>(
                 mesh->NumCell(),
-                [&](decltype(u) &data)
-                {
-                    vfv->BuildUDof(data, nVars);
-                },
+                buildDOF, buildScalar,
                 1); // 1 for esdirk
             break;
         case 101: // sdirk4
             if (mpi.rank == 0)
                 log() << "=== ODE: SSP-SDIRK4 " << std::endl;
-            ode = std::make_shared<ODE::ImplicitSDIRK4DualTimeStep<decltype(u)>>(
+            ode = std::make_shared<ODE::ImplicitSDIRK4DualTimeStep<ArrayDOFV<nVars_Fixed>, ArrayDOFV<1>>>(
                 mesh->NumCell(),
-                [&](decltype(u) &data)
-                {
-                    vfv->BuildUDof(data, nVars);
-                },
+                buildDOF, buildScalar,
                 0);
             break;
         case 1: // BDF2
             if (mpi.rank == 0)
                 log() << "=== ODE: BDF2 " << std::endl;
-            ode = std::make_shared<ODE::ImplicitBDFDualTimeStep<decltype(u)>>(
+            ode = std::make_shared<ODE::ImplicitBDFDualTimeStep<ArrayDOFV<nVars_Fixed>, ArrayDOFV<1>>>(
                 mesh->NumCell(),
-                [&](decltype(u) &data)
-                {
-                    vfv->BuildUDof(data, nVars);
-                },
+                buildDOF, buildScalar,
                 2);
             break;
         case 2: // SSPRK
             if (mpi.rank == 0)
                 log() << "=== ODE: SSPRK4 " << std::endl;
-            ode = std::make_shared<ODE::ExplicitSSPRK3TimeStepAsImplicitDualTimeStep<decltype(u)>>(
+            ode = std::make_shared<ODE::ExplicitSSPRK3TimeStepAsImplicitDualTimeStep<ArrayDOFV<nVars_Fixed>, ArrayDOFV<1>>>(
                 mesh->NumCell(),
-                [&](decltype(u) &data)
-                {
-                    vfv->BuildUDof(data, nVars);
-                },
+                buildDOF, buildScalar,
                 false); // TODO: add local stepping options
             break;
         case 401: // H3S
             if (mpi.rank == 0)
                 log() << "=== ODE: Hermite3 (simple jacobian) " << std::endl;
-            ode = std::make_shared<ODE::ImplicitHermite3SimpleJacobianDualStep<decltype(u)>>(
+            ode = std::make_shared<ODE::ImplicitHermite3SimpleJacobianDualStep<ArrayDOFV<nVars_Fixed>, ArrayDOFV<1>>>(
                 mesh->NumCell(),
-                [&](decltype(u) &data)
-                {
-                    vfv->BuildUDof(data, nVars);
-                },
+                buildDOF, buildScalar,
                 config.timeMarchControl.odeSetting1 == 0 ? 0.55 : config.timeMarchControl.odeSetting1,
                 std::round(config.timeMarchControl.odeSetting2),
                 config.timeMarchControl.odeSetting3 == 0 ? 0.9146 : config.timeMarchControl.odeSetting3);
@@ -224,7 +217,7 @@ namespace DNDS::Euler
             [&](
                 ArrayDOFV<nVars_Fixed> &crhs,
                 ArrayDOFV<nVars_Fixed> &cx,
-                std::vector<real> &dTau,
+                ArrayDOFV<1> &dTau,
                 int iter, real ct, int uPos)
         {
             cx.trans.startPersistentPull();
@@ -504,9 +497,17 @@ namespace DNDS::Euler
             }
             if (config.implicitReconstructionControl.storeRecInc && config.implicitReconstructionControl.dampRecIncDTau)
             {
-                std::vector<real> damper = dTau;
-                for (auto &v : damper)
-                    v = v / (curDtImplicit + v); //! warning: teleported value here
+                ArrayDOFV<1> damper;
+                ArrayDOFV<1> damper1;
+                vfv->BuildUDof(damper, 1);
+                vfv->BuildUDof(damper1, 1);
+                damper = dTau;
+                damper1 = dTau;
+                damper1 += curDtImplicit;
+                damper /= damper1;
+                // for (auto &v : damper)
+                //     v = v / (curDtImplicit + v); //! warning: teleported value here
+
                 uRecIncC *= damper;
                 uRecC = uRecOld;
                 uRecC += uRecIncC;
@@ -564,7 +565,7 @@ namespace DNDS::Euler
             DNDS_MPI_InsertCheck(mpi, " Lambda RHS: End");
         };
 
-        auto fdtau = [&](ArrayDOFV<nVars_Fixed> &cx, std::vector<real> &dTau, real alphaDiag, int uPos)
+        auto fdtau = [&](ArrayDOFV<nVars_Fixed> &cx, ArrayDOFV<1> &dTau, real alphaDiag, int uPos)
         {
             eval.FixUMaxFilter(cx);
             cx.trans.startPersistentPull(); //! this also need to update!
@@ -575,11 +576,22 @@ namespace DNDS::Euler
             eval.EvaluateDt(dTau, cx, uRecC, CFLNow, curDtMin, 1e100, config.implicitCFLControl.useLocalDt);
             // for (auto &i: dTau)
             //     i = std::min({i, curDtMin * 1000, curDtImplicit * 100});
-            for (auto &i : dTau)
-                i /= alphaDiag;
+            for (int iS = 1; iS <= config.implicitCFLControl.nSmoothDTau ; iS++)
+            {
+                // ArrayDOFV<1> dTauNew = dTau; //TODO: copying is still unusable; consider doing copiers on the level of ArrayDOFV and ArrayRecV
+                ArrayDOFV<1> dTauNew;
+                vfv->BuildUDof(dTauNew, 1);
+                dTauNew = dTau;
+                dTau.trans.startPersistentPull();
+                dTau.trans.waitPersistentPull();
+                eval.MinSmoothDTau(dTau, dTauNew);
+                dTau = dTauNew;
+            }
+
+            dTau *= 1. / alphaDiag;
         };
 
-        auto fsolve = [&](ArrayDOFV<nVars_Fixed> &cx, ArrayDOFV<nVars_Fixed> &crhs, std::vector<real> &dTau,
+        auto fsolve = [&](ArrayDOFV<nVars_Fixed> &cx, ArrayDOFV<nVars_Fixed> &crhs, ArrayDOFV<1> &dTau,
                           real dt, real alphaDiag, ArrayDOFV<nVars_Fixed> &cxInc, int iter, int uPos)
         {
             rhsTemp = crhs;
@@ -800,7 +812,7 @@ namespace DNDS::Euler
                               ArrayDOFV<nVars_Fixed> &cx,
                               ArrayDOFV<nVars_Fixed> &cx1,
                               ArrayDOFV<nVars_Fixed> &crhs,
-                              std::vector<real> &dTau,
+                              ArrayDOFV<1> &dTau,
                               const std::vector<real> &Coefs, // coefs are dU * c[0] + dt * c[1] * (I/(dt * c[2]) - JMid) * (I/(dt * c[3]) - J)
                               real dt, real alphaDiag, ArrayDOFV<nVars_Fixed> &cxInc, int iter, int uPos)
         {
@@ -815,16 +827,14 @@ namespace DNDS::Euler
             auto &uRecC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? uRec1 : uRec;
             // TODO: use "update spectral radius" procedure? or force update in fsolve
             eval.EvaluateDt(dTau, cx1, uRecC, CFLNow, curDtMin, 1e100, config.implicitCFLControl.useLocalDt);
-            for (auto &v : dTau)
-                v *= Coefs[2];
+            dTau *= Coefs[2];
             eval.LUSGSMatrixInit(JD1, JSource1,
                                  dTau, dt * Coefs[2], alphaDiag,
                                  cx1, uRec,
                                  0,
                                  tSimu);
             eval.EvaluateDt(dTau, cx, uRecC, CFLNow, curDtMin, 1e100, config.implicitCFLControl.useLocalDt);
-            for (auto &v : dTau)
-                v *= Coefs[3] * veryLargeReal;
+            dTau *= Coefs[3] * veryLargeReal;
             eval.LUSGSMatrixInit(JD, JSource,
                                  dTau, dt * Coefs[3], alphaDiag,
                                  cx, uRec,
@@ -1356,7 +1366,7 @@ namespace DNDS::Euler
             }
             CFLNow = config.implicitCFLControl.CFL;
             if (config.timeMarchControl.useImplicitPP)
-                std::dynamic_pointer_cast<ODE::ImplicitBDFDualTimeStep<ArrayDOFV<nVars_Fixed>>>(ode)
+                std::dynamic_pointer_cast<ODE::ImplicitBDFDualTimeStep<ArrayDOFV<nVars_Fixed>, ArrayDOFV<1>>>(ode)
                     ->StepPP(
                         u, uInc,
                         frhs,
@@ -1368,7 +1378,7 @@ namespace DNDS::Euler
                         falphaLimSource,
                         fresidualIncPP);
             else if (config.timeMarchControl.odeCode == 401 && false)
-                std::dynamic_pointer_cast<ODE::ImplicitHermite3SimpleJacobianDualStep<ArrayDOFV<nVars_Fixed>>>(ode)
+                std::dynamic_pointer_cast<ODE::ImplicitHermite3SimpleJacobianDualStep<ArrayDOFV<nVars_Fixed>, ArrayDOFV<1>>>(ode)
                     ->StepNested(
                         u, uInc,
                         frhs,

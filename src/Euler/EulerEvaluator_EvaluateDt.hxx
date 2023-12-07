@@ -146,7 +146,7 @@ namespace DNDS::Euler
     //! evaluates dt and facial spectral radius
     template <EulerModel model>
     void EulerEvaluator<model>::EvaluateDt(
-        std::vector<real> &dt,
+        ArrayDOFV<1> &dt,
         ArrayDOFV<nVars_Fixed> &u,
         ArrayRECV<nVars_Fixed> &uRec,
         real CFL, real &dtMinall, real MaxDt,
@@ -309,8 +309,8 @@ namespace DNDS::Euler
         {
             // std::cout << fv->GetCellVol(iCell) << " " << (lambdaCell[iCell]) << " " << CFL << std::endl;
             // exit(0);
-            dt[iCell] = std::min(CFL * vfv->GetCellVol(iCell) / (lambdaCell[iCell] + 1e-100), MaxDt);
-            dtMin = std::min(dtMin, dt[iCell]);
+            dt[iCell](0) = std::min(CFL * vfv->GetCellVol(iCell) / (lambdaCell[iCell] + 1e-100), MaxDt);
+            dtMin = std::min(dtMin, dt[iCell](0));
             // if (iCell == 10756)
             // {
             //     std::cout << std::endl;
@@ -323,8 +323,7 @@ namespace DNDS::Euler
         //     std::cout << "dt min is " << dtMinall << std::endl;
         if (!UseLocaldt)
         {
-            for (auto &i : dt)
-                i = dtMinall;
+            dt.setConstant(dtMinall);
         }
         // if (uRec.father->getMPI().rank == 0)
         // log() << "dt: " << dtMin << std::endl;
@@ -569,7 +568,7 @@ namespace DNDS::Euler
         else if (settings.rsRotateScheme)
         {
             TVec veloL = settings.rsRotateScheme == 1 ? UL(Seq123) / UL(0) : ULMean(Seq123) / ULMean(0);
-            TVec veloR = settings.rsRotateScheme == 1 ? UR(Seq123) / UR(0) : URMean(Seq123) / URMean(0) ;
+            TVec veloR = settings.rsRotateScheme == 1 ? UR(Seq123) / UR(0) : URMean(Seq123) / URMean(0);
             TVec diffVelo = veloR - veloL;
             real diffVeloN = diffVelo.norm();
             real veloLN = veloL.norm();
@@ -583,8 +582,8 @@ namespace DNDS::Euler
             else // use rotate
             {
                 TVec N1 = diffVelo / diffVeloN;
-                DNDS_assert_info(std::abs(N1.norm() -1) < 1e-5,
-                                     fmt::format("{}", diffVeloN));
+                DNDS_assert_info(std::abs(N1.norm() - 1) < 1e-5,
+                                 fmt::format("{}", diffVeloN));
 
                 real N1Proj = N1(0);
                 TVec N2 = -N1 * N1Proj;
@@ -601,14 +600,14 @@ namespace DNDS::Euler
                 else
                 {
                     N2 /= N2Proj;
-                    DNDS_assert_info(std::abs(N1.norm() -1) < 1e-5 && std::abs(N2.norm() - 1) < 1e-5,
+                    DNDS_assert_info(std::abs(N1.norm() - 1) < 1e-5 && std::abs(N2.norm() - 1) < 1e-5,
                                      fmt::format("{},{}", N1Proj, N2Proj));
                     auto fullN = N1 * N1Proj + N2 * N2Proj;
                     DNDS_assert_info(std::abs(fullN(0) - 1) < 1e-5 && std::abs(fullN.norm() - 1) < 1e-5 && std::abs(N1.dot(N2)) < 1e-5,
                                      fmt::format("{},{}", N1Proj, N2Proj));
-                    if(N2Proj < 0)
+                    if (N2Proj < 0)
                         N2 *= -1, N2Proj *= -1;
-                    if(N1Proj < 0)
+                    if (N1Proj < 0)
                         N1 *= -1, N1Proj *= -1; //! riemann solver should distinguish L & R, if n is inverted, then L-R is inconsistent
 
                     // {std::cout << N1.transpose() << ", ";
@@ -651,25 +650,23 @@ namespace DNDS::Euler
                     Gas::RiemannSolverType rsTypeAux = settings.rsTypeAux;
                     RSWrapper(rsTypeAux ? rsTypeAux : Gas::RiemannSolverType::Roe_M2,
                               ULN1, URN1, ULmN1, URmN1, settings.idealGasProperty.gamma, fincN1, deltaLambdaFace[iFace]);
-                              
 
                     fincN1(Seq123) = normBaseN1 * fincN1(Seq123);
                     fincN2(Seq123) = normBaseN2 * fincN2(Seq123);
 
                     { // display rotation diff
-                        // TU &ULm = settings.rsMeanValueEig == 1 ? ULMean : UL;
-                        // TU &URm = settings.rsMeanValueEig == 1 ? URMean : UR;
-                        // RSWrapper(rsType, UL, UR, UL, UR, settings.idealGasProperty.gamma, finc, deltaLambdaFace[iFace]);
-                        // {
-                        //     std::cout << N1.transpose() << "\n" << N2.transpose() << "\n";
-                        //     std::cout << N1Proj <<" " <<N2Proj << std::endl;
-                        //     std::cout << ULN1.transpose() <<" ---- " << URN1.transpose() << std::endl;
-                        //     std::cout << fincN1.transpose() << std::endl;
-                        //     std::cout << ULN2.transpose() <<" ---- " << URN2.transpose() << std::endl;
-                        //     std::cout << fincN2.transpose() << std::endl;
-                        //     std::cout << "---\n" << normBaseN1 << "\n---\n";
-                        //     std::cout << "---\n" << normBaseN2 << "\n---\n";
-
+                      // TU &ULm = settings.rsMeanValueEig == 1 ? ULMean : UL;
+                      // TU &URm = settings.rsMeanValueEig == 1 ? URMean : UR;
+                      // RSWrapper(rsType, UL, UR, UL, UR, settings.idealGasProperty.gamma, finc, deltaLambdaFace[iFace]);
+                      // {
+                      //     std::cout << N1.transpose() << "\n" << N2.transpose() << "\n";
+                      //     std::cout << N1Proj <<" " <<N2Proj << std::endl;
+                      //     std::cout << ULN1.transpose() <<" ---- " << URN1.transpose() << std::endl;
+                      //     std::cout << fincN1.transpose() << std::endl;
+                      //     std::cout << ULN2.transpose() <<" ---- " << URN2.transpose() << std::endl;
+                      //     std::cout << fincN2.transpose() << std::endl;
+                      //     std::cout << "---\n" << normBaseN1 << "\n---\n";
+                      //     std::cout << "---\n" << normBaseN2 << "\n---\n";
 
                         //     std::cout << (N1Proj * fincN1 + N2Proj * fincN2).transpose() << std::endl;
                         //     std::cout << finc.transpose() << std::endl;
