@@ -1,53 +1,64 @@
 {
     "timeMarchControl": {
-        "dtImplicit": 0.25e-1,
-        "nTimeStep": 8000,
+        "dtImplicit": 1e-4,
+        "nTimeStep": 2500,
         "steadyQuit": false,
-        "odeCode": 1,
-        "tEnd": 3e+200,
-        "odeSetting1": 0.55,
-        "odeSetting2": 0,
-        "odeSetting3": 1.333,
-        "useRHSfPP": true,
+        "useImplicitPP": false, //!
+        "useRHSfPP": false,
         "rhsfPPScale": 1,
-        "_tail": 0
+        "odeCode": 0,
+        "tEnd": 3e+200,
+        "odeSetting1": 0.5,
+        "odeSetting2": 1
     },
     "convergenceControl": {
-        "nTimeStepInternal": 400,
-        "rhsThresholdInternal": 1e-4,
+        "nTimeStepInternal": 100,
+        "rhsThresholdInternal": 1e-3,
         "res_base": 0.0,
         "useVolWiseResidual": true
     },
     "outputControl": {
         "nConsoleCheck": 1,
-        "nConsoleCheckInternal": 10,
+        "nConsoleCheckInternal": 1,
         "consoleOutputMode": 0,
+        "consoleOutputEveryFix": 1,
         "nDataOutC": 1,
         "nDataOut": 10,
-        "nDataOutCInternal": 2000,
+        "nDataOutCInternal": 100,
         "nDataOutInternal": 1000000000,
         "tDataOut": 3e+200
     },
     "implicitCFLControl": {
-        "CFL": 10.0,
+        "CFL": 0.01,
         "nForceLocalStartStep": 2147483647,
-        "nCFLRampStart": 2147483647,
-        "nCFLRampLength": 2147483647,
-        "CFLRampEnd": 0.0,
+        "nCFLRampStart": 0,
+        "nCFLRampLength": 20,
+        "CFLRampEnd": 10.0,
         "useLocalDt": true
     },
     "dataIOControl": {
         "uniqueStamps": false,
         "meshRotZ": 0.0,
-        "meshFile": "../data/mesh/CylinderA1.cgns",
-        "outPltName": "../data/outUnsteady/CylinderA1_RE2000",
-        "outLogName": "../data/outUnsteady/CylinderA1_RE2000",
+        "meshFile": "../data/mesh/Wedge30_200_R.cgns",
+        "outPltName": "../data/outUnsteady/Wedge30_200_R",
+        "outLogName": "../data/outUnsteady/Wedge30_200_R",
         "outPltMode": 0,
         "readMeshMode": 0,
         "outPltTecplotFormat": true,
         "outPltVTKFormat": false,
         "outAtPointData": true,
-        "outAtCellData": true
+        "outAtCellData": true,
+        "outCellScalarNames": [
+            "betaPP"
+        ],
+        "_tail": 0
+    },
+    "boundaryDefinition": {
+        "PeriodicTranslation2": [
+            0.0,
+            0.01,
+            0.0
+        ]
     },
     "implicitReconstructionControl": {
         "nInternalRecStep": 1,
@@ -57,43 +68,51 @@
         "nGmresIter": 10,
         "recThreshold": 1e-010,
         "nRecConsolCheck": 10,
-        "nRecMultiplyForZeroedGrad": 1000
+        "nRecMultiplyForZeroedGrad": 1,
+        "storeRecInc": true,
+        "dampRecIncDTau": false
     },
     "limiterControl": {
-        "useLimiter": false,
+        "useLimiter": true,
         "smoothIndicatorProcedure": 0,
         "limiterProcedure": 1, //1 == CWBAP
         "nPartialLimiterStart": 1000000,
-        "nPartialLimiterStartLocal": 1000000
+        "nPartialLimiterStartLocal": 1000000,
+        "preserveLimited": false,
+        "_tail": 0
     },
     "vfvSettings": {
         "maxOrder": 3,
         "intOrder": 3,
-        "cacheDiffBase": false,
-        "jacobiRelax": 1,
-        "SORInstead": true,
+        "cacheDiffBase": true,
+        "jacobiRelax": 0.5,
+        "SORInstead": false,
         "smoothThreshold": 1e-3,
         "WBAP_nStd": 10.0,
         "normWBAP": false,
         "subs2ndOrder": 1,
         "baseSettings": {
-            "localOrientation": true,
+            "localOrientation": false,
             "anisotropicLengths": false
         },
         "functionalSettings": {
             "scaleType": "BaryDiff",
-            "scaleMultiplier": 1.0,
-            "dirWeightScheme": "HQM_OPT",
-            "geomWeightScheme": "HQM_SD"
+            "scaleMultiplier": 1,
+            // "dirWeightScheme": "HQM_OPT",
+            // "useAnisotropicFunctional": true,
+            // "scaleMultiplier": 3.464101615137754,
+            "_tail": 0
         }
     },
     "linearSolverControl": {
+        "jacobiCode": 0,
         "sgsIter": 0,
-        "sgsWithRec": 1,
+        "sgsWithRec": 0,
         "nSgsConsoleCheck": 100,
         "gmresCode": 0,
         "nGmresSpace": 5,
-        "nGmresIter": 1
+        "nGmresIter": 1,
+        "initWithLastURecInc": false
     },
     "others": {
         "nFreezePassiveInner": 0
@@ -101,7 +120,8 @@
     "eulerSettings": {
         "ignoreSourceTerm": true,
         "useScalarJacobian": true,
-        "riemannSolverType": "Roe",
+        "riemannSolverType": "HLLC",
+        "rsMeanValueChar": 1,
         "nCentralSmoothStep": 0,
         "constMassForce": [
             0.0,
@@ -109,37 +129,49 @@
             0.0
         ],
         "farFieldStaticValue": [
-            1,
-            1,
+            8,
+            66,
             0,
             0,
-            79.8650793650794
+            5.635e2
         ],
         "boxInitializers": [
-            // {
-            //     "x0": -0.5,
-            //     "x1": 1,
-            //     "y0": -0.5,
-            //     "y1": 0.5,
-            //     "z0": -1,
-            //     "z1": 1,
-            //     "v": [
-            //         1,
-            //         0,
-            //         1,
-            //         0,
-            //         79.8650793650794
-            //     ]
-            // }
+            {
+                "x0": 0.2,
+                "x1": 100,
+                "y0": -100,
+                "y1": 100,
+                "z0": -100,
+                "z1": 100,
+                "v": [
+                    1.4,
+                    0,
+                    0,
+                    0,
+                    2.5
+                ]
+            }
         ],
         "idealGasProperty": {
             "gamma": 1.4,
-            "Rgas": 0.116221972344982,
-            "muGas": 5e-4,
+            "Rgas": 289,
+            "muGas": 1e-200,
             "prGas": 0.72,
             "TRef": 273.15,
             "CSutherland": 110.4
         }
     },
-    "__commit": "b0dca3a8d7613426c65ad2396e32a1097aaae34e(base)"
+    "bcSettings": [
+        {
+            "type": "BCFar",
+            "name": "FAR_R",
+            "value": [
+                1.4,
+                0,
+                0,
+                0,
+                2.5
+            ]
+        }
+    ]
 }

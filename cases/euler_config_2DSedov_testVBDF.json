@@ -1,12 +1,12 @@
 {
     "timeMarchControl": {
         "dtImplicit": 10e-6,
-        "nTimeStep": 100,
+        "nTimeStep": 1000,
         "steadyQuit": false,
         "useImplicitPP": true,
         "useRHSfPP": false,
         "rhsfPPScale": 1,
-        "odeCode": 1,
+        "odeCode": 102,
         "tEnd": 1e-3,
         "odeSetting1": 0.5,
         "odeSetting2": 1
@@ -40,8 +40,8 @@
         "uniqueStamps": false,
         "meshRotZ": 0.0,
         "meshFile": "../data/mesh/Unifrom_2DSedov5EM3_WallCent.cgns",
-        "outPltName": "../data/outUnsteady/Unifrom_2DSedov5EM3",
-        "outLogName": "../data/outUnsteady/Unifrom_2DSedov5EM3",
+        "outPltName": "../data/outUnsteady/Unifrom_2DSedov5EM3_VM_H",
+        "outLogName": "../data/outUnsteady/Unifrom_2DSedov5EM3_VM_H",
         "outPltMode": 0,
         "readMeshMode": 0,
         "outPltTecplotFormat": true,
