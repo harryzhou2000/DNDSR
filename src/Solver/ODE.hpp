@@ -5,13 +5,13 @@
 
 namespace DNDS::ODE
 {
-    template <class TDATA>
+    template <class TDATA, class TDTAU>
     class ImplicitDualTimeStep
     {
     public:
-        using Frhs = std::function<void(TDATA &, TDATA &, std::vector<real> &, int, real, int)>;
-        using Fdt = std::function<void(TDATA &, std::vector<real> &, real, int)>;
-        using Fsolve = std::function<void(TDATA &, TDATA &, std::vector<real> &, real, real, TDATA &, int, int)>;
+        using Frhs = std::function<void(TDATA &, TDATA &, TDTAU &, int, real, int)>;
+        using Fdt = std::function<void(TDATA &, TDTAU &, real, int)>;
+        using Fsolve = std::function<void(TDATA &, TDATA &, TDTAU &, real, real, TDATA &, int, int)>;
         using Fstop = std::function<bool(int, TDATA &, int)>;
         using Fincrement = std::function<void(TDATA &, TDATA &, real, int)>;
 
@@ -22,17 +22,18 @@ namespace DNDS::ODE
         virtual TDATA &getLatestRHS() = 0;
     };
 
-    template <class TDATA>
-    class ImplicitEulerDualTimeStep : public ImplicitDualTimeStep<TDATA>
+    template <class TDATA, class TDTAU>
+    class ImplicitEulerDualTimeStep : public ImplicitDualTimeStep<TDATA, TDTAU>
     {
     public:
-        using Frhs = typename ImplicitDualTimeStep<TDATA>::Frhs;
-        using Fdt = typename ImplicitDualTimeStep<TDATA>::Fdt;
-        using Fsolve = typename ImplicitDualTimeStep<TDATA>::Fsolve;
-        using Fstop = typename ImplicitDualTimeStep<TDATA>::Fstop;
-        using Fincrement = typename ImplicitDualTimeStep<TDATA>::Fincrement;
+        using tBase = ImplicitDualTimeStep<TDATA, TDTAU>;
+        using Frhs = typename tBase::Frhs;
+        using Fdt = typename tBase::Fdt;
+        using Fsolve = typename tBase::Fsolve;
+        using Fstop = typename tBase::Fstop;
+        using Fincrement = typename tBase::Fincrement;
 
-        std::vector<real> dTau;
+        TDTAU dTau;
         std::vector<TDATA> rhsbuf;
         TDATA rhs;
         TDATA xLast;
@@ -43,24 +44,24 @@ namespace DNDS::ODE
          * @brief mind that NDOF is the dof of dt
          * finit(TDATA& data)
          */
-        template <class Finit>
+        template <class Finit, class FinitDtau>
         ImplicitEulerDualTimeStep(
-            index NDOF, Finit &&finit = [](TDATA &) {}) : DOF(NDOF)
+            index NDOF, Finit &&finit = [](TDATA &) {}, FinitDtau &&finitDtau = [](TDTAU &) {}) : DOF(NDOF)
         {
-            dTau.resize(NDOF);
             rhsbuf.resize(1);
             for (auto &i : rhsbuf)
                 finit(i);
             finit(rhs);
             finit(xLast);
             finit(xInc);
+            finitDtau(dTau);
         }
 
         /**
          * @brief
          * frhs(TDATA &rhs, TDATA &x)
-         * fdt(std::vector<real>& dTau)
-         * fsolve(TDATA &x, TDATA &rhs, std::vector<real>& dTau, real dt, real alphaDiag, TDATA &xinc)
+         * fdt(TDTAU& dTau)
+         * fsolve(TDATA &x, TDATA &rhs, TDTAU& dTau, real dt, real alphaDiag, TDATA &xinc)
          * bool fstop(int iter, TDATA &xinc, int iInternal)
          */
         virtual void Step(TDATA &x, TDATA &xinc, const Frhs &frhs, const Fdt &fdt, const Fsolve &fsolve,
@@ -94,8 +95,8 @@ namespace DNDS::ODE
         }
     };
 
-    template <class TDATA>
-    class ImplicitSDIRK4DualTimeStep : public ImplicitDualTimeStep<TDATA>
+    template <class TDATA, class TDTAU>
+    class ImplicitSDIRK4DualTimeStep : public ImplicitDualTimeStep<TDATA, TDTAU>
     {
 
         Eigen::Matrix<real, -1, -1> butcherA;
@@ -105,13 +106,14 @@ namespace DNDS::ODE
         int schemeC = 0;
 
     public:
-        using Frhs = typename ImplicitDualTimeStep<TDATA>::Frhs;
-        using Fdt = typename ImplicitDualTimeStep<TDATA>::Fdt;
-        using Fsolve = typename ImplicitDualTimeStep<TDATA>::Fsolve;
-        using Fstop = typename ImplicitDualTimeStep<TDATA>::Fstop;
-        using Fincrement = typename ImplicitDualTimeStep<TDATA>::Fincrement;
+        using tBase = ImplicitDualTimeStep<TDATA, TDTAU>;
+        using Frhs = typename tBase::Frhs;
+        using Fdt = typename tBase::Fdt;
+        using Fsolve = typename tBase::Fsolve;
+        using Fstop = typename tBase::Fstop;
+        using Fincrement = typename tBase::Fincrement;
 
-        std::vector<real> dTau;
+        TDTAU dTau;
         std::vector<TDATA> rhsbuf;
         TDATA rhs;
         TDATA xLast;
@@ -122,9 +124,9 @@ namespace DNDS::ODE
          * @brief mind that NDOF is the dof of dt
          * finit(TDATA& data)
          */
-        template <class Finit>
+        template <class Finit, class FinitDtau>
         ImplicitSDIRK4DualTimeStep(
-            index NDOF, Finit &&finit = [](TDATA &) {}, int schemeCode = 0) : DOF(NDOF)
+            index NDOF, Finit &&finit = [](TDATA &) {}, FinitDtau &&finitDtau = [](TDTAU &) {}, int schemeCode = 0) : DOF(NDOF)
         {
 
             schemeC = schemeCode;
@@ -167,20 +169,20 @@ namespace DNDS::ODE
                 DNDS_assert(false);
             }
 
-            dTau.resize(NDOF);
             rhsbuf.resize(nInnerStage);
             for (auto &i : rhsbuf)
                 finit(i);
             finit(rhs);
             finit(xLast);
             finit(xIncPrev);
+            finitDtau(dTau);
         }
 
         /**
          * @brief
          * frhs(TDATA &rhs, TDATA &x)
-         * fdt(std::vector<real>& dTau)
-         * fsolve(TDATA &x, TDATA &rhs, std::vector<real>& dTau, real dt, real alphaDiag, TDATA &xinc)
+         * fdt(TDTAU& dTau)
+         * fsolve(TDATA &x, TDATA &rhs, TDTAU& dTau, real dt, real alphaDiag, TDATA &xinc)
          * bool fstop(int iter, TDATA &xinc, int iInternal)
          */
         virtual void Step(TDATA &x, TDATA &xinc, const Frhs &frhs, const Fdt &fdt, const Fsolve &fsolve,
@@ -249,20 +251,21 @@ namespace DNDS::ODE
         virtual ~ImplicitSDIRK4DualTimeStep() {}
     };
 
-    template <class TDATA>
-    class ImplicitBDFDualTimeStep : public ImplicitDualTimeStep<TDATA>
+    template <class TDATA, class TDTAU>
+    class ImplicitBDFDualTimeStep : public ImplicitDualTimeStep<TDATA, TDTAU>
     {
 
         static const Eigen::Matrix<real, 4, 5> BDFCoefs;
 
     public:
-        using Frhs = typename ImplicitDualTimeStep<TDATA>::Frhs;
-        using Fdt = typename ImplicitDualTimeStep<TDATA>::Fdt;
-        using Fsolve = typename ImplicitDualTimeStep<TDATA>::Fsolve;
-        using Fstop = typename ImplicitDualTimeStep<TDATA>::Fstop;
-        using Fincrement = typename ImplicitDualTimeStep<TDATA>::Fincrement;
+        using tBase = ImplicitDualTimeStep<TDATA, TDTAU>;
+        using Frhs = typename tBase::Frhs;
+        using Fdt = typename tBase::Fdt;
+        using Fsolve = typename tBase::Fsolve;
+        using Fstop = typename tBase::Fstop;
+        using Fincrement = typename tBase::Fincrement;
 
-        std::vector<real> dTau;
+        TDTAU dTau;
         std::vector<TDATA> xPrevs;
         Eigen::VectorXd dtPrevs;
         std::vector<TDATA> rhsbuf;
@@ -280,13 +283,13 @@ namespace DNDS::ODE
          * @brief mind that NDOF is the dof of dt
          * finit(TDATA& data)
          */
-        template <class Finit>
+        template <class Finit, class FinitDtau>
         ImplicitBDFDualTimeStep(
-            index NDOF, Finit &&finit = [](TDATA &) {},
+            index NDOF, Finit &&finit = [](TDATA &) {}, FinitDtau &&finitDtau = [](TDTAU &) {},
             index k = 2) : DOF(NDOF), cnPrev(0), prevStart(k - 2), kBDF(k)
         {
             assert(k > 0 && k <= 4);
-            dTau.resize(NDOF);
+            
             xPrevs.resize(k - 1);
             dtPrevs.resize(k - 1);
             for (auto &i : xPrevs)
@@ -297,13 +300,14 @@ namespace DNDS::ODE
             finit(resInc);
             finit(xLast);
             finit(xIncPrev);
+            finitDtau(dTau);
         }
 
         /**
          * @brief
          * frhs(TDATA &rhs, TDATA &x)
-         * fdt(std::vector<real>& dTau)
-         * fsolve(TDATA &x, TDATA &rhs, std::vector<real>& dTau, real dt, real alphaDiag, TDATA &xinc)
+         * fdt(TDTAU& dTau)
+         * fsolve(TDATA &x, TDATA &rhs, TDTAU& dTau, real dt, real alphaDiag, TDATA &xinc)
          * bool fstop(int iter, TDATA &xinc, int iInternal)
          */
         virtual void Step(TDATA &x, TDATA &xinc, const Frhs &frhs, const Fdt &fdt, const Fsolve &fsolve,
@@ -468,8 +472,8 @@ namespace DNDS::ODE
         virtual ~ImplicitBDFDualTimeStep() {}
     };
 
-    template <class TDATA>
-    const Eigen::Matrix<real, 4, 5> ImplicitBDFDualTimeStep<TDATA>::BDFCoefs{
+    template <class TDATA, class TDTAU>
+    const Eigen::Matrix<real, 4, 5> ImplicitBDFDualTimeStep<TDATA, TDTAU>::BDFCoefs{
         {1. / 1., 1. / 1., std::nan("1"), std::nan("1"), std::nan("1")},
         {2. / 3., 4. / 3., -1. / 3., std::nan("1"), std::nan("1")},
         {6. / 11., 18. / 11., -9. / 11., 2. / 11., std::nan("1")},
@@ -481,22 +485,23 @@ namespace DNDS::ODE
     /*                                                                                         */
     /*******************************************************************************************/
 
-    template <class TDATA>
-    class ImplicitHermite3SimpleJacobianDualStep : public ImplicitDualTimeStep<TDATA>
+    template <class TDATA, class TDTAU>
+    class ImplicitHermite3SimpleJacobianDualStep : public ImplicitDualTimeStep<TDATA, TDTAU>
     {
 
     public:
-        using Frhs = typename ImplicitDualTimeStep<TDATA>::Frhs;
-        using Fdt = typename ImplicitDualTimeStep<TDATA>::Fdt;
-        using Fsolve = typename ImplicitDualTimeStep<TDATA>::Fsolve;
-        using Fstop = typename ImplicitDualTimeStep<TDATA>::Fstop;
-        using Fincrement = typename ImplicitDualTimeStep<TDATA>::Fincrement;
+        using tBase = ImplicitDualTimeStep<TDATA, TDTAU>;
+        using Frhs = typename tBase::Frhs;
+        using Fdt = typename tBase::Fdt;
+        using Fsolve = typename tBase::Fsolve;
+        using Fstop = typename tBase::Fstop;
+        using Fincrement = typename tBase::Fincrement;
         using FsolveNest = std::function<void(
             TDATA &, TDATA &, TDATA &,
-            std::vector<real> &, const std::vector<real> &,
+            TDTAU &, const std::vector<real> &,
             real, real, TDATA &, int, int)>;
 
-        std::vector<real> dTau;
+        TDTAU dTau;
         TDATA xMid, rhsMid, rhsFull;
         std::vector<TDATA> rhsbuf;
         TDATA xLast;
@@ -515,9 +520,9 @@ namespace DNDS::ODE
          * @brief mind that NDOF is the dof of dt
          * finit(TDATA& data)
          */
-        template <class Finit>
+        template <class Finit, class FinitDtau>
         ImplicitHermite3SimpleJacobianDualStep(
-            index NDOF, Finit &&finit = [](TDATA &) {},
+            index NDOF, Finit &&finit = [](TDATA &) {}, FinitDtau &&finitDtau = [](TDTAU &) {},
             real alpha = 0.55, int nnStartIter = 2, real thetaM1n = 0.9146)
             : DOF(NDOF),
               cnPrev(0),
@@ -525,7 +530,7 @@ namespace DNDS::ODE
               thetaM1(thetaM1n)
         {
 
-            dTau.resize(NDOF);
+            
             rhsbuf.resize(3);
             finit(rhsbuf[0]);
             finit(rhsbuf[1]);
@@ -537,6 +542,7 @@ namespace DNDS::ODE
             finit(xIncPrev);
             finit(xIncDamper);
             finit(xIncDamper2);
+            finitDtau(dTau);
 
             SetCoefs(alpha);
         }
@@ -562,8 +568,8 @@ namespace DNDS::ODE
         /**
          * @brief
          * frhs(TDATA &rhs, TDATA &x)
-         * fdt(std::vector<real>& dTau)
-         * fsolve(TDATA &x, TDATA &rhs, std::vector<real>& dTau, real dt, real alphaDiag, TDATA &xinc)
+         * fdt(TDTAU& dTau)
+         * fsolve(TDATA &x, TDATA &rhs, TDTAU& dTau, real dt, real alphaDiag, TDATA &xinc)
          * bool fstop(int iter, TDATA &xinc, int iInternal)
          */
         virtual void Step(TDATA &x, TDATA &xinc, const Frhs &frhs, const Fdt &fdt, const Fsolve &fsolve,
@@ -600,8 +606,9 @@ namespace DNDS::ODE
                     if (method == 0)
                     {
                         fdt(x, dTau, 1.0, 0);
-                        for (auto &v : dTau)
-                            v = veryLargeReal;
+                        // for (auto &v : dTau)
+                        //     v = veryLargeReal;
+                        dTau.setConstant(veryLargeReal);
                         frhs(rhsbuf[1], x, dTau, iter, 1.0, 0);
                         xMid.setConstant(0.0);
                         xMid.addTo(xLast, cInter[0]);
@@ -661,8 +668,9 @@ namespace DNDS::ODE
 
                             //* 0
                             fdt(x, dTau, 1.0, 0);
-                            for (auto &v : dTau)
-                                v = veryLargeReal;
+                            // for (auto &v : dTau)
+                            //     v = veryLargeReal;
+                            dTau.setConstant(veryLargeReal);
                             fsolve(x, rhsFull, dTau, dt,
                                    1.0, xinc, iter, 0);
 
@@ -675,8 +683,8 @@ namespace DNDS::ODE
                             }
                             rhsFull = xinc;
                             fdt(x, dTau, 1.0, 0);
-                            for (auto &v : dTau)
-                                v *= 1;
+                            // for (auto &v : dTau)
+                            //     v *= 1;
                             fsolve(x, rhsFull, dTau, dt,
                                    1.0, xinc, iter, 0);
                             // std::cout << "solved " << iter << std::endl;
@@ -946,17 +954,18 @@ namespace DNDS::ODE
     /*                                                                                         */
     /*******************************************************************************************/
 
-    template <class TDATA>
-    class ExplicitSSPRK3TimeStepAsImplicitDualTimeStep : public ImplicitDualTimeStep<TDATA>
+    template <class TDATA, class TDTAU>
+    class ExplicitSSPRK3TimeStepAsImplicitDualTimeStep : public ImplicitDualTimeStep<TDATA, TDTAU>
     {
     public:
-        using Frhs = typename ImplicitDualTimeStep<TDATA>::Frhs;
-        using Fdt = typename ImplicitDualTimeStep<TDATA>::Fdt;
-        using Fsolve = typename ImplicitDualTimeStep<TDATA>::Fsolve;
-        using Fstop = typename ImplicitDualTimeStep<TDATA>::Fstop;
-        using Fincrement = typename ImplicitDualTimeStep<TDATA>::Fincrement;
+        using tBase = ImplicitDualTimeStep<TDATA, TDTAU>;
+        using Frhs = typename tBase::Frhs;
+        using Fdt = typename tBase::Fdt;
+        using Fsolve = typename tBase::Fsolve;
+        using Fstop = typename tBase::Fstop;
+        using Fincrement = typename tBase::Fincrement;
 
-        std::vector<real> dTau;
+        TDTAU dTau;
         std::vector<TDATA> rhsbuf;
         TDATA rhs;
         TDATA xLast;
@@ -964,19 +973,20 @@ namespace DNDS::ODE
         index DOF;
         bool localDtStepping{false};
 
-        template <class Finit>
+        template <class Finit, class FinitDtau>
         ExplicitSSPRK3TimeStepAsImplicitDualTimeStep(
-            index NDOF, Finit &&finit = [](TDATA &) {}, bool nLocalDtStepping = false)
+            index NDOF, Finit &&finit = [](TDATA &) {}, FinitDtau &&finitDtau = [](TDTAU &) {},
+            bool nLocalDtStepping = false)
             : DOF(NDOF), localDtStepping(nLocalDtStepping)
         {
 
-            dTau.resize(NDOF);
             rhsbuf.resize(3);
             for (auto &i : rhsbuf)
                 finit(i);
             finit(rhs);
             finit(xLast);
             finit(xInc);
+            finitDtau(dTau);
         }
 
         /*!

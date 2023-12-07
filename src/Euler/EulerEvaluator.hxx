@@ -9,7 +9,7 @@ namespace DNDS::Euler
     void EulerEvaluator<model>::LUSGSMatrixInit(
         ArrayDOFV<nVars_Fixed> &JDiag,
         ArrayDOFV<nVars_Fixed> &JSource,
-        std::vector<real> &dTau, real dt, real alphaDiag,
+        ArrayDOFV<1> &dTau, real dt, real alphaDiag,
         ArrayDOFV<nVars_Fixed> &u,
         ArrayRECV<nVars_Fixed> &uRec,
         int jacobianCode,
@@ -23,7 +23,7 @@ namespace DNDS::Euler
             auto c2f = mesh->cell2face[iCell];
 
             // LUSGS diag part
-            real fpDivisor = 1.0 / dTau[iCell] + 1.0 / dt;
+            real fpDivisor = 1.0 / dTau[iCell](0) + 1.0 / dt;
             for (int ic2f = 0; ic2f < c2f.size(); ic2f++)
             {
                 index iFace = c2f[ic2f];

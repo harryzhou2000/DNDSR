@@ -5,7 +5,7 @@
     {                                                       \
         template void EulerEvaluator<model>::GetWallDist(); \
         template void EulerEvaluator<model>::EvaluateDt(    \
-            std::vector<real> &dt,                          \
+            ArrayDOFV<1> &dt,                               \
             ArrayDOFV<nVars_Fixed> &u,                      \
             ArrayRECV<nVars_Fixed> &uRec,                   \
             real CFL, real &dtMinall, real MaxDt,           \

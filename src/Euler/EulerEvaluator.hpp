@@ -304,7 +304,7 @@ namespace DNDS::Euler
 
         /******************************************************/
         void EvaluateDt(
-            std::vector<real> &dt,
+            ArrayDOFV<1> &dt,
             ArrayDOFV<nVars_Fixed> &u,
             ArrayRECV<nVars_Fixed> &uRec,
             real CFL, real &dtMinall, real MaxDt = 1,
@@ -327,7 +327,7 @@ namespace DNDS::Euler
         void LUSGSMatrixInit(
             ArrayDOFV<nVars_Fixed> &JDiag,
             ArrayDOFV<nVars_Fixed> &JSource,
-            std::vector<real> &dTau, real dt, real alphaDiag,
+            ArrayDOFV<1> &dTau, real dt, real alphaDiag,
             ArrayDOFV<nVars_Fixed> &u,
             ArrayRECV<nVars_Fixed> &uRec,
             int jacobianCode,

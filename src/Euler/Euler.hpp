@@ -177,6 +177,11 @@ namespace DNDS::Euler
             for (index i = 0; i < this->father->Size(); i++)
                 this->operator[](i) *= R[i];
         }
+        void operator*=(ArrayDOFV<1> &R)
+        {
+            for (index i = 0; i < this->Size(); i++)
+                this->operator[](i) *= R[i](0);
+        }
         void operator=(t_self &R)
         {
             for (index i = 0; i < this->Size(); i++)
