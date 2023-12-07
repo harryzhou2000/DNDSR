@@ -1,18 +1,18 @@
 {
     "timeMarchControl": {
-        "dtImplicit": 1e-4,
-        "nTimeStep": 25000,
+        "dtImplicit": 1e-6,
+        "nTimeStep": 1000,
         "steadyQuit": false,
-        "useImplicitPP": true, //!
-        "useRHSfPP": false,
+        "useImplicitPP": true,
+        "useRHSfPP": true,
         "rhsfPPScale": 1,
         "odeCode": 1,
-        "tEnd": 0.25e0,
+        "tEnd": 3e+200,
         "odeSetting1": 0.5,
         "odeSetting2": 1
     },
     "convergenceControl": {
-        "nTimeStepInternal": 1000,
+        "nTimeStepInternal": 100,
         "rhsThresholdInternal": 1e-3,
         "res_base": 0.0,
         "useVolWiseResidual": true
@@ -22,8 +22,8 @@
         "nConsoleCheckInternal": 1,
         "consoleOutputMode": 0,
         "consoleOutputEveryFix": 1,
-        "nDataOutC": 10,
-        "nDataOut": 100,
+        "nDataOutC": 1,
+        "nDataOut": 10,
         "nDataOutCInternal": 100,
         "nDataOutInternal": 1000000000,
         "tDataOut": 3e+200
@@ -33,15 +33,15 @@
         "nForceLocalStartStep": 2147483647,
         "nCFLRampStart": 0,
         "nCFLRampLength": 20,
-        "CFLRampEnd": 10.0,
+        "CFLRampEnd": 2.0,
         "useLocalDt": true
     },
     "dataIOControl": {
         "uniqueStamps": false,
         "meshRotZ": 0.0,
-        "meshFile": "../data/mesh/Wedge30_200_H1.cgns",
-        "outPltName": "../data/outUnsteady/Wedge30_200_H1_Re100_HLLEP_V1_Rot0_BDF2_CWBAP_Partial0_constMu",
-        "outLogName": "../data/outUnsteady/Wedge30_200_H1_Re100_HLLEP_V1_Rot0_BDF2_CWBAP_Partial0_constMu",
+        "meshFile": "../data/mesh/Unifrom_Ma2000Jet400.cgns",
+        "outPltName": "../data/outUnsteady/Unifrom_Ma2000Jet400",
+        "outLogName": "../data/outUnsteady/Unifrom_Ma2000Jet400",
         "outPltMode": 0,
         "readMeshMode": 0,
         "outPltTecplotFormat": true,
@@ -74,9 +74,9 @@
     },
     "limiterControl": {
         "useLimiter": true,
-        "smoothIndicatorProcedure": 0, //1 = pressure only
+        "smoothIndicatorProcedure": 0,
         "limiterProcedure": 1, //1 == CWBAP
-        "nPartialLimiterStart": 500,
+        "nPartialLimiterStart": 1000000,
         "nPartialLimiterStartLocal": 1000000,
         "preserveLimited": false,
         "_tail": 0
@@ -85,7 +85,7 @@
         "maxOrder": 3,
         "intOrder": 3,
         "cacheDiffBase": true,
-        "jacobiRelax": 1,
+        "jacobiRelax": 0.5,
         "SORInstead": false,
         "smoothThreshold": 1e-3,
         "WBAP_nStd": 10.0,
@@ -97,10 +97,8 @@
         },
         "functionalSettings": {
             "scaleType": "BaryDiff",
-            // "scaleMultiplier": 0.5,
-            // "dirWeightScheme": "Factorial",
-            "dirWeightScheme": "HQM_OPT",
-            "geomWeightScheme": "HQM_SD",
+            "scaleMultiplier": 1,
+            // "dirWeightScheme": "HQM_OPT",
             // "useAnisotropicFunctional": true,
             // "scaleMultiplier": 3.464101615137754,
             "_tail": 0
@@ -122,10 +120,8 @@
     "eulerSettings": {
         "ignoreSourceTerm": true,
         "useScalarJacobian": true,
-        "riemannSolverType": "HLLEP_V1",
-        "riemannSolverTypeAux": "Roe_M2",
-        "rsMeanValueEig": 1,
-        "rsRotateScheme": 0,
+        "riemannSolverType": "Roe_M2",
+        "rsMeanValueChar": 1,
         "nCentralSmoothStep": 0,
         "constMassForce": [
             0.0,
@@ -133,49 +129,54 @@
             0.0
         ],
         "farFieldStaticValue": [
-            8,
-            66,
+            0.5,
             0,
             0,
-            5.635e2
+            0,
+            0.61905
         ],
-        "boxInitializers": [
-            {
-                "x0": 0.2,
-                "x1": 100,
-                "y0": -100,
-                "y1": 100,
-                "z0": -100,
-                "z1": 100,
-                "v": [
-                    1.4,
-                    0,
-                    0,
-                    0,
-                    2.5
-                ]
-            }
-        ],
+        "boxInitializers": [],
         "idealGasProperty": {
-            "gamma": 1.4,
-            "Rgas": 0.002614994377762,
-            "muGas": 1e-2,
+            "gamma": 1.666666666666667,
+            "Rgas": 289,
+            "muGas": 1e-200,
             "prGas": 0.72,
             "TRef": 273.15,
-            "CSutherland": 110.4,
-            "muModel": 0
+            "CSutherland": 110.4
         }
     },
     "bcSettings": [
         {
-            "type": "BCFar",
-            "name": "FAR_R",
+            "type": "BCOut",
+            "name": "Out",
             "value": [
-                1.4,
+                0.5,
                 0,
                 0,
                 0,
-                2.5
+                0.61905
+            ]
+        },
+        {
+            "type": "BCIn",
+            "name": "InFar",
+            "value": [
+                0.5,
+                0,
+                0,
+                0,
+                0.61905
+            ]
+        },
+        {
+            "type": "BCIn",
+            "name": "InJet",
+            "value": [
+                5,
+                4000,
+                0,
+                0,
+                1.600000619050000e+06
             ]
         }
     ]
