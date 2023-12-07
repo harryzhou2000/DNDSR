@@ -251,10 +251,7 @@ namespace DNDS::Euler
 
             real gamma = settings.idealGasProperty.gamma;
             real T = pMean / ((gamma - 1) / gamma * settings.idealGasProperty.CpGas * uMean(0));
-            real muf = settings.idealGasProperty.muGas *
-                       std::pow(T / settings.idealGasProperty.TRef, 1.5) *
-                       (settings.idealGasProperty.TRef + settings.idealGasProperty.CSutherland) /
-                       (T + settings.idealGasProperty.CSutherland);
+            real muf = muEff(uMean, T);
             if constexpr (model == NS_SA || model == NS_SA_3D)
             {
                 real cnu1 = 7.1;
@@ -378,9 +375,10 @@ namespace DNDS::Euler
         //                std::pow(T / settings.idealGasProperty.TRef, 1.5) *
         //                (settings.idealGasProperty.TRef + settings.idealGasProperty.CSutherland) /
         //                (T + settings.idealGasProperty.CSutherland);
-        muf = muRef * (T / TRef) * std::sqrt(T / TRef) * (TRef + CSut) / (T + CSut); // this is much faster on bssct?? at the start for vorstreet case //! ??
+        // muf = muRef * (T / TRef) * std::sqrt(T / TRef) * (TRef + CSut) / (T + CSut); // this is much faster on bssct?? at the start for vorstreet case //! ??
         // muf = muRef * std::pow(T / TRef, 1.5) * (TRef + CSut) / (T + CSut);
         // muf = muRef * pow(T / TRef, 1.5) * (TRef + CSut) / (T + CSut);
+        muf = muEff(UMeanXy, T);
         mufPhy = muf;
         // PerformanceTimer::Instance().StopTimer(PerformanceTimer::LimiterB);
 #ifndef DNDS_FV_EULEREVALUATOR_IGNORE_VISCOUS_TERM

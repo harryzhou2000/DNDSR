@@ -102,6 +102,7 @@ namespace DNDS::Euler
                 real CpGas = Rgas * gamma / (gamma - 1);
                 real TRef = 273.15;
                 real CSutherland = 110.4;
+                int muModel = 1; //0=constant
 
                 void ReadWriteJSON(nlohmann::ordered_json &jsonObj, bool read)
                 {
@@ -111,6 +112,7 @@ namespace DNDS::Euler
                     __DNDS__json_to_config(prGas);
                     __DNDS__json_to_config(TRef);
                     __DNDS__json_to_config(CSutherland);
+                    __DNDS__json_to_config(muModel);
                     CpGas = Rgas * gamma / (gamma - 1);
                 }
             } idealGasProperty;
@@ -442,9 +444,15 @@ namespace DNDS::Euler
 
         /******************************************************/
 
-        real muEff(const TU &U) // TODO: more than sutherland law
+        real muEff(const TU &U, real T) // TODO: more than sutherland law
         {
-            return std::nan("1");
+            real TRel = T / settings.idealGasProperty.TRef;
+            return settings.idealGasProperty.muGas * (
+                    settings.idealGasProperty.muModel == 0 
+                    ? 1.0 
+                    : TRel * std::sqrt(TRel) *
+                    (settings.idealGasProperty.TRef + settings.idealGasProperty.CSutherland) /
+                    (T + settings.idealGasProperty.CSutherland));
         }
 
         void UFromCell2Face(TU &u, index iFace, index iCell, rowsize if2c)
@@ -564,10 +572,7 @@ namespace DNDS::Euler
 
                 real T = pMean / ((gamma - 1) / gamma * settings.idealGasProperty.CpGas * UMeanXy(0));
                 real mufPhy, muf;
-                mufPhy = muf = settings.idealGasProperty.muGas *
-                               std::pow(T / settings.idealGasProperty.TRef, 1.5) *
-                               (settings.idealGasProperty.TRef + settings.idealGasProperty.CSutherland) /
-                               (T + settings.idealGasProperty.CSutherland);
+                mufPhy = muf = muEff(UMeanXy, T);
 
                 real Chi = (UMeanXy(I4 + 1) * muRef / mufPhy);
                 real fnu1 = std::pow(Chi, 3) / (std::pow(Chi, 3) + std::pow(cnu1, 3));
@@ -661,10 +666,7 @@ namespace DNDS::Euler
                 real T = pMean / ((gamma - 1) / gamma * settings.idealGasProperty.CpGas * UMeanXy(0));
 
                 real mufPhy, muf;
-                mufPhy = muf = settings.idealGasProperty.muGas *
-                               std::pow(T / settings.idealGasProperty.TRef, 1.5) *
-                               (settings.idealGasProperty.TRef + settings.idealGasProperty.CSutherland) /
-                               (T + settings.idealGasProperty.CSutherland);
+                mufPhy = muf = muEff(UMeanXy, T);
                 RANS::GetSource_RealizableKe<dim>(UMeanXy, DiffUxy, mufPhy, ret);
                 return ret;
             }
@@ -719,10 +721,7 @@ namespace DNDS::Euler
 
                 real T = pMean / ((gamma - 1) / gamma * settings.idealGasProperty.CpGas * UMeanXy(0));
                 real mufPhy, muf;
-                mufPhy = muf = settings.idealGasProperty.muGas *
-                               std::pow(T / settings.idealGasProperty.TRef, 1.5) *
-                               (settings.idealGasProperty.TRef + settings.idealGasProperty.CSutherland) /
-                               (T + settings.idealGasProperty.CSutherland);
+                mufPhy = muf = muEff(UMeanXy, T);
 
                 real Chi = (UMeanXy(I4 + 1) * muRef / mufPhy);
                 real fnu1 = std::pow(Chi, 3) / (std::pow(Chi, 3) + std::pow(cnu1, 3));
@@ -815,10 +814,7 @@ namespace DNDS::Euler
                 real T = pMean / ((gamma - 1) / gamma * settings.idealGasProperty.CpGas * UMeanXy(0));
 
                 real mufPhy, muf;
-                mufPhy = muf = settings.idealGasProperty.muGas *
-                               std::pow(T / settings.idealGasProperty.TRef, 1.5) *
-                               (settings.idealGasProperty.TRef + settings.idealGasProperty.CSutherland) /
-                               (T + settings.idealGasProperty.CSutherland);
+                mufPhy = muf = muEff(UMeanXy, T);
                 RANS::GetSourceJacobianDiag_RealizableKe<dim>(UMeanXy, DiffUxy, mufPhy, ret);
                 return ret;
             }
@@ -1322,10 +1318,7 @@ namespace DNDS::Euler
                     real muRef = settings.idealGasProperty.muGas;
                     real T = pMean / ((gamma - 1) / gamma * settings.idealGasProperty.CpGas * ULMeanXy(0));
                     real mufPhy1;
-                    mufPhy1 = settings.idealGasProperty.muGas *
-                              std::pow(T / settings.idealGasProperty.TRef, 1.5) *
-                              (settings.idealGasProperty.TRef + settings.idealGasProperty.CSutherland) /
-                              (T + settings.idealGasProperty.CSutherland);
+                    mufPhy1 = muEff(ULMeanXy, T);
                     real epsWall = 2 * mufPhy1 / ULMeanXy(0) * k1 / sqr(d1);
                     URxy(I4 + 2) = 2 * epsWall * ULxy(0) - ULxy(I4 + 2);
                     if (fixUL)
