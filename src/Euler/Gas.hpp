@@ -771,7 +771,7 @@ if constexpr (type != 1)
      * TODO: vectorize
      * newrhoEinteralNew is the desired fixed-to-positive e = p / (gamma -1)
      */
-    template <int dim = 3, int nVars_Fixed, typename TU, typename TUInc>
+    template <int dim = 3, int scheme=0, int nVars_Fixed, typename TU, typename TUInc>
     real IdealGasGetCompressionRatioPressure(const TU &u, const TUInc &uInc, real newrhoEinteralNew)
     {
         static const auto Seq01234 = Eigen::seq(Eigen::fix<0>, Eigen::fix<dim + 1>);
@@ -780,53 +780,66 @@ if constexpr (type != 1)
         static const auto I4 = dim + 1;
 
         Eigen::Vector<real, nVars_Fixed> ret = uInc;
+        Eigen::Vector<real, nVars_Fixed> uNew = u + uInc;
         real rhoEOld = u(I4) - u(Seq123).squaredNorm() / (u(0) + verySmallReal) * 0.5;
         newrhoEinteralNew = std::max(smallReal * rhoEOld, newrhoEinteralNew);
+        real rhoENew = uNew(I4) - uNew(Seq123).squaredNorm() / (uNew(0) + verySmallReal) * 0.5;
+        real alphaEst1 = (rhoEOld - newrhoEinteralNew) / std::max(-rhoENew + rhoEOld, verySmallReal);
+        if(rhoENew > rhoEOld)
+            alphaEst1 = 1;
+        alphaEst1 = std::min(alphaEst1, 1.);
+        alphaEst1 = std::max(alphaEst1, 0.);
+        real alpha = alphaEst1;//!using convex estimation
 
-        real c0 = 2 * u(I4) * u(0) - u(Seq123).squaredNorm() - 2 * u(0) * newrhoEinteralNew;
-        real c1 = 2 * u(I4) * ret(0) + 2 * u(0) * ret(I4) - 2 * u(Seq123).dot(ret(Seq123)) - 2 * ret(0) * newrhoEinteralNew;
-        real c2 = 2 * ret(I4) * ret(0) - ret(Seq123).squaredNorm();
-        c2 += signP(c2) * verySmallReal;
-        real deltaC = sqr(c1) - 4 * c0 * c2;
-        if (deltaC <= -sqr(c0) * smallReal)
+        real alphaL, alphaR, c0, c1, c2;
+        alphaL = alphaR = c0 = c1 = c2 = 0;
+        if constexpr(scheme == 0)
         {
-            std::cout << std::scientific << std::setprecision(5);
-            std::cout << u.transpose() << std::endl;
-            std::cout << uInc.transpose() << std::endl;
-            std::cout << newrhoEinteralNew << std::endl;
-            std::cout << fmt::format("{} {} {}", c0, c1, c2) << std::endl;
-
-            DNDS_assert(false);
-        }
-        deltaC = std::max(0., deltaC);
-        real alphaL = (-std::sqrt(deltaC) - c1) / (2 * c2);
-        real alphaR = (std::sqrt(deltaC) - c1) / (2 * c2);
-        // if (c2 > 0)
-        //     DNDS_assert(alphaL > 0);
-        // DNDS_assert(alphaR > 0);
-        // DNDS_assert(alphaL < 1);
-        // if (c2 < 0)
-        //     DNDS_assert(alphaR < 1);
-        real alpha;
-        if (std::abs(c2) < 1e-10 * c0)
-        {
-            if (std::abs(c1) < 1e-10 * c0)
+            c0 = 2 * u(I4) * u(0) - u(Seq123).squaredNorm() - 2 * u(0) * newrhoEinteralNew;
+            c1 = 2 * u(I4) * ret(0) + 2 * u(0) * ret(I4) - 2 * u(Seq123).dot(ret(Seq123)) - 2 * ret(0) * newrhoEinteralNew;
+            c2 = 2 * ret(I4) * ret(0) - ret(Seq123).squaredNorm();
+            c2 += signP(c2) * verySmallReal;
+            real deltaC = sqr(c1) - 4 * c0 * c2;
+            if (deltaC <= -sqr(c0) * smallReal)
             {
-                alpha = 0;
+                std::cout << std::scientific << std::setprecision(5);
+                std::cout << u.transpose() << std::endl;
+                std::cout << uInc.transpose() << std::endl;
+                std::cout << newrhoEinteralNew << std::endl;
+                std::cout << fmt::format("{} {} {}", c0, c1, c2) << std::endl;
+
+                DNDS_assert(false);
+            }
+            deltaC = std::max(0., deltaC);
+            real alphaL = (-std::sqrt(deltaC) - c1) / (2 * c2);
+            real alphaR = (std::sqrt(deltaC) - c1) / (2 * c2);
+            // if (c2 > 0)
+            //     DNDS_assert(alphaL > 0);
+            // DNDS_assert(alphaR > 0);
+            // DNDS_assert(alphaL < 1);
+            // if (c2 < 0)
+            //     DNDS_assert(alphaR < 1);
+            
+            if (std::abs(c2) < 1e-10 * c0)
+            {
+                if (std::abs(c1) < 1e-10 * c0)
+                {
+                    alpha = 0;
+                }
+                else
+                {
+                    alpha = std::min(-c0 / c1, 1.);
+                }
             }
             else
             {
-                alpha = std::min(-c0 / c1, 1.);
+                alpha = std::min((c2 > 0 ? alphaL : alphaL), 1.);
             }
+            alpha = std::max(0., alpha);
+            alpha *= (1 - 1e-5);
+            if (alpha < smallReal)
+                alpha = 0;
         }
-        else
-        {
-            alpha = std::min((c2 > 0 ? alphaL : alphaL), 1.);
-        }
-        alpha = std::max(0., alpha);
-        alpha *= (1 - 1e-5);
-        if (alpha < smallReal)
-            alpha = 0;
 
         ret *= alpha;
 
