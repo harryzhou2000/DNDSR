@@ -620,7 +620,7 @@ namespace DNDS::Euler
                 {
                     if (pS(iG) < 2 * pEps)
                     {
-                        real thetaThis = Gas::IdealGasGetCompressionRatioPressure<dim, nVars_Fixed>(
+                        real thetaThis = Gas::IdealGasGetCompressionRatioPressure<dim, 0, nVars_Fixed>(
                             u[iCell], recInc(iG, Eigen::all).transpose(), 1 * pEps / (gamma - 1));
                         thetaP = std::min(thetaP, thetaThis);
                     }
@@ -731,7 +731,7 @@ namespace DNDS::Euler
             if (pNew < pEps)
             {
                 // todo: use high order accurate (add control switch)
-                real alphaC = Gas::IdealGasGetCompressionRatioPressure<dim, nVars_Fixed>(
+                real alphaC = Gas::IdealGasGetCompressionRatioPressure<dim, 0, nVars_Fixed>(
                     u[iCell], inc, pEps / (gamma - 1));
                 alphaP = std::min(alphaP, alphaC);
             }
