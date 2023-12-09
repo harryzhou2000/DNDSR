@@ -210,7 +210,11 @@ namespace DNDS::Euler
 #else
                     TDiffU GradUMeanXy; 
 #endif
-                    if (faceBCType == EulerBCType::BCWallInvis)
+                    if (faceBCType == EulerBCType::BCWallInvis ||
+                        // faceBCType == EulerBCType::BCIn ||
+                        faceBCType == EulerBCType::BCOut ||
+                        faceBCType == EulerBCType::BCFar ||
+                        faceBCType == EulerBCType::BCSpecial)
                         GradUMeanXy *= 0; // force no viscid flux
 
                     TU FLFix, FRFix;
