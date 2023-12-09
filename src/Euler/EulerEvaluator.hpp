@@ -102,7 +102,7 @@ namespace DNDS::Euler
                 real CpGas = Rgas * gamma / (gamma - 1);
                 real TRef = 273.15;
                 real CSutherland = 110.4;
-                int muModel = 1; //0=constant
+                int muModel = 1; //0=constant, 1=sutherland, 2=constant_nu
 
                 void ReadWriteJSON(nlohmann::ordered_json &jsonObj, bool read)
                 {
@@ -446,13 +446,29 @@ namespace DNDS::Euler
 
         real muEff(const TU &U, real T) // TODO: more than sutherland law
         {
-            real TRel = T / settings.idealGasProperty.TRef;
-            return settings.idealGasProperty.muGas * (
-                    settings.idealGasProperty.muModel == 0 
-                    ? 1.0 
-                    : TRel * std::sqrt(TRel) *
-                    (settings.idealGasProperty.TRef + settings.idealGasProperty.CSutherland) /
-                    (T + settings.idealGasProperty.CSutherland));
+            
+            switch(settings.idealGasProperty.muModel)
+            {
+                case 0:
+                    return settings.idealGasProperty.muGas;
+                case 1:
+                {
+                    real TRel = T / settings.idealGasProperty.TRef;
+                    return settings.idealGasProperty.muGas *
+                        TRel * std::sqrt(TRel) *
+                        (settings.idealGasProperty.TRef + settings.idealGasProperty.CSutherland) /
+                        (T + settings.idealGasProperty.CSutherland);
+                }
+                break;
+                case 2:
+                {
+                    return settings.idealGasProperty.muGas * U(0);
+                }   
+                break;
+                default:
+                    DNDS_assert_info(false, "No such muModel");
+            }
+            return std::nan("0");
         }
 
         void UFromCell2Face(TU &u, index iFace, index iCell, rowsize if2c)
