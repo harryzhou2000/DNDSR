@@ -123,13 +123,17 @@ namespace DNDS::Euler
                 int nRecMultiplyForZeroedGrad = 1;
                 bool storeRecInc = false;
                 bool dampRecIncDTau = false;
+                int zeroRecForSteps = 0;
+                int zeroRecForStepsInternal = 0;
                 DNDS_NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_ORDERED_JSON(
                     ImplicitReconstructionControl,
                     nInternalRecStep, zeroGrads,
                     recLinearScheme, nGmresSpace, nGmresIter,
                     recThreshold, nRecConsolCheck,
                     nRecMultiplyForZeroedGrad,
-                    storeRecInc, dampRecIncDTau)
+                    storeRecInc, dampRecIncDTau,
+                    zeroRecForSteps,
+                    zeroRecForStepsInternal)
             } implicitReconstructionControl;
 
             struct OutputControl
