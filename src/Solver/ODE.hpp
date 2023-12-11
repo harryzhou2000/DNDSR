@@ -890,7 +890,7 @@ namespace DNDS::ODE
             xLast = x;
             xMid = x;
             fdt(xLast, dTau, 1.0, 0);
-            frhs(rhsbuf[0], xLast, dTau, 0, 1.0, 0);
+            frhs(rhsbuf[0], xLast, dTau, 1, 1.0, 0);
             rhsbuf[1] = rhsbuf[0];
             rhsbuf[2] = rhsbuf[0];
 
