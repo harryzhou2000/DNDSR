@@ -827,6 +827,7 @@ namespace DNDS::ODE
         Eigen::Vector<real, 3> wInteg;
         int nStartIter = 0;
         real thetaM1 = 0.9146;
+        real alphaHM3 = 0.5;
 
         /**
          * @brief mind that NDOF is the dof of dt
@@ -839,7 +840,8 @@ namespace DNDS::ODE
             : DOF(NDOF),
               cnPrev(0),
               nStartIter(nnStartIter),
-              thetaM1(thetaM1n)
+              thetaM1(thetaM1n),
+              alphaHM3(alpha)
         {
 
             
@@ -890,7 +892,7 @@ namespace DNDS::ODE
             xLast = x;
             xMid = x;
             fdt(xLast, dTau, 1.0, 0);
-            frhs(rhsbuf[0], xLast, dTau, 1, 1.0, 0);
+            frhs(rhsbuf[0], xLast, dTau, INT_MAX, 0.0, 0);
             rhsbuf[1] = rhsbuf[0];
             rhsbuf[2] = rhsbuf[0];
 
@@ -936,7 +938,7 @@ namespace DNDS::ODE
                             fincrement(xMid, rhsMid, 1.0, 1);
                         }
                         fdt(xMid, dTau, 1.0, 0);
-                        frhs(rhsMid, xMid, dTau, iter, 1.0, 1);
+                        frhs(rhsMid, xMid, dTau, iter, alphaHM3, 1);
                         rhsFull.setConstant(0.0);
                         rhsFull.addTo(rhsbuf[0], wInteg[0]);
                         rhsFull.addTo(rhsMid, wInteg[1]);
@@ -1092,7 +1094,7 @@ namespace DNDS::ODE
 
                         fincrement(xMid, xinc, 1.0, 1);
 
-                        frhs(rhsbuf[2], xMid, dTau, iter, 0.5, 1);
+                        frhs(rhsbuf[2], xMid, dTau, iter, alphaHM3, 1);
 
                         rhsFull.setConstant(0.0);
                         {
