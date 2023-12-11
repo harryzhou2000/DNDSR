@@ -1049,6 +1049,8 @@ namespace DNDS::Euler
                 resBaseCInternal = resBaseCInternal.array().max(res.array()); //! using max !
             Eigen::Vector<real, -1> resRel = (res.array() / (resBaseCInternal.array() + verySmallReal)).matrix();
             bool ifStop = resRel(0) < config.convergenceControl.rhsThresholdInternal; // ! using only rho's residual
+            if(iter < config.convergenceControl.nTimeStepInternalMin)
+                ifStop = false;
             if (iter % config.outputControl.nConsoleCheckInternal == 0 || iter > config.convergenceControl.nTimeStepInternal || ifStop)
             {
                 double telapsed = MPI_Wtime() - tstart;

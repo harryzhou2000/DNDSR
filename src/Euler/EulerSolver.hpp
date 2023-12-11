@@ -191,12 +191,13 @@ namespace DNDS::Euler
             struct ConvergenceControl
             {
                 int nTimeStepInternal = 20;
+                int nTimeStepInternalMin = 5;
                 real rhsThresholdInternal = 1e-10;
                 real res_base = 0;
                 bool useVolWiseResidual = false;
                 DNDS_NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_ORDERED_JSON(
                     ConvergenceControl,
-                    nTimeStepInternal,
+                    nTimeStepInternal, nTimeStepInternalMin,
                     rhsThresholdInternal,
                     res_base,
                     useVolWiseResidual)
