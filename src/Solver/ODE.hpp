@@ -197,6 +197,11 @@ namespace DNDS::ODE
                 int iter = 1;
                 for (; iter <= maxIter; iter++)
                 {
+                    if (schemeC == 1 && iB == 0) // for esdirk first frhs evaluation
+                    {
+                        frhs(rhsbuf[iB], x, dTau, INT_MAX, butcherC(iB), 0);
+                        break;
+                    }
                     fdt(x, dTau, butcherA(iB, iB), 0);
 
                     frhs(rhsbuf[iB], x, dTau, iter, butcherC(iB), 0);
@@ -290,7 +295,7 @@ namespace DNDS::ODE
             index k = 2) : DOF(NDOF), cnPrev(0), prevStart(k - 2), kBDF(k)
         {
             assert(k > 0 && k <= 4);
-            
+
             xPrevs.resize(k - 1);
             dtPrevs.resize(k - 1);
             for (auto &i : xPrevs)
@@ -523,7 +528,7 @@ namespace DNDS::ODE
             index k = 2) : DOF(NDOF), cnPrev(0), prevStart(k - 2), kBDF(k)
         {
             assert(k > 0 && k <= 4);
-            
+
             xPrevs.resize(k - 1);
             dtPrevs.resize(k - 1);
             for (auto &i : xPrevs)
@@ -674,10 +679,11 @@ namespace DNDS::ODE
                 };
                 real targetB = limitingV * -BDFCoefs(2);
                 real dtNew = dtm1;
-                if (targetB >= 16./9. )
-                    dtNew = dtm1 * 4; // max increase value
+                real maxIncrease = 1.2;
+                if (targetB >= fB(dtm1 * maxIncrease))
+                    dtNew = dtm1 * maxIncrease; // max increase value
                 else
-                    dtNew = Scalar::BisectSolveLower(fB, 0., dtm1 * 4, targetB * 0.5, 20);
+                    dtNew = Scalar::BisectSolveLower(fB, 0., dtm1 * maxIncrease, targetB * 0.5, 20);
 
                 dtOut = std::min(dtNew, dtOut);
             }
@@ -844,7 +850,6 @@ namespace DNDS::ODE
               alphaHM3(alpha)
         {
 
-            
             rhsbuf.resize(3);
             finit(rhsbuf[0]);
             finit(rhsbuf[1]);
