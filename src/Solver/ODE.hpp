@@ -661,7 +661,7 @@ namespace DNDS::ODE
                 xLast.addTo(xPrevs[mod(0 + prevStart, prevSiz)], -1.0);
                 xLast *= -BDFCoefs(2); // max value
                 real limitingV = flimitDtBDF(xIn, xLast);
-                std::cout << fmt::format("limitingV {}, B {}", limitingV, -BDFCoefs(2)) << std::endl;
+                // std::cout << fmt::format("limitingV {}, B {}", limitingV, -BDFCoefs(2)) << std::endl;
                 if (limitingV >= 1)
                     break;
                 DNDS_assert(limitingV >= 0);
