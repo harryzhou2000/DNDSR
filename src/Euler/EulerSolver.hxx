@@ -248,8 +248,8 @@ namespace DNDS::Euler
             DNDS_MPI_InsertCheck(mpi, " Lambda RHS: StartRec");
             int nRec = (gradIsZero ? config.implicitReconstructionControl.nRecMultiplyForZeroedGrad : 1) *
                        config.implicitReconstructionControl.nInternalRecStep;
-            if(step <= config.implicitReconstructionControl.zeroRecForSteps || 
-               iter <= config.implicitReconstructionControl.zeroRecForStepsInternal)
+            if (step <= config.implicitReconstructionControl.zeroRecForSteps ||
+                iter <= config.implicitReconstructionControl.zeroRecForStepsInternal)
             {
                 nRec = 0;
                 uRec.setConstant(0.0);
@@ -550,7 +550,8 @@ namespace DNDS::Euler
                 else
                     eval.EvaluateURecBeta(cx, uRecC, betaPPC, nLimBeta, minBeta);
                 if (nLimBeta)
-                    if (mpi.rank == 0 && config.outputControl.consoleOutputEveryFix != 0)
+                    if (mpi.rank == 0 &&
+                        (config.outputControl.consoleOutputEveryFix == 1 || config.outputControl.consoleOutputEveryFix == 3))
                     {
                         log() << std::scientific << std::setprecision(3)
                               << "PPRecLimiter: nLimBeta [" << nLimBeta << "]"
@@ -969,7 +970,8 @@ namespace DNDS::Euler
             alphaPP_tmp.trans.startPersistentPull();
             alphaPP_tmp.trans.waitPersistentPull();
             if (nLimAlpha)
-                if (mpi.rank == 0 && config.outputControl.consoleOutputEveryFix != 0)
+                if (mpi.rank == 0 &&
+                    (config.outputControl.consoleOutputEveryFix == 1 || config.outputControl.consoleOutputEveryFix == 4))
                 {
                     log() << std::scientific << std::setprecision(3)
                           << "PPResidualLimiter: nLimAlpha [" << nLimAlpha << "]"
@@ -994,7 +996,8 @@ namespace DNDS::Euler
                 alphaPP_tmp.trans.startPersistentPull();
                 alphaPP_tmp.trans.waitPersistentPull();
                 if (nLimAlpha)
-                    if (mpi.rank == 0 && config.outputControl.consoleOutputEveryFix != 0)
+                    if (mpi.rank == 0 &&
+                        (config.outputControl.consoleOutputEveryFix == 1 || config.outputControl.consoleOutputEveryFix == 4))
                     {
                         log() << std::scientific << std::setprecision(3)
                               << "PPResidualLimiter - first expand: nLimAlpha [" << nLimAlpha << "]"
@@ -1023,7 +1026,8 @@ namespace DNDS::Euler
             alphaMinInc = 1;
             eval.EvaluateCellRHSAlpha(cx, uRecC, betaPPC, cxInc, alphaPP_tmp, nLimInc, alphaMinInc, 0);
             if (nLimInc)
-                if (mpi.rank == 0 && config.outputControl.consoleOutputEveryFix != 0)
+                if (mpi.rank == 0 &&
+                    (config.outputControl.consoleOutputEveryFix == 1 || config.outputControl.consoleOutputEveryFix == 2))
                 {
                     std::cout << std::scientific << std::setw(3);
                     std::cout << "PPIncrementLimiter: nIncrementRes[" << nLimInc << "] minAlpha [" << alphaMinInc << "]" << std::endl;
@@ -1049,7 +1053,7 @@ namespace DNDS::Euler
                 resBaseCInternal = resBaseCInternal.array().max(res.array()); //! using max !
             Eigen::Vector<real, -1> resRel = (res.array() / (resBaseCInternal.array() + verySmallReal)).matrix();
             bool ifStop = resRel(0) < config.convergenceControl.rhsThresholdInternal; // ! using only rho's residual
-            if(iter < config.convergenceControl.nTimeStepInternalMin)
+            if (iter < config.convergenceControl.nTimeStepInternalMin)
                 ifStop = false;
             if (iter % config.outputControl.nConsoleCheckInternal == 0 || iter > config.convergenceControl.nTimeStepInternal || ifStop)
             {
@@ -1445,15 +1449,16 @@ namespace DNDS::Euler
                         config.convergenceControl.nTimeStepInternal,
                         fstop, fincrement,
                         curDtImplicit + verySmallReal);
-            else ode
-                ->Step(
-                    u, uInc,
-                    frhs,
-                    fdtau,
-                    fsolve,
-                    config.convergenceControl.nTimeStepInternal,
-                    fstop, fincrement,
-                    curDtImplicit + verySmallReal);
+            else
+                ode
+                    ->Step(
+                        u, uInc,
+                        frhs,
+                        fdtau,
+                        fsolve,
+                        config.convergenceControl.nTimeStepInternal,
+                        fstop, fincrement,
+                        curDtImplicit + verySmallReal);
 
             if (fmainloop())
                 break;
