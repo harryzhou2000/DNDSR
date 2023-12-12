@@ -41,6 +41,7 @@ namespace DNDS::CFV
         real smoothThreshold = 0.01; /// @brief limiter's smooth indicator threshold
         real WBAP_nStd = 10;         /// @brief n used in WBAP limiters
         bool normWBAP = false;       /// @brief if switch to normWBAP
+        int limiterBiwayAlter = 0;   /// @brief 0=wbap-L2-biway, 1=minmod-biway
         int subs2ndOrder = 0;        /// @brief 0: vfv; 1: gauss rule; 2: least square
 
         struct BaseSettings
@@ -155,6 +156,7 @@ namespace DNDS::CFV
             jsonSetting["smoothThreshold"] = smoothThreshold;
             jsonSetting["WBAP_nStd"] = WBAP_nStd;
             jsonSetting["normWBAP"] = normWBAP;
+            jsonSetting["limiterBiwayAlter"] = limiterBiwayAlter;
             jsonSetting["subs2ndOrder"] = subs2ndOrder;
             jsonSetting["baseSettings"] = baseSettings;
             jsonSetting["functionalSettings"] = functionalSettings;
@@ -176,6 +178,7 @@ namespace DNDS::CFV
             smoothThreshold = jsonSetting["smoothThreshold"];
             WBAP_nStd = jsonSetting["WBAP_nStd"];
             normWBAP = jsonSetting["normWBAP"];
+            limiterBiwayAlter = jsonSetting["limiterBiwayAlter"];
             subs2ndOrder = jsonSetting["subs2ndOrder"];
             baseSettings = jsonSetting["baseSettings"];
             functionalSettings = jsonSetting["functionalSettings"];

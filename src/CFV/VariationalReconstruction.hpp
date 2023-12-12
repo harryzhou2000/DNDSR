@@ -618,9 +618,11 @@ namespace DNDS::CFV
                     // real normScale = (coordTrans * norm).norm();
                     // coordTrans(0, Eigen::all) = norm.transpose() * faceL;
                     // coordTrans({1, 2}, Eigen::all).setZero();
-                } {
+                }
+                {
                     // coordTrans = Geom::NormBuildLocalBaseV<3>(norm).transpose() * faceL;
-                } {
+                }
+                {
                     // coordTrans *=  (2 * std::sqrt(3));
                     // tPoint lengths = coordTrans.rowwise().norm();
                     // // tPoint lengthsNew = lengths.array() * faceL / (faceL + lengths.array());
@@ -633,7 +635,8 @@ namespace DNDS::CFV
                     // //     std::cout << lengths << std::endl;
                     // //     std::cout << faceL << std::endl;
                     // // }
-                } {
+                }
+                {
                     // tPoint norm = this->GetFaceNorm(iFace, -1);
                     // auto getCellFaceMajorPNorm = [&](index iCell) -> tPoint
                     // {
@@ -658,7 +661,8 @@ namespace DNDS::CFV
 
                     // coordTrans(0, Eigen::all) = norm.transpose() * faceL;
                     // coordTrans({1, 2}, Eigen::all).setZero();
-                } {
+                }
+                {
                     tPoint norm = this->GetFaceNorm(iFace, -1);
                     real areaL = this->GetFaceArea(iFace);
                     if constexpr (dim == 3)
@@ -1234,10 +1238,23 @@ namespace DNDS::CFV
                                 uLimOutArray;
 
                             real n = settings.WBAP_nStd;
-                            if (settings.normWBAP)
-                                FWBAP_L2_Biway_Polynomial2D(uThisIn.array(), uOtherIn.array(), uLimOutArray, 1);
-                            else
+                            switch (settings.limiterBiwayAlter)
+                            {
+                            case 0:
                                 FWBAP_L2_Biway(uThisIn.array(), uOtherIn.array(), uLimOutArray, 1);
+                                break;
+                            case 1:
+                                FMINMOD_Biway(uThisIn.array(), uOtherIn.array(), uLimOutArray, 1);
+                                break;
+                            case 2:
+                                FWBAP_L2_Biway_PolynomialNorm<dim, nVars_Fixed>(uThisIn.array(), uOtherIn.array(), uLimOutArray, 1);
+                                break;
+                            case 3:
+                                FMEMM_Biway_PolynomialNorm<dim, nVars_Fixed>(uThisIn.array(), uOtherIn.array(), uLimOutArray, 1);
+                                break;
+                            default:
+                                DNDS_assert_info(false, "no such limiterBiwayAlter code!");
+                            }
 
                             // to phys space
                             auto MI = FMI(uL, uR, unitNorm);
@@ -1428,10 +1445,24 @@ namespace DNDS::CFV
                                 uLimOutArray;
 
                             real n = settings.WBAP_nStd;
-                            if (settings.normWBAP)
-                                FWBAP_L2_Biway_Polynomial2D(uThisIn.array(), uOtherIn.array(), uLimOutArray, 1);
-                            else
+
+                            switch (settings.limiterBiwayAlter)
+                            {
+                            case 0:
                                 FWBAP_L2_Biway(uThisIn.array(), uOtherIn.array(), uLimOutArray, 1);
+                                break;
+                            case 1:
+                                FMINMOD_Biway(uThisIn.array(), uOtherIn.array(), uLimOutArray, 1);
+                                break;
+                            case 2:
+                                FWBAP_L2_Biway_PolynomialNorm<dim, nVars_Fixed>(uThisIn.array(), uOtherIn.array(), uLimOutArray, 1);
+                                break;
+                            case 3:
+                                FMEMM_Biway_PolynomialNorm<dim, nVars_Fixed>(uThisIn.array(), uOtherIn.array(), uLimOutArray, 1);
+                                break;
+                            default:
+                                DNDS_assert_info(false, "no such limiterBiwayAlter code!");
+                            }
 
                             // to phys space
                             auto MI = FMI(uL, uR, unitNorm);

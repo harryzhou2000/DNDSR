@@ -461,121 +461,249 @@ namespace DNDS::CFV
         // PerformanceTimer::Instance().StopTimer(PerformanceTimer::LimiterA);
     }
 
+    /**
+     * @brief input eigen arrays
+     */
     template <typename Tin1, typename Tin2, typename Tout>
-    inline void FWBAP_L2_Biway_Polynomial2D(const Tin1 &u1, const Tin2 &u2, Tout &uOut, real n)
+    inline void FMINMOD_Biway(const Tin1 &u1, const Tin2 &u2, Tout &uOut, real n)
+    {
+        uOut = u1.abs().min(u2.abs()) * (u1.sign() + u2.sign()) * 0.5;
+    }
+
+    template <int dim, int nVarsFixed, typename Tin1, typename Tin2, typename Tout>
+    inline void FWBAP_L2_Biway_PolynomialNorm(const Tin1 &u1, const Tin2 &u2, Tout &uOut, real n)
     {
         static const int p = 4;
         // static const real n = 10.0;
         static const real verySmallReal_pDiP = std::pow(verySmallReal, 1.0 / p);
-        Eigen::ArrayXXd uMax = u1.abs().max(u2.abs()) + verySmallReal_pDiP;
+        static const int nDofMax = dim == 2 ? 6 : 10; //! hard code max 4thorder
+        Eigen::Array<real, Eigen::Dynamic, nVarsFixed, Eigen::AutoAlign, nDofMax> uMax = u1.abs().max(u2.abs()) + verySmallReal_pDiP;
         uMax.rowwise() = uMax.colwise().maxCoeff();
         Eigen::ArrayXd u1p, u2p;
-        Eigen::ArrayXXd theta1 = u1 / uMax;
-        Eigen::ArrayXXd theta2 = u2 / uMax;
-        switch (u1.rows())
+        Eigen::Array<real, Eigen::Dynamic, nVarsFixed, Eigen::AutoAlign, nDofMax> theta1 = u1 / uMax;
+        Eigen::Array<real, Eigen::Dynamic, nVarsFixed, Eigen::AutoAlign, nDofMax> theta2 = u2 / uMax;
+        if constexpr (dim == 2)
         {
-        case 2:
-            u1p =
-                theta1(0, Eigen::all).pow(2) +
-                theta1(1, Eigen::all).pow(2);
-            u2p =
-                theta2(0, Eigen::all).pow(2) +
-                theta2(1, Eigen::all).pow(2);
-            break;
-        case 3:
-            u1p =
-                theta1(0, Eigen::all).pow(2) +
-                theta1(1, Eigen::all).pow(2) * 0.5 +
-                theta1(2, Eigen::all).pow(2);
-            u2p =
-                theta2(0, Eigen::all).pow(2) +
-                theta2(1, Eigen::all).pow(2) * 0.5 +
-                theta2(2, Eigen::all).pow(2);
-            break;
-        case 4:
-            u1p =
-                theta1(0, Eigen::all).pow(2) +
-                theta1(1, Eigen::all).pow(2) * (1. / 3.) +
-                theta1(2, Eigen::all).pow(2) * (1. / 3.) +
-                theta1(3, Eigen::all).pow(2);
-            u2p =
-                theta2(0, Eigen::all).pow(2) +
-                theta2(1, Eigen::all).pow(2) * (1. / 3.) +
-                theta2(2, Eigen::all).pow(2) * (1. / 3.) +
-                theta2(3, Eigen::all).pow(2);
-            break;
+            switch (u1.rows())
+            {
+            case 2:
+                u1p =
+                    theta1(0, Eigen::all).square() +
+                    theta1(1, Eigen::all).square();
+                u2p =
+                    theta2(0, Eigen::all).square() +
+                    theta2(1, Eigen::all).square();
+                break;
+            case 3:
+                u1p =
+                    theta1(0, Eigen::all).square() +
+                    theta1(1, Eigen::all).square() * 0.5 +
+                    theta1(2, Eigen::all).square();
+                u2p =
+                    theta2(0, Eigen::all).square() +
+                    theta2(1, Eigen::all).square() * 0.5 +
+                    theta2(2, Eigen::all).square();
+                break;
+            case 4:
+                u1p =
+                    theta1(0, Eigen::all).square() +
+                    theta1(1, Eigen::all).square() * (1. / 3.) +
+                    theta1(2, Eigen::all).square() * (1. / 3.) +
+                    theta1(3, Eigen::all).square();
+                u2p =
+                    theta2(0, Eigen::all).square() +
+                    theta2(1, Eigen::all).square() * (1. / 3.) +
+                    theta2(2, Eigen::all).square() * (1. / 3.) +
+                    theta2(3, Eigen::all).square();
+                break;
 
-        default:
-            DNDS_assert(false);
-            break;
+            default:
+                DNDS_assert(false);
+                break;
+            }
         }
-        u1p = u1p.pow(p / 2);
-        u2p = u2p.pow(p / 2);
+        else
+        {
+            switch (u1.rows())
+            {
+            case 3:
+                u1p =
+                    theta1(0, Eigen::all).square() +
+                    theta1(1, Eigen::all).square() +
+                    theta1(2, Eigen::all).square();
+                u2p =
+                    theta2(0, Eigen::all).square() +
+                    theta2(1, Eigen::all).square() +
+                    theta2(2, Eigen::all).square();
+                break;
+            case 6:
+                u1p =
+                    theta1(0, Eigen::all).square() +
+                    theta1(1, Eigen::all).square() +
+                    theta1(2, Eigen::all).square() +
+                    theta1(3, Eigen::all).square() * 0.5 +
+                    theta1(4, Eigen::all).square() * 0.5 +
+                    theta1(5, Eigen::all).square() * 0.5;
+                u2p =
+                    theta2(0, Eigen::all).square() +
+                    theta2(1, Eigen::all).square() +
+                    theta2(2, Eigen::all).square() +
+                    theta2(3, Eigen::all).square() * 0.5 +
+                    theta2(4, Eigen::all).square() * 0.5 +
+                    theta2(5, Eigen::all).square() * 0.5;
+                break;
+            case 10:
+                u1p =
+                    theta1(0, Eigen::all).square() +
+                    theta1(1, Eigen::all).square() +
+                    theta1(2, Eigen::all).square() +
+                    theta1(3, Eigen::all).square() * (1. / 3.) +
+                    theta1(4, Eigen::all).square() * (1. / 3.) +
+                    theta1(5, Eigen::all).square() * (1. / 3.) +
+                    theta1(6, Eigen::all).square() * (1. / 3.) +
+                    theta1(7, Eigen::all).square() * (1. / 3.) +
+                    theta1(8, Eigen::all).square() * (1. / 3.) +
+                    theta1(9, Eigen::all).square() * (1. / 6.);
+                u2p =
+                    theta2(0, Eigen::all).square() +
+                    theta2(1, Eigen::all).square() +
+                    theta2(2, Eigen::all).square() +
+                    theta2(3, Eigen::all).square() * (1. / 3.) +
+                    theta2(4, Eigen::all).square() * (1. / 3.) +
+                    theta2(5, Eigen::all).square() * (1. / 3.) +
+                    theta2(6, Eigen::all).square() * (1. / 3.) +
+                    theta2(7, Eigen::all).square() * (1. / 3.) +
+                    theta2(8, Eigen::all).square() * (1. / 3.) +
+                    theta2(9, Eigen::all).square() * (1. / 6.);
+                break;
+
+            default:
+                DNDS_assert(false);
+                break;
+            }
+        }
+        // u1p = u1p.pow(p / 2);
+        // u2p = u2p.pow(p / 2);
+
+        u1p = u1p.square();
+        u2p = u2p.square();
 
         uOut = (u2.rowwise() * u1p.transpose() + n * (u1.rowwise() * u2p.transpose())).rowwise() / ((u1p + n * u2p) + verySmallReal).transpose();
 
         // std::cout << u2 << std::endl;
     }
 
-    template <typename Tin1, typename Tin2, typename Tout>
-    inline void FMEMM_Biway_Polynomial2D(const Tin1 &u1, const Tin2 &u2, Tout &uOut, real n)
+    template <int dim, int nVarsFixed, typename Tin1, typename Tin2, typename Tout>
+    inline void FMEMM_Biway_PolynomialNorm(const Tin1 &u1, const Tin2 &u2, Tout &uOut, real n)
     {
         static const int p = 4;
         // static const real n = 10.0;
         static const real verySmallReal_pDiP = std::pow(verySmallReal, 1.0 / p);
-        Eigen::ArrayXXd uMax = u1.abs().max(u2.abs()) + verySmallReal_pDiP;
+        static const int nDofMax = dim == 2 ? 6 : 10; //! hard code max 4thorder
+        Eigen::Array<real, Eigen::Dynamic, nVarsFixed, Eigen::AutoAlign, nDofMax> uMax = u1.abs().max(u2.abs()) + verySmallReal_pDiP;
         uMax.rowwise() = uMax.colwise().maxCoeff();
-        Eigen::ArrayXd u1p, u2p, u1u2;
-        Eigen::ArrayXXd theta1 = u1 / uMax;
-        Eigen::ArrayXXd theta2 = u2 / uMax;
-        switch (u1.rows())
+        Eigen::ArrayXd u1p, u2p;
+        Eigen::Array<real, Eigen::Dynamic, nVarsFixed, Eigen::AutoAlign, nDofMax> theta1 = u1 / uMax;
+        Eigen::Array<real, Eigen::Dynamic, nVarsFixed, Eigen::AutoAlign, nDofMax> theta2 = u2 / uMax;
+        if constexpr (dim == 2)
         {
-        case 2:
-            u1p =
-                theta1(0, Eigen::all).pow(2) +
-                theta1(1, Eigen::all).pow(2);
-            u2p =
-                theta2(0, Eigen::all).pow(2) +
-                theta2(1, Eigen::all).pow(2);
-            u1u2 =
-                theta2(0, Eigen::all) * theta1(0, Eigen::all) +
-                theta2(1, Eigen::all) * theta1(1, Eigen::all);
-            break;
-        case 3:
-            u1p =
-                theta1(0, Eigen::all).pow(2) +
-                theta1(1, Eigen::all).pow(2) * 0.5 +
-                theta1(2, Eigen::all).pow(2);
-            u2p =
-                theta2(0, Eigen::all).pow(2) +
-                theta2(1, Eigen::all).pow(2) * 0.5 +
-                theta2(2, Eigen::all).pow(2);
-            u1u2 =
-                theta2(0, Eigen::all) * theta1(0, Eigen::all) +
-                theta2(1, Eigen::all) * theta1(1, Eigen::all) * 0.5 +
-                theta2(2, Eigen::all) * theta1(2, Eigen::all);
-            break;
-        case 4:
-            u1p =
-                theta1(0, Eigen::all).pow(2) +
-                theta1(1, Eigen::all).pow(2) * (1. / 3.) +
-                theta1(2, Eigen::all).pow(2) * (1. / 3.) +
-                theta1(3, Eigen::all).pow(2);
-            u2p =
-                theta2(0, Eigen::all).pow(2) +
-                theta2(1, Eigen::all).pow(2) * (1. / 3.) +
-                theta2(2, Eigen::all).pow(2) * (1. / 3.) +
-                theta2(3, Eigen::all).pow(2);
-            u1u2 =
-                theta2(0, Eigen::all) * theta1(0, Eigen::all) +
-                theta2(1, Eigen::all) * theta1(1, Eigen::all) * (1. / 3.) +
-                theta2(2, Eigen::all) * theta1(2, Eigen::all) * (1. / 3.) +
-                theta2(3, Eigen::all) * theta1(3, Eigen::all);
-            break;
+            switch (u1.rows())
+            {
+            case 2:
+                u1p =
+                    theta1(0, Eigen::all).square() +
+                    theta1(1, Eigen::all).square();
+                u2p =
+                    theta2(0, Eigen::all).square() +
+                    theta2(1, Eigen::all).square();
+                break;
+            case 3:
+                u1p =
+                    theta1(0, Eigen::all).square() +
+                    theta1(1, Eigen::all).square() * 0.5 +
+                    theta1(2, Eigen::all).square();
+                u2p =
+                    theta2(0, Eigen::all).square() +
+                    theta2(1, Eigen::all).square() * 0.5 +
+                    theta2(2, Eigen::all).square();
+                break;
+            case 4:
+                u1p =
+                    theta1(0, Eigen::all).square() +
+                    theta1(1, Eigen::all).square() * (1. / 3.) +
+                    theta1(2, Eigen::all).square() * (1. / 3.) +
+                    theta1(3, Eigen::all).square();
+                u2p =
+                    theta2(0, Eigen::all).square() +
+                    theta2(1, Eigen::all).square() * (1. / 3.) +
+                    theta2(2, Eigen::all).square() * (1. / 3.) +
+                    theta2(3, Eigen::all).square();
+                break;
 
-        default:
-            DNDS_assert(false);
-            break;
+            default:
+                DNDS_assert(false);
+                break;
+            }
+        }
+        else
+        {
+            switch (u1.rows())
+            {
+            case 3:
+                u1p =
+                    theta1(0, Eigen::all).square() +
+                    theta1(1, Eigen::all).square() +
+                    theta1(2, Eigen::all).square();
+                u2p =
+                    theta2(0, Eigen::all).square() +
+                    theta2(1, Eigen::all).square() +
+                    theta2(2, Eigen::all).square();
+                break;
+            case 6:
+                u1p =
+                    theta1(0, Eigen::all).square() +
+                    theta1(1, Eigen::all).square() +
+                    theta1(2, Eigen::all).square() +
+                    theta1(3, Eigen::all).square() * 0.5 +
+                    theta1(4, Eigen::all).square() * 0.5 +
+                    theta1(5, Eigen::all).square() * 0.5;
+                u2p =
+                    theta2(0, Eigen::all).square() +
+                    theta2(1, Eigen::all).square() +
+                    theta2(2, Eigen::all).square() +
+                    theta2(3, Eigen::all).square() * 0.5 +
+                    theta2(4, Eigen::all).square() * 0.5 +
+                    theta2(5, Eigen::all).square() * 0.5;
+                break;
+            case 10:
+                u1p =
+                    theta1(0, Eigen::all).square() +
+                    theta1(1, Eigen::all).square() +
+                    theta1(2, Eigen::all).square() +
+                    theta1(3, Eigen::all).square() * (1. / 3.) +
+                    theta1(4, Eigen::all).square() * (1. / 3.) +
+                    theta1(5, Eigen::all).square() * (1. / 3.) +
+                    theta1(6, Eigen::all).square() * (1. / 3.) +
+                    theta1(7, Eigen::all).square() * (1. / 3.) +
+                    theta1(8, Eigen::all).square() * (1. / 3.) +
+                    theta1(9, Eigen::all).square() * (1. / 6.);
+                u2p =
+                    theta2(0, Eigen::all).square() +
+                    theta2(1, Eigen::all).square() +
+                    theta2(2, Eigen::all).square() +
+                    theta2(3, Eigen::all).square() * (1. / 3.) +
+                    theta2(4, Eigen::all).square() * (1. / 3.) +
+                    theta2(5, Eigen::all).square() * (1. / 3.) +
+                    theta2(6, Eigen::all).square() * (1. / 3.) +
+                    theta2(7, Eigen::all).square() * (1. / 3.) +
+                    theta2(8, Eigen::all).square() * (1. / 3.) +
+                    theta2(9, Eigen::all).square() * (1. / 6.);
+                break;
+
+            default:
+                DNDS_assert(false);
+                break;
+            }
         }
         u1p = u1p.sqrt();
         u2p = u2p.sqrt();
@@ -590,7 +718,9 @@ namespace DNDS::CFV
 
         // !safety?
         Eigen::ArrayXd ifReplace = (u1p - u2p).sign() * 0.5 + 0.5;
-        replaceFactor = ifReplace * replaceFactor + (1 - ifReplace);
+        // replaceFactor = ifReplace * replaceFactor + (1 - ifReplace);
+        // ! fast version:
+        replaceFactor = (1 - ifReplace);
 
         uOut = u1.rowwise() * replaceFactor.transpose() + u2.rowwise() * (1 - replaceFactor).transpose();
         // //! cutting
