@@ -24,7 +24,9 @@
         "nRecConsolCheck": 1,
         "nRecMultiplyForZeroedGrad": 1,
         "storeRecInc": false,
-        "dampRecIncDTau": false
+        "dampRecIncDTau": false,
+        "zeroRecForSteps": 0,
+        "zeroRecForStepsInternal": 0
     },
     "outputControl": {
         "nConsoleCheck": 1,
@@ -49,10 +51,12 @@
         "nCFLRampStart": 2147483647,
         "nCFLRampLength": 2147483647,
         "CFLRampEnd": 0.0,
-        "useLocalDt": true
+        "useLocalDt": true,
+        "nSmoothDTau": 0
     },
     "convergenceControl": {
         "nTimeStepInternal": 20,
+        "nTimeStepInternalMin": 5,
         "rhsThresholdInternal": 1e-10,
         "res_base": 0.0,
         "useVolWiseResidual": false
@@ -130,7 +134,9 @@
         "specialBuiltinInitializer": 0,
         "uRecBetaCompressPower": 11.0,
         "riemannSolverType": "Roe",
+        "riemannSolverTypeAux": "UnknownRS",
         "rsMeanValueEig": 0,
+        "rsRotateScheme": 0,
         "nCentralSmoothStep": 0,
         "constMassForce": [
             0.0,
@@ -152,7 +158,8 @@
             "muGas": 1.0,
             "prGas": 0.72,
             "TRef": 273.15,
-            "CSutherland": 110.4
+            "CSutherland": 110.4,
+            "muModel": 1
         }
     },
     "vfvSettings": {
@@ -165,6 +172,7 @@
         "smoothThreshold": 0.01,
         "WBAP_nStd": 10.0,
         "normWBAP": false,
+        "limiterBiwayAlter": 0,
         "subs2ndOrder": 0,
         "baseSettings": {
             "localOrientation": false,

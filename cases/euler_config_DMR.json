@@ -1,17 +1,24 @@
 {
     "timeMarchControl": {
-        "dtImplicit": 6.25e-5,
-        "nTimeStep": 3200,
+        "dtImplicit": 12.5e-5,
+        "nTimeStep": 2000,
         "steadyQuit": false,
-        "odeCode": 1,
-        "tEnd": 3e+200
+        "odeCode": 401,
+        "tEnd": 3e+200,
+        "odeSetting1": 0.55,
+        "odeSetting2": 0,
+        "odeSetting3": 1.3333,
+        // "useRHSfPP": true,
+        // "rhsfPPScale": 0.01
+        "_tail": 0
     },
     "outputControl": {
         "nConsoleCheck": 1,
         "nConsoleCheckInternal": 10,
         "consoleOutputMode": 0,
+        "consoleOutputEveryFix": 0,
         "nDataOutC": 100,
-        "nDataOut": 200,
+        "nDataOut": 640,
         "nDataOutCInternal": 200,
         "nDataOutInternal": 1000000000,
         "tDataOut": 3e+200
@@ -25,8 +32,8 @@
         "useLocalDt": true
     },
     "convergenceControl": {
-        "nTimeStepInternal": 20,
-        "rhsThresholdInternal": 1e-3,
+        "nTimeStepInternal": 40,
+        "rhsThresholdInternal": 1e-4,
         "res_base": 0.0,
         "useVolWiseResidual": true
     },
@@ -34,14 +41,18 @@
         "uniqueStamps": false,
         "meshRotZ": 0.0,
         "meshFile": "../data/mesh/UniformDM240.cgns",
-        "outPltName": "../data/outUnsteady/UniformDM240",
-        "outLogName": "../data/outUnsteady/UniformDM240",
+        "outPltName": "../data/outUnsteady/UniformDM240_T2_HM3_STT_HLLEPR1_MM",
+        "outLogName": "../data/outUnsteady/UniformDM240_T2_HM3_STT_HLLEPR1_MM",
         "outPltMode": 0,
         "readMeshMode": 0,
         "outPltTecplotFormat": true,
         "outPltVTKFormat": false,
         "outAtPointData": true,
-        "outAtCellData": true
+        "outAtCellData": true,
+        "outCellScalarNames": [
+            "betaPP"
+        ],
+        "_tail": 0
     },
     "implicitReconstructionControl": {
         "nInternalRecStep": 1,
@@ -49,25 +60,38 @@
         "recLinearScheme": 0,
         "nGmresSpace": 5,
         "nGmresIter": 10,
-        "recThreshold": 1e-05,
-        "nRecConsolCheck": 1
+        "recThreshold": 1e-15,
+        "nRecConsolCheck": 10,
+        "nRecMultiplyForZeroedGrad": 1,
+        "storeRecInc": false,
+        "dampRecIncDTau": false,
+        "zeroRecForSteps": 0,
+        "zeroRecForStepsInternal": 0
     },
     "limiterControl": {
         "useLimiter": true,
         "smoothIndicatorProcedure": 0,
-        "limiterProcedure": 1, //1 == CWBAP
+        "limiterProcedure": 0, //1 == CWBAP
         "nPartialLimiterStart": 1000000,
         "nPartialLimiterStartLocal": 1000000
     },
     "vfvSettings": {
         "maxOrder": 3,
-        "intOrder": 5,
-        "cacheDiffBase": false,
+        "intOrder": 3,
         "jacobiRelax": 1.0,
-        "SORInstead": true,
+        "SORInstead": false,
         "smoothThreshold": 1e-3,
         "WBAP_nStd": 10.0,
-        "normWBAP": false
+        "normWBAP": false,
+        "limiterBiwayAlter": 1,
+        "functionalSettings": {
+            "scaleType": "BaryDiff",
+            "scaleMultiplier": 1,
+            "dirWeightScheme": "HQM_OPT",
+            // "useAnisotropicFunctional": true,
+            // "scaleMultiplier": 3.464101615137754,
+            "_tail": 0
+        }
     },
     "linearSolverControl": {
         "gmresCode": 0,
@@ -81,6 +105,9 @@
         "ignoreSourceTerm": true,
         "useScalarJacobian": true,
         "riemannSolverType": "HLLEP",
+        "riemannSolverTypeAux": "Roe_M2",
+        "rsMeanValueEig": 0,
+        "rsRotateScheme": 1,
         "constMassForce": [
             0.0,
             0.0,

@@ -1,18 +1,18 @@
 {
     "timeMarchControl": {
         "dtImplicit": 1e-6,
-        "nTimeStep": 1000,
+        "nTimeStep": 100000,
         "steadyQuit": false,
         "useImplicitPP": true,
         "useRHSfPP": true,
         "rhsfPPScale": 1,
-        "odeCode": 1,
-        "tEnd": 3e+200,
+        "odeCode": 102,
+        "tEnd": 1e-3,
         "odeSetting1": 0.5,
         "odeSetting2": 1
     },
     "convergenceControl": {
-        "nTimeStepInternal": 100,
+        "nTimeStepInternal": 50,
         "rhsThresholdInternal": 1e-3,
         "res_base": 0.0,
         "useVolWiseResidual": true
@@ -22,11 +22,11 @@
         "nConsoleCheckInternal": 1,
         "consoleOutputMode": 0,
         "consoleOutputEveryFix": 1,
-        "nDataOutC": 1,
-        "nDataOut": 10,
+        "nDataOutC": 10,
+        "nDataOut": 50,
         "nDataOutCInternal": 100,
         "nDataOutInternal": 1000000000,
-        "tDataOut": 3e+200
+        "tDataOut": 1e-3
     },
     "implicitCFLControl": {
         "CFL": 0.01,
@@ -34,14 +34,15 @@
         "nCFLRampStart": 0,
         "nCFLRampLength": 20,
         "CFLRampEnd": 2.0,
-        "useLocalDt": true
+        "useLocalDt": true,
+        "nSmoothDTau": 0
     },
     "dataIOControl": {
         "uniqueStamps": false,
         "meshRotZ": 0.0,
-        "meshFile": "../data/mesh/Unifrom_Ma2000Jet400.cgns",
-        "outPltName": "../data/outUnsteady/Unifrom_Ma2000Jet400",
-        "outLogName": "../data/outUnsteady/Unifrom_Ma2000Jet400",
+        "meshFile": "../data/mesh/Unifrom_Ma2000Jet800.cgns",
+        "outPltName": "../data/outUnsteady/Unifrom_Ma2000Jet800_VBDF_T7O_RE1E3",
+        "outLogName": "../data/outUnsteady/Unifrom_Ma2000Jet800_VBDF_T7O_RE1E3",
         "outPltMode": 0,
         "readMeshMode": 0,
         "outPltTecplotFormat": true,
@@ -54,11 +55,11 @@
         "_tail": 0
     },
     "boundaryDefinition": {
-        "PeriodicTranslation2": [
-            0.0,
-            0.01,
-            0.0
-        ]
+        // "PeriodicTranslation2": [
+        //     0.0,
+        //     0.01,
+        //     0.0
+        // ]
     },
     "implicitReconstructionControl": {
         "nInternalRecStep": 1,
@@ -75,7 +76,7 @@
     "limiterControl": {
         "useLimiter": true,
         "smoothIndicatorProcedure": 0,
-        "limiterProcedure": 1, //1 == CWBAP
+        "limiterProcedure": 0, //1 == CWBAP
         "nPartialLimiterStart": 1000000,
         "nPartialLimiterStartLocal": 1000000,
         "preserveLimited": false,
@@ -106,7 +107,7 @@
     },
     "linearSolverControl": {
         "jacobiCode": 0,
-        "sgsIter": 0,
+        "sgsIter": 2,
         "sgsWithRec": 0,
         "nSgsConsoleCheck": 100,
         "gmresCode": 0,
@@ -121,7 +122,7 @@
         "ignoreSourceTerm": true,
         "useScalarJacobian": true,
         "riemannSolverType": "Roe_M2",
-        "rsMeanValueChar": 1,
+        // "rsMeanValueEig": 1,
         "nCentralSmoothStep": 0,
         "constMassForce": [
             0.0,
@@ -139,10 +140,11 @@
         "idealGasProperty": {
             "gamma": 1.666666666666667,
             "Rgas": 289,
-            "muGas": 1e-200,
+            "muGas": 1e-3,
             "prGas": 0.72,
             "TRef": 273.15,
-            "CSutherland": 110.4
+            "CSutherland": 110.4,
+            "muModel": 0
         }
     },
     "bcSettings": [

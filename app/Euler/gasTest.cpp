@@ -19,7 +19,7 @@ int main()
         std::cout << k << ": " << e1 << std::endl;
     }
 
-    real compress = Gas::IdealGasGetCompressionRatioPressure<3, 5>(
+    real compress = Gas::IdealGasGetCompressionRatioPressure<3, 0, 5>(
         V1,
         V2,
         1e-10);

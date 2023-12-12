@@ -179,5 +179,13 @@
         "Vecs"
     ],
     "C_Cpp.dimInactiveRegions": true,
+    "spellright.language": [
+        "en"
+    ],
+    "spellright.documentTypes": [
+        "markdown",
+        "latex",
+        "plaintext"
+    ],
     // "C_Cpp.intelliSenseEngine": "Tag Parser"
 }
