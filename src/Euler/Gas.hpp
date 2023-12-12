@@ -204,8 +204,8 @@ namespace DNDS::Euler::Gas
         return LeV;
     }
 
-// #define DNDS_GAS_HLLEP_USE_V1
-    template <int dim = 3, int type=0, typename TUL, typename TUR, typename TULm, typename TURm, typename TF, typename TFdumpInfo>
+    // #define DNDS_GAS_HLLEP_USE_V1
+    template <int dim = 3, int type = 0, typename TUL, typename TUR, typename TULm, typename TURm, typename TF, typename TFdumpInfo>
     void HLLEPFlux_IdealGas(const TUL &UL, const TUR &UR, const TULm &ULm, const TURm &URm, real gamma, TF &F, real dLambda,
                             const TFdumpInfo &dumpInfo)
     {
@@ -311,7 +311,7 @@ namespace DNDS::Euler::Gas
         real SP = std::max(SR, 0.0);
         real SM = std::min(SL, 0.0);
 
-if constexpr (type != 1)
+        if constexpr (type != 1)
         {
             real div = SP - SM;
             div += signP(div) * verySmallReal;
@@ -321,8 +321,8 @@ if constexpr (type != 1)
                 (SP * FL - SM * FR) / div +
                 (SP * SM / div) *
                     (UR(Eigen::seq(Eigen::fix<0>, Eigen::fix<dim + 1>)) -
-                    UL(Eigen::seq(Eigen::fix<0>, Eigen::fix<dim + 1>)) -
-                    dfix * ReVRoe(Eigen::all, {1}) * alpha({1}));
+                     UL(Eigen::seq(Eigen::fix<0>, Eigen::fix<dim + 1>)) -
+                     dfix * ReVRoe(Eigen::all, {1}) * alpha({1}));
         }
         else
         {
@@ -771,7 +771,7 @@ if constexpr (type != 1)
      * TODO: vectorize
      * newrhoEinteralNew is the desired fixed-to-positive e = p / (gamma -1)
      */
-    template <int dim = 3, int scheme=0, int nVars_Fixed, typename TU, typename TUInc>
+    template <int dim = 3, int scheme = 0, int nVars_Fixed, typename TU, typename TUInc>
     real IdealGasGetCompressionRatioPressure(const TU &u, const TUInc &uInc, real newrhoEinteralNew)
     {
         static const auto Seq01234 = Eigen::seq(Eigen::fix<0>, Eigen::fix<dim + 1>);
@@ -785,15 +785,15 @@ if constexpr (type != 1)
         newrhoEinteralNew = std::max(smallReal * rhoEOld, newrhoEinteralNew);
         real rhoENew = uNew(I4) - uNew(Seq123).squaredNorm() / (uNew(0) + verySmallReal) * 0.5;
         real alphaEst1 = (rhoEOld - newrhoEinteralNew) / std::max(-rhoENew + rhoEOld, verySmallReal);
-        if(rhoENew > rhoEOld)
+        if (rhoENew > rhoEOld)
             alphaEst1 = 1;
         alphaEst1 = std::min(alphaEst1, 1.);
         alphaEst1 = std::max(alphaEst1, 0.);
-        real alpha = alphaEst1;//!using convex estimation
+        real alpha = alphaEst1; //! using convex estimation
 
         real alphaL, alphaR, c0, c1, c2;
         alphaL = alphaR = c0 = c1 = c2 = 0;
-        if constexpr(scheme == 0)
+        if constexpr (scheme == 0)
         {
             c0 = 2 * u(I4) * u(0) - u(Seq123).squaredNorm() - 2 * u(0) * newrhoEinteralNew;
             c1 = 2 * u(I4) * ret(0) + 2 * u(0) * ret(I4) - 2 * u(Seq123).dot(ret(Seq123)) - 2 * ret(0) * newrhoEinteralNew;
@@ -819,7 +819,7 @@ if constexpr (type != 1)
             // DNDS_assert(alphaL < 1);
             // if (c2 < 0)
             //     DNDS_assert(alphaR < 1);
-            
+
             if (std::abs(c2) < 1e-10 * c0)
             {
                 if (std::abs(c1) < 1e-10 * c0)
