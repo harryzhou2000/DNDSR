@@ -1,7 +1,7 @@
 {
     "timeMarchControl": {
-        "dtImplicit": 12.5e-5,
-        "nTimeStep": 2000,
+        "dtImplicit": 4e-4,
+        "nTimeStep": 625,
         "steadyQuit": false,
         "odeCode": 401,
         "tEnd": 3e+200,
@@ -18,7 +18,7 @@
         "consoleOutputMode": 0,
         "consoleOutputEveryFix": 0,
         "nDataOutC": 100,
-        "nDataOut": 640,
+        "nDataOut": 500,
         "nDataOutCInternal": 200,
         "nDataOutInternal": 1000000000,
         "tDataOut": 3e+200
@@ -41,8 +41,8 @@
         "uniqueStamps": false,
         "meshRotZ": 0.0,
         "meshFile": "../data/mesh/UniformDM240.cgns",
-        "outPltName": "../data/outUnsteady/UniformDM240_T2_HM3_STT_HLLEPR1_MM",
-        "outLogName": "../data/outUnsteady/UniformDM240_T2_HM3_STT_HLLEPR1_MM",
+        "outPltName": "../data/outUnsteady/UniformDM240_T4_TS3_HM3_STT_RM2_Nocut",
+        "outLogName": "../data/outUnsteady/UniformDM240_T4_TS3_HM3_STT_RM2_Nocut",
         "outPltMode": 0,
         "readMeshMode": 0,
         "outPltTecplotFormat": true,
@@ -70,7 +70,7 @@
     },
     "limiterControl": {
         "useLimiter": true,
-        "smoothIndicatorProcedure": 0,
+        "smoothIndicatorProcedure": 1, //0 = normal, 1 = p only
         "limiterProcedure": 0, //1 == CWBAP
         "nPartialLimiterStart": 1000000,
         "nPartialLimiterStartLocal": 1000000
@@ -80,10 +80,10 @@
         "intOrder": 3,
         "jacobiRelax": 1.0,
         "SORInstead": false,
-        "smoothThreshold": 1e-3,
+        "smoothThreshold": 1e-2,
         "WBAP_nStd": 10.0,
         "normWBAP": false,
-        "limiterBiwayAlter": 1,
+        "limiterBiwayAlter": 0, // 1=MM, 2=PN, 3=MEMM, 4=WBAP_L2_cut
         "functionalSettings": {
             "scaleType": "BaryDiff",
             "scaleMultiplier": 1,
@@ -104,10 +104,10 @@
     "eulerSettings": {
         "ignoreSourceTerm": true,
         "useScalarJacobian": true,
-        "riemannSolverType": "HLLEP",
+        "riemannSolverType": "Roe_M2",
         "riemannSolverTypeAux": "Roe_M2",
         "rsMeanValueEig": 0,
-        "rsRotateScheme": 1,
+        "rsRotateScheme": 0,
         "constMassForce": [
             0.0,
             0.0,
