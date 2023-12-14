@@ -16,7 +16,7 @@ namespace DNDS::Euler
 
         ArrayDOFV<nVars_Fixed> &uOut = mode == PrintDataTimeAverage ? uAveraged : u;
 
-        if (config.dataIOControl.outVolumeData)
+        if (config.dataIOControl.outVolumeData || mode == PrintDataTimeAverage)
         {
             if (config.dataIOControl.outAtCellData || mode == PrintDataTimeAverage)
                 for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
@@ -178,8 +178,10 @@ namespace DNDS::Euler
             {
                 names.push_back(std::get<0>(out));
             }
-            DNDS_assert(names.size() == NOUTS_C);
-            DNDS_assert(namesPoint.size() == NOUTSPoint_C);
+            if (config.dataIOControl.outAtCellData)
+                DNDS_assert(names.size() == NOUTS_C);
+            if (config.dataIOControl.outAtPointData)
+                DNDS_assert(namesPoint.size() == NOUTSPoint_C);
 
             if (config.dataIOControl.outPltTecplotFormat)
             {
@@ -322,6 +324,7 @@ namespace DNDS::Euler
 
         if (config.dataIOControl.outBndData)
         {
+            DNDS_MPI_InsertCheck(mpi, "EulerSolver<model>::PrintData === bnd enter");
             for (index iBnd = 0; iBnd < mesh->NumBnd(); iBnd++)
             {
                 // TU recu =
@@ -330,7 +333,13 @@ namespace DNDS::Euler
                 // recu += uOut[iCell];
                 // recu = EulerEvaluator::CompressRecPart(uOut[iCell], recu);
                 index iCell = mesh->bnd2cell[iBnd][0];
-                index iFace = mesh->bnd2face[iBnd];
+                index iFace = mesh->bnd2face.at(iBnd);
+                if(iFace == -1)
+                {
+                    DNDS_assert(mesh->isPeriodic); //only internal bnd is valid, periodic bnd should be omitted
+                    (*outDistBnd)[iBnd](nOUTSBnd - 4) = meshBnd->GetCellZone(iBnd); // add this to enable blanking
+                    continue;
+                }
 
                 TU recu = uOut[iCell];
                 TVec velo = (recu(Seq123).array() / recu(0)).matrix();
@@ -351,9 +360,15 @@ namespace DNDS::Euler
                 {
                     (*outDistBnd)[iBnd][2 + i] = recu(i) / recu(0); // 4 is additional amount offset, not Index of last flow variable (I4)
                 }
+                // if(iFace < 0)
+                // {
+                //     std::cout << iFace << std::endl;
+                //     std::abort();
+                // }
 
                 (*outDistBnd)[iBnd](Eigen::seq(nVars + 2, nOUTSBnd - 5)) = eval.fluxBnd.at(iBnd);
-                (*outDistBnd)[iBnd](nOUTSBnd - 4) = mesh->GetFaceZone(iFace);
+                // (*outDistBnd)[iBnd](nOUTSBnd - 4) = mesh->GetFaceZone(iFace);
+                (*outDistBnd)[iBnd](nOUTSBnd - 4) = meshBnd->GetCellZone(iBnd);
                 (*outDistBnd)[iBnd](Eigen::seq(nOUTSBnd - 3, nOUTSBnd - 1)) = vfv->GetFaceNorm(iFace, 0) * vfv->GetFaceArea(iFace);
 
                 // (*outDist)[iCell][8] = (*vfv->SOR_iCell2iScan)[iCell];//!using SOR rb seq instead
@@ -361,6 +376,7 @@ namespace DNDS::Euler
 
             int NOUTS_C{0}, NOUTSPoint_C{0};
             NOUTS_C = nOUTSBnd;
+            DNDS_MPI_InsertCheck(mpi, "EulerSolver<model>::PrintData === bnd transfer done");
 
             if (config.dataIOControl.outPltMode == 0)
             {
@@ -390,6 +406,7 @@ namespace DNDS::Euler
 
             if (config.dataIOControl.outPltTecplotFormat)
             {
+                DNDS_MPI_InsertCheck(mpi, "EulerSolver<model>::PrintData === bnd tecplot start");
                 if (config.dataIOControl.outPltMode == 0)
                 {
                     readerBnd->PrintSerialPartPltBinaryDataArray(
@@ -432,6 +449,7 @@ namespace DNDS::Euler
             const int cDim = dim;
             if (config.dataIOControl.outPltVTKFormat)
             {
+                DNDS_MPI_InsertCheck(mpi, "EulerSolver<model>::PrintData === bnd vtk start");
                 if (config.dataIOControl.outPltMode == 0)
                 {
                     readerBnd->PrintSerialPartVTKDataArray(
@@ -525,6 +543,7 @@ namespace DNDS::Euler
                         1);
                 }
             }
+            DNDS_MPI_InsertCheck(mpi, "EulerSolver<model>::PrintData === bnd output done");
         }
     }
 }

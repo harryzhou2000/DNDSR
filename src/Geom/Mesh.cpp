@@ -1274,9 +1274,15 @@ namespace DNDS::Geom
         DNDS_MAKE_SSP(bMesh.cell2node.son, mpi);
         DNDS_MAKE_SSP(bMesh.coords.father, mpi);
         DNDS_MAKE_SSP(bMesh.coords.son, mpi);
+        // if (isPeriodic)
+        // {
+        //     bMesh.isPeriodic = true;
+        //     DNDS_MAKE_SSP(bMesh.cell2nodePbi.father, mpi);
+        //     DNDS_MAKE_SSP(bMesh.cell2nodePbi.son, mpi);
+        // }
 
         bMesh.cellElemInfo.father = bndElemInfo.father;
-        bMesh.cellElemInfo.son = bndElemInfo.son;
+        bMesh.cellElemInfo.son = bndElemInfo.son; //! TODO: make this a safe copy!!
 
         node2bndNode.resize(this->NumNodeProc(), -1);
         index bndNodeCount{0};
@@ -1291,12 +1297,14 @@ namespace DNDS::Geom
         bMesh.coords.father->Resize(bndNodeCount);
         // std::cout << bndNodeCount << std::endl;
         for (index iBNode = 0; iBNode < bndNodeCount; iBNode++)
+        {
             bMesh.coords[iBNode] = coords[bMesh.node2parentNode[iBNode]];
+        }
         bMesh.cell2node.father->Resize(this->NumBnd());
         for (index iB = 0; iB < this->NumBnd(); iB++)
         {
-            bMesh.cell2node.ResizeRow(iB, bnd2node.father->RowSize(iB));
-            for (rowsize ib2n = 0; ib2n < bnd2node.father->RowSize(iB); ib2n++)
+            bMesh.cell2node.ResizeRow(iB, bnd2node.RowSize(iB));
+            for (rowsize ib2n = 0; ib2n < bnd2node.RowSize(iB); ib2n++)
                 bMesh.cell2node[iB][ib2n] = node2bndNode.at(bnd2node[iB][ib2n]),
                 DNDS_assert(node2bndNode.at(bnd2node[iB][ib2n]) >= 0);
         }
