@@ -6,6 +6,8 @@
 #include <iostream>
 #include <typeinfo>
 
+#include <fmt/core.h>
+
 #include "Defines.hpp"
 #include "SerializerBase.hpp"
 
@@ -423,8 +425,14 @@ namespace DNDS
 
         const T &at(index iRow, rowsize iCol) const
         {
-            DNDS_assert_info(iRow < _size && iRow >= 0, "query position i out of range");
-            DNDS_assert_info(iCol < RowSize(iRow) && iCol >= 0, "query position i out of range");
+            DNDS_assert_info(iRow < _size && iRow >= 0,
+                             fmt::format(
+                                 "query position i[{}] out of range [0, {}), sig--{}",
+                                 iRow, _size, GetArraySignature()));
+            DNDS_assert_info(iCol < RowSize(iRow) && iCol >= 0,
+                             fmt::format(
+                                 "query position j[{}] out of range [0, {}), sig--{}",
+                                 iCol, RowSize(iRow), GetArraySignature()));
             if constexpr (_dataLayout == TABLE_StaticFixed)
                 return _data.at(iRow * rs + iCol);
             else if constexpr (_dataLayout == TABLE_StaticMax)
