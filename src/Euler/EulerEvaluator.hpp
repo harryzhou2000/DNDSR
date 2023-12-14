@@ -40,7 +40,7 @@ namespace DNDS::Euler
     static const auto Seq012 = Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>);   \
     static const auto Seq123 = Eigen::seq(Eigen::fix<1>, Eigen::fix<dim>);       \
     static const auto Seq01234 = Eigen::seq(Eigen::fix<0>, Eigen::fix<dim + 1>); \
-    static const auto I4 = dim + 1; 
+    static const auto I4 = dim + 1;
 
         typedef Eigen::Vector<real, dim> TVec;
         typedef Eigen::Matrix<real, dim, dim> TMat;
@@ -102,7 +102,7 @@ namespace DNDS::Euler
                 real CpGas = Rgas * gamma / (gamma - 1);
                 real TRef = 273.15;
                 real CSutherland = 110.4;
-                int muModel = 1; //0=constant, 1=sutherland, 2=constant_nu
+                int muModel = 1; // 0=constant, 1=sutherland, 2=constant_nu
 
                 void ReadWriteJSON(nlohmann::ordered_json &jsonObj, bool read)
                 {
@@ -168,6 +168,7 @@ namespace DNDS::Euler
             int specialBuiltinInitializer = 0;
 
             real uRecBetaCompressPower = 11;
+            real uRecAlphaCompressPower = 2;
 
             Eigen::Vector<real, 3> constMassForce = Eigen::Vector<real, 3>{0, 0, 0};
 
@@ -199,6 +200,7 @@ namespace DNDS::Euler
                 __DNDS__json_to_config(useScalarJacobian);
                 __DNDS__json_to_config(ignoreSourceTerm);
                 __DNDS__json_to_config(specialBuiltinInitializer);
+                __DNDS__json_to_config(uRecAlphaCompressPower);
                 __DNDS__json_to_config(uRecBetaCompressPower);
                 Gas::RiemannSolverType riemannSolverType = rsType;
                 __DNDS__json_to_config(riemannSolverType);
@@ -417,6 +419,9 @@ namespace DNDS::Euler
             ArrayRECV<nVars_Fixed> &uRec,
             ArrayDOFV<1> &uRecBeta, index &nLim, real &betaMin);
 
+        bool AssertMeanValuePP(
+            ArrayDOFV<nVars_Fixed> &u, bool panic);
+
         /**
          * @param res is incremental residual
          */
@@ -446,27 +451,27 @@ namespace DNDS::Euler
 
         real muEff(const TU &U, real T) // TODO: more than sutherland law
         {
-            
-            switch(settings.idealGasProperty.muModel)
+
+            switch (settings.idealGasProperty.muModel)
             {
-                case 0:
-                    return settings.idealGasProperty.muGas;
-                case 1:
-                {
-                    real TRel = T / settings.idealGasProperty.TRef;
-                    return settings.idealGasProperty.muGas *
-                        TRel * std::sqrt(TRel) *
-                        (settings.idealGasProperty.TRef + settings.idealGasProperty.CSutherland) /
-                        (T + settings.idealGasProperty.CSutherland);
-                }
-                break;
-                case 2:
-                {
-                    return settings.idealGasProperty.muGas * U(0);
-                }   
-                break;
-                default:
-                    DNDS_assert_info(false, "No such muModel");
+            case 0:
+                return settings.idealGasProperty.muGas;
+            case 1:
+            {
+                real TRel = T / settings.idealGasProperty.TRef;
+                return settings.idealGasProperty.muGas *
+                       TRel * std::sqrt(TRel) *
+                       (settings.idealGasProperty.TRef + settings.idealGasProperty.CSutherland) /
+                       (T + settings.idealGasProperty.CSutherland);
+            }
+            break;
+            case 2:
+            {
+                return settings.idealGasProperty.muGas * U(0);
+            }
+            break;
+            default:
+                DNDS_assert_info(false, "No such muModel");
             }
             return std::nan("0");
         }

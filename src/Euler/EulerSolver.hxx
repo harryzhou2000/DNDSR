@@ -1,4 +1,6 @@
 #include "EulerSolver.hpp"
+#include "DNDS/EigenUtil.hpp"
+#include "Solver/ODE.hpp"
 
 namespace DNDS::Euler
 {
@@ -215,6 +217,8 @@ namespace DNDS::Euler
         real minBeta = 1;
         index nLimInc = 0;
         real alphaMinInc = 1;
+
+        int dtIncreaseCounter = 0;
 
         DNDS_MPI_InsertCheck(mpi, "Implicit 2 nvars " + std::to_string(nVars));
         /*******************************************************/
@@ -1035,8 +1039,10 @@ namespace DNDS::Euler
 
             uTemp = cxInc;
             uTemp *= alphaPP_tmp;
-            // cx += uTemp;
-            eval.AddFixedIncrement(cx, uTemp, alpha);
+            cx += uTemp;
+            // eval.AddFixedIncrement(cx, uTemp, alpha);
+            eval.AssertMeanValuePP(cx, true);
+
             // eval.AddFixedIncrement(cx, cxInc, alpha);
         };
 
@@ -1378,6 +1384,7 @@ namespace DNDS::Euler
         {
             DNDS_MPI_InsertCheck(mpi, "Implicit Step");
             ifOutT = false;
+            real curDtImplicitOld = curDtImplicit;
             curDtImplicit = config.timeMarchControl.dtImplicit; //* could add CFL driven dt here
             if (tSimu + curDtImplicit > nextTout)
             {
@@ -1412,13 +1419,24 @@ namespace DNDS::Euler
                         {
                             eval.EvaluateCellRHSAlpha(u, uRec, betaPP, uInc, alphaPP_tmp, nLimAlpha, minAlpha, 0);
                             return minAlpha; },
-                        curDtImplicit); // curDtImplicit modified
-                    if (mpi.rank == 0 && minAlpha < 1)
+                        curDtImplicit, 2); // curDtImplicit modified
+                    if (curDtImplicit > curDtImplicitOld)
+                    {
+                        dtIncreaseCounter++;
+                        if (dtIncreaseCounter > config.timeMarchControl.dtIncreaseAfterCount)
+                            curDtImplicit = std::min(curDtImplicitOld * config.timeMarchControl.dtIncreaseLimit, curDtImplicit);
+                        else
+                            curDtImplicit = curDtImplicitOld;
+                    }
+                    else
+                    {
+                        dtIncreaseCounter = 0;
+                    }
+
+                    if (mpi.rank == 0)
                     {
                         log() << "##################################################################" << std::endl;
-                        log() << std::endl;
-                        log() << fmt::format("Changing dt to {}", curDtImplicit) << std::endl;
-                        log() << std::endl;
+                        log() << fmt::format("At Step [{:d}] t [{:.8g}] Changing dt to {}", step, tSimu, curDtImplicit) << std::endl;
                         log() << "##################################################################" << std::endl;
                     }
                     odeVBDF->StepPP(

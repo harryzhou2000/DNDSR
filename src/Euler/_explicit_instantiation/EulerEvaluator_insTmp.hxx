@@ -71,6 +71,9 @@
             ArrayRECV<nVars_Fixed> &uRec,                                                       \
             ArrayDOFV<1> &uRecBeta, index &nLim, real &betaMin);                                \
                                                                                                 \
+        template bool EulerEvaluator<model>::AssertMeanValuePP(                                 \
+            ArrayDOFV<nVars_Fixed> &u, bool panic);                                            \
+                                                                                                \
         template void EulerEvaluator<model>::EvaluateCellRHSAlpha(                              \
             ArrayDOFV<nVars_Fixed> &u,                                                          \
             ArrayRECV<nVars_Fixed> &uRec,                                                       \

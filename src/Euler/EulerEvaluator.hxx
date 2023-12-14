@@ -670,6 +670,50 @@ namespace DNDS::Euler
     }
 
     template <EulerModel model>
+    bool EulerEvaluator<model>::AssertMeanValuePP(
+        ArrayDOFV<nVars_Fixed> &u, bool panic)
+    {
+        DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
+        real rhoEps = smallReal * settings.refUPrim(0);
+        real pEps = smallReal * settings.refUPrim(I4);
+
+        for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
+        {
+            real gamma = settings.idealGasProperty.gamma;
+            real alphaRho = 1;
+            if (u[iCell](0) < rhoEps)
+            {
+                if (panic)
+                    DNDS_assert_info(
+                        false,
+                        fmt::format(
+                            "AssertMeanValuePP Failed on cell {} rho\n",
+                            iCell) +
+                            fmt::format(
+                                " eps={}, value={}",
+                                rhoEps, u[iCell](0)));
+                return false;
+            }
+            real rhoEi = u[iCell](I4) - 0.5 * u[iCell](Seq123).squaredNorm() / u[iCell](0);
+            if (rhoEi < pEps / (gamma - 1))
+            {
+                if (panic)
+                    DNDS_assert_info(
+                        false,
+                        fmt::format(
+                            "AssertMeanValuePP Failed on cell {} rhoEi\n",
+                            iCell) +
+                            fmt::format(
+                                " eps={}, value={}",
+                                pEps / (gamma - 1), rhoEi));
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    template <EulerModel model>
     void EulerEvaluator<model>::EvaluateCellRHSAlpha(
         ArrayDOFV<nVars_Fixed> &u,
         ArrayRECV<nVars_Fixed> &uRec,
@@ -738,9 +782,12 @@ namespace DNDS::Euler
             cellRHSAlpha[iCell](0) = alphaRho * alphaP;
             // cellRHSAlpha[iCell](0) = std::min(alphaRho, alphaP);
             if (cellRHSAlpha[iCell](0) < 1)
+            {
+                cellRHSAlpha[iCell](0) = std::pow(cellRHSAlpha[iCell](0), static_cast<int>(std::round(settings.uRecAlphaCompressPower)));
                 nLimLocal++,
                     cellRHSAlpha[iCell] *= (0.9),
-                    alphaMinLocal = std::min(alphaMinLocal, cellRHSAlpha[iCell](0)); //! for safety
+                    alphaMinLocal = std::min(alphaMinLocal, cellRHSAlpha[iCell](0));
+            } //! for safety
         }
         MPI::Allreduce(&nLimLocal, &nLim, 1, DNDS_MPI_INDEX, MPI_SUM, u.father->getMPI().comm);
         MPI::Allreduce(&alphaMinLocal, &alphaMin, 1, DNDS_MPI_REAL, MPI_MIN, u.father->getMPI().comm);

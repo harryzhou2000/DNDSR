@@ -2,7 +2,7 @@
 #include "Gas.hpp"
 #include "Geom/Mesh.hpp"
 #include "CFV/VariationalReconstruction.hpp"
-#include "Solver/ODE.hpp"
+
 #include "Solver/Linear.hpp"
 #include "EulerEvaluator.hpp"
 #include "DNDS/JsonUtil.hpp"
@@ -101,13 +101,16 @@ namespace DNDS::Euler
                 real odeSetting2 = 0;
                 real odeSetting3 = 0;
                 bool partitonMeshOnly = false;
+                real dtIncreaseLimit = 2;
+                int dtIncreaseAfterCount = 0;
                 DNDS_NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_ORDERED_JSON(
                     TimeMarchControl,
                     dtImplicit, nTimeStep,
                     steadyQuit, useRestart,
                     useImplicitPP, useRHSfPP, rhsfPPScale,
                     odeCode, tEnd, odeSetting1, odeSetting2, odeSetting3,
-                    partitonMeshOnly)
+                    partitonMeshOnly,
+                    dtIncreaseLimit, dtIncreaseAfterCount)
             } timeMarchControl;
 
             struct ImplicitReconstructionControl

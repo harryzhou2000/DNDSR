@@ -651,7 +651,7 @@ namespace DNDS::ODE
             TDATA &  // to be limited incu
             )>;
 
-        void LimitDt_StepPPV2(TDATA &xIn, const FlimitDtBDF &flimitDtBDF, real &dtOut)
+        void LimitDt_StepPPV2(TDATA &xIn, const FlimitDtBDF &flimitDtBDF, real &dtOut, real maxIncrease = 2)
         {
             VBDFFrontMatters(dtOut); // using a wished dt
             switch (kCurrent)
@@ -679,11 +679,10 @@ namespace DNDS::ODE
                 };
                 real targetB = limitingV * -BDFCoefs(2);
                 real dtNew = dtm1;
-                real maxIncrease = 1.2;
                 if (targetB >= fB(dtm1 * maxIncrease))
                     dtNew = dtm1 * maxIncrease; // max increase value
                 else
-                    dtNew = Scalar::BisectSolveLower(fB, 0., dtm1 * maxIncrease, targetB * 0.5, 20);
+                    dtNew = Scalar::BisectSolveLower(fB, 0., dtm1 * maxIncrease, targetB * 0.99, 20);
 
                 dtOut = std::min(dtNew, dtOut);
             }
