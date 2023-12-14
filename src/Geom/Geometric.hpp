@@ -9,6 +9,7 @@ namespace DNDS::Geom
     using tPoint = Eigen::Vector3d;
     using tJacobi = Eigen::Matrix3d;
     using tGPoint = Eigen::Matrix3d;
+    using tSmallCoords = Eigen::Matrix<real, 3, Eigen::Dynamic>;
 
     static_assert(std::is_signed_v<t_index>);
 

@@ -4,6 +4,7 @@
 #include <cstdint>
 #include "Eigen/Core"
 #include <array>
+#include "DNDS/HardEigen.hpp"
 
 #include "DNDS/Defines.hpp"
 #include "Geometric.hpp"
@@ -1063,6 +1064,23 @@ namespace DNDS::Geom::Elem
     tPoint PPhysicsCoordD01Nj(const tCoordsIn &cs, Eigen::Ref<const tD01Nj> DiNj)
     {
         return cs * DiNj(0, Eigen::all).transpose();
+    }
+
+    // TODO: add a integration-based counterpart
+    inline tPoint GetElemNodeMajorSpan(const tSmallCoords &coords)
+    {
+        tPoint c = coords.rowwise().mean();
+        tSmallCoords coordsC = coords.colwise() - c;
+        tPoint ve0 = coordsC(Eigen::all, 1) - coordsC(Eigen::all, 0);
+        tJacobi inertia = coordsC * coordsC.transpose();
+        real cond01 = HardEigen::Eigen3x3RealSymEigenDecompositionGetCond01(inertia);
+        if (cond01 < 1 + 1e-6)
+            inertia += ve0 * ve0.transpose() * 1e-4;
+        auto decRet = HardEigen::Eigen3x3RealSymEigenDecompositionNormalized(inertia);
+        coordsC = decRet.transpose() * coordsC;
+        tPoint ret = coordsC.rowwise().maxCoeff() - coordsC.rowwise().minCoeff();
+        std::sort(ret.begin(), ret.end(), std::greater_equal<real>());
+        return ret;
     }
 
     template <class TIn>

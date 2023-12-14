@@ -54,7 +54,7 @@ namespace DNDS::Geom
     using tIndPair = DNDS::ArrayPair<DNDS::ArrayIndex>;
     using tInd = decltype(tIndPair::father);
 
-    using tSmallCoords = Eigen::Matrix<real, 3, Eigen::Dynamic>;
+
 
     enum MeshAdjState
     {

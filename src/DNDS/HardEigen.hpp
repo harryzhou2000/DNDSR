@@ -15,6 +15,7 @@ namespace DNDS::HardEigen
     Eigen::Matrix2d Eigen2x2RealSymEigenDecomposition(const Eigen::Matrix2d &A);
 
     real Eigen3x3RealSymEigenDecompositionGetCond(const Eigen::Matrix3d &A);
+    real Eigen3x3RealSymEigenDecompositionGetCond01(const Eigen::Matrix3d &A);
     real Eigen2x2RealSymEigenDecompositionGetCond(const Eigen::Matrix2d &A);
     
     Eigen::Matrix3d Eigen3x3RealSymEigenDecompositionNormalized(const Eigen::Matrix3d &A);

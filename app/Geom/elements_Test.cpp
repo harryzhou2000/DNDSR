@@ -127,6 +127,16 @@ void test_Faces()
                       << ": " << NormVec.transpose().normalized() << std::endl;
         }
     }
+    tSmallCoords coordsWrite(3, 4);
+    coordsWrite << 0, 0, 1, 1,
+        0, 1, 1, 0,
+        0, 0, 0, 0;
+    tJacobi rotz{{0.707106781186548, -0.707106781186548, 0}, {0.707106781186548, 0.707106781186548, 0}, {0, 0, 1}};
+    std::cout << DNDS::Geom::Elem::GetElemNodeMajorSpan(coordsWrite).transpose() << std::endl;
+    std::cout << DNDS::Geom::Elem::GetElemNodeMajorSpan(rotz * coordsWrite).transpose() << std::endl;
+    coordsWrite(0, Eigen::all) *= 2;
+    std::cout << DNDS::Geom::Elem::GetElemNodeMajorSpan(coordsWrite).transpose() << std::endl;
+    std::cout << DNDS::Geom::Elem::GetElemNodeMajorSpan(rotz * coordsWrite).transpose() << std::endl;
 }
 
 int main(int argc, char *argv[])
