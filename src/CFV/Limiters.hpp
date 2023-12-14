@@ -461,6 +461,26 @@ namespace DNDS::CFV
         // PerformanceTimer::Instance().StopTimer(PerformanceTimer::LimiterA);
     }
 
+    template <typename Tin1, typename Tin2, typename Tout>
+    inline void FWBAP_L2_Cut_Biway(const Tin1 &u1, const Tin2 &u2, Tout &uOut, real n)
+    {
+        // PerformanceTimer::Instance().StartTimer(PerformanceTimer::LimiterA);
+        static const int p = 4;
+        static const real verySmallReal_pDiP = std::pow(verySmallReal, 1.0 / p);
+
+        Tout frac = (u1 / (u2.abs() + verySmallReal_pDiP) * u2.sign());
+
+        
+
+        auto theta1 = frac.cube();
+        auto theta2 = frac.square() * frac.square();
+
+        uOut = u1 * (n + theta1) / (n + theta2); // currently fast version
+        uOut *= u2.sign().abs() * (0.5 * (u1.sign() + u2.sign()).abs());
+        ///////////
+        
+    }
+
     /**
      * @brief input eigen arrays
      */
@@ -468,6 +488,15 @@ namespace DNDS::CFV
     inline void FMINMOD_Biway(const Tin1 &u1, const Tin2 &u2, Tout &uOut, real n)
     {
         uOut = u1.abs().min(u2.abs()) * (u1.sign() + u2.sign()) * 0.5;
+    }
+
+    /**
+     * @brief input eigen arrays
+     */
+    template <typename Tin1, typename Tin2, typename Tout>
+    inline void FVanLeer_Biway(const Tin1 &u1, const Tin2 &u2, Tout &uOut, real n)
+    {
+        uOut = (u1.sign() + u2.sign()) * (u1 * u2).abs() / ((u1 + u2).abs() + verySmallReal);
     }
 
     template <int dim, int nVarsFixed, typename Tin1, typename Tin2, typename Tout>

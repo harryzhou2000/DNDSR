@@ -1252,6 +1252,9 @@ namespace DNDS::CFV
                             case 3:
                                 FMEMM_Biway_PolynomialNorm<dim, nVars_Fixed>(uThisIn.array(), uOtherIn.array(), uLimOutArray, 1);
                                 break;
+                            case 4:
+                                FWBAP_L2_Cut_Biway(uThisIn.array(), uOtherIn.array(), uLimOutArray, 1);
+                                break;
                             default:
                                 DNDS_assert_info(false, "no such limiterBiwayAlter code!");
                             }
@@ -1459,6 +1462,9 @@ namespace DNDS::CFV
                                 break;
                             case 3:
                                 FMEMM_Biway_PolynomialNorm<dim, nVars_Fixed>(uThisIn.array(), uOtherIn.array(), uLimOutArray, 1);
+                                break;
+                            case 4:
+                                FWBAP_L2_Cut_Biway(uThisIn.array(), uOtherIn.array(), uLimOutArray, 1);
                                 break;
                             default:
                                 DNDS_assert_info(false, "no such limiterBiwayAlter code!");
