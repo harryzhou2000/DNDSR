@@ -213,8 +213,8 @@ namespace DNDS::Euler
                 real meshScale = 1.0;
                 std::string meshFile = "data/mesh/NACA0012_WIDE_H3.cgns";
                 std::string outPltName = "data/out/debugData_";
-                std::string outLogName = "data/out/debugData_";
-                std::string outRestartName = "data/out/debugData_";
+                std::string outLogName = "";
+                std::string outRestartName = "";
 
                 int outPltMode = 0;   // 0 = serial, 1 = dist plt
                 int readMeshMode = 0; // 0 = serial cgns, 1 = dist json
@@ -229,6 +229,16 @@ namespace DNDS::Euler
                 std::vector<std::string> outCellScalarNames{};
 
                 bool serializerSaveURec = false;
+
+                const std::string& getOutLogName()
+                {
+                    return outLogName.empty() ? outPltName : outLogName;
+                }
+
+                const std::string &getOutRestartName()
+                {
+                    return outRestartName.empty() ? outPltName : outRestartName;
+                }
 
                 DNDS_NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_ORDERED_JSON(
                     DataIOControl,
@@ -736,7 +746,7 @@ namespace DNDS::Euler
             config.ReadWriteJson(gSetting, nVars, false);
             if (mpi.rank == 0)
             {
-                std::ofstream logConfig(config.dataIOControl.outLogName + "_" + output_stamp + ".config.json");
+                std::ofstream logConfig(config.dataIOControl.getOutLogName() + "_" + output_stamp + ".config.json");
                 gSetting["___Compile_Time_Defines"] = DNDS_Defines_state;
                 gSetting["___Runtime_PartitionNumber"] = mpi.size;
                 gSetting["___Commit_ID"] = DNDS_MACRO_TO_STRING(DNDS_CURRENT_COMMIT_HASH);

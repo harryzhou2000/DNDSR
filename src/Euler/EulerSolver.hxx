@@ -30,7 +30,7 @@ namespace DNDS::Euler
         }
 
         /************* Files **************/
-        std::ofstream logErr(config.dataIOControl.outLogName + "_" + output_stamp + ".log");
+        std::ofstream logErr(config.dataIOControl.getOutLogName() + "_" + output_stamp + ".log");
         /************* Files **************/
 
         std::shared_ptr<ODE::ImplicitDualTimeStep<ArrayDOFV<nVars_Fixed>, ArrayDOFV<1>>> ode;
@@ -1139,13 +1139,13 @@ namespace DNDS::Euler
             {
                 config.restartState.iStep = step;
                 config.restartState.iStepInternal = iter;
-                PrintRestart(config.dataIOControl.outRestartName + "_" + output_stamp + "_" + std::to_string(step) + "_" + std::to_string(iter));
+                PrintRestart(config.dataIOControl.getOutRestartName() + "_" + output_stamp + "_" + std::to_string(step) + "_" + std::to_string(iter));
             }
             if (iter % config.outputControl.nRestartOutCInternal == 0)
             {
                 config.restartState.iStep = step;
                 config.restartState.iStepInternal = iter;
-                PrintRestart(config.dataIOControl.outRestartName + "_" + output_stamp + "_" + "C");
+                PrintRestart(config.dataIOControl.getOutRestartName() + "_" + output_stamp + "_" + "C");
             }
             if (iter >= config.implicitCFLControl.nCFLRampStart && iter <= config.implicitCFLControl.nCFLRampLength + config.implicitCFLControl.nCFLRampStart)
             {
@@ -1271,14 +1271,14 @@ namespace DNDS::Euler
             {
                 config.restartState.iStep = step;
                 config.restartState.iStepInternal = -1;
-                PrintRestart(config.dataIOControl.outRestartName + "_" + output_stamp + "_" + std::to_string(step));
+                PrintRestart(config.dataIOControl.getOutRestartName() + "_" + output_stamp + "_" + std::to_string(step));
                 nextStepRestart += config.outputControl.nRestartOut;
             }
             if (step == nextStepRestartC)
             {
                 config.restartState.iStep = step;
                 config.restartState.iStepInternal = -1;
-                PrintRestart(config.dataIOControl.outRestartName + "_" + output_stamp + "_" + "C");
+                PrintRestart(config.dataIOControl.getOutRestartName() + "_" + output_stamp + "_" + "C");
                 nextStepRestartC += config.outputControl.nRestartOutC;
             }
             if (ifOutT)
