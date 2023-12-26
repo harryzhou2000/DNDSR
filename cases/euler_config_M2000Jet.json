@@ -9,10 +9,12 @@
         "odeCode": 102,
         "tEnd": 1e-3,
         "odeSetting1": 0.5,
-        "odeSetting2": 1
+        "odeSetting2": 1,
+        "dtIncreaseLimit": 2.0,
+        "dtIncreaseAfterCount": 0
     },
     "convergenceControl": {
-        "nTimeStepInternal": 50,
+        "nTimeStepInternal": 100,
         "rhsThresholdInternal": 1e-3,
         "res_base": 0.0,
         "useVolWiseResidual": true
@@ -23,7 +25,7 @@
         "consoleOutputMode": 0,
         "consoleOutputEveryFix": 1,
         "nDataOutC": 10,
-        "nDataOut": 50,
+        "nDataOut": 100,
         "nDataOutCInternal": 100,
         "nDataOutInternal": 1000000000,
         "tDataOut": 1e-3
@@ -40,9 +42,9 @@
     "dataIOControl": {
         "uniqueStamps": false,
         "meshRotZ": 0.0,
-        "meshFile": "../data/mesh/Unifrom_Ma2000Jet800.cgns",
-        "outPltName": "../data/outUnsteady/Unifrom_Ma2000Jet800_VBDF_T7O_RE1E3",
-        "outLogName": "../data/outUnsteady/Unifrom_Ma2000Jet800_VBDF_T7O_RE1E3",
+        "meshFile": "../data/mesh/Unifrom_Ma2000JetUGS800.cgns",
+        "outPltName": "../data/outUnsteady/Unifrom_Ma2000JetUGS800_VBDF_TB1_REInf_IncreaseV0",
+        "outLogName": "../data/outUnsteady/Unifrom_Ma2000JetUGS800_VBDF_TB1_REInf_IncreaseV0",
         "outPltMode": 0,
         "readMeshMode": 0,
         "outPltTecplotFormat": true,
@@ -91,6 +93,7 @@
         "smoothThreshold": 1e-3,
         "WBAP_nStd": 10.0,
         "normWBAP": false,
+        "limiterBiwayAlter": 0, // 1=MM, 2=PN, 3=MEMM, 4=WBAP_L2_cut
         "subs2ndOrder": 1,
         "baseSettings": {
             "localOrientation": false,
@@ -124,6 +127,7 @@
         "riemannSolverType": "Roe_M2",
         // "rsMeanValueEig": 1,
         "nCentralSmoothStep": 0,
+        // "uRecBetaCompressPower": 2.0,
         "constMassForce": [
             0.0,
             0.0,
@@ -140,7 +144,7 @@
         "idealGasProperty": {
             "gamma": 1.666666666666667,
             "Rgas": 289,
-            "muGas": 1e-3,
+            "muGas": 1e-200,
             "prGas": 0.72,
             "TRef": 273.15,
             "CSutherland": 110.4,

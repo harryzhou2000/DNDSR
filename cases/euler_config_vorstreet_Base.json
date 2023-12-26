@@ -1,7 +1,7 @@
 {
     "timeMarchControl": {
-        "dtImplicit": 0.0125e-1,
-        "nTimeStep": 320000,
+        "dtImplicit": 0.125e-1,
+        "nTimeStep": 32000,
         "steadyQuit": false,
         "odeCode": 0,
         "tEnd": 3e+200,
@@ -22,8 +22,8 @@
         "nConsoleCheck": 1,
         "nConsoleCheckInternal": 10,
         "consoleOutputMode": 1,
-        "nDataOutC": 1000,
-        "nDataOut": 100000,
+        "nDataOutC": 10,
+        "nDataOut": 1000,
         "nDataOutCInternal": 200,
         "nDataOutInternal": 1000000000,
         "tDataOut": 3e+200
@@ -39,9 +39,9 @@
     "dataIOControl": {
         "uniqueStamps": false,
         "meshRotZ": 0.0,
-        "meshFile": "../data/mesh/CylinderA2.cgns",
-        "outPltName": "../data/outUnsteady/CylinderA2_RE100_Base2",
-        "outLogName": "../data/outUnsteady/CylinderA2_RE100_Base2",
+        "meshFile": "../data/mesh/CylinderA4.cgns",
+        "outPltName": "../data/outUnsteady/CylinderA4_RE100_Base",
+        "outLogName": "../data/outUnsteady/CylinderA4_RE100_Base",
         "outPltMode": 0,
         "readMeshMode": 0,
         "outPltTecplotFormat": true,
@@ -58,7 +58,7 @@
         "recThreshold": 1e-010,
         "nRecConsolCheck": 10,
         "nRecMultiplyForZeroedGrad": 1000,
-        "zeroRecForSteps": 4000
+        "zeroRecForSteps": 400
     },
     "limiterControl": {
         "useLimiter": false,
@@ -88,7 +88,7 @@
         }
     },
     "linearSolverControl": {
-        "sgsIter": 0,
+        "sgsIter": 2,
         "sgsWithRec": 0,
         "nSgsConsoleCheck": 100,
         "gmresCode": 0,
