@@ -79,6 +79,8 @@ namespace DNDS::Geom
         if (flag == 0)
         {
             fname += ".plt";
+            std::filesystem::path outFile{fname};
+            std::filesystem::create_directories(outFile.parent_path());
             DNDS_assert(mode == SerialOutput && dataIsSerialOut);
         }
         if (flag == 1)
@@ -432,6 +434,8 @@ namespace DNDS::Geom
         if (flag == 0)
         {
             fname += ".vtu";
+            std::filesystem::path outFile{fname};
+            std::filesystem::create_directories(outFile.parent_path());
             DNDS_assert(mode == SerialOutput && dataIsSerialOut);
         }
         std::filesystem::path outPath; // only valid if parallel out

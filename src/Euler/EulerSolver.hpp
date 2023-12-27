@@ -433,7 +433,10 @@ namespace DNDS::Euler
                 config.ReadWriteJson(gSetting, nVars, read);
                 if (mpi.rank == 0) // single call for output
                 {
+                    std::filesystem::path outFile{jsonName};
+                    std::filesystem::create_directories(outFile.parent_path());
                     auto fIn = std::ofstream(jsonName);
+                    DNDS_assert(fIn);
                     fIn << std::setw(4) << gSetting;
                 }
                 MPI_Barrier(mpi.comm); // no go until output done
@@ -746,7 +749,11 @@ namespace DNDS::Euler
             config.ReadWriteJson(gSetting, nVars, false);
             if (mpi.rank == 0)
             {
-                std::ofstream logConfig(config.dataIOControl.getOutLogName() + "_" + output_stamp + ".config.json");
+                std::string logConfigFileName = config.dataIOControl.getOutLogName() + "_" + output_stamp + ".config.json";
+                std::filesystem::path outFile{logConfigFileName};
+                std::filesystem::create_directories(outFile.parent_path());
+                std::ofstream logConfig(logConfigFileName);
+                DNDS_assert(logConfig);
                 gSetting["___Compile_Time_Defines"] = DNDS_Defines_state;
                 gSetting["___Runtime_PartitionNumber"] = mpi.size;
                 gSetting["___Commit_ID"] = DNDS_MACRO_TO_STRING(DNDS_CURRENT_COMMIT_HASH);

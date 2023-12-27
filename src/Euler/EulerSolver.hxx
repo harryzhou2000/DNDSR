@@ -30,7 +30,11 @@ namespace DNDS::Euler
         }
 
         /************* Files **************/
-        std::ofstream logErr(config.dataIOControl.getOutLogName() + "_" + output_stamp + ".log");
+        std::string logErrFileName = config.dataIOControl.getOutLogName() + "_" + output_stamp + ".log";
+        std::filesystem::path outFile{logErrFileName};
+        std::filesystem::create_directories(outFile.parent_path());
+        std::ofstream logErr(logErrFileName);
+        DNDS_assert(logErr);
         /************* Files **************/
 
         std::shared_ptr<ODE::ImplicitDualTimeStep<ArrayDOFV<nVars_Fixed>, ArrayDOFV<1>>> ode;
