@@ -4,13 +4,20 @@
 int main(int argc, char* argv[])
 {
     MPI_Init(&argc, &argv);
+    std::string defaultConfJson = "../cases/eulerSA3D_default_config.json";
+    std::string confJson = "../cases/eulerSA3D_config.json";
+    if (argc > 1 && std::stoi(argv[1]) == 1)
+    {
+        defaultConfJson = "./eulerSA3D_default_config.json";
+        confJson = "./eulerSA3D_config.json";
+    }
     {
         DNDS::MPIInfo mpi;
         mpi.setWorld();
         auto strategy = DNDS::MPI::CommStrategy::Instance().GetArrayStrategy();
         DNDS::Euler::EulerSolver<DNDS::Euler::EulerModel::NS_SA_3D> solver(mpi);
-        solver.ConfigureFromJson("../cases/eulerSA3D_default_config.json", false);
-        solver.ConfigureFromJson("../cases/eulerSA3D_default_config.json", true, "../cases/eulerSA3D_config.json");
+        solver.ConfigureFromJson(defaultConfJson, false);
+        solver.ConfigureFromJson(defaultConfJson, true, confJson);
         solver.ReadMeshAndInitialize();
         solver.RunImplicitEuler();
     }
