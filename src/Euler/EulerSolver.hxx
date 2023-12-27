@@ -32,7 +32,7 @@ namespace DNDS::Euler
         /************* Files **************/
         std::string logErrFileName = config.dataIOControl.getOutLogName() + "_" + output_stamp + ".log";
         std::filesystem::path outFile{logErrFileName};
-        std::filesystem::create_directories(outFile.parent_path());
+        std::filesystem::create_directories(outFile.parent_path() / ".");
         std::ofstream logErr(logErrFileName);
         DNDS_assert(logErr);
         /************* Files **************/
