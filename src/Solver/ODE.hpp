@@ -1060,6 +1060,24 @@ namespace DNDS::ODE
                             // fdt(xMid, dTau, 1.0,0);
                             // fsolve(xMid, rhsFull, dTau, dt, 1.0, xinc, iter,0);
                         }
+
+                        //**    xinc = (I/dtau-A*alphaDiag)\rhs
+
+                        // x += xinc;
+                        {
+                            // xIncDamper = xLast;
+                            // xIncDamper.addTo(x, -1.);
+                            // xIncDamper.setAbs();
+                            // xIncDamper += 1e-100;
+                            // xIncDamper2 = xIncPrev;
+                            // xIncDamper2.setAbs();
+                            // xIncDamper2 += xIncDamper;
+                            // xIncDamper /= xIncDamper2;
+                            // xinc *= xIncDamper;
+                        }
+
+                        fincrement(x, xinc, 1.0, 0);
+                        // x.addTo(xIncPrev, -0.5);
                     }
                     else if (method == 1)
                     {
@@ -1116,9 +1134,12 @@ namespace DNDS::ODE
                             // fsolve(x, rhsFull, dTau, dt, std::abs(-cInter(3) / cInter(1)), xinc, iter, 0);
                         }
 
+                        fincrement(x, xinc, 1.0, 0);
+
                         fdt(x, dTau, 1.0, 0);
 
                         frhs(rhsbuf[1], x, dTau, iter, 1.0, 0);
+
                     }
                     else
                     {
@@ -1126,24 +1147,7 @@ namespace DNDS::ODE
                     }
                 }
 
-                //**    xinc = (I/dtau-A*alphaDiag)\rhs
-
-                // x += xinc;
-                {
-                    // xIncDamper = xLast;
-                    // xIncDamper.addTo(x, -1.);
-                    // xIncDamper.setAbs();
-                    // xIncDamper += 1e-100;
-                    // xIncDamper2 = xIncPrev;
-                    // xIncDamper2.setAbs();
-                    // xIncDamper2 += xIncDamper;
-                    // xIncDamper /= xIncDamper2;
-                    // xinc *= xIncDamper;
-                }
-
-                fincrement(x, xinc, 1.0, 0);
-                // x.addTo(xIncPrev, -0.5);
-
+            
                 xIncPrev = xinc;
 
                 if (fstop(iter, method == 0 ? rhsMid : rhsFull, 1))
