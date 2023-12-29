@@ -915,7 +915,6 @@ namespace DNDS::ODE
                     rhsFull = rhsbuf[1];
                     rhsFull.addTo(xLast, 1. / dt);
                     rhsFull.addTo(x, -1. / dt);
-                    rhsMid = rhsFull; // * warning: rhsMid now holds residual;
                     fsolve(x, rhsFull, dTau, dt, 1.0, xinc, iter, 0);
                 }
                 else
@@ -1064,9 +1063,6 @@ namespace DNDS::ODE
                     }
                     else if (method == 1)
                     {
-                        fdt(x, dTau, 1.0, 0);
-
-                        frhs(rhsbuf[1], x, dTau, iter, 1.0, 0);
 
                         rhsMid.setConstant(0.0);
 
@@ -1098,6 +1094,8 @@ namespace DNDS::ODE
 
                         fincrement(xMid, xinc, 1.0, 1);
 
+                        fdt(xMid, dTau, 1.0, 1);
+
                         frhs(rhsbuf[2], xMid, dTau, iter, alphaHM3, 1);
 
                         rhsFull.setConstant(0.0);
@@ -1117,6 +1115,10 @@ namespace DNDS::ODE
                             // rhsFull.addTo(rhsbuf[1], -cInter(3) / cInter(1));
                             // fsolve(x, rhsFull, dTau, dt, std::abs(-cInter(3) / cInter(1)), xinc, iter, 0);
                         }
+
+                        fdt(x, dTau, 1.0, 0);
+
+                        frhs(rhsbuf[1], x, dTau, iter, 1.0, 0);
                     }
                     else
                     {
