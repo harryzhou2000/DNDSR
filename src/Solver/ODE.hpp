@@ -105,6 +105,7 @@ namespace DNDS::ODE
         Eigen::RowVector<real, -1> butcherB;
         int nInnerStage = 3;
         int schemeC = 0;
+        int hasLastEndPointR = 0;
 
     public:
         using tBase = ImplicitDualTimeStep<TDATA, TDTAU>;
@@ -199,7 +200,10 @@ namespace DNDS::ODE
                 {
                     if (schemeC == 1 && iB == 0) // for esdirk first frhs evaluation
                     {
-                        frhs(rhsbuf[iB], x, dTau, INT_MAX, butcherC(iB), 0);
+                        if (hasLastEndPointR)
+                            rhsbuf[0] = rhsbuf[nInnerStage - 1];
+                        else
+                            frhs(rhsbuf[0], x, dTau, INT_MAX, butcherC(0), 0);
                         break;
                     }
                     fdt(x, dTau, butcherA(iB, iB), 0);
@@ -241,7 +245,10 @@ namespace DNDS::ODE
                     fstop(iter, rhs, iB + 1);
             }
             if (schemeC == 1) // for esdirk
+            {
+                hasLastEndPointR = 1;
                 return;
+            }
             x = xLast;
             // for (int jB = 0; jB < nInnerStage; jB++)
             //     fincrement(x, rhsbuf[jB], butcherB(jB) * dt, 0); //!bad here
@@ -805,6 +812,7 @@ namespace DNDS::ODE
     template <class TDATA, class TDTAU>
     class ImplicitHermite3SimpleJacobianDualStep : public ImplicitDualTimeStep<TDATA, TDTAU>
     {
+        int hasLastEndPointR = 0;
 
     public:
         using tBase = ImplicitDualTimeStep<TDATA, TDTAU>;
@@ -896,7 +904,11 @@ namespace DNDS::ODE
             xLast = x;
             xMid = x;
             fdt(xLast, dTau, 1.0, 0);
-            frhs(rhsbuf[0], xLast, dTau, INT_MAX, 0.0, 0);
+
+            if (hasLastEndPointR)
+                rhsbuf[0] = rhsbuf[1];
+            else
+                frhs(rhsbuf[0], xLast, dTau, INT_MAX, 0.0, 0);
             rhsbuf[1] = rhsbuf[0];
             rhsbuf[2] = rhsbuf[0];
 
@@ -1139,7 +1151,6 @@ namespace DNDS::ODE
                         fdt(x, dTau, 1.0, 0);
 
                         frhs(rhsbuf[1], x, dTau, iter, 1.0, 0);
-
                     }
                     else
                     {
@@ -1147,7 +1158,6 @@ namespace DNDS::ODE
                     }
                 }
 
-            
                 xIncPrev = xinc;
 
                 if (fstop(iter, method == 0 ? rhsMid : rhsFull, 1))
@@ -1156,6 +1166,8 @@ namespace DNDS::ODE
             }
             if (iter > maxIter)
                 fstop(iter, method == 0 ? rhsMid : rhsFull, 1);
+
+            hasLastEndPointR = 1;
         }
 
         void StepNested(TDATA &x, TDATA &xinc, const Frhs &frhs, const Fdt &fdt, const Fsolve &fsolve, const FsolveNest &fsolveN,
