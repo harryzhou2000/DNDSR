@@ -100,6 +100,7 @@ namespace DNDS::Euler
                 real odeSetting1 = 0;
                 real odeSetting2 = 0;
                 real odeSetting3 = 0;
+                real odeSetting4 = 0;
                 bool partitonMeshOnly = false;
                 real dtIncreaseLimit = 2;
                 int dtIncreaseAfterCount = 0;
@@ -108,7 +109,7 @@ namespace DNDS::Euler
                     dtImplicit, nTimeStep,
                     steadyQuit, useRestart,
                     useImplicitPP, useRHSfPP, rhsfPPScale,
-                    odeCode, tEnd, odeSetting1, odeSetting2, odeSetting3,
+                    odeCode, tEnd, odeSetting1, odeSetting2, odeSetting3, odeSetting4,
                     partitonMeshOnly,
                     dtIncreaseLimit, dtIncreaseAfterCount)
             } timeMarchControl;
@@ -145,6 +146,8 @@ namespace DNDS::Euler
                 int nConsoleCheckInternal = 1;
                 int consoleOutputMode = 0; // 0 for basic, 1 for wall force out
                 int consoleOutputEveryFix = 0;
+                int nPrecisionConsole = 3;
+                int nPrecisionLog = 10;
                 int nDataOut = 10000;
                 int nDataOutC = 50;
                 int nDataOutInternal = 10000;

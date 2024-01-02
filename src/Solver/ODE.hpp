@@ -106,6 +106,7 @@ namespace DNDS::ODE
         int nInnerStage = 3;
         int schemeC = 0;
         int hasLastEndPointR = 0;
+        int latestStage = 0;
 
     public:
         using tBase = ImplicitDualTimeStep<TDATA, TDTAU>;
@@ -203,12 +204,12 @@ namespace DNDS::ODE
                         if (hasLastEndPointR)
                             rhsbuf[0] = rhsbuf[nInnerStage - 1];
                         else
-                            frhs(rhsbuf[0], x, dTau, INT_MAX, butcherC(0), 0);
+                            frhs(rhsbuf[0], x, dTau, INT_MAX, butcherC(0), 0), latestStage = 0;
                         break;
                     }
                     fdt(x, dTau, butcherA(iB, iB), 0);
 
-                    frhs(rhsbuf[iB], x, dTau, iter, butcherC(iB), 0);
+                    frhs(rhsbuf[iB], x, dTau, iter, butcherC(iB), 0), latestStage = iB;
 
                     // //!test explicit
                     // rhs = rhsbuf[iB];
@@ -258,7 +259,7 @@ namespace DNDS::ODE
 
         virtual TDATA &getLatestRHS() override
         {
-            return rhsbuf[0];
+            return rhsbuf[latestStage];
         }
 
         virtual ~ImplicitSDIRK4DualTimeStep() {}
@@ -849,7 +850,7 @@ namespace DNDS::ODE
         template <class Finit, class FinitDtau>
         ImplicitHermite3SimpleJacobianDualStep(
             index NDOF, Finit &&finit = [](TDATA &) {}, FinitDtau &&finitDtau = [](TDTAU &) {},
-            real alpha = 0.55, int nnStartIter = 2, real thetaM1n = 0.9146)
+            real alpha = 0.55, int nnStartIter = 2, real thetaM1n = 0.9146, int mask = 0)
             : DOF(NDOF),
               cnPrev(0),
               nStartIter(nnStartIter),
@@ -870,21 +871,34 @@ namespace DNDS::ODE
             finit(xIncDamper2);
             finitDtau(dTau);
 
-            SetCoefs(alpha);
+            SetCoefs(alpha, mask);
         }
 
-        void SetCoefs(real alpha)
+        void SetCoefs(real alpha, int mask)
         {
             assert(alpha > 0 && alpha < 1);
             cInter.setZero();
-            cInter[0] = (alpha * alpha) * -3.0 + (alpha * alpha * alpha) * 2.0 + 1.0;
-            cInter[1] = (alpha * alpha) * 3.0 - (alpha * alpha * alpha) * 2.0;
-            cInter[2] = alpha - (alpha * alpha) * 2.0 + alpha * alpha * alpha;
-            cInter[3] = -alpha * alpha + alpha * alpha * alpha;
-
-            // cInter[0] = alpha * -2.0 + alpha * alpha + 1.0;
-            // cInter[1] = alpha * 2.0 - alpha * alpha;
-            // cInter[3] = -alpha + alpha * alpha;
+            switch (mask)
+            {
+            case 0:
+            {
+                cInter[0] = (alpha * alpha) * -3.0 + (alpha * alpha * alpha) * 2.0 + 1.0;
+                cInter[1] = (alpha * alpha) * 3.0 - (alpha * alpha * alpha) * 2.0;
+                cInter[2] = alpha - (alpha * alpha) * 2.0 + alpha * alpha * alpha;
+                cInter[3] = -alpha * alpha + alpha * alpha * alpha;
+            }
+            break;
+            case 1:
+            {
+                cInter[0] = alpha * -2.0 + alpha * alpha + 1.0;
+                cInter[1] = alpha * 2.0 - alpha * alpha;
+                cInter[3] = -alpha + alpha * alpha;
+            }
+            break;
+            default:
+                DNDS_assert(false);
+                break;
+            }
 
             wInteg[0] = (-1.0 / 6.0) / alpha + 1.0 / 2.0;
             wInteg[1] = (-1.0 / 6.0) / (alpha * (alpha - 1.0));

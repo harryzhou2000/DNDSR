@@ -104,7 +104,8 @@ namespace DNDS::Euler
                 buildDOF, buildScalar,
                 config.timeMarchControl.odeSetting1 == 0 ? 0.55 : config.timeMarchControl.odeSetting1,
                 std::round(config.timeMarchControl.odeSetting2),
-                config.timeMarchControl.odeSetting3 == 0 ? 0.9146 : config.timeMarchControl.odeSetting3);
+                config.timeMarchControl.odeSetting3 == 0 ? 0.9146 : config.timeMarchControl.odeSetting3,
+                config.timeMarchControl.odeSetting4 == 0 ? 0 : 1);
             break;
         default:
             DNDS_assert_info(false, "no such ode code");
@@ -561,7 +562,7 @@ namespace DNDS::Euler
                     if (mpi.rank == 0 &&
                         (config.outputControl.consoleOutputEveryFix == 1 || config.outputControl.consoleOutputEveryFix == 3))
                     {
-                        log() << std::scientific << std::setprecision(3)
+                        log() << std::scientific << std::setprecision(config.outputControl.nPrecisionConsole)
                               << "PPRecLimiter: nLimBeta [" << nLimBeta << "]"
                               << " minBeta[" << minBeta << "]" << std::endl;
                     }
@@ -981,7 +982,7 @@ namespace DNDS::Euler
                 if (mpi.rank == 0 &&
                     (config.outputControl.consoleOutputEveryFix == 1 || config.outputControl.consoleOutputEveryFix == 4))
                 {
-                    log() << std::scientific << std::setprecision(3)
+                    log() << std::scientific << std::setprecision(config.outputControl.nPrecisionConsole)
                           << "PPResidualLimiter: nLimAlpha [" << nLimAlpha << "]"
                           << " minAlpha[" << minAlpha << "]" << std::endl;
                 }
@@ -1007,7 +1008,7 @@ namespace DNDS::Euler
                     if (mpi.rank == 0 &&
                         (config.outputControl.consoleOutputEveryFix == 1 || config.outputControl.consoleOutputEveryFix == 4))
                     {
-                        log() << std::scientific << std::setprecision(3)
+                        log() << std::scientific << std::setprecision(config.outputControl.nPrecisionConsole)
                               << "PPResidualLimiter - first expand: nLimAlpha [" << nLimAlpha << "]"
                               << " minAlpha[" << minAlpha << "]" << std::endl;
                     }
@@ -1074,7 +1075,7 @@ namespace DNDS::Euler
                 if (mpi.rank == 0)
                 {
                     auto fmt = log().flags();
-                    log() << std::setprecision(3) << std::scientific
+                    log() << std::setprecision(config.outputControl.nPrecisionConsole) << std::scientific
                           << "\t Internal === Step [" << step << ", " << iStep << ", " << iter << "]   "
                           << "res \033[91m[" << resRel.transpose() << "]\033[39m   "
                           << "t,dTaumin,CFL,nFix \033[92m["
@@ -1082,7 +1083,7 @@ namespace DNDS::Euler
                           << fmt::format("[alphaInc({},{}), betaRec({},{}), alphaRes({},{})]",
                                          nLimInc, alphaMinInc, nLimBeta, minBeta, nLimAlpha, minAlpha)
                           << "]\033[39m   "
-                          << std::setprecision(3) << std::fixed
+                          << std::setprecision(config.outputControl.nPrecisionConsole) << std::fixed
                           << "Time [" << telapsed << "]   recTime ["
                           << trec << "]   rhsTime ["
                           << trhs << "]   commTime ["
@@ -1091,7 +1092,7 @@ namespace DNDS::Euler
                           << tLimiterB << "]  ";
                     if (config.outputControl.consoleOutputMode == 1)
                     {
-                        log() << std::setprecision(4) << std::setw(10) << std::scientific
+                        log() << std::setprecision(config.outputControl.nPrecisionConsole + 2) << std::setw(10) << std::scientific
                               << "Wall Flux \033[93m[" << eval.fluxWallSum.transpose() << "]\033[39m";
                     }
                     log() << std::endl;
@@ -1103,7 +1104,7 @@ namespace DNDS::Euler
                         << std::left
                         << iter << delimC
                         << std::left
-                        << std::setprecision(9) << std::scientific
+                        << std::setprecision(config.outputControl.nPrecisionLog) << std::scientific
                         << res.transpose() << delimC
                         << tSimu << delimC
                         << curDtMin << delimC
@@ -1192,11 +1193,11 @@ namespace DNDS::Euler
                 if (mpi.rank == 0)
                 {
                     auto fmt = log().flags();
-                    log() << std::setprecision(3) << std::scientific
+                    log() << std::setprecision(config.outputControl.nPrecisionConsole) << std::scientific
                           << "=== Step [" << step << "]   "
                           << "res \033[91m[" << (res.array() / resBaseC.array()).transpose() << "]\033[39m   "
                           << "t,dt(min) \033[92m[" << tSimu << ", " << curDtMin << "]\033[39m   "
-                          << std::setprecision(3) << std::fixed
+                          << std::setprecision(config.outputControl.nPrecisionConsole) << std::fixed
                           << "Time [" << telapsed << "]   recTime [" << trec << "]   rhsTime [" << trhs << "]   commTime [" << tcomm << "]  limTime [" << tLim << "]  " << std::endl;
                     log().setf(fmt);
                     std::string delimC = " ";
@@ -1206,7 +1207,7 @@ namespace DNDS::Euler
                         << std::left
                         << -1 << delimC
                         << std::left
-                        << std::setprecision(9) << std::scientific
+                        << std::setprecision(config.outputControl.nPrecisionLog) << std::scientific
                         << res.transpose() << delimC
                         << tSimu << delimC
                         << curDtMin << delimC
@@ -1369,7 +1370,9 @@ namespace DNDS::Euler
                 MPI::Allreduce(&sumVol, &sumVolSum, 1, DNDS_MPI_REAL, MPI_SUM, mpi.comm);
                 if (mpi.rank == 0)
                 {
-                    log() << "=== Mean Error IV: [" << std::scientific << std::setprecision(5) << sumErrRhoSum << ", " << sumErrRhoSum / sumVolSum << "]" << std::endl;
+                    log() << "=== Mean Error IV: [" << std::scientific
+                          << std::setprecision(config.outputControl.nPrecisionConsole + 4) << sumErrRhoSum << ", "
+                          << sumErrRhoSum / sumVolSum << "]" << std::endl;
                 }
             }
             if (config.implicitReconstructionControl.zeroGrads)

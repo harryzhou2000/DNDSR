@@ -300,6 +300,8 @@ namespace DNDS::Euler
                 (faceBCType == EulerBCType::BCWallInvis && settings.idealGasProperty.muGas < 1e-99))
             {
                 fluxWallSumLocal -= fluxEs(Eigen::all, 0);
+                if(iFace >= mesh->NumFace())
+                    DNDS_assert(false);
             }
             if (f2c[1] == UnInitIndex)
             {
