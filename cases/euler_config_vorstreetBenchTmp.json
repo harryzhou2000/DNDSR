@@ -8,6 +8,7 @@
         "odeSetting1": 0.55,
         "odeSetting2": 0,
         "odeSetting3": 1.333,
+        "odeSetting4": 0,
         "useRHSfPP": false,
         "useRestart": true,
         "rhsfPPScale": 1,
@@ -15,7 +16,8 @@
     },
     "convergenceControl": {
         "nTimeStepInternal": 2000,
-        "rhsThresholdInternal": 1e-6,
+        "nTimeStepInternalMin": 11,
+        "rhsThresholdInternal": 1e-7,
         "res_base": 0.0,
         "useVolWiseResidual": true
     },
@@ -23,7 +25,7 @@
         "nConsoleCheck": 1,
         "nConsoleCheckInternal": 10,
         "consoleOutputMode": 1,
-        "nDataOutC": 1000,
+        "nDataOutC": 100,
         "nDataOut": 100000,
         "nDataOutCInternal": 200,
         "nDataOutInternal": 1000000000,
@@ -52,7 +54,7 @@
         "outAtCellData": true
     },
     "implicitReconstructionControl": {
-        "nInternalRecStep": 5,
+        "nInternalRecStep": 10,
         "zeroGrads": false,
         "recLinearScheme": 0,
         "nGmresSpace": 5,
@@ -92,10 +94,10 @@
         }
     },
     "linearSolverControl": {
-        "sgsIter": 0,
+        "sgsIter": 4,
         "sgsWithRec": 0,
         "nSgsConsoleCheck": 100,
-        "gmresCode": 1,
+        "gmresCode": 0,
         "nGmresSpace": 5,
         "nGmresIter": 2
     },
