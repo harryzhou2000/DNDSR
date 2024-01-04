@@ -1103,7 +1103,7 @@ namespace DNDS::ODE
                         fincrement(x, xinc, 1.0, 0);
                         // x.addTo(xIncPrev, -0.5);
                     }
-                    else if (method == 1)
+                    else if (method == 0)
                     {
 
                         rhsMid.setConstant(0.0);
@@ -1162,7 +1162,7 @@ namespace DNDS::ODE
 
                         frhs(rhsbuf[1], x, dTau, iter, 1.0, 0);
                     }
-                    else if (method == 0)
+                    else if (method == 1)
                     {
                         rhsMid.setConstant(0.0);
                         {
