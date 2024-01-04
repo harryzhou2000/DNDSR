@@ -1,13 +1,13 @@
 {
     "timeMarchControl": {
-        "dtImplicit": 4e-4,
-        "nTimeStep": 625,
+        "dtImplicit": 2e-4,
+        "nTimeStep": 1250,
         "steadyQuit": false,
         "odeCode": 401,
         "tEnd": 3e+200,
-        "odeSetting1": 0.55,
+        "odeSetting1": 0.5,
         "odeSetting2": 0,
-        "odeSetting3": 1.3333,
+        "odeSetting3": 1,
         // "useRHSfPP": true,
         // "rhsfPPScale": 0.01
         "_tail": 0
@@ -17,14 +17,14 @@
         "nConsoleCheckInternal": 10,
         "consoleOutputMode": 0,
         "consoleOutputEveryFix": 0,
-        "nDataOutC": 100,
+        "nDataOutC": 25,
         "nDataOut": 500,
         "nDataOutCInternal": 200,
         "nDataOutInternal": 1000000000,
         "tDataOut": 3e+200
     },
     "implicitCFLControl": {
-        "CFL": 10.0,
+        "CFL": 20.0,
         "nForceLocalStartStep": 2147483647,
         "nCFLRampStart": 2147483647,
         "nCFLRampLength": 2147483647,
@@ -32,7 +32,7 @@
         "useLocalDt": true
     },
     "convergenceControl": {
-        "nTimeStepInternal": 40,
+        "nTimeStepInternal": 100,
         "rhsThresholdInternal": 1e-4,
         "res_base": 0.0,
         "useVolWiseResidual": true
@@ -40,9 +40,8 @@
     "dataIOControl": {
         "uniqueStamps": false,
         "meshRotZ": 0.0,
-        "meshFile": "../data/mesh/UniformDM240.cgns",
-        "outPltName": "../data/outUnsteady/UniformDM240_T4_TS3_HM3_STT_RM2_Nocut",
-        "outLogName": "../data/outUnsteady/UniformDM240_T4_TS3_HM3_STT_RM2_Nocut",
+        "meshFile": "../data/mesh/UniformDM480.cgns",
+        "outPltName": "../data/outUnsteady/DM480/UniformDM480_T5_TS3_RM2_HM3LBTT2",
         "outPltMode": 0,
         "readMeshMode": 0,
         "outPltTecplotFormat": true,

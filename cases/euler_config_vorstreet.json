@@ -1,13 +1,13 @@
 {
     "timeMarchControl": {
-        "dtImplicit": 0.25e-1,
-        "nTimeStep": 8000,
+        "dtImplicit": 1e-1,
+        "nTimeStep": 2000,
         "steadyQuit": false,
-        "odeCode": 1,
+        "odeCode": 401,
         "tEnd": 3e+200,
         "odeSetting1": 0.55,
         "odeSetting2": 0,
-        "odeSetting3": 1.333,
+        "odeSetting3": 1.3333,
         "useRHSfPP": true,
         "rhsfPPScale": 1,
         "_tail": 0
@@ -22,8 +22,8 @@
         "nConsoleCheck": 1,
         "nConsoleCheckInternal": 10,
         "consoleOutputMode": 0,
-        "nDataOutC": 1,
-        "nDataOut": 10,
+        "nDataOutC": 10,
+        "nDataOut": 1000,
         "nDataOutCInternal": 2000,
         "nDataOutInternal": 1000000000,
         "tDataOut": 3e+200
@@ -40,8 +40,7 @@
         "uniqueStamps": false,
         "meshRotZ": 0.0,
         "meshFile": "../data/mesh/CylinderA1.cgns",
-        "outPltName": "../data/outUnsteady/CylinderA1_RE2000",
-        "outLogName": "../data/outUnsteady/CylinderA1_RE2000",
+        "outPltName": "../data/outUnsteady/CylinderA1_RE2000/CylinderA1_RE2000_HM3",
         "outPltMode": 0,
         "readMeshMode": 0,
         "outPltTecplotFormat": true,

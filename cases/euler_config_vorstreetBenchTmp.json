@@ -17,7 +17,7 @@
     "convergenceControl": {
         "nTimeStepInternal": 2000,
         "nTimeStepInternalMin": 11,
-        "rhsThresholdInternal": 1e-7,
+        "rhsThresholdInternal": 1e-6,
         "res_base": 0.0,
         "useVolWiseResidual": true
     },
@@ -54,7 +54,7 @@
         "outAtCellData": true
     },
     "implicitReconstructionControl": {
-        "nInternalRecStep": 10,
+        "nInternalRecStep": 5,
         "zeroGrads": false,
         "recLinearScheme": 0,
         "nGmresSpace": 5,

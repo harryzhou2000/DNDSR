@@ -1,31 +1,35 @@
 {
     "timeMarchControl": {
-        "dtImplicit": 0.125e-1,
-        "nTimeStep": 32000,
+        "dtImplicit": 0.0125e-1,
+        "nTimeStep": 40000,
         "steadyQuit": false,
-        "odeCode": 0,
+        "odeCode": 401,
         "tEnd": 3e+200,
         "odeSetting1": 0.55,
         "odeSetting2": 0,
         "odeSetting3": 1.333,
         "useRHSfPP": false,
+        "useRestart": true,
         "rhsfPPScale": 1,
         "_tail": 0
     },
     "convergenceControl": {
-        "nTimeStepInternal": 400,
-        "rhsThresholdInternal": 1e-4,
+        "nTimeStepInternal": 2000,
+        "rhsThresholdInternal": 1e-7,
         "res_base": 0.0,
+        "nTimeStepInternalMin": 11,
         "useVolWiseResidual": true
     },
     "outputControl": {
         "nConsoleCheck": 1,
         "nConsoleCheckInternal": 10,
         "consoleOutputMode": 1,
-        "nDataOutC": 10,
-        "nDataOut": 1000,
+        "nDataOutC": 1000,
+        "nDataOut": 100000,
         "nDataOutCInternal": 200,
         "nDataOutInternal": 1000000000,
+        "nRestartOutC": 10000,
+        "nRestartOut": 100000000,
         "tDataOut": 3e+200
     },
     "implicitCFLControl": {
@@ -39,9 +43,8 @@
     "dataIOControl": {
         "uniqueStamps": false,
         "meshRotZ": 0.0,
-        "meshFile": "../data/mesh/CylinderA4.cgns",
-        "outPltName": "../data/outUnsteady/CylinderA4_RE100_Base",
-        "outLogName": "../data/outUnsteady/CylinderA4_RE100_Base",
+        "meshFile": "../data/mesh/CylinderB1.cgns",
+        "outPltName": "../data/outUnsteady1/CylinderB1_RE1200_M01_BaseCV/out",
         "outPltMode": 0,
         "readMeshMode": 0,
         "outPltTecplotFormat": true,
@@ -50,20 +53,21 @@
         "outAtCellData": true
     },
     "implicitReconstructionControl": {
-        "nInternalRecStep": 1,
+        "nInternalRecStep": 4,
         "zeroGrads": false,
         "recLinearScheme": 0,
         "nGmresSpace": 5,
         "nGmresIter": 10,
         "recThreshold": 1e-010,
         "nRecConsolCheck": 10,
-        "nRecMultiplyForZeroedGrad": 1000,
-        "zeroRecForSteps": 400
+        "nRecMultiplyForZeroedGrad": 20000,
+        "zeroRecForSteps": 0
     },
     "limiterControl": {
         "useLimiter": false,
         "smoothIndicatorProcedure": 0,
-        "limiterProcedure": 1, //1 == CWBAP
+        "limiterProcedure": 1,
+        //1 == CWBAP
         "nPartialLimiterStart": 1000000,
         "nPartialLimiterStartLocal": 1000000
     },
@@ -75,6 +79,7 @@
         "smoothThreshold": 1e-3,
         "WBAP_nStd": 10.0,
         "normWBAP": false,
+        "cacheDiffBase": true,
         "subs2ndOrder": 1,
         "baseSettings": {
             "localOrientation": true,
@@ -88,12 +93,12 @@
         }
     },
     "linearSolverControl": {
-        "sgsIter": 2,
+        "sgsIter": 4,
         "sgsWithRec": 0,
         "nSgsConsoleCheck": 100,
         "gmresCode": 0,
         "nGmresSpace": 5,
-        "nGmresIter": 1
+        "nGmresIter": 2
     },
     "others": {
         "nFreezePassiveInner": 0
@@ -113,8 +118,12 @@
             1,
             0,
             0,
-            // 79.8650793650794 // M0.15 R0.116221972344982
-            29.071428571428580 // M0.25 0.041839910044193
+            1.790714285714286e+02
+            // M0.1 R0.261499437776209
+            // 79.8650793650794
+            // M0.15 R0.116221972344982
+            // 29.071428571428580
+            // M0.25 0.041839910044193
         ],
         "boxInitializers": [
             // {
@@ -136,11 +145,18 @@
         "idealGasProperty": {
             "gamma": 1.4,
             "Rgas": 1,
-            "muGas": 1e-2,
+            "muGas": 8.333333333333334e-04,
             "prGas": 0.72,
             "TRef": 273.15,
             "CSutherland": 110.4,
             "muModel": 0
+            // with const mu
         }
+    },
+    "restartState": {
+        "iStep": 80000,
+        "iStepInternal": -1,
+        "odeCodePrev": -1,
+        "lastRestartFile": "../data/outUnsteady/CylinderB1_RE1200_M01_Starter/out__C_p320_restart.dir"
     }
 }
