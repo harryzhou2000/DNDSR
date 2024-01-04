@@ -104,6 +104,7 @@ namespace DNDS::Euler
                 buildDOF, buildScalar,
                 config.timeMarchControl.odeSetting1 == 0 ? 0.55 : config.timeMarchControl.odeSetting1,
                 std::round(config.timeMarchControl.odeSetting2),
+                0,
                 config.timeMarchControl.odeSetting3 == 0 ? 0.9146 : config.timeMarchControl.odeSetting3,
                 config.timeMarchControl.odeSetting4 == 0 ? 0 : 1);
             break;

@@ -839,8 +839,9 @@ namespace DNDS::ODE
 
         Eigen::Vector<real, 4> cInter;
         Eigen::Vector<real, 3> wInteg;
+        int curSolveMethod = 0;
         int nStartIter = 0;
-        real thetaM1 = 0.9146;
+            real thetaM1 = 0.9146;
         real alphaHM3 = 0.5;
 
         /**
@@ -850,9 +851,10 @@ namespace DNDS::ODE
         template <class Finit, class FinitDtau>
         ImplicitHermite3SimpleJacobianDualStep(
             index NDOF, Finit &&finit = [](TDATA &) {}, FinitDtau &&finitDtau = [](TDTAU &) {},
-            real alpha = 0.55, int nnStartIter = 2, real thetaM1n = 0.9146, int mask = 0)
+            real alpha = 0.55, int nCurSolveMethod = 0,  int nnStartIter = 0, real thetaM1n = 0.9146, int mask = 0)
             : DOF(NDOF),
               cnPrev(0),
+              curSolveMethod(nCurSolveMethod),
               nStartIter(nnStartIter),
               thetaM1(thetaM1n),
               alphaHM3(alpha)
@@ -929,7 +931,7 @@ namespace DNDS::ODE
             xIncPrev.setConstant(0.0);
             int iter = 1;
 
-            int method = 1;
+            int method = curSolveMethod;
 
             for (; iter <= maxIter; iter++)
             {
@@ -946,7 +948,7 @@ namespace DNDS::ODE
                 else
                 {
 
-                    if (method == 0)
+                    if (method == 2)
                     {
                         fdt(x, dTau, 1.0, 0);
                         // for (auto &v : dTau)
@@ -989,79 +991,75 @@ namespace DNDS::ODE
                             // rhsFull *= xIncDamper;
                         }
                         {
-                            // fdt(x, dTau, 1.0); // TODO: use "update spectral radius" procedure? or force update in fsolve
-                            // for(auto &v : dTau)
-                            //     v *= -cInter[3] / cInter[1];
-                            // fsolve(x, rhsFull, dTau, -dt * cInter[3] / cInter[1],
-                            //        1.0, xinc, iter);
-                            // rhsFull = xinc;
-                            // fdt(xMid, dTau, 1.0);
-                            // for (auto &v : dTau)
-                            //     v = veryLargeReal;
-                            // fsolve(xMid, rhsFull, dTau, -dt * cInter[3] * wInteg[1] / wInteg[2],
-                            //        1.0, xinc, iter);
-                            // xinc *= -1. / (2 * dt * cInter[3] * wInteg[1]);
+                            fdt(x, dTau, 1.0, 0); // TODO: use "update spectral radius" procedure? or force update in fsolve
+                            dTau *= -cInter[3] / cInter[1];
+                            fsolve(x, rhsFull, dTau, -dt * cInter[3] / cInter[1],
+                                   1.0, xinc, iter, 0);
+                            rhsFull = xinc;
+                            fdt(xMid, dTau, 1.0, 1);
+                            dTau.setConstant(veryLargeReal);
+                            fsolve(xMid, rhsFull, dTau, -dt * cInter[3] * wInteg[1] / wInteg[2],
+                                   1.0, xinc, iter, 1);
+                            xinc *= -1. / (2 * dt * cInter[3] * wInteg[1]);
                         }
                         {
-                            // fdt(xMid, dTau, 1.0, 1); // TODO: use "update spectral radius" procedure? or force update in fsolve
-                            // for (auto &v : dTau)
-                            //     v = veryLargeReal;
-                            // fsolve(xMid, rhsFull, dTau, dt / 4,
-                            //        1.0, xinc, iter, 1);
+                            // // fdt(xMid, dTau, 1.0, 1); // TODO: use "update spectral radius" procedure? or force update in fsolve
+                            // // for (auto &v : dTau)
+                            // //     v = veryLargeReal;
+                            // // fsolve(xMid, rhsFull, dTau, dt / 4,
+                            // //        1.0, xinc, iter, 1);
 
-                            //* 0
-                            fdt(x, dTau, 1.0, 0);
-                            // for (auto &v : dTau)
-                            //     v = veryLargeReal;
-                            dTau.setConstant(veryLargeReal);
-                            fsolve(x, rhsFull, dTau, dt,
-                                   1.0, xinc, iter, 0);
-
-                            //* 1
-                            xinc *= 1 / (dt);
-                            {
-                                // for (auto &v : dTau)
-                                //     v = (v + dt) / v; // 1 / beta
-                                // xinc *= dTau;
-                            }
-                            rhsFull = xinc;
-                            fdt(x, dTau, 1.0, 0);
-                            // for (auto &v : dTau)
-                            //     v *= 1;
-                            fsolve(x, rhsFull, dTau, dt,
-                                   1.0, xinc, iter, 0);
-                            // std::cout << "solved " << iter << std::endl;
-
-                            // //* 2
-                            // xinc *= 1 / (dt);
-                            // {
-                            //     for (auto &v : dTau)
-                            //         v = (v + dt) / v; // 1 / beta
-                            //     xinc *= dTau;
-                            // }
-                            // rhsFull = xinc;
+                            // //* 0
                             // fdt(x, dTau, 1.0, 0);
-                            // for (auto &v : dTau)
-                            //     v *= 1;
+                            // dTau.setConstant(veryLargeReal);
                             // fsolve(x, rhsFull, dTau, dt,
                             //        1.0, xinc, iter, 0);
 
-                            //* 3
+                            // //* 1
                             // xinc *= 1 / (dt);
                             // {
-                            // for (auto &v : dTau)
-                            //     v = (v + dt) / v; // 1 / beta
-                            // xinc *= dTau;
+                            //     // for (auto &v : dTau)
+                            //     //     v = (v + dt) / v; // 1 / beta
+                            //     // xinc *= dTau;
                             // }
                             // rhsFull = xinc;
                             // fdt(x, dTau, 1.0, 0);
-                            // for (auto &v : dTau)
-                            //     v *= 1;
+                            // // for (auto &v : dTau)
+                            // //     v *= 1;
                             // fsolve(x, rhsFull, dTau, dt,
                             //        1.0, xinc, iter, 0);
+                            // // std::cout << "solved " << iter << std::endl;
 
-                            // note: dt/n hinders precision
-                            // note: using enough smoothing delays res-re-rise
+                            // // //* 2
+                            // // xinc *= 1 / (dt);
+                            // // {
+                            // //     for (auto &v : dTau)
+                            // //         v = (v + dt) / v; // 1 / beta
+                            // //     xinc *= dTau;
+                            // // }
+                            // // rhsFull = xinc;
+                            // // fdt(x, dTau, 1.0, 0);
+                            // // for (auto &v : dTau)
+                            // //     v *= 1;
+                            // // fsolve(x, rhsFull, dTau, dt,
+                            // //        1.0, xinc, iter, 0);
+
+                            // //* 3
+                            // // xinc *= 1 / (dt);
+                            // // {
+                            // // for (auto &v : dTau)
+                            // //     v = (v + dt) / v; // 1 / beta
+                            // // xinc *= dTau;
+                            // // }
+                            // // rhsFull = xinc;
+                            // // fdt(x, dTau, 1.0, 0);
+                            // // for (auto &v : dTau)
+                            // //     v *= 1;
+                            // // fsolve(x, rhsFull, dTau, dt,
+                            // //        1.0, xinc, iter, 0);
+
+                            // // note: dt/n hinders precision
+                            // // note: using enough smoothing delays res-re-rise
                         }
                         {
                             /**
@@ -1133,12 +1131,11 @@ namespace DNDS::ODE
                             rhsMid.addTo(rhsbuf[0], cInter(2) + thetaM1 * wInteg(0));
                             rhsMid.addTo(rhsbuf[1], cInter(3) + thetaM1 * wInteg(2));
                             rhsMid.addTo(rhsbuf[2], thetaM1 * wInteg(1));
+                            fdt(xMid, dTau, 1.0, 1);
                             fsolve(xMid, rhsMid, dTau, dt, std::abs(thetaM1 * wInteg(1)), xinc, iter, 1);
                         }
 
                         fincrement(xMid, xinc, 1.0, 1);
-
-                        fdt(xMid, dTau, 1.0, 1);
 
                         frhs(rhsbuf[2], xMid, dTau, iter, alphaHM3, 1);
 
@@ -1149,6 +1146,7 @@ namespace DNDS::ODE
                             rhsFull.addTo(rhsbuf[0], wInteg(0));
                             rhsFull.addTo(rhsbuf[2], wInteg(1));
                             rhsFull.addTo(rhsbuf[1], wInteg(2));
+                            fdt(x, dTau, 1.0, 0);
                             fsolve(x, rhsFull, dTau, dt, wInteg(2), xinc, iter, 0);
                         }
                         {
@@ -1162,8 +1160,38 @@ namespace DNDS::ODE
 
                         fincrement(x, xinc, 1.0, 0);
 
-                        fdt(x, dTau, 1.0, 0);
+                        frhs(rhsbuf[1], x, dTau, iter, 1.0, 0);
+                    }
+                    else if (method == 0)
+                    {
+                        rhsMid.setConstant(0.0);
+                        {
+                            real cmid = -wInteg(2) / cInter(3);
+                            rhsMid.addTo(xMid, -1. / dt * cmid);
+                            rhsMid.addTo(xLast, (cmid * cInter(0) + 1) / dt);
+                            rhsMid.addTo(x, (cmid * cInter(1) - 1) / dt);
+                            rhsMid.addTo(rhsbuf[0], cmid * cInter(2) + 1 * wInteg(0));
+                            rhsMid.addTo(rhsbuf[1], cmid * cInter(3) + 1 * wInteg(2));
+                            rhsMid.addTo(rhsbuf[2], 1 * wInteg(1));
+                            fdt(xMid, dTau, 1.0, 1);
+                            fsolve(xMid, rhsMid, dTau, dt, std::abs(1 * wInteg(1)), xinc, iter, 1);
+                        }
+                        fincrement(xMid, xinc, 1.0, 1);
+                        frhs(rhsbuf[2], xMid, dTau, iter, alphaHM3, 1);
 
+                        rhsFull.setConstant(0.0);
+                        {
+                            real cmid = 1. / cInter(3);
+                            rhsFull.addTo(xMid, -1. / dt * cmid);
+                            rhsFull.addTo(xLast, (cmid * cInter(0) + 0) / dt);
+                            rhsFull.addTo(x, (cmid * cInter(1) - 0) / dt);
+                            rhsFull.addTo(rhsbuf[0], cmid * cInter(2) + 0 * wInteg(0));
+                            rhsFull.addTo(rhsbuf[1], 1 /* cmid * cInter(3) */ + 0 * wInteg(2));
+                            // rhsFull.addTo(rhsbuf[2], 0 * wInteg(1));
+                            fdt(x, dTau, 1.0, 0);
+                            fsolve(x, rhsFull, dTau, dt, 1 /* cmid * cInter(3) */, xinc, iter, 0);
+                        }
+                        fincrement(x, xinc, 1.0, 0);
                         frhs(rhsbuf[1], x, dTau, iter, 1.0, 0);
                     }
                     else
