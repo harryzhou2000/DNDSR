@@ -33,11 +33,12 @@
     "dataIOControl": {
         "uniqueStamps": false,
         "meshRotZ": 0.0,
-        "meshFile": "../data/mesh/BL_1EM5.cgns",
-        "outPltName": "../data/out/BL_1EM5",
-        "outLogName": "../data/out/BL_1EM5",
+        "meshFile": "../data/mesh/BL_1EM5_V1.cgns",
+        "outPltName": "../data/out/BL_1EM5_V1",
+        "outLogName": "../data/out/BL_1EM5_V1",
         "outPltMode": 0,
         "readMeshMode": 0,
+        "outBndData": true,
         "outPltTecplotFormat": true,
         "outPltVTKFormat": false,
         "outAtPointData": true,
@@ -63,16 +64,21 @@
     "vfvSettings": {
         "maxOrder": 1,
         "intOrder": 1,
-        "cacheDiffBase": false,
         "jacobiRelax": 1.0,
-        "SORInstead": true,
+        "SORInstead": false,
         "smoothThreshold": 1e-3,
         "WBAP_nStd": 10.0,
         "normWBAP": false,
         "subs2ndOrder": 1,
         "baseSettings": {
             "localOrientation": true,
-            "anisotropicLengths": true
+            "anisotropicLengths": false
+        },
+        "functionalSettings": {
+            "scaleType": "BaryDiff",
+            "scaleMultiplier": 1.0,
+            "dirWeightScheme": "HQM_OPT",
+            "geomWeightScheme": "HQM_SD"
         }
     },
     "linearSolverControl": {
@@ -86,7 +92,7 @@
     "eulerSettings": {
         "ignoreSourceTerm": false,
         "useScalarJacobian": false,
-        "riemannSolverType": "Roe_M2",
+        "riemannSolverType": "Roe",
         "constMassForce": [
             0.0,
             0.0,
@@ -127,10 +133,24 @@
         "idealGasProperty": {
             "gamma": 1.4,
             "Rgas": 0.116221972344982,
-            "muGas": 1e-6,
+            "muGas": 1e-5,
             "prGas": 0.72,
             "TRef": 273.15,
             "CSutherland": 110.4
         }
-    }
+    },
+    "bcSettings": [
+        {
+            "type": "BCOut",
+            "name": "Rout",
+            "value": [
+                1,
+                1,
+                0,
+                0,
+                79.8650793650794,
+                1.3
+            ]
+        }
+    ]
 }
