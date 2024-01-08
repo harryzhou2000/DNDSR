@@ -367,6 +367,11 @@ namespace DNDS::CFV
             if (settings.cacheDiffBase)
                 faceDiffBaseCache.ResizeRow(iFace, 2 * qFace.GetNumPoints());
 
+            tSmallCoords coords, coordsC;
+            mesh->GetCoordsOnFace(iFace, coords);
+            coordsC = coords;
+            coordsC.colwise() -= faceCent[iFace];
+
             // * get bdv cache
             SummationNoOp noOp;
             for (int if2c = 0; if2c < 2; if2c++)
@@ -490,11 +495,9 @@ namespace DNDS::CFV
             if (settings.functionalSettings.anisotropicType == VRSettings::FunctionalSettings::InertiaCoordBB)
             {
                 Geom::tGPoint faceCoordNorm = faceCoord.colwise().normalized();
-                tSmallCoords coords, coordsL, coordsR;
-                mesh->GetCoordsOnFace(iFace, coords);
-                coords.colwise() -= faceCent[iFace];
-                coordsL = coords.colwise() - faceBaryDiffL;
-                coordsR = coords.colwise() - faceBaryDiffR;
+                tSmallCoords coordsL, coordsR;
+                coordsL = coordsC.colwise() - faceBaryDiffL;
+                coordsR = coordsC.colwise() - faceBaryDiffR;
                 coordsL = faceCoordNorm.transpose() * coordsL;
                 coordsR = faceCoordNorm.transpose() * coordsR;
                 Geom::tPoint faceCoordBB =
@@ -567,6 +570,44 @@ namespace DNDS::CFV
                     break;
                 }
                 break;
+            case VRSettings::FunctionalSettings::TEST_OPT:
+            {
+                if (dim == 2 || settings.maxOrder != 3) // use manual value
+                {
+                    switch (settings.maxOrder)
+                    {
+                    case 3:
+                        wd[3] = settings.functionalSettings.manualDirWeights(3);
+                    case 2:
+                        wd[2] = settings.functionalSettings.manualDirWeights(2);
+                    case 1:
+                        wd[1] = settings.functionalSettings.manualDirWeights(1);
+                        wd[0] = settings.functionalSettings.manualDirWeights(0);
+                        break;
+                    default:
+                        DNDS_assert(false);
+                        break;
+                    }
+                }
+                else // current scheme of a/d b/d geom weighting
+                {
+                    auto faceSpan = Geom::Elem::GetElemNodeMajorSpan(coords);
+                    real a = faceSpan(0);
+                    real b = faceSpan(1);
+                    real d = faceBaryDiffV.norm();
+                    real r1 = a / (d + verySmallReal);
+                    real r2 = b / (d + verySmallReal);
+                    real rr = std::sqrt(sqr(r1) + sqr(r2));
+                    real lrr = std::log(rr);
+
+                    wd[3] = std::sqrt(5.299e-2 - 4.63e-2 * std::exp(-0.5 * sqr((lrr - 9.028e-12) / 0.175)));
+                    wd[2] = std::sqrt(0.0676 - 0.0547 * std::exp(-0.5 * sqr((lrr + 2.74e-10) / 0.1376)));
+                    wd[1] = std::sqrt(0.3604 - 0.0774 * std::exp(-0.5 * sqr((lrr - 1.8e-10) / 0.1325)));
+                    wd[0] = std::pow(1.0031 + 0.86 * std::pow(r1 * r2, 0.5327), 0.98132);
+                    wg = 1; // force no wg
+                }
+            }
+            break;
             default:
                 DNDS_assert(false);
                 break;

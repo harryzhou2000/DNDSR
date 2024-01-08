@@ -1045,8 +1045,10 @@ namespace DNDS::Euler
 
             uTemp = cxInc;
             uTemp *= alphaPP_tmp;
-            cx += uTemp;
-            // eval.AddFixedIncrement(cx, uTemp, alpha);
+            //*directadd
+            // cx += uTemp;
+            //*fixing add
+            eval.AddFixedIncrement(cx, uTemp, alpha);
             eval.AssertMeanValuePP(cx, true);
 
             // eval.AddFixedIncrement(cx, cxInc, alpha);

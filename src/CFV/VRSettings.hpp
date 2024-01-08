@@ -70,6 +70,7 @@ namespace DNDS::CFV
                 UnknownDirWeight = -1,
                 Factorial = 0,
                 HQM_OPT = 1,
+                TEST_OPT = 1000,
                 ManualDirWeight = 999,
             } dirWeightScheme = Factorial;
 
@@ -205,7 +206,8 @@ namespace DNDS::CFV
         {{VRSettings::FunctionalSettings::UnknownDirWeight, nullptr},
          {VRSettings::FunctionalSettings::Factorial, "Factorial"},
          {VRSettings::FunctionalSettings::HQM_OPT, "HQM_OPT"},
-         {VRSettings::FunctionalSettings::ManualDirWeight, "ManualDirWeight"}})
+         {VRSettings::FunctionalSettings::ManualDirWeight, "ManualDirWeight"},
+         {VRSettings::FunctionalSettings::TEST_OPT, "TEST_OPT"}})
 
     NLOHMANN_JSON_SERIALIZE_ENUM(
         VRSettings::FunctionalSettings::GeomWeightScheme,
