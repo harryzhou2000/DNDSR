@@ -572,7 +572,7 @@ namespace DNDS::CFV
                 break;
             case VRSettings::FunctionalSettings::TEST_OPT:
             {
-                if (dim == 2 || settings.maxOrder != 3) // use manual value
+                if (settings.maxOrder != 3) // use manual value
                 {
                     switch (settings.maxOrder)
                     {
@@ -589,7 +589,7 @@ namespace DNDS::CFV
                         break;
                     }
                 }
-                else // current scheme of a/d b/d geom weighting
+                else if (dim == 3) // current scheme of a/d b/d geom weighting
                 {
                     auto faceSpan = Geom::Elem::GetElemNodeMajorSpan(coords);
                     real a = faceSpan(0);
@@ -598,12 +598,22 @@ namespace DNDS::CFV
                     real r1 = a / (d + verySmallReal);
                     real r2 = b / (d + verySmallReal);
                     real rr = std::sqrt(sqr(r1) + sqr(r2));
-                    real lrr = std::log(rr);
+                    real lrr = std::log10(rr);
 
-                    wd[3] = std::sqrt(5.299e-2 - 4.63e-2 * std::exp(-0.5 * sqr((lrr - 9.028e-12) / 0.175)));
-                    wd[2] = std::sqrt(0.0676 - 0.0547 * std::exp(-0.5 * sqr((lrr + 2.74e-10) / 0.1376)));
-                    wd[1] = std::sqrt(0.3604 - 0.0774 * std::exp(-0.5 * sqr((lrr - 1.8e-10) / 0.1325)));
-                    wd[0] = std::pow(1.0031 + 0.86 * std::pow(r1 * r2, 0.5327), 0.98132);
+                    wd[0] = std::sqrt(std::pow(1.0031 + 0.86 * std::pow(r1 * r2, 0.5327), 0.98132));
+                    wd[1] = wd[0] * std::sqrt(0.3604 - 0.0774 * std::exp(-0.5 * sqr((lrr - 1.8e-10) / 0.1325)));
+                    wd[2] = wd[0] * std::sqrt(0.0676 - 0.0547 * std::exp(-0.5 * sqr((lrr + 2.74e-10) / 0.1376)));
+                    wd[3] = wd[0] * std::sqrt(5.299e-2 - 4.63e-2 * std::exp(-0.5 * sqr((lrr - 9.028e-12) / 0.175)));
+                    wg = 1; // force no wg
+                }
+                else if (dim == 2)
+                {
+                    real r = this->GetFaceArea(iFace) / faceBaryDiffV.norm();
+                    real lr = std::log10(r);
+                    wd[0] = std::sqrt(std::pow(1.00745 + r, 1.004));
+                    wd[1] = wd[0] * std::sqrt(0.359 - 0.0674 * std::exp(-sqr(lr - 5.18e-11) / (2 * sqr(0.124))));
+                    wd[2] = wd[0] * std::sqrt(0.0676 - 0.0507 * std::exp(-sqr(lr - 3.15e-10) / (2 * sqr(0.137))));
+                    wd[3] = wd[0] * std::sqrt(0.0529 - 0.0487 * std::exp(-sqr(lr - 1.33e-10) / (2 * sqr(0.167))));
                     wg = 1; // force no wg
                 }
             }
