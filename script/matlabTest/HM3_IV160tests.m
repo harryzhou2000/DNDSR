@@ -50,6 +50,27 @@ dataHM3_V1.niter = [74
 28
 ] * 2.1;
 
+dataHM3_V2.name = "HMLBM";
+dataHM3_V2.nstep = [5,10,20,40,80]';
+dataHM3_V2.err = [3.59318e-03
+5.78180e-04
+7.81526e-05
+9.94905e-06
+1.27897e-06
+];
+dataHM3_V2.cputime = dataHM3_V1.cputime./dataHM3_V1.niter.*[84
+49
+41
+36
+30
+] * 2.1;
+dataHM3_V2.niter = [84
+49
+41
+36
+30
+] * 2.1;
+
 dataESDIRK4.name = "ESDIRK4";
 dataESDIRK4.nstep=[5,10,20,40,80]';
 dataESDIRK4.err=[4.58830e-04
@@ -95,7 +116,7 @@ dataBDF2.niter = [67
 25
 ];
 
-datas = {dataHM3, dataHM3_V1, dataESDIRK4, dataBDF2};
+datas = {dataHM3, dataHM3_V1, dataHM3_V2, dataESDIRK4, dataBDF2};
 
 
 for i = 1:numel(datas)

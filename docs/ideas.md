@@ -120,3 +120,10 @@ Array objects for exporting:
 - start with lower order
 - CFL adapt
 - RCM? reordering
+
+## mesh elevator
+
+- could just use serial
+- parallel: need some control on bnd-bnd / node-bnd
+- geometrical edge detection: 1. each node has set of norms on bnds; 2. on edge: see if norms of a endpoint is close to normal to the edge(or else dispose of it), which means filtering out those deviates the edge norm too much
+- rbf field: nodes include original bnd nodes and new bnd nodes
