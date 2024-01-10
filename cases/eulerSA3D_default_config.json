@@ -5,11 +5,17 @@
         "steadyQuit": false,
         "useRestart": false,
         "useImplicitPP": false,
+        "useRHSfPP": false,
+        "rhsfPPScale": 1.0,
         "odeCode": 0,
         "tEnd": 3e+200,
         "odeSetting1": 0.0,
         "odeSetting2": 0.0,
-        "odeSetting3": 0.0
+        "odeSetting3": 0.0,
+        "odeSetting4": 0.0,
+        "partitonMeshOnly": false,
+        "dtIncreaseLimit": 2.0,
+        "dtIncreaseAfterCount": 0
     },
     "implicitReconstructionControl": {
         "nInternalRecStep": 1,
@@ -21,7 +27,9 @@
         "nRecConsolCheck": 1,
         "nRecMultiplyForZeroedGrad": 1,
         "storeRecInc": false,
-        "dampRecIncDTau": false
+        "dampRecIncDTau": false,
+        "zeroRecForSteps": 0,
+        "zeroRecForStepsInternal": 0
     },
     "outputControl": {
         "nConsoleCheck": 1,
@@ -36,6 +44,8 @@
         "nRestartOutC": 2147483647,
         "nRestartOutInternal": 2147483647,
         "nRestartOutCInternal": 2147483647,
+        "nTimeAverageOut": 2147483647,
+        "nTimeAverageOutC": 2147483647,
         "tDataOut": 3e+200
     },
     "implicitCFLControl": {
@@ -44,10 +54,12 @@
         "nCFLRampStart": 2147483647,
         "nCFLRampLength": 2147483647,
         "CFLRampEnd": 0.0,
-        "useLocalDt": true
+        "useLocalDt": true,
+        "nSmoothDTau": 0
     },
     "convergenceControl": {
         "nTimeStepInternal": 20,
+        "nTimeStepInternalMin": 5,
         "rhsThresholdInternal": 1e-10,
         "res_base": 0.0,
         "useVolWiseResidual": false
@@ -58,8 +70,8 @@
         "meshScale": 1.0,
         "meshFile": "data/mesh/NACA0012_WIDE_H3.cgns",
         "outPltName": "data/out/debugData_",
-        "outLogName": "data/out/debugData_",
-        "outRestartName": "data/out/debugData_",
+        "outLogName": "",
+        "outRestartName": "",
         "outPltMode": 0,
         "readMeshMode": 0,
         "outPltTecplotFormat": true,
@@ -69,6 +81,7 @@
         "nASCIIPrecision": 5,
         "outVolumeData": true,
         "outBndData": false,
+        "outCellScalarNames": [],
         "serializerSaveURec": false
     },
     "boundaryDefinition": {
@@ -94,15 +107,20 @@
         "smoothIndicatorProcedure": 0,
         "limiterProcedure": 0,
         "nPartialLimiterStart": 0,
-        "nPartialLimiterStartLocal": 0
+        "nPartialLimiterStartLocal": 0,
+        "preserveLimited": false
     },
     "linearSolverControl": {
+        "jacobiCode": 1,
         "sgsIter": 0,
         "sgsWithRec": 0,
         "gmresCode": 0,
         "nGmresSpace": 10,
         "nGmresIter": 2,
         "initWithLastURecInc": false
+    },
+    "timeAverageControl": {
+        "enabled": false
     },
     "others": {
         "nFreezePassiveInner": 0
@@ -117,7 +135,12 @@
         "useScalarJacobian": false,
         "ignoreSourceTerm": false,
         "specialBuiltinInitializer": 0,
+        "uRecAlphaCompressPower": 2.0,
+        "uRecBetaCompressPower": 11.0,
         "riemannSolverType": "Roe",
+        "riemannSolverTypeAux": "UnknownRS",
+        "rsMeanValueEig": 0,
+        "rsRotateScheme": 0,
         "nCentralSmoothStep": 0,
         "constMassForce": [
             0.0,
@@ -139,7 +162,8 @@
             "muGas": 1.0,
             "prGas": 0.72,
             "TRef": 273.15,
-            "CSutherland": 110.4
+            "CSutherland": 110.4,
+            "muModel": 1
         }
     },
     "vfvSettings": {
@@ -152,6 +176,7 @@
         "smoothThreshold": 0.01,
         "WBAP_nStd": 10.0,
         "normWBAP": false,
+        "limiterBiwayAlter": 0,
         "subs2ndOrder": 0,
         "baseSettings": {
             "localOrientation": false,
@@ -161,6 +186,7 @@
             "scaleType": "BaryDiff",
             "scaleMultiplier": 1.0,
             "dirWeightScheme": "Factorial",
+            "dirWeightCombPowV": 1,
             "manualDirWeights": [
                 1.0,
                 1.0,
@@ -174,7 +200,12 @@
             "geomWeightPower2": 0.0,
             "useAnisotropicFunctional": false,
             "anisotropicType": "InertiaCoord",
-            "inertiaWeightPower": 1.0
+            "inertiaWeightPower": 1.0,
+            "geomWeightBias": 0.0,
+            "greenGauss1Weight": 0.0,
+            "greenGauss1Bias": 0.5,
+            "greenGauss1Penalty": 0.0,
+            "greenGaussSpacial": 0
         }
     },
     "bcSettings": []

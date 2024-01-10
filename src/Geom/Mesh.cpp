@@ -1274,12 +1274,13 @@ namespace DNDS::Geom
         DNDS_MAKE_SSP(bMesh.cell2node.son, mpi);
         DNDS_MAKE_SSP(bMesh.coords.father, mpi);
         DNDS_MAKE_SSP(bMesh.coords.son, mpi);
-        // if (isPeriodic)
-        // {
-        //     bMesh.isPeriodic = true;
-        //     DNDS_MAKE_SSP(bMesh.cell2nodePbi.father, mpi);
-        //     DNDS_MAKE_SSP(bMesh.cell2nodePbi.son, mpi);
-        // }
+        if (isPeriodic)
+        {
+            bMesh.isPeriodic = true;
+            bMesh.periodicInfo = this->periodicInfo;
+            DNDS_MAKE_SSP(bMesh.cell2nodePbi.father, NodePeriodicBits::CommType(), NodePeriodicBits::CommMult(), mpi);
+            DNDS_MAKE_SSP(bMesh.cell2nodePbi.son, NodePeriodicBits::CommType(), NodePeriodicBits::CommMult(), mpi);
+        }
 
         bMesh.cellElemInfo.father = bndElemInfo.father;
         bMesh.cellElemInfo.son = bndElemInfo.son; //! TODO: make this a safe copy!!
@@ -1301,12 +1302,32 @@ namespace DNDS::Geom
             bMesh.coords[iBNode] = coords[bMesh.node2parentNode[iBNode]];
         }
         bMesh.cell2node.father->Resize(this->NumBnd());
+        if (isPeriodic)
+            bMesh.cell2nodePbi.father->Resize(this->NumBnd());
         for (index iB = 0; iB < this->NumBnd(); iB++)
         {
             bMesh.cell2node.ResizeRow(iB, bnd2node.RowSize(iB));
+            if (isPeriodic)
+                bMesh.cell2nodePbi.ResizeRow(iB, bnd2node.RowSize(iB));
+            
             for (rowsize ib2n = 0; ib2n < bnd2node.RowSize(iB); ib2n++)
-                bMesh.cell2node[iB][ib2n] = node2bndNode.at(bnd2node[iB][ib2n]),
+            {
+                if(bnd2face.at(iB) < 0)//where bnd has not a face!
+                    bMesh.cell2node[iB][ib2n] = node2bndNode.at(bnd2node[iB][ib2n]);
+                else
+                    bMesh.cell2node[iB][ib2n] = node2bndNode.at(face2node[bnd2face.at(iB)][ib2n]); //* respect the face ordering if possible
                 DNDS_assert(node2bndNode.at(bnd2node[iB][ib2n]) >= 0);
+                
+                if (isPeriodic)
+                {
+                    if(bnd2face.at(iB) < 0) //where bnd has not a face!
+                        bMesh.cell2nodePbi[iB][ib2n] = Geom::NodePeriodicBits{};// a invalid value
+                    else
+                    {
+                        bMesh.cell2nodePbi[iB][ib2n] = face2nodePbi[bnd2face.at(iB)][ib2n];
+                    }
+                }
+            }
         }
 
         bMesh.cell2node.father->Compress();
