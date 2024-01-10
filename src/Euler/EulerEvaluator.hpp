@@ -74,7 +74,7 @@ namespace DNDS::Euler
         std::vector<real> lambdaFaceVis;
         std::vector<real> deltaLambdaFace;
 
-        std::vector<std::vector<real>> dWall;
+        std::vector<Eigen::Vector<real, Eigen::Dynamic>> dWall;
 
         // ArrayVDOF<25> dRdUrec;
         // ArrayVDOF<25> dRdb;

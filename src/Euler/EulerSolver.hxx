@@ -121,6 +121,36 @@ namespace DNDS::Euler
         std::unique_ptr<tGMRES_u> gmres;
         std::unique_ptr<tGMRES_uRec> gmresRec;
 
+        
+
+        if (config.linearSolverControl.gmresCode == 1 ||
+            config.linearSolverControl.gmresCode == 2)
+            gmres = std::make_unique<tGMRES_u>(
+                config.linearSolverControl.nGmresSpace,
+                [&](decltype(u) &data)
+                {
+                    vfv->BuildUDof(data, nVars);
+                });
+
+        if (config.implicitReconstructionControl.recLinearScheme == 1)
+            gmresRec = std::make_unique<tGMRES_uRec>(
+                config.implicitReconstructionControl.nGmresSpace,
+                [&](decltype(uRec) &data)
+                {
+                    vfv->BuildURec(data, nVars);
+                });
+
+        // fmt::print("pEval is {}", (void*)(pEval.get()));
+        EulerEvaluator<model> &eval = *pEval;
+
+        eval.InitializeUDOF(u);
+        if (config.timeAverageControl.enabled)
+            wAveraged.setConstant(0.0);
+        if (config.timeMarchControl.useRestart)
+        {
+            DNDS_assert(config.restartState.iStep >= 1);
+            ReadRestart(config.restartState.lastRestartFile);
+        }
         OutputPicker outputPicker;
         {
             OutputPicker::tMap outMap;
@@ -151,39 +181,14 @@ namespace DNDS::Euler
                 real aCond = HardEigen::EigenLeastSquareInverse(A, AInv);
                 return aCond;
             };
+            outMap["dWall"] = [&](index iCell)
+            {
+                return eval.dWall.at(iCell).mean();
+            };
 
             outputPicker.setMap(outMap);
         }
         tAdditionalCellScalarList addOutList = outputPicker.getSubsetList(config.dataIOControl.outCellScalarNames);
-
-        if (config.linearSolverControl.gmresCode == 1 ||
-            config.linearSolverControl.gmresCode == 2)
-            gmres = std::make_unique<tGMRES_u>(
-                config.linearSolverControl.nGmresSpace,
-                [&](decltype(u) &data)
-                {
-                    vfv->BuildUDof(data, nVars);
-                });
-
-        if (config.implicitReconstructionControl.recLinearScheme == 1)
-            gmresRec = std::make_unique<tGMRES_uRec>(
-                config.implicitReconstructionControl.nGmresSpace,
-                [&](decltype(uRec) &data)
-                {
-                    vfv->BuildURec(data, nVars);
-                });
-
-        // fmt::print("pEval is {}", (void*)(pEval.get()));
-        EulerEvaluator<model> &eval = *pEval;
-
-        eval.InitializeUDOF(u);
-        if (config.timeAverageControl.enabled)
-            wAveraged.setConstant(0.0);
-        if (config.timeMarchControl.useRestart)
-        {
-            DNDS_assert(config.restartState.iStep >= 1);
-            ReadRestart(config.restartState.lastRestartFile);
-        }
 
         /*******************************************************/
         /*                 SOLVER MAJOR START                  */

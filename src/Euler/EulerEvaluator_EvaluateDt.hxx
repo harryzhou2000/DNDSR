@@ -24,30 +24,37 @@ namespace DNDS::Euler
                 auto elem = mesh->GetFaceElement(iFace);
                 if (elem.type == Geom::Elem::ElemType::Line2)
                 {
+                    Geom::tSmallCoords coords;
+                    mesh->GetCoordsOnFace(iFace, coords);
                     Eigen::Matrix<real, 3, 3> tri;
-                    tri(Eigen::all, 0) = mesh->coords[mesh->face2node[iFace][0]];
-                    tri(Eigen::all, 1) = mesh->coords[mesh->face2node[iFace][1]];
-                    tri(Eigen::all, 2) = mesh->coords[mesh->face2node[iFace][1]] + Geom::tPoint{0., 0., vfv->GetFaceArea(iFace)};
+                    mesh->GetCoordsOnFace(iFace, coords);
+                    tri(Eigen::all, 0) = coords(Eigen::all, 0);
+                    tri(Eigen::all, 1) = coords(Eigen::all, 1);
+                    tri(Eigen::all, 2) = coords(Eigen::all, 1) + Geom::tPoint{0., 0., vfv->GetFaceArea(iFace)};
                     Triangles.push_back(tri);
                 }
                 else if (elem.type == Geom::Elem::ElemType::Tri3)
                 {
+                    Geom::tSmallCoords coords;
+                    mesh->GetCoordsOnFace(iFace, coords);
                     Eigen::Matrix<real, 3, 3> tri;
-                    tri(Eigen::all, 0) = mesh->coords[mesh->face2node[iFace][0]];
-                    tri(Eigen::all, 1) = mesh->coords[mesh->face2node[iFace][1]];
-                    tri(Eigen::all, 2) = mesh->coords[mesh->face2node[iFace][2]];
+                    tri(Eigen::all, 0) = coords(Eigen::all, 0);
+                    tri(Eigen::all, 1) = coords(Eigen::all, 1);
+                    tri(Eigen::all, 2) = coords(Eigen::all, 2);
                     Triangles.push_back(tri);
                 }
                 else if (elem.type == Geom::Elem::ElemType::Quad4)
                 {
+                    Geom::tSmallCoords coords;
+                    mesh->GetCoordsOnFace(iFace, coords);
                     Eigen::Matrix<real, 3, 3> tri;
-                    tri(Eigen::all, 0) = mesh->coords[mesh->face2node[iFace][0]];
-                    tri(Eigen::all, 1) = mesh->coords[mesh->face2node[iFace][1]];
-                    tri(Eigen::all, 2) = mesh->coords[mesh->face2node[iFace][2]];
+                    tri(Eigen::all, 0) = coords(Eigen::all, 0);
+                    tri(Eigen::all, 1) = coords(Eigen::all, 1);
+                    tri(Eigen::all, 2) = coords(Eigen::all, 2);
                     Triangles.push_back(tri);
-                    tri(Eigen::all, 0) = mesh->coords[mesh->face2node[iFace][0]];
-                    tri(Eigen::all, 1) = mesh->coords[mesh->face2node[iFace][2]];
-                    tri(Eigen::all, 2) = mesh->coords[mesh->face2node[iFace][3]];
+                    tri(Eigen::all, 0) = coords(Eigen::all, 0);
+                    tri(Eigen::all, 1) = coords(Eigen::all, 2);
+                    tri(Eigen::all, 2) = coords(Eigen::all, 3);
                     Triangles.push_back(tri);
                 }
                 else
@@ -122,6 +129,7 @@ namespace DNDS::Euler
                     FT sqd = tree.squared_distance(pQ);
                     // std::cout << "sqd" << sqd << std::endl;
                     dWall[iCell][ig] = std::max(std::sqrt(sqd), 1e-12);
+                    // dWall[iCell][ig] = p(0) < 0 ? p({0, 1}).norm() : p(1); // test for plate BL
                     if (dWall[iCell][ig] < minDist)
                         minDist = dWall[iCell][ig];
                 }
@@ -133,7 +141,7 @@ namespace DNDS::Euler
             {
                 // std::cout << "iCell " << iCell << std::endl;
                 auto quadCell = vfv->GetCellQuad(iCell);
-                dWall[iCell].resize(quadCell.GetNumPoints(), std::pow(veryLargeReal, 1. / 4.));
+                dWall[iCell].setConstant(quadCell.GetNumPoints(), std::pow(veryLargeReal, 1. / 4.));
             }
         }
         std::cout << "MinDist: " << minDist << std::endl;
