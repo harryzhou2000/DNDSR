@@ -8,7 +8,7 @@
         "tEnd": 3e+200
     },
     "convergenceControl": {
-        "nTimeStepInternal": 100000,
+        "nTimeStepInternal": 20000,
         "rhsThresholdInternal": 1e-30,
         "res_base": 0.0,
         "useVolWiseResidual": true
@@ -19,7 +19,7 @@
         "consoleOutputMode": 1,
         "nDataOutC": 100,
         "nDataOut": 10,
-        "nDataOutCInternal": 100,
+        "nDataOutCInternal": 1000,
         "nDataOutInternal": 100000000,
         "nRestartOutCInternal": 100000,
         "nRestartOutInternal": 2000000,
@@ -36,15 +36,16 @@
     "dataIOControl": {
         "uniqueStamps": false,
         "meshRotZ": 0.0,
-        "meshFile": "../data/mesh/BL_1EM6_V1_L1_SYM.cgns",
-        "outPltName": "../data/out/BL_1EM6_V1_L1_SYM_TESTOPT_RM4",
-        "outLogName": "../data/out/BL_1EM6_V1_L1_SYM_TESTOPT_RM4",
-        "outRestartName": "../data/out/BL_1EM6_V1_L1_SYM_TESTOPT_RM4",
+        "meshFile": "../data/mesh/BL_5EM7_V1_L1.cgns",
+        "outPltName": "../data/out/BL_5EM7_V1_L1_RE5M_FCTH_SD.dir/out",
         "outPltMode": 0,
         "readMeshMode": 0,
+        "outCellScalarNames": [
+            "dWall"
+        ],
         "outBndData": true,
         "outPltTecplotFormat": true,
-        "outPltVTKFormat": false,
+        "outPltVTKFormat": true,
         "outAtPointData": true,
         "outAtCellData": true
     },
@@ -58,7 +59,7 @@
         "PeriodicTranslation3": [
             0.0,
             0.0,
-            0.2
+            0.02
         ]
     },
     "implicitReconstructionControl": {
@@ -93,11 +94,13 @@
         },
         "functionalSettings": {
             "scaleType": "BaryDiff",
-            "scaleMultiplier": 1.0,
+            "scaleMultiplier": 1,
             // "dirWeightScheme": "HQM_OPT",
-            // "geomWeightScheme": "HQM_SD",
-            "dirWeightScheme": "TEST_OPT",
-            "geomWeightScheme": "GWNone",
+            "geomWeightScheme": "HQM_SD",
+            // "dirWeightScheme": "TEST_OPT",
+            // "geomWeightScheme": "GWNone",
+            "dirWeightScheme": "Factorial",
+            // "geomWeightScheme": "GWNone",
             "_tail": 0
         }
     },
@@ -155,10 +158,11 @@
         "idealGasProperty": {
             "gamma": 1.4,
             "Rgas": 0.116221972344982,
-            "muGas": 1e-6,
+            "muGas": 0.2e-6,
             "prGas": 0.72,
             "TRef": 273.15,
-            "CSutherland": 110.4
+            "CSutherland": 110.4,
+            "muModel": 0
         }
     },
     "bcSettings": [
