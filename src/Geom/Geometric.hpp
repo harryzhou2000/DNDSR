@@ -10,6 +10,18 @@ namespace DNDS::Geom
     using tJacobi = Eigen::Matrix3d;
     using tGPoint = Eigen::Matrix3d;
     using tSmallCoords = Eigen::Matrix<real, 3, Eigen::Dynamic>;
+    struct SmallCoordsAsVector : public tSmallCoords
+    {
+        auto operator[](Eigen::Index i)
+        {
+            return tSmallCoords::operator()(Eigen::all, i);
+        }
+
+        const auto operator[](Eigen::Index i) const
+        {
+            return tSmallCoords::operator()(Eigen::all, i);
+        }
+    };
 
     static_assert(std::is_signed_v<t_index>);
 

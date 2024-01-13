@@ -54,8 +54,6 @@ namespace DNDS::Geom
     using tIndPair = DNDS::ArrayPair<DNDS::ArrayIndex>;
     using tInd = decltype(tIndPair::father);
 
-
-
     enum MeshAdjState
     {
         Adj_Unknown = 0,
@@ -160,6 +158,10 @@ namespace DNDS::Geom
         t_index GetBndZone(index iB) { return bndElemInfo(iB, 0).zone; }
 
         MPIInfo &getMPI() { return mpi; }
+
+        void BuildO2FromO1Elevation(UnstructuredMesh &meshO1);
+
+        bool IsO1();
 
         /**
          * @brief directly load coords; gets faulty if isPeriodic!

@@ -411,6 +411,35 @@ namespace DNDS::Geom
 
 namespace DNDS::Geom
 {
+
+    bool UnstructuredMesh::IsO1()
+    {
+        using namespace Elem;
+        int hasBad = 0;
+        for(index iCell = 0 ; iCell < cellElemInfo.Size(); iCell ++)
+        {
+            auto eType = cellElemInfo(iCell, 0).getElemType();
+            if (eType == ElemType::Line2 ||
+                eType == ElemType::Tri3 || 
+                eType == ElemType::Quad4 || 
+                eType == ElemType::Tet4 || 
+                eType == ElemType::Hex8 ||
+                eType == ElemType::Prism6 ||
+                eType == ElemType::Pyramid5)
+            {
+                continue;
+            }
+            else
+            {
+                hasBad = 1;
+                break;
+            }
+        }
+        int hasBadAll;
+        MPI::Allreduce(&hasBad, &hasBadAll, 1, MPI_INT, MPI_SUM, mpi.comm);
+        return hasBad == 0;
+    }
+
     void UnstructuredMesh::
         BuildGhostPrimary()
     {

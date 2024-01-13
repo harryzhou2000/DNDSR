@@ -19,6 +19,7 @@ Mesh_Plts.cpp
 Mesh_Serial_BuildCell2Cell.cpp
 Mesh_Serial_ReadFromCGNS.cpp
 Mesh_Serial_Partition.cpp
+Mesh_Elevation.cpp
 )
 
 dnds_add_lib_fast(${LIBNAME} "${CPPS}" "${LINKS}")

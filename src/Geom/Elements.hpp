@@ -17,6 +17,8 @@ namespace DNDS::Geom::Elem
      *
      */
 
+    static const int CellNumNodeMax = 27; //!
+
     enum ElemType
     {
         UnknownElem = 0,
@@ -249,6 +251,94 @@ namespace DNDS::Geom::Elem
     }
     const auto FaceNodeList = __Get_FaceNodeList();
 
+    inline constexpr auto
+    __Get_ElemElevationSpan_O1O2List()
+    {
+        auto ret = std::array<std::array<std::array<t_index, 28>, 28>, ElemType_NUM>{};
+        for (auto &i : ret)
+            for (auto &j : i)
+                for (auto &k : j)
+                    k = invalid_index;
+        using TF = std::array<t_index, 28>;
+        ret[Line2][0] = TF{0, 1};
+
+        ret[Tri3][0] = TF{0, 1};
+        ret[Tri3][1] = TF{1, 2};
+        ret[Tri3][2] = TF{2, 0};
+
+        ret[Quad4][0] = TF{0, 1};
+        ret[Quad4][1] = TF{1, 2};
+        ret[Quad4][2] = TF{2, 3};
+        ret[Quad4][3] = TF{3, 0};
+        ret[Quad4][4] = TF{0, 1, 2, 3};
+
+        auto IndexToZeroBase = [&](ElemType t)
+        {
+            for (auto &j : ret[t])
+                for (auto &k : j)
+                    k = (k == invalid_index || k == 0)
+                            ? invalid_index
+                            : k - 1;
+        };
+
+        ret[Tet4][0] = TF{1, 2};
+        ret[Tet4][1] = TF{2, 3};
+        ret[Tet4][2] = TF{3, 1};
+        ret[Tet4][3] = TF{1, 4};
+        ret[Tet4][4] = TF{2, 4};
+        ret[Tet4][5] = TF{3, 4};
+        IndexToZeroBase(Tet4);
+
+        ret[Hex8][0] = TF{1, 2};
+        ret[Hex8][1] = TF{2, 3};
+        ret[Hex8][2] = TF{3, 4};
+        ret[Hex8][3] = TF{4, 1};
+        ret[Hex8][4] = TF{1, 5};
+        ret[Hex8][5] = TF{2, 6};
+        ret[Hex8][6] = TF{3, 7};
+        ret[Hex8][7] = TF{4, 8};
+        ret[Hex8][8] = TF{5, 6};
+        ret[Hex8][9] = TF{6, 7};
+        ret[Hex8][10] = TF{7, 8};
+        ret[Hex8][11] = TF{8, 5};
+        ret[Hex8][12] = TF{1, 4, 3, 2};
+        ret[Hex8][13] = TF{1, 2, 6, 5};
+        ret[Hex8][14] = TF{2, 3, 7, 6};
+        ret[Hex8][15] = TF{3, 4, 8, 7};
+        ret[Hex8][16] = TF{1, 5, 8, 4};
+        ret[Hex8][17] = TF{5, 6, 7, 8};
+        ret[Hex8][18] = TF{1, 2, 3, 4, 5, 6, 7, 8};
+        IndexToZeroBase(Hex8);
+
+        ret[Prism6][0] = TF{1, 2};
+        ret[Prism6][1] = TF{2, 3};
+        ret[Prism6][2] = TF{3, 1};
+        ret[Prism6][3] = TF{1, 4};
+        ret[Prism6][4] = TF{2, 5};
+        ret[Prism6][5] = TF{3, 6};
+        ret[Prism6][6] = TF{4, 5};
+        ret[Prism6][7] = TF{5, 6};
+        ret[Prism6][8] = TF{6, 4};
+        ret[Prism6][9] = TF{1, 2, 5, 4};
+        ret[Prism6][10] = TF{2, 3, 6, 5};
+        ret[Prism6][11] = TF{3, 1, 4, 6};
+        IndexToZeroBase(Prism6);
+
+        ret[Pyramid5][0] = TF{1, 2};
+        ret[Pyramid5][0] = TF{2, 3};
+        ret[Pyramid5][0] = TF{3, 4};
+        ret[Pyramid5][0] = TF{4, 1};
+        ret[Pyramid5][0] = TF{1, 5};
+        ret[Pyramid5][0] = TF{2, 5};
+        ret[Pyramid5][0] = TF{3, 5};
+        ret[Pyramid5][0] = TF{4, 5};
+        ret[Pyramid5][0] = TF{1, 4, 3, 2};
+        IndexToZeroBase(Pyramid5);
+
+        return ret;
+    }
+    const auto ElemElevationSpan_O1O2List = __Get_ElemElevationSpan_O1O2List();
+
     constexpr t_real ParamSpaceVol(ParamSpace ps)
     {
         if (ps == LineSpace)
@@ -266,6 +356,92 @@ namespace DNDS::Geom::Elem
         if (ps == PyramidSpace)
             return 4. / 3;
         return 0;
+    }
+
+    constexpr inline int GetElemElevation_O1O2_NumNode(ElemType t)
+    {
+        switch (t)
+        {
+        case Line2:
+            return 1;
+        case Tri3:
+            return 3;
+        case Quad4:
+            return 5;
+        case Tet4:
+            return 6;
+        case Hex8:
+            return 19;
+        case Prism6:
+            return 12;
+        case Pyramid5:
+            return 9;
+        default:
+            break;
+        }
+        return -1;
+    }
+
+    constexpr inline ElemType GetElemElevation_O1O2_NodeSpanType(ElemType t, t_index ine)
+    {
+        switch (t)
+        {
+        case Line2:
+            return Line2;
+        case Tri3:
+            return Line2;
+        case Quad4:
+            if (ine < 4)
+                return Line2;
+            else
+                return Quad4;
+        case Tet4:
+            return Line2;
+        case Hex8:
+            if (ine < 12)
+                return Line2;
+            else if (ine < 18)
+                return Quad4;
+            else
+                return Hex8;
+        case Prism6:
+            if (ine < 9)
+                return Line2;
+            else
+                return Quad4;
+        case Pyramid5:
+            if (ine < 8)
+                return Line2;
+            else
+                return Quad4;
+        default:
+            break;
+        }
+        return UnknownElem;
+    }
+
+    constexpr inline ElemType GetElemElevation_O1O2_ElevatedType(ElemType t)
+    {
+        switch (t)
+        {
+        case Line2:
+            return Line3;
+        case Tri3:
+            return Tri6;
+        case Quad4:
+            return Quad9;
+        case Tet4:
+            return Tet10;
+        case Hex8:
+            return Hex27;
+        case Prism6:
+            return Prism18;
+        case Pyramid5:
+            return Pyramid14;
+        default:
+            break;
+        }
+        return UnknownElem;
     }
 
     /**
@@ -966,6 +1142,11 @@ namespace DNDS::Geom::Elem
             return Dim_Order_NVNNNF[type][4];
         }
 
+        constexpr t_index GetNumElev_O1O2() const
+        {
+            return GetElemElevation_O1O2_NumNode(type);
+        }
+
         constexpr Element ObtainFace(t_index iFace) const
         {
             DNDS_assert(iFace < this->GetNumFaces());
@@ -981,6 +1162,25 @@ namespace DNDS::Geom::Elem
             DNDS_assert(iFace < this->GetNumFaces());
             for (t_index i = 0; i < ObtainFace(iFace).GetNumNodes(); i++)
                 faceNodes[i] = nodes[FaceNodeList[type][iFace][i]];
+        }
+
+        constexpr Element ObtainElevNodeSpan(t_index iNodeElev) const
+        {
+            DNDS_assert(iNodeElev < this->GetNumElev_O1O2());
+            return Element{GetElemElevation_O1O2_NodeSpanType(type, iNodeElev)};
+        }
+
+        constexpr Element ObtainElevatedElem() const
+        {
+            return Element{GetElemElevation_O1O2_ElevatedType(type)};
+        }
+
+        template <class TIn, class TOut>
+        void ExtractElevNodeSpanNodes(t_index iNodeElev, const TIn &nodes, TOut &spanNodes)
+        {
+            DNDS_assert(iNodeElev < this->GetNumElev_O1O2());
+            for (t_index i = 0; i < ObtainElevNodeSpan(iNodeElev).GetNumNodes(); i++)
+                spanNodes[i] = nodes[ElemElevationSpan_O1O2List[type][iNodeElev][i]];
         }
 
         /**
@@ -1073,7 +1273,7 @@ namespace DNDS::Geom::Elem
         tSmallCoords coordsC = coords.colwise() - c;
         tPoint ve0 = coordsC(Eigen::all, 1) - coordsC(Eigen::all, 0);
         tJacobi inertia = coordsC * coordsC.transpose();
-        real cond01 = HardEigen::Eigen3x3RealSymEigenDecompositionGetCond01(inertia); //ratio of 2 largest eigenvalues 
+        real cond01 = HardEigen::Eigen3x3RealSymEigenDecompositionGetCond01(inertia); // ratio of 2 largest eigenvalues
         if (cond01 < 1 + 1e-6)
             inertia += ve0 * ve0.transpose() * 1e-4; // first edge gets priority
         auto decRet = HardEigen::Eigen3x3RealSymEigenDecompositionNormalized(inertia);

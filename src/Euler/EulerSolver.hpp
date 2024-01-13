@@ -233,7 +233,7 @@ namespace DNDS::Euler
 
                 bool serializerSaveURec = false;
 
-                const std::string& getOutLogName()
+                const std::string &getOutLogName()
                 {
                     return outLogName.empty() ? outPltName : outLogName;
                 }
@@ -518,6 +518,10 @@ namespace DNDS::Euler
                     mesh->AdjGlobal2LocalPrimary();
                 }
             }
+            DNDS::ssp<DNDS::Geom::UnstructuredMesh> meshO2;
+            DNDS_MAKE_SSP(meshO2, mpi, gDimLocal);
+            meshO2->BuildO2FromO1Elevation(*mesh);
+
             // std::cout << "here" << std::endl;
             mesh->InterpolateFace();
             mesh->AssertOnFaces();
