@@ -488,6 +488,11 @@ namespace DNDS::Geom
                 cell2nodePbi.trans.pullOnce();
             cellElemInfo.trans.pullOnce();
         }
+        // if(mpi.rank == 0)
+        //     std::cout <<"XXXXXXXXXXXXXXXXXXXXXXXXX" <<std::endl;
+        // if(mpi.rank == 0)
+        //     for(index iC = 0; iC < coords.father->Size(); iC ++)
+        //         std::cout << coords.father->operator[](iC).transpose() << std::endl;
 
         /********************************/
         // cells done, go on to nodes
@@ -513,6 +518,11 @@ namespace DNDS::Geom
             coords.trans.createMPITypes();
             coords.trans.pullOnce();
         }
+        // if(mpi.rank == 0)
+        //     std::cout <<"XXXXXXXXXXXXXXXXXXXXXXXXX" <<std::endl;
+        // if(mpi.rank == 0)
+        //     for(index iC = 0; iC < coords.Size(); iC ++)
+        //         std::cout << coords.operator[](iC).transpose() << std::endl;
 
         /********************************/
         // bnds: dummy now, no actual comm
@@ -883,6 +893,17 @@ namespace DNDS::Geom
         }
         node2face.clear(); // no need
 
+        // std::cout << fmt::format("=== rank {}, nFaces {}", mpi.rank, nFaces) << std::endl;
+        // if(mpi.rank == 0)
+        //     for(auto row : face2nodeV)
+        //     {
+        //         std::cout << "Face ";
+        //         for(auto i : row)
+        //             std::cout << i <<" (" << coords[i].transpose() << ") " << ", ";
+        //         std::cout << std::endl;
+        //     }
+        
+
         /*************************************/
         // ! collect!
         std::vector<index> iFaceAllToCollected(nFaces);
@@ -930,6 +951,7 @@ namespace DNDS::Geom
                 iFaceAllToCollected[iFace] = nFacesNew++; //*use
             }
         }
+        // std::cout << fmt::format("=== rank {}, nFacesNew {}", mpi.rank, nFacesNew) << std::endl;
 
         /**********************************/
         face2cell.father->Resize(nFacesNew);

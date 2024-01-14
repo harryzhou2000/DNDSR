@@ -58,6 +58,9 @@ namespace DNDS::CFV
                     cellIntJacobiDet(iCell, iG) = JDet;
                 });
             volumeLocal[iCell] = v;
+            DNDS_assert_info(v > 0, "cell has ill area result");
+            for (int iG = 0; iG < qCell.GetNumPoints(); iG++)
+                DNDS_assert_info(cellIntJacobiDet(iCell, iG) / v > 1e-10, "cell has ill jacobi det");
             if (iCell < mesh->NumCell()) // non-ghost
 #ifdef DNDS_USE_OMP
 #pragma omp critical
@@ -189,6 +192,9 @@ namespace DNDS::CFV
                     faceIntJacobiDet(iFace, iG) = JDet;
                 });
             faceArea[iFace] = v;
+            DNDS_assert_info(v > 0, "face has ill area result");
+            for (int iG = 0; iG < qFace.GetNumPoints(); iG++)
+                DNDS_assert_info(faceIntJacobiDet(iFace, iG) / v > 1e-10, "face has ill jacobi det");
 
             //****** Get Int Point Norm/pPhy and Mean Norm
             tPoint n{0, 0, 0};

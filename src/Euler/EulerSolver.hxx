@@ -24,7 +24,7 @@ namespace DNDS::Euler
         {
             if (mpi.rank == 0)
             {
-                log() << "Mesh Is not altered; partitioning done";
+                log() << "Mesh Is not altered; partitioning done" << std::endl;
             }
             return;
         }

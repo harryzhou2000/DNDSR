@@ -214,6 +214,7 @@ namespace DNDS::Euler
                 bool uniqueStamps = true;
                 real meshRotZ = 0;
                 real meshScale = 1.0;
+                int meshElevation = 0; // 0 = noOp, 1 = O1->O2
                 std::string meshFile = "data/mesh/NACA0012_WIDE_H3.cgns";
                 std::string outPltName = "data/out/debugData_";
                 std::string outLogName = "";
@@ -246,8 +247,7 @@ namespace DNDS::Euler
                 DNDS_NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_ORDERED_JSON(
                     DataIOControl,
                     uniqueStamps,
-                    meshRotZ,
-                    meshScale,
+                    meshRotZ, meshScale, meshElevation,
                     meshFile,
                     outPltName,
                     outLogName,
@@ -470,8 +470,7 @@ namespace DNDS::Euler
             DNDS_MAKE_SSP(mesh, mpi, gDimLocal);
             DNDS_MAKE_SSP(meshBnd, mpi, gDimLocal - 1);
 
-            DNDS_MAKE_SSP(vfv, mpi, mesh);
-            vfv->settings.ParseFromJson(config.vfvSettings);
+            
 
             DNDS_MAKE_SSP(reader, mesh, 0);
             DNDS_MAKE_SSP(readerBnd, meshBnd, 0);
@@ -496,6 +495,22 @@ namespace DNDS::Euler
                 }
                 mesh->BuildGhostPrimary();
                 mesh->AdjGlobal2LocalPrimary();
+                if (config.dataIOControl.meshElevation == 1)
+                {
+                    DNDS::ssp<DNDS::Geom::UnstructuredMesh> meshO2;
+                    DNDS_MAKE_SSP(meshO2, mpi, gDimLocal);
+                    meshO2->BuildO2FromO1Elevation(*mesh);
+                    std::swap(meshO2, mesh);
+
+                    
+                    reader->mesh = mesh;
+                    if (config.dataIOControl.outPltMode == 0)
+                    {
+                        reader->BuildSerialOut();
+                    }
+                    mesh->BuildGhostPrimary();
+                    mesh->AdjGlobal2LocalPrimary();
+                }
             }
             else
             {
@@ -518,9 +533,6 @@ namespace DNDS::Euler
                     mesh->AdjGlobal2LocalPrimary();
                 }
             }
-            DNDS::ssp<DNDS::Geom::UnstructuredMesh> meshO2;
-            DNDS_MAKE_SSP(meshO2, mpi, gDimLocal);
-            meshO2->BuildO2FromO1Elevation(*mesh);
 
             // std::cout << "here" << std::endl;
             mesh->InterpolateFace();
@@ -542,6 +554,7 @@ namespace DNDS::Euler
                 serializer->CloseFile();
                 return; //** mesh preprocess only (without transformation)
             }
+            
 
 #ifdef DNDS_USE_OMP
             omp_set_num_threads(DNDS::MPIWorldSize() == 1 ? std::min(omp_get_num_procs(), omp_get_max_threads()) : 1);
@@ -596,6 +609,9 @@ namespace DNDS::Euler
             if (config.dataIOControl.outPltMode == 0)
                 reader->coordSerialOutTrans.pullOnce(),
                     readerBnd->coordSerialOutTrans.pullOnce();
+
+            DNDS_MAKE_SSP(vfv, mpi, mesh);
+            vfv->settings.ParseFromJson(config.vfvSettings);
             vfv->ConstructMetrics();
             vfv->ConstructBaseAndWeight(
                 [&](Geom::t_index id, int iOrder) -> real

@@ -20,6 +20,14 @@ namespace DNDS::Geom
         {
             return uint8_t(__v ^ r.__v);
         }
+        NodePeriodicBits operator&(const NodePeriodicBits &r) const
+        {
+            return NodePeriodicBits{uint8_t(__v & r.__v)};
+        }
+        operator uint8_t() const
+        {
+            return uint8_t{__v};
+        }
         operator bool() const
         {
             return bool(__v);
@@ -246,6 +254,20 @@ namespace DNDS::Geom
                 ret = this->TransCoord(ret, BC_ID_PERIODIC_2);
             if (bits.getP1())
                 ret = this->TransCoord(ret, BC_ID_PERIODIC_1);
+            return ret;
+        }
+
+        tPoint GetCoordBackByBits(const tPoint &c, const NodePeriodicBits &bits)
+        {
+            if (!bool(bits))
+                return c;
+            tPoint ret = c;
+            if (bits.getP1())
+                ret = this->TransCoordBack(ret, BC_ID_PERIODIC_1);
+            if (bits.getP2())
+                ret = this->TransCoordBack(ret, BC_ID_PERIODIC_2);
+            if (bits.getP3())
+                ret = this->TransCoordBack(ret, BC_ID_PERIODIC_3);
             return ret;
         }
     };

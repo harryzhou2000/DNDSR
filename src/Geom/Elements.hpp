@@ -325,14 +325,14 @@ namespace DNDS::Geom::Elem
         IndexToZeroBase(Prism6);
 
         ret[Pyramid5][0] = TF{1, 2};
-        ret[Pyramid5][0] = TF{2, 3};
-        ret[Pyramid5][0] = TF{3, 4};
-        ret[Pyramid5][0] = TF{4, 1};
-        ret[Pyramid5][0] = TF{1, 5};
-        ret[Pyramid5][0] = TF{2, 5};
-        ret[Pyramid5][0] = TF{3, 5};
-        ret[Pyramid5][0] = TF{4, 5};
-        ret[Pyramid5][0] = TF{1, 4, 3, 2};
+        ret[Pyramid5][1] = TF{2, 3};
+        ret[Pyramid5][2] = TF{3, 4};
+        ret[Pyramid5][3] = TF{4, 1};
+        ret[Pyramid5][4] = TF{1, 5};
+        ret[Pyramid5][5] = TF{2, 5};
+        ret[Pyramid5][6] = TF{3, 5};
+        ret[Pyramid5][7] = TF{4, 5};
+        ret[Pyramid5][8] = TF{1, 4, 3, 2};
         IndexToZeroBase(Pyramid5);
 
         return ret;
