@@ -10,7 +10,7 @@ namespace DNDS
 {
     //TODO: lessen copying chance?
     template <class dir>
-    constexpr std::string to_string(const Eigen::DenseBase<dir> &v,
+    std::string to_string(const Eigen::DenseBase<dir> &v,
                           int precision = 5,
                           bool scientific = false)
     {

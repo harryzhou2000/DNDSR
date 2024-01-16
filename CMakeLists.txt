@@ -92,7 +92,7 @@ set(CMAKE_USE_RELATIVE_PATHS ON)
 
 
 # ##########################################
-find_library(EXTERNAL_LIB_ZLIB NAMES z z_D REQUIRED)
+find_library(EXTERNAL_LIB_ZLIB NAMES z z_D libzlibstatic.a REQUIRED)
 find_library(EXTERNAL_LIB_HDF5 NAMES libhdf5.a hdf5 PATHS 
     "${PROJECT_SOURCE_DIR}/external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}" 
     "${PROJECT_SOURCE_DIR}/external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}/lib"
