@@ -185,6 +185,19 @@ namespace DNDS::Euler
             {
                 return eval.dWall.at(iCell).mean();
             };
+            outMap["minJacobiDetRel"] = [&](index iCell)
+            {
+                auto eCell = mesh->GetCellElement(iCell);
+                auto qCell = vfv->GetCellQuad(iCell);
+                real minDetJac = veryLargeReal;
+                for(int iG = 0; iG < qCell.GetNumPoints(); iG++)
+                    minDetJac = std::min(vfv->GetCellJacobiDet(iCell, iG), minDetJac);
+                return minDetJac * Geom::Elem::ParamSpaceVol(eCell.GetParamSpace()) / vfv->GetCellVol(iCell);
+            };
+            outMap["cellVolume"] = [&](index iCell)
+            {
+                return vfv->GetCellVol(iCell);
+            };
 
             outputPicker.setMap(outMap);
         }

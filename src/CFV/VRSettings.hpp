@@ -44,6 +44,8 @@ namespace DNDS::CFV
         int limiterBiwayAlter = 0;   /// @brief 0=wbap-L2-biway, 1=minmod-biway
         int subs2ndOrder = 0;        /// @brief 0: vfv; 1: gauss rule; 2: least square
 
+        bool ignoreMeshGeometryDeficiency = false;
+
         struct BaseSettings
         {
             bool localOrientation = false;
@@ -159,6 +161,8 @@ namespace DNDS::CFV
             jsonSetting["normWBAP"] = normWBAP;
             jsonSetting["limiterBiwayAlter"] = limiterBiwayAlter;
             jsonSetting["subs2ndOrder"] = subs2ndOrder;
+            jsonSetting["ignoreMeshGeometryDeficiency"] = ignoreMeshGeometryDeficiency;
+
             jsonSetting["baseSettings"] = baseSettings;
             jsonSetting["functionalSettings"] = functionalSettings;
         }
@@ -181,6 +185,8 @@ namespace DNDS::CFV
             normWBAP = jsonSetting["normWBAP"];
             limiterBiwayAlter = jsonSetting["limiterBiwayAlter"];
             subs2ndOrder = jsonSetting["subs2ndOrder"];
+            ignoreMeshGeometryDeficiency = jsonSetting["ignoreMeshGeometryDeficiency"];
+
             baseSettings = jsonSetting["baseSettings"];
             functionalSettings = jsonSetting["functionalSettings"];
         }

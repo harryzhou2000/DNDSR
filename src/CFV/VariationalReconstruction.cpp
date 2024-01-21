@@ -65,11 +65,15 @@ namespace DNDS::CFV
             //     if (!(cellIntJacobiDet(iCell, iG) / v > 1e-10))
             //         std::cout << fmt::format("cell has ill jacobi det, det/V {}, cellType {}", cellIntJacobiDet(iCell, iG) / v, int(eCell.type)) << std::endl;;
 
-            DNDS_assert_info(v > 0, fmt::format("cell has ill area result, v = {}, cellType {}", v, int(eCell.type)));
-            for (int iG = 0; iG < qCell.GetNumPoints(); iG++)
-                DNDS_assert_info(
-                    cellIntJacobiDet(iCell, iG) / v > 1e-10,
-                    fmt::format("cell has ill jacobi det, det/V {}, cellType {}", cellIntJacobiDet(iCell, iG) / v, int(eCell.type)));
+            if (!settings.ignoreMeshGeometryDeficiency)
+            {
+                DNDS_assert_info(v > 0, fmt::format("cell has ill area result, v = {}, cellType {}", v, int(eCell.type)));
+
+                for (int iG = 0; iG < qCell.GetNumPoints(); iG++)
+                    DNDS_assert_info(
+                        cellIntJacobiDet(iCell, iG) / v > 1e-10,
+                        fmt::format("cell has ill jacobi det, det/V {}, cellType {}", cellIntJacobiDet(iCell, iG) / v, int(eCell.type)));
+            }
             if (iCell < mesh->NumCell()) // non-ghost
 #ifdef DNDS_USE_OMP
 #pragma omp critical
@@ -254,11 +258,12 @@ namespace DNDS::CFV
             // std::cout << coordsCell << std::endl;
 
             /// ! if the faces and f2c are created right, and not distorting too much
-            DNDS_assert_info(
-                (this->GetFaceQuadraturePPhysFromCell(iFace, mesh->face2cell(iFace, 0), -1, -1) -
-                 this->GetCellQuadraturePPhys(mesh->face2cell(iFace, 0), -1))
-                        .dot(faceMeanNorm[iFace]) > 0,
-                "face mean norm is not the same side as faceCenter - cellCenter");
+            if (!settings.ignoreMeshGeometryDeficiency)
+                DNDS_assert_info(
+                    (this->GetFaceQuadraturePPhysFromCell(iFace, mesh->face2cell(iFace, 0), -1, -1) -
+                     this->GetCellQuadraturePPhys(mesh->face2cell(iFace, 0), -1))
+                            .dot(faceMeanNorm[iFace]) > 0,
+                    "face mean norm is not the same side as faceCenter - cellCenter");
         }
         faceUnitNorm.CompressBoth();
         faceIntPPhysics.CompressBoth();
