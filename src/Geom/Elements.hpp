@@ -444,6 +444,25 @@ namespace DNDS::Geom::Elem
         return UnknownElem;
     }
 
+    constexpr inline ElemType GetElemO1(ParamSpace ps)
+    {
+        if (ps == LineSpace)
+            return Line2;
+        if (ps == TriSpace)
+            return Tri3;
+        if (ps == QuadSpace)
+            return Quad4;
+        if (ps == TetSpace)
+            return Tet4;
+        if (ps == HexSpace)
+            return Hex8;
+        if (ps == PrismSpace)
+            return Prism6;
+        if (ps == PyramidSpace)
+            return Pyramid5;
+        return UnknownElem;
+    }
+
     /**
      * @brief calculates shape func matrix,
      * where Di is d_xi, d_et, d_zt when diffOrder == 1
@@ -1173,6 +1192,11 @@ namespace DNDS::Geom::Elem
         constexpr Element ObtainElevatedElem() const
         {
             return Element{GetElemElevation_O1O2_ElevatedType(type)};
+        }
+
+        constexpr Element ObtainO1Elem() const
+        {
+            return Element{GetElemO1(GetParamSpace())};
         }
 
         template <class TIn, class TOut>

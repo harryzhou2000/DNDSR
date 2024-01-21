@@ -1,13 +1,16 @@
 #include "Mesh.hpp"
+#include "Quadrature.hpp"
+#include "DNDS/ArrayDerived/ArrayEigenUniMatrixBatch.hpp"
 
 #include <omp.h>
 #include <fmt/core.h>
+#include <functional>
 
 namespace DNDS::Geom
 {
     void UnstructuredMesh::BuildO2FromO1Elevation(UnstructuredMesh &meshO1)
     {
-        real epsSqrDist = 1e-15;
+        real epsSqrDist = 1e-20;
 
         bool O1MeshIsO1 = meshO1.IsO1();
         DNDS_assert(O1MeshIsO1);
@@ -18,6 +21,8 @@ namespace DNDS::Geom
         dim = meshO1.dim;
         isPeriodic = meshO1.isPeriodic;
         periodicInfo = meshO1.periodicInfo;
+        nNodeO1 = meshO1.coords.father->Size();
+        elevState = Elevation_O1O2;
 
         tAdjPair cellNewNodes; // records iNode - iNodeO1
         index localNewNodeNum{0};
@@ -414,5 +419,391 @@ namespace DNDS::Geom
         //     }
         // }
         // // this->AdjLocal2GlobalPrimary();
+    }
+
+    static tPoint HermiteInterpolateMidPointOnLine2WithNorm(tPoint c0, tPoint c1, tPoint n0, tPoint n1)
+    {
+        tPoint c01 = c1 - c0;
+        tPoint c01U = c01.stableNormalized();
+        real c01Len = c01.stableNorm();
+        tPoint t0 = -c01U.cross(n0).cross(n0);
+        tPoint t1 = -c01U.cross(n1).cross(n1);
+        t0 = t0.stableNormalized() * c01Len;
+        t1 = t1.stableNormalized() * c01Len;
+        return 0.5 * (c0 + c1) + 0.125 * (t0 - t1);
+    }
+
+    static tPoint HermiteInterpolateMidPointOnQuad4WithNorm(
+        tPoint c0, tPoint c1, tPoint c2, tPoint c3,
+        tPoint n0, tPoint n1, tPoint n2, tPoint n3)
+    {
+        tPoint c01 = HermiteInterpolateMidPointOnLine2WithNorm(c0, c1, n0, n1);
+        tPoint c12 = HermiteInterpolateMidPointOnLine2WithNorm(c1, c2, n1, n2);
+        tPoint c23 = HermiteInterpolateMidPointOnLine2WithNorm(c2, c3, n2, n3);
+        tPoint c30 = HermiteInterpolateMidPointOnLine2WithNorm(c3, c0, n3, n0);
+        return 0.5 * (c01 + c12 + c23 + c30) - 0.25 * (c0 + c1 + c2 + c3);
+    }
+
+    void UnstructuredMesh::ElevatedNodesGetBoundarySmooth(const std::function<bool(t_index)> &FiFBndIdNeedSmooth)
+    {
+        // if (mpi.rank == 1)
+        //     for (index iCell = 0; iCell < cell2face.Size(); iCell++)
+        //     {
+        //         std::cout << iCell << ": ";
+        //         for (auto i : cell2face[iCell])
+        //             std::cout << i << ", ";
+        //         std::cout << std::endl;
+        //     }
+        DNDS_assert(elevState == Elevation_O1O2);
+        DNDS_assert(adjPrimaryState == Adj_PointToLocal);
+        DNDS_assert(adjFacialState == Adj_PointToLocal);
+        DNDS_assert(adjC2FState == Adj_PointToLocal);
+        DNDS_assert(face2node.father);
+
+        
+        
+
+
+        DNDS_MAKE_SSP(coordsElevDisp.father, mpi);
+        DNDS_MAKE_SSP(coordsElevDisp.son, mpi);
+        coordsElevDisp.father->Resize(coords.father->Size());
+        coordsElevDisp.TransAttach();
+        coordsElevDisp.trans.BorrowGGIndexing(coords.trans);
+        coordsElevDisp.trans.createMPITypes();
+
+        for (index iN = 0; iN < coords.Size(); iN++)
+            coordsElevDisp[iN].setConstant(largeReal);
+
+        // tAdj1Pair nCoordBndNum;
+        // DNDS_MAKE_SSP(nCoordBndNum.father, mpi);
+        // DNDS_MAKE_SSP(nCoordBndNum.son, mpi);
+        // nCoordBndNum.father->Resize(coords.father->Size());
+        // nCoordBndNum.TransAttach();
+        // nCoordBndNum.trans.BorrowGGIndexing(coords.trans);
+        // nCoordBndNum.trans.createMPITypes();
+
+        // for (index iN = 0; iN < coords.size(); iN++)
+        //     nCoordBndNum[iN][0] = 0;
+
+        /***********************************/
+        // build faceExteded info
+        tAdjPair face2nodeExtended;
+        tElemInfoArrayPair faceElemInfoExtended;
+        tPbiPair face2nodePbiExtended;
+        face2nodeExtended.father = face2node.father;
+        faceElemInfoExtended.father = faceElemInfo.father;
+        if (isPeriodic)
+            face2nodePbiExtended.father = face2nodePbi.father;
+        DNDS_MAKE_SSP(face2nodeExtended.son, mpi);
+        DNDS_MAKE_SSP(faceElemInfoExtended.son, ElemInfo::CommType(), ElemInfo::CommMult(), mpi);
+        if (isPeriodic)
+            DNDS_MAKE_SSP(face2nodePbiExtended.son, NodePeriodicBits::CommType(), NodePeriodicBits::CommMult(), mpi);
+
+        this->AdjLocal2GlobalFacial();
+        this->AdjLocal2GlobalC2F();
+
+        std::vector<index> faceGhostExt;
+        for (index iCell = 0; iCell < cell2face.Size(); iCell++)
+            for (auto iFace : cell2face[iCell])
+            {
+                DNDS_assert_info(iFace >= 0 || iFace == UnInitIndex, fmt::format("iFace {}", iFace));
+                if (iFace == UnInitIndex) // old cell2face could contain void pointing
+                    continue;
+                DNDS::MPI_int rank;
+                DNDS::index val;
+                if (!face2node.trans.pLGlobalMapping->search(iFace, rank, val))
+                    DNDS_assert_info(false, "search failed");
+                if (rank != mpi.rank)
+                    faceGhostExt.push_back(iFace);
+                // if (mpi.rank == 1)
+                // std::cout << "added Face " << iFace << std::endl;
+            }
+        face2nodeExtended.TransAttach();
+        faceElemInfoExtended.TransAttach();
+        if (isPeriodic)
+            face2nodePbiExtended.TransAttach();
+        face2nodeExtended.trans.createGhostMapping(faceGhostExt);
+        faceElemInfoExtended.trans.BorrowGGIndexing(face2nodeExtended.trans);
+        if (isPeriodic)
+            face2nodePbiExtended.trans.BorrowGGIndexing(face2nodeExtended.trans);
+        face2nodeExtended.trans.createMPITypes();
+        faceElemInfoExtended.trans.createMPITypes();
+        if (isPeriodic)
+            face2nodePbiExtended.trans.createMPITypes();
+        face2nodeExtended.trans.pullOnce();
+        faceElemInfoExtended.trans.pullOnce();
+        if (isPeriodic)
+            face2nodePbiExtended.trans.pullOnce();
+
+        // std::cout << fmt::format("rank {} faceElemInfo {} {}, face2node {} {}",
+        //                          mpi.rank,
+        //                          faceElemInfo.father->Size(), faceElemInfo.son->Size(),
+        //                          face2node.father->Size(), face2node.son->Size())
+        //           << std::endl;
+        // std::cout << fmt::format("rank {} faceElemInfoExt {} {}, face2nodeExt {} {}",
+        //                          mpi.rank,
+        //                          faceElemInfoExtended.father->Size(), faceElemInfoExtended.son->Size(),
+        //                          face2nodeExtended.father->Size(), face2nodeExtended.son->Size())
+        //           << std::endl;
+
+        this->AdjGlobal2LocalFacial();
+        this->AdjGlobal2LocalC2F();
+        //** a direct copy from AdjGlobal2LocalPrimary()
+        auto NodeIndexGlobal2Local = [&](DNDS::index &iNodeOther)
+        {
+            if (iNodeOther == UnInitIndex)
+                return;
+            DNDS::MPI_int rank;
+            DNDS::index val;
+            // if (!cell2cell.trans.pLGlobalMapping->search(iCellOther, rank, val))
+            //     DNDS_assert_info(false, "search failed");
+            // if (rank != mpi.rank)
+            //     iCellOther = -1 - iCellOther;
+            auto result = coords.trans.pLGhostMapping->search_indexAppend(iNodeOther, rank, val);
+            if (result)
+                iNodeOther = val;
+            else
+                iNodeOther = -1 - iNodeOther; // mapping to un-found in father-son
+        };
+
+        // std::cout << fmt::format("rank {} Sizes ext : extFaceProc: {}->{}", mpi.rank, faceElemInfo.Size(), faceElemInfoExtended.Size()) << std::endl;
+        // if (mpi.rank == 1)
+        //     for (index iFace = 0; iFace < face2nodeExtended.Size(); iFace++)
+        //     {
+        //         std::cout << fmt::format("rank {}, face {}", mpi.rank, face2nodeExtended.trans.pLGhostMapping->operator()(-1, iFace)) << std::endl;
+        //     }
+
+        // this->AdjGlobal2LocalPrimary();
+
+        for (index iFace = face2nodeExtended.father->Size(); iFace < face2nodeExtended.Size(); iFace++)
+        {
+            for (auto &iN : face2nodeExtended[iFace])
+            {
+                DNDS_assert_info(iN >= 0, fmt::format("rank {}, iN {}", mpi.rank, iN)); // can't be unfound node
+                NodeIndexGlobal2Local(iN);
+                DNDS_assert_info(iN >= 0, fmt::format("rank {}, iN {}", mpi.rank, iN)); // can't be unfound node
+            }
+        }
+        // std::cout << mpi.rank << " rank Here XXXX 1" << std::endl;
+        /***********************************/
+        // build nodeNormClusters
+        using t3VecsPair = ArrayPair<ArrayEigenUniMatrixBatch<3, 1>>;
+        t3VecsPair nodeNormClusters;
+        DNDS_MAKE_SSP(nodeNormClusters.father, mpi);
+        nodeNormClusters.father->Resize(coords.father->Size(), 3, 1);
+        DNDS_MAKE_SSP(nodeNormClusters.son, mpi);
+
+        std::vector<int> nodeBndNum(coords.father->Size(), 0); //? need row-appending methods for NonUniform arrays?
+        for (index iFace = 0; iFace < face2nodeExtended.Size(); iFace++)
+        {
+            auto faceBndID = faceElemInfoExtended(iFace, 0).zone;
+            if (!FiFBndIdNeedSmooth(faceBndID))
+                continue;
+            for (auto iNode : face2nodeExtended[iFace])
+                if (iNode < coords.father->Size() && iNode < nNodeO1) //* being local node and O1 node
+                    nodeBndNum.at(iNode)++;
+        }
+        // if (mpi.rank == 0)
+        // {
+        //     // std::cout << "faceBndID: \n";
+        //     // for (index iFace = 0; iFace < face2nodeExtended.Size(); iFace++)
+        //     // {
+        //     //     auto faceBndID = faceElemInfoExtended(iFace, 0).zone;
+        //     //     std::cout << faceBndID << ", " << FiFBndIdNeedSmooth(faceBndID) << "; "
+        //     //               << coords[face2node(iFace, 0)].transpose()
+        //     //               << " ||| " << coords[face2node(iFace, 1)].transpose() << std::endl;
+        //     // }
+        //     // std::cout << "XXXXXXXXXXXX" << std::endl;
+        //     std::cout << "nodeBndNum: ";
+        //     for (auto i : nodeBndNum)
+        //         std::cout
+        //             << i << ";";
+        //     std::cout << "XXXXXXXXXXXX" << std::endl;
+        // }
+
+        // std::cout << mpi.rank << " rank Here XXXX 2" << std::endl;
+        for (index iNode = 0; iNode < coords.father->Size(); iNode++)
+            nodeNormClusters.father->ResizeBatch(iNode, std::max(nodeBndNum.at(iNode), 0));
+        for (auto &v : nodeBndNum)
+            v = 0; // set to zero
+        // std::cout << mpi.rank << " rank Here XXXX 3" << std::endl;
+        auto GetCoordsOnFaceExtended = [&](index iFace, tSmallCoords &cs)
+        {
+            if (!isPeriodic)
+                __GetCoords(face2nodeExtended[iFace], cs);
+            else
+                __GetCoordsOnElem(face2nodeExtended[iFace], face2nodePbiExtended[iFace], cs);
+        };
+
+        for (index iFace = 0; iFace < face2nodeExtended.Size(); iFace++)
+        {
+            auto faceBndID = faceElemInfoExtended(iFace, 0).zone;
+            if (!FiFBndIdNeedSmooth(faceBndID))
+                continue;
+            auto eFace = Elem::Element{faceElemInfoExtended(iFace, 0).getElemType()}; // O1 faces could use only one norm (not strict for Quad4)
+            auto qFace = Elem::Quadrature{eFace, 1};
+            Elem::SummationNoOp noOp;
+            tPoint uNorm;
+            tSmallCoords coordsF;
+            GetCoordsOnFaceExtended(iFace, coordsF);
+            qFace.Integration(
+                noOp,
+                [&](auto &vInc, int iG, const tPoint &pParam, const Elem::tD01Nj &DiNj)
+                {
+                    tJacobi J = Elem::ShapeJacobianCoordD01Nj(coordsF, DiNj);
+                    tPoint pPhy = Elem::PPhysicsCoordD01Nj(coordsF, DiNj);
+                    tPoint np;
+                    if (dim == 2)
+                        np = FacialJacobianToNormVec<2>(J);
+                    else
+                        np = FacialJacobianToNormVec<3>(J);
+                    np.stableNormalize();
+                    uNorm = np;
+                });
+
+            for (int if2n = 0; if2n < face2nodeExtended[iFace].size(); if2n++)
+            {
+                index iNode = face2nodeExtended[iFace][if2n];
+                if (iNode < coords.father->Size() && iNode < nNodeO1) //* being local node and O1 node
+                {
+                    tPoint uNormC = uNorm;
+                    if (isPeriodic)
+                        uNormC = periodicInfo.GetVectorBackByBits(uNorm, face2nodePbiExtended[iFace][if2n]);
+                    nodeNormClusters(iNode, nodeBndNum.at(iNode)++) = uNormC;
+                }
+            }
+        }
+        nodeNormClusters.TransAttach();
+        nodeNormClusters.trans.BorrowGGIndexing(coords.trans);
+        nodeNormClusters.trans.createMPITypes();
+        MPI_Barrier(mpi.comm);
+        nodeNormClusters.trans.pullOnce();
+
+        /***********************************/
+        // do interpolation
+        index nMoved{0};
+        for (index iFace = 0; iFace < face2nodeExtended.Size(); iFace++)
+        {
+            auto faceBndID = faceElemInfoExtended(iFace, 0).zone;
+            if (!FiFBndIdNeedSmooth(faceBndID))
+                continue;
+            auto eFace = Elem::Element{faceElemInfoExtended(iFace, 0).getElemType()}; // O1 faces could use only one norm (not strict for Quad4)
+            auto qFace = Elem::Quadrature{eFace, 1};
+            Elem::SummationNoOp noOp;
+            tPoint uNorm;
+            SmallCoordsAsVector coordsF;
+            GetCoordsOnFaceExtended(iFace, coordsF);
+            qFace.Integration(
+                noOp,
+                [&](auto &vInc, int iG, const tPoint &pParam, const Elem::tD01Nj &DiNj)
+                {
+                    tJacobi J = Elem::ShapeJacobianCoordD01Nj(coordsF, DiNj);
+                    tPoint pPhy = Elem::PPhysicsCoordD01Nj(coordsF, DiNj);
+                    tPoint np;
+                    if (dim == 2)
+                        np = FacialJacobianToNormVec<2>(J);
+                    else
+                        np = FacialJacobianToNormVec<3>(J);
+                    np.stableNormalize();
+                    uNorm = np;
+                });
+
+            auto eFaceO1 = eFace.ObtainO1Elem();
+
+            auto f2n = face2nodeExtended[iFace];
+
+            std::vector<int> f2nVecSeq(f2n.size());
+            for (int i = 0; i < f2n.size(); i++)
+                f2nVecSeq[i] = i;
+
+            for (int if2n = eFaceO1.GetNumNodes(); if2n < f2n.size(); if2n++)
+            {
+                index iNode = f2n[if2n];
+                if (iNode >= coords.father->Size())
+                    continue;
+                DNDS_assert(iNode >= nNodeO1);
+
+                std::vector<index> spanO2Node;
+                std::vector<int> spanO2if2n;
+                SmallCoordsAsVector coordsSpan;
+                int iElev = if2n - eFaceO1.GetNumNodes();
+                int spanNnode = eFaceO1.ObtainElevNodeSpan(iElev).GetNumNodes();
+                spanO2Node.resize(spanNnode);
+                coordsSpan.resize(3, spanNnode);
+                spanO2if2n.resize(spanNnode);
+
+                eFaceO1.ExtractElevNodeSpanNodes(iElev, f2n, spanO2Node); // should use O1f2n, but O2f2n is equivalent
+                eFaceO1.ExtractElevNodeSpanNodes(iElev, coordsF, coordsSpan);
+                eFaceO1.ExtractElevNodeSpanNodes(iElev, f2nVecSeq, spanO2if2n);
+                tPoint cooUnsmooth = coordsF(Eigen::all, if2n);
+
+                std::vector<tPoint> edges;
+                if (spanO2Node.size() == 2)
+                {
+                    edges.push_back((coordsSpan[1] - coordsSpan[0]).stableNormalized());
+                }
+                else if (spanO2Node.size() == 4)
+                {
+                    edges.push_back((coordsSpan[1] - coordsSpan[0]).stableNormalized());
+                    edges.push_back((coordsSpan[2] - coordsSpan[1]).stableNormalized());
+                    edges.push_back((coordsSpan[3] - coordsSpan[2]).stableNormalized());
+                    edges.push_back((coordsSpan[0] - coordsSpan[3]).stableNormalized());
+                }
+                else
+                    DNDS_assert(false);
+
+                Eigen::Matrix<real, 3, 2> norms;
+                Eigen::Vector<real, 2> nAdd;
+                nAdd.setZero();
+                norms.setZero();
+                // if (mpi.rank == 1)
+                //     std::cout << nodeNormClusters.RowSize(spanO2Node[0]) << " nodeNormClustersRowSize" << std::endl;
+
+                for (int iN = 0; iN < spanO2Node.size(); iN++)
+                    for (int iNorm = 0; iNorm < nodeNormClusters.RowSize(spanO2Node[iN]); iNorm++)
+                    {
+                        tPoint normN = nodeNormClusters(spanO2Node[iN], iNorm);
+                        if (isPeriodic)
+                            normN = periodicInfo.GetVectorByBits(normN, face2nodePbiExtended[iFace][spanO2if2n[if2n]]);
+                        real sinValMax = 0;
+                        for (auto e : edges)
+                            sinValMax = std::max(sinValMax, std::abs(e.dot(normN)));
+                        if (sinValMax > std::sin(pi / 180. * 10)) //! angle is here
+                            continue;
+                        nAdd[iN] += 1.;
+                        norms(Eigen::all, iN) += normN * 1.;
+                        // std::cout << fmt::format("iFace {}, if2n {}, iN {}, iNorm{}, sinValMax {}; ====",
+                        // iFace, if2n, iN, iNorm, sinValMax) << normN.transpose() << std::endl;
+                    }
+                norms.array().rowwise() /= nAdd.transpose().array();
+                for (int iN = 0; iN < spanO2Node.size(); iN++)
+                    DNDS_assert(nAdd[iN] > 0.1);
+
+                tPoint cooSmooth;
+                if (spanO2Node.size() == 2)
+                    cooSmooth = HermiteInterpolateMidPointOnLine2WithNorm(
+                        coordsSpan[0], coordsSpan[1], norms(Eigen::all, 0), norms(Eigen::all, 1));
+                else // definitely is spanO2Node.size() == 4
+                    cooSmooth = HermiteInterpolateMidPointOnQuad4WithNorm(
+                        coordsSpan[0], coordsSpan[1], coordsSpan[2], coordsSpan[3],
+                        norms(Eigen::all, 0), norms(Eigen::all, 1), norms(Eigen::all, 2), norms(Eigen::all, 3));
+
+                tPoint cooInc = cooSmooth - cooUnsmooth;
+                if(cooInc.stableNorm() > 0) //! could use a threshold
+                {
+                    coordsElevDisp[iNode] = cooInc; // maybe output the increment directly?
+                    nMoved++;
+                }
+                
+                // std::cout << mpi.rank << " rank; iNode " << iNode << " alterwith " << coordsElevDisp[iNode].transpose() << std::endl;
+                
+            }
+        }
+        coordsElevDisp.trans.pullOnce();
+        MPI::Allreduce(&nMoved, &nTotalMoved, 1, DNDS_MPI_INDEX, MPI_SUM, mpi.comm);
+        if(mpi.rank == mRank)
+            log() << fmt::format("UnstructuredMesh === ElevatedNodesGetBoundarySmooth: Smoothing Complete, total Moved [{}]", nTotalMoved) << std::endl;
+
+        // std::cout << mpi.rank << " rank Here XXXX -1" << std::endl;
     }
 }

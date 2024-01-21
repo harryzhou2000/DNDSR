@@ -22,7 +22,8 @@ namespace DNDS::Euler
             {
                 index iFace = mesh->bnd2face[iBnd];
                 auto elem = mesh->GetFaceElement(iFace);
-                if (elem.type == Geom::Elem::ElemType::Line2)
+                if (elem.type == Geom::Elem::ElemType::Line2
+                   || elem.type == Geom::Elem::ElemType::Line3)
                 {
                     Geom::tSmallCoords coords;
                     mesh->GetCoordsOnFace(iFace, coords);

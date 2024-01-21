@@ -470,8 +470,6 @@ namespace DNDS::Euler
             DNDS_MAKE_SSP(mesh, mpi, gDimLocal);
             DNDS_MAKE_SSP(meshBnd, mpi, gDimLocal - 1);
 
-            
-
             DNDS_MAKE_SSP(reader, mesh, 0);
             DNDS_MAKE_SSP(readerBnd, meshBnd, 0);
             DNDS_assert(config.dataIOControl.readMeshMode == 0 || config.dataIOControl.readMeshMode == 1);
@@ -502,7 +500,6 @@ namespace DNDS::Euler
                     meshO2->BuildO2FromO1Elevation(*mesh);
                     std::swap(meshO2, mesh);
 
-                    
                     reader->mesh = mesh;
                     if (config.dataIOControl.outPltMode == 0)
                     {
@@ -538,6 +535,16 @@ namespace DNDS::Euler
             mesh->InterpolateFace();
             mesh->AssertOnFaces();
 
+            if (config.dataIOControl.meshElevation == 1 && config.dataIOControl.readMeshMode == 0)
+            {
+                mesh->ElevatedNodesGetBoundarySmooth(
+                    [&](Geom::t_index bndId)
+                    {
+                        auto bType = pBCHandler->GetTypeFromID(bndId);
+                        return bType == BCWall || bType == BCWallInvis;
+                    });
+            }
+
             if (config.timeMarchControl.partitonMeshOnly)
             {
                 auto meshOutName = std::string(config.dataIOControl.meshFile) + "_part_" + std::to_string(mpi.size) + ".dir";
@@ -554,7 +561,6 @@ namespace DNDS::Euler
                 serializer->CloseFile();
                 return; //** mesh preprocess only (without transformation)
             }
-            
 
 #ifdef DNDS_USE_OMP
             omp_set_num_threads(DNDS::MPIWorldSize() == 1 ? std::min(omp_get_num_procs(), omp_get_max_threads()) : 1);

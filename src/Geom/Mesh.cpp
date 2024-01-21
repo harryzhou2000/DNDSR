@@ -779,6 +779,75 @@ namespace DNDS::Geom
         adjFacialState = Adj_PointToGlobal;
     }
 
+    void UnstructuredMesh::
+        AdjLocal2GlobalC2F()
+    {
+        DNDS_assert(adjC2FState == Adj_PointToLocal);
+        /**********************************/
+        // convert cell2face
+
+        auto FaceIndexLocal2Global = [&](DNDS::index &iF)
+        {
+            if (iF == UnInitIndex)
+                return;
+            if (iF < 0) // mapping to un-found in father-son
+                iF = -1 - iF;
+            else
+                iF = face2node.trans.pLGhostMapping->operator()(-1, iF);
+        };
+
+#ifdef DNDS_USE_OMP
+#pragma omp parallel for
+#endif
+        for (DNDS::index iCell = 0; iCell < cell2face.Size(); iCell++)
+        {
+            for (rowsize ic2f = 0; ic2f < cell2face.RowSize(iCell); ic2f++)
+            {
+                index &iFace = cell2face(iCell, ic2f);
+                FaceIndexLocal2Global(iFace);
+            }
+        }
+        // MPI_Barrier(mpi.comm);
+        /**********************************/
+        adjC2FState = Adj_PointToGlobal;
+    }
+
+
+    void UnstructuredMesh::
+    AdjGlobal2LocalC2F()
+    {
+        DNDS_assert(adjC2FState == Adj_PointToGlobal);
+        /**********************************/
+        // convert cell2face
+
+        auto FaceIndexGlobal2Local = [&](DNDS::index &iF)
+        {
+            if (iF == UnInitIndex)
+                return;
+            DNDS::MPI_int rank;
+            DNDS::index val;
+            auto result = face2node.trans.pLGhostMapping->search_indexAppend(iF, rank, val);
+            if (result)
+                iF = val;
+            else
+                iF = -1 - iF; // mapping to un-found in father-son
+        };
+        
+#ifdef DNDS_USE_OMP
+#pragma omp parallel for
+#endif
+        for (DNDS::index iCell = 0; iCell < cell2face.Size(); iCell++)
+        {
+            for (rowsize ic2f = 0; ic2f < cell2face.RowSize(iCell); ic2f++)
+            {
+                index &iFace = cell2face(iCell, ic2f);
+                FaceIndexGlobal2Local(iFace);
+            }
+        }
+        /**********************************/
+        adjC2FState = Adj_PointToLocal;
+    }
+
     /// @todo //TODO: handle periodic cases
     void UnstructuredMesh::
         InterpolateFace()
@@ -1129,7 +1198,16 @@ namespace DNDS::Geom
 
         cell2face.father->Compress();
         cell2face.son->Compress();
+        adjC2FState = Adj_PointToLocal;
 
+        this->AdjLocal2GlobalC2F();
+        cell2face.TransAttach();
+        cell2face.trans.BorrowGGIndexing(cell2node.trans);
+        cell2face.trans.createMPITypes();
+        cell2face.trans.pullOnce();
+        this->AdjGlobal2LocalC2F();
+        
+        
         for (DNDS::index iFace = 0; iFace < faceElemInfo.Size(); iFace++)
         {
             if (FaceIDIsPeriodicMain(faceElemInfo(iFace, 0).zone))

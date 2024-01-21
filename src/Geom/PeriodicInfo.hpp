@@ -80,6 +80,17 @@ namespace DNDS::Geom
             std::copy(r.begin(), r.end(), __p_indices);
         }
 
+        NodePeriodicBits bitandReduce()
+        {
+            NodePeriodicBits ret;
+            ret.setP1True();
+            ret.setP2True();
+            ret.setP3True();
+            for (auto &v : *this)
+                ret = ret & v;
+            return ret;
+        }
+
         NodePeriodicBits *begin() { return __p_indices; }
         NodePeriodicBits *end() { return __p_indices + __Row_size; } // past-end
         rowsize size() const { return __Row_size; }
@@ -257,6 +268,21 @@ namespace DNDS::Geom
             return ret;
         }
 
+        template <int dim, int nVec>
+        auto GetVectorByBits(const Eigen::Matrix<real, dim, nVec> &v, const NodePeriodicBits &bits)
+        {
+            if (!bool(bits))
+                return v;
+            Eigen::Matrix<real, dim, nVec> ret = v;
+            if (bits.getP3())
+                ret = this->TransVector(ret, BC_ID_PERIODIC_3);
+            if (bits.getP2())
+                ret = this->TransVector(ret, BC_ID_PERIODIC_2);
+            if (bits.getP1())
+                ret = this->TransVector(ret, BC_ID_PERIODIC_1);
+            return ret;
+        }
+
         tPoint GetCoordBackByBits(const tPoint &c, const NodePeriodicBits &bits)
         {
             if (!bool(bits))
@@ -268,6 +294,21 @@ namespace DNDS::Geom
                 ret = this->TransCoordBack(ret, BC_ID_PERIODIC_2);
             if (bits.getP3())
                 ret = this->TransCoordBack(ret, BC_ID_PERIODIC_3);
+            return ret;
+        }
+
+        template <int dim, int nVec>
+        auto GetVectorBackByBits(const Eigen::Matrix<real, dim, nVec> &v, const NodePeriodicBits &bits)
+        {
+            if (!bool(bits))
+                return v;
+            Eigen::Matrix<real, dim, nVec> ret = v;
+            if (bits.getP1())
+                ret = this->TransVectorBack(ret, BC_ID_PERIODIC_1);
+            if (bits.getP2())
+                ret = this->TransVectorBack(ret, BC_ID_PERIODIC_2);
+            if (bits.getP3())
+                ret = this->TransVectorBack(ret, BC_ID_PERIODIC_3);
             return ret;
         }
     };

@@ -92,7 +92,7 @@ namespace DNDS
 
         void ResizeBatch(index i, rowsize b_size)
         {
-            this->ResizeRow(i, b_size * MSize());
+            this->t_base::ResizeRow(i, b_size * MSize());
         }
 
         void ResizeRow(index i, rowsize b_size)

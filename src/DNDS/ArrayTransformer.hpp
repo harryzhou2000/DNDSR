@@ -388,16 +388,19 @@ namespace DNDS
                 pPullTypeVec = std::make_shared<MPITypePairHolder>(0);
                 for (MPI_int r = 0; r < mpi.size; r++)
                 {
+                    /************************************************************/
                     // push
                     MPI_int pushNumber = pLGhostMapping->pushIndexSizes[r];
                     // std::cout << "PN" << pushNumber << std::endl;
-                    if (pushNumber > 0)
+                    MPI_Aint *pPushDisps;
+                    MPI_int *pPushSizes;
+                    pPushDisps = pushingDisps.data() + pLGhostMapping->pushIndexStarts[r];
+                    pPushSizes = pushingSizes.data() + pLGhostMapping->pushIndexStarts[r];
+                    index sumPushSizes = 0; // using upgraded integer
+                    for (MPI_int i = 0; i < pushNumber; i++)
+                        sumPushSizes += pPushSizes[i];
+                    if (sumPushSizes > 0) // if no actuall data is to be sent
                     {
-
-                        MPI_Aint *pPushDisps;
-                        MPI_int *pPushSizes;
-                        pPushDisps = pushingDisps.data() + pLGhostMapping->pushIndexStarts[r];
-                        pPushSizes = pushingSizes.data() + pLGhostMapping->pushIndexStarts[r];
                         // std::cout <<mpi.rank<< " pushSlice " << pPushDisps[0] << outputDelim << pPushSizes[0] << std::endl;
 
                         // if (mpi.rank == 0)
@@ -413,11 +416,13 @@ namespace DNDS
                         MPI_Datatype dtype;
 
                         MPI_Type_create_hindexed(pushNumber, pPushSizes, pPushDisps, father->getDataType(), &dtype);
+                        // MPI_Type_create_hindexed(PushDispsMPI.size(), PushSizesMPI.data(), PushDispsMPI.data(), father->getDataType(), &dtype);
 
                         MPI_Type_commit(&dtype);
                         pPushTypeVec->push_back(std::make_pair(r, dtype));
                         // OPT: could use MPI_Type_create_hindexed_block to save some space
                     }
+                    /************************************************************/
                     // pull
                     MPI_Aint pullDisp[1];
 
@@ -860,7 +865,9 @@ namespace DNDS
                         MPI_Waitall(nRecvPullReq, PullReqVec->data(), MPI_STATUSES_IGNORE);
                     }
                     else
+                    {
                         MPI_Waitall(PullReqVec->size(), PullReqVec->data(), MPI_STATUSES_IGNORE);
+                    }
                 }
             }
             else if (commTypeCurrent == MPI::CommStrategy::InSituPack)

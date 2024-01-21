@@ -61,6 +61,12 @@ namespace DNDS::Geom
         Adj_PointToGlobal,
     };
 
+    enum MeshElevationState
+    {
+        Elevation_Untouched = 0,
+        Elevation_O1O2,
+    };
+
     struct UnstructuredMesh;
 
     struct UnstructuredMesh
@@ -71,6 +77,10 @@ namespace DNDS::Geom
         bool isPeriodic{false};
         MeshAdjState adjPrimaryState{Adj_Unknown};
         MeshAdjState adjFacialState{Adj_Unknown};
+        MeshAdjState adjC2FState{Adj_Unknown};
+        Periodicity periodicInfo;
+        index nNodeO1{-1};
+        MeshElevationState elevState = Elevation_Untouched;
         /// reader
         tCoordPair coords;
         tAdjPair cell2node;
@@ -97,9 +107,11 @@ namespace DNDS::Geom
         std::vector<index> node2parentNode;
         std::vector<index> node2bndNode;
 
-        // tAdj1Pair bndFaces; // no comm needed for now
+        /// only elevation
+        tCoordPair coordsElevDisp;
+        index nTotalMoved{-1};
 
-        Periodicity periodicInfo;
+        // tAdj1Pair bndFaces; // no comm needed for now
 
         UnstructuredMesh(const DNDS::MPIInfo &n_mpi, int n_dim)
             : mpi(n_mpi), dim(n_dim) {}
@@ -121,6 +133,8 @@ namespace DNDS::Geom
 
         void AdjGlobal2LocalFacial();
         void AdjLocal2GlobalFacial();
+        void AdjGlobal2LocalC2F();
+        void AdjLocal2GlobalC2F();
 
         void InterpolateFace();
         void AssertOnFaces();
@@ -160,6 +174,8 @@ namespace DNDS::Geom
         MPIInfo &getMPI() { return mpi; }
 
         void BuildO2FromO1Elevation(UnstructuredMesh &meshO1);
+        void ElevatedNodesGetBoundarySmooth(const std::function<bool(t_index)> &FiFBndIdNeedSmooth);
+        void ElevatedNodesSolveInternalSmooth();
 
         bool IsO1();
 

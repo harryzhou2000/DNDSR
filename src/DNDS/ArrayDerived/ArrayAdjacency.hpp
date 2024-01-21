@@ -51,7 +51,10 @@ namespace DNDS
 
         AdjacencyRow operator[](index i)
         {
-            DNDS_assert(i < this->Size()); //! disable past-end input
+            DNDS_assert_info(
+                i < this->Size(),
+                fmt::format("i {}, Size {}, sig: {}",
+                            i, this->Size(), this->GetArraySignature())); //! disable past-end input
             return AdjacencyRow(t_base::operator[](i), t_base::RowSize(i));
         }
 
