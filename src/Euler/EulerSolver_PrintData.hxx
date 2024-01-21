@@ -62,6 +62,7 @@ namespace DNDS::Euler
                     for (auto &out : additionalCellScalars)
                     {
                         (*outDist)[iCell][iCur] = std::get<1>(out)(iCell);
+                        iCur ++;
                     }
                 }
 
