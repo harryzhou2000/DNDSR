@@ -41,6 +41,8 @@ set(DNDS_LTO OFF CACHE BOOL "use -flto")
 set(DNDS_EIGEN_USE_BLAS OFF CACHE BOOL "use blas in eigen")
 set(DNDS_EIGEN_USE_LAPACK OFF CACHE BOOL "use lapack in eigen")
 
+set(DNDS_SUPERLU_DIST_USE_BLAS OFF CACHE BOOL "use blas in superlu_dist")
+
 set(DNDS_RECORD_COMMIT ON CACHE BOOL "record commit id for each cmake configure")
 set(DNDS_VERBOSE_BUILDING ON CACHE BOOL "make the makefile verbose, overrides CMAKE_VERBOSE_MAKEFILE")
 
@@ -183,7 +185,9 @@ find_path(EXTERNAL_DOXYGEN_AWESOME doxygen-awesome.css PATHS
 add_subdirectory("${EXTERNAL_INCLUDE_PYBIND11}/..")
 add_subdirectory("${EXTERNAL_INCLUDE_FMT}/..")
 
-if (DNDS_EIGEN_USE_BLAS)
+set(USE_XSDK_DEFAULTS ON CACHE BOOL "Init by DNDS") # for superlu
+if (DNDS_SUPERLU_DIST_USE_BLAS)
+    message("Setting DNDS_SUPERLU_DIST_USE_BLAS")
     set(TPL_ENABLE_INTERNAL_BLASLIB OFF CACHE BOOL "Init by DNDS")
     set(TPL_BLAS_LIBRARIES ${EXTERNAL_LIB_BLAS} CACHE FILEPATH "Init by DNDS")
 else()
@@ -231,8 +235,8 @@ set(EXTERNAL_LIBS ${EXTERNAL_LIBS}
     ${EXTERNAL_LIB_ZLIB}
     ${EXTERNAL_LIB_CGNS}
     ${EXTERNAL_LIB_HDF5}
-    ${EXTERNAL_LIB_METIS}
     ${EXTERNAL_LIB_PARMETIS}
+    ${EXTERNAL_LIB_METIS}
     # ${EXTERNAL_LIB_TECIO}
     CACHE INTERNAL
     "Project Public External Lib Dependencies"
@@ -264,6 +268,7 @@ set(EXTERNAL_INCLUDES
     ${EXTERNAL_INCLUDE_CGAL}
     ${EXTERNAL_INCLUDE_PYBIND11}
     ${EXTERNAL_INCLUDE_FMT}
+    ${EXTERNAL_INCLUDE_SUPERLU}/SRC
     CACHE INTERNAL "Project External Includes")
 
 if(DNDS_EIGEN_USE_BLAS)
