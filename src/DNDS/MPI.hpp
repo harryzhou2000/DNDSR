@@ -297,6 +297,13 @@ namespace DNDS::MPI
         Allreduce(&v, &vR, 1, DNDS_MPI_REAL, op, mpi.comm);
         v = vR;
     }
+
+    inline void AllreduceOneIndex(index & v, MPI_Op op, MPIInfo & mpi)
+    {
+        index vR{0};
+        Allreduce(&v, &vR, 1, DNDS_MPI_REAL, op, mpi.comm);
+        v = vR;
+    }
     
 }
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "DNDS/Defines.hpp"
+#include "Geometric.hpp"
 #include "json.hpp"
 
 namespace DNDS::Geom::RBF
@@ -25,9 +26,20 @@ namespace DNDS::Geom::RBF
          {RBFKernelType::CPC2, "CPC2"}})
 }
 
-
 namespace DNDS::Geom::RBF
 {
+
+    inline real
+    GetMaxRij(const tSmallCoords &cent, const tSmallCoords &xs)
+    {
+        Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic> RiXj;
+        RiXj.resize(cent.cols(), xs.cols());
+        for (int iC = 0; iC < cent.cols(); iC++)
+        {
+            RiXj(iC, Eigen::all) = (xs.colwise() - cent(Eigen::all, iC)).colwise().norm();
+        }
+        return RiXj.array().maxCoeff();
+    }
 
     inline Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic> // redurn Ni at Xj
     RBFCPC2(const tSmallCoords &cent, const tSmallCoords &xs, real R, RBFKernelType kernel = Gaussian)
