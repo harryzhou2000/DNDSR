@@ -68,6 +68,11 @@
         "uniqueStamps": true,
         "meshRotZ": 0.0,
         "meshScale": 1.0,
+        "meshElevation": 0,
+        "meshElevationIter": 1000,
+        "meshElevationRBFRadius": 1.0,
+        "meshElevationRBFKernel": "InversedDistanceA1",
+        "meshElevationMaxIncludedAngle": 15.0,
         "meshFile": "data/mesh/NACA0012_WIDE_H3.cgns",
         "outPltName": "data/out/debugData_",
         "outLogName": "",
@@ -79,6 +84,7 @@
         "outAtPointData": true,
         "outAtCellData": true,
         "nASCIIPrecision": 5,
+        "vtuFloatEncodeMode": "binary",
         "outVolumeData": true,
         "outBndData": false,
         "outCellScalarNames": [],
@@ -178,6 +184,7 @@
         "normWBAP": false,
         "limiterBiwayAlter": 0,
         "subs2ndOrder": 0,
+        "ignoreMeshGeometryDeficiency": false,
         "baseSettings": {
             "localOrientation": false,
             "anisotropicLengths": false

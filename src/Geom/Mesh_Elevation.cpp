@@ -900,19 +900,19 @@ namespace DNDS::Geom
 
         void addTo(CoordPairDOF &R, real alpha)
         {
-            for (index i = 0; i < this->father->Size(); i++)
+            for (index i = 0; i < this->Size(); i++)
                 (*this)[i] += R[i] * alpha;
         }
 
         void operator=(CoordPairDOF &R)
         {
-            for (index i = 0; i < this->father->Size(); i++)
+            for (index i = 0; i < this->Size(); i++)
                 (*this)[i] = R[i];
         }
 
         void operator*=(real r)
         {
-            for (index i = 0; i < this->father->Size(); i++)
+            for (index i = 0; i < this->Size(); i++)
                 (*this)[i] *= r;
         }
     };
@@ -1089,6 +1089,238 @@ namespace DNDS::Geom
         coords.trans.pullOnce();
     }
 
+    void UnstructuredMesh::ElevatedNodesSolveInternalSmoothV1Old()
+    {
+        DNDS_assert(elevState == Elevation_O1O2);
+        DNDS_assert(adjPrimaryState == Adj_PointToLocal);
+        DNDS_assert(adjFacialState == Adj_PointToLocal);
+        DNDS_assert(adjC2FState == Adj_PointToLocal);
+        DNDS_assert(face2node.father);
+        DNDS_assert(nTotalMoved >= 0);
+        if (!nTotalMoved)
+        {
+            if (mpi.rank == mRank)
+                log() << "UnstructuredMesh === ElevatedNodesSolveInternalSmooth() early exit for no nodes were moved";
+            return;
+        }
+
+        DNDS_MPI_InsertCheck(mpi, "Got node2node");
+
+        coordsElevDisp.trans.initPersistentPull(); // only holds local nodes
+
+        std::unordered_set<index> nodesBoundInterpolated;
+        for (index iN = 0; iN < coords.father->Size(); iN++)
+        {
+            if (coordsElevDisp[iN](0) != largeReal || coordsElevDisp[iN](2) == 2 * largeReal)
+            {
+                nodesBoundInterpolated.insert(iN);
+            }
+        }
+
+        tCoordPair boundInterpCoo;
+        tCoordPair boundInterpVal;
+        DNDS_MAKE_SSP(boundInterpCoo.father, mpi);
+        DNDS_MAKE_SSP(boundInterpCoo.son, mpi);
+        DNDS_MAKE_SSP(boundInterpVal.father, mpi);
+        DNDS_MAKE_SSP(boundInterpVal.son, mpi);
+
+        boundInterpCoo.father->Resize(nodesBoundInterpolated.size());
+        boundInterpVal.father->Resize(nodesBoundInterpolated.size());
+
+        index top{0};
+        for (auto iN : nodesBoundInterpolated)
+        {
+            boundInterpCoo[top] = coords[iN];
+            boundInterpVal[top] = (coordsElevDisp[iN](0) != largeReal) ? tPoint{coordsElevDisp[iN]} : tPoint::Zero();
+            top++;
+        }
+        std::vector<index> boundInterpPullIdx;
+
+        index boundInterpGlobSize = boundInterpCoo.father->globalSize();
+        boundInterpPullIdx.resize(boundInterpGlobSize);
+        for (index i = 0; i < boundInterpPullIdx.size(); i++)
+            boundInterpPullIdx[i] = i;
+        boundInterpCoo.father->createGlobalMapping();
+        boundInterpCoo.TransAttach();
+        boundInterpCoo.trans.createGhostMapping(boundInterpPullIdx);
+        boundInterpCoo.trans.createMPITypes();
+        boundInterpCoo.trans.pullOnce();
+
+        boundInterpVal.TransAttach();
+        boundInterpVal.trans.BorrowGGIndexing(boundInterpCoo.trans);
+        boundInterpVal.trans.createMPITypes();
+        boundInterpVal.trans.pullOnce();
+
+        if (mpi.rank == mRank)
+            log() << "RBF set: " << boundInterpCoo.son->Size() << std::endl;
+
+        using kdtree_t = nanoflann::KDTreeSingleIndexAdaptor<
+            nanoflann::L2_Simple_Adaptor<real, PointCloudKDTreeCoordPair>,
+            PointCloudKDTreeCoordPair,
+            3,
+            index>;
+        using kdtree_tcoo = nanoflann::KDTreeSingleIndexAdaptor<
+            nanoflann::L2_Simple_Adaptor<real, PointCloudKDTree>,
+            PointCloudKDTree,
+            3,
+            index>;
+        auto coordsI = PointCloudKDTreeCoordPair(boundInterpCoo.son);
+        kdtree_t bndInterpTree(3, coordsI);
+
+        tCoordPair boundInterpCoef;
+        using tScalarPair = DNDS::ArrayPair<DNDS::ParArray<real, 1>>;
+        tScalarPair boundInterpR;
+
+        DNDS_MAKE_SSP(boundInterpCoef.father, mpi);
+        DNDS_MAKE_SSP(boundInterpCoef.son, mpi);
+        DNDS_MAKE_SSP(boundInterpR.father, mpi);
+        DNDS_MAKE_SSP(boundInterpR.son, mpi);
+        boundInterpCoef.father->Resize(mpi.rank == mRank ? boundInterpGlobSize : 0);
+        boundInterpR.father->Resize(mpi.rank == mRank ? boundInterpGlobSize : 0);
+
+        if (mpi.rank == mRank) // that dirty work
+        {
+
+            Eigen::SparseMatrix<real> M(boundInterpGlobSize, boundInterpGlobSize);
+            M.reserve(Eigen::Vector<index, Eigen::Dynamic>::Constant(boundInterpGlobSize, elevationInfo.nIter));
+            Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic> f;
+            f.resize(boundInterpGlobSize, 3);
+            for (index iN = 0; iN < boundInterpGlobSize; iN++)
+            {
+                std::cout << iN << std::endl;
+                tPoint cooC = (*boundInterpCoo.son)[iN];
+
+                index nFind = elevationInfo.nIter;
+                std::vector<index> idxFound;
+                Eigen::Vector<real, Eigen::Dynamic> outDistancesSqr;
+                idxFound.resize(nFind);
+                outDistancesSqr.resize(nFind);
+                index nFound = bndInterpTree.knnSearch(cooC.data(), nFind, idxFound.data(), outDistancesSqr.data());
+                DNDS_assert(nFound >= 1);
+                idxFound.resize(nFound);
+                outDistancesSqr.resize(nFound);
+
+                real RMin = outDistancesSqr.minCoeff();
+                real RMax = outDistancesSqr.maxCoeff();
+                real RRBF = elevationInfo.RBFRadius * std::sqrt(RMax);
+                boundInterpR(iN, 0) = RRBF;
+                DNDS_assert(RRBF > 0);
+                Eigen::Vector<real, Eigen::Dynamic> outDists = outDistancesSqr.array().sqrt() * (1. / RRBF);
+                auto fBasis = RBF::FRBFBasis(outDists, elevationInfo.kernel);
+                for (index in2n = 0; in2n < nFound; in2n++)
+                    M.insert(iN, idxFound[in2n]) = fBasis(in2n);
+
+                f(iN, Eigen::all) = (*boundInterpVal.son)[iN].transpose();
+            }
+
+            log() << "RBF assembled: " << boundInterpCoo.son->Size() << std::endl;
+            Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic> coefs;
+            M.makeCompressed();
+            Eigen::SparseLU<Eigen::SparseMatrix<real>, Eigen::COLAMDOrdering<int>> LUSolver;
+            LUSolver.analyzePattern(M);
+            LUSolver.factorize(M);
+            coefs = LUSolver.solve(f);
+            for (index iN = 0; iN < boundInterpGlobSize; iN++)
+                boundInterpCoef[iN] = coefs(iN, Eigen::all).transpose();
+        }
+
+        boundInterpCoef.father->createGlobalMapping();
+        boundInterpCoef.TransAttach();
+        boundInterpCoef.trans.createGhostMapping(boundInterpPullIdx);
+        boundInterpCoef.trans.createMPITypes();
+        boundInterpCoef.trans.pullOnce();
+
+        boundInterpR.TransAttach();
+        boundInterpR.trans.BorrowGGIndexing(boundInterpCoef.trans);
+        boundInterpR.trans.createMPITypes();
+        boundInterpR.trans.pullOnce();
+
+        if (mpi.rank == mRank)
+        {
+            for (index iN = 0; iN < boundInterpGlobSize; iN++)
+            {
+                std::cout << "coef: " << iN << " " << boundInterpCoef.son->operator[](iN).transpose() << std::endl;
+            }
+        }
+
+        PointCloudKDTree insidePts;
+        insidePts.pts.reserve(coords.father->Size() - nodesBoundInterpolated.size());
+        std::vector<index> insideNodes;
+        insideNodes.reserve(insidePts.pts.size());
+        for (index iN = 0; iN < coords.father->Size(); iN++)
+            if (!nodesBoundInterpolated.count(iN))
+                insidePts.pts.push_back(coords[iN]), insideNodes.push_back(iN), coordsElevDisp[iN].setZero();
+        kdtree_tcoo nodesDstTree(3, insidePts);
+        for (index iN = 0; iN < boundInterpGlobSize; iN++)
+        {
+
+            tPoint cooC = (*boundInterpCoo.son)[iN];
+            std::vector<std::pair<DNDS::index, DNDS::real>> IndicesDists;
+            IndicesDists.reserve(elevationInfo.nIter * 5);
+            real RRBF = boundInterpR.son->operator()(iN, 0);
+            nanoflann::SearchParams params{}; // default params
+            index nFound = nodesDstTree.radiusSearch(cooC.data(), RRBF, IndicesDists, params);
+            Eigen::Vector<real, Eigen::Dynamic> outDists;
+            outDists.resize(IndicesDists.size());
+            DNDS_assert(RRBF > 0);
+            for (index i = 0; i < IndicesDists.size(); i++)
+                outDists[i] = std::sqrt(IndicesDists[i].second) / RRBF;
+
+            auto fBasis = RBF::FRBFBasis(outDists, elevationInfo.kernel);
+            for (index i = 0; i < IndicesDists.size(); i++)
+            {
+                coordsElevDisp[insideNodes[IndicesDists[i].first]] +=
+                    fBasis(i, 0) *
+                    boundInterpCoef.son->operator[](iN);
+            }
+        }
+
+        // for (index iN = 0; iN < coords.father->Size(); iN++)
+        // {
+        //     if (nodesBoundInterpolated.count(iN))
+        //         continue;
+
+        //     index nFind = elevationInfo.nIter * 5; // for safety
+        //     tPoint cooC = coords[iN];
+
+        //     std::vector<index> idxFound;
+        //     Eigen::Vector<real, Eigen::Dynamic> outDistancesSqr;
+        //     idxFound.resize(nFind);
+        //     outDistancesSqr.resize(nFind);
+
+        //     index nFound = bndInterpTree.knnSearch(cooC.data(), nFind, idxFound.data(), outDistancesSqr.data());
+        //     DNDS_assert(nFound >= 1);
+        //     idxFound.resize(nFound);
+        //     outDistancesSqr.resize(nFound);
+
+        //     Eigen::Vector<real, Eigen::Dynamic> foundRRBFs;
+        //     foundRRBFs.resize(nFound);
+        //     tSmallCoords coefsC;
+        //     coefsC.resize(3, nFound);
+        //     for (index iF = 0; iF < nFound; iF++)
+        //         foundRRBFs[iF] = (*boundInterpR.son)(idxFound[iF], 0),
+        //         coefsC(Eigen::all, iF) = (*boundInterpCoef.son)[idxFound[iF]].transpose();
+        //     Eigen::Vector<real, Eigen::Dynamic> outDists = outDistancesSqr.array().sqrt() / foundRRBFs.array();
+        //     auto fBasis = RBF::FRBFBasis(outDists, elevationInfo.kernel);
+        //     tPoint dispC = coefsC * fBasis;
+        //     coordsElevDisp[iN] = dispC;
+        // }
+
+        coordsElevDisp.trans.startPersistentPull();
+        coordsElevDisp.trans.waitPersistentPull();
+
+        for (index iN = nNodeO1; iN < coords.father->Size(); iN++)
+        {
+            // if(dim == 2)
+            //     dispO2[iN](2) = 0;
+            // if(dispO2[iN].norm() != 0)
+            //     std::cout << dispO2[iN].transpose() << std::endl;
+            if (coordsElevDisp[iN](0) != largeReal)
+                coords[iN] += coordsElevDisp[iN];
+        }
+        coords.trans.pullOnce();
+    }
+
     void UnstructuredMesh::ElevatedNodesSolveInternalSmoothV1()
     {
         DNDS_assert(elevState == Elevation_O1O2);
@@ -1224,6 +1456,12 @@ namespace DNDS::Geom
         boundInterpCoef.trans.createGhostMapping(boundInterpPullingIndexSolving);
         boundInterpCoef.trans.createMPITypes();
         boundInterpCoef.trans.initPersistentPull();
+
+        boundInterpCoefRHS.TransAttach();
+        boundInterpCoefRHS.trans.BorrowGGIndexing(boundInterpCoef.trans);
+        boundInterpCoefRHS.trans.createMPITypes();
+        boundInterpCoefRHS.trans.initPersistentPull();
+
         std::cout << "HEre1" << std::endl;
 
         for (index iN = 0; iN < nodesBoundInterpolated.size(); iN++)
@@ -1244,17 +1482,21 @@ namespace DNDS::Geom
             for (index in2n = 0; in2n < MatC[iN].size(); in2n++)
             {
                 if (MatC[iN][in2n].first < nodesBoundInterpolated.size())
-                    M.insert(iN, MatC[iN][in2n].first) = MatC[iN][in2n].second,
-                                 std::cout << fmt::format("rank {}, inserting {},{}={}", mpi.rank, iN, MatC[iN][in2n].first, MatC[iN][in2n].second) << std::endl;
+                    M.insert(iN, MatC[iN][in2n].first) = MatC[iN][in2n].second;
+                // ,
+                //              std::cout << fmt::format("rank {}, inserting {},{}={}", mpi.rank, iN, MatC[iN][in2n].first, MatC[iN][in2n].second) << std::endl;
             }
         }
         Eigen::SparseLU<Eigen::SparseMatrix<real>, Eigen::COLAMDOrdering<int>> LUSolver;
-        LUSolver.analyzePattern(M);
-        LUSolver.factorize(M); // full LU perconditioner
+        if (nodesBoundInterpolated.size())
+        {
+            LUSolver.analyzePattern(M);
+            LUSolver.factorize(M); // full LU perconditioner
+        }
         std::cout << "HEre2" << std::endl;
 
         Linear::GMRES_LeftPreconditioned<CoordPairDOF> gmres(
-            5,
+            15,
             [&](CoordPairDOF &v)
             {
                 DNDS_MAKE_SSP(v.father, mpi);
@@ -1266,11 +1508,15 @@ namespace DNDS::Geom
                 v.trans.initPersistentPull();
             });
         std::cout << "HEre3" << std::endl;
+        boundInterpCoef.trans.startPersistentPull();
+        boundInterpCoef.trans.waitPersistentPull();
+        boundInterpCoefRHS.trans.startPersistentPull();
+        boundInterpCoefRHS.trans.waitPersistentPull();
         gmres.solve(
             [&](CoordPairDOF &x, CoordPairDOF &Ax)
             {
-                Eigen::Matrix<real, Eigen::Dynamic, 3> AxVal;
-                AxVal.resize(nodesBoundInterpolated.size(), 3);
+                x.trans.startPersistentPull();
+                x.trans.waitPersistentPull();
                 for (index iN = 0; iN < nodesBoundInterpolated.size(); iN++)
                 {
                     Ax[iN].setZero();
@@ -1278,23 +1524,30 @@ namespace DNDS::Geom
                     {
                         Ax[iN] += x[MatC[iN][in2n].first] * MatC[iN][in2n].second;
                     }
-                    AxVal(iN, Eigen::all) = Ax[iN].transpose();
-                }
-                Eigen::Matrix<real, Eigen::Dynamic, 3> AxValPrec = LUSolver.solve(AxVal);
-                for (index iN = 0; iN < nodesBoundInterpolated.size(); iN++)
-                {
-                    Ax[iN] = AxValPrec(iN, Eigen::all).transpose();
                 }
                 Ax.trans.startPersistentPull();
                 Ax.trans.waitPersistentPull();
             },
             [&](CoordPairDOF &x, CoordPairDOF &MLX)
             {
+                x.trans.startPersistentPull();
+                x.trans.waitPersistentPull();
+                Eigen::Matrix<real, Eigen::Dynamic, 3> xVal;
+                xVal.resize(nodesBoundInterpolated.size(), 3);
+                for (index iN = 0; iN < nodesBoundInterpolated.size(); iN++)
+                    xVal(iN, Eigen::all) = x[iN].transpose();
+                Eigen::Matrix<real, Eigen::Dynamic, 3> xValPrec;
+                if (nodesBoundInterpolated.size())
+                    xValPrec = LUSolver.solve(xVal);
+                for (index iN = 0; iN < nodesBoundInterpolated.size(); iN++)
+                    MLX[iN] = xValPrec(iN, Eigen::all).transpose();
                 MLX = x;
+                MLX.trans.startPersistentPull();
+                MLX.trans.waitPersistentPull();
             },
             boundInterpCoefRHS,
             boundInterpCoef,
-            10,
+            1000,
             [&](int iRestart, real res, real resB)
             {
                 if (mpi.rank == mRank)
@@ -1303,16 +1556,26 @@ namespace DNDS::Geom
             }
 
         );
+        boundInterpCoef.trans.startPersistentPull();
+        boundInterpCoef.trans.waitPersistentPull();
         boundInterpCoef.father->createGlobalMapping();
         boundInterpCoef.TransAttach();
         boundInterpCoef.trans.createGhostMapping(boundInterpPullIdx);
         boundInterpCoef.trans.createMPITypes();
         boundInterpCoef.trans.pullOnce();
 
-        boundInterpR.TransAttach();
+                boundInterpR.TransAttach();
         boundInterpR.trans.BorrowGGIndexing(boundInterpCoef.trans);
         boundInterpR.trans.createMPITypes();
         boundInterpR.trans.pullOnce();
+
+        if (mpi.rank == mRank)
+        {
+            for (index iN = 0; iN < boundInterpGlobSize; iN++)
+            {
+                std::cout << "coef: " << iN << " " << boundInterpCoef.son->operator[](iN).transpose() << std::endl;
+            }
+        }
 
         PointCloudKDTree insidePts;
         insidePts.pts.reserve(coords.father->Size() - nodesBoundInterpolated.size());

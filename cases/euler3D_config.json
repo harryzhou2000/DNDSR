@@ -33,18 +33,23 @@
     "dataIOControl": {
         "uniqueStamps": false,
         "meshElevation": 1,
-        "meshElevationIter": 100,
-        "meshElevationRBFRadius": 0.1,
+        "meshElevationIter": 200,
+        "meshElevationRBFRadius": 1,
+        "meshElevationRBFKernel": "CPC2",
         "meshFile": "../data/mesh/Ball4.cgns",
-        "outPltName": "../data/outUnsteady/Ball4",
-        "outLogName": "../data/outUnsteady/Ball4",
+        "outPltName": "../data/out/Ball4",
         "outPltMode": 0,
         "readMeshMode": 0,
         "outPltTecplotFormat": true,
         "outPltVTKFormat": true,
         "outAtPointData": true,
         "outAtCellData": true,
-        "nASCIIPrecision": 16
+        "nASCIIPrecision": 16,
+        "outCellScalarNames": [
+            "minJacobiDetRel",
+            "cellVolume"
+        ],
+        "_tail": 0
     },
     "implicitReconstructionControl": {
         "nInternalRecStep": 1,

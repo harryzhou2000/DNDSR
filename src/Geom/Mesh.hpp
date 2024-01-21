@@ -184,6 +184,7 @@ namespace DNDS::Geom
         void BuildO2FromO1Elevation(UnstructuredMesh &meshO1);
         void ElevatedNodesGetBoundarySmooth(const std::function<bool(t_index)> &FiFBndIdNeedSmooth);
         void ElevatedNodesSolveInternalSmooth();
+        void ElevatedNodesSolveInternalSmoothV1Old();
         void ElevatedNodesSolveInternalSmoothV1();
 
         bool IsO1();

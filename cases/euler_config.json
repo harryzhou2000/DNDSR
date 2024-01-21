@@ -10,6 +10,7 @@
         "odeSetting3": 0.75,
         // "useRHSfPP": true,
         // "rhsfPPScale": 0.01
+        "partitonMeshOnly": true,
         "_tail": 0
     },
     "outputControl": {
@@ -18,7 +19,7 @@
         "consoleOutputMode": 0,
         "consoleOutputEveryFix": 0,
         "nDataOutC": 100,
-        "nDataOut": 1000,
+        "nDataOut": 1,
         "nDataOutCInternal": 100,
         "nDataOutInternal": 1000000000,
         "tDataOut": 3e+200
@@ -40,8 +41,9 @@
     "dataIOControl": {
         "uniqueStamps": false,
         "meshRotZ": 0.0,
-        "meshFile": "../data/mesh/IV10_160.cgns",
-        "outPltName": "../data/outUnsteady/IV10_160",
+        "meshElevation": 1,
+        "meshFile": "../data/mesh/Box4.cgns",
+        "outPltName": "../data/outUnsteady/Box4",
         "outPltMode": 0,
         "readMeshMode": 0,
         "outPltTecplotFormat": true,

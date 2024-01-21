@@ -39,8 +39,10 @@
         "uniqueStamps": false,
         "meshRotZ": 0.0,
         "meshElevation": 1,
-        "meshElevationIter": 200,
+        "meshElevationIter": 10,
         "meshElevationRBFRadius": 1,
+        "meshElevationMaxIncludedAngle": 55,
+        "meshElevationRBFKernel": "CPC0",
         "meshFile": "../data/mesh/NACA0012_H2.cgns",
         "outPltName": "../data/out/NACA0012_H2",
         "outPltMode": 0,
@@ -49,7 +51,12 @@
         "outPltVTKFormat": true,
         "outAtPointData": true,
         "outAtCellData": true,
-        "nASCIIPrecision": 16
+        "nASCIIPrecision": 16,
+        "outCellScalarNames": [
+            "minJacobiDetRel",
+            "cellVolume"
+        ],
+        "_tail": 0
     },
     "boundaryDefinition": {},
     "implicitReconstructionControl": {
@@ -105,7 +112,8 @@
             // "inertiaWeightPower": 0,
             // "scaleMultiplier": 1,
             "_tail": 0
-        }
+        },
+        "ignoreMeshGeometryDeficiency": true
     },
     "linearSolverControl": {
         "gmresCode": 0,
