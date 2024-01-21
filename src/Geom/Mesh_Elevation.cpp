@@ -5,6 +5,8 @@
 #include <omp.h>
 #include <fmt/core.h>
 #include <functional>
+#include <unordered_set>
+#include <Solver/Linear.hpp>
 
 namespace DNDS::Geom
 {
@@ -768,7 +770,7 @@ namespace DNDS::Geom
                         real sinValMax = 0;
                         for (auto e : edges)
                             sinValMax = std::max(sinValMax, std::abs(e.dot(normN)));
-                        if (sinValMax > std::sin(pi / 180. * 10)) //! angle is here
+                        if (sinValMax > std::sin(pi / 180. * 45)) //! angle is here
                             continue;
                         nAdd[iN] += 1.;
                         norms(Eigen::all, iN) += normN * 1.;
@@ -789,6 +791,8 @@ namespace DNDS::Geom
                         norms(Eigen::all, 0), norms(Eigen::all, 1), norms(Eigen::all, 2), norms(Eigen::all, 3));
 
                 tPoint cooInc = cooSmooth - cooUnsmooth;
+                if(isPeriodic)
+                    cooInc = periodicInfo.GetVectorBackByBits(cooInc, face2nodePbiExtended[iFace][iNode]);
                 if(cooInc.stableNorm() > 0) //! could use a threshold
                 {
                     coordsElevDisp[iNode] = cooInc; // maybe output the increment directly?
@@ -805,5 +809,315 @@ namespace DNDS::Geom
             log() << fmt::format("UnstructuredMesh === ElevatedNodesGetBoundarySmooth: Smoothing Complete, total Moved [{}]", nTotalMoved) << std::endl;
 
         // std::cout << mpi.rank << " rank Here XXXX -1" << std::endl;
+    }
+
+    struct CoordPairDOF : public tCoordPair
+    {
+        real dot(CoordPairDOF & R)
+        {
+            real ret = 0;
+            for(index i = 0; i < this->father->Size(); i++)
+                ret += (*this)[i].dot(R[i]);
+            real retSum;
+            MPI::Allreduce(&ret, &retSum, 1, DNDS_MPI_REAL, MPI_SUM, this->father->getMPI().comm);
+            return retSum;
+        }
+
+        real norm2() 
+        {
+            return std::sqrt(this->dot(*this));
+        }
+
+        void addTo(CoordPairDOF & R, real alpha)
+        {
+            for(index i = 0; i < this->Size(); i++)
+                (*this)[i] += R[i] * alpha;
+        }
+
+        void operator=(CoordPairDOF & R)
+        {
+            for(index i = 0; i < this->Size(); i++)
+                (*this)[i] = R[i];
+        }
+
+        void operator*=(real r)
+        {
+            for(index i = 0; i < this->Size(); i++)
+                (*this)[i] *= r;
+        }
+
+    };
+
+    void UnstructuredMesh::ElevatedNodesSolveInternalSmooth()
+    {
+        DNDS_assert(elevState == Elevation_O1O2);
+        DNDS_assert(adjPrimaryState == Adj_PointToLocal);
+        DNDS_assert(adjFacialState == Adj_PointToLocal);
+        DNDS_assert(adjC2FState == Adj_PointToLocal);
+        DNDS_assert(face2node.father);
+        DNDS_assert(nTotalMoved >= 0);
+        if(!nTotalMoved)
+        {
+            if(mpi.rank == mRank)
+                log() << "UnstructuredMesh === ElevatedNodesSolveInternalSmooth() early exit for no nodes were moved";
+            return;
+        }
+
+        
+        AdjLocal2GlobalPrimary();
+        std::vector<std::unordered_set<index>> node2nodeV;
+        node2nodeV.resize(coords.father->Size());
+        std::vector<index> ghostNodes;
+        for(index iCell = 0; iCell < cell2node.Size(); iCell ++)
+        {
+            for(auto iN: cell2node[iCell])
+                for(auto iNOther: cell2node[iCell])
+                {
+                    if(iN == iNOther)
+                        continue;
+                    if(iN < coords.father->Size())
+                    {
+                        node2nodeV[iN].insert(iNOther);
+
+                        //standard procedure for rank determination
+                        DNDS::MPI_int rank;
+                        DNDS::index val;
+                        if (!coords.trans.pLGlobalMapping->search(iNOther, rank, val))
+                            DNDS_assert_info(false, "search failed");
+                        if (rank != mpi.rank)
+                        ghostNodes.push_back(iNOther);
+                    }
+                }
+        }
+        AdjGlobal2LocalPrimary();
+        DNDS_MPI_InsertCheck(mpi, "Got node2node");
+        // std::cout << "hereXXXXXXXXXXXXXXX 0" << std::endl;
+        
+        CoordPairDOF dispO2, bO2, dispO2New, dispO2PrecRHS;
+        auto initDOF = [&](CoordPairDOF& dispO2)
+        {
+            DNDS_MAKE_SSP(dispO2.father, mpi);
+            DNDS_MAKE_SSP(dispO2.son, mpi);
+            dispO2.father->Resize(coords.father->Size()); //O1 part is unused
+            dispO2.TransAttach();
+            dispO2.trans.BorrowGGIndexing(coords.trans); // should be subset of coord?
+            dispO2.trans.createMPITypes();
+            dispO2.trans.initPersistentPull();
+        };
+        initDOF(dispO2);
+        initDOF(dispO2New);
+        initDOF(bO2);
+        initDOF(dispO2PrecRHS);
+
+        struct MatElem{
+            index j;
+            Eigen::Matrix<real, 3, 3> m;
+        };
+        std::vector<std::vector<MatElem>> A; // stiff matrixTo O2 coords
+        A.resize(coords.father->Size());
+        for(index iN = 0; iN < coords.father->Size(); iN ++)
+        {
+            A[iN].resize(node2nodeV[iN].size() + 1);
+            A[iN][0].j = iN;
+            int curRowEnd = 1;
+            for(auto iNOther: node2nodeV[iN])
+            {
+                MPI_int rank{-1};
+                index val{-1};
+                if (!coords.trans.pLGhostMapping->search_indexAppend(iNOther, rank, val))
+                    DNDS_assert_info(false, "search failed");
+                A[iN][curRowEnd++].j = val;
+            }
+            for(auto & ME: A[iN])
+                ME.m.setConstant(iN < nNodeO1 ? veryLargeReal : 0); // O1 nodes keep row to be varyLargeReal
+            bO2[iN].setZero();
+            dispO2[iN].setZero();
+            if(coordsElevDisp[iN](0) != largeReal)
+                dispO2[iN] = coordsElevDisp[iN];
+        }
+        dispO2.trans.startPersistentPull();
+        dispO2.trans.waitPersistentPull();
+
+        Eigen::Matrix<real, 6, 6> DStruct;
+        DStruct.setIdentity();
+        real lam = 10;
+        real muu = 1;
+        DStruct *= muu;
+        DStruct({0,1,2},{0,1,2}) += muu * tJacobi::Identity();
+        DStruct({0,1,2},{0,1,2}).array() += lam;
+
+        for(index iCell = 0; iCell < cell2node.Size(); iCell ++)
+        {
+            auto c2n = cell2node[iCell];
+            rowsize nnLoc = c2n.size();
+            tSmallCoords coordsC;
+            GetCoordsOnCell(iCell, coordsC);
+            Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic> ALoc, mLoc;
+            ALoc.setZero(3 * nnLoc, 3 * nnLoc + 1);
+            mLoc.resize(6, 3 * nnLoc);
+            auto eCell = GetCellElement(iCell);
+            auto qCell = Elem::Quadrature{eCell, 5}; // for O2 FEM
+            qCell.Integration(
+                ALoc,
+                [&](auto &vInc, int iG, const tPoint &pParam, const Elem::tD01Nj &DiNj){
+                    // J = dx_i/dxii_j, Jinv = dxii_i/dx_j
+                    tJacobi J = Elem::ShapeJacobianCoordD01Nj(coordsC, DiNj);
+                    tJacobi JInv = tJacobi::Identity();
+                    real JDet;
+                    if (dim == 2)
+                        JDet = J(Eigen::all, 0).cross(J(Eigen::all, 1)).stableNorm();
+                    else
+                        JDet = J.determinant();
+                    DNDS_assert(JDet > 0);
+                    if (dim == 2)
+                        JInv({0,1},{0,1}) = J({0,1},{0,1}).inverse().eval();
+                    else
+                        JInv = J.inverse().eval();
+                    // JInv.transpose() * DiNj({1,2,3}, Eigen::all) * u (size = nnode,3) => du_j/dxi
+                    tSmallCoords m3 = JInv.transpose() * DiNj({1,2,3}, Eigen::all);
+                    mLoc(0, Eigen::seq(nnLoc * 0, nnLoc * 0 + nnLoc - 1)) = m3(0, Eigen::all);
+                    mLoc(1, Eigen::seq(nnLoc * 1, nnLoc * 1 + nnLoc - 1)) = m3(1, Eigen::all);
+                    mLoc(2, Eigen::seq(nnLoc * 2, nnLoc * 2 + nnLoc - 1)) = m3(2, Eigen::all);
+
+                    mLoc(3, Eigen::seq(nnLoc * 1, nnLoc * 1 + nnLoc - 1)) = 0.5 * m3(2, Eigen::all);
+                    mLoc(3, Eigen::seq(nnLoc * 2, nnLoc * 2 + nnLoc - 1)) = 0.5 * m3(1, Eigen::all);
+                    mLoc(4, Eigen::seq(nnLoc * 2, nnLoc * 2 + nnLoc - 1)) = 0.5 * m3(0, Eigen::all);
+                    mLoc(4, Eigen::seq(nnLoc * 0, nnLoc * 0 + nnLoc - 1)) = 0.5 * m3(2, Eigen::all);
+                    mLoc(5, Eigen::seq(nnLoc * 0, nnLoc * 0 + nnLoc - 1)) = 0.5 * m3(1, Eigen::all);
+                    mLoc(5, Eigen::seq(nnLoc * 1, nnLoc * 1 + nnLoc - 1)) = 0.5 * m3(0, Eigen::all);
+
+                    vInc.resizeLike(ALoc);
+                    vInc(Eigen::all, Eigen::seq(0, 3 * nnLoc-1)) = mLoc.transpose() * DStruct * mLoc; 
+                    vInc(Eigen::all, Eigen::last).setZero(); // no node force, thus zero 
+                    vInc *= JDet;
+                });
+
+            for(rowsize ic2n = 0; ic2n < nnLoc; ic2n ++)
+            {
+                index iN = c2n[ic2n];
+                if(iN >= coords.father->Size())
+                    continue; //not local row
+                for(rowsize jc2n = 0; jc2n < nnLoc; jc2n ++) 
+                {
+                    index jN = c2n[jc2n];
+                    for(auto & ME:A[iN])
+                        if(ME.j == jN)
+                        {
+                            ME.m(0, 0) += ALoc(0 * nnLoc + ic2n, 0 * nnLoc + jc2n);
+                            ME.m(0, 1) += ALoc(0 * nnLoc + ic2n, 1 * nnLoc + jc2n);
+                            ME.m(0, 2) += ALoc(0 * nnLoc + ic2n, 2 * nnLoc + jc2n);
+                            ME.m(1, 0) += ALoc(1 * nnLoc + ic2n, 0 * nnLoc + jc2n);
+                            ME.m(1, 1) += ALoc(1 * nnLoc + ic2n, 1 * nnLoc + jc2n);
+                            ME.m(1, 2) += ALoc(1 * nnLoc + ic2n, 2 * nnLoc + jc2n);
+                            ME.m(2, 0) += ALoc(2 * nnLoc + ic2n, 0 * nnLoc + jc2n);
+                            ME.m(2, 1) += ALoc(2 * nnLoc + ic2n, 1 * nnLoc + jc2n);
+                            ME.m(2, 2) += ALoc(2 * nnLoc + ic2n, 2 * nnLoc + jc2n);
+                            if(isPeriodic)
+                            {
+                                auto ipbi = cell2nodePbi(iCell, ic2n);
+                                auto jpbi = cell2nodePbi(iCell, jc2n);
+                                tJacobi iTrans = periodicInfo.GetVectorByBits<3, 3>(tJacobi::Identity(), ipbi);
+                                tJacobi jTrans = periodicInfo.GetVectorByBits<3, 3>(tJacobi::Identity(), jpbi);
+                                ME.m = jTrans.transpose() * ME.m * iTrans;
+                            }
+                        }
+                }
+                bO2[iN](0) += ALoc(0 * nnLoc + ic2n, Eigen::last);
+                bO2[iN](1) += ALoc(1 * nnLoc + ic2n, Eigen::last);
+                bO2[iN](2) += ALoc(2 * nnLoc + ic2n, Eigen::last);
+                
+            }
+        }
+        real SORRelax = 0.1; //!param here
+        auto UpdateDispO2Jacobi = [&](tCoordPair & x, tCoordPair & xnew, bool noRHS)
+        {
+            real incSum = 0;
+            
+            for(index iN = 0; iN < coords.father->Size(); iN ++)
+            {
+                if(coordsElevDisp[iN](0) != largeReal) // is moved
+                {
+                    xnew[iN] = coordsElevDisp[iN];
+                    continue;
+                }
+                if(iN <= nNodeO1)
+                {
+                    xnew[iN].setZero();
+                    continue;
+                }
+
+                tPoint rhsNode;
+                rhsNode.setZero();
+                for(int in2n = 1; in2n < A[iN].size(); in2n ++)
+                    rhsNode -= A[iN][in2n].m * x[A[iN][in2n].j] * 
+                       (((coordsElevDisp[A[iN][in2n].j](0) != largeReal) && noRHS) ? 0. : 1.);
+                tPoint xNewV =  A[iN][0].m.colPivHouseholderQr().solve(rhsNode);
+                tPoint xOldV = x[iN];
+                xnew[iN] = xOldV + (xNewV - xOldV) * SORRelax;
+                incSum += (xNewV - xOldV).array().abs().sum();
+            }
+            for(index iN = 0; iN < coords.father->Size(); iN ++)
+            {
+                x[iN] = xnew[iN]; 
+            }
+            real incSumTotal;
+            MPI::Allreduce(&incSum, &incSumTotal, 1, DNDS_MPI_REAL, MPI_SUM, mpi.comm);
+            return incSumTotal;
+        };
+
+        // for(int iIter = 1; iIter <= 200; iIter ++)
+        // {
+        //     real incC = UpdateDispO2Jacobi(dispO2, dispO2, false); // JOR iteration
+        //     dispO2.trans.startPersistentPull();
+        //     dispO2.trans.waitPersistentPull();
+        //     if(mpi.rank == mRank)
+        //         log() << fmt::format("iIter [{}] Jacobi Increment [{:3e}]", iIter,incC) << std::endl;
+        // }
+
+        dispO2PrecRHS = dispO2;
+        UpdateDispO2Jacobi(dispO2PrecRHS, dispO2PrecRHS, false);
+        dispO2PrecRHS.addTo(dispO2, -1.);
+        dispO2PrecRHS.trans.startPersistentPull();
+        dispO2PrecRHS.trans.waitPersistentPull();
+        dispO2PrecRHS *= -1;
+ 
+        Linear::GMRES_LeftPreconditioned<CoordPairDOF> gmres(5, initDOF);
+        gmres.solve(
+            [&](CoordPairDOF& x, CoordPairDOF &Ax)
+            {
+                Ax = x;
+                UpdateDispO2Jacobi(Ax, Ax, true);
+                Ax.trans.startPersistentPull();
+                Ax.trans.waitPersistentPull();
+                Ax.addTo(x, -1.0);
+            },
+            [&](CoordPairDOF& x, CoordPairDOF &MLx)
+            {
+                MLx = x;
+            },
+            dispO2PrecRHS,
+            dispO2,
+            20,
+            [&](int iRestart, real res, real resB)
+            {
+                // std::cout << mpi.rank << "gmres here" << std::endl;
+                if(mpi.rank == mRank)
+                    log() << fmt::format("iRestart [{}] res [{:3e}] -> [{:3e}]", iRestart, resB, res) << std::endl;
+                return res < resB * 1e-10;
+            }
+        );
+ 
+
+ 
+        for(index iN = nNodeO1; iN < coords.father->Size(); iN ++)
+        {
+            if(dim == 2)
+                dispO2[iN](2) = 0;
+            // if(dispO2[iN].norm() != 0)
+            //     std::cout << dispO2[iN].transpose() << std::endl;
+            coords[iN] += dispO2[iN];
+            
+        }
+        coords.trans.pullOnce();
     }
 }

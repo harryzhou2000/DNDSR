@@ -487,10 +487,6 @@ namespace DNDS::Euler
                 reader->BuildCell2Cell();
                 reader->MeshPartitionCell2Cell();
                 reader->PartitionReorderToMeshCell2Cell();
-                if (config.dataIOControl.outPltMode == 0)
-                {
-                    reader->BuildSerialOut();
-                }
                 mesh->BuildGhostPrimary();
                 mesh->AdjGlobal2LocalPrimary();
                 if (config.dataIOControl.meshElevation == 1)
@@ -501,10 +497,6 @@ namespace DNDS::Euler
                     std::swap(meshO2, mesh);
 
                     reader->mesh = mesh;
-                    if (config.dataIOControl.outPltMode == 0)
-                    {
-                        reader->BuildSerialOut();
-                    }
                     mesh->BuildGhostPrimary();
                     mesh->AdjGlobal2LocalPrimary();
                 }
@@ -523,12 +515,7 @@ namespace DNDS::Euler
                 serializer->OpenFile(meshPartPath, true);
                 mesh->ReadSerialize(serializer, "meshPart");
                 serializer->CloseFile();
-                if (config.dataIOControl.outPltMode == 0)
-                {
-                    mesh->AdjLocal2GlobalPrimary();
-                    reader->BuildSerialOut();
-                    mesh->AdjGlobal2LocalPrimary();
-                }
+                
             }
 
             // std::cout << "here" << std::endl;
@@ -543,6 +530,14 @@ namespace DNDS::Euler
                         auto bType = pBCHandler->GetTypeFromID(bndId);
                         return bType == BCWall || bType == BCWallInvis;
                     });
+                mesh->ElevatedNodesSolveInternalSmooth();
+            }
+
+            if (config.dataIOControl.outPltMode == 0)
+            {
+                mesh->AdjLocal2GlobalPrimary();
+                reader->BuildSerialOut();
+                mesh->AdjGlobal2LocalPrimary();
             }
 
             if (config.timeMarchControl.partitonMeshOnly)
