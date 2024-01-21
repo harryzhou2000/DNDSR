@@ -543,7 +543,7 @@ namespace DNDS::Euler
                         auto bType = pBCHandler->GetTypeFromID(bndId);
                         return bType == BCWall || bType == BCWallInvis;
                     });
-                mesh->ElevatedNodesSolveInternalSmooth();
+                mesh->ElevatedNodesSolveInternalSmoothV1();
             }
 
             if (config.dataIOControl.outPltMode == 0)

@@ -62,7 +62,7 @@ namespace DNDS
                 son->ResizeRow(i - father->Size(), aOthers...);
         }
 
-        index Size()
+        index Size() const
         {
             return father->Size() + son->Size();
         }
