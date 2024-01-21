@@ -13,7 +13,7 @@ set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS
 
 # ##########################################
 project(DNDSR LANGUAGES CXX) #! need to be in front of find_package(MPI)
-
+enable_language(C) #! building C sub-projects
 
 message("external install hard guess at: external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}")
 set(HARD_GUESS_PATH external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR})
@@ -172,12 +172,35 @@ find_path(EXTERNAL_INCLUDE_FMT fmt PATHS
     "${PROJECT_SOURCE_DIR}/external/fmt-10.1.1/include" 
     NO_DEFAULT_PATH REQUIRED)
 
+find_path(EXTERNAL_INCLUDE_SUPERLU superlu_dist.pc.in PATHS
+    "${PROJECT_SOURCE_DIR}/external/superlu_dist-8.2.1" 
+    NO_DEFAULT_PATH REQUIRED)
+
 find_path(EXTERNAL_DOXYGEN_AWESOME doxygen-awesome.css PATHS 
     "${PROJECT_SOURCE_DIR}/external/doxygen-awesome-css-2.2.1" 
     NO_DEFAULT_PATH)
 
 add_subdirectory("${EXTERNAL_INCLUDE_PYBIND11}/..")
 add_subdirectory("${EXTERNAL_INCLUDE_FMT}/..")
+
+if (DNDS_EIGEN_USE_BLAS)
+    set(TPL_ENABLE_INTERNAL_BLASLIB OFF CACHE BOOL "Init by DNDS")
+    set(TPL_BLAS_LIBRARIES ${EXTERNAL_LIB_BLAS} CACHE FILEPATH "Init by DNDS")
+else()
+    set(TPL_ENABLE_INTERNAL_BLASLIB ON CACHE BOOL "Init by DNDS")
+endif()
+set(XSDK_ENABLE_Fortran OFF CACHE BOOL "Init by DNDS")
+set(TPL_PARMETIS_INCLUDE_DIRS ${EXTERNAL_INCLUDE_PARMETIS}  CACHE PATH "Init by DNDS")
+set(TPL_PARMETIS_LIBRARIES ${EXTERNAL_LIB_PARMETIS}  CACHE FILEPATH "Init by DNDS")
+set(XSDK_INDEX_SIZE 64 CACHE STRING "Init by DNDS")
+if(WIN32 OR MSVC)
+    if(MSVC_VERSION) #! is using mingw/clang+msvc toolchain, inform superlu that do not link -lm
+        set(MSVC 1 CACHE INTERNAL "Init by DNDS")
+    endif()
+endif()
+add_subdirectory("${EXTERNAL_INCLUDE_SUPERLU}")
+#! for superlu, remember to comment the #include<unistd.h>, not needed
+
 
 set (EXTERNAL_LIBS "")
 
@@ -191,6 +214,18 @@ set(EXTERNAL_LIBS ${EXTERNAL_LIBS}
     CACHE INTERNAL
     "Project Public External Lib Dependencies"
     )
+
+set(EXTERNAL_LIBS ${EXTERNAL_LIBS}
+    superlu_dist
+    CACHE INTERNAL
+    "Project Public External Lib Dependencies"
+    )
+
+# set(EXTERNAL_LIBS ${EXTERNAL_LIBS}
+#     fmt::fmt
+#     CACHE INTERNAL
+#     "Project Public External Lib Dependencies"
+#     )
 
 set(EXTERNAL_LIBS ${EXTERNAL_LIBS}
     ${EXTERNAL_LIB_ZLIB}
@@ -330,6 +365,8 @@ elseif(WIN32 OR MSVC)
             add_compile_options(-march=native)
             message(WARNING "using -march=native")
         endif()
+        message(STATUS "MSVC ${MSVC}")
+        message(STATUS "MSVC_VERSION ${MSVC_VERSION}")
     endif()
     set(EXTERNAL_LIBS ${EXTERNAL_LIBS} # no dl
     )
