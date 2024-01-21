@@ -253,9 +253,7 @@ namespace DNDS::Euler
                         [&](int idata)
                         {
                             idata = idata > 0 ? idata + cDim : 0;
-                            if (idata >= 4)
-                                idata += 2;
-                            return names[idata]; // pointNames
+                            return namesPoint[idata]; // pointNames
                         },
                         [&](int idata, index iv)
                         {
@@ -301,7 +299,7 @@ namespace DNDS::Euler
                         [&](int idata)
                         {
                             idata = idata > 0 ? idata + cDim : 0;
-                            return names[idata]; // pointNames
+                            return namesPoint[idata]; // pointNames
                         },
                         [&](int idata, index iv)
                         {

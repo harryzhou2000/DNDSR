@@ -662,11 +662,35 @@ namespace DNDS::Geom
                                     dataOutC[iCell] = data(i, iCell);
                                 // auto dataOutCompressed = zlibCompressData((uint8_t *)dataOutC.data(), dataOutC.size() * sizeof(double));
                                 // out << cppcodec::base64_rfc4648::encode(dataOutCompressed);
+                                out << std::setprecision(ascii_precision);
                                 for (auto v : dataOutC)
-                                    out << std::setprecision(ascii_precision) << v << " ";
+                                    out << v << " ";
                                 out << newlineV;
                             });
                     }
+                    writeXMLEntity(
+                        out, level, "DataArray",
+                        {{"type", "Int32"},
+                         {"Name", "iPart"},
+                         {"format", "ascii"}},
+                        [&](auto &out, int level)
+                        {
+                            std::vector<double> dataOutC(nCell);
+                            for (index iCell = 0; iCell < nCell; iCell++)
+                            {
+                                MPI_int r{0};
+                                index v{0};
+                                if (flag == 0)
+                                    cell2nodeSerialOutTrans.pLGlobalMapping->search(iCell, r, v);
+                                else if (flag == 1)
+                                    r = mesh->getMPI().rank;
+                                dataOutC[iCell] = r;
+                            }
+                            out << std::setprecision(ascii_precision);
+                            for (auto v : dataOutC)
+                                out << v << " ";
+                            out << newlineV;
+                        });
                     for (int i = 0; i < vecArraySiz; i++)
                     {
                         writeXMLEntity(
