@@ -54,13 +54,22 @@ namespace DNDS::CFV
                         JDet = J(Eigen::all, 0).cross(J(Eigen::all, 1)).stableNorm();
                     else
                         JDet = J.determinant();
+                    JDet = std::abs(JDet);
                     vInc = 1 * JDet;
                     cellIntJacobiDet(iCell, iG) = JDet;
                 });
             volumeLocal[iCell] = v;
-            DNDS_assert_info(v > 0, "cell has ill area result");
+            // if (!(v > 0))
+            //     std::cout << fmt::format("cell has ill area result, v = {}, cellType {}", v, int(eCell.type)) << std::endl;
+            // for (int iG = 0; iG < qCell.GetNumPoints(); iG++)
+            //     if (!(cellIntJacobiDet(iCell, iG) / v > 1e-10))
+            //         std::cout << fmt::format("cell has ill jacobi det, det/V {}, cellType {}", cellIntJacobiDet(iCell, iG) / v, int(eCell.type)) << std::endl;;
+
+            DNDS_assert_info(v > 0, fmt::format("cell has ill area result, v = {}, cellType {}", v, int(eCell.type)));
             for (int iG = 0; iG < qCell.GetNumPoints(); iG++)
-                DNDS_assert_info(cellIntJacobiDet(iCell, iG) / v > 1e-10, "cell has ill jacobi det");
+                DNDS_assert_info(
+                    cellIntJacobiDet(iCell, iG) / v > 1e-10,
+                    fmt::format("cell has ill jacobi det, det/V {}, cellType {}", cellIntJacobiDet(iCell, iG) / v, int(eCell.type)));
             if (iCell < mesh->NumCell()) // non-ghost
 #ifdef DNDS_USE_OMP
 #pragma omp critical

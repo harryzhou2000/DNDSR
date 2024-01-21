@@ -215,6 +215,8 @@ namespace DNDS::Euler
                 real meshRotZ = 0;
                 real meshScale = 1.0;
                 int meshElevation = 0; // 0 = noOp, 1 = O1->O2
+                int meshElevationIter = 60;
+                real meshElevationRBFRadius = 1;
                 std::string meshFile = "data/mesh/NACA0012_WIDE_H3.cgns";
                 std::string outPltName = "data/out/debugData_";
                 std::string outLogName = "";
@@ -247,7 +249,8 @@ namespace DNDS::Euler
                 DNDS_NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_ORDERED_JSON(
                     DataIOControl,
                     uniqueStamps,
-                    meshRotZ, meshScale, meshElevation,
+                    meshRotZ, meshScale,
+                    meshElevation, meshElevationIter, meshElevationRBFRadius,
                     meshFile,
                     outPltName,
                     outLogName,
@@ -515,7 +518,6 @@ namespace DNDS::Euler
                 serializer->OpenFile(meshPartPath, true);
                 mesh->ReadSerialize(serializer, "meshPart");
                 serializer->CloseFile();
-                
             }
 
             // std::cout << "here" << std::endl;
@@ -524,6 +526,8 @@ namespace DNDS::Euler
 
             if (config.dataIOControl.meshElevation == 1 && config.dataIOControl.readMeshMode == 0)
             {
+                mesh->elevationInfo.nIter = config.dataIOControl.meshElevationIter;
+                mesh->elevationInfo.RBFRadius = config.dataIOControl.meshElevationRBFRadius;
                 mesh->ElevatedNodesGetBoundarySmooth(
                     [&](Geom::t_index bndId)
                     {

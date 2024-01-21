@@ -110,6 +110,11 @@ namespace DNDS::Geom
         /// only elevation
         tCoordPair coordsElevDisp;
         index nTotalMoved{-1};
+        struct ElevationInfo
+        {
+            real RBFRadius = 1;
+            int nIter = 60;
+        } elevationInfo;
 
         // tAdj1Pair bndFaces; // no comm needed for now
 

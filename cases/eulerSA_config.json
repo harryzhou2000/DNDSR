@@ -8,7 +8,7 @@
         "tEnd": 3e+200
     },
     "convergenceControl": {
-        "nTimeStepInternal": 100000,
+        "nTimeStepInternal": 10,
         "rhsThresholdInternal": 1e-30,
         "res_base": 0.0,
         "useVolWiseResidual": true
@@ -19,7 +19,7 @@
         "consoleOutputMode": 1,
         "nDataOutC": 100,
         "nDataOut": 10,
-        "nDataOutCInternal": 200,
+        "nDataOutCInternal": 10,
         "nDataOutInternal": 1000000000,
         "nRestartOut": 100,
         "nRestartOutC": 10,
@@ -38,16 +38,18 @@
     "dataIOControl": {
         "uniqueStamps": false,
         "meshRotZ": 0.0,
+        "meshElevation": 1,
+        "meshElevationIter": 200,
+        "meshElevationRBFRadius": 1,
         "meshFile": "../data/mesh/NACA0012_H2.cgns",
         "outPltName": "../data/out/NACA0012_H2",
-        "outLogName": "../data/out/NACA0012_H2",
-        "outRestartName": "../data/out/NACA0012_H2",
         "outPltMode": 0,
         "readMeshMode": 0,
         "outPltTecplotFormat": true,
-        "outPltVTKFormat": false,
+        "outPltVTKFormat": true,
         "outAtPointData": true,
-        "outAtCellData": true
+        "outAtCellData": true,
+        "nASCIIPrecision": 16
     },
     "boundaryDefinition": {},
     "implicitReconstructionControl": {

@@ -23,7 +23,7 @@ namespace DNDS::Euler
                 index iFace = mesh->bnd2face[iBnd];
                 auto elem = mesh->GetFaceElement(iFace);
                 if (elem.type == Geom::Elem::ElemType::Line2
-                   || elem.type == Geom::Elem::ElemType::Line3)
+                   || elem.type == Geom::Elem::ElemType::Line3) //!
                 {
                     Geom::tSmallCoords coords;
                     mesh->GetCoordsOnFace(iFace, coords);
@@ -34,7 +34,8 @@ namespace DNDS::Euler
                     tri(Eigen::all, 2) = coords(Eigen::all, 1) + Geom::tPoint{0., 0., vfv->GetFaceArea(iFace)};
                     Triangles.push_back(tri);
                 }
-                else if (elem.type == Geom::Elem::ElemType::Tri3)
+                else if (elem.type == Geom::Elem::ElemType::Tri3
+                    || elem.type == Geom::Elem::ElemType::Tri6) //! TODO
                 {
                     Geom::tSmallCoords coords;
                     mesh->GetCoordsOnFace(iFace, coords);
@@ -44,7 +45,8 @@ namespace DNDS::Euler
                     tri(Eigen::all, 2) = coords(Eigen::all, 2);
                     Triangles.push_back(tri);
                 }
-                else if (elem.type == Geom::Elem::ElemType::Quad4)
+                else if (elem.type == Geom::Elem::ElemType::Quad4
+                    || elem.type == Geom::Elem::ElemType::Quad9)
                 {
                     Geom::tSmallCoords coords;
                     mesh->GetCoordsOnFace(iFace, coords);
