@@ -864,10 +864,9 @@ namespace DNDS::Geom
         }
 
         
-        AdjLocal2GlobalPrimary();
+
         std::vector<std::unordered_set<index>> node2nodeV;
         node2nodeV.resize(coords.father->Size());
-        std::vector<index> ghostNodes;
         for(index iCell = 0; iCell < cell2node.Size(); iCell ++)
         {
             for(auto iN: cell2node[iCell])
@@ -878,18 +877,10 @@ namespace DNDS::Geom
                     if(iN < coords.father->Size())
                     {
                         node2nodeV[iN].insert(iNOther);
-
-                        //standard procedure for rank determination
-                        DNDS::MPI_int rank;
-                        DNDS::index val;
-                        if (!coords.trans.pLGlobalMapping->search(iNOther, rank, val))
-                            DNDS_assert_info(false, "search failed");
-                        if (rank != mpi.rank)
-                        ghostNodes.push_back(iNOther);
                     }
                 }
         }
-        AdjGlobal2LocalPrimary();
+
         DNDS_MPI_InsertCheck(mpi, "Got node2node");
         // std::cout << "hereXXXXXXXXXXXXXXX 0" << std::endl;
         
@@ -922,11 +913,7 @@ namespace DNDS::Geom
             int curRowEnd = 1;
             for(auto iNOther: node2nodeV[iN])
             {
-                MPI_int rank{-1};
-                index val{-1};
-                if (!coords.trans.pLGhostMapping->search_indexAppend(iNOther, rank, val))
-                    DNDS_assert_info(false, "search failed");
-                A[iN][curRowEnd++].j = val;
+                A[iN][curRowEnd++].j = iNOther;
             }
             for(auto & ME: A[iN])
                 ME.m.setConstant(iN < nNodeO1 ? veryLargeReal : 0); // O1 nodes keep row to be varyLargeReal
@@ -940,7 +927,7 @@ namespace DNDS::Geom
 
         Eigen::Matrix<real, 6, 6> DStruct;
         DStruct.setIdentity();
-        real lam = 10;
+        real lam = 1;
         real muu = 1;
         DStruct *= muu;
         DStruct({0,1,2},{0,1,2}) += muu * tJacobi::Identity();
@@ -1000,9 +987,11 @@ namespace DNDS::Geom
                 for(rowsize jc2n = 0; jc2n < nnLoc; jc2n ++) 
                 {
                     index jN = c2n[jc2n];
+                    int nMatrixFound = 0;
                     for(auto & ME:A[iN])
                         if(ME.j == jN)
                         {
+                            nMatrixFound ++;
                             ME.m(0, 0) += ALoc(0 * nnLoc + ic2n, 0 * nnLoc + jc2n);
                             ME.m(0, 1) += ALoc(0 * nnLoc + ic2n, 1 * nnLoc + jc2n);
                             ME.m(0, 2) += ALoc(0 * nnLoc + ic2n, 2 * nnLoc + jc2n);
@@ -1021,6 +1010,7 @@ namespace DNDS::Geom
                                 ME.m = jTrans.transpose() * ME.m * iTrans;
                             }
                         }
+                    DNDS_assert(nMatrixFound == 1);
                 }
                 bO2[iN](0) += ALoc(0 * nnLoc + ic2n, Eigen::last);
                 bO2[iN](1) += ALoc(1 * nnLoc + ic2n, Eigen::last);
@@ -1028,7 +1018,7 @@ namespace DNDS::Geom
                 
             }
         }
-        real SORRelax = 0.1; //!param here
+        real SORRelax = 1; //!param here
         auto UpdateDispO2Jacobi = [&](tCoordPair & x, tCoordPair & xnew, bool noRHS)
         {
             real incSum = 0;
@@ -1074,6 +1064,9 @@ namespace DNDS::Geom
         //         log() << fmt::format("iIter [{}] Jacobi Increment [{:3e}]", iIter,incC) << std::endl;
         // }
 
+        /**********************************************/
+        // SOR GMRES
+
         dispO2PrecRHS = dispO2;
         UpdateDispO2Jacobi(dispO2PrecRHS, dispO2PrecRHS, false);
         dispO2PrecRHS.addTo(dispO2, -1.);
@@ -1081,7 +1074,7 @@ namespace DNDS::Geom
         dispO2PrecRHS.trans.waitPersistentPull();
         dispO2PrecRHS *= -1;
  
-        Linear::GMRES_LeftPreconditioned<CoordPairDOF> gmres(5, initDOF);
+        Linear::GMRES_LeftPreconditioned<CoordPairDOF> gmres(5, initDOF); 
         gmres.solve(
             [&](CoordPairDOF& x, CoordPairDOF &Ax)
             {
