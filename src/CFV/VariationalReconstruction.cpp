@@ -15,7 +15,7 @@ namespace DNDS::CFV
 
         /***************************************/
         // get volumes
-        real sumVolume{0};
+        real sumVolume{0}, minVolume{veryLargeReal}, maxVolume{0};
         volumeLocal.resize(mesh->NumCellProc());
         cellAtr.resize(mesh->NumCellProc());
         this->MakePairDefaultOnCell(cellIntJacobiDet);
@@ -54,7 +54,7 @@ namespace DNDS::CFV
                         JDet = J(Eigen::all, 0).cross(J(Eigen::all, 1)).stableNorm();
                     else
                         JDet = J.determinant();
-                    JDet = std::abs(JDet);
+                    // JDet = std::abs(JDet); // use this to pass check even with bad mesh
                     vInc = 1 * JDet;
                     cellIntJacobiDet(iCell, iG) = JDet;
                 });
@@ -74,7 +74,11 @@ namespace DNDS::CFV
 #ifdef DNDS_USE_OMP
 #pragma omp critical
 #endif
+            {
                 sumVolume += v;
+                minVolume = std::min(minVolume, v);
+                maxVolume = std::max(maxVolume, v);
+            }
             //****** Get Int Point PPhy and Bary
             tPoint b{0, 0, 0};
             qCell.Integration(
@@ -150,11 +154,15 @@ namespace DNDS::CFV
             cellMajorHBox[iCell] = hBoxM;
         }
         real sumVolumeAll{0};
-        MPI::Allreduce(&sumVolume, &sumVolumeAll, 1, DNDS_MPI_REAL, MPI_SUM, mpi.comm);
+        MPI::AllreduceOneReal(sumVolume, MPI_SUM, mpi);
+        MPI::AllreduceOneReal(minVolume, MPI_MIN, mpi);
+        MPI::AllreduceOneReal(maxVolume, MPI_MAX, mpi);
         if (mpi.rank == mRank)
             log()
-                << "VariationalReconstruction<dim>::ConstructMetrics() === Sum Volume is ["
-                << std::setprecision(10) << sumVolumeAll << "] " << std::endl;
+                << fmt::format(
+                       "VariationalReconstruction<dim>::ConstructMetrics() === \n ===Sum/Min/Max Volume [{:.10g};  {:.5g}, {:.5g}]",
+                       sumVolume, minVolume, maxVolume)
+                << std::endl;
         volGlobal = sumVolumeAll;
         cellIntJacobiDet.CompressBoth();
         cellIntPPhysics.CompressBoth();

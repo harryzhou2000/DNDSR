@@ -291,6 +291,12 @@ namespace DNDS::MPI
                       void *recvbuf, MPI_int recvcount,
                       MPI_Datatype recvtype, MPI_Comm comm);
 
+    inline void AllreduceOneReal(real & v, MPI_Op op, MPIInfo & mpi)
+    {
+        real vR{0};
+        Allreduce(&v, &vR, 1, DNDS_MPI_REAL, op, mpi.comm);
+        v = vR;
+    }
     
 }
 

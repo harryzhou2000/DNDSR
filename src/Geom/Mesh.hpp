@@ -6,6 +6,7 @@
 #include "BoundaryCondition.hpp"
 #include "DNDS/ArrayPair.hpp"
 #include "PeriodicInfo.hpp"
+#include "RadialBasisFunction.hpp"
 
 namespace DNDS::Geom
 {
@@ -113,7 +114,9 @@ namespace DNDS::Geom
         struct ElevationInfo
         {
             real RBFRadius = 1;
+            real MaxIncludedAngle = 15;
             int nIter = 60;
+            RBF::RBFKernelType kernel = RBF::InversedDistanceA1;
         } elevationInfo;
 
         // tAdj1Pair bndFaces; // no comm needed for now

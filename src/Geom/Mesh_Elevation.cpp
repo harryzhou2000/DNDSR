@@ -1,6 +1,7 @@
 #include "Mesh.hpp"
 #include "Quadrature.hpp"
 #include "DNDS/ArrayDerived/ArrayEigenUniMatrixBatch.hpp"
+#include "RadialBasisFunction.hpp"
 
 #include <omp.h>
 #include <fmt/core.h>
@@ -775,8 +776,8 @@ namespace DNDS::Geom
                         real sinValMax = 0;
                         for (auto e : edges)
                             sinValMax = std::max(sinValMax, std::abs(e.dot(normN)));
-                        // if (sinValMax > std::sin(pi / 180. * 95)) //! angle is here
-                        //     continue;
+                        if (sinValMax > std::sin(pi / 180. * elevationInfo.MaxIncludedAngle)) //! angle is here
+                            continue;
                         nAdd[iN] += 1.;
                         norms(Eigen::all, iN) += normN * 1.;
                         // std::cout << fmt::format("iFace {}, if2n {}, iN {}, iNorm{}, sinValMax {}; ====",
@@ -887,41 +888,6 @@ namespace DNDS::Geom
         }
     };
 
-    inline Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic> // redurn Ni at Xj
-    RBFCPC2(const tSmallCoords &cent, const tSmallCoords &xs, real R)
-    {
-        Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic> RiXj;
-        RiXj.resize(cent.cols(), xs.cols());
-        for (int iC = 0; iC < cent.cols(); iC++)
-        {
-            RiXj(iC, Eigen::all) = (xs.colwise() - cent(Eigen::all, iC)).colwise().norm() * (1. / R);
-        }
-        Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic> NiXj = (1 - RiXj.array()).square() * (RiXj.array() * 4 + 1);
-        return NiXj;
-    }
-
-    template <class TF>
-    inline Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic>
-    RBFInterpolateSolveCoefs(const tSmallCoords &xs, const TF fs, real R)
-    {
-        Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic> PT;
-        PT.resize(4, xs.cols());
-        PT(0, Eigen::all).setConstant(1);
-        PT({1, 2, 3}, Eigen::all) = xs;
-        Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic> M = RBFCPC2(xs, xs, R);
-        Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic> A;
-        A.setZero(xs.cols() + 4, xs.cols() + 4);
-        A.topLeftCorner(xs.cols(), xs.cols()) = M;
-        A.bottomLeftCorner(4, xs.cols()) = PT;
-        A.topRightCorner(xs.cols(), 4) = PT.transpose();
-        Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic> RHS;
-        RHS.setZero(xs.cols() + 4, fs.cols());
-        DNDS_assert(fs.rows() == xs.cols());
-        RHS.topRows(xs.cols()) = fs;
-        auto LDLT = A.ldlt();
-        Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic> ret = LDLT.solve(RHS);
-        return ret;
-    }
 
     void UnstructuredMesh::ElevatedNodesSolveInternalSmooth()
     {
@@ -974,14 +940,12 @@ namespace DNDS::Geom
         if (mpi.rank == 0)
             std::cout << "nodesLeftSzAll at init " << nodesLeftSzAll << std::endl;
 
+        for (index iN = 0; iN < nNodeO1; iN++)
+            coordsElevDisp[iN](1) = 3 * largeReal; // marks O1 nodes
+        coordsElevDisp.trans.startPersistentPull();
+        coordsElevDisp.trans.waitPersistentPull();
         index sumMov{0};
         index sumLoc{0};
-        for (index iN = nNodeO1; iN < coords.Size(); iN++)
-            if ((coordsElevDisp[iN](0) != largeReal) && (std::abs(coordsElevDisp[iN](2)) > 0.01))
-            {
-                std::cout << "checkBad " << std::endl;
-                std::abort();
-            }
         for (int iIter = 1; iIter <= elevationInfo.nIter; iIter++)
         {
             currentFront.clear();
@@ -992,8 +956,13 @@ namespace DNDS::Geom
                     if (coordsElevDisp[iNOther](0) != largeReal)
                         nOtherSmoothCount++;
                 if (nOtherSmoothCount)
+                {
                     currentFront.insert(iN);
+                    coordsElevDisp[iN](1) = 2 * largeReal; // marks front nodes
+                }
             }
+            coordsElevDisp.trans.startPersistentPull();
+            coordsElevDisp.trans.waitPersistentPull();
             // interpolation
             for (index iN : currentFront)
             {
@@ -1003,12 +972,14 @@ namespace DNDS::Geom
                 for (auto i : n2nSet)
                     n2nVec.push_back(i);
                 for (auto i : n2nSet)
-                    if (i < nNodeO1 || (coordsElevDisp[i](0) != largeReal && currentFront.count(i) == 0))
+                    if (coordsElevDisp[i](1) == 3 * largeReal ||
+                        (coordsElevDisp[i](0) != largeReal && coordsElevDisp[i](1) != 2 * largeReal))
+                        // if ((coordsElevDisp[i](0) != largeReal && currentFront.count(i) == 0))
                         n2nVecKnown.push_back(i);
                 tSmallCoords dispsNKnown;
                 dispsNKnown.resize(3, n2nVecKnown.size());
                 for (int in2n = 0; in2n < n2nVecKnown.size(); in2n++)
-                    if (n2nVecKnown[in2n] < nNodeO1)
+                    if (coordsElevDisp[n2nVecKnown[in2n]](1) == 3 * largeReal)
                         dispsNKnown(Eigen::all, in2n).setZero();
                     else
                         dispsNKnown(Eigen::all, in2n) = coordsElevDisp[n2nVecKnown[in2n]];
@@ -1019,29 +990,33 @@ namespace DNDS::Geom
                 tPoint coordsNC = coordsN.rowwise().mean();
                 tSmallCoords coordsNKnownRel = coordsNKnown.colwise() - coordsNC;
 
+
                 Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic>
-                    coefs = RBFInterpolateSolveCoefs(coordsNKnownRel, dispsNKnown.transpose(), elevationInfo.RBFRadius); //! R here
+                    coefs = RBF::RBFInterpolateSolveCoefsNoPoly(coordsNKnownRel, dispsNKnown.transpose(), elevationInfo.RBFRadius, elevationInfo.kernel); //! R here
 
                 tSmallCoords qs;
                 qs.resize(3, 1);
                 qs = coords[iN] - coordsNC;
-
-                tPoint dCur = (RBFCPC2(coordsNKnownRel, qs, elevationInfo.RBFRadius).transpose() * coefs.topRows(coordsNKnownRel.cols()) +
+ 
+                tPoint dCur = (RBF::RBFCPC2(coordsNKnownRel, qs, elevationInfo.RBFRadius, elevationInfo.kernel).transpose() * coefs.topRows(coordsNKnownRel.cols()) +
                                coefs(Eigen::last - 3, Eigen::all) +
                                qs.transpose() * coefs.bottomRows(3))
                                   .transpose();
-                // if (mpi.rank == 0)
-                // {
-                //     std::cout << coordsElevDisp[n2nVecKnown[4]].transpose() << std::endl;
-                //     std::cout << dCur.transpose() << std::endl;
-                //     std::cout << "=== XNode\n";
-                //     std::cout << coordsNKnownRel << "\n";
-                //     std::cout << "=== vNode\n"
-                //               << std::endl;
-                //     std::cout << dispsNKnown << std::endl;
-                //     std::cout << "qs " << qs.transpose() << std::endl;
-                //     std::abort();
-                // }
+                if (mpi.rank == 0)
+                {
+                    // std::cout << coordsElevDisp[n2nVecKnown[4]].transpose() << std::endl;
+                    // std::cout << dCur.transpose() << std::endl;
+                    // std::cout << "=== XNode\n";
+                    // std::cout << coordsNKnownRel << "\n";
+                    // std::cout << "=== vNode\n"
+                    //           << std::endl;
+                    // std::cout << dispsNKnown << std::endl;
+                    // std::cout << "qs " << qs.transpose() << std::endl;
+                    // std::abort();
+                }
+                real maxDispOrig = dispsNKnown.colwise().norm().array().maxCoeff() * 0.9999;
+                if (dCur.norm() > maxDispOrig)
+                    dCur = dCur.normalized() * maxDispOrig;
                 coordsElevDisp[iN] = dCur;
                 nodesLeft.erase(iN);
             }
@@ -1049,7 +1024,16 @@ namespace DNDS::Geom
             index frtSzTot{0};
             MPI::Allreduce(&frtSz, &frtSzTot, 1, DNDS_MPI_INDEX, MPI_SUM, mpi.comm);
             sumMov += frtSzTot, sumLoc += frtSzTot;
-            if (iIter % 1 == 0)
+            if (frtSzTot == 0)
+            {
+                if (mpi.rank == mRank)
+                {
+                    log() << fmt::format("=== Iter {}, moved zero Nodes, stopping", iIter)
+                          << std::endl;
+                }
+                break;
+            }
+            if (iIter % 10 == 0)
                 if (mpi.rank == mRank)
                 {
                     log() << fmt::format("=== Iter {}, moved numNodes {}", iIter, sumLoc)
@@ -1059,6 +1043,7 @@ namespace DNDS::Geom
             coordsElevDisp.trans.startPersistentPull();
             coordsElevDisp.trans.waitPersistentPull();
         }
+
         if (mpi.rank == mRank)
             log() << fmt::format("UnstructuredMesh === ElevatedNodesSolveInternalSmooth() Iter Done Total {}", sumMov)
                   << std::endl;

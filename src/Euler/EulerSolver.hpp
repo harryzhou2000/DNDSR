@@ -214,9 +214,13 @@ namespace DNDS::Euler
                 bool uniqueStamps = true;
                 real meshRotZ = 0;
                 real meshScale = 1.0;
+
                 int meshElevation = 0; // 0 = noOp, 1 = O1->O2
-                int meshElevationIter = 60;
+                int meshElevationIter = 1000; // -1 to use handle all the nodes 
                 real meshElevationRBFRadius = 1;
+                Geom::RBF::RBFKernelType meshElevationRBFKernel = Geom::RBF::InversedDistanceA1;
+                real meshElevationMaxIncludedAngle = 15;
+
                 std::string meshFile = "data/mesh/NACA0012_WIDE_H3.cgns";
                 std::string outPltName = "data/out/debugData_";
                 std::string outLogName = "";
@@ -250,7 +254,8 @@ namespace DNDS::Euler
                     DataIOControl,
                     uniqueStamps,
                     meshRotZ, meshScale,
-                    meshElevation, meshElevationIter, meshElevationRBFRadius,
+                    meshElevation, 
+                    meshElevationIter, meshElevationRBFRadius, meshElevationRBFKernel, meshElevationMaxIncludedAngle,
                     meshFile,
                     outPltName,
                     outLogName,
@@ -528,6 +533,8 @@ namespace DNDS::Euler
             {
                 mesh->elevationInfo.nIter = config.dataIOControl.meshElevationIter;
                 mesh->elevationInfo.RBFRadius = config.dataIOControl.meshElevationRBFRadius;
+                mesh->elevationInfo.kernel = config.dataIOControl.meshElevationRBFKernel;
+                mesh->elevationInfo.MaxIncludedAngle = config.dataIOControl.meshElevationMaxIncludedAngle;
                 mesh->ElevatedNodesGetBoundarySmooth(
                     [&](Geom::t_index bndId)
                     {
