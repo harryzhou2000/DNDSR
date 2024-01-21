@@ -2,6 +2,7 @@
 
 #include <unordered_map>
 #include <algorithm>
+#include <tuple>
 
 #include "Defines.hpp"
 #include "MPI.hpp"
@@ -91,6 +92,14 @@ namespace DNDS
                 return true;
             }
             return false;
+        }
+
+        std::tuple<bool, MPI_int, index> search(index globalQuery)
+        {
+            MPI_int rank{-1};
+            index val{-1};
+            bool ret = this->search(globalQuery, rank, val);
+            return std::make_tuple(ret, rank, val);
         }
     };
 
@@ -318,6 +327,13 @@ namespace DNDS
                 }
             return false;
         }
+        std::tuple<bool, MPI_int, index> search(index globalQuery)
+        {
+            MPI_int rank{-1};
+            index val{-1};
+            bool ret = this->search(globalQuery, rank, val);
+            return std::make_tuple(ret, rank, val);
+        }
 
         /// \brief returns rank and place in ghost array, rank==-1 means main data;
         /// returned val is used for pair indexing
@@ -338,6 +354,13 @@ namespace DNDS
                 }
             return false;
         }
+        std::tuple<bool, MPI_int, index> search_indexAppend(index globalQuery)
+        {
+            MPI_int rank{-1};
+            index val{-1};
+            bool ret = this->search_indexAppend(globalQuery, rank, val);
+            return std::make_tuple(ret, rank, val);
+        }
 
         /// \brief returns rank and place in ghost of rank, rank==-1 means main data
         /// \warning search returns index that applies to local ghost array, this only goes for the ith of rank
@@ -355,6 +378,14 @@ namespace DNDS
                     return true;
                 }
             return false;
+        }
+
+        std::tuple<bool, MPI_int, index> search_indexRank(index globalQuery)
+        {
+            MPI_int rank{-1};
+            index val{-1};
+            bool ret = this->search_indexRank(globalQuery, rank, val);
+            return std::make_tuple(ret, rank, val);
         }
 
         /// \brief if rank == -1, return the global index of local main data,
