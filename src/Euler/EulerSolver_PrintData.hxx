@@ -12,6 +12,7 @@ namespace DNDS::Euler
     {
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
         reader->SetASCIIPrecision(config.dataIOControl.nASCIIPrecision);
+        reader->SetVTKFloatEncodeMode(config.dataIOControl.vtuFloatEncodeMode);
         const int cDim = dim;
 
         ArrayDOFV<nVars_Fixed> &uOut = mode == PrintDataTimeAverage ? uAveraged : u;

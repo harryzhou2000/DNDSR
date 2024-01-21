@@ -533,27 +533,55 @@ namespace DNDS::Geom
                         out, level, "DataArray",
                         {{"type", "Float64"},
                          {"NumberOfComponents", "3"},
-                         {"format", "ascii"}},
+                         {"format", vtuFloatEncodeMode}},
                         [&](auto &out, int level)
                         {
-                            std::vector<double> coordsOutData((nNode + nodesExtra.size()) * 3);
-                            for (index i = 0; i < nNode; i++)
+                            if (vtuFloatEncodeMode == "binary")
                             {
-                                coordsOutData[i * 3 + 0] = coordOut[i](0);
-                                coordsOutData[i * 3 + 1] = coordOut[i](1);
-                                coordsOutData[i * 3 + 2] = coordOut[i](2);
+                                /************************/
+                                // base64 inline
+                                uint64_t binSize = ((nNode + nodesExtra.size()) * 3) * sizeof(double);
+                                std::vector<uint8_t> dataOutBytes;
+                                dataOutBytes.resize(binSize + sizeof(binSize), 0);
+                                size_t top{0};
+                                *(uint64_t *)(dataOutBytes.data() + top) = binSize, top += sizeof(uint64_t);
+                                for (index i = 0; i < nNode; i++)
+                                {
+                                    *(double *)(dataOutBytes.data() + top) = double(coordOut[i](0)), top += sizeof(double);
+                                    *(double *)(dataOutBytes.data() + top) = double(coordOut[i](1)), top += sizeof(double);
+                                    *(double *)(dataOutBytes.data() + top) = double(coordOut[i](2)), top += sizeof(double);
+                                }
+                                for (index i = 0; i < nodesExtra.size(); i++)
+                                {
+                                    *(double *)(dataOutBytes.data() + top) = double(nodesExtra[i](0)), top += sizeof(double);
+                                    *(double *)(dataOutBytes.data() + top) = double(nodesExtra[i](1)), top += sizeof(double);
+                                    *(double *)(dataOutBytes.data() + top) = double(nodesExtra[i](2)), top += sizeof(double);
+                                }
+                                out << cppcodec::base64_rfc4648::encode(dataOutBytes);
                             }
-                            for (index i = 0; i < nodesExtra.size(); i++)
+                            else if (vtuFloatEncodeMode == "ascii")
                             {
-                                coordsOutData[(i + nNode) * 3 + 0] = nodesExtra[i](0);
-                                coordsOutData[(i + nNode) * 3 + 1] = nodesExtra[i](1);
-                                coordsOutData[(i + nNode) * 3 + 2] = nodesExtra[i](2);
+                                std::vector<double> coordsOutData((nNode + nodesExtra.size()) * 3);
+                                for (index i = 0; i < nNode; i++)
+                                {
+                                    coordsOutData[i * 3 + 0] = coordOut[i](0);
+                                    coordsOutData[i * 3 + 1] = coordOut[i](1);
+                                    coordsOutData[i * 3 + 2] = coordOut[i](2);
+                                }
+                                for (index i = 0; i < nodesExtra.size(); i++)
+                                {
+                                    coordsOutData[(i + nNode) * 3 + 0] = nodesExtra[i](0);
+                                    coordsOutData[(i + nNode) * 3 + 1] = nodesExtra[i](1);
+                                    coordsOutData[(i + nNode) * 3 + 2] = nodesExtra[i](2);
+                                }
+                                // out << cppcodec::base64_rfc4648::encode(
+                                //     (uint8_t *)coordsOutData.data(),
+                                //     nNode * 3 * sizeof(double));
+                                for (auto v : coordsOutData)
+                                    out << std::setprecision(ascii_precision) << v << " ";
                             }
-                            // out << cppcodec::base64_rfc4648::encode(
-                            //     (uint8_t *)coordsOutData.data(),
-                            //     nNode * 3 * sizeof(double));
-                            for (auto v : coordsOutData)
-                                out << std::setprecision(ascii_precision) << v << " ";
+                            else
+                                DNDS_assert(false);
                             out << newlineV;
                         });
                 });
@@ -654,17 +682,37 @@ namespace DNDS::Geom
                             out, level, "DataArray",
                             {{"type", "Float64"},
                              {"Name", names(i)},
-                             {"format", "ascii"}},
+                             {"format", vtuFloatEncodeMode}},
                             [&](auto &out, int level)
                             {
-                                std::vector<double> dataOutC(nCell);
-                                for (index iCell = 0; iCell < nCell; iCell++)
-                                    dataOutC[iCell] = data(i, iCell);
-                                // auto dataOutCompressed = zlibCompressData((uint8_t *)dataOutC.data(), dataOutC.size() * sizeof(double));
-                                // out << cppcodec::base64_rfc4648::encode(dataOutCompressed);
-                                out << std::setprecision(ascii_precision);
-                                for (auto v : dataOutC)
-                                    out << v << " ";
+                                if (vtuFloatEncodeMode == "binary")
+                                {
+                                    /************************/
+                                    // base64 inline
+                                    uint64_t binSize = nCell * sizeof(double);
+                                    std::vector<uint8_t> dataOutBytes;
+                                    dataOutBytes.resize(binSize + sizeof(binSize), 0);
+                                    size_t top{0};
+                                    *(uint64_t *)(dataOutBytes.data() + top) = binSize, top += sizeof(uint64_t);
+                                    for (index iCell = 0; iCell < nCell; iCell++)
+                                        *(double *)(dataOutBytes.data() + top) = double(data(i, iCell)), top += sizeof(double);
+                                    out << cppcodec::base64_rfc4648::encode(dataOutBytes);
+                                }
+                                else if (vtuFloatEncodeMode == "ascii")
+                                {
+                                    /************************/
+                                    // ascii
+                                    std::vector<double> dataOutC(nCell);
+                                    for (index iCell = 0; iCell < nCell; iCell++)
+                                        dataOutC[iCell] = data(i, iCell);
+                                    // auto dataOutCompressed = zlibCompressData((uint8_t *)dataOutC.data(), dataOutC.size() * sizeof(double));
+                                    // out << cppcodec::base64_rfc4648::encode((char *)dataOutC.data(), binSize);
+                                    out << std::setprecision(ascii_precision);
+                                    for (auto v : dataOutC)
+                                        out << v << " ";
+                                }
+                                else
+                                    DNDS_assert(false);
                                 out << newlineV;
                             });
                     }
@@ -698,21 +746,45 @@ namespace DNDS::Geom
                             {{"type", "Float64"},
                              {"Name", vectorNames(i)},
                              {"NumberOfComponents", "3"},
-                             {"format", "ascii"}},
+                             {"format", vtuFloatEncodeMode}},
                             [&](auto &out, int level)
                             {
-                                std::vector<double> dataOutC(nCell * 3);
-                                for (index iCell = 0; iCell < nCell; iCell++)
+                                if (vtuFloatEncodeMode == "binary")
                                 {
-                                    dataOutC[iCell * 3 + 0] = vectorData(i, iCell, 0);
-                                    dataOutC[iCell * 3 + 1] = vectorData(i, iCell, 1);
-                                    dataOutC[iCell * 3 + 2] = vectorData(i, iCell, 2);
+                                    /************************/
+                                    // base64 inline
+                                    uint64_t binSize = (nCell * 3) * sizeof(double);
+                                    std::vector<uint8_t> dataOutBytes;
+                                    dataOutBytes.resize(binSize + sizeof(binSize), 0);
+                                    size_t top{0};
+                                    *(uint64_t *)(dataOutBytes.data() + top) = binSize, top += sizeof(uint64_t);
+                                    for (index iCell = 0; iCell < nCell; iCell++)
+                                    {
+                                        *(double *)(dataOutBytes.data() + top) = vectorData(i, iCell, 0), top += sizeof(double);
+                                        *(double *)(dataOutBytes.data() + top) = vectorData(i, iCell, 1), top += sizeof(double);
+                                        *(double *)(dataOutBytes.data() + top) = vectorData(i, iCell, 2), top += sizeof(double);
+                                    }
+                                    out << cppcodec::base64_rfc4648::encode(dataOutBytes);
                                 }
-                                // out << cppcodec::base64_rfc4648::encode(
-                                //     (uint8_t *)dataOutC.data(),
-                                //     dataOutC.size() * sizeof(double));
-                                for (auto v : dataOutC)
-                                    out << std::setprecision(ascii_precision) << v << " ";
+                                else if (vtuFloatEncodeMode == "ascii")
+                                {
+                                    /************************/
+                                    // ascii
+                                    std::vector<double> dataOutC(nCell * 3);
+                                    for (index iCell = 0; iCell < nCell; iCell++)
+                                    {
+                                        dataOutC[iCell * 3 + 0] = vectorData(i, iCell, 0);
+                                        dataOutC[iCell * 3 + 1] = vectorData(i, iCell, 1);
+                                        dataOutC[iCell * 3 + 2] = vectorData(i, iCell, 2);
+                                    }
+                                    // out << cppcodec::base64_rfc4648::encode(
+                                    //     (uint8_t *)dataOutC.data(),
+                                    //     dataOutC.size() * sizeof(double));
+                                    for (auto v : dataOutC)
+                                        out << std::setprecision(ascii_precision) << v << " ";
+                                }
+                                else
+                                    DNDS_assert(false);
                                 out << newlineV;
                             });
                     }
@@ -740,19 +812,42 @@ namespace DNDS::Geom
                             out, level, "DataArray",
                             {{"type", "Float64"},
                              {"Name", namesPoint(i)},
-                             {"format", "ascii"}},
+                             {"format", vtuFloatEncodeMode}},
                             [&](auto &out, int level)
                             {
-                                out << std::setprecision(ascii_precision);
-                                for (index ii = 0; ii < nNode; ii++)
-                                    out << dataPoint(i, ii) << " ";
-                                // if (mesh->isPeriodic)
-                                //     for (index iCell = 0; iCell < nCell; iCell++)
-                                //         for (rowsize ic2n = 0; ic2n < cell2nodeOut.RowSize(iCell); ic2n++)
-                                //             if (cell2nodePbiOut(iCell, ic2n))
-                                //                 out << std::setprecision(ascii_precision) << dataPoint(i, cell2nodeOut(iCell, ic2n)) << " ";
-                                for (auto ii : nodesExtraAtOriginal)
-                                    out << dataPoint(i, ii) << " ";
+                                if (vtuFloatEncodeMode == "binary")
+                                {
+                                    /************************/
+                                    // base64 inline
+                                    uint64_t binSize = (nNode + nodesExtraAtOriginal.size()) * sizeof(double);
+                                    std::vector<uint8_t> dataOutBytes;
+                                    dataOutBytes.resize(binSize + sizeof(binSize), 0);
+                                    size_t top{0};
+                                    *(uint64_t *)(dataOutBytes.data() + top) = binSize, top += sizeof(uint64_t);
+                                    for (index ii = 0; ii < nNode; ii++)
+                                        *(double *)(dataOutBytes.data() + top) = dataPoint(i, ii), top += sizeof(double);
+                                    for (auto ii : nodesExtraAtOriginal)
+                                        *(double *)(dataOutBytes.data() + top) = dataPoint(i, ii), top += sizeof(double);
+
+                                    out << cppcodec::base64_rfc4648::encode(dataOutBytes);
+                                }
+                                else if (vtuFloatEncodeMode == "ascii")
+                                {
+                                    /************************/
+                                    // ascii
+                                    out << std::setprecision(ascii_precision);
+                                    for (index ii = 0; ii < nNode; ii++)
+                                        out << dataPoint(i, ii) << " ";
+                                    // if (mesh->isPeriodic)
+                                    //     for (index iCell = 0; iCell < nCell; iCell++)
+                                    //         for (rowsize ic2n = 0; ic2n < cell2nodeOut.RowSize(iCell); ic2n++)
+                                    //             if (cell2nodePbiOut(iCell, ic2n))
+                                    //                 out << std::setprecision(ascii_precision) << dataPoint(i, cell2nodeOut(iCell, ic2n)) << " ";
+                                    for (auto ii : nodesExtraAtOriginal)
+                                        out << dataPoint(i, ii) << " ";
+                                }
+                                else
+                                    DNDS_assert(false);
                                 out << newlineV;
                             });
                     }
@@ -763,32 +858,62 @@ namespace DNDS::Geom
                             {{"type", "Float64"},
                              {"Name", vectorNamesPoint(i)},
                              {"NumberOfComponents", "3"},
-                             {"format", "ascii"}},
+                             {"format", vtuFloatEncodeMode}},
                             [&](auto &out, int level)
                             {
-                                out << std::setprecision(ascii_precision);
-                                for (index ii = 0; ii < nNode; ii++)
+                                if (vtuFloatEncodeMode == "binary")
                                 {
-                                    out << vectorDataPoint(i, ii, 0) << " ";
-                                    out << vectorDataPoint(i, ii, 1) << " ";
-                                    out << vectorDataPoint(i, ii, 2) << " ";
+                                    /************************/
+                                    // base64 inline
+                                    uint64_t binSize = (nNode + nodesExtraAtOriginal.size()) * 3 * sizeof(double);
+                                    std::vector<uint8_t> dataOutBytes;
+                                    dataOutBytes.resize(binSize + sizeof(binSize), 0);
+                                    size_t top{0};
+                                    *(uint64_t *)(dataOutBytes.data() + top) = binSize, top += sizeof(uint64_t);
+                                    for (index ii = 0; ii < nNode; ii++)
+                                    {
+                                        *(double *)(dataOutBytes.data() + top) = vectorDataPoint(i, ii, 0), top += sizeof(double);
+                                        *(double *)(dataOutBytes.data() + top) = vectorDataPoint(i, ii, 1), top += sizeof(double);
+                                        *(double *)(dataOutBytes.data() + top) = vectorDataPoint(i, ii, 2), top += sizeof(double);
+                                    }
+                                    for (auto ii : nodesExtraAtOriginal)
+                                    {
+                                        *(double *)(dataOutBytes.data() + top) = vectorDataPoint(i, ii, 0), top += sizeof(double);
+                                        *(double *)(dataOutBytes.data() + top) = vectorDataPoint(i, ii, 1), top += sizeof(double);
+                                        *(double *)(dataOutBytes.data() + top) = vectorDataPoint(i, ii, 2), top += sizeof(double);
+                                    }
+                                    out << cppcodec::base64_rfc4648::encode(dataOutBytes);
                                 }
-                                // std::cout << "print vec" << std::endl;
-                                // if (mesh->isPeriodic)
-                                //     for (index iCell = 0; iCell < nCell; iCell++)
-                                //         for (rowsize ic2n = 0; ic2n < cell2nodeOut.RowSize(iCell); ic2n++)
-                                //             if (cell2nodePbiOut(iCell, ic2n))
-                                //             {
-                                //                 out << std::setprecision(ascii_precision) << vectorDataPoint(i, cell2nodeOut(iCell, ic2n), 0) << " ";
-                                //                 out << std::setprecision(ascii_precision) << vectorDataPoint(i, cell2nodeOut(iCell, ic2n), 1) << " ";
-                                //                 out << std::setprecision(ascii_precision) << vectorDataPoint(i, cell2nodeOut(iCell, ic2n), 2) << " ";
-                                //             }
-                                for (auto ii : nodesExtraAtOriginal)
+                                else if (vtuFloatEncodeMode == "ascii")
                                 {
-                                    out << vectorDataPoint(i, ii, 0) << " ";
-                                    out << vectorDataPoint(i, ii, 1) << " ";
-                                    out << vectorDataPoint(i, ii, 2) << " ";
+                                    /****************************/
+                                    // ascii
+                                    out << std::setprecision(ascii_precision);
+                                    for (index ii = 0; ii < nNode; ii++)
+                                    {
+                                        out << vectorDataPoint(i, ii, 0) << " ";
+                                        out << vectorDataPoint(i, ii, 1) << " ";
+                                        out << vectorDataPoint(i, ii, 2) << " ";
+                                    }
+                                    // std::cout << "print vec" << std::endl;
+                                    // if (mesh->isPeriodic)
+                                    //     for (index iCell = 0; iCell < nCell; iCell++)
+                                    //         for (rowsize ic2n = 0; ic2n < cell2nodeOut.RowSize(iCell); ic2n++)
+                                    //             if (cell2nodePbiOut(iCell, ic2n))
+                                    //             {
+                                    //                 out << std::setprecision(ascii_precision) << vectorDataPoint(i, cell2nodeOut(iCell, ic2n), 0) << " ";
+                                    //                 out << std::setprecision(ascii_precision) << vectorDataPoint(i, cell2nodeOut(iCell, ic2n), 1) << " ";
+                                    //                 out << std::setprecision(ascii_precision) << vectorDataPoint(i, cell2nodeOut(iCell, ic2n), 2) << " ";
+                                    //             }
+                                    for (auto ii : nodesExtraAtOriginal)
+                                    {
+                                        out << vectorDataPoint(i, ii, 0) << " ";
+                                        out << vectorDataPoint(i, ii, 1) << " ";
+                                        out << vectorDataPoint(i, ii, 2) << " ";
+                                    }
                                 }
+                                else
+                                    DNDS_assert(false);
                                 out << newlineV;
                             });
                     }
@@ -796,7 +921,6 @@ namespace DNDS::Geom
         };
 
         std::string endianName{"BigEndian"};
-
         uint32_t beTest = 1; // need c++20 for STL support
         uint8_t beTestS = *(uint8_t *)(&beTest);
         if (beTestS == 1)
@@ -804,9 +928,12 @@ namespace DNDS::Geom
 
         writeXMLEntity(
             fout, 0, "VTKFile",
-            {{"type", "UnstructuredGrid"},
-             {"byte_order", endianName},
-             {"compressor", "vtkZLibDataCompressor"}},
+            {
+                {"type", "UnstructuredGrid"},
+                {"byte_order", endianName},
+                {"header_type", "UInt64"},
+                //  {"compressor", "vtkZLibDataCompressor"}
+            },
             [&](auto &out, int level)
             {
                 writeXMLEntity(
@@ -842,7 +969,8 @@ namespace DNDS::Geom
             writeXMLEntity(
                 foutP, 0, "VTKFile",
                 {{"type", "PUnstructuredGrid"},
-                 {"byte_order", endianName}},
+                 {"byte_order", endianName},
+                 {"header_type", "UInt64"}}, // ! use uint64_t as base64 Header
                 [&](auto &out, int level)
                 {
                     writeXMLEntity(

@@ -233,6 +233,7 @@ namespace DNDS::Euler
                 bool outAtPointData = true;
                 bool outAtCellData = true;
                 int nASCIIPrecision = 5;
+                std::string vtuFloatEncodeMode = "binary";
                 bool outVolumeData = true;
                 bool outBndData = false;
 
@@ -267,6 +268,7 @@ namespace DNDS::Euler
                     outAtPointData,
                     outAtCellData,
                     nASCIIPrecision,
+                    vtuFloatEncodeMode,
                     outVolumeData,
                     outBndData,
                     outCellScalarNames,

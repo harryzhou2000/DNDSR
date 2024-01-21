@@ -267,6 +267,7 @@ namespace DNDS::Geom
     {
     private:
         int ascii_precision{16};
+        std::string vtuFloatEncodeMode = "ascii";
 
     public:
         DNDS::ssp<UnstructuredMesh> mesh;
@@ -424,5 +425,10 @@ namespace DNDS::Geom
             double t, int flag = 0);
 
         void SetASCIIPrecision(int n) { ascii_precision = n; }
+        void SetVTKFloatEncodeMode(const std::string &v)
+        {
+            vtuFloatEncodeMode = v;
+            DNDS_assert(v == "ascii" || v == "binary");
+        }
     };
 } // namespace geom
