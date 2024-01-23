@@ -116,6 +116,7 @@ namespace DNDS::Geom
             real RBFRadius = 1;
             real MaxIncludedAngle = 15;
             int nIter = 60;
+            int nSearch = 30;
             RBF::RBFKernelType kernel = RBF::InversedDistanceA1;
         } elevationInfo;
 
@@ -186,6 +187,7 @@ namespace DNDS::Geom
         void ElevatedNodesSolveInternalSmooth();
         void ElevatedNodesSolveInternalSmoothV1Old();
         void ElevatedNodesSolveInternalSmoothV1();
+        void ElevatedNodesSolveInternalSmoothV2();
 
         bool IsO1();
 

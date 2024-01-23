@@ -13,6 +13,7 @@
 #include <nanoflann.hpp>
 
 #include <Eigen/Sparse>
+#include <superlu_ddefs.h>
 
 namespace DNDS::Geom
 {
@@ -1029,7 +1030,7 @@ namespace DNDS::Geom
             if (nodesBoundInterpolated.count(iN))
                 continue;
 
-            index nFind = elevationInfo.nIter;
+            index nFind = elevationInfo.nSearch;
             tPoint cooC = coords[iN];
 
             std::vector<index> idxFound;
@@ -1050,7 +1051,7 @@ namespace DNDS::Geom
                 coordBnd(Eigen::all, iF) = (*boundInterpCoo.son)[idxFound[iF]];
                 dispBnd(Eigen::all, iF) = (*boundInterpVal.son)[idxFound[iF]];
             }
-            real RMin = outDistancesSqr.minCoeff();
+            real RMin = std::sqrt(outDistancesSqr.minCoeff());
             tPoint dispC;
             dispC.setZero();
 
@@ -1182,7 +1183,7 @@ namespace DNDS::Geom
         {
 
             Eigen::SparseMatrix<real> M(boundInterpGlobSize, boundInterpGlobSize);
-            M.reserve(Eigen::Vector<index, Eigen::Dynamic>::Constant(boundInterpGlobSize, elevationInfo.nIter));
+            M.reserve(Eigen::Vector<index, Eigen::Dynamic>::Constant(boundInterpGlobSize, elevationInfo.nSearch));
             Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic> f;
             f.resize(boundInterpGlobSize, 3);
             for (index iN = 0; iN < boundInterpGlobSize; iN++)
@@ -1190,7 +1191,7 @@ namespace DNDS::Geom
                 std::cout << iN << std::endl;
                 tPoint cooC = (*boundInterpCoo.son)[iN];
 
-                index nFind = elevationInfo.nIter;
+                index nFind = elevationInfo.nSearch;
                 std::vector<index> idxFound;
                 Eigen::Vector<real, Eigen::Dynamic> outDistancesSqr;
                 idxFound.resize(nFind);
@@ -1256,7 +1257,7 @@ namespace DNDS::Geom
 
             tPoint cooC = (*boundInterpCoo.son)[iN];
             std::vector<std::pair<DNDS::index, DNDS::real>> IndicesDists;
-            IndicesDists.reserve(elevationInfo.nIter * 5);
+            IndicesDists.reserve(elevationInfo.nSearch * 5);
             real RRBF = boundInterpR.son->operator()(iN, 0);
             nanoflann::SearchParams params{}; // default params
             index nFound = nodesDstTree.radiusSearch(cooC.data(), RRBF, IndicesDists, params);
@@ -1280,7 +1281,7 @@ namespace DNDS::Geom
         //     if (nodesBoundInterpolated.count(iN))
         //         continue;
 
-        //     index nFind = elevationInfo.nIter * 5; // for safety
+        //     index nFind = elevationInfo.nSearch * 5; // for safety
         //     tPoint cooC = coords[iN];
 
         //     std::vector<index> idxFound;
@@ -1369,6 +1370,7 @@ namespace DNDS::Geom
         std::vector<index> boundInterpPullIdx;
 
         index boundInterpGlobSize = boundInterpCoo.father->globalSize();
+        index boundInterpLocSize = nodesBoundInterpolated.size();
         boundInterpPullIdx.resize(boundInterpGlobSize);
         for (index i = 0; i < boundInterpPullIdx.size(); i++)
             boundInterpPullIdx[i] = i;
@@ -1414,13 +1416,13 @@ namespace DNDS::Geom
         boundInterpR.father->Resize(boundInterpCoo.father->Size());
         std::vector<std::vector<std::pair<index, real>>> MatC;
         std::vector<index> boundInterpPullingIndexSolving;
-        MatC.resize(nodesBoundInterpolated.size());
+        MatC.resize(boundInterpLocSize);
         std::cout << "HEre-1" << std::endl;
-        for (index iN = 0; iN < nodesBoundInterpolated.size(); iN++)
+        for (index iN = 0; iN < boundInterpLocSize; iN++)
         {
             tPoint cooC = (*boundInterpCoo.father)[iN];
 
-            index nFind = elevationInfo.nIter;
+            index nFind = elevationInfo.nSearch;
             std::vector<index> idxFound;
             Eigen::Vector<real, Eigen::Dynamic> outDistancesSqr;
             idxFound.resize(nFind);
@@ -1447,138 +1449,230 @@ namespace DNDS::Geom
                 if (rank != mpi.rank)
                     boundInterpPullingIndexSolving.push_back(idxFound[in2n]);
             }
-            boundInterpCoefRHS[iN] = (*boundInterpVal.son)[iN];
+
+            boundInterpCoefRHS[iN] = (*boundInterpVal.father)[iN];
             boundInterpCoef[iN].setZero(); // init val
+            // if(mpi.rank == 0)
+            // {
+            //     std::cout << "mat row at " << cooC.transpose() << "R = " << RRBF << "\n";
+            //     for (auto idx : idxFound)
+            //         std::cout << idx << " ";
+            //     std::cout << "\n"
+            //               << fBasis.transpose() << "\n"
+            //               << outDists.transpose() << "\n"
+            //               << boundInterpCoefRHS[iN].transpose() << std::endl;
+            // }
         }
-        std::cout << "HEre0" << std::endl;
-        boundInterpCoef.father->createGlobalMapping();
-        boundInterpCoef.TransAttach();
-        boundInterpCoef.trans.createGhostMapping(boundInterpPullingIndexSolving);
-        boundInterpCoef.trans.createMPITypes();
-        boundInterpCoef.trans.initPersistentPull();
 
-        boundInterpCoefRHS.TransAttach();
-        boundInterpCoefRHS.trans.BorrowGGIndexing(boundInterpCoef.trans);
-        boundInterpCoefRHS.trans.createMPITypes();
-        boundInterpCoefRHS.trans.initPersistentPull();
+        if (false)
+        { // use superlu_dist to solve
+            gridinfo_t grid;
+            superlu_gridinit(mpi.comm, 1, mpi.size, &grid);
+            DNDS_assert(grid.iam < mpi.size && grid.iam >= 0);
 
-        std::cout << "HEre1" << std::endl;
-
-        for (index iN = 0; iN < nodesBoundInterpolated.size(); iN++)
-        {
-            for (index in2n = 0; in2n < MatC[iN].size(); in2n++)
-            {
-                MatC[iN][in2n].first;
-                auto [search_good, rank, val] = boundInterpCoef.trans.pLGhostMapping->search_indexAppend(MatC[iN][in2n].first);
-                DNDS_assert(search_good);
-                DNDS_assert(val < boundInterpCoef.Size());
-                MatC[iN][in2n].first = val; // to local
-            }
-        }
-        Eigen::SparseMatrix<real> M(nodesBoundInterpolated.size(), nodesBoundInterpolated.size());
-        M.reserve(Eigen::Vector<index, Eigen::Dynamic>::Constant(nodesBoundInterpolated.size(), elevationInfo.nIter));
-        for (index iN = 0; iN < nodesBoundInterpolated.size(); iN++)
-        {
-            for (index in2n = 0; in2n < MatC[iN].size(); in2n++)
-            {
-                if (MatC[iN][in2n].first < nodesBoundInterpolated.size())
-                    M.insert(iN, MatC[iN][in2n].first) = MatC[iN][in2n].second;
-                // ,
-                //              std::cout << fmt::format("rank {}, inserting {},{}={}", mpi.rank, iN, MatC[iN][in2n].first, MatC[iN][in2n].second) << std::endl;
-            }
-        }
-        Eigen::SparseLU<Eigen::SparseMatrix<real>, Eigen::COLAMDOrdering<int>> LUSolver;
-        if (nodesBoundInterpolated.size())
-        {
-            LUSolver.analyzePattern(M);
-            LUSolver.factorize(M); // full LU perconditioner
-        }
-        std::cout << "HEre2" << std::endl;
-
-        Linear::GMRES_LeftPreconditioned<CoordPairDOF> gmres(
-            15,
-            [&](CoordPairDOF &v)
-            {
-                DNDS_MAKE_SSP(v.father, mpi);
-                DNDS_MAKE_SSP(v.son, mpi);
-                v.father->Resize(boundInterpCoef.father->Size());
-                v.TransAttach();
-                v.trans.BorrowGGIndexing(boundInterpCoef.trans);
-                v.trans.createMPITypes();
-                v.trans.initPersistentPull();
-            });
-        std::cout << "HEre3" << std::endl;
-        boundInterpCoef.trans.startPersistentPull();
-        boundInterpCoef.trans.waitPersistentPull();
-        boundInterpCoefRHS.trans.startPersistentPull();
-        boundInterpCoefRHS.trans.waitPersistentPull();
-        gmres.solve(
-            [&](CoordPairDOF &x, CoordPairDOF &Ax)
-            {
-                x.trans.startPersistentPull();
-                x.trans.waitPersistentPull();
-                for (index iN = 0; iN < nodesBoundInterpolated.size(); iN++)
+            std::vector<double> nzval, b;
+            std::vector<int_t> colind;
+            std::vector<int_t> rowptr;
+            rowptr.resize(boundInterpLocSize + 1);
+            rowptr[0] = 0;
+            for (index i = 0; i < boundInterpLocSize; i++)
+                rowptr[i + 1] = rowptr[i] + MatC[i].size();
+            colind.resize(rowptr.back());
+            nzval.resize(rowptr.back());
+            for (index i = 0; i < boundInterpLocSize; i++)
+                for (index i2j = 0; i2j < MatC[i].size(); i2j++)
                 {
-                    Ax[iN].setZero();
-                    for (index in2n = 0; in2n < MatC[iN].size(); in2n++)
-                    {
-                        Ax[iN] += x[MatC[iN][in2n].first] * MatC[iN][in2n].second;
-                    }
+                    colind[rowptr[i] + i2j] = MatC[i][i2j].first;
+                    nzval[rowptr[i] + i2j] = MatC[i][i2j].second;
                 }
-                Ax.trans.startPersistentPull();
-                Ax.trans.waitPersistentPull();
-            },
-            [&](CoordPairDOF &x, CoordPairDOF &MLX)
+            b.resize(boundInterpLocSize * 3);
+            for (index i = 0; i < boundInterpLocSize; i++)
             {
-                x.trans.startPersistentPull();
-                x.trans.waitPersistentPull();
-                Eigen::Matrix<real, Eigen::Dynamic, 3> xVal;
-                xVal.resize(nodesBoundInterpolated.size(), 3);
-                for (index iN = 0; iN < nodesBoundInterpolated.size(); iN++)
-                    xVal(iN, Eigen::all) = x[iN].transpose();
-                Eigen::Matrix<real, Eigen::Dynamic, 3> xValPrec;
-                if (nodesBoundInterpolated.size())
-                    xValPrec = LUSolver.solve(xVal);
-                for (index iN = 0; iN < nodesBoundInterpolated.size(); iN++)
-                    MLX[iN] = xValPrec(iN, Eigen::all).transpose();
-                MLX = x;
-                MLX.trans.startPersistentPull();
-                MLX.trans.waitPersistentPull();
-            },
-            boundInterpCoefRHS,
-            boundInterpCoef,
-            1000,
-            [&](int iRestart, real res, real resB)
-            {
-                if (mpi.rank == mRank)
-                    log() << fmt::format("iRestart {}, res {}, resB {}", iRestart, res, resB) << std::endl;
-                return res < resB * 1e-6;
+                b[boundInterpLocSize * 0 + i] = boundInterpCoefRHS[i](0);
+                b[boundInterpLocSize * 1 + i] = boundInterpCoefRHS[i](1);
+                b[boundInterpLocSize * 2 + i] = boundInterpCoefRHS[i](2);
             }
 
-        );
-        boundInterpCoef.trans.startPersistentPull();
-        boundInterpCoef.trans.waitPersistentPull();
+            SuperMatrix Aloc;
+            dCreate_CompRowLoc_Matrix_dist(
+                &Aloc, boundInterpGlobSize, boundInterpGlobSize, nzval.size(), boundInterpLocSize,
+                boundInterpCoo.trans.pLGlobalMapping->operator()(mpi.rank, 0), nzval.data(), colind.data(), rowptr.data(),
+                SLU_NR_loc, SLU_D, SLU_GE);
+
+            superlu_dist_options_t options;
+            set_default_options_dist(&options);
+            SuperLUStat_t stat;
+            PStatInit(&stat);
+            dScalePermstruct_t ScalePermstruct;
+            dScalePermstructInit(Aloc.nrow, Aloc.ncol, &ScalePermstruct);
+            dLUstruct_t LUstruct;
+            dLUstructInit(Aloc.ncol, &LUstruct);
+            dSOLVEstruct_t SOLVEstruct;
+
+            tPoint berr;
+            berr.setZero();
+            int info;
+
+            pdgssvx(&options, &Aloc, &ScalePermstruct,
+                    b.data(), boundInterpLocSize, 3,
+                    &grid, &LUstruct, &SOLVEstruct, berr.data(), &stat, &info);
+            for (index i = 0; i < boundInterpLocSize; i++)
+            {
+                boundInterpCoef[i](0) = b[boundInterpLocSize * 0 + i];
+                boundInterpCoef[i](1) = b[boundInterpLocSize * 1 + i];
+                boundInterpCoef[i](2) = b[boundInterpLocSize * 2 + i];
+            }
+            PStatPrint(&options, &stat, &grid);
+            DNDS_assert(info == 0);
+
+            PStatFree(&stat);
+            // TODO: sanitize with valgrind!
+            // Destroy_CompRowLoc_Matrix_dist(&Aloc); // use vector for strorage, this causes double free
+            SUPERLU_FREE(Aloc.Store);
+            dScalePermstructFree(&ScalePermstruct);
+            dDestroy_LU(Aloc.ncol, &grid, &LUstruct);
+            dLUstructFree(&LUstruct);
+            if (options.SolveInitialized)
+            {
+                dSolveFinalize(&options, &SOLVEstruct);
+            }
+
+            superlu_gridexit(&grid);
+        }
+        if (true)
+        { // use GMRES to solve
+            std::cout << "HEre0" << std::endl;
+            boundInterpCoef.father->createGlobalMapping();
+            boundInterpCoef.TransAttach();
+            boundInterpCoef.trans.createGhostMapping(boundInterpPullingIndexSolving);
+            boundInterpCoef.trans.createMPITypes();
+            boundInterpCoef.trans.initPersistentPull();
+
+            boundInterpCoefRHS.TransAttach();
+            boundInterpCoefRHS.trans.BorrowGGIndexing(boundInterpCoef.trans);
+            boundInterpCoefRHS.trans.createMPITypes();
+            boundInterpCoefRHS.trans.initPersistentPull();
+
+            std::cout << "HEre1" << std::endl;
+            for (index iN = 0; iN < boundInterpLocSize; iN++)
+            {
+                for (index in2n = 0; in2n < MatC[iN].size(); in2n++)
+                {
+                    MatC[iN][in2n].first;
+                    auto [search_good, rank, val] = boundInterpCoef.trans.pLGhostMapping->search_indexAppend(MatC[iN][in2n].first);
+                    DNDS_assert(search_good);
+                    DNDS_assert(val < boundInterpCoef.Size());
+                    MatC[iN][in2n].first = val; // to local
+                }
+            }
+            Eigen::SparseMatrix<real> M(boundInterpLocSize, boundInterpLocSize);
+            M.reserve(Eigen::Vector<index, Eigen::Dynamic>::Constant(boundInterpLocSize, elevationInfo.nSearch));
+            for (index iN = 0; iN < boundInterpLocSize; iN++)
+            {
+                for (index in2n = 0; in2n < MatC[iN].size(); in2n++)
+                {
+                    if (MatC[iN][in2n].first < boundInterpLocSize)
+                        M.insert(iN, MatC[iN][in2n].first) = MatC[iN][in2n].second;
+                    // ,
+                    //              std::cout << fmt::format("rank {}, inserting {},{}={}", mpi.rank, iN, MatC[iN][in2n].first, MatC[iN][in2n].second) << std::endl;
+                }
+            }
+            Eigen::SparseLU<Eigen::SparseMatrix<real>, Eigen::COLAMDOrdering<int>> LUSolver;
+            if (boundInterpLocSize)
+            {
+                LUSolver.analyzePattern(M);
+                LUSolver.factorize(M); // full LU perconditioner
+            }
+            std::cout << "HEre2" << std::endl;
+
+            Linear::GMRES_LeftPreconditioned<CoordPairDOF> gmres(
+                5,
+                [&](CoordPairDOF &v)
+                {
+                    DNDS_MAKE_SSP(v.father, mpi);
+                    DNDS_MAKE_SSP(v.son, mpi);
+                    v.father->Resize(boundInterpCoef.father->Size());
+                    v.TransAttach();
+                    v.trans.BorrowGGIndexing(boundInterpCoef.trans);
+                    v.trans.createMPITypes();
+                    v.trans.initPersistentPull();
+                });
+            std::cout << "HEre3" << std::endl;
+            boundInterpCoef.trans.startPersistentPull();
+            boundInterpCoef.trans.waitPersistentPull();
+            boundInterpCoefRHS.trans.startPersistentPull();
+            boundInterpCoefRHS.trans.waitPersistentPull();
+            gmres.solve(
+                [&](CoordPairDOF &x, CoordPairDOF &Ax)
+                {
+                    x.trans.startPersistentPull();
+                    x.trans.waitPersistentPull();
+                    for (index iN = 0; iN < boundInterpLocSize; iN++)
+                    {
+                        Ax[iN].setZero();
+                        for (index in2n = 0; in2n < MatC[iN].size(); in2n++)
+                        {
+                            Ax[iN] += x[MatC[iN][in2n].first] * MatC[iN][in2n].second;
+                        }
+                    }
+                    Ax.trans.startPersistentPull();
+                    Ax.trans.waitPersistentPull();
+                },
+                [&](CoordPairDOF &x, CoordPairDOF &MLX)
+                {
+                    x.trans.startPersistentPull();
+                    x.trans.waitPersistentPull();
+                    Eigen::Matrix<real, Eigen::Dynamic, 3> xVal;
+                    xVal.resize(boundInterpLocSize, 3);
+                    for (index iN = 0; iN < boundInterpLocSize; iN++)
+                        xVal(iN, Eigen::all) = x[iN].transpose();
+                    Eigen::Matrix<real, Eigen::Dynamic, 3> xValPrec;
+                    if (boundInterpLocSize)
+                        xValPrec = LUSolver.solve(xVal);
+                    for (index iN = 0; iN < boundInterpLocSize; iN++)
+                        MLX[iN] = xValPrec(iN, Eigen::all).transpose();
+                    MLX = x;
+                    MLX.trans.startPersistentPull();
+                    MLX.trans.waitPersistentPull();
+                },
+                boundInterpCoefRHS,
+                boundInterpCoef,
+                elevationInfo.nIter,
+                [&](int iRestart, real res, real resB)
+                {
+                    if (mpi.rank == mRank)
+                        log() << fmt::format("iRestart {}, res {}, resB {}", iRestart, res, resB) << std::endl;
+                    return res < resB * 1e-6;
+                }
+
+            );
+            boundInterpCoef.trans.startPersistentPull();
+            boundInterpCoef.trans.waitPersistentPull();
+        }
+
         boundInterpCoef.father->createGlobalMapping();
         boundInterpCoef.TransAttach();
         boundInterpCoef.trans.createGhostMapping(boundInterpPullIdx);
         boundInterpCoef.trans.createMPITypes();
         boundInterpCoef.trans.pullOnce();
 
-                boundInterpR.TransAttach();
-        boundInterpR.trans.BorrowGGIndexing(boundInterpCoef.trans);
+        boundInterpR.TransAttach();
+        boundInterpR.trans.BorrowGGIndexing(boundInterpCoo.trans);
         boundInterpR.trans.createMPITypes();
         boundInterpR.trans.pullOnce();
 
-        if (mpi.rank == mRank)
-        {
-            for (index iN = 0; iN < boundInterpGlobSize; iN++)
-            {
-                std::cout << "coef: " << iN << " " << boundInterpCoef.son->operator[](iN).transpose() << std::endl;
-            }
-        }
+        // if (mpi.rank == mRank)
+        // {
+        //     for (index iN = 0; iN < boundInterpGlobSize; iN++)
+        //     {
+        //         std::cout << "pt - coef: R " << boundInterpR.son->operator()(iN, 0)
+        //                   << " coo " << boundInterpCoo.son->operator[](iN).transpose()
+        //                   << " -> " << boundInterpCoef.son->operator[](iN).transpose() << std::endl;
+        //     }
+        // }
 
         PointCloudKDTree insidePts;
-        insidePts.pts.reserve(coords.father->Size() - nodesBoundInterpolated.size());
+        insidePts.pts.reserve(coords.father->Size() - boundInterpLocSize);
         std::vector<index> insideNodes;
         insideNodes.reserve(insidePts.pts.size());
         for (index iN = 0; iN < coords.father->Size(); iN++)
@@ -1590,7 +1684,7 @@ namespace DNDS::Geom
 
             tPoint cooC = (*boundInterpCoo.son)[iN];
             std::vector<std::pair<DNDS::index, DNDS::real>> IndicesDists;
-            IndicesDists.reserve(elevationInfo.nIter * 5);
+            IndicesDists.reserve(elevationInfo.nSearch * 5);
             real RRBF = boundInterpR.son->operator()(iN, 0);
             nanoflann::SearchParams params{}; // default params
             index nFound = nodesDstTree.radiusSearch(cooC.data(), RRBF, IndicesDists, params);
@@ -1614,7 +1708,7 @@ namespace DNDS::Geom
         //     if (nodesBoundInterpolated.count(iN))
         //         continue;
 
-        //     index nFind = elevationInfo.nIter * 5; // for safety
+        //     index nFind = elevationInfo.nSearch * 5; // for safety
         //     tPoint cooC = coords[iN];
 
         //     std::vector<index> idxFound;
@@ -1654,4 +1748,10 @@ namespace DNDS::Geom
         }
         coords.trans.pullOnce();
     }
+
+    void UnstructuredMesh::ElevatedNodesSolveInternalSmoothV2()
+    {
+
+    }
+
 }
