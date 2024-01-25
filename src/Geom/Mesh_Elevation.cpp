@@ -13,7 +13,9 @@
 #include <nanoflann.hpp>
 
 #include <Eigen/Sparse>
+#ifdef DNDS_USE_SUPERLU
 #include <superlu_ddefs.h>
+#endif
 
 namespace DNDS::Geom
 {
@@ -1494,78 +1496,79 @@ namespace DNDS::Geom
 
         if (false)
         { // use superlu_dist to solve
-            gridinfo_t grid;
-            superlu_gridinit(mpi.comm, 1, mpi.size, &grid);
-            DNDS_assert(grid.iam < mpi.size && grid.iam >= 0);
+            
+            // gridinfo_t grid;
+            // superlu_gridinit(mpi.comm, 1, mpi.size, &grid);
+            // DNDS_assert(grid.iam < mpi.size && grid.iam >= 0);
 
-            std::vector<double> nzval, b;
-            std::vector<int_t> colind;
-            std::vector<int_t> rowptr;
-            rowptr.resize(boundInterpLocSize + 1);
-            rowptr[0] = 0;
-            for (index i = 0; i < boundInterpLocSize; i++)
-                rowptr[i + 1] = rowptr[i] + MatC[i].size();
-            colind.resize(rowptr.back());
-            nzval.resize(rowptr.back());
-            for (index i = 0; i < boundInterpLocSize; i++)
-                for (index i2j = 0; i2j < MatC[i].size(); i2j++)
-                {
-                    colind[rowptr[i] + i2j] = MatC[i][i2j].first;
-                    nzval[rowptr[i] + i2j] = MatC[i][i2j].second;
-                }
-            b.resize(boundInterpLocSize * 3);
-            for (index i = 0; i < boundInterpLocSize; i++)
-            {
-                b[boundInterpLocSize * 0 + i] = boundInterpCoefRHS[i](0);
-                b[boundInterpLocSize * 1 + i] = boundInterpCoefRHS[i](1);
-                b[boundInterpLocSize * 2 + i] = boundInterpCoefRHS[i](2);
-            }
+            // std::vector<double> nzval, b;
+            // std::vector<int_t> colind;
+            // std::vector<int_t> rowptr;
+            // rowptr.resize(boundInterpLocSize + 1);
+            // rowptr[0] = 0;
+            // for (index i = 0; i < boundInterpLocSize; i++)
+            //     rowptr[i + 1] = rowptr[i] + MatC[i].size();
+            // colind.resize(rowptr.back());
+            // nzval.resize(rowptr.back());
+            // for (index i = 0; i < boundInterpLocSize; i++)
+            //     for (index i2j = 0; i2j < MatC[i].size(); i2j++)
+            //     {
+            //         colind[rowptr[i] + i2j] = MatC[i][i2j].first;
+            //         nzval[rowptr[i] + i2j] = MatC[i][i2j].second;
+            //     }
+            // b.resize(boundInterpLocSize * 3);
+            // for (index i = 0; i < boundInterpLocSize; i++)
+            // {
+            //     b[boundInterpLocSize * 0 + i] = boundInterpCoefRHS[i](0);
+            //     b[boundInterpLocSize * 1 + i] = boundInterpCoefRHS[i](1);
+            //     b[boundInterpLocSize * 2 + i] = boundInterpCoefRHS[i](2);
+            // }
 
-            SuperMatrix Aloc;
-            dCreate_CompRowLoc_Matrix_dist(
-                &Aloc, boundInterpGlobSize, boundInterpGlobSize, nzval.size(), boundInterpLocSize,
-                boundInterpCoo.trans.pLGlobalMapping->operator()(mpi.rank, 0), nzval.data(), colind.data(), rowptr.data(),
-                SLU_NR_loc, SLU_D, SLU_GE);
+            // SuperMatrix Aloc;
+            // dCreate_CompRowLoc_Matrix_dist(
+            //     &Aloc, boundInterpGlobSize, boundInterpGlobSize, nzval.size(), boundInterpLocSize,
+            //     boundInterpCoo.trans.pLGlobalMapping->operator()(mpi.rank, 0), nzval.data(), colind.data(), rowptr.data(),
+            //     SLU_NR_loc, SLU_D, SLU_GE);
 
-            superlu_dist_options_t options;
-            set_default_options_dist(&options);
-            SuperLUStat_t stat;
-            PStatInit(&stat);
-            dScalePermstruct_t ScalePermstruct;
-            dScalePermstructInit(Aloc.nrow, Aloc.ncol, &ScalePermstruct);
-            dLUstruct_t LUstruct;
-            dLUstructInit(Aloc.ncol, &LUstruct);
-            dSOLVEstruct_t SOLVEstruct;
+            // superlu_dist_options_t options;
+            // set_default_options_dist(&options);
+            // SuperLUStat_t stat;
+            // PStatInit(&stat);
+            // dScalePermstruct_t ScalePermstruct;
+            // dScalePermstructInit(Aloc.nrow, Aloc.ncol, &ScalePermstruct);
+            // dLUstruct_t LUstruct;
+            // dLUstructInit(Aloc.ncol, &LUstruct);
+            // dSOLVEstruct_t SOLVEstruct;
 
-            tPoint berr;
-            berr.setZero();
-            int info;
+            // tPoint berr;
+            // berr.setZero();
+            // int info;
 
-            pdgssvx(&options, &Aloc, &ScalePermstruct,
-                    b.data(), boundInterpLocSize, 3,
-                    &grid, &LUstruct, &SOLVEstruct, berr.data(), &stat, &info);
-            for (index i = 0; i < boundInterpLocSize; i++)
-            {
-                boundInterpCoef[i](0) = b[boundInterpLocSize * 0 + i];
-                boundInterpCoef[i](1) = b[boundInterpLocSize * 1 + i];
-                boundInterpCoef[i](2) = b[boundInterpLocSize * 2 + i];
-            }
-            PStatPrint(&options, &stat, &grid);
-            DNDS_assert(info == 0);
+            // pdgssvx(&options, &Aloc, &ScalePermstruct,
+            //         b.data(), boundInterpLocSize, 3,
+            //         &grid, &LUstruct, &SOLVEstruct, berr.data(), &stat, &info);
+            // for (index i = 0; i < boundInterpLocSize; i++)
+            // {
+            //     boundInterpCoef[i](0) = b[boundInterpLocSize * 0 + i];
+            //     boundInterpCoef[i](1) = b[boundInterpLocSize * 1 + i];
+            //     boundInterpCoef[i](2) = b[boundInterpLocSize * 2 + i];
+            // }
+            // PStatPrint(&options, &stat, &grid);
+            // DNDS_assert(info == 0);
 
-            PStatFree(&stat);
-            // TODO: sanitize with valgrind!
-            // Destroy_CompRowLoc_Matrix_dist(&Aloc); // use vector for strorage, this causes double free
-            SUPERLU_FREE(Aloc.Store);
-            dScalePermstructFree(&ScalePermstruct);
-            dDestroy_LU(Aloc.ncol, &grid, &LUstruct);
-            dLUstructFree(&LUstruct);
-            if (options.SolveInitialized)
-            {
-                dSolveFinalize(&options, &SOLVEstruct);
-            }
+            // PStatFree(&stat);
+            // // TODO: sanitize with valgrind!
+            // // Destroy_CompRowLoc_Matrix_dist(&Aloc); // use vector for strorage, this causes double free
+            // SUPERLU_FREE(Aloc.Store);
+            // dScalePermstructFree(&ScalePermstruct);
+            // dDestroy_LU(Aloc.ncol, &grid, &LUstruct);
+            // dLUstructFree(&LUstruct);
+            // if (options.SolveInitialized)
+            // {
+            //     dSolveFinalize(&options, &SOLVEstruct);
+            // }
 
-            superlu_gridexit(&grid);
+            // superlu_gridexit(&grid);
         }
         if (true)
         { // use GMRES to solve

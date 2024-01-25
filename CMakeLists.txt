@@ -176,7 +176,7 @@ find_path(EXTERNAL_INCLUDE_FMT fmt PATHS
 
 find_path(EXTERNAL_INCLUDE_SUPERLU superlu_dist.pc.in PATHS
     "${PROJECT_SOURCE_DIR}/external/superlu_dist-8.2.1" 
-    NO_DEFAULT_PATH REQUIRED)
+    NO_DEFAULT_PATH)
 
 find_path(EXTERNAL_DOXYGEN_AWESOME doxygen-awesome.css PATHS 
     "${PROJECT_SOURCE_DIR}/external/doxygen-awesome-css-2.2.1" 
@@ -185,25 +185,27 @@ find_path(EXTERNAL_DOXYGEN_AWESOME doxygen-awesome.css PATHS
 add_subdirectory("${EXTERNAL_INCLUDE_PYBIND11}/..")
 add_subdirectory("${EXTERNAL_INCLUDE_FMT}/..")
 
-set(USE_XSDK_DEFAULTS ON CACHE BOOL "Init by DNDS") # for superlu
-if (DNDS_SUPERLU_DIST_USE_BLAS)
-    message("Setting DNDS_SUPERLU_DIST_USE_BLAS")
-    set(TPL_ENABLE_INTERNAL_BLASLIB OFF CACHE BOOL "Init by DNDS")
-    set(TPL_BLAS_LIBRARIES ${EXTERNAL_LIB_BLAS} CACHE FILEPATH "Init by DNDS")
-else()
-    set(TPL_ENABLE_INTERNAL_BLASLIB ON CACHE BOOL "Init by DNDS")
-endif()
-set(XSDK_ENABLE_Fortran OFF CACHE BOOL "Init by DNDS")
-set(TPL_PARMETIS_INCLUDE_DIRS ${EXTERNAL_INCLUDE_PARMETIS}  CACHE PATH "Init by DNDS")
-set(TPL_PARMETIS_LIBRARIES ${EXTERNAL_LIB_PARMETIS}  CACHE FILEPATH "Init by DNDS")
-set(XSDK_INDEX_SIZE 64 CACHE STRING "Init by DNDS")
-if(WIN32 OR MSVC)
-    if(MSVC_VERSION) #! is using mingw/clang+msvc toolchain, inform superlu that do not link -lm
-        set(MSVC 1 CACHE INTERNAL "Init by DNDS")
+if(EXTERNAL_INCLUDE_SUPERLU)
+    set(USE_XSDK_DEFAULTS ON CACHE BOOL "Init by DNDS") # for superlu
+    if (DNDS_SUPERLU_DIST_USE_BLAS)
+        message("Setting DNDS_SUPERLU_DIST_USE_BLAS")
+        set(TPL_ENABLE_INTERNAL_BLASLIB OFF CACHE BOOL "Init by DNDS")
+        set(TPL_BLAS_LIBRARIES ${EXTERNAL_LIB_BLAS} CACHE FILEPATH "Init by DNDS")
+    else()
+        set(TPL_ENABLE_INTERNAL_BLASLIB ON CACHE BOOL "Init by DNDS")
     endif()
+    set(XSDK_ENABLE_Fortran OFF CACHE BOOL "Init by DNDS")
+    set(TPL_PARMETIS_INCLUDE_DIRS ${EXTERNAL_INCLUDE_PARMETIS}  CACHE PATH "Init by DNDS")
+    set(TPL_PARMETIS_LIBRARIES ${EXTERNAL_LIB_PARMETIS}  CACHE FILEPATH "Init by DNDS")
+    set(XSDK_INDEX_SIZE 64 CACHE STRING "Init by DNDS")
+    if(WIN32 OR MSVC)
+        if(MSVC_VERSION) #! is using mingw/clang+msvc toolchain, inform superlu that do not link -lm
+            set(MSVC 1 CACHE INTERNAL "Init by DNDS")
+        endif()
+    endif()
+    add_subdirectory("${EXTERNAL_INCLUDE_SUPERLU}")
+    #! for superlu, remember to comment the #include<unistd.h>, not needed
 endif()
-add_subdirectory("${EXTERNAL_INCLUDE_SUPERLU}")
-#! for superlu, remember to comment the #include<unistd.h>, not needed
 
 
 set (EXTERNAL_LIBS "")
@@ -219,11 +221,13 @@ set(EXTERNAL_LIBS ${EXTERNAL_LIBS}
     "Project Public External Lib Dependencies"
     )
 
+if(EXTERNAL_INCLUDE_SUPERLU)
 set(EXTERNAL_LIBS ${EXTERNAL_LIBS}
     superlu_dist
     CACHE INTERNAL
     "Project Public External Lib Dependencies"
     )
+endif()
 
 # set(EXTERNAL_LIBS ${EXTERNAL_LIBS}
 #     fmt::fmt
@@ -268,8 +272,13 @@ set(EXTERNAL_INCLUDES
     ${EXTERNAL_INCLUDE_CGAL}
     ${EXTERNAL_INCLUDE_PYBIND11}
     ${EXTERNAL_INCLUDE_FMT}
+    CACHE INTERNAL "Project External Includes")
+
+if(EXTERNAL_INCLUDE_SUPERLU)
+set(EXTERNAL_INCLUDES ${EXTERNAL_INCLUDES}
     ${EXTERNAL_INCLUDE_SUPERLU}/SRC
     CACHE INTERNAL "Project External Includes")
+endif()
 
 if(DNDS_EIGEN_USE_BLAS)
     add_compile_definitions(EIGEN_USE_BLAS)
