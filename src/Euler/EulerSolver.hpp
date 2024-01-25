@@ -220,8 +220,11 @@ namespace DNDS::Euler
                 int meshElevationIter = 1000;          // -1 to use handle all the nodes
                 int meshElevationNSearch = 30;
                 real meshElevationRBFRadius = 1;
+                real meshElevationRBFPower = 1;
                 Geom::RBF::RBFKernelType meshElevationRBFKernel = Geom::RBF::InversedDistanceA1;
                 real meshElevationMaxIncludedAngle = 15;
+                real meshElevationRefDWall = 1e-3;
+                int meshElevationBoundaryMode = 0; // 0: only wall bc; 1: wall + invis vall
 
                 std::string meshFile = "data/mesh/NACA0012_WIDE_H3.cgns";
                 std::string outPltName = "data/out/debugData_";
@@ -258,7 +261,10 @@ namespace DNDS::Euler
                     uniqueStamps,
                     meshRotZ, meshScale,
                     meshElevation, meshElevationInternalSmoother,
-                    meshElevationIter, meshElevationRBFRadius, meshElevationRBFKernel, meshElevationMaxIncludedAngle, meshElevationNSearch,
+                    meshElevationIter, 
+                    meshElevationRBFRadius, meshElevationRBFPower, 
+                    meshElevationRBFKernel, meshElevationMaxIncludedAngle, meshElevationNSearch, meshElevationRefDWall, 
+                    meshElevationBoundaryMode,
                     meshFile,
                     outPltName,
                     outLogName,
@@ -538,18 +544,26 @@ namespace DNDS::Euler
                 mesh->elevationInfo.nIter = config.dataIOControl.meshElevationIter;
                 mesh->elevationInfo.nSearch = config.dataIOControl.meshElevationNSearch;
                 mesh->elevationInfo.RBFRadius = config.dataIOControl.meshElevationRBFRadius;
+                mesh->elevationInfo.RBFPower = config.dataIOControl.meshElevationRBFPower;
                 mesh->elevationInfo.kernel = config.dataIOControl.meshElevationRBFKernel;
                 mesh->elevationInfo.MaxIncludedAngle = config.dataIOControl.meshElevationMaxIncludedAngle;
+                mesh->elevationInfo.refDWall = config.dataIOControl.meshElevationRefDWall;
                 mesh->ElevatedNodesGetBoundarySmooth(
                     [&](Geom::t_index bndId)
                     {
                         auto bType = pBCHandler->GetTypeFromID(bndId);
-                        return bType == BCWall || bType == BCWallInvis;
+                        if(bType == BCWall)
+                            return true;
+                        if(config.dataIOControl.meshElevationBoundaryMode == 1 && bType == BCWallInvis)
+                            return true;
+                        return false;
                     });
                 if (config.dataIOControl.meshElevationInternalSmoother == 0)
                     mesh->ElevatedNodesSolveInternalSmooth();
                 else if (config.dataIOControl.meshElevationInternalSmoother == 1)
                     mesh->ElevatedNodesSolveInternalSmoothV1();
+                else if (config.dataIOControl.meshElevationInternalSmoother == 2)
+                    mesh->ElevatedNodesSolveInternalSmoothV2();
                 else
                     DNDS_assert(false);
             }

@@ -118,6 +118,8 @@ namespace DNDS::Geom
             int nIter = 60;
             int nSearch = 30;
             RBF::RBFKernelType kernel = RBF::InversedDistanceA1;
+            real refDWall = 1e-3;
+            real RBFPower = 1;
         } elevationInfo;
 
         // tAdj1Pair bndFaces; // no comm needed for now
@@ -203,6 +205,17 @@ namespace DNDS::Geom
         }
 
         /**
+         * @brief directly load coords; gets faulty if isPeriodic!
+         */
+        template <class tC2n, class tCoordExt>
+        void __GetCoords(const tC2n &c2n, tSmallCoords &cs, tCoordExt& coo)
+        {
+            cs.resize(Eigen::NoChange, c2n.size());
+            for (rowsize i = 0; i < c2n.size(); i++)
+                cs(Eigen::all, i) = coo[c2n[i]];
+        }
+
+        /**
          * @brief specially for periodicity
          */
         template <class tC2n, class tC2nPbi>
@@ -213,12 +226,31 @@ namespace DNDS::Geom
                 cs(Eigen::all, i) = periodicInfo.GetCoordByBits(coords[c2n[i]], c2nPbi[i]);
         }
 
+        /**
+         * @brief specially for periodicity
+         */
+        template <class tC2n, class tC2nPbi, class tCoordExt>
+        void __GetCoordsOnElem(const tC2n &c2n, const tC2nPbi &c2nPbi, tSmallCoords &cs, tCoordExt& coo)
+        {
+            cs.resize(Eigen::NoChange, c2n.size());
+            for (rowsize i = 0; i < c2n.size(); i++)
+                cs(Eigen::all, i) = periodicInfo.GetCoordByBits(coo[c2n[i]], c2nPbi[i]);
+        }
+
         void GetCoordsOnCell(index iCell, tSmallCoords &cs)
         {
             if (!isPeriodic)
                 __GetCoords(cell2node[iCell], cs);
             else
                 __GetCoordsOnElem(cell2node[iCell], cell2nodePbi[iCell], cs);
+        }
+
+        void GetCoordsOnCell(index iCell, tSmallCoords &cs, tCoordPair& coo)
+        {
+            if (!isPeriodic)
+                __GetCoords(cell2node[iCell], cs, coo);
+            else
+                __GetCoordsOnElem(cell2node[iCell], cell2nodePbi[iCell], cs, coo);
         }
 
         void GetCoordsOnFace(index iFace, tSmallCoords &cs)

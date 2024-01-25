@@ -339,6 +339,115 @@ namespace DNDS::Geom::Elem
     }
     const auto ElemElevationSpan_O1O2List = __Get_ElemElevationSpan_O1O2List();
 
+    inline constexpr auto
+    __Get_ElemO2BisectElementList()
+    {
+        auto ret = std::array<std::array<std::array<t_index, 28>, 28>, ElemType_NUM>{};
+        for (auto &i : ret)
+            for (auto &j : i)
+                for (auto &k : j)
+                    k = invalid_index;
+        using TF = std::array<t_index, 28>;
+        ret[Line3][0] = TF{0, 2};
+        ret[Line3][1] = TF{2, 1};
+
+        auto IndexToZeroBase = [&](ElemType t)
+        {
+            for (auto &j : ret[t])
+                for (auto &k : j)
+                    k = (k == invalid_index || k == 0)
+                            ? invalid_index
+                            : k - 1;
+        };
+
+        ret[Tri6][0] = TF{1, 4, 6};
+        ret[Tri6][1] = TF{4, 2, 5};
+        ret[Tri6][2] = TF{6, 4, 5};
+        ret[Tri6][3] = TF{6, 5, 3};
+        IndexToZeroBase(Tri6);
+
+        ret[Quad9][0] = TF{1, 5, 9, 8};
+        ret[Quad9][1] = TF{5, 2, 6, 9};
+        ret[Quad9][2] = TF{8, 9, 7, 4};
+        ret[Quad9][3] = TF{9, 6, 3, 7};
+        IndexToZeroBase(Quad9);
+
+        ret[Tet10][0] = TF{1, 5, 7, 8};
+        ret[Tet10][1] = TF{5, 2, 6, 9};
+        ret[Tet10][2] = TF{7, 6, 3, 10};
+        ret[Tet10][3] = TF{10, 8, 9, 4};
+        ret[Tet10][4] = TF{5, 10, 7, 8};
+        ret[Tet10][5] = TF{5, 9, 10, 8};
+        ret[Tet10][6] = TF{5, 10, 9, 6};
+        ret[Tet10][7] = TF{5, 7, 10, 6};
+        ret[Tet10][0 + 8] = TF{1, 5, 7, 8};
+        ret[Tet10][1 + 8] = TF{5, 2, 6, 9};
+        ret[Tet10][2 + 8] = TF{7, 6, 3, 10};
+        ret[Tet10][3 + 8] = TF{10, 8, 9, 4};
+        ret[Tet10][4 + 8] = TF{6, 7, 8, 10};
+        ret[Tet10][5 + 8] = TF{6, 8, 9, 10};
+        ret[Tet10][6 + 8] = TF{6, 9, 8, 5};
+        ret[Tet10][7 + 8] = TF{6, 8, 7, 5};
+        ret[Tet10][0 + 16] = TF{1, 5, 7, 8};
+        ret[Tet10][1 + 16] = TF{5, 2, 6, 9};
+        ret[Tet10][2 + 16] = TF{7, 6, 3, 10};
+        ret[Tet10][3 + 16] = TF{10, 8, 9, 4};
+        ret[Tet10][4 + 16] = TF{7, 8, 9, 10};
+        ret[Tet10][5 + 16] = TF{7, 9, 6, 10};
+        ret[Tet10][6 + 16] = TF{7, 9, 8, 5};
+        ret[Tet10][7 + 16] = TF{7, 6, 9, 5};
+        IndexToZeroBase(Tet10);
+
+        ret[Hex27][0] = TF{1, 9, 21, 12, 13, 22, 27, 25};
+        ret[Hex27][1] = TF{9, 2, 10, 21, 22, 14, 23, 27};
+        ret[Hex27][2] = TF{12, 21, 11, 4, 25, 27, 24, 16};
+        ret[Hex27][3] = TF{21, 10, 3, 11, 27, 23, 15, 24};
+        ret[Hex27][4] = TF{13, 22, 27, 25, 5, 17, 26, 20};
+        ret[Hex27][5] = TF{22, 14, 23, 27, 17, 6, 18, 26};
+        ret[Hex27][6] = TF{25, 27, 24, 16, 20, 26, 19, 8};
+        ret[Hex27][7] = TF{27, 23, 15, 24, 26, 18, 7, 19};
+        IndexToZeroBase(Hex27);
+
+        ret[Prism18][0] = TF{1, 7, 9, 10, 16, 18};
+        ret[Prism18][1] = TF{7, 2, 8, 16, 11, 17};
+        ret[Prism18][2] = TF{9, 7, 8, 18, 16, 17};
+        ret[Prism18][3] = TF{9, 8, 3, 18, 17, 12};
+        ret[Prism18][4] = TF{10, 16, 18, 4, 13, 15};
+        ret[Prism18][5] = TF{16, 11, 17, 13, 5, 14};
+        ret[Prism18][6] = TF{18, 16, 17, 15, 13, 14};
+        ret[Prism18][7] = TF{18, 17, 12, 15, 14, 6};
+        IndexToZeroBase(Prism18);
+
+        ret[Pyramid14][0] = TF{1, 6, 14, 9, 10};
+        ret[Pyramid14][1] = TF{6, 2, 7, 14, 11};
+        ret[Pyramid14][2] = TF{9, 14, 8, 4, 13};
+        ret[Pyramid14][3] = TF{14, 7, 3, 8, 12};
+        ret[Pyramid14][4] = TF{13, 10, 9, 14};
+        ret[Pyramid14][5] = TF{10, 11, 6, 14};
+        ret[Pyramid14][6] = TF{11, 12, 7, 14};
+        ret[Pyramid14][7] = TF{12, 13, 8, 14};
+        ret[Pyramid14][8] = TF{10, 12, 13, 5};
+        ret[Pyramid14][9] = TF{10, 11, 12, 5};
+        ret[Pyramid14][10] = TF{10, 12, 11, 14};
+        ret[Pyramid14][11] = TF{10, 13, 12, 14};
+        ret[Pyramid14][12 + 0] = TF{1, 6, 14, 9, 10};
+        ret[Pyramid14][12 + 1] = TF{6, 2, 7, 14, 11};
+        ret[Pyramid14][12 + 2] = TF{9, 14, 8, 4, 13};
+        ret[Pyramid14][12 + 3] = TF{14, 7, 3, 8, 12};
+        ret[Pyramid14][12 + 4] = TF{13, 10, 9, 14};
+        ret[Pyramid14][12 + 5] = TF{10, 11, 6, 14};
+        ret[Pyramid14][12 + 6] = TF{11, 12, 7, 14};
+        ret[Pyramid14][12 + 7] = TF{12, 13, 8, 14};
+        ret[Pyramid14][12 + 8] = TF{11, 13, 10, 5};
+        ret[Pyramid14][12 + 9] = TF{11, 12, 13, 5};
+        ret[Pyramid14][12 + 10] = TF{11, 13, 12, 14};
+        ret[Pyramid14][12 + 11] = TF{11, 10, 13, 14};
+        IndexToZeroBase(Pyramid14);
+
+        return ret;
+    }
+    const auto ElemO2BisectElementList = __Get_ElemO2BisectElementList();
+
     constexpr t_real ParamSpaceVol(ParamSpace ps)
     {
         if (ps == LineSpace)
@@ -460,6 +569,43 @@ namespace DNDS::Geom::Elem
             return Prism6;
         if (ps == PyramidSpace)
             return Pyramid5;
+        return UnknownElem;
+    }
+
+    inline t_index GetO2ElemBisectNum(ElemType t)
+    {
+        if (t == Line3)
+            return 2;
+        if (t == Tri6 || t == Quad9)
+            return 4;
+        if (t == Tet10 ||t == Hex27 || t == Prism18)
+            return 8;
+        if (t == Pyramid14)
+            return 12;
+        return 0;
+    }
+
+    inline ElemType GetO2ElemBisectElem(ElemType t, t_index i)
+    {
+        if (t == Line3)
+            return Line2;
+        if (t == Tri6)
+            return Tri3;
+        if (t == Quad9)
+            return Quad4;
+        if (t == Tet10)
+            return Tet4;
+        if (t == Hex27)
+            return Hex8;
+        if (t == Prism18)
+            return Prism6;
+        if (t == Pyramid14)
+        {
+            if (i < 4)
+                return Pyramid5;
+            else
+                return Tet4;
+        }
         return UnknownElem;
     }
 
@@ -1166,6 +1312,11 @@ namespace DNDS::Geom::Elem
             return GetElemElevation_O1O2_NumNode(type);
         }
 
+        t_index GetO2NumBisect() const
+        {
+            return GetO2ElemBisectNum(type);
+        }
+
         constexpr Element ObtainFace(t_index iFace) const
         {
             DNDS_assert(iFace < this->GetNumFaces());
@@ -1199,12 +1350,32 @@ namespace DNDS::Geom::Elem
             return Element{GetElemO1(GetParamSpace())};
         }
 
+        Element ObtainO2BisectElem(t_index iSubElem) const
+        {
+            DNDS_assert(iSubElem < this->GetO2NumBisect());
+            return Element{GetO2ElemBisectElem(type, iSubElem)};
+        }
+
         template <class TIn, class TOut>
         void ExtractElevNodeSpanNodes(t_index iNodeElev, const TIn &nodes, TOut &spanNodes)
         {
             DNDS_assert(iNodeElev < this->GetNumElev_O1O2());
             for (t_index i = 0; i < ObtainElevNodeSpan(iNodeElev).GetNumNodes(); i++)
                 spanNodes[i] = nodes[ElemElevationSpan_O1O2List[type][iNodeElev][i]];
+        }
+
+        template <class TIn, class TOut>
+        void ExtractO2BisectElemNodes(t_index iSubElem, t_index iVariant, const TIn &nodes, TOut &subNodes)
+        {
+            DNDS_assert(iSubElem < this->GetO2NumBisect());
+            if (type == Pyramid14)
+                DNDS_assert(iVariant < 2);
+            else if (type == Tet10)
+                DNDS_assert(iVariant < 3);
+            else
+                DNDS_assert(iVariant == 0);
+            for (t_index i = 0; i < ObtainO2BisectElem(iSubElem).GetNumNodes(); i++)
+                subNodes[i] = nodes[ElemO2BisectElementList[type].at(iSubElem + this->GetO2NumBisect() * iVariant)[i]];
         }
 
         /**
@@ -1305,6 +1476,40 @@ namespace DNDS::Geom::Elem
         tPoint ret = coordsC.rowwise().maxCoeff() - coordsC.rowwise().minCoeff();
         std::sort(ret.begin(), ret.end(), std::greater_equal<real>());
         return ret;
+    }
+
+    inline t_index GetO2ElemBisectVariant(Element e, const tSmallCoords &coords)
+    {
+        DNDS_assert(e.GetOrder() == 2);
+        //! if serendipity ?
+        switch (e.type)
+        {
+        case Tet10:
+        {
+            Eigen::Vector<real, 3> lengths{
+                (coords(Eigen::all, 5 - 1) - coords(Eigen::all, 10 - 1)).norm(),
+                (coords(Eigen::all, 6 - 1) - coords(Eigen::all, 8 - 1)).norm(),
+                (coords(Eigen::all, 7 - 1) - coords(Eigen::all, 9 - 1)).norm(),
+            };
+            Eigen::Index iMin{-1};
+            real minLen = lengths.minCoeff(&iMin);
+            return iMin;
+        }
+        break;
+        case Pyramid14:
+        {
+            Eigen::Vector<real, 2> lengths{
+                (coords(Eigen::all, 10 - 1) - coords(Eigen::all, 12 - 1)).norm(),
+                (coords(Eigen::all, 11 - 1) - coords(Eigen::all, 13 - 1)).norm(),
+            };
+            Eigen::Index iMin{-1};
+            real minLen = lengths.minCoeff(&iMin);
+            return iMin;
+        }
+        break;
+        default:
+            return 0;
+        }
     }
 
     template <class TIn>
