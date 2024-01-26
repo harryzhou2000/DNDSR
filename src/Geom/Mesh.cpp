@@ -1078,7 +1078,7 @@ namespace DNDS::Geom
             std::sort(b2nRow.begin(), b2nRow.end());
             int nFound = 0;
             auto faceID = bndElemInfo[iBnd]->zone;
-            for (DNDS::index ic2f = 0; ic2f < cell2face.RowSize(pCell); ic2f++)
+            for (int ic2f = 0; ic2f < cell2face.RowSize(pCell); ic2f++)
             {
                 auto iFace = cell2face(pCell, ic2f);
                 if (iFace < 0) //==-1, pointing to ghost face

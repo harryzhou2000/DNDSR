@@ -354,9 +354,9 @@ namespace DNDS::CFV
                 }
                 tPoint pPhysicsCScaled = pPhysicsC.array() / simpleScale.array();
                 if constexpr (dim == 2)
-                    FPolynomialFill2D(DiBj, pPhysicsCScaled(0), pPhysicsCScaled(1), pPhysicsCScaled(2), simpleScale(0), simpleScale(1), simpleScale(2), DiBj.rows(), DiBj.cols());
+                    FPolynomialFill2D(DiBj, pPhysicsCScaled(0), pPhysicsCScaled(1), pPhysicsCScaled(2), simpleScale(0), simpleScale(1), simpleScale(2), (int)DiBj.rows(), (int)DiBj.cols());
                 else
-                    FPolynomialFill3D(DiBj, pPhysicsCScaled(0), pPhysicsCScaled(1), pPhysicsCScaled(2), simpleScale(0), simpleScale(1), simpleScale(2), DiBj.rows(), DiBj.cols());
+                    FPolynomialFill3D(DiBj, pPhysicsCScaled(0), pPhysicsCScaled(1), pPhysicsCScaled(2), simpleScale(0), simpleScale(1), simpleScale(2), (int)DiBj.rows(), (int)DiBj.cols());
             }
             else
             {
@@ -396,7 +396,7 @@ namespace DNDS::CFV
         template <class TList>
         Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic>
         GetIntPointDiffBaseValue(
-            index iCell, index iFace, rowsize if2c, index iG,
+            index iCell, index iFace, rowsize if2c, int iG,
             TList &&diffList = Eigen::all,
             uint8_t maxDiff = UINT8_MAX)
         {
@@ -416,7 +416,7 @@ namespace DNDS::CFV
                     }
                     else
                     {
-                        int maxNDOF = faceDiffBaseCacheCent[iFace].cols() / 2;
+                        int maxNDOF = int(faceDiffBaseCacheCent[iFace].cols()) / 2;
                         return faceDiffBaseCacheCent[iFace](
                             std::forward<TList>(diffList),
                             Eigen::seq(if2c * maxNDOF + 1,

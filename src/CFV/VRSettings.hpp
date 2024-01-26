@@ -139,7 +139,7 @@ namespace DNDS::CFV
 
         VRSettings(int dim)
         {
-            cacheDiffBaseSize = dim + 1;
+            cacheDiffBaseSize = uint8_t(dim + 1);
         }
 
         /**
