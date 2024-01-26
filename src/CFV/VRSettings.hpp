@@ -45,6 +45,7 @@ namespace DNDS::CFV
         int subs2ndOrder = 0;        /// @brief 0: vfv; 1: gauss rule; 2: least square
 
         bool ignoreMeshGeometryDeficiency = false;
+        real bcWeight = 1;
 
         struct BaseSettings
         {
@@ -165,6 +166,8 @@ namespace DNDS::CFV
 
             jsonSetting["baseSettings"] = baseSettings;
             jsonSetting["functionalSettings"] = functionalSettings;
+
+            jsonSetting["bcWeight"] = bcWeight;
         }
 
         /**
@@ -189,6 +192,8 @@ namespace DNDS::CFV
 
             baseSettings = jsonSetting["baseSettings"];
             functionalSettings = jsonSetting["functionalSettings"];
+
+            bcWeight = jsonSetting["bcWeight"];
         }
         friend void from_json(const json &j, VRSettings &s)
         {

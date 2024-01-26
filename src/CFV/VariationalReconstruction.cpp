@@ -654,7 +654,7 @@ namespace DNDS::CFV
             if (FaceIDIsExternalBC(mesh->GetFaceZone(iFace)))
             {
                 for (int iOrder = 0; iOrder <= settings.maxOrder; iOrder++)
-                    wd(iOrder) *= id2faceDircWeight(mesh->GetFaceZone(iFace), iOrder);
+                    wd(iOrder) *= id2faceDircWeight(mesh->GetFaceZone(iFace), iOrder) * settings.bcWeight;
             }
             faceWeight[iFace] = wd * wg;
         }
