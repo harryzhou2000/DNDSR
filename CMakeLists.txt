@@ -498,6 +498,7 @@ add_subdirectory(src/Euler)
 
 set(LIBS
 euler_library
+euler_library_fast
 cfv
 geom
 dnds
