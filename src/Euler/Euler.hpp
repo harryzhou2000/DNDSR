@@ -36,14 +36,28 @@ namespace DNDS::Euler
         }
         void operator=(t_self &R)
         {
-            for (index i = 0; i < this->Size(); i++)
-                this->operator[](i) = R.operator[](i);
+            // for (index i = 0; i < this->Size(); i++)
+            //     this->operator[](i) = R.operator[](i);
+            DNDS_assert(R.father->RawDataVector().size() == this->father->RawDataVector().size());
+            std::copy(R.father->RawDataVector().begin(), R.father->RawDataVector().end(), this->father->RawDataVector().begin());
+            DNDS_assert(R.son->RawDataVector().size() == this->son->RawDataVector().size());
+            std::copy(R.son->RawDataVector().begin(), R.son->RawDataVector().end(), this->son->RawDataVector().begin());
         }
 
         void addTo(t_self &R, real r)
         {
-            for (index i = 0; i < this->Size(); i++)
-                this->operator[](i) += R.operator[](i) * r;
+            // for (index i = 0; i < this->Size(); i++)
+            //     this->operator[](i) += R.operator[](i) * r;
+            DNDS_assert(R.father->RawDataVector().size() == this->father->RawDataVector().size());
+            auto &RVF = R.father->RawDataVector();
+            auto &TVF = this->father->RawDataVector();
+            for (size_t i = 0; i < RVF.size(); i++)
+                TVF[i] += r * RVF[i];
+            DNDS_assert(R.son->RawDataVector().size() == this->son->RawDataVector().size());
+            auto &RVS = R.son->RawDataVector();
+            auto &TVS = this->son->RawDataVector();
+            for (size_t i = 0; i < RVS.size(); i++)
+                TVS[i] += r * RVS[i];
         }
 
         void operator*=(std::vector<real> &R)
@@ -184,14 +198,28 @@ namespace DNDS::Euler
         }
         void operator=(t_self &R)
         {
-            for (index i = 0; i < this->Size(); i++)
-                this->operator[](i) = R.operator[](i);
+            // for (index i = 0; i < this->Size(); i++)
+            //     this->operator[](i) = R.operator[](i);
+            DNDS_assert(R.father->RawDataVector().size() == this->father->RawDataVector().size());
+            std::copy(R.father->RawDataVector().begin(), R.father->RawDataVector().end(), this->father->RawDataVector().begin());
+            DNDS_assert(R.son->RawDataVector().size() == this->son->RawDataVector().size());
+            std::copy(R.son->RawDataVector().begin(), R.son->RawDataVector().end(), this->son->RawDataVector().begin());
         }
 
         void addTo(t_self &R, real r)
         {
-            for (index i = 0; i < this->Size(); i++)
-                this->operator[](i) += R.operator[](i) * r;
+            // for (index i = 0; i < this->Size(); i++)
+            //     this->operator[](i) += R.operator[](i) * r;
+            DNDS_assert(R.father->RawDataVector().size() == this->father->RawDataVector().size());
+            auto &RVF = R.father->RawDataVector();
+            auto &TVF = this->father->RawDataVector();
+            for (size_t i = 0; i < RVF.size(); i++)
+                TVF[i] += r * RVF[i];
+            DNDS_assert(R.son->RawDataVector().size() == this->son->RawDataVector().size());
+            auto &RVS = R.son->RawDataVector();
+            auto &TVS = this->son->RawDataVector();
+            for (size_t i = 0; i < RVS.size(); i++)
+                TVS[i] += r * RVS[i];
         }
 
         real norm2()

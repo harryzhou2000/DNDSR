@@ -296,6 +296,13 @@ namespace DNDS
                 CSRDecompress();
         }
 
+        t_Data &RawDataVector()
+        {
+            if constexpr (_dataLayout == CSR)
+                DNDS_assert(IfCompressed());
+            return _data;
+        }
+
         /**
          * @brief resize invalidates all data and aux, and resets the sizes info to 0 for max
          *
