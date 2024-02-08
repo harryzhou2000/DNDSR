@@ -28,7 +28,7 @@ namespace DNDS::Euler
 
     public:
         typedef EulerEvaluator<model> TEval;
-        static const int nVars_Fixed = TEval::nVars_Fixed;
+        static const int nVarsFixed = TEval::nVarsFixed;
 
         static const int dim = TEval::dim;
         // static const int gdim = TEval::gdim;
@@ -49,9 +49,9 @@ namespace DNDS::Euler
         ssp<Geom::UnstructuredMeshSerialRW> reader, readerBnd;
         ssp<EulerEvaluator<model>> pEval;
 
-        ArrayDOFV<nVars_Fixed> u, uInc, uIncRHS, uTemp, rhsTemp, wAveraged, uAveraged;
-        ArrayRECV<nVars_Fixed> uRec, uRecNew, uRecNew1, uRecOld, uRec1, uRecInc, uRecInc1;
-        ArrayDOFV<nVars_Fixed> JD, JD1, JSource, JSource1;
+        ArrayDOFV<nVarsFixed> u, uInc, uIncRHS, uTemp, rhsTemp, wAveraged, uAveraged;
+        ArrayRECV<nVarsFixed> uRec, uRecNew, uRecNew1, uRecOld, uRec1, uRecInc, uRecInc1;
+        ArrayDOFV<nVarsFixed> JD, JD1, JSource, JSource1;
         ArrayDOFV<1> alphaPP, alphaPP1, betaPP, betaPP1, alphaPP_tmp;
 
         int nOUTS = {-1};

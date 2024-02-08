@@ -1134,7 +1134,7 @@ namespace DNDS::CFV
             static const int maxRecDOFBatch = dim == 2 ? 4 : 10;
             static const int maxRecDOF = dim == 2 ? 9 : 19;
             static const int maxNDiff = dim == 2 ? 10 : 20;
-            static const int nVars_Fixed = TEval::nVars_Fixed;
+            static const int nVarsFixed = TEval::nVarsFixed;
 
             static const int maxNeighbour = 7;
 
@@ -1148,7 +1148,7 @@ namespace DNDS::CFV
                 }
                 index NRecDOF = cellAtr[iCell].NDOF - 1;
                 auto c2f = mesh->cell2face[iCell];
-                std::vector<Eigen::Matrix<real, Eigen::Dynamic, nVars_Fixed, 0, maxRecDOF>> uFaces(c2f.size());
+                std::vector<Eigen::Matrix<real, Eigen::Dynamic, nVarsFixed, 0, maxRecDOF>> uFaces(c2f.size());
                 for (int ic2f = 0; ic2f < c2f.size(); ic2f++)
                 {
                     // * safety initialization
@@ -1197,9 +1197,9 @@ namespace DNDS::CFV
                             DNDS_assert(false);
                         }
 
-                    std::vector<Eigen::Array<real, Eigen::Dynamic, nVars_Fixed, 0, maxRecDOFBatch>>
+                    std::vector<Eigen::Array<real, Eigen::Dynamic, nVarsFixed, 0, maxRecDOFBatch>>
                         uOthers;
-                    Eigen::Array<real, Eigen::Dynamic, nVars_Fixed, 0, maxRecDOFBatch>
+                    Eigen::Array<real, Eigen::Dynamic, nVarsFixed, 0, maxRecDOFBatch>
                         uC = uRec[iCell](
                             Eigen::seq(
                                 LimStart,
@@ -1233,7 +1233,7 @@ namespace DNDS::CFV
                                 this->GetMatrixSecondary(iCellOther, iFace, -1);
 
                             // std::cout << "A"<<std::endl;
-                            Eigen::Matrix<real, Eigen::Dynamic, nVars_Fixed, 0, maxRecDOF>
+                            Eigen::Matrix<real, Eigen::Dynamic, nVarsFixed, 0, maxRecDOF>
                                 uOtherOther = uRec[iCellOther](Eigen::seq(0, NRecDOFLim - 1), Eigen::all);
 
                             if (LimEnd < uOtherOther.rows() - 1) // successive SR
@@ -1242,11 +1242,11 @@ namespace DNDS::CFV
                                     uFaces[ic2f](Eigen::seq(LimEnd + 1, NRecDOFLim - 1), Eigen::all);
 
                             // std::cout << "B" << std::endl;
-                            Eigen::Matrix<real, Eigen::Dynamic, nVars_Fixed, 0, maxRecDOFBatch>
+                            Eigen::Matrix<real, Eigen::Dynamic, nVarsFixed, 0, maxRecDOFBatch>
                                 uOtherIn =
                                     matrixSecondary(Eigen::seq(LimStart, LimEnd), Eigen::all) * uOtherOther;
 
-                            Eigen::Matrix<real, Eigen::Dynamic, nVars_Fixed, 0, maxRecDOFBatch>
+                            Eigen::Matrix<real, Eigen::Dynamic, nVarsFixed, 0, maxRecDOFBatch>
                                 uThisIn =
                                     uC.matrix();
 
@@ -1258,7 +1258,7 @@ namespace DNDS::CFV
                             uOtherIn = (M * uOtherIn.transpose()).transpose();
                             uThisIn = (M * uThisIn.transpose()).transpose();
 
-                            Eigen::Array<real, Eigen::Dynamic, nVars_Fixed, 0, maxRecDOFBatch>
+                            Eigen::Array<real, Eigen::Dynamic, nVarsFixed, 0, maxRecDOFBatch>
                                 uLimOutArray;
 
                             real n = settings.WBAP_nStd;
@@ -1271,10 +1271,10 @@ namespace DNDS::CFV
                                 FMINMOD_Biway(uThisIn.array(), uOtherIn.array(), uLimOutArray, 1);
                                 break;
                             case 2:
-                                FWBAP_L2_Biway_PolynomialNorm<dim, nVars_Fixed>(uThisIn.array(), uOtherIn.array(), uLimOutArray, 1);
+                                FWBAP_L2_Biway_PolynomialNorm<dim, nVarsFixed>(uThisIn.array(), uOtherIn.array(), uLimOutArray, 1);
                                 break;
                             case 3:
-                                FMEMM_Biway_PolynomialNorm<dim, nVars_Fixed>(uThisIn.array(), uOtherIn.array(), uLimOutArray, 1);
+                                FMEMM_Biway_PolynomialNorm<dim, nVarsFixed>(uThisIn.array(), uOtherIn.array(), uLimOutArray, 1);
                                 break;
                             case 4:
                                 FWBAP_L2_Cut_Biway(uThisIn.array(), uOtherIn.array(), uLimOutArray, 1);
@@ -1294,7 +1294,7 @@ namespace DNDS::CFV
                         {
                         }
                     }
-                    Eigen::Array<real, Eigen::Dynamic, nVars_Fixed, 0, maxRecDOFBatch>
+                    Eigen::Array<real, Eigen::Dynamic, nVarsFixed, 0, maxRecDOFBatch>
                         uLimOutArray;
 
                     real n = settings.WBAP_nStd;
@@ -1341,7 +1341,7 @@ namespace DNDS::CFV
             static const int maxRecDOFBatch = dim == 2 ? 4 : 10;
             static const int maxRecDOF = dim == 2 ? 9 : 19;
             static const int maxNDiff = dim == 2 ? 10 : 20;
-            static const int nVars_Fixed = TEval::nVars_Fixed;
+            static const int nVarsFixed = TEval::nVarsFixed;
 
             static const int maxNeighbour = 7;
 
@@ -1395,7 +1395,7 @@ namespace DNDS::CFV
                     }
                     index NRecDOF = cellAtr[iCell].NDOF - 1;
                     auto c2f = mesh->cell2face[iCell];
-                    // std::vector<Eigen::Matrix<real, Eigen::Dynamic, nVars_Fixed, 0, maxRecDOF>> uFaces(c2f.size());
+                    // std::vector<Eigen::Matrix<real, Eigen::Dynamic, nVarsFixed, 0, maxRecDOF>> uFaces(c2f.size());
                     for (int ic2f = 0; ic2f < c2f.size(); ic2f++)
                     {
                         // * safety initialization
@@ -1407,9 +1407,9 @@ namespace DNDS::CFV
                         }
                     }
 
-                    std::vector<Eigen::Array<real, Eigen::Dynamic, nVars_Fixed, 0, maxRecDOFBatch>>
+                    std::vector<Eigen::Array<real, Eigen::Dynamic, nVarsFixed, 0, maxRecDOFBatch>>
                         uOthers;
-                    Eigen::Array<real, Eigen::Dynamic, nVars_Fixed, 0, maxRecDOFBatch>
+                    Eigen::Array<real, Eigen::Dynamic, nVarsFixed, 0, maxRecDOFBatch>
                         uC = uRecBuf[iCell](
                             Eigen::seq(
                                 LimStart,
@@ -1443,7 +1443,7 @@ namespace DNDS::CFV
                                 this->GetMatrixSecondary(iCellOther, iFace, -1);
 
                             // std::cout << "A"<<std::endl;
-                            Eigen::Matrix<real, Eigen::Dynamic, nVars_Fixed, 0, maxRecDOF>
+                            Eigen::Matrix<real, Eigen::Dynamic, nVarsFixed, 0, maxRecDOF>
                                 uOtherOther = uRecBuf[iCellOther](Eigen::seq(0, NRecDOFLim - 1), Eigen::all);
 
                             // if (LimEnd < uOtherOther.rows() - 1) // successive SR
@@ -1452,11 +1452,11 @@ namespace DNDS::CFV
                             //         uFaces[ic2f](Eigen::seq(LimEnd + 1, NRecDOFLim - 1), Eigen::all);
 
                             // std::cout << "B" << std::endl;
-                            Eigen::Matrix<real, Eigen::Dynamic, nVars_Fixed, 0, maxRecDOFBatch>
+                            Eigen::Matrix<real, Eigen::Dynamic, nVarsFixed, 0, maxRecDOFBatch>
                                 uOtherIn =
                                     matrixSecondary(Eigen::seq(LimStart, LimEnd), Eigen::all) * uOtherOther;
 
-                            Eigen::Matrix<real, Eigen::Dynamic, nVars_Fixed, 0, maxRecDOFBatch>
+                            Eigen::Matrix<real, Eigen::Dynamic, nVarsFixed, 0, maxRecDOFBatch>
                                 uThisIn =
                                     uC.matrix();
 
@@ -1468,7 +1468,7 @@ namespace DNDS::CFV
                             uOtherIn = (M * uOtherIn.transpose()).transpose();
                             uThisIn = (M * uThisIn.transpose()).transpose();
 
-                            Eigen::Array<real, Eigen::Dynamic, nVars_Fixed, 0, maxRecDOFBatch>
+                            Eigen::Array<real, Eigen::Dynamic, nVarsFixed, 0, maxRecDOFBatch>
                                 uLimOutArray;
 
                             real n = settings.WBAP_nStd;
@@ -1482,10 +1482,10 @@ namespace DNDS::CFV
                                 FMINMOD_Biway(uThisIn.array(), uOtherIn.array(), uLimOutArray, 1);
                                 break;
                             case 2:
-                                FWBAP_L2_Biway_PolynomialNorm<dim, nVars_Fixed>(uThisIn.array(), uOtherIn.array(), uLimOutArray, 1);
+                                FWBAP_L2_Biway_PolynomialNorm<dim, nVarsFixed>(uThisIn.array(), uOtherIn.array(), uLimOutArray, 1);
                                 break;
                             case 3:
-                                FMEMM_Biway_PolynomialNorm<dim, nVars_Fixed>(uThisIn.array(), uOtherIn.array(), uLimOutArray, 1);
+                                FMEMM_Biway_PolynomialNorm<dim, nVarsFixed>(uThisIn.array(), uOtherIn.array(), uLimOutArray, 1);
                                 break;
                             case 4:
                                 FWBAP_L2_Cut_Biway(uThisIn.array(), uOtherIn.array(), uLimOutArray, 1);
@@ -1505,7 +1505,7 @@ namespace DNDS::CFV
                         {
                         }
                     }
-                    Eigen::Array<real, Eigen::Dynamic, nVars_Fixed, 0, maxRecDOFBatch>
+                    Eigen::Array<real, Eigen::Dynamic, nVarsFixed, 0, maxRecDOFBatch>
                         uLimOutArray;
 
                     real n = settings.WBAP_nStd;

@@ -7,11 +7,11 @@ namespace DNDS::Euler
 
     template <EulerModel model>
     void EulerEvaluator<model>::LUSGSMatrixInit(
-        ArrayDOFV<nVars_Fixed> &JDiag,
-        ArrayDOFV<nVars_Fixed> &JSource,
+        ArrayDOFV<nVarsFixed> &JDiag,
+        ArrayDOFV<nVarsFixed> &JSource,
         ArrayDOFV<1> &dTau, real dt, real alphaDiag,
-        ArrayDOFV<nVars_Fixed> &u,
-        ArrayRECV<nVars_Fixed> &uRec,
+        ArrayDOFV<nVarsFixed> &u,
+        ArrayRECV<nVarsFixed> &uRec,
         int jacobianCode,
         real t)
     {
@@ -50,10 +50,10 @@ namespace DNDS::Euler
     template <EulerModel model>
     void EulerEvaluator<model>::LUSGSMatrixVec(
         real alphaDiag,
-        ArrayDOFV<nVars_Fixed> &u,
-        ArrayDOFV<nVars_Fixed> &uInc,
-        ArrayDOFV<nVars_Fixed> &JDiag,
-        ArrayDOFV<nVars_Fixed> &AuInc)
+        ArrayDOFV<nVarsFixed> &u,
+        ArrayDOFV<nVarsFixed> &uInc,
+        ArrayDOFV<nVarsFixed> &JDiag,
+        ArrayDOFV<nVarsFixed> &AuInc)
     {
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
         DNDS_MPI_InsertCheck(u.father->getMPI(), "LUSGSMatrixVec 1");
@@ -136,11 +136,11 @@ namespace DNDS::Euler
     template <EulerModel model>
     void EulerEvaluator<model>::UpdateLUSGSForward(
         real alphaDiag,
-        ArrayDOFV<nVars_Fixed> &rhs,
-        ArrayDOFV<nVars_Fixed> &u,
-        ArrayDOFV<nVars_Fixed> &uInc,
-        ArrayDOFV<nVars_Fixed> &JDiag,
-        ArrayDOFV<nVars_Fixed> &uIncNew)
+        ArrayDOFV<nVarsFixed> &rhs,
+        ArrayDOFV<nVarsFixed> &u,
+        ArrayDOFV<nVarsFixed> &uInc,
+        ArrayDOFV<nVarsFixed> &JDiag,
+        ArrayDOFV<nVarsFixed> &uIncNew)
     {
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
         DNDS_MPI_InsertCheck(u.father->getMPI(), "UpdateLUSGSForward 1");
@@ -214,11 +214,11 @@ namespace DNDS::Euler
     template <EulerModel model>
     void EulerEvaluator<model>::UpdateLUSGSBackward(
         real alphaDiag,
-        ArrayDOFV<nVars_Fixed> &rhs,
-        ArrayDOFV<nVars_Fixed> &u,
-        ArrayDOFV<nVars_Fixed> &uInc,
-        ArrayDOFV<nVars_Fixed> &JDiag,
-        ArrayDOFV<nVars_Fixed> &uIncNew)
+        ArrayDOFV<nVarsFixed> &rhs,
+        ArrayDOFV<nVarsFixed> &u,
+        ArrayDOFV<nVarsFixed> &uInc,
+        ArrayDOFV<nVarsFixed> &JDiag,
+        ArrayDOFV<nVarsFixed> &uIncNew)
     {
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
         DNDS_MPI_InsertCheck(u.father->getMPI(), "UpdateLUSGSBackward 1");
@@ -271,11 +271,11 @@ namespace DNDS::Euler
     template <EulerModel model>
     void EulerEvaluator<model>::UpdateSGS(
         real alphaDiag,
-        ArrayDOFV<nVars_Fixed> &rhs,
-        ArrayDOFV<nVars_Fixed> &u,
-        ArrayDOFV<nVars_Fixed> &uInc,
-        ArrayDOFV<nVars_Fixed> &uIncNew,
-        ArrayDOFV<nVars_Fixed> &JDiag,
+        ArrayDOFV<nVarsFixed> &rhs,
+        ArrayDOFV<nVarsFixed> &u,
+        ArrayDOFV<nVarsFixed> &uInc,
+        ArrayDOFV<nVarsFixed> &uIncNew,
+        ArrayDOFV<nVarsFixed> &JDiag,
         bool forward, TU &sumInc)
     {
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
@@ -357,12 +357,12 @@ namespace DNDS::Euler
     template <EulerModel model>
     void EulerEvaluator<model>::UpdateSGSWithRec(
         real alphaDiag,
-        ArrayDOFV<nVars_Fixed> &rhs,
-        ArrayDOFV<nVars_Fixed> &u,
-        ArrayRECV<nVars_Fixed> &uRec,
-        ArrayDOFV<nVars_Fixed> &uInc,
-        ArrayRECV<nVars_Fixed> &uRecInc,
-        ArrayDOFV<nVars_Fixed> &JDiag,
+        ArrayDOFV<nVarsFixed> &rhs,
+        ArrayDOFV<nVarsFixed> &u,
+        ArrayRECV<nVarsFixed> &uRec,
+        ArrayDOFV<nVarsFixed> &uInc,
+        ArrayRECV<nVarsFixed> &uRecInc,
+        ArrayDOFV<nVarsFixed> &JDiag,
         bool forward, TU &sumInc)
     {
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
@@ -452,7 +452,7 @@ namespace DNDS::Euler
     }
 
     template <EulerModel model>
-    void EulerEvaluator<model>::FixUMaxFilter(ArrayDOFV<nVars_Fixed> &u)
+    void EulerEvaluator<model>::FixUMaxFilter(ArrayDOFV<nVarsFixed> &u)
     {
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
         // TODO: make spacial filter jacobian
@@ -460,7 +460,7 @@ namespace DNDS::Euler
     }
 
     template <EulerModel model>
-    void EulerEvaluator<model>::TimeAverageAddition(ArrayDOFV<nVars_Fixed> &w, ArrayDOFV<nVars_Fixed> &wAveraged, real dt, real &tCur)
+    void EulerEvaluator<model>::TimeAverageAddition(ArrayDOFV<nVarsFixed> &w, ArrayDOFV<nVarsFixed> &wAveraged, real dt, real &tCur)
     {
         wAveraged *= (tCur / (tCur + dt + verySmallReal));
         wAveraged.addTo(w, (dt + verySmallReal) / (tCur + dt + verySmallReal));
@@ -468,7 +468,7 @@ namespace DNDS::Euler
     }
 
     template <EulerModel model>
-    void EulerEvaluator<model>::MeanValueCons2Prim(ArrayDOFV<nVars_Fixed> &u, ArrayDOFV<nVars_Fixed> &w)
+    void EulerEvaluator<model>::MeanValueCons2Prim(ArrayDOFV<nVarsFixed> &u, ArrayDOFV<nVarsFixed> &w)
     {
         for (index iCell = 0; iCell < u.Size(); iCell++)
         {
@@ -480,7 +480,7 @@ namespace DNDS::Euler
     }
 
     template <EulerModel model>
-    void EulerEvaluator<model>::MeanValuePrim2Cons(ArrayDOFV<nVars_Fixed> &w, ArrayDOFV<nVars_Fixed> &u)
+    void EulerEvaluator<model>::MeanValuePrim2Cons(ArrayDOFV<nVarsFixed> &w, ArrayDOFV<nVarsFixed> &u)
     {
         for (index iCell = 0; iCell < w.Size(); iCell++)
         {
@@ -492,7 +492,7 @@ namespace DNDS::Euler
     }
 
     template <EulerModel model>
-    void EulerEvaluator<model>::EvaluateNorm(Eigen::Vector<real, -1> &res, ArrayDOFV<nVars_Fixed> &rhs, index P, bool volWise)
+    void EulerEvaluator<model>::EvaluateNorm(Eigen::Vector<real, -1> &res, ArrayDOFV<nVarsFixed> &rhs, index P, bool volWise)
     {
         res.resize(nVars);
         if (P < 3)
@@ -529,8 +529,8 @@ namespace DNDS::Euler
 
     template <EulerModel model>
     void EulerEvaluator<model>::EvaluateURecBeta(
-        ArrayDOFV<nVars_Fixed> &u,
-        ArrayRECV<nVars_Fixed> &uRec,
+        ArrayDOFV<nVarsFixed> &u,
+        ArrayRECV<nVarsFixed> &uRec,
         ArrayDOFV<1> &uRecBeta, index &nLim, real &betaMin)
     {
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
@@ -564,7 +564,7 @@ namespace DNDS::Euler
             }
             /***********/
 
-            Eigen::Matrix<real, Eigen::Dynamic, nVars_Fixed> recInc = quadBase * uRec[iCell];
+            Eigen::Matrix<real, Eigen::Dynamic, nVarsFixed> recInc = quadBase * uRec[iCell];
             Eigen::Vector<real, Eigen::Dynamic> rhoS = recInc(Eigen::all, 0).array() + u[iCell](0);
             real rhoMin = rhoS.minCoeff();
             real theta1 = 1;
@@ -601,7 +601,7 @@ namespace DNDS::Euler
             }
 
             recInc *= theta1;
-            Eigen::Matrix<real, Eigen::Dynamic, nVars_Fixed>
+            Eigen::Matrix<real, Eigen::Dynamic, nVarsFixed>
                 recVRhoG = recInc.rowwise() + u[iCell].transpose();
 
             real gamma = settings.idealGasProperty.gamma;
@@ -620,7 +620,7 @@ namespace DNDS::Euler
                 {
                     if (pS(iG) < 2 * pEps)
                     {
-                        real thetaThis = Gas::IdealGasGetCompressionRatioPressure<dim, 0, nVars_Fixed>(
+                        real thetaThis = Gas::IdealGasGetCompressionRatioPressure<dim, 0, nVarsFixed>(
                             u[iCell], recInc(iG, Eigen::all).transpose(), 1 * pEps / (gamma - 1));
                         thetaP = std::min(thetaP, thetaThis);
                     }
@@ -671,7 +671,7 @@ namespace DNDS::Euler
 
     template <EulerModel model>
     bool EulerEvaluator<model>::AssertMeanValuePP(
-        ArrayDOFV<nVars_Fixed> &u, bool panic)
+        ArrayDOFV<nVarsFixed> &u, bool panic)
     {
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
         real rhoEps = smallReal * settings.refUPrim(0);
@@ -715,10 +715,10 @@ namespace DNDS::Euler
 
     template <EulerModel model>
     void EulerEvaluator<model>::EvaluateCellRHSAlpha(
-        ArrayDOFV<nVars_Fixed> &u,
-        ArrayRECV<nVars_Fixed> &uRec,
+        ArrayDOFV<nVarsFixed> &u,
+        ArrayRECV<nVarsFixed> &uRec,
         ArrayDOFV<1> &uRecBeta,
-        ArrayDOFV<nVars_Fixed> &res,
+        ArrayDOFV<nVarsFixed> &res,
         ArrayDOFV<1> &cellRHSAlpha, index &nLim, real &alphaMin,
         int flag)
     {
@@ -775,7 +775,7 @@ namespace DNDS::Euler
             if (pNew < pEps)
             {
                 // todo: use high order accurate (add control switch)
-                real alphaC = Gas::IdealGasGetCompressionRatioPressure<dim, 0, nVars_Fixed>(
+                real alphaC = Gas::IdealGasGetCompressionRatioPressure<dim, 0, nVarsFixed>(
                     u[iCell], inc, pEps / (gamma - 1));
                 alphaP = std::min(alphaP, alphaC);
             }
@@ -801,10 +801,10 @@ namespace DNDS::Euler
 
     template <EulerModel model>
     void EulerEvaluator<model>::EvaluateCellRHSAlphaExpansion(
-        ArrayDOFV<nVars_Fixed> &u,
-        ArrayRECV<nVars_Fixed> &uRec,
+        ArrayDOFV<nVarsFixed> &u,
+        ArrayRECV<nVarsFixed> &uRec,
         ArrayDOFV<1> &uRecBeta,
-        ArrayDOFV<nVars_Fixed> &res,
+        ArrayDOFV<nVarsFixed> &res,
         ArrayDOFV<1> &cellRHSAlpha, index &nLim, real alphaMin)
     {
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS

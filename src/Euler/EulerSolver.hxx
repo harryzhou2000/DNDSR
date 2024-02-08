@@ -40,8 +40,8 @@ namespace DNDS::Euler
         mesh->ObtainLocalFactFillOrdering();
         mesh->ObtainSymmetricSymbolicFactorization();
 
-        std::shared_ptr<ODE::ImplicitDualTimeStep<ArrayDOFV<nVars_Fixed>, ArrayDOFV<1>>> ode;
-        auto buildDOF = [&](ArrayDOFV<nVars_Fixed> &data)
+        std::shared_ptr<ODE::ImplicitDualTimeStep<ArrayDOFV<nVarsFixed>, ArrayDOFV<1>>> ode;
+        auto buildDOF = [&](ArrayDOFV<nVarsFixed> &data)
         {
             vfv->BuildUDof(data, nVars);
         };
@@ -62,7 +62,7 @@ namespace DNDS::Euler
         case 0: // esdirk4
             if (mpi.rank == 0)
                 log() << "=== ODE: ESDIRK4 " << std::endl;
-            ode = std::make_shared<ODE::ImplicitSDIRK4DualTimeStep<ArrayDOFV<nVars_Fixed>, ArrayDOFV<1>>>(
+            ode = std::make_shared<ODE::ImplicitSDIRK4DualTimeStep<ArrayDOFV<nVarsFixed>, ArrayDOFV<1>>>(
                 mesh->NumCell(),
                 buildDOF, buildScalar,
                 1); // 1 for esdirk
@@ -70,7 +70,7 @@ namespace DNDS::Euler
         case 101: // sdirk4
             if (mpi.rank == 0)
                 log() << "=== ODE: SSP-SDIRK4 " << std::endl;
-            ode = std::make_shared<ODE::ImplicitSDIRK4DualTimeStep<ArrayDOFV<nVars_Fixed>, ArrayDOFV<1>>>(
+            ode = std::make_shared<ODE::ImplicitSDIRK4DualTimeStep<ArrayDOFV<nVarsFixed>, ArrayDOFV<1>>>(
                 mesh->NumCell(),
                 buildDOF, buildScalar,
                 0);
@@ -78,7 +78,7 @@ namespace DNDS::Euler
         case 1: // BDF2
             if (mpi.rank == 0)
                 log() << "=== ODE: BDF2 " << std::endl;
-            ode = std::make_shared<ODE::ImplicitBDFDualTimeStep<ArrayDOFV<nVars_Fixed>, ArrayDOFV<1>>>(
+            ode = std::make_shared<ODE::ImplicitBDFDualTimeStep<ArrayDOFV<nVarsFixed>, ArrayDOFV<1>>>(
                 mesh->NumCell(),
                 buildDOF, buildScalar,
                 2);
@@ -86,7 +86,7 @@ namespace DNDS::Euler
         case 102: // VBDF2
             if (mpi.rank == 0)
                 log() << "=== ODE: VBDF2 " << std::endl;
-            ode = std::make_shared<ODE::ImplicitVBDFDualTimeStep<ArrayDOFV<nVars_Fixed>, ArrayDOFV<1>>>(
+            ode = std::make_shared<ODE::ImplicitVBDFDualTimeStep<ArrayDOFV<nVarsFixed>, ArrayDOFV<1>>>(
                 mesh->NumCell(),
                 buildDOF, buildScalar,
                 2);
@@ -94,7 +94,7 @@ namespace DNDS::Euler
         case 2: // SSPRK
             if (mpi.rank == 0)
                 log() << "=== ODE: SSPRK4 " << std::endl;
-            ode = std::make_shared<ODE::ExplicitSSPRK3TimeStepAsImplicitDualTimeStep<ArrayDOFV<nVars_Fixed>, ArrayDOFV<1>>>(
+            ode = std::make_shared<ODE::ExplicitSSPRK3TimeStepAsImplicitDualTimeStep<ArrayDOFV<nVarsFixed>, ArrayDOFV<1>>>(
                 mesh->NumCell(),
                 buildDOF, buildScalar,
                 false); // TODO: add local stepping options
@@ -102,7 +102,7 @@ namespace DNDS::Euler
         case 401: // H3S
             if (mpi.rank == 0)
                 log() << "=== ODE: Hermite3 (simple jacobian) " << std::endl;
-            ode = std::make_shared<ODE::ImplicitHermite3SimpleJacobianDualStep<ArrayDOFV<nVars_Fixed>, ArrayDOFV<1>>>(
+            ode = std::make_shared<ODE::ImplicitHermite3SimpleJacobianDualStep<ArrayDOFV<nVarsFixed>, ArrayDOFV<1>>>(
                 mesh->NumCell(),
                 buildDOF, buildScalar,
                 config.timeMarchControl.odeSetting1 == 0 ? 0.55 : config.timeMarchControl.odeSetting1,
@@ -254,8 +254,8 @@ namespace DNDS::Euler
 
         auto frhs =
             [&](
-                ArrayDOFV<nVars_Fixed> &crhs,
-                ArrayDOFV<nVars_Fixed> &cx,
+                ArrayDOFV<nVarsFixed> &crhs,
+                ArrayDOFV<nVarsFixed> &cx,
                 ArrayDOFV<1> &dTau,
                 int iter, real ct, int uPos)
         {
@@ -287,7 +287,7 @@ namespace DNDS::Euler
             }
             real recIncBase = 0;
             double tstartA = MPI_Wtime();
-            typename TVFV::element_type::template TFBoundary<nVars_Fixed>
+            typename TVFV::element_type::template TFBoundary<nVarsFixed>
                 FBoundary = [&](const TU &UL, const TU &UMean, index iCell, index iFace,
                                 const Geom::tPoint &normOut, const Geom::tPoint &pPhy, const Geom::t_index bType) -> TU
             {
@@ -300,7 +300,7 @@ namespace DNDS::Euler
                     compressed);
                 return eval.generateBoundaryValue(ULfixed, UMean, iCell, iFace, normOutV, normBase, pPhy(Seq012), tSimu + ct * curDtImplicit, bType, true);
             };
-            typename TVFV::element_type::template TFBoundaryDiff<nVars_Fixed>
+            typename TVFV::element_type::template TFBoundaryDiff<nVarsFixed>
                 FBoundaryDiff = [&](const TU &UL, const TU &dU, const TU &UMean, index iCell, index iFace,
                                     const Geom::tPoint &normOut, const Geom::tPoint &pPhy, const Geom::t_index bType) -> TU
             {
@@ -371,13 +371,13 @@ namespace DNDS::Euler
 
                     bool gmresConverge =
                         gmresRec->solve(
-                            [&](ArrayRECV<nVars_Fixed> &x, ArrayRECV<nVars_Fixed> &Ax)
+                            [&](ArrayRECV<nVarsFixed> &x, ArrayRECV<nVarsFixed> &Ax)
                             {
                                 vfv->DoReconstructionIterDiff(uRec, x, Ax, cx, FBoundaryDiff);
                                 Ax.trans.startPersistentPull();
                                 Ax.trans.waitPersistentPull();
                             },
-                            [&](ArrayRECV<nVars_Fixed> &x, ArrayRECV<nVars_Fixed> &MLx)
+                            [&](ArrayRECV<nVarsFixed> &x, ArrayRECV<nVarsFixed> &MLx)
                             {
                                 MLx = x; // initial value; for the input is mostly a good estimation
                                 // MLx no need to comm
@@ -438,7 +438,7 @@ namespace DNDS::Euler
                     auto M = Gas::IdealGas_EulerGasLeftEigenVector<dim>(UC, eval.settings.idealGasProperty.gamma);
                     M(Eigen::all, Seq123) *= normBase.transpose();
 
-                    Eigen::Matrix<real, nVars_Fixed, nVars_Fixed> ret(nVars, nVars);
+                    Eigen::Matrix<real, nVarsFixed, nVarsFixed> ret(nVars, nVars);
                     ret.setIdentity();
                     ret(Seq01234, Seq01234) = M;
                     PerformanceTimer::Instance().StopTimer(PerformanceTimer::LimiterA);
@@ -455,7 +455,7 @@ namespace DNDS::Euler
                     auto M = Gas::IdealGas_EulerGasRightEigenVector<dim>(UC, eval.settings.idealGasProperty.gamma);
                     M(Seq123, Eigen::all) = normBase * M(Seq123, Eigen::all);
 
-                    Eigen::Matrix<real, nVars_Fixed, nVars_Fixed> ret(nVars, nVars);
+                    Eigen::Matrix<real, nVarsFixed, nVarsFixed> ret(nVars, nVars);
                     ret.setIdentity();
                     ret(Seq01234, Seq01234) = M;
 
@@ -611,7 +611,7 @@ namespace DNDS::Euler
             DNDS_MPI_InsertCheck(mpi, " Lambda RHS: End");
         };
 
-        auto fdtau = [&](ArrayDOFV<nVars_Fixed> &cx, ArrayDOFV<1> &dTau, real alphaDiag, int uPos)
+        auto fdtau = [&](ArrayDOFV<nVarsFixed> &cx, ArrayDOFV<1> &dTau, real alphaDiag, int uPos)
         {
             eval.FixUMaxFilter(cx);
             cx.trans.startPersistentPull(); //! this also need to update!
@@ -637,8 +637,8 @@ namespace DNDS::Euler
             dTau *= 1. / alphaDiag;
         };
 
-        auto fsolve = [&](ArrayDOFV<nVars_Fixed> &cx, ArrayDOFV<nVars_Fixed> &crhs, ArrayDOFV<1> &dTau,
-                          real dt, real alphaDiag, ArrayDOFV<nVars_Fixed> &cxInc, int iter, int uPos)
+        auto fsolve = [&](ArrayDOFV<nVarsFixed> &cx, ArrayDOFV<nVarsFixed> &crhs, ArrayDOFV<1> &dTau,
+                          real dt, real alphaDiag, ArrayDOFV<nVarsFixed> &cxInc, int iter, int uPos)
         {
             rhsTemp = crhs;
             eval.CentralSmoothResidual(rhsTemp, crhs, uTemp);
@@ -670,7 +670,7 @@ namespace DNDS::Euler
                 crhs *= alphaPP_tmp;
             }
 
-            typename TVFV::element_type::template TFBoundary<nVars_Fixed>
+            typename TVFV::element_type::template TFBoundary<nVarsFixed>
                 FBoundary = [&](const TU &UL, const TU &UMean, index iCell, index iFace,
                                 const Geom::tPoint &normOut, const Geom::tPoint &pPhy, const Geom::t_index bType) -> TU
             {
@@ -855,12 +855,12 @@ namespace DNDS::Euler
         };
 
         auto fsolveNest = [&](
-                              ArrayDOFV<nVars_Fixed> &cx,
-                              ArrayDOFV<nVars_Fixed> &cx1,
-                              ArrayDOFV<nVars_Fixed> &crhs,
+                              ArrayDOFV<nVarsFixed> &cx,
+                              ArrayDOFV<nVarsFixed> &cx1,
+                              ArrayDOFV<nVarsFixed> &crhs,
                               ArrayDOFV<1> &dTau,
                               const std::vector<real> &Coefs, // coefs are dU * c[0] + dt * c[1] * (I/(dt * c[2]) - JMid) * (I/(dt * c[3]) - J)
-                              real dt, real alphaDiag, ArrayDOFV<nVars_Fixed> &cxInc, int iter, int uPos)
+                              real dt, real alphaDiag, ArrayDOFV<nVarsFixed> &cxInc, int iter, int uPos)
         {
             crhs.trans.startPersistentPull();
             crhs.trans.waitPersistentPull();
@@ -973,7 +973,7 @@ namespace DNDS::Euler
         };
 
         auto falphaLimSource = [&](
-                                   ArrayDOFV<nVars_Fixed> &v,
+                                   ArrayDOFV<nVarsFixed> &v,
                                    int uPos)
         {
             auto &alphaPPC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? alphaPP1 : alphaPP;
@@ -982,10 +982,10 @@ namespace DNDS::Euler
         };
 
         auto fresidualIncPP = [&](
-                                  ArrayDOFV<nVars_Fixed> &cx,
-                                  ArrayDOFV<nVars_Fixed> &xPrev,
-                                  ArrayDOFV<nVars_Fixed> &crhs,
-                                  ArrayDOFV<nVars_Fixed> &rhsIncPart,
+                                  ArrayDOFV<nVarsFixed> &cx,
+                                  ArrayDOFV<nVarsFixed> &xPrev,
+                                  ArrayDOFV<nVarsFixed> &crhs,
+                                  ArrayDOFV<nVarsFixed> &rhsIncPart,
                                   const std::function<void()> &renewRhsIncPart,
                                   real ct,
                                   int uPos)
@@ -1045,8 +1045,8 @@ namespace DNDS::Euler
         };
 
         auto fincrement = [&](
-                              ArrayDOFV<nVars_Fixed> &cx,
-                              ArrayDOFV<nVars_Fixed> &cxInc,
+                              ArrayDOFV<nVarsFixed> &cx,
+                              ArrayDOFV<nVarsFixed> &cxInc,
                               real alpha, int uPos)
         {
             auto &alphaPPC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? alphaPP1 : alphaPP;
@@ -1075,7 +1075,7 @@ namespace DNDS::Euler
             // eval.AddFixedIncrement(cx, cxInc, alpha);
         };
 
-        auto fstop = [&](int iter, ArrayDOFV<nVars_Fixed> &cxinc, int iStep) -> bool
+        auto fstop = [&](int iter, ArrayDOFV<nVarsFixed> &cxinc, int iStep) -> bool
         {
             // auto &uRecC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? uRec1 : uRec;
 
@@ -1430,7 +1430,7 @@ namespace DNDS::Euler
                 switch (config.timeMarchControl.odeCode)
                 {
                 case 1:
-                    std::dynamic_pointer_cast<ODE::ImplicitBDFDualTimeStep<ArrayDOFV<nVars_Fixed>, ArrayDOFV<1>>>(ode)
+                    std::dynamic_pointer_cast<ODE::ImplicitBDFDualTimeStep<ArrayDOFV<nVarsFixed>, ArrayDOFV<1>>>(ode)
                         ->StepPP(
                             u, uInc,
                             frhs,
@@ -1446,9 +1446,9 @@ namespace DNDS::Euler
                 {
                     index nLimAlpha;
                     real minAlpha;
-                    auto odeVBDF = std::dynamic_pointer_cast<ODE::ImplicitVBDFDualTimeStep<ArrayDOFV<nVars_Fixed>, ArrayDOFV<1>>>(ode);
+                    auto odeVBDF = std::dynamic_pointer_cast<ODE::ImplicitVBDFDualTimeStep<ArrayDOFV<nVarsFixed>, ArrayDOFV<1>>>(ode);
                     odeVBDF->LimitDt_StepPPV2(
-                        u, [&](ArrayDOFV<nVars_Fixed> &u, ArrayDOFV<nVars_Fixed> &uInc) -> real
+                        u, [&](ArrayDOFV<nVarsFixed> &u, ArrayDOFV<nVarsFixed> &uInc) -> real
                         {
                             eval.EvaluateCellRHSAlpha(u, uRec, betaPP, uInc, alphaPP_tmp, nLimAlpha, minAlpha, 0);
                             return minAlpha; },
@@ -1491,7 +1491,7 @@ namespace DNDS::Euler
                 }
             }
             else if (config.timeMarchControl.odeCode == 401 && false)
-                std::dynamic_pointer_cast<ODE::ImplicitHermite3SimpleJacobianDualStep<ArrayDOFV<nVars_Fixed>, ArrayDOFV<1>>>(ode)
+                std::dynamic_pointer_cast<ODE::ImplicitHermite3SimpleJacobianDualStep<ArrayDOFV<nVarsFixed>, ArrayDOFV<1>>>(ode)
                     ->StepNested(
                         u, uInc,
                         frhs,

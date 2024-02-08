@@ -31,7 +31,7 @@ namespace DNDS::Euler
     class EulerEvaluator
     {
     public:
-        static const int nVars_Fixed = getNVars_Fixed(model);
+        static const int nVarsFixed = getnVarsFixed(model);
         static const int dim = getDim_Fixed(model);
         static const int gDim = getGeomDim_Fixed(model);
         static const auto I4 = dim + 1;
@@ -44,10 +44,10 @@ namespace DNDS::Euler
 
         typedef Eigen::Vector<real, dim> TVec;
         typedef Eigen::Matrix<real, dim, dim> TMat;
-        typedef Eigen::Vector<real, nVars_Fixed> TU;
-        typedef Eigen::Matrix<real, nVars_Fixed, nVars_Fixed> TJacobianU;
-        typedef Eigen::Matrix<real, dim, nVars_Fixed> TDiffU;
-        typedef Eigen::Matrix<real, nVars_Fixed, dim> TDIffUTransposed;
+        typedef Eigen::Vector<real, nVarsFixed> TU;
+        typedef Eigen::Matrix<real, nVarsFixed, nVarsFixed> TJacobianU;
+        typedef Eigen::Matrix<real, dim, nVarsFixed> TDiffU;
+        typedef Eigen::Matrix<real, nVarsFixed, dim> TDIffUTransposed;
 
     public:
         // static const int gdim = 2; //* geometry dim
@@ -80,7 +80,7 @@ namespace DNDS::Euler
         // ArrayVDOF<25> dRdb;
 
         Eigen::Vector<real, -1> fluxWallSum;
-        std::vector<Eigen::Vector<real, nVars_Fixed>> fluxBnd;
+        std::vector<Eigen::Vector<real, nVarsFixed>> fluxBnd;
         index nFaceReducedOrder = 0;
 
         struct Setting
@@ -309,8 +309,8 @@ namespace DNDS::Euler
         /******************************************************/
         void EvaluateDt(
             ArrayDOFV<1> &dt,
-            ArrayDOFV<nVars_Fixed> &u,
-            ArrayRECV<nVars_Fixed> &uRec,
+            ArrayDOFV<nVarsFixed> &u,
+            ArrayRECV<nVarsFixed> &uRec,
             real CFL, real &dtMinall, real MaxDt = 1,
             bool UseLocaldt = false);
         /**
@@ -319,30 +319,30 @@ namespace DNDS::Euler
          *
          */
         void EvaluateRHS(
-            ArrayDOFV<nVars_Fixed> &rhs,
-            ArrayDOFV<nVars_Fixed> &JSource,
-            ArrayDOFV<nVars_Fixed> &u,
-            ArrayRECV<nVars_Fixed> &uRec,
+            ArrayDOFV<nVarsFixed> &rhs,
+            ArrayDOFV<nVarsFixed> &JSource,
+            ArrayDOFV<nVarsFixed> &u,
+            ArrayRECV<nVarsFixed> &uRec,
             ArrayDOFV<1> &uRecBeta,
             ArrayDOFV<1> &cellRHSAlpha,
             bool onlyOnHalfAlpha,
             real t);
 
         void LUSGSMatrixInit(
-            ArrayDOFV<nVars_Fixed> &JDiag,
-            ArrayDOFV<nVars_Fixed> &JSource,
+            ArrayDOFV<nVarsFixed> &JDiag,
+            ArrayDOFV<nVarsFixed> &JSource,
             ArrayDOFV<1> &dTau, real dt, real alphaDiag,
-            ArrayDOFV<nVars_Fixed> &u,
-            ArrayRECV<nVars_Fixed> &uRec,
+            ArrayDOFV<nVarsFixed> &u,
+            ArrayRECV<nVarsFixed> &uRec,
             int jacobianCode,
             real t);
 
         void LUSGSMatrixVec(
             real alphaDiag,
-            ArrayDOFV<nVars_Fixed> &u,
-            ArrayDOFV<nVars_Fixed> &uInc,
-            ArrayDOFV<nVars_Fixed> &JDiag,
-            ArrayDOFV<nVars_Fixed> &AuInc);
+            ArrayDOFV<nVarsFixed> &u,
+            ArrayDOFV<nVarsFixed> &uInc,
+            ArrayDOFV<nVarsFixed> &JDiag,
+            ArrayDOFV<nVarsFixed> &AuInc);
 
         /**
          * @brief to use LUSGS, use LUSGSForward(..., uInc, uInc); uInc.pull; LUSGSBackward(..., uInc, uInc);
@@ -354,11 +354,11 @@ namespace DNDS::Euler
          */
         void UpdateLUSGSForward(
             real alphaDiag,
-            ArrayDOFV<nVars_Fixed> &rhs,
-            ArrayDOFV<nVars_Fixed> &u,
-            ArrayDOFV<nVars_Fixed> &uInc,
-            ArrayDOFV<nVars_Fixed> &JDiag,
-            ArrayDOFV<nVars_Fixed> &uIncNew);
+            ArrayDOFV<nVarsFixed> &rhs,
+            ArrayDOFV<nVarsFixed> &u,
+            ArrayDOFV<nVarsFixed> &uInc,
+            ArrayDOFV<nVarsFixed> &JDiag,
+            ArrayDOFV<nVarsFixed> &uIncNew);
 
         /**
          * @brief
@@ -367,69 +367,69 @@ namespace DNDS::Euler
          */
         void UpdateLUSGSBackward(
             real alphaDiag,
-            ArrayDOFV<nVars_Fixed> &rhs,
-            ArrayDOFV<nVars_Fixed> &u,
-            ArrayDOFV<nVars_Fixed> &uInc,
-            ArrayDOFV<nVars_Fixed> &JDiag,
-            ArrayDOFV<nVars_Fixed> &uIncNew);
+            ArrayDOFV<nVarsFixed> &rhs,
+            ArrayDOFV<nVarsFixed> &u,
+            ArrayDOFV<nVarsFixed> &uInc,
+            ArrayDOFV<nVarsFixed> &JDiag,
+            ArrayDOFV<nVarsFixed> &uIncNew);
 
         void UpdateSGS(
             real alphaDiag,
-            ArrayDOFV<nVars_Fixed> &rhs,
-            ArrayDOFV<nVars_Fixed> &u,
-            ArrayDOFV<nVars_Fixed> &uInc,
-            ArrayDOFV<nVars_Fixed> &uIncNew,
-            ArrayDOFV<nVars_Fixed> &JDiag,
+            ArrayDOFV<nVarsFixed> &rhs,
+            ArrayDOFV<nVarsFixed> &u,
+            ArrayDOFV<nVarsFixed> &uInc,
+            ArrayDOFV<nVarsFixed> &uIncNew,
+            ArrayDOFV<nVarsFixed> &JDiag,
             bool forward, TU &sumInc);
 
         void UpdateSGSWithRec(
             real alphaDiag,
-            ArrayDOFV<nVars_Fixed> &rhs,
-            ArrayDOFV<nVars_Fixed> &u,
-            ArrayRECV<nVars_Fixed> &uRec,
-            ArrayDOFV<nVars_Fixed> &uInc,
-            ArrayRECV<nVars_Fixed> &uRecInc,
-            ArrayDOFV<nVars_Fixed> &JDiag,
+            ArrayDOFV<nVarsFixed> &rhs,
+            ArrayDOFV<nVarsFixed> &u,
+            ArrayRECV<nVarsFixed> &uRec,
+            ArrayDOFV<nVarsFixed> &uInc,
+            ArrayRECV<nVarsFixed> &uRecInc,
+            ArrayDOFV<nVarsFixed> &JDiag,
             bool forward, TU &sumInc);
 
         // void UpdateLUSGSForwardWithRec(
         //     real alphaDiag,
-        //     ArrayDOFV<nVars_Fixed> &rhs,
-        //     ArrayDOFV<nVars_Fixed> &u,
-        //     ArrayRECV<nVars_Fixed> &uRec,
-        //     ArrayDOFV<nVars_Fixed> &uInc,
-        //     ArrayRECV<nVars_Fixed> &uRecInc,
-        //     ArrayDOFV<nVars_Fixed> &JDiag,
-        //     ArrayDOFV<nVars_Fixed> &uIncNew);
+        //     ArrayDOFV<nVarsFixed> &rhs,
+        //     ArrayDOFV<nVarsFixed> &u,
+        //     ArrayRECV<nVarsFixed> &uRec,
+        //     ArrayDOFV<nVarsFixed> &uInc,
+        //     ArrayRECV<nVarsFixed> &uRecInc,
+        //     ArrayDOFV<nVarsFixed> &JDiag,
+        //     ArrayDOFV<nVarsFixed> &uIncNew);
 
-        void FixUMaxFilter(ArrayDOFV<nVars_Fixed> &u);
+        void FixUMaxFilter(ArrayDOFV<nVarsFixed> &u);
 
-        void TimeAverageAddition(ArrayDOFV<nVars_Fixed> &w, ArrayDOFV<nVars_Fixed> &wAveraged, real dt, real &tCur);
+        void TimeAverageAddition(ArrayDOFV<nVarsFixed> &w, ArrayDOFV<nVarsFixed> &wAveraged, real dt, real &tCur);
 
-        void MeanValueCons2Prim(ArrayDOFV<nVars_Fixed> &u, ArrayDOFV<nVars_Fixed> &w);
-        void MeanValuePrim2Cons(ArrayDOFV<nVars_Fixed> &w, ArrayDOFV<nVars_Fixed> &u);
+        void MeanValueCons2Prim(ArrayDOFV<nVarsFixed> &u, ArrayDOFV<nVarsFixed> &w);
+        void MeanValuePrim2Cons(ArrayDOFV<nVarsFixed> &w, ArrayDOFV<nVarsFixed> &u);
 
         void EvaluateNorm(
             Eigen::Vector<real, -1> &res,
-            ArrayDOFV<nVars_Fixed> &rhs,
+            ArrayDOFV<nVarsFixed> &rhs,
             index P = 1, bool volWise = false);
 
         void EvaluateURecBeta(
-            ArrayDOFV<nVars_Fixed> &u,
-            ArrayRECV<nVars_Fixed> &uRec,
+            ArrayDOFV<nVarsFixed> &u,
+            ArrayRECV<nVarsFixed> &uRec,
             ArrayDOFV<1> &uRecBeta, index &nLim, real &betaMin);
 
         bool AssertMeanValuePP(
-            ArrayDOFV<nVars_Fixed> &u, bool panic);
+            ArrayDOFV<nVarsFixed> &u, bool panic);
 
         /**
          * @param res is incremental residual
          */
         void EvaluateCellRHSAlpha(
-            ArrayDOFV<nVars_Fixed> &u,
-            ArrayRECV<nVars_Fixed> &uRec,
+            ArrayDOFV<nVarsFixed> &u,
+            ArrayRECV<nVarsFixed> &uRec,
             ArrayDOFV<1> &uRecBeta,
-            ArrayDOFV<nVars_Fixed> &res,
+            ArrayDOFV<nVarsFixed> &res,
             ArrayDOFV<1> &cellRHSAlpha, index &nLim, real &alphaMin,
             int flag = 0);
 
@@ -438,10 +438,10 @@ namespace DNDS::Euler
          * @param cellRHSAlpha is limiting factor evaluated previously
          */
         void EvaluateCellRHSAlphaExpansion(
-            ArrayDOFV<nVars_Fixed> &u,
-            ArrayRECV<nVars_Fixed> &uRec,
+            ArrayDOFV<nVarsFixed> &u,
+            ArrayRECV<nVarsFixed> &uRec,
             ArrayDOFV<1> &uRecBeta,
-            ArrayDOFV<nVars_Fixed> &res,
+            ArrayDOFV<nVarsFixed> &res,
             ArrayDOFV<1> &cellRHSAlpha, index &nLim, real alphaMin);
 
         void MinSmoothDTau(
@@ -520,12 +520,12 @@ namespace DNDS::Euler
                 if2c = vfv->CellIsFaceBack(iCell, iFace) ? 0 : 1;
             if (if2c == 1 && Geom::FaceIDIsPeriodicMain(faceID))
             {
-                u(Seq012, Eigen::all) = mesh->periodicInfo.TransVectorBack<dim, nVars_Fixed>(u(Seq012, Eigen::all), faceID);
+                u(Seq012, Eigen::all) = mesh->periodicInfo.TransVectorBack<dim, nVarsFixed>(u(Seq012, Eigen::all), faceID);
                 u(Eigen::all, Seq123) = mesh->periodicInfo.TransVectorBack<dim, dim>(u(Eigen::all, Seq123).transpose(), faceID).transpose();
             }
             if (if2c == 1 && Geom::FaceIDIsPeriodicDonor(faceID))
             {
-                u(Seq012, Eigen::all) = mesh->periodicInfo.TransVector<dim, nVars_Fixed>(u(Seq012, Eigen::all), faceID);
+                u(Seq012, Eigen::all) = mesh->periodicInfo.TransVector<dim, nVarsFixed>(u(Seq012, Eigen::all), faceID);
                 u(Eigen::all, Seq123) = mesh->periodicInfo.TransVector<dim, dim>(u(Eigen::all, Seq123).transpose(), faceID).transpose();
             }
         }
@@ -1581,16 +1581,16 @@ namespace DNDS::Euler
         }
 
         void FixIncrement(
-            ArrayDOFV<nVars_Fixed> &cx,
-            ArrayDOFV<nVars_Fixed> &cxInc, real alpha = 1.0)
+            ArrayDOFV<nVarsFixed> &cx,
+            ArrayDOFV<nVarsFixed> &cxInc, real alpha = 1.0)
         {
             for (index iCell = 0; iCell < cxInc.Size(); iCell++)
                 cxInc[iCell] = this->CompressInc(cx[iCell], cxInc[iCell] * alpha);
         }
 
         void AddFixedIncrement(
-            ArrayDOFV<nVars_Fixed> &cx,
-            ArrayDOFV<nVars_Fixed> &cxInc, real alpha = 1.0)
+            ArrayDOFV<nVarsFixed> &cx,
+            ArrayDOFV<nVarsFixed> &cxInc, real alpha = 1.0)
         {
             real alpha_fix_min = 1.0;
             for (index iCell = 0; iCell < cxInc.Size(); iCell++)
@@ -1618,8 +1618,8 @@ namespace DNDS::Euler
         }
 
         // void AddFixedIncrement(
-        //     ArrayDOFV<nVars_Fixed> &cx,
-        //     ArrayDOFV<nVars_Fixed> &cxInc, real alpha = 1.0)
+        //     ArrayDOFV<nVarsFixed> &cx,
+        //     ArrayDOFV<nVarsFixed> &cxInc, real alpha = 1.0)
         // {
         //     real alpha_fix_min = 1.0;
         //     for (index iCell = 0; iCell < cxInc.Size(); iCell++)
@@ -1670,7 +1670,7 @@ namespace DNDS::Euler
         //             std::cout << "Increment fixed number " << nFixed_c << std::endl;
         // }
 
-        void CentralSmoothResidual(ArrayDOFV<nVars_Fixed> &r, ArrayDOFV<nVars_Fixed> &rs, ArrayDOFV<nVars_Fixed> &rtemp)
+        void CentralSmoothResidual(ArrayDOFV<nVarsFixed> &r, ArrayDOFV<nVarsFixed> &rs, ArrayDOFV<nVarsFixed> &rtemp)
         {
             for (int iterS = 1; iterS <= settings.nCentralSmoothStep; iterS++)
             {
@@ -1698,7 +1698,7 @@ namespace DNDS::Euler
             }
         }
 
-        void InitializeUDOF(ArrayDOFV<nVars_Fixed> &u)
+        void InitializeUDOF(ArrayDOFV<nVarsFixed> &u)
         {
             Eigen::VectorXd initConstVal = this->settings.farFieldStaticValue;
             u.setConstant(initConstVal);
