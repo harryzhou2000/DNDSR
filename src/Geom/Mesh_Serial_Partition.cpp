@@ -1,9 +1,20 @@
 #include "Mesh.hpp"
+#include "boost/graph/adjacency_list.hpp"
+#include "boost/graph/graph_utility.hpp"
+#include "boost/graph/minimum_degree_ordering.hpp"
 
 namespace _METIS
 {
 #include "metis.h"
 #include "parmetis.h"
+
+    static idx_t indexToIdx(DNDS::index v)
+    {
+        if constexpr (sizeof(DNDS::index) <= sizeof(idx_t))
+            return v;
+        else
+            return DNDS::checkedIndexTo32(v);
+    }
 }
 
 namespace DNDS::Geom
@@ -32,29 +43,29 @@ namespace DNDS::Geom
 #pragma omp parallel for
 #endif
         for (DNDS::MPI_int r = 0; r <= mesh->getMPI().size; r++)
-            vtxdist[r] = cell2cellSerialFacial->pLGlobalMapping->ROffsets().at(r); //! warning: no check overflow
+            vtxdist[r] = _METIS::indexToIdx(cell2cellSerialFacial->pLGlobalMapping->ROffsets().at(r));
         std::vector<_METIS::idx_t> xadj(cell2cellSerialFacial->Size() + 1);
 #ifdef DNDS_USE_OMP
 #pragma omp parallel for
 #endif
         for (DNDS::index iCell = 0; iCell < xadj.size(); iCell++)
-            xadj[iCell] = (cell2cellSerialFacial->rowPtr(iCell) - cell2cellSerialFacial->rowPtr(0)); //! warning: no check overflow
+            xadj[iCell] = _METIS::indexToIdx(cell2cellSerialFacial->rowPtr(iCell) - cell2cellSerialFacial->rowPtr(0));
         std::vector<_METIS::idx_t> adjncy(xadj.back());
         DNDS_assert(cell2cellSerialFacial->DataSize() == xadj.back());
 #ifdef DNDS_USE_OMP
 #pragma omp parallel for
 #endif
         for (DNDS::index iAdj = 0; iAdj < xadj.back(); iAdj++)
-            adjncy[iAdj] = cell2cellSerialFacial->data()[iAdj]; //! warning: no check overflow
+            adjncy[iAdj] = _METIS::indexToIdx(cell2cellSerialFacial->data()[iAdj]);
         if (adjncy.size() == 0)
             adjncy.resize(1, -1); //*coping with zero sized data
 
-        _METIS::idx_t nCell = cell2cellSerialFacial->Size(); //! warning: no check overflow
+        _METIS::idx_t nCell = _METIS::indexToIdx(cell2cellSerialFacial->Size());
         _METIS::idx_t nCon{1}, options[METIS_NOPTIONS];
-
+        _METIS::METIS_SetDefaultOptions(options);
         {
             options[_METIS::METIS_OPTION_OBJTYPE] = _METIS::METIS_OBJTYPE_CUT;
-            options[_METIS::METIS_OPTION_CTYPE] = _METIS::METIS_CTYPE_RM;
+            options[_METIS::METIS_OPTION_CTYPE] = _METIS::METIS_CTYPE_RM; //? could try shem?
             options[_METIS::METIS_OPTION_IPTYPE] = _METIS::METIS_IPTYPE_GROW;
             options[_METIS::METIS_OPTION_RTYPE] = _METIS::METIS_RTYPE_FM;
             // options[METIS_OPTION_NO2HOP] = 0; // only available in metis 5.1.0
@@ -118,5 +129,100 @@ namespace DNDS::Geom
             cellPartition[i] = partOut[i];
         if (mesh->getMPI().rank == mRank)
             DNDS::log() << "UnstructuredMeshSerialRW === Done  MeshPartitionCell2Cell" << std::endl;
+    }
+
+    // void UnstructuredMesh::ReorderCellLocal()
+    // {
+    //     //! currently not used
+
+    //     /****************************/
+    //     // got reordering, iCellNew = iPerm[iCell], iCell = perm[iCellNew], A(perm,perm) = Anew
+
+    //     //! remember to add all cell related indices here for altering
+    //     // DNDS_assert(this->adjPrimaryState == Adj_PointToLocal);
+    //     // DNDS_assert(this->adjFacialState == Adj_PointToLocal);
+    //     // DNDS_assert(this->adjC2FState == Adj_PointToLocal);
+    // }
+
+    void UnstructuredMesh::ObtainLocalFactFillOrdering()
+    {
+        if (!this->NumCell())
+            return;
+        int method = 2; //1 uses metis, 2 uses MMD
+        if (method == 1)
+        {
+            _METIS::idx_t nCell = _METIS::indexToIdx(this->NumCell());
+            _METIS::idx_t nCon{1}, options[METIS_NOPTIONS];
+            _METIS::METIS_SetDefaultOptions(options);
+            {
+                options[_METIS::METIS_OPTION_CTYPE] = _METIS::METIS_CTYPE_RM;
+                options[_METIS::METIS_OPTION_RTYPE] = _METIS::METIS_RTYPE_FM;
+                options[_METIS::METIS_OPTION_IPTYPE] = _METIS::METIS_IPTYPE_EDGE;
+                options[_METIS::METIS_OPTION_RTYPE] = _METIS::METIS_RTYPE_SEP1SIDED;
+                options[_METIS::METIS_OPTION_NSEPS] = 1;
+                options[_METIS::METIS_OPTION_NITER] = 10;
+                options[_METIS::METIS_OPTION_UFACTOR] = 30;
+                options[_METIS::METIS_OPTION_COMPRESS] = 0; // do not compress
+                // options[_METIS::METIS_OPTION_CCORDER] = 0; //use default?
+                options[_METIS::METIS_OPTION_SEED] = 0;    // ! seeding 0 for determined result
+                options[_METIS::METIS_OPTION_PFACTOR] = 0; // not removing large vertices
+                options[_METIS::METIS_OPTION_NUMBERING] = 0;
+                // options[_METIS::METIS_OPTION_DBGLVL] = _METIS::METIS_DBG_TIME | _METIS::METIS_DBG_IPART;
+            }
+            std::vector<std::vector<index>> cell2cellFaceV = this->GetCell2CellFaceVLocal();
+            std::vector<_METIS::idx_t> adjncy, xadj, perm, iPerm;
+            xadj.resize(nCell + 1);
+            xadj[0] = 0;
+            for (_METIS::idx_t iC = 0; iC < nCell; iC++)
+                xadj[iC + 1] = xadj[iC] + cell2cellFaceV[iC].size(); //! check overflow!
+            adjncy.resize(xadj.back());
+            for (_METIS::idx_t iC = 0; iC < nCell; iC++)
+                std::copy(cell2cellFaceV[iC].begin(), cell2cellFaceV[iC].end(), adjncy.begin() + xadj[iC]);
+            perm.resize(nCell);
+            iPerm.resize(nCell);
+
+            if (mpi.rank == mRank)
+                log() << "UnstructuredMesh::ObtainLocalFactFillOrdering(): start calling metis" << std::endl;
+
+            int ret = _METIS::METIS_NodeND(&nCell, xadj.data(), adjncy.data(), NULL, options, perm.data(), iPerm.data());
+            DNDS_assert_info(ret == _METIS::METIS_OK, fmt::format("Metis return not ok, [{}]", ret));
+
+            if (mpi.rank == mRank)
+                log() << "UnstructuredMesh::ObtainLocalFactFillOrdering(): metis done" << std::endl;
+
+            localFillOrderingNew2Old.resize(nCell);
+            localFillOrderingOld2New.resize(nCell);
+            for (index i = 0; i < this->NumCell(); i++)
+            {
+                localFillOrderingNew2Old[i] = perm[i];
+                localFillOrderingOld2New[i] = iPerm[i];
+            }
+        }
+        else if (method == 2)
+        {
+            using namespace boost;
+            typedef adjacency_list<vecS, vecS, directedS> Graph;
+            Graph cell2cellG(this->NumCell());
+            std::vector<std::vector<index>> cell2cellFaceV = this->GetCell2CellFaceVLocal();
+            for (index iCell = 0; iCell < this->NumCell(); iCell++)
+                for (auto iCOther : cell2cellFaceV[iCell])
+                    add_edge(iCell, iCOther, cell2cellG);
+            std::vector<index> supernodeSizes(this->NumCell(), 1), degree(this->NumCell(), 0);
+            localFillOrderingNew2Old.resize(this->NumCell(), 0);
+            localFillOrderingOld2New.resize(this->NumCell(), 0);
+            boost::property_map<Graph, vertex_index_t>::type id = get(vertex_index, cell2cellG);
+            if (mpi.rank == mRank)
+                log() << "UnstructuredMesh::ObtainLocalFactFillOrdering(): start calling boost" << std::endl;
+            minimum_degree_ordering(
+                cell2cellG,
+                make_iterator_property_map(degree.data(), id, degree[0]),
+                localFillOrderingOld2New.data(),
+                localFillOrderingNew2Old.data(),
+                make_iterator_property_map(supernodeSizes.data(), id, supernodeSizes[0]),
+                0,
+                id);
+            if (mpi.rank == mRank)
+                log() << "UnstructuredMesh::ObtainLocalFactFillOrdering(): boost done" << std::endl;
+        }
     }
 }

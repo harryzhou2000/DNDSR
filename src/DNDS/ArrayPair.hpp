@@ -37,6 +37,15 @@ namespace DNDS
                 return son->operator()(i - father->Size(), aOthers...);
         }
 
+        template <class... TOthers>
+        auto operator()(index i, TOthers... aOthers) const
+        {
+            if (i >= 0 && i < father->Size())
+                return father->operator()(i, aOthers...);
+            else
+                return son->operator()(i - father->Size(), aOthers...);
+        }
+
         auto RowSize(index i)
         {
             if (i >= 0 && i < father->Size())

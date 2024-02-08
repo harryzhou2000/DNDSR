@@ -37,6 +37,9 @@ namespace DNDS::Euler
         DNDS_assert(logErr);
         /************* Files **************/
 
+        mesh->ObtainLocalFactFillOrdering();
+        mesh->ObtainSymmetricSymbolicFactorization();
+
         std::shared_ptr<ODE::ImplicitDualTimeStep<ArrayDOFV<nVars_Fixed>, ArrayDOFV<1>>> ode;
         auto buildDOF = [&](ArrayDOFV<nVars_Fixed> &data)
         {
@@ -1218,8 +1221,10 @@ namespace DNDS::Euler
                           << "=== Step [" << step << "]   "
                           << "res \033[91m[" << (res.array() / resBaseC.array()).transpose() << "]\033[39m   "
                           << "t,dt(min) \033[92m[" << tSimu << ", " << curDtMin << "]\033[39m   "
+                          << fmt::format("[alphaInc({},{}), betaRec({},{}), alphaRes({},{})]",
+                                         nLimInc, alphaMinInc, nLimBeta, minBeta, nLimAlpha, minAlpha)
                           << std::setprecision(config.outputControl.nPrecisionConsole) << std::fixed
-                          << "Time [" << telapsed << "]   recTime [" << trec << "]   rhsTime [" << trhs << "]   commTime [" << tcomm << "]  limTime [" << tLim << "]  " << std::endl;
+                          << " Time [" << telapsed << "]   recTime [" << trec << "]   rhsTime [" << trhs << "]   commTime [" << tcomm << "]  limTime [" << tLim << "]  " << std::endl;
                     log().setf(fmt);
                     std::string delimC = " ";
                     logErr

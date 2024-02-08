@@ -66,7 +66,7 @@ namespace DNDS::CFV
      * output are all values derived using construct* method
      *
      */
-    template <int dim>
+    template <int dim = 2>
     class VariationalReconstruction
     {
     public:
@@ -188,15 +188,12 @@ namespace DNDS::CFV
 
         bool CellIsFaceBack(index iCell, index iFace) const
         {
-            DNDS_assert(mesh->face2cell(iFace, 0) == iCell || mesh->face2cell(iFace, 1) == iCell);
-            return mesh->face2cell(iFace, 0) == iCell;
+            return mesh->CellIsFaceBack(iCell, iFace);
         }
 
-        index CellFaceOther(index iCell, index iFace)
+        index CellFaceOther(index iCell, index iFace) const
         {
-            return CellIsFaceBack(iCell, iFace)
-                       ? mesh->face2cell(iFace, 1)
-                       : mesh->face2cell(iFace, 0);
+            return mesh->CellFaceOther(iCell, iFace);
         }
 
         Geom::tPoint GetFaceNorm(index iFace, int iG)
@@ -829,7 +826,7 @@ namespace DNDS::CFV
             u.trans.initPersistentPush();
         }
 
-        template <int nVarsFixed>
+        template <int nVarsFixed = 5>
         using TFBoundary = std::function<Eigen::Vector<real, nVarsFixed>(
             const Eigen::Vector<real, nVarsFixed> &, // UBL
             const Eigen::Vector<real, nVarsFixed> &, // UMEAN
@@ -839,7 +836,7 @@ namespace DNDS::CFV
             Geom::t_index fType                      // fCode
             )>;
 
-        template <int nVarsFixed>
+        template <int nVarsFixed = 5>
         using TFBoundaryDiff = std::function<Eigen::Vector<real, nVarsFixed>(
             const Eigen::Vector<real, nVarsFixed> &, // UBL
             const Eigen::Vector<real, nVarsFixed> &, // dUMEAN
@@ -850,7 +847,15 @@ namespace DNDS::CFV
             Geom::t_index fType                      // fCode
             )>;
 
-        template <int nVarsFixed>
+        /**
+         * \brief fallback reconstruction method,
+         * explicit 2nd order FV reconstruction
+         * \param uRec output, reconstructed gradients
+         * \param u input, mean values
+         * \param FBoundary see TFBoundary
+         * \param method currently 1==2nd-order-GaussGreen
+         */
+        template <int nVarsFixed = 5>
         void DoReconstruction2nd(
             tURec<nVarsFixed> &uRec,
             tUDof<nVarsFixed> &u,
@@ -858,18 +863,29 @@ namespace DNDS::CFV
             int method);
 
         /**
-         * @brief do reconstruction iteration
+         * \brief iterative variational reconstruction method
+         * \details
+         * DoReconstructionIter updates uRec (could locate into uRecNew)
+         * $$
+         * ur_i = A_{i}^{-1}B_{ij}ur_j +  A_{i}^{-1}b_{i}
+         * $$
+         * which is a fixed-point solver (using SOR/Jacobi sweeping)
+         * 
          * if recordInc, value in the output array is actually defined as :
          * $$
          * -(A_{i}^{-1}B_{ij}ur_j +  A_{i}^{-1}b_{i}) + ur_i
          * $$
          * which is the RHS of Block-Jacobi preconditioned system
          *
-         * @param FBoundary Vec F(const Vec &uL, const tPoint &unitNorm, const tPoint &p, t_index faceID),
-         * with Vec == Eigen::Vector<real, nVarsFixed>
+         * \param uRec input/ouput, reconstructed coefficients, is output if putIntoNew==false, otherwise is used as medium value
+         * \param uRecNew input/ouput, reconstructed coefficients, is output if putIntoNew==true, otherwise is used as medium value
+         * \param u input, mean values
+         * \param FBoundary see TFBoundary
+         * \param putIntoNew put valid output into uRecNew or not
+         * \param recordInc if true, uRecNew holds the incremental value to this iteration
          * @warning mind that uRec could be overwritten
          */
-        template <int nVarsFixed>
+        template <int nVarsFixed = 5>
         void DoReconstructionIter(
             tURec<nVarsFixed> &uRec,
             tURec<nVarsFixed> &uRecNew,
@@ -880,15 +896,23 @@ namespace DNDS::CFV
         /***********************************************************/
 
         /**
-         * @brief puts into uRecNew with Mat * uRecDiff; uses the Block-jacobi preconditioned reconstruction system as Mat:
+         * @brief puts into uRecNew with Mat * uRecDiff; uses the Block-jacobi preconditioned reconstruction system as Mat.
+         * \details
+         * the matrix operation can be viewed as
          * $$
-         * ur_i = A_{i}^{-1}B_{ij}ur_j +  A_{i}^{-1}b_{i}
+         * vr_i = ur_j - A_{i}^{-1}B_{ij}ur_j
          * $$
-         * @param FBoundary Vec F(const Vec &uL, const Vec& dUL, const tPoint &unitNorm, const tPoint &p, t_index faceID),
+         * which is the Jacobian of the DoReconstructionIter's RHS output.
+         * Note that we account for nonlinear effects from BC
+         * \param uRec input, the base value
+         * \param uRecDiff input, the diff value, $x$ in $y=Jx$, or the disturbance value
+         * \param uRecNew output, the result, $y$, or the response value
+         * \param u input, mean value
+         * \param FBoundary Vec F(const Vec &uL, const Vec& dUL, const tPoint &unitNorm, const tPoint &p, t_index faceID),
          * with Vec == Eigen::Vector<real, nVarsFixed>
          * uRecDiff should be untouched
          */
-        template <int nVarsFixed>
+        template <int nVarsFixed = 5>
         void DoReconstructionIterDiff(
             tURec<nVarsFixed> &uRec,
             tURec<nVarsFixed> &uRecDiff,
@@ -897,10 +921,10 @@ namespace DNDS::CFV
             const TFBoundaryDiff<nVarsFixed> &FBoundaryDiff);
         /***********************************************************/
 
-        /**
+        /** //TODO
          * @brief do a SOR iteration from uRecNew, with uRecInc as the RHSterm of Block-Jacobi preconditioned system
          */
-        template <int nVarsFixed>
+        template <int nVarsFixed = 5>
         void DoReconstructionIterSOR(
             tURec<nVarsFixed> &uRec,
             tURec<nVarsFixed> &uRecInc,

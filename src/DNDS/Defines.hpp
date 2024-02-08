@@ -14,6 +14,7 @@
 #include <filesystem>
 #include <functional>
 #include <locale>
+#include <fmt/core.h>
 
 #ifdef DNDS_USE_OMP
 #include <omp.h>
@@ -274,8 +275,14 @@ namespace DNDS
 
     ///@todo //TODO: overflow_assign_int64_to_32
 
+    inline int32_t checkedIndexTo32(index v)
+    {
+        DNDS_assert_info(!(v > static_cast<index>(INT32_MAX) || v < static_cast<index>(INT32_MIN)),
+                         fmt::format("Index {} to int32 overflow", v));
+        return static_cast<int32_t>(v);
+    }
+
     std::string getStringForceWString(const std::wstring &v);
-    
 
     inline std::string getStringForcePath(const std::filesystem::path::string_type &v)
     {
