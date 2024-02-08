@@ -282,6 +282,8 @@ set(EXTERNAL_INCLUDES ${EXTERNAL_INCLUDES}
     CACHE INTERNAL "Project External Includes")
 endif()
 
+add_compile_definitions(__DNDS_REALLY_COMPILING__)
+
 if(DNDS_EIGEN_USE_BLAS)
     add_compile_definitions(EIGEN_USE_BLAS)
 endif()

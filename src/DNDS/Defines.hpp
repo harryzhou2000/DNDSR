@@ -51,6 +51,12 @@ static const std::string DNDS_Defines_state =
 #define DNDS_MACRO_TO_STRING(V) __DNDS_str(V)
 #define __DNDS_str(V) #V
 
+#ifdef __DNDS_REALLY_COMPILING__
+#define DNDS_SWITCH_INTELLISENSE(real, intellisense) real
+#else
+#define DNDS_SWITCH_INTELLISENSE(real, intellisense) intellisense
+#endif
+
 /***************/ // DNDS_assertS
 
 inline void __DNDS_assert_false(const char *expr, const char *file, int line)

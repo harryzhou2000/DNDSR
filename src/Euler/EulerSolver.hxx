@@ -4,13 +4,19 @@
 
 namespace DNDS::Euler
 {
-    template <EulerModel model>
-    void EulerSolver<model>::RunImplicitEuler()
     // /***************/ // IDE mode:
     // static const auto model = NS_SA;
     // template <>
     // void EulerSolver<model>::RunImplicitEuler()
     // /***************/ // IDE mode;
+    DNDS_SWITCH_INTELLISENSE(
+        // the real definition
+        template <EulerModel model>
+        void EulerSolver<model>::RunImplicitEuler(),
+        // the intellisense friendly definition
+        static const auto model = NS_SA;
+        template <>
+        void EulerSolver<model>::RunImplicitEuler())
     {
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
         DNDS_MPI_InsertCheck(mpi, "Implicit 1 nvars " + std::to_string(nVars));
@@ -124,8 +130,6 @@ namespace DNDS::Euler
         std::unique_ptr<tGMRES_u> gmres;
         std::unique_ptr<tGMRES_uRec> gmresRec;
 
-        
-
         if (config.linearSolverControl.gmresCode == 1 ||
             config.linearSolverControl.gmresCode == 2)
             gmres = std::make_unique<tGMRES_u>(
@@ -193,7 +197,7 @@ namespace DNDS::Euler
                 auto eCell = mesh->GetCellElement(iCell);
                 auto qCell = vfv->GetCellQuad(iCell);
                 real minDetJac = veryLargeReal;
-                for(int iG = 0; iG < qCell.GetNumPoints(); iG++)
+                for (int iG = 0; iG < qCell.GetNumPoints(); iG++)
                     minDetJac = std::min(vfv->GetCellJacobiDet(iCell, iG), minDetJac);
                 return minDetJac * Geom::Elem::ParamSpaceVol(eCell.GetParamSpace()) / vfv->GetCellVol(iCell);
             };
