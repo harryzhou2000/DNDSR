@@ -2,7 +2,6 @@
 
 #include "DNDS/HardEigen.hpp"
 #include "DNDS/Defines.hpp"
-#include "Eigen/Dense"
 #include "fmt/core.h"
 
 namespace DNDS::Scalar

@@ -12,6 +12,7 @@
 
 #include "Euler.hpp"
 #include "EulerBC.hpp"
+#include "EulerJacobian.hpp"
 #include "RANS_ke.hpp"
 #include "DNDS/SerializerBase.hpp"
 #include "fmt/core.h"

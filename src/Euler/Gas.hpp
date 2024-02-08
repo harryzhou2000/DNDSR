@@ -1,6 +1,5 @@
 #pragma once
 #include "DNDS/Defines.hpp"
-#include "Eigen/Dense"
 
 #include <json.hpp>
 #include <fmt/core.h>

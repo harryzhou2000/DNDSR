@@ -13,7 +13,6 @@
 
 #include "VRSettings.hpp"
 
-#include "Eigen/Dense"
 #include "fmt/core.h"
 
 namespace DNDS::CFV

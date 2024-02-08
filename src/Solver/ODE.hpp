@@ -1,7 +1,6 @@
 #pragma once
 #include "DNDS/Defines.hpp"
 #include "DNDS/MPI.hpp"
-#include "Eigen/Dense"
 #include "Scalar.hpp"
 
 namespace DNDS::ODE

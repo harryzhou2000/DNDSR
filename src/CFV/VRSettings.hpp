@@ -14,8 +14,6 @@
 #define JSON_ASSERT DNDS_assert
 #include "json.hpp"
 
-#include "Eigen/Dense"
-
 #include "DNDS/JsonUtil.hpp"
 
 namespace DNDS::CFV
