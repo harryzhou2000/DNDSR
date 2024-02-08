@@ -238,11 +238,11 @@ endif()
 #     )
 
 set(EXTERNAL_LIBS ${EXTERNAL_LIBS}
-    ${EXTERNAL_LIB_ZLIB}
     ${EXTERNAL_LIB_CGNS}
     ${EXTERNAL_LIB_HDF5}
     ${EXTERNAL_LIB_PARMETIS}
     ${EXTERNAL_LIB_METIS}
+    ${EXTERNAL_LIB_ZLIB}
     # ${EXTERNAL_LIB_TECIO}
     CACHE INTERNAL
     "Project Public External Lib Dependencies"
@@ -297,7 +297,7 @@ if(UNIX OR MINGW)
     stdc++fs)
     if(UNIX)
         set(EXTERNAL_LIBS ${EXTERNAL_LIBS}
-        dl)
+        dl) # add dl
     endif()
     if(MINGW)
         add_compile_options(-Wa,-mbig-obj) # too many sections
@@ -492,6 +492,7 @@ euler3D
 eulerSA
 eulerSA3D
 euler2EQ
+jacobiLUTest
 )
 
 
