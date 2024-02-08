@@ -53,9 +53,7 @@ void testCGNS()
 
     mesh->TransformCoords(
         [&](const DNDS::Geom::tPoint p)
-        { 
-            
-            return p * 2; });
+        { return p * 2; });
 
     reader.PrintSerialPartPltBinaryDataArray(
         "../data/out/debug",

@@ -1474,7 +1474,7 @@ namespace DNDS::Geom
 
     void UnstructuredMesh::ObtainSymmetricSymbolicFactorization()
     {
-        auto cell2cellFaceV = this->GetCell2CellFaceVLocal();
+        auto &cell2cellFaceV = cell2cellFaceVLocal;
 
         std::vector<std::unordered_set<index>> triLowRows;
         std::vector<std::unordered_set<index>> triUppRows;
@@ -1515,18 +1515,27 @@ namespace DNDS::Geom
 
         lowerTriStructure.resize(this->NumCell());
         upperTriStructure.resize(this->NumCell());
+        lowerTriStructureNew.resize(this->NumCell());
+        upperTriStructureNew.resize(this->NumCell());
         index nnzLower{0}, nnzUpper{0};
         for (index iCellP = 0; iCellP < this->NumCell(); iCellP++)
         {
             index iCell = this->CellFillingReorderNew2Old(iCellP);
             lowerTriStructure[iCell].reserve(triLowRows[iCellP].size());
             upperTriStructure[iCell].reserve(triUppRows[iCellP].size());
+            lowerTriStructureNew[iCellP].reserve(triLowRows[iCellP].size());
+            upperTriStructureNew[iCellP].reserve(triUppRows[iCellP].size());
             for (auto iCellOtherP : triLowRows[iCellP])
-                lowerTriStructure[iCell].push_back(this->CellFillingReorderNew2Old(iCellOtherP));
+                lowerTriStructureNew[iCellP].push_back(iCellOtherP);
             for (auto iCellOtherP : triUppRows[iCellP])
+                upperTriStructureNew[iCellP].push_back(iCellOtherP);
+            std::sort(lowerTriStructureNew[iCellP].begin(), lowerTriStructureNew[iCellP].end());
+            std::sort(upperTriStructureNew[iCellP].begin(), upperTriStructureNew[iCellP].end());
+            for (auto iCellOtherP : lowerTriStructureNew[iCellP])
+                lowerTriStructure[iCell].push_back(this->CellFillingReorderNew2Old(iCellOtherP));
+            for (auto iCellOtherP : upperTriStructureNew[iCellP])
                 upperTriStructure[iCell].push_back(this->CellFillingReorderNew2Old(iCellOtherP));
-            std::sort(lowerTriStructure[iCell].begin(), lowerTriStructure[iCell].end());
-            std::sort(upperTriStructure[iCell].begin(), upperTriStructure[iCell].end());
+
             nnzLower += lowerTriStructure[iCell].size();
             nnzUpper += upperTriStructure[iCell].size();
         }

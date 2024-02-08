@@ -283,6 +283,27 @@ namespace DNDS
         return a - std::floor(a / b) * b;
     }
 
+    template <class tIt1, class tIt1end, class tIt2, class tIt2end, class tF>
+    bool iterateIdentical(tIt1 it1, tIt1end it1end, tIt2 it2, tIt2end it2end, tF F)
+    {
+        size_t it1Pos{0}, it2Pos{0};
+        while (it1 != it1end && it2 != it2end)
+        {
+            if ((*it1) < (*it2))
+                ++it1, ++it1Pos;
+            else if ((*it1) > (*it2))
+                ++it2, ++it2Pos;
+            else if ((*it1) == (*it2))
+            {
+                if (F(*it1, it1Pos, it2Pos))
+                    return true;
+                ++it1, ++it1Pos;
+                ++it2, ++it2Pos;
+            }
+        }
+        return false;
+    }
+
     ///@todo //TODO: overflow_assign_int64_to_32
 
     inline int32_t checkedIndexTo32(index v)

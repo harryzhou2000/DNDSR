@@ -125,10 +125,14 @@ namespace DNDS::Geom
         // tAdj1Pair bndFaces; // no comm needed for now
 
         /// for cell local factorization
+        using tLocalMatStruct = std::vector<std::vector<index>>;
         std::vector<index> localFillOrderingNew2Old;
         std::vector<index> localFillOrderingOld2New;
-        std::vector<std::vector<index>> lowerTriStructure;
-        std::vector<std::vector<index>> upperTriStructure;
+        tLocalMatStruct lowerTriStructure;
+        tLocalMatStruct upperTriStructure;
+        tLocalMatStruct lowerTriStructureNew;
+        tLocalMatStruct upperTriStructureNew;
+        tLocalMatStruct cell2cellFaceVLocal;
 
         index CellFillingReorderOld2New(index v)
         {

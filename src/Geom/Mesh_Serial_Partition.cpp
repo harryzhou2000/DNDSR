@@ -146,9 +146,23 @@ namespace DNDS::Geom
 
     void UnstructuredMesh::ObtainLocalFactFillOrdering()
     {
+        cell2cellFaceVLocal = this->GetCell2CellFaceVLocal();
         if (!this->NumCell())
             return;
-        int method = 2; //1 uses metis, 2 uses MMD
+        int method = 2; // 1 uses metis, 2 uses MMD
+        if (method == -1)
+        {
+            localFillOrderingNew2Old.reserve(this->NumCell());
+            for (index i = 0; i < this->NumCell(); i++)
+                if (i % 2 == 0)
+                    localFillOrderingNew2Old.push_back(i);
+            for (index i = 0; i < this->NumCell(); i++)
+                if (i % 2 != 0)
+                    localFillOrderingNew2Old.push_back(i);
+            localFillOrderingOld2New.resize(this->NumCell());
+            for (index i = 0; i < this->NumCell(); i++)
+                localFillOrderingOld2New.at(localFillOrderingNew2Old.at(i)) = i;
+        }
         if (method == 1)
         {
             _METIS::idx_t nCell = _METIS::indexToIdx(this->NumCell());
@@ -169,7 +183,7 @@ namespace DNDS::Geom
                 options[_METIS::METIS_OPTION_NUMBERING] = 0;
                 // options[_METIS::METIS_OPTION_DBGLVL] = _METIS::METIS_DBG_TIME | _METIS::METIS_DBG_IPART;
             }
-            std::vector<std::vector<index>> cell2cellFaceV = this->GetCell2CellFaceVLocal();
+            std::vector<std::vector<index>> &cell2cellFaceV = cell2cellFaceVLocal;
             std::vector<_METIS::idx_t> adjncy, xadj, perm, iPerm;
             xadj.resize(nCell + 1);
             xadj[0] = 0;
@@ -203,7 +217,7 @@ namespace DNDS::Geom
             using namespace boost;
             typedef adjacency_list<vecS, vecS, directedS> Graph;
             Graph cell2cellG(this->NumCell());
-            std::vector<std::vector<index>> cell2cellFaceV = this->GetCell2CellFaceVLocal();
+            std::vector<std::vector<index>> &cell2cellFaceV = cell2cellFaceVLocal;
             for (index iCell = 0; iCell < this->NumCell(); iCell++)
                 for (auto iCOther : cell2cellFaceV[iCell])
                     add_edge(iCell, iCOther, cell2cellG);

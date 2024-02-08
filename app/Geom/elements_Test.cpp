@@ -1,5 +1,4 @@
 #include "Geom/Quadrature.hpp"
-#include "Eigen/Dense"
 #include <cstdlib>
 #include <cassert>
 
