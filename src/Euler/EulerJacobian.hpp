@@ -87,11 +87,7 @@ namespace DNDS::Euler
                                     return true;
                                 DNDS_assert(kP < mesh->NumCell());
                                 auto k = mesh->CellFillingReorderNew2Old(kP);
-                                auto ret = std::lower_bound(
-                                    mesh->upperTriStructureNew[kP].begin(), mesh->upperTriStructureNew[kP].end(), jP);
-                                DNDS_assert(ret != mesh->upperTriStructureNew[kP].end()); // has to be found
-                                int jPInUpperPos = checkedIndexTo32(ret - mesh->upperTriStructureNew[kP].begin());
-
+                                int jPInUpperPos = mesh->lowerTriStructureNewInUpper[jP][pos2];
                                 this->GetLower(i, ijP) -= this->GetLower(i, pos1) * this->GetUpper(k, jPInUpperPos);
                                 // if (iP < 3)
                                 // log() << fmt::format("Lower Add at {},{},{} === {}", iP, jP - 1, kP, (this->GetLower(i, pos1) * this->GetUpper(k, jPInUpperPos))(0)) << std::endl;
@@ -109,11 +105,7 @@ namespace DNDS::Euler
                 {
                     auto kP = lowerRow[ikP];
                     auto k = mesh->CellFillingReorderNew2Old(kP);
-                    auto ret = std::lower_bound(
-                        mesh->upperTriStructureNew[kP].begin(), mesh->upperTriStructureNew[kP].end(), iP);
-                    DNDS_assert(ret != mesh->upperTriStructureNew[kP].end());
-                    int iPInUpperPos = checkedIndexTo32(ret - mesh->upperTriStructureNew[kP].begin());
-
+                    int iPInUpperPos = mesh->lowerTriStructureNewInUpper[iP][ikP];
                     this->GetDiag(i) -= this->GetLower(i, ikP) * this->GetUpper(k, iPInUpperPos);
                 }
                 tComponent AI;
@@ -140,11 +132,7 @@ namespace DNDS::Euler
                                 return true;
                             DNDS_assert(kP < mesh->NumCell());
                             auto k = mesh->CellFillingReorderNew2Old(kP);
-                            auto ret = std::lower_bound(
-                                mesh->upperTriStructureNew[kP].begin(), mesh->upperTriStructureNew[kP].end(), jP);
-                            DNDS_assert(ret != mesh->upperTriStructureNew[kP].end()); // has to be found
-                            int jPInUpperPos = checkedIndexTo32(ret - mesh->upperTriStructureNew[kP].begin());
-
+                            int jPInUpperPos = mesh->lowerTriStructureNewInUpper[jP][pos2];
                             this->GetUpper(i, ijP) -= this->GetLower(i, pos1) * this->GetUpper(k, jPInUpperPos);
                             // if (iP < 3)
                             // log() << fmt::format("Upper Add at {},{},{} === {}", iP, jP, kP,
@@ -159,6 +147,7 @@ namespace DNDS::Euler
 
         void PrintLog()
         {
+            log() << "nz Entries with Diag part inverse-ed" << std::endl;
             for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
             {
                 log() << "=== Row " << iCell << std::endl

@@ -133,6 +133,8 @@ namespace DNDS::Geom
         tLocalMatStruct lowerTriStructureNew;
         tLocalMatStruct upperTriStructureNew;
         tLocalMatStruct cell2cellFaceVLocal;
+        tLocalMatStruct lowerTriStructureNewInUpper;
+        tLocalMatStruct cell2cellFaceVLocal2FullRowPos; // diag-lower-upper
 
         index CellFillingReorderOld2New(index v)
         {
@@ -173,8 +175,8 @@ namespace DNDS::Geom
 
         // void ReorderCellLocal();
 
-        void ObtainLocalFactFillOrdering();
-        void ObtainSymmetricSymbolicFactorization();
+        void ObtainLocalFactFillOrdering(int method = 0); // 1 uses metis, 2 uses MMD, //TODO 10 uses geometric based searching
+        void ObtainSymmetricSymbolicFactorization(int iluCode = -1); // -1 use full LU, 0-3 use ilu(code), 
 
         index NumNode() { return coords.father->Size(); }
         index NumCell() { return cell2node.father->Size(); }

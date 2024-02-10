@@ -144,12 +144,11 @@ namespace DNDS::Geom
     //     // DNDS_assert(this->adjC2FState == Adj_PointToLocal);
     // }
 
-    void UnstructuredMesh::ObtainLocalFactFillOrdering()
+    void UnstructuredMesh::ObtainLocalFactFillOrdering(int method)
     {
         cell2cellFaceVLocal = this->GetCell2CellFaceVLocal();
         if (!this->NumCell())
             return;
-        int method = 2; // 1 uses metis, 2 uses MMD
         if (method == -1)
         {
             localFillOrderingNew2Old.reserve(this->NumCell());

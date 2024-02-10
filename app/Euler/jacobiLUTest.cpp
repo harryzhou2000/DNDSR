@@ -23,8 +23,8 @@ namespace DNDS::Euler
         mesh->AdjGlobal2LocalPrimary();
         mesh->InterpolateFace(); // this mesh building is copied from meshSerial_Test
 
-        mesh->ObtainLocalFactFillOrdering();
-        mesh->ObtainSymmetricSymbolicFactorization();
+        mesh->ObtainLocalFactFillOrdering(0);
+        mesh->ObtainSymmetricSymbolicFactorization(5);
 
         JacobianLocalLU<bDim> J(mesh, bDim);
         J.setZero();
@@ -77,9 +77,13 @@ namespace DNDS::Euler
         //     std::cout << b[i].transpose() << ", ";
         // std::cout << std::endl;
 
+        double t0 = MPI_Wtime();
         J.InPlaceDecompose();
+        std::cout << "Decomposing finished for " << std::scientific << (MPI_Wtime() - t0) << std::endl;
         // J.PrintLog();
+        t0 = MPI_Wtime();
         J.Solve(b, sol);
+        std::cout << "Solving finished for " << std::scientific << (MPI_Wtime() - t0) << std::endl;
         std::cout << "solved" << std::endl;
         solAcc -= sol;
         std::cout << "Error is " << std::scientific << std::setprecision(10) << solAcc.norm2() << std::endl;
