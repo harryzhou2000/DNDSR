@@ -320,7 +320,7 @@ if(UNIX OR MINGW)
     endif()
     
     ### set warnings
-    add_compile_options(-Wall -Wno-unused-but-set-variable -Wno-unused-variable -Wno-sign-compare)
+    add_compile_options(-Wall -Wno-unused-but-set-variable -Wno-unused-variable -Wno-sign-compare -Werror=return-type)
     
 
     if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang")
