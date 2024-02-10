@@ -5,6 +5,7 @@
 #include <vector>
 #include <iostream>
 #include <typeinfo>
+#include <utility>
 
 #include <fmt/core.h>
 
@@ -561,6 +562,29 @@ namespace DNDS
         void CopyData(const self_type &R)
         {
             this->operator=(R); // currently ok!
+        }
+
+        void SwapData(self_type &R)
+        {
+            DNDS_assert(R.Size() == this->Size());
+            DNDS_assert(R._data.size() == _data.size());
+            if constexpr (_dataLayout == CSR)
+            {
+                if (IfCompressed())
+                {
+                    _data.swap(R._data);
+                    _pRowStart.swap(R._pRowStart);
+                }
+                else
+                {
+                    _dataUncompressed.swap(R._dataUncompressed);
+                    _pRowSizes.swap(R._pRowSizes);
+                }
+            }
+            else
+            {
+                _data.swap(R._data);
+            }
         }
 
         static std::string GetArraySignature()
