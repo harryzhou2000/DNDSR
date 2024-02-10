@@ -345,6 +345,12 @@ namespace DNDS::Euler
             ArrayDOFV<nVarsFixed> &JDiag,
             ArrayDOFV<nVarsFixed> &AuInc);
 
+        void LUSGSMatrixToJacobianLU(
+            real alphaDiag,
+            ArrayDOFV<nVarsFixed> &u,
+            ArrayDOFV<nVarsFixed> &JDiag,
+            JacobianLocalLU<nVarsFixed> &jacLU);
+
         /**
          * @brief to use LUSGS, use LUSGSForward(..., uInc, uInc); uInc.pull; LUSGSBackward(..., uInc, uInc);
          * the underlying logic is that for index, ghost > dist, so the forward uses no ghost,
@@ -382,6 +388,17 @@ namespace DNDS::Euler
             ArrayDOFV<nVarsFixed> &uIncNew,
             ArrayDOFV<nVarsFixed> &JDiag,
             bool forward, TU &sumInc);
+
+        void LUSGSMatrixSolveJacobianLU(
+            real alphaDiag,
+            ArrayDOFV<nVarsFixed> &rhs,
+            ArrayDOFV<nVarsFixed> &u,
+            ArrayDOFV<nVarsFixed> &uInc,
+            ArrayDOFV<nVarsFixed> &uIncNew,
+            ArrayDOFV<nVarsFixed> &bBuf,
+            ArrayDOFV<nVarsFixed> &JDiag,
+            JacobianLocalLU<nVarsFixed> &jacLU,
+            TU &sumInc);
 
         void UpdateSGSWithRec(
             real alphaDiag,
@@ -961,6 +978,20 @@ namespace DNDS::Euler
                 dF(I4 + 2) -= dU(I4 + 2) * lambdaMain;
             }
             return dF;
+        }
+
+        TJacobianU fluxJacobian0_Right_Times_du_AsMatrix(
+            const TU &U,
+            const TVec &n,
+            Geom::t_index btype,
+            real lambdaMain, real lambdaC)
+        { //TODO: optimize this
+            TJacobianU J;
+            J.resize(nVars, nVars);
+            J.setIdentity();
+            for (int i = 0; i < nVars; i++)
+                J(Eigen::all, i) = fluxJacobian0_Right_Times_du(U, n, btype, J(Eigen::all, i), lambdaMain, lambdaC);
+            return J;
         }
 
         TU fluxJacobianC_Right_Times_du(

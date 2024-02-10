@@ -5,6 +5,8 @@
 namespace DNDS::Euler
 {
 
+    static const auto model = NS_SA; // to be hidden by template params
+
     template <EulerModel model>
     void EulerEvaluator<model>::LUSGSMatrixInit(
         ArrayDOFV<nVarsFixed> &JDiag,
@@ -131,6 +133,57 @@ namespace DNDS::Euler
             }
         }
         DNDS_MPI_InsertCheck(u.father->getMPI(), "LUSGSMatrixVec -1");
+    }
+
+    DNDS_SWITCH_INTELLISENSE(
+        template <EulerModel model>, template <>
+    )
+    void EulerEvaluator<model>::LUSGSMatrixToJacobianLU(
+        real alphaDiag,
+        ArrayDOFV<nVarsFixed> &u,
+        ArrayDOFV<nVarsFixed> &JDiag,
+        JacobianLocalLU<nVarsFixed> &jacLU)
+    {
+        DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
+        DNDS_MPI_InsertCheck(u.father->getMPI(), "LUSGSMatrixToJacobianLU 1");
+        int cnvars = nVars;
+        jacLU.setZero();
+        for (index iScan = 0; iScan < mesh->NumCell(); iScan++)
+        {
+            index iCell = iScan;
+            // iCell = (*vfv->SOR_iScan2iCell)[iCell];//TODO: add rb-sor
+            auto c2f = mesh->cell2face[iCell];
+            for (int ic2f = 0; ic2f < c2f.size(); ic2f++)
+            {
+                index iFace = c2f[ic2f];
+                auto f2c = mesh->face2cell[iFace];
+                index iCellOther = f2c[0] == iCell ? f2c[1] : f2c[0];
+                index iCellAtFace = f2c[0] == iCell ? 0 : 1;
+                if (iCellOther != UnInitIndex && iCellOther != iCell && iCellOther < mesh->NumCell())
+                {
+                    auto uj = u[iCellOther];
+                    int iC2CInLocal = -1;
+                    for (int ic2c = 0; ic2c < mesh->cell2cellFaceVLocal[iCell].size(); ic2c++)
+                        if (iCellOther == mesh->cell2cellFaceVLocal[iCell][ic2c])
+                            iC2CInLocal = ic2c;
+                    DNDS_assert(iC2CInLocal != -1);
+                    TJacobianU jacIJ;
+                    {
+                        TVec unitNorm = vfv->GetFaceNormFromCell(iFace, iCellOther, iCellAtFace, -1)(Seq012) *
+                                        (iCellAtFace ? -1 : 1); // faces out
+                        jacIJ = fluxJacobian0_Right_Times_du_AsMatrix(
+                            uj,
+                            unitNorm,
+                            Geom::BC_ID_INTERNAL, lambdaFace[iFace], lambdaFaceC[iFace]); //! always inner here
+                    }
+                    jacLU.LDU(iCell, mesh->cell2cellFaceVLocal2FullRowPos[iCell][iC2CInLocal]) =
+                        (0.5 * alphaDiag) * vfv->GetFaceArea(iFace) / vfv->GetCellVol(iCell) * jacIJ;
+                }
+            }
+            jacLU.GetDiag(iCell) = JDiag[iCell].asDiagonal();
+        }
+        jacLU.InPlaceDecompose();
+        DNDS_MPI_InsertCheck(u.father->getMPI(), "LUSGSMatrixToJacobianLU -1");
     }
 
     template <EulerModel model>
@@ -350,6 +403,7 @@ namespace DNDS::Euler
         TU sumIncAll(cnvars);
         // std::abort();
         MPI::Allreduce(sumInc.data(), sumIncAll.data(), sumInc.size(), DNDS_MPI_REAL, MPI_SUM, rhs.father->getMPI().comm);
+        sumInc = sumIncAll;
         DNDS_MPI_InsertCheck(u.father->getMPI(), "UpdateSGS -1");
         // exit(-1);
     }
@@ -449,6 +503,73 @@ namespace DNDS::Euler
         TU sumIncAll(cnvars);
         MPI::Allreduce(sumInc.data(), sumIncAll.data(), sumInc.size(), DNDS_MPI_REAL, MPI_SUM, rhs.father->getMPI().comm);
         DNDS_MPI_InsertCheck(u.father->getMPI(), "UpdateSGS -1");
+    }
+
+    DNDS_SWITCH_INTELLISENSE(
+        template <EulerModel model>, template <>
+    )
+    void EulerEvaluator<model>::LUSGSMatrixSolveJacobianLU(
+        real alphaDiag,
+        ArrayDOFV<nVarsFixed> &rhs,
+        ArrayDOFV<nVarsFixed> &u,
+        ArrayDOFV<nVarsFixed> &uInc,
+        ArrayDOFV<nVarsFixed> &uIncNew,
+        ArrayDOFV<nVarsFixed> &bBuf,
+        ArrayDOFV<nVarsFixed> &JDiag,
+        JacobianLocalLU<nVarsFixed> &jacLU,
+        TU &sumInc)
+    {
+        DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
+        DNDS_MPI_InsertCheck(u.father->getMPI(), "LUSGSMatrixSolveJacobianLU 1");
+        int cnvars = nVars;
+        index nCellDist = mesh->NumCell();
+        sumInc.setZero(cnvars);
+        for (index iScan = 0; iScan < nCellDist; iScan++)
+        {
+            index iCell = iScan;
+            auto c2f = mesh->cell2face[iCell];
+            bBuf[iCell] = rhs[iCell];
+            for (int ic2f = 0; ic2f < c2f.size(); ic2f++)
+            {
+                index iFace = c2f[ic2f];
+                auto f2c = mesh->face2cell[iFace];
+                index iCellOther = f2c[0] == iCell ? f2c[1] : f2c[0];
+                index iCellAtFace = f2c[0] == iCell ? 0 : 1;
+                if (iCellOther != UnInitIndex && iCell != iCellOther
+                    // if is a ghost neighbour
+                    && iCellOther >= mesh->NumCell())
+                {
+                    TU fInc;
+                    auto uINCj = uInc[iCellOther];
+                    {
+                        TVec unitNorm = vfv->GetFaceNormFromCell(iFace, iCellOther, iCellAtFace, -1)(Seq012) *
+                                        (iCellAtFace ? -1 : 1); // faces out
+
+                        fInc = fluxJacobian0_Right_Times_du(
+                            u[iCellOther],
+                            unitNorm,
+                            Geom::BC_ID_INTERNAL, uINCj, lambdaFace[iFace], lambdaFaceC[iFace]); //! always inner here
+                    }
+
+                    bBuf[iCell] -= (0.5 * alphaDiag) * vfv->GetFaceArea(iFace) / vfv->GetCellVol(iCell) *
+                                   (fInc);
+                }
+            }
+            // TU uIncOld = uIncNew[iCell];
+            // uIncNew[iCell] = JDiag[iCell].array().inverse() * bBuf[iCell].array();
+            // sumInc.array() += (uIncNew[iCell] - uIncOld).array().abs();
+        }
+        jacLU.Solve(bBuf, uIncNew); // top-diagonal solve
+
+        DNDS_assert(uIncNew.father.get() != uInc.father.get()); // no aliasing
+        uInc -= uIncNew;
+        sumInc = uInc.componentWiseNorm1();
+        // TU sumIncAll(cnvars);
+        // MPI::Allreduce(sumInc.data(), sumIncAll.data(), sumInc.size(), DNDS_MPI_REAL, MPI_SUM, rhs.father->getMPI().comm);
+        // sumInc = sumIncAll;
+
+        DNDS_MPI_InsertCheck(u.father->getMPI(), "LUSGSMatrixSolveJacobianLU -1");
+        // exit(-1);
     }
 
     template <EulerModel model>

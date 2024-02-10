@@ -131,6 +131,18 @@ namespace DNDS::Euler
             return std::sqrt(sqrSumAll);
         }
 
+        Eigen::Vector<real, nVarsFixed> componentWiseNorm1()
+        {
+            Eigen::Vector<real, nVarsFixed> minLocal, min;
+            minLocal.resize(this->RowSize());
+            minLocal.setConstant(0);
+            min = minLocal;
+            for (index i = 0; i < this->father->Size(); i++) //*note that only father is included
+                minLocal += (this->operator[](i).array().abs()).matrix();
+            MPI::Allreduce(minLocal.data(), min.data(), minLocal.size(), DNDS_MPI_REAL, MPI_SUM, this->father->getMPI().comm);
+            return min;
+        }
+
         Eigen::Vector<real, nVarsFixed> min()
         {
             Eigen::Vector<real, nVarsFixed> minLocal, min;
@@ -139,7 +151,7 @@ namespace DNDS::Euler
             min = minLocal;
             for (index i = 0; i < this->father->Size(); i++) //*note that only father is included
                 minLocal = minLocal.array().min(this->operator[](i).array());
-            MPI::Allreduce(&minLocal.data(), &min.data(), minLocal.size(), DNDS_MPI_REAL, MPI_MIN, this->father->getMPI().comm);
+            MPI::Allreduce(minLocal.data(), min.data(), minLocal.size(), DNDS_MPI_REAL, MPI_MIN, this->father->getMPI().comm);
             return min;
         }
 

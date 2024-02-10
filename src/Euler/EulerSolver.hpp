@@ -52,6 +52,7 @@ namespace DNDS::Euler
         ArrayDOFV<nVarsFixed> u, uInc, uIncRHS, uTemp, rhsTemp, wAveraged, uAveraged;
         ArrayRECV<nVarsFixed> uRec, uRecNew, uRecNew1, uRecOld, uRec1, uRecInc, uRecInc1;
         ArrayDOFV<nVarsFixed> JD, JD1, JSource, JSource1;
+        ssp<JacobianLocalLU<nVarsFixed>> JLocalLU;
         ArrayDOFV<1> alphaPP, alphaPP1, betaPP, betaPP1, alphaPP_tmp;
 
         int nOUTS = {-1};
@@ -261,9 +262,9 @@ namespace DNDS::Euler
                     uniqueStamps,
                     meshRotZ, meshScale,
                     meshElevation, meshElevationInternalSmoother,
-                    meshElevationIter, 
-                    meshElevationRBFRadius, meshElevationRBFPower, 
-                    meshElevationRBFKernel, meshElevationMaxIncludedAngle, meshElevationNSearch, meshElevationRefDWall, 
+                    meshElevationIter,
+                    meshElevationRBFRadius, meshElevationRBFPower,
+                    meshElevationRBFKernel, meshElevationMaxIncludedAngle, meshElevationNSearch, meshElevationRefDWall,
                     meshElevationBoundaryMode,
                     meshFile,
                     outPltName,
@@ -322,9 +323,21 @@ namespace DNDS::Euler
                     preserveLimited)
             } limiterControl;
 
+            struct DirectPrecControl
+            {
+                bool useDirectPrec = false;
+                int iluCode = 0;      // 0 for no fill, -1 for complete
+                int orderingCode = 0; // 0 for natural, 1 for metis, 2 for MMD
+                DNDS_NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_ORDERED_JSON(
+                    DirectPrecControl,
+                    useDirectPrec,
+                    iluCode,
+                    orderingCode)
+            } directPrecControl;
+
             struct LinearSolverControl
             {
-                int jacobiCode = 1; // 0 for jacobi, 1 for gs
+                int jacobiCode = 1; // 0 for jacobi, 1 for gs, 2 for ilu
                 int sgsIter = 0;
                 int sgsWithRec = 0;
                 int gmresCode = 0; // 0 for lusgs, 1 for gmres, 2 for lusgs started gmres
@@ -337,7 +350,9 @@ namespace DNDS::Euler
                     LinearSolverControl,
                     jacobiCode,
                     sgsIter, sgsWithRec, gmresCode,
-                    nGmresSpace, nGmresIter, initWithLastURecInc)
+                    nGmresSpace, nGmresIter,
+                    nSgsConsoleCheck, nGmresConsoleCheck,
+                    initWithLastURecInc)
             } linearSolverControl;
 
             struct RestartState
@@ -385,6 +400,7 @@ namespace DNDS::Euler
                 __DNDS__json_to_config(boundaryDefinition);
                 __DNDS__json_to_config(limiterControl);
                 __DNDS__json_to_config(linearSolverControl);
+                __DNDS__json_to_config(directPrecControl);
                 __DNDS__json_to_config(timeAverageControl);
                 __DNDS__json_to_config(others);
                 __DNDS__json_to_config(restartState);
@@ -552,9 +568,9 @@ namespace DNDS::Euler
                     [&](Geom::t_index bndId)
                     {
                         auto bType = pBCHandler->GetTypeFromID(bndId);
-                        if(bType == BCWall)
+                        if (bType == BCWall)
                             return true;
-                        if(config.dataIOControl.meshElevationBoundaryMode == 1 && bType == BCWallInvis)
+                        if (config.dataIOControl.meshElevationBoundaryMode == 1 && bType == BCWallInvis)
                             return true;
                         return false;
                     });
