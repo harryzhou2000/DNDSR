@@ -48,7 +48,10 @@ namespace DNDS::Euler
         typedef Eigen::Vector<real, nVarsFixed> TU;
         typedef Eigen::Matrix<real, nVarsFixed, nVarsFixed> TJacobianU;
         typedef Eigen::Matrix<real, dim, nVarsFixed> TDiffU;
-        typedef Eigen::Matrix<real, nVarsFixed, dim> TDIffUTransposed;
+        typedef Eigen::Matrix<real, nVarsFixed, dim> TDiffUTransposed;
+        typedef ArrayDOFV<nVarsFixed> TDof;
+        typedef ArrayRECV<nVarsFixed> TRec;
+        typedef ArrayRECV<1> TScalar;
 
     public:
         // static const int gdim = 2; //* geometry dim

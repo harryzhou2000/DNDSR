@@ -40,6 +40,9 @@ namespace DNDS::Euler
         typedef typename TEval::TJacobianU TJacobianU;
         typedef typename TEval::TVec TVec;
         typedef typename TEval::TMat TMat;
+        typedef typename TEval::TDof TDof;
+        typedef typename TEval::TRec TRec;
+        typedef typename TEval::TScalar TScalar;
         typedef ssp<CFV::VariationalReconstruction<gDim>> TVFV;
 
     private:
@@ -327,7 +330,7 @@ namespace DNDS::Euler
             {
                 bool useDirectPrec = false;
                 int iluCode = 0;      // 0 for no fill, -1 for complete
-                int orderingCode = 0; // 0 for natural, 1 for metis, 2 for MMD
+                int orderingCode = INT32_MIN; // INT32_MIN for auto 0 for natural, 1 for metis, 2 for MMD
                 DNDS_NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_ORDERED_JSON(
                     DirectPrecControl,
                     useDirectPrec,
