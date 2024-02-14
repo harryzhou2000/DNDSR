@@ -261,9 +261,9 @@ namespace DNDS::Euler
                     uniqueStamps,
                     meshRotZ, meshScale,
                     meshElevation, meshElevationInternalSmoother,
-                    meshElevationIter, 
-                    meshElevationRBFRadius, meshElevationRBFPower, 
-                    meshElevationRBFKernel, meshElevationMaxIncludedAngle, meshElevationNSearch, meshElevationRefDWall, 
+                    meshElevationIter,
+                    meshElevationRBFRadius, meshElevationRBFPower,
+                    meshElevationRBFKernel, meshElevationMaxIncludedAngle, meshElevationNSearch, meshElevationRefDWall,
                     meshElevationBoundaryMode,
                     meshFile,
                     outPltName,
@@ -552,9 +552,9 @@ namespace DNDS::Euler
                     [&](Geom::t_index bndId)
                     {
                         auto bType = pBCHandler->GetTypeFromID(bndId);
-                        if(bType == BCWall)
+                        if (bType == BCWall)
                             return true;
-                        if(config.dataIOControl.meshElevationBoundaryMode == 1 && bType == BCWallInvis)
+                        if (config.dataIOControl.meshElevationBoundaryMode == 1 && bType == BCWallInvis)
                             return true;
                         return false;
                     });
@@ -564,6 +564,11 @@ namespace DNDS::Euler
                     mesh->ElevatedNodesSolveInternalSmoothV1();
                 else if (config.dataIOControl.meshElevationInternalSmoother == 2)
                     mesh->ElevatedNodesSolveInternalSmoothV2();
+                else if (config.dataIOControl.meshElevationInternalSmoother == -1)
+                {
+                    if (mpi.rank == 0)
+                        log() << " WARNING !!! Not Smoothing internal, abandoning boundary smooth displacements" << std::endl;
+                }
                 else
                     DNDS_assert(false);
             }

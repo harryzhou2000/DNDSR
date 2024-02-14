@@ -129,3 +129,7 @@ make config prefix=$(realpath ../install) cc=mpicc cxx=mpicxx
 
 using a v110 api to enable the use by cgns 4.3.0 ? not working?
 
+## On DLR and curve mesh:
+
+- current results show: curved O2 meshes exhibit severe BC drift: velo and rho_nu_tilde
+
