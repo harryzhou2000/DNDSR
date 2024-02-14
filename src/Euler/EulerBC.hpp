@@ -35,8 +35,8 @@ namespace DNDS::Euler
     class BoundaryHandler
     {
     public:
-        static const int NVars_Fixed = getNVars_Fixed(model);
-        using TU = Eigen::Vector<real, NVars_Fixed>;
+        static const int nVarsFixed = getnVarsFixed(model);
+        using TU = Eigen::Vector<real, nVarsFixed>;
 
     private:
         std::vector<TU> BCValues;

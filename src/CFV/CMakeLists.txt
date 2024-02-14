@@ -26,5 +26,5 @@ _explicit_instantiation/VariationalReconstruction_Reconstruction_3_7.cpp
 _explicit_instantiation/VariationalReconstruction_Reconstruction_3_D.cpp
 )
 
-dnds_add_lib(${LIBNAME} "${CPPS}" "${LINKS}")
+dnds_add_lib_fast(${LIBNAME} "${CPPS}" "${LINKS}")
 

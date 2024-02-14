@@ -14,10 +14,10 @@ namespace DNDS::Euler
 #define IF_NOT_NOREC (1)
     template <EulerModel model>
     void EulerEvaluator<model>::EvaluateRHS(
-        ArrayDOFV<nVars_Fixed> &rhs,
-        ArrayDOFV<nVars_Fixed> &JSource,
-        ArrayDOFV<nVars_Fixed> &u,
-        ArrayRECV<nVars_Fixed> &uRec,
+        ArrayDOFV<nVarsFixed> &rhs,
+        ArrayDOFV<nVarsFixed> &JSource,
+        ArrayDOFV<nVarsFixed> &u,
+        ArrayRECV<nVarsFixed> &uRec,
         ArrayDOFV<1> &uRecBeta,
         ArrayDOFV<1> &cellRHSAlpha,
         bool onlyOnHalfAlpha,
@@ -58,9 +58,9 @@ namespace DNDS::Euler
             auto f2c = mesh->face2cell[iFace];
             auto gFace = vfv->GetFaceQuad(iFace);
 #ifdef USE_FLUX_BALANCE_TERM
-            Eigen::Matrix<real, nVars_Fixed, 3, Eigen::ColMajor> fluxEs(cnvars, 3);
+            Eigen::Matrix<real, nVarsFixed, 3, Eigen::ColMajor> fluxEs(cnvars, 3);
 #else
-            Eigen::Matrix<real, nVars_Fixed, 1, Eigen::ColMajor> fluxEs(cnvars, 1);
+            Eigen::Matrix<real, nVarsFixed, 1, Eigen::ColMajor> fluxEs(cnvars, 1);
 #endif
             if (onlyOnHalfAlpha)
             {
@@ -326,7 +326,7 @@ namespace DNDS::Euler
                 }
                 auto gCell = vfv->GetCellQuad(iCell);
 
-                Eigen::Vector<real, nvarsFixedMultiply<nVars_Fixed, 2>()> sourceV(cnvars * 2); // now includes sourcejacobian diag
+                Eigen::Vector<real, nvarsFixedMultiply<nVarsFixed, 2>()> sourceV(cnvars * 2); // now includes sourcejacobian diag
                 sourceV.setZero();
 
                 Geom::Elem::SummationNoOp noOp;
@@ -367,14 +367,14 @@ namespace DNDS::Euler
                         // ULxy = CompressRecPart(u[iCell], ULxy, compressed); //! do not forget the mean value
 
                         finc.resizeLike(sourceV);
-                        if constexpr (nVars_Fixed > 0)
+                        if constexpr (nVarsFixed > 0)
                         {
-                            finc(Eigen::seq(Eigen::fix<0>, Eigen::fix<nVars_Fixed - 1>)) =
+                            finc(Eigen::seq(Eigen::fix<0>, Eigen::fix<nVarsFixed - 1>)) =
                                 source(
                                     ULxy,
                                     GradU,
                                     iCell, iG);
-                            finc(Eigen::seq(Eigen::fix<nVars_Fixed>, Eigen::fix<2 * nVars_Fixed - 1>)) =
+                            finc(Eigen::seq(Eigen::fix<nVarsFixed>, Eigen::fix<2 * nVarsFixed - 1>)) =
                                 sourceJacobianDiag(
                                     ULxy,
                                     GradU,
@@ -404,10 +404,10 @@ namespace DNDS::Euler
                         }
                     });
                 sourceV *= cellRHSAlpha[iCell](0);
-                if constexpr (nVars_Fixed > 0)
+                if constexpr (nVarsFixed > 0)
                 {
-                    rhs[iCell] += sourceV(Eigen::seq(Eigen::fix<0>, Eigen::fix<nVars_Fixed - 1>)) / vfv->GetCellVol(iCell);
-                    JSource[iCell] = sourceV(Eigen::seq(Eigen::fix<nVars_Fixed>, Eigen::fix<2 * nVars_Fixed - 1>)) / vfv->GetCellVol(iCell);
+                    rhs[iCell] += sourceV(Eigen::seq(Eigen::fix<0>, Eigen::fix<nVarsFixed - 1>)) / vfv->GetCellVol(iCell);
+                    JSource[iCell] = sourceV(Eigen::seq(Eigen::fix<nVarsFixed>, Eigen::fix<2 * nVarsFixed - 1>)) / vfv->GetCellVol(iCell);
                 }
                 else
                 {

@@ -14,7 +14,7 @@ set(LINKS
 # ${EXTERNAL_LIBS}
 )
 
-set(CPPS
+set(CPPS_FAST
 _explicit_instantiation/EulerEvaluator_EvaluateDt_NS_2D.cpp
 _explicit_instantiation/EulerEvaluator_EvaluateDt_NS_3D.cpp
 _explicit_instantiation/EulerEvaluator_EvaluateDt_NS.cpp
@@ -33,12 +33,6 @@ _explicit_instantiation/EulerEvaluator_NS.cpp
 _explicit_instantiation/EulerEvaluator_NS_SA.cpp
 _explicit_instantiation/EulerEvaluator_NS_SA_3D.cpp
 _explicit_instantiation/EulerEvaluator_NS_2EQ.cpp
-_explicit_instantiation/EulerSolver_NS_2D.cpp
-_explicit_instantiation/EulerSolver_NS_3D.cpp
-_explicit_instantiation/EulerSolver_NS.cpp
-_explicit_instantiation/EulerSolver_NS_SA.cpp
-_explicit_instantiation/EulerSolver_NS_SA_3D.cpp
-_explicit_instantiation/EulerSolver_NS_2EQ.cpp
 _explicit_instantiation/EulerSolver_PrintData_NS_2D.cpp
 _explicit_instantiation/EulerSolver_PrintData_NS_3D.cpp
 _explicit_instantiation/EulerSolver_PrintData_NS.cpp
@@ -47,5 +41,14 @@ _explicit_instantiation/EulerSolver_PrintData_NS_SA_3D.cpp
 _explicit_instantiation/EulerSolver_PrintData_NS_2EQ.cpp
 )
 
-dnds_add_lib(${LIBNAME} "${CPPS}" "${LINKS}")
+set(CPPS
+_explicit_instantiation/EulerSolver_NS_2D.cpp
+_explicit_instantiation/EulerSolver_NS_3D.cpp
+_explicit_instantiation/EulerSolver_NS.cpp
+_explicit_instantiation/EulerSolver_NS_SA.cpp
+_explicit_instantiation/EulerSolver_NS_SA_3D.cpp
+_explicit_instantiation/EulerSolver_NS_2EQ.cpp
+)
 
+dnds_add_lib(${LIBNAME} "${CPPS}" "${LINKS}")
+dnds_add_lib_fast(${LIBNAME}_fast "${CPPS_FAST}" "${LINKS}")

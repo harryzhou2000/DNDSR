@@ -124,6 +124,27 @@ namespace DNDS::Geom
 
         // tAdj1Pair bndFaces; // no comm needed for now
 
+        /// for cell local factorization
+        using tLocalMatStruct = std::vector<std::vector<index>>;
+        std::vector<index> localFillOrderingNew2Old;
+        std::vector<index> localFillOrderingOld2New;
+        tLocalMatStruct lowerTriStructure;
+        tLocalMatStruct upperTriStructure;
+        tLocalMatStruct lowerTriStructureNew;
+        tLocalMatStruct upperTriStructureNew;
+        tLocalMatStruct cell2cellFaceVLocal;
+        tLocalMatStruct lowerTriStructureNewInUpper;
+        tLocalMatStruct cell2cellFaceVLocal2FullRowPos; // diag-lower-upper
+
+        index CellFillingReorderOld2New(index v)
+        {
+            return localFillOrderingOld2New.size() ? localFillOrderingOld2New[v] : v;
+        }
+        index CellFillingReorderNew2Old(index v)
+        {
+            return localFillOrderingNew2Old.size() ? localFillOrderingNew2Old[v] : v;
+        }
+
         UnstructuredMesh(const DNDS::MPIInfo &n_mpi, int n_dim)
             : mpi(n_mpi), dim(n_dim) {}
         /**
@@ -151,6 +172,11 @@ namespace DNDS::Geom
         void AssertOnFaces();
 
         void ConstructBndMesh(UnstructuredMesh &bMesh);
+
+        // void ReorderCellLocal();
+
+        void ObtainLocalFactFillOrdering(int method = 0); // 1 uses metis, 2 uses MMD, //TODO 10 uses geometric based searching
+        void ObtainSymmetricSymbolicFactorization(int iluCode = -1); // -1 use full LU, 0-3 use ilu(code), 
 
         index NumNode() { return coords.father->Size(); }
         index NumCell() { return cell2node.father->Size(); }
@@ -208,7 +234,7 @@ namespace DNDS::Geom
          * @brief directly load coords; gets faulty if isPeriodic!
          */
         template <class tC2n, class tCoordExt>
-        void __GetCoords(const tC2n &c2n, tSmallCoords &cs, tCoordExt& coo)
+        void __GetCoords(const tC2n &c2n, tSmallCoords &cs, tCoordExt &coo)
         {
             cs.resize(Eigen::NoChange, c2n.size());
             for (rowsize i = 0; i < c2n.size(); i++)
@@ -230,7 +256,7 @@ namespace DNDS::Geom
          * @brief specially for periodicity
          */
         template <class tC2n, class tC2nPbi, class tCoordExt>
-        void __GetCoordsOnElem(const tC2n &c2n, const tC2nPbi &c2nPbi, tSmallCoords &cs, tCoordExt& coo)
+        void __GetCoordsOnElem(const tC2n &c2n, const tC2nPbi &c2nPbi, tSmallCoords &cs, tCoordExt &coo)
         {
             cs.resize(Eigen::NoChange, c2n.size());
             for (rowsize i = 0; i < c2n.size(); i++)
@@ -245,7 +271,7 @@ namespace DNDS::Geom
                 __GetCoordsOnElem(cell2node[iCell], cell2nodePbi[iCell], cs);
         }
 
-        void GetCoordsOnCell(index iCell, tSmallCoords &cs, tCoordPair& coo)
+        void GetCoordsOnCell(index iCell, tSmallCoords &cs, tCoordPair &coo)
         {
             if (!isPeriodic)
                 __GetCoords(cell2node[iCell], cs, coo);
@@ -273,6 +299,42 @@ namespace DNDS::Geom
             if (!isPeriodic)
                 return coords[face2node(iFace, if2n)];
             return periodicInfo.GetCoordByBits(coords[face2node(iFace, if2n)], face2nodePbi(iFace, if2n));
+        }
+
+        bool CellIsFaceBack(index iCell, index iFace) const
+        {
+            DNDS_assert(face2cell(iFace, 0) == iCell || face2cell(iFace, 1) == iCell);
+            return face2cell(iFace, 0) == iCell;
+        }
+
+        index CellFaceOther(index iCell, index iFace) const
+        {
+            return CellIsFaceBack(iCell, iFace)
+                       ? face2cell(iFace, 1)
+                       : face2cell(iFace, 0);
+        }
+
+        /**
+         * \return
+         * cell2cell for local mesh, which do not contain
+         * the diagonal part; should be a diag-less symmetric adjacency matrix
+         */
+        auto GetCell2CellFaceVLocal()
+        {
+            DNDS_assert(this->adjPrimaryState == Adj_PointToLocal);
+            std::vector<std::vector<index>> cell2cellFaceV;
+            cell2cellFaceV.resize(this->NumCell());
+            for (index iCell = 0; iCell < this->NumCell(); iCell++)
+            {
+                cell2cellFaceV[iCell].reserve(cell2face.RowSize(iCell)); // do not preserve the diagonal
+                for (auto iFace : cell2face[iCell])
+                {
+                    index iCellOther = this->CellFaceOther(iCell, iFace);
+                    if (iCellOther != UnInitIndex && iCellOther < this->NumCell()) //! must be local not ghost ptrs
+                        cell2cellFaceV[iCell].push_back(iCellOther);
+                }
+            }
+            return cell2cellFaceV;
         }
 
         void WriteSerialize(SerializerBase *serializer, const std::string &name);

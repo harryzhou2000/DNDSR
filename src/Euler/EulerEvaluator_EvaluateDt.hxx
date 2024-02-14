@@ -157,8 +157,8 @@ namespace DNDS::Euler
     template <EulerModel model>
     void EulerEvaluator<model>::EvaluateDt(
         ArrayDOFV<1> &dt,
-        ArrayDOFV<nVars_Fixed> &u,
-        ArrayRECV<nVars_Fixed> &uRec,
+        ArrayDOFV<nVarsFixed> &u,
+        ArrayRECV<nVarsFixed> &uRec,
         real CFL, real &dtMinall, real MaxDt,
         bool UseLocaldt)
     {

@@ -328,7 +328,6 @@ namespace DNDS
                     index iCellOther = CellFaceOther(iCell, iFace);
                     if (iCellOther != UnInitIndex)
                     {
-
                         uRecNew[iCell] -= matrixAAInvBRow[ic2f + 1] * uRecDiff[iCellOther]; // mind the sign
                     }
                     else

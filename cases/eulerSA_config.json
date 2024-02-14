@@ -8,14 +8,14 @@
         "tEnd": 3e+200
     },
     "convergenceControl": {
-        "nTimeStepInternal": 10,
+        "nTimeStepInternal": 2000,
         "rhsThresholdInternal": 1e-30,
         "res_base": 0.0,
         "useVolWiseResidual": true
     },
     "outputControl": {
         "nConsoleCheck": 1,
-        "nConsoleCheckInternal": 10,
+        "nConsoleCheckInternal": 1,
         "consoleOutputMode": 1,
         "nDataOutC": 100,
         "nDataOut": 10,
@@ -38,7 +38,7 @@
     "dataIOControl": {
         "uniqueStamps": false,
         "meshRotZ": 0.0,
-        "meshElevation": 1,
+        "meshElevation": 0,
         "meshElevationIter": 10,
         "meshElevationRBFRadius": 1,
         "meshElevationMaxIncludedAngle": 55,
@@ -113,9 +113,17 @@
             // "scaleMultiplier": 1,
             "_tail": 0
         },
-        "ignoreMeshGeometryDeficiency": true
+        "ignoreMeshGeometryDeficiency": false
+    },
+    "directPrecControl": {
+        "useDirectPrec": true,
+        "iluCode": -1,
+        "orderingCode": 2
     },
     "linearSolverControl": {
+        "jacobiCode": 2,
+        "sgsIter": 2,
+        "nSgsConsoleCheck": 100,
         "gmresCode": 0,
         "nGmresSpace": 10,
         "nGmresIter": 5,

@@ -15,7 +15,7 @@ namespace DNDS::Euler
         reader->SetVTKFloatEncodeMode(config.dataIOControl.vtuFloatEncodeMode);
         const int cDim = dim;
 
-        ArrayDOFV<nVars_Fixed> &uOut = mode == PrintDataTimeAverage ? uAveraged : u;
+        ArrayDOFV<nVarsFixed> &uOut = mode == PrintDataTimeAverage ? uAveraged : u;
 
         if (config.dataIOControl.outVolumeData || mode == PrintDataTimeAverage)
         {

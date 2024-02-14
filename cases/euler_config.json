@@ -1,16 +1,15 @@
 {
     "timeMarchControl": {
-        "dtImplicit": 4e-1,
-        "nTimeStep": 5,
+        "dtImplicit": 1e-1,
+        "nTimeStep": 100,
         "steadyQuit": false,
-        "odeCode": 401,
+        "odeCode": 1,
         "tEnd": 3e+200,
         "odeSetting1": 0.5,
         "odeSetting2": 0,
-        "odeSetting3": 0.75,
+        "odeSetting3": 1,
         // "useRHSfPP": true,
         // "rhsfPPScale": 0.01
-        "partitonMeshOnly": true,
         "_tail": 0
     },
     "outputControl": {
@@ -18,8 +17,8 @@
         "nConsoleCheckInternal": 1,
         "consoleOutputMode": 0,
         "consoleOutputEveryFix": 0,
-        "nDataOutC": 100,
-        "nDataOut": 1,
+        "nDataOutC": 10,
+        "nDataOut": 10,
         "nDataOutCInternal": 100,
         "nDataOutInternal": 1000000000,
         "tDataOut": 3e+200
@@ -34,20 +33,19 @@
     },
     "convergenceControl": {
         "nTimeStepInternal": 4000,
-        "rhsThresholdInternal": 1e-6,
+        "rhsThresholdInternal": 1e-4,
         "res_base": 0.0,
         "useVolWiseResidual": true
     },
     "dataIOControl": {
         "uniqueStamps": false,
         "meshRotZ": 0.0,
-        "meshElevation": 1,
-        "meshFile": "../data/mesh/Box4.cgns",
-        "outPltName": "../data/outUnsteady/Box4",
+        "meshFile": "../data/mesh/IV10_160.cgns",
+        "outPltName": "../data/outUnsteady/IV10_160",
         "outPltMode": 0,
         "readMeshMode": 0,
         "outPltTecplotFormat": true,
-        "outPltVTKFormat": false,
+        "outPltVTKFormat": true,
         "outAtPointData": true,
         "outAtCellData": true
     },
@@ -68,6 +66,18 @@
             10.0
         ]
     },
+    // "implicitReconstructionControl": {
+    //     "nInternalRecStep": 5,
+    //     "zeroGrads": false,
+    //     "recLinearScheme": 1,
+    //     "nGmresSpace": 5,
+    //     "nGmresIter": 10,
+    //     "recThreshold": 1e-010,
+    //     "nRecConsolCheck": 5,
+    //     "nRecMultiplyForZeroedGrad": 1000,
+    //     "storeRecInc": true,
+    //     "dampRecIncDTau": false
+    // },
     "implicitReconstructionControl": {
         "nInternalRecStep": 1,
         "zeroGrads": false,
@@ -75,7 +85,7 @@
         "nGmresSpace": 5,
         "nGmresIter": 10,
         "recThreshold": 1e-010,
-        "nRecConsolCheck": 10,
+        "nRecConsolCheck": 5,
         "nRecMultiplyForZeroedGrad": 1000,
         "storeRecInc": true,
         "dampRecIncDTau": false
@@ -91,7 +101,7 @@
     "vfvSettings": {
         "maxOrder": 3,
         "intOrder": 3,
-        "cacheDiffBase": false,
+        "cacheDiffBase": true,
         "jacobiRelax": 1,
         "SORInstead": true,
         "smoothThreshold": 1e-3,
@@ -111,9 +121,14 @@
             "_tail": 0
         }
     },
+    "directPrecControl": {
+        "useDirectPrec": true,
+        "iluCode": 1,
+        "orderingCode": 0
+    },
     "linearSolverControl": {
-        "jacobiCode": 0,
-        "sgsIter": 10,
+        "jacobiCode": 2,
+        "sgsIter": 0,
         "sgsWithRec": 0,
         "nSgsConsoleCheck": 100,
         "gmresCode": 0,
@@ -128,6 +143,7 @@
         "ignoreSourceTerm": true,
         "useScalarJacobian": true,
         "riemannSolverType": "Roe",
+        "cacheDiffBase": true,
         "specialBuiltinInitializer": 2,
         "nCentralSmoothStep": 0,
         "constMassForce": [
