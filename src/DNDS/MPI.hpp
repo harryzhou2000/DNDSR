@@ -290,6 +290,8 @@ namespace DNDS::MPI
     MPI_int Allgather(const void *sendbuf, MPI_int sendcount, MPI_Datatype sendtype,
                       void *recvbuf, MPI_int recvcount,
                       MPI_Datatype recvtype, MPI_Comm comm);
+                      
+    MPI_int Barrier(MPI_Comm comm);
 
     inline void AllreduceOneReal(real & v, MPI_Op op, MPIInfo & mpi)
     {

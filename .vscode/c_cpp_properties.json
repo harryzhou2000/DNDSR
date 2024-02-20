@@ -84,9 +84,9 @@
                 "_UNICODE"
             ],
             "windowsSdkVersion": "10.0.22000.0",
-            "compilerPath": "cl.exe",
+            "compilerPath": "clang.exe",
             "cStandard": "c17",
-            "intelliSenseMode": "windows-msvc-x64",
+            "intelliSenseMode": "windows-clang-x64",
             "cppStandard": "c++17"
         }
     ],

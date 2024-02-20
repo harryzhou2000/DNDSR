@@ -2,7 +2,6 @@
 
 #include <type_traits>
 #include <cstdint>
-#include "Eigen/Core"
 #include <array>
 #include "DNDS/HardEigen.hpp"
 

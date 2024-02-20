@@ -4,10 +4,10 @@
     namespace DNDS::Euler                                 \
     {                                                     \
         template void EulerEvaluator<model>::EvaluateRHS( \
-            ArrayDOFV<nVars_Fixed> &rhs,                  \
-            ArrayDOFV<nVars_Fixed> &JSource,              \
-            ArrayDOFV<nVars_Fixed> &u,                    \
-            ArrayRECV<nVars_Fixed> &uRec,                 \
+            ArrayDOFV<nVarsFixed> &rhs,                  \
+            ArrayDOFV<nVarsFixed> &JSource,              \
+            ArrayDOFV<nVarsFixed> &u,                    \
+            ArrayRECV<nVarsFixed> &uRec,                 \
             ArrayDOFV<1> &uRecBeta,                       \
             ArrayDOFV<1> &cellRHSAlpha,                   \
             bool onlyOnHalfAlpha,                         \

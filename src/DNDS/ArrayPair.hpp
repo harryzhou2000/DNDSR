@@ -37,6 +37,20 @@ namespace DNDS
                 return son->operator()(i - father->Size(), aOthers...);
         }
 
+        template <class... TOthers>
+        auto operator()(index i, TOthers... aOthers) const
+        {
+            if (i >= 0 && i < father->Size())
+                return father->operator()(i, aOthers...);
+            else
+                return son->operator()(i - father->Size(), aOthers...);
+        }
+
+        auto RowSize()
+        {
+            return father->RowSize();
+        }
+
         auto RowSize(index i)
         {
             if (i >= 0 && i < father->Size())
@@ -82,6 +96,20 @@ namespace DNDS
         void CopyFather(t_self &R)
         {
             father->CopyData(*R.father);
+        }
+
+        /**
+         * \warning force waiting and re initializing persistent
+         *
+         */
+        // TODO: make a data change listener in transformer?
+        //! a situation: the data pointer should remain static as long as initPersistentPuxx is done
+        void SwapDataFatherSon(t_self &R)
+        {
+            father->SwapData(*R.father);
+            son->SwapData(*R.son);
+            trans.reInitPersistentPullPush();
+            R.trans.reInitPersistentPullPush();
         }
 
         std::size_t hash()

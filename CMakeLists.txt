@@ -1,10 +1,14 @@
+## For configuration on Windows, use clang/gcc + makefile
+## cmake .. -G "Unix Makefiles" -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang
+
+
 if(UNIX OR MINGW)
     cmake_minimum_required(VERSION 3.6 FATAL_ERROR)
 else()
     cmake_minimum_required(VERSION 3.20)
 endif()
 
-set(CMAKE_INSTALL_PREFIX build/bin CACHE FILEPATH "install place")
+set(CMAKE_INSTALL_PREFIX ${CMAKE_BINARY_DIR}/bin CACHE FILEPATH "install place")
 
 set(CMAKE_BUILD_TYPE Release CACHE STRING "Release or Debug")
 set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS
@@ -34,9 +38,11 @@ set(DNDS_USE_NDEBUG_MACRO OFF CACHE BOOL "use NDEBUG macro for eigen output and 
 set(DNDS_USE_PARALLEL_MACRO OFF CACHE BOOL "for auto multi-thread?")
 set(DNDS_USE_OMP ON CACHE BOOL "for openmp enabling")
 set(DNDS_FAST_BUILD_FAST ON CACHE BOOL "don't -g on basic modules")
+set(DNDS_USE_NO_OMIT_FRAME_POINTER OFf CACHE BOOL "in fast build fast part, use -fno-omit-frame-pointer to get correct call graph in perf's fp mode")
 set(DNDS_UNSAFE_MATH_OPT OFF CACHE BOOL "use -funsafe-math-optimizations")
 set(DNDS_NATIVE_ARCH     OFF CACHE BOOL "use -march=native")
 set(DNDS_LTO OFF CACHE BOOL "use -flto")
+
 
 set(DNDS_EIGEN_USE_BLAS OFF CACHE BOOL "use blas in eigen")
 set(DNDS_EIGEN_USE_LAPACK OFF CACHE BOOL "use lapack in eigen")
@@ -47,13 +53,19 @@ set(DNDS_RECORD_COMMIT ON CACHE BOOL "record commit id for each cmake configure"
 set(DNDS_VERBOSE_BUILDING ON CACHE BOOL "make the makefile verbose, overrides CMAKE_VERBOSE_MAKEFILE")
 
 if(DNDS_RECORD_COMMIT)
-    execute_process(COMMAND git rev-parse HEAD OUTPUT_FILE commitID.txt WORKING_DIRECTORY ${CMAKE_BINARY_DIR} TIMEOUT 120)
-    # message(STATUS "current commit id: ")
-    # execute_process(COMMAND cat commitID.txt WORKING_DIRECTORY ${CMAKE_BINARY_DIR} TIMEOUT 10)
-    file(READ "${CMAKE_BINARY_DIR}/commitID.txt" DNDS_RECORDED_COMMIT_HASH)
-    string(STRIP ${DNDS_RECORDED_COMMIT_HASH} DNDS_RECORDED_COMMIT_HASH)
-    set(DNDS_RECORDED_COMMIT_HASH ${DNDS_RECORDED_COMMIT_HASH} CACHE INTERNAL  "Project Public Current Commit Hash")
-    message(STATUS "current commit id: ${DNDS_RECORDED_COMMIT_HASH}")
+    execute_process(COMMAND git rev-parse HEAD OUTPUT_FILE ${CMAKE_BINARY_DIR}/commitID.txt WORKING_DIRECTORY ${PROJECT_SOURCE_DIR} TIMEOUT 120 RESULT_VARIABLE RET)
+    message(STATUS "git rev-parse returned ${RET}")
+    if(NOT RET EQUAL 0)
+        message(WARNING "git rev-parse failed")
+        set(DNDS_RECORDED_COMMIT_HASH "UNKNOWN" CACHE INTERNAL  "Project Public Current Commit Hash")
+    else()
+        # message(STATUS "current commit id: ")
+        # execute_process(COMMAND cat commitID.txt WORKING_DIRECTORY ${CMAKE_BINARY_DIR} TIMEOUT 10)
+        file(READ "${CMAKE_BINARY_DIR}/commitID.txt" DNDS_RECORDED_COMMIT_HASH)
+        string(STRIP ${DNDS_RECORDED_COMMIT_HASH} DNDS_RECORDED_COMMIT_HASH)
+        set(DNDS_RECORDED_COMMIT_HASH ${DNDS_RECORDED_COMMIT_HASH} CACHE INTERNAL  "Project Public Current Commit Hash")
+        message(STATUS "current commit id: ${DNDS_RECORDED_COMMIT_HASH}")
+    endif()
 endif()
 
 if(DNDS_VERBOSE_BUILDING)
@@ -236,11 +248,11 @@ endif()
 #     )
 
 set(EXTERNAL_LIBS ${EXTERNAL_LIBS}
-    ${EXTERNAL_LIB_ZLIB}
     ${EXTERNAL_LIB_CGNS}
     ${EXTERNAL_LIB_HDF5}
     ${EXTERNAL_LIB_PARMETIS}
     ${EXTERNAL_LIB_METIS}
+    ${EXTERNAL_LIB_ZLIB}
     # ${EXTERNAL_LIB_TECIO}
     CACHE INTERNAL
     "Project Public External Lib Dependencies"
@@ -280,6 +292,8 @@ set(EXTERNAL_INCLUDES ${EXTERNAL_INCLUDES}
     CACHE INTERNAL "Project External Includes")
 endif()
 
+add_compile_definitions(__DNDS_REALLY_COMPILING__)
+
 if(DNDS_EIGEN_USE_BLAS)
     add_compile_definitions(EIGEN_USE_BLAS)
 endif()
@@ -293,7 +307,7 @@ if(UNIX OR MINGW)
     stdc++fs)
     if(UNIX)
         set(EXTERNAL_LIBS ${EXTERNAL_LIBS}
-        dl)
+        dl) # add dl
     endif()
     if(MINGW)
         add_compile_options(-Wa,-mbig-obj) # too many sections
@@ -310,7 +324,7 @@ if(UNIX OR MINGW)
     endif()
     
     ### set warnings
-    add_compile_options(-Wall -Wno-unused-but-set-variable -Wno-unused-variable -Wno-sign-compare)
+    add_compile_options(-Wall -Wno-unused-but-set-variable -Wno-unused-variable -Wno-sign-compare -Werror=return-type)
     
 
     if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang")
@@ -502,13 +516,14 @@ euler3D
 eulerSA
 eulerSA3D
 euler2EQ
+jacobiLUTest
 )
 
 
-add_subdirectory(src/DNDS)
-add_subdirectory(src/Geom)
-add_subdirectory(src/CFV)
-add_subdirectory(src/Euler)
+add_subdirectory(${CMAKE_SOURCE_DIR}/src/DNDS)
+add_subdirectory(${CMAKE_SOURCE_DIR}/src/Geom)
+add_subdirectory(${CMAKE_SOURCE_DIR}/src/CFV)
+add_subdirectory(${CMAKE_SOURCE_DIR}/src/Euler)
 
 set(LIBS
 euler_library

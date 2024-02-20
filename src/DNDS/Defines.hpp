@@ -1,8 +1,8 @@
 #pragma once
 
 // #define NDEBUG
-#include <assert.h>
-#include <stdint.h>
+#include <cassert>
+#include <cstdint>
 #include <vector>
 #include <memory>
 #include <tuple>
@@ -14,6 +14,7 @@
 #include <filesystem>
 #include <functional>
 #include <locale>
+#include <fmt/core.h>
 
 #ifdef DNDS_USE_OMP
 #include <omp.h>
@@ -26,8 +27,12 @@
 
 #include "Macros.hpp"
 #include "Experimentals.hpp"
+#include "Warnings.hpp"
+DISABLE_WARNING_PUSH
+DISABLE_WARNING_MAYBE_UNINITIALIZED
 #include "Eigen/Core"
 #include "Eigen/Dense" //?It seems Mat.determinant() would be undefined rather than undeclared...
+DISABLE_WARNING_POP
 
 static const std::string DNDS_Defines_state =
     std::string("DNDS_Defines ") + DNDS_Macros_State + DNDS_Experimentals_State
@@ -49,6 +54,12 @@ static const std::string DNDS_Defines_state =
 
 #define DNDS_MACRO_TO_STRING(V) __DNDS_str(V)
 #define __DNDS_str(V) #V
+
+#ifdef __DNDS_REALLY_COMPILING__
+#define DNDS_SWITCH_INTELLISENSE(real, intellisense) real
+#else
+#define DNDS_SWITCH_INTELLISENSE(real, intellisense) intellisense
+#endif
 
 /***************/ // DNDS_assertS
 
@@ -272,10 +283,37 @@ namespace DNDS
         return a - std::floor(a / b) * b;
     }
 
+    template <class tIt1, class tIt1end, class tIt2, class tIt2end, class tF>
+    bool iterateIdentical(tIt1 it1, tIt1end it1end, tIt2 it2, tIt2end it2end, tF F)
+    {
+        size_t it1Pos{0}, it2Pos{0};
+        while (it1 != it1end && it2 != it2end)
+        {
+            if ((*it1) < (*it2))
+                ++it1, ++it1Pos;
+            else if ((*it1) > (*it2))
+                ++it2, ++it2Pos;
+            else if ((*it1) == (*it2))
+            {
+                if (F(*it1, it1Pos, it2Pos))
+                    return true;
+                ++it1, ++it1Pos;
+                ++it2, ++it2Pos;
+            }
+        }
+        return false;
+    }
+
     ///@todo //TODO: overflow_assign_int64_to_32
 
+    inline int32_t checkedIndexTo32(index v)
+    {
+        DNDS_assert_info(!(v > static_cast<index>(INT32_MAX) || v < static_cast<index>(INT32_MIN)),
+                         fmt::format("Index {} to int32 overflow", v));
+        return static_cast<int32_t>(v);
+    }
+
     std::string getStringForceWString(const std::wstring &v);
-    
 
     inline std::string getStringForcePath(const std::filesystem::path::string_type &v)
     {
@@ -401,38 +439,3 @@ struct std::hash<std::array<T, s>>
 
 */
 
-/*------------------------------------------*/
-// Warning disabler:
-
-#if defined(_MSC_VER)
-#define DISABLE_WARNING_PUSH __pragma(warning(push))
-#define DISABLE_WARNING_POP __pragma(warning(pop))
-#define DISABLE_WARNING(warningNumber) __pragma(warning(disable \
-                                                        : warningNumber))
-
-#define DISABLE_WARNING_UNREFERENCED_FORMAL_PARAMETER DISABLE_WARNING(4100)
-#define DISABLE_WARNING_UNREFERENCED_FUNCTION DISABLE_WARNING(4505)
-#define DISABLE_WARNING_DEPRECATED_DECLARATIONS
-// other warnings you want to deactivate...
-
-#elif defined(__GNUC__) || defined(__clang__)
-#define DO_PRAGMA(X) _Pragma(#X)
-#define DISABLE_WARNING_PUSH DO_PRAGMA(GCC diagnostic push)
-#define DISABLE_WARNING_POP DO_PRAGMA(GCC diagnostic pop)
-#define DISABLE_WARNING(warningName) DO_PRAGMA(GCC diagnostic ignored warningName)
-
-#define DISABLE_WARNING_UNREFERENCED_FORMAL_PARAMETER DISABLE_WARNING("-Wunused-parameter")
-#define DISABLE_WARNING_UNREFERENCED_FUNCTION DISABLE_WARNING("-Wunused-function")
-#define DISABLE_WARNING_DEPRECATED_DECLARATIONS DISABLE_WARNING("-Wdeprecated-declarations")
-// other warnings you want to deactivate...
-
-#else
-#define DISABLE_WARNING_PUSH
-#define DISABLE_WARNING_POP
-#define DISABLE_WARNING_UNREFERENCED_FORMAL_PARAMETER
-#define DISABLE_WARNING_UNREFERENCED_FUNCTION
-// other warnings you want to deactivate...
-
-#endif
-
-/*------------------------------------------*/

@@ -13,7 +13,7 @@ valgrind --log-file=log_valgrind.log
 */
 struct TEvalDub
 {
-    static const int nVars_Fixed = 1;
+    static const int nVarsFixed = 1;
 };
 void staticReconstruction()
 {

@@ -521,6 +521,7 @@ namespace DNDS
             else if (commTypeCurrent == MPI::CommStrategy::CommStrategy::InSituPack)
             {
                 // could simplify some info on sparse comm?
+                DNDS_MAKE_SSP(PushReqVec);
             }
             else
             {
@@ -588,6 +589,7 @@ namespace DNDS
             else if (commTypeCurrent == MPI::CommStrategy::CommStrategy::InSituPack)
             {
                 // could simplify some info on sparse comm?
+                DNDS_MAKE_SSP(PullReqVec);
             }
             else
             {
@@ -926,6 +928,27 @@ namespace DNDS
             startPersistentPush();
             waitPersistentPush();
             clearPersistentPush();
+        }
+
+        void reInitPersistentPullPush()
+        {
+            bool clearedPull{false}, clearedPush{false};
+            if (PullReqVec->size())
+            {
+                clearedPull = true;
+                waitPersistentPull();
+                clearPersistentPull();
+            }
+            if (PushReqVec->size())
+            {
+                clearedPush = true;
+                waitPersistentPush();
+                clearPersistentPush();
+            }
+            if (clearedPull)
+                initPersistentPull();
+            if (clearedPush)
+                initPersistentPush();
         }
     };
 

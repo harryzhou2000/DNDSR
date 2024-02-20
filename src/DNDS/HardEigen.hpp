@@ -1,6 +1,5 @@
 #pragma once
 #include "Defines.hpp"
-#include "Eigen/Dense"
 
 namespace DNDS::HardEigen
 {

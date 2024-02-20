@@ -3,11 +3,11 @@
 
 namespace DNDS::Euler
 {
-    template <int nVars_Fixed>
-    class ArrayDOFV : public CFV::tUDof<nVars_Fixed>
+    template <int nVarsFixed>
+    class ArrayDOFV : public CFV::tUDof<nVarsFixed>
     {
     public:
-        using t_self = ArrayDOFV<nVars_Fixed>;
+        using t_self = ArrayDOFV<nVarsFixed>;
         void setConstant(real R)
         {
             for (index i = 0; i < this->Size(); i++)
@@ -36,14 +36,28 @@ namespace DNDS::Euler
         }
         void operator=(t_self &R)
         {
-            for (index i = 0; i < this->Size(); i++)
-                this->operator[](i) = R.operator[](i);
+            // for (index i = 0; i < this->Size(); i++)
+            //     this->operator[](i) = R.operator[](i);
+            DNDS_assert(R.father->RawDataVector().size() == this->father->RawDataVector().size());
+            std::copy(R.father->RawDataVector().begin(), R.father->RawDataVector().end(), this->father->RawDataVector().begin());
+            DNDS_assert(R.son->RawDataVector().size() == this->son->RawDataVector().size());
+            std::copy(R.son->RawDataVector().begin(), R.son->RawDataVector().end(), this->son->RawDataVector().begin());
         }
 
         void addTo(t_self &R, real r)
         {
-            for (index i = 0; i < this->Size(); i++)
-                this->operator[](i) += R.operator[](i) * r;
+            // for (index i = 0; i < this->Size(); i++)
+            //     this->operator[](i) += R.operator[](i) * r;
+            DNDS_assert(R.father->RawDataVector().size() == this->father->RawDataVector().size());
+            auto &RVF = R.father->RawDataVector();
+            auto &TVF = this->father->RawDataVector();
+            for (size_t i = 0; i < RVF.size(); i++)
+                TVF[i] += r * RVF[i];
+            DNDS_assert(R.son->RawDataVector().size() == this->son->RawDataVector().size());
+            auto &RVS = R.son->RawDataVector();
+            auto &TVS = this->son->RawDataVector();
+            for (size_t i = 0; i < RVS.size(); i++)
+                TVS[i] += r * RVS[i];
         }
 
         void operator*=(std::vector<real> &R)
@@ -53,13 +67,13 @@ namespace DNDS::Euler
                 this->operator[](i) *= R[i];
         }
 
-        void operator*=(std::conditional_t<nVars_Fixed == 1, ArrayDOFV<2>, ArrayDOFV<1>> &R)
+        void operator*=(std::conditional_t<nVarsFixed == 1, ArrayDOFV<2>, ArrayDOFV<1>> &R)
         {
             for (index i = 0; i < this->Size(); i++)
                 this->operator[](i).array() *= R[i](0);
         }
 
-        void operator+=(const Eigen::Vector<real, nVars_Fixed> &R)
+        void operator+=(const Eigen::Vector<real, nVarsFixed> &R)
         {
             for (index i = 0; i < this->Size(); i++)
                 this->operator[](i) += R;
@@ -71,7 +85,7 @@ namespace DNDS::Euler
                 this->operator[](i).array() += R;
         }
 
-        void operator*=(const Eigen::Vector<real, nVars_Fixed> &R)
+        void operator*=(const Eigen::Vector<real, nVarsFixed> &R)
         {
             for (index i = 0; i < this->Size(); i++)
                 this->operator[](i).array() *= R.array();
@@ -95,9 +109,9 @@ namespace DNDS::Euler
                 this->operator[](i).array() = this->operator[](i).array().abs();
         }
 
-        Eigen::Vector<real, nVars_Fixed> normInc()
+        Eigen::Vector<real, nVarsFixed> normInc()
         {
-            Eigen::Vector<real, nVars_Fixed> ret, retAll;
+            Eigen::Vector<real, nVarsFixed> ret, retAll;
             ret.resize(this->RowSize());
             retAll.resize(this->RowSize());
             ret.setZero();
@@ -117,15 +131,27 @@ namespace DNDS::Euler
             return std::sqrt(sqrSumAll);
         }
 
-        Eigen::Vector<real, nVars_Fixed> min()
+        Eigen::Vector<real, nVarsFixed> componentWiseNorm1()
         {
-            Eigen::Vector<real, nVars_Fixed> minLocal, min;
+            Eigen::Vector<real, nVarsFixed> minLocal, min;
+            minLocal.resize(this->RowSize());
+            minLocal.setConstant(0);
+            min = minLocal;
+            for (index i = 0; i < this->father->Size(); i++) //*note that only father is included
+                minLocal += (this->operator[](i).array().abs()).matrix();
+            MPI::Allreduce(minLocal.data(), min.data(), minLocal.size(), DNDS_MPI_REAL, MPI_SUM, this->father->getMPI().comm);
+            return min;
+        }
+
+        Eigen::Vector<real, nVarsFixed> min()
+        {
+            Eigen::Vector<real, nVarsFixed> minLocal, min;
             minLocal.resize(this->RowSize());
             minLocal.setConstant(veryLargeReal);
             min = minLocal;
             for (index i = 0; i < this->father->Size(); i++) //*note that only father is included
                 minLocal = minLocal.array().min(this->operator[](i).array());
-            MPI::Allreduce(&minLocal.data(), &min.data(), minLocal.size(), DNDS_MPI_REAL, MPI_MIN, this->father->getMPI().comm);
+            MPI::Allreduce(minLocal.data(), min.data(), minLocal.size(), DNDS_MPI_REAL, MPI_MIN, this->father->getMPI().comm);
             return min;
         }
 
@@ -140,11 +166,11 @@ namespace DNDS::Euler
     };
 
     ///@todo://TODO add operators
-    template <int nVars_Fixed>
-    class ArrayRECV : public CFV::tURec<nVars_Fixed>
+    template <int nVarsFixed>
+    class ArrayRECV : public CFV::tURec<nVarsFixed>
     {
     public:
-        using t_self = ArrayRECV<nVars_Fixed>;
+        using t_self = ArrayRECV<nVarsFixed>;
         void setConstant(real R)
         {
             for (index i = 0; i < this->Size(); i++)
@@ -184,14 +210,28 @@ namespace DNDS::Euler
         }
         void operator=(t_self &R)
         {
-            for (index i = 0; i < this->Size(); i++)
-                this->operator[](i) = R.operator[](i);
+            // for (index i = 0; i < this->Size(); i++)
+            //     this->operator[](i) = R.operator[](i);
+            DNDS_assert(R.father->RawDataVector().size() == this->father->RawDataVector().size());
+            std::copy(R.father->RawDataVector().begin(), R.father->RawDataVector().end(), this->father->RawDataVector().begin());
+            DNDS_assert(R.son->RawDataVector().size() == this->son->RawDataVector().size());
+            std::copy(R.son->RawDataVector().begin(), R.son->RawDataVector().end(), this->son->RawDataVector().begin());
         }
 
         void addTo(t_self &R, real r)
         {
-            for (index i = 0; i < this->Size(); i++)
-                this->operator[](i) += R.operator[](i) * r;
+            // for (index i = 0; i < this->Size(); i++)
+            //     this->operator[](i) += R.operator[](i) * r;
+            DNDS_assert(R.father->RawDataVector().size() == this->father->RawDataVector().size());
+            auto &RVF = R.father->RawDataVector();
+            auto &TVF = this->father->RawDataVector();
+            for (size_t i = 0; i < RVF.size(); i++)
+                TVF[i] += r * RVF[i];
+            DNDS_assert(R.son->RawDataVector().size() == this->son->RawDataVector().size());
+            auto &RVS = R.son->RawDataVector();
+            auto &TVS = this->son->RawDataVector();
+            for (size_t i = 0; i < RVS.size(); i++)
+                TVS[i] += r * RVS[i];
         }
 
         real norm2()
@@ -214,7 +254,7 @@ namespace DNDS::Euler
         }
     };
 
-    template <int nVars_Fixed>
+    template <int nVarsFixed>
     class JacobianValue
     {
     public:
@@ -224,23 +264,23 @@ namespace DNDS::Euler
             DiagonalBlock = 1,
             Full = 2,
         };
-        ArrayDOFV<nVars_Fixed> diag, diagInv;
-        ArrayEigenMatrix<nVars_Fixed, nVars_Fixed> diagBlock, diagBlockInv;
-        ArrayRECV<nVars_Fixed> offDiagBlock;
+        ArrayDOFV<nVarsFixed> diag, diagInv;
+        ArrayEigenMatrix<nVarsFixed, nVarsFixed> diagBlock, diagBlockInv;
+        ArrayRECV<nVarsFixed> offDiagBlock;
 
-        void SetDiagonal(ArrayDOFV<nVars_Fixed> &uDof)
+        void SetDiagonal(ArrayDOFV<nVarsFixed> &uDof)
         {
             type = Diagonal;
             // todo ! allocate square blocks!
         }
 
-        void SetDiagonalBlock(ArrayDOFV<nVars_Fixed> &uDof)
+        void SetDiagonalBlock(ArrayDOFV<nVarsFixed> &uDof)
         {
             type = DiagonalBlock;
             // todo ! allocate square blocks!
         }
 
-        void SetFull(ArrayDOFV<nVars_Fixed> &uDof, Geom::tAdjPair &cell2cell)
+        void SetFull(ArrayDOFV<nVarsFixed> &uDof, Geom::tAdjPair &cell2cell)
         {
             type = Full;
             // todo ! allocate with adjacency!
@@ -266,7 +306,7 @@ namespace DNDS::Euler
         NS_2EQ_3D = 6,
     };
 
-    constexpr static inline int getNVars_Fixed(const EulerModel model)
+    constexpr static inline int getnVarsFixed(const EulerModel model)
     {
         if (model == NS || model == NS_3D)
             return 5;
@@ -283,7 +323,7 @@ namespace DNDS::Euler
 
     constexpr static inline int getNVars(EulerModel model)
     {
-        int nVars = getNVars_Fixed(model);
+        int nVars = getnVarsFixed(model);
         if (nVars < 0)
         {
             if (model == NS || model == NS_3D)
@@ -342,9 +382,9 @@ namespace DNDS::Euler
     //         model == NS_SA);
     // } // use +/- is ok
 
-    template <int nvars_Fixed, int mul>
+    template <int nVarsFixed, int mul>
     constexpr static inline int nvarsFixedMultiply()
     {
-        return nvars_Fixed != Eigen::Dynamic ? nvars_Fixed * mul : Eigen::Dynamic;
+        return nVarsFixed != Eigen::Dynamic ? nVarsFixed * mul : Eigen::Dynamic;
     }
 }

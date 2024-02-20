@@ -1,6 +1,5 @@
 #pragma once
 #include "DNDS/Defines.hpp"
-#include "Eigen/Dense"
 
 #include <json.hpp>
 #include <fmt/core.h>
@@ -771,7 +770,7 @@ namespace DNDS::Euler::Gas
      * TODO: vectorize
      * newrhoEinteralNew is the desired fixed-to-positive e = p / (gamma -1)
      */
-    template <int dim = 3, int scheme = 0, int nVars_Fixed, typename TU, typename TUInc>
+    template <int dim = 3, int scheme = 0, int nVarsFixed, typename TU, typename TUInc>
     real IdealGasGetCompressionRatioPressure(const TU &u, const TUInc &uInc, real newrhoEinteralNew)
     {
         static const auto Seq01234 = Eigen::seq(Eigen::fix<0>, Eigen::fix<dim + 1>);
@@ -779,8 +778,8 @@ namespace DNDS::Euler::Gas
         static const auto Seq123 = Eigen::seq(Eigen::fix<1>, Eigen::fix<dim>);
         static const auto I4 = dim + 1;
 
-        Eigen::Vector<real, nVars_Fixed> ret = uInc;
-        Eigen::Vector<real, nVars_Fixed> uNew = u + uInc;
+        Eigen::Vector<real, nVarsFixed> ret = uInc;
+        Eigen::Vector<real, nVarsFixed> uNew = u + uInc;
         real rhoEOld = u(I4) - u(Seq123).squaredNorm() / (u(0) + verySmallReal) * 0.5;
         newrhoEinteralNew = std::max(smallReal * rhoEOld, newrhoEinteralNew);
         real rhoENew = uNew(I4) - uNew(Seq123).squaredNorm() / (uNew(0) + verySmallReal) * 0.5;
@@ -843,7 +842,7 @@ namespace DNDS::Euler::Gas
 
         ret *= alpha;
 
-        // Eigen::Vector<real, nVars_Fixed> uNew = u + ret;
+        // Eigen::Vector<real, nVarsFixed> uNew = u + ret;
         // real eNew = uNew(I4) - 0.5 * uNew(Seq123).squaredNorm() / uNew(0);
 
         real decay = 1 - 1e-2;
