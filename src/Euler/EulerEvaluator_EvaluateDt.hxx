@@ -22,8 +22,7 @@ namespace DNDS::Euler
             {
                 index iFace = mesh->bnd2face[iBnd];
                 auto elem = mesh->GetFaceElement(iFace);
-                if (elem.type == Geom::Elem::ElemType::Line2
-                   || elem.type == Geom::Elem::ElemType::Line3) //!
+                if (elem.type == Geom::Elem::ElemType::Line2 || elem.type == Geom::Elem::ElemType::Line3) //!
                 {
                     Geom::tSmallCoords coords;
                     mesh->GetCoordsOnFace(iFace, coords);
@@ -34,8 +33,7 @@ namespace DNDS::Euler
                     tri(Eigen::all, 2) = coords(Eigen::all, 1) + Geom::tPoint{0., 0., vfv->GetFaceArea(iFace)};
                     Triangles.push_back(tri);
                 }
-                else if (elem.type == Geom::Elem::ElemType::Tri3
-                    || elem.type == Geom::Elem::ElemType::Tri6) //! TODO
+                else if (elem.type == Geom::Elem::ElemType::Tri3 || elem.type == Geom::Elem::ElemType::Tri6) //! TODO
                 {
                     Geom::tSmallCoords coords;
                     mesh->GetCoordsOnFace(iFace, coords);
@@ -45,8 +43,7 @@ namespace DNDS::Euler
                     tri(Eigen::all, 2) = coords(Eigen::all, 2);
                     Triangles.push_back(tri);
                 }
-                else if (elem.type == Geom::Elem::ElemType::Quad4
-                    || elem.type == Geom::Elem::ElemType::Quad9)
+                else if (elem.type == Geom::Elem::ElemType::Quad4 || elem.type == Geom::Elem::ElemType::Quad9)
                 {
                     Geom::tSmallCoords coords;
                     mesh->GetCoordsOnFace(iFace, coords);
@@ -504,9 +501,9 @@ namespace DNDS::Euler
         real lam0{0}, lam123{0}, lam4{0};
         lam123 = std::abs(UL(1) / UL(0) + UR(1) / UR(0)) * 0.5;
 
-#ifdef USE_NO_RIEMANN_ON_WALL
         if (pBCHandler->GetTypeFromID(btype) == EulerBCType::BCWall)
         {
+#ifdef USE_NO_RIEMANN_ON_WALL
             TU UL_Prim, UR_Prim;
             UL_Prim.resizeLike(UL);
             UL_Prim.resizeLike(UR);
@@ -517,8 +514,14 @@ namespace DNDS::Euler
             Gas::IdealGasThermalPrimitive2Conservative<dim>(UL_Prim, UL, gamma);
             // Gas::IdealGasThermalPrimitive2Conservative<dim>(UR_Prim, UR, gamma);
             UR = UL;
-        }
+#else
+
 #endif
+        }
+        if (pBCHandler->GetTypeFromID(btype) == EulerBCType::BCWallInvis)
+        {
+
+        }
 
         auto RSWrapper = [&](Gas::RiemannSolverType rsType, auto &UL, auto &UR, auto &ULm, auto &URm, real gamma, auto &finc, real dLambda)
         {

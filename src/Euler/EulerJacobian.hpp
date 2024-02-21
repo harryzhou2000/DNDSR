@@ -2,12 +2,14 @@
 
 #include "Euler.hpp"
 #include "DNDS/ArrayDerived/ArrayEigenUniMatrixBatch.hpp"
-#include "Geom/Mesh.hpp"
+#include "Solver/Direct.hpp"
 
 namespace DNDS::Euler
 {
-    template <int nVarsFixed = 5>
-    // static const int nVarsFixed = 5;
+
+    DNDS_SWITCH_INTELLISENSE(
+        template <int nVarsFixed = 5>,
+        static const int nVarsFixed = 5;)
     struct JacobianLocalLU
     {
         using tLocalMat = ArrayEigenUniMatrixBatch<nVarsFixed, nVarsFixed>;
@@ -17,23 +19,23 @@ namespace DNDS::Euler
          * \brief
          * each Row:
          * 0: diag,
-         * [1,1+mesh->lowerTriStructure[iCell].size()), lower
-         * [1+mesh->lowerTriStructure[iCell].size(), end), upper
+         * [1,1+symLU->lowerTriStructure[iCell].size()), lower
+         * [1+symLU->lowerTriStructure[iCell].size(), end), upper
          */
         tLocalMat LDU; //
-        ssp<Geom::UnstructuredMesh> mesh;
+        ssp<Direct::SerialSymLUStructure> symLU;
 
         bool isDecomposed = false;
 
-        JacobianLocalLU(const ssp<Geom::UnstructuredMesh> &nMesh, int nVarsC) : mesh{nMesh}
+        JacobianLocalLU(const ssp<Direct::SerialSymLUStructure> &nMesh, int nVarsC) : symLU{nMesh}
         {
-            DNDS_assert(mesh->lowerTriStructure.size() == mesh->NumCell());
-            LDU.Resize(mesh->NumCell(), nVarsC, nVarsC);
-            for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
+            DNDS_assert(symLU->lowerTriStructure.size() == symLU->Num());
+            LDU.Resize(symLU->Num(), nVarsC, nVarsC);
+            for (index iCell = 0; iCell < symLU->Num(); iCell++)
             {
                 LDU.ResizeRow(iCell,
-                              1 + mesh->lowerTriStructure[iCell].size() +
-                                  mesh->upperTriStructure[iCell].size());
+                              1 + symLU->lowerTriStructure[iCell].size() +
+                                  symLU->upperTriStructure[iCell].size());
                 for (auto &v : LDU[iCell])
                     v.setZero();
             }
@@ -43,7 +45,7 @@ namespace DNDS::Euler
         void setZero()
         {
             isDecomposed = false;
-            for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
+            for (index iCell = 0; iCell < symLU->Num(); iCell++)
                 for (auto &v : LDU[iCell])
                     v.setZero();
         }
@@ -58,36 +60,36 @@ namespace DNDS::Euler
         }
         auto GetUpper(index i, int iInUpp)
         {
-            return LDU(i, 1 + mesh->lowerTriStructure[i].size() + iInUpp);
+            return LDU(i, 1 + symLU->lowerTriStructure[i].size() + iInUpp);
         }
 
         void InPlaceDecompose()
         {
-            for (index iP = 0; iP < mesh->NumCell(); iP++)
+            for (index iP = 0; iP < symLU->Num(); iP++)
             {
-                index i = mesh->CellFillingReorderNew2Old(iP);
+                index i = symLU->FillingReorderNew2Old(iP);
 
-                auto &&lowerRow = mesh->lowerTriStructureNew[iP];
+                auto &&lowerRow = symLU->lowerTriStructureNew[iP];
                 /*********************/
                 // lower part
                 for (int ijP = 0; ijP < lowerRow.size(); ijP++)
                 {
                     auto jP = lowerRow[ijP];
                     DNDS_assert(jP < iP);
-                    auto j = mesh->CellFillingReorderNew2Old(jP);
+                    auto j = symLU->FillingReorderNew2Old(jP);
                     // handle last j's job
                     if (ijP > 0)
                     {
-                        auto &&lowerRowJP = mesh->lowerTriStructureNew[jP];
+                        auto &&lowerRowJP = symLU->lowerTriStructureNew[jP];
                         iterateIdentical(
                             lowerRow.begin(), lowerRow.end(), lowerRowJP.begin(), lowerRowJP.end(),
                             [&](index kP, auto pos1, auto pos2)
                             {
                                 if (kP > jP - 1)
                                     return true;
-                                DNDS_assert(kP < mesh->NumCell());
-                                auto k = mesh->CellFillingReorderNew2Old(kP);
-                                int jPInUpperPos = mesh->lowerTriStructureNewInUpper[jP][pos2];
+                                DNDS_assert(kP < symLU->Num());
+                                auto k = symLU->FillingReorderNew2Old(kP);
+                                int jPInUpperPos = symLU->lowerTriStructureNewInUpper[jP][pos2];
                                 this->GetLower(i, ijP) -= this->GetLower(i, pos1) * this->GetUpper(k, jPInUpperPos);
                                 // if (iP < 3)
                                 // log() << fmt::format("Lower Add at {},{},{} === {}", iP, jP - 1, kP, (this->GetLower(i, pos1) * this->GetUpper(k, jPInUpperPos))(0)) << std::endl;
@@ -104,8 +106,8 @@ namespace DNDS::Euler
                 for (int ikP = 0; ikP < lowerRow.size(); ikP++)
                 {
                     auto kP = lowerRow[ikP];
-                    auto k = mesh->CellFillingReorderNew2Old(kP);
-                    int iPInUpperPos = mesh->lowerTriStructureNewInUpper[iP][ikP];
+                    auto k = symLU->FillingReorderNew2Old(kP);
+                    int iPInUpperPos = symLU->lowerTriStructureNewInUpper[iP][ikP];
                     this->GetDiag(i) -= this->GetLower(i, ikP) * this->GetUpper(k, iPInUpperPos);
                 }
                 tComponent AI;
@@ -116,13 +118,13 @@ namespace DNDS::Euler
                 this->GetDiag(i) = AI;
                 /*********************/
                 // upper part
-                auto &&upperRow = mesh->upperTriStructureNew[iP];
+                auto &&upperRow = symLU->upperTriStructureNew[iP];
                 for (int ijP = 0; ijP < upperRow.size(); ijP++)
                 {
                     auto jP = upperRow[ijP];
                     DNDS_assert(jP > iP);
-                    auto j = mesh->CellFillingReorderNew2Old(jP);
-                    auto &&lowerRowJP = mesh->lowerTriStructureNew[jP];
+                    auto j = symLU->FillingReorderNew2Old(jP);
+                    auto &&lowerRowJP = symLU->lowerTriStructureNew[jP];
 
                     iterateIdentical(
                         lowerRow.begin(), lowerRow.end(), lowerRowJP.begin(), lowerRowJP.end(),
@@ -130,9 +132,9 @@ namespace DNDS::Euler
                         {
                             if (kP >= iP)
                                 return true;
-                            DNDS_assert(kP < mesh->NumCell());
-                            auto k = mesh->CellFillingReorderNew2Old(kP);
-                            int jPInUpperPos = mesh->lowerTriStructureNewInUpper[jP][pos2];
+                            DNDS_assert(kP < symLU->Num());
+                            auto k = symLU->FillingReorderNew2Old(kP);
+                            int jPInUpperPos = symLU->lowerTriStructureNewInUpper[jP][pos2];
                             this->GetUpper(i, ijP) -= this->GetLower(i, pos1) * this->GetUpper(k, jPInUpperPos);
                             // if (iP < 3)
                             // log() << fmt::format("Upper Add at {},{},{} === {}", iP, jP, kP,
@@ -148,7 +150,7 @@ namespace DNDS::Euler
         void PrintLog()
         {
             log() << "nz Entries with Diag part inverse-ed" << std::endl;
-            for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
+            for (index iCell = 0; iCell < symLU->Num(); iCell++)
             {
                 log() << "=== Row " << iCell << std::endl
                       << std::setprecision(10);
@@ -161,34 +163,34 @@ namespace DNDS::Euler
         void MatMul(ArrayDOFV<nVarsFixed> &x, ArrayDOFV<nVarsFixed> &result)
         {
             DNDS_assert(!isDecomposed);
-            for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
+            for (index iCell = 0; iCell < symLU->Num(); iCell++)
             {
                 result[iCell] = this->GetDiag(iCell) * x[iCell];
-                for (int ij = 0; ij < mesh->lowerTriStructure[iCell].size(); ij++)
-                    result[iCell] += this->GetLower(iCell, ij) * x[mesh->lowerTriStructure[iCell][ij]];
-                for (int ij = 0; ij < mesh->upperTriStructure[iCell].size(); ij++)
-                    result[iCell] += this->GetUpper(iCell, ij) * x[mesh->upperTriStructure[iCell][ij]];
+                for (int ij = 0; ij < symLU->lowerTriStructure[iCell].size(); ij++)
+                    result[iCell] += this->GetLower(iCell, ij) * x[symLU->lowerTriStructure[iCell][ij]];
+                for (int ij = 0; ij < symLU->upperTriStructure[iCell].size(); ij++)
+                    result[iCell] += this->GetUpper(iCell, ij) * x[symLU->upperTriStructure[iCell][ij]];
             }
         }
 
         void Solve(ArrayDOFV<nVarsFixed> &b, ArrayDOFV<nVarsFixed> &result)
         {
             DNDS_assert(isDecomposed);
-            for (index iP = 0; iP < mesh->NumCell(); iP++)
+            for (index iP = 0; iP < symLU->Num(); iP++)
             {
-                index i = mesh->CellFillingReorderNew2Old(iP);
+                index i = symLU->FillingReorderNew2Old(iP);
                 result[i] = b[i];
-                auto &&lowerRowOld = mesh->lowerTriStructure[i];
+                auto &&lowerRowOld = symLU->lowerTriStructure[i];
                 for (int ij = 0; ij < lowerRowOld.size(); ij++)
                 {
                     index j = lowerRowOld[ij];
                     result[i] -= this->GetLower(i, ij) * result[j];
                 }
             }
-            for (index iP = mesh->NumCell() - 1; iP >= 0; iP--)
+            for (index iP = symLU->Num() - 1; iP >= 0; iP--)
             {
-                index i = mesh->CellFillingReorderNew2Old(iP);
-                auto &&upperRowOld = mesh->upperTriStructure[i];
+                index i = symLU->FillingReorderNew2Old(iP);
+                auto &&upperRowOld = symLU->upperTriStructure[i];
                 for (int ij = 0; ij < upperRowOld.size(); ij++)
                 {
                     index j = upperRowOld[ij];

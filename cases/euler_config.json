@@ -10,7 +10,7 @@
         "odeSetting3": 1.3333,
         "useRHSfPP": true,
         "rhsfPPScale": 1,
-        "useRestart": false,
+        "useRestart": true,
         "_tail": 0
     },
     "convergenceControl": {
@@ -42,7 +42,7 @@
         "uniqueStamps": false,
         "meshRotZ": 0.0,
         "meshFile": "../data/mesh/CylinderA6.cgns",
-        "outPltName": "../data/outUnsteady/CylinderA6_RE100/starter",
+        "outPltName": "../data/outUnsteady/CylinderA6_RE100/out_o4",
         "outPltMode": 0,
         "readMeshMode": 0,
         "outPltTecplotFormat": true,
@@ -88,11 +88,11 @@
             "geomWeightScheme": "HQM_SD"
         }
     },
-    "directPrecControl": {
-        "useDirectPrec": true,
-        "iluCode": -1
-    },
     "linearSolverControl": {
+        "directPrecControl": {
+            "useDirectPrec": true,
+            "iluCode": -1
+        },
         "jacobiCode": 2,
         "sgsIter": 0,
         "sgsWithRec": 1,

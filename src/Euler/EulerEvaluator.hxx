@@ -176,7 +176,7 @@ namespace DNDS::Euler
                             unitNorm,
                             Geom::BC_ID_INTERNAL, lambdaFace[iFace], lambdaFaceC[iFace]); //! always inner here
                     }
-                    jacLU.LDU(iCell, mesh->cell2cellFaceVLocal2FullRowPos[iCell][iC2CInLocal]) =
+                    jacLU.LDU(iCell, symLU->cell2cellFaceVLocal2FullRowPos[iCell][iC2CInLocal]) =
                         (0.5 * alphaDiag) * vfv->GetFaceArea(iFace) / vfv->GetCellVol(iCell) * jacIJ;
                 }
             }

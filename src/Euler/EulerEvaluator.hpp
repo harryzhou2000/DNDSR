@@ -1,21 +1,29 @@
 #pragma once
+
+#ifndef __DNDS_REALLY_COMPILING__
+#define __DNDS_REALLY_COMPILING__
+#define __DNDS_REALLY_COMPILING__HEADER_ON__
+#endif
+
 #include "Gas.hpp"
 #include "Geom/Mesh.hpp"
 #include "CFV/VariationalReconstruction.hpp"
-
-#include <iomanip>
-#include <functional>
-
-#define JSON_ASSERT DNDS_assert
-#include "json.hpp"
 #include "DNDS/JsonUtil.hpp"
-
 #include "Euler.hpp"
 #include "EulerBC.hpp"
 #include "EulerJacobian.hpp"
 #include "RANS_ke.hpp"
 #include "DNDS/SerializerBase.hpp"
+
+#ifdef __DNDS_REALLY_COMPILING__HEADER_ON__
+#undef __DNDS_REALLY_COMPILING__
+#endif
+
+#define JSON_ASSERT DNDS_assert
+#include "json.hpp"
 #include "fmt/core.h"
+#include <iomanip>
+#include <functional>
 
 // #define DNDS_FV_EULEREVALUATOR_SOURCE_TERM_ZERO
 // // #define DNDS_FV_EULEREVALUATOR_IGNORE_SOURCE_TERM
@@ -86,6 +94,8 @@ namespace DNDS::Euler
         Eigen::Vector<real, -1> fluxWallSum;
         std::vector<Eigen::Vector<real, nVarsFixed>> fluxBnd;
         index nFaceReducedOrder = 0;
+
+        ssp<Direct::SerialSymLUStructure> symLU;
 
         struct Setting
         {
@@ -306,6 +316,8 @@ namespace DNDS::Euler
 
             real maxD = 0.1;
             this->GetWallDist(); // TODO: put this after settings is set
+
+            DNDS_MAKE_SSP(symLU, mesh->getMPI(), mesh->NumCell());
         }
 
         void GetWallDist();
@@ -988,7 +1000,7 @@ namespace DNDS::Euler
             const TVec &n,
             Geom::t_index btype,
             real lambdaMain, real lambdaC)
-        { //TODO: optimize this
+        { // TODO: optimize this
             TJacobianU J;
             J.resize(nVars, nVars);
             J.setIdentity();

@@ -1,4 +1,11 @@
+#ifndef __DNDS_REALLY_COMPILING__
+#define __DNDS_REALLY_COMPILING__
+#define __DNDS_REALLY_COMPILING__HEADER_ON__
+#endif
 #include "Euler/EulerSolver.hpp"
+#ifdef __DNDS_REALLY_COMPILING__HEADER_ON__
+#undef __DNDS_REALLY_COMPILING__
+#endif
 
 static DNDS::MPIInfo mpi;
 static const int bDim = 5;
@@ -9,6 +16,7 @@ namespace DNDS::Euler
     {
         DNDS_assert(mpi.size == 1);
         ssp<Geom::UnstructuredMesh> mesh;
+
         DNDS_MAKE_SSP(mesh, mpi, 2);
         auto reader = DNDS::Geom::UnstructuredMeshSerialRW(mesh, 0);
         mesh->periodicInfo.translation[1] *= 10;
@@ -23,36 +31,41 @@ namespace DNDS::Euler
         mesh->AdjGlobal2LocalPrimary();
         mesh->InterpolateFace(); // this mesh building is copied from meshSerial_Test
 
-        mesh->ObtainLocalFactFillOrdering(0);
-        mesh->ObtainSymmetricSymbolicFactorization(5);
+        Direct::DirectPrecControl control;
+        control.useDirectPrec = true;
+        control.iluCode = 5;
+        ssp<Direct::SerialSymLUStructure> symLU;
+        mesh->ObtainLocalFactFillOrdering(*symLU, control);
+        DNDS_MAKE_SSP(symLU, mesh->getMPI(), mesh->NumCell());
+        mesh->ObtainSymmetricSymbolicFactorization(*symLU, control);
 
-        JacobianLocalLU<bDim> J(mesh, bDim);
+        JacobianLocalLU<bDim> J(symLU, bDim);
         J.setZero();
         auto cell2cellFaceV = mesh->GetCell2CellFaceVLocal();
         for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
         {
-            index iCellP = mesh->CellFillingReorderOld2New(iCell);
+            index iCellP = symLU->FillingReorderOld2New(iCell);
             J.GetDiag(iCell).setIdentity();
             J.GetDiag(iCell) *= 0.5;
             J.GetDiag(iCell) += decltype(J.GetDiag(iCell))::Constant(0.5);
             for (auto iCO : cell2cellFaceV[iCell])
             {
-                index iCOP = mesh->CellFillingReorderOld2New(iCO);
+                index iCOP = symLU->FillingReorderOld2New(iCO);
                 if (iCOP < iCellP)
                 {
                     auto ret = std::lower_bound(
-                        mesh->lowerTriStructureNew[iCellP].begin(),
-                        mesh->lowerTriStructureNew[iCellP].end(), iCOP);
-                    DNDS_assert(ret != mesh->lowerTriStructureNew[iCellP].end());
-                    J.GetLower(iCell, ret - mesh->lowerTriStructureNew[iCellP].begin()).setConstant(.1);
+                        symLU->lowerTriStructureNew[iCellP].begin(),
+                        symLU->lowerTriStructureNew[iCellP].end(), iCOP);
+                    DNDS_assert(ret != symLU->lowerTriStructureNew[iCellP].end());
+                    J.GetLower(iCell, ret - symLU->lowerTriStructureNew[iCellP].begin()).setConstant(.1);
                 }
                 if (iCOP > iCellP)
                 {
                     auto ret = std::lower_bound(
-                        mesh->upperTriStructureNew[iCellP].begin(),
-                        mesh->upperTriStructureNew[iCellP].end(), iCOP);
-                    DNDS_assert(ret != mesh->upperTriStructureNew[iCellP].end());
-                    J.GetUpper(iCell, ret - mesh->upperTriStructureNew[iCellP].begin()).setConstant(-.1);
+                        symLU->upperTriStructureNew[iCellP].begin(),
+                        symLU->upperTriStructureNew[iCellP].end(), iCOP);
+                    DNDS_assert(ret != symLU->upperTriStructureNew[iCellP].end());
+                    J.GetUpper(iCell, ret - symLU->upperTriStructureNew[iCellP].begin()).setConstant(-.1);
                 }
             }
         }
