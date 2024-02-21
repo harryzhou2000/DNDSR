@@ -8,6 +8,7 @@
 #ifdef __DNDS_REALLY_COMPILING__HEADER_ON__
 #undef __DNDS_REALLY_COMPILING__
 #endif
+// #include "fmt/ranges.h"
 
 namespace DNDS::Euler
 {
@@ -27,6 +28,8 @@ namespace DNDS::Euler
     void EulerSolver<model>::RunImplicitEuler()
     {
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
+        using namespace std::literals;
+
         DNDS_MPI_InsertCheck(mpi, "Implicit 1 nvars " + std::to_string(nVars));
         EulerEvaluator<model> &eval = *pEval;
         auto hashCoord = mesh->coords.hash();
@@ -229,8 +232,8 @@ namespace DNDS::Euler
         double tstart = MPI_Wtime();
         double trec{0}, tcomm{0}, trhs{0}, tLim{0};
         int stepCount = 0;
-        Eigen::Vector<real, -1> resBaseC;
-        Eigen::Vector<real, -1> resBaseCInternal;
+        Eigen::VectorFMTSafe<real, -1> resBaseC;
+        Eigen::VectorFMTSafe<real, -1> resBaseCInternal;
         resBaseC.resize(nVars);
         resBaseCInternal.resize(nVars);
         resBaseC.setConstant(config.convergenceControl.res_base);
@@ -1042,19 +1045,20 @@ namespace DNDS::Euler
         {
             // auto &uRecC = config.timeMarchControl.odeCode == 401 && uPos == 1 ? uRec1 : uRec;
 
-            Eigen::Vector<real, -1> res(nVars);
+            Eigen::VectorFMTSafe<real, -1> res(nVars);
             eval.EvaluateNorm(res, cxinc, 1, config.convergenceControl.useVolWiseResidual);
             // if (iter == 1 && iStep == 1) // * using 1st rk step for reference
             if (iter == 1)
                 resBaseCInternal = res;
             else
                 resBaseCInternal = resBaseCInternal.array().max(res.array()); //! using max !
-            Eigen::Vector<real, -1> resRel = (res.array() / (resBaseCInternal.array() + verySmallReal)).matrix();
+            Eigen::VectorFMTSafe<real, -1> resRel = (res.array() / (resBaseCInternal.array() + verySmallReal)).matrix();
             bool ifStop = resRel(0) < config.convergenceControl.rhsThresholdInternal; // ! using only rho's residual
             if (iter < config.convergenceControl.nTimeStepInternalMin)
                 ifStop = false;
             if (iter % config.outputControl.nConsoleCheckInternal == 0 || iter > config.convergenceControl.nTimeStepInternal || ifStop)
             {
+                double tWall = MPI_Wtime();
                 double telapsed = MPI_Wtime() - tstart;
                 tcomm = PerformanceTimer::Instance().getTimerCollective(PerformanceTimer::Comm, mpi);
                 real tLimiterA = PerformanceTimer::Instance().getTimerCollective(PerformanceTimer::LimiterA, mpi);
@@ -1062,29 +1066,48 @@ namespace DNDS::Euler
                 if (mpi.rank == 0)
                 {
                     auto fmt = log().flags();
-                    log() << std::setprecision(config.outputControl.nPrecisionConsole) << std::scientific
-                          << "\t Internal === Step [" << step << ", " << iStep << ", " << iter << "]   "
-                          << "res \033[91m[" << resRel.transpose() << "]\033[39m   "
-                          << "t,dTaumin,CFL,nFix \033[92m["
-                          << tSimu << ", " << curDtMin << ", " << CFLNow << ", "
-                          << fmt::format("[alphaInc({},{}), betaRec({},{}), alphaRes({},{})]",
-                                         nLimInc, alphaMinInc, nLimBeta, minBeta, nLimAlpha, minAlpha)
-                          << "]\033[39m   "
-                          << std::setprecision(config.outputControl.nPrecisionConsole) << std::fixed
-                          << "Time [" << telapsed << "]   recTime ["
-                          << trec << "]   rhsTime ["
-                          << trhs << "]   commTime ["
-                          << tcomm << "]  limTime ["
-                          << tLim << "]  limtimeA [" << tLimiterA << "]  limtimeB ["
-                          << tLimiterB << "]  ";
 
-                    if (config.outputControl.consoleOutputMode == 1)
-                    {
-                        log() << std::setprecision(config.outputControl.nPrecisionConsole + 2) << std::setw(10) << std::scientific
-                              << "Wall Flux \033[93m[" << eval.fluxWallSum.transpose() << "]\033[39m";
-                    }
+                    log() << fmt::format(
+                        "\t Internal === Step [{step:4d},{iStep:2d},{iter:4d}]   "s +
+                            "res {termRed}{resRel:.3e}{termReset}   "s +
+                            "t,dTaumin,CFL,nFix {termGreen}[{tSimu:.3e},{curDtMin:.3e},{CFLNow:.3e},[alphaInc({nLimInc},{alphaMinInc}), betaRec({nLimBeta},{minBeta}), alphaRes({nLimAlpha},{minAlpha})]]{termReset}   "s +
+                            "Time[{telapsed:.3f}] recTime[{trec:.3f}] rhsTime[{trhs:.3f}] commTime[{tcomm:.3f}] limTime[{tLim:.3f}] limTimeA[{tLimiterA:.3f}] limTimeB[{tLimiterB:.3f}]" +
+                            "  "s +
+                            (config.outputControl.consoleOutputMode == 1
+                                 ? "WallFlux {termYellow}{wallFlux:.6e}{termReset}"s
+                                 : ""s),
+                        DNDS_FMT_ARG(step),
+                        DNDS_FMT_ARG(iStep),
+                        DNDS_FMT_ARG(iter),
+                        fmt::arg("resRel", resRel.transpose()),
+                        fmt::arg("wallFlux", eval.fluxWallSum.transpose()),
+                        DNDS_FMT_ARG(tSimu),
+                        DNDS_FMT_ARG(curDtMin),
+                        DNDS_FMT_ARG(CFLNow),
+                        DNDS_FMT_ARG(nLimInc),
+                        DNDS_FMT_ARG(alphaMinInc),
+                        DNDS_FMT_ARG(nLimBeta),
+                        DNDS_FMT_ARG(minBeta),
+                        DNDS_FMT_ARG(nLimAlpha),
+                        DNDS_FMT_ARG(minAlpha),
+                        DNDS_FMT_ARG(telapsed),
+                        DNDS_FMT_ARG(trec),
+                        DNDS_FMT_ARG(trhs),
+                        DNDS_FMT_ARG(tcomm),
+                        DNDS_FMT_ARG(tLim),
+                        DNDS_FMT_ARG(tLimiterA),
+                        DNDS_FMT_ARG(tLimiterB),
+                        DNDS_FMT_ARG(tWall),
+                        fmt::arg("termRed", TermColor::Red),
+                        fmt::arg("termBlue", TermColor::Blue),
+                        fmt::arg("termGreen", TermColor::Green),
+                        fmt::arg("termCyan", TermColor::Cyan),
+                        fmt::arg("termYellow", TermColor::Yellow),
+                        fmt::arg("termBold", TermColor::Bold),
+                        fmt::arg("termReset", TermColor::Reset));
                     log() << std::endl;
                     log().setf(fmt);
+
                     std::string delimC = " ";
                     logErr
                         << std::left
@@ -1163,7 +1186,7 @@ namespace DNDS::Euler
             tSimu += curDtImplicit;
             if (ifOutT)
                 tSimu = nextTout;
-            Eigen::Vector<real, -1> res(nVars);
+            Eigen::VectorFMTSafe<real, -1> res(nVars);
             eval.EvaluateNorm(res, ode->getLatestRHS(), 1, config.convergenceControl.useVolWiseResidual);
             if (stepCount == 0 && resBaseC.norm() == 0)
                 resBaseC = res;
@@ -1176,19 +1199,52 @@ namespace DNDS::Euler
 
             if (step % config.outputControl.nConsoleCheck == 0)
             {
+                double tWall = MPI_Wtime();
                 double telapsed = MPI_Wtime() - tstart;
                 tcomm = PerformanceTimer::Instance().getTimerCollective(PerformanceTimer::Comm, mpi);
+                real tLimiterA = PerformanceTimer::Instance().getTimerCollective(PerformanceTimer::LimiterA, mpi);
+                real tLimiterB = PerformanceTimer::Instance().getTimerCollective(PerformanceTimer::LimiterB, mpi);
                 if (mpi.rank == 0)
                 {
                     auto fmt = log().flags();
-                    log() << std::setprecision(config.outputControl.nPrecisionConsole) << std::scientific
-                          << "=== Step [" << step << "]   "
-                          << "res \033[91m[" << (res.array() / resBaseC.array()).transpose() << "]\033[39m   "
-                          << "t,dt(min) \033[92m[" << tSimu << ", " << curDtMin << "]\033[39m   "
-                          << fmt::format("[alphaInc({},{}), betaRec({},{}), alphaRes({},{})]",
-                                         nLimInc, alphaMinInc, nLimBeta, minBeta, nLimAlpha, minAlpha)
-                          << std::setprecision(config.outputControl.nPrecisionConsole) << std::fixed
-                          << " Time [" << telapsed << "]   recTime [" << trec << "]   rhsTime [" << trhs << "]   commTime [" << tcomm << "]  limTime [" << tLim << "]  " << std::endl;
+                    log() << fmt::format(
+                        "=== Step {termBold}[{step:4d}]   "s +
+                            "res {termBold}{termRed}{resRel:.3e}{termReset}   "s +
+                            "t,dTaumin,CFL,nFix {termGreen}[{tSimu:.3e},{curDtMin:.3e},{CFLNow:.3e},[alphaInc({nLimInc},{alphaMinInc}), betaRec({nLimBeta},{minBeta}), alphaRes({nLimAlpha},{minAlpha})]]{termReset}   "s +
+                            "Time[{telapsed:.3f}] recTime[{trec:.3f}] rhsTime[{trhs:.3f}] commTime[{tcomm:.3f}] limTime[{tLim:.3f}] limTimeA[{tLimiterA:.3f}] limTimeB[{tLimiterB:.3f}]" +
+                            "  "s +
+                            (config.outputControl.consoleOutputMode == 1
+                                 ? "WallFlux {termYellow}{wallFlux:.6e}{termReset}"s
+                                 : ""s),
+                        DNDS_FMT_ARG(step),
+                        // DNDS_FMT_ARG(iStep),
+                        // DNDS_FMT_ARG(iter),
+                        fmt::arg("resRel", (res.array() / (resBaseC.array() + verySmallReal)).transpose()),
+                        fmt::arg("wallFlux", eval.fluxWallSum.transpose()),
+                        DNDS_FMT_ARG(tSimu),
+                        DNDS_FMT_ARG(curDtMin),
+                        DNDS_FMT_ARG(CFLNow),
+                        DNDS_FMT_ARG(nLimInc),
+                        DNDS_FMT_ARG(alphaMinInc),
+                        DNDS_FMT_ARG(nLimBeta),
+                        DNDS_FMT_ARG(minBeta),
+                        DNDS_FMT_ARG(nLimAlpha),
+                        DNDS_FMT_ARG(minAlpha),
+                        DNDS_FMT_ARG(telapsed),
+                        DNDS_FMT_ARG(trec),
+                        DNDS_FMT_ARG(trhs),
+                        DNDS_FMT_ARG(tcomm),
+                        DNDS_FMT_ARG(tLim),
+                        DNDS_FMT_ARG(tLimiterA),
+                        DNDS_FMT_ARG(tLimiterB),
+                        DNDS_FMT_ARG(tWall),
+                        fmt::arg("termRed", TermColor::Red),
+                        fmt::arg("termBlue", TermColor::Blue),
+                        fmt::arg("termGreen", TermColor::Green),
+                        fmt::arg("termCyan", TermColor::Cyan),
+                        fmt::arg("termYellow", TermColor::Yellow),
+                        fmt::arg("termBold", TermColor::Bold),
+                        fmt::arg("termReset", TermColor::Reset));
                     log().setf(fmt);
                     std::string delimC = " ";
                     logErr

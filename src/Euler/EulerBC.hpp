@@ -36,7 +36,8 @@ namespace DNDS::Euler
     {
     public:
         static const int nVarsFixed = getnVarsFixed(model);
-        using TU = Eigen::Vector<real, nVarsFixed>;
+        using TU_R = Eigen::Vector<real, nVarsFixed>;
+        using TU = Eigen::VectorFMTSafe<real, nVarsFixed>;
 
     private:
         std::vector<TU> BCValues;
@@ -125,7 +126,7 @@ namespace DNDS::Euler
                 {
                     item["type"] = bcType;
                     item["name"] = bc.ID2name.at(i);
-                    item["value"] = bc.BCValues.at(i);
+                    item["value"] = static_cast<TU_R>(bc.BCValues.at(i)); // force begin() and end() to be exposed
                 }
                 break;
 

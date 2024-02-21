@@ -116,10 +116,10 @@
         "ignoreMeshGeometryDeficiency": false
     },
     "linearSolverControl": {
-        "jacobiCode": 1,
+        "jacobiCode": 2,
         "sgsIter": 0,
         "nSgsConsoleCheck": 100,
-        "gmresCode": 0,
+        "gmresCode": 1,
         "nGmresSpace": 5,
         "nGmresIter": 2,
         "sgsWithRec": 0,

@@ -130,12 +130,12 @@
         "nGmresIter": 2,
         "nSgsConsoleCheck": 100,
         "nGmresConsoleCheck": 100,
-        "initWithLastURecInc": false
-    },
-    "directPrecControl": {
-        "useDirectPrec": false,
-        "iluCode": 0,
-        "orderingCode": -2147483648
+        "initWithLastURecInc": false,
+        "directPrecControl": {
+            "useDirectPrec": false,
+            "iluCode": 0,
+            "orderingCode": -2147483648
+        }
     },
     "timeAverageControl": {
         "enabled": false

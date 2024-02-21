@@ -47,12 +47,12 @@ namespace DNDS::Euler
         static const auto I4 = dim + 1;
 
 
-        typedef Eigen::Vector<real, dim> TVec;
-        typedef Eigen::Matrix<real, dim, dim> TMat;
-        typedef Eigen::Vector<real, nVarsFixed> TU;
-        typedef Eigen::Matrix<real, nVarsFixed, nVarsFixed> TJacobianU;
-        typedef Eigen::Matrix<real, dim, nVarsFixed> TDiffU;
-        typedef Eigen::Matrix<real, nVarsFixed, dim> TDiffUTransposed;
+        typedef Eigen::VectorFMTSafe<real, dim> TVec;
+        typedef Eigen::MatrixFMTSafe<real, dim, dim> TMat;
+        typedef Eigen::VectorFMTSafe<real, nVarsFixed> TU;
+        typedef Eigen::MatrixFMTSafe<real, nVarsFixed, nVarsFixed> TJacobianU;
+        typedef Eigen::MatrixFMTSafe<real, dim, nVarsFixed> TDiffU;
+        typedef Eigen::MatrixFMTSafe<real, nVarsFixed, dim> TDiffUTransposed;
         typedef ArrayDOFV<nVarsFixed> TDof;
         typedef ArrayRECV<nVarsFixed> TRec;
         typedef ArrayRECV<1> TScalar;

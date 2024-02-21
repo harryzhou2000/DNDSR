@@ -42,6 +42,7 @@ set(DNDS_USE_NO_OMIT_FRAME_POINTER OFf CACHE BOOL "in fast build fast part, use 
 set(DNDS_UNSAFE_MATH_OPT OFF CACHE BOOL "use -funsafe-math-optimizations")
 set(DNDS_NATIVE_ARCH     OFF CACHE BOOL "use -march=native")
 set(DNDS_LTO OFF CACHE BOOL "use -flto")
+set(DNDS_USE_FULL_TEMPLATE_TRACE OFF CACHE BOOL "use -ftemplate-backtrace-limit=0")
 
 
 set(DNDS_EIGEN_USE_BLAS OFF CACHE BOOL "use blas in eigen")
@@ -77,6 +78,10 @@ endif()
 if(DNDS_LTO)
     string(APPEND CMAKE_CXX_FLAGS_RELEASE " -flto")
     # ! todo: add changing to gcc-ar gcc-ranlib gcc-nm
+endif()
+
+if(DNDS_USE_FULL_TEMPLATE_TRACE)
+    add_compile_options(-ftemplate-backtrace-limit=0)
 endif()
 
 

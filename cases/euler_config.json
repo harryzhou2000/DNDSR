@@ -10,7 +10,7 @@
         "odeSetting3": 1.3333,
         "useRHSfPP": true,
         "rhsfPPScale": 1,
-        "useRestart": true,
+        "useRestart": false,
         "_tail": 0
     },
     "convergenceControl": {
@@ -42,7 +42,7 @@
         "uniqueStamps": false,
         "meshRotZ": 0.0,
         "meshFile": "../data/mesh/CylinderA6.cgns",
-        "outPltName": "../data/outUnsteady/CylinderA6_RE100/out_o4",
+        "outPltName": "../data/outUnsteady/CylinderA6_RE100/out_test",
         "outPltMode": 0,
         "readMeshMode": 0,
         "outPltTecplotFormat": true,
