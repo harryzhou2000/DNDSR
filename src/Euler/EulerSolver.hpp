@@ -426,7 +426,7 @@ namespace DNDS::Euler
             Configuration(int nVars)
             {
                 vfvSettings = CFV::VRSettings{gDim};
-                typename TEval::Setting().ReadWriteJSON(eulerSettings, nVars, false);
+                EulerEvaluatorSettings<model>().ReadWriteJSON(eulerSettings, nVars, false);
                 bcSettings = BoundaryHandler<model>();
             }
 

@@ -8,7 +8,7 @@
 
 namespace DNDS
 {
-    //TODO: lessen copying chance?
+    // TODO: lessen copying chance?
     template <class dir>
     std::string to_string(const Eigen::DenseBase<dir> &v,
                           int precision = 5,

@@ -11,49 +11,6 @@
 
 namespace DNDS::Euler
 {
-    template <EulerModel model>
-    void EulerSolver<model>::doPrecondition(real alphaDiag, TDof &crhs, TDof &cx, TDof &cxInc, TDof &uTemp, TDof &JDC, TU &sgsRes, bool &inputIsZero, bool &hasLUDone)
-    {
-        DNDS_assert(pEval);
-        auto &eval = *pEval;
-        if (config.linearSolverControl.jacobiCode <= 1)
-        {
-            bool useJacobi = config.linearSolverControl.jacobiCode == 0;
-            eval.UpdateSGS(alphaDiag, crhs, cx, cxInc, useJacobi ? uTemp : cxInc, JDC, true, sgsRes);
-            if (useJacobi)
-                cxInc = uTemp;
-            cxInc.trans.startPersistentPull();
-            cxInc.trans.waitPersistentPull();
-            eval.UpdateSGS(alphaDiag, crhs, cx, cxInc, useJacobi ? uTemp : cxInc, JDC, false, sgsRes);
-            if (useJacobi)
-                cxInc = uTemp;
-            cxInc.trans.startPersistentPull();
-            cxInc.trans.waitPersistentPull();
-            // eval.UpdateLUSGSForward(alphaDiag, crhs, cx, cxInc, JDC, cxInc);
-            // cxInc.trans.startPersistentPull();
-            // cxInc.trans.waitPersistentPull();
-            // eval.UpdateLUSGSBackward(alphaDiag, crhs, cx, cxInc, JDC, cxInc);
-            // cxInc.trans.startPersistentPull();
-            // cxInc.trans.waitPersistentPull();
-            inputIsZero = false;
-        }
-        else if (config.linearSolverControl.jacobiCode == 2)
-        {
-            DNDS_assert_info(config.linearSolverControl.directPrecControl.useDirectPrec, "need to use config.linearSolverControl.directPrecControl.useDirectPrec first !");
-            if (!hasLUDone)
-                eval.LUSGSMatrixToJacobianLU(alphaDiag, cx, JDC, *JLocalLU), hasLUDone = true;
-            for (int iii = 0; iii < 2; iii++)
-            {
-                eval.LUSGSMatrixSolveJacobianLU(alphaDiag, crhs, cx, cxInc, uTemp, rhsTemp, JDC, *JLocalLU, sgsRes);
-                uTemp.SwapDataFatherSon(cxInc);
-                // cxInc = uTemp;
-                cxInc.trans.startPersistentPull();
-                cxInc.trans.waitPersistentPull();
-            }
-            inputIsZero = false;
-        }
-    }
-
     // /***************/ // IDE mode:
     // static const auto model = NS_SA;
     // template <>
@@ -404,7 +361,7 @@ namespace DNDS::Euler
                         if (iRec % config.implicitReconstructionControl.nRecConsolCheck == 0)
                         {
                             if (mpi.rank == 0)
-                                std::cout << iRec << " Rec inc: " << recIncBase << " -> " << recInc << std::endl;
+                                log() << iRec << " Rec inc: " << recIncBase << " -> " << recInc << std::endl;
                         }
                         if (recInc < recIncBase * config.implicitReconstructionControl.recThreshold)
                             break;
@@ -723,8 +680,8 @@ namespace DNDS::Euler
                 if (nLimFRes)
                     if (mpi.rank == 0)
                     {
-                        std::cout << std::scientific << std::setw(3);
-                        std::cout << "PPFResLimiter: nLimFRes[" << nLimFRes << "] minAlpha [" << alphaMinFRes << "]" << std::endl;
+                        log() << std::scientific << std::setw(3);
+                        log() << "PPFResLimiter: nLimFRes[" << nLimFRes << "] minAlpha [" << alphaMinFRes << "]" << std::endl;
                     }
 
                 crhs *= alphaPP_tmp;
@@ -1066,8 +1023,8 @@ namespace DNDS::Euler
                 if (mpi.rank == 0 &&
                     (config.outputControl.consoleOutputEveryFix == 1 || config.outputControl.consoleOutputEveryFix == 2))
                 {
-                    std::cout << std::scientific << std::setw(3);
-                    std::cout << "PPIncrementLimiter: nIncrementRes[" << nLimInc << "] minAlpha [" << alphaMinInc << "]" << std::endl;
+                    log() << std::scientific << std::setw(3);
+                    log() << "PPIncrementLimiter: nIncrementRes[" << nLimInc << "] minAlpha [" << alphaMinInc << "]" << std::endl;
                 }
 
             uTemp = cxInc;
@@ -1120,6 +1077,7 @@ namespace DNDS::Euler
                           << tcomm << "]  limTime ["
                           << tLim << "]  limtimeA [" << tLimiterA << "]  limtimeB ["
                           << tLimiterB << "]  ";
+
                     if (config.outputControl.consoleOutputMode == 1)
                     {
                         log() << std::setprecision(config.outputControl.nPrecisionConsole + 2) << std::setw(10) << std::scientific
@@ -1523,5 +1481,48 @@ namespace DNDS::Euler
 
         // u.trans.waitPersistentPull();
         logErr.close();
+    }
+
+    template <EulerModel model>
+    void EulerSolver<model>::doPrecondition(real alphaDiag, TDof &crhs, TDof &cx, TDof &cxInc, TDof &uTemp, TDof &JDC, TU &sgsRes, bool &inputIsZero, bool &hasLUDone)
+    {
+        DNDS_assert(pEval);
+        auto &eval = *pEval;
+        if (config.linearSolverControl.jacobiCode <= 1)
+        {
+            bool useJacobi = config.linearSolverControl.jacobiCode == 0;
+            eval.UpdateSGS(alphaDiag, crhs, cx, cxInc, useJacobi ? uTemp : cxInc, JDC, true, sgsRes);
+            if (useJacobi)
+                cxInc = uTemp;
+            cxInc.trans.startPersistentPull();
+            cxInc.trans.waitPersistentPull();
+            eval.UpdateSGS(alphaDiag, crhs, cx, cxInc, useJacobi ? uTemp : cxInc, JDC, false, sgsRes);
+            if (useJacobi)
+                cxInc = uTemp;
+            cxInc.trans.startPersistentPull();
+            cxInc.trans.waitPersistentPull();
+            // eval.UpdateLUSGSForward(alphaDiag, crhs, cx, cxInc, JDC, cxInc);
+            // cxInc.trans.startPersistentPull();
+            // cxInc.trans.waitPersistentPull();
+            // eval.UpdateLUSGSBackward(alphaDiag, crhs, cx, cxInc, JDC, cxInc);
+            // cxInc.trans.startPersistentPull();
+            // cxInc.trans.waitPersistentPull();
+            inputIsZero = false;
+        }
+        else if (config.linearSolverControl.jacobiCode == 2)
+        {
+            DNDS_assert_info(config.linearSolverControl.directPrecControl.useDirectPrec, "need to use config.linearSolverControl.directPrecControl.useDirectPrec first !");
+            if (!hasLUDone)
+                eval.LUSGSMatrixToJacobianLU(alphaDiag, cx, JDC, *JLocalLU), hasLUDone = true;
+            for (int iii = 0; iii < 2; iii++)
+            {
+                eval.LUSGSMatrixSolveJacobianLU(alphaDiag, crhs, cx, cxInc, uTemp, rhsTemp, JDC, *JLocalLU, sgsRes);
+                uTemp.SwapDataFatherSon(cxInc);
+                // cxInc = uTemp;
+                cxInc.trans.startPersistentPull();
+                cxInc.trans.waitPersistentPull();
+            }
+            inputIsZero = false;
+        }
     }
 }

@@ -95,7 +95,7 @@ namespace DNDS::Euler
 
                     bc.BCTypes.push_back(bcType);
                     bc.BCValues.push_back(bcValue);
-                    DNDS_assert(bc.name2ID.count(bcName) == 0);
+                    DNDS_assert_info(bc.name2ID.count(bcName) == 0, "the bc names are duplicate");
                     bc.name2ID[bcName] = bc.BCValues.size() - 1;
                 }
                 break;
