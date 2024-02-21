@@ -247,6 +247,11 @@ namespace DNDS
         return a > 0 ? 1 : (a < 0 ? -1 : 0);
     }
 
+    inline constexpr real signTol(real a, real tol)
+    {
+        return a > tol ? 1 : (a < -tol ? -1 : 0);
+    }
+
     inline constexpr real signP(real a)
     {
         return a >= 0 ? 1 : -1;
