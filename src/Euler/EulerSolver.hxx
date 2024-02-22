@@ -5,6 +5,7 @@
 #include "EulerSolver.hpp"
 #include "DNDS/EigenUtil.hpp"
 #include "Solver/ODE.hpp"
+#include "SpecialFields.hpp"
 #ifdef __DNDS_REALLY_COMPILING__HEADER_ON__
 #undef __DNDS_REALLY_COMPILING__
 #endif
@@ -1347,78 +1348,23 @@ namespace DNDS::Euler
             }
             if (eval.settings.specialBuiltinInitializer == 2 && (step % config.outputControl.nConsoleCheck == 0)) // IV problem special: reduction on solution
             {
-                real xymin = 5 - 2;
-                real xymax = 5 + 2;
-                real xyc = 5;
-
-                real sumErrRho = 0.0;
-                real sumErrRhoSum = std::nan("1");
-                real sumVol = 0.0;
-                real sumVolSum = std::nan("1");
-                for (index iCell = 0; iCell < u.father->Size(); iCell++)
-                {
-                    Geom::tPoint pos = vfv->GetCellBary(iCell);
-                    real chi = 5;
-                    real gamma = eval.settings.idealGasProperty.gamma;
-                    auto c2n = mesh->cell2node[iCell];
-                    auto gCell = vfv->GetCellQuad(iCell);
-                    TU um;
-                    um.setZero();
-                    gCell.IntegrationSimple(
-                        um,
-                        [&](TU &inc, int ig)
-                        {
-                            // std::cout << coords<< std::endl << std::endl;
-                            // std::cout << DiNj << std::endl;
-                            Geom::tPoint pPhysics = vfv->GetCellQuadraturePPhys(iCell, ig);
-                            pPhysics[0] = float_mod(pPhysics[0] - tSimu, 10);
-                            pPhysics[1] = float_mod(pPhysics[1] - tSimu, 10);
-                            real r = std::sqrt(sqr(pPhysics(0) - xyc) + sqr(pPhysics(1) - xyc));
-                            real dT = -(gamma - 1) / (8 * gamma * sqr(pi)) * sqr(chi) * std::exp(1 - sqr(r));
-                            real dux = chi / 2 / pi * std::exp((1 - sqr(r)) / 2) * -(pPhysics(1) - xyc);
-                            real duy = chi / 2 / pi * std::exp((1 - sqr(r)) / 2) * +(pPhysics(0) - xyc);
-                            real T = dT + 1;
-                            real ux = dux + 1;
-                            real uy = duy + 1;
-                            real S = 1;
-                            real rho = std::pow(T / S, 1 / (gamma - 1));
-                            real p = T * rho;
-
-                            real E = 0.5 * (sqr(ux) + sqr(uy)) * rho + p / (gamma - 1);
-
-                            // std::cout << T << " " << rho << std::endl;
-                            inc.setZero();
-                            inc(0) = rho;
-                            inc(1) = rho * ux;
-                            inc(2) = rho * uy;
-                            inc(dim + 1) = E;
-
-                            TU upoint = u[iCell] + (vfv->GetIntPointDiffBaseValue(iCell, -1, -1, ig, 0, 1) * uRec[iCell]).transpose();
-                            inc -= upoint;
-                            TU abserr = inc.array().abs();
-                            inc = abserr;
-
-                            inc *= vfv->GetCellJacobiDet(iCell, ig); // don't forget this
-                        });
-                    auto cP = vfv->GetCellBary(iCell);
-                    cP[0] = float_mod(cP[0] - tSimu, 10);
-                    cP[1] = float_mod(cP[1] - tSimu, 10);
-
-                    if (cP(0) > xymin && cP(0) < xymax && cP(1) > xymin && cP(1) < xymax)
+                Eigen::Vector<real, -1> err;
+                eval.EvaluateRecNorm(
+                    err, u, uRec, 1, true,
+                    [&](const Geom::tPoint &p, real t)
                     {
-                        um /= vfv->GetCellVol(iCell); // mean value (now mean value of error)
-                        real errRhoMean = u[iCell](0) * 0 - um(0);
-                        sumErrRho += std::abs(errRhoMean) * vfv->GetCellVol(iCell);
-                        sumVol += vfv->GetCellVol(iCell);
-                    }
-                }
-                MPI::Allreduce(&sumErrRho, &sumErrRhoSum, 1, DNDS_MPI_REAL, MPI_SUM, mpi.comm);
-                MPI::Allreduce(&sumVol, &sumVolSum, 1, DNDS_MPI_REAL, MPI_SUM, mpi.comm);
+                        return SpecialFields::IsentropicVortex10(eval, p, t, nVars);
+                    },
+                    [&](const Geom::tPoint &p, real t)
+                    {
+                        return real(1.0);
+                    },
+                    tSimu);
                 if (mpi.rank == 0)
                 {
                     log() << "=== Mean Error IV: [" << std::scientific
-                          << std::setprecision(config.outputControl.nPrecisionConsole + 4) << sumErrRhoSum << ", "
-                          << sumErrRhoSum / sumVolSum << "]" << std::endl;
+                          << std::setprecision(config.outputControl.nPrecisionConsole + 4) << err(0) << ", "
+                          << err(0) / vfv->GetGlobalVol() << "]" << std::endl;
                 }
             }
             if (config.implicitReconstructionControl.zeroGrads)

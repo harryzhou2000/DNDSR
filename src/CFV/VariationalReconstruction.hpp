@@ -75,6 +75,7 @@ namespace DNDS::CFV
         std::shared_ptr<Geom::UnstructuredMesh> mesh;
 
     private:
+        real sumVolume{0}, minVolume{veryLargeReal}, maxVolume{0};
         real volGlobal{0};             /// @brief constructed using ConstructMetrics()
         std::vector<real> volumeLocal; /// @brief constructed using ConstructMetrics()
         std::vector<real> faceArea;    /// @brief constructed using ConstructMetrics()
