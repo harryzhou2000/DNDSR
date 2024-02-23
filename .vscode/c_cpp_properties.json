@@ -76,7 +76,8 @@
             "includePath": [
                 "${default}",
                 "external\\Windows-AMD64\\include",
-                "C:\\Program Files (x86)\\Microsoft SDKs\\MPI\\Include"
+                "C:\\Program Files (x86)\\Microsoft SDKs\\MPI\\Include",
+                "C:/ProgramData/anaconda3/Include"
             ],
             "defines": [
                 "_DEBUG",

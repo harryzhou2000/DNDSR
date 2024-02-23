@@ -177,8 +177,8 @@ namespace DNDS::Euler
         OutputPicker outputPicker;
         {
             OutputPicker::tMap outMap;
-            outMap["R"] = [&](index iCell)
-            { return u[iCell](0); };
+            // outMap["R"] = [&](index iCell)
+            // { return u[iCell](0); };
             outMap["RU"] = [&](index iCell)
             { return u[iCell](1); };
             outMap["RV"] = [&](index iCell)
@@ -307,7 +307,7 @@ namespace DNDS::Euler
             }
             real recIncBase = 0;
             double tstartA = MPI_Wtime();
-            typename TVFV::element_type::template TFBoundary<nVarsFixed>
+            typename TVFV::template TFBoundary<nVarsFixed>
                 FBoundary = [&](const TU &UL, const TU &UMean, index iCell, index iFace,
                                 const Geom::tPoint &normOut, const Geom::tPoint &pPhy, const Geom::t_index bType) -> TU
             {
@@ -320,7 +320,7 @@ namespace DNDS::Euler
                     compressed);
                 return eval.generateBoundaryValue(ULfixed, UMean, iCell, iFace, normOutV, normBase, pPhy(Seq012), tSimu + ct * curDtImplicit, bType, true);
             };
-            typename TVFV::element_type::template TFBoundaryDiff<nVarsFixed>
+            typename TVFV::template TFBoundaryDiff<nVarsFixed>
                 FBoundaryDiff = [&](const TU &UL, const TU &dU, const TU &UMean, index iCell, index iFace,
                                     const Geom::tPoint &normOut, const Geom::tPoint &pPhy, const Geom::t_index bType) -> TU
             {
@@ -448,7 +448,10 @@ namespace DNDS::Euler
                 // vfv->ReconstructionWBAPLimitFacial(
                 //     cx, uRecC, uRecNew, uF0, uF1, ifUseLimiter,
 
-                auto fML = [&](const auto &UL, const auto &UR, const auto &n) -> auto
+                using tLimitBatch = typename TVFV::template tLimitBatch<nVarsFixed>;
+
+                auto fML = [&](const TU &UL, const TU &UR, const Geom::tPoint &n,
+                               const Eigen::Ref<tLimitBatch> &data) -> tLimitBatch
                 {
                     PerformanceTimer::Instance().StartTimer(PerformanceTimer::LimiterA);
                     Eigen::Vector<real, I4 + 1> UC = (UL + UR)(Seq01234) * 0.5;
@@ -462,10 +465,11 @@ namespace DNDS::Euler
                     ret.setIdentity();
                     ret(Seq01234, Seq01234) = M;
                     PerformanceTimer::Instance().StopTimer(PerformanceTimer::LimiterA);
-                    return ret;
+                    return (ret * data.transpose()).transpose();
                     // return real(1);
                 };
-                auto fMR = [&](const auto &UL, const auto &UR, const auto &n) -> auto
+                auto fMR = [&](const TU &UL, const TU &UR, const Geom::tPoint &n,
+                               const Eigen::Ref<tLimitBatch> &data) -> tLimitBatch
                 {
                     PerformanceTimer::Instance().StartTimer(PerformanceTimer::LimiterA);
                     Eigen::Vector<real, I4 + 1> UC = (UL + UR)(Seq01234) * 0.5;
@@ -480,56 +484,36 @@ namespace DNDS::Euler
                     ret(Seq01234, Seq01234) = M;
 
                     PerformanceTimer::Instance().StopTimer(PerformanceTimer::LimiterA);
-                    return ret;
+                    return (ret * data.transpose()).transpose();
                     // return real(1);
                 };
                 if (config.limiterControl.smoothIndicatorProcedure == 0)
-                    vfv->DoCalculateSmoothIndicator(
+                    vfv->template DoCalculateSmoothIndicator<nVarsFixed, 2>(
                         ifUseLimiter, (uRecC), (u),
                         std::array<int, 2>{0, I4});
                 else if (config.limiterControl.smoothIndicatorProcedure == 1)
-                {
-                    if constexpr (dim == 2)
-                        vfv->DoCalculateSmoothIndicatorV1(
-                            ifUseLimiter, (uRecC), (u),
-                            std::array<int, 4>{0, 1, 2, 3},
-                            [&](auto &v)
+                    vfv->template DoCalculateSmoothIndicatorV1<nVarsFixed>(
+                        ifUseLimiter, (uRecC), (u),
+                        TU::Ones(nVars),
+                        (
+                            [&](Eigen::Matrix<real, 1, nVarsFixed> &v)
                             {
-                                TU prim;
-                                TU cons;
-                                cons.setZero();
-                                cons(Seq01234) = v.transpose();
-                                Gas::IdealGasThermalConservative2Primitive<dim>(cons, prim, eval.settings.idealGasProperty.gamma);
-                                v.setConstant(prim(I4));
-                            });
-                    else
-                        vfv->DoCalculateSmoothIndicatorV1(
-                            ifUseLimiter, (uRecC), (u),
-                            std::array<int, 5>{0, 1, 2, 3, 4},
-                            [&](auto &v)
+                            TU prim;
+                            TU cons;
+                            cons = v.transpose();
+                            if (cons(0) < verySmallReal)
                             {
-                                TU prim;
-                                TU cons;
-                                cons.setZero();
-                                cons(Seq01234) = v.transpose();
-                                if (cons(0) < verySmallReal)
-                                {
-                                    v.setConstant(-veryLargeReal * v(I4));
-                                }    // to make the values absurd
-                                else // could get a p
-                                {
-                                    Gas::IdealGasThermalConservative2Primitive<dim>(cons, prim, eval.settings.idealGasProperty.gamma);
-                                    v.setConstant(prim(I4));
-                                }
-                            });
-                }
+                                v.setConstant(-veryLargeReal * v(I4));
+                            }
+                            Gas::IdealGasThermalConservative2Primitive<dim>(cons, prim, eval.settings.idealGasProperty.gamma);
+                            v.setConstant(prim(I4)); }));
+
                 else
                 {
                     DNDS_assert(false);
                 }
                 if (config.limiterControl.limiterProcedure == 1)
-                    vfv->DoLimiterWBAP_C(
-                        eval,
+                    vfv->template DoLimiterWBAP_C<nVarsFixed>(
                         (cx),
                         (uRecC),
                         (uRecNew),
@@ -538,8 +522,7 @@ namespace DNDS::Euler
                         iter < config.limiterControl.nPartialLimiterStartLocal && step < config.limiterControl.nPartialLimiterStart,
                         fML, fMR, true);
                 else if (config.limiterControl.limiterProcedure == 0)
-                    vfv->DoLimiterWBAP_3(
-                        eval,
+                    vfv->template DoLimiterWBAP_3<nVarsFixed>(
                         (cx),
                         (uRecC),
                         (uRecNew),
@@ -691,7 +674,7 @@ namespace DNDS::Euler
                 crhs *= alphaPP_tmp;
             }
 
-            typename TVFV::element_type::template TFBoundary<nVarsFixed>
+            typename TVFV::template TFBoundary<nVarsFixed>
                 FBoundary = [&](const TU &UL, const TU &UMean, index iCell, index iFace,
                                 const Geom::tPoint &normOut, const Geom::tPoint &pPhy, const Geom::t_index bType) -> TU
             {
@@ -1349,7 +1332,7 @@ namespace DNDS::Euler
             if (eval.settings.specialBuiltinInitializer == 2 && (step % config.outputControl.nConsoleCheck == 0)) // IV problem special: reduction on solution
             {
                 Eigen::Vector<real, -1> err;
-                eval.EvaluateRecNorm(
+                eval.EvaluateRecNorm( 
                     err, u, uRec, 1, true,
                     [&](const Geom::tPoint &p, real t)
                     {
@@ -1507,7 +1490,7 @@ namespace DNDS::Euler
             // cxInc.trans.startPersistentPull();
             // cxInc.trans.waitPersistentPull();
             // eval.UpdateLUSGSBackward(alphaDiag, crhs, cx, cxInc, JDC, cxInc);
-            // cxInc.trans.startPersistentPull();
+            // cxInc.trans.startPersistentPull(); 
             // cxInc.trans.waitPersistentPull();
             inputIsZero = false;
         }

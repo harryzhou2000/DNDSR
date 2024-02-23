@@ -1,30 +1,23 @@
 {
     "timeMarchControl": {
-        "dtImplicit": 0.5e-1,
-        "nTimeStep": 40,
+        "dtImplicit": 5e-4,
+        "nTimeStep": 10,
         "steadyQuit": false,
         "odeCode": 0,
-        "tEnd": 3e+200,
-        "odeSetting1": 0.5,
-        "odeSetting2": 0,
-        "odeSetting3": 0.75,
-        // "useRHSfPP": true,
-        // "rhsfPPScale": 0.01
-        "_tail": 0
+        "tEnd": 3e+200
     },
     "outputControl": {
         "nConsoleCheck": 1,
-        "nConsoleCheckInternal": 1,
+        "nConsoleCheckInternal": 10,
         "consoleOutputMode": 0,
-        "consoleOutputEveryFix": 0,
-        "nDataOutC": 1,
-        "nDataOut": 1,
-        "nDataOutCInternal": 100,
+        "nDataOutC": 50,
+        "nDataOut": 10,
+        "nDataOutCInternal": 200,
         "nDataOutInternal": 1000000000,
         "tDataOut": 3e+200
     },
     "implicitCFLControl": {
-        "CFL": 100.0,
+        "CFL": 10.0,
         "nForceLocalStartStep": 2147483647,
         "nCFLRampStart": 2147483647,
         "nCFLRampLength": 2147483647,
@@ -32,39 +25,22 @@
         "useLocalDt": true
     },
     "convergenceControl": {
-        "nTimeStepInternal": 4000,
-        "rhsThresholdInternal": 1e-6,
+        "nTimeStepInternal": 20,
+        "rhsThresholdInternal": 1e-3,
         "res_base": 0.0,
         "useVolWiseResidual": true
     },
     "dataIOControl": {
-        "uniqueStamps": false,
+        "uniqueStamps": true,
         "meshRotZ": 0.0,
-        "meshFile": "../data/mesh/IV10_80.cgns",
-        "outPltName": "../data/outUnsteady/IV10_c",
+        "meshFile": "../data/mesh/Uniform128.cgns",
+        "outPltName": "../data/outUnsteady/Uniform128/out",
         "outPltMode": 0,
         "readMeshMode": 0,
         "outPltTecplotFormat": true,
-        "outPltVTKFormat": false,
+        "outPltVTKFormat": true,
         "outAtPointData": true,
         "outAtCellData": true
-    },
-    "boundaryDefinition": {
-        "PeriodicTranslation1": [
-            10.0,
-            0.0,
-            0.0
-        ],
-        "PeriodicTranslation2": [
-            0.0,
-            10.0,
-            0.0
-        ],
-        "PeriodicTranslation3": [
-            0.0,
-            0.0,
-            10.0
-        ]
     },
     "implicitReconstructionControl": {
         "nInternalRecStep": 1,
@@ -72,54 +48,30 @@
         "recLinearScheme": 0,
         "nGmresSpace": 5,
         "nGmresIter": 10,
-        "recThreshold": 1e-010,
-        "nRecConsolCheck": 10,
-        "nRecMultiplyForZeroedGrad": 1000,
-        "storeRecInc": true,
-        "dampRecIncDTau": false
+        "recThreshold": 1e-05,
+        "nRecConsolCheck": 1
     },
     "limiterControl": {
-        "useLimiter": false,
-        "usePPRecLimiter": true,
-        "smoothIndicatorProcedure": 0,
-        "limiterProcedure": 1, //1 == CWBAP
-        "nPartialLimiterStart": 1000000,
-        "nPartialLimiterStartLocal": 1000000
+        "useLimiter": true,
+        "smoothIndicatorProcedure": 1,
+        "limiterProcedure": 0, //1 == CWBAP
+        "nPartialLimiterStart": 0,
+        "nPartialLimiterStartLocal": 0
     },
     "vfvSettings": {
         "maxOrder": 3,
-        "intOrder": 6,
-        "cacheDiffBase": false,
-        "jacobiRelax": 1,
-        "SORInstead": false,
+        "intOrder": 3,
+        "cacheDiffBase": true,
+        "jacobiRelax": 1.0,
+        "SORInstead": true,
         "smoothThreshold": 1e-3,
         "WBAP_nStd": 10.0,
-        "normWBAP": false,
-        "subs2ndOrder": 0,
-        "baseSettings": {
-            "localOrientation": false,
-            "anisotropicLengths": false
-        },
-        "functionalSettings": {
-            "scaleType": "BaryDiff",
-            // "scaleMultiplier": 0.5,
-            // "dirWeightScheme": "Factorial",
-            "dirWeightScheme": "HQM_OPT",
-            // "useAnisotropicFunctional": true,
-            // "scaleMultiplier": 3.464101615137754,
-            "greenGauss1Weight": 0,
-            "_tail": 0
-        }
+        "normWBAP": false
     },
     "linearSolverControl": {
-        "jacobiCode": 0,
-        "sgsIter": 10,
-        "sgsWithRec": 0,
-        "nSgsConsoleCheck": 100,
         "gmresCode": 0,
-        "nGmresSpace": 5,
-        "nGmresIter": 1,
-        "initWithLastURecInc": false
+        "nGmresSpace": 10,
+        "nGmresIter": 2
     },
     "others": {
         "nFreezePassiveInner": 0
@@ -127,20 +79,35 @@
     "eulerSettings": {
         "ignoreSourceTerm": true,
         "useScalarJacobian": true,
-        "riemannSolverType": "Roe",
-        "specialBuiltinInitializer": 2,
-        "nCentralSmoothStep": 0,
+        "riemannSolverType": "HLLC",
         "constMassForce": [
             0.0,
             0.0,
             0.0
         ],
         "farFieldStaticValue": [
-            1,
-            1,
-            1,
-            0,
-            3.5
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            2.5
+        ],
+        "boxInitializers": [
+            {
+                "x0": 0.25,
+                "x1": 0.75,
+                "y0": 0.25,
+                "y1": 0.75,
+                "z0": -0.25,
+                "z1": 0.75,
+                "v": [
+                    0.5,
+                    1,
+                    0,
+                    0,
+                    4
+                ]
+            }
         ],
         "idealGasProperty": {
             "gamma": 1.4,

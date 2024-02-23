@@ -50,12 +50,13 @@ namespace DNDS::Euler
         typedef typename TEval::TDof TDof;
         typedef typename TEval::TRec TRec;
         typedef typename TEval::TScalar TScalar;
-        typedef ssp<CFV::VariationalReconstruction<gDim>> TVFV;
+        typedef CFV::VariationalReconstruction<gDim> TVFV;
+        typedef ssp<CFV::VariationalReconstruction<gDim>> TpVFV;
 
     private:
         MPIInfo mpi;
         ssp<Geom::UnstructuredMesh> mesh, meshBnd;
-        TVFV vfv; // ! gDim -> 3 for intellisense
+        TpVFV vfv; // ! gDim -> 3 for intellisense
         ssp<Geom::UnstructuredMeshSerialRW> reader, readerBnd;
         ssp<EulerEvaluator<model>> pEval;
 
