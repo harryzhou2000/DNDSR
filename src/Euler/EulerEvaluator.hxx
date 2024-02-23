@@ -141,7 +141,7 @@ namespace DNDS::Euler
     
 
     DNDS_SWITCH_INTELLISENSE(
-        template <EulerModel model>, template <>
+        template <EulerModel model>, template <EulerModel model_masked>
     )
     void EulerEvaluator<model>::LUSGSMatrixToJacobianLU(
         real alphaDiag,
@@ -170,7 +170,7 @@ namespace DNDS::Euler
                     int iC2CInLocal = -1;
                     for (int ic2c = 0; ic2c < mesh->cell2cellFaceVLocal[iCell].size(); ic2c++)
                         if (iCellOther == mesh->cell2cellFaceVLocal[iCell][ic2c])
-                            iC2CInLocal = ic2c;
+                            iC2CInLocal = ic2c; //TODO: pre-search this
                     DNDS_assert(iC2CInLocal != -1);
                     TJacobianU jacIJ;
                     {

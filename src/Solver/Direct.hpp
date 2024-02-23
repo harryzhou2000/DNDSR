@@ -49,6 +49,7 @@ namespace DNDS::Direct
         tLocalMatStruct lowerTriStructureNew;
         tLocalMatStruct upperTriStructureNew;
         tLocalMatStruct lowerTriStructureNewInUpper;
+        tLocalMatStruct upperTriStructureNewInLower;
         tLocalMatStruct cell2cellFaceVLocal2FullRowPos; // diag-lower-upper
         std::vector<index> localFillOrderingOld2New;
         std::vector<index> localFillOrderingNew2Old;
@@ -204,6 +205,24 @@ namespace DNDS::Direct
                 }
             }
 
+            // pre-search
+            upperTriStructureNewInLower.resize(upperTriStructureNew.size());
+            for (index iP = 0; iP < this->Num(); iP++)
+            {
+                auto &&upperRow = upperTriStructureNew[iP];
+                upperTriStructureNewInLower[iP].resize(upperRow.size());
+                for (int ijP = 0; ijP < upperRow.size(); ijP++)
+                {
+                    index jP = upperRow[ijP];
+                    auto &&lowerRow = lowerTriStructureNew[jP];
+                    auto ret = std::lower_bound(lowerRow.begin(), lowerRow.end(), iP);
+                    // DNDS_assert(ret != upperRow.end()); // has to be found
+                    upperTriStructureNewInLower[iP][ijP] = ret != lowerRow.end()
+                                                               ? (ret - lowerRow.begin())
+                                                               : -1; // !not found in upper
+                }
+            }
+
             cell2cellFaceVLocal2FullRowPos.resize(this->Num());
             for (index i = 0; i < this->Num(); i++)
             {
@@ -248,9 +267,9 @@ namespace DNDS::Direct
         {
         }
 
-        void GetDiag(index i);
-        void GetLower(index i, int ij);
-        void GetUpper(index i, int ij);
+        void GetDiag(index i);          // pure "virtual" do not implement
+        void GetLower(index i, int ij); // pure "virtual" do not implement
+        void GetUpper(index i, int ij); // pure "virtual" do not implement
 
         void InPlaceDecompose()
         {
@@ -386,6 +405,131 @@ namespace DNDS::Direct
         }
     };
 
+    template <class Derived, class tComponent, class tVec>
+    struct LocalLDLTBase
+    {
+        ssp<Direct::SerialSymLUStructure> symLU;
+        bool isDecomposed = false;
 
-    
+        LocalLDLTBase(ssp<Direct::SerialSymLUStructure> _symLU) : symLU(_symLU)
+        {
+        }
+
+        virtual ~LocalLDLTBase()
+        {
+        }
+
+        void GetDiag(index i);
+        void GetLower(index i, int ij);
+
+        void InPlaceDecompose()
+        {
+            auto dThis = static_cast<Derived *>(this);
+            std::vector<tComponent> diagNoInv(symLU->Num());
+            for (index iP = 0; iP < symLU->Num(); iP++)
+            {
+                index i = symLU->FillingReorderNew2Old(iP);
+
+                auto &&lowerRow = symLU->lowerTriStructureNew[iP];
+                /*********************/
+                // lower part
+                for (int ijP = 0; ijP < lowerRow.size(); ijP++)
+                {
+                    auto jP = lowerRow[ijP];
+                    DNDS_assert(jP < iP);
+                    auto j = symLU->FillingReorderNew2Old(jP);
+                    // handle last j's job
+                    if (ijP > 0)
+                    {
+                        auto &&lowerRowJP = symLU->lowerTriStructureNew[jP];
+                        iterateIdentical(
+                            lowerRow.begin(), lowerRow.end(), lowerRowJP.begin(), lowerRowJP.end(),
+                            [&](index kP, auto pos1, auto pos2)
+                            {
+                                if (kP > jP - 1)
+                                    return true;                // early end
+                                DNDS_assert(kP < symLU->Num()); // a safe guarantee
+                                auto k = symLU->FillingReorderNew2Old(kP);
+                                dThis->GetLower(i, ijP) -=
+                                    dThis->GetLower(i, pos1) * diagNoInv[k] * dThis->GetLower(j, pos2).transpose();
+                                // if (iP < 3)
+                                // log() << fmt::format("Lower Add at {},{},{} === {}", iP, jP - 1, kP, (dThis->GetLower(i, pos1) * dThis->GetUpper(k, jPInUpperPos))(0)) << std::endl;
+                                return false;
+                            });
+                    }
+
+                    // auto luDiag = dThis->GetDiag(j).fullPivLu();
+                    // tComponent Aij = luDiag.solve(dThis->GetLower(i, ijP));
+                    dThis->GetLower(i, ijP) *= dThis->GetDiag(j);
+                }
+                /*********************/
+                // diag part
+                for (int ikP = 0; ikP < lowerRow.size(); ikP++)
+                {
+                    auto kP = lowerRow[ikP];
+                    auto k = symLU->FillingReorderNew2Old(kP);
+                    dThis->GetDiag(i) -= dThis->GetLower(i, ikP) * diagNoInv[k] * dThis->GetLower(i, ikP).transpose();
+                }
+                tComponent AI;
+                // HardEigen::EigenLeastSquareInverse(this->GetDiag(i), , AI);
+                auto luDiag = dThis->GetDiag(i).fullPivLu();
+                DNDS_assert(luDiag.isInvertible());
+                AI = luDiag.inverse();
+                diagNoInv[i] = dThis->GetDiag(i);
+                dThis->GetDiag(i) = AI; // * note here only stores the inverse
+            }
+            isDecomposed = true;
+        }
+
+        void MatMul(tVec &x, tVec &result)
+        {
+            auto dThis = static_cast<Derived *>(this);
+            DNDS_assert(!isDecomposed); // being before the decomposition
+            for (index iCell = 0; iCell < symLU->Num(); iCell++)
+            {
+                result[iCell] = dThis->GetDiag(iCell) * x[iCell];
+                for (int ij = 0; ij < symLU->lowerTriStructure[iCell].size(); ij++)
+                    result[iCell] += dThis->GetLower(iCell, ij) * x[symLU->lowerTriStructure[iCell][ij]];
+            }
+            for (index iCell = 0; iCell < symLU->Num(); iCell++)
+            {
+                for (int ij = 0; ij < symLU->lowerTriStructure[iCell].size(); ij++)
+                    result[symLU->lowerTriStructure[iCell][ij]] += dThis->GetLower(iCell, ij).transpose() * x[iCell]; // transposed mat-vec
+            }
+        }
+
+        void Solve(tVec &b, tVec &result)
+        {
+            auto dThis = static_cast<Derived *>(this);
+            DNDS_assert(isDecomposed);
+            for (index iP = 0; iP < symLU->Num(); iP++)
+            {
+                index i = symLU->FillingReorderNew2Old(iP);
+                result[i] = b[i];
+                auto &&lowerRowOld = symLU->lowerTriStructure[i];
+                for (int ij = 0; ij < lowerRowOld.size(); ij++)
+                {
+                    index j = lowerRowOld[ij];
+                    result[i] -= dThis->GetLower(i, ij) * result[j];
+                }
+            }
+            for (index i = 0; i < symLU->Num(); i++)
+            {
+                result[i] = dThis->GetDiag(i) * result[i];
+            }
+            for (index iP = symLU->Num() - 1; iP >= 0; iP--)
+            {
+                index i = symLU->FillingReorderNew2Old(iP);
+                auto &&upperRow = symLU->upperTriStructureNew[iP];
+                for (int ij = 0; ij < upperRow.size(); ij++)
+                {
+                    index jP = upperRow[ij];
+                    index j = symLU->FillingReorderNew2Old(jP);
+                    index ji = symLU->upperTriStructureNewInLower[iP][ij];
+                    DNDS_assert(ji != -1); // has to be found
+                    result[i] -= dThis->GetLower(j, ji).transpose() * result[j];
+                }
+            }
+        }
+    };
 }
