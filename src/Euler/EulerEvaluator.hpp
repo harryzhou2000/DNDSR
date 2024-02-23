@@ -1,9 +1,9 @@
 #pragma once
 
-#ifndef __DNDS_REALLY_COMPILING__
-#define __DNDS_REALLY_COMPILING__
-#define __DNDS_REALLY_COMPILING__HEADER_ON__
-#endif
+// #ifndef __DNDS_REALLY_COMPILING__
+// #define __DNDS_REALLY_COMPILING__
+// #define __DNDS_REALLY_COMPILING__HEADER_ON__
+// #endif
 
 #include "Gas.hpp"
 #include "Geom/Mesh.hpp"
@@ -16,9 +16,9 @@
 #include "RANS_ke.hpp"
 #include "DNDS/SerializerBase.hpp"
 
-#ifdef __DNDS_REALLY_COMPILING__HEADER_ON__
-#undef __DNDS_REALLY_COMPILING__
-#endif
+// #ifdef __DNDS_REALLY_COMPILING__HEADER_ON__
+// #undef __DNDS_REALLY_COMPILING__
+// #endif
 
 #define JSON_ASSERT DNDS_assert
 #include "json.hpp"

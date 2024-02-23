@@ -1,14 +1,14 @@
-#ifndef __DNDS_REALLY_COMPILING__
-#define __DNDS_REALLY_COMPILING__
-#define __DNDS_REALLY_COMPILING__HEADER_ON__
-#endif
+// #ifndef __DNDS_REALLY_COMPILING__
+// #define __DNDS_REALLY_COMPILING__
+// #define __DNDS_REALLY_COMPILING__HEADER_ON__
+// #endif
 #include "EulerSolver.hpp"
 #include "DNDS/EigenUtil.hpp"
 #include "Solver/ODE.hpp"
 #include "SpecialFields.hpp"
-#ifdef __DNDS_REALLY_COMPILING__HEADER_ON__
-#undef __DNDS_REALLY_COMPILING__
-#endif
+// #ifdef __DNDS_REALLY_COMPILING__HEADER_ON__
+// #undef __DNDS_REALLY_COMPILING__
+// #endif
 // #include "fmt/ranges.h"
 
 namespace DNDS::Euler

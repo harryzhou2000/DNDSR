@@ -1,9 +1,9 @@
 #pragma once
 
-#ifndef __DNDS_REALLY_COMPILING__
-#define __DNDS_REALLY_COMPILING__
-#define __DNDS_REALLY_COMPILING__HEADER_ON__
-#endif
+// #ifndef __DNDS_REALLY_COMPILING__
+// #define __DNDS_REALLY_COMPILING__
+// #define __DNDS_REALLY_COMPILING__HEADER_ON__
+// #endif
 #include "DNDS/Defines.hpp"
 #include "DNDS/MPI.hpp"
 #include "Geom/Quadrature.hpp"
@@ -14,9 +14,9 @@
 #include "BaseFunction.hpp"
 #include "Limiters.hpp"
 #include "DNDS/JsonUtil.hpp"
-#ifdef __DNDS_REALLY_COMPILING__HEADER_ON__
-#undef __DNDS_REALLY_COMPILING__
-#endif
+// #ifdef __DNDS_REALLY_COMPILING__HEADER_ON__
+// #undef __DNDS_REALLY_COMPILING__
+// #endif
 
 #define JSON_ASSERT DNDS_assert
 #include "json.hpp"

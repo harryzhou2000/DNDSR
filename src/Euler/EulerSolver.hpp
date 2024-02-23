@@ -5,10 +5,10 @@
 #include <tuple>
 #include <filesystem>
 
-#ifndef __DNDS_REALLY_COMPILING__
-#define __DNDS_REALLY_COMPILING__
-#define __DNDS_REALLY_COMPILING__HEADER_ON__
-#endif
+// #ifndef __DNDS_REALLY_COMPILING__
+// #define __DNDS_REALLY_COMPILING__
+// #define __DNDS_REALLY_COMPILING__HEADER_ON__
+// #endif
 #include "Gas.hpp"
 #include "Geom/Mesh.hpp"
 #include "CFV/VariationalReconstruction.hpp"
@@ -17,9 +17,9 @@
 #include "DNDS/JsonUtil.hpp"
 #include "EulerBC.hpp"
 #include "DNDS/SerializerJSON.hpp"
-#ifdef __DNDS_REALLY_COMPILING__HEADER_ON__
-#undef __DNDS_REALLY_COMPILING__
-#endif
+// #ifdef __DNDS_REALLY_COMPILING__HEADER_ON__
+// #undef __DNDS_REALLY_COMPILING__
+// #endif
 
 #define JSON_ASSERT DNDS_assert
 #include "json.hpp"

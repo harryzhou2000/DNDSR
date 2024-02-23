@@ -1,4 +1,6 @@
 #pragma once
+
+#include "DNDS/Defines.hpp" // for correct  DNDS_SWITCH_INTELLISENSE
 #include "EulerEvaluator.hpp"
 #include "DNDS/HardEigen.hpp"
 #include "SpecialFields.hpp"
@@ -135,6 +137,8 @@ namespace DNDS::Euler
         }
         DNDS_MPI_InsertCheck(u.father->getMPI(), "LUSGSMatrixVec -1");
     }
+
+    
 
     DNDS_SWITCH_INTELLISENSE(
         template <EulerModel model>, template <>

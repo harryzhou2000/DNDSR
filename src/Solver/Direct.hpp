@@ -1,14 +1,14 @@
 #pragma once
 
-#ifndef __DNDS_REALLY_COMPILING__
-#define __DNDS_REALLY_COMPILING__
-#define __DNDS_REALLY_COMPILING__HEADER_ON__
-#endif
+// #ifndef __DNDS_REALLY_COMPILING__
+// #define __DNDS_REALLY_COMPILING__
+// #define __DNDS_REALLY_COMPILING__HEADER_ON__
+// #endif
 #include "DNDS/JsonUtil.hpp"
 #include "DNDS/Defines.hpp"
-#ifdef __DNDS_REALLY_COMPILING__HEADER_ON__
-#undef __DNDS_REALLY_COMPILING__
-#endif
+// #ifdef __DNDS_REALLY_COMPILING__HEADER_ON__
+// #undef __DNDS_REALLY_COMPILING__
+// #endif
 
 #include <unordered_set>
 
@@ -53,7 +53,6 @@ namespace DNDS::Direct
         std::vector<index> localFillOrderingOld2New;
         std::vector<index> localFillOrderingNew2Old;
 
-
         SerialSymLUStructure(const MPIInfo &nMpi, index nN) : mpi(nMpi), N(nN){};
 
         index Num() const { return N; }
@@ -67,6 +66,13 @@ namespace DNDS::Direct
             return localFillOrderingNew2Old.size() ? localFillOrderingNew2Old[v] : v;
         }
 
+        /**
+         * @brief get symmetric symbolic matrix factorization over cell2cellFaceV
+         *
+         * @tparam TAdj
+         * @param cell2cellFaceV is std::vector<std::vector<index>> -like which holds **symmetric** local adjacency
+         * @param iluCode -1: full LU, 0,1,2... incomplete LU defined using expanded stencil
+         */
         template <class TAdj>
         void ObtainSymmetricSymbolicFactorization(
             const TAdj &cell2cellFaceV,
@@ -191,8 +197,10 @@ namespace DNDS::Direct
                     index jP = lowerRow[ijP];
                     auto &&upperRow = upperTriStructureNew[jP];
                     auto ret = std::lower_bound(upperRow.begin(), upperRow.end(), iP);
-                    DNDS_assert(ret != upperRow.end()); // has to be found
-                    lowerTriStructureNewInUpper[iP][ijP] = ret - upperRow.begin();
+                    // DNDS_assert(ret != upperRow.end()); // has to be found
+                    lowerTriStructureNewInUpper[iP][ijP] = ret != upperRow.end()
+                                                               ? (ret - upperRow.begin())
+                                                               : -1; // !not found in upper
                 }
             }
 
@@ -225,4 +233,159 @@ namespace DNDS::Direct
             }
         }
     };
+
+    template <class Derived, class tComponent, class tVec>
+    struct LocalLUBase
+    {
+        ssp<Direct::SerialSymLUStructure> symLU;
+        bool isDecomposed = false;
+
+        LocalLUBase(ssp<Direct::SerialSymLUStructure> _symLU) : symLU(_symLU)
+        {
+        }
+
+        virtual ~LocalLUBase()
+        {
+        }
+
+        void GetDiag(index i);
+        void GetLower(index i, int ij);
+        void GetUpper(index i, int ij);
+
+        void InPlaceDecompose()
+        {
+            auto dThis = static_cast<Derived *>(this);
+            for (index iP = 0; iP < symLU->Num(); iP++)
+            {
+                index i = symLU->FillingReorderNew2Old(iP);
+
+                auto &&lowerRow = symLU->lowerTriStructureNew[iP];
+                /*********************/
+                // lower part
+                for (int ijP = 0; ijP < lowerRow.size(); ijP++)
+                {
+                    auto jP = lowerRow[ijP];
+                    DNDS_assert(jP < iP);
+                    auto j = symLU->FillingReorderNew2Old(jP);
+                    // handle last j's job
+                    if (ijP > 0)
+                    {
+                        auto &&lowerRowJP = symLU->lowerTriStructureNew[jP];
+                        iterateIdentical(
+                            lowerRow.begin(), lowerRow.end(), lowerRowJP.begin(), lowerRowJP.end(),
+                            [&](index kP, auto pos1, auto pos2)
+                            {
+                                if (kP > jP - 1)
+                                    return true;                // early end
+                                DNDS_assert(kP < symLU->Num()); // a safe guarantee
+                                auto k = symLU->FillingReorderNew2Old(kP);
+                                int jPInUpperPos = symLU->lowerTriStructureNewInUpper[jP][pos2];
+                                if (jPInUpperPos != -1) // in case not symbolically symmetric
+                                    dThis->GetLower(i, ijP) -=
+                                        dThis->GetLower(i, pos1) * dThis->GetUpper(k, jPInUpperPos);
+                                // if (iP < 3)
+                                // log() << fmt::format("Lower Add at {},{},{} === {}", iP, jP - 1, kP, (dThis->GetLower(i, pos1) * dThis->GetUpper(k, jPInUpperPos))(0)) << std::endl;
+                                return false;
+                            });
+                    }
+
+                    // auto luDiag = dThis->GetDiag(j).fullPivLu();
+                    // tComponent Aij = luDiag.solve(dThis->GetLower(i, ijP));
+                    dThis->GetLower(i, ijP) *= dThis->GetDiag(j);
+                }
+                /*********************/
+                // diag part
+                for (int ikP = 0; ikP < lowerRow.size(); ikP++)
+                {
+                    auto kP = lowerRow[ikP];
+                    auto k = symLU->FillingReorderNew2Old(kP);
+                    int iPInUpperPos = symLU->lowerTriStructureNewInUpper[iP][ikP];
+                    if (iPInUpperPos != -1)
+                        dThis->GetDiag(i) -= dThis->GetLower(i, ikP) * dThis->GetUpper(k, iPInUpperPos);
+                }
+                tComponent AI;
+                // HardEigen::EigenLeastSquareInverse(this->GetDiag(i), , AI);
+                auto luDiag = dThis->GetDiag(i).fullPivLu();
+                DNDS_assert(luDiag.isInvertible());
+                AI = luDiag.inverse();
+                dThis->GetDiag(i) = AI; // * note here only stores
+                /*********************/
+                // upper part
+                auto &&upperRow = symLU->upperTriStructureNew[iP];
+                for (int ijP = 0; ijP < upperRow.size(); ijP++)
+                {
+                    auto jP = upperRow[ijP];
+                    DNDS_assert(jP > iP);
+                    auto j = symLU->FillingReorderNew2Old(jP);
+                    auto &&lowerRowJP = symLU->lowerTriStructureNew[jP];
+
+                    iterateIdentical(
+                        lowerRow.begin(), lowerRow.end(), lowerRowJP.begin(), lowerRowJP.end(),
+                        [&](index kP, auto pos1, auto pos2)
+                        {
+                            if (kP >= iP)
+                                return true;
+                            DNDS_assert(kP < symLU->Num());
+                            auto k = symLU->FillingReorderNew2Old(kP);
+                            int jPInUpperPos = symLU->lowerTriStructureNewInUpper[jP][pos2];
+                            if (jPInUpperPos != -1)
+                                dThis->GetUpper(i, ijP) -= dThis->GetLower(i, pos1) * dThis->GetUpper(k, jPInUpperPos);
+                            // if (iP < 3)
+                            // log() << fmt::format("Upper Add at {},{},{} === {}", iP, jP, kP,
+                            //                      (this->GetLower(i, pos1) * this->GetUpper(k, jPInUpperPos))(0))
+                            // << std::endl;
+                            return false;
+                        });
+                }
+            }
+            isDecomposed = true;
+        }
+
+        void MatMul(tVec &x, tVec &result)
+        {
+            auto dThis = static_cast<Derived *>(this);
+            DNDS_assert(!isDecomposed);
+            for (index iCell = 0; iCell < symLU->Num(); iCell++)
+            {
+                result[iCell] = dThis->GetDiag(iCell) * x[iCell];
+                for (int ij = 0; ij < symLU->lowerTriStructure[iCell].size(); ij++)
+                    result[iCell] += dThis->GetLower(iCell, ij) * x[symLU->lowerTriStructure[iCell][ij]];
+                for (int ij = 0; ij < symLU->upperTriStructure[iCell].size(); ij++)
+                    result[iCell] += dThis->GetUpper(iCell, ij) * x[symLU->upperTriStructure[iCell][ij]];
+            }
+        }
+
+        void Solve(tVec &b, tVec &result)
+        {
+            auto dThis = static_cast<Derived *>(this);
+            DNDS_assert(isDecomposed);
+            for (index iP = 0; iP < symLU->Num(); iP++)
+            {
+                index i = symLU->FillingReorderNew2Old(iP);
+                result[i] = b[i];
+                auto &&lowerRowOld = symLU->lowerTriStructure[i];
+                for (int ij = 0; ij < lowerRowOld.size(); ij++)
+                {
+                    index j = lowerRowOld[ij];
+                    result[i] -= dThis->GetLower(i, ij) * result[j];
+                }
+            }
+            for (index iP = symLU->Num() - 1; iP >= 0; iP--)
+            {
+                index i = symLU->FillingReorderNew2Old(iP);
+                auto &&upperRowOld = symLU->upperTriStructure[i];
+                for (int ij = 0; ij < upperRowOld.size(); ij++)
+                {
+                    index j = upperRowOld[ij];
+                    result[i] -= dThis->GetUpper(i, ij) * result[j];
+                }
+                // auto luDiag = dThis->GetDiag(i).fullPivLu();
+                // result[i] = luDiag.solve(result[i]);
+                result[i] = dThis->GetDiag(i) * result[i];
+            }
+        }
+    };
+
+
+    
 }
