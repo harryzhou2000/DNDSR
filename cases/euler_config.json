@@ -100,6 +100,7 @@
         "subs2ndOrder": 1,
         "baseSettings": {
             "localOrientation": false,
+            "localOrientation": false,
             "anisotropicLengths": false
         },
         "functionalSettings": {
@@ -112,10 +113,11 @@
         }
     },
     "linearSolverControl": {
-        "jacobiCode": 2,
+        "jacobiCode": 1,
         "sgsIter": 0,
         "sgsWithRec": 0,
         "nSgsConsoleCheck": 100,
+        "gmresCode": 0,
         "gmresCode": 0,
         "nGmresSpace": 5,
         "nGmresIter": 1,
