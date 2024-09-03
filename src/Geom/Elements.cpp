@@ -3,9 +3,9 @@
 namespace DNDS::Geom::Elem
 {
 
-    Eigen::Matrix<t_real, 3, Eigen::Dynamic> GetStandardCoord(ElemType t)
+    SmallCoordsAsVector GetStandardCoord(ElemType t)
     {
-        auto ret = Eigen::Matrix<t_real, 3, Eigen::Dynamic>{};
+        auto ret = SmallCoordsAsVector{};
         auto elem = Element{t};
 
         ret.resize(3, elem.GetNumNodes());

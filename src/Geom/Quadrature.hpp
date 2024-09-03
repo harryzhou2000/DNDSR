@@ -661,6 +661,8 @@ namespace DNDS::Geom::Elem
         }
     };
 
+    static SummationNoOp intNoOp;
+
     static struct __TNBufferAtQuadrature
     {
         std::array<std::array<std::vector<tD01Nj>, INT_ORDER_MAX + 1>, ElemType_NUM> buf;

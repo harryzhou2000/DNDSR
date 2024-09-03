@@ -102,7 +102,7 @@ namespace DNDS::Euler
                         Eigen::Matrix<real, 1, Eigen::Dynamic> DiBj;
                         DiBj.resize(1, uRecNew[iCell].rows() + 1);
                         // std::cout << uRecNew[iCell].rows() << std::endl;
-                        vfv->FDiffBaseValue(DiBj, pPhy, iCell, -2, -2);
+                        vfv->FDiffBaseValue(DiBj, pPhy, iCell, -2, -2); //!todo: put pParam of the point here to support parametric bases!
 
                         TU vRec = (DiBj(Eigen::all, Eigen::seq(1, Eigen::last)) * (config.limiterControl.useLimiter ? uRecNew[iCell] : uRec[iCell])).transpose() +
                                   uOut[iCell];

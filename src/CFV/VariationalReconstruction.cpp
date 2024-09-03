@@ -25,6 +25,19 @@ namespace DNDS::CFV
         this->MakePairDefaultOnCell(cellMajorHBox);
         this->MakePairDefaultOnCell(cellMajorCoord, 3, 3);
         this->MakePairDefaultOnCell(cellInertia, 3, 3);
+
+        if (settings.baseSettings.useParametric || settings.baseSettings.useProjectedParametric)
+        {
+            this->MakePairDefaultOnCell(cellIntJacobiInv);
+            this->MakePairDefaultOnFace(faceIntJacobiInvInCell);
+            cellIntPointParamDiBjCachePtr.resize(mesh->NumCellProc());
+            faceIntPointInCellParamDiBjCachePtr.resize(mesh->NumFaceProc());
+            this->MakePairDefaultOnCell(cellCentJacobiInv, 3, 3);
+            this->MakePairDefaultOnFace(faceCentJacobiInvInCell);
+            cellCentParamDiBjCachePtr.resize(mesh->NumCellProc());
+            faceCentParamInCellDiBjCachePtr.resize(mesh->NumFaceProc());
+        }
+
 #ifdef DNDS_USE_OMP
 #pragma omp parallel for
 #endif
@@ -39,9 +52,12 @@ namespace DNDS::CFV
             DNDS_assert(qCellO1.GetNumPoints() == 1);
             cellIntJacobiDet.ResizeRow(iCell, qCell.GetNumPoints());
             cellIntPPhysics.ResizeRow(iCell, qCell.GetNumPoints());
+            if (settings.baseSettings.useParametric || settings.baseSettings.useProjectedParametric)
+                cellIntJacobiInv.ResizeRow(iCell, qCell.GetNumPoints());
 
             tSmallCoords coordsCell;
             mesh->GetCoordsOnCell(iCell, coordsCell);
+            SummationNoOp noOp;
             //****** Get Int Point Det and Vol
             real v{0};
             qCell.Integration(
@@ -57,13 +73,36 @@ namespace DNDS::CFV
                     // JDet = std::abs(JDet); // use this to pass check even with bad mesh
                     vInc = 1 * JDet;
                     cellIntJacobiDet(iCell, iG) = JDet;
+                    if constexpr (dim == 2)
+                        J(2, {0, 1}).setZero(), J(2, 2) = 1; //! planar special
+                    if (settings.baseSettings.useParametric || settings.baseSettings.useProjectedParametric)
+                        cellIntJacobiInv(iCell, iG) = J.inverse();
                 });
             volumeLocal[iCell] = v;
-            // if (!(v > 0))
-            //     std::cout << fmt::format("cell has ill area result, v = {}, cellType {}", v, int(eCell.type)) << std::endl;
-            // for (int iG = 0; iG < qCell.GetNumPoints(); iG++)
-            //     if (!(cellIntJacobiDet(iCell, iG) / v > 1e-10))
-            //         std::cout << fmt::format("cell has ill jacobi det, det/V {}, cellType {}", cellIntJacobiDet(iCell, iG) / v, int(eCell.type)) << std::endl;;
+
+            if (settings.baseSettings.useParametric || settings.baseSettings.useProjectedParametric)
+            {
+                cellIntPointParamDiBjCachePtr[iCell].resize(qCell.GetNumPoints());
+                qCell.Integration(
+                    noOp,
+                    [&](auto &vInc, int iG, const tPoint &pParam, const Elem::tD01Nj &DiNj)
+                    {
+                        auto [nFound, ptr] = this->paramBaseCache.FindMatchingPointDiBj(
+                            cellAtr[iCell].intOrder, eCell.type, -1, pParam);
+                        DNDS_assert(nFound == 1);
+                        cellIntPointParamDiBjCachePtr[iCell][iG] = ptr;
+                    });
+                qCellO1.Integration(
+                    intNoOp,
+                    [&](auto &vInc, int iG, const tPoint &pParam, const Elem::tD01Nj &DiNj)
+                    {
+                        tJacobi J = Elem::ShapeJacobianCoordD01Nj(coordsCell, DiNj);
+                        if constexpr (dim == 2)
+                            J(2, {0, 1}).setZero(), J(2, 2) = 1; //! planar special
+                        cellCentJacobiInv[iCell] = J.inverse();
+                    });
+                cellCentParamDiBjCachePtr[iCell] = &(paramBaseCache.cache[1][eCell.type][0].at(0).DiBjParam);
+            }
 
             if (!settings.ignoreMeshGeometryDeficiency)
             {
@@ -95,9 +134,8 @@ namespace DNDS::CFV
                 });
             cellBary[iCell] = b / v;
             //****** Get Center
-            SummationNoOp noOp;
             qCellO1.Integration(
-                noOp,
+                intNoOp,
                 [&](auto &vInc, int iG, const tPoint &pParam, const Elem::tD01Nj &DiNj)
                 {
                     tPoint pPhy = Elem::PPhysicsCoordD01Nj(coordsCell, DiNj);
@@ -194,6 +232,9 @@ namespace DNDS::CFV
             faceIntPPhysics.ResizeRow(iFace, qFace.GetNumPoints());
             faceUnitNorm.ResizeRow(iFace, qFace.GetNumPoints());
 
+            index iCellL = mesh->face2cell(iFace, 0);
+            index iCellR = mesh->face2cell(iFace, 1);
+
             tSmallCoords coords;
             mesh->GetCoordsOnFace(iFace, coords);
 
@@ -217,6 +258,81 @@ namespace DNDS::CFV
             for (int iG = 0; iG < qFace.GetNumPoints(); iG++)
                 DNDS_assert_info(faceIntJacobiDet(iFace, iG) / v > 1e-10, "face has ill jacobi det");
 
+            if (settings.baseSettings.useParametric || settings.baseSettings.useProjectedParametric)
+            {
+
+                faceIntJacobiInvInCell.ResizeRow(iFace, qFace.GetNumPoints() * 2);
+                faceIntPointInCellParamDiBjCachePtr[iFace].resize(qFace.GetNumPoints() * 2);
+                faceCentJacobiInvInCell.ResizeRow(iFace, 2); //! could optimize to const size row (get a t3Mat2Pair)
+                auto processCellOnFace = [&](index iCell, int faceRowStart, int if2c)
+                {
+                    auto f2n = mesh->face2node[iFace];
+                    auto c2n = mesh->cell2node[iCell];
+                    auto ic2fC = UnInitIndex;
+                    for (rowsize ic2f = 0; ic2f < mesh->cell2face[iCell].size(); ic2f++)
+                        if (mesh->cell2face[iCell][ic2f] == iFace)
+                            ic2fC = ic2f;
+                    DNDS_assert(UnInitIndex != ic2fC);
+
+                    auto eCell = mesh->GetCellElement(iCell);
+                    auto cellStandardCoord = GetStandardCoord(eCell.type);
+                    SmallCoordsAsVector faceInCellStandardCoord;
+                    faceInCellStandardCoord.setConstant(Eigen::NoChange, eFace.GetNumNodes(), UnInitReal);
+                    for (rowsize if2n = 0; if2n < f2n.size(); if2n++)
+                        for (rowsize ic2n = 0; ic2n < c2n.size(); ic2n++)
+                            if (f2n[if2n] == c2n[ic2n])
+                                faceInCellStandardCoord[if2n] = cellStandardCoord[ic2n];
+                    SmallCoordsAsVector cellCoord;
+                    mesh->GetCoordsOnCell(iCell, cellCoord);
+                    qFace.Integration(
+                        intNoOp,
+                        [&](auto &vInc, int iG, const tPoint &pParam, const Elem::tD01Nj &DiNj)
+                        {
+                            tPoint pParamInCell = faceInCellStandardCoord * DiNj(0, Eigen::all).transpose();
+                            tD1Nj D1NjCell;
+                            eCell.GetD1Nj(pParamInCell, D1NjCell);
+                            tJacobi JInCell = ShapeJacobianCoordD1Nj(cellCoord, D1NjCell);
+                            if constexpr (dim == 2)
+                                JInCell(2, {0, 1}).setZero(), JInCell(2, 2) = 1; //! planar special
+                            faceIntJacobiInvInCell(iFace, faceRowStart + iG) = JInCell.inverse();
+                            if (faceIntJacobiInvInCell(iFace, faceRowStart + iG).hasNaN() || !faceIntJacobiInvInCell(iFace, faceRowStart + iG).allFinite())
+                            {
+                                DNDS_assert_info(false,
+                                                 "faceIntJacobiInvInCell(iFace, faceRowStart + iG) not finite \n" +
+                                                     fmt::format("pParam {}\nJInv:\n{}J:\n{}", pParam.transpose(),
+                                                                 faceIntJacobiInvInCell(iFace, faceRowStart + iG),
+                                                                 JInCell));
+                            }
+
+                            auto [nFound, ptr] = this->paramBaseCache.FindMatchingPointDiBj(
+                                faceAtr[iFace].intOrder, eCell.type, ic2fC, pParamInCell); // note the intOrder and eType intput here
+                            DNDS_assert(nFound == 1);
+                            faceIntPointInCellParamDiBjCachePtr[iFace][faceRowStart + iG] = ptr;
+                        });
+
+                    qFaceO1.Integration(
+                        intNoOp,
+                        [&](auto &vInc, int iG, const tPoint &pParam, const Elem::tD01Nj &DiNj)
+                        {
+                            tPoint pParamInCell = faceInCellStandardCoord * DiNj(0, Eigen::all).transpose();
+                            tD1Nj D1NjCell;
+                            eCell.GetD1Nj(pParamInCell, D1NjCell);
+                            tJacobi JInCell = ShapeJacobianCoordD1Nj(cellCoord, D1NjCell);
+                            if constexpr (dim == 2)
+                                JInCell(2, {0, 1}).setZero(), JInCell(2, 2) = 1; //! planar special
+                            faceCentJacobiInvInCell(iFace, if2c) = JInCell.inverse();
+
+                            auto [nFound, ptr] = this->paramBaseCache.FindMatchingPointDiBj(
+                                1, eCell.type, ic2fC, pParamInCell); // note the intOrder and eType intput here
+                            DNDS_assert(nFound == 1);
+                            faceCentParamInCellDiBjCachePtr[iFace][if2c] = ptr;
+                        });
+                };
+                processCellOnFace(iCellL, 0, 0);
+                if (iCellR != UnInitIndex)
+                    processCellOnFace(iCellR, qFace.GetNumPoints(), 1);
+            }
+
             //****** Get Int Point Norm/pPhy and Mean Norm
             tPoint n{0, 0, 0};
             qFace.Integration(
@@ -239,9 +355,8 @@ namespace DNDS::CFV
             faceMeanNorm[iFace] = n / v;
 
             //****** Get Center
-            SummationNoOp noOp;
             qFaceO1.Integration(
-                noOp,
+                intNoOp,
                 [&](auto &vInc, int iG, const tPoint &pParam, const Elem::tD01Nj &DiNj)
                 {
                     tPoint pPhy = Elem::PPhysicsCoordD01Nj(coords, DiNj);
@@ -300,6 +415,11 @@ namespace DNDS::CFV
                 std::min(maxNDIFF, static_cast<int>(settings.cacheDiffBaseSize)), maxNDOF);
         }
         volIntCholeskyL.resize(mesh->NumCellProc());
+        if (settings.baseSettings.useProjectedParametric)
+        {
+            paramProjectP.resize(mesh->NumCellProc());
+            this->MakePairDefaultOnCell(cellBaseMomentXY, maxNDOF);
+        }
 
 #ifdef DNDS_USE_OMP
 #pragma omp parallel for
@@ -335,14 +455,36 @@ namespace DNDS::CFV
                         JDet = J.determinant();
                     Eigen::RowVector<real, Eigen::Dynamic> vv;
                     vv.resizeLike(m);
-                    this->FDiffBaseValue(vv, pPhy, iCell, -1, -2, 1); // un-dispatched call
+                    this->FDiffBaseValue(vv, pPhy, iCell, -1, -2, 1, pParam); // un-dispatched call
                     vInc = vv * JDet;
                 });
             // std::cout << m << std::endl;
             cellBaseMoment[iCell] = m.transpose() / this->GetCellVol(iCell);
-            SummationNoOp noOp;
+
+            if (settings.baseSettings.useProjectedParametric)
+            {
+                m.setZero();
+                qCellMax.Integration(
+                    m,
+                    [&](auto &vInc, int iG, const tPoint &pParam, const Elem::tD01Nj &DiNj)
+                    {
+                        tPoint pPhy = Elem::PPhysicsCoordD01Nj(coordsCell, DiNj);
+                        tJacobi J = Elem::ShapeJacobianCoordD01Nj(coordsCell, DiNj);
+                        real JDet;
+                        if constexpr (dim == 2)
+                            JDet = J(Eigen::all, 0).cross(J(Eigen::all, 1)).stableNorm();
+                        else
+                            JDet = J.determinant();
+                        Eigen::RowVector<real, Eigen::Dynamic> vv;
+                        vv.resizeLike(m);
+                        this->FDiffBaseValue(vv, pPhy, iCell, -1, -2, 3, pParam); // un-dispatched call
+                        vInc = vv * JDet;
+                    });
+                cellBaseMomentXY[iCell] = m.transpose() / this->GetCellVol(iCell);
+            }
+
             qCell.Integration(
-                noOp,
+                intNoOp,
                 [&](auto &vInc, int iG, const tPoint &pParam, const Elem::tD01Nj &DiNj)
                 {
                     if (settings.cacheDiffBase)
@@ -356,7 +498,7 @@ namespace DNDS::CFV
                     }
                 });
             qCellO1.Integration(
-                noOp,
+                intNoOp,
                 [&](auto &vInc, int iG, const tPoint &pParam, const Elem::tD01Nj &DiNj)
                 {
                     if (settings.cacheDiffBase)
@@ -373,17 +515,61 @@ namespace DNDS::CFV
             //****** Get Orthogonization Coefs
             Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic> MBiBj;
             MBiBj.setZero(cellAtr[iCell].NDOF - 1, cellAtr[iCell].NDOF - 1);
-            qCell.Integration(
+            qCellMax.Integration(
                 MBiBj,
                 [&](auto &vInc, int iG, const tPoint &pParam, const Elem::tD01Nj &DiNj)
                 {
-                    Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic> D0Bj =
-                        this->GetIntPointDiffBaseValue(iCell, -1, -1, iG, std::array<int, 1>{0}, 1);
-                    vInc = (D0Bj.transpose() * D0Bj);
-                    vInc *= this->GetCellJacobiDet(iCell, iG);
+                    tPoint pPhy = Elem::PPhysicsCoordD01Nj(coordsCell, DiNj);
+                    tJacobi J = Elem::ShapeJacobianCoordD01Nj(coordsCell, DiNj);
+                    real JDet;
+                    if constexpr (dim == 2)
+                        JDet = J(Eigen::all, 0).cross(J(Eigen::all, 1)).stableNorm();
+                    else
+                        JDet = J.determinant();
+                    Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic> D0Bj;
+                    D0Bj.resize(1, cellAtr[iCell].NDOF);
+                    this->FDiffBaseValue(D0Bj, pPhy, iCell, -1, -2, 0, pParam);
+                    auto eig1Last = Eigen::seq(1, Eigen::last);
+                    vInc = (D0Bj(0, eig1Last).transpose() * D0Bj(0, eig1Last));
+                    vInc *= JDet;
                 });
             volIntCholeskyL.at(iCell).resizeLike(MBiBj);
             volIntCholeskyL.at(iCell) = MBiBj.llt().matrixL();
+
+            if (settings.baseSettings.useProjectedParametric)
+            {
+                Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic> MBXYiBj;
+                MBXYiBj.setZero(cellAtr[iCell].NDOF - 1, cellAtr[iCell].NDOF - 1);
+                qCellMax.Integration(
+                    MBXYiBj,
+                    [&](auto &vInc, int iG, const tPoint &pParam, const Elem::tD01Nj &DiNj)
+                    {
+                        tPoint pPhy = Elem::PPhysicsCoordD01Nj(coordsCell, DiNj);
+                        tJacobi J = Elem::ShapeJacobianCoordD01Nj(coordsCell, DiNj);
+                        real JDet;
+                        if constexpr (dim == 2)
+                            JDet = J(Eigen::all, 0).cross(J(Eigen::all, 1)).stableNorm();
+                        else
+                            JDet = J.determinant();
+                        Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic> D0Bj, D0BXYj;
+                        D0Bj.resize(1, cellAtr[iCell].NDOF), D0BXYj.resize(1, cellAtr[iCell].NDOF);
+                        this->FDiffBaseValue(D0Bj, pPhy, iCell, -1, -2, 0, pParam);
+                        this->FDiffBaseValue(D0BXYj, pPhy, iCell, -1, -2, 2, pParam);
+                        auto eig1Last = Eigen::seq(1, Eigen::last);
+                        vInc = (D0BXYj(0, eig1Last).transpose() * D0Bj(0, eig1Last));
+                        vInc *= JDet;
+                    });
+
+                // P = MBXYiBj *  MBiBj^-1, Pinv = MBiBj * MBXYiBj^-1
+                auto MBXYiBjDecompose = MBXYiBj.fullPivLu();
+                paramProjectP.at(iCell) = MBiBj * MBXYiBjDecompose.inverse();
+                // std::cout << "MBIBJ\n"
+                //           << MBiBj << std::endl;
+                // std::cout << "MBXYiBj\n"
+                //           << MBXYiBj << std::endl;
+                // std::cout << "paramProjectP.at(iCell)\n"
+                //           << paramProjectP.at(iCell) << std::endl;
+            }
         }
 
         /******************************/
@@ -715,6 +901,7 @@ namespace DNDS::CFV
         this->MakePairDefaultOnCell(matrixAAInvB, maxNDOF - 1, maxNDOF - 1);
         this->MakePairDefaultOnCell(vectorB, maxNDOF - 1, 1);
         this->MakePairDefaultOnCell(vectorAInvB, maxNDOF - 1, 1);
+        int useXY = settings.baseSettings.useProjectedParametric ? 2 : 0;
         if (settings.functionalSettings.greenGauss1Weight != 0)
             this->MakePairDefaultOnCell(matrixAHalf_GG, dim, (maxNDOF - 1));
         matrixACholeskyL.resize(mesh->NumCellProc());
@@ -740,7 +927,7 @@ namespace DNDS::CFV
                     A,
                     [&](auto &vInc, int iG, const tPoint &pParam, const Elem::tD01Nj &DiNj)
                     {
-                        decltype(A) DiffI = this->GetIntPointDiffBaseValue(iCell, iFace, -1, iG, Eigen::all);
+                        decltype(A) DiffI = this->GetIntPointDiffBaseValue(iCell, iFace, -1, iG, Eigen::all, UINT8_MAX, useXY);
                         vInc = this->FFaceFunctional(DiffI, DiffI, iFace, iG, iCell, iCell);
                         vInc *= this->GetFaceJacobiDet(iFace, iG);
                         // if (iCell == 71)
@@ -752,6 +939,8 @@ namespace DNDS::CFV
                 // std::cout << faceAlignedScales[iFace] << std::endl;
                 // std::cout << "face "<< faceWeight[iFace].transpose() << std::endl;
             }
+            if (settings.baseSettings.useProjectedParametric)
+                A = paramProjectP.at(iCell) * A * paramProjectP.at(iCell).transpose();
             Eigen::Matrix<real, dim, Eigen::Dynamic> AHalf_GG;
             if (settings.functionalSettings.greenGauss1Weight != 0)
             {
@@ -809,7 +998,6 @@ namespace DNDS::CFV
                 A += (AHalf_GG.transpose() * AHalf_GG) * this->GetGreenGauss1WeightOnCell(iCell);
                 matrixAHalf_GG[iCell] = AHalf_GG;
             }
-            
 
             // if (iCell == 71)
             // {
@@ -841,8 +1029,8 @@ namespace DNDS::CFV
                     B,
                     [&](auto &vInc, int iG, const tPoint &pParam, const Elem::tD01Nj &DiNj)
                     {
-                        decltype(B) DiffI = this->GetIntPointDiffBaseValue(iCell, iFace, -1, iG, Eigen::all);
-                        decltype(B) DiffJ = this->GetIntPointDiffBaseValue(iCellOther, iFace, -1, iG, Eigen::all);
+                        decltype(B) DiffI = this->GetIntPointDiffBaseValue(iCell, iFace, -1, iG, Eigen::all, UINT8_MAX, useXY);
+                        decltype(B) DiffJ = this->GetIntPointDiffBaseValue(iCellOther, iFace, -1, iG, Eigen::all, UINT8_MAX, useXY);
                         if (mesh->isPeriodic)
                         {
                             if ((if2c == 1 && Geom::FaceIDIsPeriodicMain(faceID)) ||
@@ -860,6 +1048,8 @@ namespace DNDS::CFV
                         vInc = this->FFaceFunctional(DiffI, DiffJ, iFace, iG, iCell, iCellOther);
                         vInc *= this->GetFaceJacobiDet(iFace, iG);
                     });
+                if (settings.baseSettings.useProjectedParametric)
+                    B = paramProjectP.at(iCell) * B * paramProjectP.at(iCellOther).transpose();
                 if (settings.functionalSettings.greenGauss1Weight != 0)
                 {
                     decltype(AHalf_GG) BHalf_GG;
@@ -890,7 +1080,7 @@ namespace DNDS::CFV
                     //           << AHalf_GG.transpose() * BHalf_GG << std::endl;
                     B += AHalf_GG.transpose() * BHalf_GG * this->GetGreenGauss1WeightOnCell(iCell);
                 }
-                if(iCellOther == iCell) //* coincide periodic
+                if (iCellOther == iCell) //* coincide periodic
                     A -= B, B *= 0;
                 matrixAB(iCell, 1 + ic2f) = B;
             }
@@ -908,10 +1098,12 @@ namespace DNDS::CFV
                     [&](auto &vInc, int iG, const tPoint &pParam, const Elem::tD01Nj &DiNj)
                     {
                         Eigen::RowVector<real, Eigen::Dynamic> DiffI =
-                            this->GetIntPointDiffBaseValue(iCell, iFace, -1, iG, std::array<int, 1>{0}, 1);
+                            this->GetIntPointDiffBaseValue(iCell, iFace, -1, iG, std::array<int, 1>{0}, 1, useXY);
                         vInc = this->FFaceFunctional(DiffI, Eigen::MatrixXd::Ones(1, 1), iFace, iG, iCell, iCell);
                         vInc *= this->GetFaceJacobiDet(iFace, iG);
                     });
+                if (settings.baseSettings.useProjectedParametric)
+                    b = paramProjectP.at(iCell) * b;
                 if (settings.functionalSettings.greenGauss1Weight != 0)
                 {
                     Eigen::Matrix<real, dim, 1> bHalf_GG;
@@ -985,9 +1177,14 @@ namespace DNDS::CFV
             if (iCellR == UnInitIndex) // only for faces with two
                 continue;
             // get dbv from 1st derivative to last
-            Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic> DiffI = this->GetIntPointDiffBaseValue(iCellL, iFace, 0, -1, Eigen::seq(1, Eigen::last));
-            Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic> DiffJ = this->GetIntPointDiffBaseValue(iCellR, iFace, 1, -1, Eigen::seq(1, Eigen::last));
+            Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic> DiffI = this->GetIntPointDiffBaseValue(iCellL, iFace, 0, -1, Eigen::seq(1, Eigen::last), UINT8_MAX, useXY);
+            Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic> DiffJ = this->GetIntPointDiffBaseValue(iCellR, iFace, 1, -1, Eigen::seq(1, Eigen::last), UINT8_MAX, useXY);
             Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic> M2_L2R, M2_R2L;
+            if (settings.baseSettings.useProjectedParametric)
+            {
+                DiffI = DiffI * paramProjectP.at(iCellL).transpose();
+                DiffJ = DiffJ * paramProjectP.at(iCellR).transpose();
+            }
             HardEigen::EigenLeastSquareSolve(DiffI, DiffJ, M2_R2L);
             HardEigen::EigenLeastSquareSolve(DiffJ, DiffI, M2_L2R);
             // TODO: cleanse M2s' lower triangle

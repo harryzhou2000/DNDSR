@@ -15,6 +15,7 @@ set(LINKS
 
 set(CPPS
 VariationalReconstruction.cpp
+ParametricBaseFunction.cpp
 _explicit_instantiation/VariationalReconstruction_Reconstruction_2_4.cpp
 _explicit_instantiation/VariationalReconstruction_Reconstruction_2_5.cpp
 _explicit_instantiation/VariationalReconstruction_Reconstruction_2_6.cpp

@@ -55,10 +55,14 @@ namespace DNDS::CFV
         {
             bool localOrientation = false;
             bool anisotropicLengths = false;
+            bool useParametric = false;
+            bool useProjectedParametric = false;
             DNDS_NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_ORDERED_JSON(
                 BaseSettings,
                 localOrientation,
-                anisotropicLengths)
+                anisotropicLengths,
+                useParametric,
+                useProjectedParametric)
         } baseSettings;
 
         struct FunctionalSettings
@@ -202,6 +206,9 @@ namespace DNDS::CFV
             functionalSettings = jsonSetting["functionalSettings"];
 
             bcWeight = jsonSetting["bcWeight"];
+
+            if (baseSettings.useProjectedParametric)
+                DNDS_assert(!baseSettings.useParametric);
         }
         friend void from_json(const json &j, VRSettings &s)
         {

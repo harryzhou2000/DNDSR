@@ -3,6 +3,7 @@
 #include <type_traits>
 #include <cstdint>
 #include <array>
+#include <set>
 #include "DNDS/HardEigen.hpp"
 
 #include "DNDS/Defines.hpp"
@@ -154,10 +155,13 @@ namespace DNDS::Geom::Elem
         return UnknownElem;
     }
 
-    inline constexpr std::array<std::array<std::array<t_index, 10>, 6>, ElemType_NUM>
+
+    static const int ELEM_MAX_FACE_NUM = 6;
+
+    inline constexpr std::array<std::array<std::array<t_index, 10>, ELEM_MAX_FACE_NUM>, ElemType_NUM>
     __Get_FaceNodeList()
     {
-        auto ret = std::array<std::array<std::array<t_index, 10>, 6>, ElemType_NUM>{};
+        auto ret = std::array<std::array<std::array<t_index, 10>, ELEM_MAX_FACE_NUM>, ElemType_NUM>{};
         for (auto &i : ret)
             for (auto &j : i)
                 for (auto &k : j)
@@ -1411,7 +1415,7 @@ namespace DNDS::Geom::Elem
         }
     };
 
-    Eigen::Matrix<t_real, 3, Eigen::Dynamic> GetStandardCoord(ElemType t);
+    SmallCoordsAsVector GetStandardCoord(ElemType t);
 }
 
 namespace DNDS::Geom::Elem
@@ -1452,6 +1456,12 @@ namespace DNDS::Geom::Elem
     tJacobi ShapeJacobianCoordD01Nj(const tCoordsIn &cs, Eigen::Ref<const tD01Nj> DiNj)
     {
         return cs * DiNj({1, 2, 3}, Eigen::all).transpose();
+    }
+
+    template <class tCoordsIn>
+    tJacobi ShapeJacobianCoordD1Nj(const tCoordsIn &cs, Eigen::Ref<const tD1Nj> D1Nj)
+    {
+        return cs * D1Nj.transpose();
     }
 
     template <class tCoordsIn>

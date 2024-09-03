@@ -2,6 +2,7 @@
 
 #include "VRDefines.hpp"
 #include "BaseFunction.hpp"
+#include "ParametricBaseFunction.hpp"
 #include "VRSettings.hpp"
 
 #include "fmt/core.h"
@@ -61,6 +62,15 @@ namespace DNDS::CFV
         tVMatPair cellDiffBaseCacheCent; /// @brief constructed using ConstructBaseAndWeight() //TODO *test
         tVMatPair faceDiffBaseCacheCent; /// @brief constructed using ConstructBaseAndWeight() //TODO *test
 
+        t3MatsPair cellIntJacobiInv;       /// @brief currently only when settings.baseSettings.useParametric == true;
+        t3MatsPair faceIntJacobiInvInCell; /// @brief currently only when settings.baseSettings.useParametric == true;
+        std::vector<std::vector<tParamDiBj *>> cellIntPointParamDiBjCachePtr;
+        std::vector<std::vector<tParamDiBj *>> faceIntPointInCellParamDiBjCachePtr;
+        t3MatPair cellCentJacobiInv;
+        t3MatsPair faceCentJacobiInvInCell;
+        std::vector<tParamDiBj *> cellCentParamDiBjCachePtr;
+        std::vector<std::array<tParamDiBj *, 2>> faceCentParamInCellDiBjCachePtr;
+
         tMatsPair matrixAB;        /// @brief constructed using ConstructRecCoeff()
         tVecsPair vectorB;         /// @brief constructed using ConstructRecCoeff()
         tMatsPair matrixAAInvB;    /// @brief constructed using ConstructRecCoeff()
@@ -71,8 +81,13 @@ namespace DNDS::CFV
         std::vector<Eigen::MatrixXd> volIntCholeskyL;
         std::vector<Eigen::MatrixXd> matrixACholeskyL;
 
+        std::vector<Eigen::MatrixXd> paramProjectP;
+        tVVecPair cellBaseMomentXY;
+
         CFVPeriodicity periodicity;
         TFTrans FTransPeriodic, FTransPeriodicBack;
+
+        ParametricBaseCache<dim> paramBaseCache;
 
     public:
         VariationalReconstruction(MPIInfo nMpi, ssp<Geom::UnstructuredMesh> nMesh)
@@ -254,7 +269,7 @@ namespace DNDS::CFV
 
         Geom::tPoint GetOtherCellPointFromCell(
             index iCell, index iCellOther,
-            index iFace, const Geom::tPoint& pnt)
+            index iFace, const Geom::tPoint &pnt)
         {
             if (!mesh->isPeriodic)
                 return pnt;
@@ -318,60 +333,139 @@ namespace DNDS::CFV
         /**
          * @brief flag = 0 means use moment data, or else use no moment (as 0)
          * pPhy must be relative to cell
-         * if iFace < 0, means anywhere
-         * if iFace > 0, iG == -1, means center; iG < -1, then anywhere
+         * if iFace < 0, iG == -1, means cell center
+         * if iFace < 0, iG >= 0, means cell quad point
+         * if iFace < 0, iG < -1, means anywhere
+         * if iFace >= 0, iG == -1, means face center; iG < -1, then anywhere according to pParam
          */
         template <class TOut>
         void FDiffBaseValue(TOut &DiBj,
                             const Geom::tPoint &pPhy, // conventional input above
-                            index iCell, index iFace, int iG, int flag = 0)
+                            index iCell, index iFace, int iG, int flag = 0,
+                            const Geom::tPoint &pParam = Geom::tPoint{0, 0, 0})
         {
             using namespace Geom;
-
-            auto pCen = cellCent[iCell];
-            tPoint pPhysicsC = pPhy - pCen;
-
-            if (!settings.baseSettings.localOrientation)
+            // std::cout << fmt::format("iCell {} iFace {} iG {}", iCell, iFace, iG) << std::endl;
+            if (settings.baseSettings.useParametric || (settings.baseSettings.useProjectedParametric && flag <= 1))
             {
-                tPoint simpleScale = cellAlignedHBox[iCell];
-                if (!settings.baseSettings.anisotropicLengths)
+                if (iFace < 0) // cell-centered
                 {
-                    if constexpr (dim == 2)
-                        simpleScale({0, 1}).setConstant(simpleScale({0, 1}).array().maxCoeff());
-                    else
-                        simpleScale.setConstant(simpleScale.array().maxCoeff());
+                    if (iG >= 0)
+                    {
+                        auto jacInv = cellIntJacobiInv(iCell, iG); // dXii/dxj
+                        auto &DiBjParam = *cellIntPointParamDiBjCachePtr[iCell].at(iG);
+
+                        DiBj = DiBjParam.topLeftCorner(DiBj.rows(), DiBj.cols());
+                        ConvertDiffsLinMap<dim>(DiBj, jacInv.transpose());
+                    }
+                    if (iG == -1)
+                    {
+                        auto jacInv = cellCentJacobiInv[iCell];
+                        auto &DiBjParam = *cellCentParamDiBjCachePtr[iCell];
+
+                        DiBj = DiBjParam.topLeftCorner(DiBj.rows(), DiBj.cols());
+                        ConvertDiffsLinMap<dim>(DiBj, jacInv.transpose());
+                    }
                 }
-                tPoint pPhysicsCScaled = pPhysicsC.array() / simpleScale.array();
-                if constexpr (dim == 2)
-                    FPolynomialFill2D(DiBj, pPhysicsCScaled(0), pPhysicsCScaled(1), pPhysicsCScaled(2), simpleScale(0), simpleScale(1), simpleScale(2), (int)DiBj.rows(), (int)DiBj.cols());
                 else
-                    FPolynomialFill3D(DiBj, pPhysicsCScaled(0), pPhysicsCScaled(1), pPhysicsCScaled(2), simpleScale(0), simpleScale(1), simpleScale(2), (int)DiBj.rows(), (int)DiBj.cols());
+                {
+                    if (iG >= 0)
+                    {
+                        int if2c = CellIsFaceBack(iCell, iFace) ? 0 : 1;
+                        int iGG = iG + if2c * GetFaceQuad(iFace).GetNumPoints();
+                        auto jacInv = faceIntJacobiInvInCell(iFace, iGG); // dXii/dxj
+                        auto &DiBjParam = *faceIntPointInCellParamDiBjCachePtr[iFace][iGG];
+
+                        DiBj = DiBjParam.topLeftCorner(DiBj.rows(), DiBj.cols());
+                        // std::cout << DiBj << std::endl;
+                        ConvertDiffsLinMap<dim>(DiBj, jacInv.transpose());
+                        // std::cout << jacInv << std::endl;
+                        // std::cout << DiBj << std::endl;
+                    }
+                    if (iG == -1)
+                    {
+                        int if2c = CellIsFaceBack(iCell, iFace) ? 0 : 1;
+                        auto jacInv = faceCentJacobiInvInCell(iFace, if2c);
+                        auto &DiBjParam = *faceCentParamInCellDiBjCachePtr[iFace][if2c];
+
+                        DiBj = DiBjParam.topLeftCorner(DiBj.rows(), DiBj.cols());
+                        ConvertDiffsLinMap<dim>(DiBj, jacInv.transpose());
+                    }
+                }
+                if (iG <= -2)
+                {
+                    SmallCoordsAsVector coordsCell;
+                    mesh->GetCoordsOnCell(iCell, coordsCell);
+                    Elem::tD1Nj D1Nj;
+                    // Elem::tD0Nj D0Nj;
+                    auto eCell = mesh->GetCellElement(iCell);
+                    eCell.GetD1Nj(pParam, D1Nj);
+                    auto jac = Elem::ShapeJacobianCoordD1Nj(coordsCell, D1Nj);
+                    auto jacInv = jac.inverse();
+
+                    if constexpr (dim == 2)
+                        FPolynomialFill2D(DiBj, pParam(0), pParam(1), pParam(2), 1, 1, 1, DiBj.rows(), DiBj.cols());
+                    else
+                        FPolynomialFill3D(DiBj, pParam(0), pParam(1), pParam(2), 1, 1, 1, DiBj.rows(), DiBj.cols());
+                    ConvertDiffsLinMap<dim>(DiBj, jacInv.transpose());
+                }
+                if (flag == 0)
+                {
+                    auto baseMoment = cellBaseMoment[iCell];
+                    DiBj(0, Eigen::all) -= baseMoment.transpose();
+                }
             }
             else
             {
-                tPoint simpleScale = cellMajorHBox[iCell];
-                if (!settings.baseSettings.anisotropicLengths)
-                {
-                    if constexpr (dim == 2)
-                        simpleScale({0, 1}).setConstant(simpleScale({0, 1}).array().maxCoeff());
-                    else
-                        simpleScale.setConstant(simpleScale.array().maxCoeff());
-                }
-                // std::cout << simpleScale.transpose() << std::endl;
-                tPoint pPhysicsCMajor = cellMajorCoord[iCell].transpose() * pPhysicsC;
-                tPoint pPhysicsCScaled = pPhysicsCMajor.array() / simpleScale.array();
-                if constexpr (dim == 2)
-                    FPolynomialFill2D(DiBj, pPhysicsCScaled(0), pPhysicsCScaled(1), pPhysicsCScaled(2), simpleScale(0), simpleScale(1), simpleScale(2), DiBj.rows(), DiBj.cols());
-                else
-                    FPolynomialFill3D(DiBj, pPhysicsCScaled(0), pPhysicsCScaled(1), pPhysicsCScaled(2), simpleScale(0), simpleScale(1), simpleScale(2), DiBj.rows(), DiBj.cols());
-                tGPoint dXijdxi = cellMajorCoord[iCell];
-                ConvertDiffsLinMap<dim>(DiBj, dXijdxi);
-            }
+                auto pCen = cellCent[iCell];
+                tPoint pPhysicsC = pPhy - pCen;
 
-            if (flag == 0)
-            {
-                auto baseMoment = cellBaseMoment[iCell];
-                DiBj(0, Eigen::all) -= baseMoment.transpose();
+                if (!settings.baseSettings.localOrientation)
+                {
+                    tPoint simpleScale = cellAlignedHBox[iCell];
+                    if (!settings.baseSettings.anisotropicLengths)
+                    {
+                        if constexpr (dim == 2)
+                            simpleScale({0, 1}).setConstant(simpleScale({0, 1}).array().maxCoeff());
+                        else
+                            simpleScale.setConstant(simpleScale.array().maxCoeff());
+                    }
+                    tPoint pPhysicsCScaled = pPhysicsC.array() / simpleScale.array();
+                    if constexpr (dim == 2)
+                        FPolynomialFill2D(DiBj, pPhysicsCScaled(0), pPhysicsCScaled(1), pPhysicsCScaled(2), simpleScale(0), simpleScale(1), simpleScale(2), (int)DiBj.rows(), (int)DiBj.cols());
+                    else
+                        FPolynomialFill3D(DiBj, pPhysicsCScaled(0), pPhysicsCScaled(1), pPhysicsCScaled(2), simpleScale(0), simpleScale(1), simpleScale(2), (int)DiBj.rows(), (int)DiBj.cols());
+                }
+                else
+                {
+                    tPoint simpleScale = cellMajorHBox[iCell];
+                    if (!settings.baseSettings.anisotropicLengths)
+                    {
+                        if constexpr (dim == 2)
+                            simpleScale({0, 1}).setConstant(simpleScale({0, 1}).array().maxCoeff());
+                        else
+                            simpleScale.setConstant(simpleScale.array().maxCoeff());
+                    }
+                    // std::cout << simpleScale.transpose() << std::endl;
+                    tPoint pPhysicsCMajor = cellMajorCoord[iCell].transpose() * pPhysicsC;
+                    tPoint pPhysicsCScaled = pPhysicsCMajor.array() / simpleScale.array();
+                    if constexpr (dim == 2)
+                        FPolynomialFill2D(DiBj, pPhysicsCScaled(0), pPhysicsCScaled(1), pPhysicsCScaled(2), simpleScale(0), simpleScale(1), simpleScale(2), DiBj.rows(), DiBj.cols());
+                    else
+                        FPolynomialFill3D(DiBj, pPhysicsCScaled(0), pPhysicsCScaled(1), pPhysicsCScaled(2), simpleScale(0), simpleScale(1), simpleScale(2), DiBj.rows(), DiBj.cols());
+                    tGPoint dXijdxi = cellMajorCoord[iCell];
+                    ConvertDiffsLinMap<dim>(DiBj, dXijdxi);
+                }
+
+                if (flag == 0)
+                {
+                    auto baseMoment = cellBaseMoment[iCell];
+                    DiBj(0, Eigen::all) -= baseMoment.transpose();
+                }
+                if (flag == 2)
+                {
+                    DiBj(0, Eigen::all) -= cellBaseMomentXY[iCell].transpose();
+                }
             }
         }
 
@@ -380,24 +474,21 @@ namespace DNDS::CFV
          * if iFace < 0, then seen as cell int points; if iG < 1, then seen as center
          * @todo : divide GetIntPointDiffBaseValue into different calls
          * @warning maxDiff is max(diffList) + 1 not len(difflist)
-         * @todo:  //TODO add support for rotational periodic boundary!
          */
         template <class TList>
         Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic>
         GetIntPointDiffBaseValue(
             index iCell, index iFace, rowsize if2c, int iG,
             TList &&diffList = Eigen::all,
-            uint8_t maxDiff = UINT8_MAX)
+            uint8_t maxDiff = UINT8_MAX, int xyVer = 0)
         {
             if (iFace >= 0)
             {
                 maxDiff = std::min(maxDiff, faceAtr[iFace].NDIFF);
                 if (if2c < 0)
                     if2c = CellIsFaceBack(iCell, iFace) ? 0 : 1;
-                if (settings.cacheDiffBase && maxDiff <= settings.cacheDiffBaseSize)
+                if (settings.cacheDiffBase && maxDiff <= settings.cacheDiffBaseSize && !xyVer)
                 {
-                    // auto gFace = this->GetFaceQuad(iFace);
-
                     if (iG >= 0)
                     {
                         return faceDiffBaseCache(iFace, iG + (faceDiffBaseCache.RowSize(iFace) / 2) * if2c)(
@@ -415,17 +506,16 @@ namespace DNDS::CFV
                 else
                 {
                     // Actual computing:
-                    ///@todo //!!!!TODO: take care of periodic case
                     Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic> dbv;
                     dbv.resize(maxDiff, cellAtr[iCell].NDOF);
-                    FDiffBaseValue(dbv, GetFaceQuadraturePPhysFromCell(iFace, iCell, if2c, iG), iCell, iFace, iG, 0);
+                    FDiffBaseValue(dbv, GetFaceQuadraturePPhysFromCell(iFace, iCell, if2c, iG), iCell, iFace, iG, xyVer ? 2 : 0);
                     return dbv(std::forward<TList>(diffList), Eigen::seq(Eigen::fix<1>, Eigen::last));
                 }
             }
             else
             {
                 maxDiff = std::min(maxDiff, cellAtr[iCell].NDIFF);
-                if (settings.cacheDiffBase && maxDiff <= settings.cacheDiffBaseSize)
+                if (settings.cacheDiffBase && maxDiff <= settings.cacheDiffBaseSize && !xyVer)
                 {
                     if (iG >= 0)
                     {
@@ -442,7 +532,7 @@ namespace DNDS::CFV
                 {
                     Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic> dbv;
                     dbv.resize(maxDiff, cellAtr[iCell].NDOF);
-                    FDiffBaseValue(dbv, GetCellQuadraturePPhys(iCell, iG), iCell, -1, iG, 0);
+                    FDiffBaseValue(dbv, GetCellQuadraturePPhys(iCell, iG), iCell, -1, iG, xyVer ? 2 : 0);
                     return dbv(std::forward<TList>(diffList), Eigen::seq(Eigen::fix<1>, Eigen::last));
                 }
             }

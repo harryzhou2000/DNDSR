@@ -8,8 +8,12 @@
 - [Variational Reconstruction](#variational-reconstruction)
   - [Functional Design:](#functional-design)
     - [Selecting Inner Product](#selecting-inner-product)
+      - [X-Y aligned from Pan:](#x-y-aligned-from-pan)
+      - [Pre-Isotropic from Huang:](#pre-isotropic-from-huang)
+      - [DNDSR's isotropic inner-product](#dndsrs-isotropic-inner-product)
     - [Other Forms](#other-forms)
   - [Reconstruction Matrices](#reconstruction-matrices)
+  - [Projection of Parametric Bases](#projection-of-parametric-bases)
 
 <!-- /code_chunk_output -->
 
@@ -44,9 +48,7 @@ $$
 where 
 - $w_g$ is Geometric Weight, which could well be dimensioned. An original choice is to use $w_g=S_f^{-1}$, where $S_f$ is area of $f$. 
 - $w_d$ is Derivative Weight, which is defined to be *dimensionless* here.
-- $\mathcal{D}_p u$ is a tensor-like (covariance only in linear transformation of space from
-, no curvilinear) variable representing the derivatives of $u$ , for
-example, the Cartesian components:
+- $\mathcal{D}_p u$ is a tensor-like (covariance only in linear transformation of space from, no curvilinear) variable representing the derivatives of $u$ , for example, the Cartesian components:
 $$
 [\mathcal{D}_3 u]_{ijk}
 \equiv
@@ -72,7 +74,7 @@ $$
 =d_f^6 \partial_{nnn}u \partial_{nnn}v
 $$
 
-X-Y aligned from Pan:
+#### X-Y aligned from Pan:
 
 $$
 \begin{aligned}
@@ -88,7 +90,7 @@ $$
 \end{aligned}
 $$
 
-Pre-Isotropic from Huang:
+#### Pre-Isotropic from Huang:
 
 $$
 \begin{aligned}
@@ -104,9 +106,22 @@ $$
 \end{aligned}
 $$
 
+Note that the inner-product operators here have dimensionless output.
+
+#### DNDSR's isotropic inner-product
+
+The actual inner-product used in DNDSR by default:
+$$
+\langle \mathcal{D}_3 u,\mathcal{D}_3 v\rangle _{f,3}
+=d_f^6 
+\sum_{i,j,k=1,2,3}\partial_{ijk}u \partial_{ijk}v
+$$
+where
+- Apart from the length scale $d_f$, the other parts are the simple contraction of two [3,3,3] tensors.
+
 ### Other Forms
 
-Could be re-written to:
+The functional could be re-written to:
 
 $$
 I_f=w_g(f)\int_f{d\Gamma
@@ -153,3 +168,30 @@ A_{mn}^i u_i^n = \sum_{j\in S_i}{
         \right)}
 $$
 
+## Projection of Parametric Bases
+
+In one cell $i$, we have bases $\varphi^l$ and $\psi^l$, for example $\varphi^l$ are x-y bases and  $\psi^l$ are $\xi$-$\eta$ bases.
+
+One projection is to find coefficients that
+$$
+\varphi^l \approx \sum_{m}P_{lm}\psi^m
+$$
+with condition that
+$$
+\left\langle \sum_{m}P_{lm}\psi^m - \varphi^l , \psi^n \right\rangle=0
+,\ \ \forall n
+$$
+
+So the problem becomes
+$$
+\sum_{m}P_{lm}\langle\psi^m,\psi^n\rangle=
+\langle\varphi^l, \psi^n\rangle
+,\ \ \forall n
+$$
+
+In matrix form:
+$$
+[P_{lm}]_{l,m} [\langle\psi^m,\psi^n\rangle]_{m,n}=
+[\langle\varphi^l, \psi^n\rangle]_{l,n}
+,\ \ \forall n
+$$

@@ -15,6 +15,8 @@ namespace DNDS::CFV
     using t3Vecs = decltype(t3VecsPair::father);
     using t3VecPair = Geom::tCoordPair;
     using t3Vec = Geom::tCoord;
+    using t3MatsPair = DNDS::ArrayPair<DNDS::ArrayEigenUniMatrixBatch<3, 3>>;
+    using t3Mats = decltype(t3MatsPair::father);
     using t3MatPair = DNDS::ArrayPair<DNDS::ArrayEigenMatrix<3, 3>>;
     using t3Mat = decltype(t3MatPair::father);
 
