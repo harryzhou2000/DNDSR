@@ -29,6 +29,7 @@ namespace DNDS::Euler
 
         index CLconvergeLongWindow = 100;
         index CLconvergeLongThreshold = 1e-4;
+        bool CLconvergeLongStrictAoA = false;
 
         DNDS_NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_ORDERED_JSON(
             CLDriverSettings,
@@ -37,7 +38,7 @@ namespace DNDS::Euler
             refArea, refDynamicPressure, targetCL,
             CLIncrementRelax, thresholdTargetRatio,
             nIterStartDrive, nIterConvergeMin, CLconvergeThreshold, CLconvergeWindow,
-            CLconvergeLongThreshold, CLconvergeLongWindow)
+            CLconvergeLongThreshold, CLconvergeLongWindow, CLconvergeLongStrictAoA)
     };
 
     class CLDriver
@@ -125,7 +126,8 @@ namespace DNDS::Euler
                     lastAOA = AOA;
                     lastCL = curCL;
                     AOA = AOANew;
-                    CLAtTargetAcc = 0;
+                    if (settings.CLconvergeLongStrictAoA)
+                        CLAtTargetAcc = 0;
                     _ClearCL();
 
                     if (mpi.rank == 0)
