@@ -12,7 +12,17 @@ export UCX_TLS=sm,self,ud_verbs
 export DNDS_ARRAY_STRATEGY_USE_IN_SITU=0
 export DNDS_USE_STRONG_SYNC_WAIT=0
 # export DNDS_USE_ASYNC_ONE_BY_ONE=1
+# export DNDS_DISABLE_ASYNC_MPI=1
+
+printenv | grep OMP
+printenv | grep PATH
+
+echo "JOBID: ${SLURM_JOB_ID}"
+mkdir -p ./.job_record
+echo $SB_SLURM_OUT_FILE > ./.job_record/${SLURM_JOB_ID}
+
 which mpirun
+
 pwd
 ls -la $1
 mpirun "$@"

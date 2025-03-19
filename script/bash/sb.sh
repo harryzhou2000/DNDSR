@@ -25,7 +25,9 @@ done
 
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 
-runCmd="sbatch -N$NNode -J $JName -o $JName.txt ${SCRIPT_DIR}/srunApp.sh $PostArgs"
+export SB_SLURM_OUT_FILE=$(pwd)/${JName}.txt
+
+runCmd="sbatch -N$NNode -J $JName -o $SB_SLURM_OUT_FILE ${SCRIPT_DIR}/srunApp.sh $PostArgs"
 echo $runCmd
 echo "type yes to run"
 read diryes
