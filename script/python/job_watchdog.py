@@ -69,7 +69,10 @@ class Watcher:
                     if last_size == this_size and last_size >= 0:
                         self.stall_records[f_record] += 1
 
-        self.stall_records = {key: self.stall_records[key] for key in sq_jobs.keys()}
+        self.stall_records = {
+            key: self.stall_records[key]
+            for key in set(sq_jobs.keys()).union(self.stall_records.keys())
+        }
 
     def clean_jobs(self):
         for id, n_stall in self.stall_records.items():
