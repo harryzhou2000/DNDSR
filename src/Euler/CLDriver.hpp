@@ -28,7 +28,7 @@ namespace DNDS::Euler
         index CLconvergeWindow = 10;
 
         index CLconvergeLongWindow = 100;
-        index CLconvergeLongThreshold = 1e-4;
+        real CLconvergeLongThreshold = 1e-4;
         bool CLconvergeLongStrictAoA = false;
 
         DNDS_NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_ORDERED_JSON(
@@ -92,6 +92,8 @@ namespace DNDS::Euler
         {
             _PushCL(CL);
             real curCLErr = std::abs(settings.targetCL - CL);
+            // if (mpi.rank == 0)
+            //     std::cout << fmt::format("curCLErr {}, n = {}", curCLErr, CLAtTargetAcc) << std::endl;
             if (curCLErr <= settings.CLconvergeLongThreshold)
                 CLAtTargetAcc++;
             else
