@@ -31,7 +31,7 @@ function(dnds_add_lib LIBNAME CPPS LINKS PCH_TARGET SHARED FAST)
     if ( SHARED )
         add_library(${LIBNAME} SHARED ${CPPS})
         # is this proper?
-        set_target_properties(${LIBNAME} PROPERTIES INSTALL_RPATH "$ORIGIN") 
+        set_target_properties(${LIBNAME} PROPERTIES INSTALL_RPATH "$ORIGIN:$ORIGIN/dndsr_external") 
     else()
         add_library(${LIBNAME} STATIC ${CPPS})
     endif()
@@ -82,7 +82,7 @@ function(dnds_add_py_module LIBNAME CPPS LINKS PCH_TARGET SHARED FAST)
     endif()
         
     pybind11_add_module(${LIBNAME} MODULE ${CPPS})
-    set_target_properties(${LIBNAME} PROPERTIES INSTALL_RPATH "$ORIGIN")
+    set_target_properties(${LIBNAME} PROPERTIES INSTALL_RPATH "$ORIGIN:$ORIGIN/dndsr_external")
     
     target_include_directories(${LIBNAME} PRIVATE ${DNDS_EXTERNAL_INCLUDES})
     target_include_directories(${LIBNAME} PRIVATE ${DNDS_INCLUDES})

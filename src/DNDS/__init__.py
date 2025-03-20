@@ -8,17 +8,24 @@ def _pre_import():
     DNDSR_bin_dir = os.path.realpath(
         os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "bin")
     )
+    DNDSR_libext_dir = os.path.realpath(
+        os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib", "dndsr_external")
+    )
     DNDSR_lib_dir = os.path.realpath(
         os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib")
     )
     if os.name == "posix":
-        CDLL(os.path.join(DNDSR_bin_dir, "libfmt.so"))
-
-        CDLL(os.path.join(DNDSR_lib_dir, "libz.so"))
-        CDLL(os.path.join(DNDSR_lib_dir, "libhdf5.so"))
-        CDLL(os.path.join(DNDSR_lib_dir, "libcgns.so"))
-        CDLL(os.path.join(DNDSR_lib_dir, "libmetis.so"))
-        CDLL(os.path.join(DNDSR_lib_dir, "libparmetis.so"))
+        # controlled from CMake side to be compatible with them all
+        # as we might be using a very new g++/clang++ with very new C++ runtime library
+        # that could be incompatible with what libfmt.so finds first
+        CDLL(os.path.join(DNDSR_libext_dir, "libstdc++.so")) 
+        
+        CDLL(os.path.join(DNDSR_libext_dir, "libfmt.so"))
+        CDLL(os.path.join(DNDSR_libext_dir, "libz.so"))
+        CDLL(os.path.join(DNDSR_libext_dir, "libhdf5.so"))
+        CDLL(os.path.join(DNDSR_libext_dir, "libcgns.so"))
+        CDLL(os.path.join(DNDSR_libext_dir, "libmetis.so"))
+        CDLL(os.path.join(DNDSR_libext_dir, "libparmetis.so"))
 
         # print(f"here {DNDSR_bin_dir}")
         # os.system(f"ls -la {DNDSR_bin_dir}")
@@ -26,7 +33,7 @@ def _pre_import():
         # os.system(f"ldd { name }")
         # while True:
         #     pass
-        CDLL(os.path.join(DNDSR_bin_dir, "libdnds_shared.so"))
+        CDLL(os.path.join(DNDSR_lib_dir, "libdnds_shared.so"))
         # os.environ["LD_LIBRARY_PATH"] = (
         #     DNDSR_bin_dir + os.pathsep + os.environ.get("LD_LIBRARY_PATH", "")
         # )

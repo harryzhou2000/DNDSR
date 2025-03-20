@@ -27,6 +27,22 @@ enable_language(C) #! building C sub-projects
 
 message(STATUS "CMAKE_CXX_COMPILER_ID=${CMAKE_CXX_COMPILER_ID}")
 
+if(UNIX)
+    if(NOT DEFINED LIBSTDCXX_PATH)
+        execute_process(
+            COMMAND ${CMAKE_CXX_COMPILER} -print-file-name=libstdc++.so
+            OUTPUT_VARIABLE LIBSTDCXX_PATH
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+        )
+    endif()
+
+    if(EXISTS "${LIBSTDCXX_PATH}")
+        file(INSTALL "${LIBSTDCXX_PATH}" DESTINATION ${CMAKE_INSTALL_PREFIX}/DNDSR/lib/dndsr_external FOLLOW_SYMLINK_CHAIN)
+    else()
+        message(FATAL_ERROR "libstdc++.so [${LIBSTDCXX_PATH}] told by compiler not found!")
+    endif()
+endif()
+
 set(DNDS_CFD_EXTERNALS_INSTALL  ${CMAKE_SOURCE_DIR}/external/cfd_externals/install CACHE PATH "path to cfd_externals's install")
 
 set(DNDS_CFD_EXTERNALS_LIB ${DNDS_CFD_EXTERNALS_INSTALL}/lib)
@@ -274,7 +290,7 @@ find_path(EXTERNAL_DOXYGEN_AWESOME doxygen-awesome.css PATHS
 
 set(PYBIND11_FINDPYTHON ON)
 add_subdirectory("${DNDS_EXTERNAL_INCLUDE_PYBIND11}/.." "${CMAKE_BINARY_DIR}/pybind11")
-set(FMT_LIB_DIR "DNDSR/bin")
+set(FMT_LIB_DIR "DNDSR/lib/dndsr_external")
 set(FMT_INC_DIR "DNDSR/include")
 set(FMT_CMAKE_DIR "DNDSR/lib/cmake/fmt")
 set(FMT_PKGCONFIG_DIR "DNDSR/lib/pkgconfig")
@@ -357,7 +373,7 @@ endforeach()
 
 # now DNDS_EXTERNAL_LIBS contains externally built libraries
 foreach(LIB ${DNDS_EXTERNAL_LIBS})
-    file(INSTALL ${LIB} DESTINATION ${CMAKE_INSTALL_PREFIX}/DNDSR/lib FOLLOW_SYMLINK_CHAIN)
+    file(INSTALL ${LIB} DESTINATION ${CMAKE_INSTALL_PREFIX}/DNDSR/lib/dndsr_external FOLLOW_SYMLINK_CHAIN)
 endforeach()
 
 list(REMOVE_DUPLICATES DNDS_EXTERNAL_LIBS_DIRS)

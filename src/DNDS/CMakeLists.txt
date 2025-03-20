@@ -48,7 +48,7 @@ dnds_add_lib(${LIBNAME}_shared "${CPPS}" "${LINKS}" "${DNDS_PCH_TARGETS_FAST}"
     ON ON)  # SHARED,FAST
 
 install(TARGETS ${LIBNAME}_shared;${LIBNAME}
-    LIBRARY DESTINATION "DNDSR/bin"
+    LIBRARY DESTINATION "DNDSR/lib"
     ARCHIVE DESTINATION "DNDSR/lib"
 )
 
