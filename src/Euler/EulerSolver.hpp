@@ -636,18 +636,40 @@ namespace DNDS::Euler
                 {
 
                     auto key = nlohmann::ordered_json::json_pointer(overwriteKeys[i].c_str());
-                    std::string valString =
-                        fmt::format(R"({{
-"__val_entry": {}
-}})",
-                                    overwriteValues[i]);
                     try
                     {
+                        std::string valString =
+                            fmt::format(R"({{
+    "__val_entry": {}
+    }})",
+                                        overwriteValues[i]);
                         auto valDoc = nlohmann::ordered_json::parse(valString, nullptr, true, true);
                         if (mpi.rank == 0)
                             log() << "JSON: overwrite key: " << key << std::endl
                                   << "JSON: overwrite val: " << valDoc["__val_entry"] << std::endl;
                         gSetting[key] = valDoc["__val_entry"];
+                    }
+                    catch (const nlohmann::ordered_json::parse_error &e)
+                    {
+                        try
+                        {
+                            std::string valString =
+                                fmt::format(R"({{
+"__val_entry": "{}"
+}})",
+                                            overwriteValues[i]);
+                            auto valDoc = nlohmann::ordered_json::parse(valString, nullptr, true, true);
+                            if (mpi.rank == 0)
+                                log() << "JSON: overwrite key: " << key << std::endl
+                                      << "JSON: overwrite val: " << valDoc["__val_entry"] << std::endl;
+                            gSetting[key] = valDoc["__val_entry"];
+                        }
+                        catch (const std::exception &e)
+                        {
+                            std::cerr << e.what() << "\n";
+                            std::cerr << overwriteValues[i] << "\n";
+                            DNDS_assert(false);
+                        }
                     }
                     catch (const std::exception &e)
                     {
