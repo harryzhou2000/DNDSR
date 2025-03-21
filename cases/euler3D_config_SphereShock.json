@@ -34,7 +34,7 @@
         "nDataOut": 100,
         "nDataOutCInternal": 100,
         "nDataOutInternal": 1000000000,
-        "tDataOut": 20e-3,
+        "tDataOut": 40e-3,
         "dataOutAtInit": true
     },
     "implicitCFLControl": {
@@ -50,8 +50,8 @@
         "uniqueStamps": false,
         "meshDirectBisect": 0,
         "meshRotZ": 0.0,
-        "meshFile": "../data/mesh/UniBuf3D_64.cgns",
-        "outPltName": "../data/outUnsteady/SphereShock/Test_HQMOPT_RM2/test0",
+        "meshFile": "../data/mesh/UniBuf3D_128.cgns",
+        "outPltName": "../data/outUnsteady/SphereShock/Test_HQMOPT_smallDist_128/test0",
         "outPltMode": 1,
         "readMeshMode": 0,
         "outPltTecplotFormat": false,
@@ -123,7 +123,7 @@
         }
     },
     "linearSolverControl": {
-        "jacobiCode": 0,
+        "jacobiCode": 2,
         "sgsIter": 0,
         "sgsWithRec": 0,
         "nSgsConsoleCheck": 100,
@@ -142,7 +142,7 @@
     "eulerSettings": {
         "ignoreSourceTerm": true,
         "useScalarJacobian": true,
-        "riemannSolverType": "Roe_M2",
+        "riemannSolverType": "Roe_M1",
         "rsMeanValueEig": 1,
         "usePrimGradInVisFlux": 0,
         "nCentralSmoothStep": 0,
@@ -200,7 +200,7 @@
                     "   theta *= -1; ",
                     "var rmax := 0.8; ",
                     // "rmax += sin(12*phi) * sin(8 * theta) * 0.05; ",
-                    "rmax += cos(16*phi) * cos(16*sin(phi)*theta) * 0.1; ",
+                    "rmax += cos(32*phi) * cos(32*sin(phi)*theta) * 0.05; ",
                     "if(r <= rmax) ",
                     "   inRegion := 1; ",
                     "UPrim[0] := 20; ",

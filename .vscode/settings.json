@@ -180,7 +180,9 @@
         "sparselu": "cpp",
         "sparse": "cpp",
         "resumable": "cpp",
-        "cassert": "cpp"
+        "cassert": "cpp",
+        "expected": "cpp",
+        "stdfloat": "cpp"
     },
     "cSpell.words": [
         "Bary",
