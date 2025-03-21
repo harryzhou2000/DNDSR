@@ -49,6 +49,13 @@
         "meshScale": 6.28318530717958647692528676,
         "meshDirectBisect": 0,
         "meshFile": "../data/mesh/Uniform64_3D_Periodic.cgns",
+        "meshPartitionOptions": {
+            "metisType": "KWAY",
+            "metisUfactor": 3, // using strict balancing
+            "metisSeed": 0,
+            "edgeWeightMethod": 0,
+            "metisNcuts": 3
+        },
         "outPltName": "../data/outUnsteady/TGV/Uniform64B0_Test/out",
         "outPltMode": 1,
         "readMeshMode": 0,
@@ -62,9 +69,15 @@
         "hdfChunkSize": 131072,
         // "hdfChunkSize": 1048576,
         "allowAsyncPrintData": false,
-        "restartWriter": "H5",
-        "restartWriterH5Deflate": 7,
-        "restartWriterH5Chunk": 65536,
+        "restartWriter": {
+            "type": "H5",
+            "hdfDeflateLevel": 0,
+            "hdfChunkSize": 0,
+            "hdfCollOnMeta": true,
+            "hdfCollOnData": false,
+            "jsonBinaryDeflateLevel": 5,
+            "jsonUseCodecOnUInt8": true
+        },
         "_tail": 0
     },
     "implicitReconstructionControl": {
