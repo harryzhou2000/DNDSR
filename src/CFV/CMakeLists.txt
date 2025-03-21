@@ -36,9 +36,9 @@ _explicit_instantiation/VariationalReconstruction_LimiterProcedure_3_D.cpp
 )
 
 dnds_add_lib(${LIBNAME}        "${CPPS}" "${LINKS}" "${DNDS_PCH_TARGETS_FAST}"
-            OFF ON) # SHARED, FAST
+            OFF ON ON) # SHARED, FAST, EXCLUDE
 
 dnds_add_lib(${LIBNAME}_shared "${CPPS}" "${LINKS}" "${DNDS_PCH_TARGETS_FAST}"
-            ON ON) # SHARED, FASToo
+            ON ON ON) # SHARED, FASToo, EXCLUDE
 
 

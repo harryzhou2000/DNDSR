@@ -103,7 +103,7 @@ set(DNDS_VERBOSE_BUILDING OFF CACHE BOOL "make the makefile verbose, overrides C
 set(DNDS_USE_CLANG_TIDY OFF CACHE BOOL "use clang-tidy")
 
 # for we need fmtlib to give a shared library
-set(BUILD_SHARED_LIBS ON CACHE BOOL "set by DNDS, keep it on!!!")
+set(BUILD_SHARED_LIBS ON CACHE BOOL "set by DNDS, not used for now")
 
 if(DNDS_RECORD_COMMIT)
     execute_process(COMMAND git rev-parse HEAD OUTPUT_FILE ${CMAKE_BINARY_DIR}/commitID.txt WORKING_DIRECTORY ${PROJECT_SOURCE_DIR} TIMEOUT 120 RESULT_VARIABLE RET)
@@ -183,23 +183,23 @@ set(CMAKE_USE_RELATIVE_PATHS ON)
 # ##########################################
 find_library(DNDS_EXTERNAL_LIB_BACKTRACE NAMES backtrace)
 # need zlibstatic first to find the static version on windows
-find_library(DNDS_EXTERNAL_LIB_ZLIB NAMES libz.so zlibstatic zlib z z_D libzlibstatic.a
+find_library(DNDS_EXTERNAL_LIB_ZLIB NAMES libz.so  zlibstatic z z_D
     PATHS "${DNDS_CFD_EXTERNALS_LIB}" 
     REQUIRED)
-find_library(DNDS_EXTERNAL_LIB_HDF5 NAMES libhdf5.so hdf5.dll hdf5 
+find_library(DNDS_EXTERNAL_LIB_HDF5 NAMES libhdf5.so libhdf5.lib hdf5 
     PATHS "${DNDS_CFD_EXTERNALS_LIB}" 
     REQUIRED)
 # find_library(DNDS_EXTERNAL_LIB_HDF5_HL NAMES libhdf5_hl.a hdf5_hl PATHS 
 #     "${PROJECT_SOURCE_DIR}/external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}" 
 #     "${PROJECT_SOURCE_DIR}/external/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}/lib"
 #      REQUIRED)
-find_library(DNDS_EXTERNAL_LIB_CGNS NAMES libcgns.so cgns.dll cgns 
+find_library(DNDS_EXTERNAL_LIB_CGNS NAMES libcgns.so cgns.lib cgns 
     PATHS "${DNDS_CFD_EXTERNALS_LIB}"
     REQUIRED)
-find_library(DNDS_EXTERNAL_LIB_METIS NAMES libmetis.so metis.dll metis 
+find_library(DNDS_EXTERNAL_LIB_METIS NAMES libmetis.so metis.lib metis 
     PATHS "${DNDS_CFD_EXTERNALS_LIB}"
     REQUIRED)
-find_library(DNDS_EXTERNAL_LIB_PARMETIS NAMES libparmetis.so parmetis.dll parmetis 
+find_library(DNDS_EXTERNAL_LIB_PARMETIS NAMES libparmetis.so parmetis.lib parmetis 
     PATHS "${DNDS_CFD_EXTERNALS_LIB}"
     REQUIRED)
 # find_library(DNDS_EXTERNAL_LIB_TECIO tecio PATHS 
@@ -294,7 +294,16 @@ set(FMT_LIB_DIR "DNDSR/lib/dndsr_external")
 set(FMT_INC_DIR "DNDSR/include")
 set(FMT_CMAKE_DIR "DNDSR/lib/cmake/fmt")
 set(FMT_PKGCONFIG_DIR "DNDSR/lib/pkgconfig")
+set(DNDS_TEMP_BUILD_SHARED_LIBS ${BUILD_SHARED_LIBS})
+set(BUILD_SHARED_LIBS OFF CACHE INTERNAL "FOR FMT")
 add_subdirectory("${DNDS_EXTERNAL_INCLUDE_FMT}/.."      "${CMAKE_BINARY_DIR}/fmt")
+# set(BUILD_SHARED_LIBS ${DNDS_TEMP_BUILD_SHARED_LIBS} CACHE BOOL "set by DNDSR") #! you cannot move this out of internal
+set_target_properties(fmt PROPERTIES EXCLUDE_FROM_ALL OFF)
+# install(TARGETS fmt 
+#     LIBRARY DESTINATION "DNDSR/lib"
+#     ARCHIVE DESTINATION "DNDSR/lib"
+#     COMPONENT external)
+
 # add_subdirectory("${DNDS_EXTERNAL_INCLUDE_CPPTRACE}/../..")
 
 if(DNDS_EXTERNAL_INCLUDE_SUPERLU)
@@ -725,15 +734,16 @@ add_subdirectory(${CMAKE_SOURCE_DIR}/src/CFV)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/Euler)
 
 
-install(CODE "file(CREATE_LINK ${CMAKE_INSTALL_PREFIX}/DNDSR/bin ${CMAKE_SOURCE_DIR}/src/bin SYMBOLIC)")
-install(CODE "file(CREATE_LINK ${CMAKE_INSTALL_PREFIX}/DNDSR/lib ${CMAKE_SOURCE_DIR}/src/lib SYMBOLIC)")
+install(CODE "file(CREATE_LINK ${CMAKE_INSTALL_PREFIX}/DNDSR/bin ${CMAKE_SOURCE_DIR}/src/bin SYMBOLIC)" COMPONENT py)
+install(CODE "file(CREATE_LINK ${CMAKE_INSTALL_PREFIX}/DNDSR/lib ${CMAKE_SOURCE_DIR}/src/lib SYMBOLIC)" COMPONENT py)
 # if (SKBUILD_PROJECT_NAME)
 # # __init__.py actively linking libdnds_shared.so, 
 # # cannot link correct libstdc++.so (links to anaconda's)
 # # why?
 # message(WARNING "skipping .pyi generation")
 # else()
-install(CODE "execute_process(COMMAND bash ${CMAKE_SOURCE_DIR}/src/run-pybind11-stubgen.sh  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/src)")
+install(CODE "execute_process(COMMAND bash ${CMAKE_SOURCE_DIR}/src/run-pybind11-stubgen.sh  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/src)" 
+    COMPONENT py)
 # endif()
 
 set(EXE_SUFFIX "")
@@ -742,11 +752,14 @@ if (UNIX)
 endif()
 
 
-macro(ADD_EXE_APP EXES MAIN_DIR LIBS)
+function(ADD_EXE_APP EXES MAIN_DIR LIBS USE_EXCLUDE_FROM_ALL)
     message(STATUS "To add exes: ${EXES} with libs: ${LIBS}")
     foreach(EXE ${EXES})
         # add_executable(${EXE} app/external/${EXE}.cpp $<TARGET_OBJECTS:${OBJS}>)
         add_executable(${EXE} ${MAIN_DIR}/${EXE}.cpp)
+        if(USE_EXCLUDE_FROM_ALL)
+            set_target_properties(${EXE} PROPERTIES EXCLUDE_FROM_ALL ON)
+        endif()
         target_link_libraries(${EXE} PUBLIC ${LIBS})
         target_link_libraries(${EXE} PUBLIC ${DNDS_EXTERNAL_LIBS})
         target_include_directories(${EXE} PUBLIC ${DNDS_EXTERNAL_INCLUDES} PUBLIC ${DNDS_INCLUDES})
@@ -758,7 +771,7 @@ macro(ADD_EXE_APP EXES MAIN_DIR LIBS)
             set_property(TARGET ${EXE} PROPERTY CXX_COMPILER_LAUNCHER ${DNDS_CCACHE_EXEC})
         endif()
     endforeach()
-endmacro(ADD_EXE_APP)
+endfunction(ADD_EXE_APP)
 
 # In topolocical order of the dependency graph
 # euler_library
@@ -768,12 +781,12 @@ endmacro(ADD_EXE_APP)
 # dnds
 
 ## Mind That the TOPOLOGICAL ORDER should be obeyed!
-ADD_EXE_APP("${DNDS_APPS_EXTERNAL}" "app/external" ";")
-ADD_EXE_APP("${DNDS_APPS_DNDS}" "app/DNDS" "dnds;")
-ADD_EXE_APP("${DNDS_APPS_Solver}" "app/Solver" "dnds;")
-ADD_EXE_APP("${DNDS_APPS_Geom}" "app/Geom" "geom;dnds;")
-ADD_EXE_APP("${DNDS_APPS_CFV}" "app/CFV" "cfv;geom;dnds;")
-ADD_EXE_APP("${DNDS_APPS_Euler}" "app/Euler" "cfv;geom;dnds;")
+ADD_EXE_APP("${DNDS_APPS_EXTERNAL}" "app/external" ";" ON)
+ADD_EXE_APP("${DNDS_APPS_DNDS}" "app/DNDS" "dnds;" ON)
+ADD_EXE_APP("${DNDS_APPS_Solver}" "app/Solver" "dnds;" ON)
+ADD_EXE_APP("${DNDS_APPS_Geom}" "app/Geom" "geom;dnds;" ON)
+ADD_EXE_APP("${DNDS_APPS_CFV}" "app/CFV" "cfv;geom;dnds;" ON)
+ADD_EXE_APP("${DNDS_APPS_Euler}" "app/Euler" "cfv;geom;dnds;" ON)
 
 set(DNDS_Euler_Models_List
 NS=
@@ -796,30 +809,10 @@ foreach(item IN LISTS DNDS_Euler_Models_List)
     list(APPEND DNDS_APPS_Euler_Models "${EXE_NAME}")
     message(DEBUG "${keyval} --- ${value} --- ${EXE_NAME}")
     ## Mind That the TOPOLOGICAL ORDER should be obeyed!
-    ADD_EXE_APP("${EXE_NAME}" "app/Euler" "euler_library_${key};euler_library_fast_${key};cfv;geom;dnds;")
+    ADD_EXE_APP("${EXE_NAME}" "app/Euler" "euler_library_${key};euler_library_fast_${key};cfv;geom;dnds;" ON)
     ## This works because cmake detects dependency and reorders the libraries
     # ADD_EXE_APP("${EXE_NAME}" "app/Euler" "dnds;geom;cfv;euler_library_fast_${key};euler_library_${key};")
 endforeach()
-
-
-set(PYEXTS_EXTERNAL
-pybind11_basicTest
-)
-
-function(add_python_ext EXT_NAME CPPS)
-    pybind11_add_module(${EXT_NAME} ${CPPS})
-endfunction(add_python_ext)
-
-function(ADD_EXT_APP PYEXTS PREFIX)
-    foreach(PYEXT ${PYEXTS})
-        add_python_ext(${PYEXT} "${PREFIX}/${PYEXT}.cpp")
-        target_link_libraries(${PYEXT} PUBLIC ${DNDS_LIBS})
-        target_link_libraries(${PYEXT} PUBLIC ${DNDS_EXTERNAL_LIBS})
-        target_include_directories(${PYEXT} PUBLIC ${DNDS_EXTERNAL_INCLUDES} PUBLIC ${DNDS_INCLUDES})
-    endforeach(PYEXT)
-endfunction(ADD_EXT_APP)
-
-ADD_EXT_APP("${PYEXTS_EXTERNAL}" "app/external")
 
 
 
