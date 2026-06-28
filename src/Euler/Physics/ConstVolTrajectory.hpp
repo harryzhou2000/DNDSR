@@ -139,6 +139,14 @@ namespace DNDS::Euler::Reactive0D
             for (int k = 0; k < Ns1; ++k)
                 ret[Isp + k] = omega[k] * MW[k] * invS0;
 
+            // Energy source from species formation offsets.
+            // In zero-eBase mode, rhoE stores sensible energy only.
+            // The chemistry source must include the heat-of-formation:
+            //   dU[I4]/dt = -Σ (eOffset_k - eOffset_N₂) · dU[Isp+k]/dt
+            auto eOff = chem.mixtureInternalEnergyOffsetSpecies();
+            for (int k = 0; k < Ns1; ++k)
+                ret[I4] -= (eOff[k] - eOff[Ns1]) * ret[Isp + k];
+
             std::vector<double> jbuf(Ns * nVars, 0.0);
             chem.productionRatesAndJacobian(TCantera, pCantera, Uk[0], Uk[I4], 0.0, 0.0, 0.0, I4,
                                             Yv, Chemistry::SpeciesBufferView{omega.data(), Ns},
@@ -149,9 +157,14 @@ namespace DNDS::Euler::Reactive0D
                 for (int j = 0; j < nVars; ++j)
                     jac(Isp + k, j) = MW[k] * jbuf[k + j * Ns] * invS0;
 
+            // Energy row Jacobian: d(ret[I4])/d(Uk[j])
+            for (int j = 0; j < nVars; ++j)
+                for (int k = 0; k < Ns1; ++k)
+                    jac(I4, j) -= (eOff[k] - eOff[Ns1]) * jac(Isp + k, j);
+
             Eigen::VectorXd F = Uk - U - c.dtCode * ret;
             Eigen::MatrixXd Jn = Eigen::MatrixXd::Identity(nVars, nVars) - c.dtCode * jac;
-            for (int r = 0; r <= I4; ++r)
+            for (int r = 0; r < I4; ++r)
             {
                 Jn.row(r) = Eigen::VectorXd::Unit(nVars, r);
                 F[r] = 0;
@@ -163,6 +176,7 @@ namespace DNDS::Euler::Reactive0D
             Uk += dU;
             for (int k = Isp; k < nVars; ++k)
                 Uk[k] = std::max(Uk[k], 1e-30);
+            Uk[I4] = std::max(Uk[I4], 1e-30);
             if (finalStepNorm < options.newtonTolerance)
             {
                 converged = true;

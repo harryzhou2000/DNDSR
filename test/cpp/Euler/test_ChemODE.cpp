@@ -321,6 +321,11 @@ TEST_CASE("0D const-vol — implicit Euler, species-only Newton, T via PhysicsPr
             for (int k = 0; k < Ns1; k++)
                 ret[Isp + k] = omega[k] * MW[k];
 
+            // Energy source from species formation offsets
+            auto eOff = chem.mixtureInternalEnergyOffsetSpecies();
+            for (int k = 0; k < Ns1; k++)
+                ret[4] -= (eOff[k] - eOff[Ns1]) * ret[Isp + k];
+
             std::vector<double> jbuf(Ns * nVars, 0.0);
             JacobianBufferView Jv{jbuf.data(), Ns, nVars, Ns};
             chem.productionRatesAndJacobian(Tk, pk, Uk[0], Uk[4], 0., 0., 0., 4, Ykv, omegav, Jv);
@@ -330,9 +335,14 @@ TEST_CASE("0D const-vol — implicit Euler, species-only Newton, T via PhysicsPr
                 for (int j = 0; j < nVars; j++)
                     jac(Isp + k, j) = MW[k] * Jv(k, j);
 
+            // Energy row Jacobian: d(ret[4])/d(Uk[j])
+            for (int j = 0; j < nVars; j++)
+                for (int k = 0; k < Ns1; k++)
+                    jac(4, j) -= (eOff[k] - eOff[Ns1]) * jac(Isp + k, j);
+
             Eigen::VectorXd F = Uk - U - dt * ret;
             Eigen::MatrixXd Jn = Eigen::MatrixXd::Identity(nVars, nVars) - dt * jac;
-            for (int r : {0, 1, 2, 3, 4})
+            for (int r : {0, 1, 2, 3})
                 Jn.row(r) = Eigen::VectorXd::Unit(nVars, r), F[r] = 0;
 
             Eigen::PartialPivLU<Eigen::MatrixXd> lu(Jn);
@@ -347,6 +357,7 @@ TEST_CASE("0D const-vol — implicit Euler, species-only Newton, T via PhysicsPr
             for (int k = Isp; k < Isp + Ns1; k++)
                 if (Uk[k] < 0)
                     Uk[k] = 1e-30;
+            Uk[4] = std::max(Uk[4], 1e-30);
 
             Tk = getT(Uk);
             if (stepNorm < 1e-12)
@@ -599,7 +610,7 @@ TEST_CASE("Finite-difference Jacobian check at non-initial state")
 
             Eigen::VectorXd F = Uk - U - dt * ret;
             Eigen::MatrixXd Jn = Eigen::MatrixXd::Identity(nVars, nVars) - dt * jac;
-            for (int r : {0, 1, 2, 3, 4})
+            for (int r : {0, 1, 2, 3})
                 Jn.row(r) = Eigen::VectorXd::Unit(nVars, r), F[r] = 0;
 
             Eigen::VectorXd dU = Jn.partialPivLu().solve(-F);
@@ -607,6 +618,7 @@ TEST_CASE("Finite-difference Jacobian check at non-initial state")
             for (int k = Isp; k < Isp + Ns1; k++)
                 if (Uk[k] < 0)
                     Uk[k] = 1e-30;
+            Uk[4] = std::max(Uk[4], 1e-30);
             Tk = getT(Uk);
             if (dU.lpNorm<Eigen::Infinity>() < 1e-12)
                 break;
@@ -750,13 +762,14 @@ TEST_CASE("Finite-difference Jacobian check at non-initial state")
                     jac(Isp + k, j) = MW[k] * jbuf[k + j * Ns];
             Eigen::VectorXd F = Uk - U - dt * ret;
             Eigen::MatrixXd Jn = Eigen::MatrixXd::Identity(nVars, nVars) - dt * jac;
-            for (int r : {0, 1, 2, 3, 4})
+            for (int r : {0, 1, 2, 3})
                 Jn.row(r) = Eigen::VectorXd::Unit(nVars, r), F[r] = 0;
             Eigen::VectorXd dU = Jn.partialPivLu().solve(-F);
             Uk += dU;
             for (int k = Isp; k < Isp + Ns1; k++)
                 if (Uk[k] < 0)
                     Uk[k] = 1e-30;
+            Uk[4] = std::max(Uk[4], 1e-30);
             Tk = getT(Uk);
             if (dU.lpNorm<Eigen::Infinity>() < 1e-12)
                 break;
@@ -791,13 +804,14 @@ TEST_CASE("Finite-difference Jacobian check at non-initial state")
                     jac(Isp + k, j) = MW[k] * jbuf[k + j * Ns];
             Eigen::VectorXd F = Uk - U - dt * ret;
             Eigen::MatrixXd Jn = Eigen::MatrixXd::Identity(nVars, nVars) - dt * jac;
-            for (int r : {0, 1, 2, 3, 4})
+            for (int r : {0, 1, 2, 3})
                 Jn.row(r) = Eigen::VectorXd::Unit(nVars, r), F[r] = 0;
             Eigen::VectorXd dU = Jn.partialPivLu().solve(-F);
             Uk += dU;
             for (int k = Isp; k < Isp + Ns1; k++)
                 if (Uk[k] < 0)
                     Uk[k] = 1e-30;
+            Uk[4] = std::max(Uk[4], 1e-30);
             Tk = getT(Uk);
             if (dU.lpNorm<Eigen::Infinity>() < 1e-12)
                 break;

@@ -630,10 +630,12 @@ namespace DNDS::Euler
                 const std::string &mechFile = settings.reactiveFlow.mechanismFile;
                 if (!mechPath.empty() && !mechFile.empty() && !std::filesystem::path(mechFile).is_absolute())
                     pool->emplace_back(mechPath + "/" + mechFile, "", settings.idealGasProperty.U0, settings.idealGasProperty.rho0,
-                                       settings.reactiveFlow.TBase, settings.reactiveFlow.transportModel);
+                                       settings.reactiveFlow.TBase, settings.reactiveFlow.transportModel,
+                                       settings.reactiveFlow.useZeroEBase);
                 else
                     pool->emplace_back(mechFile, "", settings.idealGasProperty.U0, settings.idealGasProperty.rho0,
-                                       settings.reactiveFlow.TBase, settings.reactiveFlow.transportModel);
+                                       settings.reactiveFlow.TBase, settings.reactiveFlow.transportModel,
+                                       settings.reactiveFlow.useZeroEBase);
             }
             for (int t = 1; t < nThreads; ++t)
                 pool->push_back(std::move(*pool->at(0).clone()));

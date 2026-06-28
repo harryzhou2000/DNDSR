@@ -687,6 +687,7 @@ namespace DNDS::Euler
             real TBase = 0.0;
             int nSpeciesOverride = 0;
             bool useCellTWarmCache = true;
+            bool useZeroEBase = false;
 
             DNDS_DECLARE_CONFIG(ReactiveFlowSettings)
             {
@@ -703,6 +704,7 @@ namespace DNDS::Euler
                 DNDS_FIELD(TBase, "Base temperature [K] for reactive sensible-energy bookkeeping; <=0 uses the minimum per-species Cantera bound");
                 DNDS_FIELD(nSpeciesOverride, "Reserved; currently unused. Species count is read from mechanism.");
                 DNDS_FIELD(useCellTWarmCache, "Enable per-cell T warm-start cache for temperature inversion");
+                DNDS_FIELD(useZeroEBase, "Zero-eBase mode: store sensible energy as conservative variable, bridge to Cantera via eOffset");
             }
         } reactiveFlow; ///< Reactive flow settings.
 

@@ -152,7 +152,8 @@ namespace DNDS::Euler::Chemistry
                                 const std::string &phaseName,
                                 double U0, double rho0,
                                 double TBase = 0.0,
-                                std::string transportModel = "MixtureAveraged");
+                                std::string transportModel = "MixtureAveraged",
+                                bool useZeroEBase = true);
         ~ChemicalSource();
 
         // Non-copyable, movable
@@ -163,47 +164,47 @@ namespace DNDS::Euler::Chemistry
 
         /// Deep-clone for thread-safety: creates independent Cantera Solution objects
         /// from the same mechanism file (no shared state between instances).
-        std::unique_ptr<ChemicalSource> clone() const;
+        [[nodiscard]] std::unique_ptr<ChemicalSource> clone() const;
 
-        const std::string &mechanismFile() const { return mechanismFile_; }
-        const std::string &phaseName() const { return phaseName_; }
+        [[nodiscard]] const std::string &mechanismFile() const { return mechanismFile_; }
+        [[nodiscard]] const std::string &phaseName() const { return phaseName_; }
 
-        int nSpecies() const;
-        int nReactions() const;
-        const std::vector<std::string> &speciesNames() const;
-        const std::vector<double> &molecularWeights() const;
-        const std::vector<double> &speciesGasConstants() const;
+        [[nodiscard]] int nSpecies() const;
+        [[nodiscard]] int nReactions() const;
+        [[nodiscard]] const std::vector<std::string> &speciesNames() const;
+        [[nodiscard]] const std::vector<double> &molecularWeights() const;
+        [[nodiscard]] const std::vector<double> &speciesGasConstants() const;
 
         /** Reference velocity scale [m/s] used for code-unit conversion. */
-        double velScale() const;
+        [[nodiscard]] double velScale() const;
         /** Reference density scale [kg/m³] used for code-unit conversion. */
-        double rhoScale() const;
+        [[nodiscard]] double rhoScale() const;
         /** Configured transport model name. Only mixture-averaged is implemented. */
-        const std::string &transportModel() const;
-        bool isMixtureAveragedTransport() const;
+        [[nodiscard]] const std::string &transportModel() const;
+        [[nodiscard]] bool isMixtureAveragedTransport() const;
 
         // ---- Mixture thermodynamic properties (via Cantera EOS) ----
 
-        double mixtureR(ConstSpeciesBufferView Y) const;
-        double mixtureCp(double T, ConstSpeciesBufferView Y, double p = 101325) const;
-        double mixtureCv(double T, ConstSpeciesBufferView Y, double p = 101325) const;
-        double mixtureGamma(double T, ConstSpeciesBufferView Y, double p = 101325) const;
-        double speedOfSound(double T, ConstSpeciesBufferView Y, double p = 101325) const;
+        [[nodiscard]] double mixtureR(ConstSpeciesBufferView Y) const;
+        [[nodiscard]] double mixtureCp(double T, ConstSpeciesBufferView Y, double p = 101325) const;
+        [[nodiscard]] double mixtureCv(double T, ConstSpeciesBufferView Y, double p = 101325) const;
+        [[nodiscard]] double mixtureGamma(double T, ConstSpeciesBufferView Y, double p = 101325) const;
+        [[nodiscard]] double speedOfSound(double T, ConstSpeciesBufferView Y, double p = 101325) const;
 
         /** Specific internal energy [J/kg] at (T, p, Y). */
-        double mixtureIntEnergy(double T, ConstSpeciesBufferView Y, double p = 101325) const;
+        [[nodiscard]] double mixtureIntEnergy(double T, ConstSpeciesBufferView Y, double p = 101325) const;
 
         /** Specific enthalpy [J/kg] at (T, p, Y). */
-        double mixtureEnthalpy(double T, ConstSpeciesBufferView Y, double p = 101325) const;
+        [[nodiscard]] double mixtureEnthalpy(double T, ConstSpeciesBufferView Y, double p = 101325) const;
 
         /** Specific entropy [J/(kg*K)] at (T, p, Y). */
-        double mixtureEntropy(double T, ConstSpeciesBufferView Y, double p = 101325) const;
+        [[nodiscard]] double mixtureEntropy(double T, ConstSpeciesBufferView Y, double p = 101325) const;
 
         /** Lower valid thermodynamic temperature bound [K] reported by Cantera. */
-        double minTemperature() const;
+        [[nodiscard]] double minTemperature() const;
 
         /** Temperature [K] used for base internal-energy offsets. */
-        double baseTemperature() const;
+        [[nodiscard]] double baseTemperature() const;
 
         /** Print detailed mechanism info (species, reactions, base temperature, etc.) to stream. */
         void printInfo(std::ostream &os) const;
@@ -213,10 +214,10 @@ namespace DNDS::Euler::Chemistry
          * Uses Cantera setState_UV (Newton). Optional T_guess [K] as warm-start.
          * rtol is forwarded to Cantera's internal UV solve.
          */
-        double temperatureFromUV(double u, double v,
-                                 ConstSpeciesBufferView Y,
-                                 double T_guess = 0,
-                                 double rtol = 1e-12) const;
+        [[nodiscard]] double temperatureFromUV(double u, double v,
+                                               ConstSpeciesBufferView Y,
+                                               double T_guess = 0,
+                                               double rtol = 1e-12) const;
 
         // ---- Kinetics ----
 
@@ -284,8 +285,8 @@ namespace DNDS::Euler::Chemistry
 
         // ---- Transport ----
 
-        double viscosity(double T, double p, ConstSpeciesBufferView Y) const;
-        double thermalConductivity(double T, double p, ConstSpeciesBufferView Y) const;
+        [[nodiscard]] double viscosity(double T, double p, ConstSpeciesBufferView Y) const;
+        [[nodiscard]] double thermalConductivity(double T, double p, ConstSpeciesBufferView Y) const;
 
         /** Mixture-averaged species diffusivities [m²/s]. D must have nSpecies elements. */
         void speciesDiffusivity(double T, double p,
@@ -301,7 +302,7 @@ namespace DNDS::Euler::Chemistry
         void speciesBaseInternalEnergies(SpeciesBufferView eBase) const;
 
         /** Specific base internal energy per mass Σ Y_k·e_base,k [J/kg] (physical units). */
-        double mixtureBaseInternalEnergy(ConstSpeciesBufferView Y) const;
+        [[nodiscard]] double mixtureBaseInternalEnergy(ConstSpeciesBufferView Y) const;
 
         /** Whether the Cantera thermo phase uses an ideal-gas EOS. */
         bool isIdealGas() const;
@@ -312,7 +313,11 @@ namespace DNDS::Euler::Chemistry
         void massFractions(double rho, const double *rhoYK, int nTransported, SpeciesBufferView Y) const;
 
         /** Return read-only per-species base internal energies in code units (e_base,k/U0²). */
-        ConstSpeciesBufferView mixtureBaseInternalRhoESpecies() const;
+        [[nodiscard]] ConstSpeciesBufferView mixtureBaseInternalRhoESpecies() const;
+
+        /** Return read-only per-species energy offsets in code units (eOffset_k/U0²).
+         *  eBase_k + eOffset_k = e_cantera(T_min).  Non-zero only in zero-eBase mode. */
+        [[nodiscard]] ConstSpeciesBufferView mixtureInternalEnergyOffsetSpecies() const;
 
         /** Code-scaled volumetric base internal energy: rho · Σ Y_k · e_base,k / U0².
          *  Uses internal velScale() for code-unit conversion. */

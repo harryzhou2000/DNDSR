@@ -144,10 +144,12 @@ namespace DNDS::Euler::Chemistry
         std::vector<std::string> speciesNames;
         std::vector<double> mw;
         std::vector<double> invMw;
-        std::vector<double> Rk;        // species gas constants
-        std::vector<double> eBase;     // per-species base internal energy [J/kg] at TBase
-        std::vector<double> eBaseCode; // eBase / U0²
-        double TBase = 0.0;            // base/reference temperature [K]
+        std::vector<double> Rk;          // species gas constants
+        std::vector<double> eBase;       // per-species base internal energy [J/kg] at TBase
+        std::vector<double> eBaseCode;   // eBase / U0², code-scaled
+        std::vector<double> eOffset;     // per-species energy offset [J/kg] (bridging to Cantera)
+        std::vector<double> eOffsetCode; // eOffset / U0², code-scaled
+        double TBase = 0.0;              // base/reference temperature [K]
 
         double U0 = 1.0;      // reference velocity [m/s]
         double rho0 = 1.0;    // reference density [kg/m³]
@@ -155,10 +157,12 @@ namespace DNDS::Euler::Chemistry
         std::string transportModel = "MixtureAveraged";
         std::string transportModelNormalized = "mixtureaveraged";
         std::string transportModelCantera = "mixture-averaged";
+        bool useZeroEBase = false; // when true: eBase=0, eOffset=e_cantera(TBase)
 
         Impl(const std::string &mechanismFile, const std::string &phaseName,
-             double U0In, double rho0In, double TBaseIn, std::string transportModelIn)
-            : U0(U0In), rho0(rho0In), invU0sq(1.0 / (U0In * U0In))
+             double U0In, double rho0In, double TBaseIn, std::string transportModelIn,
+             bool useZeroEBaseIn = false)
+            : U0(U0In), rho0(rho0In), invU0sq(1.0 / (U0In * U0In)), useZeroEBase(useZeroEBaseIn)
         {
             auto &I = *this;
             I.transportModel = std::move(transportModelIn);
@@ -175,6 +179,8 @@ namespace DNDS::Euler::Chemistry
             I.Rk.resize(I.Ns);
             I.eBase.resize(I.Ns);
             I.eBaseCode.resize(I.Ns);
+            I.eOffset.resize(I.Ns);
+            I.eOffsetCode.resize(I.Ns);
             gas->getMolecularWeights(I.mw.data());
             I.TBase = TBaseIn > 0.0 ? TBaseIn : gas->minTemp(0);
             for (int k = 0; k < I.Ns; ++k)
@@ -196,6 +202,22 @@ namespace DNDS::Euler::Chemistry
             {
                 I.eBase[k] *= I.invMw[k];
                 I.eBaseCode[k] = I.eBase[k] * I.invU0sq;
+            }
+            // Zero-eBase mode: move base energy into offset, zero out eBase.
+            // mixtureBaseInternalRhoE / mixtureBaseInternalRhoERaw will return 0;
+            // temperatureFromUV adds the offset before calling Cantera so the UV
+            // solver sees the correct total internal energy.
+            if (I.useZeroEBase)
+            {
+                I.eOffset = I.eBase;
+                I.eOffsetCode = I.eBaseCode;
+                I.eBase.assign(I.Ns, 0.0);
+                I.eBaseCode.assign(I.Ns, 0.0);
+            }
+            else
+            {
+                I.eOffset.assign(I.Ns, 0.0);
+                I.eOffsetCode.assign(I.Ns, 0.0);
             }
 #else
             DNDS_assert_info(false, "ChemicalSource::Impl: Cantera not available");
@@ -442,6 +464,9 @@ namespace DNDS::Euler::Chemistry
             c.Rk = R.Rk;
             c.eBase = R.eBase;
             c.eBaseCode = R.eBaseCode;
+            c.eOffset = R.eOffset;
+            c.eOffsetCode = R.eOffsetCode;
+            c.useZeroEBase = R.useZeroEBase;
             c.TBase = R.TBase;
             c.transportModel = R.transportModel;
             c.transportModelNormalized = R.transportModelNormalized;
@@ -577,8 +602,10 @@ namespace DNDS::Euler::Chemistry
                                    const std::string &phaseName,
                                    double U0, double rho0,
                                    double TBase,
-                                   std::string transportModel)
-        : impl_(std::make_unique<Impl>(mechanismFile, phaseName, U0, rho0, TBase, std::move(transportModel))),
+                                   std::string transportModel,
+                                   bool useZeroEBase)
+        : impl_(std::make_unique<Impl>(mechanismFile, phaseName, U0, rho0, TBase,
+                                       std::move(transportModel), useZeroEBase)),
           mechanismFile_(mechanismFile), phaseName_(phaseName)
     {
         DNDS_assert(impl_);
@@ -675,14 +702,26 @@ namespace DNDS::Euler::Chemistry
     {
         DNDS_assert(impl_);
         impl_->setTPY(T, p, Y);
-        return impl_->gas_intEnergy_mass();
+        double e = impl_->gas_intEnergy_mass();
+        if (impl_->useZeroEBase)
+        {
+            for (int k = 0; k < impl_->Ns; ++k)
+                e -= Y[k] * impl_->eOffset[k];
+        }
+        return e;
     }
 
     double ChemicalSource::mixtureEnthalpy(double T, ConstSpeciesBufferView Y, double p) const
     {
         DNDS_assert(impl_);
         impl_->setTPY(T, p, Y);
-        return impl_->gas_enthalpy_mass();
+        double h = impl_->gas_enthalpy_mass();
+        if (impl_->useZeroEBase)
+        {
+            for (int k = 0; k < impl_->Ns; ++k)
+                h -= Y[k] * impl_->eOffset[k];
+        }
+        return h;
     }
 
     double ChemicalSource::mixtureEntropy(double T, ConstSpeciesBufferView Y, double p) const
@@ -720,10 +759,13 @@ namespace DNDS::Euler::Chemistry
         os << fmt::format("  Min temperature (Cantera): {:.6e} K\n", I.gas_minTemp());
         os << fmt::format("  Reference velocity U0:    {:.6e} m/s\n", I.U0);
         os << fmt::format("  Reference density rho0:   {:.6e} kg/m^3\n", I.rho0);
+        os << fmt::format("  Zero-eBase mode:          {}\n", I.useZeroEBase ? "yes (eBase=0, eOffset bridged)" : "no");
         os << fmt::format("  Species ({:d}):\n", I.Ns);
         for (int k = 0; k < I.Ns; ++k)
-            os << fmt::format("    [{:2d}] {:<16s}  MW={:.6e} kg/mol  Rk={:.6e} J/(kg*K)  eBase={:.6e} J/kg\n",
-                              k, I.speciesNames[k], I.mw[k], I.Rk[k], I.eBase[k]);
+            os << fmt::format("    [{:2d}] {:<16s}  MW={:.6e} kg/mol  Rk={:.6e} J/(kg*K)  eBase={:.6e} J/kg",
+                              k, I.speciesNames[k], I.mw[k], I.Rk[k], I.eBase[k])
+               << (I.useZeroEBase ? fmt::format("  eOffset={:.6e} J/kg", I.eOffset[k]) : "")
+               << "\n";
     }
 
     double ChemicalSource::speedOfSound(double T, ConstSpeciesBufferView Y, double p) const
@@ -747,9 +789,17 @@ namespace DNDS::Euler::Chemistry
         double Tinit = std::max(std::max(T_guess, impl_->TBase), impl_->gas_minTemp());
         double p_init = mixtureR(Y) * Tinit / v;
         impl_->gasT_setState_TP(Tinit, p_init);
+        // In zero-eBase mode, add per-species offset so Cantera sees total
+        // (not sensible) internal energy.  eBase_i + eOffset_i = e_cantera(TBase).
+        double u_total = u;
+        if (impl_->useZeroEBase)
+        {
+            for (int k = 0; k < impl_->Ns; ++k)
+                u_total += Y[k] * impl_->eOffset[k];
+        }
         try
         {
-            impl_->gasT_setState_UV(u, v, rtol);
+            impl_->gasT_setState_UV(u_total, v, rtol);
         }
         catch (std::exception &e)
         {
@@ -854,6 +904,13 @@ namespace DNDS::Euler::Chemistry
             {
                 du -= uBar[Ns1] * invMlast;
             }
+            // General eOffset correction: du = ∂e_stored/∂(rhoY_k) at fixed rhoE.
+            // e_cantera = e_stored + eOffset(Y), so the chain rule requires
+            // dT/d(rhoY_k) ∝ u_k - u_last - (eOffset_k - eOffset_last).
+            // Degenerates to no-op in the default mode where eOffset = 0.
+            du -= I.eOffset[k];
+            if (!skipAbsorb)
+                du += I.eOffset[Ns1];
             compositionEnergyDiff[k] = du;
             double dT_drY = dT_pre * du;
             // dP/d(rhoY_k) through temperature (p → rho*R*T, at constant ρ, R varies through Y)
@@ -998,7 +1055,11 @@ namespace DNDS::Euler::Chemistry
         impl_->setTPY(T, p, Y);
         impl_->gas_getPartialMolarEnthalpies(h.data);
         for (int k = 0; k < impl_->Ns; ++k)
+        {
             h[k] *= impl_->invMw[k];
+            if (impl_->useZeroEBase)
+                h[k] -= impl_->eOffset[k];
+        }
     }
 
     void ChemicalSource::speciesBaseInternalEnergies(SpeciesBufferView eBase) const
@@ -1071,6 +1132,12 @@ namespace DNDS::Euler::Chemistry
     {
         DNDS_assert(impl_);
         return {impl_->eBaseCode.data(), impl_->Ns};
+    }
+
+    ConstSpeciesBufferView ChemicalSource::mixtureInternalEnergyOffsetSpecies() const
+    {
+        DNDS_assert(impl_);
+        return {impl_->eOffsetCode.data(), impl_->Ns};
     }
 
     double ChemicalSource::mixtureBaseInternalRhoE(double rho, ConstSpeciesBufferView Y) const
