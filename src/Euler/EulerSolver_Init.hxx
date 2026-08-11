@@ -578,7 +578,7 @@ namespace DNDS::Euler
                 "residual CFL physical-residual norms were not captured before linear-solve preprocessing");
             const auto update = residualCFLDriver.Update(
                 residualCFLSampleL2, residualCFLSampleLInf,
-                config.implicitCFLControl.residual,
+                config.implicitCFLControl.residualCFLDriver,
                 config.vfvSettings.maxOrder);
             CFLNext = update.CFL;
             residualCFLXi = update.xi;

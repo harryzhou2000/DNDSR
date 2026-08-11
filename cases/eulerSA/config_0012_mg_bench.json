@@ -48,7 +48,7 @@
         "uniqueStamps": false,
         "meshRotZ": 0.0,
         "meshFile": "../data/mesh/NACA0012_H2.cgns",
-        "outPltName": "../data/out/NACA0012_H2-MGtest_3_VRes_AOA15.dir/x-ilu-4ilu",
+        "outPltName": "../data/out/NACA0012_H2-MGtest_R1_VRes_AOA15.dir/x-gmres5x1ilu",
         "outPltMode": 0,
         "readMeshMode": 0,
         "meshDirectBisect": 1,
@@ -144,7 +144,7 @@
         "jacobiCode": 2,
         "sgsIter": 0,
         "sgsWithRec": 0,
-        "gmresCode": 0,
+        "gmresCode": 1,
         "gmresScale": 2,
         "nGmresSpace": 5,
         "nGmresIter": 1,
@@ -214,6 +214,9 @@
         "wallDistPoissonP": 8,
         "ransUseQCR": 0,
         "ransSARotCorrection": 1,
+        "SAConfig": {
+            "productionLimit": 1e100
+        },
         "usePrimGradInVisFlux": 0,
         // "ransForce2nd": 1,
         "nCentralSmoothStep": 0,

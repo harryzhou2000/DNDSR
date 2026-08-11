@@ -436,7 +436,7 @@ namespace DNDS::Euler
                 bool useLocalDt = true;
                 int nSmoothDTau = 0;
                 real RANSRelax = 1;
-                ResidualCFLControl residual;
+                ResidualCFLControl residualCFLDriver;
                 DNDS_DECLARE_CONFIG(ImplicitCFLControl)
                 {
                     // clang-format off
@@ -456,7 +456,7 @@ namespace DNDS::Euler
                                DNDS::Config::range(0));
                     DNDS_FIELD(RANSRelax,              "RANS equation under-relaxation factor",
                                DNDS::Config::range(0.0, 1.0));
-                    config.field_section(&T::residual, "residual", "Residual-based CFL settings");
+                    config.field_section(&T::residualCFLDriver, "residualCFLDriver", "Residual-based CFL driver settings");
 
                     config.check("implicit CFL mode must be StaticRamp or ResidualBased", [](const T &s)
                     {
@@ -468,7 +468,7 @@ namespace DNDS::Euler
 
                 [[nodiscard]] real initialCFL() const
                 {
-                    return mode == ImplicitCFLMode::ResidualBased ? residual.CFLMin : CFL;
+                    return mode == ImplicitCFLMode::ResidualBased ? residualCFLDriver.CFLMin : CFL;
                 }
             } implicitCFLControl;
 
@@ -957,7 +957,7 @@ namespace DNDS::Euler
                 {
                     if (s.implicitCFLControl.mode != ImplicitCFLMode::ResidualBased)
                         return true;
-                    const auto &control = s.implicitCFLControl.residual;
+                    const auto &control = s.implicitCFLControl.residualCFLDriver;
                     const real resolved = control.CFLOrd > 0
                                               ? control.CFLOrd
                                               : real(1) / (real(2) * s.vfvSettings.maxOrder + real(1));

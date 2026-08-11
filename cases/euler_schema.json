@@ -489,9 +489,9 @@
                     "minimum": 0.0,
                     "maximum": 1.0
                 },
-                "residual": {
+                "residualCFLDriver": {
                     "type": "object",
-                    "description": "Residual-based CFL settings",
+                    "description": "Residual-based CFL driver settings",
                     "properties": {
                         "CFLMin": {
                             "type": "number",

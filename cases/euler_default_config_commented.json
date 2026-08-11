@@ -68,7 +68,7 @@
         "useLocalDt": true, // false to use uniform dTau
         "nSmoothDTau": 0, // number of smoothing steps for dTau
         "RANSRelax": 0.1,
-        "residual": {
+        "residualCFLDriver": {
             "CFLMin": 10.0, // baseline CFL and the first nonlinear iteration's CFL
             "CFLMax": 1e+100, // finite upper safety cap added by DNDSR
             "CFLOrd": 0.0, // 0 derives the divergence-limit CFL as 1/(2*p+1)

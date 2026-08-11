@@ -25,6 +25,7 @@ scipy
 sympy
 pandas
 matplotlib
+SciencePlots
 # h5py        — source build required, see scripts/install_python_deps.sh
 jsonschema
 pyyaml

@@ -802,7 +802,7 @@ namespace DNDS::Euler
                 const real normStart = MPI_Wtime();
                 eval.EvaluateNormL2LInf(
                     residualCFLSampleL2, residualCFLSampleLInf, cres,
-                    config.implicitCFLControl.residual.useVolumeWeightedL2);
+                    config.implicitCFLControl.residualCFLDriver.useVolumeWeightedL2);
                 residualCFLNormWallSecondsLocal += MPI_Wtime() - normStart;
                 residualCFLNormSamples++;
                 residualCFLSampleIter = iter;
