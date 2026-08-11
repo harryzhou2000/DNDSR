@@ -308,6 +308,13 @@
                         "curDtImplicit",
                         "curDtMin",
                         "CFLNow",
+                        "CFLNext",
+                        "residualCFLXi",
+                        "residualCFLXi2",
+                        "residualCFLXiInf",
+                        "residualCFLUseLInf",
+                        "residualCFLLimitedByMax",
+                        "residualCFLReferenceInitialized",
                         "nLimInc",
                         "alphaMinInc",
                         "nLimBeta",
@@ -426,6 +433,15 @@
             "type": "object",
             "description": "Implicit CFL settings",
             "properties": {
+                "mode": {
+                    "type": "string",
+                    "default": "StaticRamp",
+                    "description": "Implicit CFL update mode",
+                    "enum": [
+                        "StaticRamp",
+                        "ResidualBased"
+                    ]
+                },
                 "CFL": {
                     "type": "number",
                     "default": 10.0,
@@ -472,6 +488,47 @@
                     "description": "RANS equation under-relaxation factor",
                     "minimum": 0.0,
                     "maximum": 1.0
+                },
+                "residual": {
+                    "type": "object",
+                    "description": "Residual-based CFL settings",
+                    "properties": {
+                        "CFLMin": {
+                            "type": "number",
+                            "default": 10.0,
+                            "description": "First-iteration/baseline CFL in the residual law",
+                            "minimum": 2.2250738585072014e-308
+                        },
+                        "CFLMax": {
+                            "type": "number",
+                            "default": 1e+100,
+                            "description": "Upper safety cap for residual-driven CFL (DNDSR extension)",
+                            "minimum": 2.2250738585072014e-308
+                        },
+                        "CFLOrd": {
+                            "type": "number",
+                            "default": 0.0,
+                            "description": "Divergence-limit CFL; 0 derives 1/(2*p+1) from reconstruction degree",
+                            "minimum": 0.0
+                        },
+                        "alpha": {
+                            "type": "number",
+                            "default": 1.0,
+                            "description": "Residual-law CFL growth exponent",
+                            "minimum": 2.2250738585072014e-308
+                        },
+                        "pMGSafetyFactor": {
+                            "type": "number",
+                            "default": 1.0,
+                            "description": "Multiplicative safety factor n_sf in the pMG level term",
+                            "minimum": 2.2250738585072014e-308
+                        },
+                        "useVolumeWeightedL2": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "Volume-weight the physical-residual L2 norm (false follows the paper's algebraic norm)"
+                        }
+                    }
                 }
             }
         },

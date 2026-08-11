@@ -563,6 +563,43 @@ namespace DNDS::Euler
 
         Eigen::VectorFMTSafe<real, -1> res(nVars);
         eval.EvaluateNorm(res, cres, config.convergenceControl.normOrd, config.convergenceControl.useVolWiseResidual);
+
+        CFLNext = CFLNow;
+        residualCFLReferenceInitialized = 0;
+        if (config.implicitCFLControl.mode == ImplicitCFLMode::ResidualBased &&
+            iter <= config.convergenceControl.nTimeStepInternal)
+        {
+            if (iter == 1)
+                residualCFLDriver.Reset();
+
+            DNDS_check_throw_info(
+                residualCFLSampleIter == iter && residualCFLSampleL2.size() == nVars &&
+                    residualCFLSampleLInf.size() == nVars,
+                "residual CFL physical-residual norms were not captured before linear-solve preprocessing");
+            const auto update = residualCFLDriver.Update(
+                residualCFLSampleL2, residualCFLSampleLInf,
+                config.implicitCFLControl.residual,
+                config.vfvSettings.maxOrder);
+            CFLNext = update.CFL;
+            residualCFLXi = update.xi;
+            residualCFLXi2 = update.xi2;
+            residualCFLXiInf = update.xiInf;
+            residualCFLUseLInf = update.usedLInfBranch ? 1 : 0;
+            residualCFLLimitedByMax = update.limitedByCFLMax ? 1 : 0;
+            residualCFLReferenceInitialized = update.referenceInitializedThisUpdate ? 1 : 0;
+        }
+        else if (config.implicitCFLControl.mode == ImplicitCFLMode::StaticRamp &&
+                 iter >= config.implicitCFLControl.nCFLRampStart &&
+                 iter <= config.implicitCFLControl.nCFLRampLength + config.implicitCFLControl.nCFLRampStart)
+        {
+            const real inter = real(iter - config.implicitCFLControl.nCFLRampStart) /
+                               config.implicitCFLControl.nCFLRampLength;
+            const real logCFL = std::log(config.implicitCFLControl.CFL) +
+                                std::log(config.implicitCFLControl.CFLRampEnd /
+                                         config.implicitCFLControl.CFL) *
+                                    inter;
+            CFLNext = std::exp(logCFL);
+        }
         if (config.convergenceControl.mergeMultiResidual == 1 && config.timeMarchControl.timeMarchIsTwoStage())
         {
             Eigen::VectorFMTSafe<real, -1> res1(nVars);
@@ -666,6 +703,13 @@ namespace DNDS::Euler
                                      DNDS_FMT_ARG(curDtImplicit),
                                      DNDS_FMT_ARG(curDtMin),
                                      DNDS_FMT_ARG(CFLNow),
+                                     DNDS_FMT_ARG(CFLNext),
+                                     DNDS_FMT_ARG(residualCFLXi),
+                                     DNDS_FMT_ARG(residualCFLXi2),
+                                     DNDS_FMT_ARG(residualCFLXiInf),
+                                     DNDS_FMT_ARG(residualCFLUseLInf),
+                                     DNDS_FMT_ARG(residualCFLLimitedByMax),
+                                     DNDS_FMT_ARG(residualCFLReferenceInitialized),
                                      DNDS_FMT_ARG(nLimInc),
                                      DNDS_FMT_ARG(alphaMinInc),
                                      DNDS_FMT_ARG(nLimBeta),
@@ -733,6 +777,13 @@ namespace DNDS::Euler
                 DNDS_FILL_IN_LOG_ERR_VAL(curDtImplicit);
                 DNDS_FILL_IN_LOG_ERR_VAL(curDtMin);
                 DNDS_FILL_IN_LOG_ERR_VAL(CFLNow);
+                DNDS_FILL_IN_LOG_ERR_VAL(CFLNext);
+                DNDS_FILL_IN_LOG_ERR_VAL(residualCFLXi);
+                DNDS_FILL_IN_LOG_ERR_VAL(residualCFLXi2);
+                DNDS_FILL_IN_LOG_ERR_VAL(residualCFLXiInf);
+                DNDS_FILL_IN_LOG_ERR_VAL(residualCFLUseLInf);
+                DNDS_FILL_IN_LOG_ERR_VAL(residualCFLLimitedByMax);
+                DNDS_FILL_IN_LOG_ERR_VAL(residualCFLReferenceInitialized);
 
                 DNDS_FILL_IN_LOG_ERR_VAL(nLimInc);
                 DNDS_FILL_IN_LOG_ERR_VAL(alphaMinInc);
@@ -817,15 +868,12 @@ namespace DNDS::Euler
             config.restartState.iStepInternal = iter;
             PrintRestart(config.dataIOControl.getOutRestartName() + "_" + output_stamp + "_" + "C");
         }
-        if (iter >= config.implicitCFLControl.nCFLRampStart && iter <= config.implicitCFLControl.nCFLRampLength + config.implicitCFLControl.nCFLRampStart)
-        {
-            real inter = real(iter - config.implicitCFLControl.nCFLRampStart) / config.implicitCFLControl.nCFLRampLength;
-            real logCFL = std::log(config.implicitCFLControl.CFL) + (std::log(config.implicitCFLControl.CFLRampEnd / config.implicitCFLControl.CFL) * inter);
-            CFLNow = std::exp(logCFL);
-        }
+        if (iter <= config.convergenceControl.nTimeStepInternal)
+            CFLNow = CFLNext;
         if (ifStop || iter > config.convergenceControl.nTimeStepInternal) //! TODO: reconstruct the framework of ODE-top-level-control
         {
-            CFLNow = config.implicitCFLControl.CFL;
+            CFLNow = config.implicitCFLControl.initialCFL();
+            CFLNext = CFLNow;
         }
         // return resRel.maxCoeff() < config.convergenceControl.rhsThresholdInternal;
         return ifStop;
@@ -924,6 +972,13 @@ namespace DNDS::Euler
                                      DNDS_FMT_ARG(curDtImplicit),
                                      DNDS_FMT_ARG(curDtMin),
                                      DNDS_FMT_ARG(CFLNow),
+                                     DNDS_FMT_ARG(CFLNext),
+                                     DNDS_FMT_ARG(residualCFLXi),
+                                     DNDS_FMT_ARG(residualCFLXi2),
+                                     DNDS_FMT_ARG(residualCFLXiInf),
+                                     DNDS_FMT_ARG(residualCFLUseLInf),
+                                     DNDS_FMT_ARG(residualCFLLimitedByMax),
+                                     DNDS_FMT_ARG(residualCFLReferenceInitialized),
                                      DNDS_FMT_ARG(nLimInc),
                                      DNDS_FMT_ARG(alphaMinInc),
                                      DNDS_FMT_ARG(nLimBeta),
@@ -961,6 +1016,13 @@ namespace DNDS::Euler
                 DNDS_FILL_IN_LOG_ERR_VAL(curDtImplicit);
                 DNDS_FILL_IN_LOG_ERR_VAL(curDtMin);
                 DNDS_FILL_IN_LOG_ERR_VAL(CFLNow);
+                DNDS_FILL_IN_LOG_ERR_VAL(CFLNext);
+                DNDS_FILL_IN_LOG_ERR_VAL(residualCFLXi);
+                DNDS_FILL_IN_LOG_ERR_VAL(residualCFLXi2);
+                DNDS_FILL_IN_LOG_ERR_VAL(residualCFLXiInf);
+                DNDS_FILL_IN_LOG_ERR_VAL(residualCFLUseLInf);
+                DNDS_FILL_IN_LOG_ERR_VAL(residualCFLLimitedByMax);
+                DNDS_FILL_IN_LOG_ERR_VAL(residualCFLReferenceInitialized);
 
                 DNDS_FILL_IN_LOG_ERR_VAL(nLimInc);
                 DNDS_FILL_IN_LOG_ERR_VAL(alphaMinInc);

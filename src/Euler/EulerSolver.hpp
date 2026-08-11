@@ -48,6 +48,7 @@
 #include "Gas.hpp"
 #include "EulerEvaluator.hpp"
 #include "EulerBC.hpp"
+#include "ResidualCFLDriver.hpp"
 // #ifdef __DNDS_REALLY_COMPILING__HEADER_ON__
 // #undef __DNDS_REALLY_COMPILING__
 // #endif
@@ -258,7 +259,7 @@ namespace DNDS::Euler
                     DNDS_FIELD(sourceStrangSplitting, "Reactive physical-time Strang splitting: 0=off, 1=on. Latest/output RHS is flow-only while enabled.");
                     // clang-format on
                 }
-                bool timeMarchIsTwoStage()
+                [[nodiscard]] bool timeMarchIsTwoStage() const
                 {
                     return odeCode == 401 || (odeCode >= 411 && odeCode <= 413);
                 }
@@ -352,7 +353,9 @@ namespace DNDS::Euler
                     "Time[{telapsedM:.3f}] recTime[{trecM:.3f}] rhsTime[{trhsM:.3f}] commTime[{tcommM:.3f}] limTime[{tLimM:.3f}] limTimeA[{tLimiterA:.3f}] limTimeB[{tLimiterB:.3f}]"};
                 std::vector<std::string> logfileOutputTitles{
                     "step", "iStep", "iterAll", "iter", "tSimu",
-                    "res", "curDtImplicit", "curDtMin", "CFLNow",
+                    "res", "curDtImplicit", "curDtMin", "CFLNow", "CFLNext",
+                    "residualCFLXi", "residualCFLXi2", "residualCFLXiInf",
+                    "residualCFLUseLInf", "residualCFLLimitedByMax", "residualCFLReferenceInitialized",
                     "nLimInc", "alphaMinInc",
                     "nLimBeta", "minBeta",
                     "nLimAlpha", "minAlpha",
@@ -424,6 +427,7 @@ namespace DNDS::Euler
              */
             struct ImplicitCFLControl
             {
+                ImplicitCFLMode mode = ImplicitCFLMode::StaticRamp;
                 real CFL = 10;
                 int nForceLocalStartStep = INT_MAX;
                 int nCFLRampStart = INT_MAX;
@@ -432,9 +436,12 @@ namespace DNDS::Euler
                 bool useLocalDt = true;
                 int nSmoothDTau = 0;
                 real RANSRelax = 1;
+                ResidualCFLControl residual;
                 DNDS_DECLARE_CONFIG(ImplicitCFLControl)
                 {
                     // clang-format off
+                    DNDS_FIELD(mode,                   "Implicit CFL update mode",
+                               DNDS::Config::enum_values(DNDS_ENUM_ALLOWED_VALUES(ImplicitCFLMode)));
                     DNDS_FIELD(CFL,                    "CFL number for implicit time stepping",
                                DNDS::Config::range(0.0));
                     DNDS_FIELD(nForceLocalStartStep,   "Step to force local time stepping",
@@ -449,7 +456,19 @@ namespace DNDS::Euler
                                DNDS::Config::range(0));
                     DNDS_FIELD(RANSRelax,              "RANS equation under-relaxation factor",
                                DNDS::Config::range(0.0, 1.0));
+                    config.field_section(&T::residual, "residual", "Residual-based CFL settings");
+
+                    config.check("implicit CFL mode must be StaticRamp or ResidualBased", [](const T &s)
+                    {
+                        return s.mode == ImplicitCFLMode::StaticRamp ||
+                               s.mode == ImplicitCFLMode::ResidualBased;
+                    });
                     // clang-format on
+                }
+
+                [[nodiscard]] real initialCFL() const
+                {
+                    return mode == ImplicitCFLMode::ResidualBased ? residual.CFLMin : CFL;
                 }
             } implicitCFLControl;
 
@@ -933,6 +952,31 @@ namespace DNDS::Euler
                 config.check("bcSettings must be a JSON array", [](const T &s)
                 {
                     return s.bcSettings.is_array();
+                });
+                config.check("residual CFLOrd must resolve to a finite value in (0, CFLMin)", [](const T &s)
+                {
+                    if (s.implicitCFLControl.mode != ImplicitCFLMode::ResidualBased)
+                        return true;
+                    const auto &control = s.implicitCFLControl.residual;
+                    const real resolved = control.CFLOrd > 0
+                                              ? control.CFLOrd
+                                              : real(1) / (real(2) * s.vfvSettings.maxOrder + real(1));
+                    return std::isfinite(resolved) && resolved > 0 && resolved < control.CFLMin;
+                });
+                config.check("ResidualBased implicit CFL currently requires linearSolverControl.multiGridLP == 0", [](const T &s)
+                {
+                    return s.implicitCFLControl.mode != ImplicitCFLMode::ResidualBased ||
+                           s.linearSolverControl.multiGridLP == 0;
+                });
+                config.check("ResidualBased implicit CFL requires an implicit ODE integrator", [](const T &s)
+                {
+                    return s.implicitCFLControl.mode != ImplicitCFLMode::ResidualBased ||
+                           s.timeMarchControl.steadyQuit || s.timeMarchControl.odeCode != 2;
+                });
+                config.check("ResidualBased implicit CFL does not yet support coupled two-stage DITR integrators", [](const T &s)
+                {
+                    return s.implicitCFLControl.mode != ImplicitCFLMode::ResidualBased ||
+                           s.timeMarchControl.steadyQuit || !s.timeMarchControl.timeMarchIsTwoStage();
                 });
                 // clang-format on
             }
@@ -1491,7 +1535,18 @@ namespace DNDS::Euler
             int nextStepOutAverage = -1;
             int nextStepOutAverageC = -1;
 
+            ResidualCFLDriver residualCFLDriver;
+            Eigen::VectorFMTSafe<real, -1> residualCFLSampleL2;
+            Eigen::VectorFMTSafe<real, -1> residualCFLSampleLInf;
+            int residualCFLSampleIter = -1;
             real CFLNow = 0;
+            real CFLNext = 0;
+            real residualCFLXi = 1;
+            real residualCFLXi2 = 1;
+            real residualCFLXiInf = 1;
+            int residualCFLUseLInf = 0;
+            int residualCFLLimitedByMax = 0;
+            int residualCFLReferenceInitialized = 0;
             bool ifOutT = false;
             real curDtMin = 0;
             real curDtImplicit = 0;
@@ -1514,49 +1569,60 @@ namespace DNDS::Euler
 
 #define DNDS_EULERSOLVER_RUNNINGENV_GET_REF(name) auto &name = runningEnvironment.name
 
-#define DNDS_EULERSOLVER_RUNNINGENV_GET_REF_LIST               \
-    auto &eval = *runningEnvironment.pEval;                    \
-    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(logErr);               \
-    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(ode);                  \
-    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(gmres);                \
-    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(gmresRec);             \
-    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(pcgRec);               \
-    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(pcgRec1);              \
-    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(tstart);               \
-    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(tstartInternal);       \
-    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(tInternalStats);       \
-    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(stepCount);            \
-    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(resBaseC);             \
-    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(resBaseCInternal);     \
-    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(tSimu);                \
-    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(tAverage);             \
-    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(nextTout);             \
-    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(nextStepOut);          \
-    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(nextStepOutC);         \
-    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(nextStepRestart);      \
-    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(nextStepRestartC);     \
-    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(nextStepOutAverage);   \
-    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(nextStepOutAverageC);  \
-                                                               \
-    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(CFLNow);               \
-    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(ifOutT);               \
-    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(curDtMin);             \
-    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(curDtImplicit);        \
-    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(curDtImplicitHistory); \
-    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(step);                 \
-    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(iterAll);              \
-    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(gradIsZero);           \
-                                                               \
-    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(nLimBeta);             \
-    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(nLimAlpha);            \
-    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(minAlpha);             \
-    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(minBeta);              \
-    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(nLimInc);              \
-    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(alphaMinInc);          \
-                                                               \
-    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(dtIncreaseCounter);    \
-                                                               \
-    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(addOutList);           \
+#define DNDS_EULERSOLVER_RUNNINGENV_GET_REF_LIST                          \
+    auto &eval = *runningEnvironment.pEval;                               \
+    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(logErr);                          \
+    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(ode);                             \
+    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(gmres);                           \
+    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(gmresRec);                        \
+    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(pcgRec);                          \
+    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(pcgRec1);                         \
+    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(tstart);                          \
+    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(tstartInternal);                  \
+    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(tInternalStats);                  \
+    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(stepCount);                       \
+    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(resBaseC);                        \
+    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(resBaseCInternal);                \
+    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(tSimu);                           \
+    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(tAverage);                        \
+    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(nextTout);                        \
+    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(nextStepOut);                     \
+    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(nextStepOutC);                    \
+    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(nextStepRestart);                 \
+    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(nextStepRestartC);                \
+    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(nextStepOutAverage);              \
+    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(nextStepOutAverageC);             \
+                                                                          \
+    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(residualCFLDriver);               \
+    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(residualCFLSampleL2);             \
+    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(residualCFLSampleLInf);           \
+    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(residualCFLSampleIter);           \
+    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(CFLNow);                          \
+    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(CFLNext);                         \
+    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(residualCFLXi);                   \
+    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(residualCFLXi2);                  \
+    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(residualCFLXiInf);                \
+    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(residualCFLUseLInf);              \
+    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(residualCFLLimitedByMax);         \
+    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(residualCFLReferenceInitialized); \
+    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(ifOutT);                          \
+    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(curDtMin);                        \
+    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(curDtImplicit);                   \
+    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(curDtImplicitHistory);            \
+    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(step);                            \
+    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(iterAll);                         \
+    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(gradIsZero);                      \
+                                                                          \
+    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(nLimBeta);                        \
+    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(nLimAlpha);                       \
+    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(minAlpha);                        \
+    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(minBeta);                         \
+    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(nLimInc);                         \
+    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(alphaMinInc);                     \
+                                                                          \
+    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(dtIncreaseCounter);               \
+                                                                          \
+    DNDS_EULERSOLVER_RUNNINGENV_GET_REF(addOutList);                      \
     DNDS_EULERSOLVER_RUNNINGENV_GET_REF(addBndOutList);
 
             RunningEnvironment(){};

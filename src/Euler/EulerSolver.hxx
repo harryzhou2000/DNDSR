@@ -146,6 +146,12 @@ namespace DNDS::Euler
 
         Timer().clearAllTimer();
 
+        // Directly measure only the additional physical-residual norm work used
+        // by ResidualBased CFL feedback.  Keep this separate from whole-solver
+        // wall time because the feedback changes the subsequent CFL trajectory.
+        real residualCFLNormWallSecondsLocal = 0;
+        index residualCFLNormSamples = 0;
+
         DNDS_MPI_InsertCheck(mpi, "Implicit 2 nvars " + std::to_string(nVars));
 
         /*******************************************************/
@@ -791,6 +797,17 @@ namespace DNDS::Euler
         auto fsolve = [&](ArrayDOFV<nVarsFixed> &cx, ArrayDOFV<nVarsFixed> &cres, ArrayDOFV<nVarsFixed> &resOther, ArrayDOFV<1> &dTau,
                           real dt, real alphaDiag, ArrayDOFV<nVarsFixed> &cxInc, int iter, real ct, int uPos)
         {
+            if (config.implicitCFLControl.mode == ImplicitCFLMode::ResidualBased && uPos == 0)
+            {
+                const real normStart = MPI_Wtime();
+                eval.EvaluateNormL2LInf(
+                    residualCFLSampleL2, residualCFLSampleLInf, cres,
+                    config.implicitCFLControl.residual.useVolumeWeightedL2);
+                residualCFLNormWallSecondsLocal += MPI_Wtime() - normStart;
+                residualCFLNormSamples++;
+                residualCFLSampleIter = iter;
+            }
+
             {
                 DNDS_EULER_SOLVER_GET_TEMP_UDOF(rhsTemp)
                 DNDS_EULER_SOLVER_GET_TEMP_UDOF(uTemp)
@@ -1361,7 +1378,8 @@ namespace DNDS::Euler
             ifOutT = false;
             real curDtImplicitOld = curDtImplicit;
             curDtImplicit = config.timeMarchControl.dtImplicit;
-            CFLNow = config.implicitCFLControl.CFL;
+            CFLNow = config.implicitCFLControl.initialCFL();
+            CFLNext = CFLNow;
             fdtau(u, dTauTmp, 1., 0);                                                                             // generates a curDtMin / CFLNow value as a CFL=1 dt value
             curDtImplicit = std::min(curDtMin / CFLNow * config.timeMarchControl.dtCFLLimitScale, curDtImplicit); // limits dt by CFL
 
@@ -1501,6 +1519,37 @@ namespace DNDS::Euler
             curDtImplicitHistory.push_back(curDtImplicit);
             if (fmainloop())
                 break;
+        }
+
+        if (config.implicitCFLControl.mode == ImplicitCFLMode::ResidualBased)
+        {
+            real residualCFLNormSamplesRankMin = real(residualCFLNormSamples);
+            real residualCFLNormSamplesRankMax = real(residualCFLNormSamples);
+            MPI::AllreduceOneReal(residualCFLNormSamplesRankMin, MPI_MIN, mpi);
+            MPI::AllreduceOneReal(residualCFLNormSamplesRankMax, MPI_MAX, mpi);
+            DNDS_check_throw_info(
+                residualCFLNormSamplesRankMin == residualCFLNormSamplesRankMax,
+                "residual CFL norm sample count differs across MPI ranks");
+            if (residualCFLNormSamples > 0)
+            {
+                const real residualCFLNormWallSecondsRank0 = residualCFLNormWallSecondsLocal;
+                real residualCFLNormWallSecondsRankMean = residualCFLNormWallSecondsLocal;
+                real residualCFLNormWallSecondsRankMax = residualCFLNormWallSecondsLocal;
+                MPI::AllreduceOneReal(residualCFLNormWallSecondsRankMean, MPI_SUM, mpi);
+                residualCFLNormWallSecondsRankMean /= real(mpi.size);
+                MPI::AllreduceOneReal(residualCFLNormWallSecondsRankMax, MPI_MAX, mpi);
+                if (mpi.rank == 0)
+                    log() << fmt::format(
+                                 "ResidualCFL norm timing: samples [{}], rank0_seconds [{:.9g}], "
+                                 "rank_mean_seconds [{:.9g}], rank_max_seconds [{:.9g}], "
+                                 "rank_max_seconds_per_sample [{:.9g}]",
+                                 residualCFLNormSamples,
+                                 residualCFLNormWallSecondsRank0,
+                                 residualCFLNormWallSecondsRankMean,
+                                 residualCFLNormWallSecondsRankMax,
+                                 residualCFLNormWallSecondsRankMax / real(residualCFLNormSamples))
+                          << std::endl;
+            }
         }
     }
 
@@ -2005,7 +2054,18 @@ namespace DNDS::Euler
         nextStepOutAverage = config.outputControl.nTimeAverageOut;
         nextStepOutAverageC = config.outputControl.nTimeAverageOutC;
 
-        CFLNow = config.implicitCFLControl.CFL;
+        residualCFLDriver.Reset();
+        residualCFLSampleL2.resize(0);
+        residualCFLSampleLInf.resize(0);
+        residualCFLSampleIter = -1;
+        CFLNow = config.implicitCFLControl.initialCFL();
+        CFLNext = CFLNow;
+        residualCFLXi = 1;
+        residualCFLXi2 = 1;
+        residualCFLXiInf = 1;
+        residualCFLUseLInf = 0;
+        residualCFLLimitedByMax = 0;
+        residualCFLReferenceInitialized = 0;
         ifOutT = false;
         curDtMin = veryLargeReal;
         curDtImplicit = config.timeMarchControl.dtImplicit;

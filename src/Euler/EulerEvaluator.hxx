@@ -2001,6 +2001,49 @@ namespace DNDS::Euler
         }
     }
 
+    template <EulerModel model>
+    /** @brief Compute component-wise L2 and L-infinity norms in one local traversal. */
+    void EulerEvaluator<model>::EvaluateNormL2LInf(
+        Eigen::Vector<real, -1> &resL2,
+        Eigen::Vector<real, -1> &resLInf,
+        ArrayDOFV<nVarsFixed> &rhs,
+        bool volWiseL2)
+    {
+        resL2.resize(nVars);
+        resLInf.resize(nVars);
+
+        TU rescL2Squared;
+        TU rescLInf;
+        rescL2Squared.setZero(nVars);
+        rescLInf.setZero(nVars);
+#if defined(DNDS_DIST_MT_USE_OMP)
+#    pragma omp declare reduction(TUSum:TU : omp_out += omp_in) initializer(omp_priv = omp_orig)
+#    pragma omp declare reduction(TUMax:TU : omp_out = omp_out.array().max(omp_in.array())) initializer(omp_priv = omp_orig)
+#    pragma omp parallel for schedule(static) reduction(TUSum : rescL2Squared) reduction(TUMax : rescLInf)
+#endif
+        for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
+        {
+            if (rhs[iCell].hasNaN() || (!rhs[iCell].allFinite()))
+            {
+                std::cout << rhs[iCell] << std::endl;
+                DNDS_assert(false);
+            }
+
+            const TU rhsAbs = rhs[iCell].array().abs().matrix();
+            const real weight = volWiseL2 ? vfv->GetCellVol(iCell) : real(1);
+            rescL2Squared += rhsAbs.array().square().matrix() * weight;
+            rescLInf = rescLInf.array().max(rhsAbs.array()).matrix();
+        }
+
+        MPI::Allreduce(
+            rescL2Squared.data(), resL2.data(), resL2.size(),
+            DNDS_MPI_REAL, MPI_SUM, rhs.father->getMPI().comm);
+        MPI::Allreduce(
+            rescLInf.data(), resLInf.data(), resLInf.size(),
+            DNDS_MPI_REAL, MPI_MAX, rhs.father->getMPI().comm);
+        resL2 = resL2.array().sqrt().matrix();
+    }
+
     DNDS_SWITCH_INTELLISENSE(
         template <EulerModel model>, )
     void EulerEvaluator<model>::EvaluateMinMax(

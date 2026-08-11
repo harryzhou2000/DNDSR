@@ -34,6 +34,35 @@ using namespace DNDS::Euler;
 static MPIInfo g_mpi;
 static constexpr real GOLDEN_NOT_ACQUIRED = 1e300;
 
+template <EulerModel model>
+static void checkFusedResidualNorms(
+    EulerEvaluator<model> &eval,
+    ArrayDOFV<EulerEvaluator<model>::nVarsFixed> &rhs,
+    int nVars)
+{
+    Eigen::VectorXd referenceLInf;
+    eval.EvaluateNorm(referenceLInf, rhs, 3, false);
+
+    for (bool volumeWeightedL2 : {false, true})
+    {
+        Eigen::VectorXd referenceL2;
+        Eigen::VectorXd fusedL2;
+        Eigen::VectorXd fusedLInf;
+        eval.EvaluateNorm(referenceL2, rhs, 2, volumeWeightedL2);
+        eval.EvaluateNormL2LInf(fusedL2, fusedLInf, rhs, volumeWeightedL2);
+
+        REQUIRE(fusedL2.size() == nVars);
+        REQUIRE(fusedLInf.size() == nVars);
+        for (int i = 0; i < nVars; i++)
+        {
+            CAPTURE(volumeWeightedL2);
+            CAPTURE(i);
+            CHECK(fusedL2(i) == doctest::Approx(referenceL2(i)).epsilon(1e-12));
+            CHECK(fusedLInf(i) == doctest::Approx(referenceLInf(i)).epsilon(1e-12));
+        }
+    }
+}
+
 // ===================================================================
 // Helper: resolve path relative to project root
 // ===================================================================
@@ -185,6 +214,8 @@ std::array<real, 3> runOneNewtonStep(const std::string &cfgPath)
     rhs.trans.startPersistentPull();
     rhs.trans.waitPersistentPull();
 
+    checkFusedResidualNorms(eval, rhs, nVars);
+
     // --- Measure RHS L1 norm (volume-weighted) ---
     Eigen::VectorXd resNorm(nVars);
     eval.EvaluateNorm(resNorm, rhs, 1, true);
@@ -234,8 +265,7 @@ TEST_CASE("EulerEvaluator pipeline: IV (NS, P1, 2D)")
     std::string cfgPath = writeTempConfig<NS>(
         root + "/cases/euler/euler_config_IV.json", "iv_test",
         {{"vfvSettings", {{"maxOrder", 1}, {"intOrder", 3}}},
-         {"dataIOControl", {{"meshDirectBisect", 0},
-                            {"meshFile", root + "/data/mesh/IV10_10.cgns"}}}});
+         {"dataIOControl", {{"meshDirectBisect", 0}, {"meshFile", root + "/data/mesh/IV10_10.cgns"}}}});
 
     if (g_mpi.rank == 0)
         std::cout << "=== IV (NS, P1) ===" << std::endl;

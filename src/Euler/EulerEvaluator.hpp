@@ -676,6 +676,23 @@ namespace DNDS::Euler
         void EvaluateNorm(Eigen::Vector<real, -1> &res, ArrayDOFV<nVarsFixed> &rhs, index P = 1, bool volWise = false, bool average = false);
 
         /**
+         * @brief Compute component-wise L2 and L-infinity norms in one local traversal.
+         *
+         * The L2 norm optionally uses cell-volume weights and is not averaged.
+         * Both results are reduced across MPI ranks.
+         *
+         * @param[out] resL2      Component-wise L2 norm (resized to nVars).
+         * @param[out] resLInf    Component-wise L-infinity norm (resized to nVars).
+         * @param[in]  rhs        Cell residual array.
+         * @param[in]  volWiseL2  If true, weight the squared L2 terms by cell volume.
+         */
+        void EvaluateNormL2LInf(
+            Eigen::Vector<real, -1> &resL2,
+            Eigen::Vector<real, -1> &resLInf,
+            ArrayDOFV<nVarsFixed> &rhs,
+            bool volWiseL2 = false);
+
+        /**
          * @brief Compute per-component min and max of a DOF array with MPI reduction.
          *
          * @param[out] uMin  Per-component minimum (resized to nVars).
@@ -2116,160 +2133,163 @@ namespace DNDS::Euler
     };
 }
 
-#define DNDS_EulerEvaluator_INS_EXTERN(model, ext)                                                                        \
-    namespace DNDS::Euler                                                                                                 \
-    {                                                                                                                     \
-        ext template void EulerEvaluator<model>::LUSGSMatrixInit(                                                         \
-            JacobianDiagBlock<nVarsFixed> &JDiag,                                                                         \
-            JacobianDiagBlock<nVarsFixed> &JSource,                                                                       \
-            ArrayDOFV<1> &dTau, real dt, real alphaDiag,                                                                  \
-            ArrayDOFV<nVarsFixed> &u,                                                                                     \
-            ArrayRECV<nVarsFixed> &uRec,                                                                                  \
-            int jacobianCode,                                                                                             \
-            real t);                                                                                                      \
-                                                                                                                          \
-        ext template void EulerEvaluator<model>::LUSGSMatrixVec(                                                          \
-            real alphaDiag,                                                                                               \
-            real t,                                                                                                       \
-            ArrayDOFV<nVarsFixed> &u,                                                                                     \
-            ArrayDOFV<nVarsFixed> &uInc,                                                                                  \
-            JacobianDiagBlock<nVarsFixed> &JDiag,                                                                         \
-            ArrayDOFV<nVarsFixed> &AuInc);                                                                                \
-                                                                                                                          \
-        ext template void EulerEvaluator<model>::LUSGSMatrixToJacobianLU(                                                 \
-            real alphaDiag,                                                                                               \
-            real t,                                                                                                       \
-            ArrayDOFV<nVarsFixed> &u,                                                                                     \
-            JacobianDiagBlock<nVarsFixed> &JDiag,                                                                         \
-            JacobianLocalLU<nVarsFixed> &jacLU);                                                                          \
-                                                                                                                          \
-        ext template void EulerEvaluator<model>::UpdateLUSGSForward(                                                      \
-            real alphaDiag,                                                                                               \
-            real t,                                                                                                       \
-            ArrayDOFV<nVarsFixed> &rhs,                                                                                   \
-            ArrayDOFV<nVarsFixed> &u,                                                                                     \
-            ArrayDOFV<nVarsFixed> &uInc,                                                                                  \
-            JacobianDiagBlock<nVarsFixed> &JDiag,                                                                         \
-            ArrayDOFV<nVarsFixed> &uIncNew);                                                                              \
-                                                                                                                          \
-        ext template void EulerEvaluator<model>::UpdateLUSGSBackward(                                                     \
-            real alphaDiag,                                                                                               \
-            real t,                                                                                                       \
-            ArrayDOFV<nVarsFixed> &rhs,                                                                                   \
-            ArrayDOFV<nVarsFixed> &u,                                                                                     \
-            ArrayDOFV<nVarsFixed> &uInc,                                                                                  \
-            JacobianDiagBlock<nVarsFixed> &JDiag,                                                                         \
-            ArrayDOFV<nVarsFixed> &uIncNew);                                                                              \
-                                                                                                                          \
-        ext template void EulerEvaluator<model>::UpdateSGS(                                                               \
-            real alphaDiag,                                                                                               \
-            real t,                                                                                                       \
-            ArrayDOFV<nVarsFixed> &rhs,                                                                                   \
-            ArrayDOFV<nVarsFixed> &u,                                                                                     \
-            ArrayDOFV<nVarsFixed> &uInc,                                                                                  \
-            ArrayDOFV<nVarsFixed> &uIncNew,                                                                               \
-            JacobianDiagBlock<nVarsFixed> &JDiag,                                                                         \
-            bool forward, bool gsUpdate, TU &sumInc,                                                                      \
-            bool uIncIsZero);                                                                                             \
-        ext template void EulerEvaluator<model>::UpdateSGSWithRec(                                                        \
-            real alphaDiag,                                                                                               \
-            real t,                                                                                                       \
-            ArrayDOFV<nVarsFixed> &rhs,                                                                                   \
-            ArrayDOFV<nVarsFixed> &u,                                                                                     \
-            ArrayRECV<nVarsFixed> &uRec,                                                                                  \
-            ArrayDOFV<nVarsFixed> &uInc,                                                                                  \
-            ArrayRECV<nVarsFixed> &uRecInc,                                                                               \
-            JacobianDiagBlock<nVarsFixed> &JDiag,                                                                         \
-            bool forward, TU &sumInc);                                                                                    \
-                                                                                                                          \
-        ext template void EulerEvaluator<model>::LUSGSMatrixSolveJacobianLU(                                              \
-            real alphaDiag,                                                                                               \
-            real t,                                                                                                       \
-            ArrayDOFV<nVarsFixed> &rhs,                                                                                   \
-            ArrayDOFV<nVarsFixed> &u,                                                                                     \
-            ArrayDOFV<nVarsFixed> &uInc,                                                                                  \
-            ArrayDOFV<nVarsFixed> &uIncNew,                                                                               \
-            ArrayDOFV<nVarsFixed> &bBuf,                                                                                  \
-            JacobianDiagBlock<nVarsFixed> &JDiag,                                                                         \
-            JacobianLocalLU<nVarsFixed> &jacLU,                                                                           \
-            bool uIncIsZero,                                                                                              \
-            TU &sumInc);                                                                                                  \
-                                                                                                                          \
-        ext template void EulerEvaluator<model>::InitializeUDOF(ArrayDOFV<nVarsFixed> &u);                                \
-                                                                                                                          \
-        ext template void EulerEvaluator<model>::FixUMaxFilter(                                                           \
-            ArrayDOFV<nVarsFixed> &u);                                                                                    \
-        ext template void EulerEvaluator<model>::PointImplicitSourceUpdate(                                               \
-            ArrayDOFV<nVarsFixed> &uNew,                                                                                  \
-            const ArrayDOFV<nVarsFixed> &res,                                                                             \
-            const ArrayDOFV<nVarsFixed> &u,                                                                               \
-            real alphaDiag,                                                                                               \
-            real dt,                                                                                                      \
-            int nNewtonSteps,                                                                                             \
-            SourceFilter filter,                                                                                          \
-            OptionalRef<ArrayDOFV<1>> cellTWarm);                                                                         \
-        ext template void EulerEvaluator<model>::ReactiveSourceConstVolumeStep(                                           \
-            ArrayDOFV<nVarsFixed> &u,                                                                                     \
-            ArrayRECV<nVarsFixed> &uRec,                                                                                  \
-            real dt,                                                                                                      \
-            real t,                                                                                                       \
-            OptionalRef<ArrayDOFV<1>> cellTWarm);                                                                         \
-                                                                                                                          \
-        ext template void EulerEvaluator<model>::TimeAverageAddition(                                                     \
-            ArrayDOFV<nVarsFixed> &w, ArrayDOFV<nVarsFixed> &wAveraged, real dt, real &tCur);                             \
-        ext template void EulerEvaluator<model>::MeanValueCons2Prim(                                                      \
-            ArrayDOFV<nVarsFixed> &u, ArrayDOFV<nVarsFixed> &w);                                                          \
-        ext template void EulerEvaluator<model>::MeanValuePrim2Cons(                                                      \
-            ArrayDOFV<nVarsFixed> &w, ArrayDOFV<nVarsFixed> &u);                                                          \
-                                                                                                                          \
-        ext template void EulerEvaluator<model>::EvaluateNorm(                                                            \
-            Eigen::Vector<real, -1> &res, ArrayDOFV<nVarsFixed> &rhs, index P, bool volWise, bool average);               \
-                                                                                                                          \
-        ext template void EulerEvaluator<model>::EvaluateMinMax(                                                          \
-            Eigen::Vector<real, -1> &uMin, Eigen::Vector<real, -1> &uMax, ArrayDOFV<nVarsFixed> &u,                       \
-            StateValueOrigin representation);                                                                             \
-                                                                                                                          \
-        ext template void EulerEvaluator<model>::EvaluateRecNorm(                                                         \
-            Eigen::Vector<real, -1> &res,                                                                                 \
-            ArrayDOFV<nVarsFixed> &u,                                                                                     \
-            ArrayRECV<nVarsFixed> &uRec,                                                                                  \
-            index P,                                                                                                      \
-            bool compare,                                                                                                 \
-            const tFCompareField &FCompareField,                                                                          \
-            const tFCompareFieldWeight &FCompareFieldWeight,                                                              \
-            real t);                                                                                                      \
-                                                                                                                          \
-        ext template void EulerEvaluator<model>::LimiterUGrad(                                                            \
-            ArrayDOFV<nVarsFixed> &u, ArrayGRADV<nVarsFixed, gDim> &uGrad, ArrayGRADV<nVarsFixed, gDim> &uGradNew,        \
-            uint64_t flags);                                                                                              \
-                                                                                                                          \
-        ext template void EulerEvaluator<model>::EvaluateURecBeta(                                                        \
-            ArrayDOFV<nVarsFixed> &u,                                                                                     \
-            ArrayRECV<nVarsFixed> &uRec,                                                                                  \
-            ArrayDOFV<1> &uRecBeta, index &nLim, real &betaMin, int flag);                                                \
-                                                                                                                          \
-        ext template bool EulerEvaluator<model>::AssertMeanValuePP(                                                       \
-            ArrayDOFV<nVarsFixed> &u, bool panic);                                                                        \
-                                                                                                                          \
-        ext template void EulerEvaluator<model>::EvaluateCellRHSAlpha(                                                    \
-            ArrayDOFV<nVarsFixed> &u,                                                                                     \
-            ArrayRECV<nVarsFixed> &uRec,                                                                                  \
-            ArrayDOFV<1> &uRecBeta,                                                                                       \
-            ArrayDOFV<nVarsFixed> &rhs,                                                                                   \
-            ArrayDOFV<1> &cellRHSAlpha, index &nLim, real &alphaMin, real relax,                                          \
-            int compress,                                                                                                 \
-            int flag);                                                                                                    \
-                                                                                                                          \
-        ext template void EulerEvaluator<model>::EvaluateCellRHSAlphaExpansion(                                           \
-            ArrayDOFV<nVarsFixed> &u,                                                                                     \
-            ArrayRECV<nVarsFixed> &uRec,                                                                                  \
-            ArrayDOFV<1> &uRecBeta,                                                                                       \
-            ArrayDOFV<nVarsFixed> &res,                                                                                   \
-            ArrayDOFV<1> &cellRHSAlpha, index &nLim, real alphaMin);                                                      \
-        ext template void EulerEvaluator<model>::MinSmoothDTau(                                                           \
-            ArrayDOFV<1> &dTau, ArrayDOFV<1> &dTauNew);                                                                   \
-        ext template void EulerEvaluator<model>::updateBCProfiles(ArrayDOFV<nVarsFixed> &u, ArrayRECV<nVarsFixed> &uRec); \
-        ext template void EulerEvaluator<model>::updateBCProfilesPressureRadialEq();                                      \
+#define DNDS_EulerEvaluator_INS_EXTERN(model, ext)                                                                         \
+    namespace DNDS::Euler                                                                                                  \
+    {                                                                                                                      \
+        ext template void EulerEvaluator<model>::LUSGSMatrixInit(                                                          \
+            JacobianDiagBlock<nVarsFixed> &JDiag,                                                                          \
+            JacobianDiagBlock<nVarsFixed> &JSource,                                                                        \
+            ArrayDOFV<1> &dTau, real dt, real alphaDiag,                                                                   \
+            ArrayDOFV<nVarsFixed> &u,                                                                                      \
+            ArrayRECV<nVarsFixed> &uRec,                                                                                   \
+            int jacobianCode,                                                                                              \
+            real t);                                                                                                       \
+                                                                                                                           \
+        ext template void EulerEvaluator<model>::LUSGSMatrixVec(                                                           \
+            real alphaDiag,                                                                                                \
+            real t,                                                                                                        \
+            ArrayDOFV<nVarsFixed> &u,                                                                                      \
+            ArrayDOFV<nVarsFixed> &uInc,                                                                                   \
+            JacobianDiagBlock<nVarsFixed> &JDiag,                                                                          \
+            ArrayDOFV<nVarsFixed> &AuInc);                                                                                 \
+                                                                                                                           \
+        ext template void EulerEvaluator<model>::LUSGSMatrixToJacobianLU(                                                  \
+            real alphaDiag,                                                                                                \
+            real t,                                                                                                        \
+            ArrayDOFV<nVarsFixed> &u,                                                                                      \
+            JacobianDiagBlock<nVarsFixed> &JDiag,                                                                          \
+            JacobianLocalLU<nVarsFixed> &jacLU);                                                                           \
+                                                                                                                           \
+        ext template void EulerEvaluator<model>::UpdateLUSGSForward(                                                       \
+            real alphaDiag,                                                                                                \
+            real t,                                                                                                        \
+            ArrayDOFV<nVarsFixed> &rhs,                                                                                    \
+            ArrayDOFV<nVarsFixed> &u,                                                                                      \
+            ArrayDOFV<nVarsFixed> &uInc,                                                                                   \
+            JacobianDiagBlock<nVarsFixed> &JDiag,                                                                          \
+            ArrayDOFV<nVarsFixed> &uIncNew);                                                                               \
+                                                                                                                           \
+        ext template void EulerEvaluator<model>::UpdateLUSGSBackward(                                                      \
+            real alphaDiag,                                                                                                \
+            real t,                                                                                                        \
+            ArrayDOFV<nVarsFixed> &rhs,                                                                                    \
+            ArrayDOFV<nVarsFixed> &u,                                                                                      \
+            ArrayDOFV<nVarsFixed> &uInc,                                                                                   \
+            JacobianDiagBlock<nVarsFixed> &JDiag,                                                                          \
+            ArrayDOFV<nVarsFixed> &uIncNew);                                                                               \
+                                                                                                                           \
+        ext template void EulerEvaluator<model>::UpdateSGS(                                                                \
+            real alphaDiag,                                                                                                \
+            real t,                                                                                                        \
+            ArrayDOFV<nVarsFixed> &rhs,                                                                                    \
+            ArrayDOFV<nVarsFixed> &u,                                                                                      \
+            ArrayDOFV<nVarsFixed> &uInc,                                                                                   \
+            ArrayDOFV<nVarsFixed> &uIncNew,                                                                                \
+            JacobianDiagBlock<nVarsFixed> &JDiag,                                                                          \
+            bool forward, bool gsUpdate, TU &sumInc,                                                                       \
+            bool uIncIsZero);                                                                                              \
+        ext template void EulerEvaluator<model>::UpdateSGSWithRec(                                                         \
+            real alphaDiag,                                                                                                \
+            real t,                                                                                                        \
+            ArrayDOFV<nVarsFixed> &rhs,                                                                                    \
+            ArrayDOFV<nVarsFixed> &u,                                                                                      \
+            ArrayRECV<nVarsFixed> &uRec,                                                                                   \
+            ArrayDOFV<nVarsFixed> &uInc,                                                                                   \
+            ArrayRECV<nVarsFixed> &uRecInc,                                                                                \
+            JacobianDiagBlock<nVarsFixed> &JDiag,                                                                          \
+            bool forward, TU &sumInc);                                                                                     \
+                                                                                                                           \
+        ext template void EulerEvaluator<model>::LUSGSMatrixSolveJacobianLU(                                               \
+            real alphaDiag,                                                                                                \
+            real t,                                                                                                        \
+            ArrayDOFV<nVarsFixed> &rhs,                                                                                    \
+            ArrayDOFV<nVarsFixed> &u,                                                                                      \
+            ArrayDOFV<nVarsFixed> &uInc,                                                                                   \
+            ArrayDOFV<nVarsFixed> &uIncNew,                                                                                \
+            ArrayDOFV<nVarsFixed> &bBuf,                                                                                   \
+            JacobianDiagBlock<nVarsFixed> &JDiag,                                                                          \
+            JacobianLocalLU<nVarsFixed> &jacLU,                                                                            \
+            bool uIncIsZero,                                                                                               \
+            TU &sumInc);                                                                                                   \
+                                                                                                                           \
+        ext template void EulerEvaluator<model>::InitializeUDOF(ArrayDOFV<nVarsFixed> &u);                                 \
+                                                                                                                           \
+        ext template void EulerEvaluator<model>::FixUMaxFilter(                                                            \
+            ArrayDOFV<nVarsFixed> &u);                                                                                     \
+        ext template void EulerEvaluator<model>::PointImplicitSourceUpdate(                                                \
+            ArrayDOFV<nVarsFixed> &uNew,                                                                                   \
+            const ArrayDOFV<nVarsFixed> &res,                                                                              \
+            const ArrayDOFV<nVarsFixed> &u,                                                                                \
+            real alphaDiag,                                                                                                \
+            real dt,                                                                                                       \
+            int nNewtonSteps,                                                                                              \
+            SourceFilter filter,                                                                                           \
+            OptionalRef<ArrayDOFV<1>> cellTWarm);                                                                          \
+        ext template void EulerEvaluator<model>::ReactiveSourceConstVolumeStep(                                            \
+            ArrayDOFV<nVarsFixed> &u,                                                                                      \
+            ArrayRECV<nVarsFixed> &uRec,                                                                                   \
+            real dt,                                                                                                       \
+            real t,                                                                                                        \
+            OptionalRef<ArrayDOFV<1>> cellTWarm);                                                                          \
+                                                                                                                           \
+        ext template void EulerEvaluator<model>::TimeAverageAddition(                                                      \
+            ArrayDOFV<nVarsFixed> &w, ArrayDOFV<nVarsFixed> &wAveraged, real dt, real &tCur);                              \
+        ext template void EulerEvaluator<model>::MeanValueCons2Prim(                                                       \
+            ArrayDOFV<nVarsFixed> &u, ArrayDOFV<nVarsFixed> &w);                                                           \
+        ext template void EulerEvaluator<model>::MeanValuePrim2Cons(                                                       \
+            ArrayDOFV<nVarsFixed> &w, ArrayDOFV<nVarsFixed> &u);                                                           \
+                                                                                                                           \
+        ext template void EulerEvaluator<model>::EvaluateNorm(                                                             \
+            Eigen::Vector<real, -1> &res, ArrayDOFV<nVarsFixed> &rhs, index P, bool volWise, bool average);                \
+                                                                                                                           \
+        ext template void EulerEvaluator<model>::EvaluateNormL2LInf(                                                       \
+            Eigen::Vector<real, -1> &resL2, Eigen::Vector<real, -1> &resLInf, ArrayDOFV<nVarsFixed> &rhs, bool volWiseL2); \
+                                                                                                                           \
+        ext template void EulerEvaluator<model>::EvaluateMinMax(                                                           \
+            Eigen::Vector<real, -1> &uMin, Eigen::Vector<real, -1> &uMax, ArrayDOFV<nVarsFixed> &u,                        \
+            StateValueOrigin representation);                                                                              \
+                                                                                                                           \
+        ext template void EulerEvaluator<model>::EvaluateRecNorm(                                                          \
+            Eigen::Vector<real, -1> &res,                                                                                  \
+            ArrayDOFV<nVarsFixed> &u,                                                                                      \
+            ArrayRECV<nVarsFixed> &uRec,                                                                                   \
+            index P,                                                                                                       \
+            bool compare,                                                                                                  \
+            const tFCompareField &FCompareField,                                                                           \
+            const tFCompareFieldWeight &FCompareFieldWeight,                                                               \
+            real t);                                                                                                       \
+                                                                                                                           \
+        ext template void EulerEvaluator<model>::LimiterUGrad(                                                             \
+            ArrayDOFV<nVarsFixed> &u, ArrayGRADV<nVarsFixed, gDim> &uGrad, ArrayGRADV<nVarsFixed, gDim> &uGradNew,         \
+            uint64_t flags);                                                                                               \
+                                                                                                                           \
+        ext template void EulerEvaluator<model>::EvaluateURecBeta(                                                         \
+            ArrayDOFV<nVarsFixed> &u,                                                                                      \
+            ArrayRECV<nVarsFixed> &uRec,                                                                                   \
+            ArrayDOFV<1> &uRecBeta, index &nLim, real &betaMin, int flag);                                                 \
+                                                                                                                           \
+        ext template bool EulerEvaluator<model>::AssertMeanValuePP(                                                        \
+            ArrayDOFV<nVarsFixed> &u, bool panic);                                                                         \
+                                                                                                                           \
+        ext template void EulerEvaluator<model>::EvaluateCellRHSAlpha(                                                     \
+            ArrayDOFV<nVarsFixed> &u,                                                                                      \
+            ArrayRECV<nVarsFixed> &uRec,                                                                                   \
+            ArrayDOFV<1> &uRecBeta,                                                                                        \
+            ArrayDOFV<nVarsFixed> &rhs,                                                                                    \
+            ArrayDOFV<1> &cellRHSAlpha, index &nLim, real &alphaMin, real relax,                                           \
+            int compress,                                                                                                  \
+            int flag);                                                                                                     \
+                                                                                                                           \
+        ext template void EulerEvaluator<model>::EvaluateCellRHSAlphaExpansion(                                            \
+            ArrayDOFV<nVarsFixed> &u,                                                                                      \
+            ArrayRECV<nVarsFixed> &uRec,                                                                                   \
+            ArrayDOFV<1> &uRecBeta,                                                                                        \
+            ArrayDOFV<nVarsFixed> &res,                                                                                    \
+            ArrayDOFV<1> &cellRHSAlpha, index &nLim, real alphaMin);                                                       \
+        ext template void EulerEvaluator<model>::MinSmoothDTau(                                                            \
+            ArrayDOFV<1> &dTau, ArrayDOFV<1> &dTauNew);                                                                    \
+        ext template void EulerEvaluator<model>::updateBCProfiles(ArrayDOFV<nVarsFixed> &u, ArrayRECV<nVarsFixed> &uRec);  \
+        ext template void EulerEvaluator<model>::updateBCProfilesPressureRadialEq();                                       \
     }
 
 DNDS_EulerEvaluator_INS_EXTERN(NS, extern);
