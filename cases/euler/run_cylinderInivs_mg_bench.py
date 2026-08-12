@@ -1,16 +1,16 @@
+from utils.GraceExit import GraceExit
 import os
 import sys
 
 dirname = os.path.dirname(os.path.realpath(__file__))
 sys.path.append(os.path.join(dirname, "..", "..", "script"))
 
-from utils.GraceExit import GraceExit
 
 handler = GraceExit(max_attempts=5)
 
 config_name = os.path.join(dirname, "config_cylinderInvis_mg_bench.json")
 
-out_base = "../data/out/CylinderInvisHalfA-MGtest_1_VRes.dir"
+out_base = "../data/out/CylinderInvisHalfA-MGtest_2_VRes.dir"
 
 name_prefix = ""
 
@@ -53,9 +53,9 @@ opt_3["name_append"] = "lusgs"  # smoother
 
 opts = [
     opt_2,  # LUSGS
-    opt_1,  # ILU
+    # opt_1,  # ILU
     opt_0,  # GMRES-ILU
-    opt_3,  # GMRES-LUSGS
+    # opt_3,  # GMRES-LUSGS
 ]
 
 mg_seqs = [
