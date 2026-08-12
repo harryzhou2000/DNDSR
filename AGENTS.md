@@ -211,6 +211,8 @@ mpirun -np 2 python test/DNDS/test_basic.py
 
 ### C++ Unit Tests (doctest)
 
+Do not add unit tests whose only purpose is verifying configuration serialization or threading; test the resulting behavior and use schema emission for config-shape verification.
+
 C++ tests live under `test/cpp/` and use the [doctest](https://github.com/doctest/doctest)
 framework. They are built when `DNDS_BUILD_TESTS=ON` and registered with CTest.
 MPI tests are registered at np=1, np=2, np=4, and np=8 by default (configurable via

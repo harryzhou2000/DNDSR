@@ -151,6 +151,8 @@ namespace DNDS::Euler
         // wall time because the feedback changes the subsequent CFL trajectory.
         real residualCFLNormWallSecondsLocal = 0;
         index residualCFLNormSamples = 0;
+        std::array<ResidualCFLDriver, 3> residualCFLCoarseDrivers;
+        std::array<real, 3> residualCFLCoarseCFLNow{0, 0, 0};
 
         DNDS_MPI_InsertCheck(mpi, "Implicit 2 nvars " + std::to_string(nVars));
 
@@ -728,7 +730,27 @@ namespace DNDS::Euler
             return frhsOuter(crhs, cx, dTau, iter, ct, uPos, 1); // reconstructionFlag == 1
         };
 
-        auto fdtau = [&](ArrayDOFV<nVarsFixed> &cx, ArrayDOFV<1> &dTau, real alphaDiag, int uPos)
+        auto cflForPMGLevel = [&](int pMGLevel) -> real
+        {
+            const real CFLFactor = config.implicitCFLControl.resolvedCFLFactor(
+                pMGLevel, config.vfvSettings.maxOrder);
+            if (config.implicitCFLControl.mode == ImplicitCFLMode::StaticRamp)
+                return CFLFactor * CFLNow;
+            if (pMGLevel == 0)
+                return CFLNow;
+            if (config.implicitCFLControl.residualCFLUpdateOnCoarseSmoothers)
+                return residualCFLCoarseCFLNow.at(pMGLevel);
+            const auto &driverControl = config.implicitCFLControl.residualCFLDriver;
+            const auto &levelControl = driverControl.controlForLevel(pMGLevel);
+            const int degree = driverControl.polynomialDegreeForLevel(
+                config.vfvSettings.maxOrder, pMGLevel);
+            return residualCFLDriver.EvaluateCurrent(
+                                        levelControl, degree, config.vfvSettings.maxOrder, degree, CFLFactor)
+                .CFL;
+        };
+
+        auto fdtauWithCFL = [&](ArrayDOFV<nVarsFixed> &cx, ArrayDOFV<1> &dTau, real alphaDiag, int uPos,
+                                real appliedCFL, bool updateFineDtMin)
         {
             eval.FixUMaxFilter(cx);
             cx.trans.startPersistentPull(); //! this also need to update!
@@ -736,7 +758,10 @@ namespace DNDS::Euler
             // uRec.trans.startPersistentPull();
             // uRec.trans.waitPersistentPull();
             auto &uRecC = config.timeMarchControl.timeMarchIsTwoStage() && uPos == 1 ? uRec1 : uRec;
-            eval.EvaluateDt(dTau, cx, uRecC, CFLNow, curDtMin, 1e100, config.implicitCFLControl.useLocalDt, tSimu, 0, warmT);
+            real levelDtMin = veryLargeReal;
+            real &reportedDtMin = updateFineDtMin ? curDtMin : levelDtMin;
+            eval.EvaluateDt(dTau, cx, uRecC, appliedCFL, reportedDtMin, 1e100,
+                            config.implicitCFLControl.useLocalDt, tSimu, 0, warmT);
             for (int iS = 1; iS <= config.implicitCFLControl.nSmoothDTau; iS++)
             {
                 // ArrayDOFV<1> dTauNew = dTau; //TODO: copying is still unusable; consider doing copiers on the level of ArrayDOFV and ArrayRecV
@@ -748,6 +773,11 @@ namespace DNDS::Euler
             }
 
             dTau *= 1. / alphaDiag;
+        };
+
+        auto fdtau = [&](ArrayDOFV<nVarsFixed> &cx, ArrayDOFV<1> &dTau, real alphaDiag, int uPos)
+        {
+            fdtauWithCFL(cx, dTau, alphaDiag, uPos, cflForPMGLevel(0), true);
         };
 
         auto fincrement = [&](
@@ -797,6 +827,17 @@ namespace DNDS::Euler
         auto fsolve = [&](ArrayDOFV<nVarsFixed> &cx, ArrayDOFV<nVarsFixed> &cres, ArrayDOFV<nVarsFixed> &resOther, ArrayDOFV<1> &dTau,
                           real dt, real alphaDiag, ArrayDOFV<nVarsFixed> &cxInc, int iter, real ct, int uPos)
         {
+            if (config.implicitCFLControl.mode == ImplicitCFLMode::ResidualBased &&
+                config.implicitCFLControl.residualCFLUpdateOnCoarseSmoothers &&
+                iter == 1 && uPos == 0)
+            {
+                for (int pMGLevel = 1; pMGLevel <= config.linearSolverControl.multiGridLP; ++pMGLevel)
+                {
+                    residualCFLCoarseDrivers.at(pMGLevel).Reset();
+                    residualCFLCoarseCFLNow.at(pMGLevel) =
+                        config.implicitCFLControl.residualCFLDriver.controlForLevel(pMGLevel).CFLMin;
+                }
+            }
             if (config.implicitCFLControl.mode == ImplicitCFLMode::ResidualBased && uPos == 0)
             {
                 const real normStart = MPI_Wtime();
@@ -1016,13 +1057,17 @@ namespace DNDS::Euler
                             DNDS_assert(false);
                     };
 
+                    real levelCFL = cflForPMGLevel(mgLevel);
+                    fdtauWithCFL(uMG1, dTauC, alphaDiag, uPos, levelCFL, false);
+
                     for (int iIterMG = 1; iIterMG <= curMGIter; iIterMG++)
                     {
+                        real levelCFLNext = levelCFL;
 
                         // if (curMGIter > 1 && mgLevel == mgLevelMax) // this is used for checking lusgs-1lusgs == 2xlusgs
                         {
                             if (iIterMG > 1)
-                                fdtau(uMG1, dTauC, alphaDiag, uPos); //! warning! dTauC is overwritten
+                                fdtauWithCFL(uMG1, dTauC, alphaDiag, uPos, levelCFL, false);
                             call_evaluate_rhs();
                             rhsTemp.trans.startPersistentPull();
                             rhsTemp.trans.waitPersistentPull();
@@ -1045,6 +1090,31 @@ namespace DNDS::Euler
                         //     rhsTemp.addTo(uMG1, -1. / dt);
                         // }
 
+                        if (config.implicitCFLControl.mode == ImplicitCFLMode::ResidualBased &&
+                            config.implicitCFLControl.residualCFLUpdateOnCoarseSmoothers)
+                        {
+                            Eigen::VectorFMTSafe<real, -1> levelResidualL2;
+                            Eigen::VectorFMTSafe<real, -1> levelResidualLInf;
+                            const real normStart = MPI_Wtime();
+                            eval.EvaluateNormL2LInf(
+                                levelResidualL2, levelResidualLInf, rhsTemp,
+                                config.implicitCFLControl.residualCFLDriver.useVolumeWeightedL2);
+                            residualCFLNormWallSecondsLocal += MPI_Wtime() - normStart;
+                            residualCFLNormSamples++;
+
+                            const auto &driverControl = config.implicitCFLControl.residualCFLDriver;
+                            const auto &levelControl = driverControl.controlForLevel(mgLevel);
+                            const int degree = driverControl.polynomialDegreeForLevel(
+                                config.vfvSettings.maxOrder, mgLevel);
+                            const real CFLFactor = config.implicitCFLControl.resolvedCFLFactor(
+                                mgLevel, config.vfvSettings.maxOrder);
+                            levelCFLNext = residualCFLCoarseDrivers.at(mgLevel)
+                                               .Update(levelResidualL2, levelResidualLInf,
+                                                       levelControl, degree,
+                                                       config.vfvSettings.maxOrder, degree, CFLFactor)
+                                               .CFL;
+                        }
+
                         eval.LUSGSMatrixInit(JDTmp, JSourceTmp, dTauC, dt, alphaDiag, uMG1, uRecNew, 0, tSimu);
 
                         if (iIterMG % config.linearSolverControl.multiGridLPInnerNSee == 0)
@@ -1058,6 +1128,12 @@ namespace DNDS::Euler
                         solveLinear(alphaDiag, tSimu, rhsTemp, uMG1, xIncBuf, uRecNew, uRecNew,
                                     JDTmp, *gmres, mgLevel);
                         fincrement(uMG1, xIncBuf, 1.0, uPos);
+                        if (config.implicitCFLControl.mode == ImplicitCFLMode::ResidualBased &&
+                            config.implicitCFLControl.residualCFLUpdateOnCoarseSmoothers)
+                        {
+                            residualCFLCoarseCFLNow.at(mgLevel) = levelCFLNext;
+                            levelCFL = levelCFLNext;
+                        }
                         // solve_multigrid_impl(x_base, cxInc, mgLevel + 1, mgLevelMax);
                         // cxInc *= -1;
                         // std::cout << "here" << std::endl;

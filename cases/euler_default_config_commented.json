@@ -59,7 +59,7 @@
         "tDataOut": 3e+200
     },
     "implicitCFLControl": {
-        "mode": "StaticRamp", // "StaticRamp" uses CFL/ramp fields; "ResidualBased" currently supports single-grid implicit BDF/SDIRK paths
+        "mode": "StaticRamp", // "StaticRamp" uses CFL/ramp fields; "ResidualBased" supports single-grid and pMG implicit BDF/SDIRK paths
         "CFL": 10.0, // CFL used in implicit local time step size control
         "nForceLocalStartStep": 2147483647,
         "nCFLRampStart": 2147483647,
@@ -68,13 +68,20 @@
         "useLocalDt": true, // false to use uniform dTau
         "nSmoothDTau": 0, // number of smoothing steps for dTau
         "RANSRelax": 0.1,
+        "CFLFactor": {}, // optional pMG-level factors, e.g. {"0": 1, "1": 3, "2": 4}; scales static CFL, residual CFLMax, and n_sf
+        "residualCFLUpdateOnCoarseSmoothers": false, // false performs one driver norm/reduction per logged finest-level iteration
         "residualCFLDriver": {
             "CFLMin": 10.0, // baseline CFL and the first nonlinear iteration's CFL
             "CFLMax": 1e+100, // finite upper safety cap added by DNDSR
             "CFLOrd": 0.0, // 0 derives the divergence-limit CFL as 1/(2*p+1)
             "alpha": 1.0, // exponent controlling CFL growth as the residual decreases
             "pMGSafetyFactor": 1.0, // multiplicative n_sf factor in Eq. (12); applies on single-grid too
-            "useVolumeWeightedL2": false // false uses the paper's algebraic component-wise L2 norm
+            "equationIndices": [], // empty uses all equations; e.g. [0, 1, 2] selects a subset
+            "useVolumeWeightedL2": false, // false uses the paper's algebraic component-wise L2 norm
+            "coarseGridControlList": { // independent driver-law settings for each pMG coarse level
+                "1": {},
+                "2": {}
+            }
         }
     },
     "convergenceControl": {

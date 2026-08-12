@@ -13,6 +13,9 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <map>
+#include <string>
+#include <vector>
 
 namespace DNDS::Euler
 {
@@ -41,16 +44,16 @@ namespace DNDS::Euler
      * unbounded as the normalized residual tends to zero and leaves zero
      * reference residuals unspecified.
      */
-    struct ResidualCFLControl
+    struct ResidualCFLLevelControl
     {
         real CFLMin = 10;
         real CFLMax = 1e100;
         real CFLOrd = 0;
         real alpha = 1;
         real pMGSafetyFactor = 1;
-        bool useVolumeWeightedL2 = false;
+        std::vector<int> equationIndices;
 
-        DNDS_DECLARE_CONFIG(ResidualCFLControl)
+        DNDS_DECLARE_CONFIG(ResidualCFLLevelControl)
         {
             // clang-format off
             DNDS_FIELD(CFLMin, "First-iteration/baseline CFL in the residual law",
@@ -63,7 +66,7 @@ namespace DNDS::Euler
                        DNDS::Config::range(std::numeric_limits<real>::min()));
             DNDS_FIELD(pMGSafetyFactor, "Multiplicative safety factor n_sf in the pMG level term",
                        DNDS::Config::range(std::numeric_limits<real>::min()));
-            DNDS_FIELD(useVolumeWeightedL2, "Volume-weight the physical-residual L2 norm (false follows the paper's algebraic norm)");
+            DNDS_FIELD(equationIndices, "Equation indices used in residual-ratio maxima; empty selects all equations");
 
             config.check("residual CFL values and exponents must be finite", [](const T &s)
             {
@@ -96,10 +99,82 @@ namespace DNDS::Euler
         }
     };
 
+    /** @brief Fine-grid residual-CFL settings plus independent coarse-level laws. */
+    struct ResidualCFLControl : ResidualCFLLevelControl
+    {
+        bool useVolumeWeightedL2 = false;
+        std::map<std::string, ResidualCFLLevelControl> coarseGridControlList{
+            {"1", ResidualCFLLevelControl{}},
+            {"2", ResidualCFLLevelControl{}},
+        };
+
+        DNDS_DECLARE_CONFIG(ResidualCFLControl)
+        {
+            // Base-class fields are flattened into the residualCFLDriver object.
+            // clang-format off
+            config.field(static_cast<real T::*>(&T::CFLMin), "CFLMin",
+                         "First-iteration/baseline CFL in the residual law",
+                         DNDS::Config::range(std::numeric_limits<real>::min()));
+            config.field(static_cast<real T::*>(&T::CFLMax), "CFLMax",
+                         "Upper safety cap for residual-driven CFL (DNDSR extension)",
+                         DNDS::Config::range(std::numeric_limits<real>::min()));
+            config.field(static_cast<real T::*>(&T::CFLOrd), "CFLOrd",
+                         "Divergence-limit CFL; 0 derives 1/(2*p+1) from reconstruction degree",
+                         DNDS::Config::range(0.0));
+            config.field(static_cast<real T::*>(&T::alpha), "alpha",
+                         "Residual-law CFL growth exponent",
+                         DNDS::Config::range(std::numeric_limits<real>::min()));
+            config.field(static_cast<real T::*>(&T::pMGSafetyFactor), "pMGSafetyFactor",
+                         "Multiplicative safety factor n_sf in the pMG level term",
+                         DNDS::Config::range(std::numeric_limits<real>::min()));
+            config.field(static_cast<std::vector<int> T::*>(&T::equationIndices), "equationIndices",
+                         "Equation indices used in residual-ratio maxima; empty selects all equations");
+            DNDS_FIELD(useVolumeWeightedL2, "Volume-weight the physical-residual L2 norm (false follows the paper's algebraic norm)");
+            config.template field_map_of<ResidualCFLLevelControl>(
+                &T::coarseGridControlList,
+                "coarseGridControlList",
+                "Independent residual-CFL law for each coarse pMG level");
+
+            config.check("residual CFL values and exponents must be finite", [](const T &s)
+            {
+                return std::isfinite(s.CFLMin) && std::isfinite(s.CFLMax) &&
+                       std::isfinite(s.CFLOrd) && std::isfinite(s.alpha) &&
+                       std::isfinite(s.pMGSafetyFactor);
+            });
+            config.check("residual CFLMax must be greater than or equal to CFLMin", [](const T &s)
+            {
+                return s.CFLMax >= s.CFLMin;
+            });
+            config.check("explicit residual CFLOrd must be less than CFLMin", [](const T &s)
+            {
+                return s.CFLOrd == 0 || s.CFLOrd < s.CFLMin;
+            });
+            // clang-format on
+        }
+
+        [[nodiscard]] static int polynomialDegreeForLevel(int fineDegree, int pMGLevel)
+        {
+            DNDS_check_throw_info(fineDegree >= 0, "fine-grid polynomial degree must be non-negative");
+            DNDS_check_throw_info(pMGLevel >= 0 && pMGLevel <= 2,
+                                  "Euler pMG level must be 0, 1, or 2");
+            if (pMGLevel == 0)
+                return fineDegree;
+            return pMGLevel == 1 ? 1 : 0;
+        }
+
+        [[nodiscard]] const ResidualCFLLevelControl &controlForLevel(int pMGLevel) const
+        {
+            if (pMGLevel == 0)
+                return *this;
+            return coarseGridControlList.at(std::to_string(pMGLevel));
+        }
+    };
+
     /** @brief Diagnostics returned for one residual-feedback update. */
     struct ResidualCFLUpdate
     {
         real CFL = 0;
+        real CFLMaxEffective = 0;
         real CFLOrd = 0;
         real xi = 1;
         real xi2 = 1;
@@ -113,15 +188,19 @@ namespace DNDS::Euler
     /**
      * @brief Stateful implementation of the residual-based CFL law in Eq. (12).
      *
-     * The state is only the first-iteration L2 and L-infinity norm of each
-     * physical equation. The caller supplies already MPI-global, component-wise
-     * norms of the cell-average nonlinear residual. The driver deliberately has
-     * no knowledge of reconstruction DOFs, linear residuals, or line searches.
+     * The state is the first-iteration and latest fine-iteration L2 and
+     * L-infinity norm of each physical equation. Every pMG level evaluates that
+     * shared sample with its own control law. The caller supplies already
+     * MPI-global, component-wise norms of the cell-average nonlinear residual.
+     * The driver deliberately has no knowledge of reconstruction DOFs, linear
+     * residuals, or line searches.
      */
     class ResidualCFLDriver
     {
         Eigen::Vector<real, Eigen::Dynamic> _referenceL2;
         Eigen::Vector<real, Eigen::Dynamic> _referenceLInf;
+        Eigen::Vector<real, Eigen::Dynamic> _currentL2;
+        Eigen::Vector<real, Eigen::Dynamic> _currentLInf;
         bool _hasReference = false;
 
         static void ValidateNorms(
@@ -145,48 +224,44 @@ namespace DNDS::Euler
             return std::numeric_limits<real>::infinity();
         }
 
+        static void ValidateEquationIndices(
+            const std::vector<int> &equationIndices,
+            Eigen::Index equationCount)
+        {
+            for (int equationIndex : equationIndices)
+                DNDS_check_throw_info(
+                    equationIndex >= 0 && equationIndex < equationCount,
+                    "residual CFL equation index must be within the residual norm vector");
+        }
+
         static real MaximumRatio(
             const Eigen::Vector<real, Eigen::Dynamic> &current,
-            const Eigen::Vector<real, Eigen::Dynamic> &reference)
+            const Eigen::Vector<real, Eigen::Dynamic> &reference,
+            const std::vector<int> &equationIndices)
         {
             real ratioMax = 0;
-            for (Eigen::Index i = 0; i < current.size(); ++i)
-                ratioMax = std::max(ratioMax, NormalizedRatio(current(i), reference(i)));
+            if (equationIndices.empty())
+            {
+                for (Eigen::Index i = 0; i < current.size(); ++i)
+                    ratioMax = std::max(ratioMax, NormalizedRatio(current(i), reference(i)));
+            }
+            else
+            {
+                for (int equationIndex : equationIndices)
+                {
+                    const Eigen::Index i = equationIndex;
+                    ratioMax = std::max(ratioMax, NormalizedRatio(current(i), reference(i)));
+                }
+            }
             return ratioMax;
         }
 
-    public:
-        void Reset()
+        static void ValidateControl(
+            const ResidualCFLLevelControl &control,
+            int finestPolynomialDegree,
+            int currentPolynomialDegree,
+            real CFLFactor)
         {
-            _referenceL2.resize(0);
-            _referenceLInf.resize(0);
-            _hasReference = false;
-        }
-
-        [[nodiscard]] bool HasReference() const
-        {
-            return _hasReference;
-        }
-
-        /**
-         * @brief Capture/update residual feedback and return the CFL for the next iteration.
-         *
-         * @param residualL2      MPI-global L2 norm of each physical equation.
-         * @param residualLInf    MPI-global L-infinity norm of each equation.
-         * @param control         Residual CFL parameters.
-         * @param polynomialDegree Reconstruction polynomial degree p used for auto CFLOrd.
-         * @param maximumPMGLevel Finest pMG polynomial level.
-         * @param currentPMGLevel Current pMG polynomial level; equal to maximum for single grid.
-         */
-        [[nodiscard]] ResidualCFLUpdate Update(
-            const Eigen::Vector<real, Eigen::Dynamic> &residualL2,
-            const Eigen::Vector<real, Eigen::Dynamic> &residualLInf,
-            const ResidualCFLControl &control,
-            int polynomialDegree,
-            int maximumPMGLevel = 0,
-            int currentPMGLevel = 0)
-        {
-            ValidateNorms(residualL2, residualLInf);
             DNDS_check_throw_info(std::isfinite(control.CFLMin) && control.CFLMin > 0,
                                   "residual CFLMin must be finite and positive");
             DNDS_check_throw_info(std::isfinite(control.CFLMax) && control.CFLMax >= control.CFLMin,
@@ -195,34 +270,55 @@ namespace DNDS::Euler
                                   "residual CFL alpha must be finite and positive");
             DNDS_check_throw_info(std::isfinite(control.pMGSafetyFactor) && control.pMGSafetyFactor > 0,
                                   "residual CFL pMG safety factor must be finite and positive");
-            DNDS_check_throw_info(maximumPMGLevel >= 0 && currentPMGLevel >= 0 &&
-                                      currentPMGLevel <= maximumPMGLevel,
-                                  "residual CFL pMG levels must satisfy 0 <= current <= maximum");
+            DNDS_check_throw_info(finestPolynomialDegree >= 0 && currentPolynomialDegree >= 0 &&
+                                      currentPolynomialDegree <= finestPolynomialDegree,
+                                  "residual CFL pMG degrees must satisfy 0 <= current <= finest");
+            DNDS_check_throw_info(std::isfinite(CFLFactor) && CFLFactor >= 0,
+                                  "residual CFL external level factor must be finite and non-negative");
+        }
+
+    public:
+        void Reset()
+        {
+            _referenceL2.resize(0);
+            _referenceLInf.resize(0);
+            _currentL2.resize(0);
+            _currentLInf.resize(0);
+            _hasReference = false;
+        }
+
+        /** @brief Evaluate one pMG level from the latest fine-iteration feedback. */
+        [[nodiscard]] ResidualCFLUpdate EvaluateCurrent(
+            const ResidualCFLLevelControl &control,
+            int polynomialDegree,
+            int finestPolynomialDegree = 0,
+            int currentPolynomialDegree = 0,
+            real CFLFactor = 0) const
+        {
+            ValidateControl(control, finestPolynomialDegree, currentPolynomialDegree, CFLFactor);
 
             ResidualCFLUpdate result;
             result.CFLOrd = control.resolvedCFLOrd(polynomialDegree);
-            result.levelFactor = (real(maximumPMGLevel) - real(currentPMGLevel) + real(1)) *
-                                 control.pMGSafetyFactor;
+            const real resolvedCFLFactor = CFLFactor > 0
+                                               ? CFLFactor
+                                               : real(finestPolynomialDegree) - real(currentPolynomialDegree) + real(1);
+            result.levelFactor = resolvedCFLFactor * control.pMGSafetyFactor;
+            result.CFLMaxEffective = resolvedCFLFactor * control.CFLMax;
             DNDS_check_throw_info(std::isfinite(result.levelFactor) && result.levelFactor > 0,
                                   "residual CFL pMG level factor must be finite and positive");
+            DNDS_check_throw_info(std::isfinite(result.CFLMaxEffective) &&
+                                      result.CFLMaxEffective >= control.CFLMin,
+                                  "factor-scaled residual CFLMax must be finite and no smaller than CFLMin");
 
             if (!_hasReference)
             {
-                _referenceL2 = residualL2;
-                _referenceLInf = residualLInf;
-                _hasReference = true;
                 result.CFL = control.CFLMin;
-                result.referenceInitializedThisUpdate = true;
                 return result;
             }
 
-            DNDS_check_throw_info(
-                residualL2.size() == _referenceL2.size() &&
-                    residualLInf.size() == _referenceLInf.size(),
-                "residual CFL norm vector size changed after reference initialization");
-
-            result.xi2 = MaximumRatio(residualL2, _referenceL2);
-            result.xiInf = MaximumRatio(residualLInf, _referenceLInf);
+            ValidateEquationIndices(control.equationIndices, _currentL2.size());
+            result.xi2 = MaximumRatio(_currentL2, _referenceL2, control.equationIndices);
+            result.xiInf = MaximumRatio(_currentLInf, _referenceLInf, control.equationIndices);
             result.usedLInfBranch = result.xiInf > 1;
             result.xi = result.usedLInfBranch
                             ? result.xiInf
@@ -232,16 +328,16 @@ namespace DNDS::Euler
             {
                 if (result.xi == 0)
                 {
-                    result.CFL = control.CFLMax;
+                    result.CFL = result.CFLMaxEffective;
                     result.limitedByCFLMax = true;
                     return result;
                 }
 
                 const real logCFL = std::log(control.CFLMin) - control.alpha * std::log(result.xi);
-                const real logCFLMax = std::log(control.CFLMax);
+                const real logCFLMax = std::log(result.CFLMaxEffective);
                 if (logCFL >= logCFLMax)
                 {
-                    result.CFL = control.CFLMax;
+                    result.CFL = result.CFLMaxEffective;
                     result.limitedByCFLMax = logCFL > logCFLMax;
                 }
                 else
@@ -256,7 +352,61 @@ namespace DNDS::Euler
                                             (control.CFLMin - result.CFLOrd);
             const real phi = std::exp(exponent);
             result.CFL = result.CFLOrd + phi * (control.CFLMin - result.CFLOrd);
-            result.CFL = std::clamp(result.CFL, result.CFLOrd, control.CFLMax);
+            result.CFL = std::clamp(result.CFL, result.CFLOrd, result.CFLMaxEffective);
+            return result;
+        }
+
+        [[nodiscard]] bool HasReference() const
+        {
+            return _hasReference;
+        }
+
+        /**
+         * @brief Capture/update residual feedback and return the CFL for the next iteration.
+         *
+         * @param residualL2      MPI-global L2 norm of each physical equation.
+         * @param residualLInf    MPI-global L-infinity norm of each equation.
+         * @param control         Residual CFL parameters.
+         * @param polynomialDegree Reconstruction polynomial degree p used for auto CFLOrd.
+         * @param finestPolynomialDegree Finest-grid polynomial degree.
+         * @param currentPolynomialDegree Current pMG polynomial degree; equal to finest on a single grid.
+         * @param CFLFactor External level factor; 0 retains the literature degree-gap factor.
+         */
+        [[nodiscard]] ResidualCFLUpdate Update(
+            const Eigen::Vector<real, Eigen::Dynamic> &residualL2,
+            const Eigen::Vector<real, Eigen::Dynamic> &residualLInf,
+            const ResidualCFLLevelControl &control,
+            int polynomialDegree,
+            int finestPolynomialDegree = 0,
+            int currentPolynomialDegree = 0,
+            real CFLFactor = 0)
+        {
+            ValidateNorms(residualL2, residualLInf);
+            ValidateEquationIndices(control.equationIndices, residualL2.size());
+            ValidateControl(control, finestPolynomialDegree, currentPolynomialDegree, CFLFactor);
+
+            bool referenceInitialized = false;
+            if (!_hasReference)
+            {
+                _referenceL2 = residualL2;
+                _referenceLInf = residualLInf;
+                _hasReference = true;
+                referenceInitialized = true;
+            }
+            else
+            {
+                DNDS_check_throw_info(
+                    residualL2.size() == _referenceL2.size() &&
+                        residualLInf.size() == _referenceLInf.size(),
+                    "residual CFL norm vector size changed after reference initialization");
+            }
+
+            _currentL2 = residualL2;
+            _currentLInf = residualLInf;
+
+            auto result = EvaluateCurrent(
+                control, polynomialDegree, finestPolynomialDegree, currentPolynomialDegree, CFLFactor);
+            result.referenceInitializedThisUpdate = referenceInitialized;
             return result;
         }
     };

@@ -436,6 +436,8 @@ namespace DNDS::Euler
                 bool useLocalDt = true;
                 int nSmoothDTau = 0;
                 real RANSRelax = 1;
+                std::map<std::string, real> CFLFactor;
+                bool residualCFLUpdateOnCoarseSmoothers = false;
                 ResidualCFLControl residualCFLDriver;
                 DNDS_DECLARE_CONFIG(ImplicitCFLControl)
                 {
@@ -456,6 +458,22 @@ namespace DNDS::Euler
                                DNDS::Config::range(0));
                     DNDS_FIELD(RANSRelax,              "RANS equation under-relaxation factor",
                                DNDS::Config::range(0.0, 1.0));
+                    config.field_schema(
+                        &T::CFLFactor,
+                        "CFLFactor",
+                        "External multiplier by pMG level for static CFL, residual CFLMax, and residual safety factor",
+                        []()
+                        {
+                            nlohmann::ordered_json schema;
+                            schema["type"] = "object";
+                            schema["additionalProperties"] = {
+                                {"type", "number"},
+                                {"exclusiveMinimum", 0},
+                            };
+                            return schema;
+                        });
+                    DNDS_FIELD(residualCFLUpdateOnCoarseSmoothers,
+                               "Update independent residual-CFL drivers on every coarse-grid smoother (adds norm reductions)");
                     config.field_section(&T::residualCFLDriver, "residualCFLDriver", "Residual-based CFL driver settings");
 
                     config.check("implicit CFL mode must be StaticRamp or ResidualBased", [](const T &s)
@@ -463,12 +481,36 @@ namespace DNDS::Euler
                         return s.mode == ImplicitCFLMode::StaticRamp ||
                                s.mode == ImplicitCFLMode::ResidualBased;
                     });
+                    config.check("CFLFactor keys must be pMG levels 0, 1, or 2 and values must be finite and positive", [](const T &s)
+                    {
+                        for (const auto &[level, factor] : s.CFLFactor)
+                            if ((level != "0" && level != "1" && level != "2") ||
+                                !std::isfinite(factor) || factor <= 0)
+                                return false;
+                        return true;
+                    });
                     // clang-format on
                 }
 
                 [[nodiscard]] real initialCFL() const
                 {
                     return mode == ImplicitCFLMode::ResidualBased ? residualCFLDriver.CFLMin : CFL;
+                }
+
+                [[nodiscard]] real resolvedCFLFactor(int pMGLevel, int finestPolynomialDegree) const
+                {
+                    DNDS_check_throw_info(pMGLevel >= 0 && pMGLevel <= 2,
+                                          "Euler pMG level must be 0, 1, or 2");
+                    const auto found = CFLFactor.find(std::to_string(pMGLevel));
+                    if (found != CFLFactor.end())
+                        return found->second;
+                    if (mode == ImplicitCFLMode::ResidualBased)
+                    {
+                        const int degree = ResidualCFLControl::polynomialDegreeForLevel(
+                            finestPolynomialDegree, pMGLevel);
+                        return real(finestPolynomialDegree - degree + 1);
+                    }
+                    return 1;
                 }
             } implicitCFLControl;
 
@@ -953,20 +995,36 @@ namespace DNDS::Euler
                 {
                     return s.bcSettings.is_array();
                 });
-                config.check("residual CFLOrd must resolve to a finite value in (0, CFLMin)", [](const T &s)
+                config.check("residual CFLOrd must resolve to a finite value in (0, CFLMin) on every active pMG level", [](const T &s)
                 {
                     if (s.implicitCFLControl.mode != ImplicitCFLMode::ResidualBased)
                         return true;
-                    const auto &control = s.implicitCFLControl.residualCFLDriver;
-                    const real resolved = control.CFLOrd > 0
-                                              ? control.CFLOrd
-                                              : real(1) / (real(2) * s.vfvSettings.maxOrder + real(1));
-                    return std::isfinite(resolved) && resolved > 0 && resolved < control.CFLMin;
-                });
-                config.check("ResidualBased implicit CFL currently requires linearSolverControl.multiGridLP == 0", [](const T &s)
-                {
-                    return s.implicitCFLControl.mode != ImplicitCFLMode::ResidualBased ||
-                           s.linearSolverControl.multiGridLP == 0;
+                    if (s.linearSolverControl.multiGridLP < 0 ||
+                        s.linearSolverControl.multiGridLP > 2)
+                        return false;
+                    const auto &driverControl = s.implicitCFLControl.residualCFLDriver;
+                    for (int pMGLevel = 0; pMGLevel <= s.linearSolverControl.multiGridLP; ++pMGLevel)
+                    {
+                        if (pMGLevel > 0 &&
+                            !driverControl.coarseGridControlList.count(std::to_string(pMGLevel)))
+                            return false;
+                        const auto &levelControl = driverControl.controlForLevel(pMGLevel);
+                        const int degree = driverControl.polynomialDegreeForLevel(
+                            s.vfvSettings.maxOrder, pMGLevel);
+                        if (degree > s.vfvSettings.maxOrder)
+                            return false;
+                        const real resolved = levelControl.CFLOrd > 0
+                                                  ? levelControl.CFLOrd
+                                                  : real(1) / (real(2) * degree + real(1));
+                        if (!std::isfinite(resolved) || resolved <= 0 || resolved >= levelControl.CFLMin)
+                            return false;
+                        const real factor = s.implicitCFLControl.resolvedCFLFactor(
+                            pMGLevel, s.vfvSettings.maxOrder);
+                        if (!std::isfinite(factor * levelControl.CFLMax) ||
+                            factor * levelControl.CFLMax < levelControl.CFLMin)
+                            return false;
+                    }
+                    return true;
                 });
                 config.check("ResidualBased implicit CFL requires an implicit ODE integrator", [](const T &s)
                 {

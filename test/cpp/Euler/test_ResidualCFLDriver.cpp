@@ -68,6 +68,24 @@ TEST_CASE("residual CFL grows from the worst normalized L2 residual")
     CHECK(update.CFL == doctest::Approx(10 / std::sqrt(0.5)).epsilon(1e-13));
 }
 
+TEST_CASE("residual CFL can select equations for ratio maxima")
+{
+    ResidualCFLDriver driver;
+    auto control = BaseControl();
+    control.equationIndices = {1};
+    static_cast<void>(driver.Update(
+        Vector({2, 4, 8}), Vector({3, 5, 10}), control, 3));
+
+    const auto update = driver.Update(
+        Vector({20, 1, 80}), Vector({30, 2.5, 100}), control, 3);
+
+    CHECK(update.xi2 == doctest::Approx(0.25));
+    CHECK(update.xiInf == doctest::Approx(0.5));
+    CHECK(update.xi == doctest::Approx(0.25));
+    CHECK_FALSE(update.usedLInfBranch);
+    CHECK(update.CFL == doctest::Approx(20));
+}
+
 TEST_CASE("residual CFL clips xi2 at one while Linf does not diverge")
 {
     ResidualCFLDriver driver;
@@ -125,6 +143,65 @@ TEST_CASE("residual CFL applies the published pMG level factor")
 
     CHECK(update.levelFactor == doctest::Approx(levelFactor));
     CHECK(update.CFL == doctest::Approx(expected).epsilon(1e-13));
+}
+
+TEST_CASE("external CFL factor scales both the residual safety term and CFL cap")
+{
+    ResidualCFLDriver driver;
+    auto control = BaseControl();
+    control.pMGSafetyFactor = 2;
+    static_cast<void>(driver.Update(
+        Vector({2}), Vector({3}), control, 1, 3, 1, 4));
+
+    const auto divergence = driver.Update(
+        Vector({1}), Vector({6}), control, 1, 3, 1, 4);
+    CHECK(divergence.levelFactor == doctest::Approx(8));
+    CHECK(divergence.CFLMaxEffective == doctest::Approx(4000));
+
+    const auto zeroResidual = driver.Update(
+        Vector({0}), Vector({0}), control, 1, 3, 1, 4);
+    CHECK(zeroResidual.CFL == doctest::Approx(4000));
+    CHECK(zeroResidual.limitedByCFLMax);
+}
+
+TEST_CASE("residual CFL reuses one fine sample with independent pMG level laws")
+{
+    ResidualCFLDriver driver;
+    auto fineControl = BaseControl();
+    static_cast<void>(driver.Update(
+        Vector({2, 4, 8}), Vector({3, 5, 10}), fineControl, 3, 3, 3));
+    static_cast<void>(driver.Update(
+        Vector({1, 8, 4}), Vector({1.5, 15, 5}), fineControl, 3, 3, 3));
+
+    auto level1Control = BaseControl();
+    level1Control.CFLMin = 20;
+    level1Control.alpha = 1;
+    level1Control.pMGSafetyFactor = 2;
+    level1Control.equationIndices = {0, 2};
+    const auto level1 = driver.EvaluateCurrent(level1Control, 1, 3, 1);
+
+    CHECK(level1.xi2 == doctest::Approx(0.5));
+    CHECK(level1.xiInf == doctest::Approx(0.5));
+    CHECK(level1.CFL == doctest::Approx(40));
+    CHECK(level1.levelFactor == doctest::Approx(6));
+
+    auto level2Control = BaseControl();
+    level2Control.CFLMin = 30;
+    level2Control.CFLOrd = 0.5;
+    level2Control.alpha = 0.25;
+    level2Control.pMGSafetyFactor = 0.5;
+    level2Control.equationIndices = {1};
+    const auto level2 = driver.EvaluateCurrent(level2Control, 0, 3, 0);
+    const DNDS::real expectedPhi = std::exp(
+        level2Control.alpha * (1 - 3) * 2 * level2Control.CFLMin /
+        (level2Control.CFLMin - level2Control.CFLOrd));
+    const DNDS::real expected = level2Control.CFLOrd +
+                                expectedPhi * (level2Control.CFLMin - level2Control.CFLOrd);
+
+    CHECK(level2.xi2 == doctest::Approx(2));
+    CHECK(level2.xiInf == doctest::Approx(3));
+    CHECK(level2.CFL == doctest::Approx(expected).epsilon(1e-13));
+    CHECK(level2.levelFactor == doctest::Approx(2));
 }
 
 TEST_CASE("residual CFL applies a sub-unity safety factor on a single grid")
@@ -220,6 +297,15 @@ TEST_CASE("residual CFL rejects invalid inputs")
         Vector({1}), control, 3)));
 
     control.CFLMax = control.CFLMin / 2;
+    CHECK_THROWS(static_cast<void>(driver.Update(
+        Vector({1}), Vector({1}), control, 3)));
+
+    control = BaseControl();
+    control.equationIndices = {-1};
+    CHECK_THROWS(static_cast<void>(driver.Update(
+        Vector({1}), Vector({1}), control, 3)));
+
+    control.equationIndices = {1};
     CHECK_THROWS(static_cast<void>(driver.Update(
         Vector({1}), Vector({1}), control, 3)));
 }

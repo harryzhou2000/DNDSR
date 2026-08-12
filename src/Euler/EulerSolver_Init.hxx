@@ -579,7 +579,11 @@ namespace DNDS::Euler
             const auto update = residualCFLDriver.Update(
                 residualCFLSampleL2, residualCFLSampleLInf,
                 config.implicitCFLControl.residualCFLDriver,
-                config.vfvSettings.maxOrder);
+                config.vfvSettings.maxOrder,
+                config.vfvSettings.maxOrder,
+                config.vfvSettings.maxOrder,
+                config.implicitCFLControl.resolvedCFLFactor(
+                    0, config.vfvSettings.maxOrder));
             CFLNext = update.CFL;
             residualCFLXi = update.xi;
             residualCFLXi2 = update.xi2;
