@@ -7,7 +7,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Sequence
 
-from .series import load_dndsr_log
+from .series import compute_residual_maxima, load_dndsr_log
 from .style import (
     DEFAULT_STYLE,
     apply_publication_style,
@@ -58,15 +58,29 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--linear-y", action="store_true")
     parser.add_argument("--keep-last", action="store_true")
     parser.add_argument("--raw-wall-time", action="store_true")
+    parser.add_argument(
+        "--truncate-residual-at",
+        type=float,
+        help="stop each residual curve at its first raw normalized crossing",
+    )
     parser.add_argument("--no-science-style", action="store_true")
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    if args.y_key.startswith("res") and args.residual_max is None:
-        raise SystemExit(
-            "--residual-max is required when plotting a res* column")
+    loaded_runs = [
+        (label, path, load_dndsr_log(path)) for label, path in args.run
+    ]
+    residual_max: float | dict[str, float] | None = args.residual_max
+    if args.y_key.startswith("res") and residual_max is None:
+        residual_max = compute_residual_maxima(
+            [data for _, _, data in loaded_runs]
+        )
+        if args.y_key not in residual_max:
+            raise SystemExit(
+                f"no finite samples found for residual column {args.y_key!r}"
+            )
 
     style = replace(
         DEFAULT_STYLE,
@@ -79,18 +93,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     apply_publication_style(style, use_scienceplots=not args.no_science_style)
     figure, axes = create_figure(style=style)
-    for plot_index, (label, path) in enumerate(args.run):
+    for plot_index, (label, _path, data) in enumerate(loaded_runs):
         plot_one(
             axes,
-            load_dndsr_log(path),
+            data,
             label,
             plot_index=plot_index,
             x_key=args.x_key,
             y_key=args.y_key,
-            residual_max=args.residual_max,
+            residual_max=residual_max,
             std_window=args.std_window,
             drop_last=not args.keep_last,
             offset_wall_time=not args.raw_wall_time,
+            truncate_residual_at=args.truncate_residual_at,
             style=style,
         )
     finalize_axes(

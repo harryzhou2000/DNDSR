@@ -117,6 +117,7 @@ def plot_one(
     std_window: int = 0,
     drop_last: bool = True,
     offset_wall_time: bool = True,
+    truncate_residual_at: float | None = None,
     style: PublicationStyle = DEFAULT_STYLE,
     **plot_kwargs: Any,
 ) -> matplotlib.lines.Line2D:
@@ -131,6 +132,7 @@ def plot_one(
         residual_smooth_window=style.residual_smooth_window,
         drop_last=drop_last,
         offset_wall_time=offset_wall_time,
+        truncate_residual_at=truncate_residual_at,
     )
     colors = matplotlib.color_sequences[style.color_sequence]
     defaults = {

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Residual History Postprocessing"
+  short_description: "Compare normalized CFD residual histories"
+  default_prompt: "Use $residual-history-postprocessing to compare DNDSR convergence histories with global normalization and startup-corrected wall time."

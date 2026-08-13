@@ -93,8 +93,63 @@ def compute_residual_maxima(
     return maxima
 
 
+def normalize_residual(
+    values: ArrayLike,
+    residual_key: str,
+    residual_maxima: float | Mapping[str, float],
+) -> np.ndarray:
+    """Normalize a residual with an externally computed ensemble maximum.
+
+    The denominator must come from the complete comparison ensemble. This
+    helper intentionally does not offer per-series maximum normalization.
+    """
+
+    denominator = (
+        residual_maxima[residual_key]
+        if isinstance(residual_maxima, Mapping)
+        else residual_maxima
+    )
+    if not np.isfinite(denominator) or denominator <= 0:
+        raise ValueError("residual maximum must be finite and positive")
+    return np.asarray(values, dtype=float) / denominator
+
+
 def _trim(values: np.ndarray, drop_last: bool) -> np.ndarray:
     return values[:-1] if drop_last else values
+
+
+def historical_wall_time(values: ArrayLike) -> np.ndarray:
+    """Apply the historical MGTest0012 wall-time origin convention.
+
+    The first retained point is placed at one measured first-step duration:
+    ``t - t[0] + (t[1] - t[0])``.
+    """
+
+    return startup_corrected_wall_time(values)
+
+
+def startup_corrected_wall_time(
+    values: ArrayLike,
+    *,
+    retain_first_step: bool = True,
+) -> np.ndarray:
+    """Subtract per-run startup time from cumulative wall-clock samples.
+
+    ``retain_first_step=True`` reproduces the old MGTest0012 plots: subtract
+    the first timestamp, then add the first measured step duration so the
+    first point is not placed at zero. Set it to ``False`` for a strict
+    zero-origin series.
+    """
+
+    wall_time = np.asarray(values, dtype=float).copy()
+    if wall_time.size == 0:
+        raise ValueError("at least one wall-time sample is required")
+    corrected = wall_time - wall_time[0]
+    if retain_first_step:
+        if wall_time.size < 2:
+            raise ValueError("at least two wall-time samples are required")
+        corrected += wall_time[1] - wall_time[0]
+    return corrected
 
 
 def prepare_series(
@@ -107,6 +162,7 @@ def prepare_series(
     residual_smooth_window: int = 20,
     drop_last: bool = True,
     offset_wall_time: bool = True,
+    truncate_residual_at: float | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Prepare one curve with the historical notebook's operation order."""
 
@@ -120,9 +176,21 @@ def prepare_series(
         raise ValueError(f"{x_key} and {y_key} have different lengths")
 
     if x_key == "tWall" and offset_wall_time:
-        if x_values.size < 2:
-            raise ValueError("at least two wall-time samples are required")
-        x_values = x_values - x_values[0] + x_values[1] - x_values[0]
+        x_values = startup_corrected_wall_time(x_values)
+
+    if truncate_residual_at is not None:
+        if not y_key.startswith("res"):
+            raise ValueError("truncate_residual_at requires a res* y column")
+        if truncate_residual_at < 0:
+            raise ValueError("truncate_residual_at must be non-negative")
+        if residual_max is None:
+            raise ValueError(f"residual_max is required for {y_key}")
+        normalized_raw = normalize_residual(y_values, y_key, residual_max)
+        crossings = np.flatnonzero(normalized_raw <= truncate_residual_at)
+        if crossings.size:
+            stop = int(crossings[0]) + 1
+            x_values = x_values[:stop]
+            y_values = y_values[:stop]
 
     if std_window > 0:
         y_values = windowed_std(y_values, std_window)
@@ -131,14 +199,7 @@ def prepare_series(
     if y_key.startswith("res"):
         if residual_max is None:
             raise ValueError(f"residual_max is required for {y_key}")
-        denominator = (
-            residual_max[y_key]
-            if isinstance(residual_max, Mapping)
-            else residual_max
-        )
-        if not np.isfinite(denominator) or denominator <= 0:
-            raise ValueError("residual_max must be finite and positive")
-        y_values /= denominator
+        y_values = normalize_residual(y_values, y_key, residual_max)
         if residual_smooth_window > 1:
             y_values = uniform_filter1d(
                 y_values, size=residual_smooth_window, mode="reflect"
@@ -162,14 +223,6 @@ def first_threshold_reach(
 
     if threshold < 0:
         raise ValueError("threshold must be non-negative")
-    denominator = (
-        residual_max[residual_key]
-        if isinstance(residual_max, Mapping)
-        else residual_max
-    )
-    if not np.isfinite(denominator) or denominator <= 0:
-        raise ValueError("residual_max must be finite and positive")
-
     residual = _trim(np.asarray(data[residual_key], dtype=float), drop_last)
     iterations = _trim(np.asarray(data[iteration_key], dtype=float), drop_last)
     wall_time = _trim(np.asarray(
@@ -177,11 +230,14 @@ def first_threshold_reach(
     if not (residual.size == iterations.size == wall_time.size):
         raise ValueError("threshold columns have different lengths")
     if offset_wall_time:
-        if wall_time.size < 2:
-            raise ValueError("at least two wall-time samples are required")
-        wall_time = wall_time - wall_time[0] + wall_time[1] - wall_time[0]
+        wall_time = startup_corrected_wall_time(wall_time)
 
-    reached = residual / denominator <= threshold
+    reached = normalize_residual(
+        residual, residual_key, residual_max) <= threshold
     if not np.any(reached):
         return ReachResult(float("inf"), float("inf"))
-    return ReachResult(float(np.min(iterations[reached])), float(np.min(wall_time[reached])))
+    first_reached = int(np.flatnonzero(reached)[0])
+    return ReachResult(
+        float(iterations[first_reached]),
+        float(wall_time[first_reached]),
+    )

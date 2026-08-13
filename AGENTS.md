@@ -105,6 +105,13 @@ CC=mpicc CXX=mpicxx python cfd_externals_build.py
 
 ### Python Tests
 
+**Scripts-component exception:** Do not add pytest tests solely for utilities
+under `scripts/` or self-contained workflows under `workspace/`. Validate those
+components with focused CLI smoke checks or standalone validation commands
+using the project venv. Do not rebuild or install pybind11 targets for
+scripts/workspace-only changes unless the validation actually imports
+`DNDSR` extension modules or the user explicitly requests that rebuild.
+
 **IMPORTANT: Before running ANY Python test, you MUST build the pybind11
 shared libraries AND install them.** The Python modules load `.so` files
 from `python/DNDSR/`, which are only placed there by `cmake --install`.
