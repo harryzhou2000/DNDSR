@@ -1,5 +1,8 @@
 from utils.GraceExit import GraceExit
+import argparse
 import os
+import shlex
+import subprocess
 import sys
 import pprint
 
@@ -9,20 +12,20 @@ sys.path.append(os.path.join(dirname, "..", "..", "scripts"))
 
 handler = GraceExit(max_attempts=5)
 
-config_name = os.path.join(dirname, "config_0012_mg_bench.json")
+config_name = os.path.join(dirname, "config_2822_mg_bench.json")
 
-out_base = "../data/out/NACA0012_H2-MGtest_3_VRes_AOA15_Bi1.dir"
+out_base = "../data/out/RAE2822_M0-MGtest_R0.dir"
 
 name_prefix = ""
 
-name_prefix = "x1-"
+name_prefix = "x0-"
 
 os.makedirs(out_base, exist_ok=True)
 
-nProc = 64
+nProc = 32
 
 opt_0 = {}
-opt_0["n_iter"] = 10000
+opt_0["n_iter"] = 4000
 opt_0["gC_base"] = 1
 opt_0["jC_base"] = 2
 opt_0["name_base"] = "gmres5x1ilu"
@@ -30,7 +33,7 @@ opt_0["jC_append"] = 2
 opt_0["name_append"] = "ilu"  # smoother
 
 opt_1 = {}
-opt_1["n_iter"] = 10000
+opt_1["n_iter"] = 4000
 opt_1["gC_base"] = 0
 opt_1["jC_base"] = 2
 opt_1["name_base"] = "ilu"
@@ -38,7 +41,7 @@ opt_1["jC_append"] = 2
 opt_1["name_append"] = "ilu"  # smoother
 
 opt_2 = {}
-opt_2["n_iter"] = 40000
+opt_2["n_iter"] = 8000
 opt_2["gC_base"] = 0
 opt_2["jC_base"] = 1
 opt_2["name_base"] = "lusgs"
@@ -46,7 +49,7 @@ opt_2["jC_append"] = 1
 opt_2["name_append"] = "lusgs"  # smoother
 
 opt_3 = {}
-opt_3["n_iter"] = 10000
+opt_3["n_iter"] = 4000
 opt_3["gC_base"] = 1
 opt_3["jC_base"] = 1
 opt_3["name_base"] = "gmres5x1lusgs"
@@ -129,7 +132,7 @@ def get_options(
         options.append(
             (
                 "/dataIOControl/outPltName",
-                f'\\"{os.path.join(out_base, name)}\\"',
+                f'"{os.path.join(out_base, name)}"',
             )
         )
         options.extend(
@@ -155,21 +158,32 @@ for opt in opts:
     options_list.update(get_options(**opt))
 
 
+def build_command(options):
+    command = ["mpirun", "-np", str(nProc), "app/eulerSA.exe", config_name]
+    for key, value in options:
+        command.extend(["-k", key, "-v", str(value)])
+    return command
+
+
 def main():
+    parser = argparse.ArgumentParser(
+        description="Run the RAE 2822 MG benchmark sweep")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="print every command without launching the solver",
+    )
+    args = parser.parse_args()
+
     pprint.pprint(options_list)
-    for v in options_list.keys():
-        print(v)
-
     for name, options in options_list.items():
-        cmd = f"mpirun -np {nProc} app/eulerSA.exe {config_name}"
-        for opt in options:
-            cmd += f" -k {opt[0]}"
-            cmd += f" -v {opt[1]}"
-        cmd += f" > {os.path.join(out_base, name)}-stdout.txt"
-
-        print(f"Command::: {name} \n\n {cmd}\n")
-
-        os.system(cmd)
+        command = build_command(options)
+        stdout_path = os.path.join(out_base, name) + "-stdout.txt"
+        print(f"Command::: {name}\n\n {shlex.join(command)} > {stdout_path}\n")
+        if args.dry_run:
+            continue
+        with open(stdout_path, "w") as stdout:
+            subprocess.run(command, stdout=stdout, check=True)
 
 
 if __name__ == "__main__":
