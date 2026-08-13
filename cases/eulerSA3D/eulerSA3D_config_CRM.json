@@ -4,7 +4,7 @@
         "dtImplicit": 2e30,
         "nTimeStep": 1,
         "steadyQuit": true,
-        "useRestart": true,
+        "useRestart": false,
         "odeCode": 1, //0 = SDIRK4, 1 = BDF2, 2 = SSPRK3
         "tEnd": 3e+200,
         "partitionMeshOnly": false,
@@ -29,8 +29,8 @@
         "nDataOutInternal": 1000000000,
         "nRestartOutC": 10,
         "nRestartOut": 100,
-        "nRestartOutCInternal": 1000,
-        "nRestartOutInternal": 5000,
+        "nRestartOutCInternal": 10000000,
+        "nRestartOutInternal": 10000,
         "dataOutAtInit": true,
         "tDataOut": 3e+200
     },
@@ -56,7 +56,7 @@
         // "rectifyNearPlaneThres": 1e-4,
         "meshFile": "../data/mesh/CARDC.ZhangYB.WB.ae2.75deg.Unstructured.C_DNDSR.cgns",
         "meshFilePartitionedInput": "../data/mesh/CARDC.ZhangYB.WB.ae2.75deg.Unstructured.C_DNDSR.cgns_part_560.dnds.h5",
-        "outPltName": "../data/out/CRM_0R/out",
+        "outPltName": "../data/out/CRM_0R1/out",
         "outPltMode": 1,
         "readMeshMode": 2,
         "outPltTecplotFormat": false,
@@ -208,6 +208,9 @@
         "rsMeanValueEig": 1,
         // "ransEigScheme": 1,
         "ransForce2nd": 1,
+        "SAConfig": {
+            "productionLimit": 1e100
+        },
         // "useSourceGradFixGG": 1,
         // "ransSource2nd": 1,
         "ransUseQCR": 0,
@@ -240,7 +243,8 @@
             "nIterStartDrive": 1000000,
             "nIterConvergeMin": 5000000,
             "CLconvergeThreshold": 0.001,
-            "CLconvergeWindow": 50
+            "CLconvergeWindow": 50,
+            "thresholdTargetRatio": 0.5
         },
         "cLDriverBCNames": [
             "WALL"

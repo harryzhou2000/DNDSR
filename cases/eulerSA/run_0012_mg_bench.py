@@ -1,4 +1,4 @@
-from utils.GraceExit import GraceExit
+import importlib
 import os
 import sys
 import pprint
@@ -6,6 +6,7 @@ import pprint
 dirname = os.path.dirname(os.path.realpath(__file__))
 sys.path.append(os.path.join(dirname, "..", "..", "scripts"))
 
+GraceExit = importlib.import_module("utils.GraceExit").GraceExit
 
 handler = GraceExit(max_attempts=5)
 
