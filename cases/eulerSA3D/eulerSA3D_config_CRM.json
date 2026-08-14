@@ -15,7 +15,7 @@
     },
     "convergenceControl": {
         "nTimeStepInternal": 50000,
-        "rhsThresholdInternal": 1e-7,
+        "rhsThresholdInternal": 1e-8,
         "res_base": 0.0,
         "useVolWiseResidual": true
     },
@@ -232,7 +232,7 @@
         "cLDriverSettings": {
             // "AOAInit": 2.4532458452124803,
             // for O4 converged
-            "AOAInit": 2.4146778875999995,
+            "AOAInit": 2.4481933313197484,
             "AOAAxis": "y",
             "CL0Axis": "z",
             "CD0Axis": "x",
@@ -263,7 +263,7 @@
         "iStep": 1,
         "iStepInternal": 10000,
         "odeCodePrev": -1,
-        "lastRestartFile": "../data/out/CRM_0R/out-O2-starter__1_10000_p2800.restart.dnds.h5",
+        "lastRestartFile": "../data/out/CRM_0R1/out-O4-0R1-drive__1_20000_p2800.restart.dnds.h5",
         "otherRestartFile": "",
         "otherRestartStoreDim": [
             0
