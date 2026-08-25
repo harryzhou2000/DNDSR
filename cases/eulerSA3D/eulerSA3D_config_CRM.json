@@ -15,7 +15,7 @@
     },
     "convergenceControl": {
         "nTimeStepInternal": 50000,
-        "rhsThresholdInternal": 1e-8,
+        "rhsThresholdInternal": 1e-16,
         "res_base": 0.0,
         "useVolWiseResidual": true
     },

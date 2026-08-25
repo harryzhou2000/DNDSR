@@ -1,16 +1,17 @@
-from utils.GraceExit import GraceExit
+import importlib
 import os
 import sys
 
 dirname = os.path.dirname(os.path.realpath(__file__))
 sys.path.append(os.path.join(dirname, "..", "..", "scripts"))
 
+GraceExit = importlib.import_module("utils.GraceExit").GraceExit
 
 handler = GraceExit(max_attempts=5)
 
 config_name = os.path.join(dirname, "config_cylinderInvis_mg_bench.json")
 
-out_base = "../data/out/CylinderInvisHalfA-MGtest_2_VRes-M0d01.dir"
+out_base = "../data/out/CylinderInvisHalfA-MGtest_2_VRes-M0d01-RM1.dir"
 
 name_prefix = ""
 
@@ -143,7 +144,7 @@ def get_options(
                     "/eulerSettings/farFieldStaticValue",
                     "[1,1.0,0.0,0,17857.642857142862]",
                 ),
-                ("/eulerSettings/riemannSolverType", '\\"Roe_M2\\"'),
+                ("/eulerSettings/riemannSolverType", '\\"Roe_M1\\"'),
             ]
         )
         options_list[name] = options

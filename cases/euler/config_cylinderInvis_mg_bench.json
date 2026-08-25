@@ -45,7 +45,7 @@
         "meshReorderCells": 1,
         "meshFile": "../data/mesh/CylinderInvisHalfA.cgns",
         // "meshFile": "../data/mesh/CylinderA1-Invis.cgns",
-        "outPltName": "../data/outUnsteady/CylinderInvisHalfA-MGtest_2_VRes.dir/gmres5x1ilu",
+        "outPltName": "../data/outUnsteady/CylinderInvisHalfA-MGtest_2_VRes.dir/test-gmres5x1ilu",
         // "outPltName": "../data/outUnsteady/CylinderA1-Invis/test1_M0d01/ilu",
         "outPltMode": 0,
         "readMeshMode": 0,
@@ -143,7 +143,7 @@
         "ignoreSourceTerm": true,
         "useScalarJacobian": false,
         // "useRoeJacobian": true,
-        "riemannSolverType": "Roe_M8",
+        "riemannSolverType": "Roe",
         "riemannSolverTypeAux": "Roe_M2",
         "rsMeanValueEig": 1,
         "rsFixScale": 1,
@@ -168,20 +168,20 @@
         //     0,
         //     3.290178571428572
         // ],
-        "farFieldStaticValue": [ //M0.1
-            1,
-            1.0,
-            0.0,
-            0,
-            179.0714285714286
-        ],
-        // "farFieldStaticValue": [//M0.01
+        // "farFieldStaticValue": [ //M0.1
         //     1,
         //     1.0,
         //     0.0,
         //     0,
-        //     17857.642857142862
+        //     179.0714285714286
         // ],
+        "farFieldStaticValue": [//M0.01
+            1,
+            1.0,
+            0.0,
+            0,
+            17857.642857142862
+        ],
         // "farFieldStaticValue": [
         //     1,
         //     1.0,
