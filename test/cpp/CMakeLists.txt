@@ -409,6 +409,7 @@ euler_add_unit_test(riemann_solvers "Euler/test_RiemannSolvers.cpp" "cfv;geom;dn
 euler_add_unit_test(rans "Euler/test_RANS.cpp" "cfv;geom;dnds")
 if(DNDS_USE_CANTERA)
     euler_add_unit_test(source_chemical "Euler/test_SourceChemical.cpp" "euler_library_NS_EX;euler_library_fast_NS_EX;cfv;geom;dnds")
+    euler_add_unit_test(reactive_split_indicator "Euler/test_ReactiveSplitIndicator.cpp" "euler_library_NS_EX;euler_library_fast_NS_EX;cfv;geom;dnds")
     euler_add_unit_test(uv "Euler/test_UV.cpp" "euler_library_NS_EX;euler_library_fast_NS_EX;cfv;geom;dnds")
     euler_add_unit_test(physics_properties "Euler/test_PhysicsProperties.cpp" "euler_library_NS_EX;euler_library_fast_NS_EX;cfv;geom;dnds")
     euler_add_unit_test(chem_ode "Euler/test_ChemODE.cpp" "euler_library_NS_EX;euler_library_fast_NS_EX;cfv;geom;dnds")

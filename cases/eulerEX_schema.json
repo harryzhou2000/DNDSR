@@ -139,7 +139,9 @@
                 "sourceStrangSplitting": {
                     "type": "integer",
                     "default": 0,
-                    "description": "Reactive physical-time Strang splitting: 0=off, 1=on. Latest/output RHS is flow-only while enabled."
+                    "description": "Reactive physical-time integration: 0=coupled, 1=Strang, 2=local mixed Strang/coupled.",
+                    "minimum": 0.0,
+                    "maximum": 2.0
                 }
             }
         },
@@ -1682,6 +1684,43 @@
                             "default": 10000000,
                             "description": "Cantera reactor max internal steps",
                             "minimum": 1.0
+                        }
+                    }
+                },
+                "reactiveSplitIndicator": {
+                    "type": "object",
+                    "description": "Dimensionless local selector for mixed Strang/coupled chemistry",
+                    "properties": {
+                        "coupledThreshold": {
+                            "type": "number",
+                            "default": 0.005,
+                            "description": "Coupled-score midpoint",
+                            "minimum": 0.0
+                        },
+                        "transitionWidth": {
+                            "type": "number",
+                            "default": 0.001,
+                            "description": "Smooth-switch width",
+                            "minimum": 0.0
+                        },
+                        "shockScale": {
+                            "type": "number",
+                            "default": 0.08,
+                            "description": "Dimensionless pressure-jump scale",
+                            "minimum": 0.0
+                        },
+                        "strangBias": {
+                            "type": "number",
+                            "default": 1.0,
+                            "description": "Multiplicative preference toward Strang",
+                            "minimum": 0.0
+                        },
+                        "chiOverride": {
+                            "type": "number",
+                            "default": -1.0,
+                            "description": "Override chi in [0,1]; negative enables the indicator",
+                            "minimum": -1.0,
+                            "maximum": 1.0
                         }
                     }
                 },

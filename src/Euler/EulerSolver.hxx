@@ -162,11 +162,14 @@ namespace DNDS::Euler
         // runs recover the unsplit zero-source equations exactly.
         const bool sourceTauSplittingEnabled = sourceTauSplittingRequested &&
                                                eval.settings.reactiveSourceScale > 0;
-        const bool sourceStrangSplittingEnabled = config.timeMarchControl.sourceStrangSplitting &&
-                                                  TEval::Traits::isExtended &&
-                                                  eval.settings.reactiveFlow.enabled;
-        DNDS_check_throw_info(!(sourceTauSplittingEnabled && sourceStrangSplittingEnabled),
-                              "sourceTauSplitting and sourceStrangSplitting cannot both be enabled");
+        const bool sourceStrangSplittingEnabled = config.timeMarchControl.sourceStrangSplitting == 1 &&
+                                                  TEval::Traits::isExtended && eval.settings.reactiveFlow.enabled;
+        const bool sourceHybridSplittingEnabled = config.timeMarchControl.sourceStrangSplitting == 2 &&
+                                                  TEval::Traits::isExtended && eval.settings.reactiveFlow.enabled;
+        const bool sourcePhysicalSplittingEnabled = sourceStrangSplittingEnabled || sourceHybridSplittingEnabled;
+        DNDS_check_throw_info(!(sourceTauSplittingEnabled && sourcePhysicalSplittingEnabled),
+                              "sourceTauSplitting and physical source splitting cannot both be enabled");
+        eval.SetReactiveSplitChiEnabled(sourceHybridSplittingEnabled);
         const uint64_t sourceTauSplittingRHSFlag = sourceStrangSplittingEnabled
                                                        ? TEval::RHS_Ignore_Reactive_Source
                                                    : sourceTauSplittingEnabled
@@ -181,6 +184,8 @@ namespace DNDS::Euler
         auto warmT = (eval.settings.reactiveFlow.useCellTWarmCache && eval.phys().hasChemicalSource())
                          ? OptionalRef<ArrayDOFV<1>>(cellT_warm_)
                          : OptionalRef<ArrayDOFV<1>>{};
+        if (sourceHybridSplittingEnabled)
+            eval.UpdateReactiveSplitChi(u, config.timeMarchControl.dtImplicit, warmT);
 
         auto frhsOuter =
             [&](
@@ -1402,9 +1407,16 @@ namespace DNDS::Euler
                 curDtImplicit = std::max(0.0, nextTout - tSimu);
             }
 
-            if (sourceStrangSplittingEnabled)
+            bool applySplitSourceStep = sourceStrangSplittingEnabled;
+            if (sourceHybridSplittingEnabled)
             {
-                eval.ReactiveSourceConstVolumeStep(u, uRec, 0.5 * curDtImplicit, tSimu, warmT);
+                eval.UpdateReactiveSplitChi(u, curDtImplicit, warmT);
+                applySplitSourceStep = eval.GetReactiveSplitChiMax() > 0;
+            }
+            if (applySplitSourceStep)
+            {
+                eval.ReactiveSourceConstVolumeStep(u, uRec, 0.5 * curDtImplicit, tSimu, warmT,
+                                                   sourceHybridSplittingEnabled);
                 ode->ResetFreshStart();
             }
 
@@ -1494,9 +1506,10 @@ namespace DNDS::Euler
                         config.convergenceControl.nTimeStepInternal,
                         fstop, fincrement,
                         curDtImplicit + verySmallReal);
-            if (sourceStrangSplittingEnabled)
+            if (applySplitSourceStep)
             {
-                eval.ReactiveSourceConstVolumeStep(u, uRec, 0.5 * curDtImplicit, tSimu + curDtImplicit, warmT);
+                eval.ReactiveSourceConstVolumeStep(u, uRec, 0.5 * curDtImplicit, tSimu + curDtImplicit, warmT,
+                                                   sourceHybridSplittingEnabled);
                 ode->ResetFreshStart();
             }
             curDtImplicitHistory.push_back(curDtImplicit);
@@ -1936,16 +1949,19 @@ namespace DNDS::Euler
         {
             DNDS_assert(config.timeMarchControl.odeCode == 1 || config.timeMarchControl.odeCode == 102);
         }
-        if (config.timeMarchControl.sourceStrangSplitting)
+        if (config.timeMarchControl.sourceStrangSplitting != 0)
         {
             DNDS_check_throw_info(TEval::Traits::isExtended && eval.settings.reactiveFlow.enabled,
-                                  "sourceStrangSplitting requires reactive extended Euler physics");
+                                  "physical source splitting requires reactive extended Euler physics");
             DNDS_check_throw_info(!ode->IsMultistep(),
-                                  "sourceStrangSplitting only supports single-step ODE methods");
+                                  "physical source splitting only supports single-step ODE methods");
             DNDS_check_throw_info(!config.timeMarchControl.useImplicitPP,
-                                  "sourceStrangSplitting is not supported with useImplicitPP");
+                                  "physical source splitting is not supported with useImplicitPP");
             if (mpi.rank == 0)
-                log() << "=== Source splitting: Strang reactive source; latest/output RHS is flow-only" << std::endl;
+                log() << (config.timeMarchControl.sourceStrangSplitting == 1
+                              ? "=== Source splitting: Strang reactive source; latest/output RHS is flow-only"
+                              : "=== Source splitting: local mixed Strang/coupled reactive source")
+                      << std::endl;
         }
 
         // std::cout << fmt::format("nVars {}, here100", nVars);

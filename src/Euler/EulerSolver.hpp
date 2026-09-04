@@ -197,7 +197,7 @@ namespace DNDS::Euler
                 bool useDtPPLimit = false;
                 real dtPPLimitRelax = 0.8;
                 real dtPPLimitScale = 1;
-                int sourceStrangSplitting = 0; ///< 0=off, 1=reactive half-step / flow / reactive half-step; latest RHS is flow-only.
+                int sourceStrangSplitting = 0; ///< 0=coupled, 1=Strang, 2=local mixed Strang/coupled.
                 DNDS_DECLARE_CONFIG(TimeMarchControl)
                 {
                     // clang-format off
@@ -255,7 +255,8 @@ namespace DNDS::Euler
                                DNDS::Config::range(0.0, 1.0));
                     DNDS_FIELD(dtPPLimitScale,      "PP dt limiter scale",
                                DNDS::Config::range(0.0));
-                    DNDS_FIELD(sourceStrangSplitting, "Reactive physical-time Strang splitting: 0=off, 1=on. Latest/output RHS is flow-only while enabled.");
+                    DNDS_FIELD(sourceStrangSplitting, "Reactive physical-time integration: 0=coupled, 1=Strang, 2=local mixed Strang/coupled.",
+                               DNDS::Config::range(0, 2));
                     // clang-format on
                 }
                 bool timeMarchIsTwoStage()

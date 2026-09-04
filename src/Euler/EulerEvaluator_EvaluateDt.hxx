@@ -1724,6 +1724,7 @@ namespace DNDS::Euler
             if (cellTWarm && phys_.hasChemicalSource())
                 (*cellTWarm)[iCell](0) = T;
             aux.rhoE_base = phys_.mixtureBaseInternalRhoE(UMeanXy);
+            aux.reactiveScale = reactiveSplitChiEnabled ? 1.0 - reactiveSplitChi[iCell](0) : 1.0;
 
             SourceTermVisitor<model> visitor{ret, jacobian, UMeanXy, DiffUxy, pPhy, aux,
                                              iCell, ig, Mode, filter};
@@ -2857,6 +2858,16 @@ namespace DNDS::Euler
         { return betaPP[iCell](0); };
         outMap["alphaPP"] = [&](index iCell)
         { return alphaPP[iCell](0); };
+        outMap["reactiveSplitChi"] = [&](index iCell)
+        { return eval.reactiveSplitChi[iCell](0); };
+        outMap["reactiveSplitChemicalStep"] = [&](index iCell)
+        { return eval.reactiveSplitChemicalStep[iCell](0); };
+        outMap["reactiveSplitDiffusiveStep"] = [&](index iCell)
+        { return eval.reactiveSplitDiffusiveStep[iCell](0); };
+        outMap["reactiveSplitShockSensor"] = [&](index iCell)
+        { return eval.reactiveSplitShockSensor[iCell](0); };
+        outMap["reactiveSplitCoupledScore"] = [&](index iCell)
+        { return eval.reactiveSplitCoupledScore[iCell](0); };
         outMap["ACond"] = [&](index iCell)
         {
             auto AI = vfv->GetCellRecMatAInv(iCell);
