@@ -25,6 +25,7 @@
 #include "Gas.hpp"
 #include "CLDriver.hpp"
 #include "RANS_ke.hpp"
+#include "ReactiveSplitIndicator.hpp"
 #include <cmath>
 #include <unordered_set>
 #include <string>
@@ -451,6 +452,7 @@ namespace DNDS::Euler
                 // clang-format on
             }
         } reactorStepSettings;                                                   ///< Settings for direct Cantera source substeps.
+        ReactiveSplitIndicatorSettings reactiveSplitIndicator;                   ///< Local mixed Strang/coupled selector settings.
         real reactiveSourceScale = 1.0;                                          ///< Multiplier for reactive source RHS and Jacobian.
         Eigen::Vector<real, 3> constMassForce = Eigen::Vector<real, 3>{0, 0, 0}; ///< Constant body force vector [fx, fy, fz].
         /// @}
@@ -798,6 +800,8 @@ namespace DNDS::Euler
             DNDS_FIELD(pointImplicitSourceUpdateOut, "Print point-implicit source-update Newton residual ratio min/max: 0=off, 1=on");
             config.field_section(&T::reactorStepSettings, "reactorStepSettings",
                                  "Cantera reactor settings for direct source substeps");
+            config.field_section(&T::reactiveSplitIndicator, "reactiveSplitIndicator",
+                                 "Dimensionless local selector for mixed Strang/coupled chemistry");
             DNDS_FIELD(reactiveSourceScale,     "Scale reactive source RHS and Jacobian directly; use 0 for non-reactive debugging",
                        DNDS::Config::range(0, 1));
             DNDS_FIELD(constMassForce,          "Constant mass force vector (3D)");

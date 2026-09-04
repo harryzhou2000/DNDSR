@@ -1791,12 +1791,169 @@ namespace DNDS::Euler
 
     DNDS_SWITCH_INTELLISENSE(
         template <EulerModel model>, )
+    void EulerEvaluator<model>::UpdateReactiveSplitChi(
+        ArrayDOFV<nVarsFixed> &u,
+        real dt,
+        OptionalRef<ArrayDOFV<1>> cellTWarm)
+    {
+        DNDS_check_throw_info(dt > 0, "UpdateReactiveSplitChi requires positive dt");
+        DNDS_check_throw_info(Traits::isExtended && settings.reactiveFlow.enabled && phys_.hasChemicalSource(),
+                              "UpdateReactiveSplitChi requires reactive extended Euler physics");
+        const auto &indicatorSettings = settings.reactiveSplitIndicator;
+        if (indicatorSettings.chiOverride >= 0)
+        {
+            reactiveSplitChi.setConstant(std::clamp(indicatorSettings.chiOverride, real(0), real(1)));
+            reactiveSplitChemicalStep.setConstant(0.0);
+            reactiveSplitDiffusiveStep.setConstant(0.0);
+            reactiveSplitShockSensor.setConstant(0.0);
+            reactiveSplitCoupledScore.setConstant(0.0);
+            return;
+        }
+
+        u.trans.startPersistentPull();
+        u.trans.waitPersistentPull();
+        const int Ns = phys_.nSpecies();
+        const int Ns1 = Ns - 1;
+        const int Isp = nVars - Ns1;
+        const real temperatureFloor = phys_.chem().baseTemperature();
+        const index nCellProc = mesh->NumCellProc();
+        std::vector<real> temperature(static_cast<size_t>(nCellProc));
+        std::vector<real> pressure(static_cast<size_t>(nCellProc));
+        std::vector<double> massFractions(static_cast<size_t>(nCellProc) * Ns);
+
+#if defined(DNDS_DIST_MT_USE_OMP)
+#    pragma omp parallel for schedule(static)
+#endif
+        for (index iCell = 0; iCell < nCellProc; ++iCell)
+        {
+            auto state = u[iCell];
+            real TGuess = cellTWarm && iCell < mesh->NumCell() ? (*cellTWarm)[iCell](0) : real(0);
+            auto [T, p, asqr, H, gammaEq, gamma] = phys_.conservativeThermal(state, TGuess);
+            (void)asqr;
+            (void)H;
+            (void)gammaEq;
+            (void)gamma;
+            temperature[static_cast<size_t>(iCell)] = phys_.toPhysT(T);
+            pressure[static_cast<size_t>(iCell)] = phys_.toPhysP(p);
+            Chemistry::SpeciesBufferView Y{massFractions.data() + static_cast<size_t>(iCell) * Ns, Ns};
+            Chemistry::RepairMassFractions(state(0), {state.data() + Isp, Ns1}, Y);
+            if (cellTWarm && iCell < mesh->NumCell())
+                (*cellTWarm)[iCell](0) = T;
+        }
+
+        std::vector<real> chemicalRate(static_cast<size_t>(mesh->NumCell()), 0.0);
+        std::vector<real> maxDiffusivity(static_cast<size_t>(mesh->NumCell()), 0.0);
+#if defined(DNDS_DIST_MT_USE_OMP)
+#    pragma omp parallel
+#endif
+        {
+            std::vector<double> omega(static_cast<size_t>(Ns));
+            std::vector<double> diffusivity(static_cast<size_t>(Ns));
+            std::vector<double> enthalpy(static_cast<size_t>(Ns));
+#if defined(DNDS_DIST_MT_USE_OMP)
+#    pragma omp for schedule(guided)
+#endif
+            for (index iCell = 0; iCell < mesh->NumCell(); ++iCell)
+            {
+                auto &chem = phys_.chem();
+                Chemistry::ConstSpeciesBufferView Y{massFractions.data() + static_cast<size_t>(iCell) * Ns, Ns};
+                Chemistry::SpeciesBufferView omegaView{omega.data(), Ns};
+                Chemistry::SpeciesBufferView diffusivityView{diffusivity.data(), Ns};
+                Chemistry::SpeciesBufferView enthalpyView{enthalpy.data(), Ns};
+                real T = temperature[static_cast<size_t>(iCell)];
+                real p = pressure[static_cast<size_t>(iCell)];
+                chem.productionRates(T, p, Y, omegaView);
+                chem.speciesDiffusivity(T, p, Y, diffusivityView);
+                chem.speciesEnthalpies(T, p, Y, enthalpyView);
+                real rhoPhysical = u[iCell](0) * settings.idealGasProperty.rho0;
+                real speciesRateSquared = 0;
+                real heatRelease = 0;
+                for (int k = 0; k < Ns; ++k)
+                {
+                    real massRate = omega[static_cast<size_t>(k)] * chem.molecularWeights()[static_cast<size_t>(k)];
+                    speciesRateSquared += sqr(massRate / rhoPhysical);
+                    heatRelease -= massRate * enthalpy[static_cast<size_t>(k)];
+                }
+                real cv = chem.mixtureCv(T, Y, p);
+                real temperatureRateScale = std::abs(heatRelease) /
+                                            (rhoPhysical * std::max(cv, real(1e-30)) * std::max(T, temperatureFloor));
+                chemicalRate[static_cast<size_t>(iCell)] = std::sqrt(speciesRateSquared + sqr(temperatureRateScale));
+                maxDiffusivity[static_cast<size_t>(iCell)] =
+                    *std::max_element(diffusivity.begin(), diffusivity.end());
+            }
+        }
+
+        real dtPhysical = dt * settings.idealGasProperty.L0 / settings.idealGasProperty.U0;
+#if defined(DNDS_DIST_MT_USE_OMP)
+#    pragma omp parallel for schedule(static)
+#endif
+        for (index iCell = 0; iCell < mesh->NumCell(); ++iCell)
+        {
+            real maxNormalizedGradient = 0;
+            real shockSensor = 0;
+            auto c2f = mesh->cell2face[iCell];
+            for (rowsize ic2f = 0; ic2f < c2f.size(); ++ic2f)
+            {
+                index iFace = c2f[ic2f];
+                index iCellOther = mesh->CellFaceOther(iCell, iFace, ic2f);
+                if (iCellOther == UnInitIndex)
+                    continue;
+                rowsize if2c = mesh->CellIsFaceBack(iCell, iFace, ic2f) ? 0 : 1;
+                real distance = (vfv->GetOtherCellBaryFromCell(iCell, iCellOther, iFace, if2c) -
+                                 vfv->GetCellBary(iCell))
+                                    .norm();
+                if (!(distance > 0))
+                    continue;
+                real Ti = temperature[static_cast<size_t>(iCell)];
+                real Tj = temperature[static_cast<size_t>(iCellOther)];
+                real normalizedGradientSquared = sqr((Tj - Ti) / (distance * std::max({Ti, Tj, temperatureFloor})));
+                for (int k = 0; k < Ns; ++k)
+                {
+                    real Yi = massFractions[static_cast<size_t>(iCell) * Ns + k];
+                    real Yj = massFractions[static_cast<size_t>(iCellOther) * Ns + k];
+                    real speciesScale = std::max({Yi, Yj, real(1e-3)});
+                    if (std::max(Yi, Yj) >= 1e-3)
+                        normalizedGradientSquared += sqr((Yj - Yi) / (distance * speciesScale));
+                }
+                maxNormalizedGradient = std::max(maxNormalizedGradient, std::sqrt(normalizedGradientSquared));
+                real pi = pressure[static_cast<size_t>(iCell)];
+                real pj = pressure[static_cast<size_t>(iCellOther)];
+                shockSensor = std::max(shockSensor, std::abs(pj - pi) / std::max({std::abs(pi), std::abs(pj), real(1e-30)}));
+            }
+            real cellLength = vfv->GetCellMaxLenScale(iCell) * settings.idealGasProperty.L0;
+            real gradientLength = maxNormalizedGradient > 0
+                                      ? std::max(1.0 / maxNormalizedGradient * settings.idealGasProperty.L0, cellLength)
+                                      : veryLargeReal;
+            real chemicalStep = dtPhysical * chemicalRate[static_cast<size_t>(iCell)];
+            real diffusiveStep = dtPhysical * maxDiffusivity[static_cast<size_t>(iCell)] / sqr(gradientLength);
+            real coupledScore = ReactiveSplitCoupledScore(chemicalStep, diffusiveStep, shockSensor, indicatorSettings);
+            reactiveSplitChemicalStep[iCell](0) = chemicalStep;
+            reactiveSplitDiffusiveStep[iCell](0) = diffusiveStep;
+            reactiveSplitShockSensor[iCell](0) = shockSensor;
+            reactiveSplitCoupledScore[iCell](0) = coupledScore;
+            reactiveSplitChi[iCell](0) = ReactiveSplitChi(coupledScore, indicatorSettings);
+        }
+        reactiveSplitChi.trans.startPersistentPull();
+        reactiveSplitChemicalStep.trans.startPersistentPull();
+        reactiveSplitDiffusiveStep.trans.startPersistentPull();
+        reactiveSplitShockSensor.trans.startPersistentPull();
+        reactiveSplitCoupledScore.trans.startPersistentPull();
+        reactiveSplitChi.trans.waitPersistentPull();
+        reactiveSplitChemicalStep.trans.waitPersistentPull();
+        reactiveSplitDiffusiveStep.trans.waitPersistentPull();
+        reactiveSplitShockSensor.trans.waitPersistentPull();
+        reactiveSplitCoupledScore.trans.waitPersistentPull();
+    }
+
+    DNDS_SWITCH_INTELLISENSE(
+        template <EulerModel model>, )
     void EulerEvaluator<model>::ReactiveSourceConstVolumeStep(
         ArrayDOFV<nVarsFixed> &u,
         ArrayRECV<nVarsFixed> &uRec,
         real dt,
         real t,
-        OptionalRef<ArrayDOFV<1>> cellTWarm)
+        OptionalRef<ArrayDOFV<1>> cellTWarm,
+        bool useReactiveSplitChi)
     {
         (void)uRec;
         (void)t;
@@ -1846,10 +2003,13 @@ namespace DNDS::Euler
             real T = phys_.temperature(state, cellTWarm ? (*cellTWarm)[iCell](0) : real(0));
             if (cellTWarm)
                 (*cellTWarm)[iCell](0) = T;
+            real splitScale = useReactiveSplitChi ? reactiveSplitChi[iCell](0) : real(1);
+            if (splitScale == 0)
+                continue;
             phys_.advanceConstVolumeY(
                 T, rho,
                 Chemistry::SpeciesBufferView{Y.data(), Ns},
-                settings.reactiveSourceScale,
+                settings.reactiveSourceScale * splitScale,
                 dt,
                 settings.reactorStepSettings.rtol,
                 settings.reactorStepSettings.atol,

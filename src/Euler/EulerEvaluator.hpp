@@ -195,6 +195,12 @@ namespace DNDS::Euler
         std::vector<real> lambdaFace4;     ///< Per-face eigenvalue |u·n - a| (acoustic wave).
         std::vector<real> deltaLambdaFace; ///< Per-face spectral radius difference for implicit diagonal.
         ArrayDOFV<1> deltaLambdaCell;      ///< Per-cell accumulated spectral radius difference.
+        ArrayDOFV<1> reactiveSplitChi;     ///< Local Strang fraction for mixed reactive integration.
+        ArrayDOFV<1> reactiveSplitChemicalStep;
+        ArrayDOFV<1> reactiveSplitDiffusiveStep;
+        ArrayDOFV<1> reactiveSplitShockSensor;
+        ArrayDOFV<1> reactiveSplitCoupledScore;
+        bool reactiveSplitChiEnabled = false;
 
         // grad fix
         std::vector<TDiffU> gradUFix; ///< Green-Gauss gradient correction buffer for source term stabilization.
@@ -279,6 +285,16 @@ namespace DNDS::Euler
 
             deltaLambdaFace.resize(lambdaFace.size());
             vfv->BuildUDof(deltaLambdaCell, 1);
+            vfv->BuildUDof(reactiveSplitChi, 1);
+            vfv->BuildUDof(reactiveSplitChemicalStep, 1);
+            vfv->BuildUDof(reactiveSplitDiffusiveStep, 1);
+            vfv->BuildUDof(reactiveSplitShockSensor, 1);
+            vfv->BuildUDof(reactiveSplitCoupledScore, 1);
+            reactiveSplitChi.setConstant(0.0);
+            reactiveSplitChemicalStep.setConstant(0.0);
+            reactiveSplitDiffusiveStep.setConstant(0.0);
+            reactiveSplitShockSensor.setConstant(0.0);
+            reactiveSplitCoupledScore.setConstant(0.0);
 
             if (settings.useSourceGradFixGG)
             {
@@ -1183,7 +1199,32 @@ namespace DNDS::Euler
             ArrayRECV<nVarsFixed> &uRec,
             real dt,
             real t,
+            OptionalRef<ArrayDOFV<1>> cellTWarm = {},
+            bool useReactiveSplitChi = false);
+
+        void UpdateReactiveSplitChi(
+            ArrayDOFV<nVarsFixed> &u,
+            real dt,
             OptionalRef<ArrayDOFV<1>> cellTWarm = {});
+
+        void SetReactiveSplitChiEnabled(bool enabled)
+        {
+            reactiveSplitChiEnabled = enabled;
+        }
+
+        real GetReactiveSplitChi(index iCell) const
+        {
+            return reactiveSplitChi[iCell](0);
+        }
+
+        real GetReactiveSplitChiMax()
+        {
+            real chiMax = 0;
+            for (index iCell = 0; iCell < mesh->NumCell(); ++iCell)
+                chiMax = std::max(chiMax, reactiveSplitChi[iCell](0));
+            MPI::AllreduceOneReal(chiMax, MPI_MAX, mesh->getMPI());
+            return chiMax;
+        }
 
         /**
          * @brief Inviscid flux approximate Jacobian (no reconstruction, no Riemann solver).
@@ -2291,6 +2332,11 @@ namespace DNDS::Euler
             ArrayRECV<nVarsFixed> &uRec,                                                                                  \
             real dt,                                                                                                      \
             real t,                                                                                                       \
+            OptionalRef<ArrayDOFV<1>> cellTWarm,                                                                          \
+            bool useReactiveSplitChi);                                                                                    \
+        ext template void EulerEvaluator<model>::UpdateReactiveSplitChi(                                                  \
+            ArrayDOFV<nVarsFixed> &u,                                                                                     \
+            real dt,                                                                                                      \
             OptionalRef<ArrayDOFV<1>> cellTWarm);                                                                         \
                                                                                                                           \
         ext template void EulerEvaluator<model>::TimeAverageAddition(                                                     \
