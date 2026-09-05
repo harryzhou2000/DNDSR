@@ -1943,6 +1943,35 @@ namespace DNDS::Euler
         reactiveSplitDiffusiveStep.trans.waitPersistentPull();
         reactiveSplitShockSensor.trans.waitPersistentPull();
         reactiveSplitCoupledScore.trans.waitPersistentPull();
+        for (int iPass = 0; iPass < indicatorSettings.spatialPasses; ++iPass)
+        {
+            std::vector<real> nextChi(static_cast<size_t>(mesh->NumCell()));
+#if defined(DNDS_DIST_MT_USE_OMP)
+#    pragma omp parallel for schedule(static)
+#endif
+            for (index iCell = 0; iCell < mesh->NumCell(); ++iCell)
+            {
+                real neighborCoupledFraction = 0;
+                auto c2f = mesh->cell2face[iCell];
+                for (rowsize ic2f = 0; ic2f < c2f.size(); ++ic2f)
+                {
+                    index iFace = c2f[ic2f];
+                    index iCellOther = mesh->CellFaceOther(iCell, iFace, ic2f);
+                    if (iCellOther == UnInitIndex)
+                        continue;
+                    neighborCoupledFraction =
+                        std::max(neighborCoupledFraction, 1.0 - reactiveSplitChi[iCellOther](0));
+                }
+                real localCoupledFraction = 1.0 - reactiveSplitChi[iCell](0);
+                real expandedCoupledFraction = ReactiveSplitExpandedCoupledFraction(
+                    localCoupledFraction, neighborCoupledFraction, reactiveSplitShockSensor[iCell](0), indicatorSettings);
+                nextChi[static_cast<size_t>(iCell)] = 1.0 - expandedCoupledFraction;
+            }
+            for (index iCell = 0; iCell < mesh->NumCell(); ++iCell)
+                reactiveSplitChi[iCell](0) = nextChi[static_cast<size_t>(iCell)];
+            reactiveSplitChi.trans.startPersistentPull();
+            reactiveSplitChi.trans.waitPersistentPull();
+        }
     }
 
     DNDS_SWITCH_INTELLISENSE(
