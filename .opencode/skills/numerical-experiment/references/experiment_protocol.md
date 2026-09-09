@@ -34,6 +34,8 @@ For `local`, confirm the requested allocation is compatible with visible resourc
 
 For a remote runner, establish the host label, repository/build location, invocation mechanism, scheduler requirements, allocation, and artifact-transfer path. Use non-interactive commands and existing credentials; do not expose secrets. A remote run must use a source/config state tied to the local record. Record whether outputs were generated remotely and which compact artifacts were fetched.
 
+For MPI experiments, start the first timed run at the maximum rank count authorized by the user. Reduce the rank count only when the runner cannot supply that allocation, the executable or mesh imposes a stricter limit, or measured scaling shows that fewer ranks are preferable; record the reason.
+
 No solver launch is authorized by a direction alone: runner and `np` or CPU limit must also be known.
 
 ## Runtime Budget and Pilot Design
@@ -59,7 +61,7 @@ State the stop conditions before launch. Stop or decline to retry when the estim
 
 Use Luna by default, or the user's named available low-cost model, as a monitoring subagent when the expected run is long enough that unattended failure would waste material time. Give it only the exact job/process/log targets, expected progress markers, timeout, and stop/escalation criteria. Monitoring must not start new cases, change configs, kill unrelated jobs, or retry silently.
 
-The primary agent may wait for the polling subagent for up to 10 minutes when that wait is bounded by the declared numerical-run deadline. Prefer one appropriately long wait over frequent short polls; the monitor should still return early on completion, failure, or a stop-condition breach.
+The primary agent may wait for the polling subagent for at least 20 minutes when waiting on an explicitly authorized long run, and may use a longer bounded wait when the user explicitly authorizes it. Retain the ordinary 10-minute wait bound for normal trials. Prefer one appropriately long wait over frequent short polls; the monitor should still return early on completion, failure, or a stop-condition breach.
 
 The primary agent remains responsible for interpreting completion and numerical validity. A clean exit proves execution, not correctness.
 
