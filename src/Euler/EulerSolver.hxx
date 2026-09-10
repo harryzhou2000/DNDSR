@@ -118,8 +118,11 @@ namespace DNDS::Euler
         eval.RepairCellMeanState(u);
         for (index i = 0; i < mesh->NumCell(); ++i)
             cellT_warm_[i](0) = eval.phys().temperature(u[i]);
+        typename TEval::ReactiveSplitDataRefs reactiveSplitData{
+            reactiveSplitChi_, reactiveSplitChemicalStep_, reactiveSplitDiffusiveStep_,
+            reactiveSplitShockSensor_, reactiveSplitCoupledScore_};
         OutputPicker outputPicker;
-        eval.InitializeOutputPicker(outputPicker, {u, uRec, betaPP, alphaPP});
+        eval.InitializeOutputPicker(outputPicker, {u, uRec, betaPP, alphaPP}, reactiveSplitData);
         addOutList = outputPicker.getSubsetList(config.dataIOControl.outCellScalarNames);
 
         OutputPicker outputPickerBnd;
@@ -169,7 +172,6 @@ namespace DNDS::Euler
         const bool sourcePhysicalSplittingEnabled = sourceStrangSplittingEnabled || sourceHybridSplittingEnabled;
         DNDS_check_throw_info(!(sourceTauSplittingEnabled && sourcePhysicalSplittingEnabled),
                               "sourceTauSplitting and physical source splitting cannot both be enabled");
-        eval.SetReactiveSplitChiEnabled(sourceHybridSplittingEnabled);
         const uint64_t sourceTauSplittingRHSFlag = sourceStrangSplittingEnabled
                                                        ? TEval::RHS_Ignore_Reactive_Source
                                                    : sourceTauSplittingEnabled
@@ -184,8 +186,11 @@ namespace DNDS::Euler
         auto warmT = (eval.settings.reactiveFlow.useCellTWarmCache && eval.phys().hasChemicalSource())
                          ? OptionalRef<ArrayDOFV<1>>(cellT_warm_)
                          : OptionalRef<ArrayDOFV<1>>{};
-        if (sourceHybridSplittingEnabled)
-            eval.UpdateReactiveSplitChi(u, config.timeMarchControl.dtImplicit, warmT);
+        auto reactiveSplitChi = sourceHybridSplittingEnabled
+                                    ? OptionalRef<const ArrayDOFV<1>>(reactiveSplitChi_)
+                                    : OptionalRef<const ArrayDOFV<1>>{};
+        if (sourceHybridSplittingEnabled && config.outputControl.dataOutAtInit)
+            eval.UpdateReactiveSplitChi(u, reactiveSplitData, config.timeMarchControl.dtImplicit, warmT);
 
         auto frhsOuter =
             [&](
@@ -254,7 +259,8 @@ namespace DNDS::Euler
                 alphaPP_tmp.setConstant(1.0);
                 uRecNew.setConstant(0.0);
                 eval.EvaluateRHS(crhs, JSourceC, cx, uRecNew, uRecNew, betaPPC, alphaPP_tmp, false, tSimu + ct * curDtImplicit,
-                                 TEval::RHS_Ignore_Viscosity | sourceTauSplittingRHSFlag, warmT); // TODO: test with viscosity // TODO: RHS_Direct_2nd_Rec_1st_Conv?
+                                 TEval::RHS_Ignore_Viscosity | sourceTauSplittingRHSFlag, warmT,
+                                 reactiveSplitChi); // TODO: test with viscosity // TODO: RHS_Direct_2nd_Rec_1st_Conv?
                 // vfv->DoReconstruction2nd(uRecOld, cx, FBoundary, 1, std::vector<int>());
                 // eval.EvaluateRHS(crhs, JSourceC, cx, uRecOld, uRecNew, betaPPC, alphaPP_tmp, false, tSimu + ct * curDtImplicit,
                 //                  0); // TEval::RHS_Ignore_Viscosity
@@ -675,13 +681,15 @@ namespace DNDS::Euler
                                  betaPPC /* dummy*/, alphaPP_tmp /* dummy*/, false, tSimu + ct * curDtImplicit,
                                  TEval::RHS_Direct_2nd_Rec | (config.limiterControl.useLimiter ? TEval::RHS_Direct_2nd_Rec_use_limiter : TEval::RHS_No_Flags) |
                                      sourceTauSplittingRHSFlag,
-                                 warmT);
+                                 warmT, reactiveSplitChi);
             else if (config.limiterControl.useLimiter || config.limiterControl.usePPRecLimiter) // todo: opt to using limited for uRecUnlim
                 eval.EvaluateRHS(crhs, JSourceC, cx, config.limiterControl.useViscousLimited ? uRecLimited : uRecC, uRecLimited,
-                                 betaPPC, alphaPP_tmp, false, tSimu + ct * curDtImplicit, sourceTauSplittingRHSFlag, warmT);
+                                 betaPPC, alphaPP_tmp, false, tSimu + ct * curDtImplicit, sourceTauSplittingRHSFlag, warmT,
+                                 reactiveSplitChi);
             else
                 eval.EvaluateRHS(crhs, JSourceC, cx, uRecC, uRecC,
-                                 betaPPC, alphaPP_tmp, false, tSimu + ct * curDtImplicit, sourceTauSplittingRHSFlag, warmT);
+                                 betaPPC, alphaPP_tmp, false, tSimu + ct * curDtImplicit, sourceTauSplittingRHSFlag, warmT,
+                                 reactiveSplitChi);
 
             crhs.trans.startPersistentPull();
             crhs.trans.waitPersistentPull();
@@ -712,7 +720,7 @@ namespace DNDS::Euler
                                             TEval::RHS_Direct_2nd_Rec_already_have_uGradBufNoLim | //! uGradBufNoLim already existent in fdtau
                                             (config.limiterControl.useLimiter ? TEval::RHS_Direct_2nd_Rec_use_limiter : TEval::RHS_No_Flags) |
                                             sourceTauSplittingRHSFlag,
-                                        warmT);
+                                        warmT, reactiveSplitChi);
                 //! note: in HM3 IV test for TPMG, this O1 version makes convergence slower compared to the O2 one, why?
                 // static const int use_1st_conv = 1;
                 // static const int use_1st_conv_ignore_vis = 0;
@@ -986,7 +994,7 @@ namespace DNDS::Euler
                                                  (config.limiterControl.useLimiter ? TEval::RHS_Direct_2nd_Rec_use_limiter : TEval::RHS_No_Flags) |
                                                  TEval::RHS_Recover_IncFScale |
                                                  sourceTauSplittingRHSFlag,
-                                             warmT);
+                                             warmT, reactiveSplitChi);
                         else if (mgLevel == 2)
                             eval.EvaluateRHS(rhsTemp, JSourceTmp, uMG1,
                                              config.limiterControl.useViscousLimited ? uRecNew : uRec /*dummy*/, uRec /*dummy*/,
@@ -1000,7 +1008,7 @@ namespace DNDS::Euler
                                                  (config.limiterControl.useLimiter ? TEval::RHS_Direct_2nd_Rec_use_limiter : TEval::RHS_No_Flags) |
                                                  TEval::RHS_Recover_IncFScale |
                                                  sourceTauSplittingRHSFlag,
-                                             warmT);
+                                             warmT, reactiveSplitChi);
                         else
                             DNDS_assert(false);
                     };
@@ -1270,10 +1278,12 @@ namespace DNDS::Euler
             alphaPPC = alphaPP_tmp;
             if (config.limiterControl.useLimiter || config.limiterControl.usePPRecLimiter)
                 eval.EvaluateRHS(crhs, JSourceC, cx, config.limiterControl.useViscousLimited ? uRecLimited : uRecC, uRecLimited,
-                                 betaPPC, alphaPPC, false, tSimu + ct * curDtImplicit, sourceTauSplittingRHSFlag, warmT);
+                                 betaPPC, alphaPPC, false, tSimu + ct * curDtImplicit, sourceTauSplittingRHSFlag, warmT,
+                                 reactiveSplitChi);
             else
                 eval.EvaluateRHS(crhs, JSourceC, cx, uRecC, uRecC,
-                                 betaPPC, alphaPPC, false, tSimu + ct * curDtImplicit, sourceTauSplittingRHSFlag, warmT);
+                                 betaPPC, alphaPPC, false, tSimu + ct * curDtImplicit, sourceTauSplittingRHSFlag, warmT,
+                                 reactiveSplitChi);
             // rhs now last-fixed
             crhs.trans.startPersistentPull();
             crhs.trans.waitPersistentPull();
@@ -1298,10 +1308,12 @@ namespace DNDS::Euler
                 alphaPPC = alphaPP_tmp;
                 if (config.limiterControl.useLimiter || config.limiterControl.usePPRecLimiter)
                     eval.EvaluateRHS(crhs, JSourceC, cx, config.limiterControl.useViscousLimited ? uRecLimited : uRecC, uRecLimited,
-                                     betaPPC, alphaPPC, false, tSimu + ct * curDtImplicit, sourceTauSplittingRHSFlag, warmT);
+                                     betaPPC, alphaPPC, false, tSimu + ct * curDtImplicit, sourceTauSplittingRHSFlag, warmT,
+                                     reactiveSplitChi);
                 else
                     eval.EvaluateRHS(crhs, JSourceC, cx, uRecC, uRecC,
-                                     betaPPC, alphaPPC, false, tSimu + ct * curDtImplicit, sourceTauSplittingRHSFlag, warmT);
+                                     betaPPC, alphaPPC, false, tSimu + ct * curDtImplicit, sourceTauSplittingRHSFlag, warmT,
+                                     reactiveSplitChi);
                 crhs.trans.startPersistentPull();
                 crhs.trans.waitPersistentPull();
             }
@@ -1410,13 +1422,17 @@ namespace DNDS::Euler
             bool applySplitSourceStep = sourceStrangSplittingEnabled;
             if (sourceHybridSplittingEnabled)
             {
-                eval.UpdateReactiveSplitChi(u, curDtImplicit, warmT);
-                applySplitSourceStep = eval.GetReactiveSplitChiMax() > 0;
+                eval.UpdateReactiveSplitChi(u, reactiveSplitData, curDtImplicit, warmT);
+                real chiMax = 0;
+                for (index iCell = 0; iCell < mesh->NumCell(); ++iCell)
+                    chiMax = std::max(chiMax, reactiveSplitChi_[iCell](0));
+                MPI::AllreduceOneReal(chiMax, MPI_MAX, mpi);
+                applySplitSourceStep = chiMax > 0;
             }
             if (applySplitSourceStep)
             {
                 eval.ReactiveSourceConstVolumeStep(u, uRec, 0.5 * curDtImplicit, tSimu, warmT,
-                                                   sourceHybridSplittingEnabled);
+                                                   reactiveSplitChi);
                 ode->ResetFreshStart();
             }
 
@@ -1509,7 +1525,7 @@ namespace DNDS::Euler
             if (applySplitSourceStep)
             {
                 eval.ReactiveSourceConstVolumeStep(u, uRec, 0.5 * curDtImplicit, tSimu + curDtImplicit, warmT,
-                                                   sourceHybridSplittingEnabled);
+                                                   reactiveSplitChi);
                 ode->ResetFreshStart();
             }
             curDtImplicitHistory.push_back(curDtImplicit);

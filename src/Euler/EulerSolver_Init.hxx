@@ -434,6 +434,16 @@ namespace DNDS::Euler
         vfv->BuildUDof(alphaPP_tmp, 1);
         vfv->BuildUDof(dTauTmp, 1);
         vfv->BuildUDof(cellT_warm_, 1);
+        vfv->BuildUDof(reactiveSplitChi_, 1);
+        vfv->BuildUDof(reactiveSplitChemicalStep_, 1);
+        vfv->BuildUDof(reactiveSplitDiffusiveStep_, 1);
+        vfv->BuildUDof(reactiveSplitShockSensor_, 1);
+        vfv->BuildUDof(reactiveSplitCoupledScore_, 1);
+        reactiveSplitChi_.setConstant(0.0);
+        reactiveSplitChemicalStep_.setConstant(0.0);
+        reactiveSplitDiffusiveStep_.setConstant(0.0);
+        reactiveSplitShockSensor_.setConstant(0.0);
+        reactiveSplitCoupledScore_.setConstant(0.0);
         betaPP.setConstant(1.0);
         alphaPP.setConstant(1.0);
         if (config.timeMarchControl.timeMarchIsTwoStage())

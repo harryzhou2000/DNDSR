@@ -64,7 +64,8 @@ namespace DNDS::Euler
         bool onlyOnHalfAlpha,
         real t,
         uint64_t flags,
-        OptionalRef<ArrayDOFV<1>> cellTWarm)
+        OptionalRef<ArrayDOFV<1>> cellTWarm,
+        OptionalRef<const ArrayDOFV<1>> reactiveSplitChi)
     {
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
         using namespace Geom;
@@ -710,36 +711,46 @@ namespace DNDS::Euler
             {
                 cellOp(iCell);
 
+                real reactiveSplitCoupledScale = 1.0;
+                if (reactiveSplitChi)
+                {
+                    const real chi = (*reactiveSplitChi)[iCell](0);
+                    DNDS_check_throw_info(std::isfinite(chi) && chi >= 0 && chi <= 1,
+                                          fmt::format("EvaluateRHS invalid reactive split chi at cell {}: {}", iCell, chi));
+                    reactiveSplitCoupledScale = 1.0 - chi;
+                }
+
                 TDiffU dummyGrad; // unused in useRecArrays mode
                 TJacobianU cellJac;
                 TU cellSrcRHS;
                 cellSrcRHS.setZero(cnvars);
                 int jacMode = JSource.isBlock() ? 2 : 1;
-                if (ignoreReactiveSource)
+                const bool skipReactiveSource = ignoreReactiveSource || reactiveSplitCoupledScale == 0;
+                if (skipReactiveSource)
                     EvaluateCellSource(cellSrcRHS, cellJac, u[iCell], dummyGrad,
                                        iCell, jacMode, SourceFilter::NonReactiveOnly,
                                        cellRHSAlpha[iCell](0),
                                        /*useRecArrays=*/true, OptionalRef(u), OptionalRef(uRecUnlim), OptionalRef(uRec),
-                                       direct2ndRec, t, cellTWarm);
+                                       direct2ndRec, t, cellTWarm, reactiveSplitCoupledScale);
                 else if (ignoreReactiveSourceJacobian)
                 {
                     EvaluateCellSource(cellSrcRHS, cellJac, u[iCell], dummyGrad,
                                        iCell, jacMode, SourceFilter::NonReactiveOnly,
                                        cellRHSAlpha[iCell](0),
                                        /*useRecArrays=*/true, OptionalRef(u), OptionalRef(uRecUnlim), OptionalRef(uRec),
-                                       direct2ndRec, t, cellTWarm);
+                                       direct2ndRec, t, cellTWarm, reactiveSplitCoupledScale);
                     EvaluateCellSource(cellSrcRHS, cellJac, u[iCell], dummyGrad,
                                        iCell, 0, SourceFilter::ReactiveOnly,
                                        cellRHSAlpha[iCell](0),
                                        /*useRecArrays=*/true, OptionalRef(u), OptionalRef(uRecUnlim), OptionalRef(uRec),
-                                       direct2ndRec, t, cellTWarm);
+                                       direct2ndRec, t, cellTWarm, reactiveSplitCoupledScale);
                 }
                 else
                     EvaluateCellSource(cellSrcRHS, cellJac, u[iCell], dummyGrad,
                                        iCell, jacMode, SourceFilter::All,
                                        cellRHSAlpha[iCell](0),
                                        /*useRecArrays=*/true, OptionalRef(u), OptionalRef(uRecUnlim), OptionalRef(uRec),
-                                       direct2ndRec, t, cellTWarm);
+                                       direct2ndRec, t, cellTWarm, reactiveSplitCoupledScale);
                 rhs[iCell] += cellSrcRHS;
                 if (JSource.isBlock())
                     JSource.getBlock(iCell) = cellJac;

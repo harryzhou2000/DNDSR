@@ -63,6 +63,7 @@
  * - @subpage array_usage
  * - @subpage serialization_usage
  * - @subpage geom_usage
+ * - @subpage reactive_split_method
  * - @subpage example_playground
  */
 

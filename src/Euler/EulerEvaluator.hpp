@@ -195,13 +195,6 @@ namespace DNDS::Euler
         std::vector<real> lambdaFace4;     ///< Per-face eigenvalue |u·n - a| (acoustic wave).
         std::vector<real> deltaLambdaFace; ///< Per-face spectral radius difference for implicit diagonal.
         ArrayDOFV<1> deltaLambdaCell;      ///< Per-cell accumulated spectral radius difference.
-        ArrayDOFV<1> reactiveSplitChi;     ///< Local Strang fraction for mixed reactive integration.
-        ArrayDOFV<1> reactiveSplitChemicalStep;
-        ArrayDOFV<1> reactiveSplitDiffusiveStep;
-        ArrayDOFV<1> reactiveSplitShockSensor;
-        ArrayDOFV<1> reactiveSplitCoupledScore;
-        bool reactiveSplitChiEnabled = false;
-
         // grad fix
         std::vector<TDiffU> gradUFix; ///< Green-Gauss gradient correction buffer for source term stabilization.
 
@@ -285,17 +278,6 @@ namespace DNDS::Euler
 
             deltaLambdaFace.resize(lambdaFace.size());
             vfv->BuildUDof(deltaLambdaCell, 1);
-            vfv->BuildUDof(reactiveSplitChi, 1);
-            vfv->BuildUDof(reactiveSplitChemicalStep, 1);
-            vfv->BuildUDof(reactiveSplitDiffusiveStep, 1);
-            vfv->BuildUDof(reactiveSplitShockSensor, 1);
-            vfv->BuildUDof(reactiveSplitCoupledScore, 1);
-            reactiveSplitChi.setConstant(0.0);
-            reactiveSplitChemicalStep.setConstant(0.0);
-            reactiveSplitDiffusiveStep.setConstant(0.0);
-            reactiveSplitShockSensor.setConstant(0.0);
-            reactiveSplitCoupledScore.setConstant(0.0);
-
             if (settings.useSourceGradFixGG)
             {
                 gradUFix.resize(mesh->NumCell());
@@ -473,6 +455,9 @@ namespace DNDS::Euler
          * @param[in]  onlyOnHalfAlpha If true, evaluate only cells with alpha < 1.
          * @param[in]  t              Current simulation time.
          * @param[in]  flags          Bitwise combination of RHS_* flags.
+         * @param[in]  reactiveSplitChi Optional solver-owned @f$\chi_i@f$ array. When present, only the
+         *                              chemical source is multiplied by @f$1-\chi_i@f$; exact
+         *                              @f$\chi_i=1@f$ bypasses chemistry evaluation for that cell.
          */
         void EvaluateRHS(
             ArrayDOFV<nVarsFixed> &rhs,
@@ -485,7 +470,8 @@ namespace DNDS::Euler
             bool onlyOnHalfAlpha,
             real t,
             uint64_t flags = RHS_No_Flags,
-            OptionalRef<ArrayDOFV<1>> cellTWarm = {});
+            OptionalRef<ArrayDOFV<1>> cellTWarm = {},
+            OptionalRef<const ArrayDOFV<1>> reactiveSplitChi = {});
 
         /**
          * @brief Assemble the diagonal blocks of the implicit Jacobian for LU-SGS / SGS.
@@ -1117,6 +1103,7 @@ namespace DNDS::Euler
          * @param[in]  iCell    Cell index.
          * @param[in]  ig       Quadrature point index within the cell.
          * @param[in]  Mode     0=source vector only, 1=diagonal Jacobian, 2=full Jacobian.
+         * @param[in]  reactiveSplitCoupledScale Per-cell @f$1-\chi_i@f$ multiplier for chemistry only.
          * @return Source term vector.
          */
         TU source(
@@ -1128,7 +1115,8 @@ namespace DNDS::Euler
             index ig,
             int Mode,
             SourceFilter filter = SourceFilter::All,
-            OptionalRef<ArrayDOFV<1>> cellTWarm = {});
+            OptionalRef<ArrayDOFV<1>> cellTWarm = {},
+            real reactiveSplitCoupledScale = 1.0);
 
         /**
          * @brief Evaluate the cell-integrated source term for a single cell.
@@ -1158,6 +1146,7 @@ namespace DNDS::Euler
          * @param[in]  pURec        Pointer to limited reconstruction (used when useRecArrays=true).
          * @param[in]  direct2ndRec Whether to use O1 quadrature (direct 2nd-order rec path).
          * @param[in]  t            Simulation time (for boundary value generation in 2nd-order gradient).
+         * @param[in]  reactiveSplitCoupledScale Per-cell @f$1-\chi_i@f$ multiplier for chemistry only.
          */
         void EvaluateCellSource(
             TU &cellRHS,
@@ -1174,7 +1163,8 @@ namespace DNDS::Euler
             OptionalRef<ArrayRECV<nVarsFixed>> pURec = {},
             bool direct2ndRec = true,
             real t = 0,
-            OptionalRef<ArrayDOFV<1>> cellTWarm = {});
+            OptionalRef<ArrayDOFV<1>> cellTWarm = {},
+            real reactiveSplitCoupledScale = 1.0);
 
         /**
          * @brief Apply a cell-local implicit update for a selected source subset.
@@ -1194,37 +1184,52 @@ namespace DNDS::Euler
             SourceFilter filter = SourceFilter::ReactiveOnly,
             OptionalRef<ArrayDOFV<1>> cellTWarm = {});
 
+        /**
+         * @brief Advance the local constant-volume source operator for a physical split substep.
+         *
+         * When @p reactiveSplitChi is supplied, the source is @f$\chi_i S(u)@f$; otherwise it is the
+         * full source @f$S(u)@f$. A cell enters the chemistry integrator only when @f$\chi_i>0@f$.
+         * The independent debug multiplier @c settings.reactiveSourceScale is multiplied by this split
+         * fraction rather than replaced by it. Density, momentum, and total energy remain fixed while
+         * species evolve.
+         */
         void ReactiveSourceConstVolumeStep(
             ArrayDOFV<nVarsFixed> &u,
             ArrayRECV<nVarsFixed> &uRec,
             real dt,
             real t,
             OptionalRef<ArrayDOFV<1>> cellTWarm = {},
-            bool useReactiveSplitChi = false);
+            OptionalRef<const ArrayDOFV<1>> reactiveSplitChi = {});
 
+        /** @brief Explicit solver-owned storage supplied to the stateless RRI evaluator API. */
+        struct ReactiveSplitDataRefs
+        {
+            ArrayDOFV<1> &chi;           ///< Strang fraction; owner entries valid after update.
+            ArrayDOFV<1> &chemicalStep;  ///< Output-only @f$a_i@f$; owner entries valid after update.
+            ArrayDOFV<1> &diffusiveStep; ///< Output-only @f$b_i@f$; owner entries valid after update.
+            ArrayDOFV<1> &shockSensor;   ///< Output-only @f$h_i@f$; owner entries valid after update.
+            ArrayDOFV<1> &coupledScore;  ///< Output-only @f$C_i@f$; owner entries valid after update.
+        };
+
+        /**
+         * @brief Recompute @f$a_i@f$, @f$b_i@f$, @f$h_i@f$, @f$C_i@f$, and @f$\chi_i@f$ from cell means.
+         *
+         * The supplied code-unit step is converted to @f$\Delta t_{\mathrm{phys}}@f$. The resulting
+         * selector is frozen by EulerSolver for both source half steps and all ODE stages in one
+         * physical step.
+         *
+         * @pre Owning and ghost entries of @p u are current. This evaluator API performs no communication
+         * for its input state.
+         * @param[out] reactiveSplit Explicit solver-owned selector and diagnostic arrays.
+         * @post Owning entries of all supplied arrays are valid. Ghost diagnostic entries are unspecified;
+         * ghost @c reactiveSplit.chi entries have no public validity guarantee outside this method's
+         * spatial expansion passes.
+         */
         void UpdateReactiveSplitChi(
-            ArrayDOFV<nVarsFixed> &u,
+            const ArrayDOFV<nVarsFixed> &u,
+            ReactiveSplitDataRefs reactiveSplit,
             real dt,
             OptionalRef<ArrayDOFV<1>> cellTWarm = {});
-
-        void SetReactiveSplitChiEnabled(bool enabled)
-        {
-            reactiveSplitChiEnabled = enabled;
-        }
-
-        real GetReactiveSplitChi(index iCell) const
-        {
-            return reactiveSplitChi[iCell](0);
-        }
-
-        real GetReactiveSplitChiMax()
-        {
-            real chiMax = 0;
-            for (index iCell = 0; iCell < mesh->NumCell(); ++iCell)
-                chiMax = std::max(chiMax, reactiveSplitChi[iCell](0));
-            MPI::AllreduceOneReal(chiMax, MPI_MAX, mesh->getMPI());
-            return chiMax;
-        }
 
         /**
          * @brief Inviscid flux approximate Jacobian (no reconstruction, no Riemann solver).
@@ -2222,7 +2227,8 @@ namespace DNDS::Euler
         };
 
         /// @brief Initialize an OutputPicker with field callbacks for VTK/HDF5 output.
-        void InitializeOutputPicker(OutputPicker &op, OutputOverlapDataRefs dataRefs);
+        void InitializeOutputPicker(
+            OutputPicker &op, OutputOverlapDataRefs dataRefs, ReactiveSplitDataRefs reactiveSplit);
 
         /// @brief Initialize an OutputPicker for boundary output with field callbacks.
         ///
@@ -2333,9 +2339,10 @@ namespace DNDS::Euler
             real dt,                                                                                                      \
             real t,                                                                                                       \
             OptionalRef<ArrayDOFV<1>> cellTWarm,                                                                          \
-            bool useReactiveSplitChi);                                                                                    \
+            OptionalRef<const ArrayDOFV<1>> reactiveSplitChi);                                                            \
         ext template void EulerEvaluator<model>::UpdateReactiveSplitChi(                                                  \
-            ArrayDOFV<nVarsFixed> &u,                                                                                     \
+            const ArrayDOFV<nVarsFixed> &u,                                                                               \
+            ReactiveSplitDataRefs reactiveSplit,                                                                          \
             real dt,                                                                                                      \
             OptionalRef<ArrayDOFV<1>> cellTWarm);                                                                         \
                                                                                                                           \
@@ -2454,7 +2461,8 @@ DNDS_EulerEvaluator_INS_EXTERN(NS_2EQ_3D, extern);
                 index ig,                                                                                                     \
                 int Mode,                                                                                                     \
                 SourceFilter filter,                                                                                          \
-                OptionalRef<ArrayDOFV<1>> cellTWarm);                                                                         \
+                OptionalRef<ArrayDOFV<1>> cellTWarm,                                                                          \
+                real reactiveSplitCoupledScale);                                                                              \
         ext template void EulerEvaluator<model>::EvaluateCellSource(                                                          \
             TU &cellRHS,                                                                                                      \
             TJacobianU &cellJac,                                                                                              \
@@ -2470,7 +2478,8 @@ DNDS_EulerEvaluator_INS_EXTERN(NS_2EQ_3D, extern);
             OptionalRef<ArrayRECV<nVarsFixed>> pURec,                                                                         \
             bool direct2ndRec,                                                                                                \
             real t,                                                                                                           \
-            OptionalRef<ArrayDOFV<1>> cellTWarm);                                                                             \
+            OptionalRef<ArrayDOFV<1>> cellTWarm,                                                                              \
+            real reactiveSplitCoupledScale);                                                                                  \
         ext template                                                                                                          \
             typename EulerEvaluator<model>::TU                                                                                \
             EulerEvaluator<model>::generateBoundaryValue(                                                                     \
@@ -2505,7 +2514,8 @@ DNDS_EulerEvaluator_INS_EXTERN(NS_2EQ_3D, extern);
         ext template typename EulerEvaluator<model>::TU EulerEvaluator<model>::generateBV_TotalConditionInflow(               \
             TU &, const TU &, index, index, int, const TVec &, const TMat &,                                                  \
             const Geom::tPoint &, real, Geom::t_index);                                                                       \
-        ext template void EulerEvaluator<model>::InitializeOutputPicker(OutputPicker &op, OutputOverlapDataRefs dataRefs);    \
+        ext template void EulerEvaluator<model>::InitializeOutputPicker(                                                      \
+            OutputPicker &op, OutputOverlapDataRefs dataRefs, ReactiveSplitDataRefs reactiveSplit);                           \
         ext template void EulerEvaluator<model>::InitializeOutputPickerBnd(OutputPicker &op, OutputOverlapDataRefs dataRefs); \
     }
 
@@ -2531,7 +2541,8 @@ DNDS_EulerEvaluator_EvaluateDt_INS_EXTERN(NS_2EQ_3D, extern);
             bool onlyOnHalfAlpha,                              \
             real t,                                            \
             uint64_t flags,                                    \
-            OptionalRef<ArrayDOFV<1>> cellTWarm);              \
+            OptionalRef<ArrayDOFV<1>> cellTWarm,               \
+            OptionalRef<const ArrayDOFV<1>> reactiveSplitChi); \
     }
 
 DNDS_EulerEvaluator_EvaluateRHS_INS_EXTERN(NS, extern);

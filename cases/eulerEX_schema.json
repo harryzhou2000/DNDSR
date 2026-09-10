@@ -139,7 +139,7 @@
                 "sourceStrangSplitting": {
                     "type": "integer",
                     "default": 0,
-                    "description": "Reactive physical-time integration: 0=coupled, 1=Strang, 2=local mixed Strang/coupled.",
+                    "description": "Reactive integration: 0=A_(F+S); 1=B_S(dt/2) A_F(dt) B_S(dt/2); 2=B_(chi S)(dt/2) A_(F+(1-chi)S)(dt) B_(chi S)(dt/2), where chi=0 is coupled and chi=1 is Strang",
                     "minimum": 0.0,
                     "maximum": 2.0
                 }
@@ -1689,36 +1689,95 @@
                 },
                 "reactiveSplitIndicator": {
                     "type": "object",
-                    "description": "Dimensionless local selector for mixed Strang/coupled chemistry",
+                    "description": "Dimensionless RRI selector: chi=0 is coupled and chi=1 is Strang",
                     "properties": {
+                        "chemicalActivityThreshold": {
+                            "type": "number",
+                            "default": 1.0,
+                            "description": "Chemical activity threshold a0 in sat(a;a0,p)",
+                            "minimum": 0.0
+                        },
+                        "diffusiveActivityThreshold": {
+                            "type": "number",
+                            "default": 1.0,
+                            "description": "Diffusion activity threshold b0 in sat(b;b0,p)",
+                            "minimum": 0.0
+                        },
+                        "activitySaturationExponent": {
+                            "type": "number",
+                            "default": 1.0,
+                            "description": "Shared activity-saturation exponent p in sat(z;z0,p)",
+                            "minimum": 0.0
+                        },
                         "coupledThreshold": {
                             "type": "number",
                             "default": 0.005,
-                            "description": "Coupled-score midpoint",
+                            "description": "Coupled-score midpoint C0",
                             "minimum": 0.0
                         },
                         "transitionWidth": {
                             "type": "number",
                             "default": 0.001,
-                            "description": "Smooth-switch width",
+                            "description": "Logistic coupled-fraction width w",
                             "minimum": 0.0
                         },
                         "shockScale": {
                             "type": "number",
                             "default": 0.08,
-                            "description": "Dimensionless pressure-jump scale",
+                            "description": "Pressure-jump scale h0 in shock gate gh",
                             "minimum": 0.0
                         },
                         "strangBias": {
                             "type": "number",
                             "default": 1.0,
-                            "description": "Multiplicative preference toward Strang",
+                            "description": "Dimensionless Strang-preference factor bs",
                             "minimum": 0.0
+                        },
+                        "switchShape": {
+                            "type": "integer",
+                            "default": 1,
+                            "description": "Coupled-fraction map: 0=logistic, 1=compact-tail Hill",
+                            "minimum": 0.0,
+                            "maximum": 1.0
+                        },
+                        "hillExponent": {
+                            "type": "number",
+                            "default": 3.0,
+                            "description": "Final coupled-fraction Hill exponent n",
+                            "minimum": 0.0
+                        },
+                        "spatialPasses": {
+                            "type": "integer",
+                            "default": 0,
+                            "description": "Number of decaying coupled-fraction neighbor passes",
+                            "minimum": 0.0,
+                            "maximum": 8.0
+                        },
+                        "spatialDecay": {
+                            "type": "number",
+                            "default": 0.65,
+                            "description": "Neighbor coupled-fraction retention eta per pass",
+                            "minimum": 0.0,
+                            "maximum": 1.0
+                        },
+                        "strangSnapTolerance": {
+                            "type": "number",
+                            "default": 0.01,
+                            "description": "Endpoint tolerance epsilon_s for snapping the computed chi to exact Strang chi=1",
+                            "minimum": 0.0,
+                            "maximum": 1.0
+                        },
+                        "coupledSnapTolerance": {
+                            "type": "number",
+                            "default": 0.01,
+                            "description": "Endpoint tolerance epsilon_c for snapping the computed chi to exact coupled chi=0",
+                            "minimum": 0.0,
+                            "maximum": 1.0
                         },
                         "chiOverride": {
                             "type": "number",
                             "default": -1.0,
-                            "description": "Override chi in [0,1]; negative enables the indicator",
+                            "description": "Override Strang fraction chi in [0,1]; negative enables the indicator",
                             "minimum": -1.0,
                             "maximum": 1.0
                         }

@@ -46,11 +46,11 @@ namespace DNDS::Euler
         real hMax = 0;
         real muf = 0;
         real T = 300;
-        real p = 101325;        // default pressure (code=phys when scaling defaults are 1)
-        real pPhys = 101325;    // physical pressure [Pa] for Cantera (same as p with default scaling)
-        real gammaEq = 1.4;     // pressure/energy closure gammaEq at this point
-        real rhoE_base = 0;     // volumetric base energy (0 when no chemistry)
-        real reactiveScale = 1; ///< Per-cell multiplier applied only to the chemical contributor.
+        real p = 101325;                    // default pressure (code=phys when scaling defaults are 1)
+        real pPhys = 101325;                // physical pressure [Pa] for Cantera (same as p with default scaling)
+        real gammaEq = 1.4;                 // pressure/energy closure gammaEq at this point
+        real rhoE_base = 0;                 // volumetric base energy (0 when no chemistry)
+        real reactiveSplitCoupledScale = 1; ///< Per-cell @f$1-\chi_i@f$ multiplier applied only to chemistry.
     };
 
     /**
@@ -421,7 +421,7 @@ namespace DNDS::Euler
         {
             if (!pool_)
                 return;
-            if (sourceScale_ == 0.0)
+            if (sourceScale_ == 0.0 || aux.reactiveSplitCoupledScale == 0.0)
                 return;
             int tid = threadIdx();
             auto &c = (*pool_)[tid];
@@ -464,7 +464,7 @@ namespace DNDS::Euler
             {
                 c.productionRates(Tcantera, pCantera, Yc, omegav);
                 for (int k = 0; k < Ns1; ++k)
-                    ret[Isp + k] += sourceScale_ * aux.reactiveScale * bufOmega[k] * c.molecularWeights()[k] * invS0;
+                    ret[Isp + k] += sourceScale_ * aux.reactiveSplitCoupledScale * bufOmega[k] * c.molecularWeights()[k] * invS0;
             }
             else if (Mode == 1)
             {
@@ -481,7 +481,7 @@ namespace DNDS::Euler
                                              uM1, uM2, uM3, I4, Yc, omegav, Jv,
                                              Chemistry::ChemicalSource::JAC_DEFAULT);
                 for (int k = 0; k < Ns1; ++k)
-                    ret[Isp + k] += sourceScale_ * aux.reactiveScale * bufOmega[k] * c.molecularWeights()[k] * invS0;
+                    ret[Isp + k] += sourceScale_ * aux.reactiveSplitCoupledScale * bufOmega[k] * c.molecularWeights()[k] * invS0;
 
                 auto &dSdu = bufDSdu_[tid];
                 dSdu.setZero(nVars, nVars);
@@ -491,7 +491,7 @@ namespace DNDS::Euler
                     int iRow = Isp + k;
                     for (int j = 0; j < nVars; ++j)
                     {
-                        double val = sourceScale_ * aux.reactiveScale * Mk * Jv(k, j) * invS0;
+                        double val = sourceScale_ * aux.reactiveSplitCoupledScale * Mk * Jv(k, j) * invS0;
                         if (!std::isfinite(val))
                         {
                             fprintf(stderr, "[chem-jac] NaN at row=%d col=%d Jv=%g Mk=%g T=%.1f\n",

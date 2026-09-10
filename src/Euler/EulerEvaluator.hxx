@@ -1792,13 +1792,19 @@ namespace DNDS::Euler
     DNDS_SWITCH_INTELLISENSE(
         template <EulerModel model>, )
     void EulerEvaluator<model>::UpdateReactiveSplitChi(
-        ArrayDOFV<nVarsFixed> &u,
+        const ArrayDOFV<nVarsFixed> &u,
+        ReactiveSplitDataRefs reactiveSplit,
         real dt,
         OptionalRef<ArrayDOFV<1>> cellTWarm)
     {
         DNDS_check_throw_info(dt > 0, "UpdateReactiveSplitChi requires positive dt");
         DNDS_check_throw_info(Traits::isExtended && settings.reactiveFlow.enabled && phys_.hasChemicalSource(),
                               "UpdateReactiveSplitChi requires reactive extended Euler physics");
+        auto &reactiveSplitChi = reactiveSplit.chi;
+        auto &reactiveSplitChemicalStep = reactiveSplit.chemicalStep;
+        auto &reactiveSplitDiffusiveStep = reactiveSplit.diffusiveStep;
+        auto &reactiveSplitShockSensor = reactiveSplit.shockSensor;
+        auto &reactiveSplitCoupledScore = reactiveSplit.coupledScore;
         const auto &indicatorSettings = settings.reactiveSplitIndicator;
         if (indicatorSettings.chiOverride >= 0)
         {
@@ -1810,8 +1816,6 @@ namespace DNDS::Euler
             return;
         }
 
-        u.trans.startPersistentPull();
-        u.trans.waitPersistentPull();
         const int Ns = phys_.nSpecies();
         const int Ns1 = Ns - 1;
         const int Isp = nVars - Ns1;
@@ -1884,6 +1888,9 @@ namespace DNDS::Euler
         }
 
         real dtPhysical = dt * settings.idealGasProperty.L0 / settings.idealGasProperty.U0;
+        std::vector<real> localShockSensor;
+        if (indicatorSettings.spatialPasses > 0)
+            localShockSensor.resize(static_cast<size_t>(mesh->NumCell()));
 #if defined(DNDS_DIST_MT_USE_OMP)
 #    pragma omp parallel for schedule(static)
 #endif
@@ -1924,27 +1931,22 @@ namespace DNDS::Euler
             real gradientLength = maxNormalizedGradient > 0
                                       ? std::max(1.0 / maxNormalizedGradient * settings.idealGasProperty.L0, cellLength)
                                       : veryLargeReal;
-            real chemicalStep = dtPhysical * chemicalRate[static_cast<size_t>(iCell)];
-            real diffusiveStep = dtPhysical * maxDiffusivity[static_cast<size_t>(iCell)] / sqr(gradientLength);
-            real coupledScore = ReactiveSplitCoupledScore(chemicalStep, diffusiveStep, shockSensor, indicatorSettings);
-            reactiveSplitChemicalStep[iCell](0) = chemicalStep;
-            reactiveSplitDiffusiveStep[iCell](0) = diffusiveStep;
-            reactiveSplitShockSensor[iCell](0) = shockSensor;
-            reactiveSplitCoupledScore[iCell](0) = coupledScore;
+            real chemicalActivity = dtPhysical * chemicalRate[static_cast<size_t>(iCell)];
+            real diffusionActivity = dtPhysical * maxDiffusivity[static_cast<size_t>(iCell)] / sqr(gradientLength);
+            real coupledScore = ReactiveSplitCoupledScore(
+                chemicalActivity, diffusionActivity, shockSensor, indicatorSettings);
+            reactiveSplitChemicalStep[iCell](0) = chemicalActivity;   // a_i
+            reactiveSplitDiffusiveStep[iCell](0) = diffusionActivity; // b_i
+            reactiveSplitShockSensor[iCell](0) = shockSensor;         // h_i
+            reactiveSplitCoupledScore[iCell](0) = coupledScore;       // C_i
             reactiveSplitChi[iCell](0) = ReactiveSplitChi(coupledScore, indicatorSettings);
+            if (indicatorSettings.spatialPasses > 0)
+                localShockSensor[static_cast<size_t>(iCell)] = shockSensor;
         }
-        reactiveSplitChi.trans.startPersistentPull();
-        reactiveSplitChemicalStep.trans.startPersistentPull();
-        reactiveSplitDiffusiveStep.trans.startPersistentPull();
-        reactiveSplitShockSensor.trans.startPersistentPull();
-        reactiveSplitCoupledScore.trans.startPersistentPull();
-        reactiveSplitChi.trans.waitPersistentPull();
-        reactiveSplitChemicalStep.trans.waitPersistentPull();
-        reactiveSplitDiffusiveStep.trans.waitPersistentPull();
-        reactiveSplitShockSensor.trans.waitPersistentPull();
-        reactiveSplitCoupledScore.trans.waitPersistentPull();
         for (int iPass = 0; iPass < indicatorSettings.spatialPasses; ++iPass)
         {
+            reactiveSplitChi.trans.startPersistentPull();
+            reactiveSplitChi.trans.waitPersistentPull();
             std::vector<real> nextChi(static_cast<size_t>(mesh->NumCell()));
 #if defined(DNDS_DIST_MT_USE_OMP)
 #    pragma omp parallel for schedule(static)
@@ -1964,13 +1966,13 @@ namespace DNDS::Euler
                 }
                 real localCoupledFraction = 1.0 - reactiveSplitChi[iCell](0);
                 real expandedCoupledFraction = ReactiveSplitExpandedCoupledFraction(
-                    localCoupledFraction, neighborCoupledFraction, reactiveSplitShockSensor[iCell](0), indicatorSettings);
-                nextChi[static_cast<size_t>(iCell)] = 1.0 - expandedCoupledFraction;
+                    localCoupledFraction, neighborCoupledFraction,
+                    localShockSensor[static_cast<size_t>(iCell)], indicatorSettings);
+                nextChi[static_cast<size_t>(iCell)] =
+                    ReactiveSplitSnapChi(1.0 - expandedCoupledFraction, indicatorSettings);
             }
             for (index iCell = 0; iCell < mesh->NumCell(); ++iCell)
                 reactiveSplitChi[iCell](0) = nextChi[static_cast<size_t>(iCell)];
-            reactiveSplitChi.trans.startPersistentPull();
-            reactiveSplitChi.trans.waitPersistentPull();
         }
     }
 
@@ -1982,7 +1984,7 @@ namespace DNDS::Euler
         real dt,
         real t,
         OptionalRef<ArrayDOFV<1>> cellTWarm,
-        bool useReactiveSplitChi)
+        OptionalRef<const ArrayDOFV<1>> reactiveSplitChi)
     {
         (void)uRec;
         (void)t;
@@ -2007,6 +2009,13 @@ namespace DNDS::Euler
 #endif
         for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
         {
+            const real splitScale = reactiveSplitChi ? (*reactiveSplitChi)[iCell](0) : real(1);
+            DNDS_check_throw_info(std::isfinite(splitScale) && splitScale >= 0 && splitScale <= 1,
+                                  fmt::format("ReactiveSourceConstVolumeStep invalid chi at cell {}: {}",
+                                              iCell, splitScale));
+            if (!(splitScale > 0))
+                continue;
+
             auto state = u[iCell];
             DNDS_check_throw_info(std::isfinite(state(0)) && state(0) > 0,
                                   fmt::format("ReactiveSourceConstVolumeStep invalid density at cell {}", iCell));
@@ -2032,9 +2041,6 @@ namespace DNDS::Euler
             real T = phys_.temperature(state, cellTWarm ? (*cellTWarm)[iCell](0) : real(0));
             if (cellTWarm)
                 (*cellTWarm)[iCell](0) = T;
-            real splitScale = useReactiveSplitChi ? reactiveSplitChi[iCell](0) : real(1);
-            if (splitScale == 0)
-                continue;
             phys_.advanceConstVolumeY(
                 T, rho,
                 Chemistry::SpeciesBufferView{Y.data(), Ns},

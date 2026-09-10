@@ -1690,7 +1690,8 @@ namespace DNDS::Euler
         index ig,
         int Mode,
         SourceFilter filter,
-        OptionalRef<ArrayDOFV<1>> cellTWarm)
+        OptionalRef<ArrayDOFV<1>> cellTWarm,
+        real reactiveSplitCoupledScale)
     {
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
         TU ret;
@@ -1724,7 +1725,11 @@ namespace DNDS::Euler
             if (cellTWarm && phys_.hasChemicalSource())
                 (*cellTWarm)[iCell](0) = T;
             aux.rhoE_base = phys_.mixtureBaseInternalRhoE(UMeanXy);
-            aux.reactiveScale = reactiveSplitChiEnabled ? 1.0 - reactiveSplitChi[iCell](0) : 1.0;
+            DNDS_check_throw_info(std::isfinite(reactiveSplitCoupledScale) &&
+                                      reactiveSplitCoupledScale >= 0 && reactiveSplitCoupledScale <= 1,
+                                  fmt::format("source invalid reactive split coupled scale at cell {}: {}",
+                                              iCell, reactiveSplitCoupledScale));
+            aux.reactiveSplitCoupledScale = reactiveSplitCoupledScale;
 
             SourceTermVisitor<model> visitor{ret, jacobian, UMeanXy, DiffUxy, pPhy, aux,
                                              iCell, ig, Mode, filter};
@@ -1907,7 +1912,8 @@ namespace DNDS::Euler
         OptionalRef<ArrayRECV<nVarsFixed>> pURec,
         bool direct2ndRec,
         real t,
-        OptionalRef<ArrayDOFV<1>> cellTWarm)
+        OptionalRef<ArrayDOFV<1>> cellTWarm,
+        real reactiveSplitCoupledScale)
     {
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
         int cnvars = nVars;
@@ -2014,13 +2020,14 @@ namespace DNDS::Euler
                 finc(EigenAll, 0) =
                     source(ULxy, GradU,
                            vfv->GetCellQuadraturePPhys(iCell, iGQ), jac,
-                           iCell, iGQ, 0, filter, cellTWarm);
+                           iCell, iGQ, 0, filter, cellTWarm, reactiveSplitCoupledScale);
                 if (jacMode >= 1)
                 {
                     TU sourceJDiag =
                         source(ULxy, GradU,
                                vfv->GetCellQuadraturePPhys(iCell, iGQ), jac,
-                               iCell, iGQ, (jacMode == 2) ? 2 : 1, filter, cellTWarm);
+                               iCell, iGQ, (jacMode == 2) ? 2 : 1, filter, cellTWarm,
+                               reactiveSplitCoupledScale);
                     if (jacMode == 2)
                         finc(EigenAll, Eigen::seq(Eigen::fix<1>, EigenLast)) = jac;
                     else
@@ -2828,8 +2835,10 @@ namespace DNDS::Euler
      *
      *  @param op        OutputPicker to populate with named field extractors (output).
      *  @param dataRefs  References to the solution arrays (u, uRec, betaPP, alphaPP).
+     *  @param reactiveSplit References to solver-owned RRI output arrays.
      */
-    void EulerEvaluator<model>::InitializeOutputPicker(OutputPicker &op, OutputOverlapDataRefs dataRefs)
+    void EulerEvaluator<model>::InitializeOutputPicker(
+        OutputPicker &op, OutputOverlapDataRefs dataRefs, ReactiveSplitDataRefs reactiveSplit)
     {
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
 
@@ -2858,16 +2867,16 @@ namespace DNDS::Euler
         { return betaPP[iCell](0); };
         outMap["alphaPP"] = [&](index iCell)
         { return alphaPP[iCell](0); };
-        outMap["reactiveSplitChi"] = [&](index iCell)
-        { return eval.reactiveSplitChi[iCell](0); };
-        outMap["reactiveSplitChemicalStep"] = [&](index iCell)
-        { return eval.reactiveSplitChemicalStep[iCell](0); };
-        outMap["reactiveSplitDiffusiveStep"] = [&](index iCell)
-        { return eval.reactiveSplitDiffusiveStep[iCell](0); };
-        outMap["reactiveSplitShockSensor"] = [&](index iCell)
-        { return eval.reactiveSplitShockSensor[iCell](0); };
-        outMap["reactiveSplitCoupledScore"] = [&](index iCell)
-        { return eval.reactiveSplitCoupledScore[iCell](0); };
+        outMap["reactiveSplitChi"] = [&chi = reactiveSplit.chi](index iCell)
+        { return chi[iCell](0); };
+        outMap["reactiveSplitChemicalStep"] = [&chemicalStep = reactiveSplit.chemicalStep](index iCell)
+        { return chemicalStep[iCell](0); };
+        outMap["reactiveSplitDiffusiveStep"] = [&diffusiveStep = reactiveSplit.diffusiveStep](index iCell)
+        { return diffusiveStep[iCell](0); };
+        outMap["reactiveSplitShockSensor"] = [&shockSensor = reactiveSplit.shockSensor](index iCell)
+        { return shockSensor[iCell](0); };
+        outMap["reactiveSplitCoupledScore"] = [&coupledScore = reactiveSplit.coupledScore](index iCell)
+        { return coupledScore[iCell](0); };
         outMap["ACond"] = [&](index iCell)
         {
             auto AI = vfv->GetCellRecMatAInv(iCell);

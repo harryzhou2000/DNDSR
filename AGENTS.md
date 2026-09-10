@@ -189,6 +189,9 @@ read-only queries (`json.load`, `json.tool` validation).  Configs may
 contain hand-maintained `caseNotes["/**/"]` sections and inline
 comments that must be preserved across edits.
 
+**Updating JSON schemas:** never edit generated schema files by hand. Rebuild
+the corresponding executable and regenerate the schema with `--emit-schema`.
+
 Tests use **pytest** with **pytest-mpi** and **pytest-timeout**. Test files live under `test/`. A default 120-second timeout is configured in `pyproject.toml` to prevent hung MPI tests from blocking CI.
 
 ```bash
