@@ -14,5 +14,6 @@ Developer guides for building, configuring, and using DNDSR.
 /guides/array_usage
 /guides/serialization_usage
 /guides/geom_usage
+/guides/reactive_split_method
 /guides/examples
 ```

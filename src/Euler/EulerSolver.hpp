@@ -117,6 +117,11 @@ namespace DNDS::Euler
         ssp<JacobianLocalLU<nVarsFixed>> JLocalLU;                                                                    ///< Local LU factorization for direct preconditioner.
         ArrayDOFV<1> alphaPP, alphaPP1, betaPP, betaPP1, alphaPP_tmp, dTauTmp;                                        ///< Positivity-preserving limiter scalars and time-step buffer.
         ArrayDOFV<1> cellT_warm_;                                                                                     ///< Per-cell last-known temperature for warm-starting T inversion.
+        ArrayDOFV<1> reactiveSplitChi_;                                                                               ///< Strang fraction @f$\chi_i@f$ owned by the time integrator.
+        ArrayDOFV<1> reactiveSplitChemicalStep_;                                                                      ///< Output-only chemical activity @f$a_i@f$.
+        ArrayDOFV<1> reactiveSplitDiffusiveStep_;                                                                     ///< Output-only diffusion activity @f$b_i@f$.
+        ArrayDOFV<1> reactiveSplitShockSensor_;                                                                       ///< Output-only pressure-jump sensor @f$h_i@f$.
+        ArrayDOFV<1> reactiveSplitCoupledScore_;                                                                      ///< Output-only local coupled score @f$C_i@f$.
 
         int nOUTS = {-1};   ///< Number of output scalars per cell in volume output.
         int nOUTSPoint{-1}; ///< Number of output scalars per node in point output.
@@ -197,7 +202,15 @@ namespace DNDS::Euler
                 bool useDtPPLimit = false;
                 real dtPPLimitRelax = 0.8;
                 real dtPPLimitScale = 1;
-                int sourceStrangSplitting = 0; ///< 0=coupled, 1=Strang, 2=local mixed Strang/coupled.
+                /**
+                 * @brief Reactive physical-time operator selection.
+                 *
+                 * Mode 0 advances @f$F+S@f$ in the ODE solve. Mode 1 applies true Strang splitting.
+                 * Mode 2 applies the RRI convention
+                 * @f$B_{\chi S}(\Delta t/2)A_{F+(1-\chi)S}(\Delta t)B_{\chi S}(\Delta t/2)@f$,
+                 * where @f$\chi=0@f$ is fully coupled and @f$\chi=1@f$ is Strang.
+                 */
+                int sourceStrangSplitting = 0;
                 DNDS_DECLARE_CONFIG(TimeMarchControl)
                 {
                     // clang-format off
@@ -255,7 +268,7 @@ namespace DNDS::Euler
                                DNDS::Config::range(0.0, 1.0));
                     DNDS_FIELD(dtPPLimitScale,      "PP dt limiter scale",
                                DNDS::Config::range(0.0));
-                    DNDS_FIELD(sourceStrangSplitting, "Reactive physical-time integration: 0=coupled, 1=Strang, 2=local mixed Strang/coupled.",
+                    DNDS_FIELD(sourceStrangSplitting, "Reactive integration: 0=A_(F+S); 1=B_S(dt/2) A_F(dt) B_S(dt/2); 2=B_(chi S)(dt/2) A_(F+(1-chi)S)(dt) B_(chi S)(dt/2), where chi=0 is coupled and chi=1 is Strang",
                                DNDS::Config::range(0, 2));
                     // clang-format on
                 }

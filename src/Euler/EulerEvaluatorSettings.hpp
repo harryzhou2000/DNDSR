@@ -452,7 +452,7 @@ namespace DNDS::Euler
                 // clang-format on
             }
         } reactorStepSettings;                                                   ///< Settings for direct Cantera source substeps.
-        ReactiveSplitIndicatorSettings reactiveSplitIndicator;                   ///< Local mixed Strang/coupled selector settings.
+        ReactiveSplitIndicatorSettings reactiveSplitIndicator;                   ///< RRI settings for @f$a_i,b_i,h_i,C_i,\chi_i@f$.
         real reactiveSourceScale = 1.0;                                          ///< Multiplier for reactive source RHS and Jacobian.
         Eigen::Vector<real, 3> constMassForce = Eigen::Vector<real, 3>{0, 0, 0}; ///< Constant body force vector [fx, fy, fz].
         /// @}
@@ -801,7 +801,7 @@ namespace DNDS::Euler
             config.field_section(&T::reactorStepSettings, "reactorStepSettings",
                                  "Cantera reactor settings for direct source substeps");
             config.field_section(&T::reactiveSplitIndicator, "reactiveSplitIndicator",
-                                 "Dimensionless local selector for mixed Strang/coupled chemistry");
+                                 "Dimensionless RRI selector: chi=0 is coupled and chi=1 is Strang");
             DNDS_FIELD(reactiveSourceScale,     "Scale reactive source RHS and Jacobian directly; use 0 for non-reactive debugging",
                        DNDS::Config::range(0, 1));
             DNDS_FIELD(constMassForce,          "Constant mass force vector (3D)");
