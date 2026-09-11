@@ -332,7 +332,10 @@ namespace DNDS::Euler::Chemistry
         double viscosity(double T, double p, ConstSpeciesBufferView Y) const;
         double thermalConductivity(double T, double p, ConstSpeciesBufferView Y) const;
 
-        /** Mixture-averaged species diffusivities [m²/s]. D must have nSpecies elements. */
+        /** Mixture-averaged mass-gradient species diffusivities [m²/s].
+         *  These coefficients multiply gradients of species mass fractions.
+         *  D must have nSpecies elements.
+         */
         void speciesDiffusivity(double T, double p,
                                 ConstSpeciesBufferView Y,
                                 SpeciesBufferView D) const;

@@ -1213,26 +1213,14 @@ namespace DNDS::Euler
                 TU VisFlux;
                 VisFlux.resizeLike(ULMeanXy);
                 VisFlux.setZero();
-                Gas::ViscousFlux_IdealGas<dim>(
-                    UMeanXYC, DiffUxyPrimC, uNormC, adiabaticWall,
+                phys_.viscousFluxIdealGas(
+                    T, pMean, UMeanXYC,
+                    DiffUxyC, DiffUxyPrimC, uNormC,
+                    adiabaticWall, impermeableWall,
                     gammaEq, gamma,
                     muf, muTurb / (muf + verySmallReal), settings.ransUseQCR,
-                    k,
-                    phys_.Cp(T, UMeanXYC),
-                    VisFlux,
-                    phys_.mixtureBaseInternalRhoE(UMeanXYC));
-
-                if constexpr (Traits::isExtended)
-                {
-                    if (phys_.hasChemicalSource())
-                    {
-                        phys_.addMixtureAveragedSpeciesDiffusionFlux(
-                            T, pMean, UMeanXYC, DiffUxyPrimC, uNormC, k,
-                            speciesDiffTurb,
-                            adiabaticWall, impermeableWall,
-                            speciesDiffusionBuffers, VisFlux);
-                    }
-                }
+                    k, phys_.Cp(T, UMeanXYC), speciesDiffTurb,
+                    speciesDiffusionBuffers, VisFlux);
 
                 this->visFluxTurVariable(UMeanXYC, DiffUxyPrimC, muRef, mufPhy, muTurb, uNormC, iFace, VisFlux);
                 if (bTypeEuler == EulerBCType::BCWallInvis || bTypeEuler == EulerBCType::BCSym)
