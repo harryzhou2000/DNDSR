@@ -1892,11 +1892,15 @@ namespace DNDS::Euler::Gas
      * @param  k          Thermal conductivity (molecular + turbulent).
      * @param  Cp         Specific heat at constant pressure.
      * @param[out] Flux   Viscous flux vector (dim+2 entries, Flux[0] = 0).
+     *
+     * @warning This bare gas-layer interface assumes a single-species calorically
+     *          perfect ideal gas. Multispecies flow, whether reacting or not,
+     *          must use PhysicsProperties::viscousFluxIdealGas() so composition-
+     *          dependent thermodynamics and species diffusion are included.
      */
     template <int dim = 3, typename TU, typename TGradU, typename TFlux, typename TNorm>
     void ViscousFlux_IdealGas(const TU &U, const TGradU &GradUPrim, TNorm norm, bool adiabatic, real gammaEq, real gamma,
-                              real mu, real mutRatio, bool mutQCRFix, real k, real Cp, TFlux &Flux,
-                              real rhoE_base = 0)
+                              real mu, real mutRatio, bool mutQCRFix, real k, real Cp, TFlux &Flux)
     {
         static const auto Seq01234 = Eigen::seq(Eigen::fix<0>, Eigen::fix<dim + 1>);
         static const auto Seq012 = Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>);
@@ -1905,14 +1909,16 @@ namespace DNDS::Euler::Gas
         Eigen::Vector<real, dim> velo = U(Seq123) / U(0);
         static const real lambda = -2. / 3.;
         Eigen::Matrix<real, dim, dim> diffVelo = GradUPrim(Seq012, Seq123); // dU_j/dx_i
-        Eigen::Vector<real, dim> GradP = GradUPrim(Seq012, dim + 1);
         real vSqr = velo.squaredNorm();
-        real p = (gammaEq - 1) * (U(dim + 1) - U(0) * 0.5 * vSqr - rhoE_base);
-        Eigen::Vector<real, dim> GradT = (gamma / ((gamma - 1) * Cp * U(0) * U(0))) *
-                                         (U(0) * GradP - p * GradUPrim(Seq012, 0)); // GradU(:,0) is grad rho no matter prim or not
-
-        if (adiabatic) //! is this fix reasonable?
-            GradT -= GradT.dot(norm) * norm;
+        real conductiveFlux = 0;
+        if (k != 0 && !adiabatic)
+        {
+            Eigen::Vector<real, dim> GradP = GradUPrim(Seq012, dim + 1);
+            real p = (gammaEq - 1) * (U(dim + 1) - U(0) * 0.5 * vSqr);
+            Eigen::Vector<real, dim> GradT = (gamma / ((gamma - 1) * Cp * U(0) * U(0))) *
+                                             (U(0) * GradP - p * GradUPrim(Seq012, 0)); // GradU(:,0) is grad rho no matter prim or not
+            conductiveFlux = k * GradT.dot(norm);
+        }
 
         Eigen::Matrix<real, dim, dim> vStress = (diffVelo + diffVelo.transpose()) * mu +
                                                 Eigen::Matrix<real, dim, dim>::Identity() * (lambda * mu * diffVelo.trace());
@@ -1936,7 +1942,7 @@ namespace DNDS::Euler::Gas
         }
         Flux(0) = 0;
         Flux(Seq123) = vStress * norm;
-        Flux(dim + 1) = (vStress * velo + k * GradT).dot(norm);
+        Flux(dim + 1) = (vStress * velo).dot(norm) + conductiveFlux;
         if (!Flux.allFinite())
         {
             std::cout << "U\n"

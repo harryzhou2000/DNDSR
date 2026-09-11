@@ -478,7 +478,44 @@ TEST_CASE("PhysicsProperties reactive transport uses Cantera mixture coefficient
     SpeciesBufferView Dv{Dbuf.data(), Ns};
     chem.speciesDiffusivity(TPhys, pPhys, Y, Dv);
     CHECK(DCode == doctest::Approx(Dbuf[0] / phys.D0()).epsilon(1e-12));
+    CHECK(Dbuf[0] == doctest::Approx(9.737166036864023e-4).epsilon(1e-10));
+    CHECK(Dbuf[3] == doctest::Approx(3.393548352588788e-4).epsilon(1e-10));
+    CHECK(Dbuf[9] == doctest::Approx(3.5565853107990923e-4).epsilon(1e-10));
     CHECK(std::abs(kCode - phys.Cp(T, cons) * muCode / phys.Pr()) > 1e-12);
+}
+
+TEST_CASE("PhysicsProperties reactive temperature gradient matches finite differences")
+{
+    auto fixture = makeReactiveFixture();
+    auto &phys = *fixture.phys;
+    using TU = PhysicsProperties<NS_EX>::TU;
+
+    TU primitive(14);
+    primitive << 1000.0, 0.12, -0.03, 0.01, 101325.0,
+        0.020, 1.0e-5, 2.0e-5, 0.180, 1.0e-4, 0.020, 1.0e-6, 1.0e-7, 0.001;
+    TU state;
+    phys.primTPPhysToCode(primitive, primitive);
+    phys.primTPToConservative(primitive, state);
+
+    Eigen::Matrix<real, 3, Eigen::Dynamic> gradU(3, state.size());
+    gradU.setZero();
+    gradU(0, 4) = 2.0e-5;
+    gradU(1, 5) = 2.0e-5;
+    gradU(2, 0) = 2.0e-5;
+
+    auto thermal = phys.conservativeThermal(state);
+    auto gradT = phys.reactiveTemperatureGradient(thermal.T, thermal.p, state, gradU);
+    for (int direction = 0; direction < 3; ++direction)
+    {
+        real epsilon = 10.0;
+        TU statePlus = state + epsilon * gradU.row(direction).transpose();
+        TU stateMinus = state - epsilon * gradU.row(direction).transpose();
+        real finiteDifference =
+            (phys.temperature(statePlus, thermal.T, 1e-14) -
+             phys.temperature(stateMinus, thermal.T, 1e-14)) /
+            (2 * epsilon);
+        CHECK(gradT(direction) == doctest::Approx(finiteDifference).epsilon(2e-3));
+    }
 }
 
 TEST_CASE("PhysicsProperties reactive total-to-static conversion iterates mixture thermodynamics")

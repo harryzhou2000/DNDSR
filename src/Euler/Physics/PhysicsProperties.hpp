@@ -1074,6 +1074,110 @@ namespace DNDS::Euler
             }
         };
 
+        /** Exact ideal-mixture temperature gradient from conservative gradients.
+         *
+         *  Uses d(rho e) = e d(rho) + rho cv dT
+         *  + rho sum_k (e_k - e_N) dY_k. This avoids differentiating the
+         *  state-dependent equivalent-gamma pressure closure as though gamma_eq
+         *  were constant, which is not valid across a reacting mixture.
+         */
+        template <class TGradU>
+        Eigen::Vector<real, dim> reactiveTemperatureGradient(real T, real p,
+                                                             const TU &U,
+                                                             const TGradU &gradU) const
+        {
+            DNDS_assert(hasChemicalSource());
+            int nSpecies = chem().nSpecies();
+            int nTransported = nSpecies - 1;
+            int speciesOffset = static_cast<int>(U.size()) - nTransported;
+            real rho = U(0);
+            real rhoInv = 1.0 / std::max(rho, verySmallReal);
+            Eigen::Vector<real, dim> velocity = U(Seq123) * rhoInv;
+
+            std::vector<real> enthalpy(static_cast<size_t>(nSpecies));
+            speciesEnthalpies(T, p, U, {enthalpy.data(), nSpecies});
+            std::vector<real> internalEnergy(static_cast<size_t>(nSpecies));
+            auto massFractions = massFractionsVector(U);
+            real mixtureInternalEnergy = U(I4) * rhoInv - 0.5 * velocity.squaredNorm();
+            for (int species = 0; species < nSpecies; ++species)
+            {
+                internalEnergy[species] =
+                    enthalpy[species] - speciesGasConstantK(species) * T;
+            }
+
+            real mixtureCv = Cv(T, U);
+            DNDS_assert_info(mixtureCv > 0, "reactiveTemperatureGradient(): mixture cv must be positive");
+            Eigen::Vector<real, dim> gradT;
+            for (int direction = 0; direction < dim; ++direction)
+            {
+                real gradRho = gradU(direction, 0);
+                real gradRhoInternalEnergy =
+                    gradU(direction, I4) -
+                    velocity.dot(gradU(direction, Seq123)) +
+                    0.5 * velocity.squaredNorm() * gradRho;
+                real compositionTerm = 0;
+                for (int species = 0; species < nTransported; ++species)
+                {
+                    real rhoGradY = gradU(direction, speciesOffset + species) -
+                                    massFractions[species] * gradRho;
+                    compositionTerm +=
+                        (internalEnergy[species] - internalEnergy[nSpecies - 1]) * rhoGradY;
+                }
+                gradT(direction) =
+                    (gradRhoInternalEnergy - mixtureInternalEnergy * gradRho - compositionTerm) /
+                    (rho * mixtureCv);
+            }
+            return gradT;
+        }
+
+        /** Ideal-gas viscous flux with the appropriate thermodynamic closure.
+         *
+         *  Single-species flow delegates completely to Gas::ViscousFlux_IdealGas.
+         *  Multispecies flow delegates stress and viscous work with zero thermal
+         *  conductivity, then adds exact mixture heat conduction, species diffusion,
+         *  and species-enthalpy transport here.
+         */
+        template <class TGradU, class TGradUPrim, class TNorm, class TFlux>
+        void viscousFluxIdealGas(real T, real p, const TU &U,
+                                 const TGradU &gradU,
+                                 const TGradUPrim &gradUPrim,
+                                 const TNorm &norm,
+                                 bool adiabaticWall,
+                                 bool impermeableWall,
+                                 real gammaEq,
+                                 real gamma,
+                                 real viscosity,
+                                 real turbulentViscosityRatio,
+                                 bool turbulentQCRFix,
+                                 real thermalConductivity,
+                                 real cp,
+                                 real turbulentSpeciesDiffusivity,
+                                 MixtureAveragedDiffusionBuffers &buffers,
+                                 TFlux &visFlux) const
+        {
+            real bareConductivity = hasChemicalSource() ? real(0) : thermalConductivity;
+            Gas::ViscousFlux_IdealGas<dim>(
+                U, gradUPrim, norm, adiabaticWall,
+                gammaEq, gamma,
+                viscosity, turbulentViscosityRatio, turbulentQCRFix,
+                bareConductivity, cp, visFlux);
+
+            if (!hasChemicalSource())
+                return;
+
+            if (!adiabaticWall)
+            {
+                Eigen::Vector<real, dim> gradT =
+                    reactiveTemperatureGradient(T, p, U, gradU);
+                visFlux(I4) += thermalConductivity * gradT.dot(norm);
+            }
+            addMixtureAveragedSpeciesDiffusionFlux(
+                T, p, U, gradUPrim, norm, 0,
+                turbulentSpeciesDiffusivity,
+                adiabaticWall, impermeableWall,
+                buffers, visFlux);
+        }
+
         /** Add mixture-averaged species diffusion and enthalpy transport to a viscous flux slot.
          *  The solver convention is F_total = F_inviscid - VisFlux, so this stores -J_k in
          *  species equations and -Σ h_k J_k in the energy equation. Also corrects the

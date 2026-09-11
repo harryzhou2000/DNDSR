@@ -32,6 +32,18 @@ Before compiling or submitting, establish:
 If fields are missing, inspect and prepare without launching. Ask at the first
 operation whose correctness depends on the missing value.
 
+## Subagent Policy
+
+When subagents are available, dispatch regular or mechanical cluster work to
+Luna, or to the user's specified available low-cost model. This includes file
+transfer, remote checkout or repository updates, compilation, job launch, and
+polling. Give each dispatch the cluster profile, exact paths, desired source
+state, scheduler request, bounds, stopping conditions, and evidence to return.
+The main agent retains source-state and authorization decisions, technical
+reasoning, result interpretation, and final verification; delegation does not
+authorize checkout mutation, job submission, cancellation, or other external
+side effects by itself.
+
 ## Workflow
 
 1. Read [the cluster protocol](references/cluster_protocol.md). If the chosen

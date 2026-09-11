@@ -419,10 +419,10 @@ namespace DNDS::Euler::Chemistry
             DNDS_assert_info(false, "ChemicalSource::Impl: Cantera not available");
 #endif
         }
-        void trn_getMixDiffCoeffs(double *d) const
+        void trn_getMixDiffCoeffsMass(double *d) const
         {
 #ifdef DNDS_USE_CANTERA
-            sol->transport()->getMixDiffCoeffs(d);
+            sol->transport()->getMixDiffCoeffsMass(d);
 #else
             DNDS_assert_info(false, "ChemicalSource::Impl: Cantera not available");
 #endif
@@ -985,7 +985,7 @@ namespace DNDS::Euler::Chemistry
         DNDS_check_throw_info(D.data != nullptr && D.nSpecies >= I.Ns,
                               "ChemicalSource::speciesDiffusivity(): output D buffer too small or null");
         I.setTPY(T, p, Y);
-        I.trn_getMixDiffCoeffs(D.data);
+        I.trn_getMixDiffCoeffsMass(D.data);
     }
 
     void ChemicalSource::speciesEnthalpies(double T, double p,

@@ -25,6 +25,17 @@ If runner or allocation is absent, proceed with planning, source inspection, exi
 
 Read [references/experiment_protocol.md](references/experiment_protocol.md) before creating the workspace or launching, monitoring, modifying, or reporting an experiment.
 
+## Subagent Policy
+
+When subagents are available, dispatch regular or mechanical execution work to
+Luna, or to the user's specified available low-cost model. This includes file
+transfer, remote repository updates, compilation, solver launches, and polling
+running cases. Give each dispatch explicit paths, commands or intended state,
+runtime bounds, stopping conditions, and the evidence it must return. The main
+agent retains experimental design, safety and authorization decisions, code or
+numerical reasoning, interpretation, and final verification; delegation does
+not expand permission to mutate Git state or launch work.
+
 ## Core Workflow
 
 1. Verify the repository root, applicable `AGENTS.md`, current Git status, available build, case path conventions, and whether `.codegraph/` requires CodeGraph-first navigation.
@@ -35,7 +46,7 @@ Read [references/experiment_protocol.md](references/experiment_protocol.md) befo
 5. Make configuration changes in place with the editing tool. Preserve JSON notes and comments; never rewrite maintained configs with `json.dump`.
 6. Build only required targets. For Python tests after C++ changes, rebuild and install every required pybind11 target before testing, as required by the repository instructions.
 7. Launch only after the input contract is complete. Record the exact command, runner, allocation, source state, config snapshot/hash, start time, and expected stop time.
-8. Monitor long expected runs with Luna or the user's specified available low-cost model. Monitoring observes progress and enforces stop conditions; it does not silently alter the experiment.
+8. Monitor long expected runs through the low-cost subagent required above. Monitoring observes progress and enforces stop conditions; it does not silently alter the experiment.
    The primary agent may wait at least 20 minutes for the polling subagent to return when waiting on an explicitly authorized long numerical run, and may wait longer when the user explicitly authorizes it. Use the ordinary 10-minute bound for normal trials.
 9. Fetch only compact post-processed lines, profiles, critical-point data, tables, and plots into the workspace. Keep ordinary raw numerical output under `<repo>/data/...` according to config conventions.
 10. Validate numerical plausibility and compare against the stated reference or invariant. Report verified results separately from partial, failed, or unrun work.
