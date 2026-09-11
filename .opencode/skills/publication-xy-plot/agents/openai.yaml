@@ -1,0 +1,4 @@
+interface:
+  display_name: "Publication XY Plot"
+  short_description: "Create print-readable colorblind-safe line plots"
+  default_prompt: "Create or revise this x-y plot for publication readability."

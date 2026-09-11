@@ -129,6 +129,58 @@ pl.camera.zoom(1.2)  # adjust after
 
 ## Layout Control
 
+### Physical figure and symbol size
+
+Treat page, figure, and panel geometry separately. A4 is 8.2677 by 11.6929
+inches in portrait or 11.6929 by 8.2677 inches in landscape. Design at the
+figure's printed insertion size: a useful default is 6 by 4 inches in landscape
+or 4 by 6 inches in portrait, with minor resizing on the A4 page. A readable
+2 by 2 composite is usually about 6 by 5.5 inches. Split denser grids rather
+than shrinking their symbols or scientific panels.
+
+At final printed size, use these practical ranges:
+
+- tick and colorbar numbers: 8--9.5 pt, never below 7.5 pt;
+- axis and colorbar labels: 9--10.5 pt;
+- subplot titles: 10--11.5 pt;
+- figure-level titles: 11.5--13 pt;
+- contour lines: 0.6--1.2 pt;
+- point or glyph markers: 4--8 pt.
+
+For PNG output, 300 dpi at the selected physical size is normally enough. Do
+not use a huge canvas to compensate for undersized fonts. Keep detailed
+figures below 5000 by 5000 pixels unless the user requests otherwise.
+
+### Hybrid PyVista and Matplotlib assembly
+
+For article figures, prefer PyVista for field pixels and contour geometry and
+Matplotlib for typography and page assembly:
+
+1. Render each spatial field without a scalar bar, title, axes, or annotation.
+2. Preserve every unassembled tile as a reusable PNG, normally at least 1600
+   pixels along its long dimension and with common camera bounds and color
+   limits.
+3. Assemble tiles on a 6 by 4, 4 by 6, or approximately 6 by 5.5 inch
+   Matplotlib `GridSpec`, depending on the panel arrangement.
+4. Add serif STIX mathematical titles and shared colorbars with Matplotlib.
+5. Put colorbars and legends in dedicated rows or columns completely outside
+   the data viewports.
+6. Deduplicate identical colorbars: one temperature bar and one shared
+   dimensionless-indicator bar are enough when their tiles use common maps and
+   limits.
+
+Use a `ScalarMappable(Normalize(vmin, vmax), cmap)` for each shared Matplotlib
+colorbar. Keep subplot titles to the quantity that changes; move source file,
+mesh, mechanism, and full time-step provenance into the report caption.
+
+This hybrid approach avoids VTK font inconsistencies. Preserve raw tiles even
+when an assembled figure is the primary artifact so future layouts do not
+require rerendering the VTKHDF snapshot.
+
+For a deliberately axis-free composite, crop the raw tile to the field bounds
+and let Matplotlib hide its axes. This is a figure-specific choice, not a
+general PyVista rule.
+
 ### Window size
 
 Always explicit — pyvista defaults are tiny:
@@ -298,6 +350,11 @@ ca.title_offset = (2.0, 5.0) # title distance from axis (default 20,20)
 
 Tick length is not exposed through pyvista but `SetScreenSize` + small
 `label_offset` produce compact, readable axes.
+
+For general scientific plots, keep coordinate rules and labels unless the
+assembled figure intentionally uses axis-free tiles. `show_bounds` is suitable
+for standalone PyVista output; hybrid composites can instead use Matplotlib
+axes aligned to the rendered world-space extent for more reliable serif text.
 
 ### Text overlays
 
