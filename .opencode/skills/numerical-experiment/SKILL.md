@@ -1,11 +1,16 @@
 ---
 name: numerical-experiment
-description: Plan, execute, monitor, and record bounded DNDSR numerical experiments on a user-selected local or remote runner. Use for solver trials, parameter studies, convergence experiments, numerical-method comparisons, and CFD evidence generation; do not use for purely source-level review with no numerical experiment.
+description: Plan, execute, monitor, and record bounded DNDSR numerical experiments on a local or direct-SSH runner. Use for solver trials, parameter studies, convergence experiments, numerical-method comparisons, and CFD evidence generation; combine with cluster-run when execution requires Slurm or another batch scheduler.
 ---
 
 # Numerical Experiment
 
 Produce reproducible numerical evidence without allowing exploratory runs to become unbounded or raw output to pollute the tracked research record.
+
+This skill directly manages local and non-scheduled SSH runners. When a remote
+machine requires `sbatch`, `srun`, `salloc`, or an equivalent scheduler, also
+use `cluster-run` for checkout preparation, allocation, submission, and job
+lifecycle handling.
 
 ## Required Inputs
 
