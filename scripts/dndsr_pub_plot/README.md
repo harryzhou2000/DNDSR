@@ -6,6 +6,7 @@ defaults use a 6 by 4 inch article figure sized for placement on an A4 page,
 serif text and STIX mathematics, 300 dpi, colorblind-safe colors, redundant
 line/marker encodings, and an automatic
 marker stride that displays 4--40 markers per sufficiently sampled line. The
+default markers are hollow, so they do not obscure the plotted curves.
 historical residual smoothing, per-run startup correction, and final-sample
 exclusion remain available.
 

@@ -20,13 +20,15 @@ Use the canonical DNDSR helpers in `scripts/dndsr_pub_plot`, especially
 2. Split a dense grid when its scientific panels would become smaller than
    about 2.4 by 1.7 inches; prefer at most a 2 by 2 grid.
 3. Encode every compared series redundantly by color, marker, and line style.
-4. Use 4--40 visible markers per sufficiently sampled line, normally 12--20.
-5. Keep titles concise: put only the control that differs between panels in a
+4. Use hollow markers: set `markerfacecolor="none"` and a marker edge matching
+   the series color. Never use white-filled markers, which conceal the curve.
+5. Use 4--40 visible markers per sufficiently sampled line, normally 12--20.
+6. Keep titles concise: put only the control that differs between panels in a
    subplot title and move shared context to the caption or report prose.
-6. Use mathematical symbols and units in axis labels. Avoid code identifiers,
+7. Use mathematical symbols and units in axis labels. Avoid code identifiers,
    raw scientific-notation strings, and prose-heavy legends.
-7. Put shared legends outside the data axes when they would cover curves.
-8. Save a vector PDF and a 300 dpi PNG from the same source.
+8. Put shared legends outside the data axes when they would cover curves.
+9. Save a vector PDF and a 300 dpi PNG from the same source.
 
 Read [references/article_style.md](references/article_style.md) for physical
 font and marker sizes, colorblind-safe encodings, grid and legend choices, and

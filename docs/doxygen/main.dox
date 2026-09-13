@@ -64,6 +64,7 @@
  * - @subpage serialization_usage
  * - @subpage geom_usage
  * - @subpage reactive_split_method
+ * - @subpage multispecies_viscous_transport
  * - @subpage example_playground
  */
 

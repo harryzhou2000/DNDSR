@@ -39,10 +39,19 @@ Luna, or to the user's specified available low-cost model. This includes file
 transfer, remote checkout or repository updates, compilation, job launch, and
 polling. Give each dispatch the cluster profile, exact paths, desired source
 state, scheduler request, bounds, stopping conditions, and evidence to return.
-The main agent retains source-state and authorization decisions, technical
-reasoning, result interpretation, and final verification; delegation does not
-authorize checkout mutation, job submission, cancellation, or other external
-side effects by itself.
+
+For one continuous cluster task, reuse the same subagent thread for successive
+mechanical actions such as remote preparation, submission, polling, fetch, and
+recording. Start a new thread only when the prior one is unavailable or a
+separate independent task needs parallel work; state why continuity was not
+possible.
+
+For source-state, scheduler, numerical, or provenance audits, use the default
+subagent model rather than deliberately selecting a cheaper model, unless the
+user specifies otherwise. The main agent retains source-state and authorization
+decisions, technical reasoning, result interpretation, and final verification;
+delegation does not authorize checkout mutation, job submission, cancellation,
+or other external side effects by itself.
 
 ## Workflow
 

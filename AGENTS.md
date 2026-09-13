@@ -189,6 +189,12 @@ read-only queries (`json.load`, `json.tool` validation).  Configs may
 contain hand-maintained `caseNotes["/**/"]` sections and inline
 comments that must be preserved across edits.
 
+**Generated Euler defaults:** every Euler-series solver regenerates its adjacent
+`<solver>_default_config.json` and writes a leading `"/**/"` notice declaring
+it generated input. Do not edit, stage, or track these files. Keep a
+hand-maintained case JSON separately; the solver merges it over the generated
+default and then applies CLI `-k`/`-v` overlays.
+
 **Updating JSON schemas:** never edit generated schema files by hand. Rebuild
 the corresponding executable and regenerate the schema with `--emit-schema`.
 
