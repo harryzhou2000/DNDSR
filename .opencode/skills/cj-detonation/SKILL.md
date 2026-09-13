@@ -112,6 +112,9 @@ The generated exprtk expression:
    for `dist > L_CJ`
 5. Adds transverse velocity perturbation `v = A_v * sin(2πy/Ly)` near the
    shock, decaying exponentially over ~2 induction lengths
+6. Emits round-trip-safe binary64 literals and normalizes each sampled
+   composition while reserving a small positive fraction for the dependent
+   final species used by DNDSR
 
 Options:
 * `--n-points 50` — number of interpolation points (adaptive spacing)

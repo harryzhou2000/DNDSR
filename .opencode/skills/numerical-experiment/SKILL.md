@@ -39,6 +39,12 @@ and reduction). Start a new thread only when the prior one is unavailable or a
 separate independent task needs parallel work; state why continuity was not
 possible.
 
+Use a maximum wait of 20 minutes for one ordinary subagent polling round. For
+an explicitly authorized long-running task, one polling round may wait up to
+one hour. A polling timeout is only an observation timeout: re-poll the same
+subagent and the same verified process or job handle instead of restarting it.
+These polling limits do not extend the solver's declared wall-time bound.
+
 For a scientific, numerical, or provenance audit, use the default subagent
 model rather than deliberately selecting a cheaper model, unless the user
 specifies otherwise. The main agent retains experimental design, safety and
@@ -56,8 +62,7 @@ or launch work.
 5. Make configuration changes in place with the editing tool. Preserve JSON notes and comments; never rewrite maintained configs with `json.dump`.
 6. Build only required targets. For Python tests after C++ changes, rebuild and install every required pybind11 target before testing, as required by the repository instructions.
 7. Launch only after the input contract is complete. Record the exact command, runner, allocation, source state, config snapshot/hash, start time, and expected stop time.
-8. Monitor long expected runs through the low-cost subagent required above. Monitoring observes progress and enforces stop conditions; it does not silently alter the experiment.
-   The primary agent may wait at least 20 minutes for the polling subagent to return when waiting on an explicitly authorized long numerical run, and may wait longer when the user explicitly authorizes it. Use the ordinary 10-minute bound for normal trials.
+8. Monitor long expected runs through the low-cost subagent required above. Monitoring observes progress and enforces stop conditions; it does not silently alter the experiment. Apply the 20-minute ordinary and one-hour explicitly authorized per-round subagent wait limits above. Use the ordinary 10-minute solver bound for normal trials.
 9. For numerous consecutive rows, launch through a checked orchestration script rather than a sequence of ad hoc shell commands. The script must enumerate the intended cases, default to serial execution unless parallelism is explicitly justified, enforce each row's bound, record or skip only verified terminal rows, stop or continue on failure by an explicit option, and print the campaign log/record roots before launch. Keep the orchestrator and its declared matrix in the workspace so the sequence is reproducible.
 10. Fetch only compact post-processed lines, profiles, critical-point data, tables, and plots into the workspace. Keep ordinary raw numerical output under `<repo>/data/...` according to config conventions.
 11. Validate numerical plausibility and compare against the stated reference or invariant. Report verified results separately from partial, failed, or unrun work.
