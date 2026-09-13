@@ -15,5 +15,6 @@ Developer guides for building, configuring, and using DNDSR.
 /guides/serialization_usage
 /guides/geom_usage
 /guides/reactive_split_method
+/guides/multispecies_viscous_transport
 /guides/examples
 ```

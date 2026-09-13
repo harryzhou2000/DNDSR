@@ -1120,6 +1120,12 @@ namespace DNDS::Euler
             else
             {
                 gSetting = nlohmann::ordered_json::object();
+                gSetting["/**/"] = nlohmann::ordered_json::array(
+                    {
+                        "GENERATED DEFAULT INPUT: emitted by the Euler solver; do not edit.",
+                        "Do not track or stage this file. Keep hand-maintained case input in a separate JSON file.",
+                        "The solver regenerates this default before merging the requested case input and CLI overrides.",
+                    });
                 config.ReadWriteJson(gSetting, nVars, read);
                 if (pBCHandler) // todo: add example pBCHandler
                     gSetting["bcSettings"] = *pBCHandler;

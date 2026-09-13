@@ -141,14 +141,16 @@ def series_encoding(
             minimum_markers=style.minimum_markers,
             maximum_markers=style.maximum_markers,
         )
+    color = style.colors[plot_index % len(style.colors)]
     return {
-        "color": style.colors[plot_index % len(style.colors)],
+        "color": color,
         "linestyle": style.line_styles[plot_index % len(style.line_styles)],
         "marker": style.markers[plot_index % len(style.markers)],
         "markevery": marker_every,
         "markersize": style.marker_size,
         "markeredgewidth": max(0.6, 0.7 * style.line_width),
-        "markerfacecolor": "white",
+        "markeredgecolor": color,
+        "markerfacecolor": "none",
     }
 
 
