@@ -32,6 +32,33 @@ import json
 
 import numpy as np
 
+MASS_FRACTION_RESERVE = 1.0e-14
+
+
+def fmt_float(value):
+    """Format a binary64 value for a round-trip-safe exprtk literal."""
+    return f"{float(value):.17g}"
+
+
+def normalize_species_columns(species):
+    """Normalize species columns and reserve a positive dependent fraction."""
+    values = np.maximum(np.asarray(species, dtype=float), 0.0)
+    totals = np.sum(values, axis=0)
+    if np.any(~np.isfinite(totals)) or np.any(totals <= 0.0):
+        raise ValueError(
+            "species profile contains a non-finite or empty composition")
+    values = values / totals
+    independent = values[:-1]
+    dependent = values[-1]
+    target = np.maximum(
+        0.0, 1.0 - np.maximum(dependent, MASS_FRACTION_RESERVE))
+    independent_totals = np.sum(independent, axis=0)
+    scale = np.divide(target, independent_totals, out=np.zeros_like(
+        target), where=independent_totals > 0.0)
+    values[:-1] = independent * scale
+    values[-1] = 1.0 - np.sum(values[:-1], axis=0)
+    return values
+
 
 def find_cj_distance(dist, P, tol=0.01):
     """Return the distance at which pressure first falls within *tol* of its final value."""
@@ -72,7 +99,7 @@ def fmt_vec(name, vals, per_line=6):
     parts.append(f"var {name}[{n}] := {{")
     for i in range(0, n, per_line):
         chunk = vals[i:i + per_line]
-        s = ", ".join(f"{v:.8g}" for v in chunk)
+        s = ", ".join(fmt_float(v) for v in chunk)
         if i + per_line < n:
             s += ","
         parts.append("    " + s)
@@ -129,6 +156,10 @@ def generate_exprtk(npz_path, n_points=50, Ly=0.1, shock_pert_amp=1e-3,
     species_names = list(d["species_names"])
     n_species = len(species_names)
 
+    species = species if species.shape[0] == n_species else species.T
+    species = normalize_species_columns(species)
+    Y1 = normalize_species_columns(np.asarray(
+        Y1, dtype=float).reshape((-1, 1)))[:, 0]
     u_lab = D - U_sf
 
     L_cj = find_cj_distance(dist, P, tol=cj_tol)
@@ -139,9 +170,14 @@ def generate_exprtk(npz_path, n_points=50, Ly=0.1, shock_pert_amp=1e-3,
 
     arrays = {"T": T, "P": P, "u": u_lab}
     for i in range(n_species):
-        arrays[f"Y{i}"] = species[i] if species.shape[0] == n_species else species[:, i]
+        arrays[f"Y{i}"] = species[i]
 
     sampled = interp_profile(x_new, dist, arrays)
+    sampled_species = normalize_species_columns(
+        np.vstack([sampled[f"Y{i}"] for i in range(n_species)])
+    )
+    for i in range(n_species):
+        sampled[f"Y{i}"] = sampled_species[i]
 
     T_cj = sampled["T"][-1]
     P_cj = sampled["P"][-1]
@@ -150,11 +186,11 @@ def generate_exprtk(npz_path, n_points=50, Ly=0.1, shock_pert_amp=1e-3,
 
     lines = []
     lines.append("inRegion := 1;")
-    lines.append(f"var Ly := {Ly:.8g};")
-    lines.append(f"var x_shock_0 := {x_shock:.8g};")
-    lines.append(f"var A_shock := {shock_pert_amp:.8g};")
-    lines.append(f"var A_v := {v_pert_amp:.8g};")
-    lines.append(f"var ind_len := {ind_len:.8g};")
+    lines.append(f"var Ly := {fmt_float(Ly)};")
+    lines.append(f"var x_shock_0 := {fmt_float(x_shock)};")
+    lines.append(f"var A_shock := {fmt_float(shock_pert_amp)};")
+    lines.append(f"var A_v := {fmt_float(v_pert_amp)};")
+    lines.append(f"var ind_len := {fmt_float(ind_len)};")
     lines.append("")
     lines.append("var pert_y := cos(2 * pi * x[1] / Ly);")
     lines.append("var pert_y_sin := sin(2 * pi * x[1] / Ly);")
@@ -191,7 +227,7 @@ def generate_exprtk(npz_path, n_points=50, Ly=0.1, shock_pert_amp=1e-3,
 
     fv = frame_velocity
     if fv is not None:
-        lines.append(f"var D := {fv:.8g};")
+        lines.append(f"var D := {fmt_float(fv)};")
         lines.append("")
 
     lines.extend(fmt_vec("xd", x_new))
@@ -203,29 +239,29 @@ def generate_exprtk(npz_path, n_points=50, Ly=0.1, shock_pert_amp=1e-3,
     lines.append("")
 
     lines.append("if (dist < 0) {")
-    lines.append(f"    UExprtk[0] := {T1:.8g};")
+    lines.append(f"    UExprtk[0] := {fmt_float(T1)};")
     if fv is not None:
         lines.append("    UExprtk[1] := -D;")
     else:
         lines.append("    UExprtk[1] := 0.0;")
     lines.append("    UExprtk[2] := 0.0;")
     lines.append("    UExprtk[3] := 0.0;")
-    lines.append(f"    UExprtk[4] := {P1:.8g};")
+    lines.append(f"    UExprtk[4] := {fmt_float(P1)};")
     for i in range(n_species - 1):
-        lines.append(f"    UExprtk[{5 + i}] := {Y1[i]:.8g};")
+        lines.append(f"    UExprtk[{5 + i}] := {fmt_float(Y1[i])};")
     lines.append("}")
 
     lines.append(f"else if (dist >= xd[{n_pts - 1}]) {{")
-    lines.append(f"    UExprtk[0] := {T_cj:.8g};")
+    lines.append(f"    UExprtk[0] := {fmt_float(T_cj)};")
     if fv is not None:
-        lines.append(f"    UExprtk[1] := {u_cj:.8g} - D;")
+        lines.append(f"    UExprtk[1] := {fmt_float(u_cj)} - D;")
     else:
-        lines.append(f"    UExprtk[1] := {u_cj:.8g};")
+        lines.append(f"    UExprtk[1] := {fmt_float(u_cj)};")
     lines.append("    UExprtk[2] := 0.0;")
     lines.append(f"    UExprtk[3] := 0.0;")
-    lines.append(f"    UExprtk[4] := {P_cj:.8g};")
+    lines.append(f"    UExprtk[4] := {fmt_float(P_cj)};")
     for i in range(n_species - 1):
-        lines.append(f"    UExprtk[{5 + i}] := {Y_cj[i]:.8g};")
+        lines.append(f"    UExprtk[{5 + i}] := {fmt_float(Y_cj[i])};")
     lines.append("}")
 
     lines.append("else {")

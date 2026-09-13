@@ -41,7 +41,12 @@ namespace DNDS::Euler
      *  - y+ (wall unit distance), heat flux.
      *
      *  Supports time-averaged mode, point-interpolated output, async I/O,
-     *  and configurable ASCII precision / VTK float encoding.
+     *  and configurable ASCII precision / VTK float encoding. Point output first
+     *  limits every cell-side conservative reconstruction toward its admissible
+     *  cell mean. Nodal reduction then averages primitive density, velocity,
+     *  temperature, and species variables; pressure and Mach number are derived
+     *  from that averaged primitive state. Conservative states are never averaged
+     *  at nodes, avoiding a non-positivity-preserving multispecies EOS inversion.
      *
      *  @param fname                  Base filename for volume output.
      *  @param fnameSeries            Filename for VTK time series metadata.
@@ -82,6 +87,66 @@ namespace DNDS::Euler
 
         std::vector<std::function<void()>> fOuts;
         // std::cout << "usize " << u.father->Size() << std::endl;
+
+        auto pointStateAdmissible = [&](const TU &state) -> bool
+        {
+            if (!state.allFinite() || state(0) <= 0)
+                return false;
+            real rhoeSensible = state(I4) - 0.5 * state(Seq123).squaredNorm() / state(0) -
+                                eval.phys().mixtureBaseInternalRhoE(state);
+            if (!std::isfinite(rhoeSensible) || rhoeSensible <= 0)
+                return false;
+            if (eval.phys().hasChemicalSource())
+            {
+                int nSpeciesIndependent = eval.phys().nSpecies() - 1;
+                int iSpecies = nVars - nSpeciesIndependent;
+                real speciesSum = 0;
+                for (int iSpeciesLocal = 0; iSpeciesLocal < nSpeciesIndependent; ++iSpeciesLocal)
+                {
+                    real rhoY = state(iSpecies + iSpeciesLocal);
+                    if (!std::isfinite(rhoY) || rhoY < 0)
+                        return false;
+                    speciesSum += rhoY;
+                }
+                if (speciesSum > state(0))
+                    return false;
+            }
+            try
+            {
+                real temperature = eval.phys().temperature(state);
+                return std::isfinite(temperature) &&
+                       eval.phys().toPhysT(temperature) >= eval.phys().temperatureFloor();
+            }
+            catch (const std::exception &)
+            {
+                return false;
+            }
+        };
+
+        auto limitPointState = [&](const TU &cellMean, const TU &pointState) -> TU
+        {
+            DNDS_check_throw_info(pointStateAdmissible(cellMean),
+                                  "invalid cell mean while limiting point output");
+            if (pointStateAdmissible(pointState))
+                return pointState;
+            TU increment = pointState - cellMean;
+            TU limited = cellMean;
+            real alphaLower = 0;
+            real alphaUpper = 1;
+            for (int iteration = 0; iteration < 48; ++iteration)
+            {
+                real alpha = 0.5 * (alphaLower + alphaUpper);
+                TU candidate = cellMean + alpha * increment;
+                if (pointStateAdmissible(candidate))
+                {
+                    alphaLower = alpha;
+                    limited = candidate;
+                }
+                else
+                    alphaUpper = alpha;
+            }
+            return limited;
+        };
 
         if (config.dataIOControl.outVolumeData || mode == PrintDataTimeAverage)
         {
@@ -165,38 +230,57 @@ namespace DNDS::Euler
                             // std::cout << uRecNew[iCell].rows() << std::endl;
                             vfv->FDiffBaseValue(DiBj, pPhy, iCell, -2, -2);
 
+                            TU cellMean = uOut[iCell];
                             TU vRec = (DiBj(EigenAll, Eigen::seq(1, EigenLast)) * (config.limiterControl.useLimiter ? uRecNew[iCell] : uRec[iCell])).transpose() +
-                                      uOut[iCell];
+                                      cellMean;
                             if (mesh->isPeriodic) // transform velocity to node reference frame
+                            {
                                 vRec(Seq123) = mesh->periodicInfo.GetVectorBackByBits<dim, 1>(vRec(Seq123), mesh->cell2nodePbi(iCell, ic2n));
+                                cellMean(Seq123) = mesh->periodicInfo.GetVectorBackByBits<dim, 1>(cellMean(Seq123), mesh->cell2nodePbi(iCell, ic2n));
+                            }
                             if (mode == PrintDataTimeAverage)
-                                vRec = uOut[iCell];
+                                vRec = cellMean;
                             if (eval.settings.frameConstRotation.enabled)
+                            {
                                 eval.TransformURotatingFrame_ABS_VELO(vRec, pPhy, -1);
+                                eval.TransformURotatingFrame_ABS_VELO(cellMean, pPhy, -1);
+                            }
+                            vRec = limitPointState(cellMean, vRec);
                             if (iNode < mesh->NumNode())
-                                outDistPointPair[iNode](Eigen::seq(0, nVars - 1)) += vRec;
+                            {
+                                TU primitiveRhoT;
+                                eval.phys().conservativeToPrimRhoT(vRec, primitiveRhoT);
+                                outDistPointPair[iNode][0] += primitiveRhoT(0);
+                                for (int i = 0; i < dim; i++)
+                                    outDistPointPair[iNode][i + 1] += primitiveRhoT(i + 1);
+                                outDistPointPair[iNode][I4 + 1] += primitiveRhoT(I4);
+                                for (int i = I4 + 1; i < nVars; ++i)
+                                    outDistPointPair[iNode][2 + i] += primitiveRhoT(i);
+                            }
                         }
                     }
 
                     for (index iN = 0; iN < mesh->NumNode(); iN++)
                     {
-                        TU recu = outDistPointPair[iN](Eigen::seq(0, nVars - 1)) / (nN2C.at(iN) + verySmallReal);
                         DNDS_assert(nN2C.at(iN) > 0);
+                        outDistPointPair[iN] /= nN2C.at(iN);
+                        TU primitiveRhoT;
+                        primitiveRhoT.setZero(nVars);
+                        primitiveRhoT(0) = outDistPointPair[iN][0];
+                        for (int i = 0; i < dim; ++i)
+                            primitiveRhoT(i + 1) = outDistPointPair[iN][i + 1];
+                        primitiveRhoT(I4) = outDistPointPair[iN][I4 + 1];
+                        for (int i = I4 + 1; i < nVars; ++i)
+                            primitiveRhoT(i) = outDistPointPair[iN][2 + i];
 
-                        TVec velo = (recu(Seq123).array() / recu(0)).matrix();
-                        real vsqr = velo.squaredNorm();
-                        auto [T, p, asqr, H, gammaEq, gamma] = eval.phys().conservativeThermal(recu);
-                        // DNDS_assert(asqr > 0);
-                        real M = std::sqrt(std::abs(vsqr / asqr));
-
-                        outDistPointPair[iN][0] = recu(0);
-                        for (int i = 0; i < dim; i++)
-                            outDistPointPair[iN][i + 1] = velo(i);
-                        outDistPointPair[iN][I4 + 0] = p;
-                        outDistPointPair[iN][I4 + 1] = T;
-                        outDistPointPair[iN][I4 + 2] = M;
-
-                        writeExtendedVariables(recu, outDistPointPair[iN], I4, nVars, 2);
+                        TU conservative;
+                        eval.phys().primRhoTToConservative(primitiveRhoT, conservative);
+                        real pressure = primitiveRhoT(0) * eval.phys().Rgas(conservative) * primitiveRhoT(I4);
+                        real gamma = eval.phys().gamma(primitiveRhoT(I4), conservative);
+                        real velocitySquared = primitiveRhoT(Seq123).squaredNorm();
+                        real soundSpeedSquared = gamma * pressure / primitiveRhoT(0);
+                        outDistPointPair[iN][I4 + 0] = pressure;
+                        outDistPointPair[iN][I4 + 2] = std::sqrt(std::abs(velocitySquared / soundSpeedSquared));
                     }
                     outDistPointPair.trans.startPersistentPull();
                     outDistPointPair.trans.waitPersistentPull();

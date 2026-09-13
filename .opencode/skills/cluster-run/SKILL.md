@@ -46,6 +46,12 @@ recording. Start a new thread only when the prior one is unavailable or a
 separate independent task needs parallel work; state why continuity was not
 possible.
 
+Use a maximum wait of 20 minutes for one ordinary subagent polling round. For
+an explicitly authorized long-running task, one polling round may wait up to
+one hour. A polling timeout is only an observation timeout: re-poll the same
+subagent and the same verified scheduler job or process handle instead of
+restarting it. These polling limits do not extend the job's declared wall time.
+
 For source-state, scheduler, numerical, or provenance audits, use the default
 subagent model rather than deliberately selecting a cheaper model, unless the
 user specifies otherwise. The main agent retains source-state and authorization
