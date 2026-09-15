@@ -389,67 +389,15 @@ namespace DNDS
             template <>
             template <>
         )
-        void VariationalReconstruction<dim>::DoReconstruction2nd(
+        void VariationalReconstruction<dim>::ConvertUGradToURec(
             tURec<nVarsFixed> &uRec,
-            tUDof<nVarsFixed> &u,
-            const TFBoundary<nVarsFixed> &FBoundary,
-            int method,
+            tUGrad<nVarsFixed, dim> &uGrad,
             const std::vector<int> &mask)
         {
             using namespace Geom;
             using namespace Geom::Elem;
-            // using TU = Eigen::Vector<real, nVarsFixed>;
-            // using TU_Batch = Eigen::Matrix<real, nVarsFixed, Eigen::Dynamic>;
-            int nVars = u.father->MatRowSize();
-            auto vfv = this;
-
-            tUGrad<nVarsFixed, dim> uGrad;
-            this->BuildUGrad(uGrad, u.father->MatRowSize(), false, false); // no son or trans makes this fully local operation
-
             static const auto Seq012 = Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>); // note this is gDim!
             static const auto Seq123 = Eigen::seq(Eigen::fix<1>, Eigen::fix<dim>);
-
-            this->DoReconstruction2ndGrad(uGrad, u, FBoundary, method);
-
-            // // in place barth limiting
-            // for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
-            // {
-            //     auto c2f = mesh->cell2face[iCell];
-
-            //     TU_Batch uFaceInc;
-            //     uFaceInc.setZero(nVars, c2f.size() * 2); // j < c2f.size(): faceInc; j > c2f.size(): baryInc
-            //     TU uOtherMin = u[iCell];
-            //     TU uOtherMax = u[iCell];
-            //     for (rowsize ic2f = 0; ic2f < c2f.size(); ic2f++)
-            //     {
-            //         index iFace = c2f[ic2f];
-            //         uFaceInc(EigenAll, ic2f) =
-            //             uGrad[iCell].transpose() *
-            //             (vfv->GetFaceQuadraturePPhysFromCell(iFace, iCell, -1, -1) - vfv->GetCellQuadraturePPhys(iCell, -1))(Seq012);
-            //         index iCellOther = mesh->CellFaceOther(iCell, iFace);
-            //         if (iCellOther != UnInitIndex)
-            //         {
-            //             uOtherMin = uOtherMin.array().min(u[iCellOther].array());
-            //             uOtherMax = uOtherMin.array().max(u[iCellOther].array());
-            //         }
-            //     }
-
-            //     TU uFaceIncMax = uFaceInc.array().rowwise().maxCoeff();
-            //     TU uFaceIncMin = uFaceInc.array().rowwise().minCoeff();
-            //     TU alpha0;
-            //     alpha0.setConstant(nVars, 1.0);
-            //     alpha0 = alpha0.array().min(((uOtherMax - u[iCell]).array().abs() / (uFaceIncMax.array().abs() + verySmallReal)));
-            //     alpha0 = alpha0.array().min(((uOtherMin - u[iCell]).array().abs() / (uFaceIncMin.array().abs() + verySmallReal)));
-            //     uGrad[iCell].array().rowwise() *= alpha0.array().transpose();
-
-            //     // kill the axis-cells
-            //     for (rowsize ic2f = 0; ic2f < c2f.size(); ic2f++)
-            //     {
-            //         index iFace = c2f[ic2f];
-            //         if (this->axisFaces.count(iFace))
-            //             uGrad[iCell] *= 0;
-            //     }
-            // }
 
 #if defined(DNDS_DIST_MT_USE_OMP)
 #    pragma omp parallel for schedule(static)
@@ -462,8 +410,6 @@ namespace DNDS
             //             for (int iPart = 0; iPart < mesh->NLocalParts(); iPart++)
             //                 for (index iCell = mesh->LocalPartStart(iPart); iCell < mesh->LocalPartEnd(iPart); iCell++)
             {
-                int nVars = u[iCell].size();
-                auto c2f = mesh->cell2face[iCell];
                 Eigen::Matrix<real, nVarsFixed, dim> grad = uGrad[iCell].transpose();
 
                 Eigen::Matrix<real, dim, dim> d1bv;
@@ -485,6 +431,26 @@ namespace DNDS
             }
         }
 
+        DNDS_SWITCH_INTELLISENSE(
+            template <int dim>
+            template <int nVarsFixed>
+            ,
+            template <>
+            template <>
+        )
+        void VariationalReconstruction<dim>::DoReconstruction2nd(
+            tURec<nVarsFixed> &uRec,
+            tUDof<nVarsFixed> &u,
+            const TFBoundary<nVarsFixed> &FBoundary,
+            int method,
+            const std::vector<int> &mask)
+        {
+            tUGrad<nVarsFixed, dim> uGrad;
+            this->BuildUGrad(uGrad, u.father->MatRowSize(), false, false);
+            this->DoReconstruction2ndGrad(uGrad, u, FBoundary, method);
+            this->ConvertUGradToURec(uRec, uGrad, mask);
+        }
+
         template <int dim>
         template <int nVarsFixed>
         void VariationalReconstruction<dim>::DoReconstructionIter(
@@ -496,11 +462,51 @@ namespace DNDS
             bool recordInc,
             bool uRecIsZero)
         {
+            DoReconstructionIterInternal<nVarsFixed>(
+                uRec, uRecNew, u, FBoundary, nullptr, nullptr,
+                putIntoNew, recordInc, uRecIsZero);
+        }
+
+        template <int dim>
+        template <int nVarsFixed>
+        void VariationalReconstruction<dim>::DoReconstructionIterLimited(
+            tURec<nVarsFixed> &uRec,
+            tURec<nVarsFixed> &uRecNew,
+            tUDof<nVarsFixed> &u,
+            const TFBoundary<nVarsFixed> &FBoundary,
+            tURec<nVarsFixed> &uRecTarget,
+            tUDof<1> &alpha,
+            bool putIntoNew)
+        {
+            DoReconstructionIterInternal<nVarsFixed>(
+                uRec, uRecNew, u, FBoundary, &uRecTarget, &alpha,
+                putIntoNew, false, false);
+        }
+
+        template <int dim>
+        template <int nVarsFixed>
+        void VariationalReconstruction<dim>::DoReconstructionIterInternal(
+            tURec<nVarsFixed> &uRec,
+            tURec<nVarsFixed> &uRecNew,
+            tUDof<nVarsFixed> &u,
+            const TFBoundary<nVarsFixed> &FBoundary,
+            tURec<nVarsFixed> *uRecTarget,
+            tUDof<1> *alpha,
+            bool putIntoNew,
+            bool recordInc,
+            bool uRecIsZero)
+        {
             using namespace Geom;
             using namespace Geom::Elem;
             using namespace Geom::Base;
             static const auto Seq012 = Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>);
             int maxNDOF = GetNDof<dim>(settings.maxOrder);
+            DNDS_assert_info((uRecTarget == nullptr) == (alpha == nullptr),
+                             "uRecTarget and alpha must be supplied together");
+            DNDS_assert_info(uRecTarget == nullptr || !recordInc,
+                             "limited reconstruction does not support increment recording");
+            DNDS_assert_info(uRecTarget == nullptr || settings.maxOrder > 1,
+                             "limited reconstruction requires maxOrder > 1");
             if (recordInc)
                 DNDS_assert_info(putIntoNew, "the -RHS must be put into uRecNew");
             if (settings.maxOrder == 1 && settings.subs2ndOrder != 0)
@@ -526,6 +532,10 @@ namespace DNDS
                 for (index iCell = mesh->LocalPartStart(iPart); iCell < mesh->LocalPartEnd(iPart); iCell++)
                 {
                     real relax = GetCellAtr(iCell).relax;
+                    real alphaCell = alpha == nullptr ? 0.0 : (*alpha)[iCell](0);
+                    DNDS_assert_info(alphaCell >= 0.0 && alphaCell <= 1.0,
+                                     "limited reconstruction alpha must be in [0, 1]");
+                    real recWeight = 1.0 - alphaCell;
 
                     if (recordInc)
                     {
@@ -535,14 +545,22 @@ namespace DNDS
                             uRecNew[iCell] = uRec[iCell];
                     }
                     else if (settings.SORInstead)
-                        uRec[iCell] = uRec[iCell] * ((recordInc ? 0 : 1) - relax);
+                    {
+                        uRec[iCell] *= 1.0 - relax;
+                        if (uRecTarget != nullptr)
+                            uRec[iCell] += relax * alphaCell * (*uRecTarget)[iCell];
+                    }
                     else
-                        uRecNew[iCell] = uRec[iCell] * ((recordInc ? 0 : 1) - relax);
+                    {
+                        uRecNew[iCell] = uRec[iCell] * (1.0 - relax);
+                        if (uRecTarget != nullptr)
+                            uRecNew[iCell] += relax * alphaCell * (*uRecTarget)[iCell];
+                    }
 
                     auto c2f = mesh->cell2face[iCell];
                     auto matrixAAInvBRow = coefficients_.matrixAAInvB[iCell];
                     auto vectorAInvBRow = coefficients_.vectorAInvB[iCell];
-                    for (int ic2f = 0; ic2f < c2f.size(); ic2f++)
+                    for (int ic2f = 0; recWeight > 0 && ic2f < c2f.size(); ic2f++)
                     {
                         index iFace = c2f[ic2f];
                         index iCellOther = CellFaceOther(iCell, iFace, ic2f);
@@ -565,12 +583,12 @@ namespace DNDS
                             }
                             else if (settings.SORInstead)
                                 uRec[iCell] +=
-                                    relax *
+                                    relax * recWeight *
                                     (matrixAAInvBRow[ic2f + 1] * uRecOther +
                                      vectorAInvBRow[ic2f] * (uOther - u[iCell].transpose()));
                             else
                                 uRecNew[iCell] +=
-                                    relax *
+                                    relax * recWeight *
                                     (matrixAAInvBRow[ic2f + 1] * uRecOther +
                                      vectorAInvBRow[ic2f] * (uOther - u[iCell].transpose()));
                         }
@@ -588,10 +606,10 @@ namespace DNDS
                             }
                             else if (settings.SORInstead && !recordInc)
                                 uRec[iCell] +=
-                                    relax * matrixAAInvBRow[0] * BCC;
+                                    relax * recWeight * matrixAAInvBRow[0] * BCC;
                             else
                                 uRecNew[iCell] +=
-                                    relax * matrixAAInvBRow[0] * BCC;
+                                    relax * recWeight * matrixAAInvBRow[0] * BCC;
                         }
                     }
                     if ((!uRecNew[iCell].allFinite()) || (!uRec[iCell].allFinite()))

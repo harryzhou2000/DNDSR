@@ -2342,17 +2342,72 @@ namespace DNDS::Euler
 
     DNDS_SWITCH_INTELLISENSE(
         template <EulerModel model>, template <>)
-    /** @brief Apply positivity-preserving gradient limiter to reconstructed solution gradients.
-     *
-     *  Limits the gradient so that density and internal energy remain above threshold
-     *  values at all face quadrature points (Zhang-Shu style for gradients).
-     *  Optionally disables shock-based limiting via flags.
-     *
-     *  @param u         Conservative variable DOF array.
-     *  @param uGrad     Input gradient array.
-     *  @param uGradNew  Limited gradient array (output).
-     *  @param flags     Bitfield flags (e.g., LIMITER_UGRAD_Disable_Shock_Limiter).
-     */
+    void EulerEvaluator<model>::BuildLimitedVRO2(
+        ArrayDOFV<nVarsFixed> &u,
+        ArrayRECV<nVarsFixed> &uRecO2,
+        ArrayDOFV<1> &alpha,
+        ArrayDOFV<1> &pressureJump,
+        ArrayDOFV<1> &compression,
+        const LimitedVRSettings &limitedVRSettings,
+        const typename TVFV::template TFBoundary<nVarsFixed> &FBoundary)
+    {
+        DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
+
+        vfv->DoReconstruction2ndGrad(uGradBufNoLim, u, FBoundary, settings.direct2ndRecMethod);
+        uGradBufNoLim.trans.startPersistentPull();
+        uGradBufNoLim.trans.waitPersistentPull();
+        LimiterUGrad(u, uGradBufNoLim, uGradBuf, LIMITER_UGRAD_No_Flags);
+        uGradBuf.trans.startPersistentPull();
+        uGradBuf.trans.waitPersistentPull();
+        vfv->ConvertUGradToURec(uRecO2, uGradBuf);
+        uRecO2.trans.startPersistentPull();
+        uRecO2.trans.waitPersistentPull();
+
+        alpha.setConstant(0.0);
+        pressureJump.setConstant(0.0);
+        compression.setConstant(0.0);
+        for (index iFace = 0; iFace < mesh->NumFaceProc(); ++iFace)
+        {
+            auto f2c = mesh->face2cell[iFace];
+            if (f2c[1] == UnInitIndex)
+                continue;
+
+            TU UL = u[f2c[0]];
+            UL += (vfv->GetIntPointDiffBaseValue(f2c[0], iFace, 0, -1, std::array<int, 1>{0}, 1) *
+                   uRecO2[f2c[0]])
+                      .transpose();
+            UFromCell2Face(UL, iFace, f2c[0], 0);
+
+            TU UR = u[f2c[1]];
+            UR += (vfv->GetIntPointDiffBaseValue(f2c[1], iFace, 1, -1, std::array<int, 1>{0}, 1) *
+                   uRecO2[f2c[1]])
+                      .transpose();
+            UFromCell2Face(UR, iFace, f2c[1], 1);
+
+            auto [TL, pL, asqrL, HL, gammaEqL, gammaL] = phys_.conservativeThermal(UL);
+            auto [TR, pR, asqrR, HR, gammaEqR, gammaR] = phys_.conservativeThermal(UR);
+            TVec unitNorm = vfv->GetFaceNorm(iFace, -1)(Seq012);
+            TVec velocityL = UL(Seq123) / UL(0);
+            TVec velocityR = UR(Seq123) / UR(0);
+            auto sensor = EvaluateLimitedVRFaceSensor(
+                pL, pR, velocityL.dot(unitNorm), velocityR.dot(unitNorm),
+                std::sqrt(std::max(asqrL, real(0))), std::sqrt(std::max(asqrR, real(0))),
+                limitedVRSettings);
+
+            for (int if2c = 0; if2c < 2; ++if2c)
+            {
+                index iCell = f2c[if2c];
+                if (iCell >= mesh->NumCell())
+                    continue;
+                alpha[iCell](0) = std::max(alpha[iCell](0), sensor.alpha);
+                pressureJump[iCell](0) = std::max(pressureJump[iCell](0), sensor.pressureJump);
+                compression[iCell](0) = std::max(compression[iCell](0), sensor.compression);
+            }
+        }
+    }
+
+    DNDS_SWITCH_INTELLISENSE(
+        template <EulerModel model>, template <>)
     void EulerEvaluator<model>::LimiterUGrad(
         ArrayDOFV<nVarsFixed> &u, ArrayGRADV<nVarsFixed, gDim> &uGrad, ArrayGRADV<nVarsFixed, gDim> &uGradNew,
         uint64_t flags)

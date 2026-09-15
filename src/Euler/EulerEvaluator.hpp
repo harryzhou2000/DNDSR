@@ -40,6 +40,7 @@
 #include "EulerEvaluatorSettings.hpp"
 #include "SourceTermContributor.hpp"
 #include "Physics/PhysicsProperties.hpp"
+#include "LimitedVR.hpp"
 #include "DNDS/Serializer/SerializerBase.hpp"
 #include "DNDS/OutputDir.hpp"
 #include "DNDS/OptionalRef.hpp"
@@ -774,6 +775,21 @@ namespace DNDS::Euler
          */
         void LimiterUGrad(ArrayDOFV<nVarsFixed> &u, ArrayGRADV<nVarsFixed, gDim> &uGrad, ArrayGRADV<nVarsFixed, gDim> &uGradNew,
                           uint64_t flags = LIMITER_UGRAD_No_Flags);
+
+        /**
+         * @brief Build the Barth-limited O2 target and cellwise limited variational reconstruction gate.
+         *
+         * The target and sensor depend only on the current cell means. Internal,
+         * periodic, and MPI faces contribute; physical external faces do not.
+         */
+        void BuildLimitedVRO2(
+            ArrayDOFV<nVarsFixed> &u,
+            ArrayRECV<nVarsFixed> &uRecO2,
+            ArrayDOFV<1> &alpha,
+            ArrayDOFV<1> &pressureJump,
+            ArrayDOFV<1> &compression,
+            const LimitedVRSettings &limitedVRSettings,
+            const typename TVFV::template TFBoundary<nVarsFixed> &FBoundary);
 
         static const int EvaluateURecBeta_DEFAULT = 0x00;          ///< Default: evaluate beta without compression.
         static const int EvaluateURecBeta_COMPRESS_TO_MEAN = 0x01; ///< Compress reconstruction toward cell mean to enforce positivity.
@@ -2224,6 +2240,9 @@ namespace DNDS::Euler
             ArrayRECV<nVarsFixed> &uRec; ///< Reconstruction coefficients.
             ArrayDOFV<1> &betaPP;        ///< PP reconstruction limiter beta.
             ArrayDOFV<1> &alphaPP;       ///< PP RHS limiter alpha.
+            ArrayDOFV<1> &lvrAlpha;
+            ArrayDOFV<1> &lvrPressureJump;
+            ArrayDOFV<1> &lvrCompression;
         };
 
         /// @brief Initialize an OutputPicker with field callbacks for VTK/HDF5 output.
@@ -2373,6 +2392,12 @@ namespace DNDS::Euler
         ext template void EulerEvaluator<model>::LimiterUGrad(                                                            \
             ArrayDOFV<nVarsFixed> &u, ArrayGRADV<nVarsFixed, gDim> &uGrad, ArrayGRADV<nVarsFixed, gDim> &uGradNew,        \
             uint64_t flags);                                                                                              \
+                                                                                                                          \
+        ext template void EulerEvaluator<model>::BuildLimitedVRO2(                                                        \
+            ArrayDOFV<nVarsFixed> &u, ArrayRECV<nVarsFixed> &uRecO2, ArrayDOFV<1> &alpha,                                 \
+            ArrayDOFV<1> &pressureJump, ArrayDOFV<1> &compression,                                                        \
+            const LimitedVRSettings &limitedVRSettings,                                                                   \
+            const typename TVFV::template TFBoundary<nVarsFixed> &FBoundary);                                             \
                                                                                                                           \
         ext template void EulerEvaluator<model>::EvaluateURecBeta(                                                        \
             ArrayDOFV<nVarsFixed> &u,                                                                                     \

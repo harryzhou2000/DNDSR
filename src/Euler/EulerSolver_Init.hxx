@@ -38,6 +38,19 @@ namespace DNDS::Euler
     void EulerSolver<model>::ReadMeshAndInitialize()
     {
         DNDS_MPI_InsertCheck(mpi, "ReadMeshAndInitialize 1 nvars " + std::to_string(nVars));
+        if (config.limiterControl.useLimiter && config.limiterControl.limiterProcedure == 2)
+        {
+            DNDS_check_throw_info(!config.implicitReconstructionControl.useExplicit,
+                                  "limited variational reconstruction requires implicit reconstruction");
+            DNDS_check_throw_info(config.implicitReconstructionControl.recLinearScheme == 0,
+                                  "limited variational reconstruction requires recLinearScheme == 0");
+            DNDS_check_throw_info(!config.implicitReconstructionControl.dampRecIncDTau,
+                                  "limited variational reconstruction requires dampRecIncDTau == false");
+            DNDS_check_throw_info(!config.limiterControl.preserveLimited,
+                                  "limited variational reconstruction requires preserveLimited == false");
+            DNDS_check_throw_info(config.vfvSettings.maxOrder > 1,
+                                  "limited variational reconstruction requires vfvSettings.maxOrder > 1");
+        }
         output_stamp = getTimeStamp(mpi);
         if (!config.dataIOControl.uniqueStamps)
             output_stamp = "";
@@ -423,6 +436,7 @@ namespace DNDS::Euler
         if (config.timeMarchControl.timeMarchIsTwoStage())
             vfv->BuildURec(uRec1, nVars);
         vfv->BuildURec(uRecLimited, nVars);
+        vfv->BuildURec(uRecO2, nVars);
         vfv->BuildURec(uRecNew, nVars);
         vfv->BuildURec(uRecNew1, nVars);
         vfv->BuildURec(uRecB, nVars);
@@ -439,11 +453,17 @@ namespace DNDS::Euler
         vfv->BuildUDof(reactiveSplitDiffusiveStep_, 1);
         vfv->BuildUDof(reactiveSplitShockSensor_, 1);
         vfv->BuildUDof(reactiveSplitCoupledScore_, 1);
+        vfv->BuildUDof(lvrAlpha_, 1);
+        vfv->BuildUDof(lvrPressureJump_, 1);
+        vfv->BuildUDof(lvrCompression_, 1);
         reactiveSplitChi_.setConstant(0.0);
         reactiveSplitChemicalStep_.setConstant(0.0);
         reactiveSplitDiffusiveStep_.setConstant(0.0);
         reactiveSplitShockSensor_.setConstant(0.0);
         reactiveSplitCoupledScore_.setConstant(0.0);
+        lvrAlpha_.setConstant(0.0);
+        lvrPressureJump_.setConstant(0.0);
+        lvrCompression_.setConstant(0.0);
         betaPP.setConstant(1.0);
         alphaPP.setConstant(1.0);
         if (config.timeMarchControl.timeMarchIsTwoStage())

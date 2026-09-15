@@ -122,11 +122,11 @@ namespace DNDS::Euler
             reactiveSplitChi_, reactiveSplitChemicalStep_, reactiveSplitDiffusiveStep_,
             reactiveSplitShockSensor_, reactiveSplitCoupledScore_};
         OutputPicker outputPicker;
-        eval.InitializeOutputPicker(outputPicker, {u, uRec, betaPP, alphaPP}, reactiveSplitData);
+        eval.InitializeOutputPicker(outputPicker, {u, uRec, betaPP, alphaPP, lvrAlpha_, lvrPressureJump_, lvrCompression_}, reactiveSplitData);
         addOutList = outputPicker.getSubsetList(config.dataIOControl.outCellScalarNames);
 
         OutputPicker outputPickerBnd;
-        eval.InitializeOutputPickerBnd(outputPickerBnd, {u, uRec, betaPP, alphaPP});
+        eval.InitializeOutputPickerBnd(outputPickerBnd, {u, uRec, betaPP, alphaPP, lvrAlpha_, lvrPressureJump_, lvrCompression_});
         addBndOutList = outputPickerBnd.getSubsetList(config.dataIOControl.outBndScalarNames);
 
         /*******************************************************/
@@ -267,6 +267,12 @@ namespace DNDS::Euler
                 return;
             }
 
+            const bool useLimitedVR = config.limiterControl.useLimiter &&
+                                      config.limiterControl.limiterProcedure == 2;
+            if (useLimitedVR)
+                eval.BuildLimitedVRO2(cx, uRecO2, lvrAlpha_, lvrPressureJump_, lvrCompression_,
+                                      config.limiterControl.limitedVR, FBoundary);
+
             DNDS_MPI_InsertCheck(mpi, " Lambda RHS: StartRec");
             int nRec = (gradIsZero ? config.implicitReconstructionControl.nRecMultiplyForZeroedGrad : 1) *
                        config.implicitReconstructionControl.nInternalRecStep;
@@ -291,10 +297,15 @@ namespace DNDS::Euler
                     if (nRec > 1)
                         uRecNew1 = uRecC;
 
-                    vfv->DoReconstructionIter(
-                        uRecC, uRecNew, cx,
-                        FBoundary,
-                        false);
+                    if (useLimitedVR)
+                        vfv->DoReconstructionIterLimited(
+                            uRecC, uRecNew, cx, FBoundary,
+                            uRecO2, lvrAlpha_, false);
+                    else
+                        vfv->DoReconstructionIter(
+                            uRecC, uRecNew, cx,
+                            FBoundary,
+                            false);
 
                     uRecC.trans.startPersistentPull();
                     uRecC.trans.waitPersistentPull();
@@ -506,7 +517,7 @@ namespace DNDS::Euler
             //     uRecC[iCell].m() -= uOld[iCell].m();
 
             DNDS_MPI_InsertCheck(mpi, " Lambda RHS: StartLim");
-            if (!config.implicitReconstructionControl.useExplicit && config.limiterControl.useLimiter)
+            if (!config.implicitReconstructionControl.useExplicit && config.limiterControl.useLimiter && !useLimitedVR)
             {
                 // vfv->ReconstructionWBAPLimitFacial(
                 //     cx, uRecC, uRecNew, uF0, uF1, ifUseLimiter,
@@ -613,6 +624,8 @@ namespace DNDS::Euler
                 // uRecLimited.trans.waitPersistentPull();
             }
             Timer().StopTimer(PerformanceTimer::Limiter);
+            if (useLimitedVR)
+                uRecLimited = uRecC;
             if (config.implicitReconstructionControl.storeRecInc)
             {
                 uRecIncC = uRecC;
