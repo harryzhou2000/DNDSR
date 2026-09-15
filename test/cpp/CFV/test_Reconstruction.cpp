@@ -177,7 +177,9 @@ static int recMethodOrder(RecMethod m)
     return 1;
 }
 
-static ssp<tVR> buildVR(ssp<UnstructuredMesh> mesh, RecMethod method)
+static ssp<tVR> buildVR(
+    ssp<UnstructuredMesh> mesh, RecMethod method,
+    bool useSOR = false, DNDS::real relaxation = 1.0)
 {
     auto vr = std::make_shared<tVR>(g_mpi, mesh);
 
@@ -190,8 +192,8 @@ static ssp<tVR> buildVR(ssp<UnstructuredMesh> mesh, RecMethod method)
     j["intOrder"] = std::max(order + 2, 5);
     j["cacheDiffBase"] = true;
     // Force Jacobi iteration for deterministic results across MPI partitions
-    j["SORInstead"] = false;
-    j["jacobiRelax"] = 1.0;
+    j["SORInstead"] = useSOR;
+    j["jacobiRelax"] = relaxation;
 
     bool isHQM = (method == RecMethod::VFV_P1_HQM ||
                   method == RecMethod::VFV_P2_HQM ||
@@ -989,4 +991,214 @@ TEST_CASE("Limiter procedure: reconstruction + smooth indicator + WBAP limiter")
             }
         }
     }
+}
+
+TEST_CASE("A-weighted limited variational reconstruction update has exact alpha endpoints and blend")
+{
+    auto checkJacobi = [&](DNDS::real alphaValue)
+    {
+        auto vr = buildVR(g_iv10[0], RecMethod::VFV_P2_Default);
+        CFV::tUDof<g_nv> u;
+        CFV::tUDof<1> alpha;
+        CFV::tURec<g_nv> recInitial, recBase, recLimited, recBaseNew, recLimitedNew, recTarget;
+        vr->BuildUDof(u, 1);
+        vr->BuildUDof(alpha, 1);
+        vr->BuildURec(recInitial, 1);
+        vr->BuildURec(recBase, 1);
+        vr->BuildURec(recLimited, 1);
+        vr->BuildURec(recBaseNew, 1);
+        vr->BuildURec(recLimitedNew, 1);
+        vr->BuildURec(recTarget, 1);
+
+        u.setConstant(0.0);
+        alpha.setConstant(alphaValue);
+        for (DNDS::index iCell = 0; iCell < vr->mesh->NumCell(); ++iCell)
+        {
+            recInitial[iCell].setConstant(0.01 * (iCell + 1));
+            recTarget[iCell].setConstant(2.0 + 0.001 * iCell);
+        }
+        u.trans.startPersistentPull();
+        recInitial.trans.startPersistentPull();
+        recTarget.trans.startPersistentPull();
+        u.trans.waitPersistentPull();
+        recInitial.trans.waitPersistentPull();
+        recTarget.trans.waitPersistentPull();
+
+        recBase = recInitial;
+        recLimited = recInitial;
+        vr->DoReconstructionIter<g_nv>(recBase, recBaseNew, u, g_zeroBC, true);
+        vr->DoReconstructionIterLimited<g_nv>(
+            recLimited, recLimitedNew, u, g_zeroBC, recTarget, alpha, true);
+
+        for (DNDS::index iCell = 0; iCell < vr->mesh->NumCell(); ++iCell)
+        {
+            auto expected = (1.0 - alphaValue) * recBaseNew[iCell] + alphaValue * recTarget[iCell];
+            CHECK((recLimitedNew[iCell] - expected).norm() == doctest::Approx(0.0).scale(1.0).epsilon(1e-12));
+        }
+    };
+
+    checkJacobi(0.0);
+    checkJacobi(0.4);
+    checkJacobi(1.0);
+}
+
+TEST_CASE("A-weighted limited variational reconstruction preserves GS and relaxation semantics")
+{
+    auto checkSweep = [&](bool useSOR, DNDS::real relaxation, DNDS::real alphaValue)
+    {
+        auto vr = buildVR(g_iv10[0], RecMethod::VFV_P2_Default, useSOR, relaxation);
+        CFV::tUDof<g_nv> u;
+        CFV::tUDof<1> alpha;
+        CFV::tURec<g_nv> recInitial, recBase, recLimited, recBaseNew, recLimitedNew, recTarget;
+        vr->BuildUDof(u, 1);
+        vr->BuildUDof(alpha, 1);
+        vr->BuildURec(recInitial, 1);
+        vr->BuildURec(recBase, 1);
+        vr->BuildURec(recLimited, 1);
+        vr->BuildURec(recBaseNew, 1);
+        vr->BuildURec(recLimitedNew, 1);
+        vr->BuildURec(recTarget, 1);
+
+        u.setConstant(0.0);
+        alpha.setConstant(alphaValue);
+        for (DNDS::index iCell = 0; iCell < vr->mesh->NumCell(); ++iCell)
+        {
+            recInitial[iCell].setConstant(0.01 * (iCell + 1));
+            recTarget[iCell].setConstant(2.0 + 0.001 * iCell);
+        }
+        u.trans.startPersistentPull();
+        recInitial.trans.startPersistentPull();
+        recTarget.trans.startPersistentPull();
+        u.trans.waitPersistentPull();
+        recInitial.trans.waitPersistentPull();
+        recTarget.trans.waitPersistentPull();
+
+        recBase = recInitial;
+        recLimited = recInitial;
+        if (alphaValue == 0.0)
+            vr->DoReconstructionIter<g_nv>(recBase, recBaseNew, u, g_zeroBC, false);
+        vr->DoReconstructionIterLimited<g_nv>(
+            recLimited, recLimitedNew, u, g_zeroBC, recTarget, alpha, false);
+
+        for (DNDS::index iCell = 0; iCell < vr->mesh->NumCell(); ++iCell)
+        {
+            if (alphaValue == 0.0)
+                CHECK((recLimited[iCell] - recBase[iCell]).norm() == doctest::Approx(0.0).scale(1.0).epsilon(1e-13));
+            else
+            {
+                auto expected = (1.0 - relaxation) * recInitial[iCell] + relaxation * recTarget[iCell];
+                CHECK((recLimited[iCell] - expected).norm() == doctest::Approx(0.0).scale(1.0).epsilon(1e-13));
+            }
+        }
+    };
+
+    checkSweep(false, 0.35, 0.0);
+    checkSweep(true, 0.35, 0.0);
+    checkSweep(false, 0.35, 1.0);
+    checkSweep(true, 0.35, 1.0);
+}
+
+TEST_CASE("Gradient conversion populates only O2 reconstruction modes")
+{
+    auto vr = buildVR(g_iv10[0], RecMethod::VFV_P3_Default);
+    CFV::tUGrad<g_nv, g_dim> gradient;
+    CFV::tURec<g_nv> reconstruction;
+    vr->BuildUGrad(gradient, 1);
+    vr->BuildURec(reconstruction, 1);
+    reconstruction.setConstant(7.0);
+    for (DNDS::index iCell = 0; iCell < vr->mesh->NumCell(); ++iCell)
+    {
+        gradient[iCell](0, 0) = 0.25 + 0.01 * iCell;
+        gradient[iCell](1, 0) = -0.75 + 0.02 * iCell;
+    }
+
+    vr->ConvertUGradToURec(reconstruction, gradient);
+    static const auto Seq012 = Eigen::seq(Eigen::fix<0>, Eigen::fix<g_dim - 1>);
+    static const auto Seq123 = Eigen::seq(Eigen::fix<1>, Eigen::fix<g_dim>);
+    for (DNDS::index iCell = 0; iCell < vr->mesh->NumCell(); ++iCell)
+    {
+        Eigen::Matrix<DNDS::real, g_dim, g_dim> d1bv;
+        d1bv = vr->GetIntPointDiffBaseValue(
+            iCell, -1, -1, -1, Seq123, g_dim + 1)(EigenAll, Seq012);
+        auto recovered = d1bv * reconstruction[iCell](Seq012, EigenAll);
+        CHECK((recovered - gradient[iCell]).norm() == doctest::Approx(0.0).scale(1.0).epsilon(1e-12));
+        CHECK(reconstruction[iCell](Eigen::seq(g_dim, reconstruction[iCell].rows() - 1), EigenAll).norm() == 0.0);
+    }
+}
+
+TEST_CASE("Limited Jacobi converges to the directly assembled penalized system")
+{
+    if (g_mpi.size != 1)
+        return;
+
+    constexpr DNDS::real alphaValue = 0.35;
+    auto vr = buildVR(g_wall_mesh, RecMethod::VFV_P2_Default);
+    CFV::tUDof<g_nv> u;
+    CFV::tUDof<1> alpha;
+    CFV::tURec<g_nv> input, output, target, iterate, scratch;
+    vr->BuildUDof(u, 1);
+    vr->BuildUDof(alpha, 1);
+    vr->BuildURec(input, 1);
+    vr->BuildURec(output, 1);
+    vr->BuildURec(target, 1);
+    vr->BuildURec(iterate, 1);
+    vr->BuildURec(scratch, 1);
+
+    alpha.setConstant(alphaValue);
+    for (DNDS::index iCell = 0; iCell < vr->mesh->NumCell(); ++iCell)
+    {
+        u[iCell](0) = 0.2 + 0.03 * iCell;
+        target[iCell].setConstant(1.0 + 0.01 * iCell);
+    }
+    u.trans.startPersistentPull();
+    target.trans.startPersistentPull();
+    u.trans.waitPersistentPull();
+    target.trans.waitPersistentPull();
+
+    const DNDS::index nCells = vr->mesh->NumCell();
+    const DNDS::index nModes = target[0].rows();
+    const DNDS::index systemSize = nCells * nModes;
+    auto flatten = [&](const CFV::tURec<g_nv> &field)
+    {
+        Eigen::VectorXd vector(systemSize);
+        for (DNDS::index iCell = 0; iCell < nCells; ++iCell)
+            vector(Eigen::seqN(iCell * nModes, nModes)) = field[iCell].col(0);
+        return vector;
+    };
+    auto setBasis = [&](CFV::tURec<g_nv> &field, DNDS::index dof)
+    {
+        field.setConstant(0.0);
+        field[dof / nModes](dof % nModes, 0) = 1.0;
+    };
+
+    input.setConstant(0.0);
+    vr->DoReconstructionIter<g_nv>(input, output, u, g_zeroBC, true);
+    Eigen::VectorXd affine = flatten(output);
+    Eigen::MatrixXd coupling(systemSize, systemSize);
+    for (DNDS::index dof = 0; dof < systemSize; ++dof)
+    {
+        setBasis(input, dof);
+        vr->DoReconstructionIter<g_nv>(input, output, u, g_zeroBC, true);
+        coupling.col(dof) = flatten(output) - affine;
+    }
+    Eigen::MatrixXd penalized = Eigen::MatrixXd::Identity(systemSize, systemSize) -
+                                (1.0 - alphaValue) * coupling;
+    Eigen::VectorXd rhs = (1.0 - alphaValue) * affine + alphaValue * flatten(target);
+    Eigen::VectorXd direct = penalized.fullPivLu().solve(rhs);
+
+    iterate.setConstant(0.0);
+    for (int iteration = 0; iteration < 500; ++iteration)
+        vr->DoReconstructionIterLimited<g_nv>(
+            iterate, scratch, u, g_zeroBC, target, alpha, false);
+    CHECK((flatten(iterate) - direct).norm() == doctest::Approx(0.0).scale(1.0).epsilon(1e-10));
+
+    auto vrSOR = buildVR(g_wall_mesh, RecMethod::VFV_P2_Default, true, 1.0);
+    CFV::tURec<g_nv> iterateSOR, scratchSOR;
+    vrSOR->BuildURec(iterateSOR, 1);
+    vrSOR->BuildURec(scratchSOR, 1);
+    iterateSOR.setConstant(0.0);
+    for (int iteration = 0; iteration < 500; ++iteration)
+        vrSOR->DoReconstructionIterLimited<g_nv>(
+            iterateSOR, scratchSOR, u, g_zeroBC, target, alpha, false);
+    CHECK((flatten(iterateSOR) - direct).norm() == doctest::Approx(0.0).scale(1.0).epsilon(1e-10));
 }

@@ -48,6 +48,7 @@
 #include "Gas.hpp"
 #include "EulerEvaluator.hpp"
 #include "EulerBC.hpp"
+#include "LimitedVR.hpp"
 // #ifdef __DNDS_REALLY_COMPILING__HEADER_ON__
 // #undef __DNDS_REALLY_COMPILING__
 // #endif
@@ -112,7 +113,7 @@ namespace DNDS::Euler
 
         ArrayDOFV<nVarsFixed> u, uIncBufODE, wAveraged, uAveraged;                                                    ///< DOF arrays: solution, ODE increment buffer, time-averaged fields.
         ObjectPool<ArrayDOFV<nVarsFixed>> uPool;                                                                      ///< Object pool for temporary DOF arrays (used by ODE integrators).
-        ArrayRECV<nVarsFixed> uRec, uRecLimited, uRecNew, uRecNew1, uRecOld, uRec1, uRecInc, uRecInc1, uRecB, uRecB1; ///< Reconstruction arrays (current, limited, new, old, increment, etc.).
+        ArrayRECV<nVarsFixed> uRec, uRecLimited, uRecO2, uRecNew, uRecNew1, uRecOld, uRec1, uRecInc, uRecInc1, uRecB, uRecB1; ///< Reconstruction arrays (current, limited, new, old, increment, etc.).
         JacobianDiagBlock<nVarsFixed> JD, JD1, JDTmp, JSource, JSource1, JSourceTmp;                                  ///< Diagonal Jacobian blocks for implicit methods.
         ssp<JacobianLocalLU<nVarsFixed>> JLocalLU;                                                                    ///< Local LU factorization for direct preconditioner.
         ArrayDOFV<1> alphaPP, alphaPP1, betaPP, betaPP1, alphaPP_tmp, dTauTmp;                                        ///< Positivity-preserving limiter scalars and time-step buffer.
@@ -123,6 +124,7 @@ namespace DNDS::Euler
         ArrayDOFV<1> reactiveSplitShockSensor_;                                                                       ///< Output-only pressure-jump sensor @f$h_i@f$.
         ArrayDOFV<1> reactiveSplitCoupledScore_;                                                                      ///< Output-only local coupled score @f$C_i@f$.
         ArrayDOFV<1> reactiveSplitStiffnessStep_;                                                                     ///< Output-only chemical stiffness @f$s_i@f$ (v2).
+        ArrayDOFV<1> lvrAlpha_, lvrPressureJump_, lvrCompression_; ///< Limited variational reconstruction sensor diagnostics.
 
         int nOUTS = {-1};   ///< Number of output scalars per cell in volume output.
         int nOUTSPoint{-1}; ///< Number of output scalars per node in point output.
@@ -733,6 +735,7 @@ namespace DNDS::Euler
                 int nPartialLimiterStartLocal = INT_MAX;
                 bool preserveLimited = false;
                 bool ppRecLimiterCompressToMean = true;
+                LimitedVRSettings limitedVR;
 
                 DNDS_DECLARE_CONFIG(LimiterControl)
                 {
@@ -741,11 +744,12 @@ namespace DNDS::Euler
                     DNDS_FIELD(usePPRecLimiter,            "Enable positivity-preserving reconstruction limiter");
                     DNDS_FIELD(useViscousLimited,          "Apply limiter to viscous reconstruction");
                     DNDS_FIELD(smoothIndicatorProcedure,   "Smooth indicator procedure index");
-                    DNDS_FIELD(limiterProcedure,           "Limiter variant: 0=WBAP (V2), 1=CWBAP (V3)");
+                    DNDS_FIELD(limiterProcedure,           "Limiter variant: 0=WBAP (V2), 1=CWBAP (V3), 2=limited variational reconstruction", DNDS::Config::range(0, 2));
                     DNDS_FIELD(nPartialLimiterStart,       "Time step to begin partial limiting");
                     DNDS_FIELD(nPartialLimiterStartLocal,  "Time step to begin local partial limiting");
                     DNDS_FIELD(preserveLimited,            "Preserve limited reconstruction across steps");
                     DNDS_FIELD(ppRecLimiterCompressToMean, "PP limiter compresses toward cell mean");
+                    config.field_section(&T::limitedVR, "limitedVR", "Limited variational reconstruction settings");
                     // clang-format on
                 }
             } limiterControl;

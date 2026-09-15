@@ -1030,7 +1030,9 @@
                 "limiterProcedure": {
                     "type": "integer",
                     "default": 0,
-                    "description": "Limiter variant: 0=WBAP (V2), 1=CWBAP (V3)"
+                    "description": "Limiter variant: 0=WBAP (V2), 1=CWBAP (V3), 2=limited variational reconstruction",
+                    "minimum": 0.0,
+                    "maximum": 2.0
                 },
                 "nPartialLimiterStart": {
                     "type": "integer",
@@ -1051,6 +1053,43 @@
                     "type": "boolean",
                     "default": true,
                     "description": "PP limiter compresses toward cell mean"
+                },
+                "limitedVR": {
+                    "type": "object",
+                    "description": "Limited variational reconstruction settings",
+                    "properties": {
+                        "pressureJumpStart": {
+                            "type": "number",
+                            "default": 0.1,
+                            "description": "Pressure-jump ramp start",
+                            "minimum": 0.0
+                        },
+                        "pressureJumpFull": {
+                            "type": "number",
+                            "default": 0.22,
+                            "description": "Pressure-jump ramp saturation",
+                            "minimum": 0.0
+                        },
+                        "compressionStart": {
+                            "type": "number",
+                            "default": 0.08,
+                            "description": "Normal-compression ramp start",
+                            "minimum": 0.0
+                        },
+                        "compressionFull": {
+                            "type": "number",
+                            "default": 0.16,
+                            "description": "Normal-compression ramp saturation",
+                            "minimum": 0.0
+                        },
+                        "alphaMax": {
+                            "type": "number",
+                            "default": 0.5,
+                            "description": "Maximum O2 penalty fraction",
+                            "minimum": 0.0,
+                            "maximum": 1.0
+                        }
+                    }
                 }
             }
         },
