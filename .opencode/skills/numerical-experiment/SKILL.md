@@ -40,9 +40,15 @@ separate independent task needs parallel work; state why continuity was not
 possible.
 
 Use a maximum wait of 20 minutes for one ordinary subagent polling round. For
-an explicitly authorized long-running task, one polling round may wait up to
-one hour. A polling timeout is only an observation timeout: re-poll the same
-subagent and the same verified process or job handle instead of restarting it.
+an explicitly authorized long-running task expected to finish within one hour,
+one polling round may wait up to one hour. If the process is expected to run
+for more than one hour, the main agent defaults to stopping active checks after
+verifying that it is safely detached. Report the detached state, process or job
+handle, log and record paths, last verified progress, stop conditions, and ETA;
+resume polling only in a later turn or when the user explicitly requests it.
+A polling timeout is only an observation timeout and never authorizes restarting
+the process. Subagent completion is not a persistent hook that can wake a main
+agent after its turn has ended, so do not rely on it for detached-job reporting.
 These polling limits do not extend the solver's declared wall-time bound.
 
 For a scientific, numerical, or provenance audit, use the default subagent
@@ -62,7 +68,7 @@ or launch work.
 5. Make configuration changes in place with the editing tool. Preserve JSON notes and comments; never rewrite maintained configs with `json.dump`.
 6. Build only required targets. For Python tests after C++ changes, rebuild and install every required pybind11 target before testing, as required by the repository instructions.
 7. Launch only after the input contract is complete. Record the exact command, runner, allocation, source state, config snapshot/hash, start time, and expected stop time.
-8. Monitor long expected runs through the low-cost subagent required above. Monitoring observes progress and enforces stop conditions; it does not silently alter the experiment. Apply the 20-minute ordinary and one-hour explicitly authorized per-round subagent wait limits above. Use the ordinary 10-minute solver bound for normal trials.
+8. Monitor long expected runs through the low-cost subagent required above. Monitoring observes progress and enforces stop conditions; it does not silently alter the experiment. Apply the polling or detached-state policy above. Use the ordinary 10-minute solver bound for normal trials.
 9. For numerous consecutive rows, launch through a checked orchestration script rather than a sequence of ad hoc shell commands. The script must enumerate the intended cases, default to serial execution unless parallelism is explicitly justified, enforce each row's bound, record or skip only verified terminal rows, stop or continue on failure by an explicit option, and print the campaign log/record roots before launch. Keep the orchestrator and its declared matrix in the workspace so the sequence is reproducible.
 10. Fetch only compact post-processed lines, profiles, critical-point data, tables, and plots into the workspace. Keep ordinary raw numerical output under `<repo>/data/...` according to config conventions.
 11. Validate numerical plausibility and compare against the stated reference or invariant. Report verified results separately from partial, failed, or unrun work.
