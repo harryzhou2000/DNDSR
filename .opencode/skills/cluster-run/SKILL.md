@@ -47,10 +47,17 @@ separate independent task needs parallel work; state why continuity was not
 possible.
 
 Use a maximum wait of 20 minutes for one ordinary subagent polling round. For
-an explicitly authorized long-running task, one polling round may wait up to
-one hour. A polling timeout is only an observation timeout: re-poll the same
-subagent and the same verified scheduler job or process handle instead of
-restarting it. These polling limits do not extend the job's declared wall time.
+an explicitly authorized long-running task expected to finish within one hour,
+one polling round may wait up to one hour. If the job is expected to run for
+more than one hour, the main agent defaults to stopping active checks after
+verifying that it is safely detached. Report the detached state, scheduler job
+ID or process handle, log and record paths, last verified progress, stop
+conditions, and ETA; resume polling only in a later turn or when the user
+explicitly requests it. A polling timeout is only an observation timeout and
+never authorizes restarting the job. Subagent completion is not a persistent
+hook that can wake a main agent after its turn has ended, so do not rely on it
+for detached-job reporting. These polling limits do not extend the job's
+declared wall time.
 
 For source-state, scheduler, numerical, or provenance audits, use the default
 subagent model rather than deliberately selecting a cheaper model, unless the
