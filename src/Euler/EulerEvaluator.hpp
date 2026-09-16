@@ -777,14 +777,20 @@ namespace DNDS::Euler
                           uint64_t flags = LIMITER_UGRAD_No_Flags);
 
         /**
-         * @brief Build the Barth-limited O2 target and cellwise limited variational reconstruction gate.
+         * @brief Build a limited, positivity-safe O2 target and the cellwise limited variational reconstruction gate.
          *
-         * The target and sensor depend only on the current cell means. Internal,
-         * periodic, and MPI faces contribute; physical external faces do not.
+         * The configured Barth or WBAP limiter is applied once to the GG O2
+         * gradients. The same finalized target is then used for face sensing and
+         * as the reconstruction penalty target. Internal, periodic, and MPI faces
+         * contribute; physical external faces do not.
          */
         void BuildLimitedVRO2(
             ArrayDOFV<nVarsFixed> &u,
             ArrayRECV<nVarsFixed> &uRecO2,
+            ArrayRECV<nVarsFixed> &uRecLimiterWork,
+            ArrayRECV<nVarsFixed> &uRecLimiterBuffer,
+            CFV::tScalarPair &limiterIndicator,
+            ArrayDOFV<1> &o2Beta,
             ArrayDOFV<1> &alpha,
             ArrayDOFV<1> &pressureJump,
             ArrayDOFV<1> &compression,
@@ -2243,6 +2249,7 @@ namespace DNDS::Euler
             ArrayDOFV<1> &lvrAlpha;
             ArrayDOFV<1> &lvrPressureJump;
             ArrayDOFV<1> &lvrCompression;
+            ArrayDOFV<1> &lvrO2Beta;
         };
 
         /// @brief Initialize an OutputPicker with field callbacks for VTK/HDF5 output.
@@ -2394,7 +2401,9 @@ namespace DNDS::Euler
             uint64_t flags);                                                                                              \
                                                                                                                           \
         ext template void EulerEvaluator<model>::BuildLimitedVRO2(                                                        \
-            ArrayDOFV<nVarsFixed> &u, ArrayRECV<nVarsFixed> &uRecO2, ArrayDOFV<1> &alpha,                                 \
+            ArrayDOFV<nVarsFixed> &u, ArrayRECV<nVarsFixed> &uRecO2,                                                      \
+            ArrayRECV<nVarsFixed> &uRecLimiterWork, ArrayRECV<nVarsFixed> &uRecLimiterBuffer,                             \
+            CFV::tScalarPair &limiterIndicator, ArrayDOFV<1> &o2Beta, ArrayDOFV<1> &alpha,                                \
             ArrayDOFV<1> &pressureJump, ArrayDOFV<1> &compression,                                                        \
             const LimitedVRSettings &limitedVRSettings,                                                                   \
             const typename TVFV::template TFBoundary<nVarsFixed> &FBoundary);                                             \

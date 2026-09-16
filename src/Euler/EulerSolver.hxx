@@ -122,11 +122,11 @@ namespace DNDS::Euler
             reactiveSplitChi_, reactiveSplitChemicalStep_, reactiveSplitDiffusiveStep_,
             reactiveSplitShockSensor_, reactiveSplitCoupledScore_};
         OutputPicker outputPicker;
-        eval.InitializeOutputPicker(outputPicker, {u, uRec, betaPP, alphaPP, lvrAlpha_, lvrPressureJump_, lvrCompression_}, reactiveSplitData);
+        eval.InitializeOutputPicker(outputPicker, {u, uRec, betaPP, alphaPP, lvrAlpha_, lvrPressureJump_, lvrCompression_, lvrO2Beta_}, reactiveSplitData);
         addOutList = outputPicker.getSubsetList(config.dataIOControl.outCellScalarNames);
 
         OutputPicker outputPickerBnd;
-        eval.InitializeOutputPickerBnd(outputPickerBnd, {u, uRec, betaPP, alphaPP, lvrAlpha_, lvrPressureJump_, lvrCompression_});
+        eval.InitializeOutputPickerBnd(outputPickerBnd, {u, uRec, betaPP, alphaPP, lvrAlpha_, lvrPressureJump_, lvrCompression_, lvrO2Beta_});
         addBndOutList = outputPickerBnd.getSubsetList(config.dataIOControl.outBndScalarNames);
 
         /*******************************************************/
@@ -270,7 +270,8 @@ namespace DNDS::Euler
             const bool useLimitedVR = config.limiterControl.useLimiter &&
                                       config.limiterControl.limiterProcedure == 2;
             if (useLimitedVR)
-                eval.BuildLimitedVRO2(cx, uRecO2, lvrAlpha_, lvrPressureJump_, lvrCompression_,
+                eval.BuildLimitedVRO2(cx, uRecO2, uRecLimited, uRecNew, ifUseLimiter, lvrO2Beta_,
+                                      lvrAlpha_, lvrPressureJump_, lvrCompression_,
                                       config.limiterControl.limitedVR, FBoundary);
 
             DNDS_MPI_InsertCheck(mpi, " Lambda RHS: StartRec");

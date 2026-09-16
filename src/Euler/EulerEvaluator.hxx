@@ -2345,6 +2345,10 @@ namespace DNDS::Euler
     void EulerEvaluator<model>::BuildLimitedVRO2(
         ArrayDOFV<nVarsFixed> &u,
         ArrayRECV<nVarsFixed> &uRecO2,
+        ArrayRECV<nVarsFixed> &uRecLimiterWork,
+        ArrayRECV<nVarsFixed> &uRecLimiterBuffer,
+        CFV::tScalarPair &limiterIndicator,
+        ArrayDOFV<1> &o2Beta,
         ArrayDOFV<1> &alpha,
         ArrayDOFV<1> &pressureJump,
         ArrayDOFV<1> &compression,
@@ -2356,12 +2360,78 @@ namespace DNDS::Euler
         vfv->DoReconstruction2ndGrad(uGradBufNoLim, u, FBoundary, settings.direct2ndRecMethod);
         uGradBufNoLim.trans.startPersistentPull();
         uGradBufNoLim.trans.waitPersistentPull();
-        LimiterUGrad(u, uGradBufNoLim, uGradBuf, LIMITER_UGRAD_No_Flags);
-        uGradBuf.trans.startPersistentPull();
-        uGradBuf.trans.waitPersistentPull();
-        vfv->ConvertUGradToURec(uRecO2, uGradBuf);
+
+        if (limitedVRSettings.o2ReferenceLimiter == LimitedVRSettings::O2ReferenceLimiterBarth)
+        {
+            LimiterUGrad(u, uGradBufNoLim, uGradBuf, LIMITER_UGRAD_No_Flags);
+            uGradBuf.trans.startPersistentPull();
+            uGradBuf.trans.waitPersistentPull();
+            vfv->ConvertUGradToURec(uRecO2, uGradBuf);
+        }
+        else
+        {
+            DNDS_assert(limitedVRSettings.o2ReferenceLimiter == LimitedVRSettings::O2ReferenceLimiterWBAP);
+            vfv->ConvertUGradToURec(uRecO2, uGradBufNoLim);
+            uRecO2.trans.startPersistentPull();
+            uRecO2.trans.waitPersistentPull();
+
+            using tLimitBatch = typename TVFV::template tLimitBatch<nVarsFixed>;
+            auto fML = [&](const TU &UL, const TU &UR, const Geom::tPoint &n,
+                           const Eigen::Ref<tLimitBatch> &data) -> tLimitBatch
+            {
+                TU UMean = (UL + UR) * 0.5;
+                Eigen::Matrix<real, dim, dim> normBase = Geom::NormBuildLocalBaseV<dim>(n(Seq012));
+                UMean(Seq123) = normBase.transpose() * UMean(Seq123);
+                Eigen::Vector<real, I4 + 1> UC = UMean(Seq01234);
+                real T = phys_.temperature(UMean);
+                real gammaEq = phys_.gammaEq(T, UMean);
+                real gamma = phys_.gamma(T, UMean);
+                auto M = Gas::IdealGas_EulerGasLeftEigenVector<dim>(
+                    UC, gammaEq, gamma, phys_.mixtureBaseInternalRhoE(UMean));
+                M(EigenAll, Seq123) *= normBase.transpose();
+                Eigen::Matrix<real, nVarsFixed, nVarsFixed> ret(nVars, nVars);
+                ret.setIdentity();
+                ret(Seq01234, Seq01234) = M;
+                return (ret * data.transpose()).transpose();
+            };
+            auto fMR = [&](const TU &UL, const TU &UR, const Geom::tPoint &n,
+                           const Eigen::Ref<tLimitBatch> &data) -> tLimitBatch
+            {
+                TU UMean = (UL + UR) * 0.5;
+                Eigen::Matrix<real, dim, dim> normBase = Geom::NormBuildLocalBaseV<dim>(n(Seq012));
+                UMean(Seq123) = normBase.transpose() * UMean(Seq123);
+                Eigen::Vector<real, I4 + 1> UC = UMean(Seq01234);
+                real T = phys_.temperature(UMean);
+                real gammaEq = phys_.gammaEq(T, UMean);
+                real gamma = phys_.gamma(T, UMean);
+                auto M = Gas::IdealGas_EulerGasRightEigenVector<dim>(
+                    UC, gammaEq, gamma, phys_.mixtureBaseInternalRhoE(UMean));
+                M(Seq123, EigenAll) = normBase * M(Seq123, EigenAll);
+                Eigen::Matrix<real, nVarsFixed, nVarsFixed> ret(nVars, nVars);
+                ret.setIdentity();
+                ret(Seq01234, Seq01234) = M;
+                return (ret * data.transpose()).transpose();
+            };
+            vfv->template DoLimiterWBAP_3<nVarsFixed>(
+                u, uRecO2, uRecLimiterWork, uRecLimiterBuffer,
+                limiterIndicator, true, fML, fMR, false);
+        }
+
         uRecO2.trans.startPersistentPull();
         uRecO2.trans.waitPersistentPull();
+
+        if (limitedVRSettings.o2ReferenceUsePP)
+        {
+            index nLimited = 0;
+            real minimumBeta = 1;
+            EvaluateURecBeta(
+                u, uRecO2, o2Beta, nLimited, minimumBeta,
+                EvaluateURecBeta_COMPRESS_TO_MEAN);
+            uRecO2.trans.startPersistentPull();
+            uRecO2.trans.waitPersistentPull();
+        }
+        else
+            o2Beta.setConstant(1.0);
 
         alpha.setConstant(0.0);
         pressureJump.setConstant(0.0);

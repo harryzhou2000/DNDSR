@@ -10,11 +10,16 @@ namespace DNDS::Euler
 {
     struct LimitedVRSettings
     {
+        static constexpr int O2ReferenceLimiterBarth = 0;
+        static constexpr int O2ReferenceLimiterWBAP = 1;
+
         real pressureJumpStart = 0.10;
         real pressureJumpFull = 0.22;
         real compressionStart = 0.08;
         real compressionFull = 0.16;
         real alphaMax = 0.50;
+        int o2ReferenceLimiter = O2ReferenceLimiterBarth;
+        bool o2ReferenceUsePP = true;
 
         DNDS_DECLARE_CONFIG(LimitedVRSettings)
         {
@@ -24,6 +29,8 @@ namespace DNDS::Euler
             DNDS_FIELD(compressionStart,  "Normal-compression ramp start", DNDS::Config::range(0.0));
             DNDS_FIELD(compressionFull,   "Normal-compression ramp saturation", DNDS::Config::range(0.0));
             DNDS_FIELD(alphaMax,         "Maximum O2 penalty fraction", DNDS::Config::range(0.0, 1.0));
+            DNDS_FIELD(o2ReferenceLimiter, "Limited O2 reference limiter: 0=Barth, 1=WBAP", DNDS::Config::range(0, 1));
+            DNDS_FIELD(o2ReferenceUsePP,   "Compress the limited O2 reference toward the cell mean to preserve facial positivity");
             // clang-format on
             config.check("limitedVR full thresholds must exceed start thresholds", [](const T &s)
                          { return s.pressureJumpFull > s.pressureJumpStart &&
