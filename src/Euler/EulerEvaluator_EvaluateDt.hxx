@@ -2839,6 +2839,7 @@ namespace DNDS::Euler
         auto &lvrAlpha = dataRefs.lvrAlpha;
         auto &lvrPressureJump = dataRefs.lvrPressureJump;
         auto &lvrCompression = dataRefs.lvrCompression;
+        auto &lvrO2Beta = dataRefs.lvrO2Beta;
 
         OutputPicker::tMap outMap;
         // outMap["R"] = [&](index iCell)
@@ -2865,6 +2866,8 @@ namespace DNDS::Euler
         { return lvrPressureJump[iCell](0); };
         outMap["lvrCompression"] = [&](index iCell)
         { return lvrCompression[iCell](0); };
+        outMap["lvrO2Beta"] = [&](index iCell)
+        { return lvrO2Beta[iCell](0); };
         outMap["reactiveSplitChi"] = [&chi = reactiveSplit.chi](index iCell)
         { return chi[iCell](0); };
         outMap["reactiveSplitChemicalStep"] = [&chemicalStep = reactiveSplit.chemicalStep](index iCell)

@@ -1088,6 +1088,18 @@
                             "description": "Maximum O2 penalty fraction",
                             "minimum": 0.0,
                             "maximum": 1.0
+                        },
+                        "o2ReferenceLimiter": {
+                            "type": "integer",
+                            "default": 0,
+                            "description": "Limited O2 reference limiter: 0=Barth, 1=WBAP",
+                            "minimum": 0.0,
+                            "maximum": 1.0
+                        },
+                        "o2ReferenceUsePP": {
+                            "type": "boolean",
+                            "default": true,
+                            "description": "Compress the limited O2 reference toward the cell mean to preserve facial positivity"
                         }
                     }
                 }

@@ -457,6 +457,7 @@ namespace DNDS::Euler
         vfv->BuildUDof(lvrAlpha_, 1);
         vfv->BuildUDof(lvrPressureJump_, 1);
         vfv->BuildUDof(lvrCompression_, 1);
+        vfv->BuildUDof(lvrO2Beta_, 1);
         reactiveSplitChi_.setConstant(config.timeMarchControl.sourceStrangSplitting == 1 ? 1.0 : 0.0);
         reactiveSplitChemicalStep_.setConstant(0.0);
         reactiveSplitDiffusiveStep_.setConstant(0.0);
@@ -466,6 +467,7 @@ namespace DNDS::Euler
         lvrAlpha_.setConstant(0.0);
         lvrPressureJump_.setConstant(0.0);
         lvrCompression_.setConstant(0.0);
+        lvrO2Beta_.setConstant(1.0);
         betaPP.setConstant(1.0);
         alphaPP.setConstant(1.0);
         if (config.timeMarchControl.timeMarchIsTwoStage())

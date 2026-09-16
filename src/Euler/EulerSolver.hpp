@@ -124,7 +124,7 @@ namespace DNDS::Euler
         ArrayDOFV<1> reactiveSplitShockSensor_;                                                                       ///< Output-only pressure-jump sensor @f$h_i@f$.
         ArrayDOFV<1> reactiveSplitCoupledScore_;                                                                      ///< Output-only local coupled score @f$C_i@f$.
         ArrayDOFV<1> reactiveSplitStiffnessStep_;                                                                     ///< Output-only chemical stiffness @f$s_i@f$ (v2).
-        ArrayDOFV<1> lvrAlpha_, lvrPressureJump_, lvrCompression_; ///< Limited variational reconstruction sensor diagnostics.
+        ArrayDOFV<1> lvrAlpha_, lvrPressureJump_, lvrCompression_, lvrO2Beta_; ///< Limited variational reconstruction sensor and O2-reference PP diagnostics.
 
         int nOUTS = {-1};   ///< Number of output scalars per cell in volume output.
         int nOUTSPoint{-1}; ///< Number of output scalars per node in point output.
