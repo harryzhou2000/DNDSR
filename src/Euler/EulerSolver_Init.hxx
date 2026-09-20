@@ -439,11 +439,13 @@ namespace DNDS::Euler
         vfv->BuildUDof(reactiveSplitDiffusiveStep_, 1);
         vfv->BuildUDof(reactiveSplitShockSensor_, 1);
         vfv->BuildUDof(reactiveSplitCoupledScore_, 1);
+        vfv->BuildUDof(reactiveSplitStiffnessStep_, 1);
         reactiveSplitChi_.setConstant(0.0);
         reactiveSplitChemicalStep_.setConstant(0.0);
         reactiveSplitDiffusiveStep_.setConstant(0.0);
         reactiveSplitShockSensor_.setConstant(0.0);
         reactiveSplitCoupledScore_.setConstant(0.0);
+        reactiveSplitStiffnessStep_.setConstant(0.0);
         betaPP.setConstant(1.0);
         alphaPP.setConstant(1.0);
         if (config.timeMarchControl.timeMarchIsTwoStage())

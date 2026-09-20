@@ -42,9 +42,12 @@ namespace DNDS::Euler
      */
     struct ReactiveSplitIndicatorSettings
     {
+        int indicatorMode = 0;                 ///< 0: v1 rate-based; 1: v2 stiffness-ratio @f$b/s@f$.
         real chemicalActivityThreshold = 1.0;  ///< Chemical saturation threshold @f$a_0@f$.
         real diffusiveActivityThreshold = 1.0; ///< Diffusion saturation threshold @f$b_0@f$.
         real activitySaturationExponent = 1.0; ///< Shared activity-saturation exponent @f$p@f$.
+        real ratioThreshold = 1e-2;            ///< v2 switch midpoint @f$r_0@f$ on @f$b/s@f$.
+        real ratioExponent = 0.5;              ///< v2 switch exponent @f$p_r@f$ on @f$b/s@f$.
         real coupledThreshold = 0.005;         ///< Coupled-score switch midpoint @f$C_0@f$.
         real transitionWidth = 0.001;          ///< Logistic switch width @f$w@f$.
         real shockScale = 0.08;                ///< Pressure-jump scale @f$h_0@f$ in @f$g_h@f$.
@@ -60,9 +63,12 @@ namespace DNDS::Euler
         DNDS_DECLARE_CONFIG(ReactiveSplitIndicatorSettings)
         {
             // clang-format off
+            DNDS_FIELD(indicatorMode,              "Reactive split mode: 0=v1 rate-based, 1=v2 b/s stiffness ratio", DNDS::Config::range(0, 1));
             DNDS_FIELD(chemicalActivityThreshold,  "Chemical activity threshold a0 in sat(a;a0,p)", DNDS::Config::range(0.0));
             DNDS_FIELD(diffusiveActivityThreshold, "Diffusion activity threshold b0 in sat(b;b0,p)", DNDS::Config::range(0.0));
             DNDS_FIELD(activitySaturationExponent, "Shared activity-saturation exponent p in sat(z;z0,p)", DNDS::Config::range(0.0));
+            DNDS_FIELD(ratioThreshold,             "v2 switch midpoint r0 on the b/s stiffness ratio", DNDS::Config::range(0.0));
+            DNDS_FIELD(ratioExponent,              "v2 switch exponent pr on the b/s stiffness ratio", DNDS::Config::range(0.0));
             DNDS_FIELD(coupledThreshold,           "Coupled-score midpoint C0", DNDS::Config::range(0.0));
             DNDS_FIELD(transitionWidth,            "Logistic coupled-fraction width w", DNDS::Config::range(0.0));
             DNDS_FIELD(shockScale,                 "Pressure-jump scale h0 in shock gate gh", DNDS::Config::range(0.0));
@@ -86,6 +92,8 @@ namespace DNDS::Euler
                          { return s.switchShape != 1 || s.hillExponent > 0; });
             config.check("reactive split endpoint snap tolerances must have sum less than one", [](const T &s)
                          { return s.strangSnapTolerance + s.coupledSnapTolerance < 1; });
+            config.check("reactive split v2 ratio threshold and exponent must be positive", [](const T &s)
+                         { return s.indicatorMode != 1 || (s.ratioThreshold > 0 && s.ratioExponent > 0); });
         }
     };
 
@@ -184,5 +192,27 @@ namespace DNDS::Euler
         if (settings.chiOverride >= 0)
             return std::clamp(settings.chiOverride, real(0), real(1));
         return ReactiveSplitSnapChi(1.0 - ReactiveSplitCoupledFraction(coupledScore, settings), settings);
+    }
+
+    /**
+     * @brief v2 stiffness-ratio Strang fraction @f$\chi_i=\operatorname{sat}(b_i/s_i;r_0,p_r)@f$.
+     *
+     * The dt-invariant ratio @f$b_i/s_i@f$ (diffusion activity per unit source-Jacobian
+     * stiffness) separates transport-locked, mildly-stiff regions (flame, detonation front;
+     * @f$b/s\ll r_0@f$, coupled) from stiffness-dominated regions (sensitive-chemistry runaway;
+     * @f$b/s\sim O(1)@f$, Strang). Because @f$b_i\propto\Delta t@f$ and
+     * @f$s_i\propto\Delta t@f$, the ratio is independent of the step, so the verdict is
+     * identical at every @f$\Delta t@f$.
+     */
+    inline real ReactiveSplitChiStiffnessRatio(real diffusionActivity, real chemicalStiffness,
+                                               const ReactiveSplitIndicatorSettings &settings)
+    {
+        if (settings.chiOverride >= 0)
+            return std::clamp(settings.chiOverride, real(0), real(1));
+        DNDS_check_throw_info(settings.ratioThreshold > 0, "reactive split ratioThreshold must be positive");
+        DNDS_check_throw_info(settings.ratioExponent > 0, "reactive split ratioExponent must be positive");
+        real ratio = diffusionActivity / std::max(chemicalStiffness, verySmallReal);
+        return ReactiveSplitSnapChi(
+            ReactiveSplitSaturate(ratio, settings.ratioThreshold, settings.ratioExponent), settings);
     }
 }

@@ -1204,11 +1204,12 @@ namespace DNDS::Euler
         /** @brief Explicit solver-owned storage supplied to the stateless RRI evaluator API. */
         struct ReactiveSplitDataRefs
         {
-            ArrayDOFV<1> &chi;           ///< Strang fraction; owner entries valid after update.
-            ArrayDOFV<1> &chemicalStep;  ///< Output-only @f$a_i@f$; owner entries valid after update.
-            ArrayDOFV<1> &diffusiveStep; ///< Output-only @f$b_i@f$; owner entries valid after update.
-            ArrayDOFV<1> &shockSensor;   ///< Output-only @f$h_i@f$; owner entries valid after update.
-            ArrayDOFV<1> &coupledScore;  ///< Output-only @f$C_i@f$; owner entries valid after update.
+            ArrayDOFV<1> &chi;                     ///< Strang fraction; owner entries valid after update.
+            ArrayDOFV<1> &chemicalStep;            ///< Output-only @f$a_i@f$; owner entries valid after update.
+            ArrayDOFV<1> &diffusiveStep;           ///< Output-only @f$b_i@f$; owner entries valid after update.
+            ArrayDOFV<1> &shockSensor;             ///< Output-only @f$h_i@f$; owner entries valid after update.
+            ArrayDOFV<1> &coupledScore;            ///< Output-only @f$C_i@f$; owner entries valid after update.
+            ArrayDOFV<1> *stiffnessStep = nullptr; ///< Output-only @f$s_i@f$ (v2); optional, owner entries valid after update.
         };
 
         /**

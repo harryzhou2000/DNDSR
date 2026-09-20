@@ -781,6 +781,32 @@ namespace DNDS::Euler::Chemistry
         I.kin_getNetProductionRates(omega.data);
     }
 
+    double ChemicalSource::maxChemicalStiffnessRate(double T, double p,
+                                                    ConstSpeciesBufferView Y) const
+    {
+        DNDS_assert(impl_);
+        auto &I = *impl_;
+        DNDS_check_throw_info(Y.data != nullptr && Y.nSpecies >= I.Ns,
+                              "ChemicalSource::maxChemicalStiffnessRate(): input Y buffer too small or null");
+#ifdef DNDS_USE_CANTERA
+        I.setTPY(T, p, Y);
+        auto dWdC = I.kin_netProductionRates_ddCi();
+        double lam = 0.0;
+        for (int k = 0; k < I.Ns; ++k)
+        {
+            double Yk = std::max(static_cast<double>(Y[k]), 1e-30);
+            // d(dotY_k)/dY_k at fixed (T,p): dotY_k = omega_k*W_k/rho, C_k = rho*Y_k/W_k.
+            lam = std::max(lam, std::abs(dWdC.coeff(k, k)) / Yk);
+        }
+        return lam;
+#else
+        (void)T;
+        (void)p;
+        (void)Y;
+        return 0.0;
+#endif
+    }
+
     void ChemicalSource::productionRatesAndJacobian(
         double T, double p, double rho, double rhoE,
         double rhoU, double rhoV, double rhoW,
