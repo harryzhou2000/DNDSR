@@ -120,7 +120,7 @@ namespace DNDS::Euler
             cellT_warm_[i](0) = eval.phys().temperature(u[i]);
         typename TEval::ReactiveSplitDataRefs reactiveSplitData{
             reactiveSplitChi_, reactiveSplitChemicalStep_, reactiveSplitDiffusiveStep_,
-            reactiveSplitShockSensor_, reactiveSplitCoupledScore_};
+            reactiveSplitShockSensor_, reactiveSplitCoupledScore_, &reactiveSplitStiffnessStep_};
         OutputPicker outputPicker;
         eval.InitializeOutputPicker(outputPicker, {u, uRec, betaPP, alphaPP}, reactiveSplitData);
         addOutList = outputPicker.getSubsetList(config.dataIOControl.outCellScalarNames);

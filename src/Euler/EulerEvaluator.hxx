@@ -1845,8 +1845,11 @@ namespace DNDS::Euler
                 (*cellTWarm)[iCell](0) = T;
         }
 
+        const bool useStiffnessRatio = (indicatorSettings.indicatorMode == 1) &&
+                                       (reactiveSplit.stiffnessStep != nullptr);
         std::vector<real> chemicalRate(static_cast<size_t>(mesh->NumCell()), 0.0);
         std::vector<real> maxDiffusivity(static_cast<size_t>(mesh->NumCell()), 0.0);
+        std::vector<real> maxStiffnessRate(static_cast<size_t>(mesh->NumCell()), 0.0);
 #if defined(DNDS_DIST_MT_USE_OMP)
 #    pragma omp parallel
 #endif
@@ -1884,6 +1887,9 @@ namespace DNDS::Euler
                 chemicalRate[static_cast<size_t>(iCell)] = std::sqrt(speciesRateSquared + sqr(temperatureRateScale));
                 maxDiffusivity[static_cast<size_t>(iCell)] =
                     *std::max_element(diffusivity.begin(), diffusivity.end());
+                if (useStiffnessRatio)
+                    maxStiffnessRate[static_cast<size_t>(iCell)] =
+                        chem.maxChemicalStiffnessRate(T, p, Y);
             }
         }
 
@@ -1939,7 +1945,18 @@ namespace DNDS::Euler
             reactiveSplitDiffusiveStep[iCell](0) = diffusionActivity; // b_i
             reactiveSplitShockSensor[iCell](0) = shockSensor;         // h_i
             reactiveSplitCoupledScore[iCell](0) = coupledScore;       // C_i
-            reactiveSplitChi[iCell](0) = ReactiveSplitChi(coupledScore, indicatorSettings);
+            if (useStiffnessRatio)
+            {
+                real chemicalStiffness = dtPhysical * maxStiffnessRate[static_cast<size_t>(iCell)]; // s_i
+                (*reactiveSplit.stiffnessStep)[iCell](0) = chemicalStiffness;
+                real chiLocal = ReactiveSplitChiStiffnessRatio(diffusionActivity, chemicalStiffness, indicatorSettings);
+                // shock gate: never couple across a resolved shock (push toward Strang)
+                real shockFloor = ReactiveSplitSnapChi(1.0 - ReactiveSplitShockGate(shockSensor, indicatorSettings),
+                                                       indicatorSettings);
+                reactiveSplitChi[iCell](0) = std::max(chiLocal, shockFloor);
+            }
+            else
+                reactiveSplitChi[iCell](0) = ReactiveSplitChi(coupledScore, indicatorSettings);
             if (indicatorSettings.spatialPasses > 0)
                 localShockSensor[static_cast<size_t>(iCell)] = shockSensor;
         }
