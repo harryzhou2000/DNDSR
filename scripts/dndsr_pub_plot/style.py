@@ -268,6 +268,12 @@ def save_figure(
     output_path = Path(output)
     if output_path.suffix == "":
         output_path = output_path.with_suffix(f".{selected_format}")
+    elif output_format is None and output_path.suffix.lstrip(".").lower() in {
+        "png", "pdf", "svg", "eps", "jpg", "jpeg", "tif", "tiff",
+    }:
+        # An explicit, recognized extension names the intended format; honor it
+        # over the style default so "out.png" cannot silently become a PDF.
+        selected_format = output_path.suffix.lstrip(".").lower()
     if create_parent:
         output_path.parent.mkdir(parents=True, exist_ok=True)
     options = {"bbox_inches": "tight", "facecolor": "white"}
