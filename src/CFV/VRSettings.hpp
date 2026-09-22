@@ -136,9 +136,9 @@ namespace DNDS::CFV
                 DNDS_FIELD(scaleType,                "Functional scale type");
                 DNDS_FIELD(scaleMultiplier,          "Functional scale multiplier",
                            DNDS::Config::range(0.0));
-                DNDS_FIELD(dirWeightScheme,          "Directional weight scheme");
-                DNDS_FIELD(dirWeightCombPowV,        "Directional weight combination power");
-                DNDS_FIELD(manualDirWeights,          "Manual directional weights vector");
+                DNDS_FIELD(dirWeightScheme,          "Derivative weight scheme (weighting of derivative terms in the reconstruction functional)");
+                DNDS_FIELD(dirWeightCombPowV,        "Derivative weight combination power");
+                DNDS_FIELD(manualDirWeights,          "Manual derivative weights vector");
                 DNDS_FIELD(geomWeightScheme,          "Geometric weight scheme");
                 DNDS_FIELD(geomWeightPower,           "Geometric weight power");
                 DNDS_FIELD(geomWeightPower1,          "Geometric weight power 1");
