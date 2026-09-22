@@ -2433,6 +2433,14 @@ namespace DNDS::Euler
         else
             o2Beta.setConstant(1.0);
 
+        std::vector<real> alphaPrevious;
+        if (limitedVRSettings.alphaUpdateRelaxation < 1.0 ||
+            limitedVRSettings.gateMode == LimitedVRSettings::GateProductCubicWithExtremumCorrection)
+        {
+            alphaPrevious.resize(static_cast<size_t>(mesh->NumCell()));
+            for (index iCell = 0; iCell < mesh->NumCell(); ++iCell)
+                alphaPrevious[static_cast<size_t>(iCell)] = alpha[iCell](0);
+        }
         alpha.setConstant(0.0);
         pressureJump.setConstant(0.0);
         compression.setConstant(0.0);
@@ -2474,6 +2482,232 @@ namespace DNDS::Euler
                 compression[iCell](0) = std::max(compression[iCell](0), sensor.compression);
             }
         }
+
+        if (limitedVRSettings.gateMode == LimitedVRSettings::GateNeighborCoupledRationalSaturated ||
+            limitedVRSettings.gateMode == LimitedVRSettings::GateNeighborhoodEnvelopeRationalSaturated ||
+            limitedVRSettings.gateMode == LimitedVRSettings::GateNeighborhoodEnvelopeCubic)
+        {
+            pressureJump.trans.startPersistentPull();
+            compression.trans.startPersistentPull();
+            pressureJump.trans.waitPersistentPull();
+            compression.trans.waitPersistentPull();
+            std::vector<real> pressureNeighbour(static_cast<size_t>(mesh->NumCell()));
+            std::vector<real> compressionNeighbour(static_cast<size_t>(mesh->NumCell()));
+            for (index iCell = 0; iCell < mesh->NumCell(); ++iCell)
+            {
+                pressureNeighbour[static_cast<size_t>(iCell)] = pressureJump[iCell](0);
+                compressionNeighbour[static_cast<size_t>(iCell)] = compression[iCell](0);
+            }
+            for (index iFace = 0; iFace < mesh->NumFaceProc(); ++iFace)
+            {
+                auto f2c = mesh->face2cell[iFace];
+                if (f2c[1] == UnInitIndex)
+                    continue;
+                for (int if2c = 0; if2c < 2; ++if2c)
+                {
+                    index iCell = f2c[if2c];
+                    index iOther = f2c[1 - if2c];
+                    if (iCell >= mesh->NumCell())
+                        continue;
+                    pressureNeighbour[static_cast<size_t>(iCell)] = std::max(
+                        pressureNeighbour[static_cast<size_t>(iCell)], pressureJump[iOther](0));
+                    compressionNeighbour[static_cast<size_t>(iCell)] = std::max(
+                        compressionNeighbour[static_cast<size_t>(iCell)], compression[iOther](0));
+                }
+            }
+            for (index iCell = 0; iCell < mesh->NumCell(); ++iCell)
+            {
+                real pressureExcess = LimitedVRNormalizedExcess(
+                    pressureJump[iCell](0), limitedVRSettings.pressureJumpStart, limitedVRSettings.pressureJumpFull);
+                real compressionExcess = LimitedVRNormalizedExcess(
+                    compression[iCell](0), limitedVRSettings.compressionStart, limitedVRSettings.compressionFull);
+                real pressureNeighbourExcess = LimitedVRNormalizedExcess(
+                    pressureNeighbour[static_cast<size_t>(iCell)], limitedVRSettings.pressureJumpStart, limitedVRSettings.pressureJumpFull);
+                real compressionNeighbourExcess = LimitedVRNormalizedExcess(
+                    compressionNeighbour[static_cast<size_t>(iCell)], limitedVRSettings.compressionStart, limitedVRSettings.compressionFull);
+                real response;
+                if (limitedVRSettings.gateMode == LimitedVRSettings::GateNeighborhoodEnvelopeCubic)
+                    response =
+                        LimitedVRCubicRamp(
+                            pressureNeighbour[static_cast<size_t>(iCell)],
+                            limitedVRSettings.pressureJumpStart, limitedVRSettings.pressureJumpFull) *
+                        LimitedVRCubicRamp(
+                            compressionNeighbour[static_cast<size_t>(iCell)],
+                            limitedVRSettings.compressionStart, limitedVRSettings.compressionFull);
+                else if (limitedVRSettings.gateMode == LimitedVRSettings::GateNeighborhoodEnvelopeRationalSaturated)
+                    response = LimitedVRCoupledSaturatedResponse(
+                        pressureNeighbourExcess, compressionNeighbourExcess);
+                else
+                    response = std::max(
+                        LimitedVRCoupledSaturatedResponse(pressureExcess, compressionNeighbourExcess),
+                        LimitedVRCoupledSaturatedResponse(compressionExcess, pressureNeighbourExcess));
+                alpha[iCell](0) = std::max(alpha[iCell](0), limitedVRSettings.alphaMax * response);
+            }
+        }
+
+        if (limitedVRSettings.gateMode == LimitedVRSettings::GateProductCubicWithExtremumCorrection)
+        {
+            // The base face gate remains the local product gate.  Add penalty
+            // only at a strict cell-mean pressure extremum next to that detected
+            // shock core.  This covers an oscillatory pre/post-shock cell without
+            // spreading the gate across an otherwise monotone shock profile.
+            alpha.trans.startPersistentPull();
+            alpha.trans.waitPersistentPull();
+            const index nCell = mesh->NumCell();
+            const index nCellProc = mesh->NumCellProc();
+            std::vector<real> pressureMean(static_cast<size_t>(nCellProc));
+            for (index iCell = 0; iCell < nCellProc; ++iCell)
+            {
+                auto [T, p, asqr, H, gammaEq, gamma] = phys_.conservativeThermal(u[iCell]);
+                pressureMean[static_cast<size_t>(iCell)] = p;
+            }
+            std::vector<real> nearestLower(static_cast<size_t>(nCell), -veryLargeReal);
+            std::vector<real> nearestUpper(static_cast<size_t>(nCell), veryLargeReal);
+            std::vector<real> shockSupport(static_cast<size_t>(nCell), 0.0);
+            std::vector<bool> hasLower(static_cast<size_t>(nCell), false);
+            std::vector<bool> hasUpper(static_cast<size_t>(nCell), false);
+            std::vector<int> equalNeighbourCount(static_cast<size_t>(nCell), 0);
+            std::vector<bool> boundaryAdjacent(static_cast<size_t>(nCell), false);
+            std::vector<real> o2BetaSaved(static_cast<size_t>(nCell));
+            for (index iCell = 0; iCell < nCell; ++iCell)
+                o2BetaSaved[static_cast<size_t>(iCell)] = o2Beta[iCell](0);
+            o2Beta.setConstant(0.0);
+            for (index iFace = 0; iFace < mesh->NumFaceProc(); ++iFace)
+            {
+                auto f2c = mesh->face2cell[iFace];
+                if (f2c[1] == UnInitIndex)
+                {
+                    if (f2c[0] < nCell)
+                        boundaryAdjacent[static_cast<size_t>(f2c[0])] = true;
+                    continue;
+                }
+                for (int if2c = 0; if2c < 2; ++if2c)
+                {
+                    index iCell = f2c[if2c];
+                    index iOther = f2c[1 - if2c];
+                    if (iCell >= nCell)
+                        continue;
+                    const size_t i = static_cast<size_t>(iCell);
+                    real pCell = pressureMean[i];
+                    real pOther = pressureMean[static_cast<size_t>(iOther)];
+                    real pScale = std::max({std::abs(pCell), std::abs(pOther), real(1e-30)});
+                    real equalTolerance = limitedVRSettings.oscillationTransverseTolerance * pScale;
+                    if (pOther < pCell - equalTolerance)
+                    {
+                        nearestLower[i] = std::max(nearestLower[i], pOther);
+                        hasLower[i] = true;
+                    }
+                    else if (pOther > pCell + equalTolerance)
+                    {
+                        nearestUpper[i] = std::min(nearestUpper[i], pOther);
+                        hasUpper[i] = true;
+                    }
+                    else
+                        ++equalNeighbourCount[i];
+                    shockSupport[i] = std::max(shockSupport[i], alpha[iOther](0));
+                }
+            }
+            for (index iCell = 0; iCell < nCell; ++iCell)
+            {
+                const size_t i = static_cast<size_t>(iCell);
+                if (boundaryAdjacent[i] ||
+                    equalNeighbourCount[i] < limitedVRSettings.oscillationMinTransverseNeighbours)
+                    continue;
+                real pCell = pressureMean[i];
+                real extremum = 0;
+                if (hasLower[i] && !hasUpper[i])
+                    extremum = (pCell - nearestLower[i]) /
+                               std::max({std::abs(pCell), std::abs(nearestLower[i]), real(1e-30)});
+                else if (hasUpper[i] && !hasLower[i])
+                    extremum = (nearestUpper[i] - pCell) /
+                               std::max({std::abs(pCell), std::abs(nearestUpper[i]), real(1e-30)});
+                real supportFraction = shockSupport[i] / std::max(limitedVRSettings.alphaMax, real(1e-30));
+                real response =
+                    LimitedVRCubicRamp(
+                        extremum,
+                        limitedVRSettings.oscillationExtremumStart,
+                        limitedVRSettings.oscillationExtremumFull) *
+                    LimitedVRCubicRamp(
+                        supportFraction,
+                        limitedVRSettings.oscillationSupportStart,
+                        limitedVRSettings.oscillationSupportFull);
+                real retainedResponse =
+                    limitedVRSettings.oscillationRetention *
+                    alphaPrevious[i] / std::max(limitedVRSettings.alphaMax, real(1e-30)) *
+                    LimitedVRCubicRamp(
+                        supportFraction,
+                        limitedVRSettings.oscillationSupportStart,
+                        limitedVRSettings.oscillationSupportFull);
+                o2Beta[iCell](0) = limitedVRSettings.alphaMax * std::max(response, retainedResponse);
+            }
+            // Limit the extremum and its immediate face neighbours.  The
+            // correction itself is communicated, so the compact stencil is
+            // partition independent.  o2Beta is borrowed as scalar scratch and
+            // restored before returning.
+            o2Beta.trans.startPersistentPull();
+            o2Beta.trans.waitPersistentPull();
+            std::vector<real> correctedAlpha(static_cast<size_t>(nCell));
+            for (index iCell = 0; iCell < nCell; ++iCell)
+                correctedAlpha[static_cast<size_t>(iCell)] =
+                    std::max(alpha[iCell](0), o2Beta[iCell](0));
+            for (index iFace = 0; iFace < mesh->NumFaceProc(); ++iFace)
+            {
+                auto f2c = mesh->face2cell[iFace];
+                if (f2c[1] == UnInitIndex)
+                    continue;
+                for (int if2c = 0; if2c < 2; ++if2c)
+                {
+                    index iCell = f2c[if2c];
+                    if (iCell >= nCell || boundaryAdjacent[static_cast<size_t>(iCell)])
+                        continue;
+                    correctedAlpha[static_cast<size_t>(iCell)] = std::max(
+                        correctedAlpha[static_cast<size_t>(iCell)], o2Beta[f2c[1 - if2c]](0));
+                }
+            }
+            for (index iCell = 0; iCell < nCell; ++iCell)
+            {
+                alpha[iCell](0) = correctedAlpha[static_cast<size_t>(iCell)];
+                o2Beta[iCell](0) = o2BetaSaved[static_cast<size_t>(iCell)];
+            }
+            o2Beta.trans.startPersistentPull();
+            o2Beta.trans.waitPersistentPull();
+        }
+
+        // A compact face-neighbour halo covers the one-sided cells immediately
+        // adjacent to a detected shock.  Propagating the already mapped alpha
+        // avoids lowering the local indicator thresholds into smooth wall
+        // regions.  Pull before every layer so partition-boundary propagation
+        // is identical to an unpartitioned traversal.
+        for (int iLayer = 0; iLayer < limitedVRSettings.gateHaloLayers; ++iLayer)
+        {
+            alpha.trans.startPersistentPull();
+            alpha.trans.waitPersistentPull();
+            std::vector<real> expanded(static_cast<size_t>(mesh->NumCell()));
+            for (index iCell = 0; iCell < mesh->NumCell(); ++iCell)
+                expanded[static_cast<size_t>(iCell)] = alpha[iCell](0);
+            for (index iFace = 0; iFace < mesh->NumFaceProc(); ++iFace)
+            {
+                auto f2c = mesh->face2cell[iFace];
+                if (f2c[1] == UnInitIndex)
+                    continue;
+                real faceAlpha = std::max(alpha[f2c[0]](0), alpha[f2c[1]](0));
+                if (limitedVRSettings.gateHaloSaturatedOnly)
+                    faceAlpha = faceAlpha >= limitedVRSettings.alphaMax * (1.0 - 1e-12)
+                                    ? limitedVRSettings.alphaMax
+                                    : 0.0;
+                for (int if2c = 0; if2c < 2; ++if2c)
+                    if (f2c[if2c] < mesh->NumCell())
+                        expanded[static_cast<size_t>(f2c[if2c])] =
+                            std::max(expanded[static_cast<size_t>(f2c[if2c])], faceAlpha);
+            }
+            for (index iCell = 0; iCell < mesh->NumCell(); ++iCell)
+                alpha[iCell](0) = expanded[static_cast<size_t>(iCell)];
+        }
+        if (limitedVRSettings.alphaUpdateRelaxation < 1.0)
+            for (index iCell = 0; iCell < mesh->NumCell(); ++iCell)
+                alpha[iCell](0) =
+                    limitedVRSettings.alphaUpdateRelaxation * alpha[iCell](0) +
+                    (1.0 - limitedVRSettings.alphaUpdateRelaxation) * alphaPrevious[static_cast<size_t>(iCell)];
     }
 
     DNDS_SWITCH_INTELLISENSE(

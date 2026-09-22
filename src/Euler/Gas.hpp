@@ -56,7 +56,7 @@ namespace DNDS::Euler::Gas
      * | Roe_M6     | Roe + H-correction only (eigScheme 6).                       |
      * | Roe_M7     | Roe + Harten-Yee fix only, no H-correction (eigScheme 7).    |
      * | Roe_M8     | Roe + H-correction + Harten-Yee fix (eigScheme 8).           |
-     * | Roe_M9     | Reserved (eigScheme 9, currently asserts false).              |
+     * | Roe_M9     | Roe_M8 with max(aL,aR) replacing Roe-average sound speed.     |
      */
     enum RiemannSolverType
     {
@@ -938,8 +938,9 @@ namespace DNDS::Euler::Gas
      * | 6         | H-correction only (floor by dLambda · scaleHFix).           |
      * | 7         | Harten-Yee only, no H-correction.                           |
      * | 8         | H-correction + Harten-Yee combined.                         |
+     * | 9         | Scheme 8 using max(aL,aR) instead of the Roe sound speed.    |
      *
-     * @tparam eigScheme  Compile-time entropy-fix scheme selector (0–8).
+     * @tparam eigScheme  Compile-time entropy-fix scheme selector (0–9).
      * @param  aL, aR     Left/right mean-state speed of sound.
      * @param  aAve       Roe-averaged speed of sound.
      * @param  uL, uR     Left/right normal velocities relative to grid.

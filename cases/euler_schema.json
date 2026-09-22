@@ -1089,6 +1089,78 @@
                             "minimum": 0.0,
                             "maximum": 1.0
                         },
+                        "gateMode": {
+                            "type": "integer",
+                            "default": 0,
+                            "description": "LVR gate: 0=product cubic, 1=union cubic, 2=additive rational tail, 3=coupled rational tail, 4=coupled rational tail with full-threshold saturation, 5=cross-cell coupled rational tail, 6=one-neighbour indicator-envelope rational tail, 7=one-neighbour indicator-envelope cubic product, 8=product cubic with shock-supported cell-mean pressure-extremum correction",
+                            "minimum": 0.0,
+                            "maximum": 8.0
+                        },
+                        "gateHaloLayers": {
+                            "type": "integer",
+                            "default": 0,
+                            "description": "Number of face-neighbour cell layers added around the detected LVR gate",
+                            "minimum": 0.0,
+                            "maximum": 4.0
+                        },
+                        "gateHaloSaturatedOnly": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "Expand only the saturated shock core and set its halo to alphaMax"
+                        },
+                        "alphaUpdateRelaxation": {
+                            "type": "number",
+                            "default": 1.0,
+                            "description": "Temporal relaxation applied when updating the LVR alpha field",
+                            "minimum": 0.0,
+                            "maximum": 1.0
+                        },
+                        "oscillationExtremumStart": {
+                            "type": "number",
+                            "default": 0.001,
+                            "description": "Normalized cell-mean pressure-extremum ramp start for gate mode 8",
+                            "minimum": 0.0
+                        },
+                        "oscillationExtremumFull": {
+                            "type": "number",
+                            "default": 0.008,
+                            "description": "Normalized cell-mean pressure-extremum ramp saturation for gate mode 8",
+                            "minimum": 0.0
+                        },
+                        "oscillationSupportStart": {
+                            "type": "number",
+                            "default": 0.02,
+                            "description": "Adjacent product-gate alpha fraction ramp start for gate mode 8",
+                            "minimum": 0.0,
+                            "maximum": 1.0
+                        },
+                        "oscillationSupportFull": {
+                            "type": "number",
+                            "default": 0.15,
+                            "description": "Adjacent product-gate alpha fraction ramp saturation for gate mode 8",
+                            "minimum": 0.0,
+                            "maximum": 1.0
+                        },
+                        "oscillationRetention": {
+                            "type": "number",
+                            "default": 0.95,
+                            "description": "Per-update retention of mode-8 correction while adjacent product-gate support remains active",
+                            "minimum": 0.0,
+                            "maximum": 1.0
+                        },
+                        "oscillationTransverseTolerance": {
+                            "type": "number",
+                            "default": 1e-08,
+                            "description": "Relative pressure tolerance used to identify a transverse equal-state neighbour for gate mode 8",
+                            "minimum": 0.0
+                        },
+                        "oscillationMinTransverseNeighbours": {
+                            "type": "integer",
+                            "default": 2,
+                            "description": "Minimum equal-state transverse face neighbours required by gate mode 8",
+                            "minimum": 1.0,
+                            "maximum": 4.0
+                        },
                         "o2ReferenceLimiter": {
                             "type": "integer",
                             "default": 0,
@@ -2520,12 +2592,12 @@
                         "dirWeightScheme": {
                             "type": "string",
                             "default": "Factorial",
-                            "description": "Directional weight scheme"
+                            "description": "Derivative weight scheme (weighting of derivative terms in the reconstruction functional)"
                         },
                         "dirWeightCombPowV": {
                             "type": "integer",
                             "default": 1,
-                            "description": "Directional weight combination power"
+                            "description": "Derivative weight combination power"
                         },
                         "manualDirWeights": {
                             "type": "array",
@@ -2536,7 +2608,7 @@
                                 0.16666666666666666,
                                 0.041666666666666664
                             ],
-                            "description": "Manual directional weights vector"
+                            "description": "Manual derivative weights vector"
                         },
                         "geomWeightScheme": {
                             "type": "string",

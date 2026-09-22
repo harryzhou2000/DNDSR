@@ -4,7 +4,7 @@
  *
  * Tests cover:
  *   - Consistency: F(UL, UR) with UL==UR equals the exact physical flux
- *   - Roe flux: default eigScheme=0, plus variants 1-8
+ *   - Roe flux: default eigScheme=0, plus variants 1-9
  *   - HLLC flux: consistency and symmetry
  *   - HLLEP flux: consistency
  *   - InviscidFlux_IdealGas_Dispatcher: runtime dispatch
@@ -436,14 +436,13 @@ TEST_CASE("Roe base-energy contact has no spurious momentum flux")
     }
 }
 
-TEST_CASE("Roe variants M1-M8 consistency")
+TEST_CASE("Roe variants M1-M9 consistency")
 {
     auto U = prim2cons(1.0, 50.0, 0.0, 0.0, 100000.0);
     Eigen::Vector3d n(1.0, 0.0, 0.0);
     auto Fexact = exactNormalFlux(U, n);
 
-    // Note: Roe_M9 (eigScheme=9) is reserved and intentionally not included.
-    for (auto rs : {Roe_M1, Roe_M2, Roe_M3, Roe_M4, Roe_M5, Roe_M6, Roe_M7, Roe_M8})
+    for (auto rs : {Roe_M1, Roe_M2, Roe_M3, Roe_M4, Roe_M5, Roe_M6, Roe_M7, Roe_M8, Roe_M9})
     {
         CAPTURE(rs);
         auto F = callDispatcher(rs, U, U, n);
@@ -452,6 +451,65 @@ TEST_CASE("Roe variants M1-M8 consistency")
             CAPTURE(i);
             CHECK(F(i) == doctest::Approx(Fexact(i)).epsilon(1e-8));
         }
+    }
+}
+
+TEST_CASE("Roe M8 and M9 produce finite Sod fluxes")
+{
+    auto UL = prim2cons(1.0, 0.0, 0.0, 0.0, 1.0);
+    auto UR = prim2cons(0.125, 0.0, 0.0, 0.0, 0.1);
+    Eigen::Vector3d n(1.0, 0.0, 0.0);
+
+    for (auto rs : {Roe_M8, Roe_M9})
+    {
+        CAPTURE(rs);
+        auto F = callDispatcher(rs, UL, UR, n);
+        CHECK(F.allFinite());
+        CHECK(F(0) >= -1e-10);
+    }
+}
+
+TEST_CASE("Roe M8 and M9 batch dispatch matches scalar dispatch")
+{
+    auto UL = prim2cons(1.0, 2.0, 0.2, 0.0, 1.0);
+    auto UR = prim2cons(0.125, -0.1, -0.05, 0.0, 0.1);
+    Eigen::Vector3d n(1.0, 0.0, 0.0);
+    Eigen::Vector3d vg = Eigen::Vector3d::Zero();
+
+    Eigen::Matrix<real, 5, -1> ULB(5, 2), URB(5, 2), FB(5, 2);
+    ULB.col(0) = UL;
+    ULB.col(1) = UL;
+    URB.col(0) = UR;
+    URB.col(1) = UR;
+    Eigen::Matrix<real, 3, -1> nB(3, 2), vgB(3, 2);
+    nB.col(0) = n;
+    nB.col(1) = n;
+    vgB.setZero();
+
+    for (auto rs : {Roe_M8, Roe_M9})
+    {
+        CAPTURE(rs);
+        real lam0 = 0, lam123 = 0, lam4 = 0;
+        FB.setZero();
+        InviscidFlux_IdealGas_Batch_Dispatcher<3>(
+            rs, ULB, URB, UL, UR, vgB, vg, nB, n,
+            g_gamma, g_gamma, FB, 0.3, 1.0, 1.0,
+            noDump, lam0, lam123, lam4);
+
+        Eigen::Vector<real, 5> F;
+        F.setZero();
+        InviscidFlux_IdealGas_Dispatcher<3>(
+            rs, UL, UR, UL, UR, vg, n, g_gamma, g_gamma, F,
+            0.3, 1.0, 1.0, noDump, lam0, lam123, lam4);
+
+        CHECK(FB.allFinite());
+        for (int iB = 0; iB < FB.cols(); ++iB)
+            for (int i = 0; i < FB.rows(); ++i)
+            {
+                CAPTURE(iB);
+                CAPTURE(i);
+                CHECK(FB(i, iB) == doctest::Approx(F(i)).epsilon(1e-11));
+            }
     }
 }
 
