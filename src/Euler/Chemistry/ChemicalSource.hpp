@@ -278,10 +278,12 @@ namespace DNDS::Euler::Chemistry
 
         /**
          * Largest-magnitude diagonal rate of the homogeneous chemical source
-         * Jacobian, max_k |∂Ẏ_k/∂Y_k| [1/s] at fixed (T, p). Uses the Cantera
-         * concentration-Jacobian diagonal netProductionRates_ddCi; a cheap
-         * stiffness estimate for the reactive-split indicator (not the full
-         * spectral radius). Returns 0 when Cantera is unavailable.
+         * Jacobian, max_k |∂Ẏ_k/∂Y_k| [1/s] at fixed density and temperature.
+         * With Ẏ_i=ω_i W_i/ρ and C_j=ρY_j/W_j, the conversion is
+         * ∂Ẏ_i/∂Y_j=(W_i/W_j)∂ω_i/∂C_j, so the molecular-weight factor cancels
+         * on the diagonal returned here. Uses Cantera's
+         * netProductionRates_ddCi as a cheap stiffness estimate, not a full
+         * spectral radius. Returns 0 when Cantera is unavailable.
          */
         double maxChemicalStiffnessRate(double T, double p,
                                         ConstSpeciesBufferView Y) const;

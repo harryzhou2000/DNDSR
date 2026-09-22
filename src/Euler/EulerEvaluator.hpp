@@ -1209,7 +1209,7 @@ namespace DNDS::Euler
             ArrayDOFV<1> &diffusiveStep;           ///< Output-only @f$b_i@f$; owner entries valid after update.
             ArrayDOFV<1> &shockSensor;             ///< Output-only @f$h_i@f$; owner entries valid after update.
             ArrayDOFV<1> &coupledScore;            ///< Output-only @f$C_i@f$; owner entries valid after update.
-            ArrayDOFV<1> *stiffnessStep = nullptr; ///< Output-only @f$s_i@f$ (v2); optional, owner entries valid after update.
+            ArrayDOFV<1> *stiffnessStep = nullptr; ///< Output-only @f$s_i@f$; required by v2, optional otherwise, owner entries valid after update.
         };
 
         /**

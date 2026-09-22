@@ -132,6 +132,52 @@ TEST_CASE("ChemicalSource::productionRatesAndJacobian — Jacobian sign conventi
     }
 }
 
+TEST_CASE("ChemicalSource::maxChemicalStiffnessRate — matches fixed-density mass-fraction diagonal")
+{
+    ChemicalSource chem(mechFile(), "", 379.0, 1.0);
+    int Ns = chem.nSpecies();
+    auto MW = chem.molecularWeights();
+
+    std::vector<double> Y(Ns, 0.0);
+    Y[0] = 0.028;
+    Y[3] = 0.222;
+    Y[9] = 0.75;
+    const double T = 1800.0;
+    const double rho = 1.0;
+    const double p = rho * chem.mixtureR({Y.data(), Ns}) * T;
+    const double stiffness = chem.maxChemicalStiffnessRate(T, p, {Y.data(), Ns});
+
+    double finiteDifferenceMaximum = 0.0;
+    std::vector<double> omegaBase(Ns);
+    chem.productionRates(T, p, {Y.data(), Ns}, {omegaBase.data(), Ns});
+    for (int k = 0; k < Ns; ++k)
+    {
+        const double epsilon = std::max(1.0e-10, std::abs(Y[k]) * 1.0e-6);
+        auto YPlus = Y;
+        YPlus[k] += epsilon;
+        const double pPlus = rho * chem.mixtureR({YPlus.data(), Ns}) * T;
+        std::vector<double> omegaPlus(Ns);
+        chem.productionRates(T, pPlus, {YPlus.data(), Ns}, {omegaPlus.data(), Ns});
+
+        double derivative = 0.0;
+        if (Y[k] > epsilon)
+        {
+            auto YMinus = Y;
+            YMinus[k] -= epsilon;
+            const double pMinus = rho * chem.mixtureR({YMinus.data(), Ns}) * T;
+            std::vector<double> omegaMinus(Ns);
+            chem.productionRates(T, pMinus, {YMinus.data(), Ns}, {omegaMinus.data(), Ns});
+            derivative = (omegaPlus[k] - omegaMinus[k]) * MW[k] / (2.0 * epsilon * rho);
+        }
+        else
+            derivative = (omegaPlus[k] - omegaBase[k]) * MW[k] / (epsilon * rho);
+        finiteDifferenceMaximum = std::max(finiteDifferenceMaximum, std::abs(derivative));
+    }
+
+    INFO("analytic diagonal maximum=" << stiffness << " finite-difference maximum=" << finiteDifferenceMaximum);
+    CHECK(stiffness == doctest::Approx(finiteDifferenceMaximum).epsilon(2.0e-3));
+}
+
 TEST_CASE("ChemicalSource::mixtureR — gas constant correctness")
 {
     ChemicalSource chem(mechFile(), "", 379.0, 1.0);

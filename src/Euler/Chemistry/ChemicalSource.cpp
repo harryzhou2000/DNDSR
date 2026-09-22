@@ -794,9 +794,10 @@ namespace DNDS::Euler::Chemistry
         double lam = 0.0;
         for (int k = 0; k < I.Ns; ++k)
         {
-            double Yk = std::max(static_cast<double>(Y[k]), 1e-30);
-            // d(dotY_k)/dY_k at fixed (T,p): dotY_k = omega_k*W_k/rho, C_k = rho*Y_k/W_k.
-            lam = std::max(lam, std::abs(dWdC.coeff(k, k)) / Yk);
+            // At fixed rho and T, dotY_i = omega_i W_i/rho and C_j = rho Y_j/W_j,
+            // so d(dotY_i)/dY_j = (W_i/W_j) d(omega_i)/dC_j. The molecular-
+            // weight factor is exactly one on the diagonal.
+            lam = std::max(lam, std::abs(dWdC.coeff(k, k)));
         }
         return lam;
 #else

@@ -42,28 +42,36 @@ namespace DNDS::Euler
      */
     struct ReactiveSplitIndicatorSettings
     {
-        int indicatorMode = 0;                 ///< 0: v1 rate-based; 1: v2 stiffness-ratio @f$b/s@f$.
+        int indicatorMode = 0;                 ///< 0: v1; 1: legacy ratio; 2: chemistry escape.
         real chemicalActivityThreshold = 1.0;  ///< Chemical saturation threshold @f$a_0@f$.
         real diffusiveActivityThreshold = 1.0; ///< Diffusion saturation threshold @f$b_0@f$.
         real activitySaturationExponent = 1.0; ///< Shared activity-saturation exponent @f$p@f$.
-        real ratioThreshold = 1e-2;            ///< v2 switch midpoint @f$r_0@f$ on @f$b/s@f$.
-        real ratioExponent = 0.5;              ///< v2 switch exponent @f$p_r@f$ on @f$b/s@f$.
-        real coupledThreshold = 0.005;         ///< Coupled-score switch midpoint @f$C_0@f$.
-        real transitionWidth = 0.001;          ///< Logistic switch width @f$w@f$.
-        real shockScale = 0.08;                ///< Pressure-jump scale @f$h_0@f$ in @f$g_h@f$.
-        real strangBias = 1.0;                 ///< Dimensionless Strang-preference factor @f$b_s@f$.
-        int switchShape = 1;                   ///< 0: logistic; 1: compact-tail Hill map (default).
-        real hillExponent = 3.0;               ///< Final coupled-fraction Hill exponent @f$n@f$.
-        int spatialPasses = 0;                 ///< Number of face-neighbor expansion passes.
-        real spatialDecay = 0.65;              ///< Neighbor retention factor @f$\eta@f$ per pass.
-        real strangSnapTolerance = 0.01;       ///< Snap to @f$\chi=1@f$ when @f$1-\chi^*\leq\epsilon_s@f$.
-        real coupledSnapTolerance = 0.01;      ///< Snap to @f$\chi=0@f$ when @f$\chi^*\leq\epsilon_c@f$.
-        real chiOverride = -1.0;               ///< Forced @f$\chi@f$ in [0,1]; negative enables selection.
+        real ratioThreshold = 1e-1;            ///< v2 switch midpoint @f$r_0@f$ on @f$b/s@f$.
+        real ratioExponent = 2.0;              ///< v2 switch exponent @f$p_r@f$ on @f$b/s@f$.
+        real escapeStiffnessThreshold = 100.0;
+        real escapeStiffnessExponent = 2.0;
+        real escapeRatioThreshold = 1e-6;
+        real escapeRatioExponent = 6.0;
+        real coupledThreshold = 0.005;    ///< Coupled-score switch midpoint @f$C_0@f$.
+        real transitionWidth = 0.001;     ///< Logistic switch width @f$w@f$.
+        real shockScale = 0.08;           ///< Pressure-jump scale @f$h_0@f$ in @f$g_h@f$.
+        real strangBias = 1.0;            ///< Dimensionless Strang-preference factor @f$b_s@f$.
+        int switchShape = 1;              ///< 0: logistic; 1: compact-tail Hill map (default).
+        real hillExponent = 3.0;          ///< Final coupled-fraction Hill exponent @f$n@f$.
+        int spatialPasses = 0;            ///< Number of face-neighbor expansion passes.
+        real spatialDecay = 0.65;         ///< Neighbor retention factor @f$\eta@f$ per pass.
+        real strangSnapTolerance = 0.01;  ///< Snap to @f$\chi=1@f$ when @f$1-\chi^*\leq\epsilon_s@f$.
+        real coupledSnapTolerance = 0.01; ///< Snap to @f$\chi=0@f$ when @f$\chi^*\leq\epsilon_c@f$.
+        real chiOverride = -1.0;          ///< Forced @f$\chi@f$ in [0,1]; negative enables selection.
 
         DNDS_DECLARE_CONFIG(ReactiveSplitIndicatorSettings)
         {
             // clang-format off
-            DNDS_FIELD(indicatorMode,              "Reactive split mode: 0=v1 rate-based, 1=v2 b/s stiffness ratio", DNDS::Config::range(0, 1));
+            DNDS_FIELD(indicatorMode,              "Reactive split mode: 0=v1 rate-based, 1=legacy b/s ratio, 2=chemistry escape", DNDS::Config::range(0, 2));
+            DNDS_FIELD(escapeStiffnessThreshold, "Chemistry escape activity midpoint s0", DNDS::Config::range(0.0));
+            DNDS_FIELD(escapeStiffnessExponent, "Chemistry escape activity power ps", DNDS::Config::range(0.0));
+            DNDS_FIELD(escapeRatioThreshold, "Chemistry escape diffusion/stiffness ratio midpoint re", DNDS::Config::range(0.0));
+            DNDS_FIELD(escapeRatioExponent, "Chemistry escape ratio power pr", DNDS::Config::range(0.0));
             DNDS_FIELD(chemicalActivityThreshold,  "Chemical activity threshold a0 in sat(a;a0,p)", DNDS::Config::range(0.0));
             DNDS_FIELD(diffusiveActivityThreshold, "Diffusion activity threshold b0 in sat(b;b0,p)", DNDS::Config::range(0.0));
             DNDS_FIELD(activitySaturationExponent, "Shared activity-saturation exponent p in sat(z;z0,p)", DNDS::Config::range(0.0));
@@ -94,6 +102,9 @@ namespace DNDS::Euler
                          { return s.strangSnapTolerance + s.coupledSnapTolerance < 1; });
             config.check("reactive split v2 ratio threshold and exponent must be positive", [](const T &s)
                          { return s.indicatorMode != 1 || (s.ratioThreshold > 0 && s.ratioExponent > 0); });
+            config.check("chemistry escape parameters must be positive and spatial passes disabled", [](const T &s)
+                         { return s.indicatorMode != 2 || (s.escapeStiffnessThreshold > 0 && s.escapeStiffnessExponent > 0 &&
+                                                           s.escapeRatioThreshold > 0 && s.escapeRatioExponent > 0 && s.spatialPasses == 0); });
         }
     };
 
@@ -105,7 +116,7 @@ namespace DNDS::Euler
         value = std::max(value, real(0));
         if (value == 0)
             return 0;
-        real logRatioPower = exponent * std::log(value / threshold);
+        real logRatioPower = exponent * (std::log(value) - std::log(threshold));
         if (logRatioPower >= 0)
             return 1.0 / (1.0 + std::exp(-logRatioPower));
         real ratioPower = std::exp(logRatioPower);
@@ -195,15 +206,34 @@ namespace DNDS::Euler
     }
 
     /**
-     * @brief v2 stiffness-ratio Strang fraction @f$\chi_i=\operatorname{sat}(b_i/s_i;r_0,p_r)@f$.
+     * @brief Chemistry escape: @f$\chi_i=1-f_{A,i}(1-E_i)@f$, followed by endpoint snapping.
      *
-     * The dt-invariant ratio @f$b_i/s_i@f$ (diffusion activity per unit source-Jacobian
-     * stiffness) separates transport-locked, mildly-stiff regions (flame, detonation front;
-     * @f$b/s\ll r_0@f$, coupled) from stiffness-dominated regions (sensitive-chemistry runaway;
-     * @f$b/s\sim O(1)@f$, Strang). Because @f$b_i\propto\Delta t@f$ and
-     * @f$s_i\propto\Delta t@f$, the ratio is independent of the step, so the verdict is
-     * identical at every @f$\Delta t@f$.
+     * Here @f$b_i=\Delta t D_{\max,i}/L_{\mathrm{grad},i}^2@f$ and
+     * @f$s_i=\Delta t\lambda_i@f$, where @f$\lambda_i@f$ is the largest-magnitude
+     * diagonal entry of the fixed-density, fixed-temperature chemical mass-fraction
+     * Jacobian. Thus @f$b_i/s_i@f$ compares the estimated diffusion-gradient rate with
+     * this particular local chemical-Jacobian rate. It is an empirical classifier, not a
+     * spectral stiffness measure and not by itself a proof that either operator is cheaper
+     * or more accurate. Because both activities are proportional to @f$\Delta t@f$, their
+     * ratio is independent of the physical step size. The escape gate is
+     * @f$E_i=H(s_i;s_0,p_s)[1-H(b_i/s_i;r_e,p_r)]@f$ for positive @f$s_i@f$,
+     * and zero otherwise. The baseline fraction @f$f_A@f$ is the existing unsnapped
+     * coupled-score map. BA-CE6 requires broadA activity parameters supplied by config.
      */
+    inline real ReactiveSplitChiChemistryEscape(real coupledScore, real diffusionActivity, real chemicalStiffness,
+                                                const ReactiveSplitIndicatorSettings &settings)
+    {
+        if (settings.chiOverride >= 0)
+            return std::clamp(settings.chiOverride, real(0), real(1));
+        real escape = 0;
+        if (chemicalStiffness > 0)
+            escape = ReactiveSplitSaturate(chemicalStiffness, settings.escapeStiffnessThreshold, settings.escapeStiffnessExponent) *
+                     (1.0 - ReactiveSplitSaturate(diffusionActivity / chemicalStiffness,
+                                                  settings.escapeRatioThreshold, settings.escapeRatioExponent));
+        return ReactiveSplitSnapChi(1.0 - ReactiveSplitCoupledFraction(coupledScore, settings) * (1.0 - escape), settings);
+    }
+
+    /** @brief Legacy ratio-only mode: @f$\chi_i=H(b_i/s_i;r_0,p_r)@f$, then snap. */
     inline real ReactiveSplitChiStiffnessRatio(real diffusionActivity, real chemicalStiffness,
                                                const ReactiveSplitIndicatorSettings &settings)
     {
