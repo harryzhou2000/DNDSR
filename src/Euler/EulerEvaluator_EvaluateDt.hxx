@@ -2865,7 +2865,7 @@ namespace DNDS::Euler
         { return shockSensor[iCell](0); };
         outMap["reactiveSplitCoupledScore"] = [&coupledScore = reactiveSplit.coupledScore](index iCell)
         { return coupledScore[iCell](0); };
-        outMap["reactiveSplitStiffnessStep"] = [&stiffnessStep = reactiveSplit.stiffnessStep](index iCell)
+        outMap["reactiveSplitStiffnessStep"] = [stiffnessStep = reactiveSplit.stiffnessStep](index iCell)
         { return stiffnessStep ? (*stiffnessStep)[iCell](0) : real(0); };
         outMap["ACond"] = [&](index iCell)
         {

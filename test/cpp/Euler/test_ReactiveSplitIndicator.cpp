@@ -82,6 +82,41 @@ TEST_CASE("Reactive split activity tuning is parsed and validated")
     CHECK_FALSE(settings.validate().empty());
 }
 
+TEST_CASE("Reactive split v2 rate ratio is scale invariant and configurable")
+{
+    ReactiveSplitIndicatorSettings settings;
+    settings.indicatorMode = 1;
+    settings.ratioThreshold = 0.1;
+    settings.ratioExponent = 2.0;
+    settings.strangSnapTolerance = 0.0;
+    settings.coupledSnapTolerance = 0.0;
+
+    CHECK(ReactiveSplitChiStiffnessRatio(0.1, 1.0, settings) == doctest::Approx(0.5));
+    CHECK(ReactiveSplitChiStiffnessRatio(1.0, 10.0, settings) == doctest::Approx(0.5));
+    CHECK(ReactiveSplitChiStiffnessRatio(0.01, 1.0, settings) == doctest::Approx(1.0 / 101.0));
+
+    settings.strangSnapTolerance = 0.01;
+    settings.coupledSnapTolerance = 0.01;
+    CHECK(ReactiveSplitChiStiffnessRatio(0.01, 1.0, settings) == 0.0);
+    CHECK(ReactiveSplitChiStiffnessRatio(1.0, 1.0, settings) == 1.0);
+    settings.chiOverride = 0.25;
+    CHECK(ReactiveSplitChiStiffnessRatio(0.0, 0.0, settings) == doctest::Approx(0.25));
+
+    nlohmann::ordered_json config = ReactiveSplitIndicatorSettings{};
+    config["indicatorMode"] = 1;
+    config["ratioThreshold"] = 0.2;
+    config["ratioExponent"] = 3.0;
+    settings = config.get<ReactiveSplitIndicatorSettings>();
+    CHECK(settings.indicatorMode == 1);
+    CHECK(settings.ratioThreshold == doctest::Approx(0.2));
+    CHECK(settings.ratioExponent == doctest::Approx(3.0));
+    CHECK(settings.validate().empty());
+
+    config["ratioThreshold"] = 0.0;
+    settings = config.get<ReactiveSplitIndicatorSettings>();
+    CHECK_FALSE(settings.validate().empty());
+}
+
 TEST_CASE("Hill switch is the default with an exact zero tail and configurable midpoint")
 {
     ReactiveSplitIndicatorSettings settings;
@@ -103,6 +138,31 @@ TEST_CASE("Hill switch is the default with an exact zero tail and configurable m
     settings.strangBias = 1.0;
     settings.strangSnapTolerance = 0.0;
     CHECK(ReactiveSplitChi(0.0, settings) == doctest::Approx(0.9933071490757153));
+}
+
+TEST_CASE("Chemistry escape preserves baseline and selects stiff low diffusion chemistry")
+{
+    ReactiveSplitIndicatorSettings settings;
+    settings.indicatorMode = 2;
+    settings.chemicalActivityThreshold = 10;
+    settings.diffusiveActivityThreshold = 2;
+    settings.activitySaturationExponent = 0.5;
+    settings.strangSnapTolerance = 0.05;
+    CHECK(settings.validate().empty());
+    CHECK(ReactiveSplitChiChemistryEscape(0.1, 1, 0, settings) == ReactiveSplitChi(0.1, settings));
+    CHECK(ReactiveSplitChiChemistryEscape(0.1, 0, 1e6, settings) == 1);
+    CHECK(ReactiveSplitChiChemistryEscape(0.1, 1e4, 1e6, settings) == 0);
+    CHECK(ReactiveSplitChiChemistryEscape(0, 0, 0, settings) == 1);
+    settings.strangSnapTolerance = 0;
+    settings.coupledSnapTolerance = 0;
+    CHECK(ReactiveSplitChiChemistryEscape(0.005, 1e-4, 100, settings) == doctest::Approx(0.625));
+    settings.chiOverride = 0.3;
+    CHECK(ReactiveSplitChiChemistryEscape(1, 0, 1e6, settings) == doctest::Approx(0.3));
+    settings.spatialPasses = 1;
+    CHECK_FALSE(settings.validate().empty());
+    settings.spatialPasses = 0;
+    settings.escapeRatioThreshold = 0;
+    CHECK_FALSE(settings.validate().empty());
 }
 
 TEST_CASE("Neighbor expansion is bounded, decaying, and shock gated")

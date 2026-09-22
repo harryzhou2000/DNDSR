@@ -1806,6 +1806,8 @@ namespace DNDS::Euler
         auto &reactiveSplitShockSensor = reactiveSplit.shockSensor;
         auto &reactiveSplitCoupledScore = reactiveSplit.coupledScore;
         const auto &indicatorSettings = settings.reactiveSplitIndicator;
+        if (reactiveSplit.stiffnessStep)
+            reactiveSplit.stiffnessStep->setConstant(0.0);
         if (indicatorSettings.chiOverride >= 0)
         {
             reactiveSplitChi.setConstant(std::clamp(indicatorSettings.chiOverride, real(0), real(1)));
@@ -1815,6 +1817,9 @@ namespace DNDS::Euler
             reactiveSplitCoupledScore.setConstant(0.0);
             return;
         }
+
+        DNDS_check_throw_info(indicatorSettings.indicatorMode == 0 || reactiveSplit.stiffnessStep,
+                              "v2 reactive split indicator requires stiffnessStep storage");
 
         const int Ns = phys_.nSpecies();
         const int Ns1 = Ns - 1;
@@ -1845,8 +1850,7 @@ namespace DNDS::Euler
                 (*cellTWarm)[iCell](0) = T;
         }
 
-        const bool useStiffnessRatio = (indicatorSettings.indicatorMode == 1) &&
-                                       (reactiveSplit.stiffnessStep != nullptr);
+        const bool useStiffnessRatio = indicatorSettings.indicatorMode != 0;
         std::vector<real> chemicalRate(static_cast<size_t>(mesh->NumCell()), 0.0);
         std::vector<real> maxDiffusivity(static_cast<size_t>(mesh->NumCell()), 0.0);
         std::vector<real> maxStiffnessRate(static_cast<size_t>(mesh->NumCell()), 0.0);
@@ -1949,11 +1953,16 @@ namespace DNDS::Euler
             {
                 real chemicalStiffness = dtPhysical * maxStiffnessRate[static_cast<size_t>(iCell)]; // s_i
                 (*reactiveSplit.stiffnessStep)[iCell](0) = chemicalStiffness;
-                real chiLocal = ReactiveSplitChiStiffnessRatio(diffusionActivity, chemicalStiffness, indicatorSettings);
-                // shock gate: never couple across a resolved shock (push toward Strang)
-                real shockFloor = ReactiveSplitSnapChi(1.0 - ReactiveSplitShockGate(shockSensor, indicatorSettings),
-                                                       indicatorSettings);
-                reactiveSplitChi[iCell](0) = std::max(chiLocal, shockFloor);
+                if (indicatorSettings.indicatorMode == 2)
+                    reactiveSplitChi[iCell](0) = ReactiveSplitChiChemistryEscape(coupledScore, diffusionActivity, chemicalStiffness, indicatorSettings);
+                else
+                {
+                    real chiLocal = ReactiveSplitChiStiffnessRatio(diffusionActivity, chemicalStiffness, indicatorSettings);
+                    // shock gate: never couple across a resolved shock (push toward Strang)
+                    real shockFloor = ReactiveSplitSnapChi(1.0 - ReactiveSplitShockGate(shockSensor, indicatorSettings),
+                                                           indicatorSettings);
+                    reactiveSplitChi[iCell](0) = std::max(chiLocal, shockFloor);
+                }
             }
             else
                 reactiveSplitChi[iCell](0) = ReactiveSplitChi(coupledScore, indicatorSettings);
