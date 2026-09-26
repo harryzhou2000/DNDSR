@@ -92,6 +92,22 @@ namespace DNDS
             this->operator=(R);
         }
 
+        void CheckSwapData(const t_self &R) const
+        {
+            this->t_base::CheckSwapData(R);
+            if constexpr (_mat_ni == DynamicSize)
+                DNDS_check_throw_info(_mat_nRow_dynamic == R._mat_nRow_dynamic, "SwapData requires identical matrix shapes");
+            if constexpr (_mat_ni == NonUniformSize)
+                for (index i = 0; i < this->Size(); ++i)
+                    DNDS_check_throw_info(MatRowSize(i) == R.MatRowSize(i), "SwapData requires identical matrix shapes");
+        }
+
+        void SwapData(t_self &R)
+        {
+            CheckSwapData(R);
+            this->t_base::SwapData(R);
+        }
+
         void Resize(index nSize, rowsize nSizeRowDynamic, rowsize nSizeColDynamic)
         {
             if constexpr (_mat_ni >= 0)
