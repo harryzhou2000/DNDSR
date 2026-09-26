@@ -823,22 +823,52 @@ namespace DNDS
             this->clone(R);
         }
 
-        /// @brief Move constructor: shallow transfer of storage.
-        /// All members (host_device_vector, shared_ptrs, PODs) have correct
-        /// move semantics. Source is left in a valid empty state.
-        Array(self_type &&) noexcept = default;
-        self_type &operator=(self_type &&) noexcept = default;
+        /// @brief Transfer storage, resetting the source's structural state.
+        Array(self_type &&R) noexcept
+            : ObjectNaming(std::move(R)),
+              _pRowStart(std::move(R._pRowStart)), _pRowSizes(std::move(R._pRowSizes)),
+              _data(std::move(R._data)), deviceBackend(std::exchange(R.deviceBackend, DeviceBackend::Unknown)),
+              _dataUncompressed(std::move(R._dataUncompressed)),
+              _size(std::exchange(R._size, 0)), _row_size_dynamic(std::exchange(R._row_size_dynamic, 0))
+        {
+            R._dataUncompressed.clear();
+        }
+        self_type &operator=(self_type &&R) noexcept
+        {
+            if (this == &R)
+                return *this;
+            ObjectNaming::operator=(std::move(R));
+            _pRowStart = std::move(R._pRowStart);
+            _pRowSizes = std::move(R._pRowSizes);
+            _data = std::move(R._data);
+            deviceBackend = std::exchange(R.deviceBackend, DeviceBackend::Unknown);
+            _dataUncompressed = std::move(R._dataUncompressed);
+            R._dataUncompressed.clear();
+            _size = std::exchange(R._size, 0);
+            _row_size_dynamic = std::exchange(R._row_size_dynamic, 0);
+            return *this;
+        }
         ~Array() = default;
 
-        /// @brief Swap the storage of two arrays in-place.
-        /// @details Both arrays must already have identical logical size and
-        /// flat-buffer size. Swaps only what the current layout uses (flat buffer
-        /// plus structural pointers, or the nested vectors for CSR decompressed).
+        /// @brief Check the identical-shape contract without changing either array.
+        void CheckSwapData(const self_type &R) const
+        {
+            DNDS_check_throw_info(R.Size() == this->Size(), "SwapData requires identical row counts");
+            DNDS_check_throw_info(R._data.size() == _data.size(), "SwapData requires identical flat sizes");
+            if constexpr (_dataLayout == CSR)
+                DNDS_check_throw_info(IfCompressed() == R.IfCompressed(), "SwapData requires identical compression states");
+            else
+                DNDS_check_throw_info(DataStride() == R.DataStride(), "SwapData requires identical strides");
+            if constexpr (_dataLayout == CSR || isTABLE_Max(_dataLayout))
+                for (index i = 0; i < Size(); ++i)
+                    DNDS_check_throw_info(RowSize(i) == R.RowSize(i), "SwapData requires identical row lengths");
+        }
+
+        /// @brief Swap values only between identical row layouts and shapes.
         // TODO: SwapData on device?
         void SwapData(self_type &R)
         {
-            DNDS_check_throw(R.Size() == this->Size());
-            DNDS_check_throw(R._data.size() == _data.size());
+            CheckSwapData(R);
             if constexpr (_dataLayout == CSR)
             {
                 if (IfCompressed())

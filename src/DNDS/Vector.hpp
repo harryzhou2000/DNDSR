@@ -267,6 +267,8 @@ namespace DNDS
 
         DNDS_HOST void resize(size_t new_size)
         {
+            if (!host_data)
+                host_data = std::make_unique<DeviceHostSingleAllocationDirect>();
             size_ = new_size;
             host_data->free();
             host_data->allocate(size_ * sizeof(T), DeviceBackend::Unknown);
@@ -282,6 +284,8 @@ namespace DNDS
 
         DNDS_HOST void create_device_data(DeviceBackend B)
         {
+            if (!device_data)
+                device_data = std::make_unique<DeviceHostSingleAllocationDirect>();
             device_data->free();
             device_data->allocate(size_ * sizeof(T), B);
             sync_device_ptr();
@@ -312,8 +316,8 @@ namespace DNDS
         DNDS_HOST void to_device(DeviceBackend backend = DeviceBackend::Host)
         {
             DNDS_check_throw_info(DeviceBackend::Unknown != backend, "cannot to_device to Unknown");
-            DNDS_check_throw_info(device_data, "device_data not initialized");
             if (
+                !device_data ||
                 device_data->bytes() != this->size() * sizeof(T) || // size change
                 device_data->device() != backend)                   // backend change
                 create_device_data(backend);
@@ -324,16 +328,21 @@ namespace DNDS
 
         DNDS_HOST void clear_device()
         {
-            DNDS_check_throw_info(device_data, "device_data not initialized");
-            device_data->free();
-            sync_device_ptr();
+            if (device_data)
+            {
+                device_data->free();
+                sync_device_ptr();
+            }
         }
 
         DNDS_HOST void clear()
         {
             clear_device();
-            host_data->free();
-            sync_host_ptr();
+            if (host_data)
+            {
+                host_data->free();
+                sync_host_ptr();
+            }
             size_ = 0;
         }
 
@@ -364,9 +373,9 @@ namespace DNDS
             if (this == &R)
                 return *this;
             this->size_ = R.size();
-            this->host_data = R.host_data->clone();
+            this->host_data = R.host_data ? R.host_data->clone() : std::make_unique<DeviceHostSingleAllocationDirect>();
             this->sync_host_ptr();
-            this->device_data = R.device_data->clone();
+            this->device_data = R.device_data ? R.device_data->clone() : std::make_unique<DeviceHostSingleAllocationDirect>();
             //! the cloned host "device" has no idea where new data reference is
             //! use to_device to sync it
             if (this->device_data->device() == DeviceBackend::Host)
@@ -378,9 +387,9 @@ namespace DNDS
         host_device_vector_r1(const t_self &R)
         {
             this->size_ = R.size();
-            this->host_data = R.host_data->clone();
+            this->host_data = R.host_data ? R.host_data->clone() : std::make_unique<DeviceHostSingleAllocationDirect>();
             this->sync_host_ptr();
-            this->device_data = R.device_data->clone();
+            this->device_data = R.device_data ? R.device_data->clone() : std::make_unique<DeviceHostSingleAllocationDirect>();
             //! the cloned host "device" has no idea where new data reference is
             //! use to_device to sync it
             if (this->device_data->device() == DeviceBackend::Host)

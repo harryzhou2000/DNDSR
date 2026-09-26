@@ -71,6 +71,18 @@ namespace DNDS
             this->operator=(R);
         }
 
+        void CheckSwapData(const t_self &R) const
+        {
+            this->t_base::CheckSwapData(R);
+            DNDS_check_throw_info(Rows() == R.Rows() && Cols() == R.Cols(), "SwapData requires identical matrix batch shapes");
+        }
+
+        void SwapData(t_self &R)
+        {
+            CheckSwapData(R);
+            this->t_base::SwapData(R);
+        }
+
         /**
          * @brief resizes all matrices to be used;
          * -1 means no change
