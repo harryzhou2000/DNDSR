@@ -531,9 +531,9 @@ namespace DNDS
             // ! check comm aux info status and correctly duplicate them
             // ! cannot share because point to different data
             if (R.PullReqVec)
-                this->initPersistentPull();
+                this->initPersistentPull(R.pullDevice);
             if (R.PushReqVec)
-                this->initPersistentPush();
+                this->initPersistentPush(R.pushDevice);
 
             // these are createMPITypes() temporaries,
             // TODO: maybe remove from member?
@@ -1464,22 +1464,20 @@ namespace DNDS
         void reInitPersistentPullPush()
         {
             bool clearedPull{false}, clearedPush{false};
-            if (!PullReqVec->empty())
+            if (PullReqVec && !PullReqVec->empty())
             {
                 clearedPull = true;
-                waitPersistentPull();
                 clearPersistentPull();
             }
-            if (!PushReqVec->empty())
+            if (PushReqVec && !PushReqVec->empty())
             {
                 clearedPush = true;
-                waitPersistentPush();
                 clearPersistentPush();
             }
             if (clearedPull)
-                initPersistentPull();
+                initPersistentPull(pullDevice);
             if (clearedPush)
-                initPersistentPush();
+                initPersistentPush(pushDevice);
         }
     };
 
