@@ -141,7 +141,12 @@ namespace DNDS
         void ResizeRow(index iMat, rowsize nSizeRow, rowsize nSizeCol)
         {
             if constexpr (_mat_ni == NonUniformSize)
-                this->t_base::ResizeRow(iMat, nSizeRow * nSizeCol), (*_mat_nRows)[iMat] = nSizeRow;
+            {
+                this->t_base::ResizeRow(iMat, nSizeRow * nSizeCol);
+                if (_mat_nRows.use_count() > 1)
+                    _mat_nRows = std::make_shared<host_device_vector<rowsize>>(*_mat_nRows);
+                (*_mat_nRows)[iMat] = nSizeRow;
+            }
             else if constexpr (_mat_ni == DynamicSize)
                 DNDS_check_throw_info(false, "Invalid call");
         }
