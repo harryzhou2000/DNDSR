@@ -319,6 +319,7 @@ namespace DNDS
                 create_device_data(backend);
 
             device_data->copy_from_host(reinterpret_cast<uint8_t *>(this->data()), this->size() * sizeof(T));
+            sync_device_ptr(); // Host backend establishes its alias during the copy.
         }
 
         DNDS_HOST void clear_device()
