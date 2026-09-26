@@ -233,6 +233,7 @@ geom_add_mpi_test(mesh_connectivity_ghost "Geom/test_MeshConnectivity_Ghost.cpp"
 geom_add_mpi_test(mesh_connectivity_interpolate "Geom/test_MeshConnectivity_Interpolate.cpp" "geom;dnds")
 geom_add_mpi_test(mesh_reorder "Geom/test_MeshReorder.cpp" "geom;dnds")
 geom_add_unit_test(mesh_cgns_multizone "Geom/test_MeshCGNSMultiZone.cpp" "geom;dnds")
+geom_add_mpi_test(mesh_audit "Geom/test_MeshAudit.cpp" "geom;dnds")
 
 set(GEOM_TEST_TARGETS
     geom_test_elements
@@ -245,6 +246,7 @@ set(GEOM_TEST_TARGETS
     geom_test_mesh_connectivity_interpolate
     geom_test_mesh_reorder
     geom_test_mesh_cgns_multizone
+    geom_test_mesh_audit
 )
 foreach(T ${GEOM_TEST_TARGETS})
     add_dependencies(geom_unit_tests ${T})

@@ -95,6 +95,7 @@ namespace DNDS::Geom
                     v,
                     [&](auto &vInc, int iG, const tPoint &pParam, const Elem::tD01Nj &DiNj)
                     {
+                        vInc = 0; // This quadrature only collects points.
                         tPoint pPhy = Elem::PPhysicsCoordD01Nj(coords, DiNj);
                         faceQuadraturePPhysics.emplace_back(pPhy);
                     });
