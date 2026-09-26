@@ -1117,11 +1117,13 @@ namespace DNDS
                         if constexpr (_dataLayout == CSR)
                             nPush = father->RowSizeField(loc);
                         if constexpr (isTABLE_Max(_dataLayout)) //! init sizes
-                            nPush = father->RowSize(loc);
+                            nPush = father->DataStride();
                         if constexpr (isTABLE_Fixed(_dataLayout))
                             nPush = father->RowSizeField();
                         nPushData += nPush;
                     }
+                    if (nPushData == 0)
+                        continue;
                     inSituBuffer.emplace_back(nPushData);
                     PushReqVec->emplace_back(MPI_REQUEST_NULL);
                     MPI_Irecv(inSituBuffer.back().data(), nPushData * father->getTypeMult(), father->getDataType(),
@@ -1132,6 +1134,8 @@ namespace DNDS
             for (MPI_int r = 0; r < mpi.size; r++)
             {
                 // pull
+                if (pLGhostMapping->ghostStart[r + 1] == pLGhostMapping->ghostStart[r] || son->DataSize() == 0)
+                    continue;
                 MPI_Aint pullDisp = UnInitMPIAint;
                 MPI_int pullSize = UnInitMPIInt; // same as pushSizes
                 auto gRPtr = son->operator[](index(pLGhostMapping->ghostStart[r + 1]));
@@ -1189,6 +1193,8 @@ namespace DNDS
             for (MPI_int r = 0; r < mpi.size; r++)
             {
                 // pull
+                if (pLGhostMapping->ghostStart[r + 1] == pLGhostMapping->ghostStart[r] || son->DataSize() == 0)
+                    continue;
                 MPI_Aint pullDisp = UnInitMPIAint;
                 MPI_int pullSize = UnInitMPIInt; // same as pushSizes
                 auto gRPtr = son->operator[](index(pLGhostMapping->ghostStart[r + 1]));
@@ -1218,11 +1224,13 @@ namespace DNDS
                         if constexpr (_dataLayout == CSR)
                             nPush = father->RowSizeField(loc);
                         if constexpr (isTABLE_Max(_dataLayout)) //! init sizes
-                            nPush = father->RowSize(loc);
+                            nPush = father->DataStride();
                         if constexpr (isTABLE_Fixed(_dataLayout))
                             nPush = father->RowSizeField();
                         nPushData += nPush;
                     }
+                    if (nPushData == 0)
+                        continue;
                     inSituBuffer.emplace_back(nPushData);
                     nPushData = 0;
                     for (index i = 0; i < pushNumber; i++)
@@ -1232,10 +1240,13 @@ namespace DNDS
                         if constexpr (_dataLayout == CSR)
                             nPush = father->RowSizeField(loc);
                         if constexpr (isTABLE_Max(_dataLayout)) //! init sizes
-                            nPush = father->RowSize(loc);
+                            nPush = father->DataStride();
                         if constexpr (isTABLE_Fixed(_dataLayout))
                             nPush = father->RowSizeField();
-                        std::copy((*father)[loc], (*father)[loc] + nPush, inSituBuffer.back().begin() + nPushData);
+                        // Padded rows travel at storage stride; padding need not
+                        // be read from the source's uninitialized entries.
+                        if (father->RowSize(loc) > 0)
+                            std::copy((*father)[loc], (*father)[loc] + father->RowSize(loc), inSituBuffer.back().begin() + nPushData);
                         nPushData += nPush;
                     }
                     PullReqVec->emplace_back(MPI_REQUEST_NULL);
@@ -1318,10 +1329,9 @@ namespace DNDS
                 if (!PushReqVec->empty())
                     MPI::WaitallAuto(PushReqVec->size(), PushReqVec->data(), PushStatVec.data());
                 auto bufferVec = inSituBuffer.begin();
-                for (MPI_int r = 0; r < mpi.size; r++)
+                for (MPI_int r = 0; !PushReqVec->empty() && r < mpi.size; r++)
                 {
                     // push
-                    DNDS_check_throw(bufferVec < inSituBuffer.end());
                     MPI_int pushNumber = pLGhostMapping->pushIndexSizes[r];
                     // std::cout << "PN" << pushNumber << std::endl;
                     if (pushNumber > 0)
@@ -1334,13 +1344,19 @@ namespace DNDS
                             if constexpr (_dataLayout == CSR)
                                 nPush = father->RowSizeField(loc);
                             if constexpr (isTABLE_Max(_dataLayout)) //! init sizes
-                                nPush = father->RowSize(loc);
+                                nPush = father->DataStride();
                             if constexpr (isTABLE_Fixed(_dataLayout))
                                 nPush = father->RowSizeField();
-                            std::copy(bufferVec->begin() + nPushData, bufferVec->begin() + nPushData + nPush, (*father)[loc]);
+                            if (nPush > 0)
+                            {
+                                DNDS_check_throw(bufferVec < inSituBuffer.end());
+                                if (father->RowSize(loc) > 0)
+                                    std::copy(bufferVec->begin() + nPushData, bufferVec->begin() + nPushData + father->RowSize(loc), (*father)[loc]);
+                            }
                             nPushData += nPush;
                         }
-                        bufferVec++;
+                        if (nPushData > 0)
+                            bufferVec++;
                     }
                 }
                 inSituBuffer.clear();
