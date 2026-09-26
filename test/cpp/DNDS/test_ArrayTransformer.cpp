@@ -65,6 +65,96 @@ static std::vector<DNDS::index> pullFirstNFromOthers(
 }
 
 // ---------------------------------------------------------------------------
+template <DNDS::rowsize rs, DNDS::rowsize rm>
+static void CheckInSituLayout(bool sparse, bool emptyRows = false)
+{
+    auto mpi = worldMPI();
+    auto father = std::make_shared<ParArray<int, rs, rm>>(mpi);
+    auto son = std::make_shared<ParArray<int, rs, rm>>(mpi);
+    father->Resize(2, 3);
+    if constexpr (rs == NonUniformSize)
+    {
+        father->ResizeRow(0, emptyRows ? 0 : 1);
+        father->ResizeRow(1, emptyRows ? 0 : 2);
+    }
+    father->Compress();
+    std::fill(father->RawDataVector().begin(), father->RawDataVector().end(), -99);
+    for (DNDS::index i = 0; i < 2; ++i)
+        for (DNDS::rowsize j = 0; j < father->RowSize(i); ++j)
+            (*father)(i, j) = 100 * mpi.rank + 10 * i + j;
+    ArrayTransformer<int, rs, rm> trans;
+    trans.setFatherSon(father, son);
+    trans.createFatherGlobalMapping();
+    const int peer = (mpi.rank + 1) % mpi.size;
+    trans.createGhostMapping(sparse && mpi.rank != 0 ? std::vector<DNDS::index>{} : std::vector<DNDS::index>{2 * peer, 2 * peer + 1});
+    trans.createMPITypes();
+    trans.initPersistentPull();
+    trans.initPersistentPush();
+    for (int repeat = 0; repeat < 2; ++repeat)
+    {
+        trans.startPersistentPull();
+        trans.waitPersistentPull();
+        for (DNDS::index i = 0; i < son->Size(); ++i)
+            for (DNDS::rowsize j = 0; j < son->RowSize(i); ++j)
+            {
+                CHECK((*son)(i, j) == 100 * peer + 10 * i + j + repeat);
+                ++(*son)(i, j);
+            }
+        trans.startPersistentPush();
+        trans.waitPersistentPush();
+        trans.waitPersistentPush();
+        for (DNDS::index i = 0; i < 2; ++i)
+            for (DNDS::rowsize j = 0; j < father->RowSize(i); ++j)
+            {
+                const bool receives = !sparse || mpi.rank == (1 % mpi.size);
+                CHECK((*father)(i, j) == 100 * mpi.rank + 10 * i + j + (receives ? repeat + 1 : 0));
+            }
+    }
+    trans.clearPersistentPush();
+    trans.clearPersistentPull();
+}
+
+TEST_CASE("Audit batch 2: in-situ packing preserves padded rows and push lifecycle")
+{
+    auto old = MPI::CommStrategy::Instance().GetArrayStrategy();
+    MPI::CommStrategy::Instance().SetArrayStrategy(MPI::CommStrategy::InSituPack);
+    for (bool sparse : {false, true})
+    {
+        CheckInSituLayout<NonUniformSize, 3>(sparse);
+        CheckInSituLayout<NonUniformSize, DynamicSize>(sparse);
+        CheckInSituLayout<NonUniformSize, NonUniformSize>(sparse);
+        CheckInSituLayout<NonUniformSize, 3>(sparse, true);
+        CheckInSituLayout<NonUniformSize, NonUniformSize>(sparse, true);
+        CheckInSituLayout<3, 3>(sparse);
+        CheckInSituLayout<DynamicSize, DynamicSize>(sparse);
+    }
+    MPI::CommStrategy::Instance().SetArrayStrategy(old);
+}
+
+TEST_CASE("Audit batch 2: empty in-situ push is repeatable")
+{
+    auto mpi = worldMPI();
+    auto old = MPI::CommStrategy::Instance().GetArrayStrategy();
+    MPI::CommStrategy::Instance().SetArrayStrategy(MPI::CommStrategy::InSituPack);
+    auto father = std::make_shared<ParArray<int, 1>>(mpi);
+    auto son = std::make_shared<ParArray<int, 1>>(mpi);
+    father->Resize(1);
+    (*father)(0, 0) = 42;
+    ArrayTransformer<int, 1> trans;
+    trans.setFatherSon(father, son);
+    trans.createFatherGlobalMapping();
+    trans.createGhostMapping(std::vector<DNDS::index>{});
+    trans.createMPITypes();
+    for (int repeat = 0; repeat < 2; ++repeat)
+    {
+        CHECK_NOTHROW(trans.pushOnce());
+        CHECK_NOTHROW(trans.waitPersistentPush());
+        CHECK_NOTHROW(trans.clearPersistentPush());
+    }
+    CHECK((*father)(0, 0) == 42);
+    MPI::CommStrategy::Instance().SetArrayStrategy(old);
+}
+
 TEST_CASE("Audit regression: transformer copies preserve backend")
 {
     auto mpi = worldMPI();
