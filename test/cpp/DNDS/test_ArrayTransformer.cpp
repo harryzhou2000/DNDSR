@@ -65,6 +65,100 @@ static std::vector<DNDS::index> pullFirstNFromOthers(
 }
 
 // ---------------------------------------------------------------------------
+TEST_CASE("Audit regression: transformer copies preserve backend")
+{
+    auto mpi = worldMPI();
+    auto oldStrategy = MPI::CommStrategy::Instance().GetArrayStrategy();
+    MPI::CommStrategy::Instance().SetArrayStrategy(MPI::CommStrategy::HIndexed);
+    for (auto backend : {DeviceBackend::Unknown, DeviceBackend::Host})
+        for (bool empty : {true, false})
+        {
+            auto father = std::make_shared<ParArray<int, 1>>(mpi);
+            auto son = std::make_shared<ParArray<int, 1>>(mpi);
+            father->Resize(1);
+            (*father)(0, 0) = 50 + mpi.rank;
+            ArrayTransformer<int, 1> original;
+            original.setFatherSon(father, son);
+            original.createFatherGlobalMapping();
+            original.createGhostMapping(empty ? std::vector<DNDS::index>{} : std::vector<DNDS::index>{(mpi.rank + 1) % mpi.size});
+            original.createMPITypes();
+            if (backend == DeviceBackend::Host)
+            {
+                father->to_device(backend);
+                son->to_device(backend);
+            }
+            original.initPersistentPull(backend);
+            original.initPersistentPush(backend);
+            auto copy = original;
+            ArrayTransformer<int, 1> assigned;
+            assigned = original;
+            for (auto *trans : {&original, &copy, &assigned})
+            {
+                CHECK(trans->pullDevice == backend);
+                CHECK(trans->pushDevice == backend);
+                trans->startPersistentPull(backend);
+                trans->waitPersistentPull(backend);
+                if (!empty)
+                    CHECK((*son)(0, 0) == 50 + (mpi.rank + 1) % mpi.size);
+                trans->startPersistentPush(backend);
+                trans->waitPersistentPush(backend);
+                CHECK((*father)(0, 0) == 50 + mpi.rank);
+            }
+        }
+    MPI::CommStrategy::Instance().SetArrayStrategy(oldStrategy);
+}
+
+TEST_CASE("Audit regression: reinitialize partially initialized transformer")
+{
+    auto mpi = worldMPI();
+    auto oldStrategy = MPI::CommStrategy::Instance().GetArrayStrategy();
+    MPI::CommStrategy::Instance().SetArrayStrategy(MPI::CommStrategy::HIndexed);
+    ArrayTransformer<int, 1> uninitialized;
+    uninitialized.reInitPersistentPullPush();
+    for (auto backend : {DeviceBackend::Unknown, DeviceBackend::Host})
+        for (int directions : {1, 2, 3})
+        {
+            auto father = std::make_shared<ParArray<int, 1>>(mpi);
+            auto son = std::make_shared<ParArray<int, 1>>(mpi);
+            father->Resize(1);
+            (*father)(0, 0) = 70 + mpi.rank;
+            ArrayTransformer<int, 1> trans;
+            trans.setFatherSon(father, son);
+            trans.createFatherGlobalMapping();
+            trans.createGhostMapping(std::vector<DNDS::index>{(mpi.rank + 1) % mpi.size});
+            trans.createMPITypes();
+            if (backend == DeviceBackend::Host)
+            {
+                father->to_device(backend);
+                son->to_device(backend);
+            }
+            if (directions & 1)
+                trans.initPersistentPull(backend);
+            if (directions & 2)
+                trans.initPersistentPush(backend);
+            for (int repeat = 0; repeat < 2; ++repeat)
+            {
+                trans.reInitPersistentPullPush();
+                CHECK(bool(trans.PullReqVec) == bool(directions & 1));
+                CHECK(bool(trans.PushReqVec) == bool(directions & 2));
+                if (directions & 1)
+                {
+                    trans.startPersistentPull(backend);
+                    trans.waitPersistentPull(backend);
+                    CHECK((*son)(0, 0) == 70 + (mpi.rank + 1) % mpi.size);
+                }
+                if (directions & 2)
+                {
+                    (*son)(0, 0) = 70 + (mpi.rank + 1) % mpi.size;
+                    trans.startPersistentPush(backend);
+                    trans.waitPersistentPush(backend);
+                    CHECK((*father)(0, 0) == 70 + mpi.rank);
+                }
+            }
+        }
+    MPI::CommStrategy::Instance().SetArrayStrategy(oldStrategy);
+}
+
 TEST_CASE("ParArray basics")
 {
     MPIInfo mpi = worldMPI();
@@ -476,9 +570,15 @@ TEST_CASE("ArrayTransformer push")
 //   Layouts: StaticFixed, Dynamic (each with RS = 1, 3, 7), CSR
 //   = 4 types x (2 layouts x 3 RS + 1 CSR) = 28 cases
 
-struct LayoutStaticFixed {};
-struct LayoutDynamic {};
-struct LayoutCSR {};
+struct LayoutStaticFixed
+{
+};
+struct LayoutDynamic
+{
+};
+struct LayoutCSR
+{
+};
 
 template <class T, class Layout, DNDS::rowsize RS>
 struct TransTag
@@ -525,35 +625,35 @@ TRANS_TAG_STR(int32_t, LayoutCSR, 0);
 
 #undef TRANS_TAG_STR
 
-#define TRANS_ALL_TAGS                                      \
-    TransTag<DNDS::real, LayoutStaticFixed, 1>,             \
-    TransTag<DNDS::real, LayoutStaticFixed, 3>,             \
-    TransTag<DNDS::real, LayoutStaticFixed, 7>,             \
-    TransTag<DNDS::real, LayoutDynamic, 1>,                 \
-    TransTag<DNDS::real, LayoutDynamic, 3>,                 \
-    TransTag<DNDS::real, LayoutDynamic, 7>,                 \
-    TransTag<DNDS::real, LayoutCSR, 0>,                     \
-    TransTag<DNDS::index, LayoutStaticFixed, 1>,            \
-    TransTag<DNDS::index, LayoutStaticFixed, 3>,            \
-    TransTag<DNDS::index, LayoutStaticFixed, 7>,            \
-    TransTag<DNDS::index, LayoutDynamic, 1>,                \
-    TransTag<DNDS::index, LayoutDynamic, 3>,                \
-    TransTag<DNDS::index, LayoutDynamic, 7>,                \
-    TransTag<DNDS::index, LayoutCSR, 0>,                    \
-    TransTag<uint16_t, LayoutStaticFixed, 1>,               \
-    TransTag<uint16_t, LayoutStaticFixed, 3>,               \
-    TransTag<uint16_t, LayoutStaticFixed, 7>,               \
-    TransTag<uint16_t, LayoutDynamic, 1>,                   \
-    TransTag<uint16_t, LayoutDynamic, 3>,                   \
-    TransTag<uint16_t, LayoutDynamic, 7>,                   \
-    TransTag<uint16_t, LayoutCSR, 0>,                       \
-    TransTag<int32_t, LayoutStaticFixed, 1>,                \
-    TransTag<int32_t, LayoutStaticFixed, 3>,                \
-    TransTag<int32_t, LayoutStaticFixed, 7>,                \
-    TransTag<int32_t, LayoutDynamic, 1>,                    \
-    TransTag<int32_t, LayoutDynamic, 3>,                    \
-    TransTag<int32_t, LayoutDynamic, 7>,                    \
-    TransTag<int32_t, LayoutCSR, 0>
+#define TRANS_ALL_TAGS                               \
+    TransTag<DNDS::real, LayoutStaticFixed, 1>,      \
+        TransTag<DNDS::real, LayoutStaticFixed, 3>,  \
+        TransTag<DNDS::real, LayoutStaticFixed, 7>,  \
+        TransTag<DNDS::real, LayoutDynamic, 1>,      \
+        TransTag<DNDS::real, LayoutDynamic, 3>,      \
+        TransTag<DNDS::real, LayoutDynamic, 7>,      \
+        TransTag<DNDS::real, LayoutCSR, 0>,          \
+        TransTag<DNDS::index, LayoutStaticFixed, 1>, \
+        TransTag<DNDS::index, LayoutStaticFixed, 3>, \
+        TransTag<DNDS::index, LayoutStaticFixed, 7>, \
+        TransTag<DNDS::index, LayoutDynamic, 1>,     \
+        TransTag<DNDS::index, LayoutDynamic, 3>,     \
+        TransTag<DNDS::index, LayoutDynamic, 7>,     \
+        TransTag<DNDS::index, LayoutCSR, 0>,         \
+        TransTag<uint16_t, LayoutStaticFixed, 1>,    \
+        TransTag<uint16_t, LayoutStaticFixed, 3>,    \
+        TransTag<uint16_t, LayoutStaticFixed, 7>,    \
+        TransTag<uint16_t, LayoutDynamic, 1>,        \
+        TransTag<uint16_t, LayoutDynamic, 3>,        \
+        TransTag<uint16_t, LayoutDynamic, 7>,        \
+        TransTag<uint16_t, LayoutCSR, 0>,            \
+        TransTag<int32_t, LayoutStaticFixed, 1>,     \
+        TransTag<int32_t, LayoutStaticFixed, 3>,     \
+        TransTag<int32_t, LayoutStaticFixed, 7>,     \
+        TransTag<int32_t, LayoutDynamic, 1>,         \
+        TransTag<int32_t, LayoutDynamic, 3>,         \
+        TransTag<int32_t, LayoutDynamic, 7>,         \
+        TransTag<int32_t, LayoutCSR, 0>
 
 TEST_CASE_TEMPLATE("ArrayTransformer pull", Tag, TRANS_ALL_TAGS)
 {
@@ -565,105 +665,105 @@ TEST_CASE_TEMPLATE("ArrayTransformer pull", Tag, TRANS_ALL_TAGS)
 
     for (DNDS::index nLocal : {10, 50, 200})
     {
-    CAPTURE(nLocal);
-    constexpr DNDS::index nGhostPerRank = 5;
+        CAPTURE(nLocal);
+        constexpr DNDS::index nGhostPerRank = 5;
 
-    if constexpr (std::is_same_v<L, LayoutStaticFixed>)
-    {
-        auto father = std::make_shared<ParArray<T, RS>>(mpi);
-        father->Resize(nLocal);
-
-        father->createGlobalMapping();
-        DNDS::index gOff = (*father->pLGlobalMapping)(mpi.rank, 0);
-        for (DNDS::index i = 0; i < nLocal; i++)
-            for (DNDS::rowsize j = 0; j < RS; j++)
-                (*father)(i, j) = static_cast<T>((gOff + i) * 100 + j);
-
-        auto son = std::make_shared<ParArray<T, RS>>(mpi);
-        ArrayTransformer<T, RS> trans;
-        trans.setFatherSon(father, son);
-        trans.createFatherGlobalMapping();
-        auto pullIdx = pullFirstNFromOthers(mpi, *trans.pLGlobalMapping, nGhostPerRank);
-        trans.createGhostMapping(std::vector<DNDS::index>(pullIdx));
-        trans.createMPITypes();
-        trans.pullOnce();
-
-        CHECK(son->Size() == static_cast<DNDS::index>(pullIdx.size()));
-
-        for (DNDS::index g = 0; g < son->Size(); g++)
+        if constexpr (std::is_same_v<L, LayoutStaticFixed>)
         {
-            DNDS::index ghostGlobal = trans.pLGhostMapping->ghostIndex[g];
-            for (DNDS::rowsize j = 0; j < RS; j++)
-                CHECK((*son)(g, j) == static_cast<T>(ghostGlobal * 100 + j));
+            auto father = std::make_shared<ParArray<T, RS>>(mpi);
+            father->Resize(nLocal);
+
+            father->createGlobalMapping();
+            DNDS::index gOff = (*father->pLGlobalMapping)(mpi.rank, 0);
+            for (DNDS::index i = 0; i < nLocal; i++)
+                for (DNDS::rowsize j = 0; j < RS; j++)
+                    (*father)(i, j) = static_cast<T>((gOff + i) * 100 + j);
+
+            auto son = std::make_shared<ParArray<T, RS>>(mpi);
+            ArrayTransformer<T, RS> trans;
+            trans.setFatherSon(father, son);
+            trans.createFatherGlobalMapping();
+            auto pullIdx = pullFirstNFromOthers(mpi, *trans.pLGlobalMapping, nGhostPerRank);
+            trans.createGhostMapping(std::vector<DNDS::index>(pullIdx));
+            trans.createMPITypes();
+            trans.pullOnce();
+
+            CHECK(son->Size() == static_cast<DNDS::index>(pullIdx.size()));
+
+            for (DNDS::index g = 0; g < son->Size(); g++)
+            {
+                DNDS::index ghostGlobal = trans.pLGhostMapping->ghostIndex[g];
+                for (DNDS::rowsize j = 0; j < RS; j++)
+                    CHECK((*son)(g, j) == static_cast<T>(ghostGlobal * 100 + j));
+            }
         }
-    }
-    else if constexpr (std::is_same_v<L, LayoutDynamic>)
-    {
-        auto father = std::make_shared<ParArray<T, DynamicSize>>(mpi);
-        father->Resize(nLocal, RS);
-
-        father->createGlobalMapping();
-        DNDS::index gOff = (*father->pLGlobalMapping)(mpi.rank, 0);
-        for (DNDS::index i = 0; i < nLocal; i++)
-            for (DNDS::rowsize j = 0; j < RS; j++)
-                (*father)(i, j) = static_cast<T>((gOff + i) * 100 + j);
-
-        auto son = std::make_shared<ParArray<T, DynamicSize>>(mpi);
-        ArrayTransformer<T, DynamicSize> trans;
-        trans.setFatherSon(father, son);
-        trans.createFatherGlobalMapping();
-        auto pullIdx = pullFirstNFromOthers(mpi, *trans.pLGlobalMapping, nGhostPerRank);
-        trans.createGhostMapping(std::vector<DNDS::index>(pullIdx));
-        trans.createMPITypes();
-        trans.pullOnce();
-
-        CHECK(son->Size() == static_cast<DNDS::index>(pullIdx.size()));
-
-        for (DNDS::index g = 0; g < son->Size(); g++)
+        else if constexpr (std::is_same_v<L, LayoutDynamic>)
         {
-            DNDS::index ghostGlobal = trans.pLGhostMapping->ghostIndex[g];
-            for (DNDS::rowsize j = 0; j < RS; j++)
-                CHECK((*son)(g, j) == static_cast<T>(ghostGlobal * 100 + j));
+            auto father = std::make_shared<ParArray<T, DynamicSize>>(mpi);
+            father->Resize(nLocal, RS);
+
+            father->createGlobalMapping();
+            DNDS::index gOff = (*father->pLGlobalMapping)(mpi.rank, 0);
+            for (DNDS::index i = 0; i < nLocal; i++)
+                for (DNDS::rowsize j = 0; j < RS; j++)
+                    (*father)(i, j) = static_cast<T>((gOff + i) * 100 + j);
+
+            auto son = std::make_shared<ParArray<T, DynamicSize>>(mpi);
+            ArrayTransformer<T, DynamicSize> trans;
+            trans.setFatherSon(father, son);
+            trans.createFatherGlobalMapping();
+            auto pullIdx = pullFirstNFromOthers(mpi, *trans.pLGlobalMapping, nGhostPerRank);
+            trans.createGhostMapping(std::vector<DNDS::index>(pullIdx));
+            trans.createMPITypes();
+            trans.pullOnce();
+
+            CHECK(son->Size() == static_cast<DNDS::index>(pullIdx.size()));
+
+            for (DNDS::index g = 0; g < son->Size(); g++)
+            {
+                DNDS::index ghostGlobal = trans.pLGhostMapping->ghostIndex[g];
+                for (DNDS::rowsize j = 0; j < RS; j++)
+                    CHECK((*son)(g, j) == static_cast<T>(ghostGlobal * 100 + j));
+            }
         }
-    }
-    else // LayoutCSR
-    {
-        auto father = std::make_shared<ParArray<T, NonUniformSize, NonUniformSize>>(mpi);
-
-        father->Resize(nLocal, [](DNDS::index i) -> DNDS::rowsize
-                       { return static_cast<DNDS::rowsize>(i % 4 + 1); });
-
-        father->createGlobalMapping();
-        DNDS::index gOff = (*father->pLGlobalMapping)(mpi.rank, 0);
-        for (DNDS::index i = 0; i < nLocal; i++)
-            for (DNDS::rowsize j = 0; j < father->RowSize(i); j++)
-                (*father)(i, j) = static_cast<T>((gOff + i) * 100 + j);
-
-        auto son = std::make_shared<ParArray<T, NonUniformSize, NonUniformSize>>(mpi);
-        ArrayTransformer<T, NonUniformSize, NonUniformSize> trans;
-        trans.setFatherSon(father, son);
-        trans.createFatherGlobalMapping();
-        auto pullIdx = pullFirstNFromOthers(mpi, *trans.pLGlobalMapping, nGhostPerRank);
-        trans.createGhostMapping(std::vector<DNDS::index>(pullIdx));
-        trans.createMPITypes();
-        trans.pullOnce();
-
-        CHECK(son->Size() == static_cast<DNDS::index>(pullIdx.size()));
-
-        for (DNDS::index g = 0; g < son->Size(); g++)
+        else // LayoutCSR
         {
-            DNDS::index ghostGlobal = trans.pLGhostMapping->ghostIndex[g];
-            MPI_int srcRank = -1;
-            DNDS::index srcLoc = -1;
-            bool found = trans.pLGlobalMapping->search(ghostGlobal, srcRank, srcLoc);
-            CHECK(found);
+            auto father = std::make_shared<ParArray<T, NonUniformSize, NonUniformSize>>(mpi);
 
-            DNDS::rowsize expectedRowSize = static_cast<DNDS::rowsize>(srcLoc % 4 + 1);
-            CHECK(son->RowSize(g) == expectedRowSize);
+            father->Resize(nLocal, [](DNDS::index i) -> DNDS::rowsize
+                           { return static_cast<DNDS::rowsize>(i % 4 + 1); });
 
-            for (DNDS::rowsize j = 0; j < son->RowSize(g); j++)
-                CHECK((*son)(g, j) == static_cast<T>(ghostGlobal * 100 + j));
+            father->createGlobalMapping();
+            DNDS::index gOff = (*father->pLGlobalMapping)(mpi.rank, 0);
+            for (DNDS::index i = 0; i < nLocal; i++)
+                for (DNDS::rowsize j = 0; j < father->RowSize(i); j++)
+                    (*father)(i, j) = static_cast<T>((gOff + i) * 100 + j);
+
+            auto son = std::make_shared<ParArray<T, NonUniformSize, NonUniformSize>>(mpi);
+            ArrayTransformer<T, NonUniformSize, NonUniformSize> trans;
+            trans.setFatherSon(father, son);
+            trans.createFatherGlobalMapping();
+            auto pullIdx = pullFirstNFromOthers(mpi, *trans.pLGlobalMapping, nGhostPerRank);
+            trans.createGhostMapping(std::vector<DNDS::index>(pullIdx));
+            trans.createMPITypes();
+            trans.pullOnce();
+
+            CHECK(son->Size() == static_cast<DNDS::index>(pullIdx.size()));
+
+            for (DNDS::index g = 0; g < son->Size(); g++)
+            {
+                DNDS::index ghostGlobal = trans.pLGhostMapping->ghostIndex[g];
+                MPI_int srcRank = -1;
+                DNDS::index srcLoc = -1;
+                bool found = trans.pLGlobalMapping->search(ghostGlobal, srcRank, srcLoc);
+                CHECK(found);
+
+                DNDS::rowsize expectedRowSize = static_cast<DNDS::rowsize>(srcLoc % 4 + 1);
+                CHECK(son->RowSize(g) == expectedRowSize);
+
+                for (DNDS::rowsize j = 0; j < son->RowSize(g); j++)
+                    CHECK((*son)(g, j) == static_cast<T>(ghostGlobal * 100 + j));
+            }
         }
-    }
     } // for nLocal
 }
