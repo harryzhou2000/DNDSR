@@ -761,7 +761,7 @@ namespace DNDS
             if (_pRowSizes)
                 hashSize = vector_hash<rowsize>()(_pRowSizes->begin(), _pRowSizes->end());
             if (_pRowStart)
-                hashSize = vector_hash<index>()(_pRowSizes->begin(), _pRowSizes->end());
+                hashSize = vector_hash<index>()(_pRowStart->begin(), _pRowStart->end());
             return array_hash<std::size_t, 3>()(std::array<std::size_t, 3>{std::size_t(_size), hashSize, hashData});
         }
 
