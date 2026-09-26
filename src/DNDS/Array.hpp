@@ -1178,6 +1178,8 @@ namespace DNDS
                     auto prsOffset = Serializer::ArrayGlobalOffset{_size + 1, offset.offset()};
                     serializerP->ReadSharedIndexVector("pRowStart", _pRowStart, prsOffset);
                     index globalDataStart = _pRowStart->at(0);
+                    // The session cache retains global offsets for subsequent reads.
+                    _pRowStart = std::make_shared<t_RowStart>(*_pRowStart);
                     for (index i = _size; i >= 0; i--)
                         _pRowStart->at(i) -= globalDataStart;
                     dataOffset = Serializer::ArrayGlobalOffset{_pRowStart->at(_size), globalDataStart};
