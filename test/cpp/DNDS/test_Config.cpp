@@ -26,7 +26,7 @@ struct IntegerConfig
 TEST_CASE("Audit batch 2: config integer conversion rejects invalid values")
 {
     for (const char *key : {"count", "custom"})
-        for (const Json &bad : {Json(2147483648LL), Json(-2147483649LL), Json(1.5), Json(true), Json("2"), Json(1e30)})
+        for (const Json &bad : {Json(2147483648LL), Json(-2147483649LL), Json(1.5), Json("2"), Json(1e30)})
         {
             IntegerConfig value;
             Json input = value;
@@ -55,6 +55,17 @@ TEST_CASE("Audit batch 2: config integer conversion rejects invalid values")
     input["count"] = 2.0;
     CHECK_NOTHROW(from_json(input, value));
     CHECK(value.count == 2);
+    // Existing Euler inputs use true/false for integer mode fields such as
+    // meshReorderCells. Preserve that exact, representable 0/1 conversion.
+    for (bool legacy : {false, true})
+    {
+        input["count"] = legacy;
+        input["custom"] = legacy;
+        CHECK_NOTHROW(from_json(input, value));
+        CHECK(value.count == int(legacy));
+        CHECK(value.wide == std::numeric_limits<uint64_t>::max());
+        CHECK(value.custom == int(legacy));
+    }
 }
 
 static std::atomic<bool> registrationEntered{false}, releaseRegistration{false};

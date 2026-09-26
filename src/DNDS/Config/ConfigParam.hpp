@@ -336,7 +336,11 @@ namespace DNDS
             if constexpr (std::is_integral_v<V> && !std::is_same_v<V, bool>)
             {
                 bool valid = false;
-                if (value.is_number_unsigned())
+                // Legacy configuration mode fields accept false/true as 0/1.
+                // Both values are exactly representable by integral field types.
+                if (value.is_boolean())
+                    valid = true;
+                else if (value.is_number_unsigned())
                     valid = value.template get<uint64_t>() <= static_cast<uint64_t>(std::numeric_limits<V>::max());
                 else if (value.is_number_integer())
                 {
