@@ -218,19 +218,13 @@ namespace DNDS::Serializer
             refPath = cP + "/" + name;
         }
 
-        if (pth_2_ssp.count(refPath))
-        {
-            // Dedup registry stores type-erased `ssp<tValue> *`; caller
-            // guarantees the stored type matches tValue.
-            v = *reinterpret_cast<ssp<tValue> *>(pth_2_ssp[refPath]);
-        }
-        else
+        if (!sharedReadLookup(refPath, ArrayGlobalOffset_Unknown, v))
         {
             DNDS_assert(jObj[nlohmann::json::json_pointer(refPath)].is_array());
             // TODO: OPTIMIZE into direct read from json
             auto v_temp = jObj[nlohmann::json::json_pointer(refPath)].get<std::vector<index>>();
             v = std::make_shared<tValue>(v_temp); // vector's copy constructor
-            pth_2_ssp[refPath] = &v;
+            sharedReadRegister(refPath, ArrayGlobalOffset_Unknown, v);
         }
         offset = ArrayGlobalOffset_Unknown;
     }
@@ -249,19 +243,13 @@ namespace DNDS::Serializer
             refPath = cP + "/" + name;
         }
 
-        if (pth_2_ssp.count(refPath))
-        {
-            // Dedup registry stores type-erased `ssp<tValue> *`; caller
-            // guarantees the stored type matches tValue.
-            v = *reinterpret_cast<ssp<tValue> *>(pth_2_ssp[refPath]);
-        }
-        else
+        if (!sharedReadLookup(refPath, ArrayGlobalOffset_Unknown, v))
         {
             DNDS_assert(jObj[nlohmann::json::json_pointer(refPath)].is_array());
             // TODO: OPTIMIZE into direct read from json
             auto v_temp = jObj[nlohmann::json::json_pointer(refPath)].get<std::vector<rowsize>>();
             v = std::make_shared<tValue>(v_temp); // vector's copy constructor
-            pth_2_ssp[refPath] = &v;
+            sharedReadRegister(refPath, ArrayGlobalOffset_Unknown, v);
         }
         offset = ArrayGlobalOffset_Unknown;
     }

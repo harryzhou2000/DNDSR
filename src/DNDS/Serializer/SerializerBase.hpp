@@ -6,6 +6,7 @@
 #include "DNDS/MPI.hpp"
 #include <limits>
 #include <set>
+#include <variant>
 #include "DNDS/Device/DeviceStorage.hpp"
 #include "DNDS/Vector.hpp"
 
@@ -158,8 +159,46 @@ namespace DNDS::Serializer
         /// freed and its address reused, which would cause false dedup hits.
         std::map<void *, std::pair<std::shared_ptr<void>, std::string>> ptr_2_pth;
 
-        /// Reverse map for read-side dedup: path -> raw pointer to the ssp local variable.
-        std::map<std::string, void *> pth_2_ssp;
+        using SharedReadValue = std::variant<ssp<host_device_vector<index>>, ssp<host_device_vector<rowsize>>>;
+        struct SharedReadEntry
+        {
+            ArrayGlobalOffset region;
+            SharedReadValue value;
+        };
+        /// Session-owned, typed read results, indexed by resolved file region.
+        std::map<std::string, std::vector<SharedReadEntry>> pth_2_ssp;
+
+        template <class T>
+        bool sharedReadLookup(const std::string &path, ArrayGlobalOffset region, ssp<T> &value)
+        {
+            auto found = pth_2_ssp.find(path);
+            if (found == pth_2_ssp.end())
+                return false;
+            for (const auto &entry : found->second)
+            {
+                auto typed = std::get_if<ssp<T>>(&entry.value);
+                DNDS_check_throw_info(typed, "Shared-vector read type differs from the cached type");
+                if (entry.region == region)
+                {
+                    value = *typed;
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        template <class T>
+        void sharedReadRegister(const std::string &path, ArrayGlobalOffset region, const ssp<T> &value)
+        {
+            auto &entries = pth_2_ssp[path];
+            for (auto &entry : entries)
+                if (entry.region == region)
+                {
+                    entry.value = value;
+                    return;
+                }
+            entries.push_back({region, value});
+        }
 
         /// Check if a shared pointer was already written; if so return its path.
         template <class T>

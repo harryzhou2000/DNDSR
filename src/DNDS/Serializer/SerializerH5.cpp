@@ -893,24 +893,22 @@ namespace DNDS::Serializer
             refPath = cP + "/" + name;
         }
 
-        if (pth_2_ssp.count(refPath))
+        size_t size = 0;
+        ReadDataVector<index>(refPath, nullptr, size, offset, h5file, reading, "/", mpi, collectiveMetadataRW, collectiveDataRW);
+        DNDS_assert(!(offset == ArrayGlobalOffset_Unknown));
+        if (offset.isDist())
+            offset = ArrayGlobalOffset{index(size), offset.offset()};
+        ssp<tValue> result;
+        int cached = sharedReadLookup(refPath, offset, result), allCached = 0;
+        MPI::Allreduce(&cached, &allCached, 1, MPI_INT, MPI_MIN, mpi.comm);
+        if (!allCached)
         {
-            // Dedup registry stores type-erased `ssp<tValue> *`; caller
-            // guarantees the stored type matches tValue.
-            v = *reinterpret_cast<ssp<tValue> *>(pth_2_ssp[refPath]);
-        }
-        else
-        {
-            v = std::make_shared<tValue>();
-            pth_2_ssp[refPath] = &v;
-
-            size_t size = 0;
+            result = std::make_shared<tValue>(size);
             index dummy{};
-            ReadDataVector<index>(refPath, nullptr, size, offset, h5file, reading, "/", mpi, collectiveMetadataRW, collectiveDataRW);
-            v->resize(size);
-            DNDS_assert(!(offset == ArrayGlobalOffset_Unknown));
-            ReadDataVector<index>(refPath, size == 0 ? &dummy : v->data(), size, offset, h5file, reading, "/", mpi, collectiveMetadataRW, collectiveDataRW);
+            ReadDataVector<index>(refPath, size == 0 ? &dummy : result->data(), size, offset, h5file, reading, "/", mpi, collectiveMetadataRW, collectiveDataRW);
+            sharedReadRegister(refPath, offset, result);
         }
+        v = std::move(result);
     }
     void SerializerH5::ReadSharedRowsizeVector(const std::string &name, ssp<host_device_vector<rowsize>> &v, ArrayGlobalOffset &offset)
     {
@@ -929,24 +927,22 @@ namespace DNDS::Serializer
             refPath = cP + "/" + name;
         }
 
-        if (pth_2_ssp.count(refPath))
+        size_t size = 0;
+        ReadDataVector<rowsize>(refPath, nullptr, size, offset, h5file, reading, "/", mpi, collectiveMetadataRW, collectiveDataRW);
+        DNDS_assert(!(offset == ArrayGlobalOffset_Unknown));
+        if (offset.isDist())
+            offset = ArrayGlobalOffset{index(size), offset.offset()};
+        ssp<tValue> result;
+        int cached = sharedReadLookup(refPath, offset, result), allCached = 0;
+        MPI::Allreduce(&cached, &allCached, 1, MPI_INT, MPI_MIN, mpi.comm);
+        if (!allCached)
         {
-            // Dedup registry stores type-erased `ssp<tValue> *`; caller
-            // guarantees the stored type matches tValue.
-            v = *reinterpret_cast<ssp<tValue> *>(pth_2_ssp[refPath]);
-        }
-        else
-        {
-            v = std::make_shared<tValue>();
-            pth_2_ssp[refPath] = &v;
-
-            size_t size = 0;
+            result = std::make_shared<tValue>(size);
             rowsize dummy{};
-            ReadDataVector<rowsize>(refPath, nullptr, size, offset, h5file, reading, "/", mpi, collectiveMetadataRW, collectiveDataRW);
-            v->resize(size);
-            DNDS_assert(!(offset == ArrayGlobalOffset_Unknown));
-            ReadDataVector<rowsize>(refPath, size == 0 ? &dummy : v->data(), size, offset, h5file, reading, "/", mpi, collectiveMetadataRW, collectiveDataRW);
+            ReadDataVector<rowsize>(refPath, size == 0 ? &dummy : result->data(), size, offset, h5file, reading, "/", mpi, collectiveMetadataRW, collectiveDataRW);
+            sharedReadRegister(refPath, offset, result);
         }
+        v = std::move(result);
     }
     void SerializerH5::WriteUint8Array(const std::string &name, const uint8_t *data, index size, ArrayGlobalOffset offset)
     {
