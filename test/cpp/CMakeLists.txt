@@ -193,6 +193,7 @@ add_dependencies(all_unit_tests dnds_unit_tests geom_unit_tests)
 # DNDS core tests
 # ===================================================================
 dnds_add_unit_test(array "DNDS/test_Array.cpp" "dnds")
+dnds_add_unit_test(config "DNDS/test_Config.cpp" "dnds")
 
 dnds_add_mpi_test(serializer "DNDS/test_Serializer.cpp" "dnds")
 dnds_add_mpi_test(mpi "DNDS/test_MPI.cpp" "dnds")
@@ -204,6 +205,7 @@ dnds_add_mpi_test(permutation_transfer "DNDS/test_PermutationTransfer.cpp" "dnds
 
 set(DNDS_TEST_TARGETS
     dnds_test_array
+    dnds_test_config
     dnds_test_serializer
     dnds_test_mpi
     dnds_test_array_transformer
