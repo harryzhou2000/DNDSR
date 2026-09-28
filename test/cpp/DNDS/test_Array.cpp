@@ -22,8 +22,38 @@
 #include <cstdio>
 #include <filesystem>
 #include <string>
+#include <numeric>
+#include <type_traits>
 
 using namespace DNDS;
+
+TEST_CASE("CSR sharing: public row starts and const iterators are read only")
+{
+    using Vector = host_device_vector<DNDS::index>;
+    using CSRArray = Array<DNDS::index, NonUniformSize>;
+    static_assert(std::is_same_v<decltype(std::declval<const Vector &>().begin()), const DNDS::index *>);
+    static_assert(std::is_same_v<decltype(std::declval<const Vector &>().end()), const DNDS::index *>);
+    static_assert(std::is_same_v<decltype(std::declval<Vector &>().cbegin()), const DNDS::index *>);
+    static_assert(std::is_same_v<decltype(std::declval<Vector &>().cend()), const DNDS::index *>);
+    static_assert(std::is_same_v<decltype(std::declval<const CSRArray &>().getRowStart()), ssp<const Vector>>);
+    static_assert(std::is_same_v<decltype(std::declval<Vector &>().begin()), DNDS::index *>);
+    static_assert(std::is_same_v<decltype(std::declval<const Vector &>()[0]), const DNDS::index &>);
+    CHECK((std::is_same_v<decltype(std::declval<const Vector &>().begin()), const DNDS::index *>));
+    CHECK((std::is_same_v<decltype(std::declval<const Vector &>().end()), const DNDS::index *>));
+    CHECK((std::is_same_v<decltype(std::declval<Vector &>().cbegin()), const DNDS::index *>));
+    CHECK((std::is_same_v<decltype(std::declval<Vector &>().cend()), const DNDS::index *>));
+    CHECK((std::is_same_v<decltype(std::declval<CSRArray &>().getRowStart()), ssp<const Vector>>));
+    Vector values(3, 7);
+    *values.begin() = 4;
+    const auto &readOnly = values;
+    CHECK(std::accumulate(readOnly.begin(), readOnly.end(), DNDS::index(0)) == 18);
+    CSRArray a;
+    a.Resize(1, [](DNDS::index)
+             { return DNDS::rowsize(2); });
+    auto handle = a.getRowStart();
+    handle.reset();
+    CHECK(a.getRowStart()->at(1) == 2);
+}
 
 TEST_CASE("Audit regression: compressed CSR hash includes row offsets")
 {

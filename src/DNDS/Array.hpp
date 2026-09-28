@@ -146,7 +146,8 @@ namespace DNDS
         /// @brief Shared pointer to the row-start index (CSR layout only).
         /// @details `_pRowStart->at(i)` gives the flat-buffer offset of row `i`.
         /// Size is `Size()+1`; the sentinel at the end equals `DataSize()`.
-        t_pRowStart getRowStart() { return _pRowStart; }
+        /// The returned owning handle cannot modify offsets or rebind this array's pointer.
+        ssp<const t_RowStart> getRowStart() const { return _pRowStart; }
         /// @brief Shared pointer to the per-row size vector (TABLE_Max / TABLE_StaticMax).
         /// @details For padded layouts, records the number of "used" columns in each row.
         t_pRowSizes getRowSizes() { return _pRowSizes; }
@@ -971,8 +972,8 @@ namespace DNDS
         ///                       pRowStart in local coordinates.
         ///                     - Collective CSR: must be isDist() = {localDataCount,
         ///                       globalDataStart}, computed by ParArray via MPI_Scan.
-        ///                       Array skips pRowStart (ParArray writes it separately
-        ///                       in global coordinates). Asserted for collective CSR.
+        ///                       The shared row-start API encodes global coordinates
+        ///                       without changing the local structure. Asserted for collective CSR.
         void WriteSerializer(Serializer::SerializerBaseSSP serializerP, const std::string &name,
                              Serializer::ArrayGlobalOffset offset,
                              Serializer::ArrayGlobalOffset dataOffset = Serializer::ArrayGlobalOffset_Unknown)
@@ -999,17 +1000,9 @@ namespace DNDS
                 if (!this->IfCompressed())
                     this->Compress();
                 // For collective serializers, dataOffset must be isDist() (set by ParArray).
-                // ParArray writes pRowStart in global coordinates; Array only writes for per-rank.
                 DNDS_assert_info(serializerP->IsPerRank() || dataOffset.isDist(),
                                  "CSR collective write requires isDist dataOffset from ParArray");
-                if (dataOffset.isDist())
-                {
-                    // ParArray handles pRowStart write in global coords
-                }
-                else
-                {
-                    serializerP->WriteSharedIndexVector("pRowStart", _pRowStart, offset);
-                }
+                serializerP->WriteSharedRowStartVector("pRowStart", _pRowStart, dataOffset);
             }
             else if constexpr (_dataLayout == TABLE_Max || _dataLayout == TABLE_StaticMax)
             {
@@ -1173,21 +1166,10 @@ namespace DNDS
             {
                 DNDS_assert_info(serializerP->IsPerRank() || offset.isDist(),
                                  "CSR collective read requires isDist offset from ParArray");
-                if (offset.isDist())
-                {
-                    auto prsOffset = Serializer::ArrayGlobalOffset{_size + 1, offset.offset()};
-                    serializerP->ReadSharedIndexVector("pRowStart", _pRowStart, prsOffset);
-                    index globalDataStart = _pRowStart->at(0);
-                    // The session cache retains global offsets for subsequent reads.
-                    _pRowStart = std::make_shared<t_RowStart>(*_pRowStart);
-                    for (index i = _size; i >= 0; i--)
-                        _pRowStart->at(i) -= globalDataStart;
-                    dataOffset = Serializer::ArrayGlobalOffset{_pRowStart->at(_size), globalDataStart};
-                }
-                else
-                {
-                    serializerP->ReadSharedIndexVector("pRowStart", _pRowStart, offset);
-                }
+                // ParArray has resolved the row slice; the explicit CSR API returns
+                // shared local offsets together with the original flat-data region.
+                auto rows = Serializer::ArrayGlobalOffset{_size, offset.isDist() ? offset.offset() : 0};
+                dataOffset = serializerP->ReadSharedRowStartVector("pRowStart", _pRowStart, rows);
             }
             else if constexpr (_dataLayout == TABLE_Max || _dataLayout == TABLE_StaticMax)
             {

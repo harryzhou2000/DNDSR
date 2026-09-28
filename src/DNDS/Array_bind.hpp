@@ -126,10 +126,10 @@ namespace DNDS // Array
                 "getRowStart",
                 [](TArray &self)
                 {
-                    if (!self.getRowStart())
+                    auto rs = self.getRowStart();
+                    if (!rs)
                         return py::memoryview::from_buffer<index>((index *)(&self), {0}, {sizeof(index)}, true);
-                    auto &rs = *self.getRowStart();
-                    return py::memoryview::from_buffer<index>(rs.data(), {rs.size()}, {sizeof(index)}, true);
+                    return py::memoryview::from_buffer<index>(rs->data(), {rs->size()}, {sizeof(index)});
                 },
                 py::keep_alive<0, 1>() /* remember to keep alive */);
 

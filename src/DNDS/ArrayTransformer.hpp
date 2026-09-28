@@ -97,10 +97,9 @@ namespace DNDS
         /// Delegates to Array::WriteSerializer for metadata, structure, and data.
         /// Additionally for collective (H5) serializers:
         /// - Writes `sizeGlobal` (sum of all ranks' _size) as a scalar attribute.
-        /// - For CSR: computes global data offsets via MPI_Scan and writes pRowStart
-        ///   in global data coordinates as a contiguous (nRowsGlobal+1) dataset.
-        ///   Non-last ranks write nRows entries (dropping the redundant tail),
-        ///   last rank writes nRows+1 (including the global data total).
+        /// - For CSR: computes global data offsets via MPI_Scan. Array passes
+        ///   them and the original shared local structure to the serializer's
+        ///   row-start API, which owns encoding and shared-reference handling.
         ///
         /// Asserts MPI context consistency with the serializer.
         ///
@@ -117,8 +116,8 @@ namespace DNDS
                                 mpi.rank, mpi.size, serializerP->GetMPIRank(), serializerP->GetMPISize()));
             }
 
-            // For collective CSR, compute global data offset and pass to Array
-            // so it skips its own pRowStart write.
+            // For collective CSR, compute the flat-data region for the explicit
+            // shared row-start API invoked by Array.
             Serializer::ArrayGlobalOffset dataOffset = Serializer::ArrayGlobalOffset_Unknown;
             if constexpr (_dataLayout == CSR)
             {
@@ -145,23 +144,6 @@ namespace DNDS
                 index sizeGlobal = 0;
                 MPI::Allreduce(&this->_size, &sizeGlobal, 1, DNDS_MPI_INDEX, MPI_SUM, mpi.comm);
                 serializerP->WriteIndex("sizeGlobal", sizeGlobal);
-
-                // For CSR, write pRowStart in global data coordinates.
-                // Non-last ranks write nRows entries; last rank writes nRows+1.
-                // Total = nRowsGlobal + 1 (no overlap, contiguous).
-                if constexpr (_dataLayout == CSR)
-                {
-                    if (dataOffset.isDist())
-                    {
-                        index globalDataStart = dataOffset.offset();
-                        index nWrite = (mpi.rank == mpi.size - 1) ? (this->_size + 1) : this->_size;
-                        auto prsGlobal = std::make_shared<host_device_vector<index>>(nWrite);
-                        for (index i = 0; i < nWrite; i++)
-                            prsGlobal->at(i) = this->_pRowStart->at(i) + globalDataStart;
-                        serializerP->WriteSharedIndexVector("pRowStart", prsGlobal,
-                                                            Serializer::ArrayGlobalOffset_Parts);
-                    }
-                }
 
                 serializerP->GoToPath(cwd);
             }

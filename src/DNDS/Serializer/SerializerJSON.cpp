@@ -203,10 +203,9 @@ namespace DNDS::Serializer
         DNDS_assert(jObj[cPointer][name].is_string());
         v = jObj[cPointer][name].get<std::remove_reference_t<decltype(v)>>();
     }
-    void SerializerJSON::ReadSharedIndexVector(const std::string &name, ssp<host_device_vector<index>> &v, ArrayGlobalOffset &offset)
+    std::string SerializerJSON::ResolveSharedIndexPath(const std::string &name)
     {
         auto cPointer = nlohmann::json::json_pointer(cP);
-        using tValue = host_device_vector<index>;
         std::string refPath;
         if (jObj[cPointer][name].is_object() && !jObj[cPointer][name].is_array())
         {
@@ -217,6 +216,13 @@ namespace DNDS::Serializer
         {
             refPath = cP + "/" + name;
         }
+        return refPath;
+    }
+
+    void SerializerJSON::ReadSharedIndexVector(const std::string &name, ssp<host_device_vector<index>> &v, ArrayGlobalOffset &offset)
+    {
+        using tValue = host_device_vector<index>;
+        auto refPath = ResolveSharedIndexPath(name);
 
         if (!sharedReadLookup(refPath, ArrayGlobalOffset_Unknown, v))
         {
@@ -228,6 +234,42 @@ namespace DNDS::Serializer
         }
         offset = ArrayGlobalOffset_Unknown;
     }
+    void SerializerJSON::WriteSharedRowStartVector(const std::string &name,
+                                                   const ssp<const host_device_vector<index>> &v, ArrayGlobalOffset data)
+    {
+        ValidateRowStartWrite(v, data);
+        auto pointer = nlohmann::json::json_pointer(cP);
+        auto found = rowStartWrites.find(v.get());
+        if (found != rowStartWrites.end())
+            jObj[pointer][name]["ref"] = found->second.path;
+        else
+        {
+            jObj[pointer][name] = *v;
+            rowStartWrites.emplace(v.get(), RowStartWriteEntry{v, data, v->size(), cP + "/" + name});
+        }
+    }
+
+    ArrayGlobalOffset SerializerJSON::ReadSharedRowStartVector(const std::string &name,
+                                                               ssp<host_device_vector<index>> &v, ArrayGlobalOffset rows)
+    {
+        auto path = ResolveSharedIndexPath(name);
+        ValidateRowStartRead(path, rows);
+        const auto &stored = jObj[nlohmann::json::json_pointer(path)];
+        RowStartCheck(stored.is_array() && rows.offset() == 0 && stored.size() == size_t(rows.size()) + 1,
+                      "JSON row-start reads require the complete local row structure");
+        auto found = rowStartReads.find(path);
+        if (found == rowStartReads.end())
+        {
+            auto local = std::make_shared<host_device_vector<index>>(stored.size());
+            for (size_t i = 0; i < stored.size(); ++i)
+                (*local)[i] = stored[i].get<index>();
+            auto data = NormalizeRowStarts(*local, false);
+            found = rowStartReads.emplace(path, RowStartReadEntry{rows, data, std::move(local)}).first;
+        }
+        v = found->second.local;
+        return found->second.data;
+    }
+
     void SerializerJSON::ReadSharedRowsizeVector(const std::string &name, ssp<host_device_vector<rowsize>> &v, ArrayGlobalOffset &offset)
     {
         auto cPointer = nlohmann::json::json_pointer(cP);

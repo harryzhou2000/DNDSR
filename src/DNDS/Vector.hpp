@@ -299,11 +299,11 @@ namespace DNDS
 
         DNDS_HOST auto begin() { return host_ptr; }
         DNDS_HOST auto end() { return host_ptr + size_; }
-        DNDS_HOST [[nodiscard]] auto begin() const { return host_ptr; }
-        DNDS_HOST [[nodiscard]] auto end() const { return host_ptr + size_; }
+        DNDS_HOST [[nodiscard]] const T *begin() const { return host_ptr; }
+        DNDS_HOST [[nodiscard]] const T *end() const { return host_ptr + size_; }
 
-        DNDS_HOST [[nodiscard]] auto cbegin() const { return host_ptr; }
-        DNDS_HOST [[nodiscard]] auto cend() const { return host_ptr + size_; }
+        DNDS_HOST [[nodiscard]] const T *cbegin() const { return host_ptr; }
+        DNDS_HOST [[nodiscard]] const T *cend() const { return host_ptr + size_; }
 
         DNDS_HOST explicit operator std::vector<T>() const
         {
