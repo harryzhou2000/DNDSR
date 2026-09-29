@@ -1691,6 +1691,37 @@
                     "type": "object",
                     "description": "Dimensionless RRI selector: chi=0 is coupled and chi=1 is Strang",
                     "properties": {
+                        "indicatorMode": {
+                            "type": "integer",
+                            "default": 0,
+                            "description": "Reactive split mode: 0=v1 rate-based, 1=legacy b/s ratio, 2=chemistry escape, 3=transport balance",
+                            "minimum": 0.0,
+                            "maximum": 3.0
+                        },
+                        "escapeStiffnessThreshold": {
+                            "type": "number",
+                            "default": 100.0,
+                            "description": "Chemistry escape activity midpoint s0",
+                            "minimum": 0.0
+                        },
+                        "escapeStiffnessExponent": {
+                            "type": "number",
+                            "default": 2.0,
+                            "description": "Chemistry escape activity power ps",
+                            "minimum": 0.0
+                        },
+                        "escapeRatioThreshold": {
+                            "type": "number",
+                            "default": 1e-06,
+                            "description": "Chemistry escape diffusion/stiffness ratio midpoint re",
+                            "minimum": 0.0
+                        },
+                        "escapeRatioExponent": {
+                            "type": "number",
+                            "default": 6.0,
+                            "description": "Chemistry escape ratio power pr",
+                            "minimum": 0.0
+                        },
                         "chemicalActivityThreshold": {
                             "type": "number",
                             "default": 1.0,
@@ -1707,6 +1738,18 @@
                             "type": "number",
                             "default": 1.0,
                             "description": "Shared activity-saturation exponent p in sat(z;z0,p)",
+                            "minimum": 0.0
+                        },
+                        "ratioThreshold": {
+                            "type": "number",
+                            "default": 0.1,
+                            "description": "v2 switch midpoint r0 on the b/s stiffness ratio",
+                            "minimum": 0.0
+                        },
+                        "ratioExponent": {
+                            "type": "number",
+                            "default": 2.0,
+                            "description": "v2 switch exponent pr on the b/s stiffness ratio",
                             "minimum": 0.0
                         },
                         "coupledThreshold": {

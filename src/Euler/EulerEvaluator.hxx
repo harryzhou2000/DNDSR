@@ -1818,7 +1818,7 @@ namespace DNDS::Euler
             return;
         }
 
-        DNDS_check_throw_info(indicatorSettings.indicatorMode == 0 || reactiveSplit.stiffnessStep,
+        DNDS_check_throw_info((indicatorSettings.indicatorMode != 1 && indicatorSettings.indicatorMode != 2) || reactiveSplit.stiffnessStep,
                               "v2 reactive split indicator requires stiffnessStep storage");
 
         const int Ns = phys_.nSpecies();
@@ -1837,7 +1837,8 @@ namespace DNDS::Euler
         {
             auto state = u[iCell];
             real TGuess = cellTWarm && iCell < mesh->NumCell() ? (*cellTWarm)[iCell](0) : real(0);
-            auto [T, p, asqr, H, gammaEq, gamma] = phys_.conservativeThermal(state, TGuess);
+            auto [T, p, asqr, H, gammaEq, gamma] = phys_.conservativeThermal(
+                state, TGuess, indicatorSettings.indicatorMode == 3 ? real(1e-12) : real(1e-8));
             (void)asqr;
             (void)H;
             (void)gammaEq;
@@ -1850,7 +1851,123 @@ namespace DNDS::Euler
                 (*cellTWarm)[iCell](0) = T;
         }
 
-        const bool useStiffnessRatio = indicatorSettings.indicatorMode != 0;
+        if (indicatorSettings.indicatorMode == 3)
+        {
+            DNDS_check_throw_info(phys_.chem().isIdealGas(), "transport balance requires ideal-gas species thermodynamics");
+            DNDS_check_throw_info(std::isfinite(settings.reactiveSourceScale) && settings.reactiveSourceScale >= 0,
+                                  "transport balance requires finite nonnegative reactiveSourceScale");
+            std::vector<double> diffusivity(static_cast<size_t>(nCellProc) * Ns);
+            std::vector<double> enthalpy(static_cast<size_t>(nCellProc) * Ns);
+            std::vector<real> conductivity(static_cast<size_t>(nCellProc));
+            std::vector<real> heatCapacity(static_cast<size_t>(nCellProc));
+#if defined(DNDS_DIST_MT_USE_OMP)
+#    pragma omp parallel for schedule(guided)
+#endif
+            for (index iCell = 0; iCell < nCellProc; ++iCell)
+            {
+                size_t offset = static_cast<size_t>(iCell) * Ns;
+                Chemistry::ConstSpeciesBufferView fractions{massFractions.data() + offset, Ns};
+                auto &chem = phys_.chem();
+                real temperaturePhysical = temperature[static_cast<size_t>(iCell)];
+                real pressurePhysical = pressure[static_cast<size_t>(iCell)];
+                chem.speciesDiffusivity(temperaturePhysical, pressurePhysical, fractions, {diffusivity.data() + offset, Ns});
+                chem.speciesEnthalpies(temperaturePhysical, pressurePhysical, fractions, {enthalpy.data() + offset, Ns});
+                conductivity[static_cast<size_t>(iCell)] = chem.thermalConductivity(temperaturePhysical, pressurePhysical, fractions);
+                heatCapacity[static_cast<size_t>(iCell)] = chem.mixtureCv(temperaturePhysical, fractions, pressurePhysical);
+            }
+            real lengthScale = settings.idealGasProperty.L0;
+            real dtPhysical = dt * lengthScale / settings.idealGasProperty.U0;
+#if defined(DNDS_DIST_MT_USE_OMP)
+#    pragma omp parallel
+#endif
+            {
+                std::vector<double> production(static_cast<size_t>(Ns));
+                std::vector<real> speciesFlux(static_cast<size_t>(Ns));
+                std::vector<real> diffusionSource(static_cast<size_t>(Ns));
+#if defined(DNDS_DIST_MT_USE_OMP)
+#    pragma omp for schedule(guided)
+#endif
+                for (index iCell = 0; iCell < mesh->NumCell(); ++iCell)
+                {
+                    auto &chem = phys_.chem();
+                    size_t offset = static_cast<size_t>(iCell) * Ns;
+                    real temperaturePhysical = temperature[static_cast<size_t>(iCell)];
+                    real densityPhysical = u[iCell](0) * settings.idealGasProperty.rho0;
+                    real cv = heatCapacity[static_cast<size_t>(iCell)];
+                    Chemistry::ConstSpeciesBufferView fractions{massFractions.data() + offset, Ns};
+                    chem.productionRates(temperaturePhysical, pressure[static_cast<size_t>(iCell)], fractions, {production.data(), Ns});
+                    std::fill(diffusionSource.begin(), diffusionSource.end(), 0.0);
+                    real diffusionEnergy = 0;
+                    real shockSensor = 0;
+                    auto faces = mesh->cell2face[iCell];
+                    for (rowsize faceInCell = 0; faceInCell < faces.size(); ++faceInCell)
+                    {
+                        index face = faces[faceInCell];
+                        index neighbor = mesh->CellFaceOther(iCell, face, faceInCell);
+                        if (neighbor == UnInitIndex)
+                            continue;
+                        rowsize side = mesh->CellIsFaceBack(iCell, face, faceInCell) ? 0 : 1;
+                        Geom::tPoint separation = (vfv->GetOtherCellBaryFromCell(iCell, neighbor, face, side) -
+                                                   vfv->GetCellBary(iCell)) *
+                                                  lengthScale;
+                        Geom::tPoint normal = vfv->GetFaceNormFromCell(face, iCell, side, -1) * (side ? -1 : 1);
+                        real distanceSquared = separation.squaredNorm();
+                        DNDS_check_throw_info(distanceSquared > 0, "transport balance requires distinct neighboring cell centers");
+                        real gradientFactor = normal.dot(separation) / distanceSquared;
+                        real areaOverVolume = vfv->GetFaceArea(face) / (vfv->GetCellVol(iCell) * lengthScale);
+                        size_t neighborOffset = static_cast<size_t>(neighbor) * Ns;
+                        real neighborTemperature = temperature[static_cast<size_t>(neighbor)];
+                        real neighborPressure = pressure[static_cast<size_t>(neighbor)];
+                        real faceDensity = 0.5 * (u[iCell](0) + u[neighbor](0)) * settings.idealGasProperty.rho0;
+                        real fluxSum = 0;
+                        for (int species = 0; species < Ns; ++species)
+                        {
+                            real faceDiffusivity = 0.5 * (diffusivity[offset + species] + diffusivity[neighborOffset + species]);
+                            speciesFlux[species] = -faceDensity * faceDiffusivity * gradientFactor *
+                                                   (massFractions[neighborOffset + species] - massFractions[offset + species]);
+                            fluxSum += speciesFlux[species];
+                        }
+                        real energyFlux = -0.5 * (conductivity[static_cast<size_t>(iCell)] + conductivity[static_cast<size_t>(neighbor)]) *
+                                          (neighborTemperature - temperaturePhysical) * gradientFactor;
+                        for (int species = 0; species < Ns; ++species)
+                        {
+                            real faceFraction = 0.5 * (massFractions[offset + species] + massFractions[neighborOffset + species]);
+                            real flux = speciesFlux[species] - faceFraction * fluxSum;
+                            diffusionSource[species] -= flux * areaOverVolume;
+                            energyFlux += 0.5 * (enthalpy[offset + species] + enthalpy[neighborOffset + species]) * flux;
+                        }
+                        diffusionEnergy -= energyFlux * areaOverVolume;
+                        real cellPressure = pressure[static_cast<size_t>(iCell)];
+                        shockSensor = std::max(shockSensor, std::abs(neighborPressure - cellPressure) /
+                                                                std::max({std::abs(neighborPressure), std::abs(cellPressure), real(1e-30)}));
+                    }
+                    real chemicalEnergy = 0;
+                    real chemicalNormSquared = 0;
+                    real diffusionNormSquared = 0;
+                    for (int species = 0; species < Ns; ++species)
+                    {
+                        real internalEnergy = enthalpy[offset + species] - chem.speciesGasConstants()[species] * temperaturePhysical;
+                        real massSource = production[species] * chem.molecularWeights()[species] * settings.reactiveSourceScale;
+                        chemicalEnergy -= internalEnergy * massSource;
+                        diffusionEnergy -= internalEnergy * diffusionSource[species];
+                        chemicalNormSquared += sqr(massSource / densityPhysical);
+                        diffusionNormSquared += sqr(diffusionSource[species] / densityPhysical);
+                    }
+                    real energyScale = densityPhysical * std::max(cv, real(1e-30)) * std::max(temperaturePhysical, temperatureFloor);
+                    real chemicalActivity = dtPhysical * std::sqrt(chemicalNormSquared + sqr(chemicalEnergy / energyScale));
+                    real diffusionActivity = dtPhysical * std::sqrt(diffusionNormSquared + sqr(diffusionEnergy / energyScale));
+                    real score = ReactiveSplitBalanceScore(chemicalActivity, diffusionActivity, shockSensor, indicatorSettings);
+                    reactiveSplitChemicalStep[iCell](0) = chemicalActivity;
+                    reactiveSplitDiffusiveStep[iCell](0) = diffusionActivity;
+                    reactiveSplitShockSensor[iCell](0) = shockSensor;
+                    reactiveSplitCoupledScore[iCell](0) = score;
+                    reactiveSplitChi[iCell](0) = ReactiveSplitChi(score, indicatorSettings);
+                }
+            }
+            return;
+        }
+
+        const bool useStiffnessRatio = indicatorSettings.indicatorMode == 1 || indicatorSettings.indicatorMode == 2;
         std::vector<real> chemicalRate(static_cast<size_t>(mesh->NumCell()), 0.0);
         std::vector<real> maxDiffusivity(static_cast<size_t>(mesh->NumCell()), 0.0);
         std::vector<real> maxStiffnessRate(static_cast<size_t>(mesh->NumCell()), 0.0);

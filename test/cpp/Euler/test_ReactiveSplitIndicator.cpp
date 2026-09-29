@@ -4,6 +4,33 @@
 
 using namespace DNDS::Euler;
 
+TEST_CASE("Transport balance has matched-rate limits and independent configuration")
+{
+    ReactiveSplitIndicatorSettings settings;
+    settings.indicatorMode = 3;
+    settings.coupledThreshold = 0.001;
+    settings.hillExponent = 2;
+    CHECK(settings.validate().empty());
+    CHECK(ReactiveSplitBalanceScore(0, 1, 0, settings) == 0);
+    CHECK(ReactiveSplitBalanceScore(1, 0, 0, settings) == 0);
+    CHECK(ReactiveSplitBalanceScore(1, 2, 0, settings) == doctest::Approx(0.5));
+    CHECK(ReactiveSplitBalanceScore(1e-8, 2e-8, 0, settings) == doctest::Approx(2e-16).epsilon(1e-6).scale(1e-16));
+    CHECK(ReactiveSplitBalanceScore(1e12, 2e12, 0, settings) == doctest::Approx(2));
+    CHECK(ReactiveSplitBalanceScore(1e300, 2e300, 0, settings) == doctest::Approx(2));
+    CHECK(ReactiveSplitBalanceScore(1, 2, 0.8, settings) < 1e-4);
+    CHECK(ReactiveSplitChi(ReactiveSplitBalanceScore(0, 2, 0, settings), settings) == 1);
+    CHECK(ReactiveSplitChi(ReactiveSplitBalanceScore(1e12, 2e12, 0, settings), settings) == 0);
+    CHECK_THROWS(ReactiveSplitBalanceScore(-1, 1, 0, settings));
+    settings.spatialPasses = 1;
+    CHECK_FALSE(settings.validate().empty());
+    settings.spatialPasses = 0;
+    settings.switchShape = 0;
+    CHECK_FALSE(settings.validate().empty());
+    settings.switchShape = 1;
+    settings.coupledThreshold = 0;
+    CHECK_FALSE(settings.validate().empty());
+}
+
 TEST_CASE("Reactive split indicator endpoints and bounds")
 {
     ReactiveSplitIndicatorSettings settings;
