@@ -6,6 +6,57 @@ Strang/coupled mode.
 
 @tableofcontents
 
+## Experimental matched-rate transport balance
+
+`indicatorMode=3` compares molecular diffusion and chemistry using the same
+dimensionless-state rate norm. It does not alter modes 0--2 or the split
+time integrator. For physical, SI-valued rates define
+
+$$
+\mathcal A=\sqrt{\sum_k\dot Y_{S,k}^2+(\dot T_S/T)^2},\qquad
+\mathcal D=\sqrt{\sum_k\dot Y_{D,k}^2+(\dot T_D/T)^2}.
+$$
+
+Both rates have units of inverse seconds; all species, including the absorbed
+last species, enter the norm. The temperature rates are at fixed mixture
+internal energy: with mass production $\dot m_k$ and species internal
+energy $e_k(T)$, $\rho c_v\dot T_S=-\sum_k e_k\dot m_k$.
+For diffusion, subtract $\sum_k e_k S_{D,k}$ from minus the divergence of
+the conductive and species-enthalpy energy fluxes before dividing by
+$\rho c_v$. This is not the enthalpy heat-release proxy in the older mode.
+The chemical rate includes the independent debugging `reactiveSourceScale`.
+
+$$
+a=\Delta t_{\rm phys}\mathcal A,\qquad
+d=\Delta t_{\rm phys}\mathcal D,\qquad
+C=g_h\frac{ad}{(1+a)^2},\qquad
+\chi^*=\frac{1}{1+[C/(C_0b_s)]^n}.
+$$
+
+`coupledThreshold`, `strangBias`, `hillExponent`, `shockScale` and the
+existing endpoint snap tolerances retain their meanings. Set `switchShape=1`
+and `spatialPasses=0`; other choices are rejected for this mode. The activity
+thresholds and chemistry-escape parameters are unused. For fixed nonzero
+chemical rate, the unsuppressed score tends to $\mathcal D/\mathcal A$ at
+large timesteps, and behaves as $\Delta t^2\mathcal A\mathcal D$ at small
+timesteps. Zero chemistry or zero diffusion gives exact Strang selection.
+
+The current estimator is deliberately cell-mean and molecular: centered
+two-point species fluxes with a zero-net-mass correction, conduction and
+species enthalpy transport. It is not the native reconstructed viscous RHS,
+does not include turbulence, and assigns zero diffusion to physical boundary
+faces. Its validated experimental scope is an orthogonal, closed adiabatic
+laminar strip (periodic transverse faces are handled as neighbors).
+General nonorthogonal/open/heat-transferring boundaries require further work.
+The owning-cell output `reactiveSplitDiffusiveStep` holds $d$, not the old
+gradient-timescale $b$, and `reactiveSplitStiffnessStep` is zero. All diagnostic
+ghost entries remain unspecified; no new communication is performed.
+
+The first two-scale n-heptane trial sets `coupledThreshold=0.001`,
+`hillExponent=2`, `strangBias=1`, `shockScale=0.08`,
+`coupledSnapTolerance=0.01`, and `strangSnapTolerance=0.05`.
+This is a candidate calibration, not an established universal accuracy claim.
+
 ## Refined v2 chemistry escape (BA-CE6)
 
 `indicatorMode=2` adds the separately selectable BA-CE6 candidate; modes 0 and 1

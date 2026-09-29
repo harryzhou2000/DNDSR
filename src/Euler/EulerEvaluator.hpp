@@ -1219,6 +1219,15 @@ namespace DNDS::Euler
          * selector is frozen by EulerSolver for both source half steps and all ODE stages in one
          * physical step.
          *
+         * Mode 3 measures chemistry and a cell-mean molecular diffusion estimate in the same
+         * @f$(\dot{\mathbf Y},\dot T/T)@f$ norm. Its diffusiveStep is @f$d=\Delta t\mathcal D@f$,
+         * not the legacy gradient-timescale @f$b@f$. The two-point face estimate includes heat
+         * conduction, mass-corrected species diffusion and species enthalpy transport; its
+         * temperature rate subtracts species internal-energy changes. Physical boundary faces
+         * contribute zero flux. This experimental estimator is intended for orthogonal laminar
+         * meshes with impermeable adiabatic boundaries, not the native reconstructed RHS.
+         * Ghost transport coefficients are evaluated locally from the already-current input.
+         *
          * @pre Owning and ghost entries of @p u are current. This evaluator API performs no communication
          * for its input state.
          * @param[out] reactiveSplit Explicit solver-owned selector and diagnostic arrays.

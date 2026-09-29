@@ -42,7 +42,7 @@ namespace DNDS::Euler
      */
     struct ReactiveSplitIndicatorSettings
     {
-        int indicatorMode = 0;                 ///< 0: v1; 1: legacy ratio; 2: chemistry escape.
+        int indicatorMode = 0;                 ///< 0: v1; 1: legacy ratio; 2: chemistry escape; 3: transport balance.
         real chemicalActivityThreshold = 1.0;  ///< Chemical saturation threshold @f$a_0@f$.
         real diffusiveActivityThreshold = 1.0; ///< Diffusion saturation threshold @f$b_0@f$.
         real activitySaturationExponent = 1.0; ///< Shared activity-saturation exponent @f$p@f$.
@@ -67,7 +67,7 @@ namespace DNDS::Euler
         DNDS_DECLARE_CONFIG(ReactiveSplitIndicatorSettings)
         {
             // clang-format off
-            DNDS_FIELD(indicatorMode,              "Reactive split mode: 0=v1 rate-based, 1=legacy b/s ratio, 2=chemistry escape", DNDS::Config::range(0, 2));
+            DNDS_FIELD(indicatorMode,              "Reactive split mode: 0=v1 rate-based, 1=legacy b/s ratio, 2=chemistry escape, 3=transport balance", DNDS::Config::range(0, 3));
             DNDS_FIELD(escapeStiffnessThreshold, "Chemistry escape activity midpoint s0", DNDS::Config::range(0.0));
             DNDS_FIELD(escapeStiffnessExponent, "Chemistry escape activity power ps", DNDS::Config::range(0.0));
             DNDS_FIELD(escapeRatioThreshold, "Chemistry escape diffusion/stiffness ratio midpoint re", DNDS::Config::range(0.0));
@@ -105,6 +105,8 @@ namespace DNDS::Euler
             config.check("chemistry escape parameters must be positive and spatial passes disabled", [](const T &s)
                          { return s.indicatorMode != 2 || (s.escapeStiffnessThreshold > 0 && s.escapeStiffnessExponent > 0 &&
                                                            s.escapeRatioThreshold > 0 && s.escapeRatioExponent > 0 && s.spatialPasses == 0); });
+            config.check("transport balance requires a positive Hill midpoint and no spatial passes", [](const T &s)
+                         { return s.indicatorMode != 3 || (s.switchShape == 1 && s.coupledThreshold > 0 && s.spatialPasses == 0); });
         }
     };
 
@@ -139,6 +141,18 @@ namespace DNDS::Euler
                                      settings.activitySaturationExponent) *
                ReactiveSplitSaturate(diffusionActivity, settings.diffusiveActivityThreshold,
                                      settings.activitySaturationExponent) *
+               ReactiveSplitShockGate(shockSensor, settings);
+    }
+
+    /** @brief Mode 3 score @f$C=g_h ad/(1+a)^2@f$ with matched species/temperature rate norms. */
+    inline real ReactiveSplitBalanceScore(real chemicalActivity, real diffusionActivity, real shockSensor,
+                                          const ReactiveSplitIndicatorSettings &settings)
+    {
+        DNDS_check_throw_info(std::isfinite(chemicalActivity) && chemicalActivity >= 0 &&
+                                  std::isfinite(diffusionActivity) && diffusionActivity >= 0,
+                              "transport balance requires finite nonnegative activities");
+        real denominator = 1 + chemicalActivity;
+        return (chemicalActivity / denominator) * (diffusionActivity / denominator) *
                ReactiveSplitShockGate(shockSensor, settings);
     }
 
