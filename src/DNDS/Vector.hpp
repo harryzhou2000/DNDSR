@@ -3,6 +3,7 @@
 /// @brief Host-device vector types with optional GPU storage and device-side views.
 
 #include "DNDS/Errors.hpp"
+#include "CheckedSize.hpp"
 #include "Device/DeviceStorage.hpp"
 #include <algorithm>
 #include <cstddef>
@@ -271,7 +272,7 @@ namespace DNDS
         {
             // Preserve the old allocation while exported views own it.
             auto replacement = std::make_shared<DeviceHostSingleAllocationDirect>();
-            replacement->allocate(new_size * sizeof(T), DeviceBackend::Unknown);
+            replacement->allocate(CheckedSize::Multiply(new_size, sizeof(T)), DeviceBackend::Unknown);
             host_data = std::move(replacement);
             size_ = new_size;
             sync_host_ptr();
@@ -289,7 +290,7 @@ namespace DNDS
         DNDS_HOST void create_device_data(DeviceBackend B)
         {
             auto replacement = std::make_shared<DeviceHostSingleAllocationDirect>();
-            replacement->allocate(size_ * sizeof(T), B);
+            replacement->allocate(CheckedSize::Multiply(size_, sizeof(T)), B);
             device_data = std::move(replacement);
             sync_device_ptr();
         }

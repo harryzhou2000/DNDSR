@@ -133,6 +133,14 @@ namespace DNDS
         using t_pRowSizes = ssp<t_RowSizes>;
 
     protected:
+        static void CheckSerializedInput(const Serializer::SerializerBaseSSP &serializer, bool valid)
+        {
+            int all = valid;
+            if (!serializer->IsPerRank())
+                MPI_Allreduce(MPI_IN_PLACE, &all, 1, MPI_INT, MPI_MIN, serializer->getMPI().comm);
+            DNDS_check_throw_info(all, "serialized array shape, size, or payload is inconsistent");
+        }
+
         t_pRowStart _pRowStart; // CSR   in number of T
         t_pRowSizes _pRowSizes; // TABLE in number of T
         t_Data _data;
@@ -338,17 +346,15 @@ namespace DNDS
         {
             if (IfCompressed())
                 return;
-            _pRowStart = std::make_shared<
-                typename decltype(_pRowStart)::element_type>(_size + 1, 0);
-            _pRowStart->at(0) = 0;
+            auto starts = std::make_shared<
+                typename decltype(_pRowStart)::element_type>(CheckedSize::Add(_size, index(1)), 0);
             for (index i = 0; i < _size; i++)
             {
-                index rsI = _pRowStart->at(i);
-                index rsIP = rsI + static_cast<index>(_dataUncompressed.at(i).size());
-                DNDS_check_throw(rsIP >= rsI);
-                _pRowStart->at(i + 1) = rsIP;
+                DNDS_check_throw(_dataUncompressed.at(i).size() <= size_t(std::numeric_limits<rowsize>::max()));
+                starts->at(i + 1) = CheckedSize::Add(starts->at(i), index(_dataUncompressed.at(i).size()));
             }
-            _data.resize(_pRowStart->at(_size));
+            _data.resize(starts->at(_size));
+            _pRowStart = std::move(starts);
             for (index i = 0; i < _size; i++)
             {
                 // // _dataUncompressed[i].resize( - _pRowStart->at(i));
@@ -407,23 +413,29 @@ namespace DNDS
          */
         void Resize(index nSize, rowsize nRow_size_dynamic)
         {
+            DNDS_check_throw(nSize >= 0 && nRow_size_dynamic >= 0);
+            if constexpr (_dataLayout == TABLE_StaticFixed)
+                DNDS_check_throw(nRow_size_dynamic == rs);
+            if constexpr (_dataLayout == TABLE_StaticMax)
+                DNDS_check_throw(nRow_size_dynamic == rm);
+            const index flatSize = CheckedSize::Multiply(nSize, index(nRow_size_dynamic));
             if constexpr (_dataLayout == CSR) // to un compressed
             {
                 DNDS_check_throw_info(!IfCompressed(), "Need to decompress before auto resizing");
-                _size = nSize;
                 // _dataUncompressed.resize(nSize, typename decltype(_dataUncompressed)::value_type(nRow_size_dynamic));
                 // _dataUncompressed.resize(nSize);
                 _dataUncompressed.assign(nSize, typename decltype(_dataUncompressed)::value_type(nRow_size_dynamic));
+                _size = nSize;
             }
             else
             {
-                _size = nSize;
                 if constexpr (_dataLayout == TABLE_Fixed || _dataLayout == TABLE_Max)
-                    _data.resize(nSize * nRow_size_dynamic), _row_size_dynamic = nRow_size_dynamic;
+                    _data.resize(flatSize), _row_size_dynamic = nRow_size_dynamic;
                 else if constexpr (_dataLayout == TABLE_StaticFixed)
-                    _data.resize(nSize * rs), DNDS_check_throw(nRow_size_dynamic == rs);
+                    _data.resize(flatSize);
                 else if constexpr (_dataLayout == TABLE_StaticMax)
-                    _data.resize(nSize * rm), DNDS_check_throw(nRow_size_dynamic == rm);
+                    _data.resize(flatSize);
+                _size = nSize;
 
                 if constexpr (_dataLayout == TABLE_Max || _dataLayout == TABLE_StaticMax)
                 {
@@ -444,21 +456,22 @@ namespace DNDS
         /// @param nSize New number of rows.
         void Resize(index nSize)
         {
+            DNDS_check_throw(nSize >= 0);
             if constexpr (_dataLayout == CSR)
             {
                 DNDS_check_throw_info(!IfCompressed(), "Need to decompress before auto resizing");
-                _size = nSize;
                 _dataUncompressed.resize(nSize);
+                _size = nSize;
             }
             else if constexpr (_dataLayout == TABLE_StaticFixed)
             {
+                _data.resize(CheckedSize::Multiply(nSize, index(rs)));
                 _size = nSize;
-                _data.resize(nSize * rs);
             }
             else if constexpr (_dataLayout == TABLE_StaticMax)
             {
+                _data.resize(CheckedSize::Multiply(nSize, index(rm)));
                 _size = nSize;
-                _data.resize(nSize * rm);
                 if (_pRowSizes.use_count() == 1)
                     _pRowSizes->resize(nSize, 0);
                 else
@@ -491,13 +504,18 @@ namespace DNDS
         {
             if constexpr (_dataLayout == CSR)
             {
+                auto starts = std::make_shared<typename decltype(_pRowStart)::element_type>(CheckedSize::Add(nSize, index(1)));
+                (*starts)[0] = 0;
+                for (index i = 0; i < nSize; i++)
+                {
+                    auto width = FRowSize(i);
+                    DNDS_check_throw(width >= 0 && width <= std::numeric_limits<rowsize>::max());
+                    (*starts)[i + 1] = CheckedSize::Add((*starts)[i], index(width));
+                }
+                _data.resize(starts->at(nSize));
+                _pRowStart = std::move(starts);
                 _size = nSize;
                 _pRowSizes.reset(), _dataUncompressed.clear(); //*directly to compressed
-                _pRowStart = std::make_shared<typename decltype(_pRowStart)::element_type>(nSize + 1);
-                _pRowStart->operator[](0) = 0;
-                for (index i = 0; i < nSize; i++)
-                    (*_pRowStart)[i + 1] = (*_pRowStart)[i] + FRowSize(i);
-                _data.resize(_pRowStart->at(nSize));
             }
             static_assert(_dataLayout == CSR, "Only Non Uniform, CSR for now");
             static_assert(std::is_invocable_r_v<rowsize, TFRowSize, index>, "Call invalid");
@@ -516,6 +534,7 @@ namespace DNDS
          */
         void ResizeRow(index iRow, rowsize nRowSize)
         {
+            DNDS_check_throw(nRowSize >= 0);
             if constexpr (_dataLayout == CSR)
             {
                 DNDS_check_throw_info(!IfCompressed(), "Need to decompress before auto resizing row");
@@ -548,6 +567,7 @@ namespace DNDS
         /// CSR-only, decompressed-only.
         void ReserveRow(index iRow, rowsize nRowSize)
         {
+            DNDS_check_throw(nRowSize >= 0);
             if constexpr (_dataLayout == CSR)
             {
                 DNDS_check_throw_info(!IfCompressed(), "Need to decompress before auto resizing row");
@@ -935,11 +955,14 @@ namespace DNDS
                 Serializer::ArrayGlobalOffset localOffset = offset;
                 if (localOffset.isDist())
                 {
+                    CheckSerializedInput(serializerP, localOffset.size() >= 0 &&
+                                                          localOffset.size() <= std::numeric_limits<index>::max() / index(sizeof_T) &&
+                                                          localOffset.offset() <= std::numeric_limits<index>::max() / index(sizeof_T));
                     localOffset = localOffset * index(sizeof_T);
                 }
                 index bufferSize{0};
                 serializerP->ReadUint8Array("data", nullptr, bufferSize, localOffset);
-                DNDS_check_throw(bufferSize % sizeof_T == 0);
+                CheckSerializedInput(serializerP, bufferSize >= 0 && bufferSize % sizeof_T == 0);
                 _data.resize(bufferSize / sizeof_T);
                 uint8_t dummy{};
                 serializerP->ReadUint8Array("data", bufferSize == 0 ? &dummy : (uint8_t *)_data.data(), bufferSize, localOffset);
@@ -1110,12 +1133,47 @@ namespace DNDS
             if (_row_max == DynamicSize && rmR >= 0)
                 _row_size_dynamic = rmR; // TODO: fix this! need a _row_max_dynamic ?
 
+            bool validShape = _size >= 0;
+            if constexpr (_dataLayout != CSR)
+            {
+                const index stride = this->DataStride();
+                validShape = validShape && stride >= 0 &&
+                             (stride == 0 || _size <= std::numeric_limits<index>::max() / stride);
+                if (offset.isDist())
+                    validShape = validShape && offset.size() >= 0 &&
+                                 (stride == 0 || (offset.size() <= std::numeric_limits<index>::max() / stride &&
+                                                  offset.offset() <= std::numeric_limits<index>::max() / stride));
+            }
+            else
+                validShape = validShape && _size < std::numeric_limits<index>::max();
+            CheckSerializedInput(serializerP, validShape);
+
             // --- Phase 2: Read structural data and resolve dataOffset ---
             ReadSerializerStructuralAndResolveDataOffset(serializerP, offset, dataOffset);
 
             // --- Phase 3: Read flat data and propagate offsets ---
             ReadSerializerDataAndPropagateOffset(serializerP, offset, dataOffset);
-            // TODO: check data validity
+            bool validPayload = false;
+            if constexpr (_dataLayout == CSR)
+            {
+                validPayload = _pRowStart && _pRowStart->size() == size_t(_size) + 1 &&
+                               _pRowStart->at(_size) >= 0 && size_t(_pRowStart->at(_size)) == _data.size();
+                if (validPayload)
+                    for (index i = 0; i < _size; ++i)
+                        validPayload = validPayload && (*_pRowStart)[i + 1] - (*_pRowStart)[i] <= std::numeric_limits<rowsize>::max();
+            }
+            else
+            {
+                validPayload = _data.size() == size_t(_size * index(this->DataStride()));
+                if constexpr (_dataLayout == TABLE_Max || _dataLayout == TABLE_StaticMax)
+                {
+                    validPayload = validPayload && _pRowSizes && _pRowSizes->size() == size_t(_size);
+                    if (validPayload)
+                        for (rowsize width : *_pRowSizes)
+                            validPayload = validPayload && width >= 0 && width <= this->DataStride();
+                }
+            }
+            CheckSerializedInput(serializerP, validPayload);
 
             serializerP->GoToPath(cwd);
         }
@@ -1222,8 +1280,11 @@ namespace DNDS
             {
                 if (dataOffset.isDist())
                 {
-                    dataOffset.CheckMultipleOf(this->DataStride());
-                    offset = dataOffset / this->DataStride();
+                    // Zero-width rows have no invertible element-to-row offset.
+                    const index stride = this->DataStride();
+                    CheckSerializedInput(serializerP, stride == 0 ? dataOffset.size() == 0 : dataOffset.size() % stride == 0 && dataOffset.offset() % stride == 0);
+                    if (stride != 0)
+                        offset = dataOffset / stride;
                 }
             }
         }

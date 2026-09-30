@@ -54,19 +54,23 @@ TEST_CASE("Audit batch 2: wall quadrature preserves square distances")
     options.method = 1;
     options.minWallDist = 0;
     options.verbose = 0;
-    mesh->BuildNodeWallDist([](auto)
-                            { return true; }, options);
-    for (DNDS::index i = 0; i < mesh->nodeWallDist.Size(); ++i)
+    for (int method : {0, 1, 20})
     {
-        const auto p = mesh->coords[i];
-        const double expected = std::min({p(0) - lower[0], upper[0] - p(0), p(1) - lower[1], upper[1] - p(1)});
-        CHECK(mesh->nodeWallDist[i].allFinite());
-        CHECK(mesh->nodeWallDist[i].norm() == doctest::Approx(expected).epsilon(1e-11));
+        options.method = method;
+        mesh->BuildNodeWallDist([](auto)
+                                { return true; }, options);
+        for (DNDS::index i = 0; i < mesh->nodeWallDist.Size(); ++i)
+        {
+            const auto p = mesh->coords[i];
+            const double expected = std::min({p(0) - lower[0], upper[0] - p(0), p(1) - lower[1], upper[1] - p(1)});
+            CHECK(mesh->nodeWallDist[i].allFinite());
+            CHECK(mesh->nodeWallDist[i].norm() == doctest::Approx(expected).epsilon(1e-11));
+        }
+        mesh->BuildNodeWallDist([](auto)
+                                { return false; }, options);
+        for (DNDS::index i = 0; i < mesh->nodeWallDist.Size(); ++i)
+            CHECK(mesh->nodeWallDist[i].norm() == std::pow(DNDS::veryLargeReal, 0.25));
     }
-    mesh->BuildNodeWallDist([](auto)
-                            { return false; }, options);
-    for (DNDS::index i = 0; i < mesh->nodeWallDist.Size(); ++i)
-        CHECK(mesh->nodeWallDist[i].norm() == std::pow(DNDS::veryLargeReal, 0.25));
 }
 
 TEST_CASE("Audit batch 2: both smoothing units share helper contracts")
