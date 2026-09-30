@@ -21,7 +21,9 @@ scientific plan, runtime bounds, data placement, and result validation.
 Before compiling or submitting, establish:
 
 - cluster SSH alias and scheduler;
-- remote repository and matching build directory;
+- the user-provided canonical DNDSR root, normally `~/<name>/DNDSR`, and its
+  matching build directory; ask for `<name>` or the full path rather than
+  inventing a personal or task-specific checkout root;
 - desired source commit or branch;
 - whether compilation is allowed on login nodes or must be scheduled;
 - partition, account/QoS if needed, nodes, tasks, CPUs per task, GPUs, memory,
@@ -98,9 +100,13 @@ or other external side effects by itself.
 4. Inspect the remote checkout once. By default, update the established remote
    checkout rather than creating another clone. Never silently destroy dirty
    work; follow the source-state decision tree in the protocol.
-5. Use the build directory paired with that source checkout. Reuse its existing
-   configuration and build only required targets unless reconfiguration is
-   demonstrably necessary.
+5. Treat the canonical checkout as the owner of the cluster's one shared
+   `venv/` and populated `external/` dependencies. Use the build directory
+   paired with each source checkout, but do not create another venv or rebuild
+   another private copy of externals for a standalone build/worktree. Link or
+   reference the verified canonical resources as described in the protocol.
+   Reuse existing build configuration and build only required targets unless
+   reconfiguration is demonstrably necessary.
 6. Compile only where the cluster contract allows it. If compute allocation is
    required, compile inside `srun` or `salloc`, never on the login node.
 7. Materialize a run-specific submission script and config record. Print the
@@ -125,8 +131,35 @@ fetch once and move it to that commit. If it is dirty:
   checkout/worktree.
 
 Do not infer that similarly named edits are already committed. For an isolated
-checkout, keep source and build paired and link large populated dependencies
-from the established checkout only after verifying each target.
+checkout, keep source and build paired and link the venv and populated
+dependencies from the canonical checkout only after verifying each target.
+
+## Canonical Python Environment
+
+The user supplies the canonical DNDSR root, normally `~/<name>/DNDSR`. Its
+`venv/` is the cluster-wide DNDSR Python environment, and its populated
+`external/` tree is the dependency source for canonical and standalone builds.
+Do not create another DNDSR venv or independently download/build the same
+externals in an isolated checkout.
+
+Do not install the DNDSR package into that venv with `pip install .` or
+`pip install -e .`. For a Python-interface job:
+
+1. Configure the checkout-specific build with the canonical venv's Python.
+2. Build `dnds_pybind11`, `geom_pybind11`, `cfv_pybind11`, and
+   `eulerP_pybind11` as required.
+3. Run `cmake --install <build> --component py`; this places the extension
+   modules in that checkout's `python/DNDSR/`, outside the venv.
+4. Launch with the canonical interpreter and the active checkout on the module
+   path, for example:
+
+   ```bash
+   PYTHONPATH=<checkout>/python ~/<name>/DNDSR/venv/bin/python <script.py>
+   ```
+
+After changing commits or C++ binding sources, rebuild and reinstall the
+bindings before the Python run. Keep `PYTHONPATH` tied to the active checkout
+so a standalone build cannot silently import the canonical checkout's modules.
 
 ## Cluster Profiles
 

@@ -7,7 +7,7 @@ scheduler capacity and queue observations as time-sensitive.
 
 | Area | Facts to record |
 |---|---|
-| Access | SSH alias, resolved host, user, repository path |
+| Access | SSH alias, resolved host, user-provided canonical `~/<name>/DNDSR` path |
 | Scheduler | implementation/version, partitions, limits, account/QoS rules |
 | Allocation | nodes, tasks per node, CPUs per task, GPUs, memory, wall time |
 | Build | source path, build path, generator, compiler/MPI, login-node policy |
@@ -33,6 +33,12 @@ Platform-specific cluster compilation can still fail, but the cluster should
 not be used to discover ordinary syntax, linkage, config, or startup errors.
 
 ## Remote Source Decision Tree
+
+Establish the canonical DNDSR root from the user before creating or selecting a
+checkout. The canonical root owns the shared `venv/` and populated `external/`
+dependencies. A task-specific build directory stays paired with its source
+checkout, but a standalone checkout must not create another venv or another
+downloaded/built external dependency tree.
 
 Resolve a full desired commit ID from the intended remote before changing the
 checkout. Then perform one remote `git status --short --branch`.
@@ -71,10 +77,34 @@ Large populated dependencies may be linked from the established checkout:
 
 1. Verify the dependency target exists and record its resolved path/version.
 2. Create the expected parent directory in the isolated checkout.
-3. Link `external/cfd_externals` and required per-library header-only
-   directories rather than copying them.
+3. Link the canonical `venv/`, `external/cfd_externals`, and required
+   per-library header-only directories rather than copying or recreating them.
 4. Never replace a real directory or existing link without inspecting it.
 5. Reconfigure only the isolated checkout's matching build directory.
+
+The build directory is never shared between source checkouts. Configure it
+with the canonical interpreter, for example
+`-DPython_EXECUTABLE=~/<name>/DNDSR/venv/bin/python` and the matching
+`Python3_EXECUTABLE` value.
+
+## Python Bindings Without Package Installation
+
+Never run `pip install .` or `pip install -e .` for DNDSR in the canonical
+venv. Build the required pybind targets, then install only CMake's `py`
+component into the active checkout's repository-local `python/` tree:
+
+```bash
+cmake --build <build> \
+  --target dnds_pybind11 geom_pybind11 cfv_pybind11 eulerP_pybind11 -j<jobs>
+cmake --install <build> --component py
+PYTHONPATH=<checkout>/python \
+  ~/<name>/DNDSR/venv/bin/python <script.py>
+```
+
+Rebuild and repeat the component install after a branch/commit switch or any
+C++ binding change. Verify `DNDSR.__file__` resolves under
+`<checkout>/python/DNDSR`, not under the venv's `site-packages` and not under a
+different checkout.
 
 ## Slurm Compilation
 
