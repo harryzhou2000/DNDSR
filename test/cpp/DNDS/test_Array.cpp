@@ -27,6 +27,92 @@
 
 using namespace DNDS;
 
+TEST_CASE("Ownership: host and Host-device leases retain fixed allocations")
+{
+    host_device_vector<DNDS::real> a(3, 4);
+    auto host = a.hostLease();
+    std::weak_ptr<DNDS::real> life = host;
+    a.to_device(DeviceBackend::Host);
+    auto device = a.deviceLease();
+    CHECK(host.get() == a.data());
+    CHECK(device.get() == host.get());
+    *host = 9;
+    CHECK(a[0] == 9);
+    auto copy = a;
+    CHECK(copy.data() != host.get());
+    a.resize(6, 2);
+    CHECK(a.data() != host.get());
+    CHECK(a.dataDevice() == a.data());
+    CHECK(*device == 9);
+    *host = 7;
+    CHECK(a[0] == 2);
+    CHECK(copy[0] == 9);
+    a.clear();
+    host.reset();
+    CHECK_FALSE(life.expired());
+    device.reset();
+    CHECK(life.expired());
+    a.resize(2, 11);
+    auto movedLease = a.hostLease();
+    auto b = std::move(a);
+    CHECK(b.data() == movedLease.get());
+    b.swap(copy);
+    CHECK(copy.data() == movedLease.get());
+    copy = host_device_vector<DNDS::real>(1, 1);
+    CHECK(*movedLease == 11);
+}
+
+TEST_CASE("Ownership: CSR row leases survive reserve compression and deletion")
+{
+    std::shared_ptr<const void> owner;
+    std::weak_ptr<const void> weak;
+    const DNDS::index *old = nullptr;
+    {
+        Array<DNDS::index, NonUniformSize> a;
+        a.Resize(1, 2);
+        a(0, 0) = 12;
+        a(0, 1) = 15;
+        owner = a.rowLease(0);
+        weak = owner;
+        old = static_cast<const DNDS::index *>(owner.get());
+        a.ReserveRow(0, 100);
+        CHECK(a(0, 0) == 12);
+        CHECK(old[1] == 15);
+        a.ResizeRow(0, 3);
+        CHECK(a(0, 1) == 15);
+        CHECK(a(0, 2) == 0);
+        a(0, 0) = 42;
+        CHECK(old[0] == 12);
+        auto row = a.rowLease(0);
+        a.Compress();
+        CHECK(static_cast<const DNDS::index *>(row.get())[0] == 42);
+        auto flat = a.dataLease();
+        a.Decompress();
+        CHECK(static_cast<const DNDS::index *>(flat.get())[0] == 42);
+        CHECK(a(0, 0) == 42);
+    }
+    CHECK(old[0] == 12);
+    CHECK_FALSE(weak.expired());
+    owner.reset();
+    CHECK(weak.expired());
+}
+
+TEST_CASE("Ownership: uncompressed row hashing preserves non-arithmetic values")
+{
+    Array<std::array<DNDS::index, 2>, NonUniformSize> a;
+    a.Resize(2, 0);
+    a.ResizeRow(0, 1);
+    a(0, 0) = {12, 15};
+    auto b = a;
+    CHECK(a.hash() == b.hash());
+    b(0, 0)[0] = 42;
+    CHECK(a(0, 0)[0] == 12);
+    CHECK(a.hash() != b.hash());
+    a.Compress();
+    b = a;
+    CHECK(a.hash() == b.hash());
+}
+
 TEST_CASE("CSR sharing: public row starts and const iterators are read only")
 {
     using Vector = host_device_vector<DNDS::index>;

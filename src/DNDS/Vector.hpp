@@ -220,20 +220,22 @@ namespace DNDS
         using t_self = host_device_vector_r1<T>;
         using t_base = data_vector_base<T, host_device_vector_r1<T>>;
 
-        std::unique_ptr<DeviceHostSingleAllocationBase> host_data = std::make_unique<DeviceHostSingleAllocationDirect>();
-        std::unique_ptr<DeviceHostSingleAllocationBase> device_data = std::make_unique<DeviceHostSingleAllocationDirect>();
+        // Only this vector controls replacement. Exported aliasing shared_ptrs
+        // own bytes, never expose the allocation manager's free/allocate API.
+        std::shared_ptr<DeviceHostSingleAllocationBase> host_data = std::make_shared<DeviceHostSingleAllocationDirect>();
+        std::shared_ptr<DeviceHostSingleAllocationBase> device_data = std::make_shared<DeviceHostSingleAllocationDirect>();
         T *host_ptr = reinterpret_cast<T *>(host_data->get());
         T *device_ptr = reinterpret_cast<T *>(device_data->get());
         size_t size_ = 0;
 
         void sync_device_ptr()
         {
-            device_ptr = reinterpret_cast<T *>(device_data->get());
+            device_ptr = device_data ? reinterpret_cast<T *>(device_data->get()) : nullptr;
         }
 
         void sync_host_ptr()
         {
-            host_ptr = reinterpret_cast<T *>(host_data->get());
+            host_ptr = host_data ? reinterpret_cast<T *>(host_data->get()) : nullptr;
         }
 
     public:
@@ -267,12 +269,14 @@ namespace DNDS
 
         DNDS_HOST void resize(size_t new_size)
         {
-            if (!host_data)
-                host_data = std::make_unique<DeviceHostSingleAllocationDirect>();
+            // Preserve the old allocation while exported views own it.
+            auto replacement = std::make_shared<DeviceHostSingleAllocationDirect>();
+            replacement->allocate(new_size * sizeof(T), DeviceBackend::Unknown);
+            host_data = std::move(replacement);
             size_ = new_size;
-            host_data->free();
-            host_data->allocate(size_ * sizeof(T), DeviceBackend::Unknown);
             sync_host_ptr();
+            if (device() == DeviceBackend::Host)
+                to_device(DeviceBackend::Host);
         }
 
         template <class TFill>
@@ -284,11 +288,24 @@ namespace DNDS
 
         DNDS_HOST void create_device_data(DeviceBackend B)
         {
-            if (!device_data)
-                device_data = std::make_unique<DeviceHostSingleAllocationDirect>();
-            device_data->free();
-            device_data->allocate(size_ * sizeof(T), B);
+            auto replacement = std::make_shared<DeviceHostSingleAllocationDirect>();
+            replacement->allocate(size_ * sizeof(T), B);
+            device_data = std::move(replacement);
             sync_device_ptr();
+        }
+
+        /// Owning buffer leases. Address/extent stay fixed for this allocation;
+        /// replacing this vector does not retarget a lease. Element writes share.
+        /// Device leases must outlive all asynchronous uses; no implicit fence.
+        [[nodiscard]] std::shared_ptr<T> hostLease() { return {host_data, host_ptr}; }
+        [[nodiscard]] std::shared_ptr<const T> hostLease() const { return {host_data, host_ptr}; }
+        [[nodiscard]] std::shared_ptr<T> deviceLease()
+        {
+            return {device() == DeviceBackend::Host ? host_data : device_data, device_ptr};
+        }
+        [[nodiscard]] std::shared_ptr<const T> deviceLease() const
+        {
+            return {device() == DeviceBackend::Host ? host_data : device_data, device_ptr};
         }
 
         DNDS_HOST T *data() { return host_ptr; }
@@ -328,21 +345,15 @@ namespace DNDS
 
         DNDS_HOST void clear_device()
         {
-            if (device_data)
-            {
-                device_data->free();
-                sync_device_ptr();
-            }
+            device_data.reset();
+            sync_device_ptr();
         }
 
         DNDS_HOST void clear()
         {
             clear_device();
-            if (host_data)
-            {
-                host_data->free();
-                sync_host_ptr();
-            }
+            host_data.reset();
+            sync_host_ptr();
             size_ = 0;
         }
 
@@ -428,7 +439,7 @@ namespace DNDS
 
         ~host_device_vector_r1() = default;
 
-        DeviceBackend device()
+        DeviceBackend device() const
         {
             return device_data ? device_data->device() : DeviceBackend::Unknown;
         }

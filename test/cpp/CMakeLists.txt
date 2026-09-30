@@ -204,6 +204,11 @@ dnds_add_mpi_test(array_dof "DNDS/test_ArrayDOF.cpp" "dnds")
 dnds_add_mpi_test(index_mapping "DNDS/test_IndexMapping.cpp" "dnds")
 dnds_add_mpi_test(permutation_transfer "DNDS/test_PermutationTransfer.cpp" "dnds")
 
+if(DNDS_USE_CUDA)
+    dnds_add_mpi_test(array_dof_cuda "DNDS/test_ArrayDOF_CUDA.cu" "dnds")
+    add_dependencies(dnds_unit_tests dnds_test_array_dof_cuda)
+endif()
+
 set(DNDS_TEST_TARGETS
     dnds_test_array
     dnds_test_config

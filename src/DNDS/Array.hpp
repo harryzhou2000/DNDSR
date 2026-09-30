@@ -122,7 +122,7 @@ namespace DNDS
         //* compressed data
         using t_Data = host_device_vector<value_type>;
         //* uncompressed data (only for CSR)
-        using t_DataUncompressed = std::vector<std::vector<value_type>>;
+        using t_DataUncompressed = std::vector<RowStorage<value_type>>;
 
         //* non uniform data: CSR
         using t_RowStart = host_device_vector<index>;
@@ -151,6 +151,18 @@ namespace DNDS
         /// @brief Shared pointer to the per-row size vector (TABLE_Max / TABLE_StaticMax).
         /// @details For padded layouts, records the number of "used" columns in each row.
         t_pRowSizes getRowSizes() { return _pRowSizes; }
+
+        /// Own the exact host allocation behind an exported row. Ordinary
+        /// element access stays borrowed; only long-lived consumers need leases.
+        std::shared_ptr<const void> rowLease(index iRow) const
+        {
+            DNDS_check_throw(iRow >= 0 && iRow < _size);
+            if constexpr (isCSR)
+                if (!IfCompressed())
+                    return _dataUncompressed.at(iRow).lease();
+            return _data.hostLease();
+        }
+        std::shared_ptr<const void> dataLease() const { return _data.hostLease(); }
 
     public:
         /// @brief Default-constructed array: empty, no storage.
@@ -754,7 +766,9 @@ namespace DNDS
                 if (IfCompressed())
                     hashData = vector_hash<T>()(_data.begin(), _data.end());
                 else
-                    hashData = vector_hash<std::vector<T>>()(_dataUncompressed);
+                    for (auto &row : _dataUncompressed)
+                        if (row.size())
+                            hashData ^= vector_hash<T>()(row.data(), row.data() + row.size());
             }
             else
                 hashData = vector_hash<T>()(_data.begin(), _data.end());
