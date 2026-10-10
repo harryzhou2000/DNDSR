@@ -792,6 +792,8 @@ namespace DNDS::Euler
             CFV::tScalarPair &limiterIndicator,
             ArrayDOFV<1> &o2Beta,
             ArrayDOFV<1> &alpha,
+            ArrayDOFV<3> &branchAlpha,
+            ArrayDOFV<1> &densityJump,
             ArrayDOFV<1> &pressureJump,
             ArrayDOFV<1> &compression,
             const LimitedVRSettings &limitedVRSettings,
@@ -2268,6 +2270,8 @@ namespace DNDS::Euler
             ArrayDOFV<1> &betaPP;        ///< PP reconstruction limiter beta.
             ArrayDOFV<1> &alphaPP;       ///< PP RHS limiter alpha.
             ArrayDOFV<1> &lvrAlpha;
+            ArrayDOFV<3> &lvrBranchAlpha; ///< Shock, contact, and contact-support alpha components.
+            ArrayDOFV<1> &lvrDensityJump;
             ArrayDOFV<1> &lvrPressureJump;
             ArrayDOFV<1> &lvrCompression;
             ArrayDOFV<1> &lvrO2Beta;
@@ -2425,6 +2429,7 @@ namespace DNDS::Euler
             ArrayDOFV<nVarsFixed> &u, ArrayRECV<nVarsFixed> &uRecO2,                                                      \
             ArrayRECV<nVarsFixed> &uRecLimiterWork, ArrayRECV<nVarsFixed> &uRecLimiterBuffer,                             \
             CFV::tScalarPair &limiterIndicator, ArrayDOFV<1> &o2Beta, ArrayDOFV<1> &alpha,                                \
+            ArrayDOFV<3> &branchAlpha, ArrayDOFV<1> &densityJump,                                                         \
             ArrayDOFV<1> &pressureJump, ArrayDOFV<1> &compression,                                                        \
             const LimitedVRSettings &limitedVRSettings,                                                                   \
             const typename TVFV::template TFBoundary<nVarsFixed> &FBoundary);                                             \

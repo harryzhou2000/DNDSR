@@ -455,6 +455,8 @@ namespace DNDS::Euler
         vfv->BuildUDof(reactiveSplitCoupledScore_, 1);
         vfv->BuildUDof(reactiveSplitStiffnessStep_, 1);
         vfv->BuildUDof(lvrAlpha_, 1);
+        vfv->BuildUDof(lvrBranchAlpha_, 3);
+        vfv->BuildUDof(lvrDensityJump_, 1);
         vfv->BuildUDof(lvrPressureJump_, 1);
         vfv->BuildUDof(lvrCompression_, 1);
         vfv->BuildUDof(lvrO2Beta_, 1);
@@ -465,6 +467,8 @@ namespace DNDS::Euler
         reactiveSplitCoupledScore_.setConstant(0.0);
         reactiveSplitStiffnessStep_.setConstant(0.0);
         lvrAlpha_.setConstant(0.0);
+        lvrBranchAlpha_.setConstant(0.0);
+        lvrDensityJump_.setConstant(0.0);
         lvrPressureJump_.setConstant(0.0);
         lvrCompression_.setConstant(0.0);
         lvrO2Beta_.setConstant(1.0);

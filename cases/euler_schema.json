@@ -1089,6 +1089,80 @@
                             "minimum": 0.0,
                             "maximum": 1.0
                         },
+                        "contactDensityJumpStart": {
+                            "type": "number",
+                            "default": 0.2,
+                            "description": "Facial density-jump contact-gate ramp start",
+                            "minimum": 0.0
+                        },
+                        "contactDensityJumpFull": {
+                            "type": "number",
+                            "default": 0.8,
+                            "description": "Facial density-jump contact-gate ramp saturation",
+                            "minimum": 0.0
+                        },
+                        "contactAlphaMax": {
+                            "type": "number",
+                            "default": 0.0,
+                            "description": "Maximum O2 penalty fraction contributed by the density-only contact gate; zero disables it",
+                            "minimum": 0.0,
+                            "maximum": 1.0
+                        },
+                        "contactUseCellMeanJump": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "Evaluate the contact density jump from adjacent cell averages instead of limited-O2 reconstructed facial states"
+                        },
+                        "contactUseExtremumCorrection": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "Add a contact-supported cell-mean density-extremum correction using the contact-specific extremum, support, retention, and halo controls"
+                        },
+                        "contactExtremumUseCellMeanSupport": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "Evaluate density-extremum support from adjacent cell averages while retaining the selected reconstructed-face or cell-mean base contact gate"
+                        },
+                        "contactExtremumStart": {
+                            "type": "number",
+                            "default": 0.001,
+                            "description": "Normalized cell-mean density-extremum correction ramp start",
+                            "minimum": 0.0
+                        },
+                        "contactExtremumFull": {
+                            "type": "number",
+                            "default": 0.008,
+                            "description": "Normalized cell-mean density-extremum correction ramp saturation",
+                            "minimum": 0.0
+                        },
+                        "contactSupportStart": {
+                            "type": "number",
+                            "default": 0.02,
+                            "description": "Adjacent density-gate support fraction ramp start for the density-extremum correction",
+                            "minimum": 0.0,
+                            "maximum": 1.0
+                        },
+                        "contactSupportFull": {
+                            "type": "number",
+                            "default": 0.15,
+                            "description": "Adjacent density-gate support fraction ramp saturation for the density-extremum correction",
+                            "minimum": 0.0,
+                            "maximum": 1.0
+                        },
+                        "contactExtremumRetention": {
+                            "type": "number",
+                            "default": 0.95,
+                            "description": "Per-update retention of the density-extremum correction while adjacent density-gate support remains active",
+                            "minimum": 0.0,
+                            "maximum": 1.0
+                        },
+                        "contactExtremumHaloLayers": {
+                            "type": "integer",
+                            "default": 1,
+                            "description": "Number of face-neighbour layers receiving the density-extremum correction",
+                            "minimum": 0.0,
+                            "maximum": 4.0
+                        },
                         "gateMode": {
                             "type": "integer",
                             "default": 0,
@@ -1130,34 +1204,34 @@
                         "oscillationSupportStart": {
                             "type": "number",
                             "default": 0.02,
-                            "description": "Adjacent product-gate alpha fraction ramp start for gate mode 8",
+                            "description": "Adjacent shock-gate alpha fraction ramp start for the mode-8 pressure correction",
                             "minimum": 0.0,
                             "maximum": 1.0
                         },
                         "oscillationSupportFull": {
                             "type": "number",
                             "default": 0.15,
-                            "description": "Adjacent product-gate alpha fraction ramp saturation for gate mode 8",
+                            "description": "Adjacent shock-gate alpha fraction ramp saturation for the mode-8 pressure correction",
                             "minimum": 0.0,
                             "maximum": 1.0
                         },
                         "oscillationRetention": {
                             "type": "number",
                             "default": 0.95,
-                            "description": "Per-update retention of mode-8 correction while adjacent product-gate support remains active",
+                            "description": "Per-update retention of the mode-8 pressure correction while adjacent shock-gate support remains active",
                             "minimum": 0.0,
                             "maximum": 1.0
                         },
                         "oscillationTransverseTolerance": {
                             "type": "number",
                             "default": 1e-08,
-                            "description": "Relative pressure tolerance used to identify a transverse equal-state neighbour for gate mode 8",
+                            "description": "Relative field tolerance used by pressure- and density-extremum equal-state-neighbour tests",
                             "minimum": 0.0
                         },
                         "oscillationMinTransverseNeighbours": {
                             "type": "integer",
                             "default": 2,
-                            "description": "Minimum equal-state transverse face neighbours required by gate mode 8",
+                            "description": "Minimum equal-state transverse face neighbours required by pressure- and density-extremum corrections",
                             "minimum": 1.0,
                             "maximum": 4.0
                         },

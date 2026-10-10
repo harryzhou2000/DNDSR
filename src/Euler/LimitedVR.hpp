@@ -27,6 +27,18 @@ namespace DNDS::Euler
         real compressionStart = 0.08;
         real compressionFull = 0.16;
         real alphaMax = 0.50;
+        real contactDensityJumpStart = 0.20;
+        real contactDensityJumpFull = 0.80;
+        real contactAlphaMax = 0.0;
+        bool contactUseCellMeanJump = false;
+        bool contactUseExtremumCorrection = false;
+        bool contactExtremumUseCellMeanSupport = false;
+        real contactExtremumStart = 0.001;
+        real contactExtremumFull = 0.008;
+        real contactSupportStart = 0.02;
+        real contactSupportFull = 0.15;
+        real contactExtremumRetention = 0.95;
+        int contactExtremumHaloLayers = 1;
         int gateMode = GateProductCubic;
         int gateHaloLayers = 0;
         bool gateHaloSaturatedOnly = false;
@@ -49,28 +61,44 @@ namespace DNDS::Euler
             DNDS_FIELD(compressionStart,  "Normal-compression ramp start", DNDS::Config::range(0.0));
             DNDS_FIELD(compressionFull,   "Normal-compression ramp saturation", DNDS::Config::range(0.0));
             DNDS_FIELD(alphaMax,         "Maximum O2 penalty fraction", DNDS::Config::range(0.0, 1.0));
+            DNDS_FIELD(contactDensityJumpStart, "Facial density-jump contact-gate ramp start", DNDS::Config::range(0.0));
+            DNDS_FIELD(contactDensityJumpFull, "Facial density-jump contact-gate ramp saturation", DNDS::Config::range(0.0));
+            DNDS_FIELD(contactAlphaMax, "Maximum O2 penalty fraction contributed by the density-only contact gate; zero disables it", DNDS::Config::range(0.0, 1.0));
+            DNDS_FIELD(contactUseCellMeanJump, "Evaluate the contact density jump from adjacent cell averages instead of limited-O2 reconstructed facial states");
+            DNDS_FIELD(contactUseExtremumCorrection, "Add a contact-supported cell-mean density-extremum correction using the contact-specific extremum, support, retention, and halo controls");
+            DNDS_FIELD(contactExtremumUseCellMeanSupport, "Evaluate density-extremum support from adjacent cell averages while retaining the selected reconstructed-face or cell-mean base contact gate");
+            DNDS_FIELD(contactExtremumStart, "Normalized cell-mean density-extremum correction ramp start", DNDS::Config::range(0.0));
+            DNDS_FIELD(contactExtremumFull, "Normalized cell-mean density-extremum correction ramp saturation", DNDS::Config::range(0.0));
+            DNDS_FIELD(contactSupportStart, "Adjacent density-gate support fraction ramp start for the density-extremum correction", DNDS::Config::range(0.0, 1.0));
+            DNDS_FIELD(contactSupportFull, "Adjacent density-gate support fraction ramp saturation for the density-extremum correction", DNDS::Config::range(0.0, 1.0));
+            DNDS_FIELD(contactExtremumRetention, "Per-update retention of the density-extremum correction while adjacent density-gate support remains active", DNDS::Config::range(0.0, 1.0));
+            DNDS_FIELD(contactExtremumHaloLayers, "Number of face-neighbour layers receiving the density-extremum correction", DNDS::Config::range(0, 4));
             DNDS_FIELD(gateMode,         "LVR gate: 0=product cubic, 1=union cubic, 2=additive rational tail, 3=coupled rational tail, 4=coupled rational tail with full-threshold saturation, 5=cross-cell coupled rational tail, 6=one-neighbour indicator-envelope rational tail, 7=one-neighbour indicator-envelope cubic product, 8=product cubic with shock-supported cell-mean pressure-extremum correction", DNDS::Config::range(0, 8));
             DNDS_FIELD(gateHaloLayers,   "Number of face-neighbour cell layers added around the detected LVR gate", DNDS::Config::range(0, 4));
             DNDS_FIELD(gateHaloSaturatedOnly, "Expand only the saturated shock core and set its halo to alphaMax");
             DNDS_FIELD(alphaUpdateRelaxation, "Temporal relaxation applied when updating the LVR alpha field", DNDS::Config::range(0.0, 1.0));
             DNDS_FIELD(oscillationExtremumStart, "Normalized cell-mean pressure-extremum ramp start for gate mode 8", DNDS::Config::range(0.0));
             DNDS_FIELD(oscillationExtremumFull, "Normalized cell-mean pressure-extremum ramp saturation for gate mode 8", DNDS::Config::range(0.0));
-            DNDS_FIELD(oscillationSupportStart, "Adjacent product-gate alpha fraction ramp start for gate mode 8", DNDS::Config::range(0.0, 1.0));
-            DNDS_FIELD(oscillationSupportFull, "Adjacent product-gate alpha fraction ramp saturation for gate mode 8", DNDS::Config::range(0.0, 1.0));
-            DNDS_FIELD(oscillationRetention, "Per-update retention of mode-8 correction while adjacent product-gate support remains active", DNDS::Config::range(0.0, 1.0));
-            DNDS_FIELD(oscillationTransverseTolerance, "Relative pressure tolerance used to identify a transverse equal-state neighbour for gate mode 8", DNDS::Config::range(0.0));
-            DNDS_FIELD(oscillationMinTransverseNeighbours, "Minimum equal-state transverse face neighbours required by gate mode 8", DNDS::Config::range(1, 4));
+            DNDS_FIELD(oscillationSupportStart, "Adjacent shock-gate alpha fraction ramp start for the mode-8 pressure correction", DNDS::Config::range(0.0, 1.0));
+            DNDS_FIELD(oscillationSupportFull, "Adjacent shock-gate alpha fraction ramp saturation for the mode-8 pressure correction", DNDS::Config::range(0.0, 1.0));
+            DNDS_FIELD(oscillationRetention, "Per-update retention of the mode-8 pressure correction while adjacent shock-gate support remains active", DNDS::Config::range(0.0, 1.0));
+            DNDS_FIELD(oscillationTransverseTolerance, "Relative field tolerance used by pressure- and density-extremum equal-state-neighbour tests", DNDS::Config::range(0.0));
+            DNDS_FIELD(oscillationMinTransverseNeighbours, "Minimum equal-state transverse face neighbours required by pressure- and density-extremum corrections", DNDS::Config::range(1, 4));
             DNDS_FIELD(o2ReferenceLimiter, "Limited O2 reference limiter: 0=Barth, 1=WBAP", DNDS::Config::range(0, 1));
             DNDS_FIELD(o2ReferenceUsePP,   "Compress the limited O2 reference toward the cell mean to preserve facial positivity");
             // clang-format on
             config.check("limitedVR full thresholds must exceed start thresholds", [](const T &s)
                          { return s.pressureJumpFull > s.pressureJumpStart &&
-                                  s.compressionFull > s.compressionStart; });
+                                  s.compressionFull > s.compressionStart &&
+                                  s.contactDensityJumpFull > s.contactDensityJumpStart; });
             config.check("limitedVR alphaUpdateRelaxation must be positive", [](const T &s)
                          { return s.alphaUpdateRelaxation > 0; });
             config.check("limitedVR oscillation full thresholds must exceed start thresholds", [](const T &s)
                          { return s.oscillationExtremumFull > s.oscillationExtremumStart &&
                                   s.oscillationSupportFull > s.oscillationSupportStart; });
+            config.check("limitedVR contact-extremum full thresholds must exceed start thresholds", [](const T &s)
+                         { return s.contactExtremumFull > s.contactExtremumStart &&
+                                  s.contactSupportFull > s.contactSupportStart; });
         }
     };
 
@@ -78,6 +106,12 @@ namespace DNDS::Euler
     {
         real pressureJump = 0;
         real compression = 0;
+        real alpha = 0;
+    };
+
+    struct LimitedVRContactFaceSensor
+    {
+        real densityJump = 0;
         real alpha = 0;
     };
 
@@ -174,5 +208,25 @@ namespace DNDS::Euler
         }
         result.alpha = settings.alphaMax * gateResponse;
         return result;
+    }
+
+    inline LimitedVRContactFaceSensor EvaluateLimitedVRContactFaceSensor(
+        real densityLeft, real densityRight,
+        const LimitedVRSettings &settings)
+    {
+        LimitedVRContactFaceSensor result;
+        real densityScale = std::max({std::abs(densityLeft), std::abs(densityRight), real(1e-30)});
+        real densityDenominator = std::max(densityLeft + densityRight, smallReal * densityScale);
+        result.densityJump = 2.0 * std::abs(densityRight - densityLeft) / densityDenominator;
+        result.alpha = settings.contactAlphaMax * LimitedVRCubicRamp(
+                                                      result.densityJump,
+                                                      settings.contactDensityJumpStart,
+                                                      settings.contactDensityJumpFull);
+        return result;
+    }
+
+    inline real CombineLimitedVRAlpha(real shockAlpha, real contactAlpha)
+    {
+        return std::max(shockAlpha, contactAlpha);
     }
 }

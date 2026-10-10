@@ -2837,6 +2837,8 @@ namespace DNDS::Euler
         auto &betaPP = dataRefs.betaPP;
         auto &alphaPP = dataRefs.alphaPP;
         auto &lvrAlpha = dataRefs.lvrAlpha;
+        auto &lvrBranchAlpha = dataRefs.lvrBranchAlpha;
+        auto &lvrDensityJump = dataRefs.lvrDensityJump;
         auto &lvrPressureJump = dataRefs.lvrPressureJump;
         auto &lvrCompression = dataRefs.lvrCompression;
         auto &lvrO2Beta = dataRefs.lvrO2Beta;
@@ -2862,6 +2864,14 @@ namespace DNDS::Euler
         { return alphaPP[iCell](0); };
         outMap["lvrAlpha"] = [&](index iCell)
         { return lvrAlpha[iCell](0); };
+        outMap["lvrShockAlpha"] = [&](index iCell)
+        { return lvrBranchAlpha[iCell](0); };
+        outMap["lvrContactAlpha"] = [&](index iCell)
+        { return lvrBranchAlpha[iCell](1); };
+        outMap["lvrContactSupportAlpha"] = [&](index iCell)
+        { return lvrBranchAlpha[iCell](2); };
+        outMap["lvrDensityJump"] = [&](index iCell)
+        { return lvrDensityJump[iCell](0); };
         outMap["lvrPressureJump"] = [&](index iCell)
         { return lvrPressureJump[iCell](0); };
         outMap["lvrCompression"] = [&](index iCell)
@@ -2975,6 +2985,12 @@ namespace DNDS::Euler
         auto &uRec = dataRefs.uRec;
         auto &betaPP = dataRefs.betaPP;
         auto &alphaPP = dataRefs.alphaPP;
+        auto &lvrAlpha = dataRefs.lvrAlpha;
+        auto &lvrBranchAlpha = dataRefs.lvrBranchAlpha;
+        auto &lvrDensityJump = dataRefs.lvrDensityJump;
+        auto &lvrPressureJump = dataRefs.lvrPressureJump;
+        auto &lvrCompression = dataRefs.lvrCompression;
+        auto &lvrO2Beta = dataRefs.lvrO2Beta;
 
         auto iBnd2Cell = [this](index iBnd) -> index
         {
@@ -3008,6 +3024,22 @@ namespace DNDS::Euler
         { return betaPP[iBnd2Cell(iBnd)](0); };
         outMap["alphaPP"] = [&, iBnd2Cell](index iBnd)
         { return alphaPP[iBnd2Cell(iBnd)](0); };
+        outMap["lvrAlpha"] = [&, iBnd2Cell](index iBnd)
+        { return lvrAlpha[iBnd2Cell(iBnd)](0); };
+        outMap["lvrShockAlpha"] = [&, iBnd2Cell](index iBnd)
+        { return lvrBranchAlpha[iBnd2Cell(iBnd)](0); };
+        outMap["lvrContactAlpha"] = [&, iBnd2Cell](index iBnd)
+        { return lvrBranchAlpha[iBnd2Cell(iBnd)](1); };
+        outMap["lvrContactSupportAlpha"] = [&, iBnd2Cell](index iBnd)
+        { return lvrBranchAlpha[iBnd2Cell(iBnd)](2); };
+        outMap["lvrDensityJump"] = [&, iBnd2Cell](index iBnd)
+        { return lvrDensityJump[iBnd2Cell(iBnd)](0); };
+        outMap["lvrPressureJump"] = [&, iBnd2Cell](index iBnd)
+        { return lvrPressureJump[iBnd2Cell(iBnd)](0); };
+        outMap["lvrCompression"] = [&, iBnd2Cell](index iBnd)
+        { return lvrCompression[iBnd2Cell(iBnd)](0); };
+        outMap["lvrO2Beta"] = [&, iBnd2Cell](index iBnd)
+        { return lvrO2Beta[iBnd2Cell(iBnd)](0); };
         outMap["ACond"] = [&, iBnd2Cell](index iBnd)
         {
             index iCell = iBnd2Cell(iBnd);
