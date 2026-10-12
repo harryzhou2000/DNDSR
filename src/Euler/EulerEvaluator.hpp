@@ -1227,6 +1227,12 @@ namespace DNDS::Euler
          * contribute zero flux. This experimental estimator is intended for orthogonal laminar
          * meshes with impermeable adiabatic boundaries, not the native reconstructed RHS.
          * Ghost transport coefficients are evaluated locally from the already-current input.
+         * Optional mode-3 balanceExpansionPasses then balanceSmoothingPasses operate on raw
+         * coupled fractions, communicating only chi before each synchronous pass and snapping
+         * once afterward. These experimental filters require a cell chain (at most two interior
+         * distinct non-self face neighbors); periodic self faces are ignored and missing endpoint
+         * neighbors copy the local value for smoothing.
+         * They do not reapply the shock gate and can extend coupling into neighboring cells.
          *
          * @pre Owning and ghost entries of @p u are current. This evaluator API performs no communication
          * for its input state.

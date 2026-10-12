@@ -2,7 +2,64 @@
 #include "Euler/ReactiveSplitIndicator.hpp"
 #include "doctest.h"
 
+TEST_CASE("Local matched-rate ratio guards activity and forbids spatial expansion")
+{
+    DNDS::Euler::ReactiveSplitIndicatorSettings settings;
+    settings.indicatorMode = 4;
+    settings.chemicalActivityThreshold = .001;
+    settings.ratioThreshold = .1;
+    settings.ratioExponent = 4;
+    CHECK(settings.validate().empty());
+    using DNDS::Euler::ReactiveSplitMatchedRatioFraction;
+    CHECK(ReactiveSplitMatchedRatioFraction(0, 1, 0, settings) == 0);
+    CHECK(ReactiveSplitMatchedRatioFraction(1, 0, 0, settings) == 0);
+    CHECK(ReactiveSplitMatchedRatioFraction(.001, .0001, 0, settings) == doctest::Approx(.25));
+    CHECK(ReactiveSplitMatchedRatioFraction(.001, .0001, .08, settings) == doctest::Approx(.125));
+    CHECK(ReactiveSplitMatchedRatioFraction(1e300, 1e-300, 0, settings) == 0);
+    CHECK(ReactiveSplitMatchedRatioFraction(1e300, 1e300, 0, settings) == doctest::Approx(1.0 / 1.0001));
+    CHECK(ReactiveSplitMatchedRatioFraction(.01, .001, 0, settings) >
+          ReactiveSplitMatchedRatioFraction(.001, .0001, 0, settings));
+    settings.spatialPasses = 1;
+    CHECK_FALSE(settings.validate().empty());
+    settings.spatialPasses = 0;
+    settings.balanceExpansionPasses = 1;
+    CHECK_FALSE(settings.validate().empty());
+    settings.balanceExpansionPasses = 0;
+    settings.ratioThreshold = 0;
+    CHECK_FALSE(settings.validate().empty());
+}
 using namespace DNDS::Euler;
+
+TEST_CASE("Balance chain filters preserve constants and defer endpoint snapping")
+{
+    ReactiveSplitIndicatorSettings settings;
+    CHECK(settings.balanceExpansionPasses == 0);
+    CHECK(settings.balanceSmoothingPasses == 0);
+    settings.indicatorMode = 3;
+    settings.balanceExpansionPasses = 2;
+    settings.balanceSmoothingPasses = 1;
+    settings.strangSnapTolerance = 0.05;
+    CHECK(settings.validate().empty());
+    nlohmann::ordered_json config = settings;
+    auto restored = config.get<ReactiveSplitIndicatorSettings>();
+    CHECK(restored.balanceExpansionPasses == 2);
+    CHECK(restored.balanceSmoothingPasses == 1);
+    for (int count = 0; count <= 2; ++count)
+    {
+        CHECK(ReactiveSplitBalanceSmooth(0.3, count * 0.3, count) == doctest::Approx(0.3));
+        CHECK(ReactiveSplitBalanceSmooth(0, 0, count) == 0);
+        CHECK(ReactiveSplitBalanceSmooth(1, count, count) == 1);
+    }
+    CHECK(ReactiveSplitBalanceSmooth(0.8, 0.4, 2) == doctest::Approx(0.5));
+    CHECK(ReactiveSplitBalanceSmooth(0.8, 0.4, 1) == doctest::Approx(0.7));
+    CHECK_THROWS(ReactiveSplitBalanceSmooth(0.3, 0.9, 3));
+    DNDS::real filtered = ReactiveSplitBalanceSmooth(0.04, 0.12, 2);
+    CHECK(filtered == doctest::Approx(0.05));
+    CHECK(ReactiveSplitSnapChi(1.0 - ReactiveSplitBalanceSmooth(0.04, 0.08, 2), settings) == 1);
+    CHECK(ReactiveSplitSnapChi(1.0 - ReactiveSplitBalanceSmooth(0.04, 0.16, 2), settings) < 1);
+    settings.indicatorMode = 0;
+    CHECK_FALSE(settings.validate().empty());
+}
 
 TEST_CASE("Transport balance has matched-rate limits and independent configuration")
 {

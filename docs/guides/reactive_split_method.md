@@ -1,5 +1,25 @@
 # Reactive Split Method {#reactive_split_method}
 
+## Experimental local matched-rate ratio (mode 4)
+
+This research-only mode shares mode 3's molecular face budgets and matched
+chemical/diffusive activities $a=\Delta t\mathcal A$ and $d=\Delta t\mathcal D$.
+It forms a coupled fraction directly, without the final Balance Hill map:
+
+$$
+f_c=g_h(h)\frac{a}{a+a_0}
+\frac{d^{p_r}}{d^{p_r}+(r_0a)^{p_r}},\qquad \chi=\operatorname{snap}(1-f_c).
+$$
+
+`chemicalActivityThreshold` is $a_0$; `ratioThreshold` and `ratioExponent`
+are $r_0,p_r$. Zero chemistry or diffusion gives $f_c=0$. A log-ratio
+evaluation avoids overflow. All spatial passes must be zero. The ordinary
+endpoint snap tolerances apply; `reactiveSplitCoupledScore` records $f_c$
+before snapping in this mode. `coupledThreshold`, `hillExponent`,
+`activitySaturationExponent` and `strangBias` do not remap this fraction.
+Modes 0–3 and the default remain unchanged. The mode inherits mode 3's
+geometry/physics limitations; no claim of posterior superiority is made.
+
 This guide describes the reactive-source integration modes implemented by the
 extended Euler solvers and the reaction-region indicator (RRI) used by the mixed
 Strang/coupled mode.
@@ -40,6 +60,30 @@ thresholds and chemistry-escape parameters are unused. For fixed nonzero
 chemical rate, the unsuppressed score tends to $\mathcal D/\mathcal A$ at
 large timesteps, and behaves as $\Delta t^2\mathcal A\mathcal D$ at small
 timesteps. Zero chemistry or zero diffusion gives exact Strang selection.
+
+### B-E2 chain filtering (opt-in)
+
+For one-dimensional cell chains only, `balanceExpansionPasses` and
+`balanceSmoothingPasses` default to zero and leave the local Balance unchanged.
+B-E2 sets them to 2 and 1, respectively, with midpoint 0.001, Hill power 2,
+bias 1 and endpoint tolerances 0.01 (coupled) / 0.05 (Strang). With raw
+coupled fraction $f=1-\chi^*$, each expansion takes the maximum over the cell
+and its neighbors; each smoothing computes
+
+$$
+f_i^{\rm next}=\tfrac14 f_{i-1}+\tfrac12 f_i+\tfrac14 f_{i+1}.
+$$
+
+Missing chain-end neighbors copy the local value. Periodic self-neighbor faces
+of a one-cell-wide strip are ignored by these filters. All expansion passes precede
+smoothing, with endpoint snapping only once after all passes. Only the chi
+halo is exchanged before each synchronous pass. Local score diagnostics stay
+unfiltered and valid on owners only. The input-state halo remains the caller's
+responsibility. An override bypasses filtering. These filters are not the
+legacy `spatialPasses` recipe: no decay or extra shock gate is applied. They
+may propagate coupling into locally inactive or shock-suppressed neighbors;
+only globally inactive fields are guaranteed to remain all-Strang. Pass width
+is mesh-dependent. Cells with more than two interior face neighbors are rejected.
 
 The current estimator is deliberately cell-mean and molecular: centered
 two-point species fluxes with a zero-net-mass correction, conduction and

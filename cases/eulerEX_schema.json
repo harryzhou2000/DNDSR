@@ -1796,6 +1796,20 @@
                             "minimum": 0.0,
                             "maximum": 8.0
                         },
+                        "balanceExpansionPasses": {
+                            "type": "integer",
+                            "default": 0,
+                            "description": "Mode 3 chain: raw coupled-fraction max-neighbor passes before snapping",
+                            "minimum": 0.0,
+                            "maximum": 8.0
+                        },
+                        "balanceSmoothingPasses": {
+                            "type": "integer",
+                            "default": 0,
+                            "description": "Mode 3 chain: raw coupled-fraction binomial passes after expansion, before snapping",
+                            "minimum": 0.0,
+                            "maximum": 8.0
+                        },
                         "spatialDecay": {
                             "type": "number",
                             "default": 0.65,

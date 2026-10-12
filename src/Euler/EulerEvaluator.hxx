@@ -1838,7 +1838,7 @@ namespace DNDS::Euler
             auto state = u[iCell];
             real TGuess = cellTWarm && iCell < mesh->NumCell() ? (*cellTWarm)[iCell](0) : real(0);
             auto [T, p, asqr, H, gammaEq, gamma] = phys_.conservativeThermal(
-                state, TGuess, indicatorSettings.indicatorMode == 3 ? real(1e-12) : real(1e-8));
+                state, TGuess, indicatorSettings.indicatorMode >= 3 ? real(1e-12) : real(1e-8));
             (void)asqr;
             (void)H;
             (void)gammaEq;
@@ -1851,7 +1851,7 @@ namespace DNDS::Euler
                 (*cellTWarm)[iCell](0) = T;
         }
 
-        if (indicatorSettings.indicatorMode == 3)
+        if (indicatorSettings.indicatorMode == 3 || indicatorSettings.indicatorMode == 4)
         {
             DNDS_check_throw_info(phys_.chem().isIdealGas(), "transport balance requires ideal-gas species thermodynamics");
             DNDS_check_throw_info(std::isfinite(settings.reactiveSourceScale) && settings.reactiveSourceScale >= 0,
@@ -1956,14 +1956,57 @@ namespace DNDS::Euler
                     real energyScale = densityPhysical * std::max(cv, real(1e-30)) * std::max(temperaturePhysical, temperatureFloor);
                     real chemicalActivity = dtPhysical * std::sqrt(chemicalNormSquared + sqr(chemicalEnergy / energyScale));
                     real diffusionActivity = dtPhysical * std::sqrt(diffusionNormSquared + sqr(diffusionEnergy / energyScale));
-                    real score = ReactiveSplitBalanceScore(chemicalActivity, diffusionActivity, shockSensor, indicatorSettings);
+                    real score = indicatorSettings.indicatorMode == 4
+                                     ? ReactiveSplitMatchedRatioFraction(chemicalActivity, diffusionActivity, shockSensor, indicatorSettings)
+                                     : ReactiveSplitBalanceScore(chemicalActivity, diffusionActivity, shockSensor, indicatorSettings);
                     reactiveSplitChemicalStep[iCell](0) = chemicalActivity;
                     reactiveSplitDiffusiveStep[iCell](0) = diffusionActivity;
                     reactiveSplitShockSensor[iCell](0) = shockSensor;
                     reactiveSplitCoupledScore[iCell](0) = score;
-                    reactiveSplitChi[iCell](0) = ReactiveSplitChi(score, indicatorSettings);
+                    reactiveSplitChi[iCell](0) = indicatorSettings.indicatorMode == 4
+                                                     ? ReactiveSplitSnapChi(1.0 - score, indicatorSettings)
+                                                 : indicatorSettings.balanceExpansionPasses + indicatorSettings.balanceSmoothingPasses > 0
+                                                     ? 1.0 - ReactiveSplitCoupledFraction(score, indicatorSettings)
+                                                     : ReactiveSplitChi(score, indicatorSettings);
                 }
             }
+            const int expansionPasses = indicatorSettings.balanceExpansionPasses;
+            const int smoothingPasses = indicatorSettings.balanceSmoothingPasses;
+            std::vector<real> nextChi(static_cast<size_t>(mesh->NumCell()));
+            for (int pass = 0; pass < expansionPasses + smoothingPasses; ++pass)
+            {
+                reactiveSplitChi.trans.startPersistentPull();
+                reactiveSplitChi.trans.waitPersistentPull();
+                for (index cell = 0; cell < mesh->NumCell(); ++cell)
+                {
+                    real localFraction = 1.0 - reactiveSplitChi[cell](0);
+                    real neighborSum = 0;
+                    real maximumFraction = localFraction;
+                    int neighborCount = 0;
+                    auto faces = mesh->cell2face[cell];
+                    for (rowsize faceInCell = 0; faceInCell < faces.size(); ++faceInCell)
+                    {
+                        index neighbor = mesh->CellFaceOther(cell, faces[faceInCell], faceInCell);
+                        if (neighbor == UnInitIndex || neighbor == cell)
+                            continue;
+                        real fraction = 1.0 - reactiveSplitChi[neighbor](0);
+                        neighborSum += fraction;
+                        maximumFraction = std::max(maximumFraction, fraction);
+                        ++neighborCount;
+                    }
+                    DNDS_check_throw_info(neighborCount <= 2,
+                                          "balance spatial filtering requires a one-dimensional cell chain");
+                    real fraction = pass < expansionPasses
+                                        ? maximumFraction
+                                        : ReactiveSplitBalanceSmooth(localFraction, neighborSum, neighborCount);
+                    nextChi[static_cast<size_t>(cell)] = 1.0 - fraction;
+                }
+                for (index cell = 0; cell < mesh->NumCell(); ++cell)
+                    reactiveSplitChi[cell](0) = nextChi[static_cast<size_t>(cell)];
+            }
+            if (expansionPasses + smoothingPasses > 0)
+                for (index cell = 0; cell < mesh->NumCell(); ++cell)
+                    reactiveSplitChi[cell](0) = ReactiveSplitSnapChi(reactiveSplitChi[cell](0), indicatorSettings);
             return;
         }
 

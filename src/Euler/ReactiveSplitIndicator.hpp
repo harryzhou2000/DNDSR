@@ -52,13 +52,15 @@ namespace DNDS::Euler
         real escapeStiffnessExponent = 2.0;
         real escapeRatioThreshold = 1e-6;
         real escapeRatioExponent = 6.0;
-        real coupledThreshold = 0.005;    ///< Coupled-score switch midpoint @f$C_0@f$.
-        real transitionWidth = 0.001;     ///< Logistic switch width @f$w@f$.
-        real shockScale = 0.08;           ///< Pressure-jump scale @f$h_0@f$ in @f$g_h@f$.
-        real strangBias = 1.0;            ///< Dimensionless Strang-preference factor @f$b_s@f$.
-        int switchShape = 1;              ///< 0: logistic; 1: compact-tail Hill map (default).
-        real hillExponent = 3.0;          ///< Final coupled-fraction Hill exponent @f$n@f$.
-        int spatialPasses = 0;            ///< Number of face-neighbor expansion passes.
+        real coupledThreshold = 0.005; ///< Coupled-score switch midpoint @f$C_0@f$.
+        real transitionWidth = 0.001;  ///< Logistic switch width @f$w@f$.
+        real shockScale = 0.08;        ///< Pressure-jump scale @f$h_0@f$ in @f$g_h@f$.
+        real strangBias = 1.0;         ///< Dimensionless Strang-preference factor @f$b_s@f$.
+        int switchShape = 1;           ///< 0: logistic; 1: compact-tail Hill map (default).
+        real hillExponent = 3.0;       ///< Final coupled-fraction Hill exponent @f$n@f$.
+        int spatialPasses = 0;         ///< Number of face-neighbor expansion passes.
+        int balanceExpansionPasses = 0;
+        int balanceSmoothingPasses = 0;
         real spatialDecay = 0.65;         ///< Neighbor retention factor @f$\eta@f$ per pass.
         real strangSnapTolerance = 0.01;  ///< Snap to @f$\chi=1@f$ when @f$1-\chi^*\leq\epsilon_s@f$.
         real coupledSnapTolerance = 0.01; ///< Snap to @f$\chi=0@f$ when @f$\chi^*\leq\epsilon_c@f$.
@@ -67,7 +69,7 @@ namespace DNDS::Euler
         DNDS_DECLARE_CONFIG(ReactiveSplitIndicatorSettings)
         {
             // clang-format off
-            DNDS_FIELD(indicatorMode,              "Reactive split mode: 0=v1 rate-based, 1=legacy b/s ratio, 2=chemistry escape, 3=transport balance", DNDS::Config::range(0, 3));
+            DNDS_FIELD(indicatorMode,              "Reactive split mode: 0=v1 rate-based, 1=legacy b/s ratio, 2=chemistry escape, 3=transport balance, 4=local matched-rate ratio", DNDS::Config::range(0, 4));
             DNDS_FIELD(escapeStiffnessThreshold, "Chemistry escape activity midpoint s0", DNDS::Config::range(0.0));
             DNDS_FIELD(escapeStiffnessExponent, "Chemistry escape activity power ps", DNDS::Config::range(0.0));
             DNDS_FIELD(escapeRatioThreshold, "Chemistry escape diffusion/stiffness ratio midpoint re", DNDS::Config::range(0.0));
@@ -84,6 +86,8 @@ namespace DNDS::Euler
             DNDS_FIELD(switchShape,                "Coupled-fraction map: 0=logistic, 1=compact-tail Hill", DNDS::Config::range(0, 1));
             DNDS_FIELD(hillExponent,               "Final coupled-fraction Hill exponent n", DNDS::Config::range(0.0));
             DNDS_FIELD(spatialPasses,              "Number of decaying coupled-fraction neighbor passes", DNDS::Config::range(0, 8));
+            DNDS_FIELD(balanceExpansionPasses,     "Mode 3 chain: raw coupled-fraction max-neighbor passes before snapping", DNDS::Config::range(0, 8));
+            DNDS_FIELD(balanceSmoothingPasses,     "Mode 3 chain: raw coupled-fraction binomial passes after expansion, before snapping", DNDS::Config::range(0, 8));
             DNDS_FIELD(spatialDecay,               "Neighbor coupled-fraction retention eta per pass", DNDS::Config::range(0.0, 1.0));
             DNDS_FIELD(strangSnapTolerance,        "Endpoint tolerance epsilon_s for snapping the computed chi to exact Strang chi=1", DNDS::Config::range(0.0, 1.0));
             DNDS_FIELD(coupledSnapTolerance,       "Endpoint tolerance epsilon_c for snapping the computed chi to exact coupled chi=0", DNDS::Config::range(0.0, 1.0));
@@ -107,6 +111,10 @@ namespace DNDS::Euler
                                                            s.escapeRatioThreshold > 0 && s.escapeRatioExponent > 0 && s.spatialPasses == 0); });
             config.check("transport balance requires a positive Hill midpoint and no spatial passes", [](const T &s)
                          { return s.indicatorMode != 3 || (s.switchShape == 1 && s.coupledThreshold > 0 && s.spatialPasses == 0); });
+            config.check("balance filters require indicatorMode 3", [](const T &s)
+                         { return s.indicatorMode == 3 || (s.balanceExpansionPasses == 0 && s.balanceSmoothingPasses == 0); });
+            config.check("local matched-rate ratio requires positive ratio controls and no spatial passes", [](const T &s)
+                         { return s.indicatorMode != 4 || (s.ratioThreshold > 0 && s.ratioExponent > 0 && s.spatialPasses == 0); });
         }
     };
 
@@ -154,6 +162,35 @@ namespace DNDS::Euler
         real denominator = 1 + chemicalActivity;
         return (chemicalActivity / denominator) * (diffusionActivity / denominator) *
                ReactiveSplitShockGate(shockSensor, settings);
+    }
+
+    /** @brief Mode 4 local coupled share: sat(a;a0,1) sat(d/a;r0,pr) gh. No spatial passes.
+     * Matched activities a and d have the same normalization as mode 3. Zero chemistry
+     * or zero diffusion returns zero coupled share; endpoint snapping is applied by the caller.
+     */
+    inline real ReactiveSplitMatchedRatioFraction(real chemicalActivity, real diffusionActivity, real shockSensor,
+                                                  const ReactiveSplitIndicatorSettings &settings)
+    {
+        DNDS_check_throw_info(std::isfinite(chemicalActivity) && chemicalActivity >= 0 &&
+                                  std::isfinite(diffusionActivity) && diffusionActivity >= 0,
+                              "matched-rate ratio requires finite nonnegative activities");
+        DNDS_check_throw_info(settings.ratioThreshold > 0 && settings.ratioExponent > 0,
+                              "matched-rate ratio controls must be positive");
+        if (chemicalActivity == 0 || diffusionActivity == 0)
+            return 0;
+        real logRatio = settings.ratioExponent * (std::log(diffusionActivity) -
+                                                  std::log(chemicalActivity) - std::log(settings.ratioThreshold));
+        real ratioGate = logRatio >= 0 ? 1.0 / (1.0 + std::exp(-logRatio))
+                                       : std::exp(logRatio) / (1.0 + std::exp(logRatio));
+        return ReactiveSplitSaturate(chemicalActivity, settings.chemicalActivityThreshold, 1.0) *
+               ratioGate * ReactiveSplitShockGate(shockSensor, settings);
+    }
+
+    inline real ReactiveSplitBalanceSmooth(real localFraction, real neighborSum, int neighborCount)
+    {
+        DNDS_check_throw_info(neighborCount >= 0 && neighborCount <= 2,
+                              "balance spatial filtering requires a one-dimensional cell chain");
+        return (1.0 - 0.25 * neighborCount) * localFraction + 0.25 * neighborSum;
     }
 
     /** @brief Map @f$C_i@f$ to the local coupled fraction @f$f_{c,i}=1-\chi_i@f$. */
