@@ -125,7 +125,7 @@ namespace DNDS::Euler
         ArrayDOFV<1> reactiveSplitCoupledScore_;                                                                      ///< Output-only local coupled score @f$C_i@f$.
         ArrayDOFV<1> reactiveSplitStiffnessStep_;                                                                     ///< Output-only chemical stiffness @f$s_i@f$ (v2).
         ArrayDOFV<1> lvrAlpha_, lvrDensityJump_, lvrPressureJump_, lvrCompression_, lvrO2Beta_; ///< Limited variational reconstruction sensor and O2-reference PP diagnostics.
-        ArrayDOFV<3> lvrBranchAlpha_; ///< Packed shock/contact/contact-support LVR alpha values.
+        ArrayDOFV<4> lvrBranchAlpha_; ///< Packed shock/contact/contact-support/weak LVR alpha values.
 
         int nOUTS = {-1};   ///< Number of output scalars per cell in volume output.
         int nOUTSPoint{-1}; ///< Number of output scalars per node in point output.

@@ -2870,6 +2870,8 @@ namespace DNDS::Euler
         { return lvrBranchAlpha[iCell](1); };
         outMap["lvrContactSupportAlpha"] = [&](index iCell)
         { return lvrBranchAlpha[iCell](2); };
+        outMap["lvrWeakAlpha"] = [&](index iCell)
+        { return lvrBranchAlpha[iCell](3); };
         outMap["lvrDensityJump"] = [&](index iCell)
         { return lvrDensityJump[iCell](0); };
         outMap["lvrPressureJump"] = [&](index iCell)
@@ -3032,6 +3034,8 @@ namespace DNDS::Euler
         { return lvrBranchAlpha[iBnd2Cell(iBnd)](1); };
         outMap["lvrContactSupportAlpha"] = [&, iBnd2Cell](index iBnd)
         { return lvrBranchAlpha[iBnd2Cell(iBnd)](2); };
+        outMap["lvrWeakAlpha"] = [&, iBnd2Cell](index iBnd)
+        { return lvrBranchAlpha[iBnd2Cell(iBnd)](3); };
         outMap["lvrDensityJump"] = [&, iBnd2Cell](index iBnd)
         { return lvrDensityJump[iBnd2Cell(iBnd)](0); };
         outMap["lvrPressureJump"] = [&, iBnd2Cell](index iBnd)

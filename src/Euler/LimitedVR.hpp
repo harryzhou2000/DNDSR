@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace DNDS::Euler
 {
@@ -27,6 +28,16 @@ namespace DNDS::Euler
         real compressionStart = 0.08;
         real compressionFull = 0.16;
         real alphaMax = 0.50;
+        real weakAlphaMax = 0.0;
+        real weakMismatchStart = 0.05;
+        real weakMismatchFull = 0.20;
+        real weakAcousticStart = 0.10;
+        real weakAcousticFull = 0.50;
+        real weakRelativeFloor = 1e-10;
+        int weakHaloLayers = 2;
+        real weakAlphaUpdateRelaxation = 1.0;
+        real weakAlphaDecayRetention = 0.0;
+        bool weakFreezeWithinImplicitStage = false;
         real contactDensityJumpStart = 0.20;
         real contactDensityJumpFull = 0.80;
         real contactAlphaMax = 0.0;
@@ -61,6 +72,16 @@ namespace DNDS::Euler
             DNDS_FIELD(compressionStart,  "Normal-compression ramp start", DNDS::Config::range(0.0));
             DNDS_FIELD(compressionFull,   "Normal-compression ramp saturation", DNDS::Config::range(0.0));
             DNDS_FIELD(alphaMax,         "Maximum O2 penalty fraction", DNDS::Config::range(0.0, 1.0));
+            DNDS_FIELD(weakAlphaMax, "Maximum additional pressure-gradient-consistency weak-shock penalty fraction; zero disables the branch", DNDS::Config::range(0.0, 1.0));
+            DNDS_FIELD(weakMismatchStart, "Relative mean-pressure versus unrestricted-O2-gradient disagreement ramp start", DNDS::Config::range(0.0));
+            DNDS_FIELD(weakMismatchFull, "Relative pressure-gradient disagreement ramp saturation", DNDS::Config::range(0.0));
+            DNDS_FIELD(weakAcousticStart, "Compressive mean-velocity jump times acoustic impedance divided by pressure jump: ramp start", DNDS::Config::range(0.0));
+            DNDS_FIELD(weakAcousticFull, "Compressive acoustic consistency ramp saturation", DNDS::Config::range(0.0));
+            DNDS_FIELD(weakRelativeFloor, "Background-relative pressure noise floor for the additional weak branch", DNDS::Config::range(0.0));
+            DNDS_FIELD(weakHaloLayers, "Face-neighbour expansion layers for the additional weak branch only", DNDS::Config::range(0, 4));
+            DNDS_FIELD(weakAlphaUpdateRelaxation, "Temporal relaxation of the weak-shock alpha on later inner evaluations only; each new stage starts with a fresh gate", DNDS::Config::range(0.0, 1.0));
+            DNDS_FIELD(weakAlphaDecayRetention, "Fraction of the previous weak-alpha excess retained when the freshly evaluated weak response decreases; rises remain immediate and zero disables one-sided decay", DNDS::Config::range(0.0, 1.0));
+            DNDS_FIELD(weakFreezeWithinImplicitStage, "Evaluate a fresh weak-shock alpha at each stage start, including one-shot explicit-first stages, and hold it fixed only for later inner evaluations of that stage");
             DNDS_FIELD(contactDensityJumpStart, "Facial density-jump contact-gate ramp start", DNDS::Config::range(0.0));
             DNDS_FIELD(contactDensityJumpFull, "Facial density-jump contact-gate ramp saturation", DNDS::Config::range(0.0));
             DNDS_FIELD(contactAlphaMax, "Maximum O2 penalty fraction contributed by the density-only contact gate; zero disables it", DNDS::Config::range(0.0, 1.0));
@@ -93,6 +114,11 @@ namespace DNDS::Euler
                                   s.contactDensityJumpFull > s.contactDensityJumpStart; });
             config.check("limitedVR alphaUpdateRelaxation must be positive", [](const T &s)
                          { return s.alphaUpdateRelaxation > 0; });
+            config.check("limitedVR weak thresholds must be ordered and noise floor positive", [](const T &s)
+                         { return s.weakMismatchFull > s.weakMismatchStart &&
+                                  s.weakAcousticFull > s.weakAcousticStart && s.weakRelativeFloor > 0 &&
+                                  s.weakAlphaUpdateRelaxation > 0 && s.weakAlphaDecayRetention < 1 &&
+                                  (s.weakAlphaDecayRetention == 0 || s.weakAlphaUpdateRelaxation == 1); });
             config.check("limitedVR oscillation full thresholds must exceed start thresholds", [](const T &s)
                          { return s.oscillationExtremumFull > s.oscillationExtremumStart &&
                                   s.oscillationSupportFull > s.oscillationSupportStart; });
@@ -228,5 +254,67 @@ namespace DNDS::Euler
     inline real CombineLimitedVRAlpha(real shockAlpha, real contactAlpha)
     {
         return std::max(shockAlpha, contactAlpha);
+    }
+
+    inline real RelaxLimitedVRAlpha(real previousAlpha, real updatedAlpha, real relaxation)
+    {
+        DNDS_check_throw_info(relaxation > 0 && relaxation <= 1,
+                              "limitedVR alpha update relaxation must lie in (0, 1]");
+        return relaxation * updatedAlpha + (1.0 - relaxation) * previousAlpha;
+    }
+
+    inline bool IsLimitedVRStageStartIteration(int iter)
+    {
+        // Iterative stages start at one. Explicit-first ESDIRK stages use the
+        // maximum integer as their one-shot RHS-evaluation sentinel.
+        return iter <= 1 || iter == std::numeric_limits<int>::max();
+    }
+
+    inline real UpdateLimitedVRWeakAlpha(
+        real previousAlpha, real updatedAlpha,
+        bool refresh, bool reset,
+        real relaxation, real decayRetention = 0)
+    {
+        DNDS_check_throw_info(decayRetention >= 0 && decayRetention < 1,
+                              "limitedVR weak alpha decay retention must lie in [0, 1)");
+        if (!refresh)
+            return previousAlpha;
+        if (reset)
+            return updatedAlpha;
+        if (decayRetention > 0)
+            return updatedAlpha + decayRetention * std::max(previousAlpha - updatedAlpha, real(0));
+        return RelaxLimitedVRAlpha(previousAlpha, updatedAlpha, relaxation);
+    }
+
+    /** @brief Additional weak-shock response from means and unrestricted explicit gradients.
+     * pressureIncrementLeft/Right are each cell's primitive pressure-gradient
+     * increment from its centroid to the shared face, in that cell's frame.
+     * Exact linear/quadratic profiles on a uniform strip with centered GG
+     * slopes have zero mismatch. Cubic and higher profiles can have a nonzero
+     * third-difference mismatch. No derivative of the unknown high-order
+     * polynomial enters this sensor.
+     */
+    inline real EvaluateLimitedVRWeakAlpha(
+        real pressureLeft, real pressureRight,
+        real pressureIncrementLeft, real pressureIncrementRight,
+        real normalVelocityLeft, real normalVelocityRight,
+        real acousticImpedance, const LimitedVRSettings &settings)
+    {
+        if (settings.weakAlphaMax == 0)
+            return 0;
+        real jump = pressureRight - pressureLeft;
+        real floor = settings.weakRelativeFloor *
+                     std::max({std::abs(pressureLeft), std::abs(pressureRight), real(1e-30)});
+        if (std::abs(jump) <= floor || normalVelocityLeft <= normalVelocityRight)
+            return 0;
+        real mismatch = std::abs(jump - pressureIncrementLeft + pressureIncrementRight) /
+                        std::max(std::abs(jump) + std::abs(pressureIncrementLeft) +
+                                     std::abs(pressureIncrementRight),
+                                 floor);
+        real acoustic = (normalVelocityLeft - normalVelocityRight) * acousticImpedance /
+                        std::abs(jump);
+        return settings.weakAlphaMax *
+               LimitedVRCubicRamp(mismatch, settings.weakMismatchStart, settings.weakMismatchFull) *
+               LimitedVRCubicRamp(acoustic, settings.weakAcousticStart, settings.weakAcousticFull);
     }
 }

@@ -455,7 +455,7 @@ namespace DNDS::Euler
         vfv->BuildUDof(reactiveSplitCoupledScore_, 1);
         vfv->BuildUDof(reactiveSplitStiffnessStep_, 1);
         vfv->BuildUDof(lvrAlpha_, 1);
-        vfv->BuildUDof(lvrBranchAlpha_, 3);
+        vfv->BuildUDof(lvrBranchAlpha_, 4);
         vfv->BuildUDof(lvrDensityJump_, 1);
         vfv->BuildUDof(lvrPressureJump_, 1);
         vfv->BuildUDof(lvrCompression_, 1);

@@ -1089,6 +1089,69 @@
                             "minimum": 0.0,
                             "maximum": 1.0
                         },
+                        "weakAlphaMax": {
+                            "type": "number",
+                            "default": 0.0,
+                            "description": "Maximum additional pressure-gradient-consistency weak-shock penalty fraction; zero disables the branch",
+                            "minimum": 0.0,
+                            "maximum": 1.0
+                        },
+                        "weakMismatchStart": {
+                            "type": "number",
+                            "default": 0.05,
+                            "description": "Relative mean-pressure versus unrestricted-O2-gradient disagreement ramp start",
+                            "minimum": 0.0
+                        },
+                        "weakMismatchFull": {
+                            "type": "number",
+                            "default": 0.2,
+                            "description": "Relative pressure-gradient disagreement ramp saturation",
+                            "minimum": 0.0
+                        },
+                        "weakAcousticStart": {
+                            "type": "number",
+                            "default": 0.1,
+                            "description": "Compressive mean-velocity jump times acoustic impedance divided by pressure jump: ramp start",
+                            "minimum": 0.0
+                        },
+                        "weakAcousticFull": {
+                            "type": "number",
+                            "default": 0.5,
+                            "description": "Compressive acoustic consistency ramp saturation",
+                            "minimum": 0.0
+                        },
+                        "weakRelativeFloor": {
+                            "type": "number",
+                            "default": 1e-10,
+                            "description": "Background-relative pressure noise floor for the additional weak branch",
+                            "minimum": 0.0
+                        },
+                        "weakHaloLayers": {
+                            "type": "integer",
+                            "default": 2,
+                            "description": "Face-neighbour expansion layers for the additional weak branch only",
+                            "minimum": 0.0,
+                            "maximum": 4.0
+                        },
+                        "weakAlphaUpdateRelaxation": {
+                            "type": "number",
+                            "default": 1.0,
+                            "description": "Temporal relaxation of the weak-shock alpha on later inner evaluations only; each new stage starts with a fresh gate",
+                            "minimum": 0.0,
+                            "maximum": 1.0
+                        },
+                        "weakAlphaDecayRetention": {
+                            "type": "number",
+                            "default": 0.0,
+                            "description": "Fraction of the previous weak-alpha excess retained when the freshly evaluated weak response decreases; rises remain immediate and zero disables one-sided decay",
+                            "minimum": 0.0,
+                            "maximum": 1.0
+                        },
+                        "weakFreezeWithinImplicitStage": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "Evaluate a fresh weak-shock alpha at each stage start, including one-shot explicit-first stages, and hold it fixed only for later inner evaluations of that stage"
+                        },
                         "contactDensityJumpStart": {
                             "type": "number",
                             "default": 0.2,

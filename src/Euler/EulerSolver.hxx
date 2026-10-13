@@ -270,10 +270,19 @@ namespace DNDS::Euler
             const bool useLimitedVR = config.limiterControl.useLimiter &&
                                       config.limiterControl.limiterProcedure == 2;
             if (useLimitedVR)
+            {
+                // ImplicitSDIRK4DualTimeStep uses INT_MAX for an explicit-first stage.
+                // In either form, each stage starts from a freshly evaluated gate;
+                // relaxation, decay, or freezing only applies to later evaluations.
+                const bool limitedVRStageStart = IsLimitedVRStageStartIteration(iter);
                 eval.BuildLimitedVRO2(cx, uRecO2, uRecLimited, uRecNew, ifUseLimiter, lvrO2Beta_,
                                       lvrAlpha_, lvrBranchAlpha_, lvrDensityJump_,
                                       lvrPressureJump_, lvrCompression_,
-                                      config.limiterControl.limitedVR, FBoundary);
+                                      config.limiterControl.limitedVR,
+                                      !config.limiterControl.limitedVR.weakFreezeWithinImplicitStage || limitedVRStageStart,
+                                      limitedVRStageStart,
+                                      FBoundary);
+            }
 
             DNDS_MPI_InsertCheck(mpi, " Lambda RHS: StartRec");
             int nRec = (gradIsZero ? config.implicitReconstructionControl.nRecMultiplyForZeroedGrad : 1) *

@@ -4,6 +4,38 @@
 
 using namespace DNDS::Euler;
 
+TEST_CASE("Weak LVR branch preserves uniform-strip quadratics and rejects contacts and expansion")
+{
+    LimitedVRSettings s;
+    s.weakAlphaMax = 1;
+    // q=1+x^2, centroids -h/2,+h/2 and a shared face at zero.
+    CHECK(EvaluateLimitedVRWeakAlpha(1.0025, 1.0025, -0.005, -0.005,
+                                     0.1, 0, 1, s) == 0);
+    // Shifted quadratic: the two primitive-gradient increments integrate the mean difference exactly.
+    CHECK(EvaluateLimitedVRWeakAlpha(1.0225, 1.0025, -0.015, 0.005,
+                                     0.1, 0, 1, s) == 0);
+    // For p=x^3 on a unit uniform strip, cell means adjacent to x=0 are
+    // -1/4 and +1/4 and the two centered-GG face increments are +1 and -1.
+    // Adding a positive constant leaves r=|1/2-1-1|/(1/2+1+1)=0.6.
+    CHECK(EvaluateLimitedVRWeakAlpha(1.75, 2.25, 1, -1,
+                                     1, 0, 1, s) == doctest::Approx(1));
+    CHECK(EvaluateLimitedVRWeakAlpha(1, 1, 0, 0, 1, 1, 10, s) == 0);
+    CHECK(EvaluateLimitedVRWeakAlpha(1.01, 1, -0.0025, 0.0025,
+                                     0, 0.01, 1, s) == 0);
+}
+
+TEST_CASE("Weak LVR branch detects rescaled shocks above its explicit noise floor")
+{
+    LimitedVRSettings s;
+    s.weakAlphaMax = 1;
+    for (DNDS::real jump : {1e-2, 1e-6})
+        CHECK(EvaluateLimitedVRWeakAlpha(1 + jump, 1, -.25 * jump, .25 * jump,
+                                         jump, 0, 1, s) == doctest::Approx(1));
+    CHECK(EvaluateLimitedVRWeakAlpha(1 + 1e-12, 1, 0, 0, 1e-12, 0, 1, s) == 0);
+    s.weakAlphaMax = 0;
+    CHECK(EvaluateLimitedVRWeakAlpha(1.01, 1, 0, 0, .01, 0, 1, s) == 0);
+}
+
 TEST_CASE("Limited variational reconstruction cubic ramp has exact endpoints and bounded transition")
 {
     CHECK(LimitedVRCubicRamp(0.0, 0.1, 0.3) == 0.0);
@@ -12,6 +44,29 @@ TEST_CASE("Limited variational reconstruction cubic ramp has exact endpoints and
     CHECK(LimitedVRCubicRamp(0.3, 0.1, 0.3) == 1.0);
     CHECK(LimitedVRCubicRamp(1.0, 0.1, 0.3) == 1.0);
     CHECK_THROWS(LimitedVRCubicRamp(0.2, 0.3, 0.3));
+}
+
+TEST_CASE("Weak LVR alpha relaxation preserves its fixed point and damps updates")
+{
+    CHECK(IsLimitedVRStageStartIteration(1));
+    CHECK(IsLimitedVRStageStartIteration(0));
+    CHECK(IsLimitedVRStageStartIteration(std::numeric_limits<int>::max()));
+    CHECK_FALSE(IsLimitedVRStageStartIteration(2));
+    CHECK(RelaxLimitedVRAlpha(0.2, 0.8, 1.0) == doctest::Approx(0.8));
+    CHECK(RelaxLimitedVRAlpha(0.2, 0.8, 0.5) == doctest::Approx(0.5));
+    CHECK(RelaxLimitedVRAlpha(0.2, 0.8, 0.25) == doctest::Approx(0.35));
+    CHECK(RelaxLimitedVRAlpha(0.6, 0.6, 0.25) == doctest::Approx(0.6));
+    CHECK_THROWS(RelaxLimitedVRAlpha(0.2, 0.8, 0.0));
+    CHECK_THROWS(RelaxLimitedVRAlpha(0.2, 0.8, 1.1));
+    CHECK(UpdateLimitedVRWeakAlpha(0.2, 0.8, false, false, 1.0) == doctest::Approx(0.2));
+    CHECK(UpdateLimitedVRWeakAlpha(0.2, 0.8, true, false, 1.0) == doctest::Approx(0.8));
+    CHECK(UpdateLimitedVRWeakAlpha(0.2, 0.8, true, false, 0.5) == doctest::Approx(0.5));
+    CHECK(UpdateLimitedVRWeakAlpha(0.2, 0.8, true, false, 1.0, 0.9) == doctest::Approx(0.8));
+    CHECK(UpdateLimitedVRWeakAlpha(0.8, 0.2, true, false, 1.0, 0.9) == doctest::Approx(0.74));
+    CHECK(UpdateLimitedVRWeakAlpha(0.8, 0.2, false, false, 1.0, 0.9) == doctest::Approx(0.8));
+    CHECK(UpdateLimitedVRWeakAlpha(0.8, 0.2, true, true, 1.0, 0.9) == doctest::Approx(0.2));
+    CHECK(UpdateLimitedVRWeakAlpha(0.8, 0.2, true, true, 0.5, 0.0) == doctest::Approx(0.2));
+    CHECK_THROWS(UpdateLimitedVRWeakAlpha(0.8, 0.2, true, false, 1.0, 1.0));
 }
 
 TEST_CASE("Limited variational reconstruction sensor rejects contacts shear and expansions")
@@ -171,6 +226,9 @@ TEST_CASE("Limited variational reconstruction settings parse and validate")
     CHECK(config["contactExtremumRetention"] == doctest::Approx(0.95));
     CHECK(config["contactExtremumHaloLayers"] == 1);
     CHECK(config["alphaUpdateRelaxation"] == 1.0);
+    CHECK(config["weakAlphaUpdateRelaxation"] == 1.0);
+    CHECK(config["weakAlphaDecayRetention"] == 0.0);
+    CHECK(config["weakFreezeWithinImplicitStage"] == false);
     CHECK(config["oscillationExtremumStart"] == doctest::Approx(0.001));
     CHECK(config["oscillationExtremumFull"] == doctest::Approx(0.008));
     CHECK(config["oscillationSupportStart"] == doctest::Approx(0.02));
@@ -220,6 +278,11 @@ TEST_CASE("Limited variational reconstruction settings parse and validate")
     CHECK_FALSE(settings.validate().empty());
 
     config["alphaUpdateRelaxation"] = 1.0;
+    config["weakAlphaUpdateRelaxation"] = 0.0;
+    settings = config.get<LimitedVRSettings>();
+    CHECK_FALSE(settings.validate().empty());
+
+    config["weakAlphaUpdateRelaxation"] = 1.0;
     config["pressureJumpFull"] = 0.05;
     settings = config.get<LimitedVRSettings>();
     CHECK_FALSE(settings.validate().empty());

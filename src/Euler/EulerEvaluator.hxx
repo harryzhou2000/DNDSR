@@ -2556,17 +2556,20 @@ namespace DNDS::Euler
         CFV::tScalarPair &limiterIndicator,
         ArrayDOFV<1> &o2Beta,
         ArrayDOFV<1> &alpha,
-        ArrayDOFV<3> &branchAlpha,
+        ArrayDOFV<4> &branchAlpha,
         ArrayDOFV<1> &densityJump,
         ArrayDOFV<1> &pressureJump,
         ArrayDOFV<1> &compression,
         const LimitedVRSettings &limitedVRSettings,
+        bool refreshWeakAlpha,
+        bool resetWeakAlpha,
         const typename TVFV::template TFBoundary<nVarsFixed> &FBoundary)
     {
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
         static constexpr int iShockAlpha = 0;
         static constexpr int iContactAlpha = 1;
         static constexpr int iContactSupportAlpha = 2;
+        static constexpr int iWeakAlpha = 3;
 
         vfv->DoReconstruction2ndGrad(uGradBufNoLim, u, FBoundary, settings.direct2ndRecMethod);
         uGradBufNoLim.trans.startPersistentPull();
@@ -2660,11 +2663,40 @@ namespace DNDS::Euler
             for (index iCell = 0; iCell < mesh->NumCell(); ++iCell)
                 contactAlphaPrevious[static_cast<size_t>(iCell)] = branchAlpha[iCell](iContactAlpha);
         }
+        std::vector<real> weakAlphaPrevious;
+        if (limitedVRSettings.weakAlphaMax > 0 &&
+            (!refreshWeakAlpha || limitedVRSettings.weakAlphaUpdateRelaxation < 1.0 ||
+             limitedVRSettings.weakAlphaDecayRetention > 0))
+        {
+            weakAlphaPrevious.resize(static_cast<size_t>(mesh->NumCell()));
+            for (index iCell = 0; iCell < mesh->NumCell(); ++iCell)
+                weakAlphaPrevious[static_cast<size_t>(iCell)] = branchAlpha[iCell](iWeakAlpha);
+        }
         alpha.setConstant(0.0);
         branchAlpha.setConstant(0.0);
         densityJump.setConstant(0.0);
         pressureJump.setConstant(0.0);
         compression.setConstant(0.0);
+        std::vector<real> weakPressureMean;
+        std::vector<TVec> weakPressureGradient;
+        if (limitedVRSettings.weakAlphaMax > 0 && refreshWeakAlpha)
+        {
+            weakPressureMean.resize(static_cast<size_t>(mesh->NumCellProc()));
+            weakPressureGradient.resize(static_cast<size_t>(mesh->NumCellProc()));
+            auto eBaseSpecies = phys_.mixtureBaseInternalRhoESpecies();
+            for (index iCell = 0; iCell < mesh->NumCellProc(); ++iCell)
+            {
+                auto [T, p, asqr, H, gammaEq, gamma] = phys_.conservativeThermal(u[iCell]);
+                TDiffU gradPrimitive;
+                TDiffU gradConservative(dim, nVars);
+                gradConservative.setZero();
+                gradConservative.topRows(gDim) = uGradBufNoLim[iCell];
+                Gas::GradientCons2Prim_IdealGas<dim>(
+                    u[iCell], gradConservative, gradPrimitive, gammaEq, eBaseSpecies);
+                weakPressureMean[static_cast<size_t>(iCell)] = p;
+                weakPressureGradient[static_cast<size_t>(iCell)] = gradPrimitive(Seq012, I4);
+            }
+        }
         for (index iFace = 0; iFace < mesh->NumFaceProc(); ++iFace)
         {
             auto f2c = mesh->face2cell[iFace];
@@ -2697,6 +2729,29 @@ namespace DNDS::Euler
             auto contactSensor = EvaluateLimitedVRContactFaceSensor(
                 contactDensityLeft, contactDensityRight, limitedVRSettings);
             auto contactSupportSensor = contactSensor;
+            real weakAlpha = 0;
+            if (limitedVRSettings.weakAlphaMax > 0 && refreshWeakAlpha)
+            {
+                TU meanL = u[f2c[0]], meanR = u[f2c[1]];
+                UFromCell2Face(meanL, iFace, f2c[0], 0);
+                UFromCell2Face(meanR, iFace, f2c[1], 1);
+                auto [TmL, pmL, amsqrL, HmL, gmEqL, gmL] = phys_.conservativeThermal(meanL);
+                auto [TmR, pmR, amsqrR, HmR, gmEqR, gmR] = phys_.conservativeThermal(meanR);
+                TVec dxL = (vfv->GetFaceQuadraturePPhysFromCell(iFace, f2c[0], 0, -1) -
+                            vfv->GetCellQuadraturePPhys(f2c[0], -1))(Seq012);
+                TVec dxR = (vfv->GetFaceQuadraturePPhysFromCell(iFace, f2c[1], 1, -1) -
+                            vfv->GetCellQuadraturePPhys(f2c[1], -1))(Seq012);
+                weakAlpha = EvaluateLimitedVRWeakAlpha(
+                    weakPressureMean[static_cast<size_t>(f2c[0])],
+                    weakPressureMean[static_cast<size_t>(f2c[1])],
+                    weakPressureGradient[static_cast<size_t>(f2c[0])].dot(dxL),
+                    weakPressureGradient[static_cast<size_t>(f2c[1])].dot(dxR),
+                    (meanL(Seq123) / meanL(0)).dot(unitNorm),
+                    (meanR(Seq123) / meanR(0)).dot(unitNorm),
+                    0.5 * (meanL(0) * std::sqrt(std::max(amsqrL, real(0))) +
+                           meanR(0) * std::sqrt(std::max(amsqrR, real(0)))),
+                    limitedVRSettings);
+            }
             if (limitedVRSettings.contactExtremumUseCellMeanSupport &&
                 !limitedVRSettings.contactUseCellMeanJump)
                 contactSupportSensor = EvaluateLimitedVRContactFaceSensor(
@@ -2713,6 +2768,7 @@ namespace DNDS::Euler
                     std::max(branchAlpha[iCell](iContactAlpha), contactSensor.alpha);
                 branchAlpha[iCell](iContactSupportAlpha) =
                     std::max(branchAlpha[iCell](iContactSupportAlpha), contactSupportSensor.alpha);
+                branchAlpha[iCell](iWeakAlpha) = std::max(branchAlpha[iCell](iWeakAlpha), weakAlpha);
                 densityJump[iCell](0) = std::max(densityJump[iCell](0), contactSensor.densityJump);
                 pressureJump[iCell](0) = std::max(pressureJump[iCell](0), sensor.pressureJump);
                 compression[iCell](0) = std::max(compression[iCell](0), sensor.compression);
@@ -3045,6 +3101,41 @@ namespace DNDS::Euler
             o2Beta.trans.waitPersistentPull();
         }
 
+        for (int iLayer = 0; limitedVRSettings.weakAlphaMax > 0 && refreshWeakAlpha &&
+                             iLayer < limitedVRSettings.weakHaloLayers;
+             ++iLayer)
+        {
+            branchAlpha.trans.startPersistentPull();
+            branchAlpha.trans.waitPersistentPull();
+            std::vector<real> expanded(static_cast<size_t>(mesh->NumCell()));
+            for (index iCell = 0; iCell < mesh->NumCell(); ++iCell)
+                expanded[static_cast<size_t>(iCell)] = branchAlpha[iCell](iWeakAlpha);
+            for (index iFace = 0; iFace < mesh->NumFaceProc(); ++iFace)
+            {
+                auto f2c = mesh->face2cell[iFace];
+                if (f2c[1] == UnInitIndex)
+                    continue;
+                real faceAlpha = std::max(branchAlpha[f2c[0]](iWeakAlpha), branchAlpha[f2c[1]](iWeakAlpha));
+                for (int if2c = 0; if2c < 2; ++if2c)
+                    if (f2c[if2c] < mesh->NumCell())
+                        expanded[static_cast<size_t>(f2c[if2c])] =
+                            std::max(expanded[static_cast<size_t>(f2c[if2c])], faceAlpha);
+            }
+            for (index iCell = 0; iCell < mesh->NumCell(); ++iCell)
+                branchAlpha[iCell](iWeakAlpha) = expanded[static_cast<size_t>(iCell)];
+        }
+        if (limitedVRSettings.weakAlphaMax > 0 &&
+            (!refreshWeakAlpha || limitedVRSettings.weakAlphaUpdateRelaxation < 1.0 ||
+             limitedVRSettings.weakAlphaDecayRetention > 0))
+            for (index iCell = 0; iCell < mesh->NumCell(); ++iCell)
+                branchAlpha[iCell](iWeakAlpha) = UpdateLimitedVRWeakAlpha(
+                    weakAlphaPrevious[static_cast<size_t>(iCell)],
+                    branchAlpha[iCell](iWeakAlpha),
+                    refreshWeakAlpha,
+                    resetWeakAlpha,
+                    limitedVRSettings.weakAlphaUpdateRelaxation,
+                    limitedVRSettings.weakAlphaDecayRetention);
+
         // A compact face-neighbour halo covers the one-sided cells immediately
         // adjacent to a detected shock.  Propagating the already mapped alpha
         // avoids lowering the local indicator thresholds into smooth wall
@@ -3089,8 +3180,8 @@ namespace DNDS::Euler
                         contactAlphaPrevious[static_cast<size_t>(iCell)];
             }
         for (index iCell = 0; iCell < mesh->NumCell(); ++iCell)
-            alpha[iCell](0) = CombineLimitedVRAlpha(
-                branchAlpha[iCell](iShockAlpha), branchAlpha[iCell](iContactAlpha));
+            alpha[iCell](0) = std::max(branchAlpha[iCell](iWeakAlpha), CombineLimitedVRAlpha(
+                                                                           branchAlpha[iCell](iShockAlpha), branchAlpha[iCell](iContactAlpha)));
     }
 
     DNDS_SWITCH_INTELLISENSE(

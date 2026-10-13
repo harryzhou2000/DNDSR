@@ -792,11 +792,13 @@ namespace DNDS::Euler
             CFV::tScalarPair &limiterIndicator,
             ArrayDOFV<1> &o2Beta,
             ArrayDOFV<1> &alpha,
-            ArrayDOFV<3> &branchAlpha,
+            ArrayDOFV<4> &branchAlpha,
             ArrayDOFV<1> &densityJump,
             ArrayDOFV<1> &pressureJump,
             ArrayDOFV<1> &compression,
             const LimitedVRSettings &limitedVRSettings,
+            bool refreshWeakAlpha,
+            bool resetWeakAlpha,
             const typename TVFV::template TFBoundary<nVarsFixed> &FBoundary);
 
         static const int EvaluateURecBeta_DEFAULT = 0x00;          ///< Default: evaluate beta without compression.
@@ -2270,7 +2272,7 @@ namespace DNDS::Euler
             ArrayDOFV<1> &betaPP;        ///< PP reconstruction limiter beta.
             ArrayDOFV<1> &alphaPP;       ///< PP RHS limiter alpha.
             ArrayDOFV<1> &lvrAlpha;
-            ArrayDOFV<3> &lvrBranchAlpha; ///< Shock, contact, and contact-support alpha components.
+            ArrayDOFV<4> &lvrBranchAlpha; ///< Shock, contact, contact-support, and weak-shock alpha components.
             ArrayDOFV<1> &lvrDensityJump;
             ArrayDOFV<1> &lvrPressureJump;
             ArrayDOFV<1> &lvrCompression;
@@ -2429,9 +2431,11 @@ namespace DNDS::Euler
             ArrayDOFV<nVarsFixed> &u, ArrayRECV<nVarsFixed> &uRecO2,                                                      \
             ArrayRECV<nVarsFixed> &uRecLimiterWork, ArrayRECV<nVarsFixed> &uRecLimiterBuffer,                             \
             CFV::tScalarPair &limiterIndicator, ArrayDOFV<1> &o2Beta, ArrayDOFV<1> &alpha,                                \
-            ArrayDOFV<3> &branchAlpha, ArrayDOFV<1> &densityJump,                                                         \
+            ArrayDOFV<4> &branchAlpha, ArrayDOFV<1> &densityJump,                                                         \
             ArrayDOFV<1> &pressureJump, ArrayDOFV<1> &compression,                                                        \
             const LimitedVRSettings &limitedVRSettings,                                                                   \
+            bool refreshWeakAlpha,                                                                                        \
+            bool resetWeakAlpha,                                                                                          \
             const typename TVFV::template TFBoundary<nVarsFixed> &FBoundary);                                             \
                                                                                                                           \
         ext template void EulerEvaluator<model>::EvaluateURecBeta(                                                        \
