@@ -289,6 +289,21 @@ namespace DNDS::Euler::Chemistry
                                         ConstSpeciesBufferView Y) const;
 
         /**
+         * Norms of J_s s and J_s d [1/s^2] in q=(Y_1,...,Y_N,ln(T/T_ref)).
+         * J_s is the fixed-density ideal-gas chemical derivative; s includes
+         * chemistryScale, and d is supplied as full species rates [1/s] and
+         * logarithmic temperature rate [1/s]. Y must be normalized and
+         * speciesDiffusionRate must conserve total mass. No chi state is read.
+         * chemistryScale scales chemistry only: the two norms scale quadratically
+         * and linearly, respectively, when the supplied transport is unchanged.
+         */
+        void constantVolumeSourceResponseNorms(double temperature, double pressure,
+                                               ConstSpeciesBufferView fractions,
+                                               ConstSpeciesBufferView speciesDiffusionRate,
+                                               double logTemperatureDiffusionRate, double chemistryScale,
+                                               double &autonomousNorm, double &forcedNorm) const;
+
+        /**
          * Production rates AND Jacobian ∂ω/∂U.
          *   U = [ρ, ρu, ρv, {ρw,} ρE, ρY_0..ρY_{Ns-2}]
          * dOmegadU: Ns × nVars, column-major.

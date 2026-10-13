@@ -178,6 +178,86 @@ TEST_CASE("ChemicalSource::maxChemicalStiffnessRate — matches fixed-density ma
     CHECK(stiffness == doctest::Approx(finiteDifferenceMaximum).epsilon(2.0e-3));
 }
 
+TEST_CASE("Constant-volume chemical response agrees with directional differences and source scaling")
+{
+    ChemicalSource chemistry(mechFile(), "", 379., 1.);
+    const int speciesCount = chemistry.nSpecies();
+    const double temperature = 1100., pressure = 3e5;
+    std::vector<double> fractions(speciesCount, .001);
+    fractions[0] = .03;
+    fractions[3] = .22;
+    fractions[9] = .75;
+    double sum = 0;
+    for (double value : fractions)
+        sum += value;
+    for (double &value : fractions)
+        value /= sum;
+    ConstSpeciesBufferView fractionView{fractions.data(), speciesCount};
+    const double density = pressure / (chemistry.mixtureR(fractionView) * temperature);
+    auto source = [&](const std::vector<double> &stateFractions, double stateTemperature)
+    {
+        ConstSpeciesBufferView view{stateFractions.data(), speciesCount};
+        const double statePressure = density * chemistry.mixtureR(view) * stateTemperature;
+        const double capacity = chemistry.mixtureCv(stateTemperature, view, statePressure);
+        std::vector<double> values(speciesCount + 1), enthalpy(speciesCount);
+        chemistry.productionRates(stateTemperature, statePressure, view, {values.data(), speciesCount});
+        chemistry.speciesEnthalpies(stateTemperature, statePressure, view, {enthalpy.data(), speciesCount});
+        for (int species = 0; species < speciesCount; ++species)
+        {
+            values[species] *= chemistry.molecularWeights()[species] / density;
+            values.back() -= (enthalpy[species] - chemistry.speciesGasConstants()[species] * stateTemperature) * values[species];
+        }
+        values.back() /= capacity * stateTemperature;
+        return values;
+    };
+    auto autonomous = source(fractions, temperature);
+    std::vector<double> diffusion(speciesCount, 0.);
+    diffusion[0] = 1;
+    diffusion[3] = -1;
+    const double thermalDiffusion = .25;
+    double autonomousNorm = 0, forcedNorm = 0;
+    chemistry.constantVolumeSourceResponseNorms(temperature, pressure, fractionView,
+                                                {diffusion.data(), speciesCount}, thermalDiffusion, 1,
+                                                autonomousNorm, forcedNorm);
+    auto finiteDifferenceNorm = [&](std::vector<double> direction)
+    {
+        double scale = 0;
+        for (double value : direction)
+            scale = std::max(scale, std::abs(value));
+        const double increment = 1e-7 / scale;
+        auto plusFractions = fractions, minusFractions = fractions;
+        for (int species = 0; species < speciesCount; ++species)
+        {
+            plusFractions[species] += increment * direction[species];
+            minusFractions[species] -= increment * direction[species];
+        }
+        auto plus = source(plusFractions, temperature * std::exp(increment * direction.back()));
+        auto minus = source(minusFractions, temperature * std::exp(-increment * direction.back()));
+        double norm = 0;
+        for (int component = 0; component <= speciesCount; ++component)
+            norm = std::hypot(norm, (plus[component] - minus[component]) / (2 * increment));
+        return norm;
+    };
+    auto forced = diffusion;
+    forced.push_back(thermalDiffusion);
+    CHECK(autonomousNorm == doctest::Approx(finiteDifferenceNorm(autonomous)).epsilon(2e-5));
+    CHECK(forcedNorm == doctest::Approx(finiteDifferenceNorm(forced)).epsilon(2e-5));
+    double scaledAutonomous = 0, scaledForced = 0;
+    chemistry.constantVolumeSourceResponseNorms(temperature, pressure, fractionView,
+                                                {diffusion.data(), speciesCount}, thermalDiffusion, .5,
+                                                scaledAutonomous, scaledForced);
+    CHECK(scaledAutonomous == doctest::Approx(.25 * autonomousNorm));
+    CHECK(scaledForced == doctest::Approx(.5 * forcedNorm));
+    chemistry.constantVolumeSourceResponseNorms(temperature, pressure, fractionView,
+                                                {diffusion.data(), speciesCount}, thermalDiffusion, 0,
+                                                scaledAutonomous, scaledForced);
+    CHECK(scaledAutonomous == 0);
+    CHECK(scaledForced == 0);
+    CHECK_THROWS(chemistry.constantVolumeSourceResponseNorms(temperature, pressure, fractionView,
+                                                             {diffusion.data(), speciesCount - 1}, thermalDiffusion, 1,
+                                                             scaledAutonomous, scaledForced));
+}
+
 TEST_CASE("ChemicalSource::mixtureR — gas constant correctness")
 {
     ChemicalSource chem(mechFile(), "", 379.0, 1.0);

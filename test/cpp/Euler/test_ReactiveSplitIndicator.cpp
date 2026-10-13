@@ -2,6 +2,37 @@
 #include "Euler/ReactiveSplitIndicator.hpp"
 #include "doctest.h"
 
+TEST_CASE("Chemical response ratio is step independent and has no auxiliary gates")
+{
+    DNDS::Euler::ReactiveSplitIndicatorSettings settings;
+    settings.indicatorMode = 5;
+    settings.ratioThreshold = .1;
+    settings.ratioExponent = 2;
+    CHECK(settings.validate().empty());
+    using DNDS::Euler::ReactiveSplitChemicalResponseFraction;
+    CHECK(ReactiveSplitChemicalResponseFraction(0, 0, settings) == 0);
+    CHECK(ReactiveSplitChemicalResponseFraction(1, 0, settings) == 0);
+    CHECK(ReactiveSplitChemicalResponseFraction(0, 1, settings) == 1);
+    CHECK(ReactiveSplitChemicalResponseFraction(1, .1, settings) == doctest::Approx(.5));
+    CHECK(ReactiveSplitChemicalResponseFraction(1, 1, settings) == doctest::Approx(1. / 1.01));
+    CHECK(ReactiveSplitChemicalResponseFraction(1e-200, 1e-201, settings) == doctest::Approx(.5));
+    CHECK(ReactiveSplitChemicalResponseFraction(1e200, 1e199, settings) == doctest::Approx(.5));
+    settings.chemicalActivityThreshold = 1e10;
+    settings.shockScale = 1e-10;
+    CHECK(ReactiveSplitChemicalResponseFraction(1, .1, settings) == doctest::Approx(.5));
+    CHECK_THROWS(ReactiveSplitChemicalResponseFraction(-1, 1, settings));
+    nlohmann::ordered_json config = settings;
+    CHECK(config.get<DNDS::Euler::ReactiveSplitIndicatorSettings>().indicatorMode == 5);
+    settings.spatialPasses = 1;
+    CHECK_FALSE(settings.validate().empty());
+    settings.spatialPasses = 0;
+    settings.balanceSmoothingPasses = 1;
+    CHECK_FALSE(settings.validate().empty());
+    settings.balanceSmoothingPasses = 0;
+    settings.ratioThreshold = 0;
+    CHECK_FALSE(settings.validate().empty());
+}
+
 TEST_CASE("Local matched-rate ratio guards activity and forbids spatial expansion")
 {
     DNDS::Euler::ReactiveSplitIndicatorSettings settings;

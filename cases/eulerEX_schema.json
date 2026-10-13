@@ -1694,9 +1694,9 @@
                         "indicatorMode": {
                             "type": "integer",
                             "default": 0,
-                            "description": "Reactive split mode: 0=v1 rate-based, 1=legacy b/s ratio, 2=chemistry escape, 3=transport balance",
+                            "description": "Reactive split mode: 0=v1 rate-based, 1=legacy b/s ratio, 2=chemistry escape, 3=transport balance, 4=local matched-rate ratio, 5=CV chemical directional response",
                             "minimum": 0.0,
-                            "maximum": 3.0
+                            "maximum": 5.0
                         },
                         "escapeStiffnessThreshold": {
                             "type": "number",
@@ -1743,13 +1743,13 @@
                         "ratioThreshold": {
                             "type": "number",
                             "default": 0.1,
-                            "description": "v2 switch midpoint r0 on the b/s stiffness ratio",
+                            "description": "Ratio midpoint r0 for modes 1, 4 and 5",
                             "minimum": 0.0
                         },
                         "ratioExponent": {
                             "type": "number",
                             "default": 2.0,
-                            "description": "v2 switch exponent pr on the b/s stiffness ratio",
+                            "description": "Ratio Hill exponent pr for modes 1, 4 and 5",
                             "minimum": 0.0
                         },
                         "coupledThreshold": {

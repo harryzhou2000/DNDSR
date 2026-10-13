@@ -42,7 +42,7 @@ namespace DNDS::Euler
      */
     struct ReactiveSplitIndicatorSettings
     {
-        int indicatorMode = 0;                 ///< 0: v1; 1: legacy ratio; 2: chemistry escape; 3: transport balance.
+        int indicatorMode = 0;                 ///< 0: v1; 1: legacy ratio; 2: escape; 3: balance; 4: matched rate; 5: chemical response.
         real chemicalActivityThreshold = 1.0;  ///< Chemical saturation threshold @f$a_0@f$.
         real diffusiveActivityThreshold = 1.0; ///< Diffusion saturation threshold @f$b_0@f$.
         real activitySaturationExponent = 1.0; ///< Shared activity-saturation exponent @f$p@f$.
@@ -69,7 +69,7 @@ namespace DNDS::Euler
         DNDS_DECLARE_CONFIG(ReactiveSplitIndicatorSettings)
         {
             // clang-format off
-            DNDS_FIELD(indicatorMode,              "Reactive split mode: 0=v1 rate-based, 1=legacy b/s ratio, 2=chemistry escape, 3=transport balance, 4=local matched-rate ratio", DNDS::Config::range(0, 4));
+            DNDS_FIELD(indicatorMode,              "Reactive split mode: 0=v1 rate-based, 1=legacy b/s ratio, 2=chemistry escape, 3=transport balance, 4=local matched-rate ratio, 5=CV chemical directional response", DNDS::Config::range(0, 5));
             DNDS_FIELD(escapeStiffnessThreshold, "Chemistry escape activity midpoint s0", DNDS::Config::range(0.0));
             DNDS_FIELD(escapeStiffnessExponent, "Chemistry escape activity power ps", DNDS::Config::range(0.0));
             DNDS_FIELD(escapeRatioThreshold, "Chemistry escape diffusion/stiffness ratio midpoint re", DNDS::Config::range(0.0));
@@ -77,8 +77,8 @@ namespace DNDS::Euler
             DNDS_FIELD(chemicalActivityThreshold,  "Chemical activity threshold a0 in sat(a;a0,p)", DNDS::Config::range(0.0));
             DNDS_FIELD(diffusiveActivityThreshold, "Diffusion activity threshold b0 in sat(b;b0,p)", DNDS::Config::range(0.0));
             DNDS_FIELD(activitySaturationExponent, "Shared activity-saturation exponent p in sat(z;z0,p)", DNDS::Config::range(0.0));
-            DNDS_FIELD(ratioThreshold,             "v2 switch midpoint r0 on the b/s stiffness ratio", DNDS::Config::range(0.0));
-            DNDS_FIELD(ratioExponent,              "v2 switch exponent pr on the b/s stiffness ratio", DNDS::Config::range(0.0));
+            DNDS_FIELD(ratioThreshold,             "Ratio midpoint r0 for modes 1, 4 and 5", DNDS::Config::range(0.0));
+            DNDS_FIELD(ratioExponent,              "Ratio Hill exponent pr for modes 1, 4 and 5", DNDS::Config::range(0.0));
             DNDS_FIELD(coupledThreshold,           "Coupled-score midpoint C0", DNDS::Config::range(0.0));
             DNDS_FIELD(transitionWidth,            "Logistic coupled-fraction width w", DNDS::Config::range(0.0));
             DNDS_FIELD(shockScale,                 "Pressure-jump scale h0 in shock gate gh", DNDS::Config::range(0.0));
@@ -115,6 +115,8 @@ namespace DNDS::Euler
                          { return s.indicatorMode == 3 || (s.balanceExpansionPasses == 0 && s.balanceSmoothingPasses == 0); });
             config.check("local matched-rate ratio requires positive ratio controls and no spatial passes", [](const T &s)
                          { return s.indicatorMode != 4 || (s.ratioThreshold > 0 && s.ratioExponent > 0 && s.spatialPasses == 0); });
+            config.check("chemical response requires positive ratio controls and no spatial passes", [](const T &s)
+                         { return s.indicatorMode != 5 || (s.ratioThreshold > 0 && s.ratioExponent > 0 && s.spatialPasses == 0); });
         }
     };
 
@@ -184,6 +186,29 @@ namespace DNDS::Euler
                                        : std::exp(logRatio) / (1.0 + std::exp(logRatio));
         return ReactiveSplitSaturate(chemicalActivity, settings.chemicalActivityThreshold, 1.0) *
                ratioGate * ReactiveSplitShockGate(shockSensor, settings);
+    }
+
+    /** @brief Mode 5 coupled share H(||J_s d|| / ||J_s s||; r0, pr), with fixed-density chemistry.
+     * No activity, shock or spatial gate is used. Both norms have the same units;
+     * endpoint snapping is separate. Zero transport response selects Strang;
+     * positive transport response with zero autonomous response selects coupled.
+     */
+    inline real ReactiveSplitChemicalResponseFraction(real autonomousNorm, real forcedNorm,
+                                                      const ReactiveSplitIndicatorSettings &settings)
+    {
+        DNDS_check_throw_info(std::isfinite(autonomousNorm) && autonomousNorm >= 0 &&
+                                  std::isfinite(forcedNorm) && forcedNorm >= 0,
+                              "chemical response requires finite nonnegative norms");
+        DNDS_check_throw_info(settings.ratioThreshold > 0 && settings.ratioExponent > 0,
+                              "chemical response ratio controls must be positive");
+        if (forcedNorm == 0)
+            return 0;
+        if (autonomousNorm == 0)
+            return 1;
+        const real argument = settings.ratioExponent * (std::log(forcedNorm) - std::log(autonomousNorm) -
+                                                        std::log(settings.ratioThreshold));
+        return argument >= 0 ? 1.0 / (1.0 + std::exp(-argument))
+                             : std::exp(argument) / (1.0 + std::exp(argument));
     }
 
     inline real ReactiveSplitBalanceSmooth(real localFraction, real neighborSum, int neighborCount)

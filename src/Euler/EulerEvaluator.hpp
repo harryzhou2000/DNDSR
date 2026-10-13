@@ -1233,6 +1233,11 @@ namespace DNDS::Euler
          * distinct non-self face neighbors); periodic self faces are ignored and missing endpoint
          * neighbors copy the local value for smoothing.
          * They do not reapply the shock gate and can extend coupling into neighboring cells.
+         * Mode 5 reuses the molecular rate estimate and evaluates fixed-density chemical
+         * response in q=(Y,ln T). Its chemicalStep and diffusiveStep outputs are respectively
+         * dt_phys^2 ||J_s s|| and dt_phys^2 ||J_s d||; coupledScore is the unsnapped Hill
+         * coupled fraction. ShockSensor is diagnostic only and stiffnessStep is zero.
+         * No activity gate, shock gate or spatial pass is applied in this mode.
          *
          * @pre Owning and ghost entries of @p u are current. This evaluator API performs no communication
          * for its input state.

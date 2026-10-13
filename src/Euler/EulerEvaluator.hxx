@@ -1851,7 +1851,7 @@ namespace DNDS::Euler
                 (*cellTWarm)[iCell](0) = T;
         }
 
-        if (indicatorSettings.indicatorMode == 3 || indicatorSettings.indicatorMode == 4)
+        if (indicatorSettings.indicatorMode == 3 || indicatorSettings.indicatorMode == 4 || indicatorSettings.indicatorMode == 5)
         {
             DNDS_check_throw_info(phys_.chem().isIdealGas(), "transport balance requires ideal-gas species thermodynamics");
             DNDS_check_throw_info(std::isfinite(settings.reactiveSourceScale) && settings.reactiveSourceScale >= 0,
@@ -1956,6 +1956,23 @@ namespace DNDS::Euler
                     real energyScale = densityPhysical * std::max(cv, real(1e-30)) * std::max(temperaturePhysical, temperatureFloor);
                     real chemicalActivity = dtPhysical * std::sqrt(chemicalNormSquared + sqr(chemicalEnergy / energyScale));
                     real diffusionActivity = dtPhysical * std::sqrt(diffusionNormSquared + sqr(diffusionEnergy / energyScale));
+                    if (indicatorSettings.indicatorMode == 5)
+                    {
+                        for (int species = 0; species < Ns; ++species)
+                            diffusionSource[species] /= densityPhysical;
+                        double autonomousNorm = 0, forcedNorm = 0;
+                        chem.constantVolumeSourceResponseNorms(
+                            temperaturePhysical, pressure[static_cast<size_t>(iCell)], fractions,
+                            {diffusionSource.data(), Ns}, diffusionEnergy / energyScale,
+                            settings.reactiveSourceScale, autonomousNorm, forcedNorm);
+                        real coupledFraction = ReactiveSplitChemicalResponseFraction(autonomousNorm, forcedNorm, indicatorSettings);
+                        reactiveSplitChemicalStep[iCell](0) = sqr(dtPhysical) * autonomousNorm;
+                        reactiveSplitDiffusiveStep[iCell](0) = sqr(dtPhysical) * forcedNorm;
+                        reactiveSplitShockSensor[iCell](0) = shockSensor;
+                        reactiveSplitCoupledScore[iCell](0) = coupledFraction;
+                        reactiveSplitChi[iCell](0) = ReactiveSplitSnapChi(1.0 - coupledFraction, indicatorSettings);
+                        continue;
+                    }
                     real score = indicatorSettings.indicatorMode == 4
                                      ? ReactiveSplitMatchedRatioFraction(chemicalActivity, diffusionActivity, shockSensor, indicatorSettings)
                                      : ReactiveSplitBalanceScore(chemicalActivity, diffusionActivity, shockSensor, indicatorSettings);

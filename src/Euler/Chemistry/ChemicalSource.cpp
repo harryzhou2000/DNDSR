@@ -351,6 +351,14 @@ namespace DNDS::Euler::Chemistry
             DNDS_assert_info(false, "ChemicalSource::Impl: Cantera not available");
 #endif
         }
+        void gas_getPartialMolarCp(double *capacity) const
+        {
+#ifdef DNDS_USE_CANTERA
+            sol->thermo()->getPartialMolarCp(capacity);
+#else
+            DNDS_assert_info(false, "ChemicalSource::Impl: Cantera not available");
+#endif
+        }
         void gasT_setMassFractions(const double *Y) const
         {
 #ifdef DNDS_USE_CANTERA
@@ -805,6 +813,90 @@ namespace DNDS::Euler::Chemistry
         (void)p;
         (void)Y;
         return 0.0;
+#endif
+    }
+
+    void ChemicalSource::constantVolumeSourceResponseNorms(
+        double temperature, double pressure, ConstSpeciesBufferView fractions,
+        ConstSpeciesBufferView speciesDiffusionRate, double logTemperatureDiffusionRate,
+        double chemistryScale, double &autonomousNorm, double &forcedNorm) const
+    {
+        DNDS_check_throw_info(impl_ && fractions.data && speciesDiffusionRate.data,
+                              "constantVolumeSourceResponseNorms requires chemistry and nonnull buffers");
+        auto &implementation = *impl_;
+        const int speciesCount = implementation.Ns;
+        DNDS_check_throw_info(fractions.nSpecies == speciesCount && speciesDiffusionRate.nSpecies == speciesCount,
+                              "constantVolumeSourceResponseNorms species count mismatch");
+        DNDS_check_throw_info(std::isfinite(temperature) && temperature > 0 &&
+                                  std::isfinite(pressure) && pressure > 0 &&
+                                  std::isfinite(logTemperatureDiffusionRate) &&
+                                  std::isfinite(chemistryScale) && chemistryScale >= 0,
+                              "constantVolumeSourceResponseNorms requires finite physical inputs");
+        autonomousNorm = forcedNorm = 0;
+        if (chemistryScale == 0)
+            return;
+#ifdef DNDS_USE_CANTERA
+        implementation.setTPY(temperature, pressure, fractions);
+        DNDS_check_throw_info(implementation.gas_isIdeal(), "chemical response requires ideal-gas thermodynamics");
+        const double density = pressure / (mixtureR(fractions) * temperature);
+        const double capacity = implementation.gas_cv_mass();
+        DNDS_check_throw_info(density > 0 && capacity > 0, "chemical response requires positive density and cv");
+        Eigen::VectorXd energies(speciesCount), speciesCapacity(speciesCount), source(speciesCount);
+        Eigen::VectorXd temperatureDerivative(speciesCount), pressureDerivative(speciesCount);
+        implementation.gas_getPartialMolarIntEnergies(energies.data());
+        implementation.gas_getPartialMolarCp(speciesCapacity.data());
+        implementation.kin_getNetProductionRates(source.data());
+        implementation.kin_getNetProductionRates_ddT(temperatureDerivative.data());
+        implementation.kin_getNetProductionRates_ddP(pressureDerivative.data());
+        auto concentrationDerivative = implementation.kin_netProductionRates_ddCi();
+        double inverseMolecularWeight = 0;
+        for (int species = 0; species < speciesCount; ++species)
+        {
+            DNDS_check_throw_info(std::isfinite(speciesDiffusionRate[species]), "nonfinite species diffusion rate");
+            energies[species] *= implementation.invMw[species];
+            speciesCapacity[species] = speciesCapacity[species] * implementation.invMw[species] - implementation.Rk[species];
+            source[species] *= implementation.mw[species] * chemistryScale / density;
+            inverseMolecularWeight += fractions[species] * implementation.invMw[species];
+        }
+        DNDS_check_throw_info(inverseMolecularWeight > 0, "chemical response requires positive molecular weight");
+        const double thermalSource = -energies.dot(source) / (capacity * temperature);
+        const double increment = temperature * 1e-5;
+        implementation.setTPY(temperature + increment, pressure, fractions);
+        const double capacityPlus = implementation.gas_cv_mass();
+        implementation.setTPY(temperature - increment, pressure, fractions);
+        const double capacityMinus = implementation.gas_cv_mass();
+        const double capacityDerivative = (capacityPlus - capacityMinus) / (2 * increment);
+        implementation.setTPY(temperature, pressure, fractions);
+        Eigen::MatrixXd directions(speciesCount, 2), concentrations(speciesCount, 2);
+        directions.col(0) = source;
+        for (int species = 0; species < speciesCount; ++species)
+        {
+            directions(species, 1) = speciesDiffusionRate[species];
+            concentrations.row(species) = density * implementation.invMw[species] * directions.row(species);
+        }
+        Eigen::MatrixXd response = concentrationDerivative * concentrations;
+        for (int direction = 0; direction < 2; ++direction)
+        {
+            const double logTemperatureDirection = direction == 0 ? thermalSource : logTemperatureDiffusionRate;
+            const double temperatureDirection = temperature * logTemperatureDirection;
+            double compositionDirection = 0;
+            for (int species = 0; species < speciesCount; ++species)
+                compositionDirection += directions(species, direction) * implementation.invMw[species];
+            const double pressureDirection = pressure * (compositionDirection / inverseMolecularWeight + logTemperatureDirection);
+            response.col(direction) += temperatureDerivative * temperatureDirection + pressureDerivative * pressureDirection;
+            for (int species = 0; species < speciesCount; ++species)
+                response(species, direction) *= implementation.mw[species] * chemistryScale / density;
+            const double capacityDirection = speciesCapacity.dot(directions.col(direction)) + capacityDerivative * temperatureDirection;
+            const double thermalResponse = -(energies.dot(response.col(direction)) +
+                                             speciesCapacity.dot(source) * temperatureDirection) /
+                                               (capacity * temperature) -
+                                           thermalSource * (capacityDirection / capacity + logTemperatureDirection);
+            double norm = std::hypot(response.col(direction).stableNorm(), thermalResponse);
+            DNDS_check_throw_info(std::isfinite(norm), "nonfinite chemical directional response");
+            (direction == 0 ? autonomousNorm : forcedNorm) = norm;
+        }
+#else
+        DNDS_check_throw_info(false, "chemical response requires Cantera");
 #endif
     }
 

@@ -397,6 +397,99 @@ where `spatialDecay` is `eta` in `[0,1]`. The shock gate limits propagation into
 strong pressure jumps. One `reactiveSplitChi` halo exchange occurs immediately
 before each pass; no diagnostic-field exchange is performed.
 
+## Chemical directional response (mode 5)
+
+This opt-in experimental mode uses fixed-density ideal-gas chemistry in
+dimensionless thermochemical coordinates $q=(Y_1,\ldots,Y_N,\ln(T/T_*))$.
+The local source rate is $s$, the mode-3 cell-mean molecular-transport rate
+is $d$, and $J_s=\partial s/\partial q$ holds density fixed. Define
+
+$$
+r=\frac{\|J_s d\|}{\|J_s s\|},\qquad
+1-\chi^*=\frac{r^p}{r^p+r_0^p}.
+$$
+
+Every norm is Euclidean over **all** species mass fractions and one
+log-temperature component, with unit component weights. With physical molar
+production rates $\omega_k$, molecular weights $W_k$, species internal
+energies $e_k$, mixture heat capacity $c_v$, and independent debugging source
+factor $\alpha=\texttt{reactiveSourceScale}$, the source components are
+
+$$
+s_k=\alpha W_k\omega_k/\rho,\qquad
+s_\theta=-\frac{\sum_ke_ks_k}{c_vT}.
+$$
+
+The transport components are $d_k=D_k/\rho$ and
+$d_\theta=(D_E-\sum_ke_kD_k)/(\rho c_vT)$, where $D_k$ and $D_E$ are the
+negative finite-volume divergences of mass-corrected molecular species flux
+and conductive plus species-enthalpy energy flux. The existing positive
+temperature/heat-capacity denominator floors still apply. Face properties
+are arithmetic averages, gradients use neighboring cell means, and faces
+without a neighboring cell contribute no estimated flux. Convection,
+compression, viscous heating and nonorthogonal corrections are not included;
+this is a local transport estimate, not the full flow residual.
+
+Both $s$ and $d$ have units s$^{-1}$, and both Jacobian products have units
+s$^{-2}$. $T_*$ is any fixed positive temperature: changing it does not change
+the derivatives. Unit invariance does not imply invariance under species
+lumping or arbitrary component reweighting.
+
+Use `indicatorMode=5`, `ratioThreshold=r0`, and `ratioExponent=p`.
+The kineticH01P2 campaign uses $r_0=0.1$, $p=2$, both endpoint snap
+tolerances zero, and all spatial passes zero. There are no activity or
+shock gates and no explicit time-step dependence. Existing endpoint snap
+controls and `chiOverride` remain available; no old default is changed.
+Zero transport response selects Strang, including when both responses
+vanish; positive transport response with zero autonomous response selects
+coupled. The generic split integrator still freezes chi over each physical
+step and scales only the chemical source by chi.
+
+For positive norms the bounded map uses a stable logistic of
+$p[\ln\lVert J_sd\rVert-\ln\lVert J_ss\rVert-\ln r_0]$. There is no
+small-response denominator floor. At a fixed state and mesh the selector's
+$\Delta t\to0$ and $\Delta t\to\infty$ limits coincide; different evolved
+states can still yield different chi. Legacy `switchShape`, activity,
+shock and Strang-bias settings do not enter this mode's Hill map. Nonzero
+spatial passes are rejected. `sourceStrangSplitting=2` enables the mixed
+integrator; `chiOverride=-1` enables the computed selector.
+
+The source debug factor `reactiveSourceScale` multiplies $s$ and $J_s$, not
+transport: it scales $J_s s$ quadratically and $J_s d$ linearly. The
+directional derivative includes composition, temperature, pressure and heat
+capacity changes under the fixed-density constraint. It is not a full flow
+Jacobian or commutator. The transport and boundary limitations of mode 3
+still apply.
+
+`constantVolumeSourceResponseNorms` assembles both directional products from
+Cantera concentration, temperature and pressure derivatives. Along either
+direction $v=s$ or $v=d$, it uses $\delta T=Tv_\theta$,
+$\delta C_k=\rho v_k/W_k$, and
+$\delta p=p[v_\theta+(\sum_kv_k/W_k)/(\sum_kY_k/W_k)]$.
+The thermal chain rule differentiates species energies, $c_v$ and $T$ as
+well as production rates. Only $\partial c_v/\partial T$ is approximated
+by a centered difference with increment $10^{-5}T$; the chemistry state is
+restored afterwards. This is a constant-density derivative, not the CP
+variant also examined in the research scripts.
+
+In mode 5, `reactiveSplitChemicalStep` and `reactiveSplitDiffusiveStep`
+store $\Delta t_{phys}^2\|J_s s\|$ and $\Delta t_{phys}^2\|J_s d\|$;
+`reactiveSplitCoupledScore` stores the unsnapped coupled fraction.
+`reactiveSplitShockSensor` remains diagnostic only, and
+`reactiveSplitStiffnessStep` is zero. All validity and communication
+contracts below remain unchanged. Cell output after a physical step may
+contain the step's held selector, not a newly evaluated endpoint selector.
+
+**Known experimental limitation:** in the n-heptane study, roundoff-level
+changes (up to $1.45\times10^{-15}$) in the final reactive species reconstructed
+from exported mass fractions changed chi by as much as 0.875. Exact restart
+states pass independent parity checks, but this does not establish robustness
+of a ratio involving a very small autonomous response. Neither smoothing nor
+an activity floor is silently added here. The 0.1/2 posterior trial recovers
+most flame rows but does not establish coupled-like interface accuracy and
+Strang-like ignition accuracy simultaneously. Mode 5 remains opt-in, with
+all previous modes and defaults preserved.
+
 ## Configuration
 
 The following fragment shows every RRI setting and its current default:
