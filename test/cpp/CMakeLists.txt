@@ -58,14 +58,6 @@ elseif(MPIEXEC_EXECUTABLE)
     endif()
 endif()
 
-# Conditionally set TIMEOUT on a test — only when DNDS_TEST_TIMEOUT env was provided.
-# When not set, ctest --timeout N works naturally.
-function(_dnds_maybe_set_timeout TEST_NAME VALUE)
-    if(DNDS_TEST_SET_TIMEOUT)
-        set_tests_properties(${TEST_NAME} PROPERTIES TIMEOUT ${VALUE})
-    endif()
-endfunction()
-
 # --- Timeout per np ---
 function(_dnds_np_timeout NP OUT_VAR)
     if(NP LESS_EQUAL 2)

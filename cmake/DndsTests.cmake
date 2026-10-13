@@ -7,18 +7,7 @@ endif()
 
 enable_testing()
 
-# --- Read test timeout from env, default to 1800 ---
-if(DEFINED ENV{DNDS_TEST_TIMEOUT})
-    set(DNDS_TEST_TIMEOUT "$ENV{DNDS_TEST_TIMEOUT}")
-    set(DNDS_TEST_SET_TIMEOUT ON)
-else()
-    set(DNDS_TEST_TIMEOUT "1800")
-    set(DNDS_TEST_SET_TIMEOUT ON)
-endif()
-message(STATUS "DNDS_TEST_TIMEOUT: ${DNDS_TEST_TIMEOUT} (set-timeout: ${DNDS_TEST_SET_TIMEOUT})")
-
-math(EXPR DNDS_TEST_TIMEOUT_SOLVER "${DNDS_TEST_TIMEOUT} / 2")
-math(EXPR DNDS_TEST_TIMEOUT_PIPELINE "${DNDS_TEST_TIMEOUT} * 5")
+include(${CMAKE_CURRENT_LIST_DIR}/DndsTestTimeout.cmake)
 
 add_subdirectory(${CMAKE_SOURCE_DIR}/test/cpp)
 
@@ -28,6 +17,14 @@ add_subdirectory(${CMAKE_SOURCE_DIR}/test/cpp)
 # runs outside an activated venv.
 get_filename_component(_DNDS_PYTHON_BIN_DIR "${Python_EXECUTABLE}" DIRECTORY)
 if(Python_EXECUTABLE)
+    # Standalone tooling regressions need no extension modules or solver build.
+    add_test(NAME harness_tooling
+        COMMAND ${Python_EXECUTABLE} -m unittest discover -s ${CMAKE_SOURCE_DIR}/scripts/tests -v)
+    set_tests_properties(harness_tooling PROPERTIES
+        LABELS "tooling"
+        ENVIRONMENT "DNDS_HARNESS_CMAKE=${CMAKE_COMMAND}")
+    _dnds_maybe_set_timeout(harness_tooling ${DNDS_TEST_TIMEOUT})
+
     add_test(NAME pytest_DNDS
         COMMAND ${Python_EXECUTABLE} -m pytest ${CMAKE_SOURCE_DIR}/test/DNDS/ -x --timeout=${DNDS_TEST_TIMEOUT}
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})

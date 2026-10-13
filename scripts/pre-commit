@@ -14,10 +14,11 @@
 #   - Python (*.py) → autopep8 --in-place (PEP 8 only, minimal changes)
 #   - Jupyter notebooks (*.ipynb) → nbstripout (strip outputs + metadata)
 #
-# Any files modified by the formatters are re-staged so the commit contains
-# the formatted versions.
+# Partially staged files are rejected before any formatter runs. Otherwise,
+# files modified by a successful formatter are re-staged. Formatter errors
+# stop the hook without staging that formatter's output.
 
-set -uo pipefail
+set -euo pipefail
 
 PROJECT_ROOT="$(git rev-parse --show-toplevel)"
 cd "$PROJECT_ROOT" || exit 1
@@ -33,15 +34,6 @@ find_tool()
     command -v "$name" 2>/dev/null || true
 }
 
-# List staged files matching an extension pattern. NUL-safe.
-staged_files()
-{
-    # $1 = extended regex of extensions, e.g. '\.(cpp|hpp)$'
-    git diff --cached --name-only --diff-filter=ACMR -z \
-        | tr '\0' '\n' \
-        | grep -E "$1" || true
-}
-
 restage_if_modified()
 {
     # Re-stage any of the given paths that the formatter touched.
@@ -50,20 +42,32 @@ restage_if_modified()
     for f in "$@"; do
         [ -f "$f" ] || continue
         # If working tree version differs from index, re-add.
-        if ! git diff --quiet -- "$f"; then
-            git add -- "$f"
+        if ! git --literal-pathspecs diff --quiet -- "$f"; then
+            git --literal-pathspecs add -- "$f"
         fi
     done
 }
 
-any_warning=0
+# Collect and check ALL candidates before formatting any of them. Preserve
+# spaces and newlines in paths, and prefix ./ to avoid treating names as flags.
+CPP_FILES=()
+PY_FILES=()
+NB_FILES=()
+while IFS= read -r -d '' f; do
+    case "$f" in
+        *.c|*.cc|*.cpp|*.cxx|*.h|*.hpp|*.hxx|*.cu|*.cuh) CPP_FILES+=("./$f") ;;
+        *.py) PY_FILES+=("./$f") ;;
+        *.ipynb) NB_FILES+=("./$f") ;;
+        *) continue ;;
+    esac
+    if ! git --literal-pathspecs diff --quiet -- "$f"; then
+        printf '[pre-commit] Refusing to format partially staged file: %s\n' "$f" >&2
+        echo '[pre-commit] Stage its intended complete contents or commit its partial changes without automatic formatting.' >&2
+        exit 1
+    fi
+done < <(git diff --cached --name-only --diff-filter=ACMR -z)
 
 # ---- C / C++ / CUDA via clang-format -------------------------------------
-CPP_FILES=()
-while IFS= read -r line; do
-    [ -n "$line" ] && CPP_FILES+=("$line")
-done < <(staged_files '\.(c|cc|cpp|cxx|h|hpp|hxx|cu|cuh)$')
-
 if [ ${#CPP_FILES[@]} -gt 0 ]; then
     CF="$(find_tool clang-format)"
     if [ -n "$CF" ]; then
@@ -72,16 +76,10 @@ if [ ${#CPP_FILES[@]} -gt 0 ]; then
         restage_if_modified "${CPP_FILES[@]}"
     else
         echo "[pre-commit] WARNING: clang-format not found; skipping C/C++ formatting."
-        any_warning=1
     fi
 fi
 
 # ---- Python via autopep8 -------------------------------------------------
-PY_FILES=()
-while IFS= read -r line; do
-    [ -n "$line" ] && PY_FILES+=("$line")
-done < <(staged_files '\.py$')
-
 if [ ${#PY_FILES[@]} -gt 0 ]; then
     AP="$(find_tool autopep8)"
     if [ -n "$AP" ]; then
@@ -91,16 +89,10 @@ if [ ${#PY_FILES[@]} -gt 0 ]; then
     else
         echo "[pre-commit] WARNING: autopep8 not found; skipping Python formatting."
         echo "[pre-commit]          Install: pip install autopep8"
-        any_warning=1
     fi
 fi
 
 # ---- Jupyter notebooks via nbstripout ------------------------------------
-NB_FILES=()
-while IFS= read -r line; do
-    [ -n "$line" ] && NB_FILES+=("$line")
-done < <(staged_files '\.ipynb$')
-
 if [ ${#NB_FILES[@]} -gt 0 ]; then
     NB="$(find_tool nbstripout)"
     if [ -n "$NB" ]; then
@@ -112,11 +104,8 @@ if [ ${#NB_FILES[@]} -gt 0 ]; then
     else
         echo "[pre-commit] WARNING: nbstripout not found; skipping notebook stripping."
         echo "[pre-commit]          Install: pip install nbstripout"
-        any_warning=1
     fi
 fi
 
-# Never block the commit on missing tools; only real formatter errors (which
-# would exit non-zero under `set -e`) should fail. We intentionally ran
-# without `-e` so a single formatter failure doesn't abort the others.
+# Missing tools are optional; command failures above propagate via set -e.
 exit 0

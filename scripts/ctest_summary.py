@@ -13,7 +13,6 @@ Example:
 import subprocess
 import sys
 import re
-from pathlib import Path
 
 
 def main():
@@ -42,10 +41,10 @@ def main():
     # [doctest] test cases:    45 |    45 passed | 0 failed | 0 skipped
     # [doctest] assertions: 85242 | 85242 passed | 0 failed |
     test_case_pattern = re.compile(
-        r'\[doctest\] test cases:\s*(\d+)\s*\|\s*(\d+)\s*passed\s*\|\s*(\d+)\s*failed'
+        r'^\[doctest\] test cases:\s*(\d+)\s*\|\s*(\d+)\s*passed\s*\|\s*(\d+)\s*failed'
     )
     assertion_pattern = re.compile(
-        r'\[doctest\] assertions:\s*(\d+)\s*\|\s*(\d+)\s*passed\s*\|\s*(\d+)\s*failed'
+        r'^\[doctest\] assertions:\s*(\d+)\s*\|\s*(\d+)\s*passed\s*\|\s*(\d+)\s*failed'
     )
 
     total_test_cases = 0
@@ -55,26 +54,38 @@ def main():
     total_assertions_passed = 0
     total_assertions_failed = 0
     test_count = 0
+    test_ids = set()
 
     # Stream output and parse
     for line in process.stdout:
         print(line, end='')
 
+        # Verbose CTest prefixes live test output with the test ID. Ignore
+        # command descriptions and unprefixed --output-on-failure replays.
+        output_match = re.match(r'^\s*(\d+):\s*(.*)', line)
+        if not output_match:
+            continue
+        output = output_match.group(2)
+
         # Check for doctest summary
-        tc_match = test_case_pattern.search(line)
+        tc_match = test_case_pattern.match(output)
         if tc_match:
             total_test_cases += int(tc_match.group(1))
             total_test_cases_passed += int(tc_match.group(2))
             total_test_cases_failed += int(tc_match.group(3))
             test_count += 1
+            test_ids.add(output_match.group(1))
 
-        assert_match = assertion_pattern.search(line)
+        assert_match = assertion_pattern.match(output)
         if assert_match:
             total_assertions += int(assert_match.group(1))
             total_assertions_passed += int(assert_match.group(2))
             total_assertions_failed += int(assert_match.group(3))
 
+    process.stdout.close()
     process.wait()
+    returncode = process.returncode or int(
+        total_test_cases_failed > 0 or total_assertions_failed > 0)
 
     # Print aggregated summary
     print("\n" + "=" * 70)
@@ -82,22 +93,24 @@ def main():
     print("=" * 70)
 
     if test_count > 0:
-        print(f"Test executables run:  {test_count}")
+        print(f"CTest tests with doctest output: {len(test_ids)}")
+        print(f"Doctest summaries (including MPI ranks): {test_count}")
         print(
             f"Total test cases:      {total_test_cases:6} | {total_test_cases_passed:6} passed | {total_test_cases_failed} failed")
         print(
             f"Total assertions:      {total_assertions:6} | {total_assertions_passed:6} passed | {total_assertions_failed} failed")
-
-        if total_test_cases_failed > 0 or total_assertions_failed > 0:
-            print("\nStatus: FAILED")
-        else:
-            print("\nStatus: SUCCESS")
     else:
         print("No doctest output found (tests may have been filtered out or not built)")
 
+    if returncode:
+        print("\nStatus: FAILED")
+    elif test_count:
+        print("\nStatus: SUCCESS")
+    else:
+        print("\nStatus: NO DOCTEST RESULTS")
     print("=" * 70)
 
-    return process.returncode
+    return returncode
 
 
 if __name__ == '__main__':

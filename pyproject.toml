@@ -1,7 +1,7 @@
 # usage:
 # CC=/usr/bin/gcc CXX=/usr/bin/g++ CMAKE_BUILD_PARALLEL_LEVEL=32 pip install . --verbose
 # Override build parallelism: SKBUILD_BUILD_TOOL_ARGS="-j8" pip install . --verbose
-# (default: -j0 = use all cores)
+# Without an explicit limit, the selected build tool uses its normal default.
 #
 # editable (use the same compiler as the main C++ build):
 # CC=mpicc CXX=mpicxx CMAKE_BUILD_PARALLEL_LEVEL=32 pip install -e . --no-build-isolation
@@ -68,7 +68,7 @@ build.targets = [
 build.verbose = true
 build-dir = "build_py"
 cmake.args = ["-G", "Ninja"]
-build.tool-args = ["-j0"]  # all cores; override: SKBUILD_BUILD_TOOL_ARGS="-j8"
+# Do not override CMAKE_BUILD_PARALLEL_LEVEL with a forced Ninja -j argument.
 sdist.include = [
     "python/DNDSR/**/*.pyi",
     "python/DNDSR/**/*.so",

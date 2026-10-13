@@ -79,6 +79,11 @@ pytest test/ -v
 | Ninja           | any           | Optional but recommended for speed     |
 | Doxygen         | any           | Required for Cantera CLib codegen      |
 
+OpenMPI **4.1.0 is not supported** because its transport can hang at large
+scales. CMake rejects that exact release using the selected MPI headers;
+choose another MPI release with matching compiler wrappers and libraries.
+The check compiles but does not launch MPI, so it also works when cross-compiling.
+
 C++ libraries (managed via `external/cfd_externals` submodule):
 Eigen, Boost, CGAL, nlohmann_json, fmt, pybind11, HDF5, CGNS,
 Metis, ParMetis, ZLIB.  Optional: CUDA toolkit, SuperLU_dist.
@@ -406,6 +411,23 @@ GPU-accelerated versions of the test apps are built when
 
 ## Running Tests
 
+### Harness Regression Tests
+
+These tests cover the commit hook, CTest summary reporting, build parallelism,
+timeout selection, preset compatibility, shared skill paths, and MPI version
+rejection. They use temporary fixtures and do not import DNDSR or require
+building/installing its Python extensions:
+
+```bash
+venv/bin/python -m unittest discover -s scripts/tests -v
+# Also registered when DNDS_BUILD_TESTS=ON:
+ctest --test-dir build -R '^harness_tooling$' --output-on-failure
+```
+
+Set `DNDS_HARNESS_CMAKE=/path/to/cmake` for the standalone command to test a
+different CMake installation. Preset schema 3 is the lowest version that
+preserves automatic generator selection; it is supported by CMake 3.21.
+
 ### C++ Unit Tests
 
 C++ tests use [doctest](https://github.com/doctest/doctest) and live
@@ -425,6 +447,13 @@ Available test executables: `dnds_test_array`, `dnds_test_mpi`,
 `dnds_test_array_transformer`, `dnds_test_array_derived`,
 `dnds_test_array_dof`, `dnds_test_index_mapping`,
 `dnds_test_serializer`, `dnds_test_permutation_transfer`.
+
+By default, no per-test CTest `TIMEOUT` property is set, so use
+`ctest --timeout <seconds>` to bound tests at runtime. Setting
+`DNDS_TEST_TIMEOUT=<seconds>` during configuration explicitly enables the
+existing per-category/rank timeout values, which take precedence over that
+command-line default. The independent pytest timeout fallback remains 1800
+seconds when invoked through CTest.
 
 ### Python Tests
 

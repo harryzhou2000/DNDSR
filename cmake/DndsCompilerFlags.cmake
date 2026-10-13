@@ -35,6 +35,8 @@ endif()
 # MPI discovery and Windows linker flags
 # -------------------------------------------------------------------
 find_package(MPI REQUIRED)
+include(${CMAKE_CURRENT_LIST_DIR}/DndsMPIVersion.cmake)
+dnds_check_mpi_version()
 if(UNIX)
     # set(CMAKE_CXX_COMPILER mpicxx CACHE FILEPATH "compiler with your MPI wrapping")
     # set(CMAKE_FIND_LIBRARY_SUFFIXES ".a") # ! using static libs

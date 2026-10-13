@@ -9,6 +9,25 @@
 DNDSR is a C++17 / Python CFD (Computational Fluid Dynamics) research code implementing
 Compact Finite Volume methods with MPI parallelism and optional CUDA GPU support.
 
+## CodeGraph in Separate Checkouts
+
+When working in a standalone checkout or linked Git worktree, an agent may
+initialize a checkout-local CodeGraph index if needed and the `codegraph` CLI
+is available, including when `.codegraph/` does not yet exist. Run
+`codegraph init .` from that checkout's root. This is optional, not a requirement
+to create a separate worktree.
+
+If CodeGraph reports that its index belongs to another checkout, do not treat
+that index as authoritative for the active checkout. Use a checkout-local index
+or verify against the active checkout's source. Keep initialization scoped to
+the intended checkout; do not reinitialize another worktree's index.
+
+## Shared Agent Skills
+
+Keep project skills in `.opencode/skills/`, shared by OpenCode and Codex.
+`.agents/skills` and the legacy `.codex/skills` are symlinks to that same
+directory; edit the shared source, not separate harness-specific copies.
+
 ## Project Structure
 
 - `src/` — C++ and Python source, organized by module:
@@ -105,7 +124,7 @@ CC=mpicc CXX=mpicxx python cfd_externals_build.py
 
 ### Python Tests
 
-**IMPORTANT: Before running ANY Python test, you MUST build the pybind11
+**IMPORTANT: Before running Python tests under `test/`, you MUST build the pybind11
 shared libraries AND install them.** The Python modules load `.so` files
 from `python/DNDSR/`, which are only placed there by `cmake --install`.
 Running Python tests against stale or missing `.so` files will produce
@@ -130,6 +149,12 @@ and reinstall before running Python tests. A `git checkout` changes source
 files but does NOT rebuild binaries — the installed `.so` files will be
 from the previous build and will silently produce wrong behavior.
 
+Tooling-only regression tests do not import DNDSR or require its C++ libraries:
+
+```bash
+venv/bin/python -m unittest discover -s scripts/tests -v
+```
+
 ### HARD RULE — never discard changes you did not make
 
 **Every modified tracked file belongs to the user** (or another agent).
@@ -147,14 +172,16 @@ user's uncommitted work.
 
 If a clean working tree is genuinely needed (e.g. for a benchmark
 baseline, or to isolate the agent's own edits from pre-existing noise),
-**push a stash with a brief message first** — a stash is harmless and
-the user can pop it later:
+**push a stash with a brief message first**. Record its identity and what it
+contains; plain `stash push` does not include untracked or ignored files:
 
     git stash push -m "baseline: user changes before <task description>"
 
-Always check `git stash list` after popping to confirm the stash was
-consumed.  A popped stash with conflicts or a dirty tree leaves the
-stash intact — the changes are NOT applied.
+After applying or popping, inspect the exit status, `git status`, the diff,
+and `git stash list`. A conflicted pop can partially apply changes and leave
+conflict markers while retaining the stash. Do not assume a retained stash
+means nothing was applied, and do not retry blindly. Preserve the stash until
+the restored changes have been verified; never discard conflicts or user work.
 
 **Before running ANY `git checkout`, `git switch`, `git restore`,
 `git reset`, `git stash`, `git stash pop`, or `git checkout -- <file>`
@@ -397,7 +424,8 @@ Key concepts agents should know:
 ## Key Dependencies
 
 - **Compiler:** GCC 9+ / Clang 8+, C++17 required
-- **MPI:** MPI-3 compatible (OpenMPI or MPICH)
+- **MPI:** MPI-3 compatible (OpenMPI or MPICH); OpenMPI 4.1.0 is rejected
+  at configure time because of large-scale transport hangs.
 - **CMake:** >= 3.21
 - **C++ libs:** Eigen, Boost, CGAL, nlohmann_json, fmt, pybind11, HDF5, CGNS, Metis, ParMetis
 - **Python:** >= 3.10, numpy, scipy, pytest, pytest-mpi, mpi4py, h5py
