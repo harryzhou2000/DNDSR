@@ -803,6 +803,7 @@ namespace DNDS::Euler
 
         static const int EvaluateURecBeta_DEFAULT = 0x00;          ///< Default: evaluate beta without compression.
         static const int EvaluateURecBeta_COMPRESS_TO_MEAN = 0x01; ///< Compress reconstruction toward cell mean to enforce positivity.
+        static const int EvaluateURecBeta_LOCAL_STATS = 0x02;      ///< Return local nLim/betaMin; skip their diagnostic reductions only, not global PP floors.
         /**
          * @brief Evaluate the positivity-preserving reconstruction limiter (beta).
          *
@@ -812,9 +813,9 @@ namespace DNDS::Euler
          * @param[in]  u          Cell-centered conservative DOFs.
          * @param[in]  uRec       Reconstruction coefficients.
          * @param[out] uRecBeta   Per-cell compression factor in [0,1].
-         * @param[out] nLim       Number of cells where beta < 1.
-         * @param[out] betaMin    Global minimum beta value.
-         * @param[in]  flag       EvaluateURecBeta_DEFAULT or EvaluateURecBeta_COMPRESS_TO_MEAN.
+         * @param[out] nLim       Number of cells where beta < 1 (local with LOCAL_STATS).
+         * @param[out] betaMin    Global minimum beta value (local with LOCAL_STATS).
+         * @param[in]  flag       Bitwise combination of COMPRESS_TO_MEAN and LOCAL_STATS; zero uses the default policy.
          */
         void EvaluateURecBeta(
             ArrayDOFV<nVarsFixed> &u,

@@ -122,11 +122,11 @@ namespace DNDS::Euler
             reactiveSplitChi_, reactiveSplitChemicalStep_, reactiveSplitDiffusiveStep_,
             reactiveSplitShockSensor_, reactiveSplitCoupledScore_, &reactiveSplitStiffnessStep_};
         OutputPicker outputPicker;
-        eval.InitializeOutputPicker(outputPicker, {u, uRec, betaPP, alphaPP, lvrAlpha_, lvrBranchAlpha_, lvrDensityJump_, lvrPressureJump_, lvrCompression_, lvrO2Beta_}, reactiveSplitData);
+        eval.InitializeOutputPicker(outputPicker, getOutputOverlapDataRefs(), reactiveSplitData);
         addOutList = outputPicker.getSubsetList(config.dataIOControl.outCellScalarNames);
 
         OutputPicker outputPickerBnd;
-        eval.InitializeOutputPickerBnd(outputPickerBnd, {u, uRec, betaPP, alphaPP, lvrAlpha_, lvrBranchAlpha_, lvrDensityJump_, lvrPressureJump_, lvrCompression_, lvrO2Beta_});
+        eval.InitializeOutputPickerBnd(outputPickerBnd, getOutputOverlapDataRefs());
         addBndOutList = outputPickerBnd.getSubsetList(config.dataIOControl.outBndScalarNames);
 
         /*******************************************************/

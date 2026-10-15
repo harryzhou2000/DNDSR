@@ -303,3 +303,24 @@ TEST_CASE("Limited variational reconstruction settings parse and validate")
     settings = config.get<LimitedVRSettings>();
     CHECK_FALSE(settings.validate().empty());
 }
+
+TEST_CASE("LVR input presets expand before explicit overrides and preserve legacy input")
+{
+    nlohmann::ordered_json layer = {{"limiterControl", {{"limitedVR", {{"preset", "v3"}, {"alphaMax", 1.0}, {"contactAlphaMax", 1.0}}}}}};
+    ExpandLimitedVRPreset(layer);
+    const auto &section = layer["limiterControl"]["limitedVR"];
+    CHECK_FALSE(section.contains("preset"));
+    auto settings = section.get<LimitedVRSettings>();
+    CHECK(settings.alphaMax == 1);
+    CHECK(settings.contactAlphaMax == 1);
+    CHECK(settings.gateMode == LimitedVRSettings::GateProductCubicWithExtremumCorrection);
+    CHECK(settings.o2ReferenceLimiter == LimitedVRSettings::O2ReferenceLimiterWBAP);
+    CHECK(settings.contactExtremumHaloLayers == 2);
+    CHECK(settings.weakAlphaMax == 0);
+    CHECK(settings.validate().empty());
+    const auto resolved = layer;
+    ExpandLimitedVRPreset(layer);
+    CHECK(layer == resolved);
+    layer["limiterControl"]["limitedVR"]["preset"] = "unknown";
+    CHECK_THROWS(ExpandLimitedVRPreset(layer));
+}

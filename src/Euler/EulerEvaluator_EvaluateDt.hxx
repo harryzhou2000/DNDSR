@@ -2863,23 +2863,23 @@ namespace DNDS::Euler
         outMap["alphaPP"] = [&](index iCell)
         { return alphaPP[iCell](0); };
         outMap["lvrAlpha"] = [&](index iCell)
-        { return lvrAlpha[iCell](0); };
+        { return lvrAlpha.father ? lvrAlpha[iCell](0) : real(0); };
         outMap["lvrShockAlpha"] = [&](index iCell)
-        { return lvrBranchAlpha[iCell](0); };
+        { return lvrBranchAlpha.father ? lvrBranchAlpha[iCell](0) : real(0); };
         outMap["lvrContactAlpha"] = [&](index iCell)
-        { return lvrBranchAlpha[iCell](1); };
+        { return lvrBranchAlpha.father ? lvrBranchAlpha[iCell](1) : real(0); };
         outMap["lvrContactSupportAlpha"] = [&](index iCell)
-        { return lvrBranchAlpha[iCell](2); };
+        { return lvrBranchAlpha.father ? lvrBranchAlpha[iCell](2) : real(0); };
         outMap["lvrWeakAlpha"] = [&](index iCell)
-        { return lvrBranchAlpha[iCell](3); };
+        { return lvrBranchAlpha.father ? lvrBranchAlpha[iCell](3) : real(0); };
         outMap["lvrDensityJump"] = [&](index iCell)
-        { return lvrDensityJump[iCell](0); };
+        { return lvrDensityJump.father ? lvrDensityJump[iCell](0) : real(0); };
         outMap["lvrPressureJump"] = [&](index iCell)
-        { return lvrPressureJump[iCell](0); };
+        { return lvrPressureJump.father ? lvrPressureJump[iCell](0) : real(0); };
         outMap["lvrCompression"] = [&](index iCell)
-        { return lvrCompression[iCell](0); };
+        { return lvrCompression.father ? lvrCompression[iCell](0) : real(0); };
         outMap["lvrO2Beta"] = [&](index iCell)
-        { return lvrO2Beta[iCell](0); };
+        { return lvrO2Beta.father ? lvrO2Beta[iCell](0) : real(1); };
         outMap["reactiveSplitChi"] = [&chi = reactiveSplit.chi](index iCell)
         { return chi[iCell](0); };
         outMap["reactiveSplitChemicalStep"] = [&chemicalStep = reactiveSplit.chemicalStep](index iCell)
@@ -3027,23 +3027,23 @@ namespace DNDS::Euler
         outMap["alphaPP"] = [&, iBnd2Cell](index iBnd)
         { return alphaPP[iBnd2Cell(iBnd)](0); };
         outMap["lvrAlpha"] = [&, iBnd2Cell](index iBnd)
-        { return lvrAlpha[iBnd2Cell(iBnd)](0); };
+        { return lvrAlpha.father ? lvrAlpha[iBnd2Cell(iBnd)](0) : real(0); };
         outMap["lvrShockAlpha"] = [&, iBnd2Cell](index iBnd)
-        { return lvrBranchAlpha[iBnd2Cell(iBnd)](0); };
+        { return lvrBranchAlpha.father ? lvrBranchAlpha[iBnd2Cell(iBnd)](0) : real(0); };
         outMap["lvrContactAlpha"] = [&, iBnd2Cell](index iBnd)
-        { return lvrBranchAlpha[iBnd2Cell(iBnd)](1); };
+        { return lvrBranchAlpha.father ? lvrBranchAlpha[iBnd2Cell(iBnd)](1) : real(0); };
         outMap["lvrContactSupportAlpha"] = [&, iBnd2Cell](index iBnd)
-        { return lvrBranchAlpha[iBnd2Cell(iBnd)](2); };
+        { return lvrBranchAlpha.father ? lvrBranchAlpha[iBnd2Cell(iBnd)](2) : real(0); };
         outMap["lvrWeakAlpha"] = [&, iBnd2Cell](index iBnd)
-        { return lvrBranchAlpha[iBnd2Cell(iBnd)](3); };
+        { return lvrBranchAlpha.father ? lvrBranchAlpha[iBnd2Cell(iBnd)](3) : real(0); };
         outMap["lvrDensityJump"] = [&, iBnd2Cell](index iBnd)
-        { return lvrDensityJump[iBnd2Cell(iBnd)](0); };
+        { return lvrDensityJump.father ? lvrDensityJump[iBnd2Cell(iBnd)](0) : real(0); };
         outMap["lvrPressureJump"] = [&, iBnd2Cell](index iBnd)
-        { return lvrPressureJump[iBnd2Cell(iBnd)](0); };
+        { return lvrPressureJump.father ? lvrPressureJump[iBnd2Cell(iBnd)](0) : real(0); };
         outMap["lvrCompression"] = [&, iBnd2Cell](index iBnd)
-        { return lvrCompression[iBnd2Cell(iBnd)](0); };
+        { return lvrCompression.father ? lvrCompression[iBnd2Cell(iBnd)](0) : real(0); };
         outMap["lvrO2Beta"] = [&, iBnd2Cell](index iBnd)
-        { return lvrO2Beta[iBnd2Cell(iBnd)](0); };
+        { return lvrO2Beta.father ? lvrO2Beta[iBnd2Cell(iBnd)](0) : real(1); };
         outMap["ACond"] = [&, iBnd2Cell](index iBnd)
         {
             index iCell = iBnd2Cell(iBnd);

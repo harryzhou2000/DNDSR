@@ -436,13 +436,29 @@ namespace DNDS::Euler
         if (config.timeMarchControl.timeMarchIsTwoStage())
             vfv->BuildURec(uRec1, nVars);
         vfv->BuildURec(uRecLimited, nVars);
-        vfv->BuildURec(uRecO2, nVars);
         vfv->BuildURec(uRecNew, nVars);
         vfv->BuildURec(uRecNew1, nVars);
         vfv->BuildURec(uRecB, nVars);
         vfv->BuildURec(uRecB1, nVars);
         vfv->BuildURec(uRecOld, nVars);
         vfv->BuildScalar(ifUseLimiter);
+        // No target buffers or diagnostic MPI layouts for conventional limiting.
+        if (config.limiterControl.useLimiter && config.limiterControl.limiterProcedure == 2)
+        {
+            vfv->BuildURec(uRecO2, nVars);
+            vfv->BuildUDof(lvrAlpha_, 1);
+            vfv->BuildUDof(lvrBranchAlpha_, 4);
+            vfv->BuildUDof(lvrDensityJump_, 1);
+            vfv->BuildUDof(lvrPressureJump_, 1);
+            vfv->BuildUDof(lvrCompression_, 1);
+            vfv->BuildUDof(lvrO2Beta_, 1);
+            lvrAlpha_.setConstant(0.0);
+            lvrBranchAlpha_.setConstant(0.0);
+            lvrDensityJump_.setConstant(0.0);
+            lvrPressureJump_.setConstant(0.0);
+            lvrCompression_.setConstant(0.0);
+            lvrO2Beta_.setConstant(1.0);
+        }
         vfv->BuildUDof(betaPP, 1);
         vfv->BuildUDof(alphaPP, 1);
         vfv->BuildUDof(alphaPP_tmp, 1);
@@ -454,24 +470,12 @@ namespace DNDS::Euler
         vfv->BuildUDof(reactiveSplitShockSensor_, 1);
         vfv->BuildUDof(reactiveSplitCoupledScore_, 1);
         vfv->BuildUDof(reactiveSplitStiffnessStep_, 1);
-        vfv->BuildUDof(lvrAlpha_, 1);
-        vfv->BuildUDof(lvrBranchAlpha_, 4);
-        vfv->BuildUDof(lvrDensityJump_, 1);
-        vfv->BuildUDof(lvrPressureJump_, 1);
-        vfv->BuildUDof(lvrCompression_, 1);
-        vfv->BuildUDof(lvrO2Beta_, 1);
         reactiveSplitChi_.setConstant(config.timeMarchControl.sourceStrangSplitting == 1 ? 1.0 : 0.0);
         reactiveSplitChemicalStep_.setConstant(0.0);
         reactiveSplitDiffusiveStep_.setConstant(0.0);
         reactiveSplitShockSensor_.setConstant(0.0);
         reactiveSplitCoupledScore_.setConstant(0.0);
         reactiveSplitStiffnessStep_.setConstant(0.0);
-        lvrAlpha_.setConstant(0.0);
-        lvrBranchAlpha_.setConstant(0.0);
-        lvrDensityJump_.setConstant(0.0);
-        lvrPressureJump_.setConstant(0.0);
-        lvrCompression_.setConstant(0.0);
-        lvrO2Beta_.setConstant(1.0);
         betaPP.setConstant(1.0);
         alphaPP.setConstant(1.0);
         if (config.timeMarchControl.timeMarchIsTwoStage())

@@ -1126,6 +1126,40 @@ TEST_CASE("Gradient conversion populates only O2 reconstruction modes")
     }
 }
 
+TEST_CASE("O2 WBAP traversal agrees with full-order traversal on a linear target")
+{
+    auto vr = buildVR(g_iv10[0], RecMethod::VFV_P3_HQM);
+    CFV::tUDof<g_nv> u;
+    CFV::tUGrad<g_nv, g_dim> gradient;
+    CFV::tURec<g_nv> full, linear, work, buffer;
+    CFV::tScalarPair indicator;
+    vr->BuildUDof(u, 1);
+    vr->BuildUGrad(gradient, 1);
+    vr->BuildURec(full, 1);
+    vr->BuildURec(linear, 1);
+    vr->BuildURec(work, 1);
+    vr->BuildURec(buffer, 1);
+    vr->BuildScalar(indicator);
+    u.setConstant(1.0);
+    for (DNDS::index i = 0; i < vr->mesh->NumCell(); ++i)
+    {
+        const auto x = vr->GetCellQuadraturePPhys(i, -1);
+        gradient[i](0, 0) = std::sin(x(0)) + 0.2;
+        gradient[i](1, 0) = std::cos(x(1)) - 0.3;
+    }
+    vr->ConvertUGradToURec(full, gradient);
+    u.trans.startPersistentPull();
+    full.trans.startPersistentPull();
+    u.trans.waitPersistentPull();
+    full.trans.waitPersistentPull();
+    linear = full;
+    tVR::tFMEig<g_nv> fm = identityFM;
+    vr->DoLimiterWBAP_3<g_nv>(u, full, work, buffer, indicator, true, fm, fm, false);
+    vr->DoLimiterWBAP_3<g_nv>(u, linear, work, buffer, indicator, true, fm, fm, false, 1);
+    for (DNDS::index i = 0; i < vr->mesh->NumCell(); ++i)
+        CHECK((full[i] - linear[i]).norm() == doctest::Approx(0).epsilon(1e-12).scale(1));
+}
+
 TEST_CASE("Limited Jacobi converges to the directly assembled penalized system")
 {
     if (g_mpi.size != 1)

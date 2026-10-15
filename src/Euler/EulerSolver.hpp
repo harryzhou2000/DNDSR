@@ -111,21 +111,21 @@ namespace DNDS::Euler
         ssp<Geom::UnstructuredMeshSerialRW> reader, readerBnd; ///< Mesh reader for volume and boundary meshes.
         ssp<EulerEvaluator<model>> pEval;                      ///< Spatial evaluator instance.
 
-        ArrayDOFV<nVarsFixed> u, uIncBufODE, wAveraged, uAveraged;                                                    ///< DOF arrays: solution, ODE increment buffer, time-averaged fields.
-        ObjectPool<ArrayDOFV<nVarsFixed>> uPool;                                                                      ///< Object pool for temporary DOF arrays (used by ODE integrators).
+        ArrayDOFV<nVarsFixed> u, uIncBufODE, wAveraged, uAveraged;                                                            ///< DOF arrays: solution, ODE increment buffer, time-averaged fields.
+        ObjectPool<ArrayDOFV<nVarsFixed>> uPool;                                                                              ///< Object pool for temporary DOF arrays (used by ODE integrators).
         ArrayRECV<nVarsFixed> uRec, uRecLimited, uRecO2, uRecNew, uRecNew1, uRecOld, uRec1, uRecInc, uRecInc1, uRecB, uRecB1; ///< Reconstruction arrays (current, limited, new, old, increment, etc.).
-        JacobianDiagBlock<nVarsFixed> JD, JD1, JDTmp, JSource, JSource1, JSourceTmp;                                  ///< Diagonal Jacobian blocks for implicit methods.
-        ssp<JacobianLocalLU<nVarsFixed>> JLocalLU;                                                                    ///< Local LU factorization for direct preconditioner.
-        ArrayDOFV<1> alphaPP, alphaPP1, betaPP, betaPP1, alphaPP_tmp, dTauTmp;                                        ///< Positivity-preserving limiter scalars and time-step buffer.
-        ArrayDOFV<1> cellT_warm_;                                                                                     ///< Per-cell last-known temperature for warm-starting T inversion.
-        ArrayDOFV<1> reactiveSplitChi_;                                                                               ///< Strang fraction @f$\chi_i@f$ owned by the time integrator.
-        ArrayDOFV<1> reactiveSplitChemicalStep_;                                                                      ///< Output-only chemical activity @f$a_i@f$.
-        ArrayDOFV<1> reactiveSplitDiffusiveStep_;                                                                     ///< Output-only diffusion activity @f$b_i@f$.
-        ArrayDOFV<1> reactiveSplitShockSensor_;                                                                       ///< Output-only pressure-jump sensor @f$h_i@f$.
-        ArrayDOFV<1> reactiveSplitCoupledScore_;                                                                      ///< Output-only local coupled score @f$C_i@f$.
-        ArrayDOFV<1> reactiveSplitStiffnessStep_;                                                                     ///< Output-only chemical stiffness @f$s_i@f$ (v2).
-        ArrayDOFV<1> lvrAlpha_, lvrDensityJump_, lvrPressureJump_, lvrCompression_, lvrO2Beta_; ///< Limited variational reconstruction sensor and O2-reference PP diagnostics.
-        ArrayDOFV<4> lvrBranchAlpha_; ///< Packed shock/contact/contact-support/weak LVR alpha values.
+        JacobianDiagBlock<nVarsFixed> JD, JD1, JDTmp, JSource, JSource1, JSourceTmp;                                          ///< Diagonal Jacobian blocks for implicit methods.
+        ssp<JacobianLocalLU<nVarsFixed>> JLocalLU;                                                                            ///< Local LU factorization for direct preconditioner.
+        ArrayDOFV<1> alphaPP, alphaPP1, betaPP, betaPP1, alphaPP_tmp, dTauTmp;                                                ///< Positivity-preserving limiter scalars and time-step buffer.
+        ArrayDOFV<1> cellT_warm_;                                                                                             ///< Per-cell last-known temperature for warm-starting T inversion.
+        ArrayDOFV<1> reactiveSplitChi_;                                                                                       ///< Strang fraction @f$\chi_i@f$ owned by the time integrator.
+        ArrayDOFV<1> reactiveSplitChemicalStep_;                                                                              ///< Output-only chemical activity @f$a_i@f$.
+        ArrayDOFV<1> reactiveSplitDiffusiveStep_;                                                                             ///< Output-only diffusion activity @f$b_i@f$.
+        ArrayDOFV<1> reactiveSplitShockSensor_;                                                                               ///< Output-only pressure-jump sensor @f$h_i@f$.
+        ArrayDOFV<1> reactiveSplitCoupledScore_;                                                                              ///< Output-only local coupled score @f$C_i@f$.
+        ArrayDOFV<1> reactiveSplitStiffnessStep_;                                                                             ///< Output-only chemical stiffness @f$s_i@f$ (v2).
+        ArrayDOFV<1> lvrAlpha_, lvrDensityJump_, lvrPressureJump_, lvrCompression_, lvrO2Beta_;                               ///< Limited variational reconstruction sensor and O2-reference PP diagnostics.
+        ArrayDOFV<4> lvrBranchAlpha_;                                                                                         ///< Packed shock/contact/contact-support/weak LVR alpha values.
 
         int nOUTS = {-1};   ///< Number of output scalars per cell in volume output.
         int nOUTSPoint{-1}; ///< Number of output scalars per node in point output.
@@ -1051,18 +1051,33 @@ namespace DNDS::Euler
                 auto fIn = std::ifstream(jsonName);
                 DNDS_assert_info(fIn, "config file not existent");
                 gSetting = nlohmann::ordered_json::parse(fIn, nullptr, true, true);
+                ExpandLimitedVRPreset(gSetting);
 
                 if (read && !jsonMergeName.empty())
                 {
                     fIn = std::ifstream(jsonMergeName);
                     DNDS_assert_info(fIn, "config file patch not existent");
                     auto gSettingAdd = nlohmann::ordered_json::parse(fIn, nullptr, true, true);
+                    ExpandLimitedVRPreset(gSettingAdd);
                     gSetting.merge_patch(gSettingAdd);
                 }
                 DNDS_assert(overwriteKeys.size() == overwriteValues.size());
+                // Expand a CLI preset first so all ordinary CLI pointers retain
+                // their existing sequential, highest-precedence semantics.
+                for (size_t i = 0; i < overwriteKeys.size(); ++i)
+                    if (overwriteKeys[i] == "/limiterControl/limitedVR/preset")
+                    {
+                        auto value = nlohmann::ordered_json::parse(overwriteValues[i], nullptr, false);
+                        if (value.is_discarded())
+                            value = overwriteValues[i];
+                        nlohmann::ordered_json layer = {{"limiterControl", {{"limitedVR", {{"preset", value}}}}}};
+                        ExpandLimitedVRPreset(layer);
+                        gSetting.merge_patch(layer);
+                    }
                 for (size_t i = 0; i < overwriteKeys.size(); i++)
                 {
-
+                    if (overwriteKeys[i] == "/limiterControl/limitedVR/preset")
+                        continue;
                     auto key = nlohmann::ordered_json::json_pointer(overwriteKeys[i].c_str());
                     try
                     {
@@ -1631,10 +1646,18 @@ namespace DNDS::Euler
 
         /// @name Test accessors (for unit testing the evaluator pipeline)
         /// @{
-        auto &getU() { return u; }                       ///< Get mutable reference to the DOF array.
-        auto &getURec() { return uRec; }                 ///< Get mutable reference to the reconstruction array.
-        auto &getURecNew() { return uRecNew; }           ///< Get mutable reference to the new reconstruction array.
-        auto &getURecLimited() { return uRecLimited; }   ///< Get mutable reference to the limited reconstruction array.
+        auto &getU() { return u; }                     ///< Get mutable reference to the DOF array.
+        auto &getURec() { return uRec; }               ///< Get mutable reference to the reconstruction array.
+        auto &getURecNew() { return uRecNew; }         ///< Get mutable reference to the new reconstruction array.
+        auto &getURecLimited() { return uRecLimited; } ///< Get mutable reference to the limited reconstruction array.
+        /// LVR storage is absent for conventional/unlimited reconstruction.
+        bool hasLimitedVRStorage() const { return bool(uRecO2.father); }
+        auto &getURecO2() { return uRecO2; } ///< Active LVR target; unallocated if LVR is disabled.
+        typename TEval::OutputOverlapDataRefs getOutputOverlapDataRefs()
+        {
+            return {u, uRec, betaPP, alphaPP, lvrAlpha_, lvrBranchAlpha_,
+                    lvrDensityJump_, lvrPressureJump_, lvrCompression_, lvrO2Beta_};
+        }
         auto &getEval() { return *pEval; }               ///< Get mutable reference to the evaluator.
         auto &getConfiguration() { return config; }      ///< Get mutable reference to the configuration.
         auto &getJSource() { return JSource; }           ///< Get mutable reference to the source Jacobian.

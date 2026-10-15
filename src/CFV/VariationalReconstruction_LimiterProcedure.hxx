@@ -336,6 +336,12 @@ namespace DNDS::CFV
         }
     }
 
+    /** @brief Successive characteristic WBAP limiting, from highest order down.
+     * @param limitOrder Zero processes every configured order. A positive value
+     * starts at that polynomial degree; callers must supply zero coefficients
+     * above it. LVR uses one for its linear O2 reference and avoids useless
+     * higher-order limiter passes and their MPI exchanges.
+     */
     template <int dim>
     template <int nVarsFixed>
     void VariationalReconstruction<dim>::DoLimiterWBAP_3(
@@ -346,11 +352,14 @@ namespace DNDS::CFV
         tScalarPair &si,
         bool ifAll,
         const tFMEig<nVarsFixed> &FM, const tFMEig<nVarsFixed> &FMI,
-        bool putIntoNew)
+        bool putIntoNew, int limitOrder)
     {
         using namespace Geom;
 
-        int cPOrder = settings.maxOrder;
+        // Zero preserves the conventional full-order limiter. The LVR target
+        // has only linear modes and needs just that pass and its ghost pull.
+        DNDS_assert(limitOrder >= 0 && limitOrder <= settings.maxOrder);
+        int cPOrder = limitOrder == 0 ? settings.maxOrder : limitOrder;
 #if defined(DNDS_DIST_MT_USE_OMP)
 #    pragma omp parallel for schedule(runtime)
 #endif

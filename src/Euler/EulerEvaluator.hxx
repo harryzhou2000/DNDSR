@@ -2571,15 +2571,31 @@ namespace DNDS::Euler
         static constexpr int iContactSupportAlpha = 2;
         static constexpr int iWeakAlpha = 3;
 
+        if (limitedVRSettings.alphaMax == 0 && limitedVRSettings.contactAlphaMax == 0 &&
+            limitedVRSettings.weakAlphaMax == 0)
+        {
+            // Exact unlimited-VR control case: no gradients, PP or exchanges.
+            uRecO2.setConstant(0.0);
+            alpha.setConstant(0.0);
+            branchAlpha.setConstant(0.0);
+            densityJump.setConstant(0.0);
+            pressureJump.setConstant(0.0);
+            compression.setConstant(0.0);
+            o2Beta.setConstant(1.0);
+            return;
+        }
+
         vfv->DoReconstruction2ndGrad(uGradBufNoLim, u, FBoundary, settings.direct2ndRecMethod);
-        uGradBufNoLim.trans.startPersistentPull();
-        uGradBufNoLim.trans.waitPersistentPull();
+        // Only the weak branch reads unrestricted gradients of ghost cells.
+        if (limitedVRSettings.weakAlphaMax > 0 && refreshWeakAlpha)
+        {
+            uGradBufNoLim.trans.startPersistentPull();
+            uGradBufNoLim.trans.waitPersistentPull();
+        }
 
         if (limitedVRSettings.o2ReferenceLimiter == LimitedVRSettings::O2ReferenceLimiterBarth)
         {
             LimiterUGrad(u, uGradBufNoLim, uGradBuf, LIMITER_UGRAD_No_Flags);
-            uGradBuf.trans.startPersistentPull();
-            uGradBuf.trans.waitPersistentPull();
             vfv->ConvertUGradToURec(uRecO2, uGradBuf);
         }
         else
@@ -2628,11 +2644,8 @@ namespace DNDS::Euler
             };
             vfv->template DoLimiterWBAP_3<nVarsFixed>(
                 u, uRecO2, uRecLimiterWork, uRecLimiterBuffer,
-                limiterIndicator, true, fML, fMR, false);
+                limiterIndicator, true, fML, fMR, false, 1);
         }
-
-        uRecO2.trans.startPersistentPull();
-        uRecO2.trans.waitPersistentPull();
 
         if (limitedVRSettings.o2ReferenceUsePP)
         {
@@ -2640,16 +2653,24 @@ namespace DNDS::Euler
             real minimumBeta = 1;
             EvaluateURecBeta(
                 u, uRecO2, o2Beta, nLimited, minimumBeta,
-                EvaluateURecBeta_COMPRESS_TO_MEAN);
+                EvaluateURecBeta_COMPRESS_TO_MEAN | EvaluateURecBeta_LOCAL_STATS);
             uRecO2.trans.startPersistentPull();
             uRecO2.trans.waitPersistentPull();
         }
         else
+        {
             o2Beta.setConstant(1.0);
+            if (limitedVRSettings.o2ReferenceLimiter == LimitedVRSettings::O2ReferenceLimiterBarth)
+            {
+                uRecO2.trans.startPersistentPull();
+                uRecO2.trans.waitPersistentPull();
+            }
+        }
 
         std::vector<real> shockAlphaPrevious;
         if (limitedVRSettings.alphaUpdateRelaxation < 1.0 ||
-            limitedVRSettings.gateMode == LimitedVRSettings::GateProductCubicWithExtremumCorrection)
+            (limitedVRSettings.alphaMax > 0 &&
+             limitedVRSettings.gateMode == LimitedVRSettings::GateProductCubicWithExtremumCorrection))
         {
             shockAlphaPrevious.resize(static_cast<size_t>(mesh->NumCell()));
             for (index iCell = 0; iCell < mesh->NumCell(); ++iCell)
@@ -2838,7 +2859,8 @@ namespace DNDS::Euler
             }
         }
 
-        if (limitedVRSettings.gateMode == LimitedVRSettings::GateProductCubicWithExtremumCorrection)
+        if (limitedVRSettings.alphaMax > 0 &&
+            limitedVRSettings.gateMode == LimitedVRSettings::GateProductCubicWithExtremumCorrection)
         {
             // The base face gate remains the local product gate.  Add penalty
             // only at a strict cell-mean pressure extremum next to that detected
@@ -2962,8 +2984,6 @@ namespace DNDS::Euler
                 branchAlpha[iCell](iShockAlpha) = correctedAlpha[static_cast<size_t>(iCell)];
                 o2Beta[iCell](0) = o2BetaSaved[static_cast<size_t>(iCell)];
             }
-            o2Beta.trans.startPersistentPull();
-            o2Beta.trans.waitPersistentPull();
         }
 
         if (limitedVRSettings.contactUseExtremumCorrection && limitedVRSettings.contactAlphaMax > 0)
@@ -2973,8 +2993,14 @@ namespace DNDS::Euler
             // without applying those jumps as the base contact penalty.  Only
             // a strict local density extremum with the configured transverse
             // equal-state neighbours can add penalty.
-            branchAlpha.trans.startPersistentPull();
-            branchAlpha.trans.waitPersistentPull();
+            // Mode 8 already pulled the contact/support components before
+            // changing only its shock component. Those ghost values remain valid.
+            if (limitedVRSettings.alphaMax == 0 ||
+                limitedVRSettings.gateMode != LimitedVRSettings::GateProductCubicWithExtremumCorrection)
+            {
+                branchAlpha.trans.startPersistentPull();
+                branchAlpha.trans.waitPersistentPull();
+            }
             const index nCell = mesh->NumCell();
             const index nCellProc = mesh->NumCellProc();
             std::vector<real> densityMean(static_cast<size_t>(nCellProc));
@@ -3065,11 +3091,15 @@ namespace DNDS::Euler
                 o2Beta[iCell](0) =
                     limitedVRSettings.contactAlphaMax * std::max(response, retainedResponse);
             }
-            o2Beta.trans.startPersistentPull();
-            o2Beta.trans.waitPersistentPull();
+            std::vector<real> expanded(limitedVRSettings.contactExtremumHaloLayers > 0
+                                           ? static_cast<size_t>(nCell)
+                                           : 0);
             for (int iLayer = 0; iLayer < limitedVRSettings.contactExtremumHaloLayers; ++iLayer)
             {
-                std::vector<real> expanded(static_cast<size_t>(nCell));
+                // Pull before each synchronous pass; the final expanded ghost
+                // values are never consumed, so no trailing pull is needed.
+                o2Beta.trans.startPersistentPull();
+                o2Beta.trans.waitPersistentPull();
                 for (index iCell = 0; iCell < nCell; ++iCell)
                     expanded[static_cast<size_t>(iCell)] = o2Beta[iCell](0);
                 for (index iFace = 0; iFace < mesh->NumFaceProc(); ++iFace)
@@ -3088,8 +3118,6 @@ namespace DNDS::Euler
                 }
                 for (index iCell = 0; iCell < nCell; ++iCell)
                     o2Beta[iCell](0) = expanded[static_cast<size_t>(iCell)];
-                o2Beta.trans.startPersistentPull();
-                o2Beta.trans.waitPersistentPull();
             }
             for (index iCell = 0; iCell < nCell; ++iCell)
             {
@@ -3097,17 +3125,19 @@ namespace DNDS::Euler
                     std::max(branchAlpha[iCell](iContactAlpha), o2Beta[iCell](0));
                 o2Beta[iCell](0) = o2BetaSaved[static_cast<size_t>(iCell)];
             }
-            o2Beta.trans.startPersistentPull();
-            o2Beta.trans.waitPersistentPull();
         }
 
+        std::vector<real> expandedAlpha;
+        if ((limitedVRSettings.weakAlphaMax > 0 && refreshWeakAlpha && limitedVRSettings.weakHaloLayers > 0) ||
+            limitedVRSettings.gateHaloLayers > 0)
+            expandedAlpha.resize(static_cast<size_t>(mesh->NumCell()));
         for (int iLayer = 0; limitedVRSettings.weakAlphaMax > 0 && refreshWeakAlpha &&
                              iLayer < limitedVRSettings.weakHaloLayers;
              ++iLayer)
         {
             branchAlpha.trans.startPersistentPull();
             branchAlpha.trans.waitPersistentPull();
-            std::vector<real> expanded(static_cast<size_t>(mesh->NumCell()));
+            auto &expanded = expandedAlpha;
             for (index iCell = 0; iCell < mesh->NumCell(); ++iCell)
                 expanded[static_cast<size_t>(iCell)] = branchAlpha[iCell](iWeakAlpha);
             for (index iFace = 0; iFace < mesh->NumFaceProc(); ++iFace)
@@ -3145,7 +3175,7 @@ namespace DNDS::Euler
         {
             branchAlpha.trans.startPersistentPull();
             branchAlpha.trans.waitPersistentPull();
-            std::vector<real> expanded(static_cast<size_t>(mesh->NumCell()));
+            auto &expanded = expandedAlpha;
             for (index iCell = 0; iCell < mesh->NumCell(); ++iCell)
                 expanded[static_cast<size_t>(iCell)] = branchAlpha[iCell](iShockAlpha);
             for (index iFace = 0; iFace < mesh->NumFaceProc(); ++iFace)
@@ -3319,7 +3349,8 @@ namespace DNDS::Euler
      *  Computes a scalar beta in [0,1] for each cell such that the reconstructed
      *  solution at all face and (optionally) volume quadrature points maintains
      *  positive density and sensible internal energy. Uses bisection to find the maximum allowable beta.
-     *  Reports the total number of limited cells and the global minimum beta.
+     *  Reports global statistics unless LOCAL_STATS requests local diagnostics;
+     *  positivity-floor reductions are retained in both modes.
      *
      *  @param u         Conservative variable DOF array.
      *  @param uRec      Reconstruction coefficients (may be modified for order reduction).
@@ -3649,8 +3680,16 @@ namespace DNDS::Euler
                 }
             }
         }
-        MPI::Allreduce(&nLimLocal, &nLim, 1, DNDS_MPI_INDEX, MPI_SUM, u.father->getMPI().comm);
-        MPI::Allreduce(&minBetaLocal, &betaMin, 1, DNDS_MPI_REAL, MPI_MIN, u.father->getMPI().comm);
+        if (flag & EvaluateURecBeta_LOCAL_STATS)
+        {
+            nLim = nLimLocal;
+            betaMin = minBetaLocal;
+        }
+        else
+        {
+            MPI::Allreduce(&nLimLocal, &nLim, 1, DNDS_MPI_INDEX, MPI_SUM, u.father->getMPI().comm);
+            MPI::Allreduce(&minBetaLocal, &betaMin, 1, DNDS_MPI_REAL, MPI_MIN, u.father->getMPI().comm);
+        }
     }
 
     template <EulerModel model>

@@ -27,6 +27,7 @@
 #include <iostream>
 #include <iomanip>
 #include <filesystem>
+#include <map>
 
 using namespace DNDS;
 using namespace DNDS::Euler;
@@ -131,6 +132,11 @@ std::array<real, 3> runOneNewtonStep(const std::string &cfgPath)
     TSolver solver(g_mpi);
     solver.ConfigureFromJson(cfgPath, true);
     solver.ReadMeshAndInitialize();
+    CHECK_FALSE(solver.hasLimitedVRStorage());
+    const auto inactive = solver.getOutputOverlapDataRefs();
+    CHECK_FALSE(inactive.lvrAlpha.father);
+    CHECK_FALSE(inactive.lvrBranchAlpha.father);
+    CHECK_FALSE(inactive.lvrO2Beta.father);
 
     auto &eval = solver.getEval();
     auto &u = solver.getU();
@@ -234,8 +240,7 @@ TEST_CASE("EulerEvaluator pipeline: IV (NS, P1, 2D)")
     std::string cfgPath = writeTempConfig<NS>(
         root + "/cases/euler/euler_config_IV.json", "iv_test",
         {{"vfvSettings", {{"maxOrder", 1}, {"intOrder", 3}}},
-         {"dataIOControl", {{"meshDirectBisect", 0},
-                            {"meshFile", root + "/data/mesh/IV10_10.cgns"}}}});
+         {"dataIOControl", {{"meshDirectBisect", 0}, {"meshFile", root + "/data/mesh/IV10_10.cgns"}}}});
 
     if (g_mpi.rank == 0)
         std::cout << "=== IV (NS, P1) ===" << std::endl;
@@ -327,6 +332,209 @@ TEST_CASE("EulerEvaluator pipeline: Box (NS_3D, P1)")
 
     CHECK(rhsDensity == doctest::Approx(goldenRhsDensity).epsilon(1e-6));
     CHECK(incL2 == doctest::Approx(goldenIncL2).epsilon(1e-6));
+}
+
+// Basic end-to-end LVR fixture: a two-dimensional state, target PP, all
+// branches and two halo layers, compared cellwise against MPI_COMM_SELF.
+// Keep this small; it is an integration regression, not a CFD benchmark.
+using LVRCellKey = std::array<long long, 2>;
+using LVRCellValues = std::vector<DNDS::real>;
+using LVRCells = std::map<LVRCellKey, LVRCellValues>;
+
+static LVRCells runLVRFixture(const std::string &cfgPath, const MPIInfo &mpi,
+                              const std::string &state, int referenceLimiter)
+{
+    EulerSolver<NS> solver(mpi);
+    solver.ConfigureFromJson(cfgPath, true, "",
+                             {"/limiterControl/limitedVR/alphaMax", "/limiterControl/limitedVR/preset"}, {"0.5", "v3"});
+    solver.ReadMeshAndInitialize();
+    REQUIRE(solver.hasLimitedVRStorage());
+    auto vfv = solver.getVFV();
+    auto mesh = solver.getMesh();
+    auto &u = solver.getU();
+    auto &target = solver.getURecO2();
+    auto data = solver.getOutputOverlapDataRefs();
+    auto settings = solver.getConfiguration().limiterControl.limitedVR;
+    CHECK(settings.gateMode == LimitedVRSettings::GateProductCubicWithExtremumCorrection);
+    CHECK(settings.contactExtremumHaloLayers == 2);
+    CHECK(settings.alphaMax == 0.5);
+    settings.o2ReferenceLimiter = referenceLimiter;
+    settings.gateHaloLayers = 2;
+    settings.weakAlphaMax = state == "shock" ? 0.5 : 0;
+    using TU = EulerEvaluator<NS>::TU;
+    for (DNDS::index i = 0; i < mesh->NumCell(); ++i)
+    {
+        const auto x = vfv->GetCellQuadraturePPhys(i, -1);
+        DNDS::real rho = 1, p = 1, vx = 0.2;
+        // Variation in y makes this a genuinely multidimensional velocity field.
+        DNDS::real vy = state == "uniform" ? 0.1 : 0.07 * std::sin(2 * M_PI * x(1) / 10);
+        if (state == "shock")
+        {
+            p = x(0) < 5 ? 3 : 1;
+            vx = x(0) < 5 ? 0.8 : 0;
+            if (x(0) > 3 && x(0) < 4)
+                p = 3.08; // a supported pressure-extremum stripe
+        }
+        if (state == "contact")
+        {
+            rho = x(0) < 5 ? 10 : 1;
+            if (x(0) > 5 && x(0) < 6)
+                rho = 11; // a supported density extremum
+        }
+        u[i] << rho, rho * vx, rho * vy, 0,
+            p / 0.4 + 0.5 * rho * (vx * vx + vy * vy);
+    }
+    u.trans.startPersistentPull();
+    u.trans.waitPersistentPull();
+    CFV::tScalarPair indicator;
+    vfv->BuildScalar(indicator);
+    CFV::VariationalReconstruction<2>::TFBoundary<5> boundary =
+        [](const TU &ul, const TU &, DNDS::index, DNDS::index, int,
+           const Geom::tPoint &, const Geom::tPoint &, Geom::t_index)
+    { return ul; };
+    solver.getEval().BuildLimitedVRO2(
+        u, target, solver.getURecLimited(), solver.getURecNew(), indicator,
+        data.lvrO2Beta, data.lvrAlpha, data.lvrBranchAlpha, data.lvrDensityJump,
+        data.lvrPressureJump, data.lvrCompression, settings, true, true, boundary);
+    LVRCells cells;
+    // Total alpha, shock, contact, weak, and contact halo beyond the base gate.
+    std::array<DNDS::real, 5> totals{};
+    for (DNDS::index i = 0; i < mesh->NumCell(); ++i)
+    {
+        const auto x = vfv->GetCellQuadraturePPhys(i, -1);
+        CHECK(data.lvrAlpha[i](0) >= 0);
+        CHECK(data.lvrAlpha[i](0) <= 0.5);
+        CHECK(data.lvrAlpha[i](0) == doctest::Approx(
+                                         std::max({data.lvrBranchAlpha[i](0), data.lvrBranchAlpha[i](1), data.lvrBranchAlpha[i](3)})));
+        CHECK(data.lvrO2Beta[i](0) > 0);
+        CHECK(data.lvrO2Beta[i](0) <= 1);
+        CHECK(target[i].allFinite());
+        CHECK(target[i].bottomRows(target[i].rows() - 2).norm() == 0);
+        totals[0] += data.lvrAlpha[i](0);
+        totals[1] += data.lvrBranchAlpha[i](0);
+        totals[2] += data.lvrBranchAlpha[i](1);
+        totals[3] += data.lvrBranchAlpha[i](3);
+        if (data.lvrDensityJump[i](0) < settings.contactDensityJumpStart && data.lvrBranchAlpha[i](1) > 0)
+            totals[4] += 1;
+        LVRCellValues values{data.lvrAlpha[i](0), data.lvrBranchAlpha[i](0),
+                             data.lvrBranchAlpha[i](1), data.lvrBranchAlpha[i](3)};
+        // Compare physical gradients rather than basis coefficients, whose
+        // local basis orientation is an implementation detail.
+        const Eigen::Matrix<DNDS::real, 2, 2> d1 =
+            vfv->GetIntPointDiffBaseValue(i, -1, -1, -1,
+                                          std::array<int, 2>{1, 2}, 3)(EigenAll, Eigen::seqN(0, 2));
+        Eigen::Matrix<DNDS::real, 2, 5> gradient = d1 * target[i].topRows(2);
+        values.insert(values.end(), gradient.data(), gradient.data() + gradient.size());
+        cells[{std::llround(x(0) * 1e8), std::llround(x(1) * 1e8)}] = values;
+    }
+    auto globalTotals = totals;
+    MPI::Allreduce(totals.data(), globalTotals.data(), 5, DNDS_MPI_REAL, MPI_SUM, mpi.comm);
+    if (state == "uniform")
+        CHECK(globalTotals[0] == doctest::Approx(0).epsilon(1e-10).scale(1));
+    if (state == "shock")
+    {
+        CHECK(globalTotals[1] > 0);
+        CHECK(globalTotals[3] > 0);
+    }
+    if (state == "contact")
+    {
+        CHECK(globalTotals[2] > 0);
+        CHECK(globalTotals[4] > 0);
+    }
+
+    if (state == "uniform" && referenceLimiter == LimitedVRSettings::O2ReferenceLimiterBarth)
+    {
+        // Force a negative O2 face state, then exercise the mean-based PP path.
+        for (DNDS::index i = 0; i < mesh->NumCell(); ++i)
+            target[i](0, 0) = 100;
+        DNDS::index nLimited = 0;
+        DNDS::real minBeta = 1;
+        solver.getEval().EvaluateURecBeta(u, target, data.lvrO2Beta, nLimited, minBeta,
+                                          EulerEvaluator<NS>::EvaluateURecBeta_COMPRESS_TO_MEAN |
+                                              EulerEvaluator<NS>::EvaluateURecBeta_LOCAL_STATS);
+        if (mesh->NumCell())
+        {
+            CHECK(nLimited > 0);
+            CHECK(minBeta < 1);
+        }
+        for (DNDS::index i = 0; i < mesh->NumCell(); ++i)
+        {
+            const auto faces = mesh->cell2face[i];
+            for (DNDS::rowsize j = 0; j < faces.size(); ++j)
+            {
+                const auto face = faces[j];
+                const int side = mesh->CellIsFaceBack(i, face, j) ? 0 : 1;
+                const auto quad = vfv->GetFaceQuad(face);
+                for (int q = 0; q < quad.GetNumPoints(); ++q)
+                {
+                    TU uq = u[i] + (vfv->GetIntPointDiffBaseValue(i, face, side, q, 0, 1) * target[i]).transpose();
+                    CHECK(uq(0) > 0);
+                    CHECK(uq(4) - 0.5 * uq.segment<3>(1).squaredNorm() / uq(0) > 0);
+                }
+            }
+        }
+        settings.alphaMax = settings.contactAlphaMax = settings.weakAlphaMax = 0;
+        solver.getEval().BuildLimitedVRO2(
+            u, target, solver.getURecLimited(), solver.getURecNew(), indicator,
+            data.lvrO2Beta, data.lvrAlpha, data.lvrBranchAlpha, data.lvrDensityJump,
+            data.lvrPressureJump, data.lvrCompression, settings, true, true, boundary);
+        for (DNDS::index i = 0; i < mesh->NumCell(); ++i)
+        {
+            CHECK(data.lvrAlpha[i](0) == 0);
+            CHECK(data.lvrBranchAlpha[i].isZero());
+            CHECK(target[i].isZero());
+            CHECK(data.lvrO2Beta[i](0) == 1);
+        }
+    }
+    if (state == "uniform")
+    {
+        // Inactive output requests must remain defined without any LVR layouts.
+        ArrayDOFV<1> emptyAlpha, emptyJump, emptyPressure, emptyCompression, emptyBeta;
+        ArrayDOFV<4> emptyBranches;
+        ArrayDOFV<1> unused;
+        OutputPicker picker;
+        solver.getEval().InitializeOutputPicker(picker,
+                                                {u, solver.getURec(), solver.getBetaPP(), solver.getAlphaPP(),
+                                                 emptyAlpha, emptyBranches, emptyJump, emptyPressure, emptyCompression, emptyBeta},
+                                                {unused, unused, unused, unused, unused});
+        auto fields = picker.getSubsetList({"lvrAlpha", "lvrWeakAlpha", "lvrO2Beta"});
+        if (mesh->NumCell())
+        {
+            CHECK(std::get<1>(fields[0])(0) == 0);
+            CHECK(std::get<1>(fields[1])(0) == 0);
+            CHECK(std::get<1>(fields[2])(0) == 1);
+        }
+    }
+    return cells;
+}
+
+TEST_CASE("LVR target and branch halos agree across 2-D MPI partitions")
+{
+    const std::string root = projectRoot();
+    const auto cfg = writeTempConfig<NS>(root + "/cases/euler/euler_config_IV.json", "lvr_2d",
+                                         {{"vfvSettings", {{"maxOrder", 3}, {"intOrder", 5}, {"subs2ndOrder", 1}, {"cacheDiffBase", true}}},
+                                          {"limiterControl", {{"useLimiter", true}, {"limiterProcedure", 2}}},
+                                          {"implicitReconstructionControl", {{"recLinearScheme", 0}}},
+                                          {"dataIOControl", {{"meshDirectBisect", 0}, {"meshFile", root + "/data/mesh/IV10_10.cgns"}}}});
+    // The fixture also exercises CLI preset expansion and explicit overrides.
+    for (const std::string state : {"uniform", "shock", "contact"})
+        for (const int limiter : {LimitedVRSettings::O2ReferenceLimiterBarth, LimitedVRSettings::O2ReferenceLimiterWBAP})
+        {
+            CAPTURE(state);
+            CAPTURE(limiter);
+            // Identical per-cell expected output from an independently built,
+            // unpartitioned evaluator, not a rank-count-dependent aggregate norm.
+            auto serial = runLVRFixture(cfg, MPIInfo(MPI_COMM_SELF), state, limiter);
+            auto parallel = runLVRFixture(cfg, g_mpi, state, limiter);
+            for (const auto &[key, values] : parallel)
+            {
+                REQUIRE(serial.count(key) == 1);
+                const auto &expected = serial.at(key);
+                REQUIRE(values.size() == expected.size());
+                for (size_t i = 0; i < values.size(); ++i)
+                    CHECK(values[i] == doctest::Approx(expected[i]).epsilon(2e-10).scale(1));
+            }
+        }
 }
 
 // ===================================================================

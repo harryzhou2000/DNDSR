@@ -1136,7 +1136,7 @@ namespace DNDS::CFV
             tScalarPair &si,
             bool ifAll,
             const tFMEig<nVarsFixed> &FM, const tFMEig<nVarsFixed> &FMI,
-            bool putIntoNew = false);
+            bool putIntoNew = false, int limitOrder = 0);
 
         void WriteSerializeRecMatrix(const Serializer::SerializerBaseSSP &serializerP)
         {
@@ -1254,7 +1254,7 @@ DNDS_VARIATIONALRECONSTRUCTION_RECONSTRUCTION_INS_EXTERN(3, Eigen::Dynamic, exte
             tScalarPair &si,                                                                         \
             bool ifAll,                                                                              \
             const tFMEig<nVarsFixed> &FM, const tFMEig<nVarsFixed> &FMI,                             \
-            bool putIntoNew);                                                                        \
+            bool putIntoNew, int limitOrder);                                                        \
     }
 // NOLINTEND(bugprone-macro-parentheses)
 DNDS_VARIATIONALRECONSTRUCTION_LIMITERPROCEDURE_INS_EXTERN(2, 1, extern)
