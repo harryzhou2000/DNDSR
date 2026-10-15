@@ -1,5 +1,38 @@
 # Reactive Split Method {#reactive_split_method}
 
+## Named indicator strategies
+
+`eulerSettings.reactiveSplitIndicator.indicatorMode` is a string backed by
+the C++ `ReactiveSplitIndicatorMode` enum class. Its maintained serialization
+and allowed-name list live together in `src/Euler/ReactiveSplitIndicator.hpp`.
+The enum docstring and generated schema field description also identify each
+report family; the schema's `enum` lists the accepted configuration strings.
+
+| Configuration string | Historical number | Scheme family |
+| --- | --- | --- |
+| `Activity` (default) | 0 | Original activity product; broadA is a parameter recipe |
+| `StiffnessRatio` | 1 | Legacy diffusion/stiffness ratio |
+| `ChemistryEscape` | 2 | broadA with chemistry escape, including BA-CE6 |
+| `TransportBalance` | 3 | Balance; B-E2 adds its chain filters |
+| `MatchedRateRatio` | 4 | localRXX family |
+| `ChemicalResponse` | 5 | Kinetic chemical directional-response ratio |
+
+Numeric mode references elsewhere in this guide identify historical research
+families, not accepted JSON values. Migrate old `indicatorMode` integers using
+this table, including CLI overrides and research launchers. Unknown strings,
+numeric values and null are invalid at configuration validation; omitting the
+field retains `Activity`. For example:
+
+```sh
+./app/eulerEX.exe 14 ../cases/eulerEX/react_test.json \
+  -k /eulerSettings/reactiveSplitIndicator/indicatorMode -v ChemicalResponse
+```
+
+The enum selects only the indicator formula; it does not change
+`timeMarchControl.sourceStrangSplitting` or `odeCode`. Physical source splitting
+(`sourceStrangSplitting` 1 or 2) requires `eulerSettings.ignoreSourceTerm=false`;
+contradictory configurations are rejected rather than partially omitting chemistry.
+
 ## Experimental local matched-rate ratio (mode 4)
 
 This research-only mode shares mode 3's molecular face budgets and matched
@@ -28,7 +61,7 @@ Strang/coupled mode.
 
 ## Experimental matched-rate transport balance
 
-`indicatorMode=3` compares molecular diffusion and chemistry using the same
+`indicatorMode="TransportBalance"` compares molecular diffusion and chemistry using the same
 dimensionless-state rate norm. It does not alter modes 0--2 or the split
 time integrator. For physical, SI-valued rates define
 
@@ -103,7 +136,7 @@ This is a candidate calibration, not an established universal accuracy claim.
 
 ## Refined v2 chemistry escape (BA-CE6)
 
-`indicatorMode=2` adds the separately selectable BA-CE6 candidate; modes 0 and 1
+`indicatorMode="ChemistryEscape"` adds the separately selectable BA-CE6 candidate; modes 0 and 1
 retain their existing selector definitions. This is an experimental candidate,
 not yet a validated accuracy improvement. Define the unsnapped broadA coupled
 fraction as @f$f_A@f$, stiffness activity @f$s=\Delta t\Lambda@f$ and ratio
@@ -258,8 +291,8 @@ the coupled method.
 
 ## Indicator modes
 
-`indicatorMode=0` selects the original v1 activity-product indicator, while
-`indicatorMode=1` selects the v2 diffusion-to-chemistry rate-ratio indicator.
+`indicatorMode="Activity"` selects the original v1 activity-product indicator, while
+`indicatorMode="StiffnessRatio"` selects the v2 diffusion-to-chemistry rate-ratio indicator.
 Both modes use the same `chi` convention, shock sensor, endpoint snapping, and
 optional spatial expansion.
 
@@ -435,7 +468,7 @@ s$^{-2}$. $T_*$ is any fixed positive temperature: changing it does not change
 the derivatives. Unit invariance does not imply invariance under species
 lumping or arbitrary component reweighting.
 
-Use `indicatorMode=5`, `ratioThreshold=r0`, and `ratioExponent=p`.
+Use `indicatorMode="ChemicalResponse"`, `ratioThreshold=r0`, and `ratioExponent=p`.
 The kineticH01P2 campaign uses $r_0=0.1$, $p=2$, both endpoint snap
 tolerances zero, and all spatial passes zero. There are no activity or
 shock gates and no explicit time-step dependence. Existing endpoint snap
@@ -501,7 +534,7 @@ The following fragment shows every RRI setting and its current default:
   },
   "eulerSettings": {
     "reactiveSplitIndicator": {
-      "indicatorMode": 0,
+      "indicatorMode": "Activity",
       "chemicalActivityThreshold": 1.0,
       "diffusiveActivityThreshold": 1.0,
       "activitySaturationExponent": 1.0,
@@ -523,7 +556,7 @@ The following fragment shows every RRI setting and its current default:
 }
 ```
 
-`indicatorMode=0` selects v1 and `indicatorMode=1` selects v2. The final
+`indicatorMode="Activity"` selects v1 and `indicatorMode="StiffnessRatio"` selects v2. The final
 `switchShape`, `coupledThreshold`, `transitionWidth`, `strangBias`, and
 `hillExponent` settings apply to v1; `ratioThreshold` and `ratioExponent` apply
 to v2. `switchShape=1` selects the default v1 Hill map and `switchShape=0`
@@ -546,6 +579,13 @@ Add any of these names to `dataIOControl.outCellScalarNames`:
 - `reactiveSplitShockSensor`: pressure-jump sensor `h_i`.
 - `reactiveSplitCoupledScore`: local score `C_i` before spatial expansion.
 - `reactiveSplitStiffnessStep`: v2 chemical-Jacobian activity `s_i`; zero in v1.
+
+Native full-coupled and full-Strang runs output constant `reactiveSplitChi`
+values of zero and one respectively. These constants are initialized with the
+solver arrays, without an additional per-step loop or communication. Other
+indicator diagnostics remain inactive (zero) in those modes. In mixed mode,
+the output is the frozen weight used for the physical step, not a freshly
+recomputed selector on its final state.
 
 All six fields are solver-owned `ArrayDOFV<1>` storage. Their owning-cell entries
 `[0, mesh->NumCell())` are valid after selector evaluation and are sufficient

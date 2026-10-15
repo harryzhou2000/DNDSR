@@ -1806,6 +1806,9 @@ namespace DNDS::Euler
         auto &reactiveSplitShockSensor = reactiveSplit.shockSensor;
         auto &reactiveSplitCoupledScore = reactiveSplit.coupledScore;
         const auto &indicatorSettings = settings.reactiveSplitIndicator;
+        const bool useMatchedTransport = indicatorSettings.indicatorMode == ReactiveSplitIndicatorMode::TransportBalance ||
+                                         indicatorSettings.indicatorMode == ReactiveSplitIndicatorMode::MatchedRateRatio ||
+                                         indicatorSettings.indicatorMode == ReactiveSplitIndicatorMode::ChemicalResponse;
         if (reactiveSplit.stiffnessStep)
             reactiveSplit.stiffnessStep->setConstant(0.0);
         if (indicatorSettings.chiOverride >= 0)
@@ -1818,7 +1821,7 @@ namespace DNDS::Euler
             return;
         }
 
-        DNDS_check_throw_info((indicatorSettings.indicatorMode != 1 && indicatorSettings.indicatorMode != 2) || reactiveSplit.stiffnessStep,
+        DNDS_check_throw_info((indicatorSettings.indicatorMode != ReactiveSplitIndicatorMode::StiffnessRatio && indicatorSettings.indicatorMode != ReactiveSplitIndicatorMode::ChemistryEscape) || reactiveSplit.stiffnessStep,
                               "v2 reactive split indicator requires stiffnessStep storage");
 
         const int Ns = phys_.nSpecies();
@@ -1838,7 +1841,7 @@ namespace DNDS::Euler
             auto state = u[iCell];
             real TGuess = cellTWarm && iCell < mesh->NumCell() ? (*cellTWarm)[iCell](0) : real(0);
             auto [T, p, asqr, H, gammaEq, gamma] = phys_.conservativeThermal(
-                state, TGuess, indicatorSettings.indicatorMode >= 3 ? real(1e-12) : real(1e-8));
+                state, TGuess, useMatchedTransport ? real(1e-12) : real(1e-8));
             (void)asqr;
             (void)H;
             (void)gammaEq;
@@ -1851,7 +1854,7 @@ namespace DNDS::Euler
                 (*cellTWarm)[iCell](0) = T;
         }
 
-        if (indicatorSettings.indicatorMode == 3 || indicatorSettings.indicatorMode == 4 || indicatorSettings.indicatorMode == 5)
+        if (useMatchedTransport)
         {
             DNDS_check_throw_info(phys_.chem().isIdealGas(), "transport balance requires ideal-gas species thermodynamics");
             DNDS_check_throw_info(std::isfinite(settings.reactiveSourceScale) && settings.reactiveSourceScale >= 0,
@@ -1956,7 +1959,7 @@ namespace DNDS::Euler
                     real energyScale = densityPhysical * std::max(cv, real(1e-30)) * std::max(temperaturePhysical, temperatureFloor);
                     real chemicalActivity = dtPhysical * std::sqrt(chemicalNormSquared + sqr(chemicalEnergy / energyScale));
                     real diffusionActivity = dtPhysical * std::sqrt(diffusionNormSquared + sqr(diffusionEnergy / energyScale));
-                    if (indicatorSettings.indicatorMode == 5)
+                    if (indicatorSettings.indicatorMode == ReactiveSplitIndicatorMode::ChemicalResponse)
                     {
                         for (int species = 0; species < Ns; ++species)
                             diffusionSource[species] /= densityPhysical;
@@ -1973,14 +1976,14 @@ namespace DNDS::Euler
                         reactiveSplitChi[iCell](0) = ReactiveSplitSnapChi(1.0 - coupledFraction, indicatorSettings);
                         continue;
                     }
-                    real score = indicatorSettings.indicatorMode == 4
+                    real score = indicatorSettings.indicatorMode == ReactiveSplitIndicatorMode::MatchedRateRatio
                                      ? ReactiveSplitMatchedRatioFraction(chemicalActivity, diffusionActivity, shockSensor, indicatorSettings)
                                      : ReactiveSplitBalanceScore(chemicalActivity, diffusionActivity, shockSensor, indicatorSettings);
                     reactiveSplitChemicalStep[iCell](0) = chemicalActivity;
                     reactiveSplitDiffusiveStep[iCell](0) = diffusionActivity;
                     reactiveSplitShockSensor[iCell](0) = shockSensor;
                     reactiveSplitCoupledScore[iCell](0) = score;
-                    reactiveSplitChi[iCell](0) = indicatorSettings.indicatorMode == 4
+                    reactiveSplitChi[iCell](0) = indicatorSettings.indicatorMode == ReactiveSplitIndicatorMode::MatchedRateRatio
                                                      ? ReactiveSplitSnapChi(1.0 - score, indicatorSettings)
                                                  : indicatorSettings.balanceExpansionPasses + indicatorSettings.balanceSmoothingPasses > 0
                                                      ? 1.0 - ReactiveSplitCoupledFraction(score, indicatorSettings)
@@ -2027,7 +2030,7 @@ namespace DNDS::Euler
             return;
         }
 
-        const bool useStiffnessRatio = indicatorSettings.indicatorMode == 1 || indicatorSettings.indicatorMode == 2;
+        const bool useStiffnessRatio = indicatorSettings.indicatorMode == ReactiveSplitIndicatorMode::StiffnessRatio || indicatorSettings.indicatorMode == ReactiveSplitIndicatorMode::ChemistryEscape;
         std::vector<real> chemicalRate(static_cast<size_t>(mesh->NumCell()), 0.0);
         std::vector<real> maxDiffusivity(static_cast<size_t>(mesh->NumCell()), 0.0);
         std::vector<real> maxStiffnessRate(static_cast<size_t>(mesh->NumCell()), 0.0);
@@ -2130,7 +2133,7 @@ namespace DNDS::Euler
             {
                 real chemicalStiffness = dtPhysical * maxStiffnessRate[static_cast<size_t>(iCell)]; // s_i
                 (*reactiveSplit.stiffnessStep)[iCell](0) = chemicalStiffness;
-                if (indicatorSettings.indicatorMode == 2)
+                if (indicatorSettings.indicatorMode == ReactiveSplitIndicatorMode::ChemistryEscape)
                     reactiveSplitChi[iCell](0) = ReactiveSplitChiChemistryEscape(coupledScore, diffusionActivity, chemicalStiffness, indicatorSettings);
                 else
                 {

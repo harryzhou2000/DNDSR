@@ -1967,6 +1967,8 @@ namespace DNDS::Euler
         }
         if (config.timeMarchControl.sourceStrangSplitting != 0)
         {
+            DNDS_check_throw_info(!eval.settings.ignoreSourceTerm,
+                                  "physical source splitting requires ignoreSourceTerm=false");
             DNDS_check_throw_info(TEval::Traits::isExtended && eval.settings.reactiveFlow.enabled,
                                   "physical source splitting requires reactive extended Euler physics");
             DNDS_check_throw_info(!ode->IsMultistep(),

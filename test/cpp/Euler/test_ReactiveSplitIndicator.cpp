@@ -2,10 +2,42 @@
 #include "Euler/ReactiveSplitIndicator.hpp"
 #include "doctest.h"
 
+using DNDS::Euler::ReactiveSplitIndicatorMode;
+
+TEST_CASE("Reactive split strategy names round trip and reject invalid configuration")
+{
+    using DNDS::Euler::ReactiveSplitIndicatorSettings;
+    const auto names = DNDS_ENUM_ALLOWED_VALUES(ReactiveSplitIndicatorMode);
+    REQUIRE(names.size() == 6);
+    const auto schema = ReactiveSplitIndicatorSettings::schema();
+    const auto &modeSchema = schema["properties"]["indicatorMode"];
+    CHECK(modeSchema["enum"] == nlohmann::ordered_json(names));
+    const auto description = modeSchema["description"].get<std::string>();
+    for (const auto &name : names)
+        CHECK(description.find(name) != std::string::npos);
+    for (const auto *recipe : {"broadA", "BA-CE6", "Balance/B-E2", "localRXX", "Kinetic/H01P2"})
+        CHECK(description.find(recipe) != std::string::npos);
+    nlohmann::ordered_json config = ReactiveSplitIndicatorSettings{};
+    CHECK(config["indicatorMode"] == "Activity");
+    for (const auto &name : names)
+    {
+        config["indicatorMode"] = name;
+        const auto settings = config.get<ReactiveSplitIndicatorSettings>();
+        CHECK(settings.validate().empty());
+        nlohmann::ordered_json restored = settings;
+        CHECK(restored["indicatorMode"] == name);
+    }
+    for (const auto &invalid : nlohmann::ordered_json::array({"unknown", 0, 5, nullptr}))
+    {
+        config["indicatorMode"] = invalid;
+        CHECK_FALSE(config.get<ReactiveSplitIndicatorSettings>().validate().empty());
+    }
+}
+
 TEST_CASE("Chemical response ratio is step independent and has no auxiliary gates")
 {
     DNDS::Euler::ReactiveSplitIndicatorSettings settings;
-    settings.indicatorMode = 5;
+    settings.indicatorMode = ReactiveSplitIndicatorMode::ChemicalResponse;
     settings.ratioThreshold = .1;
     settings.ratioExponent = 2;
     CHECK(settings.validate().empty());
@@ -22,7 +54,7 @@ TEST_CASE("Chemical response ratio is step independent and has no auxiliary gate
     CHECK(ReactiveSplitChemicalResponseFraction(1, .1, settings) == doctest::Approx(.5));
     CHECK_THROWS(ReactiveSplitChemicalResponseFraction(-1, 1, settings));
     nlohmann::ordered_json config = settings;
-    CHECK(config.get<DNDS::Euler::ReactiveSplitIndicatorSettings>().indicatorMode == 5);
+    CHECK(config.get<DNDS::Euler::ReactiveSplitIndicatorSettings>().indicatorMode == ReactiveSplitIndicatorMode::ChemicalResponse);
     settings.spatialPasses = 1;
     CHECK_FALSE(settings.validate().empty());
     settings.spatialPasses = 0;
@@ -36,7 +68,7 @@ TEST_CASE("Chemical response ratio is step independent and has no auxiliary gate
 TEST_CASE("Local matched-rate ratio guards activity and forbids spatial expansion")
 {
     DNDS::Euler::ReactiveSplitIndicatorSettings settings;
-    settings.indicatorMode = 4;
+    settings.indicatorMode = ReactiveSplitIndicatorMode::MatchedRateRatio;
     settings.chemicalActivityThreshold = .001;
     settings.ratioThreshold = .1;
     settings.ratioExponent = 4;
@@ -66,7 +98,7 @@ TEST_CASE("Balance chain filters preserve constants and defer endpoint snapping"
     ReactiveSplitIndicatorSettings settings;
     CHECK(settings.balanceExpansionPasses == 0);
     CHECK(settings.balanceSmoothingPasses == 0);
-    settings.indicatorMode = 3;
+    settings.indicatorMode = ReactiveSplitIndicatorMode::TransportBalance;
     settings.balanceExpansionPasses = 2;
     settings.balanceSmoothingPasses = 1;
     settings.strangSnapTolerance = 0.05;
@@ -88,14 +120,14 @@ TEST_CASE("Balance chain filters preserve constants and defer endpoint snapping"
     CHECK(filtered == doctest::Approx(0.05));
     CHECK(ReactiveSplitSnapChi(1.0 - ReactiveSplitBalanceSmooth(0.04, 0.08, 2), settings) == 1);
     CHECK(ReactiveSplitSnapChi(1.0 - ReactiveSplitBalanceSmooth(0.04, 0.16, 2), settings) < 1);
-    settings.indicatorMode = 0;
+    settings.indicatorMode = ReactiveSplitIndicatorMode::Activity;
     CHECK_FALSE(settings.validate().empty());
 }
 
 TEST_CASE("Transport balance has matched-rate limits and independent configuration")
 {
     ReactiveSplitIndicatorSettings settings;
-    settings.indicatorMode = 3;
+    settings.indicatorMode = ReactiveSplitIndicatorMode::TransportBalance;
     settings.coupledThreshold = 0.001;
     settings.hillExponent = 2;
     CHECK(settings.validate().empty());
@@ -200,7 +232,7 @@ TEST_CASE("Reactive split activity tuning is parsed and validated")
 TEST_CASE("Reactive split v2 rate ratio is scale invariant and configurable")
 {
     ReactiveSplitIndicatorSettings settings;
-    settings.indicatorMode = 1;
+    settings.indicatorMode = ReactiveSplitIndicatorMode::StiffnessRatio;
     settings.ratioThreshold = 0.1;
     settings.ratioExponent = 2.0;
     settings.strangSnapTolerance = 0.0;
@@ -218,11 +250,11 @@ TEST_CASE("Reactive split v2 rate ratio is scale invariant and configurable")
     CHECK(ReactiveSplitChiStiffnessRatio(0.0, 0.0, settings) == doctest::Approx(0.25));
 
     nlohmann::ordered_json config = ReactiveSplitIndicatorSettings{};
-    config["indicatorMode"] = 1;
+    config["indicatorMode"] = "StiffnessRatio";
     config["ratioThreshold"] = 0.2;
     config["ratioExponent"] = 3.0;
     settings = config.get<ReactiveSplitIndicatorSettings>();
-    CHECK(settings.indicatorMode == 1);
+    CHECK(settings.indicatorMode == ReactiveSplitIndicatorMode::StiffnessRatio);
     CHECK(settings.ratioThreshold == doctest::Approx(0.2));
     CHECK(settings.ratioExponent == doctest::Approx(3.0));
     CHECK(settings.validate().empty());
@@ -258,7 +290,7 @@ TEST_CASE("Hill switch is the default with an exact zero tail and configurable m
 TEST_CASE("Chemistry escape preserves baseline and selects stiff low diffusion chemistry")
 {
     ReactiveSplitIndicatorSettings settings;
-    settings.indicatorMode = 2;
+    settings.indicatorMode = ReactiveSplitIndicatorMode::ChemistryEscape;
     settings.chemicalActivityThreshold = 10;
     settings.diffusiveActivityThreshold = 2;
     settings.activitySaturationExponent = 0.5;

@@ -1,10 +1,40 @@
 #pragma once
 
 #include "DNDS/Config/ConfigParam.hpp"
+#include "DNDS/Config/ConfigEnum.hpp"
 #include "DNDS/Defines.hpp"
 
 namespace DNDS::Euler
 {
+    /**
+     * @brief Named RRI strategies used in configuration and research reports.
+     * @details See docs/guides/reactive_split_method.md for definitions of the
+     * dimensionless activities, shock gate and maps. Activity is the original
+     * activity-product family (including broadA); StiffnessRatio is legacy v2;
+     * ChemistryEscape is the BA-CE6 family; TransportBalance is Balance/B-E2;
+     * MatchedRateRatio is localRXX; ChemicalResponse is Kinetic/H01P2.
+     * These names select formula families, not their tuned parameter recipes.
+     */
+    enum class ReactiveSplitIndicatorMode
+    {
+        Invalid = -1,
+        Activity,         ///< Original/broadA: C=H(a;a0,p) H(b;b0,p) gh, coupled share M(C).
+        StiffnessRatio,   ///< Legacy v2: Strang share H(b/s;r0,pr), with a shock floor.
+        ChemistryEscape,  ///< BA-CE6: coupled share M(C)(1-E), with a chemistry-escape gate E.
+        TransportBalance, ///< Balance/B-E2: C=gh a d/(1+a)^2, with optional chain filters.
+        MatchedRateRatio, ///< localRXX: coupled share H(a;a0,1) H(d/a;r0,pr) gh.
+        ChemicalResponse, ///< Kinetic/H01P2: coupled share H(||Js d||/||Js s||;r0,pr).
+    };
+
+    DNDS_DEFINE_ENUM_JSON(ReactiveSplitIndicatorMode,
+                          {{ReactiveSplitIndicatorMode::Invalid, nullptr},
+                           {ReactiveSplitIndicatorMode::Activity, "Activity"},
+                           {ReactiveSplitIndicatorMode::StiffnessRatio, "StiffnessRatio"},
+                           {ReactiveSplitIndicatorMode::ChemistryEscape, "ChemistryEscape"},
+                           {ReactiveSplitIndicatorMode::TransportBalance, "TransportBalance"},
+                           {ReactiveSplitIndicatorMode::MatchedRateRatio, "MatchedRateRatio"},
+                           {ReactiveSplitIndicatorMode::ChemicalResponse, "ChemicalResponse"}})
+
     /**
      * @brief Configuration of the dimensionless mixed reactive-source selector.
      *
@@ -42,7 +72,7 @@ namespace DNDS::Euler
      */
     struct ReactiveSplitIndicatorSettings
     {
-        int indicatorMode = 0;                 ///< 0: v1; 1: legacy ratio; 2: escape; 3: balance; 4: matched rate; 5: chemical response.
+        ReactiveSplitIndicatorMode indicatorMode = ReactiveSplitIndicatorMode::Activity;
         real chemicalActivityThreshold = 1.0;  ///< Chemical saturation threshold @f$a_0@f$.
         real diffusiveActivityThreshold = 1.0; ///< Diffusion saturation threshold @f$b_0@f$.
         real activitySaturationExponent = 1.0; ///< Shared activity-saturation exponent @f$p@f$.
@@ -69,7 +99,16 @@ namespace DNDS::Euler
         DNDS_DECLARE_CONFIG(ReactiveSplitIndicatorSettings)
         {
             // clang-format off
-            DNDS_FIELD(indicatorMode,              "Reactive split mode: 0=v1 rate-based, 1=legacy b/s ratio, 2=chemistry escape, 3=transport balance, 4=local matched-rate ratio, 5=CV chemical directional response", DNDS::Config::range(0, 5));
+            DNDS_FIELD(indicatorMode,
+                       "Named RRI formula family, not a tuned recipe: Activity = original/broadA activity product; "
+                       "StiffnessRatio = legacy v2 diffusion/stiffness ratio (larger ratio favors Strang); "
+                       "ChemistryEscape = BA-CE6 broadA plus chemistry escape; "
+                       "TransportBalance = Balance/B-E2 matched-rate balance; "
+                       "MatchedRateRatio = localRXX matched diffusion/chemistry ratio; "
+                       "ChemicalResponse = Kinetic/H01P2, coupled share H(||Js d||/||Js s||;r0,pr). "
+                       "See docs/guides/reactive_split_method.md for formulas and recipe parameters. "
+                       "Use a string, not a legacy integer.",
+                       DNDS::Config::enum_values(DNDS_ENUM_ALLOWED_VALUES(ReactiveSplitIndicatorMode)));
             DNDS_FIELD(escapeStiffnessThreshold, "Chemistry escape activity midpoint s0", DNDS::Config::range(0.0));
             DNDS_FIELD(escapeStiffnessExponent, "Chemistry escape activity power ps", DNDS::Config::range(0.0));
             DNDS_FIELD(escapeRatioThreshold, "Chemistry escape diffusion/stiffness ratio midpoint re", DNDS::Config::range(0.0));
@@ -93,6 +132,8 @@ namespace DNDS::Euler
             DNDS_FIELD(coupledSnapTolerance,       "Endpoint tolerance epsilon_c for snapping the computed chi to exact coupled chi=0", DNDS::Config::range(0.0, 1.0));
             DNDS_FIELD(chiOverride,                "Override Strang fraction chi in [0,1]; negative enables the indicator", DNDS::Config::range(-1.0, 1.0));
             // clang-format on
+            config.check("reactive split indicatorMode must be a supported strategy name, not a legacy integer", [](const T &s)
+                         { return s.indicatorMode != ReactiveSplitIndicatorMode::Invalid; });
             config.check("reactive split activity thresholds and exponent must be positive", [](const T &s)
                          { return s.chemicalActivityThreshold > 0 && s.diffusiveActivityThreshold > 0 &&
                                   s.activitySaturationExponent > 0; });
@@ -105,18 +146,18 @@ namespace DNDS::Euler
             config.check("reactive split endpoint snap tolerances must have sum less than one", [](const T &s)
                          { return s.strangSnapTolerance + s.coupledSnapTolerance < 1; });
             config.check("reactive split v2 ratio threshold and exponent must be positive", [](const T &s)
-                         { return s.indicatorMode != 1 || (s.ratioThreshold > 0 && s.ratioExponent > 0); });
+                         { return s.indicatorMode != ReactiveSplitIndicatorMode::StiffnessRatio || (s.ratioThreshold > 0 && s.ratioExponent > 0); });
             config.check("chemistry escape parameters must be positive and spatial passes disabled", [](const T &s)
-                         { return s.indicatorMode != 2 || (s.escapeStiffnessThreshold > 0 && s.escapeStiffnessExponent > 0 &&
-                                                           s.escapeRatioThreshold > 0 && s.escapeRatioExponent > 0 && s.spatialPasses == 0); });
+                         { return s.indicatorMode != ReactiveSplitIndicatorMode::ChemistryEscape || (s.escapeStiffnessThreshold > 0 && s.escapeStiffnessExponent > 0 &&
+                                                                                                     s.escapeRatioThreshold > 0 && s.escapeRatioExponent > 0 && s.spatialPasses == 0); });
             config.check("transport balance requires a positive Hill midpoint and no spatial passes", [](const T &s)
-                         { return s.indicatorMode != 3 || (s.switchShape == 1 && s.coupledThreshold > 0 && s.spatialPasses == 0); });
-            config.check("balance filters require indicatorMode 3", [](const T &s)
-                         { return s.indicatorMode == 3 || (s.balanceExpansionPasses == 0 && s.balanceSmoothingPasses == 0); });
+                         { return s.indicatorMode != ReactiveSplitIndicatorMode::TransportBalance || (s.switchShape == 1 && s.coupledThreshold > 0 && s.spatialPasses == 0); });
+            config.check("balance filters require TransportBalance", [](const T &s)
+                         { return s.indicatorMode == ReactiveSplitIndicatorMode::TransportBalance || (s.balanceExpansionPasses == 0 && s.balanceSmoothingPasses == 0); });
             config.check("local matched-rate ratio requires positive ratio controls and no spatial passes", [](const T &s)
-                         { return s.indicatorMode != 4 || (s.ratioThreshold > 0 && s.ratioExponent > 0 && s.spatialPasses == 0); });
+                         { return s.indicatorMode != ReactiveSplitIndicatorMode::MatchedRateRatio || (s.ratioThreshold > 0 && s.ratioExponent > 0 && s.spatialPasses == 0); });
             config.check("chemical response requires positive ratio controls and no spatial passes", [](const T &s)
-                         { return s.indicatorMode != 5 || (s.ratioThreshold > 0 && s.ratioExponent > 0 && s.spatialPasses == 0); });
+                         { return s.indicatorMode != ReactiveSplitIndicatorMode::ChemicalResponse || (s.ratioThreshold > 0 && s.ratioExponent > 0 && s.spatialPasses == 0); });
         }
     };
 

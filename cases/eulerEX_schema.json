@@ -1692,11 +1692,17 @@
                     "description": "Dimensionless RRI selector: chi=0 is coupled and chi=1 is Strang",
                     "properties": {
                         "indicatorMode": {
-                            "type": "integer",
-                            "default": 0,
-                            "description": "Reactive split mode: 0=v1 rate-based, 1=legacy b/s ratio, 2=chemistry escape, 3=transport balance, 4=local matched-rate ratio, 5=CV chemical directional response",
-                            "minimum": 0.0,
-                            "maximum": 5.0
+                            "type": "string",
+                            "default": "Activity",
+                            "description": "Named RRI formula family, not a tuned recipe: Activity = original/broadA activity product; StiffnessRatio = legacy v2 diffusion/stiffness ratio (larger ratio favors Strang); ChemistryEscape = BA-CE6 broadA plus chemistry escape; TransportBalance = Balance/B-E2 matched-rate balance; MatchedRateRatio = localRXX matched diffusion/chemistry ratio; ChemicalResponse = Kinetic/H01P2, coupled share H(||Js d||/||Js s||;r0,pr). See docs/guides/reactive_split_method.md for formulas and recipe parameters. Use a string, not a legacy integer.",
+                            "enum": [
+                                "Activity",
+                                "StiffnessRatio",
+                                "ChemistryEscape",
+                                "TransportBalance",
+                                "MatchedRateRatio",
+                                "ChemicalResponse"
+                            ]
                         },
                         "escapeStiffnessThreshold": {
                             "type": "number",

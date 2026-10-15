@@ -516,6 +516,23 @@ TEST_CASE("PhysicsProperties reactive temperature gradient matches finite differ
             (2 * epsilon);
         CHECK(gradT(direction) == doctest::Approx(finiteDifference).epsilon(2e-3));
     }
+    Eigen::Matrix<real, 3, Eigen::Dynamic> gradPrimitive;
+    Gas::GradientCons2Prim_IdealGas<3>(state, gradU, gradPrimitive, thermal.gammaEq,
+                                       phys.mixtureBaseInternalRhoESpecies());
+    PhysicsProperties<NS_EX>::MixtureAveragedDiffusionBuffers buffers;
+    Eigen::Vector3d normal(0, 1, 0);
+    const auto heatFlux = [&](bool adiabatic, real conductivity)
+    {
+        TU flux = TU::Zero(state.size());
+        phys.viscousFluxIdealGas(thermal.T, thermal.p, state, gradU, gradPrimitive, normal,
+                                 adiabatic, true, thermal.gammaEq, thermal.gamma,
+                                 0, 0, false, conductivity, phys.Cp(thermal.T, state), 0,
+                                 buffers, flux);
+        return flux(4);
+    };
+    CHECK(heatFlux(false, 2) == doctest::Approx(2 * gradT.dot(normal)));
+    CHECK(heatFlux(true, 2) == 0);
+    CHECK(heatFlux(false, 0) == 0);
 }
 
 TEST_CASE("PhysicsProperties reactive total-to-static conversion iterates mixture thermodynamics")

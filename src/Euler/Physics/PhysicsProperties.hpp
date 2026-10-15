@@ -1094,15 +1094,13 @@ namespace DNDS::Euler
             real rhoInv = 1.0 / std::max(rho, verySmallReal);
             Eigen::Vector<real, dim> velocity = U(Seq123) * rhoInv;
 
-            std::vector<real> enthalpy(static_cast<size_t>(nSpecies));
-            speciesEnthalpies(T, p, U, {enthalpy.data(), nSpecies});
             std::vector<real> internalEnergy(static_cast<size_t>(nSpecies));
+            speciesEnthalpies(T, p, U, {internalEnergy.data(), nSpecies});
             auto massFractions = massFractionsVector(U);
             real mixtureInternalEnergy = U(I4) * rhoInv - 0.5 * velocity.squaredNorm();
             for (int species = 0; species < nSpecies; ++species)
             {
-                internalEnergy[species] =
-                    enthalpy[species] - speciesGasConstantK(species) * T;
+                internalEnergy[species] -= speciesGasConstantK(species) * T;
             }
 
             real mixtureCv = Cv(T, U);
@@ -1165,7 +1163,7 @@ namespace DNDS::Euler
             if (!hasChemicalSource())
                 return;
 
-            if (!adiabaticWall)
+            if (!adiabaticWall && thermalConductivity != 0)
             {
                 Eigen::Vector<real, dim> gradT =
                     reactiveTemperatureGradient(T, p, U, gradU);
@@ -1247,7 +1245,7 @@ namespace DNDS::Euler
 
             // Conductive heat flux sign: VisFlux stores +k∇T·n and total flux subtracts VisFlux.
             // Since T = p/(rho R), the mixture correction is -k*T/R*∇R·n.
-            if (!adiabaticWall)
+            if (!adiabaticWall && thermalConductivity != 0)
                 visFlux(I4) -= thermalConductivity * T / std::max(Rgas(U), verySmallReal) * gradRDotN;
 
             buffers.Y[Ns - 1] = real(1) - sumY;

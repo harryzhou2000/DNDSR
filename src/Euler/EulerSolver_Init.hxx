@@ -440,7 +440,7 @@ namespace DNDS::Euler
         vfv->BuildUDof(reactiveSplitShockSensor_, 1);
         vfv->BuildUDof(reactiveSplitCoupledScore_, 1);
         vfv->BuildUDof(reactiveSplitStiffnessStep_, 1);
-        reactiveSplitChi_.setConstant(0.0);
+        reactiveSplitChi_.setConstant(config.timeMarchControl.sourceStrangSplitting == 1 ? 1.0 : 0.0);
         reactiveSplitChemicalStep_.setConstant(0.0);
         reactiveSplitDiffusiveStep_.setConstant(0.0);
         reactiveSplitShockSensor_.setConstant(0.0);

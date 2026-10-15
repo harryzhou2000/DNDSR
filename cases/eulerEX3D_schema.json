@@ -1691,6 +1691,43 @@
                     "type": "object",
                     "description": "Dimensionless RRI selector: chi=0 is coupled and chi=1 is Strang",
                     "properties": {
+                        "indicatorMode": {
+                            "type": "string",
+                            "default": "Activity",
+                            "description": "Named RRI formula family, not a tuned recipe: Activity = original/broadA activity product; StiffnessRatio = legacy v2 diffusion/stiffness ratio (larger ratio favors Strang); ChemistryEscape = BA-CE6 broadA plus chemistry escape; TransportBalance = Balance/B-E2 matched-rate balance; MatchedRateRatio = localRXX matched diffusion/chemistry ratio; ChemicalResponse = Kinetic/H01P2, coupled share H(||Js d||/||Js s||;r0,pr). See docs/guides/reactive_split_method.md for formulas and recipe parameters. Use a string, not a legacy integer.",
+                            "enum": [
+                                "Activity",
+                                "StiffnessRatio",
+                                "ChemistryEscape",
+                                "TransportBalance",
+                                "MatchedRateRatio",
+                                "ChemicalResponse"
+                            ]
+                        },
+                        "escapeStiffnessThreshold": {
+                            "type": "number",
+                            "default": 100.0,
+                            "description": "Chemistry escape activity midpoint s0",
+                            "minimum": 0.0
+                        },
+                        "escapeStiffnessExponent": {
+                            "type": "number",
+                            "default": 2.0,
+                            "description": "Chemistry escape activity power ps",
+                            "minimum": 0.0
+                        },
+                        "escapeRatioThreshold": {
+                            "type": "number",
+                            "default": 1e-06,
+                            "description": "Chemistry escape diffusion/stiffness ratio midpoint re",
+                            "minimum": 0.0
+                        },
+                        "escapeRatioExponent": {
+                            "type": "number",
+                            "default": 6.0,
+                            "description": "Chemistry escape ratio power pr",
+                            "minimum": 0.0
+                        },
                         "chemicalActivityThreshold": {
                             "type": "number",
                             "default": 1.0,
@@ -1707,6 +1744,18 @@
                             "type": "number",
                             "default": 1.0,
                             "description": "Shared activity-saturation exponent p in sat(z;z0,p)",
+                            "minimum": 0.0
+                        },
+                        "ratioThreshold": {
+                            "type": "number",
+                            "default": 0.1,
+                            "description": "Ratio midpoint r0 for modes 1, 4 and 5",
+                            "minimum": 0.0
+                        },
+                        "ratioExponent": {
+                            "type": "number",
+                            "default": 2.0,
+                            "description": "Ratio Hill exponent pr for modes 1, 4 and 5",
                             "minimum": 0.0
                         },
                         "coupledThreshold": {
@@ -1750,6 +1799,20 @@
                             "type": "integer",
                             "default": 0,
                             "description": "Number of decaying coupled-fraction neighbor passes",
+                            "minimum": 0.0,
+                            "maximum": 8.0
+                        },
+                        "balanceExpansionPasses": {
+                            "type": "integer",
+                            "default": 0,
+                            "description": "Mode 3 chain: raw coupled-fraction max-neighbor passes before snapping",
+                            "minimum": 0.0,
+                            "maximum": 8.0
+                        },
+                        "balanceSmoothingPasses": {
+                            "type": "integer",
+                            "default": 0,
+                            "description": "Mode 3 chain: raw coupled-fraction binomial passes after expansion, before snapping",
                             "minimum": 0.0,
                             "maximum": 8.0
                         },

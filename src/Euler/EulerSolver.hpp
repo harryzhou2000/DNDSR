@@ -949,6 +949,10 @@ namespace DNDS::Euler
                 {
                     return s.bcSettings.is_array();
                 });
+                config.check("physical source splitting requires ignoreSourceTerm=false", [](const T &s)
+                {
+                    return s.timeMarchControl.sourceStrangSplitting == 0 || !s.eulerSettings.ignoreSourceTerm;
+                });
                 // clang-format on
             }
 

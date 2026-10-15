@@ -222,6 +222,8 @@ namespace DNDS::Euler
                         for (int ic2n = 0; ic2n < mesh->cell2node.RowSize(iCell); ic2n++)
                         {
                             auto iNode = mesh->cell2node(iCell, ic2n);
+                            if (iNode >= mesh->NumNode())
+                                continue;
                             nN2C.at(iNode)++;
                             auto pPhy = mesh->GetCoordNodeOnCell(iCell, ic2n);
 

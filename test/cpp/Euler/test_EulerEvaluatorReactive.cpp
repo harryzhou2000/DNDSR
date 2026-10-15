@@ -72,6 +72,26 @@ static std::string writeReactiveConfig()
     return configPath;
 }
 
+TEST_CASE("Physical source splitting rejects globally disabled sources")
+{
+    EulerSolver<NS_EX>::Configuration config(14);
+    config.eulerSettings.ignoreSourceTerm = false;
+    CHECK(config.validate().empty());
+    for (const int splitting : {1, 2})
+    {
+        config.timeMarchControl.sourceStrangSplitting = splitting;
+        CHECK(config.validate().empty());
+        config.eulerSettings.ignoreSourceTerm = true;
+        const auto failures = config.validate();
+        REQUIRE(failures.size() == 1);
+        CHECK(failures.front().message == "physical source splitting requires ignoreSourceTerm=false");
+        config.eulerSettings.ignoreSourceTerm = false;
+    }
+    config.timeMarchControl.sourceStrangSplitting = 0;
+    config.eulerSettings.ignoreSourceTerm = true;
+    CHECK(config.validate().empty());
+}
+
 TEST_CASE("EulerEvaluator repairs reactive cell-mean species")
 {
     constexpr int nVars = 14;

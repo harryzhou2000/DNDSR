@@ -1207,8 +1207,9 @@ namespace DNDS::Euler
                 // Reactive RHS face flux uses Cantera mixture molecular k plus
                 // turbulent heat conductivity k_t=Cp*mu_t/Pr_t and a shared
                 // turbulent species diffusivity D_t=mu_t/(rho*Sc_t).
+                real cp = phys_.Cp(T, UMeanXYC);
                 real k = phys_.mixtureConductivity(T, pMean, UMeanXYC) +
-                            phys_.Cp(T, UMeanXYC) * muTurb / phys_.PrTurb();
+                            cp * muTurb / phys_.PrTurb();
                 real speciesDiffTurb = muTurb / std::max(UMeanXYC(0) * phys_.ScTurb(), verySmallReal);
                 TU VisFlux;
                 VisFlux.resizeLike(ULMeanXy);
@@ -1219,7 +1220,7 @@ namespace DNDS::Euler
                     adiabaticWall, impermeableWall,
                     gammaEq, gamma,
                     muf, muTurb / (muf + verySmallReal), settings.ransUseQCR,
-                    k, phys_.Cp(T, UMeanXYC), speciesDiffTurb,
+                    k, cp, speciesDiffTurb,
                     speciesDiffusionBuffers, VisFlux);
 
                 this->visFluxTurVariable(UMeanXYC, DiffUxyPrimC, muRef, mufPhy, muTurb, uNormC, iFace, VisFlux);
