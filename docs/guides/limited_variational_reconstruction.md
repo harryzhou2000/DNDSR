@@ -199,8 +199,16 @@ Shock/contact/support/weak alpha components share a four-component DOF array.
 Only an enabled, refreshed weak branch needs unlimited gradient ghosts. A
 WBAP target executes the linear-order pass only. Target PP omits unused global
 statistics reductions; reductions that determine positivity floors remain.
-Temporary scalar halo buffers are reused across each loop's passes. These
-changes reduce redundant work without changing the detector's stencil.
+Pressure/contact correction seeds and weak-gate expansions share the existing
+four-component branch array. Average H2 with no extra ordinary shock halo uses
+three gate pulls: neighbour support, packed correction seeds, then the second
+density expansion. An enabled two-layer weak gate shares these rounds; its
+unrestricted-gradient prerequisite remains separate. Each correction merges
+its unexpanded base gate only after its own expansion finishes. This preserves
+the original stencil and keeps `lvrO2Beta` exclusively a PP diagnostic. v2 uses
+two gate pulls; deeper configured halos can require more. O2-reference exchanges
+remain separate and unchanged. Expansion scratch storage is reused between
+rounds.
 
 These controls do not supply a proof of monotonicity, positivity of cell means,
 or preservation of arbitrary smooth extrema. The O2 target PP and subsequent

@@ -2859,15 +2859,79 @@ namespace DNDS::Euler
             }
         }
 
-        if (limitedVRSettings.alphaMax > 0 &&
-            limitedVRSettings.gateMode == LimitedVRSettings::GateProductCubicWithExtremumCorrection)
+        const bool correctPressure = limitedVRSettings.alphaMax > 0 &&
+                                     limitedVRSettings.gateMode == LimitedVRSettings::GateProductCubicWithExtremumCorrection;
+        const bool correctDensity = limitedVRSettings.contactUseExtremumCorrection &&
+                                    limitedVRSettings.contactAlphaMax > 0;
+        const index nOwned = mesh->NumCell();
+        std::vector<bool> correctionBoundary;
+        if (correctPressure || correctDensity)
+            correctionBoundary.resize(static_cast<size_t>(nOwned), false);
+        std::vector<real> shockAlphaBase, contactAlphaBase;
+
+        // Each component has its own stencil/depth, but all active components
+        // use one packed pull per round. Do not use the O2 or PP arrays as scratch.
+        std::vector<std::array<real, 3>> expandedGates;
+        auto expandGates = [&](bool shock, bool contact, bool weak)
+        {
+            expandedGates.resize(static_cast<size_t>(nOwned));
+            for (index iCell = 0; iCell < nOwned; ++iCell)
+                expandedGates[static_cast<size_t>(iCell)] = {
+                    branchAlpha[iCell](iShockAlpha), branchAlpha[iCell](iContactAlpha),
+                    branchAlpha[iCell](iWeakAlpha)};
+            for (index iFace = 0; iFace < mesh->NumFaceProc(); ++iFace)
+            {
+                auto f2c = mesh->face2cell[iFace];
+                if (f2c[1] == UnInitIndex)
+                    continue;
+                for (int side = 0; side < 2; ++side)
+                {
+                    index iCell = f2c[side], iOther = f2c[1 - side];
+                    if (iCell >= nOwned)
+                        continue;
+                    const size_t i = static_cast<size_t>(iCell);
+                    auto &expanded = expandedGates[i];
+                    if (shock && !correctionBoundary[i])
+                        expanded[0] = std::max(expanded[0], branchAlpha[iOther](iShockAlpha));
+                    if (contact && !correctionBoundary[i])
+                        expanded[1] = std::max(expanded[1], branchAlpha[iOther](iContactAlpha));
+                    if (weak)
+                        expanded[2] = std::max(expanded[2], branchAlpha[iOther](iWeakAlpha));
+                }
+            }
+            for (index iCell = 0; iCell < nOwned; ++iCell)
+            {
+                const auto &expanded = expandedGates[static_cast<size_t>(iCell)];
+                if (shock)
+                    branchAlpha[iCell](iShockAlpha) = expanded[0];
+                if (contact)
+                    branchAlpha[iCell](iContactAlpha) = expanded[1];
+                if (weak)
+                    branchAlpha[iCell](iWeakAlpha) = expanded[2];
+            }
+        };
+        int weakLayersRemaining = limitedVRSettings.weakAlphaMax > 0 && refreshWeakAlpha
+                                      ? limitedVRSettings.weakHaloLayers
+                                      : 0;
+        if (correctPressure || correctDensity)
+        {
+            // Round 1 supplies both correction supports; the fresh weak gate
+            // can already take its first maximum pass from the same payload.
+            branchAlpha.trans.startPersistentPull();
+            branchAlpha.trans.waitPersistentPull();
+            if (weakLayersRemaining > 0)
+            {
+                expandGates(false, false, true);
+                --weakLayersRemaining;
+            }
+        }
+
+        if (correctPressure)
         {
             // The base face gate remains the local product gate.  Add penalty
             // only at a strict cell-mean pressure extremum next to that detected
             // shock core.  This covers an oscillatory pre/post-shock cell without
             // spreading the gate across an otherwise monotone shock profile.
-            branchAlpha.trans.startPersistentPull();
-            branchAlpha.trans.waitPersistentPull();
             const index nCell = mesh->NumCell();
             const index nCellProc = mesh->NumCellProc();
             std::vector<real> pressureMean(static_cast<size_t>(nCellProc));
@@ -2882,11 +2946,10 @@ namespace DNDS::Euler
             std::vector<bool> hasLower(static_cast<size_t>(nCell), false);
             std::vector<bool> hasUpper(static_cast<size_t>(nCell), false);
             std::vector<int> equalNeighbourCount(static_cast<size_t>(nCell), 0);
-            std::vector<bool> boundaryAdjacent(static_cast<size_t>(nCell), false);
-            std::vector<real> o2BetaSaved(static_cast<size_t>(nCell));
+            auto &boundaryAdjacent = correctionBoundary;
+            shockAlphaBase.resize(static_cast<size_t>(nCell));
             for (index iCell = 0; iCell < nCell; ++iCell)
-                o2BetaSaved[static_cast<size_t>(iCell)] = o2Beta[iCell](0);
-            o2Beta.setConstant(0.0);
+                shockAlphaBase[static_cast<size_t>(iCell)] = branchAlpha[iCell](iShockAlpha);
             for (index iFace = 0; iFace < mesh->NumFaceProc(); ++iFace)
             {
                 auto f2c = mesh->face2cell[iFace];
@@ -2925,6 +2988,7 @@ namespace DNDS::Euler
             for (index iCell = 0; iCell < nCell; ++iCell)
             {
                 const size_t i = static_cast<size_t>(iCell);
+                branchAlpha[iCell](iShockAlpha) = 0;
                 if (boundaryAdjacent[i] ||
                     equalNeighbourCount[i] < limitedVRSettings.oscillationMinTransverseNeighbours)
                     continue;
@@ -2953,54 +3017,19 @@ namespace DNDS::Euler
                         supportFraction,
                         limitedVRSettings.oscillationSupportStart,
                         limitedVRSettings.oscillationSupportFull);
-                o2Beta[iCell](0) = limitedVRSettings.alphaMax * std::max(response, retainedResponse);
+                branchAlpha[iCell](iShockAlpha) = limitedVRSettings.alphaMax * std::max(response, retainedResponse);
             }
-            // Limit the extremum and its immediate face neighbours.  The
-            // correction itself is communicated, so the compact stencil is
-            // partition independent.  o2Beta is borrowed as scalar scratch and
-            // restored before returning.
-            o2Beta.trans.startPersistentPull();
-            o2Beta.trans.waitPersistentPull();
-            std::vector<real> correctedAlpha(static_cast<size_t>(nCell));
-            for (index iCell = 0; iCell < nCell; ++iCell)
-                correctedAlpha[static_cast<size_t>(iCell)] =
-                    std::max(branchAlpha[iCell](iShockAlpha), o2Beta[iCell](0));
-            for (index iFace = 0; iFace < mesh->NumFaceProc(); ++iFace)
-            {
-                auto f2c = mesh->face2cell[iFace];
-                if (f2c[1] == UnInitIndex)
-                    continue;
-                for (int if2c = 0; if2c < 2; ++if2c)
-                {
-                    index iCell = f2c[if2c];
-                    if (iCell >= nCell || boundaryAdjacent[static_cast<size_t>(iCell)])
-                        continue;
-                    correctedAlpha[static_cast<size_t>(iCell)] = std::max(
-                        correctedAlpha[static_cast<size_t>(iCell)], o2Beta[f2c[1 - if2c]](0));
-                }
-            }
-            for (index iCell = 0; iCell < nCell; ++iCell)
-            {
-                branchAlpha[iCell](iShockAlpha) = correctedAlpha[static_cast<size_t>(iCell)];
-                o2Beta[iCell](0) = o2BetaSaved[static_cast<size_t>(iCell)];
-            }
+            // Keep the seed separate from its base gate until its own one-pass
+            // correction expansion is complete; expanding the base would alter v2.
         }
 
-        if (limitedVRSettings.contactUseExtremumCorrection && limitedVRSettings.contactAlphaMax > 0)
+        if (correctDensity)
         {
             // Mirror the mode-8 pressure correction on cell-mean density.  The
             // separately packed contact-support field may use cell-mean jumps
             // without applying those jumps as the base contact penalty.  Only
             // a strict local density extremum with the configured transverse
             // equal-state neighbours can add penalty.
-            // Mode 8 already pulled the contact/support components before
-            // changing only its shock component. Those ghost values remain valid.
-            if (limitedVRSettings.alphaMax == 0 ||
-                limitedVRSettings.gateMode != LimitedVRSettings::GateProductCubicWithExtremumCorrection)
-            {
-                branchAlpha.trans.startPersistentPull();
-                branchAlpha.trans.waitPersistentPull();
-            }
             const index nCell = mesh->NumCell();
             const index nCellProc = mesh->NumCellProc();
             std::vector<real> densityMean(static_cast<size_t>(nCellProc));
@@ -3012,11 +3041,10 @@ namespace DNDS::Euler
             std::vector<bool> hasLower(static_cast<size_t>(nCell), false);
             std::vector<bool> hasUpper(static_cast<size_t>(nCell), false);
             std::vector<int> equalNeighbourCount(static_cast<size_t>(nCell), 0);
-            std::vector<bool> boundaryAdjacent(static_cast<size_t>(nCell), false);
-            std::vector<real> o2BetaSaved(static_cast<size_t>(nCell));
+            auto &boundaryAdjacent = correctionBoundary;
+            contactAlphaBase.resize(static_cast<size_t>(nCell));
             for (index iCell = 0; iCell < nCell; ++iCell)
-                o2BetaSaved[static_cast<size_t>(iCell)] = o2Beta[iCell](0);
-            o2Beta.setConstant(0.0);
+                contactAlphaBase[static_cast<size_t>(iCell)] = branchAlpha[iCell](iContactAlpha);
             for (index iFace = 0; iFace < mesh->NumFaceProc(); ++iFace)
             {
                 auto f2c = mesh->face2cell[iFace];
@@ -3058,6 +3086,7 @@ namespace DNDS::Euler
             for (index iCell = 0; iCell < nCell; ++iCell)
             {
                 const size_t i = static_cast<size_t>(iCell);
+                branchAlpha[iCell](iContactAlpha) = 0;
                 if (boundaryAdjacent[i] ||
                     equalNeighbourCount[i] < limitedVRSettings.oscillationMinTransverseNeighbours)
                     continue;
@@ -3088,71 +3117,34 @@ namespace DNDS::Euler
                         supportFraction,
                         limitedVRSettings.contactSupportStart,
                         limitedVRSettings.contactSupportFull);
-                o2Beta[iCell](0) =
-                    limitedVRSettings.contactAlphaMax * std::max(response, retainedResponse);
-            }
-            std::vector<real> expanded(limitedVRSettings.contactExtremumHaloLayers > 0
-                                           ? static_cast<size_t>(nCell)
-                                           : 0);
-            for (int iLayer = 0; iLayer < limitedVRSettings.contactExtremumHaloLayers; ++iLayer)
-            {
-                // Pull before each synchronous pass; the final expanded ghost
-                // values are never consumed, so no trailing pull is needed.
-                o2Beta.trans.startPersistentPull();
-                o2Beta.trans.waitPersistentPull();
-                for (index iCell = 0; iCell < nCell; ++iCell)
-                    expanded[static_cast<size_t>(iCell)] = o2Beta[iCell](0);
-                for (index iFace = 0; iFace < mesh->NumFaceProc(); ++iFace)
-                {
-                    auto f2c = mesh->face2cell[iFace];
-                    if (f2c[1] == UnInitIndex)
-                        continue;
-                    for (int if2c = 0; if2c < 2; ++if2c)
-                    {
-                        index iCell = f2c[if2c];
-                        if (iCell >= nCell || boundaryAdjacent[static_cast<size_t>(iCell)])
-                            continue;
-                        expanded[static_cast<size_t>(iCell)] = std::max(
-                            expanded[static_cast<size_t>(iCell)], o2Beta[f2c[1 - if2c]](0));
-                    }
-                }
-                for (index iCell = 0; iCell < nCell; ++iCell)
-                    o2Beta[iCell](0) = expanded[static_cast<size_t>(iCell)];
-            }
-            for (index iCell = 0; iCell < nCell; ++iCell)
-            {
                 branchAlpha[iCell](iContactAlpha) =
-                    std::max(branchAlpha[iCell](iContactAlpha), o2Beta[iCell](0));
-                o2Beta[iCell](0) = o2BetaSaved[static_cast<size_t>(iCell)];
+                    limitedVRSettings.contactAlphaMax * std::max(response, retainedResponse);
             }
         }
 
-        std::vector<real> expandedAlpha;
-        if ((limitedVRSettings.weakAlphaMax > 0 && refreshWeakAlpha && limitedVRSettings.weakHaloLayers > 0) ||
-            limitedVRSettings.gateHaloLayers > 0)
-            expandedAlpha.resize(static_cast<size_t>(mesh->NumCell()));
-        for (int iLayer = 0; limitedVRSettings.weakAlphaMax > 0 && refreshWeakAlpha &&
-                             iLayer < limitedVRSettings.weakHaloLayers;
-             ++iLayer)
+        auto mergeBaseGate = [&](int component, const std::vector<real> &base)
         {
+            for (index iCell = 0; iCell < nOwned; ++iCell)
+                branchAlpha[iCell](component) = std::max(
+                    branchAlpha[iCell](component), base[static_cast<size_t>(iCell)]);
+        };
+        const int pressureLayers = correctPressure ? 1 : 0;
+        const int densityLayers = correctDensity ? limitedVRSettings.contactExtremumHaloLayers : 0;
+        if (correctDensity && densityLayers == 0)
+            mergeBaseGate(iContactAlpha, contactAlphaBase);
+        const int nExpansionRounds = std::max({pressureLayers, densityLayers, weakLayersRemaining});
+        for (int iLayer = 0; iLayer < nExpansionRounds; ++iLayer)
+        {
+            // Round 2 packs pressure/density seeds and the once-expanded weak
+            // field. For H2, round 3 finishes density; no trailing pull is needed.
             branchAlpha.trans.startPersistentPull();
             branchAlpha.trans.waitPersistentPull();
-            auto &expanded = expandedAlpha;
-            for (index iCell = 0; iCell < mesh->NumCell(); ++iCell)
-                expanded[static_cast<size_t>(iCell)] = branchAlpha[iCell](iWeakAlpha);
-            for (index iFace = 0; iFace < mesh->NumFaceProc(); ++iFace)
-            {
-                auto f2c = mesh->face2cell[iFace];
-                if (f2c[1] == UnInitIndex)
-                    continue;
-                real faceAlpha = std::max(branchAlpha[f2c[0]](iWeakAlpha), branchAlpha[f2c[1]](iWeakAlpha));
-                for (int if2c = 0; if2c < 2; ++if2c)
-                    if (f2c[if2c] < mesh->NumCell())
-                        expanded[static_cast<size_t>(f2c[if2c])] =
-                            std::max(expanded[static_cast<size_t>(f2c[if2c])], faceAlpha);
-            }
-            for (index iCell = 0; iCell < mesh->NumCell(); ++iCell)
-                branchAlpha[iCell](iWeakAlpha) = expanded[static_cast<size_t>(iCell)];
+            expandGates(iLayer < pressureLayers, iLayer < densityLayers,
+                        iLayer < weakLayersRemaining);
+            if (correctPressure && iLayer + 1 == pressureLayers)
+                mergeBaseGate(iShockAlpha, shockAlphaBase);
+            if (correctDensity && iLayer + 1 == densityLayers)
+                mergeBaseGate(iContactAlpha, contactAlphaBase);
         }
         if (limitedVRSettings.weakAlphaMax > 0 &&
             (!refreshWeakAlpha || limitedVRSettings.weakAlphaUpdateRelaxation < 1.0 ||
@@ -3171,6 +3163,9 @@ namespace DNDS::Euler
         // avoids lowering the local indicator thresholds into smooth wall
         // regions.  Pull before every layer so partition-boundary propagation
         // is identical to an unpartitioned traversal.
+        std::vector<real> expandedAlpha;
+        if (limitedVRSettings.gateHaloLayers > 0)
+            expandedAlpha.resize(static_cast<size_t>(mesh->NumCell()));
         for (int iLayer = 0; iLayer < limitedVRSettings.gateHaloLayers; ++iLayer)
         {
             branchAlpha.trans.startPersistentPull();

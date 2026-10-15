@@ -342,7 +342,7 @@ using LVRCellValues = std::vector<DNDS::real>;
 using LVRCells = std::map<LVRCellKey, LVRCellValues>;
 
 static LVRCells runLVRFixture(const std::string &cfgPath, const MPIInfo &mpi,
-                              const std::string &state, int referenceLimiter)
+                              const std::string &state, int referenceLimiter, int extraShockLayers)
 {
     EulerSolver<NS> solver(mpi);
     solver.ConfigureFromJson(cfgPath, true, "",
@@ -359,7 +359,7 @@ static LVRCells runLVRFixture(const std::string &cfgPath, const MPIInfo &mpi,
     CHECK(settings.contactExtremumHaloLayers == 2);
     CHECK(settings.alphaMax == 0.5);
     settings.o2ReferenceLimiter = referenceLimiter;
-    settings.gateHaloLayers = 2;
+    settings.gateHaloLayers = extraShockLayers;
     settings.weakAlphaMax = state == "shock" ? 0.5 : 0;
     using TU = EulerEvaluator<NS>::TU;
     for (DNDS::index i = 0; i < mesh->NumCell(); ++i)
@@ -417,7 +417,8 @@ static LVRCells runLVRFixture(const std::string &cfgPath, const MPIInfo &mpi,
         if (data.lvrDensityJump[i](0) < settings.contactDensityJumpStart && data.lvrBranchAlpha[i](1) > 0)
             totals[4] += 1;
         LVRCellValues values{data.lvrAlpha[i](0), data.lvrBranchAlpha[i](0),
-                             data.lvrBranchAlpha[i](1), data.lvrBranchAlpha[i](3)};
+                             data.lvrBranchAlpha[i](1), data.lvrBranchAlpha[i](2),
+                             data.lvrBranchAlpha[i](3), data.lvrO2Beta[i](0)};
         // Compare physical gradients rather than basis coefficients, whose
         // local basis orientation is an implementation detail.
         const Eigen::Matrix<DNDS::real, 2, 2> d1 =
@@ -519,22 +520,24 @@ TEST_CASE("LVR target and branch halos agree across 2-D MPI partitions")
     // The fixture also exercises CLI preset expansion and explicit overrides.
     for (const std::string state : {"uniform", "shock", "contact"})
         for (const int limiter : {LimitedVRSettings::O2ReferenceLimiterBarth, LimitedVRSettings::O2ReferenceLimiterWBAP})
-        {
-            CAPTURE(state);
-            CAPTURE(limiter);
-            // Identical per-cell expected output from an independently built,
-            // unpartitioned evaluator, not a rank-count-dependent aggregate norm.
-            auto serial = runLVRFixture(cfg, MPIInfo(MPI_COMM_SELF), state, limiter);
-            auto parallel = runLVRFixture(cfg, g_mpi, state, limiter);
-            for (const auto &[key, values] : parallel)
+            for (const int extraShockLayers : {0, 2})
             {
-                REQUIRE(serial.count(key) == 1);
-                const auto &expected = serial.at(key);
-                REQUIRE(values.size() == expected.size());
-                for (size_t i = 0; i < values.size(); ++i)
-                    CHECK(values[i] == doctest::Approx(expected[i]).epsilon(2e-10).scale(1));
+                CAPTURE(state);
+                CAPTURE(limiter);
+                CAPTURE(extraShockLayers);
+                // Exercise both the three-round H2 schedule and extra shock halos.
+                // Compare cellwise against an independently built serial evaluator.
+                auto serial = runLVRFixture(cfg, MPIInfo(MPI_COMM_SELF), state, limiter, extraShockLayers);
+                auto parallel = runLVRFixture(cfg, g_mpi, state, limiter, extraShockLayers);
+                for (const auto &[key, values] : parallel)
+                {
+                    REQUIRE(serial.count(key) == 1);
+                    const auto &expected = serial.at(key);
+                    REQUIRE(values.size() == expected.size());
+                    for (size_t i = 0; i < values.size(); ++i)
+                        CHECK(values[i] == doctest::Approx(expected[i]).epsilon(2e-10).scale(1));
+                }
             }
-        }
 }
 
 // ===================================================================
