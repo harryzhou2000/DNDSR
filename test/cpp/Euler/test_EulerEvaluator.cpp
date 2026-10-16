@@ -346,7 +346,8 @@ static LVRCells runLVRFixture(const std::string &cfgPath, const MPIInfo &mpi,
 {
     EulerSolver<NS> solver(mpi);
     solver.ConfigureFromJson(cfgPath, true, "",
-                             {"/limiterControl/limitedVR/alphaMax", "/limiterControl/limitedVR/preset"}, {"0.5", "v3"});
+                             {"/limiterControl/limitedVR/alphaMax", "/limiterControl/limitedVR/contactAlphaMax", "/limiterControl/limitedVR/preset"},
+                             {"0.5", "0.5", "v3"});
     solver.ReadMeshAndInitialize();
     REQUIRE(solver.hasLimitedVRStorage());
     auto vfv = solver.getVFV();

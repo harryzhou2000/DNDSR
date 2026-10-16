@@ -1063,31 +1063,31 @@
                     "properties": {
                         "pressureJumpStart": {
                             "type": "number",
-                            "default": 0.1,
+                            "default": 0.04,
                             "description": "jp0: start of cubic ramp for finalized-O2 face pressure jump 2*abs(pR-pL)/(pR+pL)",
                             "minimum": 0.0
                         },
                         "pressureJumpFull": {
                             "type": "number",
-                            "default": 0.22,
+                            "default": 0.16,
                             "description": "jp1: pressure-jump ramp reaches one here; must exceed pressureJumpStart",
                             "minimum": 0.0
                         },
                         "compressionStart": {
                             "type": "number",
-                            "default": 0.08,
+                            "default": 0.03,
                             "description": "jc0: start of cubic ramp for finalized-O2 normal compression max(unL-unR,0)/mean(cL,cR)",
                             "minimum": 0.0
                         },
                         "compressionFull": {
                             "type": "number",
-                            "default": 0.16,
+                            "default": 0.13,
                             "description": "jc1: compression ramp reaches one here; must exceed compressionStart",
                             "minimum": 0.0
                         },
                         "alphaMax": {
                             "type": "number",
-                            "default": 0.5,
+                            "default": 1.0,
                             "description": "Shock-branch penalty fraction cap in [0,1]: zero disables this branch; one fixes a saturated reconstruction row to the O2 target",
                             "minimum": 0.0,
                             "maximum": 1.0
@@ -1157,7 +1157,7 @@
                         },
                         "contactDensityJumpStart": {
                             "type": "number",
-                            "default": 0.2,
+                            "default": 0.5,
                             "description": "jrho0: cubic ramp start for density-only jump 2*abs(rhoR-rhoL)/(rhoR+rhoL), from O2 face states or means selected by contactUseCellMeanJump",
                             "minimum": 0.0
                         },
@@ -1169,7 +1169,7 @@
                         },
                         "contactAlphaMax": {
                             "type": "number",
-                            "default": 0.0,
+                            "default": 1.0,
                             "description": "Maximum O2 penalty fraction contributed by the density-only contact gate; zero disables it",
                             "minimum": 0.0,
                             "maximum": 1.0
@@ -1181,12 +1181,12 @@
                         },
                         "contactUseExtremumCorrection": {
                             "type": "boolean",
-                            "default": false,
+                            "default": true,
                             "description": "Add a contact-supported cell-mean density-extremum correction using the contact-specific extremum, support, retention, and halo controls"
                         },
                         "contactExtremumUseCellMeanSupport": {
                             "type": "boolean",
-                            "default": false,
+                            "default": true,
                             "description": "Evaluate density-extremum support from adjacent cell averages while retaining the selected reconstructed-face or cell-mean base contact gate"
                         },
                         "contactExtremumStart": {
@@ -1203,14 +1203,14 @@
                         },
                         "contactSupportStart": {
                             "type": "number",
-                            "default": 0.02,
+                            "default": 0.005,
                             "description": "Adjacent density-gate support fraction ramp start for the density-extremum correction",
                             "minimum": 0.0,
                             "maximum": 1.0
                         },
                         "contactSupportFull": {
                             "type": "number",
-                            "default": 0.15,
+                            "default": 0.06,
                             "description": "Adjacent density-gate support fraction ramp saturation for the density-extremum correction",
                             "minimum": 0.0,
                             "maximum": 1.0
@@ -1224,14 +1224,14 @@
                         },
                         "contactExtremumHaloLayers": {
                             "type": "integer",
-                            "default": 1,
+                            "default": 2,
                             "description": "Contact correction only: synchronous interior-face maximum passes of the correction seeds; base density gate remains local; H2 uses two",
                             "minimum": 0.0,
                             "maximum": 4.0
                         },
                         "gateMode": {
                             "type": "string",
-                            "default": "ProductCubic",
+                            "default": "PressureExtremum",
                             "description": "Shock gate: ProductCubic uses pressure/compression face ramps; PressureExtremum additionally suppresses supported cell-mean pressure extrema (v2/v3)",
                             "enum": [
                                 "ProductCubic",
@@ -1305,7 +1305,7 @@
                         },
                         "o2ReferenceLimiter": {
                             "type": "string",
-                            "default": "Barth",
+                            "default": "WBAP",
                             "description": "Limiter of the GG linear target: Barth or characteristic WBAP; the finalized target also drives ordinary face sensing",
                             "enum": [
                                 "Barth",

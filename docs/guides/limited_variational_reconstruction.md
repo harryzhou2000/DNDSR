@@ -1,7 +1,9 @@
 # Limited variational reconstruction controls
 
-LVR is selected by `limiterControl.useLimiter=true` and
-`limiterControl.limiterProcedure="LVR"`. It needs `vfvSettings.maxOrder>1`,
+LVR settings default to v3 (Average H2), with shock/contact caps `(1,1)`.
+The solver's default limiter remains `"3WBAP"`; explicit case selections
+continue to choose their stated methods. LVR uses `limiterControl.useLimiter=true`
+and `limiterControl.limiterProcedure="LVR"`. It needs `vfvSettings.maxOrder>1`,
 `implicitReconstructionControl.useExplicit=false`, `recLinearScheme=0`,
 `dampRecIncDTau=false`, and `limiterControl.preserveLimited=false`.
 The reconstruction iteration uses the existing block Jacobi or block GS/SOR
@@ -35,8 +37,9 @@ branch options remain booleans; halo depths and neighbour counts remain integers
 ## Start with a named preset
 
 An optional input-only `limiterControl.limitedVR.preset` selects a documented
-starting point. Existing numeric cases using the retained selections keep their
-behavior without it.
+starting point. Explicit named or retained numeric limiter selections still
+override the default. Omitted LVR fields now use v3 `(1,1)`; use a historical
+preset or explicit fields when reproducing older runs.
 
 ```json
 {
@@ -62,7 +65,7 @@ They also do not enable LVR automatically: the two parent switches above do.
 | --- | --- | --- |
 | `v1` | Barth GG O2; product gate, pressure `0.10/0.22`, compression `0.08/0.16` | `0.5, 0, 0` |
 | `v2` | WBAP GG O2; `PressureExtremum`, pressure `0.04/0.16`, compression `0.03/0.13` | `0.5, 0, 0` |
-| `v3` | v2 plus Average H2 contact correction: face density gate `0.5/0.8`, cell-mean density support `0.005/0.06`, two correction halo passes | `0.5, 0.5, 0` |
+| `v3` | v2 plus Average H2 contact correction: face density gate `0.5/0.8`, cell-mean density support `0.005/0.06`, two correction halo passes | `1, 1, 0` |
 
 A preset resets the **whole LVR section** to that preset, then applies explicit
 keys in the same input layer. Later patch files override earlier files.
@@ -88,8 +91,9 @@ For example, the reference and gate can also be selected directly:
 }
 ```
 
-This partial input overrides only those fields. It does not imply the rest of
-the v2/v3 preset; use `preset` when that is intended.
+This partial input overrides only those fields; the remaining controls use
+the v3 `(1,1)` defaults. Historical `v1`/`v2` presets restore their explicit
+shock-only caps and detectors rather than inheriting the new contact branch.
 
 ## Penalty and update
 
@@ -180,17 +184,17 @@ The weak branch does not necessarily contain the ordinary shock gate.
 
 ## Every LVR control
 
-Defaults below are the raw `LimitedVRSettings` defaults (`v1`). Preset changes
+Defaults below are the raw `LimitedVRSettings` defaults (v3 `(1,1)`). Preset changes
 are listed above; all ramp full thresholds must exceed their starts.
 
 | Control | Raw default | Meaning / active dependency |
 | --- | --- | --- |
-| `alphaMax` | `0.5` | Shock cap $\alpha_{s,\max}$, in `[0,1]`; zero disables shock penalty. |
-| `pressureJumpStart`, `pressureJumpFull` | `0.10`, `0.22` | `jp0`, `jp1`: pressure ramp start/full values. |
-| `compressionStart`, `compressionFull` | `0.08`, `0.16` | `jc0`, `jc1`: normal-compression ramp start/full values. |
-| `o2ReferenceLimiter` | `"Barth"` | `"Barth"` or `"WBAP"` (characteristic). Both build a GG linear target on the high-order mesh/basis. |
+| `alphaMax` | `1` | Shock cap $\alpha_{s,\max}$, in `[0,1]`; zero disables shock penalty. |
+| `pressureJumpStart`, `pressureJumpFull` | `0.04`, `0.16` | `jp0`, `jp1`: pressure ramp start/full values. |
+| `compressionStart`, `compressionFull` | `0.03`, `0.13` | `jc0`, `jc1`: normal-compression ramp start/full values. |
+| `o2ReferenceLimiter` | `"WBAP"` | `"Barth"` or `"WBAP"` (characteristic). Both build a GG linear target on the high-order mesh/basis. |
 | `o2ReferenceUsePP` | `true` | Compress O2 increment toward its cell mean if needed for positivity. |
-| `gateMode` | `"ProductCubic"` | `"ProductCubic"` or `"PressureExtremum"`; the latter adds supported pressure extrema and one correction expansion pass. |
+| `gateMode` | `"PressureExtremum"` | `"ProductCubic"` or `"PressureExtremum"`; the latter adds supported pressure extrema and one correction expansion pass. |
 | `gateHaloLayers` | `0` | Additional shock-branch face-neighbour maximum passes, after the pressure correction; integer `0..4`. |
 | `gateHaloSaturatedOnly` | `false` | In these extra passes, propagate only cells at the shock cap; unsaturated local values remain. |
 | `alphaUpdateRelaxation` | `1` | Shock/contact update $\theta\alpha_{\mathrm{fresh}}+(1-\theta)\alpha_{\mathrm{old}}$, $0<\theta\le1$, each RHS evaluation. |
@@ -199,15 +203,15 @@ are listed above; all ramp full thresholds must exceed their starts.
 | `oscillationRetention` | `0.95` | Retained fraction $r$ of old shock alpha while adjacent support exists, per RHS evaluation. |
 | `oscillationTransverseTolerance` | `1e-8` | Relative equality tolerance for pressure **and** density extrema; scale is the larger absolute neighbour value. |
 | `oscillationMinTransverseNeighbours` | `2` | Minimum number of nearly equal face neighbours, integer `1..4`; a neighbour count, not a halo depth. |
-| `contactAlphaMax` | `0` | Independent density/contact cap $\alpha_{\rho,\max}$; zero disables this branch. |
-| `contactDensityJumpStart`, `contactDensityJumpFull` | `0.20`, `0.80` | `jrho0`, `jrho1`: density-jump ramp start/full values. |
+| `contactAlphaMax` | `1` | Independent density/contact cap $\alpha_{\rho,\max}$; zero disables this branch. |
+| `contactDensityJumpStart`, `contactDensityJumpFull` | `0.50`, `0.80` | `jrho0`, `jrho1`: density-jump ramp start/full values. |
 | `contactUseCellMeanJump` | `false` | Use adjacent mean densities for the base contact gate; otherwise use finalized O2 face densities. |
-| `contactUseExtremumCorrection` | `false` | Add supported mean-density extrema and retention to the contact gate. |
-| `contactExtremumUseCellMeanSupport` | `false` | Use mean-density jump for support only, independently of the base contact gate choice. |
+| `contactUseExtremumCorrection` | `true` | Add supported mean-density extrema and retention to the contact gate. |
+| `contactExtremumUseCellMeanSupport` | `true` | Use mean-density jump for support only, independently of the base contact gate choice. |
 | `contactExtremumStart`, `contactExtremumFull` | `0.001`, `0.008` | Normalized density-extremum ramp, active only with contact correction. |
-| `contactSupportStart`, `contactSupportFull` | `0.02`, `0.15` | Adjacent contact-support fraction ramp, active only with contact correction. |
+| `contactSupportStart`, `contactSupportFull` | `0.005`, `0.06` | Adjacent contact-support fraction ramp, active only with contact correction. |
 | `contactExtremumRetention` | `0.95` | Fraction of old contact alpha retained while adjacent support exists, per RHS evaluation. |
-| `contactExtremumHaloLayers` | `1` | Synchronous face-neighbour maximum passes of the **density correction**, integer `0..4`; v3 uses `2`. |
+| `contactExtremumHaloLayers` | `2` | Synchronous face-neighbour maximum passes of the **density correction**, integer `0..4`; v3 uses `2`. |
 | `weakAlphaMax` | `0` | Weak-branch cap $\alpha_{w,\max}$; zero skips its gradient communication, pressure-gradient work and halos. |
 | `weakMismatchStart`, `weakMismatchFull` | `0.05`, `0.20` | Mismatch $M$ ramp $m_0,m_1$. |
 | `weakAcousticStart`, `weakAcousticFull` | `0.10`, `0.50` | Acoustic compression $K$ ramp $k_0,k_1$. |

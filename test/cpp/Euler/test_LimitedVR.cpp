@@ -191,22 +191,22 @@ TEST_CASE("Limited variational reconstruction combines shock and contact gates b
 TEST_CASE("Limited variational reconstruction settings parse and validate")
 {
     nlohmann::ordered_json config = LimitedVRSettings{};
-    CHECK(config["o2ReferenceLimiter"] == "Barth");
-    CHECK(config["gateMode"] == "ProductCubic");
+    CHECK(config["o2ReferenceLimiter"] == "WBAP");
+    CHECK(config["gateMode"] == "PressureExtremum");
     CHECK(config["gateHaloLayers"] == 0);
     CHECK(config["gateHaloSaturatedOnly"] == false);
-    CHECK(config["contactDensityJumpStart"] == doctest::Approx(0.2));
+    CHECK(config["contactDensityJumpStart"] == doctest::Approx(0.5));
     CHECK(config["contactDensityJumpFull"] == doctest::Approx(0.8));
-    CHECK(config["contactAlphaMax"] == 0.0);
+    CHECK(config["contactAlphaMax"] == 1.0);
     CHECK(config["contactUseCellMeanJump"] == false);
-    CHECK(config["contactUseExtremumCorrection"] == false);
-    CHECK(config["contactExtremumUseCellMeanSupport"] == false);
+    CHECK(config["contactUseExtremumCorrection"] == true);
+    CHECK(config["contactExtremumUseCellMeanSupport"] == true);
     CHECK(config["contactExtremumStart"] == doctest::Approx(0.001));
     CHECK(config["contactExtremumFull"] == doctest::Approx(0.008));
-    CHECK(config["contactSupportStart"] == doctest::Approx(0.02));
-    CHECK(config["contactSupportFull"] == doctest::Approx(0.15));
+    CHECK(config["contactSupportStart"] == doctest::Approx(0.005));
+    CHECK(config["contactSupportFull"] == doctest::Approx(0.06));
     CHECK(config["contactExtremumRetention"] == doctest::Approx(0.95));
-    CHECK(config["contactExtremumHaloLayers"] == 1);
+    CHECK(config["contactExtremumHaloLayers"] == 2);
     CHECK(config["alphaUpdateRelaxation"] == 1.0);
     CHECK(config["weakAlphaUpdateRelaxation"] == 1.0);
     CHECK(config["weakAlphaDecayRetention"] == 0.0);
@@ -224,7 +224,7 @@ TEST_CASE("Limited variational reconstruction settings parse and validate")
     config["pressureJumpFull"] = 0.50;
     auto settings = config.get<LimitedVRSettings>();
     CHECK(settings.alphaMax == 1.0);
-    CHECK(settings.o2ReferenceLimiter == O2ReferenceLimiter::Barth);
+    CHECK(settings.o2ReferenceLimiter == O2ReferenceLimiter::WBAP);
     CHECK(settings.o2ReferenceUsePP);
     CHECK(settings.validate().empty());
 
@@ -288,6 +288,18 @@ TEST_CASE("Limited variational reconstruction settings parse and validate")
 
 TEST_CASE("LVR input presets expand before explicit overrides and preserve legacy input")
 {
+    for (const std::string name : {"v1", "v2", "v3"})
+    {
+        nlohmann::ordered_json preset = {{"limiterControl", {{"limitedVR", {{"preset", name}}}}}};
+        ExpandLimitedVRPreset(preset);
+        const auto selected = preset["limiterControl"]["limitedVR"].get<LimitedVRSettings>();
+        CHECK(selected.alphaMax == (name == "v3" ? 1.0 : 0.5));
+        CHECK(selected.contactAlphaMax == (name == "v3" ? 1.0 : 0.0));
+        CHECK(selected.contactUseExtremumCorrection == (name == "v3"));
+        CHECK(selected.o2ReferenceLimiter == (name == "v1" ? O2ReferenceLimiter::Barth : O2ReferenceLimiter::WBAP));
+        CHECK(selected.gateMode == (name == "v1" ? LimitedVRGateMode::ProductCubic : LimitedVRGateMode::PressureExtremum));
+        CHECK(selected.validate().empty());
+    }
     nlohmann::ordered_json layer = {{"limiterControl", {{"limitedVR", {{"preset", "v3"}, {"alphaMax", 1.0}, {"contactAlphaMax", 1.0}}}}}};
     ExpandLimitedVRPreset(layer);
     const auto &section = layer["limiterControl"]["limitedVR"];
