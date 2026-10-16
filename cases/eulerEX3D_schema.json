@@ -1028,11 +1028,14 @@
                     "description": "Smooth indicator procedure index"
                 },
                 "limiterProcedure": {
-                    "type": "integer",
-                    "default": 0,
-                    "description": "Limiter variant: 0=WBAP (V2), 1=CWBAP (V3), 2=limited variational reconstruction",
-                    "minimum": 0.0,
-                    "maximum": 2.0
+                    "type": "string",
+                    "default": "3WBAP",
+                    "description": "Reconstruction treatment: 3WBAP or CWBAP postprocessing, or LVR penalty toward a limited GG O2 target",
+                    "enum": [
+                        "3WBAP",
+                        "CWBAP",
+                        "LVR"
+                    ]
                 },
                 "nPartialLimiterStart": {
                     "type": "integer",
@@ -1061,33 +1064,258 @@
                         "pressureJumpStart": {
                             "type": "number",
                             "default": 0.1,
-                            "description": "Pressure-jump ramp start",
+                            "description": "jp0: start of cubic ramp for finalized-O2 face pressure jump 2*abs(pR-pL)/(pR+pL)",
                             "minimum": 0.0
                         },
                         "pressureJumpFull": {
                             "type": "number",
                             "default": 0.22,
-                            "description": "Pressure-jump ramp saturation",
+                            "description": "jp1: pressure-jump ramp reaches one here; must exceed pressureJumpStart",
                             "minimum": 0.0
                         },
                         "compressionStart": {
                             "type": "number",
                             "default": 0.08,
-                            "description": "Normal-compression ramp start",
+                            "description": "jc0: start of cubic ramp for finalized-O2 normal compression max(unL-unR,0)/mean(cL,cR)",
                             "minimum": 0.0
                         },
                         "compressionFull": {
                             "type": "number",
                             "default": 0.16,
-                            "description": "Normal-compression ramp saturation",
+                            "description": "jc1: compression ramp reaches one here; must exceed compressionStart",
                             "minimum": 0.0
                         },
                         "alphaMax": {
                             "type": "number",
                             "default": 0.5,
-                            "description": "Maximum O2 penalty fraction",
+                            "description": "Shock-branch penalty fraction cap in [0,1]: zero disables this branch; one fixes a saturated reconstruction row to the O2 target",
                             "minimum": 0.0,
                             "maximum": 1.0
+                        },
+                        "weakAlphaMax": {
+                            "type": "number",
+                            "default": 0.0,
+                            "description": "Maximum additional pressure-gradient-consistency weak-shock penalty fraction; zero disables the branch",
+                            "minimum": 0.0,
+                            "maximum": 1.0
+                        },
+                        "weakMismatchStart": {
+                            "type": "number",
+                            "default": 0.05,
+                            "description": "Weak branch: ramp start for abs(dp-dL+dR)/max(abs(dp)+abs(dL)+abs(dR),floor); dp is the mean pressure difference, dL/R the unrestricted GG pressure increments from each centroid to the shared face",
+                            "minimum": 0.0
+                        },
+                        "weakMismatchFull": {
+                            "type": "number",
+                            "default": 0.2,
+                            "description": "Relative pressure-gradient disagreement ramp saturation",
+                            "minimum": 0.0
+                        },
+                        "weakAcousticStart": {
+                            "type": "number",
+                            "default": 0.1,
+                            "description": "Compressive mean-velocity jump times acoustic impedance divided by pressure jump: ramp start",
+                            "minimum": 0.0
+                        },
+                        "weakAcousticFull": {
+                            "type": "number",
+                            "default": 0.5,
+                            "description": "Compressive acoustic consistency ramp saturation",
+                            "minimum": 0.0
+                        },
+                        "weakRelativeFloor": {
+                            "type": "number",
+                            "default": 1e-10,
+                            "description": "Weak branch: positive pressure-noise floor multiplier times max(abs(pL),abs(pR)); jumps at or below this floor give zero response",
+                            "minimum": 0.0
+                        },
+                        "weakHaloLayers": {
+                            "type": "integer",
+                            "default": 2,
+                            "description": "Face-neighbour expansion layers for the additional weak branch only",
+                            "minimum": 0.0,
+                            "maximum": 4.0
+                        },
+                        "weakAlphaUpdateRelaxation": {
+                            "type": "number",
+                            "default": 1.0,
+                            "description": "Temporal relaxation of the weak-shock alpha on later inner evaluations only; each new stage starts with a fresh gate",
+                            "minimum": 0.0,
+                            "maximum": 1.0
+                        },
+                        "weakAlphaDecayRetention": {
+                            "type": "number",
+                            "default": 0.0,
+                            "description": "Fraction of the previous weak-alpha excess retained when the freshly evaluated weak response decreases; rises remain immediate and zero disables one-sided decay",
+                            "minimum": 0.0,
+                            "maximum": 1.0
+                        },
+                        "weakFreezeWithinImplicitStage": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "Evaluate a fresh weak-shock alpha at each stage start, including one-shot explicit-first stages, and hold it fixed only for later inner evaluations of that stage"
+                        },
+                        "contactDensityJumpStart": {
+                            "type": "number",
+                            "default": 0.2,
+                            "description": "jrho0: cubic ramp start for density-only jump 2*abs(rhoR-rhoL)/(rhoR+rhoL), from O2 face states or means selected by contactUseCellMeanJump",
+                            "minimum": 0.0
+                        },
+                        "contactDensityJumpFull": {
+                            "type": "number",
+                            "default": 0.8,
+                            "description": "jrho1: density-jump ramp reaches one here; must exceed contactDensityJumpStart",
+                            "minimum": 0.0
+                        },
+                        "contactAlphaMax": {
+                            "type": "number",
+                            "default": 0.0,
+                            "description": "Maximum O2 penalty fraction contributed by the density-only contact gate; zero disables it",
+                            "minimum": 0.0,
+                            "maximum": 1.0
+                        },
+                        "contactUseCellMeanJump": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "Evaluate the contact density jump from adjacent cell averages instead of limited-O2 reconstructed facial states"
+                        },
+                        "contactUseExtremumCorrection": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "Add a contact-supported cell-mean density-extremum correction using the contact-specific extremum, support, retention, and halo controls"
+                        },
+                        "contactExtremumUseCellMeanSupport": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "Evaluate density-extremum support from adjacent cell averages while retaining the selected reconstructed-face or cell-mean base contact gate"
+                        },
+                        "contactExtremumStart": {
+                            "type": "number",
+                            "default": 0.001,
+                            "description": "Normalized cell-mean density-extremum correction ramp start",
+                            "minimum": 0.0
+                        },
+                        "contactExtremumFull": {
+                            "type": "number",
+                            "default": 0.008,
+                            "description": "Normalized cell-mean density-extremum correction ramp saturation",
+                            "minimum": 0.0
+                        },
+                        "contactSupportStart": {
+                            "type": "number",
+                            "default": 0.02,
+                            "description": "Adjacent density-gate support fraction ramp start for the density-extremum correction",
+                            "minimum": 0.0,
+                            "maximum": 1.0
+                        },
+                        "contactSupportFull": {
+                            "type": "number",
+                            "default": 0.15,
+                            "description": "Adjacent density-gate support fraction ramp saturation for the density-extremum correction",
+                            "minimum": 0.0,
+                            "maximum": 1.0
+                        },
+                        "contactExtremumRetention": {
+                            "type": "number",
+                            "default": 0.95,
+                            "description": "Contact correction only: fraction of previous contact alpha retained under adjacent density support, per RHS evaluation",
+                            "minimum": 0.0,
+                            "maximum": 1.0
+                        },
+                        "contactExtremumHaloLayers": {
+                            "type": "integer",
+                            "default": 1,
+                            "description": "Contact correction only: synchronous interior-face maximum passes of the correction seeds; base density gate remains local; H2 uses two",
+                            "minimum": 0.0,
+                            "maximum": 4.0
+                        },
+                        "gateMode": {
+                            "type": "string",
+                            "default": "ProductCubic",
+                            "description": "Shock gate: ProductCubic uses pressure/compression face ramps; PressureExtremum additionally suppresses supported cell-mean pressure extrema (v2/v3)",
+                            "enum": [
+                                "ProductCubic",
+                                "PressureExtremum"
+                            ]
+                        },
+                        "gateHaloLayers": {
+                            "type": "integer",
+                            "default": 0,
+                            "description": "Extra synchronous interior-face maximum passes on the completed shock branch, after PressureExtremum's built-in one-pass correction; independent of contact and weak halos",
+                            "minimum": 0.0,
+                            "maximum": 4.0
+                        },
+                        "gateHaloSaturatedOnly": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "Extra shock halos only: propagate alphaMax-saturated cells; preserve unsaturated local shock responses"
+                        },
+                        "alphaUpdateRelaxation": {
+                            "type": "number",
+                            "default": 1.0,
+                            "description": "Shock/contact per-RHS update theta*fresh+(1-theta)*old, theta in (0,1]; independent of weak-branch temporal controls",
+                            "minimum": 0.0,
+                            "maximum": 1.0
+                        },
+                        "oscillationExtremumStart": {
+                            "type": "number",
+                            "default": 0.001,
+                            "description": "PressureExtremum: normalized cell-mean pressure excess ramp start",
+                            "minimum": 0.0
+                        },
+                        "oscillationExtremumFull": {
+                            "type": "number",
+                            "default": 0.008,
+                            "description": "PressureExtremum: normalized cell-mean pressure excess ramp saturation",
+                            "minimum": 0.0
+                        },
+                        "oscillationSupportStart": {
+                            "type": "number",
+                            "default": 0.02,
+                            "description": "PressureExtremum: adjacent base-shock alpha/alphaMax support ramp start",
+                            "minimum": 0.0,
+                            "maximum": 1.0
+                        },
+                        "oscillationSupportFull": {
+                            "type": "number",
+                            "default": 0.15,
+                            "description": "PressureExtremum: adjacent base-shock alpha/alphaMax support ramp saturation",
+                            "minimum": 0.0,
+                            "maximum": 1.0
+                        },
+                        "oscillationRetention": {
+                            "type": "number",
+                            "default": 0.95,
+                            "description": "PressureExtremum: fraction of previous shock alpha retained under adjacent support, per RHS evaluation",
+                            "minimum": 0.0,
+                            "maximum": 1.0
+                        },
+                        "oscillationTransverseTolerance": {
+                            "type": "number",
+                            "default": 1e-08,
+                            "description": "Pressure/density corrections: neighbours are nearly equal if their mean-field difference is at most this times the larger absolute value",
+                            "minimum": 0.0
+                        },
+                        "oscillationMinTransverseNeighbours": {
+                            "type": "integer",
+                            "default": 2,
+                            "description": "Pressure/density corrections: required count of nearly equal interior-face neighbours (not halo depth); physical-boundary-adjacent cells are excluded",
+                            "minimum": 1.0,
+                            "maximum": 4.0
+                        },
+                        "o2ReferenceLimiter": {
+                            "type": "string",
+                            "default": "Barth",
+                            "description": "Limiter of the GG linear target: Barth or characteristic WBAP; the finalized target also drives ordinary face sensing",
+                            "enum": [
+                                "Barth",
+                                "WBAP"
+                            ]
+                        },
+                        "o2ReferenceUsePP": {
+                            "type": "boolean",
+                            "default": true,
+                            "description": "Compress the limited GG O2 increment toward its cell mean for positive density and sensible internal energy at face and required volume quadrature points; applied before face sensing"
                         }
                     }
                 }
@@ -2570,12 +2798,12 @@
                         "dirWeightScheme": {
                             "type": "string",
                             "default": "Factorial",
-                            "description": "Directional weight scheme"
+                            "description": "Derivative weight scheme (weighting of derivative terms in the reconstruction functional)"
                         },
                         "dirWeightCombPowV": {
                             "type": "integer",
                             "default": 1,
-                            "description": "Directional weight combination power"
+                            "description": "Derivative weight combination power"
                         },
                         "manualDirWeights": {
                             "type": "array",
@@ -2586,7 +2814,7 @@
                                 0.16666666666666666,
                                 0.041666666666666664
                             ],
-                            "description": "Manual directional weights vector"
+                            "description": "Manual derivative weights vector"
                         },
                         "geomWeightScheme": {
                             "type": "string",

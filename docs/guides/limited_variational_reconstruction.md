@@ -70,8 +70,9 @@ A CLI preset is expanded before all ordinary CLI pointer overrides, so those
 explicit CLI values win regardless of their position. For example,
 `-k /limiterControl/limitedVR/preset -v v3` can replace a long LVR parameter
 list. Saved/resolved configuration contains explicit settings with named
-selectors and omits `preset`. Enum metadata advertises strings; checked-in
-generated JSON schemas remain deferred and have not been regenerated.
+selectors and omits `preset`. The generated JSON schemas advertise the named
+string selections and all 40 LVR controls for every Euler solver variant.
+The input-only preset is expanded before ordinary runtime field parsing.
 
 For example, the reference and gate can also be selected directly:
 

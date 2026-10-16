@@ -437,6 +437,7 @@ set(EULER_TEST_TARGETS
     euler_test_gas_thermo
     euler_test_riemann_solvers
     euler_test_rans
+    euler_test_limited_vr
     euler_test_evaluator_pipeline
 )
 if(DNDS_USE_CANTERA)
