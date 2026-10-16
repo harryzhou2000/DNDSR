@@ -342,7 +342,7 @@ using LVRCellValues = std::vector<DNDS::real>;
 using LVRCells = std::map<LVRCellKey, LVRCellValues>;
 
 static LVRCells runLVRFixture(const std::string &cfgPath, const MPIInfo &mpi,
-                              const std::string &state, int referenceLimiter, int extraShockLayers)
+                              const std::string &state, O2ReferenceLimiter referenceLimiter, int extraShockLayers)
 {
     EulerSolver<NS> solver(mpi);
     solver.ConfigureFromJson(cfgPath, true, "",
@@ -355,7 +355,7 @@ static LVRCells runLVRFixture(const std::string &cfgPath, const MPIInfo &mpi,
     auto &target = solver.getURecO2();
     auto data = solver.getOutputOverlapDataRefs();
     auto settings = solver.getConfiguration().limiterControl.limitedVR;
-    CHECK(settings.gateMode == LimitedVRSettings::GateProductCubicWithExtremumCorrection);
+    CHECK(settings.gateMode == LimitedVRGateMode::PressureExtremum);
     CHECK(settings.contactExtremumHaloLayers == 2);
     CHECK(settings.alphaMax == 0.5);
     settings.o2ReferenceLimiter = referenceLimiter;
@@ -443,7 +443,7 @@ static LVRCells runLVRFixture(const std::string &cfgPath, const MPIInfo &mpi,
         CHECK(globalTotals[4] > 0);
     }
 
-    if (state == "uniform" && referenceLimiter == LimitedVRSettings::O2ReferenceLimiterBarth)
+    if (state == "uniform" && referenceLimiter == O2ReferenceLimiter::Barth)
     {
         // Force a negative O2 face state, then exercise the mean-based PP path.
         for (DNDS::index i = 0; i < mesh->NumCell(); ++i)
@@ -514,16 +514,16 @@ TEST_CASE("LVR target and branch halos agree across 2-D MPI partitions")
     const std::string root = projectRoot();
     const auto cfg = writeTempConfig<NS>(root + "/cases/euler/euler_config_IV.json", "lvr_2d",
                                          {{"vfvSettings", {{"maxOrder", 3}, {"intOrder", 5}, {"subs2ndOrder", 1}, {"cacheDiffBase", true}}},
-                                          {"limiterControl", {{"useLimiter", true}, {"limiterProcedure", 2}}},
+                                          {"limiterControl", {{"useLimiter", true}, {"limiterProcedure", "LVR"}}},
                                           {"implicitReconstructionControl", {{"recLinearScheme", 0}}},
                                           {"dataIOControl", {{"meshDirectBisect", 0}, {"meshFile", root + "/data/mesh/IV10_10.cgns"}}}});
     // The fixture also exercises CLI preset expansion and explicit overrides.
     for (const std::string state : {"uniform", "shock", "contact"})
-        for (const int limiter : {LimitedVRSettings::O2ReferenceLimiterBarth, LimitedVRSettings::O2ReferenceLimiterWBAP})
+        for (const auto limiter : {O2ReferenceLimiter::Barth, O2ReferenceLimiter::WBAP})
             for (const int extraShockLayers : {0, 2})
             {
                 CAPTURE(state);
-                CAPTURE(limiter);
+                CAPTURE(nlohmann::ordered_json(limiter).dump());
                 CAPTURE(extraShockLayers);
                 // Exercise both the three-round H2 schedule and extra shock halos.
                 // Compare cellwise against an independently built serial evaluator.

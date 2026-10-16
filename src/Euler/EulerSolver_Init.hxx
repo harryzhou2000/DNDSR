@@ -38,7 +38,7 @@ namespace DNDS::Euler
     void EulerSolver<model>::ReadMeshAndInitialize()
     {
         DNDS_MPI_InsertCheck(mpi, "ReadMeshAndInitialize 1 nvars " + std::to_string(nVars));
-        if (config.limiterControl.useLimiter && config.limiterControl.limiterProcedure == 2)
+        if (config.limiterControl.useLimiter && config.limiterControl.limiterProcedure == ReconstructionLimiter::LVR)
         {
             DNDS_check_throw_info(!config.implicitReconstructionControl.useExplicit,
                                   "limited variational reconstruction requires implicit reconstruction");
@@ -443,7 +443,7 @@ namespace DNDS::Euler
         vfv->BuildURec(uRecOld, nVars);
         vfv->BuildScalar(ifUseLimiter);
         // No target buffers or diagnostic MPI layouts for conventional limiting.
-        if (config.limiterControl.useLimiter && config.limiterControl.limiterProcedure == 2)
+        if (config.limiterControl.useLimiter && config.limiterControl.limiterProcedure == ReconstructionLimiter::LVR)
         {
             vfv->BuildURec(uRecO2, nVars);
             vfv->BuildUDof(lvrAlpha_, 1);

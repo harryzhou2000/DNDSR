@@ -268,7 +268,7 @@ namespace DNDS::Euler
             }
 
             const bool useLimitedVR = config.limiterControl.useLimiter &&
-                                      config.limiterControl.limiterProcedure == 2;
+                                      config.limiterControl.limiterProcedure == ReconstructionLimiter::LVR;
             if (useLimitedVR)
             {
                 // ImplicitSDIRK4DualTimeStep uses INT_MAX for an explicit-first stage.
@@ -609,7 +609,7 @@ namespace DNDS::Euler
                 {
                     DNDS_assert(false);
                 }
-                if (config.limiterControl.limiterProcedure == 1)
+                if (config.limiterControl.limiterProcedure == ReconstructionLimiter::CWBAP)
                     vfv->template DoLimiterWBAP_C<nVarsFixed>(
                         (cx),
                         (uRecC),
@@ -618,7 +618,7 @@ namespace DNDS::Euler
                         ifUseLimiter,
                         iter < config.limiterControl.nPartialLimiterStartLocal && step < config.limiterControl.nPartialLimiterStart,
                         fML, fMR, true);
-                else if (config.limiterControl.limiterProcedure == 0)
+                else if (config.limiterControl.limiterProcedure == ReconstructionLimiter::WBAP3)
                     vfv->template DoLimiterWBAP_3<nVarsFixed>(
                         (cx),
                         (uRecC),

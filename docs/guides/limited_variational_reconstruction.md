@@ -1,23 +1,48 @@
 # Limited variational reconstruction controls
 
 LVR is selected by `limiterControl.useLimiter=true` and
-`limiterControl.limiterProcedure=2`. It needs `vfvSettings.maxOrder>1`,
+`limiterControl.limiterProcedure="LVR"`. It needs `vfvSettings.maxOrder>1`,
 `implicitReconstructionControl.useExplicit=false`, `recLinearScheme=0`,
 `dampRecIncDTau=false`, and `limiterControl.preserveLimited=false`.
 The reconstruction iteration uses the existing block Jacobi or block GS/SOR
 choice (`vfvSettings.SORInstead`). These are reconstruction iterations, not
 restrictions on the physical time integrator.
 
+## Named selections
+
+Selectors use scoped C++ enums and case-sensitive JSON strings. Saved/resolved
+configuration always writes names. Exact legacy integer inputs are accepted
+only for the retained choices below; fractional numbers, booleans, null and
+unknown names are rejected.
+
+| JSON field | Named values | Legacy integer aliases | C++ type |
+| --- | --- | --- | --- |
+| `limiterControl.limiterProcedure` | `"3WBAP"`, `"CWBAP"`, `"LVR"` | `0`, `1`, `2` respectively | `ReconstructionLimiter` |
+| `limitedVR.o2ReferenceLimiter` | `"Barth"`, `"WBAP"` | `0`, `1` respectively | `O2ReferenceLimiter` |
+| `limitedVR.gateMode` | `"ProductCubic"`, `"PressureExtremum"` | `0`, `8` respectively | `LimitedVRGateMode` |
+
+`ProductCubic` is retained for the original v1 comparisons. `PressureExtremum`
+is the supported pressure-extremum correction used by v2 and v3, previously
+called mode 8. Both share the same local pressure/compression product gate.
+Modes 1–7 were unsuccessful union, rational-tail or neighbour-envelope
+experiments. Their implementation and helper functions have been removed;
+input selecting them now reports an error. Reproduce those historical runs
+with their archived source revision, rather than silently substituting a gate.
+
+The input-only `preset` already uses names (`"v1"`, `"v2"`, `"v3"`). Boolean
+branch options remain booleans; halo depths and neighbour counts remain integers.
+
 ## Start with a named preset
 
 An optional input-only `limiterControl.limitedVR.preset` selects a documented
-starting point. Existing numeric case files keep their behavior without it.
+starting point. Existing numeric cases using the retained selections keep their
+behavior without it.
 
 ```json
 {
   "limiterControl": {
     "useLimiter": true,
-    "limiterProcedure": 2,
+    "limiterProcedure": "LVR",
     "limitedVR": {
       "preset": "v3",
       "alphaMax": 1.0,
@@ -36,7 +61,7 @@ They also do not enable LVR automatically: the two parent switches above do.
 | Preset | Reference and gate | Default branch caps: shock, contact, weak |
 | --- | --- | --- |
 | `v1` | Barth GG O2; product gate, pressure `0.10/0.22`, compression `0.08/0.16` | `0.5, 0, 0` |
-| `v2` | WBAP GG O2; product plus supported pressure-extremum correction (mode 8), pressure `0.04/0.16`, compression `0.03/0.13` | `0.5, 0, 0` |
+| `v2` | WBAP GG O2; `PressureExtremum`, pressure `0.04/0.16`, compression `0.03/0.13` | `0.5, 0, 0` |
 | `v3` | v2 plus Average H2 contact correction: face density gate `0.5/0.8`, cell-mean density support `0.005/0.06`, two correction halo passes | `0.5, 0.5, 0` |
 
 A preset resets the **whole LVR section** to that preset, then applies explicit
@@ -44,8 +69,26 @@ keys in the same input layer. Later patch files override earlier files.
 A CLI preset is expanded before all ordinary CLI pointer overrides, so those
 explicit CLI values win regardless of their position. For example,
 `-k /limiterControl/limitedVR/preset -v v3` can replace a long LVR parameter
-list. Saved/resolved configuration contains numeric settings and omits `preset`.
-Generated JSON schemas are deliberately deferred and do not yet advertise it.
+list. Saved/resolved configuration contains explicit settings with named
+selectors and omits `preset`. Enum metadata advertises strings; checked-in
+generated JSON schemas remain deferred and have not been regenerated.
+
+For example, the reference and gate can also be selected directly:
+
+```json
+{
+  "limiterControl": {
+    "limiterProcedure": "LVR",
+    "limitedVR": {
+      "o2ReferenceLimiter": "WBAP",
+      "gateMode": "PressureExtremum"
+    }
+  }
+}
+```
+
+This partial input overrides only those fields. It does not imply the rest of
+the v2/v3 preset; use `preset` when that is intended.
 
 ## Penalty and update
 
@@ -97,7 +140,7 @@ pressure and velocity. Each cell takes the maximum over its interior faces;
 final $\alpha_i=\max(\alpha_{s,i},\alpha_{\rho,i},\alpha_{w,i})$.
 Physical boundary faces are excluded from the detector's neighbour operations.
 
-Mode 8 additionally detects supported strict extrema in **cell-mean pressure**.
+`PressureExtremum` additionally detects supported strict extrema in **cell-mean pressure**.
 For a strict maximum, its excess $E$ is the difference from the nearest lower
 unequal face neighbour, divided by the larger absolute value of the two;
 reverse the difference for a minimum. It requires at least the configured number
@@ -105,7 +148,10 @@ of nearly equal face neighbours and excludes physical-boundary-adjacent cells.
 Let $s$ be the maximum neighbouring base shock fraction divided by its cap.
 The correction seed is the branch cap times
 $\max[S(E;e_0,e_1)S(s;s_0,s_1),\ r\alpha_{\mathrm{old}}S(s;s_0,s_1)/\alpha_{\max}]$.
-Mode 8 propagates this correction once to immediate face neighbours. v3 applies
+Here $e_0,e_1$ are `oscillationExtremumStart/Full`, $s_0,s_1$ are
+`oscillationSupportStart/Full`, $r$ is `oscillationRetention`, and
+$\alpha_{\mathrm{old}}$ is the previous shock-branch fraction in this cell.
+`PressureExtremum` propagates this correction once to immediate face neighbours. v3 applies
 the same construction to density, with independently selected mean-density
 support and `contactExtremumHaloLayers` maximum passes (H2 means two).
 These corrections are supported extremum detectors, not a guarantee that
@@ -131,7 +177,7 @@ A centered uniform-strip GG stencil gives zero mismatch for degree at most two,
 but not generally for cubic fields or distorted multidimensional stencils.
 The weak branch does not necessarily contain the ordinary shock gate.
 
-## Every numeric control
+## Every LVR control
 
 Defaults below are the raw `LimitedVRSettings` defaults (`v1`). Preset changes
 are listed above; all ramp full thresholds must exceed their starts.
@@ -141,14 +187,14 @@ are listed above; all ramp full thresholds must exceed their starts.
 | `alphaMax` | `0.5` | Shock cap $\alpha_{s,\max}$, in `[0,1]`; zero disables shock penalty. |
 | `pressureJumpStart`, `pressureJumpFull` | `0.10`, `0.22` | `jp0`, `jp1`: pressure ramp start/full values. |
 | `compressionStart`, `compressionFull` | `0.08`, `0.16` | `jc0`, `jc1`: normal-compression ramp start/full values. |
-| `o2ReferenceLimiter` | `0` | `0` Barth GG, `1` characteristic WBAP GG. Both build a linear target on the high-order mesh/basis. |
+| `o2ReferenceLimiter` | `"Barth"` | `"Barth"` or `"WBAP"` (characteristic). Both build a GG linear target on the high-order mesh/basis. |
 | `o2ReferenceUsePP` | `true` | Compress O2 increment toward its cell mean if needed for positivity. |
-| `gateMode` | `0` | `0` product; `8` product plus supported pressure extrema. Values `1..7` preserve earlier experimental union/rational/envelope gates; see below. |
-| `gateHaloLayers` | `0` | Additional shock-branch face-neighbour maximum passes, after mode-8 correction; integer `0..4`. |
+| `gateMode` | `"ProductCubic"` | `"ProductCubic"` or `"PressureExtremum"`; the latter adds supported pressure extrema and one correction expansion pass. |
+| `gateHaloLayers` | `0` | Additional shock-branch face-neighbour maximum passes, after the pressure correction; integer `0..4`. |
 | `gateHaloSaturatedOnly` | `false` | In these extra passes, propagate only cells at the shock cap; unsaturated local values remain. |
 | `alphaUpdateRelaxation` | `1` | Shock/contact update $\theta\alpha_{\mathrm{fresh}}+(1-\theta)\alpha_{\mathrm{old}}$, $0<\theta\le1$, each RHS evaluation. |
-| `oscillationExtremumStart`, `oscillationExtremumFull` | `0.001`, `0.008` | Mode-8 normalized pressure-excess ramp $e_0,e_1$. |
-| `oscillationSupportStart`, `oscillationSupportFull` | `0.02`, `0.15` | Mode-8 adjacent shock fraction ramp $s_0,s_1$. |
+| `oscillationExtremumStart`, `oscillationExtremumFull` | `0.001`, `0.008` | `PressureExtremum` only: normalized pressure-excess ramp $e_0,e_1$. |
+| `oscillationSupportStart`, `oscillationSupportFull` | `0.02`, `0.15` | `PressureExtremum` only: adjacent base shock fraction ramp $s_0,s_1$. |
 | `oscillationRetention` | `0.95` | Retained fraction $r$ of old shock alpha while adjacent support exists, per RHS evaluation. |
 | `oscillationTransverseTolerance` | `1e-8` | Relative equality tolerance for pressure **and** density extrema; scale is the larger absolute neighbour value. |
 | `oscillationMinTransverseNeighbours` | `2` | Minimum number of nearly equal face neighbours, integer `1..4`; a neighbour count, not a halo depth. |
@@ -172,21 +218,10 @@ are listed above; all ramp full thresholds must exceed their starts.
 
 Halo depth is graph distance through interior faces. One synchronous maximum
 pass copies the largest old value from immediate neighbours; two passes reach
-at most two face edges. Mode 8's built-in one-pass correction is separate from
+at most two face edges. The pressure correction's built-in one-pass expansion is separate from
 `gateHaloLayers`. The pressure/density nearly equal-neighbour requirement is
 particularly relevant on triangular meshes; it is not a direction-independent
 smoothness theorem.
-
-For historical modes, define nonnegative normalized excesses
-$a=\max(0,(J_p-jp0)/(jp1-jp0))$, $b=\max(0,(J_c-jc0)/(jc1-jc0))$.
-Mode 1 uses the union $1-(1-S_p)(1-S_c)$; mode 2 maps $a+b$ to
-$(a+b)/(1+a+b)$; mode 3 maps $\sqrt{ab}$ to $\sqrt{ab}/(1+\sqrt{ab})$;
-mode 4 uses $\min(1,2\sqrt{ab}/(1+\sqrt{ab}))$. Mode 5 additionally couples
-one cell's pressure/compression excess with its immediate neighbour's opposite
-indicator. Mode 6 first takes separate indicator envelopes over one neighbour
-layer, then uses mode 4's response. Mode 7 uses the same envelopes with the
-cubic product. Those modes are retained for reproducing studies, not selected
-by the v2/v3 presets.
 
 ## Storage, communication and scope
 

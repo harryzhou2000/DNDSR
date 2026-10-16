@@ -721,8 +721,8 @@ namespace DNDS::Euler
             /**
              * @brief Slope limiter control parameters.
              *
-             * Controls whether limiters are active, which limiter variant to use
-             * (WBAP, CWBAP), positivity-preserving reconstruction limiting, and
+             * Controls whether limiters are active, the reconstruction treatment
+             * (3WBAP, CWBAP or LVR), positivity-preserving reconstruction limiting, and
              * partial/preserved limiting strategies.
              */
             struct LimiterControl
@@ -731,7 +731,8 @@ namespace DNDS::Euler
                 bool usePPRecLimiter = true;
                 bool useViscousLimited = true;
                 int smoothIndicatorProcedure = 0;
-                int limiterProcedure = 0;
+                /// 3WBAP/CWBAP postprocess the high-order polynomial; LVR changes the reconstruction solve.
+                ReconstructionLimiter limiterProcedure = ReconstructionLimiter::WBAP3;
                 int nPartialLimiterStart = INT_MAX;
                 int nPartialLimiterStartLocal = INT_MAX;
                 bool preserveLimited = false;
@@ -745,7 +746,7 @@ namespace DNDS::Euler
                     DNDS_FIELD(usePPRecLimiter,            "Enable positivity-preserving reconstruction limiter");
                     DNDS_FIELD(useViscousLimited,          "Apply limiter to viscous reconstruction");
                     DNDS_FIELD(smoothIndicatorProcedure,   "Smooth indicator procedure index");
-                    DNDS_FIELD(limiterProcedure,           "Limiter variant: 0=WBAP (V2), 1=CWBAP (V3), 2=limited variational reconstruction", DNDS::Config::range(0, 2));
+                    DNDS_FIELD(limiterProcedure,           "Reconstruction treatment: 3WBAP or CWBAP postprocessing, or LVR penalty toward a limited GG O2 target", DNDS::Config::enum_values(DNDS_ENUM_ALLOWED_VALUES(ReconstructionLimiter)));
                     DNDS_FIELD(nPartialLimiterStart,       "Time step to begin partial limiting");
                     DNDS_FIELD(nPartialLimiterStartLocal,  "Time step to begin local partial limiting");
                     DNDS_FIELD(preserveLimited,            "Preserve limited reconstruction across steps");

@@ -777,12 +777,25 @@ namespace DNDS::Euler
                           uint64_t flags = LIMITER_UGRAD_No_Flags);
 
         /**
-         * @brief Build a limited, positivity-safe O2 target and the cellwise limited variational reconstruction gate.
+         * @brief Build the limited GG O2 target and cellwise LVR penalty fraction.
          *
          * The configured Barth or WBAP limiter is applied once to the GG O2
-         * gradients. The same finalized target is then used for face sensing and
-         * as the reconstruction penalty target. Internal, periodic, and MPI faces
-         * contribute; physical external faces do not.
+         * gradients; optional PP compression uses each cell mean as its base.
+         * The finalized target supplies ordinary face sensors and the penalty
+         * target. The optional weak sensor uses unrestricted GG gradients instead.
+         * Interior, periodic and MPI faces contribute; physical boundary faces
+         * do not contribute to detector maxima or correction halos.
+         *
+         * branchAlpha packs shock, contact, contact-support and weak components
+         * in that order. Correction seeds share its halo rounds; the independent
+         * base gates are merged after their respective correction expansion.
+         * alpha is the final maximum of shock/contact/weak fractions. All values
+         * are functions of means and explicit gradients, fixed during the ensuing
+         * reconstruction solve. Disabled branches avoid their optional work.
+         *
+         * @param refreshWeakAlpha Recompute the weak branch; false holds its old values.
+         * @param resetWeakAlpha Start a new stage with the fresh weak gate rather than
+         *                       applying its relaxation/decay to the preceding stage.
          */
         void BuildLimitedVRO2(
             ArrayDOFV<nVarsFixed> &u,

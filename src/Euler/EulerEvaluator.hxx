@@ -2593,14 +2593,14 @@ namespace DNDS::Euler
             uGradBufNoLim.trans.waitPersistentPull();
         }
 
-        if (limitedVRSettings.o2ReferenceLimiter == LimitedVRSettings::O2ReferenceLimiterBarth)
+        if (limitedVRSettings.o2ReferenceLimiter == O2ReferenceLimiter::Barth)
         {
             LimiterUGrad(u, uGradBufNoLim, uGradBuf, LIMITER_UGRAD_No_Flags);
             vfv->ConvertUGradToURec(uRecO2, uGradBuf);
         }
         else
         {
-            DNDS_assert(limitedVRSettings.o2ReferenceLimiter == LimitedVRSettings::O2ReferenceLimiterWBAP);
+            DNDS_assert(limitedVRSettings.o2ReferenceLimiter == O2ReferenceLimiter::WBAP);
             vfv->ConvertUGradToURec(uRecO2, uGradBufNoLim);
             uRecO2.trans.startPersistentPull();
             uRecO2.trans.waitPersistentPull();
@@ -2660,7 +2660,7 @@ namespace DNDS::Euler
         else
         {
             o2Beta.setConstant(1.0);
-            if (limitedVRSettings.o2ReferenceLimiter == LimitedVRSettings::O2ReferenceLimiterBarth)
+            if (limitedVRSettings.o2ReferenceLimiter == O2ReferenceLimiter::Barth)
             {
                 uRecO2.trans.startPersistentPull();
                 uRecO2.trans.waitPersistentPull();
@@ -2670,7 +2670,7 @@ namespace DNDS::Euler
         std::vector<real> shockAlphaPrevious;
         if (limitedVRSettings.alphaUpdateRelaxation < 1.0 ||
             (limitedVRSettings.alphaMax > 0 &&
-             limitedVRSettings.gateMode == LimitedVRSettings::GateProductCubicWithExtremumCorrection))
+             limitedVRSettings.gateMode == LimitedVRGateMode::PressureExtremum))
         {
             shockAlphaPrevious.resize(static_cast<size_t>(mesh->NumCell()));
             for (index iCell = 0; iCell < mesh->NumCell(); ++iCell)
@@ -2796,71 +2796,8 @@ namespace DNDS::Euler
             }
         }
 
-        if (limitedVRSettings.gateMode == LimitedVRSettings::GateNeighborCoupledRationalSaturated ||
-            limitedVRSettings.gateMode == LimitedVRSettings::GateNeighborhoodEnvelopeRationalSaturated ||
-            limitedVRSettings.gateMode == LimitedVRSettings::GateNeighborhoodEnvelopeCubic)
-        {
-            pressureJump.trans.startPersistentPull();
-            compression.trans.startPersistentPull();
-            pressureJump.trans.waitPersistentPull();
-            compression.trans.waitPersistentPull();
-            std::vector<real> pressureNeighbour(static_cast<size_t>(mesh->NumCell()));
-            std::vector<real> compressionNeighbour(static_cast<size_t>(mesh->NumCell()));
-            for (index iCell = 0; iCell < mesh->NumCell(); ++iCell)
-            {
-                pressureNeighbour[static_cast<size_t>(iCell)] = pressureJump[iCell](0);
-                compressionNeighbour[static_cast<size_t>(iCell)] = compression[iCell](0);
-            }
-            for (index iFace = 0; iFace < mesh->NumFaceProc(); ++iFace)
-            {
-                auto f2c = mesh->face2cell[iFace];
-                if (f2c[1] == UnInitIndex)
-                    continue;
-                for (int if2c = 0; if2c < 2; ++if2c)
-                {
-                    index iCell = f2c[if2c];
-                    index iOther = f2c[1 - if2c];
-                    if (iCell >= mesh->NumCell())
-                        continue;
-                    pressureNeighbour[static_cast<size_t>(iCell)] = std::max(
-                        pressureNeighbour[static_cast<size_t>(iCell)], pressureJump[iOther](0));
-                    compressionNeighbour[static_cast<size_t>(iCell)] = std::max(
-                        compressionNeighbour[static_cast<size_t>(iCell)], compression[iOther](0));
-                }
-            }
-            for (index iCell = 0; iCell < mesh->NumCell(); ++iCell)
-            {
-                real pressureExcess = LimitedVRNormalizedExcess(
-                    pressureJump[iCell](0), limitedVRSettings.pressureJumpStart, limitedVRSettings.pressureJumpFull);
-                real compressionExcess = LimitedVRNormalizedExcess(
-                    compression[iCell](0), limitedVRSettings.compressionStart, limitedVRSettings.compressionFull);
-                real pressureNeighbourExcess = LimitedVRNormalizedExcess(
-                    pressureNeighbour[static_cast<size_t>(iCell)], limitedVRSettings.pressureJumpStart, limitedVRSettings.pressureJumpFull);
-                real compressionNeighbourExcess = LimitedVRNormalizedExcess(
-                    compressionNeighbour[static_cast<size_t>(iCell)], limitedVRSettings.compressionStart, limitedVRSettings.compressionFull);
-                real response;
-                if (limitedVRSettings.gateMode == LimitedVRSettings::GateNeighborhoodEnvelopeCubic)
-                    response =
-                        LimitedVRCubicRamp(
-                            pressureNeighbour[static_cast<size_t>(iCell)],
-                            limitedVRSettings.pressureJumpStart, limitedVRSettings.pressureJumpFull) *
-                        LimitedVRCubicRamp(
-                            compressionNeighbour[static_cast<size_t>(iCell)],
-                            limitedVRSettings.compressionStart, limitedVRSettings.compressionFull);
-                else if (limitedVRSettings.gateMode == LimitedVRSettings::GateNeighborhoodEnvelopeRationalSaturated)
-                    response = LimitedVRCoupledSaturatedResponse(
-                        pressureNeighbourExcess, compressionNeighbourExcess);
-                else
-                    response = std::max(
-                        LimitedVRCoupledSaturatedResponse(pressureExcess, compressionNeighbourExcess),
-                        LimitedVRCoupledSaturatedResponse(compressionExcess, pressureNeighbourExcess));
-                branchAlpha[iCell](iShockAlpha) = std::max(
-                    branchAlpha[iCell](iShockAlpha), limitedVRSettings.alphaMax * response);
-            }
-        }
-
         const bool correctPressure = limitedVRSettings.alphaMax > 0 &&
-                                     limitedVRSettings.gateMode == LimitedVRSettings::GateProductCubicWithExtremumCorrection;
+                                     limitedVRSettings.gateMode == LimitedVRGateMode::PressureExtremum;
         const bool correctDensity = limitedVRSettings.contactUseExtremumCorrection &&
                                     limitedVRSettings.contactAlphaMax > 0;
         const index nOwned = mesh->NumCell();
@@ -3025,7 +2962,7 @@ namespace DNDS::Euler
 
         if (correctDensity)
         {
-            // Mirror the mode-8 pressure correction on cell-mean density.  The
+            // Mirror the supported pressure-extremum correction on cell-mean density.  The
             // separately packed contact-support field may use cell-mean jumps
             // without applying those jumps as the base contact penalty.  Only
             // a strict local density extremum with the configured transverse

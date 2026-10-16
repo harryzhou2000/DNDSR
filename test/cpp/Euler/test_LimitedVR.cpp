@@ -4,6 +4,52 @@
 
 using namespace DNDS::Euler;
 
+TEST_CASE("LVR selectors write names, accept retained integer aliases and reject removed choices")
+{
+    using json = nlohmann::ordered_json;
+    CHECK(json(ReconstructionLimiter::WBAP3) == "3WBAP");
+    CHECK(json(ReconstructionLimiter::CWBAP) == "CWBAP");
+    CHECK(json(ReconstructionLimiter::LVR) == "LVR");
+    for (const auto choice : {ReconstructionLimiter::WBAP3, ReconstructionLimiter::CWBAP, ReconstructionLimiter::LVR})
+    {
+        CHECK(json(choice).get<ReconstructionLimiter>() == choice);
+        CHECK(json(static_cast<int>(choice)).get<ReconstructionLimiter>() == choice);
+    }
+    for (const auto choice : {O2ReferenceLimiter::Barth, O2ReferenceLimiter::WBAP})
+    {
+        CHECK(json(choice).get<O2ReferenceLimiter>() == choice);
+        CHECK(json(static_cast<int>(choice)).get<O2ReferenceLimiter>() == choice);
+    }
+    for (const auto choice : {LimitedVRGateMode::ProductCubic, LimitedVRGateMode::PressureExtremum})
+    {
+        CHECK(json(choice).get<LimitedVRGateMode>() == choice);
+        CHECK(json(static_cast<int>(choice)).get<LimitedVRGateMode>() == choice);
+    }
+    for (int mode = 1; mode <= 7; ++mode)
+        CHECK_THROWS_WITH(json(mode).get<LimitedVRGateMode>(), doctest::Contains("experimental modes 1..7 were removed"));
+    for (const json &invalid : {json(nullptr), json(false), json(0.0), json(-1), json(999), json("typo")})
+    {
+        CHECK_THROWS(invalid.get<ReconstructionLimiter>());
+        CHECK_THROWS(invalid.get<O2ReferenceLimiter>());
+        CHECK_THROWS(invalid.get<LimitedVRGateMode>());
+    }
+    CHECK_THROWS(json("GateUnionCubic").get<LimitedVRGateMode>());
+    CHECK_THROWS(json(2).get<O2ReferenceLimiter>());
+    CHECK_THROWS(json(3).get<ReconstructionLimiter>());
+
+    // Test the registered metadata without regenerating checked-in schema files.
+    const auto fields = LimitedVRSettings::schema().at("properties");
+    CHECK(fields.at("gateMode").at("type") == "string");
+    CHECK(fields.at("gateMode").at("enum") == json::array({"ProductCubic", "PressureExtremum"}));
+    CHECK(fields.at("o2ReferenceLimiter").at("enum") == json::array({"Barth", "WBAP"}));
+    json legacy = LimitedVRSettings{};
+    legacy["gateMode"] = 8;
+    legacy["o2ReferenceLimiter"] = 1;
+    json saved = legacy.get<LimitedVRSettings>();
+    CHECK(saved.at("gateMode") == "PressureExtremum");
+    CHECK(saved.at("o2ReferenceLimiter") == "WBAP");
+}
+
 TEST_CASE("Weak LVR branch preserves uniform-strip quadratics and rejects contacts and expansion")
 {
     LimitedVRSettings s;
@@ -88,70 +134,6 @@ TEST_CASE("Limited variational reconstruction sensor has a bounded intermediate 
     CHECK(sensor.alpha < settings.alphaMax);
 }
 
-TEST_CASE("Limited variational reconstruction alternative gates cover pressure-only shock tails")
-{
-    LimitedVRSettings settings;
-    settings.pressureJumpStart = 0.005;
-    settings.pressureJumpFull = 0.12;
-    settings.compressionStart = 0.005;
-    settings.compressionFull = 0.09;
-
-    settings.gateMode = LimitedVRSettings::GateProductCubic;
-    CHECK(EvaluateLimitedVRFaceSensor(1.04, 1.0, 0.0, 0.0, 1.0, 1.0, settings).alpha == 0.0);
-
-    settings.gateMode = LimitedVRSettings::GateUnionCubic;
-    auto unionSensor = EvaluateLimitedVRFaceSensor(1.04, 1.0, 0.0, 0.0, 1.0, 1.0, settings);
-    CHECK(unionSensor.alpha > 0.0);
-    CHECK(unionSensor.alpha < settings.alphaMax);
-
-    settings.gateMode = LimitedVRSettings::GateCombinedRational;
-    auto rationalSensor = EvaluateLimitedVRFaceSensor(1.04, 1.0, 0.0, 0.0, 1.0, 1.0, settings);
-    CHECK(rationalSensor.alpha > 0.0);
-    CHECK(rationalSensor.alpha < settings.alphaMax);
-
-    CHECK(EvaluateLimitedVRFaceSensor(1.001, 1.0, 0.0, 0.0, 1.0, 1.0, settings).alpha == 0.0);
-}
-
-TEST_CASE("Limited variational reconstruction coupled rational gate requires both indicators")
-{
-    LimitedVRSettings settings;
-    settings.pressureJumpStart = 0.035;
-    settings.pressureJumpFull = 0.16;
-    settings.compressionStart = 0.025;
-    settings.compressionFull = 0.13;
-    settings.alphaMax = 0.4;
-    settings.gateMode = LimitedVRSettings::GateCoupledRational;
-
-    auto pressureOnly = EvaluateLimitedVRFaceSensor(1.04, 1.0, 0.0, 0.0, 1.0, 1.0, settings);
-    CHECK(pressureOnly.pressureJump > settings.pressureJumpStart);
-    CHECK(pressureOnly.compression == 0.0);
-    CHECK(pressureOnly.alpha == 0.0);
-
-    auto coupledTail = EvaluateLimitedVRFaceSensor(1.04, 1.0, 0.04, 0.0, 1.0, 1.0, settings);
-    CHECK(coupledTail.pressureJump > settings.pressureJumpStart);
-    CHECK(coupledTail.compression > settings.compressionStart);
-    CHECK(coupledTail.alpha > 0.0);
-    CHECK(coupledTail.alpha < settings.alphaMax);
-}
-
-TEST_CASE("Limited variational reconstruction saturated rational gate has a flat shock core")
-{
-    LimitedVRSettings settings;
-    settings.pressureJumpStart = 0.025;
-    settings.pressureJumpFull = 0.12;
-    settings.compressionStart = 0.01;
-    settings.compressionFull = 0.09;
-    settings.alphaMax = 0.4;
-    settings.gateMode = LimitedVRSettings::GateCoupledRationalSaturated;
-
-    auto tail = EvaluateLimitedVRFaceSensor(1.04, 1.0, 0.04, 0.0, 1.0, 1.0, settings);
-    CHECK(tail.alpha > 0.0);
-    CHECK(tail.alpha < settings.alphaMax);
-
-    auto core = EvaluateLimitedVRFaceSensor(1.3, 1.0, 0.3, 0.0, 1.0, 1.0, settings);
-    CHECK(core.alpha == doctest::Approx(settings.alphaMax));
-}
-
 TEST_CASE("Limited variational reconstruction compressive shock saturates and is orientation invariant")
 {
     LimitedVRSettings settings;
@@ -209,8 +191,8 @@ TEST_CASE("Limited variational reconstruction combines shock and contact gates b
 TEST_CASE("Limited variational reconstruction settings parse and validate")
 {
     nlohmann::ordered_json config = LimitedVRSettings{};
-    CHECK(config["o2ReferenceLimiter"] == LimitedVRSettings::O2ReferenceLimiterBarth);
-    CHECK(config["gateMode"] == LimitedVRSettings::GateProductCubic);
+    CHECK(config["o2ReferenceLimiter"] == "Barth");
+    CHECK(config["gateMode"] == "ProductCubic");
     CHECK(config["gateHaloLayers"] == 0);
     CHECK(config["gateHaloSaturatedOnly"] == false);
     CHECK(config["contactDensityJumpStart"] == doctest::Approx(0.2));
@@ -242,18 +224,18 @@ TEST_CASE("Limited variational reconstruction settings parse and validate")
     config["pressureJumpFull"] = 0.50;
     auto settings = config.get<LimitedVRSettings>();
     CHECK(settings.alphaMax == 1.0);
-    CHECK(settings.o2ReferenceLimiter == LimitedVRSettings::O2ReferenceLimiterBarth);
+    CHECK(settings.o2ReferenceLimiter == O2ReferenceLimiter::Barth);
     CHECK(settings.o2ReferenceUsePP);
     CHECK(settings.validate().empty());
 
-    config["o2ReferenceLimiter"] = LimitedVRSettings::O2ReferenceLimiterWBAP;
+    config["o2ReferenceLimiter"] = O2ReferenceLimiter::WBAP;
     config["o2ReferenceUsePP"] = false;
     config["contactUseCellMeanJump"] = true;
     config["contactUseExtremumCorrection"] = true;
     config["contactExtremumUseCellMeanSupport"] = true;
     config["contactExtremumHaloLayers"] = 2;
     settings = config.get<LimitedVRSettings>();
-    CHECK(settings.o2ReferenceLimiter == LimitedVRSettings::O2ReferenceLimiterWBAP);
+    CHECK(settings.o2ReferenceLimiter == O2ReferenceLimiter::WBAP);
     CHECK_FALSE(settings.o2ReferenceUsePP);
     CHECK(settings.contactUseCellMeanJump);
     CHECK(settings.contactUseExtremumCorrection);
@@ -264,11 +246,11 @@ TEST_CASE("Limited variational reconstruction settings parse and validate")
     config["o2ReferenceLimiter"] = 2;
     CHECK_THROWS(config.get<LimitedVRSettings>());
 
-    config["o2ReferenceLimiter"] = LimitedVRSettings::O2ReferenceLimiterBarth;
+    config["o2ReferenceLimiter"] = O2ReferenceLimiter::Barth;
     config["gateMode"] = 9;
     CHECK_THROWS(config.get<LimitedVRSettings>());
 
-    config["gateMode"] = LimitedVRSettings::GateProductCubic;
+    config["gateMode"] = LimitedVRGateMode::ProductCubic;
     config["gateHaloLayers"] = 5;
     CHECK_THROWS(config.get<LimitedVRSettings>());
 
@@ -313,8 +295,8 @@ TEST_CASE("LVR input presets expand before explicit overrides and preserve legac
     auto settings = section.get<LimitedVRSettings>();
     CHECK(settings.alphaMax == 1);
     CHECK(settings.contactAlphaMax == 1);
-    CHECK(settings.gateMode == LimitedVRSettings::GateProductCubicWithExtremumCorrection);
-    CHECK(settings.o2ReferenceLimiter == LimitedVRSettings::O2ReferenceLimiterWBAP);
+    CHECK(settings.gateMode == LimitedVRGateMode::PressureExtremum);
+    CHECK(settings.o2ReferenceLimiter == O2ReferenceLimiter::WBAP);
     CHECK(settings.contactExtremumHaloLayers == 2);
     CHECK(settings.weakAlphaMax == 0);
     CHECK(settings.validate().empty());

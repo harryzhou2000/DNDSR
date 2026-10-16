@@ -1,34 +1,121 @@
 #pragma once
 
 #include "DNDS/Config/ConfigParam.hpp"
+#include "DNDS/Config/ConfigEnum.hpp"
 #include "DNDS/Defines.hpp"
 
 #include <algorithm>
 #include <cmath>
+#include <initializer_list>
 #include <limits>
 
 namespace DNDS::Euler
 {
+    /// Reconstruction treatment selected by limiterControl.limiterProcedure.
+    enum class ReconstructionLimiter
+    {
+        Unknown = -1,
+        WBAP3 = 0,
+        CWBAP = 1,
+        LVR = 2,
+    };
+    DNDS_DEFINE_ENUM_JSON(ReconstructionLimiter, {{ReconstructionLimiter::Unknown, nullptr},
+                                                  {ReconstructionLimiter::WBAP3, "3WBAP"},
+                                                  {ReconstructionLimiter::CWBAP, "CWBAP"},
+                                                  {ReconstructionLimiter::LVR, "LVR"}})
+
+    /// Limiter applied to the explicit Green--Gauss linear reference polynomial.
+    enum class O2ReferenceLimiter
+    {
+        Unknown = -1,
+        Barth = 0,
+        WBAP = 1,
+    };
+    DNDS_DEFINE_ENUM_JSON(O2ReferenceLimiter, {{O2ReferenceLimiter::Unknown, nullptr},
+                                               {O2ReferenceLimiter::Barth, "Barth"},
+                                               {O2ReferenceLimiter::WBAP, "WBAP"}})
+
+    /// Both modes use the same face product gate; PressureExtremum adds the v2 correction.
+    enum class LimitedVRGateMode
+    {
+        Unknown = -1,
+        ProductCubic = 0,
+        PressureExtremum = 8,
+    };
+    DNDS_DEFINE_ENUM_JSON(LimitedVRGateMode, {{LimitedVRGateMode::Unknown, nullptr},
+                                              {LimitedVRGateMode::ProductCubic, "ProductCubic"},
+                                              {LimitedVRGateMode::PressureExtremum, "PressureExtremum"}})
+
+    namespace detail
+    {
+        /// Read only named choices or their exact legacy integer aliases.
+        /// The standard enum macro silently maps unknown inputs to its first entry;
+        /// these ordered-JSON overloads instead reject typos and retired experiments.
+        template <typename Enum>
+        void ReadReconstructionEnum(const nlohmann::ordered_json &input, Enum &value,
+                                    std::initializer_list<Enum> choices, const char *message)
+        {
+            for (const auto choice : choices)
+                if ((input.is_string() && input == nlohmann::ordered_json(choice)) ||
+                    (input.is_number_integer() && input == static_cast<int>(choice)))
+                {
+                    value = choice;
+                    return;
+                }
+            DNDS_check_throw_info(false, message);
+        }
+    }
+
+    inline void from_json(const nlohmann::ordered_json &input, ReconstructionLimiter &value)
+    {
+        detail::ReadReconstructionEnum(input, value,
+                                       {ReconstructionLimiter::WBAP3, ReconstructionLimiter::CWBAP, ReconstructionLimiter::LVR},
+                                       "limiterProcedure must be 3WBAP, CWBAP, or LVR (legacy integers: 0, 1, 2)");
+    }
+
+    inline void from_json(const nlohmann::ordered_json &input, O2ReferenceLimiter &value)
+    {
+        detail::ReadReconstructionEnum(input, value, {O2ReferenceLimiter::Barth, O2ReferenceLimiter::WBAP},
+                                       "o2ReferenceLimiter must be Barth or WBAP (legacy integers: 0, 1)");
+    }
+
+    inline void from_json(const nlohmann::ordered_json &input, LimitedVRGateMode &value)
+    {
+        detail::ReadReconstructionEnum(input, value, {LimitedVRGateMode::ProductCubic, LimitedVRGateMode::PressureExtremum},
+                                       "gateMode must be ProductCubic or PressureExtremum (legacy integers: 0, 8); experimental modes 1..7 were removed");
+    }
+
     /** @brief Cellwise A-weighted penalty toward a limited explicit GG O2 target.
-     * @details The shock fraction alpha=lambda/(1+lambda) multiplies the target;
-     * zero leaves VR unchanged and one fixes this cell's row to the O2 target.
-     * See docs/guides/limited_variational_reconstruction.md for all controls and
-     * input presets. Numeric keys remain compatible with the historical studies.
+     * @details For a fixed cell mean, A is the existing VR diagonal block and t
+     * contains the limited linear coefficients, with all higher modes zero.
+     * Adding lambda/2*(r-t)^T*A*(r-t) changes the block update to
+     * (1-alpha)*r_VR+alpha*t, before the existing Jacobi/SOR relaxation, where
+     * alpha=lambda/(1+lambda). Zero leaves VR unchanged; one fixes its row to t.
+     * Final alpha is the maximum of the shock, contact and optional weak branches.
+     * The target and gate are rebuilt per flow RHS evaluation, then held fixed
+     * throughout that reconstruction solve: the system remains linear in r.
+     *
+     * Jp=2*|pR-pL|/(pR+pL), Jc=max(unL-unR,0)/mean(cL,cR), and
+     * Jrho=2*|rhoR-rhoL|/(rhoR+rhoL) use finalized limited-O2 face states unless
+     * a contact option explicitly selects means. un uses a common L-to-R normal;
+     * c is sound speed. Every start/full pair defines a cubic 0-to-1 ramp.
+     * For scalar z and thresholds z0<z1, that ramp is zero below z0, one above
+     * z1, and q*q*(3-2*q) between them, q=(z-z0)/(z1-z0).
+     * PressureExtremum adds supported cell-mean pressure extrema to the product
+     * shock gate; density correction and the weak branch are independent options.
+     * At a strict mean-field extremum, excess is the distance to the nearest
+     * unequal face-neighbour value divided by the larger absolute value. The
+     * correction requires enough nearly equal neighbours and no physical boundary
+     * face. Support is the largest neighbouring base branch alpha divided by its
+     * cap; mean-density support can be selected separately from the base gate.
+     * Pressure correction spreads one face-neighbour layer; density correction
+     * spreads contactExtremumHaloLayers. gateHaloLayers adds shock layers after
+     * correction. All these are synchronous maxima over interior-face adjacency.
+     * See docs/guides/limited_variational_reconstruction.md for full definitions,
+     * presets and compatibility aliases. JSON writes selectors as strings.
      */
     struct LimitedVRSettings
     {
-        static constexpr int O2ReferenceLimiterBarth = 0;
-        static constexpr int O2ReferenceLimiterWBAP = 1;
-        static constexpr int GateProductCubic = 0;
-        static constexpr int GateUnionCubic = 1;
-        static constexpr int GateCombinedRational = 2;
-        static constexpr int GateCoupledRational = 3;
-        static constexpr int GateCoupledRationalSaturated = 4;
-        static constexpr int GateNeighborCoupledRationalSaturated = 5;
-        static constexpr int GateNeighborhoodEnvelopeRationalSaturated = 6;
-        static constexpr int GateNeighborhoodEnvelopeCubic = 7;
-        static constexpr int GateProductCubicWithExtremumCorrection = 8;
-
         /// jp0: zero response when Jp=2|pR-pL|/(pR+pL) is at/below this value.
         real pressureJumpStart = 0.10;
         /// jp1>jp0: cubic pressure response reaches one at this value.
@@ -41,21 +128,22 @@ namespace DNDS::Euler
         real alphaMax = 0.50;
         /// Additional weak-shock branch cap; zero disables its gradients and halo work.
         real weakAlphaMax = 0.0;
-        /// Start of cubic ramp for |dp-dpGradL+dpGradR|/(|dp|+|dpGradL|+|dpGradR|).
+        /// Weak branch only: mismatch-ramp start; dp=pR-pL from means, dL/R=grad(p)L/R dot (xf-xL/R).
+        /// Mismatch is |dp-dL+dR|/max(|dp|+|dL|+|dR|,pressure floor), using unrestricted GG gradients.
         real weakMismatchStart = 0.05;
-        /// Saturation of the dimensionless pressure-gradient mismatch ramp.
+        /// Weak branch only: mismatch-ramp saturation; must exceed weakMismatchStart.
         real weakMismatchFull = 0.20;
-        /// Start of cubic ramp for compressive mean normal-velocity jump times mean rho*c divided by |dp|.
+        /// Weak branch only: ramp start for max(unL-unR,0)*mean(rho*c)/|dp|, using adjacent means.
         real weakAcousticStart = 0.10;
-        /// Saturation of the acoustic compression ramp; expansion/contact pressure noise is rejected.
+        /// Weak branch only: acoustic-ramp saturation; compression and a pressure jump above the floor are required.
         real weakAcousticFull = 0.50;
         /// Positive background-relative pressure-jump floor, multiplied by max(|pL|,|pR|).
         real weakRelativeFloor = 1e-10;
         /// Synchronous face-neighbour maximum passes on the freshly detected weak branch (0..4).
         int weakHaloLayers = 2;
-        /// theta in (0,1]: theta*fresh+(1-theta)*old, later inner evaluations only.
+        /// Weak branch only: theta*fresh+(1-theta)*old, theta in (0,1]; every new stage resets to fresh.
         real weakAlphaUpdateRelaxation = 1.0;
-        /// q in [0,1): fresh+q*max(old-fresh,0); immediate rises; requires theta=1; zero disables.
+        /// Weak branch only: fresh+q*max(old-fresh,0), q in [0,1); immediate rises; requires weak relaxation=1.
         real weakAlphaDecayRetention = 0.0;
         /// Fresh gate on every stage start, including explicit-first INT_MAX; hold only within that stage.
         bool weakFreezeWithinImplicitStage = false;
@@ -67,11 +155,11 @@ namespace DNDS::Euler
         real contactAlphaMax = 0.0;
         /// Use adjacent means for the base density jump; false uses finalized O2 face states.
         bool contactUseCellMeanJump = false;
-        /// Enable supported strict density-extremum response and retention/halo below.
+        /// With contactAlphaMax>0, add supported cell-mean density extrema plus contact retention/halo below.
         bool contactUseExtremumCorrection = false;
-        /// Use mean-density jumps for support only, independently of the base contact gate.
+        /// Contact correction only: use mean-density jumps for support, independently of the base contact gate.
         bool contactExtremumUseCellMeanSupport = false;
-        /// Start of normalized density excess beyond nearest unequal neighbour at a strict extremum.
+        /// Contact correction only: start of normalized cell-mean density excess defined in the class description.
         real contactExtremumStart = 0.001;
         /// Saturation of density-extremum response; active only with contactUseExtremumCorrection.
         real contactExtremumFull = 0.008;
@@ -79,57 +167,57 @@ namespace DNDS::Euler
         real contactSupportStart = 0.02;
         /// Saturation of support ramp; multiply it by density-extremum response.
         real contactSupportFull = 0.15;
-        /// Fraction of previous contact alpha retained while adjacent support is present; per RHS evaluation.
+        /// Contact correction only: fraction in [0,1] of previous contact alpha retained under support, per RHS evaluation.
         real contactExtremumRetention = 0.95;
-        /// Face-neighbour maximum passes of density correction only; H2 uses two; boundaries excluded.
+        /// Contact correction only: synchronous maximum passes in [0,4]; H2 uses two. The base gate is not expanded.
         int contactExtremumHaloLayers = 1;
-        /// 0=product, 8=v2 supported pressure extrema; 1..7 preserve historical union/rational/envelope experiments.
-        int gateMode = GateProductCubic;
-        /// Extra synchronous face-neighbour maximum passes on shock branch, after mode-8 correction.
+        /// ProductCubic: face product only; PressureExtremum: v2 supported pressure-extremum correction too.
+        LimitedVRGateMode gateMode = LimitedVRGateMode::ProductCubic;
+        /// Extra synchronous face-neighbour maximum passes on the completed shock branch, in [0,4].
         int gateHaloLayers = 0;
         /// When expanding, propagate only alphaMax-saturated cells; local unsaturated cells remain.
         bool gateHaloSaturatedOnly = false;
-        /// theta in (0,1] for shock/contact per-RHS update; theta=1 removes this temporal lag.
+        /// Shock/contact only: theta*fresh+(1-theta)*old per RHS evaluation, theta in (0,1]; independent of weak updates.
         real alphaUpdateRelaxation = 1.0;
-        /// Mode 8: start of normalized pressure excess beyond nearest unequal neighbour at a strict extremum.
+        /// PressureExtremum only: start of normalized cell-mean pressure excess beyond the nearest unequal neighbour.
         real oscillationExtremumStart = 0.001;
-        /// Mode 8: saturation of pressure-extremum response.
+        /// PressureExtremum only: saturation of normalized pressure-extremum response; must exceed its start.
         real oscillationExtremumFull = 0.008;
-        /// Mode 8: start of adjacent shock alpha/alphaMax support ramp.
+        /// PressureExtremum only: start of adjacent base-shock alpha/alphaMax support ramp, in [0,1].
         real oscillationSupportStart = 0.02;
-        /// Mode 8: saturation of support ramp; multiply by pressure-extremum response.
+        /// PressureExtremum only: saturation of support ramp; multiplies the extremum and retained responses.
         real oscillationSupportFull = 0.15;
-        /// Mode 8: previous shock alpha retention while support is active; per RHS evaluation.
+        /// PressureExtremum only: fraction in [0,1] of previous shock alpha retained under support, per RHS evaluation.
         real oscillationRetention = 0.95;
         /// Relative equality tolerance for pressure/density neighbours, scaled by max absolute field.
         real oscillationTransverseTolerance = 1e-8;
         /// Minimum nearly equal face-neighbour count (not halo depth); exclude boundary-adjacent extrema.
         int oscillationMinTransverseNeighbours = 2;
-        /// 0=Barth, 1=characteristic WBAP on GG O2 modes; same finalized target drives ordinary face sensing.
-        int o2ReferenceLimiter = O2ReferenceLimiterBarth;
+        /// Barth or characteristic WBAP on GG linear modes; the finalized target also supplies ordinary face sensors.
+        O2ReferenceLimiter o2ReferenceLimiter = O2ReferenceLimiter::Barth;
         /// Use cell means as PP bases; enforce face/required volume-point density and sensible-energy positivity.
         bool o2ReferenceUsePP = true;
 
         DNDS_DECLARE_CONFIG(LimitedVRSettings)
         {
             // clang-format off
-            DNDS_FIELD(pressureJumpStart, "Pressure-jump ramp start", DNDS::Config::range(0.0));
-            DNDS_FIELD(pressureJumpFull,  "Pressure-jump ramp saturation", DNDS::Config::range(0.0));
-            DNDS_FIELD(compressionStart,  "Normal-compression ramp start", DNDS::Config::range(0.0));
-            DNDS_FIELD(compressionFull,   "Normal-compression ramp saturation", DNDS::Config::range(0.0));
-            DNDS_FIELD(alphaMax,         "Maximum O2 penalty fraction", DNDS::Config::range(0.0, 1.0));
+            DNDS_FIELD(pressureJumpStart, "jp0: start of cubic ramp for finalized-O2 face pressure jump 2*abs(pR-pL)/(pR+pL)", DNDS::Config::range(0.0));
+            DNDS_FIELD(pressureJumpFull,  "jp1: pressure-jump ramp reaches one here; must exceed pressureJumpStart", DNDS::Config::range(0.0));
+            DNDS_FIELD(compressionStart,  "jc0: start of cubic ramp for finalized-O2 normal compression max(unL-unR,0)/mean(cL,cR)", DNDS::Config::range(0.0));
+            DNDS_FIELD(compressionFull,   "jc1: compression ramp reaches one here; must exceed compressionStart", DNDS::Config::range(0.0));
+            DNDS_FIELD(alphaMax,         "Shock-branch penalty fraction cap in [0,1]: zero disables this branch; one fixes a saturated reconstruction row to the O2 target", DNDS::Config::range(0.0, 1.0));
             DNDS_FIELD(weakAlphaMax, "Maximum additional pressure-gradient-consistency weak-shock penalty fraction; zero disables the branch", DNDS::Config::range(0.0, 1.0));
-            DNDS_FIELD(weakMismatchStart, "Relative mean-pressure versus unrestricted-O2-gradient disagreement ramp start", DNDS::Config::range(0.0));
+            DNDS_FIELD(weakMismatchStart, "Weak branch: ramp start for abs(dp-dL+dR)/max(abs(dp)+abs(dL)+abs(dR),floor); dp is the mean pressure difference, dL/R the unrestricted GG pressure increments from each centroid to the shared face", DNDS::Config::range(0.0));
             DNDS_FIELD(weakMismatchFull, "Relative pressure-gradient disagreement ramp saturation", DNDS::Config::range(0.0));
             DNDS_FIELD(weakAcousticStart, "Compressive mean-velocity jump times acoustic impedance divided by pressure jump: ramp start", DNDS::Config::range(0.0));
             DNDS_FIELD(weakAcousticFull, "Compressive acoustic consistency ramp saturation", DNDS::Config::range(0.0));
-            DNDS_FIELD(weakRelativeFloor, "Background-relative pressure noise floor for the additional weak branch", DNDS::Config::range(0.0));
+            DNDS_FIELD(weakRelativeFloor, "Weak branch: positive pressure-noise floor multiplier times max(abs(pL),abs(pR)); jumps at or below this floor give zero response", DNDS::Config::range(0.0));
             DNDS_FIELD(weakHaloLayers, "Face-neighbour expansion layers for the additional weak branch only", DNDS::Config::range(0, 4));
             DNDS_FIELD(weakAlphaUpdateRelaxation, "Temporal relaxation of the weak-shock alpha on later inner evaluations only; each new stage starts with a fresh gate", DNDS::Config::range(0.0, 1.0));
             DNDS_FIELD(weakAlphaDecayRetention, "Fraction of the previous weak-alpha excess retained when the freshly evaluated weak response decreases; rises remain immediate and zero disables one-sided decay", DNDS::Config::range(0.0, 1.0));
             DNDS_FIELD(weakFreezeWithinImplicitStage, "Evaluate a fresh weak-shock alpha at each stage start, including one-shot explicit-first stages, and hold it fixed only for later inner evaluations of that stage");
-            DNDS_FIELD(contactDensityJumpStart, "Facial density-jump contact-gate ramp start", DNDS::Config::range(0.0));
-            DNDS_FIELD(contactDensityJumpFull, "Facial density-jump contact-gate ramp saturation", DNDS::Config::range(0.0));
+            DNDS_FIELD(contactDensityJumpStart, "jrho0: cubic ramp start for density-only jump 2*abs(rhoR-rhoL)/(rhoR+rhoL), from O2 face states or means selected by contactUseCellMeanJump", DNDS::Config::range(0.0));
+            DNDS_FIELD(contactDensityJumpFull, "jrho1: density-jump ramp reaches one here; must exceed contactDensityJumpStart", DNDS::Config::range(0.0));
             DNDS_FIELD(contactAlphaMax, "Maximum O2 penalty fraction contributed by the density-only contact gate; zero disables it", DNDS::Config::range(0.0, 1.0));
             DNDS_FIELD(contactUseCellMeanJump, "Evaluate the contact density jump from adjacent cell averages instead of limited-O2 reconstructed facial states");
             DNDS_FIELD(contactUseExtremumCorrection, "Add a contact-supported cell-mean density-extremum correction using the contact-specific extremum, support, retention, and halo controls");
@@ -138,21 +226,21 @@ namespace DNDS::Euler
             DNDS_FIELD(contactExtremumFull, "Normalized cell-mean density-extremum correction ramp saturation", DNDS::Config::range(0.0));
             DNDS_FIELD(contactSupportStart, "Adjacent density-gate support fraction ramp start for the density-extremum correction", DNDS::Config::range(0.0, 1.0));
             DNDS_FIELD(contactSupportFull, "Adjacent density-gate support fraction ramp saturation for the density-extremum correction", DNDS::Config::range(0.0, 1.0));
-            DNDS_FIELD(contactExtremumRetention, "Per-update retention of the density-extremum correction while adjacent density-gate support remains active", DNDS::Config::range(0.0, 1.0));
-            DNDS_FIELD(contactExtremumHaloLayers, "Number of face-neighbour layers receiving the density-extremum correction", DNDS::Config::range(0, 4));
-            DNDS_FIELD(gateMode,         "LVR gate: 0=product cubic, 1=union cubic, 2=additive rational tail, 3=coupled rational tail, 4=coupled rational tail with full-threshold saturation, 5=cross-cell coupled rational tail, 6=one-neighbour indicator-envelope rational tail, 7=one-neighbour indicator-envelope cubic product, 8=product cubic with shock-supported cell-mean pressure-extremum correction", DNDS::Config::range(0, 8));
-            DNDS_FIELD(gateHaloLayers,   "Number of face-neighbour cell layers added around the detected LVR gate", DNDS::Config::range(0, 4));
-            DNDS_FIELD(gateHaloSaturatedOnly, "Expand only the saturated shock core and set its halo to alphaMax");
-            DNDS_FIELD(alphaUpdateRelaxation, "Temporal relaxation applied when updating the LVR alpha field", DNDS::Config::range(0.0, 1.0));
-            DNDS_FIELD(oscillationExtremumStart, "Normalized cell-mean pressure-extremum ramp start for gate mode 8", DNDS::Config::range(0.0));
-            DNDS_FIELD(oscillationExtremumFull, "Normalized cell-mean pressure-extremum ramp saturation for gate mode 8", DNDS::Config::range(0.0));
-            DNDS_FIELD(oscillationSupportStart, "Adjacent shock-gate alpha fraction ramp start for the mode-8 pressure correction", DNDS::Config::range(0.0, 1.0));
-            DNDS_FIELD(oscillationSupportFull, "Adjacent shock-gate alpha fraction ramp saturation for the mode-8 pressure correction", DNDS::Config::range(0.0, 1.0));
-            DNDS_FIELD(oscillationRetention, "Per-update retention of the mode-8 pressure correction while adjacent shock-gate support remains active", DNDS::Config::range(0.0, 1.0));
-            DNDS_FIELD(oscillationTransverseTolerance, "Relative field tolerance used by pressure- and density-extremum equal-state-neighbour tests", DNDS::Config::range(0.0));
-            DNDS_FIELD(oscillationMinTransverseNeighbours, "Minimum equal-state transverse face neighbours required by pressure- and density-extremum corrections", DNDS::Config::range(1, 4));
-            DNDS_FIELD(o2ReferenceLimiter, "Limited O2 reference limiter: 0=Barth, 1=WBAP", DNDS::Config::range(0, 1));
-            DNDS_FIELD(o2ReferenceUsePP,   "Compress the limited O2 reference toward the cell mean to preserve facial positivity");
+            DNDS_FIELD(contactExtremumRetention, "Contact correction only: fraction of previous contact alpha retained under adjacent density support, per RHS evaluation", DNDS::Config::range(0.0, 1.0));
+            DNDS_FIELD(contactExtremumHaloLayers, "Contact correction only: synchronous interior-face maximum passes of the correction seeds; base density gate remains local; H2 uses two", DNDS::Config::range(0, 4));
+            DNDS_FIELD(gateMode,         "Shock gate: ProductCubic uses pressure/compression face ramps; PressureExtremum additionally suppresses supported cell-mean pressure extrema (v2/v3)", DNDS::Config::enum_values(DNDS_ENUM_ALLOWED_VALUES(LimitedVRGateMode)));
+            DNDS_FIELD(gateHaloLayers,   "Extra synchronous interior-face maximum passes on the completed shock branch, after PressureExtremum's built-in one-pass correction; independent of contact and weak halos", DNDS::Config::range(0, 4));
+            DNDS_FIELD(gateHaloSaturatedOnly, "Extra shock halos only: propagate alphaMax-saturated cells; preserve unsaturated local shock responses");
+            DNDS_FIELD(alphaUpdateRelaxation, "Shock/contact per-RHS update theta*fresh+(1-theta)*old, theta in (0,1]; independent of weak-branch temporal controls", DNDS::Config::range(0.0, 1.0));
+            DNDS_FIELD(oscillationExtremumStart, "PressureExtremum: normalized cell-mean pressure excess ramp start", DNDS::Config::range(0.0));
+            DNDS_FIELD(oscillationExtremumFull, "PressureExtremum: normalized cell-mean pressure excess ramp saturation", DNDS::Config::range(0.0));
+            DNDS_FIELD(oscillationSupportStart, "PressureExtremum: adjacent base-shock alpha/alphaMax support ramp start", DNDS::Config::range(0.0, 1.0));
+            DNDS_FIELD(oscillationSupportFull, "PressureExtremum: adjacent base-shock alpha/alphaMax support ramp saturation", DNDS::Config::range(0.0, 1.0));
+            DNDS_FIELD(oscillationRetention, "PressureExtremum: fraction of previous shock alpha retained under adjacent support, per RHS evaluation", DNDS::Config::range(0.0, 1.0));
+            DNDS_FIELD(oscillationTransverseTolerance, "Pressure/density corrections: neighbours are nearly equal if their mean-field difference is at most this times the larger absolute value", DNDS::Config::range(0.0));
+            DNDS_FIELD(oscillationMinTransverseNeighbours, "Pressure/density corrections: required count of nearly equal interior-face neighbours (not halo depth); physical-boundary-adjacent cells are excluded", DNDS::Config::range(1, 4));
+            DNDS_FIELD(o2ReferenceLimiter, "Limiter of the GG linear target: Barth or characteristic WBAP; the finalized target also drives ordinary face sensing", DNDS::Config::enum_values(DNDS_ENUM_ALLOWED_VALUES(O2ReferenceLimiter)));
+            DNDS_FIELD(o2ReferenceUsePP,   "Compress the limited GG O2 increment toward its cell mean for positive density and sensible internal energy at face and required volume quadrature points; applied before face sensing");
             // clang-format on
             config.check("limitedVR full thresholds must exceed start thresholds", [](const T &s)
                          { return s.pressureJumpFull > s.pressureJumpStart &&
@@ -176,8 +264,8 @@ namespace DNDS::Euler
 
     /** @brief Expand an optional input-only preset before merging this input layer.
      * @details Presets select gate/target controls only: users still select
-     * limiterProcedure=2, reconstruction order and derivative weights. Explicit
-     * numeric keys in the same layer override the preset, and later layers win.
+     * limiterProcedure=LVR, reconstruction order and derivative weights. Explicit
+     * fields in the same layer override the preset, and later layers win.
      * The input-only key is removed so saved/default JSON stays fully explicit.
      */
     inline void ExpandLimitedVRPreset(nlohmann::ordered_json &input)
@@ -194,8 +282,8 @@ namespace DNDS::Euler
         nlohmann::ordered_json values = LimitedVRSettings{};
         if (name != "v1")
         {
-            values["o2ReferenceLimiter"] = LimitedVRSettings::O2ReferenceLimiterWBAP;
-            values["gateMode"] = LimitedVRSettings::GateProductCubicWithExtremumCorrection;
+            values["o2ReferenceLimiter"] = O2ReferenceLimiter::WBAP;
+            values["gateMode"] = LimitedVRGateMode::PressureExtremum;
             values["pressureJumpStart"] = 0.04;
             values["pressureJumpFull"] = 0.16;
             values["compressionStart"] = 0.03;
@@ -241,18 +329,6 @@ namespace DNDS::Euler
         return q * q * (3.0 - 2.0 * q);
     }
 
-    inline real LimitedVRNormalizedExcess(real value, real start, real full)
-    {
-        DNDS_check_throw_info(full > start, "limitedVR ramp full threshold must exceed start");
-        return std::max(real(0), (value - start) / (full - start));
-    }
-
-    inline real LimitedVRCoupledSaturatedResponse(real firstExcess, real secondExcess)
-    {
-        real coupledExcess = std::sqrt(firstExcess * secondExcess);
-        return std::min(real(1), 2.0 * coupledExcess / (1.0 + coupledExcess));
-    }
-
     inline LimitedVRFaceSensor EvaluateLimitedVRFaceSensor(
         real pressureLeft, real pressureRight,
         real normalVelocityLeft, real normalVelocityRight,
@@ -270,58 +346,9 @@ namespace DNDS::Euler
             result.pressureJump, settings.pressureJumpStart, settings.pressureJumpFull);
         real compressionResponse = LimitedVRCubicRamp(
             result.compression, settings.compressionStart, settings.compressionFull);
-        real gateResponse = 0;
-        switch (settings.gateMode)
-        {
-        case LimitedVRSettings::GateProductCubic:
-            gateResponse = pressureResponse * compressionResponse;
-            break;
-        case LimitedVRSettings::GateUnionCubic:
-            gateResponse = 1.0 - (1.0 - pressureResponse) * (1.0 - compressionResponse);
-            break;
-        case LimitedVRSettings::GateCombinedRational:
-        {
-            real combinedExcess =
-                LimitedVRNormalizedExcess(result.pressureJump, settings.pressureJumpStart, settings.pressureJumpFull) +
-                LimitedVRNormalizedExcess(result.compression, settings.compressionStart, settings.compressionFull);
-            gateResponse = combinedExcess / (1.0 + combinedExcess);
-            break;
-        }
-        case LimitedVRSettings::GateCoupledRational:
-        {
-            // Couple the two indicators before the long-tail map.  The geometric
-            // mean retains an exact zero unless both shock signatures exceed
-            // their starts, while q / (1 + q) avoids the weak near-start response
-            // of multiplying two cubic ramps.
-            real pressureExcess = LimitedVRNormalizedExcess(
-                result.pressureJump, settings.pressureJumpStart, settings.pressureJumpFull);
-            real compressionExcess = LimitedVRNormalizedExcess(
-                result.compression, settings.compressionStart, settings.compressionFull);
-            real coupledExcess = std::sqrt(pressureExcess * compressionExcess);
-            gateResponse = coupledExcess / (1.0 + coupledExcess);
-            break;
-        }
-        case LimitedVRSettings::GateCoupledRationalSaturated:
-        case LimitedVRSettings::GateNeighborCoupledRationalSaturated:
-        case LimitedVRSettings::GateNeighborhoodEnvelopeRationalSaturated:
-        {
-            real pressureExcess = LimitedVRNormalizedExcess(
-                result.pressureJump, settings.pressureJumpStart, settings.pressureJumpFull);
-            real compressionExcess = LimitedVRNormalizedExcess(
-                result.compression, settings.compressionStart, settings.compressionFull);
-            // This rational tail is continuous and reaches an exact plateau at
-            // the declared full thresholds (coupledExcess == 1).
-            gateResponse = LimitedVRCoupledSaturatedResponse(pressureExcess, compressionExcess);
-            break;
-        }
-        case LimitedVRSettings::GateNeighborhoodEnvelopeCubic:
-        case LimitedVRSettings::GateProductCubicWithExtremumCorrection:
-            gateResponse = pressureResponse * compressionResponse;
-            break;
-        default:
-            DNDS_assert_info(false, "invalid limitedVR gateMode");
-        }
-        result.alpha = settings.alphaMax * gateResponse;
+        // Both retained modes share this local face response. PressureExtremum
+        // adds its supported cell-mean correction in BuildLimitedVRO2.
+        result.alpha = settings.alphaMax * (pressureResponse * compressionResponse);
         return result;
     }
 
