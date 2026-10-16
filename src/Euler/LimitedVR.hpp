@@ -46,6 +46,19 @@ namespace DNDS::Euler
                                               {LimitedVRGateMode::ProductCubic, "ProductCubic"},
                                               {LimitedVRGateMode::PressureExtremum, "PressureExtremum"}})
 
+    /// Penalty target; the detector always retains its independent limited GG O2 reference.
+    enum class LimitedVRTarget
+    {
+        Unknown = -1,
+        O2 = 0,
+        WBAP3 = 1,
+        CWBAP = 2,
+    };
+    DNDS_DEFINE_ENUM_JSON(LimitedVRTarget, {{LimitedVRTarget::Unknown, nullptr},
+                                            {LimitedVRTarget::O2, "O2"},
+                                            {LimitedVRTarget::WBAP3, "3WBAP"},
+                                            {LimitedVRTarget::CWBAP, "CWBAP"}})
+
     namespace detail
     {
         /// Read only named choices or their exact legacy integer aliases.
@@ -85,9 +98,18 @@ namespace DNDS::Euler
                                        "gateMode must be ProductCubic or PressureExtremum (legacy integers: 0, 8); experimental modes 1..7 were removed");
     }
 
-    /** @brief Cellwise A-weighted penalty toward a limited explicit GG O2 target.
+    inline void from_json(const nlohmann::ordered_json &input, LimitedVRTarget &value)
+    {
+        detail::ReadReconstructionEnum(input, value,
+                                       {LimitedVRTarget::O2, LimitedVRTarget::WBAP3, LimitedVRTarget::CWBAP},
+                                       "penaltyTarget must be O2, 3WBAP, or CWBAP");
+    }
+
+    /** @brief Cellwise A-weighted penalty toward a frozen limited polynomial.
      * @details For a fixed cell mean, A is the existing VR diagonal block and t
-     * contains the limited linear coefficients, with all higher modes zero.
+     * defaults to limited GG linear coefficients with higher modes zero. The
+     * experimental 3WBAP/CWBAP targets retain all degrees of a separately
+     * computed unpenalized predictor; detection still uses limited GG O2.
      * Adding lambda/2*(r-t)^T*A*(r-t) changes the block update to
      * (1-alpha)*r_VR+alpha*t, before the existing Jacobi/SOR relaxation, where
      * alpha=lambda/(1+lambda). Zero leaves VR unchanged; one fixes its row to t.
@@ -197,6 +219,12 @@ namespace DNDS::Euler
         O2ReferenceLimiter o2ReferenceLimiter = O2ReferenceLimiter::WBAP;
         /// Use cell means as PP bases; enforce face/required volume-point density and sensible-energy positivity.
         bool o2ReferenceUsePP = true;
+        /// O2 preserves the baseline. High-order choices limit a fresh, lagged unpenalized predictor.
+        /// The target is held fixed during each reconstruction solve, but depends on incoming coefficients.
+        LimitedVRTarget penaltyTarget = LimitedVRTarget::O2;
+        /// Compute the high-order limiter only where final alpha is strictly greater than this cutoff.
+        /// Other cells use the predictor itself as target; existing full halo pulls are retained.
+        real highOrderTargetAlphaThreshold = 0.01;
 
         DNDS_DECLARE_CONFIG(LimitedVRSettings)
         {
@@ -241,6 +269,8 @@ namespace DNDS::Euler
             DNDS_FIELD(oscillationMinTransverseNeighbours, "Pressure/density corrections: required count of nearly equal interior-face neighbours (not halo depth); physical-boundary-adjacent cells are excluded", DNDS::Config::range(1, 4));
             DNDS_FIELD(o2ReferenceLimiter, "Limiter of the GG linear target: Barth or characteristic WBAP; the finalized target also drives ordinary face sensing", DNDS::Config::enum_values(DNDS_ENUM_ALLOWED_VALUES(O2ReferenceLimiter)));
             DNDS_FIELD(o2ReferenceUsePP,   "Compress the limited GG O2 increment toward its cell mean for positive density and sensible internal energy at face and required volume quadrature points; applied before face sensing");
+            DNDS_FIELD(penaltyTarget, "Penalty target: O2 uses the limited GG reference; 3WBAP/CWBAP limit all degrees of one fresh unpenalized reconstruction predictor, held fixed during the ensuing solve; detection still uses limited O2", DNDS::Config::enum_values(DNDS_ENUM_ALLOWED_VALUES(LimitedVRTarget)));
+            DNDS_FIELD(highOrderTargetAlphaThreshold, "High-order target only: run the partial limiter where final alpha is strictly above this cutoff; retain the unmodified predictor elsewhere; full existing halo communication remains", DNDS::Config::range(0.0, 1.0));
             // clang-format on
             config.check("limitedVR full thresholds must exceed start thresholds", [](const T &s)
                          { return s.pressureJumpFull > s.pressureJumpStart &&

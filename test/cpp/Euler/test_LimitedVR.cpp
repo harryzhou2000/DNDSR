@@ -42,6 +42,10 @@ TEST_CASE("LVR selectors write names, accept retained integer aliases and reject
     CHECK(fields.at("gateMode").at("type") == "string");
     CHECK(fields.at("gateMode").at("enum") == json::array({"ProductCubic", "PressureExtremum"}));
     CHECK(fields.at("o2ReferenceLimiter").at("enum") == json::array({"Barth", "WBAP"}));
+    CHECK(fields.at("penaltyTarget").at("enum") == json::array({"O2", "3WBAP", "CWBAP"}));
+    for (const auto choice : {LimitedVRTarget::O2, LimitedVRTarget::WBAP3, LimitedVRTarget::CWBAP})
+        CHECK(json(choice).get<LimitedVRTarget>() == choice);
+    CHECK_THROWS(json("unknown").get<LimitedVRTarget>());
     json legacy = LimitedVRSettings{};
     legacy["gateMode"] = 8;
     legacy["o2ReferenceLimiter"] = 1;
@@ -219,6 +223,8 @@ TEST_CASE("Limited variational reconstruction settings parse and validate")
     CHECK(config["oscillationTransverseTolerance"] == doctest::Approx(1e-8));
     CHECK(config["oscillationMinTransverseNeighbours"] == 2);
     CHECK(config["o2ReferenceUsePP"] == true);
+    CHECK(config["penaltyTarget"] == "O2");
+    CHECK(config["highOrderTargetAlphaThreshold"] == doctest::Approx(0.01));
     config["alphaMax"] = 1.0;
     config["pressureJumpStart"] = 0.05;
     config["pressureJumpFull"] = 0.50;

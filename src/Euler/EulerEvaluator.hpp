@@ -814,6 +814,25 @@ namespace DNDS::Euler
             bool resetWeakAlpha,
             const typename TVFV::template TFBoundary<nVarsFixed> &FBoundary);
 
+        /// Apply a characteristic 3WBAP/CWBAP limiter without changing the input.
+        /// Full standard halo pulls are retained. limitOrder=1 is the GG O2 route.
+        void LimitReconstructionWBAP(
+            ArrayDOFV<nVarsFixed> &u, ArrayRECV<nVarsFixed> &input,
+            ArrayRECV<nVarsFixed> &output, ArrayRECV<nVarsFixed> &buffer,
+            CFV::tScalarPair &indicator, ReconstructionLimiter procedure,
+            bool allCells, int limitOrder = 0);
+
+        /// Limit every polynomial degree of a fresh unpenalized predictor only
+        /// where alpha>highOrderTargetAlphaThreshold. Unselected targets equal
+        /// the predictor; no input coefficients or detector fields are changed.
+        /// Caller freezes this target for the ensuing penalized solve and may
+        /// apply the ordinary mean-based positivity compressor before use.
+        void BuildLimitedVRHighOrderTarget(
+            ArrayDOFV<nVarsFixed> &u, ArrayRECV<nVarsFixed> &predictor,
+            ArrayRECV<nVarsFixed> &target, ArrayRECV<nVarsFixed> &buffer,
+            CFV::tScalarPair &indicator, ArrayDOFV<1> &alpha,
+            const LimitedVRSettings &settings);
+
         static const int EvaluateURecBeta_DEFAULT = 0x00;          ///< Default: evaluate beta without compression.
         static const int EvaluateURecBeta_COMPRESS_TO_MEAN = 0x01; ///< Compress reconstruction toward cell mean to enforce positivity.
         static const int EvaluateURecBeta_LOCAL_STATS = 0x02;      ///< Return local nLim/betaMin; skip their diagnostic reductions only, not global PP floors.
@@ -2451,6 +2470,16 @@ namespace DNDS::Euler
             bool refreshWeakAlpha,                                                                                        \
             bool resetWeakAlpha,                                                                                          \
             const typename TVFV::template TFBoundary<nVarsFixed> &FBoundary);                                             \
+                                                                                                                          \
+        ext template void EulerEvaluator<model>::LimitReconstructionWBAP(                                                 \
+            ArrayDOFV<nVarsFixed> &u, ArrayRECV<nVarsFixed> &input, ArrayRECV<nVarsFixed> &output,                        \
+            ArrayRECV<nVarsFixed> &buffer, CFV::tScalarPair &indicator, ReconstructionLimiter procedure,                  \
+            bool allCells, int limitOrder);                                                                               \
+                                                                                                                          \
+        ext template void EulerEvaluator<model>::BuildLimitedVRHighOrderTarget(                                           \
+            ArrayDOFV<nVarsFixed> &u, ArrayRECV<nVarsFixed> &predictor, ArrayRECV<nVarsFixed> &target,                    \
+            ArrayRECV<nVarsFixed> &buffer, CFV::tScalarPair &indicator, ArrayDOFV<1> &alpha,                              \
+            const LimitedVRSettings &settings);                                                                           \
                                                                                                                           \
         ext template void EulerEvaluator<model>::EvaluateURecBeta(                                                        \
             ArrayDOFV<nVarsFixed> &u,                                                                                     \

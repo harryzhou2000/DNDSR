@@ -1316,6 +1316,23 @@
                             "type": "boolean",
                             "default": true,
                             "description": "Compress the limited GG O2 increment toward its cell mean for positive density and sensible internal energy at face and required volume quadrature points; applied before face sensing"
+                        },
+                        "penaltyTarget": {
+                            "type": "string",
+                            "default": "O2",
+                            "description": "Penalty target: O2 uses the limited GG reference; 3WBAP/CWBAP limit all degrees of one fresh unpenalized reconstruction predictor, held fixed during the ensuing solve; detection still uses limited O2",
+                            "enum": [
+                                "O2",
+                                "3WBAP",
+                                "CWBAP"
+                            ]
+                        },
+                        "highOrderTargetAlphaThreshold": {
+                            "type": "number",
+                            "default": 0.01,
+                            "description": "High-order target only: run the partial limiter where final alpha is strictly above this cutoff; retain the unmodified predictor elsewhere; full existing halo communication remains",
+                            "minimum": 0.0,
+                            "maximum": 1.0
                         }
                     }
                 }

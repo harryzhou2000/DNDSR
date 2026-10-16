@@ -298,6 +298,32 @@ namespace DNDS::Euler
             if (config.implicitReconstructionControl.storeRecInc)
                 uRecOld = uRecC;
 
+            if (useLimitedVR && config.limiterControl.limitedVR.penaltyTarget != LimitedVRTarget::O2 && nRec > 0)
+            {
+                DNDS_check_throw_info(!config.implicitReconstructionControl.useExplicit &&
+                                          config.implicitReconstructionControl.recLinearScheme == 0,
+                                      "high-order LVR target requires the block Jacobi/GS reconstruction path");
+                // A separate predictor prevents a saturated row from targeting
+                // its previous penalized value. Keep uRecC unchanged so alpha=0
+                // has exactly the ordinary reconstruction update count.
+                uRecNew1 = uRecC;
+                vfv->DoReconstructionIter(uRecNew1, uRecNew, cx, FBoundary, false);
+                uRecNew1.trans.startPersistentPull();
+                uRecNew1.trans.waitPersistentPull();
+                eval.BuildLimitedVRHighOrderTarget(cx, uRecNew1, uRecO2, uRecNew,
+                                                   ifUseLimiter, lvrAlpha_, config.limiterControl.limitedVR);
+                if (config.limiterControl.usePPRecLimiter)
+                {
+                    index targetPPLimited = 0;
+                    real targetMinimumBeta = 1;
+                    eval.EvaluateURecBeta(cx, uRecO2, betaPPC, targetPPLimited, targetMinimumBeta,
+                                          TEval::EvaluateURecBeta_COMPRESS_TO_MEAN | TEval::EvaluateURecBeta_LOCAL_STATS);
+                    uRecO2.trans.startPersistentPull();
+                    uRecO2.trans.waitPersistentPull();
+                }
+                // The full-degree target remains fixed throughout the solve below.
+            }
+
             if (config.implicitReconstructionControl.useExplicit)
             { // pass
             }

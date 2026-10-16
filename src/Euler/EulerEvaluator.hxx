@@ -2548,6 +2548,93 @@ namespace DNDS::Euler
 
     DNDS_SWITCH_INTELLISENSE(
         template <EulerModel model>, template <>)
+    void EulerEvaluator<model>::LimitReconstructionWBAP(
+        ArrayDOFV<nVarsFixed> &u, ArrayRECV<nVarsFixed> &input,
+        ArrayRECV<nVarsFixed> &output, ArrayRECV<nVarsFixed> &buffer,
+        CFV::tScalarPair &indicator, ReconstructionLimiter procedure,
+        bool allCells, int limitOrder)
+    {
+        DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
+        using tLimitBatch = typename TVFV::template tLimitBatch<nVarsFixed>;
+        auto fML = [&](const TU &UL, const TU &UR, const Geom::tPoint &n,
+                       const Eigen::Ref<tLimitBatch> &data) -> tLimitBatch
+        {
+            TU UMean = (UL + UR) * 0.5;
+            Eigen::Matrix<real, dim, dim> normBase = Geom::NormBuildLocalBaseV<dim>(n(Seq012));
+            UMean(Seq123) = normBase.transpose() * UMean(Seq123);
+            Eigen::Vector<real, I4 + 1> UC = UMean(Seq01234);
+            real T = phys_.temperature(UMean);
+            real gammaEq = phys_.gammaEq(T, UMean);
+            real gamma = phys_.gamma(T, UMean);
+            auto M = Gas::IdealGas_EulerGasLeftEigenVector<dim>(
+                UC, gammaEq, gamma, phys_.mixtureBaseInternalRhoE(UMean));
+            M(EigenAll, Seq123) *= normBase.transpose();
+            Eigen::Matrix<real, nVarsFixed, nVarsFixed> ret(nVars, nVars);
+            ret.setIdentity();
+            ret(Seq01234, Seq01234) = M;
+            return (ret * data.transpose()).transpose();
+        };
+        auto fMR = [&](const TU &UL, const TU &UR, const Geom::tPoint &n,
+                       const Eigen::Ref<tLimitBatch> &data) -> tLimitBatch
+        {
+            TU UMean = (UL + UR) * 0.5;
+            Eigen::Matrix<real, dim, dim> normBase = Geom::NormBuildLocalBaseV<dim>(n(Seq012));
+            UMean(Seq123) = normBase.transpose() * UMean(Seq123);
+            Eigen::Vector<real, I4 + 1> UC = UMean(Seq01234);
+            real T = phys_.temperature(UMean);
+            real gammaEq = phys_.gammaEq(T, UMean);
+            real gamma = phys_.gamma(T, UMean);
+            auto M = Gas::IdealGas_EulerGasRightEigenVector<dim>(
+                UC, gammaEq, gamma, phys_.mixtureBaseInternalRhoE(UMean));
+            M(Seq123, EigenAll) = normBase * M(Seq123, EigenAll);
+            Eigen::Matrix<real, nVarsFixed, nVarsFixed> ret(nVars, nVars);
+            ret.setIdentity();
+            ret(Seq01234, Seq01234) = M;
+            return (ret * data.transpose()).transpose();
+        };
+        if (procedure == ReconstructionLimiter::WBAP3)
+            vfv->template DoLimiterWBAP_3<nVarsFixed>(
+                u, input, output, buffer, indicator, allCells, fML, fMR, true, limitOrder);
+        else
+        {
+            DNDS_check_throw_info(procedure == ReconstructionLimiter::CWBAP && limitOrder == 0,
+                                  "characteristic limiter must be 3WBAP or full-order CWBAP");
+            vfv->template DoLimiterWBAP_C<nVarsFixed>(
+                u, input, output, buffer, indicator, allCells, fML, fMR, true);
+        }
+    }
+
+    DNDS_SWITCH_INTELLISENSE(
+        template <EulerModel model>, template <>)
+    void EulerEvaluator<model>::BuildLimitedVRHighOrderTarget(
+        ArrayDOFV<nVarsFixed> &u, ArrayRECV<nVarsFixed> &predictor,
+        ArrayRECV<nVarsFixed> &target, ArrayRECV<nVarsFixed> &buffer,
+        CFV::tScalarPair &indicator, ArrayDOFV<1> &alpha,
+        const LimitedVRSettings &targetSettings)
+    {
+        DNDS_check_throw_info(targetSettings.penaltyTarget != LimitedVRTarget::O2,
+                              "high-order target requires 3WBAP or CWBAP");
+        // The partial limiter uses si<smoothThreshold. A nonnegative threshold
+        // therefore selects its own value and rejects -1, even at threshold=0.
+        // Restore a finite 0/1-normalized output flag afterwards: this existing
+        // array also supplies ifUseLimiter in snapshots, so infinities are wrong.
+        const real limiterThreshold = vfv->getSettings().smoothThreshold;
+        DNDS_check_throw_info(std::isfinite(limiterThreshold) && limiterThreshold >= 0,
+                              "high-order LVR target requires finite nonnegative smoothThreshold");
+        for (index iCell = 0; iCell < mesh->NumCell(); ++iCell)
+            indicator(iCell, 0) = alpha[iCell](0) > targetSettings.highOrderTargetAlphaThreshold
+                                      ? limiterThreshold + verySmallReal
+                                      : -1.0;
+        const auto procedure = targetSettings.penaltyTarget == LimitedVRTarget::WBAP3
+                                   ? ReconstructionLimiter::WBAP3
+                                   : ReconstructionLimiter::CWBAP;
+        LimitReconstructionWBAP(u, predictor, target, buffer, indicator, procedure, false);
+        for (index iCell = 0; iCell < mesh->NumCell(); ++iCell)
+            indicator(iCell, 0) = std::max(0.0, indicator(iCell, 0));
+    }
+
+    DNDS_SWITCH_INTELLISENSE(
+        template <EulerModel model>, template <>)
     void EulerEvaluator<model>::BuildLimitedVRO2(
         ArrayDOFV<nVarsFixed> &u,
         ArrayRECV<nVarsFixed> &uRecO2,
@@ -2605,46 +2692,9 @@ namespace DNDS::Euler
             uRecO2.trans.startPersistentPull();
             uRecO2.trans.waitPersistentPull();
 
-            using tLimitBatch = typename TVFV::template tLimitBatch<nVarsFixed>;
-            auto fML = [&](const TU &UL, const TU &UR, const Geom::tPoint &n,
-                           const Eigen::Ref<tLimitBatch> &data) -> tLimitBatch
-            {
-                TU UMean = (UL + UR) * 0.5;
-                Eigen::Matrix<real, dim, dim> normBase = Geom::NormBuildLocalBaseV<dim>(n(Seq012));
-                UMean(Seq123) = normBase.transpose() * UMean(Seq123);
-                Eigen::Vector<real, I4 + 1> UC = UMean(Seq01234);
-                real T = phys_.temperature(UMean);
-                real gammaEq = phys_.gammaEq(T, UMean);
-                real gamma = phys_.gamma(T, UMean);
-                auto M = Gas::IdealGas_EulerGasLeftEigenVector<dim>(
-                    UC, gammaEq, gamma, phys_.mixtureBaseInternalRhoE(UMean));
-                M(EigenAll, Seq123) *= normBase.transpose();
-                Eigen::Matrix<real, nVarsFixed, nVarsFixed> ret(nVars, nVars);
-                ret.setIdentity();
-                ret(Seq01234, Seq01234) = M;
-                return (ret * data.transpose()).transpose();
-            };
-            auto fMR = [&](const TU &UL, const TU &UR, const Geom::tPoint &n,
-                           const Eigen::Ref<tLimitBatch> &data) -> tLimitBatch
-            {
-                TU UMean = (UL + UR) * 0.5;
-                Eigen::Matrix<real, dim, dim> normBase = Geom::NormBuildLocalBaseV<dim>(n(Seq012));
-                UMean(Seq123) = normBase.transpose() * UMean(Seq123);
-                Eigen::Vector<real, I4 + 1> UC = UMean(Seq01234);
-                real T = phys_.temperature(UMean);
-                real gammaEq = phys_.gammaEq(T, UMean);
-                real gamma = phys_.gamma(T, UMean);
-                auto M = Gas::IdealGas_EulerGasRightEigenVector<dim>(
-                    UC, gammaEq, gamma, phys_.mixtureBaseInternalRhoE(UMean));
-                M(Seq123, EigenAll) = normBase * M(Seq123, EigenAll);
-                Eigen::Matrix<real, nVarsFixed, nVarsFixed> ret(nVars, nVars);
-                ret.setIdentity();
-                ret(Seq01234, Seq01234) = M;
-                return (ret * data.transpose()).transpose();
-            };
-            vfv->template DoLimiterWBAP_3<nVarsFixed>(
-                u, uRecO2, uRecLimiterWork, uRecLimiterBuffer,
-                limiterIndicator, true, fML, fMR, false, 1);
+            LimitReconstructionWBAP(u, uRecO2, uRecLimiterWork, uRecLimiterBuffer,
+                                    limiterIndicator, ReconstructionLimiter::WBAP3, true, 1);
+            uRecO2 = uRecLimiterWork;
         }
 
         if (limitedVRSettings.o2ReferenceUsePP)

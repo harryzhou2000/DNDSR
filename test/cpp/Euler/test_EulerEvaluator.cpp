@@ -541,6 +541,88 @@ TEST_CASE("LVR target and branch halos agree across 2-D MPI partitions")
             }
 }
 
+TEST_CASE("LVR high-order targets preserve unselected coefficients and standard limiter results across MPI")
+{
+    const std::string root = projectRoot();
+    const auto cfg = writeTempConfig<NS>(root + "/cases/euler/euler_config_IV.json", "lvr_high_order_2d",
+                                         {{"vfvSettings", {{"maxOrder", 3}, {"intOrder", 5}, {"subs2ndOrder", 1}, {"cacheDiffBase", true}}},
+                                          {"limiterControl", {{"useLimiter", true}, {"limiterProcedure", "LVR"}}},
+                                          {"implicitReconstructionControl", {{"recLinearScheme", 0}}},
+                                          {"dataIOControl", {{"meshDirectBisect", 0}, {"meshFile", root + "/data/mesh/IV10_10.cgns"}}}});
+    EulerSolver<NS> solver(g_mpi);
+    solver.ConfigureFromJson(cfg, true);
+    solver.ReadMeshAndInitialize();
+    auto vfv = solver.getVFV();
+    auto mesh = solver.getMesh();
+    auto &u = solver.getU();
+    auto &predictor = solver.getURec();
+    auto &target = solver.getURecO2();
+    auto &full = solver.getURecLimited();
+    auto &buffer = solver.getURecNew();
+    auto data = solver.getOutputOverlapDataRefs();
+    CFV::tScalarPair indicator;
+    vfv->BuildScalar(indicator);
+    for (DNDS::index i = 0; i < mesh->NumCell(); ++i)
+    {
+        const auto x = vfv->GetCellQuadraturePPhys(i, -1);
+        u[i] << 1, .2, .1, 0, 2.525;
+        for (int r = 0; r < predictor[i].rows(); ++r)
+            for (int v = 0; v < predictor[i].cols(); ++v)
+                predictor[i](r, v) = 1e-5 * (r + 1) * (v + 1) * (1 + .02 * std::sin(x(0) + x(1)));
+    }
+    u.trans.startPersistentPull();
+    u.trans.waitPersistentPull();
+    predictor.trans.startPersistentPull();
+    predictor.trans.waitPersistentPull();
+    ArrayRECV<5> saved;
+    vfv->BuildURec(saved, 5);
+    saved = predictor;
+    auto settings = solver.getConfiguration().limiterControl.limitedVR;
+    for (const auto choice : {LimitedVRTarget::WBAP3, LimitedVRTarget::CWBAP})
+    {
+        settings.penaltyTarget = choice;
+        const auto procedure = choice == LimitedVRTarget::WBAP3 ? ReconstructionLimiter::WBAP3 : ReconstructionLimiter::CWBAP;
+        data.lvrAlpha.setConstant(1);
+        solver.getEval().BuildLimitedVRHighOrderTarget(u, predictor, target, buffer, indicator, data.lvrAlpha, settings);
+        solver.getEval().LimitReconstructionWBAP(u, predictor, full, buffer, indicator, procedure, true);
+        DNDS::real higherNorm = 0;
+        for (DNDS::index i = 0; i < mesh->NumCell(); ++i)
+        {
+            CHECK((predictor[i] - saved[i]).norm() == 0);
+            CHECK((target[i] - full[i]).norm() < 1e-12);
+            higherNorm += target[i].bottomRows(target[i].rows() - 2).squaredNorm();
+        }
+        DNDS::real totalHigherNorm = 0;
+        MPI::Allreduce(&higherNorm, &totalHigherNorm, 1, DNDS_MPI_REAL, MPI_SUM, g_mpi.comm);
+        CHECK(totalHigherNorm > 0);
+
+        // Strict cutoff: alpha equal to 0.01 is not selected, including MPI borders.
+        data.lvrAlpha.setConstant(settings.highOrderTargetAlphaThreshold);
+        solver.getEval().BuildLimitedVRHighOrderTarget(u, predictor, target, buffer, indicator, data.lvrAlpha, settings);
+        for (DNDS::index i = 0; i < mesh->NumCellProc(); ++i)
+            CHECK((target[i] - predictor[i]).norm() == 0);
+
+        for (DNDS::index i = 0; i < mesh->NumCell(); ++i)
+            data.lvrAlpha[i](0) = vfv->GetCellQuadraturePPhys(i, -1)(0) < 5 ? 1 : 0;
+        solver.getEval().BuildLimitedVRHighOrderTarget(u, predictor, target, buffer, indicator, data.lvrAlpha, settings);
+        for (DNDS::index i = 0; i < mesh->NumCell(); ++i)
+        {
+            CHECK(target[i].allFinite());
+            CHECK(std::isfinite(indicator(i, 0)));
+            CHECK(indicator(i, 0) >= 0);
+            if (data.lvrAlpha[i](0) == 0)
+                CHECK((target[i] - predictor[i]).norm() == 0);
+        }
+        // The standard limiter must return ghosts identical to a new owner pull.
+        saved = target;
+        target.trans.startPersistentPull();
+        target.trans.waitPersistentPull();
+        for (DNDS::index i = 0; i < mesh->NumCellProc(); ++i)
+            CHECK((target[i] - saved[i]).norm() == 0);
+        saved = predictor;
+    }
+}
+
 // ===================================================================
 // main with MPI
 // ===================================================================

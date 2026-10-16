@@ -12,6 +12,31 @@ restrictions on the physical time integrator.
 
 ## Named selections
 
+### Experimental high-order penalty targets
+
+The `lvr-high-order-limiting` branch adds `limitedVR.penaltyTarget`: `"O2"`
+(default), `"3WBAP"`, or `"CWBAP"`. The shock/contact detector keeps the same
+WBAP-limited, positivity-protected O2 reference in all three cases. For a
+high-order target, one fresh ordinary reconstruction sweep on a separate copy
+of the incoming polynomial produces a predictor. The selected characteristic
+limiter processes all polynomial degrees only in cells with final
+$\alpha>\mathtt{highOrderTargetAlphaThreshold}$ (default `0.01`). Unselected
+targets equal the predictor. The incoming reconstruction is unchanged by
+this preparation, preserving its ordinary update when $\alpha=0$.
+
+The target is then fixed during that RHS call's penalized block Jacobi/GS
+sweeps. Thus each fixed-target solve is linear in its unknown coefficients;
+the overall predictor/limiter/solve procedure is lagged and nonlinear. A
+fresh predictor avoids self-targeting an old limited polynomial when
+$\alpha=1$. Standard mean-based positivity compression is also applied to the
+target when `usePPRecLimiter` is enabled. This does not establish a formal
+accuracy or monotonicity theorem. All existing full halo pulls remain.
+`lvrO2Beta` continues to describe the detector's O2 positivity factor.
+
+The current experiment uses only v3 caps `(1,1)`, P3 polynomials and HQM_OPT
+derivative weights. Wider support is an independent gate experiment; the
+partial-target selection does not itself enlarge the gate.
+
 Selectors use scoped C++ enums and case-sensitive JSON strings. Saved/resolved
 configuration always writes names. Exact legacy integer inputs are accepted
 only for the retained choices below; fractional numbers, booleans, null and
@@ -74,7 +99,7 @@ explicit CLI values win regardless of their position. For example,
 `-k /limiterControl/limitedVR/preset -v v3` can replace a long LVR parameter
 list. Saved/resolved configuration contains explicit settings with named
 selectors and omits `preset`. The generated JSON schemas advertise the named
-string selections and all 40 LVR controls for every Euler solver variant.
+string selections and all 42 LVR controls for every Euler solver variant.
 The input-only preset is expanded before ordinary runtime field parsing.
 
 For example, the reference and gate can also be selected directly:
