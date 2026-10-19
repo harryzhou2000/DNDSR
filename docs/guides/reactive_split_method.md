@@ -17,6 +17,14 @@ report family; the schema's `enum` lists the accepted configuration strings.
 | `MatchedRateRatio` | 4 | localRXX family |
 | `ChemicalResponse` | 5 | Kinetic chemical directional-response ratio |
 
+Posterior accuracy evidence is maintained separately in the independent RRI
+repository, not in this implementation guide. Its `2026-10-19_REPORT.md`
+(normally under `workspace/reaction_region_indicator/` in the main checkout)
+collects the available broadA and candidate matrices, including failed rows,
+inner caps, reference-refinement qualifications and CFL-clipped Kinetic runs.
+A supported strategy name is not a recommendation of a universally validated
+recipe; keep those evidence boundaries when comparing or reproducing results.
+
 Numeric mode references elsewhere in this guide identify historical research
 families, not accepted JSON values. Migrate old `indicatorMode` integers using
 this table, including CLI overrides and research launchers. Unknown strings,
