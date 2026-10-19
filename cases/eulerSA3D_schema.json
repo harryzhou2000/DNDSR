@@ -1862,7 +1862,7 @@
                 "SAVersion": {
                     "type": "integer",
                     "default": 0,
-                    "description": "SA variant: 0=current (cRot=2, corrected |S|, min(P,0) Jacobian), 1=legacy/pre-31578ce (cRot=1, Frobenius SS, P*0 Jacobian)"
+                    "description": "SA variant: 0=correct SA-R default (cRot=2, standard strain, strain-vorticity, min(P,0) Jacobian), 1=oldest legacy (cRot=1, raw symmetric-gradient norm, P*0 Jacobian), 9001=bad historical version 0 (cRot=2, standard strain, reversed vorticity-strain, min(P,0) Jacobian); 9001 is for reproduction only"
                 },
                 "ransModel": {
                     "type": "string",

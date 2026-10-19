@@ -1001,9 +1001,10 @@ namespace DNDS::Euler::RANS
      *
      * Key terms computed:
      * - **Vorticity magnitude** S = ||Omega|| * sqrt(2), with optional rotation correction
-     *   (SRotCor = c_rot * min(0, S - SS)) when @p rotCor is enabled.
+     *   (SRotCor = c_rot * min(0, SS - S), where SS is strain magnitude) when
+     *   @p rotCor is enabled. This is SA-R, acting on production only.
      * - **Modified vorticity** Sh = S + Sbar, where Sbar = nuTilde * f_{v2} / (kappa^2 * d^2).
-     * - **Production** P = c_{b1} * (1 - f_{t2}) * Sh * nuTilde.
+     * - **Production** P = c_{b1} * (1 - f_{t2}) * (Sh + SRotCor) * nuTilde.
      * - **Destruction** D = (c_{w1} * f_w - c_{b1}/kappa^2 * f_{t2}) * (nuTilde / d)^2.
      * - **Diffusion** term: c_{b2}/sigma * |grad(nuTilde)|^2 (conservative form contribution).
      * - **f_{t2} laminar suppression** term controlled by @c SA_USE_FT2_TERM.
@@ -1034,9 +1035,12 @@ namespace DNDS::Euler::RANS
      * @param hMax      Maximum cell size (used in IDDES alpha parameter: alpha = 0.25 - d/hMax).
      * @param DESMode   DES operating mode: 0 = pure RANS, 1 = IDDES, 2 = WMLES.
      * @param[out] source  Output source vector; entry at I4+1 is set.
-     * @param rotCor    Rotation correction flag: 0 = disabled, nonzero = enabled (c_rot = 2.0).
+     * @param rotCor    SA-R rotation correction flag: 0 = disabled, nonzero = enabled.
      * @param mode      Source computation mode: 0 = full source, 1 = implicit diagonal (positive).
      * @param saConfig  SA source-term hard limits.
+     * @param SAVersion 0 = current SA-R (c_rot = 2, SS = sqrt(2 S_ij S_ij));
+     *                  1 = legacy strain normalization, coefficient 1, and implicit diagonal;
+     *                  9001 = historical version-0 reversed rotation correction for reproduction.
      */
     template <int dim, class TU, class TDiffU, class TSource>
     void GetSource_SA(TU &&UMeanXy, TDiffU &&DiffUxy, real muRef, real mufPhy, real gamma,
@@ -1092,16 +1096,18 @@ namespace DNDS::Euler::RANS
             Omega += Geom::CrossVecToMat(settings.frameConstRotation.vOmega())(Seq012, Seq012); // to static frame rotation
 #endif
         const real S = Omega.norm() * std::sqrt(2.0); // is omega's magnitude
-        const real SS = SAVersion == 0
+        const bool currentSAVersion = SAVersion == 0 || SAVersion == 9001;
+        const real SS = currentSAVersion
                             ? (diffU + diffU.transpose()).norm() * (1. / std::sqrt(2.0)) // corrected strain rate magnitude
                             : (diffU + diffU.transpose()).norm();                        // legacy (Frobenius of 2*S_ij)
         real SRotCor = 0.0;
         if (rotCor)
         {
-            const real cRot = SAVersion == 0 ? 2.0 : 1.0;
-            SRotCor += SAVersion == 0
-                           ? cRot * std::min(0.0, S - SS)
-                           : cRot * std::min(0.0, SS - S);
+            const real cRot = currentSAVersion ? 2.0 : 1.0;
+            // SA-R suppresses production when vorticity S exceeds strain SS.
+            // Keep the legacy version's normalization and coefficient unchanged.
+            // Version 9001 deliberately reproduces the old version-0 sign error.
+            SRotCor = cRot * std::min(0.0, SAVersion == 9001 ? S - SS : SS - S);
         }
         real diffUNorm = diffU.norm();
 
@@ -1233,7 +1239,7 @@ namespace DNDS::Euler::RANS
             source(I4 + 1) = UMeanXy(0) * (P - D + diffNu.squaredNorm() * cb2 / sigma) / muRef -
                              (UMeanXy(I4 + 1) * fn * muRef + mufPhy) / (UMeanXy(0) * sigma) * diffRho.dot(diffNu) / muRef;
         else
-            source(I4 + 1) = SAVersion == 0
+            source(I4 + 1) = currentSAVersion
                                  ? -std::min(UMeanXy(0) * (std::min(P, 0.0) * 1 - D * 2) / muRef / (std::abs(UMeanXy(I4 + 1)) + verySmallReal), -verySmallReal)
                                  : -std::min(UMeanXy(0) * (P * 0 - D * 2) / muRef / (std::abs(UMeanXy(I4 + 1)) + verySmallReal), -verySmallReal);
 

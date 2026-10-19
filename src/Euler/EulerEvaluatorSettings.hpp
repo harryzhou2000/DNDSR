@@ -410,18 +410,22 @@ namespace DNDS::Euler
          * @brief SA model variant selector.
          *
          * - **0 (default):** Current formulation — rotation correction uses cRot = 2.0
-         *   with corrected strain-rate magnitude |S| = ||S_ij + S_ij^T|| / sqrt(2),
-         *   SRotCor = cRot * min(0, |Omega| - |S|), and the implicit Jacobian source
+         *   with strain-rate magnitude |S| = ||grad(u) + grad(u)^T|| / sqrt(2),
+         *   SRotCor = cRot * min(0, |S| - |Omega|), and the implicit Jacobian source
          *   includes the negative part of production: min(P, 0) * 1.
-         * - **1 (legacy):** Pre-31578ce (dev/harry_ba3) formulation — rotation correction
-         *   uses cRot = 1.0 with the Frobenius norm SS = ||S_ij + S_ij^T||,
+         * - **1 (legacy):** Oldest retained formulation — rotation correction
+         *   uses cRot = 1.0 with the Frobenius norm SS = ||grad(u) + grad(u)^T||,
          *   SRotCor = cRot * min(0, SS - S), and the implicit Jacobian source omits
          *   production entirely (P * 0).
+         * - **9001 (bad version 0):** Reproduces the historical version-0 sign error:
+         *   cRot = 2.0 and the standard strain magnitude, but
+         *   SRotCor = cRot * min(0, |Omega| - |S|). Uses the same negative-production
+         *   implicit diagonal as version 0. For historical comparisons only.
          */
         int SAVersion = 0;
         RANSModel ransModel = RANSModel::RANS_None; ///< RANS turbulence model (RANS_None, RANS_SA, RANS_KOWilcox, etc.).
         int ransUseQCR = 0;                         ///< Enable QCR (Quadratic Constitutive Relation) correction.
-        int ransSARotCorrection = 1;                ///< SA rotation/curvature correction mode.
+        int ransSARotCorrection = 1;                ///< Enable the SA-R production rotation correction (not SA-RC).
         int ransEigScheme = 0;                      ///< Eigenvalue computation scheme for RANS.
         int ransForce2nd = 0;                       ///< Force 2nd-order accuracy for RANS variables.
         int ransSource2nd = 0;                      ///< Enable 2nd-order RANS source term discretization.
@@ -784,7 +788,7 @@ namespace DNDS::Euler
                        DNDS::Config::range(1));
             DNDS_FIELD(SADESScale,              "SA-DES length scale");
             DNDS_FIELD(SADESMode,               "SA-DES mode");
-            DNDS_FIELD(SAVersion,               "SA variant: 0=current (cRot=2, corrected |S|, min(P,0) Jacobian), 1=legacy/pre-31578ce (cRot=1, Frobenius SS, P*0 Jacobian)");
+            DNDS_FIELD(SAVersion,               "SA variant: 0=correct SA-R default (cRot=2, standard strain, strain-vorticity, min(P,0) Jacobian), 1=oldest legacy (cRot=1, raw symmetric-gradient norm, P*0 Jacobian), 9001=bad historical version 0 (cRot=2, standard strain, reversed vorticity-strain, min(P,0) Jacobian); 9001 is for reproduction only");
             DNDS_FIELD(ransModel,               "RANS turbulence model");
             DNDS_FIELD(ransUseQCR,              "Use QCR correction for RANS");
             DNDS_FIELD(ransSARotCorrection,     "SA rotation correction");

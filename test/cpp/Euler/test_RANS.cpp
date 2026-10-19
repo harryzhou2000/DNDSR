@@ -541,3 +541,92 @@ TEST_CASE("GetSource_SA: production limit changes the physical source")
     CHECK(sourceRelaxed.allFinite());
     CHECK(sourceRelaxed(I4 + 1) > sourceCapped(I4 + 1));
 }
+
+template <int saDim>
+static void checkSARotationCorrection()
+{
+    constexpr int nSA = saDim + 3;
+    constexpr int iSA = saDim + 2;
+    Eigen::Vector<real, nSA> U = Eigen::Vector<real, nSA>::Zero();
+    U(0) = 1.2;
+    U(saDim + 1) = 1e5;
+    const real muRef = 1e-5;
+    const real nuTilde = 1e-3;
+    U(iSA) = U(0) * nuTilde / muRef;
+    SAConfig config;
+    config.productionLimit = 1e30; // Isolate the correction from the production cap.
+    for (int flow = 0; flow < 4; ++flow)
+    {
+        CAPTURE(saDim);
+        CAPTURE(flow);
+        Eigen::Matrix<real, saDim, nSA> grad = Eigen::Matrix<real, saDim, nSA>::Zero();
+        real omega = 0;
+        if (flow == 0) // Solid-body rotation: Omega = 2, strain = 0.
+        {
+            grad(0, 2) = U(0);
+            grad(1, 1) = -U(0);
+            omega = 2;
+        }
+        else if (flow == 1) // Incompressible planar strain: Omega = 0, strain = 2.
+        {
+            grad(0, 1) = U(0);
+            grad(1, 2) = -U(0);
+        }
+        else if (flow == 2) // Simple shear: Omega = strain = 1.
+        {
+            grad(1, 1) = U(0);
+            omega = 1;
+        }
+        // flow == 3 is quiescent. Rotation correction must vanish.
+        Eigen::Vector<real, nSA> uncorrected = Eigen::Vector<real, nSA>::Zero();
+        GetSource_SA<saDim>(U, grad, muRef, muRef, g_gamma,
+                            0.1, 1e10, 0.1, 0, uncorrected, 0, 0, config, 0);
+        const real chi = U(iSA);
+        const real ft2 = 1.2 * std::exp(-0.5 * chi * chi);
+        const real productionScale = U(0) / muRef * 0.1355 * (1 - ft2) * nuTilde;
+        // Analytic added frequencies for rotation, strain, shear and quiescence.
+        const real addedFrequencies[3][4] = {{-4, 0, 0, 0}, {0, -4, 0, 0}, {-2, 0, 0, 0}};
+        int variant = 0;
+        for (int version : {0, 9001, 1})
+        {
+            CAPTURE(version);
+            Eigen::Vector<real, nSA> corrected = Eigen::Vector<real, nSA>::Zero();
+            Eigen::Vector<real, nSA> diagonal = Eigen::Vector<real, nSA>::Zero();
+            Eigen::Vector<real, nSA> unrotated = Eigen::Vector<real, nSA>::Zero();
+            GetSource_SA<saDim>(U, grad, muRef, muRef, g_gamma,
+                                0.1, 1e10, 0.1, 0, corrected, 1, 0, config, version);
+            GetSource_SA<saDim>(U, grad, muRef, muRef, g_gamma,
+                                0.1, 1e10, 0.1, 0, diagonal, 1, 1, config, version);
+            GetSource_SA<saDim>(U, grad, muRef, muRef, g_gamma,
+                                0.1, 1e10, 0.1, 0, unrotated, 0, 0, config, version);
+            CHECK(corrected.allFinite());
+            CHECK(unrotated(iSA) == uncorrected(iSA));
+            CHECK(corrected(iSA) - uncorrected(iSA) ==
+                  doctest::Approx(productionScale * addedFrequencies[variant][flow]).epsilon(1e-10));
+            const real fnu1 = chi * chi * chi / (chi * chi * chi + 7.1 * 7.1 * 7.1);
+            const real fnu2 = 1 - chi / (1 + chi * fnu1);
+            const real sbar = nuTilde * fnu2 / (0.41 * 0.41 * 0.1 * 0.1);
+            const real physicalProduction = 0.1355 * (1 - ft2) *
+                                            (omega + sbar + addedFrequencies[variant][flow]) * nuTilde;
+            const real destruction = physicalProduction - corrected(iSA) * muRef / U(0);
+            const real diagonalProduction = version == 1 ? 0 : std::min(physicalProduction, 0.0);
+            CHECK(diagonal(iSA) == doctest::Approx(std::max(
+                                                       (2 * destruction - diagonalProduction) / nuTilde, verySmallReal))
+                                       .epsilon(1e-10));
+            ++variant;
+        }
+    }
+}
+
+TEST_CASE("GetSource_SA: SA-R suppresses rotation rather than strain in 2D and 3D")
+{
+    EulerEvaluatorSettings<NS_SA> settings(6);
+    CHECK(settings.SAVersion == 0);
+    nlohmann::ordered_json config = settings;
+    config["SAVersion"] = 9001;
+    EulerEvaluatorSettings<NS_SA> historical(6);
+    from_json(config, historical);
+    CHECK(historical.SAVersion == 9001);
+    checkSARotationCorrection<2>();
+    checkSARotationCorrection<3>();
+}
