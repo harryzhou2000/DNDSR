@@ -12,8 +12,10 @@ LibTorch, Legion or mesh-library dependency.
 |---|---|
 | Buffer | One allocation, device descriptor, identity, value generation and access controller |
 | Allocator | Optional allocation/deallocation policy, including pools or pinned host storage |
-| RowLayout | Immutable fixed/runtime uniform, padded or ragged row shape in element units |
-| Runtime::Array | Typed shared Buffer handle and retained row layout |
+| RowLayout | Immutable uniform-width table (optionally strided) or CSR row shape in element units |
+| ArrayStorage | Shared immutable record containing values Buffer, logical row metadata and CUDA CSR offsets |
+| Runtime::Array | Typed handle to ArrayStorage; optional fixed-width constraint |
+| PythonArray | Runtime dtype/POD codec and the same ArrayStorage as C++ |
 | ArrayAccess | Move-only read/write lease retaining both allocation and layout |
 | ArrayView | Borrowed plain pointer/offsets for kernels; no tracking per element |
 | ArrayPair | Separate owned and ghost Arrays; optional combined read indexing |
@@ -57,11 +59,20 @@ as std::string/std::vector are not. Pointer values also do not describe portable
 MPI, checkpoint or device payloads. A custom MPI payload supplies ElementSchema
 with a matching extent; a custom reduction supplies the appropriate callback.
 
-Python uses a runtime NumPy dtype over native byte storage with the same lease
-controller, avoiding a separate bound C++ class for every dtype. Numeric and
-structured POD dtypes are supported; object-reference dtypes are rejected.
-Python debug access interprets the dtype, and builtin reductions dispatch once
-to their typed implementation.
+Python uses a runtime dtype/POD codec over the exact native ArrayStorage record.
+The public `Runtime/Array_bind.hpp` converter shares values, row metadata and
+the controller with any bound `Array<T,L>`; no byte-Array intermediary or
+width-specific Python class is needed. Numeric and structured POD dtypes are
+supported. Bound POD classes can register a class-value codec once per type,
+independent of Array widths. Object-reference NumPy dtypes remain rejected.
+See [Python ownership and binding](ArrayPythonOwnership.md) for class/object
+diagrams, the generic converter and tracked POD field editing.
+
+`FixedRows<N>` adds a C++ width constraint; it does not require a new Python
+Array class. `Dense(rows,width,stride)` is a uniform-width strided table, not
+the legacy padded layout with variable row lengths and uniform capacity.
+That legacy layout is not implemented in the native runtime yet; use CSR for
+variable-width rows. Existing legacy Array layouts remain available.
 
 ## Ownership, access and failure
 
@@ -249,8 +260,11 @@ with gpu.write() as edit:   # batching control for debugging is also available
 
 Basic integer, negative, slice and ellipsis indexing is supported. Row/column
 slices are live ArrayView objects, so `a[0][1] = value` updates the Array.
-Views retain the original allocation after a parent Reset and acquire leases
-for each read/write. Fancy indexing, boolean masks and new axes are omitted.
+Views retain the original shared ArrayStorage after a parent Reset or
+destruction, including logical metadata, CUDA CSR offsets and the controller.
+Nested slices retain their own flat handle to that record. An idle view holds
+no lease; each read/write acquires one. Fancy indexing, boolean masks and new
+axes are omitted.
 Ragged indexing supports a single row or a rectangle of equal-width rows.
 These debugging views are not row-transfer payloads; SoA remains separate
 Arrays sharing a route.

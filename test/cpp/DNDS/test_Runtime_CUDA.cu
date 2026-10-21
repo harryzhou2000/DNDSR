@@ -18,6 +18,10 @@ TEST_CASE("Native ragged Array CUDA views retain metadata through replacement")
 {
     DNDS::Runtime::Array<double> values(RowLayout::Ragged({2, 0, 513}), Device::CUDA(0));
     auto retained = values;
+    auto shared = Array<double>::FromSharedStorage(values.SharedStorage());
+    CHECK(shared.SharedStorage() == values.SharedStorage());
+    CHECK(&shared.Layout() == &values.Layout());
+    CHECK(shared.SharedStorage()->SharedLayout()->deviceOffsets.Identity() == values.SharedStorage()->SharedLayout()->deviceOffsets.Identity());
     auto ctx = ExecutionContext::CUDA(0);
     {
         auto write = values.Write(ctx);

@@ -1,4 +1,5 @@
 #include "ArrayIO.hpp"
+#include "Array_bind.hpp"
 #include "RowTransfer.hpp"
 #include "DNDS/Defines_bind.hpp"
 #include <pybind11/numpy.h>
@@ -9,18 +10,6 @@ namespace DNDS::Runtime
 {
     namespace
     {
-        // A dynamic POD facade over the same native byte Array, never a second
-        // allocation/controller. Logical row metadata uses dtype element units.
-        RowLayout ByteLayout(const RowLayout &layout, size_t bytes)
-        {
-            if (!layout.IsRagged())
-                return RowLayout::Dense(layout.Rows(), CheckedSize::Multiply(layout.Width(), bytes),
-                                        CheckedSize::Multiply(layout.Stride(), bytes));
-            std::vector<size_t> lengths;
-            for (size_t i = 0; i < layout.Rows(); ++i)
-                lengths.push_back(CheckedSize::Multiply(layout.RowSize(i), bytes));
-            return RowLayout::Ragged(lengths);
-        }
         std::string DtypeSchema(const py::dtype &dtype)
         {
             const auto kind = py::str(dtype.attr("kind")).cast<std::string>();
@@ -28,39 +17,31 @@ namespace DNDS::Runtime
                 return py::str(dtype.attr("name")).cast<std::string>();
             return "numpy.pod.v1:" + py::str(dtype.attr("descr")).cast<std::string>() + ":" + std::to_string(dtype.itemsize());
         }
-        struct PythonArray
+        std::string ArraySchema(const PythonArray &array)
         {
-            RowLayout layout;
-            py::dtype dtype;
-            Array<uint8_t> bytes;
-            PythonArray(RowLayout shape, py::dtype type, Device device)
-                : layout(std::move(shape)), dtype(std::move(type))
-            {
-                DNDS_check_throw_info(dtype.itemsize() > 0 && !py::cast<bool>(dtype.attr("hasobject")) && py::cast<bool>(dtype.attr("isnative")) &&
-                                          py::cast<size_t>(dtype.attr("alignment")) <= 64,
-                                      "Array requires a native POD dtype with alignment <= 64");
-                bytes.Reset(ByteLayout(layout, dtype.itemsize()), device);
-            }
-            ExecutionContext Context(uintptr_t stream) const { return {bytes.GetDevice(), reinterpret_cast<void *>(stream)}; }
-        };
-
+            return array.Element() ? array.Element()->schema : DtypeSchema(array.Dtype());
+        }
         struct PythonAccess
         {
-            RowLayout layout;
+            ArrayStorage::Shared storage;
+            const RowLayout &layout;
             py::dtype dtype;
-            std::optional<Array<uint8_t>::ReadLease> read;
-            std::optional<Array<uint8_t>::WriteLease> write;
+            PythonElementShared element;
+            py::object elementType;
+            std::optional<ReadAccess> read;
+            std::optional<WriteAccess> write;
             ExecutionContext context;
-            PythonAccess(PythonArray &a, bool writable, uintptr_t stream) : layout(a.layout), dtype(a.dtype), context(a.Context(stream))
+            PythonAccess(PythonArray &a, bool writable, uintptr_t stream) : storage(a.SharedStorage()), layout(storage->Layout()), dtype(a.Dtype()),
+                                                                            element(a.Element()), elementType(a.ElementType()), context(a.Context(stream))
             {
                 if (writable)
-                    write.emplace(a.bytes.Write(a.Context(stream)));
+                    write.emplace(a.Write(a.Context(stream)));
                 else
-                    read.emplace(a.bytes.Read(a.Context(stream)));
+                    read.emplace(a.Read(a.Context(stream)));
             }
             bool Active() const { return write ? write->Active() : read->Active(); }
             Device Placement() const { return write ? write->GetDevice() : read->GetDevice(); }
-            const uint8_t *Pointer() const { return write ? write->View().data : read->View().data; }
+            const uint8_t *Pointer() const { return write ? write->View<uint8_t>().data : read->View<uint8_t>().data; }
             void LiveCheck() const { DNDS_check_throw_info(Active(), "element access requires a live lease"); }
             py::array Row(size_t row) const
             {
@@ -81,9 +62,38 @@ namespace DNDS::Runtime
                 DNDS_check_throw_info(input && input.dtype().equal(dtype) && input.ndim() == 1 && size_t(input.size()) == layout.RowSize(row),
                                       "row assignment dtype/shape mismatch");
                 if (input.size())
-                    Detail::CopyBytes(input.data(), Device::Host(), write->View().data + layout.Offset(row) * dtype.itemsize(),
+                    Detail::CopyBytes(input.data(), Device::Host(), write->View<uint8_t>().data + layout.Offset(row) * dtype.itemsize(),
                                       Placement(), input.nbytes(), context)
                         .Wait();
+            }
+            py::object Get(size_t row, size_t column) const
+            {
+                LiveCheck();
+                DNDS_check_throw_info(column < layout.RowSize(row), "column outside row");
+                if (!element)
+                    return Row(row).attr("__getitem__")(column);
+                std::vector<uint8_t> value(dtype.itemsize());
+                Detail::CopyBytes(Pointer() + (layout.Offset(row) + column) * dtype.itemsize(), Placement(), value.data(),
+                                  Device::Host(), value.size(), context)
+                    .Wait();
+                return element->load(value.data());
+            }
+            void Set(size_t row, size_t column, py::handle value)
+            {
+                LiveCheck();
+                DNDS_check_throw_info(write && column < layout.RowSize(row), "element write requires a valid write lease/index");
+                if (!element)
+                {
+                    auto values = Row(row);
+                    values.attr("__setitem__")(column, value);
+                    AssignRow(row, values);
+                    return;
+                }
+                std::vector<uint8_t> bytes(dtype.itemsize());
+                element->store(bytes.data(), value);
+                Detail::CopyBytes(bytes.data(), Device::Host(), write->View<uint8_t>().data + (layout.Offset(row) + column) * dtype.itemsize(),
+                                  Placement(), bytes.size(), context)
+                    .Wait();
             }
             void Finish(bool failed)
             {
@@ -108,44 +118,44 @@ namespace DNDS::Runtime
 
         PythonArray To(const PythonArray &a, Device device, uintptr_t stream)
         {
-            PythonArray result(a.layout, a.dtype, device);
+            auto result = a.New(a.Layout(), device);
             auto context = device == Device::Host() ? a.Context(stream) : ExecutionContext{device, reinterpret_cast<void *>(stream)};
-            result.bytes.CopyFrom(a.bytes, context).Wait();
+            result.CopyFrom(a, context).Wait();
             return result;
         }
         py::array Numpy(const PythonArray &a)
         {
-            DNDS_check_throw_info(!a.layout.IsRagged(), "ragged Array uses access.row() snapshots");
+            DNDS_check_throw_info(!a.Layout().IsRagged(), "ragged Array uses access.row() snapshots");
             auto host = To(a, Device::Host(), 0);
-            auto read = host.bytes.Read();
-            py::array result(a.dtype, {py::ssize_t(a.layout.Rows()), py::ssize_t(a.layout.Width())});
-            for (size_t i = 0; i < a.layout.Rows(); ++i)
-                if (a.layout.Width())
-                    std::memcpy(result.mutable_data(i, 0), read.View().Row(i), a.layout.Width() * a.dtype.itemsize());
+            auto read = host.Read(ExecutionContext::Host());
+            py::array result(a.Dtype(), {py::ssize_t(a.Layout().Rows()), py::ssize_t(a.Layout().Width())});
+            for (size_t i = 0; i < a.Layout().Rows(); ++i)
+                if (a.Layout().Width())
+                    std::memcpy(result.mutable_data(i, 0), read.View<uint8_t>().data + host.Layout().Offset(i) * host.Dtype().itemsize(), a.Layout().Width() * a.Dtype().itemsize());
             return result;
         }
         void Assign(PythonArray &a, py::array input)
         {
             input = py::array::ensure(input, py::array::c_style);
-            DNDS_check_throw_info(input && !a.layout.IsRagged() && input.dtype().equal(a.dtype) && input.ndim() == 2 &&
-                                      size_t(input.shape(0)) == a.layout.Rows() && size_t(input.shape(1)) == a.layout.Width(),
+            DNDS_check_throw_info(input && !a.Layout().IsRagged() && input.dtype().equal(a.Dtype()) && input.ndim() == 2 &&
+                                      size_t(input.shape(0)) == a.Layout().Rows() && size_t(input.shape(1)) == a.Layout().Width(),
                                   "Array assignment dtype/shape mismatch");
-            PythonArray host(a.layout, a.dtype, Device::Host());
+            auto host = a.New(a.Layout(), Device::Host());
             {
-                auto write = host.bytes.Write();
-                for (size_t i = 0; i < a.layout.Rows(); ++i)
-                    if (a.layout.Width())
-                        std::memcpy(write.View().Row(i), input.data(i, 0), a.layout.Width() * a.dtype.itemsize());
+                auto write = host.Write(ExecutionContext::Host());
+                for (size_t i = 0; i < a.Layout().Rows(); ++i)
+                    if (a.Layout().Width())
+                        std::memcpy(write.View<uint8_t>().data + host.Layout().Offset(i) * host.Dtype().itemsize(), input.data(i, 0), a.Layout().Width() * a.Dtype().itemsize());
             }
-            a.bytes.CopyFrom(host.bytes, a.Context(0)).Wait();
+            a.CopyFrom(host, a.Context(0)).Wait();
         }
         ElementSchema Schema(const PythonArray &a)
         {
             // Numeric types retain their MPI type signature. Structured POD
             // defaults to bytes; applications may supply a retained MPI typemap.
             MPI_Datatype type = MPI_DATATYPE_NULL;
-#define DNDS_NATIVE_TYPE(T)                \
-    if (a.dtype.equal(py::dtype::of<T>())) \
+#define DNDS_NATIVE_TYPE(T)                  \
+    if (a.Dtype().equal(py::dtype::of<T>())) \
     type = BasicType_To_MPIIntType<T>().first
             DNDS_NATIVE_TYPE(double);
             else DNDS_NATIVE_TYPE(float);
@@ -159,11 +169,11 @@ namespace DNDS::Runtime
             else DNDS_NATIVE_TYPE(uint8_t);
 #undef DNDS_NATIVE_TYPE
             if (type != MPI_DATATYPE_NULL)
-                return ElementSchema(type, a.dtype.itemsize(), DtypeSchema(a.dtype));
-            DNDS_check_throw_info(a.dtype.itemsize() <= INT_MAX, "POD dtype exceeds MPI contiguous count");
-            MPI_Type_contiguous(int(a.dtype.itemsize()), MPI_BYTE, &type);
+                return ElementSchema(type, a.Dtype().itemsize(), ArraySchema(a));
+            DNDS_check_throw_info(a.Dtype().itemsize() <= INT_MAX, "POD dtype exceeds MPI contiguous count");
+            MPI_Type_contiguous(int(a.Dtype().itemsize()), MPI_BYTE, &type);
             MPI_Type_commit(&type);
-            ElementSchema result(type, a.dtype.itemsize(), DtypeSchema(a.dtype));
+            ElementSchema result(type, a.Dtype().itemsize(), ArraySchema(a));
             MPI_Type_free(&type);
             return result;
         }
@@ -171,23 +181,23 @@ namespace DNDS::Runtime
         {
             for (auto row : rows)
             {
-                DNDS_check_throw_info(row < a.layout.Rows(), "row outside Array");
+                DNDS_check_throw_info(row < a.Layout().Rows(), "row outside Array");
                 for (auto column : columns)
-                    DNDS_check_throw_info(column < a.layout.RowSize(row), "column outside row");
+                    DNDS_check_throw_info(column < a.Layout().RowSize(row), "column outside row");
             }
         }
         py::array ReadElements(PythonArray &a, const std::vector<size_t> &rows, const std::vector<size_t> &columns)
         {
             CheckSelection(a, rows, columns);
-            py::array result(a.dtype, std::vector<py::ssize_t>{py::ssize_t(rows.size()), py::ssize_t(columns.size())});
-            auto read = a.bytes.Read(a.Context(0));
-            const auto *source = read.View().data;
-            const auto stride = a.dtype.itemsize();
+            py::array result(a.Dtype(), std::vector<py::ssize_t>{py::ssize_t(rows.size()), py::ssize_t(columns.size())});
+            auto read = a.Read(a.Context(0));
+            const auto *source = read.View<uint8_t>().data;
+            const auto stride = a.Dtype().itemsize();
             const bool contiguous = std::adjacent_find(columns.begin(), columns.end(), [](size_t x, size_t y)
                                                        { return y != x + 1; }) == columns.end();
             for (size_t i = 0; i < rows.size() && !columns.empty(); ++i)
                 for (size_t j = 0; j < columns.size(); j += contiguous ? columns.size() : 1)
-                    Detail::CopyBytes(source + (a.layout.Offset(rows[i]) + columns[j]) * stride, a.bytes.GetDevice(),
+                    Detail::CopyBytes(source + (a.Layout().Offset(rows[i]) + columns[j]) * stride, a.Storage().GetDevice(),
                                       result.mutable_data(i, j), Device::Host(), (contiguous ? columns.size() : 1) * stride, a.Context(0))
                         .Wait();
             return result;
@@ -196,18 +206,18 @@ namespace DNDS::Runtime
         {
             CheckSelection(a, rows, columns);
             values = py::array::ensure(values, py::array::c_style);
-            DNDS_check_throw_info(values && values.dtype().equal(a.dtype) && values.ndim() == 2 && size_t(values.shape(0)) == rows.size() &&
+            DNDS_check_throw_info(values && values.dtype().equal(a.Dtype()) && values.ndim() == 2 && size_t(values.shape(0)) == rows.size() &&
                                       size_t(values.shape(1)) == columns.size(),
                                   "element assignment dtype/shape mismatch");
-            auto write = a.bytes.Write(a.Context(0));
-            auto *destination = write.View().data;
-            const auto stride = a.dtype.itemsize();
+            auto write = a.Write(a.Context(0));
+            auto *destination = write.View<uint8_t>().data;
+            const auto stride = a.Dtype().itemsize();
             const bool contiguous = std::adjacent_find(columns.begin(), columns.end(), [](size_t x, size_t y)
                                                        { return y != x + 1; }) == columns.end();
             for (size_t i = 0; i < rows.size() && !columns.empty(); ++i)
                 for (size_t j = 0; j < columns.size(); j += contiguous ? columns.size() : 1)
-                    Detail::CopyBytes(values.data(i, j), Device::Host(), destination + (a.layout.Offset(rows[i]) + columns[j]) * stride,
-                                      a.bytes.GetDevice(), (contiguous ? columns.size() : 1) * stride, a.Context(0))
+                    Detail::CopyBytes(values.data(i, j), Device::Host(), destination + (a.Layout().Offset(rows[i]) + columns[j]) * stride,
+                                      a.Storage().GetDevice(), (contiguous ? columns.size() : 1) * stride, a.Context(0))
                         .Wait();
         }
         Reducer Builtin(const py::dtype &dtype, Reduction op, DestinationInit init)
@@ -275,9 +285,9 @@ namespace DNDS::Runtime
             .def("row", &PythonAccess::Row, "Return an independent NumPy row snapshot.")
             .def("assign_row", &PythonAccess::AssignRow)
             .def("__getitem__", [](const PythonAccess &a, std::pair<size_t, size_t> index)
-                 { DNDS_check_throw_info(index.second < a.layout.RowSize(index.first), "column outside row"); return a.Row(index.first).attr("__getitem__")(index.second); })
+                 { return a.Get(index.first, index.second); })
             .def("__setitem__", [](PythonAccess &a, std::pair<size_t, size_t> index, py::object value)
-                 { DNDS_check_throw_info(index.second < a.layout.RowSize(index.first), "column outside row"); auto row = a.Row(index.first); row.attr("__setitem__")(index.second, value); a.AssignRow(index.first, row); })
+                 { a.Set(index.first, index.second, value); })
             .def("complete", &PythonAccess::Complete)
             .def("wait", [](PythonAccess &a)
                  { a.Finish(false); })
@@ -286,19 +296,20 @@ namespace DNDS::Runtime
         py::class_<CopyOperation>(m, "CopyOperation")
             .def("wait", &CopyOperation::Wait, py::call_guard<py::gil_scoped_release>());
         py::class_<PythonArray>(m, "Array")
-            .def(py::init<RowLayout, py::dtype, Device>(), py::arg("layout"), py::arg("dtype") = py::dtype::of<double>(), py::arg("device") = Device::Host())
+            .def(py::init<RowLayout, py::object, Device>(), py::arg("layout"), py::arg("dtype") = py::dtype::of<double>(), py::arg("device") = Device::Host())
             .def_property_readonly("layout", [](const PythonArray &a)
-                                   { return a.layout; })
+                                   { return a.Layout(); })
             .def_property_readonly("dtype", [](const PythonArray &a)
-                                   { return a.dtype; })
+                                   { return a.Dtype(); })
+            .def_property_readonly("element_type", &PythonArray::ElementType)
             .def_property_readonly("device", [](const PythonArray &a)
-                                   { return a.bytes.GetDevice(); })
+                                   { return a.Storage().GetDevice(); })
             .def_property_readonly("identity", [](const PythonArray &a)
-                                   { return a.bytes.Identity(); })
+                                   { return a.Storage().Identity(); })
             .def_property_readonly("version", [](const PythonArray &a)
-                                   { return a.bytes.Version(); })
+                                   { return a.Storage().Version(); })
             .def_property_readonly("valid", [](const PythonArray &a)
-                                   { return a.bytes.IsValid(); })
+                                   { return a.Storage().IsValid(); })
             .def("read", [](PythonArray &a, uintptr_t stream)
                  { return PythonAccess(a, false, stream); }, py::arg("stream") = 0)
             .def("write", [](PythonArray &a, uintptr_t stream)
@@ -306,27 +317,56 @@ namespace DNDS::Runtime
             .def("alias", [](const PythonArray &a)
                  { return a; })
             .def("clone", [](const PythonArray &a, uintptr_t stream)
-                 { return To(a, a.bytes.GetDevice(), stream); }, py::arg("stream") = 0)
+                 { return To(a, a.Storage().GetDevice(), stream); }, py::arg("stream") = 0)
             .def("to", &To, py::arg("device"), py::arg("stream") = 0)
             .def("reset", [](PythonArray &a, RowLayout layout, Device device)
-                 { a = PythonArray(layout, a.dtype, device); }, py::arg("layout"), py::arg("device") = Device::Host())
+                 { a = a.New(layout, device); }, py::arg("layout"), py::arg("device") = Device::Host())
             .def("numpy", &Numpy, "Independent host snapshot; no mutable buffer can escape a lease.")
             .def("assign", &Assign)
             .def("_read_elements", &ReadElements)
             .def("_write_elements", &WriteElements)
+            .def("_read_object", [](PythonArray &a, size_t row, size_t column)
+                 { return PythonAccess(a, false, 0).Get(row, column); })
+            .def("_write_object", [](PythonArray &a, size_t row, size_t column, py::object value)
+                 {
+                     // Validate the class and index before acquiring mutable access.
+                     DNDS_check_throw_info(a.Element() && column < a.Layout().RowSize(row), "invalid POD element write");
+                     std::vector<uint8_t> bytes(a.Dtype().itemsize());
+                     a.Element()->store(bytes.data(), value);
+                     PythonAccess access(a, true, 0);
+                     Detail::CopyBytes(bytes.data(), Device::Host(), access.write->View<uint8_t>().data + (access.layout.Offset(row) + column) * bytes.size(),
+                                       access.Placement(), bytes.size(), access.context).Wait(); })
+            .def("_edit_object", [](PythonArray &a, size_t row, size_t column, py::function edit)
+                 {
+                     DNDS_check_throw_info(a.Element() && column < a.Layout().RowSize(row), "invalid POD element edit");
+                     PythonAccess access(a, true, 0);
+                     std::vector<uint8_t> bytes(a.Dtype().itemsize());
+                     py::object result;
+                     try
+                     {
+                         auto value = access.Get(row, column);
+                         result = edit(value);
+                         access.element->store(bytes.data(), value);
+                     }
+                     catch (...)
+                     {
+                         access.write->CancelUnmodified(); // Only the host snapshot was edited.
+                         throw;
+                     }
+                     Detail::CopyBytes(bytes.data(), Device::Host(), access.write->View<uint8_t>().data + (access.layout.Offset(row) + column) * bytes.size(),
+                                       access.Placement(), bytes.size(), access.context).Wait();
+                     return result; })
             .def("copy_from", [](PythonArray &a, const PythonArray &source, uintptr_t stream)
-                 { DNDS_check_throw_info(a.dtype.equal(source.dtype) && a.layout == source.layout, "copy dtype/layout mismatch");
-                   return a.bytes.CopyFrom(source.bytes, a.bytes.GetDevice() == Device::Host() ? source.Context(stream) : a.Context(stream)); }, py::arg("source"), py::arg("stream") = 0)
+                 { DNDS_check_throw_info(a.Dtype().equal(source.Dtype()) && a.Layout() == source.Layout(), "copy dtype/layout mismatch");
+                   return a.CopyFrom(source, a.Storage().GetDevice() == Device::Host() ? source.Context(stream) : a.Context(stream)); }, py::arg("source"), py::arg("stream") = 0)
             .def("element_schema", &Schema)
             .def("write_serializer", [](const PythonArray &a, Serializer::SerializerBaseSSP s, const std::string &name, const MPIInfo &mpi, const std::string &schema)
-                 { WriteArrayStorage(a.bytes.Storage(), a.layout, a.dtype.itemsize(), s, name, mpi, schema.empty() ? DtypeSchema(a.dtype) : schema); }, py::arg("serializer"), py::arg("name"), py::arg("mpi"), py::arg("schema") = "")
-            .def_static("read_serializer", [](Serializer::SerializerBaseSSP s, const std::string &name, const MPIInfo &mpi, py::dtype dtype, Serializer::ArrayGlobalOffset partition, Device device, const std::string &schema)
+                 { WriteArrayStorage(a.Storage(), a.Layout(), a.Dtype().itemsize(), s, name, mpi, schema.empty() ? ArraySchema(a) : schema); }, py::arg("serializer"), py::arg("name"), py::arg("mpi"), py::arg("schema") = "")
+            .def_static("read_serializer", [](Serializer::SerializerBaseSSP s, const std::string &name, const MPIInfo &mpi, py::object dtype, Serializer::ArrayGlobalOffset partition, Device device, const std::string &schema)
                         {
-                     PythonArray result(RowLayout::Dense(0, 0), dtype, Device::Host());
-                     auto archive = ReadArrayStorage(s, name, mpi, partition, device, dtype.itemsize(), schema.empty() ? DtypeSchema(dtype) : schema);
-                     result.layout = archive.layout;
-                     result.bytes = Array<uint8_t>::FromStorage(ByteLayout(result.layout, dtype.itemsize()), std::move(archive.storage));
-                     return result; }, py::arg("serializer"), py::arg("name"), py::arg("mpi"), py::arg("dtype") = py::dtype::of<double>(), py::arg("partition") = Serializer::ArrayGlobalOffset_Unknown, py::arg("device") = Device::Host(), py::arg("schema") = "");
+                     PythonArray prototype(RowLayout{}, dtype);
+                     auto archive = ReadArrayStorage(s, name, mpi, partition, device, prototype.Dtype().itemsize(), schema.empty() ? ArraySchema(prototype) : schema);
+                     return prototype.WithStorage(ArrayStorage::FromBuffer(std::move(archive.layout), std::move(archive.storage), prototype.Dtype().itemsize())); }, py::arg("serializer"), py::arg("name"), py::arg("mpi"), py::arg("dtype") = py::dtype::of<double>(), py::arg("partition") = Serializer::ArrayGlobalOffset_Unknown, py::arg("device") = Device::Host(), py::arg("schema") = "");
         py::class_<RowRequest>(m, "RowRequest")
             .def(py::init([](int rank, int64_t row, size_t destination)
                           { return RowRequest{rank, row, destination}; }));
@@ -386,8 +426,8 @@ namespace DNDS::Runtime
             .def_property_readonly("send_segments", &PayloadPlan::SendSegments)
             .def_property_readonly("receive_segments", &PayloadPlan::ReceiveSegments)
             .def("bind", [](const PayloadPlan &p, const PythonArray &src, const PythonArray &dst, std::optional<Reducer> reducer, TransferTransport transport)
-                 { p.CheckLayouts(src.layout, dst.layout, src.dtype.itemsize(), src.dtype.equal(dst.dtype));
-                   return reducer ? p.Bind(src.bytes.Storage(), dst.bytes.Storage(), *reducer, transport) : p.Bind(src.bytes.Storage(), dst.bytes.Storage(), transport); }, py::arg("source"), py::arg("destination"), py::arg("reducer") = py::none(), py::arg("transport") = TransferTransport::Direct);
+                 { p.CheckLayouts(src.Layout(), dst.Layout(), src.Dtype().itemsize(), src.SameElement(dst));
+                   return reducer ? p.Bind(src.Storage(), dst.Storage(), *reducer, transport) : p.Bind(src.Storage(), dst.Storage(), transport); }, py::arg("source"), py::arg("destination"), py::arg("reducer") = py::none(), py::arg("transport") = TransferTransport::Direct);
         py::class_<TransferBinding>(m, "TransferBinding")
             .def("begin", &TransferBinding::Begin, py::arg("context") = ExecutionContext::Host());
         py::class_<TransferOperation>(m, "TransferOperation")

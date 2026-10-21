@@ -34,10 +34,12 @@ def _select_range(values, key):
 
 
 class ArrayView:
-    """A live debugging view retaining one allocation and its access controller.
+    """A live debugging view retaining the shared ArrayStorage, independently
+    of its parent handle: values, row metadata, device offsets and controller.
 
     Basic integer/slice indexing only. Reading CUDA values synchronizes and copies
     the selected values to host. numpy() always returns an independent snapshot.
+    Holding a view does not hold a lease; each access acquires its own lease.
     This is not an MPI payload: its columns may no longer describe complete rows.
     """
 
@@ -78,9 +80,28 @@ class ArrayView:
 
     def __getitem__(self, key):
         selected = self._select(key)
-        return selected.numpy()[()] if not selected._axes else selected
+        return selected._scalar() if not selected._axes else selected
+
+    def _scalar(self):
+        if self._base.element_type is not None:
+            return self._base._read_object(self._rows[0], self._columns[0])
+        return self.numpy()[()]
 
     def _assign(self, value):
+        if self._base.element_type is not None:
+            if isinstance(value, ElementRef):
+                value = value.snapshot()
+            if not self._axes:
+                self._base._write_object(self._rows[0], self._columns[0], value)
+                return
+            objects = np.empty(self.shape, dtype=object)
+            objects[...] = value
+            objects = objects.reshape(len(self._rows), len(self._columns))
+            for i, row in enumerate(self._rows):
+                for j, column in enumerate(self._columns):
+                    item = objects[i, j]
+                    self._base._write_object(row, column, item.snapshot() if isinstance(item, ElementRef) else item)
+            return
         values = np.empty(self.shape, dtype=self.dtype)
         values[...] = value  # Validate/broadcast before taking a write lease.
         self._base._write_elements(self._rows, self._columns,
@@ -121,11 +142,50 @@ def _array_selection(array, key):
 
 def _array_getitem(array, key):
     selected = _array_selection(array, key)
-    return selected.numpy()[()] if not selected._axes else selected
+    return selected._scalar() if not selected._axes else selected
 
 
 def _array_setitem(array, key, value):
     _array_selection(array, key)._assign(value)
+
+
+class ElementRef:
+    """Tracked live POD element, retaining ArrayStorage and its POD class codec
+    through Array reset/destruction, without retaining a permanent access lease.
+
+    Attribute writes and method calls edit a class-value snapshot under one
+    write lease and copy it back, synchronizing CUDA. Attribute reads return
+    snapshots. Use edit(callback) for nested mutable attributes or several edits.
+    """
+
+    def __init__(self, array, row, column):
+        selected = _array_selection(array, (row, column))
+        if selected._axes or array.element_type is None:
+            raise TypeError("element() requires a registered POD class and two scalar indices")
+        object.__setattr__(self, "_array", array.alias())
+        object.__setattr__(self, "_row", selected._rows[0])
+        object.__setattr__(self, "_column", selected._columns[0])
+
+    def snapshot(self):
+        return self._array._read_object(self._row, self._column)
+
+    def assign(self, value):
+        self._array._write_object(self._row, self._column, value)
+
+    def edit(self, callback):
+        return self._array._edit_object(self._row, self._column, callback)
+
+    def __getattr__(self, name):
+        value = getattr(self.snapshot(), name)
+        if callable(value):
+            return lambda *args, **kwargs: self.edit(lambda item: getattr(item, name)(*args, **kwargs))
+        return value
+
+    def __setattr__(self, name, value):
+        self.edit(lambda item: setattr(item, name, value))
+
+    def __repr__(self):
+        return f"ElementRef({self.snapshot()!r})"
 
 
 # Keep the pybind type itself: aliases, placement copies and deserialization all
@@ -135,13 +195,14 @@ Array.__setitem__ = _array_setitem
 Array.__len__ = lambda self: self.layout.rows
 Array.view = lambda self: _array_selection(self, (slice(None), slice(None)))
 Array.shape = property(lambda self: (self.layout.rows, None if self.layout.is_ragged else self.layout.width))
+Array.element = lambda self, row, column=0: ElementRef(self, row, column)
 
 
 class ArrayPair:
     """Separate owned/ghost allocations with optional combined read indexing."""
 
     def __init__(self, owned, ghost):
-        if owned.dtype != ghost.dtype:
+        if owned.dtype != ghost.dtype or owned.element_type is not ghost.element_type:
             raise TypeError("ArrayPair dtype mismatch")
         if owned.identity == ghost.identity:
             raise ValueError("owned and ghost must use separate allocations")

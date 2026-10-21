@@ -12,9 +12,15 @@ authoritative interface description. The
 paths, independent build configuration and fixture isolation. Its original
 prototype limits are superseded by the native interfaces described here.
 
+The original phase was committed as `5df2a5e8114b20735f109b9b9ee98b972844468e`.
+The subsequent [C++/Python sharing correction](array_python_bridge_2026-10-21.md)
+adds the generic typed bridge, common ArrayStorage and bound-POD class access.
+Its separate validation record covers that follow-up source; the tables below
+record the original phase and its precommit checks.
+
 ## Implemented scope
 
-- Native dense/fixed/padded/ragged `Runtime::Array`, retained layouts, explicit
+- Native uniform/strided tables, fixed-width constraints and CSR `Runtime::Array`, retained layouts, explicit
   host/CUDA placement, typed element access and shallow handles/explicit clones.
 - Whole-allocation RAII access, separate owned/ghost controllers, value
   publication on completion, failed-write invalidation, and unchecked kernel
