@@ -188,6 +188,17 @@ dnds_add_unit_test(array "DNDS/test_Array.cpp" "dnds")
 dnds_add_unit_test(runtime "DNDS/test_Runtime.cpp" "dnds")
 dnds_add_unit_test(runtime_array "DNDS/test_RuntimeArray.cpp" "dnds")
 add_dependencies(dnds_unit_tests dnds_test_runtime_array)
+# Separate extension exercises sharing across pybind modules, not test-only
+# methods embedded in the production Runtime binding. Build/install the normal
+# Python modules first, then set PYTHONPATH to include this target's directory.
+# Do not apply pybind11's host LTO/strip extras to the CUDA device-link object.
+pybind11_add_module(runtime_array_bridge_test MODULE EXCLUDE_FROM_ALL NO_EXTRAS DNDS/RuntimeArrayBridge_bind.cpp)
+target_include_directories(runtime_array_bridge_test PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
+target_link_libraries(runtime_array_bridge_test PRIVATE dnds_shared ${DNDS_EXTERNAL_LIBS})
+if(DNDS_USE_CUDA)
+    target_sources(runtime_array_bridge_test PRIVATE DNDS/RuntimeArrayBridge_CUDA.cu)
+endif()
+set_target_properties(runtime_array_bridge_test PROPERTIES LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
 dnds_add_unit_test(config "DNDS/test_Config.cpp" "dnds")
 dnds_add_unit_test(hard_eigen "DNDS/test_HardEigen.cpp" "dnds")
 dnds_add_mpi_test(object_contracts "DNDS/test_ObjectContracts.cpp" "dnds")

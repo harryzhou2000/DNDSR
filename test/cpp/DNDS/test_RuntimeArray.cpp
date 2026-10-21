@@ -78,3 +78,32 @@ TEST_CASE("native layout zero rows padding and overflow validation")
     CHECK(w.View().Row(1) - w.View().Row(0) == 4);
     CHECK_THROWS(w.At(0, 2));
 }
+
+TEST_CASE("native typed handles share one allocation and logical metadata record")
+{
+    R::Array<double, R::FixedRows<5>> fixed(R::RowLayout::Dense(3, 5, 8));
+    auto dynamic = R::Array<double>::FromSharedStorage(fixed.SharedStorage());
+    CHECK(dynamic.SharedStorage() == fixed.SharedStorage());
+    CHECK(&dynamic.Layout() == &fixed.Layout());
+    dynamic.Write().At(1, 3) = 19;
+    CHECK(fixed.Read().At(1, 3) == 19);
+    CHECK(fixed.Version() == dynamic.Version());
+    {
+        auto read = fixed.Read();
+        CHECK_THROWS(dynamic.Write());
+    }
+    CHECK_THROWS((R::Array<double, R::FixedRows<7>>::FromSharedStorage(dynamic.SharedStorage())));
+    CHECK_THROWS(R::Array<int32_t>::FromSharedStorage(dynamic.SharedStorage()));
+    fixed.Reset(R::RowLayout::Dense(2, 5));
+    CHECK(fixed.SharedStorage() != dynamic.SharedStorage());
+    CHECK(dynamic.Read().At(1, 3) == 19);
+
+    R::Array<int64_t> ragged(R::RowLayout::Ragged({0, 2, 3}));
+    auto alias = R::Array<int64_t>::FromSharedStorage(ragged.SharedStorage());
+    CHECK(alias.Layout().Offsets().data() == ragged.Layout().Offsets().data());
+    auto access = alias.Write();
+    ragged.Reset(R::RowLayout::Dense(0, 0));
+    alias.Reset(R::RowLayout::Dense(0, 0));
+    access.At(2, 2) = 42; // Lease retains values and metadata after both handles detach.
+    CHECK(access.At(2, 2) == 42);
+}
