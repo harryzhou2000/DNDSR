@@ -1,0 +1,406 @@
+#include "CUDAExecution.hpp"
+#include <atomic>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
+#include <deque>
+#ifdef DNDS_USE_CUDA
+#    include <cuda_runtime_api.h>
+#endif
+
+namespace DNDS::Runtime
+{
+#ifdef DNDS_USE_CUDA
+    namespace
+    {
+        void Check(cudaError_t status) { DNDS_check_throw_info(status == cudaSuccess, cudaGetErrorString(status)); }
+        class DeviceScope
+        {
+            int _previous = -1;
+
+        public:
+            explicit DeviceScope(int ordinal)
+            {
+                Check(cudaGetDevice(&_previous));
+                Check(cudaSetDevice(ordinal));
+            }
+            ~DeviceScope()
+            {
+                if (cudaSetDevice(_previous) != cudaSuccess)
+                    std::terminate();
+            }
+        };
+        struct NativeStream
+        {
+            int ordinal;
+            cudaStream_t stream = nullptr;
+            explicit NativeStream(int device) : ordinal(device)
+            {
+                DeviceScope scope(ordinal);
+                Check(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
+            }
+            ~NativeStream()
+            {
+                DeviceScope scope(ordinal);
+                if (cudaStreamDestroy(stream) != cudaSuccess)
+                    std::terminate();
+            }
+            ExecutionContext Context() const { return ExecutionContext::CUDA(ordinal, stream); }
+        };
+        struct RetainedCommand
+        {
+            StreamLauncher::Work work;
+            StreamLauncher::Retirement retire;
+            bool cleanup = false;
+            std::exception_ptr error;
+        };
+
+        /// A closed, immutable native prefix. All dependencies refer to earlier
+        /// recorded prefixes, never unrecorded events or future promises.
+        class CUDAPrefix final : public StreamEvent::State
+        {
+            std::shared_ptr<NativeStream> _stream;
+            cudaEvent_t _event = nullptr;
+            mutable std::vector<RetainedCommand> _commands;
+            mutable std::vector<StreamEvent> _dependencies;
+            mutable std::once_flag _retired;
+            mutable std::exception_ptr _error;
+            std::atomic<bool> _recorded{false};
+
+            void Finish(std::exception_ptr nativeError) const
+            {
+                std::call_once(_retired, [&]
+                               {
+                    if (!_error) _error = nativeError;
+                    for (const auto &dependency : _dependencies)
+                        try { dependency.WaitHost(); }
+                        catch (...) { if (!_error) _error = std::current_exception(); }
+                    _dependencies.clear();
+                    for (auto &command : _commands)
+                    {
+                        if (!_error) _error = command.error;
+                        if (command.cleanup)
+                            try { command.work(_stream->Context()); }
+                            catch (...) { if (!_error) _error = std::current_exception(); }
+                        if (command.retire) command.retire(_error);
+                        command = {}; // Drop captured owners before completion is visible.
+                    }
+                    _commands.clear(); });
+                if (_error)
+                    std::rethrow_exception(_error);
+            }
+
+        public:
+            explicit CUDAPrefix(std::shared_ptr<NativeStream> stream) : _stream(std::move(stream))
+            {
+                DeviceScope scope(_stream->ordinal);
+                Check(cudaEventCreateWithFlags(&_event, cudaEventDisableTiming));
+            }
+            ~CUDAPrefix()
+            {
+                // The launcher retains every prefix until observation/drain;
+                // events may outlive it, but their work has already been retired.
+                DeviceScope scope(_stream->ordinal);
+                if (cudaEventDestroy(_event) != cudaSuccess)
+                    std::terminate();
+            }
+            void Record(std::vector<RetainedCommand> &commands, std::vector<StreamEvent> &dependencies,
+                        std::exception_ptr error)
+            {
+                DeviceScope scope(_stream->ordinal);
+                Check(cudaEventRecord(_event, _stream->stream));
+                _commands.swap(commands);
+                _dependencies.swap(dependencies);
+                _error = error;
+                _recorded = true;
+            }
+            bool Ready() const override
+            {
+                DNDS_check_throw_info(_recorded, "unrecorded CUDA prefix");
+                DeviceScope scope(_stream->ordinal);
+                auto status = cudaEventQuery(_event);
+                if (status == cudaErrorNotReady)
+                    return false;
+                std::exception_ptr error;
+                try
+                {
+                    Check(status);
+                }
+                catch (...)
+                {
+                    error = std::current_exception();
+                }
+                Finish(error);
+                return true;
+            }
+            void Wait() const override
+            {
+                DNDS_check_throw_info(_recorded, "unrecorded CUDA prefix");
+                DeviceScope scope(_stream->ordinal);
+                std::exception_ptr error;
+                try
+                {
+                    Check(cudaEventSynchronize(_event));
+                }
+                catch (...)
+                {
+                    error = std::current_exception();
+                }
+                Finish(error);
+            }
+            void WaitOn(const NativeStream &consumer) const
+            {
+                DNDS_check_throw_info(_recorded && consumer.ordinal == _stream->ordinal,
+                                      "CUDA wait requires a recorded prefix on the same device");
+                Check(cudaStreamWaitEvent(consumer.stream, _event, 0));
+            }
+        };
+    }
+
+    struct CUDALauncher::State
+    {
+        std::shared_ptr<NativeStream> native;
+        std::vector<RetainedCommand> pending;
+        std::vector<StreamEvent> dependencies;
+        std::deque<std::shared_ptr<CUDAPrefix>> prefixes;
+        StreamEvent previous;
+        std::exception_ptr error;
+        std::atomic<uint64_t> events{0};
+        std::mutex mutex;
+        std::condition_variable changed;
+        std::thread::id issuer;
+        explicit State(int device) : native(std::make_shared<NativeStream>(device)) {}
+
+        /// Serialize native issue and Record across submitting threads, but
+        /// invoke kernels/providers with no queue mutex held. Recursive issue
+        /// on the same lane is rejected instead of deadlocking.
+        struct Issue
+        {
+            State &state;
+            explicit Issue(State &value) : state(value)
+            {
+                std::unique_lock<std::mutex> lock(state.mutex);
+                DNDS_check_throw_info(state.issuer != std::this_thread::get_id(), "recursive CUDA stream submission");
+                state.changed.wait(lock, [&]
+                                   { return state.issuer == std::thread::id{}; });
+                state.issuer = std::this_thread::get_id();
+            }
+            ~Issue()
+            {
+                {
+                    std::lock_guard<std::mutex> lock(state.mutex);
+                    state.issuer = {};
+                }
+                state.changed.notify_all();
+            }
+        };
+        void Poll()
+        {
+            while (!prefixes.empty())
+            {
+                try
+                {
+                    if (!prefixes.front()->Ready())
+                        break;
+                }
+                catch (...)
+                {
+                    if (!error)
+                        error = std::current_exception();
+                }
+                prefixes.pop_front();
+            }
+        }
+        StreamEvent Record()
+        {
+            if (pending.empty() && dependencies.empty())
+                return previous;
+            auto retainedDependencies = dependencies;
+            if (previous.Provider())
+                retainedDependencies.push_back(previous);
+            auto prefix = std::make_shared<CUDAPrefix>(native);
+            prefixes.push_back(prefix); // Allocate before recording/consuming commands.
+            try
+            {
+                prefix->Record(pending, retainedDependencies, error);
+            }
+            catch (...)
+            {
+                prefixes.pop_back();
+                throw;
+            }
+            dependencies.clear();
+            ++events;
+            previous = StreamEvent(prefix);
+            return previous;
+        }
+    };
+
+    CUDALauncher::CUDALauncher(int device) : _state(std::make_unique<State>(device)) {}
+    CUDALauncher::~CUDALauncher()
+    {
+        try
+        {
+            Drain();
+        }
+        catch (...)
+        {
+        } // Explicit Drain/Synchronize reports accepted-work errors.
+    }
+    ExecutionContext CUDALauncher::Context() const { return _state->native->Context(); }
+    uint64_t CUDALauncher::NativeEventsRecorded() const { return _state->events; }
+    Buffer CUDALauncher::Allocate(size_t bytes)
+    {
+        State::Issue issue(*_state);
+        _state->Poll();
+        if (_state->error)
+            std::rethrow_exception(_state->error);
+        const auto context = Context();
+        auto result = Buffer::AllocateCUDAAsync(bytes, context);
+        std::shared_ptr<ScheduledAccess> initialization;
+        try
+        {
+            initialization = std::make_shared<ScheduledAccess>(result.Reserve(AccessMode::Write, context.device));
+            _state->pending.push_back({{}, [initialization](std::exception_ptr error) noexcept
+                                       { initialization->Complete(!error); },
+                                       false,
+                                       {}});
+            initialization->Handoff(context);
+        }
+        catch (...)
+        {
+            if (initialization)
+                initialization->Cancel();
+            result.ReleaseOn(context); // Roll back unpublished ownership without a host fence.
+            throw;
+        }
+        return result;
+    }
+    void CUDALauncher::Submit(Work work, CommandKind kind, Retirement retire)
+    {
+        DNDS_check_throw_info(work, "empty CUDA command");
+        State::Issue issue(*_state);
+        DeviceScope device(_state->native->ordinal);
+        _state->Poll();
+        _state->pending.push_back({std::move(work), std::move(retire), kind == CommandKind::Cleanup, _state->error});
+        auto &command = _state->pending.back(); // Accepted from this point on.
+        if (kind != CommandKind::Cleanup && (!_state->error || kind == CommandKind::OrderedRelease))
+            try
+            {
+                command.work(Context());
+            }
+            catch (...)
+            {
+                command.error = _state->error = std::current_exception();
+            }
+    }
+    void CUDALauncher::WaitFor(StreamEvent event)
+    {
+        State::Issue issue(*_state);
+        DeviceScope device(_state->native->ordinal);
+        auto native = std::dynamic_pointer_cast<const CUDAPrefix>(event.Provider());
+        if (!native)
+        {
+            DNDS_check_throw_info(event.Ready(), "pending non-CUDA dependency needs an explicit host wait before CUDA submission");
+            return;
+        }
+        _state->dependencies.push_back(event); // Retain provider until the consumer prefix completes.
+        try
+        {
+            native->WaitOn(*_state->native);
+        }
+        catch (...)
+        {
+            _state->dependencies.pop_back();
+            throw;
+        }
+    }
+    StreamEvent CUDALauncher::Record()
+    {
+        State::Issue issue(*_state);
+        _state->Poll();
+        return _state->Record();
+    }
+    void CUDALauncher::Drain()
+    {
+        State::Issue issue(*_state);
+        try
+        {
+            _state->Record();
+        }
+        catch (...)
+        {
+            // Failure to allocate/record a boundary cannot discard captures of
+            // work already issued. Drain that native stream before fallback
+            // retirement; no new work is accepted while this Issue is held.
+            if (!_state->error)
+                _state->error = std::current_exception();
+            DeviceScope device(_state->native->ordinal);
+            try
+            {
+                Check(cudaStreamSynchronize(_state->native->stream));
+            }
+            catch (...)
+            {
+            }
+            for (const auto &dependency : _state->dependencies)
+                try
+                {
+                    dependency.WaitHost();
+                }
+                catch (...)
+                {
+                }
+            _state->dependencies.clear();
+            for (auto &command : _state->pending)
+            {
+                if (command.cleanup)
+                    try
+                    {
+                        command.work(Context());
+                    }
+                    catch (...)
+                    {
+                    }
+                if (command.retire)
+                    command.retire(_state->error);
+            }
+            _state->pending.clear();
+        }
+        for (const auto &prefix : _state->prefixes)
+            try
+            {
+                prefix->Wait();
+            }
+            catch (...)
+            {
+                if (!_state->error)
+                    _state->error = std::current_exception();
+            }
+        _state->prefixes.clear();
+        if (_state->error)
+            std::rethrow_exception(_state->error);
+    }
+#else
+    struct CUDALauncher::State
+    {
+    };
+    CUDALauncher::CUDALauncher(int) { DNDS_check_throw_info(false, "runtime CUDA launcher is unavailable in this build"); }
+    CUDALauncher::~CUDALauncher() = default;
+    ExecutionContext CUDALauncher::Context() const { return {}; }
+    uint64_t CUDALauncher::NativeEventsRecorded() const { return 0; }
+    void CUDALauncher::Submit(Work, CommandKind, Retirement) { DNDS_check_throw_info(false, "runtime CUDA launcher unavailable"); }
+    void CUDALauncher::WaitFor(StreamEvent) { DNDS_check_throw_info(false, "runtime CUDA launcher unavailable"); }
+    StreamEvent CUDALauncher::Record()
+    {
+        DNDS_check_throw_info(false, "runtime CUDA launcher unavailable");
+        return {};
+    }
+    void CUDALauncher::Drain() {}
+    Buffer CUDALauncher::Allocate(size_t)
+    {
+        DNDS_check_throw_info(false, "runtime CUDA allocation unavailable");
+        return {};
+    }
+#endif
+}

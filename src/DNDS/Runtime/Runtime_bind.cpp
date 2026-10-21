@@ -8,6 +8,9 @@
 
 namespace DNDS::Runtime
 {
+    void BindEagerPython(py::module_ &);
+    void BindMPIOptions(py::module_ &);
+    void BindMPIEagerPython(py::module_ &);
     namespace
     {
         std::string DtypeSchema(const py::dtype &dtype)
@@ -21,10 +24,80 @@ namespace DNDS::Runtime
         {
             return array.Element() ? array.Element()->schema : DtypeSchema(array.Dtype());
         }
+        struct PythonRowBuilder
+        {
+            PythonArray prototype;
+            std::unique_ptr<RowBuilder> detached;
+            std::optional<ExclusiveRows> exclusive;
+            PythonRowBuilder(size_t rows, py::object dtype, RowLayoutKind kind, size_t capacity)
+                : prototype(RowLayout{}, std::move(dtype)),
+                  detached(std::make_unique<RowBuilder>(rows, prototype.Dtype().itemsize(), kind, capacity)) {}
+            PythonRowBuilder(PythonArray &source, bool inPlace)
+                : prototype(source.New(RowLayout{}, Device::Host()))
+            {
+                if (inPlace)
+                    exclusive.emplace(source.EditRows());
+                else
+                    detached = std::make_unique<RowBuilder>(RowBuilder::FromStorage(*source.SharedStorage()));
+            }
+            RowBuilder &Draft() const
+            {
+                if (exclusive)
+                    return exclusive->Draft();
+                DNDS_check_throw_info(detached, "row builder is inactive");
+                return *detached;
+            }
+            py::array Row(size_t row) const
+            {
+                auto bytes = Draft().RowBytes(row);
+                py::array snapshot(prototype.Dtype(), std::vector<py::ssize_t>{py::ssize_t(Draft().RowSize(row))});
+                if (bytes.size)
+                    std::memcpy(snapshot.mutable_data(), bytes.data, bytes.size);
+                return snapshot;
+            }
+            void AssignRow(size_t row, py::array input)
+            {
+                auto values = py::array::ensure(input, py::array::c_style);
+                DNDS_check_throw_info(values && values.dtype().equal(prototype.Dtype()) && values.ndim() == 1 &&
+                                          size_t(values.size()) == Draft().RowSize(row),
+                                      "builder row dtype/shape mismatch");
+                auto bytes = Draft().RowBytes(row);
+                if (bytes.size)
+                    std::memcpy(bytes.data, values.data(), bytes.size);
+            }
+            py::object Get(size_t row, size_t column) const
+            {
+                DNDS_check_throw_info(column < Draft().RowSize(row), "builder column out of range");
+                auto bytes = Draft().RowBytes(row);
+                return prototype.Element() ? prototype.Element()->load(bytes.data + column * prototype.Dtype().itemsize()) : Row(row).attr("__getitem__")(column);
+            }
+            void Set(size_t row, size_t column, py::handle value)
+            {
+                DNDS_check_throw_info(column < Draft().RowSize(row), "builder column out of range");
+                auto bytes = Draft().RowBytes(row);
+                if (prototype.Element())
+                    prototype.Element()->store(bytes.data + column * prototype.Dtype().itemsize(), value);
+                else
+                {
+                    auto snapshot = Row(row);
+                    snapshot.attr("__setitem__")(column, value);
+                    AssignRow(row, snapshot);
+                }
+            }
+            py::object Commit()
+            {
+                if (exclusive)
+                {
+                    exclusive->Commit();
+                    return py::none();
+                }
+                return py::cast(prototype.WithStorage(Draft().Commit()));
+            }
+        };
         struct PythonAccess
         {
             ArrayStorage::Shared storage;
-            const RowLayout &layout;
+            RowLayout layout;
             py::dtype dtype;
             PythonElementShared element;
             py::object elementType;
@@ -125,7 +198,7 @@ namespace DNDS::Runtime
         }
         py::array Numpy(const PythonArray &a)
         {
-            DNDS_check_throw_info(!a.Layout().IsRagged(), "ragged Array uses access.row() snapshots");
+            DNDS_check_throw_info(!a.Layout().IsVariable(), "variable-row Array uses access.row() snapshots");
             auto host = To(a, Device::Host(), 0);
             auto read = host.Read(ExecutionContext::Host());
             py::array result(a.Dtype(), {py::ssize_t(a.Layout().Rows()), py::ssize_t(a.Layout().Width())});
@@ -137,7 +210,7 @@ namespace DNDS::Runtime
         void Assign(PythonArray &a, py::array input)
         {
             input = py::array::ensure(input, py::array::c_style);
-            DNDS_check_throw_info(input && !a.Layout().IsRagged() && input.dtype().equal(a.Dtype()) && input.ndim() == 2 &&
+            DNDS_check_throw_info(input && !a.Layout().IsVariable() && input.dtype().equal(a.Dtype()) && input.ndim() == 2 &&
                                       size_t(input.shape(0)) == a.Layout().Rows() && size_t(input.shape(1)) == a.Layout().Width(),
                                   "Array assignment dtype/shape mismatch");
             auto host = a.New(a.Layout(), Device::Host());
@@ -266,16 +339,41 @@ namespace DNDS::Runtime
             .def_static("record", &Completion::Record)
             .def("wait", &Completion::Wait, py::call_guard<py::gil_scoped_release>())
             .def_property_readonly("ready", &Completion::Ready);
+        py::enum_<RowLayoutKind>(m, "RowLayoutKind")
+            .value("Table", RowLayoutKind::Table)
+            .value("Padded", RowLayoutKind::Padded)
+            .value("CSR", RowLayoutKind::CSR);
         py::class_<RowLayout>(m, "RowLayout")
             .def_static("dense", &RowLayout::Dense, py::arg("rows"), py::arg("width"), py::arg("stride") = 0)
             .def_static("ragged", &RowLayout::Ragged)
+            .def_static("padded", &RowLayout::Padded, py::arg("lengths"), py::arg("capacity"))
+            .def_property_readonly("kind", &RowLayout::Kind)
             .def_property_readonly("rows", &RowLayout::Rows)
             .def_property_readonly("width", &RowLayout::Width)
             .def_property_readonly("stride", &RowLayout::Stride)
             .def_property_readonly("is_ragged", &RowLayout::IsRagged)
+            .def_property_readonly("is_padded", &RowLayout::IsPadded)
+            .def_property_readonly("is_variable", &RowLayout::IsVariable)
             .def_property_readonly("elements", &RowLayout::Elements)
             .def("row_size", &RowLayout::RowSize)
-            .def_property_readonly("offsets", &RowLayout::Offsets);
+            .def_property_readonly("offsets", [](const RowLayout &r)
+                                   { return r.Offsets().empty() ? std::vector<size_t>{} : std::vector<size_t>(r.Offsets().begin(), r.Offsets().end()); })
+            .def_property_readonly("sizes", [](const RowLayout &r)
+                                   { return r.Sizes().empty() ? std::vector<size_t>{} : std::vector<size_t>(r.Sizes().begin(), r.Sizes().end()); });
+        py::class_<PythonRowBuilder>(m, "RowBuilder")
+            .def(py::init<size_t, py::object, RowLayoutKind, size_t>(), py::arg("rows"), py::arg("dtype") = py::dtype::of<double>(),
+                 py::arg("kind") = RowLayoutKind::CSR, py::arg("capacity") = 0)
+            .def("resize_row", [](PythonRowBuilder &b, size_t row, size_t length, bool preserve)
+                 { b.Draft().ResizeRow(row, length, preserve); }, py::arg("row"), py::arg("length"), py::arg("preserve") = true)
+            .def("row_size", [](const PythonRowBuilder &b, size_t row)
+                 { return b.Draft().RowSize(row); })
+            .def("row", &PythonRowBuilder::Row)
+            .def("assign_row", &PythonRowBuilder::AssignRow)
+            .def("__getitem__", [](const PythonRowBuilder &b, std::pair<size_t, size_t> i)
+                 { return b.Get(i.first, i.second); })
+            .def("__setitem__", [](PythonRowBuilder &b, std::pair<size_t, size_t> i, py::object value)
+                 { b.Set(i.first, i.second, value); })
+            .def("commit", &PythonRowBuilder::Commit);
         py::class_<PythonAccess>(m, "Access")
             .def("__enter__", [](PythonAccess &a) -> PythonAccess &
                  { DNDS_check_throw(a.Active()); return a; }, py::return_value_policy::reference_internal)
@@ -309,7 +407,10 @@ namespace DNDS::Runtime
             .def_property_readonly("version", [](const PythonArray &a)
                                    { return a.Storage().Version(); })
             .def_property_readonly("valid", [](const PythonArray &a)
-                                   { return a.Storage().IsValid(); })
+                                   { return a.IsValid(); })
+            .def_property_readonly("shape_version", &PythonArray::ShapeVersion)
+            .def("edit_rows", [](PythonArray &a, bool exclusive)
+                 { return PythonRowBuilder(a, exclusive); }, py::arg("exclusive") = false)
             .def("read", [](PythonArray &a, uintptr_t stream)
                  { return PythonAccess(a, false, stream); }, py::arg("stream") = 0)
             .def("write", [](PythonArray &a, uintptr_t stream)
@@ -367,12 +468,18 @@ namespace DNDS::Runtime
                      PythonArray prototype(RowLayout{}, dtype);
                      auto archive = ReadArrayStorage(s, name, mpi, partition, device, prototype.Dtype().itemsize(), schema.empty() ? ArraySchema(prototype) : schema);
                      return prototype.WithStorage(ArrayStorage::FromBuffer(std::move(archive.layout), std::move(archive.storage), prototype.Dtype().itemsize())); }, py::arg("serializer"), py::arg("name"), py::arg("mpi"), py::arg("dtype") = py::dtype::of<double>(), py::arg("partition") = Serializer::ArrayGlobalOffset_Unknown, py::arg("device") = Device::Host(), py::arg("schema") = "");
+        BindMPIOptions(m);
         py::class_<RowRequest>(m, "RowRequest")
             .def(py::init([](int rank, int64_t row, size_t destination)
                           { return RowRequest{rank, row, destination}; }));
         py::class_<RowTransferPlan>(m, "RowTransferPlan")
             .def(py::init([](const MPIInfo &mpi, size_t sources, size_t destinations, const std::vector<RowRequest> &requests)
                           { return RowTransferPlan(mpi.comm, sources, destinations, requests); }))
+            .def(py::init([](std::shared_ptr<CommunicationContext> context, size_t sources, size_t destinations, const std::vector<RowRequest> &requests)
+                          { return RowTransferPlan(std::move(context), sources, destinations, requests); }))
+            .def_static("known", [](std::shared_ptr<CommunicationContext> context, size_t sources, size_t destinations,
+                                    std::vector<std::vector<size_t>> send, std::vector<std::vector<size_t>> receive)
+                        { return RowTransferPlan::Known(std::move(context), sources, destinations, std::move(send), std::move(receive)); })
             .def("reverse", &RowTransferPlan::Reverse)
             .def("destination_layout", &RowTransferPlan::DestinationLayout)
             .def_property_readonly("has_collisions", &RowTransferPlan::HasCollisions)
@@ -398,9 +505,15 @@ namespace DNDS::Runtime
                      reducer.schema = schema.Identity();
                      reducer.elementBytes = dtype.itemsize();
                      reducer.initialization = init;
-                     reducer.host = [dtype, combine, seed, init](const void *input, void *output, const std::vector<Contribution> &groups, ExecutionContext)
+                     struct Objects { py::dtype dtype; py::function combine; py::array seed; };
+                     auto objects = std::shared_ptr<Objects>(new Objects{dtype, combine, seed}, [](Objects *p)
+                                                            { py::gil_scoped_acquire gil; delete p; });
+                     reducer.host = [objects, init](const void *input, void *output, const std::vector<Contribution> &groups, ExecutionContext)
                      {
                          py::gil_scoped_acquire gil;
+                         const auto &dtype = objects->dtype;
+                         const auto &combine = objects->combine;
+                         const auto &seed = objects->seed;
                          size_t previous = SIZE_MAX;
                          const size_t stride = dtype.itemsize();
                          for (auto group : groups)
@@ -425,14 +538,17 @@ namespace DNDS::Runtime
             .def(py::init<RowTransferPlan, RowLayout, RowLayout, ElementSchema>())
             .def_property_readonly("send_segments", &PayloadPlan::SendSegments)
             .def_property_readonly("receive_segments", &PayloadPlan::ReceiveSegments)
-            .def("bind", [](const PayloadPlan &p, const PythonArray &src, const PythonArray &dst, std::optional<Reducer> reducer, TransferTransport transport)
+            .def("bind", [](const PayloadPlan &p, const PythonArray &src, const PythonArray &dst, std::optional<Reducer> reducer, TransferTransport transport, TransferOptions options)
                  { p.CheckLayouts(src.Layout(), dst.Layout(), src.Dtype().itemsize(), src.SameElement(dst));
-                   return reducer ? p.Bind(src.Storage(), dst.Storage(), *reducer, transport) : p.Bind(src.Storage(), dst.Storage(), transport); }, py::arg("source"), py::arg("destination"), py::arg("reducer") = py::none(), py::arg("transport") = TransferTransport::Direct);
+                   return reducer ? p.Bind(src.Storage(), dst.Storage(), *reducer, transport, options) : p.Bind(src.Storage(), dst.Storage(), transport, options); }, py::arg("source"), py::arg("destination"), py::arg("reducer") = py::none(), py::arg("transport") = TransferTransport::Direct, py::arg("options") = TransferOptions{});
         py::class_<TransferBinding>(m, "TransferBinding")
-            .def("begin", &TransferBinding::Begin, py::arg("context") = ExecutionContext::Host());
+            .def("begin", &TransferBinding::Begin, py::arg("context") = ExecutionContext::Host())
+            .def("begin_scheduled", &TransferBinding::BeginScheduled, py::arg("context") = ExecutionContext::Host());
         py::class_<TransferOperation>(m, "TransferOperation")
             .def("wait", &TransferOperation::Wait, py::call_guard<py::gil_scoped_release>())
             .def("wait_destination_ready", &TransferOperation::WaitDestinationReady, py::call_guard<py::gil_scoped_release>())
             .def("test", &TransferOperation::Test, py::call_guard<py::gil_scoped_release>());
+        BindEagerPython(m);
+        BindMPIEagerPython(m);
     }
 }

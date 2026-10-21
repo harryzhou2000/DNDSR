@@ -1,5 +1,9 @@
 #include "DNDS/Runtime/Array.hpp"
+#include "DNDS/Runtime/EagerArray.hpp"
 #include <cuda_runtime.h>
+#include <atomic>
+#include <thread>
+#include <chrono>
 
 namespace R = DNDS::Runtime;
 using State = R::Array<double, R::FixedRows<5>>;
@@ -19,4 +23,26 @@ void BridgeScaleCUDA(State &array, double factor)
     DNDS_check_throw_info(cudaGetLastError() == cudaSuccess, "bridge kernel launch failed");
     access.Complete(R::Completion::Record(context));
     access.Wait();
+}
+
+void BridgeScaleCUDAAsync(R::EagerEngine &engine, const R::ExecutionStream &stream, State &array, double factor)
+{
+    R::SubmitArrays(engine, stream, [factor](R::ExecutionContext context, R::ArrayView<double> values)
+                    {
+        ScaleSharedState<<<7, 32, 0, static_cast<cudaStream_t>(context.stream)>>>(values, factor);
+        DNDS_check_throw_info(cudaGetLastError() == cudaSuccess, "bridge async scale failed"); }, R::ReadWrite(array));
+}
+
+void BridgeHoldCUDA(R::EagerEngine &engine, const R::ExecutionStream &stream, std::shared_ptr<std::atomic<bool>> flag)
+{
+    cudaFuncAttributes attributes{};
+    DNDS_check_throw_info(cudaFuncGetAttributes(&attributes, ScaleSharedState) == cudaSuccess, "bridge preload failed");
+    engine.Submit(stream, [flag = std::move(flag)](R::ExecutionContext context)
+                  {
+        auto status = cudaLaunchHostFunc(static_cast<cudaStream_t>(context.stream), [](void *pointer)
+        {
+            auto *open = static_cast<std::atomic<bool> *>(pointer);
+            while (!open->load()) std::this_thread::sleep_for(std::chrono::microseconds(50));
+        }, flag.get());
+        DNDS_check_throw_info(status == cudaSuccess, "bridge gate failed"); });
 }

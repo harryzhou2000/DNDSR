@@ -3,6 +3,7 @@
 #include "Array.hpp"
 #include "Version.hpp"
 #include "DNDS/MPI.hpp"
+#include "CommunicationContext.hpp"
 #include <functional>
 #include <string>
 #include <cstring>
@@ -23,10 +24,18 @@ namespace DNDS::Runtime
         struct State;
         std::shared_ptr<const State> _state;
         bool _reverse = false;
+        RowTransferPlan() = default;
 
     public:
         RowTransferPlan(MPI_Comm comm, size_t sourceRows, size_t destinationRows,
                         const std::vector<RowRequest> &requests, std::vector<VersionStamp> dependencies = {});
+        RowTransferPlan(std::shared_ptr<CommunicationContext> context, size_t sourceRows, size_t destinationRows,
+                        const std::vector<RowRequest> &requests, std::vector<VersionStamp> dependencies = {});
+        /// Peer row lists in matching per-peer order bypass owner/row discovery.
+        /// Counts, bounds and collisions are checked collectively.
+        static RowTransferPlan Known(std::shared_ptr<CommunicationContext> context, size_t sourceRows, size_t destinationRows,
+                                     std::vector<std::vector<size_t>> send, std::vector<std::vector<size_t>> receive,
+                                     std::vector<VersionStamp> dependencies = {});
         RowTransferPlan Reverse() const;
         MPI_Comm Communicator() const;
         size_t SourceRows() const;
@@ -194,12 +203,12 @@ namespace DNDS::Runtime
         void CheckLayouts(const RowLayout &source, const RowLayout &destination, size_t elementBytes, bool elementCompatible = true) const;
         size_t SendSegments() const;
         size_t ReceiveSegments() const;
-        TransferBinding Bind(Buffer source, Buffer destination, TransferTransport transport = TransferTransport::Direct) const;
-        TransferBinding Bind(Buffer source, Buffer destination, Reducer reducer, TransferTransport transport = TransferTransport::Direct) const;
+        TransferBinding Bind(Buffer source, Buffer destination, TransferTransport transport = TransferTransport::Direct, TransferOptions options = {}) const;
+        TransferBinding Bind(Buffer source, Buffer destination, Reducer reducer, TransferTransport transport = TransferTransport::Direct, TransferOptions options = {}) const;
         template <class T, class L, class M>
-        TransferBinding Bind(const Array<T, L> &source, const Array<T, M> &destination, TransferTransport transport = TransferTransport::Direct) const;
+        TransferBinding Bind(const Array<T, L> &source, const Array<T, M> &destination, TransferTransport transport = TransferTransport::Direct, TransferOptions options = {}) const;
         template <class T, class L, class M>
-        TransferBinding Bind(const Array<T, L> &source, const Array<T, M> &destination, Reducer reducer, TransferTransport transport = TransferTransport::Direct) const;
+        TransferBinding Bind(const Array<T, L> &source, const Array<T, M> &destination, Reducer reducer, TransferTransport transport = TransferTransport::Direct, TransferOptions options = {}) const;
     };
 
     class TransferBinding
@@ -209,12 +218,17 @@ namespace DNDS::Runtime
         friend class PayloadPlan;
         friend class TransferOperation;
         TransferBinding(std::shared_ptr<const PayloadPlan::State> plan, Buffer source, Buffer destination,
-                        std::shared_ptr<const Reducer> reducer, TransferTransport transport);
+                        std::shared_ptr<const Reducer> reducer, TransferTransport transport, TransferOptions options);
+        TransferOperation Start(ExecutionContext context, bool scheduled) const;
 
     public:
-        /// One active operation per binding. Each binding has independent MPI
-        /// context and persistent requests; immutable route/payload are shared.
+        /// One active operation per binding. Default remains isolated persistent
+        /// requests. Options select shared context/tags and transient requests.
         TransferOperation Begin(ExecutionContext context = ExecutionContext::Host()) const;
+        /// Caller-ordered eager reservations allow dependent scheduled kernels.
+        /// CPU producers must already be complete; CUDA readiness is observed
+        /// on the supplied stream before portable MPI is posted.
+        TransferOperation BeginScheduled(ExecutionContext context = ExecutionContext::Host()) const;
     };
 
     class TransferOperation
@@ -237,15 +251,15 @@ namespace DNDS::Runtime
     };
 
     template <class T, class L, class M>
-    TransferBinding PayloadPlan::Bind(const Array<T, L> &source, const Array<T, M> &destination, TransferTransport transport) const
+    TransferBinding PayloadPlan::Bind(const Array<T, L> &source, const Array<T, M> &destination, TransferTransport transport, TransferOptions options) const
     {
         CheckLayouts(source.Layout(), destination.Layout(), sizeof(T));
-        return Bind(source.Storage(), destination.Storage(), transport);
+        return Bind(source.Storage(), destination.Storage(), transport, std::move(options));
     }
     template <class T, class L, class M>
-    TransferBinding PayloadPlan::Bind(const Array<T, L> &source, const Array<T, M> &destination, Reducer reducer, TransferTransport transport) const
+    TransferBinding PayloadPlan::Bind(const Array<T, L> &source, const Array<T, M> &destination, Reducer reducer, TransferTransport transport, TransferOptions options) const
     {
         CheckLayouts(source.Layout(), destination.Layout(), sizeof(T));
-        return Bind(source.Storage(), destination.Storage(), std::move(reducer), transport);
+        return Bind(source.Storage(), destination.Storage(), std::move(reducer), transport, std::move(options));
     }
 }

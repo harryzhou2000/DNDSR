@@ -4,7 +4,10 @@ The Python `Runtime.Array` and C++ `Runtime::Array<T,L>` share one
 `shared_ptr<const ArrayStorage>`. Exporting or accepting a native Array copies
 only a handle. It does not copy values, translate row offsets to bytes, or
 instantiate Python Array methods for every `T,L`. Allocation and immutable
-metadata live together; mutable values remain controlled by leases.
+metadata live together; mutable values remain controlled by leases. A unique
+storage can now enter an exclusive row-edit state and publish a replacement
+layout on Commit. [Row editing](ArrayRowEditing.md) defines that protocol;
+retained views force explicit detachment rather than being silently changed.
 
 ## Previous byte-Array wrapper (superseded)
 
@@ -44,12 +47,24 @@ flowchart LR
 
 ## Shared storage and dynamic Python facade (implemented)
 
-`ArrayStorage` is non-templated. `Buffer` owns the value allocation and its
-access controller through a shared state. `ArrayLayout` owns the CPU row shape
-and optional CUDA CSR-offset Buffer. Both language handles retain the **same
+`ArrayStorage` is non-templated. `Buffer` retains a bounded range in a shared
+allocation/access state. `ArrayLayout` owns the CPU row shape, whose offsets
+are now a shared `MetadataBuffer<size_t>`, and optional CUDA CSR-offset Buffer.
+Both language handles retain the **same
 record and layout**, not just equal metadata. Python additionally retains its
 dtype and, when applicable, its bound POD class and codec. The C++ runtime
 record has no Python dependency.
+
+The follow-up allocation interface can import an aliasing `shared_ptr<void>`
+whose control block retains a foreign tensor or provider. Import an allocation
+once, then derive ranges from that `Allocation` handle; independent imports
+cannot discover hidden external aliases. `ArrayStorage::WithValues` creates
+another field sharing the complete metadata (including device offsets), with
+independent value allocation/access. Copying `RowLayout` also shares its host
+offset Buffer. See [the follow-up implementation record](../dev/array_runtime_followup_2026-10-21.md)
+for the implementation checkpoints and validation limits. The completed shape
+and eager contracts are described in [row editing](ArrayRowEditing.md),
+[allocation lifetime](ArrayAllocationLifetime.md), and [eager execution](EagerExecution.md).
 
 Simplified classes:
 
@@ -60,6 +75,9 @@ classDiagram
   class ArrayStorage
   class Buffer
   class ArrayLayout
+  class MetadataBuffer
+  class AllocationState
+  class ExternalOwner
   class PythonArrayView
   class PythonAccess
   NativeArray_T_L --> ArrayStorage : shared ownership
@@ -69,6 +87,10 @@ classDiagram
   ArrayStorage *-- Buffer : values
   ArrayStorage --> ArrayLayout : shared immutable metadata
   ArrayLayout *-- Buffer : CUDA CSR offsets
+  ArrayLayout --> MetadataBuffer : shared host offsets
+  MetadataBuffer *-- Buffer
+  Buffer --> AllocationState : shared bounded range
+  AllocationState --> ExternalOwner : shared ownership token when imported
 ```
 
 Example objects after `v = a[2, ::-1]` and a nested slice:

@@ -27,6 +27,16 @@ TEST_CASE("Native parallel checkpoint matching partitions and direct read")
     const auto file = "__runtime_array_" + std::to_string(pid) + ".h5";
     const size_t localRows = mpi.rank == 0 ? 3 : 0;
     Array<double> a(RowLayout::Ragged(localRows ? std::vector<size_t>{2, 0, 3} : std::vector<size_t>{}));
+    auto owner = std::make_shared<std::vector<double>>(8 + localRows * 8, -1);
+    auto imported = Allocation::Import(std::shared_ptr<void>(owner, owner->data()), owner->size() * sizeof(double));
+    auto state = Array<double, FixedRows<7>>::FromStorage(RowLayout::Dense(localRows, 7, 8),
+                                                          Buffer::FromAllocation(imported, 4 * sizeof(double), localRows * 8 * sizeof(double)));
+    {
+        auto write = state.Write();
+        for (size_t i = 0; i < localRows; ++i)
+            for (size_t j = 0; j < 7; ++j)
+                write.At(i, j) = 100 * i + j;
+    }
     if (localRows)
     {
         auto write = a.Write();
@@ -38,6 +48,11 @@ TEST_CASE("Native parallel checkpoint matching partitions and direct read")
     serializer->SetCollectiveRW(true, true);
     serializer->OpenFile(file, false);
     WriteArray(a, serializer, "state", mpi);
+    WriteArray(state, serializer, "imported_state", mpi);
+    Array<double> padded(RowLayout::Padded(localRows ? std::vector<size_t>{5, 0, 7} : std::vector<size_t>{}, 12));
+    if (localRows)
+        padded.Write().At(2, 6) = 317;
+    WriteArray(padded, serializer, "padded", mpi);
 #ifdef DNDS_USE_CUDA
     WriteArray(a.To(Device::CUDA(0)), serializer, "gpu_state", mpi);
 #endif
@@ -47,6 +62,17 @@ TEST_CASE("Native parallel checkpoint matching partitions and direct read")
     CHECK(matching.Rows() == localRows);
     if (localRows)
         CHECK(matching.Read().At(2, 2) == 22);
+    auto matchingState = ReadArray<double, FixedRows<7>>(serializer, "imported_state", mpi);
+    CHECK(matchingState.Rows() == localRows);
+    if (localRows)
+        CHECK(matchingState.Read().At(2, 6) == 206);
+    auto matchingPadded = ReadArray<double>(serializer, "padded", mpi);
+    CHECK(matchingPadded.Rows() == localRows);
+    if (localRows)
+    {
+        CHECK(matchingPadded.RowSize(1) == 0);
+        CHECK(matchingPadded.Read().At(2, 6) == 317);
+    }
 #ifdef DNDS_USE_CUDA
     auto deviceRead = ReadArray<double>(serializer, "gpu_state", mpi, S::ArrayGlobalOffset_Unknown, Device::CUDA(0));
     if (localRows)
@@ -58,6 +84,12 @@ TEST_CASE("Native parallel checkpoint matching partitions and direct read")
     auto direct = ReadArray<double>(serializer, "state", mpi, {1, 2});
     CHECK(direct.Rows() == 1);
     CHECK(direct.Read().At(0, 2) == 22);
+    auto directState = ReadArray<double, FixedRows<7>>(serializer, "imported_state", mpi, {1, 2});
+    CHECK(directState.Rows() == 1);
+    CHECK(directState.Read().At(0, 6) == 206);
+    auto directPadded = ReadArray<double>(serializer, "padded", mpi, {1, 2});
+    CHECK(directPadded.RowSize(0) == 7);
+    CHECK(directPadded.Read().At(0, 6) == 317);
     serializer->CloseFile();
     serializer->OpenFile(file, true);
     auto even = ReadArray<double>(serializer, "state", mpi, S::ArrayGlobalOffset_EvenSplit);
