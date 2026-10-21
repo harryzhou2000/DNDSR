@@ -5,6 +5,8 @@
 #include "DNDS/Errors.hpp"
 #include "CheckedSize.hpp"
 #include "Device/DeviceStorage.hpp"
+#include "Runtime/Buffer.hpp"
+#include <cstring>
 #include <algorithm>
 #include <cstddef>
 #include <memory>
@@ -44,6 +46,13 @@ namespace DNDS
         virtual void copy_to_host(uint8_t *host_dst, size_t n) = 0;
         /// @brief Deep copy; returns a new allocation containing the same bytes.
         virtual std::unique_ptr<DeviceHostSingleAllocationBase> clone() = 0;
+        /// Explicit bridge for host allocations; legacy device mirrors retain
+        /// their old contract until migrated to the native runtime separately.
+        virtual Runtime::Buffer hostRuntime() const
+        {
+            DNDS_check_throw_info(false, "allocation does not implement native host access");
+            return {};
+        }
     };
 
     /**
@@ -53,7 +62,7 @@ namespace DNDS
     class DeviceHostSingleAllocationDirect : public DeviceHostSingleAllocationBase
     {
         t_supDeviceStorageBase device_storage;
-        std::vector<uint8_t> host_data;
+        Runtime::Buffer host_data = Runtime::Buffer::Allocate(0);
         DeviceBackend B_ = DeviceBackend::Unknown;
         size_t bytes_ = 0;
 
@@ -71,7 +80,7 @@ namespace DNDS
             bytes_ = bytes;
             B_ = B;
             if (B_ == DeviceBackend::Unknown)
-                host_data.resize(bytes_);
+                host_data = Runtime::Buffer::Allocate(bytes_);
             else
                 device_storage = device_storage_create(B, bytes_);
         }
@@ -80,13 +89,13 @@ namespace DNDS
             B_ = DeviceBackend::Unknown;
             bytes_ = 0;
             device_storage = nullptr;
-            host_data.clear();
+            host_data = Runtime::Buffer::Allocate(0);
         }
         [[nodiscard]] size_t bytes() const override { return bytes_; }
         uint8_t *get() override
         {
             if (B_ == DeviceBackend::Unknown)
-                return host_data.data();
+                return static_cast<uint8_t *>(host_data.LegacyPointer());
             else
             {
                 DNDS_check_throw_info(device_storage, "device storage not initialized");
@@ -94,12 +103,21 @@ namespace DNDS
             }
         }
         DeviceBackend device() override { return B_; }
+        Runtime::Buffer hostRuntime() const override
+        {
+            DNDS_check_throw_info(B_ == DeviceBackend::Unknown, "legacy device mirror has no native host access");
+            return host_data;
+        }
 
         void copy_to_host(uint8_t *host_dst, size_t n) override
         {
             DNDS_check_throw(n <= bytes());
             if (B_ == DeviceBackend::Unknown)
-                std::copy(host_data.begin(), host_data.begin() + n, host_dst);
+            {
+                auto read = host_data.Read();
+                if (n)
+                    std::memcpy(host_dst, read.View<uint8_t>().data, n);
+            }
             else
             {
                 DNDS_check_throw_info(device_storage, "device storage not initialized");
@@ -111,7 +129,11 @@ namespace DNDS
         {
             DNDS_check_throw(n <= bytes());
             if (B_ == DeviceBackend::Unknown)
-                std::copy(host_src, host_src + n, host_data.begin());
+            {
+                auto write = host_data.Write();
+                if (n)
+                    std::memcpy(write.View<uint8_t>().data, host_src, n);
+            }
             else
             {
                 DNDS_check_throw_info(device_storage, "device storage not initialized");
@@ -127,7 +149,7 @@ namespace DNDS
             ret->allocate(bytes_, B_);
             // if B_ == Host here, actually no allocation
             if (B_ == DeviceBackend::Unknown)
-                std::copy(host_data.begin(), host_data.end(), ret->host_data.begin());
+                Runtime::Copy(host_data, ret->host_data).Wait();
             else
             {
                 DNDS_check_throw_info(device_storage, "device storage not initialized");
@@ -268,6 +290,23 @@ namespace DNDS
 
         DNDS_HOST [[nodiscard]] size_t size() const { return size_; }
 
+        Runtime::ReadAccess HostRead() const
+        {
+            DNDS_check_throw_info(host_data, "host access to a cleared vector");
+            DNDS_check_throw_info(device() == DeviceBackend::Unknown || device() == DeviceBackend::Host,
+                                  "legacy device mirror may own newer values: explicitly to_host then clear_device before native host access");
+            return host_data->hostRuntime().Read();
+        }
+        Runtime::WriteAccess HostWrite()
+        {
+            DNDS_check_throw_info(host_data, "host access to a cleared vector");
+            DNDS_check_throw_info(device() == DeviceBackend::Unknown || device() == DeviceBackend::Host,
+                                  "legacy device mirror may own newer values: explicitly to_host then clear_device before native host access");
+            return host_data->hostRuntime().Write();
+        }
+        uint64_t HostVersion() const { return host_data ? host_data->hostRuntime().Version() : 0; }
+        uint64_t HostIdentity() const { return host_data ? host_data->hostRuntime().Identity() : 0; }
+
         DNDS_HOST void resize(size_t new_size)
         {
             // Preserve the old allocation while exported views own it.
@@ -333,6 +372,8 @@ namespace DNDS
 
         DNDS_HOST void to_device(DeviceBackend backend = DeviceBackend::Host)
         {
+            DNDS_check_throw_info(!host_data || host_data->hostRuntime().IsIdle(), "finish native host access before legacy device transfer");
+            auto read = host_data ? host_data->hostRuntime().Read() : Runtime::ReadAccess{};
             DNDS_check_throw_info(DeviceBackend::Unknown != backend, "cannot to_device to Unknown");
             if (
                 !device_data ||
@@ -360,9 +401,11 @@ namespace DNDS
 
         DNDS_HOST void to_host()
         {
+            DNDS_check_throw_info(!host_data || host_data->hostRuntime().IsIdle(), "finish native host access before legacy host transfer");
             if (this->device() != DeviceBackend::Unknown)
             {
                 DNDS_assert(device_data && host_data && device_data->bytes() == host_data->bytes());
+                auto write = host_data->hostRuntime().Write();
                 device_data->copy_to_host(reinterpret_cast<uint8_t *>(this->data()), this->size() * sizeof(T));
             }
         }

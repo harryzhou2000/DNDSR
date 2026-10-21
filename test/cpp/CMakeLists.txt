@@ -185,6 +185,9 @@ add_dependencies(all_unit_tests dnds_unit_tests geom_unit_tests)
 # DNDS core tests
 # ===================================================================
 dnds_add_unit_test(array "DNDS/test_Array.cpp" "dnds")
+dnds_add_unit_test(runtime "DNDS/test_Runtime.cpp" "dnds")
+dnds_add_unit_test(runtime_array "DNDS/test_RuntimeArray.cpp" "dnds")
+add_dependencies(dnds_unit_tests dnds_test_runtime_array)
 dnds_add_unit_test(config "DNDS/test_Config.cpp" "dnds")
 dnds_add_unit_test(hard_eigen "DNDS/test_HardEigen.cpp" "dnds")
 dnds_add_mpi_test(object_contracts "DNDS/test_ObjectContracts.cpp" "dnds")
@@ -192,6 +195,10 @@ target_sources(dnds_test_object_contracts PRIVATE DNDS/test_LocalChecks.cpp)
 
 dnds_add_mpi_test(serializer "DNDS/test_Serializer.cpp" "dnds")
 dnds_add_mpi_test(mpi "DNDS/test_MPI.cpp" "dnds")
+dnds_add_mpi_test(runtime_exchange "DNDS/test_RuntimeExchange.cpp" "dnds")
+dnds_add_mpi_test(runtime_row_transfer "DNDS/test_RuntimeRowTransfer.cpp" "dnds")
+dnds_add_mpi_test(runtime_array_io "DNDS/test_RuntimeArrayIO.cpp" "dnds")
+add_dependencies(dnds_unit_tests dnds_test_runtime_row_transfer dnds_test_runtime_array_io)
 dnds_add_mpi_test(array_transformer "DNDS/test_ArrayTransformer.cpp" "dnds")
 dnds_add_mpi_test(array_derived "DNDS/test_ArrayDerived.cpp" "dnds")
 dnds_add_mpi_test(array_dof "DNDS/test_ArrayDOF.cpp" "dnds")
@@ -199,11 +206,15 @@ dnds_add_mpi_test(index_mapping "DNDS/test_IndexMapping.cpp" "dnds")
 dnds_add_mpi_test(permutation_transfer "DNDS/test_PermutationTransfer.cpp" "dnds")
 
 if(DNDS_USE_CUDA)
+    dnds_add_unit_test(runtime_cuda "DNDS/test_Runtime_CUDA.cu" "dnds")
+    add_dependencies(dnds_unit_tests dnds_test_runtime_cuda)
     dnds_add_mpi_test(array_dof_cuda "DNDS/test_ArrayDOF_CUDA.cu" "dnds")
     add_dependencies(dnds_unit_tests dnds_test_array_dof_cuda)
 endif()
 
 set(DNDS_TEST_TARGETS
+    dnds_test_runtime
+    dnds_test_runtime_exchange
     dnds_test_array
     dnds_test_config
     dnds_test_object_contracts
@@ -444,6 +455,7 @@ set(EULER_TEST_TARGETS
 if(DNDS_USE_CANTERA)
     list(APPEND EULER_TEST_TARGETS
         euler_test_source_chemical
+        euler_test_reactive_split_indicator
         euler_test_uv
         euler_test_physics_properties
         euler_test_chem_ode

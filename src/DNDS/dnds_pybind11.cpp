@@ -18,6 +18,10 @@
 #include "ArrayDOF_bind.hpp"
 
 #include "Serializer/Serializer_bind.hpp"
+namespace DNDS::Runtime
+{
+    void BindPython(pybind11::module_ &);
+}
 
 /// @brief pybind11 module initialiser for `dnds_pybind11`.
 /// @details Calls each component's `pybind11_bind_*` function against the
@@ -50,4 +54,5 @@ PYBIND11_MODULE(dnds_pybind11, m)
     DNDS::pybind11_bind_ArrayDOF_All(m);
 
     DNDS::Serializer::pybind11_bind_Serializer(m);
+    DNDS::Runtime::BindPython(m);
 }
