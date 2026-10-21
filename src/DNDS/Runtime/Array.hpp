@@ -130,6 +130,53 @@ namespace DNDS::Runtime
         };
     }
 
+    /// One immutable logical layout and its allocation, shared by typed and
+    /// language bindings. Row metadata stays in element units for every handle.
+    /// Buffer owns values/access state; ArrayLayout owns CPU/CUDA row offsets.
+    class ArrayStorage
+    {
+        Buffer _values;
+        std::shared_ptr<const Detail::ArrayLayout> _layout;
+        size_t _elementBytes;
+
+        ArrayStorage(RowLayout layout, Buffer values, size_t elementBytes)
+            : _values(std::move(values)),
+              _layout(std::make_shared<const Detail::ArrayLayout>(std::move(layout), _values.GetDevice())),
+              _elementBytes(elementBytes) {}
+
+    public:
+        using Shared = std::shared_ptr<const ArrayStorage>;
+        static Shared FromBuffer(RowLayout layout, Buffer values, size_t elementBytes)
+        {
+            DNDS_check_throw_info(elementBytes && values.Identity() &&
+                                      values.Bytes() == CheckedSize::Multiply(layout.Elements(), elementBytes),
+                                  "Array storage size/layout mismatch");
+            return Shared(new ArrayStorage(std::move(layout), std::move(values), elementBytes));
+        }
+        static Shared Allocate(RowLayout layout, size_t elementBytes, Device device = Device::Host())
+        {
+            auto values = Buffer::Allocate(CheckedSize::Multiply(layout.Elements(), elementBytes), device);
+            return FromBuffer(std::move(layout), std::move(values), elementBytes);
+        }
+        const RowLayout &Layout() const { return _layout->rows; }
+        const std::shared_ptr<const Detail::ArrayLayout> &SharedLayout() const { return _layout; }
+        const Buffer &Values() const { return _values; }
+        size_t ElementBytes() const { return _elementBytes; }
+        ReadAccess Read(ExecutionContext context = ExecutionContext::Host()) const { return _values.Read(context); }
+        WriteAccess Write(ExecutionContext context = ExecutionContext::Host()) const
+        {
+            auto handle = _values;
+            return handle.Write(context);
+        }
+        CopyOperation CopyFrom(const ArrayStorage &source, ExecutionContext context = ExecutionContext::Host()) const
+        {
+            DNDS_check_throw_info(_elementBytes == source._elementBytes && Layout() == source.Layout(),
+                                  "Array copy requires matching element size and layout");
+            auto destination = _values;
+            return Copy(source._values, destination, context);
+        }
+    };
+
     template <class T, bool Writable>
     class ArrayAccess
     {
@@ -182,8 +229,8 @@ namespace DNDS::Runtime
     {
         static_assert(std::is_trivially_copyable_v<T> && std::is_standard_layout_v<T>);
         static_assert(alignof(T) <= 64, "native Array supports alignment up to 64 bytes");
-        Buffer _values;
-        std::shared_ptr<const Detail::ArrayLayout> _layout;
+        ArrayStorage::Shared _storage;
+        explicit Array(ArrayStorage::Shared storage) : _storage(std::move(storage)) {}
 
     public:
         using value_type = T;
@@ -201,39 +248,39 @@ namespace DNDS::Runtime
         /// retains the original allocation's controller; it never wraps raw pointers.
         static Array FromStorage(RowLayout layout, Buffer storage)
         {
+            return FromSharedStorage(ArrayStorage::FromBuffer(std::move(layout), std::move(storage), sizeof(T)));
+        }
+        /// Shares values, logical layout and device offsets without allocating or
+        /// copying. Language adapters additionally validate the semantic dtype.
+        static Array FromSharedStorage(ArrayStorage::Shared storage)
+        {
+            DNDS_check_throw_info(storage && storage->ElementBytes() == sizeof(T), "Array element size mismatch");
             if constexpr (!std::is_same_v<LayoutPolicy, RowLayout>)
-                LayoutPolicy::Validate(layout);
-            DNDS_check_throw_info(storage.Identity() && storage.Bytes() == CheckedSize::Multiply(layout.Elements(), sizeof(T)),
-                                  "Array storage size/layout mismatch");
-            DNDS_check_throw_info(reinterpret_cast<uintptr_t>(storage.LegacyPointer()) % alignof(T) == 0, "Array storage alignment mismatch");
-            Array result;
-            result._layout = std::make_shared<const Detail::ArrayLayout>(std::move(layout), storage.GetDevice());
-            result._values = std::move(storage);
-            return result;
+                LayoutPolicy::Validate(storage->Layout());
+            DNDS_check_throw_info(reinterpret_cast<uintptr_t>(storage->Values().LegacyPointer()) % alignof(T) == 0,
+                                  "Array storage alignment mismatch");
+            return Array(std::move(storage));
         }
         void Reset(RowLayout layout, Device device = Device::Host())
         {
             if constexpr (!std::is_same_v<LayoutPolicy, RowLayout>)
                 LayoutPolicy::Validate(layout);
-            auto shape = std::make_shared<const Detail::ArrayLayout>(std::move(layout), device);
-            auto values = Buffer::Allocate(CheckedSize::Multiply(shape->rows.Elements(), sizeof(T)), device);
-            _layout = std::move(shape);
-            _values = std::move(values);
+            _storage = ArrayStorage::Allocate(std::move(layout), sizeof(T), device);
         }
-        const RowLayout &Layout() const { return _layout->rows; }
+        const ArrayStorage::Shared &SharedStorage() const { return _storage; }
+        const RowLayout &Layout() const { return _storage->Layout(); }
         size_t Rows() const { return Layout().Rows(); }
         size_t RowSize(size_t row) const { return Layout().RowSize(row); }
-        Device GetDevice() const { return _values.GetDevice(); }
-        uint64_t Identity() const { return _values.Identity(); }
-        uint64_t Version() const { return _values.Version(); }
-        bool IsValid() const { return _values.IsValid(); }
-        const Buffer &Storage() const { return _values; }
-        ReadLease Read(ExecutionContext context = ExecutionContext::Host()) const { return {_values.Read(context), _layout}; }
-        WriteLease Write(ExecutionContext context = ExecutionContext::Host()) { return {_values.Write(context), _layout}; }
+        Device GetDevice() const { return Storage().GetDevice(); }
+        uint64_t Identity() const { return Storage().Identity(); }
+        uint64_t Version() const { return Storage().Version(); }
+        bool IsValid() const { return Storage().IsValid(); }
+        const Buffer &Storage() const { return _storage->Values(); }
+        ReadLease Read(ExecutionContext context = ExecutionContext::Host()) const { return {_storage->Read(context), _storage->SharedLayout()}; }
+        WriteLease Write(ExecutionContext context = ExecutionContext::Host()) { return {_storage->Write(context), _storage->SharedLayout()}; }
         CopyOperation CopyFrom(const Array &other, ExecutionContext context = ExecutionContext::Host())
         {
-            DNDS_check_throw_info(Layout() == other.Layout(), "Array copy requires matching layouts");
-            return Copy(other._values, _values, context);
+            return _storage->CopyFrom(*other._storage, context);
         }
         /// Synchronous explicit snapshot/placement conversion. CopyFrom is async.
         Array To(Device device, ExecutionContext context) const
