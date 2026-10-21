@@ -172,6 +172,23 @@ namespace DNDS
         }
         std::shared_ptr<const void> dataLease() const { return _data.hostLease(); }
 
+        /// Flat data access only: row offsets/sizes remain a separate layout.
+        /// Raw legacy writes bypass these guards; do not mix them with a lease.
+        Runtime::ReadAccess HostReadData() const
+        {
+            if constexpr (isCSR)
+                DNDS_check_throw_info(IfCompressed(), "compress CSR before native flat access");
+            return _data.HostRead();
+        }
+        Runtime::WriteAccess HostWriteData()
+        {
+            if constexpr (isCSR)
+                DNDS_check_throw_info(IfCompressed(), "compress CSR before native flat access");
+            return _data.HostWrite();
+        }
+        uint64_t HostDataVersion() const { return _data.HostVersion(); }
+        uint64_t HostDataIdentity() const { return _data.HostIdentity(); }
+
     public:
         /// @brief Default-constructed array: empty, no storage.
         Array() = default;

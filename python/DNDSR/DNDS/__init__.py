@@ -269,4 +269,7 @@ def ArrayTransformerFromParArray(arr, init_args: tuple = ()):
     return cls(*init_args)
 
 
-__all__ = ["MPI", "Debug"]
+from importlib import import_module as _import_module
+Runtime = _import_module(".Runtime", __name__)
+
+__all__ = ["MPI", "Debug", "Runtime"]

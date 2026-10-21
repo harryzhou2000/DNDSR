@@ -14,6 +14,7 @@
 #include "AdjIndexInfo.hpp"
 #include "MeshConnectivity.hpp"
 #include "ReorderPlan.hpp"
+#include "DNDS/Runtime/Version.hpp"
 
 namespace DNDS::Direct
 {
@@ -36,6 +37,19 @@ namespace DNDS::Geom
 
     struct UnstructuredMesh : public DeviceTransferable<UnstructuredMesh>
     {
+        /// Native mutation boundary. Public legacy adjacency edits must declare
+        /// their changes explicitly; they are not automatically intercepted.
+        Runtime::VersionTracker versions;
+
+        /// Collective preflight prevents one rank rejecting an active read while
+        /// peers proceed into reorder communication. Orchestration is serialized.
+        void CheckCollectiveMutationAvailable() const
+        {
+            int available = versions.CanMutate();
+            MPI_Allreduce(MPI_IN_PLACE, &available, 1, MPI_INT, MPI_MIN, mpi.comm);
+            DNDS_check_throw_info(available, "mesh mutation blocked by a reader, writer or failed transition on a rank");
+        }
+
         MPI_int mRank{0};
         DNDS::MPIInfo mpi;
         int dim;
@@ -583,6 +597,13 @@ namespace DNDS::Geom
          * \warning Collective.
          */
         void ReorderEntities(const ReorderInput &input);
+
+        /// Reorder mesh and explicitly registered fields with the same plan.
+        /// Entries must have unique, matching names/kinds/order on every rank.
+        /// Callbacks participate in the destructive mutation scope; an exception
+        /// invalidates the mesh. Caller retains fields and rebuilds their ghosts.
+        void ReorderEntitiesWithFields(const ReorderInput &input,
+                                       const std::vector<CompanionEntry> &fields);
 
         /**
          * \brief Build a ReorderPlan without applying it.

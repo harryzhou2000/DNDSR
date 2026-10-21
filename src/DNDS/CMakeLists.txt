@@ -30,6 +30,9 @@ MPI.cpp
 Defines.cpp
 EnvReader.cpp
 Device/DeviceStorage.cpp
+Runtime/Buffer.cpp
+Runtime/Exchange.cpp
+Runtime/RowTransfer.cpp
 Profiling.cpp
 HardEigen.cpp
 Serializer/SerializerBase.cpp
@@ -43,6 +46,7 @@ file(GLOB ARRAYDOF_OP_SOURCES CONFIGURE_DEPENDS "ArrayDOF_inst/*.cpp")
 list(APPEND CPPS ${ARRAYDOF_OP_SOURCES})
 
 if (DNDS_USE_CUDA)
+    list(APPEND CPPS Runtime/RowTransfer_CUDA.cu)
     list(APPEND CPPS Device/DeviceStorage_CUDA.cu)
     file(GLOB ARRAYDOF_OP_SOURCES_CUDA CONFIGURE_DEPENDS "ArrayDOF_inst/*.cu")
     list(APPEND CPPS ${ARRAYDOF_OP_SOURCES_CUDA})
@@ -79,6 +83,7 @@ install(TARGETS ${LIBNAME}_shared
 
 set(CPPS_BIND
 dnds_pybind11.cpp
+Runtime/Runtime_bind.cpp
 Defines_bind.cpp
 MPI_bind.cpp
 Array_bind.cpp

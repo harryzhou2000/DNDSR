@@ -13,8 +13,10 @@
 #include "doctest.h"
 #include "Geom/Mesh/ReorderPlan.hpp"
 #include "Geom/Mesh/Mesh.hpp"
+#include "Geom/Mesh/FieldTransfer.hpp"
 #include <numeric>
 #include <set>
+#include <optional>
 
 using namespace DNDS;
 using namespace DNDS::Geom;
@@ -466,7 +468,18 @@ TEST_CASE("ReorderEntities cell-only local on UniformSquare_10")
     input.explicitMaps.push_back(EntityReorderMap{EntityKind::Cell, cellPartition});
     // Default follows: Node and Bnd follow Cell
 
+    auto geometryStamp = mesh->versions.Stamp(Runtime::Change::Geometry);
+    auto layoutStamp = mesh->versions.Stamp(Runtime::Change::Layout);
+    {
+        std::optional<Runtime::VersionTracker::ReadLease> reader;
+        if (mpi.rank == 0)
+            reader.emplace(mesh->versions.Read());
+        CHECK_THROWS(mesh->ReorderEntities(input));
+    }
+
     mesh->ReorderEntities(input);
+    CHECK(geometryStamp.Valid());
+    CHECK_FALSE(layoutStamp.Valid());
 
     // Post-condition checks
     CHECK(mesh->adjPrimaryState == Adj_PointToGlobal);
@@ -889,12 +902,25 @@ TEST_CASE("ReorderEntities with external companion array (solver-like)")
         solverDOF(i, 2) = (cellOffset + i) * 10 + 2;
     }
 
-    // Snapshot pre-reorder: map oldGlobal -> expected tag pattern
-    std::map<DNDS::index, std::array<DNDS::index, 3>> expectedByOldGlobal;
+    Runtime::Field<int64_t> stableIds({size_t(nCellBefore), 1, 1}, {7, 0, size_t(nCellBefore), 0}, "cell");
+    Runtime::Field<double> history({size_t(nCellBefore), 2, 2}, {7, 0, size_t(nCellBefore), 0}, "cell");
+    std::vector<size_t> widths(size_t(nCellBefore), 0);
+    for (size_t i = 0; i < widths.size(); ++i)
+        widths[i] = (cellOffset + i) % 3;
+    Runtime::Array<int64_t> native(Runtime::RowLayout::Ragged(widths));
+    {
+        auto w = native.Write();
+        for (size_t i = 0; i < native.Rows(); ++i)
+            for (size_t j = 0; j < native.RowSize(i); ++j)
+                w.At(i, j) = (cellOffset + i) * 10 + j;
+    }
     for (DNDS::index i = 0; i < nCellBefore; i++)
     {
         DNDS::index g = cellOffset + i;
-        expectedByOldGlobal[g] = {g * 10, g * 10 + 1, g * 10 + 2};
+        stableIds.Write().View<int64_t>()[i] = g;
+        auto values = history.Write();
+        values.View<double>()[2 * i] = double(g) + 0.25;
+        values.View<double>()[2 * i + 1] = double(g) + 0.5;
     }
 
     // Plan + register external companion + apply
@@ -906,36 +932,34 @@ TEST_CASE("ReorderEntities with external companion array (solver-like)")
     ReorderInput input;
     input.explicitMaps.push_back(EntityReorderMap{EntityKind::Cell, cellPartition});
 
-    // Build the plan (with default Node/Bnd follows)
-    auto plan = mesh->buildReorderPlan(input);
-
-    // Build registry and register the EXTERNAL companion BEFORE applying
-    auto reg = mesh->buildReorderRegistry(input.destroyKinds);
-    reg.registerCompanion(
-        EntityKind::Cell,
-        [&](const PermutationTransfer &t, const MPIInfo &m)
-        { t.transferRows(solverDOF, m); },
-        "solverDOF");
-
-    // Call the full mesh reorder (which uses its own registry internally;
-    // for external companion we must use buildReorderPlan + apply + manual rebuild).
-    //
-    // Simpler: apply plan to our extended registry directly, then rebuild mesh ghosts.
-    // However ReorderEntities does a lot of rebuild work. To test just the external
-    // companion path, we exercise it through the synthetic pattern:
-    plan.apply(reg, mpi);
-
-    // After apply, solverDOF has been relocated. Verify values preserved per old-global.
-    // New cells live at new globals — compute new-global -> old-global via plan transfer
-    const auto &transfer = plan.transfers.at(EntityKind::Cell);
-
-    // Build reverse map: new global -> old global (on this rank, post-reorder)
-    // After transferRows, solverDOF row i is at new local slot i with new global
-    // (myNewOffset + i). We need to know which old global was sent to new local slot i.
-    //
-    // The sender info isn't directly exposed; we use the tag pattern to verify.
-    // The received tag % 10 == 0,1,2 (col 0,1,2), and tag / 10 == oldGlobal.
+    std::vector<CompanionEntry> fields{
+        {EntityKind::Cell,
+         [&](const PermutationTransfer &t, const MPIInfo &m)
+         { t.transferRows(solverDOF, m); },
+         "solverDOF"},
+        RegisterField(stableIds, EntityKind::Cell, "stableIds"),
+        RegisterField(history, EntityKind::Cell, "history"),
+        RegisterArray(native, EntityKind::Cell, "nativeRagged")};
+    if (mpi.size > 1)
+    {
+        auto mismatched = fields;
+        if (mpi.rank == 0)
+            mismatched.pop_back();
+        CHECK_THROWS(mesh->ReorderEntitiesWithFields(input, mismatched));
+        CHECK(mesh->versions.CanMutate());
+    }
+    auto before = mesh->versions.Stamp(Runtime::Change::Distribution);
+    mesh->ReorderEntitiesWithFields(input, fields);
+    CHECK_FALSE(before.Valid());
+    CHECK(mesh->adjPrimaryState == Adj_PointToGlobal);
+    CHECK(stableIds.GetDistribution().epoch == 1);
+    CHECK(history.GetDistribution().epoch == 1);
+    REQUIRE(stableIds.Layout().rows == size_t(mesh->NumCell()));
+    REQUIRE(history.Layout().rows == size_t(mesh->NumCell()));
+    auto ids = stableIds.Read();
+    auto values = history.Read();
     DNDS::index nAfter = solverDOF.father->Size();
+    REQUIRE(nAfter == mesh->NumCell());
     for (DNDS::index i = 0; i < nAfter; i++)
     {
         DNDS::index v0 = solverDOF(i, 0);
@@ -947,7 +971,38 @@ TEST_CASE("ReorderEntities with external companion array (solver-like)")
         CHECK(v2 % 10 == 2);
         CHECK(v0 / 10 == v1 / 10);
         CHECK(v0 / 10 == v2 / 10);
+        CHECK(ids.View<int64_t>()[i] == v0 / 10);
+        CHECK(values.View<double>()[2 * i] == double(v0 / 10) + 0.25);
+        CHECK(values.View<double>()[2 * i + 1] == double(v0 / 10) + 0.5);
+        CHECK(native.RowSize(i) == size_t((v0 / 10) % 3));
+        auto r = native.Read();
+        for (size_t j = 0; j < native.RowSize(i); ++j)
+            CHECK(r.At(i, j) == v0 + int64_t(j));
     }
+}
+
+TEST_CASE("Native field uses exact local permutation and preserves old aliases")
+{
+    auto mpi = worldMPI();
+    ArrayAdjacencyPair<1> entity;
+    entity.InitPair("localField.entities", mpi);
+    entity.father->Resize(3);
+    entity.father->createGlobalMapping();
+    auto permutation = PermutationTransfer::fromLocalPermutation({2, 0, 1}, entity.father->pLGlobalMapping, mpi);
+    Runtime::Field<int64_t> ids({3, 1, 1}, {9, 3, 3, 0}, "cell");
+    {
+        auto edit = ids.Write();
+        for (size_t i = 0; i < 3; ++i)
+            edit.View<int64_t>()[i] = 100 * mpi.rank + int64_t(i);
+    }
+    auto old = ids;
+    RegisterField(ids, EntityKind::Cell, "ids").fn(permutation, mpi);
+    CHECK(ids.GetDistribution().epoch == 4);
+    CHECK(old.GetDistribution().epoch == 3);
+    CHECK(ids.Read().View<int64_t>()[0] == 100 * mpi.rank + 1);
+    CHECK(ids.Read().View<int64_t>()[1] == 100 * mpi.rank + 2);
+    CHECK(ids.Read().View<int64_t>()[2] == 100 * mpi.rank);
+    CHECK(old.Read().View<int64_t>()[0] == 100 * mpi.rank);
 }
 
 // =================================================================
