@@ -7,6 +7,7 @@
 #include "Mesh_CellPermutation.hpp"
 
 #include <algorithm>
+#include <limits>
 #include <set>
 
 namespace DNDS::Geom
@@ -598,6 +599,13 @@ namespace DNDS::Geom
 
     void UnstructuredMesh::ReorderEntities(const ReorderInput &input)
     {
+        ReorderEntitiesWithFields(input, {});
+    }
+
+    void UnstructuredMesh::ReorderEntitiesWithFields(const ReorderInput &input,
+                                                     const std::vector<CompanionEntry> &fields)
+    {
+        CheckCollectiveMutationAvailable();
         // Step 0: Validate precondition
         DNDS_assert_info(adjPrimaryState == Adj_PointToGlobal,
                          "ReorderEntities: adjPrimaryState must be Adj_PointToGlobal");
@@ -605,9 +613,37 @@ namespace DNDS::Geom
         // Step 1: Build registry (with destroy skip)
         auto reg = buildReorderRegistry(input.destroyKinds);
 
+        // Validate the collective callback schedule before changing mesh data.
+        std::unordered_set<std::string> names;
+        std::string signature;
+        int valid = 1;
+        for (const auto &field : fields)
+        {
+            valid = valid && field.fn && !field.name.empty() && names.insert(field.name).second &&
+                    !input.destroyKinds.count(field.kind) && bool(reg.getGlobalMapping(field.kind));
+            signature += std::to_string(static_cast<int>(field.kind)) + ":" +
+                         std::to_string(field.name.size()) + ":" + field.name + ";";
+        }
+        valid = valid && signature.size() <= size_t(std::numeric_limits<int>::max());
+        MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, mpi.comm);
+        DNDS_check_throw_info(valid, "invalid field registration on a rank");
+        int length = static_cast<int>(signature.size());
+        MPI_Bcast(&length, 1, MPI_INT, 0, mpi.comm);
+        std::string expected = mpi.rank == 0 ? signature : std::string(size_t(length), '\0');
+        MPI_Bcast(expected.data(), length, MPI_CHAR, 0, mpi.comm);
+        valid = signature == expected;
+        MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, mpi.comm);
+        DNDS_check_throw_info(valid, "field registration order/kinds/names differ between ranks");
+        reg.companions.insert(reg.companions.end(), fields.begin(), fields.end());
+
         // Step 2: Resolve follows and build plan
         auto finalInput = resolveFollows(input, reg);
         auto plan = ReorderPlan::build(finalInput, reg, mpi);
+
+        auto changes = Runtime::Change::Distribution | Runtime::Change::Layout | Runtime::Change::Allocation;
+        if (!input.destroyKinds.empty())
+            changes = changes | Runtime::Change::Topology;
+        auto mutation = versions.BeginMutation(changes);
 
         // Step 3: Destroy adjacencies for destroyKinds
         auto destroyAdj = [&](auto &trackedPair)
@@ -894,6 +930,7 @@ namespace DNDS::Geom
             bnd2faceV.clear();
             face2bndM.clear();
         }
+        mutation.Commit();
     }
 
     // =================================================================
@@ -902,6 +939,7 @@ namespace DNDS::Geom
 
     void UnstructuredMesh::ReorderLocalCells(int nParts, int nPartsInner)
     {
+        CheckCollectiveMutationAvailable();
         // Guard against edge-interpolated state.
         // ReorderLocalCells runs before InterpolateFace and InterpolateEdge in
         // the standard pipeline.  Calling it after edge interpolation would
@@ -937,6 +975,7 @@ namespace DNDS::Geom
                     cell2cell.isLocal() && bnd2cell.isLocal());
         nParts = std::max(nParts, 1);
         nPartsInner = std::max(nPartsInner, 1);
+        auto mutation = versions.BeginMutation(Runtime::Change::Layout | Runtime::Change::Allocation | Runtime::Change::Distribution);
 
         // --- Section A: Compute cell permutation (same as legacy) ---
         // We need the local face-adjacency graph and cell2cell.
@@ -1147,6 +1186,7 @@ namespace DNDS::Geom
 
         if (mpi.rank == mRank)
             log() << fmt::format("UnstructuredMesh === ReorderLocalCells finished") << std::endl;
+        mutation.Commit();
     }
 
 } // namespace DNDS::Geom
