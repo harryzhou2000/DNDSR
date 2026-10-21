@@ -20,8 +20,8 @@ TEST_CASE("Native ragged Array CUDA views retain metadata through replacement")
     auto retained = values;
     auto shared = Array<double>::FromSharedStorage(values.SharedStorage());
     CHECK(shared.SharedStorage() == values.SharedStorage());
-    CHECK(&shared.Layout() == &values.Layout());
-    CHECK(shared.SharedStorage()->SharedLayout()->deviceOffsets.Identity() == values.SharedStorage()->SharedLayout()->deviceOffsets.Identity());
+    CHECK(shared.SharedStorage()->SharedLayout() == values.SharedStorage()->SharedLayout());
+    CHECK(shared.SharedStorage()->SharedLayout()->DeviceOffsetIdentity() == values.SharedStorage()->SharedLayout()->DeviceOffsetIdentity());
     auto ctx = ExecutionContext::CUDA(0);
     {
         auto write = values.Write(ctx);
@@ -40,11 +40,85 @@ TEST_CASE("Native ragged Array CUDA views retain metadata through replacement")
     CHECK(copy.To(Device::Host(), ctx).Read().At(0, 1) == 1);
 }
 
+TEST_CASE("Padded CUDA views use logical row sizes and preserve capacity padding")
+{
+    cudaStream_t stream;
+    REQUIRE(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking) == cudaSuccess);
+    const auto context = ExecutionContext::CUDA(0, stream);
+    {
+        Array<double> values(RowLayout::Padded({0, 5, 7, 33, 0, 19}, 40), Device::CUDA(0));
+        auto retained = values;
+        auto write = values.Write(context);
+        FillRows<<<3, 64, 0, stream>>>(write.View());
+        REQUIRE(cudaGetLastError() == cudaSuccess);
+        write.Complete(Completion::Record(context));
+        values.Reset(RowLayout::Dense(0, 0));
+        write.Wait();
+        auto host = retained.To(Device::Host(), context);
+        CHECK(host.Layout().IsPadded());
+        CHECK(host.Read().At(3, 32) == 332);
+        CHECK_THROWS(host.Read().At(3, 33));
+        auto raw = host.Storage().Read();
+        auto flat = raw.View<double>();
+        for (size_t i = 0; i < host.Rows(); ++i)
+            for (size_t j = host.RowSize(i); j < 40; ++j)
+                CHECK(flat[i * 40 + j] == 0);
+    }
+    REQUIRE(cudaStreamDestroy(stream) == cudaSuccess);
+}
+
 __global__ void Scale(Span<const double> input, Span<double> output)
 {
     size_t i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < input.size)
         output[i] = 3 * input[i];
+}
+
+TEST_CASE("External CUDA allocation and shared CSR metadata survive pending kernels")
+{
+    REQUIRE(cudaSetDevice(0) == cudaSuccess);
+    cudaStream_t stream;
+    REQUIRE(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking) == cudaSuccess);
+    const auto context = ExecutionContext::CUDA(0, stream);
+    int releases = 0;
+    bool releaseOK = true;
+    {
+        const auto shape = RowLayout::Ragged({0, 5, 19, 0, 513, 7});
+        void *pointer = nullptr;
+        const auto bytes = shape.Elements() * sizeof(double);
+        REQUIRE(cudaMalloc(&pointer, bytes) == cudaSuccess);
+        auto owner = std::shared_ptr<void>(pointer, [&releases, &releaseOK](void *p)
+                                           { ++releases; releaseOK = cudaFree(p) == cudaSuccess; });
+        auto allocation = Allocation::Import(owner, bytes, Device::CUDA(0));
+        auto array = Array<double>::FromStorage(shape, Buffer::FromAllocation(allocation, 0, bytes));
+        auto second = Array<double>::FromSharedStorage(array.SharedStorage()->WithValues(Buffer::Allocate(bytes, Device::CUDA(0)), sizeof(double)));
+        CHECK(second.SharedStorage()->SharedLayout() == array.SharedStorage()->SharedLayout());
+        CHECK(second.SharedStorage()->SharedLayout()->DeviceOffsetIdentity() == array.SharedStorage()->SharedLayout()->DeviceOffsetIdentity());
+        auto write = array.Write(context);
+        FillRows<<<7, 128, 0, stream>>>(write.View());
+        REQUIRE(cudaGetLastError() == cudaSuccess);
+        write.Complete(Completion::Record(context));
+        auto retained = array;
+        array.Reset(RowLayout::Dense(0, 0));
+        owner.reset();
+        allocation = {};
+        CHECK(releases == 0);
+        write.Wait();
+        auto host = retained.To(Device::Host(), context);
+        CHECK(host.Read().At(4, 512) == 912);
+        CHECK(host.RowSize(0) == 0);
+        retained.Reset(RowLayout::Dense(0, 0));
+        CHECK(releases == 1);
+        auto edit = second.Write(context);
+        FillRows<<<3, 64, 0, stream>>>(edit.View());
+        REQUIRE(cudaGetLastError() == cudaSuccess);
+        edit.Complete(Completion::Record(context));
+        edit.Wait();
+        CHECK(second.To(Device::Host(), context).Read().At(5, 6) == 506);
+    }
+    CHECK(releaseOK);
+    CHECK(releases == 1);
+    REQUIRE(cudaStreamDestroy(stream) == cudaSuccess);
 }
 
 TEST_CASE("Runtime CUDA residency, cross-stream transfer and retained leases")

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Array.hpp"
+#include "RowBuilder.hpp"
 #include <pybind11/numpy.h>
 #include <functional>
 #include <typeindex>
@@ -75,6 +76,22 @@ namespace DNDS::Runtime
         }
 
     public:
+        PythonArray(const PythonArray &other)
+            : _storage(ArrayStorage::Share(other._storage)), _dtype(other._dtype), _element(other._element), _elementType(other._elementType) {}
+        PythonArray &operator=(const PythonArray &other)
+        {
+            if (this != &other)
+            {
+                auto shared = ArrayStorage::Share(other._storage);
+                _storage = std::move(shared);
+                _dtype = other._dtype;
+                _element = other._element;
+                _elementType = other._elementType;
+            }
+            return *this;
+        }
+        PythonArray(PythonArray &&) noexcept = default;
+        PythonArray &operator=(PythonArray &&) noexcept = default;
         PythonArray(RowLayout layout, pybind11::object dtypeOrClass, Device device = Device::Host())
         {
             _element = GetPythonElement(dtypeOrClass);
@@ -139,8 +156,11 @@ namespace DNDS::Runtime
                 throw pybind11::type_error("native Array dtype mismatch (no implicit conversion)");
             return Array<T, L>::FromSharedStorage(_storage);
         }
-        const ArrayStorage::Shared &SharedStorage() const { return _storage; }
-        const RowLayout &Layout() const { return _storage->Layout(); }
+        ArrayStorage::Shared SharedStorage() const { return ArrayStorage::Share(_storage); }
+        ExclusiveRows EditRows() { return ExclusiveRows(_storage); }
+        bool IsValid() const { return _storage->IsValid(); }
+        uint64_t ShapeVersion() const { return _storage->ShapeVersion(); }
+        RowLayout Layout() const { return _storage->Layout(); }
         const pybind11::dtype &Dtype() const { return _dtype; }
         const PythonElementShared &Element() const { return _element; }
         const pybind11::object &ElementType() const { return _elementType; }
@@ -166,7 +186,7 @@ namespace DNDS::Runtime
                                       "Array POD alignment mismatch");
             return result;
         }
-        const Buffer &Storage() const { return _storage->Values(); }
+        Buffer Storage() const { return _storage->Values(); }
         ExecutionContext Context(uintptr_t stream = 0) const { return {Storage().GetDevice(), reinterpret_cast<void *>(stream)}; }
         ReadAccess Read(ExecutionContext context) const { return _storage->Read(context); }
         WriteAccess Write(ExecutionContext context) { return _storage->Write(context); }

@@ -108,24 +108,26 @@ namespace DNDS::Runtime
 
     struct RowTransferPlan::State
     {
+        std::shared_ptr<CommunicationContext> context;
         MPI_Comm comm = MPI_COMM_NULL;
         size_t sources = 0, destinations = 0;
         std::vector<std::vector<size_t>> send, receive;
         bool collisions = false, reverseCollisions = false;
         std::vector<VersionStamp> dependencies;
-        ~State()
-        {
-            if (comm != MPI_COMM_NULL && MPIAlive())
-                MPI_Comm_free(&comm);
-        }
     };
 
     RowTransferPlan::RowTransferPlan(MPI_Comm comm, size_t sourceRows, size_t destinationRows,
                                      const std::vector<RowRequest> &requests, std::vector<VersionStamp> dependencies)
+        : RowTransferPlan(std::make_shared<CommunicationContext>(comm), sourceRows, destinationRows, requests, std::move(dependencies)) {}
+
+    RowTransferPlan::RowTransferPlan(std::shared_ptr<CommunicationContext> context, size_t sourceRows, size_t destinationRows,
+                                     const std::vector<RowRequest> &requests, std::vector<VersionStamp> dependencies)
     {
-        DNDS_check_throw_info(comm != MPI_COMM_NULL, "row transfer needs a communicator");
+        DNDS_check_throw_info(context, "row transfer needs a communication context");
+        const auto comm = context->Communicator();
         auto state = std::make_shared<State>();
-        MPI_Comm_dup(comm, &state->comm);
+        state->context = std::move(context);
+        state->comm = comm;
         int size = 0;
         MPI_Comm_size(comm, &size);
         bool valid = sourceRows <= INT64_MAX && requests.size() <= INT_MAX;
@@ -166,6 +168,55 @@ namespace DNDS::Runtime
             }
         CheckAll(valid, state->comm, "row transfer source index does not exist");
         _state = std::move(state);
+    }
+    RowTransferPlan RowTransferPlan::Known(std::shared_ptr<CommunicationContext> context, size_t sourceRows, size_t destinationRows,
+                                           std::vector<std::vector<size_t>> send, std::vector<std::vector<size_t>> receive,
+                                           std::vector<VersionStamp> dependencies)
+    {
+        DNDS_check_throw_info(context, "known route needs a communication context");
+        const auto comm = context->Communicator();
+        int size = 0;
+        MPI_Comm_size(comm, &size);
+        bool valid = send.size() == size_t(size) && receive.size() == size_t(size);
+        size_t ns = 0, nr = 0;
+        for (const auto &peer : send)
+        {
+            valid = valid && peer.size() <= INT_MAX;
+            ns = CheckedSize::Add(ns, peer.size());
+            for (auto row : peer)
+                valid = valid && row < sourceRows;
+        }
+        for (const auto &peer : receive)
+        {
+            valid = valid && peer.size() <= INT_MAX;
+            nr = CheckedSize::Add(nr, peer.size());
+            for (auto row : peer)
+                valid = valid && row < destinationRows;
+        }
+        CheckAll(valid && ns <= INT_MAX && nr <= INT_MAX, comm, "invalid known row route");
+        auto sc = Counts(send), rc = Counts(receive);
+        std::vector<int> actual(size);
+        MPI_Alltoall(sc.data(), 1, MPI_INT, actual.data(), 1, MPI_INT, comm);
+        CheckAll(actual == rc, comm, "known row route peer counts disagree");
+        auto state = std::make_shared<State>();
+        state->context = std::move(context);
+        state->comm = comm;
+        state->sources = sourceRows;
+        state->destinations = destinationRows;
+        state->send = std::move(send);
+        state->receive = std::move(receive);
+        state->dependencies = std::move(dependencies);
+        std::set<size_t> seen;
+        for (const auto &peer : state->send)
+            for (auto row : peer)
+                state->reverseCollisions |= !seen.insert(row).second;
+        seen.clear();
+        for (const auto &peer : state->receive)
+            for (auto row : peer)
+                state->collisions |= !seen.insert(row).second;
+        RowTransferPlan result;
+        result._state = std::move(state);
+        return result;
     }
     RowTransferPlan RowTransferPlan::Reverse() const
     {
@@ -304,6 +355,8 @@ namespace DNDS::Runtime
         Buffer source, destination, workspace, deviceGroups;
         Buffer hostSource, hostDestination;
         TransferTransport transport = TransferTransport::Direct;
+        TransferOptions options;
+        std::shared_ptr<const int> tag;
         std::vector<std::vector<uint8_t>> packedSend, packedReceive;
         std::vector<int> packedSendSizes;
         std::shared_ptr<const Reducer> reducer;
@@ -316,24 +369,26 @@ namespace DNDS::Runtime
             if (MPIAlive())
             {
                 for (auto &r : sends)
-                    MPI_Request_free(&r);
+                    if (r != MPI_REQUEST_NULL)
+                        MPI_Request_free(&r);
                 for (auto &r : receives)
-                    MPI_Request_free(&r);
-                if (comm != MPI_COMM_NULL)
+                    if (r != MPI_REQUEST_NULL)
+                        MPI_Request_free(&r);
+                if (comm != MPI_COMM_NULL && !options.context)
                     MPI_Comm_free(&comm);
             }
         }
     };
-    TransferBinding PayloadPlan::Bind(Buffer source, Buffer destination, TransferTransport transport) const
+    TransferBinding PayloadPlan::Bind(Buffer source, Buffer destination, TransferTransport transport, TransferOptions options) const
     {
-        return TransferBinding(_state, std::move(source), std::move(destination), {}, transport);
+        return TransferBinding(_state, std::move(source), std::move(destination), {}, transport, std::move(options));
     }
-    TransferBinding PayloadPlan::Bind(Buffer source, Buffer destination, Reducer reducer, TransferTransport transport) const
+    TransferBinding PayloadPlan::Bind(Buffer source, Buffer destination, Reducer reducer, TransferTransport transport, TransferOptions options) const
     {
-        return TransferBinding(_state, std::move(source), std::move(destination), std::make_shared<const Reducer>(std::move(reducer)), transport);
+        return TransferBinding(_state, std::move(source), std::move(destination), std::make_shared<const Reducer>(std::move(reducer)), transport, std::move(options));
     }
     TransferBinding::TransferBinding(std::shared_ptr<const PayloadPlan::State> plan, Buffer source, Buffer destination,
-                                     std::shared_ptr<const Reducer> reducer, TransferTransport transport)
+                                     std::shared_ptr<const Reducer> reducer, TransferTransport transport, TransferOptions options)
     {
         auto state = std::make_shared<State>();
         state->plan = std::move(plan);
@@ -341,7 +396,31 @@ namespace DNDS::Runtime
         state->destination = std::move(destination);
         state->reducer = std::move(reducer);
         state->transport = transport;
-        MPI_Comm_dup(state->plan->route.Communicator(), &state->comm);
+        state->options = std::move(options);
+        const auto routeComm = state->plan->route.Communicator();
+        Agree(std::to_string(int(state->options.mode)) + ":" + std::to_string(bool(state->options.context)) + ":" + std::to_string(state->options.tag), routeComm);
+        if (state->options.context)
+        {
+            int comparison = MPI_UNEQUAL;
+            MPI_Comm_compare(routeComm, state->options.context->Communicator(), &comparison);
+            CheckAll(comparison == MPI_IDENT || comparison == MPI_CONGRUENT, routeComm, "transfer context rank ordering differs from route");
+            state->comm = state->options.context->Communicator();
+            bool reserved = true;
+            try
+            {
+                state->tag = state->options.context->Reserve(state->options.tag);
+            }
+            catch (...)
+            {
+                reserved = false;
+            }
+            CheckAll(reserved, routeComm, "MPI tag unavailable on a rank");
+        }
+        else
+        {
+            CheckAll(state->options.tag == 0, routeComm, "isolated transfer binding uses tag zero");
+            MPI_Comm_dup(routeComm, &state->comm);
+        }
         const auto &p = *state->plan;
         const auto policy = state->reducer ? state->reducer->identity + ":" + std::to_string(int(state->reducer->initialization)) : "copy";
         Agree(policy + ":" + std::to_string(int(transport)), state->comm);
@@ -405,41 +484,130 @@ namespace DNDS::Runtime
             valid = false;
         }
         CheckAll(valid, state->comm, "cannot allocate/compile transfer workspace");
+        state->receives.reserve(p.route.ReceiveRows().size());
+        state->sends.reserve(p.route.SendRows().size());
         auto *receiveBase = state->reducer ? state->workspace.LegacyPointer() : state->destination.LegacyPointer();
-        for (int peer = 0; peer < int(p.route.SendRows().size()); ++peer)
-        {
-            if (!p.route.ReceiveRows()[peer].empty())
+        if (state->options.mode == TransferMode::Persistent)
+            for (int peer = 0; peer < int(p.route.SendRows().size()); ++peer)
             {
-                state->receives.push_back(MPI_REQUEST_NULL);
-                auto type = state->reducer ? p.contributionTypes[peer] : p.receiveTypes[peer];
-                if (transport == TransferTransport::Direct)
-                    MPI_Recv_init(receiveBase, 1, type->value, peer, 0, state->comm, &state->receives.back());
-                else
-                    MPI_Recv_init(state->packedReceive[peer].data(), int(state->packedReceive[peer].size()), MPI_PACKED,
-                                  peer, 0, state->comm, &state->receives.back());
+                if (!p.route.ReceiveRows()[peer].empty())
+                {
+                    state->receives.push_back(MPI_REQUEST_NULL);
+                    auto type = state->reducer ? p.contributionTypes[peer] : p.receiveTypes[peer];
+                    if (transport == TransferTransport::Direct)
+                        MPI_Recv_init(receiveBase, 1, type->value, peer, state->options.tag, state->comm, &state->receives.back());
+                    else
+                        MPI_Recv_init(state->packedReceive[peer].data(), int(state->packedReceive[peer].size()), MPI_PACKED,
+                                      peer, state->options.tag, state->comm, &state->receives.back());
+                }
+                if (!p.route.SendRows()[peer].empty())
+                {
+                    state->sends.push_back(MPI_REQUEST_NULL);
+                    if (transport == TransferTransport::Direct)
+                        MPI_Send_init(state->source.LegacyPointer(), 1, p.sendTypes[peer]->value, peer, state->options.tag, state->comm, &state->sends.back());
+                    else
+                        MPI_Send_init(state->packedSend[peer].data(), state->packedSendSizes[peer], MPI_PACKED,
+                                      peer, state->options.tag, state->comm, &state->sends.back());
+                }
             }
-            if (!p.route.SendRows()[peer].empty())
-            {
-                state->sends.push_back(MPI_REQUEST_NULL);
-                if (transport == TransferTransport::Direct)
-                    MPI_Send_init(state->source.LegacyPointer(), 1, p.sendTypes[peer]->value, peer, 0, state->comm, &state->sends.back());
-                else
-                    MPI_Send_init(state->packedSend[peer].data(), state->packedSendSizes[peer], MPI_PACKED,
-                                  peer, 0, state->comm, &state->sends.back());
-            }
-        }
         _state = std::move(state);
     }
 
+    namespace
+    {
+        struct TransferAccess
+        {
+            ReadAccess read;
+            WriteAccess write;
+            ScheduledAccess pending;
+            Completion completion;
+            bool scheduled = false, writable = false;
+            Device device;
+            ExecutionContext context;
+            void Acquire(Buffer &buffer, ExecutionContext execution, bool wr, bool sch)
+            {
+                context = execution;
+                scheduled = sch;
+                writable = wr;
+                device = buffer.GetDevice();
+                if (sch)
+                    pending = buffer.Reserve(wr ? AccessMode::Write : AccessMode::Read, context.device);
+                else if (wr)
+                    write = buffer.Write(context);
+                else
+                    read = buffer.Read(context);
+            }
+            template <class T>
+            Span<T> View()
+            {
+                if (scheduled)
+                    return {static_cast<T *>(pending.Pointer(alignof(T), sizeof(T))), 0, device.space};
+                if (writable)
+                    return write.View<T>();
+                auto view = read.View<T>();
+                return {const_cast<T *>(view.data), view.size, view.space};
+            }
+            void Complete(Completion event) { completion = std::move(event); }
+            void Wait()
+            {
+                completion.Wait();
+                if (scheduled)
+                    pending.Complete(true);
+                else if (writable)
+                    write.Wait();
+                else
+                    read.Wait();
+            }
+            void Fail()
+            {
+                std::exception_ptr error;
+                try
+                {
+                    if (scheduled && device.space == MemorySpace::CUDA)
+                        Completion::Record(context).Wait();
+                    else
+                        completion.Wait();
+                }
+                catch (...)
+                {
+                    error = std::current_exception();
+                }
+                if (scheduled)
+                    pending.Complete(false);
+                else if (writable)
+                    write.Fail();
+                else
+                    read.Wait();
+                if (error)
+                    std::rethrow_exception(error);
+            }
+            void CancelUnmodified()
+            {
+                if (scheduled)
+                    pending.Cancel();
+                else if (writable)
+                    write.CancelUnmodified();
+                else
+                    read.CancelUnmodified();
+            }
+        };
+    }
     struct TransferOperation::State
     {
         std::shared_ptr<TransferBinding::State> binding;
-        ReadAccess source;
-        WriteAccess destination, workspace;
+        TransferAccess source, destination, workspace;
         ExecutionContext context;
         bool started = false, destinationReady = false;
     };
     TransferOperation TransferBinding::Begin(ExecutionContext context) const
+    {
+        return Start(context, false);
+    }
+    TransferOperation TransferBinding::BeginScheduled(ExecutionContext context) const
+    {
+        return Start(context, true);
+    }
+    TransferOperation TransferBinding::Start(ExecutionContext context, bool scheduled) const
     {
         auto op = std::make_unique<TransferOperation::State>();
         op->binding = _state;
@@ -454,10 +622,10 @@ namespace DNDS::Runtime
         {
             auto ctx = [context](const Buffer &b)
             { return b.GetDevice() == Device::Host() ? ExecutionContext::Host() : context; };
-            op->source = _state->source.Read(ctx(_state->source));
-            op->destination = _state->destination.Write(ctx(_state->destination));
+            op->source.Acquire(_state->source, ctx(_state->source), false, scheduled);
+            op->destination.Acquire(_state->destination, ctx(_state->destination), true, scheduled);
             if (_state->reducer)
-                op->workspace = _state->workspace.Write(ctx(_state->workspace));
+                op->workspace.Acquire(_state->workspace, ctx(_state->workspace), true, scheduled);
             // Producers must have released their write leases. This event also
             // orders prior work on the caller's stream before portable MPI.
             Completion::Record(context).Wait();
@@ -497,10 +665,44 @@ namespace DNDS::Runtime
             std::lock_guard<std::mutex> lock(_state->mutex);
             _state->active = true;
         }
-        if (!_state->receives.empty())
-            MPI_Startall(int(_state->receives.size()), _state->receives.data());
-        if (!_state->sends.empty())
-            MPI_Startall(int(_state->sends.size()), _state->sends.data());
+        if (_state->options.mode == TransferMode::Persistent)
+        {
+            if (!_state->receives.empty())
+                MPI_Startall(int(_state->receives.size()), _state->receives.data());
+            if (!_state->sends.empty())
+                MPI_Startall(int(_state->sends.size()), _state->sends.data());
+        }
+        else
+        {
+            auto &b = *_state;
+            const auto &p = *b.plan;
+            b.receives.clear();
+            b.sends.clear();
+            for (int peer = 0; peer < int(p.route.SendRows().size()); ++peer)
+            {
+                if (!p.route.ReceiveRows()[peer].empty())
+                {
+                    b.receives.push_back(MPI_REQUEST_NULL);
+                    auto type = b.reducer ? p.contributionTypes[peer] : p.receiveTypes[peer];
+                    if (b.transport == TransferTransport::Direct)
+                        MPI_Irecv(b.reducer ? b.workspace.LegacyPointer() : b.destination.LegacyPointer(), 1,
+                                  type->value, peer, b.options.tag, b.comm, &b.receives.back());
+                    else
+                        MPI_Irecv(b.packedReceive[peer].data(), int(b.packedReceive[peer].size()), MPI_PACKED,
+                                  peer, b.options.tag, b.comm, &b.receives.back());
+                }
+                if (!p.route.SendRows()[peer].empty())
+                {
+                    b.sends.push_back(MPI_REQUEST_NULL);
+                    if (b.transport == TransferTransport::Direct)
+                        MPI_Isend(b.source.LegacyPointer(), 1, p.sendTypes[peer]->value,
+                                  peer, b.options.tag, b.comm, &b.sends.back());
+                    else
+                        MPI_Isend(b.packedSend[peer].data(), b.packedSendSizes[peer], MPI_PACKED,
+                                  peer, b.options.tag, b.comm, &b.sends.back());
+                }
+            }
+        }
         op->started = true;
         return TransferOperation(std::move(op));
     }
