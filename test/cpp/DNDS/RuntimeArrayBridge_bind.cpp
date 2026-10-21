@@ -1,5 +1,8 @@
 #include "DNDS/Runtime/Array_bind.hpp"
+#include "DNDS/Runtime/EagerArray.hpp"
 #include <pybind11/stl.h>
+#include <atomic>
+#include <thread>
 
 namespace R = DNDS::Runtime;
 namespace py = pybind11;
@@ -26,9 +29,48 @@ struct StorageWatch
         : storage(array.SharedStorage()), layout(array.SharedStorage()->SharedLayout()) {}
 };
 
+struct AllocationWatch
+{
+    std::weak_ptr<void> owner;
+};
+
 #ifdef DNDS_USE_CUDA
 void BridgeScaleCUDA(State &array, double factor);
+void BridgeScaleCUDAAsync(R::EagerEngine &, const R::ExecutionStream &, State &, double);
+void BridgeHoldCUDA(R::EagerEngine &, const R::ExecutionStream &, std::shared_ptr<std::atomic<bool>>);
 #endif
+
+struct AsyncGate
+{
+    std::shared_ptr<std::atomic<bool>> flag = std::make_shared<std::atomic<bool>>(false);
+    ~AsyncGate() { *flag = true; }
+    struct Event : R::StreamEvent::State
+    {
+        std::shared_ptr<std::atomic<bool>> flag;
+        explicit Event(std::shared_ptr<std::atomic<bool>> f) : flag(std::move(f)) {}
+        bool Ready() const override { return flag->load(); }
+        void Wait() const override
+        {
+            while (!Ready())
+                std::this_thread::yield();
+        }
+    };
+};
+
+void ScaleAsync(R::EagerEngine &engine, const R::ExecutionStream &stream, State array, double factor)
+{
+#ifdef DNDS_USE_CUDA
+    if (stream.Context().device.space == R::MemorySpace::CUDA)
+    {
+        BridgeScaleCUDAAsync(engine, stream, array, factor);
+        return;
+    }
+#endif
+    R::SubmitArrays(engine, stream, [factor](R::ExecutionContext, R::ArrayView<double> values)
+                    {
+        for (size_t i = 0; i < values.Rows(); ++i)
+            for (size_t j = 0; j < values.RowSize(i); ++j) values(i, j) *= factor; }, R::ReadWrite(array));
+}
 
 struct NativeOwner
 {
@@ -76,6 +118,21 @@ void Scale(State array, double factor)
 PYBIND11_MODULE(runtime_array_bridge_test, m)
 {
     py::module_::import("DNDSR.DNDS.Runtime");
+    py::class_<AsyncGate, std::shared_ptr<AsyncGate>>(m, "AsyncGate")
+        .def("open", [](AsyncGate &gate)
+             { *gate.flag = true; });
+    m.def("hold", [](R::EagerEngine &engine, const R::ExecutionStream &stream)
+          {
+        auto gate = std::make_shared<AsyncGate>();
+        if (stream.Context().device.space == R::MemorySpace::Host)
+            stream.WaitFor(R::StreamEvent(std::make_shared<AsyncGate::Event>(gate->flag)));
+#ifdef DNDS_USE_CUDA
+        else BridgeHoldCUDA(engine, stream, gate->flag);
+#endif
+        return gate; });
+    m.def("scale_async", &ScaleAsync);
+    m.def("shares_layout", [](const R::PythonArray &a, const R::PythonArray &b)
+          { return a.SharedStorage()->SharedLayout() == b.SharedStorage()->SharedLayout(); });
     PYBIND11_NUMPY_DTYPE(Metadata, id, weight);
     m.attr("metadata_dtype") = py::dtype::of<Metadata>();
     auto classMetadata = py::class_<ClassMetadata>(m, "ClassMetadata")
@@ -87,6 +144,17 @@ PYBIND11_MODULE(runtime_array_bridge_test, m)
                              .def("scale", [](ClassMetadata &value, double factor)
                                   { value.weight *= factor; });
     R::RegisterArrayElement(classMetadata, "test.ClassMetadata.v1"); // No NumPy struct registration.
+    py::class_<AllocationWatch>(m, "AllocationWatch")
+        .def_property_readonly("alive", [](const AllocationWatch &watch)
+                               { return !watch.owner.expired(); });
+    m.def("external_state", []
+          {
+              auto values = std::make_shared<std::vector<double>>(53 * 8, 1.0);
+              auto owner = std::shared_ptr<void>(values, values->data());
+              auto allocation = R::Allocation::Import(owner, values->size() * sizeof(double));
+              auto array = R::Array<double, R::FixedRows<7>>::FromStorage(
+                  R::RowLayout::Dense(53, 7, 8), R::Buffer::FromAllocation(allocation, 0, allocation.Bytes()));
+              return py::make_tuple(array, AllocationWatch{owner}); });
     py::class_<StorageWatch>(m, "StorageWatch")
         .def(py::init<const R::PythonArray &>())
         .def_property_readonly("storage_alive", [](const StorageWatch &watch)
@@ -122,7 +190,7 @@ PYBIND11_MODULE(runtime_array_bridge_test, m)
         .def("shares_ids", [](const NativeOwner &owner, R::Array<int64_t> value)
              { return owner.ids.SharedStorage() == value.SharedStorage() &&
                       owner.ids.Layout().Offsets().data() == value.Layout().Offsets().data() &&
-                      owner.ids.SharedStorage()->SharedLayout()->deviceOffsets.Identity() == value.SharedStorage()->SharedLayout()->deviceOffsets.Identity(); });
+                      owner.ids.SharedStorage()->SharedLayout()->DeviceOffsetIdentity() == value.SharedStorage()->SharedLayout()->DeviceOffsetIdentity(); });
     m.def("scale", &Scale);
     m.def("roundtrip", [](R::Array<double> array)
           { return array; });

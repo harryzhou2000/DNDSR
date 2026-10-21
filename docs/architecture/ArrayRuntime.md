@@ -10,20 +10,28 @@ LibTorch, Legion or mesh-library dependency.
 
 | Component | Owns |
 |---|---|
-| Buffer | One allocation, device descriptor, identity, value generation and access controller |
+| Allocation | Shared native/foreign owner, device, identity, value generation and access controller |
+| Buffer | A bounded byte range retaining its Allocation; overlapping ranges share exclusion |
 | Allocator | Optional allocation/deallocation policy, including pools or pinned host storage |
-| RowLayout | Immutable uniform-width table (optionally strided) or CSR row shape in element units |
-| ArrayStorage | Shared immutable record containing values Buffer, logical row metadata and CUDA CSR offsets |
+| AllocationResource | Backend payload with explicit ordered-release capability and conservative RAII fallback |
+| RowLayout | Immutable table, variable-length padded, or CSR row shape in element units |
+| MetadataBuffer | Shared Buffer containing published host offsets, exposed only for reading |
+| ArrayStorage | Shared record with a guarded publication boundary for values and immutable row metadata |
 | Runtime::Array | Typed handle to ArrayStorage; optional fixed-width constraint |
 | PythonArray | Runtime dtype/POD codec and the same ArrayStorage as C++ |
 | ArrayAccess | Move-only read/write lease retaining both allocation and layout |
 | ArrayView | Borrowed plain pointer/offsets for kernels; no tracking per element |
+| RowBuilder / ExclusiveRows | Unpublished CPU row construction or unique shape edit; Commit publishes metadata |
 | ArrayPair | Separate owned and ghost Arrays; optional combined read indexing |
 | RowTransferPlan | Immutable distributed row relation, reversible and reusable across fields |
 | ElementSchema | Retained MPI typemap, element extent and application type-signature identity |
 | PayloadPlan | Row lengths, relative MPI datatypes, coalesced segments and contribution groups |
-| TransferBinding | Actual allocation identities, transport policy, reducer, workspace and persistent requests |
+| CommunicationContext | Shared communicator and explicit matched-tag reservations |
+| TransferBinding | Allocation identities, transport/reducer/workspace and transient or persistent request policy |
 | TransferOperation | Active requests and leases; separate destination-ready and all-complete boundaries |
+| DynamicRowTransfer | Pinned source and private CSR destination; collective publication after payload success |
+| EagerEngine / StreamLauncher | Common ordered submission contract with inline/worker CPU and native CUDA providers |
+| MPIProgress | Main-thread MPI retirement and explicit events observed by eager streams |
 | ArrayIO | Schema-tagged row checkpoint adapter over the existing parallel serializer |
 | VersionTracker | Selective mesh dependency generations and explicit mutation scopes |
 | Geom::NativeRowTransfer / RegisterArray | Bridge from existing mesh permutation correspondence to native Arrays |
@@ -31,6 +39,12 @@ LibTorch, Legion or mesh-library dependency.
 `Field` and `ExchangePlan` remain compatibility helpers for the initial prototype.
 ExchangePlan now delegates to the same row-transfer implementation. New code
 should retain route, payload and binding separately to reuse setup.
+
+The detailed contracts and ownership graphs are in
+[row editing](ArrayRowEditing.md), [eager execution](EagerExecution.md),
+[allocation lifetime](ArrayAllocationLifetime.md), and
+[transient MPI](ArrayTransientMPI.md). Geom migration remains optional; the
+new runtime and its tests do not require replacing existing mesh fields.
 
 ## Element types and device dispatch
 
@@ -71,8 +85,10 @@ diagrams, the generic converter and tracked POD field editing.
 `FixedRows<N>` adds a C++ width constraint; it does not require a new Python
 Array class. `Dense(rows,width,stride)` is a uniform-width strided table, not
 the legacy padded layout with variable row lengths and uniform capacity.
-That legacy layout is not implemented in the native runtime yet; use CSR for
-variable-width rows. Existing legacy Array layouts remain available.
+`Padded(lengths,capacity)` now provides that variable-size representation;
+CSR remains available for packed variable rows. See [row construction and
+exclusive edits](ArrayRowEditing.md) for Commit, retained snapshots and Python.
+Existing legacy Array layouts remain available.
 
 ## Ownership, access and failure
 
@@ -149,8 +165,10 @@ leases are unnecessary for this owned/ghost pattern and remain deferred.
 
 All plan setup, binding and `Begin` calls are collective on the route
 communicator and must be called in the same order. Structural orchestration is
-serialized; this is not a multi-threaded distributed lock manager. A binding
-has its own communicator and persistent requests. Only one operation may be
+serialized; this is not a multi-threaded distributed lock manager. By default
+a binding has its own communicator and persistent requests. TransferOptions
+can select transient requests and a shared context with an explicit matched
+tag; see [the transfer policy guide](ArrayTransientMPI.md). Only one operation may be
 active on a binding. Multiple bindings can share the same immutable route and
 payload while retaining independent allocations and requests.
 

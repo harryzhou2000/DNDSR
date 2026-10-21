@@ -20,9 +20,11 @@ set(DNDS_PCH_TARGETS_FAST dnds_PCHs_fast)
 dnds_variable_to_parent_scope(DNDS_PCH_TARGETS_FAST)
 
 set(LIBNAME dnds)
+find_package(Threads REQUIRED)
 
 set(LINKS
 ${DNDS_EXTERNAL_LIBS}
+Threads::Threads
 )
 
 set(CPPS
@@ -31,6 +33,8 @@ Defines.cpp
 EnvReader.cpp
 Device/DeviceStorage.cpp
 Runtime/Buffer.cpp
+Runtime/EagerEngine.cpp
+Runtime/CUDAExecution.cpp
 Runtime/Exchange.cpp
 Runtime/RowTransfer.cpp
 Profiling.cpp
@@ -84,6 +88,8 @@ install(TARGETS ${LIBNAME}_shared
 set(CPPS_BIND
 dnds_pybind11.cpp
 Runtime/Runtime_bind.cpp
+Runtime/Eager_bind.cpp
+Runtime/MPI_bind.cpp
 Defines_bind.cpp
 MPI_bind.cpp
 Array_bind.cpp

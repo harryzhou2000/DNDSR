@@ -1,17 +1,28 @@
 #pragma once
 
 #include "Buffer.hpp"
+#include "Metadata.hpp"
 #include <algorithm>
 #include <vector>
 #include <limits>
+#include <mutex>
 
 namespace DNDS::Runtime
 {
+    enum class RowLayoutKind
+    {
+        Table,
+        Padded,
+        CSR
+    };
+
     /// Immutable row shape in element units. Padding belongs to storage, not a row.
     class RowLayout
     {
         size_t _rows = 0, _width = 0, _stride = 0;
-        std::vector<size_t> _offsets;
+        RowLayoutKind _kind = RowLayoutKind::Table;
+        MetadataBuffer<size_t> _offsets;
+        MetadataBuffer<size_t> _sizes;
 
     public:
         RowLayout() = default;
@@ -25,28 +36,48 @@ namespace DNDS::Runtime
             CheckedSize::Multiply(rows, layout._stride);
             return layout;
         }
+        static RowLayout Padded(const std::vector<size_t> &lengths, size_t capacity)
+        {
+            RowLayout layout;
+            layout._kind = RowLayoutKind::Padded;
+            layout._rows = lengths.size();
+            layout._stride = capacity;
+            CheckedSize::Multiply(layout._rows, capacity);
+            for (auto n : lengths)
+                DNDS_check_throw_info(n <= capacity, "row size exceeds padded capacity");
+            layout._sizes = MetadataBuffer<size_t>(lengths);
+            return layout;
+        }
         static RowLayout Ragged(const std::vector<size_t> &lengths)
         {
             RowLayout layout;
+            layout._kind = RowLayoutKind::CSR;
             layout._rows = lengths.size();
-            layout._offsets.push_back(0);
+            std::vector<size_t> offsets{0};
+            offsets.reserve(CheckedSize::Add(lengths.size(), size_t(1)));
             for (auto n : lengths)
             {
-                DNDS_check_throw_info(n <= SIZE_MAX - layout._offsets.back(), "row offsets overflow");
-                layout._offsets.push_back(layout._offsets.back() + n);
+                DNDS_check_throw_info(n <= SIZE_MAX - offsets.back(), "row offsets overflow");
+                offsets.push_back(offsets.back() + n);
             }
+            layout._offsets = MetadataBuffer<size_t>(offsets);
             return layout;
         }
         size_t Rows() const { return _rows; }
-        bool IsRagged() const { return !_offsets.empty(); }
+        RowLayoutKind Kind() const { return _kind; }
+        bool IsRagged() const { return _kind == RowLayoutKind::CSR; }
+        bool IsPadded() const { return _kind == RowLayoutKind::Padded; }
+        bool IsVariable() const { return _kind != RowLayoutKind::Table; }
         size_t Width() const { return _width; }
         size_t Stride() const { return _stride; }
         size_t Elements() const { return IsRagged() ? _offsets.back() : _rows * _stride; }
-        const std::vector<size_t> &Offsets() const { return _offsets; }
+        const MetadataBuffer<size_t> &Offsets() const { return _offsets; }
+        const MetadataBuffer<size_t> &Sizes() const { return _sizes; }
         size_t RowSize(size_t row) const
         {
             DNDS_check_throw_info(row < _rows, "row outside layout");
-            return IsRagged() ? _offsets[row + 1] - _offsets[row] : _width;
+            return IsRagged() ? _offsets[row + 1] - _offsets[row] : IsPadded() ? _sizes[row]
+                                                                               : _width;
         }
         size_t Offset(size_t row) const
         {
@@ -55,7 +86,8 @@ namespace DNDS::Runtime
         }
         bool operator==(const RowLayout &other) const
         {
-            return _rows == other._rows && _width == other._width && _stride == other._stride && _offsets == other._offsets;
+            return _kind == other._kind && _rows == other._rows && _width == other._width && _stride == other._stride &&
+                   _offsets == other._offsets && _sizes == other._sizes;
         }
     };
 
@@ -66,7 +98,7 @@ namespace DNDS::Runtime
         static RowLayout Default() { return RowLayout::Dense(0, Width); }
         static void Validate(const RowLayout &layout)
         {
-            DNDS_check_throw_info(!layout.IsRagged() && layout.Width() == Width, "fixed row width mismatch");
+            DNDS_check_throw_info(!layout.IsVariable() && layout.Width() == Width, "fixed row width mismatch");
         }
     };
 
@@ -78,13 +110,15 @@ namespace DNDS::Runtime
         T *data = nullptr;
         const size_t *offsets = nullptr;
         size_t rows = 0, width = 0, stride = 0;
+        const size_t *sizes = nullptr;
 
         DNDS_DEVICE_CALLABLE size_t Rows() const { return rows; }
         DNDS_DEVICE_CALLABLE size_t RowSize(size_t row) const
         {
             if constexpr (Checked)
                 DNDS_HD_assert(row < rows);
-            return offsets ? offsets[row + 1] - offsets[row] : width;
+            return offsets ? offsets[row + 1] - offsets[row] : sizes ? sizes[row]
+                                                                     : width;
         }
         DNDS_DEVICE_CALLABLE T *Row(size_t row) const
         {
@@ -103,23 +137,46 @@ namespace DNDS::Runtime
 
     namespace Detail
     {
-        /// CPU shape is retained for setup; only immutable CSR offsets are mirrored.
+        /// Published row metadata is retained on host and mirrored for device views.
         struct ArrayLayout
         {
-            RowLayout rows;
+        private:
             Buffer deviceOffsets;
+            Buffer deviceSizes;
+
+        public:
+            RowLayout rows;
+            uint64_t DeviceOffsetIdentity() const { return deviceOffsets.Identity(); }
+            uint64_t DeviceSizeIdentity() const { return deviceSizes.Identity(); }
+            bool CanReleaseOrdered(ExecutionContext context) const
+            {
+                return deviceOffsets.CanReleaseOrdered(context) && deviceSizes.CanReleaseOrdered(context);
+            }
+            static void ReleaseHandle(std::shared_ptr<const ArrayLayout> &layout, ExecutionContext context)
+            {
+                if (!layout)
+                    return;
+                DNDS_check_throw_info(layout->CanReleaseOrdered(context), "metadata provider cannot release on this stream");
+                auto offsets = layout->deviceOffsets, sizes = layout->deviceSizes;
+                layout.reset();
+                offsets.ReleaseOn(context);
+                sizes.ReleaseOn(context);
+            }
             explicit ArrayLayout(RowLayout shape, Device device) : rows(std::move(shape))
             {
-                if (rows.IsRagged() && device.space != MemorySpace::Host)
+                auto upload = [device](const MetadataBuffer<size_t> &metadata, Buffer &destination)
                 {
-                    auto host = Buffer::Allocate(CheckedSize::Multiply(rows.Offsets().size(), sizeof(size_t)));
-                    {
-                        auto edit = host.Write();
-                        std::copy(rows.Offsets().begin(), rows.Offsets().end(), edit.View<size_t>().data);
-                    }
-                    deviceOffsets = Buffer::Allocate(host.Bytes(), device);
-                    Copy(host, deviceOffsets, {device, nullptr}).Wait();
-                }
+                    auto host = metadata.Read();
+                    destination = Buffer::Allocate(host.Bytes(), device);
+                    auto target = destination.Write({device, nullptr});
+                    CopyBytes(host.View<size_t>().data, Device::Host(), target.View<size_t>().data,
+                              device, host.Bytes(), {device, nullptr})
+                        .Wait();
+                };
+                if (rows.IsRagged() && device.space != MemorySpace::Host)
+                    upload(rows.Offsets(), deviceOffsets);
+                if (rows.IsPadded() && device.space != MemorySpace::Host)
+                    upload(rows.Sizes(), deviceSizes);
             }
             const size_t *Offsets(Device device) const
             {
@@ -127,25 +184,83 @@ namespace DNDS::Runtime
                     return nullptr;
                 return device.space == MemorySpace::Host ? rows.Offsets().data() : static_cast<const size_t *>(deviceOffsets.LegacyPointer());
             }
+            const size_t *Sizes(Device device) const
+            {
+                if (!rows.IsPadded())
+                    return nullptr;
+                return device.space == MemorySpace::Host ? rows.Sizes().data() : static_cast<const size_t *>(deviceSizes.LegacyPointer());
+            }
         };
     }
 
     /// One immutable logical layout and its allocation, shared by typed and
     /// language bindings. Row metadata stays in element units for every handle.
     /// Buffer owns values/access state; ArrayLayout owns CPU/CUDA row offsets.
+    class ExclusiveRows;
     class ArrayStorage
     {
-        Buffer _values;
-        std::shared_ptr<const Detail::ArrayLayout> _layout;
+        friend class ExclusiveRows;
+        mutable Buffer _values;
+        mutable std::shared_ptr<const Detail::ArrayLayout> _layout;
         size_t _elementBytes;
+        mutable std::mutex _shapeMutex;
+        mutable bool _editing = false, _shapeValid = true;
+        mutable uint64_t _shapeVersion = 0;
+        void CheckPublished() const
+        {
+            DNDS_check_throw_info(!_editing && _shapeValid, "Array shape is unpublished or failed");
+        }
 
         ArrayStorage(RowLayout layout, Buffer values, size_t elementBytes)
             : _values(std::move(values)),
               _layout(std::make_shared<const Detail::ArrayLayout>(std::move(layout), _values.GetDevice())),
               _elementBytes(elementBytes) {}
+        ArrayStorage(std::shared_ptr<const Detail::ArrayLayout> layout, Buffer values, size_t elementBytes)
+            : _values(std::move(values)), _layout(std::move(layout)), _elementBytes(elementBytes) {}
 
     public:
         using Shared = std::shared_ptr<const ArrayStorage>;
+        bool CanReleaseOrdered(ExecutionContext context) const
+        {
+            std::lock_guard<std::mutex> lock(_shapeMutex);
+            return _values.CanReleaseOrdered(context) && _layout->CanReleaseOrdered(context);
+        }
+        static void ReleaseHandle(Shared &storage, ExecutionContext context)
+        {
+            if (!storage)
+                return;
+            Buffer values;
+            std::shared_ptr<const Detail::ArrayLayout> layout;
+            {
+                std::lock_guard<std::mutex> lock(storage->_shapeMutex);
+                DNDS_check_throw_info(storage->_values.CanReleaseOrdered(context) && storage->_layout->CanReleaseOrdered(context),
+                                      "Array provider cannot release on this stream");
+                values = storage->_values;
+                layout = storage->_layout;
+            }
+            storage.reset();
+            values.ReleaseOn(context);
+            Detail::ArrayLayout::ReleaseHandle(layout, context);
+        }
+        static Shared Share(const Shared &source)
+        {
+            if (!source)
+                return {};
+            std::lock_guard<std::mutex> lock(source->_shapeMutex);
+            source->CheckPublished();
+            return source;
+        }
+        uint64_t ShapeVersion() const
+        {
+            std::lock_guard<std::mutex> lock(_shapeMutex);
+            CheckPublished();
+            return _shapeVersion;
+        }
+        bool IsValid() const
+        {
+            std::lock_guard<std::mutex> lock(_shapeMutex);
+            return !_editing && _shapeValid && _values.IsValid();
+        }
         static Shared FromBuffer(RowLayout layout, Buffer values, size_t elementBytes)
         {
             DNDS_check_throw_info(elementBytes && values.Identity() &&
@@ -158,22 +273,55 @@ namespace DNDS::Runtime
             auto values = Buffer::Allocate(CheckedSize::Multiply(layout.Elements(), elementBytes), device);
             return FromBuffer(std::move(layout), std::move(values), elementBytes);
         }
-        const RowLayout &Layout() const { return _layout->rows; }
-        const std::shared_ptr<const Detail::ArrayLayout> &SharedLayout() const { return _layout; }
-        const Buffer &Values() const { return _values; }
+        /// Independent values with exactly the same retained metadata, including
+        /// CUDA offsets. Useful for SoA field bundles on a common row shape.
+        Shared WithValues(Buffer values, size_t elementBytes) const
+        {
+            std::lock_guard<std::mutex> lock(_shapeMutex);
+            CheckPublished();
+            DNDS_check_throw_info(values.Identity() && values.GetDevice() == _values.GetDevice() && elementBytes &&
+                                      values.Bytes() == CheckedSize::Multiply(_layout->rows.Elements(), elementBytes),
+                                  "shared metadata value size/device mismatch");
+            return Shared(new ArrayStorage(_layout, std::move(values), elementBytes));
+        }
+        RowLayout Layout() const
+        {
+            std::lock_guard<std::mutex> lock(_shapeMutex);
+            CheckPublished();
+            return _layout->rows;
+        }
+        std::shared_ptr<const Detail::ArrayLayout> SharedLayout() const
+        {
+            std::lock_guard<std::mutex> lock(_shapeMutex);
+            CheckPublished();
+            return _layout;
+        }
+        Buffer Values() const
+        {
+            std::lock_guard<std::mutex> lock(_shapeMutex);
+            CheckPublished();
+            return _values;
+        }
         size_t ElementBytes() const { return _elementBytes; }
-        ReadAccess Read(ExecutionContext context = ExecutionContext::Host()) const { return _values.Read(context); }
+        ReadAccess Read(ExecutionContext context = ExecutionContext::Host()) const
+        {
+            std::lock_guard<std::mutex> lock(_shapeMutex);
+            CheckPublished();
+            return _values.Read(context);
+        }
         WriteAccess Write(ExecutionContext context = ExecutionContext::Host()) const
         {
-            auto handle = _values;
-            return handle.Write(context);
+            std::lock_guard<std::mutex> lock(_shapeMutex);
+            CheckPublished();
+            return _values.Write(context);
         }
         CopyOperation CopyFrom(const ArrayStorage &source, ExecutionContext context = ExecutionContext::Host()) const
         {
+            auto destination = Values();
+            auto input = source.Values();
             DNDS_check_throw_info(_elementBytes == source._elementBytes && Layout() == source.Layout(),
                                   "Array copy requires matching element size and layout");
-            auto destination = _values;
-            return Copy(source._values, destination, context);
+            return Copy(input, destination, context);
         }
     };
 
@@ -208,7 +356,7 @@ namespace DNDS::Runtime
         {
             auto flat = _lease.template View<T>();
             const auto &r = _layout->rows;
-            return {flat.data, _layout->Offsets(_lease.GetDevice()), r.Rows(), r.Width(), r.Stride()};
+            return {flat.data, _layout->Offsets(_lease.GetDevice()), r.Rows(), r.Width(), r.Stride(), _layout->Sizes(_lease.GetDevice())};
         }
         /// Checked host access for frontends, never used inside native kernels.
         Value &At(size_t row, size_t component) const
@@ -236,6 +384,15 @@ namespace DNDS::Runtime
         using value_type = T;
         using ReadLease = ArrayAccess<T, false>;
         using WriteLease = ArrayAccess<T, true>;
+        Array(const Array &other) : _storage(ArrayStorage::Share(other._storage)) {}
+        Array &operator=(const Array &other)
+        {
+            if (this != &other)
+                _storage = ArrayStorage::Share(other._storage);
+            return *this;
+        }
+        Array(Array &&) noexcept = default;
+        Array &operator=(Array &&) noexcept = default;
         Array()
         {
             if constexpr (std::is_same_v<LayoutPolicy, RowLayout>)
@@ -267,15 +424,19 @@ namespace DNDS::Runtime
                 LayoutPolicy::Validate(layout);
             _storage = ArrayStorage::Allocate(std::move(layout), sizeof(T), device);
         }
-        const ArrayStorage::Shared &SharedStorage() const { return _storage; }
-        const RowLayout &Layout() const { return _storage->Layout(); }
+        ArrayStorage::Shared SharedStorage() const { return ArrayStorage::Share(_storage); }
+        ExclusiveRows EditRows(); // Defined by RowBuilder.hpp; exclusive CPU setup.
+        uint64_t ShapeVersion() const { return _storage->ShapeVersion(); }
+        RowLayout Layout() const { return _storage->Layout(); }
         size_t Rows() const { return Layout().Rows(); }
         size_t RowSize(size_t row) const { return Layout().RowSize(row); }
         Device GetDevice() const { return Storage().GetDevice(); }
         uint64_t Identity() const { return Storage().Identity(); }
         uint64_t Version() const { return Storage().Version(); }
-        bool IsValid() const { return Storage().IsValid(); }
-        const Buffer &Storage() const { return _storage->Values(); }
+        bool IsValid() const { return _storage->IsValid(); }
+        Buffer Storage() const { return _storage->Values(); }
+        bool CanReleaseOrdered(ExecutionContext context) const { return !_storage || _storage->CanReleaseOrdered(context); }
+        void ReleaseOn(ExecutionContext context) { ArrayStorage::ReleaseHandle(_storage, context); }
         ReadLease Read(ExecutionContext context = ExecutionContext::Host()) const { return {_storage->Read(context), _storage->SharedLayout()}; }
         WriteLease Write(ExecutionContext context = ExecutionContext::Host()) { return {_storage->Write(context), _storage->SharedLayout()}; }
         CopyOperation CopyFrom(const Array &other, ExecutionContext context = ExecutionContext::Host())

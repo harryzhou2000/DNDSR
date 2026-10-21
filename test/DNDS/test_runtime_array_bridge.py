@@ -65,6 +65,52 @@ def test_native_owner_and_python_share_values_layout_and_controller(device):
     assert not state.valid and not owner.state.valid
 
 
+def test_foreign_owner_survives_python_slices_and_cpp_aliases():
+    array, watch = bridge.external_state()
+    assert array.shape == (53, 7) and array.layout.stride == 8
+    array[:] = np.arange(53 * 7).reshape(53, 7)
+    native_alias = bridge.roundtrip(array)
+    retained = array[::3, ::-2]
+    del array
+    gc.collect()
+    assert watch.alive
+    native_alias[51, 6] = 900
+    assert retained[-1, 0] == 900
+    del native_alias
+    gc.collect()
+    assert watch.alive
+    snapshot = retained.numpy()
+    del retained
+    gc.collect()
+    assert not watch.alive
+    assert snapshot[-1, 0] == 900
+
+
+def test_bound_pod_codec_is_reused_by_row_construction_and_editing():
+    draft = R.RowBuilder(5, bridge.ClassMetadata, R.RowLayoutKind.Padded, 4)
+    draft.resize_row(2, 3)
+    draft[2, 1] = bridge.ClassMetadata(73, 0.5)
+    value = draft[2, 1]
+    assert isinstance(value, bridge.ClassMetadata)
+    assert value.tag == 73
+    array = draft.commit()
+    assert array.element_type is bridge.ClassMetadata
+    assert array[2, 1].weight == 0.5
+    old = array[2]
+    with pytest.raises(RuntimeError, match="unique"):
+        array.edit_rows(exclusive=True)
+    detached = array.edit_rows()
+    detached.resize_row(2, 4)
+    detached[2, 3] = bridge.ClassMetadata(91, 1.25)
+    array = detached.commit()
+    assert array[2, 3].tag == 91
+    assert old[1].tag == 73
+    edit = array.edit_rows(exclusive=True)
+    edit[2, 3] = bridge.ClassMetadata(92, 1.5)
+    edit.commit()
+    assert array[2, 3].weight == 1.5
+
+
 def test_python_created_array_can_be_used_and_retained_by_native_owner(device):
     owner = bridge.NativeOwner(device)
     state = R.Array(R.RowLayout.dense(2, 5, 7), np.dtype("float64"), device)

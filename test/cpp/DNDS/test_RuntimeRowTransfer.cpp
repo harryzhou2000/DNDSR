@@ -69,6 +69,89 @@ TEST_CASE("Native direct ragged halo retains leases and reusable routing")
         .Wait();
 }
 
+TEST_CASE("Direct permutation honors imported buffer origins and padded state strides")
+{
+    int rank, size;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+    const auto peer = (rank + 1) % size;
+    constexpr size_t rows = 31, width = 7, prefix = 13, suffix = 17;
+    auto sourceOwner = std::make_shared<std::vector<double>>(prefix + rows * 8 + suffix, -9);
+    auto targetOwner = std::make_shared<std::vector<double>>(prefix + rows * 9 + suffix, -19);
+    auto sourceAllocation = Allocation::Import(std::shared_ptr<void>(sourceOwner, sourceOwner->data()), sourceOwner->size() * sizeof(double));
+    auto targetAllocation = Allocation::Import(std::shared_ptr<void>(targetOwner, targetOwner->data()), targetOwner->size() * sizeof(double));
+    auto source = Array<double>::FromStorage(RowLayout::Dense(rows, width, 8),
+                                             Buffer::FromAllocation(sourceAllocation, prefix * sizeof(double), rows * 8 * sizeof(double)));
+    auto target = Array<double>::FromStorage(RowLayout::Dense(rows, width, 9),
+                                             Buffer::FromAllocation(targetAllocation, prefix * sizeof(double), rows * 9 * sizeof(double)));
+    {
+        auto write = source.Write();
+        for (size_t i = 0; i < rows; ++i)
+            for (size_t j = 0; j < width; ++j)
+                write.At(i, j) = rank * 10000 + i * 100 + j;
+    }
+    std::vector<RowRequest> requests;
+    for (size_t i = 0; i < rows; ++i)
+        requests.push_back({peer, int64_t(i * 7 % rows), i});
+    RowTransferPlan route(MPI_COMM_WORLD, rows, rows, requests);
+    PayloadPlan payload(route, source.Layout(), target.Layout(), ElementSchema::Arithmetic<double>());
+    for (auto transport : {TransferTransport::Direct, TransferTransport::HostPacked})
+    {
+        payload.Bind(source, target, transport).Begin().Wait();
+        auto read = target.Read();
+        for (size_t i = 0; i < rows; ++i)
+        {
+            for (size_t j = 0; j < width; ++j)
+                CHECK(read.At(i, j) == peer * 10000 + (i * 7 % rows) * 100 + j);
+            CHECK((*targetOwner)[prefix + i * 9 + 7] == -19);
+            CHECK((*targetOwner)[prefix + i * 9 + 8] == -19);
+            CHECK((*sourceOwner)[prefix + i * 8 + 7] == -9);
+        }
+        for (size_t i = 0; i < prefix; ++i)
+            CHECK((*targetOwner)[i] == -19);
+        for (size_t i = prefix + rows * 9; i < targetOwner->size(); ++i)
+            CHECK((*targetOwner)[i] == -19);
+    }
+}
+
+TEST_CASE("One route transfers padded reconstruction rows into a packed CSR destination")
+{
+    int rank, size;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+    constexpr size_t count = 37;
+    std::vector<size_t> lengths(count);
+    std::vector<RowRequest> requests;
+    for (size_t i = 0; i < count; ++i)
+    {
+        lengths[i] = i % 11 == 0 ? 0 : (i % 7 + 1) * 5;
+        requests.push_back({(rank + 1) % size, int64_t(i * 5 % count), i});
+    }
+    Array<double> source(RowLayout::Padded(lengths, 40));
+    {
+        auto write = source.Write();
+        for (size_t i = 0; i < count; ++i)
+            for (size_t j = 0; j < lengths[i]; ++j)
+                write.At(i, j) = rank * 10000 + i * 100 + j;
+    }
+    RowTransferPlan route(MPI_COMM_WORLD, count, count, requests);
+    Array<double> destination(route.DestinationLayout(source.Layout()));
+    CHECK(destination.Layout().IsRagged());
+    auto payload = PayloadPlan(route, source.Layout(), destination.Layout(), ElementSchema::Arithmetic<double>());
+    for (auto transport : {TransferTransport::Direct, TransferTransport::HostPacked})
+    {
+        payload.Bind(source, destination, transport).Begin().Wait();
+        auto read = destination.Read();
+        for (size_t i = 0; i < count; ++i)
+        {
+            const auto original = i * 5 % count;
+            CHECK(destination.RowSize(i) == lengths[original]);
+            for (size_t j = 0; j < lengths[original]; ++j)
+                CHECK(read.At(i, j) == ((rank + 1) % size) * 10000 + original * 100 + j);
+        }
+    }
+}
+
 TEST_CASE("Native reverse fan-in rejects copy and supports reductions")
 {
     int rank, size;
@@ -153,6 +236,15 @@ TEST_CASE("Native POD transfers use MPI extent and support custom reductions")
                                          { a.tag += b.tag; a.weight += b.weight; }, Metadata{}, DestinationInit::Identity);
     payload.Bind(src, dst, add).Begin().Wait();
     CHECK(dst.Read().At(2, 1).weight == 5);
+    for (auto transport : {TransferTransport::Direct, TransferTransport::HostPacked})
+    {
+        payload.Bind(src, dst, transport, {TransferMode::Transient, {}, 0}).Begin().Wait();
+        CHECK(dst.Read().At(2, 1).tag == (rank + 1) % size);
+        CHECK(dst.Read().At(2, 1).weight == 5);
+        payload.Bind(src, dst, add, transport, {TransferMode::Transient, {}, 0}).Begin().Wait();
+        CHECK(dst.Read().At(2, 1).tag == (rank + 1) % size);
+        CHECK(dst.Read().At(2, 1).weight == 5);
+    }
 #ifdef DNDS_USE_CUDA
     auto deviceSource = src.To(Device::CUDA(0));
     auto deviceDestination = dst.To(Device::CUDA(0));

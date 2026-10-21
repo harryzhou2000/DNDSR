@@ -1,11 +1,123 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
 #include "DNDS/Runtime/Buffer.hpp"
+#include "DNDS/Runtime/AllocationResource.hpp"
+#include "DNDS/Runtime/EagerArray.hpp"
 #include "DNDS/Array.hpp"
 #include "DNDS/Runtime/Version.hpp"
 #include "DNDS/Runtime/Field.hpp"
+#include <thread>
 
 using namespace DNDS::Runtime;
+
+namespace
+{
+    struct ReleaseObservation
+    {
+        std::atomic<int> releases{0};
+        std::atomic<bool> explicitContext{false};
+    };
+    class RecordedResource final : public AllocationResource
+    {
+        std::shared_ptr<ReleaseObservation> _observation;
+        std::unique_ptr<int64_t[]> _values = std::make_unique<int64_t[]>(131 * 7);
+
+    public:
+        explicit RecordedResource(std::shared_ptr<ReleaseObservation> value) : _observation(std::move(value)) {}
+        ~RecordedResource() override { Release(nullptr); }
+        void *Data() const noexcept override { return _values.get(); }
+        size_t Bytes() const noexcept override { return 131 * 7 * sizeof(int64_t); }
+        Device GetDevice() const noexcept override { return Device::Host(); }
+        void Release(const ExecutionContext *context) noexcept override
+        {
+            if (!_values)
+                return;
+            _observation->explicitContext = context != nullptr;
+            _values.reset();
+            ++_observation->releases;
+        }
+    };
+}
+
+TEST_CASE("Final allocation ownership passes only the actual final release context to its provider")
+{
+    auto observed = std::make_shared<ReleaseObservation>();
+    auto a = Buffer::FromResource(std::make_unique<RecordedResource>(observed));
+    auto b = a;
+    CHECK(a.CanReleaseOrdered(ExecutionContext::Host()));
+    CHECK_FALSE(a.CanReleaseOrdered(ExecutionContext::CUDA(0)));
+    CHECK_THROWS(a.ReleaseOn({Device::Host(), reinterpret_cast<void *>(1)}));
+    CHECK(a.Identity() != 0);
+    a.ReleaseOn(ExecutionContext::Host());
+    CHECK(a.Identity() == 0);
+    CHECK(observed->releases == 0);
+    b.ReleaseOn(ExecutionContext::Host());
+    CHECK(observed->releases == 1);
+    CHECK(observed->explicitContext);
+    b.ReleaseOn(ExecutionContext::Host());
+    CHECK(observed->releases == 1);
+
+    auto fallback = std::make_shared<ReleaseObservation>();
+    a = Buffer::FromResource(std::make_unique<RecordedResource>(fallback));
+    auto allocation = a.AllocationHandle();
+    a.ReleaseOn(ExecutionContext::Host());
+    CHECK(fallback->releases == 0);
+    allocation = {}; // A surviving ordinary owner uses its conservative fallback.
+    CHECK(fallback->releases == 1);
+    CHECK_FALSE(fallback->explicitContext);
+
+    auto pinned = std::make_shared<ReleaseObservation>();
+    a = Buffer::FromResource(std::make_unique<RecordedResource>(pinned));
+    auto read = a.Read();
+    a.ReleaseOn(ExecutionContext::Host());
+    CHECK(pinned->releases == 0);
+    CHECK(read.View<int64_t>().size == 131 * 7);
+    read.Wait();
+    CHECK(pinned->releases == 1);
+    CHECK_FALSE(pinned->explicitContext);
+}
+
+TEST_CASE("Concurrent contextual releases never free a shared allocation more than once")
+{
+    auto observed = std::make_shared<ReleaseObservation>();
+    auto buffer = Buffer::FromResource(std::make_unique<RecordedResource>(observed));
+    std::vector<std::thread> threads;
+    for (int i = 0; i < 8; ++i)
+        threads.emplace_back([buffer]() mutable
+                             {
+            for (int j = 0; j < 97; ++j)
+            {
+                auto copy = buffer;
+                copy.ReleaseOn(ExecutionContext::Host());
+            }
+            buffer.ReleaseOn(ExecutionContext::Host()); });
+    buffer.ReleaseOn(ExecutionContext::Host());
+    for (auto &thread : threads)
+        thread.join();
+    CHECK(observed->releases == 1);
+    CHECK(observed->explicitContext);
+}
+
+TEST_CASE("Async Array construction releases a rejected provider allocation with its explicit context")
+{
+    struct WrongShape : StreamLauncher
+    {
+        std::shared_ptr<ReleaseObservation> observation;
+        explicit WrongShape(std::shared_ptr<ReleaseObservation> value) : observation(std::move(value)) {}
+        ExecutionContext Context() const override { return ExecutionContext::Host(); }
+        void Submit(Work, CommandKind, Retirement) override { throw std::runtime_error("unused"); }
+        void WaitFor(StreamEvent) override {}
+        StreamEvent Record() override { return {}; }
+        void Drain() override {}
+        Buffer Allocate(size_t) override { return Buffer::FromResource(std::make_unique<RecordedResource>(observation)); }
+    };
+    auto observed = std::make_shared<ReleaseObservation>();
+    EagerEngine engine;
+    auto stream = engine.CreateStream(std::make_shared<WrongShape>(observed));
+    CHECK_THROWS(AllocateArrayAsync<int64_t>(engine, stream, RowLayout::Dense(1, 1)));
+    CHECK(observed->releases == 1);
+    CHECK(observed->explicitContext);
+}
 
 TEST_CASE("Allocator policy and pooled storage outlive asynchronous access owners")
 {

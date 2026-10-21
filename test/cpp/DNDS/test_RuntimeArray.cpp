@@ -84,7 +84,7 @@ TEST_CASE("native typed handles share one allocation and logical metadata record
     R::Array<double, R::FixedRows<5>> fixed(R::RowLayout::Dense(3, 5, 8));
     auto dynamic = R::Array<double>::FromSharedStorage(fixed.SharedStorage());
     CHECK(dynamic.SharedStorage() == fixed.SharedStorage());
-    CHECK(&dynamic.Layout() == &fixed.Layout());
+    CHECK(dynamic.SharedStorage()->SharedLayout() == fixed.SharedStorage()->SharedLayout());
     dynamic.Write().At(1, 3) = 19;
     CHECK(fixed.Read().At(1, 3) == 19);
     CHECK(fixed.Version() == dynamic.Version());
@@ -106,4 +106,85 @@ TEST_CASE("native typed handles share one allocation and logical metadata record
     alias.Reset(R::RowLayout::Dense(0, 0));
     access.At(2, 2) = 42; // Lease retains values and metadata after both handles detach.
     CHECK(access.At(2, 2) == 42);
+}
+
+TEST_CASE("Imported six-equation state retains external owner and one access domain")
+{
+    int releases = 0;
+    constexpr size_t rows = 37, stride = 8;
+    auto owner = std::shared_ptr<void>(new double[rows * stride](), [&releases](void *p)
+                                       { ++releases; delete[] static_cast<double *>(p); });
+    auto allocation = R::Allocation::Import(owner, rows * stride * sizeof(double));
+    auto buffer = R::Buffer::FromAllocation(allocation, 0, allocation.Bytes());
+    auto array = R::Array<double, R::FixedRows<6>>::FromStorage(R::RowLayout::Dense(rows, 6, stride), buffer);
+    auto ring = buffer.Subspan(30 * stride * sizeof(double), 7 * stride * sizeof(double));
+    auto overlap = R::Buffer::FromAllocation(allocation, 31 * stride * sizeof(double), stride * sizeof(double));
+    CHECK(ring.Identity() == array.Identity());
+    CHECK(overlap.Identity() == array.Identity());
+    {
+        auto edit = array.Write();
+        for (size_t i = 0; i < rows; ++i)
+            for (size_t j = 0; j < 6; ++j)
+                edit.At(i, j) = 100 * i + j;
+        CHECK_THROWS(ring.Read());
+    }
+    CHECK(overlap.Read().View<double>()[5] == 3105);
+    CHECK(ring.Version() == array.Version());
+    CHECK_THROWS(buffer.Subspan(buffer.Bytes(), 1));
+    CHECK_THROWS(R::Buffer::FromAllocation(allocation, SIZE_MAX, 1));
+    auto misaligned = buffer.Subspan(1, sizeof(double));
+    CHECK_THROWS(R::Array<double>::FromStorage(R::RowLayout::Dense(1, 1), misaligned));
+    auto lease = array.Read();
+    owner.reset();
+    allocation = {};
+    buffer = ring = overlap = misaligned = {};
+    array.Reset(R::RowLayout::Dense(0, 6));
+    CHECK(releases == 0);
+    CHECK(lease.At(36, 5) == 3605);
+    lease.Wait();
+    CHECK(releases == 1);
+}
+
+TEST_CASE("Imported read-only storage rejects writes without invalidating readers")
+{
+    auto owner = std::make_shared<std::vector<int64_t>>(19, 41);
+    auto token = std::shared_ptr<void>(owner, owner->data());
+    auto allocation = R::Allocation::Import(token, owner->size() * sizeof(int64_t), R::Device::Host(), false);
+    auto buffer = R::Buffer::FromAllocation(allocation, 0, allocation.Bytes());
+    CHECK_THROWS(buffer.Write());
+    CHECK(buffer.IsValid());
+    CHECK(buffer.Version() == 0);
+    CHECK(buffer.Read().View<int64_t>()[18] == 41);
+    CHECK_THROWS(R::Allocation::Import({}, 0));
+    auto emptyOwner = std::shared_ptr<void>(owner, nullptr);
+    CHECK_THROWS(R::Allocation::Import(emptyOwner, 1));
+    auto empty = R::Allocation::Import(emptyOwner, 0);
+    CHECK(R::Buffer::FromAllocation(empty, 0, 0).Read().Bytes() == 0);
+}
+
+TEST_CASE("Independent reconstruction fields share buffered CSR metadata and retain old shape")
+{
+    std::vector<size_t> lengths;
+    for (size_t row = 0; row < 97; ++row)
+        lengths.push_back(row % 11 == 0 ? 0 : (row % 3 + 1) * 5);
+    auto shape = R::RowLayout::Ragged(lengths);
+    auto copiedShape = shape;
+    CHECK(copiedShape.Offsets().Identity() == shape.Offsets().Identity());
+    R::Array<double> coefficients(shape);
+    R::Array<int64_t> indices(shape);
+    CHECK(indices.Layout().Offsets().data() == coefficients.Layout().Offsets().data());
+    auto secondStorage = coefficients.SharedStorage()->WithValues(R::Buffer::Allocate(shape.Elements() * sizeof(double)), sizeof(double));
+    auto second = R::Array<double>::FromSharedStorage(secondStorage);
+    CHECK(second.SharedStorage()->SharedLayout() == coefficients.SharedStorage()->SharedLayout());
+    CHECK(second.Identity() != coefficients.Identity());
+    auto read = coefficients.Read();
+    second.Write().At(96, 4) = 17;
+    CHECK(read.At(96, 4) == 0);
+    coefficients.Reset(R::RowLayout::Dense(1, 5));
+    indices.Reset(R::RowLayout::Dense(0, 0));
+    copiedShape = shape = {};
+    CHECK(read.Layout().RowSize(96) == lengths[96]);
+    CHECK(second.Read().At(96, 4) == 17);
+    auto metadata = read.Layout().Offsets().Read();
+    CHECK(metadata.Bytes() == (lengths.size() + 1) * sizeof(size_t));
 }
