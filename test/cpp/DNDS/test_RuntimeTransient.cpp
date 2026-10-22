@@ -52,6 +52,57 @@ TEST_CASE("Transient reduction stages collisions and rejects a partial publicati
     CHECK_THROWS(rejected.Commit());
 }
 
+TEST_CASE("Failed transfer completion remains failed when moved into eager progress")
+{
+    int rank, size;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+    auto context = std::make_shared<CommunicationContext>(MPI_COMM_WORLD);
+    constexpr size_t rows = 47;
+    Array<double> source(RowLayout::Dense(rows, 6, 8));
+    std::vector<RowRequest> requests;
+    for (size_t i = 0; i < rows; ++i)
+    {
+        requests.push_back({rank, int64_t(i), i});
+        requests.push_back({(rank + 1) % size, int64_t(rows - 1 - i), i});
+    }
+    RowTransferPlan route(context, rows, rows, requests);
+    for (auto mode : {TransferMode::Persistent, TransferMode::Transient})
+        for (auto transport : {TransferTransport::Direct, TransferTransport::HostPacked})
+            for (bool scheduled : {false, true})
+            {
+                Array<double> destination(RowLayout::Dense(rows, 6, 9));
+                int calls = 0;
+                auto reducer = Reducer::Custom<double>(ElementSchema::Arithmetic<double>(), "audit.failed-completion", [&calls](double &a, const double &b)
+                                                       {
+                        if (++calls == 17) throw std::runtime_error("audit reducer failure");
+                        a += b; }, 0.0);
+                auto binding = PayloadPlan(route, source.Layout(), destination.Layout(), ElementSchema::Arithmetic<double>())
+                                   .Bind(source, destination, reducer, transport, {mode, context, 81});
+                auto operation = scheduled ? binding.BeginScheduled() : binding.Begin();
+                CHECK_THROWS_WITH(operation.WaitDestinationReady(), "audit reducer failure");
+                CHECK_FALSE(destination.IsValid());
+                CHECK(destination.Storage().IsIdle());
+                CHECK(source.Storage().IsIdle());
+                CHECK_THROWS_WITH(operation.Wait(), "audit reducer failure");
+                CHECK_THROWS_WITH(operation.Test(), "audit reducer failure");
+                MPIProgress progress;
+                auto done = progress.Import(std::move(operation));
+                EagerEngine engine(scheduled ? 2 : 0);
+                auto consumer = engine.CreateCPUStream();
+                bool ran = false;
+                consumer.WaitFor(done);
+                engine.Submit(consumer, [&ran](ExecutionContext)
+                              { ran = true; });
+                CHECK_THROWS_WITH(progress.Drain(), "audit reducer failure");
+                CHECK_THROWS_WITH(done.WaitHost(), "audit reducer failure");
+                CHECK_THROWS_WITH(done.Ready(), "audit reducer failure");
+                CHECK_THROWS_WITH(engine.Synchronize(), "audit reducer failure");
+                CHECK_FALSE(ran);
+                CHECK(calls == 17); // Neither observation nor destruction reruns the reducer.
+            }
+}
+
 #ifdef DNDS_USE_CUDA
 TEST_CASE("CUDA eager producer portable packed MPI and consumer retain ordering")
 {

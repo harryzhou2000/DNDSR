@@ -53,6 +53,13 @@ posting. Explicit reducers retain the existing CPU/CUDA/vendor dispatch and
 receive staging. POD MPI extent is the physical element stride, including holes.
 HostPacked uses MPI pack/unpack, preserving the provided datatype signature.
 
+An operation retains its first completion error after draining requests.
+WaitDestinationReady, Wait and Test keep reporting it, including after a move
+or MPIProgress import. Destruction and replacement do not rerun the reducer.
+This prevents a caught transfer failure from becoming a successful dependency
+for later computation. Raw operation failure is local to the failing rank;
+DynamicRowTransfer adds collective success checking at Commit.
+
 ## Dynamic receive shapes
 
 DynamicRowTransfer pins a source storage/shape/value snapshot, discovers row
@@ -103,3 +110,9 @@ Python exposes CommunicationContext, TransferOptions, DynamicRowTransfer and
 MPIProgress with the same ownership and collective rules. Custom Python
 reducers acquire the GIL only at the explicit host combine step. Python
 callbacks are not dispatched inside device kernels or compute worker loops.
+Repeatable callback failures retain Python exception type/arguments with
+GIL-safe ownership. Each observation creates a Python error; live callback
+tracebacks are not retained, avoiding cycles through transfer objects in frame
+locals. C++ diagnostics retain the original formatted traceback. Custom error
+constructors must accept their saved `args`; extra instance attributes are not
+replayed.

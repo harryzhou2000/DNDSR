@@ -208,7 +208,8 @@ def test_runtime_builtin_reverse_and_reducer_failure():
     operation = payload.bind(a, b, reducer).begin()
     with pytest.raises(ValueError, match="intentional"):
         operation.wait()
-    operation.wait()
+    with pytest.raises(ValueError, match="intentional"):
+        operation.wait()  # Stored failure; the reducer is not retried.
     assert not b.valid
 
 

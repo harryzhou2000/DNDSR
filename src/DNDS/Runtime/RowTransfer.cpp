@@ -598,6 +598,7 @@ namespace DNDS::Runtime
         TransferAccess source, destination, workspace;
         ExecutionContext context;
         bool started = false, destinationReady = false;
+        std::exception_ptr error;
     };
     TransferOperation TransferBinding::Begin(ExecutionContext context) const
     {
@@ -719,7 +720,10 @@ namespace DNDS::Runtime
             }
             catch (...)
             {
-                std::terminate();
+                // A previously observed failure is retained for observers, but
+                // replacing an already drained operation must still be safe.
+                if (_state && _state->started)
+                    std::terminate();
             }
             _state = std::move(other._state);
         }
@@ -741,6 +745,8 @@ namespace DNDS::Runtime
     }
     void TransferOperation::WaitDestinationReady()
     {
+        if (_state && _state->error)
+            std::rethrow_exception(_state->error);
         if (!_state || !_state->started || _state->destinationReady)
             return;
         auto &s = *_state;
@@ -790,7 +796,7 @@ namespace DNDS::Runtime
         }
         catch (...)
         {
-            auto error = std::current_exception();
+            s.error = std::current_exception();
             // Incoming messages are already drained. Outgoing messages must also
             // finish before releasing storage, even if a custom combine throws.
             MPI_Waitall(int(b.sends.size()), b.sends.data(), MPI_STATUSES_IGNORE);
@@ -820,24 +826,39 @@ namespace DNDS::Runtime
                 std::lock_guard<std::mutex> lock(b.mutex);
                 b.active = false;
             }
-            std::rethrow_exception(error);
+            std::rethrow_exception(s.error);
         }
     }
     void TransferOperation::Wait()
     {
+        if (_state && _state->error)
+            std::rethrow_exception(_state->error);
         if (!_state || !_state->started)
             return;
         WaitDestinationReady();
         auto &s = *_state;
         auto &b = *s.binding;
         MPI_Waitall(int(b.sends.size()), b.sends.data(), MPI_STATUSES_IGNORE);
-        s.source.Wait();
+        try
+        {
+            s.source.Wait();
+        }
+        catch (...)
+        {
+            s.error = std::current_exception();
+        }
         s.started = false;
-        std::lock_guard<std::mutex> lock(b.mutex);
-        b.active = false;
+        {
+            std::lock_guard<std::mutex> lock(b.mutex);
+            b.active = false;
+        }
+        if (s.error)
+            std::rethrow_exception(s.error);
     }
     bool TransferOperation::Test()
     {
+        if (_state && _state->error)
+            std::rethrow_exception(_state->error);
         if (!_state || !_state->started)
             return true;
         auto &b = *_state->binding;

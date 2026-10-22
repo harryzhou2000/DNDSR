@@ -45,6 +45,8 @@ The detailed contracts and ownership graphs are in
 [allocation lifetime](ArrayAllocationLifetime.md), and
 [transient MPI](ArrayTransientMPI.md). Geom migration remains optional; the
 new runtime and its tests do not require replacing existing mesh fields.
+The [2026-10-22 audit](../dev/array_runtime_audit_2026-10-22.md) summarizes
+coverage, reviewed contracts and the retained-transfer-error correction.
 
 ## Element types and device dispatch
 
