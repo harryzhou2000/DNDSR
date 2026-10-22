@@ -15,6 +15,30 @@ def world():
     return mpi
 
 
+@pytest.mark.parametrize("source_type,bound_type", [
+    (np.float64, np.int64),
+    (np.dtype([("id", "i4"), ("flag", "i4")]), np.dtype([("x", "f8")])),
+])
+def test_payload_rejects_same_size_different_element_schema(source_type, bound_type):
+    layout = R.RowLayout.dense(31, 7, 9)
+    prototype = R.Array(layout, np.dtype(source_type))
+    source = R.Array(layout, np.dtype(bound_type))
+    target = R.Array(layout, np.dtype(bound_type))
+    route = R.RowTransferPlan(world(), 31, 31, [R.RowRequest(MPI.COMM_WORLD.rank, 17, 3)])
+    schema = prototype.element_schema()
+    payload = R.PayloadPlan(route, layout, layout, schema)
+    with pytest.raises(RuntimeError):
+        payload.bind(source, target)
+    with pytest.raises(RuntimeError):
+        R.DynamicRowTransfer(source, route, schema)
+    with pytest.raises(RuntimeError):
+        R.DynamicRowTransfer(source if MPI.COMM_WORLD.rank == 0 else prototype, route, schema)
+    with pytest.raises(RuntimeError):
+        R.Reducer.custom(schema, np.dtype(bound_type), "bad.dtype", lambda a, b: a, 0)
+    # A correctly typed binding remains usable after collective rejection.
+    payload.bind(prototype, R.Array(layout, np.dtype(source_type))).begin().wait()
+
+
 @pytest.mark.parametrize("dtype", [np.float64, np.float32, np.int64, np.int32, np.uint8,
                                   np.dtype([("id", "i4"), ("x", "f8")], align=True)])
 def test_runtime_leases_and_snapshots(dtype):
