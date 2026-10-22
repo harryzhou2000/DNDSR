@@ -13,6 +13,31 @@ namespace DNDS::Runtime
     void BindMPIEagerPython(py::module_ &);
     namespace
     {
+        // pybind11::error_already_set::restore is deliberately single-use.
+        // Async completion can report one callback failure more than once.
+        // Retain type/arguments, not live traceback frames: those can own the
+        // operation itself through callback locals and form an invisible cycle.
+        class PythonCallbackError final : public std::exception
+        {
+            struct Objects
+            {
+                py::object type, arguments;
+            };
+            std::shared_ptr<Objects> _objects;
+            std::string _message;
+
+        public:
+            explicit PythonCallbackError(const py::error_already_set &error)
+                : _objects(new Objects{error.type(), error.value().attr("args")}, [](Objects *p)
+                           { py::gil_scoped_acquire gil; delete p; }),
+                  _message(error.what()) {}
+            const char *what() const noexcept override { return _message.c_str(); }
+            void Restore() const
+            {
+                PyErr_SetObject(_objects->type.ptr(), _objects->arguments.ptr());
+            }
+        };
+
         std::string DtypeSchema(const py::dtype &dtype)
         {
             const auto kind = py::str(dtype.attr("kind")).cast<std::string>();
@@ -318,6 +343,10 @@ namespace DNDS::Runtime
 
     void BindPython(py::module_ &parent)
     {
+        py::register_local_exception_translator([](std::exception_ptr error)
+                                                {
+            try { if (error) std::rethrow_exception(error); }
+            catch (const PythonCallbackError &callback) { callback.Restore(); } });
         auto m = parent.def_submodule("Runtime", "Native leased row Arrays and distributed transfers");
 #ifdef DNDS_USE_CUDA
         m.attr("cuda_enabled") = true;
@@ -511,6 +540,8 @@ namespace DNDS::Runtime
                      reducer.host = [objects, init](const void *input, void *output, const std::vector<Contribution> &groups, ExecutionContext)
                      {
                          py::gil_scoped_acquire gil;
+                         try
+                         {
                          const auto &dtype = objects->dtype;
                          const auto &combine = objects->combine;
                          const auto &seed = objects->seed;
@@ -531,6 +562,11 @@ namespace DNDS::Runtime
                                                    "custom reducer returned wrong dtype/shape");
                              std::memcpy(dst, result.data(), group.count * stride);
                              previous = group.destinationElement;
+                         }
+                         }
+                         catch (py::error_already_set &error)
+                         {
+                             throw PythonCallbackError(error);
                          }
                      };
                      return reducer; }, py::arg("schema"), py::arg("dtype"), py::arg("name"), py::arg("combine"), py::arg("identity"), py::arg("initialization") = DestinationInit::Preserve);

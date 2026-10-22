@@ -288,10 +288,71 @@ TEST_CASE("Native reducer failure drains MPI and invalidates partial output")
     CHECK_THROWS(b.Read());
     CHECK(a.Storage().IsIdle());
     CHECK(b.Storage().IsIdle());
-    operation.Wait(); // No repeated combine/destructor failure.
+    CHECK_THROWS_WITH(operation.Wait(), "custom reduction failed"); // Reports the stored failure; no repeated combine.
 }
 
 #ifdef DNDS_USE_CUDA
+TEST_CASE_TEMPLATE("Native CUDA reduction dispatch covers wide rows without requiring device MPI", T,
+                   int8_t, uint8_t, int16_t, uint16_t, int32_t, uint32_t, int64_t, uint64_t, float, double)
+{
+    const auto ctx = ExecutionContext::CUDA(0);
+    Array<T> source(RowLayout::Ragged({129, 129, 129, 257, 257, 257, 257}));
+    Array<T> initial(RowLayout::Dense(3, 257, 263));
+    std::vector<Contribution> groups;
+    {
+        auto w = source.Write();
+        for (size_t i = 0; i < source.Rows(); ++i)
+        {
+            groups.push_back({source.Layout().Offset(i), i < 3 ? size_t(0) : size_t(526), source.RowSize(i)});
+            for (size_t j = 0; j < source.RowSize(i); ++j)
+                w.At(i, j) = j == 0 ? std::numeric_limits<T>::max() : T(int((i * 5 + j) % 27) - 13);
+        }
+        auto seed = initial.Storage().Write();
+        std::fill_n(seed.template View<T>().data, initial.Layout().Elements(), T(9));
+    }
+    auto gpuSource = source.To(Device::CUDA(0));
+    auto hostGroups = Buffer::Allocate(groups.size() * sizeof(Contribution));
+    {
+        auto w = hostGroups.Write();
+        std::copy(groups.begin(), groups.end(), w.View<Contribution>().data);
+    }
+    auto deviceGroups = Buffer::Allocate(hostGroups.Bytes(), Device::CUDA(0));
+    Copy(hostGroups, deviceGroups, ctx).Wait();
+    for (auto op : {Reduction::Sum, Reduction::Min, Reduction::Max, Reduction::BitOr, Reduction::BitXor, Reduction::BitAnd})
+    {
+        if (!std::is_integral_v<T> && op > Reduction::Max)
+            continue;
+        for (auto init : {DestinationInit::Identity, DestinationInit::Preserve})
+        {
+            auto expected = initial.Clone();
+            auto result = initial.To(Device::CUDA(0));
+            auto reducer = Reducer::Builtin<T>(op, init);
+            {
+                auto src = source.Read();
+                auto dst = expected.Write();
+                reducer.host(src.View().data, dst.View().data, groups, ExecutionContext::Host());
+            }
+            {
+                auto src = gpuSource.Read(ctx);
+                auto dst = result.Write(ctx);
+                auto mapping = deviceGroups.Read(ctx);
+                REQUIRE(bool(reducer.device));
+                reducer.device(src.View().data, dst.View().data, mapping.View<Contribution>().data, groups.size(), ctx);
+                auto done = Completion::Record(ctx);
+                src.Complete(done);
+                dst.Complete(done);
+                mapping.Complete(done);
+            }
+            auto hostResult = result.To(Device::Host());
+            auto actual = hostResult.Storage().Read();
+            auto reference = expected.Storage().Read();
+            // Includes untouched row, short-row tail and physical stride padding.
+            for (size_t j = 0; j < initial.Layout().Elements(); ++j)
+                CHECK(actual.template View<T>().data[j] == reference.template View<T>().data[j]);
+        }
+    }
+}
+
 TEST_CASE("Native CUDA integer reduction families agree with the CPU reference")
 {
     int rank, size;

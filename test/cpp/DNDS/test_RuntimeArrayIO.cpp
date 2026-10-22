@@ -117,6 +117,70 @@ TEST_CASE("Native parallel checkpoint matching partitions and direct read")
         std::filesystem::remove(file);
 }
 
+TEST_CASE("Parallel field bundle restores uneven reversed partitions with variable row lengths")
+{
+    DNDS::MPIInfo mpi(MPI_COMM_WORLD);
+    int pid = getpid();
+    MPI_Bcast(&pid, 1, MPI_INT, 0, mpi.comm);
+    const auto file = "__runtime_bundle_" + std::to_string(pid) + ".h5";
+    std::vector<DNDS::index> counts(mpi.size), offsets(mpi.size + 1, 0);
+    for (int rank = 0; rank < mpi.size; ++rank)
+    {
+        counts[rank] = rank == 0 && mpi.size > 1 ? 0 : 67 + 2 * rank;
+        offsets[rank + 1] = offsets[rank] + counts[rank];
+    }
+    const size_t n = counts[mpi.rank], first = offsets[mpi.rank];
+    Array<double, FixedRows<6>> state(RowLayout::Dense(n, 6, 8));
+    std::vector<size_t> widths(n);
+    for (size_t i = 0; i < n; ++i)
+        widths[i] = ((first + i) * 17) % 9;
+    Array<int64_t> stencil(RowLayout::Padded(widths, 11));
+    {
+        auto u = state.Write();
+        auto c2c = stencil.Write();
+        for (size_t i = 0; i < n; ++i)
+        {
+            for (size_t j = 0; j < 6; ++j)
+                u.At(i, j) = 100 * (first + i) + j;
+            for (size_t j = 0; j < widths[i]; ++j)
+                c2c.At(i, j) = ((first + i) * 13 + j * 7) % offsets.back();
+        }
+    }
+    auto serializer = std::make_shared<S::SerializerH5>(mpi);
+    serializer->SetCollectiveRW(true, true);
+    serializer->OpenFile(file, false);
+    WriteArray(state, serializer, "flow", mpi);
+    WriteArray(stencil, serializer, "stencil", mpi);
+    serializer->CloseFile();
+    for (bool reversed : {false, true})
+    {
+        const int from = reversed ? mpi.size - 1 - mpi.rank : mpi.rank;
+        const auto partition = reversed ? S::ArrayGlobalOffset{counts[from], offsets[from]} : S::ArrayGlobalOffset_Unknown;
+        serializer->OpenFile(file, true);
+        auto restored = ReadArray<double, FixedRows<6>>(serializer, "flow", mpi, partition);
+        auto restoredStencil = ReadArray<int64_t>(serializer, "stencil", mpi, partition);
+        REQUIRE(restored.Rows() == size_t(counts[from]));
+        REQUIRE(restoredStencil.Rows() == restored.Rows());
+        CHECK(restored.Layout().Stride() == 6); // Checkpoints carry logical rows, not capacity padding.
+        auto u = restored.Read();
+        auto c2c = restoredStencil.Read();
+        for (size_t i = 0; i < restored.Rows(); ++i)
+        {
+            const size_t global = offsets[from] + i;
+            CHECK(restoredStencil.RowSize(i) == (global * 17) % 9);
+            for (size_t j = 0; j < 6; ++j)
+                CHECK(u.At(i, j) == 100 * global + j);
+            for (size_t j = 0; j < restoredStencil.RowSize(i); ++j)
+                CHECK(c2c.At(i, j) == (global * 13 + j * 7) % offsets.back());
+        }
+        serializer->CloseFile();
+    }
+    serializer.reset();
+    MPI_Barrier(mpi.comm);
+    if (mpi.rank == 0)
+        std::filesystem::remove(file);
+}
+
 TEST_CASE("Native JSON checkpoint padded rows and POD schema")
 {
     struct Info

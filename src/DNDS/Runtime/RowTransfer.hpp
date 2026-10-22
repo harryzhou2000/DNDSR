@@ -245,6 +245,8 @@ namespace DNDS::Runtime
         TransferOperation(TransferOperation &&) noexcept;
         TransferOperation &operator=(TransferOperation &&) noexcept;
         ~TransferOperation();
+        /// Failed completion remains failed across repeated observation and
+        /// moves (including MPIProgress import). Destruction only drains once.
         void WaitDestinationReady();
         void Wait();
         bool Test();
