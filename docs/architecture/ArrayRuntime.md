@@ -8,6 +8,9 @@ LibTorch, Legion or mesh-library dependency.
 
 ## Responsibilities
 
+The [caller contract](RuntimeCallerContract.md) specifies required stream joins,
+raw-view lifetime, MPI participation, migration rebinding and checkpoint discipline.
+
 | Component | Owns |
 |---|---|
 | Allocation | Shared native/foreign owner, device, identity, value generation and access controller |
@@ -49,6 +52,10 @@ The [2026-10-22 audit](../dev/array_runtime_audit_2026-10-22.md) summarizes
 coverage, reviewed contracts and the retained-transfer-error correction.
 
 ## Element types and device dispatch
+
+The [Euler workload and overlap audit](../dev/array_runtime_scenarios_2026-10-22.md)
+maps production data patterns to CPU/MPI/CUDA tests, including detected type
+mismatches and deliberately unchecked eager ordering mistakes.
 
 The C++ interface is still templated: `Array<T, LayoutPolicy>` and its leased
 `ArrayView<T>` preserve typed element access. For example:

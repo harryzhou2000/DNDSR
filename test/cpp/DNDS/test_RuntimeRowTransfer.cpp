@@ -15,6 +15,21 @@ int main(int argc, char **argv)
     return result;
 }
 
+TEST_CASE("Typed binding rejects same-size arithmetic schema confusion")
+{
+    int rank;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    RowTransferPlan route(MPI_COMM_WORLD, 31, 31, {{rank, 17, 3}});
+    Array<int64_t> source(RowLayout::Dense(31, 7, 9)), destination(source.Layout());
+    PayloadPlan wrong(route, source.Layout(), destination.Layout(), ElementSchema::Arithmetic<double>());
+    CHECK_THROWS(wrong.Bind(source, destination));
+    CHECK_THROWS(wrong.Bind(source, destination, Reducer::Builtin<double>(Reduction::Sum)));
+    CHECK_THROWS(Reducer::Custom<int64_t>(ElementSchema::Arithmetic<double>(), "wrong.scalar", [](int64_t &a, const int64_t &b)
+                                          { a += b; }, int64_t(0)));
+    CHECK(source.Storage().IsIdle());
+    CHECK(destination.Storage().IsIdle());
+}
+
 TEST_CASE("Native direct ragged halo retains leases and reusable routing")
 {
     int rank, size;

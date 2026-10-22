@@ -11,6 +11,10 @@ namespace DNDS::Runtime
     /// thread. Worker streams poll completion without entering MPI. Drain this
     /// object before synchronizing dependent worker streams or submitting a
     /// dependent CUDA stream (portable MPI is not a native CUDA stream node).
+    /// Caller initializes MPI with at least FUNNELED for worker execution and
+    /// uses the MPI main thread at that level. Drain/import/destruction belong
+    /// to the creating thread before MPI_Finalize. Do not rely on MPI background
+    /// progress or synchronize a dependent worker while withholding host progress.
     class MPIProgress
     {
         struct Pending final : StreamEvent::State

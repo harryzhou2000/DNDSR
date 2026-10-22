@@ -1,5 +1,8 @@
 # Allocation providers and ordered ownership release
 
+See the [caller contract](RuntimeCallerContract.md) for required joins before
+final release, foreign allocation ownership and borrowed native stream lifetime.
+
 Status: native ordered release and async allocation passed the focused CPU
 and CUDA checks in [the memory validation snapshot](../dev/array_async_memory_validation_2026-10-21/).
 Seven CUDA engine cases passed 3890 assertions, including Compute Sanitizer

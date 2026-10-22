@@ -8,6 +8,7 @@
 #include <atomic>
 #include <thread>
 #include <stdexcept>
+#include <chrono>
 
 namespace R = DNDS::Runtime;
 
@@ -21,6 +22,159 @@ struct Gate : R::StreamEvent::State
             std::this_thread::yield();
     }
 };
+
+static void Await(const std::atomic<bool> &flag)
+{
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!flag.load())
+    {
+        DNDS_check_throw_info(std::chrono::steady_clock::now() < deadline, "mock overlap rendezvous timed out");
+        std::this_thread::yield();
+    }
+}
+
+TEST_CASE("Active mock communication overlaps inline and worker core kernels")
+{
+    // A separate executor models transport for inline/one-worker compute;
+    // two-worker compute uses the same engine for both lanes. Both bodies must
+    // be live: neither can finish before the other enters.
+    for (size_t workers : {size_t(0), size_t(1), size_t(2)})
+        for (size_t width : {size_t(1), size_t(4), size_t(5), size_t(6), size_t(7), size_t(13), size_t(114)})
+        {
+            R::EagerEngine engine(workers), transport(1);
+            auto core = engine.CreateCPUStream(), ring = engine.CreateCPUStream();
+            auto &commEngine = workers == 2 ? engine : transport;
+            auto comm = commEngine.CreateCPUStream();
+            R::Array<double> owned(R::RowLayout::Dense(257, width, width + 3));
+            R::Array<double> ghost(R::RowLayout::Dense(19, width, width + 2));
+            R::Array<double> output(R::RowLayout::Dense(257, width, width + 1));
+            {
+                auto w = owned.Write();
+                for (size_t i = 0; i < 257; ++i)
+                    for (size_t j = 0; j < width; ++j)
+                        w.At(i, j) = 10 * i + j;
+            }
+            std::atomic<bool> commEntered{false}, coreEntered{false}, coreFinished{false};
+            R::SubmitArrays(commEngine, comm, [&](R::ExecutionContext, auto u, auto g)
+                            {
+                commEntered = true;
+                Await(coreEntered);
+                for (size_t i = 0; i < g.Rows(); ++i)
+                    for (size_t j = 0; j < g.RowSize(i); ++j) g(i, j) = u(13 * i, j);
+                Await(coreFinished); }, R::Read(owned), R::Write(ghost));
+            auto received = comm.Record();
+            R::SubmitArrays(engine, core, [&](R::ExecutionContext, auto u, auto rhs)
+                            {
+                coreEntered = true;
+                Await(commEntered);
+                for (size_t i = 0; i < rhs.Rows(); ++i)
+                    for (size_t j = 0; j < rhs.RowSize(i); ++j) rhs(i, j) = 2 * u(i, j);
+                coreFinished = true; }, R::Read(owned), R::Write(output));
+            ring.WaitFor(core.Record());
+            ring.WaitFor(received);
+            R::SubmitArrays(engine, ring, [](R::ExecutionContext, auto g, auto rhs)
+                            {
+                for (size_t i = 0; i < g.Rows(); ++i)
+                    for (size_t j = 0; j < g.RowSize(i); ++j) rhs(i, j) += g(i, j); }, R::Read(ghost), R::ReadWrite(output));
+            engine.Synchronize();
+            transport.Synchronize();
+            CHECK(commEntered.load());
+            CHECK(coreFinished.load());
+            auto r = output.Read();
+            for (size_t i = 0; i < 257; ++i)
+                for (size_t j = 0; j < width; ++j)
+                    CHECK(r.At(i, j) == 20 * i + 2 * j + (i < 19 ? 130 * i + j : 0));
+            auto raw = output.Storage().Read();
+            for (size_t i = 0; i < 257; ++i)
+                CHECK(raw.View<double>().data[i * (width + 1) + width] == 0);
+        }
+}
+
+TEST_CASE("Missing eager join produces a deterministic stale result without a data race")
+{
+    for (size_t workers : {size_t(0), size_t(1), size_t(2)})
+    {
+        R::EagerEngine engine(workers);
+        auto comm = engine.CreateCPUStream(), compute = engine.CreateCPUStream();
+        R::Array<double> ghost(R::RowLayout::Dense(19, 7, 9)), stale(ghost.Layout()), correct(ghost.Layout());
+        auto gate = std::make_shared<Gate>();
+        comm.WaitFor(R::StreamEvent(gate));
+        R::SubmitArrays(engine, comm, [](R::ExecutionContext, auto g)
+                        { for (size_t i = 0; i < g.Rows(); ++i) for (size_t j = 0; j < 7; ++j) g(i, j) = 100 + i + j; }, R::Write(ghost));
+        CHECK_THROWS(ghost.Read()); // Immediate access catches the pending writer.
+        auto copy = [](R::ExecutionContext, auto g, auto r)
+        { for (size_t i = 0; i < g.Rows(); ++i) for (size_t j = 0; j < 7; ++j) r(i, j) = 2 * g(i, j); };
+        // Scheduled reads intentionally trust caller ordering. Keep the writer
+        // gated until this read completes so the negative case has no C++ UB.
+        R::SubmitArrays(engine, compute, copy, R::Read(ghost), R::Write(stale));
+        compute.Record().WaitHost();
+        gate->open = true;
+        compute.WaitFor(comm.Record());
+        R::SubmitArrays(engine, compute, copy, R::Read(ghost), R::Write(correct));
+        engine.Synchronize();
+        CHECK(stale.IsValid()); // Access validity is not a numerical oracle.
+        auto bad = stale.Read(), good = correct.Read();
+        size_t mismatches = 0;
+        for (size_t i = 0; i < 19; ++i)
+            for (size_t j = 0; j < 7; ++j)
+            {
+                CHECK(good.At(i, j) == 2 * (100 + i + j));
+                mismatches += bad.At(i, j) != good.At(i, j);
+            }
+        CHECK(mismatches == 19 * 7);
+    }
+}
+
+TEST_CASE("Manufactured triangular sweeps preserve in-place ordering and eager stopping")
+{
+    // Euler's SGS path reads and writes the same increment in directional
+    // order, with host decisions between iterations. Manufacture an exact
+    // solution so verification does not repeat the implementation recurrence.
+    for (size_t workers : {size_t(0), size_t(1), size_t(2)})
+        for (size_t width : {size_t(4), size_t(5), size_t(6), size_t(7), size_t(13)})
+        {
+            R::EagerEngine engine(workers);
+            auto stream = engine.CreateCPUStream();
+            R::Array<double> increment(R::RowLayout::Dense(67, width, width + 3));
+            for (bool backward : {false, true})
+            {
+                auto rhs = R::AllocateLikeAsync(engine, stream, increment);
+                R::SubmitArrays(engine, stream, [backward](R::ExecutionContext, auto r)
+                                {
+                    for (size_t i = 0; i < r.Rows(); ++i)
+                        for (size_t j = 0; j < r.RowSize(i); ++j)
+                        {
+                            const bool boundary = backward ? i + 1 == r.Rows() : i == 0;
+                            const double neighbor = boundary ? 0 : double(i) + (backward ? 1 : -1) + j + 1;
+                            r(i, j) = 2 * (i + j + 1) - 0.25 * neighbor;
+                        } }, R::Write(rhs));
+                int iterations = 0;
+                for (; iterations < 4;)
+                {
+                    ++iterations;
+                    R::SubmitArrays(engine, stream, [backward](R::ExecutionContext, auto r, auto x)
+                                    {
+                        for (size_t k = 0; k < x.Rows(); ++k)
+                        {
+                            const size_t i = backward ? x.Rows() - 1 - k : k;
+                            for (size_t j = 0; j < x.RowSize(i); ++j)
+                                x(i, j) = (r(i, j) + (k ? 0.25 * x(backward ? i + 1 : i - 1, j) : 0)) / 2;
+                        } }, R::Read(rhs), R::ReadWrite(increment));
+                    stream.Record().WaitHost();
+                    auto solution = increment.Read();
+                    double error = 0;
+                    for (size_t i = 0; i < 67; ++i)
+                        for (size_t j = 0; j < width; ++j)
+                            error = std::max(error, std::abs(solution.At(i, j) - double(i + j + 1)));
+                    if (error == 0)
+                        break; // Fully eager data-dependent stopping.
+                }
+                CHECK(iterations == 1);
+                engine.ReleaseOn(std::move(rhs), stream);
+            }
+            engine.Synchronize();
+        }
+}
 
 TEST_CASE("Inline and worker launchers execute the same eager fork join loop")
 {

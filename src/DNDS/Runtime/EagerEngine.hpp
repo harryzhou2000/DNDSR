@@ -89,13 +89,24 @@ namespace DNDS::Runtime
     public:
         ExecutionStream() = default;
         ExecutionContext Context() const;
+        /// Caller supplies every cross-stream dependency; waiting is not inferred
+        /// from Array aliases. CUDA rejects an unfinished portable MPI/CPU event.
         void WaitFor(StreamEvent event) const;
+        /// Capture only the already-submitted prefix. Later work is not covered;
+        /// caller must record again before exporting that work's readiness.
         StreamEvent Record() const;
     };
 
     /// Fully eager execution. The caller supplies dependency/release ordering.
     /// HostThreads=0 runs ready CPU work inline; >0 shares a bounded worker pool
     /// between all CPU lanes. Waiting lanes never consume blocked workers.
+    /// @pre Caller orders all conflicting scheduled accesses and joins every
+    /// independent use before a final release. No eager schedule proof exists:
+    /// omitted edges can silently produce stale values or unsafe memory access.
+    /// @pre CPU work must not block waiting for work that needs the same bounded
+    /// pool; express dependencies with WaitFor. Synchronize explicitly to observe
+    /// failures. Concurrent mutation of one public Array handle is not supported.
+    /// See docs/architecture/RuntimeCallerContract.md for the complete contract.
     class EagerEngine
     {
         struct State;
@@ -117,6 +128,10 @@ namespace DNDS::Runtime
         /// Ordered cleanup still runs after a preceding computation failed.
         void SubmitCleanup(const ExecutionStream &stream, StreamLauncher::Work work);
         void SubmitOrderedRelease(const ExecutionStream &stream, StreamLauncher::Work work, StreamLauncher::Retirement retire);
+        /// Consume one handle, not all aliases. Caller must join every independent
+        /// use onto stream before any potentially final release. Different alias
+        /// release streams are legal only when the actual final decrement follows
+        /// all uses; reference counting alone does not establish that ordering.
         template <class T>
         void ReleaseOn(T &&handle, const ExecutionStream &stream)
         {

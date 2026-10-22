@@ -1,5 +1,6 @@
 #include "DNDS/Runtime/Array_bind.hpp"
 #include "DNDS/Runtime/EagerArray.hpp"
+#include "DNDS/Runtime/RowTransfer.hpp"
 #include <pybind11/stl.h>
 #include <atomic>
 #include <thread>
@@ -118,6 +119,9 @@ void Scale(State array, double factor)
 PYBIND11_MODULE(runtime_array_bridge_test, m)
 {
     py::module_::import("DNDSR.DNDS.Runtime");
+    m.def("native_double_schema", &R::ElementSchema::Arithmetic<double>);
+    m.def("bind_native_state", [](const R::PayloadPlan &plan, State source, State destination, R::Reducer reducer)
+          { return plan.Bind(source, destination, std::move(reducer)); });
     py::class_<AsyncGate, std::shared_ptr<AsyncGate>>(m, "AsyncGate")
         .def("open", [](AsyncGate &gate)
              { *gate.flag = true; });

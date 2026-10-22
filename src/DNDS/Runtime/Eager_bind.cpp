@@ -75,27 +75,27 @@ namespace DNDS::Runtime
 
     void BindEagerPython(py::module_ &m)
     {
-        py::class_<StreamEvent>(m, "StreamEvent")
+        py::class_<StreamEvent>(m, "StreamEvent", "Fixed submitted prefix. Observe errors with wait(); later submissions are not covered.")
             .def("ready", &StreamEvent::Ready, py::call_guard<py::gil_scoped_release>())
             .def("wait", &StreamEvent::WaitHost, py::call_guard<py::gil_scoped_release>());
-        py::class_<ExecutionStream>(m, "ExecutionStream")
-            .def("record", &ExecutionStream::Record, py::call_guard<py::gil_scoped_release>())
-            .def("wait_for", &ExecutionStream::WaitFor, py::call_guard<py::gil_scoped_release>())
+        py::class_<ExecutionStream>(m, "ExecutionStream", "Ordered lane, not a dedicated CPU thread. Caller supplies all cross-stream dependencies.")
+            .def("record", &ExecutionStream::Record, py::call_guard<py::gil_scoped_release>(), "Record only the already submitted prefix; record again for later work.")
+            .def("wait_for", &ExecutionStream::WaitFor, py::call_guard<py::gil_scoped_release>(), "Enqueue a dependency. Caller must provide all conflicting-use edges. CUDA rejects unfinished portable CPU/MPI events.")
             .def_property_readonly("context", &ExecutionStream::Context);
-        py::class_<EagerEngine>(m, "EagerEngine")
+        py::class_<EagerEngine>(m, "EagerEngine", "Fully eager execution: no dependency proof. Caller orders conflicting uses and final release, and observes errors with synchronize(). See RuntimeCallerContract.md.")
             .def(py::init<size_t>(), py::arg("host_threads") = 0)
             .def("cpu_stream", &EagerEngine::CreateCPUStream)
             .def("cuda_stream", [](EagerEngine &engine, int ordinal)
                  { return engine.CreateStream(std::make_shared<CUDALauncher>(ordinal)); }, py::arg("ordinal") = 0)
-            .def("synchronize", &EagerEngine::Synchronize, py::call_guard<py::gil_scoped_release>())
-            .def("allocate", &Allocate, py::arg("stream"), py::arg("layout"), py::arg("dtype") = py::dtype::of<double>())
-            .def("allocate_like", &AllocateLike, py::arg("stream"), py::arg("prototype"))
+            .def("synchronize", &EagerEngine::Synchronize, py::call_guard<py::gil_scoped_release>(), "Drain all registered streams and report errors; destructor cleanup cannot substitute for error observation.")
+            .def("allocate", &Allocate, py::arg("stream"), py::arg("layout"), py::arg("dtype") = py::dtype::of<double>(), "Allocate with stream-ordered readiness. Join this stream before cross-stream use or synchronous access; use allocate_like for prepared variable GPU metadata.")
+            .def("allocate_like", &AllocateLike, py::arg("stream"), py::arg("prototype"), "Share prepared immutable metadata, allocate new values on stream. Caller joins allocation readiness before other-stream access.")
             .def("copy", [](EagerEngine &engine, const ExecutionStream &stream, const PythonArray &source, PythonArray &destination)
                  {
                      DNDS_check_throw_info(source.SameElement(destination) && source.Layout() == destination.Layout(),
                                            "eager Array copy requires identical dtype and physical layout");
                      auto target = destination.Storage();
-                     CopyAsync(engine, stream, source.Storage(), target); }, py::arg("stream"), py::arg("source"), py::arg("destination"))
-            .def("release_on", &ReleaseArray, py::arg("array"), py::arg("stream"), "Consume this facade's storage and replace it with an empty Array; existing aliases/views remain owners.");
+                     CopyAsync(engine, stream, source.Storage(), target); }, py::arg("stream"), py::arg("source"), py::arg("destination"), "Scheduled copy; caller orders source producers and destination consumers, then waits before synchronous indexing.")
+            .def("release_on", &ReleaseArray, py::arg("array"), py::arg("stream"), "Consume this facade and replace it with an empty Array; aliases/views remain owners. Join all uses before possible final release. Releases of aliases on different streams require that whichever is final is safe; reference counting does not infer dependencies.");
     }
 }

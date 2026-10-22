@@ -30,6 +30,9 @@ namespace DNDS::Runtime
 
     /// Borrowed execution stream. The caller keeps the stream alive until all
     /// leases using it have completed. No implicit host/device movement.
+    /// Caller keeps the native stream alive through completion/free and reports
+    /// the actual device ordinal. External kernels must use this stream or join
+    /// their other streams before publishing completion or releasing storage.
     struct ExecutionContext
     {
         Device device;
@@ -135,6 +138,11 @@ namespace DNDS::Runtime
 
     public:
         Allocation() = default;
+        /// @pre owner retains the allocation (aliasing shared_ptr is supported),
+        /// whose address, capacity, placement and readiness match this descriptor.
+        /// Import each allocation once and derive Buffer ranges from that handle;
+        /// importing aliases separately creates independent access controllers.
+        /// External writers must obey the same leases and stream dependencies.
         static Allocation Import(std::shared_ptr<void> owner, size_t bytes,
                                  Device device = Device::Host(), bool writable = true);
         size_t Bytes() const;

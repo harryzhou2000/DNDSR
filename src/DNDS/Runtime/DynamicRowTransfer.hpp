@@ -8,6 +8,12 @@ namespace DNDS::Runtime
     /// Collective preparation, then nonblocking payload progression. The new
     /// CSR field stays private until Commit; source storage/shape and its read
     /// lease span both preparation and transfer. No partial destination escapes.
+    /// @pre Every rank participates in matching construction/Commit order, even
+    /// with zero rows. Caller supplies the real source element schema (native
+    /// ArrayStorage is type-erased), a completed producer, and the correct device
+    /// context. Drain before redistribution or MPI_Finalize; rebuild downstream
+    /// payloads/stencils for the returned shape. Commit publishes once, not an
+    /// atomic transaction across multiple separately migrated fields.
     class DynamicRowTransfer
     {
         ArrayStorage::Shared _source, _destination;

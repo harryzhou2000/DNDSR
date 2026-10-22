@@ -8,6 +8,9 @@ namespace DNDS::Runtime
     /// Exclusive CPU construction form. Distinct rows may be resized/filled by
     /// different workers; Commit follows their join. Borrowed row pointers expire
     /// on that row's resize or on Commit. No published Array aliases this draft.
+    /// @pre Workers edit distinct rows; the caller joins them before Commit or
+    /// destruction. No row pointer may escape its resize/publication boundary.
+    /// A builder does not serialize concurrent writes to the same row.
     class RowBuilder
     {
         friend class ExclusiveRows;

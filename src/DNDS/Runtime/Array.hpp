@@ -104,6 +104,10 @@ namespace DNDS::Runtime
 
     /// Plain kernel view: no ownership, placement dispatch or tracking per element.
     /// Checked=true is a separate development policy, independent of NDEBUG.
+    /// @pre Caller retains the lease/operation through actual use, validates row
+    /// and component indices (including stencil indirection), and uses the correct
+    /// device. An owned-only core stencil must be reclassified after mesh changes.
+    /// Copying this view does not retain values or offset/size metadata.
     template <class T, bool Checked = false>
     struct ArrayView
     {
@@ -409,6 +413,9 @@ namespace DNDS::Runtime
         }
         /// Shares values, logical layout and device offsets without allocating or
         /// copying. Language adapters additionally validate the semantic dtype.
+        /// @pre T describes the actual stored values and their ABI. Size and
+        /// alignment checks alone cannot establish semantic type compatibility
+        /// for this deliberately type-erased native storage boundary.
         static Array FromSharedStorage(ArrayStorage::Shared storage)
         {
             DNDS_check_throw_info(storage && storage->ElementBytes() == sizeof(T), "Array element size mismatch");

@@ -1,7 +1,13 @@
 """Native row Arrays. NumPy results are snapshots; mutation needs a write lease.
 
 MPI plan construction, binding and begin are collective on the plan's MPIInfo.
-An operation owns its leases until wait() or destruction. Prefer explicit wait().
+An operation owns its leases until completion. Observe errors with explicit wait().
+Eager callers must join cross-stream conflicts and all uses before final release;
+scheduled reservations do not prove ordering. Finish asynchronous producers before
+synchronous indexing/checkpointing. Array reset does not retarget retained views
+or MPI bindings. Match collective order/tags on all ranks, including empty ranks,
+and drive MPI progress on a thread allowed by MPI's initialized thread level.
+See docs/architecture/RuntimeCallerContract.md for the complete caller contract.
 """
 
 from contextlib import ExitStack
@@ -40,6 +46,8 @@ class ArrayView:
     Basic integer/slice indexing only. Reading CUDA values synchronizes and copies
     the selected values to host. numpy() always returns an independent snapshot.
     Holding a view does not hold a lease; each access acquires its own lease.
+    Complete pending asynchronous writes before indexing. Resetting the parent
+    leaves this view attached to the old storage and old row metadata.
     This is not an MPI payload: its columns may no longer describe complete rows.
     """
 

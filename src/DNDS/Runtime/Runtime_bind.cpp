@@ -11,6 +11,14 @@ namespace DNDS::Runtime
     void BindEagerPython(py::module_ &);
     void BindMPIOptions(py::module_ &);
     void BindMPIEagerPython(py::module_ &);
+    // Shared by static payload and dynamic migration binding validation.
+    std::string DtypeSchema(const py::dtype &dtype)
+    {
+        const auto kind = py::str(dtype.attr("kind")).cast<std::string>();
+        if (kind == "i" || kind == "u" || kind == "f")
+            return py::str(dtype.attr("name")).cast<std::string>();
+        return "numpy.pod.v1:" + py::str(dtype.attr("descr")).cast<std::string>() + ":" + std::to_string(dtype.itemsize());
+    }
     namespace
     {
         // pybind11::error_already_set::restore is deliberately single-use.
@@ -38,13 +46,6 @@ namespace DNDS::Runtime
             }
         };
 
-        std::string DtypeSchema(const py::dtype &dtype)
-        {
-            const auto kind = py::str(dtype.attr("kind")).cast<std::string>();
-            if (kind == "i" || kind == "u" || kind == "f")
-                return py::str(dtype.attr("name")).cast<std::string>();
-            return "numpy.pod.v1:" + py::str(dtype.attr("descr")).cast<std::string>() + ":" + std::to_string(dtype.itemsize());
-        }
         std::string ArraySchema(const PythonArray &array)
         {
             return array.Element() ? array.Element()->schema : DtypeSchema(array.Dtype());
@@ -267,11 +268,11 @@ namespace DNDS::Runtime
             else DNDS_NATIVE_TYPE(uint8_t);
 #undef DNDS_NATIVE_TYPE
             if (type != MPI_DATATYPE_NULL)
-                return ElementSchema(type, a.Dtype().itemsize(), ArraySchema(a));
+                return ElementSchema(type, a.Dtype().itemsize(), ArraySchema(a), DtypeSchema(a.Dtype()));
             DNDS_check_throw_info(a.Dtype().itemsize() <= INT_MAX, "POD dtype exceeds MPI contiguous count");
             MPI_Type_contiguous(int(a.Dtype().itemsize()), MPI_BYTE, &type);
             MPI_Type_commit(&type);
-            ElementSchema result(type, a.Dtype().itemsize(), ArraySchema(a));
+            ElementSchema result(type, a.Dtype().itemsize(), ArraySchema(a), DtypeSchema(a.Dtype()));
             MPI_Type_free(&type);
             return result;
         }
@@ -389,7 +390,7 @@ namespace DNDS::Runtime
                                    { return r.Offsets().empty() ? std::vector<size_t>{} : std::vector<size_t>(r.Offsets().begin(), r.Offsets().end()); })
             .def_property_readonly("sizes", [](const RowLayout &r)
                                    { return r.Sizes().empty() ? std::vector<size_t>{} : std::vector<size_t>(r.Sizes().begin(), r.Sizes().end()); });
-        py::class_<PythonRowBuilder>(m, "RowBuilder")
+        py::class_<PythonRowBuilder>(m, "RowBuilder", "Unpublished CPU shape draft. Join distinct-row writers before commit. Exclusive edits forbid aliases/access; abandonment invalidates rather than rolls back.")
             .def(py::init<size_t, py::object, RowLayoutKind, size_t>(), py::arg("rows"), py::arg("dtype") = py::dtype::of<double>(),
                  py::arg("kind") = RowLayoutKind::CSR, py::arg("capacity") = 0)
             .def("resize_row", [](PythonRowBuilder &b, size_t row, size_t length, bool preserve)
@@ -402,7 +403,7 @@ namespace DNDS::Runtime
                  { return b.Get(i.first, i.second); })
             .def("__setitem__", [](PythonRowBuilder &b, std::pair<size_t, size_t> i, py::object value)
                  { b.Set(i.first, i.second, value); })
-            .def("commit", &PythonRowBuilder::Commit);
+            .def("commit", &PythonRowBuilder::Commit, "Publish after all draft writers finish. Do not retain native row pointers across resize/commit.");
         py::class_<PythonAccess>(m, "Access")
             .def("__enter__", [](PythonAccess &a) -> PythonAccess &
                  { DNDS_check_throw(a.Active()); return a; }, py::return_value_policy::reference_internal)
@@ -422,7 +423,7 @@ namespace DNDS::Runtime
                  { return reinterpret_cast<uintptr_t>(a.Pointer()); }, "Borrowed pointer for native kernels only; retain lease and complete its stream before release.");
         py::class_<CopyOperation>(m, "CopyOperation")
             .def("wait", &CopyOperation::Wait, py::call_guard<py::gil_scoped_release>());
-        py::class_<PythonArray>(m, "Array")
+        py::class_<PythonArray>(m, "Array", "Shared native storage with tracked access. Complete pending work before synchronous indexing; reset leaves existing views/bindings on old storage. valid is not a dependency-ordering proof.")
             .def(py::init<RowLayout, py::object, Device>(), py::arg("layout"), py::arg("dtype") = py::dtype::of<double>(), py::arg("device") = Device::Host())
             .def_property_readonly("layout", [](const PythonArray &a)
                                    { return a.Layout(); })
@@ -439,18 +440,18 @@ namespace DNDS::Runtime
                                    { return a.IsValid(); })
             .def_property_readonly("shape_version", &PythonArray::ShapeVersion)
             .def("edit_rows", [](PythonArray &a, bool exclusive)
-                 { return PythonRowBuilder(a, exclusive); }, py::arg("exclusive") = false)
+                 { return PythonRowBuilder(a, exclusive); }, py::arg("exclusive") = false, "Create detached draft, or require unique idle storage for exclusive editing. Commit explicitly; abandoned exclusive edits invalidate values.")
             .def("read", [](PythonArray &a, uintptr_t stream)
-                 { return PythonAccess(a, false, stream); }, py::arg("stream") = 0)
+                 { return PythonAccess(a, false, stream); }, py::arg("stream") = 0, "Immediate read lease; pending writes conflict. Retain it through native uses and complete the supplied CUDA stream before release.")
             .def("write", [](PythonArray &a, uintptr_t stream)
-                 { return PythonAccess(a, true, stream); }, py::arg("stream") = 0)
+                 { return PythonAccess(a, true, stream); }, py::arg("stream") = 0, "Exclusive immediate write lease. Complete native work on the supplied stream; exceptions invalidate values. Writes do not zero untouched elements.")
             .def("alias", [](const PythonArray &a)
                  { return a; })
             .def("clone", [](const PythonArray &a, uintptr_t stream)
                  { return To(a, a.Storage().GetDevice(), stream); }, py::arg("stream") = 0)
             .def("to", &To, py::arg("device"), py::arg("stream") = 0)
             .def("reset", [](PythonArray &a, RowLayout layout, Device device)
-                 { a = a.New(layout, device); }, py::arg("layout"), py::arg("device") = Device::Host())
+                 { a = a.New(layout, device); }, py::arg("layout"), py::arg("device") = Device::Host(), "Replace only this facade. Old aliases/views and bound MPI operations retain old storage; rebuild bindings for the replacement.")
             .def("numpy", &Numpy, "Independent host snapshot; no mutable buffer can escape a lease.")
             .def("assign", &Assign)
             .def("_read_elements", &ReadElements)
@@ -491,24 +492,23 @@ namespace DNDS::Runtime
                    return a.CopyFrom(source, a.Storage().GetDevice() == Device::Host() ? source.Context(stream) : a.Context(stream)); }, py::arg("source"), py::arg("stream") = 0)
             .def("element_schema", &Schema)
             .def("write_serializer", [](const PythonArray &a, Serializer::SerializerBaseSSP s, const std::string &name, const MPIInfo &mpi, const std::string &schema)
-                 { WriteArrayStorage(a.Storage(), a.Layout(), a.Dtype().itemsize(), s, name, mpi, schema.empty() ? ArraySchema(a) : schema); }, py::arg("serializer"), py::arg("name"), py::arg("mpi"), py::arg("schema") = "")
+                 { WriteArrayStorage(a.Storage(), a.Layout(), a.Dtype().itemsize(), s, name, mpi, schema.empty() ? ArraySchema(a) : schema); }, py::arg("serializer"), py::arg("name"), py::arg("mpi"), py::arg("schema") = "", "Finish asynchronous producers first. Match collective dataset/schema order unless serializer is per-rank. Caller supplies stable POD ABI/schema and consistent mesh/field epochs; separate writes are not atomic.")
             .def_static("read_serializer", [](Serializer::SerializerBaseSSP s, const std::string &name, const MPIInfo &mpi, py::object dtype, Serializer::ArrayGlobalOffset partition, Device device, const std::string &schema)
                         {
                      PythonArray prototype(RowLayout{}, dtype);
                      auto archive = ReadArrayStorage(s, name, mpi, partition, device, prototype.Dtype().itemsize(), schema.empty() ? ArraySchema(prototype) : schema);
-                     return prototype.WithStorage(ArrayStorage::FromBuffer(std::move(archive.layout), std::move(archive.storage), prototype.Dtype().itemsize())); }, py::arg("serializer"), py::arg("name"), py::arg("mpi"), py::arg("dtype") = py::dtype::of<double>(), py::arg("partition") = Serializer::ArrayGlobalOffset_Unknown, py::arg("device") = Device::Host(), py::arg("schema") = "");
+                     return prototype.WithStorage(ArrayStorage::FromBuffer(std::move(archive.layout), std::move(archive.storage), prototype.Dtype().itemsize())); }, py::arg("serializer"), py::arg("name"), py::arg("mpi"), py::arg("dtype") = py::dtype::of<double>(), py::arg("partition") = Serializer::ArrayGlobalOffset_Unknown, py::arg("device") = Device::Host(), py::arg("schema") = "", "Match collective read order and compatible POD ABI/schema. Reopen the serializer for a different cached partition slice; validate mesh IDs and all related fields before publishing a restarted state.");
         BindMPIOptions(m);
         py::class_<RowRequest>(m, "RowRequest")
             .def(py::init([](int rank, int64_t row, size_t destination)
                           { return RowRequest{rank, row, destination}; }));
-        py::class_<RowTransferPlan>(m, "RowTransferPlan")
+        py::class_<RowTransferPlan>(m, "RowTransferPlan", "Collective immutable row correspondence. Match construction/setup order on all ranks, including empty ranks. Rebuild after row numbering changes.")
             .def(py::init([](const MPIInfo &mpi, size_t sources, size_t destinations, const std::vector<RowRequest> &requests)
                           { return RowTransferPlan(mpi.comm, sources, destinations, requests); }))
             .def(py::init([](std::shared_ptr<CommunicationContext> context, size_t sources, size_t destinations, const std::vector<RowRequest> &requests)
                           { return RowTransferPlan(std::move(context), sources, destinations, requests); }))
-            .def_static("known", [](std::shared_ptr<CommunicationContext> context, size_t sources, size_t destinations,
-                                    std::vector<std::vector<size_t>> send, std::vector<std::vector<size_t>> receive)
-                        { return RowTransferPlan::Known(std::move(context), sources, destinations, std::move(send), std::move(receive)); })
+            .def_static("known", [](std::shared_ptr<CommunicationContext> context, size_t sources, size_t destinations, std::vector<std::vector<size_t>> send, std::vector<std::vector<size_t>> receive)
+                        { return RowTransferPlan::Known(std::move(context), sources, destinations, std::move(send), std::move(receive)); }, "Caller supplies corresponding peer send/receive row order. Matching counts cannot prove semantic permutation correctness.")
             .def("reverse", &RowTransferPlan::Reverse)
             .def("destination_layout", &RowTransferPlan::DestinationLayout)
             .def_property_readonly("has_collisions", &RowTransferPlan::HasCollisions)
@@ -516,17 +516,17 @@ namespace DNDS::Runtime
             .def_property_readonly("destination_rows", &RowTransferPlan::DestinationRows);
         py::class_<ElementSchema>(m, "ElementSchema")
             .def_static("from_mpi", [](int handle, size_t bytes, const std::string &name)
-                        { return ElementSchema(MPI_Type_f2c(handle), bytes, name); }, "Retain mpi4py datatype.py2f(); identity asserts the same type signature across ranks.")
+                        { return ElementSchema(MPI_Type_f2c(handle), bytes, name); }, "Retain committed mpi4py datatype.py2f(). Caller promises matching identity/signature/meaning, nonoverlapping fields within the element stride, and a compatible POD ABI. Untagged schemas cannot prove dtype semantics.")
             .def_property_readonly("extent", &ElementSchema::Extent)
             .def_property_readonly("identity", &ElementSchema::Identity);
         py::enum_<Reduction>(m, "Reduction").value("Sum", Reduction::Sum).value("Min", Reduction::Min).value("Max", Reduction::Max).value("BitOr", Reduction::BitOr).value("BitXor", Reduction::BitXor).value("BitAnd", Reduction::BitAnd);
         py::enum_<DestinationInit>(m, "DestinationInit").value("Preserve", DestinationInit::Preserve).value("Identity", DestinationInit::Identity);
         py::enum_<TransferTransport>(m, "TransferTransport").value("Direct", TransferTransport::Direct).value("HostPacked", TransferTransport::HostPacked);
-        py::class_<Reducer>(m, "Reducer")
+        py::class_<Reducer>(m, "Reducer", "Explicit collision resolution. Custom callbacks must have matching named semantics/initialization across ranks and read only transmitted POD fields; do not retain callback pointers or use unmatched MPI collectives.")
             .def_static("builtin", &Builtin, py::arg("dtype"), py::arg("operation"), py::arg("initialization") = DestinationInit::Preserve)
             .def_static("custom", [](const ElementSchema &schema, py::dtype dtype, std::string name, py::function combine, py::object identity, DestinationInit init)
                         {
-                     DNDS_check_throw_info(schema.Extent() == size_t(dtype.itemsize()) && !py::cast<bool>(dtype.attr("hasobject")), "custom reducer POD dtype mismatch");
+                     DNDS_check_throw_info(schema.Extent() == size_t(dtype.itemsize()) && schema.Compatible(DtypeSchema(dtype)) && !py::cast<bool>(dtype.attr("hasobject")), "custom reducer POD dtype mismatch");
                      py::array seed(dtype, std::vector<py::ssize_t>{1});
                      seed.attr("__setitem__")(0, identity);
                      Reducer reducer;
@@ -570,19 +570,19 @@ namespace DNDS::Runtime
                          }
                      };
                      return reducer; }, py::arg("schema"), py::arg("dtype"), py::arg("name"), py::arg("combine"), py::arg("identity"), py::arg("initialization") = DestinationInit::Preserve);
-        py::class_<PayloadPlan>(m, "PayloadPlan")
+        py::class_<PayloadPlan>(m, "PayloadPlan", "Collective layout/schema plan. bind pins specific allocations; reset/migration requires rebuilding layout-dependent plans and bindings.")
             .def(py::init<RowTransferPlan, RowLayout, RowLayout, ElementSchema>())
             .def_property_readonly("send_segments", &PayloadPlan::SendSegments)
             .def_property_readonly("receive_segments", &PayloadPlan::ReceiveSegments)
             .def("bind", [](const PayloadPlan &p, const PythonArray &src, const PythonArray &dst, std::optional<Reducer> reducer, TransferTransport transport, TransferOptions options)
-                 { p.CheckLayouts(src.Layout(), dst.Layout(), src.Dtype().itemsize(), src.SameElement(dst));
+                 { p.CheckLayouts(src.Layout(), dst.Layout(), src.Dtype().itemsize(), src.SameElement(dst) && p.Compatible(DtypeSchema(src.Dtype())));
                    return reducer ? p.Bind(src.Storage(), dst.Storage(), *reducer, transport, options) : p.Bind(src.Storage(), dst.Storage(), transport, options); }, py::arg("source"), py::arg("destination"), py::arg("reducer") = py::none(), py::arg("transport") = TransferTransport::Direct, py::arg("options") = TransferOptions{});
-        py::class_<TransferBinding>(m, "TransferBinding")
-            .def("begin", &TransferBinding::Begin, py::arg("context") = ExecutionContext::Host())
-            .def("begin_scheduled", &TransferBinding::BeginScheduled, py::arg("context") = ExecutionContext::Host());
-        py::class_<TransferOperation>(m, "TransferOperation")
-            .def("wait", &TransferOperation::Wait, py::call_guard<py::gil_scoped_release>())
-            .def("wait_destination_ready", &TransferOperation::WaitDestinationReady, py::call_guard<py::gil_scoped_release>())
+        py::class_<TransferBinding>(m, "TransferBinding", "Binding pins allocations, not variable names. Match collective begin order/tags, finish producers, and drain before mutation or MPI_Finalize.")
+            .def("begin", &TransferBinding::Begin, py::arg("context") = ExecutionContext::Host(), "Collectively begin on all ranks; CPU producers must be complete. Retain/wait the operation and use an MPI-permitted thread.")
+            .def("begin_scheduled", &TransferBinding::BeginScheduled, py::arg("context") = ExecutionContext::Host(), "Collective scheduled reservations permit later consumers but infer no ordering. Complete CPU producers first, explicitly progress MPI and join its event before consumption.");
+        py::class_<TransferOperation>(m, "TransferOperation", "Active requests/access ownership. Observe errors explicitly; coordinate rank-local failures before the next collective. Cleanup alone does not report errors.")
+            .def("wait", &TransferOperation::Wait, py::call_guard<py::gil_scoped_release>(), "Complete both source and destination uses and report retained errors. Call before MPI_Finalize.")
+            .def("wait_destination_ready", &TransferOperation::WaitDestinationReady, py::call_guard<py::gil_scoped_release>(), "Make destination readable. Source may still be in use: full wait/test completion is required before reusing it.")
             .def("test", &TransferOperation::Test, py::call_guard<py::gil_scoped_release>());
         BindEagerPython(m);
         BindMPIEagerPython(m);

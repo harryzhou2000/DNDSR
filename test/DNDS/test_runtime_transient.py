@@ -15,6 +15,43 @@ def channel():
     return R.CommunicationContext(mpi)
 
 
+@pytest.mark.parametrize("cuda", [False, True])
+def test_retained_binding_and_slice_follow_old_mesh_snapshot_after_reset(cuda):
+    if cuda and not R.cuda_enabled:
+        pytest.skip("this build has no CUDA backend")
+    rank, size = MPI.COMM_WORLD.rank, MPI.COMM_WORLD.size
+    peer = (rank + 1) % size
+    device = R.Device.cuda(0) if cuda else R.Device.host()
+    context = R.ExecutionContext(device)
+    ctx = channel()
+    rows, width = 43, 6
+    source = R.Array(R.RowLayout.dense(rows, width, 9), np.dtype("float64"), device)
+    old_values = np.arange(rows * width).reshape(rows, width) + rank * 10000
+    source[:] = old_values
+    destination = R.Array(R.RowLayout.dense(rows, width, 8), source.dtype, device)
+    retained = destination[::3, ::-2]
+    route = R.RowTransferPlan(ctx, rows, rows,
+                             [R.RowRequest(peer, rows - 1 - i, i) for i in range(rows)])
+    plan = R.PayloadPlan(route, source.layout, destination.layout, source.element_schema())
+    transport = R.TransferTransport.HostPacked if cuda else R.TransferTransport.Direct
+    binding = plan.bind(source, destination, transport=transport)
+    source.reset(R.RowLayout.dense(7, width), device)
+    destination.reset(R.RowLayout.dense(7, width), device)
+    source[:] = -17
+    destination[:] = -29
+    with pytest.raises(RuntimeError, match="layout"):
+        plan.bind(source, destination, transport=transport)
+    # The retained binding is valid for its old allocations, not the replacements.
+    binding.begin(context).wait()
+    expected = (np.arange(rows * width).reshape(rows, width) + peer * 10000)[::-1]
+    np.testing.assert_array_equal(retained.numpy(), expected[::3, ::-2])
+    np.testing.assert_array_equal(source.numpy(), np.full((7, width), -17))
+    np.testing.assert_array_equal(destination.numpy(), np.full((7, width), -29))
+    del binding, plan
+    gc.collect()
+    np.testing.assert_array_equal(retained.numpy(), expected[::3, ::-2])
+
+
 @pytest.mark.parametrize("mode", [R.TransferMode.Transient, R.TransferMode.Persistent])
 @pytest.mark.parametrize("transport", [R.TransferTransport.Direct, R.TransferTransport.HostPacked])
 def test_shared_context_known_route_and_tag_reuse(mode, transport):
