@@ -8,6 +8,7 @@
 #include <string>
 #include <cstring>
 #include <cmath>
+#include <typeinfo>
 
 namespace DNDS::Runtime
 {
@@ -19,6 +20,10 @@ namespace DNDS::Runtime
         size_t destinationRow = 0;
     };
 
+    /// Collective immutable row relation. Caller serializes setup/Begin in the
+    /// same order on every rank, supplies correct semantic row identities and
+    /// stamps affected mesh epochs. Mutation requires draining old operations;
+    /// a stamp is invalidation detection, not a lock held through execution.
     class RowTransferPlan
     {
         struct State;
@@ -33,6 +38,8 @@ namespace DNDS::Runtime
                         const std::vector<RowRequest> &requests, std::vector<VersionStamp> dependencies = {});
         /// Peer row lists in matching per-peer order bypass owner/row discovery.
         /// Counts, bounds and collisions are checked collectively.
+        /// Caller guarantees that corresponding send/receive entries mean the
+        /// same row; equal counts cannot detect a semantically wrong permutation.
         static RowTransferPlan Known(std::shared_ptr<CommunicationContext> context, size_t sourceRows, size_t destinationRows,
                                      std::vector<std::vector<size_t>> send, std::vector<std::vector<size_t>> receive,
                                      std::vector<VersionStamp> dependencies = {});
@@ -49,23 +56,43 @@ namespace DNDS::Runtime
     };
 
     /// Retained MPI typemap plus application schema identity; extent is stride.
+    /// Caller supplies a committed, nonoverlapping typemap within sizeof(POD)
+    /// and an identity denoting the same signature/meaning on every rank. Explicit
+    /// untagged schemas and raw Buffer bindings cannot infer the C++ object type.
     class ElementSchema
     {
         struct State;
         std::shared_ptr<const State> _state;
+        std::string _valueType;
 
     public:
-        ElementSchema(MPI_Datatype type, size_t objectBytes, std::string identity);
+        ElementSchema(MPI_Datatype type, size_t objectBytes, std::string identity, std::string valueType = {});
         MPI_Datatype Type() const;
         size_t Extent() const;
         const std::string &Identity() const;
+        /// Shared native/Python names for the supported arithmetic wire types.
+        /// Other native types retain their local RTTI identity; custom schemas
+        /// remain explicit application descriptions, not portable object codecs.
+        template <class T>
+        static std::string TypeIdentity()
+        {
+            if constexpr (std::is_same_v<T, float> || std::is_same_v<T, double>)
+                return "float" + std::to_string(sizeof(T) * 8);
+            if constexpr (std::is_same_v<T, int8_t> || std::is_same_v<T, int16_t> || std::is_same_v<T, int32_t> || std::is_same_v<T, int64_t> ||
+                          std::is_same_v<T, uint8_t> || std::is_same_v<T, uint16_t> || std::is_same_v<T, uint32_t> || std::is_same_v<T, uint64_t>)
+                return std::string(std::is_signed_v<T> ? "int" : "uint") + std::to_string(sizeof(T) * 8);
+            return typeid(T).name();
+        }
+        /// Factories retain a binding type tag. Explicit POD MPI descriptors
+        /// without a tag remain an application contract.
+        bool Compatible(const std::string &type) const { return _valueType.empty() || _valueType == type; }
         template <class T>
         static ElementSchema Arithmetic()
         {
             static_assert(std::is_arithmetic_v<T>);
             auto type = BasicType_To_MPIIntType<T>();
             DNDS_check_throw(type.second == 1);
-            return {type.first, sizeof(T), typeid(T).name()};
+            return {type.first, sizeof(T), TypeIdentity<T>(), TypeIdentity<T>()};
         }
     };
 
@@ -101,6 +128,10 @@ namespace DNDS::Runtime
 
     /// Dispatch once per operation. Custom CPU/CUDA/vendor implementations use
     /// the same contribution groups; no MPI or Array ownership in the callback.
+    /// Caller gives identical combine/initialization semantics to a shared name
+    /// on every rank. Do not read untransmitted POD fields; do not retain pointers
+    /// or issue unmatched MPI collectives in a combine. Device combines must use
+    /// the supplied stream. Floating reductions are not partition-bitwise stable.
     struct Reducer
     {
         std::string identity;
@@ -114,7 +145,7 @@ namespace DNDS::Runtime
         static Reducer Custom(const ElementSchema &element, std::string name, Combine combine, T identityValue,
                               DestinationInit init = DestinationInit::Preserve)
         {
-            DNDS_check_throw_info(element.Extent() == sizeof(T), "reducer element stride mismatch");
+            DNDS_check_throw_info(element.Extent() == sizeof(T) && element.Compatible(ElementSchema::TypeIdentity<T>()), "reducer element type/stride mismatch");
             Reducer result;
             result.identity = std::move(name);
             result.schema = element.Identity();
@@ -201,6 +232,7 @@ namespace DNDS::Runtime
     public:
         PayloadPlan(RowTransferPlan route, RowLayout source, RowLayout destination, ElementSchema schema);
         void CheckLayouts(const RowLayout &source, const RowLayout &destination, size_t elementBytes, bool elementCompatible = true) const;
+        bool Compatible(const std::string &type) const;
         size_t SendSegments() const;
         size_t ReceiveSegments() const;
         TransferBinding Bind(Buffer source, Buffer destination, TransferTransport transport = TransferTransport::Direct, TransferOptions options = {}) const;
@@ -224,10 +256,16 @@ namespace DNDS::Runtime
     public:
         /// One active operation per binding. Default remains isolated persistent
         /// requests. Options select shared context/tags and transient requests.
+        /// Collective: all ranks call in the same order, including empty ranks.
+        /// This binding retains old buffers after Array::Reset; rebuild it after
+        /// changing storage/layout or semantic row order. Finish before mutation
+        /// or MPI_Finalize, on a thread allowed by the initialized MPI level.
         TransferOperation Begin(ExecutionContext context = ExecutionContext::Host()) const;
         /// Caller-ordered eager reservations allow dependent scheduled kernels.
         /// CPU producers must already be complete; CUDA readiness is observed
         /// on the supplied stream before portable MPI is posted.
+        /// Caller joins consumers explicitly and finishes CPU producers first;
+        /// eager reservations permit conflicts but do not make races safe.
         TransferOperation BeginScheduled(ExecutionContext context = ExecutionContext::Host()) const;
     };
 
@@ -247,6 +285,9 @@ namespace DNDS::Runtime
         ~TransferOperation();
         /// Failed completion remains failed across repeated observation and
         /// moves (including MPIProgress import). Destruction only drains once.
+        /// Caller explicitly observes errors. WaitDestinationReady releases only
+        /// receives; source send ownership lasts until Wait/Test completion.
+        /// Raw failure is rank-local; coordinate solver recovery across ranks.
         void WaitDestinationReady();
         void Wait();
         bool Test();
@@ -255,13 +296,13 @@ namespace DNDS::Runtime
     template <class T, class L, class M>
     TransferBinding PayloadPlan::Bind(const Array<T, L> &source, const Array<T, M> &destination, TransferTransport transport, TransferOptions options) const
     {
-        CheckLayouts(source.Layout(), destination.Layout(), sizeof(T));
+        CheckLayouts(source.Layout(), destination.Layout(), sizeof(T), Compatible(ElementSchema::TypeIdentity<T>()));
         return Bind(source.Storage(), destination.Storage(), transport, std::move(options));
     }
     template <class T, class L, class M>
     TransferBinding PayloadPlan::Bind(const Array<T, L> &source, const Array<T, M> &destination, Reducer reducer, TransferTransport transport, TransferOptions options) const
     {
-        CheckLayouts(source.Layout(), destination.Layout(), sizeof(T));
+        CheckLayouts(source.Layout(), destination.Layout(), sizeof(T), Compatible(ElementSchema::TypeIdentity<T>()));
         return Bind(source.Storage(), destination.Storage(), std::move(reducer), transport, std::move(options));
     }
 }

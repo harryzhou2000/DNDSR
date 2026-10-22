@@ -2,8 +2,11 @@
 
 import gc
 import importlib.util
+import os
 import numpy as np
 import pytest
+from mpi4py import MPI
+from DNDSR import DNDS
 from DNDSR.DNDS import Runtime as R
 
 if importlib.util.find_spec("runtime_array_bridge_test") is None:
@@ -20,6 +23,48 @@ def execution(request):
     create = engine.cuda_stream if kind == "cuda" else engine.cpu_stream
     device = R.Device.cuda(0) if kind == "cuda" else R.Device.host()
     return engine, create(), create(), device
+
+
+def test_checkpoint_requires_finished_stage_then_restores_shared_debug_snapshot(execution):
+    engine, first, last, device = execution
+    mpi = DNDS.MPIInfo()
+    mpi.setWorld()
+    comm = MPI.COMM_WORLD
+    filename = comm.bcast(f"/tmp/dnds_stage_checkpoint_{os.getpid()}.h5" if comm.rank == 0 else None)
+    values = R.Array(R.RowLayout.dense(37 + comm.rank, 5, 8), np.dtype("float64"), device)
+    expected = np.arange(values.shape[0] * 5).reshape(values.shape) + comm.rank * 1000
+    values[:] = expected
+    retained = values[::2, ::-2]
+    serializer = DNDS.Serializer.SerializerH5(mpi)
+    serializer.OpenFile(filename, False)
+    gate = bridge.hold(engine, first)
+    try:
+        bridge.scale_async(engine, first, values, 2)
+        last.wait_for(first.record())
+        bridge.scale_async(engine, last, values, 3)
+        with pytest.raises(RuntimeError):
+            retained.numpy()
+        with pytest.raises(RuntimeError):
+            values.edit_rows(exclusive=True)
+        with pytest.raises(RuntimeError, match="snapshot"):
+            values.write_serializer(serializer, "state", mpi)
+    finally:
+        gate.open()
+    last.record().wait()
+    engine.synchronize()
+    values.write_serializer(serializer, "state", mpi)
+    serializer.CloseFile()
+    values.reset(R.RowLayout.dense(1, 5), device)
+    serializer.OpenFile(filename, True)
+    restored = R.Array.read_serializer(serializer, "state", mpi, device=device)
+    serializer.CloseFile()
+    assert restored.layout.kind == R.RowLayoutKind.CSR
+    np.testing.assert_array_equal(restored[:].numpy(), expected * 6)
+    np.testing.assert_array_equal(retained.numpy(), (expected * 6)[::2, ::-2])
+    np.testing.assert_array_equal(values.numpy(), np.zeros((1, 5)))
+    comm.Barrier()
+    if comm.rank == 0:
+        os.remove(filename)
 
 
 def test_python_orchestrates_native_operators_and_retains_debug_views(execution):

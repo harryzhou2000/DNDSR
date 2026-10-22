@@ -1,5 +1,8 @@
 # Eager execution and Array submissions
 
+Read the [caller contract](RuntimeCallerContract.md) before using eager submissions:
+access reservations do not validate cross-stream dependencies or final-release order.
+
 `DNDS/Runtime/EagerEngine.hpp` provides the common launcher/queue layer.
 It includes inline/worker CPU and native CUDA launchers, Array submission
 reservations, ordered device allocation/free and Python orchestration. Portable

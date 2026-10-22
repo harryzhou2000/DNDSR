@@ -1,5 +1,8 @@
 # Transient transfers and eager MPI progress
 
+The [caller contract](RuntimeCallerContract.md) states MPI participation, producer
+readiness, destination completion, schema and migration publication obligations.
+
 This extends RowTransferPlan / PayloadPlan / TransferBinding / TransferOperation.
 Request lifetime is independent of the transport. Persistent bindings reuse
 Send_init/Recv_init requests. Transient bindings post Isend/Irecv at each Begin.
@@ -53,6 +56,13 @@ posting. Explicit reducers retain the existing CPU/CUDA/vendor dispatch and
 receive staging. POD MPI extent is the physical element stride, including holes.
 HostPacked uses MPI pack/unpack, preserving the provided datatype signature.
 
+Factory-generated element schemas also retain a binding type tag. C++ typed
+Bind checks it against the arithmetic element type; Python Bind checks the
+dtype, including structured fields. Equal byte widths alone do not establish
+compatibility. Custom reducer factories check the same constraint. Explicit
+MPI/POD schemas without a type tag and raw Buffer bindings remain application
+contracts: callers supply the correct typemap, field meaning and ordering.
+
 An operation retains its first completion error after draining requests.
 WaitDestinationReady, Wait and Test keep reporting it, including after a move
 or MPIProgress import. Destruction and replacement do not rerun the reducer.
@@ -82,6 +92,11 @@ so dependent kernels may be submitted before communication completes. The
 caller must provide the dependency. It must finish CPU producers before Begin;
 CUDA producers are ordered/observed on the supplied context before portable
 MPI posting. No schedule proof or implicit cross-stream join is inferred.
+An omitted join can therefore produce a valid allocation containing stale
+values. Immediate leases reject pending conflicting accesses; scheduled
+reservations deliberately do not diagnose missing caller dependencies. Unit
+tests exercise this outcome with a gated writer and a completed early reader,
+without creating a simultaneous memory race.
 
 ```cpp
 R::MPIProgress progress; // Created and drained on the MPI-calling thread.

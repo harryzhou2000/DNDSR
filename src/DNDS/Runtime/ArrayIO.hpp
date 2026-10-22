@@ -53,6 +53,11 @@ namespace DNDS::Runtime
     /// I/O explicitly stages CUDA data on host; padding is not serialized.
     /// Homogeneous ABI bytes plus schema metadata; no implied portable POD codec.
     /// This common codec serves C++, Python structured dtypes and device snapshots.
+    /// @pre Finish asynchronous producers before taking the snapshot. Use the
+    /// same serializer mode, name/schema and collective call order on all ranks
+    /// (including empty ranks); per-rank serializers are independent instead.
+    /// The application supplies a stable POD schema/ABI and checkpoints matching
+    /// mesh IDs and field epochs. Separate field writes are not a transaction.
     inline void WriteArrayStorage(const Buffer &storage, const RowLayout &layout, size_t elementBytes,
                                   Serializer::SerializerBaseSSP serializer, const std::string &name,
                                   const MPIInfo &mpi, const std::string &schema)

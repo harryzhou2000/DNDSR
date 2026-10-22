@@ -262,7 +262,8 @@ namespace DNDS::Runtime
         size_t extent;
         std::string identity;
     };
-    ElementSchema::ElementSchema(MPI_Datatype type, size_t objectBytes, std::string identity)
+    ElementSchema::ElementSchema(MPI_Datatype type, size_t objectBytes, std::string identity, std::string valueType)
+        : _valueType(std::move(valueType))
     {
         DNDS_check_throw_info(type != MPI_DATATYPE_NULL && objectBytes && !identity.empty(), "invalid element schema");
         MPI_Aint lb, extent, trueLB, trueExtent;
@@ -343,6 +344,7 @@ namespace DNDS::Runtime
     }
     size_t PayloadPlan::SendSegments() const { return _state->sendSegments; }
     size_t PayloadPlan::ReceiveSegments() const { return _state->receiveSegments; }
+    bool PayloadPlan::Compatible(const std::string &type) const { return _state->schema.Compatible(type); }
     void PayloadPlan::CheckLayouts(const RowLayout &source, const RowLayout &destination, size_t bytes, bool elementCompatible) const
     {
         CheckAll(elementCompatible && source == _state->source && destination == _state->destination && bytes == _state->schema.Extent(),

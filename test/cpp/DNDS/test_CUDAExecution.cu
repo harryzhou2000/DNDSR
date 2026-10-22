@@ -57,10 +57,65 @@ __global__ void RingUpdate(R::ArrayView<const double> ghost, R::ArrayView<double
         for (size_t col = threadIdx.x; col < ghost.RowSize(row); col += blockDim.x)
             out(out.Rows() - ghost.Rows() + row, col) = ghost(row, col);
 }
+
+__device__ bool Rendezvous(int *flag, int *failure)
+{
+    const auto start = clock64();
+    while (atomicAdd(flag, 0) == 0)
+        if (clock64() - start > 5000000000ULL)
+        {
+            atomicExch(failure, 1);
+            return false;
+        }
+    return true;
+}
+
+__global__ void ConcurrentMock(R::ArrayView<const double> owned, R::ArrayView<double> output,
+                               R::ArrayView<int> flags, bool communication)
+{
+    // One resident block per stream, no oversubscribed-grid barrier. Atomic
+    // flags are intentional inter-stream synchronization solely for the test.
+    if (threadIdx.x == 0)
+    {
+        atomicExch(&flags(0, communication ? 0 : 1), 1);
+        Rendezvous(&flags(0, communication ? 1 : 0), &flags(0, 3));
+    }
+    __syncthreads();
+    for (size_t i = threadIdx.x; i < output.Rows() * output.width; i += blockDim.x)
+    {
+        const auto row = i / output.width, col = i % output.width;
+        output(row, col) = communication ? owned(13 * row, col) : 2 * owned(row, col);
+    }
+    __syncthreads();
+    if (threadIdx.x == 0)
+    {
+        if (communication)
+            Rendezvous(&flags(0, 2), &flags(0, 3));
+        else
+            atomicExch(&flags(0, 2), 1);
+    }
+}
 static void LaunchAdd(R::ExecutionContext context, R::ArrayView<double> u)
 {
     Add<<<7, 32, 0, static_cast<cudaStream_t>(context.stream)>>>(u, 1);
     DNDS_check_throw_info(cudaGetLastError() == cudaSuccess, "test Add launch failed");
+}
+
+__global__ void RestrictLevel(R::ArrayView<const double> fine, R::ArrayView<double> coarse)
+{
+    for (size_t row = blockIdx.x; row < coarse.Rows(); row += gridDim.x)
+        for (size_t col = threadIdx.x; col < coarse.RowSize(row); col += blockDim.x)
+        {
+            const auto left = 2 * row, right = left + 1 < fine.Rows() ? left + 1 : left;
+            coarse(row, col) = 0.25 * (fine(left, col) + fine(right, col));
+        }
+}
+
+__global__ void ProlongLevel(R::ArrayView<const double> coarse, R::ArrayView<double> fine)
+{
+    for (size_t row = blockIdx.x; row < fine.Rows(); row += gridDim.x)
+        for (size_t col = threadIdx.x; col < fine.RowSize(row); col += blockDim.x)
+            fine(row, col) += coarse(row / 2, col);
 }
 
 static void PreloadKernels()
@@ -73,6 +128,188 @@ static void PreloadKernels()
     DNDS_check_throw_info(cudaFuncGetAttributes(&attributes, Scale) == cudaSuccess, "test Scale preload failed");
     DNDS_check_throw_info(cudaFuncGetAttributes(&attributes, CoreStencil) == cudaSuccess, "test stencil preload failed");
     DNDS_check_throw_info(cudaFuncGetAttributes(&attributes, RingUpdate) == cudaSuccess, "test ring preload failed");
+    DNDS_check_throw_info(cudaFuncGetAttributes(&attributes, ConcurrentMock) == cudaSuccess, "test concurrent preload failed");
+    DNDS_check_throw_info(cudaFuncGetAttributes(&attributes, RestrictLevel) == cudaSuccess, "test restriction preload failed");
+    DNDS_check_throw_info(cudaFuncGetAttributes(&attributes, ProlongLevel) == cudaSuccess, "test prolongation preload failed");
+}
+
+TEST_CASE("CUDA dynamic multilevel temporaries join independent readers before final stream release")
+{
+    PreloadKernels();
+    for (size_t depth : {size_t(3), size_t(4), size_t(5)})
+    {
+        R::EagerEngine engine;
+        auto first = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
+        auto second = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
+        auto comm = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
+        R::Array<double> host(R::RowLayout::Dense(257, 7, 9));
+        {
+            auto w = host.Write();
+            for (size_t i = 0; i < host.Rows(); ++i)
+                for (size_t j = 0; j < 7; ++j)
+                    w.At(i, j) = j + 1;
+        }
+        auto seed = host.To(R::Device::CUDA(0));
+        std::vector<R::Array<double>> outputs, diagnostics;
+        size_t coarseRows = 257;
+        for (size_t i = 1; i < depth; ++i)
+            coarseRows = (coarseRows + 1) / 2;
+        for (int cycle = 0; cycle < 3; ++cycle)
+        {
+            outputs.emplace_back(seed.Layout(), R::Device::CUDA(0));
+            diagnostics.emplace_back(R::RowLayout::Dense(coarseRows, 7, 10), R::Device::CUDA(0));
+        }
+        Gate gate;
+        gate.Enqueue(engine, first);
+        for (int cycle = 0; cycle < 3; ++cycle)
+        {
+            std::vector<R::Array<double>> levels;
+            levels.push_back(R::AllocateArrayAsync<double>(engine, first, seed.Layout()));
+            R::SubmitArrays(engine, first, [cycle](R::ExecutionContext c, auto in, auto out)
+                            {
+                Scale<<<7, 32, 0, static_cast<cudaStream_t>(c.stream)>>>(in, out, cycle + 1);
+                DNDS_check_throw_info(cudaGetLastError() == cudaSuccess, "cycle seed launch failed"); }, R::Read(seed), R::Write(levels[0]));
+            for (size_t level = 1; level < depth; ++level)
+            {
+                auto producer = level % 2 ? first : second;
+                auto consumer = level % 2 ? second : first;
+                consumer.WaitFor(producer.Record());
+                levels.push_back(R::AllocateArrayAsync<double>(engine, consumer,
+                                                               R::RowLayout::Dense((levels.back().Rows() + 1) / 2, 7, 9)));
+                R::SubmitArrays(engine, consumer, [](R::ExecutionContext c, auto fine, auto coarse)
+                                {
+                    RestrictLevel<<<7, 32, 0, static_cast<cudaStream_t>(c.stream)>>>(fine, coarse);
+                    DNDS_check_throw_info(cudaGetLastError() == cudaSuccess, "restriction launch failed"); }, R::Read(levels[level - 1]), R::Write(levels[level]));
+            }
+            auto coarsest = (depth - 1) % 2 ? second : first;
+            comm.WaitFor(coarsest.Record());
+            R::SubmitArrays(engine, comm, [](R::ExecutionContext c, auto in, auto out)
+                            {
+                Scale<<<3, 32, 0, static_cast<cudaStream_t>(c.stream)>>>(in, out, 2);
+                DNDS_check_throw_info(cudaGetLastError() == cudaSuccess, "diagnostic launch failed"); }, R::Read(levels.back()), R::Write(diagnostics[cycle]));
+            for (size_t level = depth - 1; level > 0; --level)
+            {
+                auto producer = level % 2 ? second : first;
+                auto consumer = level % 2 ? first : second;
+                consumer.WaitFor(producer.Record());
+                R::SubmitArrays(engine, consumer, [](R::ExecutionContext c, auto coarse, auto fine)
+                                {
+                    ProlongLevel<<<7, 32, 0, static_cast<cudaStream_t>(c.stream)>>>(coarse, fine);
+                    DNDS_check_throw_info(cudaGetLastError() == cudaSuccess, "prolongation launch failed"); }, R::Read(levels[level]), R::ReadWrite(levels[level - 1]));
+                auto alias = levels[level];
+                // Non-final decrement on producer; final decrement on consumer.
+                engine.ReleaseOn(std::move(levels[level]), producer);
+                if (level == depth - 1)
+                    consumer.WaitFor(comm.Record());
+                engine.ReleaseOn(std::move(alias), consumer);
+            }
+            {
+                auto destination = outputs[cycle].Storage();
+                R::CopyAsync(engine, first, levels[0].Storage(), destination);
+            }
+            engine.ReleaseOn(std::move(levels[0]), first);
+        }
+        auto finished = first.Record();
+        CHECK_FALSE(finished.Ready());
+        CHECK_THROWS(outputs.back().Read(first.Context()));
+        *gate.open = true;
+        engine.Synchronize();
+        for (int cycle = 0; cycle < 3; ++cycle)
+        {
+            auto result = outputs[cycle].To(R::Device::Host()), observed = diagnostics[cycle].To(R::Device::Host());
+            auto r = result.Read(), d = observed.Read();
+            const double factor = 2.0 - 1.0 / (size_t(1) << (depth - 1));
+            for (size_t i = 0; i < result.Rows(); ++i)
+                for (size_t j = 0; j < 7; ++j)
+                    CHECK(r.At(i, j) == factor * (j + 1) * (cycle + 1));
+            for (size_t i = 0; i < observed.Rows(); ++i)
+                for (size_t j = 0; j < 7; ++j)
+                    CHECK(d.At(i, j) == double((j + 1) * (cycle + 1)) / (size_t(1) << (depth - 2)));
+        }
+    }
+}
+
+TEST_CASE("CUDA mock communication and core kernels are simultaneously resident")
+{
+    cudaDeviceProp properties{};
+    REQUIRE(cudaGetDeviceProperties(&properties, 0) == cudaSuccess);
+    REQUIRE(properties.concurrentKernels);
+    PreloadKernels();
+    for (size_t width : {size_t(5), size_t(6), size_t(7), size_t(13), size_t(114)})
+    {
+        R::EagerEngine engine;
+        auto compute = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
+        auto comm = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
+        R::Array<double> host(R::RowLayout::Dense(257, width, width + 3));
+        {
+            auto w = host.Write();
+            for (size_t i = 0; i < 257; ++i)
+                for (size_t j = 0; j < width; ++j)
+                    w.At(i, j) = 10 * i + j;
+        }
+        auto owned = host.To(R::Device::CUDA(0));
+        R::Array<double> ghost(R::RowLayout::Dense(19, width, width + 2), R::Device::CUDA(0));
+        R::Array<double> output(host.Layout(), R::Device::CUDA(0));
+        R::Array<int> flags(R::RowLayout::Dense(1, 4), R::Device::CUDA(0));
+        auto launch = [](bool communication)
+        {
+            return [communication](R::ExecutionContext context, auto u, auto out, auto f)
+            {
+                ConcurrentMock<<<1, 128, 0, static_cast<cudaStream_t>(context.stream)>>>(u, out, f, communication);
+                DNDS_check_throw_info(cudaGetLastError() == cudaSuccess, "concurrent mock launch failed");
+            };
+        };
+        R::SubmitArrays(engine, comm, launch(true), R::Read(owned), R::Write(ghost), R::ReadWrite(flags));
+        R::SubmitArrays(engine, compute, launch(false), R::Read(owned), R::Write(output), R::ReadWrite(flags));
+        compute.WaitFor(comm.Record());
+        R::SubmitArrays(engine, compute, [](R::ExecutionContext context, auto g, auto out)
+                        { RingUpdate<<<3, 32, 0, static_cast<cudaStream_t>(context.stream)>>>(g, out); }, R::Read(ghost), R::ReadWrite(output));
+        engine.Synchronize();
+        auto status = flags.To(R::Device::Host());
+        CHECK(status.Read().At(0, 3) == 0); // Serialization would time out a rendezvous.
+        CHECK(status.Read().At(0, 2) == 1);
+        auto result = output.To(R::Device::Host());
+        auto read = result.Read();
+        for (size_t i = 0; i < 257; ++i)
+            for (size_t j = 0; j < width; ++j)
+                CHECK(read.At(i, j) == (i < 238 ? 20 * i + 2 * j : 130 * (i - 238) + j));
+    }
+}
+
+TEST_CASE("CUDA missing eager join returns stale values while ordered consumption is correct")
+{
+    R::EagerEngine engine;
+    auto compute = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
+    auto comm = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
+    R::Array<double> ghost(R::RowLayout::Dense(19, 7, 9), R::Device::CUDA(0));
+    R::Array<double> stale(ghost.Layout(), R::Device::CUDA(0)), correct(ghost.Layout(), R::Device::CUDA(0));
+    PreloadKernels();
+    Gate gate;
+    gate.Enqueue(engine, comm);
+    R::SubmitArrays(engine, comm, LaunchAdd, R::Write(ghost));
+    auto consume = [](R::ExecutionContext context, auto g, auto out)
+    { Scale<<<3, 32, 0, static_cast<cudaStream_t>(context.stream)>>>(g, out, 2); };
+    R::SubmitArrays(engine, compute, consume, R::Read(ghost), R::Write(stale));
+    auto copied = compute.Record();
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!copied.Ready() && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::yield();
+    const bool readBeforeWrite = copied.Ready();
+    CHECK_THROWS(ghost.Read(comm.Context()));
+    *gate.open = true; // Opens only after read completion: no device data race.
+    REQUIRE(readBeforeWrite);
+    compute.WaitFor(comm.Record());
+    R::SubmitArrays(engine, compute, consume, R::Read(ghost), R::Write(correct));
+    engine.Synchronize();
+    auto badHost = stale.To(R::Device::Host()), goodHost = correct.To(R::Device::Host());
+    auto bad = badHost.Read(), good = goodHost.Read();
+    CHECK(stale.IsValid());
+    for (size_t i = 0; i < 19; ++i)
+        for (size_t j = 0; j < 7; ++j)
+        {
+            CHECK(bad.At(i, j) == 0);
+            CHECK(good.At(i, j) == 2);
+        }
 }
 
 static R::Buffer Pinned(size_t bytes, std::atomic<int> &releases)

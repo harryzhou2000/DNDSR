@@ -128,6 +128,27 @@ def test_python_created_array_can_be_used_and_retained_by_native_owner(device):
     assert owner.read_state(1, 4) == 6
 
 
+@pytest.mark.parametrize("native_schema", [False, True, None])
+@pytest.mark.parametrize("native_bind", [False, True])
+def test_payload_and_reducer_cross_native_python_boundary(native_schema, native_bind):
+    mpi = DNDS.MPIInfo()
+    mpi.setWorld()
+    peer = (MPI.COMM_WORLD.rank + 1) % MPI.COMM_WORLD.size
+    source = R.Array(R.RowLayout.dense(31, 5, 8), np.dtype("float64"))
+    target = R.Array(R.RowLayout.dense(31, 5, 9), source.dtype)
+    values = np.arange(155).reshape(31, 5)
+    source[:] = values + MPI.COMM_WORLD.rank * 1000
+    requests = [R.RowRequest(peer, i, i) for i in range(31)] * 2
+    route = R.RowTransferPlan(mpi, 31, 31, requests)
+    use_native_schema = MPI.COMM_WORLD.rank % 2 if native_schema is None else native_schema
+    schema = bridge.native_double_schema() if use_native_schema else source.element_schema()
+    plan = R.PayloadPlan(route, source.layout, target.layout, schema)
+    reducer = R.Reducer.builtin(source.dtype, R.Reduction.Sum, R.DestinationInit.Identity)
+    binding = bridge.bind_native_state(plan, source, target, reducer) if native_bind else plan.bind(source, target, reducer)
+    binding.begin().wait()
+    np.testing.assert_array_equal(target.numpy(), 2 * (values + peer * 1000))
+
+
 def test_ragged_integer_and_custom_pod_cross_language(device):
     owner = bridge.NativeOwner(device)
     ids = owner.ids

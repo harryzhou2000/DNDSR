@@ -103,6 +103,12 @@ namespace DNDS::Runtime
     /// Same orchestration for inline/worker CPU and device launchers. Kernel
     /// receives only bare views. Its return means CPU completion or device
     /// submission; the launcher decides when the retirement callback is safe.
+    /// @pre Declare every accessed allocation and its correct intent; do not
+    /// capture untracked raw pointers or escape views beyond this operation.
+    /// Caller proves stencil bounds and orders conflicting accesses by stream
+    /// edges. A Write declaration neither zeros nor proves full initialization.
+    /// CUDA kernels must launch on the supplied context stream and report launch
+    /// errors; launching on another stream escapes the lifetime contract.
     template <class Kernel, class... Operands>
     void SubmitArrays(EagerEngine &engine, const ExecutionStream &stream, Kernel kernel, Operands... operands)
     {
