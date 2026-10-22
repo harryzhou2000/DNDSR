@@ -40,6 +40,23 @@ __global__ void Scale(R::ArrayView<const double> in, R::ArrayView<double> out, d
         for (size_t col = threadIdx.x; col < out.RowSize(row); col += blockDim.x)
             out(row, col) = in(row, col) * factor;
 }
+__global__ void CoreStencil(R::ArrayView<const int64_t> neighbors, R::ArrayView<const double> owned, R::ArrayView<double> out)
+{
+    for (size_t row = blockIdx.x; row < neighbors.Rows(); row += gridDim.x)
+        for (size_t col = threadIdx.x; col < out.RowSize(row); col += blockDim.x)
+        {
+            double sum = 0;
+            for (size_t j = 0; j < neighbors.RowSize(row); ++j)
+                sum += owned(neighbors(row, j), col);
+            out(row, col) = sum;
+        }
+}
+__global__ void RingUpdate(R::ArrayView<const double> ghost, R::ArrayView<double> out)
+{
+    for (size_t row = blockIdx.x; row < ghost.Rows(); row += gridDim.x)
+        for (size_t col = threadIdx.x; col < ghost.RowSize(row); col += blockDim.x)
+            out(out.Rows() - ghost.Rows() + row, col) = ghost(row, col);
+}
 static void LaunchAdd(R::ExecutionContext context, R::ArrayView<double> u)
 {
     Add<<<7, 32, 0, static_cast<cudaStream_t>(context.stream)>>>(u, 1);
@@ -54,6 +71,8 @@ static void PreloadKernels()
     cudaFuncAttributes attributes{};
     DNDS_check_throw_info(cudaFuncGetAttributes(&attributes, Add) == cudaSuccess, "test Add preload failed");
     DNDS_check_throw_info(cudaFuncGetAttributes(&attributes, Scale) == cudaSuccess, "test Scale preload failed");
+    DNDS_check_throw_info(cudaFuncGetAttributes(&attributes, CoreStencil) == cudaSuccess, "test stencil preload failed");
+    DNDS_check_throw_info(cudaFuncGetAttributes(&attributes, RingUpdate) == cudaSuccess, "test ring preload failed");
 }
 
 static R::Buffer Pinned(size_t bytes, std::atomic<int> &releases)
@@ -149,6 +168,80 @@ TEST_CASE("Eager CUDA uses explicit prefix events with retained DMA owners and a
         for (size_t col = 0; col < lengths[row]; ++col)
             CHECK(read.At(row, col) == 3 * double(row * 8 + col + 17));
     CHECK(ready.Ready());
+}
+
+TEST_CASE("CUDA owned CSR stencil finishes while ghost writes are pending then joins ring work")
+{
+    constexpr size_t rows = 257, ghosts = 19, coreRows = rows - ghosts;
+    std::atomic<int> releases{0};
+    R::EagerEngine engine;
+    auto compute = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
+    auto comm = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
+    R::Array<double> host(R::RowLayout::Dense(rows, 6, 8));
+    std::vector<size_t> widths(coreRows);
+    for (size_t i = 0; i < coreRows; ++i)
+        widths[i] = i % 7;
+    R::Array<int64_t> hostNeighbors(R::RowLayout::Ragged(widths));
+    {
+        auto u = host.Write();
+        auto c2c = hostNeighbors.Write();
+        for (size_t i = 0; i < rows; ++i)
+            for (size_t j = 0; j < 6; ++j)
+                u.At(i, j) = 10 * i + j;
+        for (size_t i = 0; i < coreRows; ++i)
+            for (size_t j = 0; j < widths[i]; ++j)
+                c2c.At(i, j) = (17 * i + 13 * j) % rows;
+    }
+    auto owned = host.To(R::Device::CUDA(0));
+    auto neighbors = hostNeighbors.To(R::Device::CUDA(0));
+    R::Array<double> ghost(R::RowLayout::Dense(ghosts, 6, 8), R::Device::CUDA(0));
+    R::Array<double> output(host.Layout(), R::Device::CUDA(0));
+    auto downloaded = Pinned(output.Storage().Bytes(), releases);
+    PreloadKernels();
+    Gate gate;
+    gate.Enqueue(engine, comm);
+    R::SubmitArrays(engine, comm, LaunchAdd, R::Write(ghost));
+    auto ghostReady = comm.Record();
+    R::SubmitArrays(engine, compute, [](R::ExecutionContext context, auto c2c, auto u, auto rhs)
+                    {
+        CoreStencil<<<11, 32, 0, static_cast<cudaStream_t>(context.stream)>>>(c2c, u, rhs);
+        DNDS_check_throw_info(cudaGetLastError() == cudaSuccess, "test stencil launch failed"); }, R::Read(neighbors), R::Read(owned), R::Write(output));
+    engine.ReleaseOn(std::move(neighbors), compute); // Device metadata follows the last stencil use.
+    R::CopyAsync(engine, compute, output.Storage(), downloaded);
+    auto coreReady = compute.Record();
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!coreReady.Ready() && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    const bool completedIndependently = coreReady.Ready();
+    CHECK_FALSE(ghostReady.Ready());
+    CHECK_THROWS(ghost.Read(comm.Context()));
+    if (!completedIndependently)
+        *gate.open = true;
+    REQUIRE(completedIndependently);
+    {
+        auto read = downloaded.Read();
+        auto values = read.View<double>();
+        for (size_t i = 0; i < coreRows; ++i)
+            for (size_t j = 0; j < 6; ++j)
+            {
+                double expected = 0;
+                for (size_t k = 0; k < widths[i]; ++k)
+                    expected += 10 * ((17 * i + 13 * k) % rows) + j;
+                CHECK(values.data[i * 8 + j] == expected);
+            }
+    }
+    compute.WaitFor(ghostReady);
+    R::SubmitArrays(engine, compute, [](R::ExecutionContext context, auto g, auto rhs)
+                    {
+        RingUpdate<<<3, 32, 0, static_cast<cudaStream_t>(context.stream)>>>(g, rhs);
+        DNDS_check_throw_info(cudaGetLastError() == cudaSuccess, "test ring launch failed"); }, R::Read(ghost), R::ReadWrite(output));
+    *gate.open = true;
+    engine.Synchronize();
+    auto result = output.To(R::Device::Host());
+    auto read = result.Read();
+    for (size_t i = coreRows; i < rows; ++i)
+        for (size_t j = 0; j < 6; ++j)
+            CHECK(read.At(i, j) == 1);
 }
 
 TEST_CASE("CUDA fixed prefixes retire prior batches and preserve delayed ownership")
