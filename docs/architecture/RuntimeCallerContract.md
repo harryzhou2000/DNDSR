@@ -1,5 +1,10 @@
 # Runtime Array caller contract
 
+For external numeric tensors, also follow [the DLPack contract](ArrayDLPack.md):
+export holds a write lease through the last foreign alias, CUDA release fences
+the consumer stream, and the caller joins other streams. Import retains foreign
+ownership but cannot discover repeated imports or intercept later external writes.
+
 The Runtime checks access conflicts, shapes, typed payload compatibility and
 declared versions at API boundaries. Fully eager execution does **not** prove
 dependency ordering. A successful submission or `IsValid()` result is not proof

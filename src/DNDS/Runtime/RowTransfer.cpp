@@ -262,8 +262,8 @@ namespace DNDS::Runtime
         size_t extent;
         std::string identity;
     };
-    ElementSchema::ElementSchema(MPI_Datatype type, size_t objectBytes, std::string identity, std::string valueType)
-        : _valueType(std::move(valueType))
+    ElementSchema::ElementSchema(MPI_Datatype type, size_t objectBytes, std::string identity, std::string valueType, std::string representationType)
+        : _valueType(std::move(valueType)), _representationType(std::move(representationType))
     {
         DNDS_check_throw_info(type != MPI_DATATYPE_NULL && objectBytes && !identity.empty(), "invalid element schema");
         MPI_Aint lb, extent, trueLB, trueExtent;

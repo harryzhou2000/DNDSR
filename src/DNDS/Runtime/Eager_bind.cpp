@@ -82,7 +82,9 @@ namespace DNDS::Runtime
             .def("record", &ExecutionStream::Record, py::call_guard<py::gil_scoped_release>(), "Record only the already submitted prefix; record again for later work.")
             .def("wait_for", &ExecutionStream::WaitFor, py::call_guard<py::gil_scoped_release>(), "Enqueue a dependency. Caller must provide all conflicting-use edges. CUDA rejects unfinished portable CPU/MPI events.")
             .def_property_readonly("context", &ExecutionStream::Context);
-        py::class_<EagerEngine>(m, "EagerEngine", "Fully eager execution: no dependency proof. Caller orders conflicting uses and final release, and observes errors with synchronize(). See RuntimeCallerContract.md.")
+        // Draining can retire a foreign owner on a worker. Its DLPack/Python
+        // deleter may acquire the GIL; never hold it while joining that worker.
+        py::class_<EagerEngine>(m, "EagerEngine", py::release_gil_before_calling_cpp_dtor(), "Fully eager execution: no dependency proof. Caller orders conflicting uses and final release, and observes errors with synchronize(). See RuntimeCallerContract.md.")
             .def(py::init<size_t>(), py::arg("host_threads") = 0)
             .def("cpu_stream", &EagerEngine::CreateCPUStream)
             .def("cuda_stream", [](EagerEngine &engine, int ordinal)

@@ -1,5 +1,9 @@
 # C++ / Python Array ownership and POD access
 
+Optional numeric tensor sharing is described in [DLPack and Torch sharing](ArrayDLPack.md),
+including the managed export lease, imported allocation ownership, and foreign
+stream/alias responsibilities. It adds no LibTorch dependency to native DNDS.
+
 The Python `Runtime.Array` and C++ `Runtime::Array<T,L>` share one
 `shared_ptr<const ArrayStorage>`. Exporting or accepting a native Array copies
 only a handle. It does not copy values, translate row offsets to bytes, or
