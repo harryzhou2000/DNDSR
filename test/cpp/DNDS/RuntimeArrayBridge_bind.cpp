@@ -4,6 +4,8 @@
 #include <pybind11/stl.h>
 #include <atomic>
 #include <thread>
+#include <chrono>
+#include "../../demos/MockStencil.hpp"
 
 namespace R = DNDS::Runtime;
 namespace py = pybind11;
@@ -119,6 +121,12 @@ void Scale(State array, double factor)
 PYBIND11_MODULE(runtime_array_bridge_test, m)
 {
     py::module_::import("DNDSR.DNDS.Runtime");
+    m.def("mock_stencil", &R::Demo::Stencil);
+    m.def("delay_cpu", [](R::EagerEngine &engine, const R::ExecutionStream &stream)
+          { engine.Submit(stream, [](R::ExecutionContext)
+                          { std::this_thread::sleep_for(std::chrono::milliseconds(30)); }); });
+    m.def("cuda_aware_mpi", []
+          { return DNDS::MPI::isCudaAware(); });
     m.def("native_double_schema", &R::ElementSchema::Arithmetic<double>);
     m.def("bind_native_state", [](const R::PayloadPlan &plan, State source, State destination, R::Reducer reducer)
           { return plan.Bind(source, destination, std::move(reducer)); });
