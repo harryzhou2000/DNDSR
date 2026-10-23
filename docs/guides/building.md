@@ -79,10 +79,17 @@ pytest test/ -v
 | Ninja           | any           | Optional but recommended for speed     |
 | Doxygen         | any           | Required for Cantera CLib codegen      |
 
-OpenMPI **4.1.0 is not supported** because its transport can hang at large
-scales. CMake rejects that exact release using the selected MPI headers;
+OpenMPI **4.1.0 is rejected by default** because observed installations can
+fail at large scales. CMake checks that exact release using the selected MPI headers;
 choose another MPI release with matching compiler wrappers and libraries.
 The check compiles but does not launch MPI, so it also works when cross-compiling.
+
+For an explicitly validated 4.1.0 installation and transport, configure a
+separate build directory with `-DDNDS_ALLOW_OPENMPI_410=ON`. The option defaults
+to `OFF` and prints a warning when enabled. It only bypasses the exact-release
+guard; it does not suppress MPI header/link failures or repair runtime bugs.
+Keep compiler wrappers, libraries and runtime launcher from the intended MPI
+installation together. Set the option back to `OFF` to restore the guard.
 
 C++ libraries (managed via `external/cfd_externals` submodule):
 Eigen, Boost, CGAL, nlohmann_json, fmt, pybind11, HDF5, CGNS,

@@ -273,6 +273,24 @@ dnds_check_mpi_version()
                 else:
                     self.assertEqual(result.returncode, 0, result.stdout)
 
+        self.write("headers/mpi.h", "#define OMPI_MAJOR_VERSION 4\n"
+                   "#define OMPI_MINOR_VERSION 1\n#define OMPI_RELEASE_VERSION 0\n")
+        # Explicit opt-in and subsequent opt-out must both invalidate the cache.
+        for enabled in ["ON", "OFF", "ON"]:
+            result = self.run_command(
+                CMAKE, "-S", str(self.work), "-B", str(self.work / "build"),
+                "-DDNDS_ALLOW_OPENMPI_410=" + enabled, check=False)
+            self.assertEqual(result.returncode == 0,
+                             enabled == "ON", result.stdout)
+            if enabled == "ON":
+                self.assertIn("overrides the release guard only",
+                              " ".join(result.stdout.split()))
+        # The escape hatch must not accept unrelated header/compiler failures.
+        self.write("headers/mpi.h", '#error "broken MPI header"\n')
+        result = self.run_command(
+            CMAKE, "-S", str(self.work), "-B", str(self.work / "build"), check=False)
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+
     def test_all_presets_on_selected_cmake(self):
         # Exercise unchanged preset definitions on a tiny independent project.
         shutil.copy2(ROOT / "CMakePresets.json", self.work)
