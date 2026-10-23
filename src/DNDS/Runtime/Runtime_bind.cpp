@@ -11,6 +11,7 @@ namespace DNDS::Runtime
     void BindEagerPython(py::module_ &);
     void BindMPIOptions(py::module_ &);
     void BindMPIEagerPython(py::module_ &);
+    void BindDLPackPython(py::module_ &);
     // Shared by static payload and dynamic migration binding validation.
     std::string DtypeSchema(const py::dtype &dtype)
     {
@@ -18,6 +19,10 @@ namespace DNDS::Runtime
         if (kind == "i" || kind == "u" || kind == "f")
             return py::str(dtype.attr("name")).cast<std::string>();
         return "numpy.pod.v1:" + py::str(dtype.attr("descr")).cast<std::string>() + ":" + std::to_string(dtype.itemsize());
+    }
+    std::string ArrayTypeIdentity(const PythonArray &array)
+    {
+        return array.Element() ? array.Element()->type.name() : DtypeSchema(array.Dtype());
     }
     namespace
     {
@@ -268,11 +273,11 @@ namespace DNDS::Runtime
             else DNDS_NATIVE_TYPE(uint8_t);
 #undef DNDS_NATIVE_TYPE
             if (type != MPI_DATATYPE_NULL)
-                return ElementSchema(type, a.Dtype().itemsize(), ArraySchema(a), DtypeSchema(a.Dtype()));
+                return ElementSchema(type, a.Dtype().itemsize(), ArraySchema(a), ArrayTypeIdentity(a), DtypeSchema(a.Dtype()));
             DNDS_check_throw_info(a.Dtype().itemsize() <= INT_MAX, "POD dtype exceeds MPI contiguous count");
             MPI_Type_contiguous(int(a.Dtype().itemsize()), MPI_BYTE, &type);
             MPI_Type_commit(&type);
-            ElementSchema result(type, a.Dtype().itemsize(), ArraySchema(a), DtypeSchema(a.Dtype()));
+            ElementSchema result(type, a.Dtype().itemsize(), ArraySchema(a), ArrayTypeIdentity(a), DtypeSchema(a.Dtype()));
             MPI_Type_free(&type);
             return result;
         }
@@ -526,7 +531,7 @@ namespace DNDS::Runtime
             .def_static("builtin", &Builtin, py::arg("dtype"), py::arg("operation"), py::arg("initialization") = DestinationInit::Preserve)
             .def_static("custom", [](const ElementSchema &schema, py::dtype dtype, std::string name, py::function combine, py::object identity, DestinationInit init)
                         {
-                     DNDS_check_throw_info(schema.Extent() == size_t(dtype.itemsize()) && schema.Compatible(DtypeSchema(dtype)) && !py::cast<bool>(dtype.attr("hasobject")), "custom reducer POD dtype mismatch");
+                     DNDS_check_throw_info(schema.Extent() == size_t(dtype.itemsize()) && schema.CompatibleRepresentation(DtypeSchema(dtype)) && !py::cast<bool>(dtype.attr("hasobject")), "custom reducer POD dtype mismatch");
                      py::array seed(dtype, std::vector<py::ssize_t>{1});
                      seed.attr("__setitem__")(0, identity);
                      Reducer reducer;
@@ -575,7 +580,7 @@ namespace DNDS::Runtime
             .def_property_readonly("send_segments", &PayloadPlan::SendSegments)
             .def_property_readonly("receive_segments", &PayloadPlan::ReceiveSegments)
             .def("bind", [](const PayloadPlan &p, const PythonArray &src, const PythonArray &dst, std::optional<Reducer> reducer, TransferTransport transport, TransferOptions options)
-                 { p.CheckLayouts(src.Layout(), dst.Layout(), src.Dtype().itemsize(), src.SameElement(dst) && p.Compatible(DtypeSchema(src.Dtype())));
+                 { p.CheckLayouts(src.Layout(), dst.Layout(), src.Dtype().itemsize(), src.SameElement(dst) && p.Compatible(ArrayTypeIdentity(src)));
                    return reducer ? p.Bind(src.Storage(), dst.Storage(), *reducer, transport, options) : p.Bind(src.Storage(), dst.Storage(), transport, options); }, py::arg("source"), py::arg("destination"), py::arg("reducer") = py::none(), py::arg("transport") = TransferTransport::Direct, py::arg("options") = TransferOptions{});
         py::class_<TransferBinding>(m, "TransferBinding", "Binding pins allocations, not variable names. Match collective begin order/tags, finish producers, and drain before mutation or MPI_Finalize.")
             .def("begin", &TransferBinding::Begin, py::arg("context") = ExecutionContext::Host(), "Collectively begin on all ranks; CPU producers must be complete. Retain/wait the operation and use an MPI-permitted thread.")
@@ -586,5 +591,6 @@ namespace DNDS::Runtime
             .def("test", &TransferOperation::Test, py::call_guard<py::gil_scoped_release>());
         BindEagerPython(m);
         BindMPIEagerPython(m);
+        BindDLPackPython(m);
     }
 }

@@ -351,7 +351,7 @@ jobs:
       - name: Build pybind11 modules
         run: |
           source venv/bin/activate
-          cmake --build build -t dnds_pybind11 geom_pybind11 cfv_pybind11 eulerP_pybind11 -j$(nproc)
+          cmake --build build -t dnds_pybind11 geom_pybind11 cfv_pybind11 eulerP_pybind11 runtime_array_bridge_test -j$(nproc)
 
       - name: Show ccache stats
         if: needs.resolve.outputs.use-ccache == 'true'
@@ -378,9 +378,18 @@ jobs:
       - name: Run Python tests
         run: |
           source venv/bin/activate
-          PYTHONPATH=$PWD/python python -m pytest test/ \
+          export PYTHONPATH=$PWD/python:$PWD/build/test/cpp
+          python -c 'import runtime_array_bridge_test'
+          python -m pytest test/ \
+            --with-mpi \
             --timeout=600 \
             -v
+
+      - name: Run two-rank Runtime integration tests
+        run: |
+          source venv/bin/activate
+          export PYTHONPATH=$PWD/python:$PWD/build/test/cpp
+          mpirun -np 2 python -m pytest test/DNDS/test_runtime_*.py test/demos/test_runtime_solver.py --with-mpi --timeout=600 -v
 
       # ------------------------------------------------------------------
       # Always save ccache regardless of build/test outcome

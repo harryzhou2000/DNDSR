@@ -90,6 +90,7 @@ dnds_pybind11.cpp
 Runtime/Runtime_bind.cpp
 Runtime/Eager_bind.cpp
 Runtime/MPI_bind.cpp
+Runtime/DLPack_bind.cpp
 Defines_bind.cpp
 MPI_bind.cpp
 Array_bind.cpp

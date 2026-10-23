@@ -64,9 +64,10 @@ namespace DNDS::Runtime
         struct State;
         std::shared_ptr<const State> _state;
         std::string _valueType;
+        std::string _representationType;
 
     public:
-        ElementSchema(MPI_Datatype type, size_t objectBytes, std::string identity, std::string valueType = {});
+        ElementSchema(MPI_Datatype type, size_t objectBytes, std::string identity, std::string valueType = {}, std::string representationType = {});
         MPI_Datatype Type() const;
         size_t Extent() const;
         const std::string &Identity() const;
@@ -86,6 +87,9 @@ namespace DNDS::Runtime
         /// Factories retain a binding type tag. Explicit POD MPI descriptors
         /// without a tag remain an application contract.
         bool Compatible(const std::string &type) const { return _valueType.empty() || _valueType == type; }
+        /// A Python reducer receives NumPy records, even for a registered class.
+        /// Representation compatibility never substitutes for binding type checks.
+        bool CompatibleRepresentation(const std::string &type) const { return _representationType.empty() ? Compatible(type) : _representationType == type; }
         template <class T>
         static ElementSchema Arithmetic()
         {

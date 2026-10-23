@@ -19,6 +19,41 @@ if importlib.util.find_spec("runtime_array_bridge_test") is None:
 import runtime_array_bridge_test as bridge
 
 
+@pytest.mark.parametrize("mixed", [False, True])
+def test_registered_schema_rejects_untyped_same_size_storage_collectively(mixed):
+    mpi = DNDS.MPIInfo()
+    mpi.setWorld()
+    layout = R.RowLayout.dense(3, 1)
+    prototype = R.Array(layout, bridge.ClassMetadata)
+    schema = prototype.element_schema()
+    element = bridge.ClassMetadata if mixed and MPI.COMM_WORLD.rank % 2 else prototype.dtype
+    source, target = R.Array(layout, element), R.Array(layout, element)
+    route = R.RowTransferPlan(mpi, 3, 3, [R.RowRequest(MPI.COMM_WORLD.rank, i, i) for i in range(3)])
+    plan = R.PayloadPlan(route, layout, layout, schema)
+    with pytest.raises(RuntimeError):
+        plan.bind(source, target)
+    with pytest.raises(RuntimeError, match="schema"):
+        R.DynamicRowTransfer(source, route, schema)
+    # Failed collective preflight must not poison otherwise valid allocations.
+    assert source.valid and target.valid
+
+
+def test_registered_schema_custom_reducer_uses_declared_numpy_representation():
+    mpi = DNDS.MPIInfo()
+    mpi.setWorld()
+    source = R.Array(R.RowLayout.dense(2, 1), bridge.ClassMetadata)
+    source[0, 0] = bridge.ClassMetadata(37, 0.25)
+    source[1, 0] = bridge.ClassMetadata(41, 0.5)
+    target = R.Array(R.RowLayout.dense(1, 1), bridge.ClassMetadata)
+    rank = MPI.COMM_WORLD.rank
+    route = R.RowTransferPlan(mpi, 2, 1, [R.RowRequest(rank, 0, 0), R.RowRequest(rank, 1, 0)])
+    schema = source.element_schema()
+    reducer = R.Reducer.custom(schema, source.dtype, "pod.last", lambda a, b: b,
+                              np.zeros(1, dtype=source.dtype)[0], R.DestinationInit.Identity)
+    R.PayloadPlan(route, source.layout, target.layout, schema).bind(source, target, reducer).begin().wait()
+    assert target[0, 0].tag == 41 and target[0, 0].weight == 0.5
+
+
 @pytest.fixture(params=[R.Device.host(), R.Device.cuda(0)])
 def device(request):
     value = request.param

@@ -6,7 +6,7 @@
 namespace DNDS::Runtime
 {
     namespace py = pybind11;
-    std::string DtypeSchema(const py::dtype &dtype);
+    std::string ArrayTypeIdentity(const PythonArray &array);
     namespace
     {
         struct PythonDynamicTransfer
@@ -18,7 +18,7 @@ namespace DNDS::Runtime
                                   std::optional<Reducer> reducer, ExecutionContext context)
                 : prototype(source.New(RowLayout{}, destination))
             {
-                int compatible = schema.Compatible(DtypeSchema(source.Dtype()));
+                int compatible = schema.Compatible(ArrayTypeIdentity(source));
                 MPI_Allreduce(MPI_IN_PLACE, &compatible, 1, MPI_INT, MPI_MIN, route.Communicator());
                 DNDS_check_throw_info(compatible, "dynamic transfer source dtype differs from schema on a rank");
                 operation = std::make_unique<DynamicRowTransfer>(std::move(route), source.SharedStorage(), std::move(schema),

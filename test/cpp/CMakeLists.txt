@@ -200,7 +200,7 @@ pybind11_add_module(runtime_array_bridge_test MODULE EXCLUDE_FROM_ALL NO_EXTRAS 
 target_include_directories(runtime_array_bridge_test PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
 target_link_libraries(runtime_array_bridge_test PRIVATE dnds_shared ${DNDS_EXTERNAL_LIBS})
 if(DNDS_USE_CUDA)
-    target_sources(runtime_array_bridge_test PRIVATE DNDS/RuntimeArrayBridge_CUDA.cu)
+    target_sources(runtime_array_bridge_test PRIVATE DNDS/RuntimeArrayBridge_CUDA.cu ../demos/MockStencil.cu)
 endif()
 set_target_properties(runtime_array_bridge_test PROPERTIES LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
 dnds_add_unit_test(config "DNDS/test_Config.cpp" "dnds")
