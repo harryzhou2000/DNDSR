@@ -48,13 +48,27 @@ TEST_CASE("Mesh facade CUDA kernels traverse retained snapshots with host parity
     const int ordinal = FacadeGPUOrdinal();
     cudaStream_t stream = nullptr;
     REQUIRE(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking) == cudaSuccess);
+    cudaStream_t secondStream = nullptr;
+    REQUIRE(cudaStreamCreateWithFlags(&secondStream, cudaStreamNonBlocking) == cudaSuccess);
     const auto context = R::ExecutionContext::CUDA(ordinal, stream);
+    const auto secondContext = R::ExecutionContext::CUDA(ordinal, secondStream);
+    cudaEvent_t gatePassed = nullptr, secondDone = nullptr;
+    REQUIRE(cudaEventCreateWithFlags(&gatePassed, cudaEventDisableTiming) == cudaSuccess);
+    REQUIRE(cudaEventCreateWithFlags(&secondDone, cudaEventDisableTiming) == cudaSuccess);
     G::Test::MeshViewProbeResult *output = nullptr;
     REQUIRE(cudaMalloc(reinterpret_cast<void **>(&output), sizeof(*output)) == cudaSuccess);
+    G::Test::MeshViewProbeResult *secondOutput = nullptr;
+    REQUIRE(cudaMalloc(reinterpret_cast<void **>(&secondOutput), sizeof(*secondOutput)) == cudaSuccess);
     G::Test::MeshViewProbeResult *actual = nullptr;
     REQUIRE(cudaMallocHost(reinterpret_cast<void **>(&actual), sizeof(*actual)) == cudaSuccess);
-    for (int fixture = 0; fixture < 3; ++fixture)
+    G::Test::MeshViewProbeResult *secondActual = nullptr;
+    REQUIRE(cudaMallocHost(reinterpret_cast<void **>(&secondActual), sizeof(*secondActual)) == cudaSuccess);
+    for (int trial = 0; trial < 6; ++trial)
     {
+        const bool published = trial >= 3;
+        const int fixture = trial % 3;
+        CAPTURE(published);
+        CAPTURE(fixture);
         const bool periodic = fixture == 1, empty = fixture == 2;
         auto mesh = FacadeFixture(periodic, empty);
         G::Test::MeshViewProbeResult expected;
@@ -62,9 +76,20 @@ TEST_CASE("Mesh facade CUDA kernels traverse retained snapshots with host parity
             auto host = mesh->AcquireRead(AllFacadeRequirements());
             expected = G::Test::MeshViewProbe(host.HostView());
         }
+        if (published)
+        {
+            mesh->PublishNative(AllFacadeRequirements());
+            mesh->PlaceNative(R::Device::CUDA(ordinal), context);
+        }
         auto versions = mesh->versions;
-        std::optional<G::MeshReadAccess> access;
+        std::optional<G::MeshReadAccess> access, secondAccess;
         access.emplace(mesh->AcquireRead(AllFacadeRequirements(), context));
+        if (published)
+        {
+            secondAccess.emplace(mesh->AcquireRead(AllFacadeRequirements(), secondContext));
+            if (!empty)
+                CHECK(access->DeviceView().Coord(0).data() == secondAccess->DeviceView().Coord(0).data());
+        }
         FacadeStreamGate gate(stream);
         CHECK_THROWS(access->HostView());
         CHECK_FALSE(versions.CanMutate());
@@ -74,12 +99,26 @@ TEST_CASE("Mesh facade CUDA kernels traverse retained snapshots with host parity
         REQUIRE(G::Test::LaunchMeshViewProbe(access->DeviceView(), output, stream) == cudaSuccess);
         REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
         REQUIRE(cudaLaunchHostFunc(stream, FacadeStreamGate::Wait, &gate) == cudaSuccess);
+        REQUIRE(cudaEventRecord(gatePassed, stream) == cudaSuccess);
         REQUIRE(G::Test::LaunchMeshViewProbe(access->DeviceView(), output, stream) == cudaSuccess);
         REQUIRE(cudaMemcpyAsync(actual, output, sizeof(*actual), cudaMemcpyDeviceToHost, stream) == cudaSuccess);
+        if (published)
+        {
+            // Reacquisition uses the same immutable placement on another stream.
+            // Gate both readers, then explicitly join the second reader onto the
+            // acquisition stream before publishing its final completion.
+            REQUIRE(cudaStreamWaitEvent(secondStream, gatePassed, 0) == cudaSuccess);
+            REQUIRE(G::Test::LaunchMeshViewProbe(secondAccess->DeviceView(), secondOutput, secondStream) == cudaSuccess);
+            REQUIRE(cudaMemcpyAsync(secondActual, secondOutput, sizeof(*secondActual), cudaMemcpyDeviceToHost, secondStream) == cudaSuccess);
+            secondAccess->Complete(R::Completion::Record(secondContext));
+            REQUIRE(cudaEventRecord(secondDone, secondStream) == cudaSuccess);
+            REQUIRE(cudaStreamWaitEvent(stream, secondDone, 0) == cudaSuccess);
+            CHECK(cudaStreamQuery(secondStream) == cudaErrorNotReady);
+        }
         access->Complete(R::Completion::Record(context));
         CHECK_THROWS(access->DeviceView());
-        // Drop every legacy allocation owner before stream completion. The
-        // scope retains CUDA values/row metadata and the mesh version lease.
+        // Drop the source and its legacy/native owners while both streams are
+        // blocked. Read scopes retain CUDA values, shape and source read leases.
         CHECK(cudaStreamQuery(stream) == cudaErrorNotReady);
         mesh.reset();
         CHECK_FALSE(versions.CanMutate());
@@ -88,12 +127,26 @@ TEST_CASE("Mesh facade CUDA kernels traverse retained snapshots with host parity
         CHECK_THROWS(access->Complete(R::Completion::Record(context)));
         CHECK_THROWS(access->DeviceView());
         CheckProbeEqual(*actual, expected);
+        if (published)
+        {
+            secondAccess->Wait();
+            CHECK_THROWS(secondAccess->DeviceView());
+            CheckProbeEqual(*secondActual, expected);
+        }
         CHECK_FALSE(versions.CanMutate());
         access.reset();
+        if (published)
+            CHECK_FALSE(versions.CanMutate());
+        secondAccess.reset();
         CHECK(versions.CanMutate());
     }
+    REQUIRE(cudaFreeHost(secondActual) == cudaSuccess);
     REQUIRE(cudaFreeHost(actual) == cudaSuccess);
+    REQUIRE(cudaFree(secondOutput) == cudaSuccess);
     REQUIRE(cudaFree(output) == cudaSuccess);
+    REQUIRE(cudaEventDestroy(secondDone) == cudaSuccess);
+    REQUIRE(cudaEventDestroy(gatePassed) == cudaSuccess);
+    REQUIRE(cudaStreamDestroy(secondStream) == cudaSuccess);
     REQUIRE(cudaStreamDestroy(stream) == cudaSuccess);
 }
 

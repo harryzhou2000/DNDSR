@@ -64,6 +64,20 @@ topology/layout. CFV geometry-cache dependencies are coordinated separately.
 Native replacement may later introduce per-group allocation/distribution
 generations without weakening this outer publication boundary.
 
+After native publication integration, public wrappers obtain their token from
+`BeginManagedMutation`, which rejects native authority. The collective availability
+gate agrees that rejection before any legacy payload. Only explicit authority
+selection/import (`UseLegacyWorkspace`, `PublishNative`) and prepared native edit
+publication bypass that default. Selecting the legacy workspace does not export
+current native values. Authority changes stamp all components; private nested
+steps retain the same capability.
+Passive elevation/bisection source algorithms explicitly require the legacy
+workspace until a corresponding current-state geometry source adapter exists.
+`WriteSerialize` is exclusive setup because legacy serialization can compress
+CSR shapes. It validates global host workspace completeness and idle buffers
+before side effects, rejects retained readers, and stamps Allocation/Interface;
+native authority uses the separate collective `WriteCurrentMeshSnapshot` exporter.
+
 ## Remaining escape paths and limits
 
 Public legacy arrays, adjacency states, maps, parent vectors and metadata can

@@ -21,11 +21,16 @@ Elements.cpp
 PeriodicInfo.cpp
 Mesh/MeshConnectivity.cpp
 Mesh/MeshConnectivity_Native.cpp
+Mesh/NativeConnectivity.cpp
 Mesh/MeshConnectivity_Interpolate.cpp
 Mesh/MeshConnectivity_Ghost.cpp
 Mesh/Mesh.cpp
 Mesh/Mesh_Access.cpp
+Mesh/Mesh_GeometryEdit.cpp
+Mesh/MeshEdit.cpp
 Mesh/NativeMeshSnapshot.cpp
+Mesh/NativeMeshState.cpp
+Mesh/MeshTransition.cpp
 Mesh/Mesh_EntitySpace.cpp
 Mesh/Mesh_Legacy.cpp
 Mesh/Mesh_Plts.cpp

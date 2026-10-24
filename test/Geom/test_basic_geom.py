@@ -184,22 +184,22 @@ def test_multi_layer_ghost():
         # neighbor's cell2cell neighbors are all in the local+ghost set.
         # This is the defining property of 2-layer ghosts.
         if nLayers >= 2:
-            nCellProc = mesh.NumCellProc()  # father + son
-            for iCell in range(nCellOwned):
-                for iNeighbor in mesh.cell2cell[iCell].tolist():
-                    if iNeighbor < 0:
-                        continue  # not-found encoded, skip
-                    assert iNeighbor < nCellProc, (
-                        f"Layer-1 neighbor {iNeighbor} of owned cell {iCell} "
-                        f"is out of range [0, {nCellProc})")
-                    # Check that iNeighbor's own neighbors are also resolvable
-                    for iNeighbor2 in mesh.cell2cell[iNeighbor].tolist():
-                        if iNeighbor2 < 0:
-                            continue
-                        assert iNeighbor2 < nCellProc, (
-                            f"Layer-2 neighbor {iNeighbor2} of cell {iNeighbor} "
-                            f"(neighbor of owned cell {iCell}) is out of range "
-                            f"[0, {nCellProc})")
+            with mesh.acquire_read() as read:
+                nCellProc = read.counts["cell"][2]
+                for iCell in range(read.counts["cell"][0]):
+                    for iNeighbor in read.cell_cells(iCell).tolist():
+                        if iNeighbor < 0:
+                            continue  # not-found encoded, skip
+                        assert iNeighbor < nCellProc, (
+                            f"Layer-1 neighbor {iNeighbor} of owned cell {iCell} "
+                            f"is out of range [0, {nCellProc})")
+                        for iNeighbor2 in read.cell_cells(iNeighbor).tolist():
+                            if iNeighbor2 < 0:
+                                continue
+                            assert iNeighbor2 < nCellProc, (
+                                f"Layer-2 neighbor {iNeighbor2} of cell {iNeighbor} "
+                                f"(neighbor of owned cell {iCell}) is out of range "
+                                f"[0, {nCellProc})")
 
         # Run the full prepare pipeline to make sure it doesn't crash.
         prepare_mesh(mesh, reader, build_serial_out=False)

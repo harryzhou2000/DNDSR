@@ -48,7 +48,7 @@ namespace DNDS::Euler
     {
         auto meshRead = mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
         const auto meshView = meshRead.HostView();
-        vfv->ValidateMeshDependencies();
+        this->ValidateMeshDependencies();
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
         // TODO: for code0: flux jacobian with lambdaFace, and source jacobian with integration, only diagpart dealt with
         DNDS_assert(JDiag.isBlock() == JSource.isBlock());
@@ -192,7 +192,7 @@ namespace DNDS::Euler
     {
         auto meshRead = mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
         const auto meshView = meshRead.HostView();
-        vfv->ValidateMeshDependencies();
+        this->ValidateMeshDependencies();
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
         DNDS_MPI_InsertCheck(u.father->getMPI(), "LUSGSMatrixVec 1");
         int cnvars = nVars;
@@ -311,7 +311,7 @@ namespace DNDS::Euler
     {
         auto meshRead = mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
         const auto meshView = meshRead.HostView();
-        vfv->ValidateMeshDependencies();
+        this->ValidateMeshDependencies();
         auto periodic = meshView.Periodic();
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
         DNDS_MPI_InsertCheck(u.father->getMPI(), "LUSGSMatrixToJacobianLU 1");
@@ -370,8 +370,8 @@ namespace DNDS::Euler
                         else
                         {
                             int iC2CInLocal = -1;
-                            for (int ic2c = 0; ic2c < mesh->cell2cellFaceVLocalParts[iCell].size(); ic2c++)
-                                if (iCellOther == mesh->cell2cellFaceVLocalParts[iCell][ic2c])
+                            for (int ic2c = 0; ic2c < mesh->LocalCellNeighbors()[iCell].size(); ic2c++)
+                                if (iCellOther == mesh->LocalCellNeighbors()[iCell][ic2c])
                                     iC2CInLocal = ic2c; // TODO: pre-search this
                             DNDS_assert(iC2CInLocal != -1);
                             jacLU.LDU(iCell, symLU->cell2cellFaceVLocal2FullRowPos[iCell][iC2CInLocal]) += jacBlock;
@@ -409,7 +409,7 @@ namespace DNDS::Euler
     {
         auto meshRead = mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
         const auto meshView = meshRead.HostView();
-        vfv->ValidateMeshDependencies();
+        this->ValidateMeshDependencies();
         // Deprecated: delegate to UpdateSGS with uIncIsZero.
         // Note: callers pass uInc == uIncNew (aliased), but UpdateSGS requires
         // uInc != uIncNew. We keep the original implementation for now to
@@ -507,7 +507,7 @@ namespace DNDS::Euler
     {
         auto meshRead = mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
         const auto meshView = meshRead.HostView();
-        vfv->ValidateMeshDependencies();
+        this->ValidateMeshDependencies();
         // Deprecated: see UpdateLUSGSForward comment.
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
         DNDS_MPI_InsertCheck(u.father->getMPI(), "UpdateLUSGSBackward 1");
@@ -589,7 +589,7 @@ namespace DNDS::Euler
     {
         auto meshRead = mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
         const auto meshView = meshRead.HostView();
-        vfv->ValidateMeshDependencies();
+        this->ValidateMeshDependencies();
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
         DNDS_MPI_InsertCheck(u.father->getMPI(), "UpdateSGS 1");
         DNDS_assert(&uInc != &uIncNew);
@@ -754,7 +754,7 @@ namespace DNDS::Euler
     {
         auto meshRead = mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
         const auto meshView = meshRead.HostView();
-        vfv->ValidateMeshDependencies();
+        this->ValidateMeshDependencies();
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
         DNDS_MPI_InsertCheck(u.father->getMPI(), "UpdateSGS 1");
         int cnvars = nVars;
@@ -884,7 +884,7 @@ namespace DNDS::Euler
         auto meshRequirements = Geom::MeshReadRequirements::CellFlux();
         auto meshRead = mesh->AcquireRead(meshRequirements);
         const auto meshView = meshRead.HostView();
-        vfv->ValidateMeshDependencies();
+        this->ValidateMeshDependencies();
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
         DNDS_MPI_InsertCheck(u.father->getMPI(), "LUSGSMatrixSolveJacobianLU 1");
         int cnvars = nVars;
@@ -978,7 +978,7 @@ namespace DNDS::Euler
     {
         auto meshRead = mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
         const auto meshView = meshRead.HostView();
-        vfv->ValidateMeshDependencies();
+        this->ValidateMeshDependencies();
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
         Eigen::VectorXd initConstVal = this->settings.farFieldStaticValue.cons;
         u.setConstant(initConstVal);
@@ -1857,7 +1857,7 @@ namespace DNDS::Euler
         auto meshRequirements = Geom::MeshReadRequirements::CellFlux();
         auto meshRead = mesh->AcquireRead(meshRequirements);
         const auto meshView = meshRead.HostView();
-        vfv->ValidateMeshDependencies();
+        this->ValidateMeshDependencies();
         const int Ns = phys_.nSpecies();
         const int Ns1 = Ns - 1;
         const int Isp = nVars - Ns1;
@@ -2602,7 +2602,7 @@ namespace DNDS::Euler
     {
         auto meshRead = mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
         const auto meshView = meshRead.HostView();
-        vfv->ValidateMeshDependencies();
+        this->ValidateMeshDependencies();
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
         static constexpr int iShockAlpha = 0;
         static constexpr int iContactAlpha = 1;
@@ -3192,7 +3192,7 @@ namespace DNDS::Euler
     {
         auto meshRead = mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
         const auto meshView = meshRead.HostView();
-        vfv->ValidateMeshDependencies();
+        this->ValidateMeshDependencies();
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
         static constexpr real safetyRatio = 1 - 1e-2;
         static constexpr real E_lb_eps = 1e-2;
@@ -3340,7 +3340,7 @@ namespace DNDS::Euler
     {
         auto meshRead = mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
         const auto meshView = meshRead.HostView();
-        vfv->ValidateMeshDependencies();
+        this->ValidateMeshDependencies();
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
         static const real safetyRatio = 1 - 1e-5;
         static const real minRatio = 0.5;
@@ -3716,7 +3716,7 @@ namespace DNDS::Euler
     {
         auto meshRead = mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
         const auto meshView = meshRead.HostView();
-        vfv->ValidateMeshDependencies();
+        this->ValidateMeshDependencies();
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
         real rhoEps = smallReal * settings.refUPrim(0) * 1e-1;
         real pEps = smallReal * settings.refUPrim(I4) * 1e-1;
@@ -3852,7 +3852,7 @@ namespace DNDS::Euler
     {
         auto meshRead = mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
         const auto meshView = meshRead.HostView();
-        vfv->ValidateMeshDependencies();
+        this->ValidateMeshDependencies();
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
         real rhoEps = smallReal * settings.refUPrim(0) * 1e-1;
         real pEps = smallReal * settings.refUPrim(I4) * 1e-1;
@@ -3982,7 +3982,7 @@ namespace DNDS::Euler
     {
         auto meshRead = mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
         const auto meshView = meshRead.HostView();
-        vfv->ValidateMeshDependencies();
+        this->ValidateMeshDependencies();
         static const real minRatio = 0.5;
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
         real rhoEps = smallReal * settings.refUPrim(0) * 1e-1;
@@ -4100,7 +4100,7 @@ namespace DNDS::Euler
     {
         auto meshRead = mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
         const auto meshView = meshRead.HostView();
-        vfv->ValidateMeshDependencies();
+        this->ValidateMeshDependencies();
         real smootherCentWeight = 1;
 #if defined(DNDS_DIST_MT_USE_OMP)
 #    pragma omp parallel for schedule(runtime)
@@ -4141,7 +4141,7 @@ namespace DNDS::Euler
         auto meshRequirements = Geom::MeshReadRequirements::CellFlux();
         auto meshRead = mesh->AcquireRead(meshRequirements);
         const auto meshView = meshRead.HostView();
-        vfv->ValidateMeshDependencies();
+        this->ValidateMeshDependencies();
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
         for (Geom::t_index i = Geom::BC_ID_DEFAULT_MAX; i < pBCHandler->size(); i++) // init code, consider adding to ctor
         {

@@ -18,10 +18,12 @@ this identity and the version controller; independently constructed logical
 meshes have different identities. Global indices are the current rank-offset
 numbering, not persistent IDs that survive mesh redistribution.
 
-The descriptor's version stamp depends on topology, distribution, layout, and
-allocation. A tracked change to any of these makes its `Valid()` false and its
-mapping operations reject use. Geometry-only changes leave entity numbering
-valid. `SameDomain` compares mesh identity and entity kind; `SameOrder` also
+Legacy descriptors depend on topology, distribution, layout, and allocation.
+Published native descriptors depend on topology, distribution, and layout: their
+private maps can remain shared when a geometry edit replaces coordinate buffers.
+A tracked change to a dependency makes `Valid()` false and mapping operations
+reject use. Geometry-only changes leave native entity numbering valid.
+`SameDomain` compares mesh identity and entity kind; `SameOrder` also
 requires both descriptors to be valid and to retain the same mapping objects.
 Descriptors retain maps and the version controller, but do not hold a mesh read
 lease or block mutation. Keep the communicator alive throughout their use.
@@ -48,8 +50,10 @@ Congruent MPI communicators are supported; communicators with a different rank
 ordering are rejected. The caller chooses the correct entity kind: an untyped
 legacy field of coincidentally equal size does not identify its association.
 
-The bridge performs no collective, allocation, resize, datatype creation, or
-request creation. It does not expose a mesh transformer. Reader-owned serial
+The bridge performs no collective, payload allocation/resize, datatype creation,
+or request creation. Published maps are copied into the mutable legacy transformer;
+`cloneMaps=true` requests the same isolation for legacy authority. It does not
+expose a mesh transformer. Reader-owned serial
 output routes remain separate legacy mappings.
 
 For native payloads, `BuildRowTransferPlan()` explicitly constructs a collective

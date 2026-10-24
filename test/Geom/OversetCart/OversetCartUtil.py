@@ -1,7 +1,7 @@
 from OversetCart import *
 from CartUtil import *
 from CartGridField import *
-from GeomUtils import *
+from utils import *
 import scipy.spatial
 from ElemInterpolate import elem_get_interpolation_base
 from collections import defaultdict
@@ -10,30 +10,22 @@ from collections import defaultdict
 def get_mesh_bnd_elems(osPart: OversetPart2D, includeIDs=None, is_phy=False):
     mesh = osPart._mesh
     bnd_elems = []
-    for iB in range(mesh.NumBnd()):
-        bnd2node = np.array(osPart._mesh.bnd2node[iB], copy=False)
-        bElemInfo = mesh.bndElemInfo[iB, 0]
-        if includeIDs is not None and bElemInfo.zone not in includeIDs:
-            continue
-        assert (bnd2node < mesh.NumNodeProc()).all(), str(bnd2node)
-        nodeList = []  #!2d: list of node coords represent a bnd element
-        for n in bnd2node:
+    with mesh.acquire_read() as read:
+        nodes = mesh.entities(Geom.EntityKind.Node)
+        for iB in range(read.counts["boundary"][0]):
+            bnd2node = read.boundary_nodes(iB).tolist()
+            info = read.boundary_info(iB)
+            if includeIDs is not None and info.zone not in includeIDs:
+                continue
+            assert all(0 <= node < read.counts["node"][2] for node in bnd2node)
+            coords = read.boundary_coords(iB).T
             if is_phy:
-                nodeList.append(
-                    osPart.coord_mesh_to_phy(np.array(mesh.coords[n], copy=True))
-                )
-            else:
-                nodeList.append(np.array(mesh.coords[n], copy=True))
-        nodeList = np.array(nodeList).transpose()
-        travelling_bnd_elem = pack_travelling_cell(
-            cellType=bElemInfo.getElemType(),
-            cellZone=bElemInfo.zone,
-            iCell=-1,  # set as unknown
-            cell2nodeRow=[mesh.coords.trans.LGhostMapping(-1, n) for n in bnd2node],
-            coords=nodeList,
-        )
-        # bnd_elems.append((bElemInfo.getElemType(), bElemInfo.zone, nodeList))
-        bnd_elems.append(travelling_bnd_elem)
+                coords = osPart.coord_mesh_to_phy(coords)
+            bnd_elems.append(pack_travelling_cell(
+                cellType=info.getElemType(), cellZone=info.zone, iCell=-1,
+                cell2nodeRow=[nodes.local_to_global(int(node)) for node in bnd2node],
+                coords=coords,
+            ))
     return bnd_elems
 
 
@@ -44,32 +36,30 @@ def obtain_part_local_inner_grid_points_dist_dict(
     mesh = osPart._mesh
     origin = np.array(self.origins[0:2])
     h = self.h
-    for iCell in range(mesh.NumCell()):
-        cell2node = np.array(mesh.cell2node[iCell], copy=False)
-        assert (cell2node < mesh.NumNodeProc()).all(), str(cell2node)
-        nodeDists = osPart.dist_node[cell2node]
-        coords = []
-        for iNode in cell2node:
-            coords.append(np.array(mesh.coords[iNode], copy=True))
-        coords = np.array(coords).transpose()
-        coords = osPart.coord_mesh_to_phy(coords)
-        elemInfo = mesh.cellElemInfo[iCell, 0]
-        assert elemInfo.getElemType() in {
-            Geom.Elem.ElemType.Tri3,
-            Geom.Elem.ElemType.Quad4,
-        }  # coords is now polygon
-        gridPoints = single_elem_get_grid_point_2D(origin, h, coords[0:2, :])
-        gridPointsCoords = origin[:, None] + gridPoints * h
+    with mesh.acquire_read() as read:
+        for iCell in range(read.counts["cell"][0]):
+            cell2node = read.cell_nodes(iCell)
+            assert ((0 <= cell2node) & (cell2node < read.counts["node"][2])).all(), str(cell2node)
+            nodeDists = osPart.dist_node[cell2node]
+            coords = read.cell_coords(iCell).T
+            coords = osPart.coord_mesh_to_phy(coords)
+            elemInfo = read.cell_info(iCell)
+            assert elemInfo.getElemType() in {
+                Geom.Elem.ElemType.Tri3,
+                Geom.Elem.ElemType.Quad4,
+            }  # coords is now polygon
+            gridPoints = single_elem_get_grid_point_2D(origin, h, coords[0:2, :])
+            gridPointsCoords = origin[:, None] + gridPoints * h
 
-        if gridPoints.size:
-            for iP in range(gridPoints.shape[1]):
+            if gridPoints.size:
+                for iP in range(gridPoints.shape[1]):
 
-                p = np.zeros(3)
-                p[:2] = gridPointsCoords[:, iP]
-                distP = elem_get_interpolation_base(
-                    elemInfo.getElemType(), coords, p
-                ).dot(nodeDists)
-                local_point_dists[tuple(gridPoints[:, iP])] = distP
+                    p = np.zeros(3)
+                    p[:2] = gridPointsCoords[:, iP]
+                    distP = elem_get_interpolation_base(
+                        elemInfo.getElemType(), coords, p
+                    ).dot(nodeDists)
+                    local_point_dists[tuple(gridPoints[:, iP])] = distP
     return local_point_dists
 
 
@@ -98,22 +88,10 @@ def obtain_part_local_elem_dists(self: OversetPart2D, bc_names=["WALL"]):
     tree = scipy.spatial.KDTree(np.array(bnd_geoms))
 
     mesh = self._mesh
-    dists = np.ones((mesh.NumNodeProc()), dtype=np.float64) * 1e300
-    coordsFatherData = np.array(self._mesh.coords.father.data())
-    coordsFatherData = coordsFatherData.reshape((3, -1), order="F")
-
-    distq, idx = tree.query(coordsFatherData.T)
-    dists[0 : mesh.NumNode()] = distq
-
-    coordsSonData = (
-        np.array(self._mesh.coords.son.data())
-        if self._mesh.coords.son.Size()
-        else np.zeros(0)  # why does empty son returns a NULL buffer?
-    )
-    coordsSonData = coordsSonData.reshape((3, -1), order="F")
-
-    distq, idx = tree.query(coordsSonData.T)
-    dists[mesh.NumNode() :] = distq
+    with mesh.acquire_read() as read:
+        coords = read.coordinates()
+        distq, idx = tree.query(coords)
+        dists = np.asarray(distq, dtype=np.float64)
     print(f"{mpi.rank}: maxDist: {dists.max()}")
     return dists
 
@@ -262,27 +240,26 @@ def obtain_proc_local_bg_cell_elems_with_bnd(
     mpi = self._mpi
     MPI = self._MPI
     mesh = part._mesh
+    cells = mesh.entities(Geom.EntityKind.Cell)
 
     elem_reqs_send = [[] for _ in range(mpi.size)]
     for ijk in cell_bnds.keys():
         assert ijk in cell_cell_inds.keys()  # have at least 1 elem adjacent to bnd
         for iCellG in cell_cell_inds[ijk]:
-            ret, rank, val = mesh.cell2node.trans.LGlobalMapping.search(iCellG)
-            assert ret, "search failed"
+            rank = cells.owner(int(iCellG))
             elem_reqs_send[rank].append((ijk, iCellG))
 
     elem_reqs_recv = MPI.alltoall(elem_reqs_send)
 
-    elem_send = [[] for _ in range(mpi.size)]
-    for rank_send, reqs in enumerate(elem_reqs_recv):
-        for ijk, iCellG in reqs:
-            ret, rank_searched, iCell = mesh.cell2node.trans.LGlobalMapping.search(
-                iCellG
-            )
-            assert ret and rank_searched == mpi.rank, "search failed"
-            elem_send[rank_send].append(
-                (ijk, part.get_travelling_cell(iCell, in_phy=True))
-            )
+    with mesh.acquire_read() as read:
+        elem_send = [[] for _ in range(mpi.size)]
+        for rank_send, reqs in enumerate(elem_reqs_recv):
+            for ijk, iCellG in reqs:
+                assert cells.owner(int(iCellG)) == mpi.rank, "search failed"
+                iCell = cells.owner_local_row(int(iCellG))
+                elem_send[rank_send].append(
+                    (ijk, part._travelling_cell_from_read(read, iCell, in_phy=True))
+                )
     elem_recv = MPI.alltoall(elem_send)
     # if mpi.rank == 0:
     #     print(elem_recv)
@@ -364,35 +341,23 @@ def obtain_proc_local_bg_cell_cell_elem_inds(self: OversetBG2D, part: OversetPar
 
     send_list = [[] for _ in range(mpi.size)]
 
-    for iCell in range(mesh.NumCell()):
-        cell2node = np.array(mesh.cell2node[iCell], copy=False)
-        assert (cell2node < mesh.NumNodeProc()).all(), str(cell2node)
-        coords = []
-        for iNode in cell2node:
-            coords.append(np.array(mesh.coords[iNode], copy=True))
-        coords = np.array(coords).transpose()
-        coords = part.coord_mesh_to_phy(coords)
-        elemInfo = mesh.cellElemInfo[iCell, 0]
-        assert elemInfo.getElemType() in {
-            Geom.Elem.ElemType.Tri3,
-            Geom.Elem.ElemType.Quad4,
-        }  # coords is now polygon
-        # travelling_cell = pack_travelling_cell(
-        #     cellType=elemInfo.getElemType(),
-        #     cellZone=elemInfo.zone,
-        #     iCell=mesh.cell2node.trans.LGhostMapping(-1, iCell),
-        #     cell2nodeRow=[
-        #         mesh.coords.trans.LGhostMapping(-1, iNode) for iNode in cell2node
-        #     ],
-        #     coords=coords,
-        # )
-        # ! we only need indices here not whole travelling cell
-        ijks = single_elem_get_box_intersection_2D(origin, self.h, coords[:2, :])
-        ranks = self.global_ijk_to_rank(ijks, is_point=False)
-        for iC in range(ijks.shape[1]):
-            send_list[ranks[iC]].append(
-                (ijks[:, iC], mesh.cell2node.trans.LGhostMapping(-1, iCell))
-            )
+    with mesh.acquire_read() as read:
+        cells = mesh.entities(Geom.EntityKind.Cell)
+        for iCell in range(read.counts["cell"][0]):
+            coords = read.cell_coords(iCell).T
+            coords = part.coord_mesh_to_phy(coords)
+            elemInfo = read.cell_info(iCell)
+            assert elemInfo.getElemType() in {
+                Geom.Elem.ElemType.Tri3,
+                Geom.Elem.ElemType.Quad4,
+            }  # coords is now polygon
+            # ! we only need indices here not whole travelling cell
+            ijks = single_elem_get_box_intersection_2D(origin, self.h, coords[:2, :])
+            ranks = self.global_ijk_to_rank(ijks, is_point=False)
+            for iC in range(ijks.shape[1]):
+                send_list[ranks[iC]].append(
+                    (ijks[:, iC], cells.local_to_global(iCell))
+                )
 
     recv_list = MPI.alltoall(send_list)
     proc_cell_global_ijk_to_part_cell_dict = defaultdict(list)
@@ -558,6 +523,7 @@ def query_template_cell_from_points(
     mpi = self._mpi
     MPI = self._MPI
     mesh = osPart._mesh
+    cells = mesh.entities(Geom.EntityKind.Cell)
     points = np.reshape(points, (2, -1))
 
     ijks = points_get_grid_cells_2D(self.origins[:2], self.h, points)
@@ -580,17 +546,18 @@ def query_template_cell_from_points(
         iCellGs.update(v)
     cell_req_send = [[] for _ in range(mpi.size)]
     for iCellG in iCellGs:
-        ret, rank, iCell = mesh.cell2node.trans.LGlobalMapping.search(iCellG)
-        assert ret, "search failed"
+        rank = cells.owner(int(iCellG))
+        iCell = cells.owner_local_row(int(iCellG))
         # print(rank)
         cell_req_send[rank].append((iCell, iCellG))
     cell_req_recv = MPI.alltoall(cell_req_send)
-    travelling_cell_data_send = []
-    for cell_reqs in cell_req_recv:
-        data_c = []
-        for iCell, iCellG in cell_reqs:
-            data_c.append((iCellG, osPart.get_travelling_cell(iCell, in_phy=True)))
-        travelling_cell_data_send.append(data_c)
+    with mesh.acquire_read() as read:
+        travelling_cell_data_send = []
+        for cell_reqs in cell_req_recv:
+            data_c = []
+            for iCell, iCellG in cell_reqs:
+                data_c.append((iCellG, osPart._travelling_cell_from_read(read, iCell, in_phy=True)))
+            travelling_cell_data_send.append(data_c)
     travelling_cell_data_recv = MPI.alltoall(travelling_cell_data_send)
     travelling_cell_data_recv_dict = {}
     for iCellG, travelling_cell in itertools.chain(*travelling_cell_data_recv):
@@ -620,6 +587,14 @@ def query_template_cell_from_points(
     return template_iCellGs
 
 
+def _borrow_cell_field_indexing(field, mesh):
+    """The typed bridge validates field rows/communicator and clones maps.
+
+    The caller owns field sizing/TransAttach/createMPITypes and serializes setup.
+    """
+    Geom.borrow_legacy_field_indexing(field.trans, mesh.entities(Geom.EntityKind.Cell))
+
+
 def decide_cell_types(
     self: OversetBG2D, parts: list[OversetPart2D], proc_dist_maps: list[DistMap]
 ):
@@ -637,17 +612,8 @@ def decide_cell_types(
         part_this = parts[i]
         dist_that = proc_dist_maps[j]
         mesh = part_this._mesh
-        coordsFatherData = np.array(mesh.coords.father.data())
-        coordsFatherData = coordsFatherData.reshape((3, -1), order="F")
-
-        coordsSonData = (
-            np.array(mesh.coords.son.data())
-            if mesh.coords.son.Size()
-            else np.zeros(0)  # why does empty son returns a NULL buffer?
-        )
-        coordsSonData = coordsSonData.reshape((3, -1), order="F")
-
-        coordsFullData = np.concat([coordsFatherData, coordsSonData], axis=1)
+        with mesh.acquire_read() as read:
+            coordsFullData = read.coordinates().T
         coordsFullData = part_this.coord_mesh_to_phy(
             coordsFullData
         )  # do not forget to physical coord
@@ -682,11 +648,12 @@ def decide_cell_types(
 
         # print("===\n" * 3 + f"i{i}, {node_is_hole.sum()}, {min_dists_nodes_other[i].min()}")
         mesh = part._mesh
-        cell_type = np.zeros((mesh.NumCell()))
-        for iCell in range(mesh.NumCell()):
-            c2n = mesh.cell2node[iCell].tolist()
-            c2n_is_hole = node_is_hole[c2n]
-            cell_type[iCell] = 1 if c2n_is_hole.all() else 0
+        with mesh.acquire_read() as read:
+            cell_type = np.zeros(read.counts["cell"][0])
+            for iCell in range(read.counts["cell"][0]):
+                c2n = read.cell_nodes(iCell)
+                c2n_is_hole = node_is_hole[c2n]
+                cell_type[iCell] = 1 if c2n_is_hole.all() else 0
         cell_type_arr = DNDS.ArrayEigenVectorPair(1)
         cell_type_arr.father = DNDS.ArrayEigenVector(1, init_args=(mpi,))
         cell_type_arr.son = DNDS.ArrayEigenVector(1, init_args=(mpi,))
@@ -694,7 +661,7 @@ def decide_cell_types(
         cell_type_arr.father.Resize(mesh.NumCell())
         cell_type_arr_father_data_in = np.array(cell_type_arr.father.data(), copy=False)
         cell_type_arr_father_data_in[:] = cell_type.flat
-        cell_type_arr.trans.BorrowGGIndexing(mesh.cell2node.trans)
+        _borrow_cell_field_indexing(cell_type_arr, mesh)
         cell_type_arr.trans.createMPITypes()
         cell_type_arr.trans.pullOnce()
         cell_type_arrs.append(cell_type_arr)

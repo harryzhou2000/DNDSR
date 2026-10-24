@@ -1,6 +1,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "Geom/Mesh/Mesh.hpp"
+#include "DNDS/Serializer/SerializerJSON.hpp"
 #include <filesystem>
 
 using namespace DNDS;
@@ -146,6 +147,83 @@ TEST_CASE("Bisection creates independent geometry under independent mesh mutatio
         CHECK(quadratic->coords[node].isApprox(before[size_t(node)]));
         CHECK(bisected->coords[node].isApprox(before[size_t(node)] + tPoint{0, 2, 0}));
     }
+}
+
+TEST_CASE("Mesh serialization excludes readers before compressing legacy CSR shapes")
+{
+    auto mesh = MutationFixture(MutationMPI());
+    mesh->AdjLocal2GlobalPrimary();
+    auto serializer = make_ssp<Serializer::SerializerJSON>();
+    serializer->CreatePath("/");
+    auto before = mesh->versions.Stamp();
+    {
+        auto read = mesh->versions.Read();
+        CHECK_THROWS(mesh->WriteSerialize(serializer, "blocked"));
+        CHECK(before.Valid());
+        CHECK(serializer->ListCurrentPath().empty());
+    }
+    {
+        auto read = mesh->cell2node.father->HostReadData();
+        CHECK_THROWS(mesh->WriteSerialize(serializer, "aliased"));
+        CHECK(before.Valid());
+        CHECK(serializer->ListCurrentPath().empty());
+    }
+    mesh->cell2node.father->Decompress();
+    CHECK_FALSE(mesh->cell2node.father->IfCompressed());
+    mesh->WriteSerialize(serializer, "mesh");
+    CHECK(mesh->cell2node.father->IfCompressed());
+    auto after = mesh->versions.Stamp();
+    CHECK(after.Generation(R::Change::Allocation) == before.Generation(R::Change::Allocation) + 1);
+    CHECK(after.Generation(R::Change::Interface) == before.Generation(R::Change::Interface) + 1);
+    CHECK(after.Generation(R::Change::Layout) == before.Generation(R::Change::Layout));
+    CHECK(after.Generation(R::Change::Topology) == before.Generation(R::Change::Topology));
+    CHECK(mesh->versions.CanMutate());
+}
+
+TEST_CASE("Collective VTK cache setup rejects a reader held on one rank")
+{
+    auto mesh = MutationFixture(MutationMPI());
+    auto stamp = mesh->versions.Stamp();
+    std::optional<R::VersionTracker::ReadLease> reader;
+    if (mesh->mpi.rank == 0)
+        reader.emplace(mesh->versions.Read());
+    CHECK_THROWS(mesh->BuildVTKConnectivity());
+    CHECK(stamp.Valid());
+    CHECK(mesh->vtkCell2nodeOffsets.empty());
+    reader.reset();
+    mesh->BuildVTKConnectivity();
+    CHECK(mesh->vtkCell2nodeOffsets.size() == size_t(mesh->NumCell() + 1));
+}
+
+TEST_CASE("Two-mesh mutation rejects native destinations before acquiring either writer")
+{
+    auto mpi = MutationMPI();
+    auto source = MutationFixture(mpi);
+    auto destination = MutationFixture(mpi);
+    destination->PublishNative();
+    // The public dimension belongs to the detached workspace. Make it satisfy
+    // the boundary-output shape preflight without changing native authority.
+    destination->dim = 1;
+    auto sourceStamp = source->versions.Stamp();
+    auto destinationStamp = destination->versions.Stamp();
+    CHECK_THROWS(source->ConstructBndMesh(*destination));
+    CHECK(sourceStamp.Valid());
+    CHECK(destinationStamp.Valid());
+    CHECK(source->versions.CanMutate());
+    CHECK(destination->HasNativeState());
+    CHECK(source->AcquireRead().HostView().NumCell() == source->NumCell());
+
+    UnstructuredMesh legacyPeer(mpi, 1);
+    auto peerStamp = legacyPeer.versions.Stamp();
+    auto &mixedDestination = mpi.rank == 0 ? *destination : legacyPeer;
+    CHECK_THROWS(source->ConstructBndMesh(mixedDestination));
+    CHECK_THROWS(mixedDestination.BuildO2FromO1Elevation(*source));
+    CHECK_THROWS(mixedDestination.BuildBisectO1FormO2(*source));
+    CHECK(sourceStamp.Valid());
+    CHECK(destinationStamp.Valid());
+    CHECK(peerStamp.Valid());
+    CHECK(source->versions.CanMutate());
+    CHECK(source->AcquireRead().HostView().NumNode() == source->NumNode());
 }
 
 int main(int argc, char **argv)

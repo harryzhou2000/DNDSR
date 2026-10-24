@@ -34,7 +34,14 @@ namespace DNDS::Geom
 
     NativeMeshSnapshot NativeMeshSnapshot::Capture(UnstructuredMesh &source, MeshReadRequirements requirements)
     {
-        auto read = source.AcquireRead(requirements);
+        return FromRead(source.AcquireRead(requirements));
+    }
+    NativeMeshSnapshot NativeMeshSnapshot::ImportLegacyWorkspace(UnstructuredMesh &source, MeshReadRequirements requirements)
+    {
+        return FromRead(MeshReadAccess(source, requirements, Runtime::ExecutionContext::Host()));
+    }
+    NativeMeshSnapshot NativeMeshSnapshot::FromRead(MeshReadAccess read)
+    {
         auto state = std::make_shared<State>();
         state->source = read.Stamp();
         state->device = Runtime::Device::Host();
@@ -55,9 +62,9 @@ namespace DNDS::Geom
         state->coords = ClonePair(s.coords);
         state->cellInfo = ClonePair(s.cellElemInfo);
         state->bndInfo = ClonePair(s.bndElemInfo);
-        if (requirements.faces)
+        if (s.relationPresent[size_t(MeshRelation::FaceNodes)])
             state->faceInfo = ClonePair(s.faceElemInfo);
-        if (requirements.edges)
+        if (s.relationPresent[size_t(MeshRelation::EdgeNodes)])
             state->edgeInfo = ClonePair(s.edgeElemInfo);
         if (s.hasNodeWallDist)
             state->nodeWallDist = ClonePair(s.nodeWallDist);
@@ -65,12 +72,12 @@ namespace DNDS::Geom
         {
             state->cellNodesPbi = ClonePair(s.cell2nodePbi);
             state->bndNodesPbi = ClonePair(s.bnd2nodePbi);
-            if (requirements.faces)
+            if (s.relationPresent[size_t(MeshRelation::FaceNodes)])
             {
                 state->cellFacesPbi = ClonePair(s.cell2facePbi);
                 state->faceNodesPbi = ClonePair(s.face2nodePbi);
             }
-            if (requirements.edges)
+            if (s.relationPresent[size_t(MeshRelation::EdgeNodes)])
             {
                 state->cellEdgesPbi = ClonePair(s.cell2edgePbi);
                 state->edgeNodesPbi = ClonePair(s.edge2nodePbi);
@@ -154,5 +161,14 @@ namespace DNDS::Geom
         capture(s.faceNodesPbi, _storage.face2nodePbi);
         capture(s.cellEdgesPbi, _storage.cell2edgePbi);
         capture(s.edgeNodesPbi, _storage.edge2nodePbi);
+    }
+    MeshReadAccess::MeshReadAccess(const NativeMeshSnapshot &snapshot, Runtime::ExecutionContext context,
+                                   Runtime::VersionTracker::ReadLease source, Runtime::VersionStamp stamp)
+        : MeshReadAccess(snapshot, context)
+    {
+        // Adopt the source publication lease after all native buffers were
+        // captured. Detached snapshot reads retain their independent identity.
+        _sourceRead.emplace(std::move(source));
+        _stamp = std::move(stamp);
     }
 }

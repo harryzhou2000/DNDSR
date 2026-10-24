@@ -42,6 +42,8 @@ namespace DNDS::Geom
     /// host snapshot. This is a correctness bridge, not a resident-cache API.
     class MeshReadAccess
     {
+        friend class RelationReadAccess;
+        friend class RelationPeriodicBits;
         friend class NativeMeshSnapshot;
         struct Hold
         {
@@ -59,6 +61,7 @@ namespace DNDS::Geom
         };
 
         Runtime::VersionTracker::ReadLease _meshRead;
+        std::optional<Runtime::VersionTracker::ReadLease> _sourceRead;
         Runtime::VersionStamp _stamp;
         Runtime::ExecutionContext _context;
         MeshViewStorage _storage;
@@ -77,6 +80,8 @@ namespace DNDS::Geom
         MeshReadAccess(UnstructuredMesh &mesh, MeshReadRequirements requirements,
                        Runtime::ExecutionContext context);
         MeshReadAccess(const NativeMeshSnapshot &snapshot, Runtime::ExecutionContext context);
+        MeshReadAccess(const NativeMeshSnapshot &snapshot, Runtime::ExecutionContext context,
+                       Runtime::VersionTracker::ReadLease source, Runtime::VersionStamp stamp);
         MeshReadAccess(const MeshReadAccess &) = delete;
         MeshReadAccess &operator=(const MeshReadAccess &) = delete;
         MeshReadAccess(MeshReadAccess &&other) noexcept;

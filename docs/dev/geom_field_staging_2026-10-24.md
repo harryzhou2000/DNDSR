@@ -23,13 +23,24 @@ validated by Runtime routing/payload checks. `RetainUnchanged` and
 An Array has no intrinsic entity association/domain: its declared association
 remains the registering caller's contract.
 
+Kind-only registration declares that payload rows already match the source mesh
+family's current owned order. A Runtime Field's numeric domain/epoch is checked
+against the other registered fields; it is not a globally persistent MeshId and
+is not automatically compared with the process-local EntitySpace identity. Do
+not attach another same-size mesh's field merely because the dimensions match.
+The caller must retain and validate its original EntitySpace binding before
+registration. Detached transitions also validate owned extents for unchanged
+registered families; ghost-bearing field objects must be split or rebuilt.
+
 The native adapters agree on local destination-allocation/description failure
 before the next payload phase. Runtime `RowTransferPlan` and `PayloadPlan`
 retain their collective route/schema/row-width checks before traffic. The
 same `NativeRowTransfer` correspondence is used for native Array and Field;
 Dense Field stride padding is transferred as part of each exact byte row.
 
-This is field-bundle staging, not a detached atomic mesh transition. Legacy
+This lower layer stages field bundles. `PreparedMeshTransition` additionally
+stages the complete supported mesh inventory before one publication boundary;
+see `geom_detached_transition_2026-10-24.md`. Legacy
 `fn` callbacks still consume their arrays in place. A later mesh or legacy
 callback failure leaves the mesh in its existing failed mutation state, while
 unpublished native field sources remain unchanged. Mesh rollback, arbitrary
@@ -53,4 +64,5 @@ local permutation, distributed receive order and old aliases.
 `integration5-geom-regression.txt` and the subsequent fresh CPU
 `integration6-geom-tests.txt` cover these staged field cases at MPI 1/2/4/8.
 Earlier `reorder-full-*` logs predate field staging and establish only their
-earlier source state. A detached prepare/publish API is separate active work.
+earlier source state. The detached prepare/publish API has separate validation
+records in the transition ledger.

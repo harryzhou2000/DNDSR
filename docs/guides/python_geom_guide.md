@@ -16,6 +16,44 @@ The `DNDSR.Geom` module provides Python bindings to the C++ geometry library, en
 
 ## Managed mesh reads
 
+Prepared meshes can explicitly publish private native storage:
+
+```python
+mesh.publish_native(faces=True, inverse=True)
+with mesh.acquire_read(faces=True) as read:
+    coordinates = read.coordinates()  # independent snapshot
+cells = mesh.entities(Geom.EntityKind.Cell)
+global_cell = cells.local_to_global(0)
+```
+
+Publication is collective. It validates and copies the current legacy setup
+workspace; subsequent managed queries use those immutable native arrays and
+canonical maps. Raw legacy properties remain a separate workspace in this mode.
+Changing them does not change published queries. `mesh.use_legacy_workspace()`
+explicitly switches back and invalidates dependent descriptors and caches.
+Managed legacy setup mutations reject native mode. Use `mesh.edit()` for supported
+current-state edits, or explicitly select the legacy workspace before legacy setup.
+Release escaped readonly arrays before any in-place mutation/publication.
+
+`mesh.place_native(ordinal)` prepares a persistent CUDA placement. Legacy
+`mesh.to_device(...)` and `mesh.to_host()` require legacy mode; they are separate
+from native placement. `mesh.snapshot(...)` creates an independent retained
+snapshot, whose `.to_device(ordinal)` and `.to_host()` copies support GPU
+debugging through a host read scope. Merely copying a C++ plain device view does
+not retain storage or establish asynchronous ordering.
+
+`mesh.WriteCurrentPrimaryMeshSnapshot(serializer, name)` is collective even for
+per-rank JSON. It writes an independent **primary-topology** clone with a schema
+and rebuild-inventory marker, without changing the source authority or readers.
+Optional face/edge/inverse groups and output caches are rebuilt after reading;
+this format does not preserve their field numbering. Present wall vectors reject
+by default; passing `policy=Geom.CurrentMeshCheckpointPolicy.DropAuxiliary`
+explicitly permits omitting them. `WriteCurrentMeshSnapshot` is a compatibility
+spelling with the same strict policy. Existing `WriteSerialize` keeps
+its legacy setup contract and rejects native mode. Detached transition/export
+currently rejects elevated original-node prefixes and parent/extraction links;
+the transition contract documents these explicit restrictions.
+
 After `read_mesh` and `prepare_mesh`, acquire one host read scope for an operation:
 
 ```python
@@ -46,11 +84,37 @@ NumPy slices and `np.asarray` preserve that lifetime. Assignments and
 writable copy; changing it does not edit the mesh. No DLPack or writable managed
 mesh export is provided.
 
-`coordinates(owned_only=False)`, `cell_coords`, and `face_coords` explicitly return
+`coordinates(owned_only=False)`, `cell_coords`, `face_coords`, and `boundary_coords` explicitly return
 independent immutable snapshots. They do not retain the mesh lease. Periodic
 element coordinates apply incidence-slot periodic transforms; `coord(node)`
-returns the stored node coordinate. `cell_info` and `face_info` return detached
+returns the stored node coordinate. `cell_info`, `face_info`, and `boundary_info` return detached
 `ElemInfo` values, so editing their `zone` does not change mesh metadata.
+
+For scalar or dynamic-width **real** legacy fields, the typed compatibility
+bridge attaches a descriptor's cloned canonical maps:
+
+```python
+cells = mesh.entities(Geom.EntityKind.Cell)
+field = DNDS.ArrayEigenVectorPair(1)
+field.father = DNDS.ArrayEigenVector(1, init_args=(mpi,))
+field.son = DNDS.ArrayEigenVector(1, init_args=(mpi,))
+field.father.Resize(cells.owned)
+field.TransAttach()
+Geom.borrow_legacy_field_indexing(field.trans, cells)
+field.trans.createMPITypes()
+# Fill owned field rows, then perform the collective halo exchange.
+field.trans.pullOnce()
+```
+
+The bridge supports `ArrayTransformer<real, 1>` and
+`ArrayTransformer<real, DynamicSize>` only; it is not a generic transformer
+binding. It validates descriptor freshness, owned/ghost counts and communicator
+rank ordering before assignment, and works with legacy or native authority.
+Callers retain field sizing, attachment, MPI datatype/request setup and phase
+ordering. It does not add a mesh dependency to subsequent transformer calls:
+after a numbering transition, obtain a new descriptor and rebuild the field's
+indexing/requests. Cloned maps isolate compatibility edits from canonical mesh
+maps; no raw mesh array or transformer is returned by the descriptor.
 
 Leaving the context or calling `close()` closes the Python scope handle and
 rejects new queries on it. Close is idempotent, and exceptions inside `with` still
@@ -96,8 +160,19 @@ prevent replacing the property, but do **not** make the contained legacy arrays
 immutable or lease-safe. Legacy `TransformCoords` passes writable coordinate
 arrays to its callback and is outside the managed edit guarantee. Do not mutate
 those exports while any managed read or escaped row exists. Coordinated geometry
-edits with coherent derived-cache publication and managed Python topology editing
-remain migration work; a readonly query scope is not a writable edit context.
+edits use `with mesh.edit() as edit:` and explicit `edit.commit()`. The scope stages
+the current authority in independent storage; `coord` and `cell_info` return copies
+and `set_coord`/`set_cell_info` apply owned-row changes. Commit validates finite
+coordinates and unchanged cell element type, refreshes ghosts, and publishes native
+storage. Context exit discards uncommitted work. Neighbor editing supports only
+permutations of `cell_neighbors` via `set_cell_neighbor`, preserving each row's exact
+multiset. General topology/shape editing is unsupported. See
+[managed staged edits](../architecture/ManagedMeshEdit.md) for inventory limits.
+
+Legacy mutation methods, `transform_coordinates`, `TransformCoords`, frame
+transforms, and rectification reject native authority. Use staged setters for
+native coordinates. `use_legacy_workspace()` explicitly selects that workspace's
+values and discards publication; it does not export native edits into the workspace.
 
 ## Setup
 

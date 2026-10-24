@@ -125,6 +125,12 @@ TEST_CASE("Real mesh finite-volume neighbor sums overlap native halo with inline
     CHECK_FALSE(priorRoute.Valid());
     for (size_t workers : {size_t(0), size_t(2)})
         CheckCPUOverlap(fixture, workers);
+    fixture.mesh->PublishNative(G::MeshReadRequirements::CellFlux());
+    for (size_t workers : {size_t(0), size_t(2)})
+        CheckCPUOverlap(fixture, workers);
+    T::RedistributeCurrent(fixture);
+    for (size_t workers : {size_t(0), size_t(2)})
+        CheckCPUOverlap(fixture, workers);
 }
 
 int main(int argc, char **argv)

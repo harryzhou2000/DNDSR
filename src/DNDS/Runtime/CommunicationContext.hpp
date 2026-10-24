@@ -33,12 +33,16 @@ namespace DNDS::Runtime
             : _state(std::make_shared<State>())
         {
             DNDS_check_throw_info(comm != MPI_COMM_NULL, "communication context needs a communicator");
-            MPI_Comm_dup(comm, &_state->comm);
+            DNDS_check_throw_info(MPI_Comm_dup(comm, &_state->comm) == MPI_SUCCESS,
+                                  "cannot duplicate communication context");
             int flag = 0;
             int *limit = nullptr;
-            MPI_Comm_get_attr(_state->comm, MPI_TAG_UB, &limit, &flag);
-            DNDS_check_throw_info(flag && limit, "MPI communicator has no tag limit");
-            _state->tagLimit = *limit;
+            DNDS_check_throw_info(MPI_Comm_get_attr(_state->comm, MPI_TAG_UB, &limit, &flag) == MPI_SUCCESS,
+                                  "cannot query communication tag limit");
+            // World-model predefined attributes need not be present on SELF
+            // or split communicators. MPI guarantees tags through 32767 even
+            // when the communicator does not carry this environment attribute.
+            _state->tagLimit = flag && limit ? *limit : 32767;
         }
         MPI_Comm Communicator() const { return _state->comm; }
         /// Local reservation. The binding collectively checks success before it

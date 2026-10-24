@@ -73,6 +73,32 @@ namespace DNDS::CFV
             _metricsBuildMesh = mesh;
             _metricsStages = 0;
         }
+        uint32_t MetricsPrerequisites(MetricsStage stage) const
+        {
+            switch (stage)
+            {
+            case CellBarycenter:
+            case CellJacobian:
+            case CellPoints:
+                return CellAttributes | CellVolume;
+            case CellBox:
+                return CellAttributes | CellBarycenter;
+            case CellInertia:
+                return CellBarycenter | CellVolume;
+            case FaceArea:
+                return FaceAttributes | (axisSymmetric ? uint32_t(CellVolume) : 0u);
+            case FaceJacobian:
+            case FacePoints:
+            case FaceNormals:
+                return FaceAttributes;
+            case FaceMeanNormals:
+                return FaceAttributes | FaceCenter | CellCenter;
+            case CellSmoothing:
+                return CellVolume | FaceArea;
+            default:
+                return 0;
+            }
+        }
         void BeginMetricsStage(MetricsStage stage)
         {
             InvalidateMetricsDependencies();
@@ -81,7 +107,21 @@ namespace DNDS::CFV
             // bundle assembled from old same-shaped fields.
             if (_metricsBuildMesh.lock() != mesh || !_metricsBuildStamp.Valid())
                 BeginMetricsConstruction();
-            _metricsStages &= ~uint32_t(stage);
+            // Rebuilding an input invalidates every previously completed
+            // dependent stage, including indirect consumers. Failed stages
+            // cannot leave their old dependent bundle publishable.
+            uint32_t invalid = uint32_t(stage), previous;
+            do
+            {
+                previous = invalid;
+                for (uint32_t bit = 1; bit <= CellSmoothing; bit <<= 1)
+                    if (MetricsPrerequisites(MetricsStage(bit)) & invalid)
+                        invalid |= bit;
+            } while (previous != invalid);
+            _metricsStages &= ~invalid;
+            const auto required = MetricsPrerequisites(stage);
+            DNDS_check_throw_info((_metricsStages & required) == required,
+                                  "metric stage requires its prerequisite stages in the current construction epoch");
         }
         void EndMetricsStage(MetricsStage stage) { _metricsStages |= uint32_t(stage); }
 
@@ -94,6 +134,8 @@ namespace DNDS::CFV
                                   "finite-volume metrics are missing or stale; rebuild ConstructMetrics");
         }
         void ValidateMeshDependencies() const { ValidateMetricsDependencies(); }
+        /// Cache publication identity, including a rebuild in the same mesh epoch.
+        uint64_t MetricsGeneration() const { return _metricsGeneration; }
         /// Explicit publication after the complete granular construction sequence.
         /// Shape checks alone cannot establish geometry/order correspondence.
         void FinalizeMetrics()
@@ -212,7 +254,7 @@ namespace DNDS::CFV
             : mpi(nMpi), mesh(std::move(nMesh)), settings(mesh->getDim())
         {
             mRank = mesh->mRank;
-            periodicity = mesh->periodicInfo; //! copy here
+            periodicity = mesh->Periodic(); //! copy here
         }
 
         int getDim() const { return mesh->getDim(); }
@@ -370,16 +412,16 @@ namespace DNDS::CFV
 
         Geom::tPoint GetFaceNormFromCell(index iFace, index iCell, rowsize if2c, int iG)
         {
-            if (!mesh->isPeriodic)
+            if (!mesh->IsPeriodic())
                 return GetFaceNorm(iFace, iG);
-            auto faceID = mesh->faceElemInfo[iFace]->zone;
+            auto faceID = mesh->GetFaceZone(iFace);
             if (!Geom::FaceIDIsPeriodic(faceID))
                 return GetFaceNorm(iFace, iG);
             DNDS_assert(if2c >= 0);
             if (if2c == 1 && Geom::FaceIDIsPeriodicMain(faceID))
-                return mesh->periodicInfo.TransVector(GetFaceNorm(iFace, iG), faceID);
+                return mesh->Periodic().TransVector(GetFaceNorm(iFace, iG), faceID);
             if (if2c == 1 && Geom::FaceIDIsPeriodicDonor(faceID))
-                return mesh->periodicInfo.TransVectorBack(GetFaceNorm(iFace, iG), faceID);
+                return mesh->Periodic().TransVectorBack(GetFaceNorm(iFace, iG), faceID);
             return GetFaceNorm(iFace, iG);
         }
 
@@ -393,35 +435,35 @@ namespace DNDS::CFV
 
         Geom::tPoint GetFaceQuadraturePPhysFromCell(index iFace, index iCell, rowsize if2c, int iG)
         {
-            if (!mesh->isPeriodic)
+            if (!mesh->IsPeriodic())
                 return GetFaceQuadraturePPhys(iFace, iG);
-            auto faceID = mesh->faceElemInfo[iFace]->zone;
+            auto faceID = mesh->GetFaceZone(iFace);
             if (!Geom::FaceIDIsPeriodic(faceID))
                 return GetFaceQuadraturePPhys(iFace, iG);
             DNDS_assert(if2c >= 0);
             if (if2c == 1 && Geom ::FaceIDIsPeriodicMain(faceID)) // I am donor
             {
-                return mesh->periodicInfo.TransCoord(GetFaceQuadraturePPhys(iFace, iG), faceID);
+                return mesh->Periodic().TransCoord(GetFaceQuadraturePPhys(iFace, iG), faceID);
             }
             if (if2c == 1 && Geom::FaceIDIsPeriodicDonor(faceID)) // I am main
-                return mesh->periodicInfo.TransCoordBack(GetFaceQuadraturePPhys(iFace, iG), faceID);
+                return mesh->Periodic().TransCoordBack(GetFaceQuadraturePPhys(iFace, iG), faceID);
             return GetFaceQuadraturePPhys(iFace, iG);
         }
 
         Geom::tPoint GetFacePointFromCell(index iFace, index iCell, rowsize if2c, const Geom::tPoint &pnt)
         {
-            if (!mesh->isPeriodic)
+            if (!mesh->IsPeriodic())
                 return pnt;
-            auto faceID = mesh->faceElemInfo[iFace]->zone;
+            auto faceID = mesh->GetFaceZone(iFace);
             if (!Geom::FaceIDIsPeriodic(faceID))
                 return pnt;
             DNDS_assert(if2c >= 0);
             if (if2c == 1 && Geom ::FaceIDIsPeriodicMain(faceID)) // I am donor
             {
-                return mesh->periodicInfo.TransCoord(pnt, faceID);
+                return mesh->Periodic().TransCoord(pnt, faceID);
             }
             if (if2c == 1 && Geom::FaceIDIsPeriodicDonor(faceID)) // I am main
-                return mesh->periodicInfo.TransCoordBack(pnt, faceID);
+                return mesh->Periodic().TransCoordBack(pnt, faceID);
             return pnt;
         }
 
@@ -429,19 +471,19 @@ namespace DNDS::CFV
             index iCell, index iCellOther,
             index iFace, rowsize if2c)
         {
-            if (!mesh->isPeriodic)
+            if (!mesh->IsPeriodic())
                 return GetCellBary(iCellOther);
 
-            auto faceID = mesh->faceElemInfo[iFace]->zone;
+            auto faceID = mesh->GetFaceZone(iFace);
             if (!Geom::FaceIDIsPeriodic(faceID))
                 return GetCellBary(iCellOther);
             DNDS_assert(if2c >= 0);
             if ((if2c == 1 && Geom::FaceIDIsPeriodicMain(faceID)) ||
                 (if2c == 0 && Geom::FaceIDIsPeriodicDonor(faceID))) // I am donor
-                return mesh->periodicInfo.TransCoord(GetCellBary(iCellOther), faceID);
+                return mesh->Periodic().TransCoord(GetCellBary(iCellOther), faceID);
             if ((if2c == 1 && Geom::FaceIDIsPeriodicDonor(faceID)) ||
                 (if2c == 0 && Geom::FaceIDIsPeriodicMain(faceID))) // I am main
-                return mesh->periodicInfo.TransCoordBack(GetCellBary(iCellOther), faceID);
+                return mesh->Periodic().TransCoordBack(GetCellBary(iCellOther), faceID);
             return GetCellBary(iCellOther);
         }
 
@@ -449,19 +491,19 @@ namespace DNDS::CFV
             index iCell, index iCellOther,
             index iFace, rowsize if2c, const Geom::tPoint &pnt)
         {
-            if (!mesh->isPeriodic)
+            if (!mesh->IsPeriodic())
                 return pnt;
 
-            auto faceID = mesh->faceElemInfo[iFace]->zone;
+            auto faceID = mesh->GetFaceZone(iFace);
             if (!Geom::FaceIDIsPeriodic(faceID))
                 return pnt;
             DNDS_assert(if2c >= 0);
             if ((if2c == 1 && Geom::FaceIDIsPeriodicMain(faceID)) ||
                 (if2c == 0 && Geom::FaceIDIsPeriodicDonor(faceID))) // I am donor
-                return mesh->periodicInfo.TransCoord(pnt, faceID);
+                return mesh->Periodic().TransCoord(pnt, faceID);
             if ((if2c == 1 && Geom::FaceIDIsPeriodicDonor(faceID)) ||
                 (if2c == 0 && Geom::FaceIDIsPeriodicMain(faceID))) // I am main
-                return mesh->periodicInfo.TransCoordBack(pnt, faceID);
+                return mesh->Periodic().TransCoordBack(pnt, faceID);
             return pnt;
         }
 
@@ -469,19 +511,19 @@ namespace DNDS::CFV
             index iCell, index iCellOther,
             index iFace, rowsize if2c)
         { // structure copy of GetOtherCellBaryFromCell
-            if (!mesh->isPeriodic)
+            if (!mesh->IsPeriodic())
                 return cellInertia[iCellOther];
 
-            auto faceID = mesh->faceElemInfo[iFace]->zone;
+            auto faceID = mesh->GetFaceZone(iFace);
             if (!Geom::FaceIDIsPeriodic(faceID))
                 return cellInertia[iCellOther];
             DNDS_assert(if2c >= 0);
             if ((if2c == 1 && Geom::FaceIDIsPeriodicMain(faceID)) ||
                 (if2c == 0 && Geom::FaceIDIsPeriodicDonor(faceID))) // I am donor
-                return mesh->periodicInfo.TransMat<3>(cellInertia[iCellOther], faceID);
+                return mesh->Periodic().TransMat<3>(cellInertia[iCellOther], faceID);
             if ((if2c == 1 && Geom::FaceIDIsPeriodicDonor(faceID)) ||
                 (if2c == 0 && Geom::FaceIDIsPeriodicMain(faceID))) // I am main
-                return mesh->periodicInfo.TransMatBack<3>(cellInertia[iCellOther], faceID);
+                return mesh->Periodic().TransMatBack<3>(cellInertia[iCellOther], faceID);
             return cellInertia[iCellOther];
         }
 

@@ -78,7 +78,7 @@ namespace DNDS::Geom
                                                       const PartitionOptions &partitionOptions)
     {
         CheckCollectiveMutationAvailable();
-        MeshMutationToken mutationToken(this, versions, Runtime::Change::All);
+        auto mutationToken = BeginManagedMutation(Runtime::Change::All);
         ReadSerializeAndDistributeImpl(mutationToken, serializerP, name, partitionOptions);
         mutationToken.Commit();
     }
@@ -143,7 +143,7 @@ namespace DNDS::Geom
     void UnstructuredMesh::ReadDistributed_EvenSplitRead(Serializer::SerializerBaseSSP serializerP)
     {
         CheckCollectiveMutationAvailable();
-        MeshMutationToken mutationToken(this, versions, Runtime::Change::All);
+        auto mutationToken = BeginManagedMutation(Runtime::Change::All);
         ReadDistributed_EvenSplitReadImpl(mutationToken, serializerP);
         mutationToken.Commit();
     }
@@ -225,7 +225,7 @@ namespace DNDS::Geom
     ssp<tAdj::element_type> UnstructuredMesh::ReadDistributed_BuildFacialCell2Cell()
     {
         CheckCollectiveMutationAvailable();
-        MeshMutationToken mutationToken(this, versions, Runtime::Change::All);
+        auto mutationToken = BeginManagedMutation(Runtime::Change::All);
         auto result = ReadDistributed_BuildFacialCell2CellImpl(mutationToken);
         mutationToken.Commit();
         return result;
@@ -547,7 +547,7 @@ namespace DNDS::Geom
     void UnstructuredMesh::ReadDistributed_Redistribute(const EntityPartitions &partitions)
     {
         CheckCollectiveMutationAvailable();
-        MeshMutationToken mutationToken(this, versions, Runtime::Change::All);
+        auto mutationToken = BeginManagedMutation(Runtime::Change::All);
         ReadDistributed_RedistributeImpl(mutationToken, partitions);
         mutationToken.Commit();
     }
@@ -585,7 +585,7 @@ namespace DNDS::Geom
     void UnstructuredMesh::ReadDistributed_RedistributeLegacy(const EntityPartitions &partitions)
     {
         CheckCollectiveMutationAvailable();
-        MeshMutationToken mutationToken(this, versions, Runtime::Change::All);
+        auto mutationToken = BeginManagedMutation(Runtime::Change::All);
         ReadDistributed_RedistributeLegacyImpl(mutationToken, partitions);
         mutationToken.Commit();
     }

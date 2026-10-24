@@ -362,26 +362,20 @@ def _apply_coord_transforms(
         rz = rot_z_deg / 180.0 * math.pi
         c, s = math.cos(rz), math.sin(rz)
         rot_z = np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]], dtype=np.float64)
-        mesh.TransformCoords(lambda c: np.matmul(c, rot_z.T, out=c))
-        # TODO: also rotate periodicInfo (rotation, rotationCenter, translation)
-        # once the Python bindings for periodicInfo are available.
+        mesh.apply_geometry_transform(rot_z)
 
     if scale != 1.0:
-        mesh.TransformCoords(lambda c: np.multiply(c, scale, out=c))
-        # TODO: also scale periodicInfo.translation and rotationCenter
+        mesh.apply_geometry_transform(np.eye(3), scale)
 
     if rectify_near_plane != 0:
         def rectify(c):
             if rectify_near_plane & 1:
-                c[:, 0] = np.where(
-                    np.abs(c[:, 0]) < rectify_threshold, 0.0, c[:, 0])
+                c[0] = 0.0 if abs(c[0]) < rectify_threshold else c[0]
             if rectify_near_plane & 2:
-                c[:, 1] = np.where(
-                    np.abs(c[:, 1]) < rectify_threshold, 0.0, c[:, 1])
+                c[1] = 0.0 if abs(c[1]) < rectify_threshold else c[1]
             if rectify_near_plane & 4:
-                c[:, 2] = np.where(
-                    np.abs(c[:, 2]) < rectify_threshold, 0.0, c[:, 2])
-        mesh.TransformCoords(rectify)
+                c[2] = 0.0 if abs(c[2]) < rectify_threshold else c[2]
+        mesh.transform_coordinates(rectify)
 
 
 def build_bnd_mesh(

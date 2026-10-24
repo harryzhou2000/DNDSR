@@ -831,6 +831,16 @@ namespace DNDS::Euler
      */
     void EulerEvaluator<model>::GetWallDist()
     {
+        _wallDistanceMeshStamp = Runtime::VersionStamp{};
+        _wallDistanceMesh.reset();
+        _wallDistanceFV.reset();
+        auto requirements = Geom::MeshReadRequirements::CellFlux();
+        requirements.allFaceCellsLocal = true;
+        auto meshRead = mesh->AcquireRead(requirements);
+        vfv->ValidateMetricsDependencies();
+        DNDS_check_throw_info(settings.wallDistScheme == 0 || settings.wallDistScheme == 1 ||
+                                  settings.wallDistScheme == 2 || settings.wallDistScheme == 3 || settings.wallDistScheme == 20,
+                              "unsupported wall-distance scheme");
         if (settings.wallDistScheme == 0 || settings.wallDistScheme == 1 || settings.wallDistScheme == 20)
             GetWallDist_AABB();
         if (settings.wallDistScheme == 2 || settings.wallDistScheme == 20)
@@ -838,6 +848,11 @@ namespace DNDS::Euler
         if (settings.wallDistScheme == 3)
             GetWallDist_Poisson();
         GetWallDist_ComputeFaceDistances();
+        _wallDistanceMeshStamp = mesh->versions.Stamp(Runtime::Change::Topology | Runtime::Change::Geometry |
+                                                      Runtime::Change::Distribution | Runtime::Change::Layout);
+        _wallDistanceMetricsGeneration = vfv->MetricsGeneration();
+        _wallDistanceMesh = mesh;
+        _wallDistanceFV = vfv;
     }
 
     // Eigen::Vector<real, -1> EulerEvaluator::CompressRecPart(
@@ -883,7 +898,7 @@ namespace DNDS::Euler
         meshRequirements.allFaceCellsLocal = true;
         auto meshRead = mesh->AcquireRead(meshRequirements);
         const auto meshView = meshRead.HostView();
-        vfv->ValidateMeshDependencies();
+        this->ValidateMeshDependencies();
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
         DNDS_MPI_InsertCheck(u.father->getMPI(), "EvaluateDt 1");
 
@@ -1209,7 +1224,7 @@ namespace DNDS::Euler
         real muRef = phys_.muRef();
         real TRef = phys_.TRef();
 
-        auto f2c = mesh->face2cell[iFace];
+        auto f2c = mesh->FaceCells(iFace);
         real dLambda = deltaLambdaCell[f2c[0]](0);
         if (f2c[1] != UnInitIndex)
             dLambda = std::max(dLambda, deltaLambdaCell[f2c[1]](0));
@@ -1965,7 +1980,7 @@ namespace DNDS::Euler
             DNDS_assert(pU);
             cellGrad2nd.setZero(Eigen::NoChange, uCell.size());
             TU uC = uCell;
-            auto c2f = mesh->cell2face[iCell];
+            auto c2f = mesh->CellFaces(iCell);
             for (rowsize ic2f = 0; ic2f < c2f.size(); ++ic2f)
             {
                 index iFace = c2f[ic2f];
@@ -3045,11 +3060,11 @@ namespace DNDS::Euler
 
         auto iBnd2Cell = [this](index iBnd) -> index
         {
-            return mesh->bnd2cell[iBnd][0];
+            return mesh->BoundaryCells(iBnd)[0];
         };
         auto iBnd2Face = [this](index iBnd) -> index
         {
-            return mesh->bnd2faceV.at(iBnd);
+            return mesh->BoundaryFace(iBnd);
         };
         auto dWallCellMean = [this](index iCell) -> real
         {

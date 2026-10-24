@@ -1,5 +1,7 @@
 #include "Geom/Quadrature.hpp"
 #include "Mesh.hpp"
+#include "MeshTransition.hpp"
+#include "FieldTransfer.hpp"
 #include "Geom/CGNS.hpp"
 #include "DNDS/OutputDir.hpp"
 #include <array>
@@ -17,6 +19,42 @@
 
 namespace DNDS::Geom
 {
+    namespace
+    {
+        void CurrentOutputFieldCounts(UnstructuredMesh &source, int cells, int cellVectors, int points, int pointVectors)
+        {
+            int counts[]{cells, cellVectors, points, pointVectors, -cells, -cellVectors, -points, -pointVectors};
+            MPI_Allreduce(MPI_IN_PLACE, counts, 8, MPI_INT, MPI_MIN, source.mpi.comm);
+            for (int i = 0; i < 4; ++i)
+                DNDS_check_throw_info(counts[i] >= 0 && counts[i] == -counts[i + 4],
+                                      "current mesh output field counts differ between ranks");
+        }
+
+        std::unique_ptr<MeshReadAccess> CurrentOutputRead(UnstructuredMesh &source)
+        {
+            std::unique_ptr<MeshReadAccess> result;
+            FieldTransferDetail::LocalStage(source.mpi, [&]
+                                            { result = std::make_unique<MeshReadAccess>(source.AcquireRead()); });
+            return result;
+        }
+
+        std::vector<index> CurrentOutputNodeMap(UnstructuredMesh &source, UnstructuredMesh &workspace)
+        {
+            std::vector<index> result;
+            FieldTransferDetail::LocalStage(source.mpi, [&]
+                                            {
+                const auto from = source.Entities(EntityKind::Node);
+                const auto to = workspace.Entities(EntityKind::Node);
+                result.reserve(size_t(to.NumLocal()));
+                for (index node = 0; node < to.NumLocal(); ++node)
+                {
+                    auto original = from.GlobalToLocal(to.LocalToGlobal(node));
+                    DNDS_check_throw_info(original, "current output ghost node is absent from source point-field numbering");
+                    result.push_back(*original);
+                } });
+            return result;
+        }
+    }
 
     void UnstructuredMeshSerialRW::
         GetCurrentOutputArrays(int flag,
@@ -26,6 +64,7 @@ namespace DNDS::Geom
                                tElemInfoArrayPair &cellElemInfoOut,
                                index &nCell, index &nNode)
     {
+        mesh->RequireLegacyWorkspace("serial-reader output array access");
         /*************************************************/
         // get the output arrays: serial or parallel
         tCoord coordSerialDummy;
@@ -134,6 +173,22 @@ namespace DNDS::Geom
                                           const tFGetData &dataPoint,
                                           double t, int flag)
     {
+        int currentExport = int(mesh->HasNativeState());
+        if (flag == 1)
+            MPI_Allreduce(MPI_IN_PLACE, &currentExport, 1, MPI_INT, MPI_MAX, mesh->mpi.comm);
+        if (currentExport)
+        {
+            DNDS_check_throw_info(flag == 1, "native serial-reader output requires distributed output mode or an explicitly refreshed serial export");
+            CurrentOutputFieldCounts(*mesh, arraySiz, 0, arraySizPoint, 0);
+            auto retained = CurrentOutputRead(*mesh);
+            auto workspace = CloneCurrentMeshForSetup(*mesh, 1, TransitionCachePolicy::RebuildOutput, BoundaryCachePolicy::DropBoundaryCache);
+            auto pointRows = arraySizPoint ? CurrentOutputNodeMap(*mesh, *workspace) : std::vector<index>{};
+            tFGetData mappedPoint = [&](int field, index row)
+            { return dataPoint(field, pointRows.at(size_t(row))); };
+            UnstructuredMeshSerialRW output(workspace, mRank);
+            output.PrintSerialPartPltBinaryDataArray(std::move(fname), arraySiz, arraySizPoint, names, data, namesPoint, mappedPoint, t, flag);
+            return;
+        }
         auto mpi = mesh->getMPI();
 
         if (mpi.rank != mRank && flag == 0) //* now only operating on mRank if serial
@@ -762,6 +817,26 @@ namespace DNDS::Geom
         const tFGetVecData &vectorDataPoint,
         double t, int flag)
     {
+        int currentExport = int(mesh->HasNativeState());
+        if (flag == 1)
+            MPI_Allreduce(MPI_IN_PLACE, &currentExport, 1, MPI_INT, MPI_MAX, mesh->mpi.comm);
+        if (currentExport)
+        {
+            DNDS_check_throw_info(flag == 1, "native serial-reader output requires distributed output mode or an explicitly refreshed serial export");
+            CurrentOutputFieldCounts(*mesh, arraySiz, vecArraySiz, arraySizPoint, vecArraySizPoint);
+            auto retained = CurrentOutputRead(*mesh);
+            auto workspace = CloneCurrentMeshForSetup(*mesh, 1, TransitionCachePolicy::RebuildOutput, BoundaryCachePolicy::DropBoundaryCache);
+            auto pointRows = (arraySizPoint || vecArraySizPoint) ? CurrentOutputNodeMap(*mesh, *workspace) : std::vector<index>{};
+            tFGetData mappedPoint = [&](int field, index row)
+            { return dataPoint(field, pointRows.at(size_t(row))); };
+            tFGetVecData mappedVectorPoint = [&](int field, index row, rowsize component)
+            { return vectorDataPoint(field, pointRows.at(size_t(row)), component); };
+            UnstructuredMeshSerialRW output(workspace, mRank);
+            output.PrintSerialPartVTKDataArray(std::move(fname), std::move(seriesName), arraySiz, vecArraySiz,
+                                               arraySizPoint, vecArraySizPoint, names, data, vectorNames, vectorData,
+                                               namesPoint, mappedPoint, vectorNamesPoint, mappedVectorPoint, t, flag);
+            return;
+        }
         auto mpi = mesh->getMPI();
         std::string fnameIN = fname;
 
@@ -1346,6 +1421,27 @@ namespace DNDS::Geom
         const tFGetVecData &vectorDataPoint,
         double t, MPI_Comm commDup)
     {
+        DNDS_check_throw_info(commDup != MPI_COMM_NULL, "VTKHDF output requires its output communicator");
+        int currentExport = int(HasNativeState());
+        // The prepared legacy writer may run on a worker while the solver uses
+        // mpi.comm. Its preflight belongs to the same isolated communicator as
+        // HDF5 below. Native export still requires synchronous source setup.
+        MPI_Allreduce(MPI_IN_PLACE, &currentExport, 1, MPI_INT, MPI_MAX, commDup);
+        if (currentExport)
+        {
+            CurrentOutputFieldCounts(*this, arraySiz, vecArraySiz, arraySizPoint, vecArraySizPoint);
+            auto retained = CurrentOutputRead(*this);
+            auto workspace = CloneCurrentMeshForSetup(*this, 1, TransitionCachePolicy::RebuildOutput, BoundaryCachePolicy::DropBoundaryCache);
+            auto pointRows = (arraySizPoint || vecArraySizPoint) ? CurrentOutputNodeMap(*this, *workspace) : std::vector<index>{};
+            tFGetData mappedPoint = [&](int field, index row)
+            { return dataPoint(field, pointRows.at(size_t(row))); };
+            tFGetVecData mappedVectorPoint = [&](int field, index row, rowsize component)
+            { return vectorDataPoint(field, pointRows.at(size_t(row)), component); };
+            workspace->PrintParallelVTKHDFDataArray(std::move(fname), std::move(seriesName), arraySiz, vecArraySiz,
+                                                    arraySizPoint, vecArraySizPoint, names, data, vectorNames, vectorData,
+                                                    namesPoint, mappedPoint, vectorNamesPoint, mappedVectorPoint, t, commDup);
+            return;
+        }
         fname += ".vtkhdf";
         std::filesystem::path outFile{fname};
         createOutputDir(outFile, mpi, OutputDirMode::Fast);
@@ -1550,6 +1646,15 @@ namespace DNDS::Geom
 
     void UnstructuredMesh::PrintMeshCGNS(std::string fname, const t_FBCID_2_Name &fbcid2name, const std::vector<std::string> &allNames)
     {
+        int currentExport = int(HasNativeState());
+        MPI_Allreduce(MPI_IN_PLACE, &currentExport, 1, MPI_INT, MPI_MAX, mpi.comm);
+        if (currentExport)
+        {
+            auto retained = CurrentOutputRead(*this);
+            auto workspace = CloneCurrentMeshForSetup(*this, 1, TransitionCachePolicy::Invalidate, BoundaryCachePolicy::DropBoundaryCache);
+            workspace->PrintMeshCGNS(std::move(fname), fbcid2name, allNames);
+            return;
+        }
         DNDS_assert_info(!isPeriodic, "PrintMeshCGNS does not handle periodic mesh!");
         /*****************************/
         /*     Data preparation:     */

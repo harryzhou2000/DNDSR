@@ -15,7 +15,7 @@ namespace DNDS::Geom
         Deduplicate1to1Periodic(real search_eps) // currently does not handle parallel input mode
     {
         mesh->CheckCollectiveMutationAvailable();
-        MeshMutationToken mutationToken(mesh.get(), mesh->versions, Runtime::Change::Geometry | Runtime::Change::Interface);
+        auto mutationToken = mesh->BeginManagedMutation(Runtime::Change::Geometry | Runtime::Change::Interface);
 
         DNDS_assert(this->dataIsSerialIn);
         // TODO: build periodic donor oct-trees
@@ -515,7 +515,7 @@ namespace DNDS::Geom
     void UnstructuredMesh::RecreatePeriodicNodes()
     {
         CheckCollectiveMutationAvailable();
-        MeshMutationToken mutationToken(this, versions, Runtime::Change::Interface | Runtime::Change::Values);
+        auto mutationToken = BeginManagedMutation(Runtime::Change::Interface | Runtime::Change::Values);
 
         DNDS_assert(adjPrimaryState == Adj_PointToLocal);
         DNDS_assert(cell2node.isLocal());
@@ -635,7 +635,8 @@ namespace DNDS::Geom
 
     void UnstructuredMesh::BuildVTKConnectivity()
     {
-        MeshMutationToken mutationToken(this, versions, Runtime::Change::Interface | Runtime::Change::Values);
+        CheckCollectiveMutationAvailable();
+        auto mutationToken = BeginManagedMutation(Runtime::Change::Interface | Runtime::Change::Values);
 
         DNDS_assert(cell2node.father);
         DNDS_assert(coords.trans.pLGhostMapping); // for this->NodeIndexLocal2Global()

@@ -66,10 +66,18 @@ namespace DNDS::Euler
         tAdditionalCellScalarList &additionalBndScalars,
         TEval &eval, real tSimu, PrintDataMode mode)
     {
+        const bool nativeOutput = mesh->HasNativeState();
+        DNDS_check_throw_info(!nativeOutput ||
+                                  (!config.dataIOControl.outBndData && config.dataIOControl.outPltMode == 1),
+                              "native Euler output requires distributed volume output; rebuild boundary/serial output adapters explicitly");
+        // Native export prepares a detached output workspace collectively on
+        // the source communicator. Complete previous output before that setup.
+        if (nativeOutput && outSeqFuture.valid())
+            outSeqFuture.get();
         // Retain the volume mesh snapshot through deferred output callbacks.
         auto meshRead = std::make_shared<Geom::MeshReadAccess>(mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux()));
         const auto meshView = meshRead->HostView();
-        vfv->ValidateMeshDependencies();
+        eval.ValidateMeshDependencies();
         auto periodic = meshView.Periodic();
         // Boundary meshes currently publish the reduced ForBnd topology rather
         // than the full primary facade contract. Retain their mutation barrier
@@ -968,7 +976,9 @@ namespace DNDS::Euler
             for (auto &f : outputs)
                 f();
         };
-        bool useAsyncOut = config.dataIOControl.allowAsyncPrintData;
+        // A prepared legacy writer may use its isolated output communicator on
+        // a worker. Native workspace setup still runs synchronously here.
+        bool useAsyncOut = config.dataIOControl.allowAsyncPrintData && !nativeOutput;
 #ifndef H5_HAVE_THREADSAFE
         if (config.dataIOControl.outPltVTKHDFFormat)
             useAsyncOut = false;
@@ -999,6 +1009,7 @@ namespace DNDS::Euler
      */
     void EulerSolver<model>::PrintRestart(std::string fname)
     {
+        auto checkpointRead = mesh->AcquireRead();
         if (config.dataIOControl.restartWriter.type == "JSON")
         {
             std::filesystem::path outPath;
@@ -1027,7 +1038,7 @@ namespace DNDS::Euler
             // H5 path: write with origIndex for redistribution support
             std::vector<index> origIdx(mesh->NumCell());
             for (index i = 0; i < mesh->NumCell(); i++)
-                origIdx[i] = mesh->cell2cellOrig(i, 0);
+                origIdx[i] = mesh->OriginalEntityId(Geom::EntityKind::Cell, i);
             u.WriteSerialize(serializerP, "u", origIdx, /*PIG*/ false, /*son*/ false);
         }
         else
@@ -1035,7 +1046,15 @@ namespace DNDS::Euler
             // JSON path: no redistribution support
             u.WriteSerialize(serializerP, "u", /*PIG*/ false, /*son*/ false);
         }
-        mesh->cell2cellOrig.WriteSerialize(serializerP, "cell2cellOrig", /*PIG*/ false, /*son*/ false);
+        // Preserve the established checkpoint schema without exporting the
+        // editable legacy workspace when native query authority is active.
+        Geom::tAdj1Pair originalCellIds;
+        originalCellIds.InitPair("checkpoint-cell-original-ids", mpi);
+        originalCellIds.father->Resize(mesh->NumCell());
+        originalCellIds.son->Resize(0);
+        for (index cell = 0; cell < mesh->NumCell(); ++cell)
+            originalCellIds(cell, 0) = mesh->OriginalEntityId(Geom::EntityKind::Cell, cell);
+        originalCellIds.WriteSerialize(serializerP, "cell2cellOrig", /*PIG*/ false, /*son*/ false);
         serializerP->CloseFile();
 
         PrintConfig();
@@ -1078,7 +1097,7 @@ namespace DNDS::Euler
             std::unordered_map<index, index> cellOrig2localCell;
             cellOrig2localCell.reserve(mesh->NumCell());
             for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
-                cellOrig2localCell[mesh->cell2cellOrig(iCell, 0)] = iCell;
+                cellOrig2localCell[mesh->OriginalEntityId(Geom::EntityKind::Cell, iCell)] = iCell;
             bool isLocalReorder = true;
 
             Geom::tAdj1Pair cell2cellOrigRead;
@@ -1118,6 +1137,7 @@ namespace DNDS::Euler
      */
     void EulerSolver<model>::ReadRestart(std::string fname)
     {
+        auto checkpointRead = mesh->AcquireRead();
         if (mpi.rank == 0)
             log() << fmt::format("=== Reading Restart From [{}]", fname) << std::endl;
         std::filesystem::path outPath;
@@ -1148,7 +1168,7 @@ namespace DNDS::Euler
             // H5 path: use redistributed read (supports different np and partition layout)
             std::vector<index> newOrigIdx(mesh->NumCell());
             for (index i = 0; i < mesh->NumCell(); i++)
-                newOrigIdx[i] = mesh->cell2cellOrig(i, 0);
+                newOrigIdx[i] = mesh->OriginalEntityId(Geom::EntityKind::Cell, i);
 
             u.ReadSerializeRedistributed(serializerP, "u", newOrigIdx);
         }
@@ -1187,6 +1207,7 @@ namespace DNDS::Euler
      */
     void EulerSolver<model>::ReadRestartOtherSolver(std::string fname, const std::vector<int> &dimStore)
     {
+        auto checkpointRead = mesh->AcquireRead();
         ArrayDOFV<Eigen::Dynamic> readBuf;
         DNDS_MAKE_SSP(readBuf.father, mpi);
         DNDS_MAKE_SSP(readBuf.son, mpi);
@@ -1220,7 +1241,7 @@ namespace DNDS::Euler
             // H5 path: use redistributed read (supports different np and partition layout)
             std::vector<index> newOrigIdx(mesh->NumCell());
             for (index i = 0; i < mesh->NumCell(); i++)
-                newOrigIdx[i] = mesh->cell2cellOrig(i, 0);
+                newOrigIdx[i] = mesh->OriginalEntityId(Geom::EntityKind::Cell, i);
 
             // Peek at the file to determine the stored nVars (row dimension),
             // then pre-size readBuf so RedistributeArrayWithTransformer can copy into it.

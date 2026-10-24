@@ -10,7 +10,7 @@ namespace DNDS::CFV
     VariationalReconstruction<dim>::
         ConstructMetrics()
     {
-        this->InvalidateMetricsDependencies();
+        this->BeginMetricsConstruction();
         _baseMeshStamp = _coefficientMeshStamp = Runtime::VersionStamp{};
         auto meshAccess = mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
         periodicity = Geom::Base::CFVPeriodicity(meshAccess.HostView().Periodic());
@@ -62,7 +62,9 @@ namespace DNDS::CFV
         ConstructBaseAndWeight(const tFGetBoundaryWeight &id2faceDircWeight)
     {
         _baseMeshStamp = _coefficientMeshStamp = Runtime::VersionStamp{};
-        auto meshAccess = mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
+        auto meshRequirements = Geom::MeshReadRequirements::CellFlux();
+        meshRequirements.wallDistance = settings.functionalSettings.anisotropicType == VRSettings::FunctionalSettings::AnisotropicType::WallDist;
+        auto meshAccess = mesh->AcquireRead(meshRequirements);
         const auto meshView = meshAccess.HostView();
         this->ValidateMetricsDependencies();
         baseWeight_.bndVRCaches.clear();

@@ -49,11 +49,79 @@ entity order must match exactly. `removeSelf` additionally requires equal
 initial and final entity orders, rather than comparing coincidentally equal
 numbers from different entity families.
 
-This increment bypasses `AdjVariant`'s concrete legacy-width alternatives for
-inverse/compose. The ghost-tree/interpolation registries still use their
-existing legacy variant and have not been universally migrated. CUDA setup
-readers, topology publication, PBI/orientation output for new incidence
-generation, and detached full-mesh transitions remain separate work.
+`NativeConnectivity` completes the CPU setup boundary for interpolation and
+GhostSpec traversal. The legacy `MeshConnectivity` variant API remains an explicit
+compatibility implementation; it is not the native builder. Local interpolation
+enumeration/deduplication is shared through `ConnectivityRows::EnumerateSubEntities`.
+The new distributed path writes ordered CSR relations, element information and
+periodic companions through detached `RowBuilder` commits. It uses the existing
+ownership callback and direct native owner messages, including owner-frame PBI.
+No native input is converted into an ArrayPair for these operations.
+
+```mermaid
+flowchart TD
+    M[Current mesh authority: legacy or native] --> C[RelationReadAccess::Current]
+    C --> R[Retained mesh scope + canonical source/target spaces]
+    A[Explicit native or checked legacy relation] --> R
+    R --> N[NativeConnectivity setup registry]
+    N --> E[Evaluate GhostSpec: native requested-row transfers]
+    E --> B[BuildGhosted: detached spaces + shared routes + native CSR]
+    R --> I[Interpolate: shared enumeration + native ownership transport]
+    I --> O[Generated entity space + ordered native relations + companions]
+```
+
+`RelationReadAccess::Current(mesh, kind, requirements)` acquires one current-authority
+scope and its canonical EntitySpaces. The scope-plus-descriptors constructor is
+private, preventing a caller from attaching mesh A's values to equally sized mesh B
+metadata. `RegisterMesh(mesh, requirements)` registers the available relation groups
+through one retained scope. Both paths use the published native authority when
+present and retain its storage. Sealed or moved underlying scopes reject subsequent
+reader access. Raw copied query views still do not extend an owner's lifetime.
+
+`Evaluate` follows the compiled BFS forest, including its cumulative same-kind
+collection semantics. Every hop fetches requested owned rows from their owners with
+`RowTransferPlan`, native CSR width discovery and transient direct `PayloadPlan`.
+Only requested rows move; there is no topology allgather. Empty ranks participate.
+Ghost publication compares the complete sorted relation schedule across ranks,
+including the intermediary for same-level relations. Direct relations ignore that
+field consistently with `AdjKind` equality. Distinct node/face neighbor relations
+therefore cannot accidentally share a schedule or exchange each other's rows.
+`BuildGhosted` constructs all destination maps before payload routes and returns
+one shared `RelationGhostRoute` per entity family. It publishes global entries,
+so a missing target ghost remains explicitly resolvable by global ID and is never
+silently dereferenced. The caller must request all needed boundary-node and optional
+relation closure before publishing a complete compute mesh. A standalone discovery
+result is not a proof of compute closure.
+
+Ghosted descriptors retain their source identity, numbering and version dependency;
+a tracked source layout/distribution change invalidates them. A newly interpolated
+entity family has its own retained version controller and numbering maps. Its node
+and parent relation targets still depend on the input entity descriptors. The
+returned `NativeInterpolation` retains owned and ghost parent rows, parent slot
+ordering, first-owner entity node order, repeated self-periodic incidences,
+`entityElemInfo`, and optional node/parent PBI arrays. PBI is frame metadata, never
+an index: extraction is slot-parallel, matching compares sorted `(node, bits)` pairs,
+and the parent-to-owner transform is a uniform XOR. Owner messages carry the owner
+frame; appended parent rows and their PBI are completed through a shared native
+source route. Ordered companion transfer uses `RelationGhostRoute::TransferRows`
+with explicit source order and `ElementSchema`; custom structs must supply their
+actual wire type. Initial topology construction remains on CPU.
+
+The existing full-mesh import and detached transition rebuild still use validated
+legacy setup workspaces as compatibility adapters before explicit native publication.
+They must not be described as native topology builders. Prepared transitions now
+preserve source authority: a native source publishes its rebuilt candidate as native
+before binding typed destination fields; a legacy source remains legacy. The
+post-redistribution CUDA overlap fixture conditionally publishes only when its
+destination is not already native, then executes the native device query.
+
+`test_NativeConnectivity.cpp` adds independent ordered edge expectations, periodic
+self-face/PBI checks, empty-owner ranks, cumulative multilayer ring reachability,
+legacy traversal parity, current native authority after deliberate detached workspace
+corruption, and real IV10 periodic physical-node/frame checks across ownership and
+ghost transfers. Syntax checks passed for the new source/test and legacy interpolation
+test. Build/MPI/runtime evidence is recorded by parent integration, not implied by
+this source-level audit.
 
 New `test_RelationAccess.cpp` covers native/legacy inverse parity, deterministic
 sorted support, repeated and empty input rows, distributed sparse targets,

@@ -2,12 +2,13 @@
 
 The Geom facade migration is partial. `UnstructuredMesh::AcquireRead` now provides
 a retained read scope and a storage-independent `UnstructuredMeshView`. Legacy
-mesh arrays remain authoritative. Solver field setup can obtain
+mesh arrays remain the default setup authority; explicit `PublishNative` installs
+private immutable native authority. Solver field setup can obtain
 [entity-space descriptors](EntitySpace.md) instead of borrowing mesh
 transformers directly. CFV setup/reconstruction and selected Euler operators use
 one scope per operator. Python has managed read scopes and tracked coordinate
-transforms; legacy exports, remaining consumers, mesh mutators, caches and device
-consumers still require migration.
+transforms; the progress ledger lists remaining compatibility boundaries and
+the required final regression gates.
 
 ## Acquire once per operator
 
@@ -73,11 +74,11 @@ slots.
 
 ## Host and CUDA placement
 
-Host acquisition shares the existing legacy host allocations through the Runtime
-bridge and retains their access controllers. CUDA acquisition currently performs
-host validation and an explicit synchronous copy of the requested snapshot to
-the chosen device. It is a correctness bridge, not a resident topology cache or
-an asynchronous mesh upload API. `DeviceView()` returns the same plain query type
+In legacy mode, host acquisition shares existing host allocations through the
+Runtime bridge and retains their access controllers. CUDA acquisition in that
+mode validates and copies the requested snapshot to the chosen device. Native
+mode instead retains the existing immutable placement; `PlaceNative` must prepare
+each device explicitly before acquisition. `DeviceView()` returns the same plain query type
 with device pointers. `HostView()` rejects a CUDA scope and vice versa.
 
 For repeated native execution, explicitly capture a
@@ -129,13 +130,15 @@ redistribution with complete ghost reconstruction. These are implementation test
 definitions; successful execution must be established by the current validation
 logs, not inferred from their presence.
 
-Native topology ownership, complete mutation/cache invalidation, staged
-mesh-plus-field publication and resident device topology remain later work.
-Native inverse/composition output and field-bundle staging are intermediate
-steps, documented in `geom_relation_access_2026-10-24.md` and
-`geom_field_staging_2026-10-24.md` under `docs/dev`. Current descriptor or query
-coverage does not establish the remaining properties or full numerical solver
-equivalence.
+Explicit native authority and resident device placement are described in
+`NativeMeshPublication.md`. Detached mesh-plus-field transitions and their
+supported inventory are described in
+`../dev/geom_detached_transition_2026-10-24.md`. Native inverse/composition and
+field-bundle staging are documented in `geom_relation_access_2026-10-24.md` and
+`geom_field_staging_2026-10-24.md` under `docs/dev`. The progress ledger and
+current validation logs remain the authority for completed gates; these APIs
+alone do not establish full numerical solver equivalence or every cross-mesh
+mutation policy.
 
 ## Finite-volume and reconstruction dependencies
 

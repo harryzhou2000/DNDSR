@@ -2,7 +2,7 @@ from DNDSR import DNDS, Geom
 import sys, os, math
 import mpi4py.MPI as pyMPI
 import numpy as np
-from GeomUtils import *
+from utils import *
 from CartGridField import CartGridField
 import itertools
 
@@ -32,11 +32,11 @@ class OversetPart2D:
         self._transform = value
 
         # don't forget to update AABB!
-        coordsFatherData = np.array(self._mesh.coords.father.data())
-        coordsFatherData = coordsFatherData.reshape((3, -1), order="F")
+        with self._mesh.acquire_read() as read:
+            coordsFatherData = read.coordinates(owned_only=True).T
         coordsFatherData = self.coord_mesh_to_phy(coordsFatherData)
-        coordsMax = coordsFatherData.max(axis=1)
-        coordsMin = coordsFatherData.min(axis=1)
+        coordsMax = coordsFatherData.max(axis=1, initial=-np.inf)
+        coordsMin = coordsFatherData.min(axis=1, initial=np.inf)
         self._MPI.Allreduce(None, coordsMax, op=pyMPI.MAX)
         self._MPI.Allreduce(None, coordsMin, op=pyMPI.MIN)
         self._xyzMax = coordsMax
@@ -56,12 +56,11 @@ class OversetPart2D:
         self._id2name = {}
         for name, id in self._name2ID.items():
             self._id2name[id] = name
-        coordsFatherData = np.array(self._mesh.coords.father.data())
-        # print(coordsFatherData.shape)
-        coordsFatherData = coordsFatherData.reshape((3, -1), order="F")
+        with self._mesh.acquire_read() as read:
+            coordsFatherData = read.coordinates(owned_only=True).T
         coordsFatherData = self.coord_mesh_to_phy(coordsFatherData)
-        coordsMax = coordsFatherData.max(axis=1)
-        coordsMin = coordsFatherData.min(axis=1)
+        coordsMax = coordsFatherData.max(axis=1, initial=-np.inf)
+        coordsMin = coordsFatherData.min(axis=1, initial=np.inf)
         self._MPI.Allreduce(None, coordsMax, op=pyMPI.MAX)
         self._MPI.Allreduce(None, coordsMin, op=pyMPI.MIN)
         self._xyzMax = coordsMax
@@ -88,31 +87,26 @@ class OversetPart2D:
         Returns:
             tuple[ElemType, int, int, list[int], ndarray]: travelling cell
         """
-        mesh = self._mesh
-        part = self
+        with self._mesh.acquire_read() as read:
+            return self._travelling_cell_from_read(read, iCell, in_phy)
 
-        cell2node = np.array(mesh.cell2node[iCell], copy=False)
-        coords = []
-        for iNode in cell2node:
-            coords.append(np.array(mesh.coords[iNode], copy=True))
-        coords = np.array(coords).transpose()
+    def _travelling_cell_from_read(self, read, iCell, in_phy=True):
+        """Pack within a caller-retained query scope; returned data are copies."""
+        mesh = self._mesh
+        cells = mesh.entities(Geom.EntityKind.Cell)
+        nodes = mesh.entities(Geom.EntityKind.Node)
+        cell2node = read.cell_nodes(iCell).tolist()
+        coords = read.cell_coords(iCell).T
         if in_phy:
-            coords = part.coord_mesh_to_phy(coords)
-        elemInfo = mesh.cellElemInfo[iCell, 0]
-        assert elemInfo.getElemType() in {
-            Geom.Elem.ElemType.Tri3,
-            Geom.Elem.ElemType.Quad4,
-        }  # coords is now polygon
-        travelling_cell = pack_travelling_cell(
-            cellType=elemInfo.getElemType(),
-            cellZone=elemInfo.zone,
-            iCell=mesh.cell2node.trans.LGhostMapping(-1, iCell),
-            cell2nodeRow=[
-                mesh.coords.trans.LGhostMapping(-1, iNode) for iNode in cell2node
-            ],
+            coords = self.coord_mesh_to_phy(coords)
+        info = read.cell_info(iCell)
+        assert info.getElemType() in {Geom.Elem.ElemType.Tri3, Geom.Elem.ElemType.Quad4}
+        return pack_travelling_cell(
+            cellType=info.getElemType(), cellZone=info.zone,
+            iCell=cells.local_to_global(iCell),
+            cell2nodeRow=[nodes.local_to_global(int(node)) for node in cell2node],
             coords=coords,
         )
-        return travelling_cell
 
     def get_holed_faces_midpt(self, cell_type_arr: DNDS.ArrayEigenVectorPair_1_1_N):
         """Return indices and midpoints of faces between cells of differing type.
@@ -126,22 +120,24 @@ class OversetPart2D:
         mesh = self._mesh
         faces = []
         coords_mid = []
-        for iFace in range(mesh.NumFaceProc()):
-            f2c = mesh.face2cell[iFace].tolist()
-            type_L = cell_type_arr[f2c[0]].tolist()[0]
-            type_R = type_L
-            if f2c[1] != DNDS.UnInitIndex:
-                type_R = cell_type_arr[f2c[1]].tolist()[0]
-            if type_L != type_R:
-                faces.append(iFace)
-                faceAtr = mesh.faceElemInfo[iFace, 0]
-                assert faceAtr.getElemType() == Geom.Elem.ElemType.Line2
-                f2n = mesh.face2node[iFace].tolist()
-                coord_mid = (
-                    np.array(mesh.coords[f2n[0]]) + np.array(mesh.coords[f2n[1]])
-                ) * 0.5
-                coord_mid = self.coord_mesh_to_phy(coord_mid)
-                coords_mid.append(coord_mid[:2])
+        with mesh.acquire_read(faces=True) as read:
+            nCell = read.counts["cell"][2]
+            for iFace in range(read.counts["face"][2]):
+                f2c = read.face_cells(iFace).tolist()
+                # Outer ghost faces may reference cells beyond this halo.
+                if f2c[0] < 0 or (f2c[1] < 0 and f2c[1] != DNDS.UnInitIndex):
+                    continue
+                assert f2c[0] < nCell
+                type_L = cell_type_arr[f2c[0]].tolist()[0]
+                type_R = type_L
+                if f2c[1] != DNDS.UnInitIndex:
+                    assert f2c[1] < nCell
+                    type_R = cell_type_arr[f2c[1]].tolist()[0]
+                if type_L != type_R:
+                    faces.append(iFace)
+                    assert read.face_info(iFace).getElemType() == Geom.Elem.ElemType.Line2
+                    coord_mid = read.face_coords(iFace).mean(axis=0)
+                    coords_mid.append(self.coord_mesh_to_phy(coord_mid)[:2])
         coords_mid = np.array(coords_mid).reshape(-1, 2).T
 
         return (np.array(faces, dtype=np.int64), coords_mid)
@@ -164,11 +160,12 @@ class OversetPart2D:
 
         mesh = self._mesh
         travelling_cell_type_list = []
-        for iCell in range(mesh.NumCell()):
-            cell_type = cell_type_arr[iCell].tolist()[0]  # float
-            travelling_cell_type_list.append(
-                self.get_travelling_cell(iCell, in_phy=True) + (cell_type,)
-            )
+        with mesh.acquire_read() as read:
+            for iCell in range(read.counts["cell"][0]):
+                cell_type = cell_type_arr[iCell].tolist()[0]
+                travelling_cell_type_list.append(
+                    self._travelling_cell_from_read(read, iCell, in_phy=True) + (cell_type,)
+                )
 
         all_cell_types = MPI.gather(travelling_cell_type_list, root=0)
 

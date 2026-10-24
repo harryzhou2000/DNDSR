@@ -4,6 +4,8 @@
 #include "DNDS/Array_bind.hpp"
 #include "Mesh.hpp"
 #include "MeshAccess_bind.hpp"
+#include "MeshTransition.hpp"
+#include "MeshEdit_bind.hpp"
 #include <pybind11/pybind11.h>
 #include <pybind11_json/pybind11_json.hpp>
 #include <pybind11/eigen.h>
@@ -46,6 +48,7 @@ namespace DNDS::Geom
     inline void pybind11_UnstructuredMesh_define(py::module_ &m)
     {
         pybind11_MeshAccess_define(m);
+        pybind11_MeshEdit_define(m);
 #define DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_SIMP_FUNC(foo) \
     def(#foo, &UnstructuredMesh::foo)
 
@@ -53,9 +56,30 @@ namespace DNDS::Geom
     def_readonly(#m_name, &UnstructuredMesh::m_name, py::return_value_policy::reference_internal)
 
         auto UnstructuredMesh_ = tPy_UnstructuredMesh(m, "UnstructuredMesh");
+        py::enum_<CurrentMeshCheckpointPolicy>(m, "CurrentMeshCheckpointPolicy")
+            .value("RequireNoAuxiliaryValues", CurrentMeshCheckpointPolicy::RequireNoAuxiliaryValues)
+            .value("DropAuxiliary", CurrentMeshCheckpointPolicy::DropAuxiliary);
         UnstructuredMesh_
             .def(py::init<>([](const MPIInfo &mpi, int n_dim)
                             { return std::make_shared<UnstructuredMesh>(mpi, n_dim); }))
+            .def_property_readonly("has_native_state", &UnstructuredMesh::HasNativeState)
+            .def("edit", [](std::shared_ptr<UnstructuredMesh> self, int ghostLayers)
+                 { return std::make_shared<MeshEdit>(MeshEdit::Begin(std::move(self), ghostLayers)); }, py::arg("ghost_layers") = 1, "Collectively stage current-authority owned coordinate/cell metadata and neighbor-order edits. Explicit commit required; context exit discards uncommitted changes.")
+            .def("entities", &UnstructuredMesh::Entities, py::arg("kind"), "Retain immutable distribution metadata without exposing an ArrayTransformer. Numbering changes invalidate mapping calls; descriptors do not block mutation.")
+            .def("publish_native", [](UnstructuredMesh &self, bool faces, bool inverse, bool edges, bool cellFaceNeighbors, bool wallDistance, bool allFaceCellsLocal)
+                 {
+                     MeshReadRequirements r;
+                     r.faces = faces; r.inverse = inverse; r.edges = edges;
+                     r.cellFaceNeighbors = cellFaceNeighbors; r.wallDistance = wallDistance;
+                     r.allFaceCellsLocal = allFaceCellsLocal;
+                     self.PublishNative(r); }, py::arg("faces") = false, py::arg("inverse") = false, py::arg("edges") = false, py::arg("cell_face_neighbors") = false, py::arg("wall_distance") = false, py::arg("all_face_cells_local") = false, "Collectively validate/import the legacy workspace and publish private native query storage. Release managed rows first; raw workspace edits do not alter the publication.")
+            .def("place_native", [](UnstructuredMesh &self, int ordinal)
+                 {
+                     auto device = Runtime::Device::CUDA(ordinal);
+                     self.PlaceNative(device, {device, nullptr}); }, py::arg("ordinal") = 0, "Prepare a CUDA placement of published native data; completes transfers before returning. CPU debug reads remain host-resident.")
+            .def("use_legacy_workspace", &UnstructuredMesh::UseLegacyWorkspace, "Collectively leave native publication mode and invalidate all current-state bindings; detached snapshots remain readable.")
+            .def("apply_geometry_transform", &UnstructuredMesh::ApplyGeometryTransform, py::arg("rotation"), py::arg("scale") = 1.0, "Collective legacy-workspace proper rotation and positive scale of coordinates, periodic frames and wall vectors. Native authority requires mesh.edit; rebuild dependent metrics afterward.")
+            .def("rectify_boundary_coordinates", &UnstructuredMesh::RectifyBoundaryCoordinates, py::arg("component_for_zone"), py::arg("volume_boundary") = true, "Collective legacy-workspace boundary snapping: callback returns 0 for unchanged or component 1/2/3. Native authority requires mesh.edit; wall distance must be rebuilt if needed.")
             .def("snapshot", [](UnstructuredMesh &self, bool faces, bool inverse, bool edges, bool cellFaceNeighbors, bool wallDistance)
                  {
                      MeshReadRequirements requirements;
@@ -163,6 +187,14 @@ namespace DNDS::Geom
             .def("ReorderLocalCells", &UnstructuredMesh::ReorderLocalCells, py::arg("nParts") = 1, py::arg("nPartsInner") = 1)
             .def("ReadSerialize", &UnstructuredMesh::ReadSerialize, py::arg("serializer"), py::arg("name"))
             .def("WriteSerialize", &UnstructuredMesh::WriteSerialize, py::arg("serializer"), py::arg("name"))
+            .def("WriteCurrentPrimaryMeshSnapshot", &WriteCurrentPrimaryMeshSnapshot,
+                 py::arg("serializer"), py::arg("name"), py::arg("ghostLayers") = 1,
+                 py::arg("policy") = CurrentMeshCheckpointPolicy::RequireNoAuxiliaryValues,
+                 "Collective primary-only checkpoint. Rebuild optional topology on restart; wall values require explicit DropAuxiliary.")
+            .def("WriteCurrentMeshSnapshot", &WriteCurrentMeshSnapshot,
+                 py::arg("serializer"), py::arg("name"), py::arg("ghostLayers") = 1,
+                 py::arg("policy") = CurrentMeshCheckpointPolicy::RequireNoAuxiliaryValues,
+                 "Compatibility spelling for collective WriteCurrentPrimaryMeshSnapshot; registered fields and auxiliary values are not saved.")
             .def(
                 "ReadSerializeAndDistribute",
                 [](UnstructuredMesh &self, Serializer::SerializerBaseSSP serializer,
@@ -238,10 +270,11 @@ namespace DNDS::Geom
                                               if (!value.allFinite())
                                                   throw py::value_error("coordinate transform returned a non-finite point");
                                               return value;
-                                          }); }, py::arg("transform"), "Tracked host point transform. Callback receives a detached (3,) copy; exceptions leave the mesh failed. Periodic frames and derived caches are caller responsibilities.")
+                                          }); }, py::arg("transform"), "Tracked legacy-workspace point transform. Native authority requires mesh.edit. Callback receives a detached copy; exceptions leave the mesh failed. Periodic frames and derived caches are caller responsibilities.")
             .def("TransformCoords", [](py::object self, py::function f)
                  {
                     auto &mesh = self.cast<UnstructuredMesh &>();
+                    mesh.RequireLegacyWorkspace("legacy Python TransformCoords");
                     auto make_view = [&self](ssp<DNDS::ArrayEigenVector<3>> &arr) -> py::array_t<real>
                     {
                         index N = arr->Size();

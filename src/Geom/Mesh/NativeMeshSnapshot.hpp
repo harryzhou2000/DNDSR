@@ -38,12 +38,14 @@ namespace DNDS::Geom
         }
         template <class T>
         static Pair<T> ClonePair(Runtime::PairReadView<T> source);
+        static NativeMeshSnapshot FromRead(MeshReadAccess read);
         template <class T>
         static std::optional<Pair<T>> Place(const std::optional<Pair<T>> &source, Runtime::Device device,
                                             Runtime::ExecutionContext context);
 
     public:
         static NativeMeshSnapshot Capture(UnstructuredMesh &source, MeshReadRequirements requirements = MeshReadRequirements::Primary());
+        static NativeMeshSnapshot ImportLegacyWorkspace(UnstructuredMesh &source, MeshReadRequirements requirements = MeshReadRequirements::Primary());
         NativeMeshSnapshot To(Runtime::Device device, Runtime::ExecutionContext context) const;
         NativeMeshSnapshot To(Runtime::Device device) const { return To(device, {device == Runtime::Device::Host() ? GetDevice() : device, nullptr}); }
         Runtime::Device GetDevice() const { return Live().device; }

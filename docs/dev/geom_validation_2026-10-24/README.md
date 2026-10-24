@@ -118,6 +118,41 @@ exposed a singleton-partition test setup at MPI 8; the tiny nine-cell fixture
 must not request a two-way local Metis split. Closing runs are recorded separately.
 
 These are scoped checkpoints, not full GE0–GE6 completion or performance results.
+
+## Native publication, edits, output and transitions: integrations 18–21
+
+These records supersede the early feature-specific failures for the listed
+scope. The typed entity-field binding and native ghost/interpolation setup work
+started afterward; these results do not validate that later source.
+
+| Record | Result and boundary |
+|---|---|
+| `integration18-new-tests.txt` | 16/20 focused registrations passed; four managed-edit failures exposed globally numbered legacy inverse setup rows. |
+| `integration19-edit-tests.txt` | Corrected inverse selection: managed edits passed at MPI 1/2/4/8. |
+| `integration18-euler-tests.txt` | 17/17 Euler registrations, including native-authority residual/timestep/update and volume-output comparisons. |
+| `integration19-python-cpu.txt`, `integration19-python-cpu-np2.txt` | 54 passed, one CUDA-only skip per rank. Includes installed Geom read/edit, headless overset, CFV and EulerP. Numba was installed in the checkout-local interop venv; overset cases executed. |
+| `integration19-profile-cpu.txt` | Imported CPU extension paths and ELF build IDs matched the selected build. |
+| `integration19-python-cpu-np4.txt` | Not an accepted source/binary pair: guard tests changed during execution against earlier installed binaries. Preserve this failed invocation; rerun after final build/install. |
+| `integration20-checkpoint-tests.txt` | MPI 1/2/4/8 coherent mesh-plus-four-history H5 checkpoint after detached redistribution; exact original-ID field/coordinate oracle and rebuilt ghost/faces. |
+| `integration21-geom-tests.txt` | 83/83 Geom registrations, including native mutation rejection and malformed self-periodic side rejection. The subsequent two-mesh destination guard and typed/DSL extensions require their own builds/tests. |
+| `integration21-dnds-tests.txt` | 55/55 DNDS registrations, including the Array bridge and direct transient/persistent transfers on SELF and split communicators. |
+| `integration21-cfv-tests.txt`, `integration21-euler-tests.txt` | 9/9 CPU CFV and 17/17 CPU Euler registrations. |
+| `integration21-gpu-tests.txt` | Native facade/legacy parity and two-rank direct-MPI CUDA mock passed. One rank is assigned to each physical GPU. |
+| `integration21-native-memcheck.txt` | Native cases pass their assertions, but MPI CUDA-accelerator shutdown reports `cuMemHostUnregister` error 713. This is not a clean sanitizer run. |
+| `integration21-native-memcheck-no-mpi-accelerator.txt` | Query-only native CUDA run with `OMPI_MCA_accelerator=^cuda`: 9 cases, 768 assertions, zero memory errors. The one legacy parity case is excluded because of the separately recorded registration diagnostic. This setting is not used to claim GPU-aware MPI coverage. |
+
+The broad invocations are `ctest --test-dir build-refactor -R '^geom_'`
+(and corresponding `^dnds_`, `^cfv_`, `^euler_`), with
+`--output-on-failure`. The GPU invocation selects
+`^geom_mesh_facade(_cuda|_overlap_cuda_np2)$` in `build-refactor-cuda`.
+For the query-only sanitizer invocation, use the checkout-local
+`test/demos/one_rank_per_gpu.py` launcher with `mpirun -np 1`,
+`compute-sanitizer --tool memcheck --error-exitcode 99`, and
+`--test-case-exclude='Native mesh CUDA queries match existing const legacy pair views'`.
+
+Legacy `Mesh_DeviceView.hpp`, `ArrayPair.hpp` and `ArrayAdjacency.hpp` remain
+unchanged against the Array phase baseline `232df1a0`. New views have their own
+device compile/execute coverage; legacy read-only CUDA support is preserved.
 Native authoritative publication, detached mesh/field transitions and final
 post-change regression remain active work. Keep rank/fixture/hardware guards and
 explicit skips visible when reporting coverage. Earlier failed logs are retained

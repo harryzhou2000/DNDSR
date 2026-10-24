@@ -471,6 +471,98 @@ TEST_CASE("Mesh facade rejects distribution mapping and owned closure inconsiste
         CHECK_THROWS(mesh->AcquireRead(G::MeshReadRequirements::CellFlux()));
         CHECK(mesh->versions.CanMutate());
     }
+    SUBCASE("periodic mesh still rejects a self face in an internal or external zone")
+    {
+        for (auto zone : {G::BC_ID_INTERNAL, G::BC_ID_DEFAULT_WALL})
+        {
+            auto mesh = FacadeFixture(true);
+            CHECK_NOTHROW(mesh->AcquireRead(G::MeshReadRequirements::CellFlux()));
+            mesh->faceElemInfo(0, 0).zone = zone;
+            CHECK(mesh->isPeriodic);
+            CHECK_THROWS(mesh->AcquireRead(G::MeshReadRequirements::CellFlux()));
+            CHECK(mesh->versions.CanMutate());
+        }
+    }
+    SUBCASE("self-periodic face requires two opposite cell-face sides before publication")
+    {
+        for (auto sameSide : {G::NodePeriodicBits{}, G::nodePB1})
+        {
+            auto mesh = FacadeFixture(true);
+            mesh->cell2facePbi(0, 0) = sameSide;
+            mesh->cell2facePbi(0, 2) = sameSide;
+            CHECK_THROWS(mesh->AcquireRead(G::MeshReadRequirements::CellFlux()));
+            CHECK_THROWS(mesh->PublishNative(G::MeshReadRequirements::CellFlux()));
+            CHECK_FALSE(mesh->HasNativeState());
+            CHECK(mesh->versions.CanMutate());
+            mesh->cell2facePbi(0, 0) = G::NodePeriodicBits{};
+            mesh->cell2facePbi(0, 2) = G::nodePB2; // Any nonzero side bit retains the existing policy.
+            {
+                auto read = mesh->AcquireRead(G::MeshReadRequirements::CellFlux());
+                CHECK(read.HostView().CellIsFaceBack(0, 0, 0));
+                CHECK_FALSE(read.HostView().CellIsFaceBack(0, 0, 2));
+            }
+            CHECK_NOTHROW(mesh->PublishNative(G::MeshReadRequirements::CellFlux()));
+        }
+        auto missingSide = FacadeFixture(true);
+        missingSide->cell2face(0, 2) = 1;
+        CHECK_THROWS(missingSide->AcquireRead(G::MeshReadRequirements::CellFlux()));
+        CHECK_THROWS(missingSide->PublishNative(G::MeshReadRequirements::CellFlux()));
+        CHECK_FALSE(missingSide->HasNativeState());
+    }
+    SUBCASE("owned cell faces must reciprocally reference the source cell")
+    {
+        auto mesh = FacadeFixture();
+        // Add a second cell with in-range face IDs, but leave the faces pointing
+        // only to cell zero. Extents, type widths and mapping identities agree;
+        // a range-only acquisition used to publish these inconsistent rows.
+        mesh->cell2node.father->Resize(2, [](I)
+                                       { return DNDS::rowsize(3); });
+        mesh->cell2face.father->Resize(2, [](I)
+                                       { return DNDS::rowsize(3); });
+        mesh->cell2cell.father->Resize(2, [](I)
+                                       { return DNDS::rowsize(0); });
+        mesh->cellElemInfo.father->Resize(2);
+        for (I cell = 0; cell < 2; ++cell)
+        {
+            for (DNDS::rowsize slot = 0; slot < 3; ++slot)
+            {
+                mesh->cell2node(cell, slot) = slot;
+                mesh->cell2face(cell, slot) = slot;
+            }
+            mesh->cellElemInfo(cell, 0).setElemType(G::Elem::Tri3);
+            mesh->cellElemInfo(cell, 0).zone = 11;
+        }
+        mesh->cell2node.TransAttach();
+        mesh->cell2node.trans.createFatherGlobalMapping();
+        auto cells = G::AdjIndexInfo::makeFatherOnlyMapping(mesh->cell2node.father->pLGlobalMapping, 2, mesh->mpi);
+        mesh->cell2node.trans.pLGhostMapping = cells;
+        auto borrow = [&](auto &pair)
+        {
+            pair.TransAttach();
+            pair.trans.BorrowGGIndexing(mesh->cell2node.trans);
+        };
+        borrow(mesh->cell2cell);
+        borrow(mesh->cell2face);
+        borrow(mesh->cellElemInfo);
+        auto wire = [&](auto &pair)
+        {
+            pair.idx = G::AdjIndexInfo{};
+            pair.idx.wireTargetMapping(cells);
+            pair.idx.markLocal();
+        };
+        wire(mesh->cell2cell);
+        wire(mesh->bnd2cell);
+        wire(mesh->face2cell);
+        CHECK_NOTHROW(mesh->AcquireRead());
+        CHECK_THROWS(mesh->AcquireRead(G::MeshReadRequirements::CellFlux()));
+        CHECK(mesh->versions.CanMutate());
+        for (I face = 0; face < 3; ++face)
+        {
+            mesh->face2cell(face, 1) = 1;
+            mesh->faceElemInfo(face, 0).zone = G::BC_ID_INTERNAL;
+        }
+        CHECK_NOTHROW(mesh->AcquireRead(G::MeshReadRequirements::CellFlux()));
+    }
     SUBCASE("external sentinel and unavailable inverse support remain valid")
     {
         auto mesh = FacadeFixture();

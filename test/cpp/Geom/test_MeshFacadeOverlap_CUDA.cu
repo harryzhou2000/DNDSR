@@ -36,6 +36,8 @@ static void CheckGPUOverlap(T::Fixture &fixture, int ordinal)
     auto core = engine.CreateStream(std::make_shared<R::CUDALauncher>(ordinal));
     auto ring = engine.CreateStream(std::make_shared<R::CUDALauncher>(ordinal));
     auto comm = engine.CreateStream(std::make_shared<R::CUDALauncher>(ordinal));
+    if (mesh.HasNativeState())
+        mesh.PlaceNative(device, core.Context());
     auto access = mesh.AcquireRead(G::MeshReadRequirements::CellFlux(), core.Context());
     const auto view = access.DeviceView();
     auto coreRows = hostCore.To(device, core.Context()), ringRows = hostRing.To(device, ring.Context());
@@ -104,6 +106,10 @@ TEST_CASE("Real mesh CUDA finite-volume core uses owned solution during direct m
     const auto old = fixture.mesh->Entities(G::EntityKind::Cell);
     fixture.mesh->ReorderLocalCells(2, 1);
     CHECK_FALSE(old.Valid());
+    CheckGPUOverlap(fixture, ordinal);
+    fixture.mesh->PublishNative(G::MeshReadRequirements::CellFlux());
+    CheckGPUOverlap(fixture, ordinal);
+    T::RedistributeCurrent(fixture);
     CheckGPUOverlap(fixture, ordinal);
 }
 

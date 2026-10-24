@@ -29,6 +29,7 @@ namespace DNDS::Geom
         int readable = 1;
         try
         {
+            meshO1.RequireLegacyWorkspace("elevation source");
             sourceRead.emplace(meshO1.versions.Read());
         }
         catch (...)
@@ -37,7 +38,7 @@ namespace DNDS::Geom
         }
         MPI_Allreduce(MPI_IN_PLACE, &readable, 1, MPI_INT, MPI_MIN, mpi.comm);
         DNDS_check_throw_info(readable, "elevation source is mutating or failed on a rank");
-        MeshMutationToken mutationToken(this, versions, Runtime::Change::All);
+        auto mutationToken = BeginManagedMutation(Runtime::Change::All);
 
         real epsSqrDist = 1e-20;
 
@@ -502,6 +503,7 @@ namespace DNDS::Geom
         int readable = 1;
         try
         {
+            meshO2.RequireLegacyWorkspace("bisection source");
             sourceRead.emplace(meshO2.versions.Read());
         }
         catch (...)
@@ -510,7 +512,7 @@ namespace DNDS::Geom
         }
         MPI_Allreduce(MPI_IN_PLACE, &readable, 1, MPI_INT, MPI_MIN, mpi.comm);
         DNDS_check_throw_info(readable, "elevation source is mutating or failed on a rank");
-        MeshMutationToken mutationToken(this, versions, Runtime::Change::All);
+        auto mutationToken = BeginManagedMutation(Runtime::Change::All);
 
         bool O2MeshIsO2 = meshO2.IsO2();
         DNDS_assert(O2MeshIsO2);
@@ -739,7 +741,7 @@ namespace DNDS::Geom
     void UnstructuredMesh::ElevatedNodesGetBoundarySmooth(const std::function<bool(t_index)> &FiFBndIdNeedSmooth)
     {
         CheckCollectiveMutationAvailable();
-        MeshMutationToken mutationToken(this, versions, Runtime::Change::Geometry | Runtime::Change::Values | Runtime::Change::Interface | Runtime::Change::Allocation);
+        auto mutationToken = BeginManagedMutation(Runtime::Change::Geometry | Runtime::Change::Values | Runtime::Change::Interface | Runtime::Change::Allocation);
         ElevatedNodesGetBoundarySmoothImpl(mutationToken, FiFBndIdNeedSmooth);
         mutationToken.Commit();
     }

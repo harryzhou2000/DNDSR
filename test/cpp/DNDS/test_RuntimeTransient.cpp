@@ -22,6 +22,47 @@ int main(int argc, char **argv)
     return result;
 }
 
+TEST_CASE("Direct transfers support SELF and reordered split communicators without inherited tag attributes")
+{
+    int worldRank = -1;
+    MPI_Comm_rank(MPI_COMM_WORLD, &worldRank);
+    MPI_Comm split = MPI_COMM_NULL;
+    MPI_Comm_split(MPI_COMM_WORLD, worldRank % 2, -worldRank, &split);
+    for (auto communicator : {MPI_COMM_SELF, split})
+    {
+        int rank = -1, size = 0;
+        MPI_Comm_rank(communicator, &rank);
+        MPI_Comm_size(communicator, &size);
+        std::vector<int> worldRanks(size_t(size), -1);
+        MPI_Allgather(&worldRank, 1, MPI_INT, worldRanks.data(), 1, MPI_INT, communicator);
+        const int peer = (rank + 1) % size;
+        auto context = std::make_shared<CommunicationContext>(communicator);
+        CHECK_THROWS(context->Reserve(-1));
+        Array<int64_t> source(RowLayout::Dense(3, 5, 8));
+        {
+            auto values = source.Write();
+            for (size_t row = 0; row < 3; ++row)
+                for (size_t column = 0; column < 5; ++column)
+                    values.At(row, column) = 1000 * worldRank + 10 * row + column;
+        }
+        RowTransferPlan route(context, 3, 2, {{peer, 2, 0}, {rank, 0, 1}});
+        for (auto mode : {TransferMode::Persistent, TransferMode::Transient})
+        {
+            Array<int64_t> destination(RowLayout::Dense(2, 5, 7));
+            auto binding = PayloadPlan(route, source.Layout(), destination.Layout(), ElementSchema::Arithmetic<int64_t>())
+                               .Bind(source, destination, TransferTransport::Direct, {mode, context, 32767});
+            binding.Begin().Wait();
+            auto values = destination.Read();
+            for (size_t column = 0; column < 5; ++column)
+            {
+                CHECK(values.At(0, column) == 1000 * worldRanks[size_t(peer)] + 20 + column);
+                CHECK(values.At(1, column) == 1000 * worldRank + column);
+            }
+        }
+    }
+    MPI_Comm_free(&split);
+}
+
 TEST_CASE("Transient reduction stages collisions and rejects a partial publication")
 {
     int rank, size;

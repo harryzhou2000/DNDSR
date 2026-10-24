@@ -1,0 +1,424 @@
+#define DOCTEST_CONFIG_IMPLEMENT
+#include "doctest.h"
+#include "Geom/Mesh/Mesh.hpp"
+#include "Geom/Mesh/NativeConnectivity.hpp"
+#include "MeshFacadeOverlapFixture.hpp"
+#include <set>
+#include <filesystem>
+
+namespace G = DNDS::Geom;
+namespace R = DNDS::Runtime;
+using I = DNDS::index;
+
+namespace
+{
+    DNDS::MPIInfo MPI()
+    {
+        DNDS::MPIInfo mpi;
+        mpi.setWorld();
+        return mpi;
+    }
+    template <class T>
+    R::Array<T> Rows(const std::vector<std::vector<T>> &rows)
+    {
+        R::RowBuilder builder(rows.size(), sizeof(T));
+        for (size_t row = 0; row < rows.size(); ++row)
+        {
+            builder.ResizeRow(row, rows[row].size());
+            for (size_t slot = 0; slot < rows[row].size(); ++slot)
+                builder.Row<T>(row)[slot] = rows[row][slot];
+        }
+        return R::Array<T>::FromSharedStorage(builder.Commit());
+    }
+    std::unique_ptr<G::UnstructuredMesh> Fixture(bool periodic = false, bool emptyRanks = false)
+    {
+        const auto mpi = MPI();
+        auto mesh = std::make_unique<G::UnstructuredMesh>(mpi, 2);
+        const I count = !emptyRanks || mpi.rank == 0 ? 1 : 0;
+        mesh->coords.InitPair("nativeDSL.nodes", mpi);
+        mesh->coords.father->Resize(count * (periodic ? 2 : 4));
+        mesh->coords.TransAttach();
+        mesh->coords.trans.createFatherGlobalMapping();
+        mesh->coords.trans.createGhostMapping(std::vector<I>{});
+        mesh->coords.trans.createMPITypes();
+        mesh->coords.trans.pullOnce();
+        mesh->cell2node.InitPair("nativeDSL.cells", mpi);
+        mesh->cell2node.father->Resize(count);
+        const I offset = (*mesh->coords.father->pLGlobalMapping)(mpi.rank, 0);
+        if (count)
+        {
+            mesh->cell2node.ResizeRow(0, 4);
+            const int nodes[4]{0, periodic ? 0 : 1, periodic ? 1 : 2, periodic ? 1 : 3};
+            for (int j = 0; j < 4; ++j)
+                mesh->cell2node(0, j) = offset + nodes[j];
+        }
+        mesh->cell2node.father->Compress();
+        mesh->cell2node.son->Resize(0);
+        mesh->cell2node.son->Compress();
+        mesh->cell2node.TransAttach();
+        mesh->cell2node.trans.createFatherGlobalMapping();
+        mesh->cell2node.trans.createGhostMapping(std::vector<I>{});
+        mesh->cell2node.idx.markGlobal();
+        return mesh;
+    }
+    G::SubEntityQueryPbi QuadFaces()
+    {
+        G::SubEntityQueryPbi query;
+        query.numSubEntities = [](I)
+        { return 4; };
+        query.describe = [](I, int)
+        { return G::SubEntityDesc{2, 2, G::t_index(G::Elem::Line2)}; };
+        query.extractNodes = [](I, int sub, const std::function<I(int)> &nodes, I *out)
+        { out[0] = nodes(sub); out[1] = nodes((sub + 1) % 4); };
+        query.extractPbi = [](I, int sub, const std::function<G::NodePeriodicBits(int)> &bits, G::NodePeriodicBits *out)
+        { out[0] = bits(sub); out[1] = bits((sub + 1) % 4); };
+        return query;
+    }
+    G::OwnershipResolverMulti Owner()
+    {
+        return [](const std::vector<I> &, const std::vector<DNDS::MPI_int> &ranks, I)
+        {
+            auto mpi = MPI();
+            return G::OwnershipDecision{*std::min_element(ranks.begin(), ranks.end()) == mpi.rank, {}};
+        };
+    }
+}
+
+TEST_CASE("Native interpolation retains ordered cones and periodic self incidences with empty ranks")
+{
+    for (bool periodic : {false, true})
+        for (bool emptyRanks : {false, true})
+        {
+            auto mesh = Fixture(periodic, emptyRanks);
+            auto cells = mesh->Entities(G::EntityKind::Cell), nodes = mesh->Entities(G::EntityKind::Node);
+            G::RelationReadAccess legacy(G::Adj::Cell2Node, mesh->cell2node, cells, nodes);
+            std::vector<std::vector<I>> values;
+            for (I row = 0; row < legacy.NumOwned(); ++row)
+                values.push_back(legacy.GlobalRow(row));
+            G::NativeRelation native(G::Adj::Cell2Node, cells, nodes, Rows(values));
+            auto read = native.Read();
+            std::optional<G::RelationPeriodicBits> bits;
+            if (periodic)
+            {
+                std::vector<std::vector<G::NodePeriodicBits>> pbi(size_t(cells.NumOwned()),
+                                                                  {G::NodePeriodicBits{0}, G::NodePeriodicBits{1}, G::NodePeriodicBits{1}, G::NodePeriodicBits{0}});
+                bits.emplace(read, Rows(pbi));
+            }
+            auto result = G::NativeConnectivity::Interpolate(read, G::EntityKind::Face, QuadFaces(), Owner(), bits ? &*bits : nullptr);
+            auto oracle = G::NativeConnectivity::Interpolate(legacy, G::EntityKind::Face, QuadFaces(), Owner(), bits ? &*bits : nullptr);
+            CHECK(result.entities.NumOwned() == cells.NumOwned() * (periodic ? 3 : 4));
+            CHECK(result.entities.NumGlobal() == (emptyRanks ? 1 : mesh->mpi.size) * (periodic ? 3 : 4));
+            auto p2e = result.parent2entity.Read();
+            auto e2n = result.entity2node.Read();
+            auto e2p = result.entity2parent.Read();
+            for (I row = 0; row < cells.NumOwned(); ++row)
+            {
+                CHECK(p2e.GlobalRow(row) == oracle.parent2entity.Read().GlobalRow(row));
+                CHECK(p2e.RowSize(row) == 4);
+                for (int slot = 0; slot < 4; ++slot)
+                {
+                    const auto entity = *result.entities.GlobalToLocal(p2e.Raw(row, size_t(slot)));
+                    const int origin = periodic && slot == 3 ? 1 : slot;
+                    CHECK(e2n.GlobalRow(entity) == std::vector<I>{values[size_t(row)][size_t(origin)], values[size_t(row)][size_t((origin + 1) % 4)]});
+                }
+                if (periodic)
+                {
+                    CHECK(p2e.Raw(row, 1) == p2e.Raw(row, 3));
+                    const auto self = *result.entities.GlobalToLocal(p2e.Raw(row, 1));
+                    CHECK(e2p.GlobalRow(self) == std::vector<I>{cells.LocalToGlobal(row), cells.LocalToGlobal(row)});
+                    auto pbi = result.parent2entityPbi->Read();
+                    CHECK(uint8_t(pbi.View()(size_t(row), 1)) == 0);
+                    CHECK(uint8_t(pbi.View()(size_t(row), 3)) == 1);
+                }
+            }
+            CHECK(result.entities.Valid());
+            // Output numbering owns its controller rather than depending on
+            // the local result object's temporary construction scope.
+            auto retained = result.entities;
+            CHECK(retained.Valid());
+        }
+}
+
+TEST_CASE("Native GhostSpec discovers multilayer remote rows and publishes shared routes")
+{
+    auto mesh = Fixture();
+    auto mpi = mesh->mpi;
+    auto cells = mesh->Entities(G::EntityKind::Cell), nodes = mesh->Entities(G::EntityKind::Node);
+    const I next = (mpi.rank + 1) % mpi.size;
+    std::vector<std::vector<I>> neighbors{{next, DNDS::UnInitIndex}};
+    G::NativeRelation c2c(G::Adj::Cell2Cell, cells, cells, Rows(neighbors));
+    G::RelationReadAccess c2n(G::Adj::Cell2Node, mesh->cell2node, cells, nodes);
+    G::NativeConnectivity setup(mpi);
+    setup.Register(c2c.Read());
+    setup.Register(std::move(c2n));
+    G::GhostSpec spec{{{G::EntityKind::Cell,
+                        {G::Adj::Cell2Cell, G::Adj::Cell2Cell, G::Adj::Cell2Node},
+                        G::EntityKind::Node},
+                       {G::EntityKind::Cell, {G::Adj::Cell2Cell, G::Adj::Cell2Cell}, G::EntityKind::Cell}}};
+    auto discovered = setup.Evaluate(G::CompiledGhostTree::compile(spec));
+    const I second = (mpi.rank + 2) % mpi.size;
+    std::vector<I> expectedCells;
+    // CompiledGhostTree marks same-kind intermediate hops COLLECT: two
+    // layers are cumulative, even when layer two loops back to the owner.
+    for (auto cell : {next, second})
+        if (cell != mpi.rank)
+            expectedCells.push_back(cell);
+    std::sort(expectedCells.begin(), expectedCells.end());
+    expectedCells.erase(std::unique(expectedCells.begin(), expectedCells.end()), expectedCells.end());
+    auto indices = [&](G::EntityKind kind)
+    {
+        auto found = discovered.ghostIndices.find(kind);
+        return found == discovered.ghostIndices.end() ? std::vector<I>{} : found->second;
+    };
+    CHECK(indices(G::EntityKind::Cell) == expectedCells);
+    std::vector<I> expectedNodes;
+    if (second != mpi.rank)
+        for (int j = 0; j < 4; ++j)
+            expectedNodes.push_back(second * 4 + j);
+    CHECK(indices(G::EntityKind::Node) == expectedNodes);
+    auto publication = setup.BuildGhosted(discovered);
+    auto ghosted = publication.relations.at(G::Adj::Cell2Node).Read();
+    CHECK(ghosted.Rows() == 1 + I(expectedCells.size()));
+    for (size_t row = 0; row < expectedCells.size(); ++row)
+    {
+        std::vector<I> expected;
+        for (int j = 0; j < 4; ++j)
+            expected.push_back(expectedCells[row] * 4 + j);
+        CHECK(ghosted.GlobalRow(I(row) + 1) == expected);
+    }
+    G::tAdjPair oldNeighbors;
+    oldNeighbors.InitPair("nativeDSL.legacyNeighbors", mpi);
+    oldNeighbors.father->Resize(1);
+    oldNeighbors.ResizeRow(0, 2);
+    oldNeighbors(0, 0) = next;
+    oldNeighbors(0, 1) = DNDS::UnInitIndex;
+    oldNeighbors.father->Compress();
+    oldNeighbors.son->Resize(0);
+    oldNeighbors.son->Compress();
+    oldNeighbors.TransAttach();
+    G::LegacyFieldBridge::BorrowIndexing(oldNeighbors.trans, cells);
+    G::MeshConnectivity oldSetup;
+    oldSetup.registerAdj(G::Adj::Cell2Cell, oldNeighbors);
+    oldSetup.registerAdj(G::Adj::Cell2Node, mesh->cell2node);
+    oldSetup.registerGlobalMapping(G::EntityKind::Cell, mesh->cell2node.father->pLGlobalMapping);
+    oldSetup.registerGlobalMapping(G::EntityKind::Node, mesh->coords.father->pLGlobalMapping);
+    auto oldDiscovery = oldSetup.evaluateGhostTree(G::CompiledGhostTree::compile(spec), mpi);
+    CHECK(oldDiscovery.ghostIndices == discovered.ghostIndices);
+    auto stale = std::make_unique<G::UnstructuredMesh>(mpi, 2);
+    stale->coords = mesh->coords;
+    stale->cell2node = mesh->cell2node;
+    CHECK_THROWS(setup.Register(G::RelationReadAccess(G::Adj::Node2Cell, stale->Entities(G::EntityKind::Node),
+                                                      stale->Entities(G::EntityKind::Cell), G::Adj_PointToGlobal, Rows(std::vector<std::vector<I>>(4)))));
+}
+
+TEST_CASE("Native ghost publication agrees complete same-level relation schedules")
+{
+    auto mesh = Fixture();
+    auto mpi = mesh->mpi;
+    auto cells = mesh->Entities(G::EntityKind::Cell);
+    const G::AdjKind viaNode{G::EntityKind::Cell, G::EntityKind::Cell, G::EntityKind::Node};
+    const G::AdjKind viaFace{G::EntityKind::Cell, G::EntityKind::Cell, G::EntityKind::Face};
+    const I next = (mpi.rank + 1) % mpi.size;
+    G::NativeRelation nodeRelation(viaNode, cells, cells, Rows(std::vector<std::vector<I>>{{next}}));
+    G::NativeRelation faceRelation(viaFace, cells, cells, Rows(std::vector<std::vector<I>>{{mpi.rank, next}}));
+    G::NativeConnectivity setup(mpi);
+    // Different insertion order must compile the same sorted collective order.
+    if (mpi.rank % 2)
+    {
+        setup.Register(faceRelation.Read());
+        setup.Register(nodeRelation.Read());
+    }
+    else
+    {
+        setup.Register(nodeRelation.Read());
+        setup.Register(faceRelation.Read());
+    }
+    G::GhostResult discovery;
+    if (next != mpi.rank)
+        discovery.ghostIndices[G::EntityKind::Cell] = {next};
+    auto result = setup.BuildGhosted(discovery);
+    auto nodeRows = result.relations.at(viaNode).Read();
+    auto faceRows = result.relations.at(viaFace).Read();
+    CHECK(nodeRows.GlobalRow(0) == std::vector<I>{next});
+    CHECK(faceRows.GlobalRow(0) == std::vector<I>{mpi.rank, next});
+    if (next != mpi.rank)
+    {
+        CHECK(nodeRows.GlobalRow(1) == std::vector<I>{(next + 1) % mpi.size});
+        CHECK(faceRows.GlobalRow(1) == std::vector<I>{next, (next + 1) % mpi.size});
+    }
+    if (mpi.size > 1)
+    {
+        G::NativeConnectivity mismatch(mpi);
+        if (mpi.rank == 0)
+            mismatch.Register(faceRelation.Read());
+        else
+            mismatch.Register(nodeRelation.Read());
+        // Equal relation counts/from/to and row extents must not hide the
+        // differing intermediary or enter incompatible payload collectives.
+        CHECK_THROWS(mismatch.BuildGhosted(discovery));
+    }
+}
+
+TEST_CASE("Current authority feeds native setup without reading detached legacy workspace")
+{
+    auto fixture = G::OverlapTest::BuildFixture(MPI());
+    auto &mesh = *fixture.mesh;
+    const auto tree = G::CompiledGhostTree::compile(G::GhostSpec{{{G::EntityKind::Cell, {G::Adj::Cell2Cell, G::Adj::Cell2Node}, G::EntityKind::Node}}});
+    auto evaluate = [&]
+    {
+        G::NativeConnectivity setup(mesh.mpi);
+        setup.RegisterMesh(mesh, G::MeshReadRequirements::Primary());
+        return setup.Evaluate(tree);
+    };
+    auto baseline = evaluate();
+    auto interpolate = [&]
+    {
+        auto owner = mesh.AcquireRead(G::MeshReadRequirements::Primary());
+        auto view = owner.HostView();
+        auto cone = G::RelationReadAccess::Current(mesh, G::Adj::Cell2Node, G::MeshReadRequirements::Primary());
+        G::SubEntityQueryPbi query;
+        query.numSubEntities = [view](I parent)
+        { return view.GetCellElement(parent).GetNumFaces(); };
+        query.describe = [view](I parent, int sub)
+        {
+            auto face = view.GetCellElement(parent).ObtainFace(sub);
+            return G::SubEntityDesc{face.GetNumVertices(), face.GetNumNodes(), G::t_index(face.type)};
+        };
+        query.extractNodes = [view](I parent, int sub, const std::function<I(int)> &nodes, I *out)
+        {
+            auto element = view.GetCellElement(parent);
+            std::vector<I> parentNodes(size_t(element.GetNumNodes()));
+            for (size_t j = 0; j < parentNodes.size(); ++j)
+                parentNodes[j] = nodes(int(j));
+            std::vector<I> faceNodes(size_t(element.ObtainFace(sub).GetNumNodes()));
+            element.ExtractFaceNodes(sub, parentNodes, faceNodes);
+            std::copy(faceNodes.begin(), faceNodes.end(), out);
+        };
+        auto result = G::NativeConnectivity::Interpolate(cone, G::EntityKind::Face, query, Owner());
+        auto e2n = result.entity2node.Read();
+        auto p2e = result.parent2entity.Read();
+        CHECK(p2e.Rows() == view.NumCellProc());
+        std::vector<std::vector<I>> output;
+        for (I row = 0; row < e2n.NumOwned(); ++row)
+            output.push_back(e2n.GlobalRow(row));
+        G::NativeConnectivity generated(mesh.mpi);
+        generated.Register(result.parent2entity.Read());
+        generated.Register(result.entity2node.Read());
+        G::GhostSpec closure{{{G::EntityKind::Cell, {{G::EntityKind::Cell, G::EntityKind::Face}}, G::EntityKind::Face},
+                              {G::EntityKind::Cell, {{G::EntityKind::Cell, G::EntityKind::Face}, {G::EntityKind::Face, G::EntityKind::Node}}, G::EntityKind::Node}}};
+        auto detached = generated.BuildGhosted(generated.Evaluate(G::CompiledGhostTree::compile(closure)));
+        auto edges = detached.relations.at(G::Adj::Face2Node).Read();
+        for (I parent = 0; parent < view.NumCell(); ++parent)
+            for (size_t slot = 0; slot < p2e.RowSize(parent); ++slot)
+            {
+                const auto entity = detached.spaces.at(G::EntityKind::Face).GlobalToLocal(p2e.Raw(parent, slot));
+                REQUIRE(entity);
+                auto actual = edges.GlobalRow(*entity);
+                std::vector<I> expected(size_t(view.GetCellElement(parent).ObtainFace(int(slot)).GetNumNodes()));
+                query.extractNodes(parent, int(slot), [&](int j)
+                                   { return cone.ReadEntry(parent, size_t(j)).global; }, expected.data());
+                std::sort(actual.begin(), actual.end());
+                std::sort(expected.begin(), expected.end());
+                CHECK(actual == expected);
+            }
+        return output;
+    };
+    auto expected = interpolate();
+    mesh.PublishNative(G::MeshReadRequirements::CellFlux());
+    // These are now detached compatibility arrays. Current setup must continue
+    // to use the published native relation values and canonical native maps.
+    for (I cell = 0; cell < mesh.cell2node.father->Size(); ++cell)
+        for (DNDS::rowsize slot = 0; slot < mesh.cell2node.father->RowSize(cell); ++slot)
+            mesh.cell2node(cell, slot) = DNDS::UnInitIndex;
+    CHECK(evaluate().ghostIndices == baseline.ghostIndices);
+    CHECK(interpolate() == expected);
+}
+
+TEST_CASE("Native periodic distributed interpolation preserves owner frames and ordered companions")
+{
+    auto mpi = MPI();
+    auto mesh = std::make_shared<G::UnstructuredMesh>(mpi, 2);
+    const G::tPoint zero{0, 0, 0};
+    mesh->SetPeriodicGeometry({10, 0, 0}, zero, zero, {0, 10, 0}, zero, zero, zero, zero, zero);
+    G::UnstructuredMeshSerialRW reader(mesh, 0);
+    auto path = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path() / "data/mesh/IV10_10.cgns";
+    reader.ReadFromCGNSSerial(path.string());
+    reader.Deduplicate1to1Periodic(1e-8);
+    reader.BuildCell2Cell();
+    G::UnstructuredMeshSerialRW::PartitionOptions options;
+    options.metisType = "KWAY";
+    options.metisSeed = 42;
+    reader.MeshPartitionCell2Cell(options);
+    reader.PartitionReorderToMeshCell2Cell();
+    mesh->RecoverNode2CellAndNode2Bnd();
+    mesh->RecoverCell2CellAndBnd2Cell();
+    mesh->BuildGhostPrimary();
+    mesh->AdjGlobal2LocalPrimary();
+    mesh->InterpolateFace();
+    auto run = [&]
+    {
+        auto owner = mesh->AcquireRead(G::MeshReadRequirements::CellFlux());
+        auto view = owner.HostView();
+        auto cone = G::RelationReadAccess::Current(*mesh, G::Adj::Cell2Node, G::MeshReadRequirements::Primary());
+        G::RelationPeriodicBits periodic(cone);
+        auto result = G::NativeConnectivity::Interpolate(cone, G::EntityKind::Face, QuadFaces(), Owner(), &periodic);
+        auto parents = result.parent2entity.Read();
+        G::NativeConnectivity generated(mpi);
+        generated.Register(result.parent2entity.Read());
+        generated.Register(result.entity2node.Read());
+        G::GhostSpec spec{{{G::EntityKind::Cell, {G::Adj::Cell2Face}, G::EntityKind::Face}}};
+        auto detached = generated.BuildGhosted(generated.Evaluate(G::CompiledGhostTree::compile(spec)));
+        auto faces = detached.relations.at(G::Adj::Face2Node).Read();
+        R::ElementSchema schema(G::NodePeriodicBits::CommType(), sizeof(G::NodePeriodicBits), "Geom.NodePeriodicBits",
+                                R::ElementSchema::TypeIdentity<G::NodePeriodicBits>());
+        // Generated owned order matches the publication; its ghost map is new.
+        auto ghosts = detached.routes.at(G::EntityKind::Face).TransferRows(detached.spaces.at(G::EntityKind::Face), *result.entity2nodePbi, schema);
+        auto ownedBits = result.entity2nodePbi->Read();
+        auto ghostBits = ghosts.Read();
+        auto frameBits = result.parent2entityPbi->Read();
+        I localFaces = result.entities.NumOwned(), totalFaces = 0;
+        MPI_Allreduce(&localFaces, &totalFaces, 1, DNDS::DNDS_MPI_INDEX, MPI_SUM, mpi.comm);
+        CHECK(totalFaces == mesh->Entities(G::EntityKind::Face).NumGlobal());
+        std::vector<std::vector<I>> identity;
+        for (I parent = 0; parent < view.NumCell(); ++parent)
+        {
+            identity.push_back(parents.GlobalRow(parent));
+            for (size_t slot = 0; slot < parents.RowSize(parent); ++slot)
+            {
+                const auto face = detached.spaces.at(G::EntityKind::Face).GlobalToLocal(parents.Raw(parent, slot));
+                REQUIRE(face);
+                auto nodes = faces.GlobalRow(*face);
+                const auto bitsView = *face < localFaces ? ownedBits.View() : ghostBits.View();
+                const auto bitsRow = size_t(*face < localFaces ? *face : *face - localFaces);
+                std::vector<G::tPoint> actual, expected;
+                for (size_t j = 0; j < nodes.size(); ++j)
+                {
+                    const auto node = mesh->Entities(G::EntityKind::Node).GlobalToLocal(nodes[j]);
+                    REQUIRE(node);
+                    const auto combined = G::NodePeriodicBits{uint8_t(uint8_t(bitsView(bitsRow, j)) ^ uint8_t(frameBits.View()(size_t(parent), slot)))};
+                    actual.push_back(view.Periodic().GetCoordByBits(view.Coord(*node), combined));
+                }
+                expected.push_back(view.GetCoordNodeOnCell(parent, DNDS::rowsize(slot)));
+                expected.push_back(view.GetCoordNodeOnCell(parent, DNDS::rowsize((slot + 1) % 4)));
+                const bool same = actual[0].isApprox(expected[0]) && actual[1].isApprox(expected[1]);
+                const bool reversed = actual[0].isApprox(expected[1]) && actual[1].isApprox(expected[0]);
+                CHECK((same || reversed));
+            }
+        }
+        return identity;
+    };
+    auto expected = run();
+    mesh->PublishNative(G::MeshReadRequirements::CellFlux());
+    for (I cell = 0; cell < mesh->cell2node.father->Size(); ++cell)
+        for (DNDS::rowsize slot = 0; slot < mesh->cell2node.father->RowSize(cell); ++slot)
+            mesh->cell2node(cell, slot) = DNDS::UnInitIndex;
+    CHECK(run() == expected);
+}
+
+int main(int argc, char **argv)
+{
+    MPI_Init(&argc, &argv);
+    const auto result = doctest::Context(argc, argv).run();
+    MPI_Finalize();
+    return result;
+}
