@@ -7,6 +7,7 @@
 
 #include "VRDefines.hpp"
 #include "Geom/Mesh/Mesh.hpp"
+#include "Geom/Mesh/EntitySpace.hpp"
 
 namespace DNDS::CFV
 {
@@ -64,13 +65,13 @@ namespace DNDS::CFV
             switch (varloc)
             {
             case Geom::MeshLoc::Cell:
-                u.trans.BorrowGGIndexing(mesh->cell2node.trans);
+                Geom::LegacyFieldBridge::BorrowIndexing(u.trans, mesh->Entities(Geom::EntityKind::Cell));
                 break;
             case Geom::MeshLoc::Node:
-                u.trans.BorrowGGIndexing(mesh->coords.trans);
+                Geom::LegacyFieldBridge::BorrowIndexing(u.trans, mesh->Entities(Geom::EntityKind::Node));
                 break;
             case Geom::MeshLoc::Face:
-                u.trans.BorrowGGIndexing(mesh->face2node.trans);
+                Geom::LegacyFieldBridge::BorrowIndexing(u.trans, mesh->Entities(Geom::EntityKind::Face));
                 break;
             default:
                 DNDS_assert(false);
@@ -133,13 +134,13 @@ namespace DNDS::CFV
             switch (varloc)
             {
             case Geom::MeshLoc::Cell:
-                u.trans.BorrowGGIndexing(mesh->cell2node.trans);
+                Geom::LegacyFieldBridge::BorrowIndexing(u.trans, mesh->Entities(Geom::EntityKind::Cell));
                 break;
             case Geom::MeshLoc::Node:
-                u.trans.BorrowGGIndexing(mesh->coords.trans);
+                Geom::LegacyFieldBridge::BorrowIndexing(u.trans, mesh->Entities(Geom::EntityKind::Node));
                 break;
             case Geom::MeshLoc::Face:
-                u.trans.BorrowGGIndexing(mesh->face2node.trans);
+                Geom::LegacyFieldBridge::BorrowIndexing(u.trans, mesh->Entities(Geom::EntityKind::Face));
                 break;
             default:
                 DNDS_assert(false);

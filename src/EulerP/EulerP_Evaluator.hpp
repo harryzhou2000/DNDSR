@@ -20,6 +20,9 @@
 #include <vector>
 #include "DNDS/Device/DeviceStorageHelper.hpp"
 #include "DNDS/ObjectUtils.hpp"
+#include "Geom/Mesh/NativeMeshSnapshot.hpp"
+#include <map>
+#include <optional>
 
 namespace DNDS::EulerP
 {
@@ -39,7 +42,7 @@ namespace DNDS::EulerP
     class EvaluatorDeviceView
     {
     public:
-        using t_fv = TFiniteVolume::t_deviceView<B>;
+        using t_fv = CFV::FiniteVolumeDeviceView<B, Geom::UnstructuredMeshView>;
         t_fv fv; /**< @brief Device view of the finite volume / VFV reconstruction object. */
         using t_bcHandler = BCHandlerDeviceView<B>;
         t_bcHandler bcHandler; /**< @brief Device view of the boundary condition handler. */
@@ -108,6 +111,32 @@ namespace DNDS::EulerP
         using t_self = Evaluator;
         using t_fv = ssp<CFV::FiniteVolume>;
         t_fv fv; /**< @brief Shared pointer to the Compact Finite Volume (VFV) reconstruction object. */
+    private:
+        struct MeshSnapshotCache
+        {
+            std::weak_ptr<Geom::UnstructuredMesh> source;
+            Runtime::VersionStamp stamp;
+            std::optional<Geom::NativeMeshSnapshot> snapshot;
+        };
+        std::map<int, MeshSnapshotCache> _meshSnapshots;
+
+        Geom::NativeMeshSnapshot CachedMeshSnapshot(Runtime::Device device)
+        {
+            const int key = device.space == Runtime::MemorySpace::Host ? -1 : device.ordinal;
+            auto &entry = _meshSnapshots[key];
+            if (entry.source.lock() != fv->mesh || !entry.stamp.Valid() || !entry.snapshot)
+            {
+                auto requirements = Geom::MeshReadRequirements::CellFlux();
+                requirements.allFaceCellsLocal = true;
+                auto host = Geom::NativeMeshSnapshot::Capture(*fv->mesh, requirements);
+                entry.snapshot = device == Runtime::Device::Host() ? std::move(host) : host.To(device);
+                entry.source = fv->mesh;
+                entry.stamp = fv->mesh->versions.Stamp();
+            }
+            return *entry.snapshot;
+        }
+
+    public:
         using t_bcHandler = ssp<BCHandler>;
         t_bcHandler bcHandler; /**< @brief Shared pointer to the boundary condition handler. */
         using t_physics = ssp<Physics>;
@@ -132,10 +161,10 @@ namespace DNDS::EulerP
         }
 
         // internal buffers
-        TUDof u_face_bufferL;                         /**< @brief Left-side face DOF buffer for boundary value storage. */
-        TUDof u_face_bufferR;                         /**< @brief Right-side face DOF buffer for boundary value storage. */
-        std::vector<TUScalar> uScalar_face_bufferL;   /**< @brief Left-side face scalar buffers for additional transported scalars. */
-        std::vector<TUScalar> uScalar_face_bufferR;   /**< @brief Right-side face scalar buffers for additional transported scalars. */
+        TUDof u_face_bufferL;                       /**< @brief Left-side face DOF buffer for boundary value storage. */
+        TUDof u_face_bufferR;                       /**< @brief Right-side face DOF buffer for boundary value storage. */
+        std::vector<TUScalar> uScalar_face_bufferL; /**< @brief Left-side face scalar buffers for additional transported scalars. */
+        std::vector<TUScalar> uScalar_face_bufferR; /**< @brief Right-side face scalar buffers for additional transported scalars. */
 
         /**
          * @brief Allocates or resizes the face DOF buffer @p u to match the current mesh face count.
@@ -281,10 +310,8 @@ namespace DNDS::EulerP
         DeviceBackend device()
         {
             DeviceBackend B = fv->device();
-            DeviceBackend B_mesh = fv->mesh->device();
             DeviceBackend B_bcHandler = bcHandler->device();
             DeviceBackend B_physics = physics->device();
-            DNDS_check_throw(B == B_mesh);
             DNDS_check_throw(B == B_bcHandler);
             DNDS_check_throw(B == B_physics);
 
@@ -306,6 +333,17 @@ namespace DNDS::EulerP
             ssp<CFV::FiniteVolume> fv;
             t_bcHandler::element_type::t_deviceView<B> bcHandler;
             t_physics::element_type::t_deviceView<B> physics;
+            Runtime::VersionTracker::ReadLease sourceRead;
+            Geom::NativeMeshSnapshot snapshot;
+            Geom::MeshReadAccess meshRead;
+
+            t_deviceView(ssp<CFV::FiniteVolume> n_fv,
+                         t_bcHandler::element_type::t_deviceView<B> n_bc,
+                         t_physics::element_type::t_deviceView<B> n_physics,
+                         Runtime::VersionTracker::ReadLease source,
+                         Geom::NativeMeshSnapshot backing, Runtime::ExecutionContext context)
+                : fv(std::move(n_fv)), bcHandler(std::move(n_bc)), physics(std::move(n_physics)),
+                  sourceRead(std::move(source)), snapshot(std::move(backing)), meshRead(snapshot.AcquireRead(context)) {}
 
             //! only permit moving to avoid host_device_vector to change
             // also avoids accidentally copying this to device...
@@ -316,8 +354,11 @@ namespace DNDS::EulerP
 
             operator EvaluatorDeviceView<B>() const
             {
-                static_assert(std::is_trivially_copyable_v<remove_cvref_t<decltype(fv->deviceView<B>())>>);
-                return {fv->deviceView<B>(), bcHandler, physics};
+                using View = typename EvaluatorDeviceView<B>::t_fv;
+                if constexpr (B == DeviceBackend::Host)
+                    return {View(*fv, UnInitIndex, meshRead.HostView()), bcHandler, physics};
+                else
+                    return {View(*fv, UnInitIndex, meshRead.DeviceView()), bcHandler, physics};
             }
         };
 
@@ -330,6 +371,18 @@ namespace DNDS::EulerP
         template <DeviceBackend B>
         t_deviceView<B> deviceView()
         {
+            auto sourceRead = fv->mesh->versions.Read();
+            fv->ValidateMeshDependencies();
+            Runtime::Device device = Runtime::Device::Host();
+#ifdef DNDS_USE_CUDA
+            if constexpr (B == DeviceBackend::CUDA)
+            {
+                int ordinal = -1;
+                DNDS_check_throw_info(cudaGetDevice(&ordinal) == cudaSuccess, "EulerP cannot query current CUDA device");
+                device = Runtime::Device::CUDA(ordinal);
+            }
+#endif
+            auto backing = CachedMeshSnapshot(device);
             DeviceBackend B_fv = fv->device();
             DNDS_check_throw_info(B_fv == B || (B == DeviceBackend::Host && B_fv == DeviceBackend::Unknown),
                                   fmt::format("B_fv is  {} ", device_backend_name(B_fv)) +
@@ -338,7 +391,7 @@ namespace DNDS::EulerP
             return t_deviceView<B>{
                 fv,
                 bcHandler->deviceView<B>(),
-                physics->deviceView<B>()};
+                physics->deviceView<B>(), std::move(sourceRead), std::move(backing), Runtime::ExecutionContext{device, nullptr}};
         }
 
         /** @brief Transfers all sub-objects and face buffers from device memory back to host. */
@@ -362,6 +415,18 @@ namespace DNDS::EulerP
          */
         void to_device(DeviceBackend B)
         {
+            auto sourceRead = fv->mesh->versions.Read();
+            fv->ValidateMeshDependencies();
+            Runtime::Device placement = Runtime::Device::Host();
+#ifdef DNDS_USE_CUDA
+            if (B == DeviceBackend::CUDA)
+            {
+                int ordinal = -1;
+                DNDS_check_throw_info(cudaGetDevice(&ordinal) == cudaSuccess, "EulerP cannot query current CUDA device");
+                placement = Runtime::Device::CUDA(ordinal);
+            }
+#endif
+            CachedMeshSnapshot(placement);
             fv->to_device(B);
             bcHandler->to_device(B);
             physics->to_device(B);
@@ -448,7 +513,7 @@ namespace DNDS::EulerP
             ssp<TUGrad> uGrad; /**< @brief Gradient of conservative state (in-out: reconstructed by Green-Gauss). */
             // out
             std::vector<ssp<TUScalar>> uScalar;         /**< @brief Additional transported scalar fields (cell-centered). */
-            std::vector<ssp<TUScalarGrad>> uScalarGrad;  /**< @brief Gradients of transported scalars (in-out). */
+            std::vector<ssp<TUScalarGrad>> uScalarGrad; /**< @brief Gradients of transported scalars (in-out). */
 
             using t_self = RecGradient_Arg;
 
@@ -498,21 +563,21 @@ namespace DNDS::EulerP
         {
             using t_self = Cons2PrimMu_Arg;
 
-            ssp<TUDof> u;                                    /**< @brief Conservative state (input). */
-            ssp<TUGrad> uGrad;                               /**< @brief Gradient of conservative state (input). */
-            std::vector<ssp<TUScalar>> uScalar;              /**< @brief Transported scalar fields (input). */
-            std::vector<ssp<TUScalarGrad>> uScalarGrad;      /**< @brief Gradients of transported scalars (input). */
+            ssp<TUDof> u;                               /**< @brief Conservative state (input). */
+            ssp<TUGrad> uGrad;                          /**< @brief Gradient of conservative state (input). */
+            std::vector<ssp<TUScalar>> uScalar;         /**< @brief Transported scalar fields (input). */
+            std::vector<ssp<TUScalarGrad>> uScalarGrad; /**< @brief Gradients of transported scalars (input). */
             // out
-            ssp<TUDof> uPrim;                                /**< @brief Primitive state (output). */
-            ssp<TUGrad> uGradPrim;                           /**< @brief Gradient of primitive state (output). */
-            std::vector<ssp<TUScalar>> uScalarPrim;          /**< @brief Primitive transported scalars (output). */
-            std::vector<ssp<TUScalarGrad>> uScalarGradPrim;  /**< @brief Gradients of primitive scalars (output). */
-            ssp<TUScalar> p;                                 /**< @brief Pressure (output). */
-            ssp<TUScalar> T;                                 /**< @brief Temperature (output). */
-            ssp<TUScalar> a;                                 /**< @brief Speed of sound (output). */
-            ssp<TUScalar> gamma;                             /**< @brief Ratio of specific heats (output). */
-            ssp<TUScalar> mu;                                /**< @brief Total (laminar + turbulent) viscosity (output). */
-            std::vector<ssp<TUScalar>> muComp;               /**< @brief Component-wise viscosity contributions (output). */
+            ssp<TUDof> uPrim;                               /**< @brief Primitive state (output). */
+            ssp<TUGrad> uGradPrim;                          /**< @brief Gradient of primitive state (output). */
+            std::vector<ssp<TUScalar>> uScalarPrim;         /**< @brief Primitive transported scalars (output). */
+            std::vector<ssp<TUScalarGrad>> uScalarGradPrim; /**< @brief Gradients of primitive scalars (output). */
+            ssp<TUScalar> p;                                /**< @brief Pressure (output). */
+            ssp<TUScalar> T;                                /**< @brief Temperature (output). */
+            ssp<TUScalar> a;                                /**< @brief Speed of sound (output). */
+            ssp<TUScalar> gamma;                            /**< @brief Ratio of specific heats (output). */
+            ssp<TUScalar> mu;                               /**< @brief Total (laminar + turbulent) viscosity (output). */
+            std::vector<ssp<TUScalar>> muComp;              /**< @brief Component-wise viscosity contributions (output). */
 
             /** @brief Returns a tuple of member-to-pointer mappings for CRTP iteration / device transfer. */
             static auto member_list()
@@ -586,15 +651,15 @@ namespace DNDS::EulerP
         {
             using t_self = Cons2Prim_Arg;
 
-            ssp<TUDof> u;                           /**< @brief Conservative state (input). */
-            std::vector<ssp<TUScalar>> uScalar;     /**< @brief Transported scalar fields (input). */
+            ssp<TUDof> u;                       /**< @brief Conservative state (input). */
+            std::vector<ssp<TUScalar>> uScalar; /**< @brief Transported scalar fields (input). */
             // out
             ssp<TUDof> uPrim;                       /**< @brief Primitive state (output). */
-            std::vector<ssp<TUScalar>> uScalarPrim;  /**< @brief Primitive transported scalars (output). */
-            ssp<TUScalar> p;                         /**< @brief Pressure (output). */
-            ssp<TUScalar> T;                         /**< @brief Temperature (output). */
-            ssp<TUScalar> a;                         /**< @brief Speed of sound (output). */
-            ssp<TUScalar> gamma;                     /**< @brief Ratio of specific heats (output). */
+            std::vector<ssp<TUScalar>> uScalarPrim; /**< @brief Primitive transported scalars (output). */
+            ssp<TUScalar> p;                        /**< @brief Pressure (output). */
+            ssp<TUScalar> T;                        /**< @brief Temperature (output). */
+            ssp<TUScalar> a;                        /**< @brief Speed of sound (output). */
+            ssp<TUScalar> gamma;                    /**< @brief Ratio of specific heats (output). */
 
             /** @brief Returns a tuple of member-to-pointer mappings for CRTP iteration / device transfer. */
             static auto member_list()
@@ -659,14 +724,14 @@ namespace DNDS::EulerP
         struct EstEigenDt_Arg : public EvaluatorArgBase<EstEigenDt_Arg>
         {
             using t_self = EstEigenDt_Arg;
-            ssp<TUDof> u;                    /**< @brief Conservative state (cell-centered, input). */
-            ssp<TUScalar> muCell;            /**< @brief Per-cell total viscosity (input). */
-            ssp<TUScalar> aCell;             /**< @brief Per-cell speed of sound (input). */
-            ssp<TUScalarGrad> faceLamEst;    /**< @brief Per-face eigenvalue estimates [lam-, lam0, lam+] (output). */
-            ssp<TUScalar> faceLamVisEst;     /**< @brief Per-face viscous eigenvalue estimate (output). */
-            ssp<TUScalar> deltaLamFace;      /**< @brief Per-face eigenvalue difference for H-correction (output). */
-            ssp<TUScalar> deltaLamCell;      /**< @brief Per-cell maximum eigenvalue difference (output). */
-            ssp<TUScalar> dt;                /**< @brief Per-cell local time step (output). */
+            ssp<TUDof> u;                 /**< @brief Conservative state (cell-centered, input). */
+            ssp<TUScalar> muCell;         /**< @brief Per-cell total viscosity (input). */
+            ssp<TUScalar> aCell;          /**< @brief Per-cell speed of sound (input). */
+            ssp<TUScalarGrad> faceLamEst; /**< @brief Per-face eigenvalue estimates [lam-, lam0, lam+] (output). */
+            ssp<TUScalar> faceLamVisEst;  /**< @brief Per-face viscous eigenvalue estimate (output). */
+            ssp<TUScalar> deltaLamFace;   /**< @brief Per-face eigenvalue difference for H-correction (output). */
+            ssp<TUScalar> deltaLamCell;   /**< @brief Per-cell maximum eigenvalue difference (output). */
+            ssp<TUScalar> dt;             /**< @brief Per-cell local time step (output). */
 
             /** @brief Returns a tuple of member-to-pointer mappings for CRTP iteration / device transfer. */
             static auto member_list()
@@ -727,17 +792,17 @@ namespace DNDS::EulerP
         struct RecFace2nd_Arg : public EvaluatorArgBase<RecFace2nd_Arg>
         {
             using t_self = RecFace2nd_Arg;
-            ssp<TUDof> u;                                       /**< @brief Conservative state (cell-centered, input). */
-            ssp<TUGrad> uGrad;                                  /**< @brief Cell gradient of conservative state (input). */
-            std::vector<ssp<TUScalar>> uScalar;                 /**< @brief Cell-centered transported scalars (input). */
-            std::vector<ssp<TUScalarGrad>> uScalarGrad;         /**< @brief Gradients of transported scalars (input). */
+            ssp<TUDof> u;                               /**< @brief Conservative state (cell-centered, input). */
+            ssp<TUGrad> uGrad;                          /**< @brief Cell gradient of conservative state (input). */
+            std::vector<ssp<TUScalar>> uScalar;         /**< @brief Cell-centered transported scalars (input). */
+            std::vector<ssp<TUScalarGrad>> uScalarGrad; /**< @brief Gradients of transported scalars (input). */
             // out
-            ssp<TUDof> uFL;                                     /**< @brief Left reconstructed face values (face-located, output). */
-            ssp<TUDof> uFR;                                     /**< @brief Right reconstructed face values (face-located, output). */
-            ssp<TUGrad> uGradFF;                                /**< @brief Face-averaged gradient (face-located, output). */
-            std::vector<ssp<TUScalar>> uScalarFL;               /**< @brief Left reconstructed scalar face values (output). */
-            std::vector<ssp<TUScalar>> uScalarFR;               /**< @brief Right reconstructed scalar face values (output). */
-            std::vector<ssp<TUScalarGrad>> uScalarGradFF;       /**< @brief Face-averaged scalar gradients (output). */
+            ssp<TUDof> uFL;                               /**< @brief Left reconstructed face values (face-located, output). */
+            ssp<TUDof> uFR;                               /**< @brief Right reconstructed face values (face-located, output). */
+            ssp<TUGrad> uGradFF;                          /**< @brief Face-averaged gradient (face-located, output). */
+            std::vector<ssp<TUScalar>> uScalarFL;         /**< @brief Left reconstructed scalar face values (output). */
+            std::vector<ssp<TUScalar>> uScalarFR;         /**< @brief Right reconstructed scalar face values (output). */
+            std::vector<ssp<TUScalarGrad>> uScalarGradFF; /**< @brief Face-averaged scalar gradients (output). */
 
             /** @brief Returns a tuple of member-to-pointer mappings for CRTP iteration / device transfer. */
             static auto member_list()
@@ -806,38 +871,38 @@ namespace DNDS::EulerP
         struct Flux2nd_Arg : public EvaluatorArgBase<Flux2nd_Arg>
         {
             using t_self = Flux2nd_Arg;
-            ssp<TUDof> u;                                       /**< @brief Conservative state (cell-centered, input). */
-            ssp<TUGrad> uGrad;                                  /**< @brief Gradient of conservative state (input). */
-            std::vector<ssp<TUScalar>> uScalar;                 /**< @brief Transported scalar fields (input). */
-            std::vector<ssp<TUScalarGrad>> uScalarGrad;         /**< @brief Gradients of transported scalars (input). */
-            ssp<TUDof> uPrim;                                   /**< @brief Primitive state (cell-centered, input). */
-            ssp<TUGrad> uGradPrim;                              /**< @brief Gradient of primitive state (input). */
-            std::vector<ssp<TUScalar>> uScalarPrim;             /**< @brief Primitive transported scalars (input). */
-            std::vector<ssp<TUScalarGrad>> uScalarGradPrim;     /**< @brief Gradients of primitive scalars (input). */
-            ssp<TUScalar> p;                                    /**< @brief Pressure (cell-centered, input). */
-            ssp<TUScalar> T;                                    /**< @brief Temperature (cell-centered, input). */
-            ssp<TUScalar> a;                                    /**< @brief Speed of sound (cell-centered, input). */
-            ssp<TUScalar> mu;                                   /**< @brief Total viscosity (cell-centered, input). */
-            std::vector<ssp<TUScalar>> muComp;                  /**< @brief Component-wise viscosity contributions (input). */
-            ssp<TUScalar> gamma;                                /**< @brief Ratio of specific heats (cell-centered, input). */
-            ssp<TUScalar> deltaLamCell;                         /**< @brief Per-cell eigenvalue difference for H-correction (input). */
+            ssp<TUDof> u;                                   /**< @brief Conservative state (cell-centered, input). */
+            ssp<TUGrad> uGrad;                              /**< @brief Gradient of conservative state (input). */
+            std::vector<ssp<TUScalar>> uScalar;             /**< @brief Transported scalar fields (input). */
+            std::vector<ssp<TUScalarGrad>> uScalarGrad;     /**< @brief Gradients of transported scalars (input). */
+            ssp<TUDof> uPrim;                               /**< @brief Primitive state (cell-centered, input). */
+            ssp<TUGrad> uGradPrim;                          /**< @brief Gradient of primitive state (input). */
+            std::vector<ssp<TUScalar>> uScalarPrim;         /**< @brief Primitive transported scalars (input). */
+            std::vector<ssp<TUScalarGrad>> uScalarGradPrim; /**< @brief Gradients of primitive scalars (input). */
+            ssp<TUScalar> p;                                /**< @brief Pressure (cell-centered, input). */
+            ssp<TUScalar> T;                                /**< @brief Temperature (cell-centered, input). */
+            ssp<TUScalar> a;                                /**< @brief Speed of sound (cell-centered, input). */
+            ssp<TUScalar> mu;                               /**< @brief Total viscosity (cell-centered, input). */
+            std::vector<ssp<TUScalar>> muComp;              /**< @brief Component-wise viscosity contributions (input). */
+            ssp<TUScalar> gamma;                            /**< @brief Ratio of specific heats (cell-centered, input). */
+            ssp<TUScalar> deltaLamCell;                     /**< @brief Per-cell eigenvalue difference for H-correction (input). */
 
-            ssp<TUDof> uFL;                                     /**< @brief Left reconstructed face values (face-located, input). */
-            ssp<TUDof> uFR;                                     /**< @brief Right reconstructed face values (face-located, input). */
-            ssp<TUGrad> uGradFF;                                /**< @brief Face-averaged gradient (face-located, input). */
-            std::vector<ssp<TUScalar>> uScalarFL;               /**< @brief Left reconstructed scalar face values (input). */
-            std::vector<ssp<TUScalar>> uScalarFR;               /**< @brief Right reconstructed scalar face values (input). */
-            std::vector<ssp<TUScalarGrad>> uScalarGradFF;       /**< @brief Face-averaged scalar gradients (input). */
+            ssp<TUDof> uFL;                               /**< @brief Left reconstructed face values (face-located, input). */
+            ssp<TUDof> uFR;                               /**< @brief Right reconstructed face values (face-located, input). */
+            ssp<TUGrad> uGradFF;                          /**< @brief Face-averaged gradient (face-located, input). */
+            std::vector<ssp<TUScalar>> uScalarFL;         /**< @brief Left reconstructed scalar face values (input). */
+            std::vector<ssp<TUScalar>> uScalarFR;         /**< @brief Right reconstructed scalar face values (input). */
+            std::vector<ssp<TUScalarGrad>> uScalarGradFF; /**< @brief Face-averaged scalar gradients (input). */
 
-            ssp<TUScalar> pFL;                                  /**< @brief Left face pressure (face-located, input). */
-            ssp<TUScalar> pFR;                                  /**< @brief Right face pressure (face-located, input). */
+            ssp<TUScalar> pFL; /**< @brief Left face pressure (face-located, input). */
+            ssp<TUScalar> pFR; /**< @brief Right face pressure (face-located, input). */
 
             // out
-            ssp<TUDof> fluxFF;                                  /**< @brief Numerical flux at each face (face-located, output). */
-            std::vector<ssp<TUScalar>> fluxScalarFF;            /**< @brief Scalar numerical flux at each face (output). */
+            ssp<TUDof> fluxFF;                       /**< @brief Numerical flux at each face (face-located, output). */
+            std::vector<ssp<TUScalar>> fluxScalarFF; /**< @brief Scalar numerical flux at each face (output). */
             // out added
-            ssp<TUDof> rhs;                                     /**< @brief Accumulated right-hand-side residual (cell-centered, in-out). */
-            std::vector<ssp<TUScalar>> rhsScalar;               /**< @brief Accumulated scalar RHS residual (cell-centered, in-out). */
+            ssp<TUDof> rhs;                       /**< @brief Accumulated right-hand-side residual (cell-centered, in-out). */
+            std::vector<ssp<TUScalar>> rhsScalar; /**< @brief Accumulated scalar RHS residual (cell-centered, in-out). */
 
             /** @brief Returns a tuple of member-to-pointer mappings for CRTP iteration / device transfer. */
             static auto member_list()

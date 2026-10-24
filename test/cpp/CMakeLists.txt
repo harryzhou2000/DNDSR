@@ -187,6 +187,8 @@ add_dependencies(all_unit_tests dnds_unit_tests geom_unit_tests)
 dnds_add_unit_test(array "DNDS/test_Array.cpp" "dnds")
 dnds_add_unit_test(runtime "DNDS/test_Runtime.cpp" "dnds")
 dnds_add_unit_test(runtime_array "DNDS/test_RuntimeArray.cpp" "dnds")
+dnds_add_unit_test(legacy_array_bridge "DNDS/test_LegacyArrayBridge.cpp" "dnds")
+add_dependencies(dnds_unit_tests dnds_test_legacy_array_bridge)
 dnds_add_unit_test(runtime_row_builder "DNDS/test_RuntimeRowBuilder.cpp" "dnds")
 dnds_add_unit_test(runtime_engine "DNDS/test_EagerEngine.cpp" "dnds")
 add_dependencies(dnds_unit_tests dnds_test_runtime_engine)
@@ -265,6 +267,35 @@ geom_add_mpi_test(mesh_connectivity_interpolate "Geom/test_MeshConnectivity_Inte
 geom_add_mpi_test(mesh_reorder "Geom/test_MeshReorder.cpp" "geom;dnds")
 geom_add_unit_test(mesh_cgns_multizone "Geom/test_MeshCGNSMultiZone.cpp" "geom;dnds")
 geom_add_mpi_test(mesh_audit "Geom/test_MeshAudit.cpp" "geom;dnds")
+geom_add_mpi_test(mesh_facade "Geom/test_MeshFacade.cpp" "geom;dnds")
+add_dependencies(geom_unit_tests geom_test_mesh_facade)
+geom_add_mpi_test(mesh_facade_pipeline "Geom/test_MeshFacadePipeline.cpp" "geom;dnds")
+add_dependencies(geom_unit_tests geom_test_mesh_facade_pipeline)
+geom_add_mpi_test(mesh_facade_overlap "Geom/test_MeshFacadeOverlap.cpp" "geom;dnds")
+add_dependencies(geom_unit_tests geom_test_mesh_facade_overlap)
+geom_add_mpi_test(relation_access "Geom/test_RelationAccess.cpp" "geom;dnds")
+add_dependencies(geom_unit_tests geom_test_relation_access)
+geom_add_mpi_test(native_mesh_snapshot "Geom/test_NativeMeshSnapshot.cpp" "geom;dnds")
+add_dependencies(geom_unit_tests geom_test_native_mesh_snapshot)
+geom_add_mpi_test(mesh_mutation "Geom/test_MeshMutation.cpp" "geom;dnds")
+add_dependencies(geom_unit_tests geom_test_mesh_mutation)
+if(DNDS_USE_CUDA)
+    geom_add_unit_test(mesh_facade_cuda "Geom/test_MeshFacade_CUDA.cu" "geom;dnds")
+    target_sources(geom_test_mesh_facade_cuda PRIVATE Geom/MeshViewKernel.cu)
+    add_dependencies(geom_unit_tests geom_test_mesh_facade_cuda)
+    add_executable(geom_test_mesh_facade_overlap_cuda EXCLUDE_FROM_ALL Geom/test_MeshFacadeOverlap_CUDA.cu)
+    target_include_directories(geom_test_mesh_facade_overlap_cuda PRIVATE
+        ${DNDS_EXTERNAL_INCLUDE_DOCTEST} ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
+    target_link_libraries(geom_test_mesh_facade_overlap_cuda PRIVATE geom dnds ${DNDS_EXTERNAL_LIBS})
+    target_sources(geom_test_mesh_facade_overlap_cuda PRIVATE Geom/MeshFacadeOverlapKernel.cu)
+    add_test(NAME geom_mesh_facade_overlap_cuda_np2
+        COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2 ${MPIEXEC_PREFLAGS}
+            ${Python_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/demos/one_rank_per_gpu.py
+            $<TARGET_FILE:geom_test_mesh_facade_overlap_cuda> ${MPIEXEC_POSTFLAGS})
+    set_tests_properties(geom_mesh_facade_overlap_cuda_np2 PROPERTIES
+        PROCESSORS 2 TIMEOUT 180 ENVIRONMENT "OMP_NUM_THREADS=${DNDS_TEST_OMP_THREADS}")
+    add_dependencies(geom_unit_tests geom_test_mesh_facade_overlap_cuda)
+endif()
 
 set(GEOM_TEST_TARGETS
     geom_test_elements

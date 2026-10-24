@@ -1,6 +1,7 @@
 #pragma once
 
 #include "VariationalReconstruction.hpp"
+#include "Geom/Mesh/MeshAccess.hpp"
 
 namespace DNDS
 {
@@ -190,6 +191,9 @@ namespace DNDS
             int method,
             ReconstructionMaskView reconstructionMask)
         {
+            auto meshRead = mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
+            const auto meshView = meshRead.HostView();
+            this->ValidateMeshDependencies();
             using namespace Geom;
             using namespace Geom::Elem;
 
@@ -202,10 +206,10 @@ namespace DNDS
 #if defined(DNDS_DIST_MT_USE_OMP)
 #    pragma omp parallel for schedule(runtime)
 #endif
-                for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
+                for (index iCell = 0; iCell < meshView.NumCell(); iCell++)
                 {
                     int nVars = u[iCell].size();
-                    auto c2f = mesh->cell2face[iCell];
+                    auto c2f = meshView.CellFaces(iCell);
                     Eigen::Matrix<real, nVarsFixed, dim> grad;
                     grad.setZero(nVars, dim);
                     MatrixXR mGG;
@@ -221,9 +225,9 @@ namespace DNDS
                     for (int ic2f = 0; ic2f < c2f.size(); ic2f++)
                     {
                         index iFace = c2f[ic2f];
-                        index iCellOther = CellFaceOther(iCell, iFace, ic2f);
-                        auto faceID = mesh->GetFaceZone(iFace);
-                        int if2c = CellIsFaceBack(iCell, iFace, ic2f) ? 0 : 1;
+                        index iCellOther = meshView.CellFaceOther(iCell, iFace, ic2f);
+                        auto faceID = meshView.GetFaceZone(iFace);
+                        int if2c = meshView.CellIsFaceBack(iCell, iFace, ic2f) ? 0 : 1;
                         auto faceCent = this->GetFaceQuadraturePPhysFromCell(iFace, iCell, if2c, -1);
                         real lThis = (faceCent - this->GetCellBary(iCell)).norm();
                         if (settings.subs2ndOrderGGScheme == 0)
@@ -254,7 +258,7 @@ namespace DNDS
                         }
                         else
                         {
-                            auto faceID = mesh->GetFaceZone(iFace);
+                            auto faceID = meshView.GetFaceZone(iFace);
                             DNDS_assert(FaceIDIsExternalBC(faceID));
 
                             Eigen::Vector<real, nVarsFixed> uBL = u[iCell]; //! need fixing?
@@ -292,7 +296,7 @@ namespace DNDS
                         Eigen::Matrix<real, Eigen::Dynamic, nVarsFixed> xGG = mGGLU.solve(bGG);
                         grad = xGG(Seq012, EigenAll).transpose();
 
-                        if (mesh->GetCellElement(iCell).type == Elem::Pyramid5)
+                        if (meshView.GetCellElement(iCell).type == Elem::Pyramid5)
                         {
                             std::cout << "pyramid5\n";
                             std::cout << mGG << std::endl;
@@ -301,7 +305,7 @@ namespace DNDS
                             std::cout << svd.singularValues().transpose() << std::endl;
                             std::cout << svd.singularValues().maxCoeff() / svd.singularValues().minCoeff() << std::endl;
                         }
-                        if (mesh->GetCellElement(iCell).type == Elem::Tet4)
+                        if (meshView.GetCellElement(iCell).type == Elem::Tet4)
                         {
                             std::cout << "Tet4\n";
                             std::cout << mGG << std::endl;
@@ -325,10 +329,10 @@ namespace DNDS
 #if defined(DNDS_DIST_MT_USE_OMP)
 #    pragma omp parallel for schedule(runtime)
 #endif
-                for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
+                for (index iCell = 0; iCell < meshView.NumCell(); iCell++)
                 {
                     int nVars = u[iCell].size();
-                    auto c2f = mesh->cell2face[iCell];
+                    auto c2f = meshView.CellFaces(iCell);
                     Eigen::Matrix<real, nVarsFixed, dim> grad;
                     grad.setZero(nVars, dim);
                     Eigen::Matrix<real, Eigen::Dynamic, dim> dcs;
@@ -339,8 +343,8 @@ namespace DNDS
                     for (int ic2f = 0; ic2f < c2f.size(); ic2f++)
                     {
                         index iFace = c2f[ic2f];
-                        index iCellOther = CellFaceOther(iCell, iFace, ic2f);
-                        int if2c = CellIsFaceBack(iCell, iFace, ic2f) ? 0 : 1;
+                        index iCellOther = meshView.CellFaceOther(iCell, iFace, ic2f);
+                        int if2c = meshView.CellIsFaceBack(iCell, iFace, ic2f) ? 0 : 1;
 
                         if (iCellOther != UnInitIndex)
                         {
@@ -350,7 +354,7 @@ namespace DNDS
                         }
                         else
                         {
-                            auto faceID = mesh->GetFaceZone(iFace);
+                            auto faceID = meshView.GetFaceZone(iFace);
                             DNDS_assert(FaceIDIsExternalBC(faceID));
 
                             Eigen::Vector<real, nVarsFixed> uBL;
@@ -397,6 +401,9 @@ namespace DNDS
             const std::vector<int> &mask,
             ReconstructionMaskView reconstructionMask)
         {
+            auto meshRead = mesh->AcquireRead(Geom::MeshReadRequirements::Primary());
+            const auto meshView = meshRead.HostView();
+            this->ValidateMeshDependencies();
             using namespace Geom;
             using namespace Geom::Elem;
             static const auto Seq012 = Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>); // note this is gDim!
@@ -405,7 +412,7 @@ namespace DNDS
 #if defined(DNDS_DIST_MT_USE_OMP)
 #    pragma omp parallel for schedule(static)
 #endif
-            for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
+            for (index iCell = 0; iCell < meshView.NumCell(); iCell++)
 
             // #if defined(DNDS_DIST_MT_USE_OMP)
             // #pragma omp parallel for schedule(static)
@@ -537,10 +544,13 @@ namespace DNDS
                 return;
             }
 
+            auto meshRead = mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
+            const auto meshView = meshRead.HostView();
+            this->ValidateMeshDependencies();
             // #if defined(DNDS_DIST_MT_USE_OMP)
             // #pragma omp parallel for schedule(static)
             // #endif
-            //             for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
+            //             for (index iCell = 0; iCell < meshView.NumCell(); iCell++)
 
 #if defined(DNDS_DIST_MT_USE_OMP)
 #    pragma omp parallel for schedule(static)
@@ -584,15 +594,15 @@ namespace DNDS
                             uRecNew[iCell] += relax * alphaCell * (*uRecTarget)[iCell];
                     }
 
-                    auto c2f = mesh->cell2face[iCell];
+                    auto c2f = meshView.CellFaces(iCell);
                     auto matrixAAInvBRow = coefficients_.matrixAAInvB[iCell];
                     auto vectorAInvBRow = coefficients_.vectorAInvB[iCell];
                     for (int ic2f = 0; recWeight > 0 && ic2f < c2f.size(); ic2f++)
                     {
                         index iFace = c2f[ic2f];
-                        index iCellOther = CellFaceOther(iCell, iFace, ic2f);
-                        auto faceID = mesh->GetFaceZone(iFace);
-                        int if2c = CellIsFaceBack(iCell, iFace, ic2f) ? 0 : 1;
+                        index iCellOther = meshView.CellFaceOther(iCell, iFace, ic2f);
+                        auto faceID = meshView.GetFaceZone(iFace);
+                        int if2c = meshView.CellIsFaceBack(iCell, iFace, ic2f) ? 0 : 1;
                         if (iCellOther != UnInitIndex)
                         {
                             Eigen::RowVector<real, nVarsFixed> uOther = u[iCellOther];
@@ -651,13 +661,13 @@ namespace DNDS
 #if defined(DNDS_DIST_MT_USE_OMP)
 #    pragma omp parallel for schedule(static)
 #endif
-                    for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
+                    for (index iCell = 0; iCell < meshView.NumCell(); iCell++)
                         uRecNew[iCell].swap(uRec[iCell]);
                 if ((!putIntoNew) && (!settings.SORInstead))
 #if defined(DNDS_DIST_MT_USE_OMP)
 #    pragma omp parallel for schedule(static)
 #endif
-                    for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
+                    for (index iCell = 0; iCell < meshView.NumCell(); iCell++)
                         uRec[iCell].swap(uRecNew[iCell]);
             }
         }
@@ -672,6 +682,9 @@ namespace DNDS
             const TFBoundaryDiff<nVarsFixed> &FBoundaryDiff,
             ReconstructionMaskView reconstructionMask)
         {
+            auto meshRead = mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
+            const auto meshView = meshRead.HostView();
+            this->ValidateMeshDependencies();
             using namespace Geom;
             using namespace Geom::Elem;
             using namespace Geom::Base;
@@ -683,7 +696,7 @@ namespace DNDS
 #if defined(DNDS_DIST_MT_USE_OMP)
 #    pragma omp parallel for schedule(static)
 #endif
-                for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
+                for (index iCell = 0; iCell < meshView.NumCell(); iCell++)
                 {
                     uRecNew[iCell].setZero();
                     if (reconstructionMask.IsMasked(iCell))
@@ -694,20 +707,20 @@ namespace DNDS
 #if defined(DNDS_DIST_MT_USE_OMP)
 #    pragma omp parallel for schedule(runtime)
 #endif
-            for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
+            for (index iCell = 0; iCell < meshView.NumCell(); iCell++)
             {
                 uRecNew[iCell] = uRecDiff[iCell];
                 if (reconstructionMask.IsMasked(iCell))
                     continue; // Identity row: derivative of the constraint uRec_i=0.
 
-                auto c2f = mesh->cell2face[iCell];
+                auto c2f = meshView.CellFaces(iCell);
                 auto matrixAAInvBRow = coefficients_.matrixAAInvB[iCell];
                 for (int ic2f = 0; ic2f < c2f.size(); ic2f++)
                 {
                     index iFace = c2f[ic2f];
-                    index iCellOther = CellFaceOther(iCell, iFace, ic2f);
-                    auto faceID = mesh->GetFaceZone(iFace);
-                    int if2c = CellIsFaceBack(iCell, iFace, ic2f) ? 0 : 1;
+                    index iCellOther = meshView.CellFaceOther(iCell, iFace, ic2f);
+                    auto faceID = meshView.GetFaceZone(iFace);
+                    int if2c = meshView.CellIsFaceBack(iCell, iFace, ic2f) ? 0 : 1;
                     if (iCellOther != UnInitIndex)
                     {
                         Eigen::Matrix<real, Eigen::Dynamic, nVarsFixed> uRecOtherDiff = uRecDiff[iCellOther];
@@ -736,6 +749,9 @@ namespace DNDS
                 bool reverse,
                 ReconstructionMaskView reconstructionMask)
         {
+            auto meshRead = mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
+            const auto meshView = meshRead.HostView();
+            this->ValidateMeshDependencies();
             using namespace Geom;
             using namespace Geom::Elem;
             using namespace Geom::Base;
@@ -743,25 +759,25 @@ namespace DNDS
             static const auto Seq012 = Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>);
 
             reconstructionMask.Apply(uRecNew);
-            for (index iScan = 0; iScan < mesh->NumCell(); iScan++)
+            for (index iScan = 0; iScan < meshView.NumCell(); iScan++)
             {
                 index iCell = iScan;
                 if (reverse)
-                    iCell = mesh->NumCell() - 1 - iCell;
+                    iCell = meshView.NumCell() - 1 - iCell;
                 if (reconstructionMask.IsMasked(iCell))
                     continue;
                 real relax = GetCellAtr(iCell).relax;
 
                 uRecNew[iCell] = (1 - relax) * uRecNew[iCell] + uRecInc[iCell];
 
-                auto c2f = mesh->cell2face[iCell];
+                auto c2f = meshView.CellFaces(iCell);
                 auto matrixAAInvBRow = coefficients_.matrixAAInvB[iCell];
                 for (int ic2f = 0; ic2f < c2f.size(); ic2f++)
                 {
                     index iFace = c2f[ic2f];
-                    index iCellOther = CellFaceOther(iCell, iFace, ic2f);
-                    auto faceID = mesh->GetFaceZone(iFace);
-                    int if2c = CellIsFaceBack(iCell, iFace, ic2f) ? 0 : 1;
+                    index iCellOther = meshView.CellFaceOther(iCell, iFace, ic2f);
+                    auto faceID = meshView.GetFaceZone(iFace);
+                    int if2c = meshView.CellIsFaceBack(iCell, iFace, ic2f) ? 0 : 1;
                     if (iCellOther != UnInitIndex)
                     {
                         Eigen::Matrix<real, Eigen::Dynamic, nVarsFixed> uRecOtherNew = uRecNew[iCellOther];

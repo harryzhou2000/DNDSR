@@ -64,6 +64,7 @@ def get_fv(mpi):
     fv.ConstructFaceMeanNorm()
 
     fv.ConstructCellSmoothScale()
+    fv.finalize_metrics()
 
     nB = fv.getArrayBytes() / 1024**2
     nBMesh = mesh.getArrayBytes() / 1024**2
@@ -121,7 +122,6 @@ def test_basic_eulerP(mpi: DNDS.MPIInfo, isCuda=False):
     gSf = CFV.tUGrad_3x1()
     fv.BuildUGrad_3x1(gSf, 1, varloc=Geom.MeshLoc.Face)
     if isCuda:
-        mesh.to_device("CUDA")
         fv.to_device("CUDA")
         eval.to_device("CUDA")
         eval_device = eval.device()

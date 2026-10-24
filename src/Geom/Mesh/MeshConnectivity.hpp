@@ -23,9 +23,56 @@
 #include <variant>
 #include <unordered_map>
 #include <unordered_set>
+#include <functional>
 
 namespace DNDS::Geom
 {
+    class RelationReadAccess;
+    class NativeRelation;
+    namespace ConnectivityRows
+    {
+        /// Storage-neutral row mathematics shared by legacy and native DSL
+        /// adapters. Readers expose entries in global entity spaces; writers
+        /// receive each deterministic sorted row exactly once.
+        template <class ReadAB, class ReadBC, class ResolveB, class GlobalA, class Predicate, class Write>
+        void Compose(index nA, ReadAB &&readAB, ReadBC &&readBC, ResolveB &&resolveB,
+                     GlobalA &&globalA, Predicate &&pred, Write &&write,
+                     const std::function<bool(index, index, const std::vector<index> &)> &matchExtra = {})
+        {
+            for (index a = 0; a < nA; ++a)
+            {
+                const auto aGlobal = globalA(a);
+                std::unordered_map<index, int> counts;
+                std::unordered_map<index, std::vector<index>> shared;
+                for (auto b : readAB(a))
+                {
+                    if (b == UnInitIndex)
+                        continue;
+                    auto localB = resolveB(b);
+                    for (auto c : readBC(localB))
+                    {
+                        if (c == UnInitIndex)
+                            continue;
+                        ++counts[c];
+                        if (matchExtra)
+                            shared[c].push_back(b);
+                    }
+                }
+                std::vector<index> accepted;
+                for (auto &[c, count] : counts)
+                    if (pred(aGlobal, c, count) && (!matchExtra || matchExtra(a, c, shared[c])))
+                        accepted.push_back(c);
+                std::sort(accepted.begin(), accepted.end());
+                write(a, accepted);
+            }
+        }
+
+        template <class Read, class Write>
+        void Inverse(index nFrom, index nTo, Read &&read, Write &&write, const MPIInfo &mpi,
+                     const std::function<index(index)> &fromGlobal,
+                     const std::function<index(index)> &toGlobal,
+                     const ssp<GlobalOffsetsMapping> &toMapping);
+    }
     // Forward declaration for registerAdj overload
     template <class TPair>
     struct AdjPairTracked;
@@ -840,6 +887,15 @@ namespace DNDS::Geom
     /// More complex composed adjacencies are NOT stored in the registry.
     struct MeshConnectivity
     {
+        /// Storage-neutral setup paths. These retain their readers' explicit
+        /// source/target spaces; no legacy width variant or topology copy is
+        /// required. Inverse remains collective; composition needs all
+        /// referenced intermediate rows already present in the reader.
+        static NativeRelation Inverse(const RelationReadAccess &cone, const MPIInfo &mpi);
+        static NativeRelation Compose(const RelationReadAccess &AB, const RelationReadAccess &BC, bool removeSelf = false);
+        static NativeRelation ComposeFiltered(const RelationReadAccess &AB, const RelationReadAccess &BC,
+                                              const std::function<bool(index, index, int)> &predicate,
+                                              const std::function<bool(index, index, const std::vector<index> &)> &matchExtra = {});
         int meshDim{0};
         std::vector<ConeAdj> cones;
         std::vector<SupportAdj> supports;
@@ -1272,80 +1328,27 @@ namespace DNDS::Geom
         result.InitPair("ComposeFiltered_result", mpi);
         result.father->Resize(nALocal);
 
-        for (index iA = 0; iA < nALocal; iA++)
-        {
-            index aGlobal = aLocal2Global(iA);
-
-            // Collect all candidate C-entities with their shared-B count
-            // and optionally the list of shared B-entities.
-            std::unordered_map<index, int> candidateSharedCount;
-            std::unordered_map<index, std::vector<index>> candidateSharedBs;
-            for (auto iB : AB.father->operator[](iA))
-            {
-                // Fixed-width adjacencies may have UnInitIndex padding — skip.
-                if constexpr (rs_AB > 0)
+        ConnectivityRows::Compose(nALocal, [&](index row)
+                                  { return AB.father->operator[](row); }, [&](index row)
+                                  { return BC[row]; }, [&](index global)
+                                  {
+                auto found = bGlobal2Local.find(global);
+                DNDS_check_throw_info(found != bGlobal2Local.end(),
+                                      "ComposeFiltered: intermediate global row missing; ghost pull incomplete");
+                return found->second; }, aLocal2Global, std::forward<Predicate>(pred), [&](index row, const std::vector<index> &accepted)
+                                  {
+                if constexpr (out_rs == NonUniformSize)
                 {
-                    if (iB == UnInitIndex)
-                        continue;
+                    result.father->ResizeRow(row, accepted.size());
+                    for (rowsize j = 0; j < static_cast<rowsize>(accepted.size()); ++j)
+                        result.father->operator()(row, j) = accepted[j];
                 }
-
-                auto it = bGlobal2Local.find(iB);
-                DNDS_assert_info(it != bGlobal2Local.end(),
-                                 fmt::format("ComposeFiltered: B-entity global {} (referenced by A-entity "
-                                             "local {} / global {}) not found in bGlobal2Local. "
-                                             "Ghost pull of B→C is incomplete — the caller must "
-                                             "pull BC for all B-globals referenced by AB rows.",
-                                             iB, iA, aGlobal));
-                index bLocal = it->second;
-                for (auto iC : BC[bLocal])
+                else
                 {
-                    // Fixed-width adjacencies may have UnInitIndex padding — skip.
-                    if constexpr (rs_BC > 0)
-                    {
-                        if (iC == UnInitIndex)
-                            continue;
-                    }
-
-                    candidateSharedCount[iC]++;
-                    if (hasMatchExtra)
-                        candidateSharedBs[iC].push_back(iB);
-                }
-            }
-
-            // Apply predicate and collect passing entries
-            std::vector<index> accepted;
-            for (auto &[cGlobal, nShared] : candidateSharedCount)
-            {
-                if (!pred(aGlobal, cGlobal, nShared))
-                    continue;
-                if (hasMatchExtra)
-                {
-                    if (!matchExtra(iA, cGlobal, candidateSharedBs[cGlobal]))
-                        continue;
-                }
-                accepted.push_back(cGlobal);
-            }
-
-            // Sort for deterministic output
-            std::sort(accepted.begin(), accepted.end());
-
-            if constexpr (out_rs == NonUniformSize)
-            {
-                result.father->ResizeRow(iA, accepted.size());
-                for (rowsize j = 0; j < static_cast<rowsize>(accepted.size()); j++)
-                    result.father->operator()(iA, j) = accepted[j];
-            }
-            else
-            {
-                // Fixed-width output: fill accepted entries, pad remainder with UnInitIndex.
-                DNDS_assert_info(static_cast<rowsize>(accepted.size()) <= out_rs,
-                                 fmt::format("ComposeFiltered: row {} has {} entries but out_rs={}",
-                                             iA, accepted.size(), out_rs));
-                for (rowsize j = 0; j < out_rs; j++)
-                    result.father->operator()(iA, j) =
-                        (j < static_cast<rowsize>(accepted.size())) ? accepted[j] : UnInitIndex;
-            }
-        }
+                    DNDS_check_throw_info(accepted.size() <= size_t(out_rs), "ComposeFiltered: fixed result row too narrow");
+                    for (rowsize j = 0; j < out_rs; ++j)
+                        result.father->operator()(row, j) = size_t(j) < accepted.size() ? accepted[j] : UnInitIndex;
+                } }, matchExtra);
 
         return result;
     }
@@ -1381,23 +1384,37 @@ namespace DNDS::Geom
         const std::function<index(index)> &toLocal2Global,
         const ssp<GlobalOffsetsMapping> &toGlobalMapping)
     {
+        tAdjPair result;
+        result.InitPair("Inverse_result", mpi);
+        result.father->Resize(nToLocal);
+        ConnectivityRows::Inverse(cone.father->Size(), nToLocal, [&](index row)
+                                  { return cone.father->operator[](row); }, [&](index row, const std::vector<index> &entries)
+                                  {
+                result.father->ResizeRow(row, entries.size());
+                for (rowsize j = 0; j < static_cast<rowsize>(entries.size()); ++j)
+                    result.father->operator()(row, j) = entries[j]; }, mpi, fromLocal2Global, toLocal2Global, toGlobalMapping);
+        return result;
+    }
+
+    template <class Read, class Write>
+    void ConnectivityRows::Inverse(index nFromLocal, index nToLocal, Read &&read, Write &&write, const MPIInfo &mpi,
+                                   const std::function<index(index)> &fromLocal2Global,
+                                   const std::function<index(index)> &toLocal2Global,
+                                   const ssp<GlobalOffsetsMapping> &toGlobalMapping)
+    {
         // ----- Step 1: Local inversion -----
         std::unordered_map<index, std::unordered_set<index>> to2fromRecord;
         std::vector<index> ghostToIndices;
         std::unordered_set<index> ghostToSet;
 
-        index nFromLocal = cone.father->Size();
         for (index iFrom = 0; iFrom < nFromLocal; iFrom++)
         {
             index fromGlobal = fromLocal2Global(iFrom);
-            for (auto iTo : cone.father->operator[](iFrom))
+            for (auto iTo : read(iFrom))
             {
                 // Fixed-width adjacencies may have UnInitIndex padding — skip.
-                if constexpr (cone_rs > 0)
-                {
-                    if (iTo == UnInitIndex)
-                        continue;
-                }
+                if (iTo == UnInitIndex)
+                    continue;
 
                 to2fromRecord[iTo].insert(fromGlobal);
 
@@ -1477,10 +1494,6 @@ namespace DNDS::Geom
         }
 
         // ----- Step 5: Rebuild father -----
-        tAdjPair result;
-        result.InitPair("Inverse_result", mpi);
-        result.father->Resize(nToLocal);
-
         for (index iTo = 0; iTo < nToLocal; iTo++)
         {
             index toGlobal = toLocal2Global(iTo);
@@ -1489,13 +1502,11 @@ namespace DNDS::Geom
             {
                 std::vector<index> fromVec(it->second.begin(), it->second.end());
                 std::sort(fromVec.begin(), fromVec.end());
-                result.father->ResizeRow(iTo, fromVec.size());
-                for (rowsize j = 0; j < static_cast<rowsize>(fromVec.size()); j++)
-                    result.father->operator()(iTo, j) = fromVec[j];
+                write(iTo, fromVec);
             }
+            else
+                write(iTo, std::vector<index>{});
         }
-
-        return result;
     }
 
 } // namespace DNDS::Geom

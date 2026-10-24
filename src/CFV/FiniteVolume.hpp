@@ -23,8 +23,111 @@ namespace DNDS::CFV
 
     protected:
         FiniteVolumeSettings settings;
+        Runtime::VersionStamp _metricsMeshStamp;
+        std::weak_ptr<Geom::UnstructuredMesh> _metricsMesh;
+        Runtime::VersionStamp _metricsBuildStamp;
+        std::weak_ptr<Geom::UnstructuredMesh> _metricsBuildMesh;
+        uint32_t _metricsStages = 0;
+        uint64_t _metricsGeneration = 0;
+        enum MetricsStage : uint32_t
+        {
+            CellAttributes = 1u << 0,
+            CellVolume = 1u << 1,
+            CellBarycenter = 1u << 2,
+            CellCenter = 1u << 3,
+            CellJacobian = 1u << 4,
+            CellPoints = 1u << 5,
+            CellBox = 1u << 6,
+            CellInertia = 1u << 7,
+            FaceAttributes = 1u << 8,
+            FaceCenter = 1u << 9,
+            FaceArea = 1u << 10,
+            FaceJacobian = 1u << 11,
+            FacePoints = 1u << 12,
+            FaceNormals = 1u << 13,
+            FaceMeanNormals = 1u << 14,
+            CellSmoothing = 1u << 15,
+            AllMetrics = (1u << 16) - 1
+        };
+
+        static Runtime::Change MeshDependencyMask()
+        {
+            return Runtime::Change::Topology | Runtime::Change::Geometry |
+                   Runtime::Change::Distribution | Runtime::Change::Layout;
+        }
+        void InvalidateMetricsDependencies()
+        {
+            _metricsMeshStamp = Runtime::VersionStamp{};
+            _metricsMesh.reset();
+        }
+        void PublishMetricsDependencies()
+        {
+            _metricsMeshStamp = mesh->versions.Stamp(MeshDependencyMask());
+            _metricsMesh = mesh;
+            ++_metricsGeneration;
+        }
+        void BeginMetricsConstruction()
+        {
+            InvalidateMetricsDependencies();
+            _metricsBuildStamp = mesh->versions.Stamp(MeshDependencyMask());
+            _metricsBuildMesh = mesh;
+            _metricsStages = 0;
+        }
+        void BeginMetricsStage(MetricsStage stage)
+        {
+            InvalidateMetricsDependencies();
+            // Independent granular constructors keep their legacy getter use.
+            // A new epoch starts an incomplete publication, never a valid full
+            // bundle assembled from old same-shaped fields.
+            if (_metricsBuildMesh.lock() != mesh || !_metricsBuildStamp.Valid())
+                BeginMetricsConstruction();
+            _metricsStages &= ~uint32_t(stage);
+        }
+        void EndMetricsStage(MetricsStage stage) { _metricsStages |= uint32_t(stage); }
 
     public:
+        /// Validate once at an operator boundary, with its mesh read lease held.
+        /// Geometry accessors inside numerical kernels remain plain lookups.
+        void ValidateMetricsDependencies() const
+        {
+            DNDS_check_throw_info(_metricsMesh.lock() == mesh && _metricsMeshStamp.Valid(),
+                                  "finite-volume metrics are missing or stale; rebuild ConstructMetrics");
+        }
+        void ValidateMeshDependencies() const { ValidateMetricsDependencies(); }
+        /// Explicit publication after the complete granular construction sequence.
+        /// Shape checks alone cannot establish geometry/order correspondence.
+        void FinalizeMetrics()
+        {
+            InvalidateMetricsDependencies();
+            auto read = mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
+            DNDS_check_throw_info(_metricsBuildMesh.lock() == mesh && _metricsBuildStamp.Valid() && _metricsStages == AllMetrics,
+                                  "metrics require every construction stage in the current mesh epoch");
+            auto rows = [](const auto &pair, index owned, index ghost)
+            {
+                DNDS_check_throw_info(pair.father && pair.son && pair.father->Size() == owned && pair.son->Size() == ghost,
+                                      "metric array distribution differs from current mesh");
+            };
+            rows(volumeLocal, mesh->NumCell(), mesh->NumCellGhost());
+            rows(cellAtr, mesh->NumCell(), mesh->NumCellGhost());
+            rows(cellIntJacobiDet, mesh->NumCell(), mesh->NumCellGhost());
+            rows(cellBary, mesh->NumCell(), mesh->NumCellGhost());
+            rows(cellCent, mesh->NumCell(), mesh->NumCellGhost());
+            rows(cellIntPPhysics, mesh->NumCell(), mesh->NumCellGhost());
+            rows(cellAlignedHBox, mesh->NumCell(), mesh->NumCellGhost());
+            rows(cellMajorHBox, mesh->NumCell(), mesh->NumCellGhost());
+            rows(cellMajorCoord, mesh->NumCell(), mesh->NumCellGhost());
+            rows(cellInertia, mesh->NumCell(), mesh->NumCellGhost());
+            rows(cellSmoothScale, mesh->NumCell(), mesh->NumCellGhost());
+            rows(faceArea, mesh->NumFace(), mesh->NumFaceGhost());
+            rows(faceAtr, mesh->NumFace(), mesh->NumFaceGhost());
+            rows(faceIntJacobiDet, mesh->NumFace(), mesh->NumFaceGhost());
+            rows(faceUnitNorm, mesh->NumFace(), mesh->NumFaceGhost());
+            rows(faceMeanNorm, mesh->NumFace(), mesh->NumFaceGhost());
+            rows(faceCent, mesh->NumFace(), mesh->NumFaceGhost());
+            rows(faceIntPPhysics, mesh->NumFace(), mesh->NumFaceGhost());
+            periodicity = Geom::Base::CFVPeriodicity(read.HostView().Periodic());
+            PublishMetricsDependencies();
+        }
         [[nodiscard]] const FiniteVolumeSettings &getSettings() const
         {
             return settings;
@@ -32,6 +135,8 @@ namespace DNDS::CFV
 
         void parseSettings(FiniteVolumeSettings::json &j)
         {
+            InvalidateMetricsDependencies();
+            _metricsBuildStamp = Runtime::VersionStamp{};
             settings.ParseFromJson(j);
         }
 
@@ -94,7 +199,13 @@ namespace DNDS::CFV
 
     public:
         int GetAxisSymmetric() const { return axisSymmetric; }
-        int SetAxisSymmetric(int v) { return axisSymmetric = v; }
+        int SetAxisSymmetric(int v)
+        {
+            InvalidateMetricsDependencies();
+            _metricsBuildStamp = Runtime::VersionStamp{};
+            _metricsStages = 0;
+            return axisSymmetric = v;
+        }
 
     public:
         FiniteVolume(MPIInfo nMpi, ssp<Geom::UnstructuredMesh> nMesh)
@@ -420,7 +531,7 @@ namespace DNDS::CFV
         template <DeviceBackend B>
         using t_deviceView = FiniteVolumeDeviceView<B>;
 
-        template <DeviceBackend B>
+        template <DeviceBackend B, class MeshView>
         friend class FiniteVolumeDeviceView;
 
         template <DeviceBackend B>

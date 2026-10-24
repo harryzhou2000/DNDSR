@@ -91,6 +91,9 @@ namespace DNDS::Geom
     void UnstructuredMeshSerialRW::
         PartitionReorderToMeshCell2Cell()
     {
+        mesh->CheckCollectiveMutationAvailable();
+        MeshMutationToken mutationToken(mesh.get(), mesh->versions, Runtime::Change::All);
+
         if (mesh->getMPI().rank == mRank)
             DNDS::log() << "UnstructuredMeshSerialRW === Doing  PartitionReorderToMeshCell2Cell" << std::endl;
         DNDS_assert(cnPart == mesh->getMPI().size);
@@ -187,6 +190,7 @@ namespace DNDS::Geom
         mesh->bnd2cell.idx.markGlobal();
         if (mesh->getMPI().rank == mRank)
             DNDS::log() << "UnstructuredMeshSerialRW === Done  PartitionReorderToMeshCell2Cell" << std::endl;
+        mutationToken.Commit();
     }
 
     void UnstructuredMeshSerialRW::
@@ -344,17 +348,210 @@ namespace DNDS::Geom
         return hasBadAll == 0;
     }
 
-    void UnstructuredMesh::SetPeriodicGeometry(
-        const tPoint &translation1,
-        const tPoint &rotationCenter1,
-        const tPoint &eulerAngles1,
-        const tPoint &translation2,
-        const tPoint &rotationCenter2,
-        const tPoint &eulerAngles2,
-        const tPoint &translation3,
-        const tPoint &rotationCenter3,
-        const tPoint &eulerAngles3)
+    void UnstructuredMesh::RecoverNode2CellAndNode2Bnd()
     {
+        CheckCollectiveMutationAvailable();
+        MeshMutationToken mutationToken(this, versions, Runtime::Change::Topology | Runtime::Change::Distribution | Runtime::Change::Layout | Runtime::Change::Allocation | Runtime::Change::Interface);
+        RecoverNode2CellAndNode2BndImpl(mutationToken);
+        mutationToken.Commit();
+    }
+
+    void UnstructuredMesh::RecoverCell2CellAndBnd2Cell()
+    {
+        CheckCollectiveMutationAvailable();
+        MeshMutationToken mutationToken(this, versions, Runtime::Change::Topology | Runtime::Change::Distribution | Runtime::Change::Layout | Runtime::Change::Allocation | Runtime::Change::Interface);
+        RecoverCell2CellAndBnd2CellImpl(mutationToken);
+        mutationToken.Commit();
+    }
+
+    void UnstructuredMesh::BuildGhostPrimary(int nGhostLayers)
+    {
+        CheckCollectiveMutationAvailable();
+        MeshMutationToken mutationToken(this, versions, Runtime::Change::Distribution | Runtime::Change::Layout | Runtime::Change::Allocation | Runtime::Change::Interface);
+        BuildGhostPrimaryImpl(mutationToken, nGhostLayers);
+        mutationToken.Commit();
+    }
+
+    void UnstructuredMesh::BuildGhostN2CB()
+    {
+        CheckCollectiveMutationAvailable();
+        MeshMutationToken mutationToken(this, versions, Runtime::Change::Distribution | Runtime::Change::Layout | Runtime::Change::Allocation | Runtime::Change::Interface);
+        BuildGhostN2CBImpl(mutationToken);
+        mutationToken.Commit();
+    }
+
+    void UnstructuredMesh::BuildCell2CellFace()
+    {
+        CheckCollectiveMutationAvailable();
+        MeshMutationToken mutationToken(this, versions, Runtime::Change::Interface | Runtime::Change::Values);
+        BuildCell2CellFaceImpl(mutationToken);
+        mutationToken.Commit();
+    }
+
+    void UnstructuredMesh::InterpolateFace()
+    {
+        CheckCollectiveMutationAvailable();
+        MeshMutationToken mutationToken(this, versions, Runtime::Change::Topology | Runtime::Change::Distribution | Runtime::Change::Layout | Runtime::Change::Allocation | Runtime::Change::Interface);
+        InterpolateFaceImpl(mutationToken);
+        mutationToken.Commit();
+    }
+
+    void UnstructuredMesh::BuildGhostFace()
+    {
+        CheckCollectiveMutationAvailable();
+        MeshMutationToken mutationToken(this, versions, Runtime::Change::Distribution | Runtime::Change::Layout | Runtime::Change::Allocation | Runtime::Change::Interface);
+        BuildGhostFaceImpl(mutationToken);
+        mutationToken.Commit();
+    }
+
+    void UnstructuredMesh::MatchFaceBoundary()
+    {
+        CheckCollectiveMutationAvailable();
+        MeshMutationToken mutationToken(this, versions, Runtime::Change::Topology | Runtime::Change::Distribution | Runtime::Change::Layout | Runtime::Change::Allocation | Runtime::Change::Interface | Runtime::Change::Values);
+        MatchFaceBoundaryImpl(mutationToken);
+        mutationToken.Commit();
+    }
+
+    void UnstructuredMesh::InterpolateEdge()
+    {
+        CheckCollectiveMutationAvailable();
+        MeshMutationToken mutationToken(this, versions, Runtime::Change::Topology | Runtime::Change::Distribution | Runtime::Change::Layout | Runtime::Change::Allocation | Runtime::Change::Interface);
+        InterpolateEdgeImpl(mutationToken);
+        mutationToken.Commit();
+    }
+
+    void UnstructuredMesh::BuildGhostEdge()
+    {
+        CheckCollectiveMutationAvailable();
+        MeshMutationToken mutationToken(this, versions, Runtime::Change::Distribution | Runtime::Change::Layout | Runtime::Change::Allocation | Runtime::Change::Interface);
+        BuildGhostEdgeImpl(mutationToken);
+        mutationToken.Commit();
+    }
+
+    void UnstructuredMesh::SetPeriodicGeometry(const tPoint &translation1,
+                                               const tPoint &rotationCenter1,
+                                               const tPoint &eulerAngles1,
+                                               const tPoint &translation2,
+                                               const tPoint &rotationCenter2,
+                                               const tPoint &eulerAngles2,
+                                               const tPoint &translation3,
+                                               const tPoint &rotationCenter3,
+                                               const tPoint &eulerAngles3)
+    {
+        MeshMutationToken mutationToken(this, versions, Runtime::Change::Geometry | Runtime::Change::Interface);
+        SetPeriodicGeometryImpl(mutationToken, translation1, rotationCenter1, eulerAngles1, translation2, rotationCenter2, eulerAngles2, translation3, rotationCenter3, eulerAngles3);
+        mutationToken.Commit();
+    }
+
+    void UnstructuredMesh::AdjGlobal2LocalPrimary()
+    {
+        MeshMutationToken mutationToken(this, versions, Runtime::Change::Layout | Runtime::Change::Values | Runtime::Change::Interface);
+        AdjGlobal2LocalPrimaryImpl(mutationToken);
+        mutationToken.Commit();
+    }
+
+    void UnstructuredMesh::AdjLocal2GlobalPrimary()
+    {
+        MeshMutationToken mutationToken(this, versions, Runtime::Change::Layout | Runtime::Change::Values | Runtime::Change::Interface);
+        AdjLocal2GlobalPrimaryImpl(mutationToken);
+        mutationToken.Commit();
+    }
+
+    void UnstructuredMesh::AdjGlobal2LocalPrimaryForBnd()
+    {
+        MeshMutationToken mutationToken(this, versions, Runtime::Change::Layout | Runtime::Change::Values | Runtime::Change::Interface);
+        AdjGlobal2LocalPrimaryForBndImpl(mutationToken);
+        mutationToken.Commit();
+    }
+
+    void UnstructuredMesh::AdjLocal2GlobalPrimaryForBnd()
+    {
+        MeshMutationToken mutationToken(this, versions, Runtime::Change::Layout | Runtime::Change::Values | Runtime::Change::Interface);
+        AdjLocal2GlobalPrimaryForBndImpl(mutationToken);
+        mutationToken.Commit();
+    }
+
+    void UnstructuredMesh::AdjGlobal2LocalFacial()
+    {
+        MeshMutationToken mutationToken(this, versions, Runtime::Change::Layout | Runtime::Change::Values | Runtime::Change::Interface);
+        AdjGlobal2LocalFacialImpl(mutationToken);
+        mutationToken.Commit();
+    }
+
+    void UnstructuredMesh::AdjLocal2GlobalFacial()
+    {
+        MeshMutationToken mutationToken(this, versions, Runtime::Change::Layout | Runtime::Change::Values | Runtime::Change::Interface);
+        AdjLocal2GlobalFacialImpl(mutationToken);
+        mutationToken.Commit();
+    }
+
+    void UnstructuredMesh::AdjGlobal2LocalC2F()
+    {
+        MeshMutationToken mutationToken(this, versions, Runtime::Change::Layout | Runtime::Change::Values | Runtime::Change::Interface);
+        AdjGlobal2LocalC2FImpl(mutationToken);
+        mutationToken.Commit();
+    }
+
+    void UnstructuredMesh::AdjLocal2GlobalC2F()
+    {
+        MeshMutationToken mutationToken(this, versions, Runtime::Change::Layout | Runtime::Change::Values | Runtime::Change::Interface);
+        AdjLocal2GlobalC2FImpl(mutationToken);
+        mutationToken.Commit();
+    }
+
+    void UnstructuredMesh::AdjGlobal2LocalN2CB()
+    {
+        MeshMutationToken mutationToken(this, versions, Runtime::Change::Layout | Runtime::Change::Values | Runtime::Change::Interface);
+        AdjGlobal2LocalN2CBImpl(mutationToken);
+        mutationToken.Commit();
+    }
+
+    void UnstructuredMesh::AdjLocal2GlobalN2CB()
+    {
+        MeshMutationToken mutationToken(this, versions, Runtime::Change::Layout | Runtime::Change::Values | Runtime::Change::Interface);
+        AdjLocal2GlobalN2CBImpl(mutationToken);
+        mutationToken.Commit();
+    }
+
+    void UnstructuredMesh::AdjGlobal2LocalC2CFace()
+    {
+        MeshMutationToken mutationToken(this, versions, Runtime::Change::Interface | Runtime::Change::Values);
+        AdjGlobal2LocalC2CFaceImpl(mutationToken);
+        mutationToken.Commit();
+    }
+
+    void UnstructuredMesh::AdjLocal2GlobalC2CFace()
+    {
+        MeshMutationToken mutationToken(this, versions, Runtime::Change::Interface | Runtime::Change::Values);
+        AdjLocal2GlobalC2CFaceImpl(mutationToken);
+        mutationToken.Commit();
+    }
+
+    void UnstructuredMesh::AdjGlobal2LocalEdge()
+    {
+        MeshMutationToken mutationToken(this, versions, Runtime::Change::Layout | Runtime::Change::Values | Runtime::Change::Interface);
+        AdjGlobal2LocalEdgeImpl(mutationToken);
+        mutationToken.Commit();
+    }
+
+    void UnstructuredMesh::AdjLocal2GlobalEdge()
+    {
+        MeshMutationToken mutationToken(this, versions, Runtime::Change::Layout | Runtime::Change::Values | Runtime::Change::Interface);
+        AdjLocal2GlobalEdgeImpl(mutationToken);
+        mutationToken.Commit();
+    }
+
+    void UnstructuredMesh::SetPeriodicGeometryImpl(MeshMutationToken &mutationToken, const tPoint &translation1,
+                                                   const tPoint &rotationCenter1,
+                                                   const tPoint &eulerAngles1,
+                                                   const tPoint &translation2,
+                                                   const tPoint &rotationCenter2,
+                                                   const tPoint &eulerAngles2,
+                                                   const tPoint &translation3,
+                                                   const tPoint &rotationCenter3,
+                                                   const tPoint &eulerAngles3)
+    {
+        auto mutationStep = mutationToken.Enter(this, Runtime::Change::Geometry | Runtime::Change::Interface);
         periodicInfo.translation[1].map() = translation1;
         periodicInfo.translation[2].map() = translation2;
         periodicInfo.translation[3].map() = translation3;
@@ -375,9 +572,9 @@ namespace DNDS::Geom
             Geom::RotX(eulerAngles3[0]);
     }
 
-    void UnstructuredMesh::
-        RecoverNode2CellAndNode2Bnd()
+    void UnstructuredMesh::RecoverNode2CellAndNode2BndImpl(MeshMutationToken &mutationToken)
     {
+        auto mutationStep = mutationToken.Enter(this, Runtime::Change::Topology | Runtime::Change::Distribution | Runtime::Change::Layout | Runtime::Change::Allocation | Runtime::Change::Interface);
         DNDS_assert(adjPrimaryState == Adj_PointToGlobal);
         DNDS_assert(cell2node.isGlobal() && bnd2node.isGlobal());
         DNDS_assert(coords.father);
@@ -419,8 +616,9 @@ namespace DNDS::Geom
         // markGlobal already done by CheckedInverse
     }
 
-    void UnstructuredMesh::RecoverCell2CellAndBnd2Cell()
+    void UnstructuredMesh::RecoverCell2CellAndBnd2CellImpl(MeshMutationToken &mutationToken)
     {
+        auto mutationStep = mutationToken.Enter(this, Runtime::Change::Topology | Runtime::Change::Distribution | Runtime::Change::Layout | Runtime::Change::Allocation | Runtime::Change::Interface);
         DNDS_assert(adjPrimaryState == Adj_PointToGlobal);
         DNDS_assert(cell2node.isGlobal() && bnd2node.isGlobal());
         DNDS_assert(adjN2CBState == Adj_PointToGlobal);
@@ -663,9 +861,9 @@ namespace DNDS::Geom
         // markGlobal already done by CheckedComposeFiltered
     }
 
-    void UnstructuredMesh::
-        BuildGhostPrimary(int nGhostLayers)
+    void UnstructuredMesh::BuildGhostPrimaryImpl(MeshMutationToken &mutationToken, int nGhostLayers)
     {
+        auto mutationStep = mutationToken.Enter(this, Runtime::Change::Distribution | Runtime::Change::Layout | Runtime::Change::Allocation | Runtime::Change::Interface);
         DNDS_assert(adjPrimaryState == Adj_PointToGlobal);
         DNDS_assert(cell2node.isGlobal() && bnd2node.isGlobal());
         DNDS_assert(nGhostLayers >= 1);
@@ -704,6 +902,38 @@ namespace DNDS::Geom
         fillRegistry(dag);
 
         auto spec = GhostSpec::defaultPrimary(nGhostLayers);
+        // A boundary may now live separately from its adjacent cell. Pull
+        // that cell's stencil as well, so fresh face interpolation can use
+        // its full incidence after an independent boundary redistribution.
+        spec.chains.push_back({EntityKind::Bnd, {Adj::Bnd2Cell}, EntityKind::Cell});
+        spec.chains.push_back({EntityKind::Bnd, {Adj::Bnd2Cell, Adj::Cell2Node}, EntityKind::Node});
+        std::vector<AdjKind> bndCells{Adj::Bnd2Cell};
+        bndCells.insert(bndCells.end(), nGhostLayers, Adj::Cell2Cell);
+        spec.chains.push_back({EntityKind::Bnd, bndCells, EntityKind::Cell});
+        bndCells.push_back(Adj::Cell2Node);
+        spec.chains.push_back({EntityKind::Bnd, bndCells, EntityKind::Node});
+        // Boundary labels must also reach ranks owning adjacent cells/faces,
+        // even if all boundary rows were redistributed elsewhere.
+        spec.chains.push_back({EntityKind::Cell, {Adj::Cell2Node, Adj::Node2Bnd}, EntityKind::Bnd});
+        spec.chains.push_back({EntityKind::Cell, {Adj::Cell2Node, Adj::Node2Bnd, Adj::Bnd2Node}, EntityKind::Node});
+        // Preserved face ownership can differ from the new cell ownership.
+        // Retain the closure of owned face relations, in addition to the
+        // usual owned-cell stencil. Facial globals are available here when
+        // rebuilding after ReorderEntities, but not on initial mesh reading.
+        int facialGlobals = face2cell.isGlobal() && face2node.isGlobal();
+        int minFacialGlobals = facialGlobals, maxFacialGlobals = facialGlobals;
+        MPI_Allreduce(MPI_IN_PLACE, &minFacialGlobals, 1, MPI_INT, MPI_MIN, mpi.comm);
+        MPI_Allreduce(MPI_IN_PLACE, &maxFacialGlobals, 1, MPI_INT, MPI_MAX, mpi.comm);
+        DNDS_check_throw_info(minFacialGlobals == maxFacialGlobals,
+                              "BuildGhostPrimary: facial global state differs between ranks");
+        if (facialGlobals)
+        {
+            spec.chains.push_back({EntityKind::Face, {Adj::Face2Cell}, EntityKind::Cell});
+            spec.chains.push_back({EntityKind::Face, {Adj::Face2Node}, EntityKind::Node});
+            spec.chains.push_back({EntityKind::Face, {Adj::Face2Cell, Adj::Cell2Node}, EntityKind::Node});
+            spec.chains.push_back({EntityKind::Face, {Adj::Face2Bnd}, EntityKind::Bnd});
+            spec.chains.push_back({EntityKind::Face, {Adj::Face2Bnd, Adj::Bnd2Node}, EntityKind::Node});
+        }
         auto tree = CompiledGhostTree::compile(spec);
         auto ghostResult = dag.evaluateGhostTree(tree, mpi);
 
@@ -802,10 +1032,10 @@ namespace DNDS::Geom
         }
     }
 
-    void UnstructuredMesh::
-        AdjGlobal2LocalPrimary()
+    void UnstructuredMesh::AdjGlobal2LocalPrimaryImpl(MeshMutationToken &mutationToken)
     {
-        // needs results of BuildGhostPrimary()
+        auto mutationStep = mutationToken.Enter(this, Runtime::Change::Layout | Runtime::Change::Values | Runtime::Change::Interface);
+        // needs results of BuildGhostPrimaryImpl(mutationToken)
         DNDS_assert(adjPrimaryState == Adj_PointToGlobal);
         DNDS_assert(cell2node.isGlobal() && bnd2node.isGlobal() && cell2cell.isGlobal() && bnd2cell.isGlobal());
         DNDS_assert_info(cell2node.idx.isWired(), "cell2node target mapping not wired");
@@ -826,9 +1056,9 @@ namespace DNDS::Geom
         adjPrimaryState = Adj_PointToLocal;
     }
 
-    void UnstructuredMesh::
-        AdjLocal2GlobalPrimary()
+    void UnstructuredMesh::AdjLocal2GlobalPrimaryImpl(MeshMutationToken &mutationToken)
     {
+        auto mutationStep = mutationToken.Enter(this, Runtime::Change::Layout | Runtime::Change::Values | Runtime::Change::Interface);
         DNDS_assert(adjPrimaryState == Adj_PointToLocal);
         DNDS_assert(cell2node.isLocal() && bnd2node.isLocal() && cell2cell.isLocal() && bnd2cell.isLocal());
         DNDS_assert_info(cell2node.idx.isWired(), "cell2node target mapping not wired");
@@ -845,10 +1075,10 @@ namespace DNDS::Geom
         adjPrimaryState = Adj_PointToGlobal;
     }
 
-    void UnstructuredMesh::
-        AdjGlobal2LocalPrimaryForBnd() // a reduction of primary version
+    void UnstructuredMesh::AdjGlobal2LocalPrimaryForBndImpl(MeshMutationToken &mutationToken)
     {
-        // needs results of BuildGhostPrimary()
+        auto mutationStep = mutationToken.Enter(this, Runtime::Change::Layout | Runtime::Change::Values | Runtime::Change::Interface);
+        // needs results of BuildGhostPrimaryImpl(mutationToken)
         DNDS_assert(adjPrimaryState == Adj_PointToGlobal);
         DNDS_assert(cell2node.isGlobal());
         DNDS_assert_info(cell2node.idx.isWired(), "cell2node target mapping not wired");
@@ -858,9 +1088,9 @@ namespace DNDS::Geom
         adjPrimaryState = Adj_PointToLocal;
     }
 
-    void UnstructuredMesh::
-        AdjLocal2GlobalPrimaryForBnd() // a reduction of primary version
+    void UnstructuredMesh::AdjLocal2GlobalPrimaryForBndImpl(MeshMutationToken &mutationToken)
     {
+        auto mutationStep = mutationToken.Enter(this, Runtime::Change::Layout | Runtime::Change::Values | Runtime::Change::Interface);
         DNDS_assert(adjPrimaryState == Adj_PointToLocal);
         DNDS_assert(cell2node.isLocal());
         DNDS_assert_info(cell2node.idx.isWired(), "cell2node target mapping not wired");
@@ -870,9 +1100,9 @@ namespace DNDS::Geom
         adjPrimaryState = Adj_PointToGlobal;
     }
 
-    void UnstructuredMesh::
-        AdjGlobal2LocalFacial()
+    void UnstructuredMesh::AdjGlobal2LocalFacialImpl(MeshMutationToken &mutationToken)
     {
+        auto mutationStep = mutationToken.Enter(this, Runtime::Change::Layout | Runtime::Change::Values | Runtime::Change::Interface);
         DNDS_assert(adjFacialState == Adj_PointToGlobal);
         DNDS_assert(face2node.isGlobal() && face2cell.isGlobal());
         DNDS_assert_info(face2node.idx.isWired(), "face2node target mapping not wired");
@@ -890,9 +1120,9 @@ namespace DNDS::Geom
         adjFacialState = Adj_PointToLocal;
     }
 
-    void UnstructuredMesh::
-        AdjLocal2GlobalFacial()
+    void UnstructuredMesh::AdjLocal2GlobalFacialImpl(MeshMutationToken &mutationToken)
     {
+        auto mutationStep = mutationToken.Enter(this, Runtime::Change::Layout | Runtime::Change::Values | Runtime::Change::Interface);
         DNDS_assert(adjFacialState == Adj_PointToLocal);
         DNDS_assert(face2node.isLocal() && face2cell.isLocal() && face2bnd.isLocal());
         DNDS_assert_info(face2node.idx.isWired(), "face2node target mapping not wired");
@@ -907,9 +1137,9 @@ namespace DNDS::Geom
         adjFacialState = Adj_PointToGlobal;
     }
 
-    void UnstructuredMesh::
-        AdjLocal2GlobalC2F()
+    void UnstructuredMesh::AdjLocal2GlobalC2FImpl(MeshMutationToken &mutationToken)
     {
+        auto mutationStep = mutationToken.Enter(this, Runtime::Change::Layout | Runtime::Change::Values | Runtime::Change::Interface);
         DNDS_assert(adjC2FState == Adj_PointToLocal);
         DNDS_assert(cell2face.isLocal() && bnd2face.isLocal());
         DNDS_assert_info(cell2face.idx.isWired(), "cell2face target mapping not wired");
@@ -921,9 +1151,9 @@ namespace DNDS::Geom
         adjC2FState = Adj_PointToGlobal;
     }
 
-    void UnstructuredMesh::
-        AdjGlobal2LocalC2F()
+    void UnstructuredMesh::AdjGlobal2LocalC2FImpl(MeshMutationToken &mutationToken)
     {
+        auto mutationStep = mutationToken.Enter(this, Runtime::Change::Layout | Runtime::Change::Values | Runtime::Change::Interface);
         DNDS_assert(adjC2FState == Adj_PointToGlobal);
         DNDS_assert(cell2face.isGlobal() && bnd2face.isGlobal());
         DNDS_assert_info(cell2face.idx.isWired(), "cell2face target mapping not wired");
@@ -935,9 +1165,9 @@ namespace DNDS::Geom
         adjC2FState = Adj_PointToLocal;
     }
 
-    void UnstructuredMesh::
-        BuildGhostN2CB()
+    void UnstructuredMesh::BuildGhostN2CBImpl(MeshMutationToken &mutationToken)
     {
+        auto mutationStep = mutationToken.Enter(this, Runtime::Change::Distribution | Runtime::Change::Layout | Runtime::Change::Allocation | Runtime::Change::Interface);
         DNDS_assert(adjN2CBState == Adj_PointToGlobal);
         DNDS_assert(node2cell.isGlobal() && node2bnd.isGlobal());
 
@@ -957,9 +1187,9 @@ namespace DNDS::Geom
         node2bnd.idx.markGlobal();
     }
 
-    void UnstructuredMesh::
-        AdjLocal2GlobalN2CB()
+    void UnstructuredMesh::AdjLocal2GlobalN2CBImpl(MeshMutationToken &mutationToken)
     {
+        auto mutationStep = mutationToken.Enter(this, Runtime::Change::Layout | Runtime::Change::Values | Runtime::Change::Interface);
         DNDS_assert(adjN2CBState == Adj_PointToLocal);
         DNDS_assert(node2cell.isLocal() && node2bnd.isLocal());
         DNDS_assert_info(node2cell.idx.isWired(), "node2cell target mapping not wired");
@@ -971,9 +1201,9 @@ namespace DNDS::Geom
         adjN2CBState = Adj_PointToGlobal;
     }
 
-    void UnstructuredMesh::
-        AdjGlobal2LocalN2CB()
+    void UnstructuredMesh::AdjGlobal2LocalN2CBImpl(MeshMutationToken &mutationToken)
     {
+        auto mutationStep = mutationToken.Enter(this, Runtime::Change::Layout | Runtime::Change::Values | Runtime::Change::Interface);
         DNDS_assert(adjN2CBState == Adj_PointToGlobal);
         DNDS_assert(node2cell.isGlobal() && node2bnd.isGlobal());
         DNDS_assert_info(node2cell.idx.isWired(), "node2cell target mapping not wired");
@@ -1030,8 +1260,9 @@ namespace DNDS::Geom
             DNDS_assert(num_ghost_adj);
     }
 
-    void UnstructuredMesh::BuildCell2CellFace()
+    void UnstructuredMesh::BuildCell2CellFaceImpl(MeshMutationToken &mutationToken)
     {
+        auto mutationStep = mutationToken.Enter(this, Runtime::Change::Interface | Runtime::Change::Values);
         DNDS_assert(adjPrimaryState == Adj_PointToLocal);
         DNDS_assert(cell2node.isLocal() && bnd2node.isLocal());
         DNDS_assert(adjFacialState == Adj_PointToLocal);
@@ -1063,9 +1294,10 @@ namespace DNDS::Geom
         cell2cellFace.idx.wireTargetMapping(cellElemInfo.trans.pLGhostMapping);
     }
 
-    void UnstructuredMesh::AdjLocal2GlobalC2CFace()
+    void UnstructuredMesh::AdjLocal2GlobalC2CFaceImpl(MeshMutationToken &mutationToken)
     {
-        // needs results of BuildGhostPrimary()
+        auto mutationStep = mutationToken.Enter(this, Runtime::Change::Interface | Runtime::Change::Values);
+        // needs results of BuildGhostPrimaryImpl(mutationToken)
         DNDS_assert(adjC2CFaceState == Adj_PointToLocal);
         DNDS_assert(cell2cellFace.isLocal());
         DNDS_assert_info(cell2cellFace.idx.isWired(), "cell2cellFace target mapping not wired");
@@ -1077,9 +1309,10 @@ namespace DNDS::Geom
         adjC2CFaceState = Adj_PointToGlobal;
     }
 
-    void UnstructuredMesh::AdjGlobal2LocalC2CFace()
+    void UnstructuredMesh::AdjGlobal2LocalC2CFaceImpl(MeshMutationToken &mutationToken)
     {
-        // needs results of BuildGhostPrimary()
+        auto mutationStep = mutationToken.Enter(this, Runtime::Change::Interface | Runtime::Change::Values);
+        // needs results of BuildGhostPrimaryImpl(mutationToken)
         DNDS_assert(adjC2CFaceState == Adj_PointToGlobal);
         DNDS_assert(cell2cellFace.isGlobal());
         DNDS_assert_info(cell2cellFace.idx.isWired(), "cell2cellFace target mapping not wired");
@@ -1091,9 +1324,9 @@ namespace DNDS::Geom
         adjC2CFaceState = Adj_PointToLocal;
     }
 
-    void UnstructuredMesh::
-        InterpolateFace()
+    void UnstructuredMesh::InterpolateFaceImpl(MeshMutationToken &mutationToken)
     {
+        auto mutationStep = mutationToken.Enter(this, Runtime::Change::Topology | Runtime::Change::Distribution | Runtime::Change::Layout | Runtime::Change::Allocation | Runtime::Change::Interface);
         DNDS_assert(adjPrimaryState == Adj_PointToLocal);
         DNDS_assert(cell2node.isLocal() && cell2cell.isLocal() && bnd2node.isLocal());
 
@@ -1264,13 +1497,27 @@ namespace DNDS::Geom
         if (mpi.rank == 0)
             log() << "UnstructuredMesh === InterpolateFace: total faces " << gSize << std::endl;
 
-        BuildGhostFace();
-        MatchFaceBoundary();
+        BuildGhostFaceImpl(mutationToken);
+        MatchFaceBoundaryImpl(mutationToken);
     }
 
-    void UnstructuredMesh::
-        BuildGhostFace()
+    void UnstructuredMesh::BuildGhostFaceImpl(MeshMutationToken &mutationToken)
     {
+        auto mutationStep = mutationToken.Enter(this, Runtime::Change::Distribution | Runtime::Change::Layout | Runtime::Change::Allocation | Runtime::Change::Interface);
+        int retainedRelations = bnd2face.isGlobal() && face2bnd.isGlobal();
+        int minRetained = retainedRelations, maxRetained = retainedRelations;
+        MPI_Allreduce(MPI_IN_PLACE, &minRetained, 1, MPI_INT, MPI_MIN, mpi.comm);
+        MPI_Allreduce(MPI_IN_PLACE, &maxRetained, 1, MPI_INT, MPI_MAX, mpi.comm);
+        DNDS_check_throw_info(minRetained == maxRetained,
+                              "BuildGhostFace: retained relation state differs between ranks");
+        // Rebuild relation ghosts from the current primary correspondence.
+        // On initial interpolation the rows are already filled for ghost
+        // cells; on a preserved-face redistribution the old sons were reset.
+        cell2face.BorrowAndPull(cell2node);
+        if (isPeriodic && cell2facePbi.father)
+            cell2facePbi.BorrowAndPull(cell2node);
+        if (retainedRelations)
+            bnd2face.BorrowAndPull(bnd2node);
         // Determine ghost faces via evaluateGhostTree(Cell → Cell2Face → Face).
         // cell2face is cell-indexed but has no own pLGlobalMapping — borrow from cell2node.
         if (!cell2face.father->pLGlobalMapping)
@@ -1279,12 +1526,29 @@ namespace DNDS::Geom
             MeshConnectivity dag;
             fillRegistry(dag);
 
+            // Primary indices are already local here. Supply global owned
+            // boundary-to-cell rows to the traversal without changing the
+            // primary arrays or their index-state tracking.
+            tAdj2Pair boundaryCells;
+            boundaryCells.InitPair("ghostFace.boundaryCells", mpi);
+            boundaryCells.father->Resize(NumBnd());
+            boundaryCells.father->pLGlobalMapping = bnd2node.father->pLGlobalMapping;
+            for (index i = 0; i < NumBnd(); ++i)
+                for (rowsize j = 0; j < 2; ++j)
+                    boundaryCells(i, j) = bnd2cell.isLocal()
+                                              ? CellIndexLocal2Global(bnd2cell(i, j))
+                                              : bnd2cell(i, j);
+            dag.registerAdj(Adj::Bnd2Cell, boundaryCells);
+
             GhostSpec ghostSpec;
             ghostSpec.chains.push_back(GhostChain{
                 EntityKind::Cell,
                 {Adj::Cell2Face},
                 EntityKind::Face,
             });
+            ghostSpec.chains.push_back({EntityKind::Bnd, {Adj::Bnd2Cell, Adj::Cell2Face}, EntityKind::Face});
+            if (retainedRelations)
+                ghostSpec.chains.push_back({EntityKind::Bnd, {Adj::Bnd2Face}, EntityKind::Face});
             auto ghostTree = CompiledGhostTree::compile(ghostSpec);
             auto ghostResult = dag.evaluateGhostTree(ghostTree, mpi);
 
@@ -1309,6 +1573,8 @@ namespace DNDS::Geom
                 face2nodePbi.trans.createMPITypes();
                 face2nodePbi.trans.pullOnce();
             }
+            if (retainedRelations)
+                face2bnd.BorrowAndPull(face2cell);
         }
 
         // Wire per-adjacency target mappings for facial adjacencies.
@@ -1318,13 +1584,15 @@ namespace DNDS::Geom
             auto nodeGhostMap = coords.trans.pLGhostMapping;
             face2node.idx.wireTargetMapping(nodeGhostMap);
             face2cell.idx.wireTargetMapping(cellGhostMap);
+            if (retainedRelations)
+                face2bnd.idx.wireTargetMapping(bndElemInfo.trans.pLGhostMapping);
         }
 
         // Convert face arrays to local indices.
         adjFacialState = Adj_PointToGlobal;
         face2node.idx.markGlobal();
         face2cell.idx.markGlobal();
-        AdjGlobal2LocalFacial();
+        AdjGlobal2LocalFacialImpl(mutationToken);
 
         // Convert cell2face to local face indices (father + son).
         // Wire target mapping first (face ghost mapping available from BuildGhostFace).
@@ -1343,9 +1611,9 @@ namespace DNDS::Geom
         bnd2face.toLocal();
     }
 
-    void UnstructuredMesh::
-        MatchFaceBoundary()
+    void UnstructuredMesh::MatchFaceBoundaryImpl(MeshMutationToken &mutationToken)
     {
+        auto mutationStep = mutationToken.Enter(this, Runtime::Change::Topology | Runtime::Change::Distribution | Runtime::Change::Layout | Runtime::Change::Allocation | Runtime::Change::Interface | Runtime::Change::Values);
         MatchBoundariesToFaces(
             bndElemInfo, bnd2cell, bnd2node, cell2face, face2node, cell2node,
             faceElemInfo, bnd2faceV, face2bndM, face2bnd, bnd2face);
@@ -1367,7 +1635,7 @@ namespace DNDS::Geom
 
         // Communicate cell2face and bnd2face ghost data.
         // cell2face/bnd2face are already wired (BuildGhostFace).
-        this->AdjLocal2GlobalC2F();
+        this->AdjLocal2GlobalC2FImpl(mutationToken);
         cell2face.TransAttach();
         cell2face.trans.BorrowGGIndexing(cell2node.trans);
         cell2face.trans.createMPITypes();
@@ -1384,13 +1652,13 @@ namespace DNDS::Geom
         bnd2face.trans.createMPITypes();
         bnd2face.trans.pullOnce();
 
-        this->AdjGlobal2LocalC2F(); // NOTE: ghost-cell cell2face rows can contain
-                                    // negative encoded face IDs for faces whose
-                                    // ghost mapping is not available locally.
-                                    // Consumers MUST iterate over NumCell() (father-only)
-                                    // when dereferencing cell2face entries, or handle
-                                    // negative encodings explicitly.  See
-                                    // AdjIndexInfo::toLocal() for encoding details.
+        this->AdjGlobal2LocalC2FImpl(mutationToken); // NOTE: ghost-cell cell2face rows can contain
+                                                     // negative encoded face IDs for faces whose
+                                                     // ghost mapping is not available locally.
+                                                     // Consumers MUST iterate over NumCell() (father-only)
+                                                     // when dereferencing cell2face entries, or handle
+                                                     // negative encodings explicitly.  See
+                                                     // AdjIndexInfo::toLocal() for encoding details.
     }
 
     void UnstructuredMesh::
@@ -1401,6 +1669,8 @@ namespace DNDS::Geom
         std::vector<uint16_t> cCont(cell2cell.Size(), 0); // simulate flux
         for (DNDS::index iFace = 0; iFace < faceElemInfo.Size(); iFace++)
         {
+            for (auto node : face2node[iFace])
+                DNDS_assert(node >= 0 && node < coords.Size());
             auto faceID = faceElemInfo(iFace, 0).zone;
             // NOLINTBEGIN(bugprone-branch-clone) — branches share asserts but are semantically distinct
             if (FaceIDIsInternal(faceID))
@@ -1420,18 +1690,35 @@ namespace DNDS::Geom
                                      face2node[iFace].size() > 1 ? coords[face2node[iFace][1]](0) : 0.,
                                      face2node[iFace].size() > 1 ? coords[face2node[iFace][1]](1) : 0.,
                                      face2node[iFace].size() > 1 ? coords[face2node[iFace][1]](2) : 0.)); // Assert has enough cell donors
-                DNDS_assert(face2cell[iFace][0] >= 0 && face2cell[iFace][0] < cell2cell.Size());
-                DNDS_assert(face2cell[iFace][1] >= 0 && face2cell[iFace][1] < cell2cell.Size());
+                DNDS_assert_info(face2cell[iFace][0] >= 0 && face2cell[iFace][0] < cell2cell.Size(),
+                                 fmt::format("face {} slot 0 cell {} outside primary closure {} on rank {}",
+                                             iFace, face2cell[iFace][0], cell2cell.Size(), mpi.rank));
+                DNDS_assert_info(face2cell[iFace][1] >= 0 && face2cell[iFace][1] < cell2cell.Size(),
+                                 fmt::format("face {} slot 1 cell {} outside primary closure {} on rank {}",
+                                             iFace, face2cell[iFace][1], cell2cell.Size(), mpi.rank));
                 cCont[face2cell[iFace][0]]++;
                 cCont[face2cell[iFace][1]]++;
             }
             else // a external BC
             {
                 DNDS_assert(face2cell[iFace][1] == DNDS::UnInitIndex);
-                DNDS_assert(face2cell[iFace][0] >= 0 && face2cell[iFace][0] < cell2cell.father->Size());
+                // An owned boundary face can be adjacent to a ghost cell
+                // after an independent face redistribution. Its incidence
+                // must still be present in the rebuilt primary closure.
+                DNDS_assert(face2cell[iFace][0] >= 0 && face2cell[iFace][0] < cell2cell.Size());
                 cCont[face2cell[iFace][0]]++;
             }
             // NOLINTEND(bugprone-branch-clone)
+            if (iFace < NumFace())
+                for (auto cell : face2cell[iFace])
+                {
+                    if (cell == UnInitIndex)
+                        continue;
+                    bool found = false;
+                    for (auto face : cell2face[cell])
+                        found = found || face == iFace;
+                    DNDS_assert_info(found, "owned face missing from an adjacent cell's incidence");
+                }
         }
         for (DNDS::index iCell = 0; iCell < cellElemInfo.father->Size(); iCell++) // for every non-ghost
         {
@@ -1444,9 +1731,9 @@ namespace DNDS::Geom
         }
     }
 
-    void UnstructuredMesh::
-        InterpolateEdge()
+    void UnstructuredMesh::InterpolateEdgeImpl(MeshMutationToken &mutationToken)
     {
+        auto mutationStep = mutationToken.Enter(this, Runtime::Change::Topology | Runtime::Change::Distribution | Runtime::Change::Layout | Runtime::Change::Allocation | Runtime::Change::Interface);
         DNDS_assert(dim == 3);
         DNDS_assert(adjPrimaryState == Adj_PointToLocal);
         DNDS_assert(cell2node.isLocal() && cell2cell.isLocal() && bnd2node.isLocal());
@@ -1612,13 +1899,13 @@ namespace DNDS::Geom
         if (mpi.rank == 0)
             log() << "UnstructuredMesh === InterpolateEdge: total edges " << gSize << std::endl;
 
-        BuildGhostEdge();
-        AdjGlobal2LocalEdge();
+        BuildGhostEdgeImpl(mutationToken);
+        AdjGlobal2LocalEdgeImpl(mutationToken);
     }
 
-    void UnstructuredMesh::
-        BuildGhostEdge()
+    void UnstructuredMesh::BuildGhostEdgeImpl(MeshMutationToken &mutationToken)
     {
+        auto mutationStep = mutationToken.Enter(this, Runtime::Change::Distribution | Runtime::Change::Layout | Runtime::Change::Allocation | Runtime::Change::Interface);
         if (!cell2edge.father->pLGlobalMapping)
             cell2edge.father->pLGlobalMapping = cell2node.father->pLGlobalMapping;
 
@@ -1697,9 +1984,9 @@ namespace DNDS::Geom
         adjEdgeState = Adj_PointToGlobal;
     }
 
-    void UnstructuredMesh::
-        AdjGlobal2LocalEdge()
+    void UnstructuredMesh::AdjGlobal2LocalEdgeImpl(MeshMutationToken &mutationToken)
     {
+        auto mutationStep = mutationToken.Enter(this, Runtime::Change::Layout | Runtime::Change::Values | Runtime::Change::Interface);
         DNDS_assert(adjEdgeState == Adj_PointToGlobal);
         DNDS_assert(cell2edge.isGlobal() && edge2node.isGlobal() && edge2cell.isGlobal());
         DNDS_assert_info(cell2edge.idx.isWired(), "cell2edge target mapping not wired");
@@ -1711,9 +1998,9 @@ namespace DNDS::Geom
         adjEdgeState = Adj_PointToLocal;
     }
 
-    void UnstructuredMesh::
-        AdjLocal2GlobalEdge()
+    void UnstructuredMesh::AdjLocal2GlobalEdgeImpl(MeshMutationToken &mutationToken)
     {
+        auto mutationStep = mutationToken.Enter(this, Runtime::Change::Layout | Runtime::Change::Values | Runtime::Change::Interface);
         DNDS_assert(adjEdgeState == Adj_PointToLocal);
         DNDS_assert(cell2edge.isLocal() && edge2node.isLocal() && edge2cell.isLocal());
         DNDS_assert_info(cell2edge.idx.isWired(), "cell2edge target mapping not wired");
@@ -1766,6 +2053,9 @@ namespace DNDS::Geom
     void UnstructuredMesh::
         ReadSerialize(Serializer::SerializerBaseSSP serializerP, const std::string &name)
     {
+        CheckCollectiveMutationAvailable();
+        MeshMutationToken mutationToken(this, versions, Runtime::Change::All);
+
         auto cwd = serializerP->GetCurrentPath();
         // serializerP->CreatePath(name);//! remember no create!
         serializerP->GoToPath(name);
@@ -1855,10 +2145,22 @@ namespace DNDS::Geom
                     { log() << "    Rank: " << mpi.rank << " nNode " << this->NumNode() << " nNodeGhost " << this->NumNodeGhost() << std::endl; });
 
         serializerP->GoToPath(cwd);
+        mutationToken.Commit();
     }
 
     void UnstructuredMesh::ConstructBndMesh(UnstructuredMesh &bMesh)
     {
+        CheckCollectiveMutationAvailable();
+        int communicator = MPI_UNEQUAL;
+        if (bMesh.mpi.comm != MPI_COMM_NULL)
+            MPI_Comm_compare(mpi.comm, bMesh.mpi.comm, &communicator);
+        int distinct = !versions.SameController(bMesh.versions) && bMesh.dim == dim - 1 &&
+                       (communicator == MPI_IDENT || communicator == MPI_CONGRUENT) && bMesh.versions.CanMutate();
+        MPI_Allreduce(MPI_IN_PLACE, &distinct, 1, MPI_INT, MPI_MIN, mpi.comm);
+        DNDS_check_throw_info(distinct, "boundary destination must be independent, idle and dimension/communicator compatible");
+        MeshMutationToken mutationToken(this, versions, Runtime::Change::Interface);
+        MeshMutationToken destinationToken(&bMesh, bMesh.versions, Runtime::Change::All);
+
         DNDS_assert(bMesh.dim == dim - 1 && bMesh.mpi == mpi);
         bMesh.cell2node.InitPair("bMesh.cell2node", mpi);
         bMesh.coords.InitPair("bMesh.coords", mpi);
@@ -2037,6 +2339,8 @@ namespace DNDS::Geom
         bMesh.cell2node.idx.markLocal();
         if (mpi.rank == mRank)
             log() << "UnstructuredMesh === ConstructBndMesh Done" << std::endl;
+        destinationToken.Commit();
+        mutationToken.Commit();
     }
 
     void UnstructuredMesh::ObtainSymmetricSymbolicFactorization(Direct::SerialSymLUStructure &symLU, Direct::DirectPrecControl control) const
@@ -2159,6 +2463,8 @@ namespace DNDS::Geom
 
     void UnstructuredMesh::ReorderLocalCellsLegacy(int nParts, int nPartsInner)
     {
+        CheckCollectiveMutationAvailable();
+        MeshMutationToken mutationToken(this, versions, Runtime::Change::Layout | Runtime::Change::Distribution | Runtime::Change::Allocation);
         DNDS_assert(this->adjPrimaryState == Adj_PointToLocal);
         DNDS_assert(cell2node.isLocal() && bnd2node.isLocal() && cell2cell.isLocal() && bnd2cell.isLocal());
         DNDS_check_throw(int64_t(nParts) * int64_t(nPartsInner) < std::numeric_limits<int>::max());
@@ -2202,7 +2508,7 @@ namespace DNDS::Geom
         {
             DNDS_assert(this->adjFacialState == Adj_PointToLocal);
             DNDS_assert(face2cell.isLocal() && face2node.isLocal());
-            this->AdjLocal2GlobalFacial();
+            this->AdjLocal2GlobalFacialImpl(mutationToken);
             // see face2cell
             for (index iF = 0; iF < this->NumFace(); iF++)
                 for (rowsize if2c = 0; if2c < 2; if2c++)
@@ -2212,13 +2518,13 @@ namespace DNDS::Geom
         {
             DNDS_assert(this->adjC2FState == Adj_PointToLocal);
             DNDS_assert(cell2face.isLocal() && bnd2face.isLocal());
-            this->AdjLocal2GlobalC2F();
+            this->AdjLocal2GlobalC2FImpl(mutationToken);
         }
         if (this->adjN2CBState != Adj_Unknown && this->node2cell.isBuilt())
         {
             DNDS_assert(this->adjN2CBState == Adj_PointToLocal);
             DNDS_assert(node2cell.isLocal() && node2bnd.isLocal());
-            this->AdjLocal2GlobalN2CB();
+            this->AdjLocal2GlobalN2CBImpl(mutationToken);
             // see node2cell
             for (index iN = 0; iN < this->NumNode(); iN++)
                 for (rowsize in2c = 0; in2c < node2cell[iN].size(); in2c++)
@@ -2228,14 +2534,14 @@ namespace DNDS::Geom
         {
             DNDS_assert(this->adjEdgeState == Adj_PointToLocal);
             DNDS_assert(cell2edge.isLocal() && edge2node.isLocal() && edge2cell.isLocal());
-            this->AdjLocal2GlobalEdge();
+            this->AdjLocal2GlobalEdgeImpl(mutationToken);
             // record non-local cells referenced by edge2cell for old→new cell mapping
             index nEdges = edge2node.father->Size();
             for (index iE = 0; iE < nEdges; iE++)
                 for (rowsize ie2c = 0; ie2c < edge2cell[iE].size(); ie2c++)
                     record_iCellNonLocal(edge2cell(iE, ie2c));
         }
-        this->AdjLocal2GlobalPrimary();
+        this->AdjLocal2GlobalPrimaryImpl(mutationToken);
         // see cell2cell
         for (index iC = 0; iC < this->NumCell(); iC++)
             for (rowsize ic2c = 0; ic2c < cell2cell[iC].size(); ic2c++)
@@ -2387,22 +2693,23 @@ namespace DNDS::Geom
         // Section G: Restore all adjacencies to local indices
         if (this->adjFacialState != Adj_Unknown && this->face2cell.isBuilt())
         {
-            this->AdjGlobal2LocalFacial();
+            this->AdjGlobal2LocalFacialImpl(mutationToken);
         }
         if (this->adjC2FState != Adj_Unknown && this->cell2face.isBuilt())
         {
-            this->AdjGlobal2LocalC2F();
+            this->AdjGlobal2LocalC2FImpl(mutationToken);
         }
         if (this->adjN2CBState != Adj_Unknown && this->node2cell.isBuilt())
         {
-            this->AdjGlobal2LocalN2CB();
+            this->AdjGlobal2LocalN2CBImpl(mutationToken);
         }
         if (this->adjEdgeState != Adj_Unknown && this->cell2edge.isBuilt())
         {
-            this->AdjGlobal2LocalEdge();
+            this->AdjGlobal2LocalEdgeImpl(mutationToken);
         }
-        this->AdjGlobal2LocalPrimary();
+        this->AdjGlobal2LocalPrimaryImpl(mutationToken);
         if (mpi.rank == mRank)
             log() << fmt::format("UnstructuredMesh === ReorderLocalCells finished") << std::endl;
+        mutationToken.Commit();
     }
 }

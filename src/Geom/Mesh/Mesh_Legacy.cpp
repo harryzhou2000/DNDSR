@@ -138,6 +138,9 @@ namespace DNDS::Geom
     void UnstructuredMesh::
         RecoverNode2CellAndNode2BndLegacy()
     {
+        CheckCollectiveMutationAvailable();
+        MeshMutationToken mutationToken(this, versions, Runtime::Change::Topology | Runtime::Change::Distribution | Runtime::Change::Layout | Runtime::Change::Allocation | Runtime::Change::Interface);
+
         DNDS_assert(adjPrimaryState == Adj_PointToGlobal);
         DNDS_assert(cell2node.isGlobal() && bnd2node.isGlobal());
         DNDS_assert(coords.father);
@@ -190,10 +193,14 @@ namespace DNDS::Geom
         // mesh->node2cell.trans.BorrowGGIndexing(mesh->coords);
         // mesh->node2cell.trans.createMPITypes();
         // mesh->node2cell.trans.pullOnce();
+        mutationToken.Commit();
     }
 
     void UnstructuredMesh::RecoverCell2CellAndBnd2CellLegacy()
     {
+        CheckCollectiveMutationAvailable();
+        MeshMutationToken mutationToken(this, versions, Runtime::Change::Topology | Runtime::Change::Distribution | Runtime::Change::Layout | Runtime::Change::Allocation | Runtime::Change::Interface);
+
         DNDS_assert(adjPrimaryState == Adj_PointToGlobal);
         DNDS_assert(cell2node.isGlobal() && bnd2node.isGlobal());
         DNDS_assert(adjN2CBState == Adj_PointToGlobal);
@@ -454,10 +461,14 @@ namespace DNDS::Geom
         }
         cell2cell.idx.markGlobal();
         bnd2cell.idx.markGlobal();
+        mutationToken.Commit();
     }
     void UnstructuredMesh::
         BuildGhostPrimaryLegacy()
     {
+        CheckCollectiveMutationAvailable();
+        MeshMutationToken mutationToken(this, versions, Runtime::Change::Topology | Runtime::Change::Distribution | Runtime::Change::Layout | Runtime::Change::Allocation | Runtime::Change::Interface);
+
         DNDS_assert(adjPrimaryState == Adj_PointToGlobal);
         DNDS_assert(cell2node.isGlobal() && bnd2node.isGlobal());
         DNDS_assert(cell2cell.father && cell2cell.father->Size() == this->NumCell());
@@ -606,10 +617,14 @@ namespace DNDS::Geom
             node2cell.idx.wireTargetMapping(cellGhostMap);
             node2bnd.idx.wireTargetMapping(bndGhostMap);
         }
+        mutationToken.Commit();
     }
     void UnstructuredMesh::
         InterpolateFaceLegacy()
     {
+        CheckCollectiveMutationAvailable();
+        MeshMutationToken mutationToken(this, versions, Runtime::Change::Topology | Runtime::Change::Distribution | Runtime::Change::Layout | Runtime::Change::Allocation | Runtime::Change::Interface);
+
         DNDS_assert(adjPrimaryState == Adj_PointToLocal); // And also should have primary ghost comm
         DNDS_assert(cell2node.isLocal() && cell2cell.isLocal() && bnd2node.isLocal());
 
@@ -659,7 +674,7 @@ namespace DNDS::Geom
             faceElemInfo, bnd2faceV, face2bndM, face2bnd, bnd2face);
 
         // Section F: Ghost face communication
-        this->AdjLocal2GlobalFacial();
+        this->AdjLocal2GlobalFacialImpl(mutationToken);
 
         // Flatten faceSendLocals into CSR format
         std::vector<index> faceSendLocalsIdx;
@@ -691,7 +706,7 @@ namespace DNDS::Geom
         face2cell.idx.wireTargetMapping(cellElemInfo.trans.pLGhostMapping);
         face2bnd.idx.wireTargetMapping(bndElemInfo.trans.pLGhostMapping);
 
-        this->AdjGlobal2LocalFacial();
+        this->AdjGlobal2LocalFacialImpl(mutationToken);
 
         // Section G: Assign ghost faces to cell2face entries marked -1
         AssignGhostFacesToCells(
@@ -714,7 +729,7 @@ namespace DNDS::Geom
         bnd2face.idx.markLocal();
 
         // Section H: Communicate cell2face and bnd2face ghost data
-        this->AdjLocal2GlobalC2F();
+        this->AdjLocal2GlobalC2FImpl(mutationToken);
         cell2face.TransAttach();
         cell2face.trans.BorrowGGIndexing(cell2node.trans);
         cell2face.trans.createMPITypes();
@@ -723,7 +738,7 @@ namespace DNDS::Geom
         bnd2face.trans.BorrowGGIndexing(bnd2node.trans);
         bnd2face.trans.createMPITypes();
         bnd2face.trans.pullOnce();
-        this->AdjGlobal2LocalC2F();
+        this->AdjGlobal2LocalC2FImpl(mutationToken);
 
         for (DNDS::index iFace = 0; iFace < faceElemInfo.Size(); iFace++)
         {
@@ -743,6 +758,7 @@ namespace DNDS::Geom
         auto gSize = face2node.father->globalSize(); //! sync call!!!
         if (mpi.rank == 0)
             log() << "UnstructuredMesh === InterpolateFaceLegacy: total faces " << gSize << std::endl;
+        mutationToken.Commit();
     }
 
 } // namespace DNDS::Geom

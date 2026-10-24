@@ -9,6 +9,7 @@
 #include "Geom/BaseFunction.hpp"
 #include "Geom/DiffTensors.hpp"
 #include "FiniteVolume.hpp"
+#include "Geom/Mesh/EntitySpace.hpp"
 
 namespace DNDS::CFV
 {
@@ -129,10 +130,35 @@ namespace DNDS::CFV
     private:
         VRSettings settings = VRSettings{dim};
         InverseDiagnostics _inverseDiagnostics;
+        Runtime::VersionStamp _baseMeshStamp, _coefficientMeshStamp;
+        uint64_t _baseMetricsGeneration = 0;
+        std::array<uint64_t, 4> _baseWallDistanceIdentity{};
+
+        std::array<uint64_t, 4> WallDistanceIdentity() const
+        {
+            DNDS_check_throw_info(mesh->nodeWallDist.father && mesh->nodeWallDist.son,
+                                  "wall-distance reconstruction requires prepared node wall distances");
+            return {mesh->nodeWallDist.father->HostDataIdentity(), mesh->nodeWallDist.father->HostDataVersion(),
+                    mesh->nodeWallDist.son->HostDataIdentity(), mesh->nodeWallDist.son->HostDataVersion()};
+        }
 
     public:
         const InverseDiagnostics &GetInverseDiagnostics() const { return _inverseDiagnostics; }
 
+        void ValidateBaseDependencies() const
+        {
+            this->ValidateMetricsDependencies();
+            DNDS_check_throw_info(_baseMeshStamp.Valid() && _baseMetricsGeneration == this->_metricsGeneration,
+                                  "reconstruction bases are missing or stale; rebuild ConstructBaseAndWeight");
+            if (settings.functionalSettings.anisotropicType == VRSettings::FunctionalSettings::AnisotropicType::WallDist)
+                DNDS_check_throw_info(_baseWallDistanceIdentity == WallDistanceIdentity(),
+                                      "wall distances changed; rebuild reconstruction bases and coefficients");
+        }
+        void ValidateMeshDependencies() const
+        {
+            ValidateBaseDependencies();
+            DNDS_check_throw_info(_coefficientMeshStamp.Valid(), "reconstruction coefficients are missing or stale; rebuild ConstructRecCoeff");
+        }
         [[nodiscard]] const VRSettings &getSettings() const
         {
             return settings;
@@ -140,6 +166,10 @@ namespace DNDS::CFV
 
         void parseSettings(const VRSettings &s)
         {
+            this->InvalidateMetricsDependencies();
+            this->_metricsBuildStamp = Runtime::VersionStamp{};
+            this->_metricsStages = 0;
+            _baseMeshStamp = _coefficientMeshStamp = Runtime::VersionStamp{};
             settings = s;
             // Slice the FiniteVolumeSettings base portion into the base class copy.
             // FiniteVolume methods read maxOrder, intOrder, ignoreMeshGeometryDeficiency,
@@ -740,6 +770,8 @@ namespace DNDS::CFV
         template <int nVarsFixed = 1>
         void MatrixAMult(tURec<nVarsFixed> &uRec, tURec<nVarsFixed> &uRec1)
         {
+            auto meshRead = mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
+            this->ValidateMeshDependencies();
             DNDS_assert(coefficients_.matrixA.Size() == mesh->NumCellProc());
             for (index iCell = 0; iCell < mesh->NumCellProc(); iCell++)
                 uRec1[iCell] = coefficients_.matrixA[iCell] * uRec[iCell];
@@ -757,9 +789,9 @@ namespace DNDS::CFV
 
             Eigen::Matrix<real, Eigen::Dynamic, nVarsFixed> ret = uRec[iCell];
             if (downCastMethod == 1)
-                DNDS_assert(coefficients_.volIntCholeskyL.size() == mesh->cell2node.father->Size());
+                DNDS_assert(coefficients_.volIntCholeskyL.size() == mesh->NumCell());
             if (downCastMethod == 2)
-                DNDS_assert(coefficients_.matrixACholeskyL.size() == mesh->cell2node.father->Size());
+                DNDS_assert(coefficients_.matrixACholeskyL.size() == mesh->NumCell());
 
             auto toOrtho = [&]()
             {
@@ -840,7 +872,7 @@ namespace DNDS::CFV
             {
                 DNDS_assert(buildSon);
                 u.TransAttach();
-                u.trans.BorrowGGIndexing(mesh->cell2node.trans);
+                Geom::LegacyFieldBridge::BorrowIndexing(u.trans, mesh->Entities(Geom::EntityKind::Cell));
                 u.trans.createMPITypes();
                 u.trans.initPersistentPull();
                 u.trans.initPersistentPush();
@@ -862,7 +894,7 @@ namespace DNDS::CFV
             {
                 DNDS_assert(buildSon);
                 u.TransAttach();
-                u.trans.BorrowGGIndexing(mesh->cell2node.trans);
+                Geom::LegacyFieldBridge::BorrowIndexing(u.trans, mesh->Entities(Geom::EntityKind::Cell));
                 u.trans.createMPITypes();
                 u.trans.initPersistentPull();
                 u.trans.initPersistentPush();
@@ -882,7 +914,7 @@ namespace DNDS::CFV
             {
                 DNDS_assert(buildSon);
                 u.TransAttach();
-                u.trans.BorrowGGIndexing(mesh->cell2node.trans);
+                Geom::LegacyFieldBridge::BorrowIndexing(u.trans, mesh->Entities(Geom::EntityKind::Cell));
                 u.trans.createMPITypes();
                 u.trans.initPersistentPull();
                 u.trans.initPersistentPush();
@@ -903,7 +935,7 @@ namespace DNDS::CFV
             {
                 DNDS_assert(buildSon);
                 u.TransAttach();
-                u.trans.BorrowGGIndexing(mesh->coords.trans);
+                Geom::LegacyFieldBridge::BorrowIndexing(u.trans, mesh->Entities(Geom::EntityKind::Node));
                 u.trans.createMPITypes();
                 u.trans.initPersistentPull();
                 u.trans.initPersistentPush();
@@ -1162,6 +1194,7 @@ namespace DNDS::CFV
 
         void WriteSerializeRecMatrix(const Serializer::SerializerBaseSSP &serializerP)
         {
+            this->ValidateMeshDependencies();
             using namespace Geom;
             std::string name = "VR_Matrix";
             auto cwd = serializerP->GetCurrentPath();

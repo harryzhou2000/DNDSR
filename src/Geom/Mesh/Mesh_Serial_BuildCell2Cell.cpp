@@ -14,6 +14,9 @@ namespace DNDS::Geom
     void UnstructuredMeshSerialRW::
         Deduplicate1to1Periodic(real search_eps) // currently does not handle parallel input mode
     {
+        mesh->CheckCollectiveMutationAvailable();
+        MeshMutationToken mutationToken(mesh.get(), mesh->versions, Runtime::Change::Geometry | Runtime::Change::Interface);
+
         DNDS_assert(this->dataIsSerialIn);
         // TODO: build periodic donor oct-trees
         // TODO: search in donors if periodic main and connect cell2cell
@@ -59,6 +62,7 @@ namespace DNDS::Geom
         else
         {
             mesh->isPeriodic = false;
+            mutationToken.Commit();
             return;
         }
 
@@ -322,6 +326,7 @@ namespace DNDS::Geom
             if (iNodeOld2New[i] >= 0)
                 (*coordSerial)[iNodeOld2New[i]] = (*coordSerialOld)[i];
         coordSerialOld.reset();
+        mutationToken.Commit();
     }
 
     void UnstructuredMeshSerialRW::
@@ -509,12 +514,16 @@ namespace DNDS::Geom
 
     void UnstructuredMesh::RecreatePeriodicNodes()
     {
+        CheckCollectiveMutationAvailable();
+        MeshMutationToken mutationToken(this, versions, Runtime::Change::Interface | Runtime::Change::Values);
+
         DNDS_assert(adjPrimaryState == Adj_PointToLocal);
         DNDS_assert(cell2node.isLocal());
         DNDS_assert(cell2node.trans.pLGhostMapping);
         DNDS_assert(coords.trans.pLGhostMapping && coords.trans.pLGlobalMapping);
         if (!isPeriodic)
         {
+            mutationToken.Commit();
             return;
         }
         tAdj1Pair nodeNeedCreate;
@@ -621,10 +630,13 @@ namespace DNDS::Geom
         index nNodeRecreatedGlobal = coordsPeriodicRecreated.father->globalSize();
         if (mpi.rank == mRank)
             log() << fmt::format("=== RecreatePeriodicNodes: new nNodes [{}]", nNodeRecreatedGlobal) << std::endl;
+        mutationToken.Commit();
     }
 
     void UnstructuredMesh::BuildVTKConnectivity()
     {
+        MeshMutationToken mutationToken(this, versions, Runtime::Change::Interface | Runtime::Change::Values);
+
         DNDS_assert(cell2node.father);
         DNDS_assert(coords.trans.pLGhostMapping); // for this->NodeIndexLocal2Global()
         DNDS_assert(adjPrimaryState == Adj_PointToLocal);
@@ -689,5 +701,6 @@ namespace DNDS::Geom
         MPI_Allreduce(&nNodesLocal, &vtkNNodeGlobal, 1, DNDS_MPI_INDEX, MPI_SUM, mpi.comm);
 
         // std::cout << mpi.rank << " " << sumPrevVtkCellOffset << std::endl;
+        mutationToken.Commit();
     }
 }

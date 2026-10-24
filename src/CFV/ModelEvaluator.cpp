@@ -1,4 +1,5 @@
 #include "ModelEvaluator.hpp"
+#include "Geom/Mesh/MeshAccess.hpp"
 #include "DNDS/Defines.hpp"
 
 namespace DNDS::CFV
@@ -7,6 +8,11 @@ namespace DNDS::CFV
         tUDof<nVarsFixed> &rhs, tUDof<nVarsFixed> &u, tURec<nVarsFixed> &uRec, real t,
         const ModelEvaluator::EvaluateRHSOptions &options)
     {
+        auto meshRequirements = Geom::MeshReadRequirements::CellFlux();
+        meshRequirements.allFaceCellsLocal = true;
+        auto meshRead = mesh->AcquireRead(meshRequirements);
+        const auto meshView = meshRead.HostView();
+        vfv->ValidateMeshDependencies();
         using namespace Geom;
         int cnvars = u.father->MatRowSize();
         static const auto Seq012 = Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>);
@@ -16,7 +22,7 @@ namespace DNDS::CFV
         bool direct2ndRec = options.direct2ndRec;
         bool direct2ndRec1stConv = options.direct2ndRec1stConv;
 
-        for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
+        for (index iCell = 0; iCell < meshView.NumCell(); iCell++)
             rhs[iCell].setZero();
 
         if (direct2ndRec)
@@ -26,14 +32,14 @@ namespace DNDS::CFV
             uGradBuf.trans.waitPersistentPull();
         }
 
-        for (index iFace = 0; iFace < mesh->NumFaceProc(); iFace++)
+        for (index iFace = 0; iFace < meshView.NumFaceProc(); iFace++)
         {
-            auto f2c = mesh->face2cell[iFace];
+            auto f2c = meshView.FaceCells(iFace);
             Elem::Quadrature gFace = direct2ndRec ? vfv->GetFaceQuadO1(iFace) : vfv->GetFaceQuad(iFace);
             Eigen::Matrix<real, nVarsFixed, 1, Eigen::ColMajor> fluxEs(cnvars, 1);
             fluxEs.setZero();
 
-            auto faceBndID = mesh->GetFaceZone(iFace);
+            auto faceBndID = meshView.GetFaceZone(iFace);
             gFace.IntegrationSimple(
                 fluxEs,
                 [&](decltype(fluxEs) &finc, int iG, real w)
@@ -91,7 +97,7 @@ namespace DNDS::CFV
                             normBase,
                             vfv->GetFaceQuadraturePPhys(iFace, iGQ),
                             t,
-                            mesh->GetFaceZone(iFace), true, 0);
+                            meshView.GetFaceZone(iFace), true, 0);
                         distBary = (vfv->GetFaceQuadraturePPhysFromCell(iFace, f2c[0], 0, -1) - vfv->GetCellBary(f2c[0])).norm() * 2.;
                     }
 
