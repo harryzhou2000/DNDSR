@@ -358,7 +358,11 @@ class Solver:
             self.data[n] = a
 
     def to_device(self, backend=None):
-        """Transfer mesh, FV, and evaluator to a compute device.
+        """Place FV/physics data and the evaluator's cached native mesh snapshot.
+
+        The authoritative source mesh stays on the host. The evaluator owns
+        its immutable device topology snapshot and rebuilds it after tracked
+        mesh changes.
 
         Args:
             backend: Device backend string (e.g. ``"CUDA"``), or None to skip.
@@ -374,7 +378,6 @@ class Solver:
             raise ValueError("need to initialize fv before to_device")
         if not hasattr(self, "eval"):
             raise ValueError("need to initialize eval before to_device")
-        self.mesh.to_device(backend)
         self.fv.to_device(backend)
         self.eval.to_device(backend)
 

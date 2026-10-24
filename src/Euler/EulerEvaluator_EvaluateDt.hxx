@@ -6,6 +6,7 @@
  */
 #pragma once
 #include "EulerEvaluator.hpp"
+#include "Geom/Mesh/MeshAccess.hpp"
 #include "RANS_ke.hpp"
 #include "Solver/Linear.hpp"
 
@@ -39,20 +40,26 @@ namespace DNDS::Euler
         bool useQuadPatches,
         std::vector<Eigen::Matrix<real, 3, 3>> &trianglesOut)
     {
-        for (index iBnd = 0; iBnd < mesh->NumBnd(); iBnd++)
+        auto meshRequirements = Geom::MeshReadRequirements::CellFlux();
+        auto meshRead = mesh->AcquireRead(meshRequirements);
+        const auto meshView = meshRead.HostView();
+        vfv->ValidateMetricsDependencies();
+        for (index iBnd = 0; iBnd < meshView.NumBnd(); iBnd++)
         {
-            if (pBCHandler->GetTypeFromID(mesh->GetBndZone(iBnd)) == EulerBCType::BCWall ||
-                pBCHandler->GetTypeFromID(mesh->GetBndZone(iBnd)) == EulerBCType::BCWallIsothermal)
+            if (pBCHandler->GetTypeFromID(meshView.GetBndZone(iBnd)) == EulerBCType::BCWall ||
+                pBCHandler->GetTypeFromID(meshView.GetBndZone(iBnd)) == EulerBCType::BCWallIsothermal)
             {
-                index iFace = mesh->bnd2faceV[iBnd];
-                auto elem = mesh->GetFaceElement(iFace);
+                index iFace = meshView.BoundaryFaces(iBnd)[0];
+                DNDS_check_throw_info(iFace >= 0 && iFace < meshView.NumFaceProc(),
+                                      "wall boundary triangulation requires a locally available face");
+                auto elem = meshView.GetFaceElement(iFace);
                 auto quad = vfv->GetFaceQuad(iFace);
                 if (!useQuadPatches)
                 {
                     if (elem.type == Geom::Elem::ElemType::Line2 || elem.type == Geom::Elem::ElemType::Line3)
                     {
                         Geom::tSmallCoords coords;
-                        mesh->GetCoordsOnFace(iFace, coords);
+                        meshView.GetCoordsOnFace(iFace, coords);
                         Eigen::Matrix<real, 3, 3> tri;
                         tri(EigenAll, 0) = coords(EigenAll, 0);
                         tri(EigenAll, 1) = coords(EigenAll, 1);
@@ -62,7 +69,7 @@ namespace DNDS::Euler
                     else if (elem.type == Geom::Elem::ElemType::Tri3 || elem.type == Geom::Elem::ElemType::Tri6)
                     {
                         Geom::tSmallCoords coords;
-                        mesh->GetCoordsOnFace(iFace, coords);
+                        meshView.GetCoordsOnFace(iFace, coords);
                         Eigen::Matrix<real, 3, 3> tri;
                         tri(EigenAll, 0) = coords(EigenAll, 0);
                         tri(EigenAll, 1) = coords(EigenAll, 1);
@@ -72,7 +79,7 @@ namespace DNDS::Euler
                     else if (elem.type == Geom::Elem::ElemType::Quad4 || elem.type == Geom::Elem::ElemType::Quad9)
                     {
                         Geom::tSmallCoords coords;
-                        mesh->GetCoordsOnFace(iFace, coords);
+                        meshView.GetCoordsOnFace(iFace, coords);
                         Eigen::Matrix<real, 3, 3> tri;
                         tri(EigenAll, 0) = coords(EigenAll, 0);
                         tri(EigenAll, 1) = coords(EigenAll, 1);
@@ -95,7 +102,7 @@ namespace DNDS::Euler
                     {
                         Eigen::Matrix<real, 3, 3> tri;
                         Geom::tSmallCoords coords;
-                        mesh->GetCoordsOnFace(iFace, coords);
+                        meshView.GetCoordsOnFace(iFace, coords);
                         for (int iV = 0; iV < 3; iV++)
                             if (qPatch[iV] > 0)
                                 tri(EigenAll, iV) = coords(EigenAll, qPatch[iV] - 1);
@@ -122,10 +129,15 @@ namespace DNDS::Euler
      */
     void EulerEvaluator<model>::GetWallDist_ComputeFaceDistances()
     {
-        dWallFace.resize(mesh->NumFaceProc());
-        for (index iFace = 0; iFace < mesh->NumFaceProc(); iFace++)
+        auto meshRequirements = Geom::MeshReadRequirements::CellFlux();
+        meshRequirements.allFaceCellsLocal = true;
+        auto meshRead = mesh->AcquireRead(meshRequirements);
+        const auto meshView = meshRead.HostView();
+        vfv->ValidateMetricsDependencies();
+        dWallFace.resize(meshView.NumFaceProc());
+        for (index iFace = 0; iFace < meshView.NumFaceProc(); iFace++)
         {
-            auto f2c = mesh->face2cell[iFace];
+            auto f2c = meshView.FaceCells(iFace);
             real facialDist = dWall.at(f2c[0]).mean();
             if (f2c[1] != UnInitIndex)
                 facialDist = 0.5 * (facialDist + dWall.at(f2c[1]).mean());
@@ -146,6 +158,10 @@ namespace DNDS::Euler
      */
     void EulerEvaluator<model>::GetWallDist_AABB()
     {
+        auto meshRequirements = Geom::MeshReadRequirements::CellFlux();
+        auto meshRead = mesh->AcquireRead(meshRequirements);
+        const auto meshView = meshRead.HostView();
+        vfv->ValidateMetricsDependencies();
         using TriArray = ArrayEigenMatrix<3, 3>;
         ssp<TriArray> TrianglesLocal, TrianglesFull;
         DNDS_MAKE_SSP(TrianglesLocal, mesh->getMPI());
@@ -170,7 +186,7 @@ namespace DNDS::Euler
         TrianglesTransformer.createGhostMapping(pullingSet);
         TrianglesTransformer.createMPITypes();
         TrianglesTransformer.pullOnce();
-        if (mesh->coords.father->getMPI().rank == 0)
+        if (mesh->getMPI().rank == 0)
             log() << fmt::format("=== EulerEvaluator<model>::GetWallDist() with minWallDist = {:.4e}, ", settings.minWallDist)
                   << " To search in " << TrianglesFull->Size() << std::endl;
 
@@ -199,13 +215,13 @@ namespace DNDS::Euler
             TrianglesLocal->Resize(0, 3, 3);
             TrianglesFull->Resize(0, 3, 3);
             double minDist = veryLargeReal;
-            this->dWall.resize(mesh->NumCellProc());
+            this->dWall.resize(meshView.NumCellProc());
 
             if (!triangles.empty())
             {
                 Tree tree(triangles.begin(), triangles.end());
 
-                for (index iCell = 0; iCell < mesh->NumCellProc(); iCell++)
+                for (index iCell = 0; iCell < meshView.NumCellProc(); iCell++)
                 {
                     auto quadCell = vfv->GetCellQuad(iCell);
                     dWall[iCell].resize(quadCell.GetNumPoints());
@@ -223,7 +239,7 @@ namespace DNDS::Euler
             }
             else
             {
-                for (index iCell = 0; iCell < mesh->NumCellProc(); iCell++)
+                for (index iCell = 0; iCell < meshView.NumCellProc(); iCell++)
                 {
                     auto quadCell = vfv->GetCellQuad(iCell);
                     dWall[iCell].setConstant(quadCell.GetNumPoints(), std::pow(veryLargeReal, 1. / 4.));
@@ -259,6 +275,10 @@ namespace DNDS::Euler
      */
     void EulerEvaluator<model>::GetWallDist_BatchedAABB()
     {
+        auto meshRequirements = Geom::MeshReadRequirements::CellFlux();
+        auto meshRead = mesh->AcquireRead(meshRequirements);
+        const auto meshView = meshRead.HostView();
+        vfv->ValidateMetricsDependencies();
         typedef CGAL::Simple_cartesian<double> K;
         typedef K::FT FT;
         typedef K::Point_3 Point;
@@ -270,7 +290,7 @@ namespace DNDS::Euler
 
         // Build local AABB tree from wall boundary triangles using quad patches.
         std::vector<Triangle> triangles;
-        triangles.reserve(mesh->NumBnd() * 8 + 8);
+        triangles.reserve(meshView.NumBnd() * 8 + 8);
         {
             std::vector<Eigen::Matrix<real, 3, 3>> triEigen;
             GetWallDist_CollectTriangles(/*useQuadPatches=*/true, triEigen);
@@ -303,11 +323,11 @@ namespace DNDS::Euler
         Tree tree(triangles.begin(), triangles.end());
 
         if (settings.wallDistScheme == 2)
-            dWall.resize(mesh->NumCellProc());
+            dWall.resize(meshView.NumCellProc());
         index iCellBase = 0;
         index nProcessed = 0;
         int cellLoadNum = std::max(1, static_cast<int>(std::ceil(settings.wallDistCellLoadSize / real(mesh->getMPI().size))));
-        if (mesh->coords.father->getMPI().rank == 0)
+        if (mesh->getMPI().rank == 0)
             log() << fmt::format("=== EulerEvaluator<model>::GetWallDist() using cellLoadNum = {}, ", cellLoadNum)
                   << std::endl;
 
@@ -319,7 +339,7 @@ namespace DNDS::Euler
                     if (d <= settings.wallDistRefineMax)
                         nRefine++;
             MPI::AllreduceOneIndex(nRefine, MPI_SUM, mesh->getMPI());
-            if (mesh->coords.father->getMPI().rank == 0)
+            if (mesh->getMPI().rank == 0)
                 log() << fmt::format("=== EulerEvaluator<model>::GetWallDist() to refine {}, ", nRefine)
                       << std::endl;
         }
@@ -332,7 +352,7 @@ namespace DNDS::Euler
             for (int iCLoad = 0; iCLoad < cellLoadNum; iCLoad++)
             {
                 index iCell = iCellBase + iCLoad;
-                if (iCell < mesh->NumCellProc())
+                if (iCell < meshView.NumCellProc())
                 {
                     auto quadCell = vfv->GetCellQuad(iCell);
                     for (int ig = 0; ig < quadCell.GetNumPoints(); ig++)
@@ -397,7 +417,7 @@ namespace DNDS::Euler
             for (int iCLoad = 0; iCLoad < cellLoadNum; iCLoad++)
             {
                 index iCell = iCellBase + iCLoad;
-                if (iCell < mesh->NumCellProc())
+                if (iCell < meshView.NumCellProc())
                 {
                     auto quadCell = vfv->GetCellQuad(iCell);
                     if (settings.wallDistScheme == 2)
@@ -434,6 +454,10 @@ namespace DNDS::Euler
      */
     void EulerEvaluator<model>::GetWallDist_Poisson()
     {
+        auto meshRequirements = Geom::MeshReadRequirements::CellFlux();
+        auto meshRead = mesh->AcquireRead(meshRequirements);
+        const auto meshView = meshRead.HostView();
+        vfv->ValidateMetricsDependencies();
         int nSweep = settings.wallDistNJacobiSweep;
         int nIter = settings.wallDistIter;
         int nIterSee = 10;
@@ -461,28 +485,28 @@ namespace DNDS::Euler
         dTauInv.setConstant(0.0);
 
         std::vector<std::vector<real>> coefs;
-        coefs.resize(mesh->NumCell());
-        for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
-            coefs.at(iCell).resize(mesh->cell2face[iCell].size() + 1);
+        coefs.resize(meshView.NumCell());
+        for (index iCell = 0; iCell < meshView.NumCell(); iCell++)
+            coefs.at(iCell).resize(meshView.CellFaces(iCell).size() + 1);
 
         std::vector<MatrixXR> mGGs;
-        mGGs.resize(mesh->NumCell());
+        mGGs.resize(meshView.NumCell());
 
         // get mGG coefs
-        for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
+        for (index iCell = 0; iCell < meshView.NumCell(); iCell++)
         {
             Geom::tPoint bary = vfv->GetCellQuadraturePPhys(iCell, -1);
             auto &mGG = mGGs.at(iCell);
-            mGG.setZero(3 + mesh->cell2face[iCell].size(), 3 + mesh->cell2face[iCell].size());
+            mGG.setZero(3 + meshView.CellFaces(iCell).size(), 3 + meshView.CellFaces(iCell).size());
             mGG({0, 1, 2}, {0, 1, 2}) = Eigen::Matrix3d::Identity();
             real sumFaceArea = 0.;
-            for (int ic2f = 0; ic2f < mesh->cell2face[iCell].size(); ic2f++)
+            for (int ic2f = 0; ic2f < meshView.CellFaces(iCell).size(); ic2f++)
             {
-                index iFace = mesh->cell2face[iCell][ic2f];
-                index iCellOther = mesh->CellFaceOther(iCell, iFace, ic2f);
-                int if2c = mesh->CellIsFaceBack(iCell, iFace, ic2f) ? 0 : 1;
+                index iFace = meshView.CellFaces(iCell)[ic2f];
+                index iCellOther = meshView.CellFaceOther(iCell, iFace, ic2f);
+                int if2c = meshView.CellIsFaceBack(iCell, iFace, ic2f) ? 0 : 1;
                 Geom::tPoint uNormOut = vfv->GetFaceNormFromCell(iFace, iCell, if2c, -1) * (if2c ? -1 : 1);
-                auto faceBndID = mesh->GetFaceZone(iFace);
+                auto faceBndID = meshView.GetFaceZone(iFace);
                 auto faceBCType = pBCHandler->GetTypeFromID(faceBndID);
                 Geom::tPoint baryOther = bary;
                 Geom::tPoint bFace = vfv->GetFaceQuadraturePPhysFromCell(iFace, iCell, if2c, -1);
@@ -517,19 +541,19 @@ namespace DNDS::Euler
 
         auto getDiffPhi = [&](ArrayDOFV<1> &phi, ArrayDOFV<3> &diffPhi)
         {
-            for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
+            for (index iCell = 0; iCell < meshView.NumCell(); iCell++)
             {
                 Geom::tPoint bary = vfv->GetCellQuadraturePPhys(iCell, -1);
                 diffPhi[iCell].setZero();
                 Eigen::Vector<real, Eigen::Dynamic> bGG;
-                bGG.setZero(3 + mesh->cell2face[iCell].size());
-                for (int ic2f = 0; ic2f < mesh->cell2face[iCell].size(); ic2f++)
+                bGG.setZero(3 + meshView.CellFaces(iCell).size());
+                for (int ic2f = 0; ic2f < meshView.CellFaces(iCell).size(); ic2f++)
                 {
-                    index iFace = mesh->cell2face[iCell][ic2f];
-                    index iCellOther = mesh->CellFaceOther(iCell, iFace, ic2f);
-                    int if2c = mesh->CellIsFaceBack(iCell, iFace, ic2f) ? 0 : 1;
+                    index iFace = meshView.CellFaces(iCell)[ic2f];
+                    index iCellOther = meshView.CellFaceOther(iCell, iFace, ic2f);
+                    int if2c = meshView.CellIsFaceBack(iCell, iFace, ic2f) ? 0 : 1;
                     Geom::tPoint uNormOut = vfv->GetFaceNormFromCell(iFace, iCell, if2c, -1) * (if2c ? -1 : 1);
-                    auto faceBndID = mesh->GetFaceZone(iFace);
+                    auto faceBndID = meshView.GetFaceZone(iFace);
                     auto faceBCType = pBCHandler->GetTypeFromID(faceBndID);
                     real phiOther = phi[iCell](0);
                     Geom::tPoint baryOther = bary;
@@ -568,19 +592,19 @@ namespace DNDS::Euler
             getDiffPhi(phi, diffPhi);
             diffPhi.trans.startPersistentPull();
             diffPhi.trans.waitPersistentPull();
-            for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
+            for (index iCell = 0; iCell < meshView.NumCell(); iCell++)
             {
                 rhs[iCell](0) = 1.;
                 Geom::tPoint bary = vfv->GetCellQuadraturePPhys(iCell, -1);
                 if (updateCoefs)
                     coefs.at(iCell).at(0) = 0.;
-                for (int ic2f = 0; ic2f < mesh->cell2face[iCell].size(); ic2f++)
+                for (int ic2f = 0; ic2f < meshView.CellFaces(iCell).size(); ic2f++)
                 {
-                    index iFace = mesh->cell2face[iCell][ic2f];
-                    index iCellOther = mesh->CellFaceOther(iCell, iFace, ic2f);
-                    int if2c = mesh->CellIsFaceBack(iCell, iFace, ic2f) ? 0 : 1;
+                    index iFace = meshView.CellFaces(iCell)[ic2f];
+                    index iCellOther = meshView.CellFaceOther(iCell, iFace, ic2f);
+                    int if2c = meshView.CellIsFaceBack(iCell, iFace, ic2f) ? 0 : 1;
                     Geom::tPoint uNormOut = vfv->GetFaceNormFromCell(iFace, iCell, if2c, -1) * (if2c ? -1 : 1);
-                    auto faceBndID = mesh->GetFaceZone(iFace);
+                    auto faceBndID = meshView.GetFaceZone(iFace);
                     auto faceBCType = pBCHandler->GetTypeFromID(faceBndID);
                     real phiOther = phi[iCell](0);
                     Geom::tPoint baryOther = bary;
@@ -636,13 +660,13 @@ namespace DNDS::Euler
             dphi.setConstant(0.0);
             for (int iSweep = 1; iSweep <= nSweep; iSweep++)
             {
-                for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
+                for (index iCell = 0; iCell < meshView.NumCell(); iCell++)
                 {
                     dphiNew[iCell] = rhsPhi[iCell];
-                    for (int ic2f = 0; ic2f < mesh->cell2face[iCell].size(); ic2f++)
+                    for (int ic2f = 0; ic2f < meshView.CellFaces(iCell).size(); ic2f++)
                     {
-                        index iFace = mesh->cell2face[iCell][ic2f];
-                        index iCellOther = mesh->CellFaceOther(iCell, iFace, ic2f);
+                        index iFace = meshView.CellFaces(iCell)[ic2f];
+                        index iCellOther = meshView.CellFaceOther(iCell, iFace, ic2f);
                         if (iCellOther != UnInitIndex)
                             dphiNew[iCell] += coefs[iCell][ic2f + 1] * dphi[iCellOther];
                     }
@@ -694,13 +718,13 @@ namespace DNDS::Euler
                             Ax.trans.startPersistentPull();
                             Ax.trans.waitPersistentPull();
 
-                            // for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
+                            // for (index iCell = 0; iCell < meshView.NumCell(); iCell++)
                             // {
                             //     Ax[iCell] = -coefs[iCell][0] * x[iCell];
-                            //     for (int ic2f = 0; ic2f < mesh->cell2face[iCell].size(); ic2f++)
+                            //     for (int ic2f = 0; ic2f < meshView.CellFaces(iCell).size(); ic2f++)
                             //     {
-                            //         index iFace = mesh->cell2face[iCell][ic2f];
-                            //         index iCellOther = mesh->CellFaceOther(iCell, iFace);
+                            //         index iFace = meshView.CellFaces(iCell)[ic2f];
+                            //         index iCellOther = meshView.CellFaceOther(iCell, iFace);
                             //         if (iCellOther != UnInitIndex)
                             //             Ax[iCell] += -coefs[iCell][ic2f + 1] * x[iCellOther];
                             //     }
@@ -752,16 +776,16 @@ namespace DNDS::Euler
             getDiffPhi(phi, diffPhi);
             diffPhi.trans.startPersistentPull();
             diffPhi.trans.waitPersistentPull();
-            for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
+            for (index iCell = 0; iCell < meshView.NumCell(); iCell++)
             {
                 Geom::tPoint gradPhi;
                 gradPhi.setZero();
                 gradPhi = diffPhi[iCell];
                 real nD = 1;
-                for (int ic2f = 0; ic2f < mesh->cell2face[iCell].size(); ic2f++)
+                for (int ic2f = 0; ic2f < meshView.CellFaces(iCell).size(); ic2f++)
                 {
-                    index iFace = mesh->cell2face[iCell][ic2f];
-                    index iCellOther = mesh->CellFaceOther(iCell, iFace, ic2f);
+                    index iFace = meshView.CellFaces(iCell)[ic2f];
+                    index iCellOther = meshView.CellFaceOther(iCell, iFace, ic2f);
                     if (iCellOther != UnInitIndex)
                     {
                         gradPhi += diffPhi[iCell];
@@ -782,14 +806,14 @@ namespace DNDS::Euler
 
         auto minval = dPhi.min();
 
-        dWall.resize(mesh->NumCellProc());
-        for (index iCell = 0; iCell < mesh->NumCellProc(); iCell++)
+        dWall.resize(meshView.NumCellProc());
+        for (index iCell = 0; iCell < meshView.NumCellProc(); iCell++)
         {
             auto quadCell = vfv->GetCellQuad(iCell);
             dWall[iCell].resize(quadCell.GetNumPoints());
         }
 
-        for (index iCell = 0; iCell < mesh->NumCellProc(); iCell++)
+        for (index iCell = 0; iCell < meshView.NumCellProc(); iCell++)
             dWall.at(iCell).setConstant(std::max(dPhi[iCell](0), settings.minWallDist));
         if (phi.father->getMPI().rank == 0)
             log() << fmt::format("EulerEvaluator<model>::GetWallDist(): poisson min dist [{}]", minval(0)) << std::endl;
@@ -855,6 +879,11 @@ namespace DNDS::Euler
         OptionalRef<ArrayDOFV<1>> cellTWarm,
         CFV::ReconstructionMaskView reconstructionMask)
     {
+        auto meshRequirements = Geom::MeshReadRequirements::CellFlux();
+        meshRequirements.allFaceCellsLocal = true;
+        auto meshRead = mesh->AcquireRead(meshRequirements);
+        const auto meshView = meshRead.HostView();
+        vfv->ValidateMeshDependencies();
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
         DNDS_MPI_InsertCheck(u.father->getMPI(), "EvaluateDt 1");
 
@@ -882,9 +911,9 @@ namespace DNDS::Euler
 #if defined(DNDS_DIST_MT_USE_OMP)
 #    pragma omp parallel for schedule(runtime) private(GradULxy, GradURxy)
 #endif
-        for (index iFace = 0; iFace < mesh->NumFaceProc(); iFace++)
+        for (index iFace = 0; iFace < meshView.NumFaceProc(); iFace++)
         {
-            auto f2c = mesh->face2cell[iFace];
+            auto f2c = meshView.FaceCells(iFace);
             TVec unitNorm = vfv->GetFaceNorm(iFace, -1)(Seq012);
 
             index iCellL = f2c[0];
@@ -1030,17 +1059,17 @@ namespace DNDS::Euler
 #if defined(DNDS_DIST_MT_USE_OMP)
 #    pragma omp parallel for schedule(runtime) reduction(min : dtMin)
 #endif
-        for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
+        for (index iCell = 0; iCell < meshView.NumCell(); iCell++)
         {
             real lambdaCellC = 0;
-            for (auto iFace : mesh->cell2face[iCell])
+            for (auto iFace : meshView.CellFaces(iCell))
                 lambdaCellC += lambdaFace[iFace] * vfv->GetFaceArea(iFace);
             // std::cout << fv->GetCellVol(iCell) << " " << (lambdaCellC) << " " << CFL << std::endl;
             // exit(0);
             dt[iCell](0) = std::min(CFL * vfv->GetCellVol(iCell) * vfv->GetCellSmoothScaleRatio(iCell) / (lambdaCellC + 1e-100), MaxDt);
             dtMin = std::min(dtMin, dt[iCell](0));
             deltaLambdaCell[iCell](0) = 0;
-            for (auto iFace : mesh->cell2face[iCell])
+            for (auto iFace : meshView.CellFaces(iCell))
                 deltaLambdaCell[iCell](0) = std::max(deltaLambdaCell[iCell](0), deltaLambdaFace[iFace]);
             if (usesAUSMPWStencil)
             {

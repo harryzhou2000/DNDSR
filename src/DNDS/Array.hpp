@@ -159,6 +159,7 @@ namespace DNDS
         /// @brief Shared pointer to the per-row size vector (TABLE_Max / TABLE_StaticMax).
         /// @details For padded layouts, records the number of "used" columns in each row.
         t_pRowSizes getRowSizes() { return _pRowSizes; }
+        ssp<const t_RowSizes> getRowSizes() const { return _pRowSizes; }
 
         /// Own the exact host allocation behind an exported row. Ordinary
         /// element access stays borrowed; only long-lived consumers need leases.
@@ -188,6 +189,14 @@ namespace DNDS
         }
         uint64_t HostDataVersion() const { return _data.HostVersion(); }
         uint64_t HostDataIdentity() const { return _data.HostIdentity(); }
+
+        /// Explicit bridge boundary; retains allocation/controller, not this Array.
+        Runtime::Buffer HostBufferSnapshot() const
+        {
+            if constexpr (isCSR)
+                DNDS_check_throw_info(IfCompressed(), "publish compressed CSR before host sharing");
+            return _data.HostBufferSnapshot();
+        }
 
     public:
         /// @brief Default-constructed array: empty, no storage.
@@ -343,6 +352,9 @@ namespace DNDS
         {
             if (!IfCompressed())
                 return;
+            // Decompression reads the old allocation before publishing new rows.
+            // A retained native writer must finish before that copy can proceed.
+            auto read = _data.HostReadForLegacyCopy();
             _dataUncompressed.resize(_size);
             for (index i = 0; i < _size; i++)
             {

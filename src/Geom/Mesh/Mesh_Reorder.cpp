@@ -175,9 +175,6 @@ namespace DNDS::Geom
         // --- Step 5: Collect pull sets and build lookups ---
         for (auto kind : plan.reorderedKinds)
         {
-            std::set<index> pullSetCollector;
-            auto gm = registry.getGlobalMapping(kind);
-
             // Use pre-collected pull sets from the registry
             std::vector<index> pullSet;
             auto psIt = registry.pullSets.find(kind);
@@ -194,8 +191,113 @@ namespace DNDS::Geom
     // ReorderPlan::apply
     // =================================================================
 
+    PreparedCompanionBundle ReorderPlan::prepareCompanions(const ReorderRegistry &registry, const MPIInfo &mpi) const
+    {
+        std::string signature;
+        int valid = 1;
+        try
+        {
+            std::unordered_map<EntityKind, std::pair<uint64_t, uint64_t>> distributions;
+            std::unordered_set<std::string> names;
+            std::unordered_set<const void *> destinations;
+            auto append = [&](const std::string &value)
+            { signature += std::to_string(value.size()) + ":" + value + ";"; };
+            for (const auto &field : registry.companions)
+            {
+                DNDS_check_throw_info(field.name.empty() || names.insert(field.name).second,
+                                      "duplicate companion registration name");
+                append(std::to_string(static_cast<int>(field.kind)));
+                append(field.name);
+                append(std::to_string(static_cast<int>(field.disposition)));
+                append(field.prepare ? "staged" : "legacy");
+                DNDS_check_throw_info(!field.prepare || (field.preflight && field.attachment), "incomplete staged field registration");
+                DNDS_check_throw_info(field.prepare || (!field.preflight && !field.attachment), "incomplete staged field registration");
+                const bool active = reorderedKinds.count(field.kind);
+                DNDS_check_throw_info(!active || field.disposition == CompanionDisposition::TransferIfReordered,
+                                      "field disposition prohibits reordering its entity space");
+                if (!field.prepare)
+                    continue;
+                auto attached = field.attachment();
+                DNDS_check_throw_info(attached.destination && destinations.insert(attached.destination).second,
+                                      "staged destination handle registered more than once");
+                append(attached.schema);
+                append(attached.association);
+                append(attached.hasDistribution ? "distributed" : "array");
+                if (attached.hasDistribution)
+                {
+                    append(std::to_string(attached.domain));
+                    append(std::to_string(attached.epoch));
+                    auto metadata = std::make_pair(attached.domain, attached.epoch);
+                    auto [entry, inserted] = distributions.emplace(field.kind, metadata);
+                    DNDS_check_throw_info(inserted || entry->second == metadata,
+                                          "fields attached to one entity space have different domains/epochs");
+                }
+                if (active)
+                    field.preflight(transfers.at(field.kind));
+            }
+            DNDS_check_throw_info(signature.size() <= size_t(std::numeric_limits<int>::max()), "field schedule too large");
+        }
+        catch (...)
+        {
+            valid = 0;
+        }
+        MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, mpi.comm);
+        DNDS_check_throw_info(valid, "staged field attachment, disposition or source validation failed on a rank");
+        int length = static_cast<int>(signature.size());
+        MPI_Bcast(&length, 1, MPI_INT, 0, mpi.comm);
+        std::string expected;
+        try
+        {
+            expected = mpi.rank == 0 ? signature : std::string(size_t(length), '\0');
+        }
+        catch (...)
+        {
+            valid = 0;
+        }
+        MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, mpi.comm);
+        DNDS_check_throw_info(valid, "cannot retain staged field schedule on a rank");
+        MPI_Bcast(expected.data(), length, MPI_CHAR, 0, mpi.comm);
+        valid = signature == expected;
+        MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, mpi.comm);
+        DNDS_check_throw_info(valid, "staged field schemas/attachments/dispositions differ between ranks");
+
+        PreparedCompanionBundle result;
+        try
+        {
+            result.fields.reserve(registry.companions.size());
+        }
+        catch (...)
+        {
+            valid = 0;
+        }
+        MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, mpi.comm);
+        DNDS_check_throw_info(valid, "cannot retain staged field bundle on a rank");
+        for (const auto &field : registry.companions)
+            if (field.prepare && reorderedKinds.count(field.kind))
+            {
+                std::unique_ptr<PreparedCompanion> prepared;
+                try
+                {
+                    prepared = field.prepare(transfers.at(field.kind), mpi);
+                    valid = bool(prepared);
+                }
+                catch (...)
+                {
+                    valid = 0;
+                }
+                MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, mpi.comm);
+                DNDS_check_throw_info(valid, "staged field preparation failed on a rank; sources remain unpublished");
+                result.fields.push_back(std::move(prepared));
+            }
+        return result;
+    }
+
     void ReorderPlan::apply(ReorderRegistry &registry, const MPIInfo &mpi) const
     {
+        PreparedCompanionBundle prepared;
+        if (std::any_of(registry.companions.begin(), registry.companions.end(), [](const auto &field)
+                        { return bool(field.prepare) || field.disposition != CompanionDisposition::TransferIfReordered; }))
+            prepared = prepareCompanions(registry, mpi);
         // Phase 1: REMAP all adj entries
         for (auto &adj : registry.adjs)
         {
@@ -237,7 +339,7 @@ namespace DNDS::Geom
         // Phase 3: RELOCATE all companions of reordered kinds
         for (auto &comp : registry.companions)
         {
-            if (reorderedKinds.count(comp.kind))
+            if (!comp.prepare && reorderedKinds.count(comp.kind))
             {
                 auto it = transfers.find(comp.kind);
                 DNDS_assert_info(it != transfers.end(),
@@ -246,6 +348,7 @@ namespace DNDS::Geom
                 comp.fn(it->second, mpi);
             }
         }
+        prepared.Publish();
     }
 
     // =================================================================
@@ -256,6 +359,7 @@ namespace DNDS::Geom
         const std::unordered_set<EntityKind> &destroyKinds)
     {
         ReorderRegistry reg;
+        std::vector<std::function<void()>> collectPullSets;
 
         auto shouldSkip = [&](AdjKind kind)
         {
@@ -303,6 +407,29 @@ namespace DNDS::Geom
 
             reg.registerAdj(kind, std::move(remap), std::move(relocate),
                             adjKindName(kind));
+
+            // The remap runs on owned source rows before relocation. Build
+            // coverage from precisely those rows, so every arriving row has
+            // already had its target IDs resolved on its original owner.
+            // Keep coverage with registration rather than a second inventory
+            // that can omit a relation (notably cell2cellFace).
+            collectPullSets.emplace_back([&, kind, pair = &trackedPair]()
+                                         {
+                auto targetKind = kind.isIntraLevel() ? kind.from : kind.to;
+                auto gm = reg.getGlobalMapping(targetKind);
+                if (!gm)
+                    return;
+                auto &ps = reg.pullSets[targetKind];
+                for (index i = 0; i < pair->father->Size(); ++i)
+                    for (rowsize j = 0; j < pair->RowSize(i); ++j)
+                    {
+                        auto v = (*pair)(i, j);
+                        if (v == UnInitIndex)
+                            continue;
+                        auto [found, rank, slot] = gm->search(v);
+                        if (found && rank != mpi.rank)
+                            ps.push_back(v);
+                    } });
         };
 
         // Register tracked adj members
@@ -392,61 +519,9 @@ namespace DNDS::Geom
         if (auto gm = firstValid({getGM(edge2node), getGM(edge2cell)}))
             reg.registerGlobalMapping(EntityKind::Edge, gm);
 
-        // --- Pre-collect pull sets ---
-        // For each entity kind, collect off-rank globals from adj entries targeting it.
-        auto collectPS = [&](EntityKind targetKind, const auto &adjPair, auto targetGM)
-        {
-            if (!adjPair.father || !targetGM)
-                return;
-            auto &ps = reg.pullSets[targetKind];
-            DNDS::index nRows = adjPair.father->Size();
-            for (DNDS::index i = 0; i < nRows; i++)
-                for (rowsize j = 0; j < adjPair.RowSize(i); j++)
-                {
-                    DNDS::index v = adjPair(i, j);
-                    if (v == UnInitIndex)
-                        continue;
-                    auto [found, rank, val] = targetGM->search(v);
-                    if (found && rank != mpi.rank)
-                        ps.push_back(v);
-                }
-        };
-
-        // Cell as target (from: bnd2cell, face2cell, node2cell, cell2cell, edge2cell)
-        auto cellGM = reg.getGlobalMapping(EntityKind::Cell);
-        collectPS(EntityKind::Cell, bnd2cell, cellGM);
-        collectPS(EntityKind::Cell, node2cell, cellGM);
-        collectPS(EntityKind::Cell, cell2cell, cellGM);
-        if (!shouldSkip(Adj::Face2Cell))
-            collectPS(EntityKind::Cell, face2cell, cellGM);
-        if (!shouldSkip(Adj::Edge2Cell))
-            collectPS(EntityKind::Cell, edge2cell, cellGM);
-
-        // Node as target (from: cell2node, bnd2node, face2node, edge2node)
-        auto nodeGM = reg.getGlobalMapping(EntityKind::Node);
-        collectPS(EntityKind::Node, cell2node, nodeGM);
-        collectPS(EntityKind::Node, bnd2node, nodeGM);
-        if (!shouldSkip(Adj::Face2Node))
-            collectPS(EntityKind::Node, face2node, nodeGM);
-        if (!shouldSkip(Adj::Edge2Node))
-            collectPS(EntityKind::Node, edge2node, nodeGM);
-
-        // Bnd as target (from: node2bnd, face2bnd)
-        auto bndGM = reg.getGlobalMapping(EntityKind::Bnd);
-        collectPS(EntityKind::Bnd, node2bnd, bndGM);
-        if (!shouldSkip(Adj::Face2Bnd))
-            collectPS(EntityKind::Bnd, face2bnd, bndGM);
-
-        // Face as target (from: cell2face, bnd2face) when face arrays are built
-        auto faceGM = reg.getGlobalMapping(EntityKind::Face);
-        if (!shouldSkip(Adj::Cell2Face))
-            collectPS(EntityKind::Face, cell2face, faceGM);
-        if (!shouldSkip(Adj::Bnd2Face))
-            collectPS(EntityKind::Face, bnd2face, faceGM);
-
-        // Edge as target (from: cell2edge)
-        auto edgeGM = reg.getGlobalMapping(EntityKind::Edge);
-        collectPS(EntityKind::Edge, cell2edge, edgeGM);
+        // --- Pre-collect pull sets from the registered relation inventory ---
+        for (const auto &collect : collectPullSets)
+            collect();
 
         // Deduplicate and sort pull sets
         for (auto &[kind, ps] : reg.pullSets)
@@ -640,11 +715,31 @@ namespace DNDS::Geom
         auto finalInput = resolveFollows(input, reg);
         auto plan = ReorderPlan::build(finalInput, reg, mpi);
 
+        // Stage all native fields while mesh arrays and source bindings still
+        // describe the old distribution. No field handle publishes here.
+        auto preparedFields = plan.prepareCompanions(reg, mpi);
+        reg.companions.erase(std::remove_if(reg.companions.begin(), reg.companions.end(),
+                                            [](const auto &field)
+                                            { return bool(field.prepare); }),
+                             reg.companions.end());
+
         auto changes = Runtime::Change::Distribution | Runtime::Change::Layout | Runtime::Change::Allocation;
         if (!input.destroyKinds.empty())
             changes = changes | Runtime::Change::Topology;
-        auto mutation = versions.BeginMutation(changes);
+        MeshMutationToken mutationToken(this, versions, changes);
 
+        ExecuteReorderPlanImpl(mutationToken, input, reg, plan);
+        preparedFields.Publish();
+        mutationToken.Commit();
+    }
+
+    void UnstructuredMesh::ExecuteReorderPlanImpl(MeshMutationToken &mutationToken, const ReorderInput &input,
+                                                  ReorderRegistry &reg, const ReorderPlan &plan)
+    {
+        auto changes = Runtime::Change::Distribution | Runtime::Change::Layout | Runtime::Change::Allocation;
+        if (!input.destroyKinds.empty())
+            changes = changes | Runtime::Change::Topology;
+        auto mutationStep = mutationToken.Enter(this, changes);
         // Step 3: Destroy adjacencies for destroyKinds
         auto destroyAdj = [&](auto &trackedPair)
         {
@@ -930,7 +1025,6 @@ namespace DNDS::Geom
             bnd2faceV.clear();
             face2bndM.clear();
         }
-        mutation.Commit();
     }
 
     // =================================================================
@@ -975,7 +1069,7 @@ namespace DNDS::Geom
                     cell2cell.isLocal() && bnd2cell.isLocal());
         nParts = std::max(nParts, 1);
         nPartsInner = std::max(nPartsInner, 1);
-        auto mutation = versions.BeginMutation(Runtime::Change::Layout | Runtime::Change::Allocation | Runtime::Change::Distribution);
+        MeshMutationToken mutationToken(this, versions, Runtime::Change::Layout | Runtime::Change::Allocation | Runtime::Change::Distribution);
 
         // --- Section A: Compute cell permutation (same as legacy) ---
         // We need the local face-adjacency graph and cell2cell.
@@ -999,14 +1093,14 @@ namespace DNDS::Geom
 
         // --- Convert to global ---
         if (this->adjFacialState == Adj_PointToLocal && face2cell.isBuilt())
-            this->AdjLocal2GlobalFacial();
+            this->AdjLocal2GlobalFacialImpl(mutationToken);
         if (this->adjC2FState == Adj_PointToLocal && cell2face.isBuilt())
-            this->AdjLocal2GlobalC2F();
+            this->AdjLocal2GlobalC2FImpl(mutationToken);
         if (this->adjC2CFaceState == Adj_PointToLocal && cell2cellFace.isBuilt())
-            this->AdjLocal2GlobalC2CFace();
+            this->AdjLocal2GlobalC2CFaceImpl(mutationToken);
         if (this->adjN2CBState == Adj_PointToLocal && node2cell.isBuilt())
-            this->AdjLocal2GlobalN2CB();
-        this->AdjLocal2GlobalPrimary();
+            this->AdjLocal2GlobalN2CBImpl(mutationToken);
+        this->AdjLocal2GlobalPrimaryImpl(mutationToken);
 
         // --- Build cell partition map (all local, use permutation) ---
         // fromLocalPermutation expects old2new. perm.cellOld2New is that.
@@ -1055,6 +1149,13 @@ namespace DNDS::Geom
             addCellRefs(face2cell, NumFace());
         if (cell2cellFace.father)
             addCellRefs(cell2cellFace, NumCell());
+
+        // The retained halo can extend beyond cells referenced by owned rows
+        // (BuildGhostPrimary with two or more layers). Its complete index list
+        // is remapped below, so every halo cell needs its owner's permutation.
+        if (cell2node.trans.pLGhostMapping)
+            for (index global : cell2node.trans.pLGhostMapping->ghostIndex)
+                cellPullSet.insert(global);
 
         std::vector<index> pullVec(cellPullSet.begin(), cellPullSet.end());
         auto cellLookup = cellTransfer.buildLookup(pullVec, mpi);
@@ -1175,18 +1276,18 @@ namespace DNDS::Geom
 
         // --- Convert back to local ---
         if (this->adjFacialState == Adj_PointToGlobal && face2cell.isBuilt())
-            this->AdjGlobal2LocalFacial();
+            this->AdjGlobal2LocalFacialImpl(mutationToken);
         if (this->adjC2FState == Adj_PointToGlobal && cell2face.isBuilt())
-            this->AdjGlobal2LocalC2F();
+            this->AdjGlobal2LocalC2FImpl(mutationToken);
         if (this->adjC2CFaceState == Adj_PointToGlobal && cell2cellFace.isBuilt())
-            this->AdjGlobal2LocalC2CFace();
+            this->AdjGlobal2LocalC2CFaceImpl(mutationToken);
         if (this->adjN2CBState == Adj_PointToGlobal && node2cell.isBuilt())
-            this->AdjGlobal2LocalN2CB();
-        this->AdjGlobal2LocalPrimary();
+            this->AdjGlobal2LocalN2CBImpl(mutationToken);
+        this->AdjGlobal2LocalPrimaryImpl(mutationToken);
 
         if (mpi.rank == mRank)
             log() << fmt::format("UnstructuredMesh === ReorderLocalCells finished") << std::endl;
-        mutation.Commit();
+        mutationToken.Commit();
     }
 
 } // namespace DNDS::Geom

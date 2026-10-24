@@ -498,6 +498,93 @@ TEST_CASE("VR setup uses the small-mode cutoff and reduces owned-cell diagnostic
     CHECK(std::isfinite(summary.maxCondition));
 }
 
+TEST_CASE("Mesh dependency stamps reject stale reconstruction and permit explicit rebuild")
+{
+    auto mesh = buildMesh("Uniform_3x3_wall.cgns", false, 0, 0);
+    auto vr = buildVR(mesh, RecMethod::VFV_P2_Default);
+    CHECK_NOTHROW(vr->ValidateMeshDependencies());
+    vr->FinalizeMetrics(); // A metric publication also invalidates derived bases.
+    CHECK_THROWS(vr->ValidateMeshDependencies());
+    vr->ConstructBaseAndWeight();
+    vr->ConstructRecCoeff();
+    const auto cells = mesh->Entities(EntityKind::Cell);
+    mesh->BuildCell2CellFace(); // Auxiliary interface publication is not geometry.
+    CHECK_NOTHROW(vr->ValidateMeshDependencies());
+
+    auto volume = [&]()
+    {
+        DNDS::real total = 0;
+        for (DNDS::index cell = 0; cell < mesh->NumCell(); ++cell)
+            total += vr->GetCellVol(cell);
+        MPI::AllreduceOneReal(total, MPI_SUM, g_mpi);
+        return total;
+    };
+    const auto oldVolume = volume();
+    mesh->TransformCoords([](const tPoint &point) -> tPoint
+                          { return 2.0 * point; });
+    CHECK(cells.Valid());                // Geometry changes preserve entity numbering.
+    CHECK_THROWS(vr->FinalizeMetrics()); // Same-shaped old values cannot be republished.
+    CHECK_THROWS(vr->ValidateMeshDependencies());
+    CFV::tUDof<g_nv> u;
+    CFV::tURec<g_nv> rec, scratch;
+    vr->BuildUDof(u, 1);
+    vr->BuildURec(rec, 1);
+    vr->BuildURec(scratch, 1);
+    u.setConstant(0.0);
+    rec.setConstant(0.0);
+    CHECK_THROWS(vr->DoReconstructionIter<g_nv>(rec, scratch, u, g_zeroBC, true));
+    CHECK_THROWS(vr->ConstructBaseAndWeight());
+    CHECK_THROWS(vr->ConstructRecCoeff());
+    vr->ConstructMetrics();
+    CHECK(volume() == doctest::Approx(4.0 * oldVolume).epsilon(1e-12));
+    CHECK_THROWS(vr->ValidateMeshDependencies());
+    vr->ConstructBaseAndWeight();
+    CHECK_THROWS(vr->ValidateMeshDependencies());
+    vr->ConstructRecCoeff();
+    CHECK_NOTHROW(vr->DoReconstructionIter<g_nv>(rec, scratch, u, g_zeroBC, true));
+    for (DNDS::index cell = 0; cell < mesh->NumCell(); ++cell)
+        CHECK(scratch[cell].norm() == doctest::Approx(0.0).epsilon(1e-14));
+
+    // A failed coefficient/base rebuild must not leave the preceding snapshot
+    // marked valid. Repeating boundary-cache setup must clear old point entries.
+    auto settings = vr->getSettings();
+    settings.intOrderVRBC = 1;
+    vr->parseSettings(settings);
+    vr->ConstructMetrics();
+    auto sourceMap = mesh->cell2face.trans.pLGhostMapping;
+    mesh->cell2face.trans.pLGhostMapping = std::make_shared<OffsetAscendIndexMapping>(*sourceMap);
+    CHECK_THROWS(vr->ConstructBaseAndWeight());
+    mesh->cell2face.trans.pLGhostMapping = sourceMap;
+    CHECK_THROWS(vr->ValidateMeshDependencies());
+    vr->ConstructBaseAndWeight();
+    vr->ConstructBaseAndWeight();
+    vr->ConstructRecCoeff();
+    CHECK_NOTHROW(vr->ValidateMeshDependencies());
+    mesh->cell2face.trans.pLGhostMapping = std::make_shared<OffsetAscendIndexMapping>(*sourceMap);
+    CHECK_THROWS(vr->ConstructRecCoeff());
+    mesh->cell2face.trans.pLGhostMapping = sourceMap;
+    CHECK_THROWS(vr->ValidateMeshDependencies());
+    vr->ConstructRecCoeff();
+    mesh->cell2face.trans.pLGhostMapping = std::make_shared<OffsetAscendIndexMapping>(*sourceMap);
+    CHECK_THROWS(vr->ConstructMetrics());
+    mesh->cell2face.trans.pLGhostMapping = sourceMap;
+    CHECK_THROWS(vr->ValidateMetricsDependencies());
+    vr->ConstructMetrics();
+    vr->ConstructBaseAndWeight();
+    vr->ConstructRecCoeff();
+
+    // The nine-cell fixture has singleton partitions at np=8. One local
+    // block still publishes a reorder epoch without asking Metis to split
+    // a singleton graph into two parts.
+    mesh->ReorderLocalCells(1, 1);
+    CHECK_FALSE(cells.Valid());
+    CHECK_THROWS(vr->ValidateMeshDependencies());
+    vr->ConstructMetrics();
+    vr->ConstructBaseAndWeight();
+    vr->ConstructRecCoeff();
+    CHECK_NOTHROW(vr->ValidateMeshDependencies());
+}
+
 // ===================================================================
 // POLYNOMIAL EXACTNESS on wall mesh (Uniform_3x3_wall, [-1,2]^2)
 // ===================================================================

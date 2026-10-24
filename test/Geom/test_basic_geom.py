@@ -68,7 +68,10 @@ def test_mesh0():
     wallDistOptions.verbose = 10
     wallDistOptions.wallDistExecution = 4
     mesh.BuildNodeWallDist(id_is_wall, wallDistOptions)
-    assert mesh.nodeWallDist.father.Size() == mesh.coords.father.Size()
+    with mesh.acquire_read(wall_distance=True) as read:
+        # Acquisition checks wall-distance distribution against node coordinates.
+        if read.counts["node"][0]:
+            assert read.wall_distance(0).shape == (3,)
 
     meshBnd, readerBnd = create_bnd_mesh(mesh)
 

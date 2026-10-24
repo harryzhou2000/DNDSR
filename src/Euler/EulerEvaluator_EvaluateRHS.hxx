@@ -68,6 +68,9 @@ namespace DNDS::Euler
         OptionalRef<const ArrayDOFV<1>> reactiveSplitChi,
         CFV::ReconstructionMaskView reconstructionMask)
     {
+        auto meshAccess = mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
+        const auto meshView = meshAccess.HostView();
+        vfv->ValidateMeshDependencies();
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
         using namespace Geom;
         DNDS_MPI_InsertCheck(u.father->getMPI(), "EvaluateRHS 1");
@@ -161,9 +164,9 @@ namespace DNDS::Euler
 
 #if defined(DNDS_DIST_MT_USE_OMP)
         static std::vector<TU> faceFluxBuf;
-        if (faceFluxBuf.size() < mesh->NumFaceProc())
+        if (faceFluxBuf.size() < meshView.NumFaceProc())
         {
-            faceFluxBuf.resize(mesh->NumFaceProc(), TU::Zero(nVars));
+            faceFluxBuf.resize(meshView.NumFaceProc(), TU::Zero(nVars));
         }
 #endif
 
@@ -188,10 +191,10 @@ namespace DNDS::Euler
                                                                                                DiffUxyV, DiffUxyPrimV, unitNormV, vgXYV, \
                                                                                                FLFix, FRFix, faceGradFix, fluxEs)
 #endif
-        for (index iFace = 0; iFace < mesh->NumFaceProc(); iFace++)
+        for (index iFace = 0; iFace < meshView.NumFaceProc(); iFace++)
         {
             faceOp(iFace);
-            auto f2c = mesh->face2cell[iFace];
+            auto f2c = meshView.FaceCells(iFace);
             Elem::Quadrature gFace = direct2ndRec ? vfv->GetFaceQuadO1(iFace) : vfv->GetFaceQuad(iFace);
 
             fluxEs.setZero(cnvars, 1);
@@ -201,7 +204,7 @@ namespace DNDS::Euler
             // mesh->LoadCoords(f2n, coords);
 
             Geom::Elem::SummationNoOp noOp;
-            auto faceBndID = mesh->GetFaceZone(iFace);
+            auto faceBndID = meshView.GetFaceZone(iFace);
             auto faceBCType = pBCHandler->GetTypeFromID(faceBndID);
             ULxyV.resize(u.father->MatRowSize(), gFace.GetNumPoints());
             URxyV.resizeLike(ULxyV);
@@ -227,7 +230,7 @@ namespace DNDS::Euler
                     normBaseCent,
                     vfv->GetFaceQuadraturePPhys(iFace, -1),
                     t,
-                    mesh->GetFaceZone(iFace), false, 0);
+                    meshView.GetFaceZone(iFace), false, 0);
             }
 #ifdef USE_FLUX_BALANCE_TERM
             FLFix.setZero(cnvars, gFace.GetNumPoints()), FRFix.setZero(cnvars, gFace.GetNumPoints());
@@ -358,7 +361,7 @@ namespace DNDS::Euler
                             normBase,
                             vfv->GetFaceQuadraturePPhys(iFace, iGQ),
                             t,
-                            mesh->GetFaceZone(iFace), true, 0);
+                            meshView.GetFaceZone(iFace), true, 0);
                         if (&uRecUnlim != &uRec && false) //! disabled now, as ULxyUnlim may have negative pressure failing in generateBV
                             URxyUnlim = generateBoundaryValue(
                                 ULxyUnlim, ULMeanXy, f2c[0], iFace, iGQ,
@@ -366,7 +369,7 @@ namespace DNDS::Euler
                                 normBase,
                                 vfv->GetFaceQuadraturePPhys(iFace, iGQ),
                                 t,
-                                mesh->GetFaceZone(iFace), true, 0);
+                                meshView.GetFaceZone(iFace), true, 0);
                         else
                             URxyUnlim = URxy;
 #ifndef DNDS_FV_EULEREVALUATOR_IGNORE_VISCOUS_TERM
@@ -468,7 +471,7 @@ namespace DNDS::Euler
                         std::cout << GradURxy << std::endl;
                         std::cout << GradULxy << std::endl;
                         std::cout << distGRP << std::endl;
-                        std::cout << f2c[0] << " " << f2c[1] << " " << mesh->NumCell() << " " << mesh->NumCellProc() << std::endl;
+                        std::cout << f2c[0] << " " << f2c[1] << " " << meshView.NumCell() << " " << meshView.NumCellProc() << std::endl;
                         std::cout << uRec[f2c[0]] << std::endl;
                         std::cout << "-----------------------------------\n";
                         if (f2c[1] != UnInitIndex)
@@ -492,7 +495,7 @@ namespace DNDS::Euler
                         Gas::IdealGasThermalPrimitive2Conservative<dim>(ULcPrim, ULc, phys_.gammaEq(T_noRS, ULc), phys_.mixtureBaseInternalRhoE(ULc));
                         if (faceBCType == EulerBCType::BCWallIsothermal)
                         {
-                            real temp = pBCHandler->GetValueFromID(mesh->GetFaceZone(iFace))(0);
+                            real temp = pBCHandler->GetValueFromID(meshView.GetFaceZone(iFace))(0);
                             TU ULcPrim;
                             ULcPrim.resizeLike(ULc);
                             Gas::IdealGasThermalConservative2Primitive<dim>(ULc, ULcPrim, phys_.gammaEq(T_noRS, ULc), phys_.mixtureBaseInternalRhoE(ULc));
@@ -536,7 +539,7 @@ namespace DNDS::Euler
                 FRFix,
                 fincC,
                 lam0V, lam123V, lam4V,
-                mesh->GetFaceZone(iFace),
+                meshView.GetFaceZone(iFace),
                 rsType,
                 iFace, ignoreVis, cellTWarm);
             if (mesh->getMPI().rank == 0)
@@ -605,9 +608,9 @@ namespace DNDS::Euler
 #endif
             {
                 TDiffU faceGradFixL{faceGradFix}, faceGradFixR{faceGradFix};
-                if (f2c[0] < mesh->NumCell())
+                if (f2c[0] < meshView.NumCell())
                     this->DiffUFromCell2Face(faceGradFixL, iFace, f2c[0], 0, true), gradUFix[f2c[0]] += faceGradFixL;
-                if (f2c[1] < mesh->NumCell() && f2c[1] != UnInitIndex)
+                if (f2c[1] < meshView.NumCell() && f2c[1] != UnInitIndex)
                     this->DiffUFromCell2Face(faceGradFixR, iFace, f2c[1], 1, true), gradUFix[f2c[1]] += faceGradFixR;
             }
 
@@ -615,8 +618,9 @@ namespace DNDS::Euler
             if (!dontUpdateBndFlux)
                 if (f2c[1] == UnInitIndex)
                 {
-                    DNDS_assert(mesh->face2bndM.find(iFace) != mesh->face2bndM.end());
-                    fluxBnd.at(mesh->face2bndM[iFace]) = fluxEs(EigenAll, 0) / vfv->GetFaceArea(iFace);
+                    const index boundary = meshView.FaceBoundaries(iFace)[0];
+                    DNDS_assert(boundary >= 0 && boundary < meshView.NumBndProc());
+                    fluxBnd.at(boundary) = fluxEs(EigenAll, 0) / vfv->GetFaceArea(iFace);
                     TVec fluxBndForceTInt;
                     fluxBndForceTInt.setZero();
                     gFace.IntegrationSimple(
@@ -629,7 +633,7 @@ namespace DNDS::Euler
                             finc -= ncur * (ncur.dot(finc));
                             finc *= (direct2ndRec ? vfv->GetFaceArea(iFace) / vfv->GetFaceParamArea(iFace) : vfv->GetFaceJacobiDet(iFace, iG)); // !don't forget this
                         });
-                    fluxBndForceT.at(mesh->face2bndM[iFace]) = fluxBndForceTInt / vfv->GetFaceArea(iFace);
+                    fluxBndForceT.at(boundary) = fluxBndForceTInt / vfv->GetFaceArea(iFace);
                 }
 
             // integrate BCWall flux
@@ -639,7 +643,7 @@ namespace DNDS::Euler
                     (faceBCType == EulerBCType::BCWallInvis && phys_.muRef() < 1e-99))
                 {
                     fluxWallSumLocal -= fluxEs(EigenAll, 0);
-                    if (iFace >= mesh->NumFace())
+                    if (iFace >= meshView.NumFace())
                         DNDS_assert(false);
                 }
 
@@ -649,11 +653,11 @@ namespace DNDS::Euler
 #    pragma omp critical(bnd_integration)
 #endif
             {
-                if (pBCHandler->GetFlagFromIDSoft(mesh->GetFaceZone(iFace), "integrationOpt") == 1)
+                if (pBCHandler->GetFlagFromIDSoft(meshView.GetFaceZone(iFace), "integrationOpt") == 1)
                 {
-                    bndIntegrations.at(mesh->GetFaceZone(iFace)).Add(-fluxEs(EigenAll, 0), vfv->GetFaceArea(iFace));
+                    bndIntegrations.at(meshView.GetFaceZone(iFace)).Add(-fluxEs(EigenAll, 0), vfv->GetFaceArea(iFace));
                 }
-                if (pBCHandler->GetFlagFromIDSoft(mesh->GetFaceZone(iFace), "integrationOpt") == 2)
+                if (pBCHandler->GetFlagFromIDSoft(meshView.GetFaceZone(iFace), "integrationOpt") == 2)
                 {
                     TU uL = u[f2c[0]];
                     if (settings.frameConstRotation.enabled)
@@ -669,7 +673,7 @@ namespace DNDS::Euler
                     auto [p0, T0] = phys_.primitiveStaticToTotalPT(uLPrim);
                     vInt(nVars) = p0, vInt(nVars + 1) = T0;
                     vInt(0) = 1;
-                    bndIntegrations.at(mesh->GetFaceZone(iFace)).Add(vInt * fluxEs(0, 0), fluxEs(0, 0));
+                    bndIntegrations.at(meshView.GetFaceZone(iFace)).Add(vInt * fluxEs(0, 0), fluxEs(0, 0));
                 }
             }
         }
@@ -679,16 +683,16 @@ namespace DNDS::Euler
         for (int iPart = 0; iPart < mesh->NLocalParts(); iPart++)
             for (index iCell = mesh->LocalPartStart(iPart); iCell < mesh->LocalPartEnd(iPart); iCell++)
             {
-                auto c2f = mesh->cell2face[iCell];
+                auto c2f = meshView.CellFaces(iCell);
                 for (int ic2f = 0; ic2f < c2f.size(); ic2f++)
                 {
                     index iFace = c2f[ic2f];
-                    int if2c = mesh->CellIsFaceBack(iCell, iFace, ic2f) ? 0 : 1;
+                    int if2c = meshView.CellIsFaceBack(iCell, iFace, ic2f) ? 0 : 1;
                     TU fluxFaceC = faceFluxBuf[iFace] * (if2c ? -1 : 1);
                     this->UFromFace2Cell(fluxFaceC, iFace, iCell, if2c);
 
                     rhs[iCell] += fluxFaceC / vfv->GetCellVol(iCell);
-                    if (mesh->face2cell(iFace, 1 - if2c) == iCell) // check for self-facing face
+                    if (meshView.FaceCells(iFace)[1 - if2c] == iCell) // check for self-facing face
                     {
                         TU fluxFaceC = faceFluxBuf[iFace] * (if2c ? -1 : 1) * (-1);
                         this->UFromFace2Cell(fluxFaceC, iFace, iCell, 1 - if2c); // use 1-if2c to force use the other periodic state
@@ -711,7 +715,7 @@ namespace DNDS::Euler
 #if defined(DNDS_DIST_MT_USE_OMP)
 #    pragma omp parallel for schedule(guided)
 #endif
-            for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
+            for (index iCell = 0; iCell < meshView.NumCell(); iCell++)
             {
                 cellOp(iCell);
 

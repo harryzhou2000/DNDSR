@@ -53,6 +53,7 @@ namespace DNDS
             DNDS_check_throw_info(false, "allocation does not implement native host access");
             return {};
         }
+        virtual bool hostRuntimeIsUnique() const { return false; }
     };
 
     /**
@@ -108,6 +109,7 @@ namespace DNDS
             DNDS_check_throw_info(B_ == DeviceBackend::Unknown, "legacy device mirror has no native host access");
             return host_data;
         }
+        bool hostRuntimeIsUnique() const override { return host_data.IsUnique(); }
 
         void copy_to_host(uint8_t *host_dst, size_t n) override
         {
@@ -297,6 +299,13 @@ namespace DNDS
                                   "legacy device mirror may own newer values: explicitly to_host then clear_device before native host access");
             return host_data->hostRuntime().Read();
         }
+        /// Internal legacy host-copy guard. Unlike native host acquisition this
+        /// keeps the legacy mirror/coherence contract (caller selected host data).
+        Runtime::ReadAccess HostReadForLegacyCopy() const
+        {
+            DNDS_check_throw_info(host_data, "host copy from a cleared vector");
+            return host_data->hostRuntime().Read();
+        }
         Runtime::WriteAccess HostWrite()
         {
             DNDS_check_throw_info(host_data, "host access to a cleared vector");
@@ -306,6 +315,16 @@ namespace DNDS
         }
         uint64_t HostVersion() const { return host_data ? host_data->hostRuntime().Version() : 0; }
         uint64_t HostIdentity() const { return host_data ? host_data->hostRuntime().Identity() : 0; }
+
+        /// Explicit native alias of this exact allocation and access controller.
+        /// Replacing/clearing the vector does not retarget the returned Buffer.
+        Runtime::Buffer HostBufferSnapshot() const
+        {
+            DNDS_check_throw_info(host_data, "host alias of a cleared vector");
+            DNDS_check_throw_info(device() == DeviceBackend::Unknown || device() == DeviceBackend::Host,
+                                  "legacy device mirror cannot be shared: explicitly to_host then clear_device");
+            return host_data->hostRuntime();
+        }
 
         DNDS_HOST void resize(size_t new_size)
         {
@@ -373,6 +392,8 @@ namespace DNDS
         DNDS_HOST void to_device(DeviceBackend backend = DeviceBackend::Host)
         {
             DNDS_check_throw_info(!host_data || host_data->hostRuntime().IsIdle(), "finish native host access before legacy device transfer");
+            DNDS_check_throw_info(backend == DeviceBackend::Host || !host_data || host_data->hostRuntimeIsUnique(),
+                                  "release native host aliases before creating a separate legacy device mirror");
             auto read = host_data ? host_data->hostRuntime().Read() : Runtime::ReadAccess{};
             DNDS_check_throw_info(DeviceBackend::Unknown != backend, "cannot to_device to Unknown");
             if (

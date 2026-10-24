@@ -3,6 +3,7 @@
 #include "DNDS/Defines_bind.hpp"
 #include "DNDS/Array_bind.hpp"
 #include "Mesh.hpp"
+#include "MeshAccess_bind.hpp"
 #include <pybind11/pybind11.h>
 #include <pybind11_json/pybind11_json.hpp>
 #include <pybind11/eigen.h>
@@ -44,6 +45,7 @@ namespace DNDS::Geom
 
     inline void pybind11_UnstructuredMesh_define(py::module_ &m)
     {
+        pybind11_MeshAccess_define(m);
 #define DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_SIMP_FUNC(foo) \
     def(#foo, &UnstructuredMesh::foo)
 
@@ -54,6 +56,24 @@ namespace DNDS::Geom
         UnstructuredMesh_
             .def(py::init<>([](const MPIInfo &mpi, int n_dim)
                             { return std::make_shared<UnstructuredMesh>(mpi, n_dim); }))
+            .def("snapshot", [](UnstructuredMesh &self, bool faces, bool inverse, bool edges, bool cellFaceNeighbors, bool wallDistance)
+                 {
+                     MeshReadRequirements requirements;
+                     requirements.faces = faces;
+                     requirements.inverse = inverse;
+                     requirements.edges = edges;
+                     requirements.cellFaceNeighbors = cellFaceNeighbors;
+                     requirements.wallDistance = wallDistance;
+                     return NativeMeshSnapshot::Capture(self, requirements); }, py::arg("faces") = false, py::arg("inverse") = false, py::arg("edges") = false, py::arg("cell_face_neighbors") = false, py::arg("wall_distance") = false, "Copy a validated immutable native snapshot. Source edits do not change its values or metadata.")
+            .def("acquire_read", [](UnstructuredMesh &self, bool faces, bool inverse, bool edges, bool cellFaceNeighbors, bool wallDistance)
+                 {
+                     MeshReadRequirements requirements;
+                     requirements.faces = faces;
+                     requirements.inverse = inverse;
+                     requirements.edges = edges;
+                     requirements.cellFaceNeighbors = cellFaceNeighbors;
+                     requirements.wallDistance = wallDistance;
+                     return std::make_shared<PythonMeshReadAccess>(self.AcquireRead(requirements)); }, py::arg("faces") = false, py::arg("inverse") = false, py::arg("edges") = false, py::arg("cell_face_neighbors") = false, py::arg("wall_distance") = false, "Retained host read scope. Readonly row arrays/slices keep the lease after close; bulk geometry methods return snapshots.")
             // basic
             .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_READONLY_MEMBER(coords)
             .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_READONLY_MEMBER(cell2node)
@@ -199,10 +219,28 @@ namespace DNDS::Geom
             .def("BuildNodeWallDist", &UnstructuredMesh::BuildNodeWallDist, py::arg("fBndIsWall"), py::arg("options") = UnstructuredMesh::WallDistOptions{});
 
         UnstructuredMesh_
-            .def(
-                "TransformCoords",
-                [](py::object self, py::function f)
-                {
+            .def("transform_coordinates", [](UnstructuredMesh &self, py::function transform)
+                 {
+                     // Python receives an independent point, so a callback
+                     // cannot retain a writable alias beyond the native edit.
+                     self.TransformCoords([&transform](const tPoint &point) -> tPoint
+                                          {
+                                              py::array_t<real> input(3);
+                                              for (int d = 0; d < 3; ++d)
+                                                  input.mutable_data()[d] = point[d];
+                                              auto result = transform(input);
+                                              auto output = py::array_t<real, py::array::c_style | py::array::forcecast>::ensure(result.is_none() ? py::object(input) : result);
+                                              if (!output || output.ndim() != 1 || output.shape(0) != 3)
+                                                  throw py::value_error("coordinate transform must return a point with shape (3,), or modify its input and return None");
+                                              tPoint value;
+                                              for (int d = 0; d < 3; ++d)
+                                                  value[d] = output.data()[d];
+                                              if (!value.allFinite())
+                                                  throw py::value_error("coordinate transform returned a non-finite point");
+                                              return value;
+                                          }); }, py::arg("transform"), "Tracked host point transform. Callback receives a detached (3,) copy; exceptions leave the mesh failed. Periodic frames and derived caches are caller responsibilities.")
+            .def("TransformCoords", [](py::object self, py::function f)
+                 {
                     auto &mesh = self.cast<UnstructuredMesh &>();
                     auto make_view = [&self](ssp<DNDS::ArrayEigenVector<3>> &arr) -> py::array_t<real>
                     {
@@ -215,9 +253,7 @@ namespace DNDS::Geom
                     if (mesh.coords.father->Size() > 0)
                         f(make_view(mesh.coords.father));
                     if (mesh.coords.son->Size() > 0)
-                        f(make_view(mesh.coords.son));
-                },
-                py::arg("func"))
+                        f(make_view(mesh.coords.son)); }, py::arg("func"))
             .def("to_device", [](UnstructuredMesh &self, const std::string &backend)
                  { self.to_device(device_backend_name_to_enum(backend)); }, py::arg("backend"))
             .def("to_host", &UnstructuredMesh::to_host);

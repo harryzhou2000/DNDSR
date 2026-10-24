@@ -1,6 +1,7 @@
 
 #include "VariationalReconstruction.hpp"
 #include "DNDS/HardEigen.hpp"
+#include "Geom/Mesh/EntitySpace.hpp"
 
 namespace DNDS::CFV
 {
@@ -9,6 +10,10 @@ namespace DNDS::CFV
     VariationalReconstruction<dim>::
         ConstructMetrics()
     {
+        this->InvalidateMetricsDependencies();
+        _baseMeshStamp = _coefficientMeshStamp = Runtime::VersionStamp{};
+        auto meshAccess = mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
+        periodicity = Geom::Base::CFVPeriodicity(meshAccess.HostView().Periodic());
         using namespace Geom;
         using namespace Geom::Elem;
 
@@ -41,6 +46,7 @@ namespace DNDS::CFV
         this->ConstructFaceMeanNorm();
 
         this->ConstructCellSmoothScale();
+        this->FinalizeMetrics();
     }
 
     template void
@@ -55,6 +61,11 @@ namespace DNDS::CFV
     VariationalReconstruction<dim>::
         ConstructBaseAndWeight(const tFGetBoundaryWeight &id2faceDircWeight)
     {
+        _baseMeshStamp = _coefficientMeshStamp = Runtime::VersionStamp{};
+        auto meshAccess = mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
+        const auto meshView = meshAccess.HostView();
+        this->ValidateMetricsDependencies();
+        baseWeight_.bndVRCaches.clear();
         using namespace Geom;
         using namespace Geom::Elem;
         using namespace Geom::Base;
@@ -74,22 +85,22 @@ namespace DNDS::CFV
                 std::min(maxNDIFF, static_cast<int>(settings.cacheDiffBaseSize)), maxNDOF);
         }
         if (coefficients_.needVolIntCholeskyL)
-            coefficients_.volIntCholeskyL.resize(mesh->NumCellProc());
+            coefficients_.volIntCholeskyL.resize(meshView.NumCellProc());
 #ifdef DNDS_USE_OMP
 #    pragma omp parallel for
 #endif
-        for (index iCell = 0; iCell < mesh->NumCellProc(); iCell++)
+        for (index iCell = 0; iCell < meshView.NumCellProc(); iCell++)
         {
             GetCellAtr(iCell).relax = settings.jacobiRelax;
             auto qCell = this->GetCellQuad(iCell);
             auto qCellO1 = this->GetCellQuadO1(iCell);
-            auto qCellMax = Quadrature{mesh->GetCellElement(iCell), INT_ORDER_MAX};
+            auto qCellMax = Quadrature{meshView.GetCellElement(iCell), INT_ORDER_MAX};
             if (settings.cacheDiffBase)
             {
                 baseWeight_.cellDiffBaseCache.ResizeRow(iCell, qCell.GetNumPoints());
             }
             tSmallCoords coordsCell;
-            mesh->GetCoordsOnCell(iCell, coordsCell);
+            meshView.GetCoordsOnCell(iCell, coordsCell);
 
             Eigen::RowVector<real, Eigen::Dynamic> m;
             m.setZero(GetCellAtr(iCell).NDOF);
@@ -171,7 +182,7 @@ namespace DNDS::CFV
 #ifdef DNDS_USE_OMP
 #    pragma omp parallel for
 #endif
-        for (index iFace = 0; iFace < mesh->NumFaceProc(); iFace++)
+        for (index iFace = 0; iFace < meshView.NumFaceProc(); iFace++)
         {
             auto qFace = this->GetFaceQuad(iFace);
             auto qFaceO1 = this->GetFaceQuadO1(iFace);
@@ -179,7 +190,7 @@ namespace DNDS::CFV
                 baseWeight_.faceDiffBaseCache.ResizeRow(iFace, 2 * qFace.GetNumPoints());
 
             tSmallCoords coords, coordsC;
-            mesh->GetCoordsOnFace(iFace, coords);
+            meshView.GetCoordsOnFace(iFace, coords);
             coordsC = coords;
             coordsC.colwise() -= faceCent[iFace];
 
@@ -187,12 +198,12 @@ namespace DNDS::CFV
             SummationNoOp noOp;
             for (int if2c = 0; if2c < 2; if2c++)
             {
-                index iCell = mesh->face2cell(iFace, if2c);
+                index iCell = meshView.FaceCells(iFace)[if2c];
                 if (iCell == UnInitIndex)
                     continue;
-                if (FaceIDIsExternalBC(mesh->GetFaceZone(iFace)))
+                if (FaceIDIsExternalBC(meshView.GetFaceZone(iFace)))
                     DNDS_assert(if2c == 0);
-                else if (FaceIDIsPeriodic(mesh->GetFaceZone(iFace)))
+                else if (FaceIDIsPeriodic(meshView.GetFaceZone(iFace)))
                 {
                     // TODO: handle the case with periodic
                     // DNDS_assert(false); //! do nothing?
@@ -237,12 +248,12 @@ namespace DNDS::CFV
             int nF2C{0};
             for (int if2c = 0; if2c < 2; if2c++)
             {
-                index iCell = mesh->face2cell(iFace, if2c);
+                index iCell = meshView.FaceCells(iFace)[if2c];
                 if (iCell == UnInitIndex)
                     continue;
-                if (FaceIDIsExternalBC(mesh->GetFaceZone(iFace)))
+                if (FaceIDIsExternalBC(meshView.GetFaceZone(iFace)))
                     DNDS_assert(if2c == 0);
-                else if (FaceIDIsPeriodic(mesh->GetFaceZone(iFace)))
+                else if (FaceIDIsPeriodic(meshView.GetFaceZone(iFace)))
                 {
                     // TODO: handle the case with periodic
                     // DNDS_assert(false); // !do nothing for now
@@ -254,41 +265,41 @@ namespace DNDS::CFV
             faceScale /= nF2C;
             baseWeight_.faceAlignedScales[iFace] = faceScale;
             Geom::tPoint faceBaryDiffV;
-            if (mesh->face2cell(iFace, 1) != UnInitIndex)
+            if (meshView.FaceCells(iFace)[1] != UnInitIndex)
             {
                 faceBaryDiffV =
-                    this->GetOtherCellBaryFromCell(mesh->face2cell(iFace, 0),
-                                                   mesh->face2cell(iFace, 1), iFace, 0) -
-                    this->GetCellBary(mesh->face2cell(iFace, 0));
+                    this->GetOtherCellBaryFromCell(meshView.FaceCells(iFace)[0],
+                                                   meshView.FaceCells(iFace)[1], iFace, 0) -
+                    this->GetCellBary(meshView.FaceCells(iFace)[0]);
             }
             else
             {
                 Geom::tPoint vCB = this->GetFaceQuadraturePPhysFromCell(
                                        iFace,
-                                       mesh->face2cell(iFace, 0), 0, -1) -
-                                   this->GetCellBary(mesh->face2cell(iFace, 0));
+                                       meshView.FaceCells(iFace)[0], 0, -1) -
+                                   this->GetCellBary(meshView.FaceCells(iFace)[0]);
                 auto uNorm = this->GetFaceNormFromCell(
                     iFace,
-                    mesh->face2cell(iFace, 0), 0, -1);
+                    meshView.FaceCells(iFace)[0], 0, -1);
                 faceBaryDiffV =
                     2 * vCB.dot(uNorm) *
                     this->GetFaceNorm(iFace, -1);
             }
             Geom::tPoint faceBaryDiffL, faceBaryDiffR;
             faceBaryDiffL =
-                this->GetCellBary(mesh->face2cell(iFace, 0)) -
-                this->GetFaceQuadraturePPhysFromCell(iFace, mesh->face2cell(iFace, 0), 0, -1);
+                this->GetCellBary(meshView.FaceCells(iFace)[0]) -
+                this->GetFaceQuadraturePPhysFromCell(iFace, meshView.FaceCells(iFace)[0], 0, -1);
             faceBaryDiffR = faceBaryDiffV + faceBaryDiffL;
             real volL, volR;
-            volL = volR = std::pow(GetCellVol(mesh->face2cell(iFace, 0)) + verySmallReal, settings.functionalSettings.inertiaWeightPower);
-            Geom::tGPoint cellInertiaL = cellInertia[mesh->face2cell(iFace, 0)] * volL;
+            volL = volR = std::pow(GetCellVol(meshView.FaceCells(iFace)[0]) + verySmallReal, settings.functionalSettings.inertiaWeightPower);
+            Geom::tGPoint cellInertiaL = cellInertia[meshView.FaceCells(iFace)[0]] * volL;
             Geom::tGPoint cellInertiaR = cellInertiaL;
-            if (mesh->face2cell(iFace, 1) != UnInitIndex)
+            if (meshView.FaceCells(iFace)[1] != UnInitIndex)
             {
-                volR = std::pow(GetCellVol(mesh->face2cell(iFace, 1)) + verySmallReal, settings.functionalSettings.inertiaWeightPower);
+                volR = std::pow(GetCellVol(meshView.FaceCells(iFace)[1]) + verySmallReal, settings.functionalSettings.inertiaWeightPower);
                 cellInertiaR = this->GetOtherCellInertiaFromCell(
-                                   mesh->face2cell(iFace, 0),
-                                   mesh->face2cell(iFace, 1), iFace, 0) *
+                                   meshView.FaceCells(iFace)[0],
+                                   meshView.FaceCells(iFace)[1], iFace, 0) *
                                volR;
             }
             Geom::tGPoint faceInertiaC =
@@ -434,10 +445,10 @@ namespace DNDS::CFV
                 break;
             }
 
-            if (FaceIDIsExternalBC(mesh->GetFaceZone(iFace)))
+            if (FaceIDIsExternalBC(meshView.GetFaceZone(iFace)))
             {
                 for (int iOrder = 0; iOrder <= settings.maxOrder; iOrder++)
-                    wd(iOrder) *= id2faceDircWeight(mesh->GetFaceZone(iFace), iOrder) * settings.bcWeight;
+                    wd(iOrder) *= id2faceDircWeight(meshView.GetFaceZone(iFace), iOrder) * settings.bcWeight;
             }
             baseWeight_.faceWeight[iFace] = wd * wg;
         }
@@ -450,23 +461,23 @@ namespace DNDS::CFV
 
         if (!settings.intOrderVRBCIsSame())
         {
-            for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
+            for (index iCell = 0; iCell < meshView.NumCell(); iCell++)
             {
-                auto c2f = mesh->cell2face[iCell];
+                auto c2f = meshView.CellFaces(iCell);
                 for (int ic2f = 0; ic2f < c2f.size(); ic2f++)
                 {
                     index iFace = c2f[ic2f];
                     index iCellOther = CellFaceOther(iCell, iFace, ic2f);
-                    auto faceID = mesh->GetFaceZone(iFace);
+                    auto faceID = meshView.GetFaceZone(iFace);
                     int if2c = CellIsFaceBack(iCell, iFace, ic2f) ? 0 : 1;
                     if (iCellOther == UnInitIndex)
                     {
                         DNDS_assert(FaceIDIsExternalBC(faceID));
                         DNDS_assert(baseWeight_.bndVRCaches.count(iFace) == 0);
-                        auto qFace = Quadrature(mesh->GetFaceElement(iFace), settings.intOrderVRBCValue());
+                        auto qFace = Quadrature(meshView.GetFaceElement(iFace), settings.intOrderVRBCValue());
                         baseWeight_.bndVRCaches[iFace].reserve(qFace.GetNumPoints());
                         tSmallCoords coords;
-                        mesh->GetCoordsOnFace(iFace, coords);
+                        meshView.GetCoordsOnFace(iFace, coords);
                         SummationNoOp noOp;
                         qFace.Integration(
                             noOp,
@@ -495,6 +506,10 @@ namespace DNDS::CFV
         if (mpi.rank == mRank)
             log()
                 << "VariationalReconstruction<dim>::ConstructBaseAndWeight() done" << std::endl;
+        if (settings.functionalSettings.anisotropicType == VRSettings::FunctionalSettings::AnisotropicType::WallDist)
+            _baseWallDistanceIdentity = WallDistanceIdentity();
+        _baseMetricsGeneration = this->_metricsGeneration;
+        _baseMeshStamp = mesh->versions.Stamp(this->MeshDependencyMask());
     }
 
     template void
@@ -508,6 +523,10 @@ namespace DNDS::CFV
     void
     VariationalReconstruction<dim>::ConstructRecCoeff()
     {
+        _coefficientMeshStamp = Runtime::VersionStamp{};
+        auto meshAccess = mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
+        const auto meshView = meshAccess.HostView();
+        this->ValidateBaseDependencies();
         auto &c_ = coefficients_;
         static const auto Seq012 = Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>);
         static const auto Seq123 = Eigen::seq(Eigen::fix<1>, Eigen::fix<dim>);
@@ -525,39 +544,39 @@ namespace DNDS::CFV
             this->MakePairDefaultOnCell(c_.matrixAHalf_GG, "VR::matrixAHalf_GG", dim, (maxNDOF - 1));
         this->MakePairDefaultOnCell(c_.matrixA, "VR::matrixA", (maxNDOF - 1), (maxNDOF - 1));
         if (c_.needMatrixACholeskyL)
-            c_.matrixACholeskyL.resize(mesh->NumCellProc());
+            c_.matrixACholeskyL.resize(meshView.NumCellProc());
         real maxCond = 0.0;
         index filteredCells = 0, discardedModes = 0, rankZeroCells = 0;
 #ifdef DNDS_USE_OMP
 #    pragma omp parallel for reduction(max : maxCond) reduction(+ : filteredCells, discardedModes, rankZeroCells)
 #endif
-        for (index iCell = 0; iCell < mesh->NumCell(); iCell++) // only non-ghost
+        for (index iCell = 0; iCell < meshView.NumCell(); iCell++) // only non-ghost
         {
             if (c_.needOriginalMatrix)
-                c_.matrixAB.ResizeRow(iCell, mesh->cell2face.RowSize(iCell) + 1);
-            c_.matrixAAInvB.ResizeRow(iCell, mesh->cell2face.RowSize(iCell) + 1);
+                c_.matrixAB.ResizeRow(iCell, meshView.CellFaces(iCell).size() + 1);
+            c_.matrixAAInvB.ResizeRow(iCell, meshView.CellFaces(iCell).size() + 1);
             if (c_.needOriginalMatrix)
-                c_.vectorB.ResizeRow(iCell, mesh->cell2face.RowSize(iCell));
-            c_.vectorAInvB.ResizeRow(iCell, mesh->cell2face.RowSize(iCell));
+                c_.vectorB.ResizeRow(iCell, meshView.CellFaces(iCell).size());
+            c_.vectorAInvB.ResizeRow(iCell, meshView.CellFaces(iCell).size());
             std::vector<MatrixXR> local_Bs;
             std::vector<Eigen::Vector<real, Eigen::Dynamic>> local_bs;
-            local_Bs.reserve(mesh->cell2face.RowSize(iCell));
-            local_bs.reserve(mesh->cell2face.RowSize(iCell));
+            local_Bs.reserve(meshView.CellFaces(iCell).size());
+            local_bs.reserve(meshView.CellFaces(iCell).size());
             //*get A
             MatrixXR A;
             A.setZero(GetCellAtr(iCell).NDOF - 1, GetCellAtr(iCell).NDOF - 1);
-            for (int ic2f = 0; ic2f < mesh->cell2face.RowSize(iCell); ic2f++)
+            for (int ic2f = 0; ic2f < meshView.CellFaces(iCell).size(); ic2f++)
             {
-                index iFace = mesh->cell2face(iCell, ic2f);
+                index iFace = meshView.CellFaces(iCell)[ic2f];
                 index iCellOther = CellFaceOther(iCell, iFace, ic2f);
                 auto if2c = CellIsFaceBack(iCell, iFace, ic2f) ? 0 : 1;
                 auto qFace = this->GetFaceQuad(iFace);
-                auto qFaceVR = Quadrature(mesh->GetFaceElement(iFace), iCellOther == UnInitIndex ? settings.intOrderVRBCValue()
-                                                                                                 : settings.intOrderVRValue());
+                auto qFaceVR = Quadrature(meshView.GetFaceElement(iFace), iCellOther == UnInitIndex ? settings.intOrderVRBCValue()
+                                                                                                    : settings.intOrderVRValue());
                 bool cur_face_intOrderVRIsSame = qFace.int_order == qFaceVR.int_order;
                 tSmallCoords coords;
                 if (!cur_face_intOrderVRIsSame)
-                    mesh->GetCoordsOnFace(iFace, coords);
+                    meshView.GetCoordsOnFace(iFace, coords);
                 qFaceVR.Integration(
                     A,
                     [&](auto &vInc, int iG, const tPoint &pParam, const Elem::tD01Nj &DiNj)
@@ -600,9 +619,9 @@ namespace DNDS::CFV
                         // using no scaling here
                         inc *= this->GetCellJacobiDet(iCell, iG);
                     });
-                for (int ic2f = 0; ic2f < mesh->cell2face.RowSize(iCell); ic2f++)
+                for (int ic2f = 0; ic2f < meshView.CellFaces(iCell).size(); ic2f++)
                 {
-                    index iFace = mesh->cell2face(iCell, ic2f);
+                    index iFace = meshView.CellFaces(iCell)[ic2f];
                     index iCellOther = this->CellFaceOther(iCell, iFace, ic2f);
                     auto qFace = this->GetFaceQuad(iFace);
                     int if2c = CellIsFaceBack(iCell, iFace, ic2f) ? 0 : 1;
@@ -635,21 +654,21 @@ namespace DNDS::CFV
             }
 
             //*get B
-            for (int ic2f = 0; ic2f < mesh->cell2face.RowSize(iCell); ic2f++)
+            for (int ic2f = 0; ic2f < meshView.CellFaces(iCell).size(); ic2f++)
             {
-                index iFace = mesh->cell2face(iCell, ic2f);
+                index iFace = meshView.CellFaces(iCell)[ic2f];
                 index iCellOther = this->CellFaceOther(iCell, iFace, ic2f);
                 auto qFace = this->GetFaceQuad(iFace);
-                auto qFaceVR = Quadrature(mesh->GetFaceElement(iFace),
+                auto qFaceVR = Quadrature(meshView.GetFaceElement(iFace),
                                           iCellOther == UnInitIndex ? settings.intOrderVRBCValue()
                                                                     : settings.intOrderVRValue());
                 bool cur_face_intOrderVRIsSame = qFace.int_order == qFaceVR.int_order;
                 tSmallCoords coords;
                 if (!cur_face_intOrderVRIsSame)
-                    mesh->GetCoordsOnFace(iFace, coords);
+                    meshView.GetCoordsOnFace(iFace, coords);
                 int if2c = CellIsFaceBack(iCell, iFace, ic2f) ? 0 : 1;
-                auto faceID = mesh->GetFaceZone(iFace);
-                if (FaceIDIsExternalBC(mesh->GetFaceZone(iFace)))
+                auto faceID = meshView.GetFaceZone(iFace);
+                if (FaceIDIsExternalBC(meshView.GetFaceZone(iFace)))
                 {
                     DNDS_assert(iCellOther == UnInitIndex);
                     local_Bs.emplace_back();
@@ -684,7 +703,7 @@ namespace DNDS::CFV
                             DiffI = dbvI(EigenAll, Eigen::seq(Eigen::fix<1>, EigenLast));
                             DiffJ = dbvJ(EigenAll, Eigen::seq(Eigen::fix<1>, EigenLast));
                         }
-                        if (mesh->isPeriodic)
+                        if (meshView.IsPeriodic())
                         {
                             if ((if2c == 1 && Geom::FaceIDIsPeriodicMain(faceID)) ||
                                 (if2c == 0 && Geom::FaceIDIsPeriodicDonor(faceID))) // I am donor
@@ -733,19 +752,19 @@ namespace DNDS::CFV
             }
 
             //*get b
-            for (int ic2f = 0; ic2f < mesh->cell2face.RowSize(iCell); ic2f++)
+            for (int ic2f = 0; ic2f < meshView.CellFaces(iCell).size(); ic2f++)
             {
-                index iFace = mesh->cell2face(iCell, ic2f);
+                index iFace = meshView.CellFaces(iCell)[ic2f];
                 index iCellOther = this->CellFaceOther(iCell, iFace, ic2f);
                 int if2c = CellIsFaceBack(iCell, iFace, ic2f) ? 0 : 1;
                 auto qFace = this->GetFaceQuad(iFace);
-                auto qFaceVR = Quadrature(mesh->GetFaceElement(iFace),
+                auto qFaceVR = Quadrature(meshView.GetFaceElement(iFace),
                                           iCellOther == UnInitIndex ? settings.intOrderVRBCValue()
                                                                     : settings.intOrderVRValue());
                 bool cur_face_intOrderVRIsSame = qFace.int_order == qFaceVR.int_order;
                 tSmallCoords coords;
                 if (!cur_face_intOrderVRIsSame)
-                    mesh->GetCoordsOnFace(iFace, coords);
+                    meshView.GetCoordsOnFace(iFace, coords);
                 VectorXR b;
                 b.setZero(GetCellAtr(iCell).NDOF - 1, 1);
                 qFaceVR.Integration(
@@ -814,14 +833,14 @@ namespace DNDS::CFV
             DNDS_assert(AInv.allFinite());
 
             // * get AInvB and AInvb
-            for (int ic2f = 0; ic2f < mesh->cell2face.RowSize(iCell); ic2f++)
+            for (int ic2f = 0; ic2f < meshView.CellFaces(iCell).size(); ic2f++)
             {
-                index iFace = mesh->cell2face(iCell, ic2f);
+                index iFace = meshView.CellFaces(iCell)[ic2f];
                 auto qFace = this->GetFaceQuad(iFace);
                 index iCellOther = CellFaceOther(iCell, iFace, ic2f);
                 int if2c = CellIsFaceBack(iCell, iFace, ic2f) ? 0 : 1;
-                auto faceID = mesh->GetFaceZone(iFace);
-                if (FaceIDIsExternalBC(mesh->GetFaceZone(iFace)))
+                auto faceID = meshView.GetFaceZone(iFace);
+                if (FaceIDIsExternalBC(meshView.GetFaceZone(iFace)))
                 {
                     DNDS_assert(iCellOther == UnInitIndex);
                     continue;
@@ -840,16 +859,16 @@ namespace DNDS::CFV
 
         // standard comm for c_.matrixA
         c_.matrixA.TransAttach();
-        c_.matrixA.trans.BorrowGGIndexing(mesh->cell2cell.trans);
+        Geom::LegacyFieldBridge::BorrowIndexing(c_.matrixA.trans, mesh->Entities(Geom::EntityKind::Cell));
         c_.matrixA.trans.createMPITypes();
         c_.matrixA.trans.pullOnce();
 
         // Get Secondary matrices
         this->MakePairDefaultOnFace(c_.matrixSecondary, "VR::matrixSecondary", maxNDOF - 1, (maxNDOF - 1) * 2);
-        for (index iFace = 0; iFace < mesh->NumFaceProc(); iFace++)
+        for (index iFace = 0; iFace < meshView.NumFaceProc(); iFace++)
         {
-            index iCellL = mesh->face2cell(iFace, 0);
-            index iCellR = mesh->face2cell(iFace, 1);
+            index iCellL = meshView.FaceCells(iFace)[0];
+            index iCellR = meshView.FaceCells(iFace)[1];
             if (iCellR == UnInitIndex) // only for faces with two
                 continue;
             // get dbv from 1st derivative to last
@@ -881,6 +900,7 @@ namespace DNDS::CFV
                   << "VariationalReconstruction<dim>::ConstructRecCoeff() === A cond Max: [ " << maxCondAll
                   << "] filtered cells/modes/rank-zero/total: [ " << globalCounts[1] << ", " << globalCounts[2]
                   << ", " << globalCounts[3] << ", " << globalCounts[0] << "] " << std::endl;
+        _coefficientMeshStamp = mesh->versions.Stamp(this->MeshDependencyMask());
     }
 
     template void

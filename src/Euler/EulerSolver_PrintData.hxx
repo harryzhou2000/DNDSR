@@ -13,6 +13,7 @@
 #include <future>
 #include <hdf5.h>
 #include "EulerSolver.hpp"
+#include "Geom/Mesh/MeshAccess.hpp"
 
 namespace DNDS::Euler
 {
@@ -65,6 +66,17 @@ namespace DNDS::Euler
         tAdditionalCellScalarList &additionalBndScalars,
         TEval &eval, real tSimu, PrintDataMode mode)
     {
+        // Retain the volume mesh snapshot through deferred output callbacks.
+        auto meshRead = std::make_shared<Geom::MeshReadAccess>(mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux()));
+        const auto meshView = meshRead->HostView();
+        vfv->ValidateMeshDependencies();
+        auto periodic = meshView.Periodic();
+        // Boundary meshes currently publish the reduced ForBnd topology rather
+        // than the full primary facade contract. Retain their mutation barrier
+        // through the explicitly allowed boundary-export adapter.
+        std::shared_ptr<Runtime::VersionTracker::ReadLease> boundaryRead;
+        if (config.dataIOControl.outBndData)
+            boundaryRead = std::make_shared<Runtime::VersionTracker::ReadLease>(meshBnd->versions.Read());
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
         reader->SetASCIIPrecision(config.dataIOControl.nASCIIPrecision);
         reader->SetVTKFloatEncodeMode(config.dataIOControl.vtuFloatEncodeMode);
@@ -153,7 +165,7 @@ namespace DNDS::Euler
             {
                 std::lock_guard<std::mutex> outLock(outArraysMutex);
                 if (config.dataIOControl.outAtCellData || mode == PrintDataTimeAverage)
-                    for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
+                    for (index iCell = 0; iCell < meshView.NumCell(); iCell++)
                     {
                         // TU recu =
                         //     vfv->GetIntPointDiffBaseValue(iCell, -1, -1, -1, std::array<int, 1>{0}, 1) *
@@ -212,20 +224,20 @@ namespace DNDS::Euler
                     uOut.trans.startPersistentPull();
                     uOut.trans.waitPersistentPull();
 
-                    for (index iN = 0; iN < mesh->NumNodeProc(); iN++)
+                    for (index iN = 0; iN < meshView.NumNodeProc(); iN++)
                         outDistPointPair[iN].setZero();
-                    std::vector<int> nN2C(mesh->NumNodeProc(), 0);
-                    DNDS_assert(outDistPointPair.father->Size() == mesh->NumNode());
-                    DNDS_assert(outDistPointPair.son->Size() == mesh->NumNodeGhost());
-                    for (index iCell = 0; iCell < mesh->NumCellProc(); iCell++) //! all cells
+                    std::vector<int> nN2C(meshView.NumNodeProc(), 0);
+                    DNDS_assert(outDistPointPair.father->Size() == meshView.NumNode());
+                    DNDS_assert(outDistPointPair.son->Size() == meshView.NumNodeGhost());
+                    for (index iCell = 0; iCell < meshView.NumCellProc(); iCell++) //! all cells
                     {
-                        for (int ic2n = 0; ic2n < mesh->cell2node.RowSize(iCell); ic2n++)
+                        for (int ic2n = 0; ic2n < meshView.CellNodes(iCell).size(); ic2n++)
                         {
-                            auto iNode = mesh->cell2node(iCell, ic2n);
-                            if (iNode >= mesh->NumNode())
+                            auto iNode = meshView.CellNodes(iCell)[ic2n];
+                            if (iNode >= meshView.NumNode())
                                 continue;
                             nN2C.at(iNode)++;
-                            auto pPhy = mesh->GetCoordNodeOnCell(iCell, ic2n);
+                            auto pPhy = meshView.GetCoordNodeOnCell(iCell, ic2n);
 
                             RowVectorXR DiBj;
                             DiBj.resize(1, uRecNew[iCell].rows() + 1);
@@ -235,10 +247,10 @@ namespace DNDS::Euler
                             TU cellMean = uOut[iCell];
                             TU vRec = (DiBj(EigenAll, Eigen::seq(1, EigenLast)) * (config.limiterControl.useLimiter ? uRecNew[iCell] : uRec[iCell])).transpose() +
                                       cellMean;
-                            if (mesh->isPeriodic) // transform velocity to node reference frame
+                            if (meshView.IsPeriodic()) // transform velocity to node reference frame
                             {
-                                vRec(Seq123) = mesh->periodicInfo.GetVectorBackByBits<dim, 1>(vRec(Seq123), mesh->cell2nodePbi(iCell, ic2n));
-                                cellMean(Seq123) = mesh->periodicInfo.GetVectorBackByBits<dim, 1>(cellMean(Seq123), mesh->cell2nodePbi(iCell, ic2n));
+                                vRec(Seq123) = periodic.GetVectorBackByBits<dim, 1>(vRec(Seq123), meshView.CellNodePeriodicBits(iCell)[ic2n]);
+                                cellMean(Seq123) = periodic.GetVectorBackByBits<dim, 1>(cellMean(Seq123), meshView.CellNodePeriodicBits(iCell)[ic2n]);
                             }
                             if (mode == PrintDataTimeAverage)
                                 vRec = cellMean;
@@ -248,7 +260,7 @@ namespace DNDS::Euler
                                 eval.TransformURotatingFrame_ABS_VELO(cellMean, pPhy, -1);
                             }
                             vRec = limitPointState(cellMean, vRec);
-                            if (iNode < mesh->NumNode())
+                            if (iNode < meshView.NumNode())
                             {
                                 TU primitiveRhoT;
                                 eval.phys().conservativeToPrimRhoT(vRec, primitiveRhoT);
@@ -262,7 +274,7 @@ namespace DNDS::Euler
                         }
                     }
 
-                    for (index iN = 0; iN < mesh->NumNode(); iN++)
+                    for (index iN = 0; iN < meshView.NumNode(); iN++)
                     {
                         DNDS_assert(nN2C.at(iN) > 0);
                         outDistPointPair[iN] /= nN2C.at(iN);
@@ -339,7 +351,7 @@ namespace DNDS::Euler
             {
                 if (config.dataIOControl.outPltMode == 0)
                 {
-                    auto outRun = [mesh = mesh, reader = reader,
+                    auto outRun = [meshRead, meshView, mesh = mesh, reader = reader,
                                    outDist = outDist, outSerial = outSerial, &outDistPointPair = outDistPointPair,
                                    outSerialPoint = outSerialPoint,
                                    fname, fnameSeries, NOUTS_C, NOUTSPoint_C, cDim,
@@ -371,7 +383,7 @@ namespace DNDS::Euler
                 else if (config.dataIOControl.outPltMode == 1)
                 {
 
-                    auto outRun = [mesh = mesh, reader = reader,
+                    auto outRun = [meshRead, meshView, mesh = mesh, reader = reader,
                                    outDist = outDist, outSerial = outSerial, &outDistPointPair = outDistPointPair,
                                    outSerialPoint = outSerialPoint,
                                    fname, fnameSeries, NOUTS_C, NOUTSPoint_C, cDim,
@@ -406,7 +418,7 @@ namespace DNDS::Euler
             {
                 if (config.dataIOControl.outPltMode == 0)
                 {
-                    auto outRun = [mesh = mesh, reader = reader,
+                    auto outRun = [meshRead, meshView, mesh = mesh, reader = reader,
                                    outDist = outDist, outSerial = outSerial, &outDistPointPair = outDistPointPair,
                                    outSerialPoint = outSerialPoint,
                                    fname, fnameSeries, NOUTS_C, NOUTSPoint_C, cDim,
@@ -465,7 +477,7 @@ namespace DNDS::Euler
                 }
                 else if (config.dataIOControl.outPltMode == 1)
                 {
-                    auto outRun = [mesh = mesh, reader = reader,
+                    auto outRun = [meshRead, meshView, mesh = mesh, reader = reader,
                                    outDist = outDist, outSerial = outSerial, &outDistPointPair = outDistPointPair,
                                    outSerialPoint = outSerialPoint,
                                    fname, fnameSeries, NOUTS_C, NOUTSPoint_C, cDim,
@@ -527,7 +539,7 @@ namespace DNDS::Euler
             {
                 MPI_Comm commDup = MPI_COMM_NULL;
                 MPI_Comm_dup(mpi.comm, &commDup);
-                auto outRun = [mesh = mesh, reader = reader, outDist = outDist, &outDistPointPair = outDistPointPair,
+                auto outRun = [meshRead, meshView, mesh = mesh, reader = reader, outDist = outDist, &outDistPointPair = outDistPointPair,
                                fname, fnameSeries, NOUTS_C, NOUTSPoint_C, cDim,
                                names, namesPoint, tSimu,
                                &outArraysMutex = outArraysMutex, commDup]()
@@ -603,11 +615,11 @@ namespace DNDS::Euler
                     // recu += uOut[iCell];
                     // recu = EulerEvaluator::CompressRecPart(uOut[iCell], recu);
                     index iBnd = meshBnd->cell2parentCell.at(iB);
-                    index iCell = mesh->bnd2cell[iBnd][0];
-                    index iFace = mesh->bnd2faceV.at(iBnd);
-                    if (iFace == -1)
+                    index iCell = meshView.BoundaryCells(iBnd)[0];
+                    index iFace = meshView.BoundaryFaces(iBnd)[0];
+                    if (iFace == UnInitIndex)
                     {
-                        DNDS_assert(mesh->isPeriodic);                                  // only internal bnd is valid, periodic bnd should be omitted
+                        DNDS_assert(meshView.IsPeriodic());                             // only internal bnd is valid, periodic bnd should be omitted
                         (*outDistBnd)[iB](nOUTSBndBase - 4) = meshBnd->GetCellZone(iB); // add this to enable blanking
                         continue;
                     }
@@ -638,7 +650,7 @@ namespace DNDS::Euler
                     fluxT.setZero();
                     fluxT(Seq012) = eval.fluxBndForceT.at(iBnd);
                     (*outDistBnd)[iB](Eigen::seq(nVars + 2 + nVars, nVars + 2 + nVars + 3 - 1)) = fluxT;
-                    // (*outDistBnd)[iB](nOUTSBndBase - 4) = mesh->GetFaceZone(iFace);
+                    // (*outDistBnd)[iB](nOUTSBndBase - 4) = meshView.GetFaceZone(iFace);
                     (*outDistBnd)[iB](nOUTSBndBase - 4) = meshBnd->GetCellZone(iB);
                     (*outDistBnd)[iB](Eigen::seq(nOUTSBndBase - 3, nOUTSBndBase - 1)) = vfv->GetFaceNorm(iFace, 0) * vfv->GetFaceArea(iFace);
 
@@ -716,7 +728,7 @@ namespace DNDS::Euler
                 DNDS_MPI_InsertCheck(mpi, "EulerSolver<model>::PrintData === bnd tecplot start");
                 if (config.dataIOControl.outPltMode == 0)
                 {
-                    auto outBndRun = [meshBnd = meshBnd, readerBnd = readerBnd, outDistBnd = outDistBnd, outSerialBnd = outSerialBnd,
+                    auto outBndRun = [meshRead, meshView, meshBnd = meshBnd, readerBnd = readerBnd, outDistBnd = outDistBnd, outSerialBnd = outSerialBnd,
                                       fname, fnameSeries, NOUTS_C, nOUTSBnd = nOUTSBnd, cDim, names, tSimu,
                                       &outBndArraysMutex = outBndArraysMutex]()
                     {
@@ -744,7 +756,7 @@ namespace DNDS::Euler
                 }
                 else if (config.dataIOControl.outPltMode == 1)
                 {
-                    auto outBndRun = [meshBnd = meshBnd, readerBnd = readerBnd, outDistBnd = outDistBnd, outSerialBnd = outSerialBnd,
+                    auto outBndRun = [meshRead, meshView, meshBnd = meshBnd, readerBnd = readerBnd, outDistBnd = outDistBnd, outSerialBnd = outSerialBnd,
                                       fname, fnameSeries, NOUTS_C, nOUTSBnd = nOUTSBnd, cDim, names, tSimu,
                                       &outBndArraysMutex = outBndArraysMutex]()
                     {
@@ -778,7 +790,7 @@ namespace DNDS::Euler
                 DNDS_MPI_InsertCheck(mpi, "EulerSolver<model>::PrintData === bnd vtk start");
                 if (config.dataIOControl.outPltMode == 0)
                 {
-                    auto outBndRun = [meshBnd = meshBnd, readerBnd = readerBnd, outDistBnd = outDistBnd, outSerialBnd = outSerialBnd,
+                    auto outBndRun = [meshRead, meshView, meshBnd = meshBnd, readerBnd = readerBnd, outDistBnd = outDistBnd, outSerialBnd = outSerialBnd,
                                       fname, fnameSeries, NOUTS_C, nOUTSBnd = nOUTSBnd, nVars = nVars, cDim,
                                       namesScalar, namesVector, offsetsScalar, offsetsVector, tSimu,
                                       &outBndArraysMutex = outBndArraysMutex]()
@@ -831,7 +843,7 @@ namespace DNDS::Euler
                 }
                 else if (config.dataIOControl.outPltMode == 1)
                 {
-                    auto outBndRun = [meshBnd = meshBnd, readerBnd = readerBnd, outDistBnd = outDistBnd, outSerialBnd = outSerialBnd,
+                    auto outBndRun = [meshRead, meshView, meshBnd = meshBnd, readerBnd = readerBnd, outDistBnd = outDistBnd, outSerialBnd = outSerialBnd,
                                       fname, fnameSeries, NOUTS_C, nOUTSBnd = nOUTSBnd, cDim,
                                       namesScalar, namesVector, offsetsScalar, offsetsVector, tSimu,
                                       &outBndArraysMutex = outBndArraysMutex]()
@@ -888,7 +900,7 @@ namespace DNDS::Euler
             {
                 MPI_Comm commDup = MPI_COMM_NULL;
                 MPI_Comm_dup(mpi.comm, &commDup);
-                auto outBndRun = [meshBnd = meshBnd, outDistBnd = outDistBnd,
+                auto outBndRun = [meshRead, meshView, meshBnd = meshBnd, outDistBnd = outDistBnd,
                                   fname, fnameSeries, NOUTS_C, nOUTSBnd = nOUTSBnd, cDim,
                                   namesScalar, namesVector, offsetsScalar, offsetsVector, tSimu,
                                   &outBndArraysMutex = outBndArraysMutex, commDup]()
@@ -946,9 +958,14 @@ namespace DNDS::Euler
                 // outBndRun();
             }
         }
-        auto runFOuts = [fOuts]()
+        auto runFOuts = [fOuts, meshRead, boundaryRead]() mutable
         {
-            for (auto &f : fOuts)
+            // Empty the stored callable's captures when its work finishes;
+            // a completed std::future may outlive the output operation.
+            auto retainedRead = std::move(meshRead);
+            auto retainedBoundaryRead = std::move(boundaryRead);
+            auto outputs = std::move(fOuts);
+            for (auto &f : outputs)
                 f();
         };
         bool useAsyncOut = config.dataIOControl.allowAsyncPrintData;

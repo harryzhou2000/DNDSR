@@ -60,6 +60,7 @@ namespace DNDS::CFV
             .
 
             DNDS_PY_DEF_SIMP_FUNC(ConstructCellSmoothScale);
+        FiniteVolume_.def("finalize_metrics", &T::FinalizeMetrics);
 
         FiniteVolume_
             .def("GetCellAtr", &T::GetCellAtr, py::arg("iCell"), py::return_value_policy::reference_internal)

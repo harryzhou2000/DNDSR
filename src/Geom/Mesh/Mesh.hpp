@@ -15,6 +15,9 @@
 #include "MeshConnectivity.hpp"
 #include "ReorderPlan.hpp"
 #include "DNDS/Runtime/Version.hpp"
+#include "MeshAccess.hpp"
+#include "EntitySpace.hpp"
+#include "MeshMutation.hpp"
 
 namespace DNDS::Direct
 {
@@ -37,6 +40,54 @@ namespace DNDS::Geom
 
     struct UnstructuredMesh : public DeviceTransferable<UnstructuredMesh>
     {
+    private:
+        std::shared_ptr<const uint8_t> _entityIdentity = std::make_shared<const uint8_t>(0);
+
+        // Explicit implementation capability: public reentry never joins an edit.
+        void RecoverNode2CellAndNode2BndImpl(MeshMutationToken &mutationToken);
+        void RecoverCell2CellAndBnd2CellImpl(MeshMutationToken &mutationToken);
+        void BuildGhostPrimaryImpl(MeshMutationToken &mutationToken, int nGhostLayers);
+        void BuildGhostN2CBImpl(MeshMutationToken &mutationToken);
+        void BuildCell2CellFaceImpl(MeshMutationToken &mutationToken);
+        void InterpolateFaceImpl(MeshMutationToken &mutationToken);
+        void BuildGhostFaceImpl(MeshMutationToken &mutationToken);
+        void MatchFaceBoundaryImpl(MeshMutationToken &mutationToken);
+        void InterpolateEdgeImpl(MeshMutationToken &mutationToken);
+        void BuildGhostEdgeImpl(MeshMutationToken &mutationToken);
+        void SetPeriodicGeometryImpl(MeshMutationToken &mutationToken, const tPoint &translation1,
+                                     const tPoint &rotationCenter1,
+                                     const tPoint &eulerAngles1,
+                                     const tPoint &translation2,
+                                     const tPoint &rotationCenter2,
+                                     const tPoint &eulerAngles2,
+                                     const tPoint &translation3,
+                                     const tPoint &rotationCenter3,
+                                     const tPoint &eulerAngles3);
+        void AdjGlobal2LocalPrimaryImpl(MeshMutationToken &mutationToken);
+        void AdjLocal2GlobalPrimaryImpl(MeshMutationToken &mutationToken);
+        void AdjGlobal2LocalPrimaryForBndImpl(MeshMutationToken &mutationToken);
+        void AdjLocal2GlobalPrimaryForBndImpl(MeshMutationToken &mutationToken);
+        void AdjGlobal2LocalFacialImpl(MeshMutationToken &mutationToken);
+        void AdjLocal2GlobalFacialImpl(MeshMutationToken &mutationToken);
+        void AdjGlobal2LocalC2FImpl(MeshMutationToken &mutationToken);
+        void AdjLocal2GlobalC2FImpl(MeshMutationToken &mutationToken);
+        void AdjGlobal2LocalN2CBImpl(MeshMutationToken &mutationToken);
+        void AdjLocal2GlobalN2CBImpl(MeshMutationToken &mutationToken);
+        void AdjGlobal2LocalC2CFaceImpl(MeshMutationToken &mutationToken);
+        void AdjLocal2GlobalC2CFaceImpl(MeshMutationToken &mutationToken);
+        void AdjGlobal2LocalEdgeImpl(MeshMutationToken &mutationToken);
+        void AdjLocal2GlobalEdgeImpl(MeshMutationToken &mutationToken);
+
+        void ElevatedNodesGetBoundarySmoothImpl(MeshMutationToken &mutationToken, const std::function<bool(t_index)> &FiFBndIdNeedSmooth);
+
+        void ExecuteReorderPlanImpl(MeshMutationToken &mutationToken, const ReorderInput &input,
+                                    ReorderRegistry &reg, const ReorderPlan &plan);
+
+    public:
+        EntitySpace Entities(EntityKind kind) const;
+        MeshReadAccess AcquireRead(MeshReadRequirements requirements = MeshReadRequirements::Primary(),
+                                   Runtime::ExecutionContext context = Runtime::ExecutionContext::Host());
+
         /// Native mutation boundary. Public legacy adjacency edits must declare
         /// their changes explicitly; they are not automatically intercepted.
         Runtime::VersionTracker versions;
@@ -600,8 +651,11 @@ namespace DNDS::Geom
 
         /// Reorder mesh and explicitly registered fields with the same plan.
         /// Entries must have unique, matching names/kinds/order on every rank.
-        /// Callbacks participate in the destructive mutation scope; an exception
-        /// invalidates the mesh. Caller retains fields and rebuilds their ghosts.
+        /// Native participants prepare destinations before destructive mutation
+        /// and publish only after mesh bookkeeping succeeds. Preparation failure
+        /// preserves the mesh and native field sources. Legacy callbacks and mesh
+        /// execution retain destructive failed-mesh semantics. The caller owns
+        /// fields and must rebuild ghost routes after successful publication.
         void ReorderEntitiesWithFields(const ReorderInput &input,
                                        const std::vector<CompanionEntry> &fields);
 
@@ -1020,12 +1074,31 @@ namespace DNDS::Geom
         void ReadDistributed_RedistributeLegacy(
             const EntityPartitions &partitions);
 
+    private:
+        void ReadSerializeAndDistributeImpl(MeshMutationToken &mutationToken, Serializer::SerializerBaseSSP serializerP,
+                                            const std::string &name,
+                                            const PartitionOptions &partitionOptions);
+        void ReadDistributed_EvenSplitReadImpl(MeshMutationToken &mutationToken, Serializer::SerializerBaseSSP serializerP);
+        ssp<tAdj::element_type> ReadDistributed_BuildFacialCell2CellImpl(MeshMutationToken &mutationToken);
+        void ReadDistributed_RedistributeImpl(MeshMutationToken &mutationToken, const EntityPartitions &partitions);
+        void ReadDistributed_RedistributeLegacyImpl(MeshMutationToken &mutationToken, const EntityPartitions &partitions);
+
     public:
         template <class TFTrans>
         void TransformCoords(TFTrans &&FTrans)
         {
+            // Keep the legacy callable interface, but publish geometry changes
+            // and reject retained managed readers before touching coordinates.
+            DNDS_check_throw_info(versions.CanMutate(), "coordinate edit blocked by an active mesh read or mutation");
+            Runtime::WriteAccess ownedWrite, ghostWrite;
+            if (coords.father)
+                ownedWrite = coords.father->HostWriteData();
+            if (coords.son)
+                ghostWrite = coords.son->HostWriteData();
+            auto mutation = versions.BeginMutation(Runtime::Change::Geometry);
             for (index iNode = 0; iNode < coords.Size(); iNode++)
                 coords[iNode] = FTrans(coords[iNode]);
+            mutation.Commit();
         }
 
         void RecreatePeriodicNodes();

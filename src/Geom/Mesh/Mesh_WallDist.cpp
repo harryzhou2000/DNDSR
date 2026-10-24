@@ -11,6 +11,9 @@ namespace DNDS::Geom
 {
     void UnstructuredMesh::BuildNodeWallDist(const std::function<bool(Geom::t_index)> &fBndIsWall, WallDistOptions options)
     {
+        CheckCollectiveMutationAvailable();
+        MeshMutationToken mutationToken(this, versions, Runtime::Change::Interface | Runtime::Change::Values);
+
         /* ************************** */
         // Here implements direct search method
         using TriArray = ArrayEigenMatrix<3, 3>;
@@ -220,5 +223,6 @@ namespace DNDS::Geom
         nodeWallDist.trans.BorrowGGIndexing(coords.trans);
         nodeWallDist.trans.createMPITypes();
         nodeWallDist.trans.pullOnce();
+        mutationToken.Commit();
     }
 }

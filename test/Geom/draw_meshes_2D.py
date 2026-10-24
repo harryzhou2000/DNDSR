@@ -32,27 +32,21 @@ def draw_meshes_2D():
     fig, ax = plt.subplots(figsize=(16, 16), dpi=320)
     xymaxs = np.array([-1e100, -1e100], dtype=np.double)
     xymins = np.array([1e100, 1e100], dtype=np.double)
-    for iCell in range(mesh.cell2node.Size()):
-        c2n = mesh.cell2node[iCell].tolist()
-        nodes = []
-        # print(mesh.cell2node[iCell].tolist())
-
-        for iNode in c2n:
-            nodes.append(np.array(mesh.coords[iNode]))
-        nodes = np.array(nodes)
-
-        vertices = nodes[:, 0:2]
-        xymaxs = np.maximum(vertices.max(axis=0), xymaxs)
-        xymins = np.minimum(vertices.min(axis=0), xymins)
-        # print(vertices.max(axis=0))
-        polygon = patches.Polygon(
-            vertices,
-            closed=True,
-            edgecolor="black",
-            facecolor="blue" if iCell < mesh.cell2node.father.Size() else "red",
-            lw=1,
-        )
-        ax.add_patch(polygon)
+    with mesh.acquire_read() as read:
+        owned, _, combined = read.counts["cell"]
+        for iCell in range(combined):
+            # Physical element coordinates preserve periodic incidence frames.
+            vertices = read.cell_coords(iCell)[:, :2]
+            xymaxs = np.maximum(vertices.max(axis=0), xymaxs)
+            xymins = np.minimum(vertices.min(axis=0), xymins)
+            polygon = patches.Polygon(
+                vertices,
+                closed=True,
+                edgecolor="black",
+                facecolor="blue" if iCell < owned else "red",
+                lw=1,
+            )
+            ax.add_patch(polygon)
 
     # Maintain aspect ratio
     ax.set_aspect("equal")

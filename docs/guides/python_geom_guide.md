@@ -14,6 +14,91 @@ The `DNDSR.Geom` module provides Python bindings to the C++ geometry library, en
 - Wall distance computation
 - CUDA device offloading
 
+## Managed mesh reads
+
+After `read_mesh` and `prepare_mesh`, acquire one host read scope for an operation:
+
+```python
+with mesh.acquire_read(faces=True) as read:
+    owned_cells, ghost_cells, all_cells = read.counts["cell"]
+    for cell in range(owned_cells):
+        nodes = read.cell_nodes(cell)       # retained readonly NumPy row
+        points = read.cell_coords(cell)    # independent immutable (nodes, 3) copy
+        for slot, face in enumerate(read.cell_faces(cell)):
+            other = read.cell_face_other(cell, int(face), slot)
+            # Check boundary/unavailable sentinels before indexing another cell.
+```
+
+`counts` maps `"node"`, `"cell"`, `"face"`, `"boundary"`, and `"edge"` to
+`(owned, ghost, combined)` tuples. Optional families have zero counts when they
+were not requested. `faces=True`, `inverse=True`, `edges=True`,
+`cell_face_neighbors=True`, and `wall_distance=True` request additional prepared
+relations/fields. Acquisition checks their current index mappings and closure;
+it does not build missing topology. `relation(Geom.MeshRelation.CellNodes, row)`
+is equivalent to the named `cell_nodes(row)` helper. Named row methods cover all
+cell/node/face/boundary/edge relations.
+
+`cell_nodes`, `face_cells`, `coord`, periodic incidence-bit methods, and
+`wall_distance` return shared **readonly** arrays. A readonly Python buffer
+exporter retains the native read scope, value allocation, and row metadata.
+NumPy slices and `np.asarray` preserve that lifetime. Assignments and
+`array.setflags(write=True)` are rejected. Use `array.copy()` for an independent
+writable copy; changing it does not edit the mesh. No DLPack or writable managed
+mesh export is provided.
+
+`coordinates(owned_only=False)`, `cell_coords`, and `face_coords` explicitly return
+independent immutable snapshots. They do not retain the mesh lease. Periodic
+element coordinates apply incidence-slot periodic transforms; `coord(node)`
+returns the stored node coordinate. `cell_info` and `face_info` return detached
+`ElemInfo` values, so editing their `zone` does not change mesh metadata.
+
+Leaving the context or calling `close()` closes the Python scope handle and
+rejects new queries on it. Close is idempotent, and exceptions inside `with` still
+close the handle without being suppressed. Existing shared arrays/slices remain
+usable and keep mesh mutation blocked until their final reference is released:
+
+```python
+with mesh.acquire_read() as read:
+    escaped = read.cell_nodes(0)[::2]
+# read is closed, escaped remains readable and retains the native lease.
+del escaped  # Release all exported rows before a collective mesh mutation.
+```
+
+The exported arrays also remain valid after deleting the parent Python mesh.
+MPI communicators must still remain alive through their use. Every rank must
+follow the same collective mutation workflow; an escaped row on any rank blocks
+tracked reorder on all ranks. The Python API currently supports host acquisition.
+Native C++ CUDA snapshot scopes and asynchronous completion have separate caller
+obligations described in [MeshFacade.md](../architecture/MeshFacade.md).
+
+For a tracked host coordinate transform, release all managed rows first, then
+call a point callback on every rank:
+
+```python
+mesh.transform_coordinates(lambda point: point + [0.1, 0.0, 0.0])
+```
+
+The callback receives an independent `(3,)` NumPy array for each stored owned or
+ghost point. Return a finite `(3,)` point, or modify that detached input and
+return `None`. Retaining callback inputs or outputs does not retain writable mesh
+aliases. Active managed reads or escaped rows reject the operation before the
+callback runs. A successful transform declares a geometry-generation change;
+entity-space numbering descriptors remain valid. Callbacks may already have
+updated some points when an exception occurs: the mesh is marked failed and
+subsequent managed reads reject it. There is no automatic rollback; discard and
+rebuild the failed mesh. Invoke consistent transforms on all ranks. This generic
+callback does not update periodic frames, wall distances, finite-volume metrics,
+or reconstruction caches; refresh those affected dependencies explicitly.
+
+Legacy properties such as `mesh.coords`, `mesh.cell2node`, and
+`mesh.cellElemInfo` remain compatibility exports. Their `def_readonly` bindings
+prevent replacing the property, but do **not** make the contained legacy arrays
+immutable or lease-safe. Legacy `TransformCoords` passes writable coordinate
+arrays to its callback and is outside the managed edit guarantee. Do not mutate
+those exports while any managed read or escaped row exists. Coordinated geometry
+edits with coherent derived-cache publication and managed Python topology editing
+remain migration work; a readonly query scope is not a writable edit context.
+
 ## Setup
 
 Import the module and initialize MPI:

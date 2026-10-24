@@ -22,9 +22,15 @@ namespace DNDS::Geom
 {
     void UnstructuredMesh::ElevatedNodesSolveInternalSmooth()
     {
+        CheckCollectiveMutationAvailable();
+        MeshMutationToken mutationToken(this, versions, Runtime::Change::Geometry | Runtime::Change::Values | Runtime::Change::Interface);
+
         auto setupOpt = PrepareSmoothSolverSetup(*this);
         if (!setupOpt)
+        {
+            mutationToken.Commit();
             return;
+        }
         auto &setup = *setupOpt;
         auto &nodesBoundInterpolated = setup.nodesBoundInterpolated;
         auto &boundInterpCoo = setup.boundInterpCoo;
@@ -108,13 +114,20 @@ namespace DNDS::Geom
                 coords[iN] += coordsElevDisp[iN];
         }
         coords.trans.pullOnce();
+        mutationToken.Commit();
     }
 
     void UnstructuredMesh::ElevatedNodesSolveInternalSmoothV1Old()
     {
+        CheckCollectiveMutationAvailable();
+        MeshMutationToken mutationToken(this, versions, Runtime::Change::Geometry | Runtime::Change::Values | Runtime::Change::Interface);
+
         auto setupOpt = PrepareSmoothSolverSetup(*this);
         if (!setupOpt)
+        {
+            mutationToken.Commit();
             return;
+        }
         auto &setup = *setupOpt;
         auto &nodesBoundInterpolated = setup.nodesBoundInterpolated;
         auto &boundInterpCoo = setup.boundInterpCoo;
@@ -302,13 +315,20 @@ namespace DNDS::Geom
                 coords[iN] += coordsElevDisp[iN];
         }
         coords.trans.pullOnce();
+        mutationToken.Commit();
     }
 
     void UnstructuredMesh::ElevatedNodesSolveInternalSmoothV1()
     {
+        CheckCollectiveMutationAvailable();
+        MeshMutationToken mutationToken(this, versions, Runtime::Change::Geometry | Runtime::Change::Values | Runtime::Change::Interface);
+
         auto setupOpt = PrepareSmoothSolverSetup(*this);
         if (!setupOpt)
+        {
+            mutationToken.Commit();
             return;
+        }
         auto &setup = *setupOpt;
         auto &nodesBoundInterpolated = setup.nodesBoundInterpolated;
         auto &boundInterpCoo = setup.boundInterpCoo;
@@ -708,6 +728,7 @@ namespace DNDS::Geom
                 coords[iN] += coordsElevDisp[iN];
         }
         coords.trans.pullOnce();
+        mutationToken.Commit();
     }
 
     // ElevatedNodesSolveInternalSmoothV2 is in Mesh_Elevation_SmoothV2.cpp

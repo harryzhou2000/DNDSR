@@ -21,6 +21,24 @@ namespace DNDS::Geom
 {
     void UnstructuredMesh::BuildO2FromO1Elevation(UnstructuredMesh &meshO1)
     {
+        CheckCollectiveMutationAvailable();
+        int distinct = !versions.SameController(meshO1.versions);
+        MPI_Allreduce(MPI_IN_PLACE, &distinct, 1, MPI_INT, MPI_MIN, mpi.comm);
+        DNDS_check_throw_info(distinct, "elevation destination must have an independent mesh controller");
+        std::optional<Runtime::VersionTracker::ReadLease> sourceRead;
+        int readable = 1;
+        try
+        {
+            sourceRead.emplace(meshO1.versions.Read());
+        }
+        catch (...)
+        {
+            readable = 0;
+        }
+        MPI_Allreduce(MPI_IN_PLACE, &readable, 1, MPI_INT, MPI_MIN, mpi.comm);
+        DNDS_check_throw_info(readable, "elevation source is mutating or failed on a rank");
+        MeshMutationToken mutationToken(this, versions, Runtime::Change::All);
+
         real epsSqrDist = 1e-20;
 
         bool O1MeshIsO1 = meshO1.IsO1();
@@ -471,10 +489,29 @@ namespace DNDS::Geom
         //     }
         // }
         // // this->AdjLocal2GlobalPrimary();
+        mutationToken.Commit();
     }
 
     void UnstructuredMesh::BuildBisectO1FormO2(UnstructuredMesh &meshO2)
     {
+        CheckCollectiveMutationAvailable();
+        int distinct = !versions.SameController(meshO2.versions);
+        MPI_Allreduce(MPI_IN_PLACE, &distinct, 1, MPI_INT, MPI_MIN, mpi.comm);
+        DNDS_check_throw_info(distinct, "elevation destination must have an independent mesh controller");
+        std::optional<Runtime::VersionTracker::ReadLease> sourceRead;
+        int readable = 1;
+        try
+        {
+            sourceRead.emplace(meshO2.versions.Read());
+        }
+        catch (...)
+        {
+            readable = 0;
+        }
+        MPI_Allreduce(MPI_IN_PLACE, &readable, 1, MPI_INT, MPI_MIN, mpi.comm);
+        DNDS_check_throw_info(readable, "elevation source is mutating or failed on a rank");
+        MeshMutationToken mutationToken(this, versions, Runtime::Change::All);
+
         bool O2MeshIsO2 = meshO2.IsO2();
         DNDS_assert(O2MeshIsO2);
         DNDS_assert(meshO2.adjPrimaryState == Adj_PointToGlobal);
@@ -491,9 +528,11 @@ namespace DNDS::Geom
         elevState = MeshElevationState::Elevation_Untouched;
 
         coords.son = make_ssp<decltype(coords.son)::element_type>(ObjName{"BuildBisectO1FormO2::coords.son"}, mpi);
-        coords.father = meshO2.coords.father; // coords are the same, taken without change
+        // This is a new logical mesh with an independent mutation controller.
+        // Equal geometry must not leave writable coordinates shared with O2.
+        coords.father = make_ssp<tCoordPair::t_arr>(*meshO2.coords.father);
         node2nodeOrig.son = make_ssp<decltype(node2nodeOrig.son)::element_type>(ObjName{"BuildBisectO1FormO2::node2nodeOrig.son"}, mpi);
-        node2nodeOrig.father = meshO2.node2nodeOrig.father; // node2nodeOrig corresponds to coords, and is taken without change
+        node2nodeOrig.father = make_ssp<tAdj1Pair::t_arr>(*meshO2.node2nodeOrig.father);
 
         /**********************************/
         //* cell
@@ -665,6 +704,7 @@ namespace DNDS::Geom
         //* unhandled info
         bnd2cell.InitPair("BuildBisectO1FormO2::bnd2cell", mpi);
         cell2cell.InitPair("BuildBisectO1FormO2::cell2cell", mpi);
+        mutationToken.Commit();
     }
 
     static tPoint HermiteInterpolateMidPointOnLine2WithNorm(tPoint c0, tPoint c1, tPoint n0, tPoint n1)
@@ -698,6 +738,15 @@ namespace DNDS::Geom
 
     void UnstructuredMesh::ElevatedNodesGetBoundarySmooth(const std::function<bool(t_index)> &FiFBndIdNeedSmooth)
     {
+        CheckCollectiveMutationAvailable();
+        MeshMutationToken mutationToken(this, versions, Runtime::Change::Geometry | Runtime::Change::Values | Runtime::Change::Interface | Runtime::Change::Allocation);
+        ElevatedNodesGetBoundarySmoothImpl(mutationToken, FiFBndIdNeedSmooth);
+        mutationToken.Commit();
+    }
+
+    void UnstructuredMesh::ElevatedNodesGetBoundarySmoothImpl(MeshMutationToken &mutationToken, const std::function<bool(t_index)> &FiFBndIdNeedSmooth)
+    {
+        auto mutationStep = mutationToken.Enter(this, Runtime::Change::Geometry | Runtime::Change::Values | Runtime::Change::Interface | Runtime::Change::Allocation);
         // if (mpi.rank == 1)
         //     for (index iCell = 0; iCell < cell2face.Size(); iCell++)
         //     {
@@ -749,8 +798,8 @@ namespace DNDS::Geom
         if (isPeriodic)
             face2nodePbiExtended.son = make_ssp<decltype(face2nodePbiExtended.son)::element_type>(ObjName{"ElevatedNodesGetBoundarySmooth::face2nodePbiExtended.son"}, NodePeriodicBits::CommType(), NodePeriodicBits::CommMult(), mpi);
 
-        this->AdjLocal2GlobalFacial();
-        this->AdjLocal2GlobalC2F();
+        this->AdjLocal2GlobalFacialImpl(mutationToken);
+        this->AdjLocal2GlobalC2FImpl(mutationToken);
 
         std::vector<index> faceGhostExt;
         for (index iCell = 0; iCell < cell2face.Size(); iCell++)
@@ -796,8 +845,8 @@ namespace DNDS::Geom
         //                          face2nodeExtended.father->Size(), face2nodeExtended.son->Size())
         //           << std::endl;
 
-        this->AdjGlobal2LocalFacial();
-        this->AdjGlobal2LocalC2F();
+        this->AdjGlobal2LocalFacialImpl(mutationToken);
+        this->AdjGlobal2LocalC2FImpl(mutationToken);
         //** a direct copy from AdjGlobal2LocalPrimary()
         auto NodeIndexGlobal2Local = [&](DNDS::index &iNodeOther)
         {

@@ -390,11 +390,20 @@ TEST_CASE("Audit regression: local cell reorder retains periodic face rows")
 /// Returns mesh in Adj_PointToLocal state with ghost layers.
 static ssp<UnstructuredMesh> buildMeshPrimary(
     const MPIInfo &mpi, const std::string &file, int dim,
-    bool withFaces = false)
+    bool withFaces = false, bool periodic = false, int ghostLayers = 1,
+    DNDS::real periodicLength = 10)
 {
     auto mesh = make_ssp<UnstructuredMesh>(mpi, dim);
+    if (periodic)
+    {
+        tPoint zero{0, 0, 0};
+        mesh->SetPeriodicGeometry({periodicLength, 0, 0}, zero, zero,
+                                  {0, periodicLength, 0}, zero, zero, zero, zero, zero);
+    }
     UnstructuredMeshSerialRW reader(mesh, 0);
     reader.ReadFromCGNSSerial(meshPath(file));
+    if (periodic)
+        reader.Deduplicate1to1Periodic(1e-8);
     reader.BuildCell2Cell();
 
     UnstructuredMeshSerialRW::PartitionOptions pOpt;
@@ -407,7 +416,7 @@ static ssp<UnstructuredMesh> buildMeshPrimary(
 
     mesh->RecoverNode2CellAndNode2Bnd();
     mesh->RecoverCell2CellAndBnd2Cell();
-    mesh->BuildGhostPrimary();
+    mesh->BuildGhostPrimary(ghostLayers);
     mesh->AdjGlobal2LocalPrimary();
 
     if (withFaces)
@@ -1005,6 +1014,146 @@ TEST_CASE("Native field uses exact local permutation and preserves old aliases")
     CHECK(old.Read().View<int64_t>()[0] == 100 * mpi.rank);
 }
 
+TEST_CASE("Staged field bundle preserves every source when a later preparation fails")
+{
+    auto mpi = worldMPI();
+    ArrayAdjacencyPair<1> entity;
+    entity.InitPair("staged.entities", mpi);
+    entity.father->Resize(3);
+    entity.father->createGlobalMapping();
+    auto transfer = PermutationTransfer::fromLocalPermutation({2, 0, 1}, entity.father->pLGlobalMapping, mpi);
+    Runtime::Field<int64_t> history({3, 1, 1}, {17, 5, 3, 0}, "cell");
+    Runtime::Array<int64_t> stages(Runtime::RowLayout::Dense(3, 1));
+    for (size_t i = 0; i < 3; ++i)
+    {
+        history.Write().View<int64_t>()[i] = 100 * mpi.rank + int64_t(i);
+        stages.Write().At(i, 0) = 1000 + 100 * mpi.rank + int64_t(i);
+    }
+    const auto historyIdentity = history.Values().Identity();
+    const auto stageIdentity = stages.Identity();
+    auto first = RegisterField(history, EntityKind::Cell, "history");
+    auto second = RegisterArray(stages, EntityKind::Cell, "stages");
+    int preparedFirst = 0;
+    auto prepareFirst = first.prepare;
+    first.prepare = [&](const auto &permutation, const auto &m)
+    {
+        ++preparedFirst;
+        return prepareFirst(permutation, m);
+    };
+    second.prepare = [&](const auto &, const auto &m) -> std::unique_ptr<PreparedCompanion>
+    {
+        // This injected local phase posts no MPI. The bundle agrees on failure
+        // before proceeding to another field or publishing any retained value.
+        if (m.rank == 0)
+            throw std::runtime_error("injected second-field prepare failure");
+        return std::make_unique<FieldTransferDetail::Prepared<Runtime::Array<int64_t>>>(stages, stages);
+    };
+    ReorderRegistry registry;
+    registry.companions = {first, second};
+    ReorderPlan plan;
+    plan.reorderedKinds.insert(EntityKind::Cell);
+    plan.transfers.emplace(EntityKind::Cell, transfer);
+    CHECK_THROWS(plan.apply(registry, mpi));
+    CHECK(preparedFirst == 1);
+    CHECK(history.Values().Identity() == historyIdentity);
+    CHECK(stages.Identity() == stageIdentity);
+    CHECK(history.GetDistribution().epoch == 5);
+    for (size_t i = 0; i < 3; ++i)
+    {
+        CHECK(history.Read().View<int64_t>()[i] == 100 * mpi.rank + int64_t(i));
+        CHECK(stages.Read().At(i, 0) == 1000 + 100 * mpi.rank + int64_t(i));
+    }
+}
+
+TEST_CASE("Staged field attachment rejection precedes mesh mutation")
+{
+    auto mpi = worldMPI();
+    auto mesh = buildMeshPrimary(mpi, "UniformSquare_10.cgns", 2, false);
+    mesh->AdjLocal2GlobalPrimary();
+    const auto count = size_t(mesh->NumCell());
+    Runtime::Field<int64_t> first({count, 1, 1}, {7, 2, count, 0}, "cell");
+    Runtime::Field<int64_t> second({count, 1, 1}, {7, 2, count, 0}, "cell");
+    auto a = RegisterField(first, EntityKind::Cell, "first");
+    auto b = RegisterField(second, EntityKind::Cell, "second");
+    SUBCASE("rank-local association mismatch")
+    {
+        if (mpi.rank == 0)
+            b = RegisterField(second, EntityKind::Node, "second");
+    }
+    SUBCASE("rank-local disposition mismatch")
+    {
+        if (mpi.rank == 0)
+            b.disposition = CompanionDisposition::ProhibitReorder;
+    }
+    SUBCASE("same destination handle with different names")
+    {
+        auto &alias = first;
+        b = RegisterField(alias, EntityKind::Cell, "second");
+    }
+    SUBCASE("same entity domain mismatch")
+    {
+        second = Runtime::Field<int64_t>({count, 1, 1}, {8, 2, count, 0}, "cell");
+    }
+    SUBCASE("same entity epoch mismatch")
+    {
+        second = Runtime::Field<int64_t>({count, 1, 1}, {7, 3, count, 0}, "cell");
+    }
+    SUBCASE("rank-local second preparation failure")
+    {
+        b.prepare = [&](const auto &, const auto &m) -> std::unique_ptr<PreparedCompanion>
+        {
+            if (m.rank == 0)
+                throw std::runtime_error("second preparation rejected");
+            return std::make_unique<FieldTransferDetail::Prepared<Runtime::Field<int64_t>>>(second, second);
+        };
+    }
+    const auto identity = first.Values().Identity();
+    const auto secondIdentity = second.Values().Identity();
+    const auto stamp = mesh->versions.Stamp();
+    ReorderInput input;
+    input.explicitMaps.push_back({EntityKind::Cell, std::vector<MPI_int>(count, mpi.rank)});
+    CHECK_THROWS(mesh->ReorderEntitiesWithFields(input, {a, b}));
+    CHECK(mesh->versions.CanMutate());
+    CHECK(stamp.Valid());
+    CHECK(first.Values().Identity() == identity);
+    CHECK(second.Values().Identity() == secondIdentity);
+    CHECK(first.GetDistribution().epoch == 2);
+}
+
+TEST_CASE("Staged Array registration rejects duplicate destinations and permits distinct old aliases")
+{
+    auto mpi = worldMPI();
+    ArrayAdjacencyPair<1> entity;
+    entity.InitPair("staged.alias.entities", mpi);
+    entity.father->Resize(2);
+    entity.father->createGlobalMapping();
+    ReorderPlan plan;
+    plan.reorderedKinds.insert(EntityKind::Cell);
+    plan.transfers.emplace(EntityKind::Cell,
+                           PermutationTransfer::fromLocalPermutation({1, 0}, entity.father->pLGlobalMapping, mpi));
+    Runtime::Array<int64_t> values(Runtime::RowLayout::Dense(2, 1));
+    values.Write().At(0, 0) = 11;
+    values.Write().At(1, 0) = 22;
+    auto &sameObject = values;
+    ReorderRegistry duplicate;
+    duplicate.companions = {RegisterArray(values, EntityKind::Cell, "first"),
+                            RegisterArray(sameObject, EntityKind::Cell, "second")};
+    const auto oldIdentity = values.Identity();
+    CHECK_THROWS(plan.apply(duplicate, mpi));
+    CHECK(values.Identity() == oldIdentity);
+    CHECK(values.Read().At(0, 0) == 11);
+
+    auto distinctHandle = values;
+    ReorderRegistry aliases;
+    aliases.companions = {RegisterArray(values, EntityKind::Cell, "first"),
+                          RegisterArray(distinctHandle, EntityKind::Cell, "second")};
+    plan.apply(aliases, mpi);
+    CHECK(values.Identity() != oldIdentity);
+    CHECK(distinctHandle.Identity() != oldIdentity);
+    CHECK(values.Read().At(0, 0) == 22);
+    CHECK(distinctHandle.Read().At(0, 0) == 22);
+}
+
 // =================================================================
 // Test: RELOCATE_REMAP — both source and target reordered
 // (cell2node where BOTH cells and nodes move)
@@ -1419,8 +1568,7 @@ TEST_CASE("ReorderEntities: face-preserving cell reorder reattaches face arrays"
     mesh->RecoverCell2CellAndBnd2Cell();
     mesh->BuildGhostPrimary();
     mesh->AdjGlobal2LocalPrimary();
-    mesh->AdjGlobal2LocalFacial();
-    mesh->AdjGlobal2LocalC2F();
+    mesh->BuildGhostFace();
     mesh->BuildGhostN2CB();
     mesh->AdjGlobal2LocalN2CB();
     mesh->AssertOnFaces();
@@ -1988,8 +2136,6 @@ TEST_CASE("ReorderEntities: Bnd-explicit distributed round-robin")
 TEST_CASE("ReorderEntities: FollowSpec Bnd follows Node via bnd2node")
 {
     auto mpi = worldMPI();
-    if (mpi.size < 2)
-        return;
 
     auto mesh = buildMeshPrimary(mpi, "UniformSquare_10.cgns", 2, false);
 
@@ -2020,39 +2166,241 @@ TEST_CASE("ReorderEntities: FollowSpec Bnd follows Node via bnd2node")
     DNDS::index nNodeGlobal = mesh->coords.father->pLGlobalMapping->globalSize();
     CHECK(checkAdjEntriesValid(mesh->bnd2node, mesh->NumBnd(), nNodeGlobal));
 
-    // NOTE: full rebuild is not attempted here; node/bnd reorder with
-    // follows does not preserve the full ghost+sons state needed for
-    // Recover* / BuildGhost* / local conversion in all cases.  The
-    // adj entries are verified as valid globals, confirming the follow
-    // derived correct Bnd placement.
+    mesh->RecoverNode2CellAndNode2Bnd();
+    mesh->RecoverCell2CellAndBnd2Cell();
+    mesh->BuildGhostPrimary();
+    mesh->AdjGlobal2LocalPrimary();
+    mesh->BuildGhostN2CB();
+    mesh->AdjGlobal2LocalN2CB();
+    mesh->InterpolateFace();
+    mesh->AssertOnFaces();
 }
 
 // =================================================================
 // Test: Face-explicit identity reorder (faces preserved, all identity)
 // =================================================================
 //
-// NOTE: Distributed face-preserving reorder where Cell moves round-robin
-// while Face stays local triggers a face-global lookup resolution failure
-// in PermutationTransfer at np>1 (the face pull-set collected from
-// cell2face entries at registry-build time does not cover every old face
-// global that needs resolving after Cell rows relocate).  This is a
-// known gap — cross-rank face-preserving reorder requires the pull-set
-// to include all face globals reachable via post-relocate cell2face rows.
-// The test below validates the all-identity code path.
-
-TEST_CASE("ReorderEntities: Face-explicit identity (np=1 only, pull-set gap at np>1)")
+TEST_CASE("ReorderEntities: face-neighbor relation has independent target lookup coverage")
 {
     auto mpi = worldMPI();
-    if (mpi.size != 1)
-        return; // Face-explicit reorder only safe at np=1 (see NOTE above)
+    UnstructuredMesh mesh(mpi, 2);
+    mesh.cell2node.InitPair("coverage.cell2node", mpi);
+    mesh.cell2node.father->Resize(1);
+    mesh.cell2node.ResizeRow(0, 1);
+    mesh.cell2node.father->createGlobalMapping();
+    mesh.cell2node(0, 0) = mpi.rank;
+    mesh.cell2node.idx.markGlobal();
+    mesh.coords.InitPair("coverage.coords", mpi);
+    mesh.coords.father->Resize(1);
+    mesh.coords.father->createGlobalMapping();
+    mesh.cell2cellFace.InitPair("coverage.cell2cellFace", mpi);
+    mesh.cell2cellFace.father->Resize(1);
+    mesh.cell2cellFace.ResizeRow(0, 1);
+    mesh.cell2cellFace(0, 0) = (mpi.rank + 1) % mpi.size;
+    mesh.cell2cellFace.idx.markGlobal();
 
-    auto mesh = buildMeshPrimary(mpi, "UniformSquare_10.cgns", 2, true);
+    // Face-neighbor coverage must not rely on another registered relation
+    // incidentally containing the same remote cell IDs.
+    auto registry = mesh.buildReorderRegistry({});
+    ReorderInput input;
+    input.explicitMaps.push_back({EntityKind::Cell, {mpi.rank}});
+    auto plan = ReorderPlan::build(input, registry, mpi);
+    plan.apply(registry, mpi);
+    CHECK(mesh.cell2cellFace(0, 0) == (mpi.rank + 1) % mpi.size);
+}
+
+// Collect a bounded fixture globally so the oracle follows exact source rows
+// and relation slots, independently of destination ownership and ghost layout.
+static std::vector<DNDS::index> gatherReorderFixture(
+    const std::vector<DNDS::index> &local, const MPIInfo &mpi)
+{
+    int n = static_cast<int>(local.size());
+    std::vector<int> counts(mpi.size), offsets(mpi.size + 1, 0);
+    MPI_Allgather(&n, 1, MPI_INT, counts.data(), 1, MPI_INT, mpi.comm);
+    for (int r = 0; r < mpi.size; ++r)
+        offsets[r + 1] = offsets[r] + counts[r];
+    std::vector<DNDS::index> all(offsets.back());
+    MPI_Allgatherv(local.data(), n, DNDS_MPI_INDEX, all.data(), counts.data(),
+                   offsets.data(), DNDS_MPI_INDEX, mpi.comm);
+    return all;
+}
+
+TEST_CASE("ReorderLocalCells preserves multi-layer ghost identities and connectivity")
+{
+    auto mpi = worldMPI();
+    for (int layers : {2, 3})
+    {
+        CAPTURE(layers);
+        auto mesh = buildMeshPrimary(mpi, "Uniform32_Periodic.cgns", 2, false, true, layers, 1);
+        mesh->AdjGlobal2LocalN2CB();
+        const auto nOwned = mesh->NumCell();
+        const auto nGhost = mesh->NumCellGhost();
+        auto cellGlobal = [&](DNDS::index value)
+        {
+            return value < 0 ? -1 - value : (*mesh->cell2node.trans.pLGhostMapping)(-1, value);
+        };
+        auto originalIds = [&]()
+        {
+            std::vector<DNDS::index> ids;
+            for (DNDS::index i = 0; i < mesh->NumCell(); ++i)
+                ids.push_back(mesh->cell2cellOrig(i, 0));
+            return gatherReorderFixture(ids, mpi);
+        };
+        auto idsBefore = originalIds();
+
+        // Confirm the fixture includes halo cells absent from every owned
+        // source relation used to build the old permutation lookup.
+        std::set<DNDS::index> referenced;
+        auto collect = [&](const auto &adj, DNDS::index nRows)
+        {
+            for (DNDS::index i = 0; i < nRows; ++i)
+                for (auto value : adj[i])
+                    if (value != UnInitIndex)
+                        referenced.insert(cellGlobal(value));
+        };
+        collect(mesh->cell2cell, mesh->NumCell());
+        collect(mesh->bnd2cell, mesh->NumBnd());
+        collect(mesh->node2cell, mesh->NumNode());
+        DNDS::index deepOnly = 0;
+        for (auto global : mesh->cell2node.trans.pLGhostMapping->ghostIndex)
+            deepOnly += !referenced.count(global);
+        MPI::AllreduceOneIndex(deepOnly, MPI_SUM, mpi);
+        if (mpi.size > 1)
+            CHECK(deepOnly > 0);
+
+        using Row = std::pair<std::vector<DNDS::index>, std::vector<DNDS::index>>;
+        auto rows = [&](const std::vector<DNDS::index> &ids)
+        {
+            std::map<DNDS::index, Row> result;
+            for (DNDS::index i = 0; i < mesh->NumCellProc(); ++i)
+            {
+                Row row;
+                for (auto node : mesh->cell2node[i])
+                    row.first.push_back(node < 0 ? -1 - node : (*mesh->coords.trans.pLGhostMapping)(-1, node));
+                for (auto cell : mesh->cell2cell[i])
+                    row.second.push_back(cell == UnInitIndex ? cell : ids.at(cellGlobal(cell)));
+                result.emplace(mesh->cell2cellOrig(i, 0), std::move(row));
+            }
+            return result;
+        };
+        const auto before = rows(idsBefore);
+        std::vector<DNDS::index> ownedBefore;
+        for (DNDS::index i = 0; i < nOwned; ++i)
+            ownedBefore.push_back(mesh->cell2cellOrig(i, 0));
+
+        mesh->ReorderLocalCells(1, 1);
+
+        CHECK(mesh->NumCell() == nOwned);
+        CHECK(mesh->NumCellGhost() == nGhost);
+        CHECK(mesh->cell2node.isLocal());
+        CHECK(mesh->cell2cell.isLocal());
+        CHECK(rows(originalIds()) == before);
+        DNDS::index moved = 0;
+        for (DNDS::index i = 0; i < nOwned; ++i)
+            moved += mesh->cell2cellOrig(i, 0) != ownedBefore.at(i);
+        MPI::AllreduceOneIndex(moved, MPI_SUM, mpi);
+        CHECK(moved > 0);
+    }
+}
+
+template <class TPair>
+static std::vector<std::vector<DNDS::index>> expectedReorderRows(
+    const TPair &pair, const std::vector<DNDS::index> &sourceMap,
+    const std::vector<DNDS::index> &targetMap, const MPIInfo &mpi)
+{
+    std::vector<DNDS::index> packed;
+    auto oldOffset = (*pair.father->pLGlobalMapping)(mpi.rank, 0);
+    for (DNDS::index i = 0; i < pair.father->Size(); ++i)
+    {
+        packed.push_back(sourceMap.at(oldOffset + i));
+        packed.push_back(pair.RowSize(i));
+        for (DNDS::rowsize j = 0; j < pair.RowSize(i); ++j)
+        {
+            auto value = pair(i, j);
+            packed.push_back(value == UnInitIndex ? value : targetMap.at(value));
+        }
+    }
+    auto all = gatherReorderFixture(packed, mpi);
+    std::vector<std::vector<DNDS::index>> expected(sourceMap.size());
+    for (size_t p = 0; p < all.size();)
+    {
+        auto row = all[p++];
+        auto size = all[p++];
+        expected.at(row).assign(all.begin() + p, all.begin() + p + size);
+        p += size;
+    }
+    return expected;
+}
+
+template <class TPair>
+static void checkReorderRows(const TPair &pair,
+                             const std::vector<std::vector<DNDS::index>> &expected,
+                             const MPIInfo &mpi)
+{
+    auto offset = (*pair.father->pLGlobalMapping)(mpi.rank, 0);
+    for (DNDS::index i = 0; i < pair.father->Size(); ++i)
+    {
+        const auto &row = expected.at(offset + i);
+        CHECK(pair.RowSize(i) == row.size());
+        for (DNDS::rowsize j = 0; j < std::min<size_t>(pair.RowSize(i), row.size()); ++j)
+            CHECK(pair(i, j) == row[j]);
+    }
+}
+
+template <class TPair>
+static std::vector<std::vector<DNDS::index>> expectedReorderBits(
+    const TPair &pair, const std::vector<DNDS::index> &sourceMap, const MPIInfo &mpi)
+{
+    std::vector<DNDS::index> packed;
+    auto oldOffset = (*pair.father->pLGlobalMapping)(mpi.rank, 0);
+    for (DNDS::index i = 0; i < pair.father->Size(); ++i)
+    {
+        packed.push_back(sourceMap.at(oldOffset + i));
+        packed.push_back(pair.RowSize(i));
+        for (DNDS::rowsize j = 0; j < pair.RowSize(i); ++j)
+            packed.push_back(static_cast<uint8_t>(pair(i, j)));
+    }
+    auto all = gatherReorderFixture(packed, mpi);
+    std::vector<std::vector<DNDS::index>> expected(sourceMap.size());
+    for (size_t p = 0; p < all.size();)
+    {
+        auto row = all[p++];
+        auto size = all[p++];
+        expected.at(row).assign(all.begin() + p, all.begin() + p + size);
+        p += size;
+    }
+    return expected;
+}
+
+template <class TPair>
+static void checkReorderBits(const TPair &pair,
+                             const std::vector<std::vector<DNDS::index>> &expected,
+                             const MPIInfo &mpi)
+{
+    auto offset = (*pair.father->pLGlobalMapping)(mpi.rank, 0);
+    for (DNDS::index i = 0; i < pair.father->Size(); ++i)
+    {
+        const auto &row = expected.at(offset + i);
+        CHECK(pair.RowSize(i) == row.size());
+        for (DNDS::rowsize j = 0; j < std::min<size_t>(pair.RowSize(i), row.size()); ++j)
+            CHECK(static_cast<uint8_t>(pair(i, j)) == row[j]);
+    }
+}
+
+static void checkPreservedFaceReorder(const MPIInfo &mpi, bool periodic)
+{
+    auto mesh = buildMeshPrimary(mpi, periodic ? "IV10_10.cgns" : "UniformSquare_10.cgns",
+                                 2, true, periodic);
+    mesh->AssertOnFaces();
 
     // Convert all groups to global
     mesh->AdjLocal2GlobalPrimary();
     mesh->AdjLocal2GlobalN2CB();
     mesh->AdjLocal2GlobalFacial();
     mesh->AdjLocal2GlobalC2F();
+    for (DNDS::index i = 0; i < mesh->NumBnd(); ++i)
+        if (mesh->bnd2faceV.at(i) < 0)
+            CHECK(mesh->bnd2face(i, 0) == UnInitIndex);
 
     DNDS::index nCellBefore = mesh->NumCell();
     DNDS::index nNodeBefore = mesh->NumNode();
@@ -2067,13 +2415,63 @@ TEST_CASE("ReorderEntities: Face-explicit identity (np=1 only, pull-set gap at n
     std::vector<MPI_int> bndPartition(nBndBefore, mpi.rank);
     std::vector<MPI_int> facePartition(nFaceBefore, mpi.rank);
 
+    SUBCASE("identity") {}
+    SUBCASE("cell rows move while faces stay")
+    {
+        for (DNDS::index i = 0; i < nCellBefore; i++)
+            cellPartition[i] = static_cast<MPI_int>((mpi.rank + i) % mpi.size);
+    }
+    SUBCASE("face ownership moves independently")
+    {
+        for (DNDS::index i = 0; i < nCellBefore; i++)
+            cellPartition[i] = static_cast<MPI_int>((mpi.rank + i) % mpi.size);
+        for (auto &rank : facePartition)
+            rank = (mpi.rank + 1) % mpi.size;
+    }
+
     ReorderInput input;
     input.explicitMaps.push_back(EntityReorderMap{EntityKind::Cell, cellPartition});
     input.explicitMaps.push_back(EntityReorderMap{EntityKind::Node, nodePartition});
     input.explicitMaps.push_back(EntityReorderMap{EntityKind::Bnd, bndPartition});
     input.explicitMaps.push_back(EntityReorderMap{EntityKind::Face, facePartition});
 
+    auto plan = mesh->buildReorderPlan(input);
+    auto cellMap = gatherReorderFixture(plan.transfers.at(EntityKind::Cell).newGlobalIndices, mpi);
+    auto nodeMap = gatherReorderFixture(plan.transfers.at(EntityKind::Node).newGlobalIndices, mpi);
+    auto faceMap = gatherReorderFixture(plan.transfers.at(EntityKind::Face).newGlobalIndices, mpi);
+    auto bndMap = gatherReorderFixture(plan.transfers.at(EntityKind::Bnd).newGlobalIndices, mpi);
+    auto expectedC2N = expectedReorderRows(mesh->cell2node, cellMap, nodeMap, mpi);
+    auto expectedC2F = expectedReorderRows(mesh->cell2face, cellMap, faceMap, mpi);
+    auto expectedF2N = expectedReorderRows(mesh->face2node, faceMap, nodeMap, mpi);
+    auto expectedF2C = expectedReorderRows(mesh->face2cell, faceMap, cellMap, mpi);
+    auto expectedF2B = expectedReorderRows(mesh->face2bnd, faceMap, bndMap, mpi);
+    auto expectedB2F = expectedReorderRows(mesh->bnd2face, bndMap, faceMap, mpi);
+    auto expectedB2N = expectedReorderRows(mesh->bnd2node, bndMap, nodeMap, mpi);
+    std::vector<std::vector<DNDS::index>> expectedC2NPbi, expectedC2FPbi, expectedF2NPbi;
+    if (periodic)
+    {
+        // PBI bits belong to relation slots; face node order and cell face
+        // slot order are checked above and must move with these exact bits.
+        expectedC2NPbi = expectedReorderBits(mesh->cell2nodePbi, cellMap, mpi);
+        expectedC2FPbi = expectedReorderBits(mesh->cell2facePbi, cellMap, mpi);
+        expectedF2NPbi = expectedReorderBits(mesh->face2nodePbi, faceMap, mpi);
+    }
+
     mesh->ReorderEntities(input);
+
+    checkReorderRows(mesh->cell2node, expectedC2N, mpi);
+    checkReorderRows(mesh->cell2face, expectedC2F, mpi);
+    checkReorderRows(mesh->face2node, expectedF2N, mpi);
+    checkReorderRows(mesh->face2cell, expectedF2C, mpi);
+    checkReorderRows(mesh->face2bnd, expectedF2B, mpi);
+    checkReorderRows(mesh->bnd2face, expectedB2F, mpi);
+    checkReorderRows(mesh->bnd2node, expectedB2N, mpi);
+    if (periodic)
+    {
+        checkReorderBits(mesh->cell2nodePbi, expectedC2NPbi, mpi);
+        checkReorderBits(mesh->cell2facePbi, expectedC2FPbi, mpi);
+        checkReorderBits(mesh->face2nodePbi, expectedF2NPbi, mpi);
+    }
 
     // Global face count preserved
     CHECK(mesh->face2node.father->pLGlobalMapping->globalSize() == nFaceGlobal);
@@ -2092,12 +2490,35 @@ TEST_CASE("ReorderEntities: Face-explicit identity (np=1 only, pull-set gap at n
     mesh->RecoverCell2CellAndBnd2Cell();
     mesh->BuildGhostPrimary();
     mesh->AdjGlobal2LocalPrimary();
-    mesh->AdjGlobal2LocalFacial();
-    mesh->AdjGlobal2LocalC2F();
+    mesh->BuildGhostFace();
     // N2CB: already global, just build ghost + convert to local
     mesh->BuildGhostN2CB();
     mesh->AdjGlobal2LocalN2CB();
     mesh->AssertOnFaces();
+
+    mesh->AdjLocal2GlobalPrimary();
+    mesh->AdjLocal2GlobalFacial();
+    mesh->AdjLocal2GlobalC2F();
+    checkReorderRows(mesh->cell2node, expectedC2N, mpi);
+    checkReorderRows(mesh->cell2face, expectedC2F, mpi);
+    checkReorderRows(mesh->face2node, expectedF2N, mpi);
+    checkReorderRows(mesh->face2cell, expectedF2C, mpi);
+    checkReorderRows(mesh->face2bnd, expectedF2B, mpi);
+    checkReorderRows(mesh->bnd2face, expectedB2F, mpi);
+    checkReorderRows(mesh->bnd2node, expectedB2N, mpi);
+    if (periodic)
+    {
+        checkReorderBits(mesh->cell2nodePbi, expectedC2NPbi, mpi);
+        checkReorderBits(mesh->cell2facePbi, expectedC2FPbi, mpi);
+        checkReorderBits(mesh->face2nodePbi, expectedF2NPbi, mpi);
+    }
+}
+
+TEST_CASE("ReorderEntities: Face-explicit identity and arriving cell rows")
+{
+    auto mpi = worldMPI();
+    SUBCASE("ordinary mesh") { checkPreservedFaceReorder(mpi, false); }
+    SUBCASE("periodic mesh") { checkPreservedFaceReorder(mpi, true); }
 }
 
 // =======================================================================

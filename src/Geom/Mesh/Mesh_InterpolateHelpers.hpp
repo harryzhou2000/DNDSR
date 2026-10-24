@@ -334,12 +334,21 @@ namespace DNDS::Geom
             tAdj1Pair &face2bnd,
             tAdj1Pair &bnd2face)
         {
-            bnd2faceV.resize(bndElemInfo.father->Size(), -1); // this mapping only uses main (father) part
-            face2bndM.reserve(bndElemInfo.father->Size());
+            bnd2faceV.assign(bndElemInfo.father->Size(), -1); // this mapping only uses main (father) part
+            face2bndM.clear();
+            face2bndM.reserve(bndElemInfo.Size());
             std::unordered_map<index, index> iFace2iBnd;
-            for (DNDS::index iBnd = 0; iBnd < bndElemInfo.father->Size(); iBnd++)
+            // Ghost boundary rows carry labels to an owned face even when
+            // boundary ownership differs from the adjacent cell/face owner.
+            for (DNDS::index iBnd = 0; iBnd < bndElemInfo.Size(); iBnd++)
             {
                 DNDS::index pCell = bnd2cell(iBnd, 0);
+                bool ownedBoundary = iBnd < bndElemInfo.father->Size();
+                if (pCell < 0 || pCell >= cell2face.Size())
+                {
+                    DNDS_assert(!ownedBoundary);
+                    continue;
+                }
                 std::vector<DNDS::index> b2nRow = bnd2node[iBnd];
                 std::sort(b2nRow.begin(), b2nRow.end());
                 int nFound = 0;
@@ -359,10 +368,13 @@ namespace DNDS::Geom
                             index iBndOther = iFace2iBnd[iFace];
                             index iCellA = bnd2cell[iBnd][0];
                             index iCellB = bnd2cell[iBndOther][0];
-                            DNDS_assert(iCellA < cell2node.father->Size()); // both points to local non-ghost cells
-                            DNDS_assert(iCellB < cell2node.father->Size()); // both points to local non-ghost cells
-                            // std::cout << iCellA << " vs " << iCellB << std::endl;
-                            if (iCellA > iCellB) // make face corresponds with f2c[0]'s bnd if possible
+                            DNDS_assert(iCellA >= 0 && iCellA < cell2node.Size());
+                            DNDS_assert(iCellB >= 0 && iCellB < cell2node.Size());
+                            // Choose the same periodic side on every rank,
+                            // independently of owned/ghost local numbering.
+                            auto cellGlobalA = (*cell2node.trans.pLGhostMapping)(-1, iCellA);
+                            auto cellGlobalB = (*cell2node.trans.pLGhostMapping)(-1, iCellB);
+                            if (cellGlobalA > cellGlobalB)
                                 continue;
                         }
                         iFace2iBnd[iFace] = iBnd;
@@ -370,14 +382,15 @@ namespace DNDS::Geom
                         // if is periodic, then only gets the bnd info of the main cell's bnd;
                         // if is external bc, then must be non-ghost face
                         faceElemInfo(iFace, 0) = bndElemInfo(iBnd, 0);
-                        bnd2faceV[iBnd] = iFace;
+                        if (ownedBoundary)
+                            bnd2faceV[iBnd] = iFace;
                         face2bndM[iFace] = iBnd;
                         DNDS_assert_info(FaceIDIsExternalBC(faceID) ||
                                              FaceIDIsPeriodic(faceID),
                                          "bnd elem should have a BC id not interior");
                     }
                 }
-                DNDS_assert(nFound > 0 || (FaceIDIsPeriodic(faceID) && nFound == 0)); // periodic could miss the face
+                DNDS_assert(!ownedBoundary || nFound > 0 || FaceIDIsPeriodic(faceID));
             }
 
             face2bnd.father->Resize(face2node.father->Size());
@@ -385,7 +398,11 @@ namespace DNDS::Geom
                 face2bnd.father->operator()(iFace) = face2bndM.count(iFace) ? face2bndM[iFace] : UnInitIndex;
             bnd2face.father->Resize(bnd2node.father->Size());
             for (index iBnd = 0; iBnd < bnd2node.father->Size(); iBnd++)
-                bnd2face.father->operator()(iBnd) = bnd2faceV.at(iBnd);
+                // -1 is only a sentinel in the local side vector. In a
+                // tracked adjacency it encodes global face 0; use the true
+                // absent-entry sentinel for an unmatched periodic donor.
+                bnd2face.father->operator()(iBnd) =
+                    bnd2faceV.at(iBnd) < 0 ? UnInitIndex : bnd2faceV.at(iBnd);
         }
 
         /**
