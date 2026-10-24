@@ -96,24 +96,16 @@ namespace DNDS::Euler
             }
             return meshInput;
         };
-        mesh->periodicInfo.translation[1].map() = config.boundaryDefinition.PeriodicTranslation1;
-        mesh->periodicInfo.translation[2].map() = config.boundaryDefinition.PeriodicTranslation2;
-        mesh->periodicInfo.translation[3].map() = config.boundaryDefinition.PeriodicTranslation3;
-        mesh->periodicInfo.rotationCenter[1].map() = config.boundaryDefinition.PeriodicRotationCent1;
-        mesh->periodicInfo.rotationCenter[2].map() = config.boundaryDefinition.PeriodicRotationCent2;
-        mesh->periodicInfo.rotationCenter[3].map() = config.boundaryDefinition.PeriodicRotationCent3;
-        mesh->periodicInfo.rotation[1].map() =
-            Geom::RotZ(config.boundaryDefinition.PeriodicRotationEulerAngles1[2]) *
-            Geom::RotY(config.boundaryDefinition.PeriodicRotationEulerAngles1[1]) *
-            Geom::RotX(config.boundaryDefinition.PeriodicRotationEulerAngles1[0]);
-        mesh->periodicInfo.rotation[2].map() =
-            Geom::RotZ(config.boundaryDefinition.PeriodicRotationEulerAngles2[2]) *
-            Geom::RotY(config.boundaryDefinition.PeriodicRotationEulerAngles2[1]) *
-            Geom::RotX(config.boundaryDefinition.PeriodicRotationEulerAngles2[0]);
-        mesh->periodicInfo.rotation[3].map() =
-            Geom::RotZ(config.boundaryDefinition.PeriodicRotationEulerAngles3[2]) *
-            Geom::RotY(config.boundaryDefinition.PeriodicRotationEulerAngles3[1]) *
-            Geom::RotX(config.boundaryDefinition.PeriodicRotationEulerAngles3[0]);
+        mesh->SetPeriodicGeometry(
+            config.boundaryDefinition.PeriodicTranslation1,
+            config.boundaryDefinition.PeriodicRotationCent1,
+            config.boundaryDefinition.PeriodicRotationEulerAngles1,
+            config.boundaryDefinition.PeriodicTranslation2,
+            config.boundaryDefinition.PeriodicRotationCent2,
+            config.boundaryDefinition.PeriodicRotationEulerAngles2,
+            config.boundaryDefinition.PeriodicTranslation3,
+            config.boundaryDefinition.PeriodicRotationCent3,
+            config.boundaryDefinition.PeriodicRotationEulerAngles3);
 
         if (config.dataIOControl.readMeshMode == 0)
         {
@@ -302,42 +294,14 @@ namespace DNDS::Euler
                 {std::sin(rz), std::cos(rz), 0},
                 {0, 0, 1},
             };
-            mesh->TransformCoords(
-                [&](const Geom::tPoint &p)
-                { return Rz * p; });
-            meshBnd->TransformCoords(
-                [&](const Geom::tPoint &p)
-                { return Rz * p; });
-
-            for (auto &r : mesh->periodicInfo.rotation)
-                r.map() = Rz * r.map() * Rz.transpose();
-            for (auto &p : mesh->periodicInfo.rotationCenter)
-                p.map() = Rz * p.map();
-            for (auto &p : mesh->periodicInfo.translation)
-                p.map() = Rz * p.map();
-            // @todo  //! todo: alter the rotation and translation in  periodicInfo mesh->periodicInfo
+            mesh->ApplyGeometryTransform(Rz, 1.0);
+            meshBnd->ApplyGeometryTransform(Rz, 1.0);
         }
         if (config.dataIOControl.meshScale != 1.0)
         {
-            auto scale = config.dataIOControl.meshScale;
-            mesh->TransformCoords(
-                [&](const Geom::tPoint &p)
-                { return p * scale; });
-            meshBnd->TransformCoords(
-                [&](const Geom::tPoint &p)
-                { return p * scale; });
-
-            if (mesh->nodeWallDist.father)
-                for (index iNode = 0; iNode < mesh->nodeWallDist.father->Size(); iNode++)
-                    (*mesh->nodeWallDist.father)[iNode] *= scale;
-            if (mesh->nodeWallDist.son)
-                for (index iNode = 0; iNode < mesh->nodeWallDist.son->Size(); iNode++)
-                    (*mesh->nodeWallDist.son)[iNode] *= scale;
-
-            for (auto &i : mesh->periodicInfo.translation)
-                i.map() *= scale;
-            for (auto &i : mesh->periodicInfo.rotationCenter)
-                i.map() *= scale;
+            const auto scale = config.dataIOControl.meshScale;
+            mesh->ApplyGeometryTransform(Eigen::Matrix3d::Identity(), scale);
+            meshBnd->ApplyGeometryTransform(Eigen::Matrix3d::Identity(), scale);
         }
         if (config.dataIOControl.rectifyNearPlane)
         {
@@ -362,37 +326,17 @@ namespace DNDS::Euler
             mesh->TransformCoords(fTrans);
             meshBnd->TransformCoords(fTrans);
         }
-        { //* symBnd's rectifying: !  altering mesh
-            // Like rectifyNearPlane, symmetry-boundary rectification snaps
-            // coordinates after serialized mesh loading. It intentionally does
-            // not reinterpret serialized wall-distance metadata.
-            for (index iB = 0; iB < mesh->NumBnd(); iB++)
-            {
-                index iFace = mesh->bnd2faceV.at(iB);
-                auto bndID = mesh->bndElemInfo(iB, 0).zone;
-                EulerBCType bndType = pBCHandler->GetTypeFromID(bndID);
-                if (bndType == BCSym)
-                {
-                    auto rectifyOpt = pBCHandler->GetFlagFromID(bndID, "rectifyOpt");
-                    if (rectifyOpt >= 1 && rectifyOpt <= 3)
-                        for (auto iNode : mesh->bnd2node[iB])
-                            mesh->coords[iNode](rectifyOpt - 1) = 0.0;
-                }
-            }
-            mesh->coords.trans.pullOnce();
-            for (index iB = 0; iB < meshBnd->NumCell(); iB++)
-            {
-                auto bndID = meshBnd->cellElemInfo(iB, 0).zone;
-                EulerBCType bndType = pBCHandler->GetTypeFromID(bndID);
-                if (bndType == BCSym)
-                {
-                    auto rectifyOpt = pBCHandler->GetFlagFromID(bndID, "rectifyOpt");
-                    if (rectifyOpt >= 1 && rectifyOpt <= 3)
-                        for (auto iNode : meshBnd->cell2node[iB])
-                            meshBnd->coords[iNode](rectifyOpt - 1) = 0.0;
-                }
-            }
-        }
+        // Snapping keeps wall-distance metadata at its pre-snap meaning;
+        // applications needing geometric wall distance afterward must rebuild it.
+        auto symmetryComponent = [&](Geom::t_index zone) -> int
+        {
+            if (pBCHandler->GetTypeFromID(zone) != BCSym)
+                return 0;
+            auto component = pBCHandler->GetFlagFromID(zone, "rectifyOpt");
+            return component >= 1 && component <= 3 ? component : 0;
+        };
+        mesh->RectifyBoundaryCoordinates(symmetryComponent, true);
+        meshBnd->RectifyBoundaryCoordinates(symmetryComponent, false);
         /// @todo //todo: upgrade to optional
         if (config.dataIOControl.outPltMode == 0)
             reader->coordSerialOutTrans.pullOnce(),

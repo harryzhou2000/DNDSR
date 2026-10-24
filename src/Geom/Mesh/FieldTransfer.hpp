@@ -19,6 +19,7 @@ namespace DNDS::Geom
         void LocalStage(const MPIInfo &mpi, F &&action)
         {
             int valid = 1;
+            std::exception_ptr failure;
             try
             {
                 action();
@@ -26,8 +27,13 @@ namespace DNDS::Geom
             catch (...)
             {
                 valid = 0;
+                failure = std::current_exception();
             }
             MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, mpi.comm);
+            // Preserve the originating error after collective agreement. Other
+            // ranks still fail before entering the next payload operation.
+            if (failure)
+                std::rethrow_exception(failure);
             DNDS_check_throw_info(valid, "field preparation failed before collective payload; source retained");
         }
 
@@ -85,13 +91,22 @@ namespace DNDS::Geom
                                   "native Array migration requires idle valid compatible owned rows/context");
         };
         entry.attachment = [&array, schema]()
-        { return CompanionAttachment{schema.Identity() + ":" + Runtime::ElementSchema::TypeIdentity<T>() + ":" +
-                                         std::to_string(static_cast<int>(array.GetDevice().space)),
-                                     {},
-                                     false,
-                                     0,
-                                     0,
-                                     &array}; };
+        {
+            DNDS_check_throw_info(array.IsValid() && array.Storage().IsIdle(), "native Array attachment requires valid idle storage");
+            return CompanionAttachment{schema.Identity() + ":" + Runtime::ElementSchema::TypeIdentity<T>() + ":" +
+                                           std::to_string(static_cast<int>(array.GetDevice().space)),
+                                       {},
+                                       false,
+                                       0,
+                                       0,
+                                       &array,
+                                       array.Identity(),
+                                       array.Version(),
+                                       array.ShapeVersion(),
+                                       array.Rows(),
+                                       array.Rows(),
+                                       0};
+        };
         entry.prepare = [&array, schema, context](const PermutationTransfer &transfer, const MPIInfo &mpi)
         {
             auto route = NativeRowTransfer(transfer, mpi);
@@ -151,10 +166,13 @@ namespace DNDS::Geom
             std::transform(expected.begin(), expected.end(), expected.begin(), [](unsigned char c)
                            { return char(std::tolower(c)); });
             DNDS_check_throw_info(field.Association() == expected, "field association differs from attached entity kind");
+            DNDS_check_throw_info(field.Values().IsValid() && field.Values().IsIdle(), "native Field attachment requires valid idle storage");
             return CompanionAttachment{Runtime::ElementSchema::TypeIdentity<T>() + ":" + std::to_string(field.Layout().components) + ":" +
                                            std::to_string(field.Layout().stride),
                                        field.Association(), true,
-                                       field.GetDistribution().domain, field.GetDistribution().epoch, &field};
+                                       field.GetDistribution().domain, field.GetDistribution().epoch, &field,
+                                       field.Values().Identity(), field.Values().Version(), 0, field.Layout().rows,
+                                       field.GetDistribution().owned, field.GetDistribution().ghosts};
         };
         entry.prepare = [&field](const PermutationTransfer &transfer, const MPIInfo &mpi)
         {

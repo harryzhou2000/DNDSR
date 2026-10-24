@@ -9,6 +9,8 @@ namespace DNDS::Geom
     struct UnstructuredMesh;
     class LegacyFieldBridge;
     class RelationReadAccess;
+    template <class T, class L>
+    class EntityField;
 
     /// Immutable snapshot of one entity family's numbering and distribution.
     /// No topology, Array or transformer is exposed. Global IDs here are the
@@ -23,6 +25,11 @@ namespace DNDS::Geom
         friend struct UnstructuredMesh;
         friend class LegacyFieldBridge;
         friend class RelationReadAccess;
+        template <class T, class L>
+        friend class EntityField;
+        friend class NativeMeshState;
+        friend class NativeConnectivity;
+        friend class RelationPeriodicBits;
 
         EntityKind _kind{};
         MPIInfo _mpi;
@@ -32,6 +39,7 @@ namespace DNDS::Geom
         Runtime::VersionTracker _versions;
         std::shared_ptr<GlobalOffsetsMapping> _global;
         std::shared_ptr<OffsetAscendIndexMapping> _ghostMap;
+        bool _publishedMaps = false;
 
         EntitySpace(EntityKind kind, MPIInfo mpi, index owned, index ghost,
                     std::shared_ptr<const uint8_t> identity, Runtime::VersionStamp stamp,
@@ -77,11 +85,13 @@ namespace DNDS::Geom
     /// allocation, TransAttach, createMPITypes and request creation with callers.
     /// The returned legacy transformer retains its documented lifetime contract;
     /// this bridge cannot stamp arbitrary subsequent direct transformer calls.
+    /// cloneMaps additionally isolates compatibility callers that can edit map
+    /// objects; published native maps are always cloned regardless of this flag.
     class LegacyFieldBridge
     {
     public:
         template <class TTransformer>
-        static void BorrowIndexing(TTransformer &transformer, const EntitySpace &space)
+        static void BorrowIndexing(TTransformer &transformer, const EntitySpace &space, bool cloneMaps = false)
         {
             space.Validate();
             DNDS_check_throw_info(transformer.father && transformer.son, "attach field arrays before borrowing entity indexing");
@@ -93,9 +103,11 @@ namespace DNDS::Geom
             EntitySpace::CheckCommunicator(transformer.father->getMPI().comm, space._mpi.comm);
             EntitySpace::CheckCommunicator(transformer.son->getMPI().comm, space._mpi.comm);
             // Publish only after all recoverable local checks have succeeded.
-            transformer.pLGlobalMapping = space._global;
-            transformer.pLGhostMapping = space._ghostMap;
-            transformer.father->pLGlobalMapping = space._global;
+            auto global = cloneMaps || space._publishedMaps ? std::make_shared<GlobalOffsetsMapping>(*space._global) : space._global;
+            auto ghost = cloneMaps || space._publishedMaps ? std::make_shared<OffsetAscendIndexMapping>(*space._ghostMap) : space._ghostMap;
+            transformer.pLGlobalMapping = global;
+            transformer.pLGhostMapping = ghost;
+            transformer.father->pLGlobalMapping = std::move(global);
         }
     };
 }

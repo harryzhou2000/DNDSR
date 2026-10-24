@@ -13,6 +13,9 @@
  *   - Runs one Newton-like iteration: EvaluateDt -> EvaluateRHS -> LUSGSMatrixInit
  *     -> LUSGSForward -> LUSGSBackward
  *   - Measures the L1 RHS norm (golden regression value)
+ *   - Repeats from identical solution/halo data using native mesh authority,
+ *     rebuilding FV/wall caches after corrupting the detached legacy workspace
+ *   - Compares every owned dt, RHS and increment component between the runs
  *
  * This is an MPI test registered at np=1, 2, 4.
  * Golden value sentinel: 1e300 means not yet acquired.
@@ -28,6 +31,8 @@
 #include <iomanip>
 #include <filesystem>
 #include <map>
+#include <hdf5.h>
+#include <unistd.h>
 
 using namespace DNDS;
 using namespace DNDS::Euler;
@@ -169,65 +174,146 @@ std::array<real, 3> runOneNewtonStep(const std::string &cfgPath)
     u.trans.startPersistentPull();
     u.trans.waitPersistentPull();
 
-    // --- STEP 1: fdt (compute local pseudo-timestep) ---
-    real CFL = config.implicitCFLControl.CFL;
-    real curDtMin = 1e100;
-
     eval.FixUMaxFilter(u);
     u.trans.startPersistentPull();
     u.trans.waitPersistentPull();
-
-    eval.EvaluateDt(dTau, u, uRec, CFL, curDtMin, 1e100,
-                    config.implicitCFLControl.useLocalDt, 0.0);
-
-    // --- STEP 2: skip reconstruction (first-order, uRec stays zero) ---
-    // For a proper high-order test we'd need the boundary callback from
-    // frhsOuter, which requires significant setup. A first-order RHS
-    // evaluation is a valid regression test of the evaluator pipeline.
-
-    // --- STEP 3: frhs (evaluate spatial RHS, first-order) ---
-    eval.EvaluateRHS(rhs, JSource, u, uRec, uRec,
-                     betaPP, alphaPP_tmp, false, 0.0);
-    rhs.trans.startPersistentPull();
-    rhs.trans.waitPersistentPull();
-
-    // --- Measure RHS L1 norm (volume-weighted) ---
-    Eigen::VectorXd resNorm(nVars);
-    eval.EvaluateNorm(resNorm, rhs, 1, true);
-
-    if (g_mpi.rank == 0)
+    std::vector<Eigen::VectorXd> initialU, initialBeta;
+    std::vector<Eigen::MatrixXd> initialRec, initialRecNew;
+    for (DNDS::index cell = 0; cell < mesh->NumCellProc(); ++cell)
     {
-        std::cout << "  RHS L1 norms:";
-        for (int i = 0; i < nVars; i++)
-            std::cout << " " << std::scientific << std::setprecision(10) << resNorm(i);
-        std::cout << std::endl;
+        initialU.emplace_back(u[cell]);
+        initialBeta.emplace_back(betaPP[cell]);
+        initialRec.emplace_back(uRec[cell]);
+        initialRecNew.emplace_back(uRecNew[cell]);
     }
+    struct PipelineResult
+    {
+        std::array<real, 3> norms;
+        std::vector<real> owned;
+        real minDt;
+    };
+    auto run = [&]() -> PipelineResult
+    {
+        // Restore the complete initial halo as well as owned cells; neither
+        // run may consume solution or reconstruction values left by the other.
+        for (DNDS::index cell = 0; cell < mesh->NumCellProc(); ++cell)
+        {
+            u[cell] = initialU.at(cell);
+            betaPP[cell] = initialBeta.at(cell);
+            uRec[cell] = initialRec.at(cell);
+            uRecNew[cell] = initialRecNew.at(cell);
+        }
+        alphaPP_tmp.setConstant(1.0);
+        JSource.clearValues();
+        JD.SetModeAndInit(config.eulerSettings.useScalarJacobian ? 0 : 1, nVars, u);
+        // --- STEP 1: fdt (compute local pseudo-timestep) ---
+        const real CFL = config.implicitCFLControl.CFL;
+        real curDtMin = 1e100;
 
-    // --- STEP 4: fsolve (one Jacobi iteration -- MPI-deterministic) ---
-    // Jacobi pattern: Forward(uInc, uIncNew); Backward(uInc, uIncNew); pull uIncNew; swap.
-    // Since uInc starts at zero, this is a block-diagonal solve: xincNew = D^{-1} * rhs.
-    real dt = 1e100; // pseudo-steady
-    real alphaDiag = 1.0;
+        eval.EvaluateDt(dTau, u, uRec, CFL, curDtMin, 1e100,
+                        config.implicitCFLControl.useLocalDt, 0.0);
 
-    eval.LUSGSMatrixInit(JD, JSource, dTau, dt, alphaDiag, u, uRec, 0, 0.0);
+        // --- STEP 2: skip reconstruction (first-order, uRec stays zero) ---
+        // For a proper high-order test we'd need the boundary callback from
+        // frhsOuter, which requires significant setup. A first-order RHS
+        // evaluation is a valid regression test of the evaluator pipeline.
 
-    xinc.setConstant(0.0);
-    xincNew.setConstant(0.0);
-    eval.UpdateLUSGSForward(alphaDiag, 0.0, rhs, u, xinc, JD, xincNew);
-    eval.UpdateLUSGSBackward(alphaDiag, 0.0, rhs, u, xinc, JD, xincNew);
-    xincNew.trans.startPersistentPull();
-    xincNew.trans.waitPersistentPull();
-    xinc = xincNew;
+        // --- STEP 3: frhs (evaluate spatial RHS, first-order) ---
+        eval.EvaluateRHS(rhs, JSource, u, uRec, uRec,
+                         betaPP, alphaPP_tmp, false, 0.0);
+        rhs.trans.startPersistentPull();
+        rhs.trans.waitPersistentPull();
 
-    // --- Measure increment L2 norm ---
-    Eigen::VectorXd incNorm(nVars);
-    eval.EvaluateNorm(incNorm, xinc, 2, false);
-    real incL2 = incNorm.norm();
+        // --- Measure RHS L1 norm (volume-weighted) ---
+        Eigen::VectorXd resNorm(nVars);
+        eval.EvaluateNorm(resNorm, rhs, 1, true);
 
-    if (g_mpi.rank == 0)
-        std::cout << "  Inc L2 norm: " << std::scientific << std::setprecision(10) << incL2 << std::endl;
+        if (g_mpi.rank == 0)
+        {
+            std::cout << "  RHS L1 norms:";
+            for (int i = 0; i < nVars; i++)
+                std::cout << " " << std::scientific << std::setprecision(10) << resNorm(i);
+            std::cout << std::endl;
+        }
 
-    return {resNorm(0), resNorm(nVars > 4 ? 4 : nVars - 1), incL2};
+        // --- STEP 4: fsolve (one Jacobi iteration -- MPI-deterministic) ---
+        // Jacobi pattern: Forward(uInc, uIncNew); Backward(uInc, uIncNew); pull uIncNew; swap.
+        // Since uInc starts at zero, this is a block-diagonal solve: xincNew = D^{-1} * rhs.
+        real dt = 1e100; // pseudo-steady
+        real alphaDiag = 1.0;
+
+        eval.LUSGSMatrixInit(JD, JSource, dTau, dt, alphaDiag, u, uRec, 0, 0.0);
+
+        xinc.setConstant(0.0);
+        xincNew.setConstant(0.0);
+        eval.UpdateLUSGSForward(alphaDiag, 0.0, rhs, u, xinc, JD, xincNew);
+        eval.UpdateLUSGSBackward(alphaDiag, 0.0, rhs, u, xinc, JD, xincNew);
+        xincNew.trans.startPersistentPull();
+        xincNew.trans.waitPersistentPull();
+        xinc = xincNew;
+
+        // --- Measure increment L2 norm ---
+        Eigen::VectorXd incNorm(nVars);
+        eval.EvaluateNorm(incNorm, xinc, 2, false);
+        real incL2 = incNorm.norm();
+
+        if (g_mpi.rank == 0)
+            std::cout << "  Inc L2 norm: " << std::scientific << std::setprecision(10) << incL2 << std::endl;
+
+        PipelineResult result{{resNorm(0), resNorm(nVars > 4 ? 4 : nVars - 1), incL2}, {}, curDtMin};
+        for (DNDS::index cell = 0; cell < mesh->NumCell(); ++cell)
+        {
+            result.owned.push_back(dTau[cell](0));
+            for (int variable = 0; variable < nVars; ++variable)
+                result.owned.push_back(rhs[cell](variable));
+            for (int variable = 0; variable < nVars; ++variable)
+                result.owned.push_back(xinc[cell](variable));
+        }
+        return result;
+    };
+    const auto legacy = run();
+    auto requirements = Geom::MeshReadRequirements::CellFlux();
+    requirements.allFaceCellsLocal = true;
+    requirements.wallDistance = vfv->getSettings().functionalSettings.anisotropicType ==
+                                CFV::VRSettings::FunctionalSettings::AnisotropicType::WallDist;
+    mesh->PublishNative(requirements);
+    REQUIRE(mesh->HasNativeState());
+
+    // Numerical queries must remain independent of the detached raw workspace.
+    // Corrupt before rebuilding FV and wall caches to expose mixed helper reads.
+    for (DNDS::index node = 0; node < mesh->coords.Size(); ++node)
+        mesh->coords[node].array() += 37;
+    auto corruptNodes = [](auto &pair)
+    {
+        for (DNDS::index row = 0; row < pair.Size(); ++row)
+            for (DNDS::rowsize slot = 0; slot < pair.RowSize(row); ++slot)
+                pair(row, slot) = UnInitIndex;
+    };
+    corruptNodes(mesh->cell2node);
+    corruptNodes(mesh->face2node);
+    for (DNDS::index face = 0; face < mesh->face2cell.Size(); ++face)
+    {
+        mesh->face2cell(face, 0) = 0;
+        mesh->face2cell(face, 1) = UnInitIndex;
+        mesh->faceElemInfo(face, 0).zone = Geom::BC_ID_DEFAULT_WALL;
+    }
+    if (mesh->nodeWallDist.father && mesh->nodeWallDist.son)
+        for (DNDS::index node = 0; node < mesh->nodeWallDist.Size(); ++node)
+            mesh->nodeWallDist[node].setConstant(73);
+    mesh->isPeriodic = !mesh->isPeriodic;
+    mesh->periodicInfo = Geom::Periodicity{};
+    TEval::InitializeFV(mesh, vfv, solver.getBCHandler());
+    eval.GetWallDist();
+    const auto native = run();
+    REQUIRE(native.owned.size() == legacy.owned.size());
+    CHECK(native.minDt == doctest::Approx(legacy.minDt).epsilon(1e-11));
+    for (size_t value = 0; value < legacy.owned.size(); ++value)
+    {
+        CAPTURE(value);
+        CHECK(std::isfinite(native.owned[value]));
+        CHECK(native.owned[value] == doctest::Approx(legacy.owned[value]).epsilon(1e-11));
+    }
+    return legacy.norms;
 }
 
 // ===================================================================
@@ -332,6 +418,67 @@ TEST_CASE("EulerEvaluator pipeline: Box (NS_3D, P1)")
 
     CHECK(rhsDensity == doctest::Approx(goldenRhsDensity).epsilon(1e-6));
     CHECK(incL2 == doctest::Approx(goldenIncL2).epsilon(1e-6));
+}
+
+TEST_CASE("RANS wall cache rejects changed geometry and metric publications")
+{
+    const auto root = projectRoot();
+    const auto cfgPath = writeTempConfig<NS_SA>(
+        root + "/cases/eulerSA/eulerSA_config.json", "wall_cache_test",
+        {{"vfvSettings", {{"maxOrder", 1}, {"intOrder", 3}}},
+         {"restartState", {{"iStep", 0}, {"iStepInternal", 0}}},
+         {"eulerSettings", {{"wallDistScheme", 0}}},
+         {"dataIOControl", {{"meshFile", root + "/data/mesh/Uniform_3x3_wall.cgns"}, {"meshDirectBisect", 0}, {"meshScale", 1}, {"meshRotZ", 0}}}});
+    EulerSolver<NS_SA> solver(g_mpi);
+    solver.ConfigureFromJson(cfgPath, true);
+    solver.ReadMeshAndInitialize();
+    auto mesh = solver.getMesh();
+    auto vfv = solver.getVFV();
+    auto &eval = solver.getEval();
+    CHECK_NOTHROW(eval.ValidateMeshDependencies());
+    const auto before = eval.dWall;
+    DNDS::real total = 0;
+    for (DNDS::index cell = 0; cell < mesh->NumCell(); ++cell)
+        total += before.at(cell).mean();
+    MPI::AllreduceOneReal(total, MPI_SUM, g_mpi);
+    REQUIRE(total > 0);
+
+    mesh->ApplyGeometryTransform(Eigen::Matrix3d::Identity(), 2);
+    vfv->ConstructMetrics();
+    vfv->ConstructBaseAndWeight();
+    vfv->ConstructRecCoeff();
+    CHECK_NOTHROW(vfv->ValidateMeshDependencies());
+    CHECK_THROWS(eval.ValidateWallDistanceDependencies());
+    ArrayDOFV<1> dt;
+    vfv->BuildUDof(dt, 1);
+    DNDS::real minDt = 1e100;
+    CHECK_THROWS(eval.EvaluateDt(dt, solver.getU(), solver.getURec(), 1, minDt, 1e100, true, 0));
+    eval.GetWallDist();
+    CHECK_NOTHROW(eval.ValidateMeshDependencies());
+    REQUIRE(eval.dWall.size() == before.size());
+    for (size_t cell = 0; cell < before.size(); ++cell)
+    {
+        REQUIRE(eval.dWall[cell].size() == before[cell].size());
+        for (Eigen::Index point = 0; point < before[cell].size(); ++point)
+            CHECK(eval.dWall[cell](point) == doctest::Approx(2 * before[cell](point)).epsilon(1e-11));
+    }
+
+    // Rebuilding quadrature/metrics in the same mesh epoch also requires new
+    // distances, even when the number of rows remains unchanged.
+    vfv->FinalizeMetrics();
+    vfv->ConstructBaseAndWeight();
+    vfv->ConstructRecCoeff();
+    CHECK_THROWS(eval.ValidateMeshDependencies());
+    eval.GetWallDist();
+    CHECK_NOTHROW(eval.ValidateMeshDependencies());
+
+    const auto scheme = eval.settings.wallDistScheme;
+    eval.settings.wallDistScheme = -123;
+    CHECK_THROWS(eval.GetWallDist());
+    eval.settings.wallDistScheme = scheme;
+    CHECK_THROWS(eval.ValidateWallDistanceDependencies());
+    eval.GetWallDist();
+    CHECK_NOTHROW(eval.ValidateMeshDependencies());
 }
 
 // Basic end-to-end LVR fixture: a two-dimensional state, target PP, all
@@ -539,6 +686,79 @@ TEST_CASE("LVR target and branch halos agree across 2-D MPI partitions")
                         CHECK(values[i] == doctest::Approx(expected[i]).epsilon(2e-10).scale(1));
                 }
             }
+}
+
+static std::vector<double> OutputDataset(const std::string &fileName, const char *datasetName)
+{
+    auto file = H5Fopen(fileName.c_str(), H5F_ACC_RDONLY, H5P_DEFAULT);
+    DNDS_check_throw_info(file >= 0, "Euler output file missing");
+    auto dataset = H5Dopen2(file, datasetName, H5P_DEFAULT);
+    DNDS_check_throw_info(dataset >= 0, "Euler output dataset missing");
+    auto space = H5Dget_space(dataset);
+    auto count = H5Sget_simple_extent_npoints(space);
+    DNDS_check_throw_info(count > 0, "Euler output dataset empty");
+    std::vector<double> result(static_cast<size_t>(count));
+    auto error = H5Dread(dataset, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, result.data());
+    H5Sclose(space);
+    H5Dclose(dataset);
+    H5Fclose(file);
+    DNDS_check_throw_info(error >= 0, "Euler output dataset read failed");
+    return result;
+}
+
+TEST_CASE("Euler distributed volume output reads native authority after workspace edits")
+{
+    const auto root = projectRoot();
+    const auto cfg = writeTempConfig<NS>(root + "/cases/euler/euler_config_IV.json", "native_output",
+                                         {{"vfvSettings", {{"maxOrder", 1}, {"intOrder", 3}}},
+                                          {"limiterControl", {{"useLimiter", false}}},
+                                          {"dataIOControl", {{"meshDirectBisect", 0}, {"meshFile", root + "/data/mesh/IV10_10.cgns"}, {"outPltMode", 1}, {"outBndData", false}, {"outVolumeData", true}, {"outPltTecplotFormat", false}, {"outPltVTKFormat", false}, {"outPltVTKHDFFormat", true}, {"outAtCellData", true}, {"outAtPointData", true}, {"allowAsyncPrintData", false}, {"outCellScalarNames", nlohmann::ordered_json::array()}}}});
+    EulerSolver<NS> solver(g_mpi);
+    solver.ConfigureFromJson(cfg, true);
+    solver.ReadMeshAndInitialize();
+    auto &eval = solver.getEval();
+    eval.InitializeUDOF(solver.getU());
+    auto mesh = solver.getMesh();
+    for (DNDS::index cell = 0; cell < mesh->NumCellProc(); ++cell)
+    {
+        solver.getURec()[cell].setZero();
+        solver.getURecNew()[cell].setZero();
+    }
+    int rootPid = int(getpid());
+    MPI_Bcast(&rootPid, 1, MPI_INT, 0, g_mpi.comm);
+    auto base = (std::filesystem::temp_directory_path() /
+                 ("dndsr-euler-native-output-" + std::to_string(rootPid)))
+                    .string();
+    EulerSolver<NS>::tAdditionalCellScalarList cells, boundaries;
+    auto output = [&](const std::string &suffix)
+    { solver.PrintData(base + suffix, "", [](DNDS::index)
+                       { return 0.0; }, cells, boundaries, eval, 0); };
+    output("-legacy");
+    auto requirements = Geom::MeshReadRequirements::CellFlux();
+    requirements.allFaceCellsLocal = true;
+    mesh->PublishNative(requirements);
+    for (DNDS::index node = 0; node < mesh->coords.Size(); ++node)
+        mesh->coords[node].setConstant(731);
+    EulerEvaluator<NS>::InitializeFV(mesh, solver.getVFV(), solver.getBCHandler());
+    output("-native");
+    CHECK(mesh->HasNativeState());
+    MPI_Barrier(g_mpi.comm);
+    if (g_mpi.rank == 0)
+    {
+        for (const auto *name : {"/VTKHDF/Points", "/VTKHDF/CellData/R", "/VTKHDF/CellData/P", "/VTKHDF/CellData/Velo",
+                                 "/VTKHDF/PointData/R", "/VTKHDF/PointData/P", "/VTKHDF/PointData/Velo"})
+        {
+            CAPTURE(name);
+            const auto legacy = OutputDataset(base + "-legacy.vtkhdf", name);
+            const auto native = OutputDataset(base + "-native.vtkhdf", name);
+            REQUIRE(native.size() == legacy.size());
+            for (size_t i = 0; i < native.size(); ++i)
+                CHECK(native[i] == doctest::Approx(legacy[i]).epsilon(1e-11));
+        }
+        std::filesystem::remove(base + "-legacy.vtkhdf");
+        std::filesystem::remove(base + "-native.vtkhdf");
+    }
+    MPI_Barrier(g_mpi.comm);
 }
 
 // ===================================================================

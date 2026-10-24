@@ -139,7 +139,7 @@ namespace DNDS::Geom
         RecoverNode2CellAndNode2BndLegacy()
     {
         CheckCollectiveMutationAvailable();
-        MeshMutationToken mutationToken(this, versions, Runtime::Change::Topology | Runtime::Change::Distribution | Runtime::Change::Layout | Runtime::Change::Allocation | Runtime::Change::Interface);
+        auto mutationToken = BeginManagedMutation(Runtime::Change::Topology | Runtime::Change::Distribution | Runtime::Change::Layout | Runtime::Change::Allocation | Runtime::Change::Interface);
 
         DNDS_assert(adjPrimaryState == Adj_PointToGlobal);
         DNDS_assert(cell2node.isGlobal() && bnd2node.isGlobal());
@@ -199,7 +199,7 @@ namespace DNDS::Geom
     void UnstructuredMesh::RecoverCell2CellAndBnd2CellLegacy()
     {
         CheckCollectiveMutationAvailable();
-        MeshMutationToken mutationToken(this, versions, Runtime::Change::Topology | Runtime::Change::Distribution | Runtime::Change::Layout | Runtime::Change::Allocation | Runtime::Change::Interface);
+        auto mutationToken = BeginManagedMutation(Runtime::Change::Topology | Runtime::Change::Distribution | Runtime::Change::Layout | Runtime::Change::Allocation | Runtime::Change::Interface);
 
         DNDS_assert(adjPrimaryState == Adj_PointToGlobal);
         DNDS_assert(cell2node.isGlobal() && bnd2node.isGlobal());
@@ -467,7 +467,7 @@ namespace DNDS::Geom
         BuildGhostPrimaryLegacy()
     {
         CheckCollectiveMutationAvailable();
-        MeshMutationToken mutationToken(this, versions, Runtime::Change::Topology | Runtime::Change::Distribution | Runtime::Change::Layout | Runtime::Change::Allocation | Runtime::Change::Interface);
+        auto mutationToken = BeginManagedMutation(Runtime::Change::Topology | Runtime::Change::Distribution | Runtime::Change::Layout | Runtime::Change::Allocation | Runtime::Change::Interface);
 
         DNDS_assert(adjPrimaryState == Adj_PointToGlobal);
         DNDS_assert(cell2node.isGlobal() && bnd2node.isGlobal());
@@ -623,7 +623,7 @@ namespace DNDS::Geom
         InterpolateFaceLegacy()
     {
         CheckCollectiveMutationAvailable();
-        MeshMutationToken mutationToken(this, versions, Runtime::Change::Topology | Runtime::Change::Distribution | Runtime::Change::Layout | Runtime::Change::Allocation | Runtime::Change::Interface);
+        auto mutationToken = BeginManagedMutation(Runtime::Change::Topology | Runtime::Change::Distribution | Runtime::Change::Layout | Runtime::Change::Allocation | Runtime::Change::Interface);
 
         DNDS_assert(adjPrimaryState == Adj_PointToLocal); // And also should have primary ghost comm
         DNDS_assert(cell2node.isLocal() && cell2cell.isLocal() && bnd2node.isLocal());

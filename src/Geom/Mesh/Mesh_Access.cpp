@@ -5,7 +5,7 @@
 namespace DNDS::Geom
 {
     MeshReadAccess::MeshReadAccess(MeshReadAccess &&other) noexcept
-        : _meshRead(std::move(other._meshRead)), _stamp(std::move(other._stamp)),
+        : _meshRead(std::move(other._meshRead)), _sourceRead(std::move(other._sourceRead)), _stamp(std::move(other._stamp)),
           _context(other._context), _storage(other._storage), _holds(std::move(other._holds)),
           _completion(std::move(other._completion)), _completed(other._completed), _active(other._active)
     {
@@ -248,9 +248,9 @@ namespace DNDS::Geom
         {
             const auto &faceCells = _storage.relations[static_cast<size_t>(MeshRelation::FaceCells)];
             for (size_t face = 0; face < faceCount; ++face)
-                DNDS_check_throw_info(_storage.isPeriodic || faceCells(face, 0) < 0 ||
+                DNDS_check_throw_info((_storage.isPeriodic && FaceIDIsPeriodic(_storage.faceElemInfo(face, 0).zone)) || faceCells(face, 0) < 0 ||
                                           faceCells(face, 0) != faceCells(face, 1),
-                                      "nonperiodic mesh face cannot reference the same cell on both sides");
+                                      "only a periodic face can reference the same cell on both sides");
             for (size_t i = 0; i < (requirements.allFaceCellsLocal ? faceCount : faceRows.owned.Rows()); ++i)
                 requiredFaces[i] = true;
             const auto &cellFaces = _storage.relations[static_cast<size_t>(MeshRelation::CellFaces)];
@@ -260,6 +260,8 @@ namespace DNDS::Geom
                     const auto face = cellFaces(i, j);
                     DNDS_check_throw_info(face >= 0 && size_t(face) < faceCount,
                                           "owned cell face is outside requested local closure");
+                    DNDS_check_throw_info(faceCells(size_t(face), 0) == index(i) || faceCells(size_t(face), 1) == index(i),
+                                          "owned cell face does not reference its source cell");
                     requiredFaces[size_t(face)] = true;
                 }
         }
@@ -320,6 +322,27 @@ namespace DNDS::Geom
             {
                 periodicShape(_storage.cell2facePbi, MeshRelation::CellFaces);
                 periodicShape(_storage.face2nodePbi, MeshRelation::FaceNodes);
+                if (_context.device == Runtime::Device::Host())
+                {
+                    const auto &cellFaces = _storage.relations[static_cast<size_t>(MeshRelation::CellFaces)];
+                    const auto &faceCells = _storage.relations[static_cast<size_t>(MeshRelation::FaceCells)];
+                    for (size_t cell = 0; cell < cellFaces.owned.Rows(); ++cell)
+                        for (size_t slot = 0; slot < cellFaces.RowSize(cell); ++slot)
+                        {
+                            const auto face = cellFaces(cell, slot);
+                            if (faceCells(size_t(face), 0) != index(cell) || faceCells(size_t(face), 1) != index(cell))
+                                continue;
+                            size_t incidences = 0, backSides = 0;
+                            for (size_t other = 0; other < cellFaces.RowSize(cell); ++other)
+                                if (cellFaces(cell, other) == face)
+                                {
+                                    ++incidences;
+                                    backSides += !bool(_storage.cell2facePbi(cell, other));
+                                }
+                            DNDS_check_throw_info(incidences == 2 && backSides == 1,
+                                                  "self-periodic face requires exactly two cell-face incidences with opposite side bits");
+                        }
+                }
             }
             if (requirements.edges)
             {
@@ -368,6 +391,75 @@ namespace DNDS::Geom
 
     MeshReadAccess UnstructuredMesh::AcquireRead(MeshReadRequirements requirements, Runtime::ExecutionContext context)
     {
+        if (_nativeState)
+        {
+            auto sourceRead = versions.Read();
+            _nativeState->CheckRequirements(requirements);
+            return MeshReadAccess(_nativeState->Snapshot(context.device), context, std::move(sourceRead), versions.Stamp());
+        }
         return MeshReadAccess(*this, requirements, context);
+    }
+
+    void UnstructuredMesh::PublishNative(MeshReadRequirements requirements)
+    {
+        CheckCollectiveMutationAvailable(true);
+        std::shared_ptr<const NativeMeshState> next;
+        std::exception_ptr error;
+        int valid = 1;
+        try
+        {
+            next = NativeMeshState::CaptureLegacy(*this, requirements);
+        }
+        catch (...)
+        {
+            valid = 0;
+            error = std::current_exception();
+        }
+        MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, mpi.comm);
+        if (!valid)
+        {
+            if (error)
+                std::rethrow_exception(error);
+            DNDS_check_throw_info(false, "native workspace import failed on another rank");
+        }
+        MeshMutationToken mutation(this, versions, Runtime::Change::All, [this]
+                                   { _nativeState.reset(); });
+        mutation.Commit();
+        std::shared_ptr<const NativeMeshState> bound;
+        error = {};
+        valid = 1;
+        try
+        {
+            bound = next->BindEpoch(versions);
+        }
+        catch (...)
+        {
+            valid = 0;
+            error = std::current_exception();
+        }
+        MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, mpi.comm);
+        if (!valid)
+        {
+            // Publication must never leave a silently usable mixed state if
+            // post-commit owner allocation fails. Make failure sticky.
+            auto failed = versions.BeginMutation(Runtime::Change::All);
+            if (error)
+                std::rethrow_exception(error);
+            DNDS_check_throw_info(false, "native publication binding failed on another rank");
+        }
+        _nativeState = std::move(bound);
+    }
+    void UnstructuredMesh::PlaceNative(Runtime::Device device, Runtime::ExecutionContext context)
+    {
+        auto read = versions.Read();
+        DNDS_check_throw_info(_nativeState, "publish native mesh state before placement");
+        _nativeState = _nativeState->WithPlacement(device, context);
+    }
+    void UnstructuredMesh::UseLegacyWorkspace()
+    {
+        CheckCollectiveMutationAvailable(true);
+        MeshMutationToken mutation(this, versions, Runtime::Change::All, [this]
+                                   { _nativeState.reset(); });
+        mutation.Commit();
     }
 }

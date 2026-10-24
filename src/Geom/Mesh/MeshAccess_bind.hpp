@@ -140,6 +140,33 @@ namespace DNDS::Geom
             CheckRow(row, face ? view.NumFaceProc() : view.NumCellProc());
             return face ? view.GetFaceInfo(row) : view.GetCellInfo(row);
         }
+        ElemInfo BoundaryInfo(index row) const
+        {
+            auto view = View();
+            CheckRow(row, view.NumBndProc());
+            return view.GetBndInfo(row);
+        }
+        py::array BoundaryCoords(index row) const
+        {
+            auto view = View();
+            CheckRow(row, view.NumBndProc());
+            const auto nodes = view.BoundaryNodes(row);
+            std::vector<real> values(nodes.size() * 3);
+            for (size_t slot = 0; slot < nodes.size(); ++slot)
+            {
+                tPoint point = view.Coord(nodes[slot]);
+                if (view.IsPeriodic())
+                {
+                    const auto bits = uint8_t(view.BoundaryNodePeriodicBits(row)[slot]);
+                    for (int bit = 3; bit >= 1; --bit)
+                        if (bits & (uint8_t(1) << (bit - 1)))
+                            point = view.Periodic().TransCoord(point, -bit);
+                }
+                for (int dimension = 0; dimension < 3; ++dimension)
+                    values[slot * 3 + size_t(dimension)] = point[dimension];
+            }
+            return Snapshot(values, py::ssize_t(nodes.size()), 3);
+        }
         py::array PeriodicBits(index row, bool face) const
         {
             auto view = View();
@@ -183,6 +210,31 @@ namespace DNDS::Geom
 
     inline void pybind11_MeshAccess_define(py::module_ &m)
     {
+        py::enum_<EntityKind>(m, "EntityKind")
+            .value("Cell", EntityKind::Cell)
+            .value("Node", EntityKind::Node)
+            .value("Face", EntityKind::Face)
+            .value("Boundary", EntityKind::Bnd)
+            .value("Edge", EntityKind::Edge);
+        py::class_<EntitySpace>(m, "EntitySpace")
+            .def_property_readonly("kind", &EntitySpace::Kind)
+            .def_property_readonly("valid", &EntitySpace::Valid)
+            .def_property_readonly("mesh_identity", &EntitySpace::MeshIdentity,
+                                   "Opaque process-local identity; never persist it or compare between MPI ranks.")
+            .def_property_readonly("owned", &EntitySpace::NumOwned)
+            .def_property_readonly("ghost", &EntitySpace::NumGhost)
+            .def_property_readonly("local", &EntitySpace::NumLocal)
+            .def_property_readonly("global_count", &EntitySpace::NumGlobal)
+            .def("local_to_global", &EntitySpace::LocalToGlobal)
+            .def("global_to_local", &EntitySpace::GlobalToLocal)
+            .def("owner", &EntitySpace::Owner)
+            .def("owner_local_row", &EntitySpace::OwnerLocalRow)
+            .def("same_domain", &EntitySpace::SameDomain)
+            .def("same_order", &EntitySpace::SameOrder);
+        m.def("borrow_legacy_field_indexing", [](ArrayTransformer<real, 1> &transformer, const EntitySpace &space)
+              { LegacyFieldBridge::BorrowIndexing(transformer, space, true); }, py::arg("transformer"), py::arg("entities"), "Attach cloned entity maps to a scalar real field transformer. Caller owns sizing, TransAttach and MPI request setup.");
+        m.def("borrow_legacy_field_indexing", [](ArrayTransformer<real, DynamicSize> &transformer, const EntitySpace &space)
+              { LegacyFieldBridge::BorrowIndexing(transformer, space, true); }, py::arg("transformer"), py::arg("entities"), "Attach cloned entity maps to a dynamic-width real field transformer. Other transformer types are not supported.");
         py::class_<NativeMeshSnapshot>(m, "NativeMeshSnapshot")
             .def_property_readonly("source_current", [](const NativeMeshSnapshot &self)
                                    { return self.SourceStamp().Valid(); }, "Whether source provenance is current; independent of snapshot memory validity.")
@@ -239,6 +291,8 @@ namespace DNDS::Geom
                  { return self.Info(row, false); }, "Detached ElemInfo value.")
             .def("face_info", [](const PythonMeshReadAccess &self, index row)
                  { return self.Info(row, true); }, "Detached ElemInfo value.")
+            .def("boundary_info", &PythonMeshReadAccess::BoundaryInfo, "Detached boundary ElemInfo value.")
+            .def("boundary_coords", &PythonMeshReadAccess::BoundaryCoords, "Independent immutable physical coordinate snapshot.")
             .def("cell_node_periodic_bits", [](const PythonMeshReadAccess &self, index row)
                  { return self.PeriodicBits(row, false); })
             .def("face_node_periodic_bits", [](const PythonMeshReadAccess &self, index row)

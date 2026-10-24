@@ -69,7 +69,7 @@ namespace DNDS::Euler
     {
         auto meshAccess = mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
         const auto meshView = meshAccess.HostView();
-        vfv->ValidateMeshDependencies();
+        this->ValidateMeshDependencies();
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
         using namespace Geom;
         DNDS_MPI_InsertCheck(u.father->getMPI(), "EvaluateRHS 1");

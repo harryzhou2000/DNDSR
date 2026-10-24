@@ -1,6 +1,7 @@
 #pragma once
 
 #include "EntitySpace.hpp"
+#include "MeshAccess.hpp"
 #include "DNDS/Runtime/LegacyArrayBridge.hpp"
 #include "DNDS/Runtime/RowBuilder.hpp"
 #include <optional>
@@ -14,11 +15,20 @@ namespace DNDS::Geom
     {
         friend struct MeshConnectivity;
         friend class NativeRelation;
+        friend class NativeConnectivity;
+        friend class RelationPeriodicBits;
         EntitySpace _source, _target;
         Runtime::VersionTracker::ReadLease _sourceLease, _targetLease;
         struct Hold
         {
             virtual ~Hold() = default;
+            virtual void ValidateScope() const {}
+        };
+        struct MeshHold final : Hold
+        {
+            std::shared_ptr<MeshReadAccess> read;
+            explicit MeshHold(std::shared_ptr<MeshReadAccess> owner) : read(std::move(owner)) {}
+            void ValidateScope() const override { (void)read->HostView(); }
         };
         struct ArrayHold final : Hold
         {
@@ -36,6 +46,8 @@ namespace DNDS::Geom
         void CheckActive() const
         {
             DNDS_check_throw_info(_active, "relation read access was moved");
+            if (_owned)
+                _owned->ValidateScope();
         }
 
         Runtime::ArrayView<const index> Capture(Runtime::Array<index> array, std::unique_ptr<Hold> &destination)
@@ -88,6 +100,13 @@ namespace DNDS::Geom
             _view.ghost = Capture(Runtime::ShareLegacyHost(*pair.son), _ghost);
             Validate();
         }
+
+    private:
+        /// Used only with a scope acquired from the same mesh by Current/RegisterMesh.
+        RelationReadAccess(AdjKind kind, std::shared_ptr<MeshReadAccess> meshRead, EntitySpace source, EntitySpace target);
+
+    public:
+        static RelationReadAccess Current(UnstructuredMesh &mesh, AdjKind kind, MeshReadRequirements requirements);
         RelationReadAccess(const RelationReadAccess &) = delete;
         RelationReadAccess &operator=(const RelationReadAccess &) = delete;
         RelationReadAccess(RelationReadAccess &&other) noexcept
@@ -167,12 +186,30 @@ namespace DNDS::Geom
             : _source(std::move(source)), _route(_source.BuildRowTransferPlan()) {}
         const EntitySpace &Source() const { return _source; }
         bool Valid() const { return _source.Valid() && _route.Valid(); }
+        /// Transfer an ordered companion with the same route. The caller names
+        /// its source entity order and explicit wire schema; no map escapes.
+        template <class T>
+        Runtime::Array<T> TransferRows(const EntitySpace &source, const Runtime::Array<T> &owned,
+                                       const Runtime::ElementSchema &schema) const
+        {
+            int valid = Valid() && _source.SameOrder(source) && owned.Layout().Rows() == size_t(_source.NumOwned());
+            MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, _route.Communicator());
+            DNDS_check_throw_info(valid, "companion halo route has stale/wrong source order or row extent");
+            Runtime::Array<T> ghost(_route.DestinationLayout(owned.Layout()));
+            Runtime::TransferOptions options;
+            options.mode = Runtime::TransferMode::Transient;
+            options.context = std::make_shared<Runtime::CommunicationContext>(_route.Communicator());
+            Runtime::PayloadPlan payload(_route, owned.Layout(), ghost.Layout(), schema);
+            payload.Bind(owned, ghost, Runtime::TransferTransport::Direct, options).Begin().Wait();
+            return ghost;
+        }
     };
 
     /// Native CSR relation produced by setup mathematics. Owned output is
     /// published first; explicit WithGhostRows transfers missing source rows.
     class NativeRelation
     {
+        friend class NativeConnectivity;
         AdjKind _kind;
         EntitySpace _source, _target;
         Runtime::Array<index> _owned;

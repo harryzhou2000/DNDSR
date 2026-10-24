@@ -2,6 +2,7 @@
 
 #include "DNDS/Runtime/Version.hpp"
 #include <exception>
+#include <functional>
 #include <thread>
 
 namespace DNDS::Geom
@@ -38,8 +39,15 @@ namespace DNDS::Geom
                 }
             }
         };
-        MeshMutationToken(const void *owner, Runtime::VersionTracker &versions, Runtime::Change changes)
-            : _owner(owner), _mutation(versions.BeginMutation(changes)) {}
+        MeshMutationToken(const void *owner, Runtime::VersionTracker &versions, Runtime::Change changes,
+                          const std::function<void()> &onBegin = {})
+            : _owner(owner), _mutation(versions.BeginMutation(changes))
+        {
+            // Native query authority may be suspended only after this writer
+            // has excluded active managed readers. Nested steps never repeat it.
+            if (onBegin)
+                onBegin();
+        }
         MeshMutationToken(const MeshMutationToken &) = delete;
         MeshMutationToken &operator=(const MeshMutationToken &) = delete;
         Step Enter(const void *owner, Runtime::Change changes)

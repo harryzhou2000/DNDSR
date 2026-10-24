@@ -18,6 +18,7 @@
 #include "MeshAccess.hpp"
 #include "EntitySpace.hpp"
 #include "MeshMutation.hpp"
+#include "NativeMeshState.hpp"
 
 namespace DNDS::Direct
 {
@@ -42,6 +43,36 @@ namespace DNDS::Geom
     {
     private:
         std::shared_ptr<const uint8_t> _entityIdentity = std::make_shared<const uint8_t>(0);
+        std::shared_ptr<const NativeMeshState> _nativeState;
+        friend class NativeMeshState;
+        friend class MeshEdit;
+        EntitySpace LegacyEntities(EntityKind kind) const;
+        const UnstructuredMeshView &NativeBorrowedView(MeshRelation relation) const
+        {
+            const auto &view = _nativeState->BorrowHostView();
+            DNDS_check_throw_info(view.HasRelation(relation), "semantic mesh helper requires an unpublished relation group");
+            return view;
+        }
+        index NativeIndexGlobal2Local(EntityKind kind, index global, bool ownedOnly = false) const
+        {
+            if (global == UnInitIndex)
+                return global;
+            const auto space = Entities(kind);
+            const auto local = space.GlobalToLocal(global);
+            if (local && (!ownedOnly || *local < space.NumOwned()))
+                return *local;
+            return -1 - global;
+        }
+        index NativeIndexLocal2Global(EntityKind kind, index local, bool ownedOnly = false) const
+        {
+            if (local == UnInitIndex)
+                return local;
+            if (local < 0)
+                return -1 - local;
+            const auto space = Entities(kind);
+            DNDS_check_throw_info(!ownedOnly || local < space.NumOwned(), "local entity index outside owned rows");
+            return space.LocalToGlobal(local);
+        }
 
         // Explicit implementation capability: public reentry never joins an edit.
         void RecoverNode2CellAndNode2BndImpl(MeshMutationToken &mutationToken);
@@ -84,6 +115,36 @@ namespace DNDS::Geom
                                     ReorderRegistry &reg, const ReorderPlan &plan);
 
     public:
+        bool HasNativeState() const { return bool(_nativeState); }
+        void RequireLegacyWorkspace(const std::string &operation) const
+        {
+            DNDS_check_throw_info(!_nativeState, operation + " requires explicit UseLegacyWorkspace");
+        }
+        void PublishNative(MeshReadRequirements requirements = MeshReadRequirements::Primary());
+        void PlaceNative(Runtime::Device device, Runtime::ExecutionContext context);
+        void UseLegacyWorkspace();
+        MeshReadRequirements CurrentNativeRequirements() const
+        {
+            DNDS_check_throw_info(_nativeState, "native mesh state is not published");
+            return _nativeState->Requirements();
+        }
+        index OriginalEntityId(EntityKind kind, index row) const
+        {
+            if (_nativeState)
+                return _nativeState->OriginalEntityId(kind, row);
+            const auto *pair = kind == EntityKind::Cell ? &cell2cellOrig : kind == EntityKind::Node ? &node2nodeOrig
+                                                                                                    : &bnd2bndOrig;
+            DNDS_check_throw_info(kind == EntityKind::Cell || kind == EntityKind::Node || kind == EntityKind::Bnd,
+                                  "original IDs unavailable for this entity family");
+            DNDS_check_throw_info(pair->father && pair->son && row >= 0 && row < pair->Size(),
+                                  "original entity ID storage is missing or row is outside its family");
+            return row < pair->father->Size() ? (*pair->father)(row, 0) : (*pair->son)(row - pair->father->Size(), 0);
+        }
+        MeshMutationToken BeginManagedMutation(Runtime::Change changes)
+        {
+            RequireLegacyWorkspace("managed legacy mesh mutation");
+            return MeshMutationToken(this, versions, changes);
+        }
         EntitySpace Entities(EntityKind kind) const;
         MeshReadAccess AcquireRead(MeshReadRequirements requirements = MeshReadRequirements::Primary(),
                                    Runtime::ExecutionContext context = Runtime::ExecutionContext::Host());
@@ -94,11 +155,11 @@ namespace DNDS::Geom
 
         /// Collective preflight prevents one rank rejecting an active read while
         /// peers proceed into reorder communication. Orchestration is serialized.
-        void CheckCollectiveMutationAvailable() const
+        void CheckCollectiveMutationAvailable(bool allowNative = false) const
         {
-            int available = versions.CanMutate();
+            int available = versions.CanMutate() && (allowNative || !_nativeState);
             MPI_Allreduce(MPI_IN_PLACE, &available, 1, MPI_INT, MPI_MIN, mpi.comm);
-            DNDS_check_throw_info(available, "mesh mutation blocked by a reader, writer or failed transition on a rank");
+            DNDS_check_throw_info(available, "mesh mutation blocked by native authority, a reader, writer or failed transition on a rank; select legacy workspace explicitly for legacy mutation");
         }
 
         MPI_int mRank{0};
@@ -269,11 +330,122 @@ namespace DNDS::Geom
         UnstructuredMesh(const DNDS::MPIInfo &n_mpi, int n_dim)
             : mpi(n_mpi), dim(n_dim) {}
 
-        int getDim() const { return dim; }
+        int getDim() const { return _nativeState ? _nativeState->BorrowHostView().Dimension() : dim; }
+        bool IsPeriodic() const { return _nativeState ? _nativeState->BorrowHostView().IsPeriodic() : isPeriodic; }
+        const Periodicity &PeriodicMetadata() const { return _nativeState ? _nativeState->BorrowHostView().Periodic() : periodicInfo; }
+        const Periodicity &Periodic() const { return PeriodicMetadata(); }
+        void ApplyGeometryTransform(const Eigen::Matrix3d &rotation, real scale);
+        void RectifyBoundaryCoordinates(std::function<int(t_index)> componentForZone, bool volumeBoundary = true);
+
+        /// Borrowed semantic rows require an outer AcquireRead scope or a
+        /// serialized setup phase. They never acquire a lease in a hot loop.
+        MeshRowSpan<index> CellNodes(index row) const
+        {
+            if (_nativeState)
+                return NativeBorrowedView(MeshRelation::CellNodes).CellNodes(row);
+            auto &pair = const_cast<UnstructuredMesh *>(this)->cell2node;
+            auto data = pair[row];
+            return {data.cbegin(), size_t(data.size())};
+        }
+        MeshRowSpan<index> CellFaces(index row) const
+        {
+            if (_nativeState)
+                return NativeBorrowedView(MeshRelation::CellFaces).CellFaces(row);
+            auto &pair = const_cast<UnstructuredMesh *>(this)->cell2face;
+            auto data = pair[row];
+            return {data.cbegin(), size_t(data.size())};
+        }
+        MeshRowSpan<index> FaceNodes(index row) const
+        {
+            if (_nativeState)
+                return NativeBorrowedView(MeshRelation::FaceNodes).FaceNodes(row);
+            auto &pair = const_cast<UnstructuredMesh *>(this)->face2node;
+            auto data = pair[row];
+            return {data.cbegin(), size_t(data.size())};
+        }
+        MeshRowSpan<index> FaceCells(index row) const
+        {
+            if (_nativeState)
+                return NativeBorrowedView(MeshRelation::FaceCells).FaceCells(row);
+            auto &pair = const_cast<UnstructuredMesh *>(this)->face2cell;
+            auto data = pair[row];
+            return {data.cbegin(), size_t(data.size())};
+        }
+        MeshRowSpan<index> BoundaryCells(index row) const
+        {
+            if (_nativeState)
+                return NativeBorrowedView(MeshRelation::BoundaryCells).BoundaryCells(row);
+            auto &pair = const_cast<UnstructuredMesh *>(this)->bnd2cell;
+            auto data = pair[row];
+            return {data.cbegin(), size_t(data.size())};
+        }
+        MeshRowSpan<index> BoundaryNodes(index row) const
+        {
+            if (_nativeState)
+                return NativeBorrowedView(MeshRelation::BoundaryNodes).BoundaryNodes(row);
+            auto &pair = const_cast<UnstructuredMesh *>(this)->bnd2node;
+            auto data = pair[row];
+            return {data.cbegin(), size_t(data.size())};
+        }
+        index BoundaryFace(index row) const
+        {
+            if (_nativeState)
+                return NativeBorrowedView(MeshRelation::BoundaryFaces).BoundaryFaces(row)[0];
+            return const_cast<UnstructuredMesh *>(this)->bnd2face(row, 0);
+        }
+        tPoint Coord(index node) const
+        {
+            if (_nativeState)
+                return _nativeState->BorrowHostView().Coord(node);
+            return const_cast<tCoordPair &>(coords)[node];
+        }
+        bool HasNodeWallDist() const
+        {
+            if (_nativeState)
+                return _nativeState->BorrowHostView().HasNodeWallDist();
+            return nodeWallDist.father && nodeWallDist.son && nodeWallDist.Size() == coords.Size();
+        }
+        tPoint NodeWallDist(index node) const
+        {
+            if (_nativeState)
+            {
+                DNDS_check_throw_info(_nativeState->BorrowHostView().HasNodeWallDist(), "node wall distance was not published");
+                return _nativeState->BorrowHostView().NodeWallDist(node);
+            }
+            return const_cast<tCoordPair &>(nodeWallDist)[node];
+        }
+        const ElemInfo &GetCellInfo(index row) const
+        {
+            if (_nativeState)
+                return _nativeState->BorrowHostView().GetCellInfo(row);
+            return row < cellElemInfo.father->Size() ? (*cellElemInfo.father)(row, 0) : (*cellElemInfo.son)(row - cellElemInfo.father->Size(), 0);
+        }
+        const ElemInfo &GetFaceInfo(index row) const
+        {
+            if (_nativeState)
+                return NativeBorrowedView(MeshRelation::FaceNodes).GetFaceInfo(row);
+            return row < faceElemInfo.father->Size() ? (*faceElemInfo.father)(row, 0) : (*faceElemInfo.son)(row - faceElemInfo.father->Size(), 0);
+        }
+        const ElemInfo &GetBndInfo(index row) const
+        {
+            if (_nativeState)
+                return _nativeState->BorrowHostView().GetBndInfo(row);
+            return row < bndElemInfo.father->Size() ? (*bndElemInfo.father)(row, 0) : (*bndElemInfo.son)(row - bndElemInfo.father->Size(), 0);
+        }
 
         auto getCell2NodeIndexPbiRow(index iCell)
         {
             std::vector<Geom::NodeIndexPBI> ret;
+            if (_nativeState)
+            {
+                const auto &view = _nativeState->BorrowHostView();
+                const auto nodes = view.CellNodes(iCell);
+                const auto bits = view.IsPeriodic() ? view.CellNodePeriodicBits(iCell) : UnstructuredMeshView::tPeriodicRow{};
+                ret.reserve(nodes.size());
+                for (size_t slot = 0; slot < nodes.size(); ++slot)
+                    ret.push_back({nodes[slot], view.IsPeriodic() ? bits[slot] : NodePeriodicBits{}});
+                return ret;
+            }
             ret.reserve(cell2node[iCell].size());
             for (int ic2n = 0; ic2n < cell2node[iCell].size(); ic2n++)
                 if (isPeriodic)
@@ -286,6 +458,16 @@ namespace DNDS::Geom
         auto getBnd2NodeIndexPbiRow(index iBnd)
         {
             std::vector<Geom::NodeIndexPBI> ret;
+            if (_nativeState)
+            {
+                const auto &view = _nativeState->BorrowHostView();
+                const auto nodes = view.BoundaryNodes(iBnd);
+                const auto bits = view.IsPeriodic() ? view.BoundaryNodePeriodicBits(iBnd) : UnstructuredMeshView::tPeriodicRow{};
+                ret.reserve(nodes.size());
+                for (size_t slot = 0; slot < nodes.size(); ++slot)
+                    ret.push_back({nodes[slot], view.IsPeriodic() ? bits[slot] : NodePeriodicBits{}});
+                return ret;
+            }
             ret.reserve(bnd2node[iBnd].size());
             for (int ib2n = 0; ib2n < bnd2node[iBnd].size(); ib2n++)
                 if (isPeriodic)
@@ -336,6 +518,7 @@ namespace DNDS::Geom
         template <class TPair>
         index IndexGlobal2Local(TPair &pair, DNDS::index iGlobal)
         {
+            RequireLegacyWorkspace("IndexGlobal2Local");
             DNDS_assert(pair.trans.pLGhostMapping);
             if (iGlobal == UnInitIndex)
                 return iGlobal;
@@ -356,6 +539,7 @@ namespace DNDS::Geom
         template <class TPair>
         index IndexLocal2Global(TPair &pair, DNDS::index iLocal)
         {
+            RequireLegacyWorkspace("IndexLocal2Global");
             DNDS_assert(pair.trans.pLGhostMapping);
             if (iLocal == UnInitIndex)
                 return iLocal;
@@ -374,6 +558,7 @@ namespace DNDS::Geom
         template <class TPair>
         index IndexLocal2Global_NoSon(TPair &pair, index iLocal)
         {
+            RequireLegacyWorkspace("IndexLocal2Global_NoSon");
             DNDS_assert(pair.father->pLGlobalMapping);
             if (iLocal == UnInitIndex)
                 return UnInitIndex;
@@ -393,6 +578,7 @@ namespace DNDS::Geom
         template <class TPair>
         index IndexGlobal2Local_NoSon(TPair &pair, index iGlobal)
         {
+            RequireLegacyWorkspace("IndexGlobal2Local_NoSon");
             DNDS_assert(pair.father->pLGlobalMapping);
             if (iGlobal == UnInitIndex)
                 return UnInitIndex;
@@ -407,32 +593,32 @@ namespace DNDS::Geom
         // =================================================================
         // Named wrappers — Node
         // =================================================================
-        index NodeIndexGlobal2Local(DNDS::index i) { return IndexGlobal2Local(coords, i); }
-        index NodeIndexLocal2Global(DNDS::index i) { return IndexLocal2Global(coords, i); }
-        index NodeIndexLocal2Global_NoSon(index i) { return IndexLocal2Global_NoSon(coords, i); }
-        index NodeIndexGlobal2Local_NoSon(index i) { return IndexGlobal2Local_NoSon(coords, i); }
+        index NodeIndexGlobal2Local(DNDS::index i) { return _nativeState ? NativeIndexGlobal2Local(EntityKind::Node, i) : IndexGlobal2Local(coords, i); }
+        index NodeIndexLocal2Global(DNDS::index i) { return _nativeState ? NativeIndexLocal2Global(EntityKind::Node, i) : IndexLocal2Global(coords, i); }
+        index NodeIndexLocal2Global_NoSon(index i) { return _nativeState ? NativeIndexLocal2Global(EntityKind::Node, i, true) : IndexLocal2Global_NoSon(coords, i); }
+        index NodeIndexGlobal2Local_NoSon(index i) { return _nativeState ? NativeIndexGlobal2Local(EntityKind::Node, i, true) : IndexGlobal2Local_NoSon(coords, i); }
 
         // =================================================================
         // Named wrappers — Cell
         // =================================================================
-        index CellIndexGlobal2Local(DNDS::index i) { return IndexGlobal2Local(cell2node, i); }
-        index CellIndexLocal2Global(DNDS::index i) { return IndexLocal2Global(cell2node, i); }
-        index CellIndexLocal2Global_NoSon(index i) { return IndexLocal2Global_NoSon(cell2node, i); }
-        index CellIndexGlobal2Local_NoSon(index i) { return IndexGlobal2Local_NoSon(cell2node, i); }
+        index CellIndexGlobal2Local(DNDS::index i) { return _nativeState ? NativeIndexGlobal2Local(EntityKind::Cell, i) : IndexGlobal2Local(cell2node, i); }
+        index CellIndexLocal2Global(DNDS::index i) { return _nativeState ? NativeIndexLocal2Global(EntityKind::Cell, i) : IndexLocal2Global(cell2node, i); }
+        index CellIndexLocal2Global_NoSon(index i) { return _nativeState ? NativeIndexLocal2Global(EntityKind::Cell, i, true) : IndexLocal2Global_NoSon(cell2node, i); }
+        index CellIndexGlobal2Local_NoSon(index i) { return _nativeState ? NativeIndexGlobal2Local(EntityKind::Cell, i, true) : IndexGlobal2Local_NoSon(cell2node, i); }
 
         // =================================================================
         // Named wrappers — Bnd
         // =================================================================
-        index BndIndexGlobal2Local(DNDS::index i) { return IndexGlobal2Local(bnd2node, i); }
-        index BndIndexLocal2Global(DNDS::index i) { return IndexLocal2Global(bnd2node, i); }
-        index BndIndexLocal2Global_NoSon(index i) { return IndexLocal2Global_NoSon(bnd2node, i); }
-        index BndIndexGlobal2Local_NoSon(index i) { return IndexGlobal2Local_NoSon(bnd2node, i); }
+        index BndIndexGlobal2Local(DNDS::index i) { return _nativeState ? NativeIndexGlobal2Local(EntityKind::Bnd, i) : IndexGlobal2Local(bnd2node, i); }
+        index BndIndexLocal2Global(DNDS::index i) { return _nativeState ? NativeIndexLocal2Global(EntityKind::Bnd, i) : IndexLocal2Global(bnd2node, i); }
+        index BndIndexLocal2Global_NoSon(index i) { return _nativeState ? NativeIndexLocal2Global(EntityKind::Bnd, i, true) : IndexLocal2Global_NoSon(bnd2node, i); }
+        index BndIndexGlobal2Local_NoSon(index i) { return _nativeState ? NativeIndexGlobal2Local(EntityKind::Bnd, i, true) : IndexGlobal2Local_NoSon(bnd2node, i); }
 
         // =================================================================
         // Named wrappers — Face
         // =================================================================
-        index FaceIndexGlobal2Local(DNDS::index i) { return IndexGlobal2Local(face2node, i); }
-        index FaceIndexLocal2Global(DNDS::index i) { return IndexLocal2Global(face2node, i); }
+        index FaceIndexGlobal2Local(DNDS::index i) { return _nativeState ? NativeIndexGlobal2Local(EntityKind::Face, i) : IndexGlobal2Local(face2node, i); }
+        index FaceIndexLocal2Global(DNDS::index i) { return _nativeState ? NativeIndexLocal2Global(EntityKind::Face, i) : IndexLocal2Global(face2node, i); }
 
         // =================================================================
         // Adjacency bulk-conversion helpers
@@ -713,69 +899,97 @@ namespace DNDS::Geom
         /// Legacy implementation preserved for reference/fallback.
         void ReorderLocalCellsLegacy(int nParts = 1, int nPartsInner = 1);
 
-        int NLocalParts() const { return !localPartitionStarts.empty() ? localPartitionStarts.size() - 1 : 1; }
-        index LocalPartStart(int iPart) const { return !localPartitionStarts.empty() ? localPartitionStarts.at(iPart) : 0; }
-        index LocalPartEnd(int iPart) const { return !localPartitionStarts.empty() ? localPartitionStarts.at(iPart + 1) : this->NumCell(); }
+        int NLocalParts() const { return _nativeState ? _nativeState->NLocalParts() : !localPartitionStarts.empty() ? localPartitionStarts.size() - 1
+                                                                                                                    : 1; }
+        index LocalPartStart(int iPart) const { return _nativeState ? _nativeState->LocalPartStart(iPart) : !localPartitionStarts.empty() ? localPartitionStarts.at(iPart)
+                                                                                                                                          : 0; }
+        index LocalPartEnd(int iPart) const { return _nativeState ? _nativeState->LocalPartEnd(iPart) : !localPartitionStarts.empty() ? localPartitionStarts.at(iPart + 1)
+                                                                                                                                      : this->NumCell(); }
+        const tLocalMatStruct &LocalCellNeighbors() const { return _nativeState ? _nativeState->LocalCellNeighbors() : cell2cellFaceVLocalParts; }
 
         index NumNode() const
         {
+            if (_nativeState)
+                return _nativeState->NumOwned(EntityKind::Node);
             DNDS_check_throw_info(coords.father, "coords not initialized");
             return coords.father->Size();
         }
         index NumCell() const
         {
+            if (_nativeState)
+                return _nativeState->NumOwned(EntityKind::Cell);
             DNDS_check_throw_info(cell2node.father, "cell2node not initialized");
             return cell2node.father->Size();
         }
         index NumFace() const
         {
+            if (_nativeState)
+                return _nativeState->NumOwned(EntityKind::Face);
             DNDS_check_throw_info(face2node.father, "face2node not initialized");
             return face2node.father->Size();
         }
         index NumBnd() const
         {
+            if (_nativeState)
+                return _nativeState->NumOwned(EntityKind::Bnd);
             DNDS_check_throw_info(bnd2node.father, "bnd2node not initialized");
             return bnd2node.father->Size();
         }
 
         index NumNodeGhost() const
         {
+            if (_nativeState)
+                return _nativeState->NumGhost(EntityKind::Node);
             DNDS_check_throw_info(coords.son, "coords not initialized");
             return coords.son->Size();
         }
         index NumCellGhost() const
         {
+            if (_nativeState)
+                return _nativeState->NumGhost(EntityKind::Cell);
             DNDS_check_throw_info(cell2node.son, "cell2node not initialized");
             return cell2node.son->Size();
         }
         index NumFaceGhost() const
         {
+            if (_nativeState)
+                return _nativeState->NumGhost(EntityKind::Face);
             DNDS_check_throw_info(face2node.son, "face2node not initialized");
             return face2node.son->Size();
         }
         index NumBndGhost() const
         {
+            if (_nativeState)
+                return _nativeState->NumGhost(EntityKind::Bnd);
             DNDS_check_throw_info(bnd2node.son, "bnd2node not initialized");
             return bnd2node.son->Size();
         }
 
         index NumNodeProc() const
         {
+            if (_nativeState)
+                return _nativeState->NumOwned(EntityKind::Node) + _nativeState->NumGhost(EntityKind::Node);
             DNDS_check_throw_info(coords.father && coords.son, "coords not initialized");
             return coords.Size();
         }
         index NumCellProc() const
         {
+            if (_nativeState)
+                return _nativeState->NumOwned(EntityKind::Cell) + _nativeState->NumGhost(EntityKind::Cell);
             DNDS_check_throw_info(cell2node.father && cell2node.son, "cell2node not initialized");
             return cell2node.Size();
         }
         index NumFaceProc() const
         {
+            if (_nativeState)
+                return _nativeState->NumOwned(EntityKind::Face) + _nativeState->NumGhost(EntityKind::Face);
             DNDS_check_throw_info(face2node.father && face2node.son, "face2node not initialized");
             return face2node.Size();
         }
         index NumBndProc() const
         {
+            if (_nativeState)
+                return _nativeState->NumOwned(EntityKind::Bnd) + _nativeState->NumGhost(EntityKind::Bnd);
             DNDS_check_throw_info(bnd2node.father && bnd2node.son, "bnd2node not initialized");
             return bnd2node.Size();
         }
@@ -783,35 +997,73 @@ namespace DNDS::Geom
         /// @warning must collectively call
         index NumCellGlobal()
         {
+            if (_nativeState)
+                return _nativeState->NumGlobal(EntityKind::Cell);
             DNDS_check_throw_info(cell2node.father, "cell2node not initialized");
             return cell2node.father->globalSize();
         }
         /// @warning must collectively call
         index NumNodeGlobal()
         {
+            if (_nativeState)
+                return _nativeState->NumGlobal(EntityKind::Node);
             DNDS_check_throw_info(coords.father, "coords not initialized");
             return coords.father->globalSize();
         }
         /// @warning must collectively call
         index NumFaceGlobal()
         {
+            if (_nativeState)
+                return _nativeState->NumGlobal(EntityKind::Face);
             DNDS_check_throw_info(face2node.father, "face2node not initialized");
             return face2node.father->globalSize();
         }
         /// @warning must collectively call
         index NumBndGlobal()
         {
+            if (_nativeState)
+                return _nativeState->NumGlobal(EntityKind::Bnd);
             DNDS_check_throw_info(bnd2node.father, "bnd2node not initialized");
             return bnd2node.father->globalSize();
         }
 
-        Elem::Element GetCellElement(index iC) { return Elem::Element{cellElemInfo(iC, 0).getElemType()}; }
-        Elem::Element GetFaceElement(index iF) { return Elem::Element{faceElemInfo(iF, 0).getElemType()}; }
-        Elem::Element GetBndElement(index iB) { return Elem::Element{bndElemInfo(iB, 0).getElemType()}; }
+        Elem::Element GetCellElement(index iC)
+        {
+            if (_nativeState)
+                return _nativeState->BorrowHostView().GetCellElement(iC);
+            return Elem::Element{cellElemInfo(iC, 0).getElemType()};
+        }
+        Elem::Element GetFaceElement(index iF)
+        {
+            if (_nativeState)
+                return NativeBorrowedView(MeshRelation::FaceNodes).GetFaceElement(iF);
+            return Elem::Element{faceElemInfo(iF, 0).getElemType()};
+        }
+        Elem::Element GetBndElement(index iB)
+        {
+            if (_nativeState)
+                return _nativeState->BorrowHostView().GetBndElement(iB);
+            return Elem::Element{bndElemInfo(iB, 0).getElemType()};
+        }
 
-        t_index GetCellZone(index iC) { return cellElemInfo(iC, 0).zone; }
-        t_index GetFaceZone(index iF) { return faceElemInfo(iF, 0).zone; }
-        t_index GetBndZone(index iB) { return bndElemInfo(iB, 0).zone; }
+        t_index GetCellZone(index iC)
+        {
+            if (_nativeState)
+                return _nativeState->BorrowHostView().GetCellZone(iC);
+            return cellElemInfo(iC, 0).zone;
+        }
+        t_index GetFaceZone(index iF)
+        {
+            if (_nativeState)
+                return NativeBorrowedView(MeshRelation::FaceNodes).GetFaceZone(iF);
+            return faceElemInfo(iF, 0).zone;
+        }
+        t_index GetBndZone(index iB)
+        {
+            if (_nativeState)
+                return _nativeState->BorrowHostView().GetBndZone(iB);
+            return bndElemInfo(iB, 0).zone;
+        }
 
         MPIInfo &getMPI() { return mpi; }
 
@@ -905,6 +1157,11 @@ namespace DNDS::Geom
 
         void GetCoordsOnCell(index iCell, tSmallCoords &cs)
         {
+            if (_nativeState)
+            {
+                _nativeState->BorrowHostView().GetCoordsOnCell(iCell, cs);
+                return;
+            }
             if (!isPeriodic)
                 _detail_GetCoords(cell2node[iCell], cs);
             else
@@ -913,6 +1170,11 @@ namespace DNDS::Geom
 
         void GetCoordsOnCell(index iCell, tSmallCoords &cs, tCoordPair &coo)
         {
+            if (_nativeState)
+            {
+                _nativeState->BorrowHostView().GetCoordsOnCell(iCell, cs, coo);
+                return;
+            }
             if (!isPeriodic)
                 _detail_GetCoords(cell2node[iCell], cs, coo);
             else
@@ -921,6 +1183,11 @@ namespace DNDS::Geom
 
         void GetCoordsOnFace(index iFace, tSmallCoords &cs)
         {
+            if (_nativeState)
+            {
+                NativeBorrowedView(MeshRelation::FaceNodes).GetCoordsOnFace(iFace, cs);
+                return;
+            }
             if (!isPeriodic)
                 _detail_GetCoords(face2node[iFace], cs);
             else
@@ -929,6 +1196,8 @@ namespace DNDS::Geom
 
         tPoint GetCoordNodeOnCell(index iCell, rowsize ic2n)
         {
+            if (_nativeState)
+                return _nativeState->BorrowHostView().GetCoordNodeOnCell(iCell, ic2n);
             if (!isPeriodic)
                 return coords[cell2node(iCell, ic2n)];
             return periodicInfo.GetCoordByBits(coords[cell2node(iCell, ic2n)], cell2nodePbi(iCell, ic2n));
@@ -936,6 +1205,8 @@ namespace DNDS::Geom
 
         tPoint GetCoordNodeOnFace(index iFace, rowsize if2n)
         {
+            if (_nativeState)
+                return NativeBorrowedView(MeshRelation::FaceNodes).GetCoordNodeOnFace(iFace, if2n);
             if (!isPeriodic)
                 return coords[face2node(iFace, if2n)];
             return periodicInfo.GetCoordByBits(coords[face2node(iFace, if2n)], face2nodePbi(iFace, if2n));
@@ -943,6 +1214,8 @@ namespace DNDS::Geom
 
         tPoint GetCoordWallDistOnCell(index iCell, rowsize ic2n)
         {
+            if (_nativeState)
+                return _nativeState->BorrowHostView().GetCoordWallDistOnCell(iCell, ic2n);
             if (!isPeriodic)
                 return nodeWallDist[cell2node(iCell, ic2n)];
             return periodicInfo.GetVectorByBits<3, 1>(nodeWallDist[cell2node(iCell, ic2n)], cell2nodePbi(iCell, ic2n));
@@ -950,6 +1223,8 @@ namespace DNDS::Geom
 
         tPoint GetCoordWallDistOnFace(index iFace, rowsize if2n)
         {
+            if (_nativeState)
+                return NativeBorrowedView(MeshRelation::FaceNodes).GetCoordWallDistOnFace(iFace, if2n);
             if (!isPeriodic)
                 return nodeWallDist[face2node(iFace, if2n)];
             return periodicInfo.GetVectorByBits<3, 1>(nodeWallDist[face2node(iFace, if2n)], face2nodePbi(iFace, if2n));
@@ -957,6 +1232,8 @@ namespace DNDS::Geom
 
         bool CellIsFaceBack(index iCell, index iFace, rowsize ic2f) const
         {
+            if (_nativeState)
+                return NativeBorrowedView(MeshRelation::FaceNodes).CellIsFaceBack(iCell, iFace, ic2f);
             DNDS_assert(face2cell(iFace, 0) == iCell || face2cell(iFace, 1) == iCell);
             if (face2cell(iFace, 0) == iCell && face2cell(iFace, 1) == iCell)
             {
@@ -970,6 +1247,8 @@ namespace DNDS::Geom
 
         index CellFaceOther(index iCell, index iFace, rowsize ic2f) const
         {
+            if (_nativeState)
+                return NativeBorrowedView(MeshRelation::FaceNodes).CellFaceOther(iCell, iFace, ic2f);
             return CellIsFaceBack(iCell, iFace, ic2f)
                        ? face2cell(iFace, 1)
                        : face2cell(iFace, 0);
@@ -992,7 +1271,7 @@ namespace DNDS::Geom
         auto CellOtherCellPeriodicHandle(
             index iFace, rowsize if2c, FA &&fA, FB &&fB, F0 &&f0 = []() {})
         {
-            if (!this->isPeriodic)
+            if (!this->IsPeriodic())
                 return f0();
             auto faceID = this->GetFaceZone(iFace);
             if (!Geom::FaceIDIsPeriodic(faceID))
@@ -1087,6 +1366,7 @@ namespace DNDS::Geom
         template <class TFTrans>
         void TransformCoords(TFTrans &&FTrans)
         {
+            RequireLegacyWorkspace("TransformCoords");
             // Keep the legacy callable interface, but publish geometry changes
             // and reject retained managed readers before touching coordinates.
             DNDS_check_throw_info(versions.CanMutate(), "coordinate edit blocked by an active mesh read or mutation");
@@ -1095,7 +1375,7 @@ namespace DNDS::Geom
                 ownedWrite = coords.father->HostWriteData();
             if (coords.son)
                 ghostWrite = coords.son->HostWriteData();
-            auto mutation = versions.BeginMutation(Runtime::Change::Geometry);
+            auto mutation = BeginManagedMutation(Runtime::Change::Geometry);
             for (index iNode = 0; iNode < coords.Size(); iNode++)
                 coords[iNode] = FTrans(coords[iNode]);
             mutation.Commit();
@@ -1187,9 +1467,22 @@ namespace DNDS::Geom
         template <DeviceBackend B>
         using t_deviceView = UnstructuredMeshDeviceView<B>;
 
+        void to_device(DeviceBackend backend)
+        {
+            RequireLegacyWorkspace("legacy mesh to_device");
+            DeviceTransferable<UnstructuredMesh>::to_device(backend);
+        }
+
+        void to_host()
+        {
+            RequireLegacyWorkspace("legacy mesh to_host");
+            DeviceTransferable<UnstructuredMesh>::to_host();
+        }
+
         template <DeviceBackend B>
         auto deviceView()
         {
+            RequireLegacyWorkspace("legacy mesh deviceView");
             return t_deviceView<B>(*this, UnInitIndex);
         }
 
