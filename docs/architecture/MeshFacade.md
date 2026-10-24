@@ -1,14 +1,15 @@
 # Scoped mesh queries: current migration boundary
 
-The Geom facade migration is partial. `UnstructuredMesh::AcquireRead` now provides
+`UnstructuredMesh::AcquireRead` provides
 a retained read scope and a storage-independent `UnstructuredMeshView`. Legacy
 mesh arrays remain the default setup authority; explicit `PublishNative` installs
 private immutable native authority. Solver field setup can obtain
 [entity-space descriptors](EntitySpace.md) instead of borrowing mesh
 transformers directly. CFV setup/reconstruction and selected Euler operators use
 one scope per operator. Python has managed read scopes and tracked coordinate
-transforms; the progress ledger lists remaining compatibility boundaries and
-the required final regression gates.
+transforms. This is a bounded migration with explicit legacy setup/output
+adapters; the [checkpoint report](../dev/geom_refactor_completion_2026-10-24.md)
+lists its compatibility boundary and validation evidence.
 
 ## Acquire once per operator
 

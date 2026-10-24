@@ -1,11 +1,20 @@
 # Geom refactor progress
 
-This is a progress ledger for the approved GE0–GE6 plan, not a completion report.
+This retains the development ledger for the approved GE0–GE6 plan. The final
+[checkpoint report](geom_refactor_completion_2026-10-24.md) supersedes the
+intermediate validation status below. The bounded phase is validated with its
+explicit legacy setup/output/edit compatibility restrictions.
 The implementation checkout is `DNDSR-array-geom`, branch
 `codex/refactor-dnds-array-geom`, starting from `232df1a0`. The published plan
 checkpoint is `dndsr-next-plan` commit `c531ccc`.
 
-| Package | Implemented in the current worktree | Still required for closure |
+The table below records the pre-final checkpoint; every listed closing gate has
+now passed. Final coverage is CPU 172/172 plus 12 closing checks, Geom CUDA 3/3,
+legacy CFV CUDA 1/1, and verified CPU/CUDA Python profiles. Native 3D four-parent
+edge interpolation and actual restored-field overlap were added during the final
+audit. See the checkpoint report for counts, source revisions and limitations.
+
+| Package | Implemented at the intermediate checkpoint | Closing work, subsequently validated |
 |---|---|---|
 | GE0 | Caller/mutator inventory, pre-change baseline, reproduced distributed face-target lookup failures | Keep the ledger synchronized with final migration exceptions |
 | GE1 | Legacy host Buffer bridge, entity descriptors, retained mesh scopes, directly callable CPU/CUDA views, private native publication with cloned canonical maps | Final bridge and publication regression gates |
@@ -56,6 +65,7 @@ legacy mutators could select an older detached workspace after a native edit,
 and duplicated self-periodic face slots could carry identical side bits. Native
 mutation now requires explicit authority selection; query publication validates
 opposite self-periodic side incidence. Another review finding, same-sized fields
-used with an old retained entity order, motivates the pending typed field binding.
-Final validation must use rebuilt binaries and the correct installed Python
-profile; source presence and syntax checks are not execution evidence.
+used with an old retained entity order, is addressed by the typed EntityField
+binding and its stale-association tests. Final validation uses rebuilt binaries
+and verified installed Python profiles; source presence and syntax checks alone
+are not execution evidence.

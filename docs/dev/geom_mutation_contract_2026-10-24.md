@@ -86,7 +86,7 @@ legacy device-mirror `to_device/to_host` operations and arbitrary direct
 transformer calls retain their existing caller synchronization contract.
 Serial-reader scratch construction, output settings/serializer state,
 `ObtainLocalFactFillOrdering`'s local symbolic cache and direct borrowed
-mapping mutation are not all wrapped. These are explicit remaining GE6
+mapping mutation are not all wrapped. These are explicit compatibility
 surface restrictions, not a complete mesh immutability claim.
 
 The token provides serialized exclusion/invalidation and failed-state
