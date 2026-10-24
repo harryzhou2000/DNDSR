@@ -18,7 +18,7 @@ static void CheckCPUOverlap(T::Fixture &fixture, size_t workers)
     const auto view = access.HostView();
     const auto partition = T::Classify(mesh, view);
     auto coreRows = T::RowList(partition.core), ringRows = T::RowList(partition.ring);
-    auto owned = T::OwnedField(mesh);
+    auto owned = T::OwnedField(fixture);
     R::Array<DNDS::real> ghost(R::RowLayout::Dense(size_t(mesh.NumCellGhost()), 1));
     R::Array<DNDS::real> coreResult(R::RowLayout::Dense(partition.core.size(), 1));
     R::Array<DNDS::real> ringResult(R::RowLayout::Dense(partition.ring.size(), 1));
@@ -129,6 +129,9 @@ TEST_CASE("Real mesh finite-volume neighbor sums overlap native halo with inline
     for (size_t workers : {size_t(0), size_t(2)})
         CheckCPUOverlap(fixture, workers);
     T::RedistributeCurrent(fixture);
+    for (size_t workers : {size_t(0), size_t(2)})
+        CheckCPUOverlap(fixture, workers);
+    T::RestartCurrent(fixture);
     for (size_t workers : {size_t(0), size_t(2)})
         CheckCPUOverlap(fixture, workers);
 }

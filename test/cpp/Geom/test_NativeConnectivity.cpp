@@ -259,6 +259,134 @@ TEST_CASE("Native ghost publication agrees complete same-level relation schedule
     }
 }
 
+TEST_CASE("Native 3D edge interpolation retains four-parent incidence and empty owners")
+{
+    auto mpi = MPI();
+    auto mesh = std::make_unique<G::UnstructuredMesh>(mpi, 3);
+    const I count = 4 / mpi.size + (mpi.rank < 4 % mpi.size ? 1 : 0);
+    mesh->coords.InitPair("nativeEdges.nodes", mpi);
+    mesh->coords.father->Resize(mpi.rank == 0 ? 18 : 0);
+    mesh->coords.TransAttach();
+    mesh->coords.trans.createFatherGlobalMapping();
+    std::vector<I> ghostNodes;
+    if (mpi.rank != 0)
+        for (I node = 0; node < 18; ++node)
+            ghostNodes.push_back(node);
+    mesh->coords.trans.createGhostMapping(ghostNodes);
+    mesh->coords.trans.createMPITypes();
+    mesh->coords.trans.pullOnce();
+    mesh->cell2node.InitPair("nativeEdges.cells", mpi);
+    mesh->cell2node.father->Resize(count);
+    mesh->cell2node.TransAttach();
+    mesh->cell2node.trans.createFatherGlobalMapping();
+    const I first = (*mesh->cell2node.father->pLGlobalMapping)(mpi.rank, 0);
+    auto cellNodes = [](I cell)
+    {
+        const I x = cell % 2, y = cell / 2;
+        const auto node = [](I a, I b, I z)
+        { return a + 3 * b + 9 * z; };
+        return std::vector<I>{node(x, y, 0), node(x + 1, y, 0), node(x + 1, y + 1, 0), node(x, y + 1, 0),
+                              node(x, y, 1), node(x + 1, y, 1), node(x + 1, y + 1, 1), node(x, y + 1, 1)};
+    };
+    for (I row = 0; row < count; ++row)
+    {
+        const auto nodes = cellNodes(first + row);
+        mesh->cell2node.ResizeRow(row, 8);
+        for (int j = 0; j < 8; ++j)
+            mesh->cell2node(row, j) = nodes[size_t(j)];
+    }
+    mesh->cell2node.father->Compress();
+    std::vector<I> ghostCells;
+    for (I cell = 0; cell < 4; ++cell)
+        if (cell < first || cell >= first + count)
+            ghostCells.push_back(cell);
+    mesh->cell2node.trans.createGhostMapping(ghostCells);
+    mesh->cell2node.trans.createMPITypes();
+    mesh->cell2node.trans.pullOnce();
+    mesh->cell2node.idx.markGlobal();
+    auto cells = mesh->Entities(G::EntityKind::Cell), nodes = mesh->Entities(G::EntityKind::Node);
+    G::RelationReadAccess legacy(G::Adj::Cell2Node, mesh->cell2node, cells, nodes);
+    std::vector<std::vector<I>> owned;
+    for (I row = 0; row < count; ++row)
+        owned.push_back(legacy.GlobalRow(row));
+    G::NativeRelation initial(G::Adj::Cell2Node, cells, nodes, Rows(owned));
+    auto native = initial.WithGhostRows(G::RelationGhostRoute(cells));
+    auto cone = native.Read();
+    G::SubEntityQueryPbi query;
+    query.numSubEntities = [](I)
+    { return G::Elem::Element{G::Elem::Hex8}.GetNumEdges(); };
+    query.describe = [](I, int sub)
+    {
+        auto edge = G::Elem::Element{G::Elem::Hex8}.ObtainEdge(sub);
+        return G::SubEntityDesc{edge.GetNumVertices(), edge.GetNumNodes(), G::t_index(edge.type)};
+    };
+    query.extractNodes = [](I, int sub, const std::function<I(int)> &read, I *out)
+    {
+        std::vector<I> parent(8), edge(2);
+        for (int j = 0; j < 8; ++j)
+            parent[size_t(j)] = read(j);
+        G::Elem::Element{G::Elem::Hex8}.ExtractEdgeNodes(sub, parent, edge);
+        std::copy(edge.begin(), edge.end(), out);
+    };
+    auto result = G::NativeConnectivity::Interpolate(cone, G::EntityKind::Edge, query, Owner());
+    // Four unit hexes in a 2x2x1 block have 33 axis-aligned edges. The
+    // central vertical edge (4,13) has all four parents, rather than width 2.
+    constexpr int pairs[12][2]{{0, 1}, {1, 2}, {2, 3}, {3, 0}, {4, 5}, {5, 6}, {6, 7}, {7, 4}, {0, 4}, {1, 5}, {2, 6}, {3, 7}};
+    std::map<std::pair<I, I>, std::vector<I>> expected;
+    for (I cell = 0; cell < 4; ++cell)
+    {
+        auto row = cellNodes(cell);
+        for (auto &pair : pairs)
+            expected[std::minmax(row[size_t(pair[0])], row[size_t(pair[1])])].push_back(cell);
+    }
+    REQUIRE(expected.size() == 33);
+    CHECK(result.entities.NumGlobal() == 33);
+    auto e2n = result.entity2node.Read();
+    auto e2p = result.entity2parent.Read();
+    std::vector<int> occurrences(expected.size(), 0);
+    for (I edge = 0; edge < e2n.NumOwned(); ++edge)
+    {
+        auto vertices = e2n.GlobalRow(edge), parents = e2p.GlobalRow(edge);
+        REQUIRE(vertices.size() == 2);
+        auto found = expected.find(std::minmax(vertices[0], vertices[1]));
+        REQUIRE(found != expected.end());
+        std::sort(parents.begin(), parents.end());
+        CHECK(parents == found->second);
+        if (found->first == std::make_pair(I(4), I(13)))
+            CHECK(parents == std::vector<I>{0, 1, 2, 3});
+        ++occurrences[size_t(std::distance(expected.begin(), found))];
+    }
+    MPI_Allreduce(MPI_IN_PLACE, occurrences.data(), int(occurrences.size()), MPI_INT, MPI_SUM, mpi.comm);
+    for (auto count : occurrences)
+        CHECK(count == 1);
+    G::NativeConnectivity generated(mpi);
+    generated.Register(result.parent2entity.Read());
+    generated.Register(result.entity2node.Read());
+    G::GhostSpec spec{{{G::EntityKind::Cell, {G::Adj::Cell2Edge}, G::EntityKind::Edge}}};
+    auto detached = generated.BuildGhosted(generated.Evaluate(G::CompiledGhostTree::compile(spec)));
+    auto completeEdges = detached.relations.at(G::Adj::Edge2Node).Read();
+    auto p2e = result.parent2entity.Read();
+    for (I parent = 0; parent < p2e.Rows(); ++parent)
+    {
+        CHECK(p2e.RowSize(parent) == 12);
+        for (size_t slot = 0; slot < p2e.RowSize(parent); ++slot)
+            CHECK(p2e.Raw(parent, slot) != DNDS::UnInitIndex);
+    }
+    for (I parent = 0; parent < p2e.NumOwned(); ++parent)
+        for (size_t slot = 0; slot < p2e.RowSize(parent); ++slot)
+        {
+            const auto edge = detached.spaces.at(G::EntityKind::Edge).GlobalToLocal(p2e.Raw(parent, slot));
+            REQUIRE(edge);
+            auto vertices = completeEdges.GlobalRow(*edge);
+            std::vector<I> wanted(2);
+            query.extractNodes(parent, int(slot), [&](int j)
+                               { return cone.ReadEntry(parent, size_t(j)).global; }, wanted.data());
+            std::sort(vertices.begin(), vertices.end());
+            std::sort(wanted.begin(), wanted.end());
+            CHECK(vertices == wanted);
+        }
+}
+
 TEST_CASE("Current authority feeds native setup without reading detached legacy workspace")
 {
     auto fixture = G::OverlapTest::BuildFixture(MPI());
