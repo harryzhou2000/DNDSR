@@ -1,5 +1,63 @@
 # Geom facade and reorder validation evidence — 2026-10-24
 
+## Final formatted-source regression
+
+The [completion report](../geom_refactor_completion_2026-10-24.md) is the current
+status. Earlier sections below are historical checkpoints. Production source is
+`92e14290`; the test-only closing commit is `3258e82f`. The final source/binary
+manifest and both `final-profile-*.json` files pin the artifacts. No required
+test is omitted from the counts below without an explicit explanation.
+
+| Final record | Result |
+|---|---|
+| `final-cpu-tests.txt` | 172/172 CTest registrations: DNDS 55, Geom 91, CFV 9, Euler 17. MPI 1/2/4/8 where registered. |
+| `final-closing-cpu-tests.txt` | 12/12 after rebuilding closing tests: native connectivity, mesh overlap/restart and EntityField, each at MPI 1/2/4/8. |
+| `final-closing-cuda-tests.txt` | 3/3: direct device queries/legacy parity, real-mesh overlap/restart, typed fields and detached migration; distinct GPUs for two-rank cases. |
+| `final-cfv-device-tests.txt` | 1/1 legacy CFV CUDA transfer regression. |
+| `final-python-cpu-np{1,2,4}.txt` | 54 passed and one explicit CUDA-only skip per rank. |
+| `final-python-cuda-np2.txt` | 55 passed on each rank with no skips. |
+| `final-eulerP-cuda-np2.txt` | Explicit `isCuda=True` consumer smoke completed successfully on two GPUs; this is separate from pytest's default CPU EulerP call. |
+| `final-native-query-memcheck.txt` | 9 cases, 768 assertions, zero errors; MPI CUDA accelerator disabled and one legacy-parity case excluded, as explained below. |
+| `final-consumer-syntax/` | Eight 2EQ/EX evaluator/startup/output syntax checks passed; commands, flag hashes and unchanged production source hashes retained. |
+
+The broad CPU and initial CUDA runs preceded rebuilding the final test-only
+extensions. The closing runs execute the added actual restart inputs and native
+3D four-parent-edge oracle. Do not add their counts and describe them as one
+single invocation. `final-*-build.txt` records successful builds, not runtime
+tests. CTest registrations can contain multiple doctest cases and rank/fixture
+guards; these counts are not counts of every possible solver configuration.
+
+Commands used from the implementation checkout:
+
+```sh
+cmake --build build-refactor --target geom_unit_tests dnds_unit_tests cfv_unit_tests euler_unit_tests dnds_pybind11 geom_pybind11 cfv_pybind11 eulerP_pybind11 -j20
+ctest --test-dir build-refactor --output-on-failure -R '^(geom_|dnds_|cfv_|euler_)'
+cmake --build build-refactor --target geom_unit_tests -j16
+ctest --test-dir build-refactor --output-on-failure -R '^geom_(native_connectivity|mesh_facade_overlap|mesh_entity_field)_np(1|2|4|8)$'
+cmake --build build-refactor-cuda --target geom_test_mesh_facade_cuda geom_test_mesh_facade_overlap_cuda geom_test_mesh_entity_field_cuda cfv_unit_tests dnds_pybind11 geom_pybind11 cfv_pybind11 eulerP_pybind11 -j16
+ctest --test-dir build-refactor-cuda --output-on-failure -R '^geom_mesh_(facade_cuda|facade_overlap_cuda_np2|entity_field_cuda_np2)$'
+ctest --test-dir build-refactor-cuda --output-on-failure -R '^cfv_device_transferable'
+bash docs/dev/geom_validation_2026-10-24/final-python-commands.sh cpu
+bash docs/dev/geom_validation_2026-10-24/final-python-commands.sh cuda
+```
+
+The Python command wrapper records this machine's MPI path and checkout-local
+`venv-interop`, installs the selected profile before use and verifies extension
+and shared implementation-library ELF IDs. It refreshes artifact timestamps to
+avoid CMake retaining a newer installed file from the other profile. Run profiles
+serially because they share one installed package directory. The final installed
+profile is CUDA; the main DNDSR checkout/venv was not modified.
+
+The query-only memcheck uses `OMP_NUM_THREADS=2 OMPI_MCA_accelerator=^cuda`,
+`mpirun -np 1 venv-interop/bin/python test/demos/one_rank_per_gpu.py`, then
+`compute-sanitizer --tool memcheck --error-exitcode 99
+build-refactor-cuda/test/cpp/geom_test_mesh_facade_cuda` with
+`--test-case-exclude='Native mesh CUDA queries match existing const legacy pair views'`.
+The normal two-GPU MPI gates do **not** disable the accelerator. This clean
+sanitizer scope is not a sanitizer-clean GPU-MPI or legacy registration claim.
+
+## Historical records
+
 Evidence directory for the GE1 facade slice and reorder follow-up. Logs are
 kept compact as plain text; no logs have been removed. Commands below describe
 the recorded invocations in `build-refactor` / `build-refactor-cuda`; do not

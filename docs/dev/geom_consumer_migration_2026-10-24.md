@@ -1,10 +1,11 @@
 # Bounded CFV/Euler query migration, 2026-10-24
 
-This is a partial consumer migration supporting legacy host storage and explicit
-native publication. It does not close the approved facade phase, make legacy
-Python properties safe, or migrate the reference device views. Source presence
-and syntax compilation are not runtime or numerical-equivalence evidence;
-current build/test logs establish execution.
+This is a bounded consumer migration supporting legacy host storage and explicit
+native publication. Legacy Python properties remain compatibility access, and
+the reference device views remain unchanged. The
+[checkpoint report](geom_refactor_completion_2026-10-24.md) records the phase's
+validation and retained adapters. Source presence and syntax compilation alone
+are not runtime or numerical-equivalence evidence.
 
 ## Migrated operators
 
