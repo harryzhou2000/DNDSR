@@ -3,14 +3,18 @@
 #include "Geom/Mesh/Mesh.hpp"
 #include "Geom/Mesh/EntitySpace.hpp"
 #include "Geom/Mesh/MeshTransition.hpp"
+#include "Geom/Mesh/FieldTransfer.hpp"
 #include "DNDS/Runtime/EagerArray.hpp"
 #include "DNDS/Runtime/MPIProgress.hpp"
+#include "DNDS/Runtime/ArrayIO.hpp"
+#include "DNDS/Serializer/SerializerH5.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <filesystem>
 #include <map>
 #include <vector>
+#include <unistd.h>
 
 namespace DNDS::Geom::OverlapTest
 {
@@ -21,6 +25,8 @@ namespace DNDS::Geom::OverlapTest
     {
         ssp<UnstructuredMesh> mesh;
         std::vector<real> expected;
+        std::optional<R::Array<real>> restartedOwned;
+        std::optional<EntitySpace> restartedOrder;
     };
 
     /// Nonlinear, exactly representable values avoid a linear field's zero
@@ -142,6 +148,15 @@ namespace DNDS::Geom::OverlapTest
         return result;
     }
 
+    inline R::Array<real> OwnedField(Fixture &fixture)
+    {
+        if (!fixture.restartedOwned)
+            return OwnedField(*fixture.mesh);
+        DNDS_check_throw_info(fixture.restartedOrder && fixture.restartedOrder->SameOrder(fixture.mesh->Entities(EntityKind::Cell)),
+                              "restarted solution no longer matches current cell order");
+        return *fixture.restartedOwned;
+    }
+
     inline real Expected(const Fixture &fixture, Index localCell)
     {
         const auto original = fixture.mesh->OriginalEntityId(EntityKind::Cell, localCell);
@@ -168,4 +183,86 @@ namespace DNDS::Geom::OverlapTest
         if (!fixture.mesh->HasNativeState())
             fixture.mesh->PublishNative(MeshReadRequirements::CellFlux());
     }
+    /// Checkpoint the actual solution and stable cell IDs, then execute the
+    /// same stencil on restored values rather than regenerating its input.
+    inline void RestartCurrent(Fixture &fixture)
+    {
+        auto source = fixture.mesh;
+        const auto mpi = source->mpi;
+        auto retained = source->AcquireRead(MeshReadRequirements::CellFlux());
+        const auto sourceOrder = source->Entities(EntityKind::Cell);
+        auto field = OwnedField(fixture);
+        const auto fieldIdentity = field.Identity(), fieldVersion = field.Version();
+        R::Array<Index> ids(R::RowLayout::Dense(size_t(source->NumCell()), 1));
+        {
+            auto write = ids.Write();
+            for (Index row = 0; row < source->NumCell(); ++row)
+                write.View()(size_t(row), 0) = source->OriginalEntityId(EntityKind::Cell, row);
+        }
+        int rootPid = int(getpid());
+        MPI_Bcast(&rootPid, 1, MPI_INT, 0, mpi.comm);
+        const auto filename = (std::filesystem::temp_directory_path() /
+                               ("dnds-facade-overlap-restart-" + std::to_string(rootPid) + "-np" + std::to_string(mpi.size) + ".h5"))
+                                  .string();
+        constexpr const char *fieldSchema = "Geom.Overlap.Solution.f64.v1";
+        constexpr const char *idSchema = "Geom.Overlap.CellOriginal.i64.v1";
+        auto serializer = make_ssp<Serializer::SerializerH5>(mpi);
+        serializer->SetCollectiveRW(true, true);
+        {
+            auto fieldRead = field.Read();
+            auto idRead = ids.Read();
+            serializer->OpenFile(filename, false);
+            WriteCurrentPrimaryMeshSnapshot(*source, serializer, "mesh");
+            R::WriteArray(field, serializer, "solution", mpi, fieldSchema);
+            R::WriteArray(ids, serializer, "original_cells", mpi, idSchema);
+            serializer->CloseFile();
+        }
+        auto restored = make_ssp<UnstructuredMesh>(mpi, 2);
+        serializer->OpenFile(filename, true);
+        restored->ReadSerialize(serializer, "mesh");
+        auto loaded = R::ReadArray<real>(serializer, "solution", mpi, Serializer::ArrayGlobalOffset_Unknown,
+                                         R::Device::Host(), fieldSchema);
+        auto loadedIds = R::ReadArray<Index>(serializer, "original_cells", mpi, Serializer::ArrayGlobalOffset_Unknown,
+                                             R::Device::Host(), idSchema);
+        serializer->CloseFile();
+        FieldTransferDetail::LocalStage(mpi, [&]
+                                        {
+            DNDS_check_throw_info(loaded.Rows() == size_t(restored->NumCell()) && loadedIds.Rows() == loaded.Rows(),
+                                  "restart solution/identity extents differ from mesh");
+            auto values = loaded.Read();
+            auto identity = loadedIds.Read();
+            for (Index row = 0; row < restored->NumCell(); ++row)
+            {
+                const auto original = restored->OriginalEntityId(EntityKind::Cell, row);
+                DNDS_check_throw_info(identity.View()(size_t(row), 0) == original &&
+                                      values.View()(size_t(row), 0) == ManufacturedValue(original),
+                                      "restart solution/mesh stable-ID oracle differs");
+            }
+            DNDS_check_throw_info(field.Identity() == fieldIdentity && field.Version() == fieldVersion &&
+                                  loaded.Identity() != fieldIdentity && sourceOrder.Valid(),
+                                  "checkpoint changed source field or failed to allocate independent restart values"); });
+        restored->RecoverNode2CellAndNode2Bnd();
+        restored->RecoverCell2CellAndBnd2Cell();
+        restored->BuildGhostPrimary();
+        restored->AdjGlobal2LocalPrimary();
+        restored->InterpolateFace();
+        restored->AssertOnFaces();
+        restored->PublishNative(MeshReadRequirements::CellFlux());
+        fixture.mesh = std::move(restored);
+        fixture.restartedOwned.emplace(std::move(loaded));
+        fixture.restartedOrder.emplace(fixture.mesh->Entities(EntityKind::Cell));
+        DNDS_check_throw_info(!sourceOrder.SameDomain(*fixture.restartedOrder) && retained.HostView().NumCell() == sourceOrder.NumOwned(),
+                              "restart must preserve the old read while publishing an independent mesh");
+        MPI_Barrier(mpi.comm);
+        FieldTransferDetail::LocalStage(mpi, [&]
+                                        {
+            if (mpi.rank == 0)
+            {
+                std::error_code error;
+                std::filesystem::remove(filename, error);
+                DNDS_check_throw_info(!error, "cannot remove overlap restart fixture");
+            } });
+        MPI_Barrier(mpi.comm);
+    }
+
 }

@@ -30,7 +30,7 @@ static void CheckGPUOverlap(T::Fixture &fixture, int ordinal)
     auto hostAccess = mesh.AcquireRead(G::MeshReadRequirements::CellFlux());
     const auto partition = T::Classify(mesh, hostAccess.HostView());
     auto hostCore = T::RowList(partition.core), hostRing = T::RowList(partition.ring);
-    auto hostOwned = T::OwnedField(mesh);
+    auto hostOwned = T::OwnedField(fixture);
     const auto device = R::Device::CUDA(ordinal);
     R::EagerEngine engine;
     auto core = engine.CreateStream(std::make_shared<R::CUDALauncher>(ordinal));
@@ -110,6 +110,8 @@ TEST_CASE("Real mesh CUDA finite-volume core uses owned solution during direct m
     fixture.mesh->PublishNative(G::MeshReadRequirements::CellFlux());
     CheckGPUOverlap(fixture, ordinal);
     T::RedistributeCurrent(fixture);
+    CheckGPUOverlap(fixture, ordinal);
+    T::RestartCurrent(fixture);
     CheckGPUOverlap(fixture, ordinal);
 }
 
