@@ -88,9 +88,15 @@ namespace DNDS::Geom
     // =================================================================
     void UnstructuredMesh::ElevatedNodesSolveInternalSmoothV2()
     {
+        CheckCollectiveMutationAvailable();
+        MeshMutationToken mutationToken(this, versions, Runtime::Change::Geometry | Runtime::Change::Values | Runtime::Change::Interface);
+
         auto setupOpt = PrepareSmoothSolverSetup(*this);
         if (!setupOpt)
+        {
+            mutationToken.Commit();
             return;
+        }
         auto &setup = *setupOpt;
         auto &nodesBoundInterpolated = setup.nodesBoundInterpolated;
         auto &boundInterpCoo = setup.boundInterpCoo;
@@ -400,6 +406,7 @@ namespace DNDS::Geom
             coords[iN] += dispO2[iN];
         }
         coords.trans.pullOnce();
+        mutationToken.Commit();
     }
 
 } // namespace DNDS::Geom

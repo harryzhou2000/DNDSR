@@ -2,23 +2,48 @@
 #include "FiniteVolumeSettings.hpp"
 #include "VRDefines.hpp"
 #include "Geom/DiffTensors.hpp"
+#include "Geom/Mesh/MeshView.hpp"
 
 namespace DNDS::CFV
 {
-    template <DeviceBackend B>
+    template <DeviceBackend B, class MeshView = Geom::UnstructuredMeshDeviceView<B>>
     class FiniteVolumeDeviceView
     {
     public:
-        Geom::UnstructuredMeshDeviceView<B> mesh;
+        MeshView mesh;
+        Geom::Periodicity meshPeriodicity;
 
         FiniteVolumeSettings settings;
 
         static_assert(std::is_trivially_copyable_v<FiniteVolumeSettings>);
-        static_assert(std::is_trivially_copyable_v<Geom::UnstructuredMeshDeviceView<B>>);
+        static_assert(std::is_trivially_copyable_v<MeshView>);
+
+        DNDS_DEVICE_CALLABLE int MeshDimension() const
+        {
+            if constexpr (std::is_same_v<MeshView, Geom::UnstructuredMeshView>)
+                return mesh.Dimension();
+            else
+                return mesh.dim;
+        }
+        DNDS_DEVICE_CALLABLE bool MeshIsPeriodic() const
+        {
+            if constexpr (std::is_same_v<MeshView, Geom::UnstructuredMeshView>)
+                return mesh.IsPeriodic();
+            else
+                return mesh.isPeriodic;
+        }
+        DNDS_DEVICE_CALLABLE static const Geom::Periodicity &ReadMeshPeriodicity(const MeshView &source)
+        {
+            if constexpr (std::is_same_v<MeshView, Geom::UnstructuredMeshView>)
+                return source.Periodic();
+            else
+                return source.periodicInfo;
+        }
+        DNDS_DEVICE_CALLABLE Geom::Periodicity &MeshPeriodicity() { return meshPeriodicity; }
 
         DNDS_DEVICE_CALLABLE int getDim()
         {
-            return mesh.dim;
+            return MeshDimension();
         }
 
     protected:
@@ -53,7 +78,12 @@ namespace DNDS::CFV
         DNDS_DEVICE_TRIVIAL_COPY_DEFINE_NO_EMPTY_CTOR(FiniteVolumeDeviceView, FiniteVolumeDeviceView)
 
         template <class TMain>
-        FiniteVolumeDeviceView(TMain &fv, index placeholder) : mesh(fv.mesh->template deviceView<B>()), settings(fv.getDim())
+        FiniteVolumeDeviceView(TMain &fv, index placeholder)
+            : FiniteVolumeDeviceView(fv, placeholder, fv.mesh->template deviceView<B>()) {}
+
+        template <class TMain>
+        FiniteVolumeDeviceView(TMain &fv, index placeholder, MeshView meshView)
+            : mesh(meshView), meshPeriodicity(ReadMeshPeriodicity(meshView)), settings(fv.getDim())
         {
             DNDS_assert(placeholder == UnInitIndex);
             DNDS_COPY_MEMBER(fv, settings);
@@ -141,16 +171,16 @@ namespace DNDS::CFV
 
         DNDS_DEVICE_CALLABLE Geom::tPoint GetFaceNormFromCell(index iFace, index iCell, rowsize if2c, int iG)
         {
-            if (!mesh.isPeriodic)
+            if (!MeshIsPeriodic())
                 return GetFaceNorm(iFace, iG);
-            auto faceID = mesh.faceElemInfo[iFace]->zone;
+            auto faceID = mesh.GetFaceZone(iFace);
             if (!Geom::FaceIDIsPeriodic(faceID))
                 return GetFaceNorm(iFace, iG);
             DNDS_assert(if2c >= 0);
             if (if2c == 1 && Geom::FaceIDIsPeriodicMain(faceID))
-                return mesh.periodicInfo.TransVector(GetFaceNorm(iFace, iG), faceID);
+                return MeshPeriodicity().TransVector(GetFaceNorm(iFace, iG), faceID);
             if (if2c == 1 && Geom::FaceIDIsPeriodicDonor(faceID))
-                return mesh.periodicInfo.TransVectorBack(GetFaceNorm(iFace, iG), faceID);
+                return MeshPeriodicity().TransVectorBack(GetFaceNorm(iFace, iG), faceID);
             return GetFaceNorm(iFace, iG);
         }
 
@@ -164,9 +194,9 @@ namespace DNDS::CFV
 
         DNDS_DEVICE_CALLABLE Geom::tPoint GetFaceQuadraturePPhysFromCell(index iFace, index iCell, rowsize if2c, int iG)
         {
-            if (!mesh.isPeriodic)
+            if (!MeshIsPeriodic())
                 return GetFaceQuadraturePPhys(iFace, iG);
-            auto faceID = mesh.faceElemInfo[iFace]->zone;
+            auto faceID = mesh.GetFaceZone(iFace);
             if (!Geom::FaceIDIsPeriodic(faceID))
                 return GetFaceQuadraturePPhys(iFace, iG);
             DNDS_assert(if2c >= 0);
@@ -176,18 +206,18 @@ namespace DNDS::CFV
                 // std::cout << GetFaceQuadraturePPhys(iFace, iG).transpose() << std::endl;
                 // std::cout << mesh->periodicInfo.TransCoord(GetFaceQuadraturePPhys(iFace, iG), faceID).transpose() << std::endl;
                 // std::abort();
-                return mesh.periodicInfo.TransCoord(GetFaceQuadraturePPhys(iFace, iG), faceID);
+                return MeshPeriodicity().TransCoord(GetFaceQuadraturePPhys(iFace, iG), faceID);
             }
             if (if2c == 1 && Geom::FaceIDIsPeriodicDonor(faceID)) // I am main
-                return mesh.periodicInfo.TransCoordBack(GetFaceQuadraturePPhys(iFace, iG), faceID);
+                return MeshPeriodicity().TransCoordBack(GetFaceQuadraturePPhys(iFace, iG), faceID);
             return GetFaceQuadraturePPhys(iFace, iG);
         }
 
         DNDS_DEVICE_CALLABLE Geom::tPoint GetFacePointFromCell(index iFace, index iCell, rowsize if2c, const Geom::tPoint &pnt)
         {
-            if (!mesh.isPeriodic)
+            if (!MeshIsPeriodic())
                 return pnt;
-            auto faceID = mesh.faceElemInfo[iFace]->zone;
+            auto faceID = mesh.GetFaceZone(iFace);
             if (!Geom::FaceIDIsPeriodic(faceID))
                 return pnt;
             DNDS_assert(if2c >= 0);
@@ -197,10 +227,10 @@ namespace DNDS::CFV
                 // std::cout << pnt.transpose() << std::endl;
                 // std::cout << mesh->periodicInfo.TransCoord(pnt, faceID).transpose() << std::endl;
                 // std::abort();
-                return mesh.periodicInfo.TransCoord(pnt, faceID);
+                return MeshPeriodicity().TransCoord(pnt, faceID);
             }
             if (if2c == 1 && Geom::FaceIDIsPeriodicDonor(faceID)) // I am main
-                return mesh.periodicInfo.TransCoordBack(pnt, faceID);
+                return MeshPeriodicity().TransCoordBack(pnt, faceID);
             return pnt;
         }
 
@@ -208,19 +238,19 @@ namespace DNDS::CFV
             index iCell, index iCellOther,
             index iFace, rowsize if2c)
         {
-            if (!mesh.isPeriodic)
+            if (!MeshIsPeriodic())
                 return GetCellBary(iCellOther);
 
-            auto faceID = mesh.faceElemInfo[iFace]->zone;
+            auto faceID = mesh.GetFaceZone(iFace);
             if (!Geom::FaceIDIsPeriodic(faceID))
                 return GetCellBary(iCellOther);
             DNDS_assert(if2c >= 0);
             if ((if2c == 1 && Geom::FaceIDIsPeriodicMain(faceID)) ||
                 (if2c == 0 && Geom::FaceIDIsPeriodicDonor(faceID))) // I am donor
-                return mesh.periodicInfo.TransCoord(GetCellBary(iCellOther), faceID);
+                return MeshPeriodicity().TransCoord(GetCellBary(iCellOther), faceID);
             if ((if2c == 1 && Geom::FaceIDIsPeriodicDonor(faceID)) ||
                 (if2c == 0 && Geom::FaceIDIsPeriodicMain(faceID))) // I am main
-                return mesh.periodicInfo.TransCoordBack(GetCellBary(iCellOther), faceID);
+                return MeshPeriodicity().TransCoordBack(GetCellBary(iCellOther), faceID);
             return GetCellBary(iCellOther);
         }
 
@@ -228,19 +258,19 @@ namespace DNDS::CFV
             index iCell, index iCellOther,
             index iFace, rowsize if2c, const Geom::tPoint &pnt)
         {
-            if (!mesh.isPeriodic)
+            if (!MeshIsPeriodic())
                 return pnt;
 
-            auto faceID = mesh.faceElemInfo[iFace]->zone;
+            auto faceID = mesh.GetFaceZone(iFace);
             if (!Geom::FaceIDIsPeriodic(faceID))
                 return pnt;
             DNDS_assert(if2c >= 0);
             if ((if2c == 1 && Geom::FaceIDIsPeriodicMain(faceID)) ||
                 (if2c == 0 && Geom::FaceIDIsPeriodicDonor(faceID))) // I am donor
-                return mesh.periodicInfo.TransCoord(pnt, faceID);
+                return MeshPeriodicity().TransCoord(pnt, faceID);
             if ((if2c == 1 && Geom::FaceIDIsPeriodicDonor(faceID)) ||
                 (if2c == 0 && Geom::FaceIDIsPeriodicMain(faceID))) // I am main
-                return mesh.periodicInfo.TransCoordBack(pnt, faceID);
+                return MeshPeriodicity().TransCoordBack(pnt, faceID);
             return pnt;
         }
 
@@ -248,19 +278,19 @@ namespace DNDS::CFV
             index iCell, index iCellOther,
             index iFace, rowsize if2c)
         { // structure copy of GetOtherCellBaryFromCell
-            if (!mesh.isPeriodic)
+            if (!MeshIsPeriodic())
                 return cellInertia[iCellOther];
 
-            auto faceID = mesh.faceElemInfo[iFace]->zone;
+            auto faceID = mesh.GetFaceZone(iFace);
             if (!Geom::FaceIDIsPeriodic(faceID))
                 return cellInertia[iCellOther];
             DNDS_assert(if2c >= 0);
             if ((if2c == 1 && Geom::FaceIDIsPeriodicMain(faceID)) ||
                 (if2c == 0 && Geom::FaceIDIsPeriodicDonor(faceID))) // I am donor
-                return mesh.periodicInfo.template TransMat<3>(cellInertia[iCellOther], faceID);
+                return MeshPeriodicity().template TransMat<3>(cellInertia[iCellOther], faceID);
             if ((if2c == 1 && Geom::FaceIDIsPeriodicDonor(faceID)) ||
                 (if2c == 0 && Geom::FaceIDIsPeriodicMain(faceID))) // I am main
-                return mesh.periodicInfo.template TransMatBack<3>(cellInertia[iCellOther], faceID);
+                return MeshPeriodicity().template TransMatBack<3>(cellInertia[iCellOther], faceID);
             return cellInertia[iCellOther];
         }
 

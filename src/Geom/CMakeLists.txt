@@ -20,9 +20,13 @@ set(CPPS
 Elements.cpp
 PeriodicInfo.cpp
 Mesh/MeshConnectivity.cpp
+Mesh/MeshConnectivity_Native.cpp
 Mesh/MeshConnectivity_Interpolate.cpp
 Mesh/MeshConnectivity_Ghost.cpp
 Mesh/Mesh.cpp
+Mesh/Mesh_Access.cpp
+Mesh/NativeMeshSnapshot.cpp
+Mesh/Mesh_EntitySpace.cpp
 Mesh/Mesh_Legacy.cpp
 Mesh/Mesh_Plts.cpp
 Mesh/Mesh_Serial_BuildCell2Cell.cpp

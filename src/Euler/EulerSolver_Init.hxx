@@ -14,6 +14,7 @@
 #include "SpecialFields.hpp"
 #include "DNDS/OMP.hpp"
 #include "Geom/Mesh/Mesh_Helpers.hpp"
+#include "Geom/Mesh/EntitySpace.hpp"
 
 namespace DNDS::Euler
 {
@@ -554,7 +555,7 @@ namespace DNDS::Euler
             outDistPointPair.father = outDistPoint;
             DNDS_MAKE_SSP(outDistPointPair.son, mpi);
             outDistPointPair.TransAttach();
-            outDistPointPair.trans.BorrowGGIndexing(mesh->coords.trans);
+            Geom::LegacyFieldBridge::BorrowIndexing(outDistPointPair.trans, mesh->Entities(Geom::EntityKind::Node));
             outDistPointPair.trans.createMPITypes();
             outDistPointPair.trans.initPersistentPull();
         }

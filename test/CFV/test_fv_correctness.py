@@ -59,6 +59,7 @@ def _build_fv(mpi, mesh) -> CFV.FiniteVolume:
     fv.ConstructFaceMeanNorm()
 
     fv.ConstructCellSmoothScale()
+    fv.finalize_metrics()
     return fv
 
 
@@ -181,6 +182,8 @@ class TestCellBarycenters:
 
     def test_wall_mesh_barycenters_are_half_integers(self, wall_mesh_fv):
         """Barycenters of unit-square cells are at half-integer offsets from -1."""
+        from mpi4py import MPI
+
         mesh, fv, _ = wall_mesh_fv
         expected_coords = {-0.5, 0.5, 1.5}
         bary_xs = set()
@@ -189,6 +192,9 @@ class TestCellBarycenters:
             bary = fv.GetCellBary(iCell)
             bary_xs.add(round(bary[0], 8))
             bary_ys.add(round(bary[1], 8))
+        # Owned cells are partitioned; only their global union spans the grid.
+        bary_xs = set().union(*MPI.COMM_WORLD.allgather(bary_xs))
+        bary_ys = set().union(*MPI.COMM_WORLD.allgather(bary_ys))
         assert bary_xs == expected_coords, f"Got x coords: {bary_xs}"
         assert bary_ys == expected_coords, f"Got y coords: {bary_ys}"
 

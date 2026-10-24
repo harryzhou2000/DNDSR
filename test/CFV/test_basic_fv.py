@@ -111,6 +111,7 @@ def get_fv(mpi):
     fv.ConstructFaceMeanNorm()
 
     fv.ConstructCellSmoothScale()
+    fv.finalize_metrics()
 
     nB = fv.getArrayBytes() / 1024**2
     nBMesh = mesh.getArrayBytes() / 1024**2

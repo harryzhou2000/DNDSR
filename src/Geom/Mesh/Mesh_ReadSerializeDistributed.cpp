@@ -73,12 +73,21 @@ namespace DNDS::Geom
     // Top-level orchestrator
     // =================================================================
 
-    void UnstructuredMesh::
-        ReadSerializeAndDistribute(
-            Serializer::SerializerBaseSSP serializerP,
-            const std::string &name,
-            const PartitionOptions &partitionOptions)
+    void UnstructuredMesh::ReadSerializeAndDistribute(Serializer::SerializerBaseSSP serializerP,
+                                                      const std::string &name,
+                                                      const PartitionOptions &partitionOptions)
     {
+        CheckCollectiveMutationAvailable();
+        MeshMutationToken mutationToken(this, versions, Runtime::Change::All);
+        ReadSerializeAndDistributeImpl(mutationToken, serializerP, name, partitionOptions);
+        mutationToken.Commit();
+    }
+
+    void UnstructuredMesh::ReadSerializeAndDistributeImpl(MeshMutationToken &mutationToken, Serializer::SerializerBaseSSP serializerP,
+                                                          const std::string &name,
+                                                          const PartitionOptions &partitionOptions)
+    {
+        auto mutationStep = mutationToken.Enter(this, Runtime::Change::All);
         DNDS_check_throw_info(!serializerP->IsPerRank(),
                               "ReadSerializeAndDistribute requires a collective (H5) serializer");
 
@@ -89,11 +98,11 @@ namespace DNDS::Geom
         serializerP->GoToPath(name);
 
         // Step 0+1: read metadata and all primary arrays with even-split
-        ReadDistributed_EvenSplitRead(serializerP);
+        ReadDistributed_EvenSplitReadImpl(mutationToken, serializerP);
         serializerP->GoToPath(cwd);
 
         // Step 2+3: build adjacencies and filter to facial cell2cell
-        auto cell2cellFacial = ReadDistributed_BuildFacialCell2Cell();
+        auto cell2cellFacial = ReadDistributed_BuildFacialCell2CellImpl(mutationToken);
 
         // Step 4: ParMetis repartition
         auto cellPartition = ReadDistributed_PartitionParMetis(
@@ -102,7 +111,7 @@ namespace DNDS::Geom
 
         // Step 5: derive entity partitions and redistribute
         auto partitions = ReadDistributed_DeriveEntityPartitions(std::move(cellPartition));
-        ReadDistributed_Redistribute(partitions);
+        ReadDistributed_RedistributeImpl(mutationToken, partitions);
 
         // Step 6: log final stats
         coords.father->createGlobalMapping();
@@ -131,10 +140,17 @@ namespace DNDS::Geom
     // Step 0+1: Even-split read
     // =================================================================
 
-    void UnstructuredMesh::
-        ReadDistributed_EvenSplitRead(
-            Serializer::SerializerBaseSSP serializerP)
+    void UnstructuredMesh::ReadDistributed_EvenSplitRead(Serializer::SerializerBaseSSP serializerP)
     {
+        CheckCollectiveMutationAvailable();
+        MeshMutationToken mutationToken(this, versions, Runtime::Change::All);
+        ReadDistributed_EvenSplitReadImpl(mutationToken, serializerP);
+        mutationToken.Commit();
+    }
+
+    void UnstructuredMesh::ReadDistributed_EvenSplitReadImpl(MeshMutationToken &mutationToken, Serializer::SerializerBaseSSP serializerP)
+    {
+        auto mutationStep = mutationToken.Enter(this, Runtime::Change::All);
         // Read scalar metadata
         {
             std::string meshRead;
@@ -206,15 +222,24 @@ namespace DNDS::Geom
     // Step 2+3: Build facial cell2cell
     // =================================================================
 
-    ssp<tAdj::element_type> UnstructuredMesh::
-        ReadDistributed_BuildFacialCell2Cell()
+    ssp<tAdj::element_type> UnstructuredMesh::ReadDistributed_BuildFacialCell2Cell()
     {
+        CheckCollectiveMutationAvailable();
+        MeshMutationToken mutationToken(this, versions, Runtime::Change::All);
+        auto result = ReadDistributed_BuildFacialCell2CellImpl(mutationToken);
+        mutationToken.Commit();
+        return result;
+    }
+
+    ssp<tAdj::element_type> UnstructuredMesh::ReadDistributed_BuildFacialCell2CellImpl(MeshMutationToken &mutationToken)
+    {
+        auto mutationStep = mutationToken.Enter(this, Runtime::Change::All);
         if (mpi.rank == 0)
             log() << "UnstructuredMesh === ReadSerializeAndDistribute: building distributed cell2cell" << std::endl;
 
         // Step 2: build node-neighbor cell2cell and bnd2cell via DSL.
-        RecoverNode2CellAndNode2Bnd();
-        RecoverCell2CellAndBnd2Cell();
+        RecoverNode2CellAndNode2BndImpl(mutationToken);
+        RecoverCell2CellAndBnd2CellImpl(mutationToken);
 
         if (mpi.rank == 0)
             log() << "UnstructuredMesh === ReadSerializeAndDistribute: building facial cell2cell" << std::endl;
@@ -519,10 +544,17 @@ namespace DNDS::Geom
     // Step 5b-5d: Redistribute arrays to new partition
     // =================================================================
 
-    void UnstructuredMesh::
-        ReadDistributed_Redistribute(
-            const EntityPartitions &partitions)
+    void UnstructuredMesh::ReadDistributed_Redistribute(const EntityPartitions &partitions)
     {
+        CheckCollectiveMutationAvailable();
+        MeshMutationToken mutationToken(this, versions, Runtime::Change::All);
+        ReadDistributed_RedistributeImpl(mutationToken, partitions);
+        mutationToken.Commit();
+    }
+
+    void UnstructuredMesh::ReadDistributed_RedistributeImpl(MeshMutationToken &mutationToken, const EntityPartitions &partitions)
+    {
+        auto mutationStep = mutationToken.Enter(this, Runtime::Change::All);
         if (mpi.rank == 0)
             log() << "UnstructuredMesh === ReadSerializeAndDistribute: redistributing" << std::endl;
 
@@ -541,16 +573,26 @@ namespace DNDS::Geom
         input.explicitMaps.push_back(EntityReorderMap{EntityKind::Bnd, partitions.bndPartition});
         // No follows (all explicit). No destroyKinds (no faces at this stage).
 
-        this->ReorderEntities(input);
+        auto registry = buildReorderRegistry(input.destroyKinds);
+        auto resolved = resolveFollows(input, registry);
+        auto plan = ReorderPlan::build(resolved, registry, mpi);
+        ExecuteReorderPlanImpl(mutationToken, input, registry, plan);
 
         if (mpi.rank == 0)
             log() << "UnstructuredMesh === ReadSerializeAndDistribute: redistribute done" << std::endl;
     }
 
-    void UnstructuredMesh::
-        ReadDistributed_RedistributeLegacy(
-            const EntityPartitions &partitions)
+    void UnstructuredMesh::ReadDistributed_RedistributeLegacy(const EntityPartitions &partitions)
     {
+        CheckCollectiveMutationAvailable();
+        MeshMutationToken mutationToken(this, versions, Runtime::Change::All);
+        ReadDistributed_RedistributeLegacyImpl(mutationToken, partitions);
+        mutationToken.Commit();
+    }
+
+    void UnstructuredMesh::ReadDistributed_RedistributeLegacyImpl(MeshMutationToken &mutationToken, const EntityPartitions &partitions)
+    {
+        auto mutationStep = mutationToken.Enter(this, Runtime::Change::All);
         if (mpi.rank == 0)
             log() << "UnstructuredMesh === ReadSerializeAndDistribute: redistributing" << std::endl;
 

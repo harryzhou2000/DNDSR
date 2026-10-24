@@ -12,6 +12,7 @@
 #include "MeshConnectivity.hpp"
 
 #include <functional>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -114,6 +115,30 @@ namespace DNDS::Geom
     /// Callback invoked during RELOCATE phase for an adjacency or companion array.
     using AdjRelocateFn = std::function<void(const PermutationTransfer &transfer, const MPIInfo &mpi)>;
 
+    /// Prepared field values remain private until every preparation succeeds.
+    /// Publication only replaces retained handles and must not allocate/throw.
+    struct PreparedCompanion
+    {
+        virtual ~PreparedCompanion() = default;
+        virtual void Publish() noexcept = 0;
+    };
+    enum class CompanionDisposition
+    {
+        TransferIfReordered,
+        RetainUnchanged,
+        ProhibitReorder
+    };
+    struct CompanionAttachment
+    {
+        std::string schema;
+        std::string association;
+        bool hasDistribution = false;
+        uint64_t domain = 0, epoch = 0;
+        /// Process-local destination handle identity, never serialized or
+        /// compared between ranks. Distinct handles may share old storage.
+        const void *destination = nullptr;
+    };
+
     /// One registered adjacency entry.
     struct AdjEntry
     {
@@ -129,6 +154,26 @@ namespace DNDS::Geom
         EntityKind kind;  ///< Entity kind this array is parallel to.
         AdjRelocateFn fn; ///< Callback to relocate the array.
         std::string name;
+        /// Legacy fn callbacks retain their consuming failure semantics.
+        /// Native field adapters additionally provide a staged preparation.
+        std::function<void(const PermutationTransfer &)> preflight;
+        /// A collective adapter coordinates local failures before each internal
+        /// collective. The bundle agrees on its return/failure, but cannot
+        /// repair divergent MPI initiated by an arbitrary caller callback.
+        std::function<std::unique_ptr<PreparedCompanion>(const PermutationTransfer &, const MPIInfo &)> prepare;
+        std::function<CompanionAttachment()> attachment;
+        CompanionDisposition disposition = CompanionDisposition::TransferIfReordered;
+    };
+
+    struct PreparedCompanionBundle
+    {
+        std::vector<std::unique_ptr<PreparedCompanion>> fields;
+        void Publish() noexcept
+        {
+            for (auto &field : fields)
+                field->Publish();
+            fields.clear();
+        }
     };
 
     /// Dynamic set of arrays that participate in a reorder operation.
@@ -228,8 +273,15 @@ namespace DNDS::Geom
         /// Phase 2: RELOCATE all adj rows (source kind's transfer).
         /// Phase 3: RELOCATE all companions of reordered kinds.
         ///
-        /// @warning Collective (when !isLocalOnly).
+        /// @warning Collective when !isLocalOnly or staged fields/policies are
+        /// registered. Staged registration mode/order must match on all ranks;
+        /// use prepareCompanions directly for an explicit collective preflight.
         void apply(ReorderRegistry &registry, const MPIInfo &mpi) const;
+
+        /// Collective field-only staging. Legacy callbacks are not executed.
+        /// Failure preserves every staged source, including fields prepared
+        /// before a later field failed. This does not stage mesh topology.
+        PreparedCompanionBundle prepareCompanions(const ReorderRegistry &registry, const MPIInfo &mpi) const;
 
         // -------------------------------------------------------------
         // Standalone operations for external arrays

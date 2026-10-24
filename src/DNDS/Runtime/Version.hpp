@@ -53,6 +53,14 @@ namespace DNDS::Runtime
             return true;
         }
         void Validate() const { DNDS_check_throw_info(Valid(), "stale, mutating or failed version dependency"); }
+        uint64_t Generation(Change component) const
+        {
+            for (size_t i = 0; i < _generations.size(); ++i)
+                if (uint32_t(component) == (1u << i))
+                    return _generations[i];
+            DNDS_check_throw_info(false, "generation query requires one change component");
+            return 0;
+        }
     };
 
     class VersionTracker
@@ -119,6 +127,11 @@ namespace DNDS::Runtime
             Mutation(Mutation &&) noexcept = default;
             Mutation &operator=(Mutation &&) = delete;
             ~Mutation() { Finish(false); }
+            void IncludeChanges(Change changes)
+            {
+                DNDS_check_throw_info(_state && uint32_t(changes) && !(uint32_t(changes) & ~uint32_t(Change::All)), "invalid nested mutation mask");
+                _changes = _changes | changes;
+            }
             void Commit()
             {
                 DNDS_check_throw(_state);
@@ -153,6 +166,7 @@ namespace DNDS::Runtime
             return stamp;
         }
         ReadLease Read() const { return ReadLease(_state); }
+        bool SameController(const VersionTracker &other) const { return _state == other._state; }
         Mutation BeginMutation(Change changes) { return Mutation(_state, changes); }
         bool CanMutate() const
         {
