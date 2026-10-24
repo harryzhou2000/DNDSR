@@ -6,8 +6,9 @@ rank. Without device visibility isolation it selects ordinal `rank` and requires
 at least `size` visible devices. Under the existing one-rank-per-GPU wrapper each
 rank selects visible ordinal zero; an MPI UUID comparison also rejects accidental
 oversubscription. Register/build/run through the CUDA profile, with a bounded
-timeout. This source was added for root-managed integration; creation alone is
-not compilation or runtime evidence.
+timeout. The final two-GPU gate passes in
+`geom_validation_2026-10-24/final-closing-cuda-tests.txt`; the completion report
+records the built source and exact boundary.
 
 The real CGNS mesh fixture publishes native authority before creating
 `EntityField<double, FixedRows<5>>` from CUDA values. Its five-component state uses
