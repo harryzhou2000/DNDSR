@@ -1677,13 +1677,18 @@
                 },
                 "SAConfig": {
                     "type": "object",
-                    "description": "Spalart-Allmaras hard-limit settings",
+                    "description": "Spalart-Allmaras model options and source limits",
                     "properties": {
                         "productionLimit": {
                             "type": "number",
                             "default": 100000.0,
                             "description": "SA production-to-destruction limit multiplier",
                             "minimum": 0.0
+                        },
+                        "useFt2": {
+                            "type": "boolean",
+                            "default": true,
+                            "description": "Include ft2 in nonnegative SA production, destruction and DES psi; false selects SA-noft2 on that branch while retaining SA-neg negative-state recovery"
                         }
                     }
                 },
@@ -1852,17 +1857,20 @@
                 "SADESScale": {
                     "type": "number",
                     "default": 3e+200,
-                    "description": "SA-DES length scale"
+                    "description": "Dimensionless C_DES: >100 (including the effectively infinite default) selects SA RANS regardless of SADESMode; otherwise multiplies the completed mode-specific grid scale. Also multiplies the SST DES cell size",
+                    "minimum": 1e-12
                 },
                 "SADESMode": {
                     "type": "integer",
                     "default": 1,
-                    "description": "SA-DES mode"
+                    "description": "For SADESScale <=100: 0=DDES, 1=IDDES, 2=WMLES, 3=original DES97 without shielding/psi. SADESScale >100 selects RANS for every mode. IDDES/WMLES omit the unavailable wall-normal grid-spacing term",
+                    "minimum": 0.0,
+                    "maximum": 3.0
                 },
                 "SAVersion": {
                     "type": "integer",
                     "default": 0,
-                    "description": "SA variant: 0=current (cRot=2, corrected |S|, min(P,0) Jacobian), 1=legacy/pre-31578ce (cRot=1, Frobenius SS, P*0 Jacobian)"
+                    "description": "SA variant: 0=correct SA-R default (cRot=2, standard strain, strain-vorticity, min(P,0) Jacobian), 1=oldest legacy (cRot=1, raw symmetric-gradient norm, P*0 Jacobian), 9001=bad historical version 0 (cRot=2, standard strain, reversed vorticity-strain, min(P,0) Jacobian); 9001 is for reproduction only"
                 },
                 "ransModel": {
                     "type": "string",

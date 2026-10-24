@@ -226,13 +226,10 @@ namespace DNDS::Euler
             TU retInc;
             retInc.setZero(U.size());
             real d = std::min(aux.dWallC, std::pow(veryLargeReal, 1. / 6.));
-            real lLES = aux.hMax * SADESScale;
-            real cWall = SADESScale > 100.0 ? 1.0 : 0.15;
-            lLES = std::min(lLES, std::max({d * cWall, aux.hMax * cWall}));
             auto call = [&](int mode)
             {
                 RANS::GetSource_SA<Traits::dim>(U, GradU, muGas, aux.muf, aux.gammaEq,
-                                                d, lLES, aux.hMax, SADESMode,
+                                                d, SADESScale, aux.hMax, SADESMode,
                                                 retInc, ransSARotCorrection, mode,
                                                 saConfig, SAVersion);
             };

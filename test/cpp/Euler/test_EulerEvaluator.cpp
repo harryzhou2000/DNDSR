@@ -300,10 +300,25 @@ TEST_CASE("EulerEvaluator pipeline: NACA0012 (NS_SA, P1)")
     CHECK(incL2 == doctest::Approx(goldenIncL2).epsilon(1e-6));
 }
 
+TEST_CASE("EulerEvaluator pipeline: SA IDDES with runtime ft2 disabled")
+{
+    const std::string root = projectRoot();
+    const std::string cfgPath = writeTempConfig<NS_SA>(
+        root + "/cases/eulerSA/eulerSA_config.json", "naca_iddes_noft2_test",
+        {{"vfvSettings", {{"maxOrder", 1}, {"intOrder", 3}}},
+         {"restartState", {{"iStep", 0}, {"iStepInternal", 0}}},
+         {"eulerSettings", {{"SADESScale", .65}, {"SADESMode", 1}, {"SAConfig", {{"useFt2", false}}}}},
+         {"dataIOControl", {{"meshFile", root + "/data/mesh/NACA0012_H2.cgns"}}}});
+    const auto norms = runOneNewtonStep<NS_SA>(cfgPath);
+    for (DNDS::real norm : norms)
+        CHECK(std::isfinite(norm));
+    CHECK(norms[0] > 0);
+    CHECK(norms[2] > 0);
+}
+
 // ===================================================================
 // TEST 3: 3D Box (NS_3D, periodic, inviscid)
 // ===================================================================
-
 TEST_CASE("EulerEvaluator pipeline: Box (NS_3D, P1)")
 {
     std::string root = projectRoot();

@@ -404,8 +404,8 @@ namespace DNDS::Euler
 
         /// @name RANS / DES Configuration
         /// @{
-        real SADESScale = veryLargeReal; ///< SA-DES length scale (veryLargeReal effectively disables DES).
-        int SADESMode = 1;               ///< SA-DES mode selector (1 = DDES, etc.).
+        real SADESScale = veryLargeReal; ///< Dimensionless C_DES: >100 (including the effectively infinite default) selects SA RANS for every SADESMode; otherwise multiplies the completed grid scale. Also multiplies the SST DES cell size.
+        int SADESMode = 1;               ///< For SADESScale <=100: 0=DDES, 1=IDDES, 2=WMLES, 3=original DES97; otherwise all modes give RANS. IDDES/WMLES omit unavailable wall-normal cell spacing.
         /**
          * @brief SA model variant selector.
          *
@@ -746,7 +746,7 @@ namespace DNDS::Euler
             DNDS_FIELD(forceVolURecBeta,        "Force volume uRec beta");
             DNDS_FIELD(ppEpsIsRelaxed,          "Positivity-preserving epsilon is relaxed");
             config.field_section(&T::saConfig, "SAConfig",
-                                 "Spalart-Allmaras hard-limit settings");
+                                 "Spalart-Allmaras model options and source limits");
             config.field_section(&T::kOmegaConfig, "KOmegaConfig",
                                  "Wilcox k-omega kernel settings");
             config.field_section(&T::kOmegaSSTConfig, "KOmegaSSTConfig",
@@ -786,8 +786,10 @@ namespace DNDS::Euler
                        DNDS::Config::range(0.0));
             DNDS_FIELD(wallDistNJacobiSweep,    "Wall distance Jacobi sweep count",
                        DNDS::Config::range(1));
-            DNDS_FIELD(SADESScale,              "SA-DES length scale");
-            DNDS_FIELD(SADESMode,               "SA-DES mode");
+            DNDS_FIELD(SADESScale,              "Dimensionless C_DES: >100 (including the effectively infinite default) selects SA RANS regardless of SADESMode; otherwise multiplies the completed mode-specific grid scale. Also multiplies the SST DES cell size",
+                       DNDS::Config::range(1e-12));
+            DNDS_FIELD(SADESMode,               "For SADESScale <=100: 0=DDES, 1=IDDES, 2=WMLES, 3=original DES97 without shielding/psi. SADESScale >100 selects RANS for every mode. IDDES/WMLES omit the unavailable wall-normal grid-spacing term",
+                       DNDS::Config::range(0, 3));
             DNDS_FIELD(SAVersion,               "SA variant: 0=correct SA-R default (cRot=2, standard strain, strain-vorticity, min(P,0) Jacobian), 1=oldest legacy (cRot=1, raw symmetric-gradient norm, P*0 Jacobian), 9001=bad historical version 0 (cRot=2, standard strain, reversed vorticity-strain, min(P,0) Jacobian); 9001 is for reproduction only");
             DNDS_FIELD(ransModel,               "RANS turbulence model");
             DNDS_FIELD(ransUseQCR,              "Use QCR correction for RANS");

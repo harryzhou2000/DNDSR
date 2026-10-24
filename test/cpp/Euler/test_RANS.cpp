@@ -490,9 +490,16 @@ TEST_CASE("RANS configs: defaults and JSON round-trip preserve historical limits
 
     nlohmann::ordered_json j = g_saConfig;
     CHECK(j.at("productionLimit").get<real>() == doctest::Approx(1e5));
+    CHECK(j.at("useFt2").get<bool>());
     j["productionLimit"] = 100;
+    j["useFt2"] = false;
     auto parsed = j.get<SAConfig>();
     CHECK(parsed.productionLimit == doctest::Approx(100));
+    CHECK_FALSE(parsed.useFt2);
+    j.erase("useFt2");
+    nlohmann::ordered_json defaults = g_saConfig;
+    defaults.merge_patch(j); // The solver merges old inputs over emitted defaults.
+    CHECK(defaults.get<SAConfig>().useFt2);
 }
 
 TEST_CASE("Euler evaluator settings: RANS configs are flat nested sections")
@@ -507,9 +514,11 @@ TEST_CASE("Euler evaluator settings: RANS configs are flat nested sections")
     CHECK(j.at("RANSTopLimit").get<real>() == doctest::Approx(1e5));
 
     j["SAConfig"]["productionLimit"] = 100;
+    j["SAConfig"]["useFt2"] = false;
     EulerEvaluatorSettings<NS_SA_3D> parsed(6);
     from_json(j, parsed);
     CHECK(parsed.saConfig.productionLimit == doctest::Approx(100));
+    CHECK_FALSE(parsed.saConfig.useFt2);
     CHECK(parsed.RANSTopLimit == doctest::Approx(1e5));
 }
 
@@ -629,4 +638,109 @@ TEST_CASE("GetSource_SA: SA-R suppresses rotation rather than strain in 2D and 3
     CHECK(historical.SAVersion == 9001);
     checkSARotationCorrection<2>();
     checkSARotationCorrection<3>();
+}
+
+TEST_CASE("SA DES lengths: coefficient placement, shielding and disabled scale")
+{
+    // Force LES operation: no eddy viscosity, negligible molecular viscosity,
+    // and a point outside the fB/fe wall region. psi is independently prescribed.
+    for (DNDS::real coefficient : {0.4, 0.65})
+    {
+        CHECK(GetLength_SA_DES(3., 1., coefficient, 1, 0., 0., 1., 2.) ==
+              doctest::Approx(coefficient * .45 * 2.));
+        CHECK(GetLength_SA_DES(3., 1., coefficient, 2, 0., 0., 1., 2.) ==
+              doctest::Approx(coefficient * .45 * 2.));
+        CHECK(GetLength_SA_DES(3., 1., coefficient, 1, 0., 0., 1., 2., .8) ==
+              doctest::Approx(coefficient * .8 * 2.));
+        CHECK(GetLength_SA_DES(3., 1., coefficient, 1, 0., 0., 1., 2., 2.) ==
+              doctest::Approx(coefficient * 2.)); // Delta cannot exceed hMax.
+        CHECK(GetLength_SA_DES(3., 1., coefficient, 0, 0., 0., 1., 2.) ==
+              doctest::Approx(coefficient * 2.)); // DDES uses hMax, not IDDES delta.
+        CHECK(GetLength_SA_DES(3., 1., coefficient, 3, 0., 0., 1., 2.) ==
+              doctest::Approx(coefficient)); // Original DES has no psi correction.
+    }
+    CHECK(GetLength_SA_DES(.01, 1., .65, 3, 0., 0., 1., 2.) == doctest::Approx(.01));
+    CHECK(GetLength_SA_DES(1e30, 1., .65, 0, 0., 0., 1., 2.) == doctest::Approx(1.3));
+    // DDES/IDDES shielding must preserve RANS for a large wall-region rd.
+    for (int mode : {0, 1})
+        CHECK(GetLength_SA_DES(3., 1., .65, mode, 100., 100., 1., 1.) == doctest::Approx(3.));
+    for (int mode : {0, 1, 2, 3})
+    {
+        CHECK(GetLength_SA_DES(3., 1., veryLargeReal, mode, 0., 0., 1., 2.) == 3.);
+        CHECK(GetLength_SA_DES(3., 1., 101., mode, 100., 100., 1., 2.) == 3.);
+    }
+}
+
+template <int saDim>
+static void checkSADESAndFt2()
+{
+    constexpr int nSA = saDim + 3;
+    constexpr int iSA = saDim + 2;
+    constexpr DNDS::real muRef = 1e-5, chi = 2., nuTilde = chi * muRef;
+    constexpr DNDS::real shear = 100., wallDistance = 1., hMax = .01;
+    const DNDS::real fv1 = std::pow(chi, 3) / (std::pow(chi, 3) + std::pow(7.1, 3));
+    const DNDS::real fv2 = 1 - chi / (1 + chi * fv1);
+    const DNDS::real cb1 = .1355, kappa2 = .41 * .41;
+    const DNDS::real cw1 = cb1 / kappa2 + (1 + .622) / (2. / 3.);
+    Eigen::Vector<DNDS::real, nSA> U = Eigen::Vector<DNDS::real, nSA>::Zero();
+    U(0) = 1.;
+    U(saDim + 1) = 1e5;
+    U(iSA) = chi;
+    Eigen::Matrix<DNDS::real, saDim, nSA> grad = Eigen::Matrix<DNDS::real, saDim, nSA>::Zero();
+    grad(1, 1) = shear;
+    for (bool useFt2 : {true, false})
+        for (int desMode : {0, 1, 2, 3})
+            for (DNDS::real coefficient : {.65, veryLargeReal})
+            {
+                CAPTURE(saDim);
+                CAPTURE(useFt2);
+                CAPTURE(desMode);
+                CAPTURE(coefficient);
+                SAConfig config;
+                config.useFt2 = useFt2;
+                config.productionLimit = 1e30;
+                const DNDS::real ft2 = useFt2 ? 1.2 * std::exp(-.5 * chi * chi) : 0.;
+                const DNDS::real psi = std::sqrt(std::max(1., std::min(100.,
+                                                                       (1 - cb1 / (cw1 * kappa2 * .424) * (ft2 + (1 - ft2) * fv2)) /
+                                                                           (fv1 * std::max(1e-10, 1 - ft2)))));
+                // Here d/hMax=100, fd=1 and fB=fe=0 to floating-point accuracy.
+                // Thus every active model reduces to C_DES*hMax (times psi except DES97).
+                const DNDS::real length = coefficient > 100 ? wallDistance : coefficient * hMax * (desMode == 3 ? 1. : psi);
+                const DNDS::real sh = shear + nuTilde * fv2 / (kappa2 * length * length);
+                const DNDS::real r = std::min(nuTilde / (sh * kappa2 * length * length), 10.);
+                const DNDS::real g = r + .3 * (std::pow(r, 6) - r);
+                const DNDS::real fw = g * std::pow(65. / (std::pow(g, 6) + 64.), 1. / 6.);
+                const DNDS::real production = cb1 * (1 - ft2) * sh * nuTilde;
+                const DNDS::real destruction = (cw1 * fw - cb1 / kappa2 * ft2) * std::pow(nuTilde / length, 2);
+                Eigen::Vector<DNDS::real, nSA> source = Eigen::Vector<DNDS::real, nSA>::Zero();
+                Eigen::Vector<DNDS::real, nSA> diagonal = Eigen::Vector<DNDS::real, nSA>::Zero();
+                GetSource_SA<saDim>(U, grad, muRef, muRef, g_gamma, wallDistance,
+                                    coefficient, hMax, desMode, source, 0, 0, config);
+                GetSource_SA<saDim>(U, grad, muRef, muRef, g_gamma, wallDistance,
+                                    coefficient, hMax, desMode, diagonal, 0, 1, config);
+                CHECK(source.allFinite());
+                CHECK(diagonal.allFinite());
+                CHECK(source(iSA) == doctest::Approx((production - destruction) / muRef).epsilon(1e-10));
+                CHECK(diagonal(iSA) == doctest::Approx(std::max((2 * destruction - std::min(production, 0.)) / nuTilde, verySmallReal)).epsilon(1e-10));
+            }
+#ifdef USE_NS_SA_NEGATIVE_MODEL
+    U(iSA) = -2.;
+    SAConfig withFt2, withoutFt2;
+    withoutFt2.useFt2 = false;
+    Eigen::Vector<DNDS::real, nSA> original = Eigen::Vector<DNDS::real, nSA>::Zero();
+    Eigen::Vector<DNDS::real, nSA> noft2 = Eigen::Vector<DNDS::real, nSA>::Zero();
+    GetSource_SA<saDim>(U, grad, muRef, muRef, g_gamma, wallDistance,
+                        veryLargeReal, hMax, 1, original, 0, 0, withFt2);
+    GetSource_SA<saDim>(U, grad, muRef, muRef, g_gamma, wallDistance,
+                        veryLargeReal, hMax, 1, noft2, 0, 0, withoutFt2);
+    CHECK(noft2.allFinite());
+    CHECK(noft2(iSA) == original(iSA));
+    CHECK(noft2(iSA) > 0); // The negative continuation still drives nuTilde toward zero.
+#endif
+}
+
+TEST_CASE("GetSource_SA: DES modes and ft2 switch agree with analytic sources in 2D/3D")
+{
+    checkSADESAndFt2<2>();
+    checkSADESAndFt2<3>();
 }

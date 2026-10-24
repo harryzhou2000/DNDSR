@@ -1798,15 +1798,11 @@ namespace DNDS::Euler
 
             //! DES mesh lengths should be cached!
             real hMax = vfv->GetCellMaxLenScale(iCell);
-            real cWall = settings.SADESScale > 100.0 ? 1.0 : 0.15;
-            real lLES = hMax * settings.SADESScale;
-            //! missing hWallNormal!
-            lLES = std::min(lLES, std::max({d * cWall, hMax * cWall}));
             auto sourceCaller = [&](int mode)
             {
                 RANS::GetSource_SA<dim>(UMeanXy, DiffUxy, phys_.muRef(), muf,
                                         gamma,
-                                        d, lLES, hMax, settings.SADESMode,
+                                        d, settings.SADESScale, hMax, settings.SADESMode,
                                         retInc,
                                         settings.ransSARotCorrection, mode,
                                         settings.saConfig,

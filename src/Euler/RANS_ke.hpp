@@ -45,9 +45,6 @@
 /** @brief Select omega production formulation for SST: 0 = classical, 1 = strain-rate based, 2 = vorticity based. */
 #define KW_SST_PROD_OMEGA_VERSION 1
 
-/** @brief When set to 1, enable the ft2 laminar suppression term in Spalart-Allmaras. Setting to 0 disables ft2. */
-#define SA_USE_FT2_TERM 1
-
 /** @brief RANS turbulence model functions (eddy viscosity, viscous flux, source terms). */
 namespace DNDS::Euler::RANS
 {
@@ -55,13 +52,62 @@ namespace DNDS::Euler::RANS
     struct SAConfig
     {
         real productionLimit = 1e5; ///< Upper multiplier in P <= productionLimit * |D|.
+        bool useFt2 = true;         ///< Include ft2 in the nonnegative SA branch and DES psi; false selects SA-noft2 there. The SA-neg recovery branch is unchanged.
 
         DNDS_DECLARE_CONFIG(SAConfig)
         {
             DNDS_FIELD(productionLimit, "SA production-to-destruction limit multiplier",
                        DNDS::Config::range(0.0));
+            DNDS_FIELD(useFt2, "Include ft2 in nonnegative SA production, destruction and DES psi; false selects SA-noft2 on that branch while retaining SA-neg negative-state recovery");
         }
     };
+
+    /**
+     * @brief SA hybrid length with C_DES applied after constructing the grid scale.
+     *
+     * Modes preserve the historical selectors: 0=DDES, 1=IDDES, 2=WMLES;
+     * 3 adds original DES97 (no shielding or psi). For every mode, C_DES > 100
+     * selects pure RANS, including the effectively infinite default coefficient.
+     * DDES uses hMax; IDDES/WMLES use Shur et al. (2008), Eq. (4), with
+     * Cw=0.15. hWallNormal is the local wall-normal cell spacing, not wall
+     * distance. Its default zero explicitly omits that term when unavailable.
+     * psi is the SA low-Re correction, evaluated using the selected ft2 policy.
+     */
+    inline real GetLength_SA_DES(real d, real hMax, real cDES, int DESMode,
+                                 real nuTur, real nuLam, real gradUNorm, real psi,
+                                 real hWallNormal = 0)
+    {
+        DNDS_assert(DESMode >= 0 && DESMode <= 3);
+        if (cDES > 100)
+            return d;
+        DNDS_assert(cDES > 0 && hMax > 0 && d > 0 && hWallNormal >= 0);
+        if (DESMode == 3)
+            return std::min(d, cDES * hMax);
+
+        const real kappa = 0.41;
+        const real denominator = sqr(kappa * d) * std::max(smallReal, gradUNorm);
+        if (DESMode == 0)
+        {
+            const real rd = (nuTur + nuLam) / denominator;
+            const real shield = std::tanh(cube(8 * rd));
+            // Equivalent to d-fd*max(0,d-lLES), without cancellation when
+            // fd=1 and a wall-free cell has d much larger than its LES scale.
+            return shield * d + (1 - shield) * std::min(d, cDES * hMax * psi);
+        }
+
+        const real delta = std::min(std::max({0.15 * d, 0.15 * hMax, hWallNormal}), hMax);
+        const real lLES = cDES * delta * psi;
+        const real alpha = 0.25 - d / hMax;
+        const real fB = std::min(2 * std::exp(-9 * sqr(alpha)), 1.0);
+        const real rdt = nuTur / denominator;
+        const real rdl = nuLam / denominator;
+        const real ft = std::tanh(cube(sqr(1.63) * rdt));
+        const real fl = std::tanh(std::pow(sqr(3.55) * rdl, 10));
+        const real fe1 = 2 * std::exp(-(alpha >= 0 ? 11.09 : 9.0) * sqr(alpha));
+        const real fe = std::max(fe1 - 1, 0.0) * psi * (1 - std::max(ft, fl));
+        const real fdTilde = DESMode == 2 ? fB : std::max(fB, std::tanh(cube(8 * rdt)));
+        return std::max(fdTilde * (1 + fe) * d + (1 - fdTilde) * lLES, lLES * smallReal);
+    }
 
     /** @brief Wilcox k-omega kernel configuration. */
     struct KOmegaConfig
@@ -1007,14 +1053,16 @@ namespace DNDS::Euler::RANS
      * - **Production** P = c_{b1} * (1 - f_{t2}) * (Sh + SRotCor) * nuTilde.
      * - **Destruction** D = (c_{w1} * f_w - c_{b1}/kappa^2 * f_{t2}) * (nuTilde / d)^2.
      * - **Diffusion** term: c_{b2}/sigma * |grad(nuTilde)|^2 (conservative form contribution).
-     * - **f_{t2} laminar suppression** term controlled by @c SA_USE_FT2_TERM.
+     * - **f_{t2} laminar suppression** term controlled by @c SAConfig::useFt2.
      *
      * DES/DDES/IDDES length-scale modification:
-     * - **DESMode 0 (RANS):** l_DES = d (pure RANS, wall distance).
+     * - **DESMode 0 (DDES):** Wall-distance shielding with C_DES * hMax * psi.
      * - **DESMode 1 (IDDES):** Blends l_RANS and l_LES using the IDDES shielding functions
      *   f_d, f_B, f_e, with psi correction for grid-induced separation avoidance.
      * - **DESMode 2 (WMLES):** Uses the wall-modeled LES length scale
      *   l_WMLES = f_B * (1 + f_e) * l_RANS + (1 - f_B) * l_LES * psi.
+     * - **DESMode 3 (DES97):** min(d, C_DES * hMax), without shielding or psi.
+     * - **C_DES > 100, any mode:** Use the physical wall distance (pure RANS).
      *
      * When @p mode == 0, the full source is returned at source(I4+1).
      * When @p mode == 1, the implicit diagonal contribution -dS/dU (positive, suitable for
@@ -1031,13 +1079,13 @@ namespace DNDS::Euler::RANS
      * @param mufPhy    Physical (dimensional) laminar dynamic viscosity.
      * @param gamma     Ratio of specific heats (used for pressure gradient in optional helicity correction).
      * @param d         Wall distance.
-     * @param lLES      LES length scale for DES shielding (set to a large value to disable DES).
+     * @param cDES      Dimensionless DES coefficient, applied to the grid scale inside the source; >100 disables DES.
      * @param hMax      Maximum cell size (used in IDDES alpha parameter: alpha = 0.25 - d/hMax).
-     * @param DESMode   DES operating mode: 0 = pure RANS, 1 = IDDES, 2 = WMLES.
+     * @param DESMode   For C_DES <= 100: 0 = DDES, 1 = IDDES, 2 = WMLES, 3 = DES97; C_DES > 100 selects RANS for every mode.
      * @param[out] source  Output source vector; entry at I4+1 is set.
      * @param rotCor    SA-R rotation correction flag: 0 = disabled, nonzero = enabled.
      * @param mode      Source computation mode: 0 = full source, 1 = implicit diagonal (positive).
-     * @param saConfig  SA source-term hard limits.
+     * @param saConfig  SA production limit and runtime ft2 policy (including DES psi).
      * @param SAVersion 0 = current SA-R (c_rot = 2, SS = sqrt(2 S_ij S_ij));
      *                  1 = legacy strain normalization, coefficient 1, and implicit diagonal;
      *                  9001 = historical version-0 reversed rotation correction for reproduction.
@@ -1045,7 +1093,7 @@ namespace DNDS::Euler::RANS
     template <int dim, class TU, class TDiffU, class TSource>
     void GetSource_SA(TU &&UMeanXy, TDiffU &&DiffUxy, real muRef, real mufPhy, real gamma,
                       real d,
-                      real lLES,
+                      real cDES,
                       real hMax,
                       int DESMode,
                       TSource &source, int rotCor, int mode,
@@ -1068,13 +1116,8 @@ namespace DNDS::Euler::RANS
         static const real rlim = 10;
         static const real cw1 = cb1 / sqr(kappa) + (1 + cb2) / sigma;
 
-#if SA_USE_FT2_TERM
         static const real ct3 = 1.2;
         static const real ct4 = 0.5;
-#else
-        static const real ct3 = 0.0;
-        static const real ct4 = 0.0;
-#endif
 
         const real nuh = UMeanXy(I4 + 1) * muRef / UMeanXy(0);
 
@@ -1111,7 +1154,7 @@ namespace DNDS::Euler::RANS
         }
         real diffUNorm = diffU.norm();
 
-        const real ft2 = ct3 * std::exp(-ct4 * sqr(Chi));
+        const real ft2 = saConfig.useFt2 ? ct3 * std::exp(-ct4 * sqr(Chi)) : 0.0;
         // {
         //     Eigen::Matrix<real, dim, dim> sHat = 0.5 * (diffU.transpose() + diffU);
         //     real sHatSqr = 2 * sHat.squaredNorm();
@@ -1121,59 +1164,20 @@ namespace DNDS::Euler::RANS
         // }
 
         real lDES = d;
-        // DDES shield
+        // Preserve the disabled-DES RANS path without evaluating hybrid functions.
+        if (cDES <= 100)
         {
-            const real lRANS = d;
             const real fwStar = .424;
             const real nuTur = mufPhy / UMeanXy(0) * std::max((Chi * fnu1), 0.0);
             const real nufPhy = mufPhy / UMeanXy(0);
-            const real rd = (nuTur + nufPhy) / (sqr(kappa) * sqr(d) * std::max(smallReal, diffUNorm));
-            const real fd = 1. - std::tanh(cube(8 * rd));
             real psiSqr = 0.0;
             if (Chi <= 0)
                 psiSqr = 100.0;
             else
                 psiSqr = std::min(100.0, (1 - cb1 / (cw1 * sqr(kappa) * fwStar) * (ft2 + (1 - ft2) * fnu2)) /
                                              (fnu1 * std::max(smallReal, 1 - ft2)));
-            // if (psiSqr < 1.01)
-            // {
-            //     std::cout << psiSqr << "Chi " << Chi << " fnu1 " << fnu1 << " xx " << (fnu1 * std::max(smallReal, 1 - ft2)) << " xx " << cb1 / (cw1 * sqr(kappa) * fwStar) << std::endl;
-            // }
             real psi = std::sqrt(std::max(psiSqr, 1.0));
-            //! note that psi has lower bound of 1
-            // psi = 1.0;
-            lDES = lRANS - fd * std::max(0., lRANS - lLES * psi);
-
-            // IDDES switch
-            if (DESMode == 1 || DESMode == 2)
-            {
-                const real alphaIDDES = 0.25 - d / hMax;
-                const real fB = std::min(2 * std::exp(-9. * sqr(alphaIDDES)), 1.0);
-
-                const real cl = 3.55;
-                const real ct = 1.63;
-                const real rdt = nuTur / (sqr(kappa) * sqr(d) * std::max(smallReal, diffUNorm));
-                const real rdl = nufPhy / (sqr(kappa) * sqr(d) * std::max(smallReal, diffUNorm));
-                const real ft = std::tanh(cube(sqr(ct) * rdt));
-                const real fl_tmp = sqr(sqr(cl) * rdl);
-                const real fl = std::tanh(sqr(sqr(fl_tmp)) * fl_tmp); // power 5
-
-                const real fe1 = 2. * std::exp(-(alphaIDDES >= 0 ? 11.09 : 9.0) * sqr(alphaIDDES));
-                const real fe2 = 1. - std::max(ft, fl);
-                const real fe = std::max((fe1 - 1.), 0.) * psi * fe2;
-                if (DESMode == 2)
-                {
-                    const real lWMLES = fB * (1 + fe) * lRANS + (1 - fB) * lLES * psi;
-                    lDES = lWMLES;
-                }
-                else
-                {
-                    const real fdTilde = std::max(fB, std::tanh(cube(8 * rdt)));
-                    real lIDDES = fdTilde * (1 + fe) * lRANS + (1 - fdTilde) * lLES * psi;
-                    lIDDES = std::max(lLES * smallReal, lIDDES);
-                    lDES = lIDDES;
-                }
-            }
+            lDES = GetLength_SA_DES(d, hMax, cDES, DESMode, nuTur, nufPhy, diffUNorm, psi);
         }
         d = lDES; //! super subs
 
@@ -1225,6 +1229,8 @@ namespace DNDS::Euler::RANS
 #ifdef USE_NS_SA_NEGATIVE_MODEL
         if (UMeanXy(I4 + 1) < 0)
         {
+            // Keep the SA-neg recovery coefficient even with positive-branch SA-noft2.
+            // Setting ct3=0 here reverses the recovery production for negative nuTilde.
             real Chi = UMeanXy(I4 + 1) * muRef / mufPhy;
             fn = (SA::cn1 + std::pow(Chi, 3)) / (SA::cn1 - std::pow(Chi, 3));
             D = -cw1 * sqr(nuh / lDES);
