@@ -89,7 +89,7 @@ namespace DNDS::Geom
     void UnstructuredMesh::ElevatedNodesSolveInternalSmoothV2()
     {
         CheckCollectiveMutationAvailable();
-        MeshMutationToken mutationToken(this, versions, Runtime::Change::Geometry | Runtime::Change::Values | Runtime::Change::Interface);
+        auto mutationToken = BeginManagedMutation(Runtime::Change::Geometry | Runtime::Change::Values | Runtime::Change::Interface);
 
         auto setupOpt = PrepareSmoothSolverSetup(*this);
         if (!setupOpt)

@@ -273,7 +273,7 @@ namespace DNDS::Geom
         ///@todo //TODO: add support for cartesian tensor transformation
 
         template <int dim, int nVec>
-        DNDS_DEVICE_CALLABLE Eigen::Matrix<real, dim, nVec> TransVector(const Eigen::Matrix<real, dim, nVec> &v, t_index id)
+        DNDS_DEVICE_CALLABLE Eigen::Matrix<real, dim, nVec> TransVector(const Eigen::Matrix<real, dim, nVec> &v, t_index id) const
         {
             DNDS_assert(FaceIDIsPeriodic(id));
             t_index i{0};
@@ -288,7 +288,7 @@ namespace DNDS::Geom
         }
 
         template <int dim, int nVec>
-        DNDS_DEVICE_CALLABLE Eigen::Matrix<real, dim, nVec> TransVectorBack(const Eigen::Matrix<real, dim, nVec> &v, t_index id)
+        DNDS_DEVICE_CALLABLE Eigen::Matrix<real, dim, nVec> TransVectorBack(const Eigen::Matrix<real, dim, nVec> &v, t_index id) const
         {
             DNDS_assert(FaceIDIsPeriodic(id));
             t_index i{0};
@@ -303,7 +303,7 @@ namespace DNDS::Geom
         }
 
         template <int dim>
-        DNDS_DEVICE_CALLABLE Eigen::Matrix<real, dim, dim> TransMat(const Eigen::Matrix<real, dim, dim> &m, t_index id)
+        DNDS_DEVICE_CALLABLE Eigen::Matrix<real, dim, dim> TransMat(const Eigen::Matrix<real, dim, dim> &m, t_index id) const
         {
             DNDS_assert(FaceIDIsPeriodic(id));
             t_index i{0};
@@ -318,7 +318,7 @@ namespace DNDS::Geom
         }
 
         template <int dim>
-        DNDS_DEVICE_CALLABLE Eigen::Matrix<real, dim, dim> TransMatBack(const Eigen::Matrix<real, dim, dim> &m, t_index id)
+        DNDS_DEVICE_CALLABLE Eigen::Matrix<real, dim, dim> TransMatBack(const Eigen::Matrix<real, dim, dim> &m, t_index id) const
         {
             DNDS_assert(FaceIDIsPeriodic(id));
             t_index i{0};
@@ -347,7 +347,7 @@ namespace DNDS::Geom
         }
 
         template <int dim, int nVec>
-        DNDS_DEVICE_CALLABLE auto GetVectorByBits(const Eigen::Matrix<real, dim, nVec> &v, const NodePeriodicBits &bits)
+        DNDS_DEVICE_CALLABLE auto GetVectorByBits(const Eigen::Matrix<real, dim, nVec> &v, const NodePeriodicBits &bits) const
         {
             if (!bool(bits))
                 return v;
@@ -376,7 +376,7 @@ namespace DNDS::Geom
         }
 
         template <int dim, int nVec>
-        DNDS_DEVICE_CALLABLE auto GetVectorBackByBits(const Eigen::Matrix<real, dim, nVec> &v, const NodePeriodicBits &bits)
+        DNDS_DEVICE_CALLABLE auto GetVectorBackByBits(const Eigen::Matrix<real, dim, nVec> &v, const NodePeriodicBits &bits) const
         {
             if (!bool(bits))
                 return v;

@@ -150,6 +150,12 @@ namespace DNDS::Geom
 
     EntitySpace UnstructuredMesh::Entities(EntityKind kind) const
     {
+        if (_nativeState)
+            return _nativeState->Entities(kind);
+        return LegacyEntities(kind);
+    }
+    EntitySpace UnstructuredMesh::LegacyEntities(EntityKind kind) const
+    {
         auto lease = versions.Read();
         auto stamp = versions.Stamp(Runtime::Change::Topology | Runtime::Change::Distribution |
                                     Runtime::Change::Layout | Runtime::Change::Allocation);

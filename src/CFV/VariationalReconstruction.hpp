@@ -136,6 +136,16 @@ namespace DNDS::CFV
 
         std::array<uint64_t, 4> WallDistanceIdentity() const
         {
+            // Published native wall distances are immutable for this mesh
+            // epoch. The base stamp rejects a change of query authority.
+            if (mesh->HasNativeState())
+            {
+                DNDS_check_throw_info(mesh->HasNodeWallDist(),
+                                      "wall-distance reconstruction requires prepared node wall distances");
+                return {};
+            }
+            // Compatibility backing also detects raw writes that bypass the
+            // mesh's tracked mutation boundary.
             DNDS_check_throw_info(mesh->nodeWallDist.father && mesh->nodeWallDist.son,
                                   "wall-distance reconstruction requires prepared node wall distances");
             return {mesh->nodeWallDist.father->HostDataIdentity(), mesh->nodeWallDist.father->HostDataVersion(),
@@ -269,7 +279,7 @@ namespace DNDS::CFV
         VariationalReconstruction(MPIInfo nMpi, ssp<Geom::UnstructuredMesh> nMesh)
             : FiniteVolume(nMpi, nMesh)
         {
-            DNDS_assert(dim == mesh->dim);
+            DNDS_assert(dim == mesh->getDim());
         }
 
         void SetPeriodicTransformations(const TFTrans &nFTransPeriodic, const TFTrans &nFTransPeriodicBack)
@@ -286,11 +296,11 @@ namespace DNDS::CFV
             SetPeriodicTransformations(
                 [mesh = mesh, Seq123](auto u, Geom::t_index id)
                 {
-                    u(EigenAll, Seq123) = mesh->periodicInfo.TransVector<pDim, Eigen::Dynamic>(u(EigenAll, Seq123).transpose(), id).transpose();
+                    u(EigenAll, Seq123) = mesh->Periodic().TransVector<pDim, Eigen::Dynamic>(u(EigenAll, Seq123).transpose(), id).transpose();
                 },
                 [mesh = mesh, Seq123](auto u, Geom::t_index id)
                 {
-                    u(EigenAll, Seq123) = mesh->periodicInfo.TransVectorBack<pDim, Eigen::Dynamic>(u(EigenAll, Seq123).transpose(), id).transpose();
+                    u(EigenAll, Seq123) = mesh->Periodic().TransVectorBack<pDim, Eigen::Dynamic>(u(EigenAll, Seq123).transpose(), id).transpose();
                 });
         }
 
@@ -315,7 +325,7 @@ namespace DNDS::CFV
         template <typename... Ts>
         void ApplyPeriodicTransform(int if2c, Geom::t_index faceID, Ts &...data) const
         {
-            if (!mesh->isPeriodic)
+            if (!mesh->IsPeriodic())
                 return;
             DNDS_assert(FTransPeriodic && FTransPeriodicBack);
             if ((if2c == 1 && Geom::FaceIDIsPeriodicMain(faceID)) ||
@@ -550,9 +560,9 @@ namespace DNDS::CFV
             real faceLOrig = faceL;
             if (settings.functionalSettings.scaleType == VRSettings::FunctionalSettings::ScaleType::CellMax)
             {
-                faceL = this->GetCellMaxLenScale(mesh->face2cell(iFace, 0)) * 0.5;
-                if (mesh->face2cell(iFace, 1) != UnInitIndex)
-                    faceL = std::max(faceL, this->GetCellMaxLenScale(mesh->face2cell(iFace, 1)));
+                faceL = this->GetCellMaxLenScale(mesh->FaceCells(iFace)[0]) * 0.5;
+                if (mesh->FaceCells(iFace)[1] != UnInitIndex)
+                    faceL = std::max(faceL, this->GetCellMaxLenScale(mesh->FaceCells(iFace)[1]));
             }
             // CellMax option is the same as BaryDiff in terms of faceLOrig (being the Bary Dist)
             // CellMax only uses another faceL
@@ -644,28 +654,28 @@ namespace DNDS::CFV
                     // real tw = 1.0;
                     if (settings.functionalSettings.anisotropicType == VRSettings::FunctionalSettings::AnisotropicType::CentDiff)
                     {
-                        if (mesh->face2cell(iFace, 1) != UnInitIndex)
+                        if (mesh->FaceCells(iFace)[1] != UnInitIndex)
                         {
-                            norm = this->GetOtherCellBaryFromCell(mesh->face2cell(iFace, 0),
-                                                                  mesh->face2cell(iFace, 1), iFace, 0) -
-                                   this->GetCellBary(mesh->face2cell(iFace, 0));
+                            norm = this->GetOtherCellBaryFromCell(mesh->FaceCells(iFace)[0],
+                                                                  mesh->FaceCells(iFace)[1], iFace, 0) -
+                                   this->GetCellBary(mesh->FaceCells(iFace)[0]);
                             norm.normalize();
                         }
                     }
                     else if (
                         settings.functionalSettings.anisotropicType == VRSettings::FunctionalSettings::AnisotropicType::WallDist)
                     {
-                        DNDS_assert_info(mesh->nodeWallDist.father && mesh->nodeWallDist.father->Size() == mesh->NumNode(), "must build mesh's nodeWallDist before this");
-                        real meanAR = GetCellAR(mesh->face2cell(iFace, 0));
+                        DNDS_assert_info(mesh->HasNodeWallDist(), "must build mesh's nodeWallDist before this");
+                        real meanAR = GetCellAR(mesh->FaceCells(iFace)[0]);
                         real wd = 0.0;
-                        real h_min_LR = GetCellNodeMinLenScale(mesh->face2cell(iFace, 0));
-                        if (mesh->face2cell(iFace, 1) != UnInitIndex)
+                        real h_min_LR = GetCellNodeMinLenScale(mesh->FaceCells(iFace)[0]);
+                        if (mesh->FaceCells(iFace)[1] != UnInitIndex)
                         {
-                            h_min_LR = std::min(h_min_LR, GetCellNodeMinLenScale(mesh->face2cell(iFace, 1)));
-                            meanAR = 0.5 * (meanAR + GetCellAR(mesh->face2cell(iFace, 1)));
+                            h_min_LR = std::min(h_min_LR, GetCellNodeMinLenScale(mesh->FaceCells(iFace)[1]));
+                            meanAR = 0.5 * (meanAR + GetCellAR(mesh->FaceCells(iFace)[1]));
                             norm.setZero();
                             real wdDiv = 0.0;
-                            for (int if2n = 0; if2n < mesh->face2node[iFace].size(); if2n++)
+                            for (int if2n = 0; if2n < mesh->FaceNodes(iFace).size(); if2n++)
                             {
                                 auto d = mesh->GetCoordWallDistOnFace(iFace, 0);
                                 norm += d;
@@ -1194,6 +1204,7 @@ namespace DNDS::CFV
 
         void WriteSerializeRecMatrix(const Serializer::SerializerBaseSSP &serializerP)
         {
+            mesh->RequireLegacyWorkspace("WriteSerializeRecMatrix");
             this->ValidateMeshDependencies();
             using namespace Geom;
             std::string name = "VR_Matrix";

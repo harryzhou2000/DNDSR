@@ -12,7 +12,7 @@ namespace DNDS::Geom
     void UnstructuredMesh::BuildNodeWallDist(const std::function<bool(Geom::t_index)> &fBndIsWall, WallDistOptions options)
     {
         CheckCollectiveMutationAvailable();
-        MeshMutationToken mutationToken(this, versions, Runtime::Change::Interface | Runtime::Change::Values);
+        auto mutationToken = BeginManagedMutation(Runtime::Change::Interface | Runtime::Change::Values);
 
         /* ************************** */
         // Here implements direct search method

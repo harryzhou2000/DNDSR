@@ -220,7 +220,7 @@ static ssp<tVR> buildVR(
     }
 
     vr->parseSettings(j);
-    if (mesh->isPeriodic)
+    if (mesh->IsPeriodic())
         vr->SetPeriodicTransformations(); // identity for scalar
     vr->ConstructMetrics();
     vr->ConstructBaseAndWeight();
@@ -569,6 +569,7 @@ TEST_CASE("Mesh dependency stamps reject stale reconstruction and permit explici
     CHECK_THROWS(vr->ConstructMetrics());
     mesh->cell2face.trans.pLGhostMapping = sourceMap;
     CHECK_THROWS(vr->ValidateMetricsDependencies());
+    CHECK_THROWS(vr->FinalizeMetrics()); // Failed full rebuild cleared old stage publication.
     vr->ConstructMetrics();
     vr->ConstructBaseAndWeight();
     vr->ConstructRecCoeff();
@@ -583,6 +584,164 @@ TEST_CASE("Mesh dependency stamps reject stale reconstruction and permit explici
     vr->ConstructBaseAndWeight();
     vr->ConstructRecCoeff();
     CHECK_NOTHROW(vr->ValidateMeshDependencies());
+}
+
+TEST_CASE("Granular metric publication requires current prerequisites and dependent rebuilds")
+{
+    auto mesh = buildMesh("Uniform_3x3_wall.cgns", false, 0, 0);
+    auto vr = buildVR(mesh, RecMethod::VFV_P2_Default);
+    std::vector<tPoint> before;
+    for (DNDS::index cell = 0; cell < mesh->NumCellProc(); ++cell)
+        before.emplace_back(vr->GetCellBary(cell));
+    mesh->TransformCoords([](const tPoint &point) -> tPoint
+                          { return 2 * point; });
+    vr->SetCellAtrBasic();
+    // Same-sized arrays from the previous epoch are not valid prerequisites.
+    CHECK_THROWS(vr->ConstructCellBary());
+    CHECK_THROWS(vr->ConstructCellIntJacobiDet());
+    CHECK_THROWS(vr->ConstructCellAlignedHBox());
+    CHECK_THROWS(vr->ConstructCellMajorHBoxCoordInertia());
+    CHECK_THROWS(vr->ConstructCellSmoothScale());
+    CHECK_THROWS(vr->FinalizeMetrics());
+    vr->ConstructCellVolume();
+    vr->ConstructCellBary();
+    for (DNDS::index cell = 0; cell < mesh->NumCellProc(); ++cell)
+        CHECK(vr->GetCellBary(cell).isApprox(2 * before.at(cell), 1e-12));
+    CHECK_THROWS(vr->ConstructFaceIntPPhysics());
+    vr->SetFaceAtrBasic();
+    CHECK_THROWS(vr->ConstructFaceMeanNorm()); // Centers have not been rebuilt.
+    vr->ConstructMetrics();
+    CHECK_NOTHROW(vr->ValidateMetricsDependencies());
+
+    // A same-epoch input rebuild also invalidates dependent completion bits.
+    vr->ConstructCellVolume();
+    CHECK_THROWS(vr->FinalizeMetrics());
+    vr->ConstructCellBary();
+    vr->ConstructCellIntJacobiDet();
+    vr->ConstructCellIntPPhysics();
+    vr->ConstructCellAlignedHBox();
+    vr->ConstructCellMajorHBoxCoordInertia();
+    vr->ConstructCellSmoothScale();
+    CHECK_NOTHROW(vr->FinalizeMetrics());
+    vr->ConstructBaseAndWeight();
+    vr->ConstructRecCoeff();
+    CHECK_NOTHROW(vr->ValidateMeshDependencies());
+
+    vr->SetFaceAtrBasic();
+    CHECK_THROWS(vr->FinalizeMetrics());
+    vr->ConstructFaceArea();
+    vr->ConstructFaceIntJacobiDet();
+    vr->ConstructFaceIntPPhysics();
+    vr->ConstructFaceUnitNorm();
+    vr->ConstructFaceMeanNorm();
+    CHECK_THROWS(vr->FinalizeMetrics()); // Smoothing depends on face area.
+    vr->ConstructCellSmoothScale();
+    CHECK_NOTHROW(vr->FinalizeMetrics());
+}
+
+TEST_CASE("CFV native authority preserves metrics and anisotropic reconstruction")
+{
+    bool wallDistance = false;
+    SUBCASE("periodic centroid difference") {}
+    SUBCASE("wall distance") { wallDistance = true; }
+    auto mesh = wallDistance ? buildMesh("Uniform_3x3_wall.cgns", false, 0, 0)
+                             : buildMesh("IV10_10.cgns", true, 10, 10);
+    if (wallDistance)
+        mesh->BuildNodeWallDist([](t_index zone)
+                                { return FaceIDIsExternalBC(zone); });
+    auto makeVR = [&]()
+    {
+        auto vr = buildVR(mesh, RecMethod::VFV_P2_Default);
+        auto settings = vr->getSettings();
+        settings.functionalSettings.scaleType = CFV::VRSettings::FunctionalSettings::ScaleType::CellMax;
+        settings.functionalSettings.useAnisotropicFunctional = true;
+        settings.functionalSettings.anisotropicType = wallDistance ? CFV::VRSettings::FunctionalSettings::AnisotropicType::WallDist
+                                                                   : CFV::VRSettings::FunctionalSettings::AnisotropicType::CentDiff;
+        vr->parseSettings(settings);
+        vr->ConstructMetrics();
+        vr->ConstructBaseAndWeight();
+        vr->ConstructRecCoeff();
+        return vr;
+    };
+    auto sample = [&](const ssp<tVR> &vr)
+    {
+        std::vector<DNDS::real> values;
+        auto append = [&](const auto &matrix)
+        {
+            for (Eigen::Index j = 0; j < matrix.cols(); ++j)
+                for (Eigen::Index i = 0; i < matrix.rows(); ++i)
+                    values.push_back(matrix(i, j));
+        };
+        CFV::tUDof<g_nv> u;
+        CFV::tURec<g_nv> rec, result;
+        vr->BuildUDof(u, 1);
+        vr->BuildURec(rec, 1);
+        vr->BuildURec(result, 1);
+        rec.setConstant(0.125);
+        for (DNDS::index cell = 0; cell < mesh->NumCell(); ++cell)
+        {
+            const auto point = vr->GetCellBary(cell);
+            u[cell](0) = std::sin(point(0)) + std::cos(point(1));
+        }
+        u.trans.startPersistentPull();
+        u.trans.waitPersistentPull();
+        vr->DoReconstructionIter<g_nv>(rec, result, u, g_zeroBC, true);
+        auto read = mesh->AcquireRead(MeshReadRequirements::CellFlux());
+        const auto view = read.HostView();
+        for (DNDS::index cell = 0; cell < view.NumCellProc(); ++cell)
+        {
+            values.push_back(vr->GetCellVol(cell));
+            append(vr->GetCellBary(cell));
+            append(vr->GetCellQuadraturePPhys(cell, -1));
+            if (cell >= view.NumCell())
+                continue;
+            append(result[cell]);
+            append(vr->GetCellRecMatAInv(cell));
+            auto faces = view.CellFaces(cell);
+            for (size_t slot = 0; slot < faces.size(); ++slot)
+            {
+                const auto face = faces[slot];
+                const auto side = view.CellIsFaceBack(cell, face, slot) ? 0 : 1;
+                append(vr->GetCellRecMatAInvB(cell, slot));
+                append(vr->GetFaceNormFromCell(face, cell, side, -1));
+                append(vr->GetFaceQuadraturePPhysFromCell(face, cell, side, -1));
+            }
+        }
+        return values;
+    };
+    const auto expected = sample(makeVR());
+    auto requirements = MeshReadRequirements::CellFlux();
+    requirements.allFaceCellsLocal = true;
+    requirements.wallDistance = wallDistance;
+    mesh->PublishNative(requirements);
+    REQUIRE(mesh->HasNativeState());
+
+    // Deliberate raw edits affect the detached compatibility workspace only.
+    // Reconstruct every cache after the edits to detect mixed query backing.
+    for (DNDS::index node = 0; node < mesh->coords.Size(); ++node)
+        mesh->coords[node].array() += 37;
+    if (wallDistance)
+        for (DNDS::index node = 0; node < mesh->nodeWallDist.Size(); ++node)
+            mesh->nodeWallDist[node].setConstant(73);
+    for (DNDS::index face = 0; face < mesh->face2cell.Size(); ++face)
+    {
+        mesh->face2cell(face, 0) = 0;
+        mesh->face2cell(face, 1) = UnInitIndex;
+        for (DNDS::rowsize slot = 0; slot < mesh->face2node.RowSize(face); ++slot)
+            mesh->face2node(face, slot) = 0;
+        mesh->faceElemInfo(face, 0).zone = BC_ID_DEFAULT_WALL;
+    }
+    mesh->isPeriodic = false;
+    mesh->periodicInfo = Periodicity{};
+
+    const auto actual = sample(makeVR());
+    REQUIRE(actual.size() == expected.size());
+    for (size_t i = 0; i < actual.size(); ++i)
+    {
+        CAPTURE(i);
+        CHECK(std::isfinite(actual[i]));
+        CHECK(actual[i] == doctest::Approx(expected[i]).epsilon(1e-11));
+    }
 }
 
 // ===================================================================

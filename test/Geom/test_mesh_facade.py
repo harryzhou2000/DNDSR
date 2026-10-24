@@ -184,6 +184,73 @@ def test_periodic_incidence_queries():
     assert MPI.COMM_WORLD.allreduce(transformed) > 0
 
 
+def test_native_publication_and_explicit_workspace(facade_mesh):
+    mesh = facade_mesh
+    with mesh.acquire_read(faces=True) as read:
+        expected = read.coordinates()
+        expected_nodes = read.cell_nodes(0).copy()
+    mesh.publish_native(faces=True)
+    assert mesh.has_native_state
+    # These legacy properties are a detached edit workspace in native mode.
+    mesh.coords[0][0] += 5.0
+    with mesh.acquire_read(faces=True) as read:
+        np.testing.assert_array_equal(read.coordinates(), expected)
+        escaped = read.cell_nodes(0)[::2]
+    with pytest.raises(RuntimeError):
+        mesh.use_legacy_workspace()
+    snapshot = mesh.snapshot(faces=True)
+    del escaped
+    gc.collect()
+    mesh.use_legacy_workspace()
+    assert not mesh.has_native_state
+    with mesh.acquire_read() as read:
+        assert read.coord(0)[0] == expected[0, 0] + 5.0
+    with snapshot.acquire_read() as read:
+        np.testing.assert_array_equal(read.cell_nodes(0), expected_nodes)
+        np.testing.assert_array_equal(read.coordinates(), expected)
+
+
+def test_entity_distribution_queries_and_stale_descriptor(facade_mesh):
+    from mpi4py import MPI
+
+    mesh = facade_mesh
+    cells = mesh.entities(Geom.EntityKind.Cell)
+    assert cells.valid and cells.owned == mesh.NumCell()
+    assert cells.local == mesh.NumCellProc()
+    assert cells.global_count == MPI.COMM_WORLD.allreduce(cells.owned)
+    for local in range(cells.local):
+        global_id = cells.local_to_global(local)
+        assert cells.global_to_local(global_id) == local
+        if local < cells.owned:
+            assert cells.owner(global_id) == MPI.COMM_WORLD.rank
+            assert cells.owner_local_row(global_id) == local
+    assert cells.global_to_local(-1) is None
+    mesh.publish_native(faces=True)
+    assert not cells.valid
+    with pytest.raises(RuntimeError):
+        cells.local_to_global(0)
+    current = mesh.entities(Geom.EntityKind.Cell)
+    assert current.same_domain(cells)
+    assert current.same_order(mesh.entities(Geom.EntityKind.Cell))
+    with pytest.raises(RuntimeError):
+        mesh.transform_coordinates(lambda point: point)
+    assert current.valid
+    mesh.use_legacy_workspace()
+    assert not current.valid  # Explicit authority selection changes all stamps.
+    mesh.transform_coordinates(lambda point: point)
+
+
+def test_periodic_geometry_transform_updates_physical_coords():
+    mesh = _build_mesh(periodic=True)
+    with mesh.acquire_read(faces=True) as read:
+        before = [read.cell_coords(i) for i in range(read.counts["cell"][0])]
+    rotation = np.array([[0., -1., 0.], [1., 0., 0.], [0., 0., 1.]])
+    mesh.apply_geometry_transform(rotation, 2.0)
+    with mesh.acquire_read(faces=True) as read:
+        for cell, points in enumerate(before):
+            np.testing.assert_allclose(read.cell_coords(cell), 2.0 * points @ rotation.T, atol=1e-12)
+
+
 def test_managed_coordinate_transform_rejects_escaped_rows(facade_mesh):
     mesh = facade_mesh
     with mesh.acquire_read() as read:

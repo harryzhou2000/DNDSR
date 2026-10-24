@@ -2,6 +2,7 @@
 
 #include "Geom/Mesh/Mesh.hpp"
 #include "Geom/Mesh/EntitySpace.hpp"
+#include "Geom/Mesh/MeshTransition.hpp"
 #include "DNDS/Runtime/EagerArray.hpp"
 #include "DNDS/Runtime/MPIProgress.hpp"
 #include <algorithm>
@@ -137,14 +138,34 @@ namespace DNDS::Geom::OverlapTest
         R::Array<real> result(R::RowLayout::Dense(size_t(mesh.NumCell()), 1));
         auto write = result.Write();
         for (Index cell = 0; cell < mesh.NumCell(); ++cell)
-            write.View()(size_t(cell), 0) = ManufacturedValue(mesh.cell2cellOrig(cell, 0));
+            write.View()(size_t(cell), 0) = ManufacturedValue(mesh.OriginalEntityId(EntityKind::Cell, cell));
         return result;
     }
 
     inline real Expected(const Fixture &fixture, Index localCell)
     {
-        const auto original = fixture.mesh->cell2cellOrig(localCell, 0);
+        const auto original = fixture.mesh->OriginalEntityId(EntityKind::Cell, localCell);
         DNDS_check_throw_info(original >= 0 && size_t(original) < fixture.expected.size(), "original cell ID outside serial oracle");
         return fixture.expected[size_t(original)];
+    }
+
+    /// Exercise independent native ownership and a real distributed arrival,
+    /// retaining the old source throughout preparation/publication.
+    inline void RedistributeCurrent(Fixture &fixture)
+    {
+        auto source = fixture.mesh;
+        auto retained = source->AcquireRead(MeshReadRequirements::CellFlux());
+        auto sourceOrder = source->Entities(EntityKind::Cell);
+        MeshTransitionHandle handle(source);
+        ReorderInput input;
+        input.explicitMaps.push_back({EntityKind::Cell,
+                                      std::vector<MPI_int>(size_t(source->NumCell()), (source->mpi.rank + 1) % source->mpi.size)});
+        auto prepared = PreparedMeshTransition::Prepare(handle, input);
+        prepared.Publish();
+        fixture.mesh = handle.Get();
+        DNDS_check_throw_info(sourceOrder.Valid() && !sourceOrder.SameDomain(fixture.mesh->Entities(EntityKind::Cell)),
+                              "detached publication must retain the old source and distinguish its order");
+        if (!fixture.mesh->HasNativeState())
+            fixture.mesh->PublishNative(MeshReadRequirements::CellFlux());
     }
 }

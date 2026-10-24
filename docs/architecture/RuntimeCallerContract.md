@@ -82,6 +82,12 @@ worker dependent on MPI completion while withholding the required host progress.
 Use distinct matched tags for concurrently active bindings in a shared
 `CommunicationContext`. Transient requests change setup cost, not these rules.
 
+Contexts support `MPI_COMM_SELF` and reordered split communicators. When a
+communicator does not carry `MPI_TAG_UB`, tag reservation uses the portable
+range 0–32767; it does not assume that every communicator inherits world-model
+environment attributes. This is the minimum range required by the
+[MPI standard](https://www.mpi-forum.org/docs/mpi-4.1/mpi41-report/node245.htm).
+
 `WaitDestinationReady()` makes the destination readable; the source can still be
 in use until full completion. `Wait()` or successful `Test()` completes both.
 Retain the operation or import it into a live `MPIProgress` owner. Check errors

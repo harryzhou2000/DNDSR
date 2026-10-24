@@ -181,6 +181,7 @@ namespace DNDS::Geom
 
     tLocalMatStruct UnstructuredMesh::GetCell2CellFaceVLocal(bool onLocalPartition)
     {
+        RequireLegacyWorkspace("GetCell2CellFaceVLocal");
         // if (onLocalPartition)
         //     DNDS_assert(this->localPartitionStarts.size() >= 2);
         DNDS_assert(this->adjPrimaryState == Adj_PointToLocal);

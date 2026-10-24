@@ -134,12 +134,12 @@ namespace DNDS::Euler
                 [mesh](auto u, Geom::t_index id) //! important caveat! using & captures mesh shared_ptr as reference, lost if inbound pointer is destoried!!
                 {
                     DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
-                    u(EigenAll, Seq123) = mesh->periodicInfo.TransVector<dim, Eigen::Dynamic>(u(EigenAll, Seq123).transpose(), id).transpose();
+                    u(EigenAll, Seq123) = mesh->PeriodicMetadata().TransVector<dim, Eigen::Dynamic>(u(EigenAll, Seq123).transpose(), id).transpose();
                 },
                 [mesh](auto u, Geom::t_index id)
                 {
                     DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
-                    u(EigenAll, Seq123) = mesh->periodicInfo.TransVectorBack<dim, Eigen::Dynamic>(u(EigenAll, Seq123).transpose(), id).transpose();
+                    u(EigenAll, Seq123) = mesh->PeriodicMetadata().TransVectorBack<dim, Eigen::Dynamic>(u(EigenAll, Seq123).transpose(), id).transpose();
                 });
 
             vfv->ConstructMetrics();
@@ -207,6 +207,30 @@ namespace DNDS::Euler
         // wall distance
         std::vector<Eigen::Vector<real, Eigen::Dynamic>> dWall; ///< Per-cell wall distance (one value per cell node/quadrature point).
         std::vector<real> dWallFace;                            ///< Per-face wall distance (interpolated from cell values).
+
+    private:
+        Runtime::VersionStamp _wallDistanceMeshStamp;
+        std::weak_ptr<Geom::UnstructuredMesh> _wallDistanceMesh;
+        std::weak_ptr<CFV::VariationalReconstruction<gDim>> _wallDistanceFV;
+        uint64_t _wallDistanceMetricsGeneration = 0;
+
+    public:
+        void ValidateWallDistanceDependencies() const
+        {
+            vfv->ValidateMetricsDependencies();
+            DNDS_check_throw_info(_wallDistanceMesh.lock() == mesh && _wallDistanceFV.lock() == vfv &&
+                                      _wallDistanceMeshStamp.Valid() &&
+                                      _wallDistanceMetricsGeneration == vfv->MetricsGeneration(),
+                                  "Euler wall distances are missing or stale; rebuild GetWallDist after finite-volume metrics");
+        }
+        /// Check derived geometry once while the outer mesh scope is retained.
+        void ValidateMeshDependencies() const
+        {
+            vfv->ValidateMeshDependencies();
+            if constexpr (Traits::hasRANS || Traits::isExtended)
+                if (Traits::hasRANS || phys_.ransModel() != RANS_None)
+                    ValidateWallDistanceDependencies();
+        }
 
         // maps from bc id to various objects
         std::map<Geom::t_index, AnchorPointRecorder<nVarsFixed>> anchorRecorders; ///< Per-BC anchor point recorders for profile extraction.
@@ -1036,32 +1060,32 @@ namespace DNDS::Euler
         void UFromCell2Face(TU &u, index iFace, index iCell, rowsize if2c)
         {
             DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
-            if (!mesh->isPeriodic)
+            if (!mesh->IsPeriodic())
                 return;
             auto faceID = mesh->GetFaceZone(iFace);
             if (!Geom::FaceIDIsPeriodic(faceID))
                 return;
             DNDS_assert(if2c >= 0);
             if (if2c == 1 && Geom::FaceIDIsPeriodicMain(faceID))
-                u(Seq123) = mesh->periodicInfo.TransVectorBack(Eigen::Vector<real, dim>{u(Seq123)}, faceID);
+                u(Seq123) = mesh->PeriodicMetadata().TransVectorBack(Eigen::Vector<real, dim>{u(Seq123)}, faceID);
             if (if2c == 1 && Geom::FaceIDIsPeriodicDonor(faceID))
-                u(Seq123) = mesh->periodicInfo.TransVector(Eigen::Vector<real, dim>{u(Seq123)}, faceID);
+                u(Seq123) = mesh->PeriodicMetadata().TransVector(Eigen::Vector<real, dim>{u(Seq123)}, faceID);
         }
 
         /// @brief Inverse of UFromCell2Face: transform from face frame back to cell frame.
         void UFromFace2Cell(TU &u, index iFace, index iCell, rowsize if2c)
         {
             DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
-            if (!mesh->isPeriodic)
+            if (!mesh->IsPeriodic())
                 return;
             auto faceID = mesh->GetFaceZone(iFace);
             if (!Geom::FaceIDIsPeriodic(faceID))
                 return;
             DNDS_assert(if2c >= 0);
             if (if2c == 1 && Geom::FaceIDIsPeriodicMain(faceID))
-                u(Seq123) = mesh->periodicInfo.TransVector(Eigen::Vector<real, dim>{u(Seq123)}, faceID);
+                u(Seq123) = mesh->PeriodicMetadata().TransVector(Eigen::Vector<real, dim>{u(Seq123)}, faceID);
             if (if2c == 1 && Geom::FaceIDIsPeriodicDonor(faceID))
-                u(Seq123) = mesh->periodicInfo.TransVectorBack(Eigen::Vector<real, dim>{u(Seq123)}, faceID);
+                u(Seq123) = mesh->PeriodicMetadata().TransVectorBack(Eigen::Vector<real, dim>{u(Seq123)}, faceID);
         }
 
         /// @brief Transform a state from a neighbor cell across a periodic face.
@@ -1073,16 +1097,16 @@ namespace DNDS::Euler
             mesh->CellOtherCellPeriodicHandle(
                 iFace, if2c,
                 [&]()
-                { u(Seq123) = mesh->periodicInfo.TransVector(Eigen::Vector<real, dim>{u(Seq123)}, faceID); },
+                { u(Seq123) = mesh->PeriodicMetadata().TransVector(Eigen::Vector<real, dim>{u(Seq123)}, faceID); },
                 [&]()
-                { u(Seq123) = mesh->periodicInfo.TransVectorBack(Eigen::Vector<real, dim>{u(Seq123)}, faceID); });
+                { u(Seq123) = mesh->PeriodicMetadata().TransVectorBack(Eigen::Vector<real, dim>{u(Seq123)}, faceID); });
         }
 
         /// @brief Transform a gradient tensor from cell frame to face frame for periodic BCs.
         void DiffUFromCell2Face(TDiffU &u, index iFace, index iCell, rowsize if2c, bool reverse = false)
         {
             DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
-            if (!mesh->isPeriodic)
+            if (!mesh->IsPeriodic())
                 return;
             auto faceID = mesh->GetFaceZone(iFace);
             if (!Geom::FaceIDIsPeriodic(faceID))
@@ -1091,14 +1115,14 @@ namespace DNDS::Euler
             if ((if2c == 1 && Geom::FaceIDIsPeriodicMain(faceID) && !reverse) ||
                 (if2c == 1 && Geom::FaceIDIsPeriodicDonor(faceID) && reverse))
             {
-                u(Seq012, EigenAll) = mesh->periodicInfo.TransVectorBack<dim, nVarsFixed>(u(Seq012, EigenAll), faceID);
-                u(EigenAll, Seq123) = mesh->periodicInfo.TransVectorBack<dim, dim>(u(EigenAll, Seq123).transpose(), faceID).transpose();
+                u(Seq012, EigenAll) = mesh->PeriodicMetadata().TransVectorBack<dim, nVarsFixed>(u(Seq012, EigenAll), faceID);
+                u(EigenAll, Seq123) = mesh->PeriodicMetadata().TransVectorBack<dim, dim>(u(EigenAll, Seq123).transpose(), faceID).transpose();
             }
             if ((if2c == 1 && Geom::FaceIDIsPeriodicDonor(faceID) && !reverse) ||
                 (if2c == 1 && Geom::FaceIDIsPeriodicMain(faceID) && reverse))
             {
-                u(Seq012, EigenAll) = mesh->periodicInfo.TransVector<dim, nVarsFixed>(u(Seq012, EigenAll), faceID);
-                u(EigenAll, Seq123) = mesh->periodicInfo.TransVector<dim, dim>(u(EigenAll, Seq123).transpose(), faceID).transpose();
+                u(Seq012, EigenAll) = mesh->PeriodicMetadata().TransVector<dim, nVarsFixed>(u(Seq012, EigenAll), faceID);
+                u(EigenAll, Seq123) = mesh->PeriodicMetadata().TransVector<dim, dim>(u(EigenAll, Seq123).transpose(), faceID).transpose();
             }
         }
 
@@ -1544,7 +1568,7 @@ namespace DNDS::Euler
             auto meshRequirements = Geom::MeshReadRequirements::CellFlux();
             auto meshRead = mesh->AcquireRead(meshRequirements);
             const auto meshView = meshRead.HostView();
-            vfv->ValidateMeshDependencies();
+            this->ValidateMeshDependencies();
             DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
             for (Geom::t_index i = Geom::BC_ID_DEFAULT_MAX; i < pBCHandler->size(); i++) // init code, consider adding to ctor
             {
@@ -2261,7 +2285,7 @@ namespace DNDS::Euler
             auto meshRequirements = Geom::MeshReadRequirements::CellFlux();
             auto meshRead = mesh->AcquireRead(meshRequirements);
             const auto meshView = meshRead.HostView();
-            vfv->ValidateMeshDependencies();
+            this->ValidateMeshDependencies();
             for (int iterS = 1; iterS <= (nStep > 0 ? nStep : settings.nCentralSmoothStep); iterS++)
             {
                 real epsC = settings.centralSmoothEps;

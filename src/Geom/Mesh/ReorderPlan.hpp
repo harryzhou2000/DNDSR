@@ -19,6 +19,7 @@
 
 namespace DNDS::Geom
 {
+    class EntitySpace;
     // =================================================================
     // EntityReorderMap: per-entity target rank assignment
     // =================================================================
@@ -120,6 +121,7 @@ namespace DNDS::Geom
     struct PreparedCompanion
     {
         virtual ~PreparedCompanion() = default;
+        virtual void BindEntitySpace(const EntitySpace &) {}
         virtual void Publish() noexcept = 0;
     };
     enum class CompanionDisposition
@@ -137,6 +139,11 @@ namespace DNDS::Geom
         /// Process-local destination handle identity, never serialized or
         /// compared between ranks. Distinct handles may share old storage.
         const void *destination = nullptr;
+        /// Delayed publication guards, local to this process. Allocation IDs,
+        /// value/shape versions and local row extents must not enter the
+        /// cross-rank schema signature.
+        uint64_t allocation = 0, valuesVersion = 0, shapeVersion = 0;
+        size_t rows = 0, owned = 0, ghosts = 0;
     };
 
     /// One registered adjacency entry.
@@ -163,6 +170,9 @@ namespace DNDS::Geom
         std::function<std::unique_ptr<PreparedCompanion>(const PermutationTransfer &, const MPIInfo &)> prepare;
         std::function<CompanionAttachment()> attachment;
         CompanionDisposition disposition = CompanionDisposition::TransferIfReordered;
+        bool requiresEntityBinding = false;
+        std::function<void(const EntitySpace &)> validateSourceSpace;
+        std::function<std::unique_ptr<PreparedCompanion>()> prepareUnchanged;
     };
 
     struct PreparedCompanionBundle
