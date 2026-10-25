@@ -10,6 +10,12 @@
 #pragma once
 
 #include "Mesh.hpp"
+#include "NativeMeshPreparation.hpp"
+#include "NativeMeshCGNS.hpp"
+#include "NativeMeshRefinement.hpp"
+#include "NativeMeshArchive.hpp"
+#include "NativeMeshLegacyArchive.hpp"
+#include "FieldTransfer.hpp"
 #include "DNDS/Serializer/SerializerFactory.hpp"
 
 #include <functional>
@@ -17,6 +23,59 @@
 
 namespace DNDS::Geom
 {
+
+    /// Native CGNS setup without an intermediate legacy mesh. Periodic frames
+    /// are explicit; empty optional disables BC-zone periodic identification.
+    /// Returned mesh has complete owned node stars and prepared facial topology.
+    inline ssp<UnstructuredMesh> ReadNativeMeshFromCGNS(
+        const MPIInfo &mpi, int dimension, const std::string &meshFile,
+        const PartitionOptions &partOpts, const t_FBCName_2_ID &nameMapper,
+        std::optional<NativePeriodicImportOptions> periodic = {},
+        int elevation = 0, int bisect = 0, int readerRank = 0)
+    {
+        FieldTransferDetail::LocalStage(mpi, [&]
+                                        { DNDS_check_throw_info((elevation == 0 || elevation == 1) && bisect >= 0 && bisect <= 4,
+                                                                "native mesh setup requires elevation 0/1 and bisection count 0..4"); });
+        std::array<int, 2> derived{elevation, bisect}, expected = derived;
+        MPI_Bcast(expected.data(), int(expected.size()), MPI_INT, 0, mpi.comm);
+        FieldTransferDetail::LocalStage(mpi, [&]
+                                        { DNDS_check_throw_info(derived == expected, "native mesh derivation options differ across ranks"); });
+        const NativeMeshBuildOptions build{1, true};
+        auto state = ReadNativeCGNS(mpi, meshFile, dimension, nameMapper, readerRank, build, periodic);
+        if (elevation)
+            state = NativeMeshRefinement::Elevate(*state, mpi, build).state;
+        for (int pass = 0; pass < bisect; ++pass)
+        {
+            if (!elevation || pass)
+                state = NativeMeshRefinement::Elevate(*state, mpi, build).state;
+            state = NativeMeshRefinement::Bisect(*state, mpi, build).state;
+        }
+        NativePartitionOptions partition{partOpts.metisType, partOpts.metisUfactor, partOpts.metisSeed,
+                                         partOpts.edgeWeightMethod, partOpts.metisNcuts, 1};
+        return UnstructuredMesh::FromNative(mpi, NativeMeshPreparation::Partition(*state, mpi, partition).state);
+    }
+
+    /// Open an existing full native or legacy primary archive. Schema detection
+    /// is explicit and collective; legacy decode preserves original IDs but
+    /// creates a new namespace because the old format stores none.
+    inline ssp<UnstructuredMesh> ReadNativeMeshFromArchive(
+        const MPIInfo &mpi, Serializer::SerializerFactory factory, const std::string &inputPath,
+        bool repartition = false, const PartitionOptions &partOpts = {})
+    {
+        auto [path, part] = factory.ModifyFilePath(inputPath, mpi, "part_%d", true);
+        auto serializer = factory.BuildSerializer(mpi);
+        serializer->OpenFile(path, true);
+        const auto partition = repartition ? Serializer::ArrayGlobalOffset_EvenSplit : Serializer::ArrayGlobalOffset_Unknown;
+        auto state = ReadCompatibleNativeMeshArchive(mpi, serializer, "meshPart", partition);
+        serializer->CloseFile();
+        if (repartition)
+        {
+            NativePartitionOptions options{partOpts.metisType, partOpts.metisUfactor, partOpts.metisSeed,
+                                           partOpts.edgeWeightMethod, partOpts.metisNcuts, 1};
+            state = NativeMeshPreparation::Partition(*state, mpi, options).state;
+        }
+        return UnstructuredMesh::FromNative(mpi, std::move(state));
+    }
 
     // -----------------------------------------------------------------------
     // BuildGhostPrimary: the 5-step connectivity+ghost sequence
@@ -208,6 +267,16 @@ namespace DNDS::Geom
     {
         auto &mpi = mesh.getMPI();
 
+        if (mesh.HasNativeState())
+        {
+            mesh.PrepareNativeTopology();
+            if (opts.reorderCells == 1)
+                mesh.ReorderLocalCells(opts.reorderParts);
+            if (opts.buildSerialOut)
+                reader.BuildSerialOut();
+            return;
+        }
+
         if (opts.reorderCells == 1)
             mesh.ReorderLocalCells(opts.reorderParts);
 
@@ -254,9 +323,14 @@ namespace DNDS::Geom
         mesh.ConstructBndMesh(meshBnd);
         if (buildSerialOut)
         {
-            meshBnd.AdjLocal2GlobalPrimaryForBnd();
-            readerBnd.BuildSerialOut();
-            meshBnd.AdjGlobal2LocalPrimaryForBnd();
+            if (meshBnd.HasNativeState())
+                readerBnd.BuildSerialOut();
+            else
+            {
+                meshBnd.AdjLocal2GlobalPrimaryForBnd();
+                readerBnd.BuildSerialOut();
+                meshBnd.AdjGlobal2LocalPrimaryForBnd();
+            }
         }
     }
 
@@ -282,9 +356,14 @@ namespace DNDS::Geom
         Serializer::SerializerBaseSSP serializerP = factory.BuildSerializer(mpi);
 
         serializerP->OpenFile(pathMod, false);
-        mesh.AdjLocal2GlobalPrimary();
-        mesh.WriteSerialize(serializerP, "meshPart");
-        mesh.AdjGlobal2LocalPrimary();
+        if (mesh.HasNativeState())
+            mesh.WriteNativeArchive(serializerP, "meshPart");
+        else
+        {
+            mesh.AdjLocal2GlobalPrimary();
+            mesh.WriteSerialize(serializerP, "meshPart");
+            mesh.AdjGlobal2LocalPrimary();
+        }
         serializerP->CloseFile();
     }
 

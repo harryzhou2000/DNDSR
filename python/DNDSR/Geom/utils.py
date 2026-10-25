@@ -255,15 +255,16 @@ def read_mesh(
     :func:`prepare_mesh` next for legacy input. With ``native=True``, use
     ``mesh = prepare_native_mesh(result.mesh)`` and retain its returned facade;
     ``reader`` is None. Native CGNS uses even contiguous ownership, retains BC
-    names on every rank, and rejects legacy partition/periodic options. Native
-    H5 reads the full native archive with its saved ownership, not legacy H5.
+    names on every rank. An explicit periodic_geometry dictionary enables
+    native periodic identification (using periodic_tolerance); None leaves it
+    off. Explicit partition_options requests KWAY facial-graph repartitioning. Native
+    H5 reads a full native archive or decodes legacy primary records directly
+    into native arrays, preserving saved ownership and original IDs.
     All ranks must supply the same helper options and participate in calls.
     """
     if native:
-        if periodic_geometry is not None or periodic_tolerance != 1e-9:
-            raise ValueError("Native reading does not apply periodic identification/geometry options")
-        if partition_options is not None:
-            raise ValueError("Native reading uses even contiguous ownership; partition_options require legacy reading")
+        if periodic_geometry is None and periodic_tolerance != 1e-9:
+            raise ValueError("Native periodic_tolerance requires an explicit periodic_geometry dictionary")
         if elevation not in ("", "O2") or not 0 <= bisect <= 4 or (elevation == "O2" and bisect):
             raise ValueError("Use elevation='' or 'O2', bisect=0..4, without combining O2 and bisection")
         mode = read_mode or _detect_read_mode(mesh_file)
@@ -271,8 +272,11 @@ def read_mesh(
             if serializer_factory is not None:
                 raise ValueError("serializer_factory applies to native H5 archives only")
             mesh, names = Geom.read_native_cgns_with_names(
-                mpi, mesh_file, dim, cell_layers=cell_layers, complete_node_star=complete_node_star)
+                mpi, mesh_file, dim, cell_layers=cell_layers, complete_node_star=complete_node_star,
+                periodic_geometry=periodic_geometry, periodic_tolerance=periodic_tolerance)
         elif mode == "h5":
+            if periodic_geometry is not None or periodic_tolerance != 1e-9:
+                raise ValueError("Native archive retains its saved periodic geometry; overrides are unsupported")
             if complete_node_star:
                 raise ValueError("Native archive preserves its saved node-star requirement; complete_node_star cannot override it")
             factory = serializer_factory or default_serializer_factory()
@@ -281,7 +285,7 @@ def read_mesh(
             serializer = factory.BuildSerializer(mpi)
             serializer.OpenFile(path, True)
             try:
-                mesh = Geom.UnstructuredMesh.read_native_archive(mpi, serializer, "meshPart", ghost_layers=cell_layers)
+                mesh = Geom.read_compatible_native_archive(mpi, serializer, "meshPart", ghost_layers=cell_layers)
             finally:
                 serializer.CloseFile()
             if mesh.getDim() != dim:
@@ -295,6 +299,11 @@ def read_mesh(
             if not mesh.IsO2():
                 mesh = Geom.elevate_native_mesh(mesh, cell_layers, complete_node_star)
             mesh = Geom.bisect_native_mesh(mesh, cell_layers, complete_node_star)
+        if partition_options is not None:
+            allowed = {*_DEFAULT_PARTITION_OPTIONS, "edgeWeightMethod"}
+            if set(partition_options) - allowed:
+                raise ValueError(f"Unknown native partition options: {set(partition_options) - allowed}")
+            mesh = Geom.partition_native_mesh(mesh, **partition_options, ghost_layers=cell_layers)
         return MeshReadResult(mesh, None, names)
     if cell_layers != 1 or complete_node_star:
         raise ValueError("cell_layers and complete_node_star apply only to native reading")
@@ -412,6 +421,9 @@ def prepare_native_mesh(
     mesh: Geom.UnstructuredMesh,
     *,
     ghost_layers: int = 1,
+    partition_options: dict | None = None,
+    reorder_parts: int | None = None,
+    reorder_inner_parts: int = 1,
     edges: bool = False,
     wall_dist_predicate: Callable[[int], bool] | None = None,
     wall_dist_options: dict | None = None,
@@ -425,16 +437,25 @@ def prepare_native_mesh(
     Retain the returned facade. Source topology/geometry remain unchanged.
     All ranks must supply identical options and participate in this collective.
     This explicit route uses existing ownership and does not build legacy serial
-    output caches or perform a partition reorder. Use native output/archive APIs.
+    output caches. Explicit partition_options requests KWAY facial partitioning;
+    explicit reorder_parts requests a rank-local permutation. Allocate external
+    solver fields after this helper; fields on the input stay source-associated.
+    Use native output/archive APIs.
     """
     if not _native_authority(mesh):
         raise ValueError("prepare_native_mesh requires native construction")
     if wall_dist_options is not None and wall_dist_predicate is None:
         raise ValueError("wall_dist_options requires wall_dist_predicate")
-    # Native topology completion rejects overwriting existing families. A
-    # no-new-family call still returns a detached facade with refreshed closure.
-    requirements = Geom.native_mesh_requirements(mesh)
-    prepared = Geom.with_native_topology(mesh, faces=not requirements["faces"], edges=edges and not requirements["edges"], ghost_layers=ghost_layers)
+    if reorder_parts is None and reorder_inner_parts != 1:
+        raise ValueError("reorder_inner_parts requires reorder_parts")
+    prepared = Geom.prepare_native_topology(mesh, faces=True, edges=edges, ghost_layers=ghost_layers)
+    if partition_options is not None:
+        allowed = {*_DEFAULT_PARTITION_OPTIONS, "edgeWeightMethod"}
+        if set(partition_options) - allowed:
+            raise ValueError(f"Unknown native partition options: {set(partition_options) - allowed}")
+        prepared = Geom.partition_native_mesh(prepared, **partition_options, ghost_layers=ghost_layers)
+    if reorder_parts is not None:
+        prepared = Geom.reorder_native_mesh(prepared, reorder_parts, reorder_inner_parts, ghost_layers)
     _apply_coord_transforms(prepared, coord_scale, coord_rot_z_deg, rectify_near_plane, rectify_threshold)
     if wall_dist_predicate is not None:
         options = Geom.UnstructuredMesh.WallDistOptions()

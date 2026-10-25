@@ -102,17 +102,22 @@ Physical faces retain both parent occurrences even for a one-cell self face;
 the named mathematical inverse retains unique cells. Periodic boundary pairs
 must supply complementary main/donor labels, matched to exact element-face
 occurrences in their physical frames. Generated face/edge companions preserve
-those frames through native transitions and archives. This does not identify
-or merge periodic nodes from geometry or CGNS pairing metadata; callers must
-already supply canonical identities. Python's primary-builder wrapper currently
-exposes nonperiodic input only.
+those frames through native transitions and archives. The primary Runtime-array
+builder still requires canonical identities; its Python low-level wrapper exposes
+nonperiodic direct input only. The CGNS frontend additionally supports explicit
+periodic geometry options and matching main/donor boundary labels.
 
 `ReadNativeCGNS` calls the common CGNS parser on one explicit reader rank, then
 distributes native rows and builds sparse topology. Its reader-only serial scratch
 is distinct from distributed ghost construction. The old local serial reader
 uses the same parser and explicitly copies into its compatibility workspace;
 that local API has not acquired an implicit MPI collective. Native import supports
-multi-zone and mixed-element conventions, but does not infer periodic pairing.
+multi-zone and mixed-element conventions. Explicit periodic import canonicalizes
+all ordered node occurrences, including high-order slots, using the shared native
+pairing algorithm. Matching is bijective within the absolute tolerance and
+validates exact image reconstruction. Original-node fixed points and CGNS
+GridConnectivity Periodic properties are rejected explicitly. Node ID high-water
+marks reserve pruned donor IDs; no implicit geometry-only pairing is enabled.
 
 ## New meshes and ancestry
 
@@ -120,8 +125,13 @@ multi-zone and mixed-element conventions, but does not infer periodic pairing.
 identity and the established mean-coordinate rule. `Bisect` uses the existing
 element subdivision mathematics, including the O2 tetrahedron diagonal choice.
 They build a new mesh namespace with fresh IDs, without modifying the source.
-Both currently reject periodic input. No curved-boundary projection, smoothing,
-or conservative solution interpolation is implied.
+Both preserve periodic occurrence labels. Elevation computes physical span means
+and returns them to their common canonical image; bisection uses the physical
+coordinates for tetrahedron variant selection. Boundary extraction selects
+external boundaries, skips periodic seams, retains tangential node images, and
+compacts used canonical nodes on their source owners. No curved-boundary
+projection or conservative solution interpolation is implied. Native smoothing
+is staged separately; see the development migration record.
 
 ```mermaid
 flowchart LR
@@ -219,6 +229,16 @@ ghost_layers)`. Every rank participates, including empty ranks. Per-rank JSON
 supports matching reads only. Finish async producers before writing and keep
 serializer mode/path/call order consistent. POD archives use the Runtime
 homogeneous-ABI codec; external solver fields remain separate checkpoints.
+
+The explicit legacy-primary decoder preserves stored original IDs and creates a
+new namespace because the old format has none. It rejects duplicate stored IDs.
+Historical periodic elevation could assign new node IDs starting at the pruned
+canonical count, overlapping retained original IDs above that count. Such old
+derived archives require an explicit repair policy before import; the native
+decoder does not silently renumber them. For example, a periodic 10-by-10 grid
+can retain original IDs through 108 after pruning to 100 canonical nodes, while
+the old elevation starts new IDs at 100. Native derivation uses persistent
+high-water marks and does not create that overlap.
 
 `NativeMeshTransition` remaps topology through sparse owner requests and moves
 rows, IDs and companions through native transfer plans. Persistent IDs are

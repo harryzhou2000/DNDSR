@@ -7,6 +7,7 @@
 #include "MeshTransition.hpp"
 #include "MeshEdit_bind.hpp"
 #include "NativeMeshBuilder_bind.hpp"
+#include "NativeMeshPreparation_bind.hpp"
 #include <pybind11/pybind11.h>
 #include <pybind11_json/pybind11_json.hpp>
 #include <pybind11/eigen.h>
@@ -302,6 +303,7 @@ namespace DNDS::Geom
                  { self.to_device(device_backend_name_to_enum(backend)); }, py::arg("backend"))
             .def("to_host", &UnstructuredMesh::to_host);
         pybind11_NativeMeshBuilder_define(m);
+        pybind11_NativeMeshPreparation_define(m);
     }
 
     using tPy_UnstructuredMeshSerialRW = py_class_ssp<UnstructuredMeshSerialRW>;

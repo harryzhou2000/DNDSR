@@ -1,5 +1,52 @@
 # Native geometry consumer migration inventory, 2026-10-26
 
+## Current checkpoint 4 status
+
+The entries below the checkpoint section retain the earlier audit history.
+The native implementation now includes local cell permutation, distributed
+unweighted facial-graph partitioning, explicit preparation helpers, serial
+output snapshots, direct primary checkpoint export and old primary archive
+decoding. Periodic import, elevation, bisection and boundary extraction are
+implemented. Native allocation accounting includes shared value and shape
+buffers on host and device, counting allocation capacity once per identity.
+
+Serial output gathers only output payloads to the selected writer. It does not
+construct a legacy mesh. Its maps-only field bridge accepts existing solver
+output arrays; it neither owns those fields nor proves their association from
+matching row counts. Geometry/order changes require rebuilding the descriptor.
+The checkpoint writer stages one wire-compatible payload at a time; the native
+archive decoder constructs Runtime arrays directly. Both preserve the existing
+Serializer dependency. Old archives lack a mesh namespace, so decoding creates
+a new namespace while preserving the stored original IDs.
+
+`WriteSerializeRecMatrix` exports exact ordered face-neighbor slots without
+changing mesh state. It still uses a temporary legacy diagnostic field for the
+established file schema; this is not legacy geometry storage. Periodic boundary
+extraction resolves durable source boundary IDs into current source rows for
+the existing Euler boundary output mapping.
+
+Production C++ initialization still selects the legacy input orchestration.
+The Python EulerP native route is explicit (`native=True`). Its numerical parity
+gate exposed an orientation-dependent entropy-fix input and a zero-gradient
+write during an active halo exchange. Both corrections and their before/after
+evidence are recorded in checkpoint 4. No native-default acceptance is claimed.
+The remaining work is:
+
+1. Complete native OpenFOAM import, configured weighted/RB partition policies
+   and all three elevated-node smoothers before migrating default setup.
+2. Route Euler initialization/output field transfer setup through native helpers
+   and replace CFV benchmark/device wrappers with retained semantic read scopes.
+3. Migrate Python defaults/demos and preserve
+   old test purposes with native fixtures.
+4. Retire production dual mesh authority and the old construction fallback;
+   finish the native-only closure audit and its exact validation record.
+
+OpenFOAM/smoothing/weighted partition work is being prepared separately and is
+not part of checkpoint 4 acceptance until promoted, rebuilt and tested. Global
+boundary datasets in the established wall/smoothing algorithms remain explicit
+scalability limits; the prohibition on global-sized ghost/remap storage remains
+unchanged.
+
 This is a source audit after checkpoint `1ee2c041`, with subsequent work in
 progress. It separates legacy **mesh storage** dependencies from legacy solver
 and metric field arrays. No solver run or scientific validation is claimed.

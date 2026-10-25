@@ -22,6 +22,9 @@
 #include "doctest.h"
 
 #include "CFV/VariationalReconstruction.hpp"
+#include "Geom/Mesh/NativeMeshCGNS.hpp"
+#include "Geom/Mesh/NativeMeshTopology.hpp"
+#include "DNDS/Serializer/SerializerJSON.hpp"
 
 #include <array>
 #include <cmath>
@@ -637,6 +640,58 @@ TEST_CASE("Granular metric publication requires current prerequisites and depend
     CHECK_THROWS(vr->FinalizeMetrics()); // Smoothing depends on face area.
     vr->ConstructCellSmoothScale();
     CHECK_NOTHROW(vr->FinalizeMetrics());
+}
+
+TEST_CASE("Native reconstruction matrix export preserves mesh state and exact face slots")
+{
+    auto state = ReadNativeCGNS(g_mpi, meshPath("Uniform_3x3_wall.cgns"), 2,
+                                [](const std::string &)
+                                { return BC_ID_DEFAULT_WALL; }, 0, {2, true});
+    state = NativeMeshTopology::Build(*state, g_mpi, true, false, 2);
+    auto mesh = UnstructuredMesh::FromNative(g_mpi, state);
+    auto vr = buildVR(mesh, RecMethod::VFV_P2_Default);
+    const auto stamp = mesh->versions.Stamp();
+    auto retained = mesh->AcquireRead(MeshReadRequirements::CellFlux());
+    auto archive = make_ssp<Serializer::SerializerJSON>();
+    archive->CreatePath("/");
+    const auto archivePath = archive->GetCurrentPath();
+    vr->WriteSerializeRecMatrix(archive);
+    CHECK(stamp.Valid());
+    CHECK_FALSE(mesh->cell2cellFace.father);
+    CHECK_FALSE(mesh->cell2node.father);
+    CHECK(archive->GetCurrentPath() == archivePath);
+    tAdjPair loaded;
+    loaded.InitPair("exported reconstruction face graph", g_mpi);
+    loaded.ReadSerialize(archive, "/VR_Matrix/cell2cellFace");
+    REQUIRE(loaded.Size() == mesh->NumCellProc());
+    const auto view = retained.HostView();
+    // Compare exported global entries with the live ordered physical face
+    // incidences, including absent boundary neighbors. This deliberately checks
+    // serialization/numbering rather than re-testing the topology constructor.
+    const auto cells = mesh->Entities(EntityKind::Cell);
+    for (DNDS::index cell = 0; cell < view.NumCell(); ++cell)
+    {
+        const auto faces = view.CellFaces(cell);
+        REQUIRE(loaded.RowSize(cell) == DNDS::rowsize(faces.size()));
+        for (DNDS::rowsize slot = 0; slot < DNDS::rowsize(faces.size()); ++slot)
+        {
+            const auto other = view.CellFaceOther(cell, faces[slot], slot);
+            const auto expected = other == UnInitIndex ? UnInitIndex : cells.LocalToGlobal(other);
+            CHECK(loaded(cell, slot) == expected);
+        }
+    }
+    // Independently ask owners for the full face rows. Ghosts may lack local
+    // face closure, so deriving ghost rows from truncated ghost faces is wrong.
+    std::vector<std::vector<DNDS::index>> before;
+    for (DNDS::index row = 0; row < loaded.son->Size(); ++row)
+        before.emplace_back(loaded.son->operator[](row));
+    loaded.trans.createMPITypes();
+    loaded.trans.pullOnce();
+    for (DNDS::index row = 0; row < loaded.son->Size(); ++row)
+        CHECK(std::vector<DNDS::index>(loaded.son->operator[](row)) == before[size_t(row)]);
+    archive->GoToPath("/VR_Matrix/matrixAAInvB");
+    CHECK(archive->ListCurrentPath().count("father") == 1);
+    archive->GoToPath("/");
 }
 
 TEST_CASE("CFV native authority preserves metrics and anisotropic reconstruction")

@@ -5,6 +5,8 @@
 #include "ReorderPlan.hpp"
 #include "Mesh.hpp"
 #include "Mesh_CellPermutation.hpp"
+#include "NativeMeshTransition.hpp"
+#include "FieldTransfer.hpp"
 
 #include <algorithm>
 #include <limits>
@@ -1035,6 +1037,31 @@ namespace DNDS::Geom
 
     void UnstructuredMesh::ReorderLocalCells(int nParts, int nPartsInner)
     {
+        int native = HasNativeState(), minimum = 0, maximum = 0;
+        MPI_Allreduce(&native, &minimum, 1, MPI_INT, MPI_MIN, mpi.comm);
+        MPI_Allreduce(&native, &maximum, 1, MPI_INT, MPI_MAX, mpi.comm);
+        DNDS_check_throw_info(minimum == maximum, "local reorder authority differs across ranks");
+        if (native)
+        {
+            CheckCollectiveMutationAvailable(true);
+            const auto stamp = versions.Stamp();
+            auto result = NativeMeshTransition::ReorderLocalCells(*_nativeState, mpi, nParts, nPartsInner);
+            std::shared_ptr<NativeMeshState> prepared;
+            FieldTransferDetail::LocalStage(mpi, [&]
+                                            {
+                stamp.Validate();
+                prepared = std::shared_ptr<NativeMeshState>(new NativeMeshState(*result.state)); });
+            // Setup-only in-place entry: associated external fields/routes must
+            // be rebuilt or explicitly transferred through the detached API.
+            MeshMutationToken mutation(this, versions, Runtime::Change::Layout | Runtime::Change::Distribution | Runtime::Change::Allocation);
+            mutation.Commit();
+            prepared->BindPreparedEpoch(versions);
+            _nativeState = std::move(prepared);
+            node2bndNode.clear();
+            node2parentNode.clear();
+            cell2parentCell.clear();
+            return;
+        }
         CheckCollectiveMutationAvailable();
         // Guard against edge-interpolated state.
         // ReorderLocalCells runs before InterpolateFace and InterpolateEdge in

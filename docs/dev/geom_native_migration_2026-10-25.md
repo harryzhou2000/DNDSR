@@ -57,8 +57,16 @@ The C++ primary/topology builders now accept already canonical periodic input
 with exact ordered node-image bits and rank-agreed rigid frames. Independent
 Runtime-array tests cover self faces, doubly periodic repeated canonical IDs,
 distributed two-cell support, quadratic spans, rotation and transition/archive
-preservation. Periodic pairing/deduplication at the import frontend, Python
-periodic builder arguments and periodic refinement/extraction remain unsupported.
+preservation. The CGNS frontend now accepts explicit periodic geometry and
+main/donor boundary labels through one shared native canonicalization algorithm;
+the explicit legacy serial adapter uses the same mathematics. High-order slots,
+reserved donor-ID high-water marks, bijective matching, and inconsistent or
+ambiguous images are checked. CGNS Periodic connection properties and original
+node fixed points remain explicitly unsupported. Native periodic elevation,
+bisection, and external-boundary extraction preserve physical images and ancestry.
+The direct Python Runtime-array primary builder remains nonperiodic; CGNS reader
+kwargs expose supported periodic import. These additions are subsequent to the
+checkpoint3 evidence cited below.
 Native boundary extraction and its facade entry, geometry edits, wall vectors,
 local direct-factor graph caches, coordinate hashing, direct VTKHDF output and
 shared facade CGNS output are implemented. Native-only CPU/worker and two-GPU

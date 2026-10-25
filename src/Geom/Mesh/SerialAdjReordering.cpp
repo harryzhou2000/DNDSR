@@ -103,7 +103,7 @@ namespace DNDS::Geom
             tLocalMatStruct new_mat(n_elem);
             std::vector<index> new_i_new2old(n_elem);
             std::vector<index> i_old2new(n_elem);
-            n_elem_part.assign(n_elem, 0);
+            n_elem_part.assign(nParts, 0);
             for (index iC = 0; iC < n_elem; iC++)
             {
                 auto iP = partition_local[iC];

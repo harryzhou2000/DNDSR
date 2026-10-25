@@ -73,6 +73,12 @@ namespace DNDS::Geom
         /// neighbors without changing entity order, buffers or their epochs.
         std::shared_ptr<const NativeMeshState> WithLocalCellSetup(std::vector<index> partStarts,
                                                                   tLocalMatStruct neighbors) const;
+        /// Owned face-neighbor graph in current face-slot order. Requires faces;
+        /// optionally excludes neighbors outside each current local partition.
+        tLocalMatStruct BuildLocalCellNeighbors(bool onLocalPartition = false) const;
+        /// Detached setup metadata for a newly prepared cell order. Entity maps
+        /// and payloads stay unchanged; neighbors derive from exact face slots.
+        std::shared_ptr<const NativeMeshState> WithLocalPartitions(std::vector<index> partStarts) const;
         /// Replace wall vectors while retaining the exact coordinate allocation.
         std::shared_ptr<const NativeMeshState> WithWallDistance(Runtime::ArrayPair<real> walls) const;
         /// Detached geometry-only replacement with identical entity order and
@@ -84,6 +90,11 @@ namespace DNDS::Geom
             Runtime::ArrayPair<real> coordinates, std::optional<Runtime::ArrayPair<real>> wallVectors,
             const Periodicity &periodicInfo) const;
         void Validate() const { _epoch.Validate(); }
+        /// Rank-local capacity of retained Runtime array allocations, including
+        /// every placement and host/device row metadata. Shared allocation IDs
+        /// count once, including named/fixed aliases, IDs and ancestry. Excludes
+        /// STL containers, entity mappings, access controllers and route caches.
+        size_t ArrayBytes() const;
         /// Exact descriptor lookup over host setup storage. Device placement
         /// does not move this registry or change its canonical entity spaces.
         RelationReadAccess Relation(const AdjKind &key) const;

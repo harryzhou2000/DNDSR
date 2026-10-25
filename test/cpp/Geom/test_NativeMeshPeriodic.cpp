@@ -5,6 +5,9 @@
 #include "Geom/Mesh/NativeMeshArchive.hpp"
 #include "Geom/Mesh/NativeMeshTransition.hpp"
 #include "Geom/Mesh/NativePeriodicMatch.hpp"
+#include "Geom/Mesh/NativeMeshRefinement.hpp"
+#include "Geom/Mesh/NativeMeshExtraction.hpp"
+#include "Geom/Mesh/Mesh.hpp"
 #include "Geom/Mesh/RelationAccess.hpp"
 #include "DNDS/Runtime/RowBuilder.hpp"
 #include "DNDS/Serializer/SerializerJSON.hpp"
@@ -111,6 +114,81 @@ namespace
             CHECK(pair[0] == pair[1]);
             CHECK(view.BoundaryFaces(boundary)[0] != DNDS::UnInitIndex);
         }
+    }
+    std::map<std::pair<int, I>, std::vector<I>> PersistentDerived(const G::NativeMeshState &state, const DNDS::MPIInfo &mpi)
+    {
+        // Fixed tiny test fixture only: gather records keyed by persistent IDs,
+        // independent of current numbering. Production construction never does this.
+        std::vector<I> packed;
+        const auto &view = state.BorrowHostView();
+        for (auto kind : {G::EntityKind::Node, G::EntityKind::Cell, G::EntityKind::Bnd, G::EntityKind::Face, G::EntityKind::Edge})
+            if (state.HasEntities(kind))
+                for (I row = 0; row < state.NumOwned(kind); ++row)
+                {
+                    std::vector<I> values;
+                    if (kind == G::EntityKind::Node)
+                        for (int component = 0; component < 3; ++component)
+                            values.push_back(I(std::llround(2 * view.Coord(row)[component])));
+                    else
+                    {
+                        const auto nodes = kind == G::EntityKind::Cell ? view.CellNodes(row) : kind == G::EntityKind::Bnd ? view.BoundaryNodes(row)
+                                                                                           : kind == G::EntityKind::Face  ? view.FaceNodes(row)
+                                                                                                                          : view.EdgeNodes(row);
+                        const auto bits = kind == G::EntityKind::Cell ? view.CellNodePeriodicBits(row) : kind == G::EntityKind::Bnd ? view.BoundaryNodePeriodicBits(row)
+                                                                                                     : kind == G::EntityKind::Face  ? view.FaceNodePeriodicBits(row)
+                                                                                                                                    : view.EdgeNodePeriodicBits(row);
+                        values.push_back(I(nodes.size()));
+                        for (size_t slot = 0; slot < nodes.size(); ++slot)
+                        {
+                            values.push_back(state.OriginalEntityId(G::EntityKind::Node, nodes[slot]));
+                            values.push_back(uint8_t(bits[slot]));
+                        }
+                        if (kind == G::EntityKind::Cell)
+                        {
+                            const auto faces = view.CellFaces(row), neighbors = view.CellFaceCells(row);
+                            values.push_back(I(faces.size()));
+                            for (size_t slot = 0; slot < faces.size(); ++slot)
+                            {
+                                values.push_back(state.OriginalEntityId(G::EntityKind::Face, faces[slot]));
+                                values.push_back(uint8_t(view.CellFacePeriodicBits(row)[slot]));
+                                values.push_back(neighbors[slot] == DNDS::UnInitIndex ? DNDS::UnInitIndex : state.OriginalEntityId(G::EntityKind::Cell, neighbors[slot]));
+                            }
+                        }
+                        if (kind == G::EntityKind::Face)
+                            for (auto cell : view.FaceCells(row))
+                                values.push_back(cell == DNDS::UnInitIndex ? DNDS::UnInitIndex : state.OriginalEntityId(G::EntityKind::Cell, cell));
+                    }
+                    if (state.Provenance() && state.Provenance()->sourceIds.count(kind))
+                    {
+                        auto read = state.Provenance()->sourceIds.at(kind).Read();
+                        for (auto parent : read.View()[size_t(row)])
+                            values.push_back(parent);
+                    }
+                    packed.insert(packed.end(), {I(kind), state.OriginalEntityId(kind, row), I(values.size())});
+                    packed.insert(packed.end(), values.begin(), values.end());
+                }
+        int count = int(packed.size());
+        std::vector<int> counts(size_t(mpi.size)), starts(size_t(mpi.size));
+        MPI_Allgather(&count, 1, MPI_INT, counts.data(), 1, MPI_INT, mpi.comm);
+        int total = 0;
+        for (int rank = 0; rank < mpi.size; ++rank)
+        {
+            starts[size_t(rank)] = total;
+            total += counts[size_t(rank)];
+        }
+        std::vector<I> all(size_t(total), I(0));
+        MPI_Allgatherv(packed.data(), count, DNDS::DNDS_MPI_INDEX, all.data(), counts.data(), starts.data(), DNDS::DNDS_MPI_INDEX, mpi.comm);
+        std::map<std::pair<int, I>, std::vector<I>> result;
+        for (size_t at = 0; at < all.size();)
+        {
+            const auto kind = int(all.at(at++));
+            const auto id = all.at(at++), length = all.at(at++);
+            REQUIRE(length >= 0);
+            REQUIRE(size_t(length) <= all.size() - at);
+            result.emplace(std::make_pair(kind, id), std::vector<I>(all.begin() + at, all.begin() + at + size_t(length)));
+            at += size_t(length);
+        }
+        return result;
     }
 }
 
@@ -316,6 +394,193 @@ TEST_CASE("Native periodic construction retains a rigid rotation in physical cel
             CHECK(point[1] == expected[slot][1]);
         }
     }
+    auto elevated = G::NativeMeshRefinement::Elevate(*source, mpi);
+    const DNDS::real elevatedPoints[9][2]{{1, 0}, {0, 1}, {0, 2}, {2, 0}, {.5, .5}, {0, 1.5}, {1, 1}, {1.5, 0}, {.75, .75}};
+    for (I cell = 0; cell < elevated.state->NumOwned(G::EntityKind::Cell); ++cell)
+        for (DNDS::rowsize slot = 0; slot < 9; ++slot)
+        {
+            const auto point = elevated.state->BorrowHostView().GetCoordNodeOnCell(cell, slot);
+            CHECK(point[0] == elevatedPoints[slot][0]);
+            CHECK(point[1] == elevatedPoints[slot][1]);
+        }
+    auto split = G::NativeMeshRefinement::Bisect(*elevated.state, mpi);
+    DNDS::real area = 0;
+    for (I cell = 0; cell < split.state->NumOwned(G::EntityKind::Cell); ++cell)
+        for (DNDS::rowsize slot = 0; slot < 4; ++slot)
+        {
+            const auto a = split.state->BorrowHostView().GetCoordNodeOnCell(cell, slot);
+            const auto b = split.state->BorrowHostView().GetCoordNodeOnCell(cell, (slot + 1) % 4);
+            area += .5 * (a[0] * b[1] - b[0] * a[1]);
+        }
+    MPI_Allreduce(MPI_IN_PLACE, &area, 1, DNDS::DNDS_MPI_REAL, MPI_SUM, mpi.comm);
+    CHECK(area == doctest::Approx(-1.5));
+}
+
+TEST_CASE("Native periodic elevation bisection and external extraction preserve physical geometry and ancestry")
+{
+    const auto mpi = MPI();
+    auto primary = G::NativeMeshBuilder::Build(NativePeriodicFixtures::TwoCells(mpi));
+    const auto sourceNamespace = primary->MeshNamespace();
+    auto elevated = G::NativeMeshRefinement::Elevate(*primary, mpi);
+    CHECK(elevated.state->BorrowHostView().IsPeriodic());
+    CHECK(elevated.state->NumGlobal(G::EntityKind::Node) == 12);
+    CHECK(elevated.provenance.sourceNamespace == sourceNamespace);
+    auto topology = G::NativeMeshTopology::Build(*elevated.state, mpi);
+    CHECK(topology->NumGlobal(G::EntityKind::Face) == 6);
+    auto bisected = G::NativeMeshRefinement::Bisect(*elevated.state, mpi);
+    CHECK(bisected.state->NumGlobal(G::EntityKind::Cell) == 8);
+    CHECK(bisected.state->NumGlobal(G::EntityKind::Bnd) == 12);
+    const auto &view = bisected.state->BorrowHostView();
+    for (I cell = 0; cell < bisected.state->NumOwned(G::EntityKind::Cell); ++cell)
+    {
+        DNDS::real area = 0;
+        for (DNDS::rowsize slot = 0; slot < 4; ++slot)
+        {
+            const auto a = view.GetCoordNodeOnCell(cell, slot), b = view.GetCoordNodeOnCell(cell, (slot + 1) % 4);
+            area += a[0] * b[1] - b[0] * a[1];
+        }
+        CHECK(area / 2 == doctest::Approx(.125));
+    }
+    auto mesh = G::UnstructuredMesh::FromNative(mpi, topology);
+    auto retained = mesh->AcquireRead(topology->Requirements());
+    G::UnstructuredMesh boundary(mpi, 1);
+    mesh->ConstructBndMesh(boundary);
+    CHECK(boundary.IsPeriodic());
+    CHECK(boundary.NumCellGlobal() == 4);
+    CHECK(boundary.CurrentNativeState()->NumGlobal(G::EntityKind::Node) == 8);
+    auto cellParents = boundary.CurrentNativeState()->Provenance()->sourceIds.at(G::EntityKind::Cell).Read();
+    for (I cell = 0; cell < boundary.NumCell(); ++cell)
+    {
+        const auto parent = boundary.cell2parentCell[size_t(cell)];
+        CHECK(parent >= 2);
+        CHECK(mesh->OriginalEntityId(G::EntityKind::Bnd, parent) == cellParents.View()(size_t(cell), 0));
+        const auto &extractedView = boundary.CurrentNativeState()->BorrowHostView();
+        const auto a = extractedView.GetCoordNodeOnCell(cell, 0), b = extractedView.GetCoordNodeOnCell(cell, 1);
+        CHECK((a - b).norm() == doctest::Approx(.5));
+        CHECK(extractedView.CellNodes(cell).size() == 3);
+    }
+    auto torus = G::NativeMeshBuilder::Build(NativePeriodicFixtures::QuadraticTorus(mpi));
+    auto empty = G::NativeMeshExtraction::ExtractBoundary(*torus, mpi);
+    CHECK(empty.state->NumGlobal(G::EntityKind::Cell) == 0);
+    CHECK(empty.state->NumGlobal(G::EntityKind::Node) == 0);
+    CHECK(empty.state->BorrowHostView().IsPeriodic());
+}
+
+TEST_CASE("One-cell periodic elevation separates tangent spans with repeated canonical IDs")
+{
+    const auto mpi = MPI();
+    auto source = G::NativeMeshBuilder::Build(Strip(mpi, 2));
+    auto result = G::NativeMeshRefinement::Elevate(*source, mpi);
+    CHECK(result.state->NumGlobal(G::EntityKind::Node) == 6);
+    CHECK(result.state->BorrowHostView().IsPeriodic());
+    auto topology = G::NativeMeshTopology::Build(*result.state, mpi);
+    CHECK(topology->NumGlobal(G::EntityKind::Face) == 3);
+    auto split = G::NativeMeshRefinement::Bisect(*result.state, mpi);
+    CHECK(split.state->NumGlobal(G::EntityKind::Cell) == 4);
+    auto input = NativePeriodicFixtures::QuadraticTorus(mpi);
+    input.cellNodes = Rows<I>(input.cells.NumOwned() ? std::vector<std::vector<I>>{{0, 0, 0, 0}} : std::vector<std::vector<I>>{});
+    input.cellNodesPbi = Rows<G::NodePeriodicBits>(input.cells.NumOwned() ? std::vector<std::vector<G::NodePeriodicBits>>{{{0}, {1}, {3}, {2}}} : std::vector<std::vector<G::NodePeriodicBits>>{});
+    input.boundaryNodes = Rows<I>(std::vector<std::vector<I>>(size_t(input.boundaries.NumOwned()), {0, 0}));
+    if (input.cells.NumOwned())
+    {
+        auto write = input.cellInfo.Write();
+        write.View()(0, 0).setElemType(G::Elem::Quad4);
+    }
+    auto oldBoundaryBits = input.boundaryNodesPbi->Read();
+    std::vector<std::vector<G::NodePeriodicBits>> bits(size_t(input.boundaries.NumOwned()));
+    for (size_t row = 0; row < bits.size(); ++row)
+        bits[row] = {oldBoundaryBits.View()(row, 0), oldBoundaryBits.View()(row, 1)};
+    input.boundaryNodesPbi = Rows(bits);
+    {
+        auto write = input.boundaryInfo.Write();
+        for (size_t row = 0; row < input.boundaryInfo.Rows(); ++row)
+            write.View()(row, 0).setElemType(G::Elem::Line2);
+    }
+    auto linear = G::NativeMeshBuilder::Build(std::move(input));
+    auto quadratic = G::NativeMeshRefinement::Elevate(*linear, mpi);
+    CHECK(quadratic.state->NumGlobal(G::EntityKind::Node) == 7); // Three unused source nodes stay retained.
+    CHECK(G::NativeMeshTopology::Build(*quadratic.state, mpi)->NumGlobal(G::EntityKind::Face) == 2);
+    const DNDS::real points[9][2]{{0, 0}, {1, 0}, {1, 1}, {0, 1}, {.5, 0}, {1, .5}, {.5, 1}, {0, .5}, {.5, .5}};
+    for (I cell = 0; cell < quadratic.state->NumOwned(G::EntityKind::Cell); ++cell)
+        for (DNDS::rowsize slot = 0; slot < 9; ++slot)
+        {
+            const auto point = quadratic.state->BorrowHostView().GetCoordNodeOnCell(cell, slot);
+            CHECK(point[0] == points[slot][0]);
+            CHECK(point[1] == points[slot][1]);
+        }
+}
+
+TEST_CASE("Three-dimensional periodic refinement preserves exact volume persistent images and ancestry across redistribution and restart")
+{
+    const auto mpi = MPI();
+    auto source = G::NativeMeshBuilder::Build(Strip(mpi, 3));
+    auto elevated = G::NativeMeshRefinement::Elevate(*source, mpi);
+    CHECK(elevated.state->NumGlobal(G::EntityKind::Node) == 18);
+    for (I cell = 0; cell < elevated.state->NumOwned(G::EntityKind::Cell); ++cell)
+    {
+        std::set<std::array<int, 3>> lattice;
+        for (DNDS::rowsize slot = 0; slot < 27; ++slot)
+        {
+            const auto point = elevated.state->BorrowHostView().GetCoordNodeOnCell(cell, slot);
+            std::array<int, 3> key;
+            for (int component = 0; component < 3; ++component)
+            {
+                key[size_t(component)] = int(std::llround(2 * point[component]));
+                CHECK(point[component] == .5 * key[size_t(component)]);
+                CHECK(key[size_t(component)] >= 0);
+                CHECK(key[size_t(component)] <= 2);
+            }
+            lattice.insert(key);
+        }
+        CHECK(lattice.size() == 27);
+    }
+    auto children = G::NativeMeshRefinement::Bisect(*elevated.state, mpi);
+    CHECK(children.provenance.sourceNamespace == elevated.state->MeshNamespace());
+    CHECK(children.state->NumGlobal(G::EntityKind::Cell) == 8);
+    for (I cell = 0; cell < children.state->NumOwned(G::EntityKind::Cell); ++cell)
+    {
+        const auto &view = children.state->BorrowHostView();
+        const auto origin = view.GetCoordNodeOnCell(cell, 0);
+        const G::tPoint a = view.GetCoordNodeOnCell(cell, 1) - origin;
+        const G::tPoint b = view.GetCoordNodeOnCell(cell, 3) - origin;
+        const G::tPoint c = view.GetCoordNodeOnCell(cell, 4) - origin;
+        CHECK(a.dot(b.cross(c)) == doctest::Approx(.125));
+    }
+    auto current = G::NativeMeshTopology::Build(*children.state, mpi, true, true);
+    CHECK(current->NumGlobal(G::EntityKind::Face) == 32);
+    CHECK(current->NumGlobal(G::EntityKind::Edge) == 42);
+    const auto expected = PersistentDerived(*current, mpi);
+    const auto name = current->MeshNamespace(), ancestry = current->Provenance()->sourceNamespace;
+    const auto highWater = current->IdHighWater();
+    source.reset();
+    elevated = {};
+    children = {};
+    G::ReorderInput reorder;
+    for (auto kind : {G::EntityKind::Node, G::EntityKind::Cell, G::EntityKind::Bnd, G::EntityKind::Face, G::EntityKind::Edge})
+    {
+        std::vector<DNDS::MPI_int> placements;
+        for (I row = 0; row < current->NumOwned(kind); ++row)
+            placements.push_back(DNDS::MPI_int((current->OriginalEntityId(kind, row) + I(kind) + 1) % mpi.size));
+        reorder.explicitMaps.push_back({kind, std::move(placements)});
+    }
+    current = G::NativeMeshTransition::Build(*current, mpi, reorder).state;
+    CHECK(PersistentDerived(*current, mpi) == expected);
+    int pid = getpid();
+    MPI_Bcast(&pid, 1, MPI_INT, 0, mpi.comm);
+    const auto path = (std::filesystem::temp_directory_path() / ("periodic-derived-" + std::to_string(pid) + "-r" + std::to_string(mpi.rank) + ".json")).string();
+    auto serializer = std::make_shared<DNDS::Serializer::SerializerJSON>();
+    serializer->OpenFile(path, false);
+    G::WriteNativeMeshArchive(*current, mpi, serializer, "mesh");
+    serializer->CloseFile();
+    current.reset();
+    serializer->OpenFile(path, true);
+    current = G::ReadNativeMeshArchive(mpi, serializer, "mesh");
+    serializer->CloseFile();
+    CHECK(current->MeshNamespace() == name);
+    CHECK(current->IdHighWater() == highWater);
+    CHECK(current->Provenance()->sourceNamespace == ancestry);
+    CHECK(PersistentDerived(*current, mpi) == expected);
+    std::filesystem::remove(path);
 }
 
 int main(int argc, char **argv)

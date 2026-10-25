@@ -2,9 +2,57 @@
 #include "Mesh.hpp"
 #include "RelationAccess.hpp"
 #include "DNDS/Runtime/RowBuilder.hpp"
+#include <set>
 
 namespace DNDS::Geom
 {
+    size_t NativeMeshState::ArrayBytes() const
+    {
+        Validate();
+        size_t bytes = 0;
+        std::set<uint64_t> allocations;
+        auto visit = [&](uint64_t identity, size_t capacity, Runtime::Device)
+        {
+            if (allocations.insert(identity).second)
+                bytes = CheckedSize::Add(bytes, capacity);
+        };
+        auto array = [&](const auto &values)
+        { values.SharedStorage()->VisitAllocations(visit); };
+        auto pair = [&](const auto &values)
+        {
+            array(values.owned);
+            array(values.ghost);
+        };
+        auto optional = [&](const auto &values)
+        { if (values) pair(*values); };
+        for (const auto &[key, snapshot] : _placements)
+        {
+            const auto &state = snapshot.Live();
+            for (const auto &relation : state.relations)
+                optional(relation);
+            optional(state.coords);
+            optional(state.nodeWallDist);
+            optional(state.cellInfo);
+            optional(state.bndInfo);
+            optional(state.faceInfo);
+            optional(state.edgeInfo);
+            optional(state.cellNodesPbi);
+            optional(state.bndNodesPbi);
+            optional(state.cellFacesPbi);
+            optional(state.faceNodesPbi);
+            optional(state.cellEdgesPbi);
+            optional(state.edgeNodesPbi);
+        }
+        for (const auto &[key, relation] : _namedRelations)
+            pair(relation.data.rows);
+        for (const auto &[kind, ids] : _originalIds)
+            array(ids);
+        if (_provenance)
+            for (const auto &[kind, ids] : _provenance->sourceIds)
+                array(ids);
+        return bytes;
+    }
+
     namespace
     {
         template <class F>
@@ -388,6 +436,48 @@ namespace DNDS::Geom
         auto result = std::shared_ptr<NativeMeshState>(new NativeMeshState(*this));
         if (!result->_placements.count(PlacementKey(device)))
             result->_placements.emplace(PlacementKey(device), _placements.at(-1).To(device, context));
+        return result;
+    }
+
+    tLocalMatStruct NativeMeshState::BuildLocalCellNeighbors(bool onLocalPartition) const
+    {
+        Validate();
+        CheckRequirements(MeshReadRequirements::CellFlux());
+        const auto &view = BorrowHostView();
+        tLocalMatStruct result(size_t(view.NumCell()));
+        for (int part = 0; part < NLocalParts(); ++part)
+            for (index cell = LocalPartStart(part); cell < LocalPartEnd(part); ++cell)
+            {
+                const auto faces = view.CellFaces(cell);
+                auto &row = result[size_t(cell)];
+                row.reserve(faces.size());
+                for (size_t slot = 0; slot < faces.size(); ++slot)
+                {
+                    const auto face = faces[slot];
+                    DNDS_check_throw_info(face >= 0 && face < view.NumFaceProc(), "native local graph requires complete owned cell faces");
+                    const auto other = view.CellFaceOther(cell, face, rowsize(slot));
+                    DNDS_check_throw_info(other == UnInitIndex || (other >= 0 && other < view.NumCellProc()),
+                                          "native local graph requires local face-cell closure");
+                    if (other == UnInitIndex || other == cell || other >= view.NumCell())
+                        continue;
+                    if (onLocalPartition && (other < LocalPartStart(part) || other >= LocalPartEnd(part)))
+                        continue;
+                    row.push_back(other);
+                }
+            }
+        return result;
+    }
+
+    std::shared_ptr<const NativeMeshState> NativeMeshState::WithLocalPartitions(std::vector<index> partStarts) const
+    {
+        Validate();
+        DNDS_check_throw_info(partStarts.size() >= 2 && partStarts.front() == 0 &&
+                                  partStarts.back() == NumOwned(EntityKind::Cell) &&
+                                  std::is_sorted(partStarts.begin(), partStarts.end()),
+                              "invalid native local partition boundaries");
+        auto result = std::shared_ptr<NativeMeshState>(new NativeMeshState(*this));
+        result->_localPartStarts = std::move(partStarts);
+        result->_localCellNeighbors = result->BuildLocalCellNeighbors(true);
         return result;
     }
 

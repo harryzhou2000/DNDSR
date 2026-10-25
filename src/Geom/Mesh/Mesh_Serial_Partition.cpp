@@ -207,30 +207,7 @@ namespace DNDS::Geom
         if (HasNativeState())
         {
             auto read = AcquireRead(MeshReadRequirements::CellFlux());
-            const auto view = read.HostView();
-            tLocalMatStruct neighbors(size_t(view.NumCell()));
-            for (int part = 0; part < NLocalParts(); ++part)
-                for (index cell = LocalPartStart(part); cell < LocalPartEnd(part); ++cell)
-                {
-                    const auto faces = view.CellFaces(cell);
-                    auto &row = neighbors[size_t(cell)];
-                    row.reserve(faces.size());
-                    for (size_t slot = 0; slot < faces.size(); ++slot)
-                    {
-                        const auto face = faces[slot];
-                        DNDS_check_throw_info(face >= 0 && face < view.NumFaceProc(),
-                                              "native local graph requires complete owned cell faces");
-                        const auto other = view.CellFaceOther(cell, face, rowsize(slot));
-                        DNDS_check_throw_info(other == UnInitIndex || (other >= 0 && other < view.NumCellProc()),
-                                              "native local graph requires local face-cell closure");
-                        if (other == UnInitIndex || other == cell || other >= view.NumCell())
-                            continue;
-                        if (onLocalPartition && (other < LocalPartStart(part) || other >= LocalPartEnd(part)))
-                            continue;
-                        row.push_back(other);
-                    }
-                }
-            return neighbors;
+            return _nativeState->BuildLocalCellNeighbors(onLocalPartition);
         }
         RequireLegacyWorkspace("GetCell2CellFaceVLocal");
         // if (onLocalPartition)

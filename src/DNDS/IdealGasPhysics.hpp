@@ -216,10 +216,12 @@ namespace DNDS::IdealGas
     /**
      * @brief H-correction + Harten-Yee entropy fix (scheme 8 in Euler module).
      *
-     * This is the entropy fix scheme used by both Euler and EulerP.
+     * EulerP uses this helper; Euler/Gas.hpp has the corresponding scheme-8
+     * formula. speedL/speedR are total velocity magnitudes relative to the grid,
+     * not signed normal velocities. This keeps face reversal invariant.
      */
     DNDS_DEVICE_CALLABLE inline void
-    EntropyFix_HCorrHY(real aL, real aR, real vnL, real vnR,
+    EntropyFix_HCorrHY(real aL, real aR, real speedL, real speedR,
                        real dLambda, real fixScale,
                        real &lam0, real &lam123, real &lam4)
     {
@@ -227,7 +229,7 @@ namespace DNDS::IdealGas
         const real scaleHFix = kScaleHFix * fixScale;
 
         real aAve = 0.5 * (aL + aR);
-        real VAve = 0.5 * (vnL + vnR);
+        real VAve = 0.5 * (speedL + speedR);
 
         lam0 = std::max(lam0, dLambda * scaleHFix);
         lam4 = std::max(lam4, dLambda * scaleHFix);

@@ -103,6 +103,9 @@ namespace DNDS::Geom
     /// primary topology/geometry/original IDs/PBI; optional topology rebuilds.
     /// Wall values require explicit DropAuxiliary authorization. This does not
     /// checkpoint registered fields or preserve face/edge numbering.
+    /// The legacy file schema is encoded one payload at a time from a retained
+    /// read scope; no complete legacy mesh workspace is created. ghostLayers is
+    /// retained for source compatibility; existing source closure is serialized.
     void WriteCurrentPrimaryMeshSnapshot(UnstructuredMesh &source, Serializer::SerializerBaseSSP serializer,
                                          const std::string &name, int ghostLayers = 1,
                                          CurrentMeshCheckpointPolicy policy = CurrentMeshCheckpointPolicy::RequireNoAuxiliaryValues);

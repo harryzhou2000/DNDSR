@@ -10,11 +10,37 @@
 #include "Mesh.hpp"
 #include "DNDS/Runtime/Array_bind.hpp"
 #include <limits>
+#include <set>
 
 namespace DNDS::Geom
 {
     inline void pybind11_NativeMeshBuilder_define(py::module_ &m)
     {
+        auto periodicImport = [](const MPIInfo &mpi, py::object geometry, real tolerance)
+        {
+            std::optional<NativePeriodicImportOptions> result;
+            FieldTransferDetail::LocalStage(mpi, [&]
+                                            {
+                DNDS_check_throw_info(!geometry.is_none() || tolerance == 1e-9, "periodic tolerance requires explicit periodic_geometry ({} selects defaults)");
+                if (geometry.is_none() && tolerance == 1e-9) return;
+                result.emplace();
+                result->tolerance = tolerance;
+                if (geometry.is_none()) return;
+                DNDS_check_throw_info(py::isinstance<py::dict>(geometry), "periodic_geometry must be a dictionary or None");
+                auto values = geometry.cast<py::dict>();
+                const std::set<std::string> names{"translation1", "translation2", "translation3", "rotationCenter1", "rotationCenter2", "rotationCenter3", "eulerAngles1", "eulerAngles2", "eulerAngles3"};
+                for (auto entry : values) DNDS_check_throw_info(names.count(py::cast<std::string>(entry.first)), "unknown periodic geometry option");
+                for (int group = 1; group <= 3; ++group)
+                {
+                    auto get = [&](const std::string &name, const tPoint &fallback)
+                    { return values.contains(name.c_str()) ? values[name.c_str()].cast<tPoint>() : fallback; };
+                    result->frames.translation[size_t(group)].map() = get("translation" + std::to_string(group), result->frames.translation[size_t(group)].map());
+                    result->frames.rotationCenter[size_t(group)].map() = get("rotationCenter" + std::to_string(group), tPoint::Zero());
+                    const tPoint angles = get("eulerAngles" + std::to_string(group), tPoint::Zero());
+                    result->frames.rotation[size_t(group)].map() = RotZ(angles[2]) * RotY(angles[1]) * RotX(angles[0]);
+                } });
+            return result;
+        };
         m.def("native_mesh_requirements", [](const UnstructuredMesh &mesh)
               {
                   const auto requirements = mesh.CurrentNativeState()->Requirements();
@@ -75,20 +101,22 @@ namespace DNDS::Geom
                   result["source_kinds"] = std::move(kinds);
                   result["source_ids"] = std::move(ids);
                   return result; }, py::arg("mesh"), "Return None or durable ancestry metadata: source_namespace, source_kinds and owned source_ids Runtime.Arrays. Arrays share storage and independently retain the immutable owner publication, so writes remain blocked after the mesh/dict is released. Runtime row() returns independent snapshots; retain native read leases for borrowed pointers.");
-        m.def("read_native_cgns", [](const MPIInfo &mpi, const std::string &path, int dimension, int readerRank, int cellLayers, bool completeNodeStar)
+        m.def("read_native_cgns", [periodicImport](const MPIInfo &mpi, const std::string &path, int dimension, int readerRank, int cellLayers, bool completeNodeStar, py::object geometry, real tolerance)
               {
+                  const auto periodic = periodicImport(mpi, geometry, tolerance);
                   AutoAppendName2ID boundaryIds;
                   py::gil_scoped_release release;
                   return UnstructuredMesh::FromNative(mpi, ReadNativeCGNS(mpi, path, dimension,
-                      [&](const std::string &name) { return boundaryIds(name); }, readerRank, {cellLayers, completeNodeStar})); }, py::arg("mpi"), py::arg("path"), py::arg("dimension"), py::arg("reader_rank") = 0, py::arg("cell_layers") = 1, py::arg("complete_node_star") = false, "Collectively import CGNS through a native reader and even contiguous entity distribution. All ranks supply identical path/options. Boundary names use default IDs with deterministic IDs appended for unknown names; only reader_rank parses the file.");
-        m.def("read_native_cgns_with_names", [](const MPIInfo &mpi, const std::string &path, int dimension, int readerRank, int cellLayers, bool completeNodeStar)
+                      [&](const std::string &name) { return boundaryIds(name); }, readerRank, {cellLayers, completeNodeStar}, periodic)); }, py::arg("mpi"), py::arg("path"), py::arg("dimension"), py::arg("reader_rank") = 0, py::arg("cell_layers") = 1, py::arg("complete_node_star") = false, py::arg("periodic_geometry") = py::none(), py::arg("periodic_tolerance") = 1e-9, "Collectively import CGNS through native Runtime arrays. Optional periodic_geometry uses the SetPeriodicGeometry dictionary keys; radians and absolute matching tolerance. None with default tolerance disables identification; {} enables default transforms. BC main/donor labels determine pairing; CGNS periodic connection properties and same-original-node fixed points are rejected. All ranks supply identical options. Only reader_rank parses the file.");
+        m.def("read_native_cgns_with_names", [periodicImport](const MPIInfo &mpi, const std::string &path, int dimension, int readerRank, int cellLayers, bool completeNodeStar, py::object geometry, real tolerance)
               {
+                  const auto periodic = periodicImport(mpi, geometry, tolerance);
                   auto names = std::make_shared<AutoAppendName2ID>();
                   std::shared_ptr<const NativeMeshState> state;
                   {
                       py::gil_scoped_release release;
                       state = ReadNativeCGNS(mpi, path, dimension,
-                          [&](const std::string &name) { return (*names)(name); }, readerRank, {cellLayers, completeNodeStar});
+                          [&](const std::string &name) { return (*names)(name); }, readerRank, {cellLayers, completeNodeStar}, periodic);
                       // Only readerRank parses names. Broadcast the exact assigned
                       // dictionary rather than recreating IDs in unordered order.
                       std::string encoded;
@@ -107,7 +135,7 @@ namespace DNDS::Geom
                           names->id_cap = metadata.at("cap").get<t_index>();
                       });
                   }
-                  return py::make_tuple(UnstructuredMesh::FromNative(mpi, std::move(state)), names); }, py::arg("mpi"), py::arg("path"), py::arg("dimension"), py::arg("reader_rank") = 0, py::arg("cell_layers") = 1, py::arg("complete_node_star") = false, "Collective native CGNS import returning (mesh, boundary name dictionary). The exact reader-assigned names and IDs are retained on every rank.");
+                  return py::make_tuple(UnstructuredMesh::FromNative(mpi, std::move(state)), names); }, py::arg("mpi"), py::arg("path"), py::arg("dimension"), py::arg("reader_rank") = 0, py::arg("cell_layers") = 1, py::arg("complete_node_star") = false, py::arg("periodic_geometry") = py::none(), py::arg("periodic_tolerance") = 1e-9, "Collective native CGNS import returning (mesh, boundary name dictionary). Optional periodic_geometry and periodic_tolerance match read_native_cgns. The exact reader-assigned names and IDs are retained on every rank.");
         m.def("with_native_topology", [](const UnstructuredMesh &mesh, bool faces, bool edges, int ghostLayers)
               {
                   const auto mpi = mesh.mpi;

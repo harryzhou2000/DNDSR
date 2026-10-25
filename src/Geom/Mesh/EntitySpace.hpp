@@ -32,6 +32,7 @@ namespace DNDS::Geom
         friend class NativeMeshTransition;
         friend class NativeMeshAssembler;
         friend struct NativeMeshOutput;
+        friend struct NativeMeshSerialOutput;
         friend class NativeConnectivity;
         friend class RelationPeriodicBits;
 

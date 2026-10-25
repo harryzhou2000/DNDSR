@@ -2,6 +2,7 @@
 #include "NativeMeshAssembler.hpp"
 #include "NativeMeshClosure.hpp"
 #include "NativeConnectivity.hpp"
+#include "NativePeriodicMatch.hpp"
 #include "FieldTransfer.hpp"
 
 namespace DNDS::Geom
@@ -9,15 +10,16 @@ namespace DNDS::Geom
     namespace
     {
         using Array = Runtime::Array<index>;
-        Array ElevationRows(const std::vector<std::vector<index>> &rows)
+        template <class T>
+        Runtime::Array<T> ElevationRows(const std::vector<std::vector<T>> &rows)
         {
-            Runtime::RowBuilder builder(rows.size(), sizeof(index));
+            Runtime::RowBuilder builder(rows.size(), sizeof(T));
             for (size_t row = 0; row < rows.size(); ++row)
             {
                 builder.ResizeRow(row, rows[row].size());
-                std::copy(rows[row].begin(), rows[row].end(), builder.Row<index>(row).data);
+                std::copy(rows[row].begin(), rows[row].end(), builder.Row<T>(row).data);
             }
-            return Array::FromSharedStorage(builder.Commit());
+            return Runtime::Array<T>::FromSharedStorage(builder.Commit());
         }
         Array ElevationFetch(const Runtime::RowTransferPlan &route, const Array &source,
                              const MPIInfo &mpi, const std::shared_ptr<Runtime::CommunicationContext> &context)
@@ -43,7 +45,6 @@ namespace DNDS::Geom
         auto owned = NativeMeshAssembler::CaptureOwned(source, mpi);
         FieldTransferDetail::LocalStage(mpi, [&]
                                         {
-            DNDS_check_throw_info(!owned.periodic, "native elevation currently requires nonperiodic input");
             for (const auto *metadata : {&*owned.cellInfo, &*owned.bndInfo})
             {
                 auto read = metadata->Read();
@@ -59,6 +60,9 @@ namespace DNDS::Geom
         auto cone = closure.cellNodes.Read();
         auto metadata = closure.cellInfo.ReadCombined();
         const auto cellInfoView = metadata.View();
+        std::optional<RelationPeriodicBits> periodic;
+        if (closure.cellNodesPbi)
+            periodic.emplace(cone, closure.cellNodesPbi->owned, closure.cellNodesPbi->ghost);
         SubEntityQueryPbi query;
         query.numSubEntities = [cellInfoView](index cell)
         { return Elem::Element{cellInfoView(size_t(cell), 0).getElemType()}.GetNumElev_O1O2(); };
@@ -78,12 +82,21 @@ namespace DNDS::Geom
             element.ExtractElevNodeSpanNodes(t_index(slot), nodes, values);
             std::copy(values.begin(), values.end(), output);
         };
+        query.extractPbi = [cellInfoView](index cell, int slot, const std::function<NodePeriodicBits(int)> &read, NodePeriodicBits *output)
+        {
+            auto element = Elem::Element{cellInfoView(size_t(cell), 0).getElemType()};
+            const auto span = element.ObtainElevNodeSpan(t_index(slot));
+            std::vector<NodePeriodicBits> nodes(size_t(element.GetNumNodes())), values(size_t(span.GetNumNodes()));
+            for (size_t i = 0; i < nodes.size(); ++i)
+                nodes[i] = read(int(i));
+            element.ExtractElevNodeSpanNodes(t_index(slot), nodes, values);
+            std::copy(values.begin(), values.end(), output);
+        };
         // Temporary construction spans reuse subentity deduplication. This
         // scratch Edge space includes edge/face/cell spans and is never exposed
         // as the new mesh's edge family; every span becomes one new node.
-        auto spans = NativeConnectivity::Interpolate(cone, EntityKind::Edge, query,
-                                                     [mpi](const std::vector<index> &, const std::vector<MPI_int> &ranks, index)
-                                                     { return OwnershipDecision{*std::min_element(ranks.begin(), ranks.end()) == mpi.rank, {}}; });
+        auto spans = NativeConnectivity::Interpolate(cone, EntityKind::Edge, query, [mpi](const std::vector<index> &, const std::vector<MPI_int> &ranks, index)
+                                                     { return OwnershipDecision{*std::min_element(ranks.begin(), ranks.end()) == mpi.rank, {}}; }, periodic ? &*periodic : nullptr);
         const auto oldNodes = source.Entities(EntityKind::Node);
         const index nOld = oldNodes.NumOwned();
         index nNew = 0;
@@ -129,22 +142,32 @@ namespace DNDS::Geom
                 nodeParents[size_t(node)] = {idRead.View()(size_t(node), 0)};
             }
             auto spanNodes = spans.entity2node.Read();
+            std::optional<Runtime::Array<NodePeriodicBits>::ReadLease> spanBits;
+            if (spans.entity2nodePbi) spanBits.emplace(spans.entity2nodePbi->Read());
             for (index span = 0; span < spans.entities.NumOwned(); ++span)
             {
                 const auto globals = spanNodes.GlobalRow(span);
                 tPoint coordinate = tPoint::Zero();
-                for (auto global : globals)
+                uint8_t common = 7;
+                for (size_t slot = 0; slot < globals.size(); ++slot)
                 {
+                    const auto global = globals[slot];
                     const auto local = expandedNodes.GlobalToLocal(global);
                     DNDS_check_throw_info(local, "native elevation span node closure missing");
-                    for (size_t component = 0; component < 3; ++component) coordinate[component] += coordRead.View()(size_t(*local), component);
+                    tPoint point;
+                    for (size_t component = 0; component < 3; ++component) point[component] = coordRead.View()(size_t(*local), component);
+                    const auto bits = spanBits ? spanBits->View()(size_t(span), slot) : NodePeriodicBits{0};
+                    common &= uint8_t(bits);
+                    coordinate += owned.periodic ? owned.periodicInfo.GetCoordByBits(point, bits) : point;
                     nodeParents[size_t(nOld + span)].push_back(idRead.View()(size_t(*local), 0));
                 }
                 coordinate /= real(globals.size());
+                if (owned.periodic) coordinate = owned.periodicInfo.GetCoordBackByBits(coordinate, NodePeriodicBits{common});
                 DNDS_check_throw_info(coordinate.allFinite(), "native elevated coordinate is not finite");
                 for (size_t component = 0; component < 3; ++component) output.View()(size_t(nOld + span), component) = coordinate[component];
             } });
         std::vector<std::vector<index>> cellNodes(size_t(cells.NumOwned())), boundaryNodes(size_t(boundaries.NumOwned()));
+        std::vector<std::vector<NodePeriodicBits>> cellBits(cellNodes.size()), boundaryBits(boundaryNodes.size());
         Runtime::Array<ElemInfo> newCellInfo(Runtime::RowLayout::Dense(size_t(cells.NumOwned()), 1));
         Runtime::Array<ElemInfo> newBoundaryInfo(Runtime::RowLayout::Dense(size_t(boundaries.NumOwned()), 1));
         Array types(Runtime::RowLayout::Dense(size_t(cells.NumOwned()), 1));
@@ -158,6 +181,21 @@ namespace DNDS::Geom
                 auto &row = cellNodes[size_t(cell)];
                 for (auto global : cone.GlobalRow(cell)) row.push_back(oldNode(global));
                 for (auto global : additions.GlobalRow(cell)) row.push_back(newNode(global));
+                if (periodic)
+                {
+                    auto &bits = cellBits[size_t(cell)];
+                    for (size_t slot = 0; slot < cone.RowSize(cell); ++slot) bits.push_back((*periodic)(cell, slot));
+                    auto element = Elem::Element{cellInfoView(size_t(cell), 0).getElemType()};
+                    for (t_index span = 0; span < element.GetNumElev_O1O2(); ++span)
+                    {
+                        const auto sub = element.ObtainElevNodeSpan(span);
+                        std::vector<NodePeriodicBits> labels(size_t(sub.GetNumNodes()));
+                        element.ExtractElevNodeSpanNodes(span, bits, labels);
+                        uint8_t common = 7;
+                        for (auto value : labels) common &= uint8_t(value);
+                        bits.push_back(NodePeriodicBits{common});
+                    }
+                }
                 auto info = cellInfoView(size_t(cell), 0);
                 const auto element = Elem::Element{info.getElemType()};
                 typeWrite.View()(size_t(cell), 0) = info.type;
@@ -172,8 +210,8 @@ namespace DNDS::Geom
             const auto sourceCells = source.Entities(EntityKind::Cell);
             for (index boundary = 0; boundary < boundaries.NumOwned(); ++boundary)
             {
-                DNDS_check_throw_info(parents.View().RowSize(size_t(boundary)) == 2 && parents.View()(size_t(boundary), 1) == UnInitIndex,
-                                      "native elevation requires external one-sided boundaries");
+                DNDS_check_throw_info(parents.View().RowSize(size_t(boundary)) == 2,
+                                      "native elevation requires two boundary physical slots");
                 const auto parent = parents.View()(size_t(boundary), 0);
                 requests.push_back({sourceCells.Owner(parent), sourceCells.OwnerLocalRow(parent), size_t(boundary)});
             } });
@@ -182,11 +220,30 @@ namespace DNDS::Geom
         auto candidateNodes = ElevationFetch(boundaryRoute, closure.cellNodes.Owned(), mpi, context);
         auto candidateSpans = ElevationFetch(boundaryRoute, spans.parent2entity.Owned(), mpi, context);
         auto candidateTypes = ElevationFetch(boundaryRoute, types, mpi, context);
+        std::optional<Array> candidateFrames;
+        if (periodic)
+        {
+            std::optional<Array> frames;
+            FieldTransferDetail::LocalStage(mpi, [&]
+                                            {
+                auto read = owned.cellNodesPbi->Read();
+                std::vector<std::vector<index>> rows(owned.cellNodesPbi->Rows());
+                for (size_t row = 0; row < rows.size(); ++row) for (auto bits : read.View()[row]) rows[row].push_back(uint8_t(bits));
+                frames = ElevationRows(rows); });
+            candidateFrames = ElevationFetch(boundaryRoute, *frames, mpi, context);
+        }
         FieldTransferDetail::LocalStage(mpi, [&]
                                         {
             auto cones = owned.relations[size_t(MeshRelation::BoundaryNodes)]->Read();
             auto boundaryInfo = owned.bndInfo->Read();
             auto parentNodes = candidateNodes.Read(), parentSpans = candidateSpans.Read(), parentTypes = candidateTypes.Read();
+            std::optional<Runtime::Array<NodePeriodicBits>::ReadLease> boundaryImages;
+            std::optional<Array::ReadLease> parentImages;
+            if (periodic)
+            {
+                boundaryImages.emplace(owned.bndNodesPbi->Read());
+                parentImages.emplace(candidateFrames->Read());
+            }
             auto output = newBoundaryInfo.Write();
             for (index boundary = 0; boundary < boundaries.NumOwned(); ++boundary)
             {
@@ -196,15 +253,34 @@ namespace DNDS::Geom
                 const auto original = cones.View()[row];
                 std::vector<index> globals(original.begin(), original.end());
                 for (auto global : globals) boundaryNodes[row].push_back(oldNode(global));
+                std::vector<index> originalBits(globals.size(), 0);
+                if (periodic)
+                    for (size_t slot = 0; slot < globals.size(); ++slot)
+                    {
+                        const auto value = boundaryImages->View()(row, slot);
+                        originalBits[slot] = uint8_t(value);
+                        boundaryBits[row].push_back(value);
+                    }
                 const auto parent = parentNodes.View()[row];
                 std::vector<index> parentGlobals(parent.begin(), parent.end());
+                std::vector<index> parentBits(parentGlobals.size(), 0);
+                if (periodic) for (size_t slot = 0; slot < parentBits.size(); ++slot) parentBits[slot] = parentImages->View()(row, slot);
                 auto parentElement = Elem::Element{static_cast<Elem::ElemType>(parentTypes.View()(row, 0))};
                 for (t_index slot = 0; slot < element.GetNumElev_O1O2(); ++slot)
                 {
                     const auto span = element.ObtainElevNodeSpan(slot);
                     std::vector<index> expected(size_t(span.GetNumNodes()));
                     element.ExtractElevNodeSpanNodes(slot, globals, expected);
-                    std::sort(expected.begin(), expected.end());
+                    std::vector<index> expectedBits(expected.size());
+                    element.ExtractElevNodeSpanNodes(slot, originalBits, expectedBits);
+                    NativePeriodicNodes expectedPattern;
+                    uint8_t common = 7;
+                    for (size_t node = 0; node < expected.size(); ++node)
+                    {
+                        expectedPattern.emplace_back(expected[node], uint8_t(expectedBits[node]));
+                        common &= uint8_t(expectedBits[node]);
+                    }
+                    std::sort(expectedPattern.begin(), expectedPattern.end());
                     index found = UnInitIndex;
                     for (t_index parentSlot = 0; parentSlot < parentElement.GetNumElev_O1O2(); ++parentSlot)
                     {
@@ -212,8 +288,12 @@ namespace DNDS::Geom
                         if (candidate.type != span.type) continue;
                         std::vector<index> actual(size_t(candidate.GetNumNodes()));
                         parentElement.ExtractElevNodeSpanNodes(parentSlot, parentGlobals, actual);
-                        std::sort(actual.begin(), actual.end());
-                        if (actual == expected)
+                        std::vector<index> actualBits(actual.size());
+                        parentElement.ExtractElevNodeSpanNodes(parentSlot, parentBits, actualBits);
+                        NativePeriodicNodes actualPattern;
+                        for (size_t node = 0; node < actual.size(); ++node) actualPattern.emplace_back(actual[node], uint8_t(actualBits[node]));
+                        std::sort(actualPattern.begin(), actualPattern.end());
+                        if (actualPattern == expectedPattern)
                         {
                             DNDS_check_throw_info(found == UnInitIndex, "native boundary elevation span is ambiguous");
                             found = parentSpans.View()(row, size_t(parentSlot));
@@ -221,6 +301,7 @@ namespace DNDS::Geom
                     }
                     DNDS_check_throw_info(found != UnInitIndex, "native boundary elevation span is absent from its parent");
                     boundaryNodes[row].push_back(newNode(found));
+                    if (periodic) boundaryBits[row].push_back(NodePeriodicBits{common});
                 }
                 info.setElemType(element.ObtainElevatedElem().type);
                 output.View()(row, 0) = info;
@@ -237,6 +318,13 @@ namespace DNDS::Geom
             input.emplace(NativeMeshInput{mpi, owned.dimension, cells, nodes, boundaries, ElevationRows(cellNodes), ElevationRows(boundaryNodes),
                                          std::move(newCoordinates), std::move(newCellInfo), std::move(newBoundaryInfo)});
             input->provenance = result.provenance; });
+        if (owned.periodic)
+            FieldTransferDetail::LocalStage(mpi, [&]
+                                            {
+                input->periodic = true;
+                input->periodicInfo = owned.periodicInfo;
+                input->cellNodesPbi = ElevationRows(cellBits);
+                input->boundaryNodesPbi = ElevationRows(boundaryBits); });
         result.state = NativeMeshBuilder::Build(std::move(*input), options);
         return result;
     }

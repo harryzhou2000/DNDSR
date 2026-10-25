@@ -38,11 +38,11 @@ namespace DNDS::Geom
         FieldTransferDetail::LocalStage(mpi, [&]
                                         {
             source.Validate();
-            retained.emplace(source.Snapshot(Runtime::Device::Host()).AcquireRead());
-            DNDS_check_throw_info(!retained->HostView().IsPeriodic(), "native O2 bisection does not support periodic input"); });
+            retained.emplace(source.Snapshot(Runtime::Device::Host()).AcquireRead()); });
         auto owned = NativeMeshAssembler::CaptureOwned(source, mpi);
         const auto view = retained->HostView();
         std::vector<std::vector<index>> cellNodes, boundaryNodes;
+        std::vector<std::vector<NodePeriodicBits>> cellBits, boundaryBits;
         std::vector<ElemInfo> cellInfo, boundaryInfo;
         std::vector<index> cellParents, boundaryParents, nodeParents;
         FieldTransferDetail::LocalStage(mpi, [&]
@@ -51,10 +51,12 @@ namespace DNDS::Geom
             for (index row = 0; row < source.NumOwned(EntityKind::Node); ++row)
                 nodeParents.push_back(source.OriginalEntityId(EntityKind::Node, row));
             auto split = [&](EntityKind kind, const Runtime::Array<index> &cones,
-                             const Runtime::Array<ElemInfo> &metadata, auto &children, auto &childInfo, auto &parents)
+                             const Runtime::Array<ElemInfo> &metadata, auto &children, auto &childInfo, auto &parents, auto &childBits)
             {
                 auto cone = cones.Read();
                 auto info = metadata.Read();
+                std::optional<Runtime::Array<NodePeriodicBits>::ReadLease> images;
+                if (owned.periodic) images.emplace((kind == EntityKind::Cell ? *owned.cellNodesPbi : *owned.bndNodesPbi).Read());
                 for (size_t row = 0; row < cones.Rows(); ++row)
                 {
                     auto parentInfo = info.View()(row, 0);
@@ -65,12 +67,14 @@ namespace DNDS::Geom
                     tSmallCoords coordinates;
                     coordinates.resize(Eigen::NoChange, element.GetNumNodes());
                     std::vector<index> globals(size_t(element.GetNumNodes()));
+                    std::vector<NodePeriodicBits> bits(globals.size());
                     for (size_t slot = 0; slot < globals.size(); ++slot)
                     {
                         globals[slot] = cone.View()(row, slot);
                         const auto local = source.Entities(EntityKind::Node).GlobalToLocal(globals[slot]);
                         DNDS_check_throw_info(local, "native bisection source node closure is incomplete");
-                        coordinates.col(Eigen::Index(slot)) = view.Coord(*local);
+                        if (images) bits[slot] = images->View()(row, slot);
+                        coordinates.col(Eigen::Index(slot)) = owned.periodic ? owned.periodicInfo.GetCoordByBits(view.Coord(*local), bits[slot]) : tPoint(view.Coord(*local));
                     }
                     DNDS_check_throw_info(coordinates.allFinite(), "native bisection source coordinates are not finite");
                     const auto variant = Elem::GetO2ElemBisectVariant(element, coordinates);
@@ -82,6 +86,12 @@ namespace DNDS::Geom
                         auto mutableElement = element;
                         mutableElement.ExtractO2BisectElemNodes(child, variant, globals, nodes);
                         children.push_back(std::move(nodes));
+                        if (owned.periodic)
+                        {
+                            std::vector<NodePeriodicBits> labels(size_t(childElement.GetNumNodes()));
+                            mutableElement.ExtractO2BisectElemNodes(child, variant, bits, labels);
+                            childBits.push_back(std::move(labels));
+                        }
                         auto value = parentInfo;
                         value.setElemType(childElement.type);
                         childInfo.push_back(value);
@@ -89,8 +99,8 @@ namespace DNDS::Geom
                     }
                 }
             };
-            split(EntityKind::Cell, *owned.relations[size_t(MeshRelation::CellNodes)], *owned.cellInfo, cellNodes, cellInfo, cellParents);
-            split(EntityKind::Bnd, *owned.relations[size_t(MeshRelation::BoundaryNodes)], *owned.bndInfo, boundaryNodes, boundaryInfo, boundaryParents); });
+            split(EntityKind::Cell, *owned.relations[size_t(MeshRelation::CellNodes)], *owned.cellInfo, cellNodes, cellInfo, cellParents, cellBits);
+            split(EntityKind::Bnd, *owned.relations[size_t(MeshRelation::BoundaryNodes)], *owned.bndInfo, boundaryNodes, boundaryInfo, boundaryParents, boundaryBits); });
         const auto nodes = EntitySpace::CreateOwned(EntityKind::Node, mpi, source.NumOwned(EntityKind::Node));
         const auto cells = nodes.CreateSibling(EntityKind::Cell, index(cellNodes.size()));
         const auto boundaries = nodes.CreateSibling(EntityKind::Bnd, index(boundaryNodes.size()));
@@ -105,6 +115,25 @@ namespace DNDS::Geom
             result.provenance.sourceIds.emplace(EntityKind::Bnd, Column(boundaryParents));
             result.provenance.sourceKinds = {{EntityKind::Node, EntityKind::Node}, {EntityKind::Cell, EntityKind::Cell}, {EntityKind::Bnd, EntityKind::Bnd}};
             input->provenance = result.provenance; });
+        if (owned.periodic)
+        {
+            auto bitRows = [](const auto &rows)
+            {
+                Runtime::RowBuilder builder(rows.size(), sizeof(NodePeriodicBits));
+                for (size_t row = 0; row < rows.size(); ++row)
+                {
+                    builder.ResizeRow(row, rows[row].size());
+                    std::copy(rows[row].begin(), rows[row].end(), builder.Row<NodePeriodicBits>(row).data);
+                }
+                return Runtime::Array<NodePeriodicBits>::FromSharedStorage(builder.Commit());
+            };
+            FieldTransferDetail::LocalStage(mpi, [&]
+                                            {
+                input->periodic = true;
+                input->periodicInfo = owned.periodicInfo;
+                input->cellNodesPbi = bitRows(cellBits);
+                input->boundaryNodesPbi = bitRows(boundaryBits); });
+        }
         result.state = NativeMeshBuilder::Build(std::move(*input), options);
         return result;
     }

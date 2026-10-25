@@ -19,6 +19,7 @@
 #include "doctest.h"
 
 #include "Euler/Gas.hpp"
+#include "EulerP/EulerP_ARS.hpp"
 
 #include <Eigen/Dense>
 #include <cmath>
@@ -873,4 +874,58 @@ TEST_CASE("Roe consistency: diagonal normal")
         CAPTURE(i);
         CHECK(F(i) == doctest::Approx(Fexact(i)).epsilon(1e-8));
     }
+}
+
+TEST_CASE("EulerP Roe entropy threshold uses total speed and preserves orientation and rotation")
+{
+    namespace EP = DNDS::EulerP;
+    using State = Eigen::Vector<DNDS::real, 5>;
+    const State left = prim2cons(1.0, 1.0, 0.001, 0.4, 1.0);
+    const State right = prim2cons(0.7, 0.8, -0.001, 0.5, 0.8);
+    const Eigen::Vector3d normal{0, 1, 0};
+    auto evaluate = [&](const State &l, const State &r, const Eigen::Vector3d &n, bool oldSignedInput)
+    {
+        EP::PhysicsDeviceView<DNDS::DeviceBackend::Host> physics{};
+        physics.params.gamma = g_gamma;
+        State lp = l, rp = r;
+        lp.segment<3>(1) /= l(0);
+        rp.segment<3>(1) /= r(0);
+        const auto pl = (g_gamma - 1) * (l(4) - 0.5 * l.segment<3>(1).squaredNorm() / l(0));
+        const auto pr = (g_gamma - 1) * (r(4) - 0.5 * r.segment<3>(1).squaredNorm() / r(0));
+        Eigen::Vector3d velocity;
+        DNDS::real squared = 0, enthalpy = 0, density = 0, soundSquared = 0;
+        EP::RoeAverageNS(l, r, lp, rp, 5, pl, pr, physics, velocity, squared, enthalpy, density, soundSquared);
+        const auto sound = std::sqrt(soundSquared), vn = velocity.dot(n), speed = std::sqrt(squared);
+        DNDS::real minus = std::abs(vn - sound), contact = std::abs(vn), plus = std::abs(vn + sound);
+        EP::RoeEigenValueFixer(sound, sound, oldSignedInput ? vn : speed, oldSignedInput ? vn : speed,
+                               0, 1, minus, contact, plus);
+        if (!oldSignedInput)
+        {
+            // Independent piecewise contact-wave oracle. Tangential velocity
+            // dominates this fixture, so using only |v.n| also fails it.
+            const auto threshold = 0.05 * (speed + sound);
+            const auto absolute = std::abs(vn);
+            const auto expected = absolute < threshold ? (absolute * absolute + threshold * threshold) / (2 * threshold) : absolute;
+            CHECK(contact == doctest::Approx(expected).epsilon(1e-13));
+            DNDS::real em = std::abs(vn - sound), ec = absolute, ep = std::abs(vn + sound);
+            Roe_EntropyFixer<8>(sound, sound, sound, vn, vn, vn, speed, speed, speed, 0, 1, 1, em, ec, ep);
+            CHECK(minus == doctest::Approx(em).epsilon(1e-13));
+            CHECK(contact == doctest::Approx(ec).epsilon(1e-13));
+            CHECK(plus == doctest::Approx(ep).epsilon(1e-13));
+        }
+        State flux = State::Zero();
+        EP::RoeFluxFlow(l, r, pl, pr, velocity, squared, 0, n, soundSquared, sound, enthalpy,
+                        physics, minus, contact, plus, flux);
+        return flux;
+    };
+    const auto flux = evaluate(left, right, normal, false);
+    CHECK(flux.allFinite());
+    CHECK(flux.isApprox(-evaluate(right, left, -normal, false), 1e-13));
+    CHECK_FALSE(evaluate(left, right, normal, true).isApprox(-evaluate(right, left, -normal, true), 1e-13));
+    const Eigen::Matrix3d rotation = Eigen::AngleAxisd(0.57, Eigen::Vector3d{0.5, 1, 0.3}.normalized()).toRotationMatrix();
+    State rotatedLeft = left, rotatedRight = right, expectedFlux = flux;
+    rotatedLeft.segment<3>(1) = rotation * left.segment<3>(1);
+    rotatedRight.segment<3>(1) = rotation * right.segment<3>(1);
+    expectedFlux.segment<3>(1) = rotation * flux.segment<3>(1);
+    CHECK(evaluate(rotatedLeft, rotatedRight, rotation * normal, false).isApprox(expectedFlux, 1e-13));
 }

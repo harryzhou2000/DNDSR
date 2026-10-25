@@ -1152,7 +1152,9 @@ namespace DNDS::EulerP
             TU UR = uFR[iFace];
 
             RoeEigenValueFixer(
-                aRoe, aRoe, veloRoeN, veloRoeN,
+                // HY uses total speed, as in Euler scheme 8. A signed normal
+                // velocity makes contact dissipation depend on face orientation.
+                aRoe, aRoe, std::sqrt(vsqrRoe), std::sqrt(vsqrRoe),
                 std::max(deltaLamCell(iCellL), deltaLamCell(iCellRR)),
                 1.0, lam0, lam123, lam4);
 

@@ -4,8 +4,31 @@
 #include "DNDS/Runtime/Array.hpp"
 #include "DNDS/Array.hpp"
 #include <cuda_runtime.h>
+#include <map>
 
 using namespace DNDS::Runtime;
+
+TEST_CASE("CUDA array allocation accounting includes host and device row metadata without alias duplication")
+{
+    Array<double> csr(RowLayout::Ragged({2, 0, 3}), Device::CUDA(0));
+    auto alias = csr;
+    auto other = Array<double>::FromSharedStorage(csr.SharedStorage()->WithValues(Buffer::Allocate(5 * sizeof(double), Device::CUDA(0)), sizeof(double)));
+    Array<int> padded(RowLayout::Padded({1, 3}, 5), Device::CUDA(0));
+    std::map<uint64_t, size_t> allocations;
+    size_t host = 0, device = 0;
+    auto visit = [&](uint64_t identity, size_t capacity, Device placement)
+    {
+        if (allocations.emplace(identity, capacity).second)
+            (placement == Device::Host() ? host : device) += capacity;
+    };
+    csr.SharedStorage()->VisitAllocations(visit);
+    alias.SharedStorage()->VisitAllocations(visit);
+    other.SharedStorage()->VisitAllocations(visit);
+    padded.SharedStorage()->VisitAllocations(visit);
+    CHECK(host == 6 * sizeof(size_t));
+    CHECK(device == 2 * 5 * sizeof(double) + 2 * 5 * sizeof(int) + 6 * sizeof(size_t));
+    CHECK(allocations.size() == 7);
+}
 
 __global__ void FillRows(ArrayView<double> values)
 {

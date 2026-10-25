@@ -49,6 +49,76 @@ namespace DNDS::Geom
             destination.idx.markGlobal();
         }
 
+        // Legacy primary-file encoding is an I/O compatibility boundary. Stage
+        // one payload at a time; never reconstruct a complete legacy mesh just
+        // to serialize the native publication. Ghost rows come from owners,
+        // whose incidence rows are complete even at the closure boundary.
+        void WritePrimaryPayloads(UnstructuredMesh &source, const UnstructuredMeshView &view,
+                                  const Serializer::SerializerBaseSSP &serializer, const std::string &name)
+        {
+            const auto cwd = serializer->GetCurrentPath();
+            struct RestorePath
+            {
+                Serializer::SerializerBaseSSP serializer;
+                std::string path;
+                ~RestorePath() { serializer->GoToPath(path); }
+            } restore{serializer, cwd};
+            serializer->CreatePath(name);
+            serializer->GoToPath(name);
+            serializer->WriteString("mesh", "UnstructuredMesh");
+            serializer->WriteIndex("dim", view.Dimension());
+            if (serializer->IsPerRank())
+                serializer->WriteIndex("MPIRank", source.mpi.rank);
+            serializer->WriteIndex("MPISize", source.mpi.size);
+            serializer->WriteInt("isPeriodic", view.IsPeriodic());
+
+            auto write = [&](auto pair, EntityKind kind, const char *field, auto width, auto value)
+            {
+                const auto space = source.Entities(kind);
+                FieldTransferDetail::LocalStage(source.mpi, [&]
+                                                {
+                    CloneRows(pair, space.NumOwned(), source.mpi, field, width, value);
+                    LegacyFieldBridge::BorrowIndexing(pair.trans, space); });
+                pair.trans.createMPITypes();
+                pair.trans.pullOnce();
+                pair.WriteSerialize(serializer, field);
+            };
+            const auto one = [](index)
+            { return rowsize(1); };
+            const auto nodes = source.Entities(EntityKind::Node);
+            write(tCoordPair{}, EntityKind::Node, "coords", [](index)
+                  { return rowsize(3); }, [&](index row, rowsize slot)
+                  { return view.Coord(row)[slot]; });
+            write(tAdjPair{}, EntityKind::Cell, "cell2node", [&](index row)
+                  { return view.CellNodes(row).size(); }, [&](index row, rowsize slot)
+                  { return nodes.LocalToGlobal(view.CellNodes(row)[slot]); });
+            write(tElemInfoArrayPair{}, EntityKind::Cell, "cellElemInfo", one,
+                  [&](index row, rowsize)
+                  { return view.GetCellInfo(row); });
+            write(tAdjPair{}, EntityKind::Bnd, "bnd2node", [&](index row)
+                  { return view.BoundaryNodes(row).size(); }, [&](index row, rowsize slot)
+                  { return nodes.LocalToGlobal(view.BoundaryNodes(row)[slot]); });
+            write(tElemInfoArrayPair{}, EntityKind::Bnd, "bndElemInfo", one,
+                  [&](index row, rowsize)
+                  { return view.GetBndInfo(row); });
+            if (view.IsPeriodic())
+            {
+                write(tPbiPair{}, EntityKind::Cell, "cell2nodePbi", [&](index row)
+                      { return view.CellNodes(row).size(); }, [&](index row, rowsize slot)
+                      { return view.CellNodePeriodicBits(row)[slot]; });
+                write(tPbiPair{}, EntityKind::Bnd, "bnd2nodePbi", [&](index row)
+                      { return view.BoundaryNodes(row).size(); }, [&](index row, rowsize slot)
+                      { return view.BoundaryNodePeriodicBits(row)[slot]; });
+                auto periodic = view.Periodic();
+                periodic.WriteSerializer(serializer, "periodicInfo");
+            }
+            for (const auto &[kind, field] : std::array<std::pair<EntityKind, const char *>, 3>{
+                     {{EntityKind::Bnd, "bnd2bndOrig"}, {EntityKind::Cell, "cell2cellOrig"}, {EntityKind::Node, "node2nodeOrig"}}})
+                write(tAdj1Pair{}, kind, field, one,
+                      [&](index row, rowsize)
+                      { return source.OriginalEntityId(kind, row); });
+        }
+
         void CheckInventory(const UnstructuredMesh &mesh, const UnstructuredMeshView &view, const ReorderInput &input,
                             const std::vector<CompanionEntry> &fields)
         {
@@ -658,9 +728,9 @@ namespace DNDS::Geom
         MPI_Bcast(expected.data(), length, MPI_CHAR, 0, source.mpi.comm);
         FieldTransferDetail::LocalStage(source.mpi, [&]
                                         { DNDS_check_throw_info(name == expected, "current checkpoint path differs between ranks"); });
-        auto workspace = CloneCurrentMeshForSetup(source, ghostLayers, TransitionCachePolicy::Invalidate);
-        workspace->AdjLocal2GlobalPrimary();
-        workspace->WriteSerialize(serializer, name);
+        FieldTransferDetail::LocalStage(source.mpi, [&]
+                                        { DNDS_check_throw_info(ghostLayers >= 1, "primary checkpoint ghost layers must be positive"); });
+        WritePrimaryPayloads(source, retained->HostView(), serializer, name);
         auto cwd = serializer->GetCurrentPath();
         serializer->GoToPath(name);
         serializer->WriteString("checkpoint_kind", "DNDSR.CurrentPrimaryMeshSnapshot");

@@ -20,6 +20,7 @@
 #include "RelationAccessLegacy.hpp"
 #include "MeshMutation.hpp"
 #include "NativeMeshState.hpp"
+#include "NativeMeshSerialOutput.hpp"
 
 namespace DNDS::Direct
 {
@@ -152,6 +153,9 @@ namespace DNDS::Geom
             DNDS_check_throw_info(!_nativeState, operation + " requires explicit UseLegacyWorkspace");
         }
         void PublishNative(MeshReadRequirements requirements = MeshReadRequirements::Primary());
+        /// Collective setup-only topology completion. Rebuild external field
+        /// bindings after this operation; use detached preparation for A->B.
+        void PrepareNativeTopology(bool faces = true, bool edges = false, int ghostLayers = 1);
         /// Collective full native checkpoint. Retains the current publication;
         /// no legacy mesh conversion and no external solver fields are saved.
         void WriteNativeArchive(Serializer::SerializerBaseSSP serializer, const std::string &name) const;
@@ -944,6 +948,9 @@ namespace DNDS::Geom
          * \warning RecreatePeriodicNodes and BuildVTKConnectivity results are invalid after this;
          * \warning bnd mesh's cell2parentCell is invalid after this
          */
+        /// Setup-only native publication changes cell numbering and invalidates
+        /// associated fields/routes. Use NativeMeshTransition::ReorderLocalCells
+        /// for a detached result with explicit external-field transfer maps.
         void ReorderLocalCells(int nParts = 1, int nPartsInner = 1);
 
         /// Legacy implementation preserved for reference/fallback.
@@ -1544,6 +1551,14 @@ namespace DNDS::Geom
 
         index getArrayBytes()
         {
+            if (HasNativeState())
+            {
+                const auto localBytes = _nativeState->ArrayBytes();
+                DNDS_check_throw_info(localBytes <= size_t(std::numeric_limits<index>::max()), "native mesh array bytes exceed index range");
+                index bytes = index(localBytes);
+                MPI::AllreduceOneIndex(bytes, MPI_SUM, mpi);
+                return bytes;
+            }
             index bytes = 0;
             auto acuumulate_bytes_arr = [&](auto &v)
             {
@@ -1598,6 +1613,10 @@ namespace DNDS::Geom
     struct UnstructuredMeshSerialRW
     {
         using PartitionOptions = Geom::PartitionOptions; // backward compatibility alias
+
+        /// Explicit serial-output snapshot; native meshes never populate the
+        /// legacy mesh arrays. Refresh after geometry or ownership changes.
+        std::shared_ptr<NativeMeshSerialOutput> nativeSerialOutput;
 
     private:
         int ascii_precision{16};

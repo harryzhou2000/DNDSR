@@ -421,14 +421,34 @@ wall search retains the historical methods 0/20/1 and execution modes; its globa
 surface scratch scales with the selected wall patches on every rank. Wall node
 selection and final vectors use sparse owner/ghost routes.
 
-Native CGNS input uses even contiguous ownership and rejects Metis partition
-options and periodic identification/geometry options. The lower-level
+Optional ``prepare_native_mesh(..., partition_options={...}, reorder_parts=1)``
+performs distributed facial-graph partitioning followed by local cell ordering.
+Omitting both options retains current ownership/order. Partitioning supports
+``metisType="KWAY"``, ``edgeWeightMethod=0``, and the existing seed, cut-count
+and imbalance options. Unsupported recursive or weighted policies raise an
+error. Empty ranks participate; the graph stays distributed, except when one
+rank already owns the complete graph and can call serial METIS locally. Native
+C++ callers use ``NativeMeshPreparation::Partition`` and
+``NativeMeshTransition::ReorderLocalCells`` separately to retain every field
+transfer map. Python helpers prepare before allocating external fields; existing
+fields remain associated with the input mesh.
+
+Native CGNS input initially uses even contiguous ownership. Explicit
+`partition_options` on `read_mesh(native=True)` applies the same supported KWAY
+facial-graph partitioning after reading/refinement; omission preserves the read
+partition. Native periodic identification is enabled explicitly by a
+`periodic_geometry` dictionary (the same nine frame keys as `SetPeriodicGeometry`)
+with `periodic_tolerance`; `None` leaves identification off. Nondefault tolerance
+without an explicit dictionary rejects. Archive reads retain saved periodic
+metadata and reject overrides. The lower-level
 `Geom.read_native_cgns_with_names(...)` returns `(mesh, name_to_id)`;
 `Geom.read_native_cgns(...)` keeps its original mesh-only return. Native archive
 reading preserves its saved publication requirements, IDs, namespace, companions
 and ancestry. Archive boundary **zone IDs** survive, but the separate CGNS name
-dictionary is not saved and `name_to_id` is `None` after restart. Native and
-legacy H5 formats are distinct; choose `native=True` explicitly. `build_bnd_mesh`
+dictionary is not saved and `name_to_id` is `None` after restart. Native and legacy H5 wire formats remain distinct. With `native=True`, the
+reader agrees the exact schema across ranks and decodes either directly into
+native arrays. Legacy primary import preserves original IDs and creates a fresh
+namespace; saved legacy ghosts and transformer state are rebuilt natively. `build_bnd_mesh`
 selects the appropriate path automatically; an explicit `build_serial_out=True`
 rejects native input rather than staging a legacy copy. `prepare_mesh` remains
 the legacy mutating helper and rejects native input with guidance to the returned
@@ -821,3 +841,29 @@ nGhost = mesh.NumCellGhost()
 - See `src/Geom/Mesh/Mesh_bind.hpp` for the complete list of Python-exposed methods
 - See `src/Geom/Elements_bind.hpp` for the `ElemType` enum bindings
 - See `docs/architecture/Paradigm.md` for overall design philosophy
+
+### EulerP native preparation
+
+`Solver.ReadMesh(path, dim, native=True)` selects native read, facial-graph
+partition, local cell ordering, preparation and compact boundary extraction
+before allocating FV/evaluator fields. The compatibility default remains
+`native=False` temporarily while the complete consumer retirement and configured
+output coverage are validated. Explicit serial-reader output caches
+are not available on the native route. For native archive input, pass the
+matching `boundary_names` map explicitly: mesh archives retain zone IDs rather
+than the separate CGNS name dictionary. The reader handles are `None` in native
+mode. Solver device placement continues to use the evaluator's retained native
+snapshot.
+
+EulerP's Roe entropy threshold now receives the total Roe velocity magnitude,
+matching the existing Euler scheme-8 convention. Previously its signed normal
+velocity changed the contact/shear dissipation when a face orientation reversed,
+so equivalent native and legacy cell orders could produce different residuals.
+This intentional bug fix changes affected EulerP residuals; the underlying Euler
+formula and entropy constants are unchanged. Regression checks cover contact
+thresholds, face reversal, rotation and complete native/legacy evaluator RHS.
+
+EulerP's `zero_grad=True` path now clears gradients before starting their MPI
+halo pull. The prior order wrote active send/receive buffers and allowed delayed
+receives to restore nonzero ghost gradients. Regression checks require zero
+owned and ghost conservative/primitive gradients on both mesh backends.

@@ -374,7 +374,39 @@ TEST_CASE("Native builder CUDA stencil retains independent arrays through pendin
     options.completeNodeStar = true;
     auto state = G::NativeMeshBuilder::Build(*input, options);
     auto placed = state->WithPlacement(device, context);
+    // A placement adds device values and mirrored CSR/size metadata. Its host
+    // shape metadata, native named registry, IDs and ancestry remain shared.
+    size_t deviceBytes = size_t(state->NumOwned(G::EntityKind::Node) + state->NumGhost(G::EntityKind::Node)) * 3 * sizeof(DNDS::real) +
+                         size_t(state->NumOwned(G::EntityKind::Cell) + state->NumGhost(G::EntityKind::Cell)) * sizeof(G::ElemInfo);
+    const auto hostView = state->BorrowHostView();
+    const auto cellsOnRank = state->Entities(G::EntityKind::Cell);
+    const auto nodesOnRank = state->Entities(G::EntityKind::Node);
+    const auto boundariesOnRank = state->Entities(G::EntityKind::Bnd);
+    for (size_t slot = 0; slot < size_t(G::MeshRelation::Count); ++slot)
+    {
+        const auto relation = G::MeshRelation(slot);
+        if (!hostView.HasRelation(relation))
+            continue;
+        const auto &space = relation == G::MeshRelation::NodeCells || relation == G::MeshRelation::NodeBoundaries ? nodesOnRank : relation == G::MeshRelation::BoundaryNodes || relation == G::MeshRelation::BoundaryCells ? boundariesOnRank
+                                                                                                                                                                                                                           : cellsOnRank;
+        size_t elements = 0;
+        for (I row = 0; row < space.NumLocal(); ++row)
+            elements += hostView.Relation(relation, row).size();
+        // This primary builder fixture publishes CSR for all relations except
+        // the fixed two-column physical boundary-cell slot (empty here).
+        deviceBytes += elements * sizeof(I);
+        if (relation != G::MeshRelation::BoundaryCells)
+            deviceBytes += size_t(space.NumLocal() + 2) * sizeof(size_t);
+    }
+    CHECK(placed->ArrayBytes() == state->ArrayBytes() + deviceBytes);
+    {
+        auto samePlacement = placed->WithPlacement(device, context);
+        CHECK(samePlacement->ArrayBytes() == placed->ArrayBytes());
+    }
     auto mesh = G::UnstructuredMesh::FromNative(mpi, placed);
+    I globalBytes = I(placed->ArrayBytes());
+    DNDS::MPI::AllreduceOneIndex(globalBytes, MPI_SUM, mpi);
+    CHECK(mesh->getArrayBytes() == globalBytes);
     CHECK_FALSE(mesh->coords.father);
     CHECK_FALSE(mesh->cell2node.father);
     CHECK_FALSE(mesh->cell2cell.father);

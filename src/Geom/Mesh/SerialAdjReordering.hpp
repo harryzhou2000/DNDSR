@@ -34,6 +34,8 @@ namespace DNDS::Geom
         std::string metisType = "KWAY", int metisNcuts = 3, int metisUfactor = 5, int metisSeed = 0)
     {
         idx_t nCell = METIS::indexToIdx(size_t_to_signed<index>(mat_end - mat_begin));
+        if (nCell <= 1)
+            return std::vector<idx_t>(size_t(nCell), 0);
         idx_t nCon{1};
         std::array<idx_t, METIS_NOPTIONS> options{};
         METIS_SetDefaultOptions(options.data());
@@ -83,6 +85,25 @@ namespace DNDS::Geom
                     adjncy[pos++] = METIS::indexToIdx(iLocal);
             }
         }
+
+        // METIS rejects contiguous-part requests on disconnected input. Keep
+        // the historical connected-graph option; local mesh subgraphs may
+        // legitimately have several components or isolated cells.
+        std::vector<uint8_t> visited(size_t(nCell), 0);
+        std::vector<idx_t> pending{0};
+        visited[0] = 1;
+        for (size_t next = 0; next < pending.size(); ++next)
+            for (idx_t edge = xadj[size_t(pending[next])]; edge < xadj[size_t(pending[next]) + 1]; ++edge)
+            {
+                const auto other = adjncy[size_t(edge)];
+                if (!visited[size_t(other)])
+                {
+                    visited[size_t(other)] = 1;
+                    pending.push_back(other);
+                }
+            }
+        if (pending.size() != size_t(nCell))
+            options[METIS_OPTION_CONTIG] = 0;
 
         idx_t objval;
         std::vector<idx_t> partOut(nCell);

@@ -17,14 +17,14 @@ namespace DNDS::EulerP
     /**
      * @brief Applies entropy fix to Roe eigenvalues to prevent expansion shocks.
      *
-     * Thin wrapper delegating to @c IdealGas::EntropyFix_HCorrHY, which is shared
-     * with the Euler module. Modifies the three characteristic eigenvalues (lam0, lam123, lam4)
+     * Thin wrapper delegating to @c IdealGas::EntropyFix_HCorrHY, using the Euler scheme-8 total-speed
+     * threshold convention. Modifies the three characteristic eigenvalues (lam0, lam123, lam4)
      * in-place.
      *
      * @param aL Speed of sound on the left state.
      * @param aR Speed of sound on the right state.
-     * @param vnL Normal velocity on the left state.
-     * @param vnR Normal velocity on the right state.
+     * @param speedL Total velocity magnitude on the left state.
+     * @param speedR Total velocity magnitude on the right state.
      * @param dLambda Entropy fix threshold parameter.
      * @param fixScale Scaling factor for the entropy fix.
      * @param[in,out] lam0 Eigenvalue for the u-a characteristic wave.
@@ -32,12 +32,12 @@ namespace DNDS::EulerP
      * @param[in,out] lam4 Eigenvalue for the u+a characteristic wave.
      */
     DNDS_DEVICE_CALLABLE inline void RoeEigenValueFixer(
-        real aL, real aR, real vnL, real vnR,
+        real aL, real aR, real speedL, real speedR,
         real dLambda, real fixScale,
         real &lam0, real &lam123, real &lam4)
     {
-        DNDS::IdealGas::EntropyFix_HCorrHY(aL, aR, vnL, vnR, dLambda, fixScale,
-                                      lam0, lam123, lam4);
+        DNDS::IdealGas::EntropyFix_HCorrHY(aL, aR, speedL, speedR, dLambda, fixScale,
+                                           lam0, lam123, lam4);
     }
 
     /**
@@ -150,9 +150,9 @@ namespace DNDS::EulerP
         real incU4b = incU(I4) - alpha23VT.dot(veloRoe);
         real alpha0, alpha1, alpha4;
         DNDS::IdealGas::RoeAlphaDecomposition(incU(0), incU123N, incU4b,
-                                               veloRoeN, HRoe, asqrRoe, aRoe,
-                                               phy.params.gamma,
-                                               alpha0, alpha1, alpha4);
+                                              veloRoeN, HRoe, asqrRoe, aRoe,
+                                              phy.params.gamma,
+                                              alpha0, alpha1, alpha4);
 
         alpha0 *= lam0;
         alpha1 *= lam123;
