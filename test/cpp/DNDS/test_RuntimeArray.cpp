@@ -1,8 +1,37 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
 #include "DNDS/Runtime/Array.hpp"
+#include <map>
 
 namespace R = DNDS::Runtime;
+
+TEST_CASE("Array allocation accounting retains capacity and deduplicates aliased metadata")
+{
+    auto backing = R::Buffer::Allocate(128);
+    auto first = R::Array<double>::FromStorage(R::RowLayout::Dense(2, 2), backing.Subspan(16, 4 * sizeof(double)));
+    auto second = R::Array<double>::FromStorage(R::RowLayout::Dense(1, 1), backing.Subspan(32, sizeof(double)));
+    R::Array<double> csr(R::RowLayout::Ragged({2, 0, 3}));
+    auto otherValues = R::Array<double>::FromSharedStorage(csr.SharedStorage()->WithValues(R::Buffer::Allocate(5 * sizeof(double)), sizeof(double)));
+    R::Array<int> padded(R::RowLayout::Padded({1, 3}, 5));
+    std::map<uint64_t, size_t> allocations;
+    auto visit = [&](uint64_t identity, size_t capacity, R::Device device)
+    {
+        CHECK(device == R::Device::Host());
+        auto [entry, inserted] = allocations.emplace(identity, capacity);
+        CHECK(entry->second == capacity);
+    };
+    first.SharedStorage()->VisitAllocations(visit);
+    second.SharedStorage()->VisitAllocations(visit);
+    auto retained = csr.Read();
+    csr.SharedStorage()->VisitAllocations(visit);
+    otherValues.SharedStorage()->VisitAllocations(visit);
+    padded.SharedStorage()->VisitAllocations(visit);
+    size_t total = 0;
+    for (const auto &[identity, bytes] : allocations)
+        total += bytes;
+    CHECK(allocations.size() == 6);
+    CHECK(total == 128 + 2 * 5 * sizeof(double) + 4 * sizeof(size_t) + 2 * 5 * sizeof(int) + 2 * sizeof(size_t));
+}
 
 TEST_CASE("Native failed write scope invalidates its aliases")
 {

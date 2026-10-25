@@ -20,7 +20,8 @@ namespace DNDS::Geom
                                                NativeMeshBuildOptions options = {});
         /// Split O2 elements into their established O1 children. Returns an
         /// independent logical mesh and fresh IDs, retaining original node rows.
-        /// Periodic inputs are explicitly unsupported in this construction slice.
+        /// Periodic node-image labels follow the exact child slots; physical
+        /// coordinates determine element-dependent subdivision variants.
         static NativeMeshDerivedResult Bisect(const NativeMeshState &source, const MPIInfo &mpi,
                                               NativeMeshBuildOptions options = {});
     };

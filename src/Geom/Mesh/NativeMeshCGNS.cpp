@@ -1,4 +1,5 @@
 #include "NativeMeshCGNS.hpp"
+#include "NativeMeshPeriodicImport.hpp"
 #include "NativeMeshTransition.hpp"
 #include "FieldTransfer.hpp"
 #include "Geom/CGNS.hpp"
@@ -857,6 +858,11 @@ namespace DNDS::Geom
 
                         NATIVE_CGNS_CHECK(cg_conn_info(cgns_file, iBase, iZone, iConn, connName.data(), &gLoc, &connType, &ptType, &npts,
                                                        donorName.data(), &donorZT, &ptType_donor, &donorDT, &npts_donor));
+                        float rotationCenter[3], rotationAngle[3], translation[3];
+                        const int periodicProperty = cg_conn_periodic_read(cgns_file, iBase, iZone, iConn, rotationCenter, rotationAngle, translation);
+                        DNDS_check_throw_info(periodicProperty != CG_OK,
+                                              "CGNS periodic connectivity properties are unsupported; use explicit BC main/donor labels and periodic import transforms");
+                        DNDS_check_throw_info(periodicProperty == CG_NODE_NOT_FOUND, "cannot inspect CGNS connectivity periodic properties");
 
                         DNDS_check_throw_info(connType == Abutting1to1, "Only support Abutting1to1 in connection!");
                         DNDS_check_throw_info(ptType == PointList, "Only Supports PointList in connection!");
@@ -946,7 +952,8 @@ namespace DNDS::Geom
 #undef NATIVE_CGNS_CHECK
     std::shared_ptr<const NativeMeshState> ReadNativeCGNS(
         const MPIInfo &mpi, const std::string &path, int dimension,
-        const t_FBCName_2_ID &boundaryId, int readerRank, NativeMeshBuildOptions options)
+        const t_FBCName_2_ID &boundaryId, int readerRank, NativeMeshBuildOptions options,
+        std::optional<NativePeriodicImportOptions> periodic)
     {
         DNDS_check_throw_info(mpi.comm != MPI_COMM_NULL, "native CGNS import requires a communicator");
         FieldTransferDetail::LocalStage(mpi, [&]
@@ -957,11 +964,31 @@ namespace DNDS::Geom
             DNDS_check_throw_info(mpi.rank == rank && mpi.size == count && readerRank >= 0 && readerRank < count &&
                                       (dimension == 2 || dimension == 3) && options.cellLayers >= 1 &&
                                       path.size() <= size_t(INT_MAX), "invalid native CGNS import options"); });
-        int settings[]{readerRank, dimension, options.cellLayers, int(options.completeNodeStar)};
-        int minimum[4], maximum[4];
-        MPI_Allreduce(settings, minimum, 4, MPI_INT, MPI_MIN, mpi.comm);
-        MPI_Allreduce(settings, maximum, 4, MPI_INT, MPI_MAX, mpi.comm);
-        DNDS_check_throw_info(std::equal(minimum, minimum + 4, maximum), "native CGNS import options differ across ranks");
+        int settings[]{readerRank, dimension, options.cellLayers, int(options.completeNodeStar), int(bool(periodic))};
+        int minimum[5], maximum[5];
+        MPI_Allreduce(settings, minimum, 5, MPI_INT, MPI_MIN, mpi.comm);
+        MPI_Allreduce(settings, maximum, 5, MPI_INT, MPI_MAX, mpi.comm);
+        DNDS_check_throw_info(std::equal(minimum, minimum + 5, maximum), "native CGNS import options differ across ranks");
+        if (periodic)
+        {
+            std::array<real, 61> values{}, canonical{};
+            FieldTransferDetail::LocalStage(mpi, [&]
+                                            {
+                values[0] = periodic->tolerance;
+                size_t offset = 1;
+                for (size_t frame = 0; frame < 4; ++frame)
+                {
+                    for (int i = 0; i < 9; ++i) values[offset++] = periodic->frames.rotation[frame].map().data()[i];
+                    for (int i = 0; i < 3; ++i) values[offset++] = periodic->frames.translation[frame].map()[i];
+                    for (int i = 0; i < 3; ++i) values[offset++] = periodic->frames.rotationCenter[frame].map()[i];
+                }
+                for (auto value : values) DNDS_check_throw_info(std::isfinite(value), "nonfinite native periodic import option");
+                DNDS_check_throw_info(periodic->tolerance > 0, "invalid native periodic import tolerance"); });
+            canonical = values;
+            MPI_Bcast(canonical.data(), int(canonical.size()), DNDS_MPI_REAL, readerRank, mpi.comm);
+            FieldTransferDetail::LocalStage(mpi, [&]
+                                            { DNDS_check_throw_info(values == canonical, "native periodic import options differ across ranks"); });
+        }
         int pathSize = int(path.size());
         MPI_Bcast(&pathSize, 1, MPI_INT, readerRank, mpi.comm);
         std::string expectedPath;
@@ -973,9 +1000,100 @@ namespace DNDS::Geom
 
         NativeSerialMeshData serial;
         FieldTransferDetail::LocalStage(mpi, [&]
+                                        { if (mpi.rank == readerRank) serial = ReadNativeCGNSSerial(path, dimension, boundaryId); });
+        return DistributeNativeSerialMesh(mpi, std::move(serial), dimension, readerRank, options, std::move(periodic));
+    }
+
+    std::shared_ptr<const NativeMeshState> DistributeNativeSerialMesh(
+        const MPIInfo &mpi, NativeSerialMeshData serial, int dimension, int readerRank,
+        NativeMeshBuildOptions options, std::optional<NativePeriodicImportOptions> periodic)
+    {
+        DNDS_check_throw_info(mpi.comm != MPI_COMM_NULL, "native serial distribution requires communicator");
+        FieldTransferDetail::LocalStage(mpi, [&]
+                                        {
+            int rank = -1, size = 0;
+            MPI_Comm_rank(mpi.comm, &rank); MPI_Comm_size(mpi.comm, &size);
+            DNDS_check_throw_info(rank == mpi.rank && size == mpi.size && readerRank >= 0 && readerRank < size &&
+                                  dimension >= 1 && dimension <= 3 && options.cellLayers >= 1,
+                                  "native serial distribution options invalid"); });
+        std::array<int, 5> parameters{dimension, readerRank, options.cellLayers, int(options.completeNodeStar), int(bool(periodic))};
+        auto expected = parameters;
+        MPI_Bcast(expected.data(), int(expected.size()), MPI_INT, 0, mpi.comm);
+        FieldTransferDetail::LocalStage(mpi, [&]
+                                        { DNDS_check_throw_info(parameters == expected, "native serial distribution options differ across ranks"); });
+        if (periodic)
+        {
+            std::array<real, 61> frame{}, canonical{};
+            frame[0] = periodic->tolerance;
+            size_t offset = 1;
+            for (size_t f = 0; f < 4; ++f)
+            {
+                for (int i = 0; i < 9; ++i)
+                    frame[offset++] = periodic->frames.rotation[f].map().data()[i];
+                for (int i = 0; i < 3; ++i)
+                    frame[offset++] = periodic->frames.translation[f].map()[i];
+                for (int i = 0; i < 3; ++i)
+                    frame[offset++] = periodic->frames.rotationCenter[f].map()[i];
+            }
+            canonical = frame;
+            MPI_Bcast(canonical.data(), int(canonical.size()), DNDS_MPI_REAL, readerRank, mpi.comm);
+            FieldTransferDetail::LocalStage(mpi, [&]
+                                            { DNDS_check_throw_info(frame == canonical && std::isfinite(frame[0]) && frame[0] > 0, "native serial periodic frames differ or invalid tolerance"); });
+        }
+        FieldTransferDetail::LocalStage(mpi, [&]
+                                        {
+            DNDS_check_throw_info(!serial.periodic, "native serial ingress requires raw records before periodic canonicalization");
+            const auto nc = serial.cellNodes.Rows(), nn = serial.coordinates.Rows(), nb = serial.boundaryNodes.Rows();
+            DNDS_check_throw_info(mpi.rank == readerRank || (nc == 0 && nn == 0 && nb == 0), "nonreader supplied native serial payload");
+            if (mpi.rank != readerRank) return;
+            DNDS_check_throw_info(nc <= size_t(INT64_MAX) && nn <= size_t(INT64_MAX) && nb <= size_t(INT64_MAX) &&
+                serial.cellInfo.Rows() == nc && serial.boundaryInfo.Rows() == nb && serial.cellIds.Rows() == nc &&
+                serial.nodeIds.Rows() == nn && serial.boundaryIds.Rows() == nb, "native serial row counts differ");
+            auto check = [&](const auto &array, size_t width)
+            {
+                auto read = array.Read();
+                for (size_t row = 0; row < array.Rows(); ++row)
+                    DNDS_check_throw_info(read.View().RowSize(row) == width, "native serial companion width invalid");
+            };
+            check(serial.coordinates, 3); check(serial.cellInfo, 1); check(serial.boundaryInfo, 1);
+            check(serial.cellIds, 1); check(serial.nodeIds, 1); check(serial.boundaryIds, 1);
+            for (const auto *cone : {&serial.cellNodes, &serial.boundaryNodes})
+            {
+                auto read = cone->Read();
+                for (size_t row = 0; row < cone->Rows(); ++row)
+                    for (auto node : read.View()[row])
+                        DNDS_check_throw_info(node >= 0 && uint64_t(node) < nn, "native serial cone node outside global range");
+            }
+            auto points = serial.coordinates.Read();
+            for (size_t row = 0; row < nn; ++row)
+                for (size_t component = 0; component < 3; ++component)
+                    DNDS_check_throw_info(std::isfinite(points.View()(row, component)), "native serial coordinate nonfinite");
+            if (periodic) serial = CanonicalizeNativePeriodic(std::move(serial), *periodic); });
+        std::string identityWire;
+        FieldTransferDetail::LocalStage(mpi, [&]
                                         {
             if (mpi.rank == readerRank)
-                serial = ReadNativeCGNSSerial(path, dimension, boundaryId); });
+            {
+                nlohmann::json next = nlohmann::json::array();
+                for (const auto &[kind, value] : serial.identity.nextIds) next.push_back({int(kind), value});
+                identityWire = nlohmann::json{{"namespace", serial.identity.meshNamespace}, {"next", next}}.dump();
+            }
+            DNDS_check_throw_info(identityWire.size() <= size_t(INT_MAX), "native serial identity metadata too large"); });
+        int identitySize = int(identityWire.size());
+        MPI_Bcast(&identitySize, 1, MPI_INT, readerRank, mpi.comm);
+        FieldTransferDetail::LocalStage(mpi, [&]
+                                        { identityWire.resize(size_t(identitySize)); });
+        MPI_Bcast(identityWire.data(), identitySize, MPI_CHAR, readerRank, mpi.comm);
+        MeshIdentity identity;
+        FieldTransferDetail::LocalStage(mpi, [&]
+                                        {
+            const auto json = nlohmann::json::parse(identityWire);
+            identity.meshNamespace = json.at("namespace").get<std::string>();
+            for (const auto &entry : json.at("next")) identity.nextIds.emplace(EntityKind(entry.at(0).get<int>()), entry.at(1).get<index>()); });
+        int isPeriodic = serial.periodic;
+        MPI_Bcast(&isPeriodic, 1, MPI_INT, readerRank, mpi.comm);
+        index nodeHighWater = mpi.rank == readerRank && serial.identity.nextIds.count(EntityKind::Node) ? serial.identity.nextIds.at(EntityKind::Node) : 0;
+        MPI_Bcast(&nodeHighWater, 1, DNDS_MPI_INDEX, readerRank, mpi.comm);
         index counts[]{index(serial.cellNodes.Rows()), index(serial.coordinates.Rows()), index(serial.boundaryNodes.Rows())};
         MPI_Bcast(counts, 3, MPI_INT64_T, readerRank, mpi.comm);
         auto context = std::make_shared<Runtime::CommunicationContext>(mpi.comm);
@@ -1021,9 +1139,20 @@ namespace DNDS::Geom
                               transfer(serial.cellNodes, cells, indices), transfer(serial.boundaryNodes, boundaries, indices),
                               transfer(serial.coordinates, nodes, Runtime::ElementSchema::Arithmetic<real>()),
                               transfer(serial.cellInfo, cells, elements), transfer(serial.boundaryInfo, boundaries, elements)};
+        input.identity = std::move(identity);
         input.ids.emplace(EntityKind::Cell, transfer(serial.cellIds, cells, indices));
         input.ids.emplace(EntityKind::Node, transfer(serial.nodeIds, nodes, indices));
         input.ids.emplace(EntityKind::Bnd, transfer(serial.boundaryIds, boundaries, indices));
+        if (isPeriodic)
+        {
+            Runtime::Array<NodePeriodicBits> empty(Runtime::RowLayout::Ragged({}));
+            const Runtime::ElementSchema bits(NodePeriodicBits::CommType(), sizeof(NodePeriodicBits), "Geom.NodePeriodicBits", Runtime::ElementSchema::TypeIdentity<NodePeriodicBits>());
+            input.periodic = true;
+            input.periodicInfo = periodic->frames;
+            input.identity.nextIds.emplace(EntityKind::Node, nodeHighWater);
+            input.cellNodesPbi = transfer(serial.cellNodesPbi ? *serial.cellNodesPbi : empty, cells, bits);
+            input.boundaryNodesPbi = transfer(serial.boundaryNodesPbi ? *serial.boundaryNodesPbi : empty, boundaries, bits);
+        }
         return NativeMeshBuilder::Build(std::move(input), options);
     }
 }

@@ -2,6 +2,9 @@
 #include "NativeMeshAssembler.hpp"
 #include "NativeConnectivity.hpp"
 #include "FieldTransfer.hpp"
+#include "Mesh_CellPermutation.hpp"
+#include <limits>
+#include <numeric>
 #include <set>
 
 namespace DNDS::Geom
@@ -71,6 +74,44 @@ namespace DNDS::Geom
     NativeMeshTransitionResult NativeMeshTransition::Build(const NativeMeshState &source, const MPIInfo &mpi,
                                                            const ReorderInput &input, int ghostLayers)
     {
+        return BuildImpl(source, mpi, input, ghostLayers, nullptr);
+    }
+
+    NativeMeshTransitionResult NativeMeshTransition::ReorderLocalCells(const NativeMeshState &source, const MPIInfo &mpi,
+                                                                       int nParts, int nPartsInner, int ghostLayers)
+    {
+        nParts = std::max(nParts, 1);
+        nPartsInner = std::max(nPartsInner, 1);
+        detail::CellPermutationResult permutation;
+        FieldTransferDetail::LocalStage(mpi, [&]
+                                        {
+            source.Validate();
+            DNDS_check_throw_info(int64_t(nParts) * nPartsInner < std::numeric_limits<int>::max() && ghostLayers >= 1,
+                                  "native local reorder partition count or closure is invalid");
+            source.CheckRequirements(MeshReadRequirements::CellFlux()); });
+        Agree(mpi, "local:" + std::to_string(nParts) + ":" + std::to_string(nPartsInner) + ":" + std::to_string(ghostLayers));
+        FieldTransferDetail::LocalStage(mpi, [&]
+                                        {
+            auto graph = source.BuildLocalCellNeighbors();
+            struct CellRows
+            {
+                const UnstructuredMeshView &view;
+                auto operator[](index row) const { return view.CellCells(row); }
+            } rows{source.BorrowHostView()};
+            if (source.NumOwned(EntityKind::Cell) == 0)
+                permutation.localPartitionStarts.assign(size_t(nParts) + 1, 0);
+            else
+                permutation = detail::ComputeCellPermutation(graph, rows, source.NumOwned(EntityKind::Cell), nParts, nPartsInner); });
+        auto result = BuildImpl(source, mpi, {}, ghostLayers, &permutation.cellOld2New);
+        FieldTransferDetail::LocalStage(mpi, [&]
+                                        { result.state = result.state->WithLocalPartitions(std::move(permutation.localPartitionStarts)); });
+        return result;
+    }
+
+    NativeMeshTransitionResult NativeMeshTransition::BuildImpl(const NativeMeshState &source, const MPIInfo &mpi,
+                                                               const ReorderInput &input, int ghostLayers,
+                                                               const std::vector<index> *cellOld2New)
+    {
         NativeMeshTransitionResult result;
         std::map<EntityKind, EntitySpace> oldSpaces, spaces;
         std::map<AdjKind, NativeNamedRelation> original;
@@ -107,9 +148,11 @@ namespace DNDS::Geom
             }
             for (const auto &follow : input.follows)
                 schedule += "f" + std::to_string(int(follow.follower)) + ":" + std::to_string(int(follow.leader)) + ":" + follow.follower2leader.Signature();
-            schedule += "layers" + std::to_string(ghostLayers);
+            schedule += "layers" + std::to_string(ghostLayers) + (cellOld2New ? "local" : "partition");
             for (const auto &[key, unused] : original) schedule += key.Signature(); });
         Agree(mpi, schedule);
+        FieldTransferDetail::LocalStage(mpi, [&]
+                                        { result.sourceSpaces = oldSpaces; });
         // Missing published inverse slots need not force a legacy recovery.
         // Their sparse native inverses are setup scratch only.
         for (auto slot : {MeshRelation::NodeCells, MeshRelation::NodeBoundaries})
@@ -182,11 +225,20 @@ namespace DNDS::Geom
         {
             auto assigned = placements.find(kind);
             const auto targets = assigned == placements.end() ? std::vector<MPI_int>(size_t(old.NumOwned()), mpi.rank) : assigned->second;
-            auto transfer = PermutationTransfer::fromPartition(targets, source._spaces.at(kind).global, mpi);
+            PermutationTransfer transfer;
+            if (cellOld2New)
+            {
+                std::vector<index> identity(size_t(old.NumOwned()));
+                std::iota(identity.begin(), identity.end(), index(0));
+                transfer = PermutationTransfer::fromLocalPermutation(kind == EntityKind::Cell ? *cellOld2New : identity,
+                                                                     source._spaces.at(kind).global, mpi);
+            }
+            else
+                transfer = PermutationTransfer::fromPartition(targets, source._spaces.at(kind).global, mpi);
             auto route = NativeRowTransfer(transfer, mpi);
             spaces.emplace(kind, anchor.CreateSibling(kind, index(route.DestinationRows())));
             routes.emplace(kind, std::move(route));
-            if (assigned != placements.end())
+            if (cellOld2New || assigned != placements.end())
                 result.transfers.emplace(kind, transfer);
             allTransfers.emplace(kind, std::move(transfer));
         }

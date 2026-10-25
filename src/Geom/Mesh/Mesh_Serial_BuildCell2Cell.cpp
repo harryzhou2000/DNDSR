@@ -1,4 +1,7 @@
 #include "Mesh.hpp"
+#include "NativeMeshPeriodicImport.hpp"
+#include "FieldTransfer.hpp"
+#include "DNDS/Runtime/LegacyArrayBridge.hpp"
 
 #include <set>
 
@@ -12,321 +15,66 @@ namespace DNDS::Geom
 {
 
     void UnstructuredMeshSerialRW::
-        Deduplicate1to1Periodic(real search_eps) // currently does not handle parallel input mode
+        Deduplicate1to1Periodic(real search_eps)
     {
         mesh->CheckCollectiveMutationAvailable();
-        auto mutationToken = mesh->BeginManagedMutation(Runtime::Change::Geometry | Runtime::Change::Interface);
-
-        DNDS_assert(this->dataIsSerialIn);
-        // TODO: build periodic donor oct-trees
-        // TODO: search in donors if periodic main and connect cell2cell
-
-        PointCloudKDTree periodicDonorCenter1;
-        PointCloudKDTree periodicDonorCenter2;
-        PointCloudKDTree periodicDonorCenter3;
-        std::vector<index> periodicDonorIBnd1;
-        std::vector<index> periodicDonorIBnd2;
-        std::vector<index> periodicDonorIBnd3;
-
-        for (DNDS::index iBnd = 0; iBnd < bnd2cellSerial->Size(); iBnd++)
-        {
-            auto faceID = bndElemInfoSerial->operator()(iBnd, 0).zone;
-            Eigen::Matrix<real, 3, Eigen::Dynamic> coordBnd;
-            {
-                coordBnd.resize(3, bnd2nodeSerial->RowSize(iBnd));
-                for (rowsize ib2n = 0; ib2n < bnd2nodeSerial->RowSize(iBnd); ib2n++)
-                    coordBnd(EigenAll, ib2n) = coordSerial->operator[]((*bnd2nodeSerial)(iBnd, ib2n));
-            }
-            tPoint faceCent = coordBnd.rowwise().mean();
-
-            if (FaceIDIsPeriodicMain(faceID))
-            {
-            }
-            if (FaceIDIsPeriodicDonor(faceID))
-            {
-                if (faceID == BC_ID_PERIODIC_1_DONOR)
-                    periodicDonorCenter1.pts.push_back(faceCent), periodicDonorIBnd1.push_back(iBnd);
-                if (faceID == BC_ID_PERIODIC_2_DONOR)
-                    periodicDonorCenter2.pts.push_back(faceCent), periodicDonorIBnd2.push_back(iBnd);
-                if (faceID == BC_ID_PERIODIC_3_DONOR)
-                    periodicDonorCenter3.pts.push_back(faceCent), periodicDonorIBnd3.push_back(iBnd);
-            }
-        }
-        index nDonor = periodicDonorCenter1.pts.size() +
-                       periodicDonorCenter2.pts.size() +
-                       periodicDonorCenter3.pts.size();
-        index nDonorAll{0};
-        MPI::Allreduce(&nDonor, &nDonorAll, 1, DNDS_MPI_INDEX, MPI_SUM, mesh->getMPI().comm);
-        if (nDonorAll)
-            mesh->isPeriodic = true; //! below are all periodic code
-        else
-        {
-            mesh->isPeriodic = false;
-            mutationToken.Commit();
-            return;
-        }
-
-        using kdtree_t = nanoflann::KDTreeSingleIndexAdaptor<
-            nanoflann::L2_Simple_Adaptor<real, PointCloudKDTree>,
-            PointCloudKDTree,
-            3,
-            index>;
-        kdtree_t periodicDonorTree1(3, periodicDonorCenter1);
-        kdtree_t periodicDonorTree2(3, periodicDonorCenter2);
-        kdtree_t periodicDonorTree3(3, periodicDonorCenter3);
-
-        std::unordered_map<index, index> periodicMainToDonor1;
-        std::unordered_map<index, index> periodicMainToDonor2;
-        std::unordered_map<index, index> periodicMainToDonor3;
-
-        std::unordered_map<index, index> iNodeDonorToMain1;
-        std::unordered_map<index, index> iNodeDonorToMain2;
-        std::unordered_map<index, index> iNodeDonorToMain3;
-
-        for (DNDS::index iBnd = 0; iBnd < bnd2cellSerial->Size(); iBnd++)
-        {
-            auto faceID = bndElemInfoSerial->operator()(iBnd, 0).zone;
-            Eigen::Matrix<real, 3, Eigen::Dynamic> coordBnd;
-            {
-                coordBnd.resize(3, bnd2nodeSerial->RowSize(iBnd));
-                for (rowsize ib2n = 0; ib2n < bnd2nodeSerial->RowSize(iBnd); ib2n++)
-                    coordBnd(EigenAll, ib2n) = coordSerial->operator[]((*bnd2nodeSerial)(iBnd, ib2n));
-            }
-            tPoint faceCent = coordBnd.rowwise().mean();
-
-            if (FaceIDIsPeriodicMain(faceID))
-            {
-                tPoint faceCentTrans = mesh->periodicInfo.TransCoord(faceCent, faceID);
-                std::vector<index> outIndices(2);
-                Eigen::Vector<real, Eigen::Dynamic> outDistancesSqr;
-                outDistancesSqr.resize(2);
-                size_t nResults{0};
-                if (faceID == BC_ID_PERIODIC_1)
-                    nResults = periodicDonorTree1.knnSearch(faceCentTrans.data(), 2, outIndices.data(), outDistancesSqr.data());
-                if (faceID == BC_ID_PERIODIC_2)
-                    nResults = periodicDonorTree2.knnSearch(faceCentTrans.data(), 2, outIndices.data(), outDistancesSqr.data());
-                if (faceID == BC_ID_PERIODIC_3)
-                    nResults = periodicDonorTree3.knnSearch(faceCentTrans.data(), 2, outIndices.data(), outDistancesSqr.data());
-                DNDS_assert_info(nResults >= 1, "Tree Search of periodic result number not enough");
-
-                // std::cout << outDistancesSqr[0] << std::endl;
-                DNDS_assert_info(outDistancesSqr[0] <= sqr(search_eps),
-                                 fmt::format("nearest neighbour dist{} not matching under the threshold",
-                                             outDistancesSqr[0]));
-                if (nResults > 1)
+        NativeSerialMeshData prepared;
+        FieldTransferDetail::LocalStage(mesh->mpi, [&]
+                                        {
+            DNDS_check_throw_info(dataIsSerialIn, "periodic identification requires serial input");
+            NativeSerialMeshData source;
+            source.coordinates = Runtime::ShareLegacyHost(*coordSerial);
+            source.cellNodes = Runtime::ShareLegacyHost(*cell2nodeSerial);
+            source.boundaryNodes = Runtime::ShareLegacyHost(*bnd2nodeSerial);
+            source.cellInfo = Runtime::ShareLegacyHost(*cellElemInfoSerial);
+            source.boundaryInfo = Runtime::ShareLegacyHost(*bndElemInfoSerial);
+            source.nodeIds = Runtime::ShareLegacyHost(*node2nodeOrigSerial);
+            source.cellIds = Runtime::ShareLegacyHost(*cell2cellOrigSerial);
+            source.boundaryIds = Runtime::ShareLegacyHost(*bnd2bndOrigSerial);
+            prepared = CanonicalizeNativePeriodic(std::move(source), {mesh->periodicInfo, search_eps}); });
+        int periodic = prepared.periodic;
+        MPI_Allreduce(MPI_IN_PLACE, &periodic, 1, MPI_INT, MPI_MAX, mesh->mpi.comm);
+        auto nextCoords = coordSerial;
+        auto nextCells = cell2nodeSerial, nextBoundaries = bnd2nodeSerial;
+        auto nextIds = node2nodeOrigSerial;
+        decltype(cell2nodePbiSerial) nextCellBits;
+        decltype(bnd2nodePbiSerial) nextBoundaryBits;
+        if (periodic)
+            FieldTransferDetail::LocalStage(mesh->mpi, [&]
+                                            {
+                auto copy = [&](auto &destination, const auto &source, MPI_Datatype datatype, int count)
                 {
-                    // DNDS_assert_info(outDistancesSqr[1] > sqr(search_eps),
-                    //     fmt::format("second nearest neighbour dist{} not matching over the threshold",
-                    //                 outDistancesSqr[1]));
-                    if (!(outDistancesSqr[1] > sqr(search_eps)))
-                        std::cerr << TermColor::Red
-                                  << fmt::format("Warning: second nearest neighbour dist{} not matching over the threshold",
-                                                 outDistancesSqr[1])
-                                  << "\n"
-                                  << fmt::format("at {:.8e}", Eigen::RowVectorFMTSafe<real, Eigen::Dynamic>(faceCentTrans.transpose()))
-                                  << TermColor::Reset
-                                  << std::endl;
-                }
-                index donorIBnd{-1};
-                if (faceID == BC_ID_PERIODIC_1)
-                    donorIBnd = periodicDonorIBnd1.at(outIndices[0]), periodicMainToDonor1[iBnd] = donorIBnd;
-                if (faceID == BC_ID_PERIODIC_2)
-                    donorIBnd = periodicDonorIBnd2.at(outIndices[0]), periodicMainToDonor2[iBnd] = donorIBnd;
-                if (faceID == BC_ID_PERIODIC_3)
-                    donorIBnd = periodicDonorIBnd3.at(outIndices[0]), periodicMainToDonor3[iBnd] = donorIBnd;
-                Eigen::Matrix<real, 3, Eigen::Dynamic> coordBndOther;
-                {
-                    coordBndOther.resize(3, bnd2nodeSerial->RowSize(donorIBnd));
-                    for (rowsize ib2n = 0; ib2n < bnd2nodeSerial->RowSize(donorIBnd); ib2n++)
-                        coordBndOther(EigenAll, ib2n) = // put onto main's data
-                            coordSerial->operator[]((*bnd2nodeSerial)(donorIBnd, ib2n));
-                }
-                DNDS_assert(coordBndOther.cols() == coordBnd.cols());
-                for (rowsize ib2n = 0; ib2n < coordBnd.cols(); ib2n++)
-                {
-                    bool found = false;
-                    real minDist = veryLargeReal;
-                    rowsize jb2nMin = 0;
-                    for (rowsize jb2n = 0; jb2n < coordBnd.cols(); jb2n++)
+                    using Array = typename std::decay_t<decltype(destination)>::element_type;
+                    auto next = std::make_shared<Array>(ObjName{"native periodic compatibility"}, datatype, count, mesh->mpi);
+                    next->Resize(index(source.Rows()));
+                    auto read = source.Read();
+                    for (size_t row = 0; row < source.Rows(); ++row)
                     {
-                        real dist = (coordBndOther(EigenAll, jb2n) -
-                                     mesh->periodicInfo.TransCoord(coordBnd(EigenAll, ib2n), faceID))
-                                        .squaredNorm();
-                        if (dist < minDist)
-                        {
-                            jb2nMin = jb2n;
-                            minDist = dist;
-                        }
-                        if (dist < sqr(search_eps))
-                            found = true;
+                        if constexpr (Array::IsCSR()) next->ResizeRow(index(row), rowsize(read.View().RowSize(row)));
+                        for (size_t slot = 0; slot < read.View().RowSize(row); ++slot) (*next)(index(row), rowsize(slot)) = read.View()(row, slot);
                     }
-                    if (faceID == BC_ID_PERIODIC_1)
-                        iNodeDonorToMain1[(*bnd2nodeSerial)(donorIBnd, jb2nMin)] = (*bnd2nodeSerial)(iBnd, ib2n);
-                    if (faceID == BC_ID_PERIODIC_2)
-                        iNodeDonorToMain2[(*bnd2nodeSerial)(donorIBnd, jb2nMin)] = (*bnd2nodeSerial)(iBnd, ib2n);
-                    if (faceID == BC_ID_PERIODIC_3)
-                        iNodeDonorToMain3[(*bnd2nodeSerial)(donorIBnd, jb2nMin)] = (*bnd2nodeSerial)(iBnd, ib2n);
-                    // DNDS_assert_info(found, fmt::format("min dist was: [{}]", minDist));
-                    if (!found)
-                    {
-                        std::cerr << TermColor::Red << fmt::format("face-face node search min dist was: [{}]", minDist) << "\n"
-                                  << fmt::format("at {:.8e}", Eigen::RowVectorFMTSafe<real, Eigen::Dynamic>(faceCentTrans.transpose()))
-                                  << TermColor::Reset
-                                  << std::endl;
-                    }
-                }
-            }
-            if (FaceIDIsPeriodicDonor(faceID))
-            {
-            }
+                    next->Compress();
+                    destination = std::move(next);
+                };
+                copy(nextCoords, prepared.coordinates, MPI_DOUBLE, 1);
+                copy(nextCells, prepared.cellNodes, DNDS_MPI_INDEX, 1);
+                copy(nextBoundaries, prepared.boundaryNodes, DNDS_MPI_INDEX, 1);
+                copy(nextIds, prepared.nodeIds, DNDS_MPI_INDEX, 1);
+                Runtime::Array<NodePeriodicBits> empty(Runtime::RowLayout::Ragged({}));
+                copy(nextCellBits, prepared.cellNodesPbi ? *prepared.cellNodesPbi : empty, NodePeriodicBits::CommType(), 1);
+                copy(nextBoundaryBits, prepared.boundaryNodesPbi ? *prepared.boundaryNodesPbi : empty, NodePeriodicBits::CommType(), 1); });
+        auto mutation = mesh->BeginManagedMutation(Runtime::Change::Geometry | Runtime::Change::Interface);
+        mesh->isPeriodic = periodic;
+        if (periodic)
+        {
+            coordSerial = std::move(nextCoords);
+            cell2nodeSerial = std::move(nextCells);
+            bnd2nodeSerial = std::move(nextBoundaries);
+            node2nodeOrigSerial = std::move(nextIds);
+            cell2nodePbiSerial = std::move(nextCellBits);
+            bnd2nodePbiSerial = std::move(nextBoundaryBits);
         }
-        /******************************************************************/
-        // need to be done before cell2node points to de-duplicated
-        /**********************************************************************************************************************/
-        // getting node2cell // only primary vertices
-        std::unordered_map<index, std::vector<index>> donorNode2Cell;
-        for (DNDS::index iCell = 0; iCell < cell2nodeSerial->Size(); iCell++)
-            for (DNDS::rowsize iN = 0; iN < Elem::Element{(*cellElemInfoSerial)(iCell, 0).getElemType()}.GetNumVertices(); iN++)
-            {
-                auto iNode = (*cell2nodeSerial)(iCell, iN);
-                if (iNodeDonorToMain1.count(iNode) || iNodeDonorToMain2.count(iNode) || iNodeDonorToMain3.count(iNode))
-                {
-                    donorNode2Cell[iNode].push_back(iCell);
-                }
-            }
-        std::unordered_map<index, std::vector<index>> donorNode2Bnd;
-        for (DNDS::index iBnd = 0; iBnd < bnd2nodeSerial->Size(); iBnd++)
-            for (DNDS::rowsize iN = 0; iN < Elem::Element{(*bndElemInfoSerial)(iBnd, 0).getElemType()}.GetNumVertices(); iN++)
-            {
-                auto iNode = (*bnd2nodeSerial)(iBnd, iN);
-                if (iNodeDonorToMain1.count(iNode) || iNodeDonorToMain2.count(iNode) || iNodeDonorToMain3.count(iNode))
-                {
-                    donorNode2Bnd[iNode].push_back(iBnd);
-                }
-            }
-        /**********************************************************************************************************************/
-
-        cell2nodePbiSerial = make_ssp<decltype(cell2nodePbiSerial)::element_type>(ObjName{"Deduplicate1to1Periodic::cell2nodePbiSerial"}, mesh->getMPI());
-        cell2nodePbiSerial->Resize(cell2nodeSerial->Size());
-        for (index iCell = 0; iCell < cell2nodeSerial->Size(); iCell++)
-            cell2nodePbiSerial->ResizeRow(iCell, cell2nodeSerial->RowSize(iCell));
-        // scan the periodic bnds
-        for (index iBnd = 0; iBnd < bnd2nodeSerial->Size(); iBnd++)
-        {
-            auto faceID = bndElemInfoSerial->operator()(iBnd, 0).zone;
-            if (FaceIDIsPeriodicDonor(faceID))
-            {
-                for (auto iNodeFace : (*bnd2nodeSerial)[iBnd])
-                {
-                    DNDS_assert(donorNode2Cell.count(iNodeFace)); // node 2 cell means all the cells in bound are calculated
-                    for (auto iCell : donorNode2Cell[iNodeFace])
-                        for (auto iNode : (*bnd2nodeSerial)[iBnd])
-                            for (rowsize ic2n = 0; ic2n < (*cell2nodeSerial).RowSize(iCell); ic2n++)
-                            {
-                                if ((*cell2nodeSerial)(iCell, ic2n) == iNode)
-                                {
-                                    if (faceID == BC_ID_PERIODIC_1_DONOR)
-                                        (*cell2nodePbiSerial)(iCell, ic2n).setP1True();
-                                    if (faceID == BC_ID_PERIODIC_2_DONOR)
-                                        (*cell2nodePbiSerial)(iCell, ic2n).setP2True();
-                                    if (faceID == BC_ID_PERIODIC_3_DONOR)
-                                        (*cell2nodePbiSerial)(iCell, ic2n).setP3True();
-                                }
-                            }
-                }
-            }
-        }
-        bnd2nodePbiSerial = make_ssp<decltype(bnd2nodePbiSerial)::element_type>(ObjName{"Deduplicate1to1Periodic::bnd2nodePbiSerial"}, mesh->getMPI());
-        bnd2nodePbiSerial->Resize(bnd2nodeSerial->Size());
-        for (index iBnd = 0; iBnd < bnd2nodeSerial->Size(); iBnd++)
-            bnd2nodePbiSerial->ResizeRow(iBnd, bnd2nodeSerial->RowSize(iBnd));
-        // scan the periodic bnds
-        for (index iBnd = 0; iBnd < bnd2nodeSerial->Size(); iBnd++)
-        {
-            auto faceID = bndElemInfoSerial->operator()(iBnd, 0).zone;
-            if (FaceIDIsPeriodicDonor(faceID))
-            {
-                for (auto iNodeFace : (*bnd2nodeSerial)[iBnd])
-                {
-                    DNDS_assert(donorNode2Bnd.count(iNodeFace));
-                    for (auto iBndAdj : donorNode2Bnd[iNodeFace])
-                        for (auto iNode : (*bnd2nodeSerial)[iBnd])
-                            for (rowsize ic2n = 0; ic2n < (*bnd2nodeSerial).RowSize(iBndAdj); ic2n++)
-                            {
-                                if ((*bnd2nodeSerial)(iBndAdj, ic2n) == iNode)
-                                {
-                                    if (faceID == BC_ID_PERIODIC_1_DONOR)
-                                        (*bnd2nodePbiSerial)(iBndAdj, ic2n).setP1True();
-                                    if (faceID == BC_ID_PERIODIC_2_DONOR)
-                                        (*bnd2nodePbiSerial)(iBndAdj, ic2n).setP2True();
-                                    if (faceID == BC_ID_PERIODIC_3_DONOR)
-                                        (*bnd2nodePbiSerial)(iBndAdj, ic2n).setP3True();
-                                }
-                            }
-                }
-            }
-        }
-        /******************************************************************/
-
-        std::vector<index> iNodeOld2New(coordSerial->Size(), 0);
-        index nNodeNew;
-
-        auto getNewNodeMap = [&](const decltype(iNodeDonorToMain1) &iNodeDonorToMainI) -> void
-        {
-            nNodeNew = 0;
-            for (index iNode = 0; iNode < coordSerial->Size(); iNode++)
-            {
-                if (iNodeOld2New[iNode] < 0)
-                    continue;
-                bool isDonor = iNodeDonorToMainI.count(iNode);
-                if (!isDonor)
-                    iNodeOld2New[iNode] = nNodeNew++;
-            }
-            for (const auto &p : iNodeDonorToMainI)
-            {
-                index iMain = p.second;
-                iNodeOld2New.at(p.first) = -1 - iMain; // minus means duplication here; leaves a self-pointing pointer in the minus region
-            }
-        };
-        getNewNodeMap(iNodeDonorToMain1);
-        getNewNodeMap(iNodeDonorToMain2);
-        getNewNodeMap(iNodeDonorToMain3);
-
-        auto track = [&](index iNode) -> index
-        {
-            while (iNodeOld2New.at(iNode) < 0)
-                iNode = -1 - iNodeOld2New[iNode];
-            return iNodeOld2New.at(iNode); // recursive tracker
-        };
-
-        for (index i = 0; i < cell2nodeSerial->Size(); i++)
-            for (auto &ii : (*cell2nodeSerial)[i])
-                ii = track(ii);
-        for (index i = 0; i < bnd2nodeSerial->Size(); i++)
-            for (auto &ii : (*bnd2nodeSerial)[i])
-                ii = track(ii);
-
-        // some assertions:65
-        // for (index iBnd = 0; iBnd < bnd2nodeSerial->Size(); iBnd++)
-        // {
-        //     auto faceID = bndElemInfoSerial->operator()(iBnd, 0).zone;
-        //     if (FaceIDIsPeriodicDonor(faceID))
-        //     {
-
-        //     }
-        // } //TODO
-
-        cell2nodePbiSerial->Compress();
-        bnd2nodePbiSerial->Compress();
-
-        decltype(coordSerial) coordSerialOld = coordSerial;
-        coordSerial = make_ssp<decltype(coordSerial)::element_type>(ObjName{"Deduplicate1to1Periodic::coordSerial"}, mesh->getMPI());
-        coordSerial->Resize(nNodeNew);
-        for (index i = 0; i < coordSerialOld->Size(); i++)
-            if (iNodeOld2New[i] >= 0)
-                (*coordSerial)[iNodeOld2New[i]] = (*coordSerialOld)[i];
-        coordSerialOld.reset();
-        mutationToken.Commit();
+        mutation.Commit();
     }
 
     void UnstructuredMeshSerialRW::

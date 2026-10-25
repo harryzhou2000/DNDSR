@@ -5,10 +5,14 @@
 #include "Geom/Mesh/NativeMeshOutput.hpp"
 #include "Geom/Mesh/NativeMeshCGNS.hpp"
 #include "MeshFacadeOverlapFixture.hpp"
+#include "NativePeriodicFixtures.hpp"
+#include "DNDS/Serializer/SerializerJSON.hpp"
 #include <hdf5.h>
 #include <filesystem>
 #include <future>
 #include <map>
+#include <fstream>
+#include <sstream>
 #include <unistd.h>
 
 using namespace DNDS;
@@ -269,6 +273,139 @@ TEST_CASE("Native VTKHDF owns output buffers without legacy mesh conversion")
     MPI_Barrier(mpi.comm);
 }
 
+TEST_CASE("Native serial and distributed VTU and Tecplot preserve rows and periodic images")
+{
+    const MPIInfo mpi(MPI_COMM_WORLD);
+    for (int scenario = 0; scenario < 4; ++scenario)
+    {
+        const bool periodic = scenario % 2;
+        const int flag = scenario / 2;
+        const int readerRank = mpi.size - 1;
+        auto mesh = periodic ? UnstructuredMesh::FromNative(mpi, NativeMeshBuilder::Build(NativePeriodicFixtures::TwoCells(mpi), {1, true}))
+                             : OverlapTest::BuildNativeFixture(mpi).mesh;
+        const auto stamp = mesh->versions.Stamp();
+        auto read = mesh->AcquireRead();
+        const auto view = read.HostView();
+        // The public raw members are not the native semantics.
+        mesh->dim = 3;
+        mesh->isPeriodic = !periodic;
+        int pid = int(getpid());
+        MPI_Bcast(&pid, 1, MPI_INT, 0, mpi.comm);
+        const auto base = (std::filesystem::temp_directory_path() /
+                           ("native-piece-output-" + std::to_string(pid) + "-" + std::to_string(scenario)))
+                              .string();
+        UnstructuredMeshSerialRW writer(mesh, readerRank);
+        if (flag == 0)
+            writer.BuildSerialOut();
+        auto cellName = [](int)
+        { return "cell_id"; };
+        auto nodeName = [](int)
+        { return "node_id"; };
+        auto cellData = [&](int, DNDS::index row)
+        { return double(flag == 0 ? row : mesh->OriginalEntityId(EntityKind::Cell, row)); };
+        auto nodeData = [&](int, DNDS::index row)
+        { return double(flag == 0 ? row : mesh->OriginalEntityId(EntityKind::Node, row)); };
+        writer.PrintSerialPartVTKDataArray(base, "", 1, 0, 1, 0, cellName, cellData, {}, {}, nodeName, nodeData, {}, {}, 0, flag);
+        writer.PrintSerialPartPltBinaryDataArray(base, 1, 1, cellName, cellData, nodeName, nodeData, 0, flag);
+        if (flag == 1 || mpi.rank == readerRank)
+        {
+            auto load = [](const std::string &path)
+            {
+                std::ifstream input(path, std::ios::binary);
+                REQUIRE(input.good());
+                return std::string(std::istreambuf_iterator<char>(input), {});
+            };
+            auto xml = load(base + (flag == 0 ? ".vtu" : fmt::format(".vtu.dir/{:04d}.vtu", mpi.rank)));
+            auto array = [&](const std::string &marker)
+            {
+                auto start = xml.find(marker);
+                REQUIRE(start != std::string::npos);
+                if (marker == "<Points")
+                    start = xml.find("<DataArray", start);
+                start = xml.find('>', start) + 1;
+                const auto end = xml.find("</DataArray>", start);
+                REQUIRE(end != std::string::npos);
+                std::istringstream stream(xml.substr(start, end - start));
+                std::vector<double> values;
+                for (double value; stream >> value;)
+                    values.push_back(value);
+                return values;
+            };
+            const auto coordinates = array("<Points"), nodes = array("Name=\"node_id\""), cells = array("Name=\"cell_id\"");
+            const auto connectivity = array("Name=\"connectivity\""), types = array("Name=\"types\"");
+            REQUIRE(coordinates.size() == nodes.size() * 3);
+            REQUIRE(cells.size() == size_t(flag == 0 ? mesh->Entities(EntityKind::Cell).NumGlobal() : view.NumCell()));
+            REQUIRE(connectivity.size() == cells.size() * 4);
+            REQUIRE(types.size() == cells.size());
+            for (size_t cell = 0; cell < cells.size(); ++cell)
+            {
+                const auto id = DNDS::index(cells[cell]);
+                CHECK(cells[cell] == cellData(0, DNDS::index(cell)));
+                CHECK(types[cell] == 9);
+                for (size_t slot = 0; slot < 4; ++slot)
+                {
+                    const auto point = size_t(connectivity[cell * 4 + slot]);
+                    REQUIRE(point < nodes.size());
+                    const double x = periodic ? .5 * (double(id) + double(slot == 1 || slot == 2))
+                                              : .1 * (double(id % 10) + double(slot == 1 || slot == 2));
+                    const double y = periodic ? double(slot >= 2) : .1 * (double(id / 10) + double(slot >= 2));
+                    CHECK(coordinates[point * 3] == doctest::Approx(x));
+                    CHECK(coordinates[point * 3 + 1] == doctest::Approx(y));
+                    CHECK(coordinates[point * 3 + 2] == 0);
+                    const DNDS::index node = periodic ? DNDS::index((id + DNDS::index(slot == 1 || slot == 2)) % 2 + 2 * DNDS::index(slot >= 2))
+                                                      : 11 * (id / 10 + DNDS::index(slot >= 2)) + id % 10 + DNDS::index(slot == 1 || slot == 2);
+                    CHECK(nodes[point] == double(node));
+                }
+            }
+            // Tecplot's final data block is XYZ, node field, cell field, rank, then
+            // zero-based quad connectivity. Decode bytes without alignment casts.
+            auto binary = load(base + (flag == 0 ? ".plt" : fmt::format(".dir/{:06d}.plt", mpi.rank)));
+            CHECK(binary.substr(0, 8) == "#!TDV112");
+            const auto doubles = 4 * nodes.size() + 2 * cells.size();
+            const auto bytes = doubles * sizeof(double) + connectivity.size() * sizeof(int32_t);
+            REQUIRE(binary.size() >= bytes);
+            size_t cursor = binary.size() - bytes;
+            auto scalar = [&]
+            {
+                double value;
+                std::memcpy(&value, binary.data() + cursor, sizeof(value));
+                cursor += sizeof(value);
+                return value;
+            };
+            for (size_t component = 0; component < 3; ++component)
+                for (size_t point = 0; point < nodes.size(); ++point)
+                    CHECK(scalar() == doctest::Approx(coordinates[point * 3 + component]));
+            for (double value : nodes)
+                CHECK(scalar() == value);
+            for (double value : cells)
+                CHECK(scalar() == value);
+            for (size_t cell = 0; cell < cells.size(); ++cell)
+                CHECK(scalar() == double(flag == 0 ? mesh->Entities(EntityKind::Cell).Owner(DNDS::index(cell)) : mpi.rank));
+            for (double expected : connectivity)
+            {
+                int32_t value;
+                std::memcpy(&value, binary.data() + cursor, sizeof(value));
+                cursor += sizeof(value);
+                CHECK(value == int32_t(expected));
+            }
+            CHECK(cursor == binary.size());
+        }
+        CHECK(stamp.Valid());
+        CHECK_FALSE(mesh->coords.father);
+        CHECK_FALSE(mesh->cell2node.father);
+        MPI_Barrier(mpi.comm);
+        if (mpi.rank == 0)
+        {
+            std::filesystem::remove_all(base + ".vtu.dir");
+            std::filesystem::remove_all(base + ".dir");
+            std::filesystem::remove(base + ".pvtu");
+            std::filesystem::remove(base + ".vtu");
+            std::filesystem::remove(base + ".plt");
+        }
+        MPI_Barrier(mpi.comm);
+    }
+}
+
 TEST_CASE("Native output rejects cross-rank publication and periodic schedule mismatches")
 {
     MPIInfo mpi;
@@ -378,6 +515,68 @@ TEST_CASE("Native CGNS output round trips independently owned nodes and empty ra
     MPI_Barrier(mpi.comm);
     if (mpi.rank == 0)
         std::filesystem::remove(path);
+}
+
+TEST_CASE("Native primary compatibility archive streams payloads including boundary curves")
+{
+    const MPIInfo mpi(MPI_COMM_WORLD);
+    for (int scenario = 0; scenario < 3; ++scenario)
+    {
+        auto mesh = scenario == 1 ? UnstructuredMesh::FromNative(mpi, NativeMeshBuilder::Build(NativePeriodicFixtures::TwoCells(mpi), {2, true}))
+                                  : OverlapTest::BuildNativeFixture(mpi).mesh;
+        if (scenario == 2)
+            mesh = mesh->ExtractBoundary(); // 1D native mesh with durable ancestry.
+        const auto stamp = mesh->versions.Stamp();
+        auto retained = mesh->AcquireRead();
+        const auto view = retained.HostView();
+        auto archive = make_ssp<Serializer::SerializerJSON>();
+        archive->CreatePath("/");
+        const auto cwd = archive->GetCurrentPath();
+        WriteCurrentPrimaryMeshSnapshot(*mesh, archive, "primary");
+        CHECK(archive->GetCurrentPath() == cwd);
+        CHECK(stamp.Valid());
+        CHECK_FALSE(mesh->coords.father);
+        CHECK_FALSE(mesh->cell2node.father);
+        auto restored = make_ssp<UnstructuredMesh>(mpi, view.Dimension());
+        restored->ReadSerialize(archive, "primary");
+        REQUIRE(restored->NumCell() == view.NumCell());
+        REQUIRE(restored->NumNode() == view.NumNode());
+        REQUIRE(restored->NumBnd() == view.NumBnd());
+        CHECK(restored->isPeriodic == view.IsPeriodic());
+        const auto nodes = mesh->Entities(EntityKind::Node);
+        for (DNDS::index node = 0; node < view.NumNode(); ++node)
+        {
+            CHECK(restored->coords[node] == view.Coord(node));
+            CHECK(restored->node2nodeOrig(node, 0) == mesh->OriginalEntityId(EntityKind::Node, node));
+        }
+        for (DNDS::index cell = 0; cell < view.NumCell(); ++cell)
+        {
+            const auto cone = view.CellNodes(cell);
+            REQUIRE(restored->cell2node.RowSize(cell) == DNDS::rowsize(cone.size()));
+            CHECK(restored->cell2cellOrig(cell, 0) == mesh->OriginalEntityId(EntityKind::Cell, cell));
+            CHECK(restored->cellElemInfo(cell, 0).zone == view.GetCellZone(cell));
+            CHECK(restored->cellElemInfo(cell, 0).getElemType() == view.GetCellElement(cell).type);
+            for (size_t slot = 0; slot < cone.size(); ++slot)
+            {
+                CHECK(restored->cell2node(cell, DNDS::rowsize(slot)) == nodes.LocalToGlobal(cone[slot]));
+                if (view.IsPeriodic())
+                    CHECK(uint8_t(restored->cell2nodePbi(cell, DNDS::rowsize(slot))) == uint8_t(view.CellNodePeriodicBits(cell)[slot]));
+            }
+        }
+        for (DNDS::index boundary = 0; boundary < view.NumBnd(); ++boundary)
+        {
+            const auto cone = view.BoundaryNodes(boundary);
+            REQUIRE(restored->bnd2node.RowSize(boundary) == DNDS::rowsize(cone.size()));
+            CHECK(restored->bnd2bndOrig(boundary, 0) == mesh->OriginalEntityId(EntityKind::Bnd, boundary));
+            CHECK(restored->bndElemInfo(boundary, 0).zone == view.GetBndZone(boundary));
+            for (size_t slot = 0; slot < cone.size(); ++slot)
+            {
+                CHECK(restored->bnd2node(boundary, DNDS::rowsize(slot)) == nodes.LocalToGlobal(cone[slot]));
+                if (view.IsPeriodic())
+                    CHECK(uint8_t(restored->bnd2nodePbi(boundary, DNDS::rowsize(slot))) == uint8_t(view.BoundaryNodePeriodicBits(boundary)[slot]));
+            }
+        }
+    }
 }
 
 int main(int argc, char **argv)

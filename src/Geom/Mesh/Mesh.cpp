@@ -199,6 +199,16 @@ namespace DNDS::Geom
     void UnstructuredMeshSerialRW::
         BuildSerialOut()
     {
+        if (mesh->HasNativeState())
+        {
+            nativeSerialOutput = std::make_shared<NativeMeshSerialOutput>(
+                NativeMeshSerialOutput::Build(*mesh->CurrentNativeState(), mesh->getMPI(), mRank));
+            mode = SerialOutput;
+            dataIsSerialIn = false;
+            dataIsSerialOut = true;
+            return;
+        }
+        nativeSerialOutput.reset();
         DNDS_assert(mesh->adjPrimaryState == Adj_PointToGlobal);
         DNDS_assert(mesh->cell2node.isGlobal());
         mode = SerialOutput;
@@ -2309,7 +2319,16 @@ namespace DNDS::Geom
                     }
                 }
                 cellParents.resize(size_t(state->NumOwned(EntityKind::Cell)));
-                std::iota(cellParents.begin(), cellParents.end(), index(0));
+                sourceRows.clear();
+                for (index row = 0; row < NumBnd(); ++row)
+                    sourceRows.emplace(OriginalEntityId(EntityKind::Bnd, row), row);
+                auto cellAncestry = state->Provenance()->sourceIds.at(EntityKind::Cell).Read();
+                for (size_t row = 0; row < cellParents.size(); ++row)
+                {
+                    auto found = sourceRows.find(cellAncestry.View()(row, 0));
+                    DNDS_check_throw_info(found != sourceRows.end(), "extracted boundary cell ancestry is not owned by its source");
+                    cellParents[row] = found->second;
+                }
                 prepared = std::shared_ptr<NativeMeshState>(new NativeMeshState(*state)); });
             // These vectors are setup-only compatibility caches. They do not
             // change the source query authority or invalidate retained reads.
@@ -2317,7 +2336,8 @@ namespace DNDS::Geom
             destination.Commit();
             prepared->BindPreparedEpoch(bMesh.versions);
             bMesh._entityIdentity = next->_entityIdentity;
-            bMesh.isPeriodic = false;
+            bMesh.isPeriodic = state->BorrowHostView().IsPeriodic();
+            bMesh.periodicInfo = state->BorrowHostView().Periodic();
             bMesh._nativeState = std::move(prepared);
             bMesh.node2parentNode.swap(boundaryToSource);
             bMesh.cell2parentCell.swap(cellParents);

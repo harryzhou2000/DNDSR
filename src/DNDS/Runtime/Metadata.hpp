@@ -50,6 +50,13 @@ namespace DNDS::Runtime
         const T &operator[](size_t i) const { return _data[i]; }
         const T &back() const { return _data[_size - 1]; }
         uint64_t Identity() const { return _buffer.Identity(); }
+        /// Read-only accounting of retained allocation capacity, without an access lease.
+        template <class F>
+        void VisitAllocations(F &&visit) const
+        {
+            if (_buffer.Identity())
+                visit(_buffer.Identity(), _buffer.AllocationHandle().Bytes(), _buffer.GetDevice());
+        }
         bool IsUnique() const { return !_buffer.Identity() || _buffer.IsUnique(); }
         ReadAccess Read() const { return _buffer.Read(); }
         bool operator==(const MetadataBuffer &other) const

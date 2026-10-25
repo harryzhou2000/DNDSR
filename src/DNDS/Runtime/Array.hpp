@@ -179,6 +179,15 @@ namespace DNDS::Runtime
             RowLayout rows;
             uint64_t DeviceOffsetIdentity() const { return deviceOffsets.Identity(); }
             uint64_t DeviceSizeIdentity() const { return deviceSizes.Identity(); }
+            template <class F>
+            void VisitAllocations(F &&visit) const
+            {
+                rows.Offsets().VisitAllocations(visit);
+                rows.Sizes().VisitAllocations(visit);
+                for (const auto *buffer : {&deviceOffsets, &deviceSizes})
+                    if (buffer->Identity())
+                        visit(buffer->Identity(), buffer->AllocationHandle().Bytes(), buffer->GetDevice());
+            }
             bool CanReleaseOrdered(ExecutionContext context) const
             {
                 return deviceOffsets.CanReleaseOrdered(context) && deviceSizes.CanReleaseOrdered(context);
@@ -334,6 +343,19 @@ namespace DNDS::Runtime
             return _values;
         }
         size_t ElementBytes() const { return _elementBytes; }
+        /// Visit retained value/host metadata/device metadata allocations.
+        /// Capacity covers the whole allocation, including imported subspans;
+        /// callers deduplicate identities shared by multiple handles/layouts.
+        /// This neither accesses values nor synchronizes device work.
+        template <class F>
+        void VisitAllocations(F &&visit) const
+        {
+            std::lock_guard<std::mutex> lock(_shapeMutex);
+            CheckPublished();
+            if (_values.Identity())
+                visit(_values.Identity(), _values.AllocationHandle().Bytes(), _values.GetDevice());
+            _layout->VisitAllocations(visit);
+        }
         ReadAccess Read(ExecutionContext context = ExecutionContext::Host()) const
         {
             std::lock_guard<std::mutex> lock(_shapeMutex);

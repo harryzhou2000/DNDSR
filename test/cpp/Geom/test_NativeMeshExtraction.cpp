@@ -186,7 +186,7 @@ TEST_CASE("Native boundary extraction handles an empty selection without retaini
     CHECK_NOTHROW(G::NativeMeshExtraction::ExtractBoundary(*source, mpi));
 }
 
-TEST_CASE("Native boundary extraction rejects periodic input collectively and permits a valid retry")
+TEST_CASE("Native boundary extraction retains periodic tangential images and rejects inconsistent flags")
 {
     const auto mpi = MPI();
     auto source = Fixture(mpi, 2);
@@ -204,7 +204,9 @@ TEST_CASE("Native boundary extraction rejects periodic input collectively and pe
     owned.cellNodesPbi = bits(*owned.relations[size_t(G::MeshRelation::CellNodes)]);
     owned.bndNodesPbi = bits(*owned.relations[size_t(G::MeshRelation::BoundaryNodes)]);
     auto periodic = G::NativeMeshAssembler::Build(mpi, std::move(owned));
-    CHECK_THROWS(G::NativeMeshExtraction::ExtractBoundary(*periodic, mpi));
+    auto extracted = G::NativeMeshExtraction::ExtractBoundary(*periodic, mpi);
+    CHECK(extracted.state->NumGlobal(G::EntityKind::Cell) == 2);
+    CHECK(extracted.state->BorrowHostView().IsPeriodic());
     auto inconsistent = G::NativeMeshAssembler::CaptureOwned(*source, mpi);
     auto metadata = R::Array<G::ElemInfo>(R::RowLayout::Dense(size_t(source->NumOwned(G::EntityKind::Bnd)), 1));
     {

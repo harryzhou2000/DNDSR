@@ -1,6 +1,5 @@
 #include "Geom/Quadrature.hpp"
 #include "Mesh.hpp"
-#include "MeshTransition.hpp"
 #include "NativeMeshOutput.hpp"
 #include "FieldTransfer.hpp"
 #include "Geom/CGNS.hpp"
@@ -43,22 +42,82 @@ namespace DNDS::Geom
             return result;
         }
 
-        std::vector<index> CurrentOutputNodeMap(UnstructuredMesh &source, UnstructuredMesh &workspace)
+        /// Distributed output borrows current rows, independently of their
+        /// backing Array implementation. Only the old explicit serial export
+        /// uses reader-owned legacy arrays. No mesh workspace is constructed.
+        class OutputMeshRows
         {
-            std::vector<index> result;
-            FieldTransferDetail::LocalStage(source.mpi, [&]
-                                            {
-                const auto from = source.Entities(EntityKind::Node);
-                const auto to = workspace.Entities(EntityKind::Node);
-                result.reserve(size_t(to.NumLocal()));
-                for (index node = 0; node < to.NumLocal(); ++node)
+            std::unique_ptr<MeshReadAccess> _read;
+            tCoordPair _coordinates;
+            tAdjPair _nodes;
+            tPbiPair _bits;
+            tElemInfoArrayPair _info;
+            int _dimension;
+            bool _periodic;
+            Periodicity _frame;
+            std::shared_ptr<const NativeMeshSerialOutput> _serial;
+            std::optional<Runtime::Array<real>::ReadLease> _serialCoords;
+            std::optional<Runtime::Array<index>::ReadLease> _serialNodes;
+            std::optional<Runtime::Array<ElemInfo>::ReadLease> _serialInfo;
+            std::optional<Runtime::Array<NodePeriodicBits>::ReadLease> _serialBits;
+
+        public:
+            index nCell = 0, nNode = 0;
+            OutputMeshRows(UnstructuredMeshSerialRW &reader, int flag)
+                : _dimension(reader.mesh->getDim()), _periodic(reader.mesh->isPeriodic), _frame(reader.mesh->periodicInfo)
+            {
+                DNDS_check_throw_info(flag == 0 || flag == 1, "output mode must be serial or distributed");
+                if (flag == 1)
                 {
-                    auto original = from.GlobalToLocal(to.LocalToGlobal(node));
-                    DNDS_check_throw_info(original, "current output ghost node is absent from source point-field numbering");
-                    result.push_back(*original);
-                } });
-            return result;
-        }
+                    _read = CurrentOutputRead(*reader.mesh);
+                    const auto &view = _read->HostView();
+                    _dimension = view.Dimension();
+                    _periodic = view.IsPeriodic();
+                    _frame = view.Periodic();
+                    nCell = view.NumCell();
+                    nNode = view.NumNodeProc();
+                }
+                else if (reader.mesh->HasNativeState())
+                {
+                    _serial = reader.nativeSerialOutput;
+                    DNDS_check_throw_info(_serial && reader.mRank == _serial->readerRank,
+                                          "prepare native serial output before writing");
+                    _serial->ValidateSource(*reader.mesh->CurrentNativeState());
+                    _dimension = _serial->dimension;
+                    _periodic = _serial->periodic;
+                    _frame = _serial->periodicInfo;
+                    _serialCoords.emplace(_serial->coordinates.Read());
+                    _serialNodes.emplace(_serial->cellNodes.Read());
+                    _serialInfo.emplace(_serial->cellInfo.Read());
+                    if (_periodic)
+                        _serialBits.emplace(_serial->cellNodesPbi->Read());
+                    nCell = index(_serial->cellNodes.Rows());
+                    nNode = index(_serial->coordinates.Rows());
+                }
+                else
+                    reader.GetCurrentOutputArrays(flag, _coordinates, _nodes, _bits, _info, nCell, nNode);
+            }
+            int Dimension() const { return _dimension; }
+            bool IsPeriodic() const { return _periodic; }
+            const Periodicity &Periodic() const { return _frame; }
+            tPoint Coord(index node) const { return _serial ? tPoint(Eigen::Map<const tPoint>(_serialCoords->View().Row(size_t(node)))) : _read ? tPoint(_read->HostView().Coord(node))
+                                                                                                                                                : tPoint(_coordinates[node]); }
+            rowsize CellNodeCount(index cell) const { return _serial ? rowsize(_serialNodes->View().RowSize(size_t(cell))) : _read ? rowsize(_read->HostView().CellNodes(cell).size())
+                                                                                                                                   : _nodes.RowSize(cell); }
+            index CellNode(index cell, rowsize slot) const { return _serial ? _serialNodes->View()(size_t(cell), size_t(slot)) : _read ? _read->HostView().CellNodes(cell)[slot]
+                                                                                                                                       : _nodes(cell, slot); }
+            NodePeriodicBits CellNodeBits(index cell, rowsize slot) const { return _serial ? _serialBits->View()(size_t(cell), size_t(slot)) : _read ? _read->HostView().CellNodePeriodicBits(cell)[slot]
+                                                                                                                                                     : _bits(cell, slot); }
+            Elem::ElemType CellType(index cell) const { return _serial ? _serialInfo->View()(size_t(cell), 0).getElemType() : _read ? _read->HostView().GetCellInfo(cell).getElemType()
+                                                                                                                                    : _info[cell]->getElemType(); }
+            std::vector<index> CellNodes(index cell) const
+            {
+                std::vector<index> result(size_t(CellNodeCount(cell)));
+                for (rowsize slot = 0; slot < CellNodeCount(cell); ++slot)
+                    result[size_t(slot)] = CellNode(cell, slot);
+                return result;
+            }
+        };
     }
 
     void UnstructuredMeshSerialRW::
@@ -117,14 +176,14 @@ namespace DNDS::Geom
     }
 
     static void GetViolentNodeDeduplication(
-        index nNode, const std::vector<tPoint> &nodesExtra, tCoordPair &coordOut,
+        index nNode, const std::vector<tPoint> &nodesExtra, const OutputMeshRows &rows,
         std::vector<index> &nodeDedu2Old, std::vector<index> &nodeOld2Dedu)
     {
         PointCloudFunctional nodesCloud(
             [&](size_t idx) -> tPoint
             {
                 if (idx < nNode)
-                    return coordOut[idx];
+                    return rows.Coord(index(idx));
                 else
                     return nodesExtra.at(idx - nNode);
             },
@@ -178,26 +237,15 @@ namespace DNDS::Geom
                                           const tFGetData &dataPoint,
                                           double t, int flag)
     {
-        int currentExport = int(mesh->HasNativeState());
+        DNDS_check_throw_info(flag == 0 || flag == 1, "output mode must be serial or distributed");
+        DNDS_check_throw_info(flag != 0 || !mesh->HasNativeState() || nativeSerialOutput, "prepare native serial output before writing");
         if (flag == 1)
-            MPI_Allreduce(MPI_IN_PLACE, &currentExport, 1, MPI_INT, MPI_MAX, mesh->mpi.comm);
-        if (currentExport)
-        {
-            DNDS_check_throw_info(flag == 1, "native serial-reader output requires distributed output mode or an explicitly refreshed serial export");
             CurrentOutputFieldCounts(*mesh, arraySiz, 0, arraySizPoint, 0);
-            auto retained = CurrentOutputRead(*mesh);
-            auto workspace = CloneCurrentMeshForSetup(*mesh, 1, TransitionCachePolicy::RebuildOutput, BoundaryCachePolicy::DropBoundaryCache);
-            auto pointRows = arraySizPoint ? CurrentOutputNodeMap(*mesh, *workspace) : std::vector<index>{};
-            tFGetData mappedPoint = [&](int field, index row)
-            { return dataPoint(field, pointRows.at(size_t(row))); };
-            UnstructuredMeshSerialRW output(workspace, mRank);
-            output.PrintSerialPartPltBinaryDataArray(std::move(fname), arraySiz, arraySizPoint, names, data, namesPoint, mappedPoint, t, flag);
-            return;
-        }
         auto mpi = mesh->getMPI();
 
         if (mpi.rank != mRank && flag == 0) //* now only operating on mRank if serial
             return;
+        OutputMeshRows outputRows(*this, flag);
 
         if (flag == 0)
         {
@@ -276,11 +324,11 @@ namespace DNDS::Geom
         writeInt(-1);   // StrandID: static strand ID
         writeDouble(t); // solution time
         writeInt(-1);   // default zone color
-        if (mesh->dim == 2)
+        if (outputRows.Dimension() == 2)
             writeInt(3); // 2d: quad zone
-        else if (mesh->dim == 3)
+        else if (outputRows.Dimension() == 3)
             writeInt(5); // 3d: brick zone
-        else if (mesh->dim == 1)
+        else if (outputRows.Dimension() == 1)
             writeInt(1); // 1d: line zone
         writeInt(1);     // specifyVarLocation
 
@@ -297,24 +345,18 @@ namespace DNDS::Geom
 
         /*******************************************************/
         // output preparation
-        tCoordPair coordOut;
-        tAdjPair cell2nodeOut;
-        tPbiPair cell2nodePbiOut;
-        tElemInfoArrayPair cellElemInfoOut;
-        index nCell{-1}, nNode{-1};
-        this->GetCurrentOutputArrays(flag, coordOut, cell2nodeOut, cell2nodePbiOut, cellElemInfoOut,
-                                     nCell, nNode);
+        const index nCell = outputRows.nCell, nNode = outputRows.nNode;
 
         std::vector<Geom::tPoint>
             nodesExtra;
         std::vector<index> nodesExtraAtOriginal;
-        if (mesh->isPeriodic)
+        if (outputRows.IsPeriodic())
         {
             for (index iCell = 0; iCell < nCell; iCell++)
-                for (rowsize ic2n = 0; ic2n < cell2nodePbiOut.RowSize(iCell); ic2n++)
-                    if (cell2nodePbiOut[iCell][ic2n])
-                        nodesExtra.push_back(mesh->periodicInfo.GetCoordByBits(coordOut[cell2nodeOut[iCell][ic2n]], cell2nodePbiOut[iCell][ic2n])),
-                            nodesExtraAtOriginal.push_back(cell2nodeOut(iCell, ic2n));
+                for (rowsize ic2n = 0; ic2n < outputRows.CellNodeCount(iCell); ic2n++)
+                    if (outputRows.CellNodeBits(iCell, ic2n))
+                        nodesExtra.push_back(outputRows.Periodic().GetCoordByBits(outputRows.Coord(outputRows.CellNode(iCell, ic2n)), outputRows.CellNodeBits(iCell, ic2n))),
+                            nodesExtraAtOriginal.push_back(outputRows.CellNode(iCell, ic2n));
         }
         // if (mpi.rank == mRank)
         //     std::cout << "PrintSerialPartPltBinaryDataArray === " << std::endl;
@@ -327,7 +369,7 @@ namespace DNDS::Geom
         //     printSize();
         std::vector<index> nodeDedu2Old;
         std::vector<index> nodeOld2Dedu;
-        GetViolentNodeDeduplication(nNode, nodesExtra, coordOut, nodeDedu2Old, nodeOld2Dedu);
+        GetViolentNodeDeduplication(nNode, nodesExtra, outputRows, nodeDedu2Old, nodeOld2Dedu);
         /*******************************************************/
 
         writeInt(nodeDedu2Old.size()); // node number
@@ -367,8 +409,8 @@ namespace DNDS::Geom
             {
                 if (iN < nNode)
                 {
-                    minVal[idim] = std::min(coordOut[iN](idim), minVal[idim]);
-                    maxVal[idim] = std::max(coordOut[iN](idim), maxVal[idim]);
+                    minVal[idim] = std::min(outputRows.Coord(iN)(idim), minVal[idim]);
+                    maxVal[idim] = std::max(outputRows.Coord(iN)(idim), maxVal[idim]);
                 }
                 else
                 {
@@ -414,7 +456,7 @@ namespace DNDS::Geom
             for (auto iN : nodeDedu2Old)
             {
                 if (iN < nNode)
-                    writeDouble(coordOut[iN](idim));
+                    writeDouble(outputRows.Coord(iN)(idim));
                 else
                     writeDouble(nodesExtra.at(iN - nNode)(idim));
             }
@@ -443,7 +485,8 @@ namespace DNDS::Geom
             DNDS::index v = -1;
             if (flag == 0)
             {
-                bool ret = cell2nodeSerialOutTrans.pLGlobalMapping->search(iv, r, v);
+                const auto mapping = nativeSerialOutput ? nativeSerialOutput->cellGlobal : cell2nodeSerialOutTrans.pLGlobalMapping;
+                bool ret = mapping->search(iv, r, v);
                 DNDS_assert_info(ret, "search failed");
             }
             else if (flag == 1)
@@ -463,12 +506,12 @@ namespace DNDS::Geom
 
         for (DNDS::index iv = 0; iv < nCell; iv++)
         {
-            auto elem = Elem::Element{cellElemInfoOut[iv]->getElemType()};
-            std::vector<index> c2n = cell2nodeOut[iv];
-            if (mesh->isPeriodic)
+            auto elem = Elem::Element{outputRows.CellType(iv)};
+            std::vector<index> c2n = outputRows.CellNodes(iv);
+            if (outputRows.IsPeriodic())
                 for (rowsize ic2n = 0; ic2n < c2n.size(); ic2n++)
                 {
-                    if (cell2nodePbiOut[iv][ic2n])
+                    if (outputRows.CellNodeBits(iv, ic2n))
                         c2n[ic2n] = (nExtra++) + nNode;
                 }
 
@@ -594,36 +637,26 @@ namespace DNDS::Geom
          * newly created "extra" node indices, then applies node deduplication.
          * Converts element node ordering to VTK convention.
          *
-         * \param[in] nCell            Number of cells.
-         * \param[in] nNode            Number of original (non-extra) nodes.
-         * \param[in] cell2nodeOut     Cell-to-node adjacency.
-         * \param[in] cell2nodePbiOut  Cell-to-node periodic bits.
-         * \param[in] cellElemInfoOut  Cell element info (for element type).
+         * \param[in] rows             Scoped geometry and ordered incidences.
          * \param[in] nodeOld2Dedu     Old-to-deduplicated node index mapping.
-         * \param[in] isPeriodic       Whether periodic mesh handling is enabled.
          */
         VTKCellTopology BuildVTKCellTopology(
-            DNDS::index nCell,
-            DNDS::index nNode,
-            const tAdjPair &cell2nodeOut,
-            const tPbiPair &cell2nodePbiOut,
-            const tElemInfoArrayPair &cellElemInfoOut,
-            const std::vector<DNDS::index> &nodeOld2Dedu,
-            bool isPeriodic)
+            const OutputMeshRows &rows,
+            const std::vector<DNDS::index> &nodeOld2Dedu)
         {
+            const auto nCell = rows.nCell, nNode = rows.nNode;
             VTKCellTopology result;
-            result.connectivity.reserve(cell2nodeOut.father->DataSize() * 2);
             result.offsets.resize(nCell);
             result.cellTypes.resize(nCell);
             DNDS::index cellEnd = 0;
             DNDS::index nNodeExtra{0};
             for (DNDS::index iCell = 0; iCell < nCell; iCell++)
             {
-                auto elem = Elem::Element{cellElemInfoOut[iCell]->getElemType()};
-                std::vector<DNDS::index> c2n = cell2nodeOut[iCell];
-                if (isPeriodic) // alter the pointing
+                auto elem = Elem::Element{rows.CellType(iCell)};
+                std::vector<DNDS::index> c2n = rows.CellNodes(iCell);
+                if (rows.IsPeriodic()) // alter the pointing
                     for (DNDS::rowsize ic2n = 0; ic2n < c2n.size(); ic2n++)
-                        if (cell2nodePbiOut(iCell, ic2n))
+                        if (rows.CellNodeBits(iCell, ic2n))
                             c2n[ic2n] = (nNodeExtra++) + nNode;
                 for (auto &v : c2n)
                     v = nodeOld2Dedu.at(v);
@@ -822,31 +855,16 @@ namespace DNDS::Geom
         const tFGetVecData &vectorDataPoint,
         double t, int flag)
     {
-        int currentExport = int(mesh->HasNativeState());
+        DNDS_check_throw_info(flag == 0 || flag == 1, "output mode must be serial or distributed");
+        DNDS_check_throw_info(flag != 0 || !mesh->HasNativeState() || nativeSerialOutput, "prepare native serial output before writing");
         if (flag == 1)
-            MPI_Allreduce(MPI_IN_PLACE, &currentExport, 1, MPI_INT, MPI_MAX, mesh->mpi.comm);
-        if (currentExport)
-        {
-            DNDS_check_throw_info(flag == 1, "native serial-reader output requires distributed output mode or an explicitly refreshed serial export");
             CurrentOutputFieldCounts(*mesh, arraySiz, vecArraySiz, arraySizPoint, vecArraySizPoint);
-            auto retained = CurrentOutputRead(*mesh);
-            auto workspace = CloneCurrentMeshForSetup(*mesh, 1, TransitionCachePolicy::RebuildOutput, BoundaryCachePolicy::DropBoundaryCache);
-            auto pointRows = (arraySizPoint || vecArraySizPoint) ? CurrentOutputNodeMap(*mesh, *workspace) : std::vector<index>{};
-            tFGetData mappedPoint = [&](int field, index row)
-            { return dataPoint(field, pointRows.at(size_t(row))); };
-            tFGetVecData mappedVectorPoint = [&](int field, index row, rowsize component)
-            { return vectorDataPoint(field, pointRows.at(size_t(row)), component); };
-            UnstructuredMeshSerialRW output(workspace, mRank);
-            output.PrintSerialPartVTKDataArray(std::move(fname), std::move(seriesName), arraySiz, vecArraySiz,
-                                               arraySizPoint, vecArraySizPoint, names, data, vectorNames, vectorData,
-                                               namesPoint, mappedPoint, vectorNamesPoint, mappedVectorPoint, t, flag);
-            return;
-        }
         auto mpi = mesh->getMPI();
         std::string fnameIN = fname;
 
         if (mpi.rank != mRank && flag == 0) //* now only operating on mRank if serial
             return;
+        OutputMeshRows outputRows(*this, flag);
 
         if (flag == 0)
         {
@@ -876,24 +894,18 @@ namespace DNDS::Geom
 
         /*******************************************************/
         // output preparation
-        tCoordPair coordOut;
-        tAdjPair cell2nodeOut;
-        tPbiPair cell2nodePbiOut;
-        tElemInfoArrayPair cellElemInfoOut;
-        index nCell{-1}, nNode{-1};
-        this->GetCurrentOutputArrays(flag, coordOut, cell2nodeOut, cell2nodePbiOut, cellElemInfoOut,
-                                     nCell, nNode);
+        const index nCell = outputRows.nCell, nNode = outputRows.nNode;
 
         std::vector<Geom::tPoint>
             nodesExtra;
         std::vector<index> nodesExtraAtOriginal;
-        if (mesh->isPeriodic)
+        if (outputRows.IsPeriodic())
         {
             for (index iCell = 0; iCell < nCell; iCell++)
-                for (rowsize ic2n = 0; ic2n < cell2nodePbiOut.RowSize(iCell); ic2n++)
-                    if (cell2nodePbiOut[iCell][ic2n])
-                        nodesExtra.push_back(mesh->periodicInfo.GetCoordByBits(coordOut[cell2nodeOut[iCell][ic2n]], cell2nodePbiOut[iCell][ic2n])),
-                            nodesExtraAtOriginal.push_back(cell2nodeOut(iCell, ic2n));
+                for (rowsize ic2n = 0; ic2n < outputRows.CellNodeCount(iCell); ic2n++)
+                    if (outputRows.CellNodeBits(iCell, ic2n))
+                        nodesExtra.push_back(outputRows.Periodic().GetCoordByBits(outputRows.Coord(outputRows.CellNode(iCell, ic2n)), outputRows.CellNodeBits(iCell, ic2n))),
+                            nodesExtraAtOriginal.push_back(outputRows.CellNode(iCell, ic2n));
         }
         // if (mpi.rank == mRank)
         //     std::cout << "PrintSerialPartVTKDataArray === " << std::endl;
@@ -906,7 +918,7 @@ namespace DNDS::Geom
         //     printSize();
         std::vector<index> nodeDedu2Old;
         std::vector<index> nodeOld2Dedu;
-        GetViolentNodeDeduplication(nNode, nodesExtra, coordOut, nodeDedu2Old, nodeOld2Dedu);
+        GetViolentNodeDeduplication(nNode, nodesExtra, outputRows, nodeDedu2Old, nodeOld2Dedu);
         /*******************************************************/
 
         std::string indentV = "  ";
@@ -955,9 +967,9 @@ namespace DNDS::Geom
                                 {
                                     if (iN < nNode)
                                     {
-                                        *reinterpret_cast<double *>(dataOutBytes.data() + top) = double(coordOut[iN](0)), top += sizeof(double);
-                                        *reinterpret_cast<double *>(dataOutBytes.data() + top) = double(coordOut[iN](1)), top += sizeof(double);
-                                        *reinterpret_cast<double *>(dataOutBytes.data() + top) = double(coordOut[iN](2)), top += sizeof(double);
+                                        *reinterpret_cast<double *>(dataOutBytes.data() + top) = double(outputRows.Coord(iN)(0)), top += sizeof(double);
+                                        *reinterpret_cast<double *>(dataOutBytes.data() + top) = double(outputRows.Coord(iN)(1)), top += sizeof(double);
+                                        *reinterpret_cast<double *>(dataOutBytes.data() + top) = double(outputRows.Coord(iN)(2)), top += sizeof(double);
                                     }
                                     else
                                     {
@@ -976,9 +988,9 @@ namespace DNDS::Geom
                                     index iN = nodeDedu2Old.at(i);
                                     if (iN < nNode)
                                     {
-                                        coordsOutData[i * 3 + 0LL] = coordOut[iN](0);
-                                        coordsOutData[i * 3 + 1LL] = coordOut[iN](1);
-                                        coordsOutData[i * 3 + 2LL] = coordOut[iN](2);
+                                        coordsOutData[i * 3 + 0LL] = outputRows.Coord(iN)(0);
+                                        coordsOutData[i * 3 + 1LL] = outputRows.Coord(iN)(1);
+                                        coordsOutData[i * 3 + 2LL] = outputRows.Coord(iN)(2);
                                     }
                                     else
                                     {
@@ -1001,8 +1013,7 @@ namespace DNDS::Geom
         };
 
         auto vtkTopo = BuildVTKCellTopology(
-            nCell, nNode, cell2nodeOut, cell2nodePbiOut,
-            cellElemInfoOut, nodeOld2Dedu, mesh->isPeriodic);
+            outputRows, nodeOld2Dedu);
         auto &cell2nodeOutData = vtkTopo.connectivity;
         auto &cell2nodeOffsetData = vtkTopo.offsets;
         auto &cellTypeData = vtkTopo.cellTypes;
@@ -1128,7 +1139,8 @@ namespace DNDS::Geom
                                 index v{0};
                                 if (flag == 0)
                                 {
-                                    bool ret = cell2nodeSerialOutTrans.pLGlobalMapping->search(iCell, r, v);
+                                    const auto mapping = nativeSerialOutput ? nativeSerialOutput->cellGlobal : cell2nodeSerialOutTrans.pLGlobalMapping;
+                                    bool ret = mapping->search(iCell, r, v);
                                     DNDS_assert_info(ret, "search failed");
                                 }
                                 else if (flag == 1)

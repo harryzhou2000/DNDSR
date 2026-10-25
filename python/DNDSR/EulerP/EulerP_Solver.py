@@ -7,6 +7,7 @@ from DNDSR.Geom.utils import (
     build_fv,
     read_mesh,
     prepare_mesh,
+    prepare_native_mesh,
     build_bnd_mesh,
 )
 import numpy as np
@@ -52,10 +53,16 @@ class Solver:
     def runningDevice(self, B):
         self._runningDevice = B
 
-    def ReadMesh(self, mesh_file, dim, other_options={}):
+    def ReadMesh(self, mesh_file, dim, other_options=None, *, native=False, boundary_names=None):
         """Read and prepare a mesh for the solver.
 
-        Delegates to ``read_mesh`` + ``prepare_mesh`` + ``build_bnd_mesh``.
+        Native setup is explicit with ``native=True`` and uses detached native
+        read/partition/preparation/extraction without a legacy mesh workspace.
+        ``native=False`` remains the temporary compatibility default until
+        full consumer and configured-output coverage has been validated.
+        Native archives require an explicit matching ``boundary_names`` map.
+        Both routes build finite-volume/evaluator data after final mesh ordering.
+        Delegates to the appropriate Geom helpers and ``build_bnd_mesh``.
         Accepts both new-style keyword arguments and legacy
         ``create_mesh_from_CGNS`` parameter names via *other_options*.
 
@@ -67,6 +74,7 @@ class Solver:
                 legacy names (``meshElevation``, ``meshDirectBisect``,
                 ``inner_process_parts``, ``readMeshMode``, etc.).
         """
+        other_options = {} if other_options is None else other_options
         _LEGACY_TO_READ = {
             "meshElevation": "elevation",
             "meshDirectBisect": "bisect",
@@ -100,20 +108,36 @@ class Solver:
                     prep_kw["build_serial_out"] = (v == "Serial")
             elif k in ("periodic_geometry", "periodic_tolerance",
                        "read_mode", "partition_options",
-                       "elevation", "bisect", "serializer_factory"):
+                       "elevation", "bisect", "serializer_factory", "cell_layers", "complete_node_star"):
                 read_kw[k] = v
             elif k in ("reorder_parts", "reorder_inner_parts",
-                       "build_serial_out"):
+                       "build_serial_out", "wall_dist_predicate", "wall_dist_options",
+                       "coord_scale", "coord_rot_z_deg", "rectify_near_plane", "rectify_threshold"):
                 prep_kw[k] = v
             else:
                 raise ValueError(f"Unknown ReadMesh option: {k!r}")
 
-        result = read_mesh(mesh_file, mpi=self.mpi, dim=dim, **read_kw)
-        prepare_mesh(result.mesh, result.reader, **prep_kw)
-        self.mesh = result.mesh
+        if native:
+            if prep_kw.pop("build_serial_out", False):
+                raise ValueError("Native EulerP setup has no legacy serial output cache")
+            prep_kw.setdefault("reorder_parts", 1)
+            prep_kw.setdefault("reorder_inner_parts", 1)
+            read_kw.setdefault("partition_options", {})
+            result = read_mesh(mesh_file, mpi=self.mpi, dim=dim, native=True, **read_kw)
+            mesh = prepare_native_mesh(result.mesh, **prep_kw)
+        else:
+            result = read_mesh(mesh_file, mpi=self.mpi, dim=dim, **read_kw)
+            prepare_mesh(result.mesh, result.reader, **prep_kw)
+            mesh = result.mesh
+        if boundary_names is not None and result.name_to_id is not None and boundary_names.n2id_map != result.name_to_id.n2id_map:
+            raise ValueError("boundary_names differs from the CGNS-assigned boundary dictionary")
+        names = boundary_names if boundary_names is not None else result.name_to_id
+        if names is None:
+            raise ValueError("Mesh archives retain zone IDs but no BC names; provide boundary_names=Geom.AutoAppendName2ID() with the matching name mapping")
+        bnd = build_bnd_mesh(mesh)
+        self.mesh = mesh
         self.reader = result.reader
-        self.name2Id = result.name_to_id
-        bnd = build_bnd_mesh(self.mesh)
+        self.name2Id = names
         self.meshBnd = bnd.mesh_bnd
         self.readerBnd = bnd.reader_bnd
 
@@ -503,9 +527,11 @@ class Solver:
         eval.RecGradient(solver.LoadArg_RecGradient())
         # print(data["p"].min())
         # _ = input()
-        data["uGrad"].trans.startPersistentPull(self.runningDevice)
         if zero_grad:
             data["uGrad"].setConstant(0.0)
+        # Complete owned values before MPI reads the send buffer. Otherwise a
+        # late receive can overwrite zeroed ghosts with pre-zero gradients.
+        data["uGrad"].trans.startPersistentPull(self.runningDevice)
         eval.Cons2PrimMu(solver.LoadArg_Cons2PrimMu())
         data["p"].trans.startPersistentPull(self.runningDevice)
         data["T"].trans.startPersistentPull(self.runningDevice)

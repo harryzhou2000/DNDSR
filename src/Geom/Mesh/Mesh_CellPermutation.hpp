@@ -6,7 +6,6 @@
 /// and the new ReorderLocalCells (in Mesh_Reorder.cpp).
 
 #include "DNDS/Defines.hpp"
-#include "DNDS/ArrayPair.hpp"
 #include "SerialAdjReordering.hpp"
 
 #include <vector>
@@ -39,9 +38,10 @@ namespace DNDS::Geom::detail
     /// @param nCell           Number of local (father) cells.
     /// @param nParts          Number of first-level partitions.
     /// @param nPartsInner     Number of inner partitions per first-level part.
+    template <class CellRows>
     inline CellPermutationResult ComputeCellPermutation(
         tLocalMatStruct &cell2cellFaceV,
-        const tAdjPair &cell2cell,
+        const CellRows &cell2cell,
         index nCell,
         int nParts,
         int nPartsInner)

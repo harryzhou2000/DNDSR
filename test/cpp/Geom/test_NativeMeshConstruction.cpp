@@ -540,6 +540,47 @@ TEST_CASE("Replacing an entity descriptor does not mutate retained source contro
     CHECK(handle.SameOrder(nodes));
 }
 
+TEST_CASE("Native memory accounting counts retained capacities and shared named identity ancestry arrays once")
+{
+    const auto mpi = NativeMPI();
+    NativeTriangle input(mpi);
+    // The mesh retains the whole imported owner even though coordinates use a
+    // 72-byte subspan. Other retained aliases must count that owner only once.
+    auto backing = R::Buffer::Allocate(128);
+    input.data.coords->owned = R::Array<DNDS::real>::FromStorage(R::RowLayout::Dense(3, 3), backing.Subspan(8, 9 * sizeof(DNDS::real)));
+    const auto cone = *input.data.relations[size_t(MeshRelation::CellNodes)];
+    input.data.namedRelations.emplace(Adj::Cell2Node, NativeNamedRelation{cone, Adj_PointToLocal});
+    auto variant = Adj::Cell2Node;
+    variant.path = variant.Path();
+    variant.selection = RelationSelection::Incidence;
+    variant.order = RelationOrder::Topological;
+    variant.periodic = RelationPeriodicPolicy::FrameMatched;
+    variant.semanticName = "accounting.separate-values-shared-layout";
+    variant.semanticVersion = 1;
+    REQUIRE(input.data.namedRelations.emplace(variant, NativeNamedRelation{{cone.owned.Clone(), cone.ghost}, Adj_PointToLocal}).second);
+    NativeMeshProvenance provenance;
+    provenance.sourceNamespace = "11111111-1111-4111-8111-111111111111";
+    provenance.sourceKinds = {{EntityKind::Cell, EntityKind::Cell}, {EntityKind::Node, EntityKind::Node}};
+    provenance.sourceIds.emplace(EntityKind::Cell, input.ids.at(EntityKind::Cell));
+    provenance.sourceIds.emplace(EntityKind::Node, IndexRows({{17}, {}, {19, 23}}));
+    input.data.provenance = std::move(provenance);
+    auto state = NativeMeshState::FromNative(mpi, std::move(input.data), input.spaces, std::move(input.ids), MeshReadRequirements::Primary());
+    // Coordinates: full 128-byte owner. Two cone value allocations, four IDs,
+    // three ancestry values, one ElemInfo, and 12 size_t CSR offsets. Empty
+    // dense arrays allocate no payload; fixed/named aliases share allocations.
+    const size_t expected = 128 + 13 * sizeof(DNDS::index) + sizeof(ElemInfo) + 12 * sizeof(size_t);
+    CHECK(state->ArrayBytes() == expected);
+    auto alias = state->BindEpoch(R::VersionTracker{});
+    CHECK(alias->ArrayBytes() == expected);
+    auto host = state->WithPlacement(R::Device::Host(), R::ExecutionContext::Host());
+    CHECK(host->ArrayBytes() == expected);
+    auto mesh = UnstructuredMesh::FromNative(mpi, state);
+    auto retained = mesh->AcquireRead();
+    CHECK(mesh->getArrayBytes() == DNDS::index(expected) * mpi.size);
+    CHECK_FALSE(mesh->coords.father);
+    CHECK_FALSE(mesh->cell2node.father);
+}
+
 int main(int argc, char **argv)
 {
     MPI_Init(&argc, &argv);

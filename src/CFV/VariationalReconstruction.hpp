@@ -1204,7 +1204,7 @@ namespace DNDS::CFV
 
         void WriteSerializeRecMatrix(const Serializer::SerializerBaseSSP &serializerP)
         {
-            mesh->RequireLegacyWorkspace("WriteSerializeRecMatrix");
+            auto read = mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
             this->ValidateMeshDependencies();
             using namespace Geom;
             std::string name = "VR_Matrix";
@@ -1212,9 +1212,35 @@ namespace DNDS::CFV
             serializerP->CreatePath(name);
             serializerP->GoToPath(name);
 
-            mesh->BuildCell2CellFace();
-            mesh->cell2cellFace.WriteSerialize(serializerP, "cell2cellFace", true);
-            mesh->AdjGlobal2LocalC2CFace();
+            // Export exact face slots as a temporary diagnostic payload. This
+            // preserves the established file schema without creating a mesh
+            // workspace or changing the source's adjacency/index state.
+            tAdjPair neighbors;
+            neighbors.InitPair("reconstruction matrix face neighbors", mpi);
+            const auto view = read.HostView();
+            const auto cells = mesh->Entities(EntityKind::Cell);
+            auto fill = [&](auto &array, index count, index first)
+            {
+                array.Resize(count);
+                for (index row = 0; row < count; ++row)
+                {
+                    const auto cell = first + row;
+                    const auto faces = view.CellFaces(cell);
+                    array.ResizeRow(row, faces.size());
+                    for (rowsize slot = 0; slot < rowsize(faces.size()); ++slot)
+                    {
+                        const auto other = view.CellFaceOther(cell, faces[slot], slot);
+                        array(row, slot) = other == UnInitIndex ? UnInitIndex : cells.LocalToGlobal(other);
+                    }
+                }
+                array.Compress();
+            };
+            fill(*neighbors.father, view.NumCell(), 0);
+            neighbors.TransAttach();
+            LegacyFieldBridge::BorrowIndexing(neighbors.trans, cells);
+            neighbors.trans.createMPITypes();
+            neighbors.trans.pullOnce(); // Ghost cells need their owners' complete face-slot rows.
+            neighbors.WriteSerialize(serializerP, "cell2cellFace", true);
 
             DNDS_assert(coefficients_.matrixAAInvB.father->Size() == mesh->NumCell());
             DNDS_assert(coefficients_.matrixAAInvB.son->Size() == mesh->NumCellGhost());

@@ -117,14 +117,43 @@ def test_native_helpers_names_prepare_extract_and_restart(tmp_path):
 
 
 @pytest.mark.mpi
+def test_native_partition_prepare_matches_cfv_metrics_and_preserves_source(tmp_path):
+    from DNDSR import CFV
+    mpi = DNDS.MPIInfo()
+    mpi.setWorld()
+    result = read_mesh(_fixture(tmp_path), mpi, 2, native=True, bisect=1)
+    imported = read_mesh(_fixture(tmp_path), mpi, 2, native=True, bisect=1,
+        partition_options={"metisType": "KWAY", "metisSeed": 11, "metisNcuts": 2, "metisUfactor": 30})
+    prepared = prepare_native_mesh(imported.mesh, reorder_parts=1)
+    assert result.mesh.NumCellGlobal() == prepared.NumCellGlobal() == 4
+    assert not Geom.native_mesh_requirements(result.mesh)["faces"]
+    fv = CFV.FiniteVolume(mpi, prepared)
+    fv.ParseSettings({})
+    fv.SetCellAtrBasic()
+    fv.ConstructCellVolume()
+    fv.ConstructCellBary()
+    total = 0.0
+    with prepared.acquire_read(faces=True) as read:
+        for cell in range(prepared.NumCell()):
+            np.testing.assert_allclose(fv.GetCellVol(cell), 0.25, atol=1e-13)
+            total += fv.GetCellVol(cell)
+            points = np.array([read.coord(int(node)).copy() for node in read.cell_nodes(cell)])
+            np.testing.assert_allclose(fv.GetCellBary(cell), points.mean(axis=0), atol=1e-13)
+    assert MPI.COMM_WORLD.allreduce(total) == pytest.approx(1.0)
+    for options in ({"metisType": "RB"}, {"edgeWeightMethod": 1}, {"unknown": 1}):
+        with pytest.raises((ValueError, RuntimeError)):
+            prepare_native_mesh(result.mesh, partition_options=options)
+
+
+@pytest.mark.mpi
 def test_native_helpers_reject_unsupported_options(tmp_path):
     mpi = DNDS.MPIInfo()
     mpi.setWorld()
     path = _fixture(tmp_path)
-    for options in ({"partition_options": {}}, {"periodic_geometry": {}},
+    for options in ({"partition_options": {"metisType": "RB"}}, {"periodic_geometry": {"unsupported_frame_key": [0, 0, 0]}},
                     {"periodic_tolerance": 1e-5}, {"elevation": "bad"},
                     {"elevation": "O2", "bisect": 1}, {"bisect": 5}):
-        with pytest.raises(ValueError):
+        with pytest.raises((ValueError, RuntimeError)):
             read_mesh(path, mpi, 2, native=True, **options)
     primary = read_mesh(path, mpi, 2, native=True).mesh
     with pytest.raises(ValueError, match="requires wall_dist_predicate"):
@@ -149,3 +178,46 @@ def test_native_helpers_reject_mixed_authority_before_dispatch(tmp_path):
     ):
         with pytest.raises(ValueError, match="authority differs"):
             operation()
+
+
+@pytest.mark.mpi
+def test_native_periodic_helper_import_and_cfv_geometry():
+    from DNDSR import CFV
+    mpi = DNDS.MPIInfo()
+    mpi.setWorld()
+    path = Path(__file__).resolve().parents[2] / "data/mesh/Uniform32_Periodic.cgns"
+    result = read_mesh(str(path), mpi, 2, native=True,
+        periodic_geometry={"translation1": [1, 0, 0], "translation2": [0, 1, 0]},
+        periodic_tolerance=1e-9)
+    prepared = prepare_native_mesh(result.mesh)
+    fv = CFV.FiniteVolume(mpi, prepared)
+    fv.ParseSettings({})
+    fv.SetCellAtrBasic()
+    fv.ConstructCellVolume()
+    volume = sum(fv.GetCellVol(cell) for cell in range(prepared.NumCell()))
+    assert MPI.COMM_WORLD.allreduce(volume) == pytest.approx(1.0)
+    assert prepared.has_native_state and result.name_to_id is not None
+
+
+@pytest.mark.mpi
+def test_native_reader_decodes_legacy_primary_archive_without_legacy_state(tmp_path):
+    mpi = DNDS.MPIInfo()
+    mpi.setWorld()
+    path = _fixture(tmp_path)
+    legacy = read_mesh(path, mpi, 2)
+    before = {}
+    with legacy.mesh.acquire_read() as read:
+        for cell in range(legacy.mesh.NumCell()):
+            original = legacy.mesh.original_entity_id(Geom.EntityKind.Cell, cell)
+            before[original] = np.array([read.coord(int(node)).copy() for node in read.cell_nodes(cell)])
+    factory = default_serializer_factory()
+    base = MPI.COMM_WORLD.bcast(str(tmp_path / "legacy-primary") if mpi.rank == 0 else None, root=0)
+    serialize_mesh(legacy.mesh, base, mpi, serializer_factory=factory)
+    restored = read_mesh(base + ".dnds.h5", mpi, 2, native=True, serializer_factory=factory)
+    assert restored.reader is None and restored.name_to_id is None
+    assert restored.mesh.has_native_state
+    assert not Geom.native_mesh_requirements(restored.mesh)["faces"]
+    with restored.mesh.acquire_read() as read:
+        for cell in range(restored.mesh.NumCell()):
+            original = restored.mesh.original_entity_id(Geom.EntityKind.Cell, cell)
+            np.testing.assert_array_equal(np.array([read.coord(int(node)).copy() for node in read.cell_nodes(cell)]), before[original])
