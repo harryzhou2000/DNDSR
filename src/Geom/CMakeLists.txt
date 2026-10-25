@@ -32,6 +32,13 @@ Mesh/NativeMeshSnapshot.cpp
 Mesh/NativeMeshState.cpp
 Mesh/NativeMeshBuilder.cpp
 Mesh/NativeMeshTransition.cpp
+Mesh/NativeMeshAssembler.cpp
+Mesh/NativeMeshArchive.cpp
+Mesh/NativeMeshCGNS.cpp
+Mesh/NativeMeshTopology.cpp
+Mesh/NativeMeshClosure.cpp
+Mesh/NativeMeshRefinement.cpp
+Mesh/NativeMeshElevation.cpp
 Mesh/MeshTransition.cpp
 Mesh/Mesh_EntitySpace.cpp
 Mesh/Mesh_Legacy.cpp

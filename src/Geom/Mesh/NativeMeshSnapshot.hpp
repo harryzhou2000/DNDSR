@@ -3,6 +3,7 @@
 #include "MeshAccess.hpp"
 #include "MeshRelationTypes.hpp"
 #include "MeshIdentity.hpp"
+#include "NativeMeshProvenance.hpp"
 #include <optional>
 #include <map>
 
@@ -33,6 +34,8 @@ namespace DNDS::Geom
         std::optional<Runtime::ArrayPair<NodePeriodicBits>> cellNodesPbi, bndNodesPbi, cellFacesPbi, faceNodesPbi, cellEdgesPbi, edgeNodesPbi;
         /// Durable UUID and non-reuse marks, consumed by NativeMeshState.
         MeshIdentity identity;
+        /// Owned source-ID payload, consumed by NativeMeshState (host setup).
+        std::optional<NativeMeshProvenance> provenance;
     };
 
     /// Detached immutable native backing for the query facade. This is an
@@ -44,6 +47,8 @@ namespace DNDS::Geom
     {
         friend class MeshReadAccess;
         friend class NativeMeshTransition;
+        friend class NativeMeshAssembler;
+        friend class MeshEdit;
         template <class T>
         using Pair = Runtime::ArrayPair<T>;
         struct State

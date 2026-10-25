@@ -1,0 +1,364 @@
+#include "NativeMeshAssembler.hpp"
+#include "NativeConnectivity.hpp"
+#include "FieldTransfer.hpp"
+#include <set>
+
+namespace DNDS::Geom
+{
+    namespace
+    {
+        using RArray = Runtime::Array<index>;
+        const std::array<AdjKind, size_t(MeshRelation::Count)> &Bindings()
+        {
+            static const std::array<AdjKind, size_t(MeshRelation::Count)> result{
+                Adj::Cell2Node, Adj::Bnd2Node, Adj::Bnd2Cell, Adj::Cell2Cell,
+                Adj::Node2Cell, Adj::Node2Bnd, Adj::Cell2Face, Adj::Face2Node,
+                Adj::Face2Cell, Adj::Face2Bnd, Adj::Bnd2Face, Adj::Cell2Edge,
+                Adj::Edge2Node, Adj::Edge2Cell, Adj::Cell2CellFace};
+            return result;
+        }
+        AdjKind FacadeKey(size_t slot)
+        {
+            auto key = Bindings()[slot];
+            key.path = key.Path();
+            key.selection = RelationSelection::Incidence;
+            key.order = RelationOrder::Topological;
+            key.periodic = RelationPeriodicPolicy::EntityIdentity;
+            key.semanticName = "geom.transition.facade." + std::to_string(slot);
+            key.semanticVersion = 1;
+            return key;
+        }
+        RArray Rows(const std::vector<std::vector<index>> &rows)
+        {
+            Runtime::RowBuilder builder(rows.size(), sizeof(index));
+            for (size_t row = 0; row < rows.size(); ++row)
+            {
+                builder.ResizeRow(row, rows[row].size());
+                auto output = builder.Row<index>(row);
+                std::copy(rows[row].begin(), rows[row].end(), output.data);
+            }
+            return RArray::FromSharedStorage(builder.Commit());
+        }
+        template <class T>
+        Runtime::ArrayPair<T> Ghost(const Runtime::Array<T> &owned, EntityKind kind,
+                                    const NativeGhostPublication &publication, const Runtime::ElementSchema &schema)
+        {
+            const auto &space = publication.spaces.at(kind);
+            auto ghost = publication.routes.at(kind).TransferRows(space, owned, schema);
+            if (!owned.Layout().IsVariable())
+                ghost = Runtime::Array<T>::FromStorage(Runtime::RowLayout::Dense(ghost.Rows(), owned.Layout().Width()), ghost.Storage());
+            return {owned, std::move(ghost)};
+        }
+        void Agree(const MPIInfo &mpi, const std::string &signature)
+        {
+            int length = int(signature.size());
+            MPI_Bcast(&length, 1, MPI_INT, 0, mpi.comm);
+            std::string expected;
+            FieldTransferDetail::LocalStage(mpi, [&]
+                                            { expected = mpi.rank == 0 ? signature : std::string(size_t(length), '\0'); });
+            MPI_Bcast(expected.data(), length, MPI_CHAR, 0, mpi.comm);
+            FieldTransferDetail::LocalStage(mpi, [&]
+                                            { DNDS_check_throw_info(signature == expected, "native assembly inventory differs across ranks"); });
+        }
+        template <class T>
+        void CheckRows(const Runtime::Array<T> &array, const EntitySpace &space)
+        {
+            DNDS_check_throw_info(array.GetDevice() == Runtime::Device::Host() && array.Rows() == size_t(space.NumOwned()),
+                                  "native assembly requires matching owned host rows");
+            auto read = array.Read();
+        }
+    }
+
+    NativeOwnedMeshData NativeMeshAssembler::CaptureOwned(const NativeMeshState &source, const MPIInfo &mpi)
+    {
+        NativeOwnedMeshData result;
+        std::string inventory;
+        FieldTransferDetail::LocalStage(mpi, [&]
+                                        {
+            source.Validate();
+            const auto &snapshot = source.Snapshot(Runtime::Device::Host()).Live();
+            result.retainedRead = std::make_shared<MeshReadAccess>(source.Snapshot(Runtime::Device::Host()).AcquireRead());
+            result.identity = {source.MeshNamespace(), source.IdHighWater()};
+            result.provenance = source.Provenance();
+            if (result.provenance)
+                for (const auto &[kind, values] : result.provenance->sourceIds)
+                    result.retainedProvenance.push_back(std::make_shared<Runtime::Array<index>::ReadLease>(values.Read()));
+            result.requirements = source.Requirements();
+            result.dimension = snapshot.semantics.dim;
+            result.periodic = snapshot.semantics.isPeriodic;
+            result.periodicInfo = snapshot.semantics.periodicInfo;
+            auto global = [&](const AdjKind &key, const Runtime::ArrayPair<index> &rows, MeshAdjState state)
+            {
+                RelationReadAccess read(key, source.Entities(key.from), source.Entities(key.to), state, rows.owned, &rows.ghost);
+                std::vector<std::vector<index>> values(size_t(read.NumOwned()));
+                for (index row = 0; row < read.NumOwned(); ++row) values[size_t(row)] = read.GlobalRow(row);
+                return Rows(values);
+            };
+            for (size_t slot = 0; slot < snapshot.relations.size(); ++slot)
+                if (snapshot.relations[slot])
+                {
+                    auto array = global(FacadeKey(slot), *snapshot.relations[slot], Adj_PointToLocal);
+                    const auto &shape = snapshot.relations[slot]->owned.Layout();
+                    if (!shape.IsVariable())
+                        array = RArray::FromStorage(Runtime::RowLayout::Dense(array.Rows(), shape.Width()), array.Storage());
+                    result.relations[slot] = std::move(array);
+                }
+            for (const auto &[key, relation] : source._namedRelations)
+                result.namedRelations.emplace(key, global(key, relation.data.rows, relation.data.state));
+            auto capture = [](auto &destination, const auto &pair) { if (pair) destination = pair->owned; };
+            capture(result.coords, snapshot.coords);
+            capture(result.nodeWallDist, snapshot.nodeWallDist);
+            capture(result.cellInfo, snapshot.cellInfo);
+            capture(result.bndInfo, snapshot.bndInfo);
+            capture(result.faceInfo, snapshot.faceInfo);
+            capture(result.edgeInfo, snapshot.edgeInfo);
+            capture(result.cellNodesPbi, snapshot.cellNodesPbi);
+            capture(result.bndNodesPbi, snapshot.bndNodesPbi);
+            capture(result.cellFacesPbi, snapshot.cellFacesPbi);
+            capture(result.faceNodesPbi, snapshot.faceNodesPbi);
+            capture(result.cellEdgesPbi, snapshot.cellEdgesPbi);
+            capture(result.edgeNodesPbi, snapshot.edgeNodesPbi);
+            for (const auto &[kind, family] : source._spaces)
+            {
+                EntitySpace::CheckCommunicator(family.identity._mpi.comm, mpi.comm);
+                auto read = source._originalIds.at(kind).Read();
+                RArray ids(Runtime::RowLayout::Dense(size_t(family.owned), 1));
+                { auto write = ids.Write();
+                  for (index row = 0; row < family.owned; ++row) write.View()(size_t(row), 0) = read.View()(size_t(row), 0); }
+                result.ids.emplace(kind, std::move(ids));
+                inventory += "k" + std::to_string(int(kind)) + ":";
+                for (auto count : family.global->RLengths()) inventory += std::to_string(count) + ",";
+            }
+            inventory += "d" + std::to_string(result.dimension) + "p" + std::to_string(result.periodic) + ":" + result.identity.meshNamespace;
+            for (const auto &[kind, next] : result.identity.nextIds) inventory += "i" + std::to_string(int(kind)) + ":" + std::to_string(next) + ";";
+            const auto &r = result.requirements;
+            inventory += "q" + std::to_string(r.faces) + std::to_string(r.inverse) + std::to_string(r.edges) +
+                         std::to_string(r.cellFaceNeighbors) + std::to_string(r.wallDistance) + std::to_string(r.allFaceCellsLocal);
+            for (size_t slot = 0; slot < result.relations.size(); ++slot)
+                if (result.relations[slot]) inventory += "r" + std::to_string(slot) + ";";
+            for (const auto &[key, unused] : result.namedRelations) inventory += key.Signature();
+            inventory += result.provenance ? "p" + result.provenance->Signature() : "p;";
+            DNDS_check_throw_info(inventory.size() <= size_t(INT_MAX), "native capture inventory exceeds MPI range"); });
+        Agree(mpi, inventory);
+        for (const auto &[kind, family] : source._spaces)
+            result.spaces.emplace(kind, family.identity.WithGhosts({}));
+        return result;
+    }
+
+    std::shared_ptr<const NativeMeshState> NativeMeshAssembler::Build(const MPIInfo &mpi, NativeOwnedMeshData owned, int ghostLayers)
+    {
+        std::string schedule;
+        FieldTransferDetail::LocalStage(mpi, [&]
+                                        {
+            DNDS_check_throw_info(ghostLayers >= 1 && (owned.dimension == 2 || owned.dimension == 3), "invalid native assembly dimensions or closure");
+            DNDS_check_throw_info(owned.spaces.count(EntityKind::Node) && owned.spaces.count(EntityKind::Cell) && owned.spaces.count(EntityKind::Bnd), "native assembly primary families missing");
+            const auto identity = owned.spaces.at(EntityKind::Node).MeshIdentity();
+            for (const auto &[kind, space] : owned.spaces)
+            {
+                space.Validate();
+                EntitySpace::CheckCommunicator(space._mpi.comm, mpi.comm);
+                DNDS_check_throw_info(space.Kind() == kind && space.MeshIdentity() == identity && space.NumGhost() == 0, "native assembly spaces must be owned-only siblings");
+                DNDS_check_throw_info(owned.ids.count(kind), "native assembly persistent IDs missing");
+                CheckRows(owned.ids.at(kind), space);
+                {
+                    auto ids = owned.ids.at(kind).Read();
+                    for (size_t row = 0; row < ids.View().Rows(); ++row)
+                        DNDS_check_throw_info(ids.View().RowSize(row) == 1, "native assembly IDs must have exactly one column");
+                }
+                schedule += "k" + std::to_string(int(kind)) + ":";
+                for (auto count : space._global->RLengths()) schedule += std::to_string(count) + ",";
+            }
+            DNDS_check_throw_info(owned.ids.size() == owned.spaces.size() && owned.coords && owned.cellInfo && owned.bndInfo,
+                                  "native assembly ID or primary companion inventory invalid");
+            schedule += owned.provenance ? "p" + owned.provenance->Signature() : "p;";
+            if (owned.provenance)
+                for (const auto &[kind, values] : owned.provenance->sourceIds)
+                    CheckRows(values, owned.spaces.at(kind));
+            for (auto slot : {MeshRelation::CellNodes, MeshRelation::BoundaryNodes, MeshRelation::BoundaryCells, MeshRelation::CellCells})
+                DNDS_check_throw_info(owned.relations[size_t(slot)], "native assembly primary topology missing");
+            schedule += "d" + std::to_string(owned.dimension) + "p" + std::to_string(owned.periodic) + "l" + std::to_string(ghostLayers);
+            for (size_t slot = 0; slot < owned.relations.size(); ++slot)
+                if (owned.relations[slot])
+                {
+                    const auto &key = Bindings()[slot];
+                    CheckRows(*owned.relations[slot], owned.spaces.at(key.from));
+                    DNDS_check_throw_info(owned.spaces.count(key.to), "native assembly fixed relation target missing");
+                    schedule += "r" + std::to_string(slot) + ";";
+                }
+            for (const auto &[key, values] : owned.namedRelations)
+            {
+                key.Validate();
+                CheckRows(values, owned.spaces.at(key.from));
+                DNDS_check_throw_info(owned.spaces.count(key.to), "native assembly named relation target missing");
+                schedule += key.Signature();
+            }
+            const auto &r = owned.requirements;
+            schedule += "q" + std::to_string(r.faces) + std::to_string(r.inverse) + std::to_string(r.edges) +
+                        std::to_string(r.cellFaceNeighbors) + std::to_string(r.wallDistance) + std::to_string(r.allFaceCellsLocal);
+            auto companion = [&](const auto &array, EntityKind kind)
+            {
+                schedule += array ? "1" : "0";
+                if (array) CheckRows(*array, owned.spaces.at(kind));
+            };
+            companion(owned.coords, EntityKind::Node); companion(owned.nodeWallDist, EntityKind::Node);
+            companion(owned.cellInfo, EntityKind::Cell); companion(owned.bndInfo, EntityKind::Bnd);
+            companion(owned.faceInfo, EntityKind::Face); companion(owned.edgeInfo, EntityKind::Edge);
+            companion(owned.cellNodesPbi, EntityKind::Cell); companion(owned.bndNodesPbi, EntityKind::Bnd);
+            companion(owned.cellFacesPbi, EntityKind::Cell); companion(owned.faceNodesPbi, EntityKind::Face);
+            companion(owned.cellEdgesPbi, EntityKind::Cell); companion(owned.edgeNodesPbi, EntityKind::Edge);
+            DNDS_check_throw_info(schedule.size() <= size_t(INT_MAX), "native assembly schedule exceeds MPI range"); });
+        Agree(mpi, schedule);
+        NativeConnectivity connectivity(mpi);
+        std::map<AdjKind, RArray> relations;
+        FieldTransferDetail::LocalStage(mpi, [&]
+                                        {
+            for (size_t slot = 0; slot < owned.relations.size(); ++slot)
+                if (owned.relations[slot]) relations.emplace(FacadeKey(slot), *owned.relations[slot]);
+            for (const auto &[key, values] : owned.namedRelations)
+                DNDS_check_throw_info(relations.emplace(key, values).second, "native assembly reserved descriptor collision");
+            for (const auto &[key, values] : relations)
+            {
+                auto validate = RelationReadAccess(key, owned.spaces.at(key.from), owned.spaces.at(key.to), Adj_PointToGlobal, values);
+            } });
+        for (auto slot : {MeshRelation::NodeCells, MeshRelation::NodeBoundaries})
+            if (!owned.relations[size_t(slot)])
+            {
+                const auto coneSlot = slot == MeshRelation::NodeCells ? MeshRelation::CellNodes : MeshRelation::BoundaryNodes;
+                const auto &key = Bindings()[size_t(coneSlot)];
+                RelationReadAccess read(key, owned.spaces.at(key.from), owned.spaces.at(key.to), Adj_PointToGlobal, *owned.relations[size_t(coneSlot)]);
+                auto inverse = NativeConnectivity::Inverse(read, mpi);
+                relations.emplace(FacadeKey(size_t(slot)), inverse.Owned());
+            }
+        FieldTransferDetail::LocalStage(mpi, [&]
+                                        {
+            for (const auto &[key, values] : relations)
+                connectivity.Register(RelationReadAccess(key, owned.spaces.at(key.from), owned.spaces.at(key.to), Adj_PointToGlobal, values)); });
+        GhostSpec spec;
+        auto append = [&](EntityKind anchor, std::vector<AdjKind> hops)
+        { spec.chains.push_back({anchor, hops, hops.back().to}); };
+        for (size_t slot = 0; slot < owned.relations.size(); ++slot)
+            if (owned.relations[slot])
+                append(Bindings()[slot].from, {FacadeKey(slot)});
+        std::vector<AdjKind> layers;
+        for (int layer = 0; layer < ghostLayers; ++layer)
+        {
+            layers.push_back(FacadeKey(size_t(MeshRelation::CellCells)));
+            append(EntityKind::Cell, layers);
+            auto cone = layers;
+            cone.push_back(FacadeKey(size_t(MeshRelation::CellNodes)));
+            append(EntityKind::Cell, cone);
+        }
+        append(EntityKind::Node, {FacadeKey(size_t(MeshRelation::NodeCells))});
+        append(EntityKind::Node, {FacadeKey(size_t(MeshRelation::NodeCells)), FacadeKey(size_t(MeshRelation::CellNodes))});
+        append(EntityKind::Node, {FacadeKey(size_t(MeshRelation::NodeBoundaries))});
+        append(EntityKind::Node, {FacadeKey(size_t(MeshRelation::NodeBoundaries)), FacadeKey(size_t(MeshRelation::BoundaryNodes))});
+        if (owned.relations[size_t(MeshRelation::CellFaces)])
+            append(EntityKind::Cell, {FacadeKey(size_t(MeshRelation::CellFaces)), FacadeKey(size_t(MeshRelation::FaceCells))});
+        auto discovery = connectivity.Evaluate(CompiledGhostTree::compile(spec));
+        auto publication = connectivity.BuildGhosted(discovery);
+        // Complete cones, and (when requested) cells of EVERY discovered face.
+        // Only Cell and Node sets can grow here, so no extra cell rings arise.
+        while (true)
+        {
+            int changed = 0;
+            FieldTransferDetail::LocalStage(mpi, [&]
+                                            {
+                std::map<EntityKind, std::set<index>> known;
+                for (const auto &[kind, values] : discovery.ghostIndices) known[kind].insert(values.begin(), values.end());
+                auto collect = [&](MeshRelation slot)
+                {
+                    if (!owned.relations[size_t(slot)]) return;
+                    auto read = publication.relations.at(FacadeKey(size_t(slot))).Read();
+                    const auto kind = Bindings()[size_t(slot)].to;
+                    for (index row = 0; row < read.Rows(); ++row)
+                        for (auto global : read.GlobalRow(row))
+                            if (global != UnInitIndex && owned.spaces.at(kind).Owner(global) != mpi.rank && known[kind].insert(global).second)
+                            { discovery.ghostIndices[kind].push_back(global); changed = 1; }
+                };
+                for (auto slot : {MeshRelation::CellNodes, MeshRelation::BoundaryNodes, MeshRelation::FaceNodes, MeshRelation::EdgeNodes}) collect(slot);
+                if (owned.requirements.allFaceCellsLocal) collect(MeshRelation::FaceCells); });
+            MPI_Allreduce(MPI_IN_PLACE, &changed, 1, MPI_INT, MPI_MAX, mpi.comm);
+            if (!changed)
+                break;
+            publication = connectivity.BuildGhosted(discovery);
+        }
+        NativeMeshData data;
+        data.identity = owned.identity;
+        data.provenance = owned.provenance;
+        data.dimension = owned.dimension;
+        data.periodic = owned.periodic;
+        data.periodicInfo = owned.periodicInfo;
+        auto localRows = [&](const RelationReadAccess &read, std::optional<size_t> uniform)
+        {
+            auto convert = [&](index first, index count)
+            {
+                Runtime::RowBuilder builder(size_t(count), sizeof(index), uniform ? Runtime::RowLayoutKind::Table : Runtime::RowLayoutKind::CSR, uniform.value_or(0));
+                for (index i = 0; i < count; ++i)
+                {
+                    const auto row = first + i;
+                    builder.ResizeRow(size_t(i), read.RowSize(row));
+                    auto output = builder.Row<index>(size_t(i));
+                    for (size_t slot = 0; slot < output.size; ++slot)
+                    {
+                        auto entry = read.ReadEntry(row, slot);
+                        if (entry.absent)
+                            output[slot] = UnInitIndex;
+                        else if (auto local = read.Target().GlobalToLocal(entry.global))
+                            output[slot] = *local;
+                        else
+                        {
+                            output[slot] = -1 - entry.global;
+                            DNDS_check_throw_info(output[slot] != UnInitIndex, "native assembly target sentinel collision");
+                        }
+                    }
+                }
+                return RArray::FromSharedStorage(builder.Commit());
+            };
+            return Runtime::ArrayPair<index>{convert(0, read.NumOwned()), convert(read.NumOwned(), read.Rows() - read.NumOwned())};
+        };
+        FieldTransferDetail::LocalStage(mpi, [&]
+                                        {
+            for (size_t slot = 0; slot < owned.relations.size(); ++slot)
+                if (owned.relations[slot])
+                {
+                    const auto &shape = owned.relations[slot]->Layout();
+                    data.relations[slot] = localRows(publication.relations.at(FacadeKey(slot)).Read(), shape.IsVariable() ? std::optional<size_t>{} : shape.Width());
+                }
+            for (const auto &[key, unused] : owned.namedRelations)
+                data.namedRelations.emplace(key, NativeNamedRelation{localRows(publication.relations.at(key).Read(), {}), Adj_PointToLocal}); });
+        auto companion = [&](auto &destination, const auto &values, EntityKind kind, const Runtime::ElementSchema &schema)
+        { if (values) destination = Ghost(*values, kind, publication, schema); };
+        companion(data.coords, owned.coords, EntityKind::Node, Runtime::ElementSchema::Arithmetic<real>());
+        companion(data.nodeWallDist, owned.nodeWallDist, EntityKind::Node, Runtime::ElementSchema::Arithmetic<real>());
+        MPI_Datatype elementType;
+        MPI_Type_contiguous(ElemInfo::CommMult(), ElemInfo::CommType(), &elementType);
+        MPI_Type_commit(&elementType);
+        Runtime::ElementSchema elementSchema(elementType, sizeof(ElemInfo), "Geom.ElemInfo.v1", Runtime::ElementSchema::TypeIdentity<ElemInfo>());
+        MPI_Type_free(&elementType);
+        companion(data.cellInfo, owned.cellInfo, EntityKind::Cell, elementSchema);
+        companion(data.bndInfo, owned.bndInfo, EntityKind::Bnd, elementSchema);
+        companion(data.faceInfo, owned.faceInfo, EntityKind::Face, elementSchema);
+        companion(data.edgeInfo, owned.edgeInfo, EntityKind::Edge, elementSchema);
+        Runtime::ElementSchema bits(NodePeriodicBits::CommType(), sizeof(NodePeriodicBits), "Geom.NodePeriodicBits", Runtime::ElementSchema::TypeIdentity<NodePeriodicBits>());
+        companion(data.cellNodesPbi, owned.cellNodesPbi, EntityKind::Cell, bits);
+        companion(data.bndNodesPbi, owned.bndNodesPbi, EntityKind::Bnd, bits);
+        companion(data.cellFacesPbi, owned.cellFacesPbi, EntityKind::Cell, bits);
+        companion(data.faceNodesPbi, owned.faceNodesPbi, EntityKind::Face, bits);
+        companion(data.cellEdgesPbi, owned.cellEdgesPbi, EntityKind::Cell, bits);
+        companion(data.edgeNodesPbi, owned.edgeNodesPbi, EntityKind::Edge, bits);
+        std::map<EntityKind, RArray> ids;
+        std::map<EntityKind, EntitySpace> spaces;
+        for (const auto &[kind, values] : owned.ids)
+        {
+            auto pair = Ghost(values, kind, publication, Runtime::ElementSchema::Arithmetic<index>());
+            FieldTransferDetail::LocalStage(mpi, [&]
+                                            {
+                auto read = pair.ReadCombined();
+                RArray combined(Runtime::RowLayout::Dense(read.View().Rows(), 1));
+                { auto write = combined.Write(); for (size_t row = 0; row < combined.Rows(); ++row) write.View()(row, 0) = read.View()(row, 0); }
+                ids.emplace(kind, std::move(combined));
+                spaces.emplace(kind, publication.spaces.at(kind)); });
+        }
+        return NativeMeshState::FromNative(mpi, std::move(data), std::move(spaces), std::move(ids), owned.requirements);
+    }
+}

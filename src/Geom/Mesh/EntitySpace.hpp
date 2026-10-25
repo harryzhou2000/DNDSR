@@ -30,6 +30,7 @@ namespace DNDS::Geom
         friend class EntityField;
         friend class NativeMeshState;
         friend class NativeMeshTransition;
+        friend class NativeMeshAssembler;
         friend class NativeConnectivity;
         friend class RelationPeriodicBits;
 

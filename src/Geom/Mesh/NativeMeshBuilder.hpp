@@ -22,6 +22,7 @@ namespace DNDS::Geom
         /// Empty namespace creates a new logical mesh; restart supplies the
         /// saved namespace and high-water marks unchanged.
         MeshIdentity identity;
+        std::optional<NativeMeshProvenance> provenance;
     };
 
     struct NativeMeshBuildOptions

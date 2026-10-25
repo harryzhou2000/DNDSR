@@ -122,7 +122,7 @@ static void AddRegistry(RegistryTriangle &input, const MPIInfo &mpi)
     input.ids.emplace(EntityKind::Face, std::move(ids));
     const auto global = input.spaces.at(EntityKind::Cell).LocalToGlobal(0);
     input.data.namedRelations.emplace(RegistryInverse(), NativeNamedRelation{
-                                                             {IndexRows({{0, UnInitIndex}, {0, UnInitIndex}, {0, UnInitIndex}}), IndexRows({})}, Adj_PointToLocal});
+                                                             {IndexRows({{0}, {0}, {0}}), IndexRows({})}, Adj_PointToLocal});
     input.data.namedRelations.emplace(RegistryComposition(RelationSelection::Any), NativeNamedRelation{
                                                                                        {IndexRows({{global}, {global}, {}}), IndexRows({})}, Adj_PointToGlobal});
     input.data.namedRelations.emplace(RegistryComposition(RelationSelection::All), NativeNamedRelation{
@@ -155,7 +155,7 @@ TEST_CASE("Named native relation variants retain exact definitions arrays and ca
         CHECK(inverse.Target().SameOrder(publication->Entities(EntityKind::Cell)));
         CHECK(inverse.Raw(0, 0) == 0);
         CHECK(inverse.Raw(2, 0) == 0);
-        CHECK(inverse.GlobalRow(1) == std::vector<DNDS::index>{mpi.rank, UnInitIndex});
+        CHECK(inverse.GlobalRow(1) == std::vector<DNDS::index>{mpi.rank});
         auto any = publication->Relation(RegistryComposition(RelationSelection::Any));
         auto all = publication->Relation(RegistryComposition(RelationSelection::All));
         CHECK(any.GlobalRow(0) == std::vector<DNDS::index>{mpi.rank});
@@ -172,6 +172,51 @@ TEST_CASE("Named native relation variants retain exact definitions arrays and ca
     third.reset();
     CHECK(escaped.Raw(2, 0) == 0);
     CHECK_THROWS(retained.Write());
+}
+
+TEST_CASE("Native mesh registration retains named inverse and selection variants beside facade adapters")
+{
+    const auto mpi = RegistryMPI();
+    RegistryTriangle input(mpi);
+    AddRegistry(input, mpi);
+    const DNDS::index next = (mpi.rank + 1) % mpi.size;
+    input.data.namedRelations.at(RegistryComposition(RelationSelection::Any)).rows.owned = IndexRows({{next}, {}, {}});
+    auto state = NativeMeshState::FromNative(mpi, std::move(input.data), input.spaces, input.ids, RegistryRequirements());
+    auto mesh = UnstructuredMesh::FromNative(mpi, state);
+    CHECK(mesh->NativeRelationKeys().size() == 3);
+    CHECK(mesh->ReadNativeRelation(RegistryInverse()).GlobalRow(0) == std::vector<DNDS::index>{mpi.rank});
+    CHECK(RegistryInverse() != Adj::Face2Cell);
+    CHECK(RegistryInverse().provenance == "inverse:" + Adj::Cell2Face.Signature());
+    NativeConnectivity setup(mpi);
+    setup.RegisterMesh(*mesh, RegistryRequirements());
+    mesh.reset();
+    state.reset();
+    // The setup registry alone retains all three named readers and the facade
+    // adapters. No endpoint fallback can satisfy these exact descriptor hops.
+    for (const auto &key : {RegistryInverse(), RegistryComposition(RelationSelection::Any), RegistryComposition(RelationSelection::All), Adj::Face2Cell})
+    {
+        GhostSpec spec{{{EntityKind::Face, {key}, EntityKind::Cell}}};
+        auto discovery = setup.Evaluate(CompiledGhostTree::compile(spec));
+        if (mpi.size > 1 && key == RegistryComposition(RelationSelection::Any))
+            CHECK(discovery.ghostIndices.at(EntityKind::Cell) == std::vector<DNDS::index>{next});
+        else
+            CHECK(discovery.ghostIndices.empty());
+    }
+}
+
+TEST_CASE("Mathematical inverse definitions never alias legacy physical slots")
+{
+    const std::vector<AdjKind> cones{Adj::Cell2Node, Adj::Cell2Face, Adj::Cell2Edge, Adj::Face2Node,
+                                     Adj::Face2Edge, Adj::Edge2Node, Adj::Bnd2Node};
+    for (const auto &cone : cones)
+    {
+        const auto inverse = cone.Inverted();
+        CHECK(inverse != AdjKind(cone.to, cone.from));
+        CHECK(inverse.selection == RelationSelection::Incidence);
+        CHECK(inverse.order == RelationOrder::SortedUnique);
+        CHECK(inverse.Path() == std::vector<EntityKind>{cone.to, cone.from});
+        CHECK(inverse.provenance == "inverse:" + cone.Signature());
+    }
 }
 
 TEST_CASE("Named native relation publication rejects invalid rank-local state and collective definition mismatch")
@@ -239,6 +284,8 @@ TEST_CASE("Duplicate facade definitions require identical decoded ordered slots"
     auto retained = IndexRows({{offset, offset + 1, offset + 2}});
     input.data.namedRelations.emplace(Adj::Cell2Node, NativeNamedRelation{
                                                           {retained, IndexRows({})}, Adj_PointToGlobal});
+    input.data.namedRelations.emplace(Adj::Face2Cell, NativeNamedRelation{
+                                                          {IndexRows({{0, UnInitIndex}, {0, UnInitIndex}, {0, UnInitIndex}}), IndexRows({})}, Adj_PointToLocal});
     bool valid = true;
     SUBCASE("matching ordered slots in a different encoding") {}
     SUBCASE("only rank zero changes cone order")
@@ -254,14 +301,14 @@ TEST_CASE("Duplicate facade definitions require identical decoded ordered slots"
     {
         valid = false;
         if (mpi.rank == 0)
-            input.data.namedRelations.at(RegistryInverse()).rows.owned = IndexRows({{0}, {0}, {0}});
+            input.data.namedRelations.at(Adj::Face2Cell).rows.owned = IndexRows({{0}, {0}, {0}});
     }
     SUBCASE("only rank zero changes the absent support slot")
     {
         valid = false;
         if (mpi.rank == 0)
         {
-            auto write = input.data.namedRelations.at(RegistryInverse()).rows.owned.Write();
+            auto write = input.data.namedRelations.at(Adj::Face2Cell).rows.owned.Write();
             write.View()(0, 1) = 0;
         }
     }
@@ -275,7 +322,7 @@ TEST_CASE("Duplicate facade definitions require identical decoded ordered slots"
     {
         auto state = NativeMeshState::FromNative(mpi, std::move(input.data), input.spaces, input.ids, RegistryRequirements());
         CHECK(state->Relation(Adj::Cell2Node).GlobalRow(0) == std::vector<DNDS::index>{offset, offset + 1, offset + 2});
-        CHECK(state->Relation(RegistryInverse()).GlobalRow(0) == std::vector<DNDS::index>{mpi.rank, UnInitIndex});
+        CHECK(state->Relation(Adj::Face2Cell).GlobalRow(0) == std::vector<DNDS::index>{mpi.rank, UnInitIndex});
         CHECK_THROWS(retained.Write());
     }
 }

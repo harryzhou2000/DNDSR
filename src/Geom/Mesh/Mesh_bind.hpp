@@ -191,6 +191,13 @@ namespace DNDS::Geom
             .def("ReorderLocalCells", &UnstructuredMesh::ReorderLocalCells, py::arg("nParts") = 1, py::arg("nPartsInner") = 1)
             .def("ReadSerialize", &UnstructuredMesh::ReadSerialize, py::arg("serializer"), py::arg("name"))
             .def("WriteSerialize", &UnstructuredMesh::WriteSerialize, py::arg("serializer"), py::arg("name"))
+            .def("write_native_archive", &UnstructuredMesh::WriteNativeArchive,
+                 py::arg("serializer"), py::arg("name"),
+                 "Collective native checkpoint of all published topology, IDs and companions. Finish async producers first; external solver fields are separate.")
+            .def_static("read_native_archive", &UnstructuredMesh::ReadNativeArchive,
+                        py::arg("mpi"), py::arg("serializer"), py::arg("name"),
+                        py::arg("partition") = Serializer::ArrayGlobalOffset_Unknown, py::arg("ghost_layers") = 1,
+                        "Collective native restart with saved or even ownership partitions. All ranks participate, including empty ranks; per-rank JSON supports saved partitions only.")
             .def("WriteCurrentPrimaryMeshSnapshot", &WriteCurrentPrimaryMeshSnapshot,
                  py::arg("serializer"), py::arg("name"), py::arg("ghostLayers") = 1,
                  py::arg("policy") = CurrentMeshCheckpointPolicy::RequireNoAuxiliaryValues,

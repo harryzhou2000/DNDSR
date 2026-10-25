@@ -78,7 +78,10 @@ TEST_CASE("Storage-neutral inverse and compose preserve legacy sorted incidence 
                                                 { return cells.LocalToGlobal(i); }, [&](DNDS::index i)
                                                 { return nodes.LocalToGlobal(i); }, mesh->coords.father->pLGlobalMapping);
     auto support = inverse.Read();
-    CHECK(support.Kind() == Adj::Node2Cell);
+    CHECK(support.Kind() == Adj::Cell2Node.Inverted());
+    CHECK(support.Kind() != Adj::Node2Cell);
+    CHECK(support.Kind().provenance == "inverse:" + Adj::Cell2Node.Signature());
+    CHECK(support.Kind().order == RelationOrder::SortedUnique);
     auto inverseSupport = MeshConnectivity::Inverse(support, mpi);
     auto reversedSupport = inverseSupport.Read();
     CHECK(reversedSupport.Kind() != Adj::Cell2Node);

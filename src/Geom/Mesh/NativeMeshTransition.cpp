@@ -1,4 +1,5 @@
 #include "NativeMeshTransition.hpp"
+#include "NativeMeshAssembler.hpp"
 #include "NativeConnectivity.hpp"
 #include "FieldTransfer.hpp"
 #include <set>
@@ -55,16 +56,6 @@ namespace DNDS::Geom
                 .Begin()
                 .Wait();
             return output;
-        }
-        template <class T>
-        Runtime::ArrayPair<T> Ghost(const Runtime::Array<T> &owned, EntityKind kind,
-                                    const NativeGhostPublication &publication, const Runtime::ElementSchema &schema)
-        {
-            const auto &space = publication.spaces.at(kind);
-            auto ghost = publication.routes.at(kind).TransferRows(space, owned, schema);
-            if (!owned.Layout().IsVariable())
-                ghost = Runtime::Array<T>::FromStorage(Runtime::RowLayout::Dense(ghost.Rows(), owned.Layout().Width()), ghost.Storage());
-            return {owned, std::move(ghost)};
         }
         void Agree(const MPIInfo &mpi, const std::string &signature)
         {
@@ -227,7 +218,7 @@ namespace DNDS::Geom
             for (size_t i = 0; i < globals.size(); ++i)
                 remap[kind].emplace(globals[i], read.View()(i, 0));
         }
-        NativeConnectivity connectivity(mpi);
+        std::map<AdjKind, RArray> movedRelations;
         for (const auto &[key, values] : original)
         {
             RArray globalRows = [&]
@@ -248,138 +239,63 @@ namespace DNDS::Geom
             }();
             auto moved = Move(globalRows, routes.at(key.from), Runtime::ElementSchema::Arithmetic<index>());
             FieldTransferDetail::LocalStage(mpi, [&]
-                                            { connectivity.Register(RelationReadAccess(key, spaces.at(key.from), spaces.at(key.to), Adj_PointToGlobal, moved)); });
+                                            { movedRelations.emplace(key, std::move(moved)); });
         }
-        GhostSpec spec;
-        auto append = [&](EntityKind anchorKind, std::vector<AdjKind> path)
-        { spec.chains.push_back({anchorKind, path, path.back().to}); };
-        // All owned fixed rows have locally available targets. Extra named
-        // variants remain globally addressable and do not force extra closure.
-        for (size_t slot = 0; slot < snapshot.relations.size(); ++slot)
-            if (snapshot.relations[slot])
-                append(Bindings()[slot].from, {FacadeKey(slot)});
-        std::vector<AdjKind> layers;
-        for (int layer = 0; layer < ghostLayers; ++layer)
+        NativeOwnedMeshData owned;
+        owned.identity = {source.MeshNamespace(), source.IdHighWater()};
+        owned.requirements = source.Requirements();
+        owned.dimension = snapshot.semantics.dim;
+        owned.periodic = snapshot.semantics.isPeriodic;
+        owned.periodicInfo = snapshot.semantics.periodicInfo;
+        owned.spaces = spaces;
+        if (source.Provenance())
         {
-            layers.push_back(FacadeKey(size_t(MeshRelation::CellCells)));
-            append(EntityKind::Cell, layers);
-            auto cone = layers;
-            cone.push_back(FacadeKey(size_t(MeshRelation::CellNodes)));
-            append(EntityKind::Cell, cone);
+            owned.provenance = *source.Provenance();
+            for (auto &[kind, values] : owned.provenance->sourceIds)
+                values = Move(values, routes.at(kind), Runtime::ElementSchema::Arithmetic<index>());
         }
-        if (original.count(FacadeKey(size_t(MeshRelation::NodeCells))))
-            append(EntityKind::Node, {FacadeKey(size_t(MeshRelation::NodeCells)), FacadeKey(size_t(MeshRelation::CellNodes))});
-        if (original.count(FacadeKey(size_t(MeshRelation::NodeBoundaries))))
-            append(EntityKind::Node, {FacadeKey(size_t(MeshRelation::NodeBoundaries)), FacadeKey(size_t(MeshRelation::BoundaryNodes))});
-        if (snapshot.relations[size_t(MeshRelation::CellFaces)])
-            append(EntityKind::Cell, {FacadeKey(size_t(MeshRelation::CellFaces)), FacadeKey(size_t(MeshRelation::FaceCells))});
-        if (source.Requirements().allFaceCellsLocal && snapshot.relations[size_t(MeshRelation::BoundaryFaces)])
-            append(EntityKind::Bnd, {FacadeKey(size_t(MeshRelation::BoundaryFaces)), FacadeKey(size_t(MeshRelation::FaceCells))});
-        auto discovery = connectivity.Evaluate(CompiledGhostTree::compile(spec));
-        auto publication = connectivity.BuildGhosted(discovery);
-        // Complete node cones for every appended Cell/Boundary/Face/Edge row.
-        // This adds only Node rows and cannot recursively grow cell rings.
         FieldTransferDetail::LocalStage(mpi, [&]
                                         {
-            auto &nodes = discovery.ghostIndices[EntityKind::Node];
-            for (auto slot : {MeshRelation::CellNodes, MeshRelation::BoundaryNodes, MeshRelation::FaceNodes, MeshRelation::EdgeNodes})
-                if (snapshot.relations[size_t(slot)])
+            for (size_t slot = 0; slot < snapshot.relations.size(); ++slot)
+                if (snapshot.relations[slot])
                 {
-                    auto read = publication.relations.at(FacadeKey(size_t(slot))).Read();
-                    for (index row = 0; row < read.Rows(); ++row)
-                        for (auto global : read.GlobalRow(row))
-                            if (global != UnInitIndex && spaces.at(EntityKind::Node).Owner(global) != mpi.rank) nodes.push_back(global);
-                } });
-        publication = connectivity.BuildGhosted(discovery);
-        NativeMeshData data;
-        data.identity = {source.MeshNamespace(), source.IdHighWater()};
-        data.dimension = snapshot.semantics.dim;
-        data.periodic = snapshot.semantics.isPeriodic;
-        data.periodicInfo = snapshot.semantics.periodicInfo;
-        auto localRows = [&](const RelationReadAccess &read, std::optional<size_t> uniform)
-        {
-            auto convert = [&](index first, index count)
-            {
-                Runtime::RowBuilder builder(size_t(count), sizeof(index), uniform ? Runtime::RowLayoutKind::Table : Runtime::RowLayoutKind::CSR, uniform.value_or(0));
-                for (index i = 0; i < count; ++i)
-                {
-                    const auto row = first + i;
-                    builder.ResizeRow(size_t(i), read.RowSize(row));
-                    auto output = builder.Row<index>(size_t(i));
-                    for (size_t slot = 0; slot < output.size; ++slot)
-                    {
-                        auto entry = read.ReadEntry(row, slot);
-                        if (entry.absent)
-                            output[slot] = UnInitIndex;
-                        else if (auto local = read.Target().GlobalToLocal(entry.global))
-                            output[slot] = *local;
-                        else
-                        {
-                            output[slot] = -1 - entry.global;
-                            DNDS_check_throw_info(output[slot] != UnInitIndex, "native transition unavailable target sentinel collision");
-                        }
-                    }
+                    auto rows = movedRelations.at(FacadeKey(slot));
+                    const auto &shape = snapshot.relations[slot]->owned.Layout();
+                    if (!shape.IsVariable())
+                        rows = RArray::FromStorage(Runtime::RowLayout::Dense(rows.Rows(), shape.Width()), rows.Storage());
+                    owned.relations[slot] = std::move(rows);
                 }
-                return RArray::FromSharedStorage(builder.Commit());
-            };
-            return Runtime::ArrayPair<index>{convert(0, read.NumOwned()), convert(read.NumOwned(), read.Rows() - read.NumOwned())};
-        };
-        FieldTransferDetail::LocalStage(mpi, [&]
-                                        {
-            for (size_t slot = 0; slot < snapshot.relations.size(); ++slot) if (snapshot.relations[slot])
-            {
-                const auto &owned = snapshot.relations[slot]->owned;
-                data.relations[slot] = localRows(publication.relations.at(FacadeKey(slot)).Read(), owned.Layout().IsVariable() ? std::optional<size_t>{} : owned.Layout().Width());
-            }
             for (const auto &[key, unused] : source._namedRelations)
-                data.namedRelations.emplace(key, NativeNamedRelation{localRows(publication.relations.at(key).Read(), {}), Adj_PointToLocal}); });
+                owned.namedRelations.emplace(key, movedRelations.at(key)); });
         auto companion = [&](auto &destination, const auto &originalPair, EntityKind kind, const Runtime::ElementSchema &schema)
-        {
-            if (originalPair)
-            {
-                auto owned = Move(originalPair->owned, routes.at(kind), schema);
-                destination = Ghost(owned, kind, publication, schema);
-            }
-        };
-        companion(data.coords, snapshot.coords, EntityKind::Node, Runtime::ElementSchema::Arithmetic<real>());
-        companion(data.nodeWallDist, snapshot.nodeWallDist, EntityKind::Node, Runtime::ElementSchema::Arithmetic<real>());
+        { if (originalPair) destination = Move(originalPair->owned, routes.at(kind), schema); };
+        companion(owned.coords, snapshot.coords, EntityKind::Node, Runtime::ElementSchema::Arithmetic<real>());
+        companion(owned.nodeWallDist, snapshot.nodeWallDist, EntityKind::Node, Runtime::ElementSchema::Arithmetic<real>());
         MPI_Datatype elementType;
         MPI_Type_contiguous(ElemInfo::CommMult(), ElemInfo::CommType(), &elementType);
         MPI_Type_commit(&elementType);
         Runtime::ElementSchema elementSchema(elementType, sizeof(ElemInfo), "Geom.ElemInfo.v1", Runtime::ElementSchema::TypeIdentity<ElemInfo>());
         MPI_Type_free(&elementType);
-        companion(data.cellInfo, snapshot.cellInfo, EntityKind::Cell, elementSchema);
-        companion(data.bndInfo, snapshot.bndInfo, EntityKind::Bnd, elementSchema);
-        companion(data.faceInfo, snapshot.faceInfo, EntityKind::Face, elementSchema);
-        companion(data.edgeInfo, snapshot.edgeInfo, EntityKind::Edge, elementSchema);
+        companion(owned.cellInfo, snapshot.cellInfo, EntityKind::Cell, elementSchema);
+        companion(owned.bndInfo, snapshot.bndInfo, EntityKind::Bnd, elementSchema);
+        companion(owned.faceInfo, snapshot.faceInfo, EntityKind::Face, elementSchema);
+        companion(owned.edgeInfo, snapshot.edgeInfo, EntityKind::Edge, elementSchema);
         Runtime::ElementSchema bits(NodePeriodicBits::CommType(), sizeof(NodePeriodicBits), "Geom.NodePeriodicBits", Runtime::ElementSchema::TypeIdentity<NodePeriodicBits>());
-        companion(data.cellNodesPbi, snapshot.cellNodesPbi, EntityKind::Cell, bits);
-        companion(data.bndNodesPbi, snapshot.bndNodesPbi, EntityKind::Bnd, bits);
-        companion(data.cellFacesPbi, snapshot.cellFacesPbi, EntityKind::Cell, bits);
-        companion(data.faceNodesPbi, snapshot.faceNodesPbi, EntityKind::Face, bits);
-        companion(data.cellEdgesPbi, snapshot.cellEdgesPbi, EntityKind::Cell, bits);
-        companion(data.edgeNodesPbi, snapshot.edgeNodesPbi, EntityKind::Edge, bits);
-        std::map<EntityKind, RArray> ids;
-        std::map<EntityKind, EntitySpace> finalSpaces;
+        companion(owned.cellNodesPbi, snapshot.cellNodesPbi, EntityKind::Cell, bits);
+        companion(owned.bndNodesPbi, snapshot.bndNodesPbi, EntityKind::Bnd, bits);
+        companion(owned.cellFacesPbi, snapshot.cellFacesPbi, EntityKind::Cell, bits);
+        companion(owned.faceNodesPbi, snapshot.faceNodesPbi, EntityKind::Face, bits);
+        companion(owned.cellEdgesPbi, snapshot.cellEdgesPbi, EntityKind::Cell, bits);
+        companion(owned.edgeNodesPbi, snapshot.edgeNodesPbi, EntityKind::Edge, bits);
         for (const auto &[kind, old] : oldSpaces)
         {
             const auto &originalIds = source._originalIds.at(kind);
             const auto &baseRoute = routes.at(kind);
             auto idRoute = Runtime::RowTransferPlan::Known(std::make_shared<Runtime::CommunicationContext>(mpi.comm),
                                                            originalIds.Rows(), baseRoute.DestinationRows(), baseRoute.SendRows(), baseRoute.ReceiveRows());
-            auto owned = Move(originalIds, idRoute, Runtime::ElementSchema::Arithmetic<index>());
-            auto pair = Ghost(owned, kind, publication, Runtime::ElementSchema::Arithmetic<index>());
-            auto read = pair.ReadCombined();
-            RArray combined(Runtime::RowLayout::Dense(read.View().Rows(), 1));
-            {
-                auto write = combined.Write();
-                for (size_t i = 0; i < combined.Rows(); ++i)
-                    write.View()(i, 0) = read.View()(i, 0);
-            }
-            ids.emplace(kind, std::move(combined));
-            finalSpaces.emplace(kind, publication.spaces.at(kind));
+            owned.ids.emplace(kind, Move(originalIds, idRoute, Runtime::ElementSchema::Arithmetic<index>()));
         }
-        result.state = NativeMeshState::FromNative(mpi, std::move(data), std::move(finalSpaces), std::move(ids), source.Requirements());
+        result.state = NativeMeshAssembler::Build(mpi, std::move(owned), ghostLayers);
         return result;
     }
 }

@@ -296,9 +296,9 @@ namespace DNDS::Geom
     {
         using namespace Elem;
         int hasBad = 0;
-        for (index iCell = 0; iCell < cellElemInfo.Size(); iCell++)
+        for (index iCell = 0; iCell < NumCellProc(); iCell++)
         {
-            auto eType = cellElemInfo(iCell, 0).getElemType();
+            auto eType = GetCellInfo(iCell).getElemType();
             if (eType == ElemType::Line2 ||
                 eType == ElemType::Tri3 ||
                 eType == ElemType::Quad4 ||
@@ -324,9 +324,9 @@ namespace DNDS::Geom
     {
         using namespace Elem;
         int hasBad = 0;
-        for (index iCell = 0; iCell < cellElemInfo.Size(); iCell++)
+        for (index iCell = 0; iCell < NumCellProc(); iCell++)
         {
-            auto eType = cellElemInfo(iCell, 0).getElemType();
+            auto eType = GetCellInfo(iCell).getElemType();
             if (eType == ElemType::Line3 ||
                 eType == ElemType::Tri6 ||
                 eType == ElemType::Quad9 ||

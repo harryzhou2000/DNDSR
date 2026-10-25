@@ -16,6 +16,7 @@ namespace DNDS::Geom
         friend struct UnstructuredMesh;
         friend class MeshEdit;
         friend class NativeMeshTransition;
+        friend class NativeMeshAssembler;
         struct Space
         {
             EntitySpace identity;
@@ -31,6 +32,8 @@ namespace DNDS::Geom
         std::map<AdjKind, NamedRelation> _namedRelations;
         MeshReadRequirements _requirements;
         MeshIdentity _meshIdentity;
+        std::optional<NativeMeshProvenance> _provenance;
+        std::vector<std::shared_ptr<Runtime::Array<index>::ReadLease>> _provenanceReads;
         std::map<EntityKind, Space> _spaces;
         std::map<EntityKind, Runtime::Array<index>> _originalIds;
         std::map<EntityKind, std::shared_ptr<Runtime::Array<index>::ReadLease>> _originalReads;
@@ -82,6 +85,13 @@ namespace DNDS::Geom
         MeshReadRequirements Requirements() const { return _requirements; }
         index OriginalEntityId(EntityKind kind, index row) const;
         const std::string &MeshNamespace() const { return _meshIdentity.meshNamespace; }
+        /// Shared owned-row metadata. Array reads retain their own leases;
+        /// publication prevents writes for this state's lifetime.
+        const std::optional<NativeMeshProvenance> &Provenance() const
+        {
+            Validate();
+            return _provenance;
+        }
         const std::map<EntityKind, index> &IdHighWater() const { return _meshIdentity.nextIds; }
         index NextEntityId(EntityKind kind) const
         {

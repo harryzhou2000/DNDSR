@@ -2,6 +2,7 @@
 #include "doctest.h"
 #include "Geom/Mesh/NativeMeshBuilder.hpp"
 #include "Geom/Mesh/NativeMeshTransition.hpp"
+#include "Geom/Mesh/NativeMeshAssembler.hpp"
 #include "Geom/Mesh/RelationAccess.hpp"
 #include "Geom/Mesh/MeshTransition.hpp"
 #include "Geom/Mesh/EntityField.hpp"
@@ -76,6 +77,71 @@ namespace
         }
         return result;
     }
+}
+
+TEST_CASE("Owned native capture assembles after source release with retained companions and exact descriptor rows")
+{
+    const auto mpi = MPI();
+    auto input = RotatedTriangles(mpi, true);
+    G::NativeMeshBuildOptions options;
+    options.completeNodeStar = true;
+    auto source = G::NativeMeshBuilder::Build(input, options);
+    auto captured = G::NativeMeshAssembler::CaptureOwned(*source, mpi);
+    const auto identity = captured.identity;
+    const auto keys = source->RelationKeys();
+    for (const auto &[kind, space] : captured.spaces)
+        CHECK(space.NumGhost() == 0);
+    CHECK(captured.ids.at(G::EntityKind::Cell).Rows() == 1);
+    auto coordinates = *captured.coords;
+    const auto nodes = captured.relations[size_t(G::MeshRelation::CellNodes)]->Read();
+    CHECK(nodes.View()(0, 0) == 3 * ((mpi.rank + 1) % mpi.size));
+    source.reset();
+    CHECK_THROWS(coordinates.Write());
+    auto rebuilt = G::NativeMeshAssembler::Build(mpi, std::move(captured), 2);
+    CHECK(rebuilt->MeshNamespace() == identity.meshNamespace);
+    CHECK(rebuilt->IdHighWater() == identity.nextIds);
+    CHECK(rebuilt->RelationKeys() == keys);
+    auto read = rebuilt->Snapshot(R::Device::Host()).AcquireRead();
+    auto view = read.HostView();
+    for (size_t slot = 0; slot < 3; ++slot)
+    {
+        const I global = 3 * ((mpi.rank + 1) % mpi.size) + I(slot);
+        CHECK(rebuilt->OriginalEntityId(G::EntityKind::Node, view.CellNodes(0)[slot]) == global);
+        CHECK(view.Coord(view.CellNodes(0)[slot])[0] == double(global));
+    }
+}
+
+TEST_CASE("Native assembler rejects rank-local ID schema and closure schedule errors before publication")
+{
+    const auto mpi = MPI();
+    auto input = RotatedTriangles(mpi, true);
+    auto source = G::NativeMeshBuilder::Build(input);
+    auto captured = G::NativeMeshAssembler::CaptureOwned(*source, mpi);
+    SUBCASE("persistent ID extra columns")
+    {
+        if (mpi.rank == 0)
+            captured.ids.at(G::EntityKind::Cell) = R::Array<I>(R::RowLayout::Dense(1, 2));
+        CHECK_THROWS(G::NativeMeshAssembler::Build(mpi, std::move(captured)));
+    }
+    SUBCASE("different closure depth")
+    {
+        if (mpi.size == 1)
+            return;
+        CHECK_THROWS(G::NativeMeshAssembler::Build(mpi, std::move(captured), mpi.rank == 0 ? 2 : 1));
+    }
+    CHECK(source->OriginalEntityId(G::EntityKind::Cell, 0) == mpi.rank);
+}
+
+TEST_CASE("Owned native capture collectively rejects mismatched source inventory before ghost-map collectives")
+{
+    const auto mpi = MPI();
+    if (mpi.size == 1)
+        return;
+    auto first = G::NativeMeshBuilder::Build(RotatedTriangles(mpi, false));
+    auto second = G::NativeMeshBuilder::Build(RotatedTriangles(mpi, true));
+    CHECK_THROWS(G::NativeMeshAssembler::CaptureOwned(mpi.rank == 0 ? *first : *second, mpi));
+    CHECK(first->OriginalEntityId(G::EntityKind::Cell, 0) == mpi.rank);
+    CHECK(second->OriginalEntityId(G::EntityKind::Cell, 0) == mpi.rank);
 }
 
 TEST_CASE("Native transition preserves exact persistent topology and coordinate stencil across independent placements")

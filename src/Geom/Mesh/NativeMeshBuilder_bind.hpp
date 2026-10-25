@@ -2,6 +2,10 @@
 
 #include "DNDS/Defines_bind.hpp"
 #include "NativeMeshBuilder.hpp"
+#include "NativeMeshCGNS.hpp"
+#include "NativeMeshTopology.hpp"
+#include "NativeMeshRefinement.hpp"
+#include "FieldTransfer.hpp"
 #include "Mesh.hpp"
 #include "DNDS/Runtime/Array_bind.hpp"
 #include <limits>
@@ -10,6 +14,60 @@ namespace DNDS::Geom
 {
     inline void pybind11_NativeMeshBuilder_define(py::module_ &m)
     {
+        auto derive = [](const UnstructuredMesh &mesh, int cellLayers, bool completeNodeStar, bool bisect)
+        {
+            const auto mpi = mesh.mpi;
+            DNDS_check_throw_info(mpi.comm != MPI_COMM_NULL, "native refinement requires a communicator");
+            py::gil_scoped_release release;
+            std::shared_ptr<const NativeMeshState> source;
+            FieldTransferDetail::LocalStage(mpi, [&]
+                                            { source = mesh.CurrentNativeState(); });
+            const NativeMeshBuildOptions options{cellLayers, completeNodeStar};
+            auto result = bisect ? NativeMeshRefinement::Bisect(*source, mpi, options)
+                                 : NativeMeshRefinement::Elevate(*source, mpi, options);
+            return UnstructuredMesh::FromNative(mpi, std::move(result.state));
+        };
+        m.def("elevate_native_mesh", [derive](const UnstructuredMesh &mesh, int cellLayers, bool completeNodeStar)
+              { return derive(mesh, cellLayers, completeNodeStar, false); }, py::arg("mesh"), py::arg("cell_layers") = 1, py::arg("complete_node_star") = false, "Collectively elevate a nonperiodic O1 native mesh to O2 in a new namespace. Source buffers stay unchanged. Durable source persistent IDs are available through native_mesh_provenance.");
+        m.def("bisect_native_mesh", [derive](const UnstructuredMesh &mesh, int cellLayers, bool completeNodeStar)
+              { return derive(mesh, cellLayers, completeNodeStar, true); }, py::arg("mesh"), py::arg("cell_layers") = 1, py::arg("complete_node_star") = false, "Collectively split a nonperiodic O2 native mesh into O1 children in a new namespace. Durable source persistent IDs are available through native_mesh_provenance.");
+        m.def("native_mesh_provenance", [](const UnstructuredMesh &mesh) -> py::object
+              {
+                  auto state = mesh.CurrentNativeState();
+                  if (!state->Provenance())
+                      return py::none();
+                  const auto &provenance = *state->Provenance();
+                  py::dict result, kinds, ids;
+                  result["source_namespace"] = provenance.sourceNamespace;
+                  for (const auto &[kind, sourceKind] : provenance.sourceKinds)
+                      kinds[py::cast(kind)] = py::cast(sourceKind);
+                  for (const auto &[kind, values] : provenance.sourceIds)
+                  {
+                      auto array = py::cast(Runtime::PythonArray::Share(values));
+                      auto owner = py::capsule(new std::shared_ptr<const NativeMeshState>(state), [](void *pointer)
+                      { delete static_cast<std::shared_ptr<const NativeMeshState> *>(pointer); });
+                      // Registered pybind instances retain the capsule privately;
+                      // each escaped array keeps the publication's read leases.
+                      py::detail::keep_alive_impl(array, owner);
+                      ids[py::cast(kind)] = std::move(array);
+                  }
+                  result["source_kinds"] = std::move(kinds);
+                  result["source_ids"] = std::move(ids);
+                  return result; }, py::arg("mesh"), "Return None or durable ancestry metadata: source_namespace, source_kinds and owned source_ids Runtime.Arrays. Arrays share storage and independently retain the immutable owner publication, so writes remain blocked after the mesh/dict is released. Runtime row() returns independent snapshots; retain native read leases for borrowed pointers.");
+        m.def("read_native_cgns", [](const MPIInfo &mpi, const std::string &path, int dimension, int readerRank, int cellLayers, bool completeNodeStar)
+              {
+                  AutoAppendName2ID boundaryIds;
+                  py::gil_scoped_release release;
+                  return UnstructuredMesh::FromNative(mpi, ReadNativeCGNS(mpi, path, dimension,
+                      [&](const std::string &name) { return boundaryIds(name); }, readerRank, {cellLayers, completeNodeStar})); }, py::arg("mpi"), py::arg("path"), py::arg("dimension"), py::arg("reader_rank") = 0, py::arg("cell_layers") = 1, py::arg("complete_node_star") = false, "Collectively import CGNS through a native reader and even contiguous entity distribution. All ranks supply identical path/options. Boundary names use default IDs with deterministic IDs appended for unknown names; only reader_rank parses the file.");
+        m.def("with_native_topology", [](const UnstructuredMesh &mesh, bool faces, bool edges, int ghostLayers)
+              {
+                  const auto mpi = mesh.mpi;
+                  DNDS_check_throw_info(mpi.comm != MPI_COMM_NULL, "native topology requires a communicator");
+                  std::shared_ptr<const NativeMeshState> source;
+                  FieldTransferDetail::LocalStage(mpi, [&] { source = mesh.CurrentNativeState(); });
+                  py::gil_scoped_release release;
+                  return UnstructuredMesh::FromNative(mpi, NativeMeshTopology::Build(*source, mpi, faces, edges, ghostLayers)); }, py::arg("mesh"), py::arg("faces") = true, py::arg("edges") = false, py::arg("ghost_layers") = 1, "Collectively return a new native mesh with face/edge topology. Source must be a nonperiodic native publication; source storage and escaped read views remain valid. Owned cell face/edge cones are local. Outer ghost cell cones can contain unavailable negative global references; complete face-to-cell closure does not imply complete converse ghost cell cones.");
         m.def("build_native_mesh", [](const MPIInfo &mpi, int dimension, py::object coordinates, py::object cellNodes, py::object cellInfo, py::object boundaryNodes, py::object boundaryInfo, int cellLayers, bool completeNodeStar, py::object nodeIds, py::object cellIds, py::object boundaryIds)
               {
             DNDS_check_throw_info(mpi.comm != MPI_COMM_NULL, "native Python mesh construction requires a communicator");

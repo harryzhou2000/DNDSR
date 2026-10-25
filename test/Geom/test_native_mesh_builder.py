@@ -1,6 +1,7 @@
 """Native Python construction; requires rebuilt and installed DNDS/Geom modules."""
 
 import gc
+import json
 
 import numpy as np
 import pytest
@@ -221,3 +222,58 @@ def test_native_builder_participates_on_empty_ranks():
     assert mesh.NumCell() == int(MPI.COMM_WORLD.rank == 0)
     assert mesh.NumCellGlobal() == 1
     assert mesh.NumCellGhost() == 0
+
+
+@pytest.mark.mpi
+def test_native_archive_json_roundtrip_and_escaped_rows(tmp_path):
+    data = _input(boundaries=True)
+    mpi = data["mpi"]
+    data["node_ids"] = _ids(3, 3 * mpi.rank, 3)
+    data["cell_ids"] = _ids(1, mpi.rank, 0)
+    data["boundary_ids"] = _ids(1, mpi.rank, 4)
+    mesh = Geom.build_native_mesh(**data, complete_node_star=True)
+    filename = tmp_path / f"native-mesh-r{mpi.rank}.json"
+    serializer = DNDS.Serializer.SerializerJSON()
+    serializer.OpenFile(str(filename), False)
+    mesh.write_native_archive(serializer, "mesh")
+    serializer.CloseFile()
+    metadata = json.loads(json.loads(filename.read_text())["mesh"]["metadata_json"])
+    source = mesh.acquire_read(inverse=True)
+    escaped_source = source.coord(0)[::-1]
+    expected_source = escaped_source.copy()
+    source.close()
+    del mesh, source, data
+    gc.collect()
+    serializer.OpenFile(str(filename), True)
+    restored = Geom.UnstructuredMesh.read_native_archive(mpi, serializer, "mesh", ghost_layers=2)
+    serializer.CloseFile()
+    assert restored.has_native_state
+    cells = restored.entities(Geom.EntityKind.Cell)
+    nodes = restored.entities(Geom.EntityKind.Node)
+    boundaries = restored.entities(Geom.EntityKind.Boundary)
+    with restored.acquire_read(inverse=True) as read:
+        next_rank = (mpi.rank + 1) % mpi.size
+        assert [nodes.local_to_global(int(node)) for node in read.cell_nodes(0)] == list(range(3 * next_rank, 3 * next_rank + 3))
+        assert cells.local_to_global(int(read.boundary_cells(0)[0])) == (mpi.rank + mpi.size - 1) % mpi.size
+        assert read.boundary_cells(0)[1] == np.iinfo(np.int64).min
+        for kind, space, family in [(Geom.EntityKind.Cell, cells, 0), (Geom.EntityKind.Node, nodes, 3), (Geom.EntityKind.Boundary, boundaries, 4)]:
+            for row in range(space.local):
+                assert restored.original_entity_id(kind, row) == 10**12 + 17 * space.local_to_global(row) + family
+        for row in range(nodes.local):
+            global_row = nodes.local_to_global(row)
+            np.testing.assert_array_equal(read.coord(row), [global_row, int(global_row % 3 == 2), 0])
+        escaped_restored = read.cell_nodes(0)[::-1]
+        expected_restored = escaped_restored.copy()
+    replay = tmp_path / f"native-mesh-replay-r{mpi.rank}.json"
+    serializer.OpenFile(str(replay), False)
+    restored.write_native_archive(serializer, "mesh")
+    serializer.CloseFile()
+    replay_metadata = json.loads(json.loads(replay.read_text())["mesh"]["metadata_json"])
+    for field in ["namespace", "families", "named"]:
+        assert replay_metadata[field] == metadata[field]
+    del restored, serializer
+    gc.collect()
+    np.testing.assert_array_equal(escaped_source, expected_source)
+    np.testing.assert_array_equal(escaped_restored, expected_restored)
+    with pytest.raises(ValueError):
+        escaped_restored.setflags(write=True)

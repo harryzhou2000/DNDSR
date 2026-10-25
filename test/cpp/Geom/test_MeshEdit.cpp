@@ -2,6 +2,9 @@
 #include "doctest.h"
 #include "MeshFacadeOverlapFixture.hpp"
 #include "Geom/Mesh/MeshEdit.hpp"
+#include "Geom/Mesh/NativeMeshBuilder.hpp"
+#include "Geom/Mesh/NativeMeshArchive.hpp"
+#include "DNDS/Serializer/SerializerJSON.hpp"
 #include <limits>
 
 namespace G = DNDS::Geom;
@@ -185,6 +188,108 @@ TEST_CASE("Uncommitted scopes discard copies and active reads block edit publica
         CHECK(retained.HostView().Coord(0).isApprox(before));
     }
     CHECK(mesh->versions.CanMutate());
+}
+
+TEST_CASE("Native-only edits preserve namespace IDs named definitions and immutable source buffers")
+{
+    DNDS::MPIInfo mpi;
+    mpi.setWorld();
+    auto nodes = G::EntitySpace::CreateOwned(G::EntityKind::Node, mpi, 5);
+    auto cells = nodes.CreateSibling(G::EntityKind::Cell, 3);
+    auto boundaries = nodes.CreateSibling(G::EntityKind::Bnd, 0);
+    const auto next = (mpi.rank + 1) % mpi.size;
+    R::Array<DNDS::index> cone(R::RowLayout::Dense(3, 3)), emptyCone(R::RowLayout::Dense(0, 2));
+    {
+        auto write = cone.Write();
+        for (size_t cell = 0; cell < 3; ++cell)
+            for (size_t slot = 0; slot < 3; ++slot)
+                write.View()(cell, slot) = 5 * next + DNDS::index(cell + slot);
+    }
+    R::Array<DNDS::real> coords(R::RowLayout::Dense(5, 3));
+    {
+        auto write = coords.Write();
+        for (size_t row = 0; row < 5; ++row)
+            for (size_t component = 0; component < 3; ++component)
+                write.View()(row, component) = component == 0 ? 5 * mpi.rank + row : 0;
+    }
+    R::Array<G::ElemInfo> info(R::RowLayout::Dense(3, 1)), bndInfo(R::RowLayout::Dense(0, 1));
+    {
+        auto write = info.Write();
+        for (size_t row = 0; row < 3; ++row)
+            write.View()(row, 0) = G::ElemInfo{G::Elem::Tri3, G::INTERNAL_ZONE};
+    }
+    G::NativeMeshInput input{mpi, 2, cells, nodes, boundaries, cone, emptyCone, coords, info, bndInfo, {}};
+    auto state = G::NativeMeshBuilder::Build(input, {1, true});
+    auto owned = G::NativeMeshAssembler::CaptureOwned(*state, mpi);
+    owned.requirements.wallDistance = true;
+    owned.nodeWallDist.emplace(R::RowLayout::Dense(5, 3));
+    {
+        auto write = owned.nodeWallDist->Write();
+        for (size_t row = 0; row < 5; ++row)
+            for (size_t component = 0; component < 3; ++component)
+                write.View()(row, component) = 1;
+    }
+    owned.namedRelations.emplace(G::Adj::Cell2Cell, *owned.relations[size_t(G::MeshRelation::CellCells)]);
+    state = G::NativeMeshAssembler::Build(mpi, std::move(owned));
+    const auto name = state->MeshNamespace();
+    const auto highWater = state->IdHighWater();
+    const auto keys = state->RelationKeys();
+    auto mesh = G::UnstructuredMesh::FromNative(mpi, state);
+    std::vector<std::vector<std::vector<DNDS::index>>> expected;
+    for (const auto &key : keys)
+    {
+        auto read = state->Relation(key);
+        expected.emplace_back();
+        for (DNDS::index row = 0; row < read.Rows(); ++row)
+            expected.back().push_back(read.GlobalRow(row));
+    }
+    auto edit = G::MeshEdit::Begin(mesh);
+    for (DNDS::index row = 0; row < edit.NumNode(); ++row)
+        edit.SetCoord(row, (edit.Coord(row) + G::tPoint{0.5, 1, 2}).eval());
+    for (DNDS::index cell = 0; cell < edit.NumCell(); ++cell)
+    {
+        auto neighbors = edit.CellNeighbors(cell);
+        REQUIRE(neighbors.size() == 2);
+        for (size_t slot = 0; slot < neighbors.size(); ++slot)
+            edit.SetCellNeighbor(cell, DNDS::rowsize(slot), neighbors[neighbors.size() - 1 - slot]);
+    }
+    auto metadata = edit.CellInfo(0);
+    metadata.zone = 12345;
+    edit.SetCellInfo(0, metadata);
+    edit.Commit();
+    CHECK_FALSE(mesh->coords.father);
+    CHECK_FALSE(mesh->cell2node.father);
+    CHECK_FALSE(mesh->CurrentNativeRequirements().wallDistance);
+    CHECK(mesh->NativeRelationKeys() == keys);
+    for (size_t i = 0; i < keys.size(); ++i)
+    {
+        auto read = mesh->ReadNativeRelation(keys[i]);
+        for (DNDS::index row = 0; row < read.Rows(); ++row)
+        {
+            auto values = expected[i][size_t(row)];
+            if (keys[i] == G::Adj::Cell2Cell)
+                std::reverse(values.begin(), values.end());
+            CHECK(read.GlobalRow(row) == values);
+        }
+    }
+    {
+        auto read = mesh->AcquireRead();
+        CHECK(read.HostView().Coord(0)[0] == 5 * mpi.rank + 0.5);
+        CHECK(read.HostView().GetCellInfo(0).zone == 12345);
+    }
+    CHECK(coords.Read().View()(0, 0) == 5 * mpi.rank);
+    CHECK_THROWS(coords.Write());
+    CHECK(mesh->OriginalEntityId(G::EntityKind::Cell, 0) == 3 * mpi.rank);
+    // The old independently retained native publication is unchanged.
+    CHECK(state->MeshNamespace() == name);
+    CHECK(state->IdHighWater() == highWater);
+    auto archive = DNDS::make_ssp<DNDS::Serializer::SerializerJSON>();
+    archive->CreatePath("/");
+    mesh->WriteNativeArchive(archive, "edited");
+    auto restored = G::ReadNativeMeshArchive(mpi, archive, "edited");
+    CHECK(restored->MeshNamespace() == name);
+    CHECK(restored->IdHighWater() == highWater);
+    CHECK(restored->RelationKeys() == keys);
 }
 
 int main(int argc, char **argv)
