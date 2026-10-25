@@ -29,6 +29,8 @@ TEST_CASE("Legacy bridge reuses controller and permits scoped edits both ways")
         auto scope = R::HostRowsRead(native);
         CHECK(scope.View().Size() == 2);
         CHECK(scope.View()[1][2] == 4);
+        CHECK(scope.View().RowSpan(1).size() == 3);
+        CHECK(scope.View().RowSpan(1).data() == scope.View()[1]);
     }
     {
         auto write = native.Write();
@@ -40,9 +42,11 @@ TEST_CASE("Legacy bridge reuses controller and permits scoped edits both ways")
         auto scope = R::HostRowsWrite(legacy);
         CHECK(scope.View()(1, 2) == 9);
         scope.View()(0, 1) = 7;
+        scope.View().RowSpan(0)[2] = 8;
         CHECK_THROWS(native.Read());
     }
     CHECK(native.Read().View()(0, 1) == 7);
+    CHECK(native.Read().View()[0][2] == 8);
     CHECK(native.Version() == legacy.HostDataVersion());
     CHECK_THROWS(native.EditRows());
     CHECK_THROWS(legacy.RawDataVector().to_device(DNDS::DeviceBackend::Custom1));
@@ -76,6 +80,8 @@ TEST_CASE("Legacy bridge retains exact allocations through replacement and deep 
     retained.Reset(R::RowLayout::Dense(1, 1));
     CHECK(old.View().Size() == 2);
     CHECK(old.View()(0, 0) == 31);
+    CHECK(old.View().RowSpan(0).size() == 2);
+    CHECK(old.View().RowSpan(0)[0] == 31);
 }
 
 TEST_CASE("Legacy bridge converts CSR offsets and retains published row metadata")

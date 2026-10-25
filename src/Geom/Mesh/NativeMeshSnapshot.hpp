@@ -1,10 +1,40 @@
 #pragma once
 
 #include "MeshAccess.hpp"
+#include "MeshRelationTypes.hpp"
+#include "MeshIdentity.hpp"
 #include <optional>
+#include <map>
 
 namespace DNDS::Geom
 {
+    /// Host setup relation, keyed separately by its complete AdjKind definition.
+    /// Fixed facade slots may share these allocations without duplicating rows.
+    struct NativeNamedRelation
+    {
+        Runtime::ArrayPair<index> rows;
+        MeshAdjState state = Adj_PointToGlobal;
+    };
+
+    /// Native host construction input. Values and metadata are adopted without
+    /// copying. Mutable aliases must obey the Array access contract; publication
+    /// retains read leases. No legacy mesh or transformer is required.
+    struct NativeMeshData
+    {
+        /// Consumed by NativeMeshState; setup relations remain host-only even
+        /// when facade placements are prepared on a device.
+        std::map<AdjKind, NativeNamedRelation> namedRelations;
+        int dimension = -1;
+        bool periodic = false;
+        Periodicity periodicInfo;
+        std::array<std::optional<Runtime::ArrayPair<index>>, static_cast<size_t>(MeshRelation::Count)> relations;
+        std::optional<Runtime::ArrayPair<real>> coords, nodeWallDist;
+        std::optional<Runtime::ArrayPair<ElemInfo>> cellInfo, bndInfo, faceInfo, edgeInfo;
+        std::optional<Runtime::ArrayPair<NodePeriodicBits>> cellNodesPbi, bndNodesPbi, cellFacesPbi, faceNodesPbi, cellEdgesPbi, edgeNodesPbi;
+        /// Durable UUID and non-reuse marks, consumed by NativeMeshState.
+        MeshIdentity identity;
+    };
+
     /// Detached immutable native backing for the query facade. This is an
     /// intermediate snapshot, not the authoritative storage of UnstructuredMesh.
     /// Capture validates/copies once; repeat AcquireRead only retains native
@@ -13,11 +43,9 @@ namespace DNDS::Geom
     class NativeMeshSnapshot
     {
         friend class MeshReadAccess;
+        friend class NativeMeshTransition;
         template <class T>
-        struct Pair
-        {
-            Runtime::Array<T> owned, ghost;
-        };
+        using Pair = Runtime::ArrayPair<T>;
         struct State
         {
             Runtime::VersionTracker versions;
@@ -28,6 +56,9 @@ namespace DNDS::Geom
             std::optional<Pair<real>> coords, nodeWallDist;
             std::optional<Pair<ElemInfo>> cellInfo, bndInfo, faceInfo, edgeInfo;
             std::optional<Pair<NodePeriodicBits>> cellNodesPbi, bndNodesPbi, cellFacesPbi, faceNodesPbi, cellEdgesPbi, edgeNodesPbi;
+            /// FromNative may adopt externally aliased allocations. Keep them
+            /// read-protected for this immutable publication's entire lifetime.
+            std::shared_ptr<MeshReadAccess> immutableRead;
         };
         std::shared_ptr<const State> _state;
         explicit NativeMeshSnapshot(std::shared_ptr<const State> state) : _state(std::move(state)) {}
@@ -44,6 +75,9 @@ namespace DNDS::Geom
                                             Runtime::ExecutionContext context);
 
     public:
+        /// Consume validated local-index host buffers. Unsupported or missing
+        /// required topology fails before returning a usable snapshot.
+        static NativeMeshSnapshot FromNative(NativeMeshData data, MeshReadRequirements requirements);
         static NativeMeshSnapshot Capture(UnstructuredMesh &source, MeshReadRequirements requirements = MeshReadRequirements::Primary());
         static NativeMeshSnapshot ImportLegacyWorkspace(UnstructuredMesh &source, MeshReadRequirements requirements = MeshReadRequirements::Primary());
         NativeMeshSnapshot To(Runtime::Device device, Runtime::ExecutionContext context) const;

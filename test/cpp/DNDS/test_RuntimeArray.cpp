@@ -53,17 +53,80 @@ TEST_CASE("native ArrayPair core only needs owned access")
     pair.ghost.Reset(R::RowLayout::Dense(2, 2));
     {
         auto incoming = pair.ghost.Write();
-        auto core = pair.owned.Read();
+        auto core = pair.ReadOwned();
         auto send = pair.owned.Read();
         CHECK(core.View().Rows() == 4);
+        CHECK_THROWS(pair.ReadCombined());
         CHECK_THROWS(pair.Read());
         incoming.At(0, 1) = 7;
     }
-    auto ring = pair.Read();
+    auto ring = pair.ReadCombined();
+    CHECK(ring.View().Rows() == 6);
+    CHECK(ring.View()[4].size() == 2);
     CHECK(ring.View().Row(4)[1] == 7);
     R::Array<double, R::FixedRows<5>> fixed;
     CHECK(fixed.Layout().Width() == 5);
     CHECK_THROWS(fixed.Reset(R::RowLayout::Dense(2, 3)));
+}
+
+TEST_CASE("Native sized row views preserve logical extents and retained metadata")
+{
+    static_assert(std::is_trivially_copyable_v<R::RowSpan<int>>);
+    static_assert(std::is_same_v<decltype(std::declval<R::ArrayView<const int>>()[0][0]), const int &>);
+    static_assert(std::is_same_v<decltype(std::declval<R::ArrayView<int>>()[0][0]), int &>);
+    R::RowSpan<int> empty;
+    CHECK(empty.empty());
+    CHECK(empty.begin() == empty.end());
+    CHECK(empty.cbegin() == empty.cend());
+
+    for (const auto &shape : {R::RowLayout::Dense(3, 2, 4), R::RowLayout::Padded({2, 0, 3}, 4), R::RowLayout::Ragged({2, 0, 3})})
+    {
+        R::Array<int> values(shape);
+        {
+            auto write = values.Write();
+            auto view = write.View<true>();
+            for (size_t row = 0; row < view.Rows(); ++row)
+            {
+                auto span = view[row];
+                CHECK(span.size() == shape.RowSize(row));
+                CHECK(span.data() == view.Row(row));
+                size_t column = 0;
+                for (auto &value : span)
+                    value = int(10 * row + column++);
+            }
+        }
+        auto read = values.Read();
+        auto view = read.View<true>();
+        values.Reset(R::RowLayout::Dense(0, 0));
+        for (size_t row = 0; row < view.Rows(); ++row)
+        {
+            const auto span = view[row];
+            CHECK(span.size() == shape.RowSize(row));
+            for (size_t column = 0; column < span.size(); ++column)
+                CHECK(span[column] == int(10 * row + column));
+            CHECK(span.empty() == (span.size() == 0));
+        }
+    }
+}
+
+TEST_CASE("Native fixed POD rows share read and write span access")
+{
+    struct Entry
+    {
+        int64_t id;
+        double weight;
+    };
+    R::Array<Entry, R::FixedRows<2>> values(R::RowLayout::Dense(2, 2, 3));
+    {
+        auto write = values.Write();
+        write.View()[1][0] = {71, 1.5};
+        write.View()[1][1] = {72, 2.5};
+    }
+    auto read = values.Read();
+    CHECK(read.View()[1].size() == 2);
+    CHECK(read.View()[1][0].id == 71);
+    CHECK(read.View()[1][1].weight == 2.5);
+    CHECK(read.View()[1].data() - read.View()[0].data() == 3);
 }
 
 TEST_CASE("native layout zero rows padding and overflow validation")

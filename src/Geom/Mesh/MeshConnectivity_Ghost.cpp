@@ -44,7 +44,9 @@ namespace DNDS::Geom
         std::vector<GhostTreeNode> &roots,
         const GhostChain &chain)
     {
-        // Validate chain consistency.
+        // Validate chain consistency and complete semantic descriptors.
+        for (const auto &hop : chain.hops)
+            hop.Validate();
         if (chain.hops.empty())
             throw std::runtime_error("GhostChain: empty hop list");
         if (chain.anchor != chain.hops.front().from)
@@ -383,6 +385,19 @@ namespace DNDS::Geom
         const CompiledGhostTree &tree,
         const MPIInfo &mpi) const
     {
+        // Descriptors participate in the collective schedule before any
+        // per-hop transfer, including custom semantic names and versions.
+        const auto schedule = tree.dump();
+        int scheduleSize = mpi.rank == 0 ? int(schedule.size()) : 0;
+        MPI_Bcast(&scheduleSize, 1, MPI_INT, 0, mpi.comm);
+        std::string canonical(size_t(scheduleSize), ' ');
+        if (mpi.rank == 0)
+            canonical = schedule;
+        MPI_Bcast(canonical.data(), scheduleSize, MPI_CHAR, 0, mpi.comm);
+        int scheduleValid = schedule == canonical;
+        MPI_Allreduce(MPI_IN_PLACE, &scheduleValid, 1, MPI_INT, MPI_MIN, mpi.comm);
+        DNDS_check_throw_info(scheduleValid, "ghost traversal schedule differs between ranks");
+
         // --- Pre-check all required adjacencies ---
         auto missing = tree.checkAvailable(*this);
         if (!missing.empty())

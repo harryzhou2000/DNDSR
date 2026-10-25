@@ -1,6 +1,7 @@
 #pragma once
 
-#include "MeshConnectivity.hpp"
+#include "MeshRelationTypes.hpp"
+#include "DNDS/IndexMapping.hpp"
 #include "DNDS/Runtime/RowTransfer.hpp"
 #include <optional>
 
@@ -28,6 +29,7 @@ namespace DNDS::Geom
         template <class T, class L>
         friend class EntityField;
         friend class NativeMeshState;
+        friend class NativeMeshTransition;
         friend class NativeConnectivity;
         friend class RelationPeriodicBits;
 
@@ -49,6 +51,37 @@ namespace DNDS::Geom
         static void CheckCommunicator(MPI_Comm actual, MPI_Comm expected);
 
     public:
+        EntitySpace(const EntitySpace &) = default;
+        EntitySpace(EntitySpace &&) noexcept = default;
+        /// Replacing a descriptor handle never mutates the retained mesh epoch.
+        /// VersionTracker assignment is an owner operation; descriptors only
+        /// share its controller and therefore explicitly rebind it here.
+        EntitySpace &operator=(EntitySpace other)
+        {
+            _kind = other._kind;
+            _mpi = other._mpi;
+            _owned = other._owned;
+            _ghost = other._ghost;
+            _globalCount = other._globalCount;
+            _identity = std::move(other._identity);
+            _stamp = std::move(other._stamp);
+            _versions.RebindPrepared(other._versions);
+            _global = std::move(other._global);
+            _ghostMap = std::move(other._ghostMap);
+            _publishedMaps = other._publishedMaps;
+            return *this;
+        }
+        /// Collective native construction, with no legacy mesh/Array storage.
+        /// Each rank supplies its owned count; only O(nRanks) offsets and local
+        /// ghost/request metadata are stored. The caller retains mpi.comm.
+        static EntitySpace CreateOwned(EntityKind kind, MPIInfo mpi, index owned);
+        /// Construct another entity family in this logical mesh domain. All
+        /// ranks name the same kind; the new order has its own canonical maps.
+        EntitySpace CreateSibling(EntityKind kind, index owned) const;
+        /// Collective detached ghost-map replacement. globals names only the
+        /// required remote rows, in current rank-offset numbering. Existing
+        /// descriptors and plans continue referring to the previous order.
+        EntitySpace WithGhosts(std::vector<index> globals) const;
         EntityKind Kind() const { return _kind; }
         /// Opaque process-local identity; never serialize this value.
         uint64_t MeshIdentity() const { return static_cast<uint64_t>(reinterpret_cast<uintptr_t>(_identity.get())); }

@@ -6,6 +6,7 @@
 #include "MeshAccess_bind.hpp"
 #include "MeshTransition.hpp"
 #include "MeshEdit_bind.hpp"
+#include "NativeMeshBuilder_bind.hpp"
 #include <pybind11/pybind11.h>
 #include <pybind11_json/pybind11_json.hpp>
 #include <pybind11/eigen.h>
@@ -19,9 +20,11 @@ namespace DNDS::Geom
     {
         auto ElemInfo_ = tPy_ElemInfo(m, "ElemInfo");
         ElemInfo_
+            .def(py::init<>())
             .def("getElemType", &ElemInfo::getElemType)
             .def("setElemType", &ElemInfo::setElemType)
             .def_readwrite("zone", &ElemInfo::zone);
+        Runtime::RegisterArrayElement(ElemInfo_, "Geom.ElemInfo.v1");
     }
 
     inline void pybind11_ArrayElemInfo_define(py::module_ &m)
@@ -66,6 +69,7 @@ namespace DNDS::Geom
             .def("edit", [](std::shared_ptr<UnstructuredMesh> self, int ghostLayers)
                  { return std::make_shared<MeshEdit>(MeshEdit::Begin(std::move(self), ghostLayers)); }, py::arg("ghost_layers") = 1, "Collectively stage current-authority owned coordinate/cell metadata and neighbor-order edits. Explicit commit required; context exit discards uncommitted changes.")
             .def("entities", &UnstructuredMesh::Entities, py::arg("kind"), "Retain immutable distribution metadata without exposing an ArrayTransformer. Numbering changes invalidate mapping calls; descriptors do not block mutation.")
+            .def("original_entity_id", &UnstructuredMesh::OriginalEntityId, py::arg("kind"), py::arg("row"))
             .def("publish_native", [](UnstructuredMesh &self, bool faces, bool inverse, bool edges, bool cellFaceNeighbors, bool wallDistance, bool allFaceCellsLocal)
                  {
                      MeshReadRequirements r;
@@ -290,6 +294,7 @@ namespace DNDS::Geom
             .def("to_device", [](UnstructuredMesh &self, const std::string &backend)
                  { self.to_device(device_backend_name_to_enum(backend)); }, py::arg("backend"))
             .def("to_host", &UnstructuredMesh::to_host);
+        pybind11_NativeMeshBuilder_define(m);
     }
 
     using tPy_UnstructuredMeshSerialRW = py_class_ssp<UnstructuredMeshSerialRW>;

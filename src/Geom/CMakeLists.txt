@@ -30,6 +30,8 @@ Mesh/Mesh_GeometryEdit.cpp
 Mesh/MeshEdit.cpp
 Mesh/NativeMeshSnapshot.cpp
 Mesh/NativeMeshState.cpp
+Mesh/NativeMeshBuilder.cpp
+Mesh/NativeMeshTransition.cpp
 Mesh/MeshTransition.cpp
 Mesh/Mesh_EntitySpace.cpp
 Mesh/Mesh_Legacy.cpp

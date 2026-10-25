@@ -6,6 +6,69 @@
 
 namespace DNDS::Geom
 {
+    namespace
+    {
+        // Native setup must agree on recoverable input errors before entering
+        // the next mapping collective, including ranks with zero owned rows.
+        void CheckNativeSpaceInput(const MPIInfo &mpi, EntityKind kind, index owned, bool valid)
+        {
+            DNDS_check_throw_info(mpi.comm != MPI_COMM_NULL, "native entity space requires a communicator");
+            int rank = -1, size = 0;
+            MPI_Comm_rank(mpi.comm, &rank);
+            MPI_Comm_size(mpi.comm, &size);
+            int values[]{int(valid && mpi.rank == rank && mpi.size == size && owned >= 0 &&
+                             int(kind) >= 0 && int(kind) < int(EntityKind::NUM_KINDS)),
+                         int(kind), -int(kind)};
+            MPI_Allreduce(MPI_IN_PLACE, values, 3, MPI_INT, MPI_MIN, mpi.comm);
+            DNDS_check_throw_info(values[0] && values[1] == -values[2],
+                                  "native entity-space inputs or entity kinds differ between ranks");
+        }
+    }
+
+    EntitySpace EntitySpace::CreateOwned(EntityKind kind, MPIInfo mpi, index owned)
+    {
+        CheckNativeSpaceInput(mpi, kind, owned, true);
+        auto global = std::make_shared<GlobalOffsetsMapping>();
+        global->setMPIAlignBcast(mpi, owned);
+        std::vector<index> empty;
+        auto ghost = std::make_shared<OffsetAscendIndexMapping>((*global)(mpi.rank, 0), owned, empty, *global, mpi);
+        Runtime::VersionTracker versions;
+        EntitySpace result(kind, mpi, owned, 0, std::make_shared<const uint8_t>(0),
+                           versions.Stamp(), std::move(global), std::move(ghost), versions);
+        result._publishedMaps = true;
+        return result;
+    }
+
+    EntitySpace EntitySpace::CreateSibling(EntityKind kind, index owned) const
+    {
+        CheckNativeSpaceInput(_mpi, kind, owned, Valid());
+        auto result = CreateOwned(kind, _mpi, owned);
+        result._identity = _identity;
+        result._versions.RebindPrepared(_versions);
+        result._stamp = _stamp;
+        return result;
+    }
+
+    EntitySpace EntitySpace::WithGhosts(std::vector<index> globals) const
+    {
+        bool valid = Valid();
+        if (valid)
+            for (auto global : globals)
+            {
+                MPI_int owner = -1;
+                index row = -1;
+                valid = _global->search(global, owner, row) && owner != _mpi.rank && valid;
+            }
+        CheckNativeSpaceInput(_mpi, _kind, _owned, valid);
+        auto ghost = std::make_shared<OffsetAscendIndexMapping>((*_global)(_mpi.rank, 0), _owned,
+                                                                globals, *_global, _mpi);
+        const auto count = index(ghost->ghostIndex.size());
+        EntitySpace result(_kind, _mpi, _owned, count, _identity, _stamp,
+                           _global, std::move(ghost), _versions);
+        result._publishedMaps = true;
+        return result;
+    }
+
     void EntitySpace::CheckCommunicator(MPI_Comm actual, MPI_Comm expected)
     {
         DNDS_check_throw_info(actual != MPI_COMM_NULL && expected != MPI_COMM_NULL, "entity indexing needs a valid communicator");

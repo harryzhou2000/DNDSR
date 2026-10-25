@@ -2,12 +2,13 @@
 
 #include "EntitySpace.hpp"
 #include "MeshAccess.hpp"
-#include "DNDS/Runtime/LegacyArrayBridge.hpp"
 #include "DNDS/Runtime/RowBuilder.hpp"
 #include <optional>
 
 namespace DNDS::Geom
 {
+    template <class Pair>
+    struct AdjPairTracked;
     /// Retained host setup scope. Values and row metadata share their original
     /// controllers; source/target version leases pin the numbering. Global
     /// sparse relations need not have local target closure.
@@ -84,22 +85,9 @@ namespace DNDS::Geom
             Validate();
         }
 
+        /// Legacy adapter definition is provided by RelationAccessLegacy.hpp.
         template <class Pair>
-        RelationReadAccess(AdjKind kind, const AdjPairTracked<Pair> &pair, EntitySpace source, EntitySpace target)
-            : _source(std::move(source)), _target(std::move(target)),
-              _sourceLease(_source._versions.Read()), _targetLease(_target._versions.Read()),
-              _kind(kind), _state(pair.idx.state())
-        {
-            DNDS_check_throw_info(pair.father && pair.son, "legacy relation arrays are missing");
-            DNDS_check_throw_info(pair.father->pLGlobalMapping == _source._global &&
-                                      (pair.son->Size() == 0 || pair.trans.pLGhostMapping == _source._ghostMap),
-                                  "legacy relation row mapping differs from its source space");
-            DNDS_check_throw_info(_state != Adj_PointToLocal || pair.idx.mapping() == _target._ghostMap,
-                                  "legacy relation target mapping differs from its target space");
-            _view.owned = Capture(Runtime::ShareLegacyHost(*pair.father), _owned);
-            _view.ghost = Capture(Runtime::ShareLegacyHost(*pair.son), _ghost);
-            Validate();
-        }
+        RelationReadAccess(AdjKind kind, const AdjPairTracked<Pair> &pair, EntitySpace source, EntitySpace target);
 
     private:
         /// Used only with a scope acquired from the same mesh by Current/RegisterMesh.

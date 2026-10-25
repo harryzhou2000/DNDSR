@@ -17,6 +17,7 @@
 #include "DNDS/Runtime/Version.hpp"
 #include "MeshAccess.hpp"
 #include "EntitySpace.hpp"
+#include "RelationAccessLegacy.hpp"
 #include "MeshMutation.hpp"
 #include "NativeMeshState.hpp"
 
@@ -46,6 +47,7 @@ namespace DNDS::Geom
         std::shared_ptr<const NativeMeshState> _nativeState;
         friend class NativeMeshState;
         friend class MeshEdit;
+        friend class PreparedMeshTransition;
         EntitySpace LegacyEntities(EntityKind kind) const;
         const UnstructuredMeshView &NativeBorrowedView(MeshRelation relation) const
         {
@@ -121,6 +123,10 @@ namespace DNDS::Geom
             DNDS_check_throw_info(!_nativeState, operation + " requires explicit UseLegacyWorkspace");
         }
         void PublishNative(MeshReadRequirements requirements = MeshReadRequirements::Primary());
+        /// Construct the public facade from independently built native state.
+        /// Legacy array members remain empty; readers use the native authority.
+        static std::shared_ptr<UnstructuredMesh> FromNative(const MPIInfo &mpi,
+                                                            std::shared_ptr<const NativeMeshState> state);
         void PlaceNative(Runtime::Device device, Runtime::ExecutionContext context);
         void UseLegacyWorkspace();
         MeshReadRequirements CurrentNativeRequirements() const

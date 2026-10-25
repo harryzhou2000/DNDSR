@@ -122,6 +122,7 @@ namespace DNDS::Runtime
         DNDS_DEVICE_CALLABLE index Size() const { return index(values.Rows()); }
         DNDS_DEVICE_CALLABLE rowsize RowSize(index row) const { return rowsize(values.RowSize(size_t(row))); }
         DNDS_DEVICE_CALLABLE T *operator[](index row) const { return values.Row(size_t(row)); }
+        DNDS_DEVICE_CALLABLE Runtime::RowSpan<T> RowSpan(index row) const { return values[size_t(row)]; }
         DNDS_DEVICE_CALLABLE T &operator()(index row, rowsize column) const { return values(size_t(row), size_t(column)); }
     };
 

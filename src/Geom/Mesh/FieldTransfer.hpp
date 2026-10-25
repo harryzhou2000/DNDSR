@@ -55,23 +55,77 @@ namespace DNDS::Geom
     /// (including separate SoA components). No geometry or interpolation in DNDS.
     inline Runtime::RowTransferPlan NativeRowTransfer(const PermutationTransfer &transfer, const MPIInfo &mpi)
     {
-        ArrayAdjacencyPair<2> owners;
+        // Agree on the mode before taking branches with different collectives.
+        int mode = transfer.isLocalOnly, minMode = 0, maxMode = 0;
+        MPI_Allreduce(&mode, &minMode, 1, MPI_INT, MPI_MIN, mpi.comm);
+        MPI_Allreduce(&mode, &maxMode, 1, MPI_INT, MPI_MAX, mpi.comm);
+        DNDS_check_throw_info(minMode == maxMode, "native row transfer modes disagree");
+        std::vector<std::vector<size_t>> send, receive;
+        std::vector<int> sendCounts, receiveCounts;
+        size_t destinationRows = 0;
         FieldTransferDetail::LocalStage(mpi, [&]
                                         {
-            owners.InitPair("NativeRowTransfer.owners", mpi);
-            owners.father->Resize(transfer.size());
-            for (DNDS::index i = 0; i < transfer.size(); ++i)
+            const size_t rows = size_t(transfer.size());
+            send.resize(mpi.size);
+            receive.resize(mpi.size);
+            if (transfer.isLocalOnly)
             {
-                owners(i, 0) = mpi.rank;
-                owners(i, 1) = i;
+                DNDS_check_throw_info(transfer.localOld2New.size() == rows, "invalid native local permutation extent");
+                std::vector<bool> seen(rows, false);
+                for (size_t i = 0; i < rows; ++i)
+                {
+                    const auto target = transfer.localOld2New[i];
+                    DNDS_check_throw_info(target >= 0 && size_t(target) < rows && !seen[size_t(target)], "invalid native local permutation");
+                    seen[size_t(target)] = true;
+                    send[mpi.rank].push_back(i);
+                    receive[mpi.rank].push_back(size_t(target));
+                }
+                destinationRows = rows;
+            }
+            else
+            {
+                DNDS_check_throw_info(transfer.pushStart.size() == size_t(mpi.size + 1) &&
+                                          transfer.newGlobalOffsets.size() == size_t(mpi.size + 1) &&
+                                          transfer.pushStart.front() == 0 && transfer.pushIndex.size() == rows &&
+                                          transfer.pushStart.back() == transfer.size(), "invalid native distributed route extent");
+                sendCounts.resize(mpi.size);
+                receiveCounts.resize(mpi.size);
+                std::vector<bool> seen(rows, false);
+                for (int peer = 0; peer < mpi.size; ++peer)
+                {
+                    const auto first = transfer.pushStart[peer], last = transfer.pushStart[peer + 1];
+                    DNDS_check_throw_info(first >= 0 && last >= first && size_t(last) <= rows && last - first <= INT_MAX,
+                                          "invalid native push offsets");
+                    DNDS_check_throw_info(transfer.newGlobalOffsets[peer] >= 0 &&
+                                              transfer.newGlobalOffsets[peer + 1] >= transfer.newGlobalOffsets[peer],
+                                          "invalid native destination offsets");
+                    sendCounts[peer] = int(last - first);
+                    for (DNDS::index j = first; j < last; ++j)
+                    {
+                        const auto row = transfer.pushIndex[size_t(j)];
+                        DNDS_check_throw_info(row >= 0 && size_t(row) < rows && !seen[size_t(row)] &&
+                                                  transfer.targetRanks[size_t(row)] == peer, "invalid native push row");
+                        seen[size_t(row)] = true;
+                        send[peer].push_back(size_t(row));
+                    }
+                }
+                destinationRows = size_t(transfer.newGlobalOffsets[mpi.rank + 1] - transfer.newGlobalOffsets[mpi.rank]);
             } });
-        transfer.transferRows(owners, mpi);
-        std::vector<Runtime::RowRequest> requests;
-        FieldTransferDetail::LocalStage(mpi, [&]
-                                        {
-            for (DNDS::index i = 0; i < owners.father->Size(); ++i)
-                requests.push_back({int(owners(i, 0)), owners(i, 1), size_t(i)}); });
-        return {mpi.comm, size_t(transfer.size()), requests.size(), requests};
+        if (!transfer.isLocalOnly)
+        {
+            MPI_Alltoall(sendCounts.data(), 1, MPI_INT, receiveCounts.data(), 1, MPI_INT, mpi.comm);
+            FieldTransferDetail::LocalStage(mpi, [&]
+                                            {
+                // ArrayTransformer push receives contiguous sender-rank buckets,
+                // retaining each sender's pushIndex order within its bucket.
+                size_t next = 0;
+                for (int peer = 0; peer < mpi.size; ++peer)
+                    for (int j = 0; j < receiveCounts[peer]; ++j)
+                        receive[peer].push_back(next++);
+                DNDS_check_throw_info(next == destinationRows, "native destination offsets disagree with received rows"); });
+        }
+        return Runtime::RowTransferPlan::Known(std::make_shared<Runtime::CommunicationContext>(mpi.comm),
+                                               size_t(transfer.size()), destinationRows, std::move(send), std::move(receive));
     }
 
     template <class T, class L>

@@ -1,7 +1,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "Geom/Mesh/Mesh.hpp"
-#include "Geom/Mesh/RelationAccess.hpp"
+#include "Geom/Mesh/RelationAccessLegacy.hpp"
 
 using namespace DNDS;
 using namespace DNDS::Geom;
@@ -78,6 +78,12 @@ TEST_CASE("Storage-neutral inverse and compose preserve legacy sorted incidence 
                                                 { return cells.LocalToGlobal(i); }, [&](DNDS::index i)
                                                 { return nodes.LocalToGlobal(i); }, mesh->coords.father->pLGlobalMapping);
     auto support = inverse.Read();
+    CHECK(support.Kind() == Adj::Node2Cell);
+    auto inverseSupport = MeshConnectivity::Inverse(support, mpi);
+    auto reversedSupport = inverseSupport.Read();
+    CHECK(reversedSupport.Kind() != Adj::Cell2Node);
+    CHECK(reversedSupport.Kind().order == RelationOrder::SortedUnique);
+    CHECK(reversedSupport.GlobalRow(0) == std::vector<DNDS::index>{nodes.LocalToGlobal(0), nodes.LocalToGlobal(1)});
     for (DNDS::index row = 0; row < 3; ++row)
     {
         std::vector<DNDS::index> expected;
@@ -101,11 +107,21 @@ TEST_CASE("Storage-neutral inverse and compose preserve legacy sorted incidence 
     CHECK(inverse.Read().Rows() == nodes.NumOwned());
     auto composed = MeshConnectivity::Compose(read, complete, true);
     auto composition = composed.Read();
+    CHECK(composition.Kind().Path() == std::vector<EntityKind>{EntityKind::Cell, EntityKind::Node, EntityKind::Cell});
+    CHECK(composition.Kind().removeSelf);
+    CHECK(composition.Kind().order == RelationOrder::SortedUnique);
+    CHECK(composition.Kind() != Adj::Cell2Cell);
     CHECK(composition.RowSize(0) == 0);
     CHECK(composition.RowSize(1) == 0);
     CHECK(composition.RowSize(2) == 0);
     auto includeSelf = MeshConnectivity::Compose(read, complete);
     auto self = includeSelf.Read();
+    CHECK_FALSE(self.Kind().removeSelf);
+    CHECK(self.Kind() != composition.Kind());
+    auto reversed = MeshConnectivity::Inverse(composition, mpi);
+    CHECK(reversed.Read().Kind().Path() == composition.Kind().Path());
+    CHECK(reversed.Read().Kind().removeSelf);
+    CHECK(reversed.Read().Kind().provenance == "inverse:" + composition.Kind().Signature());
     CHECK(self.GlobalRow(0) == std::vector<DNDS::index>{cells.LocalToGlobal(0)});
     CHECK(self.GlobalRow(1).empty());
     CHECK(self.GlobalRow(2) == std::vector<DNDS::index>{cells.LocalToGlobal(2)});

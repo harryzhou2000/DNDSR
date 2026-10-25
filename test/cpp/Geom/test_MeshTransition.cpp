@@ -95,17 +95,20 @@ static std::map<DNDS::index, std::vector<DNDS::index>> TransitionCellRows(const 
     return result;
 }
 
-static void CheckTransitionCellRows(const UnstructuredMesh &mesh,
+static void CheckTransitionCellRows(UnstructuredMesh &mesh,
                                     const std::map<DNDS::index, std::vector<DNDS::index>> &expected)
 {
-    for (DNDS::index i = 0; i < mesh.NumCell(); ++i)
+    auto retained = mesh.AcquireRead();
+    auto view = retained.HostView();
+    for (DNDS::index i = 0; i < view.NumCell(); ++i)
     {
-        const auto &row = expected.at(mesh.cell2cellOrig(i, 0));
-        REQUIRE(size_t(mesh.cell2node.RowSize(i)) * 2 == row.size());
-        for (DNDS::rowsize j = 0; j < mesh.cell2node.RowSize(i); ++j)
+        const auto &row = expected.at(mesh.OriginalEntityId(EntityKind::Cell, i));
+        const auto nodes = view.CellNodes(i);
+        REQUIRE(nodes.size() * 2 == row.size());
+        for (size_t j = 0; j < nodes.size(); ++j)
         {
-            CHECK(mesh.node2nodeOrig(mesh.cell2node(i, j), 0) == row[size_t(j) * 2]);
-            CHECK((mesh.isPeriodic ? int64_t(uint8_t(mesh.cell2nodePbi(i, j))) : 0) == row[size_t(j) * 2 + 1]);
+            CHECK(mesh.OriginalEntityId(EntityKind::Node, nodes[j]) == row[j * 2]);
+            CHECK((view.IsPeriodic() ? int64_t(uint8_t(view.CellNodePeriodicBits(i)[j])) : 0) == row[j * 2 + 1]);
         }
     }
 }
@@ -176,7 +179,7 @@ TEST_CASE("Detached periodic transition retains geometry and relation companion 
     auto mpi = TransitionMPI();
     auto source = TransitionFixture(mpi, true);
     MeshTransitionHandle handle(source);
-    auto oldRead = source->AcquireRead(MeshReadRequirements::CellFlux());
+    std::optional<MeshReadAccess> oldRead{source->AcquireRead(MeshReadRequirements::CellFlux())};
     auto oldStamp = source->versions.Stamp();
     auto expectedRows = TransitionCellRows(*source);
     R::Array<int64_t> cellBits(R::RowLayout::Dense(size_t(source->NumCell()), 1));
@@ -195,6 +198,17 @@ TEST_CASE("Detached periodic transition retains geometry and relation companion 
     auto input = TransitionInput(*source);
     SUBCASE("preserved periodic faces") {}
     SUBCASE("reconstructed periodic faces") { input.destroyKinds.insert(EntityKind::Face); }
+    SUBCASE("native preserved periodic faces")
+    {
+        oldRead.reset();
+        auto requirements = MeshReadRequirements::CellFlux();
+        requirements.inverse = true;
+        requirements.cellFaceNeighbors = true;
+        requirements.allFaceCellsLocal = true;
+        source->PublishNative(requirements);
+        oldStamp = source->versions.Stamp();
+        oldRead.emplace(source->AcquireRead(requirements));
+    }
     auto prepared = PreparedMeshTransition::Prepare(handle, input,
                                                     {RegisterArray(cellBits, EntityKind::Cell, "cell-periodic-bits")});
     prepared.Publish();
@@ -202,15 +216,50 @@ TEST_CASE("Detached periodic transition retains geometry and relation companion 
     CHECK(next->isPeriodic);
     CHECK(oldStamp.Valid());
     CHECK(next->periodicInfo.translation[1].map()[0] == source->periodicInfo.translation[1].map()[0]);
-    CHECK(next->cell2nodePbi.father->Size() == next->NumCell());
-    CHECK(next->face2nodePbi.father->Size() == next->NumFace());
-    for (DNDS::index i = 0; i < next->NumCell(); ++i)
+    auto nextRead = next->AcquireRead(MeshReadRequirements::CellFlux());
+    auto nextView = nextRead.HostView();
+    for (DNDS::index i = 0; i < nextView.NumCell(); ++i)
     {
-        CHECK(next->cell2nodePbi.RowSize(i) == next->cell2node.RowSize(i));
-        CHECK(next->cell2facePbi.RowSize(i) == next->cell2face.RowSize(i));
-        CHECK(cellBits.Read().At(size_t(i), 0) == rowBits(next->cell2nodePbi, i));
+        CHECK(nextView.CellNodePeriodicBits(i).size() == nextView.CellNodes(i).size());
+        CHECK(nextView.CellFacePeriodicBits(i).size() == nextView.CellFaces(i).size());
+        uint64_t bits = uint64_t(nextView.CellNodePeriodicBits(i).size());
+        for (auto value : nextView.CellNodePeriodicBits(i))
+            bits = bits * 257 + uint8_t(value);
+        CHECK(cellBits.Read().At(size_t(i), 0) == int64_t(bits));
     }
-    next->AssertOnFaces();
+    if (!next->HasNativeState())
+        next->AssertOnFaces();
+    else
+    {
+        std::vector<size_t> contributions(size_t(nextView.NumCellProc()), 0);
+        for (DNDS::index face = 0; face < nextView.NumFaceProc(); ++face)
+        {
+            const auto cells = nextView.FaceCells(face);
+            for (auto cell : cells)
+            {
+                if (cell == UnInitIndex)
+                    continue;
+                REQUIRE(cell >= 0);
+                REQUIRE(cell < nextView.NumCellProc());
+                ++contributions[size_t(cell)];
+                if (face < nextView.NumFace())
+                {
+                    const auto reverse = nextView.CellFaces(cell);
+                    CHECK(std::find(reverse.begin(), reverse.end(), face) != reverse.end());
+                }
+            }
+        }
+        for (DNDS::index cell = 0; cell < nextView.NumCell(); ++cell)
+        {
+            CHECK(contributions[size_t(cell)] == nextView.CellFaces(cell).size());
+            for (auto face : nextView.CellFaces(cell))
+            {
+                REQUIRE(face >= 0);
+                REQUIRE(face < nextView.NumFaceProc());
+                CHECK((nextView.FaceCells(face)[0] == cell || nextView.FaceCells(face)[1] == cell));
+            }
+        }
+    }
     CheckTransitionCellRows(*next, expectedRows);
 }
 
@@ -597,7 +646,11 @@ TEST_CASE("Detached transition preserves independently placed edges with exact n
         offsets[size_t(rank + 1)] = offsets[size_t(rank)] + counts[size_t(rank)];
     std::vector<int64_t> oldIds(size_t(offsets.back()));
     MPI_Allgatherv(edgeIds.View<int64_t>().data, edgeCount, DNDS_MPI_INDEX, oldIds.data(), counts.data(), offsets.data(), DNDS_MPI_INDEX, mpi.comm);
-    REQUIRE(ids.Layout().rows == size_t(next->edge2node.father->Size()));
+    auto requirements = MeshReadRequirements::CellFlux();
+    requirements.edges = true;
+    auto read = next->AcquireRead(requirements);
+    auto view = read.HostView();
+    REQUIRE(ids.Layout().rows == size_t(view.NumEdge()));
     REQUIRE(exact.Rows() == ids.Layout().rows);
     auto rows = exact.Read();
     for (size_t edge = 0; edge < exact.Rows(); ++edge)
@@ -605,13 +658,13 @@ TEST_CASE("Detached transition preserves independently placed edges with exact n
         auto e = DNDS::index(edge);
         size_t slot = 0;
         CHECK(rows.At(edge, slot++) == edgeIds.View<int64_t>()[edge]);
-        CHECK(rows.At(edge, slot++) == next->edge2node.RowSize(e));
-        for (DNDS::rowsize j = 0; j < next->edge2node.RowSize(e); ++j)
+        CHECK(rows.At(edge, slot++) == view.EdgeNodes(e).size());
+        for (DNDS::rowsize j = 0; j < view.EdgeNodes(e).size(); ++j)
         {
-            CHECK(rows.At(edge, slot++) == next->OriginalEntityId(EntityKind::Node, next->edge2node(e, j)));
-            CHECK(rows.At(edge, slot++) == uint8_t(next->edge2nodePbi(e, j)));
+            CHECK(rows.At(edge, slot++) == next->OriginalEntityId(EntityKind::Node, view.EdgeNodes(e)[size_t(j)]));
+            CHECK(rows.At(edge, slot++) == uint8_t(view.EdgeNodePeriodicBits(e)[size_t(j)]));
         }
-        for (auto cell : next->edge2cell[e])
+        for (auto cell : view.EdgeCells(e))
         {
             REQUIRE(cell >= 0);
             CHECK(rows.At(edge, slot++) == next->OriginalEntityId(EntityKind::Cell, cell));
@@ -623,19 +676,16 @@ TEST_CASE("Detached transition preserves independently placed edges with exact n
     REQUIRE(exactCells.Rows() == size_t(next->NumCell()));
     for (DNDS::index cell = 0; cell < next->NumCell(); ++cell)
     {
-        REQUIRE(exactCells.Layout().RowSize(size_t(cell)) == size_t(next->cell2edge.RowSize(cell)) * 2);
-        for (DNDS::rowsize slot = 0; slot < next->cell2edge.RowSize(cell); ++slot)
+        REQUIRE(exactCells.Layout().RowSize(size_t(cell)) == size_t(view.CellEdges(cell).size()) * 2);
+        for (DNDS::rowsize slot = 0; slot < view.CellEdges(cell).size(); ++slot)
         {
-            auto edge = next->cell2edge(cell, slot);
+            auto edge = view.CellEdges(cell)[size_t(slot)];
             REQUIRE(edge >= 0);
             CHECK(oldIds.at(size_t(currentEdges.LocalToGlobal(edge))) == cellRows.At(size_t(cell), size_t(slot) * 2));
-            CHECK(uint8_t(next->cell2edgePbi(cell, slot)) == cellRows.At(size_t(cell), size_t(slot) * 2 + 1));
+            CHECK(uint8_t(view.CellEdgePeriodicBits(cell)[size_t(slot)]) == cellRows.At(size_t(cell), size_t(slot) * 2 + 1));
         }
     }
-    auto requirements = MeshReadRequirements::CellFlux();
-    requirements.edges = true;
-    auto read = next->AcquireRead(requirements);
-    CHECK(read.HostView().NumEdge() == next->edge2node.father->Size());
+    CHECK(view.NumEdge() == next->Entities(EntityKind::Edge).NumOwned());
 }
 
 int main(int argc, char **argv)

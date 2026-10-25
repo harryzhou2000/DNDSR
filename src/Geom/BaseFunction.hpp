@@ -2,7 +2,7 @@
 
 #include "DNDS/Defines.hpp"
 #include "Geom/EigenTensor.hpp"
-#include "Geom/PeriodicInfo.hpp"
+#include "Geom/PeriodicTypes.hpp"
 #include <array>
 #include <tuple>
 

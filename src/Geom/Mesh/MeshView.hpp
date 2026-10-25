@@ -1,6 +1,8 @@
 #pragma once
 
-#include "Mesh_DeviceView.hpp"
+#include "MeshTypes.hpp"
+#include "Geom/Elements.hpp"
+#include "Geom/PeriodicTypes.hpp"
 #include "DNDS/Runtime/Array.hpp"
 #include <type_traits>
 
@@ -34,23 +36,7 @@ namespace DNDS::Geom
     };
 
     template <class T>
-    class MeshRowSpan
-    {
-        const T *_data = nullptr;
-        size_t _size = 0;
-
-    public:
-        DNDS_DEVICE_CALLABLE MeshRowSpan() = default;
-        DNDS_DEVICE_CALLABLE MeshRowSpan(const T *data, size_t size) : _data(data), _size(size) {}
-        DNDS_DEVICE_CALLABLE const T &operator[](size_t column) const { return _data[column]; }
-        DNDS_DEVICE_CALLABLE const T *data() const { return _data; }
-        DNDS_DEVICE_CALLABLE size_t size() const { return _size; }
-        DNDS_DEVICE_CALLABLE bool empty() const { return _size == 0; }
-        DNDS_DEVICE_CALLABLE const T *begin() const { return _data; }
-        DNDS_DEVICE_CALLABLE const T *end() const { return _size ? _data + _size : _data; }
-        DNDS_DEVICE_CALLABLE const T *cbegin() const { return begin(); }
-        DNDS_DEVICE_CALLABLE const T *cend() const { return end(); }
-    };
+    using MeshRowSpan = Runtime::RowSpan<const T>;
 
     /// Assembly data for the access owner. All pointed-to values and row metadata
     /// must remain retained by that owner. Coordinates are rows of three reals;

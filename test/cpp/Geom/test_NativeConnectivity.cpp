@@ -543,6 +543,144 @@ TEST_CASE("Native periodic distributed interpolation preserves owner frames and 
     CHECK(run() == expected);
 }
 
+TEST_CASE("Named native relations distinguish incidence any all exact and face versus node neighbors")
+{
+    const auto mpi = MPI();
+    const I next = (mpi.rank + 1) % mpi.size, previous = (mpi.rank + mpi.size - 1) % mpi.size;
+    auto cells = G::EntitySpace::CreateOwned(G::EntityKind::Cell, mpi, 3);
+    auto nodes = cells.CreateSibling(G::EntityKind::Node, 5);
+    auto faces = cells.CreateSibling(G::EntityKind::Face, 2);
+    if (mpi.size > 1)
+    {
+        std::vector<I> remoteNodes;
+        for (I j = 0; j < 5; ++j)
+            remoteNodes.push_back(next * 5 + j);
+        nodes = nodes.WithGhosts(remoteNodes);
+        faces = faces.WithGhosts({previous * 2});
+    }
+    // c1 touches one face vertex; c2 contains every vertex but is not an
+    // element-face incidence. Repeated n0 models a periodic self incidence.
+    const I n = mpi.rank * 5;
+    G::NativeRelation cellNodes(G::Adj::Cell2Node, cells, nodes,
+                                Rows(std::vector<std::vector<I>>{{n + 2, n, n + 1, n}, {n + 3, n}, {n + 4, n + 1, n}}));
+    G::NativeRelation faceNodes(G::Adj::Face2Node, faces, nodes,
+                                Rows(std::vector<std::vector<I>>{{next * 5 + 1, next * 5, next * 5}, {}}));
+    G::NativeRelation cellFaces(G::Adj::Cell2Face, cells, faces,
+                                Rows(std::vector<std::vector<I>>{{previous * 2}, {}, {}}));
+    auto c2n = cellNodes.Read(), f2n = faceNodes.Read(), c2f = cellFaces.Read();
+    auto inverse = G::MeshConnectivity::Inverse(c2n, mpi);
+    G::RelationGhostRoute nodeRoute(nodes);
+    auto nodeSupport = inverse.WithGhostRows(nodeRoute);
+    auto n2c = nodeSupport.Read();
+    auto direct = G::MeshConnectivity::Inverse(c2f, mpi);
+    auto any = G::MeshConnectivity::Compose(f2n, n2c);
+    auto all = G::MeshConnectivity::ComposeAll(f2n, n2c);
+    CHECK_THROWS(G::AdjKind::Composition(f2n.Kind(), n2c.Kind(), G::RelationSelection::Custom));
+    const auto exactKind = G::AdjKind::Composition(f2n.Kind(), n2c.Kind(), G::RelationSelection::Exact,
+                                                   false, "fixture.oriented-element-face", 1);
+    auto exact = G::MeshConnectivity::ComposeFiltered(f2n, n2c, exactKind, [](I, I, int count)
+                                                      { return count == 2; }, [](I, I target, const std::vector<I> &)
+                                                      { return target % 3 == 0; });
+    const std::vector<G::NativeRelation *> variants{&direct, &any, &all, &exact};
+    const std::vector<std::vector<I>> expected{{next * 3}, {next * 3, next * 3 + 1, next * 3 + 2}, {next * 3, next * 3 + 2}, {next * 3}};
+    std::unordered_set<G::AdjKind, G::AdjKindHash> kinds;
+    G::NativeConnectivity registry(mpi);
+    G::MeshConnectivity legacyRegistry;
+    for (size_t variant = 0; variant < variants.size(); ++variant)
+    {
+        auto read = variants[variant]->Read();
+        CHECK(read.GlobalRow(0) == expected[variant]);
+        CHECK(read.GlobalRow(1).empty());
+        kinds.insert(read.Kind());
+        registry.Register(variants[variant]->Read());
+        // Both registries retain all equal-endpoint variants independently.
+        // Storage is immaterial to key identity; use a shared empty legacy
+        // variant to exercise the compatibility registry without topology.
+        legacyRegistry.registerAdj(read.Kind(), G::makeAdjVariant<G::tAdjPair>());
+    }
+    CHECK(kinds.size() == 4);
+    CHECK(legacyRegistry.adjRegistry.size() == 4);
+    // Traverse each stored definition through the actual distributed evaluator.
+    for (size_t variant = 0; variant < variants.size(); ++variant)
+    {
+        const auto kind = variants[variant]->Read().Kind();
+        G::GhostSpec spec{{{G::EntityKind::Face, {kind}, G::EntityKind::Cell}}};
+        auto tree = G::CompiledGhostTree::compile(spec);
+        CHECK(tree.dump().find(G::adjKindName(kind)) != std::string::npos);
+        auto discovery = registry.Evaluate(tree);
+        const auto found = discovery.ghostIndices.find(G::EntityKind::Cell);
+        if (mpi.size > 1)
+        {
+            REQUIRE(found != discovery.ghostIndices.end());
+            CHECK(found->second == expected[variant]);
+        }
+        else
+            CHECK(found == discovery.ghostIndices.end());
+    }
+    auto published = registry.BuildGhosted({});
+    CHECK(published.relations.size() == 4);
+    // Inversion of the face cone provides a genuine node-centered distributed
+    // traversal: each owned n0/n1 sees the previous rank's face.
+    auto n2f = G::MeshConnectivity::Inverse(f2n, mpi);
+    registry.Register(n2f.Read());
+    G::GhostSpec nodeSpec{{{G::EntityKind::Node, {G::Adj::Node2Face}, G::EntityKind::Face}}};
+    auto nodeDiscovery = registry.Evaluate(G::CompiledGhostTree::compile(nodeSpec));
+    if (mpi.size > 1)
+        CHECK(nodeDiscovery.ghostIndices.at(G::EntityKind::Face) == std::vector<I>{previous * 2});
+    else
+        CHECK(nodeDiscovery.ghostIndices.empty());
+    for (auto *variant : variants)
+        CHECK(published.relations.at(variant->Read().Kind()).Read().GlobalRow(0) == variant->Read().GlobalRow(0));
+
+    auto nodeNeighbors = G::MeshConnectivity::Compose(c2n, n2c, true);
+    G::RelationGhostRoute faceRoute(faces);
+    auto faceSupport = direct.WithGhostRows(faceRoute);
+    auto faceNeighbors = G::MeshConnectivity::Compose(c2f, faceSupport.Read(), true);
+    CHECK(nodeNeighbors.Read().Kind() != faceNeighbors.Read().Kind());
+    CHECK(nodeNeighbors.Read().GlobalRow(0) == std::vector<I>{mpi.rank * 3 + 1, mpi.rank * 3 + 2});
+    CHECK(nodeNeighbors.Read().GlobalRow(1) == std::vector<I>{mpi.rank * 3, mpi.rank * 3 + 2});
+    CHECK(faceNeighbors.Read().GlobalRow(0).empty());
+    CHECK(faceNeighbors.Read().GlobalRow(1).empty());
+    auto includeSelf = G::MeshConnectivity::Compose(c2n, n2c);
+    CHECK(includeSelf.Read().Kind() != nodeNeighbors.Read().Kind());
+    CHECK(includeSelf.Read().GlobalRow(0) == std::vector<I>{mpi.rank * 3, mpi.rank * 3 + 1, mpi.rank * 3 + 2});
+    auto nodeFaces = G::MeshConnectivity::Compose(n2c, c2f);
+    auto completeNodeFaces = nodeFaces.WithGhostRows(nodeRoute);
+    auto longerPath = G::MeshConnectivity::Compose(f2n, completeNodeFaces.Read());
+    CHECK(longerPath.Read().Kind().Path() == std::vector<G::EntityKind>{G::EntityKind::Face, G::EntityKind::Node,
+                                                                        G::EntityKind::Cell, G::EntityKind::Face});
+    CHECK(longerPath.Read().GlobalRow(0) == std::vector<I>{mpi.rank * 2});
+    CHECK(longerPath.Read().GlobalRow(1).empty());
+    CHECK(longerPath.Read().Kind() != G::Adj::Face2Face);
+    auto frameKind = exactKind;
+    frameKind.periodic = G::RelationPeriodicPolicy::FrameMatched;
+    CHECK(frameKind != exactKind);
+    auto topologicalKind = exactKind;
+    topologicalKind.order = G::RelationOrder::Topological;
+    CHECK(topologicalKind != exactKind);
+    auto allInverse = G::MeshConnectivity::Inverse(all.Read(), mpi);
+    CHECK(allInverse.Read().Kind().selection == G::RelationSelection::All);
+    CHECK(allInverse.Read().Kind().Path() == std::vector<G::EntityKind>{G::EntityKind::Cell, G::EntityKind::Node, G::EntityKind::Face});
+    CHECK(allInverse.Read().GlobalRow(0) == std::vector<I>{previous * 2});
+    CHECK(allInverse.Read().GlobalRow(1).empty());
+    CHECK(allInverse.Read().GlobalRow(2) == std::vector<I>{previous * 2});
+    // Equal rows must not erase semantic version identity or hide a collective
+    // mismatch before publication/traversal enters its payload collectives.
+    auto version2 = exactKind;
+    version2.semanticVersion = 2;
+    G::NativeRelation other(version2, faces, cells, Rows(std::vector<std::vector<I>>{expected[3], {}}));
+    CHECK(other.Read().Kind() != exact.Read().Kind());
+    if (mpi.size > 1)
+    {
+        G::NativeConnectivity mismatch(mpi);
+        mismatch.Register(mpi.rank == 0 ? exact.Read() : other.Read());
+        CHECK_THROWS(mismatch.BuildGhosted({}));
+        auto kind = mpi.rank == 0 ? exactKind : version2;
+        G::GhostSpec spec{{{G::EntityKind::Face, {kind}, G::EntityKind::Cell}}};
+        CHECK_THROWS(mismatch.Evaluate(G::CompiledGhostTree::compile(spec)));
+    }
+}
+
 int main(int argc, char **argv)
 {
     MPI_Init(&argc, &argv);
