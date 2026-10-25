@@ -49,6 +49,11 @@ namespace DNDS::Geom
         friend class MeshEdit;
         friend class PreparedMeshTransition;
         EntitySpace LegacyEntities(EntityKind kind) const;
+        void PublishNativeGeometry(std::shared_ptr<const NativeMeshState> prepared,
+                                   Runtime::VersionStamp sourceStamp,
+                                   Runtime::Change changes = Runtime::Change::Geometry | Runtime::Change::Values |
+                                                             Runtime::Change::Interface | Runtime::Change::Allocation);
+        void TransformNativeCoords(const std::function<tPoint(const tPoint &)> &transform);
         const UnstructuredMeshView &NativeBorrowedView(MeshRelation relation) const
         {
             const auto &view = _nativeState->BorrowHostView();
@@ -118,6 +123,10 @@ namespace DNDS::Geom
 
     public:
         bool HasNativeState() const { return bool(_nativeState); }
+        /// Collective compatibility hash of owned AND ghost coordinate rows.
+        /// Preserves the historical weak hash, including partition dependence;
+        /// this is not a canonical global geometry identity or equality proof.
+        std::size_t CoordinateHash();
         /// Setup authority for native transformations. The retained immutable
         /// publication carries its buffers and entity orders independently.
         std::shared_ptr<const NativeMeshState> CurrentNativeState() const
@@ -804,6 +813,13 @@ namespace DNDS::Geom
         void AdjLocal2GlobalEdge();
 
         void ConstructBndMesh(UnstructuredMesh &bMesh);
+        /// Collective detached native boundary mesh. Source publication and
+        /// its read scopes remain unchanged; durable ancestry identifies parents.
+        /// This pure operation leaves compatibility mapping caches untouched.
+        /// ConstructBndMesh updates those caches for its latest output; they
+        /// contain UnInitIndex for new ghosts without a local source parent.
+        /// Use durable ancestry across layouts and serialize cache-based setup.
+        std::shared_ptr<UnstructuredMesh> ExtractBoundary() const;
 
         // =================================================================
         // Registry
@@ -1400,6 +1416,12 @@ namespace DNDS::Geom
         template <class TFTrans>
         void TransformCoords(TFTrans &&FTrans)
         {
+            if (_nativeState)
+            {
+                TransformNativeCoords([&](const tPoint &point)
+                                      { tPoint value = point; return tPoint(FTrans(value)); });
+                return;
+            }
             RequireLegacyWorkspace("TransformCoords");
             // Keep the legacy callable interface, but publish geometry changes
             // and reject retained managed readers before touching coordinates.

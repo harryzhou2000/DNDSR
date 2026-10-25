@@ -82,8 +82,10 @@ may contain explicit unavailable global references. Cell node cones always have
 complete local coordinates. This is topology support; node-centered control
 volumes are not implemented by this constructor.
 
-The primary builder currently accepts nonperiodic meshes. Every external
-boundary must be an exact element face contained in exactly one cell. Unsupported
+The primary builder accepts nonperiodic meshes and already canonical periodic
+input with explicit ordered cell/boundary node-image bits and rank-agreed rigid
+transforms. Repeated canonical node IDs are valid only in distinct images.
+Every external boundary must be an exact element face contained in exactly one cell. Unsupported
 input is rejected; it is not converted through a legacy mesh.
 
 `NativeMeshTopology::Build` constructs faces and (in 3D) edges using the native
@@ -94,7 +96,16 @@ mathematical inverse is a separate sorted-set relation. Shared high-order faces
 must agree on all node IDs, including midside nodes; geometrically coincident
 nodes with different identities do not silently become a conforming face.
 Building a requested family that already exists is rejected. ID-preserving
-destruction/reconstruction and periodic primary construction remain open.
+destruction/reconstruction remains open. Periodic interpolation compares exact
+node-image patterns modulo a uniform frame change, including repeated node IDs.
+Physical faces retain both parent occurrences even for a one-cell self face;
+the named mathematical inverse retains unique cells. Periodic boundary pairs
+must supply complementary main/donor labels, matched to exact element-face
+occurrences in their physical frames. Generated face/edge companions preserve
+those frames through native transitions and archives. This does not identify
+or merge periodic nodes from geometry or CGNS pairing metadata; callers must
+already supply canonical identities. Python's primary-builder wrapper currently
+exposes nonperiodic input only.
 
 `ReadNativeCGNS` calls the common CGNS parser on one explicit reader rank, then
 distributes native rows and builds sparse topology. Its reader-only serial scratch
@@ -222,10 +233,65 @@ vectors. Named mathematical neighbor sets remain independent of an ordered fixed
 neighbor row. Order inspection (`IsO1`/`IsO2`) reads the public native facade,
 including on empty ranks.
 
-Remaining native transition/workflow limitations are explicit: periodic primary
-construction, boundary extraction, topology destruction and output-cache rebuilding
-need their native builders. Production legacy orchestration, wall-distance and
-some geometry/output workflows still require migration. Passing the native
-construction/refinement/archive path is not evidence that every legacy Geom path
-has already been replaced. CPU, worker, MPI, Python and CUDA evidence is recorded
-separately in the work ledger.
+## Geometry, boundary meshes and output
+
+`ExtractBoundary` constructs a detached native mesh from the source boundary
+elements, preserving physical face-node order when faces are available. Used
+nodes stay on their original owners and are compacted through sparse requests.
+Two-dimensional volumes produce one-dimensional boundary meshes with line cells;
+point boundaries and a line-cell facial topology are not synthesized. Extraction
+uses a new namespace and records Node-to-Node and Cell-to-Boundary persistent-ID
+ancestry. It does not require the source to remain alive.
+
+The `ConstructBndMesh` compatibility operation also fills current-row parent
+caches for existing output consumers. Those caches describe that particular
+source/destination pair and require serialized setup; durable ancestry remains
+the portable correspondence. A destination with legacy allocations is rejected
+before publication so it cannot retain a second, stale geometry workspace.
+
+```mermaid
+flowchart LR
+    S[Published native mesh] --> R[Retained read scope]
+    R --> G[New coordinate or wall buffers]
+    S --> T[Shared unchanged topology and IDs]
+    G --> P[Validated geometry publication]
+    T --> P
+    R --> E[Boundary extraction]
+    E --> B[New mesh and source-ID ancestry]
+    R --> O[Output coordinates and connectivity]
+    O --> F[VTKHDF or CGNS file]
+```
+
+Native affine geometry transforms update coordinates, periodic frames and wall
+vectors coherently. Arbitrary coordinate callbacks run only on node owners,
+then exchange ghosts and invalidate wall vectors. Boundary rectification reduces
+selected-node masks back to owners before refreshing ghosts. Callback failures
+are agreed across ranks before publication. These native operations are
+collective; callbacks must not enter collectives or mutate the source. The old
+legacy `TransformCoords` callable remains local, so callers must choose the same
+authority on all ranks before invoking the native collective route.
+
+`BuildNodeWallDist` uses the same geometric search/integration mathematics for
+native and legacy reads. Native output is a node-bound owned/ghost vector pair;
+publishing it shares the coordinate allocation and preserves its geometry epoch.
+The existing nearest-wall search still gathers the wall triangle coordinates.
+That replicated surface-search scratch is a separate limitation from sparse
+mesh ghost construction, which never allocates by the global entity count.
+
+`NativeMeshOutput` holds only output buffers and maps periodic image points back
+to their source point-field rows. Distributed VTKHDF output uses the supplied
+congruent output communicator for preparation and writing, including from a host
+worker. It validates publication/distribution/periodic metadata before entering
+different communication schedules. It does not build a temporary legacy mesh.
+The CGNS writer reads either facade through the same scoped queries and produces
+local mixed-element payloads without changing adjacency numbering. Empty ranks
+use CGNS's null-buffer protocol. Globally empty or periodic CGNS output is
+explicitly rejected. CGNS operations are host-serialized: the library retains
+process-global MPI state, so each parallel writer selects its communicator and
+restores the self communicator afterward; local serial readers also select self.
+
+Production default reader orchestration, legacy serial/VTU/Tecplot output,
+topology destruction, curved elevation smoothing and periodic import/refinement
+still require migration. Passing a native construction/refinement/archive path
+does not establish that every legacy Geom path has been replaced. CPU, worker,
+MPI, Python and CUDA evidence is recorded separately in the work ledger.

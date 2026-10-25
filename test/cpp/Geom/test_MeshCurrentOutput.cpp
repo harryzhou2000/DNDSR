@@ -2,6 +2,9 @@
 #include "doctest.h"
 #include "Geom/Mesh/Mesh.hpp"
 #include "Geom/Mesh/MeshTransition.hpp"
+#include "Geom/Mesh/NativeMeshOutput.hpp"
+#include "Geom/Mesh/NativeMeshCGNS.hpp"
+#include "MeshFacadeOverlapFixture.hpp"
 #include <hdf5.h>
 #include <filesystem>
 #include <future>
@@ -155,8 +158,12 @@ TEST_CASE("Prepared VTKHDF worker keeps reductions on its output communicator")
     mpi.setWorld();
     auto source = CurrentOutputFixture(mpi);
     source->PublishNative(MeshReadRequirements::CellFlux());
-    // Complete all source-communicator setup before submitting the writer.
-    auto workspace = CloneCurrentMeshForSetup(*source);
+    bool native = false;
+    SUBCASE("prepared legacy output") { native = false; }
+    SUBCASE("native output buffers") { native = true; }
+    // The native writer builds its output-only buffers directly using output
+    // comm; the baseline retains its separately prepared legacy workspace.
+    auto workspace = native ? source : CloneCurrentMeshForSetup(*source);
     int rootPid = int(getpid());
     MPI_Bcast(&rootPid, 1, MPI_INT, 0, mpi.comm);
     const auto base = (std::filesystem::temp_directory_path() /
@@ -183,6 +190,194 @@ TEST_CASE("Prepared VTKHDF worker keeps reductions on its output communicator")
         std::filesystem::remove(base + ".vtkhdf");
     }
     MPI_Barrier(mpi.comm);
+}
+
+TEST_CASE("Native VTKHDF owns output buffers without legacy mesh conversion")
+{
+    MPIInfo mpi;
+    mpi.setWorld();
+    auto fixture = OverlapTest::BuildNativeFixture(mpi);
+    auto mesh = fixture.mesh;
+    auto stamp = mesh->versions.Stamp();
+    auto source = mesh->CurrentNativeState();
+    auto read = mesh->AcquireRead(source->Requirements());
+    const auto view = read.HostView();
+    auto layout = NativeMeshOutput::Build(*source, mpi);
+    CHECK_FALSE(mesh->coords.father);
+    CHECK_FALSE(mesh->cell2node.father);
+    CHECK(layout.globalNodes == 121);
+    CHECK(layout.globalCells == 100);
+    CHECK(layout.globalConnectivity == 400);
+    auto coordinates = layout.coordinates.Read();
+    for (size_t row = 0; row < layout.coordinates.Rows(); ++row)
+        for (size_t component = 0; component < 3; ++component)
+            CHECK(coordinates.View()(row, component) == view.Coord(DNDS::index(row))[component]);
+    for (DNDS::index cell = 0; cell < mesh->NumCell(); ++cell)
+    {
+        const auto id = mesh->OriginalEntityId(EntityKind::Cell, cell);
+        const auto x = id % 10, y = id / 10;
+        const std::array<DNDS::index, 4> expected{11 * y + x, 11 * y + x + 1, 11 * (y + 1) + x + 1, 11 * (y + 1) + x};
+        CHECK(layout.types.at(size_t(cell)) == 9);
+        for (size_t slot = 0; slot < 4; ++slot)
+            CHECK(layout.connectivity.at(size_t(cell) * 4 + slot) == expected[slot]);
+    }
+    int pid = int(getpid());
+    MPI_Bcast(&pid, 1, MPI_INT, 0, mpi.comm);
+    const auto base = (std::filesystem::temp_directory_path() / ("native-output-" + std::to_string(pid))).string();
+    MPI_Comm output;
+    MPI_Comm_dup(mpi.comm, &output);
+    mesh->PrintParallelVTKHDFDataArray(base, "", 1, 0, 1, 0, [](int)
+                                       { return "cell_id"; }, [&](int, DNDS::index row)
+                                       { return double(mesh->OriginalEntityId(EntityKind::Cell, row)); }, {}, {}, [](int)
+                                       { return "node_id"; }, [&](int, DNDS::index row)
+                                       { return double(mesh->OriginalEntityId(EntityKind::Node, row)); }, {}, {}, 0, output);
+    MPI_Comm_free(&output);
+    CHECK(stamp.Valid());
+    CHECK_FALSE(mesh->coords.father);
+    CHECK_FALSE(mesh->cell2node.father);
+    MPI_Barrier(mpi.comm);
+    if (mpi.rank == 0)
+    {
+        auto file = H5Fopen((base + ".vtkhdf").c_str(), H5F_ACC_RDONLY, H5P_DEFAULT);
+        REQUIRE(file >= 0);
+        auto cellIds = ReadCurrentOutputDataset(file, "/VTKHDF/CellData/cell_id");
+        auto nodeIds = ReadCurrentOutputDataset(file, "/VTKHDF/PointData/node_id");
+        auto connectivity = ReadCurrentOutputDataset(file, "/VTKHDF/Connectivity");
+        auto points = ReadCurrentOutputDataset(file, "/VTKHDF/Points");
+        H5Fclose(file);
+        REQUIRE(cellIds.size() == 100);
+        REQUIRE(nodeIds.size() == 121);
+        REQUIRE(connectivity.size() == 400);
+        REQUIRE(points.size() == 363);
+        for (size_t cell = 0; cell < 100; ++cell)
+        {
+            CHECK(cellIds[cell] == double(cell));
+            const size_t x = cell % 10, y = cell / 10;
+            const std::array<size_t, 4> expected{11 * y + x, 11 * y + x + 1, 11 * (y + 1) + x + 1, 11 * (y + 1) + x};
+            for (size_t slot = 0; slot < 4; ++slot)
+                CHECK(connectivity[cell * 4 + slot] == double(expected[slot]));
+        }
+        for (size_t node = 0; node < 121; ++node)
+        {
+            CHECK(nodeIds[node] == double(node));
+            CHECK(points[node * 3] == doctest::Approx(double(node % 11) / 10));
+            CHECK(points[node * 3 + 1] == doctest::Approx(double(node / 11) / 10));
+            CHECK(points[node * 3 + 2] == 0);
+        }
+        std::filesystem::remove(base + ".vtkhdf");
+    }
+    MPI_Barrier(mpi.comm);
+}
+
+TEST_CASE("Native output rejects cross-rank publication and periodic schedule mismatches")
+{
+    MPIInfo mpi;
+    mpi.setWorld();
+    if (mpi.size == 1)
+        return;
+    auto first = OverlapTest::BuildNativeFixture(mpi).mesh;
+    auto second = OverlapTest::BuildNativeFixture(mpi).mesh;
+    CHECK_THROWS(NativeMeshOutput::Build(*(mpi.rank == 0 ? first : second)->CurrentNativeState(), mpi));
+    auto periodic = CurrentOutputFixture(mpi);
+    periodic->PublishNative(MeshReadRequirements::CellFlux());
+    CHECK_THROWS(NativeMeshOutput::Build(*(mpi.rank == 0 ? first : periodic)->CurrentNativeState(), mpi));
+    CHECK_NOTHROW(NativeMeshOutput::Build(*first->CurrentNativeState(), mpi));
+}
+
+TEST_CASE("CGNS output rejects a globally empty native mesh before file creation")
+{
+    namespace R = DNDS::Runtime;
+    MPIInfo mpi;
+    mpi.setWorld();
+    auto nodes = EntitySpace::CreateOwned(EntityKind::Node, mpi, 0);
+    auto cells = nodes.CreateSibling(EntityKind::Cell, 0);
+    auto boundaries = nodes.CreateSibling(EntityKind::Bnd, 0);
+    auto mesh = UnstructuredMesh::FromNative(mpi, NativeMeshBuilder::Build(
+                                                      {mpi, 2, cells, nodes, boundaries, R::Array<DNDS::index>(R::RowLayout::Dense(0, 4)), R::Array<DNDS::index>(R::RowLayout::Dense(0, 2)), R::Array<DNDS::real>(R::RowLayout::Dense(0, 3)), R::Array<ElemInfo>(R::RowLayout::Dense(0, 1)), R::Array<ElemInfo>(R::RowLayout::Dense(0, 1)), {}}));
+    const auto stamp = mesh->versions.Stamp();
+    CHECK_THROWS(mesh->PrintMeshCGNS("/unused/native-empty.cgns", {}, {}));
+    CHECK(stamp.Valid());
+}
+
+TEST_CASE("Native CGNS output round trips independently owned nodes and empty ranks")
+{
+    namespace R = DNDS::Runtime;
+    MPIInfo mpi;
+    mpi.setWorld();
+    const bool cellOwner = mpi.rank == 0, nodeOwner = mpi.rank == mpi.size - 1;
+    auto nodes = EntitySpace::CreateOwned(EntityKind::Node, mpi, nodeOwner ? 4 : 0);
+    auto cells = nodes.CreateSibling(EntityKind::Cell, cellOwner ? 1 : 0);
+    auto boundaries = nodes.CreateSibling(EntityKind::Bnd, cellOwner ? 4 : 0);
+    R::Array<DNDS::real> coords(R::RowLayout::Dense(size_t(nodes.NumOwned()), 3));
+    R::Array<DNDS::index> cellNodes(R::RowLayout::Dense(size_t(cells.NumOwned()), 4));
+    R::Array<DNDS::index> boundaryNodes(R::RowLayout::Dense(size_t(boundaries.NumOwned()), 2));
+    R::Array<ElemInfo> cellInfo(R::RowLayout::Dense(size_t(cells.NumOwned()), 1));
+    R::Array<ElemInfo> boundaryInfo(R::RowLayout::Dense(size_t(boundaries.NumOwned()), 1));
+    const std::array<tPoint, 4> points{tPoint{0, 0, 0}, tPoint{2, 0, 0}, tPoint{2, 1, 0}, tPoint{0, 1, 0}};
+    {
+        auto c = coords.Write();
+        auto cn = cellNodes.Write(), bn = boundaryNodes.Write();
+        auto ci = cellInfo.Write(), bi = boundaryInfo.Write();
+        if (nodeOwner)
+            for (size_t row = 0; row < 4; ++row)
+                for (size_t j = 0; j < 3; ++j)
+                    c.View()(row, j) = points[row][j];
+        if (cellOwner)
+        {
+            ci.View()(0, 0) = ElemInfo{Elem::Quad4, INTERNAL_ZONE};
+            for (size_t row = 0; row < 4; ++row)
+            {
+                cn.View()(0, row) = DNDS::index(row);
+                bn.View()(row, 0) = DNDS::index(row);
+                bn.View()(row, 1) = DNDS::index((row + 1) % 4);
+                bi.View()(row, 0) = ElemInfo{Elem::Line2, row == 0 ? BC_ID_DEFAULT_WALL : BC_ID_DEFAULT_FAR};
+            }
+        }
+    }
+    auto mesh = UnstructuredMesh::FromNative(mpi, NativeMeshBuilder::Build(
+                                                      {mpi, 2, cells, nodes, boundaries, cellNodes, boundaryNodes, coords, cellInfo, boundaryInfo, {}}, {1, true}));
+    auto stamp = mesh->versions.Stamp();
+    auto held = mesh->AcquireRead();
+    int pid = int(getpid());
+    MPI_Bcast(&pid, 1, MPI_INT, 0, mpi.comm);
+    const auto path = (std::filesystem::temp_directory_path() / ("native-cgns-output-" + std::to_string(pid) + ".cgns")).string();
+    auto names = [](t_index zone)
+    { return zone == BC_ID_DEFAULT_WALL ? "WALL" : "FAR"; };
+    CHECK_THROWS(mesh->PrintMeshCGNS(path, names, {"WALL"}));
+    CHECK_THROWS(mesh->PrintMeshCGNS(path, [](t_index) -> std::string
+                                     { throw std::runtime_error("boundary callback failed"); }, {"WALL", "FAR"}));
+    if (mpi.size > 1)
+        CHECK_THROWS(mesh->PrintMeshCGNS(path, names, mpi.rank == 0 ? std::vector<std::string>{"WALL", "FAR"} : std::vector<std::string>{"FAR", "WALL"}));
+    CHECK(stamp.Valid());
+    mesh->dim = 3; // Raw legacy fields cannot override native query geometry.
+    mesh->PrintMeshCGNS(path, names, {"WALL", "FAR"});
+    CHECK(stamp.Valid());
+    CHECK_FALSE(mesh->coords.father);
+    CHECK_FALSE(mesh->cell2node.father);
+    auto restored = UnstructuredMesh::FromNative(mpi, ReadNativeCGNS(mpi, path, 2,
+                                                                     [](const std::string &name)
+                                                                     { return name == "WALL" ? BC_ID_DEFAULT_WALL : BC_ID_DEFAULT_FAR; }, mpi.size - 1, {1, true}));
+    CHECK(restored->NumCellGlobal() == 1);
+    CHECK(restored->NumNodeGlobal() == 4);
+    CHECK(restored->NumBndGlobal() == 4);
+    auto read = restored->AcquireRead();
+    const auto view = read.HostView();
+    const auto nodeSpace = restored->Entities(EntityKind::Node);
+    for (DNDS::index row = 0; row < view.NumNodeProc(); ++row)
+        CHECK(view.Coord(row) == points.at(size_t(nodeSpace.LocalToGlobal(row))));
+    for (DNDS::index row = 0; row < view.NumCell(); ++row)
+        for (size_t slot = 0; slot < 4; ++slot)
+            CHECK(view.Coord(view.CellNodes(row)[slot]) == points[slot]);
+    for (DNDS::index row = 0; row < view.NumBnd(); ++row)
+    {
+        const auto cone = view.BoundaryNodes(row);
+        const auto first = nodeSpace.LocalToGlobal(cone[0]);
+        CHECK(nodeSpace.LocalToGlobal(cone[1]) == (first + 1) % 4);
+        CHECK(view.GetBndZone(row) == (first == 0 ? BC_ID_DEFAULT_WALL : BC_ID_DEFAULT_FAR));
+    }
+    MPI_Barrier(mpi.comm);
+    if (mpi.rank == 0)
+        std::filesystem::remove(path);
 }
 
 int main(int argc, char **argv)

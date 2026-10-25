@@ -3,12 +3,15 @@
 #include "Mesh_InterpolateHelpers.hpp"
 #include "MeshConnectivity.hpp"
 #include "MeshConnectivity_StateChecked.hpp"
+#include "NativeMeshExtraction.hpp"
+#include "FieldTransfer.hpp"
 #include "Solver/Direct.hpp"
 
 #include <cstdlib>
 #include <string>
 #include <map>
 #include <set>
+#include <numeric>
 #include <unordered_map>
 #include <unordered_set>
 #include <filesystem>
@@ -2234,8 +2237,94 @@ namespace DNDS::Geom
         mutationToken.Commit();
     }
 
+    std::shared_ptr<UnstructuredMesh> UnstructuredMesh::ExtractBoundary() const
+    {
+        DNDS_check_throw_info(mpi.comm != MPI_COMM_NULL, "native boundary extraction requires a communicator");
+        std::shared_ptr<const NativeMeshState> source;
+        FieldTransferDetail::LocalStage(mpi, [&]
+                                        { source = CurrentNativeState(); });
+        return FromNative(mpi, NativeMeshExtraction::ExtractBoundary(*source, mpi).state);
+    }
+
     void UnstructuredMesh::ConstructBndMesh(UnstructuredMesh &bMesh)
     {
+        int native = HasNativeState(), minNative = 0, maxNative = 0;
+        MPI_Allreduce(&native, &minNative, 1, MPI_INT, MPI_MIN, mpi.comm);
+        MPI_Allreduce(&native, &maxNative, 1, MPI_INT, MPI_MAX, mpi.comm);
+        DNDS_check_throw_info(minNative == maxNative, "boundary extraction authority differs between ranks");
+        if (native)
+        {
+            FieldTransferDetail::LocalStage(mpi, [&]
+                                            {
+                int communicator = MPI_UNEQUAL;
+                if (bMesh.mpi.comm != MPI_COMM_NULL) MPI_Comm_compare(mpi.comm, bMesh.mpi.comm, &communicator);
+                // Inspect every group irrespective of legacy state flags:
+                // detached optional arrays can exist even when flags are clear.
+                bool emptyBacking = true;
+                auto checkPair = [&](auto &member)
+                {
+                    const auto &pair = member.ref;
+                    emptyBacking = emptyBacking && !pair.father && !pair.son && !pair.trans.father && !pair.trans.son;
+                };
+                for_each_member_list(bMesh.device_array_list_primary(), checkPair);
+                for_each_member_list(bMesh.device_array_list_facial(), checkPair);
+                for_each_member_list(bMesh.device_array_list_C2F(), checkPair);
+                for_each_member_list(bMesh.device_array_list_N2CB(), checkPair);
+                for_each_member_list(bMesh.device_array_list_edge(), checkPair);
+                auto extraPairs = std::tie(bMesh.cell2cellOrig, bMesh.node2nodeOrig, bMesh.bnd2bndOrig,
+                                            bMesh.cell2cellFace, bMesh.cell2nodePeriodicRecreated,
+                                            bMesh.coordsPeriodicRecreated, bMesh.coordsElevDisp);
+                std::apply([&](auto &...pair)
+                {
+                    ((emptyBacking = emptyBacking && !pair.father && !pair.son && !pair.trans.father && !pair.trans.son), ...);
+                }, extraPairs);
+                DNDS_check_throw_info(emptyBacking,
+                                      "native boundary destination retains legacy arrays; select a fresh destination");
+                DNDS_check_throw_info(!versions.SameController(bMesh.versions) && bMesh.dim == getDim() - 1 &&
+                                          (communicator == MPI_IDENT || communicator == MPI_CONGRUENT) && bMesh.versions.CanMutate(),
+                                      "native boundary destination must be independent, idle and dimension/communicator compatible"); });
+            auto next = ExtractBoundary();
+            const auto state = next->CurrentNativeState();
+            const auto nodes = state->Entities(EntityKind::Node);
+            const auto &ancestry = state->Provenance()->sourceIds.at(EntityKind::Node);
+            RelationGhostRoute route(nodes);
+            Runtime::ArrayPair<index> parents{ancestry, route.TransferRows(nodes, ancestry, Runtime::ElementSchema::Arithmetic<index>())};
+            std::vector<index> sourceToBoundary, boundaryToSource, cellParents;
+            std::shared_ptr<NativeMeshState> prepared;
+            FieldTransferDetail::LocalStage(mpi, [&]
+                                            {
+                std::unordered_map<index, index> sourceRows;
+                for (index row = 0; row < NumNodeProc(); ++row)
+                    sourceRows.emplace(OriginalEntityId(EntityKind::Node, row), row);
+                sourceToBoundary.assign(size_t(NumNodeProc()), UnInitIndex);
+                boundaryToSource.assign(size_t(nodes.NumLocal()), UnInitIndex);
+                auto read = parents.ReadCombined();
+                for (index row = 0; row < nodes.NumLocal(); ++row)
+                {
+                    auto found = sourceRows.find(read.View()(size_t(row), 0));
+                    if (found != sourceRows.end())
+                    {
+                        boundaryToSource[size_t(row)] = found->second;
+                        sourceToBoundary[size_t(found->second)] = row;
+                    }
+                }
+                cellParents.resize(size_t(state->NumOwned(EntityKind::Cell)));
+                std::iota(cellParents.begin(), cellParents.end(), index(0));
+                prepared = std::shared_ptr<NativeMeshState>(new NativeMeshState(*state)); });
+            // These vectors are setup-only compatibility caches. They do not
+            // change the source query authority or invalidate retained reads.
+            MeshMutationToken destination(&bMesh, bMesh.versions, Runtime::Change::All);
+            destination.Commit();
+            prepared->BindPreparedEpoch(bMesh.versions);
+            bMesh._entityIdentity = next->_entityIdentity;
+            bMesh.isPeriodic = false;
+            bMesh._nativeState = std::move(prepared);
+            bMesh.node2parentNode.swap(boundaryToSource);
+            bMesh.cell2parentCell.swap(cellParents);
+            bMesh.node2bndNode.clear();
+            node2bndNode.swap(sourceToBoundary);
+            return;
+        }
         CheckCollectiveMutationAvailable();
         int communicator = MPI_UNEQUAL;
         if (bMesh.mpi.comm != MPI_COMM_NULL)

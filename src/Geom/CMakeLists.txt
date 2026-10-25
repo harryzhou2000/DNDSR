@@ -39,6 +39,8 @@ Mesh/NativeMeshTopology.cpp
 Mesh/NativeMeshClosure.cpp
 Mesh/NativeMeshRefinement.cpp
 Mesh/NativeMeshElevation.cpp
+Mesh/NativeMeshExtraction.cpp
+Mesh/NativeMeshOutput.cpp
 Mesh/MeshTransition.cpp
 Mesh/Mesh_EntitySpace.cpp
 Mesh/Mesh_Legacy.cpp

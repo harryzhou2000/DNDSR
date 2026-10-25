@@ -5,6 +5,7 @@
 #include "NativeMeshCGNS.hpp"
 #include "NativeMeshTopology.hpp"
 #include "NativeMeshRefinement.hpp"
+#include "NativeMeshExtraction.hpp"
 #include "FieldTransfer.hpp"
 #include "Mesh.hpp"
 #include "DNDS/Runtime/Array_bind.hpp"
@@ -14,6 +15,26 @@ namespace DNDS::Geom
 {
     inline void pybind11_NativeMeshBuilder_define(py::module_ &m)
     {
+        m.def("native_mesh_requirements", [](const UnstructuredMesh &mesh)
+              {
+                  const auto requirements = mesh.CurrentNativeState()->Requirements();
+                  py::dict result;
+                  result["faces"] = requirements.faces;
+                  result["edges"] = requirements.edges;
+                  result["inverse"] = requirements.inverse;
+                  result["cell_face_neighbors"] = requirements.cellFaceNeighbors;
+                  result["wall_distance"] = requirements.wallDistance;
+                  result["all_face_cells_local"] = requirements.allFaceCellsLocal;
+                  return result; }, py::arg("mesh"), "Return the exact native publication groups, including empty published families.");
+        m.def("extract_native_boundary", [](const UnstructuredMesh &mesh, int cellLayers, bool completeNodeStar)
+              {
+                  const auto mpi = mesh.mpi;
+                  DNDS_check_throw_info(mpi.comm != MPI_COMM_NULL, "native boundary extraction requires a communicator");
+                  py::gil_scoped_release release;
+                  std::shared_ptr<const NativeMeshState> source;
+                  FieldTransferDetail::LocalStage(mpi, [&] { source = mesh.CurrentNativeState(); });
+                  auto result = NativeMeshExtraction::ExtractBoundary(*source, mpi, {cellLayers, completeNodeStar});
+                  return UnstructuredMesh::FromNative(mpi, std::move(result.state)); }, py::arg("mesh"), py::arg("cell_layers") = 1, py::arg("complete_node_star") = false, "Collectively extract nonperiodic native boundary elements into a new mesh and namespace. Used nodes are compacted on their source owners; physical face order is preserved when present. Output has no boundary elements. Source queries and retained reads stay valid; owned Node->Node and Cell->Boundary ancestry is available through native_mesh_provenance. One-dimensional output supports line cells without point boundaries or facial topology.");
         auto derive = [](const UnstructuredMesh &mesh, int cellLayers, bool completeNodeStar, bool bisect)
         {
             const auto mpi = mesh.mpi;
@@ -60,6 +81,33 @@ namespace DNDS::Geom
                   py::gil_scoped_release release;
                   return UnstructuredMesh::FromNative(mpi, ReadNativeCGNS(mpi, path, dimension,
                       [&](const std::string &name) { return boundaryIds(name); }, readerRank, {cellLayers, completeNodeStar})); }, py::arg("mpi"), py::arg("path"), py::arg("dimension"), py::arg("reader_rank") = 0, py::arg("cell_layers") = 1, py::arg("complete_node_star") = false, "Collectively import CGNS through a native reader and even contiguous entity distribution. All ranks supply identical path/options. Boundary names use default IDs with deterministic IDs appended for unknown names; only reader_rank parses the file.");
+        m.def("read_native_cgns_with_names", [](const MPIInfo &mpi, const std::string &path, int dimension, int readerRank, int cellLayers, bool completeNodeStar)
+              {
+                  auto names = std::make_shared<AutoAppendName2ID>();
+                  std::shared_ptr<const NativeMeshState> state;
+                  {
+                      py::gil_scoped_release release;
+                      state = ReadNativeCGNS(mpi, path, dimension,
+                          [&](const std::string &name) { return (*names)(name); }, readerRank, {cellLayers, completeNodeStar});
+                      // Only readerRank parses names. Broadcast the exact assigned
+                      // dictionary rather than recreating IDs in unordered order.
+                      std::string encoded;
+                      FieldTransferDetail::LocalStage(mpi, [&]
+                      { if (mpi.rank == readerRank) encoded = nlohmann::json{{"names", names->n2id_map}, {"cap", names->id_cap}}.dump(); });
+                      int count = 0;
+                      FieldTransferDetail::LocalStage(mpi, [&]
+                      { DNDS_check_throw_info(encoded.size() <= size_t(std::numeric_limits<int>::max()), "CGNS boundary dictionary exceeds MPI count range"); count = int(encoded.size()); });
+                      MPI_Bcast(&count, 1, MPI_INT, readerRank, mpi.comm);
+                      FieldTransferDetail::LocalStage(mpi, [&] { encoded.resize(size_t(count)); });
+                      MPI_Bcast(encoded.data(), count, MPI_CHAR, readerRank, mpi.comm);
+                      FieldTransferDetail::LocalStage(mpi, [&]
+                      {
+                          auto metadata = nlohmann::json::parse(encoded);
+                          names->n2id_map = metadata.at("names").get<decltype(names->n2id_map)>();
+                          names->id_cap = metadata.at("cap").get<t_index>();
+                      });
+                  }
+                  return py::make_tuple(UnstructuredMesh::FromNative(mpi, std::move(state)), names); }, py::arg("mpi"), py::arg("path"), py::arg("dimension"), py::arg("reader_rank") = 0, py::arg("cell_layers") = 1, py::arg("complete_node_star") = false, "Collective native CGNS import returning (mesh, boundary name dictionary). The exact reader-assigned names and IDs are retained on every rank.");
         m.def("with_native_topology", [](const UnstructuredMesh &mesh, bool faces, bool edges, int ghostLayers)
               {
                   const auto mpi = mesh.mpi;

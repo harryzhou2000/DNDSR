@@ -1,4 +1,5 @@
 #include "NativeConnectivity.hpp"
+#include "NativePeriodicMatch.hpp"
 #include "MeshConnectivity.hpp"
 #include "ConnectivityInterpolateRows.hpp"
 #include "Mesh.hpp"
@@ -266,15 +267,10 @@ namespace DNDS::Geom
                         query.extractPbi(p, slot, [&](int j) { return (*periodic)(p, size_t(j)); }, bits.data());
                         std::vector<std::pair<index, uint8_t>> result;
                         for (size_t j = 0; j < nodes.size(); ++j) result.emplace_back(nodes[j], uint8_t(bits[j]));
-                        std::sort(result.begin(), result.end());
                         return result;
                     };
                     auto current = extract(parent, sub), original = extract(originalParent, originalSub);
-                    if (current.size() != original.size()) return false;
-                    const auto transform = current.front().second ^ original.front().second;
-                    for (size_t j = 0; j < current.size(); ++j)
-                        if (current[j].first != original[j].first || (current[j].second ^ original[j].second) != transform) return false;
-                    return true;
+                    return bool(NativePeriodicFrame(std::move(current), std::move(original)));
                 };
             rows.emplace(ConnectivityRows::EnumerateSubEntities([&](index row, int slot)
             {
@@ -313,16 +309,8 @@ namespace DNDS::Geom
                         }
                         // Repeated periodic node IDs are distinguished by their
                         // per-node frame bits, matching the legacy sorted-pair math.
-                        std::sort(current.begin(), current.end());
-                        std::sort(original.begin(), original.end());
-                        std::optional<uint8_t> uniform;
-                        for (size_t node = 0; node < nodes.size(); ++node)
-                        {
-                            DNDS_check_throw_info(current[node].first == original[node].first, "periodic subentity node set mismatch");
-                            const uint8_t difference = current[node].second ^ original[node].second;
-                            DNDS_check_throw_info(!uniform || *uniform == difference, "periodic subentity has nonuniform frame transform");
-                            uniform = difference;
-                        }
+                        auto uniform = NativePeriodicFrame(std::move(current), std::move(original));
+                        DNDS_check_throw_info(uniform, "periodic subentity has nonuniform frame transform");
                         parentBits[size_t(parent)][sub] = NodePeriodicBits{*uniform};
                     }
                 }

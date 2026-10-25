@@ -23,6 +23,11 @@ namespace DNDS::Geom
         /// saved namespace and high-water marks unchanged.
         MeshIdentity identity;
         std::optional<NativeMeshProvenance> provenance;
+        /// Already canonical node IDs with ordered physical image labels.
+        /// Periodic cones allow repeated IDs in distinct frames. All ranks
+        /// supply both companions (including empty rows) and identical frames.
+        std::optional<Runtime::Array<NodePeriodicBits>> cellNodesPbi, boundaryNodesPbi;
+        Periodicity periodicInfo;
     };
 
     struct NativeMeshBuildOptions
@@ -37,8 +42,9 @@ namespace DNDS::Geom
     /// Collective primary construction over sparse native relations. No legacy
     /// mesh/Array/transformer is allocated. All ranks, including empty ones,
     /// supply the same options and invoke Build in the same collective order.
-    /// This first construction slice rejects periodic meshes and requires each
-    /// external boundary's complete node set to match exactly one cell.
+    /// Canonical periodic inputs provide ordered image companions explicitly;
+    /// external boundaries match one physical face, periodic boundaries two
+    /// side occurrences (possibly in the same cell).
     class NativeMeshBuilder
     {
     public:

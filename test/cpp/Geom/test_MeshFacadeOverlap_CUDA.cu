@@ -101,14 +101,20 @@ TEST_CASE("Real mesh CUDA finite-volume core uses owned solution during direct m
     mpi.setWorld();
     REQUIRE(mpi.size >= 2);
     const int ordinal = OverlapGPU(mpi);
-    auto fixture = T::BuildFixture(mpi);
+    bool native = false;
+    SUBCASE("legacy-built baseline") {}
+    SUBCASE("Runtime-array-native construction") { native = true; }
+    auto fixture = native ? T::BuildNativeFixture(mpi) : T::BuildFixture(mpi);
     CheckGPUOverlap(fixture, ordinal);
-    const auto old = fixture.mesh->Entities(G::EntityKind::Cell);
-    fixture.mesh->ReorderLocalCells(2, 1);
-    CHECK_FALSE(old.Valid());
-    CheckGPUOverlap(fixture, ordinal);
-    fixture.mesh->PublishNative(G::MeshReadRequirements::CellFlux());
-    CheckGPUOverlap(fixture, ordinal);
+    if (!native)
+    {
+        const auto old = fixture.mesh->Entities(G::EntityKind::Cell);
+        fixture.mesh->ReorderLocalCells(2, 1);
+        CHECK_FALSE(old.Valid());
+        CheckGPUOverlap(fixture, ordinal);
+        fixture.mesh->PublishNative(G::MeshReadRequirements::CellFlux());
+        CheckGPUOverlap(fixture, ordinal);
+    }
     T::RedistributeCurrent(fixture);
     CheckGPUOverlap(fixture, ordinal);
     T::RestartCurrent(fixture);

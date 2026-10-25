@@ -198,9 +198,13 @@ TEST_CASE("Native EntityField CUDA scopes and direct multi-GPU halo retain check
     REQUIRE(cudaFuncGetAttributes(&attributes, CheckState) == cudaSuccess);
     REQUIRE(cudaFuncGetAttributes(&attributes, UpdateState) == cudaSuccess);
 
-    auto fixture = G::OverlapTest::BuildFixture(mpi);
+    bool native = false;
+    SUBCASE("legacy-built baseline") {}
+    SUBCASE("Runtime-array-native construction") { native = true; }
+    auto fixture = native ? G::OverlapTest::BuildNativeFixture(mpi) : G::OverlapTest::BuildFixture(mpi);
     auto mesh = fixture.mesh;
-    mesh->PublishNative(G::MeshReadRequirements::CellFlux());
+    if (!mesh->HasNativeState())
+        mesh->PublishNative(G::MeshReadRequirements::CellFlux());
     auto space = mesh->Entities(G::EntityKind::Cell);
     const auto original = GlobalOriginalIds(*mesh);
     FixedState host(R::RowLayout::Dense(size_t(space.NumOwned()), 5));

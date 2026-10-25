@@ -23,17 +23,39 @@ def test_current_authority_geometry_and_escaped_copies():
         assert edit.closed
     escaped[:] = [-1, -2, -3]
     committed = mesh.snapshot()
+    # Supported native geometry entry points publish tracked replacements.
+    # Keep the unsafe whole-array legacy callback explicitly rejected.
+    with pytest.raises(RuntimeError):
+        mesh.TransformCoords(lambda points: points.fill(99))
+    assert committed.source_current
     for operation in (
         lambda: mesh.transform_coordinates(lambda p: p + 99),
-        lambda: mesh.TransformCoords(lambda points: points.fill(99)),
         lambda: mesh.apply_geometry_transform(np.eye(3), 2),
         lambda: mesh.rectify_boundary_coordinates(lambda zone: 1),
         lambda: mesh.SetPeriodicGeometry(),
     ):
-        with pytest.raises(RuntimeError):
-            operation()
-        assert mesh.has_native_state and committed.source_current
+        with mesh.acquire_read():
+            with pytest.raises(RuntimeError):
+                operation()
+        assert committed.source_current
+    with pytest.raises(RuntimeError):
+        mesh.SetPeriodicGeometry()  # Native frame setup keeps its legacy-only contract.
+    assert committed.source_current
+    expected = before + [0.25, 0.5, 0]
     with mesh.acquire_read() as read:
+        np.testing.assert_allclose(read.coordinates(), expected)
+    entities = mesh.entities(Geom.EntityKind.Node)
+    mesh.transform_coordinates(lambda p: p + [1.0, 0.0, 0.0])
+    expected = expected + [1.0, 0.0, 0.0]
+    assert mesh.has_native_state and not committed.source_current
+    assert entities.valid
+    mesh.apply_geometry_transform(np.eye(3), 2)
+    expected *= 2
+    # This source has z=0; boundary rectification is an exact no-op.
+    mesh.rectify_boundary_coordinates(lambda zone: 3)
+    with mesh.acquire_read() as read:
+        np.testing.assert_allclose(read.coordinates(), expected)
+    with committed.acquire_read() as read:
         np.testing.assert_allclose(read.coordinates(), before + [0.25, 0.5, 0])
     with snapshot.acquire_read() as read:
         np.testing.assert_array_equal(read.coordinates(), before)

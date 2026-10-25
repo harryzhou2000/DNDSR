@@ -4,9 +4,10 @@
 
 namespace DNDS::Geom
 {
-    /// Complete nonperiodic native primary topology without a legacy workspace.
-    /// Source cell ghosts must contain the complete incidences of generated
-    /// faces/edges (the primary node-neighbor ring provides this closure).
+    /// Complete native primary topology without a legacy workspace, including
+    /// canonical periodic nodes with exact ordered image companions.
+    /// Sparse shared-node parent closure is rebuilt from authoritative owned
+    /// cones, independently of the source's existing cell ghosts.
     /// Unassigned exterior faces retain BC_ID_NULL and no boundary association.
     class NativeMeshTopology
     {

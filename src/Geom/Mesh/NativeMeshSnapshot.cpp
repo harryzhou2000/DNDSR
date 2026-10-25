@@ -7,7 +7,7 @@ namespace DNDS::Geom
     NativeMeshSnapshot NativeMeshSnapshot::FromNative(NativeMeshData data, MeshReadRequirements requirements)
     {
         DNDS_check_throw_info(data.namedRelations.empty(), "named setup relations require NativeMeshState publication");
-        DNDS_check_throw_info(data.dimension == 2 || data.dimension == 3, "native mesh dimension must be two or three");
+        DNDS_check_throw_info(data.dimension >= 1 && data.dimension <= 3, "native mesh dimension must be one, two or three");
         auto state = std::make_shared<State>();
         state->source = state->versions.Stamp();
         state->device = Runtime::Device::Host();
@@ -63,6 +63,9 @@ namespace DNDS::Geom
         required(MeshRelation::BoundaryCells);
         required(MeshRelation::CellCells);
         DNDS_check_throw_info(data.coords && data.cellInfo && data.bndInfo, "native primary mesh values are missing");
+        DNDS_check_throw_info(data.dimension != 1 || (!requirements.faces && !requirements.edges && !requirements.cellFaceNeighbors &&
+                                                      data.bndInfo->owned.Rows() == 0 && data.bndInfo->ghost.Rows() == 0),
+                              "native one-dimensional meshes support primary curves without point boundaries or facial/edge topology");
         if (requirements.faces)
         {
             for (auto relation : {MeshRelation::CellFaces, MeshRelation::FaceNodes, MeshRelation::FaceCells,

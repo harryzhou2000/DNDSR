@@ -70,7 +70,7 @@ namespace DNDS::Euler
         /*******************************************************/
         /*                 CHECK MESH                          */
         /*******************************************************/
-        auto hashCoord = mesh->coords.hash();
+        auto hashCoord = mesh->CoordinateHash();
         if (mpi.rank == 0)
         {
             log() << "Mesh coord hash is: [" << std::hex << hashCoord << std::dec << "]" << std::endl

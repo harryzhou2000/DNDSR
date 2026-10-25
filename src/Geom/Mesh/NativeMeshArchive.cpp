@@ -345,7 +345,7 @@ namespace DNDS::Geom
             const auto writerRanks = Integer(metadata.at("writer_ranks"), 1, INT_MAX);
             DNDS_check_throw_info(!(partition == S::ArrayGlobalOffset_Unknown) || writerRanks == mpi.size,
                                   "native archive writer partition mismatch");
-            owned.dimension = int(Integer(metadata.at("dimension"), 2, 3));
+            owned.dimension = int(Integer(metadata.at("dimension"), 1, 3));
             owned.periodic = Boolean(metadata.at("periodic"));
             owned.identity.meshNamespace = metadata.at("namespace").get<std::string>();
             DNDS_check_throw_info(ValidNamespace(owned.identity.meshNamespace), "native archive mesh namespace is invalid");

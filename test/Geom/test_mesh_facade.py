@@ -232,9 +232,10 @@ def test_entity_distribution_queries_and_stale_descriptor(facade_mesh):
     current = mesh.entities(Geom.EntityKind.Cell)
     assert current.same_domain(cells)
     assert current.same_order(mesh.entities(Geom.EntityKind.Cell))
-    with pytest.raises(RuntimeError):
-        mesh.transform_coordinates(lambda point: point)
-    assert current.valid
+    before_identity = mesh.snapshot()
+    mesh.transform_coordinates(lambda point: point)
+    assert mesh.has_native_state and not before_identity.source_current
+    assert current.valid  # Geometry publication preserves entity order.
     mesh.use_legacy_workspace()
     assert not current.valid  # Explicit authority selection changes all stamps.
     mesh.transform_coordinates(lambda point: point)

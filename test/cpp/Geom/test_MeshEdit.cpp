@@ -42,13 +42,19 @@ TEST_CASE("Staged current-authority geometry edits publish owned and ghost coord
     CHECK(route.Valid());
     CHECK(order.SameOrder(mesh->Entities(G::EntityKind::Node)));
     auto committed = mesh->versions.Stamp();
-    CHECK_THROWS(mesh->TransformCoords([](const G::tPoint &p)
-                                       { return p; }));
-    CHECK_THROWS(mesh->ApplyGeometryTransform(Eigen::Matrix3d::Identity(), 2));
-    CHECK_THROWS(mesh->RectifyBoundaryCoordinates([](G::t_index)
-                                                  { return 1; }));
-    CHECK_THROWS(mesh->BuildNodeWallDist([](G::t_index)
-                                         { return true; }, {}));
+    {
+        // These native operations are supported, but publication must remain
+        // blocked while a managed reader holds the current query authority.
+        auto held = mesh->AcquireRead();
+        CHECK_THROWS(mesh->TransformCoords([](const G::tPoint &p)
+                                           { return p; }));
+        CHECK_THROWS(mesh->ApplyGeometryTransform(Eigen::Matrix3d::Identity(), 2));
+        CHECK_THROWS(mesh->RectifyBoundaryCoordinates([](G::t_index)
+                                                      { return 1; }));
+        CHECK_THROWS(mesh->BuildNodeWallDist([](G::t_index)
+                                             { return true; }, {}));
+        CHECK(held.HostView().Coord(0).isApprox(before[0] + G::tPoint{0.25, 0.5, 0}));
+    }
     CHECK_THROWS(mesh->BuildGhostPrimary(1));
     G::UnstructuredMesh legacyPeer(mpi, 2);
     auto peerStamp = legacyPeer.versions.Stamp();

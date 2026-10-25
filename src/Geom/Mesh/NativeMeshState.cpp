@@ -391,6 +391,92 @@ namespace DNDS::Geom
         return result;
     }
 
+    std::shared_ptr<const NativeMeshState> NativeMeshState::WithLocalCellSetup(
+        std::vector<index> partStarts, tLocalMatStruct neighbors) const
+    {
+        Validate();
+        std::vector<index> current;
+        for (int part = 0; part < NLocalParts(); ++part)
+            current.push_back(LocalPartStart(part));
+        current.push_back(NumOwned(EntityKind::Cell));
+        DNDS_check_throw_info(partStarts == current && neighbors.size() == size_t(NumOwned(EntityKind::Cell)),
+                              "native local setup changes current cell partition or row count");
+        for (size_t row = 0; row < neighbors.size(); ++row)
+            for (auto other : neighbors[row])
+                DNDS_check_throw_info(other >= 0 && other < NumOwned(EntityKind::Cell) && other != index(row),
+                                      "native local graph contains an unavailable, ghost or diagonal cell");
+        auto result = std::shared_ptr<NativeMeshState>(new NativeMeshState(*this));
+        result->_localPartStarts = std::move(partStarts);
+        result->_localCellNeighbors = std::move(neighbors);
+        return result;
+    }
+
+    std::shared_ptr<const NativeMeshState> NativeMeshState::WithWallDistance(Runtime::ArrayPair<real> walls) const
+    {
+        Validate();
+        const auto &old = Snapshot(Runtime::Device::Host()).Live();
+        return WithGeometry(*old.coords, std::move(walls), old.semantics.periodicInfo);
+    }
+
+    std::shared_ptr<const NativeMeshState> NativeMeshState::WithGeometry(
+        Runtime::ArrayPair<real> coordinates, std::optional<Runtime::ArrayPair<real>> wallVectors,
+        const Periodicity &periodicInfo) const
+    {
+        Validate();
+        const auto &old = Snapshot(Runtime::Device::Host()).Live();
+        auto check = [&](const Runtime::ArrayPair<real> &pair)
+        {
+            DNDS_check_throw_info(pair.owned.Rows() == size_t(NumOwned(EntityKind::Node)) &&
+                                      pair.ghost.Rows() == size_t(NumGhost(EntityKind::Node)),
+                                  "native geometry replacement changes node extent");
+            for (const auto *array : {&pair.owned, &pair.ghost})
+            {
+                DNDS_check_throw_info(array->GetDevice() == Runtime::Device::Host(), "native geometry requires host buffers");
+                auto read = array->Read();
+                for (size_t row = 0; row < array->Rows(); ++row)
+                {
+                    DNDS_check_throw_info(read.View().RowSize(row) == 3, "native geometry row requires three components");
+                    for (size_t component = 0; component < 3; ++component)
+                        DNDS_check_throw_info(std::isfinite(read.View()(row, component)), "native geometry value is not finite");
+                }
+            }
+        };
+        check(coordinates);
+        if (wallVectors)
+            check(*wallVectors);
+        for (size_t frame = 0; frame < periodicInfo.rotation.size(); ++frame)
+            DNDS_check_throw_info(periodicInfo.rotation[frame].map().allFinite() &&
+                                      periodicInfo.translation[frame].map().allFinite() && periodicInfo.rotationCenter[frame].map().allFinite(),
+                                  "native periodic geometry is not finite");
+        NativeMeshData data;
+        data.dimension = old.semantics.dim;
+        data.periodic = old.semantics.isPeriodic;
+        data.periodicInfo = periodicInfo;
+        data.relations = old.relations;
+        data.coords = std::move(coordinates);
+        data.nodeWallDist = std::move(wallVectors);
+        data.cellInfo = old.cellInfo;
+        data.bndInfo = old.bndInfo;
+        data.faceInfo = old.faceInfo;
+        data.edgeInfo = old.edgeInfo;
+        data.cellNodesPbi = old.cellNodesPbi;
+        data.bndNodesPbi = old.bndNodesPbi;
+        data.cellFacesPbi = old.cellFacesPbi;
+        data.faceNodesPbi = old.faceNodesPbi;
+        data.cellEdgesPbi = old.cellEdgesPbi;
+        data.edgeNodesPbi = old.edgeNodesPbi;
+        auto result = std::shared_ptr<NativeMeshState>(new NativeMeshState(*this));
+        result->_requirements.wallDistance = bool(data.nodeWallDist);
+        result->_placements.clear();
+        result->_placements.emplace(-1, NativeMeshSnapshot::FromNative(std::move(data), result->_requirements));
+        result->_hostRead = std::make_shared<MeshReadAccess>(result->_placements.at(-1).AcquireRead());
+        result->_hostView = result->_hostRead->HostView();
+        // A detached replacement has independent validity until the facade
+        // publishes it. Rebinding handles never mutates retained source maps.
+        result->BindPreparedEpoch(Runtime::VersionTracker{});
+        return result;
+    }
+
     RelationReadAccess NativeMeshState::Relation(const AdjKind &key) const
     {
         Validate();

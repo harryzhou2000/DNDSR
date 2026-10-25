@@ -395,6 +395,45 @@ mesh, reader, name2ID = create_mesh_from_CGNS(
 )
 ```
 
+The existing helpers keep their legacy defaults. Native construction is an
+explicit route, with no legacy serial reader or mutable setup workspace:
+
+```python
+from DNDSR.Geom.utils import read_mesh, prepare_native_mesh, build_bnd_mesh, serialize_mesh
+
+result = read_mesh("data/mesh/UniformSquare_10.cgns", mpi, 2, native=True,
+                   cell_layers=1, complete_node_star=True)
+assert result.reader is None
+name_to_id = result.name_to_id  # exact CGNS boundary dictionary on every rank
+mesh = prepare_native_mesh(result.mesh, wall_dist_predicate=lambda zone: zone == 24,
+                           wall_dist_options={"method": 1, "subdivide_quad": 4})
+boundary = build_bnd_mesh(mesh)  # reader_bnd is None; compact native extraction
+serialize_mesh(mesh, "native-square", mpi)  # full native archive: native-square.dnds.h5
+restored = read_mesh("native-square.dnds.h5", mpi, 2, native=True)
+```
+
+These helpers are collective; every rank supplies the same options and logical
+file path. `prepare_native_mesh` returns a new facade; always retain its return value. It
+preserves source storage and entity numbering, completes missing face topology
+(and optional 3D edges), then applies requested geometry transforms and wall
+search. It does not reorder ownership or build legacy serial/VTK caches. Exact
+wall search retains the historical methods 0/20/1 and execution modes; its global
+surface scratch scales with the selected wall patches on every rank. Wall node
+selection and final vectors use sparse owner/ghost routes.
+
+Native CGNS input uses even contiguous ownership and rejects Metis partition
+options and periodic identification/geometry options. The lower-level
+`Geom.read_native_cgns_with_names(...)` returns `(mesh, name_to_id)`;
+`Geom.read_native_cgns(...)` keeps its original mesh-only return. Native archive
+reading preserves its saved publication requirements, IDs, namespace, companions
+and ancestry. Archive boundary **zone IDs** survive, but the separate CGNS name
+dictionary is not saved and `name_to_id` is `None` after restart. Native and
+legacy H5 formats are distinct; choose `native=True` explicitly. `build_bnd_mesh`
+selects the appropriate path automatically; an explicit `build_serial_out=True`
+rejects native input rather than staging a legacy copy. `prepare_mesh` remains
+the legacy mutating helper and rejects native input with guidance to the returned
+facade API.
+
 **`read_mesh` parameter list:**
 
 | Parameter | Type | Default | Description |
