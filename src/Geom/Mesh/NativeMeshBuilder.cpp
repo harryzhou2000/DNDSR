@@ -396,6 +396,7 @@ namespace DNDS::Geom
                                {
             NativeMeshData result;
             result.identity = std::move(input.identity);
+            result.provenance = std::move(input.provenance);
             result.dimension = input.dimension;
             auto relation = [&](MeshRelation slot, const AdjKind &kind, bool cone, bool completeOwned)
             {

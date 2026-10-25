@@ -501,10 +501,16 @@ namespace DNDS::Geom
             EntitySpace::CheckCommunicator(mesh.mpi.comm, _mpi.comm);
             read = std::make_shared<MeshReadAccess>(mesh.AcquireRead(requirements));
             DNDS_check_throw_info(_relations.empty(), "register the current mesh into an empty setup registry"); });
-        auto view = read->HostView();
-        for (auto binding : MeshRelations())
-            if (view.HasRelation(binding.second))
-                Register(RelationReadAccess(binding.first, read, mesh.Entities(binding.first.from), mesh.Entities(binding.first.to)));
+        ValidateCollectively([&]
+                             {
+            auto view = read->HostView();
+            for (auto binding : MeshRelations())
+                if (view.HasRelation(binding.second))
+                    Register(RelationReadAccess(binding.first, read, mesh.Entities(binding.first.from), mesh.Entities(binding.first.to)));
+            if (mesh.HasNativeState())
+                for (const auto &key : mesh.NativeRelationKeys())
+                    if (!_relations.count(key))
+                        Register(mesh.ReadNativeRelation(key)); });
     }
     RelationPeriodicBits::RelationPeriodicBits(const RelationReadAccess &relation)
         : _source(relation.Source()), _target(relation.Target()), _kind(relation.Kind())

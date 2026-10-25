@@ -136,6 +136,8 @@ namespace DNDS::Geom
                                    RelationSelection selection = RelationSelection::Any, bool removeSelf = false,
                                    std::string name = {}, uint32_t version = 0,
                                    RelationPeriodicPolicy periodic = RelationPeriodicPolicy::EntityIdentity);
+        /// Native mathematical inverse with sorted unique output and complete
+        /// input provenance; legacy physical-slot adapters remain explicit.
         [[nodiscard]] AdjKind Inverted() const;
         bool operator==(const AdjKind &other) const { return Signature() == other.Signature(); }
         bool operator!=(const AdjKind &other) const { return !(*this == other); }

@@ -11,6 +11,7 @@ namespace DNDS::Geom
     class MeshEdit
     {
         std::shared_ptr<UnstructuredMesh> _source, _candidate;
+        std::optional<NativeMeshData> _nativeCandidate;
         std::unique_ptr<MeshReadAccess> _sourceRead;
         Runtime::VersionStamp _stamp;
         MeshReadRequirements _requirements;

@@ -502,13 +502,15 @@ TEST_CASE("Native entity spaces support remote node-star discovery without a leg
     NativeConnectivity connectivity(mpi);
     connectivity.Register(c2n.Read());
     connectivity.Register(n2c.Read());
-    GhostSpec spec{{{EntityKind::Node, {Adj::Node2Cell}, EntityKind::Cell},
-                    {EntityKind::Node, {Adj::Node2Cell, Adj::Cell2Node}, EntityKind::Node}}};
+    const auto support = n2c.Read().Kind();
+    CHECK(support != Adj::Node2Cell);
+    GhostSpec spec{{{EntityKind::Node, {support}, EntityKind::Cell},
+                    {EntityKind::Node, {support, Adj::Cell2Node}, EntityKind::Node}}};
     auto discovery = connectivity.Evaluate(CompiledGhostTree::compile(spec));
     auto ghosted = connectivity.BuildGhosted(discovery);
     const auto &newCells = ghosted.spaces.at(EntityKind::Cell);
     CHECK(newCells.NumGhost() == (mpi.size > 1 ? 1 : 0));
-    CHECK(ghosted.relations.at(Adj::Node2Cell).Read().GlobalRow(0) == n2c.Read().GlobalRow(0));
+    CHECK(ghosted.relations.at(support).Read().GlobalRow(0) == n2c.Read().GlobalRow(0));
     CHECK(nodes.SameOrder(ghosted.spaces.at(EntityKind::Node)) == false);
     CHECK(nodes.Valid());
     const auto sourceCell = newCells.GlobalToLocal((mpi.rank + mpi.size - 1) % mpi.size);

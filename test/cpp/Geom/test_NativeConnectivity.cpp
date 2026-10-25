@@ -623,7 +623,8 @@ TEST_CASE("Named native relations distinguish incidence any all exact and face v
     // traversal: each owned n0/n1 sees the previous rank's face.
     auto n2f = G::MeshConnectivity::Inverse(f2n, mpi);
     registry.Register(n2f.Read());
-    G::GhostSpec nodeSpec{{{G::EntityKind::Node, {G::Adj::Node2Face}, G::EntityKind::Face}}};
+    CHECK(n2f.Read().Kind() != G::Adj::Node2Face);
+    G::GhostSpec nodeSpec{{{G::EntityKind::Node, {n2f.Read().Kind()}, G::EntityKind::Face}}};
     auto nodeDiscovery = registry.Evaluate(G::CompiledGhostTree::compile(nodeSpec));
     if (mpi.size > 1)
         CHECK(nodeDiscovery.ghostIndices.at(G::EntityKind::Face) == std::vector<I>{previous * 2});

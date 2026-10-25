@@ -98,15 +98,9 @@ namespace DNDS::Geom
     AdjKind AdjKind::Inverted() const
     {
         Validate();
-        // Inverting a legacy ordered cone produces its historical support
-        // slot. Inverting a support produces sorted rows, so it must not claim
-        // the element-topological ordering promised by the reverse cone slot.
-        const bool legacyCone = IsLegacy() && !isIntraLevel() &&
-                                ((from == EntityKind::Cell && (to == EntityKind::Face || to == EntityKind::Edge || to == EntityKind::Node)) ||
-                                 (from == EntityKind::Face && (to == EntityKind::Edge || to == EntityKind::Node)) ||
-                                 ((from == EntityKind::Edge || from == EntityKind::Bnd) && to == EntityKind::Node));
-        if (legacyCone)
-            return {to, from};
+        // Mathematical inversion produces sorted set-valued rows. It never
+        // claims an ordered legacy physical slot, even for direct cones.
+        // The complete input definition remains explicit construction provenance.
         AdjKind result = *this;
         result.from = to;
         result.to = from;
@@ -116,7 +110,7 @@ namespace DNDS::Geom
         {
             result.selection = isIntraLevel() ? RelationSelection::Any : RelationSelection::Incidence;
             result.periodic = RelationPeriodicPolicy::EntityIdentity;
-            result.semanticName = "geom.inverse.legacy";
+            result.semanticName = "geom.inverse";
             result.semanticVersion = 1;
         }
         result.order = RelationOrder::SortedUnique;

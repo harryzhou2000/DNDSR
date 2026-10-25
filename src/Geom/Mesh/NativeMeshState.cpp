@@ -152,6 +152,21 @@ namespace DNDS::Geom
             validate(EntityKind::Edge, data.edgeInfo);
         DNDS_check_throw_info(result->_spaces.size() == spaces.size() && ids.size() == spaces.size(),
                               "native publication contains an unbound entity family");
+        if (data.provenance)
+        {
+            (void)data.provenance->Signature();
+            for (const auto &[kind, values] : data.provenance->sourceIds)
+            {
+                DNDS_check_throw_info(spaces.count(kind) && values.GetDevice() == Runtime::Device::Host() &&
+                                          values.Rows() == size_t(spaces.at(kind).NumOwned()), "provenance rows differ from owned destination family");
+                auto read = std::make_shared<Runtime::Array<index>::ReadLease>(values.Read());
+                for (size_t row = 0; row < values.Rows(); ++row)
+                    for (auto value : read->View()[row])
+                        DNDS_check_throw_info(value >= 0 && value != UnInitIndex, "invalid source persistent ID in provenance");
+                result->_provenanceReads.push_back(std::move(read));
+            }
+            result->_provenance = std::move(data.provenance);
+        }
         for (auto &[key, relation] : data.namedRelations)
         {
             key.Validate();
@@ -209,6 +224,7 @@ namespace DNDS::Geom
         std::string schedule;
         PublicationStage(mpi, [&]
                          {
+            schedule += result->_provenance ? "p" + result->_provenance->Signature() + ";" : "p;";
             for (const auto &[key, relation] : result->_namedRelations)
             {
                 const auto signature = key.Signature();

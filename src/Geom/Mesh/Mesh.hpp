@@ -118,11 +118,39 @@ namespace DNDS::Geom
 
     public:
         bool HasNativeState() const { return bool(_nativeState); }
+        /// Setup authority for native transformations. The retained immutable
+        /// publication carries its buffers and entity orders independently.
+        std::shared_ptr<const NativeMeshState> CurrentNativeState() const
+        {
+            DNDS_check_throw_info(_nativeState, "native mesh state is not published");
+            _nativeState->Validate();
+            return _nativeState;
+        }
+        /// Setup-only named definitions. Returned readers retain immutable
+        /// buffers and the current entity order independently of this facade.
+        std::vector<AdjKind> NativeRelationKeys() const
+        {
+            DNDS_check_throw_info(_nativeState, "native mesh state is not published");
+            return _nativeState->RelationKeys();
+        }
+        RelationReadAccess ReadNativeRelation(const AdjKind &key) const
+        {
+            DNDS_check_throw_info(_nativeState, "native mesh state is not published");
+            return _nativeState->Relation(key);
+        }
         void RequireLegacyWorkspace(const std::string &operation) const
         {
             DNDS_check_throw_info(!_nativeState, operation + " requires explicit UseLegacyWorkspace");
         }
         void PublishNative(MeshReadRequirements requirements = MeshReadRequirements::Primary());
+        /// Collective full native checkpoint. Retains the current publication;
+        /// no legacy mesh conversion and no external solver fields are saved.
+        void WriteNativeArchive(Serializer::SerializerBaseSSP serializer, const std::string &name) const;
+        /// Matching saved partition or contiguous even partition; returns a
+        /// new native facade with rebuilt ghost closure and preserved IDs.
+        static std::shared_ptr<UnstructuredMesh> ReadNativeArchive(
+            const MPIInfo &mpi, Serializer::SerializerBaseSSP serializer, const std::string &name,
+            Serializer::ArrayGlobalOffset partition = Serializer::ArrayGlobalOffset_Unknown, int ghostLayers = 1);
         /// Construct the public facade from independently built native state.
         /// Legacy array members remain empty; readers use the native authority.
         static std::shared_ptr<UnstructuredMesh> FromNative(const MPIInfo &mpi,

@@ -1,6 +1,6 @@
 # Native Geom migration ledger
 
-Date: 2026-10-25. Status: **native construction/transition checkpoint; migration not complete**.
+Date: 2026-10-25. Status: **native import/topology/refinement/archive checkpoint; migration not complete**.
 
 This ledger supports [the native Geom construction work order](/home/harry/projects/DNDSR/workspace/dndsr-next-plan/docs/19-native-geom-construction.md).
 It records old Geom behavior that must survive migration to Runtime Arrays and
@@ -29,11 +29,35 @@ Implemented directly over Runtime arrays:
 - Thin Runtime row access usable from CUDA, an explicit legacy setup adapter,
   and native-only header boundaries. Legacy DNDS Array remains supported.
 
-The primary builder currently rejects periodic input and does not construct
-faces/edges. Preserving existing native face/edge topology in a transition is a
-different acceptance case from constructing that topology independently. Native
-restart, legacy reader/refinement/output migration, and final consumer removal of
-legacy mesh authority are still required. No GN7 completion is claimed.
+The next implementation checkpoint adds:
+
+- An owned-global assembly contract shared by native transitions and archives.
+  JSON matching-partition and H5 matching/even direct reads preserve all fixed
+  and named relations, entity families/IDs, ordered periodic companions,
+  coordinates and metadata. Archive tests include different reader rank counts,
+  independent family ownership, empty ranks, malformed metadata and exact IDs.
+- Native face/edge completion with sparse closure derived from owned cell cones.
+  Physical oriented FaceCells and mathematical inverse sets remain distinct.
+  Shared high-order faces with inconsistent midside IDs are rejected. Exact
+  boundary matching and nonmanifold rejection remain explicit contracts.
+- A single CGNS parser backed by Runtime build arrays, with direct native
+  distribution and a compatibility copy for the existing local serial API.
+  Multi-zone, mixed elements, PointList and reader-rank failure checks remain.
+- Native O1 elevation and O2 bisection using existing element mathematics. New
+  meshes have new namespaces/IDs and durable owned ancestry. Exact shared span
+  nodes, signed quad/tet measures, boundary metadata, sparse original IDs, source
+  destruction, redistribution and archive round trips are checked. CSR ancestry
+  permits empty/multiple/repeated sources and different storage layouts by rank.
+- Native staged MeshEdit for coordinates, cell metadata and neighbor ordering,
+  sharing unchanged buffers, retaining old readers and invalidating wall vectors
+  after coordinate changes. Order detection now reads native metadata rather than
+  silently succeeding on empty legacy storage.
+
+The primary/topology/refinement builders still reject periodic input. Existing
+periodic state can be preserved by transition/archive; that is not evidence for
+independent periodic construction. Boundary extraction, remaining geometry/wall
+and output workflows, production reader orchestration and final removal of legacy
+mesh authority remain required. No GN7 completion is claimed.
 
 Focused validation and exact artifact provenance are retained under
 `geom_validation_2026-10-25/`. The original tests below remain a purpose ledger,
@@ -41,6 +65,16 @@ not a declaration that every fixture has migrated. New constructor, relation,
 transition, Python and CUDA tests supplement it; transition checks that inspect
 published native destinations now use scoped views while retaining their exact
 ID, slot, periodic-bit and field-value oracles.
+
+The second checkpoint's evidence is under `geom_validation_2026-10-25/checkpoint2/`.
+Its latest focused static run passes 32 CTests (construction, native connectivity,
+registry, transition, topology, refinement, archive and MeshEdit at MPI 1/2/4/8).
+The CGNS and existing pipeline/multi-zone regressions are separately recorded.
+The full CUDA facade suite passes on GPU 1. A two-device attempt is retained as
+incomplete: another process increased GPU 0 usage to about 80 GB during the run,
+the probe reported CUDA allocation failure, and the waiting test processes were
+terminated without touching that other process. This does not close two-GPU
+acceptance. The validation README records final Python artifacts independently.
 
 ## Inventory snapshot
 
