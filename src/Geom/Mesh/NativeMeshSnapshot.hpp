@@ -48,6 +48,7 @@ namespace DNDS::Geom
         friend class MeshReadAccess;
         friend class NativeMeshTransition;
         friend class NativeMeshAssembler;
+        friend class NativeMeshState;
         friend class MeshEdit;
         template <class T>
         using Pair = Runtime::ArrayPair<T>;

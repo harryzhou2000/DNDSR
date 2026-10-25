@@ -1,6 +1,6 @@
 # Native Geom migration ledger
 
-Date: 2026-10-25. Status: **native import/topology/refinement/archive checkpoint; migration not complete**.
+Updated: 2026-10-26. Status: **native geometry/periodic/output checkpoint; migration not complete**.
 
 This ledger supports [the native Geom construction work order](/home/harry/projects/DNDSR/workspace/dndsr-next-plan/docs/19-native-geom-construction.md).
 It records old Geom behavior that must survive migration to Runtime Arrays and
@@ -53,11 +53,25 @@ The next implementation checkpoint adds:
   after coordinate changes. Order detection now reads native metadata rather than
   silently succeeding on empty legacy storage.
 
-The primary/topology/refinement builders still reject periodic input. Existing
-periodic state can be preserved by transition/archive; that is not evidence for
-independent periodic construction. Boundary extraction, remaining geometry/wall
-and output workflows, production reader orchestration and final removal of legacy
-mesh authority remain required. No GN7 completion is claimed.
+The C++ primary/topology builders now accept already canonical periodic input
+with exact ordered node-image bits and rank-agreed rigid frames. Independent
+Runtime-array tests cover self faces, doubly periodic repeated canonical IDs,
+distributed two-cell support, quadratic spans, rotation and transition/archive
+preservation. Periodic pairing/deduplication at the import frontend, Python
+periodic builder arguments and periodic refinement/extraction remain unsupported.
+Native boundary extraction and its facade entry, geometry edits, wall vectors,
+local direct-factor graph caches, coordinate hashing, direct VTKHDF output and
+shared facade CGNS output are implemented. Native-only CPU/worker and two-GPU
+direct-MPI stencil fixtures execute through redistribution and restart. Explicit
+Python native workflow helpers are included. Evidence and retained initial
+failures are in `geom_validation_2026-10-26/checkpoint3/`.
+
+Production reader orchestration, native local permutation, periodic frontend
+identification/refinement, remaining compatibility outputs and final removal of
+legacy mesh authority remain required. No GN7 completion is claimed. The
+[consumer inventory](geom_native_consumer_remaining_2026-10-26.md) and
+[periodic memory audit](geom_native_periodic_memory_audit_2026-10-26.md) record
+the concrete remaining work and scaling limits.
 
 Focused validation and exact artifact provenance are retained under
 `geom_validation_2026-10-25/`. The original tests below remain a purpose ledger,

@@ -1,6 +1,7 @@
 #include "Geom/Quadrature.hpp"
 #include "Mesh.hpp"
 #include "MeshTransition.hpp"
+#include "NativeMeshOutput.hpp"
 #include "FieldTransfer.hpp"
 #include "Geom/CGNS.hpp"
 #include "DNDS/OutputDir.hpp"
@@ -21,19 +22,23 @@ namespace DNDS::Geom
 {
     namespace
     {
-        void CurrentOutputFieldCounts(UnstructuredMesh &source, int cells, int cellVectors, int points, int pointVectors)
+        void CurrentOutputFieldCounts(UnstructuredMesh &source, int cells, int cellVectors, int points, int pointVectors,
+                                      MPI_Comm outputComm = MPI_COMM_NULL)
         {
             int counts[]{cells, cellVectors, points, pointVectors, -cells, -cellVectors, -points, -pointVectors};
-            MPI_Allreduce(MPI_IN_PLACE, counts, 8, MPI_INT, MPI_MIN, source.mpi.comm);
+            MPI_Allreduce(MPI_IN_PLACE, counts, 8, MPI_INT, MPI_MIN, outputComm == MPI_COMM_NULL ? source.mpi.comm : outputComm);
             for (int i = 0; i < 4; ++i)
                 DNDS_check_throw_info(counts[i] >= 0 && counts[i] == -counts[i + 4],
                                       "current mesh output field counts differ between ranks");
         }
 
-        std::unique_ptr<MeshReadAccess> CurrentOutputRead(UnstructuredMesh &source)
+        std::unique_ptr<MeshReadAccess> CurrentOutputRead(UnstructuredMesh &source, MPI_Comm outputComm = MPI_COMM_NULL)
         {
             std::unique_ptr<MeshReadAccess> result;
-            FieldTransferDetail::LocalStage(source.mpi, [&]
+            auto mpi = source.mpi;
+            if (outputComm != MPI_COMM_NULL)
+                mpi.comm = outputComm;
+            FieldTransferDetail::LocalStage(mpi, [&]
                                             { result = std::make_unique<MeshReadAccess>(source.AcquireRead()); });
             return result;
         }
@@ -1381,7 +1386,7 @@ namespace DNDS::Geom
     }
 
     static void H5_WriteDataset(hid_t loc, const char *name, index nGlobal, index nOffset, index nLocal,
-                                hid_t file_dataType, hid_t mem_dataType, hid_t plist_id, hid_t dcpl_id, void *buf, int dim2 = -1)
+                                hid_t file_dataType, hid_t mem_dataType, hid_t plist_id, hid_t dcpl_id, const void *buf, int dim2 = -1)
     {
         int herr{0};
         DNDS_assert_info(nGlobal >= 0 && nLocal >= 0 && nOffset >= 0,
@@ -1425,22 +1430,22 @@ namespace DNDS::Geom
         int currentExport = int(HasNativeState());
         // The prepared legacy writer may run on a worker while the solver uses
         // mpi.comm. Its preflight belongs to the same isolated communicator as
-        // HDF5 below. Native export still requires synchronous source setup.
+        // HDF5 below. Native output setup uses that same isolated context.
         MPI_Allreduce(MPI_IN_PLACE, &currentExport, 1, MPI_INT, MPI_MAX, commDup);
+        std::optional<NativeMeshOutput> nativeOutput;
+        std::unique_ptr<MeshReadAccess> retained;
+        std::optional<Runtime::Array<real>::ReadLease> nativeCoordinates;
         if (currentExport)
         {
-            CurrentOutputFieldCounts(*this, arraySiz, vecArraySiz, arraySizPoint, vecArraySizPoint);
-            auto retained = CurrentOutputRead(*this);
-            auto workspace = CloneCurrentMeshForSetup(*this, 1, TransitionCachePolicy::RebuildOutput, BoundaryCachePolicy::DropBoundaryCache);
-            auto pointRows = (arraySizPoint || vecArraySizPoint) ? CurrentOutputNodeMap(*this, *workspace) : std::vector<index>{};
-            tFGetData mappedPoint = [&](int field, index row)
-            { return dataPoint(field, pointRows.at(size_t(row))); };
-            tFGetVecData mappedVectorPoint = [&](int field, index row, rowsize component)
-            { return vectorDataPoint(field, pointRows.at(size_t(row)), component); };
-            workspace->PrintParallelVTKHDFDataArray(std::move(fname), std::move(seriesName), arraySiz, vecArraySiz,
-                                                    arraySizPoint, vecArraySizPoint, names, data, vectorNames, vectorData,
-                                                    namesPoint, mappedPoint, vectorNamesPoint, mappedVectorPoint, t, commDup);
-            return;
+            EntitySpace::CheckCommunicator(mpi.comm, commDup);
+            auto outputMPI = mpi;
+            outputMPI.comm = commDup;
+            FieldTransferDetail::LocalStage(outputMPI, [&]
+                                            { DNDS_check_throw_info(HasNativeState(), "native output authority differs across ranks"); });
+            CurrentOutputFieldCounts(*this, arraySiz, vecArraySiz, arraySizPoint, vecArraySizPoint, commDup);
+            retained = CurrentOutputRead(*this, commDup);
+            nativeOutput.emplace(NativeMeshOutput::Build(*CurrentNativeState(), outputMPI));
+            nativeCoordinates.emplace(nativeOutput->coordinates.Read());
         }
         fname += ".vtkhdf";
         std::filesystem::path outFile{fname};
@@ -1449,29 +1454,41 @@ namespace DNDS::Geom
             if (!seriesName.empty())
                 updateVTKSeries(seriesName + ".vtkhdf.series", getStringForcePath(outFile.filename()), t);
 
-        if (isPeriodic)
-            DNDS_assert(coordsPeriodicRecreated.father);
-        else
-            DNDS_assert(coords.father);
-        tCoord coordOut = isPeriodic ? coordsPeriodicRecreated.father : coords.father;
+        tCoord coordOut;
+        if (!nativeOutput)
+        {
+            coordOut = isPeriodic ? coordsPeriodicRecreated.father : coords.father;
+            DNDS_assert(coordOut && cell2node.father);
+        }
+        const index outputNodeCount = nativeOutput ? index(nativeOutput->coordinates.Rows()) : coordOut->Size();
+        const index outputCellCount = nativeOutput ? index(nativeOutput->types.size()) : cell2node.father->Size();
+        const real *outputCoordinates = nativeOutput ? nativeCoordinates->View().data : coordOut->data();
+        const auto &vtkCell2nodeOffsets = nativeOutput ? nativeOutput->offsets : this->vtkCell2nodeOffsets;
+        const auto &vtkCellType = nativeOutput ? nativeOutput->types : this->vtkCellType;
+        const auto &vtkCell2node = nativeOutput ? nativeOutput->connectivity : this->vtkCell2node;
+        const index vtkNodeOffset = nativeOutput ? nativeOutput->nodeOffset : this->vtkNodeOffset;
+        const index vtkCellOffset = nativeOutput ? nativeOutput->cellOffset : this->vtkCellOffset;
+        const index vtkNNodeGlobal = nativeOutput ? nativeOutput->globalNodes : this->vtkNNodeGlobal;
+        const index vtkNCellGlobal = nativeOutput ? nativeOutput->globalCells : this->vtkNCellGlobal;
+        const index vtkCell2NodeGlobalSiz = nativeOutput ? nativeOutput->globalConnectivity : this->vtkCell2NodeGlobalSiz;
+        auto sourcePointRow = [&](index row)
+        { return nativeOutput ? nativeOutput->pointSourceRows.at(size_t(row)) : (isPeriodic ? nodeRecreated2nodeLocal.at(size_t(row)) : row); };
 
         // MPI::AllreduceOneIndex(nNodesLocal, MPI_SUM, mpi);
         // long long numberOfNodes = coordOut->globalSize();
         long long numberOfNodes = vtkNNodeGlobal;
-        DNDS_assert(cell2node.father);
 
         // long long numberOfCells = cell2node.father->globalSize();
         long long numberOfCells = vtkNCellGlobal;
         long long numberOfConnectivity = vtkCell2NodeGlobalSiz;
 
         index gSize = 0;
-        index cSize = coordOut->Size();
+        index cSize = outputNodeCount;
         MPI::Allreduce(&cSize, &gSize, 1, DNDS_MPI_INDEX, MPI_SUM, commDup);
         long long numberOfNodes1 = gSize;
 
-        DNDS_assert(cell2node.father);
         gSize = 0;
-        cSize = cell2node.father->Size();
+        cSize = outputCellCount;
         MPI::Allreduce(&cSize, &gSize, 1, DNDS_MPI_INDEX, MPI_SUM, commDup);
         long long numberOfCells1 = gSize;
 
@@ -1559,15 +1576,15 @@ namespace DNDS::Geom
                         &numberOfConnectivity);
 
         /************************************************************/
-        // log() << fmt::format("coordsSize {} cellSize {} ", coordOut->Size(), cell2node.father->Size());
+        // log() << fmt::format("coordsSize {} cellSize {} ", outputNodeCount, outputCellCount);
         // log() << fmt::format("numberOfNodes {}, numberOfCells {} numberOfCon {}", numberOfNodes, numberOfCells, numberOfConnectivity) << std::endl;
-        H5_WriteDataset(VTKHDF_group_id, "Points", numberOfNodes, vtkNodeOffset, coordOut->Size(),
-                        H5T_NATIVE_DOUBLE, H5T_NATIVE_DOUBLE, plist_id, dcpl_id_3arr, coordOut->data(), 3);
+        H5_WriteDataset(VTKHDF_group_id, "Points", numberOfNodes, vtkNodeOffset, outputNodeCount,
+                        H5T_NATIVE_DOUBLE, H5T_NATIVE_DOUBLE, plist_id, dcpl_id_3arr, outputCoordinates, 3);
         /************************************************************/
-        DNDS_assert(vtkCell2nodeOffsets.size() == cell2node.father->Size() + 1);
-        H5_WriteDataset(VTKHDF_group_id, "Offsets", numberOfCells + 1, vtkCellOffset, cell2node.father->Size() + (mpi.rank == mpi.size - 1 ? 1 : 0),
+        DNDS_assert(vtkCell2nodeOffsets.size() == outputCellCount + 1);
+        H5_WriteDataset(VTKHDF_group_id, "Offsets", numberOfCells + 1, vtkCellOffset, outputCellCount + (mpi.rank == mpi.size - 1 ? 1 : 0),
                         H5T_NATIVE_LLONG, H5T_NATIVE_LLONG, plist_id, dcpl_id, vtkCell2nodeOffsets.data(), -1);
-        H5_WriteDataset(VTKHDF_group_id, "Types", numberOfCells, vtkCellOffset, cell2node.father->Size(),
+        H5_WriteDataset(VTKHDF_group_id, "Types", numberOfCells, vtkCellOffset, outputCellCount,
                         H5T_NATIVE_UINT8, H5T_NATIVE_UINT8, plist_id, dcpl_id, vtkCellType.data(), -1);
         H5_WriteDataset(VTKHDF_group_id, "Connectivity", vtkCell2NodeGlobalSiz, vtkCell2nodeOffsets.front(), vtkCell2node.size(),
                         H5T_NATIVE_LLONG, H5T_NATIVE_LLONG, plist_id, dcpl_id, vtkCell2node.data(), -1);
@@ -1575,39 +1592,39 @@ namespace DNDS::Geom
         /************************************************************/
 
         {
-            std::vector<double> cellDataBuf(cell2node.father->Size() * 3);
+            std::vector<double> cellDataBuf(outputCellCount * 3);
             hid_t CellData_group_id = H5Gcreate(VTKHDF_group_id, "CellData", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
             DNDS_assert_info(H5I_INVALID_HID != CellData_group_id, "group create failed");
 
             for (int iArr = 0; iArr < arraySiz; iArr++)
             {
-                for (index iC = 0; iC < cell2node.father->Size(); iC++)
+                for (index iC = 0; iC < outputCellCount; iC++)
                     cellDataBuf[iC] = data(iArr, iC);
 
                 auto arrName = names(iArr);
-                H5_WriteDataset(CellData_group_id, arrName.c_str(), numberOfCells, vtkCellOffset, cell2node.father->Size(),
+                H5_WriteDataset(CellData_group_id, arrName.c_str(), numberOfCells, vtkCellOffset, outputCellCount,
                                 H5T_NATIVE_DOUBLE, H5T_NATIVE_DOUBLE, plist_id, dcpl_id, cellDataBuf.data(), -1);
             }
             for (int iArr = 0; iArr < vecArraySiz; iArr++)
             {
-                for (index iC = 0; iC < cell2node.father->Size(); iC++)
+                for (index iC = 0; iC < outputCellCount; iC++)
                     for (int iRow = 0; iRow < 3; iRow++)
                         cellDataBuf[iC * 3 + iRow] = vectorData(iArr, iC, iRow);
 
                 auto arrName = vectorNames(iArr);
-                H5_WriteDataset(CellData_group_id, arrName.c_str(), numberOfCells, vtkCellOffset, cell2node.father->Size(),
+                H5_WriteDataset(CellData_group_id, arrName.c_str(), numberOfCells, vtkCellOffset, outputCellCount,
                                 H5T_NATIVE_DOUBLE, H5T_NATIVE_DOUBLE, plist_id, dcpl_id_3arr, cellDataBuf.data(), 3);
             }
 
             herr = H5Gclose(CellData_group_id), H5S_Close;
         }
-        if (isPeriodic)
+        if (!nativeOutput && isPeriodic)
         {
             DNDS_assert(coordsPeriodicRecreated.father && coordsPeriodicRecreated.father->Size() == nodeRecreated2nodeLocal.size());
         }
 
         {
-            index iNMax = coordOut->Size();
+            index iNMax = outputNodeCount;
             std::vector<double> nodeDataBuf(iNMax * 3);
             hid_t PointData_group_id = H5Gcreate(VTKHDF_group_id, "PointData", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
             DNDS_assert_info(H5I_INVALID_HID != PointData_group_id, "group create failed");
@@ -1615,10 +1632,10 @@ namespace DNDS::Geom
             for (int iArr = 0; iArr < arraySizPoint; iArr++)
             {
                 for (index iN = 0; iN < iNMax; iN++)
-                    nodeDataBuf[iN] = dataPoint(iArr, isPeriodic ? nodeRecreated2nodeLocal.at(iN) : iN);
+                    nodeDataBuf[iN] = dataPoint(iArr, sourcePointRow(iN));
 
                 auto arrName = namesPoint(iArr);
-                H5_WriteDataset(PointData_group_id, arrName.c_str(), numberOfNodes, vtkNodeOffset, coordOut->Size(),
+                H5_WriteDataset(PointData_group_id, arrName.c_str(), numberOfNodes, vtkNodeOffset, outputNodeCount,
                                 H5T_NATIVE_DOUBLE, H5T_NATIVE_DOUBLE, plist_id, dcpl_id, nodeDataBuf.data(), -1);
             }
 
@@ -1626,10 +1643,10 @@ namespace DNDS::Geom
             {
                 for (index iN = 0; iN < iNMax; iN++)
                     for (int iRow = 0; iRow < 3; iRow++)
-                        nodeDataBuf[iN * 3 + iRow] = vectorDataPoint(iArr, isPeriodic ? nodeRecreated2nodeLocal.at(iN) : iN, iRow);
+                        nodeDataBuf[iN * 3 + iRow] = vectorDataPoint(iArr, sourcePointRow(iN), iRow);
 
                 auto arrName = vectorNamesPoint(iArr);
-                H5_WriteDataset(PointData_group_id, arrName.c_str(), numberOfNodes, vtkNodeOffset, coordOut->Size(),
+                H5_WriteDataset(PointData_group_id, arrName.c_str(), numberOfNodes, vtkNodeOffset, outputNodeCount,
                                 H5T_NATIVE_DOUBLE, H5T_NATIVE_DOUBLE, plist_id, dcpl_id_3arr, nodeDataBuf.data(), 3);
             }
 
@@ -1646,22 +1663,31 @@ namespace DNDS::Geom
 
     void UnstructuredMesh::PrintMeshCGNS(std::string fname, const t_FBCID_2_Name &fbcid2name, const std::vector<std::string> &allNames)
     {
-        int currentExport = int(HasNativeState());
-        MPI_Allreduce(MPI_IN_PLACE, &currentExport, 1, MPI_INT, MPI_MAX, mpi.comm);
-        if (currentExport)
-        {
-            auto retained = CurrentOutputRead(*this);
-            auto workspace = CloneCurrentMeshForSetup(*this, 1, TransitionCachePolicy::Invalidate, BoundaryCachePolicy::DropBoundaryCache);
-            workspace->PrintMeshCGNS(std::move(fname), fbcid2name, allNames);
-            return;
-        }
-        DNDS_assert_info(!isPeriodic, "PrintMeshCGNS does not handle periodic mesh!");
-        /*****************************/
-        /*     Data preparation:     */
-        /*****************************/
-        DNDS_assert(this->adjPrimaryState == Adj_PointToLocal);
-        DNDS_assert(cell2node.isLocal() && bnd2node.isLocal() && cell2cell.isLocal() && bnd2cell.isLocal());
-        this->AdjLocal2GlobalPrimary();
+        // Serialize current read views directly. In particular, neither native
+        // export nor the legacy compatibility path changes adjacency numbering.
+        auto retained = CurrentOutputRead(*this);
+        const auto view = retained->HostView();
+        std::optional<EntitySpace> nodes;
+        std::string options;
+        FieldTransferDetail::LocalStage(mpi, [&]
+                                        {
+            DNDS_check_throw_info(!view.IsPeriodic(), "PrintMeshCGNS does not handle periodic mesh");
+            DNDS_check_throw_info(view.Dimension() == 2 || view.Dimension() == 3, "CGNS mesh output requires dimension two or three");
+            nodes.emplace(Entities(EntityKind::Node));
+            options = nlohmann::json{{"file", fname}, {"dimension", view.Dimension()}, {"boundaries", allNames}}.dump();
+            DNDS_check_throw_info(options.size() <= size_t(INT_MAX), "CGNS output options exceed MPI range");
+            std::set<std::string> unique;
+            for (const auto &name : allNames)
+                DNDS_check_throw_info(!name.empty() && name.size() <= 32 && unique.insert(name).second,
+                                      "CGNS boundary names must be distinct, nonempty and at most 32 bytes"); });
+        int length = int(options.size());
+        MPI_Bcast(&length, 1, MPI_INT, 0, mpi.comm);
+        std::string expected;
+        FieldTransferDetail::LocalStage(mpi, [&]
+                                        { expected = mpi.rank == 0 ? options : std::string(size_t(length), '\0'); });
+        MPI_Bcast(expected.data(), length, MPI_CHAR, 0, mpi.comm);
+        FieldTransferDetail::LocalStage(mpi, [&]
+                                        { DNDS_check_throw_info(options == expected, "CGNS output path, dimension or boundary names differ across ranks"); });
 
         const index nBnd = this->NumBnd();
         const index nBndGlobal = this->NumBndGlobal();
@@ -1670,6 +1696,7 @@ namespace DNDS::Geom
         const index nBndCell = nBnd + nCell;
         const index nNode = this->NumNode();
         const index nNodeGlobal = this->NumNodeGlobal();
+        DNDS_check_throw_info(nNodeGlobal > 0 && nCellGlobal > 0, "CGNS output requires nonempty global nodes and cells");
         index nNodeProcOffset{0};
 
         MPI::Scan(&nNode, &nNodeProcOffset, 1, DNDS_MPI_INDEX, MPI_SUM, mpi.comm);
@@ -1680,55 +1707,55 @@ namespace DNDS::Geom
         MPI::Scan(&nBndCell, &nBndCellProcOffset, 1, DNDS_MPI_INDEX, MPI_SUM, mpi.comm);
         nBndCellProcOffset -= nBndCell;
 
-        std::vector<cgsize_t> bndCellOffsets(nBnd + nCell + 1);
-        bndCellOffsets[0] = 0;
-        for (index iBnd = 0; iBnd < nBnd; iBnd++)
-            bndCellOffsets[iBnd + 1] = bndCellOffsets[iBnd] + bnd2node[iBnd].size() + 1;
-        for (index iCell = 0; iCell < nCell; iCell++)
-            bndCellOffsets[iCell + nBnd + 1] = bndCellOffsets[iCell + nBnd] + cell2node[iCell].size() + 1;
-        std::vector<cgsize_t> elementPolyData(bndCellOffsets.back());
-        for (index iBnd = 0; iBnd < nBnd; iBnd++)
-        {
-            elementPolyData.at(bndCellOffsets[iBnd]) = _getCGNSTypeFromElemType(this->bndElemInfo(iBnd, 0).getElemType());
-            for (rowsize ib2n = 0; ib2n < bnd2node[iBnd].size(); ib2n++)
-                elementPolyData.at(bndCellOffsets[iBnd] + 1 + ib2n) = bnd2node[iBnd][ib2n] + 1; // global node index, 1 based
-        }
-        for (index iCell = 0; iCell < nCell; iCell++)
-        {
-            elementPolyData.at(bndCellOffsets[iCell + nBnd]) = _getCGNSTypeFromElemType(this->cellElemInfo(iCell, 0).getElemType());
-            for (rowsize ic2n = 0; ic2n < cell2node[iCell].size(); ic2n++)
-                elementPolyData.at(bndCellOffsets[iCell + nBnd] + 1 + ic2n) = cell2node[iCell][ic2n] + 1; // global node index, 1 based
-        }
+        std::vector<cgsize_t> bndCellOffsets, elementPolyData;
+        std::vector<double> coordsX, coordsY, coordsZ;
+        std::map<std::string, std::vector<cgsize_t>> bocoLists;
+        FieldTransferDetail::LocalStage(mpi, [&]
+                                        {
+            bndCellOffsets.reserve(size_t(nBndCell) + 1);
+            bndCellOffsets.push_back(0);
+            auto append = [&](const ElemInfo &info, const auto &cone)
+            {
+                elementPolyData.push_back(_getCGNSTypeFromElemType(info.getElemType()));
+                for (auto node : cone)
+                    elementPolyData.push_back(nodes->LocalToGlobal(node) + 1);
+                bndCellOffsets.push_back(cgsize_t(elementPolyData.size()));
+            };
+            for (index boundary = 0; boundary < nBnd; ++boundary)
+                append(view.GetBndInfo(boundary), view.BoundaryNodes(boundary));
+            for (index cell = 0; cell < nCell; ++cell)
+                append(view.GetCellInfo(cell), view.CellNodes(cell));
+            coordsX.resize(size_t(nNode));
+            coordsY.resize(size_t(nNode));
+            coordsZ.resize(size_t(nNode));
+            for (index node = 0; node < nNode; ++node)
+            {
+                coordsX[size_t(node)] = view.Coord(node)[0];
+                coordsY[size_t(node)] = view.Coord(node)[1];
+                coordsZ[size_t(node)] = view.Coord(node)[2];
+            }
+            for (const auto &name : allNames) bocoLists.emplace(name, std::vector<cgsize_t>{});
+            for (index boundary = 0; boundary < nBnd; ++boundary)
+            {
+                auto name = fbcid2name(view.GetBndZone(boundary));
+                DNDS_check_throw_info(bocoLists.count(name), "CGNS boundary callback returned a name absent from allNames");
+                bocoLists.at(name).push_back(boundary + nBndCellProcOffset + 1);
+            } });
         index bndCellOffsetsProcOffset{0};
-        MPI::Scan(&bndCellOffsets.back(), &bndCellOffsetsProcOffset, 1, DNDS_MPI_INDEX, MPI_SUM, mpi.comm);
+        index connectivityCount = index(elementPolyData.size());
+        MPI::Scan(&connectivityCount, &bndCellOffsetsProcOffset, 1, DNDS_MPI_INDEX, MPI_SUM, mpi.comm);
         index bndCellOffsetsGlobalMax{bndCellOffsetsProcOffset};
         MPI::Bcast(&bndCellOffsetsGlobalMax, 1, DNDS_MPI_INDEX, mpi.size - 1, mpi.comm);
         bndCellOffsetsProcOffset -= bndCellOffsets.back();
         for (auto &v : bndCellOffsets)
             v += bndCellOffsetsProcOffset; // made into global offset (0-based)
 
-        std::vector<double> coordsX(nNode), coordsY(nNode), coordsZ(nNode);
-        for (index iNode = 0; iNode < nNode; iNode++)
-            coordsX[iNode] = coords[iNode](0),
-            coordsY[iNode] = coords[iNode](1),
-            coordsZ[iNode] = coords[iNode](2);
-
-        std::map<std::string, std::vector<cgsize_t>> bocoLists;
-        for (const auto &name : allNames)
-            bocoLists.insert({name, std::vector<cgsize_t>()});
-        for (index iBnd = 0; iBnd < nBnd; iBnd++)
-        {
-
-            std::string bcName = fbcid2name(this->bndElemInfo(iBnd, 0).zone);
-            bocoLists[bcName].push_back(iBnd + nBndCellProcOffset + 1);
-        }
         std::vector<index> bocoListLengths(allNames.size());
         for (size_t i = 0; i < allNames.size(); i++)
             bocoListLengths[i] = bocoLists[allNames[i]].size();
         std::vector<index> bocoListLengthsGlobal{bocoListLengths};
         MPI::Allreduce(bocoListLengths.data(), bocoListLengthsGlobal.data(), bocoListLengths.size(), DNDS_MPI_INDEX, MPI_SUM, mpi.comm);
 
-        this->AdjGlobal2LocalPrimary();
         /*****************************/
         /*     CGNS operations:      */
         /*****************************/
@@ -1737,10 +1764,11 @@ namespace DNDS::Geom
         createOutputDir(outFile, mpi, OutputDirMode::Fast);
 
         int cgns_file{0};
+        DNDS_CGNS_CALL_EXIT(cgp_mpi_comm(mpi.comm));
         DNDS_CGNS_CALL_EXIT(cgp_open(fname.c_str(), CG_MODE_WRITE, &cgns_file));
 
         int iBase{0};
-        DNDS_CGNS_CALL_EXIT(cg_base_write(cgns_file, "Base_0", this->dim, 3, &iBase));
+        DNDS_CGNS_CALL_EXIT(cg_base_write(cgns_file, "Base_0", view.Dimension(), 3, &iBase));
         int iZone{0};
         std::array<cgsize_t, 3> zone_sizes{nNodeGlobal, nCellGlobal, 0};
         DNDS_CGNS_CALL_EXIT(cg_zone_write(cgns_file, iBase, "Zone_0", zone_sizes.data(), Unstructured, &iZone));
@@ -1751,9 +1779,9 @@ namespace DNDS::Geom
         std::array<cgsize_t, 1> rmin{nNodeProcOffset + 1};     // note 1 based
         std::array<cgsize_t, 1> rmax{nNodeProcOffset + nNode}; // note inclusive end
 
-        DNDS_CGNS_CALL_EXIT(cgp_coord_write_data(cgns_file, iBase, iZone, iCoords[0], rmin.data(), rmax.data(), coordsX.data()));
-        DNDS_CGNS_CALL_EXIT(cgp_coord_write_data(cgns_file, iBase, iZone, iCoords[1], rmin.data(), rmax.data(), coordsY.data()));
-        DNDS_CGNS_CALL_EXIT(cgp_coord_write_data(cgns_file, iBase, iZone, iCoords[2], rmin.data(), rmax.data(), coordsZ.data()));
+        DNDS_CGNS_CALL_EXIT(cgp_coord_write_data(cgns_file, iBase, iZone, iCoords[0], rmin.data(), rmax.data(), nNode ? coordsX.data() : nullptr));
+        DNDS_CGNS_CALL_EXIT(cgp_coord_write_data(cgns_file, iBase, iZone, iCoords[1], rmin.data(), rmax.data(), nNode ? coordsY.data() : nullptr));
+        DNDS_CGNS_CALL_EXIT(cgp_coord_write_data(cgns_file, iBase, iZone, iCoords[2], rmin.data(), rmax.data(), nNode ? coordsZ.data() : nullptr));
 
         int iSec{0};
         DNDS_CGNS_CALL_EXIT(cgp_poly_section_write(cgns_file, iBase, iZone, "all_elements", ElementType_t::MIXED, 1, nCellGlobal + nBndGlobal,
@@ -1761,7 +1789,7 @@ namespace DNDS::Geom
 
         DNDS_CGNS_CALL_EXIT(cgp_poly_elements_write_data(cgns_file, iBase, iZone, iSec,
                                                          nBndCellProcOffset + 1, nBndCellProcOffset + nBndCell,
-                                                         elementPolyData.data(), bndCellOffsets.data()));
+                                                         nBndCell ? elementPolyData.data() : nullptr, nBndCell ? bndCellOffsets.data() : nullptr));
 
         static_assert(CGNS_VERSION >= 4500, "Need at least CGNS 4.5.0");
         for (size_t i = 0; i < allNames.size(); i++)
@@ -1770,16 +1798,20 @@ namespace DNDS::Geom
                 int iBC = 0;
                 DNDS_CGNS_CALL_EXIT(cg_boco_write(cgns_file, iBase, iZone, allNames[i].data(), BCType_t::BCTypeNull, PointList,
                                                   bocoListLengthsGlobal[i], nullptr, &iBC)); // use nullptr to postpone the data write
-                DNDS_CGNS_CALL_EXIT(cg_boco_gridlocation_write(cgns_file, iBase, iZone, iBC, this->dim == 3 ? GridLocation_t::FaceCenter : GridLocation_t::EdgeCenter));
+                DNDS_CGNS_CALL_EXIT(cg_boco_gridlocation_write(cgns_file, iBase, iZone, iBC, view.Dimension() == 3 ? GridLocation_t::FaceCenter : GridLocation_t::EdgeCenter));
                 DNDS_CGNS_CALL_EXIT(cg_goto(cgns_file, iBase, "Zone_t", iZone, "ZoneBC_t", 1, "BC_t", iBC, "PointList", 0, ""));
                 index nBCLocal = bocoListLengths[i];
                 index nBCLocalProcOffSet{0};
                 MPI::Scan(&nBCLocal, &nBCLocalProcOffSet, 1, DNDS_MPI_INDEX, MPI_SUM, mpi.comm);
                 nBCLocalProcOffSet -= nBCLocal;
-                DNDS_CGNS_CALL_EXIT(cgp_ptlist_write_data(cgns_file, nBCLocalProcOffSet + 1, nBCLocalProcOffSet + nBCLocal, bocoLists.at(allNames[i]).data()));
+                DNDS_CGNS_CALL_EXIT(cgp_ptlist_write_data(cgns_file, nBCLocalProcOffSet + 1, nBCLocalProcOffSet + nBCLocal,
+                                                          nBCLocal ? bocoLists.at(allNames[i]).data() : nullptr));
             }
 
         if (cgp_close(cgns_file))
             cg_error_exit();
+        // cgp_close resets HDF access mode, but leaves the file-probe MPI
+        // communicator active. Keep later rank-local CGNS operations local.
+        DNDS_CGNS_CALL_EXIT(cgp_mpi_comm(MPI_COMM_SELF));
     }
 }

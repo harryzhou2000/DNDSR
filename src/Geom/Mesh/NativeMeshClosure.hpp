@@ -12,6 +12,7 @@ namespace DNDS::Geom
     {
         NativeRelation cellNodes;
         Runtime::ArrayPair<ElemInfo> cellInfo;
+        std::optional<Runtime::ArrayPair<NodePeriodicBits>> cellNodesPbi;
     };
 
     NativeCellClosure BuildNativeCellClosure(const NativeMeshState &source, const MPIInfo &mpi);

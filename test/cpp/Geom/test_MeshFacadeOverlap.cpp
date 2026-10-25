@@ -115,19 +115,25 @@ TEST_CASE("Real mesh finite-volume neighbor sums overlap native halo with inline
 {
     DNDS::MPIInfo mpi;
     mpi.setWorld();
-    auto fixture = T::BuildFixture(mpi);
+    bool native = false;
+    SUBCASE("legacy-built baseline") {}
+    SUBCASE("Runtime-array-native construction") { native = true; }
+    auto fixture = native ? T::BuildNativeFixture(mpi) : T::BuildFixture(mpi);
     for (size_t workers : {size_t(0), size_t(2)})
         CheckCPUOverlap(fixture, workers);
-    auto prior = fixture.mesh->Entities(G::EntityKind::Cell);
-    auto priorRoute = prior.BuildRowTransferPlan();
-    fixture.mesh->ReorderLocalCells(2, 1);
-    CHECK_FALSE(prior.Valid());
-    CHECK_FALSE(priorRoute.Valid());
-    for (size_t workers : {size_t(0), size_t(2)})
-        CheckCPUOverlap(fixture, workers);
-    fixture.mesh->PublishNative(G::MeshReadRequirements::CellFlux());
-    for (size_t workers : {size_t(0), size_t(2)})
-        CheckCPUOverlap(fixture, workers);
+    if (!native)
+    {
+        auto prior = fixture.mesh->Entities(G::EntityKind::Cell);
+        auto priorRoute = prior.BuildRowTransferPlan();
+        fixture.mesh->ReorderLocalCells(2, 1);
+        CHECK_FALSE(prior.Valid());
+        CHECK_FALSE(priorRoute.Valid());
+        for (size_t workers : {size_t(0), size_t(2)})
+            CheckCPUOverlap(fixture, workers);
+        fixture.mesh->PublishNative(G::MeshReadRequirements::CellFlux());
+        for (size_t workers : {size_t(0), size_t(2)})
+            CheckCPUOverlap(fixture, workers);
+    }
     T::RedistributeCurrent(fixture);
     for (size_t workers : {size_t(0), size_t(2)})
         CheckCPUOverlap(fixture, workers);

@@ -2,6 +2,7 @@
 #include "NativeMeshTransition.hpp"
 #include "FieldTransfer.hpp"
 #include "Geom/CGNS.hpp"
+#include <pcgnslib.h>
 #include "DNDS/Runtime/RowBuilder.hpp"
 #include <limits>
 #include <set>
@@ -507,6 +508,15 @@ namespace DNDS::Geom
     NativeSerialMeshData ReadNativeCGNSSerial(const std::string &fName, int dimension, const t_FBCName_2_ID &FBCName_2_ID)
     {
         DNDS_check_throw_info(dimension == 2 || dimension == 3, "native CGNS dimension must be 2 or 3");
+
+        // CGNS retains its parallel communicator after cgp_close; even a
+        // subsequent cg_open file probe may broadcast on that communicator.
+        // This API is local (only the chosen reader calls it), so establish a
+        // local context explicitly. CGNS calls remain host-serialized.
+        int initialized = 0;
+        MPI_Initialized(&initialized);
+        if (initialized)
+            DNDS_check_throw_info(cgp_mpi_comm(MPI_COMM_SELF) == CG_OK, "cannot select local CGNS reader context");
 
         int cgErr = CG_OK;
 

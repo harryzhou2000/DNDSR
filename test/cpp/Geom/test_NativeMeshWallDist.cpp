@@ -1,0 +1,178 @@
+#define DOCTEST_CONFIG_IMPLEMENT
+#include "doctest.h"
+#include "Geom/Mesh/Mesh.hpp"
+#include "Geom/Mesh/NativeMeshBuilder.hpp"
+#include "Geom/Mesh/NativeMeshTopology.hpp"
+#include "DNDS/Runtime/RowBuilder.hpp"
+#include <filesystem>
+namespace G = DNDS::Geom;
+namespace R = DNDS::Runtime;
+using I = DNDS::index;
+static DNDS::ssp<G::UnstructuredMesh> Fixture(DNDS::MPIInfo mpi, bool curved = false)
+{
+    const bool ownsNodes = mpi.rank == mpi.size - 1;
+    const bool ownsCell = mpi.rank == 0;
+    const bool ownsBoundary = mpi.rank == (mpi.size > 1 ? 1 : 0);
+    auto nodes = G::EntitySpace::CreateOwned(G::EntityKind::Node, mpi, ownsNodes ? (curved ? 7 : 3) : 0);
+    auto cells = nodes.CreateSibling(G::EntityKind::Cell, ownsCell ? 1 : 0);
+    auto boundaries = nodes.CreateSibling(G::EntityKind::Bnd, ownsBoundary ? 1 : 0);
+    auto cone = [](bool owned, const std::vector<I> &values)
+    {
+        R::RowBuilder rows(owned ? 1 : 0, sizeof(I));
+        if (owned)
+        {
+            rows.ResizeRow(0, values.size());
+            auto row = rows.Row<I>(0);
+            std::copy(values.begin(), values.end(), row.data);
+        }
+        return R::Array<I>::FromSharedStorage(rows.Commit());
+    };
+    R::Array<DNDS::real> points(R::RowLayout::Dense(size_t(nodes.NumOwned()), 3));
+    R::Array<G::ElemInfo> cellInfo(R::RowLayout::Dense(size_t(cells.NumOwned()), 1));
+    R::Array<G::ElemInfo> bndInfo(R::RowLayout::Dense(size_t(boundaries.NumOwned()), 1));
+    {
+        auto write = points.Write();
+        const std::vector<G::tPoint> coordinates = curved ? std::vector<G::tPoint>{{0, 0, 0}, {2, 0, 0}, {0, 2, 0}, {1, -0.5, 0}, {1, 1, 0}, {0, 1, 0}, {1, 0.5, 0}} : std::vector<G::tPoint>{{0, 0, 0}, {2, 0, 0}, {0, 1, 0}};
+        for (size_t row = 0; row < points.Rows(); ++row)
+            for (size_t component = 0; component < 3; ++component)
+                write.View()(row, component) = coordinates[row][component];
+        if (ownsCell)
+            cellInfo.Write().View()(0, 0) = G::ElemInfo{curved ? G::Elem::Tri6 : G::Elem::Tri3, 31};
+        if (ownsBoundary)
+            bndInfo.Write().View()(0, 0) = G::ElemInfo{curved ? G::Elem::Line3 : G::Elem::Line2, 24};
+    }
+    G::NativeMeshInput input{mpi, 2, cells, nodes, boundaries, cone(ownsCell, curved ? std::vector<I>{0, 1, 2, 3, 4, 5} : std::vector<I>{0, 1, 2}), cone(ownsBoundary, curved ? std::vector<I>{0, 1, 3} : std::vector<I>{0, 1}), points, cellInfo, bndInfo, {}};
+    auto source = G::NativeMeshBuilder::Build(input, {1, true});
+    source = G::NativeMeshTopology::Build(*source, mpi);
+    return G::UnstructuredMesh::FromNative(mpi, source);
+}
+
+TEST_CASE("Native wall distance uses remote boundary selection and retains geometry identity")
+{
+    DNDS::MPIInfo mpi(MPI_COMM_WORLD);
+    auto mesh = Fixture(mpi);
+    const auto namespaceBefore = mesh->CurrentNativeState()->MeshNamespace();
+    const auto source = mesh->CurrentNativeState();
+    const auto originalView = source->BorrowHostView();
+    std::vector<G::tPoint> points;
+    for (I node = 0; node < mesh->NumNodeProc(); ++node)
+        points.emplace_back(originalView.Coord(node));
+    for (int method : {0, 20, 1})
+        for (int execution : {0, 1, 3})
+        {
+            G::UnstructuredMesh::WallDistOptions options;
+            options.method = method;
+            options.wallDistExecution = execution;
+            options.subdivide_quad = 4;
+            options.minWallDist = 1.5;
+            auto geometry = mesh->versions.Stamp(R::Change::Geometry);
+            mesh->BuildNodeWallDist([](auto zone)
+                                    { return zone == 24; }, options);
+            CHECK(geometry.Valid());
+            CHECK(mesh->HasNativeState());
+            CHECK((!mesh->coords.father || mesh->coords.father->Size() == 0));
+            CHECK((!mesh->nodeWallDist.father || mesh->nodeWallDist.father->Size() == 0));
+            CHECK(mesh->CurrentNativeState()->MeshNamespace() == namespaceBefore);
+            auto read = mesh->AcquireRead(mesh->CurrentNativeState()->Requirements());
+            auto view = read.HostView();
+            for (I node = 0; node < view.NumNodeProc(); ++node)
+            {
+                CHECK(view.Coord(node).isApprox(points[size_t(node)]));
+                CHECK(view.Coord(node).data() == originalView.Coord(node).data());
+                const auto p = view.Coord(node);
+                const auto expected = p[1] > 0 ? G::tPoint{0, 1.5, 0} : G::tPoint::Zero().eval();
+                CHECK(view.NodeWallDist(node).isApprox(expected, 1e-12));
+                CHECK(originalView.Coord(node).isApprox(p));
+            }
+        }
+    auto stamp = mesh->versions.Stamp();
+    CHECK_THROWS(mesh->BuildNodeWallDist([&](auto) -> bool
+                                         { if (mpi.rank == (mpi.size > 1 ? 1 : 0)) throw std::runtime_error("wall callback failure"); return true; }));
+    CHECK(stamp.Valid());
+    CHECK_THROWS(mesh->BuildNodeWallDist([&](auto)
+                                         { auto rejected = mesh->versions.BeginMutation(R::Change::Values); rejected.Commit(); return true; }));
+    CHECK(stamp.Valid());
+    G::UnstructuredMesh::WallDistOptions bad;
+    bad.method = mpi.rank == 0 ? -1 : 0;
+    CHECK_THROWS(mesh->BuildNodeWallDist([](auto)
+                                         { return true; }, bad));
+    CHECK(stamp.Valid());
+    G::UnstructuredMesh::WallDistOptions options;
+    options.method = 1;
+    options.subdivide_quad = 40;
+    CHECK_THROWS(mesh->BuildNodeWallDist([](auto)
+                                         { return true; }, options));
+    CHECK(stamp.Valid());
+    options.subdivide_quad = 4;
+    mesh->BuildNodeWallDist([](auto)
+                            { return false; }, options);
+    for (I node = 0; node < mesh->NumNodeProc(); ++node)
+        CHECK(mesh->NodeWallDist(node).norm() == std::pow(DNDS::veryLargeReal, 0.25));
+}
+
+TEST_CASE("Wall distance rejects mixed native and legacy authority collectively")
+{
+    DNDS::MPIInfo mpi(MPI_COMM_WORLD);
+    if (mpi.size == 1)
+        return;
+    auto mesh = Fixture(mpi);
+    auto legacy = std::make_shared<G::UnstructuredMesh>(mpi, 2);
+    G::UnstructuredMeshSerialRW reader(legacy, 0);
+    const auto root = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path();
+    reader.ReadFromCGNSSerial((root / "data/mesh/UniformSquare_10.cgns").string());
+    reader.BuildCell2Cell();
+    reader.MeshPartitionCell2Cell({});
+    reader.PartitionReorderToMeshCell2Cell();
+    legacy->RecoverNode2CellAndNode2Bnd();
+    legacy->RecoverCell2CellAndBnd2Cell();
+    legacy->BuildGhostPrimary();
+    legacy->AdjGlobal2LocalPrimary();
+    legacy->AdjGlobal2LocalN2CB();
+    legacy->InterpolateFace();
+    if (mpi.rank == 0)
+        mesh = legacy;
+    auto stamp = mesh->versions.Stamp();
+    CHECK_THROWS(mesh->BuildNodeWallDist([](auto)
+                                         { return true; }));
+    CHECK(stamp.Valid());
+}
+
+TEST_CASE("Native curved wall preserves method conventions and remote midpoint zeros")
+{
+    DNDS::MPIInfo mpi(MPI_COMM_WORLD);
+    auto mesh = Fixture(mpi, true);
+    const auto nodes = mesh->Entities(G::EntityKind::Node);
+    for (int method : {0, 20, 1})
+    {
+        G::UnstructuredMesh::WallDistOptions options;
+        options.method = method;
+        options.subdivide_quad = 1;
+        options.minWallDist = 0;
+        mesh->BuildNodeWallDist([](auto)
+                                { return true; }, options);
+        for (I node = 0; node < mesh->NumNodeProc(); ++node)
+        {
+            const auto global = nodes.LocalToGlobal(node);
+            if (global == 0 || global == 1 || global == 3)
+                CHECK(mesh->NodeWallDist(node).isZero(0));
+            if (global == 6)
+            {
+                // Method0 extrudes the endpoint chord. Method1 splits at the
+                // curved midpoint and retains the historical third point
+                // endpoint1+(0,0,1). Closest point on its first patch is
+                // (0.8,0,0.4), on edge endpoint0->third point.
+                const G::tPoint expected = method == 1 ? G::tPoint{0.2, 0.5, -0.4} : G::tPoint{0, 0.5, 0};
+                CHECK(mesh->NodeWallDist(node).isApprox(expected, 1e-12));
+            }
+        }
+    }
+}
+
+int main(int argc, char **argv)
+{
+    MPI_Init(&argc, &argv);
+    doctest::Context context(argc, argv);
+    const int result = context.run();
+    MPI_Finalize();
+    return result;
+}

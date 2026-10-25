@@ -35,10 +35,10 @@ from DNDSR import DNDS, Geom
 
 @dataclasses.dataclass
 class MeshReadResult:
-    """Result of :func:`read_mesh`."""
+    """Result of :func:`read_mesh`; native construction has no legacy reader."""
 
     mesh: Geom.UnstructuredMesh
-    reader: Geom.UnstructuredMeshSerialRW
+    reader: Geom.UnstructuredMeshSerialRW | None
     name_to_id: Geom.AutoAppendName2ID | None  # None for H5 modes
 
 
@@ -47,7 +47,7 @@ class BndMeshResult:
     """Result of :func:`build_bnd_mesh`."""
 
     mesh_bnd: Geom.UnstructuredMesh
-    reader_bnd: Geom.UnstructuredMeshSerialRW
+    reader_bnd: Geom.UnstructuredMeshSerialRW | None
 
 
 # ---------------------------------------------------------------------------
@@ -114,6 +114,19 @@ def _detect_read_mode(mesh_file: str) -> str:
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+def _native_authority(mesh: Geom.UnstructuredMesh) -> bool:
+    """Agree the dispatch branch before entering different collective paths."""
+    import numpy as np
+    mode = np.array(int(mesh.has_native_state), dtype=np.int32)
+    lower, upper = np.zeros((), dtype=np.int32), np.zeros((), dtype=np.int32)
+    mpi = mesh.getMPI()
+    DNDS.MPI.Allreduce(mode, lower, "MPI_MIN", mpi)
+    DNDS.MPI.Allreduce(mode, upper, "MPI_MAX", mpi)
+    if int(lower) != int(upper):
+        raise ValueError("Native/legacy mesh authority differs across ranks")
+    return bool(mode)
+
 
 def _build_ghost_primary(mesh: Geom.UnstructuredMesh) -> None:
     """Build connectivity and ghost for a freshly-distributed mesh.
@@ -226,6 +239,9 @@ def read_mesh(
     elevation: str = "",
     bisect: int = 0,
     serializer_factory: DNDS.Serializer.SerializerFactory | None = None,
+    native: bool = False,
+    cell_layers: int = 1,
+    complete_node_star: bool = False,
 ) -> MeshReadResult:
     """Read a mesh from any supported source and distribute it.
 
@@ -236,8 +252,52 @@ def read_mesh(
 
     Returns a :class:`MeshReadResult` with the distributed mesh (ghost cells
     built, local indices).  The mesh is **not** solver-ready: call
-    :func:`prepare_mesh` next.
+    :func:`prepare_mesh` next for legacy input. With ``native=True``, use
+    ``mesh = prepare_native_mesh(result.mesh)`` and retain its returned facade;
+    ``reader`` is None. Native CGNS uses even contiguous ownership, retains BC
+    names on every rank, and rejects legacy partition/periodic options. Native
+    H5 reads the full native archive with its saved ownership, not legacy H5.
+    All ranks must supply the same helper options and participate in calls.
     """
+    if native:
+        if periodic_geometry is not None or periodic_tolerance != 1e-9:
+            raise ValueError("Native reading does not apply periodic identification/geometry options")
+        if partition_options is not None:
+            raise ValueError("Native reading uses even contiguous ownership; partition_options require legacy reading")
+        if elevation not in ("", "O2") or not 0 <= bisect <= 4 or (elevation == "O2" and bisect):
+            raise ValueError("Use elevation='' or 'O2', bisect=0..4, without combining O2 and bisection")
+        mode = read_mode or _detect_read_mode(mesh_file)
+        if mode == "cgns":
+            if serializer_factory is not None:
+                raise ValueError("serializer_factory applies to native H5 archives only")
+            mesh, names = Geom.read_native_cgns_with_names(
+                mpi, mesh_file, dim, cell_layers=cell_layers, complete_node_star=complete_node_star)
+        elif mode == "h5":
+            if complete_node_star:
+                raise ValueError("Native archive preserves its saved node-star requirement; complete_node_star cannot override it")
+            factory = serializer_factory or default_serializer_factory()
+            base = mesh_file[:-len(".dnds.h5")] if mesh_file.endswith(".dnds.h5") else mesh_file
+            path, _ = factory.ModifyFilePath(base, mpi, "part_%d", True)
+            serializer = factory.BuildSerializer(mpi)
+            serializer.OpenFile(path, True)
+            try:
+                mesh = Geom.UnstructuredMesh.read_native_archive(mpi, serializer, "meshPart", ghost_layers=cell_layers)
+            finally:
+                serializer.CloseFile()
+            if mesh.getDim() != dim:
+                raise ValueError("Native archive dimension differs from requested dim")
+            names = None
+        else:
+            raise ValueError(f"Unknown read_mode: {mode!r}")
+        if elevation == "O2" and not mesh.IsO2():
+            mesh = Geom.elevate_native_mesh(mesh, cell_layers, complete_node_star)
+        for _ in range(bisect):
+            if not mesh.IsO2():
+                mesh = Geom.elevate_native_mesh(mesh, cell_layers, complete_node_star)
+            mesh = Geom.bisect_native_mesh(mesh, cell_layers, complete_node_star)
+        return MeshReadResult(mesh, None, names)
+    if cell_layers != 1 or complete_node_star:
+        raise ValueError("cell_layers and complete_node_star apply only to native reading")
     if read_mode is None:
         read_mode = _detect_read_mode(mesh_file)
 
@@ -282,7 +342,7 @@ def read_mesh(
 
 def prepare_mesh(
     mesh: Geom.UnstructuredMesh,
-    reader: Geom.UnstructuredMeshSerialRW,
+    reader: Geom.UnstructuredMeshSerialRW | None,
     *,
     reorder_parts: int = 1,
     reorder_inner_parts: int = 1,
@@ -300,6 +360,10 @@ def prepare_mesh(
     distance, optional serial output, periodic nodes, VTK connectivity,
     optional coordinate transforms.
     """
+    if _native_authority(mesh):
+        raise ValueError("Use prepare_native_mesh(mesh), which returns a new native facade")
+    if reader is None:
+        raise ValueError("Legacy preparation requires a serial reader")
     mpi = mesh.getMPI()
 
     # 1. Cell reordering
@@ -344,6 +408,47 @@ def prepare_mesh(
     mesh.BuildVTKConnectivity()
 
 
+def prepare_native_mesh(
+    mesh: Geom.UnstructuredMesh,
+    *,
+    ghost_layers: int = 1,
+    edges: bool = False,
+    wall_dist_predicate: Callable[[int], bool] | None = None,
+    wall_dist_options: dict | None = None,
+    coord_scale: float = 1.0,
+    coord_rot_z_deg: float = 0.0,
+    rectify_near_plane: int = 0,
+    rectify_threshold: float = 1e-12,
+) -> Geom.UnstructuredMesh:
+    """Return native face topology with optional transforms and wall vectors.
+
+    Retain the returned facade. Source topology/geometry remain unchanged.
+    All ranks must supply identical options and participate in this collective.
+    This explicit route uses existing ownership and does not build legacy serial
+    output caches or perform a partition reorder. Use native output/archive APIs.
+    """
+    if not _native_authority(mesh):
+        raise ValueError("prepare_native_mesh requires native construction")
+    if wall_dist_options is not None and wall_dist_predicate is None:
+        raise ValueError("wall_dist_options requires wall_dist_predicate")
+    # Native topology completion rejects overwriting existing families. A
+    # no-new-family call still returns a detached facade with refreshed closure.
+    requirements = Geom.native_mesh_requirements(mesh)
+    prepared = Geom.with_native_topology(mesh, faces=not requirements["faces"], edges=edges and not requirements["edges"], ghost_layers=ghost_layers)
+    _apply_coord_transforms(prepared, coord_scale, coord_rot_z_deg, rectify_near_plane, rectify_threshold)
+    if wall_dist_predicate is not None:
+        options = Geom.UnstructuredMesh.WallDistOptions()
+        if isinstance(wall_dist_options, Mapping):
+            for key, value in wall_dist_options.items():
+                if not hasattr(options, key):
+                    raise ValueError(f"Unknown wall distance option: {key}")
+                setattr(options, key, value)
+        elif wall_dist_options is not None:
+            options = wall_dist_options
+        prepared.BuildNodeWallDist(wall_dist_predicate, options)
+    return prepared
+
+
 def _apply_coord_transforms(
     mesh: Geom.UnstructuredMesh,
     scale: float,
@@ -381,12 +486,20 @@ def _apply_coord_transforms(
 def build_bnd_mesh(
     mesh: Geom.UnstructuredMesh,
     *,
-    build_serial_out: bool = True,
+    build_serial_out: bool | None = None,
 ) -> BndMeshResult:
     """Extract the boundary surface mesh from *mesh*.
 
-    Returns a :class:`BndMeshResult` with the boundary mesh and its reader.
+    The default builds serial output for legacy input. Native input returns a
+    compact native boundary mesh with ``reader_bnd=None``; explicitly requesting
+    legacy serial output in native mode raises ValueError.
     """
+    if _native_authority(mesh):
+        if build_serial_out:
+            raise ValueError("Native boundary extraction has no legacy serial reader/output cache")
+        return BndMeshResult(Geom.extract_native_boundary(mesh), None)
+    if build_serial_out is None:
+        build_serial_out = True
     mesh_bnd = Geom.UnstructuredMesh(mesh.getMPI(), mesh.getDim() - 1)
     reader_bnd = Geom.UnstructuredMeshSerialRW(mesh_bnd, 0)
     mesh.ConstructBndMesh(mesh_bnd)
@@ -459,20 +572,34 @@ def serialize_mesh(
 ) -> None:
     """Write a partitioned mesh to H5 for later distributed read.
 
-    This is the Python equivalent of the C++ ``partitionMeshOnly`` path.
+    Native input writes the full native archive (all published families, IDs,
+    companions and ancestry), readable with ``read_mesh(native=True)``. Boundary
+    name dictionaries are separate MeshReadResult metadata and are not archived.
+    Legacy input keeps the C++ ``partitionMeshOnly`` serialization path.
     """
+    native = _native_authority(mesh)
     if serializer_factory is None:
         serializer_factory = default_serializer_factory()
+    if native and output_path.endswith(".dnds.h5"):
+        output_path = output_path[:-len(".dnds.h5")]
 
     out_mod, out_path = serializer_factory.ModifyFilePath(
         output_path, mpi, "part_%d", False
     )
     serializer = serializer_factory.BuildSerializer(mpi)
     serializer.OpenFile(out_mod, False)
-    mesh.AdjLocal2GlobalPrimary()
-    mesh.WriteSerialize(serializer, "meshPart")
-    mesh.AdjGlobal2LocalPrimary()
-    serializer.CloseFile()
+    try:
+        if native:
+            mesh.write_native_archive(serializer, "meshPart")
+        else:
+            mesh.AdjLocal2GlobalPrimary()
+            try:
+                mesh.WriteSerialize(serializer, "meshPart")
+            finally:
+                mesh.AdjGlobal2LocalPrimary()
+    finally:
+        serializer.CloseFile()
+
 
 
 # ---------------------------------------------------------------------------

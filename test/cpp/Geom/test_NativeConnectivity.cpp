@@ -682,6 +682,38 @@ TEST_CASE("Named native relations distinguish incidence any all exact and face v
     }
 }
 
+TEST_CASE("Native interpolation matches repeated canonical IDs after XOR permutes frame order")
+{
+    const auto mpi = MPI();
+    auto nodes = G::EntitySpace::CreateOwned(G::EntityKind::Node, mpi, mpi.rank == 0 ? 1 : 0);
+    auto cells = nodes.CreateSibling(G::EntityKind::Cell, mpi.rank == 0 ? 2 : 0);
+    auto cones = Rows<I>(mpi.rank == 0 ? std::vector<std::vector<I>>{{0, 0, 0}, {0, 0, 0}} : std::vector<std::vector<I>>{});
+    auto bits = Rows<G::NodePeriodicBits>(mpi.rank == 0 ? std::vector<std::vector<G::NodePeriodicBits>>{{{0}, {1}, {2}}, {{1}, {0}, {3}}} : std::vector<std::vector<G::NodePeriodicBits>>{});
+    G::NativeRelation relation(G::Adj::Cell2Node, cells, nodes, std::move(cones));
+    auto read = relation.Read();
+    G::RelationPeriodicBits periodic(read, std::move(bits));
+    G::SubEntityQueryPbi query;
+    query.numSubEntities = [](I)
+    { return 1; };
+    query.describe = [](I, int)
+    { return G::SubEntityDesc{3, 3, G::Elem::Tri3}; };
+    query.extractNodes = [](I, int, const std::function<I(int)> &get, I *output)
+    { for (int slot = 0; slot < 3; ++slot) output[slot] = get(slot); };
+    query.extractPbi = [](I, int, const std::function<G::NodePeriodicBits(int)> &get, G::NodePeriodicBits *output)
+    { for (int slot = 0; slot < 3; ++slot) output[slot] = get(slot); };
+    auto result = G::NativeConnectivity::Interpolate(read, G::EntityKind::Face, query, [mpi](const std::vector<I> &, const std::vector<DNDS::MPI_int> &owners, I)
+                                                     { return G::OwnershipDecision{*std::min_element(owners.begin(), owners.end()) == mpi.rank, {}}; }, &periodic);
+    CHECK(result.entities.NumGlobal() == 1);
+    if (mpi.rank == 0)
+    {
+        CHECK(result.parent2entity.Read().GlobalRow(0) == result.parent2entity.Read().GlobalRow(1));
+        auto labels = result.parent2entityPbi->Read();
+        CHECK(uint8_t(labels.View()(0, 0)) == 0);
+        CHECK(uint8_t(labels.View()(1, 0)) == 1);
+        CHECK(result.entity2parent.Read().GlobalRow(0) == std::vector<I>{0, 1});
+    }
+}
+
 int main(int argc, char **argv)
 {
     MPI_Init(&argc, &argv);

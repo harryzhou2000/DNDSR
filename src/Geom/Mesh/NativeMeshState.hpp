@@ -69,6 +69,20 @@ namespace DNDS::Geom
         /// Bind only after a successful publication transaction has committed.
         std::shared_ptr<const NativeMeshState> BindEpoch(Runtime::VersionTracker versions) const;
         std::shared_ptr<const NativeMeshState> WithPlacement(Runtime::Device device, Runtime::ExecutionContext context) const;
+        /// Setup metadata only: retain current part boundaries and owned local
+        /// neighbors without changing entity order, buffers or their epochs.
+        std::shared_ptr<const NativeMeshState> WithLocalCellSetup(std::vector<index> partStarts,
+                                                                  tLocalMatStruct neighbors) const;
+        /// Replace wall vectors while retaining the exact coordinate allocation.
+        std::shared_ptr<const NativeMeshState> WithWallDistance(Runtime::ArrayPair<real> walls) const;
+        /// Detached geometry-only replacement with identical entity order and
+        /// shared topology/identity. Both owned and ghost coordinates must be
+        /// ready and coherent; callers arrange any owner/ghost refresh. Clearing
+        /// wallVectors explicitly invalidates the derived wall-distance data.
+        /// Device placements are discarded and must be rebuilt for the new state.
+        std::shared_ptr<const NativeMeshState> WithGeometry(
+            Runtime::ArrayPair<real> coordinates, std::optional<Runtime::ArrayPair<real>> wallVectors,
+            const Periodicity &periodicInfo) const;
         void Validate() const { _epoch.Validate(); }
         /// Exact descriptor lookup over host setup storage. Device placement
         /// does not move this registry or change its canonical entity spaces.

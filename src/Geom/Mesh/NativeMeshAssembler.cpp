@@ -2,6 +2,8 @@
 #include "NativeConnectivity.hpp"
 #include "FieldTransfer.hpp"
 #include <set>
+#include <iomanip>
+#include <sstream>
 
 namespace DNDS::Geom
 {
@@ -150,8 +152,11 @@ namespace DNDS::Geom
         std::string schedule;
         FieldTransferDetail::LocalStage(mpi, [&]
                                         {
-            DNDS_check_throw_info(ghostLayers >= 1 && (owned.dimension == 2 || owned.dimension == 3), "invalid native assembly dimensions or closure");
+            DNDS_check_throw_info(ghostLayers >= 1 && owned.dimension >= 1 && owned.dimension <= 3, "invalid native assembly dimensions or closure");
             DNDS_check_throw_info(owned.spaces.count(EntityKind::Node) && owned.spaces.count(EntityKind::Cell) && owned.spaces.count(EntityKind::Bnd), "native assembly primary families missing");
+            DNDS_check_throw_info(owned.dimension != 1 || (owned.spaces.at(EntityKind::Bnd).NumGlobal() == 0 &&
+                                                         !owned.requirements.faces && !owned.requirements.edges && !owned.requirements.cellFaceNeighbors),
+                                  "native one-dimensional assembly supports primary curves without point boundaries or facial/edge topology");
             const auto identity = owned.spaces.at(EntityKind::Node).MeshIdentity();
             for (const auto &[kind, space] : owned.spaces)
             {
@@ -206,6 +211,38 @@ namespace DNDS::Geom
             companion(owned.cellNodesPbi, EntityKind::Cell); companion(owned.bndNodesPbi, EntityKind::Bnd);
             companion(owned.cellFacesPbi, EntityKind::Cell); companion(owned.faceNodesPbi, EntityKind::Face);
             companion(owned.cellEdgesPbi, EntityKind::Cell); companion(owned.edgeNodesPbi, EntityKind::Edge);
+            auto periodicCone = [&](const auto &bits, MeshRelation slot)
+            {
+                const auto &cone = owned.relations[size_t(slot)];
+                DNDS_check_throw_info(owned.periodic ? bool(bits) == bool(cone) : !bits,
+                                      "native assembly periodic cone companion inventory differs from topology");
+                if (!bits) return;
+                auto read = bits->Read();
+                for (size_t row = 0; row < bits->Rows(); ++row)
+                {
+                    DNDS_check_throw_info(read.View().RowSize(row) == cone->Layout().RowSize(row), "native assembly periodic cone slot count differs");
+                    for (auto value : read.View()[row]) DNDS_check_throw_info(uint8_t(value) < 8, "native assembly periodic frame bits exceed three groups");
+                }
+            };
+            periodicCone(owned.cellNodesPbi, MeshRelation::CellNodes); periodicCone(owned.bndNodesPbi, MeshRelation::BoundaryNodes);
+            periodicCone(owned.cellFacesPbi, MeshRelation::CellFaces); periodicCone(owned.faceNodesPbi, MeshRelation::FaceNodes);
+            periodicCone(owned.cellEdgesPbi, MeshRelation::CellEdges); periodicCone(owned.edgeNodesPbi, MeshRelation::EdgeNodes);
+            if (owned.periodic)
+            {
+                std::ostringstream frames;
+                frames << std::hexfloat;
+                for (size_t frame = 0; frame < 4; ++frame)
+                {
+                    const auto rotation = owned.periodicInfo.rotation[frame].map();
+                    DNDS_check_throw_info(rotation.allFinite() && (rotation.transpose() * rotation - tGPoint::Identity()).norm() < 1e-10 &&
+                                              std::abs(rotation.determinant() - 1) < 1e-10 && owned.periodicInfo.translation[frame].map().allFinite() &&
+                                              owned.periodicInfo.rotationCenter[frame].map().allFinite(), "invalid native assembly rigid periodic frame");
+                    for (int i = 0; i < 9; ++i) frames << rotation.data()[i] << ";";
+                    for (int i = 0; i < 3; ++i) frames << owned.periodicInfo.translation[frame].map()[i] << ";";
+                    for (int i = 0; i < 3; ++i) frames << owned.periodicInfo.rotationCenter[frame].map()[i] << ";";
+                }
+                schedule += frames.str();
+            }
             DNDS_check_throw_info(schedule.size() <= size_t(INT_MAX), "native assembly schedule exceeds MPI range"); });
         Agree(mpi, schedule);
         NativeConnectivity connectivity(mpi);

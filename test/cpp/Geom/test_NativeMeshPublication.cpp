@@ -20,6 +20,7 @@ TEST_CASE("Explicit native publication owns queries independently of the raw edi
     const G::tPoint originalPoint = mesh.Coord(0);
     const auto originalCellPbi = mesh.getCell2NodeIndexPbiRow(0);
     const auto originalBndPbi = mesh.NumBndProc() ? mesh.getBnd2NodeIndexPbiRow(0) : std::vector<G::NodeIndexPBI>{};
+    const auto originalLocalGraph = mesh.GetCell2CellFaceVLocal();
     mesh.PublishNative(G::MeshReadRequirements::CellFlux());
     CHECK(mesh.HasNativeState());
     CHECK_THROWS(mesh.template deviceView<DNDS::DeviceBackend::Host>());
@@ -39,7 +40,7 @@ TEST_CASE("Explicit native publication owns queries independently of the raw edi
     const auto globalBnd = bndSpace.NumLocal() ? bndSpace.LocalToGlobal(0) : DNDS::UnInitIndex;
     const auto faceSpace = mesh.Entities(G::EntityKind::Face);
     const auto globalFace = faceSpace.LocalToGlobal(0);
-    CHECK_THROWS(mesh.GetCell2CellFaceVLocal());
+    CHECK(mesh.GetCell2CellFaceVLocal() == originalLocalGraph);
     CHECK_THROWS(mesh.IndexLocal2Global(mesh.cell2node, 0));
     CHECK(space.SameOrder(mesh.Entities(G::EntityKind::Cell)));
     std::optional<G::MeshReadAccess> first, second;
@@ -78,6 +79,7 @@ TEST_CASE("Explicit native publication owns queries independently of the raw edi
         CHECK(mesh.getBnd2NodeIndexPbiRow(0) == originalBndPbi);
     CHECK(mesh.CellNodes(0)[0] == originalNode);
     CHECK(mesh.Coord(0).isApprox(originalPoint));
+    CHECK(mesh.GetCell2CellFaceVLocal() == originalLocalGraph);
     CHECK(mesh.GetCellElement(0).GetNumNodes() == int(mesh.CellNodes(0).size()));
     CHECK(mesh.AcquireRead(G::MeshReadRequirements::CellFlux()).HostView().CellNodes(0)[0] == originalNode);
     CHECK(G::NativeMeshSnapshot::Capture(mesh).AcquireRead().HostView().CellNodes(0)[0] == originalNode);
@@ -188,8 +190,14 @@ TEST_CASE("Legacy mutation requires explicitly selecting its workspace")
     auto old = mesh.Entities(G::EntityKind::Cell);
     auto detached = G::NativeMeshSnapshot::Capture(mesh, G::MeshReadRequirements::CellFlux());
     const G::tPoint point = detached.AcquireRead().HostView().Coord(0);
-    CHECK_THROWS(mesh.TransformCoords([](const G::tPoint &p)
-                                      { return p; }));
+    {
+        auto read = mesh.AcquireRead();
+        const auto stamp = mesh.versions.Stamp();
+        CHECK_THROWS(mesh.TransformCoords([](const G::tPoint &p)
+                                          { return p; }));
+        CHECK(stamp.Valid());
+        CHECK(read.HostView().Coord(0).isApprox(point));
+    }
     CHECK(mesh.HasNativeState());
     CHECK(old.Valid());
     mesh.UseLegacyWorkspace();

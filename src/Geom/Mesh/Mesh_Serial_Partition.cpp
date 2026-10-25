@@ -7,6 +7,29 @@
 
 namespace DNDS::Geom
 {
+    std::size_t UnstructuredMesh::CoordinateHash()
+    {
+        if (!HasNativeState())
+            return coords.hash();
+        auto read = AcquireRead();
+        const auto view = read.HostView();
+        auto rowsHash = [&](index first, index count)
+        {
+            std::size_t values = 0;
+            for (index row = first; row < first + count; ++row)
+                for (int component = 0; component < 3; ++component)
+                    values ^= std::hash<real>{}(view.Coord(row)[component]);
+            return array_hash<std::size_t, 3>{}({std::size_t(count), 0, values});
+        };
+        // Exact ArrayPair< ArrayEigenVector<3> > diagnostic contract: include
+        // owned and appended ghost rows, then gather in communicator rank order.
+        index local = array_hash<std::size_t, 2>{}({rowsHash(0, view.NumNode()),
+                                                    rowsHash(view.NumNode(), view.NumNodeGhost())});
+        std::vector<index> hashes(size_t(mpi.size));
+        MPI::Allgather(&local, 1, DNDS_MPI_INDEX, hashes.data(), 1, DNDS_MPI_INDEX, mpi.comm);
+        return vector_hash<index>{}(hashes);
+    }
+
     void UnstructuredMeshSerialRW::
         MeshPartitionCell2Cell(const PartitionOptions &c_options)
     {
@@ -181,6 +204,34 @@ namespace DNDS::Geom
 
     tLocalMatStruct UnstructuredMesh::GetCell2CellFaceVLocal(bool onLocalPartition)
     {
+        if (HasNativeState())
+        {
+            auto read = AcquireRead(MeshReadRequirements::CellFlux());
+            const auto view = read.HostView();
+            tLocalMatStruct neighbors(size_t(view.NumCell()));
+            for (int part = 0; part < NLocalParts(); ++part)
+                for (index cell = LocalPartStart(part); cell < LocalPartEnd(part); ++cell)
+                {
+                    const auto faces = view.CellFaces(cell);
+                    auto &row = neighbors[size_t(cell)];
+                    row.reserve(faces.size());
+                    for (size_t slot = 0; slot < faces.size(); ++slot)
+                    {
+                        const auto face = faces[slot];
+                        DNDS_check_throw_info(face >= 0 && face < view.NumFaceProc(),
+                                              "native local graph requires complete owned cell faces");
+                        const auto other = view.CellFaceOther(cell, face, rowsize(slot));
+                        DNDS_check_throw_info(other == UnInitIndex || (other >= 0 && other < view.NumCellProc()),
+                                              "native local graph requires local face-cell closure");
+                        if (other == UnInitIndex || other == cell || other >= view.NumCell())
+                            continue;
+                        if (onLocalPartition && (other < LocalPartStart(part) || other >= LocalPartEnd(part)))
+                            continue;
+                        row.push_back(other);
+                    }
+                }
+            return neighbors;
+        }
         RequireLegacyWorkspace("GetCell2CellFaceVLocal");
         // if (onLocalPartition)
         //     DNDS_assert(this->localPartitionStarts.size() >= 2);
@@ -323,11 +374,34 @@ namespace DNDS::Geom
     {
         if (!control.useDirectPrec)
             return;
-        this->cell2cellFaceVLocalParts = this->GetCell2CellFaceVLocal(true);
+        std::vector<index> partStarts;
+        if (HasNativeState())
+        {
+            for (int part = 0; part < NLocalParts(); ++part)
+                partStarts.push_back(LocalPartStart(part));
+            partStarts.push_back(NumCell());
+            _nativeState = _nativeState->WithLocalCellSetup(partStarts, GetCell2CellFaceVLocal(true));
+        }
+        else
+        {
+            cell2cellFaceVLocalParts = GetCell2CellFaceVLocal(true);
+            partStarts = localPartitionStarts;
+        }
+        const auto &graph = LocalCellNeighbors();
         auto &localFillOrderingNew2Old = symLU.localFillOrderingNew2Old;
         auto &localFillOrderingOld2New = symLU.localFillOrderingOld2New;
         if (!this->NumCell())
+        {
+            // Nonempty peers report bandwidth through the same two reductions
+            // below. Empty owners must remain in that collective schedule.
+            if (control.getOrderingCode() == 3 || control.getOrderingCode() == 4)
+            {
+                index oldBandwidth = 0, newBandwidth = 0;
+                MPI::AllreduceOneIndex(oldBandwidth, MPI_MAX, mpi);
+                MPI::AllreduceOneIndex(newBandwidth, MPI_MAX, mpi);
+            }
             return;
+        }
         if (control.getOrderingCode() == -1)
         {
             localFillOrderingNew2Old.reserve(this->NumCell());
@@ -351,7 +425,7 @@ namespace DNDS::Geom
             if (mpi.rank == mRank)
                 log() << "UnstructuredMesh::ObtainLocalFactFillOrdering(): start calling metis" << std::endl;
             {
-                auto [New2Old, Old2New] = ReorderSerialAdj_Metis(this->cell2cellFaceVLocalParts);
+                auto [New2Old, Old2New] = ReorderSerialAdj_Metis(graph);
                 localFillOrderingNew2Old = std::move(New2Old);
                 localFillOrderingOld2New = std::move(Old2New);
             }
@@ -363,7 +437,7 @@ namespace DNDS::Geom
             if (mpi.rank == mRank)
                 log() << "UnstructuredMesh::ObtainLocalFactFillOrdering(): start calling boost::minimum_degree_ordering" << std::endl;
             {
-                auto [New2Old, Old2New] = ReorderSerialAdj_BoostMMD(this->cell2cellFaceVLocalParts);
+                auto [New2Old, Old2New] = ReorderSerialAdj_BoostMMD(graph);
                 localFillOrderingNew2Old = std::move(New2Old);
                 localFillOrderingOld2New = std::move(Old2New);
             }
@@ -376,7 +450,7 @@ namespace DNDS::Geom
             if (mpi.rank == mRank)
                 log() << "UnstructuredMesh::ObtainLocalFactFillOrdering(): start calling boost::cuthill_mckee_ordering" << std::endl;
             {
-                auto [New2Old, Old2New] = ReorderSerialAdj_BoostRCM(this->cell2cellFaceVLocalParts, bandWidthOld, bandWidthNew);
+                auto [New2Old, Old2New] = ReorderSerialAdj_BoostRCM(graph, bandWidthOld, bandWidthNew);
                 localFillOrderingNew2Old = std::move(New2Old);
                 localFillOrderingOld2New = std::move(Old2New);
             }
@@ -395,8 +469,7 @@ namespace DNDS::Geom
                 log() << "UnstructuredMesh::ObtainLocalFactFillOrdering(): start calling CorrectRCM::CuthillMcKeeOrdering" << std::endl;
             {
                 auto [New2Old, Old2New] = ReorderSerialAdj_CorrectRCM(
-                    this->cell2cellFaceVLocalParts.begin(),
-                    this->cell2cellFaceVLocalParts.end(), bandWidthOld, bandWidthNew);
+                    graph.begin(), graph.end(), bandWidthOld, bandWidthNew);
                 localFillOrderingNew2Old = std::move(New2Old);
                 localFillOrderingOld2New = std::move(Old2New);
             }
@@ -414,10 +487,10 @@ namespace DNDS::Geom
         }
         if (this->NLocalParts() > 1 && control.getOrderingCode() != 0)
         {
-            localFillOrderingNew2Old = put_perm_back_to_local_parts(localFillOrderingNew2Old, this->localPartitionStarts);
+            localFillOrderingNew2Old = put_perm_back_to_local_parts(localFillOrderingNew2Old, partStarts);
             for (index i = 0; i < localFillOrderingNew2Old.size(); i++)
                 localFillOrderingOld2New[localFillOrderingNew2Old[i]] = i;
         }
-        check_permutations(localFillOrderingNew2Old, localFillOrderingOld2New, this->localPartitionStarts);
+        check_permutations(localFillOrderingNew2Old, localFillOrderingOld2New, partStarts);
     }
 }
