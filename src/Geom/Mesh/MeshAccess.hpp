@@ -4,6 +4,7 @@
 #include "DNDS/Runtime/Version.hpp"
 #include <memory>
 #include <vector>
+#include <optional>
 
 namespace DNDS::Geom
 {

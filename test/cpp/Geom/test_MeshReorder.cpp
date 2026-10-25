@@ -2626,3 +2626,81 @@ TEST_CASE("ReorderEntities: Node explicit, all topology follows Node on 3D mesh"
     // full rebuild/local conversion after all entity kinds move is separate
     // reorder-pipeline hardening work.
 }
+
+TEST_CASE("NativeRowTransfer exact native routes with empty ranks and skew")
+{
+    const auto mpi = worldMPI();
+    const auto count = [&](int rank) -> DNDS::index
+    { return mpi.size > 1 && rank == mpi.size - 1 ? 0 : 3 + rank; };
+    const DNDS::index n = count(mpi.rank);
+    auto mapping = make_ssp<GlobalOffsetsMapping>();
+    mapping->setMPIAlignBcast(mpi, n);
+    SUBCASE("local reversed permutation")
+    {
+        std::vector<DNDS::index> permutation(n);
+        for (DNDS::index i = 0; i < n; ++i)
+            permutation[i] = n - i - 1;
+        auto transfer = PermutationTransfer::fromLocalPermutation(permutation, mapping, mpi);
+        auto route = NativeRowTransfer(transfer, mpi);
+        Runtime::Array<int64_t> source(Runtime::RowLayout::Dense(n, 1));
+        Runtime::Array<int64_t> destination(Runtime::RowLayout::Dense(n, 1));
+        {
+            auto write = source.Write();
+            for (DNDS::index i = 0; i < n; ++i)
+                write.At(i, 0) = 1000 * mpi.rank + i;
+        }
+        Runtime::PayloadPlan(route, source.Layout(), destination.Layout(), Runtime::ElementSchema::Arithmetic<int64_t>())
+            .Bind(source, destination)
+            .Begin()
+            .Wait();
+        auto read = destination.Read();
+        for (DNDS::index i = 0; i < n; ++i)
+            CHECK(read.At(i, 0) == 1000 * mpi.rank + n - i - 1);
+        if (mpi.rank == 0 && n > 1)
+            transfer.localOld2New[1] = transfer.localOld2New[0];
+        CHECK_THROWS(NativeRowTransfer(transfer, mpi));
+    }
+    SUBCASE("distributed sender order and local slot order")
+    {
+        const auto target = [&](int rank, DNDS::index i)
+        { return int(i % 3 == 0 ? (rank + 1) % mpi.size : 0); };
+        std::vector<MPI_int> partition(n);
+        for (DNDS::index i = 0; i < n; ++i)
+            partition[i] = target(mpi.rank, i);
+        auto transfer = PermutationTransfer::fromPartition(partition, mapping, mpi);
+        auto route = NativeRowTransfer(transfer, mpi);
+        std::vector<int64_t> expected;
+        for (int rank = 0; rank < mpi.size; ++rank)
+            for (DNDS::index i = 0; i < count(rank); ++i)
+                if (target(rank, i) == mpi.rank)
+                    expected.push_back(1000 * rank + i);
+        CHECK(route.DestinationRows() == expected.size());
+        Runtime::Array<int64_t> source(Runtime::RowLayout::Dense(n, 1));
+        Runtime::Array<int64_t> destination(Runtime::RowLayout::Dense(expected.size(), 1));
+        {
+            auto write = source.Write();
+            for (DNDS::index i = 0; i < n; ++i)
+                write.At(i, 0) = 1000 * mpi.rank + i;
+        }
+        Runtime::PayloadPlan(route, source.Layout(), destination.Layout(), Runtime::ElementSchema::Arithmetic<int64_t>())
+            .Bind(source, destination)
+            .Begin()
+            .Wait();
+        auto read = destination.Read();
+        for (size_t i = 0; i < expected.size(); ++i)
+            CHECK(read.At(i, 0) == expected[i]);
+        if (mpi.size > 1)
+        {
+            if (mpi.rank == 0)
+                transfer.pushStart.back() += 1;
+            CHECK_THROWS(NativeRowTransfer(transfer, mpi));
+        }
+    }
+    SUBCASE("collective mode rejection")
+    {
+        PermutationTransfer transfer;
+        transfer.isLocalOnly = mpi.rank == 0;
+        if (mpi.size > 1)
+            CHECK_THROWS(NativeRowTransfer(transfer, mpi));
+    }
+}

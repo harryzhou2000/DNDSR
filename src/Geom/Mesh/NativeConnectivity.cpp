@@ -1,4 +1,6 @@
 #include "NativeConnectivity.hpp"
+#include "MeshConnectivity.hpp"
+#include "ConnectivityInterpolateRows.hpp"
 #include "Mesh.hpp"
 #include <set>
 
@@ -540,25 +542,19 @@ namespace DNDS::Geom
         for (auto &entry : _relations)
             relations.push_back(entry.first);
         std::sort(kinds.begin(), kinds.end());
-        auto key = [](AdjKind kind)
-        {
-            // Direct adjacencies ignore via, exactly as AdjKind equality does.
-            return std::array<int, 3>{int(kind.from), int(kind.to), kind.isIntraLevel() ? int(kind.via) : -1};
-        };
-        std::sort(relations.begin(), relations.end(), [&](AdjKind a, AdjKind b)
-                  { return key(a) < key(b); });
-        std::vector<int> schedule;
+        std::sort(relations.begin(), relations.end());
+        std::string schedule;
         for (auto kind : relations)
         {
-            const auto triple = key(kind);
-            schedule.insert(schedule.end(), triple.begin(), triple.end());
+            const auto descriptor = kind.Signature();
+            schedule += std::to_string(descriptor.size()) + ":" + descriptor;
         }
         int canonicalSize = _mpi.rank == 0 ? int(schedule.size()) : 0;
         MPI_Bcast(&canonicalSize, 1, MPI_INT, 0, _mpi.comm);
-        std::vector<int> canonical(static_cast<size_t>(canonicalSize));
+        std::string canonical(size_t(canonicalSize), ' ');
         if (_mpi.rank == 0)
             canonical = schedule;
-        MPI_Bcast(canonical.data(), canonicalSize, MPI_INT, 0, _mpi.comm);
+        MPI_Bcast(canonical.data(), canonicalSize, MPI_CHAR, 0, _mpi.comm);
         ValidateCollectively([&]
                              {
             DNDS_check_throw_info(schedule == canonical, "ghost publication registry differs between ranks");

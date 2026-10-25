@@ -1,9 +1,19 @@
 #pragma once
 
 #include "RelationAccess.hpp"
+#include "MeshTopologyTypes.hpp"
+
+namespace DNDS
+{
+    template <class TArray>
+    struct ArrayPair;
+}
 
 namespace DNDS::Geom
 {
+    template <rowsize RowSize, rowsize RowMax, rowsize Alignment>
+    class ArrayNodePeriodicBits;
+
     /// Node-parallel periodic metadata, bound to one ordered cone. Bits are
     /// values in the parent's frame, never target indices. Native and legacy
     /// storage share the same retained value/layout lease boundary.
@@ -21,7 +31,8 @@ namespace DNDS::Geom
     public:
         RelationPeriodicBits(const RelationReadAccess &relation, Runtime::Array<NodePeriodicBits> owned,
                              std::optional<Runtime::Array<NodePeriodicBits>> ghost = {});
-        RelationPeriodicBits(const RelationReadAccess &relation, const tPbiPair &legacy);
+        RelationPeriodicBits(const RelationReadAccess &relation,
+                             const DNDS::ArrayPair<ArrayNodePeriodicBits<NonUniformSize, NonUniformSize, NoAlign>> &legacy);
         explicit RelationPeriodicBits(const RelationReadAccess &relation);
         void Validate(const RelationReadAccess &relation) const;
         NodePeriodicBits operator()(index row, size_t slot) const { return _view(size_t(row), slot); }
@@ -59,6 +70,15 @@ namespace DNDS::Geom
 
     public:
         explicit NativeConnectivity(MPIInfo mpi) : _mpi(mpi) {}
+        /// Native setup mathematics; composition requires the intermediate
+        /// support rows to be present. Legacy DSL entry points forward here.
+        static NativeRelation Inverse(const RelationReadAccess &cone, const MPIInfo &mpi);
+        static NativeRelation Compose(const RelationReadAccess &AB, const RelationReadAccess &BC, bool removeSelf = false);
+        static NativeRelation ComposeAll(const RelationReadAccess &AB, const RelationReadAccess &BC, bool removeSelf = false);
+        static NativeRelation ComposeFiltered(const RelationReadAccess &AB, const RelationReadAccess &BC,
+                                              const AdjKind &resultKind,
+                                              const std::function<bool(index, index, int)> &predicate,
+                                              const std::function<bool(index, index, const std::vector<index> &)> &matchExtra = {});
         void Register(RelationReadAccess relation);
         /// The caller selects required relation groups at acquisition.
         void RegisterMesh(UnstructuredMesh &mesh, MeshReadRequirements requirements);

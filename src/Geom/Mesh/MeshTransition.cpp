@@ -1,5 +1,6 @@
 #include "MeshTransition.hpp"
 #include "FieldTransfer.hpp"
+#include "NativeMeshTransition.hpp"
 #include <type_traits>
 
 namespace DNDS::Geom
@@ -235,6 +236,73 @@ namespace DNDS::Geom
         MPI_Allreduce(MPI_IN_PLACE, &minLayers, 1, MPI_INT, MPI_MIN, mpi.comm);
         MPI_Allreduce(MPI_IN_PLACE, &maxLayers, 1, MPI_INT, MPI_MAX, mpi.comm);
         DNDS_check_throw_info(minLayers == maxLayers, "transition ghost layer policy differs between ranks");
+
+        if (nativeDestination)
+        {
+            FieldTransferDetail::LocalStage(mpi, [&]
+                                            {
+                DNDS_check_throw_info(caches == TransitionCachePolicy::Invalidate,
+                                      "native transition output caches require a native output builder");
+                result._fields.fields.reserve(fields.size());
+                result._bindings.reserve(fields.size());
+                result._bindingPrepared.assign(fields.size(), false);
+                result._attachments = fields;
+                for (const auto &field : fields)
+                    result._attachmentStamps.push_back(field.attachment());
+                if (checkpoint) checkpoint("cloned"); });
+            auto moved = NativeMeshTransition::Build(*source._nativeState, mpi, input, ghostLayers);
+            FieldTransferDetail::LocalStage(mpi, [&]
+                                            {
+                result._next = UnstructuredMesh::FromNative(mpi, std::move(moved.state));
+                result._next->mRank = source.mRank;
+                result._next->hdf5OutSetting = source.hdf5OutSetting;
+                if (checkpoint) checkpoint("reordered"); });
+            ReorderPlan plan;
+            plan.transfers = std::move(moved.transfers);
+            for (const auto &[kind, transfer] : plan.transfers)
+                plan.reorderedKinds.insert(kind);
+            ReorderRegistry registry;
+            FieldTransferDetail::LocalStage(mpi, [&]
+                                            {
+                registry.companions = fields;
+                for (size_t i = 0; i < registry.companions.size(); ++i)
+                {
+                    auto &entry = registry.companions[i];
+                    const bool bind = entry.requiresEntityBinding;
+                    const auto kind = entry.kind;
+                    auto prepare = entry.prepare;
+                    entry.requiresEntityBinding = false;
+                    entry.prepare = [prepare, &result, i, bind, kind](const PermutationTransfer &transfer, const MPIInfo &mpi)
+                    {
+                        auto staged = prepare(transfer, mpi);
+                        DNDS_check_throw_info(staged, "native field preparation returned no value");
+                        if (bind)
+                        {
+                            result._bindings.emplace_back(kind, staged.get());
+                            result._bindingPrepared[i] = true;
+                        }
+                        result._fields.fields.push_back(std::move(staged));
+                        return std::make_unique<DeferPublication>();
+                    };
+                } });
+            // Validates full field schema/disposition schedule before the first
+            // field transfer. Deferred callbacks never publish into live handles.
+            auto deferred = plan.prepareCompanions(registry, mpi);
+            FieldTransferDetail::LocalStage(mpi, [&]
+                                            {
+                for (size_t i = 0; i < fields.size(); ++i)
+                    if (fields[i].requiresEntityBinding && !result._bindingPrepared[i])
+                    {
+                        auto staged = fields[i].prepareUnchanged();
+                        DNDS_check_throw_info(staged, "unchanged native field preparation returned no value");
+                        result._bindings.emplace_back(fields[i].kind, staged.get());
+                        result._fields.fields.push_back(std::move(staged));
+                    }
+                for (const auto &[kind, staged] : result._bindings)
+                    staged->BindEntitySpace(result._next->Entities(kind));
+                if (checkpoint) checkpoint("rebuilt"); });
+            return result;
+        }
 
         FieldTransferDetail::LocalStage(mpi, [&]
                                         {

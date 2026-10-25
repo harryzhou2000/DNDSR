@@ -178,8 +178,12 @@ namespace DNDS::Geom::OverlapTest
         auto prepared = PreparedMeshTransition::Prepare(handle, input);
         prepared.Publish();
         fixture.mesh = handle.Get();
-        DNDS_check_throw_info(sourceOrder.Valid() && !sourceOrder.SameDomain(fixture.mesh->Entities(EntityKind::Cell)),
+        const auto destinationOrder = fixture.mesh->Entities(EntityKind::Cell);
+        DNDS_check_throw_info(sourceOrder.Valid() && !sourceOrder.SameOrder(destinationOrder),
                               "detached publication must retain the old source and distinguish its order");
+        if (source->HasNativeState())
+            DNDS_check_throw_info(sourceOrder.SameDomain(destinationOrder),
+                                  "native redistribution must preserve the logical entity domain");
         if (!fixture.mesh->HasNativeState())
             fixture.mesh->PublishNative(MeshReadRequirements::CellFlux());
     }

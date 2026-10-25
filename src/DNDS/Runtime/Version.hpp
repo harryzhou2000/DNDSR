@@ -167,6 +167,12 @@ namespace DNDS::Runtime
         }
         ReadLease Read() const { return ReadLease(_state); }
         bool SameController(const VersionTracker &other) const { return _state == other._state; }
+        /// Bind a newly prepared descriptor to an existing controller without
+        /// mutating the old controller shared by retained snapshots. Ordinary
+        /// assignment intentionally invalidates the previous owner instead.
+        /// This changes only this handle: callers must prepare fresh matching
+        /// stamps and may not use it to bypass a live object's mutation checks.
+        void RebindPrepared(const VersionTracker &other) { _state = other._state; }
         Mutation BeginMutation(Change changes) { return Mutation(_state, changes); }
         bool CanMutate() const
         {

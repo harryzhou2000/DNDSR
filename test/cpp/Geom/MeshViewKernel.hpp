@@ -1,6 +1,8 @@
 #pragma once
 
 #include "Geom/Mesh/MeshView.hpp"
+// The legacy parity oracle explicitly names compatibility device views.
+#include "Geom/Mesh/Mesh_DeviceView.hpp"
 
 namespace DNDS::Geom::Test
 {

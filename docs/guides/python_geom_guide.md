@@ -16,6 +16,12 @@ The `DNDSR.Geom` module provides Python bindings to the C++ geometry library, en
 
 ## Managed mesh reads
 
+Primary nonperiodic meshes can also be built directly from shared Runtime arrays
+with `Geom.build_native_mesh(...)`. This path needs no legacy mesh workspace;
+the constructor retains input allocations and blocks writes while they are
+published. See [native construction and ownership](../architecture/NativeMesh.md)
+for input types, collective-call rules, escaped row lifetimes and current limits.
+
 Prepared meshes can explicitly publish private native storage:
 
 ```python

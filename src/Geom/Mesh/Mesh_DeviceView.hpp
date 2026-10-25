@@ -1,5 +1,6 @@
 #pragma once
 #include "Geom/Elements.hpp"
+#include "MeshTypes.hpp"
 #include "DNDS/Array.hpp"
 #include "DNDS/ArrayDerived/ArrayAdjacency.hpp"
 #include "DNDS/ArrayDerived/ArrayEigenVector.hpp"
@@ -10,54 +11,6 @@
 #include "DNDS/ObjectUtils.hpp"
 #include "DNDS/Device/DeviceStorage.hpp"
 
-namespace DNDS::Geom
-{
-    static const t_index INTERNAL_ZONE = -1;
-    struct ElemInfo
-    {
-        t_index type = static_cast<t_index>(Elem::UnknownElem);
-        /// @brief positive for BVnum, 0 for internal Elems, Negative for ?
-        t_index zone = INTERNAL_ZONE;
-
-        DNDS_DEVICE_TRIVIAL_COPY_DEFINE(ElemInfo, ElemInfo)
-
-        DNDS_DEVICE_CALLABLE [[nodiscard]] Elem::ElemType getElemType() const
-        {
-            return static_cast<Elem::ElemType>(type);
-        }
-
-        DNDS_DEVICE_CALLABLE void setElemType(Elem::ElemType t)
-        {
-            type = static_cast<t_index>(t);
-        }
-
-        // bool ZoneIsInternal()
-        // {
-        //     return zone == INTERNAL_ZONE;
-        // }
-        // bool ZoneIsIndexed()
-        // {
-        //     return zone >= 0;
-        // }
-
-        static MPI_Datatype CommType()
-        {
-            static_assert(sizeof(ElemInfo) <= (4ULL * 2));
-            return MPI_INT32_T;
-        }
-        static int CommMult() { return 2; }
-        static std::string pybind11_name() { return "ElemInfo"; }
-    };
-
-}
-namespace DNDS
-{
-    //     DNDS_DEVICE_STORAGE_BASE_DELETER_INST(Geom::ElemInfo, extern)
-    //     DNDS_DEVICE_STORAGE_INST(Geom::ElemInfo, DeviceBackend::Host, extern)
-    // #ifdef DNDS_USE_CUDA
-    //     DNDS_DEVICE_STORAGE_INST(Geom::ElemInfo, DeviceBackend::CUDA, extern)
-    // #endif
-}
 namespace DNDS::Geom
 {
 
@@ -85,19 +38,6 @@ namespace DNDS::Geom
     using tFGetName = std::function<std::string(int)>;
     using tFGetData = std::function<DNDS::real(int, DNDS::index)>;
     using tFGetVecData = std::function<DNDS::real(int, DNDS::index, DNDS::rowsize)>;
-
-    enum MeshAdjState
-    {
-        Adj_Unknown = 0,
-        Adj_PointToLocal,
-        Adj_PointToGlobal,
-    };
-
-    enum MeshElevationState
-    {
-        Elevation_Untouched = 0,
-        Elevation_O1O2,
-    };
 
     // =================================================================
     // Device-side views for AdjPairTracked (trivially copyable)

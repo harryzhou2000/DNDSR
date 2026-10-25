@@ -102,6 +102,32 @@ namespace DNDS::Runtime
         }
     };
 
+    /// Borrowed logical row, shared by native and compatibility views. A span
+    /// retains neither values nor metadata; its outer lease must remain active.
+    template <class T, bool Checked = false>
+    class RowSpan
+    {
+        T *_data = nullptr;
+        size_t _size = 0;
+
+    public:
+        DNDS_DEVICE_CALLABLE RowSpan() = default;
+        DNDS_DEVICE_CALLABLE RowSpan(T *data, size_t size) : _data(data), _size(size) {}
+        DNDS_DEVICE_CALLABLE T &operator[](size_t column) const
+        {
+            if constexpr (Checked)
+                DNDS_HD_assert(column < _size);
+            return _data[column];
+        }
+        DNDS_DEVICE_CALLABLE T *data() const { return _data; }
+        DNDS_DEVICE_CALLABLE size_t size() const { return _size; }
+        DNDS_DEVICE_CALLABLE bool empty() const { return _size == 0; }
+        DNDS_DEVICE_CALLABLE T *begin() const { return _data; }
+        DNDS_DEVICE_CALLABLE T *end() const { return _size ? _data + _size : _data; }
+        DNDS_DEVICE_CALLABLE const T *cbegin() const { return _data; }
+        DNDS_DEVICE_CALLABLE const T *cend() const { return _size ? _data + _size : _data; }
+    };
+
     /// Plain kernel view: no ownership, placement dispatch or tracking per element.
     /// Checked=true is a separate development policy, independent of NDEBUG.
     /// @pre Caller retains the lease/operation through actual use, validates row
@@ -137,6 +163,7 @@ namespace DNDS::Runtime
                 DNDS_HD_assert(row < rows && component < RowSize(row));
             return Row(row)[component];
         }
+        DNDS_DEVICE_CALLABLE RowSpan<T, Checked> operator[](size_t row) const { return {Row(row), RowSize(row)}; }
     };
 
     namespace Detail
@@ -467,6 +494,7 @@ namespace DNDS::Runtime
     struct PairReadView
     {
         ArrayView<const T, Checked> owned, ghost;
+        DNDS_DEVICE_CALLABLE size_t Rows() const { return owned.Rows() + ghost.Rows(); }
         DNDS_DEVICE_CALLABLE const T *Row(size_t row) const
         {
             return row < owned.Rows() ? owned.Row(row) : ghost.Row(row - owned.Rows());
@@ -481,6 +509,7 @@ namespace DNDS::Runtime
                 DNDS_HD_assert(column < RowSize(row));
             return Row(row)[column];
         }
+        DNDS_DEVICE_CALLABLE RowSpan<const T, Checked> operator[](size_t row) const { return {Row(row), RowSize(row)}; }
     };
 
     template <class T, class LayoutPolicy = RowLayout>
@@ -504,6 +533,9 @@ namespace DNDS::Runtime
                 ghost.Wait();
             }
         };
-        ReadLease Read(ExecutionContext context = ExecutionContext::Host()) const { return {owned.Read(context), ghost.Read(context)}; }
+        typename Array<T, LayoutPolicy>::ReadLease ReadOwned(ExecutionContext context = ExecutionContext::Host()) const { return owned.Read(context); }
+        /// Acquire only after ghost readiness. This never combines the writers.
+        ReadLease ReadCombined(ExecutionContext context = ExecutionContext::Host()) const { return {owned.Read(context), ghost.Read(context)}; }
+        ReadLease Read(ExecutionContext context = ExecutionContext::Host()) const { return ReadCombined(context); }
     };
 }

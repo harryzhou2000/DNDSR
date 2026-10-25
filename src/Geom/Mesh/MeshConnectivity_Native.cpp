@@ -1,4 +1,5 @@
-#include "RelationAccess.hpp"
+#include "NativeConnectivity.hpp"
+#include "MeshConnectivity.hpp"
 #include <algorithm>
 #include <limits>
 
@@ -7,6 +8,7 @@ namespace DNDS::Geom
     void RelationReadAccess::Validate() const
     {
         CheckActive();
+        _kind.Validate();
         _source.Validate();
         _target.Validate();
         EntitySpace::CheckCommunicator(_source._mpi.comm, _target._mpi.comm);
@@ -18,9 +20,26 @@ namespace DNDS::Geom
         DNDS_check_throw_info(_view.owned.Rows() == size_t(_source.NumOwned()) &&
                                   (_view.ghost.Rows() == 0 || _view.ghost.Rows() == size_t(_source.NumGhost())),
                               "relation owned/ghost rows differ from its source space");
+        DNDS_check_throw_info(!_kind.removeSelf || _source.SameOrder(_target),
+                              "removeSelf relation requires identical source/target entity order");
         for (index row = 0; row < Rows(); ++row)
+        {
+            index previous = -1;
             for (size_t slot = 0; slot < RowSize(row); ++slot)
-                (void)ReadEntry(row, slot);
+            {
+                const auto entry = ReadEntry(row, slot);
+                if (!_kind.IsLegacy() && _kind.order == RelationOrder::SortedUnique)
+                {
+                    // Sorting describes entity globals, never local encodings:
+                    // owned rows precede ghosts even when a ghost global is lower.
+                    DNDS_check_throw_info(!entry.absent && entry.global > previous,
+                                          "SortedUnique relation has absent, duplicate or unordered targets");
+                    previous = entry.global;
+                }
+                DNDS_check_throw_info(!_kind.removeSelf || entry.absent || entry.global != _source.LocalToGlobal(row),
+                                      "removeSelf relation contains its source entity");
+            }
+        }
     }
 
     RelationReadAccess::Entry RelationReadAccess::ReadEntry(index row, size_t slot) const
@@ -57,36 +76,80 @@ namespace DNDS::Geom
             target[slot] = entries[slot];
     }
 
-    NativeRelation MeshConnectivity::ComposeFiltered(const RelationReadAccess &AB, const RelationReadAccess &BC,
-                                                     const std::function<bool(index, index, int)> &predicate,
-                                                     const std::function<bool(index, index, const std::vector<index> &)> &matchExtra)
+    NativeRelation NativeConnectivity::ComposeFiltered(const RelationReadAccess &AB, const RelationReadAccess &BC,
+                                                       const AdjKind &resultKind,
+                                                       const std::function<bool(index, index, int)> &predicate,
+                                                       const std::function<bool(index, index, const std::vector<index> &)> &matchExtra)
     {
         AB.Validate();
         BC.Validate();
         DNDS_check_throw_info(AB.Target().SameOrder(BC.Source()), "composition intermediate entity/map order mismatch");
         DNDS_check_throw_info(bool(predicate), "composition predicate is missing");
+        resultKind.Validate();
+        DNDS_check_throw_info(!resultKind.IsLegacy() && resultKind == AdjKind::Composition(AB.Kind(), BC.Kind(),
+                                                                                           resultKind.selection, resultKind.removeSelf, resultKind.semanticName, resultKind.semanticVersion, resultKind.periodic),
+                              "composition output descriptor differs from its input definitions");
+        DNDS_check_throw_info(!resultKind.removeSelf || AB.Source().SameOrder(BC.Target()),
+                              "removeSelf requires identical source and final target spaces");
+        DNDS_check_throw_info(resultKind.selection == RelationSelection::Any || resultKind.selection == RelationSelection::All ||
+                                  resultKind.selection == RelationSelection::Custom || resultKind.selection == RelationSelection::Exact,
+                              "composition requires an any/all/custom/exact selection");
+        DNDS_check_throw_info(!matchExtra || resultKind.selection == RelationSelection::Custom || resultKind.selection == RelationSelection::Exact,
+                              "additional matching requires a named custom/exact selection");
+        DNDS_check_throw_info(resultKind.periodic != RelationPeriodicPolicy::FrameMatched || bool(matchExtra),
+                              "frame-matched selection requires an explicit periodic matcher");
+        DNDS_check_throw_info(resultKind.selection != RelationSelection::Exact || bool(matchExtra),
+                              "exact selection requires an explicit incidence/frame matcher");
+        auto unique = [](std::vector<index> entries)
+        {
+            entries.erase(std::remove(entries.begin(), entries.end(), UnInitIndex), entries.end());
+            std::sort(entries.begin(), entries.end());
+            entries.erase(std::unique(entries.begin(), entries.end()), entries.end());
+            return entries;
+        };
+        auto selected = [&](index a, index c, int count)
+        {
+            if (resultKind.removeSelf && a == c)
+                return false;
+            if (resultKind.selection == RelationSelection::Any)
+                return count >= 1;
+            if (resultKind.selection == RelationSelection::All)
+            {
+                const auto local = AB.Source().GlobalToLocal(a);
+                DNDS_check_throw_info(local, "composition source row is unavailable");
+                return count == int(unique(AB.GlobalRow(*local)).size());
+            }
+            return predicate(a, c, count);
+        };
         Runtime::RowBuilder builder(size_t(AB.NumOwned()), sizeof(index));
         ConnectivityRows::Compose(AB.NumOwned(), [&](index row)
-                                  { return AB.GlobalRow(row); }, [&](index row)
-                                  { return BC.GlobalRow(row); }, [&](index global)
+                                  { return unique(AB.GlobalRow(row)); }, [&](index row)
+                                  { return unique(BC.GlobalRow(row)); }, [&](index global)
                                   {
                 auto row = BC.Source().GlobalToLocal(global);
                 DNDS_check_throw_info(row && *row < BC.Rows(), "composition intermediate row is unavailable; transfer it explicitly");
                 return *row; }, [&](index row)
-                                  { return AB.Source().LocalToGlobal(row); }, predicate, [&](index row, const std::vector<index> &entries)
+                                  { return AB.Source().LocalToGlobal(row); }, selected, [&](index row, const std::vector<index> &entries)
                                   { WriteNativeRow(builder, row, entries); }, matchExtra);
-        return NativeRelation({AB.Source().Kind(), BC.Target().Kind()}, AB.Source(), BC.Target(),
+        return NativeRelation(resultKind, AB.Source(), BC.Target(),
                               Runtime::Array<index>::FromSharedStorage(builder.Commit()));
     }
 
-    NativeRelation MeshConnectivity::Compose(const RelationReadAccess &AB, const RelationReadAccess &BC, bool removeSelf)
+    NativeRelation NativeConnectivity::Compose(const RelationReadAccess &AB, const RelationReadAccess &BC, bool removeSelf)
     {
         DNDS_check_throw_info(!removeSelf || AB.Source().SameOrder(BC.Target()),
                               "removeSelf requires identical source and final target spaces");
-        return ComposeFiltered(AB, BC, SharedCountPredicate{1, removeSelf});
+        return ComposeFiltered(AB, BC, AdjKind::Composition(AB.Kind(), BC.Kind(), RelationSelection::Any, removeSelf),
+                               SharedCountPredicate{1, removeSelf});
     }
 
-    NativeRelation MeshConnectivity::Inverse(const RelationReadAccess &cone, const MPIInfo &mpi)
+    NativeRelation NativeConnectivity::ComposeAll(const RelationReadAccess &AB, const RelationReadAccess &BC, bool removeSelf)
+    {
+        return ComposeFiltered(AB, BC, AdjKind::Composition(AB.Kind(), BC.Kind(), RelationSelection::All, removeSelf),
+                               SharedCountPredicate{1, removeSelf});
+    }
+
+    NativeRelation NativeConnectivity::Inverse(const RelationReadAccess &cone, const MPIInfo &mpi)
     {
         int valid = 1;
         try
@@ -174,7 +237,7 @@ namespace DNDS::Geom
             entries.erase(std::unique(entries.begin(), entries.end()), entries.end());
             WriteNativeRow(builder, index(row), entries);
         }
-        return NativeRelation({cone.Target().Kind(), cone.Source().Kind()}, cone.Target(), cone.Source(),
+        return NativeRelation(cone.Kind().Inverted(), cone.Target(), cone.Source(),
                               Runtime::Array<index>::FromSharedStorage(builder.Commit()));
     }
 
@@ -209,4 +272,28 @@ namespace DNDS::Geom
         auto validated = result.Read();
         return result;
     }
+
+    NativeRelation MeshConnectivity::Inverse(const RelationReadAccess &cone, const MPIInfo &mpi)
+    {
+        return NativeConnectivity::Inverse(cone, mpi);
+    }
+
+    NativeRelation MeshConnectivity::Compose(const RelationReadAccess &AB, const RelationReadAccess &BC, bool removeSelf)
+    {
+        return NativeConnectivity::Compose(AB, BC, removeSelf);
+    }
+
+    NativeRelation MeshConnectivity::ComposeAll(const RelationReadAccess &AB, const RelationReadAccess &BC, bool removeSelf)
+    {
+        return NativeConnectivity::ComposeAll(AB, BC, removeSelf);
+    }
+
+    NativeRelation MeshConnectivity::ComposeFiltered(const RelationReadAccess &AB, const RelationReadAccess &BC,
+                                                     const AdjKind &resultKind,
+                                                     const std::function<bool(index, index, int)> &predicate,
+                                                     const std::function<bool(index, index, const std::vector<index> &)> &matchExtra)
+    {
+        return NativeConnectivity::ComposeFiltered(AB, BC, resultKind, predicate, matchExtra);
+    }
+
 }

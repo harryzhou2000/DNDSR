@@ -10,8 +10,11 @@ using namespace DNDS::Runtime;
 __global__ void FillRows(ArrayView<double> values)
 {
     for (size_t i = blockIdx.x; i < values.Rows(); i += gridDim.x)
-        for (size_t j = threadIdx.x; j < values.RowSize(i); j += blockDim.x)
-            values(i, j) = 100 * i + j;
+    {
+        auto row = values[i];
+        for (size_t j = threadIdx.x; j < row.size(); j += blockDim.x)
+            row[j] = 100 * i + j;
+    }
 }
 
 TEST_CASE("Native ragged Array CUDA views retain metadata through replacement")
@@ -65,6 +68,64 @@ TEST_CASE("Padded CUDA views use logical row sizes and preserve capacity padding
                 CHECK(flat[i * 40 + j] == 0);
     }
     REQUIRE(cudaStreamDestroy(stream) == cudaSuccess);
+}
+
+struct RowEntry
+{
+    int64_t id;
+    double weight;
+};
+
+__global__ void CopyPairRows(PairReadView<RowEntry, true> input, ArrayView<RowEntry, true> output)
+{
+    for (size_t row = blockIdx.x; row < input.Rows(); row += gridDim.x)
+    {
+        const auto source = input[row];
+        auto target = output[row];
+        for (size_t column = threadIdx.x; column < source.size(); column += blockDim.x)
+        {
+            target[column] = source.cbegin()[column];
+            target[column].weight += target[column].id;
+        }
+    }
+}
+
+TEST_CASE("Fixed POD CUDA rows use sized owned and combined read spans")
+{
+    ArrayPair<RowEntry, FixedRows<2>> host;
+    host.owned.Reset(RowLayout::Dense(1, 2, 3));
+    host.ghost.Reset(RowLayout::Dense(1, 2));
+    {
+        auto owned = host.owned.Write();
+        auto ghost = host.ghost.Write();
+        owned.View()[0][0] = {1, 1.5};
+        owned.View()[0][1] = {2, 2.5};
+        ghost.View()[0][0] = {3, 3.5};
+        ghost.View()[0][1] = {4, 4.5};
+    }
+    const auto context = ExecutionContext::CUDA(0);
+    ArrayPair<RowEntry, FixedRows<2>> device{host.owned.To(Device::CUDA(0)), host.ghost.To(Device::CUDA(0))};
+    Array<RowEntry, FixedRows<2>> output(RowLayout::Dense(2, 2, 4), Device::CUDA(0));
+    auto read = device.ReadCombined(context);
+    auto write = output.Write(context);
+    CopyPairRows<<<2, 32>>>(read.View<true>(), write.View<true>());
+    REQUIRE(cudaGetLastError() == cudaSuccess);
+    auto done = Completion::Record(context);
+    read.Complete(done);
+    write.Complete(done);
+    device.owned.Reset(RowLayout::Dense(0, 2));
+    device.ghost.Reset(RowLayout::Dense(0, 2));
+    read.Wait();
+    write.Wait();
+    auto result = output.To(Device::Host(), context);
+    auto values = result.Read();
+    for (size_t row = 0; row < 2; ++row)
+        for (size_t column = 0; column < 2; ++column)
+        {
+            const auto id = int64_t(2 * row + column + 1);
+            CHECK(values.View()[row][column].id == id);
+            CHECK(values.View()[row][column].weight == 2 * id + 0.5);
+        }
 }
 
 __global__ void Scale(Span<const double> input, Span<double> output)

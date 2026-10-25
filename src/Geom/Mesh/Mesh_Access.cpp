@@ -203,7 +203,7 @@ namespace DNDS::Geom
         const auto &edgeRows = _storage.relations[static_cast<size_t>(MeshRelation::EdgeNodes)];
         if (_context.device == Runtime::Device::Host())
         {
-            auto elementRows = [&](const auto &info, const auto &nodes)
+            auto elementRows = [&](const auto &info, const auto &nodes, int dimension)
             {
                 for (size_t row = 0; row < total(nodes); ++row)
                 {
@@ -213,16 +213,18 @@ namespace DNDS::Geom
                     DNDS_check_throw_info(type > Elem::UnknownElem && type < Elem::ElemType_NUM,
                                           "mesh element information has an unsupported type");
                     const Elem::Element element{static_cast<Elem::ElemType>(type)};
+                    DNDS_check_throw_info(element.GetDim() == dimension,
+                                          "mesh element dimension differs from its entity role");
                     DNDS_check_throw_info(nodes.RowSize(row) == size_t(element.GetNumNodes()) &&
                                               nodes.RowSize(row) <= size_t(Elem::CellNumNodeMax),
                                           "mesh node incidence width differs from element type");
                 }
             };
-            elementRows(_storage.cellElemInfo, cellRows);
-            elementRows(_storage.bndElemInfo, bndRows);
+            elementRows(_storage.cellElemInfo, cellRows, _storage.dim);
+            elementRows(_storage.bndElemInfo, bndRows, _storage.dim - 1);
             if (requirements.faces)
             {
-                elementRows(_storage.faceElemInfo, faceRows);
+                elementRows(_storage.faceElemInfo, faceRows, _storage.dim - 1);
                 const auto &cellFaces = _storage.relations[static_cast<size_t>(MeshRelation::CellFaces)];
                 DNDS_check_throw_info(sameRows(cellFaces, cellRows), "cell face rows differ from cell distribution");
                 for (size_t row = 0; row < total(cellRows); ++row)
@@ -230,7 +232,7 @@ namespace DNDS::Geom
                                           "mesh face incidence width differs from cell element type");
             }
             if (requirements.edges)
-                elementRows(_storage.edgeElemInfo, edgeRows);
+                elementRows(_storage.edgeElemInfo, edgeRows, 1);
         }
         const size_t sourceOwned[]{cellRows.owned.Rows(), bndRows.owned.Rows(), bndRows.owned.Rows(), cellRows.owned.Rows(),
                                    _storage.coords.owned.Rows(), _storage.coords.owned.Rows(), cellRows.owned.Rows(),
@@ -398,6 +400,21 @@ namespace DNDS::Geom
             return MeshReadAccess(_nativeState->Snapshot(context.device), context, std::move(sourceRead), versions.Stamp());
         }
         return MeshReadAccess(*this, requirements, context);
+    }
+
+    std::shared_ptr<UnstructuredMesh> UnstructuredMesh::FromNative(const MPIInfo &mpi,
+                                                                   std::shared_ptr<const NativeMeshState> state)
+    {
+        DNDS_check_throw_info(state, "native mesh state is missing");
+        state->Validate();
+        const auto nodes = state->Entities(EntityKind::Node);
+        EntitySpace::CheckCommunicator(nodes._mpi.comm, mpi.comm);
+        auto result = std::make_shared<UnstructuredMesh>(mpi, state->BorrowHostView().Dimension());
+        result->_entityIdentity = nodes._identity;
+        result->isPeriodic = state->BorrowHostView().IsPeriodic();
+        result->periodicInfo = state->BorrowHostView().Periodic();
+        result->_nativeState = state->BindEpoch(result->versions);
+        return result;
     }
 
     void UnstructuredMesh::PublishNative(MeshReadRequirements requirements)

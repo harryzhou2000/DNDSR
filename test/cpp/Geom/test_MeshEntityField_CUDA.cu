@@ -257,8 +257,9 @@ TEST_CASE("Native EntityField CUDA scopes and direct multi-GPU halo retain check
     auto next = handle.Get();
     REQUIRE(next->HasNativeState());
     auto nextSpace = next->Entities(G::EntityKind::Cell);
-    CHECK(space.Valid()); // Old source is retained; new field association differs.
-    CHECK_FALSE(space.SameDomain(nextSpace));
+    CHECK(space.Valid());               // Old source is retained; new field association differs.
+    CHECK(space.SameDomain(nextSpace)); // Redistribution retains the logical mesh family.
+    CHECK_FALSE(space.SameOrder(nextSpace));
     CHECK_THROWS(field.Read(space, context));
     CHECK_THROWS(binding.BeginScheduled(haloContext));
     CHECK_THROWS(route.Bind(field, nextSpace));

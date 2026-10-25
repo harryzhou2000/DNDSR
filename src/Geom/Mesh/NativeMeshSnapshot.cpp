@@ -4,6 +4,114 @@
 
 namespace DNDS::Geom
 {
+    NativeMeshSnapshot NativeMeshSnapshot::FromNative(NativeMeshData data, MeshReadRequirements requirements)
+    {
+        DNDS_check_throw_info(data.namedRelations.empty(), "named setup relations require NativeMeshState publication");
+        DNDS_check_throw_info(data.dimension == 2 || data.dimension == 3, "native mesh dimension must be two or three");
+        auto state = std::make_shared<State>();
+        state->source = state->versions.Stamp();
+        state->device = Runtime::Device::Host();
+        state->semantics.dim = data.dimension;
+        state->semantics.isPeriodic = data.periodic;
+        state->semantics.periodicInfo = std::move(data.periodicInfo);
+        state->semantics.hasNodeWallDist = bool(data.nodeWallDist);
+        // Presence is a public query promise, so every adopted optional value
+        // must belong to an enabled, fully validated publication group.
+        DNDS_check_throw_info(requirements.wallDistance || !data.nodeWallDist,
+                              "native wall distance must be explicitly included in publication requirements");
+        DNDS_check_throw_info(requirements.faces || !data.faceInfo,
+                              "native face information requires the facial publication group");
+        DNDS_check_throw_info(requirements.edges || !data.edgeInfo,
+                              "native edge information requires the edge publication group");
+        DNDS_check_throw_info(data.periodic || (!data.cellNodesPbi && !data.bndNodesPbi &&
+                                                !data.cellFacesPbi && !data.faceNodesPbi && !data.cellEdgesPbi && !data.edgeNodesPbi),
+                              "native nonperiodic mesh cannot expose periodic incidence companions");
+        DNDS_check_throw_info(requirements.faces || (!data.cellFacesPbi && !data.faceNodesPbi),
+                              "native periodic facial companions require the facial publication group");
+        DNDS_check_throw_info(requirements.edges || (!data.cellEdgesPbi && !data.edgeNodesPbi),
+                              "native periodic edge companions require the edge publication group");
+        auto checkPair = [](const auto &pair)
+        {
+            if (pair)
+                DNDS_check_throw_info(pair->owned.GetDevice() == Runtime::Device::Host() &&
+                                          pair->ghost.GetDevice() == Runtime::Device::Host(),
+                                      "native mesh construction requires explicit host buffers");
+        };
+        for (size_t i = 0; i < data.relations.size(); ++i)
+        {
+            checkPair(data.relations[i]);
+            state->semantics.relationPresent[i] = bool(data.relations[i]);
+            state->semantics.relationStates[i] = data.relations[i] ? Adj_PointToLocal : Adj_Unknown;
+        }
+        auto required = [&](MeshRelation relation)
+        { DNDS_check_throw_info(data.relations[size_t(relation)], "native mesh required relation is absent"); };
+        DNDS_check_throw_info(!requirements.allFaceCellsLocal || requirements.faces,
+                              "all-face cell closure requires facial relations");
+        auto optionalGroup = [&](bool enabled, std::initializer_list<MeshRelation> relations)
+        {
+            for (auto relation : relations)
+                DNDS_check_throw_info(enabled || !data.relations[size_t(relation)],
+                                      "native optional relation must be explicitly included in publication requirements");
+        };
+        optionalGroup(requirements.faces, {MeshRelation::CellFaces, MeshRelation::FaceNodes, MeshRelation::FaceCells,
+                                           MeshRelation::FaceBoundaries, MeshRelation::BoundaryFaces});
+        optionalGroup(requirements.inverse, {MeshRelation::NodeCells, MeshRelation::NodeBoundaries});
+        optionalGroup(requirements.edges, {MeshRelation::CellEdges, MeshRelation::EdgeNodes, MeshRelation::EdgeCells});
+        optionalGroup(requirements.cellFaceNeighbors, {MeshRelation::CellFaceCells});
+        required(MeshRelation::CellNodes);
+        required(MeshRelation::BoundaryNodes);
+        required(MeshRelation::BoundaryCells);
+        required(MeshRelation::CellCells);
+        DNDS_check_throw_info(data.coords && data.cellInfo && data.bndInfo, "native primary mesh values are missing");
+        if (requirements.faces)
+        {
+            for (auto relation : {MeshRelation::CellFaces, MeshRelation::FaceNodes, MeshRelation::FaceCells,
+                                  MeshRelation::FaceBoundaries, MeshRelation::BoundaryFaces})
+                required(relation);
+            DNDS_check_throw_info(data.faceInfo, "native face information is missing");
+        }
+        if (requirements.inverse)
+        {
+            required(MeshRelation::NodeCells);
+            required(MeshRelation::NodeBoundaries);
+        }
+        if (requirements.edges)
+        {
+            required(MeshRelation::CellEdges);
+            required(MeshRelation::EdgeNodes);
+            required(MeshRelation::EdgeCells);
+            DNDS_check_throw_info(data.edgeInfo, "native edge information is missing");
+        }
+        if (requirements.cellFaceNeighbors)
+            required(MeshRelation::CellFaceCells);
+        DNDS_check_throw_info(!requirements.wallDistance || data.nodeWallDist, "native wall distance is missing");
+        if (data.periodic)
+            DNDS_check_throw_info(data.cellNodesPbi && data.bndNodesPbi &&
+                                      (!requirements.faces || (data.cellFacesPbi && data.faceNodesPbi)) &&
+                                      (!requirements.edges || (data.cellEdgesPbi && data.edgeNodesPbi)),
+                                  "native periodic incidence companions are missing");
+        state->relations = std::move(data.relations);
+        auto adopt = [&](auto &destination, auto &source)
+        { checkPair(source); destination = std::move(source); };
+        adopt(state->coords, data.coords);
+        adopt(state->nodeWallDist, data.nodeWallDist);
+        adopt(state->cellInfo, data.cellInfo);
+        adopt(state->bndInfo, data.bndInfo);
+        adopt(state->faceInfo, data.faceInfo);
+        adopt(state->edgeInfo, data.edgeInfo);
+        adopt(state->cellNodesPbi, data.cellNodesPbi);
+        adopt(state->bndNodesPbi, data.bndNodesPbi);
+        adopt(state->cellFacesPbi, data.cellFacesPbi);
+        adopt(state->faceNodesPbi, data.faceNodesPbi);
+        adopt(state->cellEdgesPbi, data.cellEdgesPbi);
+        adopt(state->edgeNodesPbi, data.edgeNodesPbi);
+        NativeMeshSnapshot result(state);
+        auto read = std::make_shared<MeshReadAccess>(result.AcquireRead());
+        read->Validate(requirements);
+        state->immutableRead = std::move(read);
+        return result;
+    }
+
     template <class T>
     NativeMeshSnapshot::Pair<T> NativeMeshSnapshot::ClonePair(Runtime::PairReadView<T> source)
     {

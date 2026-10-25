@@ -2,6 +2,8 @@
 #define DNDS_MESH_FACADE_TEST_EMBEDDED
 #include "test_MeshFacade.cpp"
 #include "Geom/Mesh/NativeMeshSnapshot.hpp"
+#include "Geom/Mesh/NativeMeshBuilder.hpp"
+#include "DNDS/Runtime/RowBuilder.hpp"
 #include <cuda_runtime.h>
 #include <cstdlib>
 #include <atomic>
@@ -293,6 +295,134 @@ TEST_CASE("Detached native CUDA mesh backing is placed once and reused by reads"
         CheckProbeEqual(actual, expected);
     }
     REQUIRE(cudaFree(output) == cudaSuccess);
+    REQUIRE(cudaStreamDestroy(stream) == cudaSuccess);
+}
+
+namespace
+{
+    R::Array<I> NativeBuilderCUDARows(const std::vector<std::vector<I>> &rows)
+    {
+        R::RowBuilder builder(rows.size(), sizeof(I));
+        for (size_t row = 0; row < rows.size(); ++row)
+        {
+            builder.ResizeRow(row, rows[row].size(), false);
+            for (size_t slot = 0; slot < rows[row].size(); ++slot)
+                builder.Row<I>(row)[slot] = rows[row][slot];
+        }
+        return R::Array<I>::FromSharedStorage(builder.Commit());
+    }
+
+    G::NativeMeshInput NativeBuilderCUDAInput(const DNDS::MPIInfo &mpi)
+    {
+        auto nodes = G::EntitySpace::CreateOwned(G::EntityKind::Node, mpi, 4);
+        auto cells = nodes.CreateSibling(G::EntityKind::Cell, 2);
+        auto boundaries = nodes.CreateSibling(G::EntityKind::Bnd, 0);
+        const I next = (mpi.rank + 1) % mpi.size, offset = 4 * next;
+        // Two triangles share an edge, while their nodes belong to the next
+        // rank. Complete node stars also bring the previous rank's cells in.
+        G::NativeMeshInput input{mpi, 2, cells, nodes, boundaries, NativeBuilderCUDARows({{offset, offset + 1, offset + 2}, {offset + 1, offset + 3, offset + 2}}), NativeBuilderCUDARows({}), R::Array<DNDS::real>(R::RowLayout::Dense(4, 3)), R::Array<G::ElemInfo>(R::RowLayout::Dense(2, 1)), R::Array<G::ElemInfo>(R::RowLayout::Dense(0, 1)), {}};
+        {
+            auto coords = input.coordinates.Write();
+            for (size_t row = 0; row < 4; ++row)
+            {
+                coords.View()(row, 0) = DNDS::real(4 * mpi.rank + I(row));
+                coords.View()(row, 1) = DNDS::real(row * row);
+                coords.View()(row, 2) = 0;
+            }
+            auto info = input.cellInfo.Write();
+            for (size_t row = 0; row < 2; ++row)
+                info.View()(row, 0) = G::ElemInfo{G::Elem::Tri3, G::INTERNAL_ZONE};
+        }
+        return input;
+    }
+
+    __device__ DNDS::real NativeBuilderCellValue(G::UnstructuredMeshView mesh, I cell)
+    {
+        DNDS::real value = 0;
+        for (auto node : mesh.CellNodes(cell))
+        {
+            const auto coordinates = mesh.Coord(node);
+            value += coordinates[0] + 2 * coordinates[1] + 3 * coordinates[2];
+        }
+        return value;
+    }
+
+    __global__ void NativeBuilderStencil(G::UnstructuredMeshView mesh, R::ArrayView<DNDS::real> output)
+    {
+        const I cell = I(blockIdx.x * blockDim.x + threadIdx.x);
+        if (cell >= mesh.NumCellProc())
+            return;
+        auto value = NativeBuilderCellValue(mesh, cell);
+        for (auto neighbor : mesh.CellCells(cell))
+            value += 2 * NativeBuilderCellValue(mesh, neighbor);
+        output(size_t(cell), 0) = value;
+    }
+}
+
+TEST_CASE("Native builder CUDA stencil retains independent arrays through pending completion")
+{
+    const auto mpi = FacadeMPI();
+    REQUIRE(mpi.size <= 2);
+    const int ordinal = FacadeGPUOrdinal();
+    cudaStream_t stream = nullptr;
+    REQUIRE(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking) == cudaSuccess);
+    const auto device = R::Device::CUDA(ordinal);
+    const auto context = R::ExecutionContext::CUDA(ordinal, stream);
+    std::optional<G::NativeMeshInput> input;
+    input.emplace(NativeBuilderCUDAInput(mpi));
+    G::NativeMeshBuildOptions options;
+    options.completeNodeStar = true;
+    auto state = G::NativeMeshBuilder::Build(*input, options);
+    auto placed = state->WithPlacement(device, context);
+    auto mesh = G::UnstructuredMesh::FromNative(mpi, placed);
+    CHECK_FALSE(mesh->coords.father);
+    CHECK_FALSE(mesh->cell2node.father);
+    CHECK_FALSE(mesh->cell2cell.father);
+    const auto cells = mesh->Entities(G::EntityKind::Cell);
+    CHECK(cells.NumGhost() == (mpi.size > 1 ? 2 : 0));
+    CHECK(mesh->NumNodeGhost() == (mpi.size > 1 ? 4 : 0));
+    std::vector<DNDS::real> expected(size_t(cells.NumLocal()));
+    for (I row = 0; row < cells.NumLocal(); ++row)
+    {
+        const auto global = cells.LocalToGlobal(row);
+        const auto nodeOwner = (global / 2 + 1) % mpi.size;
+        // Independent exact oracle: triangle coordinate sums are 12*r+13
+        // and 12*r+34; each stencil adds twice the other triangle's sum.
+        expected[size_t(row)] = DNDS::real(36 * nodeOwner + (global % 2 ? 60 : 81));
+    }
+    R::Array<DNDS::real> output(R::RowLayout::Dense(expected.size(), 1), device);
+    std::optional<G::MeshReadAccess> access;
+    access.emplace(mesh->AcquireRead(G::MeshReadRequirements::Primary(), context));
+    CHECK_THROWS(access->HostView());
+    auto write = output.Write(context);
+    // Resolve CUDA lazy module loading before deliberately holding the stream.
+    NativeBuilderStencil<<<1, 32, 0, stream>>>(access->DeviceView(), write.View());
+    REQUIRE(cudaGetLastError() == cudaSuccess);
+    REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
+    {
+        FacadeStreamGate gate(stream);
+        REQUIRE(cudaLaunchHostFunc(stream, FacadeStreamGate::Wait, &gate) == cudaSuccess);
+        NativeBuilderStencil<<<1, 32, 0, stream>>>(access->DeviceView(), write.View());
+        REQUIRE(cudaGetLastError() == cudaSuccess);
+        const auto done = R::Completion::Record(context);
+        access->Complete(done);
+        write.Complete(done);
+        CHECK_THROWS(access->DeviceView());
+        CHECK(cudaStreamQuery(stream) == cudaErrorNotReady);
+        input.reset();
+        mesh.reset();
+        placed.reset();
+        state.reset();
+        CHECK(cudaStreamQuery(stream) == cudaErrorNotReady);
+        gate.release.store(true, std::memory_order_release);
+        access->Wait();
+        write.Wait();
+    }
+    access.reset();
+    auto host = output.To(R::Device::Host());
+    auto actual = host.Read();
+    for (size_t row = 0; row < expected.size(); ++row)
+        CHECK(actual.View()(row, 0) == expected[row]);
     REQUIRE(cudaStreamDestroy(stream) == cudaSuccess);
 }
 
