@@ -27,6 +27,7 @@
 #include "Euler/EulerSolver.hpp"
 #include "Geom/Mesh/Mesh_Helpers.hpp"
 #include "Geom/Mesh/NativeMeshAssembler.hpp"
+#include "Geom/Mesh/NativeMeshTopology.hpp"
 
 #include <fstream>
 #include <iostream>
@@ -70,7 +71,9 @@ template <EulerModel model>
 static std::string writeTempConfig(const std::string &caseJsonPath, const std::string &tag,
                                    const nlohmann::ordered_json &overrides = {})
 {
-    auto tmpDir = std::filesystem::temp_directory_path() / "dndsr_euler_test";
+    int writerPid = int(getpid());
+    MPI_Bcast(&writerPid, 1, MPI_INT, 0, g_mpi.comm);
+    auto tmpDir = std::filesystem::temp_directory_path() / "dndsr_euler_test" / std::to_string(writerPid);
     std::filesystem::create_directories(tmpDir);
     std::string defaultPath = (tmpDir / (tag + "_default.json")).string();
     std::string cfgPath = (tmpDir / (tag + ".json")).string();
@@ -1024,6 +1027,48 @@ TEST_CASE("Native Euler ingress restart and serial boundary output retain field 
         std::filesystem::remove_all(directory);
 }
 
+template <int variables>
+static void WriteLegacyEulerRestart(const std::string &file, const MPIInfo &mpi,
+                                    const std::vector<DNDS::index> &keys,
+                                    const std::vector<double> &values,
+                                    const std::string &invalid = "")
+{
+    // Deliberately use the old wire format: u has no origIndex. Rank zero owns
+    // reversed rows; other writer ranks are empty. Stored IDs stay full int64.
+    const DNDS::index rows = invalid == "global_count" ? 1 : DNDS::index(keys.size());
+    const DNDS::index keyRows = rows - (invalid == "row_count" ? 1 : 0);
+    ArrayDOFV<variables> data;
+    data.InitPair("legacy-restart-values", mpi);
+    data.father->Resize(mpi.rank == 0 ? rows : 0, variables, 1);
+    data.son->Resize(0, variables, 1);
+    Geom::tAdj1Pair original;
+    original.InitPair("legacy-restart-keys", mpi);
+    original.father->Resize(mpi.rank == 0 ? keyRows : 0);
+    original.son->Resize(0);
+    for (DNDS::index row = 0; row < data.father->Size(); ++row)
+    {
+        const auto source = keys.size() - 1 - size_t(row);
+        for (int component = 0; component < variables; ++component)
+            data[row](component) = component < 5 ? values[source * 5 + size_t(component)] : 37;
+        if (row < keyRows)
+        {
+            original(row, 0) = keys[source];
+            if (invalid == "duplicate" && row == 1)
+                original(row, 0) = keys.back();
+            if (invalid == "negative" && row == 0)
+                original(row, 0) = -1;
+            if (invalid == "missing" && row == 0)
+                original(row, 0) = 0;
+        }
+    }
+    auto serializer = std::make_shared<Serializer::SerializerH5>(mpi);
+    serializer->OpenFile(file, false);
+    data.WriteSerialize(serializer, "u", false, false);
+    if (invalid != "no_keys")
+        original.WriteSerialize(serializer, "cell2cellOrig", false, false);
+    serializer->CloseFile();
+}
+
 TEST_CASE("Native Euler H5 restarts preserve sparse high Cell IDs and selected variable dimensions")
 {
     const auto root = projectRoot();
@@ -1055,6 +1100,10 @@ TEST_CASE("Native Euler H5 restarts preserve sparse high Cell IDs and selected v
     const auto checkpoint = (directory / "solution").string();
     const auto checkpointFile = checkpoint + "_p" + std::to_string(g_mpi.size) + ".restart.dnds.h5";
     const auto dynamicFile = (directory / "dynamic.restart.dnds.h5").string();
+    const auto legacyFile = (directory / "legacy.restart.dnds.h5").string();
+    const auto legacyDynamicFile = (directory / "legacy-dynamic.restart.dnds.h5").string();
+    const auto legacySerialFile = (directory / "legacy-serial.restart.dnds.h5").string();
+    const auto invalidFile = (directory / "invalid.restart.dnds.h5").string();
     for (int readMode : {1, 2})
     {
         CAPTURE(readMode);
@@ -1098,13 +1147,129 @@ TEST_CASE("Native Euler H5 restarts preserve sparse high Cell IDs and selected v
             serializer->OpenFile(dynamicFile, false);
             dynamic.WriteSerialize(serializer, "u", ids, false, false);
             serializer->CloseFile();
+
+            const int count = int(ids.size());
+            std::vector<int> counts(g_mpi.size), offsets(g_mpi.size + 1, 0);
+            MPI_Allgather(&count, 1, MPI_INT, counts.data(), 1, MPI_INT, g_mpi.comm);
+            for (int rank = 0; rank < g_mpi.size; ++rank)
+                offsets[rank + 1] = offsets[rank] + counts[rank];
+            std::vector<DNDS::index> allKeys(size_t(offsets.back()));
+            MPI_Allgatherv(ids.data(), count, DNDS_MPI_INDEX, allKeys.data(), counts.data(), offsets.data(), DNDS_MPI_INDEX, g_mpi.comm);
+            std::vector<double> localValues;
+            for (DNDS::index row = 0; row < mesh->NumCell(); ++row)
+                for (int component = 0; component < 5; ++component)
+                    localValues.push_back(expected(row)(component));
+            const auto allValues = GatherOutputOracle(localValues);
+            WriteLegacyEulerRestart<5>(legacyFile, g_mpi, allKeys, allValues);
+            WriteLegacyEulerRestart<7>(legacyDynamicFile, g_mpi, allKeys, allValues);
+            if (g_mpi.rank == 0)
+                WriteLegacyEulerRestart<5>(legacySerialFile, MPIInfo(MPI_COMM_SELF), allKeys, allValues);
+            MPI_Barrier(g_mpi.comm);
+
+            for (const std::string invalid : {"duplicate", "negative", "missing", "row_count", "global_count", "no_keys"})
+            {
+                CAPTURE(invalid);
+                WriteLegacyEulerRestart<5>(invalidFile, g_mpi, allKeys, allValues, invalid);
+                solver.getU().setConstant(-905);
+                CHECK_THROWS(solver.ReadRestart(invalidFile));
+                CHECK_THROWS(solver.ReadRestartOtherSolver(invalidFile, {0, 4}));
+                for (DNDS::index row = 0; row < mesh->NumCellProc(); ++row)
+                    CHECK((solver.getU()[row].array() == -905).all());
+                // A failed collective import must leave no leases or pending
+                // operations that prevent a valid retry on the same solver.
+                solver.ReadRestart(legacyFile);
+                for (DNDS::index row = 0; row < mesh->NumCellProc(); ++row)
+                    CHECK(solver.getU()[row] == expected(row));
+            }
+
+            const auto jsonDirectory = directory / "legacy.dir";
+            if (g_mpi.rank == 0)
+                std::filesystem::create_directories(jsonDirectory);
+            MPI_Barrier(g_mpi.comm);
+            for (bool duplicate : {true, false})
+            {
+                ArrayDOFV<5> data;
+                data.InitPair("legacy-json-values", g_mpi);
+                data.father->Resize(mesh->NumCell(), 5, 1);
+                data.son->Resize(0, 5, 1);
+                Geom::tAdj1Pair original;
+                original.InitPair("legacy-json-keys", g_mpi);
+                original.father->Resize(mesh->NumCell());
+                original.son->Resize(0);
+                for (DNDS::index row = 0; row < mesh->NumCell(); ++row)
+                {
+                    const auto source = mesh->NumCell() - 1 - row;
+                    data[row] = expected(source);
+                    original(row, 0) = ids[size_t(source)];
+                }
+                int hasDuplicate = duplicate && mesh->NumCell() > 1;
+                if (hasDuplicate)
+                    original(1, 0) = original(0, 0);
+                MPI_Allreduce(MPI_IN_PLACE, &hasDuplicate, 1, MPI_INT, MPI_MAX, g_mpi.comm);
+                auto json = std::make_shared<Serializer::SerializerJSON>();
+                json->SetUseCodecOnUint8(true);
+                json->OpenFile((jsonDirectory / fmt::format("{:04d}.json", g_mpi.rank)).string(), false);
+                data.WriteSerialize(json, "u", false, false);
+                original.WriteSerialize(json, "cell2cellOrig", false, false);
+                json->CloseFile();
+                MPI_Barrier(g_mpi.comm);
+                solver.getU().setConstant(-907);
+                if (hasDuplicate)
+                {
+                    CHECK_THROWS(solver.ReadRestart(jsonDirectory.string()));
+                    CHECK_THROWS(solver.ReadRestartOtherSolver(jsonDirectory.string(), {0, 4}));
+                    for (DNDS::index row = 0; row < mesh->NumCellProc(); ++row)
+                        CHECK((solver.getU()[row].array() == -907).all());
+                }
+                else
+                {
+                    solver.ReadRestart(jsonDirectory.string());
+                    for (DNDS::index row = 0; row < mesh->NumCellProc(); ++row)
+                        CHECK(solver.getU()[row] == expected(row));
+                    ArrayDOFV<Eigen::Dynamic> wider;
+                    fv->BuildUDof(wider, 7);
+                    for (DNDS::index row = 0; row < mesh->NumCell(); ++row)
+                    {
+                        wider[row].head<5>() = expected(mesh->NumCell() - 1 - row);
+                        wider[row].tail<2>().setConstant(37);
+                    }
+                    json->OpenFile((jsonDirectory / fmt::format("{:04d}.json", g_mpi.rank)).string(), false);
+                    wider.WriteSerialize(json, "u", false, false);
+                    original.WriteSerialize(json, "cell2cellOrig", false, false);
+                    json->CloseFile();
+                    MPI_Barrier(g_mpi.comm);
+                    const auto unchanged = [&](DNDS::index row, int component)
+                    { return -909 - expected(row)(0) * 32 - DNDS::real(component) / 16; };
+                    for (const auto &file : {jsonDirectory.string(), legacyFile})
+                    {
+                        CAPTURE(file);
+                        for (DNDS::index row = 0; row < mesh->NumCellProc(); ++row)
+                            for (int component = 0; component < 5; ++component)
+                                solver.getU()[row](component) = unchanged(row, component);
+                        CHECK_THROWS(solver.ReadRestartOtherSolver(file, {-1}));
+                        CHECK_THROWS(solver.ReadRestartOtherSolver(file, {5}));
+                        for (DNDS::index row = 0; row < mesh->NumCellProc(); ++row)
+                            for (int component = 0; component < 5; ++component)
+                                CHECK(solver.getU()[row](component) == unchanged(row, component));
+                        solver.ReadRestartOtherSolver(file, {0, 4});
+                        for (DNDS::index row = 0; row < mesh->NumCellProc(); ++row)
+                            for (int component = 0; component < 5; ++component)
+                                CHECK(solver.getU()[row](component) ==
+                                      (component == 0 || component == 4 ? expected(row)(component) : unchanged(row, component)));
+                    }
+                }
+            }
         }
-        solver.getU().setConstant(-901);
-        solver.ReadRestart(checkpointFile);
-        for (DNDS::index row = 0; row < mesh->NumCellProc(); ++row)
-            for (int component = 0; component < 5; ++component)
-                CHECK(solver.getU()[row](component) == expected(row)(component));
-        for (const auto &file : {checkpointFile, dynamicFile})
+        for (const auto &file : {checkpointFile, legacyFile, legacySerialFile})
+        {
+            CAPTURE(file);
+            solver.getU().setConstant(-901);
+            solver.ReadRestart(file);
+            for (DNDS::index row = 0; row < mesh->NumCellProc(); ++row)
+                for (int component = 0; component < 5; ++component)
+                    CHECK(solver.getU()[row](component) == expected(row)(component));
+        }
+        for (const auto &file : {checkpointFile, dynamicFile, legacyFile, legacyDynamicFile, legacySerialFile})
         {
             CAPTURE(file);
             solver.getU().setConstant(-903);
@@ -1117,6 +1282,139 @@ TEST_CASE("Native Euler H5 restarts preserve sparse high Cell IDs and selected v
     MPI_Barrier(g_mpi.comm);
     if (g_mpi.rank == 0)
         std::filesystem::remove_all(directory);
+}
+
+TEST_CASE("Euler archived mesh setup refreshes loaded wall vectors after actual coordinate snapping")
+{
+    const auto root = projectRoot();
+    int pid = int(getpid());
+    MPI_Bcast(&pid, 1, MPI_INT, 0, g_mpi.comm);
+    const auto directory = std::filesystem::temp_directory_path() / ("dndsr-euler-setup-" + std::to_string(pid));
+    if (g_mpi.rank == 0)
+        std::filesystem::create_directories(directory);
+    MPI_Barrier(g_mpi.comm);
+    const auto archive = (directory / "mesh").string();
+    constexpr DNDS::real epsilon = 1e-4;
+    {
+        auto source = Geom::ReadNativeCGNS(g_mpi, root + "/data/mesh/Uniform_3x3_wall.cgns", 2,
+                                           [](const std::string &)
+                                           { return Geom::BC_ID_DEFAULT_WALL; });
+        source = Geom::NativeMeshTopology::Build(*source, g_mpi);
+        auto mesh = Geom::UnstructuredMesh::FromNative(g_mpi, source);
+        DNDS::real minimum = DNDS::veryLargeReal;
+        for (DNDS::index node = 0; node < mesh->NumNode(); ++node)
+            minimum = std::min(minimum, mesh->Coord(node)[0]);
+        MPI::AllreduceOneReal(minimum, MPI_MIN, g_mpi);
+        mesh->ApplyAffineGeometryTransform(Eigen::Matrix3d::Identity(), Geom::tPoint{epsilon - minimum, 0, 0});
+        Geom::UnstructuredMesh::WallDistOptions sentinel;
+        sentinel.minWallDist = 1234;
+        mesh->BuildNodeWallDist([](auto zone)
+                                { return zone == Geom::BC_ID_DEFAULT_WALL; }, sentinel);
+        Serializer::SerializerFactory factory("H5");
+        Geom::SerializeMesh(*mesh, archive, factory);
+    }
+    auto overrides = nlohmann::ordered_json{
+        {"vfvSettings", {{"maxOrder", 1}, {"intOrder", 3}, {"functionalSettings", {{"anisotropicType", "WallDist"}}}}},
+        {"limiterControl", {{"useLimiter", false}}},
+        {"dataIOControl", {{"meshFile", (directory / "partition-output").string()}, {"meshFilePartitionedInput", archive + ".dnds.h5"}, {"readMeshMode", 1}, {"meshDirectBisect", 0}, {"meshElevation", 0}, {"meshReorderCells", 0}, {"meshBuildWallDist", 0}, {"meshScale", 1}, {"meshRotZ", 0}, {"rectifyNearPlane", 1}, {"rectifyNearPlaneThres", 1e-3}, {"meshWallDistOptions", {{"method", 0}, {"minWallDist", 0}}}, {"outPltMode", 1}, {"outLogName", (directory / "log").string()}, {"meshPartitionedWriter", {{"type", "H5"}}}}}};
+    for (int mode : {1, 2})
+    {
+        CAPTURE(mode);
+        overrides["dataIOControl"]["readMeshMode"] = mode;
+        const auto cfg = writeTempConfig<NS>(root + "/cases/euler/euler_config_IV.json",
+                                             "setup_wall_" + std::to_string(pid) + "_" + std::to_string(mode), overrides);
+        EulerSolver<NS> solver(g_mpi);
+        solver.ConfigureFromJson(cfg, true);
+        solver.ReadMeshAndInitialize();
+        auto mesh = solver.getMesh();
+        REQUIRE(mesh->HasNodeWallDist());
+        CHECK(solver.getConfiguration().dataIOControl.meshBuildWallDist == 0);
+        CHECK_NOTHROW(solver.getVFV()->ValidateMeshDependencies());
+        CHECK_NOTHROW(solver.getEval().ValidateMeshDependencies());
+        Geom::tPoint lower = Geom::tPoint::Constant(DNDS::veryLargeReal), upper = -lower;
+        for (DNDS::index node = 0; node < mesh->NumNode(); ++node)
+        {
+            lower = lower.cwiseMin(mesh->Coord(node));
+            upper = upper.cwiseMax(mesh->Coord(node));
+        }
+        MPI_Allreduce(MPI_IN_PLACE, lower.data(), 3, MPI_DOUBLE, MPI_MIN, g_mpi.comm);
+        MPI_Allreduce(MPI_IN_PLACE, upper.data(), 3, MPI_DOUBLE, MPI_MAX, g_mpi.comm);
+        CHECK(lower[0] == 0); // The archive's minimum was strictly epsilon.
+        DNDS::real totalWallDistance = 0;
+        auto read = mesh->AcquireRead(mesh->CurrentNativeRequirements());
+        const auto view = read.HostView();
+        for (DNDS::index node = 0; node < view.NumNodeProc(); ++node)
+        {
+            const auto point = view.Coord(node);
+            CHECK_FALSE((point[0] > 0 && point[0] < 1e-3));
+            const auto distance = std::min({point[0] - lower[0], upper[0] - point[0], point[1] - lower[1], upper[1] - point[1]});
+            CHECK(view.NodeWallDist(node).norm() == doctest::Approx(distance).epsilon(1e-10).scale(1));
+            if (node < view.NumNode())
+                totalWallDistance += view.NodeWallDist(node).norm();
+        }
+        MPI::AllreduceOneReal(totalWallDistance, MPI_SUM, g_mpi);
+        CHECK(totalWallDistance > 0);
+        CHECK(totalWallDistance < 1234);
+    }
+    // Partition-only output keeps the archive's unsnapped geometry and loaded
+    // wall vectors, before solver transforms or FV construction are entered.
+    overrides["dataIOControl"]["readMeshMode"] = 1;
+    overrides["dataIOControl"]["meshScale"] = 2;
+    overrides["timeMarchControl"] = {{"partitionMeshOnly", true}};
+    const auto cfg = writeTempConfig<NS>(root + "/cases/euler/euler_config_IV.json",
+                                         "setup_partition_" + std::to_string(pid), overrides);
+    {
+        EulerSolver<NS> solver(g_mpi);
+        solver.ConfigureFromJson(cfg, true);
+        solver.ReadMeshAndInitialize();
+        const auto output = Geom::MeshH5Path((directory / "partition-output").string(), g_mpi.size);
+        auto mesh = Geom::ReadNativeMeshFromArchive(g_mpi, Serializer::SerializerFactory("H5"), output);
+        CHECK(mesh->HasNodeWallDist());
+        DNDS::real minimum = DNDS::veryLargeReal, maximumWall = 0;
+        for (DNDS::index node = 0; node < mesh->NumNode(); ++node)
+        {
+            minimum = std::min(minimum, mesh->Coord(node)[0]);
+            maximumWall = std::max(maximumWall, mesh->NodeWallDist(node).norm());
+        }
+        MPI::AllreduceOneReal(minimum, MPI_MIN, g_mpi);
+        MPI::AllreduceOneReal(maximumWall, MPI_MAX, g_mpi);
+        CHECK(minimum == doctest::Approx(epsilon));
+        CHECK(maximumWall == doctest::Approx(1234));
+    }
+    MPI_Barrier(g_mpi.comm);
+    if (g_mpi.rank == 0)
+        std::filesystem::remove_all(directory);
+}
+
+TEST_CASE("Euler periodic source setup accepts configured near-plane cleanup after rotation")
+{
+    const auto root = projectRoot();
+    const auto cfg = writeTempConfig<NS>(root + "/cases/euler/euler_config_IV.json", "setup_periodic_snap",
+                                         {{"vfvSettings", {{"maxOrder", 1}, {"intOrder", 3}}},
+                                          {"dataIOControl", {{"meshFile", root + "/data/mesh/IV10_10.cgns"}, {"readMeshMode", 0}, {"meshDirectBisect", 0}, {"meshElevation", 0}, {"meshReorderCells", 0}, {"meshRotZ", 1e-6}, {"meshScale", 1}, {"rectifyNearPlane", 1}, {"rectifyNearPlaneThres", 1e-5}, {"outPltMode", 1}}}});
+    EulerSolver<NS> solver(g_mpi);
+    solver.ConfigureFromJson(cfg, true);
+    solver.ReadMeshAndInitialize();
+    auto mesh = solver.getMesh();
+    CHECK(mesh->IsPeriodic());
+    CHECK_NOTHROW(solver.getVFV()->ValidateMeshDependencies());
+    CHECK_NOTHROW(solver.getEval().ValidateMeshDependencies());
+    int snapped = 0;
+    for (DNDS::index node = 0; node < mesh->NumNode(); ++node)
+    {
+        const auto point = mesh->Coord(node);
+        if (std::abs(point[0]) < 1e-5)
+        {
+            CHECK(point[0] == 0);
+            // Rotation moved every positive-y point on the original x=0
+            // plane away from zero, so these zeros prove actual cleanup.
+            snapped += point[1] > 1;
+        }
+    }
+    MPI_Allreduce(MPI_IN_PLACE, &snapped, 1, MPI_INT, MPI_SUM, g_mpi.comm);
+    CHECK(snapped > 0);
+    const auto angle = 1e-6 * DNDS::pi / 180;
+    CHECK(mesh->PeriodicMetadata().translation[1].map().isApprox(Geom::tPoint{10 * std::cos(angle), 10 * std::sin(angle), 0}, 1e-13));
 }
 
 // ===================================================================

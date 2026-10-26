@@ -40,8 +40,12 @@ namespace DNDS::Geom
     }
 
     NativeMeshDerivedResult NativeMeshRefinement::Elevate(const NativeMeshState &source, const MPIInfo &mpi,
-                                                          NativeMeshBuildOptions options)
+                                                          NativeMeshBuildOptions options, bool preserveCellIds)
     {
+        int expectedPreserve = preserveCellIds;
+        MPI_Bcast(&expectedPreserve, 1, MPI_INT, 0, mpi.comm);
+        FieldTransferDetail::LocalStage(mpi, [&]
+                                        { DNDS_check_throw_info(expectedPreserve == int(preserveCellIds), "native elevation Cell ID policy differs across ranks"); });
         auto owned = NativeMeshAssembler::CaptureOwned(source, mpi);
         FieldTransferDetail::LocalStage(mpi, [&]
                                         {
@@ -317,6 +321,8 @@ namespace DNDS::Geom
             result.provenance.sourceKinds = {{EntityKind::Node, EntityKind::Node}, {EntityKind::Cell, EntityKind::Cell}, {EntityKind::Bnd, EntityKind::Bnd}};
             input.emplace(NativeMeshInput{mpi, owned.dimension, cells, nodes, boundaries, ElevationRows(cellNodes), ElevationRows(boundaryNodes),
                                          std::move(newCoordinates), std::move(newCellInfo), std::move(newBoundaryInfo)});
+            if (preserveCellIds)
+                input->ids.emplace(EntityKind::Cell, owned.ids.at(EntityKind::Cell));
             input->provenance = result.provenance; });
         if (owned.periodic)
             FieldTransferDetail::LocalStage(mpi, [&]

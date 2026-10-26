@@ -16,8 +16,10 @@ namespace DNDS::Geom
         /// Add quadratic nodes by exact shared vertex-span identity. Coordinates
         /// use the established span mean. Node ancestry records all span nodes.
         /// Returns a new namespace; source numbering and buffers stay unchanged.
+        /// preserveCellIds retains numeric source Cell IDs for Euler setup's
+        /// legacy cell2cellOrig restart keys; other families still get fresh IDs.
         static NativeMeshDerivedResult Elevate(const NativeMeshState &source, const MPIInfo &mpi,
-                                               NativeMeshBuildOptions options = {});
+                                               NativeMeshBuildOptions options = {}, bool preserveCellIds = false);
         /// Split O2 elements into their established O1 children. Returns an
         /// independent logical mesh and fresh IDs, retaining original node rows.
         /// Periodic node-image labels follow the exact child slots; physical

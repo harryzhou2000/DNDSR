@@ -99,6 +99,12 @@ CSR remains available for packed variable rows. See [row construction and
 exclusive edits](ArrayRowEditing.md) for Commit, retained snapshots and Python.
 Existing legacy Array layouts remain available.
 
+The fixed width is currently a construction/conversion constraint, not a
+compile-time property of the kernel accessor: `Read()`/`Write()` return the
+same `ArrayAccess<T,...>` and `ArrayView<T,...>` types for every layout policy.
+Their row width and stride are runtime values. A future fixed-width view can
+retain `N` without changing ownership or registering Python classes per width.
+
 ## Ownership, access and failure
 
 Array copy/alias shares allocation and access state. `Clone()` makes independent
@@ -256,6 +262,51 @@ identity and byte-row encoding. Arithmetic schema names are stable
 schema name; Python structured dtypes can use the same supplied schema.
 The format requires compatible binary representation/endianness; it is not a
 portable codec for arbitrary structs.
+
+There are three separate element descriptions today: `ElementSchema` retains
+an MPI datatype and its extent/type identity; the checkpoint takes a schema
+string beside raw object bytes; and `RegisterArrayElement<T>` registers a
+Python class/dtype load/store codec. Registering one does not synthesize either
+of the others. For a POD, provide a committed MPI typemap with extent
+`sizeof(T)`, an explicit stable checkpoint schema, and a Python registration
+when class-based element editing is wanted. These contracts require compatible
+object representation; they do not describe field-wise portable serialization.
+
+This separation is an implementation gap, not the final contract. The next
+revision uses one immutable logical field schema with derived MPI, Python and
+I/O adapters, an optional diagnostic C++ name, dense archives without row
+offsets, and typed endian conversion. See the planning repository's
+`docs/20-unified-element-schema-and-array-io.md`. Version-2 files described
+below retain their existing ABI limits until that revision is implemented.
+
+The version-2 writer actually constructs a temporary
+`ParArray<uint8_t,NonUniformSize>` under `name/rows` to reuse the existing
+parallel CSR codec. This does not change the typed allocation shared by C++
+and Python. Its nested `array_sig` describes **byte CSR staging**, rather than
+the source `Array<T,L>`. `array_type` is an emitted RTTI diagnostic, unused by
+the reader. `row_size_dynamic` belongs to the legacy layout codec (dynamic
+table width or padded capacity) and has no useful shape meaning for this CSR
+staging layout. These fields are implementation details, not a promise that
+legacy typed Array archives and Runtime Array archives are interchangeable.
+
+For example, two double rows of lengths 2 and 3 are stored as:
+
+```text
+u/                          @runtime_array_format=2, @element_bytes=8
+                            @element_schema="float64", @writer_ranks=P
+  rows/                     @array_sig=<byte CSR signature>, @sizeGlobal=2
+    size                    int64[P]       (writer local row counts)
+    pRowStart               int64[3]       [0, 16, 40] (byte offsets)
+    data                    uint8[40]      (logical row payloads)
+    data::rank_offsets      int64[P+1]     (parallel data partitions)
+```
+
+The serializer also records partitions for the row-count/row-start datasets.
+`ReadArray<T,FixedRows<N>>` checks every restored logical row against `N`;
+different nonempty widths are rejected even though the original C++ template
+signature is not saved. An entirely empty archive carries no original table
+width or padded capacity, so it cannot diagnose a different requested `N`.
+Generic reads reconstruct CSR; they do not recover the original layout policy.
 
 The existing shared-row-start serializer permits one resolved slice per
 dataset in an open read session. Close/reopen the file to read a different

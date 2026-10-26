@@ -26,8 +26,11 @@
 namespace DNDS::Geom
 {
 
-    /// Apply requested order derivation before partitioning. All source owned
-    /// metadata is read through the native publication; existing O2 is retained.
+    /// Partition the source before optional order derivation, matching source
+    /// mesh setup. Refinement retains parent ownership without repartitioning;
+    /// all metadata comes from native publications and existing O2 is retained.
+    /// Elevation retains Cell IDs for Euler legacy restart compatibility;
+    /// bisection establishes fresh rank-prefix child IDs as in source setup.
     inline std::shared_ptr<const NativeMeshState> DeriveAndPartitionNativeMesh(
         std::shared_ptr<const NativeMeshState> state, const MPIInfo &mpi,
         const PartitionOptions &partOpts, int elevation, int bisect)
@@ -39,6 +42,9 @@ namespace DNDS::Geom
         MPI_Bcast(expected.data(), int(expected.size()), MPI_INT, 0, mpi.comm);
         FieldTransferDetail::LocalStage(mpi, [&]
                                         { DNDS_check_throw_info(derived == expected, "native mesh derivation options differ across ranks"); });
+        NativePartitionOptions partition{partOpts.metisType, partOpts.metisUfactor, partOpts.metisSeed,
+                                         partOpts.edgeWeightMethod, partOpts.metisNcuts, 1};
+        state = NativeMeshPreparation::Partition(*state, mpi, partition).state;
         auto isO2 = [&]
         {
             int local = 1;
@@ -52,16 +58,14 @@ namespace DNDS::Geom
         };
         const NativeMeshBuildOptions build{1, true};
         if (elevation && !isO2())
-            state = NativeMeshRefinement::Elevate(*state, mpi, build).state;
+            state = NativeMeshRefinement::Elevate(*state, mpi, build, true).state;
         for (int pass = 0; pass < bisect; ++pass)
         {
             if (!isO2())
-                state = NativeMeshRefinement::Elevate(*state, mpi, build).state;
+                state = NativeMeshRefinement::Elevate(*state, mpi, build, true).state;
             state = NativeMeshRefinement::Bisect(*state, mpi, build).state;
         }
-        NativePartitionOptions partition{partOpts.metisType, partOpts.metisUfactor, partOpts.metisSeed,
-                                         partOpts.edgeWeightMethod, partOpts.metisNcuts, 1};
-        return NativeMeshPreparation::Partition(*state, mpi, partition).state;
+        return state;
     }
 
     inline ssp<UnstructuredMesh> ReadNativeMeshFromCGNS(

@@ -278,6 +278,9 @@ namespace DNDS::Geom
         }
         void ApplyGeometryTransform(const Eigen::Matrix3d &rotation, real scale);
         void ApplyAffineGeometryTransform(const Eigen::Matrix3d &, const tPoint &offset = tPoint::Zero());
+        /// Snap canonical owned coordinates near selected zero planes (bits x/y/z),
+        /// then refresh ghosts. Periodic image labels and frames stay unchanged.
+        void RectifyNearPlaneCoordinates(int components, real threshold);
         void RectifyBoundaryCoordinates(std::function<int(t_index)>, bool volumeBoundary = true);
         template <class F>
         void TransformCoords(F &&transform)
