@@ -1,10 +1,11 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
-#include "LegacyMeshFixtureCodec.hpp"
 #include "Geom/Mesh/Mesh.hpp"
 #include "Geom/Mesh/MeshTransition.hpp"
 #include "Geom/Mesh/NativeMeshOutput.hpp"
 #include "Geom/Mesh/NativeMeshCGNS.hpp"
+#include "Geom/Mesh/NativeMeshTopology.hpp"
+#include "Geom/Mesh/NativeMeshLegacyArchive.hpp"
 #include "MeshFacadeOverlapFixture.hpp"
 #include "NativePeriodicFixtures.hpp"
 #include "DNDS/Serializer/SerializerJSON.hpp"
@@ -34,26 +35,15 @@ extern "C" int MPI_Allreduce(const void *send, void *receive, int count,
 
 static ssp<UnstructuredMesh> CurrentOutputFixture(const MPIInfo &mpi)
 {
-    auto mesh = make_ssp<UnstructuredMesh>(mpi, 2);
-    tPoint zero{0, 0, 0};
-    mesh->SetPeriodicGeometry({10, 0, 0}, zero, zero, {0, 10, 0}, zero, zero, zero, zero, zero);
-    auto root = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path();
-    UnstructuredMeshSerialRW reader(mesh, 0);
-    reader.ReadFromCGNSSerial((root / "data/mesh/IV10_10.cgns").string());
-    reader.Deduplicate1to1Periodic(1e-8);
-    reader.BuildCell2Cell();
-    UnstructuredMeshSerialRW::PartitionOptions options;
-    options.metisType = "KWAY";
-    options.metisSeed = 42;
-    options.metisNcuts = 1;
-    reader.MeshPartitionCell2Cell(options);
-    reader.PartitionReorderToMeshCell2Cell();
-    mesh->RecoverNode2CellAndNode2Bnd();
-    mesh->RecoverCell2CellAndBnd2Cell();
-    mesh->BuildGhostPrimary(3);
-    mesh->AdjGlobal2LocalPrimary();
-    mesh->InterpolateFace();
-    return mesh;
+    const auto root = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path();
+    NativePeriodicImportOptions periodic;
+    periodic.frames.translation[1].map() = tPoint{10, 0, 0};
+    periodic.frames.translation[2].map() = tPoint{0, 10, 0};
+    periodic.tolerance = 1e-8;
+    AutoAppendName2ID names;
+    auto state = ReadNativeCGNS(mpi, (root / "data/mesh/IV10_10.cgns").string(), 2, [&](const std::string &name)
+                                { return names(name); }, 0, {3, true}, periodic);
+    return UnstructuredMesh::FromNative(mpi, NativeMeshTopology::Build(*state, mpi));
 }
 
 static std::vector<double> ReadCurrentOutputDataset(hid_t file, const char *name)
@@ -79,7 +69,6 @@ TEST_CASE("Current periodic VTKHDF maps point callbacks from detached numbering 
     mpi.setWorld();
     auto mesh = CurrentOutputFixture(mpi);
     auto requirements = MeshReadRequirements::CellFlux();
-    mesh->PublishNative(requirements);
     auto retained = mesh->AcquireRead(requirements);
     auto view = retained.HostView();
     auto stamp = mesh->versions.Stamp();
@@ -91,9 +80,9 @@ TEST_CASE("Current periodic VTKHDF maps point callbacks from detached numbering 
         for (int component = 0; component < 3; ++component)
             coordinates[size_t(node) * 3 + size_t(component)] = view.Coord(node)[component];
     }
-    // The writer must use native query geometry even when raw workspace rows differ.
-    if (mesh->coords.father->Size())
-        mesh->coords[0] += tPoint{1000, 1000, 1000};
+    // No duplicate mesh storage is present; callbacks and periodic images
+    // must both resolve through the current native semantic rows.
+    CHECK_FALSE(mesh->coords.father);
 
     std::vector<double> local;
     for (DNDS::index node = 0; node < view.NumNode(); ++node)
@@ -162,13 +151,9 @@ TEST_CASE("Prepared VTKHDF worker keeps reductions on its output communicator")
     MPIInfo mpi;
     mpi.setWorld();
     auto source = CurrentOutputFixture(mpi);
-    source->PublishNative(MeshReadRequirements::CellFlux());
-    bool native = false;
-    SUBCASE("prepared legacy output") { native = false; }
-    SUBCASE("native output buffers") { native = true; }
-    // The native writer builds its output-only buffers directly using output
-    // comm; the baseline retains its separately prepared legacy workspace.
-    auto workspace = native ? source : TestFixtureCodec::DecodeLegacy(*source, true);
+    // Retain the actual publication across the asynchronous writer. Its
+    // collectives must use the isolated output communicator throughout.
+    auto workspace = source;
     int rootPid = int(getpid());
     MPI_Bcast(&rootPid, 1, MPI_INT, 0, mpi.comm);
     const auto base = (std::filesystem::temp_directory_path() /
@@ -417,7 +402,6 @@ TEST_CASE("Native output rejects cross-rank publication and periodic schedule mi
     auto second = OverlapTest::BuildNativeFixture(mpi).mesh;
     CHECK_THROWS(NativeMeshOutput::Build(*(mpi.rank == 0 ? first : second)->CurrentNativeState(), mpi));
     auto periodic = CurrentOutputFixture(mpi);
-    periodic->PublishNative(MeshReadRequirements::CellFlux());
     CHECK_THROWS(NativeMeshOutput::Build(*(mpi.rank == 0 ? first : periodic)->CurrentNativeState(), mpi));
     CHECK_NOTHROW(NativeMeshOutput::Build(*first->CurrentNativeState(), mpi));
 }
@@ -538,46 +522,82 @@ TEST_CASE("Native primary compatibility archive streams payloads including bound
         CHECK(stamp.Valid());
         CHECK_FALSE(mesh->coords.father);
         CHECK_FALSE(mesh->cell2node.father);
-        auto restored = make_ssp<UnstructuredMesh>(mpi, view.Dimension());
-        restored->ReadSerialize(archive, "primary");
-        REQUIRE(restored->NumCell() == view.NumCell());
-        REQUIRE(restored->NumNode() == view.NumNode());
-        REQUIRE(restored->NumBnd() == view.NumBnd());
-        CHECK(restored->isPeriodic == view.IsPeriodic());
+        // Decode the old payload schema directly into owned Runtime rows;
+        // no legacy mesh workspace or topology reconstruction is the oracle.
+        auto restored = NativeMeshLegacyArchive::ReadOwned(mpi, archive, "primary");
+        REQUIRE(restored.spaces.at(EntityKind::Cell).NumOwned() == view.NumCell());
+        REQUIRE(restored.spaces.at(EntityKind::Node).NumOwned() == view.NumNode());
+        REQUIRE(restored.spaces.at(EntityKind::Bnd).NumOwned() == view.NumBnd());
+        CHECK(restored.periodic == view.IsPeriodic());
+        auto coordinates = restored.coords->Read();
+        auto nodeIds = restored.ids.at(EntityKind::Node).Read();
+        auto cellIds = restored.ids.at(EntityKind::Cell).Read();
+        auto boundaryIds = restored.ids.at(EntityKind::Bnd).Read();
+        auto cellInfo = restored.cellInfo->Read(), boundaryInfo = restored.bndInfo->Read();
+        auto cellNodes = restored.relations[size_t(MeshRelation::CellNodes)]->Read();
+        auto boundaryNodes = restored.relations[size_t(MeshRelation::BoundaryNodes)]->Read();
+        std::optional<Runtime::Array<NodePeriodicBits>::ReadLease> cellBits, boundaryBits;
+        if (view.IsPeriodic())
+        {
+            cellBits.emplace(restored.cellNodesPbi->Read());
+            boundaryBits.emplace(restored.bndNodesPbi->Read());
+        }
         const auto nodes = mesh->Entities(EntityKind::Node);
         for (DNDS::index node = 0; node < view.NumNode(); ++node)
         {
-            CHECK(restored->coords[node] == view.Coord(node));
-            CHECK(restored->node2nodeOrig(node, 0) == mesh->OriginalEntityId(EntityKind::Node, node));
+            for (int component = 0; component < 3; ++component)
+                CHECK(coordinates.View()(size_t(node), size_t(component)) == view.Coord(node)[component]);
+            CHECK(nodeIds.View()(size_t(node), 0) == mesh->OriginalEntityId(EntityKind::Node, node));
         }
         for (DNDS::index cell = 0; cell < view.NumCell(); ++cell)
         {
             const auto cone = view.CellNodes(cell);
-            REQUIRE(restored->cell2node.RowSize(cell) == DNDS::rowsize(cone.size()));
-            CHECK(restored->cell2cellOrig(cell, 0) == mesh->OriginalEntityId(EntityKind::Cell, cell));
-            CHECK(restored->cellElemInfo(cell, 0).zone == view.GetCellZone(cell));
-            CHECK(restored->cellElemInfo(cell, 0).getElemType() == view.GetCellElement(cell).type);
+            REQUIRE(cellNodes.View().RowSize(size_t(cell)) == cone.size());
+            CHECK(cellIds.View()(size_t(cell), 0) == mesh->OriginalEntityId(EntityKind::Cell, cell));
+            CHECK(cellInfo.View()(size_t(cell), 0).zone == view.GetCellZone(cell));
+            CHECK(cellInfo.View()(size_t(cell), 0).getElemType() == view.GetCellElement(cell).type);
             for (size_t slot = 0; slot < cone.size(); ++slot)
             {
-                CHECK(restored->cell2node(cell, DNDS::rowsize(slot)) == nodes.LocalToGlobal(cone[slot]));
+                CHECK(cellNodes.View()(size_t(cell), slot) == nodes.LocalToGlobal(cone[slot]));
                 if (view.IsPeriodic())
-                    CHECK(uint8_t(restored->cell2nodePbi(cell, DNDS::rowsize(slot))) == uint8_t(view.CellNodePeriodicBits(cell)[slot]));
+                    CHECK(uint8_t(cellBits->View()(size_t(cell), slot)) == uint8_t(view.CellNodePeriodicBits(cell)[slot]));
             }
         }
         for (DNDS::index boundary = 0; boundary < view.NumBnd(); ++boundary)
         {
             const auto cone = view.BoundaryNodes(boundary);
-            REQUIRE(restored->bnd2node.RowSize(boundary) == DNDS::rowsize(cone.size()));
-            CHECK(restored->bnd2bndOrig(boundary, 0) == mesh->OriginalEntityId(EntityKind::Bnd, boundary));
-            CHECK(restored->bndElemInfo(boundary, 0).zone == view.GetBndZone(boundary));
+            REQUIRE(boundaryNodes.View().RowSize(size_t(boundary)) == cone.size());
+            CHECK(boundaryIds.View()(size_t(boundary), 0) == mesh->OriginalEntityId(EntityKind::Bnd, boundary));
+            CHECK(boundaryInfo.View()(size_t(boundary), 0).zone == view.GetBndZone(boundary));
             for (size_t slot = 0; slot < cone.size(); ++slot)
             {
-                CHECK(restored->bnd2node(boundary, DNDS::rowsize(slot)) == nodes.LocalToGlobal(cone[slot]));
+                CHECK(boundaryNodes.View()(size_t(boundary), slot) == nodes.LocalToGlobal(cone[slot]));
                 if (view.IsPeriodic())
-                    CHECK(uint8_t(restored->bnd2nodePbi(boundary, DNDS::rowsize(slot))) == uint8_t(view.BoundaryNodePeriodicBits(boundary)[slot]));
+                    CHECK(uint8_t(boundaryBits->View()(size_t(boundary), slot)) == uint8_t(view.BoundaryNodePeriodicBits(boundary)[slot]));
             }
         }
     }
+}
+
+TEST_CASE("Output rejects unpublished authority before file creation and permits native retry")
+{
+    const MPIInfo mpi(MPI_COMM_WORLD);
+    auto source = OverlapTest::BuildNativeFixture(mpi).mesh;
+    auto empty = make_ssp<UnstructuredMesh>(mpi, 2);
+    auto mixed = mpi.rank == 0 ? empty : source;
+    const auto stamp = mixed->versions.Stamp();
+    MPI_Comm output = MPI_COMM_NULL;
+    MPI_Comm_dup(mpi.comm, &output);
+    CHECK_THROWS(mixed->PrintParallelVTKHDFDataArray("/unused/unpublished", "", 0, 0, 0, 0,
+                                                     {}, {}, {}, {}, {}, {}, {}, {}, 0, output));
+    MPI_Comm_free(&output);
+    CHECK_THROWS(mixed->PrintMeshCGNS("/unused/unpublished.cgns", {}, {}));
+    UnstructuredMeshSerialRW reader(mixed, 0);
+    CHECK_THROWS(reader.PrintSerialPartVTKDataArray("/unused/unpublished", "", 0, 0, 0, 0,
+                                                    {}, {}, {}, {}, {}, {}, {}, {}, 0, 1));
+    CHECK_THROWS(reader.PrintSerialPartPltBinaryDataArray("/unused/unpublished", 0, 0, {}, {}, {}, {}, 0, 1));
+    CHECK(stamp.Valid());
+    CHECK_NOTHROW(NativeMeshOutput::Build(*source->CurrentNativeState(), mpi));
 }
 
 int main(int argc, char **argv)

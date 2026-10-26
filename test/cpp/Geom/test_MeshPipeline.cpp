@@ -23,6 +23,8 @@
 #include "doctest.h"
 
 #include "Geom/Mesh/Mesh.hpp"
+#include "Geom/Mesh/Mesh_Helpers.hpp"
+#include "Geom/Mesh/NativeMeshSmoothing.hpp"
 #include "Geom/Mesh/NativeMeshCGNS.hpp"
 #include "Geom/Mesh/RelationAccess.hpp"
 #include "Geom/BoundaryCondition.hpp"
@@ -1547,6 +1549,22 @@ TEST_CASE("Ball2: mixed 3D element types")
 }
 
 // ===========================================================================
+static ssp<UnstructuredMesh> NativeElevationFixture(const MeshConfig &cfg)
+{
+    NativePeriodicImportOptions periodic;
+    periodic.frames.translation[1].map() = cfg.translation1;
+    periodic.frames.translation[2].map() = cfg.translation2;
+    periodic.frames.translation[3].map() = cfg.translation3;
+    periodic.tolerance = 1e-8;
+    PartitionOptions options;
+    options.metisUfactor = 30;
+    options.metisSeed = 42;
+    options.metisNcuts = 1;
+    AutoAppendName2ID names;
+    return ReadNativeMeshFromCGNS(g_mpi, cfg.dim, meshPath(cfg.file), options, [&](const std::string &name)
+                                  { return names(name); }, cfg.periodic ? std::optional<NativePeriodicImportOptions>(periodic) : std::nullopt);
+}
+
 // Elevation/Bisection tests
 // ===========================================================================
 
@@ -1556,41 +1574,13 @@ TEST_CASE("Elevation: O2 mesh cell count equals O1 cell count")
     const auto &cfg = g_configs[0];
 
     // Build fresh O1 mesh
-    auto mO1 = std::make_shared<UnstructuredMesh>(g_mpi, cfg.dim);
-    UnstructuredMeshSerialRW reader(mO1, 0);
-
-    if (cfg.periodic)
-    {
-        tPoint zero{0, 0, 0};
-        mO1->SetPeriodicGeometry(cfg.translation1, zero, zero, cfg.translation2, zero, zero, cfg.translation3, zero, zero);
-    }
-
-    reader.ReadFromCGNSSerial(meshPath(cfg.file));
-    reader.Deduplicate1to1Periodic(1e-8);
-    reader.BuildCell2Cell();
-
-    UnstructuredMeshSerialRW::PartitionOptions pOpt;
-    pOpt.metisType = "KWAY";
-    pOpt.metisUfactor = 30;
-    pOpt.metisSeed = 42;
-    pOpt.metisNcuts = 1;
-    reader.MeshPartitionCell2Cell(pOpt);
-    reader.PartitionReorderToMeshCell2Cell();
-
-    mO1->RecoverNode2CellAndNode2Bnd();
-    mO1->RecoverCell2CellAndBnd2Cell();
-    mO1->BuildGhostPrimary();
-    mO1->AdjGlobal2LocalPrimary();
+    auto mO1 = NativeElevationFixture(cfg);
 
     // Build O2 mesh via elevation
     auto mO2 = std::make_shared<UnstructuredMesh>(g_mpi, cfg.dim);
     mO2->BuildO2FromO1Elevation(*mO1);
 
     // Set up MPI state for mO2
-    mO2->RecoverNode2CellAndNode2Bnd();
-    mO2->RecoverCell2CellAndBnd2Cell();
-    mO2->BuildGhostPrimary();
-    mO2->AdjGlobal2LocalPrimary();
 
     DNDS::index nCellO1 = mO1->NumCellGlobal();
     DNDS::index nCellO2 = mO2->NumCellGlobal();
@@ -1611,44 +1601,16 @@ TEST_CASE("Elevation: O2 mesh has more nodes than O1")
     const auto &cfg = g_configs[0];
 
     // Build fresh O1 mesh
-    auto mO1 = std::make_shared<UnstructuredMesh>(g_mpi, cfg.dim);
-    UnstructuredMeshSerialRW reader(mO1, 0);
-
-    if (cfg.periodic)
-    {
-        tPoint zero{0, 0, 0};
-        mO1->SetPeriodicGeometry(cfg.translation1, zero, zero, cfg.translation2, zero, zero, cfg.translation3, zero, zero);
-    }
-
-    reader.ReadFromCGNSSerial(meshPath(cfg.file));
-    reader.Deduplicate1to1Periodic(1e-8);
-    reader.BuildCell2Cell();
-
-    UnstructuredMeshSerialRW::PartitionOptions pOpt;
-    pOpt.metisType = "KWAY";
-    pOpt.metisUfactor = 30;
-    pOpt.metisSeed = 42;
-    pOpt.metisNcuts = 1;
-    reader.MeshPartitionCell2Cell(pOpt);
-    reader.PartitionReorderToMeshCell2Cell();
-
-    mO1->RecoverNode2CellAndNode2Bnd();
-    mO1->RecoverCell2CellAndBnd2Cell();
-    mO1->BuildGhostPrimary();
-    mO1->AdjGlobal2LocalPrimary();
+    auto mO1 = NativeElevationFixture(cfg);
 
     // Build O2 mesh via elevation
     auto mO2 = std::make_shared<UnstructuredMesh>(g_mpi, cfg.dim);
     mO2->BuildO2FromO1Elevation(*mO1);
 
     // Set up MPI state for mO2
-    mO2->RecoverNode2CellAndNode2Bnd();
-    mO2->RecoverCell2CellAndBnd2Cell();
-    mO2->BuildGhostPrimary();
-    mO2->AdjGlobal2LocalPrimary();
 
-    DNDS::index nNodeO1 = mO1->coords.father->globalSize();
-    DNDS::index nNodeO2 = mO2->coords.father->globalSize();
+    DNDS::index nNodeO1 = mO1->NumNodeGlobal();
+    DNDS::index nNodeO2 = mO2->NumNodeGlobal();
 
     // Elevation adds nodes
     CHECK(nNodeO2 > nNodeO1);
@@ -1659,42 +1621,14 @@ TEST_CASE("Bisection: O1 mesh has more cells than O2")
     const auto &cfg = g_configs[0];
 
     // Build fresh O1 mesh
-    auto mO1 = std::make_shared<UnstructuredMesh>(g_mpi, cfg.dim);
-    UnstructuredMeshSerialRW reader(mO1, 0);
-
-    if (cfg.periodic)
-    {
-        tPoint zero{0, 0, 0};
-        mO1->SetPeriodicGeometry(cfg.translation1, zero, zero, cfg.translation2, zero, zero, cfg.translation3, zero, zero);
-    }
-
-    reader.ReadFromCGNSSerial(meshPath(cfg.file));
-    reader.Deduplicate1to1Periodic(1e-8);
-    reader.BuildCell2Cell();
-
-    UnstructuredMeshSerialRW::PartitionOptions pOpt;
-    pOpt.metisType = "KWAY";
-    pOpt.metisUfactor = 30;
-    pOpt.metisSeed = 42;
-    pOpt.metisNcuts = 1;
-    reader.MeshPartitionCell2Cell(pOpt);
-    reader.PartitionReorderToMeshCell2Cell();
-
-    mO1->RecoverNode2CellAndNode2Bnd();
-    mO1->RecoverCell2CellAndBnd2Cell();
-    mO1->BuildGhostPrimary();
-    mO1->AdjGlobal2LocalPrimary();
+    auto mO1 = NativeElevationFixture(cfg);
 
     // Build O2 mesh
     auto mO2 = std::make_shared<UnstructuredMesh>(g_mpi, cfg.dim);
     mO2->BuildO2FromO1Elevation(*mO1);
-    mO2->RecoverNode2CellAndNode2Bnd();
-    mO2->RecoverCell2CellAndBnd2Cell();
-    mO2->BuildGhostPrimary();
-    mO2->AdjGlobal2LocalPrimary();
 
     // Build O1 mesh via bisection
-    mO2->AdjLocal2GlobalPrimary();
+
     auto mO1B = std::make_shared<UnstructuredMesh>(g_mpi, cfg.dim);
     mO1B->BuildBisectO1FormO2(*mO2);
 
@@ -1717,48 +1651,20 @@ TEST_CASE("Bisection: global node count is preserved from O2 mesh")
     const auto &cfg = g_configs[0];
 
     // Build fresh O1 mesh
-    auto mO1 = std::make_shared<UnstructuredMesh>(g_mpi, cfg.dim);
-    UnstructuredMeshSerialRW reader(mO1, 0);
-
-    if (cfg.periodic)
-    {
-        tPoint zero{0, 0, 0};
-        mO1->SetPeriodicGeometry(cfg.translation1, zero, zero, cfg.translation2, zero, zero, cfg.translation3, zero, zero);
-    }
-
-    reader.ReadFromCGNSSerial(meshPath(cfg.file));
-    reader.Deduplicate1to1Periodic(1e-8);
-    reader.BuildCell2Cell();
-
-    UnstructuredMeshSerialRW::PartitionOptions pOpt;
-    pOpt.metisType = "KWAY";
-    pOpt.metisUfactor = 30;
-    pOpt.metisSeed = 42;
-    pOpt.metisNcuts = 1;
-    reader.MeshPartitionCell2Cell(pOpt);
-    reader.PartitionReorderToMeshCell2Cell();
-
-    mO1->RecoverNode2CellAndNode2Bnd();
-    mO1->RecoverCell2CellAndBnd2Cell();
-    mO1->BuildGhostPrimary();
-    mO1->AdjGlobal2LocalPrimary();
+    auto mO1 = NativeElevationFixture(cfg);
 
     // Build O2 mesh
     auto mO2 = std::make_shared<UnstructuredMesh>(g_mpi, cfg.dim);
     mO2->BuildO2FromO1Elevation(*mO1);
-    mO2->RecoverNode2CellAndNode2Bnd();
-    mO2->RecoverCell2CellAndBnd2Cell();
-    mO2->BuildGhostPrimary();
-    mO2->AdjGlobal2LocalPrimary();
 
     // Build O1 mesh via bisection
-    mO2->AdjLocal2GlobalPrimary();
+
     auto mO1B = std::make_shared<UnstructuredMesh>(g_mpi, cfg.dim);
     mO1B->BuildBisectO1FormO2(*mO2);
 
     // No new nodes created during bisection
-    DNDS::index nNodeO2 = mO2->coords.father->globalSize();
-    DNDS::index nNodeO1B = mO1B->coords.father->globalSize();
+    DNDS::index nNodeO2 = mO2->NumNodeGlobal();
+    DNDS::index nNodeO1B = mO1B->NumNodeGlobal();
     CHECK(nNodeO1B == nNodeO2);
 }
 
@@ -1770,42 +1676,14 @@ TEST_CASE("Elevation+Bisection: exact cell count progression")
     const auto &cfg = g_configs[0];
 
     // Build fresh O1 mesh
-    auto mO1 = std::make_shared<UnstructuredMesh>(g_mpi, cfg.dim);
-    UnstructuredMeshSerialRW reader(mO1, 0);
-
-    if (cfg.periodic)
-    {
-        tPoint zero{0, 0, 0};
-        mO1->SetPeriodicGeometry(cfg.translation1, zero, zero, cfg.translation2, zero, zero, cfg.translation3, zero, zero);
-    }
-
-    reader.ReadFromCGNSSerial(meshPath(cfg.file));
-    reader.Deduplicate1to1Periodic(1e-8);
-    reader.BuildCell2Cell();
-
-    UnstructuredMeshSerialRW::PartitionOptions pOpt;
-    pOpt.metisType = "KWAY";
-    pOpt.metisUfactor = 30;
-    pOpt.metisSeed = 42;
-    pOpt.metisNcuts = 1;
-    reader.MeshPartitionCell2Cell(pOpt);
-    reader.PartitionReorderToMeshCell2Cell();
-
-    mO1->RecoverNode2CellAndNode2Bnd();
-    mO1->RecoverCell2CellAndBnd2Cell();
-    mO1->BuildGhostPrimary();
-    mO1->AdjGlobal2LocalPrimary();
+    auto mO1 = NativeElevationFixture(cfg);
 
     // Build O2 mesh
     auto mO2 = std::make_shared<UnstructuredMesh>(g_mpi, cfg.dim);
     mO2->BuildO2FromO1Elevation(*mO1);
-    mO2->RecoverNode2CellAndNode2Bnd();
-    mO2->RecoverCell2CellAndBnd2Cell();
-    mO2->BuildGhostPrimary();
-    mO2->AdjGlobal2LocalPrimary();
 
     // Build O1 mesh via bisection
-    mO2->AdjLocal2GlobalPrimary();
+
     auto mO1B = std::make_shared<UnstructuredMesh>(g_mpi, cfg.dim);
     mO1B->BuildBisectO1FormO2(*mO2);
 
@@ -1832,55 +1710,15 @@ static ssp<UnstructuredMesh> buildO2MeshWithFaces(
     const MeshConfig &cfg, ssp<UnstructuredMesh> &mO1Out)
 {
     // Build O1 mesh
-    auto mO1 = std::make_shared<UnstructuredMesh>(g_mpi, cfg.dim);
-    UnstructuredMeshSerialRW reader(mO1, 0);
-
-    if (cfg.periodic)
-    {
-        tPoint zero{0, 0, 0};
-        mO1->SetPeriodicGeometry(
-            cfg.translation1, zero, zero,
-            cfg.translation2, zero, zero,
-            cfg.translation3, zero, zero);
-    }
-
-    reader.ReadFromCGNSSerial(meshPath(cfg.file));
-    reader.Deduplicate1to1Periodic(1e-8);
-    reader.BuildCell2Cell();
-
-    UnstructuredMeshSerialRW::PartitionOptions pOpt;
-    pOpt.metisType = "KWAY";
-    pOpt.metisUfactor = 30;
-    pOpt.metisSeed = 42;
-    pOpt.metisNcuts = 1;
-    reader.MeshPartitionCell2Cell(pOpt);
-    reader.PartitionReorderToMeshCell2Cell();
-
-    mO1->RecoverNode2CellAndNode2Bnd();
-    mO1->RecoverCell2CellAndBnd2Cell();
-    mO1->BuildGhostPrimary();
-    mO1->AdjGlobal2LocalPrimary();
+    auto mO1 = NativeElevationFixture(cfg);
 
     // Build O2 mesh via elevation
     auto mO2 = std::make_shared<UnstructuredMesh>(g_mpi, cfg.dim);
     mO2->BuildO2FromO1Elevation(*mO1);
 
     // Rebuild full topology for O2
-    mO2->RecoverNode2CellAndNode2Bnd();
-    mO2->RecoverCell2CellAndBnd2Cell();
-    mO2->BuildGhostPrimary();
-    mO2->AdjGlobal2LocalPrimary();
-    mO2->AdjGlobal2LocalN2CB();
 
-    mO2->InterpolateFace();
-    mO2->AssertOnFaces();
-
-    mO2->AdjLocal2GlobalN2CB();
-    mO2->BuildGhostN2CB();
-    mO2->AdjGlobal2LocalN2CB();
-
-    mO2->BuildCell2CellFace();
-    mO2->AdjGlobal2LocalC2CFace();
+    mO2->PrepareNativeTopology();
 
     mO1Out = mO1;
     return mO2;
@@ -1897,7 +1735,7 @@ TEST_CASE("BoundarySmooth: NACA0012 moves boundary O2 nodes")
     // Snapshot pre-smooth coordinates
     std::vector<tPoint> preSmooth(mO2->NumNode());
     for (DNDS::index i = 0; i < mO2->NumNode(); i++)
-        preSmooth[i] = mO2->coords[i];
+        preSmooth[i] = mO2->Coord(i);
 
     // Run boundary smooth — all external BCs are smoothed
     mO2->ElevatedNodesGetBoundarySmooth(
@@ -1908,13 +1746,13 @@ TEST_CASE("BoundarySmooth: NACA0012 moves boundary O2 nodes")
     CHECK(mO2->nTotalMoved > 0);
 
     // Check that coordsElevDisp was initialized
-    CHECK(mO2->coordsElevDisp.father != nullptr);
+    CHECK(mO2->BoundarySmoothingWorkspace()->Displacement().owned.Rows() == size_t(mO2->NumNode()));
 
     // All coordinates must be finite (no NaN/Inf)
     for (DNDS::index i = 0; i < mO2->NumNode(); i++)
     {
         for (int d = 0; d < 3; d++)
-            CHECK(std::isfinite(mO2->coords[i](d)));
+            CHECK(std::isfinite(mO2->Coord(i)(d)));
     }
 }
 
@@ -1931,11 +1769,16 @@ TEST_CASE("BoundarySmooth: no NaN in displacement field")
 
     // coordsElevDisp should have no NaN for moved nodes
     DNDS::index nMovedLocal = 0;
-    for (DNDS::index i = 0; i < mO2->coordsElevDisp.father->Size(); i++)
+    auto diagnostics = mO2->BoundarySmoothingWorkspace();
+    auto displacement = diagnostics->Displacement().owned.Read();
+    auto roles = diagnostics->Constraints().owned.Read();
+    for (DNDS::index i = 0; i < mO2->NumNode(); i++)
     {
-        auto disp = mO2->coordsElevDisp[i];
-        // Entries with disp(0) != largeReal were set by the smooth
-        if (disp(0) != UnInitReal && std::abs(disp(0)) < 1e30)
+        tPoint disp;
+        for (int component = 0; component < 3; ++component)
+            disp[component] = displacement.View()(size_t(i), size_t(component));
+        // Native explicit roles replace legacy displacement sentinels.
+        if (NativeSmoothingConstraint(roles.View()(size_t(i), 0)) == NativeSmoothingConstraint::Prescribed)
         {
             for (int d = 0; d < 3; d++)
                 CHECK(std::isfinite(disp(d)));
@@ -1971,7 +1814,7 @@ TEST_CASE("InternalSmooth V2: coordinates remain finite after solve")
     // Save pre-smooth coords
     std::vector<tPoint> preSmoothCoords(mO2->NumNode());
     for (DNDS::index i = 0; i < mO2->NumNode(); i++)
-        preSmoothCoords[i] = mO2->coords[i];
+        preSmoothCoords[i] = mO2->Coord(i);
 
     // Run internal smooth V2
     mO2->ElevatedNodesSolveInternalSmoothV2();
@@ -1979,12 +1822,12 @@ TEST_CASE("InternalSmooth V2: coordinates remain finite after solve")
     // All coordinates must be finite
     for (DNDS::index i = 0; i < mO2->NumNode(); i++)
         for (int d = 0; d < 3; d++)
-            CHECK(std::isfinite(mO2->coords[i](d)));
+            CHECK(std::isfinite(mO2->Coord(i)(d)));
 
     // At least some coordinates should have changed
     DNDS::index nChangedLocal = 0;
     for (DNDS::index i = 0; i < mO2->NumNode(); i++)
-        if ((mO2->coords[i] - preSmoothCoords[i]).norm() > 1e-15)
+        if ((mO2->Coord(i) - preSmoothCoords[i]).norm() > 1e-15)
             nChangedLocal++;
 
     DNDS::index nChangedGlobal = 0;
@@ -2000,33 +1843,15 @@ TEST_CASE("Elevation: O2 coordinates have no NaN")
         const auto &cfg = g_configs[ci];
         SUBCASE(cfg.name)
         {
-            auto mO1 = std::make_shared<UnstructuredMesh>(g_mpi, cfg.dim);
-            UnstructuredMeshSerialRW reader(mO1, 0);
-
-            reader.ReadFromCGNSSerial(meshPath(cfg.file));
-            reader.Deduplicate1to1Periodic(1e-8);
-            reader.BuildCell2Cell();
-
-            UnstructuredMeshSerialRW::PartitionOptions pOpt;
-            pOpt.metisType = "KWAY";
-            pOpt.metisUfactor = 30;
-            pOpt.metisSeed = 42;
-            pOpt.metisNcuts = 1;
-            reader.MeshPartitionCell2Cell(pOpt);
-            reader.PartitionReorderToMeshCell2Cell();
-
-            mO1->RecoverNode2CellAndNode2Bnd();
-            mO1->RecoverCell2CellAndBnd2Cell();
-            mO1->BuildGhostPrimary();
-            mO1->AdjGlobal2LocalPrimary();
+            auto mO1 = NativeElevationFixture(cfg);
 
             auto mO2 = std::make_shared<UnstructuredMesh>(g_mpi, cfg.dim);
             mO2->BuildO2FromO1Elevation(*mO1);
 
             // All O2 coordinates must be finite
-            for (DNDS::index i = 0; i < mO2->coords.father->Size(); i++)
+            for (DNDS::index i = 0; i < mO2->NumNode(); i++)
                 for (int d = 0; d < 3; d++)
-                    CHECK(std::isfinite(mO2->coords[i](d)));
+                    CHECK(std::isfinite(mO2->Coord(i)(d)));
         }
     }
 }

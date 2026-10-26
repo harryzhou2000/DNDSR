@@ -366,6 +366,17 @@ TEST_CASE("Native facade smoothing stages work, rejects readers and stale caches
     }
 }
 
+TEST_CASE("Retired compact support smoother rejects explicitly without mutating native source")
+{
+    DNDS::MPIInfo mpi(MPI_COMM_WORLD);
+    auto state = Disk(mpi, true);
+    auto mesh = G::UnstructuredMesh::FromNative(mpi, state);
+    const auto stamp = mesh->versions.Stamp();
+    CHECK_THROWS(mesh->ElevatedNodesSolveInternalSmoothV1Old());
+    CHECK(stamp.Valid());
+    CHECK(mesh->CurrentNativeState()->MeshNamespace() == state->MeshNamespace());
+}
+
 int main(int argc, char **argv)
 {
     MPI_Init(&argc, &argv);

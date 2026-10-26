@@ -38,20 +38,16 @@ namespace DNDS::Geom
             if (outputComm != MPI_COMM_NULL)
                 mpi.comm = outputComm;
             FieldTransferDetail::LocalStage(mpi, [&]
-                                            { result = std::make_unique<MeshReadAccess>(source.AcquireRead()); });
+                                            { DNDS_check_throw_info(source.HasNativeState(), "mesh output requires native authority");
+                                              result = std::make_unique<MeshReadAccess>(source.AcquireRead()); });
             return result;
         }
 
-        /// Distributed output borrows current rows, independently of their
-        /// backing Array implementation. Only the old explicit serial export
-        /// uses reader-owned legacy arrays. No mesh workspace is constructed.
+        /// Output borrows native current rows or explicitly gathered serial
+        /// rows. The retained owner protects payload and shape for the writer.
         class OutputMeshRows
         {
             std::unique_ptr<MeshReadAccess> _read;
-            tCoordPair _coordinates;
-            tAdjPair _nodes;
-            tPbiPair _bits;
-            tElemInfoArrayPair _info;
             int _dimension;
             bool _periodic;
             Periodicity _frame;
@@ -64,7 +60,7 @@ namespace DNDS::Geom
         public:
             index nCell = 0, nNode = 0;
             OutputMeshRows(UnstructuredMeshSerialRW &reader, int flag)
-                : _dimension(reader.mesh->getDim()), _periodic(reader.mesh->isPeriodic), _frame(reader.mesh->periodicInfo)
+                : _dimension(reader.mesh->getDim()), _periodic(reader.mesh->IsPeriodic()), _frame(reader.mesh->PeriodicMetadata())
             {
                 DNDS_check_throw_info(flag == 0 || flag == 1, "output mode must be serial or distributed");
                 if (flag == 1)
@@ -77,7 +73,7 @@ namespace DNDS::Geom
                     nCell = view.NumCell();
                     nNode = view.NumNodeProc();
                 }
-                else if (reader.mesh->HasNativeState())
+                else
                 {
                     _serial = reader.nativeSerialOutput;
                     DNDS_check_throw_info(_serial && reader.mRank == _serial->readerRank,
@@ -94,22 +90,15 @@ namespace DNDS::Geom
                     nCell = index(_serial->cellNodes.Rows());
                     nNode = index(_serial->coordinates.Rows());
                 }
-                else
-                    reader.GetCurrentOutputArrays(flag, _coordinates, _nodes, _bits, _info, nCell, nNode);
             }
             int Dimension() const { return _dimension; }
             bool IsPeriodic() const { return _periodic; }
             const Periodicity &Periodic() const { return _frame; }
-            tPoint Coord(index node) const { return _serial ? tPoint(Eigen::Map<const tPoint>(_serialCoords->View().Row(size_t(node)))) : _read ? tPoint(_read->HostView().Coord(node))
-                                                                                                                                                : tPoint(_coordinates[node]); }
-            rowsize CellNodeCount(index cell) const { return _serial ? rowsize(_serialNodes->View().RowSize(size_t(cell))) : _read ? rowsize(_read->HostView().CellNodes(cell).size())
-                                                                                                                                   : _nodes.RowSize(cell); }
-            index CellNode(index cell, rowsize slot) const { return _serial ? _serialNodes->View()(size_t(cell), size_t(slot)) : _read ? _read->HostView().CellNodes(cell)[slot]
-                                                                                                                                       : _nodes(cell, slot); }
-            NodePeriodicBits CellNodeBits(index cell, rowsize slot) const { return _serial ? _serialBits->View()(size_t(cell), size_t(slot)) : _read ? _read->HostView().CellNodePeriodicBits(cell)[slot]
-                                                                                                                                                     : _bits(cell, slot); }
-            Elem::ElemType CellType(index cell) const { return _serial ? _serialInfo->View()(size_t(cell), 0).getElemType() : _read ? _read->HostView().GetCellInfo(cell).getElemType()
-                                                                                                                                    : _info[cell]->getElemType(); }
+            tPoint Coord(index node) const { return _serial ? tPoint(Eigen::Map<const tPoint>(_serialCoords->View().Row(size_t(node)))) : tPoint(_read->HostView().Coord(node)); }
+            rowsize CellNodeCount(index cell) const { return _serial ? rowsize(_serialNodes->View().RowSize(size_t(cell))) : rowsize(_read->HostView().CellNodes(cell).size()); }
+            index CellNode(index cell, rowsize slot) const { return _serial ? _serialNodes->View()(size_t(cell), size_t(slot)) : _read->HostView().CellNodes(cell)[slot]; }
+            NodePeriodicBits CellNodeBits(index cell, rowsize slot) const { return _serial ? _serialBits->View()(size_t(cell), size_t(slot)) : _read->HostView().CellNodePeriodicBits(cell)[slot]; }
+            Elem::ElemType CellType(index cell) const { return _serial ? _serialInfo->View()(size_t(cell), 0).getElemType() : _read->HostView().GetCellInfo(cell).getElemType(); }
             std::vector<index> CellNodes(index cell) const
             {
                 std::vector<index> result(size_t(CellNodeCount(cell)));
@@ -118,61 +107,6 @@ namespace DNDS::Geom
                 return result;
             }
         };
-    }
-
-    void UnstructuredMeshSerialRW::
-        GetCurrentOutputArrays(int flag,
-                               tCoordPair &coordOut,
-                               tAdjPair &cell2nodeOut,
-                               tPbiPair &cell2nodePbiOut,
-                               tElemInfoArrayPair &cellElemInfoOut,
-                               index &nCell, index &nNode)
-    {
-        mesh->RequireLegacyWorkspace("serial-reader output array access");
-        /*************************************************/
-        // get the output arrays: serial or parallel
-        tCoord coordSerialDummy;
-        tAdj cell2nodeSerialDummy;
-        tPbi cell2nodePbiSerialDummy;
-        tElemInfoArray cellElemInfoSerialDummy;
-        coordSerialDummy = make_ssp<decltype(coordSerialDummy)::element_type>(ObjName{"GetCurrentOutputArrays::coordSerialDummy"}, mesh->getMPI());
-        cell2nodeSerialDummy = make_ssp<decltype(cell2nodeSerialDummy)::element_type>(ObjName{"GetCurrentOutputArrays::cell2nodeSerialDummy"}, mesh->getMPI());
-        cell2nodePbiSerialDummy = make_ssp<decltype(cell2nodePbiSerialDummy)::element_type>(ObjName{"GetCurrentOutputArrays::cell2nodePbiSerialDummy"}, NodePeriodicBits::CommType(), NodePeriodicBits::CommMult(), mesh->getMPI());
-        cellElemInfoSerialDummy = make_ssp<decltype(cellElemInfoSerialDummy)::element_type>(ObjName{"GetCurrentOutputArrays::cellElemInfoSerialDummy"}, ElemInfo::CommType(), ElemInfo::CommMult(), mesh->getMPI());
-
-        if (flag == 0)
-        {
-            coordOut.father = coordSerial;
-            coordOut.son = coordSerialDummy;
-            cell2nodeOut.father = cell2nodeSerial;
-            cell2nodeOut.son = cell2nodeSerialDummy;
-            if (mesh->isPeriodic)
-            {
-                cell2nodePbiOut.father = cell2nodePbiSerial;
-                cell2nodePbiOut.son = cell2nodePbiSerialDummy;
-            }
-            cellElemInfoOut.father = cellElemInfoSerial;
-            cellElemInfoOut.son = cellElemInfoSerialDummy;
-            nCell = cell2nodeOut.Size();
-            nNode = coordOut.Size();
-        }
-        else if (flag == 1)
-        {
-            coordOut.father = mesh->coords.father;
-            coordOut.son = mesh->coords.son;
-            cell2nodeOut.father = mesh->cell2node.father;
-            cell2nodeOut.son = mesh->cell2node.son;
-            if (mesh->isPeriodic)
-            {
-                cell2nodePbiOut.father = mesh->cell2nodePbi.father;
-                cell2nodePbiOut.son = mesh->cell2nodePbi.son;
-            }
-            cellElemInfoOut.father = mesh->cellElemInfo.father;
-            cellElemInfoOut.son = mesh->cellElemInfo.son;
-            nCell = cell2nodeOut.father->Size(); //! only non-ghost cells are output
-            nNode = coordOut.Size();             //! need all the nodes with ghost
-        }
-        /*************************************************/
     }
 
     static void GetViolentNodeDeduplication(
@@ -238,7 +172,12 @@ namespace DNDS::Geom
                                           double t, int flag)
     {
         DNDS_check_throw_info(flag == 0 || flag == 1, "output mode must be serial or distributed");
-        DNDS_check_throw_info(flag != 0 || !mesh->HasNativeState() || nativeSerialOutput, "prepare native serial output before writing");
+        if (flag == 1)
+            FieldTransferDetail::LocalStage(mesh->getMPI(), [&]
+                                            { DNDS_check_throw_info(mesh->HasNativeState(), "mesh output requires native authority"); });
+        else
+            DNDS_check_throw_info(mesh->HasNativeState() && nativeSerialOutput,
+                                  "mesh output requires native authority and prepared serial rows");
         if (flag == 1)
             CurrentOutputFieldCounts(*mesh, arraySiz, 0, arraySizPoint, 0);
         auto mpi = mesh->getMPI();
@@ -485,7 +424,7 @@ namespace DNDS::Geom
             DNDS::index v = -1;
             if (flag == 0)
             {
-                const auto mapping = nativeSerialOutput ? nativeSerialOutput->cellGlobal : cell2nodeSerialOutTrans.pLGlobalMapping;
+                const auto mapping = nativeSerialOutput->cellGlobal;
                 bool ret = mapping->search(iv, r, v);
                 DNDS_assert_info(ret, "search failed");
             }
@@ -856,7 +795,12 @@ namespace DNDS::Geom
         double t, int flag)
     {
         DNDS_check_throw_info(flag == 0 || flag == 1, "output mode must be serial or distributed");
-        DNDS_check_throw_info(flag != 0 || !mesh->HasNativeState() || nativeSerialOutput, "prepare native serial output before writing");
+        if (flag == 1)
+            FieldTransferDetail::LocalStage(mesh->getMPI(), [&]
+                                            { DNDS_check_throw_info(mesh->HasNativeState(), "mesh output requires native authority"); });
+        else
+            DNDS_check_throw_info(mesh->HasNativeState() && nativeSerialOutput,
+                                  "mesh output requires native authority and prepared serial rows");
         if (flag == 1)
             CurrentOutputFieldCounts(*mesh, arraySiz, vecArraySiz, arraySizPoint, vecArraySizPoint);
         auto mpi = mesh->getMPI();
@@ -1139,7 +1083,7 @@ namespace DNDS::Geom
                                 index v{0};
                                 if (flag == 0)
                                 {
-                                    const auto mapping = nativeSerialOutput ? nativeSerialOutput->cellGlobal : cell2nodeSerialOutTrans.pLGlobalMapping;
+                                    const auto mapping = nativeSerialOutput->cellGlobal;
                                     bool ret = mapping->search(iCell, r, v);
                                     DNDS_assert_info(ret, "search failed");
                                 }
@@ -1439,26 +1383,15 @@ namespace DNDS::Geom
         double t, MPI_Comm commDup)
     {
         DNDS_check_throw_info(commDup != MPI_COMM_NULL, "VTKHDF output requires its output communicator");
-        int currentExport = int(HasNativeState());
-        // The prepared legacy writer may run on a worker while the solver uses
-        // mpi.comm. Its preflight belongs to the same isolated communicator as
-        // HDF5 below. Native output setup uses that same isolated context.
-        MPI_Allreduce(MPI_IN_PLACE, &currentExport, 1, MPI_INT, MPI_MAX, commDup);
-        std::optional<NativeMeshOutput> nativeOutput;
-        std::unique_ptr<MeshReadAccess> retained;
-        std::optional<Runtime::Array<real>::ReadLease> nativeCoordinates;
-        if (currentExport)
-        {
-            EntitySpace::CheckCommunicator(mpi.comm, commDup);
-            auto outputMPI = mpi;
-            outputMPI.comm = commDup;
-            FieldTransferDetail::LocalStage(outputMPI, [&]
-                                            { DNDS_check_throw_info(HasNativeState(), "native output authority differs across ranks"); });
-            CurrentOutputFieldCounts(*this, arraySiz, vecArraySiz, arraySizPoint, vecArraySizPoint, commDup);
-            retained = CurrentOutputRead(*this, commDup);
-            nativeOutput.emplace(NativeMeshOutput::Build(*CurrentNativeState(), outputMPI));
-            nativeCoordinates.emplace(nativeOutput->coordinates.Read());
-        }
+        EntitySpace::CheckCommunicator(mpi.comm, commDup);
+        auto outputMPI = mpi;
+        outputMPI.comm = commDup;
+        FieldTransferDetail::LocalStage(outputMPI, [&]
+                                        { DNDS_check_throw_info(HasNativeState(), "mesh output requires native authority"); });
+        CurrentOutputFieldCounts(*this, arraySiz, vecArraySiz, arraySizPoint, vecArraySizPoint, commDup);
+        auto retained = CurrentOutputRead(*this, commDup);
+        auto nativeOutput = NativeMeshOutput::Build(*CurrentNativeState(), outputMPI);
+        auto nativeCoordinates = nativeOutput.coordinates.Read();
         fname += ".vtkhdf";
         std::filesystem::path outFile{fname};
         createOutputDir(outFile, mpi, OutputDirMode::Fast);
@@ -1466,31 +1399,23 @@ namespace DNDS::Geom
             if (!seriesName.empty())
                 updateVTKSeries(seriesName + ".vtkhdf.series", getStringForcePath(outFile.filename()), t);
 
-        tCoord coordOut;
-        if (!nativeOutput)
-        {
-            coordOut = isPeriodic ? coordsPeriodicRecreated.father : coords.father;
-            DNDS_assert(coordOut && cell2node.father);
-        }
-        const index outputNodeCount = nativeOutput ? index(nativeOutput->coordinates.Rows()) : coordOut->Size();
-        const index outputCellCount = nativeOutput ? index(nativeOutput->types.size()) : cell2node.father->Size();
-        const real *outputCoordinates = nativeOutput ? nativeCoordinates->View().data : coordOut->data();
-        const auto &vtkCell2nodeOffsets = nativeOutput ? nativeOutput->offsets : this->vtkCell2nodeOffsets;
-        const auto &vtkCellType = nativeOutput ? nativeOutput->types : this->vtkCellType;
-        const auto &vtkCell2node = nativeOutput ? nativeOutput->connectivity : this->vtkCell2node;
-        const index vtkNodeOffset = nativeOutput ? nativeOutput->nodeOffset : this->vtkNodeOffset;
-        const index vtkCellOffset = nativeOutput ? nativeOutput->cellOffset : this->vtkCellOffset;
-        const index vtkNNodeGlobal = nativeOutput ? nativeOutput->globalNodes : this->vtkNNodeGlobal;
-        const index vtkNCellGlobal = nativeOutput ? nativeOutput->globalCells : this->vtkNCellGlobal;
-        const index vtkCell2NodeGlobalSiz = nativeOutput ? nativeOutput->globalConnectivity : this->vtkCell2NodeGlobalSiz;
+        const index outputNodeCount = index(nativeOutput.coordinates.Rows());
+        const index outputCellCount = index(nativeOutput.types.size());
+        const real *outputCoordinates = nativeCoordinates.View().data;
+        const auto &vtkCell2nodeOffsets = nativeOutput.offsets;
+        const auto &vtkCellType = nativeOutput.types;
+        const auto &vtkCell2node = nativeOutput.connectivity;
+        const index vtkNodeOffset = nativeOutput.nodeOffset;
+        const index vtkCellOffset = nativeOutput.cellOffset;
+        const index vtkNNodeGlobal = nativeOutput.globalNodes;
+        const index vtkNCellGlobal = nativeOutput.globalCells;
+        const index vtkCell2NodeGlobalSiz = nativeOutput.globalConnectivity;
         auto sourcePointRow = [&](index row)
-        { return nativeOutput ? nativeOutput->pointSourceRows.at(size_t(row)) : (isPeriodic ? nodeRecreated2nodeLocal.at(size_t(row)) : row); };
+        { return nativeOutput.pointSourceRows.at(size_t(row)); };
 
         // MPI::AllreduceOneIndex(nNodesLocal, MPI_SUM, mpi);
-        // long long numberOfNodes = coordOut->globalSize();
         long long numberOfNodes = vtkNNodeGlobal;
 
-        // long long numberOfCells = cell2node.father->globalSize();
         long long numberOfCells = vtkNCellGlobal;
         long long numberOfConnectivity = vtkCell2NodeGlobalSiz;
 
@@ -1630,11 +1555,6 @@ namespace DNDS::Geom
 
             herr = H5Gclose(CellData_group_id), H5S_Close;
         }
-        if (!nativeOutput && isPeriodic)
-        {
-            DNDS_assert(coordsPeriodicRecreated.father && coordsPeriodicRecreated.father->Size() == nodeRecreated2nodeLocal.size());
-        }
-
         {
             index iNMax = outputNodeCount;
             std::vector<double> nodeDataBuf(iNMax * 3);
@@ -1675,8 +1595,7 @@ namespace DNDS::Geom
 
     void UnstructuredMesh::PrintMeshCGNS(std::string fname, const t_FBCID_2_Name &fbcid2name, const std::vector<std::string> &allNames)
     {
-        // Serialize current read views directly. In particular, neither native
-        // export nor the legacy compatibility path changes adjacency numbering.
+        // Serialize current native read views without changing adjacency numbering.
         auto retained = CurrentOutputRead(*this);
         const auto view = retained->HostView();
         std::optional<EntitySpace> nodes;
