@@ -110,25 +110,13 @@ TEST_CASE("Native wall distance uses remote boundary selection and retains geome
         CHECK(mesh->NodeWallDist(node).norm() == std::pow(DNDS::veryLargeReal, 0.25));
 }
 
-TEST_CASE("Wall distance rejects mixed native and legacy authority collectively")
+TEST_CASE("Wall distance rejects a rank without native authority collectively")
 {
     DNDS::MPIInfo mpi(MPI_COMM_WORLD);
     if (mpi.size == 1)
         return;
     auto mesh = Fixture(mpi);
     auto legacy = std::make_shared<G::UnstructuredMesh>(mpi, 2);
-    G::UnstructuredMeshSerialRW reader(legacy, 0);
-    const auto root = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path();
-    reader.ReadFromCGNSSerial((root / "data/mesh/UniformSquare_10.cgns").string());
-    reader.BuildCell2Cell();
-    reader.MeshPartitionCell2Cell({});
-    reader.PartitionReorderToMeshCell2Cell();
-    legacy->RecoverNode2CellAndNode2Bnd();
-    legacy->RecoverCell2CellAndBnd2Cell();
-    legacy->BuildGhostPrimary();
-    legacy->AdjGlobal2LocalPrimary();
-    legacy->AdjGlobal2LocalN2CB();
-    legacy->InterpolateFace();
     if (mpi.rank == 0)
         mesh = legacy;
     auto stamp = mesh->versions.Stamp();
@@ -175,4 +163,15 @@ int main(int argc, char **argv)
     const int result = context.run();
     MPI_Finalize();
     return result;
+}
+
+TEST_CASE("Wall distance rejects an unpublished mesh collectively")
+{
+    DNDS::MPIInfo mpi(MPI_COMM_WORLD);
+    auto mesh = std::make_shared<G::UnstructuredMesh>(mpi, 2);
+    const auto stamp = mesh->versions.Stamp();
+    CHECK_THROWS(mesh->BuildNodeWallDist([](auto)
+                                         { return true; }));
+    CHECK(stamp.Valid());
+    CHECK_FALSE(mesh->HasNativeState());
 }

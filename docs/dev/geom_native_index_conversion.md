@@ -39,6 +39,10 @@ the live mesh. If followed by a collective setup operation, callers must agree
 conversion failures through the existing collective validation boundary. Source
 leases retain values and maps through conversion. Use new entity descriptors
 after a mesh transition; identical row counts do not establish the same order.
+Creating a `RelationReadAccess` validates the relation and costs a scan of its
+entries. Retain one reader outside a row loop, then reuse its row/entry access;
+constructing it for each element repeats that scan. Compute kernels use the
+already acquired plain host/device view.
 
 The old whole-mesh `AdjGlobal2Local*`/`AdjLocal2Global*` mutators remain legacy
 workspace APIs during retirement. They must not silently change the advertised

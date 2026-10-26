@@ -14,21 +14,21 @@ namespace DNDS::Geom
     void UnstructuredMesh::BuildNodeWallDist(const std::function<bool(Geom::t_index)> &fBndIsWall, WallDistOptions options)
     {
         CheckCollectiveMutationAvailable(true);
-        const bool native = HasNativeState();
         std::unique_ptr<MeshReadAccess> retained;
         std::optional<UnstructuredMeshView> nativeView;
         Runtime::VersionStamp stamp;
         FieldTransferDetail::LocalStage(mpi, [&]
                                         {
+            DNDS_check_throw_info(HasNativeState(), "wall distance requires native mesh authority");
             DNDS_check_throw_info((options.method == 0 || options.method == 20 || options.method == 1) &&
                                       options.subdivide_quad >= 0 && std::isfinite(options.minWallDist) && options.minWallDist >= 0 && options.wallDistExecution >= 0,
                                   "invalid wall distance options");
-            auto requirements = native ? CurrentNativeRequirements() : MeshReadRequirements::CellFlux();
+            auto requirements = CurrentNativeRequirements();
             requirements.faces = true;
             retained = std::make_unique<MeshReadAccess>(AcquireRead(requirements));
             nativeView = retained->HostView();
             stamp = versions.Stamp(); });
-        std::array<int, 4> parameters{options.method, options.subdivide_quad, options.wallDistExecution, int(native)};
+        std::array<int, 3> parameters{options.method, options.subdivide_quad, options.wallDistExecution};
         auto expectedParameters = parameters;
         auto expectedMinimum = options.minWallDist;
         MPI_Bcast(expectedParameters.data(), int(expectedParameters.size()), MPI_INT, 0, mpi.comm);
@@ -48,9 +48,12 @@ namespace DNDS::Geom
         { nativeView->GetCoordsOnFace(face, output); };
         std::vector<Eigen::Matrix<real, 3, 3>> Triangles;
         std::vector<index> wallNodes;
-        Runtime::Array<real> wallOwned(Runtime::RowLayout::Dense(size_t(NumNode()), 3));
+        Runtime::Array<real> wallOwned;
         std::optional<Runtime::Array<real>::WriteLease> wallWrite;
-        wallWrite.emplace(wallOwned.Write());
+        FieldTransferDetail::LocalStage(mpi, [&]
+                                        {
+            wallOwned = Runtime::Array<real>(Runtime::RowLayout::Dense(size_t(NumNode()), 3));
+            wallWrite.emplace(wallOwned.Write()); });
         auto wall = [&](index row)
         { return Eigen::Map<tPoint>(wallWrite->View().Row(size_t(row))); };
         for (index node = 0; node < NumNode(); ++node)
@@ -174,17 +177,18 @@ namespace DNDS::Geom
         static_assert(sizeof(Eigen::Matrix<real, 3, 3>) == 9 * sizeof(real), "wall MPI payload requires packed coordinates");
         auto trianglesFull = gather(Triangles, MPI_DOUBLE, 9);
         const auto nodeSpace = Entities(EntityKind::Node);
-        Runtime::Array<uint8_t> selectedOwned(Runtime::RowLayout::Dense(size_t(NumNode()), 1));
-        Runtime::Array<uint8_t> selectedGhost(Runtime::RowLayout::Dense(size_t(NumNodeGhost()), 1));
-        {
+        Runtime::Array<uint8_t> selectedOwned, selectedGhost;
+        FieldTransferDetail::LocalStage(mpi, [&]
+                                        {
+            selectedOwned = Runtime::Array<uint8_t>(Runtime::RowLayout::Dense(size_t(NumNode()), 1));
+            selectedGhost = Runtime::Array<uint8_t>(Runtime::RowLayout::Dense(size_t(NumNodeGhost()), 1));
             auto local = selectedOwned.Write(), remote = selectedGhost.Write();
             for (size_t row = 0; row < selectedOwned.Rows(); ++row)
                 local.View()(row, 0) = 0;
             for (size_t row = 0; row < selectedGhost.Rows(); ++row)
                 remote.View()(row, 0) = 0;
             for (auto node : wallNodes)
-                (node < NumNode() ? local.View()(size_t(node), 0) : remote.View()(size_t(node - NumNode()), 0)) = 1;
-        }
+                (node < NumNode() ? local.View()(size_t(node), 0) : remote.View()(size_t(node - NumNode()), 0)) = 1; });
         const auto route = nodeSpace.BuildRowTransferPlan();
         Runtime::PayloadPlan reverse(route.Reverse(), selectedGhost.Layout(), selectedOwned.Layout(), Runtime::ElementSchema::Arithmetic<uint8_t>());
         reverse.Bind(selectedGhost, selectedOwned, Runtime::Reducer::Builtin<uint8_t>(Runtime::Reduction::BitOr),
@@ -278,34 +282,12 @@ namespace DNDS::Geom
         wallWrite.reset();
         RelationGhostRoute nodeRoute(nodeSpace);
         auto wallGhost = nodeRoute.TransferRows(nodeSpace, wallOwned, Runtime::ElementSchema::Arithmetic<real>());
-        wallGhost = Runtime::Array<real>::FromStorage(Runtime::RowLayout::Dense(wallGhost.Rows(), 3), wallGhost.Storage());
-        if (native)
-        {
-            std::shared_ptr<const NativeMeshState> prepared;
-            FieldTransferDetail::LocalStage(mpi, [&]
-                                            { prepared = _nativeState->WithWallDistance({wallOwned, wallGhost}); });
-            retained.reset();
-            PublishNativeGeometry(std::move(prepared), stamp, Runtime::Change::Values | Runtime::Change::Interface | Runtime::Change::Allocation);
-        }
-        else
-        {
-            retained.reset();
-            stamp.Validate();
-            auto mutationToken = BeginManagedMutation(Runtime::Change::Interface | Runtime::Change::Values);
-            nodeWallDist.InitPair("BuildNodeWallDist::nodeWallDist", mpi);
-            nodeWallDist.father->Resize(NumNode());
-            nodeWallDist.son->Resize(NumNodeGhost());
-            nodeWallDist.TransAttach();
-            nodeWallDist.trans.BorrowGGIndexing(coords.trans);
-            nodeWallDist.trans.createMPITypes();
-            auto ownedRead = wallOwned.Read(), ghostRead = wallGhost.Read();
-            for (index node = 0; node < NumNode(); ++node)
-                for (size_t component = 0; component < 3; ++component)
-                    (*nodeWallDist.father)[node][Eigen::Index(component)] = ownedRead.View()(size_t(node), component);
-            for (index node = 0; node < NumNodeGhost(); ++node)
-                for (size_t component = 0; component < 3; ++component)
-                    (*nodeWallDist.son)[node][Eigen::Index(component)] = ghostRead.View()(size_t(node), component);
-            mutationToken.Commit();
-        }
+        std::shared_ptr<const NativeMeshState> prepared;
+        FieldTransferDetail::LocalStage(mpi, [&]
+                                        {
+            wallGhost = Runtime::Array<real>::FromStorage(Runtime::RowLayout::Dense(wallGhost.Rows(), 3), wallGhost.Storage());
+            prepared = _nativeState->WithWallDistance({wallOwned, wallGhost}); });
+        retained.reset();
+        PublishNativeGeometry(std::move(prepared), stamp, Runtime::Change::Values | Runtime::Change::Interface | Runtime::Change::Allocation);
     }
 }

@@ -1,6 +1,9 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
-#include "Geom/Mesh/Mesh_Elevation_SmoothHelpers.hpp"
+#include "Geom/Mesh/Mesh.hpp"
+#include "Geom/Mesh/NativeMeshSmoothing.hpp"
+#include "Geom/Mesh/NativeMeshCGNS.hpp"
+#include "Geom/Mesh/NativeMeshTopology.hpp"
 #include <filesystem>
 
 using namespace DNDS;
@@ -17,24 +20,11 @@ int main(int argc, char **argv)
 
 static ssp<UnstructuredMesh> ReadSquare(MPIInfo mpi)
 {
-    auto mesh = std::make_shared<UnstructuredMesh>(mpi, 2);
-    UnstructuredMeshSerialRW reader(mesh, 0);
-    auto root = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path();
-    reader.ReadFromCGNSSerial((root / "data/mesh/UniformSquare_10.cgns").string());
-    reader.BuildCell2Cell();
-    UnstructuredMeshSerialRW::PartitionOptions partition;
-    partition.metisType = "KWAY";
-    partition.metisSeed = 42;
-    partition.metisNcuts = 1;
-    reader.MeshPartitionCell2Cell(partition);
-    reader.PartitionReorderToMeshCell2Cell();
-    mesh->RecoverNode2CellAndNode2Bnd();
-    mesh->RecoverCell2CellAndBnd2Cell();
-    mesh->BuildGhostPrimary();
-    mesh->AdjGlobal2LocalPrimary();
-    mesh->AdjGlobal2LocalN2CB();
-    mesh->InterpolateFace();
-    return mesh;
+    const auto root = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path();
+    auto state = ReadNativeCGNS(mpi, (root / "data/mesh/UniformSquare_10.cgns").string(), 2,
+                                [](const std::string &) -> t_index
+                                { return 21; }, 0, {1, true});
+    return UnstructuredMesh::FromNative(mpi, NativeMeshTopology::Build(*state, mpi));
 }
 
 TEST_CASE("Audit batch 2: wall quadrature preserves square distances")
@@ -45,8 +35,8 @@ TEST_CASE("Audit batch 2: wall quadrature preserves square distances")
     for (DNDS::index i = 0; i < mesh->NumNode(); ++i)
         for (int d = 0; d < 2; ++d)
         {
-            lower[d] = std::min(lower[d], mesh->coords[i](d));
-            upper[d] = std::max(upper[d], mesh->coords[i](d));
+            lower[d] = std::min(lower[d], mesh->Coord(i)(d));
+            upper[d] = std::max(upper[d], mesh->Coord(i)(d));
         }
     MPI_Allreduce(MPI_IN_PLACE, lower, 2, MPI_DOUBLE, MPI_MIN, mpi.comm);
     MPI_Allreduce(MPI_IN_PLACE, upper, 2, MPI_DOUBLE, MPI_MAX, mpi.comm);
@@ -59,46 +49,52 @@ TEST_CASE("Audit batch 2: wall quadrature preserves square distances")
         options.method = method;
         mesh->BuildNodeWallDist([](auto)
                                 { return true; }, options);
-        for (DNDS::index i = 0; i < mesh->nodeWallDist.Size(); ++i)
+        for (DNDS::index i = 0; i < mesh->NumNodeProc(); ++i)
         {
-            const auto p = mesh->coords[i];
+            const auto p = mesh->Coord(i);
             const double expected = std::min({p(0) - lower[0], upper[0] - p(0), p(1) - lower[1], upper[1] - p(1)});
-            CHECK(mesh->nodeWallDist[i].allFinite());
-            CHECK(mesh->nodeWallDist[i].norm() == doctest::Approx(expected).epsilon(1e-11));
+            CHECK(mesh->NodeWallDist(i).allFinite());
+            CHECK(mesh->NodeWallDist(i).norm() == doctest::Approx(expected).epsilon(1e-11));
         }
         mesh->BuildNodeWallDist([](auto)
                                 { return false; }, options);
-        for (DNDS::index i = 0; i < mesh->nodeWallDist.Size(); ++i)
-            CHECK(mesh->nodeWallDist[i].norm() == std::pow(DNDS::veryLargeReal, 0.25));
+        for (DNDS::index i = 0; i < mesh->NumNodeProc(); ++i)
+            CHECK(mesh->NodeWallDist(i).norm() == std::pow(DNDS::veryLargeReal, 0.25));
     }
 }
 
-TEST_CASE("Audit batch 2: both smoothing units share helper contracts")
+TEST_CASE("Audit batch 2: native smoothers preserve zero displacement and coordinates")
 {
     MPIInfo mpi(MPI_COMM_WORLD);
     auto linear = ReadSquare(mpi);
     auto mesh = std::make_shared<UnstructuredMesh>(mpi, 2);
     mesh->BuildO2FromO1Elevation(*linear);
-    mesh->RecoverNode2CellAndNode2Bnd();
-    mesh->RecoverCell2CellAndBnd2Cell();
-    mesh->BuildGhostPrimary();
-    mesh->AdjGlobal2LocalPrimary();
-    mesh->AdjGlobal2LocalN2CB();
-    mesh->InterpolateFace();
+    mesh->PrepareNativeTopology();
     mesh->ElevatedNodesGetBoundarySmooth([](auto)
                                          { return false; });
     // Exercise both linked implementations' common no-displacement contract.
     // A finite-iteration smoothing algorithm comparison is outside this test.
-    CHECK(mesh->nTotalMoved == 0);
+    auto workspace = mesh->BoundarySmoothingWorkspace();
+    CHECK(workspace->TotalMoved() == 0);
+    auto displacement = workspace->Displacement().owned.Read();
+    DNDS::real normSquared = 0;
+    for (size_t row = 0; row < displacement.View().Rows(); ++row)
+        for (size_t component = 0; component < 3; ++component)
+            normSquared += std::pow(displacement.View()(row, component), 2);
+    MPI_Allreduce(MPI_IN_PLACE, &normSquared, 1, DNDS_MPI_REAL, MPI_SUM, mpi.comm);
+    CHECK(normSquared == 0);
+    std::vector<tPoint> before;
+    for (DNDS::index row = 0; row < mesh->NumNodeProc(); ++row)
+        before.push_back(mesh->Coord(row));
     CHECK_NOTHROW(mesh->ElevatedNodesSolveInternalSmooth());
+    mesh->ElevatedNodesGetBoundarySmooth([](auto)
+                                         { return false; });
     CHECK_NOTHROW(mesh->ElevatedNodesSolveInternalSmoothV2());
-    CoordPairDOF values;
-    values.InitPair("audit smooth helper", mpi);
-    values.father->Resize(1);
-    values.son->Resize(0);
-    values.setConstant(2);
-    CHECK(values.dot(values) == doctest::Approx(12 * mpi.size));
-    PointCloudKDTreeCoordPair cloud(values.father);
-    CHECK(cloud.kdtree_get_point_count() == 1);
-    CHECK(cloud.kdtree_get_pt(0, 2) == 2);
+    for (DNDS::index row = 0; row < mesh->NumNodeProc(); ++row)
+        CHECK(mesh->Coord(row) == before[size_t(row)]);
+    // Escaped value leases retain the old diagnostic allocation even after the
+    // workspace's source association has been superseded by publication.
+    for (size_t row = 0; row < displacement.View().Rows(); ++row)
+        for (size_t component = 0; component < 3; ++component)
+            CHECK(displacement.View()(row, component) == 0);
 }

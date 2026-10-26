@@ -2,6 +2,7 @@
 #include "doctest.h"
 #include "Geom/Mesh/Mesh.hpp"
 #include "Geom/Mesh/NativeMeshBuilder.hpp"
+#include "Geom/Mesh/NativeMeshCGNS.hpp"
 #include "DNDS/Runtime/RowBuilder.hpp"
 #include <filesystem>
 #include <set>
@@ -12,18 +13,11 @@ using I = DNDS::index;
 
 static DNDS::ssp<G::UnstructuredMesh> Fixture(DNDS::MPIInfo mpi)
 {
-    auto mesh = DNDS::make_ssp<G::UnstructuredMesh>(mpi, 2);
-    G::UnstructuredMeshSerialRW reader(mesh, 0);
-    auto root = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path();
-    reader.ReadFromCGNSSerial((root / "data/mesh/UniformSquare_10.cgns").string());
-    reader.BuildCell2Cell();
-    reader.MeshPartitionCell2Cell({});
-    reader.PartitionReorderToMeshCell2Cell();
-    mesh->RecoverNode2CellAndNode2Bnd();
-    mesh->RecoverCell2CellAndBnd2Cell();
-    mesh->BuildGhostPrimary();
-    mesh->AdjGlobal2LocalPrimary();
-    return mesh;
+    const auto root = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path();
+    return G::UnstructuredMesh::FromNative(mpi, G::ReadNativeCGNS(mpi,
+                                                                  (root / "data/mesh/UniformSquare_10.cgns").string(), 2,
+                                                                  [](const std::string &) -> G::t_index
+                                                                  { return 21; }, 0, {1, true}));
 }
 
 static std::vector<G::tPoint> Points(G::UnstructuredMesh &mesh)
@@ -36,21 +30,14 @@ static std::vector<G::tPoint> Points(G::UnstructuredMesh &mesh)
     return result;
 }
 
+static DNDS::ssp<G::UnstructuredMesh> NativeGeometryFixture(DNDS::MPIInfo mpi);
+
 TEST_CASE("Rigid geometry edit transforms coordinates periodic frame and wall vectors coherently")
 {
     DNDS::MPIInfo mpi;
     mpi.setWorld();
-    auto mesh = Fixture(mpi);
-    G::tPoint zero = G::tPoint::Zero();
-    mesh->SetPeriodicGeometry({2, 0, 0}, {1, 2, 0}, {0, 0, 0.25}, {0, 3, 0}, zero, zero, zero, zero, zero);
-    mesh->nodeWallDist.InitPair("geometry-wall-vector", mpi);
-    mesh->nodeWallDist.father->Resize(mesh->NumNode());
-    mesh->nodeWallDist.son->Resize(mesh->NumNodeGhost());
-    mesh->nodeWallDist.TransAttach();
-    G::LegacyFieldBridge::BorrowIndexing(mesh->nodeWallDist.trans, mesh->Entities(G::EntityKind::Node));
+    auto mesh = NativeGeometryFixture(mpi);
     const G::tPoint wall{1, 2, 3};
-    for (I node = 0; node < mesh->NumNodeProc(); ++node)
-        mesh->nodeWallDist[node] = wall;
     auto before = Points(*mesh);
     auto oldFrame = mesh->PeriodicMetadata();
     auto stamp = mesh->versions.Stamp();
@@ -66,12 +53,11 @@ TEST_CASE("Rigid geometry edit transforms coordinates periodic frame and wall ve
     CHECK_THROWS(mesh->ApplyGeometryTransform(rotation, mpi.rank == 0 ? -1.0 : 1.0));
     CHECK(stamp.Valid());
     {
-        // A bridge reader can block only one rank/array after another write
-        // lease has already been acquired. Rejection must leave all untouched
-        // coordinate buffers usable, including on the other ranks.
-        DNDS::Runtime::ReadAccess held;
+        // The publication epoch can be retained independently of a full row
+        // view. A reader on just one rank must reject the collective edit.
+        std::optional<R::VersionTracker::ReadLease> held;
         if (mpi.rank == 0)
-            held = mesh->coords.son->HostReadData();
+            held.emplace(mesh->versions.Read());
         CHECK_THROWS(mesh->ApplyGeometryTransform(rotation, scale));
     }
     CHECK(stamp.Valid());
@@ -83,7 +69,7 @@ TEST_CASE("Rigid geometry edit transforms coordinates periodic frame and wall ve
     for (size_t node = 0; node < after.size(); ++node)
     {
         CHECK(after[node].isApprox(scale * rotation * before[node], 1e-13));
-        CHECK(mesh->nodeWallDist[I(node)].isApprox(scale * rotation * wall, 1e-13));
+        CHECK(mesh->NodeWallDist(I(node)).isApprox(scale * rotation * wall, 1e-13));
     }
     for (int frame = 0; frame < 4; ++frame)
     {
@@ -102,7 +88,7 @@ TEST_CASE("Boundary rectification reduces remote node masks before refreshing co
     const auto nodes = mesh->Entities(G::EntityKind::Node);
     std::vector<I> boundaryNodes;
     for (I boundary = 0; boundary < mesh->NumBnd(); ++boundary)
-        for (auto node : mesh->bnd2node[boundary])
+        for (auto node : mesh->BoundaryNodes(boundary))
             boundaryNodes.push_back(nodes.LocalToGlobal(node));
     int count = int(boundaryNodes.size());
     std::vector<int> counts(mpi.size), starts(mpi.size + 1, 0);
@@ -269,22 +255,24 @@ TEST_CASE("Native rectification reduces masks across independent owners and reje
     }
 }
 
-TEST_CASE("Collective geometry operations reject mixed legacy and native authority before branching")
+TEST_CASE("Collective geometry operations reject a rank without native authority before staging")
 {
     DNDS::MPIInfo mpi;
     mpi.setWorld();
     if (mpi.size == 1)
         return;
     auto native = NativeGeometryFixture(mpi);
-    auto legacy = Fixture(mpi);
-    auto mixed = mpi.rank == 0 ? legacy : native;
+    auto uninitialized = DNDS::make_ssp<G::UnstructuredMesh>(mpi, 2);
+    auto mixed = mpi.rank == 0 ? uninitialized : native;
     const auto stamp = mixed->versions.Stamp();
-    const auto before = Points(*mixed);
+    const auto source = native->CurrentNativeState();
+    const auto before = Points(*native);
     CHECK_THROWS(mixed->ApplyGeometryTransform(Eigen::Matrix3d::Identity(), 2));
     CHECK_THROWS(mixed->RectifyBoundaryCoordinates([](G::t_index)
                                                    { return 1; }));
     CHECK(stamp.Valid());
-    CHECK(Points(*mixed) == before);
+    CHECK(Points(*native) == before);
+    CHECK(native->CurrentNativeState() == source);
     CHECK_NOTHROW(native->ApplyGeometryTransform(Eigen::Matrix3d::Identity(), 1));
 }
 
@@ -531,4 +519,16 @@ int main(int argc, char **argv)
     const auto result = doctest::Context(argc, argv).run();
     MPI_Finalize();
     return result;
+}
+
+TEST_CASE("Geometry operations reject an unpublished mesh without changing its epoch")
+{
+    DNDS::MPIInfo mpi(MPI_COMM_WORLD);
+    auto mesh = DNDS::make_ssp<G::UnstructuredMesh>(mpi, 2);
+    const auto stamp = mesh->versions.Stamp();
+    CHECK_THROWS(mesh->ApplyGeometryTransform(Eigen::Matrix3d::Identity(), 1));
+    CHECK_THROWS(mesh->RectifyBoundaryCoordinates([](G::t_index)
+                                                  { return 1; }));
+    CHECK(stamp.Valid());
+    CHECK_FALSE(mesh->HasNativeState());
 }

@@ -1,6 +1,6 @@
 /**
  * @file test_MeshIndexConversion.cpp
- * @brief Parameterized doctest-based unit tests for UnstructuredMesh index 
+ * @brief Parameterized doctest-based unit tests for UnstructuredMesh index
  *        conversion and adjacency Global2Local / Local2Global methods.
  *
  * Tests run against 4 mesh configurations (same as test_MeshPipeline):
@@ -11,7 +11,7 @@
  *
  * Each mesh is partitioned with Metis, ghost layers built, then exercises:
  *   1. Per-entity index conversions (Global2Local, Local2Global, _NoSon)
- *   2. Adjacency state-machine round-trips (Primary, ForBnd)
+ *   2. Explicit detached adjacency state round-trips (Primary, ForBnd)
  *   3. Round-trip stability under repeated conversions
  *   4. UnInitIndex pass-through
  *   5. Negative encoding for not-found globals
@@ -28,8 +28,12 @@
 #include "doctest.h"
 
 #include "Geom/Mesh/Mesh.hpp"
+#include "Geom/Mesh/NativeMeshCGNS.hpp"
+#include "Geom/Mesh/NativeMeshPreparation.hpp"
+#include "Geom/Mesh/NativeConnectivity.hpp"
 #include <string>
 #include <vector>
+#include <numeric>
 
 using namespace DNDS;
 using namespace DNDS::Geom;
@@ -43,26 +47,21 @@ using namespace DNDS::Geom;
 // ---------------------------------------------------------------------------
 struct MeshConfig
 {
-    const char *name;         ///< Human-readable label
-    const char *file;         ///< Filename relative to data/mesh/
-    int dim;                  ///< Spatial dimension
-    bool periodic;            ///< Has periodic boundaries
-    tPoint translation1;      ///< Periodic translation axis 1
-    tPoint translation2;      ///< Periodic translation axis 2
-    tPoint translation3;      ///< Periodic translation axis 3
+    const char *name;    ///< Human-readable label
+    const char *file;    ///< Filename relative to data/mesh/
+    int dim;             ///< Spatial dimension
+    bool periodic;       ///< Has periodic boundaries
+    tPoint translation1; ///< Periodic translation axis 1
+    tPoint translation2; ///< Periodic translation axis 2
+    tPoint translation3; ///< Periodic translation axis 3
 };
 
 static const MeshConfig g_configs[] = {
-    {"UniformSquare_10", "UniformSquare_10.cgns", 2, false,
-     {0, 0, 0}, {0, 0, 0}, {0, 0, 0}},
-    {"IV10_10", "IV10_10.cgns", 2, true,
-     {10, 0, 0}, {0, 10, 0}, {0, 0, 10}},
-    {"NACA0012_H2", "NACA0012_H2.cgns", 2, false,
-     {0, 0, 0}, {0, 0, 0}, {0, 0, 0}},
-    {"IV10U_10", "IV10U_10.cgns", 2, true,
-     {10, 0, 0}, {0, 10, 0}, {0, 0, 10}},
-    {"Ball2", "Ball2.cgns", 3, false,
-     {0, 0, 0}, {0, 0, 0}, {0, 0, 0}},  // 3D mixed-element mesh (Ball2 is np=8 only)
+    {"UniformSquare_10", "UniformSquare_10.cgns", 2, false, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}},
+    {"IV10_10", "IV10_10.cgns", 2, true, {10, 0, 0}, {0, 10, 0}, {0, 0, 10}},
+    {"NACA0012_H2", "NACA0012_H2.cgns", 2, false, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}},
+    {"IV10U_10", "IV10U_10.cgns", 2, true, {10, 0, 0}, {0, 10, 0}, {0, 0, 10}},
+    {"Ball2", "Ball2.cgns", 3, false, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}}, // 3D mixed-element mesh (Ball2 is np=8 only)
 };
 static constexpr int N_CONFIGS = sizeof(g_configs) / sizeof(g_configs[0]);
 
@@ -94,95 +93,87 @@ static std::string meshPath(const std::string &name)
 
 static ssp<UnstructuredMesh> buildMesh(int meshId, const MeshConfig &cfg)
 {
-    if (g_mpi.rank == 0)
-        std::cout << "[buildMesh " << meshId << " " << cfg.name << "] START" << std::endl;
-
-    auto mesh = std::make_shared<UnstructuredMesh>(g_mpi, cfg.dim);
-    UnstructuredMeshSerialRW reader(mesh, 0);
-
+    std::optional<NativePeriodicImportOptions> periodic;
     if (cfg.periodic)
     {
-        tPoint zero{0, 0, 0};
-        mesh->SetPeriodicGeometry(
-            cfg.translation1, zero, zero,
-            cfg.translation2, zero, zero,
-            cfg.translation3, zero, zero);
+        periodic.emplace();
+        periodic->tolerance = 1e-8;
+        periodic->frames.translation[1].map() = cfg.translation1;
+        periodic->frames.translation[2].map() = cfg.translation2;
+        periodic->frames.translation[3].map() = cfg.translation3;
     }
-
-    if (g_mpi.rank == 0)
-        std::cout << "[buildMesh " << meshId << " " << cfg.name << "] ReadFromCGNSSerial..." << std::endl;
-    reader.ReadFromCGNSSerial(meshPath(cfg.file));
-
-    if (g_mpi.rank == 0)
-        std::cout << "[buildMesh " << meshId << " " << cfg.name << "] Deduplicate1to1Periodic..." << std::endl;
-    reader.Deduplicate1to1Periodic(1e-8);
-
-    if (g_mpi.rank == 0)
-        std::cout << "[buildMesh " << meshId << " " << cfg.name << "] BuildCell2Cell..." << std::endl;
-    reader.BuildCell2Cell();
-
-    UnstructuredMeshSerialRW::PartitionOptions pOpt;
-    pOpt.metisType = "KWAY";
-    pOpt.metisUfactor = 30;
-    pOpt.metisSeed = 42;
-    pOpt.metisNcuts = 1;
-
-    if (g_mpi.rank == 0)
-        std::cout << "[buildMesh " << meshId << " " << cfg.name << "] MeshPartitionCell2Cell..." << std::endl;
-    reader.MeshPartitionCell2Cell(pOpt);
-
-    if (g_mpi.rank == 0)
-        std::cout << "[buildMesh " << meshId << " " << cfg.name << "] PartitionReorderToMeshCell2Cell..." << std::endl;
-    reader.PartitionReorderToMeshCell2Cell();
-
-    if (g_mpi.rank == 0)
-        std::cout << "[buildMesh " << meshId << " " << cfg.name << "] RecoverNode2CellAndNode2Bnd..." << std::endl;
-    mesh->RecoverNode2CellAndNode2Bnd();
-
-    if (g_mpi.rank == 0)
-        std::cout << "[buildMesh " << meshId << " " << cfg.name << "] RecoverCell2CellAndBnd2Cell..." << std::endl;
-    mesh->RecoverCell2CellAndBnd2Cell();
-
-    if (g_mpi.rank == 0)
-        std::cout << "[buildMesh " << meshId << " " << cfg.name << "] BuildGhostPrimary..." << std::endl;
-    mesh->BuildGhostPrimary();
-
-    if (g_mpi.rank == 0)
-        std::cout << "[buildMesh " << meshId << " " << cfg.name << "] AdjGlobal2LocalPrimary..." << std::endl;
-    mesh->AdjGlobal2LocalPrimary();
-
-    if (g_mpi.rank == 0)
-        std::cout << "[buildMesh " << meshId << " " << cfg.name << "] DONE" << std::endl;
-
-    return mesh;
+    auto state = ReadNativeCGNS(g_mpi, meshPath(cfg.file), cfg.dim, FBC_Name_2_ID_Default, 0, {1, true}, periodic);
+    NativePartitionOptions options;
+    options.metisType = "KWAY";
+    options.metisUfactor = 30;
+    options.metisSeed = 42;
+    options.metisNcuts = 1;
+    state = NativeMeshPreparation::Partition(*state, g_mpi, options).state;
+    return UnstructuredMesh::FromNative(g_mpi, std::move(state));
 }
 
-static std::vector<std::vector<DNDS::index>> snapshotAdj(
-    const tAdjPair &adj, DNDS::index nRows)
+static RelationReadAccess readAdj(UnstructuredMesh &mesh, AdjKind key)
 {
-    std::vector<std::vector<DNDS::index>> out(nRows);
-    for (DNDS::index i = 0; i < nRows; i++)
-    {
-        out[i].resize(adj.RowSize(i));
-        for (DNDS::rowsize j = 0; j < adj.RowSize(i); j++)
-            out[i][j] = adj(i, j);
-    }
+    return RelationReadAccess::Current(mesh, key, MeshReadRequirements::Primary());
+}
+
+static std::vector<std::vector<DNDS::index>> snapshotAdj(const RelationReadAccess &adj)
+{
+    std::vector<std::vector<DNDS::index>> out(size_t(adj.Rows()));
+    for (DNDS::index row = 0; row < adj.Rows(); ++row)
+        for (size_t slot = 0; slot < adj.RowSize(row); ++slot)
+            out[size_t(row)].push_back(adj.Raw(row, slot));
     return out;
+}
+
+static DNDS::index firstGlobalOnRank(const EntitySpace &space, int rank)
+{
+    const auto local = space.NumOwned();
+    std::vector<DNDS::index> counts(size_t(g_mpi.size));
+    MPI_Allgather(&local, 1, DNDS_MPI_INDEX, counts.data(), 1, DNDS_MPI_INDEX, g_mpi.comm);
+    return std::accumulate(counts.begin(), counts.begin() + rank, DNDS::index(0));
+}
+
+static void roundTrip(UnstructuredMesh &mesh, AdjKind key, int repeats)
+{
+    auto original = readAdj(mesh, key);
+    REQUIRE(original.State() == Adj_PointToLocal);
+    const auto snapshot = snapshotAdj(original);
+    auto round = NativeRelation::Convert(original, Adj_PointToLocal);
+    for (int trip = 0; trip < repeats; ++trip)
+    {
+        auto global = NativeRelation::Convert(round.Read(), Adj_PointToGlobal);
+        auto globalRead = global.Read();
+        CHECK(globalRead.State() == Adj_PointToGlobal);
+        for (DNDS::index row = 0; row < original.Rows(); ++row)
+            for (size_t slot = 0; slot < original.RowSize(row); ++slot)
+            {
+                const auto entry = original.ReadEntry(row, slot);
+                CHECK(globalRead.Raw(row, slot) == (entry.absent ? UnInitIndex : entry.global));
+            }
+        round = NativeRelation::Convert(globalRead, Adj_PointToLocal);
+        CHECK(round.Read().State() == Adj_PointToLocal);
+        CHECK(snapshotAdj(round.Read()) == snapshot);
+    }
+    // Detached setup conversion must never change the live compute state.
+    CHECK(readAdj(mesh, key).State() == Adj_PointToLocal);
+    CHECK(snapshotAdj(readAdj(mesh, key)) == snapshot);
 }
 
 // ---------------------------------------------------------------------------
 // Parameterized test macro
 // ---------------------------------------------------------------------------
 
-#define FOR_EACH_MESH_CONFIG(body)                                        \
-    for (int _ci = 0; _ci < N_CONFIGS; _ci++)                            \
-    {                                                                     \
-        /* Ball2 (index 4) is only tested with np=8 */                   \
-        if (_ci == 4 && g_mpi.size != 8) continue;                       \
-        CAPTURE(_ci);                                                     \
-        const auto &cfg = g_configs[_ci];                                \
-        auto m = g_meshes[_ci];                                           \
-        SUBCASE(cfg.name) { body }                                        \
+#define FOR_EACH_MESH_CONFIG(body)                     \
+    for (int _ci = 0; _ci < N_CONFIGS; _ci++)          \
+    {                                                  \
+        /* Ball2 (index 4) is only tested with np=8 */ \
+        if (_ci == 4 && g_mpi.size != 8)               \
+            continue;                                  \
+        CAPTURE(_ci);                                  \
+        const auto &cfg = g_configs[_ci];              \
+        auto m = g_meshes[_ci];                        \
+        SUBCASE(cfg.name) { body }                     \
     }
 
 // ---------------------------------------------------------------------------
@@ -214,14 +205,16 @@ int main(int argc, char **argv)
 // ===========================================================================
 // Mesh sanity checks (parameterized over all configs)
 // ===========================================================================
-TEST_CASE("Mesh setup: every rank has cells and nodes")
-{
+TEST_CASE("Mesh setup: every cell-owning rank has locally dereferenceable node closure"){
     FOR_EACH_MESH_CONFIG({
         CHECK(m->NumCell() >= 1);
-        CHECK(m->NumNode() >= 1);
-        CHECK(m->adjPrimaryState == Adj_PointToLocal);
-    })
-}
+        CHECK(m->NumNodeProc() >= 1);
+        CHECK(m->NumNode() >= 0);
+        CHECK(m->NumNode() <= m->NumNodeProc());
+        CHECK(m->Entities(EntityKind::Node).NumOwned() == m->NumNode());
+        CHECK(m->Entities(EntityKind::Node).NumLocal() == m->NumNodeProc());
+        CHECK(readAdj(*m, Adj::Cell2Node).State() == Adj_PointToLocal);
+    })}
 
 TEST_CASE("Mesh setup: multi-rank produces ghosts")
 {
@@ -233,14 +226,12 @@ TEST_CASE("Mesh setup: multi-rank produces ghosts")
     })
 }
 
-TEST_CASE("Mesh setup: periodic state matches configuration")
-{
+TEST_CASE("Mesh setup: periodic state matches configuration"){
     FOR_EACH_MESH_CONFIG({
         // cfg.periodic indicates if the mesh was configured as periodic
         // After Deduplicate1to1Periodic, isPeriodic should match
-        CHECK(m->isPeriodic == cfg.periodic);
-    })
-}
+        CHECK(m->AcquireRead().HostView().IsPeriodic() == cfg.periodic);
+    })}
 
 TEST_CASE("Ball2: mixed 3D element types")
 {
@@ -261,7 +252,7 @@ TEST_CASE("Ball2: mixed 3D element types")
 
     // Gather all unique element types from all ranks
     std::vector<int> localTypes;
-    for (const auto& [type, count] : typeCounts)
+    for (const auto &[type, count] : typeCounts)
         localTypes.push_back(static_cast<int>(type));
 
     int nLocalTypes = localTypes.size();
@@ -321,14 +312,14 @@ TEST_CASE("Ball2: mixed 3D element types")
     if (g_mpi.rank == 0)
     {
         std::cout << "\nBall2 element type counts:" << std::endl;
-        for (const auto& [type, count] : globalCounts)
+        for (const auto &[type, count] : globalCounts)
         {
             std::cout << "  Type " << static_cast<int>(type) << ": " << count << std::endl;
         }
 
         // Verify expected total
         int total = 0;
-        for (const auto& [type, count] : globalCounts)
+        for (const auto &[type, count] : globalCounts)
             total += count;
         CHECK(total == 958994);
     }
@@ -337,17 +328,16 @@ TEST_CASE("Ball2: mixed 3D element types")
 // ===========================================================================
 // Per-entity index conversions -- Node (parameterized)
 // ===========================================================================
-TEST_CASE("NodeIndex: Global2Local round-trip on father nodes")
-{
+TEST_CASE("NodeIndex: Global2Local round-trip on father nodes"){
     FOR_EACH_MESH_CONFIG({
         for (DNDS::index iNode = 0; iNode < m->NumNode(); iNode++)
         {
             DNDS::index g = m->NodeIndexLocal2Global(iNode);
+            CHECK(g == m->Entities(EntityKind::Node).LocalToGlobal(iNode));
             CHECK(g >= 0);
             CHECK(m->NodeIndexGlobal2Local(g) == iNode);
         }
-    })
-}
+    })}
 
 TEST_CASE("NodeIndex: Global2Local round-trip on ghost nodes")
 {
@@ -363,8 +353,7 @@ TEST_CASE("NodeIndex: Global2Local round-trip on ghost nodes")
     })
 }
 
-TEST_CASE("NodeIndex: _NoSon round-trip on father nodes")
-{
+TEST_CASE("NodeIndex: _NoSon round-trip on father nodes"){
     FOR_EACH_MESH_CONFIG({
         for (DNDS::index iNode = 0; iNode < m->NumNode(); iNode++)
         {
@@ -372,8 +361,7 @@ TEST_CASE("NodeIndex: _NoSon round-trip on father nodes")
             CHECK(g >= 0);
             CHECK(m->NodeIndexGlobal2Local_NoSon(g) == iNode);
         }
-    })
-}
+    })}
 
 TEST_CASE("NodeIndex: _NoSon returns negative for non-local global")
 {
@@ -381,35 +369,32 @@ TEST_CASE("NodeIndex: _NoSon returns negative for non-local global")
         return;
     FOR_EACH_MESH_CONFIG({
         MPI_int other = (g_mpi.rank + 1) % g_mpi.size;
-        DNDS::index g = (*m->coords.father->pLGlobalMapping)(other, 0);
+        DNDS::index g = firstGlobalOnRank(m->Entities(EntityKind::Node), other);
         CHECK(m->NodeIndexGlobal2Local_NoSon(g) < 0);
     })
 }
 
-TEST_CASE("NodeIndex: Global2Local returns negative for unknown global")
-{
+TEST_CASE("NodeIndex: Global2Local returns negative for unknown global"){
     FOR_EACH_MESH_CONFIG({
-        DNDS::index bogus = m->coords.father->globalSize() + 999;
+        DNDS::index bogus = m->Entities(EntityKind::Node).NumGlobal() + 999;
         DNDS::index result = m->NodeIndexGlobal2Local(bogus);
         CHECK(result < 0);
         CHECK(result == -1 - bogus);
-    })
-}
+    })}
 
 // ===========================================================================
 // Per-entity index conversions -- Cell (parameterized)
 // ===========================================================================
-TEST_CASE("CellIndex: Global2Local round-trip on father cells")
-{
+TEST_CASE("CellIndex: Global2Local round-trip on father cells"){
     FOR_EACH_MESH_CONFIG({
         for (DNDS::index iCell = 0; iCell < m->NumCell(); iCell++)
         {
             DNDS::index g = m->CellIndexLocal2Global(iCell);
+            CHECK(g == m->Entities(EntityKind::Cell).LocalToGlobal(iCell));
             CHECK(g >= 0);
             CHECK(m->CellIndexGlobal2Local(g) == iCell);
         }
-    })
-}
+    })}
 
 TEST_CASE("CellIndex: Global2Local round-trip on ghost cells")
 {
@@ -426,8 +411,7 @@ TEST_CASE("CellIndex: Global2Local round-trip on ghost cells")
     })
 }
 
-TEST_CASE("CellIndex: _NoSon round-trip on father cells")
-{
+TEST_CASE("CellIndex: _NoSon round-trip on father cells"){
     FOR_EACH_MESH_CONFIG({
         for (DNDS::index iCell = 0; iCell < m->NumCell(); iCell++)
         {
@@ -435,8 +419,7 @@ TEST_CASE("CellIndex: _NoSon round-trip on father cells")
             CHECK(g >= 0);
             CHECK(m->CellIndexGlobal2Local_NoSon(g) == iCell);
         }
-    })
-}
+    })}
 
 TEST_CASE("CellIndex: _NoSon returns negative for non-local global")
 {
@@ -444,7 +427,7 @@ TEST_CASE("CellIndex: _NoSon returns negative for non-local global")
         return;
     FOR_EACH_MESH_CONFIG({
         MPI_int other = (g_mpi.rank + 1) % g_mpi.size;
-        DNDS::index g = (*m->cell2node.father->pLGlobalMapping)(other, 0);
+        DNDS::index g = firstGlobalOnRank(m->Entities(EntityKind::Cell), other);
         CHECK(m->CellIndexGlobal2Local_NoSon(g) < 0);
     })
 }
@@ -452,20 +435,18 @@ TEST_CASE("CellIndex: _NoSon returns negative for non-local global")
 // ===========================================================================
 // Per-entity index conversions -- Bnd (parameterized)
 // ===========================================================================
-TEST_CASE("BndIndex: Global2Local round-trip on father bnds")
-{
+TEST_CASE("BndIndex: Global2Local round-trip on father bnds"){
     FOR_EACH_MESH_CONFIG({
         for (DNDS::index iBnd = 0; iBnd < m->NumBnd(); iBnd++)
         {
             DNDS::index g = m->BndIndexLocal2Global(iBnd);
+            CHECK(g == m->Entities(EntityKind::Bnd).LocalToGlobal(iBnd));
             CHECK(g >= 0);
             CHECK(m->BndIndexGlobal2Local(g) == iBnd);
         }
-    })
-}
+    })}
 
-TEST_CASE("BndIndex: _NoSon round-trip on father bnds")
-{
+TEST_CASE("BndIndex: _NoSon round-trip on father bnds"){
     FOR_EACH_MESH_CONFIG({
         for (DNDS::index iBnd = 0; iBnd < m->NumBnd(); iBnd++)
         {
@@ -473,14 +454,12 @@ TEST_CASE("BndIndex: _NoSon round-trip on father bnds")
             CHECK(g >= 0);
             CHECK(m->BndIndexGlobal2Local_NoSon(g) == iBnd);
         }
-    })
-}
+    })}
 
 // ===========================================================================
 // UnInitIndex pass-through and special encodings (parameterized)
 // ===========================================================================
-TEST_CASE("UnInitIndex pass-through for all 12 conversion methods")
-{
+TEST_CASE("UnInitIndex pass-through for all 12 conversion methods"){
     FOR_EACH_MESH_CONFIG({
         CHECK(m->NodeIndexGlobal2Local(UnInitIndex) == UnInitIndex);
         CHECK(m->CellIndexGlobal2Local(UnInitIndex) == UnInitIndex);
@@ -497,11 +476,9 @@ TEST_CASE("UnInitIndex pass-through for all 12 conversion methods")
         CHECK(m->NodeIndexGlobal2Local_NoSon(UnInitIndex) == UnInitIndex);
         CHECK(m->CellIndexGlobal2Local_NoSon(UnInitIndex) == UnInitIndex);
         CHECK(m->BndIndexGlobal2Local_NoSon(UnInitIndex) == UnInitIndex);
-    })
-}
+    })}
 
-TEST_CASE("Local2Global: negative local index decodes via -1-x encoding")
-{
+TEST_CASE("Local2Global: negative local index decodes via -1-x encoding"){
     FOR_EACH_MESH_CONFIG({
         DNDS::index fakeGlobal = 42;
         DNDS::index neg = -1 - fakeGlobal;
@@ -509,141 +486,87 @@ TEST_CASE("Local2Global: negative local index decodes via -1-x encoding")
         CHECK(m->NodeIndexLocal2Global(neg) == fakeGlobal);
         CHECK(m->CellIndexLocal2Global(neg) == fakeGlobal);
         CHECK(m->BndIndexLocal2Global(neg) == fakeGlobal);
-    })
-}
+    })}
 
 // ===========================================================================
 // Local index range validity (parameterized)
 // ===========================================================================
-TEST_CASE("AdjPrimary: cell2node local indices are in valid range")
-{
+TEST_CASE("AdjPrimary: cell2node local indices are in valid range"){
     FOR_EACH_MESH_CONFIG({
-        REQUIRE(m->adjPrimaryState == Adj_PointToLocal);
-        DNDS::index totalNodes = m->NumNode() + m->NumNodeGhost();
-        for (DNDS::index iC = 0; iC < m->NumCell(); iC++)
-            for (DNDS::rowsize j = 0; j < m->cell2node.RowSize(iC); j++)
+        auto access = m->AcquireRead(MeshReadRequirements::Primary());
+        const auto view = access.HostView();
+        REQUIRE(view.RelationState(MeshRelation::CellNodes) == Adj_PointToLocal);
+        const DNDS::index totalNodes = view.NumNodeProc();
+        for (DNDS::index iC = 0; iC < view.NumCell(); ++iC)
+            for (const DNDS::index iNode : view.CellNodes(iC))
             {
-                DNDS::index iNode = m->cell2node(iC, j);
                 CHECK(iNode >= 0);
                 CHECK(iNode < totalNodes);
             }
-    })
-}
+    })}
 
-TEST_CASE("AdjPrimary: cell2cell local entries are valid or not-found")
-{
+TEST_CASE("AdjPrimary: cell2cell local entries are valid or not-found"){
     FOR_EACH_MESH_CONFIG({
-        REQUIRE(m->adjPrimaryState == Adj_PointToLocal);
-        DNDS::index totalCells = m->NumCell() + m->NumCellGhost();
-        for (DNDS::index iC = 0; iC < m->NumCell(); iC++)
-            for (DNDS::rowsize j = 0; j < m->cell2cell.RowSize(iC); j++)
-            {
-                DNDS::index n = m->cell2cell(iC, j);
-                if (n >= 0)
-                    CHECK(n < totalCells);
-            }
-    })
-}
+        auto access = m->AcquireRead(MeshReadRequirements::Primary());
+        const auto view = access.HostView();
+        REQUIRE(view.RelationState(MeshRelation::CellCells) == Adj_PointToLocal);
+        const DNDS::index totalCells = view.NumCellProc();
+        for (DNDS::index iC = 0; iC < view.NumCell(); ++iC)
+            for (const DNDS::index other : view.CellCells(iC))
+                if (other >= 0)
+                    CHECK(other < totalCells);
+    })}
 
-TEST_CASE("AdjPrimary: bnd2cell owner cell is a local father cell")
-{
+TEST_CASE("AdjPrimary: independently owned boundary has a locally dereferenceable adjacent cell"){
     FOR_EACH_MESH_CONFIG({
-        REQUIRE(m->adjPrimaryState == Adj_PointToLocal);
-        for (DNDS::index ib = 0; ib < m->NumBnd(); ib++)
+        auto access = m->AcquireRead(MeshReadRequirements::Primary());
+        const auto view = access.HostView();
+        REQUIRE(view.RelationState(MeshRelation::BoundaryCells) == Adj_PointToLocal);
+        for (DNDS::index boundary = 0; boundary < view.NumBnd(); ++boundary)
         {
-            DNDS::index owner = m->bnd2cell(ib, 0);
+            const DNDS::index owner = view.BoundaryCells(boundary)[0];
             CHECK(owner >= 0);
-            CHECK(owner < m->NumCell());
+            CHECK(owner < view.NumCellProc());
         }
-    })
-}
+    })}
 
-TEST_CASE("AdjPrimary: bnd2node local indices are in valid range")
-{
+TEST_CASE("AdjPrimary: bnd2node local indices are in valid range"){
     FOR_EACH_MESH_CONFIG({
-        REQUIRE(m->adjPrimaryState == Adj_PointToLocal);
-        DNDS::index totalNodes = m->NumNode() + m->NumNodeGhost();
-        for (DNDS::index ib = 0; ib < m->NumBnd(); ib++)
-            for (DNDS::rowsize j = 0; j < m->bnd2node.RowSize(ib); j++)
+        auto access = m->AcquireRead(MeshReadRequirements::Primary());
+        const auto view = access.HostView();
+        REQUIRE(view.RelationState(MeshRelation::BoundaryNodes) == Adj_PointToLocal);
+        const DNDS::index totalNodes = view.NumNodeProc();
+        for (DNDS::index boundary = 0; boundary < view.NumBnd(); ++boundary)
+            for (const DNDS::index node : view.BoundaryNodes(boundary))
             {
-                DNDS::index iNode = m->bnd2node(ib, j);
-                CHECK(iNode >= 0);
-                CHECK(iNode < totalNodes);
+                CHECK(node >= 0);
+                CHECK(node < totalNodes);
             }
-    })
-}
+    })}
 
 // ===========================================================================
 // Adjacency state machine -- parameterized over all configs
 // ===========================================================================
-TEST_CASE("AdjPrimary: Local2Global then Global2Local is identity")
+TEST_CASE("AdjPrimary: Local2Global then Global2Local is identity"){
+    FOR_EACH_MESH_CONFIG({
+        roundTrip(*m, Adj::Cell2Node, 1);
+        roundTrip(*m, Adj::Cell2Cell, 1);
+        roundTrip(*m, Adj::Bnd2Node, 1);
+        roundTrip(*m, Adj::Bnd2Cell, 1);
+    })}
+
+TEST_CASE("AdjPrimary: three consecutive round-trips are stable"){
+    FOR_EACH_MESH_CONFIG({ roundTrip(*m, Adj::Cell2Node, 3); })}
+
+TEST_CASE("AdjPrimaryForBnd: detached cell2node conversion leaves all other published relations unchanged")
 {
     FOR_EACH_MESH_CONFIG({
-        REQUIRE(m->adjPrimaryState == Adj_PointToLocal);
-
-        auto c2nSnap = snapshotAdj(m->cell2node, m->NumCell());
-        auto c2cSnap = snapshotAdj(m->cell2cell, m->NumCell());
-
-        m->AdjLocal2GlobalPrimary();
-        CHECK(m->adjPrimaryState == Adj_PointToGlobal);
-
-        for (DNDS::index iC = 0; iC < m->NumCell(); iC++)
-            for (DNDS::rowsize j = 0; j < m->cell2node.RowSize(iC); j++)
-            {
-                DNDS::index gNode = m->cell2node(iC, j);
-                CHECK(gNode >= 0);
-                CHECK(gNode < m->coords.father->globalSize());
-            }
-
-        m->AdjGlobal2LocalPrimary();
-        CHECK(m->adjPrimaryState == Adj_PointToLocal);
-
-        for (DNDS::index iC = 0; iC < m->NumCell(); iC++)
-        {
-            REQUIRE(static_cast<DNDS::rowsize>(c2nSnap[iC].size()) == m->cell2node.RowSize(iC));
-            for (DNDS::rowsize j = 0; j < m->cell2node.RowSize(iC); j++)
-                CHECK(m->cell2node(iC, j) == c2nSnap[iC][j]);
-            REQUIRE(static_cast<DNDS::rowsize>(c2cSnap[iC].size()) == m->cell2cell.RowSize(iC));
-            for (DNDS::rowsize j = 0; j < m->cell2cell.RowSize(iC); j++)
-                CHECK(m->cell2cell(iC, j) == c2cSnap[iC][j]);
-        }
-    })
-}
-
-TEST_CASE("AdjPrimary: three consecutive round-trips are stable")
-{
-    FOR_EACH_MESH_CONFIG({
-        auto snap = snapshotAdj(m->cell2node, m->NumCell());
-
-        for (int trip = 0; trip < 3; trip++)
-        {
-            m->AdjLocal2GlobalPrimary();
-            CHECK(m->adjPrimaryState == Adj_PointToGlobal);
-            m->AdjGlobal2LocalPrimary();
-            CHECK(m->adjPrimaryState == Adj_PointToLocal);
-        }
-
-        for (DNDS::index iC = 0; iC < m->NumCell(); iC++)
-            for (DNDS::rowsize j = 0; j < m->cell2node.RowSize(iC); j++)
-                CHECK(m->cell2node(iC, j) == snap[iC][j]);
-    })
-}
-
-TEST_CASE("AdjPrimaryForBnd: round-trip on cell2node only")
-{
-    FOR_EACH_MESH_CONFIG({
-        REQUIRE(m->adjPrimaryState == Adj_PointToLocal);
-
-        auto snap = snapshotAdj(m->cell2node, m->NumCell());
-
-        m->AdjLocal2GlobalPrimaryForBnd();
-        CHECK(m->adjPrimaryState == Adj_PointToGlobal);
-
-        m->AdjGlobal2LocalPrimaryForBnd();
-        CHECK(m->adjPrimaryState == Adj_PointToLocal);
-
-        for (DNDS::index iC = 0; iC < m->NumCell(); iC++)
-            for (DNDS::rowsize j = 0; j < m->cell2node.RowSize(iC); j++)
-                CHECK(m->cell2node(iC, j) == snap[iC][j]);
+        const auto c2c = snapshotAdj(readAdj(*m, Adj::Cell2Cell));
+        const auto b2n = snapshotAdj(readAdj(*m, Adj::Bnd2Node));
+        const auto b2c = snapshotAdj(readAdj(*m, Adj::Bnd2Cell));
+        roundTrip(*m, Adj::Cell2Node, 1);
+        CHECK(snapshotAdj(readAdj(*m, Adj::Cell2Cell)) == c2c);
+        CHECK(snapshotAdj(readAdj(*m, Adj::Bnd2Node)) == b2n);
+        CHECK(snapshotAdj(readAdj(*m, Adj::Bnd2Cell)) == b2c);
     })
 }

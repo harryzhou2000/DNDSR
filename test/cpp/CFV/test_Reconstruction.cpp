@@ -23,8 +23,11 @@
 
 #include "CFV/VariationalReconstruction.hpp"
 #include "Geom/Mesh/NativeMeshCGNS.hpp"
+#include "Geom/Mesh/Mesh_Helpers.hpp"
+#include "Geom/Mesh/NativeMeshAssembler.hpp"
 #include "Geom/Mesh/NativeMeshTopology.hpp"
 #include "DNDS/Serializer/SerializerJSON.hpp"
+#include "Solver/Direct.hpp"
 
 #include <array>
 #include <cmath>
@@ -66,49 +69,25 @@ static ssp<UnstructuredMesh> buildMeshUpToGhost(
     const std::string &file, bool periodic,
     DNDS::real Lx, DNDS::real Ly, int nBisect = 0)
 {
-    auto mesh = std::make_shared<UnstructuredMesh>(g_mpi, g_dim);
-    UnstructuredMeshSerialRW reader(mesh, 0);
-
-    if (periodic)
-    {
-        tPoint zero{0, 0, 0};
-        mesh->SetPeriodicGeometry(
-            tPoint{Lx, 0, 0}, zero, zero,
-            tPoint{0, Ly, 0}, zero, zero,
-            tPoint{0, 0, 0}, zero, zero);
-    }
-
-    reader.ReadFromCGNSSerial(meshPath(file));
-    reader.Deduplicate1to1Periodic();
-    reader.BuildCell2Cell();
-
-    UnstructuredMeshSerialRW::PartitionOptions pOpt;
-    pOpt.metisSeed = 42;
-    reader.MeshPartitionCell2Cell(pOpt);
-    reader.PartitionReorderToMeshCell2Cell();
-
-    mesh->RecoverNode2CellAndNode2Bnd();
-    mesh->RecoverCell2CellAndBnd2Cell();
-    mesh->BuildGhostPrimary();
-    mesh->AdjGlobal2LocalPrimary();
+    NativePeriodicImportOptions frames;
+    frames.frames.translation[1].map() = tPoint{Lx, 0, 0};
+    frames.frames.translation[2].map() = tPoint{0, Ly, 0};
+    frames.frames.translation[3].map().setZero();
+    PartitionOptions partition;
+    partition.metisSeed = 42;
+    AutoAppendName2ID names;
+    auto mesh = ReadNativeMeshFromCGNS(g_mpi, g_dim, meshPath(file), partition, [&](const std::string &name)
+                                       { return names(name); }, periodic ? std::optional<NativePeriodicImportOptions>(frames) : std::nullopt);
 
     // Bisect nBisect times via elevation+bisection
     for (int ib = 0; ib < nBisect; ib++)
     {
         auto meshO2 = std::make_shared<UnstructuredMesh>(g_mpi, g_dim);
         meshO2->BuildO2FromO1Elevation(*mesh);
-        meshO2->RecoverNode2CellAndNode2Bnd();
-        meshO2->RecoverCell2CellAndBnd2Cell();
-        meshO2->BuildGhostPrimary();
-        meshO2->AdjGlobal2LocalPrimary();
 
-        meshO2->AdjLocal2GlobalPrimary();
         auto meshBis = std::make_shared<UnstructuredMesh>(g_mpi, g_dim);
         meshBis->BuildBisectO1FormO2(*meshO2);
-        meshBis->RecoverNode2CellAndNode2Bnd();
-        meshBis->RecoverCell2CellAndBnd2Cell();
-        meshBis->BuildGhostPrimary();
-        meshBis->AdjGlobal2LocalPrimary();
+
         mesh = meshBis;
     }
 
@@ -120,7 +99,7 @@ static ssp<UnstructuredMesh> buildMesh(
     DNDS::real Lx, DNDS::real Ly, int nBisect = 0)
 {
     auto mesh = buildMeshUpToGhost(file, periodic, Lx, Ly, nBisect);
-    mesh->InterpolateFace();
+    mesh->PrepareNativeTopology();
     mesh->AssertOnFaces();
     return mesh;
 }
@@ -511,7 +490,16 @@ TEST_CASE("Mesh dependency stamps reject stale reconstruction and permit explici
     vr->ConstructBaseAndWeight();
     vr->ConstructRecCoeff();
     const auto cells = mesh->Entities(EntityKind::Cell);
-    mesh->BuildCell2CellFace(); // Auxiliary interface publication is not geometry.
+    // Preparing the native auxiliary graph must not invalidate geometry/bases.
+    // Natural ordering also supports singleton and empty local partitions.
+    Direct::DirectPrecControl ordering;
+    ordering.useDirectPrec = true;
+    ordering.orderingCode = 0;
+    Direct::SerialSymLUStructure graph(g_mpi, mesh->NumCell());
+    const auto auxiliaryStamp = mesh->versions.Stamp();
+    mesh->ObtainLocalFactFillOrdering(graph, ordering);
+    CHECK(auxiliaryStamp.Valid());
+    CHECK(cells.Valid());
     CHECK_NOTHROW(vr->ValidateMeshDependencies());
 
     auto volume = [&]()
@@ -554,23 +542,59 @@ TEST_CASE("Mesh dependency stamps reject stale reconstruction and permit explici
     settings.intOrderVRBC = 1;
     vr->parseSettings(settings);
     vr->ConstructMetrics();
-    auto sourceMap = mesh->cell2face.trans.pLGhostMapping;
-    mesh->cell2face.trans.pLGhostMapping = std::make_shared<OffsetAscendIndexMapping>(*sourceMap);
+    // A held read rejects a tracked geometry edit; no malformed legacy mapping
+    // is installed into the native state merely to provoke a rebuild failure.
+    {
+        auto retained = mesh->AcquireRead(MeshReadRequirements::CellFlux());
+        CHECK_THROWS(mesh->TransformCoords([](const tPoint &p)
+                                           { return p; }));
+    }
+    // Explicitly invalidate geometry so the failed dependency check still tests
+    // a new epoch, then rebuild the same boundary cache twice below.
+    mesh->TransformCoords([](const tPoint &p)
+                          { return p; });
     CHECK_THROWS(vr->ConstructBaseAndWeight());
-    mesh->cell2face.trans.pLGhostMapping = sourceMap;
     CHECK_THROWS(vr->ValidateMeshDependencies());
+    vr->ConstructMetrics();
     vr->ConstructBaseAndWeight();
     vr->ConstructBaseAndWeight();
     vr->ConstructRecCoeff();
     CHECK_NOTHROW(vr->ValidateMeshDependencies());
-    mesh->cell2face.trans.pLGhostMapping = std::make_shared<OffsetAscendIndexMapping>(*sourceMap);
+    mesh->TransformCoords([](const tPoint &p)
+                          { return p; });
     CHECK_THROWS(vr->ConstructRecCoeff());
-    mesh->cell2face.trans.pLGhostMapping = sourceMap;
     CHECK_THROWS(vr->ValidateMeshDependencies());
+    vr->ConstructMetrics();
+    vr->ConstructBaseAndWeight();
     vr->ConstructRecCoeff();
-    mesh->cell2face.trans.pLGhostMapping = std::make_shared<OffsetAscendIndexMapping>(*sourceMap);
+    // A valid primary-only publication cannot satisfy face metric prerequisites.
+    // Keep a detached full publication for retry; no corrupt map is installed.
+    auto full = mesh->CurrentNativeState()->BindEpoch(Runtime::VersionTracker{});
+    auto primary = NativeMeshAssembler::CaptureOwned(*full, g_mpi);
+    primary.requirements.faces = primary.requirements.cellFaceNeighbors = primary.requirements.allFaceCellsLocal = false;
+    primary.spaces.erase(EntityKind::Face);
+    primary.ids.erase(EntityKind::Face);
+    // This temporary primary-only fixture is a new logical domain. Its absent
+    // face family cannot carry the full mesh's retained face-ID high-water map.
+    primary.identity = {};
+    const auto primaryNodes = EntitySpace::CreateOwned(EntityKind::Node, g_mpi,
+                                                       primary.spaces.at(EntityKind::Node).NumOwned());
+    for (auto &[kind, space] : primary.spaces)
+        space = kind == EntityKind::Node ? primaryNodes : primaryNodes.CreateSibling(kind, space.NumOwned());
+    primary.faceInfo.reset();
+    primary.cellFacesPbi.reset();
+    primary.faceNodesPbi.reset();
+    for (auto relation : {MeshRelation::CellFaces, MeshRelation::FaceNodes, MeshRelation::FaceCells,
+                          MeshRelation::FaceBoundaries, MeshRelation::BoundaryFaces, MeshRelation::CellFaceCells})
+        primary.relations[size_t(relation)].reset();
+    for (auto it = primary.namedRelations.begin(); it != primary.namedRelations.end();)
+        if (it->first.from == EntityKind::Face || it->first.to == EntityKind::Face)
+            it = primary.namedRelations.erase(it);
+        else
+            ++it;
+    mesh->ReplaceNativeForSetup(NativeMeshAssembler::Build(g_mpi, std::move(primary), 1));
     CHECK_THROWS(vr->ConstructMetrics());
-    mesh->cell2face.trans.pLGhostMapping = sourceMap;
+    mesh->ReplaceNativeForSetup(full);
     CHECK_THROWS(vr->ValidateMetricsDependencies());
     CHECK_THROWS(vr->FinalizeMetrics()); // Failed full rebuild cleared old stage publication.
     vr->ConstructMetrics();
@@ -806,30 +830,30 @@ TEST_CASE("CFV native authority preserves metrics and anisotropic reconstruction
         return values;
     };
     const auto expected = sample(makeVR());
-    auto requirements = MeshReadRequirements::CellFlux();
-    requirements.allFaceCellsLocal = true;
-    requirements.wallDistance = wallDistance;
-    mesh->PublishNative(requirements);
-    REQUIRE(mesh->HasNativeState());
-
-    // Deliberate raw edits affect the detached compatibility workspace only.
-    // Reconstruct every cache after the edits to detect mixed query backing.
-    for (DNDS::index node = 0; node < mesh->coords.Size(); ++node)
-        mesh->coords[node].array() += 37;
-    if (wallDistance)
-        for (DNDS::index node = 0; node < mesh->nodeWallDist.Size(); ++node)
-            mesh->nodeWallDist[node].setConstant(73);
-    for (DNDS::index face = 0; face < mesh->face2cell.Size(); ++face)
+    auto retained = NativeMeshSnapshot::Capture(*mesh, MeshReadRequirements::CellFlux());
+    const auto beforeState = mesh->CurrentNativeState()->BindEpoch(Runtime::VersionTracker{});
+    std::vector<tPoint> oldPoints;
     {
-        mesh->face2cell(face, 0) = 0;
-        mesh->face2cell(face, 1) = UnInitIndex;
-        for (DNDS::rowsize slot = 0; slot < mesh->face2node.RowSize(face); ++slot)
-            mesh->face2node(face, slot) = 0;
-        mesh->faceElemInfo(face, 0).zone = BC_ID_DEFAULT_WALL;
+        auto read = retained.AcquireRead();
+        const auto view = read.HostView();
+        for (DNDS::index node = 0; node < view.NumNodeProc(); ++node)
+            oldPoints.push_back(view.Coord(node));
     }
-    mesh->isPeriodic = false;
-    mesh->periodicInfo = Periodicity{};
-
+    mesh->ApplyGeometryTransform(Eigen::Matrix3d::Identity(), 2);
+    {
+        auto oldRead = retained.AcquireRead();
+        const auto oldView = oldRead.HostView();
+        auto newRead = mesh->AcquireRead(MeshReadRequirements::CellFlux());
+        const auto newView = newRead.HostView();
+        for (DNDS::index node = 0; node < newView.NumNodeProc(); ++node)
+        {
+            CHECK(oldView.Coord(node).isApprox(oldPoints[size_t(node)]));
+            CHECK(newView.Coord(node).isApprox(2 * oldPoints[size_t(node)]));
+        }
+    }
+    // Restoring the exact detached publication must rebuild identical geometry,
+    // anisotropic weights, face slots and numerical reconstruction.
+    mesh->ReplaceNativeForSetup(beforeState);
     const auto actual = sample(makeVR());
     REQUIRE(actual.size() == expected.size());
     for (size_t i = 0; i < actual.size(); ++i)
@@ -1043,152 +1067,52 @@ TEST_CASE("VFV P2 HQM converges on IV10 base mesh")
 // DEBUG: Compare InterpolateFace (DSL) vs InterpolateFaceLegacy
 // ===================================================================
 
-TEST_CASE("DEBUG compare InterpolateFace vs Legacy face2cell")
+TEST_CASE("Native periodic face slots match independent Quad4 vertex and neighbor oracle")
 {
-    // Build a periodic mesh up to ghost primary, then run both methods
-    auto meshA = buildMeshUpToGhost("IV10_10.cgns", true, 10, 10, 0);
-    auto meshB = buildMeshUpToGhost("IV10_10.cgns", true, 10, 10, 0);
-
-    meshA->InterpolateFace();
-    meshA->AssertOnFaces();
-    meshB->InterpolateFaceLegacy();
-    meshB->AssertOnFaces();
-
-    DNDS::index nFaceA = meshA->NumFace();
-    DNDS::index nFaceB = meshB->NumFace();
-    DNDS::index nFaceProcA = meshA->NumFaceProc();
-    DNDS::index nFaceProcB = meshB->NumFaceProc();
-
-    if (g_mpi.rank == 0)
-        std::cout << "[DBG] nFaceOwned: DSL=" << nFaceA << " Legacy=" << nFaceB
-                  << "  nFaceProc: DSL=" << nFaceProcA << " Legacy=" << nFaceProcB << std::endl;
-
-    // For each local cell, compare the face data seen through cell2face
-    DNDS::index nLocalCells = meshA->cell2cell.father->Size();
-    DNDS::index nDiffF2C = 0;
-    DNDS::index nDiffF2N = 0;
-    DNDS::index nDiffZone = 0;
-    DNDS::index nSwappedF2C = 0;
-
-    for (DNDS::index iCell = 0; iCell < nLocalCells; iCell++)
+    auto mesh = buildMesh("IV10_10.cgns", true, 10, 10);
+    auto access = mesh->AcquireRead(MeshReadRequirements::CellFlux());
+    const auto view = access.HostView();
+    const auto cells = mesh->Entities(EntityKind::Cell);
+    const auto nodes = mesh->Entities(EntityKind::Node);
+    const std::array<std::array<int, 2>, 4> vertices{{{{0, 1}}, {{1, 2}}, {{2, 3}}, {{3, 0}}}};
+    DNDS::index checked = 0;
+    for (DNDS::index cell = 0; cell < mesh->NumCell(); ++cell)
     {
-        DNDS::rowsize nFacesA = meshA->cell2face.RowSize(iCell);
-        DNDS::rowsize nFacesB = meshB->cell2face.RowSize(iCell);
-        if (nFacesA != nFacesB)
+        REQUIRE(view.GetCellInfo(cell).getElemType() == Elem::Quad4);
+        const auto cone = view.CellNodes(cell);
+        const auto faces = view.CellFaces(cell);
+        REQUIRE(faces.size() == 4);
+        for (size_t slot = 0; slot < 4; ++slot)
         {
-            if (g_mpi.rank == 0)
-                std::cout << "[DBG] Cell " << iCell << " nFaces differ: " << nFacesA << " vs " << nFacesB << std::endl;
-            continue;
-        }
-
-        for (DNDS::rowsize ic2f = 0; ic2f < nFacesA; ic2f++)
-        {
-            DNDS::index iFaceA = meshA->cell2face(iCell, ic2f);
-            DNDS::index iFaceB = meshB->cell2face(iCell, ic2f);
-
-            // Get face2cell for both
-            DNDS::index f2cA0 = meshA->face2cell(iFaceA, 0);
-            DNDS::index f2cA1 = meshA->face2cell(iFaceA, 1);
-            DNDS::index f2cB0 = meshB->face2cell(iFaceB, 0);
-            DNDS::index f2cB1 = meshB->face2cell(iFaceB, 1);
-
-            // Convert to global cell indices for comparison
-            DNDS::index gA0 = (f2cA0 != DNDS::UnInitIndex) ? meshA->cell2node.trans.pLGhostMapping->operator()(-1, f2cA0) : DNDS::UnInitIndex;
-            DNDS::index gA1 = (f2cA1 != DNDS::UnInitIndex) ? meshA->cell2node.trans.pLGhostMapping->operator()(-1, f2cA1) : DNDS::UnInitIndex;
-            DNDS::index gB0 = (f2cB0 != DNDS::UnInitIndex) ? meshB->cell2node.trans.pLGhostMapping->operator()(-1, f2cB0) : DNDS::UnInitIndex;
-            DNDS::index gB1 = (f2cB1 != DNDS::UnInitIndex) ? meshB->cell2node.trans.pLGhostMapping->operator()(-1, f2cB1) : DNDS::UnInitIndex;
-
-            bool same = (gA0 == gB0 && gA1 == gB1);
-            bool swapped = (!same && gA0 == gB1 && gA1 == gB0);
-
-            if (!same)
-            {
-                nDiffF2C++;
-                if (swapped)
-                    nSwappedF2C++;
-                if (nDiffF2C <= 5)
-                    std::cout << "[DBG rank=" << g_mpi.rank << "] Cell " << iCell
-                              << " ic2f=" << ic2f
-                              << " f2c DSL=(" << gA0 << "," << gA1 << ")"
-                              << " Legacy=(" << gB0 << "," << gB1 << ")"
-                              << (swapped ? " SWAPPED" : " DIFF")
-                              << std::endl;
-            }
-
-            // Compare face2node ordered
-            auto f2nA = meshA->face2node[iFaceA];
-            auto f2nB = meshB->face2node[iFaceB];
-            if (f2nA.size() == f2nB.size())
-            {
-                std::vector<DNDS::index> gnAOrd(f2nA.size()), gnBOrd(f2nB.size());
-                for (int k = 0; k < (int)f2nA.size(); k++)
-                    gnAOrd[k] = meshA->coords.trans.pLGhostMapping->operator()(-1, f2nA[k]);
-                for (int k = 0; k < (int)f2nB.size(); k++)
-                    gnBOrd[k] = meshB->coords.trans.pLGhostMapping->operator()(-1, f2nB[k]);
-                if (gnAOrd != gnBOrd)
-                {
-                    nDiffF2N++;
-                    if (nDiffF2N <= 5)
-                    {
-                        std::cout << "[DBG rank=" << g_mpi.rank << "] Cell " << iCell
-                                  << " ic2f=" << ic2f
-                                  << " f2n DSL=(";
-                        for (auto v : gnAOrd)
-                            std::cout << v << " ";
-                        std::cout << ") Legacy=(";
-                        for (auto v : gnBOrd)
-                            std::cout << v << " ";
-                        std::cout << ")" << std::endl;
-                    }
-                }
-            }
-
-            // Compare zone
-            auto zoneA = meshA->faceElemInfo(iFaceA, 0).zone;
-            auto zoneB = meshB->faceElemInfo(iFaceB, 0).zone;
-            if (zoneA != zoneB)
-            {
-                nDiffZone++;
-                if (nDiffZone <= 5)
-                {
-                    std::vector<DNDS::index> gnAF, gnBF;
-                    for (int k = 0; k < (int)f2nA.size(); k++)
-                        gnAF.push_back(meshA->coords.trans.pLGhostMapping->operator()(-1, f2nA[k]));
-                    for (int k = 0; k < (int)f2nB.size(); k++)
-                        gnBF.push_back(meshB->coords.trans.pLGhostMapping->operator()(-1, f2nB[k]));
-                    std::cout << "[DBG rank=" << g_mpi.rank << "] Cell " << iCell
-                              << " ic2f=" << ic2f
-                              << " zone DSL=" << zoneA << " Legacy=" << zoneB
-                              << " f2c DSL=(" << gA0 << "," << gA1 << ")"
-                              << " f2n DSL=(";
-                    for (auto v : gnAF)
-                        std::cout << v << " ";
-                    std::cout << ") Legacy=(";
-                    for (auto v : gnBF)
-                        std::cout << v << " ";
-                    std::cout << ")" << std::endl;
-                }
-            }
+            const auto face = faces[slot];
+            std::array<DNDS::index, 2> expected{nodes.LocalToGlobal(cone[size_t(vertices[slot][0])]),
+                                                nodes.LocalToGlobal(cone[size_t(vertices[slot][1])])};
+            const auto actual = view.FaceNodes(face);
+            REQUIRE(actual.size() == 2);
+            std::array<DNDS::index, 2> global{nodes.LocalToGlobal(actual[0]), nodes.LocalToGlobal(actual[1])};
+            if (!view.CellIsFaceBack(cell, face, slot))
+                std::swap(expected[0], expected[1]);
+            CHECK(global == expected);
+            tSmallCoords physical;
+            view.GetCoordsOnCell(cell, physical);
+            const auto midpoint = (physical.col(vertices[slot][0]) + physical.col(vertices[slot][1])) / 2;
+            const bool seam = std::abs(midpoint[0]) < 1e-9 || std::abs(midpoint[0] - 10) < 1e-9 ||
+                              std::abs(midpoint[1]) < 1e-9 || std::abs(midpoint[1] - 10) < 1e-9;
+            if (seam)
+                CHECK(FaceIDIsPeriodic(view.GetFaceInfo(face).zone));
+            else
+                CHECK(FaceIDIsInternal(view.GetFaceInfo(face).zone));
+            const auto adjacent = view.FaceCells(face);
+            CHECK((adjacent[0] == cell || adjacent[1] == cell));
+            CHECK(adjacent[0] >= 0);
+            CHECK(adjacent[1] >= 0); // all-periodic grid has no physical boundary
+            if (adjacent[0] >= 0 && adjacent[1] >= 0)
+                CHECK(cells.LocalToGlobal(adjacent[0]) != cells.LocalToGlobal(adjacent[1]));
+            ++checked;
         }
     }
-
-    DNDS::index totalDiffF2C = 0, totalSwapped = 0, totalDiffF2N = 0, totalDiffZone = 0;
-    MPI::Allreduce(&nDiffF2C, &totalDiffF2C, 1, DNDS_MPI_INDEX, MPI_SUM, g_mpi.comm);
-    MPI::Allreduce(&nSwappedF2C, &totalSwapped, 1, DNDS_MPI_INDEX, MPI_SUM, g_mpi.comm);
-    MPI::Allreduce(&nDiffF2N, &totalDiffF2N, 1, DNDS_MPI_INDEX, MPI_SUM, g_mpi.comm);
-    MPI::Allreduce(&nDiffZone, &totalDiffZone, 1, DNDS_MPI_INDEX, MPI_SUM, g_mpi.comm);
-
-    if (g_mpi.rank == 0)
-    {
-        std::cout << "[DBG] Total face2cell differences: " << totalDiffF2C
-                  << " (swapped: " << totalSwapped << ")" << std::endl;
-        std::cout << "[DBG] Total face2node order differences: " << totalDiffF2N << std::endl;
-        std::cout << "[DBG] Total zone differences: " << totalDiffZone << std::endl;
-    }
-
-    CHECK(totalDiffF2C == 0);
-    CHECK(totalDiffF2N == 0);
-    CHECK(totalDiffZone == 0);
+    MPI_Allreduce(MPI_IN_PLACE, &checked, 1, DNDS_MPI_INDEX, MPI_SUM, g_mpi.comm);
+    CHECK(checked == 400);
 }
 
 // ===================================================================

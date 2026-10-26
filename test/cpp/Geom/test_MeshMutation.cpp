@@ -1,6 +1,8 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "Geom/Mesh/Mesh.hpp"
+#include "Geom/Mesh/NativeMeshTopology.hpp"
+#include "Geom/Mesh/Mesh_Helpers.hpp"
 #include "MeshFacadeOverlapFixture.hpp"
 #include "DNDS/Serializer/SerializerJSON.hpp"
 #include <filesystem>
@@ -124,29 +126,27 @@ TEST_CASE("Public callback reentry cannot adopt an existing mesh writer")
 TEST_CASE("Bisection creates independent geometry under independent mesh mutation controllers")
 {
     auto mpi = MutationMPI();
-    auto linear = MutationFixture(mpi);
+    const auto root = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path();
+    auto linear = ReadNativeMeshFromCGNS(mpi, 2, (root / "data/mesh/UniformSquare_10.cgns").string(),
+                                         PartitionOptions{}, FBC_Name_2_ID_Default);
     auto quadratic = make_ssp<UnstructuredMesh>(mpi, 2);
     quadratic->BuildO2FromO1Elevation(*linear);
-    quadratic->RecoverNode2CellAndNode2Bnd();
-    quadratic->RecoverCell2CellAndBnd2Cell();
-    quadratic->BuildGhostPrimary();
-    quadratic->AdjGlobal2LocalPrimary();
-    quadratic->AdjLocal2GlobalPrimary();
     auto bisected = make_ssp<UnstructuredMesh>(mpi, 2);
     bisected->BuildBisectO1FormO2(*quadratic);
-    CHECK(bisected->coords.father != quadratic->coords.father);
-    CHECK(bisected->node2nodeOrig.father != quadratic->node2nodeOrig.father);
+    CHECK(bisected->CurrentNativeState()->MeshNamespace() != quadratic->CurrentNativeState()->MeshNamespace());
+    CHECK_FALSE(bisected->coords.father);
+    CHECK_FALSE(quadratic->coords.father); // fixture is independently native-derived
     std::vector<tPoint> before;
     for (DNDS::index node = 0; node < quadratic->NumNode(); ++node)
-        before.emplace_back(quadratic->coords[node]);
+        before.emplace_back(quadratic->Coord(node));
     auto sourceStamp = quadratic->versions.Stamp();
     bisected->TransformCoords([](const tPoint &point)
                               { return (point + tPoint{0, 2, 0}).eval(); });
     CHECK(sourceStamp.Valid());
     for (DNDS::index node = 0; node < quadratic->NumNode(); ++node)
     {
-        CHECK(quadratic->coords[node].isApprox(before[size_t(node)]));
-        CHECK(bisected->coords[node].isApprox(before[size_t(node)] + tPoint{0, 2, 0}));
+        CHECK(quadratic->Coord(node).isApprox(before[size_t(node)]));
+        CHECK(bisected->Coord(node).isApprox(before[size_t(node)] + tPoint{0, 2, 0}));
     }
 }
 
@@ -219,8 +219,16 @@ TEST_CASE("Boundary destination rejection preserves both native authorities and 
     auto peerStamp = freshPeer.versions.Stamp();
     auto &mixedDestination = mpi.rank == 0 ? *destination : freshPeer;
     CHECK_THROWS(source->ConstructBndMesh(mixedDestination));
-    CHECK_THROWS(mixedDestination.BuildO2FromO1Elevation(*source));
-    CHECK_THROWS(mixedDestination.BuildBisectO1FormO2(*source));
+    // Derivation requires matching volume dimensions, so use a genuine bad
+    // dimension on rank zero instead of detached scalar metadata on a native
+    // two-dimensional destination. This also rejects with a single MPI rank.
+    UnstructuredMesh badDerivation(mpi, 3);
+    auto badStamp = badDerivation.versions.Stamp();
+    auto &derivationDestination = mpi.rank == 0 ? badDerivation : *destination;
+    CHECK_THROWS(derivationDestination.BuildO2FromO1Elevation(*source));
+    CHECK_THROWS(derivationDestination.BuildBisectO1FormO2(*source));
+    CHECK(badStamp.Valid());
+    CHECK_FALSE(badDerivation.HasNativeState());
     CHECK(sourceStamp.Valid());
     CHECK(destinationStamp.Valid());
     CHECK(peerStamp.Valid());

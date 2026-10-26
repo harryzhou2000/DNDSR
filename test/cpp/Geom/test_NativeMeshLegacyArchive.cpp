@@ -1,6 +1,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "MeshFacadeOverlapFixture.hpp"
+#include "Geom/Mesh/NativeMeshRefinement.hpp"
 #include "Geom/Mesh/NativeMeshLegacyArchive.hpp"
 #include "Geom/Mesh/Mesh_Helpers.hpp"
 #include "DNDS/Serializer/SerializerJSON.hpp"
@@ -245,28 +246,36 @@ TEST_CASE("Native archive helper coordinates rank-local missing and malformed JS
 TEST_CASE("Historical legacy periodic elevation duplicate IDs reject without renumbering")
 {
     DNDS::MPIInfo mpi(MPI_COMM_WORLD);
-    auto source = DNDS::make_ssp<G::UnstructuredMesh>(mpi, 2);
-    source->SetPeriodicGeometry({10, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 10, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 1}, {0, 0, 0}, {0, 0, 0});
-    G::UnstructuredMeshSerialRW reader(source, 0);
     const auto root = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path();
-    reader.ReadFromCGNSSerial((root / "data/mesh/IV10_10.cgns").string());
-    reader.Deduplicate1to1Periodic(1e-9);
-    reader.BuildCell2Cell();
-    reader.MeshPartitionCell2Cell({});
-    reader.PartitionReorderToMeshCell2Cell();
-    source->RecoverNode2CellAndNode2Bnd();
-    source->RecoverCell2CellAndBnd2Cell();
-    source->BuildGhostPrimary();
-    source->AdjGlobal2LocalPrimary();
-    auto elevated = DNDS::make_ssp<G::UnstructuredMesh>(mpi, 2);
-    elevated->BuildO2FromO1Elevation(*source);
-    elevated->RecoverNode2CellAndNode2Bnd();
-    elevated->RecoverCell2CellAndBnd2Cell();
-    elevated->BuildGhostPrimary();
-    elevated->AdjGlobal2LocalPrimary();
-    std::vector<I> local;
-    for (I node = 0; node < elevated->NumNode(); ++node)
-        local.push_back(elevated->node2nodeOrig(node, 0));
+    G::NativePeriodicImportOptions periodic;
+    periodic.frames.translation[1].map() = G::tPoint{10, 0, 0};
+    periodic.frames.translation[2].map() = G::tPoint{0, 10, 0};
+    auto source = G::ReadNativeMeshFromCGNS(mpi, 2, (root / "data/mesh/IV10_10.cgns").string(),
+                                            G::PartitionOptions{}, G::FBC_Name_2_ID_Default, periodic);
+    CHECK(source->NumNodeGlobal() == 100);
+    // Reproduce the historical ID policy independently, without retaining the
+    // retired elevation algorithm: old nodes keep sparse original IDs, while
+    // inserted nodes begin at the pruned O1 count (100), colliding with retained
+    // original IDs 100..108 from this real periodic fixture.
+    auto native = G::NativeMeshRefinement::Elevate(*source->CurrentNativeState(), mpi).state;
+    auto nativeFacade = G::UnstructuredMesh::FromNative(mpi, native);
+    const auto &ancestry = *native->Provenance();
+    auto read = ancestry.sourceIds.at(G::EntityKind::Node).Read();
+    const I owned = native->NumOwned(G::EntityKind::Node);
+    I localNew = 0;
+    for (I row = 0; row < owned; ++row)
+        localNew += read.View().RowSize(size_t(row)) != 1;
+    I prefix = 0;
+    MPI_Exscan(&localNew, &prefix, 1, DNDS::DNDS_MPI_INDEX, MPI_SUM, mpi.comm);
+    if (mpi.rank == 0)
+        prefix = 0;
+    I inserted = 0;
+    std::vector<I> local(size_t(owned), 0);
+    for (I row = 0; row < owned; ++row)
+    {
+        const auto parents = read.View()[size_t(row)];
+        local[size_t(row)] = parents.size() == 1 ? parents[0] : 100 + prefix + inserted++;
+    }
     int count = int(local.size());
     std::vector<int> counts(size_t(mpi.size)), offsets(size_t(mpi.size) + 1, 0);
     MPI_Allgather(&count, 1, MPI_INT, counts.data(), 1, MPI_INT, mpi.comm);
@@ -278,15 +287,26 @@ TEST_CASE("Historical legacy periodic elevation duplicate IDs reject without ren
     const auto file = (std::filesystem::temp_directory_path() / ("dnds-legacy-duplicates-" + std::to_string(getpid()) + ".json")).string();
     auto serializer = DNDS::make_ssp<S::SerializerJSON>();
     serializer->OpenFile(file, false);
-    elevated->AdjLocal2GlobalPrimary();
-    elevated->WriteSerialize(serializer, "mesh");
+    G::WriteCurrentPrimaryMeshSnapshot(*nativeFacade, serializer, "mesh", 1, G::CurrentMeshCheckpointPolicy::DropAuxiliary);
     serializer->CloseFile();
+    serializer->OpenFile(file, true);
+    CHECK_NOTHROW(G::NativeMeshLegacyArchive::Read(mpi, serializer, "mesh"));
+    serializer->CloseFile();
+    nlohmann::json malformed;
+    {
+        std::ifstream input(file);
+        input >> malformed;
+    }
+    malformed["mesh"]["node2nodeOrig"]["father"]["data"] = local;
+    {
+        std::ofstream output(file);
+        output << malformed;
+    }
     serializer->OpenFile(file, true);
     CHECK_THROWS(G::NativeMeshLegacyArchive::Read(mpi, serializer, "mesh"));
     serializer->CloseFile();
     serializer->OpenFile(file, false);
-    source->AdjLocal2GlobalPrimary();
-    source->WriteSerialize(serializer, "mesh");
+    G::WriteCurrentPrimaryMeshSnapshot(*source, serializer, "mesh", 1, G::CurrentMeshCheckpointPolicy::DropAuxiliary);
     serializer->CloseFile();
     serializer->OpenFile(file, true);
     CHECK_NOTHROW(G::NativeMeshLegacyArchive::Read(mpi, serializer, "mesh"));

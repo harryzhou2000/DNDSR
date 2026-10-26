@@ -119,8 +119,6 @@ namespace DNDS::Geom
         void AdjGlobal2LocalEdgeImpl(MeshMutationToken &mutationToken);
         void AdjLocal2GlobalEdgeImpl(MeshMutationToken &mutationToken);
 
-        void ElevatedNodesGetBoundarySmoothImpl(MeshMutationToken &mutationToken, const std::function<bool(t_index)> &FiFBndIdNeedSmooth);
-
         void ExecuteReorderPlanImpl(MeshMutationToken &mutationToken, const ReorderInput &input,
                                     ReorderRegistry &reg, const ReorderPlan &plan);
 
@@ -1141,7 +1139,17 @@ namespace DNDS::Geom
         void BuildO2FromO1Elevation(UnstructuredMesh &meshO1);
         void ElevatedNodesGetBoundarySmooth(const std::function<bool(t_index)> &FiFBndIdNeedSmooth);
         void ElevatedNodesSolveInternalSmooth();
+        /// Deprecated compact-support predecessor; explicitly rejected.
         void ElevatedNodesSolveInternalSmoothV1Old();
+        /// Retained readonly diagnostics, valid while their source epoch is
+        /// current. Geometry publication invalidates the source association;
+        /// retain an explicit Array read lease for an independent value snapshot.
+        std::shared_ptr<const NativeSmoothingWorkspace> BoundarySmoothingWorkspace() const
+        {
+            DNDS_check_throw_info(_nativeSmoothing, "prepare boundary smoothing workspace before diagnostics");
+            return _nativeSmoothing;
+        }
+
         void ElevatedNodesSolveInternalSmoothV1();
         void ElevatedNodesSolveInternalSmoothV2();
 
@@ -1800,13 +1808,6 @@ namespace DNDS::Geom
          * @brief should be called to build data for serial out
          */
         void BuildSerialOut();
-
-        void GetCurrentOutputArrays(int flag,
-                                    tCoordPair &coordOut,
-                                    tAdjPair &cell2nodeOut,
-                                    tPbiPair &cell2nodePbiOut,
-                                    tElemInfoArrayPair &cellElemInfoOut,
-                                    index &nCell, index &nNode);
 
         // void WriteToCGNSSerial(const std::string &fName);
 
