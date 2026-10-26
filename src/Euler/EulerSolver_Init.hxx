@@ -172,98 +172,29 @@ namespace DNDS::Euler
 
         if (config.dataIOControl.readMeshMode == 0)
         {
+            const Geom::NativePeriodicImportOptions periodic{
+                mesh->periodicInfo, config.boundaryDefinition.periodicTolerance};
+            auto nameMapper = [&](const std::string &name) -> Geom::t_index
+            { return BCHandler.GetIDFromName(name); };
             if (config.dataIOControl.meshFormat == 1)
-            {
-                reader->ReadFromOpenFOAMAndConvertSerial(
-                    config.dataIOControl.meshFile,
-                    config.bcNameMapping,
-                    [&](const std::string &name)
-                        -> Geom::t_index
-                    { return BCHandler.GetIDFromName(name); });
-                reader->Deduplicate1to1Periodic(config.boundaryDefinition.periodicTolerance);
-                reader->BuildCell2Cell();
-                reader->MeshPartitionCell2Cell(config.dataIOControl.meshPartitionOptions);
-                reader->PartitionReorderToMeshCell2Cell();
-
-                mesh->RecoverNode2CellAndNode2Bnd();
-                mesh->RecoverCell2CellAndBnd2Cell();
-                mesh->BuildGhostPrimary();
-                mesh->AdjGlobal2LocalPrimary();
-                mesh->AdjGlobal2LocalN2CB();
-                if (config.dataIOControl.meshElevation == 1)
-                {
-                    DNDS::ssp<DNDS::Geom::UnstructuredMesh> meshO2;
-                    DNDS_MAKE_SSP(meshO2, mpi, gDimLocal);
-                    meshO2->BuildO2FromO1Elevation(*mesh);
-                    std::swap(meshO2, mesh);
-
-                    reader->mesh = mesh;
-                    mesh->RecoverNode2CellAndNode2Bnd();
-                    mesh->RecoverCell2CellAndBnd2Cell();
-                    mesh->BuildGhostPrimary();
-                    mesh->AdjGlobal2LocalPrimary();
-                    mesh->AdjGlobal2LocalN2CB();
-                }
-                DNDS_check_throw_info(config.dataIOControl.meshDirectBisect <= 4,
-                                      "meshDirectBisect must be <= 4");
-                for (int iter = 1; iter <= config.dataIOControl.meshDirectBisect; iter++)
-                {
-                    DNDS::ssp<DNDS::Geom::UnstructuredMesh> meshO2;
-                    DNDS_MAKE_SSP(meshO2, mpi, gDimLocal);
-                    meshO2->BuildO2FromO1Elevation(*mesh);
-
-                    meshO2->RecoverNode2CellAndNode2Bnd();
-                    meshO2->RecoverCell2CellAndBnd2Cell();
-                    meshO2->BuildGhostPrimary();
-                    DNDS::ssp<DNDS::Geom::UnstructuredMesh> meshO1B;
-                    DNDS_MAKE_SSP(meshO1B, mpi, gDimLocal);
-                    meshO1B->BuildBisectO1FormO2(*meshO2);
-
-                    std::swap(meshO1B, mesh);
-                    reader->mesh = mesh;
-                    mesh->RecoverNode2CellAndNode2Bnd();
-                    mesh->RecoverCell2CellAndBnd2Cell();
-                    mesh->BuildGhostPrimary();
-                    mesh->AdjGlobal2LocalPrimary();
-                    mesh->AdjGlobal2LocalN2CB();
-                    index nCell = mesh->NumCellGlobal();
-                    index nNode = mesh->NumNodeGlobal();
-                    if (mesh->getMPI().rank == 0)
-                    {
-                        log() << fmt::format("Mesh Direct Bisect {} done, nCell [{}], nNode [{}]", iter, nCell, nNode) << std::endl;
-                    }
-                }
-            }
+                mesh = Geom::ReadNativeMeshFromOpenFOAM(
+                    mpi, config.dataIOControl.meshFile,
+                    config.dataIOControl.meshPartitionOptions, config.bcNameMapping,
+                    nameMapper, periodic, config.dataIOControl.meshElevation,
+                    config.dataIOControl.meshDirectBisect);
             else
-            {
-                Geom::ReadMeshFromCGNS(
-                    mesh, reader,
-                    config.dataIOControl.meshFile,
-                    config.dataIOControl.meshPartitionOptions,
-                    config.boundaryDefinition.periodicTolerance,
-                    config.dataIOControl.meshElevation,
-                    config.dataIOControl.meshDirectBisect,
-                    [&](const std::string &name) -> Geom::t_index
-                    { return BCHandler.GetIDFromName(name); });
-            }
+                mesh = Geom::ReadNativeMeshFromCGNS(
+                    mpi, gDimLocal, config.dataIOControl.meshFile,
+                    config.dataIOControl.meshPartitionOptions, nameMapper,
+                    periodic, config.dataIOControl.meshElevation,
+                    config.dataIOControl.meshDirectBisect);
         }
-        else if (config.dataIOControl.readMeshMode == 1)
-        {
-            std::string meshOutName = getPartitionedMeshInput();
-            Geom::ReadMeshFromH5Parallel(
-                *mesh,
-                Serializer::SerializerFactory(config.dataIOControl.meshPartitionedReaderType),
-                meshOutName);
-        }
-        else if (config.dataIOControl.readMeshMode == 2)
-        {
-            std::string meshOutName = getPartitionedMeshInput();
-            Geom::ReadMeshFromH5(
-                *mesh,
-                Serializer::SerializerFactory(config.dataIOControl.meshPartitionedReaderType),
-                meshOutName,
+        else
+            mesh = Geom::ReadNativeMeshFromArchive(
+                mpi, Serializer::SerializerFactory(config.dataIOControl.meshPartitionedReaderType),
+                getPartitionedMeshInput(), config.dataIOControl.readMeshMode == 2,
                 config.dataIOControl.meshPartitionOptions);
-        }
+        reader->mesh = mesh;
         OMP::set_full_parallel_OMP();
         {
             Geom::PrepareMeshOptions prepOpts;
@@ -400,15 +331,14 @@ namespace DNDS::Euler
         };
         mesh->RectifyBoundaryCoordinates(symmetryComponent, true);
         meshBnd->RectifyBoundaryCoordinates(symmetryComponent, false);
-        /// @todo //todo: upgrade to optional
+        // Output descriptors retain coordinates from their construction
+        // epoch. Rebuild after smoothing/transforms before binding output fields.
+        // Native writers create periodic image connectivity in output scratch.
         if (config.dataIOControl.outPltMode == 0)
-            reader->coordSerialOutTrans.pullOnce(),
-                readerBnd->coordSerialOutTrans.pullOnce();
-
-        mesh->RecreatePeriodicNodes();
-        mesh->BuildVTKConnectivity();
-        meshBnd->RecreatePeriodicNodes();
-        meshBnd->BuildVTKConnectivity();
+        {
+            reader->BuildSerialOut();
+            readerBnd->BuildSerialOut();
+        }
 
         // *demo code
         // mesh->PrintMeshCGNS("test.cgns", [&](Geom::t_index i)
@@ -574,7 +504,7 @@ namespace DNDS::Euler
             DNDS_MAKE_SSP(outSerialBnd, mpi);
             outDist2SerialTransBnd.setFatherSon(outDistBnd, outSerialBnd);
             DNDS_assert(readerBnd->mode == Geom::MeshReaderMode::SerialOutput);
-            outDist2SerialTransBnd.BorrowGGIndexing(readerBnd->cell2nodeSerialOutTrans);
+            readerBnd->nativeSerialOutput->BorrowCellIndexing(outDist2SerialTransBnd);
             outDist2SerialTransBnd.createMPITypes();
             outDist2SerialTransBnd.initPersistentPull();
 
@@ -583,7 +513,7 @@ namespace DNDS::Euler
                 DNDS_MAKE_SSP(outSerial, mpi);
                 outDist2SerialTrans.setFatherSon(outDist, outSerial);
                 DNDS_assert(reader->mode == Geom::MeshReaderMode::SerialOutput);
-                outDist2SerialTrans.BorrowGGIndexing(reader->cell2nodeSerialOutTrans);
+                reader->nativeSerialOutput->BorrowCellIndexing(outDist2SerialTrans);
                 outDist2SerialTrans.createMPITypes();
                 outDist2SerialTrans.initPersistentPull();
             }
@@ -592,7 +522,7 @@ namespace DNDS::Euler
                 DNDS_MAKE_SSP(outSerialPoint, mpi);
                 outDist2SerialTransPoint.setFatherSon(outDistPoint, outSerialPoint);
                 DNDS_assert(reader->mode == Geom::MeshReaderMode::SerialOutput);
-                outDist2SerialTransPoint.BorrowGGIndexing(reader->coordSerialOutTrans);
+                reader->nativeSerialOutput->BorrowNodeIndexing(outDist2SerialTransPoint);
                 outDist2SerialTransPoint.createMPITypes();
                 outDist2SerialTransPoint.initPersistentPull();
             }

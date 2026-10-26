@@ -1,6 +1,20 @@
 # Native geometry consumer migration inventory, 2026-10-26
 
-## Current checkpoint 4 status
+## Current integration after checkpoint 4
+
+Native OpenFOAM Hex8 import, weighted KWAY/RB partitioning, reader-owned ingress,
+all three native elevated-node smoothers and guarded archive ingress are now
+integrated. C++ Euler initialization selects native construction. CFV benchmark
+wrappers retain semantic CPU/CUDA read scopes. Euler serial and boundary output
+uses native geometry plus maps-only solver-field adapters. The final checkpoint
+5 evidence records the exact acceptance matrix and remaining limitations.
+
+Python default orchestration and retained pair-property compatibility are still
+pending. The remaining legacy construction/edit authority and fallback must be
+retired before GN7 closes. The sections below retain the checkpoint 4 audit
+history rather than claiming those historical gaps describe current code.
+
+## Checkpoint 4 history
 
 The entries below the checkpoint section retain the earlier audit history.
 The native implementation now includes local cell permutation, distributed

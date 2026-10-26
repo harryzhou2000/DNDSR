@@ -953,7 +953,7 @@ namespace DNDS::Geom
     std::shared_ptr<const NativeMeshState> ReadNativeCGNS(
         const MPIInfo &mpi, const std::string &path, int dimension,
         const t_FBCName_2_ID &boundaryId, int readerRank, NativeMeshBuildOptions options,
-        std::optional<NativePeriodicImportOptions> periodic)
+        std::optional<NativePeriodicImportOptions> periodic, NativeSerialDistribution distribution)
     {
         DNDS_check_throw_info(mpi.comm != MPI_COMM_NULL, "native CGNS import requires a communicator");
         FieldTransferDetail::LocalStage(mpi, [&]
@@ -963,12 +963,13 @@ namespace DNDS::Geom
             MPI_Comm_size(mpi.comm, &count);
             DNDS_check_throw_info(mpi.rank == rank && mpi.size == count && readerRank >= 0 && readerRank < count &&
                                       (dimension == 2 || dimension == 3) && options.cellLayers >= 1 &&
+                                      (distribution == NativeSerialDistribution::Even || distribution == NativeSerialDistribution::ReaderOwned) &&
                                       path.size() <= size_t(INT_MAX), "invalid native CGNS import options"); });
-        int settings[]{readerRank, dimension, options.cellLayers, int(options.completeNodeStar), int(bool(periodic))};
-        int minimum[5], maximum[5];
-        MPI_Allreduce(settings, minimum, 5, MPI_INT, MPI_MIN, mpi.comm);
-        MPI_Allreduce(settings, maximum, 5, MPI_INT, MPI_MAX, mpi.comm);
-        DNDS_check_throw_info(std::equal(minimum, minimum + 5, maximum), "native CGNS import options differ across ranks");
+        int settings[]{readerRank, dimension, options.cellLayers, int(options.completeNodeStar), int(bool(periodic)), int(distribution)};
+        int minimum[6], maximum[6];
+        MPI_Allreduce(settings, minimum, 6, MPI_INT, MPI_MIN, mpi.comm);
+        MPI_Allreduce(settings, maximum, 6, MPI_INT, MPI_MAX, mpi.comm);
+        DNDS_check_throw_info(std::equal(minimum, minimum + 6, maximum), "native CGNS import options differ across ranks");
         if (periodic)
         {
             std::array<real, 61> values{}, canonical{};
@@ -1001,12 +1002,12 @@ namespace DNDS::Geom
         NativeSerialMeshData serial;
         FieldTransferDetail::LocalStage(mpi, [&]
                                         { if (mpi.rank == readerRank) serial = ReadNativeCGNSSerial(path, dimension, boundaryId); });
-        return DistributeNativeSerialMesh(mpi, std::move(serial), dimension, readerRank, options, std::move(periodic));
+        return DistributeNativeSerialMesh(mpi, std::move(serial), dimension, readerRank, options, std::move(periodic), distribution);
     }
 
     std::shared_ptr<const NativeMeshState> DistributeNativeSerialMesh(
         const MPIInfo &mpi, NativeSerialMeshData serial, int dimension, int readerRank,
-        NativeMeshBuildOptions options, std::optional<NativePeriodicImportOptions> periodic)
+        NativeMeshBuildOptions options, std::optional<NativePeriodicImportOptions> periodic, NativeSerialDistribution distribution)
     {
         DNDS_check_throw_info(mpi.comm != MPI_COMM_NULL, "native serial distribution requires communicator");
         FieldTransferDetail::LocalStage(mpi, [&]
@@ -1014,9 +1015,10 @@ namespace DNDS::Geom
             int rank = -1, size = 0;
             MPI_Comm_rank(mpi.comm, &rank); MPI_Comm_size(mpi.comm, &size);
             DNDS_check_throw_info(rank == mpi.rank && size == mpi.size && readerRank >= 0 && readerRank < size &&
-                                  dimension >= 1 && dimension <= 3 && options.cellLayers >= 1,
+                                  dimension >= 1 && dimension <= 3 && options.cellLayers >= 1 &&
+                                  (distribution == NativeSerialDistribution::Even || distribution == NativeSerialDistribution::ReaderOwned),
                                   "native serial distribution options invalid"); });
-        std::array<int, 5> parameters{dimension, readerRank, options.cellLayers, int(options.completeNodeStar), int(bool(periodic))};
+        std::array<int, 6> parameters{dimension, readerRank, options.cellLayers, int(options.completeNodeStar), int(bool(periodic)), int(distribution)};
         auto expected = parameters;
         MPI_Bcast(expected.data(), int(expected.size()), MPI_INT, 0, mpi.comm);
         FieldTransferDetail::LocalStage(mpi, [&]
@@ -1099,8 +1101,8 @@ namespace DNDS::Geom
         auto context = std::make_shared<Runtime::CommunicationContext>(mpi.comm);
         auto route = [&](index total)
         {
-            const index length = total / mpi.size + (mpi.rank < total % mpi.size);
-            const index first = (total / mpi.size) * mpi.rank + std::min<index>(mpi.rank, total % mpi.size);
+            const index length = distribution == NativeSerialDistribution::ReaderOwned ? (mpi.rank == readerRank ? total : 0) : total / mpi.size + (mpi.rank < total % mpi.size);
+            const index first = distribution == NativeSerialDistribution::ReaderOwned ? 0 : (total / mpi.size) * mpi.rank + std::min<index>(mpi.rank, total % mpi.size);
             std::vector<Runtime::RowRequest> requests;
             FieldTransferDetail::LocalStage(mpi, [&]
                                             {

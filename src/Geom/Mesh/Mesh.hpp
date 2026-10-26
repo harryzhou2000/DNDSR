@@ -31,6 +31,7 @@ namespace DNDS::Direct
 
 namespace DNDS::Geom
 {
+    class NativeSmoothingWorkspace;
     enum class MeshLoc : uint8_t
     {
         Unknown = 0,
@@ -46,6 +47,7 @@ namespace DNDS::Geom
     private:
         std::shared_ptr<const uint8_t> _entityIdentity = std::make_shared<const uint8_t>(0);
         std::shared_ptr<const NativeMeshState> _nativeState;
+        std::shared_ptr<const NativeSmoothingWorkspace> _nativeSmoothing;
         friend class NativeMeshState;
         friend class MeshEdit;
         friend class PreparedMeshTransition;

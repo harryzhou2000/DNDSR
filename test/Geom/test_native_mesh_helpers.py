@@ -140,9 +140,33 @@ def test_native_partition_prepare_matches_cfv_metrics_and_preserves_source(tmp_p
             points = np.array([read.coord(int(node)).copy() for node in read.cell_nodes(cell)])
             np.testing.assert_allclose(fv.GetCellBary(cell), points.mean(axis=0), atol=1e-13)
     assert MPI.COMM_WORLD.allreduce(total) == pytest.approx(1.0)
-    for options in ({"metisType": "RB"}, {"edgeWeightMethod": 1}, {"unknown": 1}):
+    for options in ({"metisType": "UNKNOWN"}, {"edgeWeightMethod": 2}, {"unknown": 1}):
         with pytest.raises((ValueError, RuntimeError)):
             prepare_native_mesh(result.mesh, partition_options=options)
+
+
+@pytest.mark.mpi
+def test_native_weighted_recursive_reader_and_cfv_metrics(tmp_path):
+    from DNDSR import CFV
+    mpi = DNDS.MPIInfo()
+    mpi.setWorld()
+    path = _fixture(tmp_path)
+    for method in ("RB", "KWAY"):
+        imported = read_mesh(path, mpi, 2, native=True, bisect=2,
+            partition_options={"metisType": method, "edgeWeightMethod": 1, "metisSeed": 17})
+        mesh = prepare_native_mesh(imported.mesh)
+        assert mesh.NumCellGlobal() == 16
+        ids = [mesh.original_entity_id(Geom.EntityKind.Cell, row) for row in range(mesh.NumCell())]
+        all_ids = [value for rank_ids in MPI.COMM_WORLD.allgather(ids) for value in rank_ids]
+        assert sorted(all_ids) == list(range(16))
+        fv = CFV.FiniteVolume(mpi, mesh)
+        fv.ParseSettings({})
+        fv.SetCellAtrBasic()
+        fv.ConstructCellVolume()
+        total = sum(fv.GetCellVol(cell) for cell in range(mesh.NumCell()))
+        assert MPI.COMM_WORLD.allreduce(total) == pytest.approx(1.0)
+        for cell in range(mesh.NumCell()):
+            assert fv.GetCellVol(cell) == pytest.approx(1.0 / 16)
 
 
 @pytest.mark.mpi
@@ -150,7 +174,7 @@ def test_native_helpers_reject_unsupported_options(tmp_path):
     mpi = DNDS.MPIInfo()
     mpi.setWorld()
     path = _fixture(tmp_path)
-    for options in ({"partition_options": {"metisType": "RB"}}, {"periodic_geometry": {"unsupported_frame_key": [0, 0, 0]}},
+    for options in ({"partition_options": {"metisType": "UNKNOWN"}}, {"periodic_geometry": {"unsupported_frame_key": [0, 0, 0]}},
                     {"periodic_tolerance": 1e-5}, {"elevation": "bad"},
                     {"elevation": "O2", "bisect": 1}, {"bisect": 5}):
         with pytest.raises((ValueError, RuntimeError)):

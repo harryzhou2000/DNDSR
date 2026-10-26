@@ -414,6 +414,7 @@ namespace DNDS::Geom
         result->isPeriodic = state->BorrowHostView().IsPeriodic();
         result->periodicInfo = state->BorrowHostView().Periodic();
         result->_nativeState = state->BindEpoch(result->versions);
+        result->_nativeSmoothing.reset();
         return result;
     }
 
@@ -440,7 +441,7 @@ namespace DNDS::Geom
             DNDS_check_throw_info(false, "native workspace import failed on another rank");
         }
         MeshMutationToken mutation(this, versions, Runtime::Change::All, [this]
-                                   { _nativeState.reset(); });
+                                   { _nativeState.reset(); _nativeSmoothing.reset(); });
         mutation.Commit();
         std::shared_ptr<const NativeMeshState> bound;
         error = {};
@@ -465,18 +466,20 @@ namespace DNDS::Geom
             DNDS_check_throw_info(false, "native publication binding failed on another rank");
         }
         _nativeState = std::move(bound);
+        _nativeSmoothing.reset();
     }
     void UnstructuredMesh::PlaceNative(Runtime::Device device, Runtime::ExecutionContext context)
     {
         auto read = versions.Read();
         DNDS_check_throw_info(_nativeState, "publish native mesh state before placement");
         _nativeState = _nativeState->WithPlacement(device, context);
+        _nativeSmoothing.reset();
     }
     void UnstructuredMesh::UseLegacyWorkspace()
     {
         CheckCollectiveMutationAvailable(true);
         MeshMutationToken mutation(this, versions, Runtime::Change::All, [this]
-                                   { _nativeState.reset(); });
+                                   { _nativeState.reset(); _nativeSmoothing.reset(); });
         mutation.Commit();
     }
 }

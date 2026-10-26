@@ -37,12 +37,14 @@ Mesh/NativeMeshAssembler.cpp
 Mesh/NativeMeshArchive.cpp
 Mesh/NativeMeshLegacyArchive.cpp
 Mesh/NativeMeshCGNS.cpp
+Mesh/NativeMeshOpenFOAM.cpp
 Mesh/NativeMeshPeriodicImport.cpp
 Mesh/NativeMeshTopology.cpp
 Mesh/NativeMeshClosure.cpp
 Mesh/NativeMeshRefinement.cpp
 Mesh/NativeMeshElevation.cpp
 Mesh/NativeMeshExtraction.cpp
+Mesh/NativeMeshSmoothing.cpp
 Mesh/NativeMeshOutput.cpp
 Mesh/NativeMeshSerialOutput.cpp
 Mesh/MeshTransition.cpp

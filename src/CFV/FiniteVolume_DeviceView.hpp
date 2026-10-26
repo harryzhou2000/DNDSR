@@ -6,7 +6,7 @@
 
 namespace DNDS::CFV
 {
-    template <DeviceBackend B, class MeshView = Geom::UnstructuredMeshDeviceView<B>>
+    template <DeviceBackend B, class MeshView = Geom::UnstructuredMeshView>
     class FiniteVolumeDeviceView
     {
     public:
@@ -76,10 +76,6 @@ namespace DNDS::CFV
 
     public:
         DNDS_DEVICE_TRIVIAL_COPY_DEFINE_NO_EMPTY_CTOR(FiniteVolumeDeviceView, FiniteVolumeDeviceView)
-
-        template <class TMain>
-        FiniteVolumeDeviceView(TMain &fv, index placeholder)
-            : FiniteVolumeDeviceView(fv, placeholder, fv.mesh->template deviceView<B>()) {}
 
         template <class TMain>
         FiniteVolumeDeviceView(TMain &fv, index placeholder, MeshView meshView)

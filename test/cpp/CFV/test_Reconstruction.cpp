@@ -694,6 +694,47 @@ TEST_CASE("Native reconstruction matrix export preserves mesh state and exact fa
     archive->GoToPath("/");
 }
 
+TEST_CASE("Finite-volume scoped query views retain native topology and reject stale publications")
+{
+    auto state = ReadNativeCGNS(g_mpi, meshPath("Uniform_3x3_wall.cgns"), 2,
+                                [](const std::string &)
+                                { return BC_ID_DEFAULT_WALL; });
+    state = NativeMeshTopology::Build(*state, g_mpi);
+    auto mesh = UnstructuredMesh::FromNative(g_mpi, state);
+    auto vr = buildVR(mesh, RecMethod::VFV_P2_Default);
+    CHECK_FALSE(mesh->cell2node.father);
+    {
+        auto scope = vr->AcquireDeviceRead<DeviceBackend::Host>();
+        auto view = scope.View();
+        DNDS::real volume = 0;
+        for (DNDS::index cell = 0; cell < view.mesh.NumCell(); ++cell)
+        {
+            CHECK(view.mesh.CellFaces(cell).size() == 4);
+            CHECK(view.GetCellVol(cell) == doctest::Approx(1));
+            volume += view.GetCellVol(cell);
+        }
+        MPI_Allreduce(MPI_IN_PLACE, &volume, 1, MPI_DOUBLE, MPI_SUM, g_mpi.comm);
+        CHECK(volume == doctest::Approx(9));
+        CHECK_THROWS(mesh->ApplyGeometryTransform(Eigen::Matrix3d::Identity(), 2));
+        scope.Wait();
+        CHECK_THROWS(scope.View());
+    }
+    {
+        auto scope = vr->AcquireDeviceRead<DeviceBackend::Host>();
+        vr->ConstructMetrics();
+        CHECK_THROWS(scope.View()); // Same mesh epoch, different metric publication.
+    }
+    mesh->ApplyGeometryTransform(Eigen::Matrix3d::Identity(), 2);
+    CHECK_THROWS(vr->AcquireDeviceRead<DeviceBackend::Host>());
+    vr->ConstructMetrics();
+    {
+        auto scope = vr->AcquireDeviceRead<DeviceBackend::Host>();
+        auto view = scope.View();
+        for (DNDS::index cell = 0; cell < view.mesh.NumCell(); ++cell)
+            CHECK(view.GetCellVol(cell) == doctest::Approx(4));
+    }
+}
+
 TEST_CASE("CFV native authority preserves metrics and anisotropic reconstruction")
 {
     bool wallDistance = false;

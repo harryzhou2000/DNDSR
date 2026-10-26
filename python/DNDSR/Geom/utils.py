@@ -257,7 +257,9 @@ def read_mesh(
     ``reader`` is None. Native CGNS uses even contiguous ownership, retains BC
     names on every rank. An explicit periodic_geometry dictionary enables
     native periodic identification (using periodic_tolerance); None leaves it
-    off. Explicit partition_options requests KWAY facial-graph repartitioning. Native
+    off. Explicit partition_options requests facial-graph partitioning; RB
+    selects reader-owned ingress, KWAY permits distributed input, and
+    edgeWeightMethod=1 enables physical face-diameter weights. Native
     H5 reads a full native archive or decodes legacy primary records directly
     into native arrays, preserving saved ownership and original IDs.
     All ranks must supply the same helper options and participate in calls.
@@ -273,7 +275,8 @@ def read_mesh(
                 raise ValueError("serializer_factory applies to native H5 archives only")
             mesh, names = Geom.read_native_cgns_with_names(
                 mpi, mesh_file, dim, cell_layers=cell_layers, complete_node_star=complete_node_star,
-                periodic_geometry=periodic_geometry, periodic_tolerance=periodic_tolerance)
+                periodic_geometry=periodic_geometry, periodic_tolerance=periodic_tolerance,
+                reader_owned=bool(partition_options and partition_options.get("metisType") == "RB"))
         elif mode == "h5":
             if periodic_geometry is not None or periodic_tolerance != 1e-9:
                 raise ValueError("Native archive retains its saved periodic geometry; overrides are unsupported")

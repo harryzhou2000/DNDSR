@@ -17,6 +17,8 @@
 
 #include "CFV/FiniteVolume.hpp"
 #include "Geom/Mesh/Mesh.hpp"
+#include "Geom/Mesh/NativeMeshCGNS.hpp"
+#include "Geom/Mesh/NativeMeshTopology.hpp"
 #include "DNDS/Device/CUDA_Utils.hpp"
 
 #include <cmath>
@@ -50,27 +52,37 @@ namespace // anonymous -- avoid POSIX index() ambiguity
     // Build a simple mesh + FiniteVolume with constructed metrics
     // ===================================================================
     std::pair<ssp<DNDS::Geom::UnstructuredMesh>, ssp<DNDS::CFV::FiniteVolume>>
-    buildMeshAndFV(MPIInfo &mpi)
+    buildMeshAndFV(MPIInfo &mpi, bool native)
     {
         constexpr int dim = 2;
         auto mesh = std::make_shared<DNDS::Geom::UnstructuredMesh>(mpi, dim);
-        DNDS::Geom::UnstructuredMeshSerialRW reader(mesh, 0);
+        if (!native)
+        {
+            DNDS::Geom::UnstructuredMeshSerialRW reader(mesh, 0);
 
-        reader.ReadFromCGNSSerial(meshPath("Uniform_3x3_wall.cgns"));
-        reader.Deduplicate1to1Periodic();
-        reader.BuildCell2Cell();
+            reader.ReadFromCGNSSerial(meshPath("Uniform_3x3_wall.cgns"));
+            reader.Deduplicate1to1Periodic();
+            reader.BuildCell2Cell();
 
-        DNDS::Geom::UnstructuredMeshSerialRW::PartitionOptions pOpt;
-        pOpt.metisSeed = 42;
-        reader.MeshPartitionCell2Cell(pOpt);
-        reader.PartitionReorderToMeshCell2Cell();
+            DNDS::Geom::UnstructuredMeshSerialRW::PartitionOptions pOpt;
+            pOpt.metisSeed = 42;
+            reader.MeshPartitionCell2Cell(pOpt);
+            reader.PartitionReorderToMeshCell2Cell();
 
-        mesh->RecoverNode2CellAndNode2Bnd();
-        mesh->RecoverCell2CellAndBnd2Cell();
-        mesh->BuildGhostPrimary();
-        mesh->AdjGlobal2LocalPrimary();
-        mesh->InterpolateFace();
-        mesh->AssertOnFaces();
+            mesh->RecoverNode2CellAndNode2Bnd();
+            mesh->RecoverCell2CellAndBnd2Cell();
+            mesh->BuildGhostPrimary();
+            mesh->AdjGlobal2LocalPrimary();
+            mesh->InterpolateFace();
+            mesh->AssertOnFaces();
+        }
+
+        if (native)
+        {
+            auto state = DNDS::Geom::ReadNativeCGNS(mpi, meshPath("Uniform_3x3_wall.cgns"), dim,
+                                                    DNDS::Geom::FBC_Name_2_ID_Default);
+            mesh = DNDS::Geom::UnstructuredMesh::FromNative(mpi, DNDS::Geom::NativeMeshTopology::Build(*state, mpi));
+        }
 
         auto fv = std::make_shared<DNDS::CFV::FiniteVolume>(mpi, mesh);
 
@@ -97,6 +109,7 @@ namespace // anonymous -- avoid POSIX index() ambiguity
         fv->ConstructFaceUnitNorm();
         fv->ConstructFaceMeanNorm();
         fv->ConstructCellSmoothScale();
+        fv->FinalizeMetrics();
 
         return {mesh, fv};
     }
@@ -129,6 +142,30 @@ DNDS_GLOBAL void kernel_read_fv_metrics(
     if (tid < numFaces)
     {
         out_face_areas[tid] = fv_view->GetFaceArea(tid);
+    }
+}
+
+// This fixture contains Quad4 cells. Exercise the embedded mesh view itself,
+// including random node access, rather than only the independent FV arrays.
+DNDS_GLOBAL void kernel_read_fv_mesh(
+    DNDS::CFV::FiniteVolume::t_deviceView<DeviceBackend::CUDA> *fv,
+    DNDS::index *nodes, DNDS::index *faces, DNDS::index *neighbors,
+    DNDS::real *coordinates, DNDS::index cells)
+{
+    const DNDS::index cell = DNDS::index(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (cell >= cells)
+        return;
+    const auto &mesh = fv->mesh;
+    for (DNDS::rowsize slot = 0; slot < 4; ++slot)
+    {
+        const auto node = mesh.CellNodes(cell)[slot];
+        const auto face = mesh.CellFaces(cell)[slot];
+        nodes[cell * 4 + slot] = node;
+        faces[cell * 4 + slot] = face;
+        neighbors[cell * 4 + slot] = mesh.CellFaceOther(cell, face, slot);
+        const auto point = mesh.Coord(node);
+        for (int d = 0; d < 3; ++d)
+            coordinates[(cell * 4 + slot) * 3 + d] = point[d];
     }
 }
 
@@ -219,6 +256,26 @@ namespace // anonymous for test functions
         std::vector<DNDS::real> host_bary_x(nCells);
         std::vector<DNDS::real> host_bary_y(nCells);
         std::vector<DNDS::real> host_face_areas(nFaces);
+        std::vector<DNDS::index> host_nodes(nCells * 4), host_faces(nCells * 4), host_neighbors(nCells * 4);
+        std::vector<DNDS::real> host_coordinates(nCells * 12);
+        {
+            auto read = fv.mesh->AcquireRead(DNDS::Geom::MeshReadRequirements::CellFlux());
+            const auto view = read.HostView();
+            for (DNDS::index cell = 0; cell < nCells; ++cell)
+            {
+                DNDS_assert(view.CellNodes(cell).size() == 4 && view.CellFaces(cell).size() == 4);
+                for (DNDS::rowsize slot = 0; slot < 4; ++slot)
+                {
+                    const auto node = view.CellNodes(cell)[slot];
+                    const auto face = view.CellFaces(cell)[slot];
+                    host_nodes[cell * 4 + slot] = node;
+                    host_faces[cell * 4 + slot] = face;
+                    host_neighbors[cell * 4 + slot] = view.CellFaceOther(cell, face, slot);
+                    for (int d = 0; d < 3; ++d)
+                        host_coordinates[(cell * 4 + slot) * 3 + d] = view.Coord(node)[d];
+                }
+            }
+        }
 
         for (DNDS::index i = 0; i < nCells; i++)
         {
@@ -230,15 +287,22 @@ namespace // anonymous for test functions
         for (DNDS::index i = 0; i < nFaces; i++)
             host_face_areas[i] = fv.GetFaceArea(i);
 
-        // 2) Transfer mesh + FV to CUDA
-        fv.mesh->to_device(DeviceBackend::CUDA);
+        // 2) Transfer metric arrays. AcquireDeviceRead retains the mesh placement.
+        if (fv.mesh->HasNativeState())
+        {
+            int ordinal = -1;
+            DNDS_CUDA_CHECKED(cudaGetDevice(&ordinal));
+            fv.mesh->PlaceNative(DNDS::Runtime::Device::CUDA(ordinal),
+                                 DNDS::Runtime::ExecutionContext::CUDA(ordinal));
+        }
         fv.to_device(DeviceBackend::CUDA);
 
         DNDS_assert_info(fv.device() == DeviceBackend::CUDA,
                          "Expected CUDA device after to_device");
 
         // 3) Build device view and copy to device memory
-        auto fv_view_host = fv.deviceView<DeviceBackend::CUDA>();
+        auto fv_read = fv.AcquireDeviceRead<DeviceBackend::CUDA>();
+        auto fv_view_host = fv_read.View();
         DNDS::CUDA::DeviceObject<DNDS::CFV::FiniteVolume::t_deviceView<DeviceBackend::CUDA>> fv_dev(fv_view_host);
 
         // 4) Allocate device output buffers
@@ -247,6 +311,8 @@ namespace // anonymous for test functions
         thrust::device_vector<DNDS::real> d_bary_x(nCells);
         thrust::device_vector<DNDS::real> d_bary_y(nCells);
         thrust::device_vector<DNDS::real> d_face_areas(nFaces);
+        thrust::device_vector<DNDS::index> d_nodes(nCells * 4), d_faces(nCells * 4), d_neighbors(nCells * 4);
+        thrust::device_vector<DNDS::real> d_coordinates(nCells * 12);
 
         // 5) Launch kernel
         uint32_t threadsPerBlock = 256;
@@ -258,6 +324,10 @@ namespace // anonymous for test functions
             thrust::raw_pointer_cast(d_bary_y.data()),
             thrust::raw_pointer_cast(d_face_areas.data()),
             nCells, nFaces);
+        kernel_read_fv_mesh<<<blocksPerGrid, threadsPerBlock>>>(
+            fv_dev.get(), thrust::raw_pointer_cast(d_nodes.data()),
+            thrust::raw_pointer_cast(d_faces.data()), thrust::raw_pointer_cast(d_neighbors.data()),
+            thrust::raw_pointer_cast(d_coordinates.data()), nCells);
         DNDS_CUDA_CHECKED(cudaDeviceSynchronize());
 
         // 6) Copy kernel results back to host
@@ -265,6 +335,16 @@ namespace // anonymous for test functions
         thrust::host_vector<DNDS::real> h_bary_x = d_bary_x;
         thrust::host_vector<DNDS::real> h_bary_y = d_bary_y;
         thrust::host_vector<DNDS::real> h_face_areas = d_face_areas;
+        thrust::host_vector<DNDS::index> h_nodes = d_nodes, h_faces = d_faces, h_neighbors = d_neighbors;
+        thrust::host_vector<DNDS::real> h_coordinates = d_coordinates;
+        for (size_t i = 0; i < host_nodes.size(); ++i)
+        {
+            DNDS_assert(h_nodes[i] == host_nodes[i]);
+            DNDS_assert(h_faces[i] == host_faces[i]);
+            DNDS_assert(h_neighbors[i] == host_neighbors[i]);
+        }
+        for (size_t i = 0; i < host_coordinates.size(); ++i)
+            DNDS_assert(std::abs(h_coordinates[i] - host_coordinates[i]) < 1e-14);
 
         // 7) Verify: values read on GPU must match host-side values
         for (DNDS::index i = 0; i < nCells; i++)
@@ -291,8 +371,8 @@ namespace // anonymous for test functions
         }
 
         // 8) Transfer back to host and verify again
+        fv_read.Wait();
         fv.to_host();
-        fv.mesh->to_host();
 
         DNDS_assert_info(fv.device() == DeviceBackend::Unknown,
                          "Expected Unknown after to_host");
@@ -325,7 +405,8 @@ namespace // anonymous for test functions
             std::is_trivially_copyable_v<DNDS::CFV::FiniteVolume::t_deviceView<DeviceBackend::Host>>,
             "FiniteVolumeDeviceView<Host> must be trivially copyable");
 
-        auto host_view = fv.deviceView<DeviceBackend::Host>();
+        auto host_read = fv.AcquireDeviceRead<DeviceBackend::Host>();
+        auto host_view = host_read.View();
         DNDS::index nCells = fv.mesh->NumCellProc();
         for (DNDS::index i = 0; i < nCells; i++)
         {
@@ -353,12 +434,10 @@ namespace // anonymous for test functions
 
         for (int trip = 0; trip < 3; trip++)
         {
-            fv.mesh->to_device(DeviceBackend::CUDA);
             fv.to_device(DeviceBackend::CUDA);
             DNDS_assert_info(fv.device() == DeviceBackend::CUDA, "Expected CUDA");
 
             fv.to_host();
-            fv.mesh->to_host();
             DNDS_assert_info(fv.device() == DeviceBackend::Unknown, "Expected Unknown");
 
             for (DNDS::index i = 0; i < nCells; i++)
@@ -388,27 +467,21 @@ int main(int argc, char *argv[])
     if (mpi.rank == 0)
         std::cout << "=== DeviceTransferable unit tests (CUDA + Host) ===" << std::endl;
 
-    auto [mesh, fv] = buildMeshAndFV(mpi);
-
-    // Compress all mesh CSR arrays once before any device transfer.
-    // Compress() is a no-op for non-CSR arrays.
-    mesh->op_on_device_arrays([](auto &v)
+    for (bool native : {false, true})
     {
-        if (v.ref.father)
-            v.ref.father->Compress();
-        if (v.ref.son)
-            v.ref.son->Compress();
-    });
-
-    if (mpi.rank == 0)
-        std::cout << "Mesh built: " << mesh->NumCell() << " cells, "
-                  << mesh->NumFace() << " faces" << std::endl;
-
-    test_device_view_trivially_copyable(*fv, mpi);
-    test_device_state_tracking(*fv, mpi);
-    test_host_device_transfer(*fv, mpi);
-    test_cuda_round_trip(*fv, mpi);
-    test_cuda_multiple_round_trips(*fv, mpi);
+        auto [mesh, fv] = buildMeshAndFV(mpi, native);
+        if (native)
+            DNDS_assert_info(!mesh->coords.father && !mesh->cell2node.father,
+                             "native device fixture must not allocate legacy mesh arrays");
+        if (mpi.rank == 0)
+            std::cout << "Mesh built (native=" << native << "): " << mesh->NumCell()
+                      << " cells, " << mesh->NumFace() << " faces" << std::endl;
+        test_device_view_trivially_copyable(*fv, mpi);
+        test_device_state_tracking(*fv, mpi);
+        test_host_device_transfer(*fv, mpi);
+        test_cuda_round_trip(*fv, mpi);
+        test_cuda_multiple_round_trips(*fv, mpi);
+    }
 
     if (mpi.rank == 0)
         std::cout << "=== All DeviceTransferable tests PASSED ===" << std::endl;

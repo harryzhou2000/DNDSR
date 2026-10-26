@@ -576,12 +576,66 @@ namespace DNDS::CFV
         template <DeviceBackend B, class MeshView>
         friend class FiniteVolumeDeviceView;
 
+        /// Host scope retaining the mesh allocation/metadata and read lease.
+        /// The FiniteVolume and its metric arrays must outlive this scope and
+        /// remain unchanged until all launched work completes. Raw View() copies
+        /// have no ownership. Join other using streams before Complete()/Wait().
         template <DeviceBackend B>
-        t_deviceView<B> deviceView()
+        class DeviceReadScope
         {
-            DeviceBackend B_mesh = mesh->device();
-            DNDS_assert(B_mesh == B || (B == DeviceBackend::Host && B_mesh == DeviceBackend::Unknown));
-            return {*this, UnInitIndex};
+            friend class FiniteVolume;
+            FiniteVolume &_fv;
+            ssp<Geom::UnstructuredMesh> _source;
+            uint64_t _generation;
+            Geom::MeshReadAccess _meshRead;
+            DeviceReadScope(FiniteVolume &fv, Runtime::ExecutionContext context)
+                : _fv(fv), _source(fv.mesh), _generation(fv.MetricsGeneration()),
+                  _meshRead(_source->AcquireRead(Geom::MeshReadRequirements::CellFlux(), context)) {}
+
+        public:
+            DeviceReadScope(const DeviceReadScope &) = delete;
+            DeviceReadScope(DeviceReadScope &&) noexcept = default;
+            DeviceReadScope &operator=(const DeviceReadScope &) = delete;
+            t_deviceView<B> View() const
+            {
+                DNDS_check_throw_info(_source == _fv.mesh && _generation == _fv.MetricsGeneration(),
+                                      "finite-volume scope source or metric publication changed");
+                _fv.ValidateMeshDependencies();
+                _meshRead.Stamp().Validate();
+                if constexpr (B == DeviceBackend::Host)
+                    return {_fv, UnInitIndex, _meshRead.HostView()};
+                else
+                    return {_fv, UnInitIndex, _meshRead.DeviceView()};
+            }
+            void Complete(Runtime::Completion completion) { _meshRead.Complete(std::move(completion)); }
+            void Wait() { _meshRead.Wait(); }
+        };
+
+        /// Acquire once per loop/launch batch. CUDA uses the current device and
+        /// the supplied native stream. Native mesh input must first be placed
+        /// with PlaceNative(device, context); acquisition never changes storage.
+        /// Legacy mesh input is captured through the same read API.
+        template <DeviceBackend B>
+        DeviceReadScope<B> AcquireDeviceRead(void *stream = nullptr)
+        {
+            ValidateMeshDependencies();
+            const auto placement = device();
+            DNDS_check_throw_info(placement == B || (B == DeviceBackend::Host && placement == DeviceBackend::Unknown),
+                                  "finite-volume metric placement differs from requested view");
+            Runtime::ExecutionContext context = Runtime::ExecutionContext::Host();
+            if constexpr (B == DeviceBackend::Host)
+                DNDS_check_throw_info(!stream, "host finite-volume acquisition does not accept a CUDA stream");
+            else
+            {
+#ifdef DNDS_USE_CUDA
+                int ordinal = -1;
+                DNDS_check_throw_info(cudaGetDevice(&ordinal) == cudaSuccess, "cannot query CUDA device for finite-volume view");
+                context = Runtime::ExecutionContext::CUDA(ordinal, stream);
+#else
+                DNDS_check_throw_info(false, "CUDA finite-volume view requires a CUDA build");
+#endif
+            }
+            return DeviceReadScope<B>(*this, context);
         }
     };
 

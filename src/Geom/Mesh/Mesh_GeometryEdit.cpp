@@ -48,6 +48,7 @@ namespace DNDS::Geom
         // No fallible array construction remains after committing generations.
         next->BindPreparedEpoch(versions);
         _nativeState = std::move(next);
+        _nativeSmoothing.reset();
     }
 
     void UnstructuredMesh::TransformNativeCoords(const std::function<tPoint(const tPoint &)> &transform)

@@ -393,10 +393,12 @@ namespace DNDS::Geom
         catch (...)
         {
             mesh._nativeState.reset();
+            mesh._nativeSmoothing.reset();
             auto failed = mesh.versions.BeginMutation(Runtime::Change::All);
             throw;
         }
         mesh._nativeState = std::move(prepared);
+        mesh._nativeSmoothing.reset();
         _candidate.reset();
         _nativeCandidate.reset();
     }

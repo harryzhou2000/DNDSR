@@ -2,6 +2,7 @@
 #include "doctest.h"
 #include "MeshFacadeOverlapFixture.hpp"
 #include "Geom/Mesh/NativeMeshLegacyArchive.hpp"
+#include "Geom/Mesh/Mesh_Helpers.hpp"
 #include "DNDS/Serializer/SerializerJSON.hpp"
 #include <fstream>
 namespace G = DNDS::Geom;
@@ -198,6 +199,98 @@ TEST_CASE("Legacy periodic primary import preserves exact ordered image bits and
     }
     MPI_Allreduce(MPI_IN_PLACE, &total, 1, MPI_DOUBLE, MPI_SUM, mpi.comm);
     CHECK(total == doctest::Approx(1));
+    std::filesystem::remove(file);
+}
+
+TEST_CASE("Native archive helper coordinates rank-local missing and malformed JSON before retry")
+{
+    DNDS::MPIInfo mpi(MPI_COMM_WORLD);
+    auto fixture = G::OverlapTest::BuildNativeFixture(mpi);
+    S::SerializerFactory factory("JSON");
+    std::string base = (std::filesystem::temp_directory_path() / ("dnds-helper-fault-" + std::to_string(getpid()))).string();
+    int length = mpi.rank == 0 ? int(base.size()) : 0;
+    MPI_Bcast(&length, 1, MPI_INT, 0, mpi.comm);
+    base.resize(size_t(length));
+    MPI_Bcast(base.data(), length, MPI_CHAR, 0, mpi.comm);
+    const auto file = std::get<0>(factory.ModifyFilePath(base, mpi, "part_%d", false));
+    auto writer = factory.BuildSerializer(mpi);
+    writer->OpenFile(file, false);
+    fixture.mesh->WriteNativeArchive(writer, "meshPart");
+    writer->CloseFile();
+    std::ifstream input(file);
+    const std::string pristine((std::istreambuf_iterator<char>(input)), {});
+    input.close();
+    for (int fault = 0; fault < 2; ++fault)
+    {
+        G::FieldTransferDetail::LocalStage(mpi, [&]
+                                           {
+            if (mpi.rank != 0) return;
+            if (fault == 0) std::filesystem::rename(file, file + ".backup");
+            else { std::ofstream output(file); output << "{ \"meshPart\": "; } });
+        CHECK_THROWS(G::ReadNativeMeshFromArchive(mpi, factory, base));
+        G::FieldTransferDetail::LocalStage(mpi, [&]
+                                           {
+            if (mpi.rank != 0) return;
+            if (fault == 0) std::filesystem::rename(file + ".backup", file);
+            else { std::ofstream output(file); output << pristine; } });
+        auto restored = G::ReadNativeMeshFromArchive(mpi, factory, base);
+        CHECK(restored->HasNativeState());
+        CHECK(restored->NumCellGlobal() == 100);
+    }
+    MPI_Barrier(mpi.comm);
+    if (mpi.rank == 0)
+        std::filesystem::remove_all(base + ".dir");
+}
+
+TEST_CASE("Historical legacy periodic elevation duplicate IDs reject without renumbering")
+{
+    DNDS::MPIInfo mpi(MPI_COMM_WORLD);
+    auto source = DNDS::make_ssp<G::UnstructuredMesh>(mpi, 2);
+    source->SetPeriodicGeometry({10, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 10, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 1}, {0, 0, 0}, {0, 0, 0});
+    G::UnstructuredMeshSerialRW reader(source, 0);
+    const auto root = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path();
+    reader.ReadFromCGNSSerial((root / "data/mesh/IV10_10.cgns").string());
+    reader.Deduplicate1to1Periodic(1e-9);
+    reader.BuildCell2Cell();
+    reader.MeshPartitionCell2Cell({});
+    reader.PartitionReorderToMeshCell2Cell();
+    source->RecoverNode2CellAndNode2Bnd();
+    source->RecoverCell2CellAndBnd2Cell();
+    source->BuildGhostPrimary();
+    source->AdjGlobal2LocalPrimary();
+    auto elevated = DNDS::make_ssp<G::UnstructuredMesh>(mpi, 2);
+    elevated->BuildO2FromO1Elevation(*source);
+    elevated->RecoverNode2CellAndNode2Bnd();
+    elevated->RecoverCell2CellAndBnd2Cell();
+    elevated->BuildGhostPrimary();
+    elevated->AdjGlobal2LocalPrimary();
+    std::vector<I> local;
+    for (I node = 0; node < elevated->NumNode(); ++node)
+        local.push_back(elevated->node2nodeOrig(node, 0));
+    int count = int(local.size());
+    std::vector<int> counts(size_t(mpi.size)), offsets(size_t(mpi.size) + 1, 0);
+    MPI_Allgather(&count, 1, MPI_INT, counts.data(), 1, MPI_INT, mpi.comm);
+    for (int rank = 0; rank < mpi.size; ++rank)
+        offsets[size_t(rank) + 1] = offsets[size_t(rank)] + counts[size_t(rank)];
+    std::vector<I> all(size_t(offsets.back()));
+    MPI_Allgatherv(local.data(), count, DNDS::DNDS_MPI_INDEX, all.data(), counts.data(), offsets.data(), DNDS::DNDS_MPI_INDEX, mpi.comm);
+    CHECK(std::set<I>(all.begin(), all.end()).size() < all.size());
+    const auto file = (std::filesystem::temp_directory_path() / ("dnds-legacy-duplicates-" + std::to_string(getpid()) + ".json")).string();
+    auto serializer = DNDS::make_ssp<S::SerializerJSON>();
+    serializer->OpenFile(file, false);
+    elevated->AdjLocal2GlobalPrimary();
+    elevated->WriteSerialize(serializer, "mesh");
+    serializer->CloseFile();
+    serializer->OpenFile(file, true);
+    CHECK_THROWS(G::NativeMeshLegacyArchive::Read(mpi, serializer, "mesh"));
+    serializer->CloseFile();
+    serializer->OpenFile(file, false);
+    source->AdjLocal2GlobalPrimary();
+    source->WriteSerialize(serializer, "mesh");
+    serializer->CloseFile();
+    serializer->OpenFile(file, true);
+    CHECK_NOTHROW(G::NativeMeshLegacyArchive::Read(mpi, serializer, "mesh"));
+    serializer->CloseFile();
     std::filesystem::remove(file);
 }
 

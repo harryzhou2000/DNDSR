@@ -27,9 +27,9 @@ namespace DNDS::CFV
         auto &mesh = fv.mesh;
         // if (iCell != 0)
         //     return;
-        for (rowsize ic2f = 0; ic2f < mesh.cell2face.RowSize(iCell); ic2f++)
+        for (rowsize ic2f = 0; ic2f < mesh.CellFaces(iCell).size(); ic2f++)
         {
-            index iFace = mesh.cell2face(iCell, ic2f);
+            index iFace = mesh.CellFaces(iCell)[ic2f];
             index iCellOther = mesh.CellFaceOther(iCell, iFace, ic2f);
             rowsize if2c = mesh.CellIsFaceBack(iCell, iFace, ic2f) ? 0 : 1;
             if (iCellOther == UnInitIndex)
@@ -100,7 +100,8 @@ namespace DNDS::CFV
     {
         auto u_view = u.deviceView<B>();
         auto u_grad_view = u_grad.deviceView<B>();
-        auto fv_view = fv.deviceView<B>();
+        auto fv_read = fv.AcquireDeviceRead<B>();
+        auto fv_view = fv_read.View();
 
         finiteVolumeCellOpTest_run<B>(fv_view, u_view, u_grad_view, nIter, settings);
     }
@@ -131,9 +132,9 @@ namespace DNDS::CFV
         auto &mesh = fv.mesh;
         // if (iCell != 0)
         //     return;
-        for (rowsize ic2f = 0; ic2f < mesh.cell2face.RowSize(iCell); ic2f++)
+        for (rowsize ic2f = 0; ic2f < mesh.CellFaces(iCell).size(); ic2f++)
         {
-            index iFace = mesh.cell2face(iCell, ic2f);
+            index iFace = mesh.CellFaces(iCell)[ic2f];
             index iCellOther = mesh.CellFaceOther(iCell, iFace, ic2f);
             rowsize if2c = mesh.CellIsFaceBack(iCell, iFace, ic2f) ? 0 : 1;
             if (iCellOther == UnInitIndex)
@@ -218,7 +219,8 @@ namespace DNDS::CFV
     {
         auto u_view = u.template deviceView<B>();
         auto u_grad_view = u_grad.template deviceView<B>();
-        auto fv_view = fv.deviceView<B>();
+        auto fv_read = fv.AcquireDeviceRead<B>();
+        auto fv_view = fv_read.View();
 
         finiteVolumeCellOpTest_Fixed_entry<B, nVarsFixed>().run(fv_view, u_view, u_grad_view, nIter, settings);
     }
@@ -249,9 +251,9 @@ namespace DNDS::CFV
         auto &mesh = fv.mesh;
         // if (iCell != 0)
         //     return;
-        for (rowsize ic2f = 0; ic2f < mesh.cell2face.RowSize(iCell); ic2f++)
+        for (rowsize ic2f = 0; ic2f < mesh.CellFaces(iCell).size(); ic2f++)
         {
-            index iFace = mesh.cell2face(iCell, ic2f);
+            index iFace = mesh.CellFaces(iCell)[ic2f];
             index iCellOther = mesh.CellFaceOther(iCell, iFace, ic2f);
             rowsize if2c = mesh.CellIsFaceBack(iCell, iFace, ic2f) ? 0 : 1;
             if (iCellOther == UnInitIndex)
@@ -322,7 +324,8 @@ namespace DNDS::CFV
         int nIter,
         const t_jsonconfig &settings)
     {
-        auto fv_view = fv.deviceView<B>();
+        auto fv_read = fv.AcquireDeviceRead<B>();
+        auto fv_view = fv_read.View();
 
         std::array<tUDof<1>::t_deviceView<B>, nVarsFixed> u_view;
         for (int i = 0; i < nVarsFixed; i++)

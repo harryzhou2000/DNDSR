@@ -28,7 +28,7 @@ namespace DNDS::Geom
             const NativePartitionOptions options{method, ufactor, seed, edgeWeight, cuts, ghostLayers};
             py::gil_scoped_release release;
             auto result = NativeMeshPreparation::Partition(*source, mpi, options);
-            return UnstructuredMesh::FromNative(mpi, std::move(result.state)); }, py::arg("mesh"), py::arg("metisType") = "KWAY", py::arg("metisUfactor") = 20, py::arg("metisSeed") = 0, py::arg("edgeWeightMethod") = 0, py::arg("metisNcuts") = 3, py::arg("ghost_layers") = 1, "Collectively return a native facial-graph partition. KWAY/unweighted only; unsupported policies reject. External fields remain associated with the source; prepare before field allocation, or use C++ Partition's returned transfers.");
+            return UnstructuredMesh::FromNative(mpi, std::move(result.state)); }, py::arg("mesh"), py::arg("metisType") = "KWAY", py::arg("metisUfactor") = 20, py::arg("metisSeed") = 0, py::arg("edgeWeightMethod") = 0, py::arg("metisNcuts") = 3, py::arg("ghost_layers") = 1, "Collectively return a native facial-graph partition. KWAY accepts distributed ownership; RB requires all cells on one rank (reader_owned ingress). Weight 0 is uniform; weight 1 uses physical face-node diameter with integer-overflow-safe scaling. External fields remain associated with the source; prepare before field allocation, or use C++ Partition's returned transfers.");
         m.def("reorder_native_mesh", [](const UnstructuredMesh &mesh, int parts, int innerParts, int ghostLayers)
               {
             const auto mpi = mesh.mpi;
