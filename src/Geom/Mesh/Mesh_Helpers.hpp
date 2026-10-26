@@ -12,6 +12,7 @@
 #include "Mesh.hpp"
 #include "NativeMeshPreparation.hpp"
 #include "NativeMeshCGNS.hpp"
+#include "NativeMeshOpenFOAM.hpp"
 #include "NativeMeshRefinement.hpp"
 #include "NativeMeshArchive.hpp"
 #include "NativeMeshLegacyArchive.hpp"
@@ -19,19 +20,17 @@
 #include "DNDS/Serializer/SerializerFactory.hpp"
 
 #include <functional>
+#include <fstream>
 #include <string>
 
 namespace DNDS::Geom
 {
 
-    /// Native CGNS setup without an intermediate legacy mesh. Periodic frames
-    /// are explicit; empty optional disables BC-zone periodic identification.
-    /// Returned mesh has complete owned node stars and prepared facial topology.
-    inline ssp<UnstructuredMesh> ReadNativeMeshFromCGNS(
-        const MPIInfo &mpi, int dimension, const std::string &meshFile,
-        const PartitionOptions &partOpts, const t_FBCName_2_ID &nameMapper,
-        std::optional<NativePeriodicImportOptions> periodic = {},
-        int elevation = 0, int bisect = 0, int readerRank = 0)
+    /// Apply requested order derivation before partitioning. All source owned
+    /// metadata is read through the native publication; existing O2 is retained.
+    inline std::shared_ptr<const NativeMeshState> DeriveAndPartitionNativeMesh(
+        std::shared_ptr<const NativeMeshState> state, const MPIInfo &mpi,
+        const PartitionOptions &partOpts, int elevation, int bisect)
     {
         FieldTransferDetail::LocalStage(mpi, [&]
                                         { DNDS_check_throw_info((elevation == 0 || elevation == 1) && bisect >= 0 && bisect <= 4,
@@ -40,19 +39,51 @@ namespace DNDS::Geom
         MPI_Bcast(expected.data(), int(expected.size()), MPI_INT, 0, mpi.comm);
         FieldTransferDetail::LocalStage(mpi, [&]
                                         { DNDS_check_throw_info(derived == expected, "native mesh derivation options differ across ranks"); });
+        auto isO2 = [&]
+        {
+            int local = 1;
+            FieldTransferDetail::LocalStage(mpi, [&]
+                                            {
+                const auto view = state->BorrowHostView();
+                for (index row = 0; row < view.NumCell(); ++row)
+                    local = local && Elem::Element{view.GetCellInfo(row).getElemType()}.GetOrder() == 2; });
+            MPI_Allreduce(MPI_IN_PLACE, &local, 1, MPI_INT, MPI_MIN, mpi.comm);
+            return bool(local);
+        };
         const NativeMeshBuildOptions build{1, true};
-        auto state = ReadNativeCGNS(mpi, meshFile, dimension, nameMapper, readerRank, build, periodic);
-        if (elevation)
+        if (elevation && !isO2())
             state = NativeMeshRefinement::Elevate(*state, mpi, build).state;
         for (int pass = 0; pass < bisect; ++pass)
         {
-            if (!elevation || pass)
+            if (!isO2())
                 state = NativeMeshRefinement::Elevate(*state, mpi, build).state;
             state = NativeMeshRefinement::Bisect(*state, mpi, build).state;
         }
         NativePartitionOptions partition{partOpts.metisType, partOpts.metisUfactor, partOpts.metisSeed,
                                          partOpts.edgeWeightMethod, partOpts.metisNcuts, 1};
-        return UnstructuredMesh::FromNative(mpi, NativeMeshPreparation::Partition(*state, mpi, partition).state);
+        return NativeMeshPreparation::Partition(*state, mpi, partition).state;
+    }
+
+    inline ssp<UnstructuredMesh> ReadNativeMeshFromCGNS(
+        const MPIInfo &mpi, int dimension, const std::string &meshFile,
+        const PartitionOptions &partOpts, const t_FBCName_2_ID &nameMapper,
+        std::optional<NativePeriodicImportOptions> periodic = {},
+        int elevation = 0, int bisect = 0, int readerRank = 0)
+    {
+        const auto distribution = partOpts.metisType == "RB" ? NativeSerialDistribution::ReaderOwned : NativeSerialDistribution::Even;
+        auto state = ReadNativeCGNS(mpi, meshFile, dimension, nameMapper, readerRank, {1, true}, periodic, distribution);
+        return UnstructuredMesh::FromNative(mpi, DeriveAndPartitionNativeMesh(std::move(state), mpi, partOpts, elevation, bisect));
+    }
+
+    inline ssp<UnstructuredMesh> ReadNativeMeshFromOpenFOAM(
+        const MPIInfo &mpi, const std::string &meshFile, const PartitionOptions &partOpts,
+        const std::map<std::string, std::string> &nameMapping,
+        const t_FBCName_2_ID &nameMapper, std::optional<NativePeriodicImportOptions> periodic = {},
+        int elevation = 0, int bisect = 0, int readerRank = 0)
+    {
+        const auto distribution = partOpts.metisType == "RB" ? NativeSerialDistribution::ReaderOwned : NativeSerialDistribution::Even;
+        auto state = ReadNativeOpenFOAM(mpi, meshFile, nameMapping, nameMapper, readerRank, {1, true}, periodic, distribution);
+        return UnstructuredMesh::FromNative(mpi, DeriveAndPartitionNativeMesh(std::move(state), mpi, partOpts, elevation, bisect));
     }
 
     /// Open an existing full native or legacy primary archive. Schema detection
@@ -62,12 +93,58 @@ namespace DNDS::Geom
         const MPIInfo &mpi, Serializer::SerializerFactory factory, const std::string &inputPath,
         bool repartition = false, const PartitionOptions &partOpts = {})
     {
-        auto [path, part] = factory.ModifyFilePath(inputPath, mpi, "part_%d", true);
-        auto serializer = factory.BuildSerializer(mpi);
-        serializer->OpenFile(path, true);
+        std::string signature;
+        FieldTransferDetail::LocalStage(mpi, [&]
+                                        {
+            DNDS_check_throw_info((factory.type == "JSON" || factory.type == "H5") && factory.hdfDeflateLevel >= 0 &&
+                                  factory.hdfDeflateLevel <= 9 && factory.hdfChunkSize >= 0 &&
+                                  factory.jsonBinaryDeflateLevel >= 0 && factory.jsonBinaryDeflateLevel <= 9,
+                                  "native archive serializer configuration invalid");
+            signature = nlohmann::json{{"path", inputPath}, {"type", factory.type}, {"deflate", factory.hdfDeflateLevel},
+                {"chunk", factory.hdfChunkSize}, {"collectiveData", factory.hdfCollOnData}, {"collectiveMeta", factory.hdfCollOnMeta},
+                {"jsonDeflate", factory.jsonBinaryDeflateLevel}, {"codec", factory.jsonUseCodecOnUInt8}, {"repartition", repartition},
+                {"partitionType", partOpts.metisType}, {"ufactor", partOpts.metisUfactor}, {"seed", partOpts.metisSeed},
+                {"weight", partOpts.edgeWeightMethod}, {"cuts", partOpts.metisNcuts}}.dump();
+            DNDS_check_throw_info(signature.size() <= size_t(INT_MAX), "native archive configuration too large"); });
+        int length = mpi.rank == 0 ? int(signature.size()) : 0;
+        MPI_Bcast(&length, 1, MPI_INT, 0, mpi.comm);
+        std::string canonical;
+        FieldTransferDetail::LocalStage(mpi, [&]
+                                        { canonical = mpi.rank == 0 ? signature : std::string(size_t(length), '\0'); });
+        MPI_Bcast(canonical.data(), length, MPI_CHAR, 0, mpi.comm);
+        FieldTransferDetail::LocalStage(mpi, [&]
+                                        { DNDS_check_throw_info(signature == canonical, "native archive reader options differ across ranks"); });
+        Serializer::SerializerBaseSSP serializer;
+        std::string path;
+        FieldTransferDetail::LocalStage(mpi, [&]
+                                        {
+            path = std::get<0>(factory.ModifyFilePath(inputPath, mpi, "part_%d", true));
+            serializer = factory.BuildSerializer(mpi);
+            std::ifstream probe(path, std::ios::binary);
+            DNDS_check_throw_info(probe.good(), "native archive input file is not readable"); });
+        struct CloseArchive
+        {
+            Serializer::SerializerBaseSSP serializer;
+            bool opened = false, json = false;
+            ~CloseArchive()
+            {
+                if (opened || json)
+                    try
+                    {
+                        serializer->CloseFile();
+                    }
+                    catch (...)
+                    {
+                    }
+            }
+        } close{serializer, false, factory.type == "JSON"};
+        FieldTransferDetail::LocalStage(mpi, [&]
+                                        { serializer->OpenFile(path, true); close.opened = true; });
         const auto partition = repartition ? Serializer::ArrayGlobalOffset_EvenSplit : Serializer::ArrayGlobalOffset_Unknown;
         auto state = ReadCompatibleNativeMeshArchive(mpi, serializer, "meshPart", partition);
-        serializer->CloseFile();
+        FieldTransferDetail::LocalStage(mpi, [&]
+                                        { serializer->CloseFile(); });
+        close.opened = close.json = false;
         if (repartition)
         {
             NativePartitionOptions options{partOpts.metisType, partOpts.metisUfactor, partOpts.metisSeed,

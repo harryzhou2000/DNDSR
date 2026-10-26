@@ -1,5 +1,6 @@
 #include "DNDS/Defines.hpp"
 #include "Mesh.hpp"
+#include "Mesh_NativeSmoothingHelpers.hpp"
 #include "Geom/Quadrature.hpp"
 #include "DNDS/ArrayDerived/ArrayEigenUniMatrixBatch.hpp"
 #include "Geom/RadialBasisFunction.hpp"
@@ -709,37 +710,20 @@ namespace DNDS::Geom
         mutationToken.Commit();
     }
 
-    static tPoint HermiteInterpolateMidPointOnLine2WithNorm(tPoint c0, tPoint c1, tPoint n0, tPoint n1)
-    {
-        tPoint c01 = c1 - c0;
-        tPoint c01U = c01.stableNormalized();
-        real c01Len = c01.stableNorm();
-        tPoint t0 = -c01U.cross(n0).cross(n0);
-        tPoint t1 = -c01U.cross(n1).cross(n1);
-        t0 = t0.stableNormalized() * c01Len;
-        t1 = t1.stableNormalized() * c01Len;
-        if (n0.norm() == 0 && n1.norm() != 0)
-            return 0.25 * c0 + 0.75 * c1 - 0.25 * t1;
-        if (n0.norm() != 0 && n1.norm() == 0)
-            return 0.75 * c0 + 0.25 * c1 + 0.25 * t0;
-        if (n0.norm() == 0 && n1.norm() == 0)
-            return 0.5 * (c0 + c1);
-        return 0.5 * (c0 + c1) + 0.125 * (t0 - t1);
-    }
-
-    static tPoint HermiteInterpolateMidPointOnQuad4WithNorm(
-        tPoint c0, tPoint c1, tPoint c2, tPoint c3,
-        tPoint n0, tPoint n1, tPoint n2, tPoint n3)
-    {
-        tPoint c01 = HermiteInterpolateMidPointOnLine2WithNorm(c0, c1, n0, n1);
-        tPoint c12 = HermiteInterpolateMidPointOnLine2WithNorm(c1, c2, n1, n2);
-        tPoint c23 = HermiteInterpolateMidPointOnLine2WithNorm(c2, c3, n2, n3);
-        tPoint c30 = HermiteInterpolateMidPointOnLine2WithNorm(c3, c0, n3, n0);
-        return 0.5 * (c01 + c12 + c23 + c30) - 0.25 * (c0 + c1 + c2 + c3);
-    }
-
     void UnstructuredMesh::ElevatedNodesGetBoundarySmooth(const std::function<bool(t_index)> &FiFBndIdNeedSmooth)
     {
+        SmoothingLegacyBridge::CheckAuthority(mpi, HasNativeState());
+        if (_nativeState)
+        {
+            CheckCollectiveMutationAvailable(true);
+            const auto stamp = versions.Stamp();
+            auto work = NativeMeshSmoothing::PrepareBoundary(_nativeState, mpi, SmoothingLegacyBridge::Options(elevationInfo), FiFBndIdNeedSmooth);
+            FieldTransferDetail::LocalStage(mpi, [&]
+                                            { stamp.Validate(); });
+            nTotalMoved = work->TotalMoved();
+            _nativeSmoothing = std::move(work);
+            return;
+        }
         CheckCollectiveMutationAvailable();
         auto mutationToken = BeginManagedMutation(Runtime::Change::Geometry | Runtime::Change::Values | Runtime::Change::Interface | Runtime::Change::Allocation);
         ElevatedNodesGetBoundarySmoothImpl(mutationToken, FiFBndIdNeedSmooth);
@@ -1120,7 +1104,7 @@ namespace DNDS::Geom
                 tPoint cooInc;
                 if (spanO2Node.size() == 2)
                 {
-                    cooSmooth = HermiteInterpolateMidPointOnLine2WithNorm(
+                    cooSmooth = NativeSmoothingDetail::LineMidpoint(
                         coordsSpan[0], coordsSpan[1], norms(EigenAll, 0), norms(EigenAll, 1));
                     cooInc = cooSmooth - cooUnsmooth;
                 }
@@ -1142,7 +1126,7 @@ namespace DNDS::Geom
                              periodicInfo.GetVectorByBits<3, 1>(coordsElevDisp[f2n[if2n - 1]], face2nodePbiExtended[iFace][if2n - 1]));
                     }
 
-                    cooSmooth = HermiteInterpolateMidPointOnQuad4WithNorm(
+                    cooSmooth = NativeSmoothingDetail::QuadMidpoint(
                         coordsSpan[0], coordsSpan[1], coordsSpan[2], coordsSpan[3],
                         norms(EigenAll, 0), norms(EigenAll, 1), norms(EigenAll, 2), norms(EigenAll, 3));
 

@@ -1057,6 +1057,7 @@ namespace DNDS::Geom
             mutation.Commit();
             prepared->BindPreparedEpoch(versions);
             _nativeState = std::move(prepared);
+            _nativeSmoothing.reset();
             node2bndNode.clear();
             node2parentNode.clear();
             cell2parentCell.clear();

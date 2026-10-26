@@ -135,9 +135,9 @@ TEST_CASE("Native partition invalid options reject collectively without mutating
         if (mpi.rank == 0)
         {
             if (failure == 0)
-                options.metisType = "RB";
+                options.metisType = "UNKNOWN";
             if (failure == 1)
-                options.edgeWeightMethod = 1;
+                options.edgeWeightMethod = 2;
             if (failure == 2)
                 options.metisNcuts = 0;
             if (failure == 3)

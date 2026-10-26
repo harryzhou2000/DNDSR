@@ -14,7 +14,7 @@
  *     -> LUSGSForward -> LUSGSBackward
  *   - Measures the L1 RHS norm (golden regression value)
  *   - Repeats from identical solution/halo data using native mesh authority,
- *     rebuilding FV/wall caches after corrupting the detached legacy workspace
+ *     rebuilding FV/wall caches after corrupting detached facade metadata
  *   - Compares every owned dt, RHS and increment component between the runs
  *
  * This is an MPI test registered at np=1, 2, 4.
@@ -25,6 +25,7 @@
 #include "doctest.h"
 
 #include "Euler/EulerSolver.hpp"
+#include "Geom/Mesh/Mesh_Helpers.hpp"
 
 #include <fstream>
 #include <iostream>
@@ -272,49 +273,46 @@ std::array<real, 3> runOneNewtonStep(const std::string &cfgPath)
         }
         return result;
     };
-    const auto legacy = run();
+    REQUIRE(mesh->HasNativeState());
+    auto checkNativeOnly = [&]
+    {
+        CHECK_FALSE(mesh->coords.father);
+        CHECK_FALSE(mesh->coords.son);
+        CHECK_FALSE(mesh->cell2node.father);
+        CHECK_FALSE(mesh->cell2node.son);
+        CHECK_FALSE(mesh->face2node.father);
+        CHECK_FALSE(mesh->face2cell.father);
+        CHECK_FALSE(mesh->cellElemInfo.father);
+        CHECK_FALSE(mesh->faceElemInfo.father);
+        CHECK_FALSE(mesh->nodeWallDist.father);
+    };
+    checkNativeOnly();
+    const auto baseline = run();
     auto requirements = Geom::MeshReadRequirements::CellFlux();
     requirements.allFaceCellsLocal = true;
     requirements.wallDistance = vfv->getSettings().functionalSettings.anisotropicType ==
                                 CFV::VRSettings::FunctionalSettings::AnisotropicType::WallDist;
-    mesh->PublishNative(requirements);
-    REQUIRE(mesh->HasNativeState());
-
-    // Numerical queries must remain independent of the detached raw workspace.
-    // Corrupt before rebuilding FV and wall caches to expose mixed helper reads.
-    for (DNDS::index node = 0; node < mesh->coords.Size(); ++node)
-        mesh->coords[node].array() += 37;
-    auto corruptNodes = [](auto &pair)
-    {
-        for (DNDS::index row = 0; row < pair.Size(); ++row)
-            for (DNDS::rowsize slot = 0; slot < pair.RowSize(row); ++slot)
-                pair(row, slot) = UnInitIndex;
-    };
-    corruptNodes(mesh->cell2node);
-    corruptNodes(mesh->face2node);
-    for (DNDS::index face = 0; face < mesh->face2cell.Size(); ++face)
-    {
-        mesh->face2cell(face, 0) = 0;
-        mesh->face2cell(face, 1) = UnInitIndex;
-        mesh->faceElemInfo(face, 0).zone = Geom::BC_ID_DEFAULT_WALL;
-    }
-    if (mesh->nodeWallDist.father && mesh->nodeWallDist.son)
-        for (DNDS::index node = 0; node < mesh->nodeWallDist.Size(); ++node)
-            mesh->nodeWallDist[node].setConstant(73);
+    CHECK_NOTHROW(mesh->CurrentNativeState()->CheckRequirements(requirements));
+    // Native ingress leaves every legacy allocation absent. Poison detached
+    // facade metadata before rebuilding metrics to expose mixed helper reads.
+    // A raw legacy topology access would encounter empty storage.
+    mesh->adjPrimaryState = Geom::Adj_Unknown;
+    mesh->adjFacialState = Geom::Adj_Unknown;
     mesh->isPeriodic = !mesh->isPeriodic;
     mesh->periodicInfo = Geom::Periodicity{};
     TEval::InitializeFV(mesh, vfv, solver.getBCHandler());
     eval.GetWallDist();
     const auto native = run();
-    REQUIRE(native.owned.size() == legacy.owned.size());
-    CHECK(native.minDt == doctest::Approx(legacy.minDt).epsilon(1e-11));
-    for (size_t value = 0; value < legacy.owned.size(); ++value)
+    checkNativeOnly();
+    REQUIRE(native.owned.size() == baseline.owned.size());
+    CHECK(native.minDt == doctest::Approx(baseline.minDt).epsilon(1e-11));
+    for (size_t value = 0; value < baseline.owned.size(); ++value)
     {
         CAPTURE(value);
         CHECK(std::isfinite(native.owned[value]));
-        CHECK(native.owned[value] == doctest::Approx(legacy.owned[value]).epsilon(1e-11));
+        CHECK(native.owned[value] == doctest::Approx(baseline.owned[value]).epsilon(1e-11));
     }
-    return legacy.norms;
+    return baseline.norms;
 }
 
 // ===================================================================
@@ -624,7 +622,7 @@ static LVRCells runLVRFixture(const std::string &cfgPath, const MPIInfo &mpi,
         }
         for (DNDS::index i = 0; i < mesh->NumCell(); ++i)
         {
-            const auto faces = mesh->cell2face[i];
+            const auto faces = mesh->CellFaces(i);
             for (DNDS::rowsize j = 0; j < faces.size(); ++j)
             {
                 const auto face = faces[j];
@@ -842,7 +840,7 @@ static std::vector<double> OutputDataset(const std::string &fileName, const char
     return result;
 }
 
-TEST_CASE("Euler distributed volume output reads native authority after workspace edits")
+TEST_CASE("Euler distributed volume output reads native authority after detached facade metadata edits")
 {
     const auto root = projectRoot();
     const auto cfg = writeTempConfig<NS>(root + "/cases/euler/euler_config_IV.json", "native_output",
@@ -869,12 +867,19 @@ TEST_CASE("Euler distributed volume output reads native authority after workspac
     auto output = [&](const std::string &suffix)
     { solver.PrintData(base + suffix, "", [](DNDS::index)
                        { return 0.0; }, cells, boundaries, eval, 0); };
-    output("-legacy");
+    REQUIRE(mesh->HasNativeState());
+    CHECK_FALSE(mesh->coords.father);
+    CHECK_FALSE(mesh->cell2node.father);
+    CHECK_FALSE(mesh->face2node.father);
+    CHECK_FALSE(mesh->cellElemInfo.father);
+    output("-baseline");
     auto requirements = Geom::MeshReadRequirements::CellFlux();
     requirements.allFaceCellsLocal = true;
-    mesh->PublishNative(requirements);
-    for (DNDS::index node = 0; node < mesh->coords.Size(); ++node)
-        mesh->coords[node].setConstant(731);
+    CHECK_NOTHROW(mesh->CurrentNativeState()->CheckRequirements(requirements));
+    mesh->isPeriodic = !mesh->IsPeriodic();
+    mesh->periodicInfo = Geom::Periodicity{};
+    mesh->adjPrimaryState = Geom::Adj_Unknown;
+    mesh->adjFacialState = Geom::Adj_Unknown;
     EulerEvaluator<NS>::InitializeFV(mesh, solver.getVFV(), solver.getBCHandler());
     output("-native");
     CHECK(mesh->HasNativeState());
@@ -885,16 +890,153 @@ TEST_CASE("Euler distributed volume output reads native authority after workspac
                                  "/VTKHDF/PointData/R", "/VTKHDF/PointData/P", "/VTKHDF/PointData/Velo"})
         {
             CAPTURE(name);
-            const auto legacy = OutputDataset(base + "-legacy.vtkhdf", name);
+            const auto baseline = OutputDataset(base + "-baseline.vtkhdf", name);
             const auto native = OutputDataset(base + "-native.vtkhdf", name);
-            REQUIRE(native.size() == legacy.size());
+            REQUIRE(native.size() == baseline.size());
             for (size_t i = 0; i < native.size(); ++i)
-                CHECK(native[i] == doctest::Approx(legacy[i]).epsilon(1e-11));
+                CHECK(native[i] == doctest::Approx(baseline[i]).epsilon(1e-11));
         }
-        std::filesystem::remove(base + "-legacy.vtkhdf");
+        std::filesystem::remove(base + "-baseline.vtkhdf");
         std::filesystem::remove(base + "-native.vtkhdf");
     }
     MPI_Barrier(g_mpi.comm);
+}
+
+static std::vector<double> GatherOutputOracle(const std::vector<double> &local)
+{
+    const int size = int(local.size());
+    std::vector<int> counts(g_mpi.size), offsets(g_mpi.size + 1, 0);
+    MPI_Allgather(&size, 1, MPI_INT, counts.data(), 1, MPI_INT, g_mpi.comm);
+    for (int rank = 0; rank < g_mpi.size; ++rank)
+        offsets[rank + 1] = offsets[rank] + counts[rank];
+    // Small test-only oracle. Production mesh setup never gathers this data.
+    std::vector<double> global(offsets.back());
+    MPI_Allgatherv(local.data(), size, MPI_DOUBLE, global.data(), counts.data(), offsets.data(), MPI_DOUBLE, g_mpi.comm);
+    return global;
+}
+
+static std::vector<double> ReadVTKCellDensity(const std::string &fileName)
+{
+    std::ifstream file(fileName);
+    DNDS_check_throw_info(file.good(), "serial VTU output missing");
+    const std::string text((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    const auto cells = text.find("<CellData");
+    const auto name = text.find("Name=\"R\"", cells);
+    const auto begin = text.find('>', name), end = text.find("</DataArray>", begin);
+    DNDS_check_throw_info(cells != std::string::npos && name != std::string::npos &&
+                              begin != std::string::npos && end != std::string::npos,
+                          "serial VTU density array missing");
+    std::istringstream values(text.substr(begin + 1, end - begin - 1));
+    std::vector<double> result;
+    double value = 0;
+    while (values >> value)
+        result.push_back(value);
+    return result;
+}
+
+TEST_CASE("Native Euler ingress restart and serial boundary output retain field association")
+{
+    const auto root = projectRoot();
+    int rootPid = int(getpid());
+    MPI_Bcast(&rootPid, 1, MPI_INT, 0, g_mpi.comm);
+    const auto directory = std::filesystem::temp_directory_path() / ("dndsr-native-euler-io-" + std::to_string(rootPid));
+    if (g_mpi.rank == 0)
+        std::filesystem::create_directories(directory);
+    MPI_Barrier(g_mpi.comm);
+    const auto archive = (directory / "mesh").string();
+    std::vector<double> originalGeometry;
+    for (int readMode : {0, 1, 2})
+        for (int outputMode : {0, 1})
+        {
+            CAPTURE(readMode);
+            CAPTURE(outputMode);
+            const auto tag = std::to_string(readMode) + "-" + std::to_string(outputMode);
+            const auto cfg = writeTempConfig<NS>(root + "/cases/euler/euler_config_IV.json", "native_io_" + tag,
+                                                 {{"vfvSettings", {{"maxOrder", 1}, {"intOrder", 3}}},
+                                                  {"limiterControl", {{"useLimiter", false}}},
+                                                  {"dataIOControl", {{"meshDirectBisect", 0}, {"meshFile", root + "/data/mesh/Uniform_3x3_wall.cgns"}, {"readMeshMode", readMode}, {"meshFilePartitionedInput", archive + ".dnds.h5"}, {"outPltMode", outputMode}, {"outBndData", true}, {"outVolumeData", true}, {"outPltTecplotFormat", true}, {"outPltVTKFormat", true}, {"outPltVTKHDFFormat", true}, {"outAtCellData", true}, {"outAtPointData", true}, {"vtuFloatEncodeMode", "ascii"}, {"nASCIIPrecision", 17}, {"allowAsyncPrintData", false}, {"outCellScalarNames", nlohmann::ordered_json::array()}}}});
+            EulerSolver<NS> solver(g_mpi);
+            solver.ConfigureFromJson(cfg, true);
+            solver.ReadMeshAndInitialize();
+            const auto mesh = solver.getMesh();
+            REQUIRE(mesh->HasNativeState());
+            CHECK_FALSE(mesh->coords.father);
+            CHECK_FALSE(mesh->cell2node.father);
+            CHECK(mesh->NumCellGlobal() == 9);
+            if (readMode == 0 && outputMode == 0)
+            {
+                Serializer::SerializerFactory factory("H5");
+                Geom::SerializeMesh(*mesh, archive, factory);
+            }
+            auto &eval = solver.getEval();
+            const auto fv = solver.getVFV();
+            std::vector<double> geometry, expectedCell, expectedBoundary;
+            for (DNDS::index cell = 0; cell < mesh->NumCellProc(); ++cell)
+            {
+                const auto center = fv->GetCellBary(cell);
+                const DNDS::real rho = 1 + center[0] / 32 + center[1] / 128;
+                solver.getU()[cell] << rho, 0, 0, 0, 2.5;
+                solver.getURec()[cell].setZero();
+                solver.getURecNew()[cell].setZero();
+                if (cell < mesh->NumCell())
+                {
+                    expectedCell.push_back(rho);
+                    geometry.push_back(mesh->OriginalEntityId(Geom::EntityKind::Cell, cell) * 1024 + center[0] * 16 + center[1]);
+                    CHECK(fv->GetCellVol(cell) == doctest::Approx(1));
+                }
+            }
+            for (auto &flux : eval.fluxBnd)
+                flux.setConstant(7);
+            for (auto &force : eval.fluxBndForceT)
+                force.setConstant(11);
+            {
+                auto read = mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
+                const auto view = read.HostView();
+                for (DNDS::index boundary = 0; boundary < view.NumBnd(); ++boundary)
+                    expectedBoundary.push_back(solver.getU()[view.BoundaryCells(boundary)[0]](0));
+            }
+            geometry = GatherOutputOracle(geometry);
+            std::sort(geometry.begin(), geometry.end());
+            if (readMode == 0 && outputMode == 0)
+                originalGeometry = geometry;
+            CHECK(geometry == originalGeometry);
+            expectedCell = GatherOutputOracle(expectedCell);
+            expectedBoundary = GatherOutputOracle(expectedBoundary);
+            const auto output = (directory / tag).string();
+            EulerSolver<NS>::tAdditionalCellScalarList cells, boundaries;
+            solver.PrintData(output, "", [](DNDS::index)
+                             { return 0.; }, cells, boundaries, eval, 0);
+            MPI_Barrier(g_mpi.comm);
+            if (g_mpi.rank == 0)
+            {
+                auto actualCell = OutputDataset(output + ".vtkhdf", "/VTKHDF/CellData/R");
+                auto actualBoundary = OutputDataset(output + "_bnd.vtkhdf", "/VTKHDF/CellData/R");
+                CHECK(actualCell == expectedCell);
+                if (!outputMode)
+                {
+                    const auto serial = ReadVTKCellDensity(output + ".vtu");
+                    REQUIRE(serial.size() == expectedCell.size());
+                    // ASCII output uses the configured decimal precision.
+                    for (size_t row = 0; row < serial.size(); ++row)
+                        CHECK(serial[row] == doctest::Approx(expectedCell[row]).epsilon(1e-13));
+                }
+                std::sort(actualBoundary.begin(), actualBoundary.end());
+                std::sort(expectedBoundary.begin(), expectedBoundary.end());
+                CHECK(actualBoundary == expectedBoundary);
+                for (auto value : OutputDataset(output + "_bnd.vtkhdf", "/VTKHDF/CellData/F0"))
+                    CHECK(value == 7);
+                const auto suffix = outputMode ? ".pvtu" : ".vtu";
+                for (const auto &base : {output, output + "_bnd"})
+                {
+                    CHECK(std::filesystem::file_size(base + suffix) > 0);
+                    if (!outputMode)
+                        CHECK(std::filesystem::file_size(base + ".plt") > 0);
+                }
+            }
+        }
+    MPI_Barrier(g_mpi.comm);
+    if (g_mpi.rank == 0)
+        std::filesystem::remove_all(directory);
 }
 
 // ===================================================================

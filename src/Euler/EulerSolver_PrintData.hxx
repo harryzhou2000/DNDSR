@@ -67,9 +67,8 @@ namespace DNDS::Euler
         TEval &eval, real tSimu, PrintDataMode mode)
     {
         const bool nativeOutput = mesh->HasNativeState();
-        DNDS_check_throw_info(!nativeOutput ||
-                                  (!config.dataIOControl.outBndData && config.dataIOControl.outPltMode == 1),
-                              "native Euler output requires distributed volume output; rebuild boundary/serial output adapters explicitly");
+        // Initialization prepares native serial geometry and field routing when
+        // requested; boundary extraction retains current parent-boundary rows.
         // Native export prepares a detached output workspace collectively on
         // the source communicator. Complete previous output before that setup.
         if (nativeOutput && outSeqFuture.valid())

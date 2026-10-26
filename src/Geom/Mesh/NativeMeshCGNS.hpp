@@ -10,6 +10,12 @@ namespace DNDS::Geom
         Periodicity frames;
         real tolerance = 1e-9;
     };
+    enum class NativeSerialDistribution
+    {
+        Even,
+        ReaderOwned
+    };
+
     /// Explicit serial import result, held entirely in Runtime arrays. Global
     /// serial scratch is confined to the reader rank; it is not ghost storage.
     /// Numbering follows zone-major, node-major deterministic deduplication.
@@ -31,7 +37,8 @@ namespace DNDS::Geom
     /// once before sparse direct distribution, and owned IDs remain payload.
     std::shared_ptr<const NativeMeshState> DistributeNativeSerialMesh(
         const MPIInfo &mpi, NativeSerialMeshData serial, int dimension, int readerRank = 0,
-        NativeMeshBuildOptions options = {}, std::optional<NativePeriodicImportOptions> periodic = {});
+        NativeMeshBuildOptions options = {}, std::optional<NativePeriodicImportOptions> periodic = {},
+        NativeSerialDistribution distribution = NativeSerialDistribution::Even);
 
     /// Local file operation, no MPI collectives. Supports the existing CGNS
     /// multi-zone, mixed-element and boundary PointList/PointRange conventions.
@@ -49,5 +56,6 @@ namespace DNDS::Geom
         const MPIInfo &mpi, const std::string &path, int dimension,
         const t_FBCName_2_ID &boundaryId, int readerRank = 0,
         NativeMeshBuildOptions options = {},
-        std::optional<NativePeriodicImportOptions> periodic = {});
+        std::optional<NativePeriodicImportOptions> periodic = {},
+        NativeSerialDistribution distribution = NativeSerialDistribution::Even);
 }

@@ -358,6 +358,7 @@ namespace DNDS::Geom
                 partStarts.push_back(LocalPartStart(part));
             partStarts.push_back(NumCell());
             _nativeState = _nativeState->WithLocalCellSetup(partStarts, GetCell2CellFaceVLocal(true));
+            _nativeSmoothing.reset();
         }
         else
         {

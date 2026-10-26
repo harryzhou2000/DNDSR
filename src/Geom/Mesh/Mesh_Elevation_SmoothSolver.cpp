@@ -1,4 +1,5 @@
 #include "Mesh_Elevation_SmoothHelpers.hpp"
+#include "Mesh_NativeSmoothingHelpers.hpp"
 #include "Geom/Quadrature.hpp"
 #include "DNDS/ArrayDerived/ArrayEigenUniMatrixBatch.hpp"
 #include "Geom/RadialBasisFunction.hpp"
@@ -22,6 +23,19 @@ namespace DNDS::Geom
 {
     void UnstructuredMesh::ElevatedNodesSolveInternalSmooth()
     {
+        SmoothingLegacyBridge::CheckAuthority(mpi, HasNativeState());
+        if (_nativeState)
+        {
+            CheckCollectiveMutationAvailable(true);
+            const auto stamp = versions.Stamp();
+            FieldTransferDetail::LocalStage(mpi, [&]
+                                            { DNDS_check_throw_info(_nativeSmoothing && _nativeSmoothing->Source() == _nativeState, "native smoothing requires a fresh boundary workspace for the current mesh"); });
+            auto prepared = NativeMeshSmoothing::LocalRBF(*_nativeSmoothing, mpi, SmoothingLegacyBridge::Options(elevationInfo));
+            if (prepared != _nativeState)
+                PublishNativeGeometry(std::move(prepared), stamp);
+            _nativeSmoothing.reset();
+            return;
+        }
         CheckCollectiveMutationAvailable();
         auto mutationToken = BeginManagedMutation(Runtime::Change::Geometry | Runtime::Change::Values | Runtime::Change::Interface);
 
@@ -320,6 +334,19 @@ namespace DNDS::Geom
 
     void UnstructuredMesh::ElevatedNodesSolveInternalSmoothV1()
     {
+        SmoothingLegacyBridge::CheckAuthority(mpi, HasNativeState());
+        if (_nativeState)
+        {
+            CheckCollectiveMutationAvailable(true);
+            const auto stamp = versions.Stamp();
+            FieldTransferDetail::LocalStage(mpi, [&]
+                                            { DNDS_check_throw_info(_nativeSmoothing && _nativeSmoothing->Source() == _nativeState, "native smoothing requires a fresh boundary workspace for the current mesh"); });
+            auto prepared = NativeMeshSmoothing::GlobalRBF(*_nativeSmoothing, mpi, SmoothingLegacyBridge::Options(elevationInfo));
+            if (prepared != _nativeState)
+                PublishNativeGeometry(std::move(prepared), stamp);
+            _nativeSmoothing.reset();
+            return;
+        }
         CheckCollectiveMutationAvailable();
         auto mutationToken = BeginManagedMutation(Runtime::Change::Geometry | Runtime::Change::Values | Runtime::Change::Interface);
 

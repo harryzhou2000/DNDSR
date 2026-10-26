@@ -2339,6 +2339,7 @@ namespace DNDS::Geom
             bMesh.isPeriodic = state->BorrowHostView().IsPeriodic();
             bMesh.periodicInfo = state->BorrowHostView().Periodic();
             bMesh._nativeState = std::move(prepared);
+            bMesh._nativeSmoothing.reset();
             bMesh.node2parentNode.swap(boundaryToSource);
             bMesh.cell2parentCell.swap(cellParents);
             bMesh.node2bndNode.clear();
