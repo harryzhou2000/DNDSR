@@ -65,6 +65,7 @@ namespace DNDS::Geom
     {
         MeshViewStorage _storage{};
         friend class MeshReadAccess;
+        friend class UnstructuredMeshLegacyView;
 
         DNDS_DEVICE_CALLABLE explicit UnstructuredMeshView(const MeshViewStorage &storage) : _storage(storage) {}
 

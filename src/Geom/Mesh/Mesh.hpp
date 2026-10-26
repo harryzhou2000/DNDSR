@@ -124,6 +124,11 @@ namespace DNDS::Geom
         EntitySpace Entities(EntityKind kind) const;
         MeshReadAccess AcquireRead(MeshReadRequirements requirements = MeshReadRequirements::Primary(),
                                    Runtime::ExecutionContext context = Runtime::ExecutionContext::Host());
+        UnstructuredMeshLegacyRead AcquireLegacyRead(MeshReadRequirements requirements = MeshReadRequirements::Primary(),
+                                                     Runtime::ExecutionContext context = Runtime::ExecutionContext::Host())
+        {
+            return UnstructuredMeshLegacyRead(AcquireRead(requirements, context));
+        }
         index OriginalEntityId(EntityKind kind, index row) const { return Native().OriginalEntityId(kind, row); }
         /// Collective preflight; caller serializes submission/publication.
         void CheckCollectiveMutationAvailable(bool = true) const

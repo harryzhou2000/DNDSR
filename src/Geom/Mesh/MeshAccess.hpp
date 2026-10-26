@@ -1,6 +1,6 @@
 #pragma once
 
-#include "MeshView.hpp"
+#include "MeshLegacyView.hpp"
 #include "DNDS/Runtime/Version.hpp"
 #include <memory>
 #include <vector>
@@ -45,6 +45,7 @@ namespace DNDS::Geom
         friend class RelationReadAccess;
         friend class RelationPeriodicBits;
         friend class NativeMeshSnapshot;
+        friend class UnstructuredMeshLegacyRead;
         struct Hold
         {
             virtual ~Hold() = default;
@@ -87,6 +88,8 @@ namespace DNDS::Geom
         ~MeshReadAccess();
         UnstructuredMeshView HostView() const;
         UnstructuredMeshView DeviceView() const;
+        UnstructuredMeshLegacyView LegacyHostView() const { return UnstructuredMeshLegacyView(HostView()); }
+        UnstructuredMeshLegacyView LegacyDeviceView() const { return UnstructuredMeshLegacyView(DeviceView()); }
         const Runtime::VersionStamp &Stamp() const { return _stamp; }
         /// Seal this scope after submitting its last use. Completion must cover
         /// the acquisition stream and joined other uses. No new view may be
@@ -96,5 +99,36 @@ namespace DNDS::Geom
         /// and read leases until destruction; the caller must not reuse old raw
         /// views after sealing. No unrelated later stream work is included.
         void Wait();
+    };
+
+    /// Convenience owner for legacy readonly syntax. Operator implementations
+    /// bind HostView/DeviceView once in their prologue; loops use that plain
+    /// borrowed value. Raw copies never extend this scope. Complete/Wait obey
+    /// MeshReadAccess's same stream-join and sealing contract.
+    class UnstructuredMeshLegacyRead
+    {
+        MeshReadAccess _read;
+        UnstructuredMeshLegacyView _view;
+
+    public:
+        explicit UnstructuredMeshLegacyRead(MeshReadAccess read)
+            : _read(std::move(read)), _view(_read._context.device == Runtime::Device::Host() ? _read.LegacyHostView() : _read.LegacyDeviceView()) {}
+        UnstructuredMeshLegacyRead(const UnstructuredMeshLegacyRead &) = delete;
+        UnstructuredMeshLegacyRead(UnstructuredMeshLegacyRead &&) noexcept = default;
+        UnstructuredMeshLegacyRead &operator=(const UnstructuredMeshLegacyRead &) = delete;
+        UnstructuredMeshLegacyRead &operator=(UnstructuredMeshLegacyRead &&) = delete;
+        const UnstructuredMeshLegacyView &HostView() const
+        {
+            _read.HostView();
+            return _view;
+        }
+        const UnstructuredMeshLegacyView &DeviceView() const
+        {
+            _read.DeviceView();
+            return _view;
+        }
+        const UnstructuredMeshLegacyView *operator->() const { return &HostView(); }
+        void Complete(Runtime::Completion completion) { _read.Complete(std::move(completion)); }
+        void Wait() { _read.Wait(); }
     };
 }

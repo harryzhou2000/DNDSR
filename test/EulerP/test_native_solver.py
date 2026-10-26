@@ -9,7 +9,7 @@ from DNDSR.EulerP.EulerP_Solver import Solver
 from DNDSR.Geom.utils import read_mesh, prepare_mesh, build_bnd_mesh
 
 
-def _evaluate(mpi, native):
+def _evaluate(mpi, native, cuda=False):
     solver = Solver(mpi)
     source = Path(__file__).resolve().parents[2] / "data/mesh/Uniform32_Periodic.cgns"
     geometry = {"translation1": [1., 0., 0.], "translation2": [0., 1., 0.]}
@@ -38,11 +38,23 @@ def _evaluate(mpi, native):
         x = solver.fv.GetCellBary(cell)
         density = 1 + 0.1 * x[0] + 0.05 * x[1]
         solver.data["u"][cell] = np.array([density, 0.1, 0.05, 0., 2.8]).reshape(-1, 1)
+    if cuda:
+        solver.runningDevice = DNDS.DeviceBackend.CUDA
+        solver.to_device("CUDA")
+        # Field storage remains the legacy backend. Rebind requests after
+        # placement; the evaluator independently retains its native mesh read.
+        for _, array in solver.data.items():
+            array.to_device("CUDA")
+        solver.WrapData()
     for _, array in solver.data.items():
         array.trans.initPersistentPull(solver.runningDevice)
     solver.data["u"].trans.startPersistentPull(solver.runningDevice)
     solver.data["u"].trans.waitPersistentPull(solver.runningDevice)
     solver.CalculateOneRHS(zero_grad=True)
+    if cuda:
+        for _, array in solver.data.items():
+            array.to_host()
+        solver.fv.to_host()
     for cell in range(solver.mesh.NumCellProc()):
         np.testing.assert_array_equal(np.asarray(solver.data["uGrad"][cell]), 0.0)
         np.testing.assert_array_equal(np.asarray(solver.data["uGradPrim"][cell]), 0.0)
@@ -71,6 +83,21 @@ def test_native_solver_setup_evaluator_rhs_matches_primary_wire_restart():
     assert native.name2Id.n2id_map == restarted.name2Id.n2id_map
     assert set(actual) == set(expected) and len(actual) == 1024
     assert any(np.linalg.norm(value) > 1e-8 for value in actual.values())
+    for point, value in actual.items():
+        assert np.isfinite(value).all()
+        np.testing.assert_allclose(value, expected[point], rtol=1e-10, atol=1e-10)
+
+
+@pytest.mark.mpi
+def test_native_cuda_evaluator_read_facade_matches_cpu_rhs():
+    if not DNDS.Runtime.cuda_enabled:
+        pytest.skip("requires CUDA bindings and one rank per GPU")
+    mpi = DNDS.MPIInfo()
+    mpi.setWorld()
+    # The launcher assigns a unique physical GPU to each rank before import.
+    _, expected = _evaluate(mpi, True)
+    _, actual = _evaluate(mpi, True, cuda=True)
+    assert set(actual) == set(expected) and len(actual) == 1024
     for point, value in actual.items():
         assert np.isfinite(value).all()
         np.testing.assert_allclose(value, expected[point], rtol=1e-10, atol=1e-10)

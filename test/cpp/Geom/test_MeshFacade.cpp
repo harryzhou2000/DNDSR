@@ -9,6 +9,8 @@
 #include "MeshViewKernel.hpp"
 #include <memory>
 #include <optional>
+#include <type_traits>
+#include <utility>
 
 namespace R = DNDS::Runtime;
 namespace G = DNDS::Geom;
@@ -22,6 +24,7 @@ static DNDS::MPIInfo FacadeMPI()
 }
 
 #include "NativeMeshFacadeFixture.hpp"
+#include "LegacyConstReferenceFixture.hpp"
 
 static auto FacadeFixture(bool periodic = false, bool empty = false)
 {
@@ -30,6 +33,199 @@ static auto FacadeFixture(bool periodic = false, bool empty = false)
 static G::MeshReadRequirements AllFacadeRequirements()
 {
     return NativeFacadeFixture::Requirements();
+}
+
+using LegacyFacade = G::UnstructuredMeshLegacyView;
+static_assert(std::is_trivially_copyable_v<LegacyFacade>);
+static_assert(!std::is_copy_constructible_v<G::UnstructuredMeshLegacyRead>);
+static_assert(std::is_same_v<decltype(std::declval<LegacyFacade>().face2cell(0, 0)), const I &>);
+static_assert(std::is_same_v<decltype(std::declval<LegacyFacade>().cell2node[0][0]), const I &>);
+static_assert(std::is_same_v<decltype(std::declval<LegacyFacade>().cellElemInfo(0, 0)), const G::ElemInfo &>);
+static_assert(std::is_same_v<decltype(std::declval<LegacyFacade>().cell2nodePbi(0, 0)), const G::NodePeriodicBits &>);
+static_assert(std::is_same_v<decltype(std::declval<LegacyFacade>().coords.father.rowPtr(0)), const DNDS::real *>);
+static_assert(!std::is_assignable_v<decltype(std::declval<LegacyFacade>().coords[0][0]), DNDS::real>);
+static_assert(!std::is_convertible_v<decltype(std::declval<LegacyFacade>().cell2node), G::tAdjPair &>);
+
+template <class Pair, class Reference>
+static void CheckLegacyFacadeRows(const Pair &actual, const Reference &reference)
+{
+    REQUIRE(actual.Size() == reference.Size());
+    CHECK(actual.father.Size() == reference.father->Size());
+    CHECK(actual.father->Size() == reference.father->Size());
+    CHECK(actual.son.Size() == reference.son->Size());
+    for (I row = 0; row < actual.Size(); ++row)
+    {
+        REQUIRE(actual.RowSize(row) == reference.RowSize(row));
+        const auto entries = actual[row];
+        CHECK(entries.size() == size_t(reference.RowSize(row)));
+        for (DNDS::rowsize slot = 0; slot < actual.RowSize(row); ++slot)
+        {
+            CHECK(entries[slot] == reference(row, slot));
+            CHECK(actual(row, slot) == reference(row, slot));
+        }
+    }
+}
+
+TEST_CASE("Legacy read facade matches independent legacy arrays without copying native rows")
+{
+    for (bool periodic : {false, true})
+    {
+        auto mesh = FacadeFixture(periodic);
+        auto reference = LegacyConstReferenceFixture(periodic);
+        auto access = mesh->AcquireRead(AllFacadeRequirements());
+        const auto query = access.HostView();
+        const auto view = access.LegacyHostView();
+        const auto &old = std::as_const(*reference);
+        CHECK(view.dim == 2);
+        CHECK(view.isPeriodic == periodic);
+        CHECK(view.coords.isBuilt());
+        CheckLegacyFacadeRows(view.cell2node, old.cell2node);
+        CheckLegacyFacadeRows(view.cell2face, old.cell2face);
+        CheckLegacyFacadeRows(view.face2node, old.face2node);
+        CheckLegacyFacadeRows(view.face2cell, old.face2cell);
+        CHECK(view.cell2cell[0].size() == size_t(periodic ? 1 : 0));
+        CHECK(view.cell2node[0].data() == query.CellNodes(0).data());
+        CHECK(view.cell2face.father.rowPtr(0) == query.CellFaces(0).data());
+        CHECK(view.face2cell.father[1].data() == query.FaceCells(1).data());
+        CHECK(&view.cellElemInfo(0, 0) == &query.GetCellInfo(0));
+        CHECK(&view.faceElemInfo(0, 0) == &query.GetFaceInfo(0));
+        for (I node = 0; node < view.coords.Size(); ++node)
+        {
+            CHECK(view.coords[node].isApprox(old.coords[node]));
+            CHECK(view.coords[node].data() == query.Coord(node).data());
+            CHECK(view.coords.father->RowSize(node) == 3);
+            CHECK(view.nodeWallDist[node].isApprox(G::tPoint{1 + double(node), 2, 0}));
+        }
+        CHECK(view.cellElemInfo(0, 0).getElemType() == old.cellElemInfo(0, 0).getElemType());
+        CHECK(view.cellElemInfo(0, 0).zone == 11);
+        for (I face = 0; face < view.face2cell.Size(); ++face)
+        {
+            CHECK(view.face2cell.RowSize(face) == 2);
+            CHECK(view.faceElemInfo(face, 0).zone == old.faceElemInfo(face, 0).zone);
+            CHECK(view.face2cell(face, 1) == ((periodic && face == 0) ? 0 : DNDS::UnInitIndex));
+        }
+        for (I bnd = 0; bnd < view.bnd2face.Size(); ++bnd)
+        {
+            const I expected = bnd + I(periodic);
+            CHECK(view.bnd2face(bnd, 0) == expected);
+            CHECK(view.bnd2faceV[bnd] == expected);
+            CHECK(view.bnd2faceV.at(bnd) == expected);
+        }
+        CHECK_THROWS(view.bnd2faceV.at(-1));
+        CHECK_THROWS(view.bnd2faceV.at(view.bnd2face.Size()));
+        CHECK(view.edge2node.isBuilt());
+        CHECK(view.cell2cellFace.isBuilt());
+        CHECK(view.cell2nodePbi.isBuilt() == periodic);
+        CHECK(view.face2nodePbi.isBuilt() == periodic);
+        if (periodic)
+        {
+            CheckLegacyFacadeRows(view.cell2nodePbi, old.cell2nodePbi);
+            CheckLegacyFacadeRows(view.face2nodePbi, old.face2nodePbi);
+            CheckLegacyFacadeRows(view.cell2facePbi, old.cell2facePbi);
+            CHECK(view.cell2face[0][0] == view.cell2face[0][2]);
+            CHECK(view.cell2facePbi[0][0] == G::NodePeriodicBits{});
+            CHECK(view.cell2facePbi[0][2] == G::nodePB1);
+            CHECK(view.GetCoordNodeOnCell(0, 2).isApprox(G::tPoint{2, 1, 0}));
+            int side = 0;
+            view.CellOtherCellPeriodicHandle(0, 0, [&]
+                                             { side = 1; }, [&]
+                                             { side = 2; });
+            CHECK(side == 2);
+        }
+        CHECK_THROWS(access.LegacyDeviceView());
+        CHECK_THROWS(mesh->versions.BeginMutation(R::Change::Geometry));
+    }
+}
+
+TEST_CASE("Legacy facade distinguishes unavailable groups from published empty groups")
+{
+    auto mesh = FacadeFixture(true);
+    auto primary = mesh->AcquireRead();
+    const auto view = primary.LegacyHostView();
+    CHECK(view.cell2node.isBuilt());
+    CHECK(view.cell2nodePbi.isBuilt());
+    CHECK_FALSE(view.cell2face.isBuilt());
+    CHECK_FALSE(view.cell2face.father);
+    CHECK_FALSE(view.face2node.isBuilt());
+    CHECK_FALSE(view.faceElemInfo.isBuilt());
+    CHECK_FALSE(view.face2nodePbi.isBuilt());
+    CHECK_FALSE(view.node2cell.isBuilt());
+    CHECK_FALSE(view.edge2node.isBuilt());
+    CHECK_FALSE(view.nodeWallDist.isBuilt());
+    CHECK(view.cell2face.Size() == 0);
+    CHECK(view.bnd2faceV.size() == 0);
+    CHECK_THROWS(view.bnd2faceV.at(0));
+    auto empty = FacadeFixture(true, true);
+    auto read = empty->AcquireLegacyRead(AllFacadeRequirements());
+    CHECK(read->coords.isBuilt());
+    CHECK(read->coords.Size() == 0);
+    CHECK(read->face2node.isBuilt());
+    CHECK(read->face2node.father);
+    CHECK(read->face2node.son.isBuilt());
+    CHECK(read->face2node.Size() == 0);
+    CHECK(read->cell2nodePbi.isBuilt());
+    CHECK(read->cell2nodePbi.Size() == 0);
+}
+
+TEST_CASE("Legacy facade preserves owned and ghost segments with outer closure sentinels")
+{
+    auto data = NativeFacadeFixture::Make(FacadeMPI()).data;
+    data.relations[size_t(G::MeshRelation::FaceNodes)]->ghost = NativeFacadeFixture::Rows<I>({{2, 0}}).owned;
+    data.relations[size_t(G::MeshRelation::FaceCells)]->ghost = NativeFacadeFixture::Rows<I>({{-4, -5}}, 2).owned;
+    data.relations[size_t(G::MeshRelation::FaceBoundaries)]->ghost = NativeFacadeFixture::Rows<I>({{DNDS::UnInitIndex}}, 1).owned;
+    data.faceInfo->ghost = NativeFacadeFixture::Rows<G::ElemInfo>({{{G::Elem::Line2, G::BC_ID_INTERNAL}}}, 1).owned;
+    data.relations[size_t(G::MeshRelation::NodeCells)]->owned.Write().View()(0, 0) = -4;
+    auto snapshot = G::NativeMeshSnapshot::FromNative(data, AllFacadeRequirements());
+    auto read = snapshot.AcquireRead();
+    const auto view = read.LegacyHostView();
+    CHECK(view.face2node.father.Size() == 3);
+    CHECK(view.face2node.son->Size() == 1);
+    CHECK(view.face2node.Size() == 4);
+    CHECK(view.face2node.son.RowSize(0) == 2);
+    CHECK(view.face2node[3][0] == 2);
+    CHECK(view.face2node[3][1] == 0);
+    CHECK(view.face2node[3].data() == view.face2node.son[0].data());
+    CHECK(view.face2node[3].data() == read.HostView().FaceNodes(3).data());
+    CHECK(view.face2cell.son(0, 0) == -4);
+    CHECK(view.face2cell(3, 1) == -5);
+    CHECK(view.face2cell[0][1] == DNDS::UnInitIndex);
+    CHECK(view.node2cell(0, 0) == -4);
+    CHECK(&view.faceElemInfo(3, 0) == &view.faceElemInfo.son(0, 0));
+    CHECK(view.faceElemInfo(3, 0).zone == G::BC_ID_INTERNAL);
+}
+
+TEST_CASE("Legacy read owner retains native storage through moves and mesh handle replacement")
+{
+    auto input = NativeFacadeFixture::Make(FacadeMPI());
+    auto coordinates = input.data.coords->owned;
+    auto mesh = input.Publish(FacadeMPI());
+    auto versions = mesh->versions;
+    std::optional<G::UnstructuredMeshLegacyRead> original, retained;
+    original.emplace(mesh->AcquireRead(AllFacadeRequirements()));
+    const auto allocation = original->HostView().coords[0].data();
+    retained.emplace(std::move(*original));
+    CHECK_THROWS(original->HostView());
+    CHECK_THROWS(original->DeviceView());
+    original.reset();
+    auto replacement = FacadeFixture(true);
+    CHECK_THROWS(mesh->ReplaceNativeForSetup(replacement->CurrentNativeState()));
+    mesh = replacement;
+    replacement.reset();
+    mesh.reset();
+    CHECK_FALSE(versions.CanMutate());
+    CHECK_THROWS(coordinates.Write());
+    CHECK(retained->HostView().coords[0].data() == allocation);
+    CHECK(retained->HostView().cell2node[0][2] == 2);
+    CHECK(retained->operator->()->coords[2].isApprox(G::tPoint{1, 1, 0}));
+    CHECK_THROWS(retained->DeviceView());
+    retained->Complete(R::Completion::Record(R::ExecutionContext::Host()));
+    CHECK_THROWS(retained->HostView());
+    CHECK_THROWS(retained->operator->());
+    retained->Wait();
+    CHECK_FALSE(versions.CanMutate());
+    retained.reset();
+    CHECK(versions.CanMutate());
+    CHECK_NOTHROW(coordinates.Write());
 }
 
 [[maybe_unused]] static void CheckProbeEqual(const G::Test::MeshViewProbeResult &actual, const G::Test::MeshViewProbeResult &expected)

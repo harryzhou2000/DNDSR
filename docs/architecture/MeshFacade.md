@@ -34,6 +34,61 @@ publication. Repeated acquisition reuses them without legacy conversion or a
 full topology scan. The plain view owns no allocation, shared pointer or lock;
 its element access performs no lease lookup inside numerical loops.
 
+## Legacy read spelling without legacy storage
+
+`MeshReadAccess::LegacyHostView()` and `LegacyDeviceView()` expose a borrowed
+`UnstructuredMeshLegacyView`. Its `cell2face`, `face2cell`, coordinates, metadata
+and periodic-bit members are readonly proxies over the same native buffers. They
+support the historical `[]`, `(row,column)`, `RowSize`, `Size`, and owned/ghost
+`father`/`son` read spellings. There is no mutable Array, transformer, implicit
+conversion to `ArrayAdjacencyPair&`, or legacy mesh construction behind them.
+The view copies descriptors, not payload or row-offset buffers.
+
+The normal C++ Euler/CFV operator acquires its scope internally, once in its
+prologue. Borrow the compatibility view there to keep numerical bodies close to
+their original source:
+
+```cpp
+auto meshRead = this->mesh->AcquireRead(requirements);
+const auto meshLegacy = meshRead.LegacyHostView();
+const auto *mesh = &meshLegacy;
+ValidateMeshDependencies();
+for (auto face : mesh->cell2face[cell])
+    /* existing numerical body */;
+```
+
+Host-only setup, partition metadata and field-index bridging still use the owning
+`this->mesh`. Dependency checks, corrected face-slot semantics and other numerical
+fixes remain explicit. Semantic queries (`CellFaces`, `FaceCells`, etc.) also
+remain supported on the compatibility view.
+
+```mermaid
+flowchart TD
+    O[UnstructuredMeshLegacyRead: host owner] --> R[MeshReadAccess]
+    R --> S[Native state, value and shape leases]
+    O --> V[UnstructuredMeshLegacyView: borrowed CPU/CUDA descriptors]
+    V --> P[Readonly member proxies]
+    P -. borrow .-> S
+```
+
+`UnstructuredMesh::AcquireLegacyRead(requirements, context)` is a convenience
+owner over that same contract. Its `HostView()`/`DeviceView()` and host `operator->`
+check acquisition/sealing state. Bind the plain view once before hot loops or
+worker submission. Every copied view, proxy, row or Eigen map borrows the owner;
+it must not escape the owner's completed lifetime. `Complete` must join every
+consuming stream, and sealing forbids obtaining another view. CPU workers retain
+the owner until execution returns. No lease acquisition happens in a GPU thread.
+
+EulerP's host argument keeps `this_v` alive while its plain device view uses these
+same proxies. Its normal launches currently use the default stream, and destroying
+the mesh read scope records/waits on that acquisition stream even with
+`serializeCUDAExecution=false`. Foreign-stream callers must supply the existing
+explicit join/completion ordering; copying a POD view is not lifetime retention.
+
+Optional/unrequested groups report `isBuilt()==false`; requested empty groups
+remain distinguishable. Owned and ghost rows stay separate allocations.
+Sentinels, ordered slots and periodic occurrence bits are preserved exactly.
+
 ## Local indices and partial closure
 
 Owned entities precede ghosts. `NumCell` counts owned rows; `NumCellProc` includes

@@ -603,9 +603,9 @@ namespace DNDS::CFV
                 _fv.ValidateMeshDependencies();
                 _meshRead.Stamp().Validate();
                 if constexpr (B == DeviceBackend::Host)
-                    return {_fv, UnInitIndex, _meshRead.HostView()};
+                    return {_fv, UnInitIndex, _meshRead.LegacyHostView()};
                 else
-                    return {_fv, UnInitIndex, _meshRead.DeviceView()};
+                    return {_fv, UnInitIndex, _meshRead.LegacyDeviceView()};
             }
             void Complete(Runtime::Completion completion) { _meshRead.Complete(std::move(completion)); }
             void Wait() { _meshRead.Wait(); }

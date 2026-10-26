@@ -42,7 +42,7 @@ namespace DNDS::EulerP
     class EvaluatorDeviceView
     {
     public:
-        using t_fv = CFV::FiniteVolumeDeviceView<B, Geom::UnstructuredMeshView>;
+        using t_fv = CFV::FiniteVolumeDeviceView<B, Geom::UnstructuredMeshLegacyView>;
         t_fv fv; /**< @brief Device view of the finite volume / VFV reconstruction object. */
         using t_bcHandler = BCHandlerDeviceView<B>;
         t_bcHandler bcHandler; /**< @brief Device view of the boundary condition handler. */
@@ -356,9 +356,9 @@ namespace DNDS::EulerP
             {
                 using View = typename EvaluatorDeviceView<B>::t_fv;
                 if constexpr (B == DeviceBackend::Host)
-                    return {View(*fv, UnInitIndex, meshRead.HostView()), bcHandler, physics};
+                    return {View(*fv, UnInitIndex, meshRead.LegacyHostView()), bcHandler, physics};
                 else
-                    return {View(*fv, UnInitIndex, meshRead.DeviceView()), bcHandler, physics};
+                    return {View(*fv, UnInitIndex, meshRead.LegacyDeviceView()), bcHandler, physics};
             }
         };
 

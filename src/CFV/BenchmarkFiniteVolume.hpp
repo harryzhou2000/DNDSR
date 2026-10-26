@@ -27,9 +27,9 @@ namespace DNDS::CFV
         auto &mesh = fv.mesh;
         // if (iCell != 0)
         //     return;
-        for (rowsize ic2f = 0; ic2f < mesh.CellFaces(iCell).size(); ic2f++)
+        for (rowsize ic2f = 0; ic2f < mesh.cell2face.RowSize(iCell); ic2f++)
         {
-            index iFace = mesh.CellFaces(iCell)[ic2f];
+            index iFace = mesh.cell2face(iCell, ic2f);
             index iCellOther = mesh.CellFaceOther(iCell, iFace, ic2f);
             rowsize if2c = mesh.CellIsFaceBack(iCell, iFace, ic2f) ? 0 : 1;
             if (iCellOther == UnInitIndex)
@@ -132,9 +132,9 @@ namespace DNDS::CFV
         auto &mesh = fv.mesh;
         // if (iCell != 0)
         //     return;
-        for (rowsize ic2f = 0; ic2f < mesh.CellFaces(iCell).size(); ic2f++)
+        for (rowsize ic2f = 0; ic2f < mesh.cell2face.RowSize(iCell); ic2f++)
         {
-            index iFace = mesh.CellFaces(iCell)[ic2f];
+            index iFace = mesh.cell2face(iCell, ic2f);
             index iCellOther = mesh.CellFaceOther(iCell, iFace, ic2f);
             rowsize if2c = mesh.CellIsFaceBack(iCell, iFace, ic2f) ? 0 : 1;
             if (iCellOther == UnInitIndex)
@@ -251,9 +251,9 @@ namespace DNDS::CFV
         auto &mesh = fv.mesh;
         // if (iCell != 0)
         //     return;
-        for (rowsize ic2f = 0; ic2f < mesh.CellFaces(iCell).size(); ic2f++)
+        for (rowsize ic2f = 0; ic2f < mesh.cell2face.RowSize(iCell); ic2f++)
         {
-            index iFace = mesh.CellFaces(iCell)[ic2f];
+            index iFace = mesh.cell2face(iCell, ic2f);
             index iCellOther = mesh.CellFaceOther(iCell, iFace, ic2f);
             rowsize if2c = mesh.CellIsFaceBack(iCell, iFace, ic2f) ? 0 : 1;
             if (iCellOther == UnInitIndex)

@@ -44,8 +44,9 @@ namespace DNDS::CFV
         tScalarPair &si, tURec<nVarsFixed> &uRec, tUDof<nVarsFixed> &u,
         const std::array<int, nVarsSee> &varsSee)
     {
-        auto meshRead = mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
-        const auto meshView = meshRead.HostView();
+        auto meshRead = this->mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
+        const auto meshLegacy = meshRead.LegacyHostView();
+        const auto *mesh = &meshLegacy;
         this->ValidateMeshDependencies();
         using namespace Geom;
         static const int maxNDiff = dim == 2 ? 10 : 20;
@@ -53,18 +54,18 @@ namespace DNDS::CFV
 #if defined(DNDS_DIST_MT_USE_OMP)
 #    pragma omp parallel for schedule(runtime)
 #endif
-        for (index iCell = 0; iCell < meshView.NumCell(); iCell++)
+        for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
         {
             // int NRecDOF = cellAtr[iCell].NDOF - 1; // ! not good ! TODO
 
-            auto c2f = meshView.CellFaces(iCell);
+            auto c2f = mesh->cell2face[iCell];
             Eigen::Matrix<real, nVarsSee, 2> IJIISIsum;
             IJIISIsum.setZero(nVarsSee, 2);
             for (int ic2f = 0; ic2f < c2f.size(); ic2f++)
             {
                 index iFace = c2f[ic2f];
-                rowsize if2c = meshView.CellIsFaceBack(iCell, iFace, ic2f) ? 0 : 1;
-                index iCellOther = meshView.CellFaceOther(iCell, iFace, ic2f);
+                rowsize if2c = mesh->CellIsFaceBack(iCell, iFace, ic2f) ? 0 : 1;
+                index iCellOther = mesh->CellFaceOther(iCell, iFace, ic2f);
                 auto gFace = this->GetFaceQuadO1(iFace);
                 decltype(IJIISIsum) IJIISI;
                 IJIISI.setZero(nVarsSee, 2);
@@ -119,8 +120,9 @@ namespace DNDS::CFV
         const Eigen::Vector<real, nVarsFixed> &varsSee,
         const TFPost<nVarsFixed> &FPost)
     {
-        auto meshRead = mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
-        const auto meshView = meshRead.HostView();
+        auto meshRead = this->mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
+        const auto meshLegacy = meshRead.LegacyHostView();
+        const auto *mesh = &meshLegacy;
         this->ValidateMeshDependencies();
         using namespace Geom;
         static const int maxNDiff = dim == 2 ? 10 : 20;
@@ -129,18 +131,18 @@ namespace DNDS::CFV
 #if defined(DNDS_DIST_MT_USE_OMP)
 #    pragma omp parallel for schedule(runtime)
 #endif
-        for (index iCell = 0; iCell < meshView.NumCell(); iCell++)
+        for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
         {
             // int NRecDOF = cellAtr[iCell].NDOF - 1; // ! not good ! TODO
 
-            auto c2f = meshView.CellFaces(iCell);
+            auto c2f = mesh->cell2face[iCell];
             Eigen::Matrix<real, nVarsFixed, 2> IJIISIsum;
             IJIISIsum.setZero(nVars, 2);
             for (int ic2f = 0; ic2f < c2f.size(); ic2f++)
             {
                 index iFace = c2f[ic2f];
-                rowsize if2c = meshView.CellIsFaceBack(iCell, iFace, ic2f) ? 0 : 1;
-                index iCellOther = meshView.CellFaceOther(iCell, iFace, ic2f);
+                rowsize if2c = mesh->CellIsFaceBack(iCell, iFace, ic2f) ? 0 : 1;
+                index iCellOther = mesh->CellFaceOther(iCell, iFace, ic2f);
                 auto gFace = this->GetFaceQuadO1(iFace);
                 decltype(IJIISIsum) IJIISI;
                 // if (iCellOther != UnInitIndex)
@@ -207,15 +209,16 @@ namespace DNDS::CFV
         bool putIntoNew,
         ReconstructionMaskView reconstructionMask)
     {
-        auto meshRead = mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
-        const auto meshView = meshRead.HostView();
+        auto meshRead = this->mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
+        const auto meshLegacy = meshRead.LegacyHostView();
+        const auto *mesh = &meshLegacy;
         this->ValidateMeshDependencies();
         using namespace Geom;
 
 #if defined(DNDS_DIST_MT_USE_OMP)
 #    pragma omp parallel for schedule(runtime)
 #endif
-        for (index iCell = 0; iCell < meshView.NumCell(); iCell++)
+        for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
         {
             if ((!ifAll) &&
                 si(iCell, 0) < settings.smoothThreshold)
@@ -224,14 +227,14 @@ namespace DNDS::CFV
                 continue;
             }
             index NRecDOF = GetCellAtr(iCell).NDOF - 1;
-            auto c2f = meshView.CellFaces(iCell);
+            auto c2f = mesh->cell2face[iCell];
             std::vector<Eigen::Matrix<real, Eigen::Dynamic, nVarsFixed, 0, maxRecDOF>> uFaces(c2f.size());
             for (int ic2f = 0; ic2f < c2f.size(); ic2f++)
             {
                 // * safety initialization
                 index iFace = c2f[ic2f];
-                rowsize if2c = meshView.CellIsFaceBack(iCell, iFace, ic2f) ? 0 : 1;
-                index iCellOther = meshView.CellFaceOther(iCell, iFace, ic2f);
+                rowsize if2c = mesh->CellIsFaceBack(iCell, iFace, ic2f) ? 0 : 1;
+                index iCellOther = mesh->CellFaceOther(iCell, iFace, ic2f);
                 if (iCellOther != UnInitIndex)
                 {
                     uFaces[ic2f].resizeLike(uRec[iCellOther]);
@@ -257,8 +260,8 @@ namespace DNDS::CFV
                 for (int ic2f = 0; ic2f < c2f.size(); ic2f++)
                 {
                     index iFace = c2f[ic2f];
-                    rowsize if2c = meshView.CellIsFaceBack(iCell, iFace, ic2f) ? 0 : 1;
-                    index iCellOther = meshView.CellFaceOther(iCell, iFace, ic2f);
+                    rowsize if2c = mesh->CellIsFaceBack(iCell, iFace, ic2f) ? 0 : 1;
+                    index iCellOther = mesh->CellFaceOther(iCell, iFace, ic2f);
                     index iCellAtFace = if2c;
 
                     if (iCellOther != UnInitIndex)
@@ -343,7 +346,7 @@ namespace DNDS::CFV
 #if defined(DNDS_DIST_MT_USE_OMP)
 #    pragma omp parallel for schedule(runtime)
 #endif
-            for (index iCell = 0; iCell < meshView.NumCellProc(); iCell++) // mind the edge
+            for (index iCell = 0; iCell < mesh->NumCellProc(); iCell++) // mind the edge
                 uRec[iCell] = uRecNew[iCell];
         }
     }
@@ -367,8 +370,9 @@ namespace DNDS::CFV
         bool putIntoNew, int limitOrder,
         ReconstructionMaskView reconstructionMask)
     {
-        auto meshRead = mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
-        const auto meshView = meshRead.HostView();
+        auto meshRead = this->mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
+        const auto meshLegacy = meshRead.LegacyHostView();
+        const auto *mesh = &meshLegacy;
         this->ValidateMeshDependencies();
         using namespace Geom;
 
@@ -379,7 +383,7 @@ namespace DNDS::CFV
 #if defined(DNDS_DIST_MT_USE_OMP)
 #    pragma omp parallel for schedule(runtime)
 #endif
-        for (index iCell = 0; iCell < meshView.NumCellProc(); iCell++) // mind the edge
+        for (index iCell = 0; iCell < mesh->NumCellProc(); iCell++) // mind the edge
             uRecNew[iCell] = uRec[iCell];
         for (; cPOrder >= 1; cPOrder--)
         {
@@ -387,12 +391,12 @@ namespace DNDS::CFV
 #if defined(DNDS_DIST_MT_USE_OMP)
 #    pragma omp parallel for schedule(runtime)
 #endif
-            for (index iCell = 0; iCell < meshView.NumCellProc(); iCell++) // mind the edge
+            for (index iCell = 0; iCell < mesh->NumCellProc(); iCell++) // mind the edge
                 uRecBuf[iCell] = uRecNew[iCell];
 #if defined(DNDS_DIST_MT_USE_OMP)
 #    pragma omp parallel for schedule(runtime)
 #endif
-            for (index iCell = 0; iCell < meshView.NumCell(); iCell++)
+            for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
             {
                 if ((!ifAll) &&
                     si(iCell, 0) < settings.smoothThreshold)
@@ -401,14 +405,14 @@ namespace DNDS::CFV
                     continue;
                 }
                 index NRecDOF = GetCellAtr(iCell).NDOF - 1;
-                auto c2f = meshView.CellFaces(iCell);
+                auto c2f = mesh->cell2face[iCell];
                 // std::vector<Eigen::Matrix<real, Eigen::Dynamic, nVarsFixed, 0, maxRecDOF>> uFaces(c2f.size());
                 for (int ic2f = 0; ic2f < c2f.size(); ic2f++)
                 {
                     // * safety initialization
                     index iFace = c2f[ic2f];
-                    rowsize if2c = meshView.CellIsFaceBack(iCell, iFace, ic2f) ? 0 : 1;
-                    index iCellOther = meshView.CellFaceOther(iCell, iFace, ic2f);
+                    rowsize if2c = mesh->CellIsFaceBack(iCell, iFace, ic2f) ? 0 : 1;
+                    index iCellOther = mesh->CellFaceOther(iCell, iFace, ic2f);
                     if (iCellOther != UnInitIndex)
                     {
                         // uFaces[ic2f].resizeLike(uRec[iCellOther]);
@@ -429,8 +433,8 @@ namespace DNDS::CFV
                 for (int ic2f = 0; ic2f < c2f.size(); ic2f++)
                 {
                     index iFace = c2f[ic2f];
-                    rowsize if2c = meshView.CellIsFaceBack(iCell, iFace, ic2f) ? 0 : 1;
-                    index iCellOther = meshView.CellFaceOther(iCell, iFace, ic2f);
+                    rowsize if2c = mesh->CellIsFaceBack(iCell, iFace, ic2f) ? 0 : 1;
+                    index iCellOther = mesh->CellFaceOther(iCell, iFace, ic2f);
                     index iCellAtFace = if2c;
 
                     if (iCellOther != UnInitIndex)
@@ -517,7 +521,7 @@ namespace DNDS::CFV
 #if defined(DNDS_DIST_MT_USE_OMP)
 #    pragma omp parallel for schedule(runtime)
 #endif
-            for (index iCell = 0; iCell < meshView.NumCellProc(); iCell++) // mind the edge
+            for (index iCell = 0; iCell < mesh->NumCellProc(); iCell++) // mind the edge
                 uRec[iCell] = uRecNew[iCell];
         }
     }
