@@ -103,7 +103,9 @@ static void CheckCPUOverlap(T::Fixture &fixture, size_t workers)
     MPI_Allreduce(MPI_IN_PLACE, counts, 2, DNDS::DNDS_MPI_INDEX, MPI_SUM, mesh.mpi.comm);
     CHECK(counts[0] > 0);
     CHECK(counts[0] + counts[1] == DNDS::index(fixture.expected.size()));
-    if (mesh.mpi.size > 1)
+    DNDS::index owners = mesh.NumCell() > 0;
+    MPI_Allreduce(MPI_IN_PLACE, &owners, 1, DNDS::DNDS_MPI_INDEX, MPI_SUM, mesh.mpi.comm);
+    if (owners > 1)
         CHECK(counts[1] > 0);
     if (mesh.mpi.rank == 0)
         std::cout << "real mesh CPU engine workers=" << workers << " core=" << counts[0]
@@ -115,25 +117,26 @@ TEST_CASE("Real mesh finite-volume neighbor sums overlap native halo with inline
 {
     DNDS::MPIInfo mpi;
     mpi.setWorld();
-    bool native = false;
-    SUBCASE("legacy-built baseline") {}
-    SUBCASE("Runtime-array-native construction") { native = true; }
-    auto fixture = native ? T::BuildNativeFixture(mpi) : T::BuildFixture(mpi);
+    bool emptyPeers = false;
+    SUBCASE("balanced native ownership") {}
+    SUBCASE("native empty owners")
+    {
+        emptyPeers = true;
+    }
+    auto fixture = T::BuildNativeFixture(mpi, emptyPeers);
+    DNDS::index empty = fixture.mesh->NumCell() == 0;
+    MPI_Allreduce(MPI_IN_PLACE, &empty, 1, DNDS::DNDS_MPI_INDEX, MPI_SUM, mpi.comm);
+    if (emptyPeers && mpi.size > 1)
+        CHECK(empty > 0);
     for (size_t workers : {size_t(0), size_t(2)})
         CheckCPUOverlap(fixture, workers);
-    if (!native)
-    {
-        auto prior = fixture.mesh->Entities(G::EntityKind::Cell);
-        auto priorRoute = prior.BuildRowTransferPlan();
-        fixture.mesh->ReorderLocalCells(2, 1);
-        CHECK_FALSE(prior.Valid());
-        CHECK_FALSE(priorRoute.Valid());
-        for (size_t workers : {size_t(0), size_t(2)})
-            CheckCPUOverlap(fixture, workers);
-        fixture.mesh->PublishNative(G::MeshReadRequirements::CellFlux());
-        for (size_t workers : {size_t(0), size_t(2)})
-            CheckCPUOverlap(fixture, workers);
-    }
+    const auto old = fixture.mesh->Entities(G::EntityKind::Cell);
+    auto oldRoute = old.BuildRowTransferPlan();
+    fixture.mesh->ReorderLocalCells(2, 1);
+    CHECK_FALSE(old.Valid());
+    CHECK_FALSE(oldRoute.Valid());
+    for (size_t workers : {size_t(0), size_t(2)})
+        CheckCPUOverlap(fixture, workers);
     T::RedistributeCurrent(fixture);
     for (size_t workers : {size_t(0), size_t(2)})
         CheckCPUOverlap(fixture, workers);

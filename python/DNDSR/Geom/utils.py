@@ -399,6 +399,8 @@ def prepare_mesh(
         return
     if reader is None:
         raise ValueError("Legacy preparation requires a serial reader")
+    if build_serial_out:
+        raise ValueError("Legacy volume fixtures require build_serial_out=False; native output is the production path")
     mpi = mesh.getMPI()
 
     # 1. Cell reordering
@@ -425,12 +427,6 @@ def prepare_mesh(
             else:
                 opts = wall_dist_options
         mesh.BuildNodeWallDist(wall_dist_predicate, opts)
-
-    # 5. Serial output (optional)
-    if build_serial_out:
-        mesh.AdjLocal2GlobalPrimary()
-        reader.BuildSerialOut()
-        mesh.AdjGlobal2LocalPrimary()
 
     # 6. Coordinate transforms (all default to no-op)
     _apply_coord_transforms(
@@ -537,7 +533,7 @@ def build_bnd_mesh(
 ) -> BndMeshResult:
     """Extract the boundary surface mesh from *mesh*.
 
-    The default builds serial output for legacy input. Native input returns a
+    Native input returns a
     compact native boundary mesh with a native serial output adapter. Serial
     output preserves physical periodic images without a legacy mesh workspace.
     """
@@ -547,18 +543,7 @@ def build_bnd_mesh(
         if build_serial_out is not False:
             reader_bnd.BuildSerialOut()
         return BndMeshResult(mesh_bnd, reader_bnd)
-    if build_serial_out is None:
-        build_serial_out = True
-    mesh_bnd = Geom.UnstructuredMesh(mesh.getMPI(), mesh.getDim() - 1)
-    reader_bnd = Geom.UnstructuredMeshSerialRW(mesh_bnd, 0)
-    mesh.ConstructBndMesh(mesh_bnd)
-    if build_serial_out:
-        mesh_bnd.AdjLocal2GlobalPrimaryForBnd()
-        reader_bnd.BuildSerialOut()
-        mesh_bnd.AdjGlobal2LocalPrimaryForBnd()
-    mesh_bnd.RecreatePeriodicNodes()
-    mesh_bnd.BuildVTKConnectivity()
-    return BndMeshResult(mesh_bnd=mesh_bnd, reader_bnd=reader_bnd)
+    raise ValueError("Boundary extraction requires native mesh authority")
 
 
 def build_fv(

@@ -1,3 +1,4 @@
+#include "Geom/Mesh/Mesh_Helpers.hpp"
 #include "CFV/VariationalReconstruction.hpp"
 #include "CFV/VariationalReconstruction_Reconstruction.hxx"
 #include "CFV/VariationalReconstruction_LimiterProcedure.hxx"
@@ -27,26 +28,11 @@ void staticReconstruction()
     // DNDS::Debug::MPIDebugHold(mpi);
     char buf[512];
     // std::cout << getcwd(buf, 512) << std::endl;
-    auto mesh = std::make_shared<DNDS::Geom::UnstructuredMesh>(mpi, dim);
+    auto mesh = DNDS::Geom::ReadNativeMeshFromCGNS(mpi, dim, "../data/mesh/UniformSquare_80.cgns",
+                                                   DNDS::Geom::PartitionOptions{}, DNDS::Geom::FBC_Name_2_ID_Default,
+                                                   DNDS::Geom::NativePeriodicImportOptions{});
     auto reader = DNDS::Geom::UnstructuredMeshSerialRW(mesh, 0);
-    // "../data/mesh/FourTris_V1.pw.cgns"
-    // "../data/mesh/SC20714_MixedA.cgns"
-    // "../data/mesh/UniformDM240_E120.cgns"
-    // "../data/mesh/Ball.cgns"
-    // "../data/mesh/UniformSquare_10.cgns"
-    reader.ReadFromCGNSSerial("../data/mesh/UniformSquare_80.cgns");
-    reader.Deduplicate1to1Periodic();
-
-    reader.BuildCell2Cell();
-    reader.MeshPartitionCell2Cell(DNDS::Geom::UnstructuredMeshSerialRW::PartitionOptions{});
-    reader.PartitionReorderToMeshCell2Cell();
-    reader.BuildSerialOut();
-    mesh->RecoverNode2CellAndNode2Bnd();
-    mesh->RecoverCell2CellAndBnd2Cell();
-    mesh->BuildGhostPrimary();
-    mesh->AdjGlobal2LocalPrimary();
-    mesh->InterpolateFace();
-    mesh->AssertOnFaces();
+    DNDS::Geom::PrepareMesh(*mesh, reader);
 
     auto vr = DNDS::CFV::VariationalReconstruction<dim>(mpi, mesh);
 #ifdef DNDS_USE_OMP
@@ -54,11 +40,13 @@ void staticReconstruction()
 #endif
     // omp_set_num_threads(1);
 
-    vr.settings.maxOrder = 3;
-    vr.settings.SORInstead = true;
-    vr.settings.cacheDiffBase = true;
+    auto settings = vr.getSettings();
+    settings.maxOrder = 3;
+    settings.SORInstead = true;
+    settings.cacheDiffBase = true;
 
-    vr.settings.smoothThreshold = 1e100;
+    settings.smoothThreshold = 1e100;
+    vr.parseSettings(settings);
 
     vr.ConstructMetrics();
     vr.ConstructBaseAndWeight();
@@ -187,7 +175,6 @@ void staticReconstruction()
             // printErr(*uRec);
         }
 
-        
         Linear::GMRES_LeftPreconditioned<std::remove_reference_t<decltype(*uRec)>> gmresRec(
             kGmres,
             [&](decltype(*uRec) &data)
@@ -195,7 +182,7 @@ void staticReconstruction()
                 vr.BuildURec(data, 1);
             });
         {
-            for (int iRec = 1; iRec <= (method == 1 ? 1: 0); iRec++)
+            for (int iRec = 1; iRec <= (method == 1 ? 1 : 0); iRec++)
             {
                 if (mpi.rank == 0)
                     std::cout << "GMRESOut: " << std::endl;
@@ -208,7 +195,7 @@ void staticReconstruction()
                 uRecNew->trans.startPersistentPull();
                 uRecNew->trans.waitPersistentPull();
                 *uRec = *uRecNew;
-                
+
                 gmresRec.solve(
                     [&](decltype(*uRec) &x, decltype(*uRec) &Ax)
                     {
@@ -255,16 +242,16 @@ void staticReconstruction()
         tScalarPair si;
         vr.BuildScalar(si);
         using tLimitBatch = decltype(vr)::template tLimitBatch<1>;
-        vr.DoCalculateSmoothIndicator<1, 1>(si, *uRec, u, std::array<int, 1>{0}); 
+        vr.DoCalculateSmoothIndicator<1, 1>(si, *uRec, u, std::array<int, 1>{0});
         // todo: make explicit ins lazy
 
         vr.DoLimiterWBAP_C<1>(
             u, *uRec, *uRecNew, *uRecOld, si, false,
             [](const auto &UL, const auto &UR, const Geom::tPoint &n,
-                               const Eigen::Ref<tLimitBatch> &data) -> tLimitBatch
+               const Eigen::Ref<tLimitBatch> &data) -> tLimitBatch
             { return data; },
             [](const auto &UL, const auto &UR, const Geom::tPoint &n,
-                               const Eigen::Ref<tLimitBatch> &data) -> tLimitBatch
+               const Eigen::Ref<tLimitBatch> &data) -> tLimitBatch
             { return data; });
         printErr(*uRec);
     }

@@ -1,3 +1,4 @@
+#include "Geom/Mesh/Mesh_Helpers.hpp"
 #include "CFV/VariationalReconstruction.hpp"
 #include "CFV/VariationalReconstruction_Reconstruction.hxx"
 #include "CFV/VariationalReconstruction_LimiterProcedure.hxx"
@@ -32,21 +33,11 @@ void testConstruct()
     // DNDS::Debug::MPIDebugHold(mpi);
     char buf[512];
     // std::cout << getcwd(buf, 512) << std::endl;
-    auto mesh = std::make_shared<DNDS::Geom::UnstructuredMesh>(mpi, dim);
+    auto mesh = DNDS::Geom::ReadNativeMeshFromCGNS(mpi, dim, meshName,
+                                                   DNDS::Geom::PartitionOptions{}, DNDS::Geom::FBC_Name_2_ID_Default,
+                                                   DNDS::Geom::NativePeriodicImportOptions{});
     auto reader = DNDS::Geom::UnstructuredMeshSerialRW(mesh, 0);
-
-    reader.ReadFromCGNSSerial(meshName);
-    reader.Deduplicate1to1Periodic();
-    reader.BuildCell2Cell();
-    reader.MeshPartitionCell2Cell(DNDS::Geom::UnstructuredMeshSerialRW::PartitionOptions{});
-    reader.PartitionReorderToMeshCell2Cell();
-    reader.BuildSerialOut();
-    mesh->RecoverNode2CellAndNode2Bnd();
-    mesh->RecoverCell2CellAndBnd2Cell();
-    mesh->BuildGhostPrimary();
-    mesh->AdjGlobal2LocalPrimary();
-    mesh->InterpolateFace();
-    mesh->AssertOnFaces();
+    DNDS::Geom::PrepareMesh(*mesh, reader);
 
     /**************************/
     // about serializer: test the coherence of mesh serializer
@@ -60,16 +51,17 @@ void testConstruct()
     std::dynamic_pointer_cast<DNDS::Serializer::SerializerJSON>(serializerP)->SetUseCodecOnUint8(true);
 
     serializerP->OpenFile(meshPartPath, false);
-    mesh->WriteSerialize(serializerP, "meshPart");
+    mesh->WriteNativeArchive(serializerP, "meshPart");
     serializerP->CloseFile();
 
     serializerP->OpenFile(meshPartPath, true);
-    mesh->ReadSerialize(serializerP, "meshPart");
+    mesh = DNDS::Geom::UnstructuredMesh::ReadNativeArchive(mpi, serializerP, "meshPart");
+    reader.mesh = mesh;
     serializerP->CloseFile();
 
     /**************************/
-    mesh->InterpolateFace();
-    mesh->AssertOnFaces();
+    mesh->PrepareNativeTopology();
+    reader.BuildSerialOut();
 
     auto vr = DNDS::CFV::VariationalReconstruction<dim>(mpi, mesh);
 #ifdef DNDS_USE_OMP

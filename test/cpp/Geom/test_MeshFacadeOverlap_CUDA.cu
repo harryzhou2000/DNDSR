@@ -36,8 +36,7 @@ static void CheckGPUOverlap(T::Fixture &fixture, int ordinal)
     auto core = engine.CreateStream(std::make_shared<R::CUDALauncher>(ordinal));
     auto ring = engine.CreateStream(std::make_shared<R::CUDALauncher>(ordinal));
     auto comm = engine.CreateStream(std::make_shared<R::CUDALauncher>(ordinal));
-    if (mesh.HasNativeState())
-        mesh.PlaceNative(device, core.Context());
+    mesh.PlaceNative(device, core.Context());
     auto access = mesh.AcquireRead(G::MeshReadRequirements::CellFlux(), core.Context());
     const auto view = access.DeviceView();
     auto coreRows = hostCore.To(device, core.Context()), ringRows = hostRing.To(device, ring.Context());
@@ -88,7 +87,10 @@ static void CheckGPUOverlap(T::Fixture &fixture, int ordinal)
     DNDS::index counts[]{DNDS::index(partition.core.size()), DNDS::index(partition.ring.size())};
     MPI_Allreduce(MPI_IN_PLACE, counts, 2, DNDS::DNDS_MPI_INDEX, MPI_SUM, mesh.mpi.comm);
     CHECK(counts[0] > 0);
-    CHECK(counts[1] > 0);
+    DNDS::index owners = mesh.NumCell() > 0;
+    MPI_Allreduce(MPI_IN_PLACE, &owners, 1, DNDS::DNDS_MPI_INDEX, MPI_SUM, mesh.mpi.comm);
+    if (owners > 1)
+        CHECK(counts[1] > 0);
     CHECK(counts[0] + counts[1] == DNDS::index(fixture.expected.size()));
     if (mesh.mpi.rank == 0)
         std::cout << "real mesh CUDA direct MPI core=" << counts[0] << " ring=" << counts[1]
@@ -101,20 +103,24 @@ TEST_CASE("Real mesh CUDA finite-volume core uses owned solution during direct m
     mpi.setWorld();
     REQUIRE(mpi.size >= 2);
     const int ordinal = OverlapGPU(mpi);
-    bool native = false;
-    SUBCASE("legacy-built baseline") {}
-    SUBCASE("Runtime-array-native construction") { native = true; }
-    auto fixture = native ? T::BuildNativeFixture(mpi) : T::BuildFixture(mpi);
-    CheckGPUOverlap(fixture, ordinal);
-    if (!native)
+    bool emptyPeers = false;
+    SUBCASE("balanced native ownership") {}
+    SUBCASE("native empty owners")
     {
-        const auto old = fixture.mesh->Entities(G::EntityKind::Cell);
-        fixture.mesh->ReorderLocalCells(2, 1);
-        CHECK_FALSE(old.Valid());
-        CheckGPUOverlap(fixture, ordinal);
-        fixture.mesh->PublishNative(G::MeshReadRequirements::CellFlux());
-        CheckGPUOverlap(fixture, ordinal);
+        emptyPeers = true;
     }
+    auto fixture = T::BuildNativeFixture(mpi, emptyPeers);
+    DNDS::index empty = fixture.mesh->NumCell() == 0;
+    MPI_Allreduce(MPI_IN_PLACE, &empty, 1, DNDS::DNDS_MPI_INDEX, MPI_SUM, mpi.comm);
+    if (emptyPeers && mpi.size > 1)
+        CHECK(empty > 0);
+    CheckGPUOverlap(fixture, ordinal);
+    const auto old = fixture.mesh->Entities(G::EntityKind::Cell);
+    auto oldRoute = old.BuildRowTransferPlan();
+    fixture.mesh->ReorderLocalCells(2, 1);
+    CHECK_FALSE(old.Valid());
+    CHECK_FALSE(oldRoute.Valid());
+    CheckGPUOverlap(fixture, ordinal);
     T::RedistributeCurrent(fixture);
     CheckGPUOverlap(fixture, ordinal);
     T::RestartCurrent(fixture);

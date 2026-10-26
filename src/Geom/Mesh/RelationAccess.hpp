@@ -148,14 +148,20 @@ namespace DNDS::Geom
             return _view(size_t(row), slot);
         }
         Entry ReadEntry(index row, size_t slot) const;
+        /// Setup-only conversion against this exact target order. Global means
+        /// current distributed rank-offset numbering, never a persistent ID.
+        /// Missing targets encode as -1-global in local state; UnInitIndex
+        /// remains an absent incidence. Strict local conversion rejects missing
+        /// closure. No mapping/storage mutation or communication is performed.
+        index ConvertedIndex(index row, size_t slot, MeshAdjState targetState,
+                             bool allowUnavailable = true) const;
         std::vector<index> GlobalRow(index row) const
         {
             std::vector<index> result;
             result.reserve(RowSize(row));
             for (size_t slot = 0; slot < RowSize(row); ++slot)
             {
-                auto entry = ReadEntry(row, slot);
-                result.push_back(entry.absent ? UnInitIndex : entry.global);
+                result.push_back(ConvertedIndex(row, slot, Adj_PointToGlobal));
             }
             return result;
         }
@@ -213,9 +219,18 @@ namespace DNDS::Geom
             auto check = Read();
         }
         const Runtime::Array<index> &Owned() const { return _owned; }
+        const std::optional<Runtime::Array<index>> &Ghost() const { return _ghost; }
         const EntitySpace &Source() const { return _source; }
         const EntitySpace &Target() const { return _target; }
         RelationReadAccess Read() const { return {_kind, _source, _target, _state, _owned, _ghost ? &*_ghost : nullptr}; }
+        /// Detached host conversion of every owned and present ghost row.
+        /// Retains source/target identity, slot order and logical row shape.
+        /// Both directions validate explicit state; even same-state conversion
+        /// returns independent values. Live compute mesh publications stay local.
+        /// No MPI is issued; wrap in the caller's collective failure boundary
+        /// before a subsequent collective setup operation.
+        static NativeRelation Convert(const RelationReadAccess &source, MeshAdjState targetState,
+                                      bool allowUnavailable = true);
         /// Collective transient direct transfer using a route explicitly bound
         /// to this source identity/order. The original owned relation is retained.
         /// Local-index payloads require target-map translation across ranks;

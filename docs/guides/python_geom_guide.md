@@ -22,24 +22,35 @@ the constructor retains input allocations and blocks writes while they are
 published. See [native construction and ownership](../architecture/NativeMesh.md)
 for input types, collective-call rules, escaped row lifetimes and current limits.
 
-Prepared meshes can explicitly publish private native storage:
+`read_mesh` creates native storage by default. Preparation mutates that facade
+through tracked publication; it does not require a second `publish_native` call:
 
 ```python
-mesh.publish_native(faces=True, inverse=True)
+result = read_mesh(mesh_file, mpi=mpi, dim=2)
+prepare_mesh(result.mesh, result.reader)
+mesh = result.mesh
 with mesh.acquire_read(faces=True) as read:
     coordinates = read.coordinates()  # independent snapshot
+    assert read.relation_state(Geom.MeshRelation.CellNodes) == Geom.MeshAdjState.PointToLocal
 cells = mesh.entities(Geom.EntityKind.Cell)
-global_cell = cells.local_to_global(0)
+if cells.owned:
+    global_cell = cells.local_to_global(0)
+    assert cells.global_to_local(global_cell) == 0
 ```
 
-Publication is collective. It validates and copies the current legacy setup
-workspace; subsequent managed queries use those immutable native arrays and
-canonical maps. Raw legacy properties remain a separate workspace in this mode.
-Changing them does not change published queries. `mesh.use_legacy_workspace()`
-explicitly switches back and invalidates dependent descriptors and caches.
-Managed legacy setup mutations reject native mode. Use `mesh.edit()` for supported
-current-state edits, or explicitly select the legacy workspace before legacy setup.
-Release escaped readonly arrays before any in-place mutation/publication.
+Mesh publication is collective. Managed queries use immutable native arrays and
+canonical maps. Current global indices are distributed row numbers, distinct
+from persistent entity IDs; native compute relations always contain local
+indices (plus documented unavailable/absent sentinels). C++ setup can explicitly
+convert detached relations in either direction; see the
+[index conversion contract](../dev/geom_native_index_conversion.md).
+Use `mesh.edit()` for supported current-state edits. Release escaped readonly
+arrays before mutation/publication; retained snapshots remain independent.
+
+During migration, explicit `native=False` fixtures can still import a legacy
+workspace with `publish_native(...)`. That is a compatibility operation, not a
+step in the default native workflow. Legacy mutation methods require legacy
+authority and do not toggle the state of a native compute relation.
 
 `mesh.place_native(ordinal)` prepares a persistent CUDA placement. Legacy
 `mesh.to_device(...)` and `mesh.to_host()` require legacy mode; they are separate
@@ -49,16 +60,16 @@ debugging through a host read scope. Merely copying a C++ plain device view does
 not retain storage or establish asynchronous ordering.
 
 `mesh.WriteCurrentPrimaryMeshSnapshot(serializer, name)` is collective even for
-per-rank JSON. It writes an independent **primary-topology** clone with a schema
+per-rank JSON. It writes an independent **primary-topology** export with a schema
 and rebuild-inventory marker, without changing the source authority or readers.
 Optional face/edge/inverse groups and output caches are rebuilt after reading;
 this format does not preserve their field numbering. Present wall vectors reject
 by default; passing `policy=Geom.CurrentMeshCheckpointPolicy.DropAuxiliary`
 explicitly permits omitting them. `WriteCurrentMeshSnapshot` is a compatibility
 spelling with the same strict policy. Existing `WriteSerialize` keeps
-its legacy setup contract and rejects native mode. Detached transition/export
-currently rejects elevated original-node prefixes and parent/extraction links;
-the transition contract documents these explicit restrictions.
+its legacy setup contract and rejects native mode. Use `WriteNativeArchive` and
+`read_native_archive` for full native topology, IDs, high-water marks and ancestry.
+Primary export and a full native archive are different restart contracts.
 
 After `read_mesh` and `prepare_mesh`, acquire one host read scope for an operation:
 

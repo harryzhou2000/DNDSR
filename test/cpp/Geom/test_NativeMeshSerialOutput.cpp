@@ -170,6 +170,40 @@ TEST_CASE("Native serial output retains old geometry and explicitly refreshes af
     CHECK_FALSE(mesh->cell2node.father);
 }
 
+TEST_CASE("Serial output facade rejects absent native authority and retains successful descriptors after failure")
+{
+    const DNDS::MPIInfo mpi(MPI_COMM_WORLD);
+    auto native = G::UnstructuredMesh::FromNative(mpi, Strip(mpi, false));
+    auto empty = std::make_shared<G::UnstructuredMesh>(mpi, 2);
+    const auto stamp = empty->versions.Stamp();
+    G::UnstructuredMeshSerialRW reader(empty, mpi.size - 1);
+    CHECK_THROWS(reader.BuildSerialOut());
+    CHECK(stamp.Valid());
+    CHECK_FALSE(reader.nativeSerialOutput);
+    if (mpi.size > 1)
+    {
+        reader.mesh = mpi.rank == 0 ? empty : native;
+        CHECK_THROWS(reader.BuildSerialOut());
+        CHECK_FALSE(reader.nativeSerialOutput);
+    }
+    reader.mesh = native;
+    reader.BuildSerialOut();
+    REQUIRE(reader.nativeSerialOutput);
+    CHECK(reader.dataIsSerialOut);
+    CHECK_FALSE(reader.dataIsSerialIn);
+    const auto prepared = reader.nativeSerialOutput;
+    const auto nodes = prepared->coordinates.Read();
+    CHECK(nodes.View().Rows() == (mpi.rank == reader.mRank ? size_t(3 * mpi.size) : 0));
+    reader.mRank = mpi.rank == 0 ? -1 : mpi.size - 1;
+    CHECK_THROWS(reader.BuildSerialOut());
+    CHECK(reader.nativeSerialOutput == prepared);
+    CHECK(reader.dataIsSerialOut);
+    reader.mRank = mpi.size - 1;
+    reader.BuildSerialOut();
+    CHECK(reader.nativeSerialOutput != prepared);
+    CHECK_NOTHROW(prepared->ValidateSource(*native->CurrentNativeState()));
+}
+
 int main(int argc, char **argv)
 {
     MPI_Init(&argc, &argv);

@@ -1,3 +1,4 @@
+#include "Geom/Mesh/Mesh_Helpers.hpp"
 #include "Geom/Mesh/Mesh.hpp"
 #include "stdio.h"
 #include "unistd.h"
@@ -17,43 +18,40 @@ void testCGNS()
     char buf[512];
     // std::cout << getcwd(buf, 512) << std::endl;
     int dim = 2;
-    auto mesh = std::make_shared<DNDS::Geom::UnstructuredMesh>(mpi, dim);
+    auto mesh = DNDS::Geom::ReadNativeMeshFromCGNS(mpi, dim,
+                                                   "../data/mesh/Uniform32_Periodic.cgns", DNDS::Geom::PartitionOptions{},
+                                                   DNDS::Geom::FBC_Name_2_ID_Default, DNDS::Geom::NativePeriodicImportOptions{});
     auto reader = DNDS::Geom::UnstructuredMeshSerialRW(mesh, 0);
-    // "../data/mesh/FourTris_V1.pw.cgns"
-    // "../data/mesh/SC20714_MixedA.cgns"
-    // "../data/mesh/UniformDM240_E120.cgns"
-    // "../data/mesh/Ball.cgns"
-    // "../data/mesh/Uniform32_Periodic.cgns"
-    // "../data/mesh/Uniform128.cgns"
-    reader.ReadFromCGNSSerial("../data/mesh/Uniform32_Periodic.cgns");
-    reader.Deduplicate1to1Periodic();
-    reader.BuildCell2Cell();
-    reader.MeshPartitionCell2Cell(DNDS::Geom::UnstructuredMeshSerialRW::PartitionOptions{});
-    reader.PartitionReorderToMeshCell2Cell();
-    reader.BuildSerialOut();
-    mesh->BuildGhostPrimary();
-    mesh->AdjGlobal2LocalPrimary();
-    mesh->InterpolateFace();
-    // mesh->AssertOnFaces();
+    DNDS::Geom::PrepareMesh(*mesh, reader, {0, 1, false});
 
-    auto meshBnd = std::make_shared<DNDS::Geom::UnstructuredMesh>(mpi, dim - 1);
+    auto meshBnd = mesh->ExtractBoundary();
     auto readerBnd = DNDS::Geom::UnstructuredMeshSerialRW(meshBnd, 0);
-    mesh->ConstructBndMesh(*meshBnd);
-    meshBnd->AdjLocal2GlobalPrimaryForBnd();
     readerBnd.BuildSerialOut();
-    meshBnd->AdjGlobal2LocalPrimaryForBnd();
 
-    for (int i = 0; i < 4; i++)
-    {
-        mesh->AdjLocal2GlobalFacial();
-        mesh->AdjGlobal2LocalFacial();
-        mesh->AdjLocal2GlobalPrimary();
-        mesh->AdjGlobal2LocalPrimary(); // test on the ptr mapping completeness
-    }
+    // Four repetitions retain the original mapping-completeness purpose.
+    // Owned global expectations come independently from rank-prefix counts.
+    for (int pass = 0; pass < 4; ++pass)
+        for (auto kind : {DNDS::Geom::EntityKind::Cell, DNDS::Geom::EntityKind::Node,
+                          DNDS::Geom::EntityKind::Face, DNDS::Geom::EntityKind::Bnd})
+        {
+            const auto space = mesh->Entities(kind);
+            DNDS::index owned = space.NumOwned(), first = 0;
+            MPI_Exscan(&owned, &first, 1, DNDS::DNDS_MPI_INDEX, MPI_SUM, mpi.comm);
+            if (mpi.rank == 0)
+                first = 0;
+            for (DNDS::index row = 0; row < space.NumLocal(); ++row)
+            {
+                const auto global = space.LocalToGlobal(row);
+                if (row < owned)
+                    DNDS_check_throw_info(global == first + row, "owned mesh global order mismatch");
+                const auto local = space.GlobalToLocal(global);
+                DNDS_check_throw_info(local && *local == row, "native mesh entity roundtrip incomplete");
+            }
+        }
 
-    mesh->TransformCoords(
-        [&](const DNDS::Geom::tPoint p)
-        { return p * 2; });
+    mesh->ApplyGeometryTransform(Eigen::Matrix3d::Identity(), 2);
+
+    reader.BuildSerialOut(); // refresh physical output geometry after transform
 
     reader.PrintSerialPartPltBinaryDataArray(
         "../data/out/debug",

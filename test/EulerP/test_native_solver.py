@@ -6,13 +6,23 @@ import pytest
 from mpi4py import MPI
 from DNDSR import DNDS
 from DNDSR.EulerP.EulerP_Solver import Solver
+from DNDSR.Geom.utils import read_mesh, prepare_mesh
 
 
 def _evaluate(mpi, native):
     solver = Solver(mpi)
     source = Path(__file__).resolve().parents[2] / "data/mesh/Uniform32_Periodic.cgns"
-    solver.ReadMesh(str(source), 2, native=native, other_options={
-        "periodic_geometry": {"translation1": [1., 0., 0.], "translation2": [0., 1., 0.]}})
+    geometry = {"translation1": [1., 0., 0.], "translation2": [0., 1., 0.]}
+    if native:
+        solver.ReadMesh(str(source), 2, other_options={"periodic_geometry": geometry})
+    else:
+        # Test-only numerical baseline: the old volume setup still feeds the
+        # evaluator. Retired legacy boundary/output producers are not required
+        # to compare exactly the same physical RHS on the two volume layouts.
+        result = read_mesh(str(source), mpi, 2, native=False, periodic_geometry=geometry)
+        prepare_mesh(result.mesh, result.reader, build_serial_out=False)
+        solver.mesh, solver.reader, solver.name2Id = result.mesh, result.reader, result.name_to_id
+        solver.meshBnd = solver.readerBnd = None
     solver.BuildFV({"intOrder": 1, "maxOrder": 1})
     solver.BuildEval()
     solver.WrapEval()
@@ -45,6 +55,8 @@ def _evaluate(mpi, native):
 def test_native_solver_setup_evaluator_rhs_matches_legacy():
     mpi = DNDS.MPIInfo()
     mpi.setWorld()
+    with pytest.raises(ValueError, match="native=False is retired"):
+        Solver(mpi).ReadMesh("unused.cgns", 2, native=False)
     legacy, expected = _evaluate(mpi, False)
     native, actual = _evaluate(mpi, True)
     assert native.mesh.has_native_state and native.meshBnd.has_native_state

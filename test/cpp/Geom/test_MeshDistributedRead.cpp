@@ -615,7 +615,14 @@ TEST_CASE("CrossNp: helper path PrepareMesh resolves owned node2cell")
     CHECK(mesh.NumBndGlobal() == g_refCounts[0].nBndGlobal);
     CHECK(mesh.NumFaceGlobal() == g_refCounts[0].nFaceGlobal);
 
+    REQUIRE(mesh.HasNativeState());
+    auto requirements = MeshReadRequirements::Primary();
+    requirements.inverse = true;
+    auto read = mesh.AcquireRead(requirements);
     for (DNDS::index iNode = 0; iNode < mesh.NumNode(); iNode++)
-        for (DNDS::index iCell : mesh.node2cell.father->operator[](iNode))
+        for (DNDS::index iCell : read.HostView().NodeCells(iNode))
+        {
             CHECK(iCell >= 0);
+            CHECK(iCell < mesh.NumCellProc());
+        }
 }

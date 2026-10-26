@@ -1,3 +1,4 @@
+#include "Geom/Mesh/Mesh_Helpers.hpp"
 #include "Geom/Mesh/Mesh.hpp"
 #include "DNDS/Serializer/SerializerJSON.hpp"
 #include "stdio.h"
@@ -19,36 +20,10 @@ void doPartitioning(const std::string &meshName, int dim)
     // DNDS::Debug::MPIDebugHold(mpi);
     char buf[512];
     // std::cout << getcwd(buf, 512) << std::endl;
-    auto mesh = std::make_shared<DNDS::Geom::UnstructuredMesh>(mpi, dim);
-    auto reader = DNDS::Geom::UnstructuredMeshSerialRW(mesh, 0);
-    // "../data/mesh/FourTris_V1.pw.cgns"
-    // "../data/mesh/SC20714_MixedA.cgns"
-    // "../data/mesh/UniformDM240_E120.cgns"
-    // "../data/mesh/Ball.cgns"
-    mesh->periodicInfo.translation[3] *= 10;
-    reader.ReadFromCGNSSerial(meshName);
-    reader.Deduplicate1to1Periodic();
-
-    reader.BuildCell2Cell();
-    // MPI_Request bReq{MPI_REQUEST_NULL};
-    // MPI_Ibarrier(mpi.comm, &bReq);
-    // bool barrierOk = false;
-    // MPI_Start(&bReq);
-    // while (!barrierOk)
-    // {
-    //     int flag{0};
-    //     MPI_Status stat;
-    //     MPI_Test(&bReq, &flag, &stat);
-    //     barrierOk = flag != 0;
-    //     // sleep(5);
-    // }
-
-    reader.MeshPartitionCell2Cell(DNDS::Geom::UnstructuredMeshSerialRW::PartitionOptions{});
-    reader.PartitionReorderToMeshCell2Cell();
-    mesh->RecoverNode2CellAndNode2Bnd();
-    mesh->RecoverCell2CellAndBnd2Cell();
-    mesh->BuildGhostPrimary();
-    mesh->AdjGlobal2LocalPrimary();
+    DNDS::Geom::NativePeriodicImportOptions periodic;
+    periodic.frames.translation[3].map() *= 10;
+    auto mesh = DNDS::Geom::ReadNativeMeshFromCGNS(mpi, dim, meshName,
+                                                   DNDS::Geom::PartitionOptions{}, DNDS::Geom::FBC_Name_2_ID_Default, periodic);
 
     /**************************/
     // about serializerPP:
@@ -58,12 +33,12 @@ void doPartitioning(const std::string &meshName, int dim)
     std::filesystem::create_directories(meshOutDir);
     std::string meshPartPath = DNDS::getStringForcePath(meshOutDir / (std::string("part_") + std::to_string(mpi.rank) + ".json"));
 
-    DNDS::SerializerJSON serializerJSON;
-    serializerJSON.SetUseCodecOnUint8(true);
-    DNDS::Serializer::SerializerBaseSSP serializerP = &serializerJSON;
+    auto serializerJSON = DNDS::make_ssp<DNDS::Serializer::SerializerJSON>();
+    serializerJSON->SetUseCodecOnUint8(true);
+    DNDS::Serializer::SerializerBaseSSP serializerP = serializerJSON;
 
     serializerP->OpenFile(meshPartPath, false);
-    mesh->WriteSerialize(serializerP, "meshPart");
+    mesh->WriteNativeArchive(serializerP, "meshPart");
     serializerP->CloseFile();
 
     MPISerialDo(mpi, [&]()

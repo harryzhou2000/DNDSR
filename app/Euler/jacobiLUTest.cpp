@@ -1,10 +1,11 @@
+#include "Geom/Mesh/Mesh_Helpers.hpp"
 #ifndef __DNDS_REALLY_COMPILING__
-#define __DNDS_REALLY_COMPILING__
-#define __DNDS_REALLY_COMPILING__HEADER_ON__
+#    define __DNDS_REALLY_COMPILING__
+#    define __DNDS_REALLY_COMPILING__HEADER_ON__
 #endif
 #include "Euler/EulerSolver.hpp"
 #ifdef __DNDS_REALLY_COMPILING__HEADER_ON__
-#undef __DNDS_REALLY_COMPILING__
+#    undef __DNDS_REALLY_COMPILING__
 #endif
 
 namespace DNDS::Euler
@@ -17,22 +18,13 @@ namespace DNDS::Euler
     {
         DNDS_assert(mpi.size == 1);
 
-        ssp<Geom::UnstructuredMesh> mesh;
-        DNDS_MAKE_SSP(mesh, mpi, 2);
-        auto reader = DNDS::Geom::UnstructuredMeshSerialRW(mesh, 0);
-        mesh->periodicInfo.translation[1] *= 10;
-        mesh->periodicInfo.translation[2] *= 10;
-        reader.ReadFromCGNSSerial("../data/mesh/IV10_10.cgns");
-        reader.Deduplicate1to1Periodic();
-        reader.BuildCell2Cell();
-        reader.MeshPartitionCell2Cell(DNDS::Geom::UnstructuredMeshSerialRW::PartitionOptions{});
-        reader.PartitionReorderToMeshCell2Cell();
-        reader.BuildSerialOut();
-        mesh->RecoverNode2CellAndNode2Bnd();
-        mesh->RecoverCell2CellAndBnd2Cell();
-        mesh->BuildGhostPrimary();
-        mesh->AdjGlobal2LocalPrimary();
-        mesh->InterpolateFace(); // this mesh building is copied from meshSerial_Test
+        Geom::NativePeriodicImportOptions periodic;
+        periodic.frames.translation[1].map() *= 10;
+        periodic.frames.translation[2].map() *= 10;
+        auto mesh = Geom::ReadNativeMeshFromCGNS(mpi, 2, "../data/mesh/IV10_10.cgns",
+                                                 Geom::PartitionOptions{}, Geom::FBC_Name_2_ID_Default, periodic);
+        auto reader = Geom::UnstructuredMeshSerialRW(mesh, 0);
+        Geom::PrepareMesh(*mesh, reader);
 
         Direct::DirectPrecControl control;
         control.useDirectPrec = true;
@@ -58,7 +50,7 @@ namespace DNDS::Euler
                 if (i > 0)
                     cell2cellFaceV[i].push_back((i - 1) % N);
             }
-            symLU->ObtainSymmetricSymbolicFactorization(cell2cellFaceV, control.getILUCode()); // no ordering
+            symLU->ObtainSymmetricSymbolicFactorization(cell2cellFaceV, {}, control.getILUCode()); // no ordering
         }
 
         JType J(symLU, bDim);

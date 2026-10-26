@@ -357,6 +357,32 @@ TEST_CASE("Native boundary parent cache marks newly introduced ghosts absent fro
     }
 }
 
+TEST_CASE("Boundary facade rejects absent native authority collectively before mutating either mesh")
+{
+    const auto mpi = MPI();
+    auto native = G::UnstructuredMesh::FromNative(mpi, Fixture(mpi, 2));
+    auto empty = std::make_shared<G::UnstructuredMesh>(mpi, 2);
+    G::UnstructuredMesh destination(mpi, 1);
+    const auto sourceStamp = empty->versions.Stamp(), destinationStamp = destination.versions.Stamp();
+    CHECK_THROWS(empty->ConstructBndMesh(destination));
+    CHECK(sourceStamp.Valid());
+    CHECK(destinationStamp.Valid());
+    CHECK_FALSE(destination.HasNativeState());
+    CHECK(empty->node2bndNode.empty());
+    CHECK(destination.node2parentNode.empty());
+    if (mpi.size > 1)
+    {
+        auto source = mpi.rank == 0 ? empty : native;
+        CHECK_THROWS(source->ConstructBndMesh(destination));
+        CHECK(sourceStamp.Valid());
+        CHECK(destinationStamp.Valid());
+        CHECK_FALSE(destination.HasNativeState());
+        CHECK(source->node2bndNode.empty());
+    }
+    native->ConstructBndMesh(destination);
+    CheckExtracted(*destination.CurrentNativeState(), native->CurrentNativeState()->MeshNamespace(), 2, false);
+}
+
 int main(int argc, char **argv)
 {
     MPI_Init(&argc, &argv);
