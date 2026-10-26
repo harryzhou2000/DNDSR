@@ -1567,7 +1567,8 @@ namespace DNDS::Euler
         {
             auto meshRequirements = Geom::MeshReadRequirements::CellFlux();
             auto meshRead = mesh->AcquireRead(meshRequirements);
-            const auto meshView = meshRead.HostView();
+            const auto meshLegacy = meshRead.LegacyHostView();
+            const auto *mesh = &meshLegacy;
             this->ValidateMeshDependencies();
             DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
             for (Geom::t_index i = Geom::BC_ID_DEFAULT_MAX; i < pBCHandler->size(); i++) // init code, consider adding to ctor
@@ -1575,20 +1576,20 @@ namespace DNDS::Euler
                 if (pBCHandler->GetFlagFromIDSoft(i, "anchorOpt") == 0)
                     continue;
                 if (!anchorRecorders.count(i))
-                    anchorRecorders.emplace(std::make_pair(i, AnchorPointRecorder<nVarsFixed>(mesh->getMPI())));
+                    anchorRecorders.emplace(std::make_pair(i, AnchorPointRecorder<nVarsFixed>(this->mesh->getMPI())));
             }
             for (auto &v : anchorRecorders)
                 v.second.Reset();
-            for (index iBnd = 0; iBnd < meshView.NumBnd(); iBnd++)
+            for (index iBnd = 0; iBnd < mesh->NumBnd(); iBnd++)
             {
-                index iFace = meshView.BoundaryFaces(iBnd)[0];
+                index iFace = mesh->bnd2faceV.at(iBnd);
                 if (iFace < 0) // remember that some iBnd do not have iFace (for periodic case)
                     continue;
-                auto f2c = meshView.FaceCells(iFace);
+                auto f2c = mesh->face2cell[iFace];
                 auto gFace = vfv->GetFaceQuad(iFace);
 
                 Geom::Elem::SummationNoOp noOp;
-                auto faceBndID = meshView.GetFaceZone(iFace);
+                auto faceBndID = mesh->GetFaceZone(iFace);
                 auto faceBCType = pBCHandler->GetTypeFromID(faceBndID);
 
                 if (pBCHandler->GetFlagFromIDSoft(faceBndID, "anchorOpt") == 0)
@@ -2284,7 +2285,8 @@ namespace DNDS::Euler
         {
             auto meshRequirements = Geom::MeshReadRequirements::CellFlux();
             auto meshRead = mesh->AcquireRead(meshRequirements);
-            const auto meshView = meshRead.HostView();
+            const auto meshLegacy = meshRead.LegacyHostView();
+            const auto *mesh = &meshLegacy;
             this->ValidateMeshDependencies();
             for (int iterS = 1; iterS <= (nStep > 0 ? nStep : settings.nCentralSmoothStep); iterS++)
             {
@@ -2292,11 +2294,11 @@ namespace DNDS::Euler
 #if defined(DNDS_DIST_MT_USE_OMP)
 #    pragma omp parallel for schedule(runtime)
 #endif
-                for (index iCell = 0; iCell < meshView.NumCell(); iCell++)
+                for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
                 {
                     real div = 1.;
                     TU vC = r[iCell];
-                    auto c2f = meshView.CellFaces(iCell);
+                    auto c2f = mesh->cell2face[iCell];
                     for (int ic2f = 0; ic2f < c2f.size(); ic2f++)
                     {
                         index iFace = c2f[ic2f];

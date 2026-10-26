@@ -8,13 +8,14 @@ namespace DNDS::CFV
     void FiniteVolume::SetCellAtrBasic()
     {
         BeginMetricsConstruction();
-        auto meshAccess = mesh->AcquireRead(Geom::MeshReadRequirements::Primary());
-        const auto meshView = meshAccess.HostView();
+        auto meshAccess = this->mesh->AcquireRead(Geom::MeshReadRequirements::Primary());
+        const auto meshLegacy = meshAccess.LegacyHostView();
+        const auto *mesh = &meshLegacy;
         this->MakePairDefaultOnCell(cellAtr, "FV::cellAtr");
 #ifdef DNDS_USE_OMP
 #    pragma omp parallel for
 #endif
-        for (index iCell = 0; iCell < meshView.NumCellProc(); iCell++)
+        for (index iCell = 0; iCell < mesh->NumCellProc(); iCell++)
         {
             cellAtr(iCell, 0).intOrder = settings.intOrder;
             cellAtr(iCell, 0).Order = settings.maxOrder;
@@ -27,8 +28,9 @@ namespace DNDS::CFV
     void FiniteVolume::ConstructCellVolume()
     {
         BeginMetricsStage(CellVolume);
-        auto meshAccess = mesh->AcquireRead(Geom::MeshReadRequirements::Primary());
-        const auto meshView = meshAccess.HostView();
+        auto meshAccess = this->mesh->AcquireRead(Geom::MeshReadRequirements::Primary());
+        const auto meshLegacy = meshAccess.LegacyHostView();
+        const auto *mesh = &meshLegacy;
         using namespace Geom;
         using namespace Geom::Elem;
         this->MakePairDefaultOnCell(volumeLocal, "FV::volumeLocal");
@@ -40,12 +42,12 @@ namespace DNDS::CFV
 #ifdef DNDS_USE_OMP
 #    pragma omp parallel for
 #endif
-        for (index iCell = 0; iCell < meshView.NumCellProc(); iCell++)
+        for (index iCell = 0; iCell < mesh->NumCellProc(); iCell++)
         {
-            auto eCell = meshView.GetCellElement(iCell);
+            auto eCell = mesh->GetCellElement(iCell);
             auto qCellMax = Quadrature{eCell, INT_ORDER_MAX};
             tSmallCoords coordsCell;
-            meshView.GetCoordsOnCell(iCell, coordsCell);
+            mesh->GetCoordsOnCell(iCell, coordsCell);
             //****** Get Int Point Det and Vol
             real v{0};
             { // using more accurate sum volume
@@ -76,7 +78,7 @@ namespace DNDS::CFV
             v += verySmallReal;
             volumeLocal[iCell][0] = v;
 
-            if (iCell < meshView.NumCell()) // non-ghost
+            if (iCell < mesh->NumCell()) // non-ghost
 #ifdef DNDS_USE_OMP
 #    pragma omp critical
 #endif
@@ -96,25 +98,26 @@ namespace DNDS::CFV
     void FiniteVolume::ConstructCellIntJacobiDet()
     {
         BeginMetricsStage(CellJacobian);
-        auto meshAccess = mesh->AcquireRead(Geom::MeshReadRequirements::Primary());
-        const auto meshView = meshAccess.HostView();
+        auto meshAccess = this->mesh->AcquireRead(Geom::MeshReadRequirements::Primary());
+        const auto meshLegacy = meshAccess.LegacyHostView();
+        const auto *mesh = &meshLegacy;
         using namespace Geom;
         using namespace Geom::Elem;
-        DNDS_assert_info(volumeLocal.father->Size() == meshView.NumCell(), "need to do ConstructCellVolume() first");
-        DNDS_assert_info(cellAtr.father->Size() == meshView.NumCell(), "need to do SetCellAtrBasic() first");
+        DNDS_assert_info(volumeLocal.father->Size() == mesh->NumCell(), "need to do ConstructCellVolume() first");
+        DNDS_assert_info(cellAtr.father->Size() == mesh->NumCell(), "need to do SetCellAtrBasic() first");
 
         this->MakePairDefaultOnCell(cellIntJacobiDet, "FV::cellIntJacobiDet");
 #ifdef DNDS_USE_OMP
 #    pragma omp parallel for
 #endif
-        for (index iCell = 0; iCell < meshView.NumCellProc(); iCell++)
+        for (index iCell = 0; iCell < mesh->NumCellProc(); iCell++)
         {
-            auto eCell = meshView.GetCellElement(iCell);
+            auto eCell = mesh->GetCellElement(iCell);
             auto qCell = Quadrature{eCell, GetCellAtr(iCell).intOrder};
             cellIntJacobiDet.ResizeRow(iCell, qCell.GetNumPoints());
 
             tSmallCoords coordsCell;
-            meshView.GetCoordsOnCell(iCell, coordsCell);
+            mesh->GetCoordsOnCell(iCell, coordsCell);
             //****** Get Int Point Det and Vol
             real v{0};
             qCell.Integration(
@@ -157,25 +160,26 @@ namespace DNDS::CFV
     void FiniteVolume::ConstructCellIntPPhysics()
     {
         BeginMetricsStage(CellPoints);
-        auto meshAccess = mesh->AcquireRead(Geom::MeshReadRequirements::Primary());
-        const auto meshView = meshAccess.HostView();
+        auto meshAccess = this->mesh->AcquireRead(Geom::MeshReadRequirements::Primary());
+        const auto meshLegacy = meshAccess.LegacyHostView();
+        const auto *mesh = &meshLegacy;
         using namespace Geom;
         using namespace Geom::Elem;
-        DNDS_assert_info(volumeLocal.father->Size() == meshView.NumCell(), "need to do ConstructCellVolume() first");
-        DNDS_assert_info(cellAtr.father->Size() == meshView.NumCell(), "need to do SetCellAtrBasic() first");
+        DNDS_assert_info(volumeLocal.father->Size() == mesh->NumCell(), "need to do ConstructCellVolume() first");
+        DNDS_assert_info(cellAtr.father->Size() == mesh->NumCell(), "need to do SetCellAtrBasic() first");
 
         this->MakePairDefaultOnCell(cellIntPPhysics, "FV::cellIntPPhysics");
 #ifdef DNDS_USE_OMP
 #    pragma omp parallel for
 #endif
-        for (index iCell = 0; iCell < meshView.NumCellProc(); iCell++)
+        for (index iCell = 0; iCell < mesh->NumCellProc(); iCell++)
         {
-            auto eCell = meshView.GetCellElement(iCell);
+            auto eCell = mesh->GetCellElement(iCell);
             auto qCell = Quadrature{eCell, GetCellAtr(iCell).intOrder};
             cellIntPPhysics.ResizeRow(iCell, qCell.GetNumPoints());
 
             tSmallCoords coordsCell;
-            meshView.GetCoordsOnCell(iCell, coordsCell);
+            mesh->GetCoordsOnCell(iCell, coordsCell);
             //****** Get Int Point Det and PPhy
             real v{0};
             qCell.Integration(
@@ -193,25 +197,26 @@ namespace DNDS::CFV
     void FiniteVolume::ConstructCellBary()
     {
         BeginMetricsStage(CellBarycenter);
-        auto meshAccess = mesh->AcquireRead(Geom::MeshReadRequirements::Primary());
-        const auto meshView = meshAccess.HostView();
+        auto meshAccess = this->mesh->AcquireRead(Geom::MeshReadRequirements::Primary());
+        const auto meshLegacy = meshAccess.LegacyHostView();
+        const auto *mesh = &meshLegacy;
         using namespace Geom;
         using namespace Geom::Elem;
-        DNDS_assert_info(volumeLocal.father->Size() == meshView.NumCell(), "need to do ConstructCellVolume() first");
-        DNDS_assert_info(cellAtr.father->Size() == meshView.NumCell(), "need to do SetCellAtrBasic() first");
+        DNDS_assert_info(volumeLocal.father->Size() == mesh->NumCell(), "need to do ConstructCellVolume() first");
+        DNDS_assert_info(cellAtr.father->Size() == mesh->NumCell(), "need to do SetCellAtrBasic() first");
 
         this->MakePairDefaultOnCell(cellBary, "FV::cellBary");
 #ifdef DNDS_USE_OMP
 #    pragma omp parallel for
 #endif
-        for (index iCell = 0; iCell < meshView.NumCellProc(); iCell++)
+        for (index iCell = 0; iCell < mesh->NumCellProc(); iCell++)
         {
-            auto eCell = meshView.GetCellElement(iCell);
+            auto eCell = mesh->GetCellElement(iCell);
             auto qCell = Quadrature{eCell, GetCellAtr(iCell).intOrder};
             auto qCellMax = Quadrature{eCell, INT_ORDER_MAX};
 
             tSmallCoords coordsCell;
-            meshView.GetCoordsOnCell(iCell, coordsCell);
+            mesh->GetCoordsOnCell(iCell, coordsCell);
             //****** Get Bary
             real v{0};
             tPoint b{0, 0, 0};
@@ -236,8 +241,9 @@ namespace DNDS::CFV
     void FiniteVolume::ConstructCellCent()
     {
         BeginMetricsStage(CellCenter);
-        auto meshAccess = mesh->AcquireRead(Geom::MeshReadRequirements::Primary());
-        const auto meshView = meshAccess.HostView();
+        auto meshAccess = this->mesh->AcquireRead(Geom::MeshReadRequirements::Primary());
+        const auto meshLegacy = meshAccess.LegacyHostView();
+        const auto *mesh = &meshLegacy;
         using namespace Geom;
         using namespace Geom::Elem;
 
@@ -245,13 +251,13 @@ namespace DNDS::CFV
 #ifdef DNDS_USE_OMP
 #    pragma omp parallel for
 #endif
-        for (index iCell = 0; iCell < meshView.NumCellProc(); iCell++)
+        for (index iCell = 0; iCell < mesh->NumCellProc(); iCell++)
         {
-            auto eCell = meshView.GetCellElement(iCell);
+            auto eCell = mesh->GetCellElement(iCell);
             auto qCellO1 = Quadrature{eCell, 1};
 
             tSmallCoords coordsCell;
-            meshView.GetCoordsOnCell(iCell, coordsCell);
+            mesh->GetCoordsOnCell(iCell, coordsCell);
             //****** Get Int Point Det and PPhy
             SummationNoOp noOp;
             qCellO1.Integration(
@@ -268,24 +274,25 @@ namespace DNDS::CFV
     void FiniteVolume::ConstructCellAlignedHBox()
     {
         BeginMetricsStage(CellBox);
-        auto meshAccess = mesh->AcquireRead(Geom::MeshReadRequirements::Primary());
-        const auto meshView = meshAccess.HostView();
+        auto meshAccess = this->mesh->AcquireRead(Geom::MeshReadRequirements::Primary());
+        const auto meshLegacy = meshAccess.LegacyHostView();
+        const auto *mesh = &meshLegacy;
         using namespace Geom;
         using namespace Geom::Elem;
-        DNDS_assert_info(cellBary.father->Size() == meshView.NumCell(), "need to do ConstructCellBary() first");
+        DNDS_assert_info(cellBary.father->Size() == mesh->NumCell(), "need to do ConstructCellBary() first");
 
         this->MakePairDefaultOnCell(cellAlignedHBox, "FV::cellAlignedHBox");
 #ifdef DNDS_USE_OMP
 #    pragma omp parallel for
 #endif
-        for (index iCell = 0; iCell < meshView.NumCellProc(); iCell++)
+        for (index iCell = 0; iCell < mesh->NumCellProc(); iCell++)
         {
-            auto eCell = meshView.GetCellElement(iCell);
+            auto eCell = mesh->GetCellElement(iCell);
             auto qCell = Quadrature{eCell, GetCellAtr(iCell).intOrder};
             auto qCellMax = Quadrature{eCell, INT_ORDER_MAX};
 
             tSmallCoords coordsCell;
-            meshView.GetCoordsOnCell(iCell, coordsCell);
+            mesh->GetCoordsOnCell(iCell, coordsCell);
             //****** Get HBox aligned
             tSmallCoords coordsCellC = coordsCell.colwise() - this->GetCellBary(iCell);
             DNDS_assert(coordsCellC.cols() == coordsCell.cols());
@@ -300,26 +307,27 @@ namespace DNDS::CFV
     void FiniteVolume::ConstructCellMajorHBoxCoordInertia()
     {
         BeginMetricsStage(CellInertia);
-        auto meshAccess = mesh->AcquireRead(Geom::MeshReadRequirements::Primary());
-        const auto meshView = meshAccess.HostView();
+        auto meshAccess = this->mesh->AcquireRead(Geom::MeshReadRequirements::Primary());
+        const auto meshLegacy = meshAccess.LegacyHostView();
+        const auto *mesh = &meshLegacy;
         using namespace Geom;
         using namespace Geom::Elem;
 
         this->MakePairDefaultOnCell(cellMajorHBox, "FV::cellMajorHBox");
         this->MakePairDefaultOnCell(cellMajorCoord, "FV::cellMajorCoord", 3, 3);
         this->MakePairDefaultOnCell(cellInertia, "FV::cellInertia", 3, 3);
-        DNDS_assert_info(cellBary.father->Size() == meshView.NumCell(), "need to do ConstructCellBary() first");
+        DNDS_assert_info(cellBary.father->Size() == mesh->NumCell(), "need to do ConstructCellBary() first");
 
 #ifdef DNDS_USE_OMP
 #    pragma omp parallel for
 #endif
-        for (index iCell = 0; iCell < meshView.NumCellProc(); iCell++)
+        for (index iCell = 0; iCell < mesh->NumCellProc(); iCell++)
         {
-            auto eCell = meshView.GetCellElement(iCell);
+            auto eCell = mesh->GetCellElement(iCell);
             auto qCellMax = Quadrature{eCell, INT_ORDER_MAX};
 
             tSmallCoords coordsCell;
-            meshView.GetCoordsOnCell(iCell, coordsCell);
+            mesh->GetCoordsOnCell(iCell, coordsCell);
             //****** Get Int Point Det and Vol
             real v = GetCellVol(iCell);
             tSmallCoords coordsCellC = coordsCell.colwise() - this->GetCellBary(iCell);
@@ -371,13 +379,14 @@ namespace DNDS::CFV
     void FiniteVolume::SetFaceAtrBasic()
     {
         BeginMetricsStage(FaceAttributes);
-        auto meshAccess = mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
-        const auto meshView = meshAccess.HostView();
+        auto meshAccess = this->mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
+        const auto meshLegacy = meshAccess.LegacyHostView();
+        const auto *mesh = &meshLegacy;
         this->MakePairDefaultOnFace(faceAtr, "FV::faceAtr");
 #ifdef DNDS_USE_OMP
 #    pragma omp parallel for
 #endif
-        for (index iFace = 0; iFace < meshView.NumFaceProc(); iFace++)
+        for (index iFace = 0; iFace < mesh->NumFaceProc(); iFace++)
         {
             faceAtr(iFace, 0).intOrder = settings.intOrder;
             // faceAtr(iCell, 0).Order = settings.maxOrder;
@@ -392,26 +401,27 @@ namespace DNDS::CFV
         BeginMetricsStage(FaceArea);
         auto meshRequirements = Geom::MeshReadRequirements::CellFlux();
         meshRequirements.allFaceCellsLocal = axisSymmetric;
-        auto meshAccess = mesh->AcquireRead(meshRequirements);
-        const auto meshView = meshAccess.HostView();
+        auto meshAccess = this->mesh->AcquireRead(meshRequirements);
+        const auto meshLegacy = meshAccess.LegacyHostView();
+        const auto *mesh = &meshLegacy;
         using namespace Geom;
         using namespace Geom::Elem;
-        DNDS_assert_info(faceAtr.father->Size() == meshView.NumFace(), "need to do SetFaceAtrBasic() first");
+        DNDS_assert_info(faceAtr.father->Size() == mesh->NumFace(), "need to do SetFaceAtrBasic() first");
 
         this->MakePairDefaultOnFace(faceArea, "FV::faceArea");
         axisFaces.clear();
 #ifdef DNDS_USE_OMP
 #    pragma omp parallel for
 #endif
-        for (index iFace = 0; iFace < meshView.NumFaceProc(); iFace++)
+        for (index iFace = 0; iFace < mesh->NumFaceProc(); iFace++)
         {
-            auto eFace = meshView.GetFaceElement(iFace);
+            auto eFace = mesh->GetFaceElement(iFace);
             auto qFace = Quadrature{eFace, GetFaceAtr(iFace).intOrder};
             auto qFaceO1 = Quadrature{eFace, 1};
             DNDS_assert(qFaceO1.GetNumPoints() == 1);
 
             tSmallCoords coords;
-            meshView.GetCoordsOnFace(iFace, coords);
+            mesh->GetCoordsOnFace(iFace, coords);
 
             //****** Get Int Point Det and Vol
             real v{0};
@@ -429,7 +439,7 @@ namespace DNDS::CFV
             v += verySmallReal;
             if (axisSymmetric) // could this be helpful out of axisSymmetric context?
             {
-                if (v < std::pow(this->GetCellVol(meshView.FaceCells(iFace)[0]), (real(getDim()) - 1) / real(getDim())) * smallReal)
+                if (v < std::pow(this->GetCellVol(mesh->face2cell[iFace][0]), (real(getDim()) - 1) / real(getDim())) * smallReal)
                     axisFaces.insert(iFace);
             }
             faceArea[iFace][0] = v;
@@ -441,8 +451,9 @@ namespace DNDS::CFV
     void FiniteVolume::ConstructFaceCent()
     {
         BeginMetricsStage(FaceCenter);
-        auto meshAccess = mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
-        const auto meshView = meshAccess.HostView();
+        auto meshAccess = this->mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
+        const auto meshLegacy = meshAccess.LegacyHostView();
+        const auto *mesh = &meshLegacy;
         using namespace Geom;
         using namespace Geom::Elem;
 
@@ -450,14 +461,14 @@ namespace DNDS::CFV
 #ifdef DNDS_USE_OMP
 #    pragma omp parallel for
 #endif
-        for (index iFace = 0; iFace < meshView.NumFaceProc(); iFace++)
+        for (index iFace = 0; iFace < mesh->NumFaceProc(); iFace++)
         {
-            auto eFace = meshView.GetFaceElement(iFace);
+            auto eFace = mesh->GetFaceElement(iFace);
             auto qFaceO1 = Quadrature{eFace, 1};
             DNDS_assert(qFaceO1.GetNumPoints() == 1);
 
             tSmallCoords coords;
-            meshView.GetCoordsOnFace(iFace, coords);
+            mesh->GetCoordsOnFace(iFace, coords);
 
             //****** Get Center
             SummationNoOp noOp;
@@ -475,26 +486,27 @@ namespace DNDS::CFV
     void FiniteVolume::ConstructFaceIntJacobiDet()
     {
         BeginMetricsStage(FaceJacobian);
-        auto meshAccess = mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
-        const auto meshView = meshAccess.HostView();
+        auto meshAccess = this->mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
+        const auto meshLegacy = meshAccess.LegacyHostView();
+        const auto *mesh = &meshLegacy;
         using namespace Geom;
         using namespace Geom::Elem;
-        DNDS_assert_info(faceAtr.father->Size() == meshView.NumFace(), "need to do SetFaceAtrBasic() first");
-        // DNDS_assert_info(faceArea.father->Size() == meshView.NumFace(), "need to do ConstructFaceArea() first");
+        DNDS_assert_info(faceAtr.father->Size() == mesh->NumFace(), "need to do SetFaceAtrBasic() first");
+        // DNDS_assert_info(faceArea.father->Size() == mesh->NumFace(), "need to do ConstructFaceArea() first");
 
         this->MakePairDefaultOnFace(faceIntJacobiDet, "FV::faceIntJacobiDet");
 #ifdef DNDS_USE_OMP
 #    pragma omp parallel for
 #endif
-        for (index iFace = 0; iFace < meshView.NumFaceProc(); iFace++)
+        for (index iFace = 0; iFace < mesh->NumFaceProc(); iFace++)
         {
-            auto eFace = meshView.GetFaceElement(iFace);
+            auto eFace = mesh->GetFaceElement(iFace);
             auto qFace = Quadrature{eFace, GetFaceAtr(iFace).intOrder};
             auto qFaceO1 = Quadrature{eFace, 1};
             DNDS_assert(qFaceO1.GetNumPoints() == 1);
             faceIntJacobiDet.ResizeRow(iFace, qFace.GetNumPoints());
             tSmallCoords coords;
-            meshView.GetCoordsOnFace(iFace, coords);
+            mesh->GetCoordsOnFace(iFace, coords);
             //****** Get Int Point Det and Vol
             real v{0};
             qFace.Integration(
@@ -522,23 +534,24 @@ namespace DNDS::CFV
     void FiniteVolume::ConstructFaceIntPPhysics()
     {
         BeginMetricsStage(FacePoints);
-        auto meshAccess = mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
-        const auto meshView = meshAccess.HostView();
+        auto meshAccess = this->mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
+        const auto meshLegacy = meshAccess.LegacyHostView();
+        const auto *mesh = &meshLegacy;
         using namespace Geom;
         using namespace Geom::Elem;
-        DNDS_assert_info(faceAtr.father->Size() == meshView.NumFace(), "need to do SetFaceAtrBasic() first");
+        DNDS_assert_info(faceAtr.father->Size() == mesh->NumFace(), "need to do SetFaceAtrBasic() first");
 
         this->MakePairDefaultOnFace(faceIntPPhysics, "FV::faceIntPPhysics");
 #ifdef DNDS_USE_OMP
 #    pragma omp parallel for
 #endif
-        for (index iFace = 0; iFace < meshView.NumFaceProc(); iFace++)
+        for (index iFace = 0; iFace < mesh->NumFaceProc(); iFace++)
         {
-            auto eFace = meshView.GetFaceElement(iFace);
+            auto eFace = mesh->GetFaceElement(iFace);
             auto qFace = Quadrature{eFace, GetFaceAtr(iFace).intOrder};
             faceIntPPhysics.ResizeRow(iFace, qFace.GetNumPoints());
             tSmallCoords coords;
-            meshView.GetCoordsOnFace(iFace, coords);
+            mesh->GetCoordsOnFace(iFace, coords);
             //****** Get Int Point Det and Vol
             real v{0};
             qFace.Integration(
@@ -556,24 +569,25 @@ namespace DNDS::CFV
     void FiniteVolume::ConstructFaceUnitNorm()
     {
         BeginMetricsStage(FaceNormals);
-        auto meshAccess = mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
-        const auto meshView = meshAccess.HostView();
+        auto meshAccess = this->mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
+        const auto meshLegacy = meshAccess.LegacyHostView();
+        const auto *mesh = &meshLegacy;
         using namespace Geom;
         using namespace Geom::Elem;
-        DNDS_assert_info(faceAtr.father->Size() == meshView.NumFace(), "need to do SetFaceAtrBasic() first");
-        // DNDS_assert_info(faceIntJacobiDet.father->Size() == meshView.NumFace(), "need to do ConstructFaceIntJacobiDet() first");
+        DNDS_assert_info(faceAtr.father->Size() == mesh->NumFace(), "need to do SetFaceAtrBasic() first");
+        // DNDS_assert_info(faceIntJacobiDet.father->Size() == mesh->NumFace(), "need to do ConstructFaceIntJacobiDet() first");
 
         this->MakePairDefaultOnFace(faceUnitNorm, "FV::faceUnitNorm");
 #ifdef DNDS_USE_OMP
 #    pragma omp parallel for
 #endif
-        for (index iFace = 0; iFace < meshView.NumFaceProc(); iFace++)
+        for (index iFace = 0; iFace < mesh->NumFaceProc(); iFace++)
         {
-            auto eFace = meshView.GetFaceElement(iFace);
+            auto eFace = mesh->GetFaceElement(iFace);
             auto qFace = Quadrature{eFace, GetFaceAtr(iFace).intOrder};
             faceUnitNorm.ResizeRow(iFace, qFace.GetNumPoints());
             tSmallCoords coords;
-            meshView.GetCoordsOnFace(iFace, coords);
+            mesh->GetCoordsOnFace(iFace, coords);
             //****** Get Int Point Norm/pPhy and Mean Norm
             tPoint n{0, 0, 0};
             qFace.Integration(
@@ -600,25 +614,26 @@ namespace DNDS::CFV
         BeginMetricsStage(FaceMeanNormals);
         auto meshRequirements = Geom::MeshReadRequirements::CellFlux();
         meshRequirements.allFaceCellsLocal = !settings.ignoreMeshGeometryDeficiency;
-        auto meshAccess = mesh->AcquireRead(meshRequirements);
-        const auto meshView = meshAccess.HostView();
+        auto meshAccess = this->mesh->AcquireRead(meshRequirements);
+        const auto meshLegacy = meshAccess.LegacyHostView();
+        const auto *mesh = &meshLegacy;
         using namespace Geom;
         using namespace Geom::Elem;
-        DNDS_assert_info(faceAtr.father->Size() == meshView.NumFace(), "need to do SetFaceAtrBasic() first");
-        DNDS_assert_info(faceCent.father->Size() == meshView.NumFace(), "need to do ConstructFaceCent() first");
-        DNDS_assert_info(cellCent.father->Size() == meshView.NumCell(), "need to do ConstructCellCent() first");
+        DNDS_assert_info(faceAtr.father->Size() == mesh->NumFace(), "need to do SetFaceAtrBasic() first");
+        DNDS_assert_info(faceCent.father->Size() == mesh->NumFace(), "need to do ConstructFaceCent() first");
+        DNDS_assert_info(cellCent.father->Size() == mesh->NumCell(), "need to do ConstructCellCent() first");
 
         this->MakePairDefaultOnFace(faceMeanNorm, "FV::faceMeanNorm");
         axisFaces.clear();
 #ifdef DNDS_USE_OMP
 #    pragma omp parallel for
 #endif
-        for (index iFace = 0; iFace < meshView.NumFaceProc(); iFace++)
+        for (index iFace = 0; iFace < mesh->NumFaceProc(); iFace++)
         {
-            auto eFace = meshView.GetFaceElement(iFace);
+            auto eFace = mesh->GetFaceElement(iFace);
             auto qFace = Quadrature{eFace, GetFaceAtr(iFace).intOrder};
             tSmallCoords coords;
-            meshView.GetCoordsOnFace(iFace, coords);
+            mesh->GetCoordsOnFace(iFace, coords);
 
             //****** Get Int Point Norm/pPhy and Mean Norm
             tPoint n{0, 0, 0};
@@ -646,8 +661,8 @@ namespace DNDS::CFV
             /// ! if the faces and f2c are created right, and not distorting too much
             if (!settings.ignoreMeshGeometryDeficiency)
                 DNDS_assert_info(
-                    (this->GetFaceQuadraturePPhysFromCell(iFace, meshView.FaceCells(iFace)[0], 0, -1) -
-                     this->GetCellQuadraturePPhys(meshView.FaceCells(iFace)[0], -1))
+                    (this->GetFaceQuadraturePPhysFromCell(iFace, mesh->face2cell(iFace, 0), 0, -1) -
+                     this->GetCellQuadraturePPhys(mesh->face2cell(iFace, 0), -1))
                             .dot(faceMeanNorm[iFace]) >= 0,
                     "face mean norm is not the same side as faceCenter - cellCenter");
         }
@@ -657,21 +672,22 @@ namespace DNDS::CFV
     void FiniteVolume::ConstructCellSmoothScale()
     {
         BeginMetricsStage(CellSmoothing);
-        auto meshAccess = mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
-        const auto meshView = meshAccess.HostView();
-        DNDS_assert_info(volumeLocal.father->Size() == meshView.NumCell(), "need to do ConstructCellVolume() first");
-        DNDS_assert_info(faceArea.father->Size() == meshView.NumFace(), "need to do ConstructFaceArea() first");
+        auto meshAccess = this->mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
+        const auto meshLegacy = meshAccess.LegacyHostView();
+        const auto *mesh = &meshLegacy;
+        DNDS_assert_info(volumeLocal.father->Size() == mesh->NumCell(), "need to do ConstructCellVolume() first");
+        DNDS_assert_info(faceArea.father->Size() == mesh->NumFace(), "need to do ConstructFaceArea() first");
 
         this->MakePairDefaultOnCell(cellSmoothScale, "FV::cellSmoothScale");
         cellSmoothScale.TransAttach();
-        Geom::LegacyFieldBridge::BorrowIndexing(cellSmoothScale.trans, mesh->Entities(Geom::EntityKind::Cell));
+        Geom::LegacyFieldBridge::BorrowIndexing(cellSmoothScale.trans, this->mesh->Entities(Geom::EntityKind::Cell));
         cellSmoothScale.trans.createMPITypes();
         cellSmoothScale.trans.initPersistentPull();
-        std::vector<real> cellScale(meshView.NumCellProc());
-        for (index iCell = 0; iCell < meshView.NumCell(); iCell++)
+        std::vector<real> cellScale(mesh->NumCellProc());
+        for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
         {
             real faceSum{0};
-            for (auto iFace : meshView.CellFaces(iCell))
+            for (auto iFace : mesh->cell2face[iCell])
                 faceSum += this->GetFaceArea(iFace);
             cellScale[iCell] = this->GetCellVol(iCell) / (faceSum + verySmallReal);
             cellSmoothScale(iCell, 0) = cellScale[iCell];
@@ -681,10 +697,10 @@ namespace DNDS::CFV
         {
             cellSmoothScale.trans.startPersistentPull();
             cellSmoothScale.trans.waitPersistentPull();
-            for (index iCell = 0; iCell < meshView.NumCell(); iCell++)
+            for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
             {
                 real nAdj{0}, sum{0};
-                auto c2f = meshView.CellFaces(iCell);
+                auto c2f = mesh->cell2face[iCell];
                 for (rowsize ic2f = 0; ic2f < c2f.size(); ++ic2f)
                 {
                     index iFace = c2f[ic2f];
@@ -700,16 +716,16 @@ namespace DNDS::CFV
                 sum /= nAdj * (1 + smootherCentWeight);
                 cellScaleNew[iCell] = std::min(cellSmoothScale(iCell, 0), sum);
             }
-            for (index iCell = 0; iCell < meshView.NumCell(); iCell++)
+            for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
                 cellSmoothScale(iCell, 0) = cellScaleNew[iCell];
         }
-        for (index iCell = 0; iCell < meshView.NumCell(); iCell++)
+        for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
             cellSmoothScale(iCell, 0) /= cellScale[iCell];
         cellSmoothScale.trans.startPersistentPull();
         cellSmoothScale.trans.waitPersistentPull();
 
         real minCellSmoothScale{veryLargeReal};
-        for (index iCell = 0; iCell < meshView.NumCell(); iCell++)
+        for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
             minCellSmoothScale = std::min(cellSmoothScale(iCell, 0), minCellSmoothScale);
         MPI::AllreduceOneReal(minCellSmoothScale, MPI_MIN, mpi);
 

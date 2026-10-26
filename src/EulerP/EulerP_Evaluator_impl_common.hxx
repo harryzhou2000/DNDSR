@@ -74,8 +74,8 @@ namespace DNDS::EulerP
         if (Geom::FaceIDIsInternal(bcid))
             return;
 
-        index iFace = mesh.BoundaryFaces(iBnd)[0];
-        index iCell = mesh.BoundaryCells(iBnd)[0];
+        index iFace = mesh.bnd2face(iBnd, 0);
+        index iCell = mesh.bnd2cell(iBnd, 0);
 
         auto uI = [u, uScalar, iCell] DNDS_DEVICE(int i) mutable -> real &
         {
@@ -153,7 +153,7 @@ namespace DNDS::EulerP
         {
             for (int iVarS = 0; iVarS < nVarsScalar; iVarS++)
                 uScalarGrad[iVarS].father[iCell].setZero();
-            auto c2f = mesh.CellFaces(iCell);
+            auto c2f = mesh.cell2face[iCell];
             TU uI = u[iCell];
 
             for (rowsize ic2f = 0; ic2f < c2f.size(); ++ic2f)
@@ -273,7 +273,7 @@ namespace DNDS::EulerP
 
         if (iCell < iCellEnd)
         {
-            auto c2f = mesh.CellFaces(iCell);
+            auto c2f = mesh.cell2face[iCell];
             TU uI = u[iCell];
             grad = uGrad.father[iCell];
 
@@ -419,7 +419,7 @@ namespace DNDS::EulerP
         if (iCell >= iCellEnd)
             return;
 
-        auto c2f = mesh.CellFaces(iCell);
+        auto c2f = mesh.cell2face[iCell];
         TU uI;
         TU uIIncMax;
         TU uIIncMin;
@@ -756,8 +756,8 @@ namespace DNDS::EulerP
         if (iFace >= iFaceEnd)
             return;
 
-        index iCellL = mesh.FaceCells(iFace)[0];
-        index iCellR = mesh.FaceCells(iFace)[1];
+        index iCellL = mesh.face2cell(iFace, 0);
+        index iCellR = mesh.face2cell(iFace, 1);
         if ((0 > iCellL || iCellL >= mesh.NumCell()) &&
             (0 > iCellR || iCellR >= mesh.NumCell()) && iCellR != UnInitIndex)
         {
@@ -846,7 +846,7 @@ namespace DNDS::EulerP
 
         real lambdaCellC = 0.0;
         real dLambdaCellC = 0.0;
-        auto c2f = mesh.CellFaces(iCell);
+        auto c2f = mesh.cell2face.father[iCell];
         for (auto iFace : c2f)
         {
             real lambdaFace =
@@ -923,8 +923,8 @@ namespace DNDS::EulerP
 
         if (iFace < iFaceEnd)
         {
-            index iCellL = mesh.FaceCells(iFace)[0];
-            index iCellR = mesh.FaceCells(iFace)[1];
+            index iCellL = mesh.face2cell(iFace, 0);
+            index iCellR = mesh.face2cell(iFace, 1);
             if ((0 > iCellL || iCellL >= mesh.NumCell()) &&
                 (0 > iCellR || iCellR >= mesh.NumCell()) && iCellR != UnInitIndex)
             {
@@ -1092,8 +1092,8 @@ namespace DNDS::EulerP
 
         if (iFace < iFaceEnd)
         {
-            index iCellL = mesh.FaceCells(iFace)[0];
-            index iCellR = mesh.FaceCells(iFace)[1];
+            index iCellL = mesh.face2cell(iFace, 0);
+            index iCellR = mesh.face2cell(iFace, 1);
             if ((0 > iCellL || iCellL >= mesh.NumCell()) &&
                 (0 > iCellR || iCellR >= mesh.NumCell()) && iCellR != UnInitIndex)
             {
@@ -1247,7 +1247,7 @@ namespace DNDS::EulerP
         if (iCell < iCellEnd)
         {
             rhsC = rhs[iCell];
-            auto c2f = mesh.CellFaces(iCell);
+            auto c2f = mesh.cell2face.father[iCell];
             for (rowsize ic2f = 0; ic2f < c2f.size(); ++ic2f)
             {
                 auto iFace = c2f[ic2f];

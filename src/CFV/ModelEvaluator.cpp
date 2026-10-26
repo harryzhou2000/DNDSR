@@ -10,8 +10,9 @@ namespace DNDS::CFV
     {
         auto meshRequirements = Geom::MeshReadRequirements::CellFlux();
         meshRequirements.allFaceCellsLocal = true;
-        auto meshRead = mesh->AcquireRead(meshRequirements);
-        const auto meshView = meshRead.HostView();
+        auto meshRead = this->mesh->AcquireRead(meshRequirements);
+        const auto meshLegacy = meshRead.LegacyHostView();
+        const auto *mesh = &meshLegacy;
         vfv->ValidateMeshDependencies();
         using namespace Geom;
         int cnvars = u.father->MatRowSize();
@@ -22,7 +23,7 @@ namespace DNDS::CFV
         bool direct2ndRec = options.direct2ndRec;
         bool direct2ndRec1stConv = options.direct2ndRec1stConv;
 
-        for (index iCell = 0; iCell < meshView.NumCell(); iCell++)
+        for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
             rhs[iCell].setZero();
 
         if (direct2ndRec)
@@ -32,14 +33,14 @@ namespace DNDS::CFV
             uGradBuf.trans.waitPersistentPull();
         }
 
-        for (index iFace = 0; iFace < meshView.NumFaceProc(); iFace++)
+        for (index iFace = 0; iFace < mesh->NumFaceProc(); iFace++)
         {
-            auto f2c = meshView.FaceCells(iFace);
+            auto f2c = mesh->face2cell[iFace];
             Elem::Quadrature gFace = direct2ndRec ? vfv->GetFaceQuadO1(iFace) : vfv->GetFaceQuad(iFace);
             Eigen::Matrix<real, nVarsFixed, 1, Eigen::ColMajor> fluxEs(cnvars, 1);
             fluxEs.setZero();
 
-            auto faceBndID = meshView.GetFaceZone(iFace);
+            auto faceBndID = mesh->GetFaceZone(iFace);
             gFace.IntegrationSimple(
                 fluxEs,
                 [&](decltype(fluxEs) &finc, int iG, real w)
@@ -97,7 +98,7 @@ namespace DNDS::CFV
                             normBase,
                             vfv->GetFaceQuadraturePPhys(iFace, iGQ),
                             t,
-                            meshView.GetFaceZone(iFace), true, 0);
+                            mesh->GetFaceZone(iFace), true, 0);
                         distBary = (vfv->GetFaceQuadraturePPhysFromCell(iFace, f2c[0], 0, -1) - vfv->GetCellBary(f2c[0])).norm() * 2.;
                     }
 

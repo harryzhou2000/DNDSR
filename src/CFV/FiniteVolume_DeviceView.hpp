@@ -2,11 +2,11 @@
 #include "FiniteVolumeSettings.hpp"
 #include "VRDefines.hpp"
 #include "Geom/DiffTensors.hpp"
-#include "Geom/Mesh/MeshView.hpp"
+#include "Geom/Mesh/MeshLegacyView.hpp"
 
 namespace DNDS::CFV
 {
-    template <DeviceBackend B, class MeshView = Geom::UnstructuredMeshView>
+    template <DeviceBackend B, class MeshView = Geom::UnstructuredMeshLegacyView>
     class FiniteVolumeDeviceView
     {
     public:

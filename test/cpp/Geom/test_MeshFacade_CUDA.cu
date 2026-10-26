@@ -10,6 +10,97 @@
 #include <atomic>
 #include <thread>
 
+__global__ static void LegacyFacadeProbeKernel(const G::UnstructuredMeshLegacyView *descriptor, G::Test::MeshViewProbeResult *output)
+{
+    if (blockIdx.x || threadIdx.x)
+        return;
+    const auto &view = *descriptor;
+    auto result = G::Test::MeshViewProbe(view);
+    // Exercise the legacy member spellings on the device, including metadata
+    // needed for ragged rows. The expected probe comes from the host query API.
+    const G::MeshLegacyPairRead<I> pairs[]{view.cell2node, view.bnd2node, view.bnd2cell,
+                                           view.cell2cell, view.node2cell, view.node2bnd,
+                                           view.cell2face, view.face2node, view.face2cell,
+                                           view.face2bnd, view.bnd2face, view.cell2edge,
+                                           view.edge2node, view.edge2cell, view.cell2cellFace};
+    result.relationChecksum = 0;
+    for (int relation = 0; relation < int(G::MeshRelation::Count); ++relation)
+        if (pairs[relation].isBuilt())
+            for (I row = 0; row < pairs[relation].Size(); ++row)
+            {
+                const auto entries = pairs[relation][row];
+                result.relationChecksum += (relation + 1) * (row + 1) * I(pairs[relation].RowSize(row) + 1);
+                for (size_t slot = 0; slot < entries.size(); ++slot)
+                    result.relationChecksum += (relation + 1) * (row + 1) * I(slot + 1) * G::Test::MeshViewProbeIndex(entries[slot]);
+            }
+    result.coordinateChecksum = 0;
+    for (I node = 0; node < view.coords.Size(); ++node)
+        for (int d = 0; d < 3; ++d)
+            result.coordinateChecksum += (node + 1) * (d + 1) * view.coords[node][d];
+    result.counts[0] = view.coords.father.Size();
+    result.counts[1] = view.coords.son->Size();
+    result.counts[2] = view.coords.Size();
+    result.counts[3] = view.cell2node.father->Size();
+    result.counts[4] = view.cell2node.son.Size();
+    result.counts[5] = view.cell2node.Size();
+    result.counts[6] = view.face2node.father.Size();
+    result.counts[7] = view.face2node.son.Size();
+    result.counts[8] = view.face2node.Size();
+    *output = result;
+}
+
+__global__ static void LegacyFacadeParityKernel(const G::UnstructuredMeshLegacyView *descriptor,
+                                                G::Test::LegacyConstMeshReference old, int *mismatches)
+{
+    if (blockIdx.x || threadIdx.x)
+        return;
+    const auto &view = *descriptor;
+    int errors = 0;
+    errors += view.dim != 2 || view.isPeriodic != old.isPeriodic;
+    errors += view.coords.Size() != old.coords.Size();
+    for (I node = 0; node < old.coords.Size(); ++node)
+        for (int d = 0; d < 3; ++d)
+            errors += view.coords[node][d] != old.coords[node][d];
+    errors += view.cell2node.father.Size() != old.cellNodes.father.Size();
+    errors += view.cell2node.son.Size() != old.cellNodes.son.Size();
+    for (I cell = 0; cell < old.cellNodes.Size(); ++cell)
+    {
+        errors += view.cellElemInfo(cell, 0).type != old.cellInfo(cell, 0).type;
+        errors += view.cellElemInfo(cell, 0).zone != old.cellInfo(cell, 0).zone;
+        errors += view.cell2node.RowSize(cell) != old.cellNodes.RowSize(cell);
+        for (DNDS::rowsize slot = 0; slot < old.cellNodes.RowSize(cell); ++slot)
+        {
+            errors += view.cell2node[cell][slot] != old.cellNodes(cell, slot);
+            if (old.isPeriodic)
+                errors += uint8_t(view.cell2nodePbi(cell, slot)) != uint8_t(old.cellBits(cell, slot));
+        }
+        errors += view.cell2face.RowSize(cell) != old.cellFaces.RowSize(cell);
+        for (DNDS::rowsize slot = 0; slot < old.cellFaces.RowSize(cell); ++slot)
+        {
+            errors += view.cell2face.father[cell][slot] != old.cellFaces(cell, slot);
+            if (old.isPeriodic)
+                errors += uint8_t(view.cell2facePbi[cell][slot]) != uint8_t(old.slotBits(cell, slot));
+        }
+    }
+    errors += view.face2cell.Size() != old.faceCells.Size();
+    for (I face = 0; face < old.faceCells.Size(); ++face)
+    {
+        errors += view.face2cell.RowSize(face) != 2;
+        errors += view.faceElemInfo(face, 0).type != old.faceInfo(face, 0).type;
+        errors += view.faceElemInfo(face, 0).zone != old.faceInfo(face, 0).zone;
+        for (DNDS::rowsize side = 0; side < 2; ++side)
+            errors += view.face2cell(face, side) != old.faceCells(face, side);
+        errors += view.face2node.RowSize(face) != old.faceNodes.RowSize(face);
+        for (DNDS::rowsize slot = 0; slot < old.faceNodes.RowSize(face); ++slot)
+        {
+            errors += view.face2node(face, slot) != old.faceNodes(face, slot);
+            if (old.isPeriodic)
+                errors += uint8_t(view.face2nodePbi[face][slot]) != uint8_t(old.faceBits(face, slot));
+        }
+    }
+    *mismatches += errors;
+}
+
 static int FacadeGPUOrdinal()
 {
     const auto mpi = FacadeMPI();
@@ -66,6 +157,8 @@ TEST_CASE("Mesh facade CUDA kernels traverse retained snapshots with host parity
     REQUIRE(cudaMallocHost(reinterpret_cast<void **>(&actual), sizeof(*actual)) == cudaSuccess);
     G::Test::MeshViewProbeResult *secondActual = nullptr;
     REQUIRE(cudaMallocHost(reinterpret_cast<void **>(&secondActual), sizeof(*secondActual)) == cudaSuccess);
+    G::UnstructuredMeshLegacyView *deviceDescriptors = nullptr;
+    REQUIRE(cudaMalloc(reinterpret_cast<void **>(&deviceDescriptors), 2 * sizeof(*deviceDescriptors)) == cudaSuccess);
     for (int trial = 0; trial < 6; ++trial)
     {
         const bool twoReaders = trial >= 3;
@@ -89,6 +182,11 @@ TEST_CASE("Mesh facade CUDA kernels traverse retained snapshots with host parity
             if (!empty)
                 CHECK(access->DeviceView().Coord(0).data() == secondAccess->DeviceView().Coord(0).data());
         }
+        const auto descriptor = access->LegacyDeviceView();
+        REQUIRE(cudaMemcpyAsync(deviceDescriptors, &descriptor, sizeof(descriptor), cudaMemcpyHostToDevice, stream) == cudaSuccess);
+        // Both readers borrow the same immutable placement; the descriptor copy
+        // completes before the streams are deliberately gated below.
+        REQUIRE(cudaMemcpyAsync(deviceDescriptors + 1, &descriptor, sizeof(descriptor), cudaMemcpyHostToDevice, stream) == cudaSuccess);
         FacadeStreamGate gate(stream);
         CHECK_THROWS(access->HostView());
         CHECK_FALSE(versions.CanMutate());
@@ -96,10 +194,13 @@ TEST_CASE("Mesh facade CUDA kernels traverse retained snapshots with host parity
         // CUDA lazy module loading can synchronize on the first kernel launch.
         // Load the probe before a host callback deliberately blocks this stream.
         REQUIRE(G::Test::LaunchMeshViewProbe(access->DeviceView(), output, stream) == cudaSuccess);
+        LegacyFacadeProbeKernel<<<1, 1, 0, stream>>>(deviceDescriptors, output);
+        REQUIRE(cudaGetLastError() == cudaSuccess);
         REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
         REQUIRE(cudaLaunchHostFunc(stream, FacadeStreamGate::Wait, &gate) == cudaSuccess);
         REQUIRE(cudaEventRecord(gatePassed, stream) == cudaSuccess);
-        REQUIRE(G::Test::LaunchMeshViewProbe(access->DeviceView(), output, stream) == cudaSuccess);
+        LegacyFacadeProbeKernel<<<1, 1, 0, stream>>>(deviceDescriptors, output);
+        REQUIRE(cudaGetLastError() == cudaSuccess);
         REQUIRE(cudaMemcpyAsync(actual, output, sizeof(*actual), cudaMemcpyDeviceToHost, stream) == cudaSuccess);
         if (twoReaders)
         {
@@ -107,7 +208,8 @@ TEST_CASE("Mesh facade CUDA kernels traverse retained snapshots with host parity
             // Gate both readers, then explicitly join the second reader onto the
             // acquisition stream before publishing its final completion.
             REQUIRE(cudaStreamWaitEvent(secondStream, gatePassed, 0) == cudaSuccess);
-            REQUIRE(G::Test::LaunchMeshViewProbe(secondAccess->DeviceView(), secondOutput, secondStream) == cudaSuccess);
+            LegacyFacadeProbeKernel<<<1, 1, 0, secondStream>>>(deviceDescriptors + 1, secondOutput);
+            REQUIRE(cudaGetLastError() == cudaSuccess);
             REQUIRE(cudaMemcpyAsync(secondActual, secondOutput, sizeof(*secondActual), cudaMemcpyDeviceToHost, secondStream) == cudaSuccess);
             secondAccess->Complete(R::Completion::Record(secondContext));
             REQUIRE(cudaEventRecord(secondDone, secondStream) == cudaSuccess);
@@ -116,6 +218,7 @@ TEST_CASE("Mesh facade CUDA kernels traverse retained snapshots with host parity
         }
         access->Complete(R::Completion::Record(context));
         CHECK_THROWS(access->DeviceView());
+        CHECK_THROWS(access->LegacyDeviceView());
         // Drop the source and its native authority owners while both streams are
         // blocked. Read scopes retain CUDA values, shape and source read leases.
         CHECK(cudaStreamQuery(stream) == cudaErrorNotReady);
@@ -139,6 +242,7 @@ TEST_CASE("Mesh facade CUDA kernels traverse retained snapshots with host parity
         secondAccess.reset();
         CHECK(versions.CanMutate());
     }
+    REQUIRE(cudaFree(deviceDescriptors) == cudaSuccess);
     REQUIRE(cudaFreeHost(secondActual) == cudaSuccess);
     REQUIRE(cudaFreeHost(actual) == cudaSuccess);
     REQUIRE(cudaFree(secondOutput) == cudaSuccess);
@@ -196,6 +300,8 @@ TEST_CASE("Native mesh CUDA queries match existing const legacy pair views")
     REQUIRE(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking) == cudaSuccess);
     int *deviceErrors = nullptr;
     REQUIRE(cudaMalloc(reinterpret_cast<void **>(&deviceErrors), sizeof(int)) == cudaSuccess);
+    G::UnstructuredMeshLegacyView *deviceDescriptor = nullptr;
+    REQUIRE(cudaMalloc(reinterpret_cast<void **>(&deviceDescriptor), sizeof(*deviceDescriptor)) == cudaSuccess);
     for (bool periodic : {false, true})
     {
         auto native = FacadeFixture(periodic);
@@ -236,14 +342,22 @@ TEST_CASE("Native mesh CUDA queries match existing const legacy pair views")
             reference.face2nodePbi.template deviceView<DNDS::DeviceBackend::CUDA>(),
             reference.cell2facePbi.template deviceView<DNDS::DeviceBackend::CUDA>(),
             reference.periodicInfo, periodic};
-        auto access = native->AcquireRead(G::MeshReadRequirements::CellFlux(), R::ExecutionContext::CUDA(ordinal, stream));
+        auto access = native->AcquireLegacyRead(G::MeshReadRequirements::CellFlux(), R::ExecutionContext::CUDA(ordinal, stream));
+        CHECK_THROWS(access.HostView());
+        CHECK_THROWS(access.operator->());
+        const auto &descriptor = access.DeviceView();
+        REQUIRE(cudaMemcpyAsync(deviceDescriptor, &descriptor, sizeof(descriptor), cudaMemcpyHostToDevice, stream) == cudaSuccess);
         REQUIRE(G::Test::LaunchLegacyMeshParity(access.DeviceView(), old, deviceErrors, stream) == cudaSuccess);
+        LegacyFacadeParityKernel<<<1, 1, 0, stream>>>(deviceDescriptor, old, deviceErrors);
+        REQUIRE(cudaGetLastError() == cudaSuccess);
         access.Complete(R::Completion::Record(R::ExecutionContext::CUDA(ordinal, stream)));
+        CHECK_THROWS(access.DeviceView());
         access.Wait();
         int errors = -1;
         REQUIRE(cudaMemcpy(&errors, deviceErrors, sizeof(int), cudaMemcpyDeviceToHost) == cudaSuccess);
         CHECK(errors == 0);
     }
+    REQUIRE(cudaFree(deviceDescriptor) == cudaSuccess);
     REQUIRE(cudaFree(deviceErrors) == cudaSuccess);
     REQUIRE(cudaStreamDestroy(stream) == cudaSuccess);
 }
