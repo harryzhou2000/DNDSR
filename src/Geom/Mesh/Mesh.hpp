@@ -154,6 +154,11 @@ namespace DNDS::Geom
         {
             DNDS_check_throw_info(!_nativeState, operation + " requires explicit UseLegacyWorkspace");
         }
+        /// Setup-only replacement without legacy geometry staging. Collective;
+        /// accepts an empty facade or an existing native destination, rejects
+        /// held reads and populated legacy destinations. External fields/routes
+        /// on the old publication must be recreated or explicitly transferred.
+        void ReplaceNativeForSetup(std::shared_ptr<const NativeMeshState> source);
         void PublishNative(MeshReadRequirements requirements = MeshReadRequirements::Primary());
         /// Collective setup-only topology completion. Rebuild external field
         /// bindings after this operation; use detached preparation for A->B.

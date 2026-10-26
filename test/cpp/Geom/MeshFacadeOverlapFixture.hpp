@@ -109,14 +109,17 @@ namespace DNDS::Geom::OverlapTest
 
     /// Independent Cartesian input and edge-length oracle; no file reader or
     /// legacy mesh allocation participates in this fixture.
-    inline Fixture BuildNativeFixture(MPIInfo mpi)
+    inline Fixture BuildNativeFixture(MPIInfo mpi, bool emptyPeers = false)
     {
         Fixture result;
         constexpr Index width = 10;
         constexpr real h = 0.1;
-        const auto rows = EvenSplitRange(mpi.rank, mpi.size, width);
-        const auto nodeRows = EvenSplitRange(mpi.rank, mpi.size, (width + 1) * (width + 1));
-        const auto boundaryRows = EvenSplitRange(mpi.rank, mpi.size, 4 * width);
+        const int active = emptyPeers && mpi.size > 1 ? mpi.size - 1 : mpi.size;
+        const auto split = [&](Index size)
+        { return mpi.rank < active ? EvenSplitRange(mpi.rank, active, size) : std::pair<Index, Index>{size, size}; };
+        const auto rows = split(width);
+        const auto nodeRows = split((width + 1) * (width + 1));
+        const auto boundaryRows = split(4 * width);
         auto nodes = EntitySpace::CreateOwned(EntityKind::Node, mpi, nodeRows.second - nodeRows.first);
         auto cells = nodes.CreateSibling(EntityKind::Cell, width * (rows.second - rows.first));
         auto boundaries = nodes.CreateSibling(EntityKind::Bnd, boundaryRows.second - boundaryRows.first);
@@ -199,8 +202,7 @@ namespace DNDS::Geom::OverlapTest
         auto state = NativeMeshBuilder::Build(std::move(input), {1, true});
         state = NativeMeshTopology::Build(*state, mpi, true, false);
         result.mesh = UnstructuredMesh::FromNative(mpi, std::move(state));
-        DNDS_check_throw_info(!result.mesh->coords.father && !result.mesh->cell2node.father && !result.mesh->face2node.father,
-                              "native overlap fixture allocated legacy mesh storage");
+        DNDS_check_throw_info(result.mesh->HasNativeState(), "native overlap fixture was not published");
         result.expected.resize(size_t(width * width), 0);
         for (Index y = 0; y < width; ++y)
             for (Index x = 0; x < width; ++x)
@@ -290,11 +292,8 @@ namespace DNDS::Geom::OverlapTest
         const auto destinationOrder = fixture.mesh->Entities(EntityKind::Cell);
         DNDS_check_throw_info(sourceOrder.Valid() && !sourceOrder.SameOrder(destinationOrder),
                               "detached publication must retain the old source and distinguish its order");
-        if (source->HasNativeState())
-            DNDS_check_throw_info(sourceOrder.SameDomain(destinationOrder),
-                                  "native redistribution must preserve the logical entity domain");
-        if (!fixture.mesh->HasNativeState())
-            fixture.mesh->PublishNative(MeshReadRequirements::CellFlux());
+        DNDS_check_throw_info(sourceOrder.SameDomain(destinationOrder) && fixture.mesh->HasNativeState(),
+                              "native redistribution must preserve the logical entity domain");
     }
     /// Checkpoint the actual solution and stable cell IDs, then execute the
     /// same stencil on restored values rather than regenerating its input.
@@ -325,23 +324,14 @@ namespace DNDS::Geom::OverlapTest
             auto fieldRead = field.Read();
             auto idRead = ids.Read();
             serializer->OpenFile(filename, false);
-            if (source->HasNativeState())
-                source->WriteNativeArchive(serializer, "mesh");
-            else
-                WriteCurrentPrimaryMeshSnapshot(*source, serializer, "mesh");
+            source->WriteNativeArchive(serializer, "mesh");
             R::WriteArray(field, serializer, "solution", mpi, fieldSchema);
             R::WriteArray(ids, serializer, "original_cells", mpi, idSchema);
             serializer->CloseFile();
         }
         std::shared_ptr<UnstructuredMesh> restored;
         serializer->OpenFile(filename, true);
-        if (source->HasNativeState())
-            restored = UnstructuredMesh::ReadNativeArchive(mpi, serializer, "mesh");
-        else
-        {
-            restored = make_ssp<UnstructuredMesh>(mpi, 2);
-            restored->ReadSerialize(serializer, "mesh");
-        }
+        restored = UnstructuredMesh::ReadNativeArchive(mpi, serializer, "mesh");
         auto loaded = R::ReadArray<real>(serializer, "solution", mpi, Serializer::ArrayGlobalOffset_Unknown,
                                          R::Device::Host(), fieldSchema);
         auto loadedIds = R::ReadArray<Index>(serializer, "original_cells", mpi, Serializer::ArrayGlobalOffset_Unknown,
@@ -363,16 +353,6 @@ namespace DNDS::Geom::OverlapTest
             DNDS_check_throw_info(field.Identity() == fieldIdentity && field.Version() == fieldVersion &&
                                   loaded.Identity() != fieldIdentity && sourceOrder.Valid(),
                                   "checkpoint changed source field or failed to allocate independent restart values"); });
-        if (!restored->HasNativeState())
-        {
-            restored->RecoverNode2CellAndNode2Bnd();
-            restored->RecoverCell2CellAndBnd2Cell();
-            restored->BuildGhostPrimary();
-            restored->AdjGlobal2LocalPrimary();
-            restored->InterpolateFace();
-            restored->AssertOnFaces();
-            restored->PublishNative(MeshReadRequirements::CellFlux());
-        }
         fixture.mesh = std::move(restored);
         fixture.restartedOwned.emplace(std::move(loaded));
         fixture.restartedOrder.emplace(fixture.mesh->Entities(EntityKind::Cell));

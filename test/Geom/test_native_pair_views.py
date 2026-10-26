@@ -76,6 +76,7 @@ def test_all_incidence_aliases_and_owned_ghost_boundaries(dimension):
             aliases.pop(alias)
     with mesh.acquire_read(faces=True, inverse=True, edges=dimension == 3, cell_face_neighbors=True) as read:
         for name, relation in aliases.items():
+            assert read.relation_state(getattr(Geom.MeshRelation, relation)) == Geom.MeshAdjState.PointToLocal
             pair = getattr(mesh, name)
             assert isinstance(pair, Geom.NativeMeshPairRead)
             assert pair.Size() == pair.father.Size() + pair.son.Size()

@@ -1,4 +1,5 @@
 #include "MeshConnectivity.hpp"
+#include "NativeConnectivity.hpp"
 
 #include <unordered_map>
 #include <unordered_set>
@@ -230,3 +231,30 @@ namespace DNDS::Geom
     }
 
 } // namespace DNDS::Geom
+
+namespace DNDS::Geom
+{
+    NativeRelation MeshConnectivity::Inverse(const RelationReadAccess &cone, const MPIInfo &mpi)
+    {
+        return NativeConnectivity::Inverse(cone, mpi);
+    }
+
+    NativeRelation MeshConnectivity::Compose(const RelationReadAccess &AB, const RelationReadAccess &BC, bool removeSelf)
+    {
+        return NativeConnectivity::Compose(AB, BC, removeSelf);
+    }
+
+    NativeRelation MeshConnectivity::ComposeAll(const RelationReadAccess &AB, const RelationReadAccess &BC, bool removeSelf)
+    {
+        return NativeConnectivity::ComposeAll(AB, BC, removeSelf);
+    }
+
+    NativeRelation MeshConnectivity::ComposeFiltered(const RelationReadAccess &AB, const RelationReadAccess &BC,
+                                                     const AdjKind &resultKind,
+                                                     const std::function<bool(index, index, int)> &predicate,
+                                                     const std::function<bool(index, index, const std::vector<index> &)> &matchExtra)
+    {
+        return NativeConnectivity::ComposeFiltered(AB, BC, resultKind, predicate, matchExtra);
+    }
+
+}

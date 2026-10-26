@@ -167,11 +167,7 @@ namespace DNDS::Geom
      */
     inline void BuildGhostPrimary(UnstructuredMesh &mesh, int nGhostLayers = 1)
     {
-        mesh.RecoverNode2CellAndNode2Bnd();
-        mesh.RecoverCell2CellAndBnd2Cell();
-        mesh.BuildGhostPrimary(nGhostLayers);
-        mesh.AdjGlobal2LocalPrimary();
-        mesh.AdjGlobal2LocalN2CB();
+        mesh.PrepareNativeTopology(false, false, nGhostLayers);
     }
 
     // -----------------------------------------------------------------------
@@ -204,60 +200,21 @@ namespace DNDS::Geom
         int bisect = 0,
         std::function<t_index(const std::string &)> nameMapper = nullptr)
     {
-        auto &mpi = mesh->getMPI();
-        int dim = mesh->getDim();
-
-        if (nameMapper)
-            reader->ReadFromCGNSSerial(meshFile, nameMapper);
-        else
-            reader->ReadFromCGNSSerial(meshFile);
-
-        reader->Deduplicate1to1Periodic(periodicTol);
-        reader->BuildCell2Cell();
-        reader->MeshPartitionCell2Cell(partOpts);
-        reader->PartitionReorderToMeshCell2Cell();
-
-        Geom::BuildGhostPrimary(*mesh);
-
-        // --- Optional O2 elevation ---
-        if (elevation == 1)
-        {
-            ssp<UnstructuredMesh> meshO2;
-            DNDS_MAKE_SSP(meshO2, mpi, dim);
-            meshO2->BuildO2FromO1Elevation(*mesh);
-            std::swap(meshO2, mesh);
-
-            reader->mesh = mesh;
-            Geom::BuildGhostPrimary(*mesh);
-        }
-
-        // --- Optional bisection ---
-        DNDS_assert(bisect >= 0 && bisect <= 4);
-        for (int iter = 1; iter <= bisect; iter++)
-        {
-            ssp<UnstructuredMesh> meshO2;
-            DNDS_MAKE_SSP(meshO2, mpi, dim);
-            meshO2->BuildO2FromO1Elevation(*mesh);
-
-            meshO2->RecoverNode2CellAndNode2Bnd();
-            meshO2->RecoverCell2CellAndBnd2Cell();
-            meshO2->BuildGhostPrimary();
-
-            ssp<UnstructuredMesh> meshO1B;
-            DNDS_MAKE_SSP(meshO1B, mpi, dim);
-            meshO1B->BuildBisectO1FormO2(*meshO2);
-
-            std::swap(meshO1B, mesh);
-            reader->mesh = mesh;
-            Geom::BuildGhostPrimary(*mesh);
-
-            index nCell = mesh->NumCellGlobal();
-            index nNode = mesh->NumNodeGlobal();
-            if (mpi.rank == 0)
-                log() << fmt::format("Mesh Direct Bisect {} done, nCell [{}], nNode [{}]",
-                                     iter, nCell, nNode)
-                      << std::endl;
-        }
+        const auto mpi = mesh->getMPI();
+        const int dimension = mesh->getDim();
+        int readerRank = 0;
+        FieldTransferDetail::LocalStage(mpi, [&]
+                                        {
+            DNDS_check_throw_info(reader && reader->mesh.get() == mesh.get(), "native CGNS helper requires the bound reader");
+            readerRank = reader->mRank; });
+        NativePeriodicImportOptions periodic{mesh->periodicInfo, periodicTol};
+        AutoAppendName2ID generatedNames;
+        const t_FBCName_2_ID names = nameMapper ? nameMapper : t_FBCName_2_ID([&](const std::string &name)
+                                                                              { return generatedNames(name); });
+        auto prepared = ReadNativeMeshFromCGNS(mpi, dimension, meshFile, partOpts, names,
+                                               periodic, elevation, bisect, readerRank);
+        mesh = std::move(prepared);
+        reader = make_ssp<UnstructuredMeshSerialRW>(mesh, readerRank);
     }
 
     // -----------------------------------------------------------------------
@@ -274,19 +231,8 @@ namespace DNDS::Geom
         const std::string &h5Path,
         const PartitionOptions &partOpts = {})
     {
-        auto &mpi = mesh.getMPI();
-        auto [pathMod, pathPart] = factory.ModifyFilePath(h5Path, mpi, "part_%d", true);
-        Serializer::SerializerBaseSSP serializerP = factory.BuildSerializer(mpi);
-
-        if (mpi.rank == 0)
-            log() << "ReadMeshFromH5: distributed read via [" << factory.type
-                  << "]" << std::endl;
-
-        serializerP->OpenFile(pathMod, true);
-        mesh.ReadSerializeAndDistribute(serializerP, "meshPart", partOpts);
-        serializerP->CloseFile();
-
-        Geom::BuildGhostPrimary(mesh);
+        auto result = ReadNativeMeshFromArchive(mesh.getMPI(), std::move(factory), h5Path, true, partOpts);
+        mesh.ReplaceNativeForSetup(result->CurrentNativeState());
     }
 
     /** @brief Read a pre-partitioned mesh from H5 (exact np match required).
@@ -299,19 +245,8 @@ namespace DNDS::Geom
         Serializer::SerializerFactory factory,
         const std::string &h5Path)
     {
-        auto &mpi = mesh.getMPI();
-        auto [pathMod, pathPart] = factory.ModifyFilePath(h5Path, mpi, "part_%d", true);
-        Serializer::SerializerBaseSSP serializerP = factory.BuildSerializer(mpi);
-
-        if (mpi.rank == 0)
-            log() << "ReadMeshFromH5Parallel: reading via [" << factory.type
-                  << "]" << std::endl;
-
-        serializerP->OpenFile(pathMod, true);
-        mesh.ReadSerialize(serializerP, "meshPart");
-        serializerP->CloseFile();
-
-        Geom::BuildGhostPrimary(mesh);
+        auto result = ReadNativeMeshFromArchive(mesh.getMPI(), std::move(factory), h5Path, false);
+        mesh.ReplaceNativeForSetup(result->CurrentNativeState());
     }
 
     // -----------------------------------------------------------------------
@@ -342,42 +277,20 @@ namespace DNDS::Geom
         UnstructuredMeshSerialRW &reader,
         const PrepareMeshOptions &opts = {})
     {
-        auto &mpi = mesh.getMPI();
-
-        if (mesh.HasNativeState())
-        {
-            mesh.PrepareNativeTopology();
-            if (opts.reorderCells == 1)
-                mesh.ReorderLocalCells(opts.reorderParts);
-            if (opts.buildSerialOut)
-                reader.BuildSerialOut();
-            return;
-        }
-
+        const auto mpi = mesh.getMPI();
+        FieldTransferDetail::LocalStage(mpi, [&]
+                                        { DNDS_check_throw_info(mesh.HasNativeState() && reader.mesh.get() == &mesh &&
+                                                                    (opts.reorderCells == 0 || opts.reorderCells == 1),
+                                                                "native preparation requires the bound output adapter and supported reorder option"); });
+        std::array<int, 3> settings{opts.reorderCells, opts.reorderParts, int(opts.buildSerialOut)}, expected = settings;
+        MPI_Bcast(expected.data(), int(expected.size()), MPI_INT, 0, mpi.comm);
+        FieldTransferDetail::LocalStage(mpi, [&]
+                                        { DNDS_check_throw_info(settings == expected, "native preparation options differ across ranks"); });
+        mesh.PrepareNativeTopology();
         if (opts.reorderCells == 1)
             mesh.ReorderLocalCells(opts.reorderParts);
-
-        mesh.InterpolateFace();
-        mesh.AssertOnFaces();
-
-        mesh.AdjLocal2GlobalN2CB();
-        mesh.BuildGhostN2CB();
-        mesh.AdjGlobal2LocalN2CB();
-        log() << fmt::format("{}, NumBndGhost {}", mpi.rank, mesh.NumBndGhost())
-              << std::endl;
-
-        // Owned nodes must have all cell neighbors resolved to local indices.
-        // Ghost (son) nodes may have unresolved neighbors encoded as negative.
-        for (index iNode = 0; iNode < mesh.NumNode(); iNode++)
-            for (index iCell : mesh.node2cell.father->operator[](iNode))
-                DNDS_assert(iCell >= 0);
-
         if (opts.buildSerialOut)
-        {
-            mesh.AdjLocal2GlobalPrimary();
             reader.BuildSerialOut();
-            mesh.AdjGlobal2LocalPrimary();
-        }
     }
 
     // -----------------------------------------------------------------------
@@ -397,26 +310,25 @@ namespace DNDS::Geom
         UnstructuredMeshSerialRW &readerBnd,
         bool buildSerialOut = true)
     {
+        FieldTransferDetail::LocalStage(mesh.getMPI(), [&]
+                                        { DNDS_check_throw_info(mesh.HasNativeState() && readerBnd.mesh.get() == &meshBnd,
+                                                                "native boundary helper requires native input and bound output adapter"); });
+        int expected = buildSerialOut;
+        MPI_Bcast(&expected, 1, MPI_INT, 0, mesh.getMPI().comm);
+        FieldTransferDetail::LocalStage(mesh.getMPI(), [&]
+                                        { DNDS_check_throw_info(expected == int(buildSerialOut), "native boundary output options differ across ranks"); });
         mesh.ConstructBndMesh(meshBnd);
         if (buildSerialOut)
-        {
-            if (meshBnd.HasNativeState())
-                readerBnd.BuildSerialOut();
-            else
-            {
-                meshBnd.AdjLocal2GlobalPrimaryForBnd();
-                readerBnd.BuildSerialOut();
-                meshBnd.AdjGlobal2LocalPrimaryForBnd();
-            }
-        }
+            readerBnd.BuildSerialOut();
     }
 
     // -----------------------------------------------------------------------
     // SerializeMesh
     // -----------------------------------------------------------------------
 
-    /** @brief Write a partitioned mesh to H5 for later same-partition or redistributed read.
+    /** @brief Write a full native archive for matching or redistributed restart.
      *
+     *  Rejects nonnative input collectively before creating files or directories.
      *  The Python equivalent of the C++ ``partitionMeshOnly`` path.  The
      *  caller controls where this occurs in the pipeline; in Euler solvers it
      *  occurs before coordinate transforms, boundary mesh extraction, and solver
@@ -429,18 +341,13 @@ namespace DNDS::Geom
         Serializer::SerializerFactory &factory)
     {
         auto &mpi = mesh.getMPI();
+        FieldTransferDetail::LocalStage(mpi, [&]
+                                        { DNDS_check_throw_info(mesh.HasNativeState(), "native serialization helper requires native mesh input"); });
         auto [pathMod, pathPart] = factory.ModifyFilePath(outputPath, mpi, "part_%d", false);
         Serializer::SerializerBaseSSP serializerP = factory.BuildSerializer(mpi);
 
         serializerP->OpenFile(pathMod, false);
-        if (mesh.HasNativeState())
-            mesh.WriteNativeArchive(serializerP, "meshPart");
-        else
-        {
-            mesh.AdjLocal2GlobalPrimary();
-            mesh.WriteSerialize(serializerP, "meshPart");
-            mesh.AdjGlobal2LocalPrimary();
-        }
+        mesh.WriteNativeArchive(serializerP, "meshPart");
         serializerP->CloseFile();
     }
 

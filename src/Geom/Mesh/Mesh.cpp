@@ -199,105 +199,19 @@ namespace DNDS::Geom
     void UnstructuredMeshSerialRW::
         BuildSerialOut()
     {
-        if (mesh->HasNativeState())
-        {
-            nativeSerialOutput = std::make_shared<NativeMeshSerialOutput>(
-                NativeMeshSerialOutput::Build(*mesh->CurrentNativeState(), mesh->getMPI(), mRank));
-            mode = SerialOutput;
-            dataIsSerialIn = false;
-            dataIsSerialOut = true;
-            return;
-        }
-        nativeSerialOutput.reset();
-        DNDS_assert(mesh->adjPrimaryState == Adj_PointToGlobal);
-        DNDS_assert(mesh->cell2node.isGlobal());
+        std::shared_ptr<const NativeMeshState> source;
+        FieldTransferDetail::LocalStage(mesh->getMPI(), [&]
+                                        { source = mesh->CurrentNativeState(); });
+        std::shared_ptr<NativeMeshSerialOutput> prepared;
+        FieldTransferDetail::LocalStage(mesh->getMPI(), [&]
+                                        { prepared = std::make_shared<NativeMeshSerialOutput>(); });
+        *prepared = NativeMeshSerialOutput::Build(*source, mesh->getMPI(), mRank);
+        // Assign only after successful collective gathering. A failed refresh
+        // retains the previous descriptor; writers still validate its source.
+        nativeSerialOutput = std::move(prepared);
         mode = SerialOutput;
         dataIsSerialIn = false;
         dataIsSerialOut = true;
-
-        std::vector<DNDS::index> serialPullCell;
-        std::vector<DNDS::index> serialPullNode;
-        // std::vector<DNDS::index> serialPullBnd;
-
-        DNDS::index numCellGlobal = mesh->cellElemInfo.father->globalSize();
-        // DNDS::index numBndGlobal = mesh->bndElemInfo.father->globalSize();
-        DNDS::index numNodeGlobal = mesh->coords.father->globalSize();
-
-        if (mesh->getMPI().rank == mRank)
-        {
-            serialPullCell.resize(numCellGlobal);
-            serialPullNode.resize(numNodeGlobal);
-            // serialPullBnd.reserve(numBndGlobal);
-            for (DNDS::index i = 0; i < numCellGlobal; i++)
-                serialPullCell[i] = i;
-            for (DNDS::index i = 0; i < numNodeGlobal; i++)
-                serialPullNode[i] = i;
-            // for (DNDS::index i = 0; i < numBndGlobal; i++)
-            //     serialPullBnd[i] = i;
-        }
-        cell2nodeSerial = make_ssp<decltype(cell2nodeSerial)::element_type>(ObjName{"cell2nodeSerial"}, mesh->getMPI());
-        if (mesh->isPeriodic)
-            cell2nodePbiSerial = make_ssp<decltype(cell2nodePbiSerial)::element_type>(ObjName{"cell2nodePbiSerial"}, NodePeriodicBits::CommType(), NodePeriodicBits::CommMult(), mesh->getMPI());
-        coordSerial = make_ssp<decltype(coordSerial)::element_type>(ObjName{"coordSerial"}, mesh->getMPI());
-        cellElemInfoSerial = make_ssp<decltype(cellElemInfoSerial)::element_type>(ObjName{"cellElemInfoSerial"}, ElemInfo::CommType(), ElemInfo::CommMult(), mesh->getMPI());
-
-        coordSerialOutTrans.setFatherSon(mesh->coords.father, coordSerial);
-        cell2nodeSerialOutTrans.setFatherSon(mesh->cell2node.father, cell2nodeSerial);
-        if (mesh->isPeriodic)
-            cell2nodePbiSerialOutTrans.setFatherSon(mesh->cell2nodePbi.father, cell2nodePbiSerial);
-        // bnd2nodeSerialOutTrans.setFatherSon(mesh->bnd2node.father, bnd2nodeSerial);
-        cellElemInfoSerialOutTrans.setFatherSon(mesh->cellElemInfo.father, cellElemInfoSerial);
-        // bndElemInfoSerialOutTrans.setFatherSon(mesh->bndElemInfo.father, bndElemInfoSerial);
-
-        // Reuse existing father global mappings to avoid side-effects on
-        // the mesh's own pLGlobalMapping pointers.  createFatherGlobalMapping()
-        // would call father->createGlobalMapping() which replaces the shared_ptr
-        // on the father array, affecting the mesh's own transformer.
-        auto reuseOrCreateFatherGlobalMapping = [](auto &trans)
-        {
-            if (trans.father->pLGlobalMapping)
-                trans.pLGlobalMapping = trans.father->pLGlobalMapping;
-            else
-                trans.createFatherGlobalMapping();
-        };
-        reuseOrCreateFatherGlobalMapping(coordSerialOutTrans);
-        reuseOrCreateFatherGlobalMapping(cell2nodeSerialOutTrans);
-        if (mesh->isPeriodic)
-            reuseOrCreateFatherGlobalMapping(cell2nodePbiSerialOutTrans);
-        // reuseOrCreateFatherGlobalMapping(bnd2nodeSerialOutTrans);
-        reuseOrCreateFatherGlobalMapping(cellElemInfoSerialOutTrans);
-        // reuseOrCreateFatherGlobalMapping(bndElemInfoSerialOutTrans);
-
-        coordSerialOutTrans.createGhostMapping(serialPullNode);
-        cell2nodeSerialOutTrans.createGhostMapping(serialPullCell);
-        if (mesh->isPeriodic)
-            cell2nodePbiSerialOutTrans.createGhostMapping(serialPullCell);
-        // bnd2nodeSerialOutTrans.createGhostMapping(serialPullBnd);
-        // cellElemInfo shares the same cell indexing as cell2node: copy
-        // ghost + global mappings without overwriting the father's pointer.
-        cellElemInfoSerialOutTrans.pLGhostMapping = cell2nodeSerialOutTrans.pLGhostMapping;
-        cellElemInfoSerialOutTrans.pLGlobalMapping = cell2nodeSerialOutTrans.pLGlobalMapping;
-        // bndElemInfoSerialOutTrans.BorrowGGIndexing(bnd2nodeSerialOutTrans);
-
-        coordSerialOutTrans.createMPITypes();
-        cell2nodeSerialOutTrans.createMPITypes();
-        if (mesh->isPeriodic)
-            cell2nodePbiSerialOutTrans.createMPITypes();
-        // bnd2nodeSerialOutTrans.createMPITypes();
-        cellElemInfoSerialOutTrans.createMPITypes();
-        // bndElemInfoSerialOutTrans.createMPITypes();
-
-        coordSerialOutTrans.pullOnce();
-        cell2nodeSerialOutTrans.pullOnce();
-        if (mesh->isPeriodic)
-            cell2nodePbiSerialOutTrans.pullOnce();
-        // bnd2nodeSerialOutTrans.pullOnce();
-        cellElemInfoSerialOutTrans.pullOnce();
-        // bndElemInfoSerialOutTrans.pullOnce();
-        if (mesh->getMPI().rank == mRank)
-        {
-            DNDS::log() << "UnstructuredMeshSerialRW === BuildSerialOut Done " << std::endl;
-        }
     }
 
 }
@@ -1242,6 +1156,54 @@ namespace DNDS::Geom
 
     void UnstructuredMesh::AssertOnN2CB()
     {
+        if (HasNativeState())
+        {
+            auto requirements = MeshReadRequirements::Primary();
+            requirements.inverse = true;
+            auto read = AcquireRead(requirements);
+            const auto view = read.HostView();
+            auto cells = RelationReadAccess::Current(*this, Adj::Node2Cell, requirements);
+            auto boundaries = RelationReadAccess::Current(*this, Adj::Node2Bnd, requirements);
+            auto contains = [](auto row, index target)
+            { return std::find(row.begin(), row.end(), target) != row.end(); };
+            for (index node = 0; node < view.NumNodeProc(); ++node)
+            {
+                auto checkSupport = [&](const RelationReadAccess &support, bool boundary)
+                {
+                    for (size_t slot = 0; slot < support.RowSize(node); ++slot)
+                    {
+                        const auto entry = support.ReadEntry(node, slot);
+                        DNDS_check_throw_info(!entry.absent, "inverse support contains an absent entity");
+                        if (entry.unavailable)
+                            continue; // A partial node star is a valid publication.
+                        const auto parent = support.Raw(node, slot);
+                        const auto cone = boundary ? view.BoundaryNodes(parent) : view.CellNodes(parent);
+                        DNDS_check_throw_info(contains(cone, node), "inverse support parent does not contain its source node");
+                    }
+                };
+                checkSupport(cells, false);
+                checkSupport(boundaries, true);
+            }
+            auto checkOwnedCones = [&](index count, const RelationReadAccess &support, bool boundary)
+            {
+                for (index parent = 0; parent < count; ++parent)
+                {
+                    const auto cone = boundary ? view.BoundaryNodes(parent) : view.CellNodes(parent);
+                    for (auto node : cone)
+                    {
+                        DNDS_check_throw_info(node >= 0 && node < view.NumNodeProc(), "owned cone node is unavailable");
+                        bool found = false;
+                        for (size_t slot = 0; slot < support.RowSize(node); ++slot)
+                            found = found || support.Raw(node, slot) == parent;
+                        DNDS_check_throw_info(found, "owned cone is missing from inverse node support");
+                    }
+                }
+            };
+            checkOwnedCones(view.NumCell(), cells, false);
+            checkOwnedCones(view.NumBnd(), boundaries, true);
+            // Unused nodes may have empty support; no nonempty-star assertion.
+            return;
+        }
         for (index iNode = NumNode(); iNode < NumNodeProc(); iNode++)
         {
             int nCellAdjIn = 0;
@@ -1689,6 +1651,66 @@ namespace DNDS::Geom
     void UnstructuredMesh::
         AssertOnFaces()
     {
+        if (HasNativeState())
+        {
+            const auto requirements = MeshReadRequirements::CellFlux();
+            auto read = AcquireRead(requirements);
+            const auto view = read.HostView();
+            // Typed scopes validate local/encoded-global targets against the
+            // exact entity maps, including unavailable outer ghost references.
+            auto faceCells = RelationReadAccess::Current(*this, Adj::Face2Cell, requirements);
+            auto cellFaces = RelationReadAccess::Current(*this, Adj::Cell2Face, requirements);
+            std::vector<std::map<index, size_t>> incoming(size_t(view.NumCell()));
+            for (index face = 0; face < view.NumFaceProc(); ++face)
+            {
+                const auto support = view.FaceCells(face);
+                DNDS_check_throw_info(support.size() == 2, "face assertion requires two ordered cell sides");
+                const bool external = FaceIDIsExternalBC(view.GetFaceInfo(face).zone);
+                DNDS_check_throw_info(!faceCells.ReadEntry(face, 0).absent &&
+                                          faceCells.ReadEntry(face, 1).absent == external,
+                                      "face boundary zone disagrees with its ordered cell-side sentinels");
+                for (size_t side = 0; side < support.size(); ++side)
+                {
+                    const auto entry = faceCells.ReadEntry(face, side);
+                    if (entry.absent || entry.unavailable)
+                        continue; // Outer faces need not have complete local cell closure.
+                    const auto cell = support[side];
+                    if (cell < view.NumCell())
+                        ++incoming[size_t(cell)][face];
+                }
+                if (face < view.NumFace())
+                {
+                    std::map<index, size_t> multiplicities;
+                    for (auto cell : support)
+                        if (cell != UnInitIndex)
+                            ++multiplicities[cell];
+                    for (const auto &[cell, count] : multiplicities)
+                    {
+                        DNDS_check_throw_info(cell >= 0 && cell < view.NumCellProc(), "owned face cell is unavailable");
+                        const auto reverse = view.CellFaces(cell);
+                        const auto occurrences = size_t(std::count(reverse.begin(), reverse.end(), face));
+                        DNDS_check_throw_info(occurrences == count,
+                                              "owned face is missing or duplicated in an adjacent cell incidence");
+                    }
+                }
+            }
+            for (index cell = 0; cell < view.NumCell(); ++cell)
+            {
+                std::map<index, size_t> outgoing;
+                for (auto face : view.CellFaces(cell))
+                {
+                    DNDS_check_throw_info(face >= 0 && face < view.NumFaceProc(), "owned cell face is unavailable");
+                    ++outgoing[face];
+                }
+                // Count ordered incidences, not unique faces: a self-periodic
+                // face appears twice on both sides of this equality.
+                DNDS_check_throw_info(outgoing == incoming[size_t(cell)],
+                                      "owned cell and face incidences disagree in identity or multiplicity");
+            }
+            // An owned face may touch a ghost cell whose OTHER face slots are
+            // unavailable. Do not demand completeness of those outer rows.
+            return;
+        }
 
         //* some assertions on faces
         std::vector<uint16_t> cCont(cell2cell.Size(), 0); // simulate flux
@@ -2258,285 +2280,88 @@ namespace DNDS::Geom
 
     void UnstructuredMesh::ConstructBndMesh(UnstructuredMesh &bMesh)
     {
-        int native = HasNativeState(), minNative = 0, maxNative = 0;
-        MPI_Allreduce(&native, &minNative, 1, MPI_INT, MPI_MIN, mpi.comm);
-        MPI_Allreduce(&native, &maxNative, 1, MPI_INT, MPI_MAX, mpi.comm);
-        DNDS_check_throw_info(minNative == maxNative, "boundary extraction authority differs between ranks");
-        if (native)
-        {
-            FieldTransferDetail::LocalStage(mpi, [&]
-                                            {
-                int communicator = MPI_UNEQUAL;
-                if (bMesh.mpi.comm != MPI_COMM_NULL) MPI_Comm_compare(mpi.comm, bMesh.mpi.comm, &communicator);
-                // Inspect every group irrespective of legacy state flags:
-                // detached optional arrays can exist even when flags are clear.
-                bool emptyBacking = true;
-                auto checkPair = [&](auto &member)
-                {
-                    const auto &pair = member.ref;
-                    emptyBacking = emptyBacking && !pair.father && !pair.son && !pair.trans.father && !pair.trans.son;
-                };
-                for_each_member_list(bMesh.device_array_list_primary(), checkPair);
-                for_each_member_list(bMesh.device_array_list_facial(), checkPair);
-                for_each_member_list(bMesh.device_array_list_C2F(), checkPair);
-                for_each_member_list(bMesh.device_array_list_N2CB(), checkPair);
-                for_each_member_list(bMesh.device_array_list_edge(), checkPair);
-                auto extraPairs = std::tie(bMesh.cell2cellOrig, bMesh.node2nodeOrig, bMesh.bnd2bndOrig,
-                                            bMesh.cell2cellFace, bMesh.cell2nodePeriodicRecreated,
-                                            bMesh.coordsPeriodicRecreated, bMesh.coordsElevDisp);
-                std::apply([&](auto &...pair)
-                {
-                    ((emptyBacking = emptyBacking && !pair.father && !pair.son && !pair.trans.father && !pair.trans.son), ...);
-                }, extraPairs);
-                DNDS_check_throw_info(emptyBacking,
-                                      "native boundary destination retains legacy arrays; select a fresh destination");
-                DNDS_check_throw_info(!versions.SameController(bMesh.versions) && bMesh.dim == getDim() - 1 &&
-                                          (communicator == MPI_IDENT || communicator == MPI_CONGRUENT) && bMesh.versions.CanMutate(),
-                                      "native boundary destination must be independent, idle and dimension/communicator compatible"); });
-            auto next = ExtractBoundary();
-            const auto state = next->CurrentNativeState();
-            const auto nodes = state->Entities(EntityKind::Node);
-            const auto &ancestry = state->Provenance()->sourceIds.at(EntityKind::Node);
-            RelationGhostRoute route(nodes);
-            Runtime::ArrayPair<index> parents{ancestry, route.TransferRows(nodes, ancestry, Runtime::ElementSchema::Arithmetic<index>())};
-            std::vector<index> sourceToBoundary, boundaryToSource, cellParents;
-            std::shared_ptr<NativeMeshState> prepared;
-            FieldTransferDetail::LocalStage(mpi, [&]
-                                            {
-                std::unordered_map<index, index> sourceRows;
-                for (index row = 0; row < NumNodeProc(); ++row)
-                    sourceRows.emplace(OriginalEntityId(EntityKind::Node, row), row);
-                sourceToBoundary.assign(size_t(NumNodeProc()), UnInitIndex);
-                boundaryToSource.assign(size_t(nodes.NumLocal()), UnInitIndex);
-                auto read = parents.ReadCombined();
-                for (index row = 0; row < nodes.NumLocal(); ++row)
-                {
-                    auto found = sourceRows.find(read.View()(size_t(row), 0));
-                    if (found != sourceRows.end())
-                    {
-                        boundaryToSource[size_t(row)] = found->second;
-                        sourceToBoundary[size_t(found->second)] = row;
-                    }
-                }
-                cellParents.resize(size_t(state->NumOwned(EntityKind::Cell)));
-                sourceRows.clear();
-                for (index row = 0; row < NumBnd(); ++row)
-                    sourceRows.emplace(OriginalEntityId(EntityKind::Bnd, row), row);
-                auto cellAncestry = state->Provenance()->sourceIds.at(EntityKind::Cell).Read();
-                for (size_t row = 0; row < cellParents.size(); ++row)
-                {
-                    auto found = sourceRows.find(cellAncestry.View()(row, 0));
-                    DNDS_check_throw_info(found != sourceRows.end(), "extracted boundary cell ancestry is not owned by its source");
-                    cellParents[row] = found->second;
-                }
-                prepared = std::shared_ptr<NativeMeshState>(new NativeMeshState(*state)); });
-            // These vectors are setup-only compatibility caches. They do not
-            // change the source query authority or invalidate retained reads.
-            MeshMutationToken destination(&bMesh, bMesh.versions, Runtime::Change::All);
-            destination.Commit();
-            prepared->BindPreparedEpoch(bMesh.versions);
-            bMesh._entityIdentity = next->_entityIdentity;
-            bMesh.isPeriodic = state->BorrowHostView().IsPeriodic();
-            bMesh.periodicInfo = state->BorrowHostView().Periodic();
-            bMesh._nativeState = std::move(prepared);
-            bMesh._nativeSmoothing.reset();
-            bMesh.node2parentNode.swap(boundaryToSource);
-            bMesh.cell2parentCell.swap(cellParents);
-            bMesh.node2bndNode.clear();
-            node2bndNode.swap(sourceToBoundary);
-            return;
-        }
-        CheckCollectiveMutationAvailable();
-        int communicator = MPI_UNEQUAL;
-        if (bMesh.mpi.comm != MPI_COMM_NULL)
-            MPI_Comm_compare(mpi.comm, bMesh.mpi.comm, &communicator);
-        int distinct = !bMesh.HasNativeState() && !versions.SameController(bMesh.versions) && bMesh.dim == dim - 1 &&
-                       (communicator == MPI_IDENT || communicator == MPI_CONGRUENT) && bMesh.versions.CanMutate();
-        MPI_Allreduce(MPI_IN_PLACE, &distinct, 1, MPI_INT, MPI_MIN, mpi.comm);
-        DNDS_check_throw_info(distinct, "boundary destination must select legacy workspace, be independent, idle and dimension/communicator compatible");
-        auto mutationToken = BeginManagedMutation(Runtime::Change::Interface);
-        auto destinationToken = bMesh.BeginManagedMutation(Runtime::Change::All);
-
-        DNDS_assert(bMesh.dim == dim - 1 && bMesh.mpi == mpi);
-        bMesh.cell2node.InitPair("bMesh.cell2node", mpi);
-        bMesh.coords.InitPair("bMesh.coords", mpi);
-        if (isPeriodic)
-        {
-            bMesh.isPeriodic = true;
-            bMesh.periodicInfo = this->periodicInfo;
-            bMesh.cell2nodePbi.InitPair("bMesh.cell2nodePbi", mpi);
-        }
-        bMesh.cellElemInfo.InitPair("bMesh.cellElemInfo", mpi);
-        bMesh.cell2cellOrig.InitPair("bMesh.cell2cellOrig", mpi);
-        bMesh.node2nodeOrig.InitPair("bMesh.node2nodeOrig", mpi);
-
-        bMesh.bnd2cell.InitPair("bMesh.bnd2cell", mpi);       // which will remain 0 sized
-        bMesh.bnd2node.InitPair("bMesh.bnd2node", mpi);       // which will remain 0 sized
-        bMesh.bndElemInfo.InitPair("bMesh.bndElemInfo", mpi); // which will remain 0 sized
-        bMesh.bnd2bndOrig.InitPair("bMesh.bnd2bndOrig", mpi); // which will remain 0 sized
-        if (isPeriodic)
-            bMesh.bnd2nodePbi.InitPair("bMesh.bnd2nodePbi", mpi); // which will remain 0 sized
-
-        tIndPair node2bndNodeGlobal;
-        node2bndNodeGlobal.InitPair("node2bndNodeGlobal", mpi);
-
-        node2bndNodeGlobal.father->Resize(this->NumNode());
-        node2bndNodeGlobal.TransAttach();
-        node2bndNodeGlobal.trans.BorrowGGIndexing(coords.trans);
-        node2bndNodeGlobal.trans.createMPITypes();
-        index bndNodeCount{0}, bndNodeStart{0};
-        {
-            for (index i = 0; i < node2bndNodeGlobal.Size(); i++)
-                node2bndNodeGlobal[i] = 0;
-            // Boundary-node metadata intentionally includes periodic boundary rows.
-            // Periodic boundary elements are skipped below, but retaining their nodes
-            // keeps parent-node/residual geometry information available for periodic
-            // boundary diagnostics and future boundary-mesh features.
-            for (index iBnd = 0; iBnd < this->NumBnd(); iBnd++)
-                for (auto iNode : bnd2node.father->operator[](iBnd))
-                    node2bndNodeGlobal[iNode]++; // now stores num-reference
-
+        FieldTransferDetail::LocalStage(mpi, [&]
+                                        { DNDS_check_throw_info(HasNativeState(), "boundary extraction requires native mesh authority"); });
+        FieldTransferDetail::LocalStage(mpi, [&]
+                                        {
+            int communicator = MPI_UNEQUAL;
+            if (bMesh.mpi.comm != MPI_COMM_NULL) MPI_Comm_compare(mpi.comm, bMesh.mpi.comm, &communicator);
+            // Inspect every group irrespective of legacy state flags:
+            // detached optional arrays can exist even when flags are clear.
+            bool emptyBacking = true;
+            auto checkPair = [&](auto &member)
             {
-                auto node2bndNodeGlobalPast = make_ssp<tInd::element_type>(ObjName{"node2bndNodeGlobalPast"}, mpi);
-                DNDS::ArrayTransformerType<tInd::element_type>::Type node2bndNodeGlobalPastTrans;
-                node2bndNodeGlobalPastTrans.setFatherSon(node2bndNodeGlobal.son, node2bndNodeGlobalPast);
-                node2bndNodeGlobalPastTrans.createFatherGlobalMapping();
-                std::vector<index> pushSonSeries(node2bndNodeGlobal.son->Size());
-                for (size_t i = 0; i < pushSonSeries.size(); i++)
-                    pushSonSeries[i] = DNDS::size_to_index(i);
-                node2bndNodeGlobalPastTrans.createGhostMapping(pushSonSeries, node2bndNodeGlobal.trans.pLGhostMapping->ghostStart);
-                node2bndNodeGlobalPastTrans.createMPITypes();
-                node2bndNodeGlobalPastTrans.pullOnce();
-                DNDS_assert(DNDS::size_to_index(node2bndNodeGlobal.trans.pLGhostMapping->ghostIndex.size()) == node2bndNodeGlobal.son->Size());
-                DNDS_assert(DNDS::size_to_index(node2bndNodeGlobal.trans.pLGhostMapping->pushingIndexGlobal.size()) == node2bndNodeGlobalPast->Size());
-                for (index i = 0; i < node2bndNodeGlobalPast->Size(); i++)
+                const auto &pair = member.ref;
+                emptyBacking = emptyBacking && !pair.father && !pair.son && !pair.trans.father && !pair.trans.son;
+            };
+            for_each_member_list(bMesh.device_array_list_primary(), checkPair);
+            for_each_member_list(bMesh.device_array_list_facial(), checkPair);
+            for_each_member_list(bMesh.device_array_list_C2F(), checkPair);
+            for_each_member_list(bMesh.device_array_list_N2CB(), checkPair);
+            for_each_member_list(bMesh.device_array_list_edge(), checkPair);
+            auto extraPairs = std::tie(bMesh.cell2cellOrig, bMesh.node2nodeOrig, bMesh.bnd2bndOrig,
+                                        bMesh.cell2cellFace, bMesh.cell2nodePeriodicRecreated,
+                                        bMesh.coordsPeriodicRecreated, bMesh.coordsElevDisp);
+            std::apply([&](auto &...pair)
+            {
+                ((emptyBacking = emptyBacking && !pair.father && !pair.son && !pair.trans.father && !pair.trans.son), ...);
+            }, extraPairs);
+            DNDS_check_throw_info(emptyBacking,
+                                  "native boundary destination retains legacy arrays; select a fresh destination");
+            DNDS_check_throw_info(!versions.SameController(bMesh.versions) && bMesh.getDim() == getDim() - 1 &&
+                                      (communicator == MPI_IDENT || communicator == MPI_CONGRUENT) && bMesh.versions.CanMutate(),
+                                  "native boundary destination must be independent, idle and dimension/communicator compatible"); });
+        auto next = ExtractBoundary();
+        const auto state = next->CurrentNativeState();
+        const auto nodes = state->Entities(EntityKind::Node);
+        const auto &ancestry = state->Provenance()->sourceIds.at(EntityKind::Node);
+        RelationGhostRoute route(nodes);
+        Runtime::ArrayPair<index> parents{ancestry, route.TransferRows(nodes, ancestry, Runtime::ElementSchema::Arithmetic<index>())};
+        std::vector<index> sourceToBoundary, boundaryToSource, cellParents;
+        std::shared_ptr<NativeMeshState> prepared;
+        FieldTransferDetail::LocalStage(mpi, [&]
+                                        {
+            std::unordered_map<index, index> sourceRows;
+            for (index row = 0; row < NumNodeProc(); ++row)
+                sourceRows.emplace(OriginalEntityId(EntityKind::Node, row), row);
+            sourceToBoundary.assign(size_t(NumNodeProc()), UnInitIndex);
+            boundaryToSource.assign(size_t(nodes.NumLocal()), UnInitIndex);
+            auto read = parents.ReadCombined();
+            for (index row = 0; row < nodes.NumLocal(); ++row)
+            {
+                auto found = sourceRows.find(read.View()(size_t(row), 0));
+                if (found != sourceRows.end())
                 {
-                    index iNodeG = node2bndNodeGlobal.trans.pLGhostMapping->pushingIndexGlobal[i]; //?should be right
-                    auto [ret, rank, iNodeL] = node2bndNodeGlobal.trans.pLGlobalMapping->search(iNodeG);
-                    DNDS_assert(ret && rank == node2bndNodeGlobal.father->getMPI().rank); // has to be local main
-                    node2bndNodeGlobal[iNodeL] += (*node2bndNodeGlobalPast)[i];
+                    boundaryToSource[size_t(row)] = found->second;
+                    sourceToBoundary[size_t(found->second)] = row;
                 }
             }
+            cellParents.resize(size_t(state->NumOwned(EntityKind::Cell)));
+            sourceRows.clear();
+            for (index row = 0; row < NumBnd(); ++row)
+                sourceRows.emplace(OriginalEntityId(EntityKind::Bnd, row), row);
+            auto cellAncestry = state->Provenance()->sourceIds.at(EntityKind::Cell).Read();
+            for (size_t row = 0; row < cellParents.size(); ++row)
             {
-                for (index i = 0; i < node2bndNodeGlobal.father->Size(); i++)
-                    if (node2bndNodeGlobal[i] == 0)
-                        node2bndNodeGlobal[i] = UnInitIndex;
-                    else
-                        node2bndNodeGlobal[i] = bndNodeCount++;
+                auto found = sourceRows.find(cellAncestry.View()(row, 0));
+                DNDS_check_throw_info(found != sourceRows.end(), "extracted boundary cell ancestry is not owned by its source");
+                cellParents[row] = found->second;
             }
-            MPI::Scan(&bndNodeCount, &bndNodeStart, 1, DNDS_MPI_INDEX, MPI_SUM, mpi.comm);
-            bndNodeStart -= bndNodeCount;
-            DNDS_assert(bndNodeStart >= 0 && bndNodeCount >= 0);
-            for (index i = 0; i < node2bndNodeGlobal.Size(); i++)
-                if (node2bndNodeGlobal[i] >= 0)
-                    node2bndNodeGlobal[i] += bndNodeStart;
-        }
-        node2bndNodeGlobal.trans.pullOnce();
-        bMesh.coords.father->Resize(bndNodeCount);
-        bMesh.coords.TransAttach();
-        bMesh.coords.trans.createFatherGlobalMapping();
-        std::vector<index> bndNodePullingSet;
-        for (index iNode = 0; iNode < this->NumNodeProc(); iNode++)
-        {
-            if (node2bndNodeGlobal[iNode] < 0)
-                continue;
-            // then node2bndNodeGlobal[iNode] >= 0, which covers all bnd2node entries
-            auto [ret, rank, iNodeL_in_bnd] = bMesh.coords.trans.pLGlobalMapping->search(node2bndNodeGlobal[iNode]);
-            DNDS_assert(ret);
-            if (rank != node2bndNodeGlobal.father->getMPI().rank)
-                bndNodePullingSet.push_back(node2bndNodeGlobal[iNode]); // bndNodePullingSet now also covers bnd2node needs
-        }
-        bMesh.coords.trans.createGhostMapping(bndNodePullingSet);
-        bMesh.coords.trans.createMPITypes();
-        bMesh.node2nodeOrig.father->Resize(bndNodeCount);
-        bMesh.node2nodeOrig.TransAttach();
-        bMesh.node2nodeOrig.trans.BorrowGGIndexing(bMesh.coords.trans);
-        bMesh.node2nodeOrig.trans.createMPITypes();
-
-        // std::cout << mpi.rank << ", " << bndNodePullingSet.size() << ", " << bndNodeCount << std::endl;
-        node2bndNode.resize(this->NumNodeProc(), -1);
-        bMesh.node2parentNode.resize(bMesh.coords.Size());
-        for (index iN = 0; iN < node2bndNodeGlobal.Size(); iN++)
-            node2bndNode.at(iN) = bMesh.NodeIndexGlobal2Local(node2bndNodeGlobal[iN]),
-            DNDS_assert(node2bndNodeGlobal[iN] != UnInitIndex ? (node2bndNode.at(iN) >= 0) : true);
-        for (size_t iNode = 0; iNode < node2bndNode.size(); iNode++)
-            if (node2bndNode[iNode] >= 0)
-                bMesh.node2parentNode.at(node2bndNode[iNode]) = iNode;
-
-        // std::cout << mpi.rank << ", " << bndNodeCount << std::endl;
-        for (index iBNode = 0; iBNode < bMesh.coords.Size(); iBNode++)
-            bMesh.coords[iBNode] = coords[bMesh.node2parentNode[iBNode]];
-        bMesh.coords.trans.pullOnce(); // excessive, should be identical
-        for (index iBNode = 0; iBNode < bMesh.node2nodeOrig.Size(); iBNode++)
-            bMesh.node2nodeOrig[iBNode] = node2nodeOrig[bMesh.node2parentNode[iBNode]];
-
-        index nBndCellUse{0};
-        for (index iB = 0; iB < this->NumBnd(); iB++)
-            if (!FaceIDIsPeriodic(this->bndElemInfo(iB, 0).zone))
-                nBndCellUse++;
-        bMesh.cell2node.father->Resize(nBndCellUse);
-        if (isPeriodic)
-            bMesh.cell2nodePbi.father->Resize(nBndCellUse);
-        bMesh.cell2cellOrig.father->Resize(nBndCellUse);
-        bMesh.cellElemInfo.father->Resize(nBndCellUse);
-        bMesh.cell2parentCell.resize(nBndCellUse, -1);
-        nBndCellUse = 0;
-        for (index iB = 0; iB < this->NumBnd(); iB++)
-        {
-            if (FaceIDIsPeriodic(this->bndElemInfo(iB, 0).zone))
-                // Periodic boundary faces are not emitted as boundary-mesh cells.
-                // Nodes touched only by these rows may remain as intentionally
-                // orphaned residual nodes; consumers must not assume every
-                // boundary-mesh node is referenced by an output cell.
-                continue;
-            bMesh.cell2parentCell.at(nBndCellUse) = iB;
-            bMesh.cell2node.ResizeRow(nBndCellUse, bnd2node.RowSize(iB));
-            if (isPeriodic)
-                bMesh.cell2nodePbi.ResizeRow(nBndCellUse, bnd2node.RowSize(iB));
-            bMesh.cellElemInfo(nBndCellUse, 0) = bndElemInfo(iB, 0);
-            bMesh.cell2cellOrig(nBndCellUse, 0) = bnd2bndOrig(iB, 0);
-
-            for (rowsize ib2n = 0; ib2n < bnd2node.RowSize(iB); ib2n++)
-            {
-                if (bnd2faceV.at(iB) < 0) // where bnd has not a face!
-                    bMesh.cell2node[nBndCellUse][ib2n] = node2bndNode.at(bnd2node[iB][ib2n]);
-                else
-                    bMesh.cell2node[nBndCellUse][ib2n] = node2bndNode.at(face2node[bnd2faceV.at(iB)][ib2n]); //* respect the face ordering if possible // this can be omitted if all bnds used are not periodic
-                DNDS_assert(node2bndNode.at(bnd2node[iB][ib2n]) >= 0);
-                if (isPeriodic)
-                {
-                    if (bnd2faceV.at(iB) < 0)                                             // where bnd has not a face!
-                        bMesh.cell2nodePbi[nBndCellUse][ib2n] = Geom::NodePeriodicBits{}; // a invalid value
-                    else
-                    {
-                        bMesh.cell2nodePbi[nBndCellUse][ib2n] = face2nodePbi[bnd2faceV.at(iB)][ib2n];
-                    }
-                }
-            }
-            nBndCellUse++;
-        }
-
-        bMesh.cell2node.father->Compress();
-        bMesh.cell2node.father->createGlobalMapping();
-        bMesh.cell2node.TransAttach();
-        bMesh.cell2node.trans.createGhostMapping(std::vector<int>{}); // now bnd mesh has no valid cell2cell and ghost cells
-
-        // Ensure global mappings exist on all arrays that BuildSerialOut
-        // (and other consumers) may query via globalSize().  The ghost
-        // mappings were already set up for coords/node2nodeOrig above;
-        // cellElemInfo and cell2cellOrig only need the global mapping.
-        bMesh.cellElemInfo.father->createGlobalMapping();
-        bMesh.cell2cellOrig.father->createGlobalMapping();
-
-        bMesh.adjPrimaryState = Adj_PointToLocal;
-        // bMesh.cell2node was populated directly with local indices.
-        // Wire the target mapping (bMesh's node ghost mapping), then mark local.
-        bMesh.cell2node.idx.wireTargetMapping(bMesh.coords.trans.pLGhostMapping);
-        bMesh.cell2node.idx.markLocal();
-        if (mpi.rank == mRank)
-            log() << "UnstructuredMesh === ConstructBndMesh Done" << std::endl;
-        destinationToken.Commit();
-        mutationToken.Commit();
+            prepared = std::shared_ptr<NativeMeshState>(new NativeMeshState(*state)); });
+        // These vectors are setup-only compatibility caches. They do not
+        // change the source query authority or invalidate retained reads.
+        MeshMutationToken destination(&bMesh, bMesh.versions, Runtime::Change::All);
+        destination.Commit();
+        prepared->BindPreparedEpoch(bMesh.versions);
+        bMesh._entityIdentity = next->_entityIdentity;
+        bMesh.isPeriodic = state->BorrowHostView().IsPeriodic();
+        bMesh.periodicInfo = state->BorrowHostView().Periodic();
+        bMesh._nativeState = std::move(prepared);
+        bMesh._nativeSmoothing.reset();
+        bMesh.node2parentNode.swap(boundaryToSource);
+        bMesh.cell2parentCell.swap(cellParents);
+        bMesh.node2bndNode.clear();
+        node2bndNode.swap(sourceToBoundary);
     }
 
     void UnstructuredMesh::ObtainSymmetricSymbolicFactorization(Direct::SerialSymLUStructure &symLU, Direct::DirectPrecControl control) const

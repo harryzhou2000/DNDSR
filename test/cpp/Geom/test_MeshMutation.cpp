@@ -1,6 +1,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "Geom/Mesh/Mesh.hpp"
+#include "MeshFacadeOverlapFixture.hpp"
 #include "DNDS/Serializer/SerializerJSON.hpp"
 #include <filesystem>
 
@@ -195,27 +196,28 @@ TEST_CASE("Collective VTK cache setup rejects a reader held on one rank")
     CHECK(mesh->vtkCell2nodeOffsets.size() == size_t(mesh->NumCell() + 1));
 }
 
-TEST_CASE("Two-mesh mutation rejects native destinations before acquiring either writer")
+TEST_CASE("Boundary destination rejection preserves both native authorities and controllers")
 {
     auto mpi = MutationMPI();
-    auto source = MutationFixture(mpi);
-    auto destination = MutationFixture(mpi);
-    destination->PublishNative();
-    // The public dimension belongs to the detached workspace. Make it satisfy
-    // the boundary-output shape preflight without changing native authority.
+    auto source = DNDS::Geom::OverlapTest::BuildNativeFixture(mpi).mesh;
+    auto destination = DNDS::Geom::OverlapTest::BuildNativeFixture(mpi).mesh;
+    // Native state remains dimension two; detached scalar metadata cannot make
+    // it a compatible dimension-one boundary destination.
     destination->dim = 1;
     auto sourceStamp = source->versions.Stamp();
     auto destinationStamp = destination->versions.Stamp();
+    const auto sourceState = source->CurrentNativeState();
+    const auto destinationState = destination->CurrentNativeState();
     CHECK_THROWS(source->ConstructBndMesh(*destination));
     CHECK(sourceStamp.Valid());
     CHECK(destinationStamp.Valid());
     CHECK(source->versions.CanMutate());
-    CHECK(destination->HasNativeState());
+    CHECK(source->CurrentNativeState() == sourceState);
+    CHECK(destination->CurrentNativeState() == destinationState);
     CHECK(source->AcquireRead().HostView().NumCell() == source->NumCell());
-
-    UnstructuredMesh legacyPeer(mpi, 1);
-    auto peerStamp = legacyPeer.versions.Stamp();
-    auto &mixedDestination = mpi.rank == 0 ? *destination : legacyPeer;
+    UnstructuredMesh freshPeer(mpi, 1);
+    auto peerStamp = freshPeer.versions.Stamp();
+    auto &mixedDestination = mpi.rank == 0 ? *destination : freshPeer;
     CHECK_THROWS(source->ConstructBndMesh(mixedDestination));
     CHECK_THROWS(mixedDestination.BuildO2FromO1Elevation(*source));
     CHECK_THROWS(mixedDestination.BuildBisectO1FormO2(*source));
@@ -223,6 +225,8 @@ TEST_CASE("Two-mesh mutation rejects native destinations before acquiring either
     CHECK(destinationStamp.Valid());
     CHECK(peerStamp.Valid());
     CHECK(source->versions.CanMutate());
+    CHECK(source->CurrentNativeState() == sourceState);
+    CHECK(destination->CurrentNativeState() == destinationState);
     CHECK(source->AcquireRead().HostView().NumNode() == source->NumNode());
 }
 

@@ -336,18 +336,7 @@ namespace DNDS::Geom
                     builder.ResizeRow(size_t(i), read.RowSize(row));
                     auto output = builder.Row<index>(size_t(i));
                     for (size_t slot = 0; slot < output.size; ++slot)
-                    {
-                        auto entry = read.ReadEntry(row, slot);
-                        if (entry.absent)
-                            output[slot] = UnInitIndex;
-                        else if (auto local = read.Target().GlobalToLocal(entry.global))
-                            output[slot] = *local;
-                        else
-                        {
-                            output[slot] = -1 - entry.global;
-                            DNDS_check_throw_info(output[slot] != UnInitIndex, "native assembly target sentinel collision");
-                        }
-                    }
+                        output[slot] = read.ConvertedIndex(row, slot, Adj_PointToLocal);
                 }
                 return RArray::FromSharedStorage(builder.Commit());
             };

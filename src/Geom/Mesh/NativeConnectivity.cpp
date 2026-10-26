@@ -1,6 +1,5 @@
 #include "NativeConnectivity.hpp"
 #include "NativePeriodicMatch.hpp"
-#include "MeshConnectivity.hpp"
 #include "ConnectivityInterpolateRows.hpp"
 #include "Mesh.hpp"
 #include <set>

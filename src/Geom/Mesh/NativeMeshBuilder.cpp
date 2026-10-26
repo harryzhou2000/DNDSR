@@ -363,21 +363,8 @@ namespace DNDS::Geom
                     if (externalBoundarySlot)
                         output[1] = UnInitIndex;
                     for (size_t slot = 0; slot < relation.RowSize(source); ++slot)
-                    {
-                        const auto entry = relation.ReadEntry(source, slot);
-                        if (entry.absent)
-                            output[slot] = UnInitIndex;
-                        else if (auto local = relation.Target().GlobalToLocal(entry.global))
-                            output[slot] = *local;
-                        else
-                        {
-                            DNDS_check_throw_info(!cone && (!completeOwned || source >= relation.NumOwned()),
-                                                  "native primary closure is missing a required local target");
-                            output[slot] = -1 - entry.global;
-                            DNDS_check_throw_info(output[slot] != UnInitIndex,
-                                                  "unavailable target collides with the absent sentinel");
-                        }
-                    }
+                        output[slot] = relation.ConvertedIndex(source, slot, Adj_PointToLocal,
+                                                               !cone && (!completeOwned || source >= relation.NumOwned()));
                 }
                 return Runtime::Array<index>::FromSharedStorage(builder.Commit());
             };

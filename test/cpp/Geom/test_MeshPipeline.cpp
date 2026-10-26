@@ -23,6 +23,8 @@
 #include "doctest.h"
 
 #include "Geom/Mesh/Mesh.hpp"
+#include "Geom/Mesh/NativeMeshCGNS.hpp"
+#include "Geom/Mesh/RelationAccess.hpp"
 #include "Geom/BoundaryCondition.hpp"
 #include <string>
 #include <vector>
@@ -68,6 +70,8 @@ static MPIInfo g_mpi;
 
 /// One full-pipeline mesh per config.
 static ssp<UnstructuredMesh> g_full[N_CONFIGS];
+// Boundary operations no longer allocate a legacy destination workspace.
+static ssp<UnstructuredMesh> g_nativeBoundary[N_CONFIGS];
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -85,6 +89,25 @@ static std::string meshPath(const std::string &name)
             f = f.substr(0, pos);
     }
     return f + "/data/mesh/" + name;
+}
+
+static ssp<UnstructuredMesh> nativeBoundarySource(int meshId, const MeshConfig &cfg)
+{
+    if (!g_nativeBoundary[meshId])
+    {
+        std::optional<NativePeriodicImportOptions> periodic;
+        if (cfg.periodic)
+        {
+            periodic.emplace();
+            periodic->frames.translation[1].map() = cfg.translation1;
+            periodic->frames.translation[2].map() = cfg.translation2;
+            periodic->frames.translation[3].map() = cfg.translation3;
+            periodic->tolerance = 1e-8;
+        }
+        auto state = ReadNativeCGNS(g_mpi, meshPath(cfg.file), cfg.dim, FBC_Name_2_ID_Default, 0, {1, true}, periodic);
+        g_nativeBoundary[meshId] = UnstructuredMesh::FromNative(g_mpi, std::move(state));
+    }
+    return g_nativeBoundary[meshId];
 }
 
 static ssp<UnstructuredMesh> buildFullMesh(
@@ -212,6 +235,8 @@ int main(int argc, char **argv)
     ctx.applyCommandLine(argc, argv);
     int res = ctx.run();
 
+    for (auto &m : g_nativeBoundary)
+        m.reset();
     for (auto &m : g_full)
         m.reset();
     MPI_Finalize();
@@ -1158,30 +1183,34 @@ TEST_CASE("BuildCell2CellFace: entries are valid cells or negative"){
 
 // --- ConstructBndMesh ---
 
-TEST_CASE("ConstructBndMesh: correct dimensions and state"){
+TEST_CASE("ConstructBndMesh: correct dimensions and native local state"){
     FOR_EACH_MESH_CONFIG({
         if (cfg.periodic)
             continue; // periodic meshes may have no real boundaries after deduplication
-        UnstructuredMesh bMesh(g_mpi, m->dim - 1);
-        m->ConstructBndMesh(bMesh);
-        CHECK(bMesh.dim == m->dim - 1);
-        CHECK(bMesh.NumCell() == m->NumBnd());
-        CHECK(bMesh.adjPrimaryState == Adj_PointToLocal);
+        auto source = nativeBoundarySource(_ci, cfg);
+        UnstructuredMesh bMesh(g_mpi, source->getDim() - 1);
+        source->ConstructBndMesh(bMesh);
+        CHECK(bMesh.getDim() == source->getDim() - 1);
+        CHECK(bMesh.NumCell() == source->NumBnd());
+        CHECK(bMesh.HasNativeState());
+        CHECK(bMesh.ReadNativeRelation(Adj::Cell2Node).State() == Adj_PointToLocal);
     })}
 
 TEST_CASE("ConstructBndMesh: node2parentNode valid"){
     FOR_EACH_MESH_CONFIG({
         if (cfg.periodic)
             continue;
-        UnstructuredMesh bMesh(g_mpi, m->dim - 1);
-        m->ConstructBndMesh(bMesh);
+        auto source = nativeBoundarySource(_ci, cfg);
+        UnstructuredMesh bMesh(g_mpi, source->getDim() - 1);
+        source->ConstructBndMesh(bMesh);
         CHECK(bMesh.node2parentNode.size() ==
               static_cast<size_t>(bMesh.NumNode() + bMesh.NumNodeGhost()));
         for (DNDS::index i = 0; i < bMesh.NumNode(); i++)
         {
             DNDS::index pn = bMesh.node2parentNode[i];
             CHECK(pn >= 0);
-            CHECK(pn < m->NumNode() + m->NumNodeGhost());
+            CHECK(pn < source->NumNode() + source->NumNodeGhost());
+            CHECK(bMesh.Coord(i).isApprox(source->Coord(pn), 1e-13));
         }
     })}
 
@@ -1388,29 +1417,37 @@ TEST_CASE("AdjPrimary round-trip: serial-out pattern")
         })
 }
 
-TEST_CASE("AdjForBnd round-trip: ConstructBndMesh + ForBnd")
+TEST_CASE("Boundary adjacency round-trip: native detached local and global states")
 {
     FOR_EACH_MESH_CONFIG(
-        UnstructuredMesh bMesh(g_mpi, m->dim - 1);
-        m->ConstructBndMesh(bMesh);
-        REQUIRE(bMesh.adjPrimaryState == Adj_PointToLocal);
-
-        auto c2nSnap = snapshotAdj(bMesh.cell2node, bMesh.NumCell());
-
-        bMesh.AdjLocal2GlobalPrimaryForBnd();
-        CHECK(bMesh.adjPrimaryState == Adj_PointToGlobal);
-
-        DNDS::index globalNodeSize = bMesh.coords.father->globalSize();
-        for (DNDS::index iC = 0; iC < bMesh.NumCell(); iC++) for (DNDS::rowsize j = 0; j < bMesh.cell2node.RowSize(iC); j++) {
-            DNDS::index gN = bMesh.cell2node(iC, j);
-            CHECK(gN >= 0);
-            CHECK(gN < globalNodeSize);
-        }
-
-        bMesh.AdjGlobal2LocalPrimaryForBnd();
-        CHECK(bMesh.adjPrimaryState == Adj_PointToLocal);
-
-        checkAdjMatchesSnapshot(bMesh.cell2node, bMesh.NumCell(), c2nSnap);)
+        auto source = nativeBoundarySource(_ci, cfg);
+        UnstructuredMesh bMesh(g_mpi, source->getDim() - 1);
+        source->ConstructBndMesh(bMesh);
+        const auto stamp = bMesh.versions.Stamp();
+        auto original = bMesh.ReadNativeRelation(Adj::Cell2Node);
+        REQUIRE(original.State() == Adj_PointToLocal);
+        std::vector<std::vector<DNDS::index>> snapshot(size_t(original.Rows()));
+        for (DNDS::index row = 0; row < original.Rows(); ++row) for (size_t slot = 0; slot < original.RowSize(row); ++slot)
+            snapshot[size_t(row)]
+                .push_back(original.Raw(row, slot));
+        auto globals = NativeRelation::Convert(original, Adj_PointToGlobal);
+        auto globalRead = globals.Read();
+        CHECK(globalRead.State() == Adj_PointToGlobal);
+        for (DNDS::index row = 0; row < globalRead.Rows(); ++row) for (size_t slot = 0; slot < globalRead.RowSize(row); ++slot) {
+            const auto global = globalRead.Raw(row, slot);
+            CHECK(global >= 0);
+            CHECK(global < globalRead.Target().NumGlobal());
+        } auto locals = NativeRelation::Convert(globalRead, Adj_PointToLocal, false);
+        auto localRead = locals.Read();
+        CHECK(localRead.State() == Adj_PointToLocal);
+        CHECK(localRead.Rows() == original.Rows());
+        CHECK(stamp.Valid()); // Detached conversion never toggles live query storage.
+        CHECK(bMesh.ReadNativeRelation(Adj::Cell2Node).State() == Adj_PointToLocal);
+        for (DNDS::index row = 0; row < localRead.Rows(); ++row) {
+            REQUIRE(localRead.RowSize(row) == snapshot[size_t(row)].size());
+            for (size_t slot = 0; slot < localRead.RowSize(row); ++slot)
+                CHECK(localRead.Raw(row, slot) == snapshot[size_t(row)][slot]);
+        })
 }
 
 // ===========================================================================

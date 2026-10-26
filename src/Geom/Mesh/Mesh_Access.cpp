@@ -1,5 +1,6 @@
 #include "Mesh.hpp"
 #include "MeshAccess.hpp"
+#include "FieldTransfer.hpp"
 #include "DNDS/Runtime/LegacyArrayBridge.hpp"
 
 namespace DNDS::Geom
@@ -416,6 +417,106 @@ namespace DNDS::Geom
         result->_nativeState = state->BindEpoch(result->versions);
         result->_nativeSmoothing.reset();
         return result;
+    }
+
+    void UnstructuredMesh::ReplaceNativeForSetup(std::shared_ptr<const NativeMeshState> source)
+    {
+        CheckCollectiveMutationAvailable(true);
+        std::shared_ptr<NativeMeshState> prepared;
+        std::shared_ptr<const uint8_t> identity;
+        Periodicity periodic;
+        bool nextPeriodic = false;
+        std::string signature;
+        FieldTransferDetail::LocalStage(mpi, [&]
+                                        {
+            int actualRank = -1, actualSize = 0;
+            MPI_Comm_rank(mpi.comm, &actualRank);
+            MPI_Comm_size(mpi.comm, &actualSize);
+            DNDS_check_throw_info(actualRank == mpi.rank && actualSize == mpi.size && source,
+                                  "native setup replacement requires valid MPIInfo and source");
+            source->Validate();
+            const auto nodes = source->Entities(EntityKind::Node);
+            EntitySpace::CheckCommunicator(nodes._mpi.comm, mpi.comm);
+            const auto &view = source->BorrowHostView();
+            DNDS_check_throw_info(view.Dimension() == getDim(), "native setup replacement dimension differs");
+            if (!_nativeState)
+            {
+                auto empty = [](const auto &pair)
+                { return (!pair.father || pair.father->Size() == 0) && (!pair.son || pair.son->Size() == 0); };
+                bool vacant = true;
+                auto check = [&](const auto &pair) { vacant = vacant && empty(pair); };
+                check(coords); check(cell2node); check(bnd2node); check(bnd2cell); check(cell2cell);
+                check(cellElemInfo); check(bndElemInfo); check(cell2cellOrig); check(node2nodeOrig); check(bnd2bndOrig);
+                check(cell2nodePbi); check(bnd2nodePbi); check(node2cell); check(node2bnd);
+                check(cell2face); check(face2node); check(face2cell); check(faceElemInfo); check(bnd2face); check(face2bnd);
+                check(cell2facePbi); check(face2nodePbi); check(cell2edge); check(edge2node); check(edge2cell);
+                check(edgeElemInfo); check(cell2edgePbi); check(edge2nodePbi); check(cell2cellFace);
+                check(nodeWallDist); check(coordsElevDisp); check(cell2nodePeriodicRecreated); check(coordsPeriodicRecreated);
+                DNDS_check_throw_info(vacant, "native setup replacement rejects populated legacy destination");
+            }
+            signature = source->MeshNamespace() + ":" + std::to_string(view.Dimension()) + ":" + std::to_string(view.IsPeriodic());
+            for (const auto &[kind, family] : source->_spaces)
+            {
+                EntitySpace::CheckCommunicator(family.identity._mpi.comm, mpi.comm);
+                signature += "k" + std::to_string(int(kind)) + ":";
+                for (auto count : family.global->RLengths()) signature += std::to_string(count) + ",";
+            }
+            for (const auto &[kind, next] : source->IdHighWater()) signature += "i" + std::to_string(int(kind)) + ":" + std::to_string(next) + ";";
+            const auto r = source->Requirements();
+            signature += "q" + std::to_string(r.faces) + std::to_string(r.inverse) + std::to_string(r.edges) +
+                         std::to_string(r.cellFaceNeighbors) + std::to_string(r.wallDistance) + std::to_string(r.allFaceCellsLocal);
+            for (size_t slot = 0; slot < size_t(MeshRelation::Count); ++slot)
+                signature += view.HasRelation(static_cast<MeshRelation>(slot)) ? "r1" : "r0";
+            for (const auto &key : source->RelationKeys())
+            { const auto value = key.Signature(); signature += "a" + std::to_string(value.size()) + ":" + value; }
+            std::vector<real> frame;
+            for (size_t f = 0; f < view.Periodic().rotation.size(); ++f)
+            {
+                for (int entry = 0; entry < 9; ++entry) frame.push_back(view.Periodic().rotation[f].map().data()[entry]);
+                for (int entry = 0; entry < 3; ++entry) frame.push_back(view.Periodic().translation[f].map()[entry]);
+                for (int entry = 0; entry < 3; ++entry) frame.push_back(view.Periodic().rotationCenter[f].map()[entry]);
+            }
+            signature += nlohmann::json(frame).dump();
+            signature += source->Provenance() ? source->Provenance()->Signature() : "none";
+            DNDS_check_throw_info(signature.size() <= size_t(INT_MAX), "native setup replacement metadata too large");
+            prepared = std::shared_ptr<NativeMeshState>(new NativeMeshState(*source));
+            // Prepare all allocations and descriptor bindings before publication.
+            prepared->BindPreparedEpoch(versions);
+            identity = nodes._identity;
+            periodic = view.Periodic();
+            nextPeriodic = view.IsPeriodic(); });
+        int size = mpi.rank == 0 ? int(signature.size()) : 0;
+        MPI_Bcast(&size, 1, MPI_INT, 0, mpi.comm);
+        std::string expected;
+        FieldTransferDetail::LocalStage(mpi, [&]
+                                        { expected = mpi.rank == 0 ? signature : std::string(size_t(size), '\0'); });
+        MPI_Bcast(expected.data(), size, MPI_CHAR, 0, mpi.comm);
+        FieldTransferDetail::LocalStage(mpi, [&]
+                                        { DNDS_check_throw_info(signature == expected, "native setup source metadata differs across ranks"); });
+        MeshMutationToken mutation(this, versions, Runtime::Change::All);
+        mutation.Commit();
+        // Refresh stamps after commit; these operations only rebind shared
+        // handles or clear existing storage and cannot allocate.
+        prepared->BindPreparedEpoch(versions);
+        _entityIdentity = std::move(identity);
+        isPeriodic = nextPeriodic;
+        periodicInfo = periodic;
+        _nativeState = std::move(prepared);
+        _nativeSmoothing.reset();
+        node2bndNode.clear();
+        node2parentNode.clear();
+        cell2parentCell.clear();
+        bnd2faceV.clear();
+        face2bndM.clear();
+        vtkCell2nodeOffsets.clear();
+        vtkCellType.clear();
+        vtkCell2node.clear();
+        nodeRecreated2nodeLocal.clear();
+        vtkNodeOffset = vtkCellOffset = vtkCell2NodeGlobalSiz = vtkNCellGlobal = vtkNNodeGlobal = -1;
+        cell2cellFaceVLocalParts.clear();
+        localPartitionStarts.clear();
+        nNodeO1 = nTotalMoved = -1;
+        elevState = Elevation_Untouched;
     }
 
     void UnstructuredMesh::PublishNative(MeshReadRequirements requirements)

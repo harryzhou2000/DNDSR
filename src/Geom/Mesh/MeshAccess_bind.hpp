@@ -281,6 +281,12 @@ namespace DNDS::Geom
                                    { return self.View().IsPeriodic(); })
             .def("has_relation", &PythonMeshReadAccess::HasRelation)
             .def("relation", &PythonMeshReadAccess::Relation, py::arg("kind"), py::arg("row"))
+            .def("relation_state", [](const PythonMeshReadAccess &self, MeshRelation kind)
+                 {
+                     auto view = self.View();
+                     DNDS_check_throw_info(kind >= MeshRelation::CellNodes && kind < MeshRelation::Count && view.HasRelation(kind),
+                                           "relation is not present in this read scope");
+                     return view.RelationState(kind); }, py::arg("kind"), "Index state of this retained relation. Native compute publications are local; distributed global numbers differ from persistent IDs.")
             .def("coord", &PythonMeshReadAccess::Coord, py::arg("node"), "Readonly retained coordinate row; slices retain its lease.")
             .def("coordinates", &PythonMeshReadAccess::Coordinates, py::arg("owned_only") = false, "Independent immutable coordinate snapshot.")
             .def("cell_coords", [](const PythonMeshReadAccess &self, index row)

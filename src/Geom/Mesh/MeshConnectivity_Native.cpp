@@ -1,5 +1,5 @@
 #include "NativeConnectivity.hpp"
-#include "MeshConnectivity.hpp"
+#include "ConnectivityComposeRows.hpp"
 #include <algorithm>
 #include <limits>
 
@@ -66,6 +66,59 @@ namespace DNDS::Geom
                                   "encoded unavailable target is present in the supplied local target mapping");
         }
         return {false, unavailable, global};
+    }
+
+    index RelationReadAccess::ConvertedIndex(index row, size_t slot, MeshAdjState targetState,
+                                             bool allowUnavailable) const
+    {
+        DNDS_check_throw_info(targetState == Adj_PointToGlobal || targetState == Adj_PointToLocal,
+                              "relation conversion requires an explicit global/local destination state");
+        const auto entry = ReadEntry(row, slot);
+        if (entry.absent)
+            return UnInitIndex;
+        if (targetState == Adj_PointToGlobal)
+            return entry.global;
+        if (!entry.unavailable)
+            return *_target.GlobalToLocal(entry.global);
+        DNDS_check_throw_info(allowUnavailable, "relation local conversion requires missing target closure");
+        const index encoded = -1 - entry.global;
+        DNDS_check_throw_info(encoded != UnInitIndex, "relation unavailable target collides with absent sentinel");
+        return encoded;
+    }
+
+    NativeRelation NativeRelation::Convert(const RelationReadAccess &source, MeshAdjState targetState,
+                                           bool allowUnavailable)
+    {
+        source.Validate();
+        DNDS_check_throw_info(targetState == Adj_PointToGlobal || targetState == Adj_PointToLocal,
+                              "relation conversion requires an explicit global/local destination state");
+        auto convert = [&](const Runtime::ArrayView<const index> &view, index first)
+        {
+            std::vector<size_t> lengths;
+            if (view.offsets || view.sizes)
+            {
+                lengths.resize(view.Rows());
+                for (size_t row = 0; row < view.Rows(); ++row)
+                    lengths[row] = view.RowSize(row);
+            }
+            const auto shape = view.offsets ? Runtime::RowLayout::Ragged(lengths) : view.sizes ? Runtime::RowLayout::Padded(lengths, view.stride)
+                                                                                               : Runtime::RowLayout::Dense(view.Rows(), view.width, view.stride);
+            Runtime::Array<index> output(shape);
+            {
+                auto write = output.Write();
+                for (size_t row = 0; row < view.Rows(); ++row)
+                    for (size_t slot = 0; slot < view.RowSize(row); ++slot)
+                        write.View()(row, slot) = source.ConvertedIndex(first + index(row), slot, targetState, allowUnavailable);
+            }
+            return output;
+        };
+        NativeRelation result(source.Kind(), source.Source(), source.Target(), convert(source._view.owned, 0), targetState);
+        // A mesh scope retains both portions in one MeshHold; it need not have
+        // a separate ghost holder even though ghost rows are present.
+        if (source._ghost || source._view.ghost.Rows())
+            result._ghost.emplace(convert(source._view.ghost, source.NumOwned()));
+        auto check = result.Read();
+        return result;
     }
 
     static void WriteNativeRow(Runtime::RowBuilder &builder, index row, const std::vector<index> &entries)
@@ -271,29 +324,6 @@ namespace DNDS::Geom
         result._ghost.emplace(std::move(ghosts));
         auto validated = result.Read();
         return result;
-    }
-
-    NativeRelation MeshConnectivity::Inverse(const RelationReadAccess &cone, const MPIInfo &mpi)
-    {
-        return NativeConnectivity::Inverse(cone, mpi);
-    }
-
-    NativeRelation MeshConnectivity::Compose(const RelationReadAccess &AB, const RelationReadAccess &BC, bool removeSelf)
-    {
-        return NativeConnectivity::Compose(AB, BC, removeSelf);
-    }
-
-    NativeRelation MeshConnectivity::ComposeAll(const RelationReadAccess &AB, const RelationReadAccess &BC, bool removeSelf)
-    {
-        return NativeConnectivity::ComposeAll(AB, BC, removeSelf);
-    }
-
-    NativeRelation MeshConnectivity::ComposeFiltered(const RelationReadAccess &AB, const RelationReadAccess &BC,
-                                                     const AdjKind &resultKind,
-                                                     const std::function<bool(index, index, int)> &predicate,
-                                                     const std::function<bool(index, index, const std::vector<index> &)> &matchExtra)
-    {
-        return NativeConnectivity::ComposeFiltered(AB, BC, resultKind, predicate, matchExtra);
     }
 
 }

@@ -59,7 +59,8 @@ class Solver:
         Native setup is the default and uses native read/partition, in-place
         preparation and extraction without a legacy mesh workspace. Serial
         reader objects adapt native output and preserve the established return
-        contract. Explicit native=False is retained only as a migration baseline.
+        contract. The production frontend requires native=True; the independent
+        legacy volume evaluator baseline is constructed explicitly in tests.
         Native archives require an explicit matching ``boundary_names`` map.
         Both routes build finite-volume/evaluator data after final mesh ordering.
         Delegates to the appropriate Geom helpers and ``build_bnd_mesh``.
@@ -74,6 +75,8 @@ class Solver:
                 legacy names (``meshElevation``, ``meshDirectBisect``,
                 ``inner_process_parts``, ``readMeshMode``, etc.).
         """
+        if not native:
+            raise ValueError("Solver.ReadMesh requires native mesh construction; native=False is retired")
         other_options = {} if other_options is None else other_options
         _LEGACY_TO_READ = {
             "meshElevation": "elevation",
