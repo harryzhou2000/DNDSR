@@ -5,6 +5,12 @@
 #include "Geom/Mesh/EntitySpace.hpp"
 #include "DNDS/Serializer/SerializerH5.hpp"
 #include "Geom/Mesh/NativeMeshSnapshot.hpp"
+#include "Geom/Mesh/NativeMeshCGNS.hpp"
+#include "Geom/Mesh/NativeMeshPreparation.hpp"
+#include "Geom/Mesh/NativeMeshAssembler.hpp"
+#include "Geom/Mesh/NativeMeshArchive.hpp"
+#include "DNDS/Array.hpp"
+#include "DNDS/ArrayPair.hpp"
 #include <algorithm>
 #include <array>
 #include <filesystem>
@@ -29,34 +35,43 @@ struct PipelineFixture
 static PipelineFixture BuildFacadePipeline(DNDS::MPIInfo mpi, bool periodic)
 {
     PipelineFixture fixture;
-    fixture.mesh = DNDS::make_ssp<G::UnstructuredMesh>(mpi, 2);
-    auto &mesh = *fixture.mesh;
-    if (periodic)
-    {
-        const G::tPoint zero{0, 0, 0};
-        mesh.SetPeriodicGeometry({10, 0, 0}, zero, zero, {0, 10, 0}, zero, zero, zero, zero, zero);
-    }
-    G::UnstructuredMeshSerialRW reader(fixture.mesh, 0);
     const auto path = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path() /
                       "data" / "mesh" / (periodic ? "IV10_10.cgns" : "UniformSquare_10.cgns");
     REQUIRE(std::filesystem::exists(path));
-    reader.ReadFromCGNSSerial(path.string());
-
     // Capture the serial CGNS geometry before periodic node deduplication or
     // partitioning. This oracle does not call a facade/legacy geometry helper.
     std::vector<DNDS::real> packed;
+    std::exception_ptr parseError;
+    int parsed = 1;
     if (mpi.rank == 0)
-    {
-        packed.push_back(DNDS::real(reader.cell2nodeSerial->Size()));
-        for (I cell = 0; cell < reader.cell2nodeSerial->Size(); ++cell)
+        try
         {
-            auto nodes = (*reader.cell2nodeSerial)[cell];
-            const auto &info = (*reader.cellElemInfoSerial)(cell, 0);
-            packed.insert(packed.end(), {DNDS::real(nodes.size()), DNDS::real(info.type), DNDS::real(info.zone)});
-            for (auto node : nodes)
-                for (int d = 0; d < 3; ++d)
-                    packed.push_back((*reader.coordSerial)[node][d]);
+            G::AutoAppendName2ID names;
+            const auto serial = G::ReadNativeCGNSSerial(path.string(), 2, [&](const std::string &name)
+                                                        { return names(name); });
+            const auto cones = serial.cellNodes.Read();
+            const auto coordinates = serial.coordinates.Read();
+            const auto info = serial.cellInfo.Read();
+            packed.push_back(DNDS::real(serial.cellNodes.Rows()));
+            for (size_t cell = 0; cell < serial.cellNodes.Rows(); ++cell)
+            {
+                packed.insert(packed.end(), {DNDS::real(cones.View().RowSize(cell)), DNDS::real(info.View()(cell, 0).type), DNDS::real(info.View()(cell, 0).zone)});
+                for (auto node : cones.View()[cell])
+                    for (size_t component = 0; component < 3; ++component)
+                        packed.push_back(coordinates.View()(size_t(node), component));
+            }
         }
+        catch (...)
+        {
+            parsed = 0;
+            parseError = std::current_exception();
+        }
+    MPI_Bcast(&parsed, 1, MPI_INT, 0, mpi.comm);
+    if (!parsed)
+    {
+        if (parseError)
+            std::rethrow_exception(parseError);
+        DNDS_check_throw_info(false, "serial fixture oracle parse failed on reader");
     }
     int count = int(packed.size());
     MPI_Bcast(&count, 1, MPI_INT, 0, mpi.comm);
@@ -76,26 +91,25 @@ static PipelineFixture BuildFacadePipeline(DNDS::MPIInfo mpi, bool periodic)
                 value = packed.at(cursor++);
     }
     REQUIRE(cursor == packed.size());
+    std::optional<G::NativePeriodicImportOptions> import;
     if (periodic)
-        reader.Deduplicate1to1Periodic(1e-8);
-    reader.BuildCell2Cell();
-    G::UnstructuredMeshSerialRW::PartitionOptions options;
+    {
+        import.emplace();
+        import->frames.translation[1].map() = G::tPoint{10, 0, 0};
+        import->frames.translation[2].map() = G::tPoint{0, 10, 0};
+        import->tolerance = 1e-8;
+    }
+    G::AutoAppendName2ID names;
+    auto state = G::ReadNativeCGNS(mpi, path.string(), 2, [&](const std::string &name)
+                                   { return names(name); }, 0, {1, true}, import);
+    G::NativePartitionOptions options;
     options.metisType = "KWAY";
     options.metisUfactor = 30;
     options.metisSeed = 42;
     options.metisNcuts = 1;
-    reader.MeshPartitionCell2Cell(options);
-    reader.PartitionReorderToMeshCell2Cell();
-    mesh.RecoverNode2CellAndNode2Bnd();
-    mesh.RecoverCell2CellAndBnd2Cell();
-    mesh.BuildGhostPrimary();
-    mesh.AdjGlobal2LocalPrimary();
-    mesh.InterpolateFace();
-    if (mesh.adjN2CBState == G::Adj_PointToLocal)
-        mesh.AdjLocal2GlobalN2CB();
-    mesh.BuildGhostN2CB();
-    mesh.AdjGlobal2LocalN2CB();
-    mesh.AssertOnFaces();
+    auto partition = G::NativeMeshPreparation::Partition(*state, mpi, options);
+    fixture.mesh = G::UnstructuredMesh::FromNative(mpi, std::move(partition.state));
+    fixture.mesh->AssertOnFaces();
     return fixture;
 }
 
@@ -108,13 +122,13 @@ static void CheckFacadePipeline(const PipelineFixture &fixture)
     CHECK(view.NumCellGhost() == mesh.NumCellGhost());
     CHECK(view.NumNodeProc() == mesh.NumNodeProc());
     CHECK(view.NumFaceProc() == mesh.NumFaceProc());
-    CHECK(view.IsPeriodic() == mesh.isPeriodic);
+    CHECK(view.IsPeriodic() == mesh.IsPeriodic());
     I checkedSlots = 0, transformedNodes = 0;
     for (I cell = 0; cell < view.NumCellProc(); ++cell)
     {
         // Original CGNS IDs are explicitly retained setup companions, outside
         // the query view. They provide correspondence after either transition.
-        const I original = mesh.cell2cellOrig(cell, 0);
+        const I original = mesh.OriginalEntityId(G::EntityKind::Cell, cell);
         REQUIRE(original >= 0);
         REQUIRE(size_t(original) < fixture.cells.size());
         const auto &expected = fixture.cells[size_t(original)];
@@ -169,7 +183,7 @@ static void CheckFacadePipeline(const PipelineFixture &fixture)
     MPI_Allreduce(MPI_IN_PLACE, &checkedSlots, 1, DNDS::DNDS_MPI_INDEX, MPI_SUM, mesh.mpi.comm);
     MPI_Allreduce(MPI_IN_PLACE, &transformedNodes, 1, DNDS::DNDS_MPI_INDEX, MPI_SUM, mesh.mpi.comm);
     CHECK(checkedSlots > 0);
-    CHECK((transformedNodes > 0) == mesh.isPeriodic);
+    CHECK((transformedNodes > 0) == mesh.IsPeriodic());
 }
 
 static void CheckFacadeHalo(G::UnstructuredMesh &mesh)
@@ -215,12 +229,13 @@ static void CheckFacadeTransitions(bool periodic)
     CheckFacadeHalo(mesh);
     auto oldCells = mesh.Entities(G::EntityKind::Cell);
     auto oldRoute = oldCells.BuildRowTransferPlan();
-    // Inject an equal-content but wrong target-map identity. Acquisition must
-    // reject it and release all partial captures before the fixture is restored.
-    auto correctMap = mesh.coords.trans.pLGhostMapping;
-    mesh.coords.trans.pLGhostMapping = std::make_shared<DNDS::OffsetAscendIndexMapping>(*correctMap);
-    CHECK_THROWS(mesh.AcquireRead(G::MeshReadRequirements::CellFlux()));
-    mesh.coords.trans.pLGhostMapping = correctMap;
+    // Canonical native maps are immutable. An equal-sized detached candidate
+    // with a foreign target domain must fail without disturbing current rows.
+    {
+        auto candidate = G::NativeMeshAssembler::CaptureOwned(*mesh.CurrentNativeState(), mpi);
+        candidate.spaces.at(G::EntityKind::Node) = G::EntitySpace::CreateOwned(G::EntityKind::Node, mpi, mesh.NumNode());
+        CHECK_THROWS(G::NativeMeshAssembler::Build(mpi, std::move(candidate)));
+    }
     CHECK(mesh.versions.CanMutate());
     mesh.ReorderLocalCells(2, 1);
     CHECK_FALSE(oldCells.Valid());
@@ -230,10 +245,6 @@ static void CheckFacadeTransitions(bool periodic)
     CheckFacadeHalo(mesh);
 
     auto beforeRedistribution = mesh.Entities(G::EntityKind::Cell);
-    mesh.AdjLocal2GlobalPrimary();
-    mesh.AdjLocal2GlobalN2CB();
-    mesh.AdjLocal2GlobalFacial();
-    mesh.AdjLocal2GlobalC2F();
     G::ReorderInput input;
     std::vector<DNDS::MPI_int> cellRanks(size_t(mesh.NumCell()));
     for (I i = 0; i < mesh.NumCell(); ++i)
@@ -242,15 +253,9 @@ static void CheckFacadeTransitions(bool periodic)
     input.explicitMaps.push_back({G::EntityKind::Node, std::vector<DNDS::MPI_int>(size_t(mesh.NumNode()), mpi.rank)});
     input.explicitMaps.push_back({G::EntityKind::Bnd, std::vector<DNDS::MPI_int>(size_t(mesh.NumBnd()), mpi.rank)});
     input.explicitMaps.push_back({G::EntityKind::Face, std::vector<DNDS::MPI_int>(size_t(mesh.NumFace()), (mpi.rank + 1) % mpi.size)});
-    mesh.ReorderEntities(input);
+    auto redistribution = G::NativeMeshTransition::Build(*mesh.CurrentNativeState(), mpi, input);
+    mesh.ReplaceNativeForSetup(std::move(redistribution.state));
     CHECK_FALSE(beforeRedistribution.Valid());
-    mesh.RecoverNode2CellAndNode2Bnd();
-    mesh.RecoverCell2CellAndBnd2Cell();
-    mesh.BuildGhostPrimary();
-    mesh.AdjGlobal2LocalPrimary();
-    mesh.BuildGhostFace();
-    mesh.BuildGhostN2CB();
-    mesh.AdjGlobal2LocalN2CB();
     mesh.AssertOnFaces();
     CheckFacadePipeline(fixture);
     CheckFacadeHalo(mesh);
@@ -268,25 +273,19 @@ TEST_CASE("Mesh facade checkpoint restores exact serial geometry and native quer
         const auto firstPoint = G::tPoint(before.HostView().Coord(0));
         auto path = std::filesystem::temp_directory_path() /
                     ("dnds_facade_restart_np" + std::to_string(mpi.size) + (periodic ? "_periodic.h5" : "_ordinary.h5"));
-        fixture.mesh->AdjLocal2GlobalPrimary();
         auto serializer = DNDS::make_ssp<DNDS::Serializer::SerializerH5>(mpi);
         serializer->OpenFile(path.string(), false);
-        fixture.mesh->WriteSerialize(serializer, "meshPart");
+        fixture.mesh->WriteNativeArchive(serializer, "meshPart");
         serializer->CloseFile();
         // Reusing a serializer across distinct files is not part of this test.
         serializer.reset();
-        auto restored = DNDS::make_ssp<G::UnstructuredMesh>(mpi, 2);
+        // Exercise a real source numbering change after checkpointing. The
+        // detached snapshot and saved rows must remain independent of it.
+        fixture.mesh->ReorderLocalCells(2, 1);
         serializer = DNDS::make_ssp<DNDS::Serializer::SerializerH5>(mpi);
         serializer->OpenFile(path.string(), true);
-        restored->ReadSerialize(serializer, "meshPart");
+        auto restored = G::UnstructuredMesh::FromNative(mpi, G::ReadNativeMeshArchive(mpi, serializer, "meshPart"));
         serializer->CloseFile();
-        restored->RecoverNode2CellAndNode2Bnd();
-        restored->RecoverCell2CellAndBnd2Cell();
-        restored->BuildGhostPrimary();
-        restored->AdjGlobal2LocalPrimary();
-        restored->InterpolateFace();
-        restored->BuildGhostN2CB();
-        restored->AdjGlobal2LocalN2CB();
         fixture.mesh = restored;
         CheckFacadePipeline(fixture);
         CheckFacadeHalo(*restored);

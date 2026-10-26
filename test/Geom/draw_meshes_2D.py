@@ -1,32 +1,23 @@
-from DNDSR import DNDS, Geom
+from DNDSR import DNDS
+from DNDSR.Geom.utils import read_mesh, prepare_mesh
 import os
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import numpy as np
 
 
-def draw_meshes_2D():
+def draw_meshes_2D(mesh_file=None, output_file=None):
     mpi = DNDS.MPIInfo()
     mpi.setWorld()
 
-    mesh = Geom.UnstructuredMesh(mpi, 2)
-    meshReader = Geom.UnstructuredMeshSerialRW(mesh, 0)
-    name2ID = meshReader.ReadFromCGNSSerial(
-        os.path.join(
+    if mesh_file is None:
+        mesh_file = os.path.join(
             os.path.dirname(__file__), "..", "..", "data", "mesh", "NACA0012_H2.cgns"
         )
-    )
-    print(name2ID.n2id_map)
-    meshReader.Deduplicate1to1Periodic(1e-9)
-    meshReader.BuildCell2Cell()
-    meshReader.MeshPartitionCell2Cell({"metisUfactor": 5})
-    meshReader.PartitionReorderToMeshCell2Cell()
-
-    mesh.RecoverNode2CellAndNode2Bnd()
-    mesh.RecoverCell2CellAndBnd2Cell()
-    mesh.BuildGhostPrimary()
-    mesh.AdjGlobal2LocalPrimary()
-    mesh.InterpolateFace()
+    result = read_mesh(mesh_file, mpi, 2, partition_options={"metisUfactor": 5})
+    print(result.name_to_id.n2id_map)
+    mesh = result.mesh
+    prepare_mesh(mesh, result.reader, build_serial_out=False)
     mesh.AssertOnFaces()
 
     fig, ax = plt.subplots(figsize=(16, 16), dpi=320)
@@ -50,14 +41,15 @@ def draw_meshes_2D():
 
     # Maintain aspect ratio
     ax.set_aspect("equal")
-    ax.set_xlim(xymins[0], xymaxs[0])
-    ax.set_ylim(xymins[1], xymaxs[1])
+    if combined:
+        ax.set_xlim(xymins[0], xymaxs[0])
+        ax.set_ylim(xymins[1], xymaxs[1])
     ax.set_title(f"part_{mpi.rank}")
 
     # Show the plot
     # plt.show(block=False)
-    plt.figure(fig)
-    plt.savefig(f"test_print_part_{mpi.rank}.png")
+    fig.savefig(output_file or f"test_print_part_{mpi.rank}.png")
+    return fig
 
 
 if __name__ == "__main__":

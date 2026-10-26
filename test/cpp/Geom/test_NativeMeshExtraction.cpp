@@ -240,26 +240,20 @@ TEST_CASE("Native boundary facade retains source reads and publishes legacy pare
     G::UnstructuredMesh wrong(mpi, 3), destination(mpi, 1);
     CHECK_THROWS(source->ConstructBndMesh(wrong));
     CHECK_THROWS(source->ConstructBndMesh(*source));
-    G::UnstructuredMesh populated(mpi, 1);
+    auto populated = source->ExtractBoundary();
+    const auto populatedState = populated->CurrentNativeState();
+    std::optional<G::MeshReadAccess> populatedRead;
     if (mpi.rank == 0)
-    {
-        // Optional storage remains a duplicate workspace even if its group
-        // flag is unset. Test a group outside the primary device list.
-        populated.edge2node.InitPair("detached legacy edge storage", mpi);
-        populated.edge2node.father->Resize(1);
-    }
-    const auto destinationStamp = populated.versions.Stamp();
+        populatedRead.emplace(populated->AcquireRead());
+    const auto destinationStamp = populated->versions.Stamp();
     const auto sourceStamp = source->versions.Stamp();
-    CHECK_THROWS(source->ConstructBndMesh(populated));
+    CHECK_THROWS(source->ConstructBndMesh(*populated));
     CHECK(destinationStamp.Valid());
     CHECK(sourceStamp.Valid());
-    CHECK_FALSE(populated.HasNativeState());
-    if (mpi.rank == 0)
-        CHECK(populated.edge2node.father->Size() == 1);
+    CHECK(populated->CurrentNativeState() == populatedState);
+    populatedRead.reset();
     source->ConstructBndMesh(destination);
     CHECK(destination.HasNativeState());
-    CHECK(!destination.coords.father);
-    CHECK(!destination.cell2node.father);
     CHECK(source->CurrentNativeState() == state);
     CHECK(read.HostView().NumNodeProc() == sourceNodeCount);
     CHECK(source->node2bndNode.size() == size_t(sourceNodeCount));

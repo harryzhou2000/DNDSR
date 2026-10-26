@@ -3,6 +3,7 @@
 #include "DNDS/ArrayDerived/ArrayEigenUniMatrixBatch.hpp"
 #include "DNDS/ArrayDerived/ArrayEigenMatrix.hpp"
 #include "DNDS/ArrayRedistributor.hpp"
+#include "DNDS/ArrayPair.hpp"
 #include "DNDS/Serializer/SerializerH5.hpp"
 #include <filesystem>
 #include <limits>
@@ -146,6 +147,168 @@ TEST_CASE("Local checks: redistribution rejects rank-local invalid layouts colle
     if (mpi.rank == 0)
         read[1] = read[0];
     CHECK_THROWS(DNDS::BuildRedistributionPullingIndex(mpi, read, {5}, mapping));
+}
+
+TEST_CASE("Local checks: redistribution preserves exact sparse and high ID row order")
+{
+    DNDS::MPIInfo mpi(MPI_COMM_WORLD);
+    const int owners = std::max(1, mpi.size - 1);
+    auto count = [&](int rank) -> DNDS::index
+    { return rank < owners ? 3 + rank % 2 : 0; };
+    auto first = [](int rank) -> DNDS::index
+    { return 3 * DNDS::index(rank) + rank / 2; };
+    auto mapping = std::make_shared<DNDS::GlobalOffsetsMapping>();
+    mapping->setMPIAlignBcast(mpi, count(mpi.rank));
+    for (int mode : {0, 1, 2})
+    {
+        CAPTURE(mode);
+        auto key = [&](DNDS::index global)
+        {
+            if (mode == 0)
+                return global;
+            if (mode == 1)
+                return DNDS::index(1000000000000LL) + global * 101;
+            return std::numeric_limits<DNDS::index>::max() - 1 - global * 4099;
+        };
+        std::vector<DNDS::index> read(size_t(count(mpi.rank)));
+        using Array = DNDS::ParArray<DNDS::index, 2>;
+        auto source = std::make_shared<Array>(mpi);
+        source->Resize(count(mpi.rank));
+        for (DNDS::index row = 0; row < count(mpi.rank); ++row)
+        {
+            const auto global = first(mpi.rank) + row;
+            read[size_t(row)] = key(global);
+            (*source)(row, 0) = key(global);
+            (*source)(row, 1) = 100 * global + 17;
+        }
+        const int owner = (mpi.rank + 1) % owners;
+        const std::vector<DNDS::index> expected{first(owner) + count(owner) - 1,
+                                                first(owner), first(owner) + count(owner) - 1,
+                                                first(owner) + 1};
+        std::vector<DNDS::index> query;
+        for (auto global : expected)
+            query.push_back(key(global));
+        const auto originalRead = read, originalQuery = query;
+        CHECK(DNDS::BuildRedistributionPullingIndex(mpi, read, query, mapping) == expected);
+        CHECK(read == originalRead);
+        CHECK(query == originalQuery);
+        auto destination = std::make_shared<Array>(mpi);
+        destination->Resize(DNDS::index(query.size()));
+        DNDS::RedistributeArrayWithTransformer(mpi, source, read, query, destination);
+        for (size_t row = 0; row < expected.size(); ++row)
+        {
+            CHECK((*destination)(DNDS::index(row), 0) == query[row]);
+            CHECK((*destination)(DNDS::index(row), 1) == 100 * expected[row] + 17);
+        }
+    }
+}
+
+TEST_CASE("Local checks: high ID redistribution faults reject collectively and allow retry")
+{
+    DNDS::MPIInfo mpi(MPI_COMM_WORLD);
+    auto key = [](DNDS::index global)
+    { return std::numeric_limits<DNDS::index>::max() - 1 - global * 4099; };
+    auto mapping = std::make_shared<DNDS::GlobalOffsetsMapping>();
+    mapping->setMPIAlignBcast(mpi, 3);
+    std::vector<DNDS::index> read;
+    for (DNDS::index row = 0; row < 3; ++row)
+        read.push_back(key(3 * DNDS::index(mpi.rank) + row));
+    const DNDS::index expected = 3 * DNDS::index((mpi.rank + 1) % mpi.size) + 2;
+    const std::vector<DNDS::index> query{key(expected)};
+    auto retry = [&]
+    { CHECK(DNDS::BuildRedistributionPullingIndex(mpi, read, query, mapping) == std::vector<DNDS::index>{expected}); };
+    retry();
+    auto malformed = read;
+    if (mpi.rank == 0)
+        malformed[0] = -1;
+    CHECK_THROWS(DNDS::BuildRedistributionPullingIndex(mpi, malformed, query, mapping));
+    retry();
+    malformed = read;
+    if (mpi.rank == 0)
+        malformed[1] = malformed[0];
+    CHECK_THROWS(DNDS::BuildRedistributionPullingIndex(mpi, malformed, query, mapping));
+    retry();
+    if (mpi.size > 1)
+    {
+        malformed = read;
+        if (mpi.rank == 1)
+            malformed[0] = key(0);
+        CHECK_THROWS(DNDS::BuildRedistributionPullingIndex(mpi, malformed, query, mapping));
+        retry();
+    }
+    auto missing = query;
+    if (mpi.rank == 0)
+        missing[0] = std::numeric_limits<DNDS::index>::max() - 2;
+    CHECK_THROWS(DNDS::BuildRedistributionPullingIndex(mpi, read, missing, mapping));
+    retry();
+}
+
+TEST_CASE("Local checks: H5 redistribution preserves sparse and high IDs across ownership changes")
+{
+    DNDS::MPIInfo mpi(MPI_COMM_WORLD);
+    int pid = int(getpid());
+    MPI_Bcast(&pid, 1, MPI_INT, 0, mpi.comm);
+    const auto path = (std::filesystem::temp_directory_path() /
+                       ("dndsr-high-id-restart-" + std::to_string(pid) + ".h5"))
+                          .string();
+    const int owners = std::max(1, mpi.size - 1);
+    auto count = [&](int rank) -> DNDS::index
+    { return rank < owners ? 3 + rank % 2 : 0; };
+    auto first = [](int rank) -> DNDS::index
+    { return 3 * DNDS::index(rank) + rank / 2; };
+    using Pair = DNDS::ArrayPair<DNDS::ParArray<DNDS::index, 2>>;
+    for (bool high : {false, true})
+    {
+        CAPTURE(high);
+        auto key = [&](DNDS::index global)
+        {
+            return high ? std::numeric_limits<DNDS::index>::max() - 1 - global * 4099
+                        : DNDS::index(1000000000000LL) + global * 101;
+        };
+        {
+            Pair pair;
+            pair.InitPair("high-ID checkpoint writer", mpi);
+            pair.father->Resize(count(mpi.rank));
+            pair.son->Resize(0);
+            std::vector<DNDS::index> ids;
+            for (DNDS::index row = 0; row < count(mpi.rank); ++row)
+            {
+                const auto global = first(mpi.rank) + row;
+                ids.push_back(key(global));
+                (*pair.father)(row, 0) = key(global);
+                (*pair.father)(row, 1) = global * 13 + 5;
+            }
+            auto serializer = std::make_shared<DNDS::Serializer::SerializerH5>(mpi);
+            serializer->OpenFile(path, false);
+            pair.WriteSerialize(serializer, "u", ids, false, false);
+            serializer->CloseFile();
+        }
+        {
+            Pair pair;
+            pair.InitPair("high-ID checkpoint reader", mpi);
+            const int owner = (mpi.rank + 1) % mpi.size;
+            pair.father->Resize(count(owner));
+            pair.son->Resize(0);
+            std::vector<DNDS::index> ids;
+            for (DNDS::index row = 0; row < count(owner); ++row)
+                ids.push_back(key(first(owner) + count(owner) - 1 - row));
+            auto serializer = std::make_shared<DNDS::Serializer::SerializerH5>(mpi);
+            serializer->OpenFile(path, true);
+            pair.ReadSerializeRedistributed(serializer, "u", ids);
+            serializer->CloseFile();
+            REQUIRE(pair.father->Size() == count(owner));
+            for (DNDS::index row = 0; row < count(owner); ++row)
+            {
+                const auto global = first(owner) + count(owner) - 1 - row;
+                CHECK((*pair.father)(row, 0) == ids[size_t(row)]);
+                CHECK((*pair.father)(row, 1) == global * 13 + 5);
+            }
+        }
+        MPI_Barrier(mpi.comm);
+        if (mpi.rank == 0)
+            std::filesystem::remove(path);
+        MPI_Barrier(mpi.comm);
+    }
 }
 
 TEST_CASE("Local checks: serialized payload must match array shape")

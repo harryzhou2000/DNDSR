@@ -140,7 +140,7 @@ namespace DNDS::Geom
         } close{serializer, false, factory.type == "JSON"};
         FieldTransferDetail::LocalStage(mpi, [&]
                                         { serializer->OpenFile(path, true); close.opened = true; });
-        const auto partition = repartition ? Serializer::ArrayGlobalOffset_EvenSplit : Serializer::ArrayGlobalOffset_Unknown;
+        const auto partition = repartition && !serializer->IsPerRank() ? Serializer::ArrayGlobalOffset_EvenSplit : Serializer::ArrayGlobalOffset_Unknown;
         auto state = ReadCompatibleNativeMeshArchive(mpi, serializer, "meshPart", partition, ghostLayers);
         FieldTransferDetail::LocalStage(mpi, [&]
                                         { serializer->CloseFile(); });
@@ -207,7 +207,7 @@ namespace DNDS::Geom
                                         {
             DNDS_check_throw_info(reader && reader->mesh.get() == mesh.get(), "native CGNS helper requires the bound reader");
             readerRank = reader->mRank; });
-        NativePeriodicImportOptions periodic{mesh->periodicInfo, periodicTol};
+        NativePeriodicImportOptions periodic{mesh->PeriodicMetadata(), periodicTol};
         AutoAppendName2ID generatedNames;
         const t_FBCName_2_ID names = nameMapper ? nameMapper : t_FBCName_2_ID([&](const std::string &name)
                                                                               { return generatedNames(name); });

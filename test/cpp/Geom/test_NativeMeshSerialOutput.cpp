@@ -166,8 +166,7 @@ TEST_CASE("Native serial output retains old geometry and explicitly refreshes af
     field.father->Resize(ownedNodes);
     field.TransAttach();
     CHECK_THROWS(before.BorrowNodeIndexing(field.trans));
-    CHECK_FALSE(mesh->coords.father);
-    CHECK_FALSE(mesh->cell2node.father);
+    CHECK(mesh->HasNativeState());
 }
 
 TEST_CASE("Serial output facade rejects absent native authority and retains successful descriptors after failure")

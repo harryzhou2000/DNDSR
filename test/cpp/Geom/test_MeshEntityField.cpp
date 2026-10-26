@@ -1,6 +1,8 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
-#include "MeshFacadeOverlapFixture.hpp"
+#include "NativeMeshOverlapFixture.hpp"
+#include "Geom/Mesh/NativeMeshState.hpp"
+#include "DNDS/Runtime/RowBuilder.hpp"
 #include "Geom/Mesh/EntityField.hpp"
 #include "Geom/Mesh/MeshTransition.hpp"
 #include <filesystem>
@@ -16,39 +18,74 @@ static MPIInfo EntityFieldMPI()
     return mpi;
 }
 
+// Field ownership fixture: independent valid native line cells. Explicit cell
+// halo row zero is retained on every nonowner, including zero-owned ranks.
 static ssp<UnstructuredMesh> EntityFieldSpaces(const MPIInfo &mpi, DNDS::index owned = -1)
 {
-    auto mesh = make_ssp<UnstructuredMesh>(mpi, 2);
     const DNDS::index count = owned >= 0 ? owned : (mpi.rank == 0 ? 3 : (mpi.rank % 2 ? 0 : 1));
-    mesh->coords.InitPair("bound.nodes", mpi);
-    mesh->coords.father->Resize(count);
-    mesh->coords.TransAttach();
-    mesh->coords.trans.createFatherGlobalMapping();
-    auto offset = (*mesh->coords.father->pLGlobalMapping)(mpi.rank, 0);
-    for (DNDS::index row = 0; row < count; ++row)
-        mesh->coords[row] = tPoint{double(offset + row), 0, 0};
-    std::vector<DNDS::index> ghosts;
+    const auto nodeBase = EntitySpace::CreateOwned(EntityKind::Node, mpi, 2 * count);
+    auto cellSpace = nodeBase.CreateSibling(EntityKind::Cell, count);
+    const auto boundaries = nodeBase.CreateSibling(EntityKind::Bnd, 0);
     if (mpi.rank != 0)
-        ghosts.push_back(0);
-    mesh->coords.trans.createGhostMapping(ghosts);
-    mesh->coords.trans.createMPITypes();
-    mesh->coords.trans.pullOnce();
-    mesh->cell2node.InitPair("bound.cells", mpi);
-    mesh->cell2node.father->Resize(count);
-    for (DNDS::index row = 0; row < count; ++row)
+        cellSpace = cellSpace.WithGhosts({0});
+    else
+        cellSpace = cellSpace.WithGhosts({});
+    const auto nodes = nodeBase.WithGhosts(mpi.rank == 0 ? std::vector<DNDS::index>{} : std::vector<DNDS::index>{0, 1});
+    auto rows = [](const EntitySpace &space, size_t width, auto fill)
     {
-        mesh->cell2node.ResizeRow(row, 1);
-        mesh->cell2node(row, 0) = offset + row;
+        R::ArrayPair<DNDS::index> result{
+            R::Array<DNDS::index>(R::RowLayout::Dense(size_t(space.NumOwned()), width)),
+            R::Array<DNDS::index>(R::RowLayout::Dense(size_t(space.NumGhost()), width))};
+        auto local = result.owned.Write(), ghost = result.ghost.Write();
+        for (DNDS::index row = 0; row < space.NumLocal(); ++row)
+            for (size_t slot = 0; slot < width; ++slot)
+                (row < space.NumOwned() ? local.View()(size_t(row), slot) : ghost.View()(size_t(row - space.NumOwned()), slot)) = fill(row, slot);
+        return result;
+    };
+    NativeMeshData data;
+    data.dimension = 1;
+    data.relations[size_t(MeshRelation::CellNodes)] = rows(cellSpace, 2, [&](DNDS::index row, size_t slot)
+                                                           {
+        const auto global = 2 * cellSpace.LocalToGlobal(row) + DNDS::index(slot);
+        const auto local = nodes.GlobalToLocal(global);
+        DNDS_check_throw_info(local, "field fixture cell cone lacks its node");
+        return *local; });
+    data.relations[size_t(MeshRelation::CellCells)] = rows(cellSpace, 0, [](auto, auto)
+                                                           { return DNDS::UnInitIndex; });
+    data.relations[size_t(MeshRelation::BoundaryNodes)] = rows(boundaries, 0, [](auto, auto)
+                                                               { return DNDS::UnInitIndex; });
+    data.relations[size_t(MeshRelation::BoundaryCells)] = rows(boundaries, 2, [](auto, auto)
+                                                               { return DNDS::UnInitIndex; });
+    data.coords = R::ArrayPair<real>{R::Array<real>(R::RowLayout::Dense(size_t(nodes.NumOwned()), 3)),
+                                     R::Array<real>(R::RowLayout::Dense(size_t(nodes.NumGhost()), 3))};
+    {
+        auto local = data.coords->owned.Write(), ghost = data.coords->ghost.Write();
+        for (DNDS::index row = 0; row < nodes.NumLocal(); ++row)
+            for (size_t component = 0; component < 3; ++component)
+                (row < nodes.NumOwned() ? local.View()(size_t(row), component) : ghost.View()(size_t(row - nodes.NumOwned()), component)) =
+                    component == 0 ? double(nodes.LocalToGlobal(row)) : 0;
     }
-    mesh->cell2node.father->Compress();
-    mesh->cell2node.TransAttach();
-    mesh->cell2node.trans.createFatherGlobalMapping();
-    mesh->cell2node.trans.createGhostMapping(ghosts);
-    mesh->cell2node.trans.createMPITypes();
-    mesh->cell2node.trans.pullOnce();
-    mesh->cell2node.idx.markGlobal();
-    mesh->adjPrimaryState = Adj_PointToGlobal;
-    return mesh;
+    data.cellInfo = R::ArrayPair<ElemInfo>{R::Array<ElemInfo>(R::RowLayout::Dense(size_t(cellSpace.NumOwned()), 1)),
+                                           R::Array<ElemInfo>(R::RowLayout::Dense(size_t(cellSpace.NumGhost()), 1))};
+    {
+        auto local = data.cellInfo->owned.Write(), ghost = data.cellInfo->ghost.Write();
+        for (DNDS::index row = 0; row < cellSpace.NumLocal(); ++row)
+            (row < cellSpace.NumOwned() ? local.View()(size_t(row), 0) : ghost.View()(size_t(row - cellSpace.NumOwned()), 0)) = ElemInfo{Elem::Line2, INTERNAL_ZONE};
+    }
+    data.bndInfo = R::ArrayPair<ElemInfo>{R::Array<ElemInfo>(R::RowLayout::Dense(0, 1)), R::Array<ElemInfo>(R::RowLayout::Dense(0, 1))};
+    std::map<EntityKind, EntitySpace> spaces{{EntityKind::Cell, cellSpace}, {EntityKind::Node, nodes}, {EntityKind::Bnd, boundaries}};
+    std::map<EntityKind, R::Array<DNDS::index>> ids;
+    for (const auto &[kind, space] : spaces)
+    {
+        R::Array<DNDS::index> values(R::RowLayout::Dense(size_t(space.NumLocal()), 1));
+        {
+            auto write = values.Write();
+            for (DNDS::index row = 0; row < space.NumLocal(); ++row)
+                write.View()(size_t(row), 0) = space.LocalToGlobal(row);
+        }
+        ids.emplace(kind, std::move(values));
+    }
+    return UnstructuredMesh::FromNative(mpi, NativeMeshState::FromNative(mpi, std::move(data), std::move(spaces), std::move(ids), MeshReadRequirements::Primary()));
 }
 
 TEST_CASE("Entity-bound fields reject wrong domain/kind and retain field/mesh leases")
@@ -71,6 +108,13 @@ TEST_CASE("Entity-bound fields reject wrong domain/kind and retain field/mesh le
     }
     CHECK_THROWS(field.Read(other->Entities(EntityKind::Cell)));
     CHECK_THROWS(field.Read(mesh->Entities(EntityKind::Node)));
+    std::vector<DNDS::index> ghostGlobals;
+    for (DNDS::index row = space.NumOwned(); row < space.NumLocal(); ++row)
+        ghostGlobals.push_back(space.LocalToGlobal(row));
+    auto wrongKind = space.CreateSibling(EntityKind::Node, space.NumOwned()).WithGhosts(ghostGlobals);
+    CHECK(wrongKind.NumLocal() == space.NumLocal());
+    CHECK(wrongKind.SameDomain(space) == false);
+    CHECK_THROWS(field.Read(wrongKind));
     CHECK_THROWS(field.Read(space, {R::Device::CUDA(0), nullptr}));
     auto route = field.BuildHaloRoute(space);
     auto binding = route.Bind(field, space);
@@ -104,9 +148,11 @@ TEST_CASE("Entity-bound fields reject wrong domain/kind and retain field/mesh le
         auto operation = movedBinding.Begin();
         operation.Wait();
     }
-    ReorderInput input;
-    input.explicitMaps.push_back({EntityKind::Cell, std::vector<MPI_int>(size_t(space.NumOwned()), mpi.rank)});
-    CHECK_THROWS(mesh->ReorderEntitiesWithFields(input, {movedField.Register("bound-consuming-rejected")}));
+    auto descriptor = movedField.Register("bound-consuming-rejected");
+    PermutationTransfer consuming;
+    consuming.isLocalOnly = true;
+    CHECK_THROWS(descriptor.fn(consuming, mpi));
+    CHECK_NOTHROW(movedField.Validate(space));
 }
 
 static ssp<UnstructuredMesh> EntityFieldMesh(const MPIInfo &mpi)
@@ -251,6 +297,48 @@ TEST_CASE("Entity field collective setup rejects rank-local stale/shape/schema a
     auto descriptor = field.Register("stale-descriptor");
     CHECK_THROWS(FieldTransferDetail::LocalStage(mpi, [&]
                                                  { descriptor.attachment(); }));
+}
+
+TEST_CASE("Entity CSR fields preserve variable row shape values and source leases across empty owners")
+{
+    const auto mpi = EntityFieldMPI();
+    auto mesh = EntityFieldSpaces(mpi);
+    const auto space = mesh->Entities(EntityKind::Cell);
+    CHECK(space.NumOwned() == (mpi.rank == 0 ? 3 : (mpi.rank % 2 ? 0 : 1)));
+    CHECK(space.NumGhost() == (mpi.rank == 0 ? 0 : 1));
+    if (mpi.rank != 0)
+        CHECK(space.LocalToGlobal(space.NumOwned()) == 0);
+    for (size_t extra : {size_t(0), size_t(2)})
+    {
+        R::RowBuilder rows(size_t(space.NumOwned()), sizeof(double));
+        for (DNDS::index row = 0; row < space.NumOwned(); ++row)
+        {
+            const auto global = space.LocalToGlobal(row);
+            rows.ResizeRow(size_t(row), size_t(global % 3) + extra);
+            auto output = rows.Row<double>(size_t(row));
+            for (size_t slot = 0; slot < output.size; ++slot)
+                output[slot] = 10 * double(global) + double(slot) / 8;
+        }
+        EntityField<double> field(space, R::Array<double>::FromSharedStorage(rows.Commit()));
+        auto route = field.BuildHaloRoute(space);
+        auto binding = route.Bind(field, space);
+        {
+            auto operation = binding.Begin();
+            operation.Wait();
+        }
+        auto ghost = binding.GhostValues().Read();
+        for (DNDS::index row = 0; row < space.NumGhost(); ++row)
+        {
+            const auto global = space.LocalToGlobal(space.NumOwned() + row);
+            REQUIRE(ghost.View().RowSize(size_t(row)) == size_t(global % 3) + extra);
+            for (size_t slot = 0; slot < ghost.View().RowSize(size_t(row)); ++slot)
+                CHECK(ghost.View()(size_t(row), slot) == 10 * double(global) + double(slot) / 8);
+        }
+        auto retained = field.Read(space);
+        CHECK_THROWS(mesh->versions.BeginMutation(R::Change::Layout));
+        for (DNDS::index row = 0; row < space.NumOwned(); ++row)
+            CHECK(retained.View().RowSize(size_t(row)) == size_t(space.LocalToGlobal(row) % 3) + extra);
+    }
 }
 
 int main(int argc, char **argv)

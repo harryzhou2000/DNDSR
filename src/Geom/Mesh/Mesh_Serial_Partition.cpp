@@ -1,16 +1,10 @@
 #include "Mesh.hpp"
-#include "Solver/Direct.hpp"
-#include "Geom/Metis.hpp"
 #include "SerialAdjReordering.hpp"
-
-#include <array>
-
+#include "Solver/Direct.hpp"
 namespace DNDS::Geom
 {
     std::size_t UnstructuredMesh::CoordinateHash()
     {
-        if (!HasNativeState())
-            return coords.hash();
         auto read = AcquireRead();
         const auto view = read.HostView();
         auto rowsHash = [&](index first, index count)
@@ -29,246 +23,11 @@ namespace DNDS::Geom
         MPI::Allgather(&local, 1, DNDS_MPI_INDEX, hashes.data(), 1, DNDS_MPI_INDEX, mpi.comm);
         return vector_hash<index>{}(hashes);
     }
-
-    void UnstructuredMeshSerialRW::
-        MeshPartitionCell2Cell(const PartitionOptions &c_options)
+    tLocalMatStruct UnstructuredMesh::GetCell2CellFaceVLocal(bool local)
     {
-        if (mesh->getMPI().rank == mRank)
-            DNDS::log() << "UnstructuredMeshSerialRW === Doing  MeshPartitionCell2Cell" << std::endl;
-        //! preset hyper config, should be optional in the future
-        bool isSerial = true;
-        idx_t nPart = mesh->getMPI().size;
-        cnPart = nPart;
-
-        //! assuming all adj point to local numbers now
-        // * Tend to local-global issues putting into
-        // cell2cellSerial->Compress();
-        // cell2cellSerial->AssertConsistent();
-        // cell2cellSerial->createGlobalMapping();
-        cell2cellSerialFacial->Compress();
-        cell2cellSerialFacial->AssertConsistent();
-        cell2cellSerialFacial->createGlobalMapping();
-
-        std::vector<idx_t> vtxdist(mesh->getMPI().size + 1);
-#ifdef DNDS_USE_OMP
-#    pragma omp parallel for
-#endif
-        for (DNDS::MPI_int r = 0; r <= mesh->getMPI().size; r++)
-            vtxdist[r] = METIS::indexToIdx(cell2cellSerialFacial->pLGlobalMapping->ROffsets().at(r));
-        std::vector<idx_t> xadj(cell2cellSerialFacial->Size() + 1);
-#ifdef DNDS_USE_OMP
-#    pragma omp parallel for
-#endif
-        for (DNDS::index iCell = 0; iCell < xadj.size(); iCell++)
-            xadj[iCell] = METIS::indexToIdx(cell2cellSerialFacial->rowPtr(iCell) - cell2cellSerialFacial->rowPtr(0));
-        std::vector<idx_t> adjncy(xadj.back());
-        std::vector<idx_t> adjncyWeights;
-        DNDS_assert(cell2cellSerialFacial->DataSize() == xadj.back());
-#ifdef DNDS_USE_OMP
-#    pragma omp parallel for
-#endif
-        for (DNDS::index iAdj = 0; iAdj < xadj.back(); iAdj++)
-            adjncy[iAdj] = METIS::indexToIdx(cell2cellSerialFacial->data()[iAdj]);
-        if (c_options.edgeWeightMethod == 1)
-        {
-            adjncyWeights.reserve(xadj.back());
-            std::vector<real> adjncyWeightsR;
-            adjncyWeightsR.reserve(xadj.back());
-
-            real maxDistMax{0};
-            for (index iCell = 0; iCell < cell2cellSerialFacial->Size(); iCell++)
-            {
-                tSmallCoords coordsC;
-                GetCoordsOnCellSerial(iCell, coordsC, coordSerial);
-                std::vector<index> cell2nodeCV = cell2nodeSerial->operator[](iCell);
-                std::sort(cell2nodeCV.begin(), cell2nodeCV.end());
-                for (auto iCellOther : cell2cellSerialFacial->operator[](iCell))
-                {
-                    std::vector<index> cell2nodeCVOther = cell2nodeSerial->operator[](iCellOther);
-                    std::sort(cell2nodeCVOther.begin(), cell2nodeCVOther.end());
-                    std::vector<index> faceFound;
-                    faceFound.reserve(9);
-                    std::set_intersection(cell2nodeCV.begin(), cell2nodeCV.end(), cell2nodeCVOther.begin(), cell2nodeCVOther.end(), std::back_inserter(faceFound));
-                    DNDS_assert(faceFound.size() >= 2);
-                    std::vector<int> faceFoundC2F;
-                    faceFoundC2F.reserve(faceFound.size());
-                    for (auto iN : faceFound)
-                        for (int i = 0; i < cell2nodeSerial->operator[](iCell).size(); i++)
-                            if (cell2nodeSerial->operator[](iCell)[i] == iN)
-                                faceFoundC2F.push_back(i);
-                    DNDS_assert(faceFoundC2F.size() == faceFound.size());
-                    tSmallCoords coordsF = coordsC(EigenAll, faceFoundC2F);
-                    real maxDist{0};
-                    for (int i = 0; i < coordsF.cols(); i++)
-                        for (int j = 0; j < coordsF.cols(); j++)
-                            if (i != j)
-                                maxDist = std::max(maxDist, (coordsF(EigenAll, i) - coordsF(EigenAll, j)).norm());
-                    adjncyWeightsR.push_back(maxDist);
-                    maxDistMax = std::max(maxDist, maxDistMax);
-                }
-            }
-            auto weightMapping = [](real x) -> real
-            { return std::pow(x, 1); };
-            for (auto d : adjncyWeightsR)
-                adjncyWeights.push_back(weightMapping(d / maxDistMax) * (INT_MAX - 1) + 1.);
-        }
-        if (adjncy.empty())
-            adjncy.resize(1, -1); //*coping with zero sized data
-
-        idx_t nCell = METIS::indexToIdx(cell2cellSerialFacial->Size());
-        idx_t nCon{1};
-        std::array<idx_t, METIS_NOPTIONS> options{};
-        METIS_SetDefaultOptions(options.data());
-        {
-            options[METIS_OPTION_OBJTYPE] = METIS_OBJTYPE_CUT;
-            options[METIS_OPTION_CTYPE] = METIS_CTYPE_SHEM; //? could try shem?
-            options[METIS_OPTION_IPTYPE] = METIS_IPTYPE_GROW;
-            options[METIS_OPTION_RTYPE] = METIS_RTYPE_FM;
-            // options[METIS_OPTION_NO2HOP] = 0; // only available in metis 5.1.0
-            options[METIS_OPTION_NCUTS] = std::max(c_options.metisNcuts, 1);
-            options[METIS_OPTION_NITER] = 10;
-            // options[METIS_OPTION_UFACTOR] = 30; // load imbalance factor, fow k-way
-            options[METIS_OPTION_UFACTOR] = c_options.metisUfactor;
-            options[METIS_OPTION_MINCONN] = 1;
-            options[METIS_OPTION_CONTIG] = 1;                 // ! forcing contigious partition now ? necessary?
-            options[METIS_OPTION_SEED] = c_options.metisSeed; // ! seeding 0 for determined result
-            options[METIS_OPTION_NUMBERING] = 0;
-            // options[METIS_OPTION_DBGLVL] = METIS_DBG_TIME | METIS_DBG_IPART;
-            options[METIS_OPTION_DBGLVL] = METIS_DBG_TIME;
-        }
-        std::vector<idx_t> partOut(nCell);
-        if (nCell == 0)
-            partOut.resize(1, -1); //*coping with zero sized data
-        if (nPart > 1)
-        {
-            if (mesh->getMPI().size == 1 || (isSerial && mesh->getMPI().rank == mRank))
-            {
-                idx_t objval;
-                DNDS_assert_info(c_options.metisType == std::string("KWAY") or c_options.metisType == std::string("RB"), "metisType must be KWAY or RB!");
-                int ret = c_options.metisType == std::string("KWAY")
-                              ? METIS_PartGraphKway(
-                                    &nCell, &nCon, xadj.data(), adjncy.data(), nullptr, nullptr, c_options.edgeWeightMethod ? adjncyWeights.data() : nullptr,
-                                    &nPart, nullptr, nullptr, options.data(), &objval, partOut.data())
-                              : METIS_PartGraphRecursive(
-                                    &nCell, &nCon, xadj.data(), adjncy.data(), nullptr, nullptr, c_options.edgeWeightMethod ? adjncyWeights.data() : nullptr,
-                                    &nPart, nullptr, nullptr, options.data(), &objval, partOut.data());
-                if (ret != METIS_OK)
-                {
-                    DNDS::log() << "METIS returned not OK: [" << ret << "]" << std::endl;
-                    DNDS_assert(false);
-                }
-            }
-            else if (mesh->getMPI().size != 1 && (!isSerial))
-            {
-                ///@todo //TODO: parmetis needs testing!
-                for (int i = 0; i < vtxdist.size() - 1; i++)
-                    DNDS_assert_info(vtxdist[i + 1] - vtxdist[i] > 0, "need more than zero cells on each proc!");
-                std::vector<real_t> tpWeights(static_cast<index>(nPart) * nCon, 1.0 / nPart); //! assuming homogenous
-                std::array<real_t, 1> ubVec{1.05};
-                DNDS_assert(nCon == 1);
-                std::array<idx_t, 3> optsC{};
-                idx_t wgtflag{0}, numflag{0};
-                optsC[0] = 1;
-                optsC[1] = 1;
-                optsC[2] = 0;
-                idx_t objval;
-                int ret = ParMETIS_V3_PartKway(
-                    vtxdist.data(), xadj.data(), adjncy.data(), nullptr, nullptr, &wgtflag, &numflag,
-                    &nCon, &nPart, tpWeights.data(), ubVec.data(), optsC.data(), &objval, partOut.data(),
-                    &mesh->getMPI().comm);
-                if (ret != METIS_OK)
-                {
-                    DNDS::log() << "METIS returned not OK: [" << ret << "]" << std::endl;
-                    DNDS_assert(false);
-                }
-            }
-        }
-        else
-        {
-            partOut.assign(partOut.size(), 0);
-        }
-        cellPartition.resize(cell2cellSerialFacial->Size());
-        for (DNDS::index i = 0; i < cellPartition.size(); i++)
-            cellPartition[i] = partOut[i];
-        if (mesh->getMPI().rank == mRank)
-        {
-            std::vector<index> partCellCnt(nPart, 0);
-            for (auto p : cellPartition)
-                partCellCnt.at(p)++;
-            auto [min, max] = std::minmax_element(partCellCnt.begin(), partCellCnt.end());
-            log() << "UnstructuredMeshSerialRW === Done  MeshPartitionCell2Cell "
-                  << fmt::format("ave [{}], min [{}], max [{}], ", real(cellPartition.size()) / nPart, *min, *max)
-                  << fmt::format("ratio [{:.4f}] ", real(*min) / *max) << std::endl;
-        }
+        auto read = AcquireRead(MeshReadRequirements::CellFlux());
+        return CurrentNativeState()->BuildLocalCellNeighbors(local);
     }
-
-    tLocalMatStruct UnstructuredMesh::GetCell2CellFaceVLocal(bool onLocalPartition)
-    {
-        if (HasNativeState())
-        {
-            auto read = AcquireRead(MeshReadRequirements::CellFlux());
-            return _nativeState->BuildLocalCellNeighbors(onLocalPartition);
-        }
-        RequireLegacyWorkspace("GetCell2CellFaceVLocal");
-        // if (onLocalPartition)
-        //     DNDS_assert(this->localPartitionStarts.size() >= 2);
-        DNDS_assert(this->adjPrimaryState == Adj_PointToLocal);
-        DNDS_assert(cell2node.isLocal() && bnd2node.isLocal());
-        std::vector<std::vector<index>> cell2cellFaceV;
-        cell2cellFaceV.resize(this->NumCell());
-        if (this->adjFacialState == Adj_PointToLocal && this->face2cell.isBuilt())
-        {
-            for (int iPart = 0; iPart < this->NLocalParts(); iPart++)
-                for (index iCell = this->LocalPartStart(iPart); iCell < this->LocalPartEnd(iPart); iCell++)
-                {
-                    cell2cellFaceV[iCell].reserve(cell2face.RowSize(iCell)); // do not preserve the diagonal
-                    for (rowsize ic2f = 0; ic2f < cell2face.RowSize(iCell); ++ic2f)
-                    {
-                        index iFace = cell2face(iCell, ic2f);
-                        index iCellOther = this->CellFaceOther(iCell, iFace, ic2f);
-                        if (iCellOther != UnInitIndex && iCellOther != iCell && iCellOther < this->NumCell()) //! must be local not ghost ptrs
-                        {
-                            if (onLocalPartition)
-                                if (iCellOther < this->LocalPartStart(iPart) || iCellOther >= this->LocalPartEnd(iPart))
-                                    continue;
-                            cell2cellFaceV[iCell].push_back(iCellOther);
-                        }
-                    }
-                }
-        }
-        else
-        {
-            for (int iPart = 0; iPart < this->NLocalParts(); iPart++)
-                for (index iCell = this->LocalPartStart(iPart); iCell < this->LocalPartEnd(iPart); iCell++)
-                {
-                    std::vector<index> cell2cellRow;
-                    auto eCell = this->GetCellElement(iCell);
-                    std::vector<index> c2ni(cell2node[iCell].begin(), cell2node[iCell].begin() + eCell.GetNumVertices());
-                    std::sort(c2ni.begin(), c2ni.end());
-                    for (index iCellOther : cell2cell[iCell])
-                    {
-                        if (iCellOther == iCell)
-                            continue;
-                        if (iCellOther >= this->NumCell())
-                            continue;
-                        if (onLocalPartition)
-                            if (iCellOther < this->LocalPartStart(iPart) || iCellOther >= this->LocalPartEnd(iPart))
-                                continue;
-                        auto eCellOther = this->GetCellElement(iCellOther);
-                        std::vector<index> c2nj(cell2node[iCellOther].begin(), cell2node[iCellOther].begin() + eCellOther.GetNumVertices());
-                        std::sort(c2nj.begin(), c2nj.end());
-                        std::vector<index> intersect;
-                        intersect.reserve(9);
-                        std::set_intersection(c2ni.begin(), c2ni.end(), c2nj.begin(), c2nj.end(), std::back_inserter(intersect));
-                        if (intersect.size() >= this->dim) // for 2d, exactly 2; for 3d, 3 or 4
-                            cell2cellRow.push_back(iCellOther);
-                    }
-                    cell2cellFaceV[iCell] = std::move(cell2cellRow);
-                }
-        }
-        return cell2cellFaceV;
-    }
-
     static std::vector<index> put_perm_back_to_local_parts(const std::vector<index> &new2old, const std::vector<index> &localPartStarts)
     {
         auto fGetIPart = [&](index iCell) -> index
@@ -296,7 +55,6 @@ namespace DNDS::Geom
         DNDS_assert(out.size() == new2old.size());
         return out;
     }
-
     static void check_permutations(const std::vector<index> &new2old, const std::vector<index> &old2new, const std::vector<index> &localPartStarts)
     {
         index N = new2old.size();
@@ -346,25 +104,18 @@ namespace DNDS::Geom
             }
         }
     }
-
     void UnstructuredMesh::ObtainLocalFactFillOrdering(Direct::SerialSymLUStructure &symLU, Direct::DirectPrecControl control)
     {
         if (!control.useDirectPrec)
             return;
         std::vector<index> partStarts;
-        if (HasNativeState())
-        {
-            for (int part = 0; part < NLocalParts(); ++part)
-                partStarts.push_back(LocalPartStart(part));
-            partStarts.push_back(NumCell());
-            _nativeState = _nativeState->WithLocalCellSetup(partStarts, GetCell2CellFaceVLocal(true));
-            _nativeSmoothing.reset();
-        }
-        else
-        {
-            cell2cellFaceVLocalParts = GetCell2CellFaceVLocal(true);
-            partStarts = localPartitionStarts;
-        }
+
+        for (int part = 0; part < NLocalParts(); ++part)
+            partStarts.push_back(LocalPartStart(part));
+        partStarts.push_back(NumCell());
+        _nativeState = _nativeState->WithLocalCellSetup(partStarts, GetCell2CellFaceVLocal(true));
+        _nativeSmoothing.reset();
+
         const auto &graph = LocalCellNeighbors();
         auto &localFillOrderingNew2Old = symLU.localFillOrderingNew2Old;
         auto &localFillOrderingOld2New = symLU.localFillOrderingOld2New;

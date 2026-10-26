@@ -19,6 +19,8 @@
 #include "Geom/Mesh/Mesh.hpp"
 #include "Geom/Mesh/NativeMeshCGNS.hpp"
 #include "Geom/Mesh/NativeMeshTopology.hpp"
+#include "Geom/Mesh/Mesh_Helpers.hpp"
+#include "../Geom/LegacyMeshFixtureCodec.hpp"
 #include "DNDS/Device/CUDA_Utils.hpp"
 
 #include <cmath>
@@ -55,34 +57,35 @@ namespace // anonymous -- avoid POSIX index() ambiguity
     buildMeshAndFV(MPIInfo &mpi, bool native)
     {
         constexpr int dim = 2;
-        auto mesh = std::make_shared<DNDS::Geom::UnstructuredMesh>(mpi, dim);
+        DNDS::Geom::PartitionOptions partition;
+        partition.metisSeed = 42;
+        auto mesh = DNDS::Geom::ReadNativeMeshFromCGNS(mpi, dim,
+                                                       meshPath("Uniform_3x3_wall.cgns"), partition, DNDS::Geom::FBC_Name_2_ID_Default);
         if (!native)
         {
-            DNDS::Geom::UnstructuredMeshSerialRW reader(mesh, 0);
-
-            reader.ReadFromCGNSSerial(meshPath("Uniform_3x3_wall.cgns"));
-            reader.Deduplicate1to1Periodic();
-            reader.BuildCell2Cell();
-
-            DNDS::Geom::UnstructuredMeshSerialRW::PartitionOptions pOpt;
-            pOpt.metisSeed = 42;
-            reader.MeshPartitionCell2Cell(pOpt);
-            reader.PartitionReorderToMeshCell2Cell();
-
-            mesh->RecoverNode2CellAndNode2Bnd();
-            mesh->RecoverCell2CellAndBnd2Cell();
-            mesh->BuildGhostPrimary();
-            mesh->AdjGlobal2LocalPrimary();
-            mesh->InterpolateFace();
-            mesh->AssertOnFaces();
+            // The reference traverses the historical primary payload codec
+            // into independent Runtime ownership, then rebuilds native faces.
+            auto reference = DNDS::Geom::TestFixtureCodec::DecodePrimaryReference(*mesh);
+            {
+                auto sourceRead = mesh->AcquireRead(DNDS::Geom::MeshReadRequirements::CellFlux());
+                auto referenceRead = reference->AcquireRead(DNDS::Geom::MeshReadRequirements::CellFlux());
+                const auto source = sourceRead.HostView(), decoded = referenceRead.HostView();
+                DNDS_assert(source.NumCell() == decoded.NumCell() && source.NumNode() == decoded.NumNode());
+                if (source.NumNode())
+                    DNDS_assert(source.Coord(0).data() != decoded.Coord(0).data());
+                for (DNDS::index cell = 0; cell < source.NumCell(); ++cell)
+                {
+                    DNDS_assert(mesh->OriginalEntityId(DNDS::Geom::EntityKind::Cell, cell) == reference->OriginalEntityId(DNDS::Geom::EntityKind::Cell, cell));
+                    DNDS::Geom::MeshQueryCoords expected, actual;
+                    source.GetCoordsOnCell(cell, expected);
+                    decoded.GetCoordsOnCell(cell, actual);
+                    DNDS_assert(expected.isApprox(actual, 1e-14));
+                    DNDS_assert(source.GetCellInfo(cell).type == decoded.GetCellInfo(cell).type);
+                }
+            }
+            mesh = std::move(reference);
         }
-
-        if (native)
-        {
-            auto state = DNDS::Geom::ReadNativeCGNS(mpi, meshPath("Uniform_3x3_wall.cgns"), dim,
-                                                    DNDS::Geom::FBC_Name_2_ID_Default);
-            mesh = DNDS::Geom::UnstructuredMesh::FromNative(mpi, DNDS::Geom::NativeMeshTopology::Build(*state, mpi));
-        }
+        DNDS_assert_info(mesh->HasNativeState(), "device fixture requires native mesh authority");
 
         auto fv = std::make_shared<DNDS::CFV::FiniteVolume>(mpi, mesh);
 
@@ -150,7 +153,7 @@ DNDS_GLOBAL void kernel_read_fv_metrics(
 DNDS_GLOBAL void kernel_read_fv_mesh(
     DNDS::CFV::FiniteVolume::t_deviceView<DeviceBackend::CUDA> *fv,
     DNDS::index *nodes, DNDS::index *faces, DNDS::index *neighbors,
-    DNDS::real *coordinates, DNDS::index cells)
+    DNDS::real *coordinates, DNDS::index cells, DNDS::index ownedCells)
 {
     const DNDS::index cell = DNDS::index(blockIdx.x) * blockDim.x + threadIdx.x;
     if (cell >= cells)
@@ -159,10 +162,15 @@ DNDS_GLOBAL void kernel_read_fv_mesh(
     for (DNDS::rowsize slot = 0; slot < 4; ++slot)
     {
         const auto node = mesh.CellNodes(cell)[slot];
-        const auto face = mesh.CellFaces(cell)[slot];
         nodes[cell * 4 + slot] = node;
-        faces[cell * 4 + slot] = face;
-        neighbors[cell * 4 + slot] = mesh.CellFaceOther(cell, face, slot);
+        // Outer ghost cell faces may be unavailable. Geometry cones are
+        // complete for every proc row; face-side traversal is owned-only.
+        if (cell < ownedCells)
+        {
+            const auto face = mesh.CellFaces(cell)[slot];
+            faces[cell * 4 + slot] = face;
+            neighbors[cell * 4 + slot] = mesh.CellFaceOther(cell, face, slot);
+        }
         const auto point = mesh.Coord(node);
         for (int d = 0; d < 3; ++d)
             coordinates[(cell * 4 + slot) * 3 + d] = point[d];
@@ -250,27 +258,34 @@ namespace // anonymous for test functions
 
         DNDS::index nCells = fv.mesh->NumCellProc();
         DNDS::index nFaces = fv.mesh->NumFaceProc();
+        const DNDS::index ownedCells = fv.mesh->NumCell();
 
         // 1) Record host-side metric values
         std::vector<DNDS::real> host_volumes(nCells);
         std::vector<DNDS::real> host_bary_x(nCells);
         std::vector<DNDS::real> host_bary_y(nCells);
         std::vector<DNDS::real> host_face_areas(nFaces);
-        std::vector<DNDS::index> host_nodes(nCells * 4), host_faces(nCells * 4), host_neighbors(nCells * 4);
+        std::vector<DNDS::index> host_nodes(nCells * 4), host_faces(ownedCells * 4), host_neighbors(ownedCells * 4);
         std::vector<DNDS::real> host_coordinates(nCells * 12);
         {
             auto read = fv.mesh->AcquireRead(DNDS::Geom::MeshReadRequirements::CellFlux());
             const auto view = read.HostView();
             for (DNDS::index cell = 0; cell < nCells; ++cell)
             {
-                DNDS_assert(view.CellNodes(cell).size() == 4 && view.CellFaces(cell).size() == 4);
+                DNDS_assert(view.CellNodes(cell).size() == 4);
+                if (cell < ownedCells)
+                    DNDS_assert(view.CellFaces(cell).size() == 4);
                 for (DNDS::rowsize slot = 0; slot < 4; ++slot)
                 {
                     const auto node = view.CellNodes(cell)[slot];
-                    const auto face = view.CellFaces(cell)[slot];
                     host_nodes[cell * 4 + slot] = node;
-                    host_faces[cell * 4 + slot] = face;
-                    host_neighbors[cell * 4 + slot] = view.CellFaceOther(cell, face, slot);
+                    if (cell < ownedCells)
+                    {
+                        const auto face = view.CellFaces(cell)[slot];
+                        DNDS_assert_info(face >= 0 && face < view.NumFaceProc(), "owned cell face must be available");
+                        host_faces[cell * 4 + slot] = face;
+                        host_neighbors[cell * 4 + slot] = view.CellFaceOther(cell, face, slot);
+                    }
                     for (int d = 0; d < 3; ++d)
                         host_coordinates[(cell * 4 + slot) * 3 + d] = view.Coord(node)[d];
                 }
@@ -311,23 +326,26 @@ namespace // anonymous for test functions
         thrust::device_vector<DNDS::real> d_bary_x(nCells);
         thrust::device_vector<DNDS::real> d_bary_y(nCells);
         thrust::device_vector<DNDS::real> d_face_areas(nFaces);
-        thrust::device_vector<DNDS::index> d_nodes(nCells * 4), d_faces(nCells * 4), d_neighbors(nCells * 4);
+        thrust::device_vector<DNDS::index> d_nodes(nCells * 4), d_faces(ownedCells * 4), d_neighbors(ownedCells * 4);
         thrust::device_vector<DNDS::real> d_coordinates(nCells * 12);
 
         // 5) Launch kernel
         uint32_t threadsPerBlock = 256;
-        auto [blocksPerGrid, unused] = DNDS::CUDA::calckernelSizeSimple(maxN, threadsPerBlock);
-        kernel_read_fv_metrics<<<blocksPerGrid, threadsPerBlock>>>(
-            fv_dev.get(),
-            thrust::raw_pointer_cast(d_volumes.data()),
-            thrust::raw_pointer_cast(d_bary_x.data()),
-            thrust::raw_pointer_cast(d_bary_y.data()),
-            thrust::raw_pointer_cast(d_face_areas.data()),
-            nCells, nFaces);
-        kernel_read_fv_mesh<<<blocksPerGrid, threadsPerBlock>>>(
-            fv_dev.get(), thrust::raw_pointer_cast(d_nodes.data()),
-            thrust::raw_pointer_cast(d_faces.data()), thrust::raw_pointer_cast(d_neighbors.data()),
-            thrust::raw_pointer_cast(d_coordinates.data()), nCells);
+        if (maxN > 0)
+        {
+            auto [blocksPerGrid, unused] = DNDS::CUDA::calckernelSizeSimple(maxN, threadsPerBlock);
+            kernel_read_fv_metrics<<<blocksPerGrid, threadsPerBlock>>>(
+                fv_dev.get(),
+                thrust::raw_pointer_cast(d_volumes.data()),
+                thrust::raw_pointer_cast(d_bary_x.data()),
+                thrust::raw_pointer_cast(d_bary_y.data()),
+                thrust::raw_pointer_cast(d_face_areas.data()),
+                nCells, nFaces);
+            kernel_read_fv_mesh<<<blocksPerGrid, threadsPerBlock>>>(
+                fv_dev.get(), thrust::raw_pointer_cast(d_nodes.data()),
+                thrust::raw_pointer_cast(d_faces.data()), thrust::raw_pointer_cast(d_neighbors.data()),
+                thrust::raw_pointer_cast(d_coordinates.data()), nCells, ownedCells);
+        }
         DNDS_CUDA_CHECKED(cudaDeviceSynchronize());
 
         // 6) Copy kernel results back to host
@@ -340,6 +358,9 @@ namespace // anonymous for test functions
         for (size_t i = 0; i < host_nodes.size(); ++i)
         {
             DNDS_assert(h_nodes[i] == host_nodes[i]);
+        }
+        for (size_t i = 0; i < host_faces.size(); ++i)
+        {
             DNDS_assert(h_faces[i] == host_faces[i]);
             DNDS_assert(h_neighbors[i] == host_neighbors[i]);
         }
@@ -470,11 +491,9 @@ int main(int argc, char *argv[])
     for (bool native : {false, true})
     {
         auto [mesh, fv] = buildMeshAndFV(mpi, native);
-        if (native)
-            DNDS_assert_info(!mesh->coords.father && !mesh->cell2node.father,
-                             "native device fixture must not allocate legacy mesh arrays");
+        DNDS_assert_info(mesh->HasNativeState(), "device fixture must retain native authority");
         if (mpi.rank == 0)
-            std::cout << "Mesh built (native=" << native << "): " << mesh->NumCell()
+            std::cout << "Mesh built (path=" << (native ? "direct native" : "primary wire reference") << "): " << mesh->NumCell()
                       << " cells, " << mesh->NumFace() << " faces" << std::endl;
         test_device_view_trivially_copyable(*fv, mpi);
         test_device_state_tracking(*fv, mpi);

@@ -56,16 +56,6 @@ namespace DNDS::Geom
         }
         Validate(relation);
     }
-    RelationPeriodicBits::RelationPeriodicBits(const RelationReadAccess &relation, const tPbiPair &legacy)
-        : RelationPeriodicBits(relation, [&]
-                               { DNDS_check_throw_info(legacy.father && legacy.son, "periodic companion arrays are missing"); return Runtime::ShareLegacyHost(*legacy.father); }(), legacy.son ? std::optional<Runtime::Array<NodePeriodicBits>>(Runtime::ShareLegacyHost(*legacy.son)) : std::nullopt)
-    {
-        DNDS_check_throw_info(legacy.trans.father == legacy.father && legacy.trans.son == legacy.son &&
-                                  legacy.trans.pLGlobalMapping == legacy.father->pLGlobalMapping &&
-                                  legacy.trans.pLGlobalMapping == _source._global &&
-                                  (_source.NumGhost() == 0 || legacy.trans.pLGhostMapping == _source._ghostMap),
-                              "periodic companion source map differs from ordered relation");
-    }
     void RelationPeriodicBits::Validate(const RelationReadAccess &relation) const
     {
         if (_meshRead)
@@ -111,20 +101,37 @@ namespace DNDS::Geom
     }
     Runtime::Array<index> NativeConnectivity::Fetch(const RelationReadAccess &relation, const std::vector<index> &globals) const
     {
-        // Encode all owned entries globally once per hop. Remote rows retain
-        // ordered slots/sentinels; local unavailable encodings are decoded.
-        std::vector<std::vector<index>> rows(size_t(relation.NumOwned()));
         std::vector<Runtime::RowRequest> requests;
         ValidateCollectively([&]
                              {
-            relation.Validate();
-            for (index row = 0; row < relation.NumOwned(); ++row)
-                rows[size_t(row)] = relation.GlobalRow(row);
+            relation.CheckActive();
+            relation.Source().Validate();
+            relation.Target().Validate();
+            if (!_fetchValues.count(relation.Kind()))
+            {
+                // Registration retains immutable input leases. Share globally
+                // indexed native storage; convert local numbering once per
+                // relation, rather than rebuilding every owned row per hop.
+                const auto *owned = dynamic_cast<const RelationReadAccess::ArrayHold *>(relation._owned.get());
+                if (relation.State() == Adj_PointToGlobal && owned)
+                    _fetchValues.emplace(relation.Kind(), owned->array);
+                else
+                {
+                    Runtime::RowBuilder builder(size_t(relation.NumOwned()), sizeof(index));
+                    for (index row = 0; row < relation.NumOwned(); ++row)
+                    {
+                        const auto entries = relation.GlobalRow(row);
+                        builder.ResizeRow(size_t(row), entries.size());
+                        std::copy(entries.begin(), entries.end(), builder.Row<index>(size_t(row)).data);
+                    }
+                    _fetchValues.emplace(relation.Kind(), Runtime::Array<index>::FromSharedStorage(builder.Commit()));
+                }
+            }
             for (size_t row = 0; row < globals.size(); ++row)
                 requests.push_back({relation.Source().Owner(globals[row]), relation.Source().OwnerLocalRow(globals[row]), row}); });
-        auto values = BuildRows(rows, 0, rows.size());
+        const auto &values = _fetchValues.at(relation.Kind());
         auto context = std::make_shared<Runtime::CommunicationContext>(_mpi.comm);
-        Runtime::RowTransferPlan route(context, rows.size(), globals.size(), requests,
+        Runtime::RowTransferPlan route(context, size_t(relation.NumOwned()), globals.size(), requests,
                                        {relation.Source().Stamp(), relation.Target().Stamp()});
         return Transfer(route, values, context);
     }
@@ -449,7 +456,7 @@ namespace DNDS::Geom
         const std::vector<std::pair<AdjKind, MeshRelation>> &MeshRelations()
         {
             static const std::vector<std::pair<AdjKind, MeshRelation>> bindings{
-                {Adj::Cell2Node, MeshRelation::CellNodes}, {Adj::Bnd2Node, MeshRelation::BoundaryNodes}, {Adj::Bnd2Cell, MeshRelation::BoundaryCells}, {Adj::Cell2Cell, MeshRelation::CellCells}, {Adj::Node2Cell, MeshRelation::NodeCells}, {Adj::Node2Bnd, MeshRelation::NodeBoundaries}, {Adj::Cell2Face, MeshRelation::CellFaces}, {Adj::Face2Node, MeshRelation::FaceNodes}, {Adj::Face2Cell, MeshRelation::FaceCells}, {Adj::Face2Bnd, MeshRelation::FaceBoundaries}, {Adj::Bnd2Face, MeshRelation::BoundaryFaces}, {Adj::Cell2Edge, MeshRelation::CellEdges}, {Adj::Edge2Node, MeshRelation::EdgeNodes}, {Adj::Edge2Cell, MeshRelation::EdgeCells}};
+                {Adj::Cell2Node, MeshRelation::CellNodes}, {Adj::Bnd2Node, MeshRelation::BoundaryNodes}, {Adj::Bnd2Cell, MeshRelation::BoundaryCells}, {Adj::Cell2Cell, MeshRelation::CellCells}, {Adj::Cell2CellFace, MeshRelation::CellFaceCells}, {Adj::Node2Cell, MeshRelation::NodeCells}, {Adj::Node2Bnd, MeshRelation::NodeBoundaries}, {Adj::Cell2Face, MeshRelation::CellFaces}, {Adj::Face2Node, MeshRelation::FaceNodes}, {Adj::Face2Cell, MeshRelation::FaceCells}, {Adj::Face2Bnd, MeshRelation::FaceBoundaries}, {Adj::Bnd2Face, MeshRelation::BoundaryFaces}, {Adj::Cell2Edge, MeshRelation::CellEdges}, {Adj::Edge2Node, MeshRelation::EdgeNodes}, {Adj::Edge2Cell, MeshRelation::EdgeCells}};
             return bindings;
         }
         MeshRelation QueryRelation(AdjKind kind)

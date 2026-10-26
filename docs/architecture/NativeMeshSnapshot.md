@@ -1,55 +1,53 @@
 # Detached native mesh query storage
 
-`NativeMeshSnapshot` is immutable query storage built from a validated
-`UnstructuredMesh` read scope. It is an intermediate native backend, not a
-replacement for the mesh's current construction and redistribution storage.
-Capture copies values and publishes independent Runtime row metadata once.
-Repeated `AcquireRead()` calls retain that storage and acquire leases; they do
-not scan topology, convert CSR metadata or transfer values again.
+`NativeMeshSnapshot` is immutable Runtime-backed query storage. The current
+`NativeMeshState` uses snapshots for its host and explicit device placements;
+`NativeMeshSnapshot::Capture(mesh, requirements)` additionally copies requested
+current native data into a detached snapshot. No legacy storage bridge is used.
 
 ```mermaid
 flowchart TD
-  mesh[Mutable UnstructuredMesh] --> capture[Capture: validate and copy once]
-  capture --> handle[NativeMeshSnapshot handle]
-  handle -->|shared const ownership| state[Private snapshot State]
-  state -->|owns handles| arrays[Runtime Arrays: owned and ghost]
-  arrays -->|shared ownership| storage[ArrayStorage]
-  storage --> values[Shared value allocation]
-  storage --> metadata[Shared published row metadata]
-  read[MeshReadAccess] -->|retains array handles and leases| storage
-  read --> view[Borrowed trivially copyable mesh view]
+    facade[UnstructuredMesh] --> native[Current NativeMeshState]
+    native --> host[Resident host snapshot]
+    native --> device[Explicit device placements]
+    facade --> capture[Capture requested groups once]
+    capture --> detached[Detached NativeMeshSnapshot]
+    detached --> buffers[Owned / ghost Runtime values and row metadata]
+    read[MeshReadAccess] -->|retains handles and read leases| buffers
+    read --> view[Borrowed plain query view]
+    view -. pointers .-> buffers
 ```
 
-The source mesh is needed only during `Capture`. Its later mutation or deletion
-does not affect the detached snapshot. `SourceStamp()` records provenance: it
-can become stale while the snapshot's own read scope remains valid. Do not use
-provenance validity as the snapshot's memory-lifetime test. Conversely, using an
-old snapshot with a newly ordered solver field still requires an explicit
-entity-order check; immutable storage does not prove field association.
+Repeated `AcquireRead()` retains existing values and published row metadata; it
+does not recopy payloads or rebuild topology. A detached snapshot's later reads
+remain valid after source replacement or destruction. `SourceStamp()` records
+provenance and may become stale without invalidating snapshot storage. Neither
+immutability nor a valid allocation proves compatibility with a newly ordered
+solver field; check its entity-space association separately.
 
-`To(device, context)` creates a new placement once and completes its transfers
-before returning. The resulting snapshot may supply many CPU or CUDA read
-scopes. Keep each scope alive through actual worker or device completion, and
-join all streams before attaching its completion. The plain view itself owns
-nothing. A scope can outlive both its parent snapshot handle and source mesh.
+`To(device, context)` creates an independent placement and completes its copies
+before returning. A native facade instead retains prepared placements through
+`PlaceNative`. Acquisition on an unprepared device fails rather than uploading
+inside an operator. Backend placement preserves mathematical identity.
 
-Only requested relation groups are captured. `HasRelation` advertises the
-available groups, and `allFaceCellsLocal` may request stronger closure during
-capture. All values, element information and incidence companions use the same
-split and ordering as the source acquisition. There is no mutable array export
-from this snapshot and no implicit publication back to the source mesh.
+Capture includes only requested relation groups and companions. `HasRelation`
+advertises availability; stronger closure such as `allFaceCellsLocal` is checked
+at acquisition, not constructed by the snapshot. A detached query snapshot is
+not a full restart archive or a mutable mesh export: named setup relations,
+identity and ancestry are managed by `NativeMeshState` and the full archive.
 
-The native snapshot and legacy bridge run the same `UnstructuredMeshView`
-queries. Dedicated tests check repeated reads reuse addresses, independent
-value/shape lifetime, source permutation, moved-from rejection, and CUDA parity.
-Validation results belong in the current Geom validation record; the presence
-of these tests alone is not evidence of a successful run.
+A scope retains allocation controllers and metadata; facade acquisition also
+retains its native state owner, including across placement clones. A plain view
+or escaped C++ span owns nothing. Keep the scope through worker execution and
+all GPU uses; join consuming streams before attaching completion. `Complete`
+seals further view acquisition; `Wait` waits for the declared prefix. Neither
+releases leases before scope destruction. Keep required MPI communicators alive.
 
-Python exposes the same detached ownership through `mesh.snapshot(faces=True)`.
-Use `with snapshot.acquire_read() as read:` for CPU indexing and readonly NumPy
-rows. A returned row or slice retains its storage and metadata after both Python
-handles are deleted. `snapshot.to_device(ordinal)` returns an independent CUDA
-placement; `device_snapshot.to_host()` synchronizes and returns a CPU debug
-snapshot. CPU indexing of a CUDA placement is rejected explicitly. The boolean
-`source_current` reports provenance only; a false value does not invalidate
-the immutable snapshot. No CUDA view is exported as a host NumPy pointer.
+Python exposes `mesh.snapshot(faces=True)` and
+`with snapshot.acquire_read() as read:`. Shared readonly rows/slices retain their
+scope after either Python parent is deleted. Bulk coordinate helpers return
+independent immutable copies. `snapshot.to_device(ordinal)` returns another
+placement; `device_snapshot.to_host()` returns a host debug copy. CPU indexing
+of a CUDA placement is rejected, and no CUDA pointer is exported as NumPy.
+`source_current` reports provenance only. There is no writable managed mesh
+Tensor/DLPack export.

@@ -447,11 +447,10 @@ TEST_CASE("Native output preparation and primary checkpoint preserve authoritati
     const auto stamp = source->versions.Stamp();
     // Explicit test-only codec preserves the old isolated-reference purpose;
     // mutating its payload never installs a second production mesh authority.
-    auto reference = TestFixtureCodec::DecodeLegacy(*source);
-    if (reference->NumNode())
-        reference->coords[0][0] += 1000;
-    if (reference->NumCell())
-        reference->cell2node(0, 0) = UnInitIndex;
+    auto reference = TestFixtureCodec::DecodePrimaryReference(*source);
+    reference->TransformCoords([](const tPoint &point)
+                               { return tPoint(point + tPoint{1000, 0, 0}); });
+    reference->ReorderLocalCells(2);
     MeshTransitionHandle handle(source);
     auto prepared = PreparedMeshTransition::Prepare(handle, {}, {}, {}, 1, TransitionCachePolicy::RebuildOutput);
     auto output = prepared.PreparedOutput();

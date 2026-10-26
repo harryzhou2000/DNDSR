@@ -326,9 +326,10 @@ TEST_CASE("Native facade smoothing stages work, rejects readers and stale caches
         mesh->elevationInfo.RBFRadius = 1.2;
         mesh->elevationInfo.nIter = 100;
         mesh->elevationInfo.kernel = G::RBF::CPC2;
+        const auto beforePreparation = mesh->CurrentNativeState();
         mesh->ElevatedNodesGetBoundarySmooth([](auto zone)
                                              { return zone == G::BC_ID_DEFAULT_WALL; });
-        CHECK(mesh->nTotalMoved == 8);
+        CHECK(mesh->CurrentNativeState() == beforePreparation);
         const auto staged = mesh->CurrentNativeState();
         CHECK(staged->MeshNamespace() == source->MeshNamespace());
         auto solve = [&]

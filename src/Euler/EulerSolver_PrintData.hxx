@@ -1246,9 +1246,15 @@ namespace DNDS::Euler
             // then pre-size readBuf so RedistributeArrayWithTransformer can copy into it.
             {
                 auto meta = readBuf.father->ReadSerializerMeta(serializerP, "u/father");
-                // ArrayDOFV<Eigen::Dynamic> stores nVars in row_size_dynamic
-                readBuf.father->Resize(mesh->NumCell(), meta.row_size_dynamic, 1);
-                readBuf.son->Resize(0, meta.row_size_dynamic, 1);
+                // Fixed-width DOFs store zero in row_size_dynamic. Resolve the
+                // matrix dimensions from their own signature/metadata instead.
+                const auto [rows, columns, maxRows, maxColumns] =
+                    readBuf.father->GetDerivedArraySignatureInts(meta.derived_type);
+                const auto variables = rows >= 0 ? rows : meta.mat_nRow_dynamic;
+                DNDS_check_throw_info(columns == 1 && (rows >= 0 || rows == DynamicSize) && variables > 0,
+                                      "other-solver restart must store uniform column-vector DOFs");
+                readBuf.father->Resize(mesh->NumCell(), variables, 1);
+                readBuf.son->Resize(0, variables, 1);
             }
 
             readBuf.ReadSerializeRedistributed(serializerP, "u", newOrigIdx);

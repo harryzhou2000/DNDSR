@@ -16,10 +16,9 @@ namespace DNDS::Geom
     /// Immutable snapshot of one entity family's numbering and distribution.
     /// No topology, Array or transformer is exposed. Global IDs here are the
     /// current rank-offset numbering, not persistent entity IDs across reorder.
-    /// The identity token is process-local and shared by legacy shallow mesh
-    /// copies; a separately constructed logical mesh receives a different token.
-    /// Legacy code must declare numbering changes through the mesh version
-    /// tracker. Untracked edits of public maps remain outside this guarantee.
+    /// The identity token is process-local. Native sibling families share the
+    /// logical mesh domain; numbering changes publish new descriptors and epochs.
+    /// Exported field maps cannot mutate the retained canonical numbering.
     /// The caller retains the MPI communicator through descriptor/plan use.
     class EntitySpace
     {
@@ -96,7 +95,7 @@ namespace DNDS::Geom
         bool Valid() const { return _identity && _global && _ghostMap && _stamp.Valid(); }
         void Validate() const { DNDS_check_throw_info(Valid(), "stale or invalid entity-space descriptor"); }
         bool SameDomain(const EntitySpace &other) const { return _identity == other._identity && _kind == other._kind; }
-        /// Map identity plus current stamps describe legacy row ordering. Values
+        /// Map identity plus current stamps describe the current row ordering. Values
         /// are deliberately not compared as a substitute for semantic identity.
         bool SameOrder(const EntitySpace &other) const
         {

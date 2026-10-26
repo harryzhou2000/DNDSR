@@ -24,7 +24,7 @@ static void Fixture(const std::string &path, bool tetra)
     file("boundary", tetra ? "1\n(patchA { type wall; nFaces 4; startFace 0; })\n" : "1\n(patchA { type wall; nFaces 6; startFace 0; })\n");
 }
 
-TEST_CASE("Native OpenFOAM canonical Hex8 matches legacy slots and boundary remap")
+TEST_CASE("Native OpenFOAM canonical Hex8 matches fixed slots and boundary remap")
 {
     DNDS::MPIInfo mpi(MPI_COMM_WORLD);
     std::string path = (std::filesystem::temp_directory_path() / ("dnds-native-foam-" + std::to_string(getpid()))).string();
@@ -61,14 +61,15 @@ TEST_CASE("Native OpenFOAM canonical Hex8 matches legacy slots and boundary rema
     }
     for (I boundary = 0; boundary < view.NumBnd(); ++boundary)
         CHECK(view.GetBndInfo(boundary).zone == 24);
-    // The old converter is the slot-order compatibility baseline; it is never
-    // instantiated by the production native path.
-    auto legacy = DNDS::make_ssp<G::UnstructuredMesh>(mpi, 3);
-    G::UnstructuredMeshSerialRW reader(legacy, 0);
-    reader.ReadFromOpenFOAMAndConvertSerial(path, mapping, name);
+    // The fixed slot sequence preserves the historical converter convention;
+    // check serial Runtime records independently of distributed publication.
     if (mpi.rank == 0)
+    {
+        auto serial = G::ReadNativeOpenFOAMSerial(path, mapping, name);
+        auto cone = serial.cellNodes.Read();
         for (size_t slot = 0; slot < 8; ++slot)
-            CHECK((*reader.cell2nodeSerial)[0][slot] == expected[slot]);
+            CHECK(cone.View()(0, slot) == expected[slot]);
+    }
     CHECK_THROWS(G::ReadNativeOpenFOAM(mpi, path + ".missing", mapping, name));
     G::FieldTransferDetail::LocalStage(mpi, [&]
                                        { if (mpi.rank == 0) Fixture(path, true); });

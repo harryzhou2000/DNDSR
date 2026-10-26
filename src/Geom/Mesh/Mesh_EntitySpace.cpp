@@ -213,46 +213,7 @@ namespace DNDS::Geom
 
     EntitySpace UnstructuredMesh::Entities(EntityKind kind) const
     {
-        if (_nativeState)
-            return _nativeState->Entities(kind);
-        return LegacyEntities(kind);
-    }
-    EntitySpace UnstructuredMesh::LegacyEntities(EntityKind kind) const
-    {
-        auto lease = versions.Read();
-        auto stamp = versions.Stamp(Runtime::Change::Topology | Runtime::Change::Distribution |
-                                    Runtime::Change::Layout | Runtime::Change::Allocation);
-        auto describe = [&](const auto &pair)
-        {
-            DNDS_check_throw_info(pair.father && pair.son, "entity arrays are not initialized");
-            DNDS_check_throw_info(pair.trans.father == pair.father && pair.trans.son == pair.son,
-                                  "entity indexing is attached to different allocations");
-            EntitySpace::CheckCommunicator(pair.father->getMPI().comm, mpi.comm);
-            EntitySpace::CheckCommunicator(pair.son->getMPI().comm, mpi.comm);
-            EntitySpace::CheckCommunicator(pair.trans.mpi.comm, mpi.comm);
-            DNDS_check_throw_info(!pair.trans.pLGlobalMapping || !pair.father->pLGlobalMapping ||
-                                      pair.trans.pLGlobalMapping == pair.father->pLGlobalMapping,
-                                  "entity global map differs between array and transformer");
-            auto global = pair.trans.pLGlobalMapping ? pair.trans.pLGlobalMapping : pair.father->pLGlobalMapping;
-            DNDS_check_throw_info(global && pair.trans.pLGhostMapping, "entity indexing is not prepared");
-            return EntitySpace(kind, mpi, pair.father->Size(), pair.son->Size(), _entityIdentity, stamp,
-                               std::move(global), pair.trans.pLGhostMapping, versions);
-        };
-        switch (kind)
-        {
-        case EntityKind::Cell:
-            return describe(cell2node);
-        case EntityKind::Face:
-            return describe(face2node);
-        case EntityKind::Edge:
-            return describe(edge2node);
-        case EntityKind::Node:
-            return describe(coords);
-        case EntityKind::Bnd:
-            return describe(bnd2node);
-        default:
-            DNDS_check_throw_info(false, "invalid entity kind");
-            return describe(cell2node);
-        }
+        DNDS_check_throw_info(_nativeState, "entity numbering requires native mesh authority");
+        return _nativeState->Entities(kind);
     }
 }

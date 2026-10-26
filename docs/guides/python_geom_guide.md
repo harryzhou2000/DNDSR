@@ -1,114 +1,245 @@
-# Python Geom Module - Mesh Reader Guide {#python_geom_guide}
+# Python Geom: native mesh workflow {#python_geom_guide}
 
-This document describes how to use the DNDSR Python Geom module for reading and manipulating computational meshes.
+`DNDSR.Geom` reads, constructs, prepares and queries native Runtime-backed meshes.
+`UnstructuredMesh` has no legacy geometry workspace. Readonly compatibility pair
+names remain available; solver-field Array/ArrayPair and Torch interfaces retain
+their independent contracts.
 
-## Overview
-
-The `DNDSR.Geom` module provides Python bindings to the C++ geometry library, enabling:
-- Reading CGNS mesh files
-- Mesh partitioning and distribution
-- Order elevation (O1 → O2)
-- Mesh bisection for h-refinement
-- Boundary mesh extraction
-- VTK output generation
-- Wall distance computation
-- CUDA device offloading
-
-## Managed mesh reads
-
-Primary nonperiodic meshes can also be built directly from shared Runtime arrays
-with `Geom.build_native_mesh(...)`. This path needs no legacy mesh workspace;
-the constructor retains input allocations and blocks writes while they are
-published. See [native construction and ownership](../architecture/NativeMesh.md)
-for input types, collective-call rules, escaped row lifetimes and current limits.
-
-`read_mesh` creates native storage by default. Preparation mutates that facade
-through tracked publication; it does not require a second `publish_native` call:
+## Read and prepare
 
 ```python
-result = read_mesh(mesh_file, mpi=mpi, dim=2)
+from DNDSR import DNDS, Geom
+from DNDSR.Geom.utils import read_mesh, prepare_mesh, build_bnd_mesh, build_fv
+
+mpi = DNDS.MPIInfo()
+mpi.setWorld()
+result = read_mesh("data/mesh/UniformSquare_10.cgns", mpi=mpi, dim=2)
 prepare_mesh(result.mesh, result.reader)
-mesh = result.mesh
-with mesh.acquire_read(faces=True) as read:
-    coordinates = read.coordinates()  # independent snapshot
-    assert read.relation_state(Geom.MeshRelation.CellNodes) == Geom.MeshAdjState.PointToLocal
-cells = mesh.entities(Geom.EntityKind.Cell)
-if cells.owned:
-    global_cell = cells.local_to_global(0)
-    assert cells.global_to_local(global_cell) == 0
+mesh = result.mesh                         # same facade, prepared in place
+boundary = build_bnd_mesh(mesh)
+fv = build_fv(mpi, mesh)                    # includes finalize_metrics()
 ```
 
-Mesh publication is collective. Managed queries use immutable native arrays and
-canonical maps. Current global indices are distributed row numbers, distinct
-from persistent entity IDs; native compute relations always contain local
-indices (plus documented unavailable/absent sentinels). C++ setup can explicitly
-convert detached relations in either direction; see the
-[index conversion contract](../dev/geom_native_index_conversion.md).
-Use `mesh.edit()` for supported current-state edits. Release escaped readonly
-arrays before mutation/publication; retained snapshots remain independent.
+DNDS initializes MPI when imported. To control initialization/thread level,
+initialize `mpi4py` before importing DNDS. Keep the supplied communicator alive
+through mesh, field and pending communication use. Do not substitute
+`COMM_WORLD` for a mesh's actual communicator.
 
-During migration, explicit `native=False` fixtures can still import a legacy
-workspace with `publish_native(...)`. That is a compatibility operation, not a
-step in the default native workflow. Legacy mutation methods require legacy
-authority and do not toggle the state of a native compute relation.
+`MeshReadResult` contains `mesh`, `reader` and `name_to_id`. The reader is an
+output-only `UnstructuredMeshSerialRW` adapter over that native facade. CGNS
+returns its boundary-name map on every rank; archive input returns
+`name_to_id=None` because the separate name dictionary is not archived.
+Numeric boundary zone IDs are preserved. Retain/provide a name map separately
+when restarting applications that select boundary conditions by name.
 
-`mesh.place_native(ordinal)` prepares a persistent CUDA placement. Legacy
-`mesh.to_device(...)` and `mesh.to_host()` require legacy mode; they are separate
-from native placement. `mesh.snapshot(...)` creates an independent retained
-snapshot, whose `.to_device(ordinal)` and `.to_host()` copies support GPU
-debugging through a host read scope. Merely copying a C++ plain device view does
-not retain storage or establish asynchronous ordering.
+All setup helpers are collective. Every rank, including empty ranks, must
+provide the same logical options and follow the same call order on the supplied
+communicator. Python option/configuration control flow is also caller
+responsibility: do not have only one rank call a helper or take a failing local
+branch while peers enter MPI. Finish asynchronous input producers before host
+setup. Callbacks must not enter MPI collectives or mutate the source mesh.
 
-`mesh.WriteCurrentPrimaryMeshSnapshot(serializer, name)` is collective even for
-per-rank JSON. It writes an independent **primary-topology** export with a schema
-and rebuild-inventory marker, without changing the source authority or readers.
-Optional face/edge/inverse groups and output caches are rebuilt after reading;
-this format does not preserve their field numbering. Present wall vectors reject
-by default; passing `policy=Geom.CurrentMeshCheckpointPolicy.DropAuxiliary`
-explicitly permits omitting them. `WriteCurrentMeshSnapshot` is a compatibility
-spelling with the same strict policy. Existing `WriteSerialize` keeps
-its legacy setup contract and rejects native mode. Use `WriteNativeArchive` and
-`read_native_archive` for full native topology, IDs, high-water marks and ancestry.
-Primary export and a full native archive are different restart contracts.
+### Input options and partitioning
 
-After `read_mesh` and `prepare_mesh`, acquire one host read scope for an operation:
+| `read_mesh` argument | Default / meaning |
+|---|---|
+| `mesh_file`, `mpi`, `dim` | Required input path, MPI context and dimension |
+| `read_mode` | Auto from extension, or `"cgns"` / `"h5"` |
+| `partition_options` | CGNS: KWAY defaults below; archive: matching saved ownership when omitted |
+| `cell_layers` | 1; positive cell closure depth |
+| `complete_node_star` | False; opt in to complete cells/boundaries incident to owned nodes |
+| `elevation` | `""` or `"O2"` |
+| `bisect` | 0..4; do not combine a nonzero value with `elevation="O2"` |
+| `periodic_geometry`, `periodic_tolerance` | CGNS import frames / absolute matching tolerance (1e-9) |
+| `serializer_factory` | Default H5 factory for archive input |
+| `native` | True; `False` explicitly rejects before input I/O |
+
+CGNS defaults are `metisType="KWAY"`, `metisUfactor=20`, `metisSeed=0`,
+`metisNcuts=3`; `edgeWeightMethod=0` is unweighted. Explicit method 1 weights the
+facial graph by physical face diameter. Distributed ownership uses ParMETIS
+KWAY. RB requires reader-owned serial ingress and runs METIS before distribution;
+the high-level reader selects it when requested. Unsupported options reject;
+there is no silent legacy fallback.
 
 ```python
-with mesh.acquire_read(faces=True) as read:
-    owned_cells, ghost_cells, all_cells = read.counts["cell"]
-    for cell in range(owned_cells):
-        nodes = read.cell_nodes(cell)       # retained readonly NumPy row
-        points = read.cell_coords(cell)    # independent immutable (nodes, 3) copy
+result = read_mesh(
+    "data/mesh/UniformSquare_10.cgns", mpi, 2,
+    partition_options={"metisType": "KWAY", "metisSeed": 42},
+    cell_layers=2,
+)
+```
+
+Matching archive input preserves saved partitions and original IDs. Explicit
+`partition_options` requests even-split H5 loading, including a different MPI
+size, followed by graph partitioning. Per-rank JSON requires matching saved MPI
+partitions; it does not support changed-size loading. The C++ file helper
+coordinates archive open/decode/close failures and propagates `cell_layers`
+through assembly and repartitioning. Low-level serializer users still own
+consistent serializer mode, open/close ordering and file lifetime.
+
+```python
+matching = read_mesh("mesh.dnds.h5", mpi, 3)
+repartitioned = read_mesh("mesh.dnds.h5", mpi, 3,
+                         partition_options={"metisType": "KWAY"}, cell_layers=2)
+```
+
+### Preparation preserves the in-place contract
+
+`prepare_mesh(mesh, reader, ...)` returns None and updates the same native
+facade. It prepares missing topology, reorders local cells, applies requested
+geometry operations, optionally builds wall vectors, and refreshes serial output
+when requested. It does not call a legacy interpolation/ghost/conversion chain.
+A supplied reader must refer to that same mesh on every rank. `reader=None`
+creates a temporary output adapter when needed.
+
+| Preparation option | Default |
+|---|---|
+| `ghost_layers` | 1 |
+| `reorder_parts`, `reorder_inner_parts` | 1, 1 |
+| `build_serial_out` | True |
+| `coord_scale`, `coord_rot_z_deg` | 1.0, 0.0 |
+| `rectify_near_plane`, `rectify_threshold` | 0, 1e-12; bit mask x=1, y=2, z=4 |
+| `wall_dist_predicate`, `wall_dist_options` | None; options require a predicate |
+
+Allocate solver fields after preparation. Reorder/replacement does not
+implicitly transfer arbitrary external fields or rebuild finite-volume metrics.
+Use the C++ native transition field maps when fields already exist.
+
+`prepare_native_mesh(mesh, ...)` instead returns a detached facade; retain the
+return value. It partitions/reorders only when explicitly requested and does
+not build serial output caches. `Geom.prepare_native_topology`,
+`partition_native_mesh` and `reorder_native_mesh` are the corresponding detached
+setup functions. `mesh.PrepareNativeTopology(...)` and `mesh.ReorderLocalCells(...)`
+are tracked in-place setup methods.
+
+The deprecated `create_mesh_from_CGNS` and `create_bnd_mesh` preserve their tuple
+contracts by delegating native helpers. Their historical names do not select
+another storage backend. SerialRW's former read/deduplicate/partition methods
+have been removed.
+
+## Periodic import and derivation
+
+High-level CGNS `read_mesh` keeps the established default unit translations when
+`periodic_geometry=None`. An explicit dictionary overrides any of these nine
+keys: `translation1..3`, `rotationCenter1..3`, `eulerAngles1..3` (each a 3-vector).
+For example:
+
+```python
+periodic = read_mesh("data/mesh/IV10_10.cgns", mpi, 2,
+                     periodic_geometry={"translation1": [10, 0, 0],
+                                        "translation2": [0, 10, 0],
+                                        "translation3": [0, 0, 10]})
+```
+
+Low-level `Geom.read_native_cgns` / `read_native_cgns_with_names` use None to
+**disable** periodic identification; `{}` enables default frames. A nondefault
+tolerance requires an explicit geometry dictionary. Archive input retains its
+saved frames and rejects periodic overrides. There is no mutable
+`SetPeriodicGeometry` binding.
+
+Periodic identity is canonical node identity plus ordered incidence-image bits.
+Do not discard or reorder bits independently of cell/face/node slots. The reader
+requires matching main/donor labels and exact image reconstruction within the
+absolute tolerance; it does not guess geometry-only pairs.
+
+Elevation inserts shared O2 span nodes; bisection splits O2 elements using the
+established element subdivision rules. Native derivation creates a new namespace
+and fresh IDs, preserves physical periodic images, and records source-ID
+ancestry. It does not interpolate solution fields or project new points onto a
+curved boundary automatically.
+
+```python
+quadratic = Geom.elevate_native_mesh(mesh)
+refined = Geom.bisect_native_mesh(quadratic)
+# Or use the destination-style compatibility spelling:
+quadratic2 = Geom.UnstructuredMesh(mpi, mesh.getDim())
+quadratic2.BuildO2FromO1Elevation(mesh)
+assert quadratic2.IsO2()
+```
+
+For a 10x10 Quad4 grid, elevation keeps 100 cells and changes 121 nodes to 441;
+bisection produces 400 Quad4 cells while retaining those O2 nodes. Elevation
+covers Tri3/Quad4/Tet4/Hex8/Prism6/Pyramid5 and their supported O2 counterparts.
+`native_mesh_provenance(mesh)` exposes source namespace, source kinds and retained
+Runtime source-ID arrays. Zero/multiple CSR parents are valid. These values are
+persistent IDs, never current source indices, and survive native transitions and
+full archives. Retaining ancestry does not require the source mesh to remain alive.
+
+## Scoped reads and readonly aliases
+
+```python
+with mesh.acquire_read(faces=True, inverse=True) as read:
+    owned, ghosts, combined = read.counts["cell"]
+    if owned:
+        info = read.cell_info(0)             # detached ElemInfo value
+    for cell in range(owned):
+        cone = read.cell_nodes(cell)        # shared readonly NumPy row
+        points = read.cell_coords(cell)     # independent immutable copy
         for slot, face in enumerate(read.cell_faces(cell)):
             other = read.cell_face_other(cell, int(face), slot)
-            # Check boundary/unavailable sentinels before indexing another cell.
+            # Check absence / unavailable encoding before using other as an index.
 ```
 
-`counts` maps `"node"`, `"cell"`, `"face"`, `"boundary"`, and `"edge"` to
-`(owned, ghost, combined)` tuples. Optional families have zero counts when they
-were not requested. `faces=True`, `inverse=True`, `edges=True`,
-`cell_face_neighbors=True`, and `wall_distance=True` request additional prepared
-relations/fields. Acquisition checks their current index mappings and closure;
-it does not build missing topology. `relation(Geom.MeshRelation.CellNodes, row)`
-is equivalent to the named `cell_nodes(row)` helper. Named row methods cover all
-cell/node/face/boundary/edge relations.
+Counts include `node`, `cell`, `face`, `boundary`, `edge` tuples
+`(owned, ghost, combined)`. `NumCell()` also counts owned rows;
+`NumCellProc()` includes ghosts. Requirements `faces`, `inverse`, `edges`,
+`cell_face_neighbors`, `wall_distance` expose only the requested prepared groups.
+Unrequested groups are hidden even if present in the publication. Acquisition
+never constructs a missing group. `read.relation_state(Geom.MeshRelation.CellNodes)`
+reports local compute state; there is no `mesh.adjPrimaryState` or mutable
+adjacency `idx` API.
 
-`cell_nodes`, `face_cells`, `coord`, periodic incidence-bit methods, and
-`wall_distance` return shared **readonly** arrays. A readonly Python buffer
-exporter retains the native read scope, value allocation, and row metadata.
-NumPy slices and `np.asarray` preserve that lifetime. Assignments and
-`array.setflags(write=True)` are rejected. Use `array.copy()` for an independent
-writable copy; changing it does not edit the mesh. No DLPack or writable managed
-mesh export is provided.
+Rows, individual coordinates, periodic bits and wall vectors share readonly
+storage. A NumPy buffer owner retains the scope, values and row metadata;
+slices and `np.asarray` retain that lifetime. Assignment and making the buffer
+writable are rejected. `array.copy()` is independent and writable. Bulk
+`coordinates`, `cell_coords`, `face_coords`, `boundary_coords` return independent
+immutable snapshots and do not retain a facade read lease.
 
-`coordinates(owned_only=False)`, `cell_coords`, `face_coords`, and `boundary_coords` explicitly return
-independent immutable snapshots. They do not retain the mesh lease. Periodic
-element coordinates apply incidence-slot periodic transforms; `coord(node)`
-returns the stored node coordinate. `cell_info`, `face_info`, and `boundary_info` return detached
-`ElemInfo` values, so editing their `zone` does not change mesh metadata.
+```python
+with mesh.acquire_read() as read:
+    escaped = read.cell_nodes(0)[::2] if read.counts["cell"][0] else None
+# New queries on read reject after close; escaped still retains the native lease.
+del escaped                               # release before tracked mutation
+```
 
-For scalar or dynamic-width **real** legacy fields, the typed compatibility
-bridge attaches a descriptor's cloned canonical maps:
+Scopes/readonly rows can outlive the Python mesh. Keep communicators alive.
+Every rank must follow the same mutation workflow: a retained facade read on
+any rank blocks tracked mutation. A plain C++ view owns nothing; its owner must
+outlive host workers and joined GPU completion. An independent detached snapshot
+retains old values without blocking later source publication.
+
+Compatibility properties such as `mesh.coords`, `mesh.cell2node`,
+`mesh.cellElemInfo`, and their `father` (owned) / `son` (ghost) parts are native
+read handles, **not** legacy mutable Arrays. Numeric indexing returns readonly
+rows; `(row, column)` or call indexing returns scalars. `data()` exports only a
+uniform contiguous arithmetic part. Ragged rows and split owned/ghost buffers
+must be read by row or explicit part; no fabricated contiguous view is created.
+POD metadata is a readonly handle; `.snapshot()` returns a detached mutable value.
+These aliases also retain leases, so release aliases as well as scopes before
+mutating the facade. Prefer scoped semantic queries in new code.
+
+```python
+if mesh.NumCell():
+    info = mesh.cellElemInfo[0, 0]          # readonly NativeElemInfoRead
+    kind, zone = info.getElemType(), info.zone
+    copy = info.snapshot()                 # detached mutable ElemInfo
+# Editing copy does not edit mesh metadata.
+```
+
+`Geom.Elem.ElemType` includes Line2/Line3, Tri3/Tri6, Quad4/Quad9, Tet4/Tet10,
+Hex8/Hex27, Prism6/Prism18 and Pyramid5/Pyramid14. Mesh `IsO1()` / `IsO2()` are
+exposed. The full C++ Element shape-function class is not a Python mesh export.
+
+## Solver fields, Torch and entity spaces
+
+`mesh.entities(Geom.EntityKind.Cell)` retains immutable canonical distribution
+metadata. Current globals are rank-offset addresses; `original_entity_id(kind,row)`
+returns persistent IDs. Descriptors do not lock mutation. After a numbering
+change, refresh descriptors, field indexing, communication requests and caches;
+equal row counts do not prove matching order.
+
+The compatibility bridge supports real scalar/dynamic-width field transformers:
 
 ```python
 cells = mesh.entities(Geom.EntityKind.Cell)
@@ -119,752 +250,167 @@ field.father.Resize(cells.owned)
 field.TransAttach()
 Geom.borrow_legacy_field_indexing(field.trans, cells)
 field.trans.createMPITypes()
-# Fill owned field rows, then perform the collective halo exchange.
+# Fill owned rows, then perform the collective halo exchange.
 field.trans.pullOnce()
 ```
 
-The bridge supports `ArrayTransformer<real, 1>` and
-`ArrayTransformer<real, DynamicSize>` only; it is not a generic transformer
-binding. It validates descriptor freshness, owned/ghost counts and communicator
-rank ordering before assignment, and works with legacy or native authority.
-Callers retain field sizing, attachment, MPI datatype/request setup and phase
-ordering. It does not add a mesh dependency to subsequent transformer calls:
-after a numbering transition, obtain a new descriptor and rebuild the field's
-indexing/requests. Cloned maps isolate compatibility edits from canonical mesh
-maps; no raw mesh array or transformer is returned by the descriptor.
+The bridge clones maps into the field transformer and checks freshness, counts
+and communicator ordering. Callers own sizing, attachment, requests, phase
+ordering and rebuilds. It does not return a mutable mesh transformer or attach a
+permanent mesh dependency to every later field operation.
 
-Leaving the context or calling `close()` closes the Python scope handle and
-rejects new queries on it. Close is idempotent, and exceptions inside `with` still
-close the handle without being suppressed. Existing shared arrays/slices remain
-usable and keep mesh mutation blocked until their final reference is released:
+Existing solver-field `DNDS.Array`, ArrayPair/transformer and Torch interfaces
+remain available. Their access, placement, tensor lifetime and MPI active-buffer
+contracts are unchanged. A native mesh readonly alias is not such a writable
+field. Managed mesh reads provide no writable Tensor/DLPack export: copy data
+before creating a writable tensor, and never bypass readonly storage with a
+foreign pointer or tensor alias. Async consumers require explicit dependency
+record/wait and completion; validity alone does not order streams.
 
-```python
-with mesh.acquire_read() as read:
-    escaped = read.cell_nodes(0)[::2]
-# read is closed, escaped remains readable and retains the native lease.
-del escaped  # Release all exported rows before a collective mesh mutation.
-```
+## Edits and geometry
 
-The exported arrays also remain valid after deleting the parent Python mesh.
-MPI communicators must still remain alive through their use. Every rank must
-follow the same collective mutation workflow; an escaped row on any rank blocks
-tracked reorder on all ranks. The Python API currently supports host acquisition.
-Native C++ CUDA snapshot scopes and asynchronous completion have separate caller
-obligations described in [MeshFacade.md](../architecture/MeshFacade.md).
-
-For a tracked host coordinate transform, release all managed rows first, then
-call a point callback on every rank:
+Release retained scopes/aliases first. `mesh.edit()` stages supported owned
+coordinate, cell-info and neighbor-order changes, and publishes only on explicit
+collective commit. Returned values are copies; context exit discards uncommitted
+work. Neighbor rows may only be permuted with the original exact multiset;
+general connectivity or element-type changes are unsupported.
 
 ```python
-mesh.transform_coordinates(lambda point: point + [0.1, 0.0, 0.0])
+with mesh.edit() as edit:
+    if mesh.NumNode():
+        point = edit.coord(0)
+        point[0] += 0.1
+        edit.set_coord(0, point)
+    edit.commit()
 ```
 
-The callback receives an independent `(3,)` NumPy array for each stored owned or
-ghost point. Return a finite `(3,)` point, or modify that detached input and
-return `None`. Retaining callback inputs or outputs does not retain writable mesh
-aliases. Active managed reads or escaped rows reject the operation before the
-callback runs. A successful transform declares a geometry-generation change;
-entity-space numbering descriptors remain valid. Callbacks may already have
-updated some points when an exception occurs: the mesh is marked failed and
-subsequent managed reads reject it. There is no automatic rollback; discard and
-rebuild the failed mesh. Invoke consistent transforms on all ranks. This generic
-callback does not update periodic frames, wall distances, finite-volume metrics,
-or reconstruction caches; refresh those affected dependencies explicitly.
+`transform_coordinates(callback)` accepts nonperiodic meshes only and calls the
+callback on independent `(3,)` owned-point copies, refreshes ghosts and invalidates
+wall vectors. Return a
+finite `(3,)` value or modify the copy and return None. Failure before publication
+preserves the source. Use the validated rigid/affine APIs for periodic geometry;
+general point callbacks reject it.
 
-Legacy properties such as `mesh.coords`, `mesh.cell2node`, and
-`mesh.cellElemInfo` remain compatibility exports. Their `def_readonly` bindings
-prevent replacing the property, but do **not** make the contained legacy arrays
-immutable or lease-safe. Legacy `TransformCoords` passes writable coordinate
-arrays to its callback and is outside the managed edit guarantee. Do not mutate
-those exports while any managed read or escaped row exists. Coordinated geometry
-edits use `with mesh.edit() as edit:` and explicit `edit.commit()`. The scope stages
-the current authority in independent storage; `coord` and `cell_info` return copies
-and `set_coord`/`set_cell_info` apply owned-row changes. Commit validates finite
-coordinates and unchanged cell element type, refreshes ghosts, and publishes native
-storage. Context exit discards uncommitted work. Neighbor editing supports only
-permutations of `cell_neighbors` via `set_cell_neighbor`, preserving each row's exact
-multiset. General topology/shape editing is unsupported. See
-[managed staged edits](../architecture/ManagedMeshEdit.md) for inventory limits.
+`apply_geometry_transform(rotation, scale)` applies a proper rotation and
+positive scale coherently. `apply_affine_geometry_transform(linear, offset)`
+requires a finite orientation-preserving invertible 3x3 map, transforms
+coordinates/frames, and invalidates wall vectors. Conjugated periodic rotations
+must remain rigid. `rectify_boundary_coordinates(component_for_zone, ...)` uses
+owner/ghost boundary masks; selected coordinate changes invalidate wall vectors.
+The old writable bulk `TransformCoords` export is removed.
 
-Legacy mutation methods, `transform_coordinates`, `TransformCoords`, frame
-transforms, and rectification reject native authority. Use staged setters for
-native coordinates. `use_legacy_workspace()` explicitly selects that workspace's
-values and discards publication; it does not export native edits into the workspace.
+After geometry/order changes, rebuild metrics, reconstruction bases and
+coefficients in dependency order. Wall-anisotropic bases also depend on wall
+allocation/version. Low-level granular FV construction must finish with
+`finalize_metrics()`; `build_fv` does this automatically. Auxiliary fill-order
+cache setup is pure and can run under retained reads without changing geometry
+or generations; use the acquired scope/captured state for references retained
+across cache or placement-handle replacement.
 
-## Setup
+## Boundary extraction and wall vectors
 
-Import the module and initialize MPI:
+`build_bnd_mesh(mesh)` returns `BndMeshResult(mesh_bnd, reader_bnd)` with an output
+adapter; `build_serial_out=False` omits output assembly. Extraction selects
+external boundaries, omits periodic seams and preserves tangential images. It
+creates a new namespace and Node-to-Node / Cell-to-Boundary ancestry. A 2D volume
+produces 1D line cells; a line-cell face topology is not synthesized. The
+`ConstructBndMesh` compatibility method additionally provides current-pair parent
+caches, which are not durable ancestry.
 
 ```python
-from DNDSR import Geom, DNDS
+name_map = result.name_to_id.n2id_map
+wall_ids = {value for name, value in name_map.items() if "WALL" in name.upper()}
+options = Geom.UnstructuredMesh.WallDistOptions()
+options.method = 1
+options.subdivide_quad = 5
+options.minWallDist = 1e-10
+mesh.BuildNodeWallDist(lambda zone: zone in wall_ids, options)
+with mesh.acquire_read(wall_distance=True) as read:
+    if read.counts["node"][0]:
+        wall_vector = read.wall_distance(0)
 ```
 
-MPI is initialized automatically when `DNDSR.DNDS` is imported (via
-`MPI.Init_thread`).  If you need to control MPI initialization yourself
-(e.g., to set the thread level), import and initialize `mpi4py` **before**
-importing `DNDSR.DNDS`.
+Wall search retains methods 0/20/1, execution modes and minimum-distance policy.
+Publishing wall vectors shares coordinates without advancing geometry generation.
+The search still replicates selected wall-triangle coordinates: this surface
+scratch is a scaling limit separate from sparse mesh ghost construction.
 
-## Core Classes
-
-### UnstructuredMesh
-
-The main mesh container class.
+## Placement and detached snapshots
 
 ```python
-from DNDSR import Geom, DNDS
-
-mpi = DNDS.MPIInfo()
-mpi.setWorld()
-mesh = Geom.UnstructuredMesh(mpi, dim=3)
+mesh.place_native(-1)                       # current CUDA ordinal
+mesh.to_device("CUDA")                     # same native-placement route
+mesh.to_host()                             # resident immutable host state
+snapshot = mesh.snapshot(faces=True)
+with snapshot.acquire_read() as read:
+    values = read.cell_coords(0) if read.counts["cell"][0] else None
 ```
 
-**Key Methods:**
+Placement prepares native buffers before GPU operators; it does not make mesh
+values device-mutable. Python managed indexing remains host-only.
+`snapshot.to_device(ordinal)` returns an independent CUDA snapshot;
+`device_snapshot.to_host()` returns a synchronized host debug snapshot. A stale
+`source_current` flag is provenance, not lost snapshot storage. Never export a
+CUDA pointer as a host NumPy row.
 
-| Method | Description |
-|--------|-------------|
-| `NumCell()` | Number of local cells |
-| `NumCellGlobal()` | Global cell count (collective) |
-| `NumNode()` | Number of local nodes |
-| `NumNodeGlobal()` | Global node count (collective) |
-| `NumFace()` | Number of local faces |
-| `NumFaceGlobal()` | Global face count (collective) |
-| `NumBnd()` | Number of local boundary faces |
-| `NumBndGlobal()` | Global boundary face count (collective) |
-| `NumCellGhost()` | Number of ghost cells |
-| `NumNodeGhost()` | Number of ghost nodes |
-| `NumFaceGhost()` | Number of ghost faces |
-| `NumBndGhost()` | Number of ghost boundary faces |
-| `getDim()` | Mesh dimension (2 or 3) |
-| `getMPI()` | Return the `MPIInfo` object |
-| `RecoverNode2CellAndNode2Bnd()` | Build node connectivity |
-| `RecoverCell2CellAndBnd2Cell()` | Build cell/boundary connectivity |
-| `BuildGhostPrimary()` | Build ghost cell communication |
-| `AdjGlobal2LocalPrimary()` | Convert global indices to local |
-| `AdjLocal2GlobalPrimary()` | Convert local indices to global |
-| `AdjGlobal2LocalPrimaryForBnd()` | Global→local for boundary mesh |
-| `AdjLocal2GlobalPrimaryForBnd()` | Local→global for boundary mesh |
-| `AdjGlobal2LocalN2CB()` | Global→local for node-to-cell/bnd |
-| `AdjLocal2GlobalN2CB()` | Local→global for node-to-cell/bnd |
-| `BuildGhostN2CB()` | Build ghost node-to-cell/bnd comm |
-| `InterpolateFace()` | Build face interpolation data |
-| `AssertOnFaces()` | Validate face data |
-| `BuildVTKConnectivity()` | Prepare for VTK output |
-| `RecreatePeriodicNodes()` | Reconstruct periodic node mapping |
-| `ConstructBndMesh(bndMesh)` | Extract (dim-1) boundary mesh |
-| `ReorderLocalCells(nParts, nPartsInner)` | Reorder cells for cache locality |
-| `BuildO2FromO1Elevation(meshO1)` | Elevate O1→O2 in-place |
-| `BuildBisectO1FormO2(meshO2)` | Bisect O2→O1 sub-mesh in-place |
-| `BuildNodeWallDist(fBndIsWall, options)` | Compute wall distance field |
-| `to_device(backend)` | Offload arrays to device (`"CUDA"`) |
-| `to_host()` | Pull arrays back to host |
-| `getArrayBytes()` | Total memory used by arrays |
-
-**Key Read-Only Members:**
-
-| Member | Type | Description |
-|--------|------|-------------|
-| `coords` | coordinate pair | Node coordinates |
-| `cell2node` | adjacency pair | Cell-to-node connectivity |
-| `bnd2node` | adjacency pair | Boundary-to-node connectivity |
-| `bnd2cell` | adjacency pair | Boundary-to-cell connectivity |
-| `cell2cell` | adjacency pair | Cell-to-cell connectivity |
-| `cellElemInfo` | ElemInfo pair | Per-cell element type and zone |
-| `bndElemInfo` | ElemInfo pair | Per-bnd element type and zone |
-| `cell2face` | adjacency pair | Cell-to-face (after `InterpolateFace`) |
-| `face2cell` | adjacency pair | Face-to-cell (after `InterpolateFace`) |
-| `face2node` | adjacency pair | Face-to-node (after `InterpolateFace`) |
-| `faceElemInfo` | ElemInfo pair | Per-face element type and zone |
-
-> **Note:** `GetCellElement()`, `GetBndElement()`, `IsO1()`, and `IsO2()` are
-> C++ methods that are **not** exposed in the Python bindings.  To query element
-> types from Python, use `mesh.cellElemInfo[iCell][0].getElemType()` which
-> returns a `Geom.Elem.ElemType` enum value.
-
-### ElemInfo
-
-Per-element metadata, accessible via `mesh.cellElemInfo` and `mesh.bndElemInfo`.
+## Restart and output
 
 ```python
-info = mesh.cellElemInfo[iCell][0]
-elem_type = info.getElemType()   # returns Geom.Elem.ElemType enum
-zone = info.zone                 # zone index
+from DNDSR.Geom.utils import serialize_mesh
+serialize_mesh(mesh, "prepared", mpi)
+restored = read_mesh("prepared.dnds.h5", mpi, mesh.getDim())
 ```
 
-### UnstructuredMeshSerialRW
-
-Serial mesh reader/writer for CGNS files.
-
-```python
-reader = Geom.UnstructuredMeshSerialRW(mesh, 0)
-name2ID = reader.ReadFromCGNSSerial("mesh.cgns")
-```
-
-**Key Methods:**
-
-| Method | Description |
-|--------|-------------|
-| `ReadFromCGNSSerial(path)` | Read CGNS file; returns `AutoAppendName2ID` |
-| `Deduplicate1to1Periodic(tol)` | Merge periodic 1-to-1 connections |
-| `BuildCell2Cell()` | Build serial cell-to-cell adjacency |
-| `MeshPartitionCell2Cell(options)` | Partition with Metis |
-| `PartitionReorderToMeshCell2Cell()` | Reorder to match partition |
-| `BuildSerialOut()` | Prepare serial output data |
-
-**Key Members:**
-
-| Member | Access | Description |
-|--------|--------|-------------|
-| `mesh` | read/write | The `UnstructuredMesh` object |
-| `dataIsSerialOut` | read-only | Whether serial output is built |
-| `dataIsSerialIn` | read-only | Whether serial input is ready |
-
-### AutoAppendName2ID
-
-Returned by `ReadFromCGNSSerial`. Maps boundary/zone names to integer IDs.
-
-```python
-name2ID = reader.ReadFromCGNSSerial(meshFile)
-n2id = name2ID.n2id_map   # dict-like: name → ID
-```
-
-### ElemType Enum
-
-Available as `Geom.Elem.ElemType`:
-
-| Value | Description |
-|-------|-------------|
-| `UnknownElem` | Unknown / uninitialized |
-| `Line2`, `Line3` | 1D line elements |
-| `Tri3`, `Tri6` | Triangle elements |
-| `Quad4`, `Quad9` | Quadrilateral elements |
-| `Tet4`, `Tet10` | Tetrahedron elements |
-| `Hex8`, `Hex27` | Hexahedron elements |
-| `Prism6`, `Prism18` | Prism elements |
-| `Pyramid5`, `Pyramid14` | Pyramid elements |
-
-> **Note:** The C++ `Elem::Element` struct (with methods `GetDim()`, `GetOrder()`,
-> `GetNumNodes()`, `IsO1()`, `GetParamSpace()`, etc.) is **not** exposed in the
-> Python bindings.  Only the `ElemType` enum is available.
-
-### WallDistOptions
-
-Nested class `UnstructuredMesh.WallDistOptions` for configuring wall distance
-computation:
-
-```python
-opts = Geom.UnstructuredMesh.WallDistOptions()
-opts.method = 1
-opts.subdivide_quad = 5
-opts.verbose = 10
-opts.wallDistExecution = 4
-opts.minWallDist = 1e-10
-mesh.BuildNodeWallDist(lambda bnd_id: bnd_id == wall_id, opts)
-```
-
-## Mesh Reading Workflow
-
-### Using the High-Level API (Recommended)
-
-The recommended API uses `read_mesh` + `prepare_mesh` from
-`DNDSR.Geom.utils`:
-
-```python
-from DNDSR.Geom.utils import read_mesh, prepare_mesh
-from DNDSR import DNDS
-
-mpi = DNDS.MPIInfo()
-mpi.setWorld()
-
-result = read_mesh(
-    "data/mesh/UniformSquare_10.cgns",
-    mpi=mpi,
-    dim=2,
-)
-prepare_mesh(result.mesh, result.reader)
-mesh = result.mesh
-```
-
-`read_mesh` returns a `MeshReadResult` dataclass with `mesh`, `reader`,
-and `name_to_id` fields. `prepare_mesh` mutates the mesh in-place (cell
-reorder, face interpolation, ghost N2CB, serial output, periodic nodes,
-VTK connectivity).
-
-The legacy `create_mesh_from_CGNS` function is still available as a
-backward-compatible wrapper:
-
-```python
-from DNDSR.Geom.utils import create_mesh_from_CGNS
-from DNDSR import DNDS
-
-mpi = DNDS.MPIInfo()
-mpi.setWorld()
-
-mesh, reader, name2ID = create_mesh_from_CGNS(
-    meshFile="data/mesh/UniformSquare_10.cgns",
-    mpi=mpi,
-    dim=2,
-)
-```
-
-Native construction is the default. The reader object returned by the helpers
-is an output adapter over native storage, preserving the established tuple API:
-
-```python
-from DNDSR.Geom.utils import read_mesh, prepare_mesh, build_bnd_mesh, serialize_mesh
-
-result = read_mesh("data/mesh/UniformSquare_10.cgns", mpi, 2)
-name_to_id = result.name_to_id  # exact CGNS boundary dictionary on every rank
-prepare_mesh(result.mesh, result.reader, wall_dist_predicate=lambda zone: zone == 24,
-             wall_dist_options={"method": 1, "subdivide_quad": 4})
-mesh = result.mesh  # prepare_mesh updates this same facade in place
-boundary = build_bnd_mesh(mesh)  # native mesh and serial output adapter
-serialize_mesh(mesh, "native-square", mpi)
-restored = read_mesh("native-square.dnds.h5", mpi, 2)
-```
-
-These helpers are collective; every rank supplies the same options and logical
-file path. `prepare_mesh` prepares native topology, local ordering, geometry and
-optional wall distance in place. Its serial output adapter retains physical
-periodic images without copying the mesh into legacy geometry arrays. Use
-`prepare_native_mesh` when a detached result is required, and retain its return
-value. External fields must be allocated after preparation or explicitly
-transferred with the C++ transition maps.
-
-CGNS input uses the existing KWAY defaults when `partition_options` is omitted.
-`metisType="RB"` selects reader-owned ingress before recursive METIS;
-`edgeWeightMethod=1` uses physical face diameters. KWAY permits distributed
-input. Empty ranks participate and the graph remains distributed except when
-one rank already owns the complete graph. `prepare_native_mesh` partitions or
-reorders only when those options are explicitly supplied.
-
-High-level CGNS reads retain the former helper's default periodic frames when
-`periodic_geometry` is None; an explicit dictionary overrides the same nine
-frame keys as `SetPeriodicGeometry`. Low-level `Geom.read_native_cgns` and
-`read_native_cgns_with_names` keep None as an explicit request to disable periodic
-identification. Archive reads retain saved periodic metadata and reject frame
-overrides. Matching archive reads preserve saved ownership and original IDs;
-explicit `partition_options` requests graph repartitioning. The archive file
-helper coordinates open, decode and close errors across ranks, including
-missing or malformed per-rank JSON files.
-
-Native archives retain all families, descriptors, IDs, namespace, companions and
-ancestry. Boundary zone IDs survive, but the separate CGNS name dictionary is
-not archived and `name_to_id` is None after restart. Legacy-primary archives are
-decoded directly into native arrays with original IDs and a fresh namespace;
-saved legacy ghosts and transformer state are rebuilt natively. Wall search
-retains methods 0/20/1 and execution modes. Its explicit global wall-surface
-scratch scales with the selected wall patches; owner/ghost wall masks and final
-vectors use sparse routes.
-
-**`read_mesh` parameter list:**
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `mesh_file` | `str` | required | Path to CGNS or H5 mesh file |
-| `mpi` | `MPIInfo` | required | MPI context |
-| `dim` | `int` | `2` | Mesh dimension (2 or 3) |
-| `periodic_geometry` | `dict` | see below | Periodic transform parameters |
-| `periodic_tolerance` | `float` | `1e-9` | Tolerance for periodic dedup |
-| `read_mode` | `str` | auto | `"cgns"` or `"h5"` (auto-detected from extension) |
-| `partition_options` | `dict` | Metis defaults | Metis/ParMetis partitioning options |
-| `elevation` | `str` | `""` | `""` or `"O2"` for quadratic elevation |
-| `bisect` | `int` | `0` | Number of bisection levels (0-4) |
-| `serializer_factory` | `SerializerFactory` | H5 factory | For H5 read modes |
-
-**`prepare_mesh` parameter list:**
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `mesh` | `UnstructuredMesh` | required | Mesh to prepare (mutated in-place) |
-| `reader` | `UnstructuredMeshSerialRW` | required | Reader from `read_mesh` |
-| `reorder_parts` | `int` | `1` | Cell reordering partitions |
-| `reorder_inner_parts` | `int` | `1` | Second-level reordering partitions |
-| `build_serial_out` | `bool` | `True` | Build serial output data |
-| `wall_dist_predicate` | `callable` | `None` | `f(bnd_id) -> bool` for wall distance |
-| `wall_dist_options` | `WallDistOptions` | `None` | Wall distance settings |
-| `coord_scale` | `float` | `None` | Scale coordinates |
-| `coord_rot_z_deg` | `float` | `None` | Rotate coordinates around Z axis |
-| `rectify_near_plane` | `str` | `None` | Rectify near-plane coords (`"x"`, `"y"`, `"z"`) |
-| `rectify_threshold` | `float` | `1e-10` | Threshold for rectification |
-
-**Periodic geometry default:**
-
-```python
-periodic_geometry={
-    "translation1": [1, 0, 0],
-    "rotationCenter1": [0, 0, 0],
-    "eulerAngles1": [0, 0, 0],
-    "translation2": [0, 1, 0],
-    "rotationCenter2": [0, 0, 0],
-    "eulerAngles2": [0, 0, 0],
-    "translation3": [0, 0, 1],
-    "rotationCenter3": [0, 0, 0],
-    "eulerAngles3": [0, 0, 0],
-}
-```
-
-These are passed directly to `mesh.SetPeriodicGeometry()`, which accepts up to
-three periodic direction triples (translation, rotationCenter, eulerAngle).
-
-### Read Mode Options
-
-`read_mesh` auto-detects the mode from the file extension (`.cgns` -> CGNS
-serial read, `.h5` -> H5 distributed read). Override with the `read_mode`
-parameter:
-
-| Mode | Extension | Description |
-|------|-----------|-------------|
-| `"cgns"` | `.cgns` | Read CGNS on rank 0, partition with Metis, distribute. Returns `name_to_id`. |
-| `"h5"` | `.h5` | Read H5 with even-split + ParMetis repartition. Works with any MPI rank count. |
-
-> **Warning:** In H5 mode, `name_to_id` (boundary name mapping) is not read
-> from the serializer and will be `None`. Only CGNS mode returns a valid
-> `AutoAppendName2ID`.
-
-### Common Usage Patterns
-
-```python
-from DNDSR.Geom.utils import read_mesh, prepare_mesh
-
-# Basic read
-result = read_mesh("data/mesh/UniformSquare_10.cgns", mpi=mpi, dim=2)
-prepare_mesh(result.mesh, result.reader)
-
-# With order elevation (O1 → O2)
-result = read_mesh(
-    "data/mesh/UniformSquare_10.cgns", mpi=mpi, dim=2,
-    elevation="O2",
-)
-prepare_mesh(result.mesh, result.reader)
-
-# With bisection (h-refinement)
-result = read_mesh(
-    "data/mesh/UniformSquare_10.cgns", mpi=mpi, dim=2,
-    bisect=1,
-)
-prepare_mesh(result.mesh, result.reader)
-
-# Combined elevation + bisection
-result = read_mesh(
-    "data/mesh/UniformSquare_10.cgns", mpi=mpi, dim=2,
-    elevation="O2", bisect=2,
-)
-prepare_mesh(result.mesh, result.reader)
-
-# With cell reordering for cache locality
-result = read_mesh("data/mesh/UniformSquare_10.cgns", mpi=mpi, dim=2)
-prepare_mesh(result.mesh, result.reader, reorder_parts=4, reorder_inner_parts=4)
-
-# H5 distributed read with auto-repartitioning
-result = read_mesh("mesh.dnds.h5", mpi=mpi, dim=3)
-prepare_mesh(result.mesh, result.reader)
-```
-
-#### Legacy API (backward-compatible)
-
-```python
-from DNDSR.Geom.utils import create_mesh_from_CGNS
-
-# create_mesh_from_CGNS wraps read_mesh + prepare_mesh
-mesh, reader, name2ID = create_mesh_from_CGNS(
-    meshFile="data/mesh/UniformSquare_10.cgns",
-    mpi=mpi, dim=2,
-    meshElevation="O2",
-    meshDirectBisect=1,
-    readMeshMode="Serial",
-)
-```
-
-### What the Pipeline Does
-
-`read_mesh` + `prepare_mesh` run the complete mesh pipeline so you do not
-need to call these steps manually. For reference, the CGNS-mode pipeline is:
-
-**`read_mesh` (CGNS mode):**
-
-1. `reader.ReadFromCGNSSerial(meshFile)` — read CGNS on rank 0
-2. `reader.Deduplicate1to1Periodic(tolerance)` — merge periodic connections
-3. `reader.BuildCell2Cell()` — build serial cell adjacency
-4. `reader.MeshPartitionCell2Cell({...})` — partition with Metis
-5. `reader.PartitionReorderToMeshCell2Cell()` — reorder to match partition
-6. Ghost + connectivity build (RecoverN2C, RecoverC2C, BuildGhostPrimary, G2L)
-7. (If `elevation == "O2"`) Build O2 mesh and swap
-8. (If `bisect > 0`) Elevate→bisect loop
-
-**`prepare_mesh`:**
-
-1. `mesh.ReorderLocalCells(nParts, nPartsInner)` — cell reordering
-2. `mesh.InterpolateFace()` — build face data
-3. `mesh.AssertOnFaces()` — validate faces
-4. `AdjLocal2GlobalN2CB()` / `BuildGhostN2CB()` / `AdjGlobal2LocalN2CB()`
-5. (If `build_serial_out`) Build serial output
-6. `mesh.RecreatePeriodicNodes()` — reconstruct periodic mapping
-7. `mesh.BuildVTKConnectivity()` — prepare VTK output
-8. (If `wall_dist_predicate`) Compute wall distances
-9. (If coord transforms specified) Apply scale/rotation/rectification
-
-### Low-Level Serial Read (Manual Pipeline)
-
-If you need fine-grained control, you can run the pipeline manually:
-
-```python
-from DNDSR import Geom, DNDS
-import os
-
-mpi = DNDS.MPIInfo()
-mpi.setWorld()
-
-mesh = Geom.UnstructuredMesh(mpi, dim=2)
-reader = Geom.UnstructuredMeshSerialRW(mesh, 0)
-
-meshFile = "path/to/mesh.cgns"
-assert os.path.isfile(meshFile)
-name2ID = reader.ReadFromCGNSSerial(meshFile)
-
-reader.Deduplicate1to1Periodic(1e-9)
-reader.BuildCell2Cell()
-reader.MeshPartitionCell2Cell({
-    "metisType": "KWAY",
-    "metisUfactor": 5,
-    "metisSeed": 0,
-    "metisNcuts": 3,
-})
-reader.PartitionReorderToMeshCell2Cell()
-
-mesh.RecoverNode2CellAndNode2Bnd()
-mesh.RecoverCell2CellAndBnd2Cell()
-mesh.BuildGhostPrimary()
-mesh.AdjGlobal2LocalPrimary()
-mesh.AdjGlobal2LocalN2CB()
-```
-
-## Order Elevation (O1 → O2)
-
-Elevation converts linear elements to quadratic elements:
-- Quad4 → Quad9
-- Tri3 → Tri6
-- Hex8 → Hex27
-- Tet4 → Tet10
-- Prism6 → Prism18
-- Pyramid5 → Pyramid14
-
-```python
-meshO2 = Geom.UnstructuredMesh(mpi, dim)
-meshO2.BuildO2FromO1Elevation(meshO1)
-
-meshO2.RecoverNode2CellAndNode2Bnd()
-meshO2.RecoverCell2CellAndBnd2Cell()
-meshO2.BuildGhostPrimary()
-meshO2.AdjGlobal2LocalPrimary()
-meshO2.AdjGlobal2LocalN2CB()
-```
-
-**Node count increase for UniformSquare_10 (10×10 Quad4):**
-- O1: 121 nodes (11×11 grid)
-- O2: 441 nodes (+320 new nodes)
-  - 220 edge midpoints (110 horizontal + 110 vertical)
-  - 100 cell centers
-
-## Mesh Bisection (h-refinement)
-
-Bisection splits O2 elements into O1 sub-elements:
-
-| O2 Element | Sub-elements | O1 Type |
-|------------|--------------|---------|
-| Quad9 | 4 | Quad4 |
-| Tri6 | 4 | Tri3 |
-| Hex27 | 8 | Hex8 |
-| Tet10 | 8 | Tet4 |
-| Prism18 | 8 | Prism6 |
-| Pyramid14 | 12 | Pyramid5 |
-
-```python
-meshO2 = Geom.UnstructuredMesh(mpi, dim)
-meshO2.BuildO2FromO1Elevation(meshO1)
-
-meshO2.RecoverNode2CellAndNode2Bnd()
-meshO2.RecoverCell2CellAndBnd2Cell()
-meshO2.BuildGhostPrimary()
-
-meshO1B = Geom.UnstructuredMesh(mpi, dim)
-meshO1B.BuildBisectO1FormO2(meshO2)
-
-meshO1B.RecoverNode2CellAndNode2Bnd()
-meshO1B.RecoverCell2CellAndBnd2Cell()
-meshO1B.BuildGhostPrimary()
-meshO1B.AdjGlobal2LocalPrimary()
-meshO1B.AdjGlobal2LocalN2CB()
-```
-
-**Cell count progression for UniformSquare_10:**
-- Original: 100 Quad4 cells
-- Elevated: 100 Quad9 cells
-- Bisected: 400 Quad4 cells (100 × 4)
-
-## Periodic Meshes
-
-For meshes with periodic boundaries:
-
-```python
-mesh, reader, name2ID = create_mesh_from_CGNS(
-    meshFile="IV10_10.cgns",
-    mpi=mpi,
-    dim=2,
-    periodic_geometry={
-        "translation1": [10, 0, 0],
-        "rotationCenter1": [0, 0, 0],
-        "eulerAngles1": [0, 0, 0],
-    },
-    periodic_tolerance=1e-9,
-)
-```
-
-`SetPeriodicGeometry` accepts up to three periodic direction triples:
-`translation1`/`rotationCenter1`/`eulerAngles1` through
-`translation3`/`rotationCenter3`/`eulerAngles3`.
-
-## Boundary Mesh Extraction
-
-```python
-from DNDSR.Geom.utils import build_bnd_mesh
-
-bnd = build_bnd_mesh(mesh)
-meshBnd = bnd.mesh_bnd
-readerBnd = bnd.reader_bnd
-
-# Legacy wrapper (backward-compatible):
-# from DNDSR.Geom.utils import create_bnd_mesh
-# meshBnd, readerBnd = create_bnd_mesh(mesh)
-
-# Access boundary information
-n2id = name2ID.n2id_map
-id2name = {v: k for k, v in n2id.items()}
-
-for iBnd in range(mesh.NumBnd()):
-    elem_type = mesh.bndElemInfo[iBnd][0].getElemType()
-    zone = mesh.bndElemInfo[iBnd][0].zone
-    print(f"Boundary {iBnd}: type={elem_type}, zone={zone}")
-```
-
-## Wall Distance Computation
-
-```python
-# Identify wall boundaries by name
-n2id = name2ID.n2id_map
-id2name = {v: k for k, v in n2id.items()}
-
-def id_is_wall(bnd_id):
-    if bnd_id in id2name:
-        name = id2name[bnd_id].upper()
-        return "WALL" in name
-    return False
-
-opts = Geom.UnstructuredMesh.WallDistOptions()
-opts.method = 1
-opts.subdivide_quad = 5
-opts.verbose = 10
-opts.wallDistExecution = 4
-mesh.BuildNodeWallDist(id_is_wall, opts)
-```
-
-## CUDA Device Offloading
-
-```python
-mesh.coords.to_device("CUDA")
-mesh.to_device("CUDA")
-
-# ... GPU computation ...
-
-mesh.to_host()
-```
-
-## VTK Output
-
-VTK connectivity is built automatically by `create_mesh_from_CGNS`.  For
-manual control:
-
-```python
-mesh.BuildVTKConnectivity()
-
-# For serial output
-mesh.AdjLocal2GlobalPrimary()
-reader.BuildSerialOut()
-mesh.AdjGlobal2LocalPrimary()
-```
-
-## Querying Mesh State
-
-### Element Information
-
-```python
-# Get element type for a cell
-elem_type = mesh.cellElemInfo[iCell][0].getElemType()  # Geom.Elem.ElemType enum
-
-# Compare with known types
-if elem_type == Geom.Elem.Quad4:
-    print("Linear quad")
-elif elem_type == Geom.Elem.Quad9:
-    print("Quadratic quad")
-
-# Get zone index
-zone = mesh.cellElemInfo[iCell][0].zone
-```
-
-### Mesh Properties
-
-```python
-# Global counts
-nCellGlobal = mesh.NumCellGlobal()
-nNodeGlobal = mesh.NumNodeGlobal()
-
-# Local counts
-nCellLocal = mesh.NumCell()
-nNodeLocal = mesh.NumNode()
-nGhost = mesh.NumCellGhost()
-```
-
-> **Note:** The C++ methods `IsO1()` and `IsO2()`, as well as the
-> `MeshElevationState` enum (`Elevation_Untouched`, `Elevation_O1O2`), are
-> **not** exposed in the Python bindings.  To check whether a mesh uses O2
-> elements, inspect the element types via `cellElemInfo[i][0].getElemType()`.
-
-> **Note:** The `MeshAdjState` enum is exposed in Python as
-> `Geom.MeshAdjState` with values `Unknown`, `PointToGlobal`, and
-> `PointToLocal`. Each adjacency member (e.g. `mesh.cell2node`) is an
-> `AdjPairTracked` object whose `idx` member exposes read-only state query
-> methods: `state()`, `isLocal()`, `isGlobal()`, `isBuilt()`, `isWired()`.
-> The group state variables (e.g. `adjPrimaryState`) are still accessible
-> as integers for backward compatibility.
+The full native archive preserves every published family, full named relation,
+periodic metadata, typed companions, wall vectors, persistent IDs, namespace,
+high-water marks and ancestry. Only owned rows are serialized; sparse closure
+is rebuilt at the requested depth. Solver fields and boundary-name dictionaries
+are separate checkpoint data. `mesh.write_native_archive(serializer, name)` /
+`Geom.UnstructuredMesh.read_native_archive(...)` are lower-level alternatives.
+
+Old primary-wire input is decoded directly into Runtime arrays. It preserves
+valid original IDs and generates a fresh namespace because that schema had none.
+It does not reconstruct a legacy mesh. Historical derived periodic archives
+with duplicate original IDs reject explicitly; no silent renumbering occurs.
+`WriteCurrentPrimaryMeshSnapshot` (and `WriteCurrentMeshSnapshot`) exports only
+primary topology with a rebuild marker. It does not preserve optional-family
+field numbering; wall vectors require explicit `DropAuxiliary` policy. Use a
+full native archive for authoritative restart.
+
+`UnstructuredMeshSerialRW(mesh, 0).BuildSerialOut()` builds native serial output
+buffers and field routes for existing serial output consumers, including
+physical periodic images. Rebuild the adapter after changing its source mesh.
+VTK/CGNS output uses native buffers; it does not toggle adjacency globals or
+require `BuildVTKConnectivity`. Globally empty or periodic parallel CGNS output
+is explicitly unsupported. Output buffer preparation is not an automatic solver
+field transfer or a numerical validation result.
+
+## EulerP and removed setup APIs
+
+`Solver.ReadMesh` uses native ingestion, in-place preparation and compact
+boundary extraction before field allocation. Native archive restart requires
+`boundary_names` when the evaluator needs names. `Solver.to_device("CUDA")` and
+`Solver.to_device(DNDS.DeviceBackend.CUDA)` place mesh topology on the current
+CUDA device before FV/evaluator placement. `native=False` raises before I/O.
+
+The removed APIs include `publish_native`, `use_legacy_workspace`, mutable raw
+mesh topology, in-place `AdjGlobal2Local*` / `AdjLocal2Global*`, the SerialRW
+input/partition chain, `SetPeriodicGeometry`, and writable bulk `TransformCoords`.
+Use native construction, tracked geometry/edit operations, or C++ detached
+`NativeRelation::Convert`; live compute topology stays local.
+
+EulerP's intentional Roe entropy-threshold correction uses total Roe speed,
+matching the existing Euler convention, rather than signed normal velocity.
+Its `zero_grad=True` path clears gradients before starting the halo pull, so it
+does not write active MPI buffers or allow late receives to restore old ghosts.
+These are numerical/caller-contract changes, not consequences of a storage alias.
+Current test logs, not this guide, establish their validation status.
 
 ## References
 
-- See `test/Geom/test_basic_geom.py` for Python usage examples
-- See `python/DNDSR/Geom/utils.py` for the Python API implementation
-- See `src/Geom/Mesh/Mesh_bind.hpp` for the complete list of Python-exposed methods
-- See `src/Geom/Elements_bind.hpp` for the `ElemType` enum bindings
-- See `docs/architecture/Paradigm.md` for overall design philosophy
-
-### EulerP native preparation
-
-`Solver.ReadMesh(path, dim)` now selects native ingestion, in-place preparation
-and compact boundary extraction before allocating FV/evaluator fields. Reader
-handles are native serial output adapters; existing serial-output requests are
-supported. Archive input requires the matching `boundary_names` map because
-archives retain zone IDs rather than the separate CGNS name dictionary.
-`Solver.to_device("CUDA")` places native topology on the currently selected CUDA
-device before FV/evaluator preparation. Passing `DNDS.DeviceBackend.CUDA` selects
-the same route. Explicit `native=False` remains an independent migration
-baseline and is not used as an automatic fallback.
-
-EulerP's Roe entropy threshold now receives the total Roe velocity magnitude,
-matching the existing Euler scheme-8 convention. Previously its signed normal
-velocity changed the contact/shear dissipation when a face orientation reversed,
-so equivalent native and legacy cell orders could produce different residuals.
-This intentional bug fix changes affected EulerP residuals; the underlying Euler
-formula and entropy constants are unchanged. Regression checks cover contact
-thresholds, face reversal, rotation and complete native/legacy evaluator RHS.
-
-EulerP's `zero_grad=True` path now clears gradients before starting their MPI
-halo pull. The prior order wrote active send/receive buffers and allowed delayed
-receives to restore nonzero ghost gradients. Regression checks require zero
-owned and ghost conservative/primitive gradients on both mesh backends.
+- [Native construction and identity](../architecture/NativeMesh.md)
+- [Scoped query lifetime](../architecture/MeshFacade.md)
+- [Managed edits](../architecture/ManagedMeshEdit.md)
+- [Connectivity and ghost closure](../architecture/MeshConnectivity.md)
+- `python/DNDSR/Geom/utils.py` and `src/Geom/Mesh/Mesh_bind.hpp`
+- `test/Geom/test_native_mesh_helpers.py` and `test/EulerP/test_native_solver.py`

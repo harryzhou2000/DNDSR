@@ -26,12 +26,14 @@
 
 #include "Euler/EulerSolver.hpp"
 #include "Geom/Mesh/Mesh_Helpers.hpp"
+#include "Geom/Mesh/NativeMeshAssembler.hpp"
 
 #include <fstream>
 #include <iostream>
 #include <iomanip>
 #include <filesystem>
 #include <map>
+#include <limits>
 #include <hdf5.h>
 #include <unistd.h>
 
@@ -276,15 +278,7 @@ std::array<real, 3> runOneNewtonStep(const std::string &cfgPath)
     REQUIRE(mesh->HasNativeState());
     auto checkNativeOnly = [&]
     {
-        CHECK_FALSE(mesh->coords.father);
-        CHECK_FALSE(mesh->coords.son);
-        CHECK_FALSE(mesh->cell2node.father);
-        CHECK_FALSE(mesh->cell2node.son);
-        CHECK_FALSE(mesh->face2node.father);
-        CHECK_FALSE(mesh->face2cell.father);
-        CHECK_FALSE(mesh->cellElemInfo.father);
-        CHECK_FALSE(mesh->faceElemInfo.father);
-        CHECK_FALSE(mesh->nodeWallDist.father);
+        CHECK_NOTHROW(mesh->CurrentNativeState()->Validate());
     };
     checkNativeOnly();
     const auto baseline = run();
@@ -293,11 +287,8 @@ std::array<real, 3> runOneNewtonStep(const std::string &cfgPath)
     requirements.wallDistance = vfv->getSettings().functionalSettings.anisotropicType ==
                                 CFV::VRSettings::FunctionalSettings::AnisotropicType::WallDist;
     CHECK_NOTHROW(mesh->CurrentNativeState()->CheckRequirements(requirements));
-    // Native ingress leaves every legacy allocation absent. Poison detached
-    // facade metadata before rebuilding metrics to expose mixed helper reads.
-    // A raw legacy topology access would encounter empty storage.
-    mesh->adjPrimaryState = Geom::Adj_Unknown;
-    mesh->adjFacialState = Geom::Adj_Unknown;
+    // Poison surviving reader-configuration metadata before rebuilding metrics.
+    // Current native geometry/topology must remain the query authority.
     mesh->isPeriodic = !mesh->isPeriodic;
     mesh->periodicInfo = Geom::Periodicity{};
     TEval::InitializeFV(mesh, vfv, solver.getBCHandler());
@@ -868,18 +859,13 @@ TEST_CASE("Euler distributed volume output reads native authority after detached
     { solver.PrintData(base + suffix, "", [](DNDS::index)
                        { return 0.0; }, cells, boundaries, eval, 0); };
     REQUIRE(mesh->HasNativeState());
-    CHECK_FALSE(mesh->coords.father);
-    CHECK_FALSE(mesh->cell2node.father);
-    CHECK_FALSE(mesh->face2node.father);
-    CHECK_FALSE(mesh->cellElemInfo.father);
+    CHECK_NOTHROW(mesh->CurrentNativeState()->Validate());
     output("-baseline");
     auto requirements = Geom::MeshReadRequirements::CellFlux();
     requirements.allFaceCellsLocal = true;
     CHECK_NOTHROW(mesh->CurrentNativeState()->CheckRequirements(requirements));
     mesh->isPeriodic = !mesh->IsPeriodic();
     mesh->periodicInfo = Geom::Periodicity{};
-    mesh->adjPrimaryState = Geom::Adj_Unknown;
-    mesh->adjFacialState = Geom::Adj_Unknown;
     EulerEvaluator<NS>::InitializeFV(mesh, solver.getVFV(), solver.getBCHandler());
     output("-native");
     CHECK(mesh->HasNativeState());
@@ -960,8 +946,7 @@ TEST_CASE("Native Euler ingress restart and serial boundary output retain field 
             solver.ReadMeshAndInitialize();
             const auto mesh = solver.getMesh();
             REQUIRE(mesh->HasNativeState());
-            CHECK_FALSE(mesh->coords.father);
-            CHECK_FALSE(mesh->cell2node.father);
+            CHECK_NOTHROW(mesh->CurrentNativeState()->Validate());
             CHECK(mesh->NumCellGlobal() == 9);
             if (readMode == 0 && outputMode == 0)
             {
@@ -1034,6 +1019,101 @@ TEST_CASE("Native Euler ingress restart and serial boundary output retain field 
                 }
             }
         }
+    MPI_Barrier(g_mpi.comm);
+    if (g_mpi.rank == 0)
+        std::filesystem::remove_all(directory);
+}
+
+TEST_CASE("Native Euler H5 restarts preserve sparse high Cell IDs and selected variable dimensions")
+{
+    const auto root = projectRoot();
+    int pid = int(getpid());
+    MPI_Bcast(&pid, 1, MPI_INT, 0, g_mpi.comm);
+    const auto directory = std::filesystem::temp_directory_path() / ("dndsr-euler-high-id-" + std::to_string(pid));
+    if (g_mpi.rank == 0)
+        std::filesystem::create_directories(directory);
+    MPI_Barrier(g_mpi.comm);
+    const auto archive = (directory / "mesh").string();
+    {
+        auto source = Geom::ReadNativeCGNS(g_mpi, root + "/data/mesh/Uniform_3x3_wall.cgns", 2,
+                                           [](const std::string &)
+                                           { return Geom::BC_ID_DEFAULT_WALL; });
+        auto input = Geom::NativeMeshAssembler::CaptureOwned(*source, g_mpi);
+        auto ids = input.ids.at(Geom::EntityKind::Cell).Clone();
+        const auto cells = input.spaces.at(Geom::EntityKind::Cell);
+        {
+            auto write = ids.Write();
+            for (DNDS::index row = 0; row < cells.NumOwned(); ++row)
+                write.View()(size_t(row), 0) = std::numeric_limits<DNDS::index>::max() - 1 - cells.LocalToGlobal(row) * 4099;
+        }
+        input.ids[Geom::EntityKind::Cell] = std::move(ids);
+        input.identity = {}; // This test creates a new ID domain from explicit runtime payloads.
+        auto mesh = Geom::UnstructuredMesh::FromNative(g_mpi, Geom::NativeMeshAssembler::Build(g_mpi, std::move(input)));
+        Serializer::SerializerFactory factory("H5");
+        Geom::SerializeMesh(*mesh, archive, factory);
+    }
+    const auto checkpoint = (directory / "solution").string();
+    const auto checkpointFile = checkpoint + "_p" + std::to_string(g_mpi.size) + ".restart.dnds.h5";
+    const auto dynamicFile = (directory / "dynamic.restart.dnds.h5").string();
+    for (int readMode : {1, 2})
+    {
+        CAPTURE(readMode);
+        const auto cfg = writeTempConfig<NS>(root + "/cases/euler/euler_config_IV.json",
+                                             "high_id_" + std::to_string(pid) + "_" + std::to_string(readMode),
+                                             {{"vfvSettings", {{"maxOrder", 1}, {"intOrder", 3}}},
+                                              {"limiterControl", {{"useLimiter", false}}},
+                                              {"dataIOControl", {{"meshDirectBisect", 0}, {"meshFile", root + "/data/mesh/Uniform_3x3_wall.cgns"}, {"readMeshMode", readMode}, {"meshFilePartitionedInput", archive + ".dnds.h5"}, {"outPltMode", 1}, {"outLogName", (directory / "log").string()}, {"restartWriter", {{"type", "H5"}}}}}});
+        EulerSolver<NS> solver(g_mpi);
+        solver.ConfigureFromJson(cfg, true);
+        solver.ReadMeshAndInitialize();
+        const auto mesh = solver.getMesh();
+        const auto fv = solver.getVFV();
+        REQUIRE(mesh->NumCellGlobal() == 9);
+        auto expected = [&](DNDS::index row)
+        {
+            const auto center = fv->GetCellBary(row);
+            Eigen::Matrix<DNDS::real, 5, 1> value;
+            value << 1 + center[0] / 32 + center[1] / 128,
+                center[0] / 16, center[1] / 16, 0, 2.5 + center[0] / 8;
+            return value;
+        };
+        for (DNDS::index row = 0; row < mesh->NumCellProc(); ++row)
+        {
+            CHECK(mesh->OriginalEntityId(Geom::EntityKind::Cell, row) >= std::numeric_limits<DNDS::index>::max() - 1 - 8 * 4099);
+            solver.getU()[row] = expected(row);
+        }
+        if (readMode == 1)
+        {
+            solver.PrintRestart(checkpoint);
+            ArrayDOFV<Eigen::Dynamic> dynamic;
+            fv->BuildUDof(dynamic, 7);
+            std::vector<DNDS::index> ids;
+            for (DNDS::index row = 0; row < mesh->NumCell(); ++row)
+            {
+                dynamic[row].head<5>() = expected(row);
+                dynamic[row].tail<2>().setConstant(37);
+                ids.push_back(mesh->OriginalEntityId(Geom::EntityKind::Cell, row));
+            }
+            auto serializer = std::make_shared<Serializer::SerializerH5>(g_mpi);
+            serializer->OpenFile(dynamicFile, false);
+            dynamic.WriteSerialize(serializer, "u", ids, false, false);
+            serializer->CloseFile();
+        }
+        solver.getU().setConstant(-901);
+        solver.ReadRestart(checkpointFile);
+        for (DNDS::index row = 0; row < mesh->NumCellProc(); ++row)
+            for (int component = 0; component < 5; ++component)
+                CHECK(solver.getU()[row](component) == expected(row)(component));
+        for (const auto &file : {checkpointFile, dynamicFile})
+        {
+            CAPTURE(file);
+            solver.getU().setConstant(-903);
+            solver.ReadRestartOtherSolver(file, {0, 4});
+            for (DNDS::index row = 0; row < mesh->NumCellProc(); ++row)
+                for (int component = 0; component < 5; ++component)
+                    CHECK(solver.getU()[row](component) == (component == 0 || component == 4 ? expected(row)(component) : -903));
+        }
+    }
     MPI_Barrier(g_mpi.comm);
     if (g_mpi.rank == 0)
         std::filesystem::remove_all(directory);

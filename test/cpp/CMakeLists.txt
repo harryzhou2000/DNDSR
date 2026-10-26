@@ -279,6 +279,8 @@ geom_add_mpi_test(native_relation_conversion "Geom/test_NativeRelationConversion
 add_dependencies(geom_unit_tests geom_test_native_relation_conversion)
 geom_add_mpi_test(native_connectivity "Geom/test_NativeConnectivity.cpp" "geom;dnds")
 add_dependencies(geom_unit_tests geom_test_native_connectivity)
+geom_add_mpi_test(native_mesh_scenarios "Geom/test_NativeMeshScenarios.cpp" "geom;dnds")
+add_dependencies(geom_unit_tests geom_test_native_mesh_scenarios)
 geom_add_mpi_test(native_mesh_snapshot "Geom/test_NativeMeshSnapshot.cpp" "geom;dnds")
 add_dependencies(geom_unit_tests geom_test_native_mesh_snapshot)
 geom_add_mpi_test(native_mesh_publication "Geom/test_NativeMeshPublication.cpp" "geom;dnds")

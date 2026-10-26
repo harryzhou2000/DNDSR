@@ -1,15 +1,9 @@
-# Scoped mesh queries: current migration boundary
+# Scoped native mesh queries
 
-`UnstructuredMesh::AcquireRead` provides
-a retained read scope and a storage-independent `UnstructuredMeshView`. Legacy
-mesh arrays remain the default setup authority; explicit `PublishNative` installs
-private immutable native authority. Solver field setup can obtain
-[entity-space descriptors](EntitySpace.md) instead of borrowing mesh
-transformers directly. CFV setup/reconstruction and selected Euler operators use
-one scope per operator. Python has managed read scopes and tracked coordinate
-transforms. This is a bounded migration with explicit legacy setup/output
-adapters; the [checkpoint report](../dev/geom_refactor_completion_2026-10-24.md)
-lists its compatibility boundary and validation evidence.
+`UnstructuredMesh` owns a `NativeMeshState` backed entirely by Runtime Arrays.
+Construction, partitioning, ghost closure, edits and output use native data.
+The facade preserves semantic query names and readonly compatibility spellings;
+there is no mutable legacy setup workspace or publication mode switch.
 
 ## Acquire once per operator
 
@@ -17,150 +11,140 @@ lists its compatibility boundary and validation evidence.
 auto access = mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
 auto view = access.HostView();
 for (DNDS::index cell = 0; cell < view.NumCell(); ++cell)
-{
-    auto faces = view.CellFaces(cell);
-    for (DNDS::rowsize slot = 0; slot < faces.size(); ++slot)
+    for (DNDS::rowsize slot = 0; slot < view.CellFaces(cell).size(); ++slot)
     {
-        auto face = faces[slot];
-        // face is a local face required by this owned-cell stencil.
+        auto face = view.CellFaces(cell)[slot];
         auto other = view.CellFaceOther(cell, face, slot);
-        // Test for a boundary sentinel before using other as a subscript.
+        // Check absence/unavailable encoding before indexing another cell.
     }
-}
 ```
 
-`Primary()` acquires cell/node/boundary primary fields. `CellFlux()` additionally
-requests facial/C2F relations and face information. Explicit requirement flags
-request inverse support, edges, face-neighbor cells, or wall distances. Absent
-groups are not silently captured; use `HasRelation` when writing optional queries.
+`Primary()` requests cell/node/boundary fields. `CellFlux()` additionally requests
+faces and cell-to-face connectivity. Explicit flags request inverse support,
+edges, ordered face-neighbor cells or wall vectors. Acquisition checks prepared
+availability and closure; it does not construct missing data. Unrequested groups
+are hidden, even when the native publication contains them. Use `HasRelation`
+for optional queries.
 
-The scope retains the mesh version read lease, value allocations, row offsets and
-row lengths. It validates relation state, source/target-map identity, companion
-row shape, supported element types and incidence widths, periodic slot shape,
-and required local closure at acquisition. Legacy edge construction independently
-builds maps for `edge2cell`, edge information, and edge-node PBI. That explicit
-compatibility boundary accepts distinct source maps only when their complete
-ordered global offsets, ghost rows, and push/pull lists match the canonical edge
-mapping. Other source families require shared map identity. The plain
-view and its row spans own no allocation, tracker, lock, or shared pointer. Their
-native element access performs no lease acquisition or identity lookup.
+The scope retains Runtime values, published row offsets/lengths, allocation read
+leases and a mesh version read lease. Facade acquisition also strongly retains
+the native state owner so metadata survives placement-state replacement.
+Canonical associations and row/companion invariants are established at native
+publication. Repeated acquisition reuses them without legacy conversion or a
+full topology scan. The plain view owns no allocation, shared pointer or lock;
+its element access performs no lease lookup inside numerical loops.
 
 ## Local indices and partial closure
 
-Local numbering appends ghost entities after owned entities. `NumCell`, for
-example, counts owned rows; `NumCellProc` includes owned plus ghost rows. Geometry
-relations such as cell-to-node and face-to-node require locally available nodes.
-Faces used by owned cells and owned faces require locally available adjacent
-cells, apart from an external face's second-cell sentinel.
+Owned entities precede ghosts. `NumCell` counts owned rows; `NumCellProc` includes
+both. Cell/face node cones require local coordinates. Faces needed by owned
+cells and owned faces provide their required adjacent cells, apart from an
+external second-cell sentinel.
 
-Operators that dereference cells on every ghost face request
-`allFaceCellsLocal=true` together with facial relations. This requires both
-face-cell entries to be local on every captured face, except the permitted
-external second-cell sentinel. Generic `CellFlux()` keeps the narrower owned-cell
-stencil contract. Timestep evaluation uses the stronger requirement; face-area
-and mean-normal setup request it when their geometry checks dereference cells.
+`allFaceCellsLocal=true` additionally requests usable adjacent cells on every
+captured face. Ordinary `CellFlux()` has the narrower owned-cell stencil
+contract. Outer support and inverse rows can contain negative encoded unavailable
+globals (`-1-global`). `UnInitIndex` is a distinct permitted absence. A local
+relation state does not make every entry a valid subscript.
 
-Outer ghost support can contain negative encoded unavailable globals. Inverse
-node support may also lack the wider cell closure. These entries preserve legacy
-meaning and must be tested before dereferencing. `UnInitIndex` denotes permitted
-absence, for example the second cell on an external boundary face. It is distinct
-from an encoded unavailable global. A relation being local does not make every
-entry usable as an array subscript.
-
-Periodic coordinates use incidence-slot PBI data and the captured periodic frame.
-`CellIsFaceBack` and `CellFaceOther` require the actual cell-to-face slot for a
-self-periodic face whose two adjacent cells have the same index. Checking only
-the cell ID loses its side. Preserve incidence order when using element face/node
-slots.
+Periodic geometry uses incidence-slot bits and captured frames. Pass the actual
+cell-to-face slot to `CellIsFaceBack` / `CellFaceOther`: a self-periodic face can
+have the same cell in both parent slots. Preserve topological slot order.
+Persistent IDs are separate from current rank-offset globals and local indices.
 
 ## Host and CUDA placement
 
-In legacy mode, host acquisition shares existing host allocations through the
-Runtime bridge and retains their access controllers. CUDA acquisition in that
-mode validates and copies the requested snapshot to the chosen device. Native
-mode instead retains the existing immutable placement; `PlaceNative` must prepare
-each device explicitly before acquisition. `DeviceView()` returns the same plain query type
-with device pointers. `HostView()` rejects a CUDA scope and vice versa.
+`PlaceNative(device, context)` prepares a persistent immutable placement before
+operator acquisition. Requesting an unprepared device fails; read acquisition
+never uploads data implicitly. `HostView()` rejects a CUDA scope and
+`DeviceView()` rejects a host scope. Both use the same plain query type.
 
-For repeated native execution, explicitly capture a
-[NativeMeshSnapshot](NativeMeshSnapshot.md). It validates and copies once, then
-serves the same query contract over private Runtime Arrays on host or CUDA.
-Repeated reads avoid the legacy bridge's metadata conversion and full topology
-validation. Its independent snapshot lifetime does not establish compatibility
-with fields reordered since capture.
+`MeshQueryCoords` provides inline-capacity coordinate matrices in kernels;
+resizing its logical width allocates nothing. The dynamic `tSmallCoords`
+compatibility output is host-only. Query connectivity and coordinates are readonly.
 
-Use `MeshQueryCoords` for coordinate matrices inside a CUDA kernel. It has inline
-capacity for every supported element; resizing the logical width does not
-allocate. The dynamic `tSmallCoords` compatibility output is host-only. Coordinates
-and connectivity remain read-only in the query interface.
+Python `mesh.place_native(ordinal)` accepts `-1` for the current CUDA device.
+`mesh.to_device("CUDA")` is a native-placement alias for that current device;
+`mesh.to_host()` checks the resident host state, not a device-write download.
+Detached snapshots have independent `.to_device(ordinal)` / `.to_host()` copies.
+See [NativeMeshSnapshot](NativeMeshSnapshot.md).
 
-## Lifetime, completion, and mutation
+## Lifetime and completion
 
-Retain the access owner until every use of its view and row spans has completed.
-Deleting the parent mesh does not invalidate allocations retained by the scope.
-Copying a plain view or an escaped span does not retain the scope. A host worker
-must retain its owner through execution; a raw view captured by itself is unsafe.
+Keep the access owner until every use of its view/spans finishes. Deleting the
+parent mesh does not release buffers retained by the scope. Copying a plain view
+or C++ span retains nothing. A worker closure must retain the owner, not just
+its raw view. Keep MPI communicators and execution contexts alive as required.
 
-The scope can move; the moved-from scope rejects new view requests. `Complete`
-seals a scope after its last submitted use and attaches a completion from the
-acquisition context. That completion must cover every use, including work joined
-from other streams. `Wait` seals if needed and waits for the declared prefix.
-Both reject later view acquisition. Allocation and mesh read leases remain held
-until the scope is destroyed, even after waiting. Do not reuse previously copied
-raw views after sealing.
+Moving a scope invalidates view acquisition from the moved-from object.
+`Complete` seals further acquisitions and attaches an execution completion;
+`Wait` seals if needed and waits for that declared prefix. Completion must cover
+all consumers, including work joined from other streams. Leases persist until
+scope destruction even after waiting. Do not submit new work or host accesses
+through previously copied raw views after sealing. Validity and eager submission alone do not establish cross-stream
+ordering; explicitly record/wait dependencies.
 
-Validity and eager submission do not establish cross-stream order. Callers must
-record and wait for dependencies and ensure the declared completion joins all
-consumers. Keep streams and MPI communicators alive through their required use.
-Supported tracked mutation rejects active mesh readers. Direct writes through
-public legacy arrays, raw pointers, or periodic metadata remain compatibility
-escape hatches and must not race an acquired scope. Coordinate/periodic edits
-must declare the appropriate generations and refresh dependent data.
+Python scopes close on context exit. Shared readonly rows, NumPy slices and
+compatibility pair aliases retain their owner after close and block tracked
+mutation until released. Bulk coordinate methods return independent immutable
+snapshots. POD read handles are immutable; use their explicit snapshot/copy when
+editing. No writable managed mesh Tensor or DLPack export is supplied. Existing
+solver-field Array/ArrayPair/Torch bridges remain separate APIs with their own
+access, placement and completion obligations.
 
-## Evidence and remaining work
+## Mutation, setup and fields
 
-`test_MeshFacade.cpp` checks synthetic ordered connectivity, ordinary and
-self-periodic geometry, invalid association/shape cases, scope lifetime, stale
-descriptors, and legacy/native halo setup. CUDA-specific tests launch direct
-query kernels with retained snapshots and completion/lifetime checks.
-`test_MeshFacadePipeline.cpp` prepares `UniformSquare_10.cgns` and periodic
-`IV10_10.cgns` through the real partition/ghost/face pipeline. Its serial CGNS
-coordinate oracle precedes deduplication and partitioning. It rechecks queries
-and legacy/native halo values after local reordering and independent face/cell
-redistribution with complete ghost reconstruction. These are implementation test
-definitions; successful execution must be established by the current validation
-logs, not inferred from their presence.
+Tracked facade mutations reject active readers collectively. `MeshEdit` stages
+supported owned coordinate, cell-metadata and neighbor-order edits over native
+buffers. Geometry transforms prepare replacement coordinates. Proper rotation/positive
+scale transforms periodic frames and wall vectors coherently; general affine
+transforms update frames and invalidate wall vectors. Arbitrary coordinate
+callbacks accept nonperiodic meshes only, run on owners, exchange ghosts and
+invalidate wall vectors. Release retained
+rows first; callbacks must not mutate the source or enter collectives.
 
-Explicit native authority and resident device placement are described in
-`NativeMeshPublication.md`. Detached mesh-plus-field transitions and their
-supported inventory are described in
-`../dev/geom_detached_transition_2026-10-24.md`. Native inverse/composition and
-field-bundle staging are documented in `geom_relation_access_2026-10-24.md` and
-`geom_field_staging_2026-10-24.md` under `docs/dev`. The progress ledger and
-current validation logs remain the authority for completed gates; these APIs
-alone do not establish full numerical solver equivalence or every cross-mesh
-mutation policy.
+`PrepareNativeTopology` and `ReorderLocalCells` support in-place setup. Detached
+native transitions retain the source and return family transfers with exact
+input `sourceSpaces`; use these for registered fields. A setup-only replacement
+or in-place reorder does not transfer arbitrary external fields automatically.
+`ObtainLocalFactFillOrdering` is pure auxiliary setup, permitted under retained
+readers without changing mesh generations. Read scopes pin the state acquired;
+retain that scope or an explicit shared state owner for metadata references
+across cache/placement-handle replacement. A later borrowed facade lookup is not
+the same captured state.
+
+EntitySpace descriptors retain canonical distribution metadata, not a mutation
+lock. Mapping calls detect stale numbering. The supported real legacy-field
+indexing bridge clones maps into the mutable field transformer; callers retain
+sizing, attachment, MPI datatype/request setup and rebuild responsibility after
+numbering changes. No mutable mesh transformer is exported.
 
 ## Finite-volume and reconstruction dependencies
 
-Metrics, reconstruction bases, and coefficients have separate mesh stamps for
-topology, geometry, distribution, and layout. Migrated operators acquire their
-mesh read scope and validate dependencies once before numerical loops; geometry
-getters remain plain lookups. Auxiliary interface/value publication does not
-invalidate geometry metrics. Wall-distance anisotropic bases additionally check
-the wall-distance allocation identities/versions, so rebuilding that auxiliary
-field requires rebuilding those bases and coefficients.
+Metrics, bases and coefficients have separate topology/geometry/distribution/
+layout stamps. Operators validate them once before numerical loops. Auxiliary
+interface/value publication does not gratuitously invalidate geometry metrics;
+wall-anisotropic bases also require prepared immutable wall vectors in the
+matching native epoch.
 
 After geometry changes or cell reorder, rebuild `ConstructMetrics`, then
 `ConstructBaseAndWeight`, then `ConstructRecCoeff`. Each invalidates its own and
-downstream stamps before work and publishes only on success. Repeated base
-construction clears boundary caches. Rebinding to a different mesh and parsing
-reconstruction settings also require rebuilding.
+downstream dependencies before work and publishes only on success. Rebinding a
+mesh or parsing reconstruction settings also requires rebuilding.
 
-Standalone `FiniteVolume` users finish the granular construction sequence with
-`FinalizeMetrics()` (`finalize_metrics()` in Python). A completion mask plus one
-construction stamp requires every cell/face stage to succeed in the same mesh
-epoch; matching array extents alone cannot republish old values. Independent
-granular constructors retain legacy getter use but do not certify a complete
-operator-ready bundle. `SetCellAtrBasic` starts a fresh build; the high-level
-`ConstructMetrics` finalizes automatically.
+Standalone granular `FiniteVolume` construction ends with `FinalizeMetrics()`
+(`finalize_metrics()` in Python). Every required cell/face stage must succeed in
+the same build epoch; matching extents cannot republish stale values.
+`SetCellAtrBasic` starts a fresh build; high-level `ConstructMetrics` finalizes
+automatically. Granular getters do not certify an operator-ready metric bundle.
+
+Legacy Euler solution checkpoints associate rows by numeric persistent Cell IDs;
+they do not validate mesh namespaces. The caller must choose a checkpoint for
+the same physical mesh. Equal IDs in unrelated meshes do not establish that
+association. A full native mesh archive preserves its own namespace and topology,
+but does not add a namespace check to the legacy solution checkpoint format.
+
+See [native construction](NativeMesh.md), [publication](NativeMeshPublication.md),
+[managed edits](ManagedMeshEdit.md) and [connectivity](MeshConnectivity.md).
+Historical reports describe their recorded checkpoints; this API page does not
+claim any unrecorded runtime or solver-equivalence result.

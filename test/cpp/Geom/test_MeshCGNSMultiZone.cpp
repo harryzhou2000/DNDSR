@@ -5,7 +5,7 @@
 
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
-#include "Geom/Mesh/Mesh.hpp"
+#include "Geom/Mesh/NativeMeshCGNS.hpp"
 #include "Geom/CGNS.hpp"
 
 #include <cstdlib>
@@ -63,19 +63,18 @@ static void checkGeneratedOneSidedBlocks(int blocks)
     REQUIRE(mpi.size == 1);
 
     std::string name = fmt::format("GeneratedMultiBlock{}x{}_OneSided.cgns", blocks, blocks);
-    auto mesh = make_ssp<UnstructuredMesh>(mpi, 2);
-    UnstructuredMeshSerialRW reader(mesh, 0);
-    reader.ReadFromCGNSSerial(meshPath(name).string());
+    auto serial = ReadNativeCGNSSerial(meshPath(name).string(), 2, FBC_Name_2_ID_Default);
 
-    CHECK(reader.cell2nodeSerial->Size() == blocks * blocks);
-    CHECK(reader.coordSerial->Size() == (blocks + 1) * (blocks + 1));
+    CHECK(serial.cellNodes.Rows() == blocks * blocks);
+    CHECK(serial.coordinates.Rows() == (blocks + 1) * (blocks + 1));
 
     // Every assembled node coordinate should be initialized exactly once after
     // union deduplication of the one-sided block interfaces.
-    for (DNDS::index iNode = 0; iNode < reader.coordSerial->Size(); iNode++)
+    auto coordinates = serial.coordinates.Read();
+    for (size_t iNode = 0; iNode < serial.coordinates.Rows(); iNode++)
     {
-        CHECK(!DNDS::IsUnInitReal((*reader.coordSerial)[iNode](0)));
-        CHECK(!DNDS::IsUnInitReal((*reader.coordSerial)[iNode](1)));
+        CHECK(!DNDS::IsUnInitReal(coordinates.View()(iNode, 0)));
+        CHECK(!DNDS::IsUnInitReal(coordinates.View()(iNode, 1)));
     }
 }
 
@@ -109,15 +108,14 @@ TEST_CASE("Audit regression: CGNS single-entry boundary PointList")
     REQUIRE(cg_close(file) == CG_OK);
     MPIInfo mpi;
     mpi.setWorld();
-    auto mesh = make_ssp<UnstructuredMesh>(mpi, 2);
-    UnstructuredMeshSerialRW reader(mesh, 0);
-    reader.ReadFromCGNSSerial(path.string());
-    REQUIRE(reader.cell2nodeSerial->Size() == 1);
-    REQUIRE(reader.bnd2nodeSerial->Size() == 4);
+    auto serial = ReadNativeCGNSSerial(path.string(), 2, FBC_Name_2_ID_Default);
+    REQUIRE(serial.cellNodes.Rows() == 1);
+    REQUIRE(serial.boundaryNodes.Rows() == 4);
     int walls = 0, farfields = 0;
-    for (DNDS::index i = 0; i < reader.bndElemInfoSerial->Size(); ++i)
+    auto info = serial.boundaryInfo.Read();
+    for (size_t i = 0; i < serial.boundaryInfo.Rows(); ++i)
     {
-        auto code = (*reader.bndElemInfoSerial)(i, 0).zone;
+        auto code = info.View()(i, 0).zone;
         walls += code == BC_ID_DEFAULT_WALL;
         farfields += code == BC_ID_DEFAULT_FAR;
     }

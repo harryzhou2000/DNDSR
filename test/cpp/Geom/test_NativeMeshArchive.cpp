@@ -123,10 +123,7 @@ namespace
         const auto nodes = state->Entities(G::EntityKind::Node);
         const auto boundaries = state->Entities(G::EntityKind::Bnd);
         auto facade = G::UnstructuredMesh::FromNative(mpi, state);
-        CHECK_FALSE(facade->coords.father);
-        CHECK_FALSE(facade->cell2node.father);
-        CHECK_FALSE(facade->bnd2node.father);
-        CHECK_FALSE(facade->node2cell.father);
+        CHECK(facade->HasNativeState());
         auto scope = facade->AcquireRead(state->Requirements());
         const auto view = scope.HostView();
         for (auto kind : {G::EntityKind::Cell, G::EntityKind::Node, G::EntityKind::Bnd})
@@ -433,9 +430,7 @@ namespace
             }
         }
         auto facade = G::UnstructuredMesh::FromNative(mpi, state);
-        CHECK_FALSE(facade->cell2node.father);
-        CHECK_FALSE(facade->face2node.father);
-        CHECK_FALSE(facade->edge2node.father);
+        CHECK(facade->HasNativeState());
     }
 }
 

@@ -72,7 +72,7 @@ namespace DNDS::Geom
         MPI_Bcast(expected.data(), int(expected.size()), MPI_INT, 0, mpi.comm);
         FieldTransferDetail::LocalStage(mpi, [&]
                                         { DNDS_check_throw_info(flags == expected && ghostLayers > 0, "native preparation topology options differ across ranks"); });
-        return NativeMeshTopology::Build(source, mpi, faces && !flags[3], edges && !flags[4], ghostLayers);
+        return NativeMeshTopology::Build(source, mpi, faces, edges, ghostLayers);
     }
 
     namespace detail
@@ -189,7 +189,10 @@ namespace DNDS::Geom
         FieldTransferDetail::LocalStage(mpi, [&]
                                         { DNDS_check_throw_info(options.metisType != "RB" || activeRanks <= 1,
                                                                 "native recursive partition requires all cells on one reader rank before distribution"); });
-        auto complete = PrepareTopology(source, mpi, true, false, options.ghostLayers);
+        // Partition preserves input associations for existing entity fields.
+        // Completing missing faces is necessary; refreshing present faces may
+        // change their owners/order before the returned source transfers begin.
+        auto complete = PrepareTopology(source, mpi, !source.Requirements().faces, false, options.ghostLayers);
         const auto cells = complete->Entities(EntityKind::Cell);
         std::vector<idx_t> xadj, adjacency, adjacencyWeights, part;
         std::vector<index> counts(size_t(mpi.size));

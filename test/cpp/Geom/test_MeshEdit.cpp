@@ -1,6 +1,6 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
-#include "MeshFacadeOverlapFixture.hpp"
+#include "NativeMeshOverlapFixture.hpp"
 #include "Geom/Mesh/MeshEdit.hpp"
 #include "Geom/Mesh/NativeMeshBuilder.hpp"
 #include "Geom/Mesh/NativeMeshArchive.hpp"
@@ -10,13 +10,12 @@
 namespace G = DNDS::Geom;
 namespace R = DNDS::Runtime;
 
-TEST_CASE("Explicitly imported legacy geometry edits isolate detached workspace aliases")
+TEST_CASE("Native geometry edits preserve detached snapshots and escaped value copies")
 {
     DNDS::MPIInfo mpi;
     mpi.setWorld();
-    auto fixture = G::OverlapTest::BuildFixture(mpi);
+    auto fixture = G::OverlapTest::BuildNativeFixture(mpi);
     auto mesh = fixture.mesh;
-    mesh->PublishNative(G::MeshReadRequirements::CellFlux());
     auto order = mesh->Entities(G::EntityKind::Node);
     auto route = order.BuildRowTransferPlan();
     auto detached = G::NativeMeshSnapshot::Capture(*mesh, G::MeshReadRequirements::CellFlux());
@@ -26,8 +25,6 @@ TEST_CASE("Explicitly imported legacy geometry edits isolate detached workspace 
         for (DNDS::index row = 0; row < mesh->NumNodeProc(); ++row)
             before.push_back(read.HostView().Coord(row));
     }
-    // A deliberately stale workspace must never become the edit's input.
-    mesh->coords[0] = G::tPoint{900, 800, 700};
     auto edit = G::MeshEdit::Begin(mesh);
     CHECK(edit.Coord(0).isApprox(before[0]));
     auto escaped = edit.Coord(0);
@@ -55,15 +52,10 @@ TEST_CASE("Explicitly imported legacy geometry edits isolate detached workspace 
                                              { return true; }, {}));
         CHECK(held.HostView().Coord(0).isApprox(before[0] + G::tPoint{0.25, 0.5, 0}));
     }
-    CHECK_THROWS(mesh->BuildGhostPrimary(1));
-    G::UnstructuredMesh legacyPeer(mpi, 2);
-    auto peerStamp = legacyPeer.versions.Stamp();
-    auto &mixedAuthority = mpi.rank == 0 ? *mesh : legacyPeer;
-    CHECK_THROWS(mixedAuthority.BuildGhostPrimary(1));
-    CHECK(peerStamp.Valid());
-    CHECK_THROWS(mesh->SetPeriodicGeometry(G::tPoint::Zero(), G::tPoint::Zero(), G::tPoint::Zero(),
-                                           G::tPoint::Zero(), G::tPoint::Zero(), G::tPoint::Zero(),
-                                           G::tPoint::Zero(), G::tPoint::Zero(), G::tPoint::Zero()));
+    {
+        auto held = mesh->AcquireRead();
+        CHECK_THROWS(mesh->ReplaceNativeForSetup(mesh->CurrentNativeState()));
+    }
     CHECK(committed.Valid());
     CHECK(mesh->HasNativeState());
     escaped = G::tPoint{-1, -2, -3};
@@ -71,7 +63,7 @@ TEST_CASE("Explicitly imported legacy geometry edits isolate detached workspace 
     for (DNDS::index node = 0; node < mesh->NumNodeProc(); ++node)
         CHECK(read.HostView().Coord(node).isApprox(before[size_t(node)] + G::tPoint{0.25, 0.5, 0}));
     CHECK(detached.AcquireRead().HostView().Coord(0).isApprox(before[0]));
-    CHECK(mesh->coords[0].isApprox(G::tPoint{900, 800, 700}));
+    CHECK(detached.AcquireRead().HostView().Coord(0) != read.HostView().Coord(0));
 }
 
 TEST_CASE("Staged metadata and neighbor-order edits validate before publication")
@@ -82,8 +74,6 @@ TEST_CASE("Staged metadata and neighbor-order edits validate before publication"
     auto mesh = fixture.mesh;
     const auto oldInfo = mesh->GetCellInfo(0);
     CHECK(mesh->HasNativeState());
-    CHECK_FALSE(mesh->node2cell.father);
-    CHECK_FALSE(mesh->coords.father);
     {
         auto edit = G::MeshEdit::Begin(mesh);
         auto invalid = edit.CellInfo(0);
@@ -162,8 +152,6 @@ TEST_CASE("Staged metadata and neighbor-order edits validate before publication"
     CHECK(mesh->versions.CanMutate());
     auto read = mesh->AcquireRead(G::MeshReadRequirements::CellFlux());
     CHECK(read.HostView().GetCellInfo(0).zone == 54321);
-    CHECK_FALSE(mesh->coords.father);
-    CHECK_FALSE(mesh->cell2node.father);
 }
 
 TEST_CASE("Uncommitted scopes discard copies and active reads block edit publication")
@@ -203,30 +191,28 @@ TEST_CASE("Uncommitted scopes discard copies and active reads block edit publica
 TEST_CASE("Mesh edits require explicit native authority and recover after collective rejection")
 {
     const DNDS::MPIInfo mpi(MPI_COMM_WORLD);
-    auto fixture = G::OverlapTest::BuildFixture(mpi);
-    auto legacy = fixture.mesh;
-    const auto stamp = legacy->versions.Stamp();
-    const auto point = legacy->Coord(0);
-    CHECK_THROWS(G::MeshEdit::Begin(legacy));
+    auto unpublished = std::make_shared<G::UnstructuredMesh>(mpi, 2);
+    const auto stamp = unpublished->versions.Stamp();
+    CHECK_THROWS(G::MeshEdit::Begin(unpublished));
     CHECK(stamp.Valid());
-    CHECK(legacy->versions.CanMutate());
-    CHECK(legacy->Coord(0).isApprox(point));
+    CHECK(unpublished->versions.CanMutate());
+    CHECK_FALSE(unpublished->HasNativeState());
     auto native = G::OverlapTest::BuildNativeFixture(mpi).mesh;
+    const auto point = native->Coord(0);
     if (mpi.size > 1)
     {
-        auto mixed = mpi.rank == 0 ? legacy : native;
+        auto mixed = mpi.rank == 0 ? unpublished : native;
         CHECK_THROWS(G::MeshEdit::Begin(mixed));
         CHECK(mixed->versions.CanMutate());
     }
-    legacy->PublishNative(G::MeshReadRequirements::CellFlux());
-    CHECK_THROWS(G::MeshEdit::Begin(legacy, mpi.rank == 0 ? 0 : 1));
-    auto edit = G::MeshEdit::Begin(legacy);
+    unpublished->ReplaceNativeForSetup(native->CurrentNativeState());
+    CHECK_THROWS(G::MeshEdit::Begin(unpublished, mpi.rank == 0 ? 0 : 1));
+    auto edit = G::MeshEdit::Begin(unpublished);
     const auto original = edit.Coord(0);
     edit.SetCoord(0, original);
     edit.Commit();
-    CHECK(legacy->Coord(0).isApprox(point));
+    CHECK(unpublished->Coord(0).isApprox(point));
     CHECK(native->HasNativeState());
-    CHECK_FALSE(native->coords.father);
 }
 
 TEST_CASE("Native-only edits preserve namespace IDs named definitions and immutable source buffers")
@@ -296,8 +282,6 @@ TEST_CASE("Native-only edits preserve namespace IDs named definitions and immuta
     metadata.zone = 12345;
     edit.SetCellInfo(0, metadata);
     edit.Commit();
-    CHECK_FALSE(mesh->coords.father);
-    CHECK_FALSE(mesh->cell2node.father);
     CHECK_FALSE(mesh->CurrentNativeRequirements().wallDistance);
     CHECK(mesh->NativeRelationKeys() == keys);
     for (size_t i = 0; i < keys.size(); ++i)

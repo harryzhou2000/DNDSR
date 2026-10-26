@@ -681,8 +681,7 @@ TEST_CASE("Native reconstruction matrix export preserves mesh state and exact fa
     const auto archivePath = archive->GetCurrentPath();
     vr->WriteSerializeRecMatrix(archive);
     CHECK(stamp.Valid());
-    CHECK_FALSE(mesh->cell2cellFace.father);
-    CHECK_FALSE(mesh->cell2node.father);
+    CHECK(mesh->HasNativeState());
     CHECK(archive->GetCurrentPath() == archivePath);
     tAdjPair loaded;
     loaded.InitPair("exported reconstruction face graph", g_mpi);
@@ -726,7 +725,7 @@ TEST_CASE("Finite-volume scoped query views retain native topology and reject st
     state = NativeMeshTopology::Build(*state, g_mpi);
     auto mesh = UnstructuredMesh::FromNative(g_mpi, state);
     auto vr = buildVR(mesh, RecMethod::VFV_P2_Default);
-    CHECK_FALSE(mesh->cell2node.father);
+    CHECK(mesh->HasNativeState());
     {
         auto scope = vr->AcquireDeviceRead<DeviceBackend::Host>();
         auto view = scope.View();

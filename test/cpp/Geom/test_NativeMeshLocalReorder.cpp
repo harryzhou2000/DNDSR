@@ -1,6 +1,5 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
-#include "LegacyMeshFixtureCodec.hpp"
 #include "Geom/Mesh/NativeMeshBuilder.hpp"
 #include "Geom/Mesh/NativeMeshTopology.hpp"
 #include "Geom/Mesh/NativeMeshTransition.hpp"
@@ -249,11 +248,20 @@ TEST_CASE("Native local reorder shares permutation semantics and preserves curre
             CAPTURE(parts.second);
             auto source = Fixture(mpi, empty);
             auto facade = G::UnstructuredMesh::FromNative(mpi, source);
-            auto legacy = G::TestFixtureCodec::DecodeLegacy(*facade);
-            auto graph = legacy->GetCell2CellFaceVLocal();
+            // Quad face slots independently give the four-cell path and one
+            // isolated triangle. Full node neighbors additionally include the
+            // triangle/quad vertex contact, local or remote as constructed above.
+            G::tLocalMatStruct graph;
+            std::vector<std::vector<I>> full;
+            if (!empty || mpi.rank == 0)
+            {
+                graph = {{1}, {2, 0}, {3, 1}, {2}, {}};
+                const I contact = (!empty && mpi.size > 1) ? 5 : 4;
+                full = {{1, contact}, {0, 2}, {1, 3}, {2}, {contact == 4 ? 0 : 5}};
+            }
             G::detail::CellPermutationResult expected;
-            if (legacy->NumCell())
-                expected = G::detail::ComputeCellPermutation(graph, legacy->cell2cell, legacy->NumCell(), parts.first, parts.second);
+            if (!graph.empty())
+                expected = G::detail::ComputeCellPermutation(graph, full, 5, parts.first, parts.second);
             auto retained = facade->AcquireRead(source->Requirements());
             auto result = G::NativeMeshTransition::ReorderLocalCells(*source, mpi, parts.first, parts.second);
             CHECK(result.transfers.at(G::EntityKind::Cell).localOld2New == expected.cellOld2New);
@@ -298,7 +306,6 @@ TEST_CASE("Native facade local reorder validates inputs and publishes only after
     CHECK_FALSE(stamp.Valid());
     CHECK_FALSE(oldOrder.Valid());
     CHECK(mesh->HasNativeState());
-    CHECK_FALSE(mesh->cell2node.father);
     CHECK(mesh->NLocalParts() == 2);
     CHECK(mesh->LocalCellNeighbors().size() == 5);
     for (int part = 0; part < mesh->NLocalParts(); ++part)

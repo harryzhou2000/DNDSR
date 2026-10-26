@@ -86,7 +86,9 @@ TEST_CASE("Native facial partition retains ID-derived fields geometry and sparse
     CHECK(minimum > 0);
     CHECK(maximum <= 2 * ((100 + mpi.size - 1) / mpi.size));
     auto again = G::NativeMeshPreparation::PrepareTopology(*result.state, mpi);
-    CHECK(again->NumOwned(G::EntityKind::Face) == result.state->NumOwned(G::EntityKind::Face));
+    CHECK(again->NumGlobal(G::EntityKind::Face) == result.state->NumGlobal(G::EntityKind::Face));
+    CHECK(again->MeshNamespace() == result.state->MeshNamespace());
+    CHECK(again->IdHighWater() == result.state->IdHighWater());
 }
 
 TEST_CASE("Native primary partition adds facial IDs while retaining exact original field association")
@@ -177,8 +179,7 @@ TEST_CASE("Native production preparation preserves facade identity rejects reade
     CHECK(source->CurrentNativeState()->MeshNamespace() == name);
     REQUIRE(reader.nativeSerialOutput);
     CHECK_NOTHROW(reader.nativeSerialOutput->ValidateSource(*source->CurrentNativeState()));
-    CHECK_FALSE(reader.cell2nodeSerial);
-    CHECK_FALSE(source->cell2node.father);
+    CHECK(source->HasNativeState());
     const auto now = source->CurrentNativeState();
     for (const auto &[kind, count] : counts)
         CHECK(now->NumGlobal(kind) == count);
@@ -189,6 +190,78 @@ TEST_CASE("Native production preparation preserves facade identity rejects reade
     REQUIRE(boundaryReader.nativeSerialOutput);
     CHECK(boundaryReader.nativeSerialOutput->dimension == 1);
     CHECK_NOTHROW(boundaryReader.nativeSerialOutput->ValidateSource(*boundary->CurrentNativeState()));
+}
+
+TEST_CASE("Partition preserves independent existing Face ownership and exact source associations for registered fields")
+{
+    const DNDS::MPIInfo mpi(MPI_COMM_WORLD);
+    auto source = G::OverlapTest::BuildNativeFixture(mpi).mesh->CurrentNativeState();
+    G::ReorderInput independentFaces;
+    independentFaces.explicitMaps.push_back({G::EntityKind::Face,
+                                             std::vector<DNDS::MPI_int>(size_t(source->NumOwned(G::EntityKind::Face)), mpi.size - 1)});
+    source = G::NativeMeshTransition::Build(*source, mpi, independentFaces).state;
+    REQUIRE(source->NumOwned(G::EntityKind::Face) == (mpi.rank == mpi.size - 1 ? source->NumGlobal(G::EntityKind::Face) : 0));
+    const auto name = source->MeshNamespace();
+    const auto marks = source->IdHighWater();
+    auto retained = source->Snapshot(R::Device::Host()).AcquireRead();
+    auto records = [](const G::NativeMeshState &state)
+    {
+        const auto &view = state.BorrowHostView();
+        std::vector<std::vector<I>> result;
+        for (I row = 0; row < state.NumOwned(G::EntityKind::Face); ++row)
+        {
+            std::vector<I> values{state.OriginalEntityId(G::EntityKind::Face, row), view.GetFaceInfo(row).type,
+                                  view.GetFaceInfo(row).zone, I(view.FaceNodes(row).size())};
+            for (auto node : view.FaceNodes(row))
+                values.push_back(state.OriginalEntityId(G::EntityKind::Node, node));
+            for (auto cell : view.FaceCells(row))
+                values.push_back(cell == DNDS::UnInitIndex ? cell : state.OriginalEntityId(G::EntityKind::Cell, cell));
+            result.push_back(std::move(values));
+        }
+        return result;
+    };
+    const auto expectedFaces = records(*source);
+    R::Array<I> faceValues(R::RowLayout::Dense(size_t(source->NumOwned(G::EntityKind::Face)), 1));
+    R::Array<I> cellValues(R::RowLayout::Dense(size_t(source->NumOwned(G::EntityKind::Cell)), 1));
+    {
+        auto faces = faceValues.Write(), cells = cellValues.Write();
+        for (size_t row = 0; row < faceValues.Rows(); ++row)
+            faces.View()(row, 0) = 2 * source->OriginalEntityId(G::EntityKind::Face, I(row)) + 17;
+        for (size_t row = 0; row < cellValues.Rows(); ++row)
+            cells.View()(row, 0) = 3 * source->OriginalEntityId(G::EntityKind::Cell, I(row)) + 7;
+    }
+    G::EntityField<I> faceField(source->Entities(G::EntityKind::Face), faceValues);
+    G::EntityField<I> cellField(source->Entities(G::EntityKind::Cell), cellValues);
+    auto faceEntry = faceField.Register("independent-face-owned-order");
+    auto cellEntry = cellField.Register("partitioned-cell-order");
+    auto oldFaceRead = faceField.Read(source->Entities(G::EntityKind::Face));
+    G::NativePartitionOptions options;
+    options.metisNcuts = 2;
+    options.metisSeed = 43;
+    options.ghostLayers = 2;
+    auto result = G::NativeMeshPreparation::Partition(*source, mpi, options);
+    CHECK(result.state->MeshNamespace() == name);
+    CHECK(result.state->IdHighWater() == marks);
+    for (auto kind : {G::EntityKind::Cell, G::EntityKind::Node, G::EntityKind::Bnd, G::EntityKind::Face})
+    {
+        REQUIRE(result.sourceSpaces.count(kind));
+        CHECK(result.sourceSpaces.at(kind).SameOrder(source->Entities(kind)));
+    }
+    CHECK_NOTHROW(faceEntry.validateSourceSpace(result.sourceSpaces.at(G::EntityKind::Face)));
+    CHECK_NOTHROW(cellEntry.validateSourceSpace(result.sourceSpaces.at(G::EntityKind::Cell)));
+    CHECK_THROWS(faceEntry.validateSourceSpace(result.state->Entities(G::EntityKind::Face)));
+    CHECK(records(*result.state) == expectedFaces); // Ordered nodes AND physical parent slots, not a set/count comparison.
+    CHECK(records(*source) == expectedFaces);
+    for (size_t row = 0; row < faceValues.Rows(); ++row)
+        CHECK(oldFaceRead.View()(row, 0) == 2 * result.state->OriginalEntityId(G::EntityKind::Face, I(row)) + 17);
+    cellEntry.preflight(result.transfers.at(G::EntityKind::Cell));
+    auto prepared = cellEntry.prepare(result.transfers.at(G::EntityKind::Cell), mpi);
+    prepared->BindEntitySpace(result.state->Entities(G::EntityKind::Cell));
+    prepared->Publish();
+    auto moved = cellField.Read(result.state->Entities(G::EntityKind::Cell));
+    for (I row = 0; row < result.state->NumOwned(G::EntityKind::Cell); ++row)
+        CHECK(moved.View()(size_t(row), 0) == 3 * result.state->OriginalEntityId(G::EntityKind::Cell, row) + 7);
+    CHECK_NOTHROW(retained.HostView());
 }
 
 int main(int argc, char **argv)

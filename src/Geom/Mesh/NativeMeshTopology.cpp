@@ -71,6 +71,80 @@ namespace DNDS::Geom
             return Transfer(route, values, context);
         }
 
+        std::vector<index> CanonicalRoleKey(Elem::Element element, const NativePeriodicNodes &pattern, bool periodic)
+        {
+            std::vector<index> best;
+            for (uint8_t mask = 0; mask < (periodic ? 8 : 1); ++mask)
+            {
+                auto image = pattern;
+                for (auto &[node, frame] : image)
+                {
+                    DNDS_check_throw_info(frame < 8, "invalid native topology identity image");
+                    frame ^= mask;
+                }
+                std::sort(image.begin(), image.end());
+                std::vector<index> key{element.type, index(image.size())};
+                for (const auto &[node, frame] : image)
+                {
+                    key.push_back(node);
+                    key.push_back(frame);
+                }
+                // Interpolation first compares element vertices, then
+                // the complete higher-order nodes. Preserve that role
+                // distinction: an endpoint cannot become a midside node.
+                const auto count = element.GetNumVertices();
+                auto vertices = NativePeriodicNodes(pattern.begin(), pattern.begin() + count);
+                for (auto &[node, frame] : vertices)
+                    frame ^= mask;
+                std::sort(vertices.begin(), vertices.end());
+                key.push_back(count);
+                for (const auto &[node, frame] : vertices)
+                {
+                    key.push_back(node);
+                    key.push_back(frame);
+                }
+                // Generated 2-D faces have 1-D subfaces (the Element
+                // edge API is for 3-D cells). Preserve which midpoint
+                // belongs to each edge, and thus Quad9 center identity.
+                std::vector<std::vector<index>> edges;
+                if (element.GetDim() == 2)
+                    for (t_index slot = 0; slot < element.GetNumFaces(); ++slot)
+                    {
+                        const auto sub = element.ObtainFace(slot);
+                        NativePeriodicNodes occurrences(size_t(sub.GetNumNodes()));
+                        element.ExtractFaceNodes(slot, pattern, occurrences);
+                        for (auto &[node, frame] : occurrences)
+                            frame ^= mask;
+                        auto corners = NativePeriodicNodes(occurrences.begin(), occurrences.begin() + sub.GetNumVertices());
+                        std::sort(corners.begin(), corners.end());
+                        std::sort(occurrences.begin(), occurrences.end());
+                        std::vector<index> edge{sub.type, sub.GetNumVertices()};
+                        for (const auto &[node, frame] : corners)
+                        {
+                            edge.push_back(node);
+                            edge.push_back(frame);
+                        }
+                        edge.push_back(index(occurrences.size()));
+                        for (const auto &[node, frame] : occurrences)
+                        {
+                            edge.push_back(node);
+                            edge.push_back(frame);
+                        }
+                        edges.push_back(std::move(edge));
+                    }
+                std::sort(edges.begin(), edges.end());
+                key.push_back(index(edges.size()));
+                for (const auto &edge : edges)
+                {
+                    key.push_back(index(edge.size()));
+                    key.insert(key.end(), edge.begin(), edge.end());
+                }
+                if (best.empty() || key < best)
+                    best = std::move(key);
+            }
+            return best;
+        }
+
         SubEntityQueryPbi Query(R::PairReadView<ElemInfo> types, const RelationReadAccess &cone, bool edges,
                                 const RelationPeriodicBits *periodic = nullptr)
         {
@@ -134,8 +208,9 @@ namespace DNDS::Geom
                 // are distinct entities, not cracked higher-order geometry.
                 if (!NativePeriodicFrame(fullNodes(parent, sub, true), fullNodes(originalParent, originalSub, true)))
                     return false;
-                DNDS_check_throw_info(NativePeriodicFrame(fullNodes(parent, sub, false), fullNodes(originalParent, originalSub, false)),
-                                      "shared native subentity vertices have inconsistent higher-order nodes");
+                DNDS_check_throw_info(CanonicalRoleKey(Elem::Element{static_cast<Elem::ElemType>(describe(parent, sub).typeTag)}, fullNodes(parent, sub, false), periodic != nullptr) ==
+                                          CanonicalRoleKey(Elem::Element{static_cast<Elem::ElemType>(describe(originalParent, originalSub).typeTag)}, fullNodes(originalParent, originalSub, false), periodic != nullptr),
+                                      "shared native subentity vertices have inconsistent higher-order nodes or edge roles");
                 return true;
             };
             return query;
@@ -156,6 +231,243 @@ namespace DNDS::Geom
             data.spaces.emplace(space.Kind(), space);
             data.ids.emplace(space.Kind(), std::move(ids));
             data.identity.nextIds[space.Kind()] = first + space.NumGlobal();
+        }
+
+        // Detached refresh maps use CURRENT global row numbers. Persistent IDs
+        // remain payload; no table is sized or addressed by an ID magnitude.
+        struct RefreshMap
+        {
+            EntitySpace oldSpace, newSpace;
+            Array oldToNew, newToOld;
+        };
+
+        Array Fetch(const MPIInfo &mpi, const EntitySpace &space, const Array &values,
+                    const std::vector<index> &globals)
+        {
+            std::vector<R::RowRequest> requests;
+            FieldTransferDetail::LocalStage(mpi, [&]
+                                            {
+                requests.reserve(globals.size());
+                for (size_t row = 0; row < globals.size(); ++row)
+                {
+                    DNDS_check_throw_info(globals[row] >= 0 && globals[row] < space.NumGlobal(),
+                                          "native topology refresh references an unavailable source row");
+                    requests.push_back({space.Owner(globals[row]), space.OwnerLocalRow(globals[row]), row});
+                } });
+            auto context = std::make_shared<R::CommunicationContext>(mpi.comm);
+            R::RowTransferPlan route(context, size_t(space.NumOwned()), globals.size(), requests);
+            return Transfer(route, values, context);
+        }
+
+        std::vector<std::vector<index>> IdentityKeys(const MPIInfo &mpi, const EntitySpace &nodes,
+                                                     const Array &nodeIds, const Array &cone,
+                                                     const R::Array<ElemInfo> &information,
+                                                     const std::optional<R::Array<NodePeriodicBits>> &periodic)
+        {
+            std::vector<index> globals;
+            FieldTransferDetail::LocalStage(mpi, [&]
+                                            {
+                std::set<index> unique;
+                auto read = cone.Read();
+                for (size_t row = 0; row < cone.Rows(); ++row)
+                    for (index global : read.View()[row]) unique.insert(global);
+                globals.assign(unique.begin(), unique.end()); });
+            auto fetched = Fetch(mpi, nodes, nodeIds, globals);
+            std::vector<std::vector<index>> keys;
+            FieldTransferDetail::LocalStage(mpi, [&]
+                                            {
+                auto ids = fetched.Read(), rows = cone.Read();
+                auto info = information.Read();
+                std::optional<R::Array<NodePeriodicBits>::ReadLease> bits;
+                if (periodic) bits.emplace(periodic->Read());
+                std::map<index, index> idByGlobal;
+                for (size_t row = 0; row < globals.size(); ++row)
+                    idByGlobal.emplace(globals[row], ids.View()(row, 0));
+                DNDS_check_throw_info(information.Rows() == cone.Rows(), "native topology identity information extent mismatch");
+                keys.resize(cone.Rows());
+                for (size_t row = 0; row < keys.size(); ++row)
+                {
+                    NativePeriodicNodes pattern;
+                    for (size_t slot = 0; slot < rows.View().RowSize(row); ++slot)
+                        pattern.emplace_back(idByGlobal.at(rows.View()(row, slot)), bits ? uint8_t(bits->View()(row, slot)) : 0);
+                    // Same full-node/image equivalence as NativePeriodicFrame:
+                    // orientation may change, and a uniform XOR frame is free.
+                    keys[row] = CanonicalRoleKey(Elem::Element{info.View()(row, 0).getElemType()}, pattern, bool(periodic));
+                } });
+            return keys;
+        }
+
+        RefreshMap RecoverIdentity(const NativeMeshState &source, const MPIInfo &mpi,
+                                   const NativeOwnedMeshData &previous, NativeOwnedMeshData &data,
+                                   const EntitySpace &space, MeshRelation coneSlot,
+                                   const R::Array<ElemInfo> &information,
+                                   const std::optional<R::Array<NodePeriodicBits>> &bits,
+                                   std::optional<index> generatedFloor = {})
+        {
+            const auto kind = space.Kind();
+            const auto old = source.Entities(kind);
+            const auto &oldInfo = kind == EntityKind::Face ? *previous.faceInfo : *previous.edgeInfo;
+            const auto &oldBits = kind == EntityKind::Face ? previous.faceNodesPbi : previous.edgeNodesPbi;
+            auto oldKeys = IdentityKeys(mpi, previous.spaces.at(EntityKind::Node), previous.ids.at(EntityKind::Node),
+                                        *previous.relations[size_t(coneSlot)], oldInfo, oldBits);
+            auto newKeys = IdentityKeys(mpi, previous.spaces.at(EntityKind::Node), previous.ids.at(EntityKind::Node),
+                                        *data.relations[size_t(coneSlot)], information, bits);
+            std::vector<std::vector<index>> messages(size_t(mpi.size));
+            FieldTransferDetail::LocalStage(mpi, [&]
+                                            {
+                auto ids = previous.ids.at(kind).Read();
+                auto append = [&](const std::vector<std::vector<index>> &keys, const EntitySpace &family, bool isNew)
+                {
+                    for (size_t row = 0; row < keys.size(); ++row)
+                    {
+                        uint64_t hash = 1469598103934665603ULL;
+                        // Routing uses the full-node part. Vertex roles remain
+                        // in the exact key; sharing a hash server is harmless.
+                        for (size_t slot = 0; slot < size_t(2 + 2 * keys[row][1]); ++slot)
+                            hash = (hash ^ uint64_t(keys[row][slot])) * 1099511628211ULL;
+                        auto &message = messages[size_t(hash % uint64_t(mpi.size))];
+                        message.insert(message.end(), {int(isNew), index(row), family.LocalToGlobal(index(row)),
+                                                       isNew ? UnInitIndex : ids.View()(row, 0), index(keys[row].size())});
+                        message.insert(message.end(), keys[row].begin(), keys[row].end());
+                    }
+                };
+                append(oldKeys, old, false);
+                append(newKeys, space, true); });
+            auto incoming = Exchange(mpi, messages);
+            std::vector<std::vector<index>> replies(size_t(mpi.size));
+            FieldTransferDetail::LocalStage(mpi, [&]
+                                            {
+                struct Entry { int rank; index row, global, id; };
+                std::map<std::vector<index>, Entry> oldByKey, newByKey;
+                auto read = incoming.Read();
+                for (int peer = 0; peer < mpi.size; ++peer)
+                {
+                    const auto message = read.View()[size_t(peer)];
+                    for (size_t slot = 0; slot < message.size();)
+                    {
+                        DNDS_check_throw_info(message.size() - slot >= 5, "malformed native topology identity record");
+                        const bool isNew = message[slot] == 1;
+                        const index count = message[slot + 4];
+                        DNDS_check_throw_info((message[slot] == 0 || isNew) && count >= 2 && size_t(count) <= message.size() - slot - 5,
+                                              "malformed native topology identity key");
+                        std::vector<index> key(message.data() + slot + 5, message.data() + slot + 5 + size_t(count));
+                        DNDS_check_throw_info((isNew ? newByKey : oldByKey).emplace(std::move(key), Entry{peer, message[slot + 1], message[slot + 2], message[slot + 3]}).second,
+                                              "duplicate canonical key in native topology refresh");
+                        slot += 5 + size_t(count);
+                    }
+                }
+                for (const auto &[key, fresh] : newByKey)
+                {
+                    const auto found = oldByKey.find(key);
+                    const auto oldGlobal = found == oldByKey.end() ? UnInitIndex : found->second.global;
+                    const auto id = found == oldByKey.end() || generatedFloor ? UnInitIndex : found->second.id;
+                    auto &reply = replies[size_t(fresh.rank)];
+                    reply.insert(reply.end(), {1, fresh.row, id, oldGlobal});
+                }
+                for (const auto &[key, prior] : oldByKey)
+                {
+                    const auto found = newByKey.find(key);
+                    auto &reply = replies[size_t(prior.rank)];
+                    reply.insert(reply.end(), {0, prior.row, found == newByKey.end() ? UnInitIndex : found->second.global, 0});
+                } });
+            auto returned = Exchange(mpi, replies);
+            std::vector<index> ids(size_t(space.NumOwned()), UnInitIndex), oldGlobals(ids.size(), UnInitIndex), newGlobals(size_t(old.NumOwned()), UnInitIndex);
+            index missing = 0;
+            FieldTransferDetail::LocalStage(mpi, [&]
+                                            {
+                std::vector<bool> seenOld(newGlobals.size()), seenNew(ids.size());
+                auto read = returned.Read();
+                for (int peer = 0; peer < mpi.size; ++peer)
+                {
+                    const auto message = read.View()[size_t(peer)];
+                    DNDS_check_throw_info(message.size() % 4 == 0, "malformed native topology identity reply");
+                    for (size_t slot = 0; slot < message.size(); slot += 4)
+                    {
+                        const auto row = message[slot + 1];
+                        auto &seen = message[slot] == 1 ? seenNew : seenOld;
+                        DNDS_check_throw_info(row >= 0 && size_t(row) < seen.size() && !seen[size_t(row)], "invalid native topology identity reply row");
+                        seen[size_t(row)] = true;
+                        if (message[slot] == 1) { ids[size_t(row)] = message[slot + 2]; oldGlobals[size_t(row)] = message[slot + 3]; }
+                        else newGlobals[size_t(row)] = message[slot + 2];
+                    }
+                }
+                DNDS_check_throw_info(std::all_of(seenOld.begin(), seenOld.end(), [](bool value){return value;}) &&
+                                      std::all_of(seenNew.begin(), seenNew.end(), [](bool value){return value;}), "incomplete native topology identity replies");
+                missing = std::count(ids.begin(), ids.end(), UnInitIndex); });
+            index prefix = 0, total = 0;
+            MPI_Exscan(&missing, &prefix, 1, DNDS_MPI_INDEX, MPI_SUM, mpi.comm);
+            if (mpi.rank == 0)
+                prefix = 0;
+            MPI_Allreduce(&missing, &total, 1, DNDS_MPI_INDEX, MPI_SUM, mpi.comm);
+            const index first = generatedFloor.value_or(source.NextEntityId(kind));
+            FieldTransferDetail::LocalStage(mpi, [&]
+                                            {
+                DNDS_check_throw_info(total <= std::numeric_limits<index>::max() - first, "refreshed native persistent IDs exceed high-water range");
+                index next = first + prefix;
+                for (auto &id : ids) if (id == UnInitIndex) id = next++;
+                std::vector<std::vector<index>> idRows;
+                for (auto id : ids) idRows.push_back({id});
+                data.ids[kind] = Rows(idRows, 1);
+                data.identity.nextIds[kind] = first + total; });
+            std::optional<RefreshMap> result;
+            FieldTransferDetail::LocalStage(mpi, [&]
+                                            {
+                std::vector<std::vector<index>> forward, reverse;
+                for (auto global : newGlobals) forward.push_back({global});
+                for (auto global : oldGlobals) reverse.push_back({global});
+                data.spaces.emplace(kind, space);
+                result.emplace(RefreshMap{old, space, Rows(forward, 1), Rows(reverse, 1)}); });
+            return std::move(*result);
+        }
+
+        Array RefreshSourceRows(const MPIInfo &mpi, const Array &values, const RefreshMap &mapping)
+        {
+            std::vector<index> globals;
+            FieldTransferDetail::LocalStage(mpi, [&]
+                                            {
+                auto read = mapping.newToOld.Read();
+                for (size_t row = 0; row < mapping.newToOld.Rows(); ++row)
+                {
+                    const auto global = read.View()(row, 0);
+                    DNDS_check_throw_info(global != UnInitIndex, "new topology rows have no inferable named-relation or ancestry payload");
+                    globals.push_back(global);
+                } });
+            return Fetch(mpi, mapping.oldSpace, values, globals);
+        }
+
+        Array RefreshTargetRows(const MPIInfo &mpi, const Array &values, const RefreshMap &mapping, bool sortedUnique)
+        {
+            std::vector<index> globals;
+            FieldTransferDetail::LocalStage(mpi, [&]
+                                            {
+                std::set<index> unique;
+                auto read = values.Read();
+                for (size_t row = 0; row < values.Rows(); ++row)
+                    for (auto global : read.View()[row]) if (global != UnInitIndex) unique.insert(global);
+                globals.assign(unique.begin(), unique.end()); });
+            auto fetched = Fetch(mpi, mapping.oldSpace, mapping.oldToNew, globals);
+            std::vector<std::vector<index>> rows;
+            FieldTransferDetail::LocalStage(mpi, [&]
+                                            {
+                std::map<index, index> targets;
+                auto read = fetched.Read();
+                for (size_t row = 0; row < globals.size(); ++row)
+                {
+                    DNDS_check_throw_info(read.View()(row, 0) != UnInitIndex, "named relation references a removed topology key");
+                    targets.emplace(globals[row], read.View()(row, 0));
+                }
+                auto original = values.Read();
+                rows.resize(values.Rows());
+                for (size_t row = 0; row < rows.size(); ++row)
+                {
+                    for (auto global : original.View()[row]) rows[row].push_back(global == UnInitIndex ? global : targets.at(global));
+                    if (sortedUnique)
+                    {
+                        std::sort(rows[row].begin(), rows[row].end());
+                        rows[row].erase(std::unique(rows[row].begin(), rows[row].end()), rows[row].end());
+                    }
+                } });
+            return Rows(rows);
         }
 
         R::Array<ElemInfo> Information(const R::Array<ElemInfo> &original, const std::vector<t_index> &zones)
@@ -180,8 +492,6 @@ namespace DNDS::Geom
         FieldTransferDetail::LocalStage(mpi, [&]
                                         {
             DNDS_check_throw_info(data.dimension >= 2 && ghostLayers >= 1, "native topology completion requires dimension two or three and positive closure");
-            DNDS_check_throw_info((!buildFaces || !data.spaces.count(EntityKind::Face)) &&
-                                      (!buildEdges || !data.spaces.count(EntityKind::Edge)), "native topology target family already exists");
             DNDS_check_throw_info(!buildEdges || data.dimension == 3, "native edge completion currently requires three dimensions"); });
         std::array<index, 2> idStarts{-1, -1}, expectedStarts;
         FieldTransferDetail::LocalStage(mpi, [&]
@@ -190,6 +500,8 @@ namespace DNDS::Geom
             {
                 DNDS_check_throw_info(first >= 0 && ((kind == EntityKind::Face && buildFaces) || (kind == EntityKind::Edge && buildEdges)),
                                       "generated ID floor requires a requested target family");
+                DNDS_check_throw_info(!source.IdHighWater().count(kind) || first >= source.NextEntityId(kind),
+                                      "explicit topology ID floor would reuse a previous ID");
                 idStarts[kind == EntityKind::Face ? 0 : 1] = first;
             } });
         expectedStarts = idStarts;
@@ -200,6 +512,42 @@ namespace DNDS::Geom
         MPI_Allreduce(flags, minimum, 3, MPI_INT, MPI_MIN, mpi.comm);
         MPI_Allreduce(flags, maximum, 3, MPI_INT, MPI_MAX, mpi.comm);
         DNDS_check_throw_info(std::equal(minimum, minimum + 3, maximum), "native topology options differ between ranks");
+        std::optional<NativeOwnedMeshData> previousStorage;
+        FieldTransferDetail::LocalStage(mpi, [&]
+                                        { previousStorage.emplace(data); });
+        const auto &previous = *previousStorage;
+        std::map<EntityKind, RefreshMap> refresh;
+        std::set<AdjKind> regenerated;
+        FieldTransferDetail::LocalStage(mpi, [&]
+                                        {
+            for (auto kind : {EntityKind::Face, EntityKind::Edge})
+            {
+                if (!(kind == EntityKind::Face ? buildFaces : buildEdges) || !data.spaces.count(kind)) continue;
+                data.spaces.erase(kind);
+                data.ids.erase(kind);
+                const auto slots = kind == EntityKind::Face
+                    ? std::vector<MeshRelation>{MeshRelation::CellFaces, MeshRelation::FaceNodes, MeshRelation::FaceCells,
+                                                MeshRelation::FaceBoundaries, MeshRelation::BoundaryFaces, MeshRelation::CellFaceCells}
+                    : std::vector<MeshRelation>{MeshRelation::CellEdges, MeshRelation::EdgeNodes, MeshRelation::EdgeCells};
+                for (auto slot : slots) data.relations[size_t(slot)].reset();
+                if (kind == EntityKind::Face)
+                {
+                    data.faceInfo.reset(); data.cellFacesPbi.reset(); data.faceNodesPbi.reset();
+                }
+                else
+                {
+                    data.edgeInfo.reset(); data.cellEdgesPbi.reset(); data.edgeNodesPbi.reset();
+                }
+            }
+            // Reinsert affected named rows after exact source/target remapping.
+            for (auto item = data.namedRelations.begin(); item != data.namedRelations.end();)
+            {
+                const auto path = item->first.Path();
+                if ((buildFaces && std::find(path.begin(), path.end(), EntityKind::Face) != path.end()) ||
+                    (buildEdges && std::find(path.begin(), path.end(), EntityKind::Edge) != path.end()))
+                    item = data.namedRelations.erase(item);
+                else ++item;
+            } });
         auto closure = BuildNativeCellClosure(source, mpi);
         auto coneRead = closure.cellNodes.Read();
         const auto cells = coneRead.Source(), nodes = coneRead.Target();
@@ -403,10 +751,22 @@ namespace DNDS::Geom
                     data.cellFacesPbi = *faces.parent2entityPbi;
                     data.faceNodesPbi = *faces.entity2nodePbi;
                 }
-                AddIdentity(data, faces.entities, generatedIdStarts);
                 data.requirements.faces = true;
                 data.requirements.cellFaceNeighbors = true;
                 data.requirements.allFaceCellsLocal = true; });
+            FieldTransferDetail::LocalStage(mpi, [&]
+                                            { regenerated.insert(inverse.Read().Kind()); });
+            if (source.HasEntities(EntityKind::Face))
+            {
+                auto recovered = RecoverIdentity(source, mpi, previous, data, faces.entities,
+                                                 MeshRelation::FaceNodes, *data.faceInfo, data.faceNodesPbi,
+                                                 generatedIdStarts.count(EntityKind::Face) ? std::optional<index>{generatedIdStarts.at(EntityKind::Face)} : std::optional<index>{});
+                FieldTransferDetail::LocalStage(mpi, [&]
+                                                { refresh.emplace(EntityKind::Face, std::move(recovered)); });
+            }
+            else
+                FieldTransferDetail::LocalStage(mpi, [&]
+                                                { AddIdentity(data, faces.entities, generatedIdStarts); });
         }
         if (buildEdges)
         {
@@ -424,9 +784,77 @@ namespace DNDS::Geom
                     data.cellEdgesPbi = *edges.parent2entityPbi;
                     data.edgeNodesPbi = *edges.entity2nodePbi;
                 }
-                AddIdentity(data, edges.entities, generatedIdStarts);
                 data.requirements.edges = true; });
+            FieldTransferDetail::LocalStage(mpi, [&]
+                                            { regenerated.insert(inverse.Read().Kind()); });
+            if (source.HasEntities(EntityKind::Edge))
+            {
+                auto recovered = RecoverIdentity(source, mpi, previous, data, edges.entities,
+                                                 MeshRelation::EdgeNodes, *data.edgeInfo, data.edgeNodesPbi,
+                                                 generatedIdStarts.count(EntityKind::Edge) ? std::optional<index>{generatedIdStarts.at(EntityKind::Edge)} : std::optional<index>{});
+                FieldTransferDetail::LocalStage(mpi, [&]
+                                                { refresh.emplace(EntityKind::Edge, std::move(recovered)); });
+            }
+            else
+                FieldTransferDetail::LocalStage(mpi, [&]
+                                                { AddIdentity(data, edges.entities, generatedIdStarts); });
         }
+        for (const auto &[key, original] : previous.namedRelations)
+        {
+            if (data.namedRelations.count(key) || regenerated.count(key))
+                continue;
+            // An explicit fixed-slot alias means the current physical facade
+            // relation, whose first-parent orientation may have changed.
+            // Regenerate these aliases instead of preserving an obsolete frame.
+            bool fixedAlias = false;
+            FieldTransferDetail::LocalStage(mpi, [&]
+                                            {
+                for (const auto &[alias, slot] : std::initializer_list<std::pair<AdjKind, MeshRelation>>{
+                    {Adj::Cell2Face, MeshRelation::CellFaces}, {Adj::Face2Node, MeshRelation::FaceNodes},
+                    {Adj::Face2Cell, MeshRelation::FaceCells}, {Adj::Face2Bnd, MeshRelation::FaceBoundaries},
+                    {Adj::Bnd2Face, MeshRelation::BoundaryFaces}, {Adj::Cell2CellFace, MeshRelation::CellFaceCells},
+                    {Adj::Cell2Edge, MeshRelation::CellEdges}, {Adj::Edge2Node, MeshRelation::EdgeNodes},
+                    {Adj::Edge2Cell, MeshRelation::EdgeCells}})
+                    if (key == alias && data.relations[size_t(slot)])
+                    {
+                        data.namedRelations.emplace(key, *data.relations[size_t(slot)]);
+                        fixedAlias = true;
+                        break;
+                    } });
+            if (fixedAlias)
+                continue;
+            const auto path = key.Path();
+            FieldTransferDetail::LocalStage(mpi, [&]
+                                            {
+                for (auto kind : {EntityKind::Face, EntityKind::Edge})
+                {
+                    if (refresh.count(kind) && key.from != kind && key.to != kind &&
+                        std::find(path.begin(), path.end(), kind) != path.end())
+                    {
+                        auto read = refresh.at(kind).oldToNew.Read();
+                        for (size_t row = 0; row < refresh.at(kind).oldToNew.Rows(); ++row)
+                            DNDS_check_throw_info(read.View()(row, 0) != UnInitIndex,
+                                                  "named relation through a removed topology key cannot be inferred");
+                        auto reverse = refresh.at(kind).newToOld.Read();
+                        for (size_t row = 0; row < refresh.at(kind).newToOld.Rows(); ++row)
+                            DNDS_check_throw_info(reverse.View()(row, 0) != UnInitIndex,
+                                                  "named relation through an added topology key cannot be inferred");
+                    }
+                } });
+            Array values = original;
+            if (refresh.count(key.from))
+                values = RefreshSourceRows(mpi, values, refresh.at(key.from));
+            if (refresh.count(key.to))
+                values = RefreshTargetRows(mpi, values, refresh.at(key.to), key.order == RelationOrder::SortedUnique);
+            FieldTransferDetail::LocalStage(mpi, [&]
+                                            { data.namedRelations.emplace(key, std::move(values)); });
+        }
+        if (data.provenance)
+            for (auto &[kind, values] : data.provenance->sourceIds)
+            {
+                if (refresh.count(kind))
+                    values = RefreshSourceRows(mpi, values, refresh.at(kind));
+            }
         return NativeMeshAssembler::Build(mpi, std::move(data), ghostLayers);
     }
 }

@@ -1,48 +1,21 @@
-/**
- * @file test_MeshPipeline.cpp
- * @brief Parameterized doctest tests for the full mesh pipeline.
- *
- * Each mesh configuration (file, dimension, periodic settings, expected counts)
- * is tested through the complete pipeline:
- *   - Pipeline state tracking: every state variable checked
- *   - InterpolateFace: face topology, face2cell, bnd2face
- *   - ReorderLocalCells: cell permutation, partition starts
- *   - N2CB, C2F, Facial, C2CFace adjacency validation
- *   - ConstructBndMesh, BuildVTKConnectivity
- *   - Global count conservation
- *   - All 5 Adj round-trip inverses (on one mesh config)
- *
- * Mesh configurations:
- *   [0] UniformSquare_10  -- 2D, 100 quad cells, non-periodic
- *   [1] IV10_10           -- 2D, 100 quad cells, periodic (isentropic vortex)
- *   [2] NACA0012_H2       -- 2D, 20816 unstructured quad cells, non-periodic (airfoil)
- *   [3] IV10U_10          -- 2D, 322 unstructured tri cells, periodic (isentropic vortex)
- */
-
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
-
-#include "Geom/Mesh/Mesh.hpp"
 #include "Geom/Mesh/Mesh_Helpers.hpp"
+#include "Geom/Mesh/NativeMeshAssembler.hpp"
+#include "Geom/Mesh/NativeMeshOutput.hpp"
 #include "Geom/Mesh/NativeMeshSmoothing.hpp"
-#include "Geom/Mesh/NativeMeshCGNS.hpp"
-#include "Geom/Mesh/RelationAccess.hpp"
-#include "Geom/BoundaryCondition.hpp"
-#include <string>
-#include <vector>
-#include <array>
-#include <cmath>
+#include "Geom/Mesh/NativeMeshTopology.hpp"
+#include "Geom/Mesh/NativeConnectivity.hpp"
+#include "DNDS/Runtime/RowBuilder.hpp"
+#include <filesystem>
 #include <set>
-#include <fmt/core.h>
-
+#include <map>
+#include <numeric>
+#include <chrono>
 using namespace DNDS;
 using namespace DNDS::Geom;
-
-// NOTE: DNDS::index, DNDS::real, DNDS::rowsize clash with POSIX symbols.
-
-// ---------------------------------------------------------------------------
-// Mesh configuration
-// ---------------------------------------------------------------------------
+namespace R = DNDS::Runtime;
+using I = DNDS::index;
 struct MeshConfig
 {
     const char *name;          ///< Human-readable label
@@ -65,158 +38,172 @@ static const MeshConfig g_configs[] = {
 };
 static constexpr int N_CONFIGS = sizeof(g_configs) / sizeof(g_configs[0]);
 
-// ---------------------------------------------------------------------------
-// Globals
-// ---------------------------------------------------------------------------
 static MPIInfo g_mpi;
-
-/// One full-pipeline mesh per config.
 static ssp<UnstructuredMesh> g_full[N_CONFIGS];
-// Boundary operations no longer allocate a legacy destination workspace.
-static ssp<UnstructuredMesh> g_nativeBoundary[N_CONFIGS];
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
+static ssp<UnstructuredMesh> g_edges;
 static std::string meshPath(const std::string &name)
 {
-    std::string f(__FILE__);
-    for (int i = 0; i < 4; i++)
-    {
-        auto pos = f.rfind('/');
-        if (pos == std::string::npos)
-            pos = f.rfind('\\');
-        if (pos != std::string::npos)
-            f = f.substr(0, pos);
-    }
-    return f + "/data/mesh/" + name;
+    return (std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path() / "data/mesh" / name).string();
 }
-
-static ssp<UnstructuredMesh> nativeBoundarySource(int meshId, const MeshConfig &cfg)
+static MeshReadRequirements FullRequirements()
 {
-    if (!g_nativeBoundary[meshId])
+    auto r = MeshReadRequirements::CellFlux();
+    r.inverse = true;
+    r.cellFaceNeighbors = true;
+    r.allFaceCellsLocal = true;
+    return r;
+}
+static R::Array<I> Rows(const std::vector<std::vector<I>> &rows)
+{
+    R::RowBuilder builder(rows.size(), sizeof(I));
+    for (size_t row = 0; row < rows.size(); ++row)
     {
-        std::optional<NativePeriodicImportOptions> periodic;
-        if (cfg.periodic)
+        builder.ResizeRow(row, rows[row].size());
+        auto target = builder.Row<I>(row);
+        std::copy(rows[row].begin(), rows[row].end(), target.data);
+    }
+    return R::Array<I>::FromSharedStorage(builder.Commit());
+}
+static std::optional<NativePeriodicImportOptions> PeriodicOptions(const MeshConfig &cfg)
+{
+    if (!cfg.periodic)
+        return {};
+    NativePeriodicImportOptions p;
+    p.tolerance = 1e-8;
+    p.frames.translation[1].map() = cfg.translation1;
+    p.frames.translation[2].map() = cfg.translation2;
+    p.frames.translation[3].map() = cfg.translation3;
+    return p;
+}
+static std::shared_ptr<const NativeMeshState> Complete(std::shared_ptr<const NativeMeshState> state, int layers = 1)
+{
+    auto data = NativeMeshAssembler::CaptureOwned(*state, g_mpi);
+    const auto &view = state->BorrowHostView();
+    const auto cells = state->Entities(EntityKind::Cell);
+    std::vector<std::vector<I>> other(size_t(cells.NumOwned()));
+    for (I cell = 0; cell < cells.NumOwned(); ++cell)
+        for (size_t slot = 0; slot < view.CellFaces(cell).size(); ++slot)
         {
-            periodic.emplace();
-            periodic->frames.translation[1].map() = cfg.translation1;
-            periodic->frames.translation[2].map() = cfg.translation2;
-            periodic->frames.translation[3].map() = cfg.translation3;
-            periodic->tolerance = 1e-8;
+            const auto adjacent = view.CellFaceOther(cell, view.CellFaces(cell)[slot], DNDS::rowsize(slot));
+            other[size_t(cell)].push_back(adjacent == UnInitIndex ? UnInitIndex : (adjacent >= 0 ? cells.LocalToGlobal(adjacent) : -1 - adjacent));
         }
-        auto state = ReadNativeCGNS(g_mpi, meshPath(cfg.file), cfg.dim, FBC_Name_2_ID_Default, 0, {1, true}, periodic);
-        g_nativeBoundary[meshId] = UnstructuredMesh::FromNative(g_mpi, std::move(state));
-    }
-    return g_nativeBoundary[meshId];
+    data.relations[size_t(MeshRelation::CellFaceCells)] = Rows(other);
+    data.requirements = FullRequirements();
+    return NativeMeshAssembler::Build(g_mpi, std::move(data), layers);
 }
-
-static ssp<UnstructuredMesh> buildFullMesh(
-    int meshId, const MeshConfig &cfg, int nReorderParts = 1)
+static ssp<UnstructuredMesh> ReadConfigured(const MeshConfig &cfg, int layers = 1)
 {
-    if (g_mpi.rank == 0)
-        std::cout << "[buildMesh " << meshId << " " << cfg.name << "] START" << std::endl;
-
-    auto mesh = std::make_shared<UnstructuredMesh>(g_mpi, cfg.dim);
-    UnstructuredMeshSerialRW reader(mesh, 0);
-
-    if (cfg.periodic)
-    {
-        tPoint zero{0, 0, 0};
-        mesh->SetPeriodicGeometry(
-            cfg.translation1, zero, zero,
-            cfg.translation2, zero, zero,
-            cfg.translation3, zero, zero);
-    }
-
-    reader.ReadFromCGNSSerial(meshPath(cfg.file));
-    reader.Deduplicate1to1Periodic(1e-8);
-    reader.BuildCell2Cell();
-
-    UnstructuredMeshSerialRW::PartitionOptions pOpt;
-    pOpt.metisType = "KWAY";
-    pOpt.metisUfactor = 30;
-    pOpt.metisSeed = 42;
-    pOpt.metisNcuts = 1;
-    reader.MeshPartitionCell2Cell(pOpt);
-    reader.PartitionReorderToMeshCell2Cell();
-
-    mesh->RecoverNode2CellAndNode2Bnd();
-    mesh->RecoverCell2CellAndBnd2Cell();
-    mesh->BuildGhostPrimary();
-
-    mesh->AdjGlobal2LocalPrimary();
-    mesh->AdjGlobal2LocalN2CB();
-
-    if (nReorderParts > 1)
-        mesh->ReorderLocalCells(nReorderParts);
-
-    mesh->InterpolateFace();
-    mesh->AssertOnFaces();
-
-    mesh->AdjLocal2GlobalN2CB();
-    mesh->BuildGhostN2CB();
-    mesh->AdjGlobal2LocalN2CB();
-    mesh->AssertOnN2CB();
-
-    mesh->BuildCell2CellFace();
-    mesh->AdjGlobal2LocalC2CFace();
-
-    if (cfg.periodic)
-        mesh->RecreatePeriodicNodes();
-    mesh->BuildVTKConnectivity();
-
-    if (g_mpi.rank == 0)
-        std::cout << "[buildMesh " << meshId << " " << cfg.name << "] DONE" << std::endl;
-
+    AutoAppendName2ID names;
+    auto state = ReadNativeCGNS(g_mpi, meshPath(cfg.file), cfg.dim, [&](const std::string &name)
+                                { return names(name); }, 0, {layers, true}, PeriodicOptions(cfg));
+    NativePartitionOptions p;
+    p.metisUfactor = 30;
+    p.metisSeed = 42;
+    p.metisNcuts = 1;
+    p.ghostLayers = layers;
+    state = NativeMeshPreparation::Partition(*state, g_mpi, p).state;
+    return UnstructuredMesh::FromNative(g_mpi, Complete(std::move(state), layers));
+}
+static ssp<UnstructuredMesh> nativeBoundarySource(int id, const MeshConfig &) { return g_full[id]; }
+static ssp<UnstructuredMesh> buildFullMesh(int, const MeshConfig &cfg, int parts = 1)
+{
+    auto mesh = ReadConfigured(cfg);
+    if (parts > 1)
+        mesh->ReorderLocalCells(parts);
     return mesh;
 }
-
-static std::vector<std::vector<DNDS::index>> snapshotAdj(
-    const tAdjPair &adj, DNDS::index nRows)
+static std::vector<I> Global(const EntitySpace &space, MeshRowSpan<I> row)
 {
-    std::vector<std::vector<DNDS::index>> out(nRows);
-    for (DNDS::index i = 0; i < nRows; i++)
+    std::vector<I> result;
+    for (auto value : row)
+        result.push_back(value == UnInitIndex ? UnInitIndex : (value >= 0 ? space.LocalToGlobal(value) : -1 - value));
+    return result;
+}
+static std::set<I> Set(const std::vector<I> &values) { return {values.begin(), values.end()}; }
+static void FaceIncidence(UnstructuredMesh &mesh)
+{
+    auto retained = mesh.AcquireRead(FullRequirements());
+    const auto v = retained.HostView();
+    const auto nodes = mesh.Entities(EntityKind::Node);
+    for (I cell = 0; cell < v.NumCell(); ++cell)
     {
-        out[i].resize(adj.RowSize(i));
-        for (DNDS::rowsize j = 0; j < adj.RowSize(i); j++)
-            out[i][j] = adj(i, j);
-    }
-    return out;
-}
-
-static std::vector<std::pair<DNDS::index, DNDS::index>> snapshotAdj2(
-    const tAdj2Pair &adj, DNDS::index nRows)
-{
-    std::vector<std::pair<DNDS::index, DNDS::index>> out(nRows);
-    for (DNDS::index i = 0; i < nRows; i++)
-        out[i] = {adj(i, 0), adj(i, 1)};
-    return out;
-}
-
-static std::vector<DNDS::index> snapshotAdj1(
-    const tAdj1Pair &adj, DNDS::index nRows)
-{
-    std::vector<DNDS::index> out(nRows);
-    for (DNDS::index i = 0; i < nRows; i++)
-        out[i] = adj(i, 0);
-    return out;
-}
-
-static void checkAdjMatchesSnapshot(
-    const tAdjPair &adj, DNDS::index nRows,
-    const std::vector<std::vector<DNDS::index>> &snap)
-{
-    for (DNDS::index i = 0; i < nRows; i++)
-    {
-        REQUIRE(adj.RowSize(i) == static_cast<DNDS::rowsize>(snap[i].size()));
-        for (DNDS::rowsize j = 0; j < adj.RowSize(i); j++)
-            CHECK(adj(i, j) == snap[i][j]);
+        auto e = v.GetCellElement(cell);
+        const auto cone = v.CellNodes(cell);
+        const auto faces = v.CellFaces(cell);
+        REQUIRE(faces.size() == size_t(e.GetNumFaces()));
+        for (size_t slot = 0; slot < faces.size(); ++slot)
+        {
+            const auto face = faces[slot];
+            REQUIRE(face >= 0);
+            REQUIRE(face < v.NumFaceProc());
+            auto ef = e.ObtainFace(DNDS::rowsize(slot));
+            std::vector<I> expected(size_t(ef.GetNumNodes()));
+            e.ExtractFaceNodes(DNDS::rowsize(slot), cone, expected);
+            for (auto &node : expected)
+                node = nodes.LocalToGlobal(node);
+            const auto actual = Global(nodes, v.FaceNodes(face));
+            CHECK(Set(actual) == Set(expected));
+            if (v.CellIsFaceBack(cell, face, DNDS::rowsize(slot)))
+                CHECK(actual == expected);
+            const auto parents = v.FaceCells(face);
+            CHECK((parents[0] == cell || parents[1] == cell));
+            CHECK(v.GetFaceInfo(face).getElemType() == ef.type);
+        }
     }
 }
-
-// ---------------------------------------------------------------------------
+static std::array<AdjKind, size_t(MeshRelation::Count)> Bindings()
+{
+    return {Adj::Cell2Node, Adj::Bnd2Node, Adj::Bnd2Cell, Adj::Cell2Cell, Adj::Node2Cell, Adj::Node2Bnd, Adj::Cell2Face, Adj::Face2Node, Adj::Face2Cell, Adj::Face2Bnd, Adj::Bnd2Face, Adj::Cell2Edge, Adj::Edge2Node, Adj::Edge2Cell, Adj::Cell2CellFace};
+}
+static void Roundtrip(UnstructuredMesh &mesh, std::initializer_list<MeshRelation> slots)
+{
+    const auto stamp = mesh.versions.Stamp();
+    auto retained = mesh.AcquireRead(FullRequirements());
+    const auto view = retained.HostView();
+    const auto kinds = Bindings();
+    for (auto slot : slots)
+    {
+        auto key = kinds[size_t(slot)];
+        key.semanticName = "pipeline.convert." + std::to_string(size_t(slot));
+        key.order = RelationOrder::Topological;
+        key.selection = RelationSelection::Incidence;
+        key.path = {key.from, key.to};
+        key.periodic = RelationPeriodicPolicy::EntityIdentity;
+        const auto from = mesh.Entities(key.from), to = mesh.Entities(key.to);
+        std::vector<std::vector<I>> rows(size_t(from.NumOwned())), local(rows.size());
+        for (I row = 0; row < from.NumOwned(); ++row)
+        {
+            rows[size_t(row)] = Global(to, view.Relation(slot, row));
+            auto r = view.Relation(slot, row);
+            local[size_t(row)] = {r.begin(), r.end()};
+        }
+        auto values = Rows(rows);
+        RelationReadAccess original(key, from, to, Adj_PointToGlobal, values);
+        auto localized = NativeRelation::Convert(original, Adj_PointToLocal);
+        auto localizedRead = localized.Read();
+        auto restored = NativeRelation::Convert(localizedRead, Adj_PointToGlobal);
+        auto restoredRead = restored.Read();
+        for (I row = 0; row < from.NumOwned(); ++row)
+        {
+            CHECK(restoredRead.GlobalRow(row) == rows[size_t(row)]);
+            std::vector<I> raw;
+            for (size_t j = 0; j < localizedRead.RowSize(row); ++j)
+                raw.push_back(localizedRead.Raw(row, j));
+            CHECK(raw == local[size_t(row)]);
+        }
+    }
+    CHECK(stamp.Valid());
+}
+#define FOR_EACH_MESH_CONFIG(...)             \
+    for (int _ci = 0; _ci < N_CONFIGS; ++_ci) \
+    {                                         \
+        if (_ci == 4 && g_mpi.size != 8)      \
+            continue;                         \
+        CAPTURE(_ci);                         \
+        const auto &cfg = g_configs[_ci];     \
+        auto m = g_full[_ci];                 \
+        SUBCASE(cfg.name) { __VA_ARGS__ }     \
+    }
 int main(int argc, char **argv)
 {
     MPI_Init(&argc, &argv);
@@ -237,955 +224,164 @@ int main(int argc, char **argv)
     ctx.applyCommandLine(argc, argv);
     int res = ctx.run();
 
-    for (auto &m : g_nativeBoundary)
-        m.reset();
     for (auto &m : g_full)
         m.reset();
+    g_edges.reset();
     MPI_Finalize();
     return res;
 }
 
-// ===========================================================================
-// Parameterized tests over all mesh configs (read-only)
-// ===========================================================================
-
-#define FOR_EACH_MESH_CONFIG(body)                     \
-    for (int _ci = 0; _ci < N_CONFIGS; _ci++)          \
-    {                                                  \
-        /* Ball2 (index 4) is only tested with np=8 */ \
-        if (_ci == 4 && g_mpi.size != 8)               \
-            continue;                                  \
-        CAPTURE(_ci);                                  \
-        const auto &cfg = g_configs[_ci];              \
-        auto m = g_full[_ci];                          \
-        SUBCASE(cfg.name) { body }                     \
-    }
-
-// --- Pipeline state ---
-
-TEST_CASE("Pipeline: all five states are Local"){
-    FOR_EACH_MESH_CONFIG({
-        CHECK(m->adjPrimaryState == Adj_PointToLocal);
-        CHECK(m->adjFacialState == Adj_PointToLocal);
-        CHECK(m->adjC2FState == Adj_PointToLocal);
-        CHECK(m->adjN2CBState == Adj_PointToLocal);
-        CHECK(m->adjC2CFaceState == Adj_PointToLocal);
-    })}
-
-// --- Global count conservation ---
-
-TEST_CASE("Pipeline: global cell count matches expected"){
-    FOR_EACH_MESH_CONFIG({
-        DNDS::index localCells = m->NumCell();
-        DNDS::index globalCells = 0;
-        MPI_Allreduce(&localCells, &globalCells, 1, DNDS_MPI_INDEX, MPI_SUM, g_mpi.comm);
-        CHECK(globalCells > 0);
-        if (cfg.expectedCells > 0)
-            CHECK(globalCells == cfg.expectedCells);
-    })}
-
-TEST_CASE("Pipeline: global bnd count matches expected"){
-    FOR_EACH_MESH_CONFIG({
-        DNDS::index localBnds = m->NumBnd();
-        DNDS::index globalBnds = 0;
-        MPI_Allreduce(&localBnds, &globalBnds, 1, DNDS_MPI_INDEX, MPI_SUM, g_mpi.comm);
-        if (cfg.expectedBnds > 0)
-            CHECK(globalBnds == cfg.expectedBnds);
-        else if (!cfg.periodic)
-            CHECK(globalBnds > 0); // non-periodic meshes must have boundaries
-    })}
-
-// --- InterpolateFace topology ---
-
-TEST_CASE("InterpolateFace: face count is positive"){
-    FOR_EACH_MESH_CONFIG({
-        CHECK(m->NumFace() > 0);
-    })}
-
-TEST_CASE("InterpolateFace: face2cell has exactly 2 entries per face"){
-    FOR_EACH_MESH_CONFIG({
-        for (DNDS::index iF = 0; iF < m->NumFace(); iF++)
-            CHECK(m->face2cell.RowSize(iF) == 2);
-    })}
-
-TEST_CASE("InterpolateFace: face2cell owner is a valid local cell"){
-    FOR_EACH_MESH_CONFIG({
-        DNDS::index totalCells = m->NumCell() + m->NumCellGhost();
-        for (DNDS::index iF = 0; iF < m->NumFace(); iF++)
-        {
-            DNDS::index owner = m->face2cell(iF, 0);
-            CHECK(owner >= 0);
-            CHECK(owner < totalCells);
-        }
-    })}
-
-TEST_CASE("InterpolateFace: face2node indices in valid range"){
-    FOR_EACH_MESH_CONFIG({
-        DNDS::index totalNodes = m->NumNode() + m->NumNodeGhost();
-        for (DNDS::index iF = 0; iF < m->NumFace(); iF++)
-            for (DNDS::rowsize j = 0; j < m->face2node.RowSize(iF); j++)
-            {
-                DNDS::index iN = m->face2node(iF, j);
-                CHECK(iN >= 0);
-                CHECK(iN < totalNodes);
-            }
-    })}
-
-TEST_CASE("InterpolateFace: cell2face row sizes match expected face count"){
-    FOR_EACH_MESH_CONFIG({
-        for (DNDS::index iC = 0; iC < m->NumCell(); iC++)
-        {
-            auto elem = m->GetCellElement(iC);
-            int nFaceExpected = elem.GetNumFaces();
-            CHECK(m->cell2face.RowSize(iC) == nFaceExpected);
-        }
-    })}
-
-TEST_CASE("InterpolateFace: cell2face entries are valid face indices"){
-    FOR_EACH_MESH_CONFIG({
-        DNDS::index totalFaces = m->NumFace() + m->NumFaceGhost();
-        for (DNDS::index iC = 0; iC < m->NumCell(); iC++)
-            for (DNDS::rowsize j = 0; j < m->cell2face.RowSize(iC); j++)
-            {
-                DNDS::index iF = m->cell2face(iC, j);
-                CHECK(iF >= 0);
-                CHECK(iF < totalFaces);
-            }
-    })}
-
-TEST_CASE("InterpolateFace: bnd2face maps to valid faces"){
-    FOR_EACH_MESH_CONFIG({
-        for (DNDS::index ib = 0; ib < m->NumBnd(); ib++)
-        {
-            DNDS::index iFace = m->bnd2face(ib, 0);
-            // Periodic boundaries that became internal faces may have bnd2face == -1
-            if (iFace >= 0)
-                CHECK(iFace < m->NumFace() + m->NumFaceGhost());
-        }
-    })}
-
-TEST_CASE("InterpolateFace: face element types are valid")
+TEST_CASE("Pipeline: all five published relation groups are Local"){FOR_EACH_MESH_CONFIG({auto read=m->AcquireRead(FullRequirements());auto v=read.HostView();for(size_t slot=0;slot<size_t(MeshRelation::Count);++slot)if(v.HasRelation(MeshRelation(slot)))CHECK(v.RelationState(MeshRelation(slot))==Adj_PointToLocal); })} TEST_CASE("Pipeline: global cell count matches expected"){FOR_EACH_MESH_CONFIG({ CHECK(m->NumCellGlobal() == cfg.expectedCells); })} TEST_CASE("Pipeline: global bnd count matches expected"){FOR_EACH_MESH_CONFIG({if(cfg.expectedBnds>=0)CHECK(m->NumBndGlobal()==cfg.expectedBnds); })} TEST_CASE("InterpolateFace: face count is positive"){FOR_EACH_MESH_CONFIG({ CHECK(m->NumFaceGlobal() > 0); })} TEST_CASE("InterpolateFace: face2cell has exactly 2 entries per face"){FOR_EACH_MESH_CONFIG({auto r=m->AcquireRead(FullRequirements());auto v=r.HostView();for(I f=0;f<v.NumFace();++f)CHECK(v.FaceCells(f).size()==2); })} TEST_CASE("InterpolateFace: face2cell owner is a valid local cell"){FOR_EACH_MESH_CONFIG({auto r=m->AcquireRead(FullRequirements());auto v=r.HostView();for(I f=0;f<v.NumFace();++f){CHECK(v.FaceCells(f)[0]>=0);CHECK(v.FaceCells(f)[0]<v.NumCellProc());} })} TEST_CASE("InterpolateFace: face2node indices in valid range"){FOR_EACH_MESH_CONFIG({auto r=m->AcquireRead(FullRequirements());auto v=r.HostView();for(I f=0;f<v.NumFace();++f)for(auto n:v.FaceNodes(f)){CHECK(n>=0);CHECK(n<v.NumNodeProc());} })} TEST_CASE("InterpolateFace: cell2face row sizes match expected face count"){FOR_EACH_MESH_CONFIG({auto r=m->AcquireRead(FullRequirements());auto v=r.HostView();for(I c=0;c<v.NumCell();++c)CHECK(v.CellFaces(c).size()==size_t(v.GetCellElement(c).GetNumFaces())); })} TEST_CASE("InterpolateFace: cell2face entries are valid face indices"){FOR_EACH_MESH_CONFIG({auto r=m->AcquireRead(FullRequirements());auto v=r.HostView();for(I c=0;c<v.NumCell();++c)for(auto f:v.CellFaces(c)){CHECK(f>=0);CHECK(f<v.NumFaceProc());} })} TEST_CASE("InterpolateFace: bnd2face maps to valid faces"){FOR_EACH_MESH_CONFIG({auto r=m->AcquireRead(FullRequirements());auto v=r.HostView();for(I b=0;b<v.NumBnd();++b)for(auto f:v.Relation(MeshRelation::BoundaryFaces,b)){CHECK(f>=0);CHECK(f<v.NumFaceProc());} })} TEST_CASE("InterpolateFace: face element types are valid"){FOR_EACH_MESH_CONFIG({for(I f=0;f<m->NumFace();++f)CHECK(m->GetFaceElement(f).type!=Elem::UnknownElem); })} TEST_CASE("InterpolateFace: independent element slots and exact back-face cones agree")
 {
-    FOR_EACH_MESH_CONFIG({
-        for (DNDS::index iF = 0; iF < m->NumFace(); iF++)
-            CHECK(m->GetFaceElement(iF).type != Elem::ElemType::UnknownElem);
-    })
+    FOR_EACH_MESH_CONFIG({ FaceIncidence(*m); })
 }
 
-// --- InterpolateFace: DSL vs Legacy comparison ---
-
-/// Build a mesh through the pipeline up to (and including) InterpolateFace,
-/// using the specified face interpolation method.
-static ssp<UnstructuredMesh> buildMeshUpToFace(
-    const MeshConfig &cfg, bool useLegacy)
+static uint8_t FaceFrame(const UnstructuredMeshView &v, I cell, I face)
 {
-    auto mesh = std::make_shared<UnstructuredMesh>(g_mpi, cfg.dim);
-    UnstructuredMeshSerialRW reader(mesh, 0);
-
-    if (cfg.periodic)
+    const auto cn = v.CellNodes(cell), fn = v.FaceNodes(face);
+    const auto cb = v.CellNodePeriodicBits(cell), fb = v.FaceNodePeriodicBits(face);
+    std::optional<uint8_t> result;
+    for (size_t j = 0; j < fn.size(); ++j)
     {
-        tPoint zero{0, 0, 0};
-        mesh->SetPeriodicGeometry(
-            cfg.translation1, zero, zero,
-            cfg.translation2, zero, zero,
-            cfg.translation3, zero, zero);
+        auto it = std::find(cn.begin(), cn.end(), fn[j]);
+        REQUIRE(it != cn.end());
+        const auto frame = uint8_t(cb[size_t(it - cn.begin())]) ^ uint8_t(fb[j]);
+        if (result)
+            CHECK(frame == *result);
+        else
+            result = frame;
     }
-
-    reader.ReadFromCGNSSerial(meshPath(cfg.file));
-    reader.Deduplicate1to1Periodic(1e-8);
-    reader.BuildCell2Cell();
-
-    UnstructuredMeshSerialRW::PartitionOptions pOpt;
-    pOpt.metisType = "KWAY";
-    pOpt.metisUfactor = 30;
-    pOpt.metisSeed = 42;
-    pOpt.metisNcuts = 1;
-    reader.MeshPartitionCell2Cell(pOpt);
-    reader.PartitionReorderToMeshCell2Cell();
-
-    mesh->RecoverNode2CellAndNode2Bnd();
-    mesh->RecoverCell2CellAndBnd2Cell();
-    mesh->BuildGhostPrimary();
-    mesh->AdjGlobal2LocalPrimary();
-    mesh->AdjGlobal2LocalN2CB();
-
-    if (useLegacy)
-        mesh->InterpolateFaceLegacy();
-    else
-        mesh->InterpolateFace();
-
-    return mesh;
+    REQUIRE(result);
+    return *result;
 }
-
-/// Collect sorted face vertex sets for all local cells.
-static std::vector<std::set<std::set<DNDS::index>>>
-collectCellFaceVertexSets(const ssp<UnstructuredMesh> &m)
+TEST_CASE("Periodic: face pbi has uniform XOR between owner and neighbor (collaborating check)"){
+    FOR_EACH_MESH_CONFIG({if(!cfg.periodic)continue;auto r=m->AcquireRead(FullRequirements());auto v=r.HostView();
+    for(I f=0;f<v.NumFace();++f){auto parents=v.FaceCells(f);REQUIRE(parents[0]>=0);FaceFrame(v,parents[0],f);if(parents[1]>=0)FaceFrame(v,parents[1],f);} })} TEST_CASE("Periodic: face2nodePbi is consistent with owner cell's cell2nodePbi")
 {
-    DNDS::index nCells = m->cell2node.father->Size();
-    std::vector<std::set<std::set<DNDS::index>>> result(nCells);
-    for (DNDS::index iCell = 0; iCell < nCells; iCell++)
+    FOR_EACH_MESH_CONFIG({if(!cfg.periodic)continue;auto r=m->AcquireRead(FullRequirements());auto v=r.HostView();
+    for(I cell=0;cell<v.NumCell();++cell)for(size_t j=0;j<v.CellFaces(cell).size();++j)
+        CHECK(FaceFrame(v,cell,v.CellFaces(cell)[j])==uint8_t(v.CellFacePeriodicBits(cell)[j])); })
+}
+static std::set<std::pair<I, uint8_t>> OutputImages(UnstructuredMesh &mesh)
+{
+    auto r = mesh.AcquireRead(FullRequirements());
+    auto v = r.HostView();
+    auto nodes = mesh.Entities(EntityKind::Node);
+    std::set<std::pair<I, uint8_t>> local;
+    for (I n = 0; n < nodes.NumOwned(); ++n)
+        local.emplace(nodes.LocalToGlobal(n), 0);
+    for (I c = 0; c < v.NumCell(); ++c)
+        for (size_t j = 0; j < v.CellNodes(c).size(); ++j)
+            local.emplace(nodes.LocalToGlobal(v.CellNodes(c)[j]), uint8_t(v.CellNodePeriodicBits(c)[j]));
+    std::vector<I> flat;
+    for (const auto &[node, bits] : local)
     {
-        auto eCell = Elem::Element{m->cellElemInfo[iCell]->getElemType()};
-        for (DNDS::rowsize j = 0; j < m->cell2face.RowSize(iCell); j++)
-        {
-            DNDS::index iFace = m->cell2face(iCell, j);
-            auto eFace = eCell.ObtainFace(j);
-            int nVerts = eFace.GetNumVertices();
-            std::set<DNDS::index> vs;
-            for (int k = 0; k < nVerts; k++)
-                vs.insert(m->face2node[iFace][k]);
-            result[iCell].insert(vs);
-        }
+        flat.push_back(node);
+        flat.push_back(bits);
     }
+    int count = int(flat.size());
+    std::vector<int> counts(size_t(g_mpi.size)), offsets(size_t(g_mpi.size) + 1, 0);
+    MPI_Allgather(&count, 1, MPI_INT, counts.data(), 1, MPI_INT, g_mpi.comm);
+    for (int p = 0; p < g_mpi.size; ++p)
+        offsets[size_t(p) + 1] = offsets[size_t(p)] + counts[size_t(p)];
+    std::vector<I> global(size_t(offsets.back()));
+    MPI_Allgatherv(flat.data(), count, DNDS_MPI_INDEX, global.data(), counts.data(), offsets.data(), DNDS_MPI_INDEX, g_mpi.comm);
+    std::set<std::pair<I, uint8_t>> result;
+    for (size_t i = 0; i < global.size(); i += 2)
+        result.emplace(global[i], uint8_t(global[i + 1]));
     return result;
 }
-
-TEST_CASE("InterpolateFace: DSL matches Legacy on all mesh configs")
+TEST_CASE("Periodic: native output image count matches independent node-frame keys"){
+    FOR_EACH_MESH_CONFIG({if(!cfg.periodic)continue;const auto keys=OutputImages(*m);auto output=NativeMeshOutput::Build(*m->CurrentNativeState(),g_mpi);CHECK(output.globalNodes==I(keys.size()));
+    auto read=output.coordinates.Read();auto nodes=m->Entities(EntityKind::Node);
+    std::vector<tPoint> expected,actual;
+    for(const auto &[global,bits]:keys)if(nodes.Owner(global)==g_mpi.rank)
+    {auto row=nodes.GlobalToLocal(global);REQUIRE(row);expected.push_back(m->Periodic().GetCoordByBits(m->Coord(*row),NodePeriodicBits{bits}));}
+    for(size_t row=0;row<output.coordinates.Rows();++row){tPoint p;for(int d=0;d<3;++d)p[d]=read.View()(row,size_t(d));actual.push_back(p);}
+    auto order=[](const tPoint&a,const tPoint&b){return std::array<DNDS::real,3>{a[0],a[1],a[2]}<std::array<DNDS::real,3>{b[0],b[1],b[2]};};
+    std::sort(expected.begin(),expected.end(),order);std::sort(actual.begin(),actual.end(),order);REQUIRE(expected.size()==actual.size());for(size_t j=0;j<actual.size();++j)CHECK(actual[j].isApprox(expected[j],1e-13)); })} TEST_CASE("Periodic: ordered incidence PBI and physical geometry survive native reassembly"){
+    FOR_EACH_MESH_CONFIG({if(!cfg.periodic)continue;auto data=NativeMeshAssembler::CaptureOwned(*m->CurrentNativeState(),g_mpi);auto next=NativeMeshAssembler::Build(g_mpi,std::move(data),1);
+    auto old=m->AcquireRead(FullRequirements());auto fresh=next->Snapshot(R::Device::Host()).AcquireRead();auto a=old.HostView(),b=fresh.HostView();
+    REQUIRE(a.NumFaceProc()==b.NumFaceProc());for(I f=0;f<a.NumFaceProc();++f){CHECK(Global(m->Entities(EntityKind::Node),a.FaceNodes(f))==Global(next->Entities(EntityKind::Node),b.FaceNodes(f)));auto ab=a.FaceNodePeriodicBits(f),bb=b.FaceNodePeriodicBits(f);REQUIRE(ab.size()==bb.size());for(size_t j=0;j<ab.size();++j)CHECK(uint8_t(ab[j])==uint8_t(bb[j]));} })} TEST_CASE("bnd2cell: independent boundary facet incidence on all mesh configs"){
+    FOR_EACH_MESH_CONFIG({auto r=m->AcquireRead(FullRequirements());auto v=r.HostView();
+    for(I boundary=0;boundary<v.NumBnd();++boundary){const auto bnodes=v.BoundaryNodes(boundary),parents=v.BoundaryCells(boundary);REQUIRE(parents.size()==2);REQUIRE(parents[0]>=0);for(auto parent:parents)if(parent!=UnInitIndex){REQUIRE(parent>=0);REQUIRE(parent<v.NumCellProc());auto cone=v.CellNodes(parent);for(auto node:bnodes)CHECK(std::find(cone.begin(),cone.end(),node)!=cone.end());}} })} TEST_CASE("BuildGhostPrimary: sparse closure and all global relations survive native reassembly")
 {
-    for (int ci = 0; ci < N_CONFIGS; ci++)
-    {
-        if (ci == 4 && g_mpi.size != 8)
-            continue;
-        CAPTURE(ci);
-        const auto &cfg = g_configs[ci];
-        SUBCASE(cfg.name)
-        {
-            auto mDSL = buildMeshUpToFace(cfg, false);
-            auto mLeg = buildMeshUpToFace(cfg, true);
-
-            // Both should have the same number of local faces
-            CHECK(mDSL->NumFace() == mLeg->NumFace());
-            CHECK(mDSL->NumFaceGhost() == mLeg->NumFaceGhost());
-
-            // For each local cell, the face vertex sets must match
-            auto dslSets = collectCellFaceVertexSets(mDSL);
-            auto legSets = collectCellFaceVertexSets(mLeg);
-            DNDS::index nCells = mDSL->cell2node.father->Size();
-            CHECK(nCells == static_cast<DNDS::index>(legSets.size()));
-
-            for (DNDS::index iCell = 0; iCell < nCells; iCell++)
-            {
-                CAPTURE(iCell);
-                CHECK(dslSets[iCell] == legSets[iCell]);
-            }
-
-            // face2cell: for each local face, the set of (face vertex set, cell pair)
-            // should match. We compare by face vertex set → cell global indices.
-            // (Face ordering may differ, so we compare via vertex sets.)
-            std::map<std::set<DNDS::index>, std::pair<DNDS::index, DNDS::index>> dslF2C, legF2C;
-            for (DNDS::index iF = 0; iF < mDSL->NumFace(); iF++)
-            {
-                auto eFace = Elem::Element{mDSL->faceElemInfo(iF, 0).getElemType()};
-                std::set<DNDS::index> vs;
-                for (int k = 0; k < eFace.GetNumVertices(); k++)
-                    vs.insert(mDSL->face2node[iF][k]);
-                dslF2C[vs] = {mDSL->face2cell(iF, 0), mDSL->face2cell(iF, 1)};
-            }
-            for (DNDS::index iF = 0; iF < mLeg->NumFace(); iF++)
-            {
-                auto eFace = Elem::Element{mLeg->faceElemInfo(iF, 0).getElemType()};
-                std::set<DNDS::index> vs;
-                for (int k = 0; k < eFace.GetNumVertices(); k++)
-                    vs.insert(mLeg->face2node[iF][k]);
-                legF2C[vs] = {mLeg->face2cell(iF, 0), mLeg->face2cell(iF, 1)};
-            }
-            CHECK(dslF2C.size() == legF2C.size());
-
-            for (auto &[vs, dslPair] : dslF2C)
-            {
-                auto it = legF2C.find(vs);
-                REQUIRE(it != legF2C.end());
-                // Cell pairs should be same set (order of L/R might differ)
-                std::set<DNDS::index> dslCells{dslPair.first, dslPair.second};
-                std::set<DNDS::index> legCells{it->second.first, it->second.second};
-                CHECK(dslCells == legCells);
-            }
-
-            // Boundary zone assignment: same face vertex set should have same zone
-            std::map<std::set<DNDS::index>, t_index> dslZones, legZones;
-            for (DNDS::index iF = 0; iF < mDSL->NumFace(); iF++)
-            {
-                auto eFace = Elem::Element{mDSL->faceElemInfo(iF, 0).getElemType()};
-                std::set<DNDS::index> vs;
-                for (int k = 0; k < eFace.GetNumVertices(); k++)
-                    vs.insert(mDSL->face2node[iF][k]);
-                dslZones[vs] = mDSL->faceElemInfo(iF, 0).zone;
-            }
-            for (DNDS::index iF = 0; iF < mLeg->NumFace(); iF++)
-            {
-                auto eFace = Elem::Element{mLeg->faceElemInfo(iF, 0).getElemType()};
-                std::set<DNDS::index> vs;
-                for (int k = 0; k < eFace.GetNumVertices(); k++)
-                    vs.insert(mLeg->face2node[iF][k]);
-                legZones[vs] = mLeg->faceElemInfo(iF, 0).zone;
-            }
-            for (auto &[vs, dslZone] : dslZones)
-            {
-                auto it = legZones.find(vs);
-                REQUIRE(it != legZones.end());
-                CHECK(dslZone == it->second);
-            }
-        }
-    }
+    FOR_EACH_MESH_CONFIG({auto next=NativeMeshAssembler::Build(g_mpi,NativeMeshAssembler::CaptureOwned(*m->CurrentNativeState(),g_mpi),1);
+    for(auto kind:{EntityKind::Cell,EntityKind::Node,EntityKind::Face,EntityKind::Bnd}){const auto a=m->Entities(kind),b=next->Entities(kind);CHECK(a.NumOwned()==b.NumOwned());CHECK(a.NumGhost()==b.NumGhost());std::set<I>x,y;for(I row=a.NumOwned();row<a.NumLocal();++row)x.insert(a.LocalToGlobal(row));for(I row=b.NumOwned();row<b.NumLocal();++row)y.insert(b.LocalToGlobal(row));CHECK(x==y);}
+    auto a=m->AcquireRead(FullRequirements());auto b=next->Snapshot(R::Device::Host()).AcquireRead();const auto av=a.HostView(),bv=b.HostView();const auto kinds=Bindings();
+    for(size_t slot=0;slot<size_t(MeshRelation::Count);++slot)if(av.HasRelation(MeshRelation(slot))){const auto from=m->Entities(kinds[slot].from);for(I row=0;row<from.NumOwned();++row)CHECK(Global(m->Entities(kinds[slot].to),av.Relation(MeshRelation(slot),row))==Global(next->Entities(kinds[slot].to),bv.Relation(MeshRelation(slot),row)));}
+    FaceIncidence(*m); })
 }
 
-// --- Periodic face invariants ---
-
-using idx_pbi_t = std::pair<DNDS::index, uint8_t>;
-
-TEST_CASE("Periodic: face pbi has uniform XOR between owner and neighbor (collaborating check)")
+static std::map<I, std::set<I>> LocalNodeStars(const UnstructuredMeshView &v, const EntitySpace &cells, const EntitySpace &nodes)
 {
-    for (int _ci = 0; _ci < N_CONFIGS; _ci++)
-    {
-        if (_ci == 4 && g_mpi.size != 8)
-            continue;
-        const auto &cfg = g_configs[_ci];
-        if (!cfg.periodic)
-            continue;
-        auto m = g_full[_ci];
-        CAPTURE(_ci);
-        SUBCASE(cfg.name)
-        {
-            for (DNDS::index iFace = 0; iFace < m->NumFace(); iFace++)
-            {
-                DNDS::index iCellL = m->face2cell(iFace, 0);
-                DNDS::index iCellR = m->face2cell(iFace, 1);
-                if (iCellR == DNDS::UnInitIndex)
-                    continue;
-
-                auto eCellL = Elem::Element{m->cellElemInfo[iCellL]->getElemType()};
-                auto eCellR = Elem::Element{m->cellElemInfo[iCellR]->getElemType()};
-
-                int slotL = -1, slotR = -1;
-                for (DNDS::rowsize j = 0; j < m->cell2face.RowSize(iCellL); j++)
-                    if (m->cell2face(iCellL, j) == iFace)
-                    {
-                        slotL = j;
-                        break;
-                    }
-                for (DNDS::rowsize j = 0; j < m->cell2face.RowSize(iCellR); j++)
-                    if (m->cell2face(iCellR, j) == iFace)
-                    {
-                        slotR = j;
-                        break;
-                    }
-                REQUIRE(slotL >= 0);
-                REQUIRE(slotR >= 0);
-
-                auto eFaceL = eCellL.ObtainFace(slotL);
-                int nFN = eFaceL.GetNumNodes();
-
-                std::vector<DNDS::index> nodesL(nFN), nodesR(nFN);
-                std::vector<NodePeriodicBits> pbiL(nFN), pbiR(nFN);
-                eCellL.ExtractFaceNodes(slotL, m->cell2node[iCellL], nodesL);
-                eCellL.ExtractFaceNodes(slotL, m->cell2nodePbi[iCellL], pbiL);
-                eCellR.ExtractFaceNodes(slotR, m->cell2node[iCellR], nodesR);
-                eCellR.ExtractFaceNodes(slotR, m->cell2nodePbi[iCellR], pbiR);
-
-                std::vector<idx_pbi_t> pairsL(nFN), pairsR(nFN);
-                for (int k = 0; k < nFN; k++)
-                {
-                    pairsL[k] = {nodesL[k], uint8_t(pbiL[k])};
-                    pairsR[k] = {nodesR[k], uint8_t(pbiR[k])};
-                }
-                std::sort(pairsL.begin(), pairsL.end());
-                std::sort(pairsR.begin(), pairsR.end());
-
-                for (int k = 0; k < nFN; k++)
-                {
-                    CAPTURE(iFace);
-                    CAPTURE(k);
-                    CHECK(pairsL[k].first == pairsR[k].first);
-                }
-
-                uint8_t v0 = pairsL[0].second ^ pairsR[0].second;
-                for (int k = 1; k < nFN; k++)
-                {
-                    uint8_t vk = pairsL[k].second ^ pairsR[k].second;
-                    CAPTURE(iFace);
-                    CAPTURE(k);
-                    CAPTURE(v0);
-                    CAPTURE(vk);
-                    CHECK(vk == v0);
-                }
-            }
-        }
-    }
+    std::map<I, std::set<I>> result;
+    for (I cell = 0; cell < v.NumCellProc(); ++cell)
+        for (auto node : v.CellNodes(cell))
+            result[nodes.LocalToGlobal(node)].insert(cells.LocalToGlobal(cell));
+    return result;
 }
-
-TEST_CASE("Periodic: face2nodePbi is consistent with owner cell's cell2nodePbi")
+TEST_CASE("Benchmark: native inverse compose and face topology with verified results")
 {
-    for (int _ci = 0; _ci < N_CONFIGS; _ci++)
-    {
-        if (_ci == 4 && g_mpi.size != 8)
-            continue;
-        const auto &cfg = g_configs[_ci];
-        if (!cfg.periodic)
-            continue;
-        auto m = g_full[_ci];
-        CAPTURE(_ci);
-        SUBCASE(cfg.name)
-        {
-            for (DNDS::index iFace = 0; iFace < m->NumFace(); iFace++)
-            {
-                DNDS::index iCellOwner = m->face2cell(iFace, 0);
-                auto eCell = Elem::Element{m->cellElemInfo[iCellOwner]->getElemType()};
-
-                int iSlot = -1;
-                for (DNDS::rowsize j = 0; j < m->cell2face.RowSize(iCellOwner); j++)
-                    if (m->cell2face(iCellOwner, j) == iFace)
-                    {
-                        iSlot = j;
-                        break;
-                    }
-                REQUIRE(iSlot >= 0);
-
-                auto eFace = eCell.ObtainFace(iSlot);
-                int nFN = eFace.GetNumNodes();
-
-                std::vector<DNDS::index> cellFaceNodes(nFN);
-                std::vector<NodePeriodicBits> cellFacePbi(nFN);
-                eCell.ExtractFaceNodes(iSlot, m->cell2node[iCellOwner], cellFaceNodes);
-                eCell.ExtractFaceNodes(iSlot, m->cell2nodePbi[iCellOwner], cellFacePbi);
-
-                std::set<idx_pbi_t> fromCell, fromFace;
-                for (int k = 0; k < nFN; k++)
-                {
-                    fromCell.insert({cellFaceNodes[k], uint8_t(cellFacePbi[k])});
-                    fromFace.insert({m->face2node(iFace, k), uint8_t(m->face2nodePbi(iFace, k))});
-                }
-                CAPTURE(iFace);
-                CHECK(fromCell == fromFace);
-            }
-        }
-    }
-}
-
-TEST_CASE("Periodic: RecreatePeriodicNodes produces consistent counts DSL vs Legacy")
-{
-    for (int ci = 0; ci < N_CONFIGS; ci++)
-    {
-        if (ci == 4 && g_mpi.size != 8)
-            continue;
-        const auto &cfg = g_configs[ci];
-        if (!cfg.periodic)
-            continue;
-        CAPTURE(ci);
-        SUBCASE(cfg.name)
-        {
-            auto mDSL = buildMeshUpToFace(cfg, false);
-            auto mLeg = buildMeshUpToFace(cfg, true);
-
-            mDSL->AdjLocal2GlobalN2CB();
-            mDSL->BuildGhostN2CB();
-            mDSL->AdjGlobal2LocalN2CB();
-            mDSL->RecreatePeriodicNodes();
-
-            mLeg->AdjLocal2GlobalN2CB();
-            mLeg->BuildGhostN2CB();
-            mLeg->AdjGlobal2LocalN2CB();
-            mLeg->RecreatePeriodicNodes();
-
-            CHECK(mDSL->coordsPeriodicRecreated.father->Size() ==
-                  mLeg->coordsPeriodicRecreated.father->Size());
-
-            auto dslGlobal = mDSL->coordsPeriodicRecreated.father->globalSize();
-            auto legGlobal = mLeg->coordsPeriodicRecreated.father->globalSize();
-            CHECK(dslGlobal == legGlobal);
-        }
-    }
-}
-
-TEST_CASE("Periodic: face2nodePbi matches DSL vs Legacy")
-{
-    for (int ci = 0; ci < N_CONFIGS; ci++)
-    {
-        if (ci == 4 && g_mpi.size != 8)
-            continue;
-        const auto &cfg = g_configs[ci];
-        if (!cfg.periodic)
-            continue;
-        CAPTURE(ci);
-        SUBCASE(cfg.name)
-        {
-            auto mDSL = buildMeshUpToFace(cfg, false);
-            auto mLeg = buildMeshUpToFace(cfg, true);
-
-            REQUIRE(mDSL->NumFace() == mLeg->NumFace());
-
-            // Map face vertex set → sorted (node, pbi) pairs for each path
-            using FaceKey = std::set<DNDS::index>;
-            using NodePbiSet = std::set<std::pair<DNDS::index, uint8_t>>;
-            std::map<FaceKey, NodePbiSet> dslMap, legMap;
-
-            for (DNDS::index iF = 0; iF < mDSL->NumFace(); iF++)
-            {
-                auto eF = Elem::Element{mDSL->faceElemInfo(iF, 0).getElemType()};
-                FaceKey vs;
-                for (int k = 0; k < eF.GetNumVertices(); k++)
-                    vs.insert(mDSL->face2node(iF, k));
-                NodePbiSet nps;
-                for (int k = 0; k < eF.GetNumNodes(); k++)
-                    nps.insert({mDSL->face2node(iF, k), uint8_t(mDSL->face2nodePbi(iF, k))});
-                dslMap[vs] = nps;
-            }
-            for (DNDS::index iF = 0; iF < mLeg->NumFace(); iF++)
-            {
-                auto eF = Elem::Element{mLeg->faceElemInfo(iF, 0).getElemType()};
-                FaceKey vs;
-                for (int k = 0; k < eF.GetNumVertices(); k++)
-                    vs.insert(mLeg->face2node(iF, k));
-                NodePbiSet nps;
-                for (int k = 0; k < eF.GetNumNodes(); k++)
-                    nps.insert({mLeg->face2node(iF, k), uint8_t(mLeg->face2nodePbi(iF, k))});
-                legMap[vs] = nps;
-            }
-
-            CHECK(dslMap.size() == legMap.size());
-            for (auto &[vs, dslNps] : dslMap)
-            {
-                auto it = legMap.find(vs);
-                REQUIRE(it != legMap.end());
-                CHECK(dslNps == it->second);
-            }
-        }
-    }
-}
-
-// --- bnd2cell DSL vs Legacy ---
-
-/// Build mesh through RecoverCell2CellAndBnd2Cell only (not InterpolateFace).
-static ssp<UnstructuredMesh> buildMeshUpToBnd2Cell(
-    const MeshConfig &cfg, bool useLegacy)
-{
-    auto mesh = std::make_shared<UnstructuredMesh>(g_mpi, cfg.dim);
-    UnstructuredMeshSerialRW reader(mesh, 0);
-
-    if (cfg.periodic)
-    {
-        tPoint zero{0, 0, 0};
-        mesh->SetPeriodicGeometry(
-            cfg.translation1, zero, zero,
-            cfg.translation2, zero, zero,
-            cfg.translation3, zero, zero);
-    }
-
-    reader.ReadFromCGNSSerial(meshPath(cfg.file));
-    reader.Deduplicate1to1Periodic(1e-8);
-    reader.BuildCell2Cell();
-
-    UnstructuredMeshSerialRW::PartitionOptions pOpt;
-    pOpt.metisType = "KWAY";
-    pOpt.metisUfactor = 30;
-    pOpt.metisSeed = 42;
-    pOpt.metisNcuts = 1;
-    reader.MeshPartitionCell2Cell(pOpt);
-    reader.PartitionReorderToMeshCell2Cell();
-
-    if (useLegacy)
-    {
-        mesh->RecoverNode2CellAndNode2BndLegacy();
-        mesh->RecoverCell2CellAndBnd2CellLegacy();
-    }
-    else
-    {
-        mesh->RecoverNode2CellAndNode2Bnd();
-        mesh->RecoverCell2CellAndBnd2Cell();
-    }
-
-    return mesh;
-}
-
-TEST_CASE("bnd2cell: DSL matches Legacy on all mesh configs")
-{
-    for (int ci = 0; ci < N_CONFIGS; ci++)
-    {
-        if (ci == 4 && g_mpi.size != 8)
-            continue;
-        const auto &cfg = g_configs[ci];
-        CAPTURE(ci);
-        SUBCASE(cfg.name)
-        {
-            auto mDSL = buildMeshUpToBnd2Cell(cfg, false);
-            auto mLeg = buildMeshUpToBnd2Cell(cfg, true);
-
-            REQUIRE(mDSL->NumBnd() == mLeg->NumBnd());
-
-            // Compare bnd2cell: for each bnd, the cell pair (as a set) must match.
-            for (DNDS::index iBnd = 0; iBnd < mDSL->NumBnd(); iBnd++)
-            {
-                CAPTURE(iBnd);
-                std::set<DNDS::index> dslCells{mDSL->bnd2cell(iBnd, 0), mDSL->bnd2cell(iBnd, 1)};
-                std::set<DNDS::index> legCells{mLeg->bnd2cell(iBnd, 0), mLeg->bnd2cell(iBnd, 1)};
-                CHECK(dslCells == legCells);
-
-                // For periodic boundaries with 2 cells, the ordering matters
-                // (bnd2cell(i,0) is donor-side). Check exact match.
-                if (mDSL->bnd2cell(iBnd, 1) != DNDS::UnInitIndex)
-                {
-                    CHECK(mDSL->bnd2cell(iBnd, 0) == mLeg->bnd2cell(iBnd, 0));
-                    CHECK(mDSL->bnd2cell(iBnd, 1) == mLeg->bnd2cell(iBnd, 1));
-                }
-            }
-
-            // Also compare cell2cell: for each cell, the neighbor set must match.
-            REQUIRE(mDSL->NumCell() == mLeg->NumCell());
-            for (DNDS::index iCell = 0; iCell < mDSL->NumCell(); iCell++)
-            {
-                CAPTURE(iCell);
-                std::set<DNDS::index> dslNeighbors, legNeighbors;
-                for (DNDS::rowsize j = 0; j < mDSL->cell2cell.father->RowSize(iCell); j++)
-                    dslNeighbors.insert(mDSL->cell2cell.father->operator()(iCell, j));
-                for (DNDS::rowsize j = 0; j < mLeg->cell2cell.father->RowSize(iCell); j++)
-                    legNeighbors.insert(mLeg->cell2cell.father->operator()(iCell, j));
-                CHECK(dslNeighbors == legNeighbors);
-            }
-        }
-    }
-}
-
-// --- BuildGhostPrimary: DSL vs Legacy ---
-
-/// Build mesh through BuildGhostPrimary, using either DSL or Legacy path.
-static ssp<UnstructuredMesh> buildMeshUpToGhost(
-    const MeshConfig &cfg, bool useLegacy)
-{
-    auto mesh = std::make_shared<UnstructuredMesh>(g_mpi, cfg.dim);
-    UnstructuredMeshSerialRW reader(mesh, 0);
-
-    if (cfg.periodic)
-    {
-        tPoint zero{0, 0, 0};
-        mesh->SetPeriodicGeometry(
-            cfg.translation1, zero, zero,
-            cfg.translation2, zero, zero,
-            cfg.translation3, zero, zero);
-    }
-
-    reader.ReadFromCGNSSerial(meshPath(cfg.file));
-    reader.Deduplicate1to1Periodic(1e-8);
-    reader.BuildCell2Cell();
-
-    UnstructuredMeshSerialRW::PartitionOptions pOpt;
-    pOpt.metisType = "KWAY";
-    pOpt.metisUfactor = 30;
-    pOpt.metisSeed = 42;
-    pOpt.metisNcuts = 1;
-    reader.MeshPartitionCell2Cell(pOpt);
-    reader.PartitionReorderToMeshCell2Cell();
-
-    mesh->RecoverNode2CellAndNode2Bnd();
-    mesh->RecoverCell2CellAndBnd2Cell();
-
-    if (useLegacy)
-        mesh->BuildGhostPrimaryLegacy();
-    else
-        mesh->BuildGhostPrimary();
-
-    return mesh;
-}
-
-TEST_CASE("BuildGhostPrimary: DSL matches Legacy ghost sets")
-{
-    for (int ci = 0; ci < N_CONFIGS; ci++)
-    {
-        if (ci == 4 && g_mpi.size != 8)
-            continue;
-        const auto &cfg = g_configs[ci];
-        CAPTURE(ci);
-        SUBCASE(cfg.name)
-        {
-            auto mDSL = buildMeshUpToGhost(cfg, false);
-            auto mLeg = buildMeshUpToGhost(cfg, true);
-
-            // Cell ghost sets must be identical (same cell2cell traversal).
-            DNDS::index nCellDSL = mDSL->NumCellGhost();
-            DNDS::index nCellLeg = mLeg->NumCellGhost();
-            CHECK(nCellDSL == nCellLeg);
-
-            // Ghost cell indices must match (from the ghost mapping).
-            {
-                auto &dslGhost = mDSL->cell2cell.trans.pLGhostMapping->ghostIndex;
-                auto &legGhost = mLeg->cell2cell.trans.pLGhostMapping->ghostIndex;
-                std::set<DNDS::index> dslSet(dslGhost.begin(), dslGhost.end());
-                std::set<DNDS::index> legSet(legGhost.begin(), legGhost.end());
-                CHECK(dslSet == legSet);
-            }
-
-            // Node ghost: DSL must be a superset of Legacy.
-            // DSL may find additional ghost nodes via its better chain
-            // traversal; Legacy is the baseline.
-            DNDS::index nNodeDSL = mDSL->NumNodeGhost();
-            DNDS::index nNodeLeg = mLeg->NumNodeGhost();
-            CHECK(nNodeDSL >= nNodeLeg);
-            // CHECK(nNodeDSL == nNodeLeg);
-
-            {
-                auto &dslGhost = mDSL->coords.trans.pLGhostMapping->ghostIndex;
-                auto &legGhost = mLeg->coords.trans.pLGhostMapping->ghostIndex;
-                std::set<DNDS::index> dslSet(dslGhost.begin(), dslGhost.end());
-                std::set<DNDS::index> legSet(legGhost.begin(), legGhost.end());
-                CHECK(std::includes(dslSet.begin(), dslSet.end(),
-                                    legSet.begin(), legSet.end()));
-                // CHECK(dslSet == legSet);
-            }
-
-            // Bnd ghost: DSL must be a superset of Legacy.
-            // DSL finds cross-rank bnd entries that Legacy misses because
-            // Legacy iterates node2bnd.father only (built from bnd2node.father).
-            DNDS::index nBndDSL = mDSL->NumBndGhost();
-            DNDS::index nBndLeg = mLeg->NumBndGhost();
-            CHECK(nBndDSL >= nBndLeg);
-            // CHECK(nBndDSL == nBndLeg);
-
-            {
-                auto &dslGhost = mDSL->bnd2cell.trans.pLGhostMapping->ghostIndex;
-                auto &legGhost = mLeg->bnd2cell.trans.pLGhostMapping->ghostIndex;
-                std::set<DNDS::index> dslSet(dslGhost.begin(), dslGhost.end());
-                std::set<DNDS::index> legSet(legGhost.begin(), legGhost.end());
-                CHECK(std::includes(dslSet.begin(), dslSet.end(),
-                                    legSet.begin(), legSet.end()));
-                // CHECK(dslSet == legSet);
-            }
-
-            if (g_mpi.rank == 0)
-                fmt::print("  [{}] ghost: cells={}, nodes={}, bnds={}\n",
-                           cfg.name, nCellDSL, nNodeDSL, nBndDSL);
-
-            if (ci == 0 || ci == 2)
-            {
-                MPI_Barrier(g_mpi.comm);
-                fmt::print("  [{}] r{} DSL nBndGhost={} LEG nBndGhost={}\n",
-                           cfg.name, g_mpi.rank, nBndDSL, nBndLeg);
-                // Ghost bnds: global bnd index and their bnd2node entries (global node indices)
-                for (DNDS::index iBnd = mDSL->bnd2node.father->Size(); iBnd < mDSL->bnd2node.Size(); iBnd++)
-                {
-                    DNDS::index iSon = iBnd - mDSL->bnd2node.father->Size();
-                    DNDS::index bndGlobal = mDSL->bnd2node.trans.pLGhostMapping->ghostIndex[iSon];
-                    fmt::print("    r{} gBnd[{}]:", g_mpi.rank, bndGlobal);
-                    for (DNDS::rowsize j = 0; j < mDSL->bnd2node.RowSize(iBnd); j++)
-                        fmt::print(" {}", mDSL->bnd2node(iBnd, j));
-                    fmt::print("\n");
-                }
-            }
-        }
-    }
-}
-
-// --- Benchmark: DSL vs Legacy for all migrated APIs ---
-
-/// Build a mesh up to the point where we can benchmark each API independently.
-/// Returns mesh in Adj_PointToGlobal state after serial read + partition.
-static ssp<UnstructuredMesh> buildMeshForBenchmark(const MeshConfig &cfg)
-{
-    auto mesh = std::make_shared<UnstructuredMesh>(g_mpi, cfg.dim);
-    UnstructuredMeshSerialRW reader(mesh, 0);
-
-    if (cfg.periodic)
-    {
-        tPoint zero{0, 0, 0};
-        mesh->SetPeriodicGeometry(
-            cfg.translation1, zero, zero,
-            cfg.translation2, zero, zero,
-            cfg.translation3, zero, zero);
-    }
-
-    reader.ReadFromCGNSSerial(meshPath(cfg.file));
-    reader.Deduplicate1to1Periodic(1e-8);
-    reader.BuildCell2Cell();
-
-    UnstructuredMeshSerialRW::PartitionOptions pOpt;
-    pOpt.metisType = "KWAY";
-    pOpt.metisUfactor = 30;
-    pOpt.metisSeed = 42;
-    pOpt.metisNcuts = 1;
-    reader.MeshPartitionCell2Cell(pOpt);
-    reader.PartitionReorderToMeshCell2Cell();
-    return mesh;
-}
-
-TEST_CASE("Benchmark: DSL vs Legacy pipeline steps")
-{
-    // Use NACA0012_H2 (20816 cells) — large enough to measure, small enough to
-    // run quickly.  Ball2 is too expensive and the small meshes have too much
-    // noise.  Index 2 in g_configs.
     const auto &cfg = g_configs[2];
-
-    if (g_mpi.size < 2)
-        return; // benchmarking single-rank is not interesting
-
-    const int nRuns = 3; // repeat for stability
-
-    // --- RecoverNode2CellAndNode2Bnd (Inverse) ---
+    AutoAppendName2ID names;
+    auto source = ReadNativeCGNS(g_mpi, meshPath(cfg.file), cfg.dim, [&](const std::string &name)
+                                 { return names(name); }, 0, {1, true});
+    auto sourceMesh = UnstructuredMesh::FromNative(g_mpi, source);
+    REQUIRE(sourceMesh->NumCellGlobal() == 20816);
+    double inverseTime = 0, composeTime = 0, topologyTime = 0;
+    for (int run = 0; run < 3; ++run)
     {
-        double tDSL = 0, tLeg = 0;
-        for (int r = 0; r < nRuns; r++)
+        auto cone = sourceMesh->ReadNativeRelation(Adj::Cell2Node);
+        MPI_Barrier(g_mpi.comm);
+        const auto t0 = MPI_Wtime();
+        auto inverse = NativeConnectivity::Inverse(cone, g_mpi);
+        MPI_Barrier(g_mpi.comm);
+        inverseTime += MPI_Wtime() - t0;
+        auto complete = inverse.WithGhostRows(RelationGhostRoute(source->Entities(EntityKind::Node)));
+        auto inverseRead = inverse.Read();
+        auto retained = sourceMesh->AcquireRead();
+        auto v = retained.HostView();
+        const auto cells = source->Entities(EntityKind::Cell), nodes = source->Entities(EntityKind::Node);
+        const auto stars = LocalNodeStars(v, cells, nodes);
+        for (I node = 0; node < nodes.NumOwned(); ++node)
+            CHECK(Set(inverseRead.GlobalRow(node)) == stars.at(nodes.LocalToGlobal(node)));
+        MPI_Barrier(g_mpi.comm);
+        const auto t1 = MPI_Wtime();
+        auto adjacency = NativeConnectivity::Compose(cone, complete.Read(), true);
+        MPI_Barrier(g_mpi.comm);
+        composeTime += MPI_Wtime() - t1;
+        auto adjacencyRead = adjacency.Read();
+        for (I cell = 0; cell < cells.NumOwned(); ++cell)
         {
-            auto m1 = buildMeshForBenchmark(cfg);
-            MPI_Barrier(g_mpi.comm);
-            double t0 = MPI_Wtime();
-            m1->RecoverNode2CellAndNode2Bnd();
-            MPI_Barrier(g_mpi.comm);
-            double t1 = MPI_Wtime();
-            tDSL += t1 - t0;
-
-            auto m2 = buildMeshForBenchmark(cfg);
-            MPI_Barrier(g_mpi.comm);
-            double t2 = MPI_Wtime();
-            m2->RecoverNode2CellAndNode2BndLegacy();
-            MPI_Barrier(g_mpi.comm);
-            double t3 = MPI_Wtime();
-            tLeg += t3 - t2;
+            std::set<I> expected;
+            for (auto node : v.CellNodes(cell))
+            {
+                const auto &star = stars.at(nodes.LocalToGlobal(node));
+                expected.insert(star.begin(), star.end());
+            }
+            expected.erase(cells.LocalToGlobal(cell));
+            CHECK(Set(adjacencyRead.GlobalRow(cell)) == expected);
         }
-        if (g_mpi.rank == 0)
-            fmt::print("  Inverse (RecoverN2CB):  DSL {:.4f}s  Legacy {:.4f}s  ({:.2f}x, {} runs)\n",
-                       tDSL / nRuns, tLeg / nRuns, tLeg / tDSL, nRuns);
+        MPI_Barrier(g_mpi.comm);
+        const auto t2 = MPI_Wtime();
+        auto topology = NativeMeshTopology::Build(*source, g_mpi, true, false);
+        MPI_Barrier(g_mpi.comm);
+        topologyTime += MPI_Wtime() - t2;
+        CHECK(topology->NumGlobal(EntityKind::Cell) == 20816);
+        CHECK(topology->NumGlobal(EntityKind::Face) > 0);
+        auto full = UnstructuredMesh::FromNative(g_mpi, Complete(topology));
+        FaceIncidence(*full);
     }
-
-    // --- RecoverCell2CellAndBnd2Cell (ComposeFiltered) ---
-    {
-        double tDSL = 0, tLeg = 0;
-        for (int r = 0; r < nRuns; r++)
-        {
-            auto m1 = buildMeshForBenchmark(cfg);
-            m1->RecoverNode2CellAndNode2Bnd();
-            MPI_Barrier(g_mpi.comm);
-            double t0 = MPI_Wtime();
-            m1->RecoverCell2CellAndBnd2Cell();
-            MPI_Barrier(g_mpi.comm);
-            double t1 = MPI_Wtime();
-            tDSL += t1 - t0;
-
-            auto m2 = buildMeshForBenchmark(cfg);
-            m2->RecoverNode2CellAndNode2BndLegacy();
-            MPI_Barrier(g_mpi.comm);
-            double t2 = MPI_Wtime();
-            m2->RecoverCell2CellAndBnd2CellLegacy();
-            MPI_Barrier(g_mpi.comm);
-            double t3 = MPI_Wtime();
-            tLeg += t3 - t2;
-        }
-        if (g_mpi.rank == 0)
-            fmt::print("  Compose (RecoverC2C):   DSL {:.4f}s  Legacy {:.4f}s  ({:.2f}x, {} runs)\n",
-                       tDSL / nRuns, tLeg / nRuns, tLeg / tDSL, nRuns);
-    }
-
-    // --- BuildGhostPrimary (evaluateGhostTree for cell ghost) ---
-    {
-        double tDSL = 0, tLeg = 0;
-        for (int r = 0; r < nRuns; r++)
-        {
-            auto m1 = buildMeshForBenchmark(cfg);
-            m1->RecoverNode2CellAndNode2Bnd();
-            m1->RecoverCell2CellAndBnd2Cell();
-            MPI_Barrier(g_mpi.comm);
-            double t0 = MPI_Wtime();
-            m1->BuildGhostPrimary();
-            MPI_Barrier(g_mpi.comm);
-            double t1 = MPI_Wtime();
-            tDSL += t1 - t0;
-
-            auto m2 = buildMeshForBenchmark(cfg);
-            m2->RecoverNode2CellAndNode2Bnd();
-            m2->RecoverCell2CellAndBnd2Cell();
-            MPI_Barrier(g_mpi.comm);
-            double t2 = MPI_Wtime();
-            m2->BuildGhostPrimaryLegacy();
-            MPI_Barrier(g_mpi.comm);
-            double t3 = MPI_Wtime();
-            tLeg += t3 - t2;
-        }
-        if (g_mpi.rank == 0)
-            fmt::print("  Ghost (BuildGhostPri):  DSL {:.4f}s  Legacy {:.4f}s  ({:.2f}x, {} runs)\n",
-                       tDSL / nRuns, tLeg / nRuns, tLeg / tDSL, nRuns);
-    }
-
-    // --- InterpolateFace (Interpolate) ---
-    {
-        double tDSL = 0, tLeg = 0;
-        for (int r = 0; r < nRuns; r++)
-        {
-            auto m1 = buildMeshForBenchmark(cfg);
-            m1->RecoverNode2CellAndNode2Bnd();
-            m1->RecoverCell2CellAndBnd2Cell();
-            m1->BuildGhostPrimary();
-            m1->AdjGlobal2LocalPrimary();
-            m1->AdjGlobal2LocalN2CB();
-            MPI_Barrier(g_mpi.comm);
-            double t0 = MPI_Wtime();
-            m1->InterpolateFace();
-            MPI_Barrier(g_mpi.comm);
-            double t1 = MPI_Wtime();
-            tDSL += t1 - t0;
-
-            auto m2 = buildMeshForBenchmark(cfg);
-            m2->RecoverNode2CellAndNode2Bnd();
-            m2->RecoverCell2CellAndBnd2Cell();
-            m2->BuildGhostPrimary();
-            m2->AdjGlobal2LocalPrimary();
-            m2->AdjGlobal2LocalN2CB();
-            MPI_Barrier(g_mpi.comm);
-            double t2 = MPI_Wtime();
-            m2->InterpolateFaceLegacy();
-            MPI_Barrier(g_mpi.comm);
-            double t3 = MPI_Wtime();
-            tLeg += t3 - t2;
-        }
-        if (g_mpi.rank == 0)
-            fmt::print("  Interpolate (Face):     DSL {:.4f}s  Legacy {:.4f}s  ({:.2f}x, {} runs)\n",
-                       tDSL / nRuns, tLeg / nRuns, tLeg / tDSL, nRuns);
-    }
+    for (auto &elapsed : std::array<std::reference_wrapper<double>, 3>{inverseTime, composeTime, topologyTime})
+        MPI_Allreduce(MPI_IN_PLACE, &elapsed.get(), 1, MPI_DOUBLE, MPI_MAX, g_mpi.comm);
+    if (g_mpi.rank == 0)
+        std::cout << "Native setup mean over 3 runs: inverse " << inverseTime / 3 << " compose " << composeTime / 3 << " face topology " << topologyTime / 3 << std::endl;
 }
-
-// --- N2CB ---
-
-TEST_CASE("N2CB: every local node has at least one adjacent cell"){
-    FOR_EACH_MESH_CONFIG({
-        for (DNDS::index iNode = 0; iNode < m->NumNode(); iNode++)
-        {
-            bool hasCell = false;
-            for (DNDS::rowsize j = 0; j < m->node2cell.RowSize(iNode); j++)
-                if (m->node2cell(iNode, j) >= 0)
-                    hasCell = true;
-            CHECK(hasCell);
-        }
-    })}
-
-TEST_CASE("N2CB: node2cell entries are valid local indices"){
-    FOR_EACH_MESH_CONFIG({
-        DNDS::index totalCells = m->NumCell() + m->NumCellGhost();
-        for (DNDS::index iNode = 0; iNode < m->NumNodeProc(); iNode++)
-            for (DNDS::rowsize j = 0; j < m->node2cell.RowSize(iNode); j++)
-            {
-                DNDS::index iC = m->node2cell(iNode, j);
-                if (iC >= 0)
-                    CHECK(iC < totalCells);
-            }
-    })}
-
-// --- BuildCell2CellFace ---
-
-TEST_CASE("BuildCell2CellFace: row sizes match cell2face"){
-    FOR_EACH_MESH_CONFIG({
-        for (DNDS::index iC = 0; iC < m->NumCell(); iC++)
-            CHECK(m->cell2cellFace.RowSize(iC) == m->cell2face.RowSize(iC));
-    })}
-
-TEST_CASE("BuildCell2CellFace: entries are valid cells or negative"){
-    FOR_EACH_MESH_CONFIG({
-        DNDS::index totalCells = m->NumCell() + m->NumCellGhost();
-        for (DNDS::index iC = 0; iC < m->NumCell(); iC++)
-            for (DNDS::rowsize j = 0; j < m->cell2cellFace.RowSize(iC); j++)
-            {
-                DNDS::index nb = m->cell2cellFace(iC, j);
-                if (nb >= 0)
-                    CHECK(nb < totalCells);
-            }
-    })}
-
-// --- ConstructBndMesh ---
-
-TEST_CASE("ConstructBndMesh: correct dimensions and native local state"){
+TEST_CASE("N2CB: every owned node has at least one adjacent cell"){FOR_EACH_MESH_CONFIG({auto r=m->AcquireRead(FullRequirements());auto v=r.HostView();for(I node=0;node<v.NumNode();++node)CHECK(!v.Relation(MeshRelation::NodeCells,node).empty()); })} TEST_CASE("N2CB: owned node stars match independent local cone incidence"){
+    FOR_EACH_MESH_CONFIG({auto r=m->AcquireRead(FullRequirements());auto v=r.HostView();const auto cells=m->Entities(EntityKind::Cell),nodes=m->Entities(EntityKind::Node);const auto stars=LocalNodeStars(v,cells,nodes);
+    for(I node=0;node<v.NumNode();++node){CHECK(Set(Global(cells,v.Relation(MeshRelation::NodeCells,node)))==stars.at(nodes.LocalToGlobal(node)));for(auto cell:v.Relation(MeshRelation::NodeCells,node)){CHECK(cell>=0);CHECK(cell<v.NumCellProc());}} })} TEST_CASE("Cell face neighbors: row sizes match cell2face"){FOR_EACH_MESH_CONFIG({auto r=m->AcquireRead(FullRequirements());auto v=r.HostView();for(I cell=0;cell<v.NumCell();++cell)CHECK(v.Relation(MeshRelation::CellFaceCells,cell).size()==v.CellFaces(cell).size()); })} TEST_CASE("Cell face neighbors: each slot names the opposite face cell or boundary sentinel"){
+    FOR_EACH_MESH_CONFIG({auto r=m->AcquireRead(FullRequirements());auto v=r.HostView();for(I cell=0;cell<v.NumCell();++cell){const auto neighbors=v.Relation(MeshRelation::CellFaceCells,cell);for(size_t slot=0;slot<neighbors.size();++slot)CHECK(neighbors[slot]==v.CellFaceOther(cell,v.CellFaces(cell)[slot],DNDS::rowsize(slot)));} })} TEST_CASE("ConstructBndMesh: correct dimensions and native local state"){
     FOR_EACH_MESH_CONFIG({
         if (cfg.periodic)
             continue; // periodic meshes may have no real boundaries after deduplication
@@ -1215,209 +411,6 @@ TEST_CASE("ConstructBndMesh: node2parentNode valid"){
             CHECK(bMesh.Coord(i).isApprox(source->Coord(pn), 1e-13));
         }
     })}
-
-// --- BuildVTKConnectivity ---
-
-TEST_CASE("BuildVTKConnectivity: arrays populated correctly"){
-    FOR_EACH_MESH_CONFIG({
-        CHECK(m->vtkCell2node.size() > 0);
-        CHECK(m->vtkCell2nodeOffsets.size() == static_cast<size_t>(m->NumCell() + 1));
-        CHECK(m->vtkCellType.size() == static_cast<size_t>(m->NumCell()));
-        for (size_t i = 1; i < m->vtkCell2nodeOffsets.size(); i++)
-            CHECK(m->vtkCell2nodeOffsets[i] >= m->vtkCell2nodeOffsets[i - 1]);
-        for (auto ct : m->vtkCellType)
-            CHECK(ct != 0);
-    })}
-
-TEST_CASE("BuildVTKConnectivity: repeat call replaces connectivity"){
-    FOR_EACH_MESH_CONFIG({
-        const auto vtkCell2nodeSize = m->vtkCell2node.size();
-        const auto vtkCell2nodeOffsets = m->vtkCell2nodeOffsets;
-        const auto vtkCellType = m->vtkCellType;
-        m->BuildVTKConnectivity();
-        CHECK(m->vtkCell2node.size() == vtkCell2nodeSize);
-        CHECK(m->vtkCell2nodeOffsets == vtkCell2nodeOffsets);
-        CHECK(m->vtkCellType == vtkCellType);
-    })}
-
-// ===========================================================================
-// ReorderLocalCells (config 0 only)
-// ===========================================================================
-
-TEST_CASE("ReorderLocalCells: all states preserved"){
-    FOR_EACH_MESH_CONFIG({
-        m->ReorderLocalCells(2);
-        CHECK(m->adjPrimaryState == Adj_PointToLocal);
-        CHECK(m->adjFacialState == Adj_PointToLocal);
-        CHECK(m->adjC2FState == Adj_PointToLocal);
-        CHECK(m->adjN2CBState == Adj_PointToLocal);
-        CHECK(m->adjC2CFaceState == Adj_PointToLocal);
-    })}
-
-TEST_CASE("ReorderLocalCells: cell count preserved")
-{
-    FOR_EACH_MESH_CONFIG(
-        DNDS::index g1 = 0;
-        DNDS::index g2 = 0;
-        DNDS::index loc1 = m->NumCell();
-        MPI_Allreduce(&loc1, &g1, 1, DNDS_MPI_INDEX, MPI_SUM, g_mpi.comm);
-        m->ReorderLocalCells(2);
-        DNDS::index loc2 = m->NumCell();
-        MPI_Allreduce(&loc2, &g2, 1, DNDS_MPI_INDEX, MPI_SUM, g_mpi.comm);
-        CHECK(g1 == g2);)
-}
-
-TEST_CASE("ReorderLocalCells: partition starts valid"){
-    FOR_EACH_MESH_CONFIG({
-        m->ReorderLocalCells(2);
-        int nParts = m->NLocalParts();
-        CHECK(nParts == 2);
-        CHECK(m->LocalPartStart(0) == 0);
-        CHECK(m->LocalPartEnd(nParts - 1) == m->NumCell());
-        for (int ip = 0; ip < nParts; ip++)
-            CHECK(m->LocalPartStart(ip) <= m->LocalPartEnd(ip));
-    })}
-
-TEST_CASE("ReorderLocalCells: cell2node still valid"){
-    FOR_EACH_MESH_CONFIG({
-        m->ReorderLocalCells(2);
-        DNDS::index totalNodes = m->NumNode() + m->NumNodeGhost();
-        for (DNDS::index iC = 0; iC < m->NumCell(); iC++)
-            for (DNDS::rowsize j = 0; j < m->cell2node.RowSize(iC); j++)
-            {
-                DNDS::index iN = m->cell2node(iC, j);
-                CHECK(iN >= 0);
-                CHECK(iN < totalNodes);
-            }
-    })}
-
-TEST_CASE("ReorderLocalCells: face count preserved")
-{
-    FOR_EACH_MESH_CONFIG(
-        DNDS::index g1 = 0;
-        DNDS::index g2 = 0;
-        DNDS::index loc1 = m->NumFace();
-        MPI_Allreduce(&loc1, &g1, 1, DNDS_MPI_INDEX, MPI_SUM, g_mpi.comm);
-        m->ReorderLocalCells(2);
-        DNDS::index loc2 = m->NumFace();
-        MPI_Allreduce(&loc2, &g2, 1, DNDS_MPI_INDEX, MPI_SUM, g_mpi.comm);
-        CHECK(g1 == g2);)
-}
-
-// ===========================================================================
-// Adj round-trip tests (all mesh configs)
-// ===========================================================================
-
-TEST_CASE("AdjFacial round-trip: face2node and face2cell identity")
-{
-    FOR_EACH_MESH_CONFIG(
-        REQUIRE(m->adjFacialState == Adj_PointToLocal);
-
-        auto f2nSnap = snapshotAdj(m->face2node, m->NumFace());
-        auto f2cSnap = snapshotAdj2(m->face2cell, m->NumFace());
-
-        m->AdjLocal2GlobalFacial();
-        CHECK(m->adjFacialState == Adj_PointToGlobal);
-
-        for (DNDS::index iF = 0; iF < m->NumFace(); iF++) for (DNDS::rowsize j = 0; j < m->face2node.RowSize(iF); j++)
-            CHECK(m->face2node(iF, j) >= 0);
-
-        m->AdjGlobal2LocalFacial();
-        CHECK(m->adjFacialState == Adj_PointToLocal);
-
-        checkAdjMatchesSnapshot(m->face2node, m->NumFace(), f2nSnap);
-        for (DNDS::index iF = 0; iF < m->NumFace(); iF++) {
-            CHECK(m->face2cell(iF, 0) == f2cSnap[iF].first);
-            CHECK(m->face2cell(iF, 1) == f2cSnap[iF].second);
-        }
-        // NOTE: face2bnd intentionally not round-tripped (asymmetric by design)
-    )
-}
-
-TEST_CASE("AdjC2F round-trip: cell2face and bnd2face identity")
-{
-    FOR_EACH_MESH_CONFIG(
-        REQUIRE(m->adjC2FState == Adj_PointToLocal);
-
-        auto c2fSnap = snapshotAdj(m->cell2face, m->NumCell());
-        auto b2fSnap = snapshotAdj1(m->bnd2face, m->NumBnd());
-
-        m->AdjLocal2GlobalC2F();
-        CHECK(m->adjC2FState == Adj_PointToGlobal);
-
-        m->AdjGlobal2LocalC2F();
-        CHECK(m->adjC2FState == Adj_PointToLocal);
-
-        checkAdjMatchesSnapshot(m->cell2face, m->NumCell(), c2fSnap);
-        for (DNDS::index ib = 0; ib < m->NumBnd(); ib++)
-            CHECK(m->bnd2face(ib, 0) == b2fSnap[ib]);)
-}
-
-TEST_CASE("AdjN2CB round-trip: node2cell and node2bnd identity")
-{
-    FOR_EACH_MESH_CONFIG(
-        REQUIRE(m->adjN2CBState == Adj_PointToLocal);
-
-        auto n2cSnap = snapshotAdj(m->node2cell, m->NumNodeProc());
-        auto n2bSnap = snapshotAdj(m->node2bnd, m->NumNodeProc());
-
-        m->AdjLocal2GlobalN2CB();
-        CHECK(m->adjN2CBState == Adj_PointToGlobal);
-
-        m->AdjGlobal2LocalN2CB();
-        CHECK(m->adjN2CBState == Adj_PointToLocal);
-
-        checkAdjMatchesSnapshot(m->node2cell, m->NumNodeProc(), n2cSnap);
-        checkAdjMatchesSnapshot(m->node2bnd, m->NumNodeProc(), n2bSnap);)
-}
-
-TEST_CASE("AdjC2CFace round-trip: cell2cellFace identity")
-{
-    FOR_EACH_MESH_CONFIG(
-        REQUIRE(m->adjC2CFaceState == Adj_PointToLocal);
-
-        auto c2cfSnap = snapshotAdj(m->cell2cellFace, m->NumCell());
-
-        m->AdjLocal2GlobalC2CFace();
-        CHECK(m->adjC2CFaceState == Adj_PointToGlobal);
-
-        m->AdjGlobal2LocalC2CFace();
-        CHECK(m->adjC2CFaceState == Adj_PointToLocal);
-
-        checkAdjMatchesSnapshot(m->cell2cellFace, m->NumCell(), c2cfSnap);)
-}
-
-TEST_CASE("AdjPrimary round-trip: serial-out pattern")
-{
-    FOR_EACH_MESH_CONFIG(
-        REQUIRE(m->adjPrimaryState == Adj_PointToLocal);
-
-        auto c2nSnap = snapshotAdj(m->cell2node, m->NumCell());
-        auto c2cSnap = snapshotAdj(m->cell2cell, m->NumCell());
-        auto b2nSnap = snapshotAdj(m->bnd2node, m->NumBnd());
-        auto b2cSnap = snapshotAdj2(m->bnd2cell, m->NumBnd());
-
-        m->AdjLocal2GlobalPrimary();
-        CHECK(m->adjPrimaryState == Adj_PointToGlobal);
-
-        DNDS::index globalNodeSize = m->coords.father->globalSize();
-        for (DNDS::index iC = 0; iC < m->NumCell(); iC++) for (DNDS::rowsize j = 0; j < m->cell2node.RowSize(iC); j++) {
-            DNDS::index gN = m->cell2node(iC, j);
-            CHECK(gN >= 0);
-            CHECK(gN < globalNodeSize);
-        }
-
-        m->AdjGlobal2LocalPrimary();
-        CHECK(m->adjPrimaryState == Adj_PointToLocal);
-
-        checkAdjMatchesSnapshot(m->cell2node, m->NumCell(), c2nSnap);
-        checkAdjMatchesSnapshot(m->cell2cell, m->NumCell(), c2cSnap);
-        checkAdjMatchesSnapshot(m->bnd2node, m->NumBnd(), b2nSnap);
-        for (DNDS::index ib = 0; ib < m->NumBnd(); ib++) {
-            CHECK(m->bnd2cell(ib, 0) == b2cSnap[ib].first);
-            CHECK(m->bnd2cell(ib, 1) == b2cSnap[ib].second);
-        })
-}
 
 TEST_CASE("Boundary adjacency round-trip: native detached local and global states")
 {
@@ -1549,6 +542,14 @@ TEST_CASE("Ball2: mixed 3D element types")
 }
 
 // ===========================================================================
+
+TEST_CASE("Native output connectivity: arrays populated correctly"){
+    FOR_EACH_MESH_CONFIG({auto output=NativeMeshOutput::Build(*m->CurrentNativeState(),g_mpi);CHECK(output.offsets.size()==size_t(m->NumCell()+1));CHECK(output.types.size()==size_t(m->NumCell()));const I local=I(output.connectivity.size());I prefix=0;MPI_Exscan(&local,&prefix,1,MPI_INT64_T,MPI_SUM,g_mpi.comm);if(g_mpi.rank==0)prefix=0;CHECK(output.offsets.front()==prefix);CHECK(output.offsets.back()==prefix+local);for(size_t j=1;j<output.offsets.size();++j)CHECK(output.offsets[j]>=output.offsets[j-1]);for(auto type:output.types)CHECK(type!=0);for(auto point:output.connectivity){CHECK(point>=0);CHECK(point<output.globalNodes);}CHECK(output.globalCells==cfg.expectedCells); })} TEST_CASE("Native output connectivity: repeat build replaces buffers without accumulating entries"){
+    FOR_EACH_MESH_CONFIG({auto a=NativeMeshOutput::Build(*m->CurrentNativeState(),g_mpi),b=NativeMeshOutput::Build(*m->CurrentNativeState(),g_mpi);CHECK(a.connectivity==b.connectivity);CHECK(a.offsets==b.offsets);CHECK(a.types==b.types);CHECK(a.pointSourceRows==b.pointSourceRows);CHECK(a.coordinates.Rows()==b.coordinates.Rows());auto ar=a.coordinates.Read(),br=b.coordinates.Read();for(size_t row=0;row<a.coordinates.Rows();++row)for(size_t d=0;d<3;++d)CHECK(ar.View()(row,d)==br.View()(row,d)); })} TEST_CASE("ReorderLocalCells: all published relation groups remain local"){
+    FOR_EACH_MESH_CONFIG({m->ReorderLocalCells(2);auto r=m->AcquireRead(FullRequirements());auto v=r.HostView();for(size_t slot=0;slot<size_t(MeshRelation::Count);++slot)if(v.HasRelation(MeshRelation(slot)))CHECK(v.RelationState(MeshRelation(slot))==Adj_PointToLocal); })} TEST_CASE("ReorderLocalCells: cell count preserved"){FOR_EACH_MESH_CONFIG({const auto old=m->NumCellGlobal();m->ReorderLocalCells(2);CHECK(m->NumCellGlobal()==old);CHECK(old==cfg.expectedCells); })} TEST_CASE("ReorderLocalCells: partition starts valid"){FOR_EACH_MESH_CONFIG({m->ReorderLocalCells(2);CHECK(m->NLocalParts()==2);CHECK(m->LocalPartStart(0)==0);CHECK(m->LocalPartEnd(1)==m->NumCell());for(int part=0;part<2;++part)CHECK(m->LocalPartStart(part)<=m->LocalPartEnd(part)); })} TEST_CASE("ReorderLocalCells: cell2node still valid"){FOR_EACH_MESH_CONFIG({m->ReorderLocalCells(2);auto r=m->AcquireRead(FullRequirements());auto v=r.HostView();for(I c=0;c<v.NumCell();++c)for(auto n:v.CellNodes(c)){CHECK(n>=0);CHECK(n<v.NumNodeProc());}FaceIncidence(*m); })} TEST_CASE("ReorderLocalCells: face count preserved"){FOR_EACH_MESH_CONFIG({const auto old=m->NumFaceGlobal();m->ReorderLocalCells(2);CHECK(m->NumFaceGlobal()==old); })} TEST_CASE("AdjFacial detached round-trip: face2node and face2cell identity"){FOR_EACH_MESH_CONFIG({ Roundtrip(*m, {MeshRelation::FaceNodes, MeshRelation::FaceCells}); })} TEST_CASE("AdjC2F detached round-trip: cell2face and bnd2face identity"){FOR_EACH_MESH_CONFIG({ Roundtrip(*m, {MeshRelation::CellFaces, MeshRelation::BoundaryFaces}); })} TEST_CASE("AdjN2CB detached round-trip: node2cell and node2bnd identity"){FOR_EACH_MESH_CONFIG({ Roundtrip(*m, {MeshRelation::NodeCells, MeshRelation::NodeBoundaries}); })} TEST_CASE("AdjC2CFace detached round-trip: ordered face-neighbor identity"){FOR_EACH_MESH_CONFIG({ Roundtrip(*m, {MeshRelation::CellFaceCells}); })} TEST_CASE("AdjPrimary detached round-trip and serial output preserve source publication")
+{
+    FOR_EACH_MESH_CONFIG({const auto stamp=m->versions.Stamp();Roundtrip(*m,{MeshRelation::CellNodes,MeshRelation::CellCells,MeshRelation::BoundaryNodes,MeshRelation::BoundaryCells});UnstructuredMeshSerialRW output(m,0);output.BuildSerialOut();CHECK(output.dataIsSerialOut);CHECK(output.nativeSerialOutput);CHECK(stamp.Valid()); })
+}
 static ssp<UnstructuredMesh> NativeElevationFixture(const MeshConfig &cfg)
 {
     NativePeriodicImportOptions periodic;
@@ -1742,10 +743,10 @@ TEST_CASE("BoundarySmooth: NACA0012 moves boundary O2 nodes")
         [](Geom::t_index bndId)
         { return Geom::FaceIDIsExternalBC(bndId); });
 
-    // Check that nTotalMoved > 0 (some O2 boundary nodes moved)
-    CHECK(mO2->nTotalMoved > 0);
+    // The retained native smoothing workspace records actual boundary movement.
+    CHECK(mO2->BoundarySmoothingWorkspace()->TotalMoved() > 0);
 
-    // Check that coordsElevDisp was initialized
+    // The displacement array covers every owned node.
     CHECK(mO2->BoundarySmoothingWorkspace()->Displacement().owned.Rows() == size_t(mO2->NumNode()));
 
     // All coordinates must be finite (no NaN/Inf)
@@ -1767,7 +768,7 @@ TEST_CASE("BoundarySmooth: no NaN in displacement field")
         [](Geom::t_index bndId)
         { return Geom::FaceIDIsExternalBC(bndId); });
 
-    // coordsElevDisp should have no NaN for moved nodes
+    // Prescribed native constraints have finite displacement values.
     DNDS::index nMovedLocal = 0;
     auto diagnostics = mO2->BoundarySmoothingWorkspace();
     auto displacement = diagnostics->Displacement().owned.Read();
@@ -1808,7 +809,7 @@ TEST_CASE("InternalSmooth V2: coordinates remain finite after solve")
         [](Geom::t_index bndId)
         { return Geom::FaceIDIsExternalBC(bndId); });
 
-    if (mO2->nTotalMoved == 0)
+    if (mO2->BoundarySmoothingWorkspace()->TotalMoved() == 0)
         return; // nothing to smooth
 
     // Save pre-smooth coords
@@ -1857,249 +858,184 @@ TEST_CASE("Elevation: O2 coordinates have no NaN")
 }
 
 // ===========================================================================
-// Multi-layer ghost tests (UniformSquare_10, config 0)
-// ===========================================================================
 
-/// Build mesh through BuildGhostPrimary with a specific ghost layer count,
-/// then run the full prepare pipeline.
-static ssp<UnstructuredMesh> buildMeshWithGhostLayers(
-    const MeshConfig &cfg, int nGhostLayers)
-{
-    auto mesh = std::make_shared<UnstructuredMesh>(g_mpi, cfg.dim);
-    UnstructuredMeshSerialRW reader(mesh, 0);
-
-    if (cfg.periodic)
-    {
-        tPoint zero{0, 0, 0};
-        mesh->SetPeriodicGeometry(
-            cfg.translation1, zero, zero,
-            cfg.translation2, zero, zero,
-            cfg.translation3, zero, zero);
-    }
-
-    reader.ReadFromCGNSSerial(meshPath(cfg.file));
-    reader.Deduplicate1to1Periodic(1e-8);
-    reader.BuildCell2Cell();
-
-    UnstructuredMeshSerialRW::PartitionOptions pOpt;
-    pOpt.metisType = "KWAY";
-    pOpt.metisUfactor = 30;
-    pOpt.metisSeed = 42;
-    pOpt.metisNcuts = 1;
-    reader.MeshPartitionCell2Cell(pOpt);
-    reader.PartitionReorderToMeshCell2Cell();
-
-    mesh->RecoverNode2CellAndNode2Bnd();
-    mesh->RecoverCell2CellAndBnd2Cell();
-    mesh->BuildGhostPrimary(nGhostLayers);
-    mesh->AdjGlobal2LocalPrimary();
-    mesh->AdjGlobal2LocalN2CB();
-
-    mesh->InterpolateFace();
-    mesh->AssertOnFaces();
-
-    mesh->AdjLocal2GlobalN2CB();
-    mesh->BuildGhostN2CB();
-    mesh->AdjGlobal2LocalN2CB();
-
-    return mesh;
-}
-
+static ssp<UnstructuredMesh> buildMeshWithGhostLayers(const MeshConfig &cfg, int layers) { return ReadConfigured(cfg, layers); }
 TEST_CASE("MultiLayerGhost: ghost counts increase with layer count")
 {
-    const auto &cfg = g_configs[0]; // UniformSquare_10
-
-    DNDS::index cellGhost[3], nodeGhost[3], bndGhost[3];
-
-    for (int nL = 1; nL <= 3; nL++)
+    std::array<I, 3> previous{-1, -1, -1};
+    for (int layers = 1; layers <= 3; ++layers)
     {
-        auto m = buildMeshWithGhostLayers(cfg, nL);
-        cellGhost[nL - 1] = m->NumCellGhost();
-        nodeGhost[nL - 1] = m->NumNodeGhost();
-        bndGhost[nL - 1] = m->NumBndGhost();
-
-        if (g_mpi.rank == 0)
-            fmt::print("  nLayers={}: cellGhost={}, nodeGhost={}, bndGhost={}\n",
-                       nL, cellGhost[nL - 1], nodeGhost[nL - 1], bndGhost[nL - 1]);
-    }
-
-    // Monotonically non-decreasing.
-    for (int i = 0; i < 2; i++)
-    {
-        CHECK(cellGhost[i + 1] >= cellGhost[i]);
-        CHECK(nodeGhost[i + 1] >= nodeGhost[i]);
-        CHECK(bndGhost[i + 1] >= bndGhost[i]);
-    }
-
-    // With np >= 2, cell and node ghosts must strictly increase.
-    if (g_mpi.size >= 2)
-    {
-        CHECK(cellGhost[1] > cellGhost[0]);
-        CHECK(cellGhost[2] > cellGhost[1]);
-        CHECK(nodeGhost[1] > nodeGhost[0]);
-        CHECK(nodeGhost[2] > nodeGhost[1]);
+        auto mesh = buildMeshWithGhostLayers(g_configs[0], layers);
+        const std::array<I, 3> counts{mesh->NumCellGhost(), mesh->NumNodeGhost(), mesh->NumBndGhost()};
+        for (size_t j = 0; j < 3; ++j)
+            CHECK(counts[j] >= previous[j]);
+        previous = counts;
     }
 }
-
 TEST_CASE("MultiLayerGhost: 2-layer cell2cell neighbors are all local")
 {
-    if (g_mpi.size < 2)
-        return; // single-rank has no ghosts
-
-    const auto &cfg = g_configs[0]; // UniformSquare_10
-    auto m = buildMeshWithGhostLayers(cfg, 2);
-
-    DNDS::index nCellOwned = m->NumCell();
-    DNDS::index nCellProc = m->NumCellProc();
-
-    // Every owned cell's cell2cell neighbor's cell2cell neighbors
-    // must be within [0, nCellProc).
-    for (DNDS::index iCell = 0; iCell < nCellOwned; iCell++)
-    {
-        for (DNDS::rowsize j = 0; j < m->cell2cell.RowSize(iCell); j++)
+    auto mesh = buildMeshWithGhostLayers(g_configs[0], 2);
+    auto r = mesh->AcquireRead(FullRequirements());
+    auto v = r.HostView();
+    for (I cell = 0; cell < v.NumCell(); ++cell)
+        for (auto first : v.CellCells(cell))
         {
-            DNDS::index iNeighbor = m->cell2cell(iCell, j);
-            if (iNeighbor < 0)
-                continue;
-            REQUIRE(iNeighbor < nCellProc);
-
-            for (DNDS::rowsize k = 0; k < m->cell2cell.RowSize(iNeighbor); k++)
+            REQUIRE(first >= 0);
+            REQUIRE(first < v.NumCellProc());
+            for (auto second : v.CellCells(first))
             {
-                DNDS::index iNeighbor2 = m->cell2cell(iNeighbor, k);
-                if (iNeighbor2 < 0)
-                    continue;
-                CHECK(iNeighbor2 < nCellProc);
+                CHECK(second >= 0);
+                CHECK(second < v.NumCellProc());
             }
         }
-    }
 }
-
 TEST_CASE("MultiLayerGhost: global cell count preserved across layers")
 {
-    const auto &cfg = g_configs[0]; // UniformSquare_10
-
-    for (int nL = 1; nL <= 3; nL++)
+    for (int layers = 1; layers <= 3; ++layers)
     {
-        CAPTURE(nL);
-        auto m = buildMeshWithGhostLayers(cfg, nL);
-
-        DNDS::index localCells = m->NumCell();
-        DNDS::index globalCells = 0;
-        MPI_Allreduce(&localCells, &globalCells, 1, DNDS_MPI_INDEX, MPI_SUM, g_mpi.comm);
-        CHECK(globalCells == cfg.expectedCells);
+        auto mesh = buildMeshWithGhostLayers(g_configs[0], layers);
+        CHECK(mesh->NumCellGlobal() == 100);
     }
 }
 
-// ===========================================================================
-// InterpolateEdge tests (3D only — no small 3D mesh in config, skipped)
-// ===========================================================================
-// Edge interpolation is tested at the DSL level in
-// test_MeshConnectivity_Interpolate.cpp (InterpolateGlobal with edges).
-// The tests below require a 3D mesh; the only 3D config is Ball2 (np=8, ~960K
-// cells) which is too expensive for CI.  When a small 3D mesh is added to the
-// config list, remove the MESSAGE/return guards.
-#if 1
+static ssp<UnstructuredMesh> TinyEdges()
+{
+    if (g_edges)
+        return g_edges;
+    const I nc = g_mpi.size == 1 ? 2 : (g_mpi.rank == 0 || g_mpi.rank == g_mpi.size - 1 ? 1 : 0);
+    const auto nodes = EntitySpace::CreateOwned(EntityKind::Node, g_mpi, g_mpi.rank == 0 ? 5 : 0);
+    const auto cells = nodes.CreateSibling(EntityKind::Cell, nc), bnds = nodes.CreateSibling(EntityKind::Bnd, g_mpi.rank == 0 ? 6 : 0);
+    const std::array<std::array<I, 4>, 2> cones{{{{0, 1, 2, 3}}, {{0, 2, 1, 4}}}};
+    const std::array<std::array<I, 3>, 6> boundary{{{{0, 1, 3}}, {{1, 2, 3}}, {{2, 0, 3}}, {{0, 2, 4}}, {{2, 1, 4}}, {{1, 0, 4}}}};
+    std::vector<std::vector<I>> cr, br;
+    for (I row = 0; row < nc; ++row)
+    {
+        auto global = cells.LocalToGlobal(row);
+        cr.emplace_back(cones[size_t(global)].begin(), cones[size_t(global)].end());
+    }
+    if (g_mpi.rank == 0)
+        for (const auto &r : boundary)
+            br.emplace_back(r.begin(), r.end());
+    R::Array<DNDS::real> xyz(R::RowLayout::Dense(size_t(nodes.NumOwned()), 3));
+    {
+        auto w = xyz.Write();
+        const std::array<tPoint, 5> values{tPoint{0, 0, 0}, tPoint{1, 0, 0}, tPoint{0, 1, 0}, tPoint{0, 0, 1}, tPoint{0, 0, -1}};
+        for (size_t row = 0; row < xyz.Rows(); ++row)
+            for (size_t d = 0; d < 3; ++d)
+                w.View()(row, d) = values[row][Eigen::Index(d)];
+    }
+    R::Array<ElemInfo> ci(R::RowLayout::Dense(size_t(nc), 1)), bi(R::RowLayout::Dense(size_t(bnds.NumOwned()), 1));
+    {
+        auto w = ci.Write();
+        for (size_t row = 0; row < ci.Rows(); ++row)
+            w.View()(row, 0) = ElemInfo{Elem::Tet4, INTERNAL_ZONE};
+    }
+    {
+        auto w = bi.Write();
+        for (size_t row = 0; row < bi.Rows(); ++row)
+            w.View()(row, 0) = ElemInfo{Elem::Tri3, BC_ID_DEFAULT_WALL};
+    }
+    NativeMeshInput input{g_mpi, 3, cells, nodes, bnds, Rows(cr), Rows(br), xyz, ci, bi, {}};
+    auto state = NativeMeshBuilder::Build(std::move(input), {1, true});
+    state = NativeMeshTopology::Build(*state, g_mpi, true, true);
+    g_edges = UnstructuredMesh::FromNative(g_mpi, state);
+    return g_edges;
+}
 TEST_CASE("InterpolateEdge: edge count is positive")
 {
-    MESSAGE("Skipped — no small 3D mesh in config; Ball2 too expensive for CI");
-    return;
-    auto &m = *g_full[4];
-    m.InterpolateEdge();
-    m.AdjGlobal2LocalEdge();
-    CHECK(m.cell2edge.father);
-    CHECK(m.edge2node.father);
-    CHECK(m.edge2cell.father);
-    CHECK(m.edgeElemInfo.father);
-    DNDS::index localEdges = m.edge2node.father->Size();
-    CHECK(localEdges > 0);
-    DNDS::index localCells = m.NumCell();
-    for (DNDS::index iC = 0; iC < localCells; iC++)
-    {
-        auto elem = m.GetCellElement(iC);
-        int nEdgeExpected = elem.GetNumEdges();
-        CHECK(m.cell2edge.RowSize(iC) == nEdgeExpected);
-    }
+    auto mesh = TinyEdges();
+    CHECK(mesh->Entities(EntityKind::Edge).NumGlobal() == 9);
+    CHECK(mesh->NumCellGlobal() == 2);
+    CHECK(mesh->NumFaceGlobal() == 7);
 }
-
 TEST_CASE("InterpolateEdge: edge2node indices in valid range")
 {
-    MESSAGE("Skipped — no small 3D mesh in config");
-    return;
-    auto &m = *g_full[4];
-    DNDS::index totalNodes = m.NumNode() + m.NumNodeGhost();
-    for (DNDS::index iE = 0; iE < m.edge2node.father->Size(); iE++)
-        for (DNDS::rowsize j = 0; j < m.edge2node.RowSize(iE); j++)
-        {
-            DNDS::index iN = m.edge2node(iE, j);
-            CHECK(iN >= 0);
-            CHECK(iN < totalNodes);
-        }
-}
-
-TEST_CASE("InterpolateEdge: edge2cell has at least 1 parent per edge")
-{
-    MESSAGE("Skipped — no small 3D mesh in config");
-    return;
-    auto &m = *g_full[4];
-    DNDS::index totalCells = m.NumCell() + m.NumCellGhost();
-    for (DNDS::index iE = 0; iE < m.edge2cell.father->Size(); iE++)
+    auto mesh = TinyEdges();
+    auto q = MeshReadRequirements::CellFlux();
+    q.edges = true;
+    auto r = mesh->AcquireRead(q);
+    auto v = r.HostView();
+    for (I edge = 0; edge < v.NumEdge(); ++edge)
     {
-        CHECK(m.edge2cell.RowSize(iE) >= 1);
-        for (DNDS::rowsize j = 0; j < m.edge2cell.RowSize(iE); j++)
+        CHECK(v.EdgeNodes(edge).size() == 2);
+        for (auto node : v.EdgeNodes(edge))
         {
-            DNDS::index iC = m.edge2cell(iE, j);
-            CHECK(iC >= 0);
-            CHECK(iC < totalCells);
+            CHECK(node >= 0);
+            CHECK(node < v.NumNodeProc());
         }
     }
 }
-
+TEST_CASE("InterpolateEdge: edge2cell has independently expected parents per edge")
+{
+    auto mesh = TinyEdges();
+    auto q = MeshReadRequirements::CellFlux();
+    q.edges = true;
+    auto r = mesh->AcquireRead(q);
+    auto v = r.HostView();
+    auto cells = mesh->Entities(EntityKind::Cell);
+    const std::array<std::set<I>, 2> vertices{{{0, 1, 2, 3}, {0, 1, 2, 4}}};
+    auto nodes = mesh->Entities(EntityKind::Node);
+    for (I edge = 0; edge < v.NumEdge(); ++edge)
+    {
+        auto endpoints = Global(nodes, v.EdgeNodes(edge));
+        std::set<I> expected;
+        for (I cell = 0; cell < 2; ++cell)
+            if (vertices[size_t(cell)].count(endpoints[0]) && vertices[size_t(cell)].count(endpoints[1]))
+                expected.insert(cell);
+        CHECK(Set(Global(cells, v.EdgeCells(edge))) == expected);
+    }
+}
 TEST_CASE("InterpolateEdge: cell2edge row sizes match expected edge count")
 {
-    MESSAGE("Skipped — no small 3D mesh in config");
-    return;
-    auto &m = *g_full[4];
-    for (DNDS::index iC = 0; iC < m.NumCell(); iC++)
+    auto mesh = TinyEdges();
+    auto q = MeshReadRequirements::CellFlux();
+    q.edges = true;
+    auto r = mesh->AcquireRead(q);
+    auto v = r.HostView();
+    for (I cell = 0; cell < v.NumCell(); ++cell)
+        CHECK(v.CellEdges(cell).size() == size_t(v.GetCellElement(cell).GetNumEdges()));
+}
+TEST_CASE("InterpolateEdge: cell2edge entries have exact element-slot endpoint IDs")
+{
+    auto mesh = TinyEdges();
+    auto q = MeshReadRequirements::CellFlux();
+    q.edges = true;
+    auto r = mesh->AcquireRead(q);
+    auto v = r.HostView();
+    auto nodes = mesh->Entities(EntityKind::Node);
+    for (I cell = 0; cell < v.NumCell(); ++cell)
     {
-        auto elem = m.GetCellElement(iC);
-        int nEdgeExpected = elem.GetNumEdges();
-        CHECK(m.cell2edge.RowSize(iC) == nEdgeExpected);
+        auto element = v.GetCellElement(cell);
+        const auto cone = v.CellNodes(cell);
+        for (size_t slot = 0; slot < v.CellEdges(cell).size(); ++slot)
+        {
+            const auto edge = v.CellEdges(cell)[slot];
+            REQUIRE(edge >= 0);
+            REQUIRE(edge < v.NumEdgeProc());
+            std::vector<I> expected(2);
+            element.ExtractEdgeNodes(DNDS::rowsize(slot), cone, expected);
+            for (auto &n : expected)
+                n = nodes.LocalToGlobal(n);
+            CHECK(Set(Global(nodes, v.EdgeNodes(edge))) == Set(expected));
+        }
     }
 }
-
-TEST_CASE("InterpolateEdge: cell2edge entries are valid edge indices")
-{
-    MESSAGE("Skipped — no small 3D mesh in config");
-    return;
-    auto &m = *g_full[4];
-    DNDS::index totalEdges = m.edge2node.father->Size() + m.edge2node.son->Size();
-    for (DNDS::index iC = 0; iC < m.NumCell(); iC++)
-        for (DNDS::rowsize j = 0; j < m.cell2edge.RowSize(iC); j++)
-        {
-            DNDS::index iE = m.cell2edge(iC, j);
-            CHECK(iE >= 0);
-            CHECK(iE < totalEdges);
-        }
-}
-
 TEST_CASE("InterpolateEdge: edge adjacency state is Local after pipeline")
 {
-    MESSAGE("Skipped — no small 3D mesh in config");
-    return;
-    auto &m = *g_full[4];
-    CHECK(m.adjEdgeState == Adj_PointToLocal);
+    auto mesh = TinyEdges();
+    auto q = MeshReadRequirements::CellFlux();
+    q.edges = true;
+    auto r = mesh->AcquireRead(q);
+    for (auto slot : {MeshRelation::CellEdges, MeshRelation::EdgeNodes, MeshRelation::EdgeCells})
+        CHECK(r.HostView().RelationState(slot) == Adj_PointToLocal);
 }
-
 TEST_CASE("InterpolateEdge: edge elem types are valid Line2 or Line3")
 {
-    MESSAGE("Skipped — no small 3D mesh in config");
-    return;
-    auto &m = *g_full[4];
-    for (DNDS::index iE = 0; iE < m.edgeElemInfo.father->Size(); iE++)
-    {
-        auto eType = m.edgeElemInfo(iE, 0).getElemType();
-        auto dim = Elem::Element{eType}.GetDim();
-        CHECK(dim == 1);
-    }
+    auto mesh = TinyEdges();
+    auto q = MeshReadRequirements::CellFlux();
+    q.edges = true;
+    auto r = mesh->AcquireRead(q);
+    auto v = r.HostView();
+    for (I edge = 0; edge < v.NumEdge(); ++edge)
+        CHECK(v.GetEdgeInfo(edge).getElemType() == Elem::Line2);
 }
-#endif

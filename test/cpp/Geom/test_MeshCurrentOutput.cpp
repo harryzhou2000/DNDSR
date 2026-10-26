@@ -82,7 +82,7 @@ TEST_CASE("Current periodic VTKHDF maps point callbacks from detached numbering 
     }
     // No duplicate mesh storage is present; callbacks and periodic images
     // must both resolve through the current native semantic rows.
-    CHECK_FALSE(mesh->coords.father);
+    CHECK(mesh->HasNativeState());
 
     std::vector<double> local;
     for (DNDS::index node = 0; node < view.NumNode(); ++node)
@@ -193,8 +193,7 @@ TEST_CASE("Native VTKHDF owns output buffers without legacy mesh conversion")
     auto read = mesh->AcquireRead(source->Requirements());
     const auto view = read.HostView();
     auto layout = NativeMeshOutput::Build(*source, mpi);
-    CHECK_FALSE(mesh->coords.father);
-    CHECK_FALSE(mesh->cell2node.father);
+    CHECK(mesh->HasNativeState());
     CHECK(layout.globalNodes == 121);
     CHECK(layout.globalCells == 100);
     CHECK(layout.globalConnectivity == 400);
@@ -223,8 +222,7 @@ TEST_CASE("Native VTKHDF owns output buffers without legacy mesh conversion")
                                        { return double(mesh->OriginalEntityId(EntityKind::Node, row)); }, {}, {}, 0, output);
     MPI_Comm_free(&output);
     CHECK(stamp.Valid());
-    CHECK_FALSE(mesh->coords.father);
-    CHECK_FALSE(mesh->cell2node.father);
+    CHECK(mesh->HasNativeState());
     MPI_Barrier(mpi.comm);
     if (mpi.rank == 0)
     {
@@ -377,8 +375,7 @@ TEST_CASE("Native serial and distributed VTU and Tecplot preserve rows and perio
             CHECK(cursor == binary.size());
         }
         CHECK(stamp.Valid());
-        CHECK_FALSE(mesh->coords.father);
-        CHECK_FALSE(mesh->cell2node.father);
+        CHECK(mesh->HasNativeState());
         MPI_Barrier(mpi.comm);
         if (mpi.rank == 0)
         {
@@ -474,8 +471,7 @@ TEST_CASE("Native CGNS output round trips independently owned nodes and empty ra
     mesh->dim = 3; // Raw legacy fields cannot override native query geometry.
     mesh->PrintMeshCGNS(path, names, {"WALL", "FAR"});
     CHECK(stamp.Valid());
-    CHECK_FALSE(mesh->coords.father);
-    CHECK_FALSE(mesh->cell2node.father);
+    CHECK(mesh->HasNativeState());
     auto restored = UnstructuredMesh::FromNative(mpi, ReadNativeCGNS(mpi, path, 2,
                                                                      [](const std::string &name)
                                                                      { return name == "WALL" ? BC_ID_DEFAULT_WALL : BC_ID_DEFAULT_FAR; }, mpi.size - 1, {1, true}));
@@ -520,8 +516,7 @@ TEST_CASE("Native primary compatibility archive streams payloads including bound
         WriteCurrentPrimaryMeshSnapshot(*mesh, archive, "primary");
         CHECK(archive->GetCurrentPath() == cwd);
         CHECK(stamp.Valid());
-        CHECK_FALSE(mesh->coords.father);
-        CHECK_FALSE(mesh->cell2node.father);
+        CHECK(mesh->HasNativeState());
         // Decode the old payload schema directly into owned Runtime rows;
         // no legacy mesh workspace or topology reconstruction is the oracle.
         auto restored = NativeMeshLegacyArchive::ReadOwned(mpi, archive, "primary");

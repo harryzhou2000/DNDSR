@@ -18,7 +18,7 @@ def _build_mesh(periodic=False):
     )
     assert source.is_file()
     options = {"periodic_geometry": {"translation1": [10., 0., 0.], "translation2": [0., 10., 0.]}} if periodic else {}
-    result = read_mesh(str(source), mpi=mpi, dim=2, native=False, **options)
+    result = read_mesh(str(source), mpi=mpi, dim=2, native=True, **options)
     prepare_mesh(result.mesh, result.reader, build_serial_out=False)
     return result.mesh
 
@@ -184,31 +184,27 @@ def test_periodic_incidence_queries():
     assert MPI.COMM_WORLD.allreduce(transformed) > 0
 
 
-def test_native_publication_and_explicit_workspace(facade_mesh):
+def test_native_publication_retains_readonly_aliases_and_detached_snapshot(facade_mesh):
     mesh = facade_mesh
-    # Retain the detached legacy fixture before native publication. Public
-    # properties then expose readonly native data, never this old allocation.
-    legacy_coords = mesh.coords
+    assert mesh.has_native_state
+    assert not hasattr(mesh, "publish_native")
+    assert not hasattr(mesh, "use_legacy_workspace")
+    coordinates = mesh.coords
     with mesh.acquire_read(faces=True) as read:
         expected = read.coordinates()
         expected_nodes = read.cell_nodes(0).copy()
-    mesh.publish_native(faces=True)
-    assert mesh.has_native_state
-    with pytest.raises(ValueError):
-        mesh.coords[0][0] += 5.0
-    legacy_coords[0][0] += 5.0
-    with mesh.acquire_read(faces=True) as read:
-        np.testing.assert_array_equal(read.coordinates(), expected)
         escaped = read.cell_nodes(0)[::2]
+    with pytest.raises(ValueError):
+        coordinates[0][0] += 5.0
     with pytest.raises(RuntimeError):
-        mesh.use_legacy_workspace()
+        mesh.ReorderLocalCells(2, 1)
     snapshot = mesh.snapshot(faces=True)
-    del escaped
+    del escaped, coordinates
     gc.collect()
-    mesh.use_legacy_workspace()
-    assert not mesh.has_native_state
+    mesh.transform_coordinates(lambda point: point + np.array([5.0, 0.0, 0.0]))
+    assert mesh.has_native_state
     with mesh.acquire_read() as read:
-        assert read.coord(0)[0] == expected[0, 0] + 5.0
+        np.testing.assert_allclose(read.coordinates(), expected + [5.0, 0.0, 0.0])
     with snapshot.acquire_read() as read:
         np.testing.assert_array_equal(read.cell_nodes(0), expected_nodes)
         np.testing.assert_array_equal(read.coordinates(), expected)
@@ -229,7 +225,7 @@ def test_entity_distribution_queries_and_stale_descriptor(facade_mesh):
             assert cells.owner(global_id) == MPI.COMM_WORLD.rank
             assert cells.owner_local_row(global_id) == local
     assert cells.global_to_local(-1) is None
-    mesh.publish_native(faces=True)
+    mesh.ReorderLocalCells(2, 1)
     assert not cells.valid
     with pytest.raises(RuntimeError):
         cells.local_to_global(0)
@@ -240,8 +236,8 @@ def test_entity_distribution_queries_and_stale_descriptor(facade_mesh):
     mesh.transform_coordinates(lambda point: point)
     assert mesh.has_native_state and not before_identity.source_current
     assert current.valid  # Geometry publication preserves entity order.
-    mesh.use_legacy_workspace()
-    assert not current.valid  # Explicit authority selection changes all stamps.
+    mesh.ReorderLocalCells(2, 1)
+    assert not current.valid  # Explicit numbering replacement changes order stamps.
     mesh.transform_coordinates(lambda point: point)
 
 
@@ -289,22 +285,34 @@ def test_managed_coordinate_transform_rejects_escaped_rows(facade_mesh):
         np.testing.assert_allclose(current.coordinates(), after + [0, 0, 0.25])
 
 
-def test_coordinate_callback_failure_marks_mesh_failed():
+def test_coordinate_callback_failure_preserves_mesh_for_retry():
     mesh = _build_mesh()
+    snapshot = mesh.snapshot()
+    with mesh.acquire_read() as read:
+        before = read.coordinates()
 
     def fail(_point):
         raise LookupError("deliberate coordinate callback failure")
 
     with pytest.raises(LookupError):
         mesh.transform_coordinates(fail)
-    with pytest.raises(RuntimeError):
-        mesh.acquire_read()
+    assert snapshot.source_current
+    with mesh.acquire_read() as read:
+        np.testing.assert_array_equal(read.coordinates(), before)
+    mesh.transform_coordinates(lambda point: point + [1, 0, 0])
+    with mesh.acquire_read() as read:
+        np.testing.assert_allclose(read.coordinates(), before + [1, 0, 0])
 
 
 @pytest.mark.parametrize("bad_point", [[], [float("nan"), 0, 0]])
 def test_coordinate_callback_shape_and_finite_checks(bad_point):
     mesh = _build_mesh()
+    snapshot = mesh.snapshot()
+    with mesh.acquire_read() as read:
+        before = read.coordinates()
     with pytest.raises(ValueError):
         mesh.transform_coordinates(lambda _point: bad_point)
-    with pytest.raises(RuntimeError):
-        mesh.acquire_read()
+    assert snapshot.source_current
+    with mesh.acquire_read() as read:
+        np.testing.assert_array_equal(read.coordinates(), before)
+    mesh.transform_coordinates(lambda point: point)

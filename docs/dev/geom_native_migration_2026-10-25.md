@@ -1,6 +1,7 @@
 # Native Geom migration ledger
 
-Updated: 2026-10-26. Status: **native geometry/periodic/output checkpoint; migration not complete**.
+Updated: 2026-10-26. Status: **GN0–GN7 native ownership and execution phase complete
+within the explicit limits below**.
 
 This ledger supports [the native Geom construction work order](/home/harry/projects/DNDSR/workspace/dndsr-next-plan/docs/19-native-geom-construction.md).
 It records old Geom behavior that must survive migration to Runtime Arrays and
@@ -8,6 +9,49 @@ new acceptance gaps. Existing tests are not evidence for native construction
 unless they construct mesh state without the legacy reader/workspace. The
 inventory below records the starting state; subsequent implementation is tracked
 in the checkpoint section immediately below.
+
+## Native ownership retirement and GN0–GN7 closure
+
+Current production construction, mutation, topology, transition, archive and
+output paths own Runtime Arrays directly. `UnstructuredMesh` is the semantic
+facade over immutable native state. Legacy mesh payload fields, serial setup
+chain, dual authority switch and capture/publication fallback are removed.
+Standalone legacy DNDS Arrays and solver-field schedules remain supported.
+Python pair/POD access retains readonly native scopes; managed edits stage and
+publish replacements. Read scopes pin state metadata through placement changes.
+
+Ordinary face/edge refresh recovers exact persistent identities under orientation
+and periodic frame changes, including high-order vertex/edge roles. Full-key
+comparison handles hash collisions; new entities allocate above prior high-water
+marks. Ordered named relations, sorted sets and ancestry remap explicitly;
+uninferable changed definitions reject. Explicit destroyed-family reconstruction
+retains its fresh-ID policy. Partition ensures missing topology while preserving
+the original source order required by external field transfers.
+
+The final Geom run passes 191/191 registrations; the relinked DNDS/CFV/Euler run
+passes 81/81. These include MPI 1/2/4/8 and the
+full 958,994-cell Ball2 fixtures. Additional source-association/frame scenarios
+pass at all four sizes. CPU Python passes 45 tests plus two documented skips per
+rank; CUDA Python passes 46 plus one skip at MPI 1/2, with one rank per GPU and
+eight loaded binary IDs verified per profile. Four ordinary CUDA gates include
+real direct-MPI overlap and field transfer before/after permutation, migration
+and restart. Inline and worker CPU launchers use the same exact field oracle.
+
+Node-centered coverage includes all-remote valence-eight stars, reverse SUM and
+forward scatter, independently distinct node/cell and node/edge bridges, and
+actual periodic frame/order traversal. Tracked traversal C++ allocation peaks
+remain fixed as unrelated remote components grow 1/128/4096; these measurements
+exclude MPI/C malloc/CUDA and are not whole-process peak claims.
+
+The full sanitizer result remains nonzero, with independent CUB/RDC and
+OpenMPI-finalization reproductions retained. Node dual-volume geometry, GPU mesh
+mutation, graph capture and a namespace check in legacy Euler solution files are
+outside this phase. Caller lifetime/order responsibilities remain explicit.
+The exact gates, source/binary manifests, original failures and scoped limits
+are in [checkpoint10](geom_validation_2026-10-26/checkpoint10/README.md).
+
+The remainder is the historical migration ledger and starting-state inventory;
+its earlier incomplete-mode descriptions do not describe the current API.
 
 ## Native construction checkpoint
 

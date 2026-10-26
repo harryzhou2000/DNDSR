@@ -306,9 +306,6 @@ TEST_CASE("Native prepared transition stages field histories atomically and bind
     auto next = handle.Get();
     REQUIRE(next != source);
     CHECK(next->HasNativeState());
-    CHECK_FALSE(next->coords.father);
-    CHECK_FALSE(next->cell2node.father);
-    CHECK_FALSE(next->node2cell.father);
     const I previous = (mpi.rank + mpi.size - 1) % mpi.size;
     CHECK(next->OriginalEntityId(G::EntityKind::Cell, 0) == previous);
     {

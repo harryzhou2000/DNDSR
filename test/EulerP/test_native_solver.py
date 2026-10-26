@@ -4,9 +4,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 from mpi4py import MPI
-from DNDSR import DNDS
+from DNDSR import DNDS, Geom
 from DNDSR.EulerP.EulerP_Solver import Solver
-from DNDSR.Geom.utils import read_mesh, prepare_mesh
+from DNDSR.Geom.utils import read_mesh, prepare_mesh, build_bnd_mesh
 
 
 def _evaluate(mpi, native):
@@ -16,13 +16,18 @@ def _evaluate(mpi, native):
     if native:
         solver.ReadMesh(str(source), 2, other_options={"periodic_geometry": geometry})
     else:
-        # Test-only numerical baseline: the old volume setup still feeds the
-        # evaluator. Retired legacy boundary/output producers are not required
-        # to compare exactly the same physical RHS on the two volume layouts.
-        result = read_mesh(str(source), mpi, 2, native=False, periodic_geometry=geometry)
-        prepare_mesh(result.mesh, result.reader, build_serial_out=False)
-        solver.mesh, solver.reader, solver.name2Id = result.mesh, result.reader, result.name_to_id
-        solver.meshBnd = solver.readerBnd = None
+        # One-way old-wire fixture: no legacy mesh backend is constructed.
+        result = read_mesh(str(source), mpi, 2, periodic_geometry=geometry)
+        writer = DNDS.Serializer.SerializerJSON()
+        writer.CreatePath("/")
+        result.mesh.WriteCurrentPrimaryMeshSnapshot(writer, "meshPart",
+            policy=Geom.CurrentMeshCheckpointPolicy.DropAuxiliary)
+        imported = Geom.read_compatible_native_archive(mpi, writer, "meshPart")
+        adapter = Geom.UnstructuredMeshSerialRW(imported, 0)
+        prepare_mesh(imported, adapter)
+        boundary = build_bnd_mesh(imported)
+        solver.mesh, solver.reader, solver.name2Id = imported, adapter, result.name_to_id
+        solver.meshBnd, solver.readerBnd = boundary.mesh_bnd, boundary.reader_bnd
     solver.BuildFV({"intOrder": 1, "maxOrder": 1})
     solver.BuildEval()
     solver.WrapEval()
@@ -52,18 +57,18 @@ def _evaluate(mpi, native):
 
 
 @pytest.mark.mpi
-def test_native_solver_setup_evaluator_rhs_matches_legacy():
+def test_native_solver_setup_evaluator_rhs_matches_primary_wire_restart():
     mpi = DNDS.MPIInfo()
     mpi.setWorld()
     with pytest.raises(ValueError, match="native=False is retired"):
         Solver(mpi).ReadMesh("unused.cgns", 2, native=False)
-    legacy, expected = _evaluate(mpi, False)
+    restarted, expected = _evaluate(mpi, False)
     native, actual = _evaluate(mpi, True)
     assert native.mesh.has_native_state and native.meshBnd.has_native_state
     assert native.reader.mesh is native.mesh and native.reader.dataIsSerialOut
     assert native.readerBnd.mesh is native.meshBnd and native.readerBnd.dataIsSerialOut
-    assert not legacy.mesh.has_native_state
-    assert native.name2Id.n2id_map == legacy.name2Id.n2id_map
+    assert restarted.mesh.has_native_state
+    assert native.name2Id.n2id_map == restarted.name2Id.n2id_map
     assert set(actual) == set(expected) and len(actual) == 1024
     assert any(np.linalg.norm(value) > 1e-8 for value in actual.values())
     for point, value in actual.items():

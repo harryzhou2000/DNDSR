@@ -1,6 +1,6 @@
 /**
  * @file test_MeshDistributedRead.cpp
- * @brief Tests for ReadSerializeAndDistribute: write mesh to H5, then
+ * @brief Native archive tests: write mesh to H5, then
  *        read it back with even-split + ParMetis repartition and verify
  *        the rebuilt mesh matches the original.
  *
@@ -22,7 +22,7 @@
  *   [0] UniformSquare_10 -- 2D, 100 quad, non-periodic
  *   TODO: [1] IV10_10 -- 2D, 100 quad, periodic (pending periodic bnd convention)
  *
- * @par Bugs found and fixed during development
+ * @par Historical bugs whose regression purposes remain covered
  *
  *   1. **H5 path navigation** (Mesh_ReadSerializeDistributed.cpp):
  *      `GoToPath("..")` appends ".." literally in the H5 serializer instead
@@ -94,6 +94,9 @@
 
 #include "Geom/Mesh/Mesh.hpp"
 #include "Geom/Mesh/Mesh_Helpers.hpp"
+#include "Geom/Mesh/NativeMeshCGNS.hpp"
+#include "Geom/Mesh/NativeMeshPreparation.hpp"
+#include "Geom/Mesh/NativeMeshArchive.hpp"
 #include "DNDS/Serializer/SerializerH5.hpp"
 #include <string>
 #include <filesystem>
@@ -182,84 +185,36 @@ static std::string tmpDir()
     return f + "/data/tmp_test_distributed_read_np" + std::to_string(g_mpi.size);
 }
 
-static void setPeriodicIfNeeded(ssp<UnstructuredMesh> &mesh, const MeshConfig &cfg)
+static std::shared_ptr<const NativeMeshState> readReference(const MeshConfig &cfg, const MPIInfo &mpi)
 {
+    std::optional<NativePeriodicImportOptions> periodic;
     if (cfg.periodic)
     {
-        tPoint zero{0, 0, 0};
-        mesh->SetPeriodicGeometry(
-            cfg.translation1, zero, zero,
-            cfg.translation2, zero, zero,
-            cfg.translation3, zero, zero);
+        periodic.emplace();
+        periodic->tolerance = 1e-8;
+        periodic->frames.translation[1].map() = cfg.translation1;
+        periodic->frames.translation[2].map() = cfg.translation2;
+        periodic->frames.translation[3].map() = cfg.translation3;
     }
+    auto state = ReadNativeCGNS(mpi, meshPath(cfg.file), cfg.dim, FBC_Name_2_ID_Default, 0, {1, true}, periodic);
+    NativePartitionOptions options;
+    options.metisType = "KWAY";
+    options.metisUfactor = 30;
+    options.metisSeed = 42;
+    options.metisNcuts = 1;
+    return NativeMeshPreparation::Partition(*state, mpi, options).state;
 }
 
-/// Full pipeline rebuild after ReadSerializeAndDistribute.
-static void rebuildAfterDistributedRead(ssp<UnstructuredMesh> &mesh, const MeshConfig &cfg)
+static void buildAndWriteRef(int ic, const MeshConfig &cfg, const MPIInfo &mpi, const std::string &h5Path)
 {
-    mesh->RecoverNode2CellAndNode2Bnd();
-    mesh->RecoverCell2CellAndBnd2Cell();
-    mesh->BuildGhostPrimary();
-    mesh->AdjGlobal2LocalPrimary();
-    mesh->AdjGlobal2LocalN2CB();
-
-    mesh->InterpolateFace();
-    mesh->AssertOnFaces();
-
-    mesh->AdjLocal2GlobalN2CB();
-    mesh->BuildGhostN2CB();
-    mesh->AdjGlobal2LocalN2CB();
-
-    if (cfg.periodic)
-        mesh->RecreatePeriodicNodes();
-    mesh->BuildVTKConnectivity();
-}
-
-/// Build reference mesh, record counts, and write to H5.
-static void buildAndWriteRef(
-    int ic, const MeshConfig &cfg, const MPIInfo &mpi, const std::string &h5Path)
-{
-    auto mesh = std::make_shared<UnstructuredMesh>(mpi, cfg.dim);
-    UnstructuredMeshSerialRW reader(mesh, 0);
-    setPeriodicIfNeeded(mesh, cfg);
-
-    reader.ReadFromCGNSSerial(meshPath(cfg.file));
-    reader.Deduplicate1to1Periodic(1e-8);
-    reader.BuildCell2Cell();
-
-    PartitionOptions pOpt;
-    pOpt.metisType = "KWAY";
-    pOpt.metisUfactor = 30;
-    pOpt.metisSeed = 42;
-    pOpt.metisNcuts = 1;
-    reader.MeshPartitionCell2Cell(pOpt);
-    reader.PartitionReorderToMeshCell2Cell();
-
-    mesh->RecoverNode2CellAndNode2Bnd();
-    mesh->RecoverCell2CellAndBnd2Cell();
-    mesh->BuildGhostPrimary();
-    mesh->AdjGlobal2LocalPrimary();
-    mesh->AdjGlobal2LocalN2CB();
-
-    mesh->InterpolateFace();
-    mesh->AssertOnFaces();
-
-    mesh->AdjLocal2GlobalN2CB();
-    mesh->BuildGhostN2CB();
-    mesh->AdjGlobal2LocalN2CB();
-
-    // Record reference counts
-    g_refCounts[ic].nCellGlobal = mesh->NumCellGlobal();
-    g_refCounts[ic].nNodeGlobal = mesh->NumNodeGlobal();
-    g_refCounts[ic].nBndGlobal = mesh->NumBndGlobal();
-    g_refCounts[ic].nFaceGlobal = mesh->NumFaceGlobal();
-
-    // Write to H5
-    mesh->AdjLocal2GlobalPrimary();
-    auto ser = std::make_shared<Serializer::SerializerH5>(mpi);
-    ser->OpenFile(h5Path, false);
-    mesh->WriteSerialize(ser, "meshPart");
-    ser->CloseFile();
+    auto state = readReference(cfg, mpi);
+    g_refCounts[ic] = {state->NumGlobal(EntityKind::Cell), state->NumGlobal(EntityKind::Node),
+                       state->NumGlobal(EntityKind::Bnd), state->NumGlobal(EntityKind::Face)};
+    auto serializer = std::make_shared<Serializer::SerializerH5>(mpi);
+    serializer->SetCollectiveRW(true, true);
+    serializer->OpenFile(h5Path, false);
+    WriteNativeMeshArchive(*state, mpi, serializer, "meshPart");
+    serializer->CloseFile();
 }
 
 /// Write mesh to H5 using a sub-communicator of size npWrite.
@@ -283,25 +238,20 @@ static void buildAndWriteRefSubComm(
 }
 
 /// Read from H5 with ReadSerializeAndDistribute using the full world communicator.
-static ssp<UnstructuredMesh> distributedRead(
-    const MeshConfig &cfg, const std::string &h5Path)
+static ssp<UnstructuredMesh> distributedRead(const MeshConfig &cfg, const std::string &h5Path)
 {
-    auto mesh = std::make_shared<UnstructuredMesh>(g_mpi, cfg.dim);
-    setPeriodicIfNeeded(mesh, cfg);
-
-    PartitionOptions pOpt;
-    pOpt.metisType = "KWAY";
-    pOpt.metisUfactor = 5;
-    pOpt.metisSeed = 777; // deliberately different from write
-    pOpt.metisNcuts = 1;
-
-    auto ser = std::make_shared<Serializer::SerializerH5>(g_mpi);
-    ser->OpenFile(h5Path, true);
-    mesh->ReadSerializeAndDistribute(ser, "meshPart", pOpt);
-    ser->CloseFile();
-
-    rebuildAfterDistributedRead(mesh, cfg);
-    return mesh;
+    auto serializer = std::make_shared<Serializer::SerializerH5>(g_mpi);
+    serializer->SetCollectiveRW(true, true);
+    serializer->OpenFile(h5Path, true);
+    auto state = ReadNativeMeshArchive(g_mpi, serializer, "meshPart", Serializer::ArrayGlobalOffset_EvenSplit);
+    serializer->CloseFile();
+    NativePartitionOptions options;
+    options.metisType = "KWAY";
+    options.metisUfactor = 5;
+    options.metisSeed = 777;
+    options.metisNcuts = 1;
+    state = NativeMeshPreparation::Partition(*state, g_mpi, options).state;
+    return UnstructuredMesh::FromNative(g_mpi, std::move(state));
 }
 
 /// Read through the public helper path used by Euler solvers:
@@ -311,7 +261,6 @@ static ssp<UnstructuredMesh> distributedReadPrepareViaHelpers(
 {
     auto mesh = std::make_shared<UnstructuredMesh>(g_mpi, cfg.dim);
     auto reader = std::make_shared<UnstructuredMeshSerialRW>(mesh, 0);
-    setPeriodicIfNeeded(mesh, cfg);
 
     PartitionOptions pOpt;
     pOpt.metisType = "KWAY";
@@ -343,7 +292,7 @@ static void checkOrigUnique(UnstructuredMesh &mesh, DNDS::index expectedGlobal, 
 {
     std::vector<DNDS::index> localOrig(mesh.NumCell());
     for (DNDS::index iC = 0; iC < mesh.NumCell(); iC++)
-        localOrig[iC] = mesh.cell2cellOrig(iC, 0);
+        localOrig[iC] = mesh.OriginalEntityId(EntityKind::Cell, iC);
 
     int localCount = static_cast<int>(localOrig.size());
     std::vector<int> allCounts(mpi.size);
@@ -373,8 +322,8 @@ computeBBox(UnstructuredMesh &mesh, const MPIInfo &mpi)
     for (DNDS::index iN = 0; iN < mesh.NumNode(); iN++)
         for (int d = 0; d < 3; d++)
         {
-            localMin(d) = std::min(localMin(d), mesh.coords[iN](d));
-            localMax(d) = std::max(localMax(d), mesh.coords[iN](d));
+            localMin(d) = std::min(localMin(d), mesh.Coord(iN)(d));
+            localMax(d) = std::max(localMax(d), mesh.Coord(iN)(d));
         }
     Eigen::Vector3d globalMin, globalMax;
     MPI_Allreduce(localMin.data(), globalMin.data(), 3, MPI_DOUBLE, MPI_MIN, mpi.comm);
@@ -502,10 +451,10 @@ TEST_CASE("SameNp: face2cell valid"){
         auto &mesh = *g_sameNpMesh[ic];
         for (DNDS::index iF = 0; iF < mesh.NumFace(); iF++)
         {
-            DNDS::index iCL = mesh.face2cell(iF, 0);
-            DNDS::index iCR = mesh.face2cell(iF, 1);
+            DNDS::index iCL = mesh.FaceCells(iF)[0];
+            DNDS::index iCR = mesh.FaceCells(iF)[1];
             REQUIRE(iCL >= 0);
-            REQUIRE(iCL < mesh.NumCell());
+            REQUIRE(iCL < mesh.NumCellProc());
             if (iCR != UnInitIndex)
             {
                 REQUIRE(iCR >= 0);
@@ -518,7 +467,12 @@ TEST_CASE("SameNp: node2cell non-empty"){
     FOR_EACH_CONFIG({
         auto &mesh = *g_sameNpMesh[ic];
         for (DNDS::index iN = 0; iN < mesh.NumNode(); iN++)
-            CHECK(mesh.node2cell.RowSize(iN) > 0);
+        {
+            auto requirements = MeshReadRequirements::Primary();
+            requirements.inverse = true;
+            auto read = mesh.AcquireRead(requirements);
+            CHECK(read.HostView().NodeCells(iN).size() > 0);
+        }
     })}
 
 TEST_CASE("SameNp: cell2cellOrig globally unique"){
@@ -580,10 +534,10 @@ TEST_CASE("CrossNp: face2cell valid"){
         auto &mesh = *g_crossNpMesh[ic];
         for (DNDS::index iF = 0; iF < mesh.NumFace(); iF++)
         {
-            DNDS::index iCL = mesh.face2cell(iF, 0);
-            DNDS::index iCR = mesh.face2cell(iF, 1);
+            DNDS::index iCL = mesh.FaceCells(iF)[0];
+            DNDS::index iCR = mesh.FaceCells(iF)[1];
             REQUIRE(iCL >= 0);
-            REQUIRE(iCL < mesh.NumCell());
+            REQUIRE(iCL < mesh.NumCellProc());
             if (iCR != UnInitIndex)
             {
                 REQUIRE(iCR >= 0);
@@ -601,7 +555,12 @@ TEST_CASE("CrossNp: node2cell non-empty"){
     FOR_EACH_CROSS_CONFIG({
         auto &mesh = *g_crossNpMesh[ic];
         for (DNDS::index iN = 0; iN < mesh.NumNode(); iN++)
-            CHECK(mesh.node2cell.RowSize(iN) > 0);
+        {
+            auto requirements = MeshReadRequirements::Primary();
+            requirements.inverse = true;
+            auto read = mesh.AcquireRead(requirements);
+            CHECK(read.HostView().NodeCells(iN).size() > 0);
+        }
     })}
 
 TEST_CASE("CrossNp: helper path PrepareMesh resolves owned node2cell")

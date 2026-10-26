@@ -275,9 +275,10 @@ namespace DNDS::Geom
                 if (checkpoint) checkpoint("reordered"); });
             ReorderPlan plan;
             plan.transfers = std::move(moved.transfers);
-            // Only selected families are active field operations. Native
-            // assembly also returns identity maps for retained families; those
-            // do not replace unchanged owned-only fields or advance epochs.
+            // Only selected families are active field operations. Local cell
+            // permutations also return identity maps; general transitions may
+            // omit untouched families. Neither replaces unchanged owned-only
+            // fields or advances their epochs.
             for (const auto &map : input.explicitMaps)
                 plan.reorderedKinds.insert(map.kind);
             for (const auto &follow : input.follows)

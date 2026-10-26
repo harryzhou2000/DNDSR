@@ -202,7 +202,7 @@ TEST_CASE("Native geometry transforms preserve order identity topology and detac
     CHECK_FALSE(stamp.Valid());
     CHECK(nodes.SameOrder(mesh->Entities(G::EntityKind::Node)));
     CHECK(mesh->CurrentNativeState()->MeshNamespace() == namespaceBefore);
-    CHECK_FALSE(mesh->coords.father);
+    CHECK(mesh->HasNativeState());
     auto current = mesh->AcquireRead(mesh->CurrentNativeRequirements());
     const auto view = current.HostView();
     for (I node = 0; node < view.NumNodeProc(); ++node)
@@ -471,7 +471,7 @@ TEST_CASE("Native affine geometry maps periodic physical corners and invalidates
         CHECK(after.Periodic().translation[image].map().isApprox(linear * before.Periodic().translation[image].map(), 1e-13));
         CHECK(after.Periodic().rotationCenter[image].map().isApprox(linear * before.Periodic().rotationCenter[image].map() + offset, 1e-13));
     }
-    CHECK_FALSE(mesh->coords.father);
+    CHECK(mesh->HasNativeState());
 }
 
 TEST_CASE("Native affine geometry rejects nonrigid periodic conjugation before publication")

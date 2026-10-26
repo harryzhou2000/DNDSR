@@ -1,78 +1,101 @@
-# Explicit native mesh publication
+# Native mesh ownership and publication
 
-The default `UnstructuredMesh` mode retains its legacy setup behavior and
-conservative managed acquisition checks. `PublishNative(requirements)` is an
-explicit collective transition: it validates the legacy workspace uncached,
-copies selected topology/geometry into private native Arrays, clones canonical
-entity maps, and publishes one immutable native query state. This is the
-authority for managed reads until another transition.
+`UnstructuredMesh` is a facade over `shared_ptr<const NativeMeshState>`.
+Topology, geometry and typed companions are Runtime Arrays with immutable
+published values and row metadata. There is no legacy mesh workspace,
+`PublishNative`, `ImportLegacyWorkspace`, or `UseLegacyWorkspace` mode switch.
 
 ```mermaid
 flowchart TD
-  cpp[C++ or Python mesh handle] --> mesh[UnstructuredMesh facade]
-  mesh --> native[shared const NativeMeshState: current authority]
-  mesh --> workspace[legacy arrays: detached setup workspace]
-  native --> host[retained host snapshot and plain query view]
-  native --> placed[device snapshots by explicit placement]
-  native --> maps[private canonical maps and original IDs]
-  read[C++ MeshReadAccess or Python escaped row] --> nativeValues[shared value and row-metadata allocations]
-  host --> nativeValues
-  placed --> nativeValues
-  read --> lease[source epoch read lease and array read leases]
-  kernel[plain CUDA or CPU kernel view] -. borrowed pointers .-> nativeValues
+    input[Native builder / file decoder / detached transition] --> candidate[Validated NativeMeshState]
+    candidate --> publish[Tracked collective publication]
+    facade[UnstructuredMesh facade] --> current[Current shared const state]
+    publish --> current
+    current --> maps[Canonical spaces / namespace / IDs / ancestry]
+    current --> host[Host Runtime snapshot]
+    current --> device[Explicit CUDA placements]
+    scope[MeshReadAccess] -->|strong ownership| current
+    scope --> leases[Array and mesh read leases]
+    scope --> view[Borrowed plain view]
+    old[Detached snapshot] --> oldvalues[Independent retained old values]
 ```
 
-The facade is the single current-publication owner. Snapshot allocations are
-shared, immutable during publication, and retained independently by readers.
-The plain kernel view owns nothing; its access owner must outlive every using
-stream or join those streams through its completion. Python escaped readonly
-rows retain that owner, including row metadata. Backend placement does not
-change mathematical mesh identity or make a missing stream dependency valid.
+`FromNative` adopts a validated state into a new facade. Construction may share
+input Array allocations while retaining read leases that block writes through
+aliases. Replacing an external Array handle cannot retarget the publication.
+`ReplaceNativeForSetup` stages a replacement for an empty or already native
+facade, validates dimension/communicator/metadata and active-reader constraints,
+then publishes `Change::All`. It changes mesh identity/order associations and
+invalidates dependent fields, routes and caches; it is not a field transfer.
 
-`AcquireRead`, semantic borrowed row/geometry helpers, `Num*`, and `Entities`
-then resolve the same native publication. Repeated reads retain the existing
-native allocations and metadata; they perform no CSR conversion, topology scan,
-or value copy. Canonical entity descriptors are validated once at publication.
-Repeated descriptors preserve map identity and `SameOrder`. Exporting indexing
-to a mutable legacy field transformer copies map metadata, preventing that
-compatibility escape from altering the private canonical maps.
+Current queries (`AcquireRead`, semantic borrowed helpers, `Num*`, `Entities`)
+resolve the same publication. Canonical spaces and full relation signatures are
+validated at setup. Repeated reads retain buffers and metadata without scanning
+or converting topology. The read owner also strongly retains native metadata,
+including when placement preparation replaces the facade's state handle.
 
-Public legacy arrays remain a detached edit workspace in this explicit mode.
-Raw changes there do not alter published queries. `NativeMeshSnapshot::Capture`
-captures the current managed state; `ImportLegacyWorkspace` explicitly validates
-and copies the raw workspace even when a native publication exists. Failed
-imports leave the current publication intact. This separation is intentional;
-there is no automatic detection of arbitrary raw writes.
+## Reads, placement and mutation
 
-`UseLegacyWorkspace()` invalidates all publication dependencies and explicitly
-selects the detached workspace's values; it does not export current native data.
-Managed legacy mutation methods reject native authority. They require this
-explicit selection and never silently discard a publication. For current-state
-edits use `MeshEdit`; a detached setup clone can also export the current authority.
-Mode changes use `Change::All` because detached raw workspace
-edits may involve any component. In-place managed native read scopes retain the
-source version lease and block these transitions until released. Independently
-captured detached snapshots remain valid after source changes.
+`AcquireRead(requirements, context)` exposes only requested prepared groups.
+Unrequested optional groups are hidden even if present in the publication.
+Missing requested groups fail; acquisition never builds them. The plain view is
+borrowed and performs no lease acquisition in numerical loops. Borrowed facade
+helpers require an outer scope or serialized setup and do not independently
+validate every access boundary.
 
-`PlaceNative(device, context)` explicitly creates a persistent device placement.
-Acquisition on an unprepared placement fails; no upload occurs in the read path.
-The publication owns a persistent native host read scope for plain borrowed
-semantic helpers. Such helpers require an outer `AcquireRead` owner or a
-serialized setup phase, and do not acquire locks or leases inside numerical
-loops. Optional relation helpers reject groups absent from the publication.
-Shallow mesh copies share the version tracker; after either copy mutates, an
-older sibling publication is rejected by its next `AcquireRead` boundary.
-Borrowed helpers alone do not validate that boundary. Named numbering helpers
-use published entity maps, and packed node/periodic-bit helpers use native rows.
-Generic arbitrary-pair numbering and `ObtainLocalFactFillOrdering` require the
-explicit legacy workspace. `ObtainSymmetricSymbolicFactorization` reads published
-semantic neighbor/partition data and validates its supplied symbolic structure.
-The legacy `to_device`, `to_host`, and `deviceView` entry points also reject
-native mode; use `PlaceNative` and `AcquireRead` for the published authority.
+`PlaceNative(device, context)` prepares persistent immutable device storage.
+Unprepared-device acquisition fails. Python `place_native(ordinal)` supports
+`-1` for the current CUDA device; `to_device("CUDA")` selects that current device.
+`to_host()` validates the resident host publication, because kernels cannot
+mutate native mesh values. Detached snapshot copies have their own placement
+API. Placement does not change geometric identity or replace stream ordering.
 
-This establishes native ownership and query publication. Legacy reconstruction,
-ghost construction, distribution mutation, and serializers still use the
-explicit workspace path. It does not claim that those algorithms have already
-been rewritten as native Array row builders or native ghost pipelines. Passive
-cross-mesh legacy algorithms must reject native sources until their input path
-uses semantic queries or an explicit workspace export.
+Retain read owners until all host/worker/device uses finish. Completion must join
+every consuming stream. `Complete`/`Wait` seal new queries but leases persist
+until destruction. Python shared rows retain those leases after context exit.
+Tracked mutation rejects active readers collectively. Detached snapshot readers
+keep old values without blocking a later source publication.
+
+Geometry/edit/setup operations prepare all fallible data before publication.
+Validation failures preserve the source; callers must still obey collective
+participation and serialize orchestration. `ObtainLocalFactFillOrdering` is
+pure auxiliary native setup: it may run under retained readers and does not
+bump geometry or layout generations. Existing scopes retain the state acquired;
+use their HostView or an explicit shared current-state capture for references
+that must survive cache/placement-handle replacement. Mathematical changes use tracked geometry operations,
+`MeshEdit`, or mesh-plus-field transitions, not raw buffer writes.
+
+## Fields and compatibility names
+
+Persistent identity is `(namespace, kind, ID)`; rank-offset globals describe
+current addressing. EntitySpace descriptors retain immutable canonical maps but
+do not lock the mesh. Numbering changes stale their mapping operations. The
+legacy-field indexing bridge copies map metadata into supported real field
+transformers, keeping those mutable maps separate from canonical mesh maps.
+Callers rebuild field requests and dependencies after ordering changes.
+
+Readonly Python spellings such as `coords`, `cell2node`, `cellElemInfo`, and their
+`father`/`son` parts are retained native read aliases. They expose no mutable
+mesh Array or transformer. Numeric rows are readonly; POD metadata is a readonly
+handle with an explicit detached `snapshot()`. Solver-field Array/ArrayPair and
+Torch interfaces remain independent and retain their existing contracts.
+
+## Restart and output
+
+The full native archive preserves all published families, full named relation
+keys, companions, periodic metadata, IDs, namespace/high-water marks and ancestry.
+It saves owned rows and reconstructs sparse ghost closure. Matching reads retain
+saved partitions; explicit even-split loading can change MPI size before a
+native graph partition. Per-rank JSON requires matching rank partitions.
+
+The old primary-wire schema has a one-way native decoder. It has no mesh
+namespace and cannot preserve auxiliary-family field numbering; imported IDs
+are checked and a fresh namespace is created. It never reconstructs a legacy
+mesh workspace. Primary snapshot export is an interoperability format, not a
+full native checkpoint.
+
+`UnstructuredMeshSerialRW` is output-only. `BuildSerialOut` builds a
+`NativeMeshSerialOutput` adapter for existing solver-field output; it does not
+clone legacy geometry or change live adjacency numbering. Native output buffers
+and CGNS/VTKHDF writers consume scoped native data. These contracts describe the
+implementation, not a claim of completed numerical or runtime validation.

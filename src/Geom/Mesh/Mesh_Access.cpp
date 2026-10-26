@@ -1,159 +1,18 @@
 #include "Mesh.hpp"
 #include "MeshAccess.hpp"
 #include "FieldTransfer.hpp"
-#include "DNDS/Runtime/LegacyArrayBridge.hpp"
+#include <nlohmann/json.hpp>
 
 namespace DNDS::Geom
 {
     MeshReadAccess::MeshReadAccess(MeshReadAccess &&other) noexcept
-        : _meshRead(std::move(other._meshRead)), _sourceRead(std::move(other._sourceRead)), _stamp(std::move(other._stamp)),
+        : _meshRead(std::move(other._meshRead)), _sourceRead(std::move(other._sourceRead)),
+          _nativeOwner(std::move(other._nativeOwner)), _stamp(std::move(other._stamp)),
           _context(other._context), _storage(other._storage), _holds(std::move(other._holds)),
           _completion(std::move(other._completion)), _completed(other._completed), _active(other._active)
     {
         other._active = false;
     }
-    template <class Pair>
-    auto MeshReadAccess::Capture(Pair &pair) -> Runtime::PairReadView<typename Pair::t_arr::value_type>
-    {
-        using T = typename Pair::t_arr::value_type;
-        auto capture = [&](const auto &legacy) -> Runtime::ArrayView<const T>
-        {
-            if (!legacy)
-                return {};
-            auto array = Runtime::ShareLegacyHost(*legacy);
-            // Explicit placement conversion keeps the transitional source read
-            // alive during the copy. Native topology backing will bypass this.
-            if (_context.device != Runtime::Device::Host())
-                array = array.To(_context.device, _context);
-            auto hold = std::make_unique<ArrayHold<T>>(std::move(array), _context);
-            auto view = hold->read.View();
-            _holds.push_back(std::move(hold));
-            return view;
-        };
-        return {capture(pair.father), capture(pair.son)};
-    }
-
-    MeshReadAccess::MeshReadAccess(UnstructuredMesh &mesh, MeshReadRequirements requirements,
-                                   Runtime::ExecutionContext context)
-        : _meshRead(mesh.versions.Read()), _stamp(mesh.versions.Stamp()), _context(context)
-    {
-        DNDS_check_throw_info(context.device.space != Runtime::MemorySpace::Host || !context.stream,
-                              "host mesh acquisition cannot use a device stream");
-        // Validate actual indices on host before device placement. This temporary
-        // owner uses the same controllers; it is discarded after synchronous
-        // uploads. Native backing will cache validated shape/order descriptors.
-        std::unique_ptr<MeshReadAccess> hostPreflight;
-        if (context.device != Runtime::Device::Host())
-            hostPreflight = std::make_unique<MeshReadAccess>(mesh, requirements, Runtime::ExecutionContext::Host());
-        _storage.dim = mesh.dim;
-        _storage.isPeriodic = mesh.isPeriodic;
-        _storage.periodicInfo = mesh.periodicInfo;
-        auto source = [&](const auto &pair, const auto &canonical, bool equivalentEdgeMaps)
-        {
-            DNDS_check_throw_info(pair.father && pair.son && canonical.father && canonical.son,
-                                  "mesh source entity storage is not initialized");
-            DNDS_check_throw_info(pair.trans.father == pair.father && pair.trans.son == pair.son,
-                                  "mesh source mapping is attached to different arrays");
-            const auto &global = pair.trans.pLGlobalMapping;
-            const auto &ghost = pair.trans.pLGhostMapping;
-            const auto &expectedGlobal = canonical.trans.pLGlobalMapping;
-            const auto &expectedGhost = canonical.trans.pLGhostMapping;
-            DNDS_check_throw_info(global && ghost && expectedGlobal && expectedGhost &&
-                                      pair.father->pLGlobalMapping == global,
-                                  "mesh source mapping is not prepared");
-            DNDS_check_throw_info(global->RLengths().size() == size_t(mesh.mpi.size) &&
-                                      mesh.mpi.rank >= 0 && mesh.mpi.rank < mesh.mpi.size &&
-                                      global->RLengths()[mesh.mpi.rank] == pair.father->Size() &&
-                                      ghost->ghostIndex.size() == size_t(pair.son->Size()),
-                                  "mesh source mapping extents differ from its arrays");
-            bool same = global == expectedGlobal && ghost == expectedGhost;
-            // BuildGhostEdge historically constructs independent route objects
-            // for edge companions from the same exact ordered global/ghost IDs.
-            // Confine semantic equivalence to that explicit legacy boundary.
-            if (!same && equivalentEdgeMaps)
-                same = global->RLengths() == expectedGlobal->RLengths() &&
-                       global->ROffsets() == expectedGlobal->ROffsets() &&
-                       ghost->ghostIndex == expectedGhost->ghostIndex &&
-                       ghost->ghostStart == expectedGhost->ghostStart &&
-                       ghost->ghostSizes == expectedGhost->ghostSizes &&
-                       ghost->pushIndexStarts == expectedGhost->pushIndexStarts &&
-                       ghost->pushIndexSizes == expectedGhost->pushIndexSizes &&
-                       ghost->pushingIndexGlobal == expectedGhost->pushingIndexGlobal;
-            DNDS_check_throw_info(same, "mesh source row mapping differs from the published entity space");
-        };
-        auto field = [&](auto &pair, const auto &canonical, bool equivalentEdgeMaps = false)
-        {
-            source(pair, canonical, equivalentEdgeMaps);
-            return Capture(pair);
-        };
-        auto relation = [&](MeshRelation kind, auto &pair, const auto &targetMap, const auto &canonical,
-                            bool equivalentEdgeMaps = false)
-        {
-            DNDS_check_throw_info(pair.isLocal(), "mesh query requires a published local adjacency");
-            // A local index is meaningful only in the published target order.
-            // Equal row counts cannot establish that correspondence.
-            DNDS_check_throw_info(pair.idx.isWired() && targetMap && pair.idx.mapping() == targetMap,
-                                  "mesh relation target mapping differs from the published entity space");
-            auto slot = static_cast<size_t>(kind);
-            _storage.relations[slot] = field(pair, canonical, equivalentEdgeMaps);
-            _storage.relationStates[slot] = pair.idx.state();
-            _storage.relationPresent[slot] = true;
-        };
-        _storage.coords = field(mesh.coords, mesh.coords);
-        relation(MeshRelation::CellNodes, mesh.cell2node, mesh.coords.trans.pLGhostMapping, mesh.cell2node);
-        relation(MeshRelation::BoundaryNodes, mesh.bnd2node, mesh.coords.trans.pLGhostMapping, mesh.bnd2node);
-        relation(MeshRelation::BoundaryCells, mesh.bnd2cell, mesh.cell2node.trans.pLGhostMapping, mesh.bnd2node);
-        relation(MeshRelation::CellCells, mesh.cell2cell, mesh.cell2node.trans.pLGhostMapping, mesh.cell2node);
-        _storage.cellElemInfo = field(mesh.cellElemInfo, mesh.cell2node);
-        _storage.bndElemInfo = field(mesh.bndElemInfo, mesh.bnd2node);
-        if (mesh.isPeriodic)
-        {
-            _storage.cell2nodePbi = field(mesh.cell2nodePbi, mesh.cell2node);
-            _storage.bnd2nodePbi = field(mesh.bnd2nodePbi, mesh.bnd2node);
-        }
-        if (requirements.faces)
-        {
-            relation(MeshRelation::CellFaces, mesh.cell2face, mesh.face2node.trans.pLGhostMapping, mesh.cell2node);
-            relation(MeshRelation::FaceNodes, mesh.face2node, mesh.coords.trans.pLGhostMapping, mesh.face2node);
-            relation(MeshRelation::FaceCells, mesh.face2cell, mesh.cell2node.trans.pLGhostMapping, mesh.face2node);
-            relation(MeshRelation::FaceBoundaries, mesh.face2bnd, mesh.bnd2node.trans.pLGhostMapping, mesh.face2node);
-            relation(MeshRelation::BoundaryFaces, mesh.bnd2face, mesh.face2node.trans.pLGhostMapping, mesh.bnd2node);
-            _storage.faceElemInfo = field(mesh.faceElemInfo, mesh.face2node);
-            if (mesh.isPeriodic)
-            {
-                _storage.cell2facePbi = field(mesh.cell2facePbi, mesh.cell2node);
-                _storage.face2nodePbi = field(mesh.face2nodePbi, mesh.face2node);
-            }
-        }
-        if (requirements.inverse)
-        {
-            relation(MeshRelation::NodeCells, mesh.node2cell, mesh.cell2node.trans.pLGhostMapping, mesh.coords);
-            relation(MeshRelation::NodeBoundaries, mesh.node2bnd, mesh.bnd2node.trans.pLGhostMapping, mesh.coords);
-        }
-        if (requirements.edges)
-        {
-            relation(MeshRelation::CellEdges, mesh.cell2edge, mesh.edge2node.trans.pLGhostMapping, mesh.cell2node);
-            relation(MeshRelation::EdgeNodes, mesh.edge2node, mesh.coords.trans.pLGhostMapping, mesh.edge2node);
-            relation(MeshRelation::EdgeCells, mesh.edge2cell, mesh.cell2node.trans.pLGhostMapping, mesh.edge2node, true);
-            _storage.edgeElemInfo = field(mesh.edgeElemInfo, mesh.edge2node, true);
-            if (mesh.isPeriodic)
-            {
-                _storage.cell2edgePbi = field(mesh.cell2edgePbi, mesh.cell2node);
-                _storage.edge2nodePbi = field(mesh.edge2nodePbi, mesh.edge2node, true);
-            }
-        }
-        if (requirements.cellFaceNeighbors)
-            relation(MeshRelation::CellFaceCells, mesh.cell2cellFace, mesh.cell2node.trans.pLGhostMapping, mesh.cell2node);
-        if (requirements.wallDistance)
-        {
-            _storage.nodeWallDist = field(mesh.nodeWallDist, mesh.coords);
-            _storage.hasNodeWallDist = true;
-        }
-        DNDS_check_throw_info(!requirements.allFaceCellsLocal || requirements.faces,
-                              "all-face cell closure requires facial relations");
-        Validate(requirements);
-    }
-
     void MeshReadAccess::Validate(const MeshReadRequirements &requirements) const
     {
         auto total = [](const auto &pair)
@@ -392,15 +251,53 @@ namespace DNDS::Geom
         _completion.Wait();
     }
 
+    void MeshReadAccess::Restrict(const MeshReadRequirements &requirements)
+    {
+        auto hide = [&](std::initializer_list<MeshRelation> relations)
+        {
+            for (auto relation : relations)
+            {
+                const auto slot = size_t(relation);
+                _storage.relationPresent[slot] = false;
+                _storage.relationStates[slot] = Adj_Unknown;
+                _storage.relations[slot] = {};
+            }
+        };
+        if (!requirements.faces)
+        {
+            hide({MeshRelation::CellFaces, MeshRelation::FaceNodes, MeshRelation::FaceCells,
+                  MeshRelation::FaceBoundaries, MeshRelation::BoundaryFaces});
+            _storage.faceElemInfo = {};
+            _storage.cell2facePbi = {};
+            _storage.face2nodePbi = {};
+        }
+        if (!requirements.inverse)
+            hide({MeshRelation::NodeCells, MeshRelation::NodeBoundaries});
+        if (!requirements.edges)
+        {
+            hide({MeshRelation::CellEdges, MeshRelation::EdgeNodes, MeshRelation::EdgeCells});
+            _storage.edgeElemInfo = {};
+            _storage.cell2edgePbi = {};
+            _storage.edge2nodePbi = {};
+        }
+        if (!requirements.cellFaceNeighbors)
+            hide({MeshRelation::CellFaceCells});
+        if (!requirements.wallDistance)
+        {
+            _storage.nodeWallDist = {};
+            _storage.hasNodeWallDist = false;
+        }
+    }
+
     MeshReadAccess UnstructuredMesh::AcquireRead(MeshReadRequirements requirements, Runtime::ExecutionContext context)
     {
-        if (_nativeState)
-        {
-            auto sourceRead = versions.Read();
-            _nativeState->CheckRequirements(requirements);
-            return MeshReadAccess(_nativeState->Snapshot(context.device), context, std::move(sourceRead), versions.Stamp());
-        }
-        return MeshReadAccess(*this, requirements, context);
+        DNDS_check_throw_info(_nativeState, "mesh read requires native authority");
+        auto sourceRead = versions.Read();
+        _nativeState->CheckRequirements(requirements);
+        MeshReadAccess result(_nativeState->Snapshot(context.device), context, std::move(sourceRead), versions.Stamp());
+        result._nativeOwner = _nativeState;
+        result.Restrict(requirements);
+        return result;
     }
 
     std::shared_ptr<UnstructuredMesh> UnstructuredMesh::FromNative(const MPIInfo &mpi,
@@ -439,21 +336,6 @@ namespace DNDS::Geom
             EntitySpace::CheckCommunicator(nodes._mpi.comm, mpi.comm);
             const auto &view = source->BorrowHostView();
             DNDS_check_throw_info(view.Dimension() == getDim(), "native setup replacement dimension differs");
-            if (!_nativeState)
-            {
-                auto empty = [](const auto &pair)
-                { return (!pair.father || pair.father->Size() == 0) && (!pair.son || pair.son->Size() == 0); };
-                bool vacant = true;
-                auto check = [&](const auto &pair) { vacant = vacant && empty(pair); };
-                check(coords); check(cell2node); check(bnd2node); check(bnd2cell); check(cell2cell);
-                check(cellElemInfo); check(bndElemInfo); check(cell2cellOrig); check(node2nodeOrig); check(bnd2bndOrig);
-                check(cell2nodePbi); check(bnd2nodePbi); check(node2cell); check(node2bnd);
-                check(cell2face); check(face2node); check(face2cell); check(faceElemInfo); check(bnd2face); check(face2bnd);
-                check(cell2facePbi); check(face2nodePbi); check(cell2edge); check(edge2node); check(edge2cell);
-                check(edgeElemInfo); check(cell2edgePbi); check(edge2nodePbi); check(cell2cellFace);
-                check(nodeWallDist); check(coordsElevDisp); check(cell2nodePeriodicRecreated); check(coordsPeriodicRecreated);
-                DNDS_check_throw_info(vacant, "native setup replacement rejects populated legacy destination");
-            }
             signature = source->MeshNamespace() + ":" + std::to_string(view.Dimension()) + ":" + std::to_string(view.IsPeriodic());
             for (const auto &[kind, family] : source->_spaces)
             {
@@ -506,69 +388,8 @@ namespace DNDS::Geom
         node2bndNode.clear();
         node2parentNode.clear();
         cell2parentCell.clear();
-        bnd2faceV.clear();
-        face2bndM.clear();
-        vtkCell2nodeOffsets.clear();
-        vtkCellType.clear();
-        vtkCell2node.clear();
-        nodeRecreated2nodeLocal.clear();
-        vtkNodeOffset = vtkCellOffset = vtkCell2NodeGlobalSiz = vtkNCellGlobal = vtkNNodeGlobal = -1;
-        cell2cellFaceVLocalParts.clear();
-        localPartitionStarts.clear();
-        nNodeO1 = nTotalMoved = -1;
-        elevState = Elevation_Untouched;
     }
 
-    void UnstructuredMesh::PublishNative(MeshReadRequirements requirements)
-    {
-        CheckCollectiveMutationAvailable(true);
-        std::shared_ptr<const NativeMeshState> next;
-        std::exception_ptr error;
-        int valid = 1;
-        try
-        {
-            next = NativeMeshState::CaptureLegacy(*this, requirements);
-        }
-        catch (...)
-        {
-            valid = 0;
-            error = std::current_exception();
-        }
-        MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, mpi.comm);
-        if (!valid)
-        {
-            if (error)
-                std::rethrow_exception(error);
-            DNDS_check_throw_info(false, "native workspace import failed on another rank");
-        }
-        MeshMutationToken mutation(this, versions, Runtime::Change::All, [this]
-                                   { _nativeState.reset(); _nativeSmoothing.reset(); });
-        mutation.Commit();
-        std::shared_ptr<const NativeMeshState> bound;
-        error = {};
-        valid = 1;
-        try
-        {
-            bound = next->BindEpoch(versions);
-        }
-        catch (...)
-        {
-            valid = 0;
-            error = std::current_exception();
-        }
-        MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, mpi.comm);
-        if (!valid)
-        {
-            // Publication must never leave a silently usable mixed state if
-            // post-commit owner allocation fails. Make failure sticky.
-            auto failed = versions.BeginMutation(Runtime::Change::All);
-            if (error)
-                std::rethrow_exception(error);
-            DNDS_check_throw_info(false, "native publication binding failed on another rank");
-        }
-        _nativeState = std::move(bound);
-        _nativeSmoothing.reset();
-    }
     void UnstructuredMesh::PlaceNative(Runtime::Device device, Runtime::ExecutionContext context)
     {
         auto read = versions.Read();
@@ -576,11 +397,5 @@ namespace DNDS::Geom
         _nativeState = _nativeState->WithPlacement(device, context);
         _nativeSmoothing.reset();
     }
-    void UnstructuredMesh::UseLegacyWorkspace()
-    {
-        CheckCollectiveMutationAvailable(true);
-        MeshMutationToken mutation(this, versions, Runtime::Change::All, [this]
-                                   { _nativeState.reset(); _nativeSmoothing.reset(); });
-        mutation.Commit();
-    }
+
 }

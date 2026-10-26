@@ -6,8 +6,8 @@
 namespace DNDS::Geom
 {
     /// Native-only alias kind. This adapter owns a semantic read, never a mesh
-    /// payload copy. Mutable legacy properties are retained only by the explicit
-    /// legacy branch until its separate retirement package.
+    /// payload copy. Rows and POD references are readonly; explicit snapshots
+    /// provide detached mutable values for debugging.
     enum class NativePythonPairKind
     {
         Coords,

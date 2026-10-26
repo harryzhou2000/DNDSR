@@ -22,7 +22,6 @@ PeriodicInfo.cpp
 Mesh/MeshConnectivity.cpp
 Mesh/MeshConnectivity_Native.cpp
 Mesh/NativeConnectivity.cpp
-Mesh/MeshConnectivity_Interpolate.cpp
 Mesh/MeshConnectivity_Ghost.cpp
 Mesh/Mesh.cpp
 Mesh/Mesh_Access.cpp
@@ -49,12 +48,8 @@ Mesh/NativeMeshOutput.cpp
 Mesh/NativeMeshSerialOutput.cpp
 Mesh/MeshTransition.cpp
 Mesh/Mesh_EntitySpace.cpp
-Mesh/Mesh_Legacy.cpp
 Mesh/Mesh_Plts.cpp
-Mesh/Mesh_Serial_BuildCell2Cell.cpp
-Mesh/Mesh_Serial_ReadFromCGNS.cpp
 Mesh/Mesh_Serial_Partition.cpp
-Mesh/Mesh_ReadSerializeDistributed.cpp
 Mesh/Mesh_Elevation.cpp
 Mesh/Mesh_Elevation_SmoothSolver.cpp
 Mesh/Mesh_Elevation_SmoothV2.cpp
@@ -64,7 +59,7 @@ Mesh/SerialAdjReordering.cpp
 )
 
 if (DNDS_USE_CUDA)
-list(APPEND CPPS Mesh/Mesh.cu PeriodicInfo.cu)
+list(APPEND CPPS PeriodicInfo.cu)
 endif()
 
 dnds_add_lib(${LIBNAME} "${CPPS}" "${LINKS}" "${DNDS_PCH_TARGETS}"

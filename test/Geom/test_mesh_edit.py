@@ -34,21 +34,18 @@ def test_current_authority_geometry_and_escaped_copies():
     committed = mesh.snapshot()
     # Supported native geometry entry points publish tracked replacements.
     # Keep the unsafe whole-array legacy callback explicitly rejected.
-    with pytest.raises(RuntimeError):
-        mesh.TransformCoords(lambda points: points.fill(99))
+    assert not hasattr(mesh, "TransformCoords")
     assert committed.source_current
     for operation in (
         lambda: mesh.transform_coordinates(lambda p: p + 99),
         lambda: mesh.apply_geometry_transform(np.eye(3), 2),
         lambda: mesh.rectify_boundary_coordinates(lambda zone: 1),
-        lambda: mesh.SetPeriodicGeometry(),
     ):
         with mesh.acquire_read():
             with pytest.raises(RuntimeError):
                 operation()
         assert committed.source_current
-    with pytest.raises(RuntimeError):
-        mesh.SetPeriodicGeometry()  # Native frame setup keeps its legacy-only contract.
+    assert not hasattr(mesh, "SetPeriodicGeometry")
     assert committed.source_current
     expected = before + [0.25, 0.5, 0]
     with mesh.acquire_read() as read:

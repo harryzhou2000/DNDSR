@@ -9,7 +9,7 @@
 /// UnstructuredMesh provides buildReorderRegistry() and ReorderEntities() convenience methods.
 
 #include "DNDS/PermutationTransfer.hpp"
-#include "MeshConnectivity.hpp"
+#include "MeshRelationTypes.hpp"
 #include "MeshReorderTypes.hpp"
 
 #include <functional>

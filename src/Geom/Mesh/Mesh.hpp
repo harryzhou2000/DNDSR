@@ -1,37 +1,28 @@
 #pragma once
-#include "DNDS/Device/DeviceStorage.hpp"
-#include "DNDS/Device/DeviceTransferable.hpp"
 #include "Geom/Elements.hpp"
-#include "DNDS/Array.hpp"
-#include "DNDS/ArrayDerived/ArrayAdjacency.hpp"
-#include "DNDS/ArrayDerived/ArrayEigenVector.hpp"
 #include "Geom/BoundaryCondition.hpp"
-#include "DNDS/ArrayPair.hpp"
 #include "Geom/PeriodicInfo.hpp"
 #include "Geom/RadialBasisFunction.hpp"
-#include "DNDS/ObjectUtils.hpp"
 #include "DNDS/Config/ConfigParam.hpp"
-#include "AdjIndexInfo.hpp"
-#include "MeshConnectivity.hpp"
 #include "ReorderPlan.hpp"
-#include "DNDS/Runtime/Version.hpp"
 #include "MeshAccess.hpp"
 #include "EntitySpace.hpp"
-#include "RelationAccessLegacy.hpp"
+#include "RelationAccess.hpp"
 #include "MeshMutation.hpp"
 #include "NativeMeshState.hpp"
 #include "NativeMeshSerialOutput.hpp"
+// Legacy field/output schedule types; no legacy mesh allocations are owned.
+#include "Mesh_DeviceView.hpp"
 
 namespace DNDS::Direct
 {
     struct SerialSymLUStructure;
     struct DirectPrecControl;
 }
-#include "Mesh_DeviceView.hpp"
-
 namespace DNDS::Geom
 {
     class NativeSmoothingWorkspace;
+    struct PartitionOptions;
     enum class MeshLoc : uint8_t
     {
         Unknown = 0,
@@ -40,9 +31,10 @@ namespace DNDS::Geom
         Cell = 4
     };
 
-    struct PartitionOptions; // forward declaration; defined after UnstructuredMesh
-
-    struct UnstructuredMesh : public DeviceTransferable<UnstructuredMesh>
+    /// Public mesh facade over one immutable native publication. Geometry/topology
+    /// ownership belongs to NativeMeshState and shared Runtime value/shape buffers.
+    /// Borrowed semantic rows require an outer AcquireRead or serialized setup.
+    struct UnstructuredMesh
     {
     private:
         std::shared_ptr<const uint8_t> _entityIdentity = std::make_shared<const uint8_t>(0);
@@ -51,16 +43,15 @@ namespace DNDS::Geom
         friend class NativeMeshState;
         friend class MeshEdit;
         friend class PreparedMeshTransition;
-        EntitySpace LegacyEntities(EntityKind kind) const;
-        void PublishNativeGeometry(std::shared_ptr<const NativeMeshState> prepared,
-                                   Runtime::VersionStamp sourceStamp,
-                                   Runtime::Change changes = Runtime::Change::Geometry | Runtime::Change::Values |
-                                                             Runtime::Change::Interface | Runtime::Change::Allocation);
-        void TransformNativeCoords(const std::function<tPoint(const tPoint &)> &transform);
+        const NativeMeshState &Native() const
+        {
+            DNDS_check_throw_info(_nativeState, "native mesh state is not published");
+            return *_nativeState;
+        }
         const UnstructuredMeshView &NativeBorrowedView(MeshRelation relation) const
         {
-            const auto &view = _nativeState->BorrowHostView();
-            DNDS_check_throw_info(view.HasRelation(relation), "semantic mesh helper requires an unpublished relation group");
+            const auto &view = Native().BorrowHostView();
+            DNDS_check_throw_info(view.HasRelation(relation), "requested mesh relation is not published");
             return view;
         }
         index NativeIndexGlobal2Local(EntityKind kind, index global, bool ownedOnly = false) const
@@ -83,270 +74,20 @@ namespace DNDS::Geom
             DNDS_check_throw_info(!ownedOnly || local < space.NumOwned(), "local entity index outside owned rows");
             return space.LocalToGlobal(local);
         }
-
-        // Explicit implementation capability: public reentry never joins an edit.
-        void RecoverNode2CellAndNode2BndImpl(MeshMutationToken &mutationToken);
-        void RecoverCell2CellAndBnd2CellImpl(MeshMutationToken &mutationToken);
-        void BuildGhostPrimaryImpl(MeshMutationToken &mutationToken, int nGhostLayers);
-        void BuildGhostN2CBImpl(MeshMutationToken &mutationToken);
-        void BuildCell2CellFaceImpl(MeshMutationToken &mutationToken);
-        void InterpolateFaceImpl(MeshMutationToken &mutationToken);
-        void BuildGhostFaceImpl(MeshMutationToken &mutationToken);
-        void MatchFaceBoundaryImpl(MeshMutationToken &mutationToken);
-        void InterpolateEdgeImpl(MeshMutationToken &mutationToken);
-        void BuildGhostEdgeImpl(MeshMutationToken &mutationToken);
-        void SetPeriodicGeometryImpl(MeshMutationToken &mutationToken, const tPoint &translation1,
-                                     const tPoint &rotationCenter1,
-                                     const tPoint &eulerAngles1,
-                                     const tPoint &translation2,
-                                     const tPoint &rotationCenter2,
-                                     const tPoint &eulerAngles2,
-                                     const tPoint &translation3,
-                                     const tPoint &rotationCenter3,
-                                     const tPoint &eulerAngles3);
-        void AdjGlobal2LocalPrimaryImpl(MeshMutationToken &mutationToken);
-        void AdjLocal2GlobalPrimaryImpl(MeshMutationToken &mutationToken);
-        void AdjGlobal2LocalPrimaryForBndImpl(MeshMutationToken &mutationToken);
-        void AdjLocal2GlobalPrimaryForBndImpl(MeshMutationToken &mutationToken);
-        void AdjGlobal2LocalFacialImpl(MeshMutationToken &mutationToken);
-        void AdjLocal2GlobalFacialImpl(MeshMutationToken &mutationToken);
-        void AdjGlobal2LocalC2FImpl(MeshMutationToken &mutationToken);
-        void AdjLocal2GlobalC2FImpl(MeshMutationToken &mutationToken);
-        void AdjGlobal2LocalN2CBImpl(MeshMutationToken &mutationToken);
-        void AdjLocal2GlobalN2CBImpl(MeshMutationToken &mutationToken);
-        void AdjGlobal2LocalC2CFaceImpl(MeshMutationToken &mutationToken);
-        void AdjLocal2GlobalC2CFaceImpl(MeshMutationToken &mutationToken);
-        void AdjGlobal2LocalEdgeImpl(MeshMutationToken &mutationToken);
-        void AdjLocal2GlobalEdgeImpl(MeshMutationToken &mutationToken);
-
-        void ExecuteReorderPlanImpl(MeshMutationToken &mutationToken, const ReorderInput &input,
-                                    ReorderRegistry &reg, const ReorderPlan &plan);
+        void PublishNativeGeometry(std::shared_ptr<const NativeMeshState> prepared,
+                                   Runtime::VersionStamp sourceStamp,
+                                   Runtime::Change changes = Runtime::Change::Geometry | Runtime::Change::Values | Runtime::Change::Interface | Runtime::Change::Allocation);
+        void TransformNativeCoords(const std::function<tPoint(const tPoint &)> &transform);
 
     public:
-        bool HasNativeState() const { return bool(_nativeState); }
-        /// Collective compatibility hash of owned AND ghost coordinate rows.
-        /// Preserves the historical weak hash, including partition dependence;
-        /// this is not a canonical global geometry identity or equality proof.
-        std::size_t CoordinateHash();
-        /// Setup authority for native transformations. The retained immutable
-        /// publication carries its buffers and entity orders independently.
-        std::shared_ptr<const NativeMeshState> CurrentNativeState() const
-        {
-            DNDS_check_throw_info(_nativeState, "native mesh state is not published");
-            _nativeState->Validate();
-            return _nativeState;
-        }
-        /// Setup-only named definitions. Returned readers retain immutable
-        /// buffers and the current entity order independently of this facade.
-        std::vector<AdjKind> NativeRelationKeys() const
-        {
-            DNDS_check_throw_info(_nativeState, "native mesh state is not published");
-            return _nativeState->RelationKeys();
-        }
-        RelationReadAccess ReadNativeRelation(const AdjKind &key) const
-        {
-            DNDS_check_throw_info(_nativeState, "native mesh state is not published");
-            return _nativeState->Relation(key);
-        }
-        void RequireLegacyWorkspace(const std::string &operation) const
-        {
-            DNDS_check_throw_info(!_nativeState, operation + " requires explicit UseLegacyWorkspace");
-        }
-        /// Setup-only replacement without legacy geometry staging. Collective;
-        /// accepts an empty facade or an existing native destination, rejects
-        /// held reads and populated legacy destinations. External fields/routes
-        /// on the old publication must be recreated or explicitly transferred.
-        void ReplaceNativeForSetup(std::shared_ptr<const NativeMeshState> source);
-        void PublishNative(MeshReadRequirements requirements = MeshReadRequirements::Primary());
-        /// Collective setup-only topology completion. Rebuild external field
-        /// bindings after this operation; use detached preparation for A->B.
-        void PrepareNativeTopology(bool faces = true, bool edges = false, int ghostLayers = 1);
-        /// Collective full native checkpoint. Retains the current publication;
-        /// no legacy mesh conversion and no external solver fields are saved.
-        void WriteNativeArchive(Serializer::SerializerBaseSSP serializer, const std::string &name) const;
-        /// Matching saved partition or contiguous even partition; returns a
-        /// new native facade with rebuilt ghost closure and preserved IDs.
-        static std::shared_ptr<UnstructuredMesh> ReadNativeArchive(
-            const MPIInfo &mpi, Serializer::SerializerBaseSSP serializer, const std::string &name,
-            Serializer::ArrayGlobalOffset partition = Serializer::ArrayGlobalOffset_Unknown, int ghostLayers = 1);
-        /// Construct the public facade from independently built native state.
-        /// Legacy array members remain empty; readers use the native authority.
-        static std::shared_ptr<UnstructuredMesh> FromNative(const MPIInfo &mpi,
-                                                            std::shared_ptr<const NativeMeshState> state);
-        void PlaceNative(Runtime::Device device, Runtime::ExecutionContext context);
-        void UseLegacyWorkspace();
-        MeshReadRequirements CurrentNativeRequirements() const
-        {
-            DNDS_check_throw_info(_nativeState, "native mesh state is not published");
-            return _nativeState->Requirements();
-        }
-        index OriginalEntityId(EntityKind kind, index row) const
-        {
-            if (_nativeState)
-                return _nativeState->OriginalEntityId(kind, row);
-            const auto *pair = kind == EntityKind::Cell ? &cell2cellOrig : kind == EntityKind::Node ? &node2nodeOrig
-                                                                                                    : &bnd2bndOrig;
-            DNDS_check_throw_info(kind == EntityKind::Cell || kind == EntityKind::Node || kind == EntityKind::Bnd,
-                                  "original IDs unavailable for this entity family");
-            DNDS_check_throw_info(pair->father && pair->son && row >= 0 && row < pair->Size(),
-                                  "original entity ID storage is missing or row is outside its family");
-            return row < pair->father->Size() ? (*pair->father)(row, 0) : (*pair->son)(row - pair->father->Size(), 0);
-        }
-        MeshMutationToken BeginManagedMutation(Runtime::Change changes)
-        {
-            RequireLegacyWorkspace("managed legacy mesh mutation");
-            return MeshMutationToken(this, versions, changes);
-        }
-        EntitySpace Entities(EntityKind kind) const;
-        MeshReadAccess AcquireRead(MeshReadRequirements requirements = MeshReadRequirements::Primary(),
-                                   Runtime::ExecutionContext context = Runtime::ExecutionContext::Host());
-
-        /// Native mutation boundary. Public legacy adjacency edits must declare
-        /// their changes explicitly; they are not automatically intercepted.
-        Runtime::VersionTracker versions;
-
-        /// Collective preflight prevents one rank rejecting an active read while
-        /// peers proceed into reorder communication. Orchestration is serialized.
-        void CheckCollectiveMutationAvailable(bool allowNative = false) const
-        {
-            int available = versions.CanMutate() && (allowNative || !_nativeState);
-            MPI_Allreduce(MPI_IN_PLACE, &available, 1, MPI_INT, MPI_MIN, mpi.comm);
-            DNDS_check_throw_info(available, "mesh mutation blocked by native authority, a reader, writer or failed transition on a rank; select legacy workspace explicitly for legacy mutation");
-        }
-
-        MPI_int mRank{0};
-        DNDS::MPIInfo mpi;
+        MPI_int mRank = 0;
+        MPIInfo mpi;
         int dim;
-        bool isPeriodic{false};
-        // state of: cell2node, cell2cell, bnd2node (only for non-bnd mesh object), bnd2cell (only for non-bnd mesh object)
-        MeshAdjState adjPrimaryState{Adj_Unknown};
-        // state of: face2cell, face2node, face2bnd
-        MeshAdjState adjFacialState{Adj_Unknown};
-        // state of: cell2face, bnd2face
-        MeshAdjState adjC2FState{Adj_Unknown};
-        // state of: node2cell, node2bnd
-        MeshAdjState adjN2CBState{Adj_Unknown};
-        // state of: cell2cellFace
-        MeshAdjState adjC2CFaceState{Adj_Unknown};
-        // state of: cell2edge, edge2node, edge2cell
-        MeshAdjState adjEdgeState{Adj_Unknown};
+        // Initial reader configuration only. Published access uses native metadata.
+        bool isPeriodic = false;
         Periodicity periodicInfo;
-        index nNodeO1{-1};
-        MeshElevationState elevState = Elevation_Untouched;
-        /// reader
-        tCoordPair coords;
-        AdjPairTracked<tAdjPair> cell2node; // → Node
-        AdjPairTracked<tAdjPair> bnd2node;  // → Node
-        AdjPairTracked<tAdj2Pair> bnd2cell; // → Cell
-        AdjPairTracked<tAdjPair> cell2cell; // → Cell
-        tElemInfoArrayPair cellElemInfo;
-        tElemInfoArrayPair bndElemInfo;
-        tAdj1Pair cell2cellOrig; // no device
-        tAdj1Pair node2nodeOrig; // no device
-        tAdj1Pair bnd2bndOrig;   // no device
-        /// periodic only, after reader
-        tPbiPair cell2nodePbi;
-        tPbiPair bnd2nodePbi;
-
-        auto device_array_list_primary()
-        {
-            return std::make_tuple(
-                DNDS_MAKE_1_MEMBER_REF(coords),
-                DNDS_MAKE_1_MEMBER_REF(cell2node),
-                DNDS_MAKE_1_MEMBER_REF(bnd2node),
-                DNDS_MAKE_1_MEMBER_REF(bnd2cell),
-                DNDS_MAKE_1_MEMBER_REF(cell2cell),
-                DNDS_MAKE_1_MEMBER_REF(cellElemInfo),
-                DNDS_MAKE_1_MEMBER_REF(bndElemInfo),
-                DNDS_MAKE_1_MEMBER_REF(cell2nodePbi),
-                DNDS_MAKE_1_MEMBER_REF(bnd2nodePbi),
-                DNDS_MAKE_1_MEMBER_REF(nodeWallDist));
-        }
-
-        /// inverse relations
-        AdjPairTracked<tAdjPair> node2cell; // → Cell
-        AdjPairTracked<tAdjPair> node2bnd;  // → Bnd
-
-        auto device_array_list_N2CB()
-        {
-            return std::make_tuple(
-                DNDS_MAKE_1_MEMBER_REF(node2cell),
-                DNDS_MAKE_1_MEMBER_REF(node2bnd));
-        }
-
-        /// interpolated
-        AdjPairTracked<tAdjPair> cell2face;  // → Face
-        AdjPairTracked<tAdjPair> face2node;  // → Node
-        AdjPairTracked<tAdj2Pair> face2cell; // → Cell
-        tElemInfoArrayPair faceElemInfo;
-        AdjPairTracked<tAdj1Pair> bnd2face; // → Face
-        AdjPairTracked<tAdj1Pair> face2bnd; // → Bnd
-
-        std::vector<index> bnd2faceV;               // no device
-        std::unordered_map<index, index> face2bndM; // no device
-        /// periodic only, after interpolated
-        tPbiPair cell2facePbi;
-        tPbiPair face2nodePbi;
-
-        auto device_array_list_facial()
-        {
-            return std::make_tuple(
-                DNDS_MAKE_1_MEMBER_REF(face2cell),
-                DNDS_MAKE_1_MEMBER_REF(face2node),
-                DNDS_MAKE_1_MEMBER_REF(cell2facePbi),
-                DNDS_MAKE_1_MEMBER_REF(face2nodePbi),
-                DNDS_MAKE_1_MEMBER_REF(faceElemInfo),
-                DNDS_MAKE_1_MEMBER_REF(face2bnd));
-        }
-
-        auto device_array_list_C2F()
-        {
-            return std::make_tuple(
-                DNDS_MAKE_1_MEMBER_REF(cell2face),
-                DNDS_MAKE_1_MEMBER_REF(bnd2face));
-        }
-
-        /// interpolated edges (3D only)
-        AdjPairTracked<tAdjPair> cell2edge; // → Edge
-        AdjPairTracked<tAdjPair> edge2node; // → Node
-        AdjPairTracked<tAdjPair> edge2cell; // → Cell (variable-width, N-parent)
-        tElemInfoArrayPair edgeElemInfo;
-        /// periodic only, after edge interpolation
-        tPbiPair cell2edgePbi;
-        tPbiPair edge2nodePbi;
-
-        auto device_array_list_edge()
-        {
-            return std::make_tuple(
-                DNDS_MAKE_1_MEMBER_REF(cell2edge),
-                DNDS_MAKE_1_MEMBER_REF(edge2cell),
-                DNDS_MAKE_1_MEMBER_REF(edge2node),
-                DNDS_MAKE_1_MEMBER_REF(cell2edgePbi),
-                DNDS_MAKE_1_MEMBER_REF(edge2nodePbi),
-                DNDS_MAKE_1_MEMBER_REF(edgeElemInfo));
-        }
-
-        /// constructed on demand
-        AdjPairTracked<tAdjPair> cell2cellFace; // → Cell
-
-        /// parent built
-        std::vector<index> node2parentNode; // from local-appended iNode to local-appended iNode in parent
-        std::vector<index> node2bndNode;    // from local-appended iNode to local-appended iNode in bnd
-        std::vector<index> cell2parentCell;
-
-        /// for parallel out
-        std::vector<index> vtkCell2nodeOffsets;
-        std::vector<uint8_t> vtkCellType;
-        std::vector<index> vtkCell2node;
-        index vtkNodeOffset{-1};
-        index vtkCellOffset{-1};
-        index vtkCell2NodeGlobalSiz{-1};
-        index vtkNCellGlobal{-1};
-        index vtkNNodeGlobal{-1};
-        tAdjPair cell2nodePeriodicRecreated;
-        tCoordPair coordsPeriodicRecreated;
-        std::vector<index> nodeRecreated2nodeLocal;
-
+        Runtime::VersionTracker versions;
+        std::vector<index> node2parentNode, node2bndNode, cell2parentCell;
         struct HDF5OutSetting
         {
             size_t chunkSize = 128;
@@ -354,10 +95,6 @@ namespace DNDS::Geom
             bool coll_on_data = false;
             bool coll_on_meta = true;
         } hdf5OutSetting;
-
-        /// only elevation
-        tCoordPair coordsElevDisp;
-        index nTotalMoved{-1};
         struct ElevationInfo
         {
             real RBFRadius = 1;
@@ -368,984 +105,131 @@ namespace DNDS::Geom
             real refDWall = 1e-3;
             real RBFPower = 1;
         } elevationInfo;
-
-        // tAdj1Pair bndFaces; // no comm needed for now
-
-        /// for cell local factorization
-        tLocalMatStruct cell2cellFaceVLocalParts;
-
-        std::vector<index> localPartitionStarts;
-
-        /// wall dist:
-        tCoordPair nodeWallDist;
-
-        UnstructuredMesh(const DNDS::MPIInfo &n_mpi, int n_dim)
-            : mpi(n_mpi), dim(n_dim) {}
-
-        int getDim() const { return _nativeState ? _nativeState->BorrowHostView().Dimension() : dim; }
-        bool IsPeriodic() const { return _nativeState ? _nativeState->BorrowHostView().IsPeriodic() : isPeriodic; }
-        const Periodicity &PeriodicMetadata() const { return _nativeState ? _nativeState->BorrowHostView().Periodic() : periodicInfo; }
+        UnstructuredMesh(const MPIInfo &mpi_, int dim_) : mpi(mpi_), dim(dim_) {}
+        UnstructuredMesh(const UnstructuredMesh &) = delete;
+        UnstructuredMesh &operator=(const UnstructuredMesh &) = delete;
+        bool HasNativeState() const { return bool(_nativeState); }
+        std::shared_ptr<const NativeMeshState> CurrentNativeState() const
+        {
+            Native().Validate();
+            return _nativeState;
+        }
+        MeshReadRequirements CurrentNativeRequirements() const { return Native().Requirements(); }
+        std::vector<AdjKind> NativeRelationKeys() const { return Native().RelationKeys(); }
+        RelationReadAccess ReadNativeRelation(const AdjKind &key) const { return Native().Relation(key); }
+        void ReplaceNativeForSetup(std::shared_ptr<const NativeMeshState> source);
+        static std::shared_ptr<UnstructuredMesh> FromNative(const MPIInfo &, std::shared_ptr<const NativeMeshState>);
+        void PrepareNativeTopology(bool faces = true, bool edges = false, int ghostLayers = 1);
+        void PlaceNative(Runtime::Device device, Runtime::ExecutionContext context);
+        EntitySpace Entities(EntityKind kind) const;
+        MeshReadAccess AcquireRead(MeshReadRequirements requirements = MeshReadRequirements::Primary(),
+                                   Runtime::ExecutionContext context = Runtime::ExecutionContext::Host());
+        index OriginalEntityId(EntityKind kind, index row) const { return Native().OriginalEntityId(kind, row); }
+        /// Collective preflight; caller serializes submission/publication.
+        void CheckCollectiveMutationAvailable(bool = true) const
+        {
+            int available = versions.CanMutate();
+            MPI_Allreduce(MPI_IN_PLACE, &available, 1, MPI_INT, MPI_MIN, mpi.comm);
+            DNDS_check_throw_info(available, "mesh mutation blocked by an active reader, writer or failed transition");
+        }
+        int getDim() const { return _nativeState ? Native().BorrowHostView().Dimension() : dim; }
+        bool IsPeriodic() const { return _nativeState ? Native().BorrowHostView().IsPeriodic() : isPeriodic; }
+        const Periodicity &PeriodicMetadata() const { return _nativeState ? Native().BorrowHostView().Periodic() : periodicInfo; }
         const Periodicity &Periodic() const { return PeriodicMetadata(); }
-        void ApplyGeometryTransform(const Eigen::Matrix3d &rotation, real scale);
-        /// Collective native-only x'=linear*x+offset, staged with periodic frames.
-        /// Requires finite orientation-preserving invertible linear and identical
-        /// arguments on every rank. Conjugated periodic rotations must stay proper
-        /// orthonormal (absolute Frobenius/determinant tolerance 1e-10).
-        /// Drops wall vectors and device placements; rebuild dependent metrics.
-        /// Release facade read aliases first; detached snapshots remain readable.
-        void ApplyAffineGeometryTransform(const Eigen::Matrix3d &linear, const tPoint &offset = tPoint::Zero());
-        void RectifyBoundaryCoordinates(std::function<int(t_index)> componentForZone, bool volumeBoundary = true);
-
-        /// Borrowed semantic rows require an outer AcquireRead scope or a
-        /// serialized setup phase. They never acquire a lease in a hot loop.
-        MeshRowSpan<index> CellNodes(index row) const
-        {
-            if (_nativeState)
-                return NativeBorrowedView(MeshRelation::CellNodes).CellNodes(row);
-            auto &pair = const_cast<UnstructuredMesh *>(this)->cell2node;
-            auto data = pair[row];
-            return {data.cbegin(), size_t(data.size())};
-        }
-        MeshRowSpan<index> CellFaces(index row) const
-        {
-            if (_nativeState)
-                return NativeBorrowedView(MeshRelation::CellFaces).CellFaces(row);
-            auto &pair = const_cast<UnstructuredMesh *>(this)->cell2face;
-            auto data = pair[row];
-            return {data.cbegin(), size_t(data.size())};
-        }
-        MeshRowSpan<index> FaceNodes(index row) const
-        {
-            if (_nativeState)
-                return NativeBorrowedView(MeshRelation::FaceNodes).FaceNodes(row);
-            auto &pair = const_cast<UnstructuredMesh *>(this)->face2node;
-            auto data = pair[row];
-            return {data.cbegin(), size_t(data.size())};
-        }
-        MeshRowSpan<index> FaceCells(index row) const
-        {
-            if (_nativeState)
-                return NativeBorrowedView(MeshRelation::FaceCells).FaceCells(row);
-            auto &pair = const_cast<UnstructuredMesh *>(this)->face2cell;
-            auto data = pair[row];
-            return {data.cbegin(), size_t(data.size())};
-        }
-        MeshRowSpan<index> BoundaryCells(index row) const
-        {
-            if (_nativeState)
-                return NativeBorrowedView(MeshRelation::BoundaryCells).BoundaryCells(row);
-            auto &pair = const_cast<UnstructuredMesh *>(this)->bnd2cell;
-            auto data = pair[row];
-            return {data.cbegin(), size_t(data.size())};
-        }
-        MeshRowSpan<index> BoundaryNodes(index row) const
-        {
-            if (_nativeState)
-                return NativeBorrowedView(MeshRelation::BoundaryNodes).BoundaryNodes(row);
-            auto &pair = const_cast<UnstructuredMesh *>(this)->bnd2node;
-            auto data = pair[row];
-            return {data.cbegin(), size_t(data.size())};
-        }
-        index BoundaryFace(index row) const
-        {
-            if (_nativeState)
-                return NativeBorrowedView(MeshRelation::BoundaryFaces).BoundaryFaces(row)[0];
-            return const_cast<UnstructuredMesh *>(this)->bnd2face(row, 0);
-        }
-        tPoint Coord(index node) const
-        {
-            if (_nativeState)
-                return _nativeState->BorrowHostView().Coord(node);
-            return const_cast<tCoordPair &>(coords)[node];
-        }
-        bool HasNodeWallDist() const
-        {
-            if (_nativeState)
-                return _nativeState->BorrowHostView().HasNodeWallDist();
-            return nodeWallDist.father && nodeWallDist.son && nodeWallDist.Size() == coords.Size();
-        }
-        tPoint NodeWallDist(index node) const
-        {
-            if (_nativeState)
-            {
-                DNDS_check_throw_info(_nativeState->BorrowHostView().HasNodeWallDist(), "node wall distance was not published");
-                return _nativeState->BorrowHostView().NodeWallDist(node);
-            }
-            return const_cast<tCoordPair &>(nodeWallDist)[node];
-        }
-        const ElemInfo &GetCellInfo(index row) const
-        {
-            if (_nativeState)
-                return _nativeState->BorrowHostView().GetCellInfo(row);
-            return row < cellElemInfo.father->Size() ? (*cellElemInfo.father)(row, 0) : (*cellElemInfo.son)(row - cellElemInfo.father->Size(), 0);
-        }
-        const ElemInfo &GetFaceInfo(index row) const
-        {
-            if (_nativeState)
-                return NativeBorrowedView(MeshRelation::FaceNodes).GetFaceInfo(row);
-            return row < faceElemInfo.father->Size() ? (*faceElemInfo.father)(row, 0) : (*faceElemInfo.son)(row - faceElemInfo.father->Size(), 0);
-        }
-        const ElemInfo &GetBndInfo(index row) const
-        {
-            if (_nativeState)
-                return _nativeState->BorrowHostView().GetBndInfo(row);
-            return row < bndElemInfo.father->Size() ? (*bndElemInfo.father)(row, 0) : (*bndElemInfo.son)(row - bndElemInfo.father->Size(), 0);
-        }
-
-        auto getCell2NodeIndexPbiRow(index iCell)
-        {
-            std::vector<Geom::NodeIndexPBI> ret;
-            if (_nativeState)
-            {
-                const auto &view = _nativeState->BorrowHostView();
-                const auto nodes = view.CellNodes(iCell);
-                const auto bits = view.IsPeriodic() ? view.CellNodePeriodicBits(iCell) : UnstructuredMeshView::tPeriodicRow{};
-                ret.reserve(nodes.size());
-                for (size_t slot = 0; slot < nodes.size(); ++slot)
-                    ret.push_back({nodes[slot], view.IsPeriodic() ? bits[slot] : NodePeriodicBits{}});
-                return ret;
-            }
-            ret.reserve(cell2node[iCell].size());
-            for (int ic2n = 0; ic2n < cell2node[iCell].size(); ic2n++)
-                if (isPeriodic)
-                    ret.push_back(Geom::NodeIndexPBI{cell2node[iCell][ic2n], cell2nodePbi[iCell][ic2n]});
-                else
-                    ret.push_back(Geom::NodeIndexPBI{cell2node[iCell][ic2n], Geom::NodePeriodicBits{}});
-            return ret;
-        }
-
-        auto getBnd2NodeIndexPbiRow(index iBnd)
-        {
-            std::vector<Geom::NodeIndexPBI> ret;
-            if (_nativeState)
-            {
-                const auto &view = _nativeState->BorrowHostView();
-                const auto nodes = view.BoundaryNodes(iBnd);
-                const auto bits = view.IsPeriodic() ? view.BoundaryNodePeriodicBits(iBnd) : UnstructuredMeshView::tPeriodicRow{};
-                ret.reserve(nodes.size());
-                for (size_t slot = 0; slot < nodes.size(); ++slot)
-                    ret.push_back({nodes[slot], view.IsPeriodic() ? bits[slot] : NodePeriodicBits{}});
-                return ret;
-            }
-            ret.reserve(bnd2node[iBnd].size());
-            for (int ib2n = 0; ib2n < bnd2node[iBnd].size(); ib2n++)
-                if (isPeriodic)
-                    ret.push_back(Geom::NodeIndexPBI{bnd2node[iBnd][ib2n], bnd2nodePbi[iBnd][ib2n]});
-                else
-                    ret.push_back(Geom::NodeIndexPBI{bnd2node[iBnd][ib2n], Geom::NodePeriodicBits{}});
-            return ret;
-        }
-
-        // =================================================================
-        // Generic index conversion templates
-        // =================================================================
-        // The 4 templates below replace 12 structurally identical methods
-        // (3 entity types x 4 variants).  The old named methods are kept
-        // as thin inline wrappers so all existing call sites compile
-        // unchanged.
-
-        /**
-         * \brief Ensure a pair has a ghost mapping on its transformer.
-         *
-         * If `trans.pLGhostMapping` is already set, does nothing.
-         * Otherwise, creates a father-only ghost mapping (empty ghost set)
-         * so that `IndexGlobal2Local` / `IndexLocal2Global` work even
-         * before ghost layers are built.
-         *
-         * \pre `trans.pLGlobalMapping` must be set (call
-         *      `createFatherGlobalMapping` first).
-         * \warning Collective — calls MPI_Alltoall internally when creating
-         *          the mapping.
-         */
-        template <class TPair>
-        void EnsureGhostMapping(TPair &pair)
-        {
-            if (pair.trans.pLGhostMapping)
-                return;
-            DNDS_assert_info(pair.trans.pLGlobalMapping,
-                             "EnsureGhostMapping: pLGlobalMapping must be set first");
-            pair.trans.pLGhostMapping = AdjIndexInfo::makeFatherOnlyMapping(
-                pair.trans.pLGlobalMapping,
-                pair.father->Size(), mpi);
-        }
-
-        /**
-         * \brief Global-to-local conversion using father+son ghost mapping.
-         * \return local index, or (-1 - iGlobal) when not found in the pair.
-         *         UnInitIndex passes through unchanged.
-         */
-        template <class TPair>
-        index IndexGlobal2Local(TPair &pair, DNDS::index iGlobal)
-        {
-            RequireLegacyWorkspace("IndexGlobal2Local");
-            DNDS_assert(pair.trans.pLGhostMapping);
-            if (iGlobal == UnInitIndex)
-                return iGlobal;
-            DNDS::MPI_int rank = UnInitMPIInt;
-            DNDS::index val = UnInitIndex;
-            auto result = pair.trans.pLGhostMapping->search_indexAppend(iGlobal, rank, val);
-            if (result)
-                return val;
-            else
-                return -1 - iGlobal; // mapping to un-found in father-son
-        }
-
-        /**
-         * \brief Local-to-global conversion using father+son ghost mapping.
-         * \return global index, or the decoded global when the local is
-         *         a negative "not-found" encoding.  UnInitIndex passes through.
-         */
-        template <class TPair>
-        index IndexLocal2Global(TPair &pair, DNDS::index iLocal)
-        {
-            RequireLegacyWorkspace("IndexLocal2Global");
-            DNDS_assert(pair.trans.pLGhostMapping);
-            if (iLocal == UnInitIndex)
-                return iLocal;
-            if (iLocal < 0) // mapping to un-found in father-son
-                return -1 - iLocal;
-            else
-                return pair.trans.pLGhostMapping->operator()(-1, iLocal);
-        }
-
-        /**
-         * \brief Local-to-global conversion using only the father's global
-         *        mapping (no son / ghost layer).
-         * \return global index.  Asserts if iLocal exceeds father size.
-         *         Negative "not-found" encoding and UnInitIndex pass through.
-         */
-        template <class TPair>
-        index IndexLocal2Global_NoSon(TPair &pair, index iLocal)
-        {
-            RequireLegacyWorkspace("IndexLocal2Global_NoSon");
-            DNDS_assert(pair.father->pLGlobalMapping);
-            if (iLocal == UnInitIndex)
-                return UnInitIndex;
-            if (iLocal < 0)
-                return -1 - iLocal;
-            if (iLocal >= pair.father->Size())
-                DNDS_assert_info(false, "local idx not right: " + std::to_string(iLocal));
-            return pair.father->pLGlobalMapping->operator()(mpi.rank, iLocal);
-        }
-
-        /**
-         * \brief Global-to-local conversion using only the father's global
-         *        mapping (no son / ghost layer).
-         * \return local index if the global maps to this rank, otherwise
-         *         (-1 - iGlobal).  UnInitIndex passes through.
-         */
-        template <class TPair>
-        index IndexGlobal2Local_NoSon(TPair &pair, index iGlobal)
-        {
-            RequireLegacyWorkspace("IndexGlobal2Local_NoSon");
-            DNDS_assert(pair.father->pLGlobalMapping);
-            if (iGlobal == UnInitIndex)
-                return UnInitIndex;
-            auto [ret, rank, val] = pair.father->pLGlobalMapping->search(iGlobal);
-            DNDS_assert_info(ret, "search failed with input: " + std::to_string(iGlobal));
-            if (rank == mpi.rank)
-                return val;
-            else
-                return -1 - iGlobal;
-        }
-
-        // =================================================================
-        // Named wrappers — Node
-        // =================================================================
-        index NodeIndexGlobal2Local(DNDS::index i) { return _nativeState ? NativeIndexGlobal2Local(EntityKind::Node, i) : IndexGlobal2Local(coords, i); }
-        index NodeIndexLocal2Global(DNDS::index i) { return _nativeState ? NativeIndexLocal2Global(EntityKind::Node, i) : IndexLocal2Global(coords, i); }
-        index NodeIndexLocal2Global_NoSon(index i) { return _nativeState ? NativeIndexLocal2Global(EntityKind::Node, i, true) : IndexLocal2Global_NoSon(coords, i); }
-        index NodeIndexGlobal2Local_NoSon(index i) { return _nativeState ? NativeIndexGlobal2Local(EntityKind::Node, i, true) : IndexGlobal2Local_NoSon(coords, i); }
-
-        // =================================================================
-        // Named wrappers — Cell
-        // =================================================================
-        index CellIndexGlobal2Local(DNDS::index i) { return _nativeState ? NativeIndexGlobal2Local(EntityKind::Cell, i) : IndexGlobal2Local(cell2node, i); }
-        index CellIndexLocal2Global(DNDS::index i) { return _nativeState ? NativeIndexLocal2Global(EntityKind::Cell, i) : IndexLocal2Global(cell2node, i); }
-        index CellIndexLocal2Global_NoSon(index i) { return _nativeState ? NativeIndexLocal2Global(EntityKind::Cell, i, true) : IndexLocal2Global_NoSon(cell2node, i); }
-        index CellIndexGlobal2Local_NoSon(index i) { return _nativeState ? NativeIndexGlobal2Local(EntityKind::Cell, i, true) : IndexGlobal2Local_NoSon(cell2node, i); }
-
-        // =================================================================
-        // Named wrappers — Bnd
-        // =================================================================
-        index BndIndexGlobal2Local(DNDS::index i) { return _nativeState ? NativeIndexGlobal2Local(EntityKind::Bnd, i) : IndexGlobal2Local(bnd2node, i); }
-        index BndIndexLocal2Global(DNDS::index i) { return _nativeState ? NativeIndexLocal2Global(EntityKind::Bnd, i) : IndexLocal2Global(bnd2node, i); }
-        index BndIndexLocal2Global_NoSon(index i) { return _nativeState ? NativeIndexLocal2Global(EntityKind::Bnd, i, true) : IndexLocal2Global_NoSon(bnd2node, i); }
-        index BndIndexGlobal2Local_NoSon(index i) { return _nativeState ? NativeIndexGlobal2Local(EntityKind::Bnd, i, true) : IndexGlobal2Local_NoSon(bnd2node, i); }
-
-        // =================================================================
-        // Named wrappers — Face
-        // =================================================================
-        index FaceIndexGlobal2Local(DNDS::index i) { return _nativeState ? NativeIndexGlobal2Local(EntityKind::Face, i) : IndexGlobal2Local(face2node, i); }
-        index FaceIndexLocal2Global(DNDS::index i) { return _nativeState ? NativeIndexLocal2Global(EntityKind::Face, i) : IndexLocal2Global(face2node, i); }
-
-        // =================================================================
-        // Adjacency bulk-conversion helpers
-        // =================================================================
-
-        /**
-         * \brief Apply a conversion function to every entry of an adjacency
-         *        array's first \p nRows rows.
-         *
-         * Replaces the recurring nested-loop pattern:
-         * \code
-         *   for (index i = 0; i < nRows; i++)
-         *       for (rowsize j = 0; j < adj.RowSize(i); j++)
-         *           adj(i, j) = fn(adj(i, j));
-         * \endcode
-         *
-         * \tparam TAdj  Any type with RowSize(index) and operator()(index, rowsize).
-         * \tparam TFn   Callable  index(index).
-         */
-        template <class TAdj, class TFn>
-        static void ConvertAdjEntries(TAdj &adj, index nRows, TFn &&fn)
-        {
-            for (index i = 0; i < nRows; i++)
-                for (rowsize j = 0; j < adj.RowSize(i); j++)
-                    adj(i, j) = fn(adj(i, j));
-        }
-
-        /**
-         * \brief OpenMP-parallelized variant of ConvertAdjEntries.
-         *
-         * Same semantics as ConvertAdjEntries but with `#pragma omp parallel for`
-         * over the outer row loop. Use when the adjacency array is large and
-         * the conversion function is thread-safe.
-         */
-        template <class TAdj, class TFn>
-        static void ConvertAdjEntriesOMP(TAdj &adj, index nRows, TFn &&fn)
-        {
-#ifdef DNDS_USE_OMP
-#    pragma omp parallel for
-#endif
-            for (index i = 0; i < nRows; i++)
-                for (rowsize j = 0; j < adj.RowSize(i); j++)
-                    adj(i, j) = fn(adj(i, j));
-        }
-
-        // =================================================================
-        // Row-permutation helper
-        // =================================================================
-
-        /**
-         * \brief Permute the father rows of an ArrayPair according to a
-         *        mapping function.
-         *
-         * For each old row index \p i in [0, nRows), the row is moved to
-         * position old2new(i).  Works with both CSR (variable-row-size)
-         * and fixed-row-size array pairs: CSR pairs are Decompressed before
-         * and Compressed after the permutation; fixed-size pairs are
-         * copied directly.
-         *
-         * \tparam TPair  An ArrayPair-like type with father/son, IsCSR().
-         * \tparam TFn    Callable  index(index) returning the new row index.
-         */
-        template <class TPair, class TFn>
-        static void PermuteRows(TPair &pair, index nRows, TFn &&old2new)
-        {
-            using TArr = typename decltype(pair.father)::element_type;
-            auto tmp = std::make_shared<TArr>(*pair.father); // deep copy via copy ctor
-            if constexpr (TPair::IsCSR())
-                pair.father->Decompress();
-            for (index i = 0; i < nRows; i++)
-            {
-                index iNew = old2new(i);
-                if constexpr (TPair::IsCSR())
-                    pair.father->ResizeRow(iNew, tmp->RowSize(i));
-                for (rowsize j = 0; j < tmp->RowSize(i); j++)
-                    pair(iNew, j) = (*tmp)(i, j);
-            }
-            if constexpr (TPair::IsCSR())
-                pair.father->Compress();
-        }
-
-        void SetPeriodicGeometry(
-            const tPoint &translation1,
-            const tPoint &rotationCenter1,
-            const tPoint &eulerAngles1,
-            const tPoint &translation2,
-            const tPoint &rotationCenter2,
-            const tPoint &eulerAngles2,
-            const tPoint &translation3,
-            const tPoint &rotationCenter3,
-            const tPoint &eulerAngles3);
-
-        /**
-         * \brief only requires father part of cell2node, bnd2node and coords
-         * generates node2cell and node2bnd (father part)
-         */
-        void RecoverNode2CellAndNode2Bnd();
-        void RecoverNode2CellAndNode2BndLegacy();
-
-        /**
-         * \brief needs to use RecoverNode2CellAndNode2Bnd before doing this.
-         * Requires node2cell.father and builds a version of its son.
-         */
-        void RecoverCell2CellAndBnd2Cell();
-        void RecoverCell2CellAndBnd2CellLegacy();
-
-        /**
-         * @brief building ghost (son) from primary (currently only cell2cell)
-         * @details
-         * the face and bnd parts are currently only local (no comm available)
-         * only builds comm data of cell and node
-         * cells: current-father and cell2cell neighbor (face or node neighbor)
-         * nodes: needed by all cells
-         * faces/bnds: needed by all father cells
-         *
-         */
-        void BuildGhostPrimary(int nGhostLayers = 1);
-        void BuildGhostPrimaryLegacy();
-        void AdjGlobal2LocalPrimary();
-        void AdjLocal2GlobalPrimary();
-        // ForBnd: reduction of primary version, only on cell2node
-        void AdjGlobal2LocalPrimaryForBnd();
-        void AdjLocal2GlobalPrimaryForBnd();
-
-        void AdjGlobal2LocalFacial();
-        void AdjLocal2GlobalFacial();
-        void AdjGlobal2LocalC2F();
-        void AdjLocal2GlobalC2F();
-
-        void BuildGhostN2CB();
-        void AdjGlobal2LocalN2CB();
-        void AdjLocal2GlobalN2CB();
-
-        void AssertOnN2CB();
-
-        void BuildCell2CellFace();
-        void AdjGlobal2LocalC2CFace();
-        void AdjLocal2GlobalC2CFace();
-
-        void InterpolateFace();
-        void BuildGhostFace();
-        void MatchFaceBoundary();
-        void InterpolateFaceLegacy();
-        void AssertOnFaces();
-
-        void InterpolateEdge();
-        void BuildGhostEdge();
-        void AdjGlobal2LocalEdge();
-        void AdjLocal2GlobalEdge();
-
-        void ConstructBndMesh(UnstructuredMesh &bMesh);
-        /// Collective detached native boundary mesh. Source publication and
-        /// its read scopes remain unchanged; durable ancestry identifies parents.
-        /// This pure operation leaves compatibility mapping caches untouched.
-        /// ConstructBndMesh updates those caches for its latest output; they
-        /// contain UnInitIndex for new ghosts without a local source parent.
-        /// Use durable ancestry across layouts and serialize cache-based setup.
-        std::shared_ptr<UnstructuredMesh> ExtractBoundary() const;
-
-        // =================================================================
-        // Registry
-        // =================================================================
-
-        /**
-         * \brief Populate a MeshConnectivity registry from this mesh's
-         *        currently-built adjacencies.
-         *
-         * Registers all adjacency arrays whose father is non-null.
-         * For each entity kind that appears as a source (.from) of any
-         * registered adjacency, finds a pLGlobalMapping from any adj
-         * array for that entity kind.
-         *
-         * \pre All entity kinds that have registered adjacencies must
-         *      have at least one adj array with a valid pLGlobalMapping
-         *      on its father.  Throws if this is not satisfied.
-         *
-         * \param dag   MeshConnectivity to populate (meshDim is set).
-         */
-        void fillRegistry(MeshConnectivity &dag) const;
-
-        /// \overload Overload with an explicit skip set.
-        /// AdjKinds in \p skip are excluded from registration.
-        void fillRegistry(
-            MeshConnectivity &dag,
-            const std::unordered_set<AdjKind, AdjKindHash> &skip) const;
-
-        // =================================================================
-        // Reorder (distributed entity reordering framework)
-        // =================================================================
-
-        /**
-         * \brief Build a ReorderRegistry containing all mesh members.
-         *
-         * Registers all built adj arrays (as type-erased callbacks) and all
-         * companion arrays (coords, cellElemInfo, pbi, etc.).
-         * Skips adjacencies involving destroyKinds.
-         *
-         * Adj remap callbacks intentionally rewrite owned/father rows only.
-         * Ghost/son rows are pre-reorder cache data and are rebuilt by the
-         * caller's normal ghost-building pipeline after ReorderEntities().
-         *
-         * External code may extend the returned registry with its own arrays
-         * before passing to ReorderPlan::build.
-         */
-        ReorderRegistry buildReorderRegistry(
-            const std::unordered_set<EntityKind> &destroyKinds = {});
-
-        /**
-         * \brief Reorder entities using the general framework.
-         *
-         * Builds a ReorderRegistry, computes follow maps, builds a
-         * ReorderPlan, applies it, rebuilds global mappings, and updates
-         * idx states.
-         *
-         * \pre All adjacencies in Adj_PointToGlobal state.
-         * \post All (non-destroyed) adjacencies in Adj_PointToGlobal.
-         *       Ghost mappings stale (caller must rebuild ghosts).
-         *       Global mappings fresh on reordered entities.
-         *
-         * \warning Collective.
-         */
-        void ReorderEntities(const ReorderInput &input);
-
-        /// Reorder mesh and explicitly registered fields with the same plan.
-        /// Entries must have unique, matching names/kinds/order on every rank.
-        /// Native participants prepare destinations before destructive mutation
-        /// and publish only after mesh bookkeeping succeeds. Preparation failure
-        /// preserves the mesh and native field sources. Legacy callbacks and mesh
-        /// execution retain destructive failed-mesh semantics. The caller owns
-        /// fields and must rebuild ghost routes after successful publication.
-        void ReorderEntitiesWithFields(const ReorderInput &input,
-                                       const std::vector<CompanionEntry> &fields);
-
-        /**
-         * \brief Build a ReorderPlan without applying it.
-         *
-         * Useful for external code to obtain the plan and apply it to
-         * its own arrays after the mesh reorder.
-         */
-        ReorderPlan buildReorderPlan(const ReorderInput &input);
-
-        /**
-         * \brief Augment a ReorderInput with default follows and compute follow maps.
-         *
-         * The \p follower2leader adjacency in each FollowSpec must be a
-         * follower→leader direction (e.g. Bnd→Cell via \ref Bnd2Cell, Face→Node
-         * via \ref Face2Node).  The target rank for each follower is the minimum
-         * valid leader target rank over all non-UnInitIndex support entries.
-         * If a follower has no valid leaders it stays on the current rank.
-         *
-         * When `input.follows` is empty and Cell is explicitly reordered,
-         * default follows (Node/Bnd follow Cell via \ref Node2Cell / \ref Bnd2Cell)
-         * are added automatically.  Face/Edge follows and non-Cell leader follows
-         * must always be explicit.
-         *
-         * Supported follower→leader adjacency pairs:
-         *   - Node→Cell, Bnd→Cell, Face→Cell, Edge→Cell
-         *   - Cell→Node, Bnd→Node, Face→Node, Edge→Node
-         *
-         * \param input    Original input (may have empty follows).
-         * \param reg      Registry with global mappings and adj data.
-         * \return ReorderInput with all entity kinds as explicit maps.
-         */
-        ReorderInput resolveFollows(
-            const ReorderInput &input,
-            const ReorderRegistry &reg);
-
-        // void ReorderCellLocal();
-
-        /**
-         * \return
-         * cell2cell for local mesh, which do not contain
-         * the diagonal part; should be a diag-less symmetric adjacency matrix
-         */
-        tLocalMatStruct GetCell2CellFaceVLocal(bool onLocalPartition = false);
-
-        void ObtainLocalFactFillOrdering(Direct::SerialSymLUStructure &symLU, Direct::DirectPrecControl control);                // 1 uses metis, 2 uses MMD, //TODO 10 uses geometric based searching
-        void ObtainSymmetricSymbolicFactorization(Direct::SerialSymLUStructure &symLU, Direct::DirectPrecControl control) const; // -1 use full LU, 0-3 use ilu(code),
-        /**
-         * \warning RecreatePeriodicNodes and BuildVTKConnectivity results are invalid after this;
-         * \warning bnd mesh's cell2parentCell is invalid after this
-         */
-        /// Setup-only native publication changes cell numbering and invalidates
-        /// associated fields/routes. Use NativeMeshTransition::ReorderLocalCells
-        /// for a detached result with explicit external-field transfer maps.
-        void ReorderLocalCells(int nParts = 1, int nPartsInner = 1, int ghostLayers = 1);
-
-        /// Legacy implementation preserved for reference/fallback.
-        void ReorderLocalCellsLegacy(int nParts = 1, int nPartsInner = 1);
-
-        int NLocalParts() const { return _nativeState ? _nativeState->NLocalParts() : !localPartitionStarts.empty() ? localPartitionStarts.size() - 1
-                                                                                                                    : 1; }
-        index LocalPartStart(int iPart) const { return _nativeState ? _nativeState->LocalPartStart(iPart) : !localPartitionStarts.empty() ? localPartitionStarts.at(iPart)
-                                                                                                                                          : 0; }
-        index LocalPartEnd(int iPart) const { return _nativeState ? _nativeState->LocalPartEnd(iPart) : !localPartitionStarts.empty() ? localPartitionStarts.at(iPart + 1)
-                                                                                                                                      : this->NumCell(); }
-        const tLocalMatStruct &LocalCellNeighbors() const { return _nativeState ? _nativeState->LocalCellNeighbors() : cell2cellFaceVLocalParts; }
-
-        index NumNode() const
-        {
-            if (_nativeState)
-                return _nativeState->NumOwned(EntityKind::Node);
-            DNDS_check_throw_info(coords.father, "coords not initialized");
-            return coords.father->Size();
-        }
-        index NumCell() const
-        {
-            if (_nativeState)
-                return _nativeState->NumOwned(EntityKind::Cell);
-            DNDS_check_throw_info(cell2node.father, "cell2node not initialized");
-            return cell2node.father->Size();
-        }
-        index NumFace() const
-        {
-            if (_nativeState)
-                return _nativeState->NumOwned(EntityKind::Face);
-            DNDS_check_throw_info(face2node.father, "face2node not initialized");
-            return face2node.father->Size();
-        }
-        index NumBnd() const
-        {
-            if (_nativeState)
-                return _nativeState->NumOwned(EntityKind::Bnd);
-            DNDS_check_throw_info(bnd2node.father, "bnd2node not initialized");
-            return bnd2node.father->Size();
-        }
-
-        index NumNodeGhost() const
-        {
-            if (_nativeState)
-                return _nativeState->NumGhost(EntityKind::Node);
-            DNDS_check_throw_info(coords.son, "coords not initialized");
-            return coords.son->Size();
-        }
-        index NumCellGhost() const
-        {
-            if (_nativeState)
-                return _nativeState->NumGhost(EntityKind::Cell);
-            DNDS_check_throw_info(cell2node.son, "cell2node not initialized");
-            return cell2node.son->Size();
-        }
-        index NumFaceGhost() const
-        {
-            if (_nativeState)
-                return _nativeState->NumGhost(EntityKind::Face);
-            DNDS_check_throw_info(face2node.son, "face2node not initialized");
-            return face2node.son->Size();
-        }
-        index NumBndGhost() const
-        {
-            if (_nativeState)
-                return _nativeState->NumGhost(EntityKind::Bnd);
-            DNDS_check_throw_info(bnd2node.son, "bnd2node not initialized");
-            return bnd2node.son->Size();
-        }
-
-        index NumNodeProc() const
-        {
-            if (_nativeState)
-                return _nativeState->NumOwned(EntityKind::Node) + _nativeState->NumGhost(EntityKind::Node);
-            DNDS_check_throw_info(coords.father && coords.son, "coords not initialized");
-            return coords.Size();
-        }
-        index NumCellProc() const
-        {
-            if (_nativeState)
-                return _nativeState->NumOwned(EntityKind::Cell) + _nativeState->NumGhost(EntityKind::Cell);
-            DNDS_check_throw_info(cell2node.father && cell2node.son, "cell2node not initialized");
-            return cell2node.Size();
-        }
-        index NumFaceProc() const
-        {
-            if (_nativeState)
-                return _nativeState->NumOwned(EntityKind::Face) + _nativeState->NumGhost(EntityKind::Face);
-            DNDS_check_throw_info(face2node.father && face2node.son, "face2node not initialized");
-            return face2node.Size();
-        }
-        index NumBndProc() const
-        {
-            if (_nativeState)
-                return _nativeState->NumOwned(EntityKind::Bnd) + _nativeState->NumGhost(EntityKind::Bnd);
-            DNDS_check_throw_info(bnd2node.father && bnd2node.son, "bnd2node not initialized");
-            return bnd2node.Size();
-        }
-
-        /// @warning must collectively call
-        index NumCellGlobal()
-        {
-            if (_nativeState)
-                return _nativeState->NumGlobal(EntityKind::Cell);
-            DNDS_check_throw_info(cell2node.father, "cell2node not initialized");
-            return cell2node.father->globalSize();
-        }
-        /// @warning must collectively call
-        index NumNodeGlobal()
-        {
-            if (_nativeState)
-                return _nativeState->NumGlobal(EntityKind::Node);
-            DNDS_check_throw_info(coords.father, "coords not initialized");
-            return coords.father->globalSize();
-        }
-        /// @warning must collectively call
-        index NumFaceGlobal()
-        {
-            if (_nativeState)
-                return _nativeState->NumGlobal(EntityKind::Face);
-            DNDS_check_throw_info(face2node.father, "face2node not initialized");
-            return face2node.father->globalSize();
-        }
-        /// @warning must collectively call
-        index NumBndGlobal()
-        {
-            if (_nativeState)
-                return _nativeState->NumGlobal(EntityKind::Bnd);
-            DNDS_check_throw_info(bnd2node.father, "bnd2node not initialized");
-            return bnd2node.father->globalSize();
-        }
-
-        Elem::Element GetCellElement(index iC)
-        {
-            if (_nativeState)
-                return _nativeState->BorrowHostView().GetCellElement(iC);
-            return Elem::Element{cellElemInfo(iC, 0).getElemType()};
-        }
-        Elem::Element GetFaceElement(index iF)
-        {
-            if (_nativeState)
-                return NativeBorrowedView(MeshRelation::FaceNodes).GetFaceElement(iF);
-            return Elem::Element{faceElemInfo(iF, 0).getElemType()};
-        }
-        Elem::Element GetBndElement(index iB)
-        {
-            if (_nativeState)
-                return _nativeState->BorrowHostView().GetBndElement(iB);
-            return Elem::Element{bndElemInfo(iB, 0).getElemType()};
-        }
-
-        t_index GetCellZone(index iC)
-        {
-            if (_nativeState)
-                return _nativeState->BorrowHostView().GetCellZone(iC);
-            return cellElemInfo(iC, 0).zone;
-        }
-        t_index GetFaceZone(index iF)
-        {
-            if (_nativeState)
-                return NativeBorrowedView(MeshRelation::FaceNodes).GetFaceZone(iF);
-            return faceElemInfo(iF, 0).zone;
-        }
-        t_index GetBndZone(index iB)
-        {
-            if (_nativeState)
-                return _nativeState->BorrowHostView().GetBndZone(iB);
-            return bndElemInfo(iB, 0).zone;
-        }
-
         MPIInfo &getMPI() { return mpi; }
-
-        void BuildO2FromO1Elevation(UnstructuredMesh &meshO1);
-        void ElevatedNodesGetBoundarySmooth(const std::function<bool(t_index)> &FiFBndIdNeedSmooth);
-        void ElevatedNodesSolveInternalSmooth();
-        /// Deprecated compact-support predecessor; explicitly rejected.
-        void ElevatedNodesSolveInternalSmoothV1Old();
-        /// Retained readonly diagnostics, valid while their source epoch is
-        /// current. Geometry publication invalidates the source association;
-        /// retain an explicit Array read lease for an independent value snapshot.
-        std::shared_ptr<const NativeSmoothingWorkspace> BoundarySmoothingWorkspace() const
+        const MPIInfo &getMPI() const { return mpi; }
+        MeshRowSpan<index> CellNodes(index row) const { return NativeBorrowedView(MeshRelation::CellNodes).CellNodes(row); }
+        MeshRowSpan<index> CellFaces(index row) const { return NativeBorrowedView(MeshRelation::CellFaces).CellFaces(row); }
+        MeshRowSpan<index> FaceNodes(index row) const { return NativeBorrowedView(MeshRelation::FaceNodes).FaceNodes(row); }
+        MeshRowSpan<index> FaceCells(index row) const { return NativeBorrowedView(MeshRelation::FaceCells).FaceCells(row); }
+        MeshRowSpan<index> BoundaryCells(index row) const { return NativeBorrowedView(MeshRelation::BoundaryCells).BoundaryCells(row); }
+        MeshRowSpan<index> BoundaryNodes(index row) const { return NativeBorrowedView(MeshRelation::BoundaryNodes).BoundaryNodes(row); }
+        index BoundaryFace(index row) const { return NativeBorrowedView(MeshRelation::BoundaryFaces).BoundaryFaces(row)[0]; }
+        tPoint Coord(index row) const { return Native().BorrowHostView().Coord(row); }
+        bool HasNodeWallDist() const { return Native().BorrowHostView().HasNodeWallDist(); }
+        tPoint NodeWallDist(index row) const
         {
-            DNDS_check_throw_info(_nativeSmoothing, "prepare boundary smoothing workspace before diagnostics");
-            return _nativeSmoothing;
+            DNDS_check_throw_info(HasNodeWallDist(), "wall distance is not published");
+            return Native().BorrowHostView().NodeWallDist(row);
         }
-
-        void ElevatedNodesSolveInternalSmoothV1();
-        void ElevatedNodesSolveInternalSmoothV2();
-
-        void BuildBisectO1FormO2(UnstructuredMesh &meshO2);
-
-        bool IsO1();
-        bool IsO2();
-
-        /**
-         * @brief directly load coords; gets faulty if isPeriodic!
-         */
-        template <class tC2n>
-        void _detail_GetCoords(const tC2n &c2n, tSmallCoords &cs)
+        const ElemInfo &GetCellInfo(index row) const { return Native().BorrowHostView().GetCellInfo(row); }
+        Elem::Element GetCellElement(index row) const { return Native().BorrowHostView().GetCellElement(row); }
+        t_index GetCellZone(index row) const { return Native().BorrowHostView().GetCellZone(row); }
+        const ElemInfo &GetFaceInfo(index row) const { return NativeBorrowedView(MeshRelation::FaceNodes).GetFaceInfo(row); }
+        Elem::Element GetFaceElement(index row) const { return NativeBorrowedView(MeshRelation::FaceNodes).GetFaceElement(row); }
+        t_index GetFaceZone(index row) const { return NativeBorrowedView(MeshRelation::FaceNodes).GetFaceZone(row); }
+        const ElemInfo &GetBndInfo(index row) const { return Native().BorrowHostView().GetBndInfo(row); }
+        Elem::Element GetBndElement(index row) const { return Native().BorrowHostView().GetBndElement(row); }
+        t_index GetBndZone(index row) const { return Native().BorrowHostView().GetBndZone(row); }
+        index NumNode() const { return Native().NumOwned(EntityKind::Node); }
+        index NumNodeGhost() const { return Native().NumGhost(EntityKind::Node); }
+        index NumNodeProc() const { return NumNode() + NumNodeGhost(); }
+        index NumNodeGlobal() const { return Native().NumGlobal(EntityKind::Node); }
+        index NodeIndexGlobal2Local(index value) const { return NativeIndexGlobal2Local(EntityKind::Node, value); }
+        index NodeIndexGlobal2Local_NoSon(index value) const { return NativeIndexGlobal2Local(EntityKind::Node, value, true); }
+        index NodeIndexLocal2Global(index value) const { return NativeIndexLocal2Global(EntityKind::Node, value); }
+        index NodeIndexLocal2Global_NoSon(index value) const { return NativeIndexLocal2Global(EntityKind::Node, value, true); }
+        index NumCell() const { return Native().NumOwned(EntityKind::Cell); }
+        index NumCellGhost() const { return Native().NumGhost(EntityKind::Cell); }
+        index NumCellProc() const { return NumCell() + NumCellGhost(); }
+        index NumCellGlobal() const { return Native().NumGlobal(EntityKind::Cell); }
+        index CellIndexGlobal2Local(index value) const { return NativeIndexGlobal2Local(EntityKind::Cell, value); }
+        index CellIndexGlobal2Local_NoSon(index value) const { return NativeIndexGlobal2Local(EntityKind::Cell, value, true); }
+        index CellIndexLocal2Global(index value) const { return NativeIndexLocal2Global(EntityKind::Cell, value); }
+        index CellIndexLocal2Global_NoSon(index value) const { return NativeIndexLocal2Global(EntityKind::Cell, value, true); }
+        index NumFace() const { return Native().NumOwned(EntityKind::Face); }
+        index NumFaceGhost() const { return Native().NumGhost(EntityKind::Face); }
+        index NumFaceProc() const { return NumFace() + NumFaceGhost(); }
+        index NumFaceGlobal() const { return Native().NumGlobal(EntityKind::Face); }
+        index FaceIndexGlobal2Local(index value) const { return NativeIndexGlobal2Local(EntityKind::Face, value); }
+        index FaceIndexGlobal2Local_NoSon(index value) const { return NativeIndexGlobal2Local(EntityKind::Face, value, true); }
+        index FaceIndexLocal2Global(index value) const { return NativeIndexLocal2Global(EntityKind::Face, value); }
+        index FaceIndexLocal2Global_NoSon(index value) const { return NativeIndexLocal2Global(EntityKind::Face, value, true); }
+        index NumBnd() const { return Native().NumOwned(EntityKind::Bnd); }
+        index NumBndGhost() const { return Native().NumGhost(EntityKind::Bnd); }
+        index NumBndProc() const { return NumBnd() + NumBndGhost(); }
+        index NumBndGlobal() const { return Native().NumGlobal(EntityKind::Bnd); }
+        index BndIndexGlobal2Local(index value) const { return NativeIndexGlobal2Local(EntityKind::Bnd, value); }
+        index BndIndexGlobal2Local_NoSon(index value) const { return NativeIndexGlobal2Local(EntityKind::Bnd, value, true); }
+        index BndIndexLocal2Global(index value) const { return NativeIndexLocal2Global(EntityKind::Bnd, value); }
+        index BndIndexLocal2Global_NoSon(index value) const { return NativeIndexLocal2Global(EntityKind::Bnd, value, true); }
+        index NumEdge() const { return Native().NumOwned(EntityKind::Edge); }
+        index NumEdgeGhost() const { return Native().NumGhost(EntityKind::Edge); }
+        index NumEdgeProc() const { return NumEdge() + NumEdgeGhost(); }
+        index NumEdgeGlobal() const { return Native().NumGlobal(EntityKind::Edge); }
+        index EdgeIndexGlobal2Local(index value) const { return NativeIndexGlobal2Local(EntityKind::Edge, value); }
+        index EdgeIndexGlobal2Local_NoSon(index value) const { return NativeIndexGlobal2Local(EntityKind::Edge, value, true); }
+        index EdgeIndexLocal2Global(index value) const { return NativeIndexLocal2Global(EntityKind::Edge, value); }
+        index EdgeIndexLocal2Global_NoSon(index value) const { return NativeIndexLocal2Global(EntityKind::Edge, value, true); }
+        std::vector<NodeIndexPBI> getCell2NodeIndexPbiRow(index row) const
         {
-            cs.resize(Eigen::NoChange, c2n.size());
-            for (rowsize i = 0; i < c2n.size(); i++)
-            {
-                index iNode = c2n[i];
-                if (adjPrimaryState == Adj_PointToGlobal)
-                {
-                    DNDS_assert(cell2node.isGlobal() && adjPrimaryState == Adj_PointToGlobal);
-                    iNode = NodeIndexGlobal2Local(iNode), DNDS_assert_info(iNode >= 0, "iNode not found in main/ghost pair");
-                }
-                cs(EigenAll, i) = coords[iNode];
-            }
+            const auto &view = NativeBorrowedView(MeshRelation::CellNodes);
+            const auto nodes = view.CellNodes(row);
+            std::vector<NodeIndexPBI> result;
+            result.reserve(nodes.size());
+            for (size_t slot = 0; slot < nodes.size(); ++slot)
+                result.push_back({nodes[slot], view.IsPeriodic() ? view.CellNodePeriodicBits(row)[slot] : NodePeriodicBits{}});
+            return result;
         }
-
-        /**
-         * @brief directly load coords; gets faulty if isPeriodic!
-         */
-        template <class tC2n, class tCoordExt>
-        void _detail_GetCoords(const tC2n &c2n, tSmallCoords &cs, tCoordExt &coo)
+        std::vector<NodeIndexPBI> getBnd2NodeIndexPbiRow(index row) const
         {
-            cs.resize(Eigen::NoChange, c2n.size());
-            for (rowsize i = 0; i < c2n.size(); i++)
-            {
-                index iNode = c2n[i];
-                if (adjPrimaryState == Adj_PointToGlobal)
-                {
-                    DNDS_assert(cell2node.isGlobal() && adjPrimaryState == Adj_PointToGlobal);
-                    iNode = NodeIndexGlobal2Local(iNode), DNDS_assert_info(iNode >= 0, "iNode not found in main/ghost pair");
-                }
-                cs(EigenAll, i) = coo[iNode];
-            }
+            const auto &view = NativeBorrowedView(MeshRelation::BoundaryNodes);
+            const auto nodes = view.BoundaryNodes(row);
+            std::vector<NodeIndexPBI> result;
+            result.reserve(nodes.size());
+            for (size_t slot = 0; slot < nodes.size(); ++slot)
+                result.push_back({nodes[slot], view.IsPeriodic() ? view.BoundaryNodePeriodicBits(row)[slot] : NodePeriodicBits{}});
+            return result;
         }
-
-        /**
-         * @brief specially for periodicity
-         */
-        template <class tC2n, class tC2nPbi>
-        void _detail_GetCoordsOnElem(const tC2n &c2n, const tC2nPbi &c2nPbi, tSmallCoords &cs)
-        {
-            cs.resize(Eigen::NoChange, c2n.size());
-            for (rowsize i = 0; i < c2n.size(); i++)
-            {
-                index iNode = c2n[i];
-                if (adjPrimaryState == Adj_PointToGlobal)
-                {
-                    DNDS_assert(cell2node.isGlobal() && adjPrimaryState == Adj_PointToGlobal);
-                    iNode = NodeIndexGlobal2Local(iNode), DNDS_assert_info(iNode >= 0, "iNode not found in main/ghost pair");
-                }
-                cs(EigenAll, i) = periodicInfo.GetCoordByBits(coords[iNode], c2nPbi[i]);
-            }
-        }
-
-        /**
-         * @brief specially for periodicity
-         */
-        template <class tC2n, class tC2nPbi, class tCoordExt>
-        void _detail_GetCoordsOnElem(const tC2n &c2n, const tC2nPbi &c2nPbi, tSmallCoords &cs, tCoordExt &coo)
-        {
-            cs.resize(Eigen::NoChange, c2n.size());
-            for (rowsize i = 0; i < c2n.size(); i++)
-            {
-                index iNode = c2n[i];
-                if (adjPrimaryState == Adj_PointToGlobal)
-                {
-                    DNDS_assert(cell2node.isGlobal() && adjPrimaryState == Adj_PointToGlobal);
-                    iNode = NodeIndexGlobal2Local(iNode), DNDS_assert_info(iNode >= 0, "iNode not found in main/ghost pair");
-                }
-                cs(EigenAll, i) = periodicInfo.GetCoordByBits(coo[iNode], c2nPbi[i]);
-            }
-        }
-
-        void GetCoordsOnCell(index iCell, tSmallCoords &cs)
-        {
-            if (_nativeState)
-            {
-                _nativeState->BorrowHostView().GetCoordsOnCell(iCell, cs);
-                return;
-            }
-            if (!isPeriodic)
-                _detail_GetCoords(cell2node[iCell], cs);
-            else
-                _detail_GetCoordsOnElem(cell2node[iCell], cell2nodePbi[iCell], cs);
-        }
-
-        void GetCoordsOnCell(index iCell, tSmallCoords &cs, tCoordPair &coo)
-        {
-            if (_nativeState)
-            {
-                _nativeState->BorrowHostView().GetCoordsOnCell(iCell, cs, coo);
-                return;
-            }
-            if (!isPeriodic)
-                _detail_GetCoords(cell2node[iCell], cs, coo);
-            else
-                _detail_GetCoordsOnElem(cell2node[iCell], cell2nodePbi[iCell], cs, coo);
-        }
-
-        void GetCoordsOnFace(index iFace, tSmallCoords &cs)
-        {
-            if (_nativeState)
-            {
-                NativeBorrowedView(MeshRelation::FaceNodes).GetCoordsOnFace(iFace, cs);
-                return;
-            }
-            if (!isPeriodic)
-                _detail_GetCoords(face2node[iFace], cs);
-            else
-                _detail_GetCoordsOnElem(face2node[iFace], face2nodePbi[iFace], cs);
-        }
-
-        tPoint GetCoordNodeOnCell(index iCell, rowsize ic2n)
-        {
-            if (_nativeState)
-                return _nativeState->BorrowHostView().GetCoordNodeOnCell(iCell, ic2n);
-            if (!isPeriodic)
-                return coords[cell2node(iCell, ic2n)];
-            return periodicInfo.GetCoordByBits(coords[cell2node(iCell, ic2n)], cell2nodePbi(iCell, ic2n));
-        }
-
-        tPoint GetCoordNodeOnFace(index iFace, rowsize if2n)
-        {
-            if (_nativeState)
-                return NativeBorrowedView(MeshRelation::FaceNodes).GetCoordNodeOnFace(iFace, if2n);
-            if (!isPeriodic)
-                return coords[face2node(iFace, if2n)];
-            return periodicInfo.GetCoordByBits(coords[face2node(iFace, if2n)], face2nodePbi(iFace, if2n));
-        }
-
-        tPoint GetCoordWallDistOnCell(index iCell, rowsize ic2n)
-        {
-            if (_nativeState)
-                return _nativeState->BorrowHostView().GetCoordWallDistOnCell(iCell, ic2n);
-            if (!isPeriodic)
-                return nodeWallDist[cell2node(iCell, ic2n)];
-            return periodicInfo.GetVectorByBits<3, 1>(nodeWallDist[cell2node(iCell, ic2n)], cell2nodePbi(iCell, ic2n));
-        }
-
-        tPoint GetCoordWallDistOnFace(index iFace, rowsize if2n)
-        {
-            if (_nativeState)
-                return NativeBorrowedView(MeshRelation::FaceNodes).GetCoordWallDistOnFace(iFace, if2n);
-            if (!isPeriodic)
-                return nodeWallDist[face2node(iFace, if2n)];
-            return periodicInfo.GetVectorByBits<3, 1>(nodeWallDist[face2node(iFace, if2n)], face2nodePbi(iFace, if2n));
-        }
-
-        bool CellIsFaceBack(index iCell, index iFace, rowsize ic2f) const
-        {
-            if (_nativeState)
-                return NativeBorrowedView(MeshRelation::FaceNodes).CellIsFaceBack(iCell, iFace, ic2f);
-            DNDS_assert(face2cell(iFace, 0) == iCell || face2cell(iFace, 1) == iCell);
-            if (face2cell(iFace, 0) == iCell && face2cell(iFace, 1) == iCell)
-            {
-                DNDS_assert(ic2f >= 0);
-                DNDS_assert_info(isPeriodic,
-                                 "CellIsFaceBack(): self-periodic face with ic2f requires periodic mesh");
-                return !bool(cell2facePbi(iCell, ic2f));
-            }
-            return face2cell(iFace, 0) == iCell;
-        }
-
-        index CellFaceOther(index iCell, index iFace, rowsize ic2f) const
-        {
-            if (_nativeState)
-                return NativeBorrowedView(MeshRelation::FaceNodes).CellFaceOther(iCell, iFace, ic2f);
-            return CellIsFaceBack(iCell, iFace, ic2f)
-                       ? face2cell(iFace, 1)
-                       : face2cell(iFace, 0);
-        }
-
-        /**
-         * @brief fA executes when if2c points to the donor side; fB the main side
-         *
-         * @tparam FA
-         * @tparam FB
-         * @tparam F0
-         * @param iFace
-         * @param if2c
-         * @param fA
-         * @param fB
-         * @param f0
-         * @return auto
-         */
+        void GetCoordsOnCell(index row, tSmallCoords &coords) const { Native().BorrowHostView().GetCoordsOnCell(row, coords); }
+        void GetCoordsOnCell(index row, tSmallCoords &coords, tCoordPair &external) const { Native().BorrowHostView().GetCoordsOnCell(row, coords, external); }
+        void GetCoordsOnFace(index row, tSmallCoords &coords) const { NativeBorrowedView(MeshRelation::FaceNodes).GetCoordsOnFace(row, coords); }
+        tPoint GetCoordNodeOnCell(index row, rowsize slot) const { return Native().BorrowHostView().GetCoordNodeOnCell(row, slot); }
+        tPoint GetCoordNodeOnFace(index row, rowsize slot) const { return NativeBorrowedView(MeshRelation::FaceNodes).GetCoordNodeOnFace(row, slot); }
+        tPoint GetCoordWallDistOnCell(index row, rowsize slot) const { return Native().BorrowHostView().GetCoordWallDistOnCell(row, slot); }
+        tPoint GetCoordWallDistOnFace(index row, rowsize slot) const { return NativeBorrowedView(MeshRelation::FaceNodes).GetCoordWallDistOnFace(row, slot); }
+        bool CellIsFaceBack(index cell, index face, rowsize slot) const { return NativeBorrowedView(MeshRelation::FaceNodes).CellIsFaceBack(cell, face, slot); }
+        index CellFaceOther(index cell, index face, rowsize slot) const { return NativeBorrowedView(MeshRelation::FaceNodes).CellFaceOther(cell, face, slot); }
         template <class FA, class FB, class F0 = std::function<void(void)>>
         auto CellOtherCellPeriodicHandle(
             index iFace, rowsize if2c, FA &&fA, FB &&fB, F0 &&f0 = []() {})
@@ -1362,114 +246,49 @@ namespace DNDS::Geom
                 (if2c == 0 && Geom::FaceIDIsPeriodicMain(faceID))) // I am main
                 return fB();
         }
-
-        void WriteSerialize(Serializer::SerializerBaseSSP serializerP, const std::string &name);
-        void ReadSerialize(Serializer::SerializerBaseSSP serializerP, const std::string &name);
-
-        /**
-         * @brief Reads mesh from an H5 serializer using even-split distribution, then
-         * repartitions via ParMetis for locality.
-         *
-         * @details
-         * This method enables reading a mesh written with any number of MPI ranks
-         * into any number of MPI ranks, without requiring the original partition.
-         *
-         * Flow:
-         * 1. Even-split read of all primary arrays (coords, cell2node, cellElemInfo,
-         *    bnd2node, bndElemInfo, cell2nodePbi, bnd2nodePbi, origIndex arrays).
-         * 2. Build distributed node2cell and cell2cell (node-neighbor) using existing
-         *    RecoverNode2CellAndNode2Bnd() + RecoverCell2CellAndBnd2Cell().
-         * 3. Filter cell2cell to facial neighbors only (shared O1 vertices >= dim).
-         * 4. Call ParMETIS_V3_PartKway on the distributed facial graph.
-         * 5. Redistribute cells, nodes, and boundaries to the new partition
-         *    via ArrayTransformer push-based transfer.
-         * 6. Set adjPrimaryState = Adj_PointToGlobal.
-         *
-         * After return, the caller should proceed with the standard rebuild sequence:
-         *   RecoverNode2CellAndNode2Bnd -> RecoverCell2CellAndBnd2Cell ->
-         *   BuildGhostPrimary -> AdjGlobal2LocalPrimary -> ...
-         *
-         * @param serializerP  H5 serializer (must be collective / non-per-rank)
-         * @param name         Path name in the serializer hierarchy
-         * @param partitionOptions  ParMetis partitioning options
-         */
-        void ReadSerializeAndDistribute(
-            Serializer::SerializerBaseSSP serializerP,
-            const std::string &name,
-            const PartitionOptions &partitionOptions);
-
-    private:
-        // --- ReadSerializeAndDistribute sub-steps ---
-
-        /// Read scalar metadata and all primary arrays with H5 even-split.
-        /// Sets adjPrimaryState = Adj_PointToGlobal.
-        void ReadDistributed_EvenSplitRead(
-            Serializer::SerializerBaseSSP serializerP);
-
-        /// Build facial cell2cell from the even-split data.
-        ssp<tAdj::element_type> ReadDistributed_BuildFacialCell2Cell();
-
-        /// Run ParMetis on the facial cell2cell graph.
-        std::vector<MPI_int> ReadDistributed_PartitionParMetis(
-            const ssp<tAdj::element_type> &cell2cellFacial,
-            const PartitionOptions &partitionOptions);
-
-        /// Derive node and bnd partitions from cell partition.
-        struct EntityPartitions
+        bool IsO1();
+        bool IsO2();
+        void AssertOnFaces();
+        void AssertOnN2CB();
+        std::size_t CoordinateHash();
+        tLocalMatStruct GetCell2CellFaceVLocal(bool onLocalPartition = false);
+        void ObtainLocalFactFillOrdering(Direct::SerialSymLUStructure &, Direct::DirectPrecControl);
+        void ObtainSymmetricSymbolicFactorization(Direct::SerialSymLUStructure &, Direct::DirectPrecControl) const;
+        void ReorderLocalCells(int nParts = 1, int nPartsInner = 1, int ghostLayers = 1);
+        int NLocalParts() const { return Native().NLocalParts(); }
+        index LocalPartStart(int part) const { return Native().LocalPartStart(part); }
+        index LocalPartEnd(int part) const { return Native().LocalPartEnd(part); }
+        const tLocalMatStruct &LocalCellNeighbors() const { return Native().LocalCellNeighbors(); }
+        void BuildO2FromO1Elevation(UnstructuredMesh &source);
+        void BuildBisectO1FormO2(UnstructuredMesh &source);
+        void ElevatedNodesGetBoundarySmooth(const std::function<bool(t_index)> &);
+        void ElevatedNodesSolveInternalSmooth();
+        void ElevatedNodesSolveInternalSmoothV1();
+        void ElevatedNodesSolveInternalSmoothV2();
+        void ElevatedNodesSolveInternalSmoothV1Old();
+        std::shared_ptr<const NativeSmoothingWorkspace> BoundarySmoothingWorkspace() const
         {
-            std::vector<MPI_int> cellPartition;
-            std::vector<MPI_int> nodePartition;
-            std::vector<MPI_int> bndPartition;
-        };
-        EntityPartitions ReadDistributed_DeriveEntityPartitions(
-            std::vector<MPI_int> cellPartition);
-
-        /// Redistribute all primary arrays to the new partition.
-        void ReadDistributed_Redistribute(
-            const EntityPartitions &partitions);
-
-        /// Legacy implementation preserved for reference/fallback.
-        void ReadDistributed_RedistributeLegacy(
-            const EntityPartitions &partitions);
-
-    private:
-        void ReadSerializeAndDistributeImpl(MeshMutationToken &mutationToken, Serializer::SerializerBaseSSP serializerP,
-                                            const std::string &name,
-                                            const PartitionOptions &partitionOptions);
-        void ReadDistributed_EvenSplitReadImpl(MeshMutationToken &mutationToken, Serializer::SerializerBaseSSP serializerP);
-        ssp<tAdj::element_type> ReadDistributed_BuildFacialCell2CellImpl(MeshMutationToken &mutationToken);
-        void ReadDistributed_RedistributeImpl(MeshMutationToken &mutationToken, const EntityPartitions &partitions);
-        void ReadDistributed_RedistributeLegacyImpl(MeshMutationToken &mutationToken, const EntityPartitions &partitions);
-
-    public:
-        template <class TFTrans>
-        void TransformCoords(TFTrans &&FTrans)
-        {
-            if (_nativeState)
-            {
-                TransformNativeCoords([&](const tPoint &point)
-                                      { tPoint value = point; return tPoint(FTrans(value)); });
-                return;
-            }
-            RequireLegacyWorkspace("TransformCoords");
-            // Keep the legacy callable interface, but publish geometry changes
-            // and reject retained managed readers before touching coordinates.
-            DNDS_check_throw_info(versions.CanMutate(), "coordinate edit blocked by an active mesh read or mutation");
-            Runtime::WriteAccess ownedWrite, ghostWrite;
-            if (coords.father)
-                ownedWrite = coords.father->HostWriteData();
-            if (coords.son)
-                ghostWrite = coords.son->HostWriteData();
-            auto mutation = BeginManagedMutation(Runtime::Change::Geometry);
-            for (index iNode = 0; iNode < coords.Size(); iNode++)
-                coords[iNode] = FTrans(coords[iNode]);
-            mutation.Commit();
+            DNDS_check_throw_info(_nativeSmoothing, "prepare boundary smoothing workspace before diagnostics");
+            return _nativeSmoothing;
         }
-
-        void RecreatePeriodicNodes();
-
-        void BuildVTKConnectivity();
-
+        void ApplyGeometryTransform(const Eigen::Matrix3d &rotation, real scale);
+        void ApplyAffineGeometryTransform(const Eigen::Matrix3d &, const tPoint &offset = tPoint::Zero());
+        void RectifyBoundaryCoordinates(std::function<int(t_index)>, bool volumeBoundary = true);
+        template <class F>
+        void TransformCoords(F &&transform)
+        {
+            TransformNativeCoords([&](const tPoint &point)
+                                  {tPoint value=point;return tPoint(transform(value)); });
+        }
+        std::shared_ptr<UnstructuredMesh> ExtractBoundary() const;
+        void ConstructBndMesh(UnstructuredMesh &destination);
+        void WriteNativeArchive(Serializer::SerializerBaseSSP, const std::string &) const;
+        static std::shared_ptr<UnstructuredMesh> ReadNativeArchive(const MPIInfo &, Serializer::SerializerBaseSSP, const std::string &,
+                                                                   Serializer::ArrayGlobalOffset = Serializer::ArrayGlobalOffset_Unknown, int ghostLayers = 1);
+        /// Collective primary wire-compatibility export; use full native archive for restart.
+        void WriteSerialize(Serializer::SerializerBaseSSP, const std::string &);
+        void ReadSerialize(Serializer::SerializerBaseSSP, const std::string &);
+        void ReadSerializeAndDistribute(Serializer::SerializerBaseSSP, const std::string &, const PartitionOptions &);
         void PrintParallelVTKHDFDataArray(
             std::string fname, std::string seriesName,
             int arraySiz, int vecArraySiz, int arraySizPoint, int vecArraySizPoint,
@@ -1482,7 +301,7 @@ namespace DNDS::Geom
             const tFGetName &vectorNamesPoint,
             const tFGetVecData &vectorDataPoint,
             double t, MPI_Comm commDup);
-
+        void PrintMeshCGNS(std::string fname, const t_FBCID_2_Name &fbcid2name, const std::vector<std::string> &allNames);
         void SetHDF5OutSetting(size_t chunkSiz, int deflateLevel, bool coll_on_data, bool coll_on_meta)
         {
             hdf5OutSetting.chunkSize = chunkSiz;
@@ -1490,14 +309,6 @@ namespace DNDS::Geom
             hdf5OutSetting.coll_on_data = coll_on_data;
             hdf5OutSetting.coll_on_meta = coll_on_meta;
         }
-
-        /// @brief Parallel CGNS mesh export utility.
-        ///
-        /// This uses CGNS parallel write calls and is intended for diagnostics / mesh
-        /// interchange. Solver partitioned-mesh workflows use SerializeMesh + H5
-        /// instead, because that path supports same-partition and redistributed reads.
-        void PrintMeshCGNS(std::string fname, const t_FBCID_2_Name &fbcid2name, const std::vector<std::string> &allNames);
-
         struct WallDistOptions
         {
             int subdivide_quad = 1;
@@ -1525,89 +336,15 @@ namespace DNDS::Geom
             }
         };
         void BuildNodeWallDist(const std::function<bool(Geom::t_index)> &fBndIsWall, WallDistOptions options = WallDistOptions{});
-
-        template <class F>
-        void op_on_device_arrays(F &&f)
-        {
-            for_each_member_list(this->device_array_list_primary(), f);
-            if (adjFacialState && face2cell.isBuilt())
-                for_each_member_list(this->device_array_list_facial(), f);
-            if (adjC2FState && cell2face.isBuilt())
-                for_each_member_list(this->device_array_list_C2F(), f);
-            if (adjN2CBState && node2cell.isBuilt())
-                for_each_member_list(this->device_array_list_N2CB(), f);
-            if (adjEdgeState && cell2edge.isBuilt())
-                for_each_member_list(this->device_array_list_edge(), f);
-        }
-
-        template <typename F>
-        void for_each_device_member(F &&f)
-        {
-            op_on_device_arrays(std::forward<F>(f));
-        }
-
-        // to_device(), to_host(), device() are provided by
-        // DeviceTransferable<UnstructuredMesh> via for_each_device_member().
-
-        template <DeviceBackend B>
-        using t_deviceView = UnstructuredMeshDeviceView<B>;
-
-        void to_device(DeviceBackend backend)
-        {
-            RequireLegacyWorkspace("legacy mesh to_device");
-            DeviceTransferable<UnstructuredMesh>::to_device(backend);
-        }
-
-        void to_host()
-        {
-            RequireLegacyWorkspace("legacy mesh to_host");
-            DeviceTransferable<UnstructuredMesh>::to_host();
-        }
-
-        template <DeviceBackend B>
-        auto deviceView()
-        {
-            RequireLegacyWorkspace("legacy mesh deviceView");
-            return t_deviceView<B>(*this, UnInitIndex);
-        }
-
         index getArrayBytes()
         {
-            if (HasNativeState())
-            {
-                const auto localBytes = _nativeState->ArrayBytes();
-                DNDS_check_throw_info(localBytes <= size_t(std::numeric_limits<index>::max()), "native mesh array bytes exceed index range");
-                index bytes = index(localBytes);
-                MPI::AllreduceOneIndex(bytes, MPI_SUM, mpi);
-                return bytes;
-            }
-            index bytes = 0;
-            auto acuumulate_bytes_arr = [&](auto &v)
-            {
-                if (v.ref.father)
-                    bytes += v.ref.father->FullSizeBytes();
-                if (v.ref.son)
-                    bytes += v.ref.son->FullSizeBytes();
-            };
-            op_on_device_arrays(acuumulate_bytes_arr);
+            const auto local = Native().ArrayBytes();
+            DNDS_check_throw_info(local <= size_t(std::numeric_limits<index>::max()), "mesh allocation bytes overflow");
+            index bytes = index(local);
             MPI::AllreduceOneIndex(bytes, MPI_SUM, mpi);
             return bytes;
         }
     };
-
-}
-namespace DNDS::Geom
-{
-    using tFDataFieldName = std::function<std::string(int)>;
-    using tFDataFieldQuery = tFGetData;
-
-    enum MeshReaderMode
-    {
-        UnknownMode,
-        SerialReadAndDistribute,
-        SerialOutput,
-    };
-
     struct PartitionOptions
     {
         std::string metisType = "KWAY";
@@ -1631,195 +368,42 @@ namespace DNDS::Geom
             // clang-format on
         }
     };
-
+    enum MeshReaderMode
+    {
+        UnknownMode,
+        SerialReadAndDistribute,
+        SerialOutput
+    };
+    /// Native serial output adapter. The maps below route external legacy solver
+    /// fields; they neither allocate nor own any legacy geometry payload.
     struct UnstructuredMeshSerialRW
     {
-        using PartitionOptions = Geom::PartitionOptions; // backward compatibility alias
-
-        /// Explicit serial-output snapshot; native meshes never populate the
-        /// legacy mesh arrays. Refresh after geometry or ownership changes.
-        std::shared_ptr<NativeMeshSerialOutput> nativeSerialOutput;
+        using PartitionOptions = Geom::PartitionOptions;
 
     private:
-        int ascii_precision{16};
+        int ascii_precision = 16;
         std::string vtuFloatEncodeMode = "ascii";
 
     public:
-        DNDS::ssp<UnstructuredMesh> mesh;
-
-        MeshReaderMode mode{UnknownMode};
-
-        bool dataIsSerialOut = false;
-        bool dataIsSerialIn = false;
-
-        tCoord coordSerial;                // created through reading
-        tAdj cell2nodeSerial;              // created through reading
-        tAdj bnd2nodeSerial;               // created through reading
-        tElemInfoArray cellElemInfoSerial; // created through reading
-        tElemInfoArray bndElemInfoSerial;  // created through reading
-        tAdj2 bnd2cellSerial;              // created through reading
-        tAdj1 cell2cellOrigSerial;         // created through reading
-        tAdj1 node2nodeOrigSerial;         // created through reading
-        tAdj1 bnd2bndOrigSerial;           // created through reading
-        tPbi cell2nodePbiSerial;           // created through reading-Deduplicate
-        tPbi bnd2nodePbiSerial;            // created through reading-Deduplicate
-        /***************************************************************/
-        // Current Method: R/W don't manage actually used interpolation,
-        // but manually get cell2cell or node2node
-        // because: currently only support node based or cell based
-        /***************************************************************/
-
-        // tAdj face2nodeSerial;    // created through InterpolateTopology
-        // tAdj2 face2cellSerial;   // created through InterpolateTopology
-        // tAdj cell2faceSerial;    // created through InterpolateTopology
-        // tElemInfoArray faceElemInfoSerial; // created through InterpolateTopology
-
-        tAdj cell2cellSerial; // optionally created with GetCell2Cell()
-        tAdj node2nodeSerial; // optionally created with GetNode2Node()
-
-        tAdj cell2cellSerialFacial; // optionally created with GetCell2Cell()
-
-        tAdj node2cellSerial; // not used for now
-        tAdj node2faceSerial; // not used for now
-        tAdj node2edgeSerial; // not used for now
-
-        tAdj cell2faceSerial; // not used for now
-        tAdj cell2edgeSerial; // not used for now
-
-        tAdj face2nodeSerial; // not used for now
-        tAdj face2faceSerial; // not used for now
-        tAdj face2edgeSerial; // not used for now
-        tAdj face2cellSerial; // not used for now
-
-        tAdj edge2nodeSerial; // not used for now
-        tAdj edge2cellSerial; // not used for now
-        tAdj edge2edgeSerial; // not used for now
-        tAdj edge2faceSerial; // not used for now
-
+        std::shared_ptr<NativeMeshSerialOutput> nativeSerialOutput;
+        ssp<UnstructuredMesh> mesh;
+        MeshReaderMode mode = UnknownMode;
+        bool dataIsSerialOut = false, dataIsSerialIn = false;
+        MPI_int mRank = 0;
         DNDS::ArrayTransformerType<tCoord::element_type>::Type coordSerialOutTrans;                // used in serial out mode
         DNDS::ArrayTransformerType<tAdj::element_type>::Type cell2nodeSerialOutTrans;              // used in serial out mode
         DNDS::ArrayTransformerType<tPbi::element_type>::Type cell2nodePbiSerialOutTrans;           // used in serial out mode
         DNDS::ArrayTransformerType<tAdj::element_type>::Type bnd2nodeSerialOutTrans;               // used in serial out mode
         DNDS::ArrayTransformerType<tElemInfoArray::element_type>::Type cellElemInfoSerialOutTrans; // used in serial out mode
         DNDS::ArrayTransformerType<tElemInfoArray::element_type>::Type bndElemInfoSerialOutTrans;  // used in serial out mode
-
-        std::vector<DNDS::MPI_int> cellPartition;
-        std::vector<DNDS::MPI_int> nodePartition;
-        std::vector<DNDS::MPI_int> bndPartition;
-
-        DNDS::MPI_int mRank{0}, cnPart{0};
-
-        /**
-         * @brief directly load coords; gets faulty if isPeriodic!, analog of mesh's method
-         */
-        template <class tC2n, class tCoordExt>
-        void _detail_GetCoordsSerial(const tC2n &c2n, tSmallCoords &cs, tCoordExt &coo)
-        {
-            cs.resize(Eigen::NoChange, c2n.size());
-            for (rowsize i = 0; i < c2n.size(); i++)
-            {
-                index iNode = c2n[i];
-                cs(EigenAll, i) = coo->operator[](iNode);
-            }
-        }
-
-        /**
-         * @brief specially for periodicity, analog of mesh's method
-         */
-        template <class tC2n, class tC2nPbi, class tCoordExt>
-        void _detail_GetCoordsOnElemSerial(const tC2n &c2n, const tC2nPbi &c2nPbi, tSmallCoords &cs, tCoordExt &coo)
-        {
-            cs.resize(Eigen::NoChange, c2n.size());
-            for (rowsize i = 0; i < c2n.size(); i++)
-            {
-                index iNode = c2n[i];
-                cs(EigenAll, i) = mesh->periodicInfo.GetCoordByBits(coo->operator[](iNode), c2nPbi[i]);
-            }
-        }
-        /**
-         * @brief analog of mesh's method
-         */
-        void GetCoordsOnCellSerial(index iCell, tSmallCoords &cs, tCoord &coo)
-        {
-            if (!mesh->isPeriodic)
-                _detail_GetCoordsSerial((*cell2nodeSerial)[iCell], cs, coo);
-            else
-                _detail_GetCoordsOnElemSerial((*cell2nodeSerial)[iCell], (*cell2nodePbiSerial)[iCell], cs, coo);
-        }
-
-        UnstructuredMeshSerialRW(decltype(mesh) n_mesh, DNDS::MPI_int n_mRank)
-            : mesh(std::move(n_mesh)), mRank(n_mRank) {}
-
-        /// @brief reads a cgns file as serial input
-        /**
-         * @details
-         * the file MUST consist of one CGNS base node, and
-         * multiple zones within.
-         * All the zones are treated as a whole unstructured grid
-         * Proofed on .cgns files generated from Pointwise
-         * @warning //!Pointwise Options: with "Include Donor Information", "Treat Structured as Unstructured", "Unstructured Interfaces = Node-to-Node"
-         */
-        /// @todo //TODO Add some multi thread here!
-        /// @param fName file name of .cgns file
-        void ReadFromCGNSSerial(const std::string &fName, const t_FBCName_2_ID &FBCName_2_ID);
-
-        auto ReadFromCGNSSerial(const std::string &fName)
-        {
-            AutoAppendName2ID appended_name2id;
-            this->ReadFromCGNSSerial(fName, appended_name2id);
-            return appended_name2id;
-        }
-
-        void ReadFromOpenFOAMAndConvertSerial(const std::string &fName, const std::map<std::string, std::string> &nameMapping, const t_FBCName_2_ID &FBCName_2_ID = FBC_Name_2_ID_Default);
-
-        void Deduplicate1to1Periodic(real search_eps = 1e-8);
-
-        // void InterpolateTopology();
-
-        /**
-         * \brief build cell2cell topology, with node-neighbors included
-         * \todo add support for only face-neighbors
-         */
-        void BuildCell2Cell(); // For cell based purpose
-
-        void BuildNode2Node(); // For node based purpose //!not yet implemented
-
-        void MeshPartitionCell2Cell(const PartitionOptions &options);
-
-        void PartitionReorderToMeshCell2Cell();
-
+        UnstructuredMeshSerialRW(ssp<UnstructuredMesh> source, MPI_int writer) : mesh(std::move(source)), mRank(writer) {}
+        void BuildSerialOut();
         void ClearSerial()
         {
-            coordSerial.reset();
-            cell2nodeSerial.reset();
-            cell2cellSerial.reset();
-            cellElemInfoSerial.reset();
-            bnd2nodeSerial.reset();
-            bnd2cellSerial.reset();
-            bndElemInfoSerial.reset();
-            cell2cellOrigSerial.reset();
-            node2nodeOrigSerial.reset();
-            bnd2bndOrigSerial.reset();
+            nativeSerialOutput.reset();
             mode = UnknownMode;
             dataIsSerialIn = dataIsSerialOut = false;
         }
-
-        /**
-         * @brief should be called to build data for serial out
-         */
-        void BuildSerialOut();
-
-        // void WriteToCGNSSerial(const std::string &fName);
-
-        // void WriteSolutionToTecBinary(const std::string &fName,
-        //                               int nField, const tFDataFieldName &names, const tFDataFieldQuery &data,
-        //                               int nFieldBnd, const tFDataFieldName &namesBnd, const tFDataFieldQuery &dataBnd);
-
-        /**
-         * @brief names(idata) data(idata, ivolume)
-         * https://tecplot.azureedge.net/products/360/current/360_data_format_guide.pdf
-         * @todo //TODO add support for bnd export
-         */
         void PrintSerialPartPltBinaryDataArray(
             std::string fname,
             int arraySiz, int arraySizPoint,
@@ -1828,11 +412,6 @@ namespace DNDS::Geom
             const tFGetName &namesPoint,
             const tFGetData &dataPoint,
             double t, int flag);
-
-        /**
-         * @brief names(idata) data(idata, ivolume)
-         * @todo //TODO add support for bnd export
-         */
         void PrintSerialPartVTKDataArray(
             std::string fname, std::string seriesName,
             int arraySiz, int vecArraySiz, int arraySizPoint, int vecArraySizPoint,
@@ -1845,7 +424,6 @@ namespace DNDS::Geom
             const tFGetName &vectorNamesPoint,
             const tFGetVecData &vectorDataPoint,
             double t, int flag = 0);
-
         void SetASCIIPrecision(int n) { ascii_precision = n; }
         void SetVTKFloatEncodeMode(const std::string &v)
         {
@@ -1853,4 +431,4 @@ namespace DNDS::Geom
             DNDS_assert(v == "ascii" || v == "binary");
         }
     };
-} // namespace geom
+}

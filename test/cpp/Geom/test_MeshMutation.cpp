@@ -1,84 +1,71 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "Geom/Mesh/Mesh.hpp"
-#include "Geom/Mesh/NativeMeshTopology.hpp"
 #include "Geom/Mesh/Mesh_Helpers.hpp"
-#include "MeshFacadeOverlapFixture.hpp"
+#include "Geom/Mesh/NativeMeshCGNS.hpp"
+#include "Geom/Mesh/NativeMeshOutput.hpp"
+#include "Geom/Mesh/MeshConnectivity.hpp"
+#include "Solver/Direct.hpp"
+#include "NativeMeshOverlapFixture.hpp"
 #include "DNDS/Serializer/SerializerJSON.hpp"
 #include <filesystem>
-
 using namespace DNDS;
 using namespace DNDS::Geom;
 namespace R = DNDS::Runtime;
-
 static MPIInfo MutationMPI()
 {
     MPIInfo mpi;
     mpi.setWorld();
     return mpi;
 }
-
 static ssp<UnstructuredMesh> MutationFixture(const MPIInfo &mpi)
 {
-    auto mesh = make_ssp<UnstructuredMesh>(mpi, 2);
-    auto root = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path();
-    UnstructuredMeshSerialRW reader(mesh, 0);
-    reader.ReadFromCGNSSerial((root / "data/mesh/UniformSquare_10.cgns").string());
-    reader.BuildCell2Cell();
-    UnstructuredMeshSerialRW::PartitionOptions options;
-    options.metisType = "KWAY";
-    options.metisSeed = 42;
-    options.metisNcuts = 1;
-    reader.MeshPartitionCell2Cell(options);
-    reader.PartitionReorderToMeshCell2Cell();
-    mesh->RecoverNode2CellAndNode2Bnd();
-    mesh->RecoverCell2CellAndBnd2Cell();
-    mesh->BuildGhostPrimary();
-    mesh->AdjGlobal2LocalPrimary();
-    return mesh;
+    const auto root = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path();
+    return UnstructuredMesh::FromNative(mpi, ReadNativeCGNS(mpi, (root / "data/mesh/UniformSquare_10.cgns").string(), 2, FBC_Name_2_ID_Default, 0, {1, true}));
 }
-
-TEST_CASE("Managed public mutations reject retained readers before changing values or generations")
+TEST_CASE("Managed public mutations reject retained readers while detached conversion remains pure")
 {
     auto mesh = MutationFixture(MutationMPI());
     auto before = mesh->versions.Stamp();
+    const auto periodicTranslation = mesh->PeriodicMetadata().translation[1].map()[0];
     {
         auto read = mesh->AcquireRead();
-        CHECK_THROWS(mesh->AdjLocal2GlobalPrimary());
-        CHECK_THROWS(mesh->InterpolateFace());
-        tPoint zero = tPoint::Zero();
-        CHECK_THROWS(mesh->SetPeriodicGeometry({9, 0, 0}, zero, zero, zero, zero, zero, zero, zero, zero));
+        CHECK_THROWS(mesh->PrepareNativeTopology());
+        CHECK_THROWS(mesh->ApplyGeometryTransform(Eigen::Matrix3d::Identity(), 2));
+        CHECK_THROWS(mesh->ReorderLocalCells());
+        auto relation = RelationReadAccess::Current(*mesh, Adj::Cell2Node, MeshReadRequirements::Primary());
+        auto globals = NativeRelation::Convert(relation, Adj_PointToGlobal);
+        auto locals = NativeRelation::Convert(globals.Read(), Adj_PointToLocal, false);
+        CHECK(locals.Read().GlobalRow(0) == relation.GlobalRow(0));
         CHECK(before.Valid());
-        CHECK(mesh->adjPrimaryState == Adj_PointToLocal);
-        CHECK(mesh->periodicInfo.translation[1].map()[0] == 1);
+        CHECK(read.HostView().RelationState(MeshRelation::CellNodes) == Adj_PointToLocal);
+        CHECK(mesh->PeriodicMetadata().translation[1].map()[0] == periodicTranslation);
     }
     CHECK(mesh->versions.CanMutate());
-    mesh->AdjLocal2GlobalPrimary();
+    mesh->PrepareNativeTopology();
     CHECK_FALSE(before.Valid());
 }
-
-TEST_CASE("Nested face setup and reorder publish each changed generation only once")
+TEST_CASE("Native topology publication changes each declared generation once and auxiliary setup remains pure")
 {
     auto mesh = MutationFixture(MutationMPI());
-    auto before = mesh->versions.Stamp();
-    mesh->InterpolateFace();
+    const auto before = mesh->versions.Stamp();
+    mesh->PrepareNativeTopology();
     mesh->AssertOnFaces();
-    auto after = mesh->versions.Stamp();
-    for (auto change : {R::Change::Topology, R::Change::Distribution, R::Change::Layout,
-                        R::Change::Allocation, R::Change::Interface, R::Change::Values})
+    const auto after = mesh->versions.Stamp();
+    for (auto change : {R::Change::Topology, R::Change::Distribution, R::Change::Layout, R::Change::Allocation})
         CHECK(after.Generation(change) == before.Generation(change) + 1);
-    CHECK(after.Generation(R::Change::Geometry) == before.Generation(R::Change::Geometry));
-    mesh->BuildCell2CellFace();
-    mesh->AdjGlobal2LocalC2CFace();
-    mesh->AdjLocal2GlobalC2CFace();
-    auto auxiliary = mesh->versions.Stamp();
-    CHECK(auxiliary.Generation(R::Change::Layout) == after.Generation(R::Change::Layout));
-    CHECK(auxiliary.Generation(R::Change::Topology) == after.Generation(R::Change::Topology));
-    CHECK(auxiliary.Generation(R::Change::Geometry) == after.Generation(R::Change::Geometry));
+    for (auto change : {R::Change::Geometry, R::Change::Interface, R::Change::Values})
+        CHECK(after.Generation(change) == before.Generation(change));
+    Direct::DirectPrecControl options;
+    options.useDirectPrec = true;
+    options.orderingCode = 0;
+    Direct::SerialSymLUStructure graph(mesh->mpi, mesh->NumCell());
+    mesh->ObtainLocalFactFillOrdering(graph, options);
+    CHECK(after.Valid());
+    CHECK(mesh->LocalCellNeighbors().size() == size_t(mesh->NumCell()));
     auto read = mesh->AcquireRead(MeshReadRequirements::CellFlux());
     CHECK(read.HostView().NumFace() == mesh->NumFace());
 }
-
 TEST_CASE("Failed nested mutation stays failed even when an intermediate caller catches it")
 {
     R::VersionTracker versions;
@@ -104,25 +91,32 @@ TEST_CASE("Failed nested mutation stays failed even when an intermediate caller 
     CHECK_THROWS(versions.Read());
 }
 
-TEST_CASE("Public callback reentry cannot adopt an existing mesh writer")
+TEST_CASE("Public callback reentry cannot adopt a writer and staged failures preserve the source")
 {
     auto mesh = MutationFixture(MutationMPI());
-    tPoint zero = tPoint::Zero();
     bool rejected = false;
     mesh->TransformCoords([&](const tPoint &point)
                           {
-        try { mesh->SetPeriodicGeometry({9, 0, 0}, zero, zero, zero, zero, zero, zero, zero, zero); }
-        catch (const std::runtime_error &) { rejected = true; }
+        try {auto write=mesh->versions.BeginMutation(R::Change::Geometry);write.Commit();}
+        catch(const std::runtime_error &){rejected=true;}
         return point; });
-    CHECK(rejected);
-    CHECK(mesh->periodicInfo.translation[1].map()[0] == 1);
+    CHECK(rejected == (mesh->NumNode() > 0));
     CHECK(mesh->versions.CanMutate());
+    const auto stamp = mesh->versions.Stamp();
+    const auto state = mesh->CurrentNativeState();
+    std::vector<tPoint> before;
+    for (DNDS::index row = 0; row < mesh->NumNodeProc(); ++row)
+        before.push_back(mesh->Coord(row));
     CHECK_THROWS(mesh->TransformCoords([](const tPoint &) -> tPoint
                                        { throw std::runtime_error("coordinate edit failed"); }));
-    CHECK_FALSE(mesh->versions.CanMutate());
-    CHECK_THROWS(mesh->AcquireRead());
+    CHECK(stamp.Valid());
+    CHECK(mesh->versions.CanMutate());
+    CHECK(mesh->CurrentNativeState() == state);
+    for (DNDS::index row = 0; row < mesh->NumNodeProc(); ++row)
+        CHECK(mesh->Coord(row) == before[size_t(row)]);
+    CHECK_NOTHROW(mesh->TransformCoords([](const tPoint &point)
+                                        { return point; }));
 }
-
 TEST_CASE("Bisection creates independent geometry under independent mesh mutation controllers")
 {
     auto mpi = MutationMPI();
@@ -134,8 +128,6 @@ TEST_CASE("Bisection creates independent geometry under independent mesh mutatio
     auto bisected = make_ssp<UnstructuredMesh>(mpi, 2);
     bisected->BuildBisectO1FormO2(*quadratic);
     CHECK(bisected->CurrentNativeState()->MeshNamespace() != quadratic->CurrentNativeState()->MeshNamespace());
-    CHECK_FALSE(bisected->coords.father);
-    CHECK_FALSE(quadratic->coords.father); // fixture is independently native-derived
     std::vector<tPoint> before;
     for (DNDS::index node = 0; node < quadratic->NumNode(); ++node)
         before.emplace_back(quadratic->Coord(node));
@@ -150,52 +142,57 @@ TEST_CASE("Bisection creates independent geometry under independent mesh mutatio
     }
 }
 
-TEST_CASE("Mesh serialization excludes readers before compressing legacy CSR shapes")
+TEST_CASE("Native primary serialization shares immutable shape safely with readers and preserves the source")
 {
     auto mesh = MutationFixture(MutationMPI());
-    mesh->AdjLocal2GlobalPrimary();
     auto serializer = make_ssp<Serializer::SerializerJSON>();
     serializer->CreatePath("/");
-    auto before = mesh->versions.Stamp();
+    const auto before = mesh->versions.Stamp();
+    const auto state = mesh->CurrentNativeState();
     {
-        auto read = mesh->versions.Read();
-        CHECK_THROWS(mesh->WriteSerialize(serializer, "blocked"));
+        auto read = mesh->AcquireRead();
+        CHECK_NOTHROW(mesh->WriteSerialize(serializer, "mesh"));
         CHECK(before.Valid());
-        CHECK(serializer->ListCurrentPath().empty());
+        CHECK(mesh->CurrentNativeState() == state);
+        auto restored = make_ssp<UnstructuredMesh>(mesh->mpi, mesh->getDim());
+        restored->ReadSerialize(serializer, "mesh");
+        CHECK(restored->NumCell() == mesh->NumCell());
+        CHECK(restored->NumNode() == mesh->NumNode());
+        for (DNDS::index row = 0; row < mesh->NumNode(); ++row)
+        {
+            CHECK(restored->OriginalEntityId(EntityKind::Node, row) == mesh->OriginalEntityId(EntityKind::Node, row));
+            CHECK(restored->Coord(row) == read.HostView().Coord(row));
+        }
+        for (DNDS::index row = 0; row < mesh->NumCell(); ++row)
+        {
+            CHECK(restored->OriginalEntityId(EntityKind::Cell, row) == mesh->OriginalEntityId(EntityKind::Cell, row));
+            const auto oldNodes = mesh->CellNodes(row), newNodes = restored->CellNodes(row);
+            REQUIRE(newNodes.size() == oldNodes.size());
+            for (size_t slot = 0; slot < oldNodes.size(); ++slot)
+                CHECK(restored->OriginalEntityId(EntityKind::Node, newNodes[slot]) == mesh->OriginalEntityId(EntityKind::Node, oldNodes[slot]));
+        }
     }
-    {
-        auto read = mesh->cell2node.father->HostReadData();
-        CHECK_THROWS(mesh->WriteSerialize(serializer, "aliased"));
-        CHECK(before.Valid());
-        CHECK(serializer->ListCurrentPath().empty());
-    }
-    mesh->cell2node.father->Decompress();
-    CHECK_FALSE(mesh->cell2node.father->IfCompressed());
-    mesh->WriteSerialize(serializer, "mesh");
-    CHECK(mesh->cell2node.father->IfCompressed());
-    auto after = mesh->versions.Stamp();
-    CHECK(after.Generation(R::Change::Allocation) == before.Generation(R::Change::Allocation) + 1);
-    CHECK(after.Generation(R::Change::Interface) == before.Generation(R::Change::Interface) + 1);
-    CHECK(after.Generation(R::Change::Layout) == before.Generation(R::Change::Layout));
-    CHECK(after.Generation(R::Change::Topology) == before.Generation(R::Change::Topology));
+    CHECK(before.Valid());
     CHECK(mesh->versions.CanMutate());
 }
-
-TEST_CASE("Collective VTK cache setup rejects a reader held on one rank")
+TEST_CASE("Collective native topology setup rejects a one-rank reader while output remains readonly")
 {
     auto mesh = MutationFixture(MutationMPI());
-    auto stamp = mesh->versions.Stamp();
+    const auto stamp = mesh->versions.Stamp();
+    const auto state = mesh->CurrentNativeState();
     std::optional<R::VersionTracker::ReadLease> reader;
     if (mesh->mpi.rank == 0)
         reader.emplace(mesh->versions.Read());
-    CHECK_THROWS(mesh->BuildVTKConnectivity());
+    CHECK_THROWS(mesh->PrepareNativeTopology());
     CHECK(stamp.Valid());
-    CHECK(mesh->vtkCell2nodeOffsets.empty());
+    CHECK(mesh->CurrentNativeState() == state);
+    auto output = NativeMeshOutput::Build(*state, mesh->mpi);
+    CHECK(output.globalCells == mesh->NumCellGlobal());
+    CHECK(stamp.Valid());
     reader.reset();
-    mesh->BuildVTKConnectivity();
-    CHECK(mesh->vtkCell2nodeOffsets.size() == size_t(mesh->NumCell() + 1));
+    CHECK_NOTHROW(mesh->PrepareNativeTopology());
+    CHECK_FALSE(stamp.Valid());
 }
-
 TEST_CASE("Boundary destination rejection preserves both native authorities and controllers")
 {
     auto mpi = MutationMPI();

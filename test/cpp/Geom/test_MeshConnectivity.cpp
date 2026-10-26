@@ -2,6 +2,7 @@
 #include "doctest.h"
 #include "NativeRelationSynthetic.hpp"
 #include "Geom/Mesh/MeshConnectivity.hpp"
+#include "Geom/Mesh/RelationAccessLegacy.hpp"
 #include "NativeStructuredInterpolation.hpp"
 #include "Geom/Mesh/NativeMeshCGNS.hpp"
 #include "Geom/Mesh/Mesh.hpp"

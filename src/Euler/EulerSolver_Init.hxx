@@ -159,21 +159,30 @@ namespace DNDS::Euler
             }
             return meshInput;
         };
-        mesh->SetPeriodicGeometry(
-            config.boundaryDefinition.PeriodicTranslation1,
-            config.boundaryDefinition.PeriodicRotationCent1,
-            config.boundaryDefinition.PeriodicRotationEulerAngles1,
-            config.boundaryDefinition.PeriodicTranslation2,
-            config.boundaryDefinition.PeriodicRotationCent2,
-            config.boundaryDefinition.PeriodicRotationEulerAngles2,
-            config.boundaryDefinition.PeriodicTranslation3,
-            config.boundaryDefinition.PeriodicRotationCent3,
-            config.boundaryDefinition.PeriodicRotationEulerAngles3);
-
         if (config.dataIOControl.readMeshMode == 0)
         {
+            Geom::Periodicity frames;
+            const std::array<Geom::tPoint, 3> translations{
+                config.boundaryDefinition.PeriodicTranslation1,
+                config.boundaryDefinition.PeriodicTranslation2,
+                config.boundaryDefinition.PeriodicTranslation3};
+            const std::array<Geom::tPoint, 3> centers{
+                config.boundaryDefinition.PeriodicRotationCent1,
+                config.boundaryDefinition.PeriodicRotationCent2,
+                config.boundaryDefinition.PeriodicRotationCent3};
+            const std::array<Geom::tPoint, 3> angles{
+                config.boundaryDefinition.PeriodicRotationEulerAngles1,
+                config.boundaryDefinition.PeriodicRotationEulerAngles2,
+                config.boundaryDefinition.PeriodicRotationEulerAngles3};
+            for (size_t group = 0; group < 3; ++group)
+            {
+                frames.translation[group + 1].map() = translations[group];
+                frames.rotationCenter[group + 1].map() = centers[group];
+                frames.rotation[group + 1].map() =
+                    Geom::RotZ(angles[group][2]) * Geom::RotY(angles[group][1]) * Geom::RotX(angles[group][0]);
+            }
             const Geom::NativePeriodicImportOptions periodic{
-                mesh->periodicInfo, config.boundaryDefinition.periodicTolerance};
+                frames, config.boundaryDefinition.periodicTolerance};
             auto nameMapper = [&](const std::string &name) -> Geom::t_index
             { return BCHandler.GetIDFromName(name); };
             if (config.dataIOControl.meshFormat == 1)
