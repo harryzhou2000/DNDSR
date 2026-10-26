@@ -1,5 +1,6 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
+#include "LegacyMeshFixtureCodec.hpp"
 #include "Geom/Mesh/Mesh.hpp"
 #include "Geom/Mesh/MeshTransition.hpp"
 #include "Geom/Mesh/NativeMeshOutput.hpp"
@@ -167,7 +168,7 @@ TEST_CASE("Prepared VTKHDF worker keeps reductions on its output communicator")
     SUBCASE("native output buffers") { native = true; }
     // The native writer builds its output-only buffers directly using output
     // comm; the baseline retains its separately prepared legacy workspace.
-    auto workspace = native ? source : CloneCurrentMeshForSetup(*source);
+    auto workspace = native ? source : TestFixtureCodec::DecodeLegacy(*source, true);
     int rootPid = int(getpid());
     MPI_Bcast(&rootPid, 1, MPI_INT, 0, mpi.comm);
     const auto base = (std::filesystem::temp_directory_path() /

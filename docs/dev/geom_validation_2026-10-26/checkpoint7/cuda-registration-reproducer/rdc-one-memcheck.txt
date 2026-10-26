@@ -1,0 +1,3 @@
+========= COMPUTE-SANITIZER
+a=9 b=8 cuda=no error
+========= ERROR SUMMARY: 0 errors

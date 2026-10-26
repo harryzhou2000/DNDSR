@@ -35,10 +35,10 @@ from DNDSR import DNDS, Geom
 
 @dataclasses.dataclass
 class MeshReadResult:
-    """Result of :func:`read_mesh`; native construction has no legacy reader."""
+    """Result of :func:`read_mesh`; native input retains a serial output adapter."""
 
     mesh: Geom.UnstructuredMesh
-    reader: Geom.UnstructuredMeshSerialRW | None
+    reader: Geom.UnstructuredMeshSerialRW | None  # Native input uses an output-only adapter.
     name_to_id: Geom.AutoAppendName2ID | None  # None for H5 modes
 
 
@@ -239,7 +239,7 @@ def read_mesh(
     elevation: str = "",
     bisect: int = 0,
     serializer_factory: DNDS.Serializer.SerializerFactory | None = None,
-    native: bool = False,
+    native: bool = True,
     cell_layers: int = 1,
     complete_node_star: bool = False,
 ) -> MeshReadResult:
@@ -252,25 +252,28 @@ def read_mesh(
 
     Returns a :class:`MeshReadResult` with the distributed mesh (ghost cells
     built, local indices).  The mesh is **not** solver-ready: call
-    :func:`prepare_mesh` next for legacy input. With ``native=True``, use
-    ``mesh = prepare_native_mesh(result.mesh)`` and retain its returned facade;
-    ``reader`` is None. Native CGNS uses even contiguous ownership, retains BC
-    names on every rank. An explicit periodic_geometry dictionary enables
-    native periodic identification (using periodic_tolerance); None leaves it
-    off. Explicit partition_options requests facial-graph partitioning; RB
+    :func:`prepare_mesh` next. Native construction is the default and the
+    returned reader is an output-only adapter. ``prepare_mesh`` updates the same
+    facade; ``prepare_native_mesh`` remains the explicitly detached variant.
+    Native CGNS retains BC names on every rank. None selects the former helper's
+    default periodic frames; an explicit dictionary overrides those frames.
+    Omitted partition_options retains the former KWAY defaults. Explicit RB
     selects reader-owned ingress, KWAY permits distributed input, and
     edgeWeightMethod=1 enables physical face-diameter weights. Native
     H5 reads a full native archive or decodes legacy primary records directly
-    into native arrays, preserving saved ownership and original IDs.
+    into native arrays, preserving saved ownership and original IDs unless
+    partition_options explicitly requests graph repartitioning.
     All ranks must supply the same helper options and participate in calls.
     """
     if native:
-        if periodic_geometry is None and periodic_tolerance != 1e-9:
-            raise ValueError("Native periodic_tolerance requires an explicit periodic_geometry dictionary")
         if elevation not in ("", "O2") or not 0 <= bisect <= 4 or (elevation == "O2" and bisect):
             raise ValueError("Use elevation='' or 'O2', bisect=0..4, without combining O2 and bisection")
         mode = read_mode or _detect_read_mode(mesh_file)
         if mode == "cgns":
+            if partition_options is None:
+                partition_options = dict(_DEFAULT_PARTITION_OPTIONS)
+            if periodic_geometry is None:
+                periodic_geometry = {"translation1": [1, 0, 0], "rotationCenter1": [0, 0, 0], "eulerAngles3": [0, 0, 0]}
             if serializer_factory is not None:
                 raise ValueError("serializer_factory applies to native H5 archives only")
             mesh, names = Geom.read_native_cgns_with_names(
@@ -284,13 +287,7 @@ def read_mesh(
                 raise ValueError("Native archive preserves its saved node-star requirement; complete_node_star cannot override it")
             factory = serializer_factory or default_serializer_factory()
             base = mesh_file[:-len(".dnds.h5")] if mesh_file.endswith(".dnds.h5") else mesh_file
-            path, _ = factory.ModifyFilePath(base, mpi, "part_%d", True)
-            serializer = factory.BuildSerializer(mpi)
-            serializer.OpenFile(path, True)
-            try:
-                mesh = Geom.read_compatible_native_archive(mpi, serializer, "meshPart", ghost_layers=cell_layers)
-            finally:
-                serializer.CloseFile()
+            mesh = Geom.read_native_archive_file(mpi, factory, base, ghost_layers=cell_layers)
             if mesh.getDim() != dim:
                 raise ValueError("Native archive dimension differs from requested dim")
             names = None
@@ -307,7 +304,7 @@ def read_mesh(
             if set(partition_options) - allowed:
                 raise ValueError(f"Unknown native partition options: {set(partition_options) - allowed}")
             mesh = Geom.partition_native_mesh(mesh, **partition_options, ghost_layers=cell_layers)
-        return MeshReadResult(mesh, None, names)
+        return MeshReadResult(mesh, Geom.UnstructuredMeshSerialRW(mesh, 0), names)
     if cell_layers != 1 or complete_node_star:
         raise ValueError("cell_layers and complete_node_star apply only to native reading")
     if read_mode is None:
@@ -356,6 +353,7 @@ def prepare_mesh(
     mesh: Geom.UnstructuredMesh,
     reader: Geom.UnstructuredMeshSerialRW | None,
     *,
+    ghost_layers: int = 1,
     reorder_parts: int = 1,
     reorder_inner_parts: int = 1,
     build_serial_out: bool = True,
@@ -373,7 +371,32 @@ def prepare_mesh(
     optional coordinate transforms.
     """
     if _native_authority(mesh):
-        raise ValueError("Use prepare_native_mesh(mesh), which returns a new native facade")
+        if reader is None:
+            reader = Geom.UnstructuredMeshSerialRW(mesh, 0)
+        import numpy as np
+        mismatch = np.array(int(reader.mesh is not mesh), dtype=np.int32)
+        any_mismatch = np.zeros((), dtype=np.int32)
+        DNDS.MPI.Allreduce(mismatch, any_mismatch, "MPI_MAX", mesh.getMPI())
+        if int(any_mismatch):
+            raise ValueError("Preparation output adapter must belong to the same mesh on every rank")
+        mesh.PrepareNativeTopology(ghost_layers=ghost_layers)
+        mesh.ReorderLocalCells(nParts=reorder_parts, nPartsInner=reorder_inner_parts, ghost_layers=ghost_layers)
+        _apply_coord_transforms(mesh, coord_scale, coord_rot_z_deg, rectify_near_plane, rectify_threshold)
+        if wall_dist_options is not None and wall_dist_predicate is None:
+            raise ValueError("wall_dist_options requires wall_dist_predicate")
+        if wall_dist_predicate is not None:
+            opts = Geom.UnstructuredMesh.WallDistOptions()
+            if isinstance(wall_dist_options, Mapping):
+                for key, value in wall_dist_options.items():
+                    if not hasattr(opts, key):
+                        raise ValueError(f"Unknown wall distance option: {key}")
+                    setattr(opts, key, value)
+            elif wall_dist_options is not None:
+                opts = wall_dist_options
+            mesh.BuildNodeWallDist(wall_dist_predicate, opts)
+        if build_serial_out:
+            reader.BuildSerialOut()
+        return
     if reader is None:
         raise ValueError("Legacy preparation requires a serial reader")
     mpi = mesh.getMPI()
@@ -515,13 +538,15 @@ def build_bnd_mesh(
     """Extract the boundary surface mesh from *mesh*.
 
     The default builds serial output for legacy input. Native input returns a
-    compact native boundary mesh with ``reader_bnd=None``; explicitly requesting
-    legacy serial output in native mode raises ValueError.
+    compact native boundary mesh with a native serial output adapter. Serial
+    output preserves physical periodic images without a legacy mesh workspace.
     """
     if _native_authority(mesh):
-        if build_serial_out:
-            raise ValueError("Native boundary extraction has no legacy serial reader/output cache")
-        return BndMeshResult(Geom.extract_native_boundary(mesh), None)
+        mesh_bnd = Geom.extract_native_boundary(mesh)
+        reader_bnd = Geom.UnstructuredMeshSerialRW(mesh_bnd, 0)
+        if build_serial_out is not False:
+            reader_bnd.BuildSerialOut()
+        return BndMeshResult(mesh_bnd, reader_bnd)
     if build_serial_out is None:
         build_serial_out = True
     mesh_bnd = Geom.UnstructuredMesh(mesh.getMPI(), mesh.getDim() - 1)
@@ -684,8 +709,8 @@ def create_mesh_from_CGNS(
         h5_file if read_mode == "h5" else meshFile,
         mpi,
         dim,
-        periodic_geometry=periodic_geometry,
-        periodic_tolerance=periodic_tolerance,
+        periodic_geometry=periodic_geometry if read_mode == "cgns" else None,
+        periodic_tolerance=periodic_tolerance if read_mode == "cgns" else 1e-9,
         read_mode=read_mode,
         elevation=meshElevation,
         bisect=meshDirectBisect,

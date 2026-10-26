@@ -290,6 +290,8 @@ add_dependencies(geom_unit_tests geom_test_native_relation_registry)
 
 geom_add_mpi_test(native_mesh_transition "Geom/test_NativeMeshTransition.cpp" "geom;dnds")
 add_dependencies(geom_unit_tests geom_test_native_mesh_transition)
+geom_add_mpi_test(native_transition_rebuild "Geom/test_NativeTransitionRebuild.cpp" "geom;dnds")
+add_dependencies(geom_unit_tests geom_test_native_transition_rebuild)
 geom_add_mpi_test(native_mesh_archive "Geom/test_NativeMeshArchive.cpp" "geom;dnds")
 add_dependencies(geom_unit_tests geom_test_native_mesh_archive)
 geom_add_mpi_test(native_mesh_cgns "Geom/test_NativeMeshCGNS.cpp" "geom;dnds")

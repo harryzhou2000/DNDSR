@@ -384,6 +384,13 @@ namespace DNDS::Geom
         const Periodicity &PeriodicMetadata() const { return _nativeState ? _nativeState->BorrowHostView().Periodic() : periodicInfo; }
         const Periodicity &Periodic() const { return PeriodicMetadata(); }
         void ApplyGeometryTransform(const Eigen::Matrix3d &rotation, real scale);
+        /// Collective native-only x'=linear*x+offset, staged with periodic frames.
+        /// Requires finite orientation-preserving invertible linear and identical
+        /// arguments on every rank. Conjugated periodic rotations must stay proper
+        /// orthonormal (absolute Frobenius/determinant tolerance 1e-10).
+        /// Drops wall vectors and device placements; rebuild dependent metrics.
+        /// Release facade read aliases first; detached snapshots remain readable.
+        void ApplyAffineGeometryTransform(const Eigen::Matrix3d &linear, const tPoint &offset = tPoint::Zero());
         void RectifyBoundaryCoordinates(std::function<int(t_index)> componentForZone, bool volumeBoundary = true);
 
         /// Borrowed semantic rows require an outer AcquireRead scope or a
@@ -953,7 +960,7 @@ namespace DNDS::Geom
         /// Setup-only native publication changes cell numbering and invalidates
         /// associated fields/routes. Use NativeMeshTransition::ReorderLocalCells
         /// for a detached result with explicit external-field transfer maps.
-        void ReorderLocalCells(int nParts = 1, int nPartsInner = 1);
+        void ReorderLocalCells(int nParts = 1, int nPartsInner = 1, int ghostLayers = 1);
 
         /// Legacy implementation preserved for reference/fallback.
         void ReorderLocalCellsLegacy(int nParts = 1, int nPartsInner = 1);

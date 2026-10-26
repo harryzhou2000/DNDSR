@@ -1,7 +1,10 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
+#include "MeshFacadeOverlapFixture.hpp"
 #include "Geom/Mesh/MeshTransition.hpp"
 #include "Geom/Mesh/FieldTransfer.hpp"
+#include "Geom/Mesh/NativeMeshLegacyArchive.hpp"
+#include "Geom/Mesh/NativeMeshPreparation.hpp"
 #include "DNDS/Runtime/ArrayIO.hpp"
 #include "DNDS/Serializer/SerializerH5.hpp"
 #include <filesystem>
@@ -14,23 +17,7 @@ namespace R = DNDS::Runtime;
 
 static ssp<UnstructuredMesh> CheckpointMesh(const MPIInfo &mpi)
 {
-    auto mesh = make_ssp<UnstructuredMesh>(mpi, 2);
-    auto root = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path();
-    UnstructuredMeshSerialRW reader(mesh, 0);
-    reader.ReadFromCGNSSerial((root / "data/mesh/UniformSquare_10.cgns").string());
-    reader.BuildCell2Cell();
-    UnstructuredMeshSerialRW::PartitionOptions options;
-    options.metisType = "KWAY";
-    options.metisSeed = 42;
-    options.metisNcuts = 1;
-    reader.MeshPartitionCell2Cell(options);
-    reader.PartitionReorderToMeshCell2Cell();
-    mesh->RecoverNode2CellAndNode2Bnd();
-    mesh->RecoverCell2CellAndBnd2Cell();
-    mesh->BuildGhostPrimary();
-    mesh->AdjGlobal2LocalPrimary();
-    mesh->InterpolateFace();
-    return mesh;
+    return OverlapTest::BuildNativeFixture(mpi).mesh;
 }
 
 static double HistoryValue(DNDS::index cellId, size_t history, size_t component)
@@ -62,7 +49,7 @@ TEST_CASE("Retained mesh and multi-history field form a coherent matching-partit
     {
         localNodeIds[size_t(node)] = source->OriginalEntityId(EntityKind::Node, node);
         for (size_t component = 0; component < 3; ++component)
-            localCoords[size_t(node) * 3 + component] = source->coords[node][int(component)];
+            localCoords[size_t(node) * 3 + component] = source->CurrentNativeState()->BorrowHostView().Coord(node)[int(component)];
     }
     int localCount = int(localNodeIds.size());
     std::vector<int> counts(size_t(mpi.size)), offsets(size_t(mpi.size + 1), 0);
@@ -92,7 +79,6 @@ TEST_CASE("Retained mesh and multi-history field form a coherent matching-partit
     auto mesh = handle.Get();
     FieldTransferDetail::LocalStage(mpi, [&]
                                     { DNDS_check_throw_info(mesh != source, "checkpoint transition did not publish a detached mesh"); });
-    mesh->PublishNative(MeshReadRequirements::CellFlux());
     auto meshStamp = mesh->versions.Stamp();
     const auto fieldIdentity = field.Identity(), fieldVersion = field.Version();
 
@@ -126,7 +112,7 @@ TEST_CASE("Retained mesh and multi-history field form a coherent matching-partit
     CHECK(field.Identity() == fieldIdentity);
     CHECK(field.Version() == fieldVersion);
 
-    auto restored = make_ssp<UnstructuredMesh>(mpi, 2);
+    ssp<UnstructuredMesh> restored;
     serializer->OpenFile(filename, true);
     std::string applicationSchema, association;
     DNDS::index savedComponents = 0, savedHistories = 0;
@@ -134,7 +120,7 @@ TEST_CASE("Retained mesh and multi-history field form a coherent matching-partit
     serializer->ReadString("field_association", association);
     serializer->ReadIndex("field_components", savedComponents);
     serializer->ReadIndex("field_histories", savedHistories);
-    restored->ReadSerialize(serializer, "mesh");
+    restored = UnstructuredMesh::FromNative(mpi, ReadCompatibleNativeMeshArchive(mpi, serializer, "mesh"));
     auto restartedField = R::ReadArray<double, R::FixedRows<width>>(
         serializer, "flow_histories", mpi, Serializer::ArrayGlobalOffset_Unknown, R::Device::Host(), schema);
     serializer->CloseFile();
@@ -157,13 +143,8 @@ TEST_CASE("Retained mesh and multi-history field form a coherent matching-partit
                     CHECK(values.At(size_t(cell), history * components + component) == HistoryValue(id, history, component));
         }
         for (DNDS::index node = 0; node < restored->NumNode(); ++node)
-            CHECK(restored->coords[node].isApprox(coordinates.at(restored->OriginalEntityId(EntityKind::Node, node)))); });
-    restored->RecoverNode2CellAndNode2Bnd();
-    restored->RecoverCell2CellAndBnd2Cell();
-    restored->BuildGhostPrimary();
-    restored->AdjGlobal2LocalPrimary();
-    restored->InterpolateFace();
-    restored->AssertOnFaces();
+            CHECK(restored->CurrentNativeState()->BorrowHostView().Coord(node).isApprox(coordinates.at(restored->OriginalEntityId(EntityKind::Node, node)))); });
+    restored->PrepareNativeTopology();
     auto read = restored->AcquireRead(MeshReadRequirements::CellFlux());
     CHECK(read.HostView().NumCell() == DNDS::index(restartedField.Rows()));
     MPI_Barrier(mpi.comm);

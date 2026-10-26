@@ -1,5 +1,6 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
+#include "LegacyMeshFixtureCodec.hpp"
 #include "Geom/Mesh/NativeMeshBuilder.hpp"
 #include "Geom/Mesh/NativeMeshTopology.hpp"
 #include "Geom/Mesh/NativeMeshTransition.hpp"
@@ -89,7 +90,7 @@ TEST_CASE("Native face graph and direct ordering match exact legacy face slots w
     CHECK_THROWS(missingFaces->GetCell2CellFaceVLocal());
     auto state = G::NativeMeshTopology::Build(*primary, mpi);
     auto mesh = G::UnstructuredMesh::FromNative(mpi, state);
-    auto legacy = G::CloneCurrentMeshForSetup(*mesh, 1, G::TransitionCachePolicy::Invalidate);
+    auto legacy = G::TestFixtureCodec::DecodeLegacy(*mesh);
     const G::tLocalMatStruct expected{{1}, {2, 0}, {1}};
     CHECK(mesh->GetCell2CellFaceVLocal() == expected);
     CHECK(mesh->GetCell2CellFaceVLocal(true) == expected);
@@ -125,11 +126,10 @@ TEST_CASE("Native face graph and direct ordering match exact legacy face slots w
     CHECK_THROWS(state->WithLocalCellSetup({0, 3}, {{3}, {2, 0}, {1}}));
     CHECK_THROWS(state->WithLocalCellSetup({0, 3}, {{0}, {2, 0}, {1}}));
 
-    // Capture a valid pre-existing local split, then ensure setup preserves its
-    // cross-part filtering and never consults detached legacy facade offsets.
-    legacy->localPartitionStarts = {0, 1, 3};
-    legacy->PublishNative(G::MeshReadRequirements::CellFlux());
-    auto partitioned = G::UnstructuredMesh::FromNative(mpi, legacy->CurrentNativeState());
+    // Native partition metadata preserves cross-part filtering without reading
+    // detached legacy facade offsets. Earlier checks retain the legacy numeric
+    // ordering/factorization reference.
+    auto partitioned = G::UnstructuredMesh::FromNative(mpi, state->WithLocalPartitions({0, 1, 3}));
     const G::tLocalMatStruct filtered{{}, {2}, {1}};
     CHECK(partitioned->GetCell2CellFaceVLocal() == expected);
     CHECK(partitioned->GetCell2CellFaceVLocal(true) == filtered);
@@ -168,7 +168,7 @@ TEST_CASE("Native and legacy direct setup keep empty cell owners in RCM collecti
     const DNDS::MPIInfo mpi(MPI_COMM_WORLD);
     auto state = G::NativeMeshTopology::Build(*Strip(mpi, true), mpi);
     auto mesh = G::UnstructuredMesh::FromNative(mpi, state);
-    auto legacy = G::CloneCurrentMeshForSetup(*mesh, 1, G::TransitionCachePolicy::Invalidate);
+    auto legacy = G::TestFixtureCodec::DecodeLegacy(*mesh);
     const G::tLocalMatStruct expected = mpi.rank == 0 ? G::tLocalMatStruct{{1}, {2, 0}, {1}} : G::tLocalMatStruct{};
     CHECK(mesh->GetCell2CellFaceVLocal() == expected);
     for (int code : {0, 3, 4})

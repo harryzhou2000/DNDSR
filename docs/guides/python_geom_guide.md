@@ -395,64 +395,55 @@ mesh, reader, name2ID = create_mesh_from_CGNS(
 )
 ```
 
-The existing helpers keep their legacy defaults. Native construction is an
-explicit route, with no legacy serial reader or mutable setup workspace:
+Native construction is the default. The reader object returned by the helpers
+is an output adapter over native storage, preserving the established tuple API:
 
 ```python
-from DNDSR.Geom.utils import read_mesh, prepare_native_mesh, build_bnd_mesh, serialize_mesh
+from DNDSR.Geom.utils import read_mesh, prepare_mesh, build_bnd_mesh, serialize_mesh
 
-result = read_mesh("data/mesh/UniformSquare_10.cgns", mpi, 2, native=True,
-                   cell_layers=1, complete_node_star=True)
-assert result.reader is None
+result = read_mesh("data/mesh/UniformSquare_10.cgns", mpi, 2)
 name_to_id = result.name_to_id  # exact CGNS boundary dictionary on every rank
-mesh = prepare_native_mesh(result.mesh, wall_dist_predicate=lambda zone: zone == 24,
-                           wall_dist_options={"method": 1, "subdivide_quad": 4})
-boundary = build_bnd_mesh(mesh)  # reader_bnd is None; compact native extraction
-serialize_mesh(mesh, "native-square", mpi)  # full native archive: native-square.dnds.h5
-restored = read_mesh("native-square.dnds.h5", mpi, 2, native=True)
+prepare_mesh(result.mesh, result.reader, wall_dist_predicate=lambda zone: zone == 24,
+             wall_dist_options={"method": 1, "subdivide_quad": 4})
+mesh = result.mesh  # prepare_mesh updates this same facade in place
+boundary = build_bnd_mesh(mesh)  # native mesh and serial output adapter
+serialize_mesh(mesh, "native-square", mpi)
+restored = read_mesh("native-square.dnds.h5", mpi, 2)
 ```
 
 These helpers are collective; every rank supplies the same options and logical
-file path. `prepare_native_mesh` returns a new facade; always retain its return value. It
-preserves source storage and entity numbering, completes missing face topology
-(and optional 3D edges), then applies requested geometry transforms and wall
-search. It does not reorder ownership or build legacy serial/VTK caches. Exact
-wall search retains the historical methods 0/20/1 and execution modes; its global
-surface scratch scales with the selected wall patches on every rank. Wall node
-selection and final vectors use sparse owner/ghost routes.
+file path. `prepare_mesh` prepares native topology, local ordering, geometry and
+optional wall distance in place. Its serial output adapter retains physical
+periodic images without copying the mesh into legacy geometry arrays. Use
+`prepare_native_mesh` when a detached result is required, and retain its return
+value. External fields must be allocated after preparation or explicitly
+transferred with the C++ transition maps.
 
-Optional ``prepare_native_mesh(..., partition_options={...}, reorder_parts=1)``
-performs distributed facial-graph partitioning followed by local cell ordering.
-Omitting both options retains current ownership/order. Partitioning supports
-``metisType="KWAY"``, ``edgeWeightMethod=0``, and the existing seed, cut-count
-and imbalance options. Unsupported recursive or weighted policies raise an
-error. Empty ranks participate; the graph stays distributed, except when one
-rank already owns the complete graph and can call serial METIS locally. Native
-C++ callers use ``NativeMeshPreparation::Partition`` and
-``NativeMeshTransition::ReorderLocalCells`` separately to retain every field
-transfer map. Python helpers prepare before allocating external fields; existing
-fields remain associated with the input mesh.
+CGNS input uses the existing KWAY defaults when `partition_options` is omitted.
+`metisType="RB"` selects reader-owned ingress before recursive METIS;
+`edgeWeightMethod=1` uses physical face diameters. KWAY permits distributed
+input. Empty ranks participate and the graph remains distributed except when
+one rank already owns the complete graph. `prepare_native_mesh` partitions or
+reorders only when those options are explicitly supplied.
 
-Native CGNS input initially uses even contiguous ownership. Explicit
-`partition_options` on `read_mesh(native=True)` applies the same supported KWAY
-facial-graph partitioning after reading/refinement; omission preserves the read
-partition. Native periodic identification is enabled explicitly by a
-`periodic_geometry` dictionary (the same nine frame keys as `SetPeriodicGeometry`)
-with `periodic_tolerance`; `None` leaves identification off. Nondefault tolerance
-without an explicit dictionary rejects. Archive reads retain saved periodic
-metadata and reject overrides. The lower-level
-`Geom.read_native_cgns_with_names(...)` returns `(mesh, name_to_id)`;
-`Geom.read_native_cgns(...)` keeps its original mesh-only return. Native archive
-reading preserves its saved publication requirements, IDs, namespace, companions
-and ancestry. Archive boundary **zone IDs** survive, but the separate CGNS name
-dictionary is not saved and `name_to_id` is `None` after restart. Native and legacy H5 wire formats remain distinct. With `native=True`, the
-reader agrees the exact schema across ranks and decodes either directly into
-native arrays. Legacy primary import preserves original IDs and creates a fresh
-namespace; saved legacy ghosts and transformer state are rebuilt natively. `build_bnd_mesh`
-selects the appropriate path automatically; an explicit `build_serial_out=True`
-rejects native input rather than staging a legacy copy. `prepare_mesh` remains
-the legacy mutating helper and rejects native input with guidance to the returned
-facade API.
+High-level CGNS reads retain the former helper's default periodic frames when
+`periodic_geometry` is None; an explicit dictionary overrides the same nine
+frame keys as `SetPeriodicGeometry`. Low-level `Geom.read_native_cgns` and
+`read_native_cgns_with_names` keep None as an explicit request to disable periodic
+identification. Archive reads retain saved periodic metadata and reject frame
+overrides. Matching archive reads preserve saved ownership and original IDs;
+explicit `partition_options` requests graph repartitioning. The archive file
+helper coordinates open, decode and close errors across ranks, including
+missing or malformed per-rank JSON files.
+
+Native archives retain all families, descriptors, IDs, namespace, companions and
+ancestry. Boundary zone IDs survive, but the separate CGNS name dictionary is
+not archived and `name_to_id` is None after restart. Legacy-primary archives are
+decoded directly into native arrays with original IDs and a fresh namespace;
+saved legacy ghosts and transformer state are rebuilt natively. Wall search
+retains methods 0/20/1 and execution modes. Its explicit global wall-surface
+scratch scales with the selected wall patches; owner/ghost wall masks and final
+vectors use sparse routes.
 
 **`read_mesh` parameter list:**
 
@@ -844,16 +835,15 @@ nGhost = mesh.NumCellGhost()
 
 ### EulerP native preparation
 
-`Solver.ReadMesh(path, dim, native=True)` selects native read, facial-graph
-partition, local cell ordering, preparation and compact boundary extraction
-before allocating FV/evaluator fields. The compatibility default remains
-`native=False` temporarily while the complete consumer retirement and configured
-output coverage are validated. Explicit serial-reader output caches
-are not available on the native route. For native archive input, pass the
-matching `boundary_names` map explicitly: mesh archives retain zone IDs rather
-than the separate CGNS name dictionary. The reader handles are `None` in native
-mode. Solver device placement continues to use the evaluator's retained native
-snapshot.
+`Solver.ReadMesh(path, dim)` now selects native ingestion, in-place preparation
+and compact boundary extraction before allocating FV/evaluator fields. Reader
+handles are native serial output adapters; existing serial-output requests are
+supported. Archive input requires the matching `boundary_names` map because
+archives retain zone IDs rather than the separate CGNS name dictionary.
+`Solver.to_device("CUDA")` places native topology on the currently selected CUDA
+device before FV/evaluator preparation. Passing `DNDS.DeviceBackend.CUDA` selects
+the same route. Explicit `native=False` remains an independent migration
+baseline and is not used as an automatic fallback.
 
 EulerP's Roe entropy threshold now receives the total Roe velocity magnitude,
 matching the existing Euler scheme-8 convention. Previously its signed normal

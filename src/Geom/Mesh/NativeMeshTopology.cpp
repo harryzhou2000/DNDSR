@@ -1,4 +1,5 @@
 #include "NativeMeshTopology.hpp"
+#include <limits>
 #include "NativeMeshAssembler.hpp"
 #include "NativeMeshClosure.hpp"
 #include "NativeConnectivity.hpp"
@@ -140,18 +141,21 @@ namespace DNDS::Geom
             return query;
         }
 
-        void AddIdentity(NativeOwnedMeshData &data, const EntitySpace &space)
+        void AddIdentity(NativeOwnedMeshData &data, const EntitySpace &space, const std::map<EntityKind, index> &starts)
         {
-            // This operation rejects preexisting target families; generated IDs
-            // are assigned once from the new family's distributed numbering.
+            const auto found = starts.find(space.Kind());
+            const index first = found == starts.end() ? 0 : found->second;
+            DNDS_check_throw_info(first >= 0 && space.NumGlobal() <= std::numeric_limits<index>::max() - first,
+                                  "generated native persistent IDs exceed high-water range");
             Array ids(R::RowLayout::Dense(size_t(space.NumOwned()), 1));
             {
                 auto write = ids.Write();
                 for (index row = 0; row < space.NumOwned(); ++row)
-                    write.View()(size_t(row), 0) = space.LocalToGlobal(row);
+                    write.View()(size_t(row), 0) = first + space.LocalToGlobal(row);
             }
             data.spaces.emplace(space.Kind(), space);
             data.ids.emplace(space.Kind(), std::move(ids));
+            data.identity.nextIds[space.Kind()] = first + space.NumGlobal();
         }
 
         R::Array<ElemInfo> Information(const R::Array<ElemInfo> &original, const std::vector<t_index> &zones)
@@ -169,7 +173,7 @@ namespace DNDS::Geom
     }
 
     std::shared_ptr<const NativeMeshState> NativeMeshTopology::Build(const NativeMeshState &source, const MPIInfo &mpi,
-                                                                     bool buildFaces, bool buildEdges, int ghostLayers)
+                                                                     bool buildFaces, bool buildEdges, int ghostLayers, const std::map<EntityKind, index> &generatedIdStarts)
     {
         DNDS_check_throw_info(mpi.comm != MPI_COMM_NULL, "native topology requires a communicator");
         auto data = NativeMeshAssembler::CaptureOwned(source, mpi);
@@ -179,6 +183,19 @@ namespace DNDS::Geom
             DNDS_check_throw_info((!buildFaces || !data.spaces.count(EntityKind::Face)) &&
                                       (!buildEdges || !data.spaces.count(EntityKind::Edge)), "native topology target family already exists");
             DNDS_check_throw_info(!buildEdges || data.dimension == 3, "native edge completion currently requires three dimensions"); });
+        std::array<index, 2> idStarts{-1, -1}, expectedStarts;
+        FieldTransferDetail::LocalStage(mpi, [&]
+                                        {
+            for (const auto &[kind,first] : generatedIdStarts)
+            {
+                DNDS_check_throw_info(first >= 0 && ((kind == EntityKind::Face && buildFaces) || (kind == EntityKind::Edge && buildEdges)),
+                                      "generated ID floor requires a requested target family");
+                idStarts[kind == EntityKind::Face ? 0 : 1] = first;
+            } });
+        expectedStarts = idStarts;
+        MPI_Bcast(expectedStarts.data(), 2, DNDS_MPI_INDEX, 0, mpi.comm);
+        FieldTransferDetail::LocalStage(mpi, [&]
+                                        { DNDS_check_throw_info(idStarts == expectedStarts, "generated native ID floors differ across ranks"); });
         int flags[]{int(buildFaces), int(buildEdges), ghostLayers}, minimum[3], maximum[3];
         MPI_Allreduce(flags, minimum, 3, MPI_INT, MPI_MIN, mpi.comm);
         MPI_Allreduce(flags, maximum, 3, MPI_INT, MPI_MAX, mpi.comm);
@@ -386,7 +403,7 @@ namespace DNDS::Geom
                     data.cellFacesPbi = *faces.parent2entityPbi;
                     data.faceNodesPbi = *faces.entity2nodePbi;
                 }
-                AddIdentity(data, faces.entities);
+                AddIdentity(data, faces.entities, generatedIdStarts);
                 data.requirements.faces = true;
                 data.requirements.cellFaceNeighbors = true;
                 data.requirements.allFaceCellsLocal = true; });
@@ -407,7 +424,7 @@ namespace DNDS::Geom
                     data.cellEdgesPbi = *edges.parent2entityPbi;
                     data.edgeNodesPbi = *edges.entity2nodePbi;
                 }
-                AddIdentity(data, edges.entities);
+                AddIdentity(data, edges.entities, generatedIdStarts);
                 data.requirements.edges = true; });
         }
         return NativeMeshAssembler::Build(mpi, std::move(data), ghostLayers);

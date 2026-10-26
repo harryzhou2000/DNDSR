@@ -12,7 +12,10 @@ namespace DNDS::Geom
     class NativeMeshTopology
     {
     public:
+        /// Explicit generated-ID floors are used only for reconstructed targets;
+        /// every rank supplies identical floors and removed IDs are never reused.
         static std::shared_ptr<const NativeMeshState> Build(const NativeMeshState &source, const MPIInfo &mpi,
-                                                            bool buildFaces = true, bool buildEdges = false, int ghostLayers = 1);
+                                                            bool buildFaces = true, bool buildEdges = false, int ghostLayers = 1,
+                                                            const std::map<EntityKind, index> &generatedIdStarts = {});
     };
 }

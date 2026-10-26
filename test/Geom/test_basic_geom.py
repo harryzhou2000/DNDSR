@@ -82,13 +82,13 @@ def test_mesh0():
         print(f"mesh  num  cell: {mesh_nCell}")
         print(f"mesh size total: {mesh_bytes / (1024 * 1024):.4g} MB")
 
-    try:
-        mesh.coords.to_device("CUDA")
-        mesh.to_device("CUDA")
-        mesh.to_host()
-        assert mesh.nodeWallDist.father.Size() == mesh.coords.father.Size()
-    except RuntimeError:
-        pass  # CUDA not available, skip device transfer
+    from DNDSR.DNDS import Runtime
+    if Runtime.cuda_enabled:
+        mesh.place_native(-1)
+        with mesh.acquire_read(wall_distance=True) as read:
+            assert read.counts["node"][0] == mesh.NumNode()
+            for node in range(mesh.NumNodeProc()):
+                assert read.wall_distance(node).shape == (3,)
     # while True:
     #     pass
 
@@ -149,24 +149,10 @@ def test_multi_layer_ghost():
     ghost_counts = {}  # nLayers -> (nCellGhost, nNodeGhost, nBndGhost)
 
     for nLayers in [1, 2, 3]:
-        mesh = Geom.UnstructuredMesh(mpi, 2)
-        reader = Geom.UnstructuredMeshSerialRW(mesh, 0)
-        reader.ReadFromCGNSSerial(mesh_file)
-        reader.Deduplicate1to1Periodic(1e-9)
-        reader.BuildCell2Cell()
-        reader.MeshPartitionCell2Cell({
-            "metisType": "KWAY",
-            "metisUfactor": 5,
-            "metisSeed": 0,
-            "metisNcuts": 3,
-        })
-        reader.PartitionReorderToMeshCell2Cell()
-
-        mesh.RecoverNode2CellAndNode2Bnd()
-        mesh.RecoverCell2CellAndBnd2Cell()
-        mesh.BuildGhostPrimary(nLayers)
-        mesh.AdjGlobal2LocalPrimary()
-        mesh.AdjGlobal2LocalN2CB()
+        result = read_mesh(mesh_file, mpi, 2, cell_layers=nLayers,
+            partition_options={"metisType": "KWAY", "metisUfactor": 5,
+                               "metisSeed": 0, "metisNcuts": 3})
+        mesh, reader = result.mesh, result.reader
 
         nCellOwned = mesh.NumCell()
         nCellGhost = mesh.NumCellGhost()
@@ -202,7 +188,7 @@ def test_multi_layer_ghost():
                                 f"[0, {nCellProc})")
 
         # Run the full prepare pipeline to make sure it doesn't crash.
-        prepare_mesh(mesh, reader, build_serial_out=False)
+        prepare_mesh(mesh, reader, build_serial_out=False, ghost_layers=nLayers)
 
         del mesh, reader
 

@@ -2,6 +2,12 @@
 #include "doctest.h"
 #include "Geom/Mesh/MeshTransition.hpp"
 #include "Geom/Mesh/FieldTransfer.hpp"
+#include "Geom/Mesh/NativeMeshCGNS.hpp"
+#include "Geom/Mesh/NativeMeshPreparation.hpp"
+#include "Geom/Mesh/NativeMeshTopology.hpp"
+#include "Geom/Mesh/NativeMeshLegacyArchive.hpp"
+#include "Geom/Mesh/NativeMeshExtraction.hpp"
+#include "LegacyMeshFixtureCodec.hpp"
 #include "DNDS/Serializer/SerializerJSON.hpp"
 #include <filesystem>
 #include <map>
@@ -19,39 +25,28 @@ static MPIInfo TransitionMPI()
 
 static ssp<UnstructuredMesh> TransitionFixture(const MPIInfo &mpi, bool periodic = false, int dim = 2)
 {
-    auto mesh = make_ssp<UnstructuredMesh>(mpi, dim);
+    std::optional<NativePeriodicImportOptions> periodicOptions;
     if (periodic || dim == 3)
     {
-        tPoint zero{0, 0, 0};
-        if (dim == 3)
-            mesh->SetPeriodicGeometry({1, 0, 0}, zero, zero, {0, 1, 0}, zero, zero, {0, 0, 1}, zero, zero);
-        else
-            mesh->SetPeriodicGeometry({10, 0, 0}, zero, zero, {0, 10, 0}, zero, zero, zero, zero, zero);
+        periodicOptions.emplace();
+        periodicOptions->tolerance = 1e-8;
+        if (dim == 2)
+        {
+            periodicOptions->frames.translation[1].map() = tPoint{10, 0, 0};
+            periodicOptions->frames.translation[2].map() = tPoint{0, 10, 0};
+            periodicOptions->frames.translation[3].map().setZero();
+        }
     }
-    auto root = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path();
-    UnstructuredMeshSerialRW reader(mesh, 0);
-    reader.ReadFromCGNSSerial((root / "data/mesh" / (dim == 3 ? "UP3D_32.cgns" : periodic ? "IV10_10.cgns"
-                                                                                          : "UniformSquare_10.cgns"))
-                                  .string());
-    if (periodic || dim == 3)
-        reader.Deduplicate1to1Periodic(1e-8);
-    reader.BuildCell2Cell();
-    UnstructuredMeshSerialRW::PartitionOptions options;
-    options.metisType = "KWAY";
-    options.metisSeed = 42;
-    options.metisNcuts = 1;
-    reader.MeshPartitionCell2Cell(options);
-    reader.PartitionReorderToMeshCell2Cell();
-    mesh->RecoverNode2CellAndNode2Bnd();
-    mesh->RecoverCell2CellAndBnd2Cell();
-    mesh->BuildGhostPrimary();
-    mesh->AdjGlobal2LocalPrimary();
-    mesh->InterpolateFace();
-    mesh->BuildGhostN2CB();
-    mesh->AdjGlobal2LocalN2CB();
-    mesh->BuildCell2CellFace();
-    mesh->AdjGlobal2LocalC2CFace();
-    return mesh;
+    const auto root = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path();
+    const auto file = root / "data/mesh" / (dim == 3 ? "UP3D_32.cgns" : periodic ? "IV10_10.cgns"
+                                                                                 : "UniformSquare_10.cgns");
+    AutoAppendName2ID names;
+    auto primary = ReadNativeCGNS(mpi, file.string(), dim, [&](const std::string &name)
+                                  { return names(name); }, 0, {1, true}, periodicOptions);
+    auto prepared = NativeMeshPreparation::Partition(*primary, mpi, {"KWAY", 30, 42, 0, 1, 1}).state;
+    if (dim == 3)
+        prepared = NativeMeshTopology::Build(*prepared, mpi, false, true);
+    return UnstructuredMesh::FromNative(mpi, std::move(prepared));
 }
 
 static ReorderInput TransitionInput(const UnstructuredMesh &mesh)
@@ -66,15 +61,17 @@ static ReorderInput TransitionInput(const UnstructuredMesh &mesh)
 
 static std::map<DNDS::index, std::vector<DNDS::index>> TransitionCellRows(const UnstructuredMesh &mesh)
 {
+    const auto &view = mesh.CurrentNativeState()->BorrowHostView();
     std::vector<DNDS::index> local;
-    for (DNDS::index i = 0; i < mesh.NumCell(); ++i)
+    for (DNDS::index i = 0; i < view.NumCell(); ++i)
     {
-        local.push_back(mesh.cell2cellOrig(i, 0));
-        local.push_back(mesh.cell2node.RowSize(i));
-        for (DNDS::rowsize j = 0; j < mesh.cell2node.RowSize(i); ++j)
+        const auto nodes = view.CellNodes(i);
+        local.push_back(mesh.OriginalEntityId(EntityKind::Cell, i));
+        local.push_back(DNDS::index(nodes.size()));
+        for (size_t slot = 0; slot < nodes.size(); ++slot)
         {
-            local.push_back(mesh.node2nodeOrig(mesh.cell2node(i, j), 0));
-            local.push_back(mesh.isPeriodic ? int64_t(uint8_t(mesh.cell2nodePbi(i, j))) : 0);
+            local.push_back(mesh.OriginalEntityId(EntityKind::Node, nodes[slot]));
+            local.push_back(view.IsPeriodic() ? int64_t(uint8_t(view.CellNodePeriodicBits(i)[slot])) : 0);
         }
     }
     int count = int(local.size());
@@ -126,7 +123,7 @@ TEST_CASE("Detached transition retains source scopes and publishes matching nati
         auto b = history.Write();
         for (size_t i = 0; i < count; ++i)
         {
-            a.View<int64_t>()[i] = source->cell2cellOrig(DNDS::index(i), 0);
+            a.View<int64_t>()[i] = source->OriginalEntityId(EntityKind::Cell, DNDS::index(i));
             b.View<int64_t>()[i] = 3 * a.View<int64_t>()[i] + 11;
         }
     }
@@ -147,9 +144,13 @@ TEST_CASE("Detached transition retains source scopes and publishes matching nati
     auto next = handle.Get();
     CHECK(next != source);
     CHECK_FALSE(next->versions.SameController(source->versions));
-    CHECK(next->coords.father->HostDataIdentity() != source->coords.father->HostDataIdentity());
-    CHECK(next->cell2node.father->HostDataIdentity() != source->cell2node.father->HostDataIdentity());
-    CHECK(next->cell2node.father->getRowStart().get() != source->cell2node.father->getRowStart().get());
+    {
+        auto current = next->AcquireRead();
+        if (source->NumNode())
+            CHECK(current.HostView().Coord(0).data() != oldRead.HostView().Coord(0).data());
+        if (source->NumCell())
+            CHECK(current.HostView().CellNodes(0).data() != oldRead.HostView().CellNodes(0).data());
+    }
     CHECK(oldRead.HostView().NumNode() == oldNodes);
     CHECK(oldStamp.Valid());
     CHECK(ids.Values().Identity() != oldIdentity);
@@ -158,17 +159,17 @@ TEST_CASE("Detached transition retains source scopes and publishes matching nati
     for (size_t i = 0; i < ids.Layout().rows; ++i)
     {
         auto id = ids.Read().View<int64_t>()[i];
-        CHECK(id == next->cell2cellOrig(DNDS::index(i), 0));
+        CHECK(id == next->OriginalEntityId(EntityKind::Cell, DNDS::index(i)));
         CHECK(history.Read().View<int64_t>()[i] == 3 * id + 11);
     }
-    next->AssertOnFaces();
+    CHECK(next->HasNativeState());
     CheckTransitionCellRows(*next, expectedRows);
     if (source->NumNode() > 0)
     {
-        tPoint coordinate = source->coords[0];
+        tPoint coordinate = oldRead.HostView().Coord(0);
         next->TransformCoords([](tPoint x)
                               { x[0] += 1; return x; });
-        CHECK((source->coords[0] - coordinate).norm() == 0);
+        CHECK((oldRead.HostView().Coord(0) - coordinate).norm() == 0);
         CHECK(oldStamp.Valid());
     }
     CHECK_THROWS(prepared.Publish());
@@ -183,39 +184,27 @@ TEST_CASE("Detached periodic transition retains geometry and relation companion 
     auto oldStamp = source->versions.Stamp();
     auto expectedRows = TransitionCellRows(*source);
     R::Array<int64_t> cellBits(R::RowLayout::Dense(size_t(source->NumCell()), 1));
-    auto rowBits = [](const auto &pair, DNDS::index i)
-    {
-        uint64_t bits = uint64_t(pair.RowSize(i));
-        for (DNDS::rowsize j = 0; j < pair.RowSize(i); ++j)
-            bits = bits * 257 + uint8_t(pair(i, j));
-        return int64_t(bits);
-    };
     {
         auto write = cellBits.Write();
-        for (DNDS::index i = 0; i < source->NumCell(); ++i)
-            write.At(size_t(i), 0) = rowBits(source->cell2nodePbi, i);
+        const auto &view = oldRead->HostView();
+        for (DNDS::index cell = 0; cell < view.NumCell(); ++cell)
+        {
+            uint64_t hash = view.CellNodes(cell).size();
+            for (auto value : view.CellNodePeriodicBits(cell))
+                hash = hash * 257 + uint8_t(value);
+            write.At(size_t(cell), 0) = int64_t(hash);
+        }
     }
     auto input = TransitionInput(*source);
     SUBCASE("preserved periodic faces") {}
     SUBCASE("reconstructed periodic faces") { input.destroyKinds.insert(EntityKind::Face); }
-    SUBCASE("native preserved periodic faces")
-    {
-        oldRead.reset();
-        auto requirements = MeshReadRequirements::CellFlux();
-        requirements.inverse = true;
-        requirements.cellFaceNeighbors = true;
-        requirements.allFaceCellsLocal = true;
-        source->PublishNative(requirements);
-        oldStamp = source->versions.Stamp();
-        oldRead.emplace(source->AcquireRead(requirements));
-    }
     auto prepared = PreparedMeshTransition::Prepare(handle, input,
                                                     {RegisterArray(cellBits, EntityKind::Cell, "cell-periodic-bits")});
     prepared.Publish();
     auto next = handle.Get();
-    CHECK(next->isPeriodic);
+    CHECK(next->IsPeriodic());
     CHECK(oldStamp.Valid());
-    CHECK(next->periodicInfo.translation[1].map()[0] == source->periodicInfo.translation[1].map()[0]);
+    CHECK(next->PeriodicMetadata().translation[1].map()[0] == source->PeriodicMetadata().translation[1].map()[0]);
     auto nextRead = next->AcquireRead(MeshReadRequirements::CellFlux());
     auto nextView = nextRead.HostView();
     for (DNDS::index i = 0; i < nextView.NumCell(); ++i)
@@ -227,9 +216,6 @@ TEST_CASE("Detached periodic transition retains geometry and relation companion 
             bits = bits * 257 + uint8_t(value);
         CHECK(cellBits.Read().At(size_t(i), 0) == int64_t(bits));
     }
-    if (!next->HasNativeState())
-        next->AssertOnFaces();
-    else
     {
         std::vector<size_t> contributions(size_t(nextView.NumCellProc()), 0);
         for (DNDS::index face = 0; face < nextView.NumFaceProc(); ++face)
@@ -314,16 +300,17 @@ TEST_CASE("Detached preparation failures retain mesh and every field source")
     CHECK(source->versions.CanMutate());
 }
 
-TEST_CASE("Detached transition rejects unsupported inventory before cloning")
+TEST_CASE("Detached transition rejects unsupported inventory before preparing candidates")
 {
     auto source = TransitionFixture(TransitionMPI());
     MeshTransitionHandle handle(source);
     auto stamp = source->versions.Stamp();
-    source->node2parentNode.push_back(0);
-    bool cloned = false;
-    CHECK_THROWS(PreparedMeshTransition::Prepare(handle, TransitionInput(*source), {}, [&](const char *)
-                                                 { cloned = true; }));
-    CHECK_FALSE(cloned);
+    auto input = TransitionInput(*source);
+    input.destroyKinds.insert(EntityKind::Node);
+    bool prepared = false;
+    CHECK_THROWS(PreparedMeshTransition::Prepare(handle, input, {}, [&](const char *)
+                                                 { prepared = true; }));
+    CHECK_FALSE(prepared);
     CHECK(stamp.Valid());
     CHECK(handle.Get() == source);
 }
@@ -375,27 +362,26 @@ TEST_CASE("Inactive registered fields still require exact owned source rows")
     CHECK(stamp.Valid());
 }
 
-TEST_CASE("Output export may explicitly drop only the copied boundary extraction cache")
+TEST_CASE("Native transition invalidates destination extraction row caches without editing source")
 {
     auto source = TransitionFixture(TransitionMPI());
     source->node2bndNode.assign(size_t(source->NumNodeProc()), 17);
-    auto cache = source->node2bndNode;
-    auto stamp = source->versions.Stamp();
-    auto retained = source->AcquireRead();
-    auto view = retained.HostView();
-    CHECK_THROWS(CloneCurrentMeshForSetup(*source));
-    auto output = CloneCurrentMeshForSetup(*source, 1, TransitionCachePolicy::Invalidate, BoundaryCachePolicy::DropBoundaryCache);
-    CHECK(output->node2bndNode.empty());
+    const auto cache = source->node2bndNode;
+    const auto stamp = source->versions.Stamp();
+    MeshTransitionHandle handle(source);
+    auto prepared = PreparedMeshTransition::Prepare(handle, {});
+    CHECK_FALSE(prepared.PreparedOutput());
+    prepared.Publish();
+    const auto next = handle.Get();
+    CHECK(next->HasNativeState());
+    CHECK(next->node2bndNode.empty());
     CHECK(source->node2bndNode == cache);
     CHECK(stamp.Valid());
-    CHECK_FALSE(source->versions.SameController(output->versions));
-    REQUIRE(output->NumNode() == view.NumNode());
-    for (DNDS::index node = 0; node < output->NumNode(); ++node)
-        CHECK(output->coords[node].isApprox(view.Coord(node)));
-    source->node2parentNode.push_back(0);
-    CHECK_THROWS(CloneCurrentMeshForSetup(*source, 1, TransitionCachePolicy::Invalidate, BoundaryCachePolicy::DropBoundaryCache));
-    CHECK(source->node2bndNode == cache);
-    CHECK(stamp.Valid());
+    CHECK_FALSE(source->versions.SameController(next->versions));
+    auto old = source->AcquireRead(), current = next->AcquireRead();
+    REQUIRE(old.HostView().NumNode() == current.HostView().NumNode());
+    for (DNDS::index node = 0; node < old.HostView().NumNode(); ++node)
+        CHECK(old.HostView().Coord(node).isApprox(current.HostView().Coord(node)));
 }
 
 TEST_CASE("Delayed publication rejects rank-local native field edits and replacement")
@@ -437,70 +423,59 @@ TEST_CASE("Delayed publication rejects rank-local native field edits and replace
     CHECK(sourceStamp.Valid());
 }
 
-TEST_CASE("Current native mesh exports independent authoritative rows and wall vectors")
+TEST_CASE("Native output preparation and primary checkpoint preserve authoritative rows and wall policy")
 {
     auto source = TransitionFixture(TransitionMPI());
+    const auto nodes = source->Entities(EntityKind::Node);
+    R::Array<DNDS::real> owned(R::RowLayout::Dense(size_t(nodes.NumOwned()), 3));
     {
-        auto mutation = source->BeginManagedMutation(R::Change::Interface | R::Change::Values);
-        source->nodeWallDist.InitPair("transition.wall", source->mpi);
-        source->nodeWallDist.father->Resize(source->NumNode());
-        source->nodeWallDist.son->Resize(source->NumNodeGhost());
-        for (DNDS::index i = 0; i < source->NumNodeProc(); ++i)
-            source->nodeWallDist[i] = tPoint{DNDS::real(source->node2nodeOrig(i, 0)), 2, 3};
-        source->nodeWallDist.TransAttach();
-        source->nodeWallDist.trans.BorrowGGIndexing(source->coords.trans);
-        mutation.Commit();
+        auto write = owned.Write();
+        for (DNDS::index node = 0; node < nodes.NumOwned(); ++node)
+        {
+            write.View()(size_t(node), 0) = DNDS::real(source->OriginalEntityId(EntityKind::Node, node));
+            write.View()(size_t(node), 1) = 2;
+            write.View()(size_t(node), 2) = 3;
+        }
     }
-    source->BuildVTKConnectivity();
-    auto requirements = MeshReadRequirements::CellFlux();
-    requirements.inverse = true;
-    requirements.cellFaceNeighbors = true;
-    requirements.wallDistance = true;
-    source->PublishNative(requirements);
+    RelationGhostRoute route(nodes);
+    auto ghost = route.TransferRows(nodes, owned, R::ElementSchema::Arithmetic<DNDS::real>());
+    ghost = R::Array<DNDS::real>::FromStorage(R::RowLayout::Dense(ghost.Rows(), 3), ghost.Storage());
+    source = UnstructuredMesh::FromNative(source->mpi, source->CurrentNativeState()->WithWallDistance({owned, ghost}));
+    const auto requirements = source->CurrentNativeRequirements();
     auto retained = source->AcquireRead(requirements);
-    auto view = retained.HostView();
-    auto stamp = source->versions.Stamp();
-    // Explicit raw workspace edits must not replace published query authority.
-    if (source->coords.father->Size())
-        source->coords[0][0] += 1000;
-    if (source->cell2node.father->Size())
+    const auto view = retained.HostView();
+    const auto stamp = source->versions.Stamp();
+    // Explicit test-only codec preserves the old isolated-reference purpose;
+    // mutating its payload never installs a second production mesh authority.
+    auto reference = TestFixtureCodec::DecodeLegacy(*source);
+    if (reference->NumNode())
+        reference->coords[0][0] += 1000;
+    if (reference->NumCell())
+        reference->cell2node(0, 0) = UnInitIndex;
+    MeshTransitionHandle handle(source);
+    auto prepared = PreparedMeshTransition::Prepare(handle, {}, {}, {}, 1, TransitionCachePolicy::RebuildOutput);
+    auto output = prepared.PreparedOutput();
+    REQUIRE(output);
+    CHECK(output->offsets.size() == size_t(view.NumCell() + 1));
+    CHECK(output->globalCells == source->NumCellGlobal());
+    CHECK(output->pointSourceRows.size() == output->coordinates.Rows());
     {
-        source->cell2node(0, 0) = UnInitIndex;
-        source->cell2cellOrig(0, 0) = -999;
+        auto coordinates = output->coordinates.Read();
+        for (size_t row = 0; row < output->pointSourceRows.size(); ++row)
+            for (size_t component = 0; component < 3; ++component)
+                CHECK(coordinates.View()(row, component) == view.Coord(output->pointSourceRows[row])[Eigen::Index(component)]);
     }
-    auto clone = CloneCurrentMeshForSetup(*source);
-    CHECK(source->HasNativeState());
-    CHECK_FALSE(clone->HasNativeState());
-    CHECK(stamp.Valid());
-    CHECK(clone->NumNode() == view.NumNode());
-    CHECK(clone->vtkCell2nodeOffsets.size() == size_t(view.NumCell() + 1));
-    CHECK(clone->vtkNCellGlobal >= view.NumCell());
-    for (DNDS::index i = 0; i < clone->NumNode(); ++i)
+    prepared.Publish();
+    auto current = handle.Get()->AcquireRead(requirements);
+    for (DNDS::index row = 0; row < view.NumNode(); ++row)
     {
-        CHECK(clone->coords[i].isApprox(view.Coord(i)));
-        CHECK(clone->nodeWallDist[i].isApprox(view.NodeWallDist(i)));
-        CHECK(clone->node2nodeOrig(i, 0) == source->OriginalEntityId(EntityKind::Node, i));
+        CHECK(current.HostView().Coord(row).isApprox(view.Coord(row)));
+        CHECK(current.HostView().NodeWallDist(row).isApprox(view.NodeWallDist(row)));
     }
-    for (DNDS::index i = 0; i < clone->NumCell(); ++i)
-    {
-        CHECK(clone->cell2cellOrig(i, 0) == source->OriginalEntityId(EntityKind::Cell, i));
-        REQUIRE(size_t(clone->cell2node.RowSize(i)) == view.CellNodes(i).size());
-        for (DNDS::rowsize j = 0; j < clone->cell2node.RowSize(i); ++j)
-            CHECK(clone->node2nodeOrig(clone->cell2node(i, j), 0) ==
-                  source->OriginalEntityId(EntityKind::Node, view.CellNodes(i)[size_t(j)]));
-    }
-    auto invalidated = CloneCurrentMeshForSetup(*source, 1, TransitionCachePolicy::Invalidate);
-    CHECK(invalidated->vtkCell2nodeOffsets.empty());
-    CHECK(invalidated->localPartitionStarts.empty());
     auto checkpoint = make_ssp<Serializer::SerializerJSON>();
     checkpoint->CreatePath("/");
-    CHECK_THROWS(source->WriteSerialize(checkpoint, "legacy"));
-    CHECK(checkpoint->ListCurrentPath().empty());
-    CHECK_THROWS(WriteCurrentMeshSnapshot(*source, checkpoint, "current"));
     CHECK_THROWS(WriteCurrentPrimaryMeshSnapshot(*source, checkpoint, "current"));
     CHECK(checkpoint->ListCurrentPath().empty());
-    CHECK(source->HasNativeState());
-    CHECK(stamp.Valid());
     WriteCurrentPrimaryMeshSnapshot(*source, checkpoint, "current", 1, CurrentMeshCheckpointPolicy::DropAuxiliary);
     checkpoint->GoToPath("current");
     int schema = 0, inventory = 0;
@@ -515,25 +490,22 @@ TEST_CASE("Current native mesh exports independent authoritative rows and wall v
     CHECK(kind == "DNDSR.CurrentPrimaryMeshSnapshot");
     CHECK(auxiliary == "drop_auxiliary");
     checkpoint->GoToPath("/");
-    auto restored = make_ssp<UnstructuredMesh>(source->mpi, 2);
-    restored->ReadSerialize(checkpoint, "current");
+    auto restored = ReadCompatibleNativeMeshArchive(source->mpi, checkpoint, "current");
+    REQUIRE(restored->NumOwned(EntityKind::Node) == view.NumNode());
+    for (DNDS::index row = 0; row < view.NumNode(); ++row)
+        CHECK(restored->BorrowHostView().Coord(row).isApprox(view.Coord(row)));
     CHECK(source->HasNativeState());
     CHECK(stamp.Valid());
-    REQUIRE(restored->NumNode() == view.NumNode());
-    for (DNDS::index i = 0; i < restored->NumNode(); ++i)
-        CHECK(restored->coords[i].isApprox(view.Coord(i)));
-    for (DNDS::index i = 0; i < restored->NumCell(); ++i)
-        CHECK(restored->cell2cellOrig(i, 0) == source->OriginalEntityId(EntityKind::Cell, i));
+    // The retained descriptor remains usable independently of source owners.
+    auto detached = output->coordinates.Read();
+    CHECK(detached.View().Rows() == output->pointSourceRows.size());
 }
 
 TEST_CASE("Detached transition reconstructs 3D edges under an explicit cache policy")
 {
     auto mpi = TransitionMPI();
     auto source = TransitionFixture(mpi, false, 3);
-    source->InterpolateEdge();
-    source->RecreatePeriodicNodes();
-    source->BuildVTKConnectivity();
-    DNDS::index globalEdges = source->edge2node.father->globalSize();
+    DNDS::index globalEdges = source->CurrentNativeState()->NumGlobal(EntityKind::Edge);
     MeshTransitionHandle handle(source);
     auto stamp = source->versions.Stamp();
     auto input = TransitionInput(*source);
@@ -543,9 +515,12 @@ TEST_CASE("Detached transition reconstructs 3D edges under an explicit cache pol
     prepared.Publish();
     auto next = handle.Get();
     CHECK(stamp.Valid());
-    CHECK(next->adjEdgeState == Adj_PointToLocal);
-    CHECK(next->edge2node.father->globalSize() == globalEdges);
-    CHECK(next->vtkCell2nodeOffsets.size() == size_t(next->NumCell() + 1));
+    CHECK(next->HasNativeState());
+    CHECK(next->CurrentNativeState()->NumGlobal(EntityKind::Edge) == globalEdges);
+    REQUIRE(prepared.PreparedOutput());
+    CHECK(prepared.PreparedOutput()->offsets.size() == size_t(next->NumCell() + 1));
+    for (DNDS::index row = 0; row < next->Entities(EntityKind::Edge).NumOwned(); ++row)
+        CHECK(next->OriginalEntityId(EntityKind::Edge, row) >= source->CurrentNativeState()->NextEntityId(EntityKind::Edge));
     auto requirements = MeshReadRequirements::CellFlux();
     requirements.edges = true;
     auto read = next->AcquireRead(requirements);
@@ -567,7 +542,7 @@ TEST_CASE("Detached transition preserves independently placed edges with exact n
 {
     auto mpi = TransitionMPI();
     auto source = TransitionFixture(mpi, false, 3);
-    source->InterpolateEdge();
+    const auto &sourceView = source->CurrentNativeState()->BorrowHostView();
     const auto edgeSpace = source->Entities(EntityKind::Edge);
     auto owned = size_t(edgeSpace.NumOwned());
     R::Field<int64_t> ids({owned, 1, 1}, {92, 7, owned, 0}, "edge");
@@ -575,8 +550,8 @@ TEST_CASE("Detached transition preserves independently placed edges with exact n
     // incident-cell order plus every endpoint's periodic companion bits.
     std::vector<size_t> widths(owned);
     for (size_t edge = 0; edge < owned; ++edge)
-        widths[edge] = size_t(source->edge2node.RowSize(DNDS::index(edge))) * 2 +
-                       size_t(source->edge2cell.RowSize(DNDS::index(edge))) + 2;
+        widths[edge] = size_t(sourceView.EdgeNodes(DNDS::index(edge)).size()) * 2 +
+                       size_t(sourceView.EdgeCells(DNDS::index(edge)).size()) + 2;
     R::Array<int64_t> exact(R::RowLayout::Ragged(widths));
     {
         auto id = ids.Write();
@@ -587,37 +562,28 @@ TEST_CASE("Detached transition preserves independently placed edges with exact n
             id.View<int64_t>()[edge] = edgeSpace.LocalToGlobal(e);
             size_t slot = 0;
             row.At(edge, slot++) = id.View<int64_t>()[edge];
-            row.At(edge, slot++) = source->edge2node.RowSize(e);
-            for (DNDS::rowsize j = 0; j < source->edge2node.RowSize(e); ++j)
+            row.At(edge, slot++) = sourceView.EdgeNodes(e).size();
+            for (DNDS::rowsize j = 0; j < sourceView.EdgeNodes(e).size(); ++j)
             {
-                row.At(edge, slot++) = source->OriginalEntityId(EntityKind::Node, source->edge2node(e, j));
-                row.At(edge, slot++) = uint8_t(source->edge2nodePbi(e, j));
+                row.At(edge, slot++) = source->OriginalEntityId(EntityKind::Node, sourceView.EdgeNodes(e)[size_t(j)]);
+                row.At(edge, slot++) = uint8_t(sourceView.EdgeNodePeriodicBits(e)[size_t(j)]);
             }
-            for (auto cell : source->edge2cell[e])
+            for (auto cell : sourceView.EdgeCells(e))
                 row.At(edge, slot++) = source->OriginalEntityId(EntityKind::Cell, cell);
         }
     }
     std::vector<size_t> cellWidths(size_t(source->NumCell()));
     for (DNDS::index cell = 0; cell < source->NumCell(); ++cell)
-        cellWidths[size_t(cell)] = size_t(source->cell2edge.RowSize(cell)) * 2;
+        cellWidths[size_t(cell)] = size_t(sourceView.CellEdges(cell).size()) * 2;
     R::Array<int64_t> exactCells(R::RowLayout::Ragged(cellWidths));
     {
         auto rows = exactCells.Write();
         for (DNDS::index cell = 0; cell < source->NumCell(); ++cell)
-            for (DNDS::rowsize slot = 0; slot < source->cell2edge.RowSize(cell); ++slot)
+            for (DNDS::rowsize slot = 0; slot < sourceView.CellEdges(cell).size(); ++slot)
             {
-                rows.At(size_t(cell), size_t(slot) * 2) = edgeSpace.LocalToGlobal(source->cell2edge(cell, slot));
-                rows.At(size_t(cell), size_t(slot) * 2 + 1) = uint8_t(source->cell2edgePbi(cell, slot));
+                rows.At(size_t(cell), size_t(slot) * 2) = edgeSpace.LocalToGlobal(sourceView.CellEdges(cell)[size_t(slot)]);
+                rows.At(size_t(cell), size_t(slot) * 2 + 1) = uint8_t(sourceView.CellEdgePeriodicBits(cell)[size_t(slot)]);
             }
-    }
-    SUBCASE("legacy current source") {}
-    SUBCASE("native current source")
-    {
-        auto requirements = MeshReadRequirements::CellFlux();
-        requirements.edges = true;
-        requirements.inverse = true;
-        requirements.cellFaceNeighbors = true;
-        source->PublishNative(requirements);
     }
     auto input = TransitionInput(*source);
     input.explicitMaps.push_back({EntityKind::Edge,

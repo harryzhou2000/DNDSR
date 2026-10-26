@@ -58,7 +58,7 @@ def test_overset_travelling_geometry_uses_current_query_authority(mpi, monkeypat
         "IV10_10.cgns" if periodic else "UniformSquare_10.cgns"
     )
     options = {"periodic_geometry": {"translation1": [10., 0., 0.], "translation2": [0., 10., 0.]}} if periodic else {}
-    result = read_mesh(str(source), mpi=mpi, dim=2, **options)
+    result = read_mesh(str(source), mpi=mpi, dim=2, native=False, **options)
     mesh = result.mesh
     prepare_mesh(mesh, result.reader, build_serial_out=False)
     part = parts.OversetPart2D(mpi, (np.eye(3), np.array([2., -3., 0.])))

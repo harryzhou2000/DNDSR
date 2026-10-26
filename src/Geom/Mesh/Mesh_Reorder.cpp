@@ -1035,7 +1035,7 @@ namespace DNDS::Geom
     // UnstructuredMesh::ReorderLocalCells (new, using ReorderEntities)
     // =================================================================
 
-    void UnstructuredMesh::ReorderLocalCells(int nParts, int nPartsInner)
+    void UnstructuredMesh::ReorderLocalCells(int nParts, int nPartsInner, int ghostLayers)
     {
         int native = HasNativeState(), minimum = 0, maximum = 0;
         MPI_Allreduce(&native, &minimum, 1, MPI_INT, MPI_MIN, mpi.comm);
@@ -1044,8 +1044,10 @@ namespace DNDS::Geom
         if (native)
         {
             CheckCollectiveMutationAvailable(true);
+            FieldTransferDetail::LocalStage(mpi, [&]
+                                            { DNDS_check_throw_info(ghostLayers > 0, "native local reorder requires positive ghost layers"); });
             const auto stamp = versions.Stamp();
-            auto result = NativeMeshTransition::ReorderLocalCells(*_nativeState, mpi, nParts, nPartsInner);
+            auto result = NativeMeshTransition::ReorderLocalCells(*_nativeState, mpi, nParts, nPartsInner, ghostLayers);
             std::shared_ptr<NativeMeshState> prepared;
             FieldTransferDetail::LocalStage(mpi, [&]
                                             {
