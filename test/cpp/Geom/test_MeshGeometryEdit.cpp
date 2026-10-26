@@ -513,6 +513,123 @@ TEST_CASE("Native affine geometry rejects nonrigid periodic conjugation before p
     CHECK_FALSE(stamp.Valid());
 }
 
+static DNDS::ssp<G::UnstructuredMesh> PeriodicPlaneFixture(const DNDS::MPIInfo &mpi, bool rotational)
+{
+    const bool ownsNodes = mpi.rank == mpi.size - 1, ownsCell = mpi.rank == 0;
+    auto nodes = G::EntitySpace::CreateOwned(G::EntityKind::Node, mpi, ownsNodes ? 2 : 0);
+    auto cells = nodes.CreateSibling(G::EntityKind::Cell, ownsCell ? 1 : 0);
+    auto boundaries = nodes.CreateSibling(G::EntityKind::Bnd, 0);
+    auto rows = [](auto values, bool owned)
+    {
+        using T = typename decltype(values)::value_type;
+        R::RowBuilder rows(owned ? 1 : 0, sizeof(T));
+        if (owned)
+        {
+            rows.ResizeRow(0, values.size());
+            std::copy(values.begin(), values.end(), rows.template Row<T>(0).data);
+        }
+        return R::Array<T>::FromSharedStorage(rows.Commit());
+    };
+    G::NativeMeshInput input{mpi, 2, cells, nodes, boundaries,
+                             rows(std::vector<I>{0, 0, 1, 1}, ownsCell), rows(std::vector<I>{}, false),
+                             R::Array<DNDS::real>(R::RowLayout::Dense(size_t(nodes.NumOwned()), 3)),
+                             R::Array<G::ElemInfo>(R::RowLayout::Dense(size_t(cells.NumOwned()), 1)),
+                             R::Array<G::ElemInfo>(R::RowLayout::Dense(0, 1))};
+    input.periodic = true;
+    input.cellNodesPbi = rows(std::vector<G::NodePeriodicBits>{{0}, {1}, {1}, {0}}, ownsCell);
+    input.boundaryNodesPbi = rows(std::vector<G::NodePeriodicBits>{}, false);
+    if (rotational)
+    {
+        input.periodicInfo.translation[1].map().setZero();
+        input.periodicInfo.rotation[1].map() << 0, -1, 0, 1, 0, 0, 0, 0, 1;
+    }
+    {
+        auto write = input.coordinates.Write();
+        for (size_t node = 0; node < input.coordinates.Rows(); ++node)
+        {
+            write.View()(node, 0) = rotational ? 1 + DNDS::real(node) : 1e-8;
+            write.View()(node, 1) = rotational ? 1e-8 : DNDS::real(node);
+            write.View()(node, 2) = 0;
+        }
+        if (ownsCell)
+            input.cellInfo.Write().View()(0, 0) = G::ElemInfo{G::Elem::Quad4, G::INTERNAL_ZONE};
+    }
+    return G::UnstructuredMesh::FromNative(mpi, G::NativeMeshBuilder::Build(std::move(input), {1, true}));
+}
+
+TEST_CASE("Near-plane native snapping edits canonical periodic owners and preserves physical images")
+{
+    DNDS::MPIInfo mpi(MPI_COMM_WORLD);
+    bool rotational = false;
+    SUBCASE("translated periodic images") {}
+    SUBCASE("rotational periodic images") { rotational = true; }
+    auto mesh = PeriodicPlaneFixture(mpi, rotational);
+    const auto source = mesh->CurrentNativeState();
+    const auto nodes = mesh->Entities(G::EntityKind::Node);
+    const auto cells = mesh->Entities(G::EntityKind::Cell);
+    auto old = source->Snapshot(R::Device::Host()).AcquireRead();
+    const auto before = old.HostView();
+    const auto stamp = mesh->versions.Stamp();
+    // The explicit cleanup operation does not weaken the arbitrary-callback
+    // guard: a general f need not commute with periodic image transforms.
+    CHECK_THROWS(mesh->TransformCoords([](const G::tPoint &point)
+                                       { return point; }));
+    CHECK_THROWS(mesh->RectifyNearPlaneCoordinates(-1, 1e-6));
+    CHECK_THROWS(mesh->RectifyNearPlaneCoordinates(8, 1e-6));
+    CHECK_THROWS(mesh->RectifyNearPlaneCoordinates(1, -1));
+    CHECK_THROWS(mesh->RectifyNearPlaneCoordinates(1, std::numeric_limits<double>::quiet_NaN()));
+    CHECK_THROWS(mesh->RectifyNearPlaneCoordinates(1, std::numeric_limits<double>::infinity()));
+    {
+        std::unique_ptr<G::MeshReadAccess> held;
+        if (mpi.rank == 0)
+            held = std::make_unique<G::MeshReadAccess>(mesh->AcquireRead());
+        CHECK_THROWS(mesh->RectifyNearPlaneCoordinates(1, 1e-6));
+    }
+    if (mpi.size > 1)
+    {
+        CHECK_THROWS(mesh->RectifyNearPlaneCoordinates(mpi.rank == 0 ? 1 : 2, 1e-6));
+        CHECK_THROWS(mesh->RectifyNearPlaneCoordinates(1, mpi.rank == 0 ? 1e-6 : 2e-6));
+    }
+    CHECK(stamp.Valid());
+    mesh->RectifyNearPlaneCoordinates(rotational ? 2 : 1, 1e-6);
+    CHECK_FALSE(stamp.Valid());
+    CHECK(nodes.SameOrder(mesh->Entities(G::EntityKind::Node)));
+    CHECK(cells.SameOrder(mesh->Entities(G::EntityKind::Cell)));
+    CHECK(mesh->CurrentNativeState()->MeshNamespace() == source->MeshNamespace());
+    {
+        auto read = mesh->AcquireRead();
+        const auto view = read.HostView();
+        for (I node = 0; node < view.NumNodeProc(); ++node)
+        {
+            auto expected = G::tPoint(before.Coord(node));
+            expected[rotational ? 1 : 0] = 0;
+            CHECK(view.Coord(node) == expected);
+        }
+        for (size_t group = 0; group < view.Periodic().rotation.size(); ++group)
+        {
+            CHECK(view.Periodic().rotation[group].map() == before.Periodic().rotation[group].map());
+            CHECK(view.Periodic().translation[group].map() == before.Periodic().translation[group].map());
+            CHECK(view.Periodic().rotationCenter[group].map() == before.Periodic().rotationCenter[group].map());
+        }
+        for (I cell = 0; cell < view.NumCellProc(); ++cell)
+        {
+            CHECK(view.CellNodePeriodicBits(cell).data() == before.CellNodePeriodicBits(cell).data());
+            CHECK(view.CellNodes(cell).data() == before.CellNodes(cell).data());
+            const std::vector<G::tPoint> expected = rotational
+                                                        ? std::vector<G::tPoint>{{1, 0, 0}, {0, 1, 0}, {0, 2, 0}, {2, 0, 0}}
+                                                        : std::vector<G::tPoint>{{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}};
+            for (DNDS::rowsize slot = 0; slot < 4; ++slot)
+                CHECK(view.GetCoordNodeOnCell(cell, slot).isApprox(expected[size_t(slot)], 1e-14));
+        }
+    }
+    const auto unchanged = mesh->CurrentNativeState();
+    mesh->RectifyNearPlaneCoordinates(7, 1e-6);
+    CHECK(mesh->CurrentNativeState() == unchanged);
+    mesh->RectifyBoundaryCoordinates([](G::t_index)
+                                     { return 0; });
+    CHECK(mesh->CurrentNativeState() == unchanged);
+}
+
 int main(int argc, char **argv)
 {
     MPI_Init(&argc, &argv);
@@ -527,6 +644,7 @@ TEST_CASE("Geometry operations reject an unpublished mesh without changing its e
     auto mesh = DNDS::make_ssp<G::UnstructuredMesh>(mpi, 2);
     const auto stamp = mesh->versions.Stamp();
     CHECK_THROWS(mesh->ApplyGeometryTransform(Eigen::Matrix3d::Identity(), 1));
+    CHECK_THROWS(mesh->RectifyNearPlaneCoordinates(1, 1e-6));
     CHECK_THROWS(mesh->RectifyBoundaryCoordinates([](G::t_index)
                                                   { return 1; }));
     CHECK(stamp.Valid());

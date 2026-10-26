@@ -166,6 +166,58 @@ namespace DNDS::Geom
         PublishNativeGeometry(std::move(prepared), stamp);
     }
 
+    void UnstructuredMesh::RectifyNearPlaneCoordinates(int components, real threshold)
+    {
+        CheckCollectiveMutationAvailable(true);
+        FieldTransferDetail::LocalStage(mpi, [&]
+                                        {
+            DNDS_check_throw_info(HasNativeState(), "near-plane rectification requires native mesh authority");
+            DNDS_check_throw_info(components >= 0 && components <= 7 && std::isfinite(threshold) && threshold >= 0,
+                                  "near-plane rectification requires component mask 0..7 and finite nonnegative threshold"); });
+        int expectedComponents = components;
+        real expectedThreshold = threshold;
+        MPI_Bcast(&expectedComponents, 1, MPI_INT, 0, mpi.comm);
+        MPI_Bcast(&expectedThreshold, 1, MPI_DOUBLE, 0, mpi.comm);
+        const auto stamp = versions.Stamp();
+        std::shared_ptr<const NativeMeshState> prepared;
+        {
+            auto sourceRead = AcquireRead(_nativeState->Requirements());
+            const auto view = sourceRead.HostView();
+            std::optional<Runtime::Array<real>> coordinates;
+            int changed = 0;
+            FieldTransferDetail::LocalStage(mpi, [&]
+                                            {
+                DNDS_check_throw_info(components == expectedComponents && threshold == expectedThreshold,
+                                      "near-plane rectification options differ across ranks");
+                coordinates.emplace(Runtime::RowLayout::Dense(size_t(view.NumNode()), 3));
+                auto write = coordinates->Write();
+                for (index node = 0; node < view.NumNode(); ++node)
+                    for (size_t component = 0; component < 3; ++component)
+                    {
+                        real value = view.Coord(node)[component];
+                        if ((components & (1 << component)) && std::abs(value) < threshold)
+                        {
+                            changed |= value != 0;
+                            value = 0;
+                        }
+                        write.View()(size_t(node), component) = value;
+                    } });
+            MPI_Allreduce(MPI_IN_PLACE, &changed, 1, MPI_INT, MPI_MAX, mpi.comm);
+            if (!changed)
+                return;
+            // Canonical coordinates have one authority per node. Images are
+            // evaluated using the unchanged PBI/frame after owner-row cleanup.
+            const auto nodes = Entities(EntityKind::Node);
+            RelationGhostRoute route(nodes);
+            auto ghost = route.TransferRows(nodes, *coordinates, Runtime::ElementSchema::Arithmetic<real>());
+            FieldTransferDetail::LocalStage(mpi, [&]
+                                            {
+                ghost = Runtime::Array<real>::FromStorage(Runtime::RowLayout::Dense(ghost.Rows(), 3), ghost.Storage());
+                prepared = _nativeState->WithGeometry({std::move(*coordinates), std::move(ghost)}, {}, view.Periodic()); });
+        }
+        PublishNativeGeometry(std::move(prepared), stamp);
+    }
+
     void UnstructuredMesh::RectifyBoundaryCoordinates(std::function<int(t_index)> componentForZone,
                                                       bool volumeBoundary)
     {
@@ -212,6 +264,7 @@ namespace DNDS::Geom
                 .Wait();
             Runtime::PayloadPlan forward(route, owned->Layout(), ghost->Layout(), Runtime::ElementSchema::Arithmetic<uint8_t>());
             forward.Bind(*owned, *ghost, Runtime::TransferTransport::Direct, {Runtime::TransferMode::Transient}).Begin().Wait();
+            int changed = 0;
             FieldTransferDetail::LocalStage(mpi, [&]
                                             {
                 auto local = owned->Read(), remote = ghost->Read();
@@ -220,10 +273,17 @@ namespace DNDS::Geom
                     tPoint point = view.Coord(node);
                     const auto mask = node < nodes.NumOwned() ? local.View()(size_t(node), 0) : remote.View()(size_t(node - nodes.NumOwned()), 0);
                     for (size_t component = 0; component < 3; ++component)
-                        if (mask & (1u << component)) point[component] = 0;
+                        if (mask & (1u << component))
+                        {
+                            changed |= point[component] != 0;
+                            point[component] = 0;
+                        }
                     return point;
                 });
                 prepared = _nativeState->WithGeometry(std::move(coordinates), {}, view.Periodic()); });
+            MPI_Allreduce(MPI_IN_PLACE, &changed, 1, MPI_INT, MPI_MAX, mpi.comm);
+            if (!changed)
+                return;
         }
         PublishNativeGeometry(std::move(prepared), stamp);
     }

@@ -11,6 +11,7 @@
 #pragma once
 
 #include <future>
+#include <unordered_set>
 #include <hdf5.h>
 #include "EulerSolver.hpp"
 #include "Geom/Mesh/MeshAccess.hpp"
@@ -1059,6 +1060,52 @@ namespace DNDS::Euler
         PrintConfig();
     }
 
+    /// Read old Euler H5 checkpoints whose row keys were stored only in the
+    /// sibling cell2cellOrig array. These keys are identities, never row offsets.
+    /// Current keys must use that same domain; independently numbered native
+    /// mesh identities cannot be matched by guessing their row positions.
+    template <class TPair>
+    void read_euler_restart_redistributed(TPair &destination,
+                                          const Serializer::SerializerBaseSSP &serializerP,
+                                          const std::vector<index> &currentKeys)
+    {
+        const auto cwd = serializerP->GetCurrentPath();
+        serializerP->GoToPath("u");
+        const bool hasOrigIndex = serializerP->ListCurrentPath().count("origIndex");
+        serializerP->GoToPath(cwd);
+        if (hasOrigIndex)
+        {
+            destination.ReadSerializeRedistributed(serializerP, "u", currentKeys);
+            return;
+        }
+
+        const auto mpi = destination.father->getMPI();
+        DNDS::detail::RedistributionCheck(mpi, serializerP->ListCurrentPath().count("cell2cellOrig"),
+                                          "Euler H5 restart requires u/origIndex or cell2cellOrig row keys");
+        using TArray = typename TPair::t_arr;
+        auto values = std::make_shared<TArray>(mpi);
+        auto keys = std::make_shared<Geom::tAdj1Pair::t_arr>(mpi);
+        auto valueRows = Serializer::ArrayGlobalOffset_EvenSplit;
+        auto keyRows = Serializer::ArrayGlobalOffset_EvenSplit;
+        values->ReadSerializer(serializerP, "u/father", valueRows);
+        keys->ReadSerializer(serializerP, "cell2cellOrig/father", keyRows);
+        DNDS::detail::RedistributionCheck(mpi, valueRows == keyRows && values->Size() == keys->Size() && destination.father->Size() == index(currentKeys.size()),
+                                          "Euler restart values and cell2cellOrig row counts differ");
+        std::vector<index> storedKeys(size_t(keys->Size()));
+        for (index row = 0; row < keys->Size(); ++row)
+            storedKeys[size_t(row)] = (*keys)(row, 0);
+        auto currentMapping = std::make_shared<GlobalOffsetsMapping>();
+        currentMapping->setMPIAlignBcast(mpi, index(currentKeys.size()));
+        values->createGlobalMapping();
+        DNDS::detail::RedistributionCheck(mpi, currentMapping->globalSize() == values->pLGlobalMapping->globalSize(),
+                                          "Euler restart and current mesh global cell counts differ");
+        // The reverse directory rejects duplicate current keys and keys absent
+        // from the mesh. The forward redistribution rejects duplicate stored
+        // keys and missing current keys, establishing a global bijection.
+        BuildRedistributionPullingIndex(mpi, currentKeys, storedKeys, currentMapping);
+        RedistributeArrayWithTransformer<TArray>(mpi, values, storedKeys, currentKeys, destination.father);
+    }
+
     DNDS_SWITCH_INTELLISENSE(template <EulerModel model>, )
     /** @brief Reorder restart data to match current cell ordering using cell2cellOrig mapping.
      *
@@ -1095,21 +1142,27 @@ namespace DNDS::Euler
             // TODO: lazy-build this inverse map
             std::unordered_map<index, index> cellOrig2localCell;
             cellOrig2localCell.reserve(mesh->NumCell());
-            for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
-                cellOrig2localCell[mesh->OriginalEntityId(Geom::EntityKind::Cell, iCell)] = iCell;
             bool isLocalReorder = true;
+            for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
+            {
+                const auto key = mesh->OriginalEntityId(Geom::EntityKind::Cell, iCell);
+                isLocalReorder = key >= 0 && cellOrig2localCell.emplace(key, iCell).second && isLocalReorder;
+            }
 
             Geom::tAdj1Pair cell2cellOrigRead;
             DNDS_MAKE_SSP(cell2cellOrigRead.father, mpi);
             DNDS_MAKE_SSP(cell2cellOrigRead.son, mpi);
             cell2cellOrigRead.ReadSerialize(serializerP, "cell2cellOrig", /*PIG*/ false, /*son*/ false);
-            DNDS_assert_info(cell2cellOrigRead.father->Size() == u.father->Size(),
-                             fmt::format("read size of cell2cellOrig not consistent: needed {}, got {}",
-                                         u.father->Size(), cell2cellOrigRead.father->Size()));
+            DNDS::detail::RedistributionCheck(mpi, cell2cellOrigRead.father->Size() == u.father->Size() && uRead.father->Size() == u.father->Size(),
+                                              "JSON restart values and cell2cellOrig row counts differ");
+            std::unordered_set<index> storedKeys;
             for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
-                if (cellOrig2localCell.count(cell2cellOrigRead(iCell, 0)) == 0)
-                    isLocalReorder = false;
-            DNDS_assert_info(isLocalReorder, "must be local reorder now! global reorder not implemented for now");
+            {
+                const auto key = cell2cellOrigRead(iCell, 0);
+                isLocalReorder = key >= 0 && cellOrig2localCell.count(key) && storedKeys.insert(key).second && isLocalReorder;
+            }
+            DNDS::detail::RedistributionCheck(mpi, isLocalReorder,
+                                              "JSON restart requires unique nonnegative keys matching the local mesh partition");
             for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
             {
                 index iCellOrigG = cell2cellOrigRead(iCell, 0);
@@ -1169,7 +1222,7 @@ namespace DNDS::Euler
             for (index i = 0; i < mesh->NumCell(); i++)
                 newOrigIdx[i] = mesh->OriginalEntityId(Geom::EntityKind::Cell, i);
 
-            u.ReadSerializeRedistributed(serializerP, "u", newOrigIdx);
+            read_euler_restart_redistributed(u, serializerP, newOrigIdx);
         }
         else
         {
@@ -1177,9 +1230,8 @@ namespace DNDS::Euler
             TDof uRead;
             vfv->BuildUDof(uRead, nVars, false, false);
             uRead.ReadSerialize(serializerP, "u", /*PIG*/ false, /*son*/ false);
-            DNDS_assert_info(uRead.father->Size() == u.father->Size(),
-                             fmt::format("read size not consistent: needed {}, got {}",
-                                         u.father->Size(), uRead.father->Size()));
+            DNDS::detail::RedistributionCheck(mpi, uRead.father->Size() == u.father->Size(),
+                                              "JSON restart value row count differs from the current partition");
             // Doing reorder
             paste_read_restart_with_cell_ordering(*this, u, uRead, serializerP);
         }
@@ -1257,11 +1309,14 @@ namespace DNDS::Euler
                 readBuf.son->Resize(0, variables, 1);
             }
 
-            readBuf.ReadSerializeRedistributed(serializerP, "u", newOrigIdx);
+            read_euler_restart_redistributed(readBuf, serializerP, newOrigIdx);
 
             int iMax = std::min(u.RowSize(), readBuf.RowSize()) - 1;
-            for (auto item : dimStore)
-                DNDS_assert(item <= iMax);
+            DNDS::detail::RedistributionCheck(mpi,
+                                              std::all_of(dimStore.begin(), dimStore.end(),
+                                                          [&](int item)
+                                                          { return item >= 0 && item <= iMax; }),
+                                              "restart variable selection is outside the stored or current DOF dimensions");
 
             for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
                 u[iCell](dimStore) = readBuf[iCell](dimStore);
@@ -1269,19 +1324,27 @@ namespace DNDS::Euler
         else
         {
             // JSON path: read with same-partition, reorder locally
-            readBuf.ReadSerialize(serializerP, "u");
+            readBuf.ReadSerialize(serializerP, "u", /*PIG*/ false, /*son*/ false);
 
-            DNDS_assert_info(readBuf.father->Size() == u.father->Size(), fmt::format("{}, {}", readBuf.father->Size(), u.father->Size()));
-            DNDS_assert_info(readBuf.son->Size() == u.son->Size(), fmt::format("{}, {}", readBuf.son->Size(), u.son->Size()));
+            DNDS::detail::RedistributionCheck(mpi, readBuf.father->Size() == u.father->Size(),
+                                              "JSON restart value row count differs from the current partition");
             int iMax = std::min(u.RowSize(), readBuf.RowSize()) - 1;
-            for (auto item : dimStore)
-                DNDS_assert(item <= iMax);
-            TDof uRead;
+            DNDS::detail::RedistributionCheck(mpi,
+                                              std::all_of(dimStore.begin(), dimStore.end(),
+                                                          [&](int item)
+                                                          { return item >= 0 && item <= iMax; }),
+                                              "restart variable selection is outside the stored or current DOF dimensions");
+            TDof uRead, reordered;
             vfv->BuildUDof(uRead, nVars, false, false);
+            vfv->BuildUDof(reordered, nVars, false, false);
+            uRead.setConstant(0);
+            reordered.setConstant(0);
             for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
                 uRead[iCell](dimStore) = readBuf[iCell](dimStore);
 
-            paste_read_restart_with_cell_ordering(*this, u, uRead, serializerP);
+            paste_read_restart_with_cell_ordering(*this, reordered, uRead, serializerP);
+            for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
+                u[iCell](dimStore) = reordered[iCell](dimStore);
         }
 
         u.trans.startPersistentPull();

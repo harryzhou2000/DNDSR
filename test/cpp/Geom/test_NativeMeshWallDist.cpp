@@ -124,6 +124,48 @@ TEST_CASE("Wall distance rejects a rank without native authority collectively")
     CHECK(stamp.Valid());
 }
 
+TEST_CASE("Wall vectors rebuilt after near-plane cleanup use the final shape and configured selector")
+{
+    DNDS::MPIInfo mpi(MPI_COMM_WORLD);
+    auto mesh = Fixture(mpi);
+    constexpr DNDS::real epsilon = 1e-4;
+    mesh->ApplyAffineGeometryTransform(Eigen::Matrix3d::Identity(), G::tPoint{0, epsilon, 0});
+    G::UnstructuredMesh::WallDistOptions options;
+    options.method = 0;
+    options.minWallDist = 0;
+    const auto selected = [](auto zone)
+    { return zone == 24; };
+    mesh->BuildNodeWallDist(selected, options);
+    auto before = mesh->CurrentNativeState();
+    for (I node = 0; node < mesh->NumNodeProc(); ++node)
+        if (mesh->Entities(G::EntityKind::Node).LocalToGlobal(node) == 2)
+            CHECK(mesh->NodeWallDist(node).isApprox(G::tPoint{0, 1, 0}, 1e-12));
+    mesh->RectifyNearPlaneCoordinates(2, 1e-3);
+    CHECK_FALSE(mesh->HasNodeWallDist());
+    CHECK_FALSE(mesh->CurrentNativeRequirements().wallDistance);
+    CHECK_THROWS(mesh->NodeWallDist(0));
+    mesh->BuildNodeWallDist(selected, options);
+    CHECK(mesh->HasNodeWallDist());
+    CHECK(mesh->CurrentNativeState()->MeshNamespace() == before->MeshNamespace());
+    {
+        auto read = mesh->AcquireRead(mesh->CurrentNativeRequirements());
+        auto view = read.HostView();
+        for (I node = 0; node < view.NumNodeProc(); ++node)
+        {
+            const auto global = mesh->Entities(G::EntityKind::Node).LocalToGlobal(node);
+            const G::tPoint expected = global == 2 ? G::tPoint{0, 1 + epsilon, 0} : G::tPoint::Zero().eval();
+            CHECK(view.NodeWallDist(node).isApprox(expected, 1e-12));
+            CHECK(view.Coord(node)[1] == doctest::Approx(global == 2 ? 1 + epsilon : 0));
+        }
+    }
+    const auto state = mesh->CurrentNativeState();
+    mesh->RectifyNearPlaneCoordinates(2, 1e-3);
+    mesh->RectifyBoundaryCoordinates([](auto)
+                                     { return 0; });
+    CHECK(mesh->CurrentNativeState() == state);
+    CHECK(mesh->HasNodeWallDist());
+}
+
 TEST_CASE("Native curved wall preserves method conventions and remote midpoint zeros")
 {
     DNDS::MPIInfo mpi(MPI_COMM_WORLD);

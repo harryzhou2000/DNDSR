@@ -18,7 +18,7 @@ namespace DNDS::Geom
                                   (relation == MPI_IDENT || relation == MPI_CONGRUENT), "native derivation communicator differs");
             retained.emplace(source.versions.Read());
             input = source.CurrentNativeState(); });
-        auto result = NativeMeshRefinement::Elevate(*input, mpi);
+        auto result = NativeMeshRefinement::Elevate(*input, mpi, {}, true);
         ReplaceNativeForSetup(std::move(result.state));
     }
 

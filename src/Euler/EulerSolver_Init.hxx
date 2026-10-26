@@ -257,16 +257,13 @@ namespace DNDS::Euler
                 DNDS_check_throw_info(false, "meshElevationInternalSmoother must be -1, 0, 1, or 2");
         }
 
-        if (config.dataIOControl.meshBuildWallDist)
+        auto buildNodeWallDist = [&]
         {
             // Wall distance is built before partition-only serialization and
             // before solver-only coordinate transforms so serialized meshes keep
             // a distance field in the same frame as the stored coordinates.
-            // Runtime transforms below are currently limited to rotations,
-            // uniform scaling, and optional coordinate snapping. Rotations
-            // preserve distance magnitudes; uniform scaling is applied to the
-            // running distance vectors below; non-orthogonal future transforms
-            // must invalidate or rebuild nodeWallDist instead of reusing it.
+            // Rigid transforms below transport directional vectors; snapping
+            // invalidates them and triggers a rebuild in the final geometry.
             mesh->BuildNodeWallDist(
                 [pBCHandler = pBCHandler](Geom::t_index id)
                 {
@@ -274,7 +271,9 @@ namespace DNDS::Euler
                     return static_cast<bool>(euler_bc_type == Euler::BCWall || euler_bc_type == Euler::BCWallIsothermal);
                 },
                 config.dataIOControl.meshWallDistOptions);
-        }
+        };
+        if (config.dataIOControl.meshBuildWallDist)
+            buildNodeWallDist();
 
         if (config.timeMarchControl.partitionMeshOnly)
         {
@@ -306,31 +305,14 @@ namespace DNDS::Euler
             mesh->ApplyGeometryTransform(Eigen::Matrix3d::Identity(), scale);
             meshBnd->ApplyGeometryTransform(Eigen::Matrix3d::Identity(), scale);
         }
+        const bool hadNodeWallDist = mesh->CurrentNativeRequirements().wallDistance;
         if (config.dataIOControl.rectifyNearPlane)
         {
-            // Coordinate snapping is a solver-side cleanup transform, not a
-            // general geometry transform. If a prebuilt directional
-            // nodeWallDist field is later used with snapping enabled, callers
-            // must treat that field as pre-snap metadata or rebuild it.
-            auto fTrans = [&](const Geom::tPoint &p)
-            {
-                Geom::tPoint ret = p;
-                if (config.dataIOControl.rectifyNearPlane & 1)
-                    if (std::abs(ret(0)) < config.dataIOControl.rectifyNearPlaneThres)
-                        ret(0) = 0;
-                if (config.dataIOControl.rectifyNearPlane & 2)
-                    if (std::abs(ret(1)) < config.dataIOControl.rectifyNearPlaneThres)
-                        ret(1) = 0;
-                if (config.dataIOControl.rectifyNearPlane & 4)
-                    if (std::abs(ret(2)) < config.dataIOControl.rectifyNearPlaneThres)
-                        ret(2) = 0;
-                return ret;
-            };
-            mesh->TransformCoords(fTrans);
-            meshBnd->TransformCoords(fTrans);
+            mesh->RectifyNearPlaneCoordinates(config.dataIOControl.rectifyNearPlane,
+                                              config.dataIOControl.rectifyNearPlaneThres);
+            meshBnd->RectifyNearPlaneCoordinates(config.dataIOControl.rectifyNearPlane,
+                                                 config.dataIOControl.rectifyNearPlaneThres);
         }
-        // Snapping keeps wall-distance metadata at its pre-snap meaning;
-        // applications needing geometric wall distance afterward must rebuild it.
         auto symmetryComponent = [&](Geom::t_index zone) -> int
         {
             if (pBCHandler->GetTypeFromID(zone) != BCSym)
@@ -340,6 +322,11 @@ namespace DNDS::Euler
         };
         mesh->RectifyBoundaryCoordinates(symmetryComponent, true);
         meshBnd->RectifyBoundaryCoordinates(symmetryComponent, false);
+        // Retain the pre-partition-only build point above. Normal solver setup
+        // also refreshes loaded or freshly built vectors when snapping changed
+        // the geometry; no pre-snap directional field reaches the evaluator.
+        if (hadNodeWallDist && !mesh->CurrentNativeRequirements().wallDistance)
+            buildNodeWallDist();
         // Output descriptors retain coordinates from their construction
         // epoch. Rebuild after smoothing/transforms before binding output fields.
         // Native writers create periodic image connectivity in output scratch.
