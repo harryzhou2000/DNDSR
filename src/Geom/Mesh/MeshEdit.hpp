@@ -4,13 +4,15 @@
 
 namespace DNDS::Geom
 {
-    /// Collective staging over the current authority. No writable mesh pointer
+    /// Collective staging over native authority. No writable mesh pointer
     /// escapes: getters return values, setters change an independent candidate.
     /// Explicit Commit publishes native backing; Abort/destruction discards it.
     /// Initial topology support is CellCells neighbor-order permutation only.
+    /// Legacy callers explicitly publish/import before Begin; no whole legacy
+    /// candidate workspace is allocated or used by an edit.
     class MeshEdit
     {
-        std::shared_ptr<UnstructuredMesh> _source, _candidate;
+        std::shared_ptr<UnstructuredMesh> _source;
         std::optional<NativeMeshData> _nativeCandidate;
         std::unique_ptr<MeshReadAccess> _sourceRead;
         Runtime::VersionStamp _stamp;

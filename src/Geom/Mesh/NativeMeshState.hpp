@@ -109,6 +109,15 @@ namespace DNDS::Geom
         EntitySpace Entities(EntityKind kind) const;
         MeshReadRequirements Requirements() const { return _requirements; }
         index OriginalEntityId(EntityKind kind, index row) const;
+        /// Retain the immutable combined owned/ghost ID allocation. Consumers
+        /// coupling these IDs to other mesh rows also retain a MeshReadAccess.
+        std::shared_ptr<const Runtime::Array<index>::ReadLease> ReadOriginalEntityIds(EntityKind kind) const
+        {
+            Validate();
+            auto found = _originalReads.find(kind);
+            DNDS_check_throw_info(found != _originalReads.end(), "original entity ID family is unavailable");
+            return found->second;
+        }
         const std::string &MeshNamespace() const { return _meshIdentity.meshNamespace; }
         /// Shared owned-row metadata. Array reads retain their own leases;
         /// publication prevents writes for this state's lifetime.

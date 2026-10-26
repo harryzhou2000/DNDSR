@@ -186,13 +186,17 @@ def test_periodic_incidence_queries():
 
 def test_native_publication_and_explicit_workspace(facade_mesh):
     mesh = facade_mesh
+    # Retain the detached legacy fixture before native publication. Public
+    # properties then expose readonly native data, never this old allocation.
+    legacy_coords = mesh.coords
     with mesh.acquire_read(faces=True) as read:
         expected = read.coordinates()
         expected_nodes = read.cell_nodes(0).copy()
     mesh.publish_native(faces=True)
     assert mesh.has_native_state
-    # These legacy properties are a detached edit workspace in native mode.
-    mesh.coords[0][0] += 5.0
+    with pytest.raises(ValueError):
+        mesh.coords[0][0] += 5.0
+    legacy_coords[0][0] += 5.0
     with mesh.acquire_read(faces=True) as read:
         np.testing.assert_array_equal(read.coordinates(), expected)
         escaped = read.cell_nodes(0)[::2]

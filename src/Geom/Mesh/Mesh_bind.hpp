@@ -4,6 +4,7 @@
 #include "DNDS/Array_bind.hpp"
 #include "Mesh.hpp"
 #include "MeshAccess_bind.hpp"
+#include "NativeMeshPairRead_bind.hpp"
 #include "MeshTransition.hpp"
 #include "MeshEdit_bind.hpp"
 #include "NativeMeshBuilder_bind.hpp"
@@ -52,12 +53,18 @@ namespace DNDS::Geom
     inline void pybind11_UnstructuredMesh_define(py::module_ &m)
     {
         pybind11_MeshAccess_define(m);
+        pybind11_NativeMeshPairRead_define(m);
         pybind11_MeshEdit_define(m);
 #define DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_SIMP_FUNC(foo) \
     def(#foo, &UnstructuredMesh::foo)
 
 #define DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_READONLY_MEMBER(m_name) \
     def_readonly(#m_name, &UnstructuredMesh::m_name, py::return_value_policy::reference_internal)
+
+#define DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_PAIR(m_name, kind) \
+    def_property_readonly(#m_name, [](std::shared_ptr<UnstructuredMesh> self) -> py::object { \
+        if (self->HasNativeState()) return py::cast(NativePythonPairRead(*self, NativePythonPairKind::kind)); \
+        return py::cast(&self->m_name, py::return_value_policy::reference_internal, py::cast(self)); }, "Retained readonly native row/owned/ghost view. Legacy construction temporarily exposes its original pair. Use explicit mesh edits for native mutation.")
 
         auto UnstructuredMesh_ = tPy_UnstructuredMesh(m, "UnstructuredMesh");
         py::enum_<CurrentMeshCheckpointPolicy>(m, "CurrentMeshCheckpointPolicy")
@@ -68,7 +75,7 @@ namespace DNDS::Geom
                             { return std::make_shared<UnstructuredMesh>(mpi, n_dim); }))
             .def_property_readonly("has_native_state", &UnstructuredMesh::HasNativeState)
             .def("edit", [](std::shared_ptr<UnstructuredMesh> self, int ghostLayers)
-                 { return std::make_shared<MeshEdit>(MeshEdit::Begin(std::move(self), ghostLayers)); }, py::arg("ghost_layers") = 1, "Collectively stage current-authority owned coordinate/cell metadata and neighbor-order edits. Explicit commit required; context exit discards uncommitted changes.")
+                 { return std::make_shared<MeshEdit>(MeshEdit::Begin(std::move(self), ghostLayers)); }, py::arg("ghost_layers") = 1, "Collectively stage native owned coordinate/cell metadata and neighbor-order edits. Legacy inputs must explicitly publish_native first. Explicit commit required; context exit discards uncommitted changes.")
             .def("entities", &UnstructuredMesh::Entities, py::arg("kind"), "Retain immutable distribution metadata without exposing an ArrayTransformer. Numbering changes invalidate mapping calls; descriptors do not block mutation.")
             .def("original_entity_id", &UnstructuredMesh::OriginalEntityId, py::arg("kind"), py::arg("row"))
             .def("publish_native", [](UnstructuredMesh &self, bool faces, bool inverse, bool edges, bool cellFaceNeighbors, bool wallDistance, bool allFaceCellsLocal)
@@ -83,8 +90,8 @@ namespace DNDS::Geom
                      auto device = Runtime::Device::CUDA(ordinal);
                      self.PlaceNative(device, {device, nullptr}); }, py::arg("ordinal") = 0, "Prepare a CUDA placement of published native data; completes transfers before returning. CPU debug reads remain host-resident.")
             .def("use_legacy_workspace", &UnstructuredMesh::UseLegacyWorkspace, "Collectively leave native publication mode and invalidate all current-state bindings; detached snapshots remain readable.")
-            .def("apply_geometry_transform", &UnstructuredMesh::ApplyGeometryTransform, py::arg("rotation"), py::arg("scale") = 1.0, "Collective legacy-workspace proper rotation and positive scale of coordinates, periodic frames and wall vectors. Native authority requires mesh.edit; rebuild dependent metrics afterward.")
-            .def("rectify_boundary_coordinates", &UnstructuredMesh::RectifyBoundaryCoordinates, py::arg("component_for_zone"), py::arg("volume_boundary") = true, "Collective legacy-workspace boundary snapping: callback returns 0 for unchanged or component 1/2/3. Native authority requires mesh.edit; wall distance must be rebuilt if needed.")
+            .def("apply_geometry_transform", &UnstructuredMesh::ApplyGeometryTransform, py::arg("rotation"), py::arg("scale") = 1.0, "Collective proper rotation and positive scale of coordinates, periodic frames and wall vectors. Native input publishes a tracked replacement; release retained reads first and rebuild dependent metrics afterward.")
+            .def("rectify_boundary_coordinates", &UnstructuredMesh::RectifyBoundaryCoordinates, py::arg("component_for_zone"), py::arg("volume_boundary") = true, "Collective boundary snapping: callback returns 0 for unchanged or component 1/2/3. Native input publishes a tracked replacement; release retained reads first and rebuild wall distance if needed.")
             .def("snapshot", [](UnstructuredMesh &self, bool faces, bool inverse, bool edges, bool cellFaceNeighbors, bool wallDistance)
                  {
                      MeshReadRequirements requirements;
@@ -104,28 +111,37 @@ namespace DNDS::Geom
                      requirements.wallDistance = wallDistance;
                      return std::make_shared<PythonMeshReadAccess>(self.AcquireRead(requirements)); }, py::arg("faces") = false, py::arg("inverse") = false, py::arg("edges") = false, py::arg("cell_face_neighbors") = false, py::arg("wall_distance") = false, "Retained host read scope. Readonly row arrays/slices keep the lease after close; bulk geometry methods return snapshots.")
             // basic
-            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_READONLY_MEMBER(coords)
-            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_READONLY_MEMBER(cell2node)
-            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_READONLY_MEMBER(bnd2node)
-            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_READONLY_MEMBER(bnd2cell)
-            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_READONLY_MEMBER(cell2cell)
-            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_READONLY_MEMBER(cellElemInfo)
-            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_READONLY_MEMBER(bndElemInfo)
-            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_READONLY_MEMBER(cell2cellOrig)
-            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_READONLY_MEMBER(node2nodeOrig)
+            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_PAIR(coords, Coords)
+            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_PAIR(cell2node, CellNodes)
+            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_PAIR(bnd2node, BoundaryNodes)
+            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_PAIR(bnd2cell, BoundaryCells)
+            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_PAIR(cell2cell, CellCells)
+            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_PAIR(cellElemInfo, CellInfo)
+            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_PAIR(bndElemInfo, BoundaryInfo)
+            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_PAIR(cell2cellOrig, CellOriginalIds)
+            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_PAIR(node2nodeOrig, NodeOriginalIds)
             // interpolated
-            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_READONLY_MEMBER(cell2face)
-            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_READONLY_MEMBER(face2cell)
-            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_READONLY_MEMBER(face2node)
-            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_READONLY_MEMBER(faceElemInfo)
+            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_PAIR(cell2face, CellFaces)
+            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_PAIR(face2cell, FaceCells)
+            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_PAIR(face2node, FaceNodes)
+            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_PAIR(faceElemInfo, FaceInfo)
             // edge connectivity
-            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_READONLY_MEMBER(cell2edge)
-            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_READONLY_MEMBER(edge2cell)
-            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_READONLY_MEMBER(edge2node)
-            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_READONLY_MEMBER(edgeElemInfo)
-            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_READONLY_MEMBER(cell2edgePbi)
-            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_READONLY_MEMBER(edge2nodePbi)
-            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_READONLY_MEMBER(nodeWallDist);
+            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_PAIR(cell2edge, CellEdges)
+            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_PAIR(edge2cell, EdgeCells)
+            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_PAIR(edge2node, EdgeNodes)
+            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_PAIR(edgeElemInfo, EdgeInfo)
+            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_PAIR(cell2edgePbi, CellEdgeBits)
+            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_PAIR(edge2nodePbi, EdgeNodeBits)
+            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_PAIR(nodeWallDist, Wall)
+            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_PAIR(node2cell, NodeCells)
+            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_PAIR(node2bnd, NodeBoundaries)
+            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_PAIR(face2bnd, FaceBoundaries)
+            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_PAIR(bnd2face, BoundaryFaces)
+            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_PAIR(cell2cellFace, CellFaceCells)
+            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_PAIR(cell2nodePbi, CellNodeBits)
+            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_PAIR(bnd2nodePbi, BoundaryNodeBits)
+            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_PAIR(face2nodePbi, FaceNodeBits)
+            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_PAIR(cell2facePbi, CellFaceBits);
 
         UnstructuredMesh_
             .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_SIMP_FUNC(RecoverNode2CellAndNode2Bnd)
@@ -186,6 +202,7 @@ namespace DNDS::Geom
         UnstructuredMesh_
             .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_SIMP_FUNC(getArrayBytes);
 #undef DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_READONLY_MEMBER
+#undef DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_PAIR
 #undef DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_SIMP_FUNC
 
         UnstructuredMesh_
@@ -282,7 +299,7 @@ namespace DNDS::Geom
                                               if (!value.allFinite())
                                                   throw py::value_error("coordinate transform returned a non-finite point");
                                               return value;
-                                          }); }, py::arg("transform"), "Tracked legacy-workspace point transform. Native authority requires mesh.edit. Callback receives a detached copy; exceptions leave the mesh failed. Periodic frames and derived caches are caller responsibilities.")
+                                          }); }, py::arg("transform"), "Collective tracked point transform. Native input validates and publishes an independent replacement; callback receives a detached copy. Release retained reads first; periodic frames and dependent metrics are caller responsibilities.")
             .def("TransformCoords", [](py::object self, py::function f)
                  {
                     auto &mesh = self.cast<UnstructuredMesh &>();
