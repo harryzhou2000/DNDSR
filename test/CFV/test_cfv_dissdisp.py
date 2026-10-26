@@ -6,6 +6,7 @@ from DNDSR import DNDS, Geom, CFV
 from DNDSR.Geom.utils import *
 import numpy as np
 import json
+import os
 
 # vfvSettings = json.loads(
 #     "".join(
@@ -129,32 +130,35 @@ class WaveTester:
             @ transform
         )
 
-        mesh, reader, name2Id = create_mesh_from_CGNS(
-            meshFile,
-            mpi,
-            2,
+        result = read_mesh(
+            meshFile, mpi, 2, native=True, complete_node_star=True,
             periodic_geometry={
                 "translation1": [5, 0, 0],
                 "translation2": [0, 5, 0],
             },
         )
-        mesh.SetPeriodicGeometry(
-            translation1=transform @ np.array([5, 0, 0]),
-            translation2=transform @ np.array([0, 5, 0]),
-        )
-        coord_father = np.array(mesh.coords.father.data(),
-                                copy=False).reshape(-1, 3)
-        coord_son = np.array(mesh.coords.son.data(), copy=False).reshape(-1, 3)
+        mesh = prepare_native_mesh(result.mesh, reorder_parts=1)
+        name2Id = result.name_to_id
+        with mesh.acquire_read(faces=True) as read:
+            # Physical cell corners include periodic images. Detached snapshots
+            # survive the atomic coordinate/frame publication below.
+            before_cells = [read.cell_coords(cell) for cell in range(mesh.NumCell())]
+        before = mesh.snapshot(faces=True)
+        mesh.apply_affine_geometry_transform(transform)
+        assert not before.source_current
+        with mesh.acquire_read(faces=True) as read:
+            for cell, points in enumerate(before_cells):
+                np.testing.assert_allclose(read.cell_coords(cell), points @ transform.T,
+                                           rtol=1e-12, atol=1e-12)
+        with before.acquire_read() as read:
+            for cell, points in enumerate(before_cells):
+                np.testing.assert_array_equal(read.cell_coords(cell), points)
 
-        coord_father[:] = coord_father @ transform.transpose()
-        coord_son[:] = coord_son @ transform.transpose()
-
-        meshBnd, readerBnd = create_bnd_mesh(mesh)
-
-        self.reader = reader
+        boundary = build_bnd_mesh(mesh)
+        self.reader = result.reader
         self.name2Id = name2Id
-        self.meshBnd = meshBnd
-        self.readerBnd = readerBnd
+        self.meshBnd = boundary.mesh_bnd
+        self.readerBnd = boundary.reader_bnd
 
         vfv = CFV.VariationalReconstruction_2(mpi, mesh)
         self.vfvSettings = vfvSettings
@@ -171,6 +175,18 @@ class WaveTester:
                 bcid_2_bcweight_map[(id, 2)] = 1.0
                 bcid_2_bcweight_map[(id, 3)] = 1.0
         vfv.ConstructMetrics()
+        for cell, points in enumerate(before_cells):
+            # Independent polygon area and bilinear-reference Jacobian oracle.
+            # Preserve the true shear and anisotropic scaling of this fixture.
+            assert points.shape == (4, 3)
+            xy = (points @ transform.T)[:, :2]
+            signed_area = 0.5 * np.sum(xy[:, 0] * np.roll(xy[:, 1], -1)
+                                       - xy[:, 1] * np.roll(xy[:, 0], -1))
+            assert signed_area > 0
+            np.testing.assert_allclose(vfv.GetCellVol(cell), signed_area,
+                                       rtol=1e-11, atol=1e-12)
+            np.testing.assert_allclose(vfv.GetCellJacobiDet(cell, 0), signed_area / 4,
+                                       rtol=1e-11, atol=1e-12)
         vfv.ConstructBaseAndWeight_map(bcid_2_bcweight_map)
         vfv.ConstructRecCoeff()
 
@@ -628,6 +644,17 @@ class WaveTester:
 
         # print(np.array(uRec_real[self.iCellFree]).flatten())
         # print(np.real(uRecFree).flatten())
+
+
+def test_native_affine_shear_geometry():
+    """Exercise non-rigid geometry independently of wave iteration."""
+    mpi = DNDS.MPIInfo()
+    mpi.setWorld()
+    if mpi.size != 1:
+        import pytest
+        pytest.skip("WaveTester requires its single free cell on this rank; distributed affine coverage lives in Geom tests")
+    tester = WaveTester(mpi, AR=2.0, ob=0.4)
+    assert tester.mesh.has_native_state
 
 
 def test():

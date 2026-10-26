@@ -91,18 +91,18 @@ namespace DNDS::Geom
     /// creates a new namespace because the old format stores none.
     inline ssp<UnstructuredMesh> ReadNativeMeshFromArchive(
         const MPIInfo &mpi, Serializer::SerializerFactory factory, const std::string &inputPath,
-        bool repartition = false, const PartitionOptions &partOpts = {})
+        bool repartition = false, const PartitionOptions &partOpts = {}, int ghostLayers = 1)
     {
         std::string signature;
         FieldTransferDetail::LocalStage(mpi, [&]
                                         {
-            DNDS_check_throw_info((factory.type == "JSON" || factory.type == "H5") && factory.hdfDeflateLevel >= 0 &&
+            DNDS_check_throw_info(ghostLayers >= 1 && (factory.type == "JSON" || factory.type == "H5") && factory.hdfDeflateLevel >= 0 &&
                                   factory.hdfDeflateLevel <= 9 && factory.hdfChunkSize >= 0 &&
                                   factory.jsonBinaryDeflateLevel >= 0 && factory.jsonBinaryDeflateLevel <= 9,
                                   "native archive serializer configuration invalid");
             signature = nlohmann::json{{"path", inputPath}, {"type", factory.type}, {"deflate", factory.hdfDeflateLevel},
                 {"chunk", factory.hdfChunkSize}, {"collectiveData", factory.hdfCollOnData}, {"collectiveMeta", factory.hdfCollOnMeta},
-                {"jsonDeflate", factory.jsonBinaryDeflateLevel}, {"codec", factory.jsonUseCodecOnUInt8}, {"repartition", repartition},
+                {"jsonDeflate", factory.jsonBinaryDeflateLevel}, {"codec", factory.jsonUseCodecOnUInt8}, {"repartition", repartition}, {"ghostLayers", ghostLayers},
                 {"partitionType", partOpts.metisType}, {"ufactor", partOpts.metisUfactor}, {"seed", partOpts.metisSeed},
                 {"weight", partOpts.edgeWeightMethod}, {"cuts", partOpts.metisNcuts}}.dump();
             DNDS_check_throw_info(signature.size() <= size_t(INT_MAX), "native archive configuration too large"); });
@@ -141,14 +141,14 @@ namespace DNDS::Geom
         FieldTransferDetail::LocalStage(mpi, [&]
                                         { serializer->OpenFile(path, true); close.opened = true; });
         const auto partition = repartition ? Serializer::ArrayGlobalOffset_EvenSplit : Serializer::ArrayGlobalOffset_Unknown;
-        auto state = ReadCompatibleNativeMeshArchive(mpi, serializer, "meshPart", partition);
+        auto state = ReadCompatibleNativeMeshArchive(mpi, serializer, "meshPart", partition, ghostLayers);
         FieldTransferDetail::LocalStage(mpi, [&]
                                         { serializer->CloseFile(); });
         close.opened = close.json = false;
         if (repartition)
         {
             NativePartitionOptions options{partOpts.metisType, partOpts.metisUfactor, partOpts.metisSeed,
-                                           partOpts.edgeWeightMethod, partOpts.metisNcuts, 1};
+                                           partOpts.edgeWeightMethod, partOpts.metisNcuts, ghostLayers};
             state = NativeMeshPreparation::Partition(*state, mpi, options).state;
         }
         return UnstructuredMesh::FromNative(mpi, std::move(state));

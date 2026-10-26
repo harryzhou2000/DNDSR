@@ -53,13 +53,13 @@ class Solver:
     def runningDevice(self, B):
         self._runningDevice = B
 
-    def ReadMesh(self, mesh_file, dim, other_options=None, *, native=False, boundary_names=None):
+    def ReadMesh(self, mesh_file, dim, other_options=None, *, native=True, boundary_names=None):
         """Read and prepare a mesh for the solver.
 
-        Native setup is explicit with ``native=True`` and uses detached native
-        read/partition/preparation/extraction without a legacy mesh workspace.
-        ``native=False`` remains the temporary compatibility default until
-        full consumer and configured-output coverage has been validated.
+        Native setup is the default and uses native read/partition, in-place
+        preparation and extraction without a legacy mesh workspace. Serial
+        reader objects adapt native output and preserve the established return
+        contract. Explicit native=False is retained only as a migration baseline.
         Native archives require an explicit matching ``boundary_names`` map.
         Both routes build finite-volume/evaluator data after final mesh ordering.
         Delegates to the appropriate Geom helpers and ``build_bnd_mesh``.
@@ -117,18 +117,9 @@ class Solver:
             else:
                 raise ValueError(f"Unknown ReadMesh option: {k!r}")
 
-        if native:
-            if prep_kw.pop("build_serial_out", False):
-                raise ValueError("Native EulerP setup has no legacy serial output cache")
-            prep_kw.setdefault("reorder_parts", 1)
-            prep_kw.setdefault("reorder_inner_parts", 1)
-            read_kw.setdefault("partition_options", {})
-            result = read_mesh(mesh_file, mpi=self.mpi, dim=dim, native=True, **read_kw)
-            mesh = prepare_native_mesh(result.mesh, **prep_kw)
-        else:
-            result = read_mesh(mesh_file, mpi=self.mpi, dim=dim, **read_kw)
-            prepare_mesh(result.mesh, result.reader, **prep_kw)
-            mesh = result.mesh
+        result = read_mesh(mesh_file, mpi=self.mpi, dim=dim, native=native, **read_kw)
+        prepare_mesh(result.mesh, result.reader, **prep_kw)
+        mesh = result.mesh
         if boundary_names is not None and result.name_to_id is not None and boundary_names.n2id_map != result.name_to_id.n2id_map:
             raise ValueError("boundary_names differs from the CGNS-assigned boundary dictionary")
         names = boundary_names if boundary_names is not None else result.name_to_id
@@ -384,9 +375,9 @@ class Solver:
     def to_device(self, backend=None):
         """Place FV/physics data and the evaluator's cached native mesh snapshot.
 
-        The authoritative source mesh stays on the host. The evaluator owns
-        its immutable device topology snapshot and rebuilds it after tracked
-        mesh changes.
+        Native source topology is placed on the current CUDA device before
+        FV kernels are prepared. Host scoped reads remain available; evaluator
+        snapshots refresh after tracked mesh changes.
 
         Args:
             backend: Device backend string (e.g. ``"CUDA"``), or None to skip.
@@ -402,6 +393,14 @@ class Solver:
             raise ValueError("need to initialize fv before to_device")
         if not hasattr(self, "eval"):
             raise ValueError("need to initialize eval before to_device")
+        is_cuda = (str(backend).upper() == "CUDA" or
+                   backend == getattr(DNDS.DeviceBackend, "CUDA", None))
+        if self.mesh.has_native_state and is_cuda:
+            self.mesh.place_native(-1)
+        if is_cuda:
+            backend = "CUDA"
+        elif backend == DNDS.DeviceBackend.Host:
+            backend = "Host"
         self.fv.to_device(backend)
         self.eval.to_device(backend)
 

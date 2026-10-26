@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Mesh.hpp"
+#include "NativeMeshOutput.hpp"
 #include <mutex>
 
 namespace DNDS::Geom
@@ -14,16 +15,6 @@ namespace DNDS::Geom
     {
         RequireNoAuxiliaryValues,
         DropAuxiliary
-    };
-    enum class BoundaryCachePolicy
-    {
-        Prohibit,
-        DropBoundaryCache
-    };
-    enum class TransitionAuthority
-    {
-        PreserveSource,
-        LegacyWorkspace
     };
     /// One serialized publication point for a mesh and its registered fields.
     /// Access to external field handles must use the same caller serialization.
@@ -42,14 +33,15 @@ namespace DNDS::Geom
     };
 
     /// Prepared host transition, collectively constructed and published.
-    /// Primary, inverse, facial and optional face-neighbor relations are rebuilt
-    /// on independent storage. Faces may be preserved or explicitly destroyed
+    /// Native primary, inverse, facial and optional face-neighbor relations are
+    /// assembled on detached storage. Faces may be preserved or explicitly destroyed
     /// and reconstructed. Native owned fields use the exact mesh reorder plan.
     /// Wall vectors move as Node companions. Edges and their registered fields
     /// preserve exact row slots; destroyKinds{Edge} explicitly reconstructs them
     /// and prohibits attached Edge fields/maps. Derived caches are explicitly invalidated
-    /// or output caches reconstructed. Parent/extraction links and elevated
-    /// original-node-prefix semantics require a separate cross-mesh policy.
+    /// or native output-only buffers reconstructed. Persistent identity and
+    /// durable ancestry follow native row transfers. Setup-only parent/extraction
+    /// row caches are invalidated on the new facade; the source is unchanged.
     ///
     /// The handle and registered field objects must outlive this object. Caller
     /// orchestration and external field writes remain serialized through Publish.
@@ -66,6 +58,7 @@ namespace DNDS::Geom
         std::vector<std::pair<EntityKind, PreparedCompanion *>> _bindings;
         std::vector<bool> _bindingPrepared;
         bool _published = false;
+        std::shared_ptr<const NativeMeshOutput> _output;
 
         explicit PreparedMeshTransition(MeshTransitionHandle &handle) : _handle(&handle) {}
 
@@ -82,22 +75,15 @@ namespace DNDS::Geom
             MeshTransitionHandle &handle, const ReorderInput &input,
             const std::vector<CompanionEntry> &fields = {},
             const std::function<void(const char *)> &checkpoint = {}, int ghostLayers = 1,
-            TransitionCachePolicy caches = TransitionCachePolicy::Invalidate,
-            TransitionAuthority authority = TransitionAuthority::PreserveSource);
+            TransitionCachePolicy caches = TransitionCachePolicy::Invalidate);
 
         /// All validation and MPI agreement precede nonthrowing publication.
         /// A failed validation leaves the handle and every field unpublished.
         void Publish();
+        /// Prepared output-only native payload, or null for Invalidate. It
+        /// retains its own buffers after transition/source destruction.
+        const std::shared_ptr<const NativeMeshOutput> &PreparedOutput() const { return _output; }
     };
-
-    /// Collective synchronous export of the current authority to independent
-    /// prepared host legacy storage. No entity ownership/order changes. Useful
-    /// for legacy output/checkpoint setup without switching source authority.
-    /// Parent/extraction and elevation policies match PreparedMeshTransition.
-    std::shared_ptr<UnstructuredMesh> CloneCurrentMeshForSetup(
-        UnstructuredMesh &source, int ghostLayers = 1,
-        TransitionCachePolicy caches = TransitionCachePolicy::RebuildOutput,
-        BoundaryCachePolicy boundaryCache = BoundaryCachePolicy::Prohibit);
 
     /// Collective primary-only checkpoint, including per-rank JSON. Preserves
     /// primary topology/geometry/original IDs/PBI; optional topology rebuilds.

@@ -18,7 +18,7 @@ def _build_mesh(periodic=False):
     )
     assert source.is_file()
     options = {"periodic_geometry": {"translation1": [10., 0., 0.], "translation2": [0., 10., 0.]}} if periodic else {}
-    result = read_mesh(str(source), mpi=mpi, dim=2, **options)
+    result = read_mesh(str(source), mpi=mpi, dim=2, native=False, **options)
     prepare_mesh(result.mesh, result.reader, build_serial_out=False)
     return result.mesh
 

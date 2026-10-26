@@ -6,6 +6,7 @@
 #include "MeshAccess_bind.hpp"
 #include "NativeMeshPairRead_bind.hpp"
 #include "MeshTransition.hpp"
+#include "FieldTransfer.hpp"
 #include "MeshEdit_bind.hpp"
 #include "NativeMeshBuilder_bind.hpp"
 #include "NativeMeshPreparation_bind.hpp"
@@ -13,6 +14,9 @@
 #include <pybind11_json/pybind11_json.hpp>
 #include <pybind11/eigen.h>
 #include <pybind11/functional.h>
+#ifdef DNDS_USE_CUDA
+#    include <cuda_runtime_api.h>
+#endif
 
 namespace DNDS::Geom
 {
@@ -87,10 +91,30 @@ namespace DNDS::Geom
                      self.PublishNative(r); }, py::arg("faces") = false, py::arg("inverse") = false, py::arg("edges") = false, py::arg("cell_face_neighbors") = false, py::arg("wall_distance") = false, py::arg("all_face_cells_local") = false, "Collectively validate/import the legacy workspace and publish private native query storage. Release managed rows first; raw workspace edits do not alter the publication.")
             .def("place_native", [](UnstructuredMesh &self, int ordinal)
                  {
+                     if (ordinal == -1)
+                     {
+#ifdef DNDS_USE_CUDA
+                         DNDS_check_throw_info(cudaGetDevice(&ordinal) == cudaSuccess, "CUDA current device query failed");
+#else
+                         DNDS_check_throw_info(false, "CUDA placement unavailable in a CPU-only build");
+#endif
+                     }
+                     DNDS_check_throw_info(ordinal >= 0, "native placement requires a nonnegative CUDA ordinal or -1 for current device");
                      auto device = Runtime::Device::CUDA(ordinal);
-                     self.PlaceNative(device, {device, nullptr}); }, py::arg("ordinal") = 0, "Prepare a CUDA placement of published native data; completes transfers before returning. CPU debug reads remain host-resident.")
+                     self.PlaceNative(device, {device, nullptr}); }, py::arg("ordinal") = 0, "Prepare a CUDA placement of published native data; ordinal -1 selects the current CUDA device. Completes transfers before returning. CPU debug reads remain host-resident.")
             .def("use_legacy_workspace", &UnstructuredMesh::UseLegacyWorkspace, "Collectively leave native publication mode and invalidate all current-state bindings; detached snapshots remain readable.")
             .def("apply_geometry_transform", &UnstructuredMesh::ApplyGeometryTransform, py::arg("rotation"), py::arg("scale") = 1.0, "Collective proper rotation and positive scale of coordinates, periodic frames and wall vectors. Native input publishes a tracked replacement; release retained reads first and rebuild dependent metrics afterward.")
+            .def("apply_affine_geometry_transform", [](UnstructuredMesh &self, py::object linear, py::object offset)
+                 {
+                     Eigen::Matrix3d matrix;
+                     tPoint translation;
+                     // Agree Python shape/conversion errors before any rank
+                     // enters the native operation's collective preflight.
+                     FieldTransferDetail::LocalStage(self.getMPI(), [&]
+                                                     {
+                         matrix = linear.cast<Eigen::Matrix3d>();
+                         translation = offset.cast<tPoint>(); });
+                     self.ApplyAffineGeometryTransform(matrix, translation); }, py::arg("linear"), py::arg("offset") = tPoint{0, 0, 0}, "Collective native-only x'=linear*x+offset with finite orientation-preserving invertible linear. Updates periodic frames atomically; conjugated rotations must remain proper orthonormal within 1e-10. Invalidates wall distances and metrics. All ranks supply identical arguments and release retained read aliases first.")
             .def("rectify_boundary_coordinates", &UnstructuredMesh::RectifyBoundaryCoordinates, py::arg("component_for_zone"), py::arg("volume_boundary") = true, "Collective boundary snapping: callback returns 0 for unchanged or component 1/2/3. Native input publishes a tracked replacement; release retained reads first and rebuild wall distance if needed.")
             .def("snapshot", [](UnstructuredMesh &self, bool faces, bool inverse, bool edges, bool cellFaceNeighbors, bool wallDistance)
                  {
@@ -206,7 +230,9 @@ namespace DNDS::Geom
 #undef DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_SIMP_FUNC
 
         UnstructuredMesh_
-            .def("ReorderLocalCells", &UnstructuredMesh::ReorderLocalCells, py::arg("nParts") = 1, py::arg("nPartsInner") = 1)
+            .def("PrepareNativeTopology", &UnstructuredMesh::PrepareNativeTopology, py::arg("faces") = true, py::arg("edges") = false, py::arg("ghost_layers") = 1,
+                 "Collectively prepare native topology on this same facade. Release retained reads and rebuild dependent metrics afterward.")
+            .def("ReorderLocalCells", &UnstructuredMesh::ReorderLocalCells, py::arg("nParts") = 1, py::arg("nPartsInner") = 1, py::arg("ghost_layers") = 1)
             .def("ReadSerialize", &UnstructuredMesh::ReadSerialize, py::arg("serializer"), py::arg("name"))
             .def("WriteSerialize", &UnstructuredMesh::WriteSerialize, py::arg("serializer"), py::arg("name"))
             .def("write_native_archive", &UnstructuredMesh::WriteNativeArchive,

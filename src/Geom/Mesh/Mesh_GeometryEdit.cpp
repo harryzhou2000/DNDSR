@@ -153,6 +153,64 @@ namespace DNDS::Geom
         mutation.Commit();
     }
 
+    void UnstructuredMesh::ApplyAffineGeometryTransform(const Eigen::Matrix3d &linear, const tPoint &offset)
+    {
+        CheckCollectiveMutationAvailable(true);
+        Eigen::Matrix3d inverse;
+        FieldTransferDetail::LocalStage(mpi, [&]
+                                        {
+            DNDS_check_throw_info(HasNativeState(), "affine geometry transform requires native mesh authority");
+            DNDS_check_throw_info(linear.allFinite() && offset.allFinite(), "affine geometry transform must be finite");
+            const auto determinant = linear.determinant();
+            DNDS_check_throw_info(std::isfinite(determinant) && determinant > 0,
+                                  "affine geometry transform must be invertible and orientation preserving");
+            inverse = linear.inverse();
+            DNDS_check_throw_info(inverse.allFinite(), "affine geometry inverse is not finite"); });
+        std::array<real, 12> parameters{};
+        std::copy(linear.data(), linear.data() + 9, parameters.begin());
+        std::copy(offset.data(), offset.data() + 3, parameters.begin() + 9);
+        auto expected = parameters;
+        MPI_Bcast(expected.data(), int(expected.size()), MPI_DOUBLE, 0, mpi.comm);
+        const auto stamp = versions.Stamp();
+        std::shared_ptr<const NativeMeshState> prepared;
+        {
+            // Keep source geometry, topology and metadata alive through staging;
+            // publication occurs only after this operation releases its read.
+            std::unique_ptr<MeshReadAccess> sourceRead;
+            FieldTransferDetail::LocalStage(mpi, [&]
+                                            {
+                DNDS_check_throw_info(parameters == expected, "affine geometry transform differs across ranks");
+                sourceRead = std::make_unique<MeshReadAccess>(AcquireRead(_nativeState->Requirements()));
+                const auto view = sourceRead->HostView();
+                auto frame = view.Periodic();
+                for (size_t image = 0; image < frame.rotation.size(); ++image)
+                {
+                    const Eigen::Matrix3d rotation = linear * frame.rotation[image].map() * inverse;
+                    DNDS_check_throw_info(rotation.allFinite() &&
+                                              (!view.IsPeriodic() ||
+                                               ((rotation.transpose() * rotation - Eigen::Matrix3d::Identity()).norm() < 1e-10 &&
+                                                std::abs(rotation.determinant() - 1.0) < 1e-10)),
+                                          "affine geometry transform makes a periodic rotation nonrigid");
+                    frame.rotation[image].map() = rotation;
+                    frame.rotationCenter[image].map() = (linear * frame.rotationCenter[image].map() + offset).eval();
+                    frame.translation[image].map() = (linear * frame.translation[image].map()).eval();
+                }
+                for (size_t image = 0; image < frame.rotation.size(); ++image)
+                    DNDS_check_throw_info(frame.translation[image].map().allFinite() && frame.rotationCenter[image].map().allFinite(),
+                                          "affine geometry frame overflowed");
+                auto coordinates = GeometryRows(view, [&](index node)
+                {
+                    const tPoint point = linear * view.Coord(node) + offset;
+                    DNDS_check_throw_info(point.allFinite(), "affine geometry coordinate overflowed");
+                    return point;
+                });
+                // General affine maps do not preserve nearest-wall directions or
+                // distances. Recompute wall geometry after this publication.
+                prepared = _nativeState->WithGeometry(std::move(coordinates), {}, frame); });
+        }
+        PublishNativeGeometry(std::move(prepared), stamp);
+    }
+
     void UnstructuredMesh::RectifyBoundaryCoordinates(std::function<int(t_index)> componentForZone,
                                                       bool volumeBoundary)
     {

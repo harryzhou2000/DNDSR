@@ -6,24 +6,12 @@ import numpy as np
 
 def get_mesh_2D(meshFile: str, mpi: DNDS.MPIInfo):
 
-    mesh = Geom.UnstructuredMesh(mpi, 2)
-    meshReader = Geom.UnstructuredMeshSerialRW(mesh, 0)
+    from DNDSR.Geom.utils import read_mesh, prepare_mesh
+
     assert os.path.isfile(meshFile)
-    name2ID = meshReader.ReadFromCGNSSerial(meshFile)
-    # print(name2ID.n2id_map)
-    meshReader.Deduplicate1to1Periodic(1e-9)
-    meshReader.BuildCell2Cell()
-    meshReader.MeshPartitionCell2Cell({"metisUfactor": 5})
-    meshReader.PartitionReorderToMeshCell2Cell()
-
-    mesh.RecoverNode2CellAndNode2Bnd()
-    mesh.RecoverCell2CellAndBnd2Cell()
-    mesh.BuildGhostPrimary()
-    mesh.AdjGlobal2LocalPrimary()
-    mesh.InterpolateFace()
-    mesh.AssertOnFaces()
-
-    return mesh, meshReader, name2ID
+    result = read_mesh(meshFile, mpi, 2, partition_options={"metisUfactor": 5})
+    prepare_mesh(result.mesh, result.reader, build_serial_out=False)
+    return result.mesh, result.reader, result.name_to_id
 
 
 def get_mpi4py_comm_from_MPIInfo(mpi: DNDS.MPIInfo):

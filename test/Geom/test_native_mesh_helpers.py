@@ -61,13 +61,14 @@ def test_native_helpers_names_prepare_extract_and_restart(tmp_path):
     assert NAME in names.n2id_map
     assert all(part == names.n2id_map for part in MPI.COMM_WORLD.allgather(names.n2id_map))
     result = read_mesh(path, mpi, 2, native=True, bisect=1)
-    assert result.reader is None
+    assert result.reader is not None and result.reader.mesh is result.mesh
     assert result.mesh.has_native_state
     assert result.mesh.NumCellGlobal() == 4
     assert result.mesh.NumNodeGlobal() == 9
     label = result.name_to_id.n2id_map[NAME]
-    with pytest.raises(ValueError, match="prepare_native_mesh"):
-        prepare_mesh(result.mesh, result.reader)
+    with result.mesh.acquire_read():
+        with pytest.raises(RuntimeError):
+            prepare_mesh(result.mesh, result.reader)
     before = [result.mesh.original_entity_id(Geom.EntityKind.Cell, row) for row in range(result.mesh.NumCell())]
     prepared = prepare_native_mesh(result.mesh, coord_scale=2.0,
         wall_dist_predicate=lambda zone: zone == label,
@@ -77,7 +78,7 @@ def test_native_helpers_names_prepare_extract_and_restart(tmp_path):
     with result.mesh.acquire_read() as source_read:
         for row in range(result.mesh.NumNodeProc()):
             assert np.max(source_read.coord(row)[:2]) <= 1.0
-    assert not Geom.native_mesh_requirements(result.mesh)["faces"]
+    assert Geom.native_mesh_requirements(result.mesh)["faces"]
     assert not Geom.native_mesh_requirements(result.mesh)["wall_distance"]
     assert Geom.native_mesh_requirements(prepared)["wall_distance"]
     # Repeating preparation retains published numbering instead of overwriting
@@ -92,11 +93,12 @@ def test_native_helpers_names_prepare_extract_and_restart(tmp_path):
         for row in range(again.NumBnd()):
             assert read.boundary_info(row).zone == label
     boundary = build_bnd_mesh(again)
-    assert boundary.reader_bnd is None
+    assert boundary.reader_bnd is not None and boundary.reader_bnd.dataIsSerialOut
     assert boundary.mesh_bnd.has_native_state
     assert boundary.mesh_bnd.NumCellGlobal() == 8
-    with pytest.raises(ValueError, match="serial"):
-        build_bnd_mesh(again, build_serial_out=True)
+    explicit_output = build_bnd_mesh(again, build_serial_out=True)
+    assert explicit_output.reader_bnd.dataIsSerialOut
+    assert explicit_output.mesh_bnd.has_native_state
     for kind in ("H5", "JSON"):
         factory = default_serializer_factory()
         config = factory.to_dict()
@@ -106,7 +108,7 @@ def test_native_helpers_names_prepare_extract_and_restart(tmp_path):
         serialize_mesh(again, base, mpi, serializer_factory=factory)
         restored = read_mesh(base + (".dnds.h5" if kind == "H5" else ""), mpi, 2,
             native=True, read_mode="h5", serializer_factory=factory)
-        assert restored.reader is None and restored.name_to_id is None
+        assert restored.reader is not None and restored.name_to_id is None
         assert [restored.mesh.original_entity_id(Geom.EntityKind.Cell, row) for row in range(restored.mesh.NumCell())] == before
         assert Geom.native_mesh_requirements(restored.mesh)["wall_distance"]
         assert restored.mesh.NumFaceGlobal() == 12
@@ -126,7 +128,7 @@ def test_native_partition_prepare_matches_cfv_metrics_and_preserves_source(tmp_p
         partition_options={"metisType": "KWAY", "metisSeed": 11, "metisNcuts": 2, "metisUfactor": 30})
     prepared = prepare_native_mesh(imported.mesh, reorder_parts=1)
     assert result.mesh.NumCellGlobal() == prepared.NumCellGlobal() == 4
-    assert not Geom.native_mesh_requirements(result.mesh)["faces"]
+    assert Geom.native_mesh_requirements(result.mesh)["faces"]
     fv = CFV.FiniteVolume(mpi, prepared)
     fv.ParseSettings({})
     fv.SetCellAtrBasic()
@@ -175,8 +177,7 @@ def test_native_helpers_reject_unsupported_options(tmp_path):
     mpi.setWorld()
     path = _fixture(tmp_path)
     for options in ({"partition_options": {"metisType": "UNKNOWN"}}, {"periodic_geometry": {"unsupported_frame_key": [0, 0, 0]}},
-                    {"periodic_tolerance": 1e-5}, {"elevation": "bad"},
-                    {"elevation": "O2", "bisect": 1}, {"bisect": 5}):
+                    {"elevation": "bad"}, {"elevation": "O2", "bisect": 1}, {"bisect": 5}):
         with pytest.raises((ValueError, RuntimeError)):
             read_mesh(path, mpi, 2, native=True, **options)
     primary = read_mesh(path, mpi, 2, native=True).mesh
@@ -192,7 +193,7 @@ def test_native_helpers_reject_mixed_authority_before_dispatch(tmp_path):
     mpi.setWorld()
     path = _fixture(tmp_path)
     native = read_mesh(path, mpi, 2, native=True).mesh
-    legacy_result = read_mesh(path, mpi, 2)
+    legacy_result = read_mesh(path, mpi, 2, native=False)
     mixed = legacy_result.mesh if mpi.rank == 0 else native
     for operation in (
         lambda: prepare_mesh(mixed, legacy_result.reader, build_serial_out=False),
@@ -228,7 +229,7 @@ def test_native_reader_decodes_legacy_primary_archive_without_legacy_state(tmp_p
     mpi = DNDS.MPIInfo()
     mpi.setWorld()
     path = _fixture(tmp_path)
-    legacy = read_mesh(path, mpi, 2)
+    legacy = read_mesh(path, mpi, 2, native=False)
     before = {}
     with legacy.mesh.acquire_read() as read:
         for cell in range(legacy.mesh.NumCell()):
@@ -238,10 +239,103 @@ def test_native_reader_decodes_legacy_primary_archive_without_legacy_state(tmp_p
     base = MPI.COMM_WORLD.bcast(str(tmp_path / "legacy-primary") if mpi.rank == 0 else None, root=0)
     serialize_mesh(legacy.mesh, base, mpi, serializer_factory=factory)
     restored = read_mesh(base + ".dnds.h5", mpi, 2, native=True, serializer_factory=factory)
-    assert restored.reader is None and restored.name_to_id is None
+    assert restored.reader is not None and restored.name_to_id is None
     assert restored.mesh.has_native_state
     assert not Geom.native_mesh_requirements(restored.mesh)["faces"]
     with restored.mesh.acquire_read() as read:
         for cell in range(restored.mesh.NumCell()):
             original = restored.mesh.original_entity_id(Geom.EntityKind.Cell, cell)
             np.testing.assert_array_equal(np.array([read.coord(int(node)).copy() for node in read.cell_nodes(cell)]), before[original])
+
+
+@pytest.mark.mpi
+def test_default_native_preparation_preserves_mesh_and_serial_adapter_contract(tmp_path):
+    mpi = DNDS.MPIInfo()
+    mpi.setWorld()
+    result = read_mesh(_fixture(tmp_path), mpi, 2)
+    original = result.mesh
+    assert original.has_native_state and result.reader.mesh is original
+    label = result.name_to_id.n2id_map[NAME]
+    prepare_mesh(original, result.reader, coord_scale=2.0,
+        wall_dist_predicate=lambda zone: zone == label)
+    assert result.mesh is original and result.reader.mesh is original
+    assert result.reader.dataIsSerialOut
+    assert original.NumFaceGlobal() == 4
+    with original.acquire_read(faces=True, wall_distance=True) as read:
+        for node in range(original.NumNodeProc()):
+            assert np.max(read.coord(node)[:2]) <= 2.0
+    boundary = build_bnd_mesh(original, build_serial_out=True)
+    assert boundary.mesh_bnd.has_native_state
+    assert boundary.reader_bnd.dataIsSerialOut
+
+
+@pytest.mark.mpi
+def test_default_native_archive_file_faults_reject_collectively_and_retry(tmp_path):
+    mpi = DNDS.MPIInfo()
+    mpi.setWorld()
+    result = read_mesh(_fixture(tmp_path), mpi, 2)
+    prepare_mesh(result.mesh, result.reader, build_serial_out=False)
+    factory = default_serializer_factory()
+    settings = factory.to_dict()
+    settings["type"] = "JSON"
+    factory.from_dict(settings)
+    base = MPI.COMM_WORLD.bcast(str(tmp_path / "guarded-native") if mpi.rank == 0 else None, root=0)
+    serialize_mesh(result.mesh, base, mpi, serializer_factory=factory)
+    file, _ = factory.ModifyFilePath(base, mpi, "part_%d", True)
+    file = Path(file)
+    pristine = file.read_bytes()
+    for fault in ("missing", "malformed"):
+        if mpi.rank == 0:
+            if fault == "missing":
+                file.rename(str(file) + ".backup")
+            else:
+                file.write_text('{ "meshPart": ')
+        MPI.COMM_WORLD.Barrier()
+        try:
+            with pytest.raises(RuntimeError):
+                read_mesh(base, mpi, 2, read_mode="h5", serializer_factory=factory)
+        finally:
+            if mpi.rank == 0:
+                if fault == "missing":
+                    Path(str(file) + ".backup").rename(file)
+                else:
+                    file.write_bytes(pristine)
+            MPI.COMM_WORLD.Barrier()
+        restored = read_mesh(base, mpi, 2, read_mode="h5", serializer_factory=factory)
+        assert restored.mesh.has_native_state
+        assert restored.reader.mesh is restored.mesh
+        assert restored.mesh.NumCellGlobal() == 1
+        assert restored.mesh.NumFaceGlobal() == 4
+        assert result.mesh.has_native_state
+
+
+@pytest.mark.mpi
+def test_native_bisection_and_default_frames_preserve_geometry(tmp_path):
+    mpi = DNDS.MPIInfo()
+    mpi.setWorld()
+    result = read_mesh(_fixture(tmp_path), mpi, 2, bisect=1,
+                       periodic_tolerance=1e-5)
+    assert result.mesh.has_native_state and result.mesh.IsO1()
+    assert result.mesh.NumCellGlobal() == 4
+    assert result.mesh.NumNodeGlobal() == 9
+    centers = []
+    with result.mesh.acquire_read() as read:
+        for cell in range(result.mesh.NumCell()):
+            points = read.cell_coords(cell)
+            centers.append(tuple(np.round(points.mean(axis=0)[:2], 12)))
+    combined = {point for part in MPI.COMM_WORLD.allgather(centers) for point in part}
+    assert combined == {(0.25, 0.25), (0.25, 0.75), (0.75, 0.25), (0.75, 0.75)}
+
+
+@pytest.mark.mpi
+def test_native_preparation_wrong_reader_rejects_on_all_ranks_and_retries(tmp_path):
+    mpi = DNDS.MPIInfo()
+    mpi.setWorld()
+    path = _fixture(tmp_path)
+    first = read_mesh(path, mpi, 2)
+    second = read_mesh(path, mpi, 2)
+    reader = second.reader if mpi.rank == 0 else first.reader
+    with pytest.raises(ValueError, match="same mesh"):
+        prepare_mesh(first.mesh, reader, build_serial_out=False)
+    prepare_mesh(first.mesh, first.reader, build_serial_out=False)
+    assert first.mesh.has_native_state and first.mesh.NumFaceGlobal() == 4

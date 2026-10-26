@@ -321,6 +321,210 @@ TEST_CASE("Native arbitrary coordinate callbacks run on owners and refresh ghost
     }
 }
 
+// Direct native periodic arrays with independent cell and node owners.
+static DNDS::ssp<G::UnstructuredMesh> NativeAffineFixture(const DNDS::MPIInfo &mpi, int dimension)
+{
+    const bool ownsNodes = mpi.rank == mpi.size - 1, ownsCell = mpi.rank == 0;
+    const size_t nodeCount = dimension == 2 ? 2 : 4;
+    auto nodes = G::EntitySpace::CreateOwned(G::EntityKind::Node, mpi, ownsNodes ? I(nodeCount) : 0);
+    auto cells = nodes.CreateSibling(G::EntityKind::Cell, ownsCell ? 1 : 0);
+    auto boundaries = nodes.CreateSibling(G::EntityKind::Bnd, 0);
+    auto rows = [](auto values, bool owns)
+    {
+        using T = typename decltype(values)::value_type;
+        R::RowBuilder result(owns ? 1 : 0, sizeof(T));
+        if (owns)
+        {
+            result.ResizeRow(0, values.size());
+            std::copy(values.begin(), values.end(), result.template Row<T>(0).data);
+        }
+        return R::Array<T>::FromSharedStorage(result.Commit());
+    };
+    std::vector<I> cone = dimension == 2 ? std::vector<I>{0, 0, 1, 1} : std::vector<I>{0, 0, 1, 1, 2, 2, 3, 3};
+    std::vector<G::NodePeriodicBits> bits(cone.size());
+    for (size_t slot = 0; slot < bits.size(); ++slot)
+        bits[slot] = G::NodePeriodicBits{uint8_t(slot % 4 == 1 || slot % 4 == 2)};
+    G::NativeMeshInput input{mpi, dimension, cells, nodes, boundaries, rows(cone, ownsCell), rows(std::vector<I>{}, false),
+                             R::Array<DNDS::real>(R::RowLayout::Dense(size_t(nodes.NumOwned()), 3)),
+                             R::Array<G::ElemInfo>(R::RowLayout::Dense(size_t(cells.NumOwned()), 1)),
+                             R::Array<G::ElemInfo>(R::RowLayout::Dense(0, 1))};
+    input.periodic = true;
+    input.cellNodesPbi = rows(bits, ownsCell);
+    input.boundaryNodesPbi = rows(std::vector<G::NodePeriodicBits>{}, false);
+    input.periodicInfo.rotationCenter[1].map() = G::tPoint{0.2, 0.3, 0.4};
+    {
+        auto write = input.coordinates.Write();
+        for (size_t node = 0; node < input.coordinates.Rows(); ++node)
+        {
+            write.View()(node, 0) = 0;
+            write.View()(node, 1) = DNDS::real(node % 2);
+            write.View()(node, 2) = DNDS::real(node / 2);
+        }
+        if (ownsCell)
+            input.cellInfo.Write().View()(0, 0) = G::ElemInfo{dimension == 2 ? G::Elem::Quad4 : G::Elem::Hex8, G::INTERNAL_ZONE};
+    }
+    auto state = G::NativeMeshBuilder::Build(std::move(input), {1, true});
+    const auto view = state->BorrowHostView();
+    auto pair = [&](bool walls)
+    {
+        R::ArrayPair<DNDS::real> result{R::Array<DNDS::real>(R::RowLayout::Dense(size_t(view.NumNode()), 3)),
+                                        R::Array<DNDS::real>(R::RowLayout::Dense(size_t(view.NumNodeGhost()), 3))};
+        auto owned = result.owned.Write(), ghost = result.ghost.Write();
+        for (I node = 0; node < view.NumNodeProc(); ++node)
+        {
+            const G::tPoint point = walls ? G::tPoint{1, 2, 3} : G::tPoint(view.Coord(node));
+            auto row = node < view.NumNode() ? owned.View()[size_t(node)] : ghost.View()[size_t(node - view.NumNode())];
+            for (size_t component = 0; component < 3; ++component)
+                row[component] = point[component];
+        }
+        return result;
+    };
+    return G::UnstructuredMesh::FromNative(mpi, state->WithGeometry(pair(false), pair(true), view.Periodic()));
+}
+
+TEST_CASE("Native affine geometry maps periodic physical corners and invalidates wall vectors atomically")
+{
+    DNDS::MPIInfo mpi;
+    mpi.setWorld();
+    int dimension = 2;
+    SUBCASE("periodic quadrilateral") {}
+    SUBCASE("periodic hexahedron") { dimension = 3; }
+    auto mesh = NativeAffineFixture(mpi, dimension);
+    const auto state = mesh->CurrentNativeState();
+    const auto nodes = mesh->Entities(G::EntityKind::Node);
+    const auto cells = mesh->Entities(G::EntityKind::Cell);
+    auto old = state->Snapshot(R::Device::Host()).AcquireRead();
+    const auto before = old.HostView();
+    REQUIRE(before.HasNodeWallDist());
+    const auto stamp = mesh->versions.Stamp();
+    Eigen::Matrix3d linear;
+    linear << 2, 0.4, 0, 0, 0.5, 0.2, 0, 0, 1.5;
+    const G::tPoint offset{0.3, -0.2, 0.7};
+    {
+        std::unique_ptr<G::MeshReadAccess> held;
+        if (mpi.rank == 0)
+            held = std::make_unique<G::MeshReadAccess>(mesh->AcquireRead());
+        CHECK_THROWS(mesh->ApplyAffineGeometryTransform(linear, offset));
+    }
+    CHECK(stamp.Valid());
+    for (int invalid = 0; invalid < 3; ++invalid)
+    {
+        Eigen::Matrix3d bad = linear;
+        if (mpi.rank == 0)
+        {
+            if (invalid == 0)
+                bad.col(0).setZero();
+            if (invalid == 1)
+                bad.col(0) *= -1;
+            if (invalid == 2)
+                bad(0, 0) = std::numeric_limits<double>::quiet_NaN();
+        }
+        CHECK_THROWS(mesh->ApplyAffineGeometryTransform(bad, offset));
+        CHECK(stamp.Valid());
+    }
+    G::tPoint badOffset = offset;
+    if (mpi.rank == 0)
+        badOffset[0] = std::numeric_limits<double>::infinity();
+    CHECK_THROWS(mesh->ApplyAffineGeometryTransform(linear, badOffset));
+    if (mpi.size > 1)
+    {
+        G::tPoint different = offset;
+        if (mpi.rank == 0)
+            different[0] += 1;
+        CHECK_THROWS(mesh->ApplyAffineGeometryTransform(linear, different));
+        auto differentLinear = linear;
+        if (mpi.rank == 0)
+            differentLinear(0, 0) += 1;
+        CHECK_THROWS(mesh->ApplyAffineGeometryTransform(differentLinear, offset));
+    }
+    CHECK(stamp.Valid());
+    CHECK(mesh->CurrentNativeState() == state);
+    mesh->ApplyAffineGeometryTransform(linear, offset);
+    CHECK_FALSE(stamp.Valid());
+    CHECK(nodes.SameOrder(mesh->Entities(G::EntityKind::Node)));
+    CHECK(cells.SameOrder(mesh->Entities(G::EntityKind::Cell)));
+    CHECK(mesh->CurrentNativeState()->MeshNamespace() == state->MeshNamespace());
+    CHECK(mesh->CurrentNativeState()->IdHighWater() == state->IdHighWater());
+    CHECK_FALSE(mesh->CurrentNativeRequirements().wallDistance);
+    auto read = mesh->AcquireRead();
+    const auto after = read.HostView();
+    CHECK_FALSE(after.HasNodeWallDist());
+    for (I node = 0; node < after.NumNodeProc(); ++node)
+        CHECK(after.Coord(node).isApprox(linear * before.Coord(node) + offset, 1e-13));
+    const G::tPoint originalCorners[]{{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}, {0, 0, 1}, {1, 0, 1}, {1, 1, 1}, {0, 1, 1}};
+    for (I cell = 0; cell < after.NumCellProc(); ++cell)
+    {
+        CHECK(after.CellNodes(cell).data() == before.CellNodes(cell).data());
+        CHECK(after.CellNodePeriodicBits(cell).data() == before.CellNodePeriodicBits(cell).data());
+        std::vector<G::tPoint> corners;
+        for (DNDS::rowsize slot = 0; slot < (dimension == 2 ? 4 : 8); ++slot)
+        {
+            const auto p = originalCorners[slot];
+            const G::tPoint expected{2 * p[0] + 0.4 * p[1] + 0.3, 0.5 * p[1] + 0.2 * p[2] - 0.2, 1.5 * p[2] + 0.7};
+            CHECK(before.GetCoordNodeOnCell(cell, slot).isApprox(p, 1e-13));
+            corners.push_back(after.GetCoordNodeOnCell(cell, slot));
+            CHECK(corners.back().isApprox(expected, 1e-13));
+        }
+        const G::tPoint u = corners[1] - corners[0], v = corners[3] - corners[0];
+        CHECK(u.cross(v).norm() == doctest::Approx(1));
+        if (dimension == 3)
+        {
+            const G::tPoint w = corners[4] - corners[0];
+            CHECK(u.cross(v).dot(w) == doctest::Approx(1.5));
+            // Hex8 uses [-1,1]^3 reference coordinates.
+            CHECK((u / 2).cross(v / 2).dot(w / 2) == doctest::Approx(1.5 / 8));
+        }
+        else
+            CHECK((u / 2).cross(v / 2).norm() == doctest::Approx(0.25));
+    }
+    for (size_t image = 0; image < before.Periodic().rotation.size(); ++image)
+    {
+        CHECK(after.Periodic().rotation[image].map().isApprox(Eigen::Matrix3d::Identity(), 1e-13));
+        CHECK(after.Periodic().translation[image].map().isApprox(linear * before.Periodic().translation[image].map(), 1e-13));
+        CHECK(after.Periodic().rotationCenter[image].map().isApprox(linear * before.Periodic().rotationCenter[image].map() + offset, 1e-13));
+    }
+    CHECK_FALSE(mesh->coords.father);
+}
+
+TEST_CASE("Native affine geometry rejects nonrigid periodic conjugation before publication")
+{
+    DNDS::MPIInfo mpi;
+    mpi.setWorld();
+    auto mesh = NativeAffineFixture(mpi, 2);
+    const auto state = mesh->CurrentNativeState();
+    auto read = state->Snapshot(R::Device::Host()).AcquireRead();
+    const auto view = read.HostView();
+    auto copy = [&](bool wall)
+    {
+        R::ArrayPair<DNDS::real> result{R::Array<DNDS::real>(R::RowLayout::Dense(size_t(view.NumNode()), 3)),
+                                        R::Array<DNDS::real>(R::RowLayout::Dense(size_t(view.NumNodeGhost()), 3))};
+        auto owned = result.owned.Write(), ghost = result.ghost.Write();
+        for (I row = 0; row < view.NumNodeProc(); ++row)
+        {
+            auto output = row < view.NumNode() ? owned.View()[size_t(row)] : ghost.View()[size_t(row - view.NumNode())];
+            const G::tPoint point = wall ? G::tPoint{1, 2, 3} : G::tPoint(view.Coord(row));
+            for (size_t component = 0; component < 3; ++component)
+                output[component] = point[component];
+        }
+        return result;
+    };
+    // Synthetic proper rotation metadata isolates the conjugation guard;
+    // physical image/measure oracles use the translation-only fixture above.
+    auto frame = view.Periodic();
+    frame.rotation[1].map() = G::RotZ(0.2);
+    auto rotated = G::UnstructuredMesh::FromNative(mpi, state->WithGeometry(copy(false), copy(true), frame));
+    const auto source = rotated->CurrentNativeState();
+    const auto stamp = rotated->versions.Stamp();
+    Eigen::Matrix3d shear = Eigen::Matrix3d::Identity();
+    shear(0, 1) = 0.5;
+    CHECK_THROWS(rotated->ApplyAffineGeometryTransform(shear));
+    CHECK(stamp.Valid());
+    CHECK(rotated->CurrentNativeState() == source);
+    // A proper coordinate rotation conjugates the same periodic frame safely.
+    CHECK_NOTHROW(rotated->ApplyAffineGeometryTransform(G::RotZ(0.3), G::tPoint{1, 2, 3}));
+    CHECK_FALSE(stamp.Valid());
+}
+
 int main(int argc, char **argv)
 {
     MPI_Init(&argc, &argv);

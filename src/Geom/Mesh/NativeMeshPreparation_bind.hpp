@@ -1,6 +1,7 @@
 #pragma once
 #include "NativeMeshPreparation.hpp"
 #include "NativeMeshLegacyArchive.hpp"
+#include "Mesh_Helpers.hpp"
 #include "Mesh.hpp"
 #include "FieldTransfer.hpp"
 #include "DNDS/Defines_bind.hpp"
@@ -9,6 +10,10 @@ namespace DNDS::Geom
 {
     inline void pybind11_NativeMeshPreparation_define(py::module_ &m)
     {
+        m.def("read_native_archive_file", [](const MPIInfo &mpi, Serializer::SerializerFactory factory, const std::string &path, int ghostLayers)
+              {
+            py::gil_scoped_release release;
+            return ReadNativeMeshFromArchive(mpi, std::move(factory), path, false, {}, ghostLayers); }, py::arg("mpi"), py::arg("factory"), py::arg("path"), py::arg("ghost_layers") = 1, "Collectively open, decode and close a native-full or legacy-primary archive; path is the logical factory base path.");
         m.def("read_compatible_native_archive", [](const MPIInfo &mpi, Serializer::SerializerBaseSSP serializer, const std::string &name, Serializer::ArrayGlobalOffset partition, int layers)
               {
             py::gil_scoped_release release;

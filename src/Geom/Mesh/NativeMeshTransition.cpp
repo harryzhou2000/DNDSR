@@ -1,5 +1,6 @@
 #include "NativeMeshTransition.hpp"
 #include "NativeMeshAssembler.hpp"
+#include "NativeMeshTopology.hpp"
 #include "NativeConnectivity.hpp"
 #include "FieldTransfer.hpp"
 #include "Mesh_CellPermutation.hpp"
@@ -74,7 +75,76 @@ namespace DNDS::Geom
     NativeMeshTransitionResult NativeMeshTransition::Build(const NativeMeshState &source, const MPIInfo &mpi,
                                                            const ReorderInput &input, int ghostLayers)
     {
-        return BuildImpl(source, mpi, input, ghostLayers, nullptr);
+        // Reconstruction first removes only the requested native families.
+        // Retained relations, IDs and ancestry then use the normal exact move.
+        // New target IDs begin at the old family's high-water mark.
+        const std::set<EntityKind> requested(input.destroyKinds.begin(), input.destroyKinds.end());
+        std::string reconstruction;
+        FieldTransferDetail::LocalStage(mpi, [&]
+                                        {
+            source.Validate();
+            DNDS_check_throw_info(ghostLayers >= 1,"native transition requires positive closure");
+            for (auto kind : requested)
+            {
+                DNDS_check_throw_info((kind == EntityKind::Face || kind == EntityKind::Edge) && source.HasEntities(kind),
+                                      "only existing native Face or Edge families can be reconstructed");
+                reconstruction += std::to_string(int(kind))+";";
+            }
+            for (const auto &map : input.explicitMaps)
+                DNDS_check_throw_info(!input.destroyKinds.count(map.kind),"cannot place a reconstructed family");
+            for (const auto &follow : input.follows)
+                DNDS_check_throw_info(!input.destroyKinds.count(follow.follower) && !input.destroyKinds.count(follow.leader),
+                                      "cannot follow through a reconstructed family"); });
+        Agree(mpi, reconstruction);
+        if (input.destroyKinds.empty())
+            return BuildImpl(source, mpi, input, ghostLayers, nullptr);
+        auto stripped = NativeMeshAssembler::CaptureOwned(source, mpi);
+        const auto &bindings = Bindings();
+        std::map<EntityKind, index> starts;
+        FieldTransferDetail::LocalStage(mpi, [&]
+                                        {
+            for (auto kind : requested)
+            {
+                starts.emplace(kind,source.NextEntityId(kind));
+                stripped.spaces.erase(kind); stripped.ids.erase(kind); stripped.identity.nextIds.erase(kind);
+                for (size_t slot = 0; slot < stripped.relations.size(); ++slot)
+                    if (bindings[slot].from == kind || bindings[slot].to == kind) stripped.relations[slot].reset();
+                for (auto item = stripped.namedRelations.begin(); item != stripped.namedRelations.end();)
+                {
+                    const auto path = item->first.Path();
+                    if (std::find(path.begin(),path.end(),kind) != path.end()) item = stripped.namedRelations.erase(item);
+                    else ++item;
+                }
+                if (stripped.provenance)
+                {
+                    stripped.provenance->sourceIds.erase(kind); stripped.provenance->sourceKinds.erase(kind);
+                    if (stripped.provenance->sourceIds.empty()) stripped.provenance.reset();
+                }
+                if (kind == EntityKind::Face)
+                {
+                    stripped.faceInfo.reset(); stripped.cellFacesPbi.reset(); stripped.faceNodesPbi.reset();
+                    stripped.relations[size_t(MeshRelation::CellFaceCells)].reset();
+                    stripped.requirements.faces = stripped.requirements.cellFaceNeighbors = stripped.requirements.allFaceCellsLocal = false;
+                }
+                else
+                {
+                    stripped.edgeInfo.reset(); stripped.cellEdgesPbi.reset(); stripped.edgeNodesPbi.reset();
+                    stripped.requirements.edges = false;
+                }
+            } });
+        auto native = NativeMeshAssembler::Build(mpi, std::move(stripped), ghostLayers);
+        auto retained = input;
+        retained.destroyKinds.clear();
+        auto result = BuildImpl(*native, mpi, retained, ghostLayers, nullptr);
+        // Field source associations are the original publication, not the
+        // temporary owned-family projection with equivalent numbering.
+        FieldTransferDetail::LocalStage(mpi, [&]
+                                        {
+            result.sourceSpaces.clear();
+            for (const auto &[kind,family] : source._spaces) result.sourceSpaces.emplace(kind,family.identity); });
+        result.state = NativeMeshTopology::Build(*result.state, mpi, input.destroyKinds.count(EntityKind::Face),
+                                                 input.destroyKinds.count(EntityKind::Edge), ghostLayers, starts);
+        return result;
     }
 
     NativeMeshTransitionResult NativeMeshTransition::ReorderLocalCells(const NativeMeshState &source, const MPIInfo &mpi,

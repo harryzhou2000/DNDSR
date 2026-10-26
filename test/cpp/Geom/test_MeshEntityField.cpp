@@ -1,5 +1,6 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
+#include "MeshFacadeOverlapFixture.hpp"
 #include "Geom/Mesh/EntityField.hpp"
 #include "Geom/Mesh/MeshTransition.hpp"
 #include <filesystem>
@@ -110,24 +111,7 @@ TEST_CASE("Entity-bound fields reject wrong domain/kind and retain field/mesh le
 
 static ssp<UnstructuredMesh> EntityFieldMesh(const MPIInfo &mpi)
 {
-    auto mesh = make_ssp<UnstructuredMesh>(mpi, 2);
-    auto root = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path();
-    UnstructuredMeshSerialRW reader(mesh, 0);
-    reader.ReadFromCGNSSerial((root / "data/mesh/UniformSquare_10.cgns").string());
-    reader.BuildCell2Cell();
-    UnstructuredMeshSerialRW::PartitionOptions options;
-    options.metisType = "KWAY";
-    options.metisSeed = 42;
-    options.metisNcuts = 1;
-    reader.MeshPartitionCell2Cell(options);
-    reader.PartitionReorderToMeshCell2Cell();
-    mesh->RecoverNode2CellAndNode2Bnd();
-    mesh->RecoverCell2CellAndBnd2Cell();
-    mesh->BuildGhostPrimary();
-    mesh->AdjGlobal2LocalPrimary();
-    mesh->InterpolateFace();
-    mesh->PublishNative(MeshReadRequirements::CellFlux());
-    return mesh;
+    return OverlapTest::BuildNativeFixture(mpi).mesh;
 }
 
 TEST_CASE("Detached publication binds active and inactive fields to final native destination and rejects old routes")

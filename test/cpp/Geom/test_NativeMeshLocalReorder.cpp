@@ -1,5 +1,6 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
+#include "LegacyMeshFixtureCodec.hpp"
 #include "Geom/Mesh/NativeMeshBuilder.hpp"
 #include "Geom/Mesh/NativeMeshTopology.hpp"
 #include "Geom/Mesh/NativeMeshTransition.hpp"
@@ -248,7 +249,7 @@ TEST_CASE("Native local reorder shares permutation semantics and preserves curre
             CAPTURE(parts.second);
             auto source = Fixture(mpi, empty);
             auto facade = G::UnstructuredMesh::FromNative(mpi, source);
-            auto legacy = G::CloneCurrentMeshForSetup(*facade, 1, G::TransitionCachePolicy::Invalidate);
+            auto legacy = G::TestFixtureCodec::DecodeLegacy(*facade);
             auto graph = legacy->GetCell2CellFaceVLocal();
             G::detail::CellPermutationResult expected;
             if (legacy->NumCell())

@@ -48,7 +48,8 @@ def test_native_solver_setup_evaluator_rhs_matches_legacy():
     legacy, expected = _evaluate(mpi, False)
     native, actual = _evaluate(mpi, True)
     assert native.mesh.has_native_state and native.meshBnd.has_native_state
-    assert native.reader is None and native.readerBnd is None
+    assert native.reader.mesh is native.mesh and native.reader.dataIsSerialOut
+    assert native.readerBnd.mesh is native.meshBnd and native.readerBnd.dataIsSerialOut
     assert not legacy.mesh.has_native_state
     assert native.name2Id.n2id_map == legacy.name2Id.n2id_map
     assert set(actual) == set(expected) and len(actual) == 1024
