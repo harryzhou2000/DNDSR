@@ -10,7 +10,7 @@
 namespace G = DNDS::Geom;
 namespace R = DNDS::Runtime;
 
-TEST_CASE("Staged current-authority geometry edits publish owned and ghost coordinates safely")
+TEST_CASE("Explicitly imported legacy geometry edits isolate detached workspace aliases")
 {
     DNDS::MPIInfo mpi;
     mpi.setWorld();
@@ -78,10 +78,12 @@ TEST_CASE("Staged metadata and neighbor-order edits validate before publication"
 {
     DNDS::MPIInfo mpi;
     mpi.setWorld();
-    auto fixture = G::OverlapTest::BuildFixture(mpi);
+    auto fixture = G::OverlapTest::BuildNativeFixture(mpi);
     auto mesh = fixture.mesh;
     const auto oldInfo = mesh->GetCellInfo(0);
-    CHECK_FALSE(mesh->node2cell.isLocal()); // Prepared legacy inverse setup is global.
+    CHECK(mesh->HasNativeState());
+    CHECK_FALSE(mesh->node2cell.father);
+    CHECK_FALSE(mesh->coords.father);
     {
         auto edit = G::MeshEdit::Begin(mesh);
         auto invalid = edit.CellInfo(0);
@@ -160,13 +162,15 @@ TEST_CASE("Staged metadata and neighbor-order edits validate before publication"
     CHECK(mesh->versions.CanMutate());
     auto read = mesh->AcquireRead(G::MeshReadRequirements::CellFlux());
     CHECK(read.HostView().GetCellInfo(0).zone == 54321);
+    CHECK_FALSE(mesh->coords.father);
+    CHECK_FALSE(mesh->cell2node.father);
 }
 
 TEST_CASE("Uncommitted scopes discard copies and active reads block edit publication")
 {
     DNDS::MPIInfo mpi;
     mpi.setWorld();
-    auto fixture = G::OverlapTest::BuildFixture(mpi);
+    auto fixture = G::OverlapTest::BuildNativeFixture(mpi);
     auto mesh = fixture.mesh;
     const G::tPoint before = mesh->Coord(0);
     {
@@ -194,6 +198,35 @@ TEST_CASE("Uncommitted scopes discard copies and active reads block edit publica
         CHECK(retained.HostView().Coord(0).isApprox(before));
     }
     CHECK(mesh->versions.CanMutate());
+}
+
+TEST_CASE("Mesh edits require explicit native authority and recover after collective rejection")
+{
+    const DNDS::MPIInfo mpi(MPI_COMM_WORLD);
+    auto fixture = G::OverlapTest::BuildFixture(mpi);
+    auto legacy = fixture.mesh;
+    const auto stamp = legacy->versions.Stamp();
+    const auto point = legacy->Coord(0);
+    CHECK_THROWS(G::MeshEdit::Begin(legacy));
+    CHECK(stamp.Valid());
+    CHECK(legacy->versions.CanMutate());
+    CHECK(legacy->Coord(0).isApprox(point));
+    auto native = G::OverlapTest::BuildNativeFixture(mpi).mesh;
+    if (mpi.size > 1)
+    {
+        auto mixed = mpi.rank == 0 ? legacy : native;
+        CHECK_THROWS(G::MeshEdit::Begin(mixed));
+        CHECK(mixed->versions.CanMutate());
+    }
+    legacy->PublishNative(G::MeshReadRequirements::CellFlux());
+    CHECK_THROWS(G::MeshEdit::Begin(legacy, mpi.rank == 0 ? 0 : 1));
+    auto edit = G::MeshEdit::Begin(legacy);
+    const auto original = edit.Coord(0);
+    edit.SetCoord(0, original);
+    edit.Commit();
+    CHECK(legacy->Coord(0).isApprox(point));
+    CHECK(native->HasNativeState());
+    CHECK_FALSE(native->coords.father);
 }
 
 TEST_CASE("Native-only edits preserve namespace IDs named definitions and immutable source buffers")

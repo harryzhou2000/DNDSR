@@ -1,17 +1,26 @@
 """Staged owned mesh edits; rebuild/install bindings before execution."""
 
 import gc
+from pathlib import Path
 
 import numpy as np
 import pytest
 
-from DNDSR import Geom
-from test_mesh_facade import _build_mesh
+from DNDSR import DNDS, Geom
+from DNDSR.Geom.utils import read_mesh, prepare_native_mesh
+
+
+def _build_mesh():
+    mpi = DNDS.MPIInfo()
+    mpi.setWorld()
+    source = Path(__file__).resolve().parents[2] / "data/mesh/UniformSquare_10.cgns"
+    mesh = prepare_native_mesh(read_mesh(str(source), mpi, 2, native=True).mesh)
+    assert mesh.has_native_state
+    return mesh
 
 
 def test_current_authority_geometry_and_escaped_copies():
     mesh = _build_mesh()
-    mesh.publish_native(faces=True)
     with mesh.acquire_read() as read:
         before = read.coordinates()
     snapshot = mesh.snapshot()

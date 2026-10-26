@@ -101,15 +101,19 @@ def test_overset_travelling_geometry_uses_current_query_authority(mpi, monkeypat
     legacy_field = _cell_field(mpi, legacy_cells)
     helpers._borrow_cell_field_indexing(legacy_field, mesh)
     legacy_values = _fill_and_pull(legacy_field, legacy_cells)
+    legacy_coords = mesh.coords
+    legacy_cell_nodes = mesh.cell2node
+    legacy_boundaries = mesh.bnd2node
+    legacy_boundary_info = mesh.bndElemInfo
     mesh.publish_native(faces=True)
     # These are intentional raw compatibility edits, not managed mutations.
     for node in range(mesh.NumNodeProc()):
-        np.asarray(mesh.coords[node])[:] = 73
+        np.asarray(legacy_coords[node])[:] = 73
     for cell in range(mesh.NumCellProc()):
-        np.asarray(mesh.cell2node[cell])[:] = DNDS.UnInitIndex
+        np.asarray(legacy_cell_nodes[cell])[:] = DNDS.UnInitIndex
     for boundary in range(mesh.NumBndProc()):
-        np.asarray(mesh.bnd2node[boundary])[:] = DNDS.UnInitIndex
-        mesh.bndElemInfo[boundary, 0].zone = 999
+        np.asarray(legacy_boundaries[boundary])[:] = DNDS.UnInitIndex
+        legacy_boundary_info[boundary, 0].zone = 999
     after = sample()
     for expected_items, actual_items in zip(before, after):
         assert len(actual_items) == len(expected_items)
@@ -117,8 +121,8 @@ def test_overset_travelling_geometry_uses_current_query_authority(mpi, monkeypat
             assert actual[:4] == expected[:4]
             np.testing.assert_allclose(actual[4], expected[4])
     native_cells = mesh.entities(Geom.EntityKind.Cell)
-    mesh.cell2node.trans.LGhostMapping = None
-    mesh.cell2node.trans.LGlobalMapping = None
+    legacy_cell_nodes.trans.LGhostMapping = None
+    legacy_cell_nodes.trans.LGlobalMapping = None
     field = _cell_field(mpi, native_cells)
     helpers._borrow_cell_field_indexing(field, mesh)
     native_values = _fill_and_pull(field, native_cells)
