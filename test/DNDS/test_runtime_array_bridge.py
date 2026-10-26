@@ -19,6 +19,129 @@ if importlib.util.find_spec("runtime_array_bridge_test") is None:
 import runtime_array_bridge_test as bridge
 
 
+@pytest.mark.parametrize("backend", ["h5", "json"])
+def test_registered_pod_byte_fields_keep_byte_semantics_in_dtype_and_io(backend):
+    comm = MPI.COMM_WORLD
+    mpi = DNDS.MPIInfo()
+    mpi.setWorld()
+    values = bridge.byte_metadata()
+    assert values.numpy()["payload"].tobytes() == b"xyz"
+    assert values.element_schema().word_fields == [
+        ("payload", 0, "byte", 3), ("tag", 4, "int32", 1)]
+    values.element(0, 0).tag = 234 + comm.rank
+    halo = R.Array(R.RowLayout.dense(1, 1), bridge.ByteMetadata)
+    route = R.RowTransferPlan(mpi, 1, 1, [R.RowRequest((comm.rank + 1) % comm.size, 0, 0)])
+    R.PayloadPlan(route, values.layout, halo.layout, values.element_schema()).bind(values, halo).begin().wait()
+    assert halo[0, 0].tag == 234 + (comm.rank + 1) % comm.size
+    assert halo.numpy()["payload"].tobytes() == b"xyz"
+    base = comm.bcast(f"/tmp/dnds_byte_pod_{os.getpid()}" if comm.rank == 0 else None)
+    name = base + (f"_{comm.rank}.json" if backend == "json" else ".h5")
+    serializer = DNDS.Serializer.SerializerJSON() if backend == "json" else DNDS.Serializer.SerializerH5(mpi)
+    serializer.OpenFile(name, False)
+    values.write_serializer(serializer, "field", mpi)
+    serializer.CloseFile()
+    serializer.OpenFile(name, True)
+    restored = R.Array.read_serializer(serializer, "field", mpi, dtype=bridge.ByteMetadata)
+    serializer.CloseFile()
+    assert restored[0, 0].tag == 234 + comm.rank
+    assert restored.numpy()["payload"].tobytes() == b"xyz"
+    comm.Barrier()
+    if backend == "json" or comm.rank == 0:
+        os.remove(name)
+
+
+def test_registered_numpy_record_retains_native_alignment_and_schema_across_io():
+    mpi = DNDS.MPIInfo()
+    mpi.setWorld()
+    comm = MPI.COMM_WORLD
+    source = R.Array(R.RowLayout.dense(2, 2, 3), bridge.metadata_dtype)
+    schema = bridge.native_metadata_schema()
+    assert source.element_schema().shares_definition(schema)
+    for row in range(2):
+        for column in range(2):
+            source[row, column] = (comm.rank * 100 + row * 10 + column, row + column / 4)
+    name = comm.bcast(f"/tmp/dnds_structured_schema_{os.getpid()}.h5" if comm.rank == 0 else None)
+    serializer = DNDS.Serializer.SerializerH5(mpi)
+    serializer.OpenFile(name, False)
+    bridge.write_metadata_field(source, serializer, "from_native", mpi)
+    source.write_serializer(serializer, "from_python", mpi)
+    serializer.CloseFile()
+    serializer.OpenFile(name, True)
+    a = R.Array.read_serializer(serializer, "from_native", mpi, dtype=bridge.metadata_dtype)
+    b = bridge.read_metadata_field(serializer, "from_python", mpi)
+    serializer.CloseFile()
+    assert a.element_schema().shares_definition(schema)
+    assert b.element_schema().shares_definition(schema)
+    np.testing.assert_array_equal(a.numpy(), source.numpy())
+    np.testing.assert_array_equal(b.numpy(), source.numpy())
+    comm.Barrier()
+    if comm.rank == 0:
+        os.remove(name)
+
+
+@pytest.mark.parametrize("backend", ["h5", "json"])
+@pytest.mark.parametrize("native_writer", [False, True])
+def test_one_pod_schema_spans_native_python_mpi_and_direct_io(backend, native_writer):
+    comm = MPI.COMM_WORLD
+    mpi = DNDS.MPIInfo()
+    mpi.setWorld()
+    rows = 3 + comm.rank if comm.size == 1 or comm.rank + 1 < comm.size else 0
+    source = R.Array(R.RowLayout.dense(rows, 2, 5), bridge.ClassMetadata)
+    native = bridge.native_class_schema()
+    schema = source.element_schema()
+    assert schema.shares_definition(native)
+    assert schema.definition == native.definition
+    assert schema.identity == "test.ClassMetadata.v1"
+    assert schema.can_swap_words
+    assert [(word[0], word[2], word[3]) for word in schema.word_fields] == [
+        ("tag", "int64", 1), ("weight", "float64", 1)]
+    for row in range(rows):
+        for column in range(2):
+            value = bridge.ClassMetadata()
+            value.tag = (1 << 60) + comm.rank * 1000 + row * 10 + column
+            value.weight = comm.rank * 100 + row + column / 8
+            source[row, column] = value
+
+    # This exact descriptor supplies MPI's numeric typemap as well as the
+    # field schema used by both language frontends for the checkpoint.
+    route = R.RowTransferPlan(mpi, rows, 1, [R.RowRequest(0, 0, 0)])
+    halo = R.Array(route.destination_layout(source.layout), bridge.ClassMetadata)
+    R.PayloadPlan(route, source.layout, halo.layout, native).bind(source, halo).begin().wait()
+    assert halo[0, 1].tag == (1 << 60) + 1
+
+    base = comm.bcast(f"/tmp/dnds_one_schema_{os.getpid()}_{backend}_{native_writer}" if comm.rank == 0 else None)
+    name = base + (f"_rank{comm.rank}.json" if backend == "json" else ".h5")
+    serializer = DNDS.Serializer.SerializerJSON() if backend == "json" else DNDS.Serializer.SerializerH5(mpi)
+    serializer.OpenFile(name, False)
+    with pytest.raises(RuntimeError, match="registration|identity"):
+        source.write_serializer(serializer, "bad", mpi, schema="unregistered.relabel")
+    if native_writer:
+        bridge.write_class_field(source, serializer, "field", mpi)
+    else:
+        source.write_serializer(serializer, "field", mpi)
+    serializer.CloseFile()
+    serializer.OpenFile(name, True)
+    restored = (R.Array.read_serializer(serializer, "field", mpi, dtype=bridge.ClassMetadata)
+                if native_writer else bridge.read_class_field(serializer, "field", mpi))
+    serializer.GoToPath("field")
+    contents = serializer.ListCurrentPath()
+    assert "row_offsets" not in contents and "rows" not in contents
+    assert "row_width" in contents and "element_definition" in contents
+    serializer.GoToPath("/")
+    assert "runtime_array_byte_order" in serializer.ListCurrentPath()
+    serializer.CloseFile()
+    assert restored.shape == (rows, 2)
+    assert restored.layout.stride == 2
+    assert restored.element_schema().shares_definition(native)
+    for row in range(rows):
+        for column in range(2):
+            assert restored[row, column].tag == source[row, column].tag
+            assert restored[row, column].weight == source[row, column].weight
+    comm.Barrier()
+    if backend == "json" or comm.rank == 0:
+        os.remove(name)
+
+
 @pytest.mark.parametrize("mixed", [False, True])
 def test_registered_schema_rejects_untyped_same_size_storage_collectively(mixed):
     mpi = DNDS.MPIInfo()
@@ -399,10 +522,13 @@ def test_class_pod_transfer_and_checkpoint(device):
     name = comm.bcast(f"/tmp/dnds_class_pod_{os.getpid()}.h5" if comm.rank == 0 else None)
     serializer = DNDS.Serializer.SerializerH5(mpi)
     serializer.OpenFile(name, False)
-    b.write_serializer(serializer, "class_field", mpi)
+    if device.space == R.MemorySpace.CUDA:
+        with pytest.raises(RuntimeError, match="staging|device"):
+            b.write_serializer(serializer, "class_field", mpi)
+    b.to(R.Device.host()).write_serializer(serializer, "class_field", mpi)
     serializer.CloseFile()
     serializer.OpenFile(name, True)
-    c = R.Array.read_serializer(serializer, "class_field", mpi, dtype=bridge.ClassMetadata, device=device)
+    c = R.Array.read_serializer(serializer, "class_field", mpi, dtype=bridge.ClassMetadata).to(device)
     serializer.CloseFile()
     assert c.element_type is bridge.ClassMetadata
     assert bridge.roundtrip_class_metadata(c)[1, 1].tag == comm.rank + 100

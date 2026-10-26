@@ -356,16 +356,12 @@ namespace DNDS::Geom
         { if (values) destination = Ghost(*values, kind, publication, schema); };
         companion(data.coords, owned.coords, EntityKind::Node, Runtime::ElementSchema::Arithmetic<real>());
         companion(data.nodeWallDist, owned.nodeWallDist, EntityKind::Node, Runtime::ElementSchema::Arithmetic<real>());
-        MPI_Datatype elementType;
-        MPI_Type_contiguous(ElemInfo::CommMult(), ElemInfo::CommType(), &elementType);
-        MPI_Type_commit(&elementType);
-        Runtime::ElementSchema elementSchema(elementType, sizeof(ElemInfo), "Geom.ElemInfo.v1", Runtime::ElementSchema::TypeIdentity<ElemInfo>());
-        MPI_Type_free(&elementType);
+        const auto elementSchema = Runtime::ElementSchema::For<ElemInfo>();
         companion(data.cellInfo, owned.cellInfo, EntityKind::Cell, elementSchema);
         companion(data.bndInfo, owned.bndInfo, EntityKind::Bnd, elementSchema);
         companion(data.faceInfo, owned.faceInfo, EntityKind::Face, elementSchema);
         companion(data.edgeInfo, owned.edgeInfo, EntityKind::Edge, elementSchema);
-        Runtime::ElementSchema bits(NodePeriodicBits::CommType(), sizeof(NodePeriodicBits), "Geom.NodePeriodicBits", Runtime::ElementSchema::TypeIdentity<NodePeriodicBits>());
+        const auto bits = Runtime::ElementSchema::For<NodePeriodicBits>();
         companion(data.cellNodesPbi, owned.cellNodesPbi, EntityKind::Cell, bits);
         companion(data.bndNodesPbi, owned.bndNodesPbi, EntityKind::Bnd, bits);
         companion(data.cellFacesPbi, owned.cellFacesPbi, EntityKind::Cell, bits);

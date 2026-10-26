@@ -144,12 +144,20 @@ completed before synchronous indexing or NumPy snapshots. NumPy results and POD
 class-value reads are copies. Mutate through a write lease, tracked slice assignment
 or element proxy; changing a returned snapshot does not change the Array.
 
-The Array I/O adapter uses the existing Serializer, stages CUDA snapshots on host,
-and serializes logical rows without padding. Complete asynchronous producers first.
+The native Array I/O adapter uses the existing Serializer and transfers logical
+rows directly from/to the retained host allocation without a payload-sized
+packing buffer. Device buffers are rejected until a direct I/O backend exists;
+an application can explicitly make a host checkpoint copy outside the adapter.
+Complete asynchronous producers first.
 Parallel serializers require matching dataset/schema call order; per-rank
-serializers are independent. Use stable explicit POD schema names and compatible
-ABI bytes. Reopen the reader when selecting a different partition slice of a cached
-dataset. Checkpoint the mesh IDs, state time level and all related fields together
+serializers are independent. Register POD scalar fields once with ElementSchema,
+which also supplies MPI and Python's element description. I/O schema strings may
+only confirm that identity. The file-wide byte-order flag controls in-place
+scalar-word reversal; registered native layout/extent must still agree. Padding
+inside objects is native ABI data and is not byte-swapped. Dynamic file row sizes
+must satisfy the requested table/padded/CSR policy; no static type-name matching
+is used. Reopen v2 readers for another slice of cached row-start metadata.
+Checkpoint the mesh IDs, state time level and all related fields together
 at the application level; individual Array writes are not an atomic restart.
 
 ## What tests establish

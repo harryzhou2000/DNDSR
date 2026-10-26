@@ -5,6 +5,7 @@
 #include <zlib.h>
 #include <fmt/core.h>
 #include <set>
+#include <climits>
 
 namespace DNDS::Serializer
 {
@@ -43,6 +44,8 @@ namespace DNDS::Serializer
 
         if (reading)
             fileStream >> jObj;
+        else
+            jObj = nlohmann::json::object();
         cP = "";
     }
     void SerializerJSON::CloseFile()
@@ -90,7 +93,7 @@ namespace DNDS::Serializer
     std::set<std::string> SerializerJSON::ListCurrentPath()
     {
         auto cPointer = nlohmann::json::json_pointer(cP);
-        auto v = jObj[cPointer];
+        const auto &v = jObj[cPointer];
         DNDS_assert_info(v.is_object(), fmt::format("current path is not an object " + cP));
         std::set<std::string> ret;
         for (const auto &[key, value] : v.items())
@@ -295,6 +298,129 @@ namespace DNDS::Serializer
         }
         offset = ArrayGlobalOffset_Unknown;
     }
+    void SerializerJSON::WriteByteSegments(const std::string &name, const uint8_t *data, index memoryBytes,
+                                           const std::vector<ByteMemorySegment> &segments, ArrayGlobalOffset offset)
+    {
+        const auto total = ValidateByteSegments(data, memoryBytes, segments);
+        DNDS_check_throw_info(!reading && offset == ArrayGlobalOffset_Unknown,
+                              "JSON byte segments require a writable per-rank record");
+        // The DOM is the encoding buffer. Do not concatenate rows into another
+        // byte vector or invoke the legacy whole-buffer compression path.
+        auto &stored = jObj[nlohmann::json::json_pointer(cP)][name];
+        stored = nlohmann::json::array();
+        auto &values = stored.get_ref<nlohmann::json::array_t &>();
+        values.reserve(size_t(total));
+        for (const auto &segment : segments)
+            for (index byte = 0; byte < segment.size; ++byte)
+                values.emplace_back(data[segment.offset + byte]);
+    }
+
+    index SerializerJSON::IndexVectorSize(const std::string &name)
+    {
+        const auto &value = jObj.at(nlohmann::json::json_pointer(cP)).at(name);
+        DNDS_check_throw_info(value.is_array() && value.size() <= size_t(INT64_MAX), "invalid index metadata extent");
+        return index(value.size());
+    }
+
+    void SerializerJSON::ReadByteSegments(const std::string &name, uint8_t *data, index memoryBytes,
+                                          const std::vector<ByteMemorySegment> &segments, ArrayGlobalOffset &offset)
+    {
+        const auto total = ValidateByteSegments(data, memoryBytes, segments);
+        DNDS_check_throw_info(reading && offset == ArrayGlobalOffset_Unknown,
+                              "JSON byte segments require a readable per-rank record");
+        const auto &stored = jObj.at(nlohmann::json::json_pointer(cP)).at(name);
+        if (stored.is_object())
+        {
+            // Version-2 checkpoints used a base64/zlib object. Decode its
+            // compressed input a base64 word at a time and inflate directly
+            // into the final selected rows: no payload-sized decode buffers.
+            DNDS_check_throw_info(stored.contains("size") && stored.at("size").is_number_integer() &&
+                                      stored.at("size").get<index>() == total && stored.contains("encoded") && stored.at("encoded").is_string(),
+                                  "invalid legacy JSON byte encoding");
+            const auto &encoded = stored.at("encoded").get_ref<const nlohmann::json::string_t &>();
+            DNDS_check_throw_info(encoded.size() % 4 == 0, "invalid legacy base64 length");
+            auto digit = [](char c) -> int
+            {
+                if (c >= 'A' && c <= 'Z')
+                    return c - 'A';
+                if (c >= 'a' && c <= 'z')
+                    return c - 'a' + 26;
+                if (c >= '0' && c <= '9')
+                    return c - '0' + 52;
+                if (c == '+')
+                    return 62;
+                if (c == '/')
+                    return 63;
+                return -1;
+            };
+            z_stream stream{};
+            DNDS_check_throw_info(inflateInit(&stream) == Z_OK, "legacy JSON inflate initialization failed");
+            struct EndInflate
+            {
+                z_stream *stream;
+                ~EndInflate() { inflateEnd(stream); }
+            } end{&stream};
+            size_t segment = 0;
+            index used = 0, written = 0;
+            bool finished = false;
+            uint8_t overflow{};
+            for (size_t input = 0; input < encoded.size(); input += 4)
+            {
+                const bool last = input + 4 == encoded.size();
+                const int a = digit(encoded[input]), b = digit(encoded[input + 1]);
+                const bool pad2 = encoded[input + 2] == '=', pad3 = encoded[input + 3] == '=';
+                const int c = pad2 ? 0 : digit(encoded[input + 2]), d = pad3 ? 0 : digit(encoded[input + 3]);
+                DNDS_check_throw_info(a >= 0 && b >= 0 && c >= 0 && d >= 0 && (!pad2 || pad3) &&
+                                          (!(pad2 || pad3) || last) && (!pad2 || (b & 15) == 0) && (!pad3 || pad2 || (c & 3) == 0) && !finished,
+                                      "invalid or trailing legacy base64 input");
+                const uint32_t word = (uint32_t(a) << 18) | (uint32_t(b) << 12) | (uint32_t(c) << 6) | uint32_t(d);
+                uint8_t compressed[3]{uint8_t(word >> 16), uint8_t(word >> 8), uint8_t(word)};
+                stream.next_in = compressed;
+                stream.avail_in = pad2 ? 1 : pad3 ? 2
+                                                  : 3;
+                do
+                {
+                    while (segment < segments.size() && used == segments[segment].size)
+                    {
+                        ++segment;
+                        used = 0;
+                    }
+                    const bool hasOutput = segment < segments.size();
+                    const auto capacity = hasOutput ? uInt(std::min<index>(segments[segment].size - used, UINT_MAX)) : uInt(1);
+                    stream.next_out = hasOutput ? data + segments[segment].offset + used : &overflow;
+                    stream.avail_out = capacity;
+                    const auto before = stream.avail_in;
+                    const int result = inflate(&stream, Z_NO_FLUSH);
+                    const auto produced = capacity - stream.avail_out;
+                    if (result == Z_BUF_ERROR && stream.avail_in == 0 && produced == 0)
+                        break;
+                    DNDS_check_throw_info((result == Z_OK || result == Z_STREAM_END) && (hasOutput || produced == 0),
+                                          "legacy JSON inflate failed or expanded beyond its declared size");
+                    used += produced;
+                    written += produced;
+                    finished = result == Z_STREAM_END;
+                    DNDS_check_throw_info(!finished || (last && stream.avail_in == 0 && written == total),
+                                          "legacy JSON compressed payload has trailing data or wrong size");
+                    DNDS_check_throw_info(finished || produced || stream.avail_in != before, "legacy JSON inflate made no progress");
+                } while ((stream.avail_in || stream.avail_out == 0) && !finished);
+            }
+            DNDS_check_throw_info(finished && written == total, "truncated legacy JSON compressed payload");
+            return;
+        }
+        DNDS_check_throw_info(stored.is_array() && stored.size() == size_t(total),
+                              "JSON byte segment payload has an incompatible encoding or size");
+        // Validate the entire encoding before modifying caller memory.
+        for (const auto &value : stored)
+            DNDS_check_throw_info(value.is_number_integer() &&
+                                      (value.is_number_unsigned() ? value.get<uint64_t>() <= 255
+                                                                  : value.get<int64_t>() >= 0 && value.get<int64_t>() <= 255),
+                                  "JSON byte segment payload contains an invalid byte");
+        size_t source = 0;
+        for (const auto &segment : segments)
+            for (index byte = 0; byte < segment.size; ++byte)
+                data[segment.offset + byte] = stored[source++].get<uint8_t>();
+    }
+
     void SerializerJSON::WriteUint8Array(const std::string &name, const uint8_t *data, index size, ArrayGlobalOffset offset)
     {
         auto zlibCompressedSize = [&](index sizeC)

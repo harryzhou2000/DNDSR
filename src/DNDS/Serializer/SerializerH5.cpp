@@ -845,6 +845,15 @@ namespace DNDS::Serializer
         herr = H5Gclose(group_id), H5CHECK_Close;
     }
 
+    index SerializerH5::IndexVectorSize(const std::string &name)
+    {
+        size_t size = 0;
+        auto offset = ArrayGlobalOffset_One;
+        ReadDataVector<index>(name, nullptr, size, offset, h5file, reading, cP, mpi, collectiveMetadataRW, collectiveDataRW);
+        RowStartCheck(size <= size_t(INT64_MAX), "index metadata extent exceeds native Array range");
+        return index(size);
+    }
+
     void SerializerH5::ReadIndexVector(const std::string &name, std::vector<index> &v, ArrayGlobalOffset &offset)
     {
         size_t size{0};
@@ -993,6 +1002,155 @@ namespace DNDS::Serializer
         }
         v = found->second.local;
         return found->second.data;
+    }
+
+    namespace
+    {
+        struct ByteH5Handle
+        {
+            hid_t value;
+            herr_t (*close)(hid_t);
+            ~ByteH5Handle()
+            {
+                if (value >= 0)
+                    close(value);
+            }
+        };
+
+        // File bytes are contiguous; the HDF5 memory selection visits only the
+        // logical intervals in increasing address order, omitting row padding.
+        // Even empty ranks enter exactly one dataset payload operation.
+        void TransferByteSegments(hid_t dataset, bool read, const void *data, index memoryBytes,
+                                  const std::vector<ByteMemorySegment> &segments,
+                                  index fileOffset, index count, hid_t transfer)
+        {
+            ByteH5Handle fileSpace{H5Dget_space(dataset), H5Sclose};
+            const hsize_t memoryExtent = hsize_t(std::max<index>(memoryBytes, 1));
+            ByteH5Handle memorySpace{H5Screate_simple(1, &memoryExtent, nullptr), H5Sclose};
+            DNDS_assert_info(fileSpace.value >= 0 && memorySpace.value >= 0, "byte segment spaces could not be opened");
+            herr_t status = H5Sselect_none(memorySpace.value);
+            status |= H5Sselect_none(fileSpace.value);
+            for (const auto &segment : segments)
+                if (segment.size)
+                {
+                    const hsize_t start = hsize_t(segment.offset), length = hsize_t(segment.size);
+                    status |= H5Sselect_hyperslab(memorySpace.value, H5S_SELECT_OR, &start, nullptr, &length, nullptr);
+                }
+            if (count)
+            {
+                const hsize_t start = hsize_t(fileOffset), length = hsize_t(count);
+                status |= H5Sselect_hyperslab(fileSpace.value, H5S_SELECT_SET, &start, nullptr, &length, nullptr);
+            }
+            DNDS_assert_info(status >= 0, "byte segment selection failed");
+            uint8_t dummy = 0;
+            const void *buffer = count ? data : &dummy;
+            if (read)
+                status = H5Dread(dataset, H5T_NATIVE_UINT8, memorySpace.value, fileSpace.value, transfer, const_cast<void *>(buffer));
+            else
+                status = H5Dwrite(dataset, H5T_NATIVE_UINT8, memorySpace.value, fileSpace.value, transfer, buffer);
+            DNDS_assert_info(status >= 0, "direct byte segment payload transfer failed");
+        }
+    }
+
+    void SerializerH5::WriteByteSegments(const std::string &name, const uint8_t *data, index memoryBytes,
+                                         const std::vector<ByteMemorySegment> &segments, ArrayGlobalOffset offset)
+    {
+        const index local = ValidateByteSegments(data, memoryBytes, segments);
+        RowStartCheck(!reading && (offset == ArrayGlobalOffset_Parts || offset == ArrayGlobalOffset_One || offset.isDist()),
+                      "Invalid direct byte segment write mode");
+        RowStartCheck(RowStartSamePath(cP + "/" + name + ":" + std::to_string(offset.isDist() ? 0 : offset.offset())),
+                      "Direct byte segment write schedule differs between ranks");
+        std::vector<index> counts(size_t(mpi.size), 0);
+        MPI_Allgather(&local, 1, DNDS_MPI_INDEX, counts.data(), 1, DNDS_MPI_INDEX, commDup);
+        index global = 0, start = 0, count = local;
+        bool valid = true;
+        for (int rank = 0; rank < mpi.size; ++rank)
+        {
+            valid = valid && counts[size_t(rank)] <= std::numeric_limits<index>::max() - global;
+            if (valid)
+            {
+                if (rank < mpi.rank)
+                    start += counts[size_t(rank)];
+                global += counts[size_t(rank)];
+            }
+        }
+        if (offset == ArrayGlobalOffset_One)
+        {
+            global = counts.front();
+            start = 0;
+            count = mpi.rank == 0 ? local : 0;
+        }
+        else if (offset.isDist())
+            valid = valid && offset.size() == global && offset.offset() == start;
+        RowStartCheck(valid, "Direct byte segment global extent overflows or explicit partition is not rank-contiguous");
+        ByteH5Handle group{GetGroupOfFileIfExist(h5file, reading, cP, collectiveMetadataRW), H5Gclose};
+        ByteH5Handle transfer{H5Pcreate(H5P_DATASET_XFER), H5Pclose};
+        ByteH5Handle access{H5Pcreate(H5P_DATASET_ACCESS), H5Pclose};
+        ByteH5Handle creation{H5Pcreate(H5P_DATASET_CREATE), H5Pclose};
+        DNDS_assert_info(group.value >= 0 && transfer.value >= 0 && access.value >= 0 && creation.value >= 0,
+                         "Direct byte segment property creation failed");
+        herr_t status = H5Pset_dxpl_mpio(transfer.value, collectiveDataRW || deflateLevel > 0 ? H5FD_MPIO_COLLECTIVE : H5FD_MPIO_INDEPENDENT);
+        if (collectiveMetadataRW)
+            status |= H5Pset_all_coll_metadata_ops(access.value, true);
+        const hsize_t extent = hsize_t(global), maximum = chunksize > 0 ? H5S_UNLIMITED : extent;
+        ByteH5Handle space{H5Screate_simple(1, &extent, &maximum), H5Sclose};
+        if (chunksize > 0)
+        {
+            const hsize_t chunk = hsize_t(chunksize);
+            status |= H5Pset_chunk(creation.value, 1, &chunk);
+        }
+#ifdef H5_HAVE_FILTER_DEFLATE
+        if (deflateLevel > 0)
+            status |= H5Pset_deflate(creation.value, deflateLevel);
+#endif
+        DNDS_assert_info(status >= 0 && space.value >= 0, "Direct byte segment dataset configuration failed");
+        ByteH5Handle dataset{H5Dcreate(group.value, name.c_str(), H5T_STD_U8LE, space.value, H5P_DEFAULT, creation.value, access.value), H5Dclose};
+        DNDS_assert_info(dataset.value >= 0, "Direct byte segment dataset creation failed");
+        const std::vector<ByteMemorySegment> empty;
+        const auto &selected = offset == ArrayGlobalOffset_One && mpi.rank != 0 ? empty : segments;
+        TransferByteSegments(dataset.value, false, data, memoryBytes, selected, start, count, transfer.value);
+        if (!(offset == ArrayGlobalOffset_One))
+        {
+            std::array<index, 2> saved{start, global};
+            H5_WriteDataset(group.value, (name + "::rank_offsets").c_str(), mpi.size + 1, mpi.rank, mpi.rank == mpi.size - 1 ? 2 : 1,
+                            DNDS_H5T_INDEX(), DNDS_H5T_INDEX(), transfer.value, access.value, chunksize, deflateLevel, saved.data());
+        }
+    }
+
+    void SerializerH5::ReadByteSegments(const std::string &name, uint8_t *data, index memoryBytes,
+                                        const std::vector<ByteMemorySegment> &segments, ArrayGlobalOffset &offset)
+    {
+        const index count = ValidateByteSegments(data, memoryBytes, segments);
+        RowStartCheck(reading && (offset.isDist() || offset == ArrayGlobalOffset_One),
+                      "Direct byte segment read requires a resolved byte window");
+        RowStartCheck(RowStartSamePath(cP + "/" + name), "Direct byte segment read paths differ between ranks");
+        ByteH5Handle group{GetGroupOfFileIfExist(h5file, reading, cP, collectiveMetadataRW), H5Gclose};
+        ByteH5Handle transfer{H5Pcreate(H5P_DATASET_XFER), H5Pclose};
+        ByteH5Handle access{H5Pcreate(H5P_DATASET_ACCESS), H5Pclose};
+        DNDS_assert_info(group.value >= 0 && transfer.value >= 0 && access.value >= 0, "Direct byte segment properties could not be opened");
+        herr_t status = H5Pset_dxpl_mpio(transfer.value, collectiveDataRW ? H5FD_MPIO_COLLECTIVE : H5FD_MPIO_INDEPENDENT);
+        if (collectiveMetadataRW)
+            status |= H5Pset_all_coll_metadata_ops(access.value, true);
+        DNDS_assert_info(status >= 0, "Direct byte segment read configuration failed");
+        ByteH5Handle dataset{H5Dopen(group.value, name.c_str(), access.value), H5Dclose};
+        DNDS_assert_info(dataset.value >= 0, "Direct byte segment dataset open failed");
+        ByteH5Handle space{H5Dget_space(dataset.value), H5Sclose};
+        ByteH5Handle type{H5Dget_type(dataset.value), H5Tclose};
+        DNDS_assert_info(space.value >= 0 && type.value >= 0, "Direct byte segment dataset space or type open failed");
+        hsize_t extent = 0;
+        const int dimensions = H5Sget_simple_extent_ndims(space.value);
+        if (dimensions == 1)
+            status = H5Sget_simple_extent_dims(space.value, &extent, nullptr);
+        const index start = offset.isDist() ? offset.offset() : 0;
+        RowStartCheck(status >= 0 && dimensions == 1 && extent <= hsize_t(std::numeric_limits<index>::max()) &&
+                          H5Tget_class(type.value) == H5T_INTEGER && H5Tget_size(type.value) == 1 &&
+                          H5Tget_sign(type.value) == H5T_SGN_NONE && hsize_t(start) <= extent &&
+                          hsize_t(count) <= extent - hsize_t(start) && (!(offset == ArrayGlobalOffset_One) || hsize_t(count) == extent),
+                      "Direct byte segment dataset type, extent or selected window is invalid");
+        RowStartCheck(!offset.isDist() || offset.size() == count, "Direct byte segment count differs from the requested window");
+        TransferByteSegments(dataset.value, true, data, memoryBytes, segments, start, count, transfer.value);
+        if (offset.isDist())
+            offset = ArrayGlobalOffset{count, start};
     }
 
     void SerializerH5::WriteUint8Array(const std::string &name, const uint8_t *data, index size, ArrayGlobalOffset offset)

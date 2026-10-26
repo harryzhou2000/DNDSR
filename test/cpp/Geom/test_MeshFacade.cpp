@@ -36,6 +36,9 @@ static G::MeshReadRequirements AllFacadeRequirements()
 }
 
 using LegacyFacade = G::UnstructuredMeshLegacyView;
+static_assert(decltype(std::declval<G::UnstructuredMeshView>().FaceCells(0))::row_width == 2);
+static_assert(decltype(std::declval<G::UnstructuredMeshView>().BoundaryCells(0))::row_width == 2);
+static_assert(std::is_same_v<decltype(std::declval<G::UnstructuredMeshView>().FaceCells(0)[0]), const I &>);
 static_assert(std::is_trivially_copyable_v<LegacyFacade>);
 static_assert(!std::is_copy_constructible_v<G::UnstructuredMeshLegacyRead>);
 static_assert(std::is_same_v<decltype(std::declval<LegacyFacade>().face2cell(0, 0)), const I &>);
@@ -64,6 +67,46 @@ static void CheckLegacyFacadeRows(const Pair &actual, const Reference &reference
             CHECK(actual(row, slot) == reference(row, slot));
         }
     }
+}
+
+TEST_CASE("Physical cell pairs publish fixed rows while sharing CSR and padded payloads")
+{
+    auto data = NativeFacadeFixture::Make(FacadeMPI(), true).data;
+    data.relations[size_t(G::MeshRelation::FaceCells)] = NativeFacadeFixture::Rows<I>({{0, 0}, {0, DNDS::UnInitIndex}, {0, DNDS::UnInitIndex}});
+    R::Array<I> padded(R::RowLayout::Padded({2, 2}, 4));
+    {
+        auto write = padded.Write();
+        for (size_t row = 0; row < 2; ++row)
+        {
+            write.View()(row, 0) = 0;
+            write.View()(row, 1) = DNDS::UnInitIndex;
+        }
+    }
+    data.relations[size_t(G::MeshRelation::BoundaryCells)]->owned = padded;
+    auto sourceFaces = data.relations[size_t(G::MeshRelation::FaceCells)]->owned;
+    auto sourceRead = sourceFaces.Read();
+    auto paddedRead = padded.Read();
+    auto snapshot = G::NativeMeshSnapshot::FromNative(data, AllFacadeRequirements());
+    auto read = snapshot.AcquireRead();
+    const auto view = read.HostView();
+    CHECK(sourceFaces.Layout().IsRagged());
+    CHECK(padded.Layout().IsPadded());
+    CHECK(view.FaceCells(0).data() == sourceRead.View().Row(0));
+    CHECK(view.FaceCells(1).data() == sourceRead.View().Row(1));
+    CHECK(view.BoundaryCells(1).data() == paddedRead.View().Row(1));
+    CHECK(view.BoundaryCells(1).data() - view.BoundaryCells(0).data() == 4);
+    CHECK(view.FaceCells(0)[0] == 0);
+    CHECK(view.FaceCells(0)[1] == 0); // Same-cell periodic face keeps both ordered slots.
+    CHECK(view.FaceCells(1)[1] == DNDS::UnInitIndex);
+    CHECK(view.BoundaryCells(0).size() == 2);
+    CHECK(view.BoundaryCells(0)[1] == DNDS::UnInitIndex);
+    auto detached = snapshot.To(R::Device::Host());
+    auto copied = detached.AcquireRead();
+    CHECK(copied.HostView().FaceCells(0)[1] == 0);
+    CHECK(copied.HostView().BoundaryCells(1)[1] == DNDS::UnInitIndex);
+    auto legacy = read.LegacyHostView();
+    CHECK(legacy.face2cell.father.RowSize(0) == 2);
+    CHECK(legacy.bnd2cell.father.RowSize(0) == 2);
 }
 
 TEST_CASE("Legacy read facade matches independent legacy arrays without copying native rows")
@@ -408,6 +451,14 @@ TEST_CASE("Native facade construction rejects mismatched shapes and owned closur
                {
             input.data.cellInfo->owned = R::Array<G::ElemInfo>(R::RowLayout::Dense(0, 1));
             input.data.cellInfo->ghost = R::Array<G::ElemInfo>(R::RowLayout::Dense(1, 1)); });
+    }
+    SUBCASE("physical boundary and face cell pairs require two ordered slots")
+    {
+        for (auto relation : {G::MeshRelation::BoundaryCells, G::MeshRelation::FaceCells})
+            reject([&](auto &input)
+                   {
+                auto &pair = *input.data.relations[size_t(relation)];
+                pair.owned = NativeFacadeFixture::Rows<I>(std::vector<std::vector<I>>(pair.owned.Rows(), {0})).owned; });
     }
     SUBCASE("entity family equal extents cannot substitute a foreign domain")
     {

@@ -124,6 +124,14 @@ namespace DNDS::Serializer
     /// starting at `rank * N_global / nRanks`). Used during repartitioned restarts.
     static const ArrayGlobalOffset ArrayGlobalOffset_EvenSplit = ArrayGlobalOffset{0, Offset_EvenSplit};
 
+    /// A logical byte interval in caller-owned host memory. Intervals are ordered,
+    /// nonoverlapping and may omit row padding; the file stores their concatenation.
+    struct ByteMemorySegment
+    {
+        index offset = 0;
+        index size = 0;
+    };
+
     /// @brief Abstract interface for reading/writing scalars, vectors, and byte arrays.
     ///
     /// ## Collective semantics (SerializerH5)
@@ -193,6 +201,27 @@ namespace DNDS::Serializer
         void ValidateRowStartWrite(const ssp<const RowStartVector> &v, ArrayGlobalOffset data);
         void ValidateRowStartRead(const std::string &path, ArrayGlobalOffset rows);
         ArrayGlobalOffset NormalizeRowStarts(RowStartVector &v, bool distributed);
+
+        index ValidateByteSegments(const uint8_t *data, index memoryBytes,
+                                   const std::vector<ByteMemorySegment> &segments)
+        {
+            bool valid = memoryBytes >= 0;
+            index previous = 0, total = 0;
+            for (const auto &segment : segments)
+            {
+                const bool bounded = valid && segment.offset >= previous && segment.size >= 0 &&
+                                     segment.offset <= memoryBytes && segment.size <= memoryBytes - segment.offset &&
+                                     segment.size <= std::numeric_limits<index>::max() - total;
+                valid = valid && bounded;
+                if (bounded)
+                {
+                    previous = segment.offset + segment.size;
+                    total += segment.size;
+                }
+            }
+            RowStartCheck(valid && (!total || data), "Invalid caller byte segments or memory extent");
+            return total;
+        }
 
         template <class T>
         bool sharedReadLookup(const std::string &path, ArrayGlobalOffset region, ssp<T> &value)
@@ -331,6 +360,32 @@ namespace DNDS::Serializer
         /// means the caller provides the exact per-rank slab; otherwise the
         /// buffer is treated according to the offset's sentinel.
         virtual void WriteUint8Array(const std::string &name, const uint8_t *data, index size, ArrayGlobalOffset offset) = 0;
+
+        /// Write concatenated logical intervals directly from caller memory.
+        /// H5 accepts Parts, One, or the legacy write descriptor {global bytes,
+        /// rank byte offset}; JSON accepts Unknown. No payload staging is required.
+        virtual void WriteByteSegments(const std::string &, const uint8_t *, index,
+                                       const std::vector<ByteMemorySegment> &, ArrayGlobalOffset)
+        {
+            DNDS_check_throw_info(false, "Serializer does not support direct byte segments");
+        }
+
+        /// Fill caller intervals from a flat byte dataset. Query the byte window
+        /// first with ReadUint8Array(nullptr,...), then pass the resolved offset.
+        /// The segment byte count must match that window. Empty ranks still
+        /// participate; nullptr is permitted when the logical byte count is zero.
+        virtual void ReadByteSegments(const std::string &, uint8_t *, index,
+                                      const std::vector<ByteMemorySegment> &, ArrayGlobalOffset &)
+        {
+            DNDS_check_throw_info(false, "Serializer does not support direct byte segments");
+        }
+        /// Physical metadata extent without materializing its values. Used to
+        /// reject malformed row windows before a legacy backend slice can abort.
+        virtual index IndexVectorSize(const std::string &)
+        {
+            DNDS_check_throw_info(false, "Serializer does not support index extent queries");
+            return 0;
+        }
 
         /**
          * @brief Write a per-rank index vector (replicated name, independent values).

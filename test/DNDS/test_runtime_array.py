@@ -251,17 +251,23 @@ def test_runtime_parallel_checkpoint(device):
             write[2, 0] = 5
     s = DNDS.Serializer.SerializerH5(world())
     s.OpenFile(name, False)
-    a.write_serializer(s, "field", world())
+    if device.space == R.MemorySpace.CUDA:
+        with pytest.raises(RuntimeError, match="staging|device"):
+            a.write_serializer(s, "field", world())
+    a.to(R.Device.host()).write_serializer(s, "field", world())
     s.CloseFile()
     s.OpenFile(name, True)
-    b = R.Array.read_serializer(s, "field", world(), device=device)
+    if device.space == R.MemorySpace.CUDA:
+        with pytest.raises(RuntimeError, match="device|staging"):
+            R.Array.read_serializer(s, "field", world(), device=device)
+    b = R.Array.read_serializer(s, "field", world()).to(device)
     assert b.layout.rows == a.layout.rows
     if comm.rank == 0:
         with b.read() as read:
             assert read[2, 0] == 5
     s.CloseFile()
     s.OpenFile(name, True)
-    c = R.Array.read_serializer(s, "field", world(), partition=DNDS.Serializer.ArrayGlobalOffset(1, 2), device=device)
+    c = R.Array.read_serializer(s, "field", world(), partition=DNDS.Serializer.ArrayGlobalOffset(1, 2)).to(device)
     with c.read() as read:
         assert read[0, 0] == 5
     s.CloseFile()

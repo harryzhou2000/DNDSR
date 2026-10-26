@@ -1,4 +1,5 @@
 #include "DNDS/Runtime/Array_bind.hpp"
+#include "DNDS/Runtime/ArrayIO.hpp"
 #include "DNDS/Runtime/EagerArray.hpp"
 #include "DNDS/Runtime/RowTransfer.hpp"
 #include <pybind11/stl.h>
@@ -21,6 +22,11 @@ struct ClassMetadata
 {
     int64_t tag;
     double weight;
+};
+struct ByteMetadata
+{
+    uint8_t payload[3];
+    int32_t tag;
 };
 
 // Observe actual ownership without extending it or exposing a production API.
@@ -146,7 +152,15 @@ PYBIND11_MODULE(runtime_array_bridge_test, m)
     m.def("shares_layout", [](const R::PythonArray &a, const R::PythonArray &b)
           { return a.SharedStorage()->SharedLayout() == b.SharedStorage()->SharedLayout(); });
     PYBIND11_NUMPY_DTYPE(Metadata, id, weight);
+    R::ElementSchema::Register<Metadata>(R::PythonDtypeSchema(py::dtype::of<Metadata>()));
     m.attr("metadata_dtype") = py::dtype::of<Metadata>();
+    m.def("native_metadata_schema", &R::ElementSchema::For<Metadata>);
+    m.def("write_metadata_field", [](R::Array<Metadata> values, DNDS::Serializer::SerializerBaseSSP serializer,
+                                     const std::string &name, const DNDS::MPIInfo &mpi)
+          { R::WriteArray(values, serializer, name, mpi); });
+    m.def("read_metadata_field", [](DNDS::Serializer::SerializerBaseSSP serializer, const std::string &name,
+                                    const DNDS::MPIInfo &mpi)
+          { return R::ReadArray<Metadata>(serializer, name, mpi); });
     auto classMetadata = py::class_<ClassMetadata>(m, "ClassMetadata")
                              .def(py::init([](int64_t tag, double weight)
                                            { return ClassMetadata{tag, weight}; }),
@@ -155,7 +169,28 @@ PYBIND11_MODULE(runtime_array_bridge_test, m)
                              .def_readwrite("weight", &ClassMetadata::weight)
                              .def("scale", [](ClassMetadata &value, double factor)
                                   { value.weight *= factor; });
-    R::RegisterArrayElement(classMetadata, "test.ClassMetadata.v1"); // No NumPy struct registration.
+    auto classSchema = R::ElementSchema::Record("test.ClassMetadata.v1", sizeof(ClassMetadata),
+                                                {{"tag", offsetof(ClassMetadata, tag), R::ElementScalar::I64},
+                                                 {"weight", offsetof(ClassMetadata, weight), R::ElementScalar::F64}},
+                                                "ClassMetadata", alignof(ClassMetadata));
+    R::RegisterArrayElement(classMetadata, R::ElementSchema::Register<ClassMetadata>(classSchema));
+    m.def("native_class_schema", &R::ElementSchema::For<ClassMetadata>);
+    auto bytes = py::class_<ByteMetadata>(m, "ByteMetadata").def(py::init<>()).def_readwrite("tag", &ByteMetadata::tag);
+    R::RegisterArrayElement(bytes, R::ElementSchema::Record("test.ByteMetadata.v1", sizeof(ByteMetadata),
+                                                            {{"payload", offsetof(ByteMetadata, payload), R::ElementScalar::Byte, 3},
+                                                             {"tag", offsetof(ByteMetadata, tag), R::ElementScalar::I32}},
+                                                            "ByteMetadata", alignof(ByteMetadata)));
+    m.def("byte_metadata", []
+          {
+              R::Array<ByteMetadata> values(R::RowLayout::Dense(1, 1));
+              { auto write = values.Write(); write.At(0, 0) = ByteMetadata{{'x', 'y', 'z'}, 123}; }
+              return values; });
+    m.def("write_class_field", [](R::Array<ClassMetadata> values, DNDS::Serializer::SerializerBaseSSP serializer,
+                                  const std::string &name, const DNDS::MPIInfo &mpi)
+          { R::WriteArray(values, serializer, name, mpi); });
+    m.def("read_class_field", [](DNDS::Serializer::SerializerBaseSSP serializer, const std::string &name,
+                                 const DNDS::MPIInfo &mpi)
+          { return R::ReadArray<ClassMetadata>(serializer, name, mpi); });
     py::class_<AllocationWatch>(m, "AllocationWatch")
         .def_property_readonly("alive", [](const AllocationWatch &watch)
                                { return !watch.owner.expired(); });

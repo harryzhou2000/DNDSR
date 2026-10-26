@@ -39,6 +39,7 @@ namespace DNDS::Serializer
         std::string ResolveSharedIndexPath(const std::string &name);
 
     public:
+        index IndexVectorSize(const std::string &name) override;
         // Rule-of-five closure. Owns `fstream` + JSON DOM; copy / move
         // are inherited-deleted from SerializerBase but must be re-declared
         // explicitly because the non-trivial dtor suppresses implicit defaults.
@@ -77,6 +78,10 @@ namespace DNDS::Serializer
         ArrayGlobalOffset ReadSharedRowStartVector(const std::string &name, ssp<host_device_vector<index>> &v, ArrayGlobalOffset rows) override;
 
         void WriteUint8Array(const std::string &name, const uint8_t *data, index size, ArrayGlobalOffset offset) override;
+        void WriteByteSegments(const std::string &name, const uint8_t *data, index memoryBytes,
+                               const std::vector<ByteMemorySegment> &segments, ArrayGlobalOffset offset) override;
+        void ReadByteSegments(const std::string &name, uint8_t *data, index memoryBytes,
+                              const std::vector<ByteMemorySegment> &segments, ArrayGlobalOffset &offset) override;
 
         void WriteIndexVectorPerRank(const std::string &name, const std::vector<index> &v) override
         {

@@ -3,6 +3,7 @@
 #include "Geom/Geometric.hpp"
 #include "Geom/ElemEnum.hpp"
 #include "DNDS/MPI.hpp"
+#include "DNDS/Runtime/ElementSchema.hpp"
 
 namespace DNDS::Geom
 {
@@ -54,5 +55,20 @@ namespace DNDS::Geom
     {
         Elevation_Untouched = 0,
         Elevation_O1O2,
+    };
+}
+
+namespace DNDS::Runtime
+{
+    template <>
+    struct ElementSchemaProvider<Geom::ElemInfo>
+    {
+        static ElementSchema Get()
+        {
+            return ElementSchema::Record("Geom.ElemInfo.v1", sizeof(Geom::ElemInfo),
+                                         {{"type", offsetof(Geom::ElemInfo, type), ElementScalar::I32},
+                                          {"zone", offsetof(Geom::ElemInfo, zone), ElementScalar::I32}},
+                                         "DNDS::Geom::ElemInfo", alignof(Geom::ElemInfo));
+        }
     };
 }

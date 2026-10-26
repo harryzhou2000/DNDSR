@@ -98,10 +98,13 @@ def test_iterate_permute_restart(backend, mode):
             filename = comm.bcast(f"/tmp/dnds_mock_{os.getpid()}.h5" if comm.rank == 0 else None)
             serializer = DNDS.Serializer.SerializerH5(mpi)
             serializer.OpenFile(filename, False)
-            owned.write_serializer(serializer, "state", mpi)
+            if device.space == R.MemorySpace.CUDA:
+                with pytest.raises(RuntimeError, match="staging|device"):
+                    owned.write_serializer(serializer, "state", mpi)
+            owned.to(R.Device.host()).write_serializer(serializer, "state", mpi)
             serializer.CloseFile()
             serializer.OpenFile(filename, True)
-            restored = R.Array.read_serializer(serializer, "state", mpi, device=device)
+            restored = R.Array.read_serializer(serializer, "state", mpi).to(device)
             serializer.CloseFile()
             owned[:] = restored[:].numpy()
             comm.Barrier()

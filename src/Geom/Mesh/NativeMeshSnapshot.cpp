@@ -93,6 +93,40 @@ namespace DNDS::Geom
                                       (!requirements.faces || (data.cellFacesPbi && data.faceNodesPbi)) &&
                                       (!requirements.edges || (data.cellEdgesPbi && data.edgeNodesPbi)),
                                   "native periodic incidence companions are missing");
+        // Physical incidence pairs promise two ordered slots. Normalize once at
+        // publication, including empty ranks; named exact containment relations
+        // remain separate. A new layout shares values and their access controller
+        // and never requires mutable access to an already retained publication.
+        auto cellPairTable = [](Runtime::Array<index> values)
+        {
+            const auto layout = values.Layout();
+            if (!layout.Rows() && (layout.IsVariable() || layout.Width() != 2))
+                return Runtime::Array<index>::FromStorage(Runtime::RowLayout::Dense(0, 2, std::max(layout.Stride(), size_t(2))), values.Storage());
+            if (!layout.IsVariable())
+            {
+                DNDS_check_throw_info(layout.Width() == 2, "physical cell incidence requires two ordered slots");
+                return values;
+            }
+            for (size_t row = 0; row < layout.Rows(); ++row)
+            {
+                DNDS_check_throw_info(layout.RowSize(row) == 2, "physical cell incidence requires two ordered slots");
+                if (layout.IsRagged())
+                    DNDS_check_throw_info(layout.Offset(row) == CheckedSize::Multiply(row, size_t(2)),
+                                          "physical cell incidence CSR is not tightly contiguous");
+            }
+            if (layout.IsRagged())
+                DNDS_check_throw_info(layout.Elements() == CheckedSize::Multiply(layout.Rows(), size_t(2)),
+                                      "physical cell incidence CSR terminal offset is invalid");
+            const auto stride = layout.IsPadded() ? layout.Stride() : size_t(2);
+            DNDS_check_throw_info(!layout.Rows() || stride >= 2, "physical cell incidence stride is too small");
+            return Runtime::Array<index>::FromStorage(Runtime::RowLayout::Dense(layout.Rows(), 2, std::max(stride, size_t(2))), values.Storage());
+        };
+        for (auto relation : {MeshRelation::BoundaryCells, MeshRelation::FaceCells})
+            if (auto &pair = data.relations[size_t(relation)]; pair)
+            {
+                pair->owned = cellPairTable(std::move(pair->owned));
+                pair->ghost = cellPairTable(std::move(pair->ghost));
+            }
         state->relations = std::move(data.relations);
         auto adopt = [&](auto &destination, auto &source)
         { checkPair(source); destination = std::move(source); };

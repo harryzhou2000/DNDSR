@@ -54,7 +54,7 @@ TEST_CASE("Native parallel checkpoint matching partitions and direct read")
         padded.Write().At(2, 6) = 317;
     WriteArray(padded, serializer, "padded", mpi);
 #ifdef DNDS_USE_CUDA
-    WriteArray(a.To(Device::CUDA(0)), serializer, "gpu_state", mpi);
+    CHECK_THROWS(WriteArray(a.To(Device::CUDA(0)), serializer, "gpu_state", mpi));
 #endif
     serializer->CloseFile();
     serializer->OpenFile(file, true);
@@ -74,9 +74,7 @@ TEST_CASE("Native parallel checkpoint matching partitions and direct read")
         CHECK(matchingPadded.Read().At(2, 6) == 317);
     }
 #ifdef DNDS_USE_CUDA
-    auto deviceRead = ReadArray<double>(serializer, "gpu_state", mpi, S::ArrayGlobalOffset_Unknown, Device::CUDA(0));
-    if (localRows)
-        CHECK(deviceRead.To(Device::Host()).Read().At(2, 2) == 22);
+    CHECK_THROWS(ReadArray<double>(serializer, "state", mpi, S::ArrayGlobalOffset_Unknown, Device::CUDA(0)));
 #endif
     serializer->CloseFile();
     serializer->OpenFile(file, true);
@@ -188,6 +186,8 @@ TEST_CASE("Native JSON checkpoint padded rows and POD schema")
         int id;
         double x;
     };
+    ElementSchema::Register<Info>(ElementSchema::Record("metadata.v1", sizeof(Info),
+                                                        {{"id", offsetof(Info, id), ElementScalar::I32}, {"x", offsetof(Info, x), ElementScalar::F64}}, "Info", alignof(Info)));
     DNDS::MPIInfo mpi(MPI_COMM_WORLD);
     const auto file = "__runtime_json_" + std::to_string(getpid()) + ".json";
     auto serializer = std::make_shared<S::SerializerJSON>();

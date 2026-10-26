@@ -36,6 +36,7 @@ Runtime/Buffer.cpp
 Runtime/EagerEngine.cpp
 Runtime/CUDAExecution.cpp
 Runtime/Exchange.cpp
+Runtime/ElementSchema.cpp
 Runtime/RowTransfer.cpp
 Profiling.cpp
 HardEigen.cpp

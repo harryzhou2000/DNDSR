@@ -15,14 +15,11 @@ namespace DNDS::Runtime
     // Shared by static payload and dynamic migration binding validation.
     std::string DtypeSchema(const py::dtype &dtype)
     {
-        const auto kind = py::str(dtype.attr("kind")).cast<std::string>();
-        if (kind == "i" || kind == "u" || kind == "f")
-            return py::str(dtype.attr("name")).cast<std::string>();
-        return "numpy.pod.v1:" + py::str(dtype.attr("descr")).cast<std::string>() + ":" + std::to_string(dtype.itemsize());
+        return PythonDtypeIdentity(dtype);
     }
     std::string ArrayTypeIdentity(const PythonArray &array)
     {
-        return array.Element() ? array.Element()->type.name() : DtypeSchema(array.Dtype());
+        return array.Schema().BindingIdentity().empty() ? DtypeSchema(array.Dtype()) : array.Schema().BindingIdentity();
     }
     namespace
     {
@@ -51,10 +48,6 @@ namespace DNDS::Runtime
             }
         };
 
-        std::string ArraySchema(const PythonArray &array)
-        {
-            return array.Element() ? array.Element()->schema : DtypeSchema(array.Dtype());
-        }
         struct PythonRowBuilder
         {
             PythonArray prototype;
@@ -255,31 +248,7 @@ namespace DNDS::Runtime
         }
         ElementSchema Schema(const PythonArray &a)
         {
-            // Numeric types retain their MPI type signature. Structured POD
-            // defaults to bytes; applications may supply a retained MPI typemap.
-            MPI_Datatype type = MPI_DATATYPE_NULL;
-#define DNDS_NATIVE_TYPE(T)                  \
-    if (a.Dtype().equal(py::dtype::of<T>())) \
-    type = BasicType_To_MPIIntType<T>().first
-            DNDS_NATIVE_TYPE(double);
-            else DNDS_NATIVE_TYPE(float);
-            else DNDS_NATIVE_TYPE(int64_t);
-            else DNDS_NATIVE_TYPE(uint64_t);
-            else DNDS_NATIVE_TYPE(int32_t);
-            else DNDS_NATIVE_TYPE(uint32_t);
-            else DNDS_NATIVE_TYPE(int16_t);
-            else DNDS_NATIVE_TYPE(uint16_t);
-            else DNDS_NATIVE_TYPE(int8_t);
-            else DNDS_NATIVE_TYPE(uint8_t);
-#undef DNDS_NATIVE_TYPE
-            if (type != MPI_DATATYPE_NULL)
-                return ElementSchema(type, a.Dtype().itemsize(), ArraySchema(a), ArrayTypeIdentity(a), DtypeSchema(a.Dtype()));
-            DNDS_check_throw_info(a.Dtype().itemsize() <= INT_MAX, "POD dtype exceeds MPI contiguous count");
-            MPI_Type_contiguous(int(a.Dtype().itemsize()), MPI_BYTE, &type);
-            MPI_Type_commit(&type);
-            ElementSchema result(type, a.Dtype().itemsize(), ArraySchema(a), ArrayTypeIdentity(a), DtypeSchema(a.Dtype()));
-            MPI_Type_free(&type);
-            return result;
+            return a.Schema().WithRepresentation(DtypeSchema(a.Dtype()));
         }
         void CheckSelection(const PythonArray &a, const std::vector<size_t> &rows, const std::vector<size_t> &columns)
         {
@@ -497,12 +466,15 @@ namespace DNDS::Runtime
                    return a.CopyFrom(source, a.Storage().GetDevice() == Device::Host() ? source.Context(stream) : a.Context(stream)); }, py::arg("source"), py::arg("stream") = 0)
             .def("element_schema", &Schema)
             .def("write_serializer", [](const PythonArray &a, Serializer::SerializerBaseSSP s, const std::string &name, const MPIInfo &mpi, const std::string &schema)
-                 { WriteArrayStorage(a.Storage(), a.Layout(), a.Dtype().itemsize(), s, name, mpi, schema.empty() ? ArraySchema(a) : schema); }, py::arg("serializer"), py::arg("name"), py::arg("mpi"), py::arg("schema") = "", "Finish asynchronous producers first. Match collective dataset/schema order unless serializer is per-rank. Caller supplies stable POD ABI/schema and consistent mesh/field epochs; separate writes are not atomic.")
+                 { DNDS_check_throw_info(s, "null Array serializer");
+                   Detail::IOCheck(schema.empty() || schema == a.Schema().Identity(), mpi, s->IsPerRank(), "Python I/O identity differs from its element registration");
+                   WriteArrayStorage(a.Storage(), a.Layout(), a.Schema(), s, name, mpi); }, py::arg("serializer"), py::arg("name"), py::arg("mpi"), py::arg("schema") = "", "Native host-only row I/O without a payload staging allocation. Finish producers and match collective calls. Uses the same registered schema as MPI/Python; device buffers are rejected. Separate fields are not a transaction.")
             .def_static("read_serializer", [](Serializer::SerializerBaseSSP s, const std::string &name, const MPIInfo &mpi, py::object dtype, Serializer::ArrayGlobalOffset partition, Device device, const std::string &schema)
                         {
                      PythonArray prototype(RowLayout{}, dtype);
-                     auto archive = ReadArrayStorage(s, name, mpi, partition, device, prototype.Dtype().itemsize(), schema.empty() ? ArraySchema(prototype) : schema);
-                     return prototype.WithStorage(ArrayStorage::FromBuffer(std::move(archive.layout), std::move(archive.storage), prototype.Dtype().itemsize())); }, py::arg("serializer"), py::arg("name"), py::arg("mpi"), py::arg("dtype") = py::dtype::of<double>(), py::arg("partition") = Serializer::ArrayGlobalOffset_Unknown, py::arg("device") = Device::Host(), py::arg("schema") = "", "Match collective read order and compatible POD ABI/schema. Reopen the serializer for a different cached partition slice; validate mesh IDs and all related fields before publishing a restarted state.");
+                     DNDS_check_throw_info(s, "null Array serializer");
+                     auto archive = ReadArrayStorage(s, name, mpi, partition, device, prototype.Schema(), {}, schema);
+                     return prototype.WithStorage(ArrayStorage::FromBuffer(std::move(archive.layout), std::move(archive.storage), prototype.Dtype().itemsize())); }, py::arg("serializer"), py::arg("name"), py::arg("mpi"), py::arg("dtype") = py::dtype::of<double>(), py::arg("partition") = Serializer::ArrayGlobalOffset_Unknown, py::arg("device") = Device::Host(), py::arg("schema") = "", "Read directly into host storage, dynamically validate logical shape, and swap declared words when file endian differs. Device destinations require a direct I/O backend and are currently rejected; match collective calls and mesh/field identities.");
         BindMPIOptions(m);
         py::class_<RowRequest>(m, "RowRequest")
             .def(py::init([](int rank, int64_t row, size_t destination)
@@ -523,7 +495,17 @@ namespace DNDS::Runtime
             .def_static("from_mpi", [](int handle, size_t bytes, const std::string &name)
                         { return ElementSchema(MPI_Type_f2c(handle), bytes, name); }, "Retain committed mpi4py datatype.py2f(). Caller promises matching identity/signature/meaning, nonoverlapping fields within the element stride, and a compatible POD ABI. Untagged schemas cannot prove dtype semantics.")
             .def_property_readonly("extent", &ElementSchema::Extent)
-            .def_property_readonly("identity", &ElementSchema::Identity);
+            .def_property_readonly("identity", &ElementSchema::Identity)
+            .def_property_readonly("definition", &ElementSchema::Definition)
+            .def_property_readonly("cpp_type_name", &ElementSchema::CppTypeName)
+            .def_property_readonly("can_swap_words", &ElementSchema::CanSwapWords)
+            .def("shares_definition", &ElementSchema::SharesDefinition)
+            .def_property_readonly("word_fields", [](const ElementSchema &schema)
+                                   {
+                py::list fields;
+                for (const auto &field : schema.Fields())
+                    fields.append(py::make_tuple(field.name, field.offset, ElementSchema::ScalarName(field.scalar), field.count));
+                return fields; });
         py::enum_<Reduction>(m, "Reduction").value("Sum", Reduction::Sum).value("Min", Reduction::Min).value("Max", Reduction::Max).value("BitOr", Reduction::BitOr).value("BitXor", Reduction::BitXor).value("BitAnd", Reduction::BitAnd);
         py::enum_<DestinationInit>(m, "DestinationInit").value("Preserve", DestinationInit::Preserve).value("Identity", DestinationInit::Identity);
         py::enum_<TransferTransport>(m, "TransferTransport").value("Direct", TransferTransport::Direct).value("HostPacked", TransferTransport::HostPacked);

@@ -2,11 +2,158 @@
 #include "doctest.h"
 #include "DNDS/Runtime/Buffer.hpp"
 #include "DNDS/Runtime/Array.hpp"
+#include "DNDS/Runtime/EagerArray.hpp"
+#include "DNDS/Runtime/CUDAExecution.hpp"
 #include "DNDS/Array.hpp"
 #include <cuda_runtime.h>
 #include <map>
 
 using namespace DNDS::Runtime;
+
+template <class Policy>
+__global__ void FillStaticRows(ArrayView<double, false, Policy> values)
+{
+    static_assert(!decltype(values)::is_dynamic);
+    static_assert(std::is_trivially_copyable_v<decltype(values)>);
+    for (size_t row = blockIdx.x; row < values.Rows(); row += gridDim.x)
+    {
+        auto entries = values[row];
+        for (size_t column = threadIdx.x; column < entries.size(); column += blockDim.x)
+            entries[column] = double(100 * row + column + 1);
+    }
+}
+
+template <class Policy>
+__global__ void ReadStaticRows(ArrayView<const double, false, Policy> values, ArrayView<double> sums)
+{
+    static_assert(std::is_same_v<decltype(values[0][0]), const double &>);
+    if (threadIdx.x)
+        return;
+    for (size_t row = blockIdx.x; row < values.Rows(); row += gridDim.x)
+    {
+        double sum = 0;
+        for (auto value : values[row])
+            sum += value;
+        sums(row, 0) = sum;
+    }
+}
+
+template <class Policy>
+static void CheckStaticCUDAAccess(RowLayout shape)
+{
+    Array<double, Policy> host(shape);
+    {
+        auto raw = host.Storage().Write();
+        const auto flat = raw.template View<double>();
+        for (size_t i = 0; i < flat.size; ++i)
+            flat[i] = -51;
+    }
+    const auto context = ExecutionContext::CUDA(0);
+    auto device = host.To(Device::CUDA(0), context);
+    auto retained = device;
+    {
+        auto write = device.Write(context);
+        FillStaticRows<Policy><<<3, 32>>>(write.View());
+        REQUIRE(cudaGetLastError() == cudaSuccess);
+        write.Complete(Completion::Record(context));
+        device.Reset(Policy::Default());
+        write.Wait();
+    }
+    Array<double, FixedRows<1>> sums(RowLayout::Dense(shape.Rows(), 1), Device::CUDA(0));
+    {
+        auto read = retained.Read(context);
+        auto write = sums.Write(context);
+        ReadStaticRows<Policy><<<3, 32>>>(read.View(), write.View());
+        REQUIRE(cudaGetLastError() == cudaSuccess);
+        const auto done = Completion::Record(context);
+        read.Complete(done);
+        write.Complete(done);
+        read.Wait();
+        write.Wait();
+    }
+    auto actual = retained.To(Device::Host(), context);
+    auto hostSums = sums.To(Device::Host(), context);
+    auto raw = actual.Storage().Read();
+    auto logical = actual.Read();
+    auto totals = hostSums.Read();
+    const auto flat = raw.template View<double>();
+    for (size_t row = 0; row < shape.Rows(); ++row)
+    {
+        double sum = 0;
+        CHECK(logical.View()[row].size() == shape.RowSize(row));
+        for (size_t column = 0; column < shape.RowSize(row); ++column)
+        {
+            const double expected = double(100 * row + column + 1);
+            CHECK(logical.View()(row, column) == expected);
+            sum += expected;
+        }
+        if (!shape.IsRagged())
+            for (size_t column = shape.RowSize(row); column < shape.Stride(); ++column)
+                CHECK(flat[row * shape.Stride() + column] == -51);
+        CHECK(totals.View()(row, 0) == sum);
+    }
+}
+
+TEST_CASE("CUDA five layout policies static width stride and capacity reach actual kernels")
+{
+    CheckStaticCUDAAccess<TableRows>(RowLayout::Dense(3, 3, 7));
+    CheckStaticCUDAAccess<FixedRows<3>>(RowLayout::Dense(3, 3, 7));
+    CheckStaticCUDAAccess<FixedRows<3, 7>>(RowLayout::Dense(3, 3, 7));
+    CheckStaticCUDAAccess<PaddedRows>(RowLayout::Padded({0, 3, 7}, 7));
+    CheckStaticCUDAAccess<StaticMaxRows<7>>(RowLayout::Padded({0, 3, 7}, 7));
+    CheckStaticCUDAAccess<CSRRows>(RowLayout::Ragged({0, 3, 7}));
+    CheckStaticCUDAAccess<TableRows>(RowLayout::Dense(0, 3, 7));
+    CheckStaticCUDAAccess<FixedRows<3, 7>>(RowLayout::Dense(0, 3, 7));
+    CheckStaticCUDAAccess<PaddedRows>(RowLayout::Padded({}, 7));
+    CheckStaticCUDAAccess<StaticMaxRows<7>>(RowLayout::Padded({}, 7));
+    CheckStaticCUDAAccess<CSRRows>(RowLayout::Ragged({}));
+}
+
+template <class Policy>
+static void CheckEagerTypedCUDA(RowLayout shape)
+{
+    EagerEngine engine(2);
+    auto stream = engine.CreateStream(std::make_shared<CUDALauncher>(0));
+    Array<double, Policy> values(shape, Device::CUDA(0));
+    auto retained = values;
+    Array<double, FixedRows<1>> sums(RowLayout::Dense(shape.Rows(), 1), Device::CUDA(0));
+    SubmitArrays(engine, stream, [](ExecutionContext context, auto output)
+                 {
+        static_assert(std::is_same_v<decltype(output), ArrayView<double, false, Policy>>);
+        FillStaticRows<Policy><<<3, 32, 0, static_cast<cudaStream_t>(context.stream)>>>(output);
+        DNDS_check_throw_info(cudaGetLastError() == cudaSuccess, "typed eager fill launch failed"); }, Write(values));
+    SubmitArrays(engine, stream, [](ExecutionContext context, auto input, auto output)
+                 {
+        static_assert(std::is_same_v<decltype(input), ArrayView<const double, false, Policy>>);
+        static_assert(decltype(output)::row_width == 1);
+        ReadStaticRows<Policy><<<3, 32, 0, static_cast<cudaStream_t>(context.stream)>>>(input, output);
+        DNDS_check_throw_info(cudaGetLastError() == cudaSuccess, "typed eager read launch failed"); }, Read(values), Write(sums));
+    values.Reset(Policy::Default());
+    stream.Record().WaitHost();
+    auto actual = sums.To(Device::Host(), stream.Context());
+    auto source = retained.To(Device::Host(), stream.Context());
+    auto read = actual.Read();
+    auto input = source.Read();
+    for (size_t row = 0; row < shape.Rows(); ++row)
+    {
+        double expected = 0;
+        for (size_t column = 0; column < shape.RowSize(row); ++column)
+        {
+            expected += double(100 * row + column + 1);
+            CHECK(input.View()(row, column) == double(100 * row + column + 1));
+        }
+        CHECK(read.View()(row, 0) == expected);
+    }
+}
+
+TEST_CASE("CUDA eager submissions preserve all five layout policies in launcher and device views")
+{
+    CheckEagerTypedCUDA<TableRows>(RowLayout::Dense(3, 3, 5));
+    CheckEagerTypedCUDA<FixedRows<3, 5>>(RowLayout::Dense(3, 3, 5));
+    CheckEagerTypedCUDA<PaddedRows>(RowLayout::Padded({0, 2, 5}, 5));
+    CheckEagerTypedCUDA<StaticMaxRows<5>>(RowLayout::Padded({0, 2, 5}, 5));
+    CheckEagerTypedCUDA<CSRRows>(RowLayout::Ragged({0, 2, 5}));
+}
 
 TEST_CASE("CUDA array allocation accounting includes host and device row metadata without alias duplication")
 {
@@ -99,8 +246,10 @@ struct RowEntry
     double weight;
 };
 
-__global__ void CopyPairRows(PairReadView<RowEntry, true> input, ArrayView<RowEntry, true> output)
+__global__ void CopyPairRows(PairReadView<RowEntry, true, FixedRows<2>> input, ArrayView<RowEntry, true, FixedRows<2>> output)
 {
+    static_assert(decltype(input)::row_width == 2 && decltype(output)::row_width == 2);
+    static_assert(decltype(input[0])::row_width == 2);
     for (size_t row = blockIdx.x; row < input.Rows(); row += gridDim.x)
     {
         const auto source = input[row];

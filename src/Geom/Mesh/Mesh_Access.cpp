@@ -31,6 +31,15 @@ namespace DNDS::Geom
         width(_storage.coords, 3);
         width(_storage.cellElemInfo, 1);
         width(_storage.bndElemInfo, 1);
+        auto cellPairWidth = [&](MeshRelation relation)
+        {
+            const auto &pair = _storage.relations[size_t(relation)];
+            width(pair, 2);
+            for (const auto *segment : {&pair.owned, &pair.ghost})
+                DNDS_check_throw_info(!segment->offsets && !segment->sizes && segment->width == 2 && segment->stride >= 2,
+                                      "physical cell incidence must use a two-slot table");
+        };
+        cellPairWidth(MeshRelation::BoundaryCells);
         auto rows = [&](MeshRelation kind)
         { return total(_storage.relations[static_cast<size_t>(kind)]); };
         DNDS_check_throw_info(sameRows(_storage.cellElemInfo, _storage.relations[static_cast<size_t>(MeshRelation::CellNodes)]) &&
@@ -39,7 +48,7 @@ namespace DNDS::Geom
         if (requirements.faces)
         {
             width(_storage.faceElemInfo, 1);
-            width(_storage.relations[static_cast<size_t>(MeshRelation::FaceCells)], 2);
+            cellPairWidth(MeshRelation::FaceCells);
             DNDS_check_throw_info(sameRows(_storage.faceElemInfo, _storage.relations[static_cast<size_t>(MeshRelation::FaceNodes)]), "face information row mismatch");
         }
         if (requirements.edges)

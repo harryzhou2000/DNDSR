@@ -69,6 +69,7 @@ namespace DNDS::Serializer
         std::string ResolveSharedIndexPath(const std::string &name);
 
     public:
+        index IndexVectorSize(const std::string &name) override;
         SerializerH5(const MPIInfo &_mpi) : mpi(_mpi)
         {
             MPI_Comm_dup(mpi.comm, &commDup);
@@ -121,6 +122,10 @@ namespace DNDS::Serializer
         ArrayGlobalOffset ReadSharedRowStartVector(const std::string &name, ssp<host_device_vector<index>> &v, ArrayGlobalOffset rows) override;
 
         void WriteUint8Array(const std::string &name, const uint8_t *data, index size, ArrayGlobalOffset offset) override;
+        void WriteByteSegments(const std::string &name, const uint8_t *data, index memoryBytes,
+                               const std::vector<ByteMemorySegment> &segments, ArrayGlobalOffset offset) override;
+        void ReadByteSegments(const std::string &name, uint8_t *data, index memoryBytes,
+                              const std::vector<ByteMemorySegment> &segments, ArrayGlobalOffset &offset) override;
 
         void WriteIndexVectorPerRank(const std::string &name, const std::vector<index> &v) override
         {
