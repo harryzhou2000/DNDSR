@@ -80,6 +80,20 @@ namespace DNDS::Geom
             return {data.Row(row), data.RowSize(row)};
         }
 
+        template <size_t Width>
+        DNDS_DEVICE_CALLABLE Runtime::RowSpan<const index, false, Width> CellPairRow(MeshRelation relation, index row) const
+        {
+            const auto &pair = RelationData(relation);
+            const bool owned = row < index(pair.owned.Rows());
+            const auto &segment = owned ? pair.owned : pair.ghost;
+            const auto local = owned ? row : row - index(pair.owned.Rows());
+            // Publication validates the fixed table shape. Kernel access uses
+            // its stride directly, with no CSR/padded metadata dispatch.
+            const Runtime::ArrayView<const index, false, Runtime::FixedRows<Width>> view{
+                segment.data, nullptr, segment.rows, Width, segment.stride, nullptr};
+            return view[size_t(local)];
+        }
+
         DNDS_DEVICE_CALLABLE tPoint TransformWallVector(const tPoint &value, NodePeriodicBits bits) const
         {
             tPoint result = value;
@@ -131,6 +145,7 @@ namespace DNDS::Geom
         DNDS_DEVICE_TRIVIAL_COPY_DEFINE(UnstructuredMeshView, UnstructuredMeshView)
 
         using tAdjacencyRow = MeshRowSpan<index>;
+        using tCellPairRow = Runtime::RowSpan<const index, false, 2>;
         using tPeriodicRow = MeshRowSpan<NodePeriodicBits>;
 
         DNDS_DEVICE_CALLABLE int Dimension() const { return _storage.dim; }
@@ -152,13 +167,13 @@ namespace DNDS::Geom
 
         DNDS_DEVICE_CALLABLE tAdjacencyRow CellNodes(index row) const { return Relation(MeshRelation::CellNodes, row); }
         DNDS_DEVICE_CALLABLE tAdjacencyRow BoundaryNodes(index row) const { return Relation(MeshRelation::BoundaryNodes, row); }
-        DNDS_DEVICE_CALLABLE tAdjacencyRow BoundaryCells(index row) const { return Relation(MeshRelation::BoundaryCells, row); }
+        DNDS_DEVICE_CALLABLE tCellPairRow BoundaryCells(index row) const { return CellPairRow<2>(MeshRelation::BoundaryCells, row); }
         DNDS_DEVICE_CALLABLE tAdjacencyRow CellCells(index row) const { return Relation(MeshRelation::CellCells, row); }
         DNDS_DEVICE_CALLABLE tAdjacencyRow NodeCells(index row) const { return Relation(MeshRelation::NodeCells, row); }
         DNDS_DEVICE_CALLABLE tAdjacencyRow NodeBoundaries(index row) const { return Relation(MeshRelation::NodeBoundaries, row); }
         DNDS_DEVICE_CALLABLE tAdjacencyRow CellFaces(index row) const { return Relation(MeshRelation::CellFaces, row); }
         DNDS_DEVICE_CALLABLE tAdjacencyRow FaceNodes(index row) const { return Relation(MeshRelation::FaceNodes, row); }
-        DNDS_DEVICE_CALLABLE tAdjacencyRow FaceCells(index row) const { return Relation(MeshRelation::FaceCells, row); }
+        DNDS_DEVICE_CALLABLE tCellPairRow FaceCells(index row) const { return CellPairRow<2>(MeshRelation::FaceCells, row); }
         DNDS_DEVICE_CALLABLE tAdjacencyRow FaceBoundaries(index row) const { return Relation(MeshRelation::FaceBoundaries, row); }
         DNDS_DEVICE_CALLABLE tAdjacencyRow BoundaryFaces(index row) const { return Relation(MeshRelation::BoundaryFaces, row); }
         DNDS_DEVICE_CALLABLE tAdjacencyRow CellEdges(index row) const { return Relation(MeshRelation::CellEdges, row); }

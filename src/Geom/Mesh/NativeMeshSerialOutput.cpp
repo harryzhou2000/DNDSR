@@ -131,15 +131,11 @@ namespace DNDS::Geom
         const auto &snapshot = source.Snapshot(Runtime::Device::Host()).Live();
         result.coordinates = gather(snapshot.coords->owned, nodeRoute.first, Runtime::ElementSchema::Arithmetic<real>());
         result.cellNodes = gather(globalCones, cellRoute.first, Runtime::ElementSchema::Arithmetic<index>());
-        MPI_Datatype type = MPI_DATATYPE_NULL;
-        MPI_Type_contiguous(ElemInfo::CommMult(), ElemInfo::CommType(), &type);
-        MPI_Type_commit(&type);
-        Runtime::ElementSchema info(type, sizeof(ElemInfo), "Geom.ElemInfo.v1", Runtime::ElementSchema::TypeIdentity<ElemInfo>());
-        MPI_Type_free(&type);
+        const auto info = Runtime::ElementSchema::For<ElemInfo>();
         result.cellInfo = gather(snapshot.cellInfo->owned, cellRoute.first, info);
         if (result.periodic)
         {
-            Runtime::ElementSchema bits(NodePeriodicBits::CommType(), sizeof(NodePeriodicBits), "Geom.NodePeriodicBits", Runtime::ElementSchema::TypeIdentity<NodePeriodicBits>());
+            const auto bits = Runtime::ElementSchema::For<NodePeriodicBits>();
             result.cellNodesPbi = gather(snapshot.cellNodesPbi->owned, cellRoute.first, bits);
         }
         return result;

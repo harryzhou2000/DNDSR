@@ -15,6 +15,8 @@ __global__ static void LegacyFacadeProbeKernel(const G::UnstructuredMeshLegacyVi
     if (blockIdx.x || threadIdx.x)
         return;
     const auto &view = *descriptor;
+    static_assert(decltype(view.FaceCells(0))::row_width == 2);
+    static_assert(decltype(view.BoundaryCells(0))::row_width == 2);
     auto result = G::Test::MeshViewProbe(view);
     // Exercise the legacy member spellings on the device, including metadata
     // needed for ragged rows. The expected probe comes from the host query API.
@@ -89,7 +91,10 @@ __global__ static void LegacyFacadeParityKernel(const G::UnstructuredMeshLegacyV
         errors += view.faceElemInfo(face, 0).type != old.faceInfo(face, 0).type;
         errors += view.faceElemInfo(face, 0).zone != old.faceInfo(face, 0).zone;
         for (DNDS::rowsize side = 0; side < 2; ++side)
+        {
             errors += view.face2cell(face, side) != old.faceCells(face, side);
+            errors += view.FaceCells(face)[side] != old.faceCells(face, side);
+        }
         errors += view.face2node.RowSize(face) != old.faceNodes.RowSize(face);
         for (DNDS::rowsize slot = 0; slot < old.faceNodes.RowSize(face); ++slot)
         {
@@ -97,6 +102,12 @@ __global__ static void LegacyFacadeParityKernel(const G::UnstructuredMeshLegacyV
             if (old.isPeriodic)
                 errors += uint8_t(view.face2nodePbi[face][slot]) != uint8_t(old.faceBits(face, slot));
         }
+    }
+    for (I boundary = 0; boundary < view.bnd2cell.Size(); ++boundary)
+    {
+        errors += view.BoundaryCells(boundary).size() != 2;
+        errors += view.BoundaryCells(boundary)[0] != 0;
+        errors += view.BoundaryCells(boundary)[1] != DNDS::UnInitIndex;
     }
     *mismatches += errors;
 }
@@ -115,6 +126,67 @@ static int FacadeGPUOrdinal()
     const int ordinal = isolated ? 0 : mpi.rank;
     REQUIRE(cudaSetDevice(ordinal) == cudaSuccess);
     return ordinal;
+}
+
+__global__ static void NormalizedCellPairsKernel(G::UnstructuredMeshView view, int *errors)
+{
+    if (blockIdx.x || threadIdx.x)
+        return;
+    static_assert(decltype(view.FaceCells(0))::row_width == 2);
+    static_assert(decltype(view.BoundaryCells(0))::row_width == 2);
+    int count = 0;
+    count += view.FaceCells(0)[0] != 0 || view.FaceCells(0)[1] != 0;
+    count += view.FaceCells(1)[1] != DNDS::UnInitIndex;
+    count += view.FaceCells(3)[0] != -4 || view.FaceCells(3)[1] != -5;
+    count += view.FaceCells(4)[0] != -6 || view.FaceCells(4)[1] != -7;
+    count += view.FaceCells(4).data() - view.FaceCells(3).data() != 5;
+    count += view.BoundaryCells(0)[0] != 0 || view.BoundaryCells(0)[1] != DNDS::UnInitIndex;
+    count += view.BoundaryCells(1).data() - view.BoundaryCells(0).data() != 4;
+    count += view.BoundaryCells(2)[0] != -4 || view.BoundaryCells(2)[1] != DNDS::UnInitIndex;
+    count += view.BoundaryCells(3)[0] != -6 || view.BoundaryCells(3)[1] != DNDS::UnInitIndex;
+    count += view.BoundaryCells(3).data() - view.BoundaryCells(2).data() != 6;
+    *errors = count;
+}
+
+TEST_CASE("CUDA physical pair publication normalizes CSR and distinct padded owned ghost strides")
+{
+    const int ordinal = FacadeGPUOrdinal();
+    const auto context = R::ExecutionContext::CUDA(ordinal);
+    auto data = NativeFacadeFixture::Make(FacadeMPI(), true).data;
+    auto padded = [](const std::vector<std::vector<I>> &rows, size_t capacity)
+    {
+        R::Array<I> values(R::RowLayout::Padded(std::vector<size_t>(rows.size(), 2), capacity));
+        auto write = values.Write();
+        for (size_t row = 0; row < rows.size(); ++row)
+            for (size_t slot = 0; slot < 2; ++slot)
+                write.View()(row, slot) = rows[row][slot];
+        return values;
+    };
+    data.relations[size_t(G::MeshRelation::FaceCells)] = NativeFacadeFixture::Rows<I>({{0, 0}, {0, DNDS::UnInitIndex}, {0, DNDS::UnInitIndex}});
+    data.relations[size_t(G::MeshRelation::FaceCells)]->ghost = padded({{-4, -5}, {-6, -7}}, 5);
+    data.relations[size_t(G::MeshRelation::FaceNodes)]->ghost = NativeFacadeFixture::Rows<I>({{0, 1}, {1, 2}}).owned;
+    data.relations[size_t(G::MeshRelation::FaceBoundaries)]->ghost = NativeFacadeFixture::Rows<I>({{DNDS::UnInitIndex}, {DNDS::UnInitIndex}}, 1).owned;
+    data.faceInfo->ghost = NativeFacadeFixture::Rows<G::ElemInfo>({{{G::Elem::Line2, G::BC_ID_INTERNAL}}, {{G::Elem::Line2, G::BC_ID_INTERNAL}}}, 1).owned;
+    data.faceNodesPbi->ghost = NativeFacadeFixture::Rows<G::NodePeriodicBits>({{{}, {}}, {{}, {}}}).owned;
+    data.relations[size_t(G::MeshRelation::BoundaryCells)]->owned = padded({{0, DNDS::UnInitIndex}, {0, DNDS::UnInitIndex}}, 4);
+    data.relations[size_t(G::MeshRelation::BoundaryCells)]->ghost = padded({{-4, DNDS::UnInitIndex}, {-6, DNDS::UnInitIndex}}, 6);
+    data.relations[size_t(G::MeshRelation::BoundaryNodes)]->ghost = NativeFacadeFixture::Rows<I>({{0, 1}, {1, 2}}).owned;
+    data.relations[size_t(G::MeshRelation::BoundaryFaces)]->ghost = NativeFacadeFixture::Rows<I>({{DNDS::UnInitIndex}, {DNDS::UnInitIndex}}, 1).owned;
+    data.bndInfo->ghost = NativeFacadeFixture::Rows<G::ElemInfo>({{{G::Elem::Line2, 7}}, {{G::Elem::Line2, 7}}}, 1).owned;
+    data.bndNodesPbi->ghost = NativeFacadeFixture::Rows<G::NodePeriodicBits>({{{}, {}}, {{}, {}}}).owned;
+    auto host = G::NativeMeshSnapshot::FromNative(std::move(data), AllFacadeRequirements());
+    auto placed = host.To(R::Device::CUDA(ordinal), context);
+    int *deviceErrors = nullptr;
+    REQUIRE(cudaMalloc(reinterpret_cast<void **>(&deviceErrors), sizeof(int)) == cudaSuccess);
+    auto read = placed.AcquireRead(context);
+    NormalizedCellPairsKernel<<<1, 1>>>(read.DeviceView(), deviceErrors);
+    REQUIRE(cudaGetLastError() == cudaSuccess);
+    read.Complete(R::Completion::Record(context));
+    read.Wait();
+    int errors = -1;
+    REQUIRE(cudaMemcpy(&errors, deviceErrors, sizeof(errors), cudaMemcpyDeviceToHost) == cudaSuccess);
+    CHECK(errors == 0);
+    REQUIRE(cudaFree(deviceErrors) == cudaSuccess);
 }
 
 struct FacadeStreamGate

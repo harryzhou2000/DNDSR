@@ -100,11 +100,12 @@ TEST_CASE("Retained mesh and multi-history field form a coherent matching-partit
         CHECK_THROWS(field.Write());
         serializer->OpenFile(filename, false);
         serializer->WriteString("application_schema", "dndsr.mesh-and-flow-history.v1");
+        serializer->WriteString("field_semantics", schema);
         serializer->WriteString("field_association", "cell");
         serializer->WriteIndex("field_components", components);
         serializer->WriteIndex("field_histories", histories);
         WriteCurrentPrimaryMeshSnapshot(*mesh, serializer, "mesh");
-        R::WriteArray(field, serializer, "flow_histories", mpi, schema);
+        R::WriteArray(field, serializer, "flow_histories", mpi);
         serializer->CloseFile();
         CHECK(fieldRead.View().Rows() == size_t(meshRead.HostView().NumCell()));
     }
@@ -114,17 +115,19 @@ TEST_CASE("Retained mesh and multi-history field form a coherent matching-partit
 
     ssp<UnstructuredMesh> restored;
     serializer->OpenFile(filename, true);
-    std::string applicationSchema, association;
+    std::string applicationSchema, association, fieldSemantics;
     DNDS::index savedComponents = 0, savedHistories = 0;
     serializer->ReadString("application_schema", applicationSchema);
+    serializer->ReadString("field_semantics", fieldSemantics);
     serializer->ReadString("field_association", association);
     serializer->ReadIndex("field_components", savedComponents);
     serializer->ReadIndex("field_histories", savedHistories);
     restored = UnstructuredMesh::FromNative(mpi, ReadCompatibleNativeMeshArchive(mpi, serializer, "mesh"));
     auto restartedField = R::ReadArray<double, R::FixedRows<width>>(
-        serializer, "flow_histories", mpi, Serializer::ArrayGlobalOffset_Unknown, R::Device::Host(), schema);
+        serializer, "flow_histories", mpi);
     serializer->CloseFile();
     CHECK(applicationSchema == "dndsr.mesh-and-flow-history.v1");
+    CHECK(fieldSemantics == schema);
     CHECK(association == "cell");
     CHECK(savedComponents == DNDS::index(components));
     CHECK(savedHistories == DNDS::index(histories));

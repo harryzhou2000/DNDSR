@@ -1129,11 +1129,7 @@ namespace DNDS::Geom
             return std::move(*output);
         };
         const auto indices = Runtime::ElementSchema::Arithmetic<index>();
-        MPI_Datatype datatype = MPI_DATATYPE_NULL;
-        MPI_Type_contiguous(ElemInfo::CommMult(), ElemInfo::CommType(), &datatype);
-        MPI_Type_commit(&datatype);
-        Runtime::ElementSchema elements(datatype, sizeof(ElemInfo), "Geom.ElemInfo.v1", Runtime::ElementSchema::TypeIdentity<ElemInfo>());
-        MPI_Type_free(&datatype);
+        const auto elements = Runtime::ElementSchema::For<ElemInfo>();
         const auto nodeSpace = EntitySpace::CreateOwned(EntityKind::Node, mpi, index(nodes.DestinationRows()));
         NativeMeshInput input{mpi, dimension,
                               nodeSpace.CreateSibling(EntityKind::Cell, index(cells.DestinationRows())),
@@ -1148,7 +1144,7 @@ namespace DNDS::Geom
         if (isPeriodic)
         {
             Runtime::Array<NodePeriodicBits> empty(Runtime::RowLayout::Ragged({}));
-            const Runtime::ElementSchema bits(NodePeriodicBits::CommType(), sizeof(NodePeriodicBits), "Geom.NodePeriodicBits", Runtime::ElementSchema::TypeIdentity<NodePeriodicBits>());
+            const auto bits = Runtime::ElementSchema::For<NodePeriodicBits>();
             input.periodic = true;
             input.periodicInfo = periodic->frames;
             input.identity.nextIds.emplace(EntityKind::Node, nodeHighWater);

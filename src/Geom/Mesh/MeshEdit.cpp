@@ -184,11 +184,7 @@ namespace DNDS::Geom
         }
         if (changes & CellMetadata)
         {
-            MPI_Datatype type;
-            MPI_Type_contiguous(ElemInfo::CommMult(), ElemInfo::CommType(), &type);
-            MPI_Type_commit(&type);
-            Runtime::ElementSchema schema(type, sizeof(ElemInfo), "Geom.ElemInfo.v1", Runtime::ElementSchema::TypeIdentity<ElemInfo>());
-            MPI_Type_free(&type);
+            const auto schema = Runtime::ElementSchema::For<ElemInfo>();
             Refresh(*data.cellInfo, mesh.Entities(EntityKind::Cell), schema, mesh.mpi);
         }
         if (changes & NeighborOrder)

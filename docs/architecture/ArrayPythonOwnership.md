@@ -173,18 +173,24 @@ Register each class once, independently of Array widths and layouts:
 
 ```cpp
 struct CellInfo { int64_t id; double volume; };
+namespace R = DNDS::Runtime;
+auto schema = R::ElementSchema::Register<CellInfo>(R::ElementSchema::Record(
+    "app.CellInfo.v1", sizeof(CellInfo),
+    {{"id", offsetof(CellInfo, id), R::ElementScalar::I64},
+     {"volume", offsetof(CellInfo, volume), R::ElementScalar::F64}},
+    "app::CellInfo", alignof(CellInfo)));
 auto cls = pybind11::class_<CellInfo>(m, "CellInfo")
     .def(pybind11::init<>())
     .def_readwrite("id", &CellInfo::id)
     .def_readwrite("volume", &CellInfo::volume);
-DNDS::Runtime::RegisterArrayElement(cls, "app.CellInfo.v1");
+R::RegisterArrayElement(cls, schema);
 ```
 
 Types must satisfy the runtime POD constraints. This binding codec copies
 class values; the registered type must also support value construction/copy
 for pybind11. A structured NumPy dtype can optionally be passed as the third
-argument after registering it with pybind11. Without one, NumPy snapshots use
-opaque `sizeof(T)`-byte records; class-based element access works normally.
+argument after registering it with pybind11. Otherwise the element schema
+generates its structured dtype, preserving numeric words and opaque byte fields.
 Neither case stores Python objects inside the native allocation.
 
 Simplified classes:
@@ -252,9 +258,13 @@ Class registration owns a codec capsule; the codec does not own the Python
 class, avoiding a class/codec ownership cycle. Live aliases, slices, proxies
 and access objects retain the class and codec as well as storage.
 
-MPI and checkpoint APIs use the registered schema name. POD checkpoints still
-require compatible ABI/endianness; registering a Python class does not make
-its byte representation portable. Class slice assignment is a debugging loop
+MPI, Python and checkpoint APIs share one registered ElementSchema descriptor.
+Its word fields generate the MPI type and NumPy record representation; class
+load/store functions remain binding-side adapters. Native checkpoints require
+matching object ABI, with file-wide endian detection and in-place declared-word
+swapping. They do not relocate arbitrary members across unrelated C++ layouts.
+Device I/O is rejected until a direct backend exists; explicit host copies
+belong to the caller. Class slice assignment is a debugging loop
 of individual writes, not an atomic multi-element transaction.
 
 ## Executable ownership checks

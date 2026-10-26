@@ -258,17 +258,22 @@ namespace DNDS::Geom::OverlapTest
             auto idRead = ids.Read();
             serializer->OpenFile(filename, false);
             source->WriteNativeArchive(serializer, "mesh");
-            R::WriteArray(field, serializer, "solution", mpi, fieldSchema);
-            R::WriteArray(ids, serializer, "original_cells", mpi, idSchema);
+            serializer->WriteString("solution_field_schema", fieldSchema);
+            serializer->WriteString("original_cells_field_schema", idSchema);
+            R::WriteArray(field, serializer, "solution", mpi);
+            R::WriteArray(ids, serializer, "original_cells", mpi);
             serializer->CloseFile();
         }
         std::shared_ptr<UnstructuredMesh> restored;
         serializer->OpenFile(filename, true);
         restored = UnstructuredMesh::ReadNativeArchive(mpi, serializer, "mesh");
-        auto loaded = R::ReadArray<real>(serializer, "solution", mpi, Serializer::ArrayGlobalOffset_Unknown,
-                                         R::Device::Host(), fieldSchema);
-        auto loadedIds = R::ReadArray<Index>(serializer, "original_cells", mpi, Serializer::ArrayGlobalOffset_Unknown,
-                                             R::Device::Host(), idSchema);
+        std::string fieldMeaning, idMeaning;
+        serializer->ReadString("solution_field_schema", fieldMeaning);
+        serializer->ReadString("original_cells_field_schema", idMeaning);
+        FieldTransferDetail::LocalStage(mpi, [&]
+                                        { DNDS_check_throw_info(fieldMeaning == fieldSchema && idMeaning == idSchema, "overlap field association metadata differs"); });
+        auto loaded = R::ReadArray<real>(serializer, "solution", mpi);
+        auto loadedIds = R::ReadArray<Index>(serializer, "original_cells", mpi);
         serializer->CloseFile();
         FieldTransferDetail::LocalStage(mpi, [&]
                                         {

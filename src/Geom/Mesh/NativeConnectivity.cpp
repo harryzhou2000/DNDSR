@@ -440,8 +440,7 @@ namespace DNDS::Geom
         if (periodic)
         {
             result.parent2entityPbi.emplace(BuildRows(parentBits, 0, size_t(cone.NumOwned())));
-            Runtime::ElementSchema pbiSchema(NodePeriodicBits::CommType(), sizeof(NodePeriodicBits),
-                                             "Geom.NodePeriodicBits", Runtime::ElementSchema::TypeIdentity<NodePeriodicBits>());
+            const auto pbiSchema = Runtime::ElementSchema::For<NodePeriodicBits>();
             result.parent2entityGhostPbi.emplace(parentRoute.TransferRows(cone.Source(), *result.parent2entityPbi, pbiSchema));
             result.entity2nodePbi.emplace(BuildRows(e2nBits, 0, e2nBits.size()));
         }

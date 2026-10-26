@@ -3,6 +3,7 @@
 #include "Geometric.hpp"
 #include "BoundaryCondition.hpp"
 #include "DNDS/Serializer/SerializerBase.hpp"
+#include "DNDS/Runtime/ElementSchema.hpp"
 
 namespace DNDS::Geom
 {
@@ -289,3 +290,17 @@ namespace DNDS::Geom
         }
     };
 } // namespace DNDS::Geom
+
+namespace DNDS::Runtime
+{
+    template <>
+    struct ElementSchemaProvider<Geom::NodePeriodicBits>
+    {
+        static ElementSchema Get()
+        {
+            return ElementSchema::Record("Geom.NodePeriodicBits.v1", sizeof(Geom::NodePeriodicBits),
+                                         {{"_v", offsetof(Geom::NodePeriodicBits, _v), ElementScalar::U8}},
+                                         "DNDS::Geom::NodePeriodicBits", alignof(Geom::NodePeriodicBits));
+        }
+    };
+}

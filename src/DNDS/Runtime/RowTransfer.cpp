@@ -256,33 +256,6 @@ namespace DNDS::Runtime
         return RowLayout::Ragged(lengths);
     }
 
-    struct ElementSchema::State
-    {
-        std::shared_ptr<Datatype> type;
-        size_t extent;
-        std::string identity;
-    };
-    ElementSchema::ElementSchema(MPI_Datatype type, size_t objectBytes, std::string identity, std::string valueType, std::string representationType)
-        : _valueType(std::move(valueType)), _representationType(std::move(representationType))
-    {
-        DNDS_check_throw_info(type != MPI_DATATYPE_NULL && objectBytes && !identity.empty(), "invalid element schema");
-        MPI_Aint lb, extent, trueLB, trueExtent;
-        MPI_Type_get_extent(type, &lb, &extent);
-        MPI_Type_get_true_extent(type, &trueLB, &trueExtent);
-        DNDS_check_throw_info(lb == 0 && extent > 0 && uint64_t(extent) == objectBytes && trueLB >= 0 &&
-                                  trueExtent >= 0 && trueLB <= extent && trueExtent <= extent - trueLB,
-                              "MPI typemap exceeds element storage or extent differs from stride");
-        auto state = std::make_shared<State>();
-        state->type = std::make_shared<Datatype>();
-        MPI_Type_dup(type, &state->type->value);
-        state->extent = objectBytes;
-        state->identity = std::move(identity);
-        _state = std::move(state);
-    }
-    MPI_Datatype ElementSchema::Type() const { return _state->type->value; }
-    size_t ElementSchema::Extent() const { return _state->extent; }
-    const std::string &ElementSchema::Identity() const { return _state->identity; }
-
     struct PayloadPlan::State
     {
         RowTransferPlan route;
@@ -298,7 +271,7 @@ namespace DNDS::Runtime
     {
         auto state = std::make_shared<State>(std::move(route), std::move(source), std::move(destination), std::move(schema));
         const auto comm = state->route.Communicator();
-        Agree(state->schema.Identity() + ":" + std::to_string(state->schema.Extent()), comm);
+        Agree(state->schema.Identity() + ":" + state->schema.Definition(), comm);
         CheckAll(state->destination.Rows() == state->route.DestinationRows(), comm, "row transfer destination shape mismatch");
         const auto lengths = ExchangeLengths(state->route, state->source);
         size_t edge = 0;

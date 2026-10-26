@@ -574,16 +574,11 @@ namespace DNDS::Geom
         data.coords = Companion(publication, EntityKind::Node, input.coordinates, Runtime::ElementSchema::Arithmetic<real>());
         if (input.periodic)
         {
-            const Runtime::ElementSchema bits(NodePeriodicBits::CommType(), sizeof(NodePeriodicBits), "Geom.NodePeriodicBits", Runtime::ElementSchema::TypeIdentity<NodePeriodicBits>());
+            const auto bits = Runtime::ElementSchema::For<NodePeriodicBits>();
             data.cellNodesPbi = Companion(publication, EntityKind::Cell, *input.cellNodesPbi, bits);
             data.bndNodesPbi = Companion(publication, EntityKind::Bnd, *input.boundaryNodesPbi, bits);
         }
-        MPI_Datatype elemType = MPI_DATATYPE_NULL;
-        DNDS_check_throw_info(MPI_Type_contiguous(ElemInfo::CommMult(), ElemInfo::CommType(), &elemType) == MPI_SUCCESS,
-                              "cannot construct native element metadata wire type");
-        MPI_Type_commit(&elemType);
-        Runtime::ElementSchema elemSchema(elemType, sizeof(ElemInfo), "Geom.ElemInfo.v1", Runtime::ElementSchema::TypeIdentity<ElemInfo>());
-        MPI_Type_free(&elemType);
+        const auto elemSchema = Runtime::ElementSchema::For<ElemInfo>();
         data.cellInfo = Companion(publication, EntityKind::Cell, input.cellInfo, elemSchema);
         data.bndInfo = Companion(publication, EntityKind::Bnd, input.boundaryInfo, elemSchema);
         std::map<EntityKind, EntitySpace> spaces;

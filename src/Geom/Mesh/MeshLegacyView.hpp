@@ -82,6 +82,8 @@ namespace DNDS::Geom
     /// remains available for shared helpers. Copies contain borrowed descriptors
     /// only; the acquiring MeshReadAccess must outlive every CPU/device use.
     /// No descriptor points back into this object, so copies and moves are safe.
+    /// Raw legacy member rows retain dynamic compatibility spans. Use semantic
+    /// FaceCells()/BoundaryCells() for compile-time two-slot physical cell rows.
     class UnstructuredMeshLegacyView : public UnstructuredMeshView
     {
         struct NoPeriodicOperation

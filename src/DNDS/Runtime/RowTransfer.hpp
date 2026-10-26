@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Array.hpp"
+#include "ElementSchema.hpp"
 #include "Version.hpp"
 #include "DNDS/MPI.hpp"
 #include "CommunicationContext.hpp"
@@ -53,51 +54,6 @@ namespace DNDS::Runtime
         bool Valid() const;
         /// Setup exchange only: values are not moved. Unrequested rows have width 0.
         RowLayout DestinationLayout(const RowLayout &source) const;
-    };
-
-    /// Retained MPI typemap plus application schema identity; extent is stride.
-    /// Caller supplies a committed, nonoverlapping typemap within sizeof(POD)
-    /// and an identity denoting the same signature/meaning on every rank. Explicit
-    /// untagged schemas and raw Buffer bindings cannot infer the C++ object type.
-    class ElementSchema
-    {
-        struct State;
-        std::shared_ptr<const State> _state;
-        std::string _valueType;
-        std::string _representationType;
-
-    public:
-        ElementSchema(MPI_Datatype type, size_t objectBytes, std::string identity, std::string valueType = {}, std::string representationType = {});
-        MPI_Datatype Type() const;
-        size_t Extent() const;
-        const std::string &Identity() const;
-        /// Shared native/Python names for the supported arithmetic wire types.
-        /// Other native types retain their local RTTI identity; custom schemas
-        /// remain explicit application descriptions, not portable object codecs.
-        template <class T>
-        static std::string TypeIdentity()
-        {
-            if constexpr (std::is_same_v<T, float> || std::is_same_v<T, double>)
-                return "float" + std::to_string(sizeof(T) * 8);
-            if constexpr (std::is_same_v<T, int8_t> || std::is_same_v<T, int16_t> || std::is_same_v<T, int32_t> || std::is_same_v<T, int64_t> ||
-                          std::is_same_v<T, uint8_t> || std::is_same_v<T, uint16_t> || std::is_same_v<T, uint32_t> || std::is_same_v<T, uint64_t>)
-                return std::string(std::is_signed_v<T> ? "int" : "uint") + std::to_string(sizeof(T) * 8);
-            return typeid(T).name();
-        }
-        /// Factories retain a binding type tag. Explicit POD MPI descriptors
-        /// without a tag remain an application contract.
-        bool Compatible(const std::string &type) const { return _valueType.empty() || _valueType == type; }
-        /// A Python reducer receives NumPy records, even for a registered class.
-        /// Representation compatibility never substitutes for binding type checks.
-        bool CompatibleRepresentation(const std::string &type) const { return _representationType.empty() ? Compatible(type) : _representationType == type; }
-        template <class T>
-        static ElementSchema Arithmetic()
-        {
-            static_assert(std::is_arithmetic_v<T>);
-            auto type = BasicType_To_MPIIntType<T>();
-            DNDS_check_throw(type.second == 1);
-            return {type.first, sizeof(T), TypeIdentity<T>(), TypeIdentity<T>()};
-        }
     };
 
     enum class Reduction

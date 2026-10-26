@@ -50,16 +50,11 @@ namespace DNDS::Geom
         }
         Runtime::ElementSchema ElementSchema()
         {
-            MPI_Datatype type;
-            MPI_Type_contiguous(ElemInfo::CommMult(), ElemInfo::CommType(), &type);
-            MPI_Type_commit(&type);
-            Runtime::ElementSchema result(type, sizeof(ElemInfo), "Geom.ElemInfo.v1", Runtime::ElementSchema::TypeIdentity<ElemInfo>());
-            MPI_Type_free(&type);
-            return result;
+            return Runtime::ElementSchema::For<ElemInfo>();
         }
         Runtime::ElementSchema BitSchema()
         {
-            return {NodePeriodicBits::CommType(), sizeof(NodePeriodicBits), "Geom.NodePeriodicBits", Runtime::ElementSchema::TypeIdentity<NodePeriodicBits>()};
+            return Runtime::ElementSchema::For<NodePeriodicBits>();
         }
         struct BoundaryCloud
         {

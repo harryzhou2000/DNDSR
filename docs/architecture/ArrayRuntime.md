@@ -20,14 +20,14 @@ raw-view lifetime, MPI participation, migration rebinding and checkpoint discipl
 | RowLayout | Immutable table, variable-length padded, or CSR row shape in element units |
 | MetadataBuffer | Shared Buffer containing published host offsets, exposed only for reading |
 | ArrayStorage | Shared record with a guarded publication boundary for values and immutable row metadata |
-| Runtime::Array | Typed handle to ArrayStorage; optional fixed-width constraint |
+| Runtime::Array | Typed handle to ArrayStorage; optional compile-time table/padded/CSR access policy |
 | PythonArray | Runtime dtype/POD codec and the same ArrayStorage as C++ |
 | ArrayAccess | Move-only read/write lease retaining both allocation and layout |
 | ArrayView | Borrowed plain pointer/offsets for kernels; no tracking per element |
 | RowBuilder / ExclusiveRows | Unpublished CPU row construction or unique shape edit; Commit publishes metadata |
 | ArrayPair | Separate owned and ghost Arrays; optional combined read indexing |
 | RowTransferPlan | Immutable distributed row relation, reversible and reusable across fields |
-| ElementSchema | Retained MPI typemap, element extent and application type-signature identity |
+| ElementSchema | Shared immutable scalar-word record, stable identity, native layout and lazy MPI datatype; used by I/O and Python too |
 | PayloadPlan | Row lengths, relative MPI datatypes, coalesced segments and contribution groups |
 | CommunicationContext | Shared communicator and explicit matched-tag reservations |
 | TransferBinding | Allocation identities, transport/reducer/workspace and transient or persistent request policy |
@@ -99,11 +99,25 @@ CSR remains available for packed variable rows. See [row construction and
 exclusive edits](ArrayRowEditing.md) for Commit, retained snapshots and Python.
 Existing legacy Array layouts remain available.
 
-The fixed width is currently a construction/conversion constraint, not a
-compile-time property of the kernel accessor: `Read()`/`Write()` return the
-same `ArrayAccess<T,...>` and `ArrayView<T,...>` types for every layout policy.
-Their row width and stride are runtime values. A future fixed-width view can
-retain `N` without changing ownership or registering Python classes per width.
+The access policy propagates through `ArrayAccess<T,...,Policy>`,
+`ArrayView<T,...,Policy>`, pair views and `RowSpan<T,...,Width,Capacity>`.
+Unchecked views select indexing with `if constexpr`, without per-element
+layout detection or ownership operations:
+
+| Policy | Row pointer | Logical row size |
+|---|---|---|
+| `TableRows` | row times runtime stride | Runtime uniform width |
+| `FixedRows<N>` / `FixedRows<N,S>` | row times runtime / static stride | Compile-time N |
+| `PaddedRows` | row times runtime capacity | Per-row size buffer |
+| `StaticMaxRows<C>` | row times compile-time C | Per-row size, static capacity C |
+| `CSRRows` | Per-row offset buffer | Offset difference |
+
+`RowLayout` remains a dynamic compatibility policy. `DynamicView()` converts
+typed descriptors for generic kernels without copying payloads. Static
+assumptions are checked on host construction/adoption, including empty arrays;
+raw row views retain no ownership and need the enclosing lease. Python remains
+one dynamic class and needs no width/capacity instantiation list. There are no
+Eigen maps or multidimensional numerical views in this API.
 
 ## Ownership, access and failure
 
@@ -248,73 +262,88 @@ releases access. Explicit Wait reports the error. Destruction is a blocking
 fallback, not an error-reporting API. MPI process/transport failure recovery
 is outside this phase.
 
-## Checkpoints
+## Checkpoints and shared element schemas
 
-`WriteArray` / `ReadArray<T>` use the existing serializer's distributed CSR
-path. Parallel HDF5 supports saved matching-rank partitions, EvenSplit at a
-different rank count, and explicit contiguous global row slices. JSON is
-per-rank. CUDA data is explicitly staged on host. Padding between rows is
-omitted; reads reconstruct packed rows (or the requested fixed-width policy).
+`WriteArray` / `ReadArray<T,L>` use the existing Serializer backend through
+native direct-memory row selections. No legacy Array or whole-payload packing
+allocation is made. H5 uses memory hyperslabs over the source or final output
+allocation; JSON uses its required document representation. Metadata scratch
+is proportional to rows/ranks. Device buffers are rejected before payload I/O
+until a direct device-capable backend is supplied: no hidden CUDA staging.
+Applications may explicitly copy a checkpoint to host outside this adapter.
 
-C++ and Python share format version 2, logical element byte size, schema
-identity and byte-row encoding. Arithmetic schema names are stable
-(`float64`, `int32`, etc.). Application PODs should provide an explicit stable
-schema name; Python structured dtypes can use the same supplied schema.
-The format requires compatible binary representation/endianness; it is not a
-portable codec for arbitrary structs.
+One `ElementSchema` record describes scalar fields, word sizes/counts, offsets,
+object extent/alignment and stable identity. Its lazy MPI datatype is derived
+from those fields. `RegisterArrayElement<T>` attaches Python class load/store
+functions to the same registered record and derives its structured dtype.
+C++ registration works before MPI initialization and does not require importing
+Python. Arbitrary custom PODs need registration or an `ElementSchemaProvider<T>`;
+free I/O strings cannot relabel their bytes. An optional `cpp_type_name` is
+saved for diagnostics, never compatibility matching. Legacy explicit MPI
+constructors remain available with their caller-supplied type/meaning contract.
 
-There are three separate element descriptions today: `ElementSchema` retains
-an MPI datatype and its extent/type identity; the checkpoint takes a schema
-string beside raw object bytes; and `RegisterArrayElement<T>` registers a
-Python class/dtype load/store codec. Registering one does not synthesize either
-of the others. For a POD, provide a committed MPI typemap with extent
-`sizeof(T)`, an explicit stable checkpoint schema, and a Python registration
-when class-based element editing is wanted. These contracts require compatible
-object representation; they do not describe field-wise portable serialization.
-
-This separation is an implementation gap, not the final contract. The next
-revision uses one immutable logical field schema with derived MPI, Python and
-I/O adapters, an optional diagnostic C++ name, dense archives without row
-offsets, and typed endian conversion. See the planning repository's
-`docs/20-unified-element-schema-and-array-io.md`. Version-2 files described
-below retain their existing ABI limits until that revision is implemented.
-
-The version-2 writer actually constructs a temporary
-`ParArray<uint8_t,NonUniformSize>` under `name/rows` to reuse the existing
-parallel CSR codec. This does not change the typed allocation shared by C++
-and Python. Its nested `array_sig` describes **byte CSR staging**, rather than
-the source `Array<T,L>`. `array_type` is an emitted RTTI diagnostic, unused by
-the reader. `row_size_dynamic` belongs to the legacy layout codec (dynamic
-table width or padded capacity) and has no useful shape meaning for this CSR
-staging layout. These fields are implementation details, not a promise that
-legacy typed Array archives and Runtime Array archives are interchangeable.
-
-For example, two double rows of lengths 2 and 3 are stored as:
-
-```text
-u/                          @runtime_array_format=2, @element_bytes=8
-                            @element_schema="float64", @writer_ranks=P
-  rows/                     @array_sig=<byte CSR signature>, @sizeGlobal=2
-    size                    int64[P]       (writer local row counts)
-    pRowStart               int64[3]       [0, 16, 40] (byte offsets)
-    data                    uint8[40]      (logical row payloads)
-    data::rank_offsets      int64[P+1]     (parallel data partitions)
+```cpp
+struct Tag { int64_t id; double weight; };
+auto schema = ElementSchema::Register<Tag>(ElementSchema::Record(
+    "example.Tag.v1", sizeof(Tag),
+    {{"id", offsetof(Tag, id), ElementScalar::I64},
+     {"weight", offsetof(Tag, weight), ElementScalar::F64}},
+    "example::Tag", alignof(Tag)));
+// schema.Type(), WriteArray(tags,...), and RegisterArrayElement(pyClass,schema)
+// consume this same immutable descriptor. No width-specific binding is needed.
 ```
 
-The serializer also records partitions for the row-count/row-start datasets.
-`ReadArray<T,FixedRows<N>>` checks every restored logical row against `N`;
-different nonempty widths are rejected even though the original C++ template
-signature is not saved. An entirely empty archive carries no original table
-width or padded capacity, so it cannot diagnose a different requested `N`.
-Generic reads reconstruct CSR; they do not recover the original layout policy.
+Version 3 saves dynamic logical shape independently of the C++ policy:
 
-The existing shared-row-start serializer permits one resolved slice per
-dataset in an open read session. Close/reopen the file to read a different
-slice of that dataset. A matching-rank read rejects a different communicator
-size; use EvenSplit or an explicit partition instead. Rank-local access
-conflicts and schema disagreement are checked collectively before data I/O.
-Ordinary MPI/HDF5 collective call discipline and allocation availability are
-still required.
+```text
+/ @runtime_array_byte_order=0                 (0 little, 1 big; file-wide)
+  field/ @runtime_array_format=3, @element_bytes, @element_schema
+         @element_definition, @cpp_type_name, @writer_ranks
+         @row_encoding=0, @row_width=W        (dense; even when N=0)
+         @rows_global=N, @elements_global=N*W
+    row_counts        int64[writer ranks]     (one count in each JSON file)
+    values            uint8[logical payload]  (native object bytes, rows packed on disk)
+    values::rank_offsets int64[P+1]           (H5 backend metadata)
+```
+
+Variable rows use `row_encoding=1`, `row_width=-1` and
+`row_offsets:int64[N+1]` in **element units**. There are no row offsets for dense
+records. Physical padding between rows is omitted. A generic dense read returns
+a table; a generic variable-row read returns CSR. Requested table/padded/CSR
+policies reconstruct their chosen allocation directly after dynamic row-size
+validation. `FixedRows<N>` checks actual logical width, including empty dense
+files; it never compares C++ template signatures. `StaticMaxRows<C>` checks
+that each logical row fits C and reads directly into that padded destination.
+
+All arrays in a file use its one native-byte-order flag. If it differs from
+the reader, each declared scalar word is reversed in place in the final host
+allocation, including repeated POD fields; object padding is untouched. The
+schema definition must agree on native word layout/extent. This handles endian
+changes for that representation, not unrelated C++ ABIs, float representations,
+pointer members or schema evolution. Opaque legacy MPI layouts reject endian
+conversion rather than treating an entire struct as one word. Writers reject
+appending native bytes with a different file flag.
+
+Version-2 byte-CSR Runtime archives remain readable through the native row
+adapter, including old JSON base64/zlib payloads streamed into the final rows.
+They lack writer byte-order/static-width metadata and retain their documented
+same-representation/empty-shape limits. An explicit old schema string is accepted
+only by a v2 reader for historical application labels; new writes and v3 reads
+require the registered element identity. Field association/history metadata is
+stored separately from the element schema. Legacy `array_sig`, `array_type` and
+`row_size_dynamic` belong to that old nested byte-CSR codec; they do not decide
+new typed Array compatibility. Unrelated legacy typed Array archives use their
+existing dedicated adapters, not automatic Runtime schema guessing.
+
+Parallel H5 supports matching writer ranks, EvenSplit with a different MPI
+size, and explicit contiguous global row windows. JSON reads its saved local
+partition. Match collective names/schema/call order and finish producers first;
+source leases remain held through writes, and reads publish only complete owned
+storage. Dynamic partitions and policy failures are agreed before payload calls.
+Version-2 shared row-start caches still require reopening for another slice;
+version-3 metadata uses ordinary independent direct windows. Checkpoint mesh IDs,
+field epochs and all related arrays coherently at the application level;
+individual Array writes are not an atomic restart.
 
 ## Python debugging and production access
 

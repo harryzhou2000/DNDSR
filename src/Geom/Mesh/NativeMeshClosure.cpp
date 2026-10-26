@@ -57,17 +57,13 @@ namespace DNDS::Geom
         GhostSpec spec{{{EntityKind::Cell, {Adj::Cell2Node, support.Read().Kind()}, EntityKind::Cell},
                         {EntityKind::Cell, {Adj::Cell2Node, support.Read().Kind(), Adj::Cell2Node}, EntityKind::Node}}};
         auto publication = setup.BuildGhosted(setup.Evaluate(CompiledGhostTree::compile(spec)));
-        MPI_Datatype type = MPI_DATATYPE_NULL;
-        MPI_Type_contiguous(ElemInfo::CommMult(), ElemInfo::CommType(), &type);
-        MPI_Type_commit(&type);
-        Runtime::ElementSchema schema(type, sizeof(ElemInfo), "Geom.ElemInfo.v1", Runtime::ElementSchema::TypeIdentity<ElemInfo>());
-        MPI_Type_free(&type);
+        const auto schema = Runtime::ElementSchema::For<ElemInfo>();
         auto ghosts = publication.routes.at(EntityKind::Cell).TransferRows(publication.spaces.at(EntityKind::Cell), *metadata, schema);
         ghosts = Runtime::Array<ElemInfo>::FromStorage(Runtime::RowLayout::Dense(ghosts.Rows(), 1), ghosts.Storage());
         NativeCellClosure result{std::move(publication.relations.at(Adj::Cell2Node)), {std::move(*metadata), std::move(ghosts)}};
         if (periodic)
         {
-            Runtime::ElementSchema bits(NodePeriodicBits::CommType(), sizeof(NodePeriodicBits), "Geom.NodePeriodicBits", Runtime::ElementSchema::TypeIdentity<NodePeriodicBits>());
+            const auto bits = Runtime::ElementSchema::For<NodePeriodicBits>();
             auto ghostBits = publication.routes.at(EntityKind::Cell).TransferRows(publication.spaces.at(EntityKind::Cell), *periodic, bits);
             result.cellNodesPbi = Runtime::ArrayPair<NodePeriodicBits>{std::move(*periodic), std::move(ghostBits)};
         }

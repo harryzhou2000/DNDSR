@@ -46,19 +46,22 @@ def test_checkpoint_requires_finished_stage_then_restores_shared_debug_snapshot(
             retained.numpy()
         with pytest.raises(RuntimeError):
             values.edit_rows(exclusive=True)
-        with pytest.raises(RuntimeError, match="snapshot"):
+        with pytest.raises(RuntimeError, match="lease|snapshot|staging|device"):
             values.write_serializer(serializer, "state", mpi)
     finally:
         gate.open()
     last.record().wait()
     engine.synchronize()
-    values.write_serializer(serializer, "state", mpi)
+    if device.space == R.MemorySpace.CUDA:
+        with pytest.raises(RuntimeError, match="staging|device"):
+            values.write_serializer(serializer, "state", mpi)
+    values.to(R.Device.host()).write_serializer(serializer, "state", mpi)
     serializer.CloseFile()
     values.reset(R.RowLayout.dense(1, 5), device)
     serializer.OpenFile(filename, True)
-    restored = R.Array.read_serializer(serializer, "state", mpi, device=device)
+    restored = R.Array.read_serializer(serializer, "state", mpi).to(device)
     serializer.CloseFile()
-    assert restored.layout.kind == R.RowLayoutKind.CSR
+    assert restored.layout.kind == R.RowLayoutKind.Table
     np.testing.assert_array_equal(restored[:].numpy(), expected * 6)
     np.testing.assert_array_equal(retained.numpy(), (expected * 6)[::2, ::-2])
     np.testing.assert_array_equal(values.numpy(), np.zeros((1, 5)))

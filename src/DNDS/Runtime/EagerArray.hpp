@@ -8,20 +8,21 @@ namespace DNDS::Runtime
 {
     /// Structural pin and declared intent; construction does not reserve access.
     /// SubmitArrays reserves all operands before accepting the command.
-    template <class T, bool Writable>
+    template <class T, bool Writable, class LayoutPolicy = RowLayout>
     struct ArrayOperand
     {
         using Value = std::conditional_t<Writable, T, const T>;
+        using Policy = LayoutPolicy;
         ArrayStorage::Shared storage;
         AccessMode mode;
     };
 
     template <class T, class L>
-    ArrayOperand<T, false> Read(const Array<T, L> &array) { return {array.SharedStorage(), AccessMode::Read}; }
+    ArrayOperand<T, false, L> Read(const Array<T, L> &array) { return {array.SharedStorage(), AccessMode::Read}; }
     template <class T, class L>
-    ArrayOperand<T, true> Write(Array<T, L> &array) { return {array.SharedStorage(), AccessMode::Write}; }
+    ArrayOperand<T, true, L> Write(Array<T, L> &array) { return {array.SharedStorage(), AccessMode::Write}; }
     template <class T, class L>
-    ArrayOperand<T, true> ReadWrite(Array<T, L> &array) { return {array.SharedStorage(), AccessMode::ReadWrite}; }
+    ArrayOperand<T, true, L> ReadWrite(Array<T, L> &array) { return {array.SharedStorage(), AccessMode::ReadWrite}; }
 
     /// Values are initialized in stream order. New GPU tables need no metadata
     /// upload. For variable GPU shapes, prepare/upload metadata during setup and
@@ -74,16 +75,19 @@ namespace DNDS::Runtime
         struct PreparedOperand
         {
             using Value = typename Operand::Value;
+            using Policy = typename Operand::Policy;
             ArrayStorage::Shared storage;
             std::shared_ptr<const ArrayLayout> layout;
             ScheduledAccess access;
-            ArrayView<Value> view;
+            ArrayView<Value, false, Policy> view;
 
             PreparedOperand(Operand operand, Device device)
                 : storage(std::move(operand.storage)), layout(storage->SharedLayout()),
                   access(storage->Values().Reserve(operand.mode, device))
             {
                 DNDS_check_throw_info(storage->ElementBytes() == sizeof(Value), "eager operand element size mismatch");
+                if constexpr (!std::is_same_v<Policy, RowLayout>)
+                    Policy::Validate(layout->rows);
                 auto *pointer = static_cast<Value *>(access.Pointer(alignof(Value), sizeof(Value)));
                 const auto &rows = layout->rows;
                 view = {pointer, layout->Offsets(device), rows.Rows(), rows.Width(), rows.Stride(), layout->Sizes(device)};
