@@ -7,6 +7,9 @@
 #include "Geom/Mesh/MeshTransition.hpp"
 #include "DNDS/Runtime/RowBuilder.hpp"
 #include "Solver/Direct.hpp"
+#include "Geom/Mesh/SerialAdjReordering.hpp"
+#include "DNDS/ArrayDerived/ArrayEigenVector.hpp"
+#include "DNDS/ArrayPair.hpp"
 
 namespace G = DNDS::Geom;
 namespace R = DNDS::Runtime;
@@ -49,21 +52,46 @@ namespace
         return G::NativeMeshBuilder::Build(std::move(input), {1, true});
     }
 
+    // Independent numerical inputs: the graph below is hand-authored from
+    // strip element faces. Only generic graph algorithms enter this oracle.
+    std::pair<std::vector<I>, std::vector<I>> GenericOrdering(const G::tLocalMatStruct &graph, int code)
+    {
+        if (graph.empty() || code == 0)
+            return {};
+        if (code == -1)
+        {
+            std::vector<I> order, inverse(graph.size());
+            for (size_t row = 0; row < graph.size(); row += 2)
+                order.push_back(I(row));
+            for (size_t row = 1; row < graph.size(); row += 2)
+                order.push_back(I(row));
+            for (size_t row = 0; row < order.size(); ++row)
+                inverse[size_t(order[row])] = I(row);
+            return {order, inverse};
+        }
+        if (code == 1)
+            return G::ReorderSerialAdj_Metis(graph);
+        if (code == 2)
+            return G::ReorderSerialAdj_BoostMMD(graph);
+        I oldWidth = 0, newWidth = 0;
+        if (code == 3)
+            return G::ReorderSerialAdj_BoostRCM(graph, oldWidth, newWidth);
+        return G::ReorderSerialAdj_CorrectRCM(graph.begin(), graph.end(), oldWidth, newWidth);
+    }
+
     void CheckHash(const std::shared_ptr<const G::NativeMeshState> &state, const DNDS::MPIInfo &mpi)
     {
         auto native = G::UnstructuredMesh::FromNative(mpi, state);
-        G::UnstructuredMesh legacy(mpi, 2);
-        legacy.coords.InitPair("coordinate hash reference", mpi);
+        DNDS::ArrayPair<DNDS::ArrayEigenVector<3>> reference;
+        reference.InitPair("coordinate hash reference", mpi);
         auto read = native->AcquireRead();
         const auto view = read.HostView();
-        legacy.coords.father->Resize(view.NumNode());
-        legacy.coords.son->Resize(view.NumNodeGhost());
+        reference.father->Resize(view.NumNode());
+        reference.son->Resize(view.NumNodeGhost());
         for (I row = 0; row < view.NumNodeProc(); ++row)
-            legacy.coords[row] = view.Coord(row);
-        const auto expected = legacy.coords.hash();
+            reference[row] = view.Coord(row);
+        const auto expected = reference.hash();
         CHECK(native->CoordinateHash() == expected);
-        CHECK(legacy.CoordinateHash() == expected);
-        CHECK_FALSE(native->coords.father);
         auto retained = native->AcquireRead();
         CHECK(native->CoordinateHash() == expected);
     }
@@ -82,7 +110,7 @@ TEST_CASE("Coordinate compatibility hash matches legacy owned and ghost rows bef
     CheckHash(Strip(mpi, true), mpi);
 }
 
-TEST_CASE("Native face graph and direct ordering match exact legacy face slots without legacy storage")
+TEST_CASE("Native face graph and direct ordering match exact face slots and generic serial algorithms")
 {
     const DNDS::MPIInfo mpi(MPI_COMM_WORLD);
     auto primary = Strip(mpi);
@@ -90,11 +118,11 @@ TEST_CASE("Native face graph and direct ordering match exact legacy face slots w
     CHECK_THROWS(missingFaces->GetCell2CellFaceVLocal());
     auto state = G::NativeMeshTopology::Build(*primary, mpi);
     auto mesh = G::UnstructuredMesh::FromNative(mpi, state);
-    auto legacy = G::TestFixtureCodec::DecodeLegacy(*mesh);
+    auto decoded = G::TestFixtureCodec::DecodePrimaryReference(*mesh);
     const G::tLocalMatStruct expected{{1}, {2, 0}, {1}};
     CHECK(mesh->GetCell2CellFaceVLocal() == expected);
     CHECK(mesh->GetCell2CellFaceVLocal(true) == expected);
-    CHECK(legacy->GetCell2CellFaceVLocal() == expected);
+    CHECK(decoded->GetCell2CellFaceVLocal() == expected);
     const auto cells = mesh->Entities(G::EntityKind::Cell);
     const auto stamp = mesh->versions.Stamp();
     auto retained = mesh->AcquireRead(G::MeshReadRequirements::CellFlux());
@@ -106,12 +134,14 @@ TEST_CASE("Native face graph and direct ordering match exact legacy face slots w
         control.orderingCode = ordering;
         DNDS::Direct::SerialSymLUStructure actual(mpi, 3), reference(mpi, 3);
         mesh->ObtainLocalFactFillOrdering(actual, control);
-        legacy->ObtainLocalFactFillOrdering(reference, control);
+        auto [new2old, old2new] = GenericOrdering(expected, ordering);
+        reference.localFillOrderingNew2Old = std::move(new2old);
+        reference.localFillOrderingOld2New = std::move(old2new);
         CHECK(actual.localFillOrderingNew2Old == reference.localFillOrderingNew2Old);
         CHECK(actual.localFillOrderingOld2New == reference.localFillOrderingOld2New);
         CHECK(mesh->LocalCellNeighbors() == expected);
         mesh->ObtainSymmetricSymbolicFactorization(actual, control);
-        legacy->ObtainSymmetricSymbolicFactorization(reference, control);
+        reference.ObtainSymmetricSymbolicFactorization(expected, {0, 3}, control.getILUCode());
         CHECK(actual.lowerTriStructure == reference.lowerTriStructure);
         CHECK(actual.upperTriStructure == reference.upperTriStructure);
         CHECK(actual.cell2cellFaceVLocal2FullRowPos == reference.cell2cellFaceVLocal2FullRowPos);
@@ -119,16 +149,13 @@ TEST_CASE("Native face graph and direct ordering match exact legacy face slots w
     CHECK(stamp.Valid());
     CHECK(mesh->Entities(G::EntityKind::Cell).SameOrder(cells));
     CHECK(retained.HostView().NumCell() == 3);
-    CHECK_FALSE(mesh->cell2node.father);
-    CHECK(mesh->cell2cellFaceVLocalParts.empty());
     CHECK_THROWS(state->WithLocalCellSetup({0, 1, 3}, expected));
     CHECK_THROWS(state->WithLocalCellSetup({0, 3}, {{1}, {2, 0}}));
     CHECK_THROWS(state->WithLocalCellSetup({0, 3}, {{3}, {2, 0}, {1}}));
     CHECK_THROWS(state->WithLocalCellSetup({0, 3}, {{0}, {2, 0}, {1}}));
 
-    // Native partition metadata preserves cross-part filtering without reading
-    // detached legacy facade offsets. Earlier checks retain the legacy numeric
-    // ordering/factorization reference.
+    // Native partition metadata preserves cross-part filtering. The ordering
+    // oracle above invokes generic serial algorithms on the exact input graph.
     auto partitioned = G::UnstructuredMesh::FromNative(mpi, state->WithLocalPartitions({0, 1, 3}));
     const G::tLocalMatStruct filtered{{}, {2}, {1}};
     CHECK(partitioned->GetCell2CellFaceVLocal() == expected);
@@ -141,7 +168,6 @@ TEST_CASE("Native face graph and direct ordering match exact legacy face slots w
     CHECK(ordering.localFillOrderingNew2Old == std::vector<I>{0, 2, 1});
     CHECK(partitioned->LocalCellNeighbors() == filtered);
     CHECK(partitioned->LocalPartStart(1) == 1);
-    CHECK(partitioned->localPartitionStarts.empty());
 
     if (mpi.size > 1)
     {
@@ -163,12 +189,12 @@ TEST_CASE("Native face graph and direct ordering match exact legacy face slots w
     }
 }
 
-TEST_CASE("Native and legacy direct setup keep empty cell owners in RCM collectives")
+TEST_CASE("Native direct setup keeps empty cell owners in RCM collectives")
 {
     const DNDS::MPIInfo mpi(MPI_COMM_WORLD);
     auto state = G::NativeMeshTopology::Build(*Strip(mpi, true), mpi);
     auto mesh = G::UnstructuredMesh::FromNative(mpi, state);
-    auto legacy = G::TestFixtureCodec::DecodeLegacy(*mesh);
+    auto decoded = G::TestFixtureCodec::DecodePrimaryReference(*mesh);
     const G::tLocalMatStruct expected = mpi.rank == 0 ? G::tLocalMatStruct{{1}, {2, 0}, {1}} : G::tLocalMatStruct{};
     CHECK(mesh->GetCell2CellFaceVLocal() == expected);
     for (int code : {0, 3, 4})
@@ -178,9 +204,11 @@ TEST_CASE("Native and legacy direct setup keep empty cell owners in RCM collecti
         control.orderingCode = code;
         DNDS::Direct::SerialSymLUStructure structure(mpi, mesh->NumCell()), reference(mpi, mesh->NumCell());
         mesh->ObtainLocalFactFillOrdering(structure, control);
-        legacy->ObtainLocalFactFillOrdering(reference, control);
+        auto [new2old, old2new] = GenericOrdering(expected, code);
+        reference.localFillOrderingNew2Old = std::move(new2old);
+        reference.localFillOrderingOld2New = std::move(old2new);
         mesh->ObtainSymmetricSymbolicFactorization(structure, control);
-        legacy->ObtainSymmetricSymbolicFactorization(reference, control);
+        reference.ObtainSymmetricSymbolicFactorization(expected, {0, mesh->NumCell()}, control.getILUCode());
         CHECK(structure.localFillOrderingNew2Old == reference.localFillOrderingNew2Old);
         CHECK(mesh->LocalCellNeighbors() == expected);
     }

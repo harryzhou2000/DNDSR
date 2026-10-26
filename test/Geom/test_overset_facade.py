@@ -1,6 +1,7 @@
 """Headless geometry/identity checks for the overset demo's query helpers."""
 
 import importlib
+import gc
 import importlib.util
 from pathlib import Path
 import sys
@@ -58,7 +59,7 @@ def test_overset_travelling_geometry_uses_current_query_authority(mpi, monkeypat
         "IV10_10.cgns" if periodic else "UniformSquare_10.cgns"
     )
     options = {"periodic_geometry": {"translation1": [10., 0., 0.], "translation2": [0., 10., 0.]}} if periodic else {}
-    result = read_mesh(str(source), mpi=mpi, dim=2, native=False, **options)
+    result = read_mesh(str(source), mpi=mpi, dim=2, native=True, **options)
     mesh = result.mesh
     prepare_mesh(mesh, result.reader, build_serial_out=False)
     part = parts.OversetPart2D(mpi, (np.eye(3), np.array([2., -3., 0.])))
@@ -101,19 +102,29 @@ def test_overset_travelling_geometry_uses_current_query_authority(mpi, monkeypat
     legacy_field = _cell_field(mpi, legacy_cells)
     helpers._borrow_cell_field_indexing(legacy_field, mesh)
     legacy_values = _fill_and_pull(legacy_field, legacy_cells)
-    legacy_coords = mesh.coords
-    legacy_cell_nodes = mesh.cell2node
-    legacy_boundaries = mesh.bnd2node
-    legacy_boundary_info = mesh.bndElemInfo
-    mesh.publish_native(faces=True)
-    # These are intentional raw compatibility edits, not managed mutations.
-    for node in range(mesh.NumNodeProc()):
-        np.asarray(legacy_coords[node])[:] = 73
-    for cell in range(mesh.NumCellProc()):
-        np.asarray(legacy_cell_nodes[cell])[:] = DNDS.UnInitIndex
-    for boundary in range(mesh.NumBndProc()):
-        np.asarray(legacy_boundaries[boundary])[:] = DNDS.UnInitIndex
-        legacy_boundary_info[boundary, 0].zone = 999
+    coordinates = mesh.coords
+    cones = mesh.cell2node
+    boundaries = mesh.bnd2node
+    info = mesh.bndElemInfo
+    # Public pair aliases expose the current native storage with read leases.
+    with pytest.raises(ValueError):
+        coordinates[0][0] = 73
+    with pytest.raises(ValueError):
+        cones[0][0] = DNDS.UnInitIndex
+    if mesh.NumBndProc():
+        with pytest.raises(ValueError):
+            boundaries[0][0] = DNDS.UnInitIndex
+        borrowed_info = info[0, 0]
+        with pytest.raises(AttributeError):
+            borrowed_info.zone = 999
+        copied_info = borrowed_info.snapshot()
+        copied_info.zone = 999
+        assert info[0, 0].zone != 999
+        del borrowed_info
+    del coordinates, cones, boundaries, info
+    gc.collect()
+    # Topology setup replaces the epoch while retaining owned family order.
+    mesh.PrepareNativeTopology()
     after = sample()
     for expected_items, actual_items in zip(before, after):
         assert len(actual_items) == len(expected_items)
@@ -121,8 +132,8 @@ def test_overset_travelling_geometry_uses_current_query_authority(mpi, monkeypat
             assert actual[:4] == expected[:4]
             np.testing.assert_allclose(actual[4], expected[4])
     native_cells = mesh.entities(Geom.EntityKind.Cell)
-    legacy_cell_nodes.trans.LGhostMapping = None
-    legacy_cell_nodes.trans.LGlobalMapping = None
+    legacy_field.trans.LGhostMapping = None
+    legacy_field.trans.LGlobalMapping = None
     field = _cell_field(mpi, native_cells)
     helpers._borrow_cell_field_indexing(field, mesh)
     native_values = _fill_and_pull(field, native_cells)

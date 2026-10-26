@@ -6,6 +6,12 @@
 #include "Geom/Mesh/NativeMeshClosure.hpp"
 #include "Geom/Mesh/NativeMeshArchive.hpp"
 #include "Geom/Mesh/NativeMeshTransition.hpp"
+#include "Geom/Mesh/NativeMeshAssembler.hpp"
+#include "Geom/Mesh/NativeMeshRefinement.hpp"
+#include "NativePeriodicFixtures.hpp"
+#include <numeric>
+#include <limits>
+#include "Geom/Mesh/Mesh.hpp"
 #include "DNDS/Serializer/SerializerJSON.hpp"
 #include <filesystem>
 #include <unistd.h>
@@ -145,43 +151,44 @@ namespace
         const auto view = read.HostView();
         std::vector<I> packed;
         for (auto kind : {G::EntityKind::Node, G::EntityKind::Cell, G::EntityKind::Face, G::EntityKind::Edge})
-            for (I row = 0; row < state.NumOwned(kind); ++row)
-            {
-                std::vector<I> values;
-                auto append = [&](G::MeshRowSpan<I> entries, G::EntityKind target)
+            if (state.HasEntities(kind))
+                for (I row = 0; row < state.NumOwned(kind); ++row)
                 {
-                    values.push_back(I(entries.size()));
-                    for (auto local : entries)
+                    std::vector<I> values;
+                    auto append = [&](G::MeshRowSpan<I> entries, G::EntityKind target)
                     {
-                        DNDS_check_throw_info(local == DNDS::UnInitIndex || local >= 0, "test oracle requires complete owned topology");
-                        values.push_back(local == DNDS::UnInitIndex ? local : state.OriginalEntityId(target, local));
+                        values.push_back(I(entries.size()));
+                        for (auto local : entries)
+                        {
+                            DNDS_check_throw_info(local == DNDS::UnInitIndex || local >= 0, "test oracle requires complete owned topology");
+                            values.push_back(local == DNDS::UnInitIndex ? local : state.OriginalEntityId(target, local));
+                        }
+                    };
+                    if (kind == G::EntityKind::Node)
+                        for (int component = 0; component < 3; ++component)
+                            values.push_back(I(view.Coord(row)[component]));
+                    else if (kind == G::EntityKind::Cell)
+                    {
+                        values = {view.GetCellInfo(row).type, view.GetCellInfo(row).zone};
+                        append(view.CellNodes(row), G::EntityKind::Node);
+                        append(view.CellFaces(row), G::EntityKind::Face);
+                        append(view.CellFaceCells(row), G::EntityKind::Cell);
                     }
-                };
-                if (kind == G::EntityKind::Node)
-                    for (int component = 0; component < 3; ++component)
-                        values.push_back(I(view.Coord(row)[component]));
-                else if (kind == G::EntityKind::Cell)
-                {
-                    values = {view.GetCellInfo(row).type, view.GetCellInfo(row).zone};
-                    append(view.CellNodes(row), G::EntityKind::Node);
-                    append(view.CellFaces(row), G::EntityKind::Face);
-                    append(view.CellFaceCells(row), G::EntityKind::Cell);
+                    else if (kind == G::EntityKind::Face)
+                    {
+                        values = {view.GetFaceInfo(row).type, view.GetFaceInfo(row).zone};
+                        append(view.FaceNodes(row), G::EntityKind::Node);
+                        append(view.FaceCells(row), G::EntityKind::Cell);
+                    }
+                    else
+                    {
+                        values = {view.GetEdgeInfo(row).type, view.GetEdgeInfo(row).zone};
+                        append(view.EdgeNodes(row), G::EntityKind::Node);
+                        append(view.EdgeCells(row), G::EntityKind::Cell);
+                    }
+                    packed.insert(packed.end(), {int(kind), state.OriginalEntityId(kind, row), I(values.size())});
+                    packed.insert(packed.end(), values.begin(), values.end());
                 }
-                else if (kind == G::EntityKind::Face)
-                {
-                    values = {view.GetFaceInfo(row).type, view.GetFaceInfo(row).zone};
-                    append(view.FaceNodes(row), G::EntityKind::Node);
-                    append(view.FaceCells(row), G::EntityKind::Cell);
-                }
-                else
-                {
-                    values = {view.GetEdgeInfo(row).type, view.GetEdgeInfo(row).zone};
-                    append(view.EdgeNodes(row), G::EntityKind::Node);
-                    append(view.EdgeCells(row), G::EntityKind::Cell);
-                }
-                packed.insert(packed.end(), {int(kind), state.OriginalEntityId(kind, row), I(values.size())});
-                packed.insert(packed.end(), values.begin(), values.end());
-            }
         // This fixed tiny fixture oracle gathers records only in the test. The
         // production algorithms never gather global topology or allocate by IDs.
         const int local = int(packed.size());
@@ -281,7 +288,11 @@ TEST_CASE("Native face completion matches independent topology with remote bound
                 CHECK(neighbor == DNDS::UnInitIndex);
         }
     }
-    CHECK_THROWS(G::NativeMeshTopology::Build(*complete, mpi));
+    auto refreshed = G::NativeMeshTopology::Build(*complete, mpi);
+    CHECK(PersistentTopology(*refreshed, mpi) == PersistentTopology(*complete, mpi));
+    CHECK(refreshed->IdHighWater() == complete->IdHighWater());
+    CHECK_THROWS(G::NativeMeshTopology::Build(*complete, mpi, true, false, 1,
+                                              {{G::EntityKind::Face, complete->NextEntityId(G::EntityKind::Face) - 1}}));
     CHECK_NOTHROW(primary->Validate());
 }
 
@@ -468,6 +479,620 @@ TEST_CASE("Generated topology keeps persistent IDs and oriented slots through ar
         CHECK(PersistentTopology(*current, mpi) == expected);
     }
     std::filesystem::remove(file);
+}
+
+namespace
+{
+    using TopologyKeys = std::map<std::vector<I>, I>;
+    std::vector<I> RefreshOracleKey(const G::NativeMeshState &state, G::EntityKind kind, I row)
+    {
+        const auto &view = state.BorrowHostView();
+        const auto nodes = kind == G::EntityKind::Face ? view.FaceNodes(row) : view.EdgeNodes(row);
+        std::vector<std::pair<I, I>> images;
+        for (size_t slot = 0; slot < nodes.size(); ++slot)
+        {
+            const I frame = !view.IsPeriodic() ? 0 : uint8_t(kind == G::EntityKind::Face ? view.FaceNodePeriodicBits(row)[slot] : view.EdgeNodePeriodicBits(row)[slot]);
+            images.emplace_back(state.OriginalEntityId(G::EntityKind::Node, nodes[slot]), frame);
+        }
+        std::sort(images.begin(), images.end());
+        std::vector<I> result;
+        // Anchor on each occurrence of the smallest node ID. This independent
+        // oracle allows orientation reversal and uniform periodic image shifts.
+        for (const auto &[node, frame] : images)
+        {
+            if (node != images.front().first)
+                break;
+            auto normalized = images;
+            for (auto &[id, bits] : normalized)
+                bits ^= frame;
+            std::sort(normalized.begin(), normalized.end());
+            std::vector<I> key{int(kind), kind == G::EntityKind::Face ? view.GetFaceInfo(row).type : view.GetEdgeInfo(row).type};
+            for (const auto &[id, bits] : normalized)
+            {
+                key.push_back(id);
+                key.push_back(bits);
+            }
+            if (result.empty() || key < result)
+                result = std::move(key);
+        }
+        return result;
+    }
+    TopologyKeys RefreshOracle(const G::NativeMeshState &state, const DNDS::MPIInfo &mpi)
+    {
+        std::vector<I> local;
+        for (auto kind : {G::EntityKind::Face, G::EntityKind::Edge})
+            if (state.HasEntities(kind))
+                for (I row = 0; row < state.NumOwned(kind); ++row)
+                {
+                    const auto key = RefreshOracleKey(state, kind, row);
+                    local.insert(local.end(), {I(key.size()), state.OriginalEntityId(kind, row)});
+                    local.insert(local.end(), key.begin(), key.end());
+                }
+        const int count = int(local.size());
+        std::vector<int> counts(size_t(mpi.size)), offsets(size_t(mpi.size) + 1);
+        MPI_Allgather(&count, 1, MPI_INT, counts.data(), 1, MPI_INT, mpi.comm);
+        std::partial_sum(counts.begin(), counts.end(), offsets.begin() + 1);
+        std::vector<I> global(size_t(offsets.back()));
+        MPI_Allgatherv(local.data(), count, DNDS::DNDS_MPI_INDEX, global.data(), counts.data(), offsets.data(), DNDS::DNDS_MPI_INDEX, mpi.comm);
+        TopologyKeys result;
+        for (size_t slot = 0; slot < global.size();)
+        {
+            const auto width = size_t(global[slot]);
+            const auto id = global[slot + 1];
+            REQUIRE(slot + 2 + width <= global.size());
+            CHECK(result.emplace(std::vector<I>(global.begin() + slot + 2, global.begin() + slot + 2 + width), id).second);
+            slot += width + 2;
+        }
+        return result;
+    }
+    G::AdjKind RefreshVariant(G::EntityKind kind, bool sorted = false)
+    {
+        G::AdjKind key{kind, kind};
+        key.path = {kind, kind};
+        key.selection = G::RelationSelection::Custom;
+        key.order = sorted ? G::RelationOrder::SortedUnique : G::RelationOrder::Topological;
+        key.periodic = G::RelationPeriodicPolicy::FrameMatched;
+        key.semanticName = sorted ? "test.topology.refresh.sorted-adjacents" : "test.topology.refresh.ordered-self";
+        key.semanticVersion = 1;
+        return key;
+    }
+    std::shared_ptr<const G::NativeMeshState> RefreshPayloads(std::shared_ptr<const G::NativeMeshState> state,
+                                                              const DNDS::MPIInfo &mpi)
+    {
+        const auto keys = RefreshOracle(*state, mpi);
+        auto data = G::NativeMeshAssembler::CaptureOwned(*state, mpi);
+        data.provenance.emplace();
+        data.provenance->sourceNamespace = state->MeshNamespace();
+        for (auto kind : {G::EntityKind::Face, G::EntityKind::Edge})
+        {
+            if (!state->HasEntities(kind))
+                continue;
+            std::vector<std::vector<I>> ids, ancestry, named;
+            const I first = kind == G::EntityKind::Face ? I(1000000000000LL) : std::numeric_limits<I>::max() - 100000;
+            I ordinal = 0, maximum = -1;
+            std::map<std::vector<I>, I> expected;
+            for (const auto &[key, unused] : keys)
+                if (key[0] == int(kind))
+                    expected.emplace(key, first + ordinal++ * 1009);
+            for (I row = 0; row < state->NumOwned(kind); ++row)
+            {
+                const I id = expected.at(RefreshOracleKey(*state, kind, row));
+                ids.push_back({id});
+                ancestry.push_back({id, 42});
+                const I global = state->Entities(kind).LocalToGlobal(row);
+                named.push_back({global, DNDS::UnInitIndex, global});
+                maximum = std::max(maximum, id);
+            }
+            MPI_Allreduce(MPI_IN_PLACE, &maximum, 1, DNDS::DNDS_MPI_INDEX, MPI_MAX, mpi.comm);
+            data.ids[kind] = Rows(ids);
+            data.identity.nextIds[kind] = maximum + 101;
+            data.provenance->sourceKinds[kind] = G::EntityKind::Cell;
+            data.provenance->sourceIds.emplace(kind, Rows(ancestry));
+            data.namedRelations.emplace(RefreshVariant(kind), Rows(named));
+            std::vector<std::vector<I>> sorted(size_t(state->NumOwned(G::EntityKind::Node)));
+            for (auto &row : sorted)
+                for (I global = 0; global < state->NumGlobal(kind); ++global)
+                    row.push_back(global);
+            auto sortedKey = RefreshVariant(kind, true);
+            sortedKey.from = G::EntityKind::Node;
+            sortedKey.path = {G::EntityKind::Node, kind};
+            data.namedRelations.emplace(sortedKey, Rows(sorted));
+            const auto fixedSlot = kind == G::EntityKind::Face ? G::MeshRelation::FaceCells : G::MeshRelation::EdgeCells;
+            data.namedRelations.emplace(kind == G::EntityKind::Face ? G::Adj::Face2Cell : G::Adj::Edge2Cell,
+                                        *data.relations[size_t(fixedSlot)]);
+        }
+        return G::NativeMeshAssembler::Build(mpi, std::move(data));
+    }
+    void CheckRefreshPayloads(const G::NativeMeshState &state)
+    {
+        REQUIRE(state.Provenance().has_value());
+        for (auto kind : {G::EntityKind::Face, G::EntityKind::Edge})
+        {
+            if (!state.HasEntities(kind))
+                continue;
+            const auto read = state.Relation(RefreshVariant(kind));
+            auto sortedKey = RefreshVariant(kind, true);
+            sortedKey.from = G::EntityKind::Node;
+            sortedKey.path = {G::EntityKind::Node, kind};
+            const auto sorted = state.Relation(sortedKey);
+            for (I row = 0; row < sorted.NumOwned(); ++row)
+            {
+                REQUIRE(sorted.RowSize(row) == size_t(state.NumGlobal(kind)));
+                for (I slot = 0; slot < state.NumGlobal(kind); ++slot)
+                    CHECK(sorted.ReadEntry(row, size_t(slot)).global == slot);
+            }
+            const auto ancestry = state.Provenance()->sourceIds.at(kind).Read();
+            for (I row = 0; row < state.NumOwned(kind); ++row)
+            {
+                REQUIRE(read.RowSize(row) == 3);
+                CHECK(read.ReadEntry(row, 1).absent);
+                for (size_t slot : {size_t(0), size_t(2)})
+                {
+                    const auto target = state.Entities(kind).GlobalToLocal(read.ReadEntry(row, slot).global);
+                    REQUIRE(target.has_value());
+                    CHECK(state.OriginalEntityId(kind, *target) == state.OriginalEntityId(kind, row));
+                }
+                REQUIRE(ancestry.View().RowSize(size_t(row)) == 2);
+                CHECK(ancestry.View()(size_t(row), 0) == state.OriginalEntityId(kind, row));
+                CHECK(ancestry.View()(size_t(row), 1) == 42);
+            }
+        }
+    }
+}
+
+TEST_CASE("Ordinary native topology refresh recovers every high ID after reorder and independent redistribution")
+{
+    const auto mpi = MPI();
+    auto current = RefreshPayloads(G::NativeMeshTopology::Build(*Fixture(mpi, 3), mpi, true, true), mpi);
+    const auto expected = RefreshOracle(*current, mpi);
+    CHECK(expected.size() == 16); // Seven distinct tetrahedron faces and nine edges.
+    std::set<std::vector<I>> faces, edges;
+    for (const auto &[key, id] : expected)
+    {
+        std::vector<I> nodes;
+        for (size_t slot = 2; slot < key.size(); slot += 2)
+            nodes.push_back(key[slot]);
+        (key[0] == int(G::EntityKind::Face) ? faces : edges).insert(nodes);
+    }
+    CHECK(faces == std::set<std::vector<I>>{{0, 1, 2}, {0, 1, 3}, {0, 1, 4}, {0, 2, 3}, {0, 2, 4}, {1, 2, 3}, {1, 2, 4}});
+    CHECK(edges == std::set<std::vector<I>>{{0, 1}, {0, 2}, {0, 3}, {0, 4}, {1, 2}, {1, 3}, {1, 4}, {2, 3}, {2, 4}});
+    const auto marks = current->IdHighWater();
+    const auto name = current->MeshNamespace();
+    for (int step = 0; step < 3; ++step)
+    {
+        if (step == 1)
+            current = G::NativeMeshTransition::ReorderLocalCells(*current, mpi, 2).state;
+        if (step == 2)
+        {
+            G::ReorderInput input;
+            for (auto kind : {G::EntityKind::Cell, G::EntityKind::Node, G::EntityKind::Bnd, G::EntityKind::Face, G::EntityKind::Edge})
+                input.explicitMaps.push_back({kind, std::vector<DNDS::MPI_int>(size_t(current->NumOwned(kind)), (mpi.rank + 1 + int(kind)) % mpi.size)});
+            current = G::NativeMeshTransition::Build(*current, mpi, input).state;
+        }
+        const auto retained = current;
+        auto read = retained->Snapshot(R::Device::Host()).AcquireRead();
+        current = G::NativeMeshTopology::Build(*current, mpi, true, true);
+        CHECK(current->MeshNamespace() == name);
+        CHECK(current->IdHighWater() == marks);
+        CHECK(RefreshOracle(*current, mpi) == expected);
+        CheckRefreshPayloads(*current);
+        CHECK_NOTHROW(read.HostView());
+        CHECK(RefreshOracle(*retained, mpi) == expected);
+    }
+    auto facade = G::UnstructuredMesh::FromNative(mpi, current);
+    facade->PrepareNativeTopology(true, true);
+    CHECK(RefreshOracle(*facade->CurrentNativeState(), mpi) == expected);
+    CHECK(facade->CurrentNativeState()->IdHighWater() == marks);
+    CheckRefreshPayloads(*facade->CurrentNativeState());
+    for (const auto &flags : {std::pair<bool, bool>{false, false}, {true, false}, {false, true}})
+    {
+        current = G::NativeMeshTopology::Build(*current, mpi, flags.first, flags.second);
+        CHECK(RefreshOracle(*current, mpi) == expected);
+        CHECK(current->IdHighWater() == marks);
+        CheckRefreshPayloads(*current);
+    }
+}
+
+TEST_CASE("Native topology refresh matches exact periodic occurrence keys and preserves named ancestry")
+{
+    const auto mpi = MPI();
+    for (bool repeated : {false, true})
+    {
+        CAPTURE(repeated);
+        auto primary = G::NativeMeshBuilder::Build(repeated ? NativePeriodicFixtures::QuadraticTorus(mpi) : NativePeriodicFixtures::TwoCells(mpi));
+        auto current = RefreshPayloads(G::NativeMeshTopology::Build(*primary, mpi), mpi);
+        const auto expected = RefreshOracle(*current, mpi);
+        CHECK(expected.size() == (repeated ? 2 : 6));
+        const auto marks = current->IdHighWater();
+        for (int step = 0; step < 2; ++step)
+        {
+            G::ReorderInput input;
+            for (auto kind : {G::EntityKind::Cell, G::EntityKind::Node, G::EntityKind::Bnd, G::EntityKind::Face})
+                input.explicitMaps.push_back({kind, std::vector<DNDS::MPI_int>(size_t(current->NumOwned(kind)), (mpi.rank + step + 1 + int(kind)) % mpi.size)});
+            current = G::NativeMeshTransition::Build(*current, mpi, input).state;
+            current = G::NativeMeshTopology::Build(*current, mpi);
+            CHECK(current->IdHighWater() == marks);
+            CHECK(RefreshOracle(*current, mpi) == expected);
+            CheckRefreshPayloads(*current);
+        }
+    }
+}
+
+TEST_CASE("Native refresh allocates only unmatched keys and rejects uninferable retained associations collectively")
+{
+    const auto mpi = MPI();
+    auto complete = RefreshPayloads(G::NativeMeshTopology::Build(*Fixture(mpi, 3), mpi, true, true), mpi);
+    const auto original = RefreshOracle(*complete, mpi);
+    const I highWater = complete->NextEntityId(G::EntityKind::Face);
+    auto staleData = G::NativeMeshAssembler::CaptureOwned(*complete, mpi);
+    auto cone = staleData.relations[size_t(G::MeshRelation::FaceNodes)]->Clone();
+    const auto faces = complete->Entities(G::EntityKind::Face);
+    // Represent a stale generated cone left behind after primary topology was
+    // changed. {0,3,4} is not any face of the two known tetrahedra. Typed array
+    // validation cannot establish that full cell/subentity consistency.
+    if (faces.Owner(0) == mpi.rank)
+    {
+        auto write = cone.Write();
+        const size_t row = size_t(faces.OwnerLocalRow(0));
+        for (size_t slot = 0; slot < 3; ++slot)
+            write.View()(row, slot) = std::vector<I>{0, 3, 4}[slot];
+    }
+    staleData.relations[size_t(G::MeshRelation::FaceNodes)] = std::move(cone);
+    auto stale = G::NativeMeshAssembler::Build(mpi, staleData);
+    // The new source face has no old application row; neither named rows nor
+    // ancestry can be invented. Failure leaves both publications usable.
+    CHECK_THROWS(G::NativeMeshTopology::Build(*stale, mpi, true, false));
+    CHECK_NOTHROW(stale->Validate());
+    CHECK(RefreshOracle(*complete, mpi) == original);
+    staleData.provenance->sourceIds.erase(G::EntityKind::Face);
+    staleData.provenance->sourceKinds.erase(G::EntityKind::Face);
+    staleData.namedRelations.erase(RefreshVariant(G::EntityKind::Face));
+    auto sortedFace = RefreshVariant(G::EntityKind::Face, true);
+    sortedFace.from = G::EntityKind::Node;
+    sortedFace.path = {G::EntityKind::Node, G::EntityKind::Face};
+    staleData.namedRelations.erase(sortedFace);
+    auto noApplicationRows = G::NativeMeshAssembler::Build(mpi, std::move(staleData));
+    auto refreshed = G::NativeMeshTopology::Build(*noApplicationRows, mpi, true, false);
+    const auto actual = RefreshOracle(*refreshed, mpi);
+    REQUIRE(actual.size() == original.size());
+    size_t replaced = 0;
+    for (const auto &[key, id] : actual)
+    {
+        const auto found = original.find(key);
+        REQUIRE(found != original.end());
+        if (id != found->second)
+        {
+            CHECK(key[0] == int(G::EntityKind::Face));
+            CHECK(id == highWater);
+            ++replaced;
+        }
+    }
+    CHECK(replaced == 1);
+    CHECK(refreshed->NextEntityId(G::EntityKind::Face) == highWater + 1);
+    CHECK(refreshed->NextEntityId(G::EntityKind::Edge) == complete->NextEntityId(G::EntityKind::Edge));
+    auto again = G::NativeMeshTopology::Build(*refreshed, mpi, true, false);
+    CHECK(RefreshOracle(*again, mpi) == actual);
+    CHECK(again->IdHighWater() == refreshed->IdHighWater());
+    const I floor = refreshed->NextEntityId(G::EntityKind::Face) + 23;
+    auto fresh = G::NativeMeshTopology::Build(*refreshed, mpi, true, false, 1, {{G::EntityKind::Face, floor}});
+    const auto freshKeys = RefreshOracle(*fresh, mpi);
+    for (const auto &[key, id] : freshKeys)
+        if (key[0] == int(G::EntityKind::Face))
+        {
+            CHECK(id >= floor);
+            CHECK(id < floor + fresh->NumGlobal(G::EntityKind::Face));
+            CHECK(id != actual.at(key));
+        }
+    CHECK(fresh->NextEntityId(G::EntityKind::Face) == floor + fresh->NumGlobal(G::EntityKind::Face));
+}
+
+TEST_CASE("Periodic three dimensional refresh preserves repeated-node face and edge keys")
+{
+    const auto mpi = MPI();
+    auto nodes = G::EntitySpace::CreateOwned(G::EntityKind::Node, mpi, mpi.rank == mpi.size - 1 ? 4 : 0);
+    auto cells = nodes.CreateSibling(G::EntityKind::Cell, mpi.rank == 0 ? 1 : 0);
+    auto bnd = nodes.CreateSibling(G::EntityKind::Bnd, mpi.rank == mpi.size / 2 ? 2 : 0);
+    G::NativeMeshInput input{mpi, 3, cells, nodes, bnd,
+                             Rows(cells.NumOwned() ? std::vector<std::vector<I>>{{0, 0, 1, 1, 2, 2, 3, 3}} : std::vector<std::vector<I>>{}),
+                             Rows(bnd.NumOwned() ? std::vector<std::vector<I>>{{0, 1, 3, 2}, {0, 2, 3, 1}} : std::vector<std::vector<I>>{}),
+                             R::Array<DNDS::real>(R::RowLayout::Dense(size_t(nodes.NumOwned()), 3)),
+                             R::Array<G::ElemInfo>(R::RowLayout::Dense(size_t(cells.NumOwned()), 1)),
+                             R::Array<G::ElemInfo>(R::RowLayout::Dense(size_t(bnd.NumOwned()), 1))};
+    input.periodic = true;
+    input.cellNodesPbi = NativePeriodicFixtures::Rows<G::NodePeriodicBits>(cells.NumOwned()
+                                                                               ? std::vector<std::vector<G::NodePeriodicBits>>{{{0}, {1}, {1}, {0}, {0}, {1}, {1}, {0}}}
+                                                                               : std::vector<std::vector<G::NodePeriodicBits>>{});
+    input.boundaryNodesPbi = NativePeriodicFixtures::Rows<G::NodePeriodicBits>(bnd.NumOwned()
+                                                                                   ? std::vector<std::vector<G::NodePeriodicBits>>{{{1}, {1}, {1}, {1}}, {{0}, {0}, {0}, {0}}}
+                                                                                   : std::vector<std::vector<G::NodePeriodicBits>>{});
+    {
+        auto coords = input.coordinates.Write();
+        for (I row = 0; row < nodes.NumOwned(); ++row)
+        {
+            coords.View()(size_t(row), 0) = 0;
+            coords.View()(size_t(row), 1) = row % 2;
+            coords.View()(size_t(row), 2) = row / 2;
+        }
+        auto info = input.cellInfo.Write();
+        if (cells.NumOwned())
+            info.View()(0, 0) = G::ElemInfo{G::Elem::Hex8, G::INTERNAL_ZONE};
+        auto boundary = input.boundaryInfo.Write();
+        if (bnd.NumOwned())
+        {
+            boundary.View()(0, 0) = G::ElemInfo{G::Elem::Quad4, G::BC_ID_PERIODIC_1};
+            boundary.View()(1, 0) = G::ElemInfo{G::Elem::Quad4, G::BC_ID_PERIODIC_1_DONOR};
+        }
+    }
+    auto primary = G::NativeMeshBuilder::Build(std::move(input));
+    auto current = RefreshPayloads(G::NativeMeshTopology::Build(*primary, mpi, true, true), mpi);
+    CHECK(current->NumGlobal(G::EntityKind::Face) == 5);
+    CHECK(current->NumGlobal(G::EntityKind::Edge) == 8);
+    const auto expected = RefreshOracle(*current, mpi);
+    const auto marks = current->IdHighWater();
+    for (int step = 0; step < 2; ++step)
+    {
+        G::ReorderInput placement;
+        for (auto kind : {G::EntityKind::Cell, G::EntityKind::Node, G::EntityKind::Bnd, G::EntityKind::Face, G::EntityKind::Edge})
+            placement.explicitMaps.push_back({kind, std::vector<DNDS::MPI_int>(size_t(current->NumOwned(kind)), (mpi.rank + 1 + step + int(kind)) % mpi.size)});
+        current = G::NativeMeshTransition::Build(*current, mpi, placement).state;
+        current = G::NativeMeshTopology::Build(*current, mpi, true, true);
+        CHECK(current->IdHighWater() == marks);
+        CHECK(RefreshOracle(*current, mpi) == expected);
+        CheckRefreshPayloads(*current);
+    }
+}
+
+TEST_CASE("Distinct full topology keys retain different IDs even under an exact rendezvous hash collision")
+{
+    const auto mpi = MPI();
+    auto source = Fixture(mpi, 2);
+    auto data = G::NativeMeshAssembler::CaptureOwned(*source, mpi);
+    // These Line2 full keys [type,2,node,0,node,0] collide under the
+    // rendezvous's 64-bit hash, not merely modulo the communicator size.
+    const I idValues[]{0, 1, 2, 3329321212988115LL};
+    auto hash = [](std::initializer_list<I> key)
+    {
+        uint64_t value = 1469598103934665603ULL;
+        for (auto word : key)
+            value = (value ^ uint64_t(word)) * 1099511628211ULL;
+        return value;
+    };
+    REQUIRE(hash({G::Elem::Line2, 2, idValues[0], 0, idValues[1], 0}) ==
+            hash({G::Elem::Line2, 2, idValues[2], 0, idValues[3], 0}));
+    {
+        auto write = data.ids.at(G::EntityKind::Node).Write();
+        for (I row = 0; row < source->NumOwned(G::EntityKind::Node); ++row)
+            write.View()(size_t(row), 0) = idValues[source->Entities(G::EntityKind::Node).LocalToGlobal(row)];
+    }
+    data.identity.nextIds[G::EntityKind::Node] = idValues[3] + 1;
+    source = G::NativeMeshAssembler::Build(mpi, std::move(data));
+    auto current = RefreshPayloads(G::NativeMeshTopology::Build(*source, mpi), mpi);
+    const auto expected = RefreshOracle(*current, mpi);
+    CHECK(expected.size() == 5);
+    CHECK(expected.at({int(G::EntityKind::Face), G::Elem::Line2, idValues[0], 0, idValues[1], 0}) !=
+          expected.at({int(G::EntityKind::Face), G::Elem::Line2, idValues[2], 0, idValues[3], 0}));
+    current = G::NativeMeshTopology::Build(*current, mpi);
+    CHECK(RefreshOracle(*current, mpi) == expected);
+    CheckRefreshPayloads(*current);
+}
+
+TEST_CASE("Intermediate-only named definitions reject added topology keys without inventing new paths")
+{
+    const auto mpi = MPI();
+    auto complete = G::NativeMeshTopology::Build(*Fixture(mpi, 3), mpi);
+    const auto allKeys = RefreshOracle(*complete, mpi);
+    auto data = G::NativeMeshAssembler::CaptureOwned(*complete, mpi);
+    const auto oldSpace = complete->Entities(G::EntityKind::Face);
+    const I removed = oldSpace.NumGlobal() - 1;
+    const I newCount = oldSpace.NumOwned() - I(oldSpace.Owner(removed) == mpi.rank);
+    auto truncate = [&](const R::Array<I> &array)
+    {
+        std::vector<std::vector<I>> rows;
+        auto read = array.Read();
+        for (I row = 0; row < newCount; ++row)
+            rows.emplace_back(read.View()[size_t(row)].begin(), read.View()[size_t(row)].end());
+        auto result = Rows(rows);
+        if (!array.Layout().IsVariable())
+            result = R::Array<I>::FromStorage(R::RowLayout::Dense(rows.size(), array.Layout().Width()), result.Storage());
+        return result;
+    };
+    // Retain the first six exact keys. The stale primary-to-face slot for the
+    // missing seventh key is still a valid index; only reconstruction can know
+    // that one more physical face is required by the authoritative cell cones.
+    for (auto slot : {G::MeshRelation::FaceNodes, G::MeshRelation::FaceCells, G::MeshRelation::FaceBoundaries})
+        data.relations[size_t(slot)] = truncate(*data.relations[size_t(slot)]);
+    data.ids[G::EntityKind::Face] = truncate(data.ids.at(G::EntityKind::Face));
+    R::Array<G::ElemInfo> information(R::RowLayout::Dense(size_t(newCount), 1));
+    {
+        auto old = data.faceInfo->Read();
+        auto write = information.Write();
+        for (I row = 0; row < newCount; ++row)
+            write.View()(size_t(row), 0) = old.View()(size_t(row), 0);
+    }
+    data.faceInfo = std::move(information);
+    auto slots = data.relations[size_t(G::MeshRelation::CellFaces)]->Clone();
+    {
+        auto write = slots.Write();
+        for (size_t row = 0; row < slots.Rows(); ++row)
+            for (size_t slot = 0; slot < write.View().RowSize(row); ++slot)
+                if (write.View()(row, slot) == removed)
+                    write.View()(row, slot) = 0;
+    }
+    data.relations[size_t(G::MeshRelation::CellFaces)] = std::move(slots);
+    data.spaces.at(G::EntityKind::Face) = data.spaces.at(G::EntityKind::Node).CreateSibling(G::EntityKind::Face, newCount);
+    for (auto item = data.namedRelations.begin(); item != data.namedRelations.end();)
+    {
+        const auto path = item->first.Path();
+        if (std::find(path.begin(), path.end(), G::EntityKind::Face) != path.end())
+            item = data.namedRelations.erase(item);
+        else
+            ++item;
+    }
+    auto composed = G::AdjKind::Composition(G::Adj::Cell2Face, G::Adj::Face2Cell, G::RelationSelection::Custom,
+                                            false, "test.refresh.intermediate-only", 1);
+    composed.order = G::RelationOrder::Topological;
+    data.namedRelations.emplace(composed, *data.relations[size_t(G::MeshRelation::CellFaceCells)]);
+    auto partial = G::NativeMeshAssembler::Build(mpi, data);
+    REQUIRE(partial->NumGlobal(G::EntityKind::Face) == 6);
+    CHECK_THROWS(G::NativeMeshTopology::Build(*partial, mpi));
+    CHECK_NOTHROW(partial->Validate());
+    data.namedRelations.erase(composed);
+    partial = G::NativeMeshAssembler::Build(mpi, std::move(data));
+    auto repaired = G::NativeMeshTopology::Build(*partial, mpi);
+    const auto keys = RefreshOracle(*repaired, mpi);
+    CHECK(keys.size() == allKeys.size());
+    I fresh = 0;
+    for (const auto &[key, id] : keys)
+    {
+        REQUIRE(allKeys.count(key));
+        if (id != allKeys.at(key))
+        {
+            CHECK(id == complete->NextEntityId(G::EntityKind::Face));
+            ++fresh;
+        }
+    }
+    CHECK(fresh == 1);
+}
+
+TEST_CASE("Topology ID reuse distinguishes higher order vertex roles despite equal full node image multisets")
+{
+    const auto mpi = MPI();
+    auto primary = G::NativeMeshBuilder::Build(NativePeriodicFixtures::QuadraticTorus(mpi));
+    auto complete = G::NativeMeshTopology::Build(*primary, mpi);
+    const auto original = RefreshOracle(*complete, mpi);
+    const auto space = complete->Entities(G::EntityKind::Face);
+    auto data = G::NativeMeshAssembler::CaptureOwned(*complete, mpi);
+    auto nodes = data.relations[size_t(G::MeshRelation::FaceNodes)]->Clone();
+    auto bits = data.faceNodesPbi->Clone();
+    if (space.Owner(0) == mpi.rank)
+    {
+        auto nodeWrite = nodes.Write();
+        auto bitWrite = bits.Write();
+        const auto row = size_t(space.OwnerLocalRow(0));
+        // Swap an endpoint occurrence with the midside occurrence, retaining
+        // the exact same full multiset of (persistent node ID,image) pairs.
+        std::swap(nodeWrite.View()(row, 1), nodeWrite.View()(row, 2));
+        std::swap(bitWrite.View()(row, 1), bitWrite.View()(row, 2));
+    }
+    data.relations[size_t(G::MeshRelation::FaceNodes)] = std::move(nodes);
+    data.faceNodesPbi = std::move(bits);
+    auto stale = G::NativeMeshAssembler::Build(mpi, std::move(data));
+    CHECK(RefreshOracle(*stale, mpi) == original); // A full-multiset-only matcher misses this.
+    auto recovered = G::NativeMeshTopology::Build(*stale, mpi);
+    const auto actual = RefreshOracle(*recovered, mpi);
+    REQUIRE(actual.size() == original.size());
+    size_t fresh = 0;
+    for (const auto &[key, id] : actual)
+        if (id != original.at(key))
+        {
+            CHECK(id == complete->NextEntityId(G::EntityKind::Face));
+            ++fresh;
+        }
+    CHECK(fresh == 1);
+    CHECK(recovered->NextEntityId(G::EntityKind::Face) == complete->NextEntityId(G::EntityKind::Face) + 1);
+}
+
+namespace
+{
+    std::shared_ptr<const G::NativeMeshState> QuadraticHexPair(const DNDS::MPIInfo &mpi)
+    {
+        auto nodes = G::EntitySpace::CreateOwned(G::EntityKind::Node, mpi, mpi.rank == mpi.size - 1 ? 12 : 0);
+        const bool first = mpi.rank == 0, second = mpi.rank == (mpi.size > 1 ? 1 : 0);
+        auto cells = nodes.CreateSibling(G::EntityKind::Cell, I(first) + I(second));
+        auto boundaries = nodes.CreateSibling(G::EntityKind::Bnd, 0);
+        std::vector<std::vector<I>> cones;
+        if (first)
+            cones.push_back({0, 1, 4, 3, 6, 7, 10, 9});
+        if (second)
+            cones.push_back({1, 2, 5, 4, 7, 8, 11, 10});
+        G::NativeMeshInput input{mpi, 3, cells, nodes, boundaries, Rows(cones), Rows({}),
+                                 R::Array<DNDS::real>(R::RowLayout::Dense(size_t(nodes.NumOwned()), 3)),
+                                 R::Array<G::ElemInfo>(R::RowLayout::Dense(size_t(cells.NumOwned()), 1)),
+                                 R::Array<G::ElemInfo>(R::RowLayout::Dense(0, 1))};
+        {
+            auto points = input.coordinates.Write();
+            for (I row = 0; row < nodes.NumOwned(); ++row)
+            {
+                points.View()(size_t(row), 0) = row % 3;
+                points.View()(size_t(row), 1) = row / 3 % 2;
+                points.View()(size_t(row), 2) = row / 6;
+            }
+            auto info = input.cellInfo.Write();
+            for (I row = 0; row < cells.NumOwned(); ++row)
+                info.View()(size_t(row), 0) = G::ElemInfo{G::Elem::Hex8, G::INTERNAL_ZONE};
+        }
+        auto primary = G::NativeMeshBuilder::Build(std::move(input));
+        return G::NativeMeshRefinement::Elevate(*primary, mpi).state;
+    }
+}
+
+TEST_CASE("Quadratic topology roles reject actual cracked shared faces and prevent stale generated ID reuse")
+{
+    const auto mpi = MPI();
+    const auto primary = QuadraticHexPair(mpi);
+    const auto complete = G::NativeMeshTopology::Build(*primary, mpi, true, true);
+    REQUIRE(complete->NumGlobal(G::EntityKind::Face) == 11);
+    const auto expected = RefreshOracle(*complete, mpi);
+    for (bool center : {false, true})
+    {
+        CAPTURE(center);
+        auto data = G::NativeMeshAssembler::CaptureOwned(*primary, mpi);
+        auto cone = data.relations[size_t(G::MeshRelation::CellNodes)]->Clone();
+        const auto cells = primary->Entities(G::EntityKind::Cell);
+        if (cells.Owner(1) == mpi.rank)
+        {
+            const I row = cells.OwnerLocalRow(1);
+            G::Elem::Element element{G::Elem::Hex27};
+            std::vector<I> localSlots(27);
+            std::iota(localSlots.begin(), localSlots.end(), I(0));
+            size_t found = 0;
+            auto write = cone.Write();
+            for (G::t_index face = 0; face < element.GetNumFaces(); ++face)
+            {
+                std::vector<I> slots(9);
+                element.ExtractFaceNodes(face, localSlots, slots);
+                bool shared = true;
+                for (size_t corner = 0; corner < 4; ++corner)
+                    shared = shared && primary->BorrowHostView().Coord(primary->BorrowHostView().CellNodes(row)[size_t(slots[corner])])[0] == 1;
+                if (!shared)
+                    continue;
+                std::swap(write.View()(size_t(row), size_t(slots[4])), write.View()(size_t(row), size_t(slots[center ? 8 : 5])));
+                ++found;
+            }
+            REQUIRE(found == 1);
+        }
+        data.relations[size_t(G::MeshRelation::CellNodes)] = cone;
+        if (data.namedRelations.count(G::Adj::Cell2Node))
+            data.namedRelations.at(G::Adj::Cell2Node) = cone;
+        auto cracked = G::NativeMeshAssembler::Build(mpi, std::move(data));
+        CHECK_THROWS(G::NativeMeshTopology::Build(*cracked, mpi, true, true));
+        CHECK_NOTHROW(cracked->Validate());
+        CHECK(RefreshOracle(*G::NativeMeshTopology::Build(*primary, mpi, true, true), mpi) == expected);
+        auto staleData = G::NativeMeshAssembler::CaptureOwned(*complete, mpi);
+        auto faces = staleData.relations[size_t(G::MeshRelation::FaceNodes)]->Clone();
+        const auto space = complete->Entities(G::EntityKind::Face);
+        if (space.Owner(0) == mpi.rank)
+        {
+            auto write = faces.Write();
+            const auto row = size_t(space.OwnerLocalRow(0));
+            std::swap(write.View()(row, 4), write.View()(row, center ? 8 : 5));
+        }
+        staleData.relations[size_t(G::MeshRelation::FaceNodes)] = faces;
+        if (staleData.namedRelations.count(G::Adj::Face2Node))
+            staleData.namedRelations.at(G::Adj::Face2Node) = faces;
+        auto stale = G::NativeMeshAssembler::Build(mpi, std::move(staleData));
+        CHECK(RefreshOracle(*stale, mpi) == expected); // Same corners and full node sets.
+        auto repaired = G::NativeMeshTopology::Build(*stale, mpi, true, false);
+        size_t fresh = 0;
+        for (const auto &[key, id] : RefreshOracle(*repaired, mpi))
+            if (id != expected.at(key))
+            {
+                CHECK(key[0] == int(G::EntityKind::Face));
+                CHECK(id == complete->NextEntityId(G::EntityKind::Face));
+                ++fresh;
+            }
+        CHECK(fresh == 1);
+    }
 }
 
 int main(int argc, char **argv)

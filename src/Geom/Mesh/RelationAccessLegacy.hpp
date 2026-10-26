@@ -22,4 +22,21 @@ namespace DNDS::Geom
         _view.ghost = Capture(Runtime::ShareLegacyHost(*pair.son), _ghost);
         Validate();
     }
+    template <rowsize target_rs, rowsize source_rs = NonUniformSize>
+    static void narrowAdjToFixed(
+        const ArrayAdjacencyPair<source_rs> &source,
+        ArrayAdjacencyPair<target_rs> &target,
+        index nRows,
+        index fill = UnInitIndex)
+    {
+        static_assert(target_rs > 0, "narrowAdjToFixed: target must be fixed-width");
+        for (index i = 0; i < nRows; i++)
+        {
+            auto row = source.father->operator[](i);
+            for (rowsize j = 0; j < target_rs; j++)
+                target.father->operator()(i, j) =
+                    (j < static_cast<rowsize>(row.size())) ? row[j] : fill;
+        }
+    }
+
 }

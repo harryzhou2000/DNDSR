@@ -138,18 +138,9 @@ namespace DNDS::CFV
         {
             // Published native wall distances are immutable for this mesh
             // epoch. The base stamp rejects a change of query authority.
-            if (mesh->HasNativeState())
-            {
-                DNDS_check_throw_info(mesh->HasNodeWallDist(),
-                                      "wall-distance reconstruction requires prepared node wall distances");
-                return {};
-            }
-            // Compatibility backing also detects raw writes that bypass the
-            // mesh's tracked mutation boundary.
-            DNDS_check_throw_info(mesh->nodeWallDist.father && mesh->nodeWallDist.son,
+            DNDS_check_throw_info(mesh->HasNativeState() && mesh->HasNodeWallDist(),
                                   "wall-distance reconstruction requires prepared node wall distances");
-            return {mesh->nodeWallDist.father->HostDataIdentity(), mesh->nodeWallDist.father->HostDataVersion(),
-                    mesh->nodeWallDist.son->HostDataIdentity(), mesh->nodeWallDist.son->HostDataVersion()};
+            return {};
         }
 
     public:

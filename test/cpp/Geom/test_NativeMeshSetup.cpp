@@ -3,7 +3,7 @@
 #include "Geom/Mesh/Mesh_Helpers.hpp"
 #include "Geom/Mesh/EntityField.hpp"
 #include "Geom/Mesh/NativeMeshAssembler.hpp"
-#include "MeshFacadeOverlapFixture.hpp"
+#include "NativeMeshOverlapFixture.hpp"
 #include <filesystem>
 #include <set>
 #include <unistd.h>
@@ -22,8 +22,6 @@ TEST_CASE("Native setup replacement stages identity and invalidates prior associ
     CHECK(destination->HasNativeState());
     CHECK(destination->CurrentNativeState()->MeshNamespace() == input->MeshNamespace());
     CHECK(destination->Entities(G::EntityKind::Node).SameDomain(source->Entities(G::EntityKind::Node)));
-    CHECK_FALSE(destination->coords.father);
-    CHECK_FALSE(destination->cell2node.father);
     auto old = destination->Entities(G::EntityKind::Cell);
     R::Array<I> values(R::RowLayout::Dense(size_t(old.NumOwned()), 1));
     {
@@ -57,7 +55,7 @@ TEST_CASE("Native setup replacement stages identity and invalidates prior associ
     CHECK_NOTHROW(destination->AcquireRead(G::MeshReadRequirements::CellFlux()));
 }
 
-TEST_CASE("Native setup rejects null malformed association and populated legacy destination before commit")
+TEST_CASE("Native setup rejects null malformed association and preserves an existing publication on failure")
 {
     DNDS::MPIInfo mpi(MPI_COMM_WORLD);
     auto fixture = G::OverlapTest::BuildNativeFixture(mpi);
@@ -67,12 +65,16 @@ TEST_CASE("Native setup rejects null malformed association and populated legacy 
     G::UnstructuredMesh wrongDimension(mpi, 3);
     CHECK_THROWS(wrongDimension.ReplaceNativeForSetup(fixture.mesh->CurrentNativeState()));
     CHECK_FALSE(wrongDimension.HasNativeState());
-    G::UnstructuredMesh populated(mpi, 2);
-    populated.coords.InitPair("populated installer rejection", mpi);
-    populated.coords.father->Resize(mpi.rank == 0 ? 1 : 0);
-    CHECK_THROWS(populated.ReplaceNativeForSetup(fixture.mesh->CurrentNativeState()));
-    CHECK_FALSE(populated.HasNativeState());
-    CHECK(populated.coords.father->Size() == (mpi.rank == 0 ? 1 : 0));
+    auto populated = G::UnstructuredMesh::FromNative(mpi, fixture.mesh->CurrentNativeState());
+    const auto previous = populated->CurrentNativeState();
+    const auto stamp = populated->versions.Stamp();
+    const auto point = populated->Coord(0);
+    CHECK_THROWS(populated->ReplaceNativeForSetup(mpi.rank == 0 ? nullptr : fixture.mesh->CurrentNativeState()));
+    CHECK(populated->CurrentNativeState() == previous);
+    CHECK(stamp.Valid());
+    CHECK(populated->Coord(0) == point);
+    CHECK_NOTHROW(populated->ReplaceNativeForSetup(fixture.mesh->CurrentNativeState()));
+    CHECK_FALSE(stamp.Valid());
     if (mpi.size > 1)
     {
         DNDS::MPIInfo self(MPI_COMM_SELF);

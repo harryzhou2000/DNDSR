@@ -9,8 +9,6 @@
 
 namespace DNDS::Geom
 {
-    // Forward declaration for CompiledGhostTree::checkAvailable.
-    struct MeshConnectivity;
 
     // =================================================================
     // GhostChain, GhostSpec: user-facing ghost specification
@@ -103,9 +101,7 @@ namespace DNDS::Geom
         /// Collect all distinct AdjKind values used by any hop in the tree.
         [[nodiscard]] std::unordered_set<AdjKind, AdjKindHash> requiredAdjs() const;
 
-        /// Pre-check that all required adjacencies exist in the DAG.
-        /// Returns the set of missing AdjKind values (empty = all available).
-        [[nodiscard]] std::vector<AdjKind> checkAvailable(const MeshConnectivity &dag) const;
+        // NativeConnectivity::Evaluate validates required definitions collectively.
 
         /// Collect all EntityKind values that appear at COLLECT nodes.
         [[nodiscard]] std::unordered_set<EntityKind> collectedKinds() const;

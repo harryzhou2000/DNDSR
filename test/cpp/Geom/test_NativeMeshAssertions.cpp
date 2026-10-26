@@ -139,8 +139,8 @@ TEST_CASE("Native mesh assertions validate real incidences and reject missing gr
     CHECK_NOTHROW(valid->AssertOnN2CB());
     CHECK(stamp.Valid());
     CHECK(valid->CurrentNativeState() == state);
-    CHECK_FALSE(valid->coords.father);
-    CHECK_FALSE(valid->node2cell.father);
+    CHECK(valid->HasNativeState());
+    CHECK(retained.HostView().HasRelation(G::MeshRelation::NodeCells));
     auto noFaces = Fixture(mpi, Defect::None, false);
     auto noInverse = Fixture(mpi, Defect::None, true, false);
     auto duplicateFace = Fixture(mpi, Defect::DuplicateFace);

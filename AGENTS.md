@@ -406,29 +406,38 @@ in **`docs/architecture/MeshConnectivity.md`**.
 
 Key concepts agents should know:
 
-- **Adjacency state:** Each adjacency array (e.g. `cell2node`, `face2cell`)
-  is wrapped in `AdjPairTracked<TPair>` (inherits from `TPair`, adds an
-  `AdjIndexInfo idx` member). All `idx` fields are private; state
-  transitions go through `markGlobal()`, `markLocal()`,
-  `wireTargetMapping()`, `toLocal()`/`toGlobal()`, and
-  `bootstrapToLocal()`. See `src/Geom/Mesh/AdjIndexInfo.hpp`.
+- **Native ownership:** `UnstructuredMesh` is the public semantic facade over
+  one immutable `NativeMeshState`. Owned/ghost values and row metadata use
+  Runtime Arrays. Mesh building, topology, closure and transitions use
+  `NativeMeshBuilder`, `NativeMeshTopology` and `NativeMeshAssembler`; there is
+  no legacy mesh construction workspace. Standalone legacy DNDS Arrays and
+  solver-field transformers remain supported.
 
-- **Three-layer architecture:**
-  1. `MeshConnectivity` (DSL) -- bare `ArrayAdjacencyPair<rs>`, no state
-  2. `Mesh/MeshConnectivity_StateChecked.hpp` -- asserts `idx.state()`, forwards to DSL
-  3. `UnstructuredMesh` (Mesh/Mesh.cpp) -- owns `AdjPairTracked` members, calls checked wrappers
+- **Access:** Acquire one `MeshReadAccess` per operator, request the required
+  groups, and use its borrowed host/device view in loops. The scope retains
+  native state, value/shape buffers and leases; keep it through asynchronous
+  execution or join declared streams before release. Unrequested groups are
+  hidden. Serialize facade setup/publication with access acquisition.
 
-- **Conversion methods:** `AdjGlobal2Local*` / `AdjLocal2Global*` delegate
-  to `adj.toLocal()` / `adj.toGlobal()`, which use the stored target
-  mapping. The five group state variables (`adjPrimaryState`, etc.)
-  still exist and are updated in parallel with per-adj states.
+- **Relations:** `NativeConnectivity` evaluates full `AdjKind` descriptors.
+  Physical slot relations, inverses and compositions are distinct definitions.
+  `MeshConnectivity` provides native mathematical compatibility spellings.
+  Compute publications use local indices; detached `NativeRelation::Convert`
+  and `ConvertedIndex` perform global/local conversion with explicit source
+  and target spaces, preserving absence/unavailable encodings. Legacy group
+  flags and in-place whole-mesh conversion APIs have been retired.
 
-- **State discipline:** Every site that sets a group state variable
-  (`adjXState = ...`) must also call the corresponding `idx` method
-  (`markGlobal()`, `markLocal()`) on the governed adjacencies. Every
-  site that builds ghost mappings must wire them to the relevant
-  adjacencies via `wireTargetMapping()`. Both DSL and legacy code
-  paths maintain this invariant.
+- **Identity and mutation:** Entity spaces describe current numbering/order;
+  persistent IDs survive reorder, redistribution and ghost construction.
+  New-mesh refinement may allocate a new namespace with explicit provenance.
+  Stage and validate replacements before publication, preserve version masks,
+  and reject conflicting readers. Pure placement/auxiliary cache setup does
+  not change geometry generations; retained scopes pin their acquired state.
+
+- **Sparse closure:** Ghost discovery and remapping must not allocate
+  global-entity-sized local scratch. Storage scales with local requested/served
+  incidences plus ranks. Explicit serial file ingress/output may gather on its
+  designated reader; this exception does not apply to ghost construction.
 
 ## Key Dependencies
 

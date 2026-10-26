@@ -1,38 +1,21 @@
 #pragma once
-// TEST ONLY. Old wire-format decoding supplies a numerical/reference fixture;
-// production code cannot include this header or export a legacy mesh backend.
+// TEST ONLY: one-way historical primary wire decoding into Runtime ownership.
+// Derived groups may be reconstructed natively; no legacy mesh exists here.
 #include "Geom/Mesh/MeshTransition.hpp"
+#include "Geom/Mesh/NativeMeshLegacyArchive.hpp"
+#include "Geom/Mesh/NativeMeshPreparation.hpp"
 #include "DNDS/Serializer/SerializerJSON.hpp"
 namespace DNDS::Geom::TestFixtureCodec
 {
-    inline std::shared_ptr<UnstructuredMesh> DecodeLegacy(UnstructuredMesh &source, bool outputCaches = false)
+    inline std::shared_ptr<UnstructuredMesh> DecodePrimaryReference(UnstructuredMesh &source)
     {
         auto serializer = std::make_shared<Serializer::SerializerJSON>();
         serializer->CreatePath("/");
         WriteCurrentPrimaryMeshSnapshot(source, serializer, "fixture", 1, CurrentMeshCheckpointPolicy::DropAuxiliary);
-        auto result = std::make_shared<UnstructuredMesh>(source.mpi, source.getDim());
-        result->ReadSerialize(serializer, "fixture");
-        if (result->adjPrimaryState == Adj_PointToLocal)
-            result->AdjLocal2GlobalPrimary();
-        result->RecoverNode2CellAndNode2Bnd();
-        result->RecoverCell2CellAndBnd2Cell();
-        result->BuildGhostPrimary();
-        result->AdjGlobal2LocalPrimary();
-        if (source.CurrentNativeRequirements().faces)
-        {
-            result->InterpolateFace();
-            result->BuildGhostN2CB();
-            result->AdjGlobal2LocalN2CB();
-            result->BuildCell2CellFace();
-            result->AdjGlobal2LocalC2CFace();
-        }
-        if (source.CurrentNativeRequirements().edges)
-            result->InterpolateEdge();
-        if (outputCaches)
-        {
-            result->RecreatePeriodicNodes();
-            result->BuildVTKConnectivity();
-        }
-        return result;
+        auto state = NativeMeshLegacyArchive::Read(source.mpi, serializer, "fixture");
+        const auto groups = source.CurrentNativeRequirements();
+        if (groups.faces || groups.edges)
+            state = NativeMeshPreparation::PrepareTopology(*state, source.mpi, groups.faces, groups.edges);
+        return UnstructuredMesh::FromNative(source.mpi, std::move(state));
     }
 }

@@ -147,10 +147,6 @@ namespace DNDS::Geom
     {
         return FromRead(source.AcquireRead(requirements));
     }
-    NativeMeshSnapshot NativeMeshSnapshot::ImportLegacyWorkspace(UnstructuredMesh &source, MeshReadRequirements requirements)
-    {
-        return FromRead(MeshReadAccess(source, requirements, Runtime::ExecutionContext::Host()));
-    }
     NativeMeshSnapshot NativeMeshSnapshot::FromRead(MeshReadAccess read)
     {
         auto state = std::make_shared<State>();

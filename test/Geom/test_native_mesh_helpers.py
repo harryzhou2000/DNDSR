@@ -1,4 +1,4 @@
-"""Explicit native helpers preserve labels and keep legacy defaults separate."""
+"""Native-only helpers preserve labels, publication contracts and archive compatibility."""
 import ctypes
 import importlib.util
 from pathlib import Path
@@ -193,10 +193,11 @@ def test_native_helpers_reject_mixed_authority_before_dispatch(tmp_path):
     mpi.setWorld()
     path = _fixture(tmp_path)
     native = read_mesh(path, mpi, 2, native=True).mesh
-    legacy_result = read_mesh(path, mpi, 2, native=False)
-    mixed = legacy_result.mesh if mpi.rank == 0 else native
+    empty = Geom.UnstructuredMesh(mpi, 2)
+    mixed = empty if mpi.rank == 0 else native
+    output = Geom.UnstructuredMeshSerialRW(mixed, 0)
     for operation in (
-        lambda: prepare_mesh(mixed, legacy_result.reader, build_serial_out=False),
+        lambda: prepare_mesh(mixed, output, build_serial_out=False),
         lambda: prepare_native_mesh(mixed),
         lambda: build_bnd_mesh(mixed),
         lambda: serialize_mesh(mixed, str(tmp_path / "rejected"), mpi),
@@ -229,16 +230,24 @@ def test_native_reader_decodes_legacy_primary_archive_without_legacy_state(tmp_p
     mpi = DNDS.MPIInfo()
     mpi.setWorld()
     path = _fixture(tmp_path)
-    legacy = read_mesh(path, mpi, 2, native=False)
+    reference = read_mesh(path, mpi, 2)
     before = {}
-    with legacy.mesh.acquire_read() as read:
-        for cell in range(legacy.mesh.NumCell()):
-            original = legacy.mesh.original_entity_id(Geom.EntityKind.Cell, cell)
+    with reference.mesh.acquire_read() as read:
+        for cell in range(reference.mesh.NumCell()):
+            original = reference.mesh.original_entity_id(Geom.EntityKind.Cell, cell)
             before[original] = np.array([read.coord(int(node)).copy() for node in read.cell_nodes(cell)])
     factory = default_serializer_factory()
+    config = factory.to_dict(); config["type"] = "JSON"; factory.from_dict(config)
     base = MPI.COMM_WORLD.bcast(str(tmp_path / "legacy-primary") if mpi.rank == 0 else None, root=0)
-    serialize_mesh(legacy.mesh, base, mpi, serializer_factory=factory)
-    restored = read_mesh(base + ".dnds.h5", mpi, 2, native=True, serializer_factory=factory)
+    file, _ = factory.ModifyFilePath(base, mpi, "part_%d", False)
+    writer = factory.BuildSerializer(mpi)
+    writer.OpenFile(file, False)
+    try:
+        reference.mesh.WriteCurrentPrimaryMeshSnapshot(writer, "meshPart",
+            policy=Geom.CurrentMeshCheckpointPolicy.DropAuxiliary)
+    finally:
+        writer.CloseFile()
+    restored = read_mesh(base, mpi, 2, read_mode="h5", serializer_factory=factory)
     assert restored.reader is not None and restored.name_to_id is None
     assert restored.mesh.has_native_state
     assert not Geom.native_mesh_requirements(restored.mesh)["faces"]
@@ -339,3 +348,74 @@ def test_native_preparation_wrong_reader_rejects_on_all_ranks_and_retries(tmp_pa
         prepare_mesh(first.mesh, reader, build_serial_out=False)
     prepare_mesh(first.mesh, first.reader, build_serial_out=False)
     assert first.mesh.has_native_state and first.mesh.NumFaceGlobal() == 4
+
+
+@pytest.mark.mpi
+def test_retired_mesh_backend_rejects_before_file_io():
+    mpi = DNDS.MPIInfo()
+    mpi.setWorld()
+    with pytest.raises(ValueError, match="native=False is retired"):
+        read_mesh("missing.cgns", mpi, 2, native=False)
+
+
+@pytest.mark.mpi
+def test_h5_subset_writer_world_reader_changed_size_and_two_layer_closure(tmp_path):
+    import gc
+    world = MPI.COMM_WORLD
+    mpi = DNDS.MPIInfo()
+    mpi.setWorld()
+    writers = max(1, world.size // 2)
+    sub = world.Split(0 if world.rank < writers else MPI.UNDEFINED, world.rank)
+    base = world.bcast(str(tmp_path / "subset-native") if world.rank == 0 else None, root=0)
+    factory = default_serializer_factory()
+    reference = None
+    if sub != MPI.COMM_NULL:
+        writer_mpi = DNDS.MPIInfo(sub.handle)
+        path = Path(__file__).resolve().parents[2] / "data/mesh/UniformSquare_10.cgns"
+        result = read_mesh(str(path), writer_mpi, 2)
+        node_records, cell_records = {}, {}
+        with result.mesh.acquire_read() as read:
+            for row in range(result.mesh.NumNode()):
+                node_records[result.mesh.original_entity_id(Geom.EntityKind.Node, row)] = read.coord(row).tolist()
+            for row in range(result.mesh.NumCell()):
+                cell_records[result.mesh.original_entity_id(Geom.EntityKind.Cell, row)] = tuple(
+                    result.mesh.original_entity_id(Geom.EntityKind.Node, int(node)) for node in read.cell_nodes(row))
+        serialize_mesh(result.mesh, base, writer_mpi, serializer_factory=factory)
+        nodes, cells = {}, {}
+        for owned in sub.allgather(node_records):
+            nodes.update(owned)
+        for owned in sub.allgather(cell_records):
+            cells.update(owned)
+        if sub.rank == 0:
+            reference = nodes, cells
+        del result, read
+        gc.collect()
+        sub.Free()
+    reference = world.bcast(reference, root=0)
+    world.Barrier()
+    # A malformed option on only one rank must reject before opening the file.
+    with pytest.raises((ValueError, RuntimeError, TypeError)):
+        Geom.read_native_archive_file(mpi, factory, base,
+            partition_options={"unknown": 1} if mpi.rank == 0 else {})
+    if writers != world.size:
+        with pytest.raises(RuntimeError):
+            read_mesh(base + ".dnds.h5", mpi, 2)  # matching ownership is explicit default
+    restored = read_mesh(base + ".dnds.h5", mpi, 2, cell_layers=2,
+                         partition_options={"metisType": "KWAY", "metisSeed": 19})
+    assert restored.mesh.NumCellGlobal() == 100
+    assert restored.mesh.NumNodeGlobal() == 121
+    expected_nodes, expected_cells = reference
+    with restored.mesh.acquire_read() as read:
+        for row in range(restored.mesh.NumNodeProc()):
+            original = restored.mesh.original_entity_id(Geom.EntityKind.Node, row)
+            np.testing.assert_array_equal(read.coord(row), expected_nodes[original])
+        for row in range(restored.mesh.NumCellProc()):
+            original = restored.mesh.original_entity_id(Geom.EntityKind.Cell, row)
+            actual = tuple(restored.mesh.original_entity_id(Geom.EntityKind.Node, int(node))
+                           for node in read.cell_nodes(row))
+            assert actual == expected_cells[original]
+        for row in range(restored.mesh.NumCell()):
+            for first in read.cell_cells(row):
+                assert 0 <= first < restored.mesh.NumCellProc()
+                for second in read.cell_cells(int(first)):
+                    assert 0 <= second < restored.mesh.NumCellProc()

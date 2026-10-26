@@ -12,6 +12,10 @@ namespace DNDS::Geom
     class NativeMeshTopology
     {
     public:
+        /// Existing requested families are refreshed by exact full-node/image
+        /// keys. Surviving IDs and ancestry are retained across owner/order
+        /// changes; unmatched new entities allocate above the old high-water.
+        /// Named rows are remapped or rejected when no payload can be inferred.
         /// Explicit generated-ID floors are used only for reconstructed targets;
         /// every rank supplies identical floors and removed IDs are never reused.
         static std::shared_ptr<const NativeMeshState> Build(const NativeMeshState &source, const MPIInfo &mpi,

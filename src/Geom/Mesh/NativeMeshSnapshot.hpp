@@ -38,11 +38,10 @@ namespace DNDS::Geom
         std::optional<NativeMeshProvenance> provenance;
     };
 
-    /// Detached immutable native backing for the query facade. This is an
-    /// intermediate snapshot, not the authoritative storage of UnstructuredMesh.
-    /// Capture validates/copies once; repeat AcquireRead only retains native
-    /// allocations and acquires their controllers. Source mutations do not alter
-    /// or invalidate this snapshot. Provenance is informative, not a dependency.
+    /// Immutable native backing used by authoritative placements or detached
+    /// snapshots. Explicit Capture copies current native rows once. Repeated
+    /// AcquireRead retains values, shape and controllers. Source replacement
+    /// cannot alter a detached snapshot; its source stamp is provenance only.
     class NativeMeshSnapshot
     {
         friend class MeshReadAccess;
@@ -86,7 +85,6 @@ namespace DNDS::Geom
         /// required topology fails before returning a usable snapshot.
         static NativeMeshSnapshot FromNative(NativeMeshData data, MeshReadRequirements requirements);
         static NativeMeshSnapshot Capture(UnstructuredMesh &source, MeshReadRequirements requirements = MeshReadRequirements::Primary());
-        static NativeMeshSnapshot ImportLegacyWorkspace(UnstructuredMesh &source, MeshReadRequirements requirements = MeshReadRequirements::Primary());
         NativeMeshSnapshot To(Runtime::Device device, Runtime::ExecutionContext context) const;
         NativeMeshSnapshot To(Runtime::Device device) const { return To(device, {device == Runtime::Device::Host() ? GetDevice() : device, nullptr}); }
         Runtime::Device GetDevice() const { return Live().device; }

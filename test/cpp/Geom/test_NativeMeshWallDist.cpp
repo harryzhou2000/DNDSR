@@ -70,8 +70,7 @@ TEST_CASE("Native wall distance uses remote boundary selection and retains geome
                                     { return zone == 24; }, options);
             CHECK(geometry.Valid());
             CHECK(mesh->HasNativeState());
-            CHECK((!mesh->coords.father || mesh->coords.father->Size() == 0));
-            CHECK((!mesh->nodeWallDist.father || mesh->nodeWallDist.father->Size() == 0));
+            CHECK(mesh->HasNodeWallDist());
             CHECK(mesh->CurrentNativeState()->MeshNamespace() == namespaceBefore);
             auto read = mesh->AcquireRead(mesh->CurrentNativeState()->Requirements());
             auto view = read.HostView();

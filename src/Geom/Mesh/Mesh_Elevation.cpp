@@ -51,7 +51,6 @@ namespace DNDS::Geom
             auto work = NativeMeshSmoothing::PrepareBoundary(_nativeState, mpi, NativeSmoothingFacade::Options(elevationInfo), FiFBndIdNeedSmooth);
             FieldTransferDetail::LocalStage(mpi, [&]
                                             { stamp.Validate(); });
-            nTotalMoved = work->TotalMoved();
             _nativeSmoothing = std::move(work);
             return;
         }

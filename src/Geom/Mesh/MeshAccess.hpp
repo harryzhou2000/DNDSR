@@ -10,6 +10,7 @@ namespace DNDS::Geom
 {
     struct UnstructuredMesh;
     class NativeMeshSnapshot;
+    class NativeMeshState;
 
     /// A view exposes only explicitly requested relation groups. Local index
     /// validation occurs during acquisition, never in a release kernel's loop.
@@ -37,12 +38,10 @@ namespace DNDS::Geom
     /// and shape allocations plus the mesh read lease. Copying HostView or
     /// DeviceView does not retain this scope. Keep it through all uses, or attach
     /// a completion that joins every using stream. Acquisition is serialized
-    /// with legacy setup/mutation; raw legacy writes bypass these guards.
-    ///
-    /// During legacy backing, CUDA acquisition explicitly copies the requested
-    /// host snapshot. This is a correctness bridge, not a resident-cache API.
+    /// with native setup/publication. Device reads use an explicit placement.
     class MeshReadAccess
     {
+        friend struct UnstructuredMesh;
         friend class RelationReadAccess;
         friend class RelationPeriodicBits;
         friend class NativeMeshSnapshot;
@@ -63,6 +62,7 @@ namespace DNDS::Geom
 
         Runtime::VersionTracker::ReadLease _meshRead;
         std::optional<Runtime::VersionTracker::ReadLease> _sourceRead;
+        std::shared_ptr<const NativeMeshState> _nativeOwner;
         Runtime::VersionStamp _stamp;
         Runtime::ExecutionContext _context;
         MeshViewStorage _storage;
@@ -71,15 +71,12 @@ namespace DNDS::Geom
         bool _completed = false;
         bool _active = true;
 
-        template <class Pair>
-        auto Capture(Pair &pair) -> Runtime::PairReadView<typename Pair::t_arr::value_type>;
         template <class T>
         Runtime::PairReadView<T> CaptureNative(const Runtime::Array<T> &owned, const Runtime::Array<T> &ghost);
         void Validate(const MeshReadRequirements &requirements) const;
+        void Restrict(const MeshReadRequirements &requirements);
 
     public:
-        MeshReadAccess(UnstructuredMesh &mesh, MeshReadRequirements requirements,
-                       Runtime::ExecutionContext context);
         MeshReadAccess(const NativeMeshSnapshot &snapshot, Runtime::ExecutionContext context);
         MeshReadAccess(const NativeMeshSnapshot &snapshot, Runtime::ExecutionContext context,
                        Runtime::VersionTracker::ReadLease source, Runtime::VersionStamp stamp);

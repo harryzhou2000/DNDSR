@@ -66,9 +66,7 @@ namespace DNDS::Geom
     def_readonly(#m_name, &UnstructuredMesh::m_name, py::return_value_policy::reference_internal)
 
 #define DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_PAIR(m_name, kind) \
-    def_property_readonly(#m_name, [](std::shared_ptr<UnstructuredMesh> self) -> py::object { \
-        if (self->HasNativeState()) return py::cast(NativePythonPairRead(*self, NativePythonPairKind::kind)); \
-        return py::cast(&self->m_name, py::return_value_policy::reference_internal, py::cast(self)); }, "Retained readonly native row/owned/ghost view. Legacy construction temporarily exposes its original pair. Use explicit mesh edits for native mutation.")
+    def_property_readonly(#m_name, [](std::shared_ptr<UnstructuredMesh> self) { return NativePythonPairRead(*self, NativePythonPairKind::kind); })
 
         auto UnstructuredMesh_ = tPy_UnstructuredMesh(m, "UnstructuredMesh");
         py::enum_<CurrentMeshCheckpointPolicy>(m, "CurrentMeshCheckpointPolicy")
@@ -79,16 +77,9 @@ namespace DNDS::Geom
                             { return std::make_shared<UnstructuredMesh>(mpi, n_dim); }))
             .def_property_readonly("has_native_state", &UnstructuredMesh::HasNativeState)
             .def("edit", [](std::shared_ptr<UnstructuredMesh> self, int ghostLayers)
-                 { return std::make_shared<MeshEdit>(MeshEdit::Begin(std::move(self), ghostLayers)); }, py::arg("ghost_layers") = 1, "Collectively stage native owned coordinate/cell metadata and neighbor-order edits. Legacy inputs must explicitly publish_native first. Explicit commit required; context exit discards uncommitted changes.")
+                 { return std::make_shared<MeshEdit>(MeshEdit::Begin(std::move(self), ghostLayers)); }, py::arg("ghost_layers") = 1, "Collectively stage native owned coordinate/cell metadata and neighbor-order edits. Native authority is required. Explicit commit required; context exit discards uncommitted changes.")
             .def("entities", &UnstructuredMesh::Entities, py::arg("kind"), "Retain immutable distribution metadata without exposing an ArrayTransformer. Numbering changes invalidate mapping calls; descriptors do not block mutation.")
             .def("original_entity_id", &UnstructuredMesh::OriginalEntityId, py::arg("kind"), py::arg("row"))
-            .def("publish_native", [](UnstructuredMesh &self, bool faces, bool inverse, bool edges, bool cellFaceNeighbors, bool wallDistance, bool allFaceCellsLocal)
-                 {
-                     MeshReadRequirements r;
-                     r.faces = faces; r.inverse = inverse; r.edges = edges;
-                     r.cellFaceNeighbors = cellFaceNeighbors; r.wallDistance = wallDistance;
-                     r.allFaceCellsLocal = allFaceCellsLocal;
-                     self.PublishNative(r); }, py::arg("faces") = false, py::arg("inverse") = false, py::arg("edges") = false, py::arg("cell_face_neighbors") = false, py::arg("wall_distance") = false, py::arg("all_face_cells_local") = false, "Collectively validate/import the legacy workspace and publish private native query storage. Release managed rows first; raw workspace edits do not alter the publication.")
             .def("place_native", [](UnstructuredMesh &self, int ordinal)
                  {
                      if (ordinal == -1)
@@ -102,7 +93,6 @@ namespace DNDS::Geom
                      DNDS_check_throw_info(ordinal >= 0, "native placement requires a nonnegative CUDA ordinal or -1 for current device");
                      auto device = Runtime::Device::CUDA(ordinal);
                      self.PlaceNative(device, {device, nullptr}); }, py::arg("ordinal") = 0, "Prepare a CUDA placement of published native data; ordinal -1 selects the current CUDA device. Completes transfers before returning. CPU debug reads remain host-resident.")
-            .def("use_legacy_workspace", &UnstructuredMesh::UseLegacyWorkspace, "Collectively leave native publication mode and invalidate all current-state bindings; detached snapshots remain readable.")
             .def("apply_geometry_transform", &UnstructuredMesh::ApplyGeometryTransform, py::arg("rotation"), py::arg("scale") = 1.0, "Collective proper rotation and positive scale of coordinates, periodic frames and wall vectors. Native input publishes a tracked replacement; release retained reads first and rebuild dependent metrics afterward.")
             .def("apply_affine_geometry_transform", [](UnstructuredMesh &self, py::object linear, py::object offset)
                  {
@@ -168,25 +158,7 @@ namespace DNDS::Geom
             .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_PAIR(cell2facePbi, CellFaceBits);
 
         UnstructuredMesh_
-            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_SIMP_FUNC(RecoverNode2CellAndNode2Bnd)
-            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_SIMP_FUNC(RecoverCell2CellAndBnd2Cell)
-            .def("BuildGhostPrimary", &UnstructuredMesh::BuildGhostPrimary, py::arg("nGhostLayers") = 1)
-            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_SIMP_FUNC(AdjGlobal2LocalPrimary)
-            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_SIMP_FUNC(AdjLocal2GlobalPrimary)
-            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_SIMP_FUNC(AdjGlobal2LocalPrimaryForBnd)
-            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_SIMP_FUNC(AdjLocal2GlobalPrimaryForBnd)
-            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_SIMP_FUNC(AdjGlobal2LocalFacial)
-            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_SIMP_FUNC(AdjLocal2GlobalFacial)
-            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_SIMP_FUNC(AdjGlobal2LocalC2F)
-            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_SIMP_FUNC(AdjLocal2GlobalC2F)
-            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_SIMP_FUNC(AdjGlobal2LocalEdge)
-            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_SIMP_FUNC(AdjLocal2GlobalEdge)
-            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_SIMP_FUNC(BuildGhostN2CB)
-            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_SIMP_FUNC(AdjGlobal2LocalN2CB)
-            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_SIMP_FUNC(AdjLocal2GlobalN2CB)
             .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_SIMP_FUNC(AssertOnN2CB)
-            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_SIMP_FUNC(InterpolateFace)
-            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_SIMP_FUNC(InterpolateEdge)
             .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_SIMP_FUNC(AssertOnFaces)
             .def("ConstructBndMesh", [](UnstructuredMesh &self, ssp<UnstructuredMesh> &pbMesh)
                  { self.ConstructBndMesh(*pbMesh); }, py::arg("bndMesh"))
@@ -194,7 +166,8 @@ namespace DNDS::Geom
             // ObtainLocalFactFillOrdering
             // ObtainSymmetricSymbolicFactorization
             // .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_SIMP_FUNC(ReorderLocalCells) //! it has argument now
-            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_SIMP_FUNC(getMPI)
+            .def("getMPI", [](const UnstructuredMesh &self)
+                 { return self.getMPI(); })
             .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_SIMP_FUNC(getDim)
             .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_SIMP_FUNC(NumNode)
             .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_SIMP_FUNC(NumCell)
@@ -218,8 +191,6 @@ namespace DNDS::Geom
             .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_SIMP_FUNC(BuildBisectO1FormO2)
             .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_SIMP_FUNC(IsO1)
             .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_SIMP_FUNC(IsO2)
-            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_SIMP_FUNC(RecreatePeriodicNodes)
-            .DNDS_GEOM_UNSTRUCTURED_MESH_PY_DEF_SIMP_FUNC(BuildVTKConnectivity)
             .def("PrintMeshCGNS", &UnstructuredMesh::PrintMeshCGNS,
                  py::arg("fname"), py::arg("fbcid2name"), py::arg("allNames"));
 
@@ -233,8 +204,6 @@ namespace DNDS::Geom
             .def("PrepareNativeTopology", &UnstructuredMesh::PrepareNativeTopology, py::arg("faces") = true, py::arg("edges") = false, py::arg("ghost_layers") = 1,
                  "Collectively prepare native topology on this same facade. Release retained reads and rebuild dependent metrics afterward.")
             .def("ReorderLocalCells", &UnstructuredMesh::ReorderLocalCells, py::arg("nParts") = 1, py::arg("nPartsInner") = 1, py::arg("ghost_layers") = 1)
-            .def("ReadSerialize", &UnstructuredMesh::ReadSerialize, py::arg("serializer"), py::arg("name"))
-            .def("WriteSerialize", &UnstructuredMesh::WriteSerialize, py::arg("serializer"), py::arg("name"))
             .def("write_native_archive", &UnstructuredMesh::WriteNativeArchive,
                  py::arg("serializer"), py::arg("name"),
                  "Collective native checkpoint of all published topology, IDs and companions. Finish async producers first; external solver fields are separate.")
@@ -249,35 +218,7 @@ namespace DNDS::Geom
             .def("WriteCurrentMeshSnapshot", &WriteCurrentMeshSnapshot,
                  py::arg("serializer"), py::arg("name"), py::arg("ghostLayers") = 1,
                  py::arg("policy") = CurrentMeshCheckpointPolicy::RequireNoAuxiliaryValues,
-                 "Compatibility spelling for collective WriteCurrentPrimaryMeshSnapshot; registered fields and auxiliary values are not saved.")
-            .def(
-                "ReadSerializeAndDistribute",
-                [](UnstructuredMesh &self, Serializer::SerializerBaseSSP serializer,
-                   const std::string &name, py::object options_in)
-                {
-                    auto options_full = PartitionOptions();
-                    auto json_options_full = nlohmann::ordered_json(options_full);
-                    if (!options_in.is_none())
-                    {
-                        auto json_options_in = nlohmann::json(options_in);
-                        json_options_full.merge_patch(json_options_in);
-                    }
-                    self.ReadSerializeAndDistribute(
-                        serializer, name,
-                        json_options_full.template get<PartitionOptions>());
-                },
-                py::arg("serializer"), py::arg("name"), py::arg("partitionOptions") = py::none());
-
-        UnstructuredMesh_.def("SetPeriodicGeometry", &UnstructuredMesh::SetPeriodicGeometry,
-                              py::arg("translation1") = Geom::tPoint{1, 0, 0},
-                              py::arg("rotationCenter1") = Geom::tPoint{0, 0, 0},
-                              py::arg("eulerAngles1") = Geom::tPoint{0, 0, 0},
-                              py::arg("translation2") = Geom::tPoint{0, 1, 0},
-                              py::arg("rotationCenter2") = Geom::tPoint{0, 0, 0},
-                              py::arg("eulerAngles2") = Geom::tPoint{0, 0, 0},
-                              py::arg("translation3") = Geom::tPoint{0, 0, 1},
-                              py::arg("rotationCenter3") = Geom::tPoint{0, 0, 0},
-                              py::arg("eulerAngles3") = Geom::tPoint{0, 0, 0});
+                 "Compatibility spelling for collective WriteCurrentPrimaryMeshSnapshot; registered fields and auxiliary values are not saved.");
 
         UnstructuredMesh_
             .def(
@@ -326,25 +267,27 @@ namespace DNDS::Geom
                                                   throw py::value_error("coordinate transform returned a non-finite point");
                                               return value;
                                           }); }, py::arg("transform"), "Collective tracked point transform. Native input validates and publishes an independent replacement; callback receives a detached copy. Release retained reads first; periodic frames and dependent metrics are caller responsibilities.")
-            .def("TransformCoords", [](py::object self, py::function f)
-                 {
-                    auto &mesh = self.cast<UnstructuredMesh &>();
-                    mesh.RequireLegacyWorkspace("legacy Python TransformCoords");
-                    auto make_view = [&self](ssp<DNDS::ArrayEigenVector<3>> &arr) -> py::array_t<real>
-                    {
-                        index N = arr->Size();
-                        std::vector<py::ssize_t> shape = {py::ssize_t(N), py::ssize_t(3)};
-                        std::vector<py::ssize_t> strides = {py::ssize_t(sizeof(real) * 3),
-                                                            py::ssize_t(sizeof(real))};
-                        return {shape, strides, arr->data(), self};
-                    };
-                    if (mesh.coords.father->Size() > 0)
-                        f(make_view(mesh.coords.father));
-                    if (mesh.coords.son->Size() > 0)
-                        f(make_view(mesh.coords.son)); }, py::arg("func"))
             .def("to_device", [](UnstructuredMesh &self, const std::string &backend)
-                 { self.to_device(device_backend_name_to_enum(backend)); }, py::arg("backend"))
-            .def("to_host", &UnstructuredMesh::to_host);
+                 {
+                     auto source = self.CurrentNativeState();
+                     if (backend == "Host")
+                     {
+                         source->Snapshot(Runtime::Device::Host());
+                         return;
+                     }
+                     DNDS_check_throw_info(backend == "CUDA", "mesh placement backend must be Host or CUDA");
+#ifdef DNDS_USE_CUDA
+                     int ordinal = -1;
+                     DNDS_check_throw_info(cudaGetDevice(&ordinal) == cudaSuccess, "CUDA current device query failed");
+                     auto device = Runtime::Device::CUDA(ordinal);
+                     self.PlaceNative(device, {device, nullptr});
+#else
+                     DNDS_check_throw_info(false, "CUDA placement unavailable in a CPU-only build");
+#endif
+                 },
+                 py::arg("backend"), "Place immutable native topology on the currently selected device. Host authority remains available.")
+            .def("to_host", [](UnstructuredMesh &self)
+                 { self.CurrentNativeState()->Snapshot(Runtime::Device::Host()); }, "Validate the resident immutable host publication; native mesh data are never device-mutable.");
         pybind11_NativeMeshBuilder_define(m);
         pybind11_NativeMeshPreparation_define(m);
     }
@@ -362,25 +305,7 @@ namespace DNDS::Geom
             .def_readwrite("mesh", &UnstructuredMeshSerialRW::mesh)
             .def_readonly("dataIsSerialOut", &UnstructuredMeshSerialRW::dataIsSerialOut)
             .def_readonly("dataIsSerialIn", &UnstructuredMeshSerialRW::dataIsSerialIn)
-            .def("ReadFromCGNSSerial", py::overload_cast<const std::string &>(&UnstructuredMeshSerialRW::ReadFromCGNSSerial))
-            .def("Deduplicate1to1Periodic", &UnstructuredMeshSerialRW::Deduplicate1to1Periodic)
-            .def("BuildCell2Cell", &UnstructuredMeshSerialRW::BuildCell2Cell)
-            .def("BuildSerialOut", &UnstructuredMeshSerialRW::BuildSerialOut)
-            .def(
-                "MeshPartitionCell2Cell",
-                [](UnstructuredMeshSerialRW &self, py::object options_in) // use default
-                {
-                    auto options_full = UnstructuredMeshSerialRW::PartitionOptions();
-                    auto json_options_full = nlohmann::ordered_json(options_full); // warning: using {} here makes it a list
-                    if (!options_in.is_none())
-                    {
-                        auto json_options_in = nlohmann::json(options_in);
-                        json_options_full.merge_patch(json_options_in);
-                    }
-                    // std::cout << json_options_full << std::endl;
-                    self.MeshPartitionCell2Cell(json_options_full.template get<UnstructuredMeshSerialRW::PartitionOptions>());
-                },
-                py::arg("options") = py::none())
-            .def("PartitionReorderToMeshCell2Cell", &UnstructuredMeshSerialRW::PartitionReorderToMeshCell2Cell);
+            .def("BuildSerialOut", &UnstructuredMeshSerialRW::BuildSerialOut,
+                 "Collectively prepare a native serial output descriptor. Input readers are separate native ingress functions.");
     }
 }

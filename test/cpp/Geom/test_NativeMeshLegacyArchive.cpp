@@ -1,6 +1,8 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
-#include "MeshFacadeOverlapFixture.hpp"
+#include "NativeMeshOverlapFixture.hpp"
+#include "Geom/Mesh/NativeMeshCGNS.hpp"
+#include "Geom/Mesh/NativeMeshPreparation.hpp"
 #include "Geom/Mesh/NativeMeshRefinement.hpp"
 #include "Geom/Mesh/NativeMeshLegacyArchive.hpp"
 #include "Geom/Mesh/Mesh_Helpers.hpp"
@@ -38,7 +40,7 @@ static void CheckNative(const G::NativeMeshState &state, const DNDS::MPIInfo &mp
 TEST_CASE("Legacy primary JSON and H5 decode directly to native owned rows")
 {
     DNDS::MPIInfo mpi(MPI_COMM_WORLD);
-    auto fixture = G::OverlapTest::BuildFixture(mpi);
+    auto fixture = G::OverlapTest::BuildNativeFixture(mpi);
     auto &mesh = *fixture.mesh;
     const auto root = std::filesystem::temp_directory_path() / ("dnds-native-legacy-" + std::to_string(getpid()));
     SUBCASE("JSON")
@@ -46,9 +48,7 @@ TEST_CASE("Legacy primary JSON and H5 decode directly to native owned rows")
         auto serializer = DNDS::make_ssp<S::SerializerJSON>();
         const auto file = root.string() + ".json";
         serializer->OpenFile(file, false);
-        mesh.AdjLocal2GlobalPrimary();
-        mesh.WriteSerialize(serializer, "mesh");
-        mesh.AdjGlobal2LocalPrimary();
+        G::WriteCurrentPrimaryMeshSnapshot(mesh, serializer, "mesh");
         serializer->CloseFile();
         serializer->OpenFile(file, true);
         auto state = G::ReadCompatibleNativeMeshArchive(mpi, serializer, "mesh");
@@ -104,9 +104,7 @@ TEST_CASE("Legacy primary JSON and H5 decode directly to native owned rows")
         MPI_Bcast(file.data(), count, MPI_CHAR, 0, mpi.comm);
         auto serializer = DNDS::make_ssp<S::SerializerH5>(mpi);
         serializer->OpenFile(file, false);
-        mesh.AdjLocal2GlobalPrimary();
-        mesh.WriteSerialize(serializer, "mesh");
-        mesh.AdjGlobal2LocalPrimary();
+        G::WriteCurrentPrimaryMeshSnapshot(mesh, serializer, "mesh");
         serializer->CloseFile();
         for (auto partition : {S::ArrayGlobalOffset_Unknown, S::ArrayGlobalOffset_EvenSplit})
         {
@@ -132,11 +130,10 @@ TEST_CASE("Legacy single-rank H5 imports with changed MPI size through native ev
                                        {
         if (mpi.rank != 0) return;
         DNDS::MPIInfo self(MPI_COMM_SELF);
-        auto fixture = G::OverlapTest::BuildFixture(self);
+        auto fixture = G::OverlapTest::BuildNativeFixture(self);
         auto serializer = DNDS::make_ssp<S::SerializerH5>(self);
         serializer->OpenFile(file, false);
-        fixture.mesh->AdjLocal2GlobalPrimary();
-        fixture.mesh->WriteSerialize(serializer, "mesh");
+        G::WriteCurrentPrimaryMeshSnapshot(*fixture.mesh, serializer, "mesh");
         serializer->CloseFile(); });
     auto serializer = DNDS::make_ssp<S::SerializerH5>(mpi);
     if (mpi.size != 1)
@@ -157,39 +154,35 @@ TEST_CASE("Legacy single-rank H5 imports with changed MPI size through native ev
 TEST_CASE("Legacy periodic primary import preserves exact ordered image bits and original IDs")
 {
     DNDS::MPIInfo mpi(MPI_COMM_WORLD);
-    auto mesh = DNDS::make_ssp<G::UnstructuredMesh>(mpi, 2);
-    G::UnstructuredMeshSerialRW reader(mesh, 0);
     const auto root = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path();
-    reader.ReadFromCGNSSerial((root / "data/mesh/Uniform32_Periodic.cgns").string());
-    reader.Deduplicate1to1Periodic(1e-9);
-    reader.BuildCell2Cell();
-    reader.MeshPartitionCell2Cell({});
-    reader.PartitionReorderToMeshCell2Cell();
-    mesh->RecoverNode2CellAndNode2Bnd();
-    mesh->RecoverCell2CellAndBnd2Cell();
-    mesh->BuildGhostPrimary();
-    mesh->AdjGlobal2LocalPrimary();
+    G::NativePeriodicImportOptions periodic;
+    periodic.tolerance = 1e-9; // Default unit translations match this unit-square file.
+    G::AutoAppendName2ID names;
+    auto primary = G::ReadNativeCGNS(mpi, (root / "data/mesh/Uniform32_Periodic.cgns").string(), 2, [&](const std::string &name)
+                                     { return names(name); }, 0, {1, true}, periodic);
+    auto partitioned = G::NativeMeshPreparation::Partition(*primary, mpi);
+    auto mesh = G::UnstructuredMesh::FromNative(mpi, std::move(partitioned.state));
     const auto file = (std::filesystem::temp_directory_path() / ("dnds-legacy-periodic-" + std::to_string(getpid()) + ".json")).string();
     auto serializer = DNDS::make_ssp<S::SerializerJSON>();
     serializer->OpenFile(file, false);
-    mesh->AdjLocal2GlobalPrimary();
-    mesh->WriteSerialize(serializer, "mesh");
-    mesh->AdjGlobal2LocalPrimary();
+    G::WriteCurrentPrimaryMeshSnapshot(*mesh, serializer, "mesh");
     serializer->CloseFile();
     serializer->OpenFile(file, true);
     auto state = G::NativeMeshLegacyArchive::Read(mpi, serializer, "mesh");
     serializer->CloseFile();
     CHECK(state->BorrowHostView().IsPeriodic());
     const auto view = state->BorrowHostView();
+    auto original = mesh->AcquireRead();
+    const auto source = original.HostView();
     CHECK(view.NumCell() == mesh->NumCell());
     DNDS::real total = 0;
     for (I cell = 0; cell < view.NumCell(); ++cell)
     {
-        CHECK(state->OriginalEntityId(G::EntityKind::Cell, cell) == mesh->cell2cellOrig(cell, 0));
+        CHECK(state->OriginalEntityId(G::EntityKind::Cell, cell) == mesh->OriginalEntityId(G::EntityKind::Cell, cell));
         const auto bits = view.CellNodePeriodicBits(cell);
-        REQUIRE(bits.size() == mesh->cell2nodePbi[cell].size());
+        REQUIRE(bits.size() == source.CellNodePeriodicBits(cell).size());
         for (size_t slot = 0; slot < bits.size(); ++slot)
-            CHECK(uint8_t(bits[slot]) == uint8_t(mesh->cell2nodePbi[cell][DNDS::rowsize(slot)]));
+            CHECK(uint8_t(bits[slot]) == uint8_t(source.CellNodePeriodicBits(cell)[slot]));
         G::tSmallCoords physical;
         view.GetCoordsOnCell(cell, physical);
         DNDS::real area = 0;

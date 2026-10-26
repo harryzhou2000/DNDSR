@@ -1,6 +1,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #define DNDS_MESH_FACADE_TEST_EMBEDDED
 #include "test_MeshFacade.cpp"
+#include "LegacyConstReferenceFixture.hpp"
 #include "Geom/Mesh/NativeMeshSnapshot.hpp"
 #include "Geom/Mesh/NativeMeshBuilder.hpp"
 #include "DNDS/Runtime/RowBuilder.hpp"
@@ -67,9 +68,9 @@ TEST_CASE("Mesh facade CUDA kernels traverse retained snapshots with host parity
     REQUIRE(cudaMallocHost(reinterpret_cast<void **>(&secondActual), sizeof(*secondActual)) == cudaSuccess);
     for (int trial = 0; trial < 6; ++trial)
     {
-        const bool published = trial >= 3;
+        const bool twoReaders = trial >= 3;
         const int fixture = trial % 3;
-        CAPTURE(published);
+        CAPTURE(twoReaders);
         CAPTURE(fixture);
         const bool periodic = fixture == 1, empty = fixture == 2;
         auto mesh = FacadeFixture(periodic, empty);
@@ -78,15 +79,11 @@ TEST_CASE("Mesh facade CUDA kernels traverse retained snapshots with host parity
             auto host = mesh->AcquireRead(AllFacadeRequirements());
             expected = G::Test::MeshViewProbe(host.HostView());
         }
-        if (published)
-        {
-            mesh->PublishNative(AllFacadeRequirements());
-            mesh->PlaceNative(R::Device::CUDA(ordinal), context);
-        }
+        mesh->PlaceNative(R::Device::CUDA(ordinal), context);
         auto versions = mesh->versions;
         std::optional<G::MeshReadAccess> access, secondAccess;
         access.emplace(mesh->AcquireRead(AllFacadeRequirements(), context));
-        if (published)
+        if (twoReaders)
         {
             secondAccess.emplace(mesh->AcquireRead(AllFacadeRequirements(), secondContext));
             if (!empty)
@@ -104,7 +101,7 @@ TEST_CASE("Mesh facade CUDA kernels traverse retained snapshots with host parity
         REQUIRE(cudaEventRecord(gatePassed, stream) == cudaSuccess);
         REQUIRE(G::Test::LaunchMeshViewProbe(access->DeviceView(), output, stream) == cudaSuccess);
         REQUIRE(cudaMemcpyAsync(actual, output, sizeof(*actual), cudaMemcpyDeviceToHost, stream) == cudaSuccess);
-        if (published)
+        if (twoReaders)
         {
             // Reacquisition uses the same immutable placement on another stream.
             // Gate both readers, then explicitly join the second reader onto the
@@ -119,7 +116,7 @@ TEST_CASE("Mesh facade CUDA kernels traverse retained snapshots with host parity
         }
         access->Complete(R::Completion::Record(context));
         CHECK_THROWS(access->DeviceView());
-        // Drop the source and its legacy/native owners while both streams are
+        // Drop the source and its native authority owners while both streams are
         // blocked. Read scopes retain CUDA values, shape and source read leases.
         CHECK(cudaStreamQuery(stream) == cudaErrorNotReady);
         mesh.reset();
@@ -129,7 +126,7 @@ TEST_CASE("Mesh facade CUDA kernels traverse retained snapshots with host parity
         CHECK_THROWS(access->Complete(R::Completion::Record(context)));
         CHECK_THROWS(access->DeviceView());
         CheckProbeEqual(*actual, expected);
-        if (published)
+        if (twoReaders)
         {
             secondAccess->Wait();
             CHECK_THROWS(secondAccess->DeviceView());
@@ -137,7 +134,7 @@ TEST_CASE("Mesh facade CUDA kernels traverse retained snapshots with host parity
         }
         CHECK_FALSE(versions.CanMutate());
         access.reset();
-        if (published)
+        if (twoReaders)
             CHECK_FALSE(versions.CanMutate());
         secondAccess.reset();
         CHECK(versions.CanMutate());
@@ -158,6 +155,7 @@ TEST_CASE("Moved mesh CUDA access can outlive its destroyed acquisition stream")
     cudaStream_t stream = nullptr;
     REQUIRE(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking) == cudaSuccess);
     auto mesh = FacadeFixture();
+    mesh->PlaceNative(R::Device::CUDA(ordinal), R::ExecutionContext::CUDA(ordinal, stream));
     std::optional<G::MeshReadAccess> movedFrom;
     movedFrom.emplace(mesh->AcquireRead(G::MeshReadRequirements::CellFlux(), R::ExecutionContext::CUDA(ordinal, stream)));
     {
@@ -180,6 +178,7 @@ TEST_CASE("Mesh facade CUDA completion validates the acquisition stream")
     cudaStream_t stream = nullptr;
     REQUIRE(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking) == cudaSuccess);
     auto mesh = FacadeFixture(true);
+    mesh->PlaceNative(R::Device::CUDA(ordinal), R::ExecutionContext::CUDA(ordinal, stream));
     {
         auto access = mesh->AcquireRead(AllFacadeRequirements(), R::ExecutionContext::CUDA(ordinal, stream));
         CHECK_THROWS(access.Complete(R::Completion::Record(R::ExecutionContext::CUDA(ordinal))));
@@ -199,20 +198,9 @@ TEST_CASE("Native mesh CUDA queries match existing const legacy pair views")
     REQUIRE(cudaMalloc(reinterpret_cast<void **>(&deviceErrors), sizeof(int)) == cudaSuccess);
     for (bool periodic : {false, true})
     {
-        auto native = FacadeFixture(periodic), legacy = FacadeFixture(periodic);
-        if (!periodic)
-        {
-            auto zeros = [](const auto &rows)
-            {
-                std::vector<std::vector<G::NodePeriodicBits>> result;
-                for (I i = 0; i < rows.Size(); ++i)
-                    result.emplace_back(size_t(rows.RowSize(i)), G::NodePeriodicBits{});
-                return result;
-            };
-            PublishRows(legacy->cell2nodePbi, "legacy.reference.cellBits", legacy->mpi, zeros(legacy->cell2node));
-            PublishRows(legacy->face2nodePbi, "legacy.reference.faceBits", legacy->mpi, zeros(legacy->face2node));
-            PublishRows(legacy->cell2facePbi, "legacy.reference.slotBits", legacy->mpi, zeros(legacy->cell2face));
-        }
+        auto native = FacadeFixture(periodic);
+        auto legacy = LegacyConstReferenceFixture(periodic);
+        native->PlaceNative(R::Device::CUDA(ordinal), R::ExecutionContext::CUDA(ordinal, stream));
         // Independent legacy allocations use their established device copies.
         // Reference acquisition is const; no legacy implementation is altered.
         legacy->coords.to_device(DNDS::DeviceBackend::CUDA);
@@ -407,9 +395,6 @@ TEST_CASE("Native builder CUDA stencil retains independent arrays through pendin
     I globalBytes = I(placed->ArrayBytes());
     DNDS::MPI::AllreduceOneIndex(globalBytes, MPI_SUM, mpi);
     CHECK(mesh->getArrayBytes() == globalBytes);
-    CHECK_FALSE(mesh->coords.father);
-    CHECK_FALSE(mesh->cell2node.father);
-    CHECK_FALSE(mesh->cell2cell.father);
     const auto cells = mesh->Entities(G::EntityKind::Cell);
     CHECK(cells.NumGhost() == (mpi.size > 1 ? 2 : 0));
     CHECK(mesh->NumNodeGhost() == (mpi.size > 1 ? 4 : 0));

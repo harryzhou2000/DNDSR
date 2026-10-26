@@ -87,9 +87,6 @@ TEST_CASE("Native arrays publish a mesh with empty legacy storage and retained r
     auto state = NativeMeshState::FromNative(mpi, std::move(input.data), input.spaces, std::move(input.ids), MeshReadRequirements::Primary());
     auto mesh = UnstructuredMesh::FromNative(mpi, state);
     CHECK(mesh->HasNativeState());
-    CHECK_FALSE(mesh->coords.father);
-    CHECK_FALSE(mesh->cell2node.father);
-    CHECK_FALSE(mesh->node2cell.father);
     CHECK(mesh->Entities(EntityKind::Node).SameOrder(input.spaces.at(EntityKind::Node)));
     CHECK(state->MeshNamespace().size() == 36);
     // Immutable publication and repeated owner binding must not mutate the
@@ -497,7 +494,7 @@ TEST_CASE("Native entity spaces support remote node-star discovery without a leg
     const auto cells = nodes.CreateSibling(EntityKind::Cell, 1);
     const DNDS::index next = (mpi.rank + 1) % mpi.size;
     NativeRelation c2n(Adj::Cell2Node, cells, nodes, IndexRows({{next}}));
-    auto n2c = MeshConnectivity::Inverse(c2n.Read(), mpi);
+    auto n2c = NativeConnectivity::Inverse(c2n.Read(), mpi);
     CHECK(n2c.Read().GlobalRow(0) == std::vector<DNDS::index>{(mpi.rank + mpi.size - 1) % mpi.size});
     NativeConnectivity connectivity(mpi);
     connectivity.Register(c2n.Read());
@@ -577,8 +574,7 @@ TEST_CASE("Native memory accounting counts retained capacities and shared named 
     auto mesh = UnstructuredMesh::FromNative(mpi, state);
     auto retained = mesh->AcquireRead();
     CHECK(mesh->getArrayBytes() == DNDS::index(expected) * mpi.size);
-    CHECK_FALSE(mesh->coords.father);
-    CHECK_FALSE(mesh->cell2node.father);
+    CHECK(mesh->HasNativeState());
 }
 
 int main(int argc, char **argv)

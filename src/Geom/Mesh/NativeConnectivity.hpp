@@ -3,20 +3,11 @@
 #include "RelationAccess.hpp"
 #include "MeshTopologyTypes.hpp"
 
-namespace DNDS
-{
-    template <class TArray>
-    struct ArrayPair;
-}
-
 namespace DNDS::Geom
 {
-    template <rowsize RowSize, rowsize RowMax, rowsize Alignment>
-    class ArrayNodePeriodicBits;
-
     /// Node-parallel periodic metadata, bound to one ordered cone. Bits are
-    /// values in the parent's frame, never target indices. Native and legacy
-    /// storage share the same retained value/layout lease boundary.
+    /// values in the parent's frame, never target indices. Native values and
+    /// layouts remain protected by the same retained lease boundary.
     class RelationPeriodicBits
     {
         EntitySpace _source, _target;
@@ -31,8 +22,6 @@ namespace DNDS::Geom
     public:
         RelationPeriodicBits(const RelationReadAccess &relation, Runtime::Array<NodePeriodicBits> owned,
                              std::optional<Runtime::Array<NodePeriodicBits>> ghost = {});
-        RelationPeriodicBits(const RelationReadAccess &relation,
-                             const DNDS::ArrayPair<ArrayNodePeriodicBits<NonUniformSize, NonUniformSize, NoAlign>> &legacy);
         explicit RelationPeriodicBits(const RelationReadAccess &relation);
         void Validate(const RelationReadAccess &relation) const;
         NodePeriodicBits operator()(index row, size_t slot) const { return _view(size_t(row), slot); }
@@ -59,11 +48,14 @@ namespace DNDS::Geom
     /// CPU setup DSL. Registration retains source/target identities and read
     /// scopes; no compute-kernel dispatch or silent legacy-storage fallback.
     /// Collective operations must be called in the same order on every rank.
+    /// Serialize registry operations; immutable global payloads and one-time
+    /// local-to-global conversions are cached for repeated traversal hops.
     class NativeConnectivity
     {
         MPIInfo _mpi;
         std::unordered_map<AdjKind, std::shared_ptr<RelationReadAccess>, AdjKindHash> _relations;
         std::unordered_map<EntityKind, EntitySpace> _spaces;
+        mutable std::unordered_map<AdjKind, Runtime::Array<index>, AdjKindHash> _fetchValues;
         void ValidateCollectively(const std::function<void()> &validate) const;
         Runtime::Array<index> Fetch(const RelationReadAccess &relation, const std::vector<index> &globals) const;
         static EntitySpace MakeSpace(EntityKind kind, index owned, const EntitySpace &anchor);

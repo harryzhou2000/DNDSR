@@ -3,7 +3,7 @@
 `NativeMeshBuilder` builds primary unstructured topology directly from
 `Runtime::Array` storage. `UnstructuredMesh::FromNative` wraps the result in the
 existing public mesh facade. Neither operation constructs a legacy mesh array.
-The ongoing migration is tracked in
+Current construction, ownership, setup and output are native-only. The migration history and validation ledger are tracked in
 [the Geom work ledger](../dev/geom_native_migration_2026-10-25.md).
 
 ## Ownership and publication
@@ -30,8 +30,7 @@ Publication adopts existing coordinate and metadata buffers and retains read
 leases. A caller can keep its original Array handle, but cannot write through
 that alias while the publication or an escaped read still owns the allocation.
 Replacing an Array handle does not retarget a mesh or an escaped row. A plain
-C++ view does not own storage: retain its `MeshReadAccess` through all CPU uses
-or attach a completion that joins every GPU stream using it.
+C++ view does not own storage: retain its `MeshReadAccess` until all host, worker and device uses complete, and attach completion that joins every consuming GPU stream.
 
 Entity spaces describe the current owned/appended row order. Their global
 indices are rank-offset addresses, separate from persistent entity IDs.
@@ -44,6 +43,16 @@ against owners. Each kind has a next-ID high-water mark that survives transition
 deleting an entity must not lower it. New construction generates one collective
 UUID unless a saved namespace is supplied. Native archive persistence for this
 metadata is included in native archives.
+
+Ordinary topology refresh preserves unchanged Face/Edge IDs through sparse
+full-key matching. Keys use the element type, all persistent node/image
+occurrences, vertex roles and edge incidences under one periodic frame; hashes
+only route exact-key comparisons. New keys allocate above the previous
+high-water mark. Explicit destroy/reconstruct floors deliberately assign fresh
+IDs. Refresh remaps named source/target rows and ancestry; it rejects added or
+removed keys when an arbitrary retained definition cannot be inferred safely.
+Sorted set variants are re-sorted after renumbering; physical slot aliases are
+regenerated with their current orientation. No persistent ID is an array index.
 
 ## Native construction
 
@@ -95,8 +104,7 @@ Physical FaceCells retains two ordered slots and an absent-cell sentinel. The
 mathematical inverse is a separate sorted-set relation. Shared high-order faces
 must agree on all node IDs, including midside nodes; geometrically coincident
 nodes with different identities do not silently become a conforming face.
-Building a requested family that already exists is rejected. ID-preserving
-destruction/reconstruction remains open. Periodic interpolation compares exact
+`Build` rejects a target family that already exists; facade/native preparation retains existing families. Explicit transition destruction/reconstruction uses generated-ID floors so removed IDs are not reused; external family fields require the transition policy rather than a setup-only rebuild. Periodic interpolation compares exact
 node-image patterns modulo a uniform frame change, including repeated node IDs.
 Physical faces retain both parent occurrences even for a one-cell self face;
 the named mathematical inverse retains unique cells. Periodic boundary pairs
@@ -109,15 +117,15 @@ periodic geometry options and matching main/donor boundary labels.
 
 `ReadNativeCGNS` calls the common CGNS parser on one explicit reader rank, then
 distributes native rows and builds sparse topology. Its reader-only serial scratch
-is distinct from distributed ghost construction. The old local serial reader
-uses the same parser and explicitly copies into its compatibility workspace;
-that local API has not acquired an implicit MPI collective. Native import supports
+is distinct from distributed ghost construction. `UnstructuredMeshSerialRW` no longer performs ingestion: it is an output adapter. Native import supports
 multi-zone and mixed-element conventions. Explicit periodic import canonicalizes
 all ordered node occurrences, including high-order slots, using the shared native
 pairing algorithm. Matching is bijective within the absolute tolerance and
 validates exact image reconstruction. Original-node fixed points and CGNS
 GridConnectivity Periodic properties are rejected explicitly. Node ID high-water
 marks reserve pruned donor IDs; no implicit geometry-only pairing is enabled.
+
+`ReadNativeOpenFOAM` uses the existing OpenFOAM STL parser/converter and distributes Runtime rows through the common serial-ingress helper. Serial input scratch belongs only to the reader; it is not distributed ghost storage. Even distribution is the ordinary policy; ReaderOwned ingress enables the single-active-rank RB partition path.
 
 ## New meshes and ancestry
 
@@ -171,9 +179,7 @@ preserve their ordered slots and permitted boundary sentinels.
 `NativeMeshState::Relation(key)` is a retained host setup query. Its named
 registry is independent of fixed solver-facing slots; extra named variants are
 not silently substituted into those slots. The fixed `UnstructuredMeshView`
-continues to provide CUDA-callable direct row access. Native setup headers do
-not include legacy Array/ArrayTransformer definitions; legacy constructors are
-provided by the explicit `RelationAccessLegacy.hpp` adapter.
+continues to provide CUDA-callable direct row access. Native setup headers use Runtime arrays and explicit entity spaces. `MeshConnectivity` retains forwarding names for native mathematics, not a second storage backend. Live compute data remain local; `NativeRelation::Convert` creates detached global/local data without changing the source publication.
 
 ## Python
 
@@ -188,7 +194,7 @@ mesh = Geom.build_native_mesh(
     complete_node_star=True,
 )
 with mesh.acquire_read(inverse=True) as read:
-    cell_nodes_view = read.cell_nodes(0)
+    cell_nodes_view = read.cell_nodes(0) if read.counts["cell"][0] else None
 # The escaped readonly NumPy row retains its scope, values and row metadata.
 ```
 
@@ -266,8 +272,7 @@ ancestry. It does not require the source to remain alive.
 The `ConstructBndMesh` compatibility operation also fills current-row parent
 caches for existing output consumers. Those caches describe that particular
 source/destination pair and require serialized setup; durable ancestry remains
-the portable correspondence. A destination with legacy allocations is rejected
-before publication so it cannot retain a second, stale geometry workspace.
+the portable correspondence. A destination must satisfy the native setup installer contract; no second geometry workspace is retained.
 
 ```mermaid
 flowchart LR
@@ -282,17 +287,13 @@ flowchart LR
     O --> F[VTKHDF or CGNS file]
 ```
 
-Native affine geometry transforms update coordinates, periodic frames and wall
-vectors coherently. Arbitrary coordinate callbacks run only on node owners,
+Native proper rotation/positive-scale transforms update coordinates, periodic frames and wall vectors coherently. General orientation-preserving affine transforms update coordinates and frames but invalidate wall vectors; conjugated periodic rotations must remain rigid. Arbitrary coordinate callbacks accept nonperiodic meshes only and run on node owners,
 then exchange ghosts and invalidate wall vectors. Boundary rectification reduces
 selected-node masks back to owners before refreshing ghosts. Callback failures
 are agreed across ranks before publication. These native operations are
-collective; callbacks must not enter collectives or mutate the source. The old
-legacy `TransformCoords` callable remains local, so callers must choose the same
-authority on all ranks before invoking the native collective route.
+collective; callbacks must not enter collectives or mutate the source. Python `transform_coordinates` is a collective point-copy callback, not the removed writable bulk `TransformCoords` export. Callback or validation failure preserves the published source. Use the validated rigid/affine operations for periodic frame changes; general point callbacks reject periodic meshes.
 
-`BuildNodeWallDist` uses the same geometric search/integration mathematics for
-native and legacy reads. Native output is a node-bound owned/ghost vector pair;
+`BuildNodeWallDist` preserves the established geometric search/integration mathematics using native queries. Its result is a node-bound owned/ghost vector pair;
 publishing it shares the coordinate allocation and preserves its geometry epoch.
 The existing nearest-wall search still gathers the wall triangle coordinates.
 That replicated surface-search scratch is a separate limitation from sparse
@@ -303,15 +304,15 @@ to their source point-field rows. Distributed VTKHDF output uses the supplied
 congruent output communicator for preparation and writing, including from a host
 worker. It validates publication/distribution/periodic metadata before entering
 different communication schedules. It does not build a temporary legacy mesh.
-The CGNS writer reads either facade through the same scoped queries and produces
+The CGNS writer reads native scoped queries and produces
 local mixed-element payloads without changing adjacency numbering. Empty ranks
 use CGNS's null-buffer protocol. Globally empty or periodic CGNS output is
 explicitly rejected. CGNS operations are host-serialized: the library retains
 process-global MPI state, so each parallel writer selects its communicator and
 restores the self communicator afterward; local serial readers also select self.
 
-Production default reader orchestration, legacy serial/VTU/Tecplot output,
-topology destruction, curved elevation smoothing and periodic import/refinement
-still require migration. Passing a native construction/refinement/archive path
-does not establish that every legacy Geom path has been replaced. CPU, worker,
-MPI, Python and CUDA evidence is recorded separately in the work ledger.
+Production reader orchestration, refinement, smoothing, boundary extraction and output consume native state. Existing output entry points use native output buffers; SerialRW is output-only and retains solver-field routing. The LocalRBF, GlobalRBF and Elasticity smoothers preserve their established mathematics; the distinct deprecated V1Old method rejects explicitly rather than silently selecting another algorithm. Some smoothing datasets and nearest-wall surface scratch remain replicated, so sparse mesh closure is not a scalability claim for those algorithms.
+
+Python `read_mesh` and EulerP select native construction. `native=False` rejects before input I/O. Removed mesh APIs include publication/workspace switches, mutable topology producer chains, `SetPeriodicGeometry`, and writable bulk `TransformCoords`. Readonly legacy-spelling pair properties retain native scopes; generic solver-field Array/ArrayPair and Torch contracts remain available independently. `acquire_read` exposes only requested groups, even when additional topology exists. Auxiliary fill-order setup is pure and permitted under retained readers without changing mesh generations; read scopes pin their acquired state across cache/placement-handle replacement.
+
+The full native archive is the authoritative mesh restart format. Old primary-wire import is a one-way Runtime decoder, not another backend. CPU, worker, MPI, Python and CUDA evidence belongs to the current validation ledger; API availability alone is not a runtime or numerical-equivalence claim.

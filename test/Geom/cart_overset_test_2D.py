@@ -1,32 +1,17 @@
-from DNDSR import DNDS, Geom
+from DNDSR import DNDS
+from DNDSR.Geom.utils import read_mesh, prepare_mesh
 import os
-import matplotlib.pyplot as plt
-import matplotlib.patches as patches
-import numpy as np
-import sympy
 
 def get_mesh_2D(meshFile: str):
     mpi = DNDS.MPIInfo()
     mpi.setWorld()
 
-    mesh = Geom.UnstructuredMesh(mpi, 2)
-    meshReader = Geom.UnstructuredMeshSerialRW(mesh, 0)
-    assert os.path.isfile(meshFile)
-    name2ID = meshReader.ReadFromCGNSSerial(meshFile)
-    print(name2ID.n2id_map)
-    meshReader.Deduplicate1to1Periodic(1e-9)
-    meshReader.BuildCell2Cell()
-    meshReader.MeshPartitionCell2Cell({"metisUfactor": 5})
-    meshReader.PartitionReorderToMeshCell2Cell()
+    result = read_mesh(meshFile, mpi, 2, partition_options={"metisUfactor": 5})
+    print(result.name_to_id.n2id_map)
+    prepare_mesh(result.mesh, result.reader, build_serial_out=False)
+    result.mesh.AssertOnFaces()
 
-    mesh.RecoverNode2CellAndNode2Bnd()
-    mesh.RecoverCell2CellAndBnd2Cell()
-    mesh.BuildGhostPrimary()
-    mesh.AdjGlobal2LocalPrimary()
-    mesh.InterpolateFace()
-    mesh.AssertOnFaces()
-
-    return mesh, meshReader
+    return result.mesh, result.reader
 
 
 if __name__ == "__main__":

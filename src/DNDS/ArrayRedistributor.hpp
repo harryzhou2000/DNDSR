@@ -17,6 +17,7 @@
 #include <unordered_map>
 #include <algorithm>
 #include <numeric>
+#include <cstdint>
 
 namespace DNDS
 {
@@ -80,14 +81,11 @@ namespace DNDS
     ///   Round 3: Directory ranks reply with resolved globalReadIdx.
     ///
     /// @par Memory scaling
-    /// Temporary memory per rank is O(nLocal) where nLocal is the larger of
-    /// readOrigIndex.size() and newOrigIndex.size(). Specifically:
-    ///   - 7 index vectors of size O(nLocal): sendBuf, recvBuf, querySendBuf,
-    ///     queryRecvBuf, queryReplyBuf, replyRecvBuf, pullingIndexGlobal
-    ///   - 1 unordered_map<index,index> of size O(nGlobal/nRanks) for the directory
-    ///   - Total: ~7 × nLocal × sizeof(index) + O(nGlobal/nRanks) hash table overhead
-    /// For a 100M-cell mesh with 8 ranks: ~12.5M entries × 8 B × 7 ≈ 700 MB per rank,
-    /// plus ~200 MB for the directory hash table.
+    /// Temporary storage scales with this rank's read/query rows, received
+    /// directory/query entries, and communicator size. IDs are hash keys, never
+    /// array subscripts or dense range endpoints. Hash partitioning distributes
+    /// arbitrary sparse IDs without routing every ID above nGlobal to one rank;
+    /// an adversarial set of colliding keys can still concentrate served work.
     ///
     /// @param mpi           MPI communicator info
     /// @param readOrigIndex Original indices from the even-split read (this rank's slice)
@@ -107,8 +105,9 @@ namespace DNDS
         // Each rank holds readOrigIndex for its read slice. The global read index
         // for readOrigIndex[i] on rank r is: readGlobalMapping(r, i).
         //
-        // Directory rank assignment: directoryRank(origIdx) = origIdx * nRanks / nGlobal
-        // (block partitioning for good locality).
+        // Directory ranks use the same unsigned integer mixing as native mesh
+        // persistent-ID validation. Keep the full ID as the directory key, so
+        // hash collisions only share a server and never identify distinct rows.
         //
         // Steps:
         //   1. Send (origIdx, globalReadIdx) pairs to directory ranks via Alltoallv.
@@ -120,8 +119,8 @@ namespace DNDS
         index nGlobal = readGlobalMapping->globalSize();
         auto validKeys = [&](const std::vector<index> &keys)
         {
-            return std::all_of(keys.begin(), keys.end(), [&](index key)
-                               { return key >= 0 && key <= std::numeric_limits<index>::max() / nRanks; });
+            return std::all_of(keys.begin(), keys.end(), [](index key)
+                               { return key >= 0; });
         };
         const auto &lengths = readGlobalMapping->RLengths();
         detail::RedistributionCheck(mpi,
@@ -133,9 +132,11 @@ namespace DNDS
                                     "invalid redistribution lengths or original indices");
         auto directoryRank = [&](index origIdx) -> int
         {
-            if (nGlobal == 0)
-                return 0;
-            return static_cast<int>(std::min(index(nRanks - 1), origIdx * index(nRanks) / nGlobal));
+            uint64_t hash = static_cast<uint64_t>(origIdx) + 0x9e3779b97f4a7c15ULL;
+            hash = (hash ^ (hash >> 30)) * 0xbf58476d1ce4e5b9ULL;
+            hash = (hash ^ (hash >> 27)) * 0x94d049bb133111ebULL;
+            hash ^= hash >> 31;
+            return static_cast<int>(hash % static_cast<uint64_t>(nRanks));
         };
 
         // Step 3: Send read entries to directory via Alltoallv.
@@ -143,7 +144,7 @@ namespace DNDS
 
         // Count entries per directory rank
         std::vector<int> sendCounts(nRanks, 0);
-        for (long i : readOrigIndex)
+        for (index i : readOrigIndex)
         {
             int dr = directoryRank(i);
             sendCounts[dr]++;
@@ -199,7 +200,7 @@ namespace DNDS
         // Step 5: Send queries from newOrigIndex to directory, get back globalReadIdx.
         // Count queries per directory rank
         std::vector<int> querySendCounts(nRanks, 0);
-        for (long i : newOrigIndex)
+        for (index i : newOrigIndex)
         {
             int dr = directoryRank(i);
             querySendCounts[dr]++;

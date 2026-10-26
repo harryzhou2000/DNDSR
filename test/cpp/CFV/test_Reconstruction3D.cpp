@@ -19,6 +19,7 @@
 #include "doctest.h"
 
 #include "CFV/VariationalReconstruction.hpp"
+#include "Geom/Mesh/Mesh_Helpers.hpp"
 
 #include <array>
 #include <cmath>
@@ -57,30 +58,15 @@ static ssp<UnstructuredMesh> buildMesh3D(
     const std::string &file,
     DNDS::real Lx, DNDS::real Ly, DNDS::real Lz)
 {
-    auto mesh = std::make_shared<UnstructuredMesh>(g_mpi, g_dim);
-    UnstructuredMeshSerialRW reader(mesh, 0);
-
-    tPoint zero{0, 0, 0};
-    mesh->SetPeriodicGeometry(
-        tPoint{Lx, 0, 0}, zero, zero,
-        tPoint{0, Ly, 0}, zero, zero,
-        tPoint{0, 0, Lz}, zero, zero);
-
-    reader.ReadFromCGNSSerial(meshPath(file));
-    reader.Deduplicate1to1Periodic();
-    reader.BuildCell2Cell();
-
-    UnstructuredMeshSerialRW::PartitionOptions pOpt;
-    pOpt.metisSeed = 42;
-    reader.MeshPartitionCell2Cell(pOpt);
-    reader.PartitionReorderToMeshCell2Cell();
-
-    mesh->RecoverNode2CellAndNode2Bnd();
-    mesh->RecoverCell2CellAndBnd2Cell();
-    mesh->BuildGhostPrimary();
-    mesh->AdjGlobal2LocalPrimary();
-
-    mesh->InterpolateFace();
+    NativePeriodicImportOptions periodic;
+    periodic.frames.translation[1].map() = tPoint{Lx, 0, 0};
+    periodic.frames.translation[2].map() = tPoint{0, Ly, 0};
+    periodic.frames.translation[3].map() = tPoint{0, 0, Lz};
+    PartitionOptions partition;
+    partition.metisSeed = 42;
+    AutoAppendName2ID names;
+    auto mesh = ReadNativeMeshFromCGNS(g_mpi, g_dim, meshPath(file), partition, [&](const std::string &name)
+                                       { return names(name); }, periodic);
     mesh->AssertOnFaces();
     return mesh;
 }
@@ -138,7 +124,7 @@ static ssp<tVR> buildVR3D(ssp<UnstructuredMesh> mesh, RecMethod3D method)
     }
 
     vr->parseSettings(j);
-    if (mesh->isPeriodic)
+    if (mesh->IsPeriodic())
         vr->SetPeriodicTransformations();
     vr->ConstructMetrics();
     vr->ConstructBaseAndWeight();

@@ -193,11 +193,7 @@ namespace
         const auto cells = state->Entities(G::EntityKind::Cell);
         const auto boundaries = state->Entities(G::EntityKind::Bnd);
         auto facade = G::UnstructuredMesh::FromNative(mpi, state);
-        CHECK_FALSE(facade->coords.father);
-        CHECK_FALSE(facade->cell2node.father);
-        CHECK_FALSE(facade->bnd2node.father);
-        CHECK_FALSE(facade->node2cell.father);
-        CHECK_FALSE(facade->cellElemInfo.father);
+        CHECK(facade->HasNativeState());
         auto read = facade->AcquireRead(state->Requirements());
         const auto view = read.HostView();
         for (const auto &space : {nodes, cells, boundaries})

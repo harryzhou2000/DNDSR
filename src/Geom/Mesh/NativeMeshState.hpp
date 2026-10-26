@@ -8,8 +8,7 @@ namespace DNDS::Geom
 {
     class RelationReadAccess;
 
-    /// Explicitly published native query authority. Legacy public arrays remain
-    /// a separate edit workspace; no raw edit silently updates this state.
+    /// Immutable native query authority owned by the public mesh facade.
     /// All map/array ownership is private and immutable after publication.
     class NativeMeshState
     {
@@ -62,10 +61,6 @@ namespace DNDS::Geom
         static std::shared_ptr<const NativeMeshState> FromNative(
             const MPIInfo &mpi, NativeMeshData data, std::map<EntityKind, EntitySpace> spaces,
             std::map<EntityKind, Runtime::Array<index>> ids, MeshReadRequirements requirements);
-        /// Always imports/validates the legacy workspace, even if a prior native
-        /// state is currently published. Caller serializes publication/setup.
-        static std::shared_ptr<const NativeMeshState> CaptureLegacy(UnstructuredMesh &source,
-                                                                    MeshReadRequirements requirements);
         /// Bind only after a successful publication transaction has committed.
         std::shared_ptr<const NativeMeshState> BindEpoch(Runtime::VersionTracker versions) const;
         std::shared_ptr<const NativeMeshState> WithPlacement(Runtime::Device device, Runtime::ExecutionContext context) const;

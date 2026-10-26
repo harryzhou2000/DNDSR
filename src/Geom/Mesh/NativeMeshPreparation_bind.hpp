@@ -10,10 +10,39 @@ namespace DNDS::Geom
 {
     inline void pybind11_NativeMeshPreparation_define(py::module_ &m)
     {
-        m.def("read_native_archive_file", [](const MPIInfo &mpi, Serializer::SerializerFactory factory, const std::string &path, int ghostLayers)
+        m.def("read_native_archive_file", [](const MPIInfo &mpi, Serializer::SerializerFactory factory, const std::string &path, int ghostLayers, py::object partitionOptions)
               {
+            const bool repartition = !partitionOptions.is_none();
+            PartitionOptions options;
+            FieldTransferDetail::LocalStage(mpi, [&]
+            {
+                if (!repartition) return;
+                DNDS_check_throw_info(py::isinstance<py::dict>(partitionOptions), "archive partition_options must be a dictionary or None");
+                for (const auto &entry : partitionOptions.cast<py::dict>())
+                {
+                    const auto key = py::cast<std::string>(entry.first);
+                    if (key == "metisType")
+                    {
+                        DNDS_check_throw_info(py::isinstance<py::str>(entry.second), "archive partition method must be a string");
+                        options.metisType = py::cast<std::string>(entry.second);
+                        continue;
+                    }
+                    DNDS_check_throw_info(key == "metisUfactor" || key == "metisSeed" || key == "edgeWeightMethod" || key == "metisNcuts", "unknown archive partition option");
+                    DNDS_check_throw_info(py::isinstance<py::int_>(entry.second) && !py::isinstance<py::bool_>(entry.second), "archive partition option must be an integer");
+                    const int value = py::cast<int>(entry.second);
+                    if (key == "metisUfactor") options.metisUfactor = value;
+                    else if (key == "metisSeed") options.metisSeed = value;
+                    else if (key == "edgeWeightMethod") options.edgeWeightMethod = value;
+                    else options.metisNcuts = value;
+                }
+                DNDS_check_throw_info((options.metisType == "KWAY" || options.metisType == "RB") &&
+                    options.metisUfactor > 0 && options.metisSeed >= 0 && options.metisNcuts > 0 &&
+                    (options.edgeWeightMethod == 0 || options.edgeWeightMethod == 1) &&
+                    options.metisSeed <= std::numeric_limits<int>::max() - (options.metisNcuts - 1),
+                    "archive native partition options invalid");
+            });
             py::gil_scoped_release release;
-            return ReadNativeMeshFromArchive(mpi, std::move(factory), path, false, {}, ghostLayers); }, py::arg("mpi"), py::arg("factory"), py::arg("path"), py::arg("ghost_layers") = 1, "Collectively open, decode and close a native-full or legacy-primary archive; path is the logical factory base path.");
+            return ReadNativeMeshFromArchive(mpi, std::move(factory), path, repartition, options, ghostLayers); }, py::arg("mpi"), py::arg("factory"), py::arg("path"), py::arg("ghost_layers") = 1, py::arg("partition_options") = py::none(), "Collectively open/decode/close native-full or legacy-primary archives. None preserves matching ownership. A partition dictionary explicitly requests H5 even-split loading (including changed MPI size) followed by native graph partitioning; per-rank JSON cannot change MPI size.");
         m.def("read_compatible_native_archive", [](const MPIInfo &mpi, Serializer::SerializerBaseSSP serializer, const std::string &name, Serializer::ArrayGlobalOffset partition, int layers)
               {
             py::gil_scoped_release release;
