@@ -65,7 +65,8 @@ namespace DNDS::Euler
         real t,
         uint64_t flags,
         OptionalRef<ArrayDOFV<1>> cellTWarm,
-        OptionalRef<const ArrayDOFV<1>> reactiveSplitChi)
+        OptionalRef<const ArrayDOFV<1>> reactiveSplitChi,
+        CFV::ReconstructionMaskView reconstructionMask)
     {
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
         using namespace Geom;
@@ -139,12 +140,15 @@ namespace DNDS::Euler
             };
             if (!direct2ndRec_already_have_uGradBufNoLim)
             {
-                vfv->DoReconstruction2ndGrad(uGradBufNoLim, u, FBoundary, settings.direct2ndRecMethod);
+                vfv->DoReconstruction2ndGrad(uGradBufNoLim, u, FBoundary, settings.direct2ndRecMethod, reconstructionMask);
                 uGradBufNoLim.trans.startPersistentPull(); // this can be safely put before LimiterUGradCall
             }
             // uGradBuf = uGradBufNoLim;
             if (!direct2ndRec1stConv)
+            {
                 this->LimiterUGrad(u, uGradBufNoLim, uGradBuf, direct2ndUseLimiter ? LIMITER_UGRAD_No_Flags : LIMITER_UGRAD_Disable_Shock_Limiter);
+                reconstructionMask.Apply(uGradBuf);
+            }
             if (!direct2ndRec1stConv)
                 uGradBuf.trans.startPersistentPull();
             if (!direct2ndRec_already_have_uGradBufNoLim)

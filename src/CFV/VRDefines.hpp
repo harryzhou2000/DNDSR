@@ -84,15 +84,45 @@ namespace DNDS::CFV
     template <int nVarsFixed, int gDim>
     using tUGrad = ArrayDof<gDim, nVarsFixed>;
 
+    /** @brief Call-local read-only view of a caller-owned static reconstruction mask.
+     * Empty means unconstrained. Nonzero values select cells whose reconstruction
+     * is zero. Selected indices must be sorted, include available ghosts, and
+     * refer to the supplied values. Neither VR nor evaluator retains this view.
+     */
+    struct ReconstructionMaskView
+    {
+        const tUDof<1> *values = nullptr;
+        const std::vector<index> *selectedCells = nullptr;
+
+        [[nodiscard]] bool IsMasked(index iCell) const
+        {
+            return values && (*values)[iCell](0) != 0;
+        }
+
+        /// @brief Project a reconstruction/gradient buffer without evaluation or communication.
+        template <class TArray>
+        void Apply(TArray &field) const
+        {
+            if (!selectedCells)
+                return;
+            for (index iCell : *selectedCells)
+            {
+                if (iCell >= field.Size()) // Some temporary gradients contain owned cells only.
+                    break;
+                field[iCell].setZero();
+            }
+        }
+    };
+
     using tScalarPair = DNDS::ArrayPair<DNDS::ArrayEigenVector<1>>;
     using tScalar = decltype(tScalarPair::father);
 }
 
 namespace DNDS
 {
-//     DNDS_DEVICE_STORAGE_BASE_DELETER_INST(CFV::RecAtr, extern)
-//     DNDS_DEVICE_STORAGE_INST(CFV::RecAtr, DeviceBackend::Host, extern)
-// #ifdef DNDS_USE_CUDA
-//     DNDS_DEVICE_STORAGE_INST(CFV::RecAtr, DeviceBackend::CUDA, extern)
-// #endif
+    //     DNDS_DEVICE_STORAGE_BASE_DELETER_INST(CFV::RecAtr, extern)
+    //     DNDS_DEVICE_STORAGE_INST(CFV::RecAtr, DeviceBackend::Host, extern)
+    // #ifdef DNDS_USE_CUDA
+    //     DNDS_DEVICE_STORAGE_INST(CFV::RecAtr, DeviceBackend::CUDA, extern)
+    // #endif
 }

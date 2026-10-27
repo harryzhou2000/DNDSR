@@ -952,14 +952,16 @@ namespace DNDS::CFV
             tUGrad<nVarsFixed, dim> &uRec,
             tUDof<nVarsFixed> &u,
             const TFBoundary<nVarsFixed> &FBoundary,
-            int method);
+            int method,
+            ReconstructionMaskView reconstructionMask = {});
 
         /** @brief Convert a supplied physical gradient to linear reconstruction modes. */
         template <int nVarsFixed = 5>
         void ConvertUGradToURec(
             tURec<nVarsFixed> &uRec,
             tUGrad<nVarsFixed, dim> &uGrad,
-            const std::vector<int> &mask = std::vector<int>());
+            const std::vector<int> &mask = std::vector<int>(),
+            ReconstructionMaskView reconstructionMask = {});
 
         /**
          * \brief fallback reconstruction method,
@@ -975,7 +977,8 @@ namespace DNDS::CFV
             tUDof<nVarsFixed> &u,
             const TFBoundary<nVarsFixed> &FBoundary,
             int method,
-            const std::vector<int> &mask);
+            const std::vector<int> &mask,
+            ReconstructionMaskView reconstructionMask = {});
 
         /**
          * \brief iterative variational reconstruction method
@@ -998,6 +1001,7 @@ namespace DNDS::CFV
          * \param FBoundary see TFBoundary
          * \param putIntoNew put valid output into uRecNew or not
          * \param recordInc if true, uRecNew holds the incremental value to this iteration
+         * \param reconstructionMask Caller-owned static constraint for this call only; empty leaves every cell unconstrained.
          * @warning mind that uRec could be overwritten
          */
         template <int nVarsFixed = 5>
@@ -1008,7 +1012,8 @@ namespace DNDS::CFV
             const TFBoundary<nVarsFixed> &FBoundary,
             bool putIntoNew = false,
             bool recordInc = false,
-            bool uRecIsZero = false);
+            bool uRecIsZero = false,
+            ReconstructionMaskView reconstructionMask = {});
 
         /** @brief Apply one exact block update for the A-weighted O2 penalty. */
         template <int nVarsFixed = 5>
@@ -1019,7 +1024,8 @@ namespace DNDS::CFV
             const TFBoundary<nVarsFixed> &FBoundary,
             tURec<nVarsFixed> &uRecTarget,
             tUDof<1> &alpha,
-            bool putIntoNew = false);
+            bool putIntoNew = false,
+            ReconstructionMaskView reconstructionMask = {});
 
     private:
         template <int nVarsFixed = 5>
@@ -1032,7 +1038,8 @@ namespace DNDS::CFV
             tUDof<1> *alpha,
             bool putIntoNew,
             bool recordInc,
-            bool uRecIsZero);
+            bool uRecIsZero,
+            ReconstructionMaskView reconstructionMask);
 
     public:
         /***********************************************************/
@@ -1060,7 +1067,8 @@ namespace DNDS::CFV
             tURec<nVarsFixed> &uRecDiff,
             tURec<nVarsFixed> &uRecNew,
             tUDof<nVarsFixed> &u,
-            const TFBoundaryDiff<nVarsFixed> &FBoundaryDiff);
+            const TFBoundaryDiff<nVarsFixed> &FBoundaryDiff,
+            ReconstructionMaskView reconstructionMask = {});
         /***********************************************************/
 
         /** //TODO
@@ -1073,7 +1081,8 @@ namespace DNDS::CFV
             tURec<nVarsFixed> &uRecNew,
             tUDof<nVarsFixed> &u,
             const TFBoundaryDiff<nVarsFixed> &FBoundaryDiff,
-            bool reverse = false);
+            bool reverse = false,
+            ReconstructionMaskView reconstructionMask = {});
 
         /***********************************************************/
 
@@ -1121,7 +1130,8 @@ namespace DNDS::CFV
             tScalarPair &si,
             bool ifAll,
             const tFMEig<nVarsFixed> &FM, const tFMEig<nVarsFixed> &FMI,
-            bool putIntoNew = false);
+            bool putIntoNew = false,
+            ReconstructionMaskView reconstructionMask = {});
 
         /**
          * @brief FM(uLeft,uRight,norm) gives vsize * vsize mat of Left Eigen Vectors
@@ -1136,7 +1146,8 @@ namespace DNDS::CFV
             tScalarPair &si,
             bool ifAll,
             const tFMEig<nVarsFixed> &FM, const tFMEig<nVarsFixed> &FMI,
-            bool putIntoNew = false, int limitOrder = 0);
+            bool putIntoNew = false, int limitOrder = 0,
+            ReconstructionMaskView reconstructionMask = {});
 
         void WriteSerializeRecMatrix(const Serializer::SerializerBaseSSP &serializerP)
         {
@@ -1159,59 +1170,59 @@ namespace DNDS::CFV
     };
 }
 // NOLINTBEGIN(bugprone-macro-parentheses)
-#define DNDS_VARIATIONALRECONSTRUCTION_RECONSTRUCTION_INS_EXTERN(dim, nVarsFixed, ext)             \
-    namespace DNDS::CFV                                                                            \
-    {                                                                                              \
-        ext template void VariationalReconstruction<dim>::DoReconstruction2ndGrad<nVarsFixed>(     \
-            tUGrad<nVarsFixed, dim> & uRec,                                                        \
-            tUDof<nVarsFixed> &u,                                                                  \
-            const TFBoundary<nVarsFixed> &FBoundary,                                               \
-            int method);                                                                           \
-                                                                                                   \
-        ext template void VariationalReconstruction<dim>::ConvertUGradToURec<nVarsFixed>(          \
-            tURec<nVarsFixed> & uRec,                                                              \
-            tUGrad<nVarsFixed, dim> &uGrad,                                                        \
-            const std::vector<int> &mask);                                                         \
-                                                                                                   \
-        ext template void VariationalReconstruction<dim>::DoReconstruction2nd<nVarsFixed>(         \
-            tURec<nVarsFixed> & uRec,                                                              \
-            tUDof<nVarsFixed> &u,                                                                  \
-            const TFBoundary<nVarsFixed> &FBoundary,                                               \
-            int method,                                                                            \
-            const std::vector<int> &mask);                                                         \
-                                                                                                   \
-        ext template void VariationalReconstruction<dim>::DoReconstructionIter<nVarsFixed>(        \
-            tURec<nVarsFixed> & uRec,                                                              \
-            tURec<nVarsFixed> &uRecNew,                                                            \
-            tUDof<nVarsFixed> &u,                                                                  \
-            const TFBoundary<nVarsFixed> &FBoundary,                                               \
-            bool putIntoNew,                                                                       \
-            bool recordInc,                                                                        \
-            bool uRecIsZero);                                                                      \
-                                                                                                   \
-        ext template void VariationalReconstruction<dim>::DoReconstructionIterLimited<nVarsFixed>( \
-            tURec<nVarsFixed> & uRec,                                                              \
-            tURec<nVarsFixed> &uRecNew,                                                            \
-            tUDof<nVarsFixed> &u,                                                                  \
-            const TFBoundary<nVarsFixed> &FBoundary,                                               \
-            tURec<nVarsFixed> &uRecTarget,                                                         \
-            tUDof<1> &alpha,                                                                       \
-            bool putIntoNew);                                                                      \
-                                                                                                   \
-        ext template void VariationalReconstruction<dim>::DoReconstructionIterDiff<nVarsFixed>(    \
-            tURec<nVarsFixed> & uRec,                                                              \
-            tURec<nVarsFixed> &uRecDiff,                                                           \
-            tURec<nVarsFixed> &uRecNew,                                                            \
-            tUDof<nVarsFixed> &u,                                                                  \
-            const TFBoundaryDiff<nVarsFixed> &FBoundaryDiff);                                      \
-                                                                                                   \
-        ext template void VariationalReconstruction<dim>::DoReconstructionIterSOR<nVarsFixed>(     \
-            tURec<nVarsFixed> & uRec,                                                              \
-            tURec<nVarsFixed> &uRecInc,                                                            \
-            tURec<nVarsFixed> &uRecNew,                                                            \
-            tUDof<nVarsFixed> &u,                                                                  \
-            const TFBoundaryDiff<nVarsFixed> &FBoundaryDiff,                                       \
-            bool reverse);                                                                         \
+#define DNDS_VARIATIONALRECONSTRUCTION_RECONSTRUCTION_INS_EXTERN(dim, nVarsFixed, ext)                   \
+    namespace DNDS::CFV                                                                                  \
+    {                                                                                                    \
+        ext template void VariationalReconstruction<dim>::DoReconstruction2ndGrad<nVarsFixed>(           \
+            tUGrad<nVarsFixed, dim> & uRec,                                                              \
+            tUDof<nVarsFixed> &u,                                                                        \
+            const TFBoundary<nVarsFixed> &FBoundary,                                                     \
+            int method, ReconstructionMaskView reconstructionMask);                                      \
+                                                                                                         \
+        ext template void VariationalReconstruction<dim>::ConvertUGradToURec<nVarsFixed>(                \
+            tURec<nVarsFixed> & uRec,                                                                    \
+            tUGrad<nVarsFixed, dim> &uGrad,                                                              \
+            const std::vector<int> &mask, ReconstructionMaskView reconstructionMask);                    \
+                                                                                                         \
+        ext template void VariationalReconstruction<dim>::DoReconstruction2nd<nVarsFixed>(               \
+            tURec<nVarsFixed> & uRec,                                                                    \
+            tUDof<nVarsFixed> &u,                                                                        \
+            const TFBoundary<nVarsFixed> &FBoundary,                                                     \
+            int method,                                                                                  \
+            const std::vector<int> &mask, ReconstructionMaskView reconstructionMask);                    \
+                                                                                                         \
+        ext template void VariationalReconstruction<dim>::DoReconstructionIter<nVarsFixed>(              \
+            tURec<nVarsFixed> & uRec,                                                                    \
+            tURec<nVarsFixed> &uRecNew,                                                                  \
+            tUDof<nVarsFixed> &u,                                                                        \
+            const TFBoundary<nVarsFixed> &FBoundary,                                                     \
+            bool putIntoNew,                                                                             \
+            bool recordInc,                                                                              \
+            bool uRecIsZero, ReconstructionMaskView reconstructionMask);                                 \
+                                                                                                         \
+        ext template void VariationalReconstruction<dim>::DoReconstructionIterLimited<nVarsFixed>(       \
+            tURec<nVarsFixed> & uRec,                                                                    \
+            tURec<nVarsFixed> &uRecNew,                                                                  \
+            tUDof<nVarsFixed> &u,                                                                        \
+            const TFBoundary<nVarsFixed> &FBoundary,                                                     \
+            tURec<nVarsFixed> &uRecTarget,                                                               \
+            tUDof<1> &alpha,                                                                             \
+            bool putIntoNew, ReconstructionMaskView reconstructionMask);                                 \
+                                                                                                         \
+        ext template void VariationalReconstruction<dim>::DoReconstructionIterDiff<nVarsFixed>(          \
+            tURec<nVarsFixed> & uRec,                                                                    \
+            tURec<nVarsFixed> &uRecDiff,                                                                 \
+            tURec<nVarsFixed> &uRecNew,                                                                  \
+            tUDof<nVarsFixed> &u,                                                                        \
+            const TFBoundaryDiff<nVarsFixed> &FBoundaryDiff, ReconstructionMaskView reconstructionMask); \
+                                                                                                         \
+        ext template void VariationalReconstruction<dim>::DoReconstructionIterSOR<nVarsFixed>(           \
+            tURec<nVarsFixed> & uRec,                                                                    \
+            tURec<nVarsFixed> &uRecInc,                                                                  \
+            tURec<nVarsFixed> &uRecNew,                                                                  \
+            tUDof<nVarsFixed> &u,                                                                        \
+            const TFBoundaryDiff<nVarsFixed> &FBoundaryDiff,                                             \
+            bool reverse, ReconstructionMaskView reconstructionMask);                                    \
     }
 
 DNDS_VARIATIONALRECONSTRUCTION_RECONSTRUCTION_INS_EXTERN(2, 4, extern)
@@ -1244,7 +1255,7 @@ DNDS_VARIATIONALRECONSTRUCTION_RECONSTRUCTION_INS_EXTERN(3, Eigen::Dynamic, exte
             tScalarPair &si,                                                                         \
             bool ifAll,                                                                              \
             const tFMEig<nVarsFixed> &FM, const tFMEig<nVarsFixed> &FMI,                             \
-            bool putIntoNew);                                                                        \
+            bool putIntoNew, ReconstructionMaskView reconstructionMask);                             \
                                                                                                      \
         ext template void VariationalReconstruction<dim>::DoLimiterWBAP_3(                           \
             tUDof<nVarsFixed> &u,                                                                    \
@@ -1254,7 +1265,7 @@ DNDS_VARIATIONALRECONSTRUCTION_RECONSTRUCTION_INS_EXTERN(3, Eigen::Dynamic, exte
             tScalarPair &si,                                                                         \
             bool ifAll,                                                                              \
             const tFMEig<nVarsFixed> &FM, const tFMEig<nVarsFixed> &FMI,                             \
-            bool putIntoNew, int limitOrder);                                                        \
+            bool putIntoNew, int limitOrder, ReconstructionMaskView reconstructionMask);             \
     }
 // NOLINTEND(bugprone-macro-parentheses)
 DNDS_VARIATIONALRECONSTRUCTION_LIMITERPROCEDURE_INS_EXTERN(2, 1, extern)

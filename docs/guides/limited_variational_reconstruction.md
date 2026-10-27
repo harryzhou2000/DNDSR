@@ -10,6 +10,10 @@ The reconstruction iteration uses the existing block Jacobi or block GS/SOR
 choice (`vfvSettings.SORInstead`). These are reconstruction iterations, not
 restrictions on the physical time integrator.
 
+An independent [static reconstruction mask](reconstruction_mask.md) can force
+coordinate-selected or BC-adjacent cells to piecewise constant states. It
+overrides LVR targets and conventional limiters without changing cell means.
+
 ## Named selections
 
 Selectors use scoped C++ enums and case-sensitive JSON strings. Saved/resolved

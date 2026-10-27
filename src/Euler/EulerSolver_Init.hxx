@@ -13,11 +13,74 @@
 #include "EulerSolver.hpp"
 #include "SpecialFields.hpp"
 #include "DNDS/OMP.hpp"
+#include "DNDS/ExprtkWrapper.hpp"
 #include "Geom/Mesh/Mesh_Helpers.hpp"
 
 namespace DNDS::Euler
 {
     static const auto model = NS_SA;
+    template <EulerModel model>
+    void EulerSolver<model>::BuildReconstructionMask()
+    {
+        const auto &s = config.implicitReconstructionControl.reconstructionMask;
+        DNDS_check_throw_info(!reconstructionMask_.father, "static reconstruction mask is already built");
+        if (!s.enabled())
+            return;
+
+        std::set<Geom::t_index> boundaryIDs(s.boundaryIDs.begin(), s.boundaryIDs.end());
+        for (const auto &name : s.boundaryNames)
+        {
+            auto id = pBCHandler->GetIDFromName(name);
+            DNDS_check_throw_info(id != Geom::BC_ID_NULL && Geom::FaceIDIsExternalBC(id),
+                                  fmt::format("reconstructionMask: unknown or non-external BC name [{}]", name));
+            boundaryIDs.insert(id);
+        }
+        for (auto id : boundaryIDs)
+            DNDS_check_throw_info(id != Geom::BC_ID_NULL && Geom::FaceIDIsExternalBC(id),
+                                  fmt::format("reconstructionMask: invalid external BC face-zone ID {}", id));
+
+        ExprtkWrapperEvaluator expression;
+        if (!s.expression.empty())
+        {
+            expression.AddVector("x", 3);
+            expression.Compile(s.expression);
+        }
+        vfv->BuildUDof(reconstructionMask_, 1);
+        reconstructionMask_.setConstant(0);
+        index nSelected = 0;
+        int invalid = 0;
+        for (index iCell = 0; iCell < mesh->NumCell(); ++iCell)
+        {
+            bool selected = false;
+            if (expression.Compiled())
+            {
+                auto p = vfv->GetCellBary(iCell);
+                for (int d = 0; d < 3; ++d)
+                    expression.VarVec("x", d) = d < gDim ? p(d) : 0;
+                const real value = expression.Evaluate();
+                invalid |= !std::isfinite(value);
+                selected = std::isfinite(value) && value != 0;
+            }
+            for (auto iFace : mesh->cell2face[iCell])
+                selected = selected || boundaryIDs.count(mesh->GetFaceZone(iFace)) != 0;
+            reconstructionMask_[iCell](0) = selected ? 1.0 : 0.0;
+            nSelected += selected;
+        }
+        int invalidAll = 0;
+        MPI::Allreduce(&invalid, &invalidAll, 1, MPI_INT, MPI_MAX, mpi.comm);
+        DNDS_check_throw_info(!invalidAll, "reconstructionMask expression returned a non-finite value on at least one cell");
+
+        reconstructionMask_.trans.startPersistentPull();
+        reconstructionMask_.trans.waitPersistentPull();
+        for (index iCell = 0; iCell < reconstructionMask_.Size(); ++iCell)
+            if (reconstructionMask_[iCell](0) != 0)
+                reconstructionMaskedCells_.push_back(iCell);
+        index nSelectedAll = 0;
+        MPI::Allreduce(&nSelected, &nSelectedAll, 1, DNDS_MPI_INDEX, MPI_SUM, mpi.comm);
+        if (mpi.rank == 0)
+            log() << "Static reconstruction mask: " << nSelectedAll << " cells; all reconstruction modes zero" << std::endl;
+    }
+
     DNDS_SWITCH_INTELLISENSE(template <EulerModel model>, )
     /** @brief Read the mesh, partition it, build solver data structures, and initialize the evaluator.
      *
@@ -411,6 +474,7 @@ namespace DNDS::Euler
         if (vfv->SetAxisSymmetric(config.others.axisSymmetric) && mpi.rank == 0)
             log() << "EulerSolver === Using Axis Symmetric" << std::endl;
         TEval::InitializeFV(mesh, vfv, pBCHandler);
+        BuildReconstructionMask();
         if (config.others.printRecMatrix)
         {
             auto serializerP = config.others.recMatrixWriter.BuildSerializer(mpi);

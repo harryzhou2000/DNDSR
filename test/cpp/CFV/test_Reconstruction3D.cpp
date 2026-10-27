@@ -184,7 +184,7 @@ static DNDS::real runTest3D(
             [&](auto &vInc, int iG)
             {
                 vInc(0) = exactFunc(vr->GetCellQuadraturePPhys(iCell, iG)) *
-                           vr->GetCellJacobiDet(iCell, iG);
+                          vr->GetCellJacobiDet(iCell, iG);
             });
         u[iCell] = uc / vr->GetCellVol(iCell);
     }
@@ -211,8 +211,8 @@ static DNDS::real runTest3D(
                 {
                     tPoint pPhy = vr->GetCellQuadraturePPhys(iCell, iG);
                     DNDS::real uRecVal = u[iCell](0) +
-                        (uGrad[iCell].transpose() *
-                         (pPhy - vr->GetCellBary(iCell))(Seq012))(0);
+                                         (uGrad[iCell].transpose() *
+                                          (pPhy - vr->GetCellBary(iCell))(Seq012))(0);
                     DNDS::real uExact = exactFunc(pPhy);
                     vInc = std::abs(uRecVal - uExact) * vr->GetCellJacobiDet(iCell, iG);
                 });
@@ -337,17 +337,62 @@ static constexpr DNDS::real GOLDEN_NOT_ACQUIRED = 1e300;
 TEST_CASE("3D: constant exactness with GaussGreen")
 {
     auto vr = buildVR3D(g_mesh3d, RecMethod3D::GaussGreen);
-    ScalarFunc3D f = [](const tPoint &) { return 1.0; };
+    ScalarFunc3D f = [](const tPoint &)
+    { return 1.0; };
     DNDS::real err = runTest3D(vr, RecMethod3D::GaussGreen, f, g_zeroBC, 1, 0, false);
     if (g_mpi.rank == 0)
         std::cout << "[3D/const/GG] err = " << std::scientific << err << std::endl;
     CHECK(err < 1e-12);
 }
 
+TEST_CASE("3D static reconstruction mask is exchanged and survives GG and VR updates")
+{
+    auto vr = buildVR3D(g_mesh3d, RecMethod3D::VFV_P2_HQM);
+    CFV::tUDof<1> u, mask;
+    std::vector<DNDS::index> selectedCells;
+    CFV::tURec<1> rec, scratch;
+    vr->BuildUDof(u, 1);
+    vr->BuildUDof(mask, 1);
+    vr->BuildURec(rec, 1);
+    vr->BuildURec(scratch, 1);
+    for (DNDS::index i = 0; i < g_mesh3d->NumCell(); ++i)
+    {
+        auto p = vr->GetCellBary(i);
+        mask[i](0) = p(0) > 0.6 && p(2) < 0.4;
+    }
+    mask.trans.pullOnce();
+    for (DNDS::index i = 0; i < mask.Size(); ++i)
+        if (mask[i](0))
+            selectedCells.push_back(i);
+    const CFV::ReconstructionMaskView reconstructionMask{&mask, &selectedCells};
+    for (DNDS::index i = 0; i < u.Size(); ++i)
+    {
+        auto p = vr->GetCellBary(i);
+        const bool expected = p(0) > 0.6 && p(2) < 0.4;
+        CHECK(reconstructionMask.IsMasked(i) == expected); // Includes ghost cells.
+        u[i](0) = 1 + std::sin(2 * pi * p(0)) * std::cos(2 * pi * p(2));
+    }
+    rec.setConstant(7);
+    for (int k = 0; k < 3; ++k)
+    {
+        vr->DoReconstructionIter<1>(rec, scratch, u, g_zeroBC, false, false, false, reconstructionMask);
+        rec.trans.pullOnce();
+        for (DNDS::index i = 0; i < rec.Size(); ++i)
+            if (reconstructionMask.IsMasked(i))
+                CHECK(rec[i].isZero(0));
+    }
+    vr->DoReconstruction2nd<1>(rec, u, g_zeroBC, 1, {}, reconstructionMask);
+    rec.trans.pullOnce();
+    for (DNDS::index i = 0; i < rec.Size(); ++i)
+        if (reconstructionMask.IsMasked(i))
+            CHECK(rec[i].isZero(0));
+}
+
 TEST_CASE("3D: constant exactness with VFV_P1_HQM")
 {
     auto vr = buildVR3D(g_mesh3d, RecMethod3D::VFV_P1_HQM);
-    ScalarFunc3D f = [](const tPoint &) { return 1.0; };
+    ScalarFunc3D f = [](const tPoint &)
+    { return 1.0; };
     DNDS::real err = runTest3D(vr, RecMethod3D::VFV_P1_HQM, f, g_zeroBC, 100, 1e-15, false);
     if (g_mpi.rank == 0)
         std::cout << "[3D/const/P1-HQM] err = " << std::scientific << err << std::endl;
@@ -357,7 +402,8 @@ TEST_CASE("3D: constant exactness with VFV_P1_HQM")
 TEST_CASE("3D: constant exactness with VFV_P2_HQM")
 {
     auto vr = buildVR3D(g_mesh3d, RecMethod3D::VFV_P2_HQM);
-    ScalarFunc3D f = [](const tPoint &) { return 1.0; };
+    ScalarFunc3D f = [](const tPoint &)
+    { return 1.0; };
     DNDS::real err = runTest3D(vr, RecMethod3D::VFV_P2_HQM, f, g_zeroBC, 200, 1e-15, false);
     if (g_mpi.rank == 0)
         std::cout << "[3D/const/P2-HQM] err = " << std::scientific << err << std::endl;
@@ -383,9 +429,12 @@ static const char *recMethodName3D(RecMethod3D m)
 {
     switch (m)
     {
-    case RecMethod3D::GaussGreen: return "GG";
-    case RecMethod3D::VFV_P1_HQM: return "P1-HQM";
-    case RecMethod3D::VFV_P2_HQM: return "P2-HQM";
+    case RecMethod3D::GaussGreen:
+        return "GG";
+    case RecMethod3D::VFV_P1_HQM:
+        return "P1-HQM";
+    case RecMethod3D::VFV_P2_HQM:
+        return "P2-HQM";
     }
     return "?";
 }
@@ -422,7 +471,7 @@ TEST_CASE("3D: golden-value regression for smooth functions")
         {
             auto vr = buildVR3D(g_mesh3d, tc.method);
             DNDS::real err = runTest3D(vr, tc.method, tc.func,
-                                        g_zeroBC, tc.maxIters, tc.convTol, false);
+                                       g_zeroBC, tc.maxIters, tc.convTol, false);
 
             if (g_mpi.rank == 0)
                 std::cout << "[" << label << "] err = " << std::scientific
@@ -462,7 +511,7 @@ TEST_CASE("3D: VFV P1 HQM converges on sinCos3D")
             [&](auto &vInc, int iG)
             {
                 vInc(0) = sinCos3D(vr->GetCellQuadraturePPhys(iCell, iG)) *
-                           vr->GetCellJacobiDet(iCell, iG);
+                          vr->GetCellJacobiDet(iCell, iG);
             });
         u[iCell] = uc / vr->GetCellVol(iCell);
     }
@@ -512,9 +561,9 @@ TEST_CASE("3D: VFV P2 HQM error < P1 on sinCos3D")
     auto vrP2 = buildVR3D(g_mesh3d, RecMethod3D::VFV_P2_HQM);
 
     DNDS::real errP1 = runTest3D(vrP1, RecMethod3D::VFV_P1_HQM, sinCos3D,
-                                  g_zeroBC, 200, 1e-14, false);
+                                 g_zeroBC, 200, 1e-14, false);
     DNDS::real errP2 = runTest3D(vrP2, RecMethod3D::VFV_P2_HQM, sinCos3D,
-                                  g_zeroBC, 200, 1e-14, false);
+                                 g_zeroBC, 200, 1e-14, false);
 
     if (g_mpi.rank == 0)
         std::cout << "[3D] P2/P1 ratio = " << errP2 / errP1 << std::endl;

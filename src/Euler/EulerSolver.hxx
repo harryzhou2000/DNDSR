@@ -64,6 +64,7 @@ namespace DNDS::Euler
         auto runningEnvironment = RunningEnvironment();
         InitializeRunningEnvironment(runningEnvironment);
         DNDS_EULERSOLVER_RUNNINGENV_GET_REF_LIST
+        const auto reconstructionMask = GetReconstructionMaskView();
 
         DNDS_MPI_InsertCheck(mpi, "Implicit 1 nvars " + std::to_string(nVars));
         /*******************************************************/
@@ -116,6 +117,9 @@ namespace DNDS::Euler
                 ReadRestartOtherSolver(config.restartState.otherRestartFile, config.restartState.otherRestartStoreDim);
         }
         eval.RepairCellMeanState(u);
+        ApplyReconstructionMask(uRec);
+        if (config.timeMarchControl.timeMarchIsTwoStage())
+            ApplyReconstructionMask(uRec1);
         for (index i = 0; i < mesh->NumCell(); ++i)
             cellT_warm_[i](0) = eval.phys().temperature(u[i]);
         typename TEval::ReactiveSplitDataRefs reactiveSplitData{
@@ -260,7 +264,7 @@ namespace DNDS::Euler
                 uRecNew.setConstant(0.0);
                 eval.EvaluateRHS(crhs, JSourceC, cx, uRecNew, uRecNew, betaPPC, alphaPP_tmp, false, tSimu + ct * curDtImplicit,
                                  TEval::RHS_Ignore_Viscosity | sourceTauSplittingRHSFlag, warmT,
-                                 reactiveSplitChi); // TODO: test with viscosity // TODO: RHS_Direct_2nd_Rec_1st_Conv?
+                                 reactiveSplitChi, reconstructionMask); // TODO: test with viscosity // TODO: RHS_Direct_2nd_Rec_1st_Conv?
                 // vfv->DoReconstruction2nd(uRecOld, cx, FBoundary, 1, std::vector<int>());
                 // eval.EvaluateRHS(crhs, JSourceC, cx, uRecOld, uRecNew, betaPPC, alphaPP_tmp, false, tSimu + ct * curDtImplicit,
                 //                  0); // TEval::RHS_Ignore_Viscosity
@@ -281,7 +285,7 @@ namespace DNDS::Euler
                                       config.limiterControl.limitedVR,
                                       !config.limiterControl.limitedVR.weakFreezeWithinImplicitStage || limitedVRStageStart,
                                       limitedVRStageStart,
-                                      FBoundary);
+                                      FBoundary, reconstructionMask);
             }
 
             DNDS_MPI_InsertCheck(mpi, " Lambda RHS: StartRec");
@@ -311,12 +315,12 @@ namespace DNDS::Euler
                     if (useLimitedVR)
                         vfv->DoReconstructionIterLimited(
                             uRecC, uRecNew, cx, FBoundary,
-                            uRecO2, lvrAlpha_, false);
+                            uRecO2, lvrAlpha_, false, reconstructionMask);
                     else
                         vfv->DoReconstructionIter(
                             uRecC, uRecNew, cx,
                             FBoundary,
-                            false);
+                            false, false, false, reconstructionMask);
 
                     uRecC.trans.startPersistentPull();
                     uRecC.trans.waitPersistentPull();
@@ -358,7 +362,7 @@ namespace DNDS::Euler
                     vfv->DoReconstructionIter(
                         uRecC, uRecNew, cx,
                         FBoundary,
-                        true, true);
+                        true, true, false, reconstructionMask);
                     uRecNew.trans.startPersistentPull();
                     uRecNew.trans.waitPersistentPull();
                     // uRec.setConstant(0.0);
@@ -370,7 +374,7 @@ namespace DNDS::Euler
                         gmresRec->solve(
                             [&](ArrayRECV<nVarsFixed> &x, ArrayRECV<nVarsFixed> &Ax)
                             {
-                                vfv->DoReconstructionIterDiff(uRec, x, Ax, cx, FBoundaryDiff);
+                                vfv->DoReconstructionIterDiff(uRec, x, Ax, cx, FBoundaryDiff, reconstructionMask);
                                 Ax.trans.startPersistentPull();
                                 Ax.trans.waitPersistentPull();
                             },
@@ -402,6 +406,7 @@ namespace DNDS::Euler
                                 return res < gmresResidualB * config.implicitReconstructionControl.recThreshold;
                             });
                     uRecC.addTo(uRecNew1, -1);
+                    ApplyReconstructionMask(uRecC);
                     if (gmresConverge)
                         break;
                 }
@@ -421,7 +426,7 @@ namespace DNDS::Euler
                 uRecNew = uRecBC; // last version of B
                 vfv->DoReconstructionIter(
                     uRecC, uRecBC, cx,
-                    FBoundary, true, true, true); // puts rhs of reconstruction A^-1b into uRecBC
+                    FBoundary, true, true, true, reconstructionMask); // puts rhs of reconstruction A^-1b into uRecBC
                 if (iter > 2)
                 {
                     if (config.implicitReconstructionControl.fpcgResetScheme == 0)
@@ -450,7 +455,7 @@ namespace DNDS::Euler
                     bool pcgConverged = pcgRecC->solve(
                         [&](ArrayRECV<nVarsFixed> &x, ArrayRECV<nVarsFixed> &Ax)
                         {
-                            vfv->DoReconstructionIterDiff(uRec, x, Ax, cx, FBoundaryDiff);
+                            vfv->DoReconstructionIterDiff(uRec, x, Ax, cx, FBoundaryDiff, reconstructionMask);
                             Ax.trans.startPersistentPull();
                             Ax.trans.waitPersistentPull();
                             vfv->MatrixAMult(Ax, Ax);
@@ -463,7 +468,7 @@ namespace DNDS::Euler
                         {
                             vfv->DoReconstructionIter(
                                 x, res, cx,
-                                FBoundary, true, true);
+                                FBoundary, true, true, false, reconstructionMask);
                             res.trans.startPersistentPull();
                             res.trans.waitPersistentPull();
                             res *= -1;
@@ -499,12 +504,13 @@ namespace DNDS::Euler
             }
             else
                 DNDS_assert_info(false, "no such recLinearScheme");
+            ApplyReconstructionMask(uRecC);
             if ((model == NS_SA || model == NS_SA_3D) && eval.settings.ransForce2nd)
             {
                 std::vector<int> mask;
                 mask.resize(1);
                 mask[0] = 5;
-                vfv->DoReconstruction2nd(uRec, u, FBoundary, 1, mask);
+                vfv->DoReconstruction2nd(uRec, u, FBoundary, 1, mask, reconstructionMask);
             }
             if (model == NS_2EQ || model == NS_2EQ_3D)
             {
@@ -512,7 +518,7 @@ namespace DNDS::Euler
                 mask.resize(2);
                 mask[0] = 5;
                 mask[1] = 6;
-                vfv->DoReconstruction2nd(uRec, u, FBoundary, 1, mask);
+                vfv->DoReconstruction2nd(uRec, u, FBoundary, 1, mask, reconstructionMask);
             }
             Timer().StopTimer(PerformanceTimer::Reconstruction);
             if (gradIsZero)
@@ -617,7 +623,7 @@ namespace DNDS::Euler
                         (uRecNew),
                         ifUseLimiter,
                         iter < config.limiterControl.nPartialLimiterStartLocal && step < config.limiterControl.nPartialLimiterStart,
-                        fML, fMR, true);
+                        fML, fMR, true, reconstructionMask);
                 else if (config.limiterControl.limiterProcedure == ReconstructionLimiter::WBAP3)
                     vfv->template DoLimiterWBAP_3<nVarsFixed>(
                         (cx),
@@ -626,7 +632,7 @@ namespace DNDS::Euler
                         (uRecNew),
                         ifUseLimiter,
                         iter < config.limiterControl.nPartialLimiterStartLocal && step < config.limiterControl.nPartialLimiterStart,
-                        fML, fMR, true);
+                        fML, fMR, true, 0, reconstructionMask);
                 else
                 {
                     DNDS_assert(false);
@@ -637,6 +643,10 @@ namespace DNDS::Euler
             Timer().StopTimer(PerformanceTimer::Limiter);
             if (useLimitedVR)
                 uRecLimited = uRecC;
+            // Limiter neighbour projections and passive-variable O2 overrides
+            // must obey the same static first-order constraint as the VR solve.
+            ApplyReconstructionMask(uRecC);
+            ApplyReconstructionMask(uRecLimited);
             if (config.implicitReconstructionControl.storeRecInc)
             {
                 uRecIncC = uRecC;
@@ -661,6 +671,7 @@ namespace DNDS::Euler
             }
             if (config.limiterControl.preserveLimited && config.limiterControl.useLimiter)
                 uRecC = uRecLimited;
+            ApplyReconstructionMask(uRecC);
 
             // uRecC.trans.startPersistentPull(); //! this also need to update!
             // uRecC.trans.waitPersistentPull();
@@ -705,15 +716,15 @@ namespace DNDS::Euler
                                  betaPPC /* dummy*/, alphaPP_tmp /* dummy*/, false, tSimu + ct * curDtImplicit,
                                  TEval::RHS_Direct_2nd_Rec | (config.limiterControl.useLimiter ? TEval::RHS_Direct_2nd_Rec_use_limiter : TEval::RHS_No_Flags) |
                                      sourceTauSplittingRHSFlag,
-                                 warmT, reactiveSplitChi);
+                                 warmT, reactiveSplitChi, reconstructionMask);
             else if (config.limiterControl.useLimiter || config.limiterControl.usePPRecLimiter) // todo: opt to using limited for uRecUnlim
                 eval.EvaluateRHS(crhs, JSourceC, cx, config.limiterControl.useViscousLimited ? uRecLimited : uRecC, uRecLimited,
                                  betaPPC, alphaPP_tmp, false, tSimu + ct * curDtImplicit, sourceTauSplittingRHSFlag, warmT,
-                                 reactiveSplitChi);
+                                 reactiveSplitChi, reconstructionMask);
             else
                 eval.EvaluateRHS(crhs, JSourceC, cx, uRecC, uRecC,
                                  betaPPC, alphaPP_tmp, false, tSimu + ct * curDtImplicit, sourceTauSplittingRHSFlag, warmT,
-                                 reactiveSplitChi);
+                                 reactiveSplitChi, reconstructionMask);
 
             crhs.trans.startPersistentPull();
             crhs.trans.waitPersistentPull();
@@ -744,7 +755,7 @@ namespace DNDS::Euler
                                             TEval::RHS_Direct_2nd_Rec_already_have_uGradBufNoLim | //! uGradBufNoLim already existent in fdtau
                                             (config.limiterControl.useLimiter ? TEval::RHS_Direct_2nd_Rec_use_limiter : TEval::RHS_No_Flags) |
                                             sourceTauSplittingRHSFlag,
-                                        warmT, reactiveSplitChi);
+                                        warmT, reactiveSplitChi, reconstructionMask);
                 //! note: in HM3 IV test for TPMG, this O1 version makes convergence slower compared to the O2 one, why?
                 // static const int use_1st_conv = 1;
                 // static const int use_1st_conv_ignore_vis = 0;
@@ -768,7 +779,7 @@ namespace DNDS::Euler
             // uRec.trans.startPersistentPull();
             // uRec.trans.waitPersistentPull();
             auto &uRecC = config.timeMarchControl.timeMarchIsTwoStage() && uPos == 1 ? uRec1 : uRec;
-            eval.EvaluateDt(dTau, cx, uRecC, CFLNow, curDtMin, 1e100, config.implicitCFLControl.useLocalDt, tSimu, 0, warmT);
+            eval.EvaluateDt(dTau, cx, uRecC, CFLNow, curDtMin, 1e100, config.implicitCFLControl.useLocalDt, tSimu, 0, warmT, reconstructionMask);
             for (int iS = 1; iS <= config.implicitCFLControl.nSmoothDTau; iS++)
             {
                 // ArrayDOFV<1> dTauNew = dTau; //TODO: copying is still unusable; consider doing copiers on the level of ArrayDOFV and ArrayRecV
@@ -1018,7 +1029,7 @@ namespace DNDS::Euler
                                                  (config.limiterControl.useLimiter ? TEval::RHS_Direct_2nd_Rec_use_limiter : TEval::RHS_No_Flags) |
                                                  TEval::RHS_Recover_IncFScale |
                                                  sourceTauSplittingRHSFlag,
-                                             warmT, reactiveSplitChi);
+                                             warmT, reactiveSplitChi, reconstructionMask);
                         else if (mgLevel == 2)
                             eval.EvaluateRHS(rhsTemp, JSourceTmp, uMG1,
                                              config.limiterControl.useViscousLimited ? uRecNew : uRec /*dummy*/, uRec /*dummy*/,
@@ -1032,7 +1043,7 @@ namespace DNDS::Euler
                                                  (config.limiterControl.useLimiter ? TEval::RHS_Direct_2nd_Rec_use_limiter : TEval::RHS_No_Flags) |
                                                  TEval::RHS_Recover_IncFScale |
                                                  sourceTauSplittingRHSFlag,
-                                             warmT, reactiveSplitChi);
+                                             warmT, reactiveSplitChi, reconstructionMask);
                         else
                             DNDS_assert(false);
                     };
@@ -1155,14 +1166,14 @@ namespace DNDS::Euler
             auto &JSourceC = config.timeMarchControl.timeMarchIsTwoStage() && uPos == 1 ? JSource1 : JSource;
             auto &uRecC = config.timeMarchControl.timeMarchIsTwoStage() && uPos == 1 ? uRec1 : uRec;
             // TODO: use "update spectral radius" procedure? or force update in fsolve
-            eval.EvaluateDt(dTau, cx1, uRecC, CFLNow, curDtMin, 1e100, config.implicitCFLControl.useLocalDt, tSimu, 0, warmT);
+            eval.EvaluateDt(dTau, cx1, uRecC, CFLNow, curDtMin, 1e100, config.implicitCFLControl.useLocalDt, tSimu, 0, warmT, reconstructionMask);
             dTau *= Coefs[2];
             eval.LUSGSMatrixInit(JD1, JSource1,
                                  dTau, dt * Coefs[2], alphaDiag,
                                  cx1, uRec,
                                  0,
                                  tSimu);
-            eval.EvaluateDt(dTau, cx, uRecC, CFLNow, curDtMin, 1e100, config.implicitCFLControl.useLocalDt, tSimu, 0, warmT);
+            eval.EvaluateDt(dTau, cx, uRecC, CFLNow, curDtMin, 1e100, config.implicitCFLControl.useLocalDt, tSimu, 0, warmT, reconstructionMask);
             dTau *= Coefs[3] * veryLargeReal;
             eval.LUSGSMatrixInit(JD, JSource,
                                  dTau, dt * Coefs[3], alphaDiag,
@@ -1303,11 +1314,11 @@ namespace DNDS::Euler
             if (config.limiterControl.useLimiter || config.limiterControl.usePPRecLimiter)
                 eval.EvaluateRHS(crhs, JSourceC, cx, config.limiterControl.useViscousLimited ? uRecLimited : uRecC, uRecLimited,
                                  betaPPC, alphaPPC, false, tSimu + ct * curDtImplicit, sourceTauSplittingRHSFlag, warmT,
-                                 reactiveSplitChi);
+                                 reactiveSplitChi, reconstructionMask);
             else
                 eval.EvaluateRHS(crhs, JSourceC, cx, uRecC, uRecC,
                                  betaPPC, alphaPPC, false, tSimu + ct * curDtImplicit, sourceTauSplittingRHSFlag, warmT,
-                                 reactiveSplitChi);
+                                 reactiveSplitChi, reconstructionMask);
             // rhs now last-fixed
             crhs.trans.startPersistentPull();
             crhs.trans.waitPersistentPull();
@@ -1333,11 +1344,11 @@ namespace DNDS::Euler
                 if (config.limiterControl.useLimiter || config.limiterControl.usePPRecLimiter)
                     eval.EvaluateRHS(crhs, JSourceC, cx, config.limiterControl.useViscousLimited ? uRecLimited : uRecC, uRecLimited,
                                      betaPPC, alphaPPC, false, tSimu + ct * curDtImplicit, sourceTauSplittingRHSFlag, warmT,
-                                     reactiveSplitChi);
+                                     reactiveSplitChi, reconstructionMask);
                 else
                     eval.EvaluateRHS(crhs, JSourceC, cx, uRecC, uRecC,
                                      betaPPC, alphaPPC, false, tSimu + ct * curDtImplicit, sourceTauSplittingRHSFlag, warmT,
-                                     reactiveSplitChi);
+                                     reactiveSplitChi, reconstructionMask);
                 crhs.trans.startPersistentPull();
                 crhs.trans.waitPersistentPull();
             }
@@ -1669,7 +1680,7 @@ namespace DNDS::Euler
                     vfv->DoReconstructionIter(
                         uRecNew, uRecNew1, cxInc,
                         FBoundary,
-                        false);
+                        false, false, false, GetReconstructionMaskView());
                     uRecNew.trans.startPersistentPull();
                     uRecNew.trans.waitPersistentPull();
                     eval.UpdateSGSWithRec(alphaDiag, t, cres, cx, uRecC, cxInc, uRecNew, JDC, true, sgsRes);

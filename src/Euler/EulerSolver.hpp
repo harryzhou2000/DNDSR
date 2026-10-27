@@ -118,6 +118,8 @@ namespace DNDS::Euler
         ssp<JacobianLocalLU<nVarsFixed>> JLocalLU;                                                                            ///< Local LU factorization for direct preconditioner.
         ArrayDOFV<1> alphaPP, alphaPP1, betaPP, betaPP1, alphaPP_tmp, dTauTmp;                                                ///< Positivity-preserving limiter scalars and time-step buffer.
         ArrayDOFV<1> cellT_warm_;                                                                                             ///< Per-cell last-known temperature for warm-starting T inversion.
+        ArrayDOFV<1> reconstructionMask_;                                                                                     ///< Solver-owned static binary double mask, including ghosts; absent when disabled.
+        std::vector<index> reconstructionMaskedCells_;                                                                        ///< Solver-owned cached selected owner/ghost indices.
         ArrayDOFV<1> reactiveSplitChi_;                                                                                       ///< Strang fraction @f$\chi_i@f$ owned by the time integrator.
         ArrayDOFV<1> reactiveSplitChemicalStep_;                                                                              ///< Output-only chemical activity @f$a_i@f$.
         ArrayDOFV<1> reactiveSplitDiffusiveStep_;                                                                             ///< Output-only diffusion activity @f$b_i@f$.
@@ -157,6 +159,24 @@ namespace DNDS::Euler
         CFV::tScalarPair ifUseLimiter; ///< Per-cell flag indicating whether the limiter was active.
 
         ssp<BoundaryHandler<model>> pBCHandler; ///< Boundary condition handler (shared with evaluator).
+
+        /// @brief Build and exchange the static reconstruction constraint once after geometry/BC setup.
+        void BuildReconstructionMask();
+
+        /// @brief Construct an explicit call argument; callees must not retain this solver-owned view.
+        [[nodiscard]] CFV::ReconstructionMaskView GetReconstructionMaskView() const
+        {
+            return reconstructionMask_.father
+                       ? CFV::ReconstructionMaskView{&reconstructionMask_, &reconstructionMaskedCells_}
+                       : CFV::ReconstructionMaskView{};
+        }
+
+        /// @brief Project solver reconstruction buffers without evaluating selectors or communicating.
+        template <class TArray>
+        void ApplyReconstructionMask(TArray &values) const
+        {
+            GetReconstructionMaskView().Apply(values);
+        }
 
     public:
         nlohmann::ordered_json gSetting; ///< Full JSON configuration (read from file, may be modified at runtime).
@@ -291,6 +311,30 @@ namespace DNDS::Euler
              */
             struct ImplicitReconstructionControl
             {
+                /** @brief Static union of coordinate-selected and BC-adjacent first-order cells.
+                 * Built by EulerSolver once after geometry and BC mapping. A value
+                 * of one suppresses every reconstruction mode and variable, leaving
+                 * means untouched. Empty selectors disable storage and communication.
+                 */
+                struct ReconstructionMaskSettings
+                {
+                    std::string expression;                 ///< ExprTk scalar expression; finite nonzero selects a cell. x[0..2] is its physical barycentre (z=0 in 2D), in transformed mesh units.
+                    std::vector<std::string> boundaryNames; ///< Exact external BC zone names; select directly incident cells without neighbour expansion.
+                    std::vector<int> boundaryIDs;           ///< Internal external-BC face-zone IDs, not BC type enum values; union with names and expression.
+
+                    [[nodiscard]] bool enabled() const
+                    {
+                        return !expression.empty() || !boundaryNames.empty() || !boundaryIDs.empty();
+                    }
+
+                    DNDS_DECLARE_CONFIG(ReconstructionMaskSettings)
+                    {
+                        DNDS_FIELD(expression, "Static ExprTk mask: finite nonzero selects; x[0..2] is physical cell barycentre in transformed mesh units. Empty disables coordinate selection");
+                        DNDS_FIELD(boundaryNames, "Union of cells directly incident to these external BC zone names; no neighbour expansion");
+                        DNDS_FIELD(boundaryIDs, "Union of cells directly incident to these internal external-BC face-zone IDs, not BC type enums");
+                    }
+                } reconstructionMask;
+
                 bool useExplicit = false;
                 int nInternalRecStep = 1;
                 bool zeroGrads = false;
@@ -340,6 +384,8 @@ namespace DNDS::Euler
                                DNDS::Config::range(0));
                     DNDS_FIELD(zeroRecForStepsInternal,    "Zero reconstruction for N internal steps",
                                DNDS::Config::range(0));
+                    config.field_section(&T::reconstructionMask, "reconstructionMask",
+                                         "Solver-owned static first-order cell mask, built once during setup; expression OR boundary incidence; masked reconstruction is zero");
                     // clang-format on
                 }
             } implicitReconstructionControl;
@@ -1651,13 +1697,15 @@ namespace DNDS::Euler
         auto &getURec() { return uRec; }               ///< Get mutable reference to the reconstruction array.
         auto &getURecNew() { return uRecNew; }         ///< Get mutable reference to the new reconstruction array.
         auto &getURecLimited() { return uRecLimited; } ///< Get mutable reference to the limited reconstruction array.
+        /// @brief Solver-owned setup mask; unallocated when all selectors are empty.
+        const ArrayDOFV<1> &getReconstructionMask() const { return reconstructionMask_; }
         /// LVR storage is absent for conventional/unlimited reconstruction.
         bool hasLimitedVRStorage() const { return bool(uRecO2.father); }
         auto &getURecO2() { return uRecO2; } ///< Active LVR target; unallocated if LVR is disabled.
         typename TEval::OutputOverlapDataRefs getOutputOverlapDataRefs()
         {
             return {u, uRec, betaPP, alphaPP, lvrAlpha_, lvrBranchAlpha_,
-                    lvrDensityJump_, lvrPressureJump_, lvrCompression_, lvrO2Beta_};
+                    lvrDensityJump_, lvrPressureJump_, lvrCompression_, lvrO2Beta_, GetReconstructionMaskView()};
         }
         auto &getEval() { return *pEval; }               ///< Get mutable reference to the evaluator.
         auto &getConfiguration() { return config; }      ///< Get mutable reference to the configuration.

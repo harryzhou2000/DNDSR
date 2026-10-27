@@ -852,7 +852,8 @@ namespace DNDS::Euler
         bool UseLocaldt,
         real t,
         uint64_t flags,
-        OptionalRef<ArrayDOFV<1>> cellTWarm)
+        OptionalRef<ArrayDOFV<1>> cellTWarm,
+        CFV::ReconstructionMaskView reconstructionMask)
     {
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
         DNDS_MPI_InsertCheck(u.father->getMPI(), "EvaluateDt 1");
@@ -873,7 +874,7 @@ namespace DNDS::Euler
                     compressed);
                 return this->generateBoundaryValue(ULfixed, UMean, iCell, iFace, ig, normOutV, normBase, pPhy, t, bType, true, 1);
             };
-            vfv->DoReconstruction2ndGrad(uGradBufNoLim, u, FBoundary, settings.direct2ndRecMethod);
+            vfv->DoReconstruction2ndGrad(uGradBufNoLim, u, FBoundary, settings.direct2ndRecMethod, reconstructionMask);
             uGradBufNoLim.trans.startPersistentPull();
             uGradBufNoLim.trans.waitPersistentPull();
         }
@@ -2858,6 +2859,8 @@ namespace DNDS::Euler
         { return betaPP[iCell](0); };
         outMap["alphaPP"] = [&](index iCell)
         { return alphaPP[iCell](0); };
+        outMap["reconstructionMask"] = [mask = dataRefs.reconstructionMask](index iCell)
+        { return real(mask.IsMasked(iCell)); };
         outMap["lvrAlpha"] = [&](index iCell)
         { return lvrAlpha.father ? lvrAlpha[iCell](0) : real(0); };
         outMap["lvrShockAlpha"] = [&](index iCell)
@@ -3022,6 +3025,8 @@ namespace DNDS::Euler
         { return betaPP[iBnd2Cell(iBnd)](0); };
         outMap["alphaPP"] = [&, iBnd2Cell](index iBnd)
         { return alphaPP[iBnd2Cell(iBnd)](0); };
+        outMap["reconstructionMask"] = [mask = dataRefs.reconstructionMask, iBnd2Cell](index iBnd)
+        { return real(mask.IsMasked(iBnd2Cell(iBnd))); };
         outMap["lvrAlpha"] = [&, iBnd2Cell](index iBnd)
         { return lvrAlpha.father ? lvrAlpha[iBnd2Cell(iBnd)](0) : real(0); };
         outMap["lvrShockAlpha"] = [&, iBnd2Cell](index iBnd)

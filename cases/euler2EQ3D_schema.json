@@ -249,6 +249,27 @@
                     "default": 0,
                     "description": "Zero reconstruction for N internal steps",
                     "minimum": 0.0
+                },
+                "reconstructionMask": {
+                    "type": "object",
+                    "description": "Solver-owned static first-order cell mask, built once during setup; expression OR boundary incidence; masked reconstruction is zero",
+                    "properties": {
+                        "expression": {
+                            "type": "string",
+                            "default": "",
+                            "description": "Static ExprTk mask: finite nonzero selects; x[0..2] is physical cell barycentre in transformed mesh units. Empty disables coordinate selection"
+                        },
+                        "boundaryNames": {
+                            "type": "array",
+                            "default": [],
+                            "description": "Union of cells directly incident to these external BC zone names; no neighbour expansion"
+                        },
+                        "boundaryIDs": {
+                            "type": "array",
+                            "default": [],
+                            "description": "Union of cells directly incident to these internal external-BC face-zone IDs, not BC type enums"
+                        }
+                    }
                 }
             }
         },

@@ -133,6 +133,7 @@ std::array<real, 3> runOneNewtonStep(const std::string &cfgPath)
     solver.ConfigureFromJson(cfgPath, true);
     solver.ReadMeshAndInitialize();
     CHECK_FALSE(solver.hasLimitedVRStorage());
+    CHECK_FALSE(solver.getReconstructionMask().father);
     const auto inactive = solver.getOutputOverlapDataRefs();
     CHECK_FALSE(inactive.lvrAlpha.father);
     CHECK_FALSE(inactive.lvrBranchAlpha.father);
@@ -554,6 +555,127 @@ TEST_CASE("LVR target and branch halos agree across 2-D MPI partitions")
                         CHECK(values[i] == doctest::Approx(expected[i]).epsilon(2e-10).scale(1));
                 }
             }
+}
+
+TEST_CASE("EulerSolver static reconstruction mask owns selectors and setup storage")
+{
+    using json = nlohmann::ordered_json;
+    using Control = EulerSolver<NS>::Configuration::ImplicitReconstructionControl;
+    CHECK(Control::schema().at("properties").contains("reconstructionMask"));
+    CHECK_FALSE(CFV::VRSettings::schema().at("properties").contains("reconstructionMask"));
+    const auto root = projectRoot();
+    const std::vector<std::pair<json, int>> selectors{
+        {json::object(), 0},
+        {{{"expression", "x[0] < 0"}}, 3},
+        {{{"boundaryNames", {"WALL"}}}, 8},
+        {{{"boundaryIDs", {Geom::BC_ID_DEFAULT_WALL}}}, 8},
+        {{{"expression", "x[0] > 0 and x[0] < 1 and x[1] > 0 and x[1] < 1"}, {"boundaryNames", {"WALL"}}}, 9},
+        {{{"boundaryNames", {"misspelled-outlet"}}}, -1},
+        {{{"boundaryIDs", {-1}}}, -1},
+        {{{"expression", "unknown_variable > 0"}}, -1},
+        {{{"expression", "sqrt(x[0])"}}, -1}};
+    int testID = 0;
+    for (const auto &[selector, expectedCount] : selectors)
+    {
+        auto cfg = writeTempConfig<NS>(root + "/cases/euler/euler_config_IV.json", "mask_setup_" + std::to_string(testID++),
+                                       {{"vfvSettings", {{"maxOrder", 1}, {"intOrder", 3}}},
+                                        {"implicitReconstructionControl", {{"reconstructionMask", selector}}},
+                                        {"dataIOControl", {{"meshDirectBisect", 0}, {"meshFile", root + "/data/mesh/Uniform_3x3_wall.cgns"}, {"outAtPointData", false}, {"outPltMode", 1}}}});
+        EulerSolver<NS> solver(g_mpi);
+        solver.ConfigureFromJson(cfg, true);
+        if (expectedCount < 0)
+        {
+            CHECK_THROWS(solver.ReadMeshAndInitialize());
+            continue;
+        }
+        solver.ReadMeshAndInitialize();
+        const auto &mask = solver.getReconstructionMask();
+        CHECK(bool(mask.father) == (expectedCount != 0));
+        if (!mask.father)
+            continue;
+        DNDS::index count = 0, countAll = 0;
+        for (DNDS::index i = 0; i < solver.getMesh()->NumCell(); ++i)
+            count += mask[i](0) != 0;
+        MPI::Allreduce(&count, &countAll, 1, DNDS_MPI_INDEX, MPI_SUM, g_mpi.comm);
+        CHECK(countAll == expectedCount);
+        for (DNDS::index i = 0; i < mask.Size(); ++i)
+            CHECK((mask[i](0) == 0 || mask[i](0) == 1));
+    }
+}
+
+TEST_CASE("EulerSolver static reconstruction mask builds a 3D coordinate selection")
+{
+    const auto root = projectRoot();
+    auto cfg = writeTempConfig<NS_3D>(root + "/cases/euler3D/euler3D_config_Box.json", "mask_setup_3d",
+                                      {{"vfvSettings", {{"maxOrder", 1}, {"intOrder", 3}, {"cacheDiffBase", false}}},
+                                       {"implicitReconstructionControl", {{"reconstructionMask", {{"expression", "x[0] > 0.6 and x[2] < 0.4"}}}}},
+                                       {"dataIOControl", {{"meshFile", root + "/data/mesh/Uniform32_3D_Periodic.cgns"}}}});
+    EulerSolver<NS_3D> solver(g_mpi);
+    solver.ConfigureFromJson(cfg, true);
+    solver.ReadMeshAndInitialize();
+    auto vr = solver.getVFV();
+    const auto &mask = solver.getReconstructionMask();
+    REQUIRE(mask.father);
+    for (DNDS::index i = 0; i < mask.Size(); ++i)
+    {
+        auto p = vr->GetCellBary(i);
+        CHECK(bool(mask[i](0)) == (p(0) > 0.6 && p(2) < 0.4));
+    }
+}
+
+TEST_CASE("EulerSolver static reconstruction mask survives limiter paths and time updates")
+{
+    const auto root = projectRoot();
+    // A small periodic fixture exercises the production RHS callback. With every
+    // cell masked, all limiter paths must produce the same first-order advance.
+    std::vector<Eigen::VectorXd> reference;
+    for (const std::string method : {"3WBAP", "CWBAP", "LVR", "directGG"})
+    {
+        const bool direct = method == "directGG";
+        const std::string tag = "static_mask_" + method + "_np" + std::to_string(g_mpi.size);
+        auto path = writeTempConfig<NS>(root + "/cases/euler/euler_config_IV.json", tag,
+                                        {{"timeMarchControl", {{"odeCode", 2}, {"dtImplicit", 1e-3}, {"useDtPPLimit", false}, {"useRestart", false}, {"tEnd", 1}}},
+                                         {"convergenceControl", {{"nTimeStepInternal", 2}}},
+                                         {"restartState", {{"iStep", 0}, {"iStepInternal", 0}}},
+                                         {"vfvSettings", {{"maxOrder", 3}, {"intOrder", 5}}},
+                                         {"bcSettings", {{{"name", "UnusedCustomOutlet"}, {"type", "BCOut"}, {"value", {1, 0, 0, 0, 3}}}}},
+                                         {"implicitReconstructionControl", {{"useExplicit", direct}, {"recLinearScheme", 0}, {"nInternalRecStep", 2}, {"reconstructionMask", {{"expression", "1"}, {"boundaryNames", {"UnusedCustomOutlet"}}}}}},
+                                         {"limiterControl", {{"useLimiter", true}, {"limiterProcedure", method == "LVR" ? "LVR" : method == "CWBAP" ? "CWBAP"
+                                                                                                                                                    : "3WBAP"}}},
+                                         {"dataIOControl", {{"meshDirectBisect", 0}, {"meshFile", root + "/data/mesh/IV10_10.cgns"}, {"outAtPointData", false}, {"outPltMode", 1}, {"outPltName", (std::filesystem::temp_directory_path() / "dndsr_euler_test" / tag).string()}}}});
+        EulerSolver<NS> solver(g_mpi);
+        solver.ConfigureFromJson(path, true);
+        solver.ReadMeshAndInitialize();
+        solver.getConfiguration().timeMarchControl.nTimeStep = 3;
+        auto vr = solver.getVFV();
+        REQUIRE(solver.getReconstructionMask().father);
+        solver.RunImplicitEuler();
+        auto &rec = solver.getURec();
+        auto &limited = solver.getURecLimited();
+        auto &u = solver.getU();
+        for (DNDS::index i = 0; i < rec.Size(); ++i)
+        {
+            CHECK(solver.getReconstructionMask()[i](0) == 1);
+            CHECK(rec[i].isZero(0));
+            CHECK(limited[i].isZero(0));
+        }
+        if (reference.empty())
+            for (DNDS::index i = 0; i < u.Size(); ++i)
+                reference.emplace_back(u[i]);
+        else
+        {
+            REQUIRE(reference.size() == size_t(u.Size()));
+            for (DNDS::index i = 0; i < u.Size(); ++i)
+                CHECK((u[i] - reference[i]).norm() < 1e-12);
+        }
+        OutputPicker picker;
+        ArrayDOFV<1> unused;
+        solver.getEval().InitializeOutputPicker(picker, solver.getOutputOverlapDataRefs(),
+                                                {unused, unused, unused, unused, unused});
+        auto field = picker.getSubsetList({"reconstructionMask"});
+        for (DNDS::index i = 0; i < solver.getMesh()->NumCell(); ++i)
+            CHECK(std::get<1>(field[0])(i) == 1);
+    }
 }
 
 // ===================================================================

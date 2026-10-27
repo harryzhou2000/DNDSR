@@ -187,7 +187,8 @@ namespace DNDS
             tUGrad<nVarsFixed, dim> &uRec,
             tUDof<nVarsFixed> &u,
             const TFBoundary<nVarsFixed> &FBoundary,
-            int method)
+            int method,
+            ReconstructionMaskView reconstructionMask)
         {
             using namespace Geom;
             using namespace Geom::Elem;
@@ -380,6 +381,7 @@ namespace DNDS
             {
                 DNDS_assert_info(false, "NO SUCH 2nd rec METHOD");
             }
+            reconstructionMask.Apply(uRec);
         }
 
         DNDS_SWITCH_INTELLISENSE(
@@ -392,7 +394,8 @@ namespace DNDS
         void VariationalReconstruction<dim>::ConvertUGradToURec(
             tURec<nVarsFixed> &uRec,
             tUGrad<nVarsFixed, dim> &uGrad,
-            const std::vector<int> &mask)
+            const std::vector<int> &mask,
+            ReconstructionMaskView reconstructionMask)
         {
             using namespace Geom;
             using namespace Geom::Elem;
@@ -429,6 +432,7 @@ namespace DNDS
                     uRec[iCell](Seq012, mask) = lud1bv.solve(grad.transpose())(EigenAll, mask);
                 }
             }
+            reconstructionMask.Apply(uRec);
         }
 
         DNDS_SWITCH_INTELLISENSE(
@@ -443,12 +447,13 @@ namespace DNDS
             tUDof<nVarsFixed> &u,
             const TFBoundary<nVarsFixed> &FBoundary,
             int method,
-            const std::vector<int> &mask)
+            const std::vector<int> &mask,
+            ReconstructionMaskView reconstructionMask)
         {
             tUGrad<nVarsFixed, dim> uGrad;
             this->BuildUGrad(uGrad, u.father->MatRowSize(), false, false);
-            this->DoReconstruction2ndGrad(uGrad, u, FBoundary, method);
-            this->ConvertUGradToURec(uRec, uGrad, mask);
+            this->DoReconstruction2ndGrad(uGrad, u, FBoundary, method, reconstructionMask);
+            this->ConvertUGradToURec(uRec, uGrad, mask, reconstructionMask);
         }
 
         template <int dim>
@@ -460,11 +465,12 @@ namespace DNDS
             const TFBoundary<nVarsFixed> &FBoundary,
             bool putIntoNew,
             bool recordInc,
-            bool uRecIsZero)
+            bool uRecIsZero,
+            ReconstructionMaskView reconstructionMask)
         {
             DoReconstructionIterInternal<nVarsFixed>(
                 uRec, uRecNew, u, FBoundary, nullptr, nullptr,
-                putIntoNew, recordInc, uRecIsZero);
+                putIntoNew, recordInc, uRecIsZero, reconstructionMask);
         }
 
         template <int dim>
@@ -476,11 +482,12 @@ namespace DNDS
             const TFBoundary<nVarsFixed> &FBoundary,
             tURec<nVarsFixed> &uRecTarget,
             tUDof<1> &alpha,
-            bool putIntoNew)
+            bool putIntoNew,
+            ReconstructionMaskView reconstructionMask)
         {
             DoReconstructionIterInternal<nVarsFixed>(
                 uRec, uRecNew, u, FBoundary, &uRecTarget, &alpha,
-                putIntoNew, false, false);
+                putIntoNew, false, false, reconstructionMask);
         }
 
         template <int dim>
@@ -494,7 +501,8 @@ namespace DNDS
             tUDof<1> *alpha,
             bool putIntoNew,
             bool recordInc,
-            bool uRecIsZero)
+            bool uRecIsZero,
+            ReconstructionMaskView reconstructionMask)
         {
             using namespace Geom;
             using namespace Geom::Elem;
@@ -509,14 +517,23 @@ namespace DNDS
                              "limited reconstruction requires maxOrder > 1");
             if (recordInc)
                 DNDS_assert_info(putIntoNew, "the -RHS must be put into uRecNew");
+            if (!recordInc)
+            {
+                reconstructionMask.Apply(uRec);    // Also clear old/restarted ghost coefficients before a sweep.
+                reconstructionMask.Apply(uRecNew); // Either array may receive the update, including its ghost storage.
+            }
             if (settings.maxOrder == 1 && settings.subs2ndOrder != 0)
             {
                 if (recordInc)
-                    this->DoReconstruction2nd<nVarsFixed>(uRecNew, u, (FBoundary), settings.subs2ndOrder, std::vector<int>());
+                    this->DoReconstruction2nd<nVarsFixed>(uRecNew, u, (FBoundary), settings.subs2ndOrder, std::vector<int>(), reconstructionMask);
                 else if (putIntoNew)
-                    this->DoReconstruction2nd<nVarsFixed>(uRecNew, u, (FBoundary), settings.subs2ndOrder, std::vector<int>());
+                    this->DoReconstruction2nd<nVarsFixed>(uRecNew, u, (FBoundary), settings.subs2ndOrder, std::vector<int>(), reconstructionMask);
                 else
-                    this->DoReconstruction2nd<nVarsFixed>(uRec, u, (FBoundary), settings.subs2ndOrder, std::vector<int>());
+                    this->DoReconstruction2nd<nVarsFixed>(uRec, u, (FBoundary), settings.subs2ndOrder, std::vector<int>(), reconstructionMask);
+                if (recordInc && !uRecIsZero && reconstructionMask.selectedCells)
+                    for (index iCell : *reconstructionMask.selectedCells)
+                        if (iCell < mesh->NumCell())
+                            uRecNew[iCell] = uRec[iCell];
                 return;
             }
 
@@ -531,6 +548,16 @@ namespace DNDS
             for (int iPart = 0; iPart < mesh->NLocalParts(); iPart++)
                 for (index iCell = mesh->LocalPartStart(iPart); iCell < mesh->LocalPartEnd(iPart); iCell++)
                 {
+                    if (reconstructionMask.IsMasked(iCell))
+                    {
+                        // The constrained equation is uRec_i=0. Its residual is
+                        // uRec_i, not a zero row (Krylov operators stay nonsingular).
+                        if (recordInc && !uRecIsZero)
+                            uRecNew[iCell] = uRec[iCell];
+                        else
+                            uRecNew[iCell].setZero();
+                        continue;
+                    }
                     real relax = GetCellAtr(iCell).relax;
                     real alphaCell = alpha == nullptr ? 0.0 : (*alpha)[iCell](0);
                     DNDS_assert_info(alphaCell >= 0.0 && alphaCell <= 1.0,
@@ -642,7 +669,8 @@ namespace DNDS
             tURec<nVarsFixed> &uRecDiff,
             tURec<nVarsFixed> &uRecNew,
             tUDof<nVarsFixed> &u,
-            const TFBoundaryDiff<nVarsFixed> &FBoundaryDiff)
+            const TFBoundaryDiff<nVarsFixed> &FBoundaryDiff,
+            ReconstructionMaskView reconstructionMask)
         {
             using namespace Geom;
             using namespace Geom::Elem;
@@ -656,7 +684,11 @@ namespace DNDS
 #    pragma omp parallel for schedule(static)
 #endif
                 for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
+                {
                     uRecNew[iCell].setZero();
+                    if (reconstructionMask.IsMasked(iCell))
+                        uRecNew[iCell] = uRecDiff[iCell];
+                }
                 return;
             }
 #if defined(DNDS_DIST_MT_USE_OMP)
@@ -665,6 +697,8 @@ namespace DNDS
             for (index iCell = 0; iCell < mesh->NumCell(); iCell++)
             {
                 uRecNew[iCell] = uRecDiff[iCell];
+                if (reconstructionMask.IsMasked(iCell))
+                    continue; // Identity row: derivative of the constraint uRec_i=0.
 
                 auto c2f = mesh->cell2face[iCell];
                 auto matrixAAInvBRow = coefficients_.matrixAAInvB[iCell];
@@ -699,7 +733,8 @@ namespace DNDS
                 tURec<nVarsFixed> &uRecNew,
                 tUDof<nVarsFixed> &u,
                 const TFBoundaryDiff<nVarsFixed> &FBoundaryDiff,
-                bool reverse)
+                bool reverse,
+                ReconstructionMaskView reconstructionMask)
         {
             using namespace Geom;
             using namespace Geom::Elem;
@@ -707,11 +742,14 @@ namespace DNDS
             int maxNDOF = GetNDof<dim>(settings.maxOrder);
             static const auto Seq012 = Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>);
 
+            reconstructionMask.Apply(uRecNew);
             for (index iScan = 0; iScan < mesh->NumCell(); iScan++)
             {
                 index iCell = iScan;
                 if (reverse)
                     iCell = mesh->NumCell() - 1 - iCell;
+                if (reconstructionMask.IsMasked(iCell))
+                    continue;
                 real relax = GetCellAtr(iCell).relax;
 
                 uRecNew[iCell] = (1 - relax) * uRecNew[iCell] + uRecInc[iCell];

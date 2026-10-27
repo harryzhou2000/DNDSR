@@ -197,7 +197,8 @@ namespace DNDS::CFV
         tScalarPair &si,
         bool ifAll,
         const tFMEig<nVarsFixed> &FM, const tFMEig<nVarsFixed> &FMI,
-        bool putIntoNew)
+        bool putIntoNew,
+        ReconstructionMaskView reconstructionMask)
     {
         using namespace Geom;
 
@@ -324,6 +325,7 @@ namespace DNDS::CFV
                     EigenAll) = uLimOutArray.matrix();
             }
         }
+        reconstructionMask.Apply(uRecNew);
         uRecNew.trans.startPersistentPull();
         uRecNew.trans.waitPersistentPull();
         if (!putIntoNew)
@@ -352,7 +354,8 @@ namespace DNDS::CFV
         tScalarPair &si,
         bool ifAll,
         const tFMEig<nVarsFixed> &FM, const tFMEig<nVarsFixed> &FMI,
-        bool putIntoNew, int limitOrder)
+        bool putIntoNew, int limitOrder,
+        ReconstructionMaskView reconstructionMask)
     {
         using namespace Geom;
 
@@ -492,6 +495,7 @@ namespace DNDS::CFV
                         LimEnd),
                     EigenAll) = uLimOutArray.matrix();
             }
+            reconstructionMask.Apply(uRecNew);
             uRecNew.trans.startPersistentPull();
             uRecNew.trans.waitPersistentPull();
         }

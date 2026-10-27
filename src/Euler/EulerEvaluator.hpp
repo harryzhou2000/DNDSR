@@ -413,6 +413,7 @@ namespace DNDS::Euler
          * @param[in]  UseLocaldt If true, use local (per-cell) time stepping.
          * @param[in]  t         Current simulation time.
          * @param[in]  flags     Bitwise combination of DT_* flags.
+         * @param[in]  reconstructionMask Optional caller-owned constraint for this call's GG gradients; not retained.
          */
         void EvaluateDt(
             ArrayDOFV<1> &dt,
@@ -422,7 +423,8 @@ namespace DNDS::Euler
             bool UseLocaldt,
             real t,
             uint64_t flags = DT_No_Flags,
-            OptionalRef<ArrayDOFV<1>> cellTWarm = {});
+            OptionalRef<ArrayDOFV<1>> cellTWarm = {},
+            CFV::ReconstructionMaskView reconstructionMask = {});
 
         /// @name RHS evaluation flags (bitwise OR combinable)
         /// @{
@@ -459,6 +461,7 @@ namespace DNDS::Euler
          * @param[in]  reactiveSplitChi Optional solver-owned @f$\chi_i@f$ array. When present, only the
          *                              chemical source is multiplied by @f$1-\chi_i@f$; exact
          *                              @f$\chi_i=1@f$ bypasses chemistry evaluation for that cell.
+         * @param[in]  reconstructionMask Optional caller-owned constraint for direct reconstruction in this call; not retained.
          */
         void EvaluateRHS(
             ArrayDOFV<nVarsFixed> &rhs,
@@ -472,7 +475,8 @@ namespace DNDS::Euler
             real t,
             uint64_t flags = RHS_No_Flags,
             OptionalRef<ArrayDOFV<1>> cellTWarm = {},
-            OptionalRef<const ArrayDOFV<1>> reactiveSplitChi = {});
+            OptionalRef<const ArrayDOFV<1>> reactiveSplitChi = {},
+            CFV::ReconstructionMaskView reconstructionMask = {});
 
         /**
          * @brief Assemble the diagonal blocks of the implicit Jacobian for LU-SGS / SGS.
@@ -796,6 +800,7 @@ namespace DNDS::Euler
          * @param refreshWeakAlpha Recompute the weak branch; false holds its old values.
          * @param resetWeakAlpha Start a new stage with the fresh weak gate rather than
          *                       applying its relaxation/decay to the preceding stage.
+         * @param reconstructionMask Optional caller-owned static constraint on reference gradients/modes for this call only.
          */
         void BuildLimitedVRO2(
             ArrayDOFV<nVarsFixed> &u,
@@ -812,7 +817,8 @@ namespace DNDS::Euler
             const LimitedVRSettings &limitedVRSettings,
             bool refreshWeakAlpha,
             bool resetWeakAlpha,
-            const typename TVFV::template TFBoundary<nVarsFixed> &FBoundary);
+            const typename TVFV::template TFBoundary<nVarsFixed> &FBoundary,
+            CFV::ReconstructionMaskView reconstructionMask = {});
 
         static const int EvaluateURecBeta_DEFAULT = 0x00;          ///< Default: evaluate beta without compression.
         static const int EvaluateURecBeta_COMPRESS_TO_MEAN = 0x01; ///< Compress reconstruction toward cell mean to enforce positivity.
@@ -2291,6 +2297,7 @@ namespace DNDS::Euler
             ArrayDOFV<1> &lvrPressureJump;
             ArrayDOFV<1> &lvrCompression;
             ArrayDOFV<1> &lvrO2Beta;
+            CFV::ReconstructionMaskView reconstructionMask = {}; ///< Explicit solver-owned output data; never stored on the evaluator or VR.
         };
 
         /// @brief Initialize an OutputPicker with field callbacks for VTK/HDF5 output.
@@ -2450,7 +2457,8 @@ namespace DNDS::Euler
             const LimitedVRSettings &limitedVRSettings,                                                                   \
             bool refreshWeakAlpha,                                                                                        \
             bool resetWeakAlpha,                                                                                          \
-            const typename TVFV::template TFBoundary<nVarsFixed> &FBoundary);                                             \
+            const typename TVFV::template TFBoundary<nVarsFixed> &FBoundary,                                              \
+            CFV::ReconstructionMaskView reconstructionMask);                                                              \
                                                                                                                           \
         ext template void EulerEvaluator<model>::EvaluateURecBeta(                                                        \
             ArrayDOFV<nVarsFixed> &u,                                                                                     \
@@ -2507,7 +2515,7 @@ DNDS_EulerEvaluator_INS_EXTERN(NS_2EQ_3D, extern);
             bool UseLocaldt,                                                                                                  \
             real t,                                                                                                           \
             uint64_t flags,                                                                                                   \
-            OptionalRef<ArrayDOFV<1>> cellTWarm);                                                                             \
+            OptionalRef<ArrayDOFV<1>> cellTWarm, CFV::ReconstructionMaskView reconstructionMask);                             \
         ext template void                                                                                                     \
         EulerEvaluator<model>::fluxFace(                                                                                      \
             const TU_Batch &ULxy,                                                                                             \
@@ -2620,7 +2628,8 @@ DNDS_EulerEvaluator_EvaluateDt_INS_EXTERN(NS_2EQ_3D, extern);
             real t,                                            \
             uint64_t flags,                                    \
             OptionalRef<ArrayDOFV<1>> cellTWarm,               \
-            OptionalRef<const ArrayDOFV<1>> reactiveSplitChi); \
+            OptionalRef<const ArrayDOFV<1>> reactiveSplitChi,  \
+            CFV::ReconstructionMaskView reconstructionMask);   \
     }
 
 DNDS_EulerEvaluator_EvaluateRHS_INS_EXTERN(NS, extern);

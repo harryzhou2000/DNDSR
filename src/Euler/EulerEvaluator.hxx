@@ -2563,7 +2563,8 @@ namespace DNDS::Euler
         const LimitedVRSettings &limitedVRSettings,
         bool refreshWeakAlpha,
         bool resetWeakAlpha,
-        const typename TVFV::template TFBoundary<nVarsFixed> &FBoundary)
+        const typename TVFV::template TFBoundary<nVarsFixed> &FBoundary,
+        CFV::ReconstructionMaskView reconstructionMask)
     {
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
         static constexpr int iShockAlpha = 0;
@@ -2585,7 +2586,7 @@ namespace DNDS::Euler
             return;
         }
 
-        vfv->DoReconstruction2ndGrad(uGradBufNoLim, u, FBoundary, settings.direct2ndRecMethod);
+        vfv->DoReconstruction2ndGrad(uGradBufNoLim, u, FBoundary, settings.direct2ndRecMethod, reconstructionMask);
         // Only the weak branch reads unrestricted gradients of ghost cells.
         if (limitedVRSettings.weakAlphaMax > 0 && refreshWeakAlpha)
         {
@@ -2596,12 +2597,12 @@ namespace DNDS::Euler
         if (limitedVRSettings.o2ReferenceLimiter == O2ReferenceLimiter::Barth)
         {
             LimiterUGrad(u, uGradBufNoLim, uGradBuf, LIMITER_UGRAD_No_Flags);
-            vfv->ConvertUGradToURec(uRecO2, uGradBuf);
+            vfv->ConvertUGradToURec(uRecO2, uGradBuf, {}, reconstructionMask);
         }
         else
         {
             DNDS_assert(limitedVRSettings.o2ReferenceLimiter == O2ReferenceLimiter::WBAP);
-            vfv->ConvertUGradToURec(uRecO2, uGradBufNoLim);
+            vfv->ConvertUGradToURec(uRecO2, uGradBufNoLim, {}, reconstructionMask);
             uRecO2.trans.startPersistentPull();
             uRecO2.trans.waitPersistentPull();
 
@@ -2644,7 +2645,7 @@ namespace DNDS::Euler
             };
             vfv->template DoLimiterWBAP_3<nVarsFixed>(
                 u, uRecO2, uRecLimiterWork, uRecLimiterBuffer,
-                limiterIndicator, true, fML, fMR, false, 1);
+                limiterIndicator, true, fML, fMR, false, 1, reconstructionMask);
         }
 
         if (limitedVRSettings.o2ReferenceUsePP)
@@ -3602,6 +3603,48 @@ namespace DNDS::Euler
             {
                 if (eInternalS(iG) < rhoeSensibleEps)
                 {
+                    // Include stable mesh identity and physical location before aborting.
+                    const auto center = vfv->GetCellQuadraturePPhys(iCell, -1);
+                    Geom::tPoint failedPoint = center;
+                    index failedFace = UnInitIndex;
+                    int failedFacePoint = -1;
+                    int remainingPoint = iG;
+                    if (restrictOnVolPoints && remainingPoint < gCell.GetNumPoints())
+                        failedPoint = vfv->GetCellQuadraturePPhys(iCell, remainingPoint);
+                    else
+                    {
+                        if (restrictOnVolPoints)
+                            remainingPoint -= gCell.GetNumPoints();
+                        for (int ic2f = 0; ic2f < c2f.size(); ++ic2f)
+                        {
+                            index face = c2f[ic2f];
+                            int nq = vfv->GetFaceQuad(face).GetNumPoints();
+                            if (remainingPoint < nq)
+                            {
+                                int side = mesh->CellIsFaceBack(iCell, face, ic2f) ? 0 : 1;
+                                failedPoint = vfv->GetFaceQuadraturePPhysFromCell(face, iCell, side, remainingPoint);
+                                failedFace = face;
+                                failedFacePoint = remainingPoint;
+                                break;
+                            }
+                            remainingPoint -= nq;
+                        }
+                    }
+                    index originalCell = mesh->cell2cellOrig.father && iCell < mesh->cell2cellOrig.father->Size()
+                                             ? mesh->cell2cellOrig(iCell, 0)
+                                             : UnInitIndex;
+                    std::ostringstream spatial;
+                    spatial << std::scientific << std::setprecision(17)
+                            << "PP_REC_FAILURE_LOCATION rank=" << mesh->getMPI().rank
+                            << " localCell=" << iCell << " originalCell=" << originalCell
+                            << " quadratureIndex=" << iG << " localFace=" << failedFace
+                            << " faceQuadratureIndex=" << failedFacePoint
+                            << " cellCenter=[" << center.transpose() << "] point=[" << failedPoint.transpose() << "]"
+                            << " sensibleInternalEnergy=" << eInternalS(iG) << " threshold=" << rhoeSensibleEps
+                            << " mean=[" << u[iCell].transpose() << "] pointState=[" << recVRhoG.row(iG) << "]"
+                            << " beta=" << uRecBeta[iCell](0) << " thetaDensity=" << theta1 << " thetaPressure=" << thetaP
+                            << "\n";
+                    std::cerr << spatial.str() << std::flush;
                     std::cout << std::scientific;
                     std::cout << eInternalS.transpose() << std::endl;
                     std::cout << curOrder << std::endl;

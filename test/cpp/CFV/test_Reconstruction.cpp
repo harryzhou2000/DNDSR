@@ -1236,3 +1236,91 @@ TEST_CASE("Limited Jacobi converges to the directly assembled penalized system")
             iterateSOR, scratchSOR, u, g_zeroBC, target, alpha, false);
     CHECK((flatten(iterateSOR) - direct).norm() == doctest::Approx(0.0).scale(1.0).epsilon(1e-10));
 }
+
+TEST_CASE("Static reconstruction mask passed as a call argument constrains updates")
+{
+    for (bool sor : {false, true})
+    {
+        auto vr = buildVR(g_wall_mesh, RecMethod::VFV_P3_Default, sor);
+        // Selector evaluation and storage belong to the caller, not VR.
+        CFV::tUDof<1> expected, u, alpha;
+        std::vector<DNDS::index> selectedCells;
+        vr->BuildUDof(expected, 1);
+        vr->BuildUDof(u, 1);
+        vr->BuildUDof(alpha, 1);
+        DNDS::index selected = 0, selectedAll = 0;
+        for (DNDS::index i = 0; i < g_wall_mesh->NumCell(); ++i)
+        {
+            bool on = vr->GetCellBary(i)(0) < 0;
+            for (auto f : g_wall_mesh->cell2face[i])
+                on = on || g_wall_mesh->GetFaceZone(f) == Geom::BC_ID_DEFAULT_WALL;
+            expected[i](0) = on;
+            selected += on;
+            u[i](0) = 2 + vr->GetCellBary(i)(0);
+        }
+        expected.trans.pullOnce();
+        u.trans.pullOnce();
+        MPI::Allreduce(&selected, &selectedAll, 1, DNDS_MPI_INDEX, MPI_SUM, g_mpi.comm);
+        CHECK(selectedAll == 8); // Boundary ring of the 3x3 mesh; centre remains free.
+        for (DNDS::index i = 0; i < expected.Size(); ++i)
+        {
+            if (expected[i](0))
+                selectedCells.push_back(i);
+        }
+        const CFV::ReconstructionMaskView reconstructionMask{&expected, &selectedCells};
+
+        CFV::tURec<1> rec, scratch, target;
+        vr->BuildURec(rec, 1);
+        vr->BuildURec(scratch, 1);
+        vr->BuildURec(target, 1);
+        target.setConstant(3);
+        alpha.setConstant(1);
+        for (bool intoNew : {false, true})
+        {
+            rec.setConstant(7); // Include dirty owned/ghost coefficients, as with a restart.
+            scratch.setConstant(7);
+            vr->DoReconstructionIterLimited<1>(rec, scratch, u, g_zeroBC, target, alpha, intoNew, reconstructionMask);
+            auto &result = intoNew ? scratch : rec;
+            for (DNDS::index i = 0; i < g_wall_mesh->NumCell(); ++i)
+            {
+                if (expected[i](0))
+                    CHECK(result[i].isZero(0));
+                else
+                    CHECK(result[i].isConstant(3, 1e-12));
+            }
+            for (DNDS::index i = g_wall_mesh->NumCell(); i < result.Size(); ++i)
+                if (expected[i](0))
+                    CHECK(result[i].isZero(0));
+        }
+        // Krylov residual and derivative use identity constraint rows, not singular zero rows.
+        rec.setConstant(2);
+        vr->DoReconstructionIter<1>(rec, scratch, u, g_zeroBC, true, true, false, reconstructionMask);
+        for (DNDS::index i = 0; i < g_wall_mesh->NumCell(); ++i)
+            if (expected[i](0))
+                CHECK(scratch[i].isConstant(2));
+        tVR::TFBoundaryDiff<1> zeroDiff = [](const auto &, const auto &, const auto &, DNDS::index, DNDS::index, int,
+                                             const tPoint &, const tPoint &, t_index)
+        { return Eigen::Vector<DNDS::real, 1>::Zero().eval(); };
+        vr->DoReconstructionIterDiff<1>(rec, rec, scratch, u, zeroDiff, reconstructionMask);
+        for (DNDS::index i = 0; i < g_wall_mesh->NumCell(); ++i)
+            if (expected[i](0))
+                CHECK(scratch[i].isConstant(2));
+
+        // GG gradients (including owned-only temporaries) and passive-column overrides obey the mask.
+        CFV::tUGrad<1, 2> gradient;
+        vr->BuildUGrad(gradient, 1, false, false);
+        vr->DoReconstruction2ndGrad<1>(gradient, u, g_zeroBC, 1, reconstructionMask);
+        vr->ConvertUGradToURec<1>(rec, gradient, {0}, reconstructionMask);
+        for (DNDS::index i = 0; i < g_wall_mesh->NumCell(); ++i)
+            if (expected[i](0))
+            {
+                CHECK(gradient[i].isZero(0));
+                CHECK(rec[i].isZero(0));
+            }
+        // A subsequent call without a mask is unconstrained: VR retains no view.
+        rec.setConstant(7);
+        vr->DoReconstructionIterLimited<1>(rec, scratch, u, g_zeroBC, target, alpha);
+        for (DNDS::index i = 0; i < g_wall_mesh->NumCell(); ++i)
+            CHECK(rec[i].isConstant(3, 1e-12));
+    }
+}
