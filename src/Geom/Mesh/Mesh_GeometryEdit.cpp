@@ -96,14 +96,24 @@ namespace DNDS::Geom
                                         {
             DNDS_check_throw_info(parameters == expected, "native geometry transform differs across ranks");
             const auto view = _nativeState->BorrowHostView();
-            auto coordinates = GeometryRows(view, [&](index node) { return (scale * rotation * view.Coord(node)).eval(); });
+            const bool rotate = !(rotation.array() == Eigen::Matrix3d::Identity().array()).all();
+            auto transform = [&](const tPoint &point) -> tPoint
+            {
+                // Preserve the legacy pure scale/rotation operation order.
+                // Identity matrix products can erase signed zero; a combined
+                // transform explicitly rotates first, then scales the result.
+                const tPoint rotated = rotate ? tPoint((rotation * point).eval()) : point;
+                return scale == 1.0 ? rotated : tPoint((scale * rotated).eval());
+            };
+            auto coordinates = GeometryRows(view, [&](index node) { return transform(view.Coord(node)); });
             std::optional<Runtime::ArrayPair<real>> walls;
             if (view.HasNodeWallDist())
-                walls = GeometryRows(view, [&](index node) { return (scale * rotation * view.NodeWallDist(node)).eval(); });
+                walls = GeometryRows(view, [&](index node) { return transform(view.NodeWallDist(node)); });
             auto frame = view.Periodic();
-            for (auto &r : frame.rotation) r.map() = (rotation * r.map() * rotation.transpose()).eval();
-            for (auto &center : frame.rotationCenter) center.map() = (scale * rotation * center.map()).eval();
-            for (auto &translation : frame.translation) translation.map() = (scale * rotation * translation.map()).eval();
+            if (rotate)
+                for (auto &r : frame.rotation) r.map() = (rotation * r.map() * rotation.transpose()).eval();
+            for (auto &center : frame.rotationCenter) center.map() = transform(center.map());
+            for (auto &translation : frame.translation) translation.map() = transform(translation.map());
             prepared = _nativeState->WithGeometry(std::move(coordinates), std::move(walls), frame); });
         PublishNativeGeometry(std::move(prepared), stamp);
     }

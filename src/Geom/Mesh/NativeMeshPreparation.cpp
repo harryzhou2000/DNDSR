@@ -192,7 +192,14 @@ namespace DNDS::Geom
         // Partition preserves input associations for existing entity fields.
         // Completing missing faces is necessary; refreshing present faces may
         // change their owners/order before the returned source transfers begin.
-        auto complete = PrepareTopology(source, mpi, !source.Requirements().faces, false, options.ghostLayers);
+        // A published facial mesh already has the closure needed by this
+        // graph. Preparing it again would rebuild every primary/inverse row
+        // even with buildFaces=false, and discard setup work without changing
+        // the partition input. Keep completion owned only when it is needed.
+        auto completed = source.Requirements().faces
+                             ? std::shared_ptr<const NativeMeshState>{}
+                             : PrepareTopology(source, mpi, true, false, options.ghostLayers);
+        const auto *complete = completed ? completed.get() : &source;
         const auto cells = complete->Entities(EntityKind::Cell);
         std::vector<idx_t> xadj, adjacency, adjacencyWeights, part;
         std::vector<index> counts(size_t(mpi.size));
@@ -235,9 +242,22 @@ namespace DNDS::Geom
             {
                 std::array<idx_t, METIS_NOPTIONS> settings{};
                 METIS_SetDefaultOptions(settings.data());
+                // Preserve MeshPartitionCell2Cell's source-reader policy. The
+                // defaults differ between KWAY and RB (notably refinement and
+                // contiguity); seed/cut/imbalance alone do not define the same
+                // legacy partition.
+                settings[METIS_OPTION_OBJTYPE] = METIS_OBJTYPE_CUT;
+                settings[METIS_OPTION_CTYPE] = METIS_CTYPE_SHEM;
+                settings[METIS_OPTION_IPTYPE] = METIS_IPTYPE_GROW;
+                settings[METIS_OPTION_RTYPE] = METIS_RTYPE_FM;
                 settings[METIS_OPTION_NCUTS] = options.metisNcuts;
+                settings[METIS_OPTION_NITER] = 10;
                 settings[METIS_OPTION_UFACTOR] = options.metisUfactor;
+                settings[METIS_OPTION_MINCONN] = 1;
+                settings[METIS_OPTION_CONTIG] = 1;
                 settings[METIS_OPTION_SEED] = options.metisSeed;
+                settings[METIS_OPTION_NUMBERING] = 0;
+                settings[METIS_OPTION_DBGLVL] = METIS_DBG_TIME;
                 idx_t vertices = global;
                 auto partition = options.metisType == "RB" ? METIS_PartGraphRecursive : METIS_PartGraphKway;
                 status = partition(&vertices, &nCon, xadj.data(), adjacency.data(), nullptr, nullptr,
@@ -286,7 +306,7 @@ namespace DNDS::Geom
                 // a serial reader must not retain the global facial payload.
                 // Existing face/edge families keep their caller-defined owners.
                 input.follows = {{EntityKind::Node, EntityKind::Cell, Adj::Node2Cell},
-                                 {EntityKind::Bnd, EntityKind::Cell, Adj::Bnd2Cell},
+                                 {EntityKind::Bnd, EntityKind::Cell, NativeBoundaryPlacementRelation(*complete)},
                                  {EntityKind::Face, EntityKind::Cell, Adj::Face2Cell}};
             } });
         auto result = NativeMeshTransition::Build(*complete, mpi, input, options.ghostLayers);

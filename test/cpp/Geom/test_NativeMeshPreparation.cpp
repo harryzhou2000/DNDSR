@@ -5,10 +5,280 @@
 #include "Geom/Mesh/EntityField.hpp"
 #include "Geom/Mesh/NativeMeshCGNS.hpp"
 #include "Geom/Mesh/Mesh_Helpers.hpp"
+#include "Geom/Mesh/NativeMeshPartitionGraph.hpp"
+#include "NativePeriodicFixtures.hpp"
+
+#include <iterator>
 
 namespace G = DNDS::Geom;
 namespace R = DNDS::Runtime;
 using I = DNDS::index;
+
+TEST_CASE("Periodic default boundary ownership follows physical side while explicit support follows both")
+{
+    DNDS::MPIInfo mpi(MPI_COMM_WORLD);
+    if (mpi.size < 2)
+        return;
+    auto source = G::NativeMeshBuilder::Build(NativePeriodicFixtures::TwoCells(mpi), {1, true});
+    for (const bool withFaces : {false, true})
+        for (const bool missingNamedSide : {false, true})
+        {
+            auto input = withFaces ? G::NativeMeshPreparation::PrepareTopology(*source, mpi) : source;
+            if (missingNamedSide)
+            {
+                auto owned = G::NativeMeshAssembler::CaptureOwned(*input, mpi);
+                owned.namedRelations.erase(G::NativeBoundaryPlacementRelation(*input));
+                input = G::NativeMeshAssembler::Build(mpi, std::move(owned));
+                CHECK_THROWS(input->Relation(G::NativeBoundaryPlacementRelation(*input)));
+            }
+            const auto &view = input->BorrowHostView();
+            // Reverse the two cell owners: main side goes to larger rank, partner
+            // to rank zero. Min-over-both would incorrectly move the main with it.
+            G::ReorderInput reorder;
+            std::vector<DNDS::MPI_int> ranks;
+            for (I cell = 0; cell < view.NumCell(); ++cell)
+                ranks.push_back(input->OriginalEntityId(G::EntityKind::Cell, cell) == 0 ? mpi.size - 1 : 0);
+            reorder.explicitMaps.push_back({G::EntityKind::Cell, ranks});
+            auto result = G::NativeMeshTransition::Build(*input, mpi, reorder).state;
+            auto inspect = [&](const G::NativeMeshState &state, bool explicitBoth)
+            {
+                const auto &actual = state.BorrowHostView();
+                for (I boundary = 0; boundary < actual.NumBnd(); ++boundary)
+                {
+                    const I id = state.OriginalEntityId(G::EntityKind::Bnd, boundary);
+                    const I side = id == 0 || id == 2 || id == 4 ? 0 : 1;
+                    const int expectedOwner = explicitBoth && id < 2 ? 0 : (side == 0 ? mpi.size - 1 : 0);
+                    CHECK(mpi.rank == expectedOwner);
+                    const auto pair = actual.BoundaryCells(boundary);
+                    CHECK(state.OriginalEntityId(G::EntityKind::Cell, pair[0]) == side);
+                    if (id < 2)
+                    {
+                        REQUIRE(pair[1] != DNDS::UnInitIndex);
+                        CHECK(state.OriginalEntityId(G::EntityKind::Cell, pair[1]) == 1 - side);
+                    }
+                }
+                CHECK(state.NumGlobal(G::EntityKind::Bnd) == 6);
+                CHECK(state.IdHighWater() == input->IdHighWater());
+            };
+            inspect(*result, false);
+            // Explicit FollowSpec retains its documented minimum-over-relation
+            // meaning; callers can deliberately request coupled support ownership.
+            reorder.follows = {{G::EntityKind::Node, G::EntityKind::Cell, G::Adj::Node2Cell},
+                               {G::EntityKind::Bnd, G::EntityKind::Cell, G::Adj::Bnd2Cell}};
+            inspect(*G::NativeMeshTransition::Build(*input, mpi, reorder).state, true);
+        }
+}
+
+TEST_CASE("Source helpers retain exact legacy serial METIS graph policy and cell ownership")
+{
+    DNDS::MPIInfo mpi(MPI_COMM_WORLD);
+    const int readerRank = mpi.size - 1;
+    const auto root = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path();
+    const auto path = (root / "data/mesh/UniformSquare_10.cgns").string();
+    const auto name = [](const std::string &) -> G::t_index
+    { return 21; };
+    std::vector<idx_t> offsets, adjacency;
+    G::FieldTransferDetail::LocalStage(mpi, [&]
+                                       {
+        if (mpi.rank != readerRank) return;
+        auto serial = G::ReadNativeCGNSSerial(path, 2, name);
+        auto nodes = serial.cellNodes.Read();
+        auto info = serial.cellInfo.Read();
+        std::vector<std::vector<I>> vertices(serial.cellNodes.Rows());
+        for (size_t cell = 0; cell < vertices.size(); ++cell)
+        {
+            const auto count = G::Elem::Element{info.View()(cell,0).getElemType()}.GetNumVertices();
+            for (int slot = 0; slot < count; ++slot) vertices[cell].push_back(nodes.View()(cell,size_t(slot)));
+            std::sort(vertices[cell].begin(),vertices[cell].end());
+        }
+        // Independent legacy BuildCell2Cell oracle: ordered vertex
+        // intersections, before any native faces or native partition graph.
+        offsets.push_back(0);
+        for (size_t cell = 0; cell < vertices.size(); ++cell)
+        {
+            for (size_t other = 0; other < vertices.size(); ++other)
+            {
+                if (cell == other) continue;
+                std::vector<I> common;
+                std::set_intersection(vertices[cell].begin(),vertices[cell].end(),vertices[other].begin(),vertices[other].end(),std::back_inserter(common));
+                if (common.size() >= 2) adjacency.push_back(idx_t(other));
+            }
+            offsets.push_back(idx_t(adjacency.size()));
+        } });
+    auto primary = G::ReadNativeCGNS(mpi, path, 2, name, readerRank, {1, true}, {}, G::NativeSerialDistribution::ReaderOwned);
+    CHECK(primary->NumOwned(G::EntityKind::Cell) == (mpi.rank == readerRank ? 100 : 0));
+    auto complete = G::NativeMeshPreparation::PrepareTopology(*primary, mpi);
+    const auto graph = G::detail::BuildNativePartitionGraph(*complete, mpi);
+    if (mpi.rank == readerRank)
+    {
+        CHECK(graph.offsets == offsets);
+        CHECK(graph.adjacency == adjacency);
+    }
+    for (const std::string method : {"KWAY", "RB"})
+        for (const int cuts : {0, 2})
+        {
+            G::PartitionOptions options;
+            options.metisType = method;
+            options.metisSeed = 41;
+            options.metisNcuts = cuts;
+            options.metisUfactor = 30;
+            std::vector<int> expected(100, 0);
+            G::FieldTransferDetail::LocalStage(mpi, [&]
+                                               {
+                if (mpi.rank != readerRank || mpi.size == 1) return;
+                std::array<idx_t,METIS_NOPTIONS> settings{};
+                METIS_SetDefaultOptions(settings.data());
+                settings[METIS_OPTION_OBJTYPE] = METIS_OBJTYPE_CUT;
+                settings[METIS_OPTION_CTYPE] = METIS_CTYPE_SHEM;
+                settings[METIS_OPTION_IPTYPE] = METIS_IPTYPE_GROW;
+                settings[METIS_OPTION_RTYPE] = METIS_RTYPE_FM;
+                settings[METIS_OPTION_NCUTS] = std::max(cuts,1);
+                settings[METIS_OPTION_NITER] = 10;
+                settings[METIS_OPTION_UFACTOR] = 30;
+                settings[METIS_OPTION_MINCONN] = 1;
+                settings[METIS_OPTION_CONTIG] = 1;
+                settings[METIS_OPTION_SEED] = 41;
+                settings[METIS_OPTION_NUMBERING] = 0;
+                std::vector<idx_t> parts(100);
+                idx_t count = 100, constraints = 1, nParts = mpi.size, cut = 0;
+                auto partition = method == "RB" ? METIS_PartGraphRecursive : METIS_PartGraphKway;
+                DNDS_check_throw_info(partition(&count,&constraints,offsets.data(),adjacency.data(),nullptr,nullptr,nullptr,&nParts,nullptr,nullptr,settings.data(),&cut,parts.data()) == METIS_OK,"legacy serial partition oracle failed");
+                for (size_t cell = 0; cell < parts.size(); ++cell) expected[cell] = int(parts[cell]); });
+            MPI_Bcast(expected.data(), int(expected.size()), MPI_INT, readerRank, mpi.comm);
+            auto actual = G::ReadNativeMeshFromCGNS(mpi, 2, path, options, name, {}, 0, 0, readerRank)->CurrentNativeState();
+            std::vector<I> wanted;
+            for (size_t cell = 0; cell < expected.size(); ++cell)
+                if (expected[cell] == mpi.rank)
+                    wanted.push_back(I(cell));
+            REQUIRE(actual->NumOwned(G::EntityKind::Cell) == I(wanted.size()));
+            for (size_t cell = 0; cell < wanted.size(); ++cell)
+                CHECK(actual->OriginalEntityId(G::EntityKind::Cell, I(cell)) == wanted[cell]);
+        }
+}
+
+TEST_CASE("Prepared reordered faces follow independent post-permutation parent-major slots")
+{
+    DNDS::MPIInfo mpi(MPI_COMM_WORLD);
+    const auto root = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path();
+    for (const bool periodic : {false, true})
+        for (const bool initialFaces : {false, true})
+        {
+            G::AutoAppendName2ID names;
+            G::NativePeriodicImportOptions images;
+            images.frames.translation[1].map() = G::tPoint{10, 0, 0};
+            images.frames.translation[2].map() = G::tPoint{0, 10, 0};
+            images.frames.translation[3].map() = G::tPoint{0, 0, 10};
+            const auto path = (root / "data/mesh" / (periodic ? "IV10_10.cgns" : "UniformSquare_10.cgns")).string();
+            DNDS::ssp<G::UnstructuredMesh> mesh;
+            if (initialFaces)
+                mesh = G::ReadNativeMeshFromCGNS(mpi, 2, path, {}, [&](const std::string &name)
+                                                 { return names(name); }, periodic ? std::optional<G::NativePeriodicImportOptions>(images) : std::nullopt);
+            else
+                mesh = G::UnstructuredMesh::FromNative(mpi, G::ReadNativeCGNS(mpi, path, 2, [&](const std::string &name)
+                                                                              { return names(name); }, 0, {1, true}, periodic ? std::optional<G::NativePeriodicImportOptions>(images) : std::nullopt));
+            auto before = mesh->CurrentNativeState();
+            CHECK(before->Requirements().faces == initialFaces);
+            G::UnstructuredMeshSerialRW output(mesh, 0);
+            G::PrepareMeshOptions options;
+            options.reorderCells = 1;
+            options.reorderParts = 2;
+            options.buildSerialOut = false;
+            G::PrepareMesh(*mesh, output, options);
+            const auto state = mesh->CurrentNativeState();
+            const auto &view = state->BorrowHostView();
+            CHECK(state->MeshNamespace() == before->MeshNamespace());
+            for (const auto &[kind, highWater] : before->IdHighWater())
+                CHECK(state->IdHighWater().at(kind) == highWater);
+            CHECK(state->NLocalParts() == 2);
+            CHECK(state->LocalPartStart(0) == 0);
+            CHECK(state->LocalPartEnd(1) == state->NumOwned(G::EntityKind::Cell));
+            auto actualCellIds = std::vector<I>{}, previousCellIds = std::vector<I>{};
+            for (I cell = 0; cell < view.NumCell(); ++cell)
+                actualCellIds.push_back(state->OriginalEntityId(G::EntityKind::Cell, cell));
+            for (I cell = 0; cell < before->NumOwned(G::EntityKind::Cell); ++cell)
+                previousCellIds.push_back(before->OriginalEntityId(G::EntityKind::Cell, cell));
+            std::sort(actualCellIds.begin(), actualCellIds.end());
+            std::sort(previousCellIds.begin(), previousCellIds.end());
+            CHECK(actualCellIds == previousCellIds);
+            struct Face
+            {
+                std::vector<I> nodes, parents;
+                std::vector<uint8_t> bits;
+                int owner;
+            };
+            std::map<std::vector<I>, size_t> lookup;
+            std::vector<Face> expected;
+            const auto cells = state->Entities(G::EntityKind::Cell);
+            for (I cell = 0; cell < view.NumCellProc(); ++cell)
+            {
+                auto element = view.GetCellElement(cell);
+                std::vector<I> parentNodes;
+                std::vector<uint8_t> parentBits;
+                for (size_t slot = 0; slot < view.CellNodes(cell).size(); ++slot)
+                {
+                    parentNodes.push_back(state->OriginalEntityId(G::EntityKind::Node, view.CellNodes(cell)[slot]));
+                    parentBits.push_back(periodic ? uint8_t(view.CellNodePeriodicBits(cell)[slot]) : 0);
+                }
+                for (int slot = 0; slot < element.GetNumFaces(); ++slot)
+                {
+                    const auto faceElement = element.ObtainFace(slot);
+                    std::vector<I> nodes(size_t(faceElement.GetNumNodes()));
+                    std::vector<uint8_t> bits(nodes.size());
+                    element.ExtractFaceNodes(slot, parentNodes, nodes);
+                    element.ExtractFaceNodes(slot, parentBits, bits);
+                    // An independent image-invariant key; the retained first
+                    // occurrence still records the exact unsorted physical slots.
+                    std::vector<I> key;
+                    for (uint8_t mask = 0; mask < (periodic ? 8 : 1); ++mask)
+                    {
+                        std::vector<std::pair<I, uint8_t>> pairs;
+                        for (size_t node = 0; node < nodes.size(); ++node)
+                            pairs.emplace_back(nodes[node], uint8_t(bits[node] ^ mask));
+                        std::sort(pairs.begin(), pairs.end());
+                        std::vector<I> candidate{I(faceElement.type)};
+                        for (auto [node, image] : pairs)
+                        {
+                            candidate.push_back(node);
+                            candidate.push_back(image);
+                        }
+                        if (key.empty() || candidate < key)
+                            key = std::move(candidate);
+                    }
+                    const int owner = cells.Owner(cells.LocalToGlobal(cell));
+                    const auto [found, inserted] = lookup.emplace(key, expected.size());
+                    if (inserted)
+                        expected.push_back({nodes, {}, bits, owner});
+                    auto &face = expected[found->second];
+                    face.parents.push_back(state->OriginalEntityId(G::EntityKind::Cell, cell));
+                    face.owner = std::min(face.owner, owner);
+                }
+            }
+            I owned = 0;
+            for (auto &face : expected)
+            {
+                if (face.owner != mpi.rank)
+                    continue;
+                REQUIRE(owned < view.NumFace());
+                std::vector<I> nodes, parents;
+                std::vector<uint8_t> bits;
+                for (size_t slot = 0; slot < view.FaceNodes(owned).size(); ++slot)
+                {
+                    nodes.push_back(state->OriginalEntityId(G::EntityKind::Node, view.FaceNodes(owned)[slot]));
+                    bits.push_back(periodic ? uint8_t(view.FaceNodePeriodicBits(owned)[slot]) : 0);
+                }
+                for (auto cell : view.FaceCells(owned))
+                    parents.push_back(cell == DNDS::UnInitIndex ? cell : state->OriginalEntityId(G::EntityKind::Cell, cell));
+                if (face.parents.size() == 1)
+                    face.parents.push_back(DNDS::UnInitIndex);
+                CHECK(nodes == face.nodes);
+                CHECK(bits == face.bits);
+                CHECK(parents == face.parents);
+                ++owned;
+            }
+            CHECK(owned == view.NumFace());
+            CHECK_NOTHROW(state->BuildLocalCellNeighbors(true));
+        }
+}
 
 TEST_CASE("Native facial partition retains ID-derived fields geometry and sparse closure")
 {

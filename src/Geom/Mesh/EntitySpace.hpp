@@ -51,6 +51,11 @@ namespace DNDS::Geom
                     std::shared_ptr<OffsetAscendIndexMapping> ghostMap,
                     Runtime::VersionTracker versions);
         static void CheckCommunicator(MPI_Comm actual, MPI_Comm expected);
+        // RelationReadAccess owns read leases for both numbering epochs, so
+        // these private map operations need no generation mutex per incidence.
+        // Public descriptor queries still validate on every call.
+        index LocalToGlobalPinned(index local) const;
+        std::optional<index> GlobalToLocalPinned(index global) const;
 
     public:
         EntitySpace(const EntitySpace &) = default;

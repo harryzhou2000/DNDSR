@@ -152,6 +152,11 @@ namespace DNDS::Geom
     index EntitySpace::LocalToGlobal(index local) const
     {
         Validate();
+        return LocalToGlobalPinned(local);
+    }
+
+    index EntitySpace::LocalToGlobalPinned(index local) const
+    {
         DNDS_check_throw_info(local >= 0 && local < NumLocal(), "local entity index outside entity space");
         return local < _owned ? (*_global)(_mpi.rank, local) : _ghostMap->ghostIndex[local - _owned];
     }
@@ -159,6 +164,11 @@ namespace DNDS::Geom
     std::optional<index> EntitySpace::GlobalToLocal(index global) const
     {
         Validate();
+        return GlobalToLocalPinned(global);
+    }
+
+    std::optional<index> EntitySpace::GlobalToLocalPinned(index global) const
+    {
         if (global < 0 || global >= _globalCount)
             return std::nullopt;
         auto start = (*_global)(_mpi.rank, 0);

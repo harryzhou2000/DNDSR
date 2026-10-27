@@ -163,6 +163,15 @@ namespace DNDS::Geom
         FieldTransferDetail::LocalStage(mpi, [&]
                                         {
             auto graph = source.BuildLocalCellNeighbors();
+            // Source setup historically reorders before face interpolation:
+            // its vertex-derived facial graph is sorted and duplicate-free.
+            // Face-slot order, including repeated periodic neighbors, must
+            // not change the METIS/RCM permutation for that setup path.
+            for (auto &row : graph)
+            {
+                std::sort(row.begin(), row.end());
+                row.erase(std::unique(row.begin(), row.end()), row.end());
+            }
             struct CellRows
             {
                 const UnstructuredMeshView &view;
@@ -237,11 +246,30 @@ namespace DNDS::Geom
                 original.emplace(FacadeKey(size_t(slot)), NativeNamedRelation{
                                                               {inverse.Owned(), Rows({})}, Adj_PointToGlobal});
             }
+        const auto boundaryPlacement = NativeBoundaryPlacementRelation(source);
+        if (source.BorrowHostView().IsPeriodic() && !original.count(boundaryPlacement))
+            FieldTransferDetail::LocalStage(mpi, [&]
+                                            {
+                // Full snapshots/archives may predate the optional named
+                // exact relation. The physical facade contract already puts
+                // the boundary's own side in slot 0. Publish a distinct exact
+                // side relation; never change/truncate its coupled support.
+                const auto &physical = original.at(FacadeKey(size_t(MeshRelation::BoundaryCells)));
+                RelationReadAccess read(Adj::Bnd2Cell, oldSpaces.at(EntityKind::Bnd), oldSpaces.at(EntityKind::Cell),
+                                        physical.state, physical.rows.owned, &physical.rows.ghost);
+                std::vector<std::vector<index>> sides(size_t(read.NumOwned()));
+                for (index boundary = 0; boundary < read.NumOwned(); ++boundary)
+                {
+                    DNDS_check_throw_info(read.RowSize(boundary) >= 1 && !read.ReadEntry(boundary,0).absent,
+                                          "periodic boundary placement requires its physical side in slot zero");
+                    sides[size_t(boundary)] = {read.ReadEntry(boundary,0).global};
+                }
+                original.emplace(boundaryPlacement,NativeNamedRelation{{Rows(sides),Rows({})},Adj_PointToGlobal}); });
         std::vector<FollowSpec> follows = input.follows;
         if (follows.empty() && placements.count(EntityKind::Cell))
             for (auto kind : {EntityKind::Node, EntityKind::Bnd})
                 if (!placements.count(kind))
-                    follows.push_back({kind, EntityKind::Cell, kind == EntityKind::Node ? Adj::Node2Cell : Adj::Bnd2Cell});
+                    follows.push_back({kind, EntityKind::Cell, kind == EntityKind::Node ? Adj::Node2Cell : boundaryPlacement});
         for (const auto &follow : follows)
         {
             std::optional<RelationReadAccess> relation;

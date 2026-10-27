@@ -855,6 +855,16 @@ namespace DNDS::Geom
                 if (refresh.count(kind))
                     values = RefreshSourceRows(mpi, values, refresh.at(kind));
             }
-        return NativeMeshAssembler::Build(mpi, std::move(data), ghostLayers);
+        auto result = NativeMeshAssembler::Build(mpi, std::move(data), ghostLayers);
+        // Topology completion retains the Cell family order and ownership.
+        // Preserve its execution partitions while rebuilding the facial graph
+        // for the new publication (not the old face orientation/order).
+        if (!result->Requirements().faces)
+            return result;
+        std::vector<index> partStarts;
+        for (int part = 0; part < source.NLocalParts(); ++part)
+            partStarts.push_back(source.LocalPartStart(part));
+        partStarts.push_back(source.NumOwned(EntityKind::Cell));
+        return result->WithLocalPartitions(std::move(partStarts));
     }
 }

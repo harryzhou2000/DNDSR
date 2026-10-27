@@ -51,6 +51,8 @@ namespace DNDS::Geom
         /// When empty (default), the mesh wrapper applies the default policy:
         /// all non-explicit entity kinds with a support adjacency to an
         /// explicit kind follow it (currently: Node and Bnd follow Cell).
+        /// Native periodic Bnd defaults use the exact physical-side relation;
+        /// an explicit Bnd2Cell follow instead takes min over both side slots.
         ///
         /// When non-empty, only the listed follows are computed (overrides
         /// the default policy — allows selective follow or custom adj routes).

@@ -6,6 +6,17 @@
 
 namespace DNDS::Geom
 {
+    /// Boundary placement follows the cell in its physical image. The public
+    /// Bnd2Cell facade also carries the periodic partner in its second slot;
+    /// that coupled support must not change which side owns the boundary.
+    inline AdjKind NativeBoundaryPlacementRelation(const NativeMeshState &source)
+    {
+        if (!source.BorrowHostView().IsPeriodic())
+            return Adj::Bnd2Cell;
+        return AdjKind::Composition(Adj::Bnd2Node, Adj::Cell2Node.Inverted(), RelationSelection::Exact, false,
+                                    "geom.boundary.physical-frame-face", 1, RelationPeriodicPolicy::FrameMatched);
+    }
+
     struct NativeMeshTransitionResult
     {
         std::shared_ptr<const NativeMeshState> state;

@@ -193,6 +193,33 @@ TEST_CASE("Inverse collectively rejects bad global payload before native communi
     CHECK_NOTHROW(MeshConnectivity::Inverse(read, mpi));
 }
 
+TEST_CASE("Pinned setup mapping retains bounds conversion and moved-scope errors")
+{
+    const auto mpi = RelationMPI();
+    RelationFixture fixture(mpi);
+    auto original = fixture.Read();
+    auto read = std::move(original);
+    CHECK_THROWS(original.ReadEntry(0, 0));
+    CHECK_THROWS(read.ReadEntry(-1, 0));
+    CHECK_THROWS(read.ReadEntry(read.Rows(), 0));
+    CHECK_THROWS(read.ReadEntry(1, 0));
+    CHECK_THROWS(read.ConvertedIndex(0, 0, Adj_Unknown));
+    CHECK_THROWS(fixture.nodes.LocalToGlobal(-1));
+    CHECK_FALSE(fixture.nodes.GlobalToLocal(-1));
+    CHECK_FALSE(fixture.nodes.GlobalToLocal(fixture.nodes.NumGlobal()));
+    auto local = NativeRelation::Convert(read, Adj_PointToLocal);
+    auto localRead = local.Read();
+    for (I row = 0; row < read.Rows(); ++row)
+        for (size_t slot = 0; slot < read.RowSize(row); ++slot)
+        {
+            const auto a = read.ReadEntry(row, slot), b = localRead.ReadEntry(row, slot);
+            CHECK(a.absent == b.absent);
+            CHECK(a.global == b.global);
+            CHECK(a.unavailable == b.unavailable);
+        }
+    CHECK_THROWS(fixture.values.Write());
+}
+
 TEST_CASE("Typed native halo route rejects stale entity orders")
 {
     const auto mpi = RelationMPI();

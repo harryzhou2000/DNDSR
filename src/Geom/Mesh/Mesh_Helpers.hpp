@@ -43,7 +43,7 @@ namespace DNDS::Geom
         FieldTransferDetail::LocalStage(mpi, [&]
                                         { DNDS_check_throw_info(derived == expected, "native mesh derivation options differ across ranks"); });
         NativePartitionOptions partition{partOpts.metisType, partOpts.metisUfactor, partOpts.metisSeed,
-                                         partOpts.edgeWeightMethod, partOpts.metisNcuts, 1};
+                                         partOpts.edgeWeightMethod, std::max(partOpts.metisNcuts, 1), 1};
         state = NativeMeshPreparation::Partition(*state, mpi, partition).state;
         auto isO2 = [&]
         {
@@ -74,7 +74,10 @@ namespace DNDS::Geom
         std::optional<NativePeriodicImportOptions> periodic = {},
         int elevation = 0, int bisect = 0, int readerRank = 0)
     {
-        const auto distribution = partOpts.metisType == "RB" ? NativeSerialDistribution::ReaderOwned : NativeSerialDistribution::Even;
+        // Source setup historically partitions the reader's serial graph with
+        // METIS for both KWAY and RB. An even split selects ParMETIS instead
+        // and changes the partition despite identical user options.
+        const auto distribution = NativeSerialDistribution::ReaderOwned;
         auto state = ReadNativeCGNS(mpi, meshFile, dimension, nameMapper, readerRank, {1, true}, periodic, distribution);
         return UnstructuredMesh::FromNative(mpi, DeriveAndPartitionNativeMesh(std::move(state), mpi, partOpts, elevation, bisect));
     }
@@ -85,7 +88,7 @@ namespace DNDS::Geom
         const t_FBCName_2_ID &nameMapper, std::optional<NativePeriodicImportOptions> periodic = {},
         int elevation = 0, int bisect = 0, int readerRank = 0)
     {
-        const auto distribution = partOpts.metisType == "RB" ? NativeSerialDistribution::ReaderOwned : NativeSerialDistribution::Even;
+        const auto distribution = NativeSerialDistribution::ReaderOwned;
         auto state = ReadNativeOpenFOAM(mpi, meshFile, nameMapping, nameMapper, readerRank, {1, true}, periodic, distribution);
         return UnstructuredMesh::FromNative(mpi, DeriveAndPartitionNativeMesh(std::move(state), mpi, partOpts, elevation, bisect));
     }
@@ -290,9 +293,16 @@ namespace DNDS::Geom
         MPI_Bcast(expected.data(), int(expected.size()), MPI_INT, 0, mpi.comm);
         FieldTransferDetail::LocalStage(mpi, [&]
                                         { DNDS_check_throw_info(settings == expected, "native preparation options differ across ranks"); });
-        mesh.PrepareNativeTopology();
         if (opts.reorderCells == 1)
+        {
+            if (!mesh.CurrentNativeRequirements().faces)
+                mesh.PrepareNativeTopology();
             mesh.ReorderLocalCells(opts.reorderParts);
+        }
+        // Legacy source setup enumerates/orients faces only after the cell
+        // permutation. Refresh once here; existing faces already suffice for
+        // reordering and need no preliminary refresh.
+        mesh.PrepareNativeTopology();
         if (opts.buildSerialOut)
             reader.BuildSerialOut();
     }
