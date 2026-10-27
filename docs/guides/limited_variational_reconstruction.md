@@ -74,7 +74,7 @@ explicit CLI values win regardless of their position. For example,
 `-k /limiterControl/limitedVR/preset -v v3` can replace a long LVR parameter
 list. Saved/resolved configuration contains explicit settings with named
 selectors and omits `preset`. The generated JSON schemas advertise the named
-string selections and all 40 LVR controls for every Euler solver variant.
+string selections and LVR control metadata for every Euler solver variant.
 The input-only preset is expanded before ordinary runtime field parsing.
 
 For example, the reference and gate can also be selected directly:
@@ -184,6 +184,20 @@ The weak branch does not necessarily contain the ordinary shock gate.
 
 ## Every LVR control
 
+`detectExpansion=false` preserves the compression-only face gate. Setting it to
+`true` replaces $\max(u_{n,L}-u_{n,R},0)$ in $J_c$ by
+$|u_{n,L}-u_{n,R}|$, retaining the mean-sound-speed normalization, pressure
+ramp, branch cap and all existing correction/halo operations. The pressure
+and velocity ramps must still both activate, so equal-pressure expansion or
+a pure contact does not by itself activate this face gate. Pressure-extremum
+support can now come from expansion as well as compression. The optional
+weak-shock branch remains compression-only. The stored `lvrCompression`
+diagnostic, when enabled, reports this selected nonnegative indicator.
+This switch adds no DOF storage or communication and is off in all presets.
+
+For example, add `"detectExpansion": true` inside `limitedVR` alongside
+`"preset": "v3"` to test symmetric sensing with the WBAP GG O2 target.
+
 Defaults below are the raw `LimitedVRSettings` defaults (v3 `(1,1)`). Preset changes
 are listed above; all ramp full thresholds must exceed their starts.
 
@@ -191,7 +205,8 @@ are listed above; all ramp full thresholds must exceed their starts.
 | --- | --- | --- |
 | `alphaMax` | `1` | Shock cap $\alpha_{s,\max}$, in `[0,1]`; zero disables shock penalty. |
 | `pressureJumpStart`, `pressureJumpFull` | `0.04`, `0.16` | `jp0`, `jp1`: pressure ramp start/full values. |
-| `compressionStart`, `compressionFull` | `0.03`, `0.13` | `jc0`, `jc1`: normal-compression ramp start/full values. |
+| `detectExpansion` | `false` | Use the absolute normal-velocity jump in the ordinary pressure/velocity product gate; keep contact and weak gates unchanged. |
+| `compressionStart`, `compressionFull` | `0.03`, `0.13` | `jc0`, `jc1`: selected normal-velocity-jump ramp start/full values. |
 | `o2ReferenceLimiter` | `"WBAP"` | `"Barth"` or `"WBAP"` (characteristic). Both build a GG linear target on the high-order mesh/basis. |
 | `o2ReferenceUsePP` | `true` | Compress O2 increment toward its cell mean if needed for positivity. |
 | `gateMode` | `"PressureExtremum"` | `"ProductCubic"` or `"PressureExtremum"`; the latter adds supported pressure extrema and one correction expansion pass. |

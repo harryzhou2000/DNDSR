@@ -98,7 +98,9 @@ namespace DNDS::Euler
      * Jp=2*|pR-pL|/(pR+pL), Jc=max(unL-unR,0)/mean(cL,cR), and
      * Jrho=2*|rhoR-rhoL|/(rhoR+rhoL) use finalized limited-O2 face states unless
      * a contact option explicitly selects means. un uses a common L-to-R normal;
-     * c is sound speed. Every start/full pair defines a cubic 0-to-1 ramp.
+     * c is sound speed. detectExpansion replaces max(unL-unR,0) by abs(unL-unR)
+     * in Jc only; pressure gating is still required and the optional weak branch
+     * remains compression-only. Every start/full pair defines a cubic 0-to-1 ramp.
      * For scalar z and thresholds z0<z1, that ramp is zero below z0, one above
      * z1, and q*q*(3-2*q) between them, q=(z-z0)/(z1-z0).
      * PressureExtremum adds supported cell-mean pressure extrema to the product
@@ -120,9 +122,12 @@ namespace DNDS::Euler
         real pressureJumpStart = 0.04;
         /// jp1>jp0: cubic pressure response reaches one at this value.
         real pressureJumpFull = 0.16;
-        /// jc0: zero response for Jc=max(unL-unR,0)/mean(cL,cR) at/below this value.
+        /// Also admit expansion in the ordinary pressure/velocity product gate: use |unL-unR| instead of max(unL-unR,0).
+        /// Does not change the contact or optional weak gate; pressure-extremum support follows this selected face gate.
+        bool detectExpansion = false;
+        /// jc0: zero response for selected Jc (compression, or absolute normal-velocity jump) at/below this value.
         real compressionStart = 0.03;
-        /// jc1>jc0: cubic compression response reaches one at this value.
+        /// jc1>jc0: selected normal-velocity-jump response reaches one at this value.
         real compressionFull = 0.13;
         /// Shock-branch cap in [0,1]; lambda=alpha/(1-alpha), with alpha=1 the fixed-target limit.
         real alphaMax = 1.0;
@@ -203,8 +208,9 @@ namespace DNDS::Euler
             // clang-format off
             DNDS_FIELD(pressureJumpStart, "jp0: start of cubic ramp for finalized-O2 face pressure jump 2*abs(pR-pL)/(pR+pL)", DNDS::Config::range(0.0));
             DNDS_FIELD(pressureJumpFull,  "jp1: pressure-jump ramp reaches one here; must exceed pressureJumpStart", DNDS::Config::range(0.0));
-            DNDS_FIELD(compressionStart,  "jc0: start of cubic ramp for finalized-O2 normal compression max(unL-unR,0)/mean(cL,cR)", DNDS::Config::range(0.0));
-            DNDS_FIELD(compressionFull,   "jc1: compression ramp reaches one here; must exceed compressionStart", DNDS::Config::range(0.0));
+            DNDS_FIELD(detectExpansion, "Also detect expansion in the ordinary face gate: replace max(unL-unR,0) by abs(unL-unR), normalized by mean sound speed; pressure ramp is still required; contact/weak branches and halo exchanges are unchanged");
+            DNDS_FIELD(compressionStart,  "jc0: start of cubic ramp for finalized-O2 normal-velocity jump; max(unL-unR,0)/mean(cL,cR), or abs(unL-unR)/mean(cL,cR) when detectExpansion=true", DNDS::Config::range(0.0));
+            DNDS_FIELD(compressionFull,   "jc1: selected normal-velocity-jump ramp reaches one here; must exceed compressionStart", DNDS::Config::range(0.0));
             DNDS_FIELD(alphaMax,         "Shock-branch penalty fraction cap in [0,1]: zero disables this branch; one fixes a saturated reconstruction row to the O2 target", DNDS::Config::range(0.0, 1.0));
             DNDS_FIELD(weakAlphaMax, "Maximum additional pressure-gradient-consistency weak-shock penalty fraction; zero disables the branch", DNDS::Config::range(0.0, 1.0));
             DNDS_FIELD(weakMismatchStart, "Weak branch: ramp start for abs(dp-dL+dR)/max(abs(dp)+abs(dL)+abs(dR),floor); dp is the mean pressure difference, dL/R the unrestricted GG pressure increments from each centroid to the shared face", DNDS::Config::range(0.0));
@@ -309,6 +315,7 @@ namespace DNDS::Euler
     struct LimitedVRFaceSensor
     {
         real pressureJump = 0;
+        /// Selected normal-velocity indicator: nonnegative compression, or absolute jump with detectExpansion.
         real compression = 0;
         real alpha = 0;
     };
@@ -342,7 +349,8 @@ namespace DNDS::Euler
         real acousticScale = std::max({std::abs(soundSpeedLeft), std::abs(soundSpeedRight), real(1e-30)});
         real acousticDenominator = std::max(0.5 * (soundSpeedLeft + soundSpeedRight), smallReal * acousticScale);
         result.pressureJump = 2.0 * std::abs(pressureRight - pressureLeft) / pressureDenominator;
-        result.compression = std::max(real(0), normalVelocityLeft - normalVelocityRight) / acousticDenominator;
+        real velocityJump = normalVelocityLeft - normalVelocityRight;
+        result.compression = (settings.detectExpansion ? std::abs(velocityJump) : std::max(real(0), velocityJump)) / acousticDenominator;
         real pressureResponse = LimitedVRCubicRamp(
             result.pressureJump, settings.pressureJumpStart, settings.pressureJumpFull);
         real compressionResponse = LimitedVRCubicRamp(

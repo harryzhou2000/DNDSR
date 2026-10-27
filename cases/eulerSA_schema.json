@@ -1073,16 +1073,21 @@
                             "description": "jp1: pressure-jump ramp reaches one here; must exceed pressureJumpStart",
                             "minimum": 0.0
                         },
+                        "detectExpansion": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "Also detect expansion in the ordinary face gate: replace max(unL-unR,0) by abs(unL-unR), normalized by mean sound speed; pressure ramp is still required; contact/weak branches and halo exchanges are unchanged"
+                        },
                         "compressionStart": {
                             "type": "number",
                             "default": 0.03,
-                            "description": "jc0: start of cubic ramp for finalized-O2 normal compression max(unL-unR,0)/mean(cL,cR)",
+                            "description": "jc0: start of cubic ramp for finalized-O2 normal-velocity jump; max(unL-unR,0)/mean(cL,cR), or abs(unL-unR)/mean(cL,cR) when detectExpansion=true",
                             "minimum": 0.0
                         },
                         "compressionFull": {
                             "type": "number",
                             "default": 0.13,
-                            "description": "jc1: compression ramp reaches one here; must exceed compressionStart",
+                            "description": "jc1: selected normal-velocity-jump ramp reaches one here; must exceed compressionStart",
                             "minimum": 0.0
                         },
                         "alphaMax": {

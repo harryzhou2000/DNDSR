@@ -134,6 +134,32 @@ TEST_CASE("Limited variational reconstruction sensor has a bounded intermediate 
     CHECK(sensor.alpha < settings.alphaMax);
 }
 
+TEST_CASE("LVR expansion switch symmetrizes only the pressure and normal-velocity face gate")
+{
+    LimitedVRSettings settings;
+    CHECK_FALSE(settings.detectExpansion);
+    const auto compression = EvaluateLimitedVRFaceSensor(1.15, 1.0, 0.12, 0.0, 1.0, 1.0, settings);
+    const auto expansionOff = EvaluateLimitedVRFaceSensor(1.15, 1.0, 0.0, 0.12, 1.0, 1.0, settings);
+    CHECK(expansionOff.alpha == 0.0);
+    settings.detectExpansion = true;
+    const auto expansion = EvaluateLimitedVRFaceSensor(1.15, 1.0, 0.0, 0.12, 1.0, 1.0, settings);
+    const auto unchangedCompression = EvaluateLimitedVRFaceSensor(1.15, 1.0, 0.12, 0.0, 1.0, 1.0, settings);
+    // Swap sides and reverse the common normal: the physical expansion is unchanged.
+    const auto reversed = EvaluateLimitedVRFaceSensor(1.0, 1.15, -0.12, 0.0, 1.0, 1.0, settings);
+    CHECK(expansion.alpha > 0.0);
+    CHECK(expansion.alpha == doctest::Approx(compression.alpha));
+    CHECK(expansion.compression == doctest::Approx(compression.compression));
+    CHECK(unchangedCompression.alpha == compression.alpha);
+    CHECK(reversed.alpha == doctest::Approx(expansion.alpha));
+    CHECK(reversed.compression == doctest::Approx(expansion.compression));
+    CHECK(EvaluateLimitedVRFaceSensor(1.0, 1.0, -2.0, 2.0, 1.0, 1.0, settings).alpha == 0.0);
+    CHECK(EvaluateLimitedVRFaceSensor(1.01, 1.0, -2.0, 2.0, 1.0, 1.0, settings).alpha == 0.0);
+    CHECK(EvaluateLimitedVRFaceSensor(1.0, 10.0, -2.0, 0.0, 1.0, 1.0, settings).alpha == settings.alphaMax);
+    CHECK(EvaluateLimitedVRFaceSensor(1.0, 10.0, 0.0, 0.0, 1.0, 1.0, settings).alpha == 0.0);
+    settings.weakAlphaMax = 1.0;
+    CHECK(EvaluateLimitedVRWeakAlpha(1.01, 1.0, 0, 0, 0, 0.01, 1, settings) == 0.0);
+}
+
 TEST_CASE("Limited variational reconstruction compressive shock saturates and is orientation invariant")
 {
     LimitedVRSettings settings;
@@ -193,6 +219,10 @@ TEST_CASE("Limited variational reconstruction settings parse and validate")
     nlohmann::ordered_json config = LimitedVRSettings{};
     CHECK(config["o2ReferenceLimiter"] == "WBAP");
     CHECK(config["gateMode"] == "PressureExtremum");
+    CHECK(config["detectExpansion"] == false);
+    auto expansionConfig = config;
+    expansionConfig["detectExpansion"] = true;
+    CHECK(expansionConfig.get<LimitedVRSettings>().detectExpansion);
     CHECK(config["gateHaloLayers"] == 0);
     CHECK(config["gateHaloSaturatedOnly"] == false);
     CHECK(config["contactDensityJumpStart"] == doctest::Approx(0.5));
