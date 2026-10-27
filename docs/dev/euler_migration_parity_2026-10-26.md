@@ -99,6 +99,14 @@ order, and multiply/divide expressions differ from legacy global RBF; this is
 a demonstrated limit of exact reproduction, not an accuracy or convergence
 claim about the perturbed result.
 
+The [2026-10-27 causal diagnosis](https://github.com/harryzhou2000/dndsr-next-plan/blob/main/experiments/euler-migration-parity/RBF_CAUSE.md)
+isolates constraint enumeration, matrix normalization arithmetic and GMRES dot
+grouping. Matching all three in diagnostic copies restores exact coefficients,
+displacements and downstream Euler fields for this case. The accepted production
+policy retains the native order, division and componentwise dot accumulation;
+inline implementation comments explain the differences. No legacy-order
+compatibility switch is added, and no cross-build/rank bit guarantee is implied.
+
 ## Limits
 
 - No unconditional legacy-bit guarantee is claimed for every configuration.

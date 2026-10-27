@@ -65,6 +65,10 @@ namespace DNDS::Geom
         };
         BoundaryCloud Constraints(const NativeSmoothingWorkspace &workspace, const MPIInfo &mpi)
         {
+            // Keep ascending owned-node order. Legacy unordered_set iteration
+            // ordered the same constraints differently, affecting tied-neighbor
+            // order and floating-point reductions/accumulation in global RBF.
+            // Native ordering is intentional; see GlobalRBF's parity note.
             const auto nodes = workspace.Source()->Entities(EntityKind::Node);
             auto displacement = workspace.Displacement().ReadCombined();
             auto roles = workspace.Constraints().ReadCombined();
@@ -186,6 +190,9 @@ namespace DNDS::Geom
             }
             real dot(SmoothingField &other)
             {
+                // Keep native componentwise accumulation. Legacy added an Eigen
+                // three-vector dot per row, with different rounding/grouping.
+                // Global-RBF GMRES coefficients can therefore differ in bits.
                 auto a = values.Read();
                 auto b = other.values.Read();
                 real result = 0;
@@ -457,6 +464,15 @@ namespace DNDS::Geom
     std::shared_ptr<const NativeMeshState> NativeMeshSmoothing::GlobalRBF(
         const NativeSmoothingWorkspace &workspace, const MPIInfo &mpi, NativeSmoothingOptions options)
     {
+        // Accepted native/legacy bit difference (2026-10-27): constraint order,
+        // division versus reciprocal multiplication, and dot-product grouping
+        // change rounding without changing the RBF equations. In the two-rank
+        // NACA diagnostic, matching all three restored exact coefficients,
+        // displacements and downstream Euler fields; matching any two did not.
+        // Retain the native choices, rather than emulate unordered_set order.
+        // This is scoped reproducibility evidence, not an accuracy guarantee.
+        // Full causes/ablation evidence: dndsr-next-plan repository,
+        // experiments/euler-migration-parity/RBF_CAUSE.md.
         Options(mpi, options);
         FieldTransferDetail::LocalStage(mpi, [&]
                                         { workspace.Validate(mpi); });
@@ -492,6 +508,9 @@ namespace DNDS::Geom
                 const real support = options.RBFRadius*std::sqrt(distances.head(Eigen::Index(found)).maxCoeff());
                 DNDS_check_throw_info(std::isfinite(support) && support > 0,"native global RBF radius is zero; include another distinct constraint");
                 radius.View()(row,0) = support;
+                // Keep native division. Legacy multiplied by a rounded
+                // reciprocal; different matrix-weight bits can propagate to
+                // GMRES, mesh coordinates/metrics and the solver RHS.
                 const Eigen::VectorXd normalized = distances.head(Eigen::Index(found)).array().pow(.5/options.RBFPower)/std::pow(support,1/options.RBFPower);
                 const auto basis = RBF::FRBFBasis(normalized,options.kernel);
                 for (size_t slot = 0; slot < found; ++slot) matrix[row].push_back({nearest[slot],basis(Eigen::Index(slot))});
