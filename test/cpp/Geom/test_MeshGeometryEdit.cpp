@@ -4,7 +4,11 @@
 #include "Geom/Mesh/NativeMeshBuilder.hpp"
 #include "Geom/Mesh/NativeMeshCGNS.hpp"
 #include "DNDS/Runtime/RowBuilder.hpp"
+#include <array>
+#include <cstdint>
+#include <cstring>
 #include <filesystem>
+#include <limits>
 #include <set>
 
 namespace G = DNDS::Geom;
@@ -30,7 +34,8 @@ static std::vector<G::tPoint> Points(G::UnstructuredMesh &mesh)
     return result;
 }
 
-static DNDS::ssp<G::UnstructuredMesh> NativeGeometryFixture(DNDS::MPIInfo mpi);
+static DNDS::ssp<G::UnstructuredMesh> NativeGeometryFixture(DNDS::MPIInfo mpi,
+                                                            const std::array<G::tPoint, 3> *values = nullptr);
 
 TEST_CASE("Rigid geometry edit transforms coordinates periodic frame and wall vectors coherently")
 {
@@ -119,7 +124,8 @@ TEST_CASE("Boundary rectification reduces remote node masks before refreshing co
     }
 }
 
-static DNDS::ssp<G::UnstructuredMesh> NativeGeometryFixture(DNDS::MPIInfo mpi)
+static DNDS::ssp<G::UnstructuredMesh> NativeGeometryFixture(DNDS::MPIInfo mpi,
+                                                            const std::array<G::tPoint, 3> *values)
 {
     const bool ownsNodes = mpi.rank == mpi.size - 1;
     const bool ownsCell = mpi.rank == 0;
@@ -146,7 +152,7 @@ static DNDS::ssp<G::UnstructuredMesh> NativeGeometryFixture(DNDS::MPIInfo mpi)
         const G::tPoint coordinates[]{{1, 1, 1}, {2, 1, 1}, {1, 2, 1}};
         for (size_t row = 0; row < points.Rows(); ++row)
             for (size_t component = 0; component < 3; ++component)
-                write.View()(row, component) = coordinates[row][component];
+                write.View()(row, component) = values ? (*values)[row][component] : coordinates[row][component];
         if (ownsCell)
             cellInfo.Write().View()(0, 0) = G::ElemInfo{G::Elem::Tri3, 31};
         if (ownsBoundary)
@@ -162,7 +168,8 @@ static DNDS::ssp<G::UnstructuredMesh> NativeGeometryFixture(DNDS::MPIInfo mpi)
         auto owned = result.owned.Write(), ghost = result.ghost.Write();
         for (I node = 0; node < view.NumNodeProc(); ++node)
         {
-            const G::tPoint p = wall ? G::tPoint{1, 2, 3} : G::tPoint(view.Coord(node));
+            const G::tPoint p = wall ? (values ? (*values)[size_t(source->Entities(G::EntityKind::Node).LocalToGlobal(node))] : G::tPoint{1, 2, 3})
+                                     : G::tPoint(view.Coord(node));
             auto row = node < view.NumNode() ? owned.View()[size_t(node)] : ghost.View()[size_t(node - view.NumNode())];
             for (size_t component = 0; component < 3; ++component)
                 row[component] = p[component];
@@ -173,7 +180,78 @@ static DNDS::ssp<G::UnstructuredMesh> NativeGeometryFixture(DNDS::MPIInfo mpi)
     frame.translation[1].map() = G::tPoint{2, 1, 0};
     frame.rotationCenter[1].map() = G::tPoint{1, 2, 0};
     frame.rotation[1].map() = G::RotZ(0.2);
+    if (values)
+    {
+        frame.translation[1].map() = (*values)[0];
+        frame.rotationCenter[1].map() = (*values)[1];
+    }
     return G::UnstructuredMesh::FromNative(mpi, source->WithGeometry(pair(false), pair(true), frame));
+}
+
+TEST_CASE("Pure native geometry transforms preserve legacy scalar and rotation bit patterns")
+{
+    DNDS::MPIInfo mpi;
+    mpi.setWorld();
+    const std::array<G::tPoint, 3> values{
+        G::tPoint{-0.0, std::numeric_limits<DNDS::real>::denorm_min(), -1e250},
+        G::tPoint{0.0, -1e-250, 1e250},
+        G::tPoint{1.2345678901234567, -9.876543210987654, -0.0}};
+    Eigen::Matrix3d rotation = Eigen::Matrix3d::Identity();
+    DNDS::real scale = 1;
+    SUBCASE("identity preserves every bit") {}
+    SUBCASE("pure scaling preserves signed zeros and tiny components") { scale = 1.75; }
+    SUBCASE("pure rotation matches the legacy matrix product") { rotation = G::RotZ(0.37); }
+    SUBCASE("combined transform rotates before scaling")
+    {
+        rotation = G::RotZ(0.37);
+        scale = 1.75;
+    }
+    auto mesh = NativeGeometryFixture(mpi, &values);
+    const auto before = Points(*mesh);
+    const auto frameBefore = mesh->PeriodicMetadata();
+    const bool rotate = !(rotation.array() == Eigen::Matrix3d::Identity().array()).all();
+    auto legacy = [&](const G::tPoint &point) -> G::tPoint
+    {
+        G::tPoint result = point;
+        if (rotate)
+            result = (rotation * point).eval();
+        if (scale != 1)
+            result *= scale;
+        return result;
+    };
+    auto checkBits = [](const auto &actual, const auto &expected)
+    {
+        REQUIRE(actual.size() == expected.size());
+        for (Eigen::Index component = 0; component < actual.size(); ++component)
+        {
+            uint64_t actualBits = 0, expectedBits = 0;
+            static_assert(sizeof(DNDS::real) == sizeof(uint64_t));
+            const DNDS::real actualValue = actual.data()[component], expectedValue = expected.data()[component];
+            std::memcpy(&actualBits, &actualValue, sizeof(actualBits));
+            std::memcpy(&expectedBits, &expectedValue, sizeof(expectedBits));
+            CAPTURE(component);
+            CHECK(actualBits == expectedBits);
+        }
+    };
+    mesh->ApplyGeometryTransform(rotation, scale);
+    auto read = mesh->AcquireRead(mesh->CurrentNativeRequirements());
+    const auto after = read.HostView();
+    for (I node = 0; node < after.NumNodeProc(); ++node)
+    {
+        CAPTURE(node);
+        const auto expected = legacy(before[size_t(node)]);
+        checkBits(after.Coord(node), expected);
+        checkBits(after.NodeWallDist(node), expected);
+    }
+    for (size_t group = 0; group < frameBefore.rotation.size(); ++group)
+    {
+        CAPTURE(group);
+        checkBits(after.Periodic().translation[group].map(), legacy(frameBefore.translation[group].map()));
+        checkBits(after.Periodic().rotationCenter[group].map(), legacy(frameBefore.rotationCenter[group].map()));
+        const Eigen::Matrix3d expected = rotate ? Eigen::Matrix3d((rotation * frameBefore.rotation[group].map() * rotation.transpose()).eval())
+                                                : Eigen::Matrix3d(frameBefore.rotation[group].map());
+        checkBits(after.Periodic().rotation[group].map(), expected);
+    }
 }
 
 TEST_CASE("Native geometry transforms preserve order identity topology and detached readers")

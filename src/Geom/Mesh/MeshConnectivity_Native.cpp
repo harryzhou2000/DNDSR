@@ -52,7 +52,7 @@ namespace DNDS::Geom
         if (_state == Adj_PointToLocal && value >= 0)
         {
             DNDS_check_throw_info(value < _target.NumLocal(), "relation local target is outside its entity space");
-            global = _target.LocalToGlobal(value);
+            global = _target.LocalToGlobalPinned(value);
             unavailable = false;
         }
         else
@@ -61,7 +61,7 @@ namespace DNDS::Geom
                                   "global relation contains a local unavailable-index encoding");
             global = _state == Adj_PointToLocal ? -1 - value : value;
             DNDS_check_throw_info(global >= 0 && global < _target.NumGlobal(), "relation global target is outside its entity space");
-            unavailable = !_target.GlobalToLocal(global).has_value();
+            unavailable = !_target.GlobalToLocalPinned(global).has_value();
             DNDS_check_throw_info(_state != Adj_PointToLocal || unavailable,
                                   "encoded unavailable target is present in the supplied local target mapping");
         }
@@ -79,7 +79,7 @@ namespace DNDS::Geom
         if (targetState == Adj_PointToGlobal)
             return entry.global;
         if (!entry.unavailable)
-            return *_target.GlobalToLocal(entry.global);
+            return *_target.GlobalToLocalPinned(entry.global);
         DNDS_check_throw_info(allowUnavailable, "relation local conversion requires missing target closure");
         const index encoded = -1 - entry.global;
         DNDS_check_throw_info(encoded != UnInitIndex, "relation unavailable target collides with absent sentinel");

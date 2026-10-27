@@ -567,6 +567,14 @@ if(DNDS_USE_CANTERA)
         "euler_library_NS_EX;euler_library_fast_NS_EX;cfv;geom;dnds")
 endif()
 
+# Common standalone migration probe, also built against pinned legacy sources.
+# It is opt-in: regular unit tests do not require a second solver source tree.
+add_executable(euler_migration_probe EXCLUDE_FROM_ALL Euler/MigrationParityProbe.cpp)
+target_include_directories(euler_migration_probe PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
+target_link_libraries(euler_migration_probe PRIVATE
+    euler_library_NS euler_library_fast_NS euler_library_NS_SA euler_library_fast_NS_SA
+    euler_library_NS_3D euler_library_fast_NS_3D cfv geom dnds ${DNDS_EXTERNAL_LIBS})
+
 # EulerEvaluator pipeline test: needs full Euler libraries for NS, NS_SA, NS_3D
 euler_add_mpi_test(evaluator_pipeline "Euler/test_EulerEvaluator.cpp"
     "euler_library_NS;euler_library_fast_NS;euler_library_NS_SA;euler_library_fast_NS_SA;euler_library_NS_3D;euler_library_fast_NS_3D;cfv;geom;dnds")
