@@ -200,30 +200,56 @@ namespace DNDS::Geom
                     }
                     else
                     {
+                        size_t rawA = 0, rawB = 0, rawShared = 0;
+                        while (rawA < nVertices && rawB < otherVertices)
+                        {
+                            if (current[rawA] < other[rawB])
+                                ++rawA;
+                            else if (other[rawB] < current[rawA])
+                                ++rawB;
+                            else
+                            {
+                                ++rawShared;
+                                ++rawA;
+                                ++rawB;
+                            }
+                        }
+                        if (rawShared < size_t(source.dimension))
+                            continue;
                         const auto *currentFrames = frames.data() + size_t(cell) * maxVertices;
                         const auto *otherFrames = frames.data() + size_t(*neighbor) * maxVertices;
-                        for (uint8_t mask = 0; mask < 8; ++mask)
+                        uint8_t tried = 0;
+                        for (size_t currentVertex = 0; currentVertex < nVertices && !facial; ++currentVertex)
                         {
-                            size_t a = 0, b = 0, shared = 0;
-                            while (a < nVertices && b < otherVertices)
+                            for (size_t otherVertex = 0; otherVertex < otherVertices; ++otherVertex)
                             {
-                                const auto currentKey = std::pair(current[a], currentFrames[a]);
-                                const auto otherKey = std::pair(other[b], uint8_t(otherFrames[b] ^ mask));
-                                if (currentKey < otherKey)
-                                    ++a;
-                                else if (otherKey < currentKey)
-                                    ++b;
-                                else
+                                if (current[currentVertex] != other[otherVertex])
+                                    continue;
+                                const uint8_t mask = currentFrames[currentVertex] ^ otherFrames[otherVertex];
+                                if (tried & (uint8_t(1) << mask))
+                                    continue;
+                                tried |= uint8_t(1) << mask;
+                                size_t a = 0, b = 0, shared = 0;
+                                while (a < nVertices && b < otherVertices)
                                 {
-                                    ++shared;
-                                    ++a;
-                                    ++b;
+                                    const auto currentKey = std::pair(current[a], currentFrames[a]);
+                                    const auto otherKey = std::pair(other[b], uint8_t(otherFrames[b] ^ mask));
+                                    if (currentKey < otherKey)
+                                        ++a;
+                                    else if (otherKey < currentKey)
+                                        ++b;
+                                    else
+                                    {
+                                        ++shared;
+                                        ++a;
+                                        ++b;
+                                    }
                                 }
-                            }
-                            if (shared >= size_t(source.dimension))
-                            {
-                                facial = true;
-                                break;
+                                if (shared >= size_t(source.dimension))
+                                {
+                                    facial = true;
+                                    break;
+                                }
                             }
                         }
                     }
@@ -637,14 +663,14 @@ namespace DNDS::Geom
             else
                 for (index cell = 0; cell < cells.NumOwned(); ++cell)
                     for (idx_t slot = facial->offsets[size_t(cell)]; slot < facial->offsets[size_t(cell + 1)]; ++slot)
-                        if (const auto local = cells.GlobalToLocal(index(facial->adjacency[size_t(slot)])))
+                        if (const auto local = cells.GlobalToLocalPinned(index(facial->adjacency[size_t(slot)])))
                             graph[size_t(cell)].push_back(*local);
             for (index cell = 0; cell < cells.NumOwned(); ++cell)
             {
                 for (auto global : all.View()[size_t(cell)])
                 {
                     DNDS_check_throw_info(global >= 0 && global < cells.NumGlobal(), "owned cell neighbor is unavailable");
-                    const auto local = cells.GlobalToLocal(global);
+                    const auto local = cells.GlobalToLocalPinned(global);
                     neighbors[size_t(cell)].push_back(local ? *local : cells.NumOwned());
                 }
             }

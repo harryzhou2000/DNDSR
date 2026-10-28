@@ -433,9 +433,14 @@ namespace DNDS::Geom
                                         { return NativeRelation(Adj::Bnd2Node, input.boundaries, nodes, input.boundaryNodes); });
         auto nodeCells = NativeConnectivity::Inverse(cellNodes.Read(), mpi);
         auto nodeBoundaries = NativeConnectivity::Inverse(boundaryNodes.Read(), mpi);
-        RelationGhostRoute initialNodeRoute(nodes);
-        nodeCells = nodeCells.WithGhostRows(initialNodeRoute);
-        nodeBoundaries = nodeBoundaries.WithGhostRows(initialNodeRoute);
+        int anyNodeGhost = nodes.NumGhost() > 0;
+        MPI_Allreduce(MPI_IN_PLACE, &anyNodeGhost, 1, MPI_INT, MPI_MAX, mpi.comm);
+        if (anyNodeGhost)
+        {
+            RelationGhostRoute initialNodeRoute(nodes);
+            nodeCells = nodeCells.WithGhostRows(initialNodeRoute);
+            nodeBoundaries = nodeBoundaries.WithGhostRows(initialNodeRoute);
+        }
         auto cellCells = LocalStage(mpi, "cell neighbor composition", [&]
                                     { return NativeConnectivity::Compose(cellNodes.Read(), nodeCells.Read(), true); });
         auto containment = LocalStage(mpi, "boundary cell containment", [&]

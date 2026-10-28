@@ -262,6 +262,50 @@ namespace DNDS::Geom
 
     NativeRelation NativeConnectivity::Inverse(const RelationReadAccess &cone, const MPIInfo &mpi)
     {
+        int sourceOwnerLocal = cone.Source().NumOwned() ? mpi.rank : -1;
+        int sourceOwner = -1;
+        MPI_Allreduce(&sourceOwnerLocal, &sourceOwner, 1, MPI_INT, MPI_MAX, mpi.comm);
+        int localOnly = sourceOwner < 0 ||
+                        (mpi.rank == sourceOwner && cone.Source().NumOwned() == cone.Source().NumGlobal() &&
+                         cone.Target().NumOwned() == cone.Target().NumGlobal()) ||
+                        (mpi.rank != sourceOwner && cone.Source().NumOwned() == 0 && cone.Target().NumOwned() == 0);
+        MPI_Allreduce(MPI_IN_PLACE, &localOnly, 1, MPI_INT, MPI_MIN, mpi.comm);
+        if (localOnly)
+        {
+            int validLocal = 1;
+            std::vector<std::vector<index>> support(size_t(cone.Target().NumOwned()));
+            try
+            {
+                cone.Validate();
+                cone.CheckCommunicator(mpi.comm);
+                for (index sourceRow = 0; sourceRow < cone.NumOwned(); ++sourceRow)
+                {
+                    const auto sourceGlobal = cone.Source().LocalToGlobalPinned(sourceRow);
+                    for (size_t slot = 0; slot < cone.RowSize(sourceRow); ++slot)
+                    {
+                        const auto entry = cone.ReadEntry(sourceRow, slot);
+                        if (entry.absent)
+                            continue;
+                        const auto targetRow = cone.Target().GlobalToLocalPinned(entry.global);
+                        DNDS_check_throw_info(targetRow && size_t(*targetRow) < support.size(),
+                                              "local inverse target row is unavailable");
+                        support[size_t(*targetRow)].push_back(sourceGlobal);
+                    }
+                }
+                for (auto &entries : support)
+                {
+                    std::sort(entries.begin(), entries.end());
+                    entries.erase(std::unique(entries.begin(), entries.end()), entries.end());
+                }
+            }
+            catch (...)
+            {
+                validLocal = 0;
+            }
+            MPI_Allreduce(MPI_IN_PLACE, &validLocal, 1, MPI_INT, MPI_MIN, mpi.comm);
+            DNDS_check_throw_info(validLocal, "local inverse relation/communicator validation failed on a rank");
+            return NativeRelation(cone.Kind().Inverted(), cone.Target(), cone.Source(), BuildNativeRows(support));
+        }
         int valid = 1;
         std::vector<std::vector<index>> batches;
         try

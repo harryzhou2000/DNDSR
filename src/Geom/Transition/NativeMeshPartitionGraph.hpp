@@ -28,6 +28,7 @@ namespace DNDS::Geom
         key.semanticVersion = 1;
         return key;
     }
+
     namespace detail
     {
         using NativeNeighborWeight = std::pair<index, real>;
