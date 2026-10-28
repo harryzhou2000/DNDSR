@@ -13,6 +13,11 @@ namespace DNDS::Geom
     {
         MeshIdentity identity;
         MeshReadRequirements requirements;
+        /// True only when Cell2Cell was built as the exact Cell->Node->Cell
+        /// union and retained through partitioning/reordering. Detached or
+        /// deliberately truncated graphs leave this false so setup uses the
+        /// authoritative Node2Cell inverse instead.
+        bool cellCellsComplete = false;
         int dimension = -1;
         bool periodic = false;
         Periodicity periodicInfo;

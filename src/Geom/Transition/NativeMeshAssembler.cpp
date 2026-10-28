@@ -58,6 +58,7 @@ namespace DNDS::Geom
                                   "native assembly requires matching owned host rows");
             auto read = array.Read();
         }
+
     }
 
     GhostSpec DefaultNativeMeshGhostSpec(const NativeOwnedMeshData &owned, int cellLayers, bool completeOwnedNodeStars)
@@ -168,6 +169,8 @@ namespace DNDS::Geom
                         array = RArray::FromStorage(Runtime::RowLayout::Dense(array.Rows(), shape.Width()), array.Storage());
                     result.relations[slot] = std::move(array);
                 }
+            result.cellCellsComplete = source.Requirements().inverse &&
+                                       result.relations[size_t(MeshRelation::CellCells)].has_value();
             for (const auto &[key, relation] : source._namedRelations)
                 result.namedRelations.emplace(key, global(key, relation.data.rows, relation.data.state));
             auto capture = [](auto &destination, const auto &pair) { if (pair) destination = pair->owned; };
@@ -320,18 +323,7 @@ namespace DNDS::Geom
                 if (owned.relations[slot]) relations.emplace(FacadeKey(slot), *owned.relations[slot]);
             for (const auto &[key, values] : owned.namedRelations)
                 if (key != NativeSetupFacialCellNeighborsKey())
-                    DNDS_check_throw_info(relations.emplace(key, values).second, "native assembly reserved descriptor collision");
-            for (const auto &[key, values] : relations)
-            {
-                try
-                {
-                    auto validate = RelationReadAccess(key, owned.spaces.at(key.from), owned.spaces.at(key.to), Adj_PointToGlobal, values);
-                }
-                catch (const std::exception &error)
-                {
-                    throw std::runtime_error("native assembly relation [" + key.Signature() + "]: " + error.what());
-                }
-            } });
+                    DNDS_check_throw_info(relations.emplace(key, values).second, "native assembly reserved descriptor collision"); });
         for (auto slot : {MeshRelation::NodeCells, MeshRelation::NodeBoundaries})
             if (!owned.relations[size_t(slot)])
             {
@@ -392,10 +384,16 @@ namespace DNDS::Geom
                     auto read = publication.relations.at(FacadeKey(size_t(slot))).Read();
                     const auto kind = Bindings()[size_t(slot)].to;
                     for (index row = 0; row < read.Rows(); ++row)
-                        for (auto global : read.GlobalRow(row))
-                            if (global != UnInitIndex && owned.spaces.at(kind).Owner(global) != mpi.rank &&
+                        for (size_t entrySlot = 0; entrySlot < read.RowSize(row); ++entrySlot)
+                        {
+                            const auto entry = read.ReadEntry(row, entrySlot);
+                            if (entry.absent)
+                                continue;
+                            const auto global = entry.global;
+                            if (owned.spaces.at(kind).Owner(global) != mpi.rank &&
                                 !std::binary_search(known[kind].begin(), known[kind].end(), global))
                                 additional[kind].push_back(global);
+                        }
                 };
                 for (auto slot : {MeshRelation::CellNodes, MeshRelation::BoundaryNodes, MeshRelation::FaceNodes, MeshRelation::EdgeNodes}) collect(slot);
                 if (owned.requirements.allFaceCellsLocal) collect(MeshRelation::FaceCells);

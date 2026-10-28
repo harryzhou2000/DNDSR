@@ -7,6 +7,7 @@
 #include "Geom/Metis.hpp"
 
 #include <array>
+#include <unordered_set>
 #include <boost/graph/adjacency_list.hpp>
 #include <boost/graph/graph_utility.hpp>
 #include <boost/graph/minimum_degree_ordering.hpp>
@@ -343,11 +344,13 @@ namespace DNDS::Geom
         for (auto &v : localFillOrderingOld2New)
             v = localFillOrderingOld2New.size() - 1 - v;
 
-        std::unordered_set<index>
-            _checkOrder;
+        std::vector<uint8_t> _checkOrder(size_t(mat_size), 0);
         for (auto v : localFillOrderingOld2New)
-            DNDS_assert(v < size_t_to_signed<index>(mat_size) && v >= 0), _checkOrder.insert(v);
-        DNDS_check_throw_info(_checkOrder.size() == localFillOrderingOld2New.size(), "The output of CorrectRCM::CuthillMcKeeOrdering is invalid!");
+        {
+            DNDS_assert(v < size_t_to_signed<index>(mat_size) && v >= 0);
+            DNDS_check_throw_info(!_checkOrder[size_t(v)], "The output of CorrectRCM::CuthillMcKeeOrdering is invalid!");
+            _checkOrder[size_t(v)] = 1;
+        }
 
         for (index iCell = 0; iCell < size_t_to_signed<index>(mat_size); iCell++)
             localFillOrderingNew2Old[localFillOrderingOld2New[iCell]] = iCell;

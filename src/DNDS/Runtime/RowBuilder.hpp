@@ -45,7 +45,14 @@ namespace DNDS::Runtime
             Buffer lengths, dense;
             WriteAccess lengthAccess, denseAccess;
             size_t *sizes;
-            std::vector<Buffer> blocks;
+            struct Slab
+            {
+                Buffer buffer;
+                size_t used = 0;
+            };
+            std::vector<Slab> slabs;
+            std::vector<std::byte *> rowPointers;
+            std::vector<size_t> rowCapacity;
 
             State(size_t n, size_t bytes, RowLayoutKind layout, size_t cap, Buffer values = {}, WriteAccess access = {})
                 : rows(n), elementBytes(bytes), capacity(cap), width(cap), kind(layout)
@@ -56,7 +63,10 @@ namespace DNDS::Runtime
                 lengthAccess = lengths.Write();
                 sizes = lengthAccess.View<size_t>().data;
                 if (kind == RowLayoutKind::CSR)
-                    blocks.resize(n);
+                {
+                    rowPointers.resize(n);
+                    rowCapacity.resize(n);
+                }
                 else
                 {
                     dense = values.Identity() ? std::move(values) : Buffer::Allocate(CheckedSize::Multiply(CheckedSize::Multiply(n, cap), bytes));
@@ -68,9 +78,48 @@ namespace DNDS::Runtime
             std::byte *Pointer(size_t row) const
             {
                 if (kind == RowLayoutKind::CSR)
-                    return static_cast<std::byte *>(blocks[row].LegacyPointer());
+                    return rowPointers[row];
                 auto *base = denseAccess.View<std::byte>().data;
                 return base ? base + row * capacity * elementBytes : nullptr;
+            }
+            std::byte *AllocateRow(size_t row, size_t bytes)
+            {
+                // CSR construction often creates thousands of tiny rows. One
+                // allocation per node/cell dominates serial ingress and generic
+                // topology setup, so carve stable row spans from large slabs.
+                // Oversized rows receive a dedicated slab. A resize still
+                // invalidates the old borrowed pointer, as documented above.
+                constexpr size_t slabBytes = 64 * 1024;
+                constexpr size_t alignment = 64;
+                const size_t request = std::max(bytes, size_t(1));
+                const size_t wanted = std::max(slabBytes, request + alignment);
+                std::byte *pointer = nullptr;
+                if (!slabs.empty())
+                {
+                    auto &slab = slabs.back();
+                    auto *base = static_cast<std::byte *>(slab.buffer.LegacyPointer());
+                    const auto address = reinterpret_cast<uintptr_t>(base + slab.used);
+                    const auto padding = (alignment - address % alignment) % alignment;
+                    if (slab.used + padding + request <= slab.buffer.Bytes())
+                    {
+                        slab.used += padding;
+                        pointer = base + slab.used;
+                        slab.used += request;
+                    }
+                }
+                if (!pointer)
+                {
+                    slabs.push_back({Buffer::Allocate(wanted), 0});
+                    auto &slab = slabs.back();
+                    auto *base = static_cast<std::byte *>(slab.buffer.LegacyPointer());
+                    const auto address = reinterpret_cast<uintptr_t>(base);
+                    slab.used = (alignment - address % alignment) % alignment;
+                    pointer = base + slab.used;
+                    slab.used += request;
+                }
+                rowPointers[row] = pointer;
+                rowCapacity[row] = bytes;
+                return pointer;
             }
         };
         std::unique_ptr<State> _state;
@@ -126,12 +175,12 @@ namespace DNDS::Runtime
             const auto bytes = CheckedSize::Multiply(length, s.elementBytes);
             DNDS_check_throw_info(s.kind == RowLayoutKind::CSR || length <= s.capacity, "row size exceeds padded capacity");
             DNDS_check_throw_info(s.kind != RowLayoutKind::Table || length == s.width, "table row width is fixed");
-            if (s.kind == RowLayoutKind::CSR && bytes > s.blocks[row].Bytes())
+            if (s.kind == RowLayoutKind::CSR && bytes > s.rowCapacity[row])
             {
-                auto replacement = Buffer::Allocate(bytes);
+                auto *previousPointer = s.Pointer(row);
+                auto *replacement = s.AllocateRow(row, bytes);
                 if (preserve && previous)
-                    std::memcpy(replacement.LegacyPointer(), s.Pointer(row), std::min(previous, length) * s.elementBytes);
-                s.blocks[row] = std::move(replacement);
+                    std::memcpy(replacement, previousPointer, std::min(previous, length) * s.elementBytes);
             }
             else if (length && (!preserve || length > previous))
             {

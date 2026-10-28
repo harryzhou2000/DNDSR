@@ -2,7 +2,7 @@
 #include <climits>
 #include <numeric>
 #include <optional>
-#include <set>
+#include <unordered_set>
 #include <mutex>
 
 namespace DNDS::Runtime
@@ -59,6 +59,38 @@ namespace DNDS::Runtime
                 result[i + 1] = result[i] + counts[i];
             return result;
         }
+        /// Collision detection for row routes. Dense membership is faster and
+        /// allocation-free during insertion for solver-sized entity families;
+        /// a hash fallback preserves bounded memory for unusually large routes.
+        class SeenRows
+        {
+            std::vector<uint8_t> _dense;
+            std::unordered_set<size_t> _hash;
+            size_t _extent = 0;
+
+        public:
+            SeenRows(size_t extent, size_t expected)
+                : _extent(extent)
+            {
+                constexpr size_t denseLimit = size_t(64) << 20;
+                if (extent <= denseLimit && expected >= extent / 16)
+                    _dense.assign(extent, 0);
+                else
+                    _hash.reserve(expected);
+            }
+            bool Insert(size_t row)
+            {
+                if (!_dense.empty())
+                {
+                    DNDS_check_throw_info(row < _extent, "route collision row outside destination extent");
+                    if (_dense[row])
+                        return false;
+                    _dense[row] = 1;
+                    return true;
+                }
+                return _hash.insert(row).second;
+            }
+        };
         std::vector<uint64_t> ExchangeLengths(const RowTransferPlan &route, const RowLayout &source)
         {
             CheckAll(source.Rows() == route.SourceRows() && route.Valid(), route.Communicator(), "row transfer source layout or epoch mismatch");
@@ -139,32 +171,43 @@ namespace DNDS::Runtime
         state->dependencies = std::move(dependencies);
         state->send.resize(size);
         state->receive.resize(size);
-        std::vector<std::vector<int64_t>> requested(size);
-        std::set<size_t> targets;
+        std::vector<std::vector<std::pair<size_t, size_t>>> grouped(size);
+        SeenRows targets(destinationRows, requests.size());
         for (auto request : requests)
         {
-            requested[request.sourceRank].push_back(request.sourceRow);
-            state->receive[request.sourceRank].push_back(request.destinationRow);
-            state->collisions |= !targets.insert(request.destinationRow).second;
+            grouped[request.sourceRank].emplace_back(request.sourceRow, request.destinationRow);
+            state->collisions |= !targets.Insert(request.destinationRow);
         }
+        // Pair order defines the positional direct-MPI correspondence. Sorting
+        // each peer's pairs by source row keeps both endpoints aligned while
+        // collapsing contiguous source rows into one hindexed type segment.
+        for (auto &peer : grouped)
+            std::sort(peer.begin(), peer.end());
+        std::vector<std::vector<int64_t>> requested(size);
+        for (size_t peer = 0; peer < grouped.size(); ++peer)
+            for (const auto &[sourceRow, destinationRow] : grouped[peer])
+            {
+                requested[peer].push_back(int64_t(sourceRow));
+                state->receive[peer].push_back(destinationRow);
+            }
         auto requestCounts = Counts(state->receive);
         std::vector<int> incomingCounts(size);
         MPI_Alltoall(requestCounts.data(), 1, MPI_INT, incomingCounts.data(), 1, MPI_INT, state->comm);
         auto incomingTotal = std::accumulate(incomingCounts.begin(), incomingCounts.end(), int64_t(0));
         CheckAll(incomingTotal <= INT_MAX, state->comm, "row transfer request table exceeds MPI int range");
+        SeenRows sourcesSeen(sourceRows, size_t(incomingTotal));
         auto requestOffsets = Offsets(requestCounts), incomingOffsets = Offsets(incomingCounts);
         std::vector<int64_t> outgoing, incoming(size_t(incomingTotal), 0);
         for (const auto &peer : requested)
             outgoing.insert(outgoing.end(), peer.begin(), peer.end());
         MPI_Alltoallv(outgoing.data(), requestCounts.data(), requestOffsets.data(), MPI_INT64_T,
                       incoming.data(), incomingCounts.data(), incomingOffsets.data(), MPI_INT64_T, state->comm);
-        targets.clear();
         for (int peer = 0; peer < size; ++peer)
             for (int j = incomingOffsets[peer]; j < incomingOffsets[peer + 1]; ++j)
             {
                 valid = valid && incoming[j] >= 0 && uint64_t(incoming[j]) < sourceRows;
                 state->send[peer].push_back(size_t(incoming[j]));
-                state->reverseCollisions |= !targets.insert(size_t(incoming[j])).second;
+                state->reverseCollisions |= !sourcesSeen.Insert(size_t(incoming[j]));
             }
         CheckAll(valid, state->comm, "row transfer source index does not exist");
         _state = std::move(state);
@@ -206,14 +249,13 @@ namespace DNDS::Runtime
         state->send = std::move(send);
         state->receive = std::move(receive);
         state->dependencies = std::move(dependencies);
-        std::set<size_t> seen;
+        SeenRows sourceSeen(sourceRows, ns), destinationSeen(destinationRows, nr);
         for (const auto &peer : state->send)
             for (auto row : peer)
-                state->reverseCollisions |= !seen.insert(row).second;
-        seen.clear();
+                state->reverseCollisions |= !sourceSeen.Insert(row);
         for (const auto &peer : state->receive)
             for (auto row : peer)
-                state->collisions |= !seen.insert(row).second;
+                state->collisions |= !destinationSeen.Insert(row);
         RowTransferPlan result;
         result._state = std::move(state);
         return result;

@@ -84,7 +84,7 @@ namespace DNDS::Geom
                 CheckRows(*periodic, source.NumOwned());
                 bits.emplace(periodic->Read());
             }
-            std::vector<std::pair<index, uint8_t>> seen;
+            std::array<std::pair<index, uint8_t>, Elem::CellNumNodeMax> seen{};
             for (size_t row = 0; row < entries.View().Rows(); ++row)
             {
                 const auto elementInfo = elements.View()(row, 0);
@@ -97,18 +97,18 @@ namespace DNDS::Geom
                 DNDS_check_throw_info(!boundary || FaceIDIsExternalBC(elementInfo.zone) || (periodic && FaceIDIsPeriodic(elementInfo.zone)),
                                       "native boundary requires an external or periodic zone");
                 DNDS_check_throw_info(!bits || bits->View().RowSize(row) == entries.View().RowSize(row), "periodic cone slots differ from node slots");
-                seen.clear();
-                seen.reserve(entries.View().RowSize(row));
-                for (size_t slot = 0; slot < entries.View().RowSize(row); ++slot)
+                const auto count = entries.View().RowSize(row);
+                DNDS_check_throw_info(count <= seen.size(), "native input cone exceeds the supported element size");
+                for (size_t slot = 0; slot < count; ++slot)
                 {
                     const auto node = entries.View()(row, slot);
                     const auto frame = bits ? uint8_t(bits->View()(row, slot)) : uint8_t(0);
                     DNDS_check_throw_info(node >= 0 && node < nodes.NumGlobal() && frame < 8,
                                           "native input node/image is invalid in an ordered cone");
-                    seen.emplace_back(node, frame);
+                    seen[slot] = {node, frame};
                 }
-                std::sort(seen.begin(), seen.end());
-                DNDS_check_throw_info(std::adjacent_find(seen.begin(), seen.end()) == seen.end(),
+                std::sort(seen.begin(), seen.begin() + count);
+                DNDS_check_throw_info(std::adjacent_find(seen.begin(), seen.begin() + count) == seen.begin() + count,
                                       "native input node/image is repeated in an ordered cone");
             }
         }
@@ -482,6 +482,7 @@ namespace DNDS::Geom
             relation(MeshRelation::CellNodes, cellNodes);
             relation(MeshRelation::BoundaryNodes, boundaryNodes);
             relation(MeshRelation::CellCells, cellCells);
+            result.cellCellsComplete = true;
             // The native containment relation stays sorted/set-valued. Only
             // this explicit facade slot adds the external second-cell sentinel.
             result.relations[size_t(MeshRelation::BoundaryCells)] = physicalBoundary

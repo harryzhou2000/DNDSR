@@ -10,6 +10,7 @@
 #include <limits>
 #include <numeric>
 #include <set>
+#include <unordered_set>
 #include <tuple>
 
 namespace DNDS::Geom
@@ -49,6 +50,11 @@ namespace DNDS::Geom
         {
             DNDS_check_throw_info(!reorderRows || oldToNew.size() == source.Rows(),
                                   "owned reorder permutation extent differs from array rows");
+            // Non-cell descriptors retain their rows and values. Published
+            // storage is immutable, so aliases can share the source handle
+            // instead of cloning every relation unrelated to the local order.
+            if (!reorderRows && !remapValues && !sortValues)
+                return source;
             auto layout = source.Layout();
             if (reorderRows && layout.IsVariable())
             {
@@ -61,16 +67,37 @@ namespace DNDS::Geom
             Runtime::Array<T> result(layout);
             auto input = source.Read();
             auto output = result.Write();
+            const auto inputView = input.View();
+            const auto outputView = output.View();
+            if (!remapValues && !sortValues)
+            {
+                for (size_t oldRow = 0; oldRow < source.Rows(); ++oldRow)
+                {
+                    const size_t newRow = reorderRows ? size_t(oldToNew[oldRow]) : oldRow;
+                    DNDS_check_throw_info(newRow < result.Rows() && inputView.RowSize(oldRow) == outputView.RowSize(newRow),
+                                          "owned reorder changed a row layout");
+                }
+                for (size_t oldRow = 0; oldRow < source.Rows(); ++oldRow)
+                {
+                    const size_t from = oldRow;
+                    const size_t to = reorderRows ? size_t(oldToNew[from]) : from;
+                    const auto count = inputView.RowSize(from);
+                    std::copy_n(inputView.Row(from), count, outputView.Row(to));
+                }
+                return result;
+            }
             for (size_t oldRow = 0; oldRow < source.Rows(); ++oldRow)
             {
                 const size_t newRow = reorderRows ? size_t(oldToNew[oldRow]) : oldRow;
-                DNDS_check_throw_info(newRow < result.Rows() && input.View().RowSize(oldRow) == output.View().RowSize(newRow),
+                DNDS_check_throw_info(newRow < result.Rows() && inputView.RowSize(oldRow) == outputView.RowSize(newRow),
                                       "owned reorder changed a row layout");
-                for (size_t slot = 0; slot < input.View().RowSize(oldRow); ++slot)
-                    output.View()(newRow, slot) = remapValues ? mapValue(input.View()(oldRow, slot)) : input.View()(oldRow, slot);
+                auto *target = outputView.Row(newRow);
+                const auto *sourceRow = inputView.Row(oldRow);
+                for (size_t slot = 0; slot < inputView.RowSize(oldRow); ++slot)
+                    target[slot] = remapValues ? mapValue(sourceRow[slot]) : sourceRow[slot];
                 if constexpr (std::is_same_v<T, index>)
                     if (sortValues)
-                        std::sort(output.View().Row(newRow), output.View().Row(newRow) + output.View().RowSize(newRow));
+                        std::sort(target, target + outputView.RowSize(newRow));
             }
             return result;
         }
@@ -347,9 +374,12 @@ namespace DNDS::Geom
             DNDS_check_throw_info(oldCells.NumGhost() == 0 && cellOld2New.size() == size_t(oldCells.NumOwned()),
                                   "primary owned reorder requires a complete owned-cell permutation");
             std::vector<index> referenced;
+            std::unordered_set<uintptr_t> scannedTargets;
             auto collectTargets = [&](const AdjKind &key, const RArray &rows)
             {
                 if (key.to != EntityKind::Cell)
+                    return;
+                if (!scannedTargets.insert(reinterpret_cast<uintptr_t>(rows.SharedStorage().get())).second)
                     return;
                 auto read = rows.Read();
                 for (size_t row = 0; row < read.View().Rows(); ++row)
@@ -410,6 +440,25 @@ namespace DNDS::Geom
             NativeOwnedMeshTransitionResult result;
             result.sourceSpaces = source.spaces;
             auto owned = source;
+            // Fixed and named descriptors commonly alias the same immutable
+            // payload. Apply a cell-row permutation once per payload and
+            // transformation, then let aliases retain the same result handle.
+            using ReorderKey = std::tuple<uintptr_t, bool, bool, bool>;
+            std::map<ReorderKey, RArray> reordered;
+            auto reorder = [&](const RArray &rows, const AdjKind &key) -> RArray
+            {
+                const bool sourceCell = key.from == EntityKind::Cell;
+                const bool targetCell = key.to == EntityKind::Cell;
+                const bool sorted = key.order == RelationOrder::SortedUnique;
+                const ReorderKey identity{reinterpret_cast<uintptr_t>(rows.SharedStorage().get()),
+                                          sourceCell, targetCell, sorted};
+                auto found = reordered.find(identity);
+                if (found != reordered.end())
+                    return found->second;
+                auto moved = ReorderOwnedRows(rows, cellOld2New, sourceCell, targetCell, sorted, mappedCell);
+                reordered.emplace(identity, moved);
+                return moved;
+            };
             auto nodes = source.spaces.at(EntityKind::Node);
             owned.spaces.insert_or_assign(EntityKind::Cell,
                                           nodes.CreateSibling(EntityKind::Cell, oldCells.NumOwned()));
@@ -417,8 +466,7 @@ namespace DNDS::Geom
                 if (source.relations[slot])
                 {
                     const auto key = FacadeKey(slot);
-                    auto moved = ReorderOwnedRows(*source.relations[slot], cellOld2New, key.from == EntityKind::Cell,
-                                                  key.to == EntityKind::Cell, key.order == RelationOrder::SortedUnique, mappedCell);
+                    auto moved = reorder(*source.relations[slot], key);
                     owned.relations[slot] = std::move(moved);
                 }
             owned.namedRelations.clear();
@@ -426,8 +474,7 @@ namespace DNDS::Geom
             {
                 if (key == NativeSetupFacialCellNeighborsKey())
                     continue;
-                auto moved = ReorderOwnedRows(rows, cellOld2New, key.from == EntityKind::Cell,
-                                              key.to == EntityKind::Cell, key.order == RelationOrder::SortedUnique, mappedCell);
+                auto moved = reorder(rows, key);
                 owned.namedRelations.emplace(key, std::move(moved));
             }
             if (source.cellInfo)
@@ -661,18 +708,28 @@ namespace DNDS::Geom
             if (cachedFacial == source.namedRelations.end() && !source.requirements.faces)
                 graph = PrimaryFaceNeighborsFromCellGraph(source);
             else
+            {
+                int invalid = 0;
+#pragma omp parallel for schedule(static)
                 for (index cell = 0; cell < cells.NumOwned(); ++cell)
                     for (idx_t slot = facial->offsets[size_t(cell)]; slot < facial->offsets[size_t(cell + 1)]; ++slot)
                         if (const auto local = cells.GlobalToLocalPinned(index(facial->adjacency[size_t(slot)])))
                             graph[size_t(cell)].push_back(*local);
-            for (index cell = 0; cell < cells.NumOwned(); ++cell)
-            {
-                for (auto global : all.View()[size_t(cell)])
+#pragma omp parallel for reduction(| : invalid) schedule(static)
+                for (index cell = 0; cell < cells.NumOwned(); ++cell)
                 {
-                    DNDS_check_throw_info(global >= 0 && global < cells.NumGlobal(), "owned cell neighbor is unavailable");
-                    const auto local = cells.GlobalToLocalPinned(global);
-                    neighbors[size_t(cell)].push_back(local ? *local : cells.NumOwned());
+                    for (auto global : all.View()[size_t(cell)])
+                    {
+                        if (global < 0 || global >= cells.NumGlobal())
+                        {
+                            invalid = 1;
+                            continue;
+                        }
+                        const auto local = cells.GlobalToLocalPinned(global);
+                        neighbors[size_t(cell)].push_back(local ? *local : cells.NumOwned());
+                    }
                 }
+                DNDS_check_throw_info(!invalid, "owned cell neighbor is unavailable");
             }
             if (cells.NumOwned() == 0)
                 permutation.localPartitionStarts.assign(size_t(nParts) + 1, 0);
@@ -1039,6 +1096,7 @@ namespace DNDS::Geom
         NativeOwnedMeshData owned;
         owned.identity = source.identity;
         owned.requirements = source.requirements;
+        owned.cellCellsComplete = source.cellCellsComplete;
         owned.audit = source.audit;
         owned.ghostSpec = source.ghostSpec;
         owned.dimension = source.dimension;
