@@ -1117,6 +1117,55 @@ namespace DNDS::Geom
         index counts[]{index(serial.cellNodes.Rows()), index(serial.coordinates.Rows()), index(serial.boundaryNodes.Rows())};
         MPI_Bcast(counts, 3, MPI_INT64_T, readerRank, mpi.comm);
         auto context = std::make_shared<Runtime::CommunicationContext>(mpi.comm);
+        if (distribution == NativeSerialDistribution::ReaderOwned)
+        {
+            auto localCopy = [&](auto source)
+            {
+                using Array = std::decay_t<decltype(source)>;
+                if (mpi.rank == readerRank && source.Layout().IsRagged())
+                    return std::move(source);
+                std::vector<size_t> lengths(mpi.rank == readerRank ? source.Rows() : 0, 0);
+                if (mpi.rank == readerRank)
+                {
+                    auto input = source.Read();
+                    for (size_t row = 0; row < input.View().Rows(); ++row)
+                        lengths[row] = input.View().RowSize(row);
+                }
+                Array output(Runtime::RowLayout::Ragged(lengths));
+                if (mpi.rank == readerRank)
+                {
+                    auto input = source.Read();
+                    auto destination = output.Write();
+                    for (size_t row = 0; row < input.View().Rows(); ++row)
+                        std::copy_n(input.View().Row(row), input.View().RowSize(row), destination.View().Row(row));
+                }
+                return output;
+            };
+            const auto nodeSpace = EntitySpace::CreateOwned(EntityKind::Node, mpi,
+                                                            mpi.rank == readerRank ? counts[1] : 0);
+            NativeMeshInput input{mpi, dimension,
+                                  nodeSpace.CreateSibling(EntityKind::Cell, mpi.rank == readerRank ? counts[0] : 0),
+                                  nodeSpace,
+                                  nodeSpace.CreateSibling(EntityKind::Bnd, mpi.rank == readerRank ? counts[2] : 0),
+                                  localCopy(serial.cellNodes), localCopy(serial.boundaryNodes),
+                                  localCopy(serial.coordinates), localCopy(serial.cellInfo),
+                                  localCopy(serial.boundaryInfo)};
+            input.identity = std::move(identity);
+            input.ids.emplace(EntityKind::Cell, localCopy(serial.cellIds));
+            input.ids.emplace(EntityKind::Node, localCopy(serial.nodeIds));
+            input.ids.emplace(EntityKind::Bnd, localCopy(serial.boundaryIds));
+            if (isPeriodic)
+            {
+                DNDS_check_throw_info(periodic, "native serial periodic frames missing");
+                Runtime::Array<NodePeriodicBits> empty(Runtime::RowLayout::Ragged({}));
+                input.periodic = true;
+                input.periodicInfo = periodic->frames;
+                input.identity.nextIds.emplace(EntityKind::Node, nodeHighWater);
+                input.cellNodesPbi = localCopy(serial.cellNodesPbi ? *serial.cellNodesPbi : empty);
+                input.boundaryNodesPbi = localCopy(serial.boundaryNodesPbi ? *serial.boundaryNodesPbi : empty);
+            }
+            return NativeMeshBuilder::Build(std::move(input), options);
+        }
         auto route = [&](index total)
         {
             const index length = distribution == NativeSerialDistribution::ReaderOwned ? (mpi.rank == readerRank ? total : 0) : total / mpi.size + (mpi.rank < total % mpi.size);

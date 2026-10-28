@@ -97,20 +97,36 @@ namespace DNDS::Geom::detail
                     }
                     else
                     {
+                        size_t rawLeft = 0, rawRight = 0, rawShared = 0;
+                        while (rawLeft < currentSize && rawRight < otherSize)
+                        {
+                            if (current[rawLeft] < other[rawRight]) ++rawLeft;
+                            else if (other[rawRight] < current[rawLeft]) ++rawRight;
+                            else { ++rawShared; ++rawLeft; ++rawRight; }
+                        }
+                        if (rawShared < size_t(source.dimension)) continue;
                         const auto *currentFrames = frames.data() + size_t(cell) * maxVertices;
                         const auto *otherFrames = frames.data() + size_t(*neighbor) * maxVertices;
-                        for (uint8_t mask = 0; mask < 8; ++mask)
+                        uint8_t tried = 0;
+                        for (size_t currentVertex = 0; currentVertex < currentSize && !facial; ++currentVertex)
                         {
-                            size_t left = 0, right = 0, shared = 0;
-                            while (left < currentSize && right < otherSize)
+                            for (size_t otherVertex = 0; otherVertex < otherSize; ++otherVertex)
                             {
-                                const auto currentKey = std::pair(current[left], currentFrames[left]);
-                                const auto otherKey = std::pair(other[right], uint8_t(otherFrames[right] ^ mask));
-                                if (currentKey < otherKey) ++left;
-                                else if (otherKey < currentKey) ++right;
-                                else { ++shared; ++left; ++right; }
+                                if (current[currentVertex] != other[otherVertex]) continue;
+                                const uint8_t mask = currentFrames[currentVertex] ^ otherFrames[otherVertex];
+                                if (tried & (uint8_t(1) << mask)) continue;
+                                tried |= uint8_t(1) << mask;
+                                size_t left = 0, right = 0, shared = 0;
+                                while (left < currentSize && right < otherSize)
+                                {
+                                    const auto currentKey = std::pair(current[left], currentFrames[left]);
+                                    const auto otherKey = std::pair(other[right], uint8_t(otherFrames[right] ^ mask));
+                                    if (currentKey < otherKey) ++left;
+                                    else if (otherKey < currentKey) ++right;
+                                    else { ++shared; ++left; ++right; }
+                                }
+                                if (shared >= size_t(source.dimension)) { facial = true; break; }
                             }
-                            if (shared >= size_t(source.dimension)) { facial = true; break; }
                         }
                     }
                     if (facial) neighbors.push_back(neighborGlobal);

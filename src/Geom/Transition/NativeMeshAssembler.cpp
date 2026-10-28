@@ -257,8 +257,7 @@ namespace DNDS::Geom
                 }
             for (const auto &[key, values] : owned.namedRelations)
             {
-                if (key == NativeSetupFacialCellNeighborsKey())
-                    continue;
+                if (key == NativeSetupFacialCellNeighborsKey()) continue;
                 key.Validate();
                 CheckRows(values, owned.spaces.at(key.from));
                 DNDS_check_throw_info(owned.spaces.count(key.to), "native assembly named relation target missing");
