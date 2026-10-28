@@ -66,6 +66,10 @@ namespace DNDS::Geom
             std::vector<idx_t> offsets, adjacency, weights;
         };
         NativePartitionGraph BuildNativePartitionGraph(const UnstructuredMeshState &source, const MPIInfo &mpi, int edgeWeightMethod = 0);
+        /// Primary cell graph already published by owned construction. It uses
+        /// the legacy vertex-sharing cell neighborhood and is the fast partition
+        /// input when a primary Cell2Cell relation is available.
+        NativePartitionGraph BuildOwnedPrimaryCellGraph(const NativeOwnedMeshData &source, const MPIInfo &mpi);
         /// Temporary exact facial incidence from owned cell cones. Remote
         /// inputs are sparse closure scratch, with no Face family/publication.
         NativePartitionGraph BuildOwnedPartitionGraph(const NativeOwnedMeshData &source, const MPIInfo &mpi, int edgeWeightMethod = 0);

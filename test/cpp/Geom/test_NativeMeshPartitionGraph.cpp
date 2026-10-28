@@ -4,6 +4,7 @@
 #include "Geom/Mesh/NativeMeshPreparation.hpp"
 #include "Geom/Mesh/NativeMeshBuilder.hpp"
 #include "Geom/Mesh/NativeMeshTopology.hpp"
+#include "Geom/Mesh/NativeMeshAssembler.hpp"
 #include "DNDS/Runtime/RowBuilder.hpp"
 #include "Geom/Unstructured/ReaderPartitionGraph.hpp"
 #include "Geom/Refinement/NativeMeshExtraction.hpp"
@@ -83,6 +84,10 @@ namespace
         const auto oracle = G::detail::BuildNativePartitionGraph(*full, mpi, 0);
         CHECK(graph.offsets == oracle.offsets);
         CHECK(graph.adjacency == oracle.adjacency);
+        const auto owned = G::NativeMeshAssembler::CaptureOwned(source, mpi);
+        const auto primary = G::detail::BuildOwnedPrimaryCellGraph(owned, mpi);
+        CHECK(primary.offsets == oracle.offsets);
+        CHECK(primary.adjacency == oracle.adjacency);
         CHECK(graph.weights.empty());
         if (!partition)
             return;
@@ -235,10 +240,14 @@ TEST_CASE("Reader primary unweighted graph equals full facial publication and pa
         }
         else
             CHECK(graph.offsets == std::vector<idx_t>{0});
+        INFO("periodic two-cell fixture");
         CheckReaderGraphAndPartition(*source, mpi);
     }
+    INFO("reader-owned hex fixture");
     CheckReaderGraphAndPartition(*G::ConstructNativeMesh(ReaderHex(mpi)), mpi);
+    INFO("quadratic periodic torus fixture");
     CheckReaderGraphAndPartition(*G::ConstructNativeMesh(NativePeriodicFixtures::QuadraticTorus(mpi)), mpi);
+    INFO("weighted strip fixture");
     CheckReaderGraphAndPartition(*WeightedStrip(mpi, true), mpi);
 }
 

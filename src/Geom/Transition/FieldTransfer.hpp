@@ -72,6 +72,8 @@ namespace DNDS::Geom
             {
                 DNDS_check_throw_info(transfer.localOld2New.size() == rows, "invalid native local permutation extent");
                 std::vector<bool> seen(rows, false);
+                send[mpi.rank].reserve(rows);
+                receive[mpi.rank].reserve(rows);
                 for (size_t i = 0; i < rows; ++i)
                 {
                     const auto target = transfer.localOld2New[i];
@@ -100,6 +102,7 @@ namespace DNDS::Geom
                                               transfer.newGlobalOffsets[peer + 1] >= transfer.newGlobalOffsets[peer],
                                           "invalid native destination offsets");
                     sendCounts[peer] = int(last - first);
+                    send[peer].reserve(size_t(sendCounts[peer]));
                     for (DNDS::index j = first; j < last; ++j)
                     {
                         const auto row = transfer.pushIndex[size_t(j)];
@@ -120,8 +123,11 @@ namespace DNDS::Geom
                 // retaining each sender's pushIndex order within its bucket.
                 size_t next = 0;
                 for (int peer = 0; peer < mpi.size; ++peer)
+                {
+                    receive[peer].reserve(size_t(receiveCounts[peer]));
                     for (int j = 0; j < receiveCounts[peer]; ++j)
                         receive[peer].push_back(next++);
+                }
                 DNDS_check_throw_info(next == destinationRows, "native destination offsets disagree with received rows"); });
         }
         return Runtime::RowTransferPlan::Known(std::make_shared<Runtime::CommunicationContext>(mpi.comm),
