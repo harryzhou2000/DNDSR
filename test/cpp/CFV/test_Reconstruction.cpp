@@ -1568,11 +1568,13 @@ TEST_CASE("Static reconstruction mask passed as a call argument constrains updat
         vr->BuildUDof(u, 1);
         vr->BuildUDof(alpha, 1);
         DNDS::index selected = 0, selectedAll = 0;
+        auto legacyRead = g_wall_mesh->AcquireLegacyRead(Geom::MeshReadRequirements::CellFlux());
+        const auto &meshLegacy = legacyRead.HostView();
         for (DNDS::index i = 0; i < g_wall_mesh->NumCell(); ++i)
         {
             bool on = vr->GetCellBary(i)(0) < 0;
-            for (auto f : g_wall_mesh->cell2face[i])
-                on = on || g_wall_mesh->GetFaceZone(f) == Geom::BC_ID_DEFAULT_WALL;
+            for (auto f : meshLegacy.cell2face[i])
+                on = on || meshLegacy.GetFaceZone(f) == Geom::BC_ID_DEFAULT_WALL;
             expected[i](0) = on;
             selected += on;
             u[i](0) = 2 + vr->GetCellBary(i)(0);
