@@ -151,12 +151,12 @@ namespace DNDS::Geom
                 const CaptureKey identity{reinterpret_cast<uintptr_t>(rows.owned.SharedStorage().get()), key.from, key.to, state};
                 auto found = converted.find(identity);
                 if (found != converted.end()) return found->second;
+                const auto &shape = rows.owned.Layout();
                 auto result = Runtime::BuildArrayRows<index>(size_t(read.NumOwned()), [&](size_t row) { return read.RowSize(index(row)); },
                                                              [&](size_t row, auto output)
                                                              {
-                    for (size_t slot = 0; slot < output.size(); ++slot)
-                        output[slot] = read.ConvertedIndex(index(row), slot, Adj_PointToGlobal);
-                });
+                    read.ConvertRowTo(index(row), Adj_PointToGlobal, output.data());
+                }, shape.IsVariable() ? std::optional<size_t>{} : std::optional<size_t>(shape.Width()), true);
                 converted.emplace(identity, result);
                 return result;
             };
@@ -164,9 +164,6 @@ namespace DNDS::Geom
                 if (snapshot.relations[slot])
                 {
                     auto array = global(FacadeKey(slot), *snapshot.relations[slot], Adj_PointToLocal);
-                    const auto &shape = snapshot.relations[slot]->owned.Layout();
-                    if (!shape.IsVariable())
-                        array = RArray::FromStorage(Runtime::RowLayout::Dense(array.Rows(), shape.Width()), array.Storage());
                     result.relations[slot] = std::move(array);
                 }
             result.cellCellsComplete = source.Requirements().inverse &&
@@ -383,17 +380,28 @@ namespace DNDS::Geom
                     if (!owned.relations[size_t(slot)]) return;
                     auto read = publication.relations.at(FacadeKey(size_t(slot))).Read();
                     const auto kind = Bindings()[size_t(slot)].to;
-                    for (index row = 0; row < read.Rows(); ++row)
-                        for (size_t entrySlot = 0; entrySlot < read.RowSize(row); ++entrySlot)
+                    DNDS_check_throw_info(read.State() == Adj_PointToGlobal,
+                                          "ghost publication completion requires global target state");
+                    const auto view = read.View();
+                    const auto scan = [&](const Runtime::ArrayView<const index> &part)
+                    {
+                        for (size_t row = 0; row < part.Rows(); ++row)
                         {
-                            const auto entry = read.ReadEntry(row, entrySlot);
-                            if (entry.absent)
-                                continue;
-                            const auto global = entry.global;
-                            if (owned.spaces.at(kind).Owner(global) != mpi.rank &&
-                                !std::binary_search(known[kind].begin(), known[kind].end(), global))
-                                additional[kind].push_back(global);
+                            const auto count = part.RowSize(row);
+                            const auto *values = count ? part.Row(row) : nullptr;
+                            for (size_t entrySlot = 0; entrySlot < count; ++entrySlot)
+                            {
+                                const auto global = values[entrySlot];
+                                if (global == UnInitIndex)
+                                    continue;
+                                if (owned.spaces.at(kind).Owner(global) != mpi.rank &&
+                                    !std::binary_search(known[kind].begin(), known[kind].end(), global))
+                                    additional[kind].push_back(global);
+                            }
                         }
+                    };
+                    scan(view.owned);
+                    scan(view.ghost);
                 };
                 for (auto slot : {MeshRelation::CellNodes, MeshRelation::BoundaryNodes, MeshRelation::FaceNodes, MeshRelation::EdgeNodes}) collect(slot);
                 if (owned.requirements.allFaceCellsLocal) collect(MeshRelation::FaceCells);
@@ -432,9 +440,7 @@ namespace DNDS::Geom
             {
                 return Runtime::BuildArrayRows<index>(size_t(count), [&](size_t row)
                                                       { return read.RowSize(first + index(row)); }, [&](size_t row, auto output)
-                                                      {
-                    for (size_t slot = 0; slot < output.size(); ++slot)
-                        output[slot] = read.ConvertedIndex(first + index(row), slot, Adj_PointToLocal); }, uniform);
+                                                      { read.ConvertRowTo(first + index(row), Adj_PointToLocal, output.data()); }, uniform, true);
             };
             Runtime::ArrayPair<index> result{convert(0, read.NumOwned()), convert(read.NumOwned(), read.Rows() - read.NumOwned())};
             localized.emplace(key, result);

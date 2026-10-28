@@ -38,14 +38,20 @@ namespace DNDS::Geom::detail
     /// @param nCell           Number of local (father) cells.
     /// @param nParts          Number of first-level partitions.
     /// @param nPartsInner     Number of inner partitions per first-level part.
+    /// @param hasRemote       Optional per-cell remote-neighbor flags; avoids
+    ///                        retaining a second full adjacency list solely for
+    ///                        the private/interior classification.
     template <class CellRows>
     inline CellPermutationResult ComputeCellPermutation(
         tLocalMatStruct &cell2cellFaceV,
         const CellRows &cell2cell,
         index nCell,
         int nParts,
-        int nPartsInner)
+        int nPartsInner,
+        const std::vector<uint8_t> *hasRemote = nullptr)
     {
+        DNDS_check_throw_info(!hasRemote || hasRemote->size() == size_t(nCell),
+                              "cell permutation remote-marker extent differs from cells");
         CellPermutationResult result;
         result.cellOld2New.resize(nCell, -1);
         result.cellNew2Old.resize(nCell);
@@ -127,6 +133,8 @@ namespace DNDS::Geom::detail
         {
             auto cellIsNotPrivate = [&](index iCell)
             {
+                if (hasRemote)
+                    return int((*hasRemote)[size_t(iCell)]);
                 for (auto iCellOther : cell2cell[iCell])
                 {
                     if (iCellOther >= nCell)

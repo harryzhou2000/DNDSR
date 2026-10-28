@@ -168,8 +168,8 @@ TEST_CASE("Retained relation validation follows its read scope and fresh reads v
         CHECK_THROWS(values.Write());
         CHECK_THROWS(moved.ConvertedIndex(0, 2, G::Adj_PointToGlobal));
     }
-    // NativeRelation does not retain a lifetime content cache: an alias can
-    // change after the previous scope releases, and a new scope must rescan it.
+    // NativeRelation reuses only a validation tied to the current storage value
+    // version: an alias write after the previous scope releases forces a rescan.
     {
         auto write = values.Write();
         write.View()(0, 0) = -1;

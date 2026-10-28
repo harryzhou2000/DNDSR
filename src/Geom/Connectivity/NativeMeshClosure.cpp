@@ -3,6 +3,7 @@
 #include "Geom/Transition/FieldTransfer.hpp"
 #include "DNDS/Runtime/RowBuilder.hpp"
 #include "Geom/Transition/NativeMeshAssembler.hpp"
+#include <unordered_set>
 
 namespace DNDS::Geom
 {
@@ -24,8 +25,16 @@ namespace DNDS::Geom
             const auto nodes = source.spaces.at(EntityKind::Node);
             DNDS_check_throw_info(cells.NumGhost() == 0 && source.cellInfo,
                                   "construction closure requires authoritative owned cell inputs");
+            // The following scans validate each incidence while consuming it,
+            // avoiding a complete second payload pass in the hot construction
+            // path. Scope identity, layouts and target mappings remain checked.
             RelationReadAccess cellNodesCheck(Adj::Cell2Node, cells, nodes, Adj_PointToGlobal,
-                                              *source.relations[size_t(MeshRelation::CellNodes)]);
+                                              *source.relations[size_t(MeshRelation::CellNodes)], nullptr, true);
+            DNDS_check_throw_info(cellNodesCheck.State() == Adj_PointToGlobal,
+                                  "construction closure requires global cell-node values");
+            constexpr index denseNodeLimit = 64ll * 1024 * 1024;
+            const bool denseNodes = nodes.NumGlobal() <= denseNodeLimit;
+            std::vector<uint8_t> nodeFlags(denseNodes ? size_t(nodes.NumGlobal()) : 0, 0);
             std::vector<index> referencedNodes;
             FieldTransferDetail::LocalStage(mpi, [&]
                                             {
@@ -40,14 +49,25 @@ namespace DNDS::Geom
                         const auto global = values[slot];
                         DNDS_check_throw_info(global >= 0 && global < nodes.NumGlobal(),
                                               "cell closure requires complete cell-node rows");
-                        referencedNodes.push_back(global);
+                        if (denseNodes)
+                            nodeFlags[size_t(global)] = 1;
+                        else
+                            referencedNodes.push_back(global);
                     }
                 } });
             std::vector<index> ghostCells;
             if (source.cellCellsComplete)
             {
                 RelationReadAccess cellCellsCheck(Adj::Cell2Cell, cells, cells, Adj_PointToGlobal,
-                                                  *source.relations[size_t(MeshRelation::CellCells)]);
+                                                  *source.relations[size_t(MeshRelation::CellCells)], nullptr, true);
+                DNDS_check_throw_info(cellCellsCheck.State() == Adj_PointToGlobal,
+                                      "construction closure requires global cell-neighbor values");
+                constexpr index denseGhostLimit = 64ll * 1024 * 1024;
+                const bool denseGhosts = cells.NumGlobal() <= denseGhostLimit;
+                std::vector<uint8_t> ghostFlags(denseGhosts ? size_t(cells.NumGlobal()) : 0, 0);
+                std::unordered_set<index> uniqueGhosts;
+                if (!denseGhosts)
+                    uniqueGhosts.reserve(size_t(cells.NumOwned()) / 8 + 1);
                 FieldTransferDetail::LocalStage(mpi, [&]
                                                 {
                     const auto first = cells.NumOwned() ? cells.LocalToGlobal(0) : 0;
@@ -59,11 +79,27 @@ namespace DNDS::Geom
                         for (size_t slot = 0; slot < count; ++slot)
                         {
                             const auto globalCell = neighbors[slot];
-                            if (globalCell != UnInitIndex &&
-                                (globalCell < first || globalCell - first >= cells.NumOwned()))
-                                ghostCells.push_back(globalCell);
+                            if (globalCell == UnInitIndex)
+                                continue;
+                            DNDS_check_throw_info(globalCell >= 0 && globalCell < cells.NumGlobal(),
+                                                  "cell closure contains an invalid neighbor cell");
+                            if (globalCell < first || globalCell - first >= cells.NumOwned())
+                            {
+                                if (denseGhosts)
+                                    ghostFlags[size_t(globalCell)] = 1;
+                                else
+                                    uniqueGhosts.insert(globalCell);
+                            }
                         }
-                    } });
+                    }
+                    if (denseGhosts)
+                    {
+                        for (size_t global = 0; global < ghostFlags.size(); ++global)
+                            if (ghostFlags[global])
+                                ghostCells.push_back(index(global));
+                    }
+                    else
+                        ghostCells.assign(uniqueGhosts.begin(), uniqueGhosts.end()); });
             }
             else
             {
@@ -71,8 +107,17 @@ namespace DNDS::Geom
                                                   *source.relations[size_t(MeshRelation::NodeCells)]);
                 FieldTransferDetail::LocalStage(mpi, [&]
                                                 {
-                    std::sort(referencedNodes.begin(), referencedNodes.end());
-                    referencedNodes.erase(std::unique(referencedNodes.begin(), referencedNodes.end()), referencedNodes.end()); });
+                    if (denseNodes)
+                    {
+                        for (size_t global = 0; global < nodeFlags.size(); ++global)
+                            if (nodeFlags[global])
+                                referencedNodes.push_back(index(global));
+                    }
+                    else
+                    {
+                        std::sort(referencedNodes.begin(), referencedNodes.end());
+                        referencedNodes.erase(std::unique(referencedNodes.begin(), referencedNodes.end()), referencedNodes.end());
+                    } });
                 std::vector<Runtime::RowRequest> nodeRequests;
                 nodeRequests.reserve(referencedNodes.size());
                 FieldTransferDetail::LocalStage(mpi, [&]
@@ -136,12 +181,27 @@ namespace DNDS::Geom
                     {
                         DNDS_check_throw_info(global >= 0 && global < nodes.NumGlobal(),
                                               "closed cell contains an invalid node reference");
-                        referencedNodes.push_back(global);
+                        if (denseNodes)
+                            nodeFlags[size_t(global)] = 1;
+                        else
+                            referencedNodes.push_back(global);
                     }
-                std::sort(referencedNodes.begin(), referencedNodes.end());
-                referencedNodes.erase(std::unique(referencedNodes.begin(), referencedNodes.end()), referencedNodes.end());
+                if (denseNodes)
+                {
+                    referencedNodes.clear();
+                    referencedNodes.reserve(std::count(nodeFlags.begin(), nodeFlags.end(), uint8_t(1)));
+                    for (size_t global = 0; global < nodeFlags.size(); ++global)
+                        if (nodeFlags[global])
+                            referencedNodes.push_back(index(global));
+                }
+                else
+                {
+                    std::sort(referencedNodes.begin(), referencedNodes.end());
+                    referencedNodes.erase(std::unique(referencedNodes.begin(), referencedNodes.end()), referencedNodes.end());
+                }
+                const auto first = nodes.NumOwned() ? nodes.LocalToGlobal(0) : 0;
                 for (auto global : referencedNodes)
-                    if (nodes.Owner(global) != mpi.rank)
+                    if (global < first || global - first >= nodes.NumOwned())
                         remoteNodes.push_back(global); });
             auto closedNodes = nodes.WithGhosts(std::move(remoteNodes));
             NativeRelation completed = NativeRelation::WithGhostValues(

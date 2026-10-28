@@ -4,6 +4,7 @@
 #include "DNDS/Runtime/RowBuilder.hpp"
 #include "DNDS/Runtime/EagerArray.hpp"
 #include <map>
+#include <stdexcept>
 
 namespace R = DNDS::Runtime;
 
@@ -521,4 +522,26 @@ TEST_CASE("Independent reconstruction fields share buffered CSR metadata and ret
     CHECK(second.Read().At(96, 4) == 17);
     auto metadata = read.Layout().Offsets().Read();
     CHECK(metadata.Bytes() == (lengths.size() + 1) * sizeof(size_t));
+}
+
+TEST_CASE("Known-row construction fills independently and reports worker failures")
+{
+    constexpr size_t rows = 8193;
+    auto values = R::BuildArrayRows<DNDS::index>(rows, [](size_t)
+                                                 { return size_t(1); }, [](size_t row, auto output)
+                                                 { output[0] = DNDS::index(3 * row); }, size_t(1), true);
+    auto read = values.Read();
+    REQUIRE(read.View().Rows() == rows);
+    for (size_t row : {size_t(0), size_t(1), rows / 2, rows - 1})
+    {
+        CHECK(read.View().RowSize(row) == 1);
+        CHECK(read.View()(row, 0) == DNDS::index(3 * row));
+    }
+
+    CHECK_THROWS_AS((R::BuildArrayRows<int>(rows, [](size_t)
+                                            { return size_t(1); }, [](size_t row, auto)
+                                            {
+                                               if (row == 4097)
+                                                   throw std::runtime_error("worker failure"); }, size_t(1), true)),
+                    std::runtime_error);
 }

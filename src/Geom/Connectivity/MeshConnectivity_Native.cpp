@@ -135,6 +135,51 @@ namespace DNDS::Geom
         return encoded;
     }
 
+    void RelationReadAccess::ConvertRowTo(index row, MeshAdjState targetState, index *output,
+                                          bool allowUnavailable) const
+    {
+        DNDS_check_throw_info(targetState == Adj_PointToGlobal || targetState == Adj_PointToLocal,
+                              "relation conversion requires an explicit global/local destination state");
+        DNDS_check_throw_info(row >= 0 && row < Rows(), "relation row is not present locally");
+        const auto count = _view.RowSize(size_t(row));
+        DNDS_check_throw_info(!count || output, "relation row conversion needs destination storage");
+        const auto *source = count ? _view.Row(size_t(row)) : nullptr;
+        for (size_t slot = 0; slot < count; ++slot)
+        {
+            const auto value = source[slot];
+            if (value == UnInitIndex)
+            {
+                output[slot] = UnInitIndex;
+                continue;
+            }
+            if (_state == Adj_PointToLocal)
+            {
+                if (targetState == Adj_PointToGlobal)
+                    output[slot] = value >= 0 ? _target.LocalToGlobalPinned(value) : -1 - value;
+                else
+                {
+                    DNDS_check_throw_info(value >= 0 || allowUnavailable,
+                                          "relation local conversion requires missing target closure");
+                    output[slot] = value;
+                }
+                continue;
+            }
+            if (targetState == Adj_PointToGlobal)
+            {
+                output[slot] = value;
+                continue;
+            }
+            if (const auto local = _target.GlobalToLocalPinned(value))
+                output[slot] = *local;
+            else
+            {
+                DNDS_check_throw_info(allowUnavailable,
+                                      "relation local conversion requires missing target closure");
+                output[slot] = -1 - value;
+            }
+        }
+    }
+
     NativeRelation NativeRelation::Convert(const RelationReadAccess &source, MeshAdjState targetState,
                                            bool allowUnavailable)
     {
@@ -156,8 +201,7 @@ namespace DNDS::Geom
             {
                 auto write = output.Write();
                 for (size_t row = 0; row < view.Rows(); ++row)
-                    for (size_t slot = 0; slot < view.RowSize(row); ++slot)
-                        write.View()(row, slot) = source.ConvertedIndex(first + index(row), slot, targetState, allowUnavailable);
+                    source.ConvertRowTo(first + index(row), targetState, write.View().Row(row), allowUnavailable);
             }
             return output;
         };
