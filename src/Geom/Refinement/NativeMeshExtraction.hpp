@@ -15,7 +15,9 @@ namespace DNDS::Geom
         /// ancestry, including the compact old-to-boundary node correspondence.
         /// The result has no boundary elements of its own; dimension-one primary
         /// curves are supported; zero-dimensional output is unsupported. Nodes
-        /// used only by omitted periodic rows are compacted away.
+        /// used only by omitted periodic rows are compacted away. The source is
+        /// read directly through its immutable host publication: only referenced
+        /// face and node rows are staged, never the complete owned mesh state.
         static NativeMeshDerivedResult ExtractBoundary(const UnstructuredMeshState &source, const MPIInfo &mpi,
                                                        NativeMeshBuildOptions options = {});
     };
