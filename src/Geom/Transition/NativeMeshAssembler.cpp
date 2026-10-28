@@ -324,7 +324,14 @@ namespace DNDS::Geom
                     DNDS_check_throw_info(relations.emplace(key, values).second, "native assembly reserved descriptor collision");
             for (const auto &[key, values] : relations)
             {
-                auto validate = RelationReadAccess(key, owned.spaces.at(key.from), owned.spaces.at(key.to), Adj_PointToGlobal, values);
+                try
+                {
+                    auto validate = RelationReadAccess(key, owned.spaces.at(key.from), owned.spaces.at(key.to), Adj_PointToGlobal, values);
+                }
+                catch (const std::exception &error)
+                {
+                    throw std::runtime_error("native assembly relation [" + key.Signature() + "]: " + error.what());
+                }
             } });
         for (auto slot : {MeshRelation::NodeCells, MeshRelation::NodeBoundaries})
             if (!owned.relations[size_t(slot)])
@@ -338,7 +345,14 @@ namespace DNDS::Geom
         FieldTransferDetail::LocalStage(mpi, [&]
                                         {
             for (const auto &[key, values] : relations)
-                connectivity.Register(RelationReadAccess(key, owned.spaces.at(key.from), owned.spaces.at(key.to), Adj_PointToGlobal, values)); });
+                try
+                {
+                    connectivity.Register(RelationReadAccess(key, owned.spaces.at(key.from), owned.spaces.at(key.to), Adj_PointToGlobal, values));
+                }
+                catch (const std::exception &error)
+                {
+                    throw std::runtime_error("native assembly registration [" + key.Signature() + "]: " + error.what());
+                } });
         CompiledGhostTree tree;
         FieldTransferDetail::LocalStage(mpi, [&]
                                         {

@@ -485,7 +485,10 @@ namespace DNDS::Geom
         MPI_Allreduce(MPI_IN_PLACE, &active, 1, MPI_INT, MPI_SUM, mpi.comm);
         FieldTransferDetail::LocalStage(mpi, [&]
                                         { DNDS_check_throw_info(options.metisType != "RB" || active <= 1, "owned RB partition requires one reader cell rank"); });
-        auto graph = detail::BuildOwnedPartitionGraph(source, mpi, options.edgeWeightMethod);
+        const bool primaryCellGraph = options.edgeWeightMethod == 0 && source.relations[size_t(MeshRelation::CellCells)];
+        auto graph = primaryCellGraph
+                         ? detail::BuildOwnedPrimaryCellGraph(source, mpi)
+                         : detail::BuildOwnedPartitionGraph(source, mpi, options.edgeWeightMethod);
         auto carried = source;
         FieldTransferDetail::LocalStage(mpi, [&]
                                         {
@@ -564,8 +567,14 @@ namespace DNDS::Geom
                         DNDS_check_throw_info(source.OriginalEntityId(kind, row) == ids.View()(size_t(row), 0),
                                               "topology preparation changed original owned row order");
                 } });
-        auto graph = source.Requirements().faces
+        const bool primaryCellGraph = !source.Requirements().faces && options.edgeWeightMethod == 0 &&
+                                      owned.relations[size_t(MeshRelation::CellCells)];
+        auto graph = readerGraph
+                         ? detail::BuildReaderPartitionGraph(source, mpi)
+                     : source.Requirements().faces
                          ? detail::BuildNativePartitionGraph(source, mpi, options.edgeWeightMethod)
+                     : primaryCellGraph
+                         ? detail::BuildOwnedPrimaryCellGraph(owned, mpi)
                          : detail::BuildOwnedPartitionGraph(owned, mpi, options.edgeWeightMethod);
         auto targets = detail::PartitionNativeGraph(owned.spaces.at(EntityKind::Cell), mpi, std::move(graph), options);
         ReorderInput input;

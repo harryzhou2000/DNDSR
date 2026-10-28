@@ -10,6 +10,7 @@
 #include "Geom/Mesh/FieldTransfer.hpp"
 #include "Geom/Unstructured/ReaderPartitionGraph.hpp"
 #include "NativeMeshFacadeFixture.hpp"
+#include "NativePeriodicFixtures.hpp"
 
 namespace G = DNDS::Geom;
 namespace R = DNDS::Runtime;
@@ -360,6 +361,14 @@ TEST_CASE("Primary local reorder matches full facial graph permutation and final
                 for (I row = 0; row < actual.state->NumOwned(kind); ++row)
                     CHECK(actual.state->OriginalEntityId(kind, row) == reference.state->OriginalEntityId(kind, row));
             }
+            const auto actualView = actual.state->BorrowHostView();
+            const auto referenceView = reference.state->BorrowHostView();
+            for (I cell = 0; cell < actual.state->NumOwned(G::EntityKind::Cell); ++cell)
+            {
+                const auto lhs = actualView.CellCells(cell), rhs = referenceView.CellCells(cell);
+                REQUIRE(lhs.size() == rhs.size());
+                CHECK(std::equal(lhs.begin(), lhs.end(), rhs.begin()));
+            }
             if (!empty && mpi.size > 1 && parts.first == 1)
                 CHECK(actual.transfers.at(G::EntityKind::Cell).localOld2New[0] >= 3); // Remote vertex-only contact remains non-private.
             auto final = G::PrepareNativeMeshTopology(*actual.state, mpi);
@@ -374,6 +383,26 @@ TEST_CASE("Primary local reorder matches full facial graph permutation and final
         }
         CHECK_THROWS(primary->WithLocalPartitions({0, primary->NumOwned(G::EntityKind::Cell) + 1}));
         CHECK(G::detail::BuildPrimaryLocalCellNeighbors(*primary) == expectedGraph);
+    }
+}
+
+TEST_CASE("Periodic primary local reorder uses frame-aware facial adjacency")
+{
+    const DNDS::MPIInfo mpi(MPI_COMM_WORLD);
+    auto primary = G::ConstructNativeMesh(NativePeriodicFixtures::QuadraticTorus(mpi));
+    auto facial = G::PrepareNativeMeshTopology(*primary, mpi);
+    auto actual = G::NativeMeshTransition::ReorderLocalCells(*primary, mpi, 2, 1);
+    auto reference = G::NativeMeshTransition::ReorderLocalCells(*facial, mpi, 2, 1);
+    CHECK(actual.transfers.at(G::EntityKind::Cell).localOld2New ==
+          reference.transfers.at(G::EntityKind::Cell).localOld2New);
+    const auto actualView = actual.state->BorrowHostView();
+    const auto referenceView = reference.state->BorrowHostView();
+    for (I cell = 0; cell < actual.state->NumOwned(G::EntityKind::Cell); ++cell)
+    {
+        const auto lhs = actualView.CellCells(cell);
+        const auto rhs = referenceView.CellCells(cell);
+        REQUIRE(lhs.size() == rhs.size());
+        CHECK(std::equal(lhs.begin(), lhs.end(), rhs.begin()));
     }
 }
 

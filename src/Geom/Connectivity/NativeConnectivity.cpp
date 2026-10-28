@@ -162,7 +162,7 @@ namespace DNDS::Geom
         {
             auto &space = _spaces.at(root.kind);
             for (index row = 0; row < space.NumOwned(); ++row)
-                sets[size_t(root.nodeId)].push_back(space.LocalToGlobal(row));
+                sets[size_t(root.nodeId)].push_back(space.LocalToGlobalPinned(row));
         }
         GhostResult result;
         for (int level = 0; level <= tree.maxLevel; ++level)
@@ -198,10 +198,21 @@ namespace DNDS::Geom
                         if (global >= first && global - first < source.NumOwned())
                         {
                             const auto row = global - first;
-                            for (size_t slot = 0; slot < relation.RowSize(row); ++slot)
+                            if (relation.State() == Adj_PointToGlobal)
                             {
-                                const auto value = relation.ConvertedIndex(row, slot, Adj_PointToGlobal);
-                                if (value != UnInitIndex) output.push_back(value);
+                                const auto &view = relation._view.owned;
+                                const auto count = view.RowSize(size_t(row));
+                                const auto *values = count ? view.Row(size_t(row)) : nullptr;
+                                for (size_t slot = 0; slot < count; ++slot)
+                                    if (values[slot] != UnInitIndex) output.push_back(values[slot]);
+                            }
+                            else
+                            {
+                                for (size_t slot = 0; slot < relation.RowSize(row); ++slot)
+                                {
+                                    const auto value = relation.ConvertedIndex(row, slot, Adj_PointToGlobal);
+                                    if (value != UnInitIndex) output.push_back(value);
+                                }
                             }
                         }
                         else remote.push_back(global);
