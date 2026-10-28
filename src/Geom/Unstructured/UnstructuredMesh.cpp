@@ -203,8 +203,10 @@ namespace DNDS::Geom
     }
     void UnstructuredMesh::ConstructBndMesh(UnstructuredMesh &bMesh)
     {
+        std::shared_ptr<const UnstructuredMeshState> source;
         FieldTransferDetail::LocalStage(mpi, [&]
-                                        { DNDS_check_throw_info(HasNativeState(), "boundary extraction requires native mesh authority"); });
+                                        { DNDS_check_throw_info(HasNativeState(), "boundary extraction requires native mesh authority");
+                                          source = CurrentNativeState(); });
         FieldTransferDetail::LocalStage(mpi, [&]
                                         {
             int communicator = MPI_UNEQUAL;
@@ -212,14 +214,13 @@ namespace DNDS::Geom
             DNDS_check_throw_info(!versions.SameController(bMesh.versions) && bMesh.getDim() == getDim() - 1 &&
                                       (communicator == MPI_IDENT || communicator == MPI_CONGRUENT) && bMesh.versions.CanMutate(),
                                   "native boundary destination must be independent, idle and dimension/communicator compatible"); });
-        auto next = ExtractBoundary();
-        const auto state = next->CurrentNativeState();
+        auto extracted = NativeMeshExtraction::ExtractBoundary(*source, mpi);
+        const auto state = std::move(extracted.state);
         const auto nodes = state->Entities(EntityKind::Node);
         const auto &ancestry = state->Provenance()->sourceIds.at(EntityKind::Node);
         RelationGhostRoute route(nodes);
         Runtime::ArrayPair<index> parents{ancestry, route.TransferRows(nodes, ancestry, Runtime::ElementSchema::Arithmetic<index>())};
         std::vector<index> sourceToBoundary, boundaryToSource, cellParents;
-        std::shared_ptr<UnstructuredMeshState> prepared;
         FieldTransferDetail::LocalStage(mpi, [&]
                                         {
             std::unordered_map<index, index> sourceRows;
@@ -247,17 +248,15 @@ namespace DNDS::Geom
                 auto found = sourceRows.find(cellAncestry.View()(row, 0));
                 DNDS_check_throw_info(found != sourceRows.end(), "extracted boundary cell ancestry is not owned by its source");
                 cellParents[row] = found->second;
-            }
-            prepared = std::shared_ptr<UnstructuredMeshState>(new UnstructuredMeshState(*state)); });
+            } });
         // These vectors are setup-only compatibility caches. They do not
         // change the source query authority or invalidate retained reads.
         MeshMutationToken destination(&bMesh, bMesh.versions, Runtime::Change::All);
         destination.Commit();
-        prepared->BindPreparedEpoch(bMesh.versions);
-        bMesh._entityIdentity = next->_entityIdentity;
+        bMesh._entityIdentity = nodes._identity;
         bMesh.isPeriodic = state->BorrowHostView().IsPeriodic();
         bMesh.periodicInfo = state->BorrowHostView().Periodic();
-        bMesh._nativeState = std::move(prepared);
+        bMesh._nativeState = state->BindEpoch(bMesh.versions);
         bMesh._nativeSmoothing.reset();
         bMesh.node2parentNode.swap(boundaryToSource);
         bMesh.cell2parentCell.swap(cellParents);

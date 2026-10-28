@@ -2,29 +2,66 @@
 
 #include "Array.hpp"
 #include <cstring>
+#include <exception>
+#include <mutex>
 #include <optional>
 
 namespace DNDS::Runtime
 {
+    template <class Fill>
+    void FillKnownRows(size_t rows, bool parallel, Fill &&fill)
+    {
+        if (!parallel || rows < 4096)
+        {
+            for (size_t row = 0; row < rows; ++row)
+                fill(row);
+            return;
+        }
+        std::exception_ptr failure;
+#pragma omp parallel for schedule(static)
+        for (std::ptrdiff_t row = 0; row < static_cast<std::ptrdiff_t>(rows); ++row)
+            try
+            {
+                fill(size_t(row));
+            }
+            catch (...)
+            {
+#pragma omp critical(DNDS_FillKnownRowsFailure)
+                if (!failure)
+                    failure = std::current_exception();
+            }
+        if (failure)
+            std::rethrow_exception(failure);
+    }
+
     /// CPU setup for known row sizes: allocate the final table/CSR once and
     /// initialize it under one writer. Unlike incremental RowBuilder this needs
     /// no allocation/controller per row. Callbacks must not retain borrowed rows;
     /// a failed fill never publishes an output. Every size is queried once.
     template <class T, class Size, class Fill>
-    Array<T> BuildArrayRows(size_t rows, Size &&size, Fill &&fill, std::optional<size_t> width = {})
+    Array<T> BuildArrayRows(size_t rows, Size &&size, Fill &&fill, std::optional<size_t> width = {},
+                            bool parallel = false)
     {
+        if (width)
+        {
+            Array<T> result(RowLayout::Dense(rows, *width));
+            auto write = result.Write();
+            const auto view = write.View();
+            FillKnownRows(rows, parallel, [&](size_t row)
+                          {
+                DNDS_check_throw_info(size(row) == *width, "known table row width mismatch");
+                fill(row, view[row]); });
+            return result;
+        }
         std::vector<size_t> lengths(rows);
         for (size_t row = 0; row < rows; ++row)
-        {
             lengths[row] = size(row);
-            DNDS_check_throw_info(!width || lengths[row] == *width, "known table row width mismatch");
-        }
-        Array<T> result(width ? RowLayout::Dense(rows, *width) : RowLayout::Ragged(lengths));
+        Array<T> result(RowLayout::Ragged(lengths));
         {
             auto write = result.Write();
             const auto view = write.View();
-            for (size_t row = 0; row < rows; ++row)
-                fill(row, view[row]);
+            FillKnownRows(rows, parallel, [&](size_t row)
+                          { fill(row, view[row]); });
         }
         return result;
     }
@@ -53,6 +90,7 @@ namespace DNDS::Runtime
             std::vector<Slab> slabs;
             std::vector<std::byte *> rowPointers;
             std::vector<size_t> rowCapacity;
+            std::mutex allocationMutex;
 
             State(size_t n, size_t bytes, RowLayoutKind layout, size_t cap, Buffer values = {}, WriteAccess access = {})
                 : rows(n), elementBytes(bytes), capacity(cap), width(cap), kind(layout)
@@ -93,6 +131,10 @@ namespace DNDS::Runtime
                 constexpr size_t alignment = 64;
                 const size_t request = std::max(bytes, size_t(1));
                 const size_t wanted = std::max(slabBytes, request + alignment);
+                // Distinct rows can be filled by independent workers. The
+                // per-row pointers are private, but the slab bump frontier and
+                // slab vector are shared by all allocations.
+                std::lock_guard<std::mutex> lock(allocationMutex);
                 std::byte *pointer = nullptr;
                 if (!slabs.empty())
                 {

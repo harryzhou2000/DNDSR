@@ -1,5 +1,6 @@
 #pragma once
 
+#include "DNDS/Runtime/RowTransfer.hpp"
 #include "Geom/Access/RelationAccess.hpp"
 #include "Geom/Connectivity/MeshTopologyTypes.hpp"
 
@@ -57,7 +58,9 @@ namespace DNDS::Geom
         std::unordered_map<EntityKind, EntitySpace> _spaces;
         mutable std::unordered_map<AdjKind, Runtime::Array<index>, AdjKindHash> _fetchValues;
         void ValidateCollectively(const std::function<void()> &validate) const;
-        Runtime::Array<index> Fetch(const RelationReadAccess &relation, const std::vector<index> &globals) const;
+        Runtime::Array<index> Fetch(const RelationReadAccess &relation, const std::vector<index> &globals,
+                                    const Runtime::RowTransferPlan *reusedRoute = nullptr,
+                                    std::shared_ptr<Runtime::CommunicationContext> context = {}) const;
         static EntitySpace MakeSpace(EntityKind kind, index owned, const EntitySpace &anchor);
 
     public:

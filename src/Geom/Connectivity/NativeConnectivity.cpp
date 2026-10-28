@@ -101,7 +101,9 @@ namespace DNDS::Geom
         return found == _relations.end() ? nullptr : found->second;
     }
 
-    Runtime::Array<index> NativeConnectivity::Fetch(const RelationReadAccess &relation, const std::vector<index> &globals) const
+    Runtime::Array<index> NativeConnectivity::Fetch(const RelationReadAccess &relation, const std::vector<index> &globals,
+                                                    const Runtime::RowTransferPlan *reusedRoute,
+                                                    std::shared_ptr<Runtime::CommunicationContext> context) const
     {
         std::vector<Runtime::RowRequest> requests;
         ValidateCollectively([&]
@@ -122,15 +124,21 @@ namespace DNDS::Geom
                     _fetchValues.emplace(relation.Kind(), Runtime::BuildArrayRows<index>(size_t(relation.NumOwned()),
                         [&](size_t row) { return relation.RowSize(index(row)); }, [&](size_t row, auto output)
                         {
-                            for (size_t slot = 0; slot < output.size(); ++slot)
-                                output[slot] = relation.ConvertedIndex(index(row), slot, Adj_PointToGlobal);
-                        }));
+                            relation.ConvertRowTo(index(row), Adj_PointToGlobal, output.data());
+                        }, {}, true));
                 }
             }
-            for (size_t row = 0; row < globals.size(); ++row)
-                requests.push_back({relation.Source().Owner(globals[row]), relation.Source().OwnerLocalRow(globals[row]), row}); });
+            if (!reusedRoute)
+                for (size_t row = 0; row < globals.size(); ++row)
+                    requests.push_back({relation.Source().Owner(globals[row]),
+                                        relation.Source().OwnerLocalRow(globals[row]), row}); });
         const auto &values = _fetchValues.at(relation.Kind());
-        auto context = std::make_shared<Runtime::CommunicationContext>(_mpi.comm);
+        if (reusedRoute)
+        {
+            DNDS_check_throw_info(context, "reused native fetch route requires its communication context");
+            return Transfer(*reusedRoute, values, context);
+        }
+        context = std::make_shared<Runtime::CommunicationContext>(_mpi.comm);
         Runtime::RowTransferPlan route(context, size_t(relation.NumOwned()), globals.size(), requests,
                                        {relation.Source().Stamp(), relation.Target().Stamp()});
         return Transfer(route, values, context);
@@ -160,9 +168,13 @@ namespace DNDS::Geom
         std::vector<std::vector<index>> sets(size_t(tree.totalNodes));
         for (const auto &root : tree.levels.front())
         {
-            auto &space = _spaces.at(root.kind);
-            for (index row = 0; row < space.NumOwned(); ++row)
-                sets[size_t(root.nodeId)].push_back(space.LocalToGlobalPinned(row));
+            const auto &space = _spaces.at(root.kind);
+            auto &output = sets[size_t(root.nodeId)];
+            output.resize(size_t(space.NumOwned()));
+            const auto first = (*space._global)(_mpi.rank, 0);
+#pragma omp parallel for schedule(static)
+            for (std::ptrdiff_t row = 0; row < static_cast<std::ptrdiff_t>(output.size()); ++row)
+                output[size_t(row)] = first + index(row);
         }
         GhostResult result;
         for (int level = 0; level <= tree.maxLevel; ++level)
@@ -180,57 +192,199 @@ namespace DNDS::Geom
             }
             if (level == tree.maxLevel)
                 break;
-            for (const auto &entry : tree.levels[size_t(level + 1)])
+            const auto &hops = tree.levels[size_t(level + 1)];
+            struct PendingHop
             {
-                const auto &relation = *_relations.at(entry.hop);
-                auto &output = sets[size_t(entry.nodeId)];
+                size_t entry, relation;
                 std::vector<index> remote;
-                ValidateCollectively([&]
-                                     {
-                    relation.CheckActive();
-                    const auto &source = relation.Source();
-                    const auto first = (*source._global)(_mpi.rank, 0);
-                    // Local incidence is already retained and validated. A DSL
-                    // traversal needs its union, not another transferred copy
-                    // of every local row. Only remote parents need a route.
-                    for (auto global : sets[size_t(entry.parentId)])
+            };
+            std::vector<PendingHop> pending(hops.size());
+            std::vector<size_t> hopRelation(hops.size(), SIZE_MAX);
+            std::vector<const RelationReadAccess *> relations;
+            int valid = 1;
+            try
+            {
+                std::vector<uint8_t> seenNodes(size_t(tree.totalNodes), 0);
+                for (size_t hopEntry = 0; hopEntry < hops.size(); ++hopEntry)
+                {
+                    const auto &entry = hops[hopEntry];
+                    DNDS_check_throw_info(size_t(entry.nodeId) < seenNodes.size() && !seenNodes[size_t(entry.nodeId)],
+                                          "native ghost traversal repeats a child node in one level");
+                    seenNodes[size_t(entry.nodeId)] = 1;
+                    const auto &relation = *_relations.at(entry.hop);
+                    size_t relationSlot = 0;
+                    while (relationSlot < relations.size() && relations[relationSlot] != &relation)
+                        ++relationSlot;
+                    if (relationSlot == relations.size())
+                        relations.push_back(&relation);
+                    hopRelation[hopEntry] = relationSlot;
+                }
+                int invalid = 0;
+#pragma omp parallel for if (hops.size() >= 2) schedule(static) reduction(| : invalid)
+                for (long long hopEntry = 0; hopEntry < static_cast<long long>(hops.size()); ++hopEntry)
+                {
+                    try
                     {
-                        if (global >= first && global - first < source.NumOwned())
+                        const auto &entry = hops[size_t(hopEntry)];
+                        const auto &relation = *relations[hopRelation[size_t(hopEntry)]];
+                        relation.CheckActive();
+                        auto &candidate = pending[size_t(hopEntry)];
+                        candidate.entry = size_t(hopEntry);
+                        candidate.relation = hopRelation[size_t(hopEntry)];
+                        auto &output = sets[size_t(entry.nodeId)];
+                        const auto &parentValues = sets[size_t(entry.parentId)];
+                        const auto &sourceView = relation._view.owned;
+                        const size_t sourceElements = sourceView.offsets ? sourceView.offsets[sourceView.Rows()]
+                                                                         : sourceView.Rows() * sourceView.stride;
+                        const size_t averageRow = sourceView.Rows()
+                                                      ? std::max<size_t>(1, (sourceElements + sourceView.Rows() - 1) /
+                                                                                sourceView.Rows())
+                                                      : 1;
+                        // Each branch starts empty. Reserve for local and remote
+                        // expansions once; SortUnique later owns the exact shape.
+                        const size_t reserveRows = CheckedSize::Multiply(parentValues.size(),
+                                                                         CheckedSize::Multiply(averageRow, size_t(2)));
+                        output.reserve(CheckedSize::Add(output.size(), reserveRows));
+                        const auto &source = relation.Source();
+                        const auto first = (*source._global)(_mpi.rank, 0);
+                        // Local incidence is already retained and validated. A DSL
+                        // traversal needs its union, not another transferred copy
+                        // of every local row. Only remote parents need a route.
+                        for (auto global : parentValues)
                         {
-                            const auto row = global - first;
-                            if (relation.State() == Adj_PointToGlobal)
+                            if (global >= first && global - first < source.NumOwned())
                             {
-                                const auto &view = relation._view.owned;
-                                const auto count = view.RowSize(size_t(row));
-                                const auto *values = count ? view.Row(size_t(row)) : nullptr;
-                                for (size_t slot = 0; slot < count; ++slot)
-                                    if (values[slot] != UnInitIndex) output.push_back(values[slot]);
-                            }
-                            else
-                            {
-                                for (size_t slot = 0; slot < relation.RowSize(row); ++slot)
+                                const auto row = global - first;
+                                if (relation.State() == Adj_PointToGlobal)
                                 {
-                                    const auto value = relation.ConvertedIndex(row, slot, Adj_PointToGlobal);
-                                    if (value != UnInitIndex) output.push_back(value);
+                                    const auto &view = relation._view.owned;
+                                    const auto count = view.RowSize(size_t(row));
+                                    const auto *values = count ? view.Row(size_t(row)) : nullptr;
+                                    for (size_t slot = 0; slot < count; ++slot)
+                                        if (values[slot] != UnInitIndex)
+                                            output.push_back(values[slot]);
+                                }
+                                else
+                                {
+                                    for (size_t slot = 0; slot < relation.RowSize(row); ++slot)
+                                    {
+                                        const auto value = relation.ConvertedIndex(row, slot, Adj_PointToGlobal);
+                                        if (value != UnInitIndex)
+                                            output.push_back(value);
+                                    }
                                 }
                             }
+                            else
+                                candidate.remote.push_back(global);
                         }
-                        else remote.push_back(global);
-                    } });
-                int needsRemote = !remote.empty();
-                MPI_Allreduce(MPI_IN_PLACE, &needsRemote, 1, MPI_INT, MPI_MAX, _mpi.comm);
-                if (needsRemote)
+                    }
+                    catch (...)
+                    {
+                        invalid = 1;
+                    }
+                }
+                valid = !invalid;
+            }
+            catch (...)
+            {
+                valid = 0;
+            }
+            MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, _mpi.comm);
+            DNDS_check_throw_info(valid, "native ghost traversal local expansion failed on a rank");
+
+            std::vector<std::vector<index>> requested(relations.size());
+            for (const auto &hop : pending)
+            {
+                auto &target = requested[hop.relation];
+                target.insert(target.end(), hop.remote.begin(), hop.remote.end());
+            }
+            std::vector<MPI_int> active(relations.size(), 0);
+            for (size_t relationSlot = 0; relationSlot < relations.size(); ++relationSlot)
+            {
+                SortUnique(requested[relationSlot]);
+                active[relationSlot] = requested[relationSlot].empty() ? 0 : 1;
+            }
+            if (!active.empty())
+                MPI_Allreduce(MPI_IN_PLACE, active.data(), int(active.size()), MPI_INT, MPI_MAX, _mpi.comm);
+            std::vector<std::vector<size_t>> parentIds(relations.size());
+            for (const auto &hop : pending)
+                parentIds[hop.relation].push_back(hops[hop.entry].parentId);
+            for (auto &ids : parentIds)
+            {
+                std::sort(ids.begin(), ids.end());
+                ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+            }
+            struct FetchGroup
+            {
+                EntityKind sourceKind;
+                size_t parent;
+                std::vector<size_t> relationSlots;
+                std::shared_ptr<Runtime::CommunicationContext> context;
+                std::optional<Runtime::RowTransferPlan> route;
+            };
+            std::vector<FetchGroup> groups;
+            std::vector<size_t> relationGroup(relations.size(), SIZE_MAX);
+            for (size_t relationSlot = 0; relationSlot < relations.size(); ++relationSlot)
+                if (active[relationSlot])
                 {
-                    // All ranks participate when any peer needs a row, even
-                    // ranks with no requests of their own. An entirely local
-                    // hop needs neither a payload copy nor an empty route.
-                    auto rows = Fetch(relation, remote);
-                    auto read = rows.Read();
-                    auto view = read.View();
-                    for (size_t row = 0; row < view.Rows(); ++row)
-                        for (size_t slot = 0; slot < view.RowSize(row); ++slot)
-                            if (view(row, slot) != UnInitIndex)
-                                output.push_back(view(row, slot));
+                    const auto sourceKind = relations[relationSlot]->Source().Kind();
+                    const auto parent = parentIds[relationSlot].size() == 1 ? parentIds[relationSlot].front() : SIZE_MAX;
+                    size_t groupSlot = 0;
+                    if (parent != SIZE_MAX)
+                        while (groupSlot < groups.size() &&
+                               (groups[groupSlot].sourceKind != sourceKind || groups[groupSlot].parent != parent))
+                            ++groupSlot;
+                    else
+                        groupSlot = groups.size();
+                    if (groupSlot == groups.size())
+                        groups.push_back({sourceKind, parent, {}, {}, {}});
+                    groups[groupSlot].relationSlots.push_back(relationSlot);
+                    relationGroup[relationSlot] = groupSlot;
+                }
+            for (auto &group : groups)
+            {
+                const auto &model = *relations[group.relationSlots.front()];
+                const auto &source = model.Source();
+                std::vector<Runtime::RowRequest> requests;
+                requests.reserve(requested[group.relationSlots.front()].size());
+                for (size_t row = 0; row < requested[group.relationSlots.front()].size(); ++row)
+                    requests.push_back({source.Owner(requested[group.relationSlots.front()][row]),
+                                        source.OwnerLocalRow(requested[group.relationSlots.front()][row]), row});
+                group.context = std::make_shared<Runtime::CommunicationContext>(_mpi.comm);
+                group.route.emplace(group.context, size_t(model.NumOwned()),
+                                    requested[group.relationSlots.front()].size(), requests,
+                                    std::vector<Runtime::VersionStamp>{source.Stamp()});
+            }
+            std::vector<std::optional<Runtime::Array<index>>> fetched(relations.size());
+            std::vector<std::optional<Runtime::Array<index>::ReadLease>> fetchViews(relations.size());
+            for (size_t relationSlot = 0; relationSlot < relations.size(); ++relationSlot)
+                if (active[relationSlot])
+                {
+                    const auto &group = groups[relationGroup[relationSlot]];
+                    // Branches from one parent frontier reuse the owner route;
+                    // their typed payloads remain distinct.
+                    fetched[relationSlot].emplace(Fetch(*relations[relationSlot], requested[relationSlot],
+                                                        &*group.route, group.context));
+                    fetchViews[relationSlot].emplace(fetched[relationSlot]->Read());
+                }
+            for (const auto &hop : pending)
+            {
+                const auto &entry = hops[hop.entry];
+                auto &output = sets[size_t(entry.nodeId)];
+                if (!hop.remote.empty())
+                {
+                    const auto &fetchView = fetchViews[hop.relation]->View();
+                    for (auto global : hop.remote)
+                    {
+                        const auto found = std::lower_bound(requested[hop.relation].begin(),
+                                                            requested[hop.relation].end(), global);
+                        DNDS_check_throw_info(found != requested[hop.relation].end() && *found == global,
+                                              "native ghost traversal lost a remote source row");
+                        const auto row = size_t(found - requested[hop.relation].begin());
+                        for (size_t slot = 0; slot < fetchView.RowSize(row); ++slot)
+                            if (fetchView(row, slot) != UnInitIndex)
+                                output.push_back(fetchView(row, slot));
+                    }
                 }
                 SortUnique(output);
             }
@@ -729,9 +883,8 @@ namespace DNDS::Geom
                     values = Runtime::BuildArrayRows<index>(size_t(input.NumOwned()), [&](size_t row) { return input.RowSize(index(row)); },
                         [&](size_t row, auto output)
                         {
-                            for (size_t slot = 0; slot < output.size(); ++slot)
-                                output[slot] = input.ConvertedIndex(index(row), slot, Adj_PointToGlobal);
-                        }); });
+                            input.ConvertRowTo(index(row), Adj_PointToGlobal, output.data());
+                        }, {}, true); });
             NativeRelation owned(kind, result.spaces.at(kind.from), result.spaces.at(kind.to), std::move(*values));
             auto completed = owned.WithGhostRows(result.routes.at(kind.from));
             payloads.insert_or_assign(key, Payload{int(ordinal), completed.Owned(), *completed.Ghost()});

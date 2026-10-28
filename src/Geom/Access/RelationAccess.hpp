@@ -3,6 +3,8 @@
 #include "Geom/Access/EntitySpace.hpp"
 #include "Geom/Access/MeshAccess.hpp"
 #include "DNDS/Runtime/RowBuilder.hpp"
+#include <atomic>
+#include <limits>
 #include <optional>
 
 namespace DNDS::Geom
@@ -106,6 +108,18 @@ namespace DNDS::Geom
     private:
         /// Used only with a scope acquired from the same mesh by Current/RegisterMesh.
         RelationReadAccess(AdjKind kind, std::shared_ptr<MeshReadAccess> meshRead, EntitySpace source, EntitySpace target);
+        RelationReadAccess(AdjKind kind, EntitySpace source, EntitySpace target,
+                           MeshAdjState state, const Runtime::Array<index> &owned,
+                           const Runtime::Array<index> *ghost, bool contentsValidated)
+            : _source(std::move(source)), _target(std::move(target)),
+              _sourceLease(_source._versions.Read()), _targetLease(_target._versions.Read()),
+              _kind(kind), _state(state), _contentsValidated(contentsValidated)
+        {
+            _view.owned = Capture(owned, _owned);
+            if (ghost)
+                _view.ghost = Capture(*ghost, _ghost);
+            Validate();
+        }
 
     public:
         static RelationReadAccess Current(UnstructuredMesh &mesh, AdjKind kind, MeshReadRequirements requirements);
@@ -162,6 +176,14 @@ namespace DNDS::Geom
             DNDS_check_throw_info(slot < RowSize(row), "relation slot is out of range");
             return _view(size_t(row), slot);
         }
+        /// Row-wise setup view for builders that already retain this relation
+        /// and perform their own family/state checks. Element access here has
+        /// no per-slot public-API validation; do not expose it as solver access.
+        Runtime::PairReadView<index> View() const
+        {
+            CheckActive();
+            return _view;
+        }
         Entry ReadEntry(index row, size_t slot) const;
         /// Setup-only conversion against this exact target order. Global means
         /// current distributed rank-offset numbering, never a persistent ID.
@@ -170,14 +192,17 @@ namespace DNDS::Geom
         /// closure. No mapping/storage mutation or communication is performed.
         index ConvertedIndex(index row, size_t slot, MeshAdjState targetState,
                              bool allowUnavailable = true) const;
+        /// Convert one complete row under one retained-scope check. Setup
+        /// builders use this when they already allocated the destination row
+        /// from RowSize(); random debugging access remains item-wise.
+        void ConvertRowTo(index row, MeshAdjState targetState, index *output,
+                          bool allowUnavailable = true) const;
         std::vector<index> GlobalRow(index row) const
         {
             std::vector<index> result;
             result.reserve(RowSize(row));
-            for (size_t slot = 0; slot < RowSize(row); ++slot)
-            {
-                result.push_back(ConvertedIndex(row, slot, Adj_PointToGlobal));
-            }
+            result.resize(RowSize(row));
+            ConvertRowTo(row, Adj_PointToGlobal, result.data());
             return result;
         }
     };
@@ -224,6 +249,15 @@ namespace DNDS::Geom
         Runtime::Array<index> _owned;
         std::optional<Runtime::Array<index>> _ghost;
         MeshAdjState _state;
+        // Setup relations are immutable between explicit Array writes. The
+        // value version changes at write completion, so a fresh scope can reuse
+        // a prior successful scan while still detecting alias mutation.
+        struct ValidatedVersions
+        {
+            std::atomic<uint64_t> owned = std::numeric_limits<uint64_t>::max();
+            std::atomic<uint64_t> ghost = std::numeric_limits<uint64_t>::max();
+        };
+        mutable std::shared_ptr<ValidatedVersions> _validatedVersions = std::make_shared<ValidatedVersions>();
 
     public:
         NativeRelation(AdjKind kind, EntitySpace source, EntitySpace target,
@@ -243,7 +277,21 @@ namespace DNDS::Geom
         }
         const EntitySpace &Source() const { return _source; }
         const EntitySpace &Target() const { return _target; }
-        RelationReadAccess Read() const { return {_kind, _source, _target, _state, _owned, _ghost ? &*_ghost : nullptr}; }
+        RelationReadAccess Read() const
+        {
+            const auto ownedVersion = _owned.Version();
+            const bool current = _validatedVersions->owned.load(std::memory_order_acquire) == ownedVersion &&
+                                 (!_ghost || _validatedVersions->ghost.load(std::memory_order_acquire) == _ghost->Version());
+            RelationReadAccess result(_kind, _source, _target, _state, _owned,
+                                      _ghost ? &*_ghost : nullptr, current);
+            if (!current)
+            {
+                _validatedVersions->owned.store(ownedVersion, std::memory_order_release);
+                if (_ghost)
+                    _validatedVersions->ghost.store(_ghost->Version(), std::memory_order_release);
+            }
+            return result;
+        }
         /// Detached host conversion of every owned and present ghost row.
         /// Retains source/target identity, slot order and logical row shape.
         /// Both directions validate explicit state; even same-state conversion
