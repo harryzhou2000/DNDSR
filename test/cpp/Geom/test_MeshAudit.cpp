@@ -24,7 +24,7 @@ static ssp<UnstructuredMesh> ReadSquare(MPIInfo mpi)
     auto state = ReadNativeCGNS(mpi, (root / "data/mesh/UniformSquare_10.cgns").string(), 2,
                                 [](const std::string &) -> t_index
                                 { return 21; }, 0, {1, true});
-    return UnstructuredMesh::FromNative(mpi, NativeMeshTopology::Build(*state, mpi));
+    return UnstructuredMesh::FromNative(mpi, PrepareNativeMeshTopology(*state, mpi));
 }
 
 TEST_CASE("Audit batch 2: wall quadrature preserves square distances")

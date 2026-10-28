@@ -8,6 +8,7 @@
 #include "Geom/Mesh/Mesh_Helpers.hpp"
 #include "DNDS/Serializer/SerializerJSON.hpp"
 #include <fstream>
+#include <limits>
 namespace G = DNDS::Geom;
 namespace S = DNDS::Serializer;
 using I = DNDS::index;
@@ -109,8 +110,13 @@ TEST_CASE("Legacy primary JSON and H5 decode directly to native owned rows")
         for (auto partition : {S::ArrayGlobalOffset_Unknown, S::ArrayGlobalOffset_EvenSplit})
         {
             serializer->OpenFile(file, true);
-            auto state = G::NativeMeshLegacyArchive::Read(mpi, serializer, "mesh", partition);
+            auto owned = G::ReadCompatibleNativeMeshArchiveOwned(mpi, serializer, "mesh", partition);
             serializer->CloseFile();
+            CHECK_FALSE(owned.retainedRead);
+            for (const auto &[kind, space] : owned.spaces)
+                CHECK(space.NumGhost() == 0);
+            CHECK_NOTHROW(owned.coords->Write());
+            auto state = G::AssembleNativeMesh(mpi, std::move(owned), 1);
             CheckNative(*state, mpi);
         }
         MPI_Barrier(mpi.comm);
@@ -236,7 +242,7 @@ TEST_CASE("Native archive helper coordinates rank-local missing and malformed JS
         std::filesystem::remove_all(base + ".dir");
 }
 
-TEST_CASE("Historical legacy periodic elevation duplicate IDs reject without renumbering")
+TEST_CASE("Legacy periodic high-order import rejects explicitly duplicated node IDs without renumbering")
 {
     DNDS::MPIInfo mpi(MPI_COMM_WORLD);
     const auto root = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path();
@@ -246,29 +252,26 @@ TEST_CASE("Historical legacy periodic elevation duplicate IDs reject without ren
     auto source = G::ReadNativeMeshFromCGNS(mpi, 2, (root / "data/mesh/IV10_10.cgns").string(),
                                             G::PartitionOptions{}, G::FBC_Name_2_ID_Default, periodic);
     CHECK(source->NumNodeGlobal() == 100);
-    // Reproduce the historical ID policy independently, without retaining the
-    // retired elevation algorithm: old nodes keep sparse original IDs, while
-    // inserted nodes begin at the pruned O1 count (100), colliding with retained
-    // original IDs 100..108 from this real periodic fixture.
+    // The frozen legacy implementation produces unique compact IDs before and
+    // after elevation. Deliberately corrupt a valid snapshot; do not rely on a
+    // new-native fixture's ID bug to manufacture a supposed historical defect.
     auto native = G::NativeMeshRefinement::Elevate(*source->CurrentNativeState(), mpi).state;
     auto nativeFacade = G::UnstructuredMesh::FromNative(mpi, native);
-    const auto &ancestry = *native->Provenance();
-    auto read = ancestry.sourceIds.at(G::EntityKind::Node).Read();
     const I owned = native->NumOwned(G::EntityKind::Node);
-    I localNew = 0;
-    for (I row = 0; row < owned; ++row)
-        localNew += read.View().RowSize(size_t(row)) != 1;
-    I prefix = 0;
-    MPI_Exscan(&localNew, &prefix, 1, DNDS::DNDS_MPI_INDEX, MPI_SUM, mpi.comm);
-    if (mpi.rank == 0)
-        prefix = 0;
-    I inserted = 0;
     std::vector<I> local(size_t(owned), 0);
+    I minimum = std::numeric_limits<I>::max(), maximum = -1;
     for (I row = 0; row < owned; ++row)
     {
-        const auto parents = read.View()[size_t(row)];
-        local[size_t(row)] = parents.size() == 1 ? parents[0] : 100 + prefix + inserted++;
+        local[size_t(row)] = native->OriginalEntityId(G::EntityKind::Node, row);
+        minimum = std::min(minimum, local[size_t(row)]);
+        maximum = std::max(maximum, local[size_t(row)]);
     }
+    MPI_Allreduce(MPI_IN_PLACE, &minimum, 1, DNDS::DNDS_MPI_INDEX, MPI_MIN, mpi.comm);
+    MPI_Allreduce(MPI_IN_PLACE, &maximum, 1, DNDS::DNDS_MPI_INDEX, MPI_MAX, mpi.comm);
+    REQUIRE(minimum < maximum);
+    for (auto &id : local)
+        if (id == maximum)
+            id = minimum;
     int count = int(local.size());
     std::vector<int> counts(size_t(mpi.size)), offsets(size_t(mpi.size) + 1, 0);
     MPI_Allgather(&count, 1, MPI_INT, counts.data(), 1, MPI_INT, mpi.comm);

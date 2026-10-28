@@ -89,13 +89,13 @@ static std::shared_ptr<const NativeMeshState> Complete(std::shared_ptr<const Nat
         }
     data.relations[size_t(MeshRelation::CellFaceCells)] = Rows(other);
     data.requirements = FullRequirements();
-    return NativeMeshAssembler::Build(g_mpi, std::move(data), layers);
+    return AssembleNativeMesh(g_mpi, std::move(data), layers);
 }
 static ssp<UnstructuredMesh> ReadConfigured(const MeshConfig &cfg, int layers = 1)
 {
     AutoAppendName2ID names;
     auto state = ReadNativeCGNS(g_mpi, meshPath(cfg.file), cfg.dim, [&](const std::string &name)
-                                { return names(name); }, 0, {layers, true}, PeriodicOptions(cfg));
+                                { return names(name); }, 0, {layers, true}, PeriodicOptions(cfg), NativeSerialDistribution::ReaderOwned);
     NativePartitionOptions p;
     p.metisUfactor = 30;
     p.metisSeed = 42;
@@ -150,6 +150,37 @@ static void FaceIncidence(UnstructuredMesh &mesh)
             CHECK(v.GetFaceInfo(face).getElemType() == ef.type);
         }
     }
+}
+/// Check required membership directly from complete inverse rows, separately
+/// from reassembly equality. A missing boundary on BOTH publications must fail.
+/// Only locally stored rows are visited; there is no global-sized oracle table.
+static void CheckRequiredBoundaryCoverage(UnstructuredMesh &mesh)
+{
+    auto retained = mesh.AcquireRead(FullRequirements());
+    const auto view = retained.HostView();
+    const auto boundaries = mesh.Entities(EntityKind::Bnd);
+    auto requireStored = [&](const std::vector<I> &globals)
+    {
+        for (const auto global : globals)
+            if (global != UnInitIndex)
+            {
+                CAPTURE(global);
+                CHECK(boundaries.GlobalToLocal(global).has_value());
+            }
+    };
+    auto visitNode = [&](I node)
+    {
+        REQUIRE(node >= 0);
+        REQUIRE(node < view.NumNodeProc());
+        requireStored(Global(boundaries, view.NodeBoundaries(node)));
+    };
+    for (I boundary = 0; boundary < view.NumBnd(); ++boundary)
+        for (const auto node : view.BoundaryNodes(boundary))
+            visitNode(node);
+    for (I node = 0; node < view.NumNode(); ++node)
+        visitNode(node);
+    for (I face = 0; face < view.NumFace(); ++face)
+        requireStored(Global(boundaries, view.Relation(MeshRelation::FaceBoundaries, face)));
 }
 static std::array<AdjKind, size_t(MeshRelation::Count)> Bindings()
 {
@@ -300,17 +331,17 @@ TEST_CASE("Periodic: native output image count matches independent node-frame ke
     for(size_t row=0;row<output.coordinates.Rows();++row){tPoint p;for(int d=0;d<3;++d)p[d]=read.View()(row,size_t(d));actual.push_back(p);}
     auto order=[](const tPoint&a,const tPoint&b){return std::array<DNDS::real,3>{a[0],a[1],a[2]}<std::array<DNDS::real,3>{b[0],b[1],b[2]};};
     std::sort(expected.begin(),expected.end(),order);std::sort(actual.begin(),actual.end(),order);REQUIRE(expected.size()==actual.size());for(size_t j=0;j<actual.size();++j)CHECK(actual[j].isApprox(expected[j],1e-13)); })} TEST_CASE("Periodic: ordered incidence PBI and physical geometry survive native reassembly"){
-    FOR_EACH_MESH_CONFIG({if(!cfg.periodic)continue;auto data=NativeMeshAssembler::CaptureOwned(*m->CurrentNativeState(),g_mpi);auto next=NativeMeshAssembler::Build(g_mpi,std::move(data),1);
+    FOR_EACH_MESH_CONFIG({if(!cfg.periodic)continue;auto data=NativeMeshAssembler::CaptureOwned(*m->CurrentNativeState(),g_mpi);auto next=AssembleNativeMesh(g_mpi,std::move(data),1);
     auto old=m->AcquireRead(FullRequirements());auto fresh=next->Snapshot(R::Device::Host()).AcquireRead();auto a=old.HostView(),b=fresh.HostView();
     REQUIRE(a.NumFaceProc()==b.NumFaceProc());for(I f=0;f<a.NumFaceProc();++f){CHECK(Global(m->Entities(EntityKind::Node),a.FaceNodes(f))==Global(next->Entities(EntityKind::Node),b.FaceNodes(f)));auto ab=a.FaceNodePeriodicBits(f),bb=b.FaceNodePeriodicBits(f);REQUIRE(ab.size()==bb.size());for(size_t j=0;j<ab.size();++j)CHECK(uint8_t(ab[j])==uint8_t(bb[j]));} })} TEST_CASE("bnd2cell: independent boundary facet incidence on all mesh configs"){
     FOR_EACH_MESH_CONFIG({auto r=m->AcquireRead(FullRequirements());auto v=r.HostView();
     for(I boundary=0;boundary<v.NumBnd();++boundary){const auto bnodes=v.BoundaryNodes(boundary);const auto parents=v.BoundaryCells(boundary);REQUIRE(parents.size()==2);REQUIRE(parents[0]>=0);for(auto parent:parents)if(parent!=UnInitIndex){REQUIRE(parent>=0);REQUIRE(parent<v.NumCellProc());auto cone=v.CellNodes(parent);for(auto node:bnodes)CHECK(std::find(cone.begin(),cone.end(),node)!=cone.end());}} })} TEST_CASE("BuildGhostPrimary: sparse closure and all global relations survive native reassembly")
 {
-    FOR_EACH_MESH_CONFIG({auto next=NativeMeshAssembler::Build(g_mpi,NativeMeshAssembler::CaptureOwned(*m->CurrentNativeState(),g_mpi),1);
+    FOR_EACH_MESH_CONFIG({auto next=AssembleNativeMesh(g_mpi,NativeMeshAssembler::CaptureOwned(*m->CurrentNativeState(),g_mpi),1);
     for(auto kind:{EntityKind::Cell,EntityKind::Node,EntityKind::Face,EntityKind::Bnd}){const auto a=m->Entities(kind),b=next->Entities(kind);CHECK(a.NumOwned()==b.NumOwned());CHECK(a.NumGhost()==b.NumGhost());std::set<I>x,y;for(I row=a.NumOwned();row<a.NumLocal();++row)x.insert(a.LocalToGlobal(row));for(I row=b.NumOwned();row<b.NumLocal();++row)y.insert(b.LocalToGlobal(row));CHECK(x==y);}
     auto a=m->AcquireRead(FullRequirements());auto b=next->Snapshot(R::Device::Host()).AcquireRead();const auto av=a.HostView(),bv=b.HostView();const auto kinds=Bindings();
     for(size_t slot=0;slot<size_t(MeshRelation::Count);++slot)if(av.HasRelation(MeshRelation(slot))){const auto from=m->Entities(kinds[slot].from);for(I row=0;row<from.NumOwned();++row)CHECK(Global(m->Entities(kinds[slot].to),av.Relation(MeshRelation(slot),row))==Global(next->Entities(kinds[slot].to),bv.Relation(MeshRelation(slot),row)));}
-    FaceIncidence(*m); })
+    FaceIncidence(*m); CheckRequiredBoundaryCoverage(*m); })
 }
 
 static std::map<I, std::set<I>> LocalNodeStars(const UnstructuredMeshView &v, const EntitySpace &cells, const EntitySpace &nodes)
@@ -325,8 +356,15 @@ TEST_CASE("Benchmark: native inverse compose and face topology with verified res
 {
     const auto &cfg = g_configs[2];
     AutoAppendName2ID names;
-    auto source = ReadNativeCGNS(g_mpi, meshPath(cfg.file), cfg.dim, [&](const std::string &name)
-                                 { return names(name); }, 0, {1, true});
+    auto owned = ReadNativeCGNSOwned(g_mpi, meshPath(cfg.file), cfg.dim, [&](const std::string &name)
+                                     { return names(name); }, 0, {1, true}, PeriodicOptions(cfg), NativeSerialDistribution::ReaderOwned);
+    NativePartitionOptions partition;
+    partition.metisUfactor = 30;
+    partition.metisSeed = 42;
+    partition.metisNcuts = 1;
+    owned = NativeMeshPreparation::PartitionOwned(owned, g_mpi, partition).owned;
+    const auto recipe = DefaultNativeMeshGhostSpec(owned, 1, true);
+    auto source = NativeMeshAssembler::Build(g_mpi, std::move(owned), recipe);
     auto sourceMesh = UnstructuredMesh::FromNative(g_mpi, source);
     REQUIRE(sourceMesh->NumCellGlobal() == 20816);
     double inverseTime = 0, composeTime = 0, topologyTime = 0;
@@ -365,7 +403,7 @@ TEST_CASE("Benchmark: native inverse compose and face topology with verified res
         }
         MPI_Barrier(g_mpi.comm);
         const auto t2 = MPI_Wtime();
-        auto topology = NativeMeshTopology::Build(*source, g_mpi, true, false);
+        auto topology = PrepareNativeMeshTopology(*source, g_mpi, true, false);
         MPI_Barrier(g_mpi.comm);
         topologyTime += MPI_Wtime() - t2;
         CHECK(topology->NumGlobal(EntityKind::Cell) == 20816);
@@ -869,6 +907,11 @@ TEST_CASE("MultiLayerGhost: ghost counts increase with layer count")
         const std::array<I, 3> counts{mesh->NumCellGhost(), mesh->NumNodeGhost(), mesh->NumBndGhost()};
         for (size_t j = 0; j < 3; ++j)
             CHECK(counts[j] >= previous[j]);
+        if (g_mpi.size >= 2 && layers > 1)
+        {
+            CHECK(counts[0] > previous[0]);
+            CHECK(counts[1] > previous[1]);
+        }
         previous = counts;
     }
 }
@@ -936,8 +979,8 @@ static ssp<UnstructuredMesh> TinyEdges()
             w.View()(row, 0) = ElemInfo{Elem::Tri3, BC_ID_DEFAULT_WALL};
     }
     NativeMeshInput input{g_mpi, 3, cells, nodes, bnds, Rows(cr), Rows(br), xyz, ci, bi, {}};
-    auto state = NativeMeshBuilder::Build(std::move(input), {1, true});
-    state = NativeMeshTopology::Build(*state, g_mpi, true, true);
+    auto state = ConstructNativeMesh(std::move(input), {1, true});
+    state = PrepareNativeMeshTopology(*state, g_mpi, true, true);
     g_edges = UnstructuredMesh::FromNative(g_mpi, state);
     return g_edges;
 }

@@ -234,7 +234,7 @@ static void CheckFacadeTransitions(bool periodic)
     {
         auto candidate = G::NativeMeshAssembler::CaptureOwned(*mesh.CurrentNativeState(), mpi);
         candidate.spaces.at(G::EntityKind::Node) = G::EntitySpace::CreateOwned(G::EntityKind::Node, mpi, mesh.NumNode());
-        CHECK_THROWS(G::NativeMeshAssembler::Build(mpi, std::move(candidate)));
+        CHECK_THROWS(G::AssembleNativeMesh(mpi, std::move(candidate)));
     }
     CHECK(mesh.versions.CanMutate());
     mesh.ReorderLocalCells(2, 1);

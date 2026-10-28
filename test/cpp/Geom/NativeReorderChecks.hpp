@@ -59,7 +59,7 @@ namespace NativeReorderChecks
             partition.ghostLayers = layers;
             state = G::NativeMeshPreparation::Partition(*state, mpi, partition).state;
             if (edges)
-                state = G::NativeMeshTopology::Build(*state, mpi, false, true, layers);
+                state = G::PrepareNativeMeshTopology(*state, mpi, false, true, layers);
         }
         fixtures.emplace(key, state);
         return state;

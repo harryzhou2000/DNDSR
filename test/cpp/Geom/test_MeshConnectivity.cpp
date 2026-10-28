@@ -4,6 +4,7 @@
 #include "Geom/Mesh/MeshConnectivity.hpp"
 #include "Geom/Mesh/RelationAccessLegacy.hpp"
 #include "NativeStructuredInterpolation.hpp"
+#include "NativeConnectivityLegacyConditions.hpp"
 #include "Geom/Mesh/NativeMeshCGNS.hpp"
 #include "Geom/Mesh/Mesh.hpp"
 #include <array>
@@ -18,6 +19,11 @@ static DNDS::MPIInfo mpi;
 TEST_CASE("Inverse: 4-quad serial correctness")
 {
     auto cone = T::FourQuadCones(mpi);
+    CHECK(cone.Source().NumOwned() == (mpi.size == 1 ? 4 : mpi.rank < 2 ? 2
+                                                                        : 0));
+    CHECK(cone.Target().NumOwned() == (mpi.size == 1 ? 9 : mpi.rank == 0 ? 5
+                                                       : mpi.rank == 1   ? 4
+                                                                         : 0));
     auto inverse = G::NativeConnectivity::Inverse(cone.Read(), mpi);
     const std::vector<std::set<I>> expected{{0}, {0, 1}, {1}, {0, 2}, {0, 1, 2, 3}, {1, 3}, {2}, {2, 3}, {3}};
     const auto actual = T::GatherTiny(inverse.Read(), mpi);
@@ -71,10 +77,10 @@ TEST_CASE("ComposeFiltered: face-share filter (minShared=dim)")
         CHECK(actual[size_t(cell)] == expected[size_t(cell)]);
 }
 
-static std::shared_ptr<const G::NativeMeshState> importedGrid()
+static std::shared_ptr<const G::NativeMeshState> importedGrid(bool legacyPartition)
 {
-    const auto path = (std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path() / "data/mesh/UniformSquare_10.cgns");
-    return G::ReadNativeCGNS(mpi, path.string(), 2, G::FBC_Name_2_ID_Default, 0, {1, true});
+    namespace L = NativeConnectivityLegacyConditions;
+    return L::UniformSquare10(mpi, legacyPartition ? L::Placement::LegacyReaderMetis : L::Placement::NativeEven);
 }
 
 static std::array<I, 100> gridCells(const G::NativeMeshState &state)
@@ -104,7 +110,10 @@ static std::array<I, 100> gridCells(const G::NativeMeshState &state)
 
 TEST_CASE("Regression: Inverse matches independent lattice node stars on UniformSquare_10")
 {
-    auto state = importedGrid();
+    bool legacyPartition = true;
+    SUBCASE("legacy reader METIS KWAY seed42 ufactor30 ncuts1") { legacyPartition = true; }
+    SUBCASE("additional native direct even partition") { legacyPartition = false; }
+    auto state = importedGrid(legacyPartition);
     auto mesh = G::UnstructuredMesh::FromNative(mpi, state);
     auto cone = G::RelationReadAccess::Current(*mesh, G::Adj::Cell2Node, G::MeshReadRequirements::Primary());
     auto inverse = G::NativeConnectivity::Inverse(cone, mpi);
@@ -127,7 +136,10 @@ TEST_CASE("Regression: Inverse matches independent lattice node stars on Uniform
 
 TEST_CASE("Regression: ComposeFiltered matches independent lattice neighbors on UniformSquare_10")
 {
-    auto state = importedGrid();
+    bool legacyPartition = true;
+    SUBCASE("legacy reader METIS KWAY seed42 ufactor30 ncuts1") { legacyPartition = true; }
+    SUBCASE("additional native direct even partition") { legacyPartition = false; }
+    auto state = importedGrid(legacyPartition);
     auto mesh = G::UnstructuredMesh::FromNative(mpi, state);
     auto cone = G::RelationReadAccess::Current(*mesh, G::Adj::Cell2Node, G::MeshReadRequirements::Primary());
     auto inverse = G::NativeConnectivity::Inverse(cone, mpi);
@@ -156,7 +168,21 @@ TEST_CASE("Native registry cone management rejects duplicate and omitted definit
 {
     auto cone = T::FourQuadCones(mpi);
     G::NativeConnectivity registry(mpi);
+    CHECK(registry.RegisteredCount() == 0);
+    CHECK_FALSE(registry.Find(G::Adj::Cell2Node));
+    CHECK_FALSE(registry.Find(G::Adj::Node2Cell));
     registry.Register(cone.Read());
+    auto found = registry.Find(G::Adj::Cell2Node);
+    REQUIRE(found);
+    CHECK(found->Kind().from == G::EntityKind::Cell);
+    CHECK(found->Kind().to == G::EntityKind::Node);
+    CHECK(registry.Find(G::Adj::Cell2Node).get() == found.get());
+    auto faces = cone.Source().CreateSibling(G::EntityKind::Face, 0);
+    G::NativeRelation other(G::Adj::Face2Node, faces, cone.Target(),
+                            DNDS::Runtime::Array<I>(DNDS::Runtime::RowLayout::Ragged(std::vector<size_t>{})));
+    registry.Register(other.Read());
+    CHECK(registry.Find(G::Adj::Face2Node));
+    CHECK(registry.RegisteredCount() == 2);
     CHECK_THROWS(registry.Register(cone.Read()));
     auto direct = G::CompiledGhostTree::compile(G::GhostSpec{{{G::EntityKind::Cell, {G::Adj::Cell2Node}, G::EntityKind::Node}}});
     CHECK_NOTHROW(registry.Evaluate(direct));
@@ -173,6 +199,13 @@ TEST_CASE("Native registry support management preserves semantic inverse identit
     G::NativeConnectivity registry(mpi);
     registry.Register(cone.Read());
     registry.Register(inverse.Read());
+    auto found = registry.Find(inverse.Read().Kind());
+    REQUIRE(found);
+    CHECK(found->Kind().from == G::EntityKind::Node);
+    CHECK(found->Kind().to == G::EntityKind::Cell);
+    CHECK(registry.Find(inverse.Read().Kind()).get() == found.get());
+    CHECK(registry.RegisteredCount() == 2);
+    CHECK_FALSE(registry.Find(G::Adj::Bnd2Node));
     CHECK_THROWS(registry.Register(inverse.Read()));
     auto spec = G::CompiledGhostTree::compile(G::GhostSpec{{{G::EntityKind::Node, {inverse.Read().Kind()}, G::EntityKind::Cell}}});
     CHECK_NOTHROW(registry.Evaluate(spec));
@@ -180,8 +213,37 @@ TEST_CASE("Native registry support management preserves semantic inverse identit
 
 TEST_CASE("Native cone typed access validates family state and ordered companions")
 {
+    static_assert(!std::is_default_constructible_v<G::NativeRelation>);
+    static_assert(!std::is_default_constructible_v<G::RelationReadAccess>);
     auto cone = T::FourQuadCones(mpi);
     auto read = cone.Read();
+    std::vector<std::vector<G::NodePeriodicBits>> labels(size_t(read.NumOwned()), std::vector<G::NodePeriodicBits>(4));
+    for (size_t row = 0; row < labels.size(); ++row)
+        for (size_t slot = 0; slot < 4; ++slot)
+            labels[row][slot] = G::NodePeriodicBits{uint8_t((row + slot) % 8)};
+    G::RelationPeriodicBits valid(read, NativePeriodicFixtures::Rows(labels));
+    valid.Validate(read);
+    for (I row = 0; row < read.NumOwned(); ++row)
+        for (size_t slot = 0; slot < 4; ++slot)
+            CHECK(valid(row, slot) == labels[size_t(row)][slot]);
+    // Fixed-width and variable-width payloads expose the same typed relation
+    // contract; variant instantiation is not an alternate storage path.
+    auto faces = cone.Source().CreateSibling(G::EntityKind::Face, mpi.rank == 0 ? 1 : 0);
+    DNDS::Runtime::Array<I> fixed(DNDS::Runtime::RowLayout::Dense(size_t(faces.NumOwned()), 2));
+    if (faces.NumOwned())
+    {
+        auto write = fixed.Write();
+        write.View()(0, 0) = 0;
+        write.View()(0, 1) = DNDS::UnInitIndex;
+    }
+    G::NativeRelation fixedSupport(G::Adj::Face2Cell, faces, cone.Source(), fixed);
+    auto fixedRead = fixedSupport.Read();
+    if (faces.NumOwned())
+    {
+        CHECK(fixedRead.RowSize(0) == 2);
+        CHECK(fixedRead.ReadEntry(0, 0).global == 0);
+        CHECK(fixedRead.ReadEntry(0, 1).absent);
+    }
     CHECK_THROWS(G::RelationReadAccess(G::Adj::Face2Node, cone.Source(), cone.Target(), G::Adj_PointToGlobal, cone.Owned()));
     CHECK_THROWS(G::RelationReadAccess(G::Adj::Cell2Node, cone.Source(), cone.Target(), G::Adj_Unknown, cone.Owned()));
     DNDS::Runtime::Array<G::NodePeriodicBits> wrong(DNDS::Runtime::RowLayout::Dense(size_t(cone.Source().NumOwned()) + 1, 3));
@@ -189,6 +251,28 @@ TEST_CASE("Native cone typed access validates family state and ordered companion
     auto moved = std::move(read);
     CHECK_THROWS(read.Kind());
     CHECK(moved.Kind() == G::Adj::Cell2Node);
+}
+
+TEST_CASE("Native registry lookup retains the exact typed row lease after registry destruction")
+{
+    auto cone = T::FourQuadCones(mpi);
+    auto alias = cone.Owned();
+    std::shared_ptr<const G::RelationReadAccess> retained;
+    {
+        G::NativeConnectivity registry(mpi);
+        registry.Register(cone.Read());
+        retained = registry.Find(G::Adj::Cell2Node);
+        REQUIRE(retained);
+    }
+    if (alias.Rows())
+        CHECK_THROWS(alias.Write());
+    for (I row = 0; row < retained->NumOwned(); ++row)
+    {
+        CHECK(retained->RowSize(row) == 4);
+        CHECK(retained->GlobalRow(row).size() == 4);
+    }
+    retained.reset();
+    CHECK_NOTHROW(alias.Write());
 }
 
 TEST_CASE("Native support has explicit sorted entity semantics independent of node image companions")

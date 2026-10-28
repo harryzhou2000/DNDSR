@@ -247,6 +247,70 @@ TEST_CASE("Native ghost publication agrees complete same-level relation schedule
     }
 }
 
+TEST_CASE("Exact payload aliases preserve named descriptors with rank-local alias differences")
+{
+    const auto mpi = MPI();
+    auto fixture = Fixture();
+    const auto &base = fixture->cellNodes;
+    auto key = [&](const char *name)
+    {
+        auto result = G::Adj::Cell2Node;
+        result.path = result.Path();
+        result.selection = G::RelationSelection::Incidence;
+        result.order = G::RelationOrder::Topological;
+        result.periodic = G::RelationPeriodicPolicy::EntityIdentity;
+        result.semanticName = name;
+        result.semanticVersion = 1;
+        return result;
+    };
+    const auto a = key("alias.a"), b = key("alias.b"), c = key("alias.c"),
+               d = key("alias.d"), e = key("alias.e");
+    auto independent = mpi.rank % 2 ? base.Owned().Clone() : base.Owned();
+    auto reversed = base.Owned().Clone();
+    {
+        auto write = reversed.Write();
+        auto row = write.View()[0];
+        std::reverse(row.begin(), row.end());
+    }
+    G::NativeRelation first(a, base.Source(), base.Target(), base.Owned());
+    G::NativeRelation second(b, base.Source(), base.Target(), independent);
+    G::NativeRelation third(c, base.Source(), base.Target(), base.Owned());
+    G::NativeRelation fourth(d, base.Source(), base.Target(), reversed);
+    // Every rank has a cache hit, but on different prior transfers. Reusing
+    // each local hit would silently give the ghost its donor's wrong row.
+    G::NativeRelation fifth(e, base.Source(), base.Target(), mpi.rank % 2 ? reversed : base.Owned());
+    G::NativeConnectivity setup(mpi);
+    setup.Register(first.Read());
+    setup.Register(second.Read());
+    setup.Register(third.Read());
+    setup.Register(fourth.Read());
+    setup.Register(fifth.Read());
+    G::GhostResult discovery;
+    if (mpi.size > 1)
+        discovery.ghostIndices[G::EntityKind::Cell].push_back((mpi.rank + 1) % mpi.size);
+    const auto result = setup.BuildGhosted(discovery);
+    const auto reference = base.Read();
+    for (const auto &descriptor : {a, b, c, d, e})
+    {
+        const auto &relation = result.relations.at(descriptor);
+        CHECK(relation.Kind() == descriptor);
+        const auto read = relation.Read();
+        auto expected = [&](I donor)
+        {
+            std::vector<I> row{4 * donor, 4 * donor + 1, 4 * donor + 2, 4 * donor + 3};
+            if (descriptor == d || (descriptor == e && donor % 2))
+                std::reverse(row.begin(), row.end());
+            return row;
+        };
+        CHECK(read.GlobalRow(0) == expected(mpi.rank));
+        if (mpi.size > 1)
+        {
+            const auto donor = I((mpi.rank + 1) % mpi.size);
+            CHECK(read.GlobalRow(1) == expected(donor));
+        }
+    }
+}
+
 TEST_CASE("Native 3D edge interpolation retains four-parent incidence and empty owners")
 {
     auto mpi = MPI();
@@ -439,7 +503,7 @@ TEST_CASE("Native periodic distributed interpolation preserves owner frames and 
     periodic.frames.translation[2].map() = G::tPoint{0, 10, 0};
     const auto path = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path() / "data/mesh/IV10_10.cgns";
     auto state = G::ReadNativeCGNS(mpi, path.string(), 2, G::FBC_Name_2_ID_Default, 0, {1, true}, periodic);
-    state = G::NativeMeshTopology::Build(*state, mpi);
+    state = G::PrepareNativeMeshTopology(*state, mpi);
     auto mesh = G::UnstructuredMesh::FromNative(mpi, state);
     auto run = [&]
     {

@@ -38,6 +38,26 @@
 #include <hdf5.h>
 #include <unistd.h>
 
+TEST_CASE("Existing Euler configurations retain full mesh audits when new keys are absent")
+{
+    using Configuration = DNDS::Euler::EulerSolver<DNDS::Euler::NS>::Configuration;
+    Configuration original(DNDS::Euler::getNVars(DNDS::Euler::NS));
+    nlohmann::ordered_json input;
+    original.ReadWriteJson(input, DNDS::Euler::getNVars(DNDS::Euler::NS), false);
+    auto &meshInput = input.at("dataIOControl");
+    meshInput.erase("meshAuditPersistentIdentity");
+    meshInput.erase("meshAuditClosure");
+    Configuration restored(DNDS::Euler::getNVars(DNDS::Euler::NS));
+    restored.ReadWriteJson(input, DNDS::Euler::getNVars(DNDS::Euler::NS), true);
+    CHECK(restored.dataIOControl.meshAuditPersistentIdentity);
+    CHECK(restored.dataIOControl.meshAuditClosure);
+    meshInput["meshAuditPersistentIdentity"] = false;
+    meshInput["meshAuditClosure"] = false;
+    restored.ReadWriteJson(input, DNDS::Euler::getNVars(DNDS::Euler::NS), true);
+    CHECK_FALSE(restored.dataIOControl.meshAuditPersistentIdentity);
+    CHECK_FALSE(restored.dataIOControl.meshAuditClosure);
+}
+
 using namespace DNDS;
 using namespace DNDS::Euler;
 
@@ -1093,7 +1113,7 @@ TEST_CASE("Native Euler H5 restarts preserve sparse high Cell IDs and selected v
         }
         input.ids[Geom::EntityKind::Cell] = std::move(ids);
         input.identity = {}; // This test creates a new ID domain from explicit runtime payloads.
-        auto mesh = Geom::UnstructuredMesh::FromNative(g_mpi, Geom::NativeMeshAssembler::Build(g_mpi, std::move(input)));
+        auto mesh = Geom::UnstructuredMesh::FromNative(g_mpi, Geom::AssembleNativeMesh(g_mpi, std::move(input)));
         Serializer::SerializerFactory factory("H5");
         Geom::SerializeMesh(*mesh, archive, factory);
     }
@@ -1299,7 +1319,7 @@ TEST_CASE("Euler archived mesh setup refreshes loaded wall vectors after actual 
         auto source = Geom::ReadNativeCGNS(g_mpi, root + "/data/mesh/Uniform_3x3_wall.cgns", 2,
                                            [](const std::string &)
                                            { return Geom::BC_ID_DEFAULT_WALL; });
-        source = Geom::NativeMeshTopology::Build(*source, g_mpi);
+        source = Geom::PrepareNativeMeshTopology(*source, g_mpi);
         auto mesh = Geom::UnstructuredMesh::FromNative(g_mpi, source);
         DNDS::real minimum = DNDS::veryLargeReal;
         for (DNDS::index node = 0; node < mesh->NumNode(); ++node)

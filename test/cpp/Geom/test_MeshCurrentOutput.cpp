@@ -43,7 +43,7 @@ static ssp<UnstructuredMesh> CurrentOutputFixture(const MPIInfo &mpi)
     AutoAppendName2ID names;
     auto state = ReadNativeCGNS(mpi, (root / "data/mesh/IV10_10.cgns").string(), 2, [&](const std::string &name)
                                 { return names(name); }, 0, {3, true}, periodic);
-    return UnstructuredMesh::FromNative(mpi, NativeMeshTopology::Build(*state, mpi));
+    return UnstructuredMesh::FromNative(mpi, PrepareNativeMeshTopology(*state, mpi));
 }
 
 static std::vector<double> ReadCurrentOutputDataset(hid_t file, const char *name)
@@ -265,7 +265,7 @@ TEST_CASE("Native serial and distributed VTU and Tecplot preserve rows and perio
         const bool periodic = scenario % 2;
         const int flag = scenario / 2;
         const int readerRank = mpi.size - 1;
-        auto mesh = periodic ? UnstructuredMesh::FromNative(mpi, NativeMeshBuilder::Build(NativePeriodicFixtures::TwoCells(mpi), {1, true}))
+        auto mesh = periodic ? UnstructuredMesh::FromNative(mpi, ConstructNativeMesh(NativePeriodicFixtures::TwoCells(mpi), {1, true}))
                              : OverlapTest::BuildNativeFixture(mpi).mesh;
         const auto stamp = mesh->versions.Stamp();
         auto read = mesh->AcquireRead();
@@ -411,7 +411,7 @@ TEST_CASE("CGNS output rejects a globally empty native mesh before file creation
     auto nodes = EntitySpace::CreateOwned(EntityKind::Node, mpi, 0);
     auto cells = nodes.CreateSibling(EntityKind::Cell, 0);
     auto boundaries = nodes.CreateSibling(EntityKind::Bnd, 0);
-    auto mesh = UnstructuredMesh::FromNative(mpi, NativeMeshBuilder::Build(
+    auto mesh = UnstructuredMesh::FromNative(mpi, ConstructNativeMesh(
                                                       {mpi, 2, cells, nodes, boundaries, R::Array<DNDS::index>(R::RowLayout::Dense(0, 4)), R::Array<DNDS::index>(R::RowLayout::Dense(0, 2)), R::Array<DNDS::real>(R::RowLayout::Dense(0, 3)), R::Array<ElemInfo>(R::RowLayout::Dense(0, 1)), R::Array<ElemInfo>(R::RowLayout::Dense(0, 1)), {}}));
     const auto stamp = mesh->versions.Stamp();
     CHECK_THROWS(mesh->PrintMeshCGNS("/unused/native-empty.cgns", {}, {}));
@@ -453,7 +453,7 @@ TEST_CASE("Native CGNS output round trips independently owned nodes and empty ra
             }
         }
     }
-    auto mesh = UnstructuredMesh::FromNative(mpi, NativeMeshBuilder::Build(
+    auto mesh = UnstructuredMesh::FromNative(mpi, ConstructNativeMesh(
                                                       {mpi, 2, cells, nodes, boundaries, cellNodes, boundaryNodes, coords, cellInfo, boundaryInfo, {}}, {1, true}));
     auto stamp = mesh->versions.Stamp();
     auto held = mesh->AcquireRead();
@@ -503,7 +503,7 @@ TEST_CASE("Native primary compatibility archive streams payloads including bound
     const MPIInfo mpi(MPI_COMM_WORLD);
     for (int scenario = 0; scenario < 3; ++scenario)
     {
-        auto mesh = scenario == 1 ? UnstructuredMesh::FromNative(mpi, NativeMeshBuilder::Build(NativePeriodicFixtures::TwoCells(mpi), {2, true}))
+        auto mesh = scenario == 1 ? UnstructuredMesh::FromNative(mpi, ConstructNativeMesh(NativePeriodicFixtures::TwoCells(mpi), {2, true}))
                                   : OverlapTest::BuildNativeFixture(mpi).mesh;
         if (scenario == 2)
             mesh = mesh->ExtractBoundary(); // 1D native mesh with durable ancestry.

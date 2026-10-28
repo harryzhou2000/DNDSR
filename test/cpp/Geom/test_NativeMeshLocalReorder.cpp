@@ -8,6 +8,8 @@
 #include "Geom/Mesh/Mesh_CellPermutation.hpp"
 #include "Geom/Mesh/EntityField.hpp"
 #include "Geom/Mesh/FieldTransfer.hpp"
+#include "Geom/Unstructured/ReaderPartitionGraph.hpp"
+#include "NativeMeshFacadeFixture.hpp"
 
 namespace G = DNDS::Geom;
 namespace R = DNDS::Runtime;
@@ -36,7 +38,7 @@ namespace
         }
         return R::Array<I>::FromSharedStorage(builder.Commit());
     }
-    std::shared_ptr<const G::NativeMeshState> Fixture(const DNDS::MPIInfo &mpi, bool empty)
+    std::shared_ptr<const G::NativeMeshState> Fixture(const DNDS::MPIInfo &mpi, bool empty, bool primaryOnly = false)
     {
         const bool active = !empty || mpi.rank == 0;
         const I base = 12 * mpi.rank;
@@ -71,8 +73,10 @@ namespace
                 boundary.View()(row, 0) = {G::Elem::Line2, 24};
         }
         G::NativeMeshInput input{mpi, 2, cells, nodes, boundaries, Rows(cones), Rows(bnd), points, info, bndInfo};
-        auto primary = G::NativeMeshBuilder::Build(std::move(input), {1, true});
-        auto topology = G::NativeMeshTopology::Build(*primary, mpi);
+        auto primary = G::ConstructNativeMesh(std::move(input), {1, true});
+        if (primaryOnly)
+            return primary;
+        auto topology = G::PrepareNativeMeshTopology(*primary, mpi);
         auto owned = G::NativeMeshAssembler::CaptureOwned(*topology, mpi);
         owned.nodeWallDist.emplace(R::RowLayout::Dense(points.Rows(), 3));
         {
@@ -106,7 +110,7 @@ namespace
         for (size_t row = 0; row < cones.size(); ++row)
             ancestry[row] = {9000000000000LL + 5 * mpi.rank + I(row)};
         owned.provenance->sourceIds.emplace(G::EntityKind::Cell, Rows(ancestry));
-        return G::NativeMeshAssembler::Build(mpi, std::move(owned));
+        return G::AssembleNativeMesh(mpi, std::move(owned));
     }
 
     void CheckRows(const G::NativeMeshState &before, const G::NativeMeshState &after,
@@ -255,7 +259,9 @@ TEST_CASE("Native local reorder shares permutation semantics and preserves curre
             std::vector<std::vector<I>> full;
             if (!empty || mpi.rank == 0)
             {
-                graph = {{1}, {2, 0}, {3, 1}, {2}, {}};
+                // Setup reordering uses sorted unique neighbors, independently
+                // of the face slot order checked below by CheckRows.
+                graph = {{1}, {0, 2}, {1, 3}, {2}, {}};
                 const I contact = (!empty && mpi.size > 1) ? 5 : 4;
                 full = {{1, contact}, {0, 2}, {1, 3}, {2}, {contact == 4 ? 0 : 5}};
             }
@@ -312,6 +318,150 @@ TEST_CASE("Native facade local reorder validates inputs and publishes only after
         for (I row = mesh->LocalPartStart(part); row < mesh->LocalPartEnd(part); ++row)
             for (auto other : mesh->LocalCellNeighbors()[size_t(row)])
                 CHECK((other >= mesh->LocalPartStart(part) && other < mesh->LocalPartEnd(part)));
+}
+
+TEST_CASE("Primary local reorder matches full facial graph permutation and final partition graph")
+{
+    const DNDS::MPIInfo mpi(MPI_COMM_WORLD);
+    for (bool empty : {false, true})
+    {
+        const auto primary = Fixture(mpi, empty, true);
+        const auto facial = G::PrepareNativeMeshTopology(*primary, mpi);
+        auto expectedGraph = facial->BuildLocalCellNeighbors();
+        for (auto &row : expectedGraph)
+        {
+            std::sort(row.begin(), row.end());
+            row.erase(std::unique(row.begin(), row.end()), row.end());
+        }
+        CHECK(G::detail::BuildPrimaryLocalCellNeighbors(*primary) == expectedGraph);
+        for (const auto &parts : {std::pair<int, int>{1, 1}, {2, 1}, {2, 2}})
+        {
+            CAPTURE(empty);
+            CAPTURE(parts.first);
+            CAPTURE(parts.second);
+            auto actual = G::NativeMeshTransition::ReorderLocalCells(*primary, mpi, parts.first, parts.second);
+            auto reference = G::NativeMeshTransition::ReorderLocalCells(*facial, mpi, parts.first, parts.second);
+            CHECK(actual.transfers.at(G::EntityKind::Cell).localOld2New == reference.transfers.at(G::EntityKind::Cell).localOld2New);
+            CHECK(actual.state->MeshNamespace() == primary->MeshNamespace());
+            CHECK(actual.state->IdHighWater() == primary->IdHighWater());
+            CHECK_FALSE(actual.state->HasEntities(G::EntityKind::Face));
+            CHECK_FALSE(actual.state->Requirements().faces);
+            CHECK(actual.state->LocalCellNeighbors().empty());
+            CHECK(actual.state->NLocalParts() == reference.state->NLocalParts());
+            for (int part = 0; part < actual.state->NLocalParts(); ++part)
+            {
+                CHECK(actual.state->LocalPartStart(part) == reference.state->LocalPartStart(part));
+                CHECK(actual.state->LocalPartEnd(part) == reference.state->LocalPartEnd(part));
+            }
+            for (auto kind : {G::EntityKind::Cell, G::EntityKind::Node, G::EntityKind::Bnd})
+            {
+                CHECK(actual.sourceSpaces.at(kind).SameOrder(primary->Entities(kind)));
+                REQUIRE(actual.state->NumOwned(kind) == reference.state->NumOwned(kind));
+                for (I row = 0; row < actual.state->NumOwned(kind); ++row)
+                    CHECK(actual.state->OriginalEntityId(kind, row) == reference.state->OriginalEntityId(kind, row));
+            }
+            if (!empty && mpi.size > 1 && parts.first == 1)
+                CHECK(actual.transfers.at(G::EntityKind::Cell).localOld2New[0] >= 3); // Remote vertex-only contact remains non-private.
+            auto final = G::PrepareNativeMeshTopology(*actual.state, mpi);
+            auto finalReference = G::PrepareNativeMeshTopology(*reference.state, mpi);
+            CHECK(final->LocalCellNeighbors() == finalReference->LocalCellNeighbors());
+            CHECK(final->NLocalParts() == actual.state->NLocalParts());
+            for (int part = 0; part < final->NLocalParts(); ++part)
+            {
+                CHECK(final->LocalPartStart(part) == actual.state->LocalPartStart(part));
+                CHECK(final->LocalPartEnd(part) == actual.state->LocalPartEnd(part));
+            }
+        }
+        CHECK_THROWS(primary->WithLocalPartitions({0, primary->NumOwned(G::EntityKind::Cell) + 1}));
+        CHECK(G::detail::BuildPrimaryLocalCellNeighbors(*primary) == expectedGraph);
+    }
+}
+
+TEST_CASE("Local cell reorder accepts padded combined IDs and retains noncell payload after source release")
+{
+    const DNDS::MPIInfo mpi(MPI_COMM_WORLD);
+    const bool empty = mpi.size > 1 && mpi.rank == 0;
+    auto input = NativeFacadeFixture::Make(mpi, false, empty);
+    const auto ownedNodes = input.spaces.at(G::EntityKind::Node);
+    std::vector<I> ghostNodes;
+    if (empty)
+        ghostNodes = {0};
+    else if (mpi.size > 2)
+    {
+        const int owner = mpi.rank == mpi.size - 1 ? 1 : mpi.rank + 1;
+        ghostNodes = {3 * (owner - 1)};
+    }
+    auto nodes = ownedNodes.WithGhosts(ghostNodes);
+    input.spaces.at(G::EntityKind::Node) = nodes;
+    if (!ghostNodes.empty())
+    {
+        input.data.coords->ghost = R::Array<DNDS::real>(R::RowLayout::Dense(1, 3));
+        input.data.nodeWallDist->ghost = R::Array<DNDS::real>(R::RowLayout::Dense(1, 3));
+        {
+            auto coords = input.data.coords->ghost.Write(), wall = input.data.nodeWallDist->ghost.Write();
+            const auto local = size_t(ghostNodes[0] % 3);
+            const DNDS::real points[3][3]{{0, 0, 0}, {1, 0, 0}, {1, 1, 0}};
+            for (size_t component = 0; component < 3; ++component)
+            {
+                coords.View()(0, component) = points[local][component];
+                wall.View()(0, component) = component == 0 ? DNDS::real(1 + local) : component == 1 ? 2.
+                                                                                                    : 0.;
+            }
+        }
+        for (auto relation : {G::MeshRelation::NodeCells, G::MeshRelation::NodeBoundaries})
+            input.data.relations[size_t(relation)]->ghost = Rows({{}});
+    }
+    // Every ID family uses a genuinely padded combined owned/ghost table.
+    // Rank zero exercises a zero-length owned prefix of a nonempty allocation.
+    for (const auto &[kind, space] : input.spaces)
+    {
+        R::Array<I> ids(R::RowLayout::Dense(size_t(space.NumLocal()), 1, 3));
+        {
+            auto write = ids.Write();
+            for (I row = 0; row < space.NumLocal(); ++row)
+                write.View()(size_t(row), 0) = 10000 + 17 * space.LocalToGlobal(row) + I(kind);
+        }
+        input.ids.at(kind) = std::move(ids);
+    }
+    auto coordinateAlias = input.data.coords->owned;
+    const auto *coordinateData = coordinateAlias.Read().View().data;
+    auto source = G::NativeMeshState::FromNative(mpi, input.data, input.spaces, input.ids, NativeFacadeFixture::Requirements());
+    CHECK(source->NumGhost(G::EntityKind::Node) == I(ghostNodes.size()));
+    CHECK(input.ids.at(G::EntityKind::Node).Layout().Stride() == 3);
+    if (empty)
+    {
+        CHECK(source->NumOwned(G::EntityKind::Node) == 0);
+        CHECK(source->NumGhost(G::EntityKind::Node) == 1);
+    }
+    auto result = G::NativeMeshTransition::ReorderLocalCells(*source, mpi);
+    CHECK(result.state->MeshNamespace() == source->MeshNamespace());
+    CHECK(result.state->IdHighWater() == source->IdHighWater());
+    for (const auto &[kind, space] : input.spaces)
+    {
+        REQUIRE(result.state->NumOwned(kind) == space.NumOwned());
+        for (I row = 0; row < space.NumOwned(); ++row)
+            CHECK(result.state->OriginalEntityId(kind, row) == 10000 + 17 * space.LocalToGlobal(row) + I(kind));
+    }
+    // The unused source ghost is deliberately omitted by fresh assembly.
+    CHECK(result.state->NumGhost(G::EntityKind::Node) == 0);
+    {
+        auto retained = result.state->Snapshot(R::Device::Host()).AcquireRead();
+        auto retainedIds = result.state->ReadOriginalEntityIds(G::EntityKind::Node);
+        const auto view = retained.HostView();
+        if (!empty)
+            CHECK(view.Coord(0).data() == coordinateData);
+        source.reset();
+        result.state.reset();
+        result.sourceSpaces.clear();
+        result.transfers.clear();
+        CHECK_THROWS(coordinateAlias.Write()); // No source/read of this alias remains: the result scope owns protection.
+        for (I row = 0; row < view.NumNode(); ++row)
+        {
+            CHECK(retainedIds->View()(size_t(row), 0) == 10000 + 17 * nodes.LocalToGlobal(row) + I(G::EntityKind::Node));
+            CHECK(view.NodeWallDist(row) == G::tPoint{1 + DNDS::real(row), 2, 0});
+        }
+    }
+    CHECK_NOTHROW(coordinateAlias.Write());
 }
 
 TEST_CASE("Shared local partition helper handles disconnected empty and singleton face graphs")

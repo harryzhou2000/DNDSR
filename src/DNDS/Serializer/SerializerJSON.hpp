@@ -22,6 +22,9 @@
 namespace DNDS::Serializer
 {
     /// @brief Per-rank JSON file serializer; each MPI rank writes its own .json file.
+    /// It also supports an in-memory DOM through CreatePath without opening a
+    /// file; byte-segment operations follow file read/write mode only when a
+    /// backing file is open.
     class SerializerJSON : public SerializerBase
     {
         std::fstream fileStream;

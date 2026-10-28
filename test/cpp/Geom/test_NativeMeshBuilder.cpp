@@ -2,6 +2,9 @@
 #include "doctest.h"
 #include "Geom/Mesh/NativeMeshBuilder.hpp"
 #include "DNDS/Runtime/RowBuilder.hpp"
+#include "Geom/Transition/NativeMeshAssembler.hpp"
+#include "Geom/Connectivity/NativeMeshTopology.hpp"
+#include "Geom/Transition/NativeMeshTransition.hpp"
 #include <set>
 
 namespace G = DNDS::Geom;
@@ -86,6 +89,86 @@ namespace
     }
 }
 
+TEST_CASE("Owned primary redistribution and face construction finalize once with the supplied boundary ring")
+{
+    const auto mpi = MPI();
+    std::vector<std::vector<I>> boundaries;
+    if (mpi.size == 1)
+        boundaries = {{0, 1}, {1, 2}, {2, 0}};
+    else
+    {
+        if (mpi.rank == 0)
+            boundaries.push_back({0, 1});
+        if (mpi.rank == 1)
+            boundaries.push_back({1, 2});
+        if (mpi.rank == mpi.size - 1)
+            boundaries.push_back({2, 0});
+    }
+    // All nodes belong to rank zero. Other boundary owners therefore need
+    // remote Node2Bnd rows: an owned-Node root cannot cover their boundary ring.
+    auto input = Input(mpi, mpi.rank == 0 ? 3 : 0, mpi.rank == 0 ? 1 : 0, I(boundaries.size()),
+                       mpi.rank == 0 ? std::vector<std::vector<I>>{{0, 1, 2}} : std::vector<std::vector<I>>{}, boundaries);
+    auto owned = G::NativeMeshBuilder::Build(input);
+    for (const auto &[kind, space] : owned.spaces)
+        CHECK(space.NumGhost() == 0);
+    CHECK_FALSE(owned.retainedRead);
+    // Deliberately omit owned-Node roots and indirect Cell→Node→Bnd paths.
+    // Remote boundary owners can only obtain the other edges through the
+    // explicit connected Bnd→Node→Bnd path, never by inventing another root.
+    G::GhostSpec recipe;
+    auto append = [&](G::EntityKind anchor, std::vector<G::AdjKind> hops)
+    { recipe.chains.push_back({anchor, hops, hops.back().to}); };
+    for (const auto key : {G::Adj::Cell2Node, G::Adj::Bnd2Node, G::Adj::Bnd2Cell,
+                           G::Adj::Cell2Cell, G::Adj::Cell2Face, G::Adj::Face2Node,
+                           G::Adj::Face2Cell, G::Adj::Face2Bnd, G::Adj::Bnd2Face})
+        append(key.from, {key});
+    append(G::EntityKind::Bnd, {G::Adj::Bnd2Node, G::Adj::Node2Bnd});
+    append(G::EntityKind::Bnd, {G::Adj::Bnd2Node, G::Adj::Node2Bnd, G::Adj::Bnd2Node});
+    owned.ghostSpec = recipe;
+    G::ReorderInput placement;
+    std::vector<DNDS::MPI_int> nodeRanks(size_t(input.nodes.NumOwned()));
+    const int targets[3]{mpi.size - 1, 0, mpi.size > 1 ? 1 : 0};
+    for (size_t row = 0; row < nodeRanks.size(); ++row)
+        nodeRanks[row] = targets[row];
+    placement.explicitMaps.push_back({G::EntityKind::Node, nodeRanks});
+    auto redistributed = G::NativeMeshTransition::BuildOwned(owned, mpi, placement);
+    owned = std::move(redistributed.owned);
+    REQUIRE(owned.ghostSpec);
+    CHECK(owned.ghostSpec->chains.size() == recipe.chains.size());
+    for (const auto &[kind, space] : owned.spaces)
+        CHECK(space.NumGhost() == 0);
+    const bool hasOwnedNodes = owned.spaces.at(G::EntityKind::Node).NumOwned() != 0;
+    owned = G::NativeMeshTopology::Build(std::move(owned), mpi, true, false);
+    for (const auto &[kind, space] : owned.spaces)
+        CHECK(space.NumGhost() == 0);
+    CHECK_FALSE(owned.retainedRead);
+    REQUIRE(owned.spaces.count(G::EntityKind::Face));
+    CHECK(owned.spaces.at(G::EntityKind::Face).NumGlobal() == 3);
+    auto state = G::NativeMeshAssembler::Build(mpi, std::move(owned), recipe);
+    REQUIRE(state->GhostSpecification());
+    CHECK(state->GhostSpecification()->chains.size() == recipe.chains.size());
+    const auto space = state->Entities(G::EntityKind::Bnd);
+    std::set<I> actual;
+    for (I row = space.NumOwned(); row < space.NumOwned() + space.NumGhost(); ++row)
+        actual.insert(space.LocalToGlobal(row));
+    // Independent triangle oracle: every pair of distinct edges shares one
+    // node. Only ranks with an owned boundary or an owned node need the star.
+    std::set<I> expected;
+    if (hasOwnedNodes || !boundaries.empty())
+        for (I global = 0; global < 3; ++global)
+            if (space.Owner(global) != mpi.rank)
+                expected.insert(global);
+    CHECK(actual == expected);
+    const auto &view = state->BorrowHostView();
+    for (I boundary = 0; boundary < space.NumOwned(); ++boundary)
+        for (I node : view.BoundaryNodes(boundary))
+        {
+            const auto neighbors = Globals(space, view.NodeBoundaries(node));
+            CHECK(neighbors.size() == 2);
+            CHECK(neighbors.count(space.LocalToGlobal(boundary)) == 1);
+        }
+}
+
 TEST_CASE("Native primary builder closes remote owned-node stars explicitly")
 {
     const auto mpi = MPI();
@@ -97,7 +180,7 @@ TEST_CASE("Native primary builder closes remote owned-node stars explicitly")
         auto metadata = input.cellInfo;
         G::NativeMeshBuildOptions options;
         options.completeNodeStar = complete;
-        auto state = G::NativeMeshBuilder::Build(input, options);
+        auto state = G::ConstructNativeMesh(input, options);
         auto read = state->Snapshot(R::Device::Host()).AcquireRead();
         const auto view = read.HostView();
         CHECK(state->NumOwned(G::EntityKind::Cell) == 1);
@@ -139,7 +222,12 @@ TEST_CASE("Native primary builder matches all boundary nodes and transfers indep
             write.View()(size_t(row), 0) = 1000000000000LL + 17 * space->LocalToGlobal(row) + int(space->Kind());
         input.ids.emplace(space->Kind(), std::move(ids));
     }
-    auto state = G::NativeMeshBuilder::Build(input);
+    auto owned = G::NativeMeshBuilder::Build(input);
+    auto recipe = G::DefaultNativeMeshGhostSpec(owned, 1, false);
+    // This companion-transfer fixture deliberately requests a remote boundary
+    // incident to an owned cell's nodes, beyond the default owned-boundary ring.
+    recipe.chains.push_back({G::EntityKind::Cell, {G::Adj::Cell2Node, G::Adj::Node2Bnd}, G::EntityKind::Bnd});
+    auto state = G::NativeMeshAssembler::Build(mpi, std::move(owned), recipe);
     const auto cells = state->Entities(G::EntityKind::Cell);
     const auto boundaries = state->Entities(G::EntityKind::Bnd);
     auto read = state->Snapshot(R::Device::Host()).AcquireRead();
@@ -169,7 +257,7 @@ TEST_CASE("Native primary builder retains every cell layer and its node closure"
         auto input = Input(mpi, 3, 1, 0, {triangle}, {});
         G::NativeMeshBuildOptions options;
         options.cellLayers = layers;
-        auto state = G::NativeMeshBuilder::Build(input, options);
+        auto state = G::ConstructNativeMesh(input, options);
         const auto cells = state->Entities(G::EntityKind::Cell);
         const auto nodes = state->Entities(G::EntityKind::Node);
         auto read = state->Snapshot(R::Device::Host()).AcquireRead();
@@ -213,7 +301,7 @@ TEST_CASE("Native primary builder normalizes uniform CSR and padded companions w
         auto metadata = input.cellInfo;
         const auto coordinatePointer = coordinates.Storage().LegacyPointer();
         const auto infoPointer = metadata.Storage().LegacyPointer();
-        auto state = G::NativeMeshBuilder::Build(input);
+        auto state = G::ConstructNativeMesh(input);
         auto read = state->Snapshot(R::Device::Host()).AcquireRead();
         const auto view = read.HostView();
         CHECK(view.Coord(0).data() == coordinatePointer);
@@ -240,13 +328,13 @@ TEST_CASE("Native primary builder rejects a boundary diagonal collectively then 
     }
     // Every boundary is contained in exactly one cell. Only rank zero's row
     // is not an actual element edge, so containment alone cannot reject it.
-    CHECK_THROWS(G::NativeMeshBuilder::Build(input));
+    CHECK_THROWS(G::ConstructNativeMesh(input));
     {
         auto boundary = input.boundaryNodes.Write();
         if (mpi.rank == 0)
             boundary.View()(0, 1) = offset + 1;
     }
-    auto state = G::NativeMeshBuilder::Build(input);
+    auto state = G::ConstructNativeMesh(input);
     auto read = state->Snapshot(R::Device::Host()).AcquireRead();
     const auto view = read.HostView();
     CHECK(view.GetCellElement(0).type == G::Elem::Quad4);
@@ -268,7 +356,7 @@ TEST_CASE("Native primary builder includes empty ranks and agrees on invalid inp
     {
         G::NativeMeshBuildOptions options;
         options.completeNodeStar = true;
-        auto state = G::NativeMeshBuilder::Build(input, options);
+        auto state = G::ConstructNativeMesh(input, options);
         CHECK(state->NumOwned(G::EntityKind::Cell) == (owner ? 1 : 0));
         CHECK(state->NumGlobal(G::EntityKind::Cell) == 1);
         CHECK(state->NumGhost(G::EntityKind::Cell) == 0);
@@ -280,25 +368,25 @@ TEST_CASE("Native primary builder includes empty ranks and agrees on invalid inp
             auto write = input.cellNodes.Write();
             write.View()[0][2] = 3;
         }
-        CHECK_THROWS(G::NativeMeshBuilder::Build(input));
+        CHECK_THROWS(G::ConstructNativeMesh(input));
     }
     SUBCASE("one rank contains a nonuniform coordinate width")
     {
         if (owner)
             input.coordinates = R::Array<DNDS::real>(R::RowLayout::Ragged({3, 2, 3}));
-        CHECK_THROWS(G::NativeMeshBuilder::Build(input));
+        CHECK_THROWS(G::ConstructNativeMesh(input));
     }
     SUBCASE("one rank requests unsupported periodic construction")
     {
         input.periodic = owner;
-        CHECK_THROWS(G::NativeMeshBuilder::Build(input));
+        CHECK_THROWS(G::ConstructNativeMesh(input));
     }
     SUBCASE("one rank has active coordinate writer")
     {
         std::optional<R::Array<DNDS::real>::WriteLease> writer;
         if (owner)
             writer.emplace(input.coordinates.Write());
-        CHECK_THROWS(G::NativeMeshBuilder::Build(input));
+        CHECK_THROWS(G::ConstructNativeMesh(input));
     }
     SUBCASE("collective options mismatch")
     {
@@ -306,7 +394,7 @@ TEST_CASE("Native primary builder includes empty ranks and agrees on invalid inp
         {
             G::NativeMeshBuildOptions options;
             options.completeNodeStar = owner;
-            CHECK_THROWS(G::NativeMeshBuilder::Build(input, options));
+            CHECK_THROWS(G::ConstructNativeMesh(input, options));
         }
     }
 }

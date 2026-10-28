@@ -374,6 +374,58 @@ TEST_CASE("Native payload uses caller buffers across dense CSR padded fixed and 
     }
 }
 
+TEST_CASE("JSON byte segments support in-memory DOM and retain file mode checks")
+{
+    const DNDS::MPIInfo mpi(MPI_COMM_WORLD);
+    auto memory = std::make_shared<S::SerializerJSON>();
+    memory->CreatePath("/");
+    const uint8_t sourceBytes[]{1, 2, 3, 99, 4, 5};
+    const std::vector<S::ByteMemorySegment> segments{{0, 3}, {4, 2}};
+    memory->WriteByteSegments("bytes", sourceBytes, 6, segments, S::ArrayGlobalOffset_Unknown);
+    uint8_t restoredBytes[6]{};
+    auto offset = S::ArrayGlobalOffset_Unknown;
+    memory->ReadByteSegments("bytes", restoredBytes, 6, segments, offset);
+    for (size_t i : {size_t(0), size_t(1), size_t(2), size_t(4), size_t(5)})
+        CHECK(restoredBytes[i] == sourceBytes[i]);
+
+    R::Array<double> source(R::RowLayout::Ragged({2, 0, 1}));
+    {
+        auto write = source.Write();
+        write.At(0, 0) = 1.25;
+        write.At(0, 1) = -3.5;
+        write.At(2, 0) = 9.75;
+    }
+    R::WriteArray(source, memory, "array", mpi);
+    const auto restarted = R::ReadArray<double>(memory, "array", mpi);
+    CHECK(restarted.Rows() == 3);
+    CHECK(restarted.RowSize(0) == 2);
+    CHECK(restarted.RowSize(1) == 0);
+    CHECK(restarted.RowSize(2) == 1);
+    auto values = restarted.Read();
+    CHECK(values.At(0, 0) == 1.25);
+    CHECK(values.At(0, 1) == -3.5);
+    CHECK(values.At(2, 0) == 9.75);
+
+    const auto file = File(mpi, "byte-mode", true);
+    auto writer = std::make_shared<S::SerializerJSON>();
+    writer->OpenFile(file, false);
+    CHECK_THROWS(writer->ReadByteSegments("missing", restoredBytes, 6, segments, offset));
+    writer->WriteByteSegments("bytes", sourceBytes, 6, segments, S::ArrayGlobalOffset_Unknown);
+    writer->CloseFile();
+
+    auto reader = std::make_shared<S::SerializerJSON>();
+    reader->OpenFile(file, true);
+    CHECK_THROWS(reader->WriteByteSegments("bytes", sourceBytes, 6, segments, S::ArrayGlobalOffset_Unknown));
+    std::fill(std::begin(restoredBytes), std::end(restoredBytes), uint8_t(0));
+    offset = S::ArrayGlobalOffset_Unknown;
+    reader->ReadByteSegments("bytes", restoredBytes, 6, segments, offset);
+    for (size_t i : {size_t(0), size_t(1), size_t(2), size_t(4), size_t(5)})
+        CHECK(restoredBytes[i] == sourceBytes[i]);
+    reader->CloseFile();
+    MPI_Barrier(mpi.comm);
+    std::filesystem::remove(file);
+}
+
 TEST_CASE("Opposite-endian mixed records swap individual declared words and preserve object padding")
 {
     const DNDS::MPIInfo mpi(MPI_COMM_WORLD);

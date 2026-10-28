@@ -12,7 +12,11 @@
 #include "DNDS/Runtime/RowBuilder.hpp"
 #include "DNDS/Serializer/SerializerJSON.hpp"
 #include "NativePeriodicFixtures.hpp"
+#include "NativeStructuredInterpolation.hpp"
+#include "Geom/Transition/NativeMeshAssembler.hpp"
 #include <filesystem>
+#include <random>
+#include <set>
 #include <unistd.h>
 
 namespace G = DNDS::Geom;
@@ -198,8 +202,8 @@ TEST_CASE("Native periodic strip constructs exact self incidences and preserves 
     int dimension = 2;
     SUBCASE("quadrilateral") {}
     SUBCASE("hexahedron with edges") { dimension = 3; }
-    auto primary = G::NativeMeshBuilder::Build(Strip(mpi, dimension));
-    auto state = G::NativeMeshTopology::Build(*primary, mpi, true, dimension == 3);
+    auto primary = G::ConstructNativeMesh(Strip(mpi, dimension));
+    auto state = G::PrepareNativeMeshTopology(*primary, mpi, true, dimension == 3);
     Check(*state, dimension);
     const auto name = state->MeshNamespace();
     G::ReorderInput reorder;
@@ -233,17 +237,17 @@ TEST_CASE("Native periodic primary rejects invalid image metadata collectively a
     auto bad = input;
     if (mpi.rank == 0)
         bad.cellNodesPbi.reset();
-    CHECK_THROWS(G::NativeMeshBuilder::Build(std::move(bad)));
+    CHECK_THROWS(G::ConstructNativeMesh(std::move(bad)));
     bad = input;
     if (mpi.rank == 0)
         bad.cellNodesPbi = Rows<G::NodePeriodicBits>({{{0}, {0}, {1}, {0}}});
-    CHECK_THROWS(G::NativeMeshBuilder::Build(std::move(bad)));
+    CHECK_THROWS(G::ConstructNativeMesh(std::move(bad)));
     bad = input;
     if (mpi.rank == 0)
         bad.periodicInfo.translation[1].map()[0] = 2;
     if (mpi.size > 1)
-        CHECK_THROWS(G::NativeMeshBuilder::Build(std::move(bad)));
-    CHECK_NOTHROW(G::NativeMeshBuilder::Build(input));
+        CHECK_THROWS(G::ConstructNativeMesh(std::move(bad)));
+    CHECK_NOTHROW(G::ConstructNativeMesh(input));
 }
 
 TEST_CASE("Exact periodic frame matching handles repeated IDs whose XOR changes sorted order")
@@ -251,6 +255,56 @@ TEST_CASE("Exact periodic frame matching handles repeated IDs whose XOR changes 
     CHECK(G::NativePeriodicFrame({{0, 0}, {0, 1}, {1, 0}, {1, 1}}, {{0, 2}, {0, 3}, {1, 2}, {1, 3}}) == 2);
     CHECK(G::NativePeriodicFrame({{0, 0}, {0, 2}, {1, 0}, {1, 2}}, {{0, 1}, {0, 3}, {1, 1}, {1, 3}}) == 1);
     CHECK_FALSE(G::NativePeriodicFrame({{0, 0}, {0, 1}, {1, 0}}, {{0, 2}, {0, 3}, {1, 4}}));
+}
+
+TEST_CASE("Periodic frame matching agrees with independent full image search")
+{
+    const auto reference = [](const G::NativePeriodicNodes &input, G::NativePeriodicNodes expected) -> std::optional<uint8_t>
+    {
+        if (input.empty() || input.size() != expected.size())
+            return {};
+        for (const auto &[node, bits] : input)
+            if (bits >= 8)
+                return {};
+        for (const auto &[node, bits] : expected)
+            if (bits >= 8)
+                return {};
+        std::sort(expected.begin(), expected.end());
+        for (uint8_t mask = 0; mask < 8; ++mask)
+        {
+            G::NativePeriodicNodes image;
+            for (const auto &[node, bits] : input)
+                image.emplace_back(node, uint8_t(bits ^ mask));
+            std::sort(image.begin(), image.end());
+            if (image == expected)
+                return mask;
+        }
+        return {};
+    };
+    std::mt19937 random(17381);
+    for (size_t width = 1; width <= 10; ++width)
+        for (int trial = 0; trial < 120; ++trial)
+        {
+            G::NativePeriodicNodes input, expected;
+            const uint8_t mask = uint8_t(random() % 8);
+            for (size_t node = 0; node < width; ++node)
+            {
+                const I id = (I(1) << 44) + I(random() % 4);
+                const auto bits = uint8_t(random() % 8);
+                input.emplace_back(id, bits);
+                expected.emplace_back(id, uint8_t(bits ^ mask));
+            }
+            std::shuffle(expected.begin(), expected.end(), random);
+            CHECK(G::NativePeriodicFrame(input, expected) == reference(input, expected));
+            expected.back().second ^= 3;
+            CHECK(G::NativePeriodicFrame(input, expected) == reference(input, expected));
+            expected.back().first += 19;
+            CHECK(G::NativePeriodicFrame(input, expected) == reference(input, expected));
+        }
+    CHECK_FALSE(G::NativePeriodicFrame({}, {}));
+    CHECK_FALSE(G::NativePeriodicFrame({{1, 0}}, {}));
+    CHECK_FALSE(G::NativePeriodicFrame({{1, 8}}, {{1, 0}}));
+    CHECK_FALSE(G::NativePeriodicFrame({{1, 0}}, {{1, 8}}));
 }
 
 TEST_CASE("One-cell doubly periodic native torus retains two distinct self faces")
@@ -285,8 +339,8 @@ TEST_CASE("One-cell doubly periodic native torus retains two distinct self faces
         for (size_t row = 0; row < 4; ++row)
             write.View()(row, 0) = G::ElemInfo{G::Elem::Line2, zones[row]};
     }
-    auto source = G::NativeMeshBuilder::Build(std::move(input));
-    auto state = G::NativeMeshTopology::Build(*source, mpi);
+    auto source = G::ConstructNativeMesh(std::move(input));
+    auto state = G::PrepareNativeMeshTopology(*source, mpi);
     CHECK(state->NumGlobal(G::EntityKind::Face) == 2);
     if (cells.NumOwned())
     {
@@ -306,9 +360,10 @@ TEST_CASE("One-cell doubly periodic native torus retains two distinct self faces
 TEST_CASE("Partitioned native periodic cells distinguish internal physical and periodic faces")
 {
     const auto mpi = MPI();
-    auto primary = G::NativeMeshBuilder::Build(NativePeriodicFixtures::TwoCells(mpi));
-    auto state = G::NativeMeshTopology::Build(*primary, mpi);
+    auto primary = G::ConstructNativeMesh(NativePeriodicFixtures::TwoCells(mpi));
+    auto state = G::PrepareNativeMeshTopology(*primary, mpi);
     CHECK(state->NumGlobal(G::EntityKind::Face) == 6);
+    auto coupledRead = state->Relation(G::Adj::Bnd2CellCoupled);
     const auto &view = state->BorrowHostView();
     auto cells = state->Entities(G::EntityKind::Cell);
     for (I cell = 0; cell < cells.NumOwned(); ++cell)
@@ -327,13 +382,20 @@ TEST_CASE("Partitioned native periodic cells distinguish internal physical and p
     for (I boundary = 0; boundary < state->NumOwned(G::EntityKind::Bnd); ++boundary)
     {
         const auto pair = view.BoundaryCells(boundary);
+        const auto coupled = coupledRead.GlobalRow(boundary);
+        REQUIRE(coupled.size() == 2);
         if (G::FaceIDIsPeriodic(view.GetBndInfo(boundary).zone))
         {
-            CHECK(pair[0] != pair[1]);
-            CHECK(pair[1] != DNDS::UnInitIndex);
+            CHECK(pair[0] == pair[1]);
+            CHECK(coupled[0] != coupled[1]);
+            CHECK(coupled[1] != DNDS::UnInitIndex);
+            CHECK(cells.LocalToGlobal(pair[0]) == coupled[0]);
         }
         else
+        {
             CHECK(pair[1] == DNDS::UnInitIndex);
+            CHECK(coupled[1] == DNDS::UnInitIndex);
+        }
     }
     auto bad = NativePeriodicFixtures::TwoCells(mpi);
     if (bad.boundaryInfo.Rows())
@@ -341,16 +403,16 @@ TEST_CASE("Partitioned native periodic cells distinguish internal physical and p
         auto write = bad.boundaryInfo.Write();
         write.View()(1, 0).zone = G::BC_ID_PERIODIC_1;
     }
-    auto badPrimary = G::NativeMeshBuilder::Build(std::move(bad));
-    CHECK_THROWS(G::NativeMeshTopology::Build(*badPrimary, mpi));
-    CHECK_NOTHROW(G::NativeMeshTopology::Build(*primary, mpi));
+    auto badPrimary = G::ConstructNativeMesh(std::move(bad));
+    CHECK_THROWS(G::PrepareNativeMeshTopology(*badPrimary, mpi));
+    CHECK_NOTHROW(G::PrepareNativeMeshTopology(*primary, mpi));
 }
 
 TEST_CASE("Quadratic native periodic topology keeps image-distinct spans and rejects cracked midside nodes")
 {
     const auto mpi = MPI();
-    auto source = G::NativeMeshBuilder::Build(NativePeriodicFixtures::QuadraticTorus(mpi));
-    auto state = G::NativeMeshTopology::Build(*source, mpi);
+    auto source = G::ConstructNativeMesh(NativePeriodicFixtures::QuadraticTorus(mpi));
+    auto state = G::PrepareNativeMeshTopology(*source, mpi);
     CHECK(state->NumGlobal(G::EntityKind::Face) == 2);
     for (I cell = 0; cell < state->NumOwned(G::EntityKind::Cell); ++cell)
     {
@@ -361,9 +423,9 @@ TEST_CASE("Quadratic native periodic topology keeps image-distinct spans and rej
         for (auto face : view.CellFaces(cell))
             CHECK(view.FaceNodes(face).size() == 3);
     }
-    auto cracked = G::NativeMeshBuilder::Build(NativePeriodicFixtures::QuadraticTorus(mpi, true));
-    CHECK_THROWS(G::NativeMeshTopology::Build(*cracked, mpi));
-    CHECK_NOTHROW(G::NativeMeshTopology::Build(*source, mpi));
+    auto cracked = G::ConstructNativeMesh(NativePeriodicFixtures::QuadraticTorus(mpi, true));
+    CHECK_THROWS(G::PrepareNativeMeshTopology(*cracked, mpi));
+    CHECK_NOTHROW(G::PrepareNativeMeshTopology(*source, mpi));
 }
 
 TEST_CASE("Native periodic construction retains a rigid rotation in physical cell images")
@@ -381,8 +443,8 @@ TEST_CASE("Native periodic construction retains a rigid rotation in physical cel
             write.View()(row, 2) = 0;
         }
     }
-    auto source = G::NativeMeshBuilder::Build(std::move(input));
-    auto state = G::NativeMeshTopology::Build(*source, mpi);
+    auto source = G::ConstructNativeMesh(std::move(input));
+    auto state = G::PrepareNativeMeshTopology(*source, mpi);
     for (I cell = 0; cell < state->NumOwned(G::EntityKind::Cell); ++cell)
     {
         const auto &view = state->BorrowHostView();
@@ -419,13 +481,13 @@ TEST_CASE("Native periodic construction retains a rigid rotation in physical cel
 TEST_CASE("Native periodic elevation bisection and external extraction preserve physical geometry and ancestry")
 {
     const auto mpi = MPI();
-    auto primary = G::NativeMeshBuilder::Build(NativePeriodicFixtures::TwoCells(mpi));
+    auto primary = G::ConstructNativeMesh(NativePeriodicFixtures::TwoCells(mpi));
     const auto sourceNamespace = primary->MeshNamespace();
     auto elevated = G::NativeMeshRefinement::Elevate(*primary, mpi);
     CHECK(elevated.state->BorrowHostView().IsPeriodic());
     CHECK(elevated.state->NumGlobal(G::EntityKind::Node) == 12);
     CHECK(elevated.provenance.sourceNamespace == sourceNamespace);
-    auto topology = G::NativeMeshTopology::Build(*elevated.state, mpi);
+    auto topology = G::PrepareNativeMeshTopology(*elevated.state, mpi);
     CHECK(topology->NumGlobal(G::EntityKind::Face) == 6);
     auto bisected = G::NativeMeshRefinement::Bisect(*elevated.state, mpi);
     CHECK(bisected.state->NumGlobal(G::EntityKind::Cell) == 8);
@@ -459,7 +521,7 @@ TEST_CASE("Native periodic elevation bisection and external extraction preserve 
         CHECK((a - b).norm() == doctest::Approx(.5));
         CHECK(extractedView.CellNodes(cell).size() == 3);
     }
-    auto torus = G::NativeMeshBuilder::Build(NativePeriodicFixtures::QuadraticTorus(mpi));
+    auto torus = G::ConstructNativeMesh(NativePeriodicFixtures::QuadraticTorus(mpi));
     auto empty = G::NativeMeshExtraction::ExtractBoundary(*torus, mpi);
     CHECK(empty.state->NumGlobal(G::EntityKind::Cell) == 0);
     CHECK(empty.state->NumGlobal(G::EntityKind::Node) == 0);
@@ -469,11 +531,11 @@ TEST_CASE("Native periodic elevation bisection and external extraction preserve 
 TEST_CASE("One-cell periodic elevation separates tangent spans with repeated canonical IDs")
 {
     const auto mpi = MPI();
-    auto source = G::NativeMeshBuilder::Build(Strip(mpi, 2));
+    auto source = G::ConstructNativeMesh(Strip(mpi, 2));
     auto result = G::NativeMeshRefinement::Elevate(*source, mpi);
     CHECK(result.state->NumGlobal(G::EntityKind::Node) == 6);
     CHECK(result.state->BorrowHostView().IsPeriodic());
-    auto topology = G::NativeMeshTopology::Build(*result.state, mpi);
+    auto topology = G::PrepareNativeMeshTopology(*result.state, mpi);
     CHECK(topology->NumGlobal(G::EntityKind::Face) == 3);
     auto split = G::NativeMeshRefinement::Bisect(*result.state, mpi);
     CHECK(split.state->NumGlobal(G::EntityKind::Cell) == 4);
@@ -496,10 +558,10 @@ TEST_CASE("One-cell periodic elevation separates tangent spans with repeated can
         for (size_t row = 0; row < input.boundaryInfo.Rows(); ++row)
             write.View()(row, 0).setElemType(G::Elem::Line2);
     }
-    auto linear = G::NativeMeshBuilder::Build(std::move(input));
+    auto linear = G::ConstructNativeMesh(std::move(input));
     auto quadratic = G::NativeMeshRefinement::Elevate(*linear, mpi);
     CHECK(quadratic.state->NumGlobal(G::EntityKind::Node) == 7); // Three unused source nodes stay retained.
-    CHECK(G::NativeMeshTopology::Build(*quadratic.state, mpi)->NumGlobal(G::EntityKind::Face) == 2);
+    CHECK(G::PrepareNativeMeshTopology(*quadratic.state, mpi)->NumGlobal(G::EntityKind::Face) == 2);
     const DNDS::real points[9][2]{{0, 0}, {1, 0}, {1, 1}, {0, 1}, {.5, 0}, {1, .5}, {.5, 1}, {0, .5}, {.5, .5}};
     for (I cell = 0; cell < quadratic.state->NumOwned(G::EntityKind::Cell); ++cell)
         for (DNDS::rowsize slot = 0; slot < 9; ++slot)
@@ -513,7 +575,7 @@ TEST_CASE("One-cell periodic elevation separates tangent spans with repeated can
 TEST_CASE("Three-dimensional periodic refinement preserves exact volume persistent images and ancestry across redistribution and restart")
 {
     const auto mpi = MPI();
-    auto source = G::NativeMeshBuilder::Build(Strip(mpi, 3));
+    auto source = G::ConstructNativeMesh(Strip(mpi, 3));
     auto elevated = G::NativeMeshRefinement::Elevate(*source, mpi);
     CHECK(elevated.state->NumGlobal(G::EntityKind::Node) == 18);
     for (I cell = 0; cell < elevated.state->NumOwned(G::EntityKind::Cell); ++cell)
@@ -546,7 +608,7 @@ TEST_CASE("Three-dimensional periodic refinement preserves exact volume persiste
         const G::tPoint c = view.GetCoordNodeOnCell(cell, 4) - origin;
         CHECK(a.dot(b.cross(c)) == doctest::Approx(.125));
     }
-    auto current = G::NativeMeshTopology::Build(*children.state, mpi, true, true);
+    auto current = G::PrepareNativeMeshTopology(*children.state, mpi, true, true);
     CHECK(current->NumGlobal(G::EntityKind::Face) == 32);
     CHECK(current->NumGlobal(G::EntityKind::Edge) == 42);
     const auto expected = PersistentDerived(*current, mpi);
@@ -581,6 +643,66 @@ TEST_CASE("Three-dimensional periodic refinement preserves exact volume persiste
     CHECK(current->Provenance()->sourceNamespace == ancestry);
     CHECK(PersistentDerived(*current, mpi) == expected);
     std::filesystem::remove(path);
+}
+
+TEST_CASE("Periodic parent-face flags use the published owner frame across ranks")
+{
+    DNDS::MPIInfo mpi(MPI_COMM_WORLD);
+    // Three cells per direction avoid conflating distinct canonical node IDs
+    // with repeated occurrences. Slab boundaries force remote face ownership;
+    // final assembly also appends faces of ghost cells.
+    auto grid = NativeStructuredInterpolation::BuildHex(mpi, 3, 7);
+    auto nodes = grid.cone.Target().WithGhosts({});
+    auto cells = grid.cone.Source().WithGhosts({});
+    auto boundaries = nodes.CreateSibling(G::EntityKind::Bnd, 0);
+    G::NativeMeshInput input{mpi, 3, cells, nodes, boundaries, grid.cone.Owned(),
+                             R::Array<I>(R::RowLayout::Ragged({})),
+                             R::Array<DNDS::real>(R::RowLayout::Dense(size_t(nodes.NumOwned()), 3)),
+                             R::Array<G::ElemInfo>(R::RowLayout::Dense(size_t(cells.NumOwned()), 1)),
+                             R::Array<G::ElemInfo>(R::RowLayout::Dense(0, 1))};
+    input.periodic = true;
+    input.cellNodesPbi = grid.ownedBits;
+    input.boundaryNodesPbi = R::Array<G::NodePeriodicBits>(R::RowLayout::Ragged({}));
+    {
+        auto info = input.cellInfo.Write();
+        for (size_t row = 0; row < input.cellInfo.Rows(); ++row)
+            info.View()(row, 0) = G::ElemInfo{G::Elem::Hex8, G::INTERNAL_ZONE};
+    }
+    auto owned = G::NativeMeshBuilder::Build(std::move(input));
+    owned = G::NativeMeshTopology::Build(std::move(owned), mpi);
+    const auto recipe = G::DefaultNativeMeshGhostSpec(owned, 1, true);
+    auto state = G::NativeMeshAssembler::Build(mpi, std::move(owned), recipe);
+    auto read = state->Snapshot(R::Device::Host()).AcquireRead();
+    const auto view = read.HostView();
+    I shifts = 0, remoteFaces = 0, checked = 0;
+    for (I cell = 0; cell < view.NumCell(); ++cell)
+    {
+        auto element = G::Elem::Element{view.GetCellInfo(cell).getElemType()};
+        for (size_t slot = 0; slot < view.CellFaces(cell).size(); ++slot)
+        {
+            const auto face = view.CellFaces(cell)[slot];
+            std::vector<I> expectedNodes(size_t(element.ObtainFace(DNDS::Geom::t_index(slot)).GetNumNodes()));
+            std::vector<G::NodePeriodicBits> expectedBits(expectedNodes.size());
+            element.ExtractFaceNodes(DNDS::Geom::t_index(slot), view.CellNodes(cell), expectedNodes);
+            element.ExtractFaceNodes(DNDS::Geom::t_index(slot), view.CellNodePeriodicBits(cell), expectedBits);
+            std::multiset<std::pair<I, int>> expected, actual;
+            for (size_t node = 0; node < expectedNodes.size(); ++node)
+                expected.emplace(expectedNodes[node], uint8_t(expectedBits[node]));
+            const auto shift = uint8_t(view.CellFacePeriodicBits(cell)[slot]);
+            for (size_t node = 0; node < view.FaceNodes(face).size(); ++node)
+                actual.emplace(view.FaceNodes(face)[node], uint8_t(view.FaceNodePeriodicBits(face)[node]) ^ shift);
+            CHECK(actual == expected);
+            shifts += shift != 0;
+            remoteFaces += face >= view.NumFace();
+            ++checked;
+        }
+    }
+    MPI_Allreduce(MPI_IN_PLACE, &shifts, 1, DNDS::DNDS_MPI_INDEX, MPI_SUM, mpi.comm);
+    MPI_Allreduce(MPI_IN_PLACE, &remoteFaces, 1, DNDS::DNDS_MPI_INDEX, MPI_SUM, mpi.comm);
+    CHECK(checked == 27 * 6);
+    CHECK(shifts > 0);
+    if (mpi.size > 1)
+        CHECK(remoteFaces > 0);
 }
 
 int main(int argc, char **argv)

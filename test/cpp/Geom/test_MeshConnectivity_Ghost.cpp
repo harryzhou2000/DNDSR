@@ -19,7 +19,10 @@ static NativeRelation conesWithManualGhostRows()
         ghosts = {0, 1};
     auto source = original.Source().WithGhosts(ghosts);
     NativeRelation cone(Adj::Cell2Node, source, original.Target(), original.Owned());
-    return cone.WithGhostRows(RelationGhostRoute(source));
+    auto full = cone.WithGhostRows(RelationGhostRoute(source));
+    CHECK(full.Source().NumGhost() == (g_mpi.size > 1 && g_mpi.rank < 2 ? 2 : 0));
+    CHECK(full.Read().Rows() == full.Source().NumOwned() + full.Source().NumGhost());
+    return full;
 }
 
 TEST_CASE("evaluateGhostTree: single hop cell2cell")
@@ -827,7 +830,7 @@ TEST_CASE("GhostChain: checkAvailable native registry rejects omitted required r
     const auto required = CompiledGhostTree::compile(GhostSpec::defaultPrimary()).requiredAdjs();
     std::unordered_set<AdjKind, AdjKindHash> missing;
     for (const auto &key : required)
-        if (key != Adj::Cell2Node && key != Adj::Cell2Cell)
+        if (!registry.Find(key))
             missing.insert(key);
     CHECK(missing.size() == 2);
     CHECK(missing.count(Adj::Bnd2Node) == 1);

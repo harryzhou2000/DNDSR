@@ -42,8 +42,8 @@ static DNDS::ssp<G::UnstructuredMesh> Fixture(DNDS::MPIInfo mpi, bool curved = f
             bndInfo.Write().View()(0, 0) = G::ElemInfo{curved ? G::Elem::Line3 : G::Elem::Line2, 24};
     }
     G::NativeMeshInput input{mpi, 2, cells, nodes, boundaries, cone(ownsCell, curved ? std::vector<I>{0, 1, 2, 3, 4, 5} : std::vector<I>{0, 1, 2}), cone(ownsBoundary, curved ? std::vector<I>{0, 1, 3} : std::vector<I>{0, 1}), points, cellInfo, bndInfo, {}};
-    auto source = G::NativeMeshBuilder::Build(input, {1, true});
-    source = G::NativeMeshTopology::Build(*source, mpi);
+    auto source = G::ConstructNativeMesh(input, {1, true});
+    source = G::PrepareNativeMeshTopology(*source, mpi);
     return G::UnstructuredMesh::FromNative(mpi, source);
 }
 

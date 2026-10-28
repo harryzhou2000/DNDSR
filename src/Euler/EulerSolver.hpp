@@ -586,6 +586,8 @@ namespace DNDS::Euler
 
                 int meshDirectBisect = 0;
                 int meshReorderCells = 0; // 0: natural; 1: reorder
+                bool meshAuditPersistentIdentity = true;
+                bool meshAuditClosure = true;
                 int meshBuildWallDist = 0;
                 Geom::UnstructuredMesh::WallDistOptions meshWallDistOptions;
 
@@ -669,6 +671,8 @@ namespace DNDS::Euler
                     DNDS_FIELD(meshDirectBisect,            "Mesh bisection passes",
                                DNDS::Config::range(0));
                     DNDS_FIELD(meshReorderCells,            "Reorder cells: 0=natural, 1=reorder");
+                    DNDS_FIELD(meshAuditPersistentIdentity, "Native source-mesh identity diagnostics during setup; disable only for producer-validated input");
+                    DNDS_FIELD(meshAuditClosure,            "Native source-mesh cell-face reciprocity diagnostics during setup; required ghost/index checks remain enabled");
                     DNDS_FIELD(meshBuildWallDist,           "Build wall distance field: 0=no, 1=yes");
                     DNDS_FIELD(meshWallDistOptions,         "Wall distance computation options");
                     DNDS_FIELD(meshFormat,                  "Mesh format code");
@@ -1017,7 +1021,16 @@ namespace DNDS::Euler
             {
                 (void)nVars; // nVars is already stored in eulerSettings via Configuration(nVars)
                 if (read)
+                {
+                    // These diagnostics were added after existing complete
+                    // Euler input files. Missing keys retain the full-audit
+                    // behavior; explicit false remains an opt-in trust policy.
+                    auto &meshInput = jsonObj.at("dataIOControl");
+                    for (const auto *key : {"meshAuditPersistentIdentity", "meshAuditClosure"})
+                        if (!meshInput.contains(key))
+                            meshInput[key] = true;
                     from_json(jsonObj, *this);
+                }
                 else
                     to_json(jsonObj, *this);
             }

@@ -1,8 +1,11 @@
 # Native mesh construction and access
 
 `NativeMeshBuilder` builds primary unstructured topology directly from
-`Runtime::Array` storage. `UnstructuredMesh::FromNative` wraps the result in the
-existing public mesh facade. Neither operation constructs a legacy mesh array.
+`Runtime::Array` storage and returns owned global topology. An explicit final
+assembler creates the state that `UnstructuredMesh::FromNative` wraps in the
+public mesh facade. Neither operation constructs a legacy mesh array. The
+construction/closure distinction and current correction status are documented
+in [Mesh connectivity](MeshConnectivity.md).
 Current construction, ownership, setup and output are native-only. The migration history and validation ledger are tracked in
 [the Geom work ledger](../dev/geom_native_migration_2026-10-25.md).
 
@@ -14,7 +17,9 @@ flowchart TD
     P[Python Runtime.Array handles] --> A
     B[NativeMeshInput] --> A
     B --> W[Native sparse topology construction]
-    W --> S[NativeMeshState]
+    W --> O[Owned topology and temporary construction closure]
+    O --> G[Final assembler with caller GhostSpec]
+    G --> S[NativeMeshState]
     S --> A
     S --> E[Canonical entity spaces]
     S --> R[Named relation registry]
@@ -65,7 +70,14 @@ Coordinates have three components even for two-dimensional geometry.
 NativeMeshBuildOptions options;
 options.cellLayers = 2;
 options.completeNodeStar = true;
-auto state = NativeMeshBuilder::Build(std::move(input), options);
+auto owned = NativeMeshBuilder::Build(input, options);
+// Optional owned-only stages, before final compute ghosts exist:
+owned = NativeMeshPreparation::PartitionOwned(owned, mpi).owned;
+owned = NativeMeshTransition::ReorderOwnedCells(owned, mpi).owned;
+owned = NativeMeshTopology::Build(std::move(owned), mpi, true, false);
+auto recipe = DefaultNativeMeshGhostSpec(owned, options.cellLayers,
+                                        options.completeNodeStar);
+auto state = NativeMeshAssembler::Build(mpi, std::move(owned), recipe);
 auto mesh = UnstructuredMesh::FromNative(mpi, state);
 auto access = mesh->AcquireRead(state->Requirements());
 auto view = access.HostView();
@@ -79,13 +91,31 @@ arrays to the host builder. Recoverable local input errors are agreed before
 subsequent communication. Invalid communicator participation itself is a caller
 error and cannot be repaired by an MPI collective on a different communicator.
 
+`ReadNativeCGNSOwned` / `ReadNativeOpenFOAMOwned` replace the first input/build
+step when construction begins at a file. `ElevateOwned` / `BisectOwned` can run
+after distribution and before permutation/faces without a readable intermediate
+state. Their completed-state counterparts capture owned input and finalize only
+at return. Elevation's legacy setup policy retains source cell, boundary and
+original-node labels; added nodes use a separate rank-prefix span range above
+the source high-water mark. Current global row numbering can change while those
+labels stay fixed. General new-namespace elevation still supports fresh labels.
+
+`ReadNativeMeshArchiveOwned` and `ReadCompatibleNativeMeshArchiveOwned` provide
+the same boundary for restart: decode saved owned rows and the declarative
+coverage policy, optionally redistribute/construct topology, then assemble.
+The legacy-primary decoder never constructs a temporary mesh state to recover
+owned arrays. `ExtendNativeMeshGhostSpecForTopology` explicitly appends the
+requested face/edge paths while preserving custom coverage. The wire formats
+and matching/direct-partition read modes are unchanged.
+
 The builder obtains inverse support rows at their owners, constructs distinct
-neighbor/containment relations, discovers requested ghosts, and exchanges typed
-companions through shared entity routes. Storage is proportional to local rows,
+neighbor/containment relations, and returns owned topology. Its temporary remote
+rows do not become final ghosts. The assembler evaluates the supplied recipe and
+exchanges typed companions through shared entity routes. Storage is proportional to local rows,
 requested/served rows and rank metadata. It never indexes a local vector by the
 global entity count or the magnitude of a persistent ID.
 
-`completeNodeStar` includes every cell and boundary incident to an owned node,
+The default recipe's `completeNodeStar` setting includes every cell and boundary incident to an owned node,
 including when none is owned locally. Without that option, outer support rows
 may contain explicit unavailable global references. Cell node cones always have
 complete local coordinates. This is topology support; node-centered control
@@ -99,12 +129,15 @@ input is rejected; it is not converted through a legacy mesh.
 
 `NativeMeshTopology::Build` constructs faces and (in 3D) edges using the native
 interpolation DSL. It first reconstructs parent closure from authoritative owned
-CellNodes, so incomplete incoming neighbor ghosts cannot produce duplicate faces.
+CellNodes, without requiring an incoming published mesh or compute ghost ring.
+It returns owned arrays, including generated families. Temporary fetched parents
+are construction inputs; final assembly remains the caller's responsibility.
 Physical FaceCells retains two ordered slots and an absent-cell sentinel. The
 mathematical inverse is a separate sorted-set relation. Shared high-order faces
 must agree on all node IDs, including midside nodes; geometrically coincident
 nodes with different identities do not silently become a conforming face.
-`Build` rejects a target family that already exists; facade/native preparation retains existing families. Explicit transition destruction/reconstruction uses generated-ID floors so removed IDs are not reused; external family fields require the transition policy rather than a setup-only rebuild. Periodic interpolation compares exact
+An ordinary topology refresh matches existing family identities by full keys;
+facade/native preparation retains existing families. Explicit transition destruction/reconstruction uses generated-ID floors so removed IDs are not reused; external family fields require the transition policy rather than a setup-only rebuild. Periodic interpolation compares exact
 node-image patterns modulo a uniform frame change, including repeated node IDs.
 Physical faces retain both parent occurrences even for a one-cell self face;
 the named mathematical inverse retains unique cells. Periodic boundary pairs
@@ -216,14 +249,19 @@ It does not retain the source mesh named by the ancestry IDs.
 ## Migration and validation boundaries
 
 `NativeMeshAssembler::CaptureOwned` retains native values and extracts only owned
-topology in global numbering. `Build` uses those owned arrays to discover sparse
-closure, exchange companions and publish local views. Native transition and
+topology in global numbering. `Build` uses those owned arrays and a caller-supplied
+GhostSpec to discover sparse closure, exchange companions and create local views. Native transition and
 archive restart share this assembly; neither requires a legacy mesh candidate.
 
 `WriteNativeMeshArchive` / `ReadNativeMeshArchive` preserve every published entity
 family, fixed and named relation, periodic transform/bit companion, coordinates,
 wall vectors, element metadata and persistent identity. They use Runtime Array
-I/O through the existing Serializer. Only owned rows are saved. Matching reads
+I/O through the existing Serializer. Only owned rows are saved. Archives
+also retain the full declarative ghost policy in version-two metadata; the
+reader accepts version one with an explicit default. The existing positive
+`ghostLayers` restart option overrides standard Cell2Cell prefix depths and
+preserves other saved custom paths. No pointer, MPI request or old local index
+mapping is serialized. Matching reads
 restore saved rank partitions; even reads take a contiguous partition per family
 and support a different MPI rank count. Arbitrary overlapping/permuted read
 windows are rejected because topology globals require exhaustive rank-ordered
@@ -238,13 +276,12 @@ homogeneous-ABI codec; external solver fields remain separate checkpoints.
 
 The explicit legacy-primary decoder preserves stored original IDs and creates a
 new namespace because the old format has none. It rejects duplicate stored IDs.
-Historical periodic elevation could assign new node IDs starting at the pruned
-canonical count, overlapping retained original IDs above that count. Such old
-derived archives require an explicit repair policy before import; the native
-decoder does not silently renumber them. For example, a periodic 10-by-10 grid
-can retain original IDs through 108 after pruning to 100 canonical nodes, while
-the old elevation starts new IDs at 100. Native derivation uses persistent
-high-water marks and does not create that overlap.
+A frozen legacy IV10_10 probe on one and two ranks produces unique IDs 0–99
+after periodic pruning and 0–399 after elevation. An earlier claim of sparse
+retained IDs causing historical duplicates was incorrect; see the
+[semantic audit](../dev/mesh_construction_semantics_2026-10-28.md). Duplicate-ID
+rejection tests now deliberately corrupt a valid periodic high-order snapshot.
+The decoder never silently renumbers malformed input.
 
 `NativeMeshTransition` remaps topology through sparse owner requests and moves
 rows, IDs and companions through native transfer plans. Persistent IDs are

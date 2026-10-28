@@ -3,6 +3,7 @@
 #include "NativeRelationSynthetic.hpp"
 #include "Geom/Elements.hpp"
 #include "NativeStructuredInterpolation.hpp"
+#include "NativeConnectivityLegacyConditions.hpp"
 #include "Geom/Mesh/NativeMeshCGNS.hpp"
 #include "Geom/Mesh/NativeMeshTopology.hpp"
 #include <filesystem>
@@ -953,11 +954,59 @@ TEST_CASE("InterpolateGlobal: 4x4x4 distributed hex faces (triply-periodic)")
 
 TEST_CASE("Regression: Interpolate matches InterpolateFace on UniformSquare_10")
 {
-    const auto path = (std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path() / "data/mesh/UniformSquare_10.cgns");
-    auto state = ReadNativeCGNS(g_mpi, path.string(), 2, FBC_Name_2_ID_Default, 0, {1, true});
-    state = NativeMeshTopology::Build(*state, g_mpi);
+    namespace L = NativeConnectivityLegacyConditions;
+    auto placement = L::Placement::LegacyReaderMetis;
+    SUBCASE("legacy reader METIS KWAY seed42 ufactor30 ncuts1") { placement = L::Placement::LegacyReaderMetis; }
+    SUBCASE("additional native direct even partition") { placement = L::Placement::NativeEven; }
+    auto state = L::UniformSquare10(g_mpi, placement, true);
     auto access = state->Snapshot(R::Device::Host()).AcquireRead();
     const auto view = access.HostView();
+    // Preserve the original regression's separate DSL call over owned AND
+    // appended parents. Topology's own builder result alone is insufficient.
+    auto cone = state->Relation(Adj::Cell2Node);
+    const auto query = queryFor(std::vector<Elem::ElemType>(size_t(cone.Rows()), Elem::Quad4), false);
+    auto resolver = [&](const std::vector<DNDS::index> &parents, const std::vector<MPI_int> &ranks, DNDS::index)
+    {
+        bool ownsParent = false;
+        for (const auto parent : parents)
+            ownsParent |= parent < cone.NumOwned();
+        if (!ownsParent || *std::min_element(ranks.begin(), ranks.end()) != g_mpi.rank)
+            return OwnershipDecision{false, {}};
+        std::set<MPI_int> peers;
+        for (size_t i = 0; i < parents.size(); ++i)
+            if (parents[i] >= cone.NumOwned() && ranks[i] != g_mpi.rank)
+                peers.insert(ranks[i]);
+        return OwnershipDecision{true, {peers.begin(), peers.end()}};
+    };
+    auto interpolated = NativeConnectivity::Interpolate(cone, EntityKind::Face, query, resolver);
+    auto parentFaces = interpolated.parent2entity.Read();
+    REQUIRE(parentFaces.Rows() == cone.Rows());
+    std::set<DNDS::index> remoteFaces;
+    for (DNDS::index cell = 0; cell < parentFaces.Rows(); ++cell)
+        for (const auto face : parentFaces.GlobalRow(cell))
+            if (!interpolated.entities.GlobalToLocal(face))
+                remoteFaces.insert(face);
+    auto faceSpace = interpolated.entities.WithGhosts({remoteFaces.begin(), remoteFaces.end()});
+    NativeRelation faceNodes(Adj::Face2Node, faceSpace, cone.Target(), interpolated.entity2node.Owned());
+    auto fullFaceNodes = faceNodes.WithGhostRows(RelationGhostRoute(faceSpace));
+    auto faceRead = fullFaceNodes.Read();
+    for (DNDS::index cell = 0; cell < cone.Rows(); ++cell)
+    {
+        const auto nodes = cone.GlobalRow(cell);
+        REQUIRE(nodes.size() == 4);
+        std::set<std::set<DNDS::index>> expected, actual;
+        for (size_t side = 0; side < 4; ++side)
+            expected.insert({nodes[side], nodes[(side + 1) % 4]});
+        for (const auto face : parentFaces.GlobalRow(cell))
+        {
+            const auto row = faceSpace.GlobalToLocal(face);
+            REQUIRE(row.has_value());
+            const auto vertices = faceRead.GlobalRow(*row);
+            REQUIRE(vertices.size() == 2);
+            actual.emplace(vertices.begin(), vertices.end());
+        }
+        CHECK(actual == expected);
+    }
     for (DNDS::index cell = 0; cell < view.NumCell(); ++cell)
     {
         MeshQueryCoords points;

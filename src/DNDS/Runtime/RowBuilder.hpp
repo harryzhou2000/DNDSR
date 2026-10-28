@@ -2,9 +2,33 @@
 
 #include "Array.hpp"
 #include <cstring>
+#include <optional>
 
 namespace DNDS::Runtime
 {
+    /// CPU setup for known row sizes: allocate the final table/CSR once and
+    /// initialize it under one writer. Unlike incremental RowBuilder this needs
+    /// no allocation/controller per row. Callbacks must not retain borrowed rows;
+    /// a failed fill never publishes an output. Every size is queried once.
+    template <class T, class Size, class Fill>
+    Array<T> BuildArrayRows(size_t rows, Size &&size, Fill &&fill, std::optional<size_t> width = {})
+    {
+        std::vector<size_t> lengths(rows);
+        for (size_t row = 0; row < rows; ++row)
+        {
+            lengths[row] = size(row);
+            DNDS_check_throw_info(!width || lengths[row] == *width, "known table row width mismatch");
+        }
+        Array<T> result(width ? RowLayout::Dense(rows, *width) : RowLayout::Ragged(lengths));
+        {
+            auto write = result.Write();
+            const auto view = write.View();
+            for (size_t row = 0; row < rows; ++row)
+                fill(row, view[row]);
+        }
+        return result;
+    }
+
     /// Exclusive CPU construction form. Distinct rows may be resized/filled by
     /// different workers; Commit follows their join. Borrowed row pointers expire
     /// on that row's resize or on Commit. No published Array aliases this draft.

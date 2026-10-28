@@ -91,14 +91,14 @@ namespace
         }
         G::NativeMeshBuildOptions options;
         options.completeNodeStar = true;
-        auto base = G::NativeMeshBuilder::Build(std::move(input), options);
+        auto base = G::ConstructNativeMesh(std::move(input), options);
         auto owned = G::NativeMeshAssembler::CaptureOwned(*base, mpi);
         owned.identity.meshNamespace = Namespace;
         for (auto kind : {G::EntityKind::Cell, G::EntityKind::Node, G::EntityKind::Bnd})
             owned.identity.nextIds[kind] = HighWater(kind);
         owned.namedRelations.emplace(AnyKey(), Rows(owned.spaces.at(G::EntityKind::Cell), AnyRows));
         owned.namedRelations.emplace(AllKey(), Rows(owned.spaces.at(G::EntityKind::Cell), AllRows));
-        return G::NativeMeshAssembler::Build(mpi, std::move(owned), 2);
+        return G::AssembleNativeMesh(mpi, std::move(owned), 2);
     }
     std::string FileName(const DNDS::MPIInfo &mpi, const std::string &label, const std::string &suffix)
     {
@@ -315,7 +315,7 @@ namespace
                                             { return PersistentId(kind, global); }));
             data.identity.nextIds[kind] = HighWater(kind);
         }
-        return G::NativeMeshAssembler::Build(mpi, std::move(data), 1);
+        return G::AssembleNativeMesh(mpi, std::move(data), 1);
     }
     void CheckTetrahedron(const std::shared_ptr<const G::NativeMeshState> &state, const DNDS::MPIInfo &mpi, I totalCells)
     {
@@ -434,6 +434,47 @@ namespace
     }
 }
 
+TEST_CASE("Native archive preserves a full custom ghost recipe across saved and even partitions")
+{
+    const auto mpi = MPI();
+    auto owned = G::NativeMeshAssembler::CaptureOwned(*Fixture(mpi, false), mpi);
+    REQUIRE(owned.ghostSpec);
+    auto recipe = *owned.ghostSpec;
+    recipe.chains.push_back({G::EntityKind::Cell, {AnyKey()}, G::EntityKind::Cell});
+    auto source = G::NativeMeshAssembler::Build(mpi, std::move(owned), recipe);
+    const auto file = FileName(mpi, "custom-policy", ".h5");
+    auto serializer = std::make_shared<S::SerializerH5>(mpi);
+    serializer->SetCollectiveRW(true, true);
+    serializer->OpenFile(file, false);
+    G::WriteNativeMeshArchive(*source, mpi, serializer, "mesh");
+    serializer->CloseFile();
+    for (auto partition : {S::ArrayGlobalOffset_Unknown, S::ArrayGlobalOffset_EvenSplit})
+    {
+        serializer->OpenFile(file, true);
+        auto decoded = G::ReadNativeMeshArchiveOwned(mpi, serializer, "mesh", partition);
+        serializer->CloseFile();
+        CHECK_FALSE(decoded.retainedRead);
+        for (const auto &[kind, space] : decoded.spaces)
+            CHECK(space.NumGhost() == 0);
+        REQUIRE(decoded.ghostSpec);
+        CHECK(decoded.ghostSpec->chains.size() == recipe.chains.size());
+        CHECK_NOTHROW(decoded.coords->Write());
+        auto restored = G::AssembleNativeMesh(mpi, std::move(decoded), 2);
+        REQUIRE(restored->GhostSpecification());
+        const auto &actual = restored->GhostSpecification()->chains;
+        REQUIRE(actual.size() == recipe.chains.size());
+        for (size_t i = 0; i < actual.size(); ++i)
+        {
+            CHECK(actual[i].anchor == recipe.chains[i].anchor);
+            CHECK(actual[i].target == recipe.chains[i].target);
+            CHECK(actual[i].hops == recipe.chains[i].hops);
+        }
+    }
+    MPI_Barrier(mpi.comm);
+    if (mpi.rank == 0)
+        std::filesystem::remove(file);
+}
+
 TEST_CASE("Native H5 archive preserves exact topology identity and stencil across saved and even partitions")
 {
     const auto mpi = MPI();
@@ -512,6 +553,23 @@ TEST_CASE("Native per-rank JSON archive preserves matching topology and rejects 
         std::ifstream input(file);
         input >> pristine;
     }
+    // Version-one metadata predates saved coverage and must still use a
+    // validated explicit default, without requiring a new-format field.
+    {
+        auto older = pristine;
+        auto metadata = nlohmann::json::parse(older.at("mesh").at("metadata_json").get<std::string>());
+        metadata.at("version") = 1;
+        metadata.erase("ghost_spec");
+        older.at("mesh").at("metadata_json") = metadata.dump();
+        {
+            std::ofstream output(file);
+            output << older;
+        }
+        serializer->OpenFile(file, true);
+        auto compatible = G::ReadNativeMeshArchive(mpi, serializer, "mesh");
+        serializer->CloseFile();
+        CheckState(compatible, mpi, source->RelationKeys());
+    }
     for (bool schema : {false, true})
     {
         auto corrupted = pristine;
@@ -546,7 +604,8 @@ TEST_CASE("Native per-rank JSON archive preserves matching topology and rejects 
     // parsing must still reject lossy numeric conversions and invalid identity.
     for (const std::string fault : {"version_float", "family_kind_float", "next_id_float", "fixed_width_float",
                                     "named_width_float", "companion_width_float", "writer_count", "namespace", "next_id_low",
-                                    "writer_rows_length", "writer_rows_sum", "writer_rows_ownership"})
+                                    "writer_rows_length", "writer_rows_sum", "writer_rows_ownership",
+                                    "ghost_policy_missing", "ghost_policy_type", "ghost_chain_empty", "ghost_chain_float"})
     {
         if (fault == "writer_rows_ownership" && mpi.size == 1)
             continue;
@@ -555,6 +614,14 @@ TEST_CASE("Native per-rank JSON archive preserves matching topology and rejects 
         auto metadata = nlohmann::json::parse(corrupted.at("mesh").at("metadata_json").get<std::string>());
         if (fault == "version_float")
             metadata.at("version") = 1.0;
+        if (fault == "ghost_policy_missing")
+            metadata.erase("ghost_spec");
+        if (fault == "ghost_policy_type")
+            metadata.at("ghost_spec") = nlohmann::json::object();
+        if (fault == "ghost_chain_empty" || fault == "ghost_chain_float")
+            metadata.at("ghost_spec") = nlohmann::json::array({{{"anchor", fault == "ghost_chain_float" ? nlohmann::json(0.5) : nlohmann::json(int(G::EntityKind::Cell))},
+                                                                {"target", int(G::EntityKind::Node)},
+                                                                {"hops", nlohmann::json::array()}}});
         if (fault == "family_kind_float")
             metadata.at("families").at(0).at("kind") = 0.5;
         if (fault == "next_id_float")

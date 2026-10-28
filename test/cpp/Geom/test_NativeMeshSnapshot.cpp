@@ -49,7 +49,7 @@ TEST_CASE("Detached snapshot publication retains validation and explicit placeme
 {
     DNDS::MPIInfo mpi;
     mpi.setWorld();
-    auto state = G::NativeMeshBuilder::Build(NativePeriodicFixtures::TwoCells(mpi), {1, true});
+    auto state = G::ConstructNativeMesh(NativePeriodicFixtures::TwoCells(mpi), {1, true});
     auto mesh = G::UnstructuredMesh::FromNative(mpi, state);
     auto snapshot = G::NativeMeshSnapshot::Capture(*mesh);
     CHECK_FALSE(snapshot.AcquireRead().HostView().HasRelation(G::MeshRelation::CellFaces));
@@ -68,8 +68,8 @@ TEST_CASE("Detached snapshot publication retains validation and explicit placeme
         auto write = rows.Write();
         write.View()(0, 0) = state->NumGlobal(G::EntityKind::Node);
     }
-    CHECK_THROWS(G::NativeMeshAssembler::Build(mpi, std::move(malformed)));
-    CHECK_NOTHROW(G::NativeMeshAssembler::Build(mpi, G::NativeMeshAssembler::CaptureOwned(*state, mpi)));
+    CHECK_THROWS(G::AssembleNativeMesh(mpi, std::move(malformed)));
+    CHECK_NOTHROW(G::AssembleNativeMesh(mpi, G::NativeMeshAssembler::CaptureOwned(*state, mpi)));
     CHECK(first.Stamp().Valid());
     auto moved = std::move(copy);
     CHECK_THROWS(copy.GetDevice());

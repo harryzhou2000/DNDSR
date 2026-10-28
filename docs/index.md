@@ -11,6 +11,29 @@ small-mode cutoff change, setup diagnostics and affected nonzero-tolerance cases
 The [2026-11-03 extended Euler rotation correction](dev/euler_extended_rotation_2026-11-03.md)
 records the NS_EX/NS_EX_3D absolute-velocity source convention and focused tests.
 
+## Architecture entry points
+
+| Topic | Guide |
+| --- | --- |
+| Mesh ownership, relation semantics, construction closure and ghost assembly | [Mesh connectivity and construction](architecture/MeshConnectivity.md) |
+| Owned construction API and mesh access examples | [Native mesh construction](architecture/NativeMesh.md) |
+| Shared arrays, placement, access and transfers | [Array infrastructure](architecture/array_infrastructure.md) |
+| Runtime ordering and lifetime responsibilities | [Runtime caller contract](architecture/RuntimeCallerContract.md) |
+| Native field algebra | [Native DOF algebra](architecture/NativeDofAlgebra.md) |
+| Canonical and compatibility source paths | [Source organization](architecture/source_organization.md) |
+| Mesh Python access and operations | [Python mesh guide](guides/python_geom_guide.md) |
+
+The mesh construction correction and its fixture/condition audit are recorded
+in the validation ledger below. Earlier infrastructure acceptance was withdrawn
+after detecting an omitted boundary ring; see the
+[evidence correction](dev/infrastructure_finish_2026-10-27.md). Test totals and
+owned numerical parity do not prove per-rank ghost completeness.
+The [source comparison and validation ledger](dev/mesh_construction_semantics_2026-10-28.md)
+records the final checks, explicit legacy periodic-frame differences and limits.
+The [legacy connectivity test-purpose ledger](dev/mesh_connectivity_test_port_2026-10-28.md)
+records all 47 original cases, independent expected answers and explicit
+replacements for retired containers.
+
 ## Core Modules
 
 | Module     | Directory    | Description                                              |

@@ -546,7 +546,7 @@ TEST_CASE("Native builder CUDA stencil retains independent arrays through pendin
     input.emplace(NativeBuilderCUDAInput(mpi));
     G::NativeMeshBuildOptions options;
     options.completeNodeStar = true;
-    auto state = G::NativeMeshBuilder::Build(*input, options);
+    auto state = G::ConstructNativeMesh(*input, options);
     auto placed = state->WithPlacement(device, context);
     // A placement adds device values and mirrored CSR/size metadata. Its host
     // shape metadata, native named registry, IDs and ancestry remain shared.

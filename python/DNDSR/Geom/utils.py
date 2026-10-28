@@ -160,7 +160,8 @@ def read_mesh(
     Native CGNS retains BC names on every rank. None selects the former helper's
     default periodic frames; an explicit dictionary overrides those frames.
     Omitted partition_options retains the former KWAY defaults. Explicit RB
-    selects reader-owned ingress, KWAY permits distributed input, and
+    and KWAY both use reader-owned ingress, matching the C++ source helper's
+    serial METIS policy. Partition precedes optional refinement;
     edgeWeightMethod=1 enables physical face-diameter weights. Native
     H5 reads a full native archive or decodes legacy primary records directly
     into native arrays, preserving saved ownership and original IDs unless
@@ -186,7 +187,7 @@ def read_mesh(
         mesh, names = Geom.read_native_cgns_with_names(
             mpi, mesh_file, dim, cell_layers=cell_layers, complete_node_star=complete_node_star,
             periodic_geometry=periodic_geometry, periodic_tolerance=periodic_tolerance,
-            reader_owned=bool(partition_options and partition_options.get("metisType") == "RB"))
+            reader_owned=True)
     elif mode == "h5":
         if periodic_geometry is not None or periodic_tolerance != 1e-9:
             raise ValueError("Native archive retains its saved periodic geometry; overrides are unsupported")
@@ -202,17 +203,17 @@ def read_mesh(
         names = None
     else:
         raise ValueError(f"Unknown read_mode: {mode!r}")
-    if elevation == "O2" and not mesh.IsO2():
-        mesh = Geom.elevate_native_mesh(mesh, cell_layers, complete_node_star)
-    for _ in range(bisect):
-        if not mesh.IsO2():
-            mesh = Geom.elevate_native_mesh(mesh, cell_layers, complete_node_star)
-        mesh = Geom.bisect_native_mesh(mesh, cell_layers, complete_node_star)
     if partition_options is not None:
         allowed = {*_DEFAULT_PARTITION_OPTIONS, "edgeWeightMethod"}
         if set(partition_options) - allowed:
             raise ValueError(f"Unknown native partition options: {set(partition_options) - allowed}")
         mesh = Geom.partition_native_mesh(mesh, **partition_options, ghost_layers=cell_layers)
+    if elevation == "O2" and not mesh.IsO2():
+        mesh = Geom.elevate_native_mesh(mesh, cell_layers, complete_node_star, preserve_original_ids=True)
+    for _ in range(bisect):
+        if not mesh.IsO2():
+            mesh = Geom.elevate_native_mesh(mesh, cell_layers, complete_node_star, preserve_original_ids=True)
+        mesh = Geom.bisect_native_mesh(mesh, cell_layers, complete_node_star)
     return MeshReadResult(mesh, Geom.UnstructuredMeshSerialRW(mesh, 0), names)
 
 
@@ -233,9 +234,10 @@ def prepare_mesh(
 ) -> None:
     """Prepare a distributed mesh for solver use (mutates *mesh* in place).
 
-    Steps: cell reorder, face interpolation, ghost N2CB, optional wall
-    distance, optional serial output, periodic nodes, VTK connectivity,
-    optional coordinate transforms.
+    Owned cell permutation precedes face construction; one final assembly
+    provides facial closure and complete owned-node stars. Coordinate transforms
+    precede optional wall distance and serial output. All ranks supply matching
+    options. Active reads reject in-place publication; release them first.
     """
     _native_authority(mesh)
     if reader is None:
@@ -246,8 +248,8 @@ def prepare_mesh(
     DNDS.MPI.Allreduce(mismatch, any_mismatch, "MPI_MAX", mesh.getMPI())
     if int(any_mismatch):
         raise ValueError("Preparation output adapter must belong to the same mesh on every rank")
-    mesh.PrepareNativeTopology(ghost_layers=ghost_layers)
-    mesh.ReorderLocalCells(nParts=reorder_parts, nPartsInner=reorder_inner_parts, ghost_layers=ghost_layers)
+    Geom.prepare_native_mesh_setup(mesh, reorder_parts, reorder_inner_parts,
+                                   ghost_layers, in_place=True)
     _apply_coord_transforms(mesh, coord_scale, coord_rot_z_deg, rectify_near_plane, rectify_threshold)
     if wall_dist_options is not None and wall_dist_predicate is None:
         raise ValueError("wall_dist_options requires wall_dist_predicate")
@@ -287,7 +289,8 @@ def prepare_native_mesh(
     All ranks must supply identical options and participate in this collective.
     This explicit route uses existing ownership and does not build legacy serial
     output caches. Explicit partition_options requests KWAY facial partitioning;
-    explicit reorder_parts requests a rank-local permutation. Allocate external
+    explicit reorder_parts requests a rank-local permutation before final face
+    construction. Owned setup assembles once; source reads remain valid. Allocate external
     solver fields after this helper; fields on the input stay source-associated.
     Use native output/archive APIs.
     """
@@ -297,14 +300,14 @@ def prepare_native_mesh(
         raise ValueError("wall_dist_options requires wall_dist_predicate")
     if reorder_parts is None and reorder_inner_parts != 1:
         raise ValueError("reorder_inner_parts requires reorder_parts")
-    prepared = Geom.prepare_native_topology(mesh, faces=True, edges=edges, ghost_layers=ghost_layers)
+    prepared = mesh
     if partition_options is not None:
         allowed = {*_DEFAULT_PARTITION_OPTIONS, "edgeWeightMethod"}
         if set(partition_options) - allowed:
             raise ValueError(f"Unknown native partition options: {set(partition_options) - allowed}")
         prepared = Geom.partition_native_mesh(prepared, **partition_options, ghost_layers=ghost_layers)
-    if reorder_parts is not None:
-        prepared = Geom.reorder_native_mesh(prepared, reorder_parts, reorder_inner_parts, ghost_layers)
+    prepared = Geom.prepare_native_mesh_setup(prepared, reorder_parts or 0,
+                                              reorder_inner_parts, ghost_layers, edges)
     _apply_coord_transforms(prepared, coord_scale, coord_rot_z_deg, rectify_near_plane, rectify_threshold)
     if wall_dist_predicate is not None:
         options = Geom.UnstructuredMesh.WallDistOptions()

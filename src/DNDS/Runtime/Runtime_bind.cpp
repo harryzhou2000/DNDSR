@@ -12,6 +12,7 @@ namespace DNDS::Runtime
     void BindMPIOptions(py::module_ &);
     void BindMPIEagerPython(py::module_ &);
     void BindDLPackPython(py::module_ &);
+    void BindAlgebraPython(py::module_ &);
     // Shared by static payload and dynamic migration binding validation.
     std::string DtypeSchema(const py::dtype &dtype)
     {
@@ -574,5 +575,6 @@ namespace DNDS::Runtime
         BindEagerPython(m);
         BindMPIEagerPython(m);
         BindDLPackPython(m);
+        BindAlgebraPython(m);
     }
 }

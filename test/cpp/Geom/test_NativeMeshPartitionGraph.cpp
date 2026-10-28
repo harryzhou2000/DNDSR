@@ -5,6 +5,9 @@
 #include "Geom/Mesh/NativeMeshBuilder.hpp"
 #include "Geom/Mesh/NativeMeshTopology.hpp"
 #include "DNDS/Runtime/RowBuilder.hpp"
+#include "Geom/Unstructured/ReaderPartitionGraph.hpp"
+#include "Geom/Refinement/NativeMeshExtraction.hpp"
+#include "NativePeriodicFixtures.hpp"
 
 namespace G = DNDS::Geom;
 namespace R = DNDS::Runtime;
@@ -12,6 +15,176 @@ using I = DNDS::index;
 
 namespace
 {
+    G::NativeMeshInput ReaderPeriodic(const DNDS::MPIInfo &mpi, bool triangles)
+    {
+        auto input = NativePeriodicFixtures::TwoCells(mpi);
+        const size_t count = triangles ? 4 : 2;
+        input.cells = input.nodes.CreateSibling(G::EntityKind::Cell, mpi.rank == 0 ? I(count) : 0);
+        const bool active = input.cells.NumOwned() != 0;
+        const std::vector<std::vector<I>> cones = triangles ? std::vector<std::vector<I>>{{0, 1, 3}, {0, 3, 2}, {1, 0, 2}, {1, 2, 3}}
+                                                            : std::vector<std::vector<I>>{{0, 1, 3, 2}, {1, 0, 2, 3}};
+        const std::vector<std::vector<G::NodePeriodicBits>> bits = triangles ? std::vector<std::vector<G::NodePeriodicBits>>{{{0}, {0}, {0}}, {{0}, {0}, {0}}, {{0}, {1}, {1}}, {{0}, {1}, {0}}}
+                                                                             : std::vector<std::vector<G::NodePeriodicBits>>{{{0}, {0}, {0}, {0}}, {{0}, {1}, {1}, {0}}};
+        input.cellNodes = NativePeriodicFixtures::Rows<I>(active ? cones : std::vector<std::vector<I>>{});
+        input.cellNodesPbi = NativePeriodicFixtures::Rows<G::NodePeriodicBits>(active ? bits : std::vector<std::vector<G::NodePeriodicBits>>{});
+        input.cellInfo = R::Array<G::ElemInfo>(R::RowLayout::Dense(size_t(input.cells.NumOwned()), 1));
+        auto info = input.cellInfo.Write();
+        for (size_t row = 0; row < size_t(input.cells.NumOwned()); ++row)
+            info.View()(row, 0) = G::ElemInfo{triangles ? G::Elem::Tri3 : G::Elem::Quad4, G::INTERNAL_ZONE};
+        return input;
+    }
+
+    G::NativeMeshInput ReaderHex(const DNDS::MPIInfo &mpi)
+    {
+        auto nodes = G::EntitySpace::CreateOwned(G::EntityKind::Node, mpi, mpi.rank == mpi.size - 1 ? 6 : 0);
+        auto cells = nodes.CreateSibling(G::EntityKind::Cell, mpi.rank == 0 ? 2 : 0);
+        auto bnd = nodes.CreateSibling(G::EntityKind::Bnd, mpi.rank == mpi.size / 2 ? 4 : 0);
+        std::vector<std::vector<I>> cones, boundaries;
+        std::vector<std::vector<G::NodePeriodicBits>> bits, boundaryBits;
+        if (cells.NumOwned())
+        {
+            cones = {{0, 0, 1, 1, 3, 3, 4, 4}, {1, 1, 2, 2, 4, 4, 5, 5}};
+            bits = {{{0}, {1}, {1}, {0}, {0}, {1}, {1}, {0}}, {{0}, {1}, {1}, {0}, {0}, {1}, {1}, {0}}};
+        }
+        if (bnd.NumOwned())
+        {
+            boundaries = {{0, 1, 4, 3}, {0, 3, 4, 1}, {1, 2, 5, 4}, {1, 4, 5, 2}};
+            boundaryBits = {{{1}, {1}, {1}, {1}}, {{0}, {0}, {0}, {0}}, {{1}, {1}, {1}, {1}}, {{0}, {0}, {0}, {0}}};
+        }
+        G::NativeMeshInput input{mpi, 3, cells, nodes, bnd, NativePeriodicFixtures::Rows(cones), NativePeriodicFixtures::Rows(boundaries),
+                                 R::Array<DNDS::real>(R::RowLayout::Dense(size_t(nodes.NumOwned()), 3)),
+                                 R::Array<G::ElemInfo>(R::RowLayout::Dense(size_t(cells.NumOwned()), 1)),
+                                 R::Array<G::ElemInfo>(R::RowLayout::Dense(size_t(bnd.NumOwned()), 1))};
+        input.periodic = true;
+        input.cellNodesPbi = NativePeriodicFixtures::Rows(bits);
+        input.boundaryNodesPbi = NativePeriodicFixtures::Rows(boundaryBits);
+        {
+            auto coordinates = input.coordinates.Write();
+            for (size_t row = 0; row < size_t(nodes.NumOwned()); ++row)
+            {
+                coordinates.View()(row, 0) = 0;
+                coordinates.View()(row, 1) = DNDS::real(row % 3);
+                coordinates.View()(row, 2) = DNDS::real(row / 3);
+            }
+            auto info = input.cellInfo.Write();
+            for (size_t row = 0; row < size_t(cells.NumOwned()); ++row)
+                info.View()(row, 0) = {G::Elem::Hex8, G::INTERNAL_ZONE};
+            auto boundary = input.boundaryInfo.Write();
+            for (size_t row = 0; row < size_t(bnd.NumOwned()); ++row)
+                boundary.View()(row, 0) = {G::Elem::Quad4, row % 2 ? G::BC_ID_PERIODIC_1 : G::BC_ID_PERIODIC_1_DONOR};
+        }
+        return input;
+    }
+
+    void CheckReaderGraphAndPartition(const G::UnstructuredMeshState &source, const DNDS::MPIInfo &mpi, bool partition = true)
+    {
+        const auto graph = G::detail::BuildReaderPartitionGraph(source, mpi);
+        const auto full = G::PrepareNativeMeshTopology(source, mpi);
+        const auto oracle = G::detail::BuildNativePartitionGraph(*full, mpi, 0);
+        CHECK(graph.offsets == oracle.offsets);
+        CHECK(graph.adjacency == oracle.adjacency);
+        CHECK(graph.weights.empty());
+        if (!partition)
+            return;
+        for (const auto *method : {"KWAY", "RB"})
+        {
+            CAPTURE(std::string(method));
+            G::NativePartitionOptions options;
+            options.metisType = method;
+            const auto fast = G::NativeMeshPreparation::Partition(source, mpi, options);
+            const auto reference = G::NativeMeshPreparation::Partition(*full, mpi, options);
+            options.deferNewFacesUntilPreparation = true;
+            const auto deferred = G::NativeMeshPreparation::Partition(source, mpi, options);
+            const auto retainedFaces = G::NativeMeshPreparation::Partition(*full, mpi, options);
+            CHECK_FALSE(deferred.state->HasEntities(G::EntityKind::Face));
+            CHECK_FALSE(deferred.state->Requirements().faces);
+            CHECK(deferred.state->LocalCellNeighbors().empty());
+            CHECK(deferred.state->IdHighWater() == source.IdHighWater());
+            CHECK(deferred.state->MeshNamespace() == source.MeshNamespace());
+            CHECK(retainedFaces.state->Requirements().faces);
+            CHECK(retainedFaces.state->IdHighWater() == reference.state->IdHighWater());
+            auto localOracle = fast.state->BuildLocalCellNeighbors();
+            for (auto &row : localOracle)
+            {
+                std::sort(row.begin(), row.end());
+                row.erase(std::unique(row.begin(), row.end()), row.end());
+            }
+            CHECK(G::detail::BuildPrimaryLocalCellNeighbors(*deferred.state) == localOracle);
+            CHECK(fast.state->MeshNamespace() == source.MeshNamespace());
+            for (const auto kind : {G::EntityKind::Cell, G::EntityKind::Node, G::EntityKind::Bnd})
+            {
+                CHECK(fast.sourceSpaces.at(kind).SameOrder(source.Entities(kind)));
+                REQUIRE(fast.state->NumOwned(kind) == reference.state->NumOwned(kind));
+                REQUIRE(deferred.state->NumOwned(kind) == fast.state->NumOwned(kind));
+                CHECK(deferred.sourceSpaces.at(kind).SameOrder(source.Entities(kind)));
+                CHECK(fast.state->IdHighWater().at(kind) == source.IdHighWater().at(kind));
+                for (I row = 0; row < fast.state->NumOwned(kind); ++row)
+                {
+                    CHECK(fast.state->OriginalEntityId(kind, row) == reference.state->OriginalEntityId(kind, row));
+                    CHECK(deferred.state->OriginalEntityId(kind, row) == fast.state->OriginalEntityId(kind, row));
+                }
+            }
+            CHECK_FALSE(fast.transfers.count(G::EntityKind::Face));
+            CHECK(fast.state->NumGlobal(G::EntityKind::Face) == full->NumGlobal(G::EntityKind::Face));
+            const auto beforeA = fast.state->BorrowHostView(), beforeB = reference.state->BorrowHostView();
+            for (I cell = 0; cell < beforeA.NumCell(); ++cell)
+                for (size_t slot = 0; slot < beforeA.CellFaces(cell).size(); ++slot)
+                {
+                    const auto fa = beforeA.CellFaces(cell)[slot], fb = beforeB.CellFaces(cell)[slot];
+                    // Fresh faces may select the opposite periodic reference
+                    // side before final cell reorder. Physical boundary zones
+                    // and coordinates in this cell's frame must still agree.
+                    auto zoneOnCell = [&](const auto &view, I face)
+                    {
+                        const auto zone = view.GetFaceZone(face);
+                        if (!G::FaceIDIsPeriodic(zone))
+                            return zone;
+                        const bool back = view.CellIsFaceBack(cell, face, DNDS::rowsize(slot));
+                        const bool main = G::FaceIDIsPeriodicMain(zone) == back;
+                        return G::t_index(-(((-int(zone) - 1) % 3) + 1) - (main ? 0 : 3));
+                    };
+                    CHECK(zoneOnCell(beforeA, fa) == zoneOnCell(beforeB, fb));
+                }
+            // PrepareMesh reorders cells and refreshes faces. This exact stage
+            // must restore the same final orientation, slots and PBI, not merely
+            // an isomorphic graph with new face labels.
+            auto finalA = G::NativeMeshTransition::ReorderLocalCells(*deferred.state, mpi).state;
+            auto finalB = G::NativeMeshTransition::ReorderLocalCells(*reference.state, mpi).state;
+            finalA = G::NativeMeshPreparation::PrepareTopology(*finalA, mpi);
+            finalB = G::NativeMeshPreparation::PrepareTopology(*finalB, mpi);
+            const auto a = finalA->BorrowHostView(), b = finalB->BorrowHostView();
+            for (I cell = 0; cell < a.NumCell(); ++cell)
+            {
+                REQUIRE(a.CellNodes(cell).size() == b.CellNodes(cell).size());
+                CHECK(a.GetCellInfo(cell).type == b.GetCellInfo(cell).type);
+                for (size_t slot = 0; slot < a.CellNodes(cell).size(); ++slot)
+                {
+                    CHECK(finalA->OriginalEntityId(G::EntityKind::Node, a.CellNodes(cell)[slot]) ==
+                          finalB->OriginalEntityId(G::EntityKind::Node, b.CellNodes(cell)[slot]));
+                    CHECK(a.GetCoordNodeOnCell(cell, DNDS::rowsize(slot)) == b.GetCoordNodeOnCell(cell, DNDS::rowsize(slot)));
+                }
+                for (size_t slot = 0; slot < a.CellFaces(cell).size(); ++slot)
+                {
+                    const auto fa = a.CellFaces(cell)[slot], fb = b.CellFaces(cell)[slot];
+                    CHECK(a.GetFaceZone(fa) == b.GetFaceZone(fb));
+                    CHECK(a.CellIsFaceBack(cell, fa, DNDS::rowsize(slot)) == b.CellIsFaceBack(cell, fb, DNDS::rowsize(slot)));
+                    REQUIRE(a.FaceNodes(fa).size() == b.FaceNodes(fb).size());
+                    for (size_t node = 0; node < a.FaceNodes(fa).size(); ++node)
+                    {
+                        CHECK(finalA->OriginalEntityId(G::EntityKind::Node, a.FaceNodes(fa)[node]) ==
+                              finalB->OriginalEntityId(G::EntityKind::Node, b.FaceNodes(fb)[node]));
+                        if (a.IsPeriodic())
+                            CHECK(a.FaceNodePeriodicBits(fa)[node] == b.FaceNodePeriodicBits(fb)[node]);
+                    }
+                    const auto na = a.CellFaceOther(cell, fa, DNDS::rowsize(slot));
+                    const auto nb = b.CellFaceOther(cell, fb, DNDS::rowsize(slot));
+                    CHECK((na == DNDS::UnInitIndex ? na : finalA->OriginalEntityId(G::EntityKind::Cell, na)) ==
+                          (nb == DNDS::UnInitIndex ? nb : finalB->OriginalEntityId(G::EntityKind::Cell, nb)));
+                }
+            }
+        }
+    }
+
     std::shared_ptr<const G::NativeMeshState> WeightedStrip(const DNDS::MPIInfo &mpi, bool readerOwned)
     {
         const bool active = !readerOwned || mpi.rank == mpi.size - 1;
@@ -42,7 +215,157 @@ namespace
             for (size_t row = 0; row < size_t(cells.NumOwned()); ++row)
                 info.View()(row, 0) = G::ElemInfo{G::Elem::Quad4, G::t_index(100 * mpi.rank + int(row))};
         }
-        return G::NativeMeshBuilder::Build(std::move(input));
+        return G::ConstructNativeMesh(std::move(input));
+    }
+}
+
+TEST_CASE("Reader primary unweighted graph equals full facial publication and partitions identical primary rows")
+{
+    const DNDS::MPIInfo mpi(MPI_COMM_WORLD);
+    for (bool triangles : {false, true})
+    {
+        auto source = G::ConstructNativeMesh(ReaderPeriodic(mpi, triangles));
+        const auto graph = G::detail::BuildReaderPartitionGraph(*source, mpi);
+        if (mpi.rank == 0)
+        {
+            CHECK(graph.offsets == (triangles ? std::vector<idx_t>{0, 2, 4, 6, 8} : std::vector<idx_t>{0, 1, 2}));
+            CHECK(graph.adjacency == (triangles ? std::vector<idx_t>{1, 3, 0, 2, 1, 3, 0, 2} : std::vector<idx_t>{1, 0}));
+            if (mpi.size > 1)
+                CHECK(source->NumOwned(G::EntityKind::Node) == 0);
+        }
+        else
+            CHECK(graph.offsets == std::vector<idx_t>{0});
+        CheckReaderGraphAndPartition(*source, mpi);
+    }
+    CheckReaderGraphAndPartition(*G::ConstructNativeMesh(ReaderHex(mpi)), mpi);
+    CheckReaderGraphAndPartition(*G::ConstructNativeMesh(NativePeriodicFixtures::QuadraticTorus(mpi)), mpi);
+    CheckReaderGraphAndPartition(*WeightedStrip(mpi, true), mpi);
+}
+
+TEST_CASE("Reader scratch rejects dimension-one boundary meshes collectively")
+{
+    const DNDS::MPIInfo mpi(MPI_COMM_WORLD);
+    auto source = G::ConstructNativeMesh(ReaderPeriodic(mpi, false));
+    auto boundary = G::NativeMeshExtraction::ExtractBoundary(*source, mpi).state;
+    CHECK(boundary->Snapshot(R::Device::Host()).AcquireRead().HostView().Dimension() == 1);
+    CHECK_THROWS(G::detail::BuildReaderPartitionGraph(*boundary, mpi));
+    CHECK_THROWS(G::NativeMeshPreparation::Partition(*boundary, mpi));
+    CHECK_THROWS(G::NativeMeshTransition::ReorderLocalCells(*boundary, mpi));
+    CHECK_NOTHROW(boundary->Validate());
+}
+
+TEST_CASE("Face deferral agrees collectively and preserves weighted fallback")
+{
+    const DNDS::MPIInfo mpi(MPI_COMM_WORLD);
+    auto source = WeightedStrip(mpi, true);
+    G::NativePartitionOptions options;
+    if (mpi.size > 1)
+    {
+        options.deferNewFacesUntilPreparation = mpi.rank == 0;
+        CHECK_THROWS(G::NativeMeshPreparation::Partition(*source, mpi, options));
+        CHECK_NOTHROW(source->Validate());
+    }
+    options.deferNewFacesUntilPreparation = true;
+    auto deferred = G::NativeMeshPreparation::Partition(*source, mpi, options);
+    CHECK_FALSE(deferred.state->HasEntities(G::EntityKind::Face));
+    options.edgeWeightMethod = 1;
+    auto weighted = G::NativeMeshPreparation::Partition(*source, mpi, options);
+    CHECK(weighted.state->Requirements().faces);
+    CHECK(weighted.state->HasEntities(G::EntityKind::Face));
+    CHECK(weighted.state->MeshNamespace() == source->MeshNamespace());
+}
+
+TEST_CASE("Reader graph retains empty disconnected nonmanifold and cracked high-order behavior")
+{
+    const DNDS::MPIInfo mpi(MPI_COMM_WORLD);
+    for (bool disconnected : {false, true})
+    {
+        auto input = ReaderPeriodic(mpi, false);
+        input.periodic = false;
+        input.cellNodesPbi.reset();
+        input.boundaryNodesPbi.reset();
+        input.nodes = G::EntitySpace::CreateOwned(G::EntityKind::Node, mpi, disconnected && mpi.rank == mpi.size - 1 ? 8 : 0);
+        input.cells = input.nodes.CreateSibling(G::EntityKind::Cell, disconnected && mpi.rank == 0 ? 2 : 0);
+        input.boundaries = input.nodes.CreateSibling(G::EntityKind::Bnd, 0);
+        input.cellNodes = NativePeriodicFixtures::Rows<I>(input.cells.NumOwned() ? std::vector<std::vector<I>>{{0, 1, 2, 3}, {4, 5, 6, 7}} : std::vector<std::vector<I>>{});
+        input.boundaryNodes = R::Array<I>();
+        input.coordinates = R::Array<DNDS::real>(R::RowLayout::Dense(size_t(input.nodes.NumOwned()), 3));
+        input.cellInfo = R::Array<G::ElemInfo>(R::RowLayout::Dense(size_t(input.cells.NumOwned()), 1));
+        input.boundaryInfo = R::Array<G::ElemInfo>(R::RowLayout::Dense(0, 1));
+        {
+            auto info = input.cellInfo.Write();
+            for (size_t row = 0; row < size_t(input.cells.NumOwned()); ++row)
+                info.View()(row, 0) = {G::Elem::Quad4, G::INTERNAL_ZONE};
+        }
+        auto source = G::ConstructNativeMesh(std::move(input));
+        CheckReaderGraphAndPartition(*source, mpi, !disconnected);
+        if (disconnected)
+        {
+            const auto full = G::PrepareNativeMeshTopology(*source, mpi);
+            for (const auto *method : {"KWAY", "RB"})
+            {
+                G::NativePartitionOptions options;
+                options.metisType = method;
+                std::optional<G::NativeMeshTransitionResult> fast, reference;
+                try
+                {
+                    fast.emplace(G::NativeMeshPreparation::Partition(*source, mpi, options));
+                }
+                catch (const std::exception &)
+                {
+                }
+                try
+                {
+                    reference.emplace(G::NativeMeshPreparation::Partition(*full, mpi, options));
+                }
+                catch (const std::exception &)
+                {
+                }
+                // METIS contiguity can reject disconnected input. Keep the
+                // reference success/failure behavior as well as assignments.
+                REQUIRE(bool(fast) == bool(reference));
+                if (fast)
+                {
+                    REQUIRE(fast->state->NumOwned(G::EntityKind::Cell) == reference->state->NumOwned(G::EntityKind::Cell));
+                    for (I row = 0; row < fast->state->NumOwned(G::EntityKind::Cell); ++row)
+                        CHECK(fast->state->OriginalEntityId(G::EntityKind::Cell, row) == reference->state->OriginalEntityId(G::EntityKind::Cell, row));
+                }
+            }
+        }
+    }
+    auto cracked = G::ConstructNativeMesh(NativePeriodicFixtures::QuadraticTorus(mpi, true));
+    CHECK_THROWS(G::detail::BuildReaderPartitionGraph(*cracked, mpi));
+    CHECK_THROWS(G::PrepareNativeMeshTopology(*cracked, mpi));
+    CHECK_THROWS(G::NativeMeshTransition::ReorderLocalCells(*cracked, mpi));
+    CHECK_NOTHROW(cracked->Validate());
+    auto input = ReaderPeriodic(mpi, true);
+    input.periodic = false;
+    input.cellNodesPbi.reset();
+    input.boundaryNodesPbi.reset();
+    input.nodes = G::EntitySpace::CreateOwned(G::EntityKind::Node, mpi, mpi.rank == mpi.size - 1 ? 5 : 0);
+    input.cells = input.nodes.CreateSibling(G::EntityKind::Cell, mpi.rank == 0 ? 3 : 0);
+    input.boundaries = input.nodes.CreateSibling(G::EntityKind::Bnd, 0);
+    input.cellNodes = NativePeriodicFixtures::Rows<I>(input.cells.NumOwned() ? std::vector<std::vector<I>>{{0, 1, 2}, {1, 0, 3}, {0, 1, 4}} : std::vector<std::vector<I>>{});
+    input.boundaryNodes = R::Array<I>();
+    input.coordinates = R::Array<DNDS::real>(R::RowLayout::Dense(size_t(input.nodes.NumOwned()), 3));
+    input.cellInfo = R::Array<G::ElemInfo>(R::RowLayout::Dense(size_t(input.cells.NumOwned()), 1));
+    input.boundaryInfo = R::Array<G::ElemInfo>(R::RowLayout::Dense(0, 1));
+    {
+        auto info = input.cellInfo.Write();
+        for (size_t row = 0; row < size_t(input.cells.NumOwned()); ++row)
+            info.View()(row, 0) = {G::Elem::Tri3, G::INTERNAL_ZONE};
+    }
+    auto nonmanifold = G::ConstructNativeMesh(std::move(input));
+    CHECK_THROWS(G::detail::BuildReaderPartitionGraph(*nonmanifold, mpi));
+    CHECK_THROWS(G::PrepareNativeMeshTopology(*nonmanifold, mpi));
+    CHECK_THROWS(G::NativeMeshTransition::ReorderLocalCells(*nonmanifold, mpi));
+    CHECK_NOTHROW(nonmanifold->Validate());
+    auto retry = G::ConstructNativeMesh(ReaderPeriodic(mpi, false));
+    CHECK_NOTHROW(G::NativeMeshTransition::ReorderLocalCells(*retry, mpi));
+    if (mpi.size > 1)
+    {
+        auto distributed = WeightedStrip(mpi, false);
+        CHECK_THROWS(G::detail::BuildReaderPartitionGraph(*distributed, mpi));
     }
 }
 
@@ -52,7 +375,7 @@ TEST_CASE("Native partition uses exact global CSR and normalized nonuniform phys
     for (bool readerOwned : {false, true})
     {
         auto source = WeightedStrip(mpi, readerOwned);
-        auto prepared = G::NativeMeshTopology::Build(*source, mpi);
+        auto prepared = G::PrepareNativeMeshTopology(*source, mpi);
         const auto graph = G::detail::BuildNativePartitionGraph(*prepared, mpi, 1);
         const auto unweighted = G::detail::BuildNativePartitionGraph(*prepared, mpi, 0);
         CHECK(unweighted.offsets == graph.offsets);
@@ -202,7 +525,7 @@ TEST_CASE("Several physical faces of one cell pair contribute their maximum diam
         for (size_t row = 0; row < size_t(cells.NumOwned()); ++row)
             info.View()(row, 0) = G::ElemInfo{G::Elem::Quad4, 0};
     }
-    auto source = G::NativeMeshTopology::Build(*G::NativeMeshBuilder::Build(std::move(input)), mpi);
+    auto source = G::PrepareNativeMeshTopology(*G::ConstructNativeMesh(std::move(input)), mpi);
     auto graph = G::detail::BuildNativePartitionGraph(*source, mpi, 1);
     if (mpi.rank == 0)
     {

@@ -7,6 +7,8 @@
 #include "Geom/Mesh/Mesh_Helpers.hpp"
 #include "Geom/Mesh/NativeMeshPartitionGraph.hpp"
 #include "NativePeriodicFixtures.hpp"
+#include "NativeReorderChecks.hpp"
+#include "Geom/Connectivity/NativeMeshTopology.hpp"
 
 #include <iterator>
 
@@ -14,12 +16,100 @@ namespace G = DNDS::Geom;
 namespace R = DNDS::Runtime;
 using I = DNDS::index;
 
+TEST_CASE("Owned graph rejects mismatched weight branches before coordinate exchange")
+{
+    DNDS::MPIInfo mpi(MPI_COMM_WORLD);
+    auto owned = G::NativeMeshBuilder::Build(NativePeriodicFixtures::TwoCells(mpi));
+    const int method = mpi.size == 1 ? -1 : mpi.rank == 0 ? 0
+                                                          : 1;
+    CHECK_THROWS(G::detail::BuildOwnedPartitionGraph(owned, mpi, method));
+    CHECK_NOTHROW(owned.coords->Write());
+    owned.dimension = 1;
+    CHECK_THROWS(G::detail::BuildOwnedPartitionGraph(owned, mpi, 0));
+}
+
+TEST_CASE("Owned CGNS partition permutation and faces need only one final assembly")
+{
+    DNDS::MPIInfo mpi(MPI_COMM_WORLD);
+    for (const bool periodic : {false, true})
+        for (const bool readerOwned : {false, true})
+            for (const int weight : {0, 1})
+            {
+                CAPTURE(periodic);
+                CAPTURE(readerOwned);
+                CAPTURE(weight);
+                std::optional<G::NativePeriodicImportOptions> frames;
+                if (periodic)
+                {
+                    frames.emplace();
+                    frames->frames.translation[1].map() = G::tPoint{10, 0, 0};
+                    frames->frames.translation[2].map() = G::tPoint{0, 10, 0};
+                }
+                const auto path = (NativeReorderChecks::Root() / "data/mesh" /
+                                   (periodic ? "IV10_10.cgns" : "UniformSquare_10.cgns"))
+                                      .string();
+                auto owned = G::ReadNativeCGNSOwned(mpi, path, 2, G::FBC_Name_2_ID_Default, mpi.size - 1,
+                                                    {1, true}, frames, readerOwned ? G::NativeSerialDistribution::ReaderOwned : G::NativeSerialDistribution::Even);
+                auto checkOwned = [&](const G::NativeOwnedMeshData &data)
+                {
+                    CHECK_FALSE(data.retainedRead);
+                    for (const auto &[kind, space] : data.spaces)
+                        CHECK(space.NumGhost() == 0);
+                };
+                checkOwned(owned);
+                CHECK_FALSE(owned.spaces.count(G::EntityKind::Face));
+                const auto recipe = G::DefaultNativeMeshGhostSpec(owned, 1, true);
+                // A separate completed-state reference exercises the older
+                // call sequence. It is never an input to the owned pipeline.
+                auto reference = G::NativeMeshAssembler::Build(mpi, owned, recipe);
+                auto facialReference = G::NativeMeshPreparation::PrepareTopology(*reference, mpi);
+                const auto actualGraph = G::detail::BuildOwnedPartitionGraph(owned, mpi, weight);
+                const auto expectedGraph = G::detail::BuildNativePartitionGraph(*facialReference, mpi, weight);
+                CHECK(actualGraph.offsets == expectedGraph.offsets);
+                CHECK(actualGraph.adjacency == expectedGraph.adjacency);
+                CHECK(actualGraph.weights == expectedGraph.weights);
+                G::NativePartitionOptions options;
+                options.metisSeed = 43;
+                options.metisNcuts = 1;
+                options.edgeWeightMethod = weight;
+                options.deferNewFacesUntilPreparation = true;
+                auto partition = G::NativeMeshPreparation::PartitionOwned(owned, mpi, options);
+                checkOwned(partition.owned);
+                CHECK_FALSE(partition.owned.spaces.count(G::EntityKind::Face));
+                reference = G::NativeMeshPreparation::Partition(*reference, mpi, options).state;
+                auto permutation = G::NativeMeshTransition::ReorderOwnedCells(partition.owned, mpi, 2, 1);
+                checkOwned(permutation.owned);
+                CHECK_FALSE(permutation.owned.spaces.count(G::EntityKind::Face));
+                reference = G::NativeMeshTransition::ReorderLocalCells(*reference, mpi, 2, 1).state;
+                auto topology = G::NativeMeshTopology::Build(std::move(permutation.owned), mpi);
+                checkOwned(topology);
+                CHECK(topology.spaces.count(G::EntityKind::Face) == 1);
+                auto finalRecipe = G::DefaultNativeMeshGhostSpec(topology, 1, true);
+                auto actual = G::NativeMeshAssembler::Build(mpi, std::move(topology), finalRecipe);
+                reference = G::NativeMeshPreparation::PrepareTopology(*reference, mpi);
+                for (const auto kind : {G::EntityKind::Node, G::EntityKind::Cell, G::EntityKind::Bnd})
+                {
+                    CHECK(actual->NumOwned(kind) == reference->NumOwned(kind));
+                    NativeReorderChecks::Equal(NativeReorderChecks::Records(*actual, kind), NativeReorderChecks::Records(*reference, kind));
+                    std::set<I> actualGhosts, expectedGhosts;
+                    for (I row = actual->NumOwned(kind); row < actual->Entities(kind).NumLocal(); ++row)
+                        actualGhosts.insert(actual->OriginalEntityId(kind, row));
+                    for (I row = reference->NumOwned(kind); row < reference->Entities(kind).NumLocal(); ++row)
+                        expectedGhosts.insert(reference->OriginalEntityId(kind, row));
+                    CHECK(actualGhosts == expectedGhosts);
+                }
+                CHECK(actual->NLocalParts() == 2);
+                for (int part = 0; part < 2; ++part)
+                    CHECK(actual->LocalPartStart(part) == reference->LocalPartStart(part));
+            }
+}
+
 TEST_CASE("Periodic default boundary ownership follows physical side while explicit support follows both")
 {
     DNDS::MPIInfo mpi(MPI_COMM_WORLD);
     if (mpi.size < 2)
         return;
-    auto source = G::NativeMeshBuilder::Build(NativePeriodicFixtures::TwoCells(mpi), {1, true});
+    auto source = G::ConstructNativeMesh(NativePeriodicFixtures::TwoCells(mpi), {1, true});
     for (const bool withFaces : {false, true})
         for (const bool missingNamedSide : {false, true})
         {
@@ -28,7 +118,7 @@ TEST_CASE("Periodic default boundary ownership follows physical side while expli
             {
                 auto owned = G::NativeMeshAssembler::CaptureOwned(*input, mpi);
                 owned.namedRelations.erase(G::NativeBoundaryPlacementRelation(*input));
-                input = G::NativeMeshAssembler::Build(mpi, std::move(owned));
+                input = G::AssembleNativeMesh(mpi, std::move(owned));
                 CHECK_THROWS(input->Relation(G::NativeBoundaryPlacementRelation(*input)));
             }
             const auto &view = input->BorrowHostView();
@@ -43,6 +133,7 @@ TEST_CASE("Periodic default boundary ownership follows physical side while expli
             auto inspect = [&](const G::NativeMeshState &state, bool explicitBoth)
             {
                 const auto &actual = state.BorrowHostView();
+                auto coupled = state.Relation(G::Adj::Bnd2CellCoupled);
                 for (I boundary = 0; boundary < actual.NumBnd(); ++boundary)
                 {
                     const I id = state.OriginalEntityId(G::EntityKind::Bnd, boundary);
@@ -54,7 +145,12 @@ TEST_CASE("Periodic default boundary ownership follows physical side while expli
                     if (id < 2)
                     {
                         REQUIRE(pair[1] != DNDS::UnInitIndex);
-                        CHECK(state.OriginalEntityId(G::EntityKind::Cell, pair[1]) == 1 - side);
+                        CHECK(pair[1] == pair[0]);
+                        const auto partner = coupled.ReadEntry(boundary, 1);
+                        REQUIRE(!partner.absent);
+                        const auto local = state.Entities(G::EntityKind::Cell).GlobalToLocal(partner.global);
+                        REQUIRE(local);
+                        CHECK(state.OriginalEntityId(G::EntityKind::Cell, *local) == 1 - side);
                     }
                 }
                 CHECK(state.NumGlobal(G::EntityKind::Bnd) == 6);
@@ -64,7 +160,7 @@ TEST_CASE("Periodic default boundary ownership follows physical side while expli
             // Explicit FollowSpec retains its documented minimum-over-relation
             // meaning; callers can deliberately request coupled support ownership.
             reorder.follows = {{G::EntityKind::Node, G::EntityKind::Cell, G::Adj::Node2Cell},
-                               {G::EntityKind::Bnd, G::EntityKind::Cell, G::Adj::Bnd2Cell}};
+                               {G::EntityKind::Bnd, G::EntityKind::Cell, G::Adj::Bnd2CellCoupled}};
             inspect(*G::NativeMeshTransition::Build(*input, mpi, reorder).state, true);
         }
 }
@@ -161,8 +257,13 @@ TEST_CASE("Prepared reordered faces follow independent post-permutation parent-m
     DNDS::MPIInfo mpi(MPI_COMM_WORLD);
     const auto root = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path();
     for (const bool periodic : {false, true})
-        for (const bool initialFaces : {false, true})
+    {
+        const int readerRank = mpi.size - 1;
+        std::array<std::map<G::EntityKind, std::vector<I>>, 3> ownedIdsByMode;
+        std::array<std::vector<std::vector<I>>, 3> faceGeometryByMode;
+        for (const int inputMode : {0, 1, 2})
         {
+            const bool initialFaces = inputMode == 1;
             G::AutoAppendName2ID names;
             G::NativePeriodicImportOptions images;
             images.frames.translation[1].map() = G::tPoint{10, 0, 0};
@@ -170,15 +271,20 @@ TEST_CASE("Prepared reordered faces follow independent post-permutation parent-m
             images.frames.translation[3].map() = G::tPoint{0, 0, 10};
             const auto path = (root / "data/mesh" / (periodic ? "IV10_10.cgns" : "UniformSquare_10.cgns")).string();
             DNDS::ssp<G::UnstructuredMesh> mesh;
-            if (initialFaces)
+            if (inputMode != 0)
                 mesh = G::ReadNativeMeshFromCGNS(mpi, 2, path, {}, [&](const std::string &name)
-                                                 { return names(name); }, periodic ? std::optional<G::NativePeriodicImportOptions>(images) : std::nullopt);
+                                                 { return names(name); }, periodic ? std::optional<G::NativePeriodicImportOptions>(images) : std::nullopt, 0, 0, readerRank, inputMode == 2);
             else
                 mesh = G::UnstructuredMesh::FromNative(mpi, G::ReadNativeCGNS(mpi, path, 2, [&](const std::string &name)
-                                                                              { return names(name); }, 0, {1, true}, periodic ? std::optional<G::NativePeriodicImportOptions>(images) : std::nullopt));
+                                                                              { return names(name); }, readerRank, {1, true}, periodic ? std::optional<G::NativePeriodicImportOptions>(images) : std::nullopt));
             auto before = mesh->CurrentNativeState();
             CHECK(before->Requirements().faces == initialFaces);
-            G::UnstructuredMeshSerialRW output(mesh, 0);
+            if (inputMode == 2)
+            {
+                CHECK_FALSE(before->HasEntities(G::EntityKind::Face));
+                CHECK_FALSE(before->Requirements().faces);
+            }
+            G::UnstructuredMeshSerialRW output(mesh, readerRank);
             G::PrepareMeshOptions options;
             options.reorderCells = 1;
             options.reorderParts = 2;
@@ -200,6 +306,13 @@ TEST_CASE("Prepared reordered faces follow independent post-permutation parent-m
             std::sort(actualCellIds.begin(), actualCellIds.end());
             std::sort(previousCellIds.begin(), previousCellIds.end());
             CHECK(actualCellIds == previousCellIds);
+            for (const auto kind : {G::EntityKind::Cell, G::EntityKind::Node, G::EntityKind::Bnd})
+            {
+                auto &ids = ownedIdsByMode[size_t(inputMode)][kind];
+                for (I row = 0; row < state->NumOwned(kind); ++row)
+                    ids.push_back(state->OriginalEntityId(kind, row));
+                std::sort(ids.begin(), ids.end());
+            }
             struct Face
             {
                 std::vector<I> nodes, parents;
@@ -277,7 +390,34 @@ TEST_CASE("Prepared reordered faces follow independent post-permutation parent-m
             }
             CHECK(owned == view.NumFace());
             CHECK_NOTHROW(state->BuildLocalCellNeighbors(true));
+
+            auto &faceGeometry = faceGeometryByMode[size_t(inputMode)];
+            for (I face = 0; face < view.NumFace(); ++face)
+            {
+                std::vector<std::pair<I, uint8_t>> nodes;
+                for (size_t slot = 0; slot < view.FaceNodes(face).size(); ++slot)
+                    nodes.emplace_back(state->OriginalEntityId(G::EntityKind::Node, view.FaceNodes(face)[slot]),
+                                       periodic ? uint8_t(view.FaceNodePeriodicBits(face)[slot]) : 0);
+                std::sort(nodes.begin(), nodes.end());
+                std::vector<I> parents;
+                for (auto cell : view.FaceCells(face))
+                    parents.push_back(cell == DNDS::UnInitIndex ? cell : state->OriginalEntityId(G::EntityKind::Cell, cell));
+                std::sort(parents.begin(), parents.end());
+                std::vector<I> signature{I(nodes.size())};
+                for (const auto &[node, bits] : nodes)
+                {
+                    signature.push_back(node);
+                    signature.push_back(I(bits));
+                }
+                signature.push_back(I(parents.size()));
+                signature.insert(signature.end(), parents.begin(), parents.end());
+                faceGeometry.push_back(std::move(signature));
+            }
+            std::sort(faceGeometry.begin(), faceGeometry.end());
         }
+        CHECK(ownedIdsByMode[1] == ownedIdsByMode[2]);
+        CHECK(faceGeometryByMode[1] == faceGeometryByMode[2]);
+    }
 }
 
 TEST_CASE("Native facial partition retains ID-derived fields geometry and sparse closure")

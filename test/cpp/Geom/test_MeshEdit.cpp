@@ -244,7 +244,7 @@ TEST_CASE("Native-only edits preserve namespace IDs named definitions and immuta
             write.View()(row, 0) = G::ElemInfo{G::Elem::Tri3, G::INTERNAL_ZONE};
     }
     G::NativeMeshInput input{mpi, 2, cells, nodes, boundaries, cone, emptyCone, coords, info, bndInfo, {}};
-    auto state = G::NativeMeshBuilder::Build(input, {1, true});
+    auto state = G::ConstructNativeMesh(input, {1, true});
     auto owned = G::NativeMeshAssembler::CaptureOwned(*state, mpi);
     owned.requirements.wallDistance = true;
     owned.nodeWallDist.emplace(R::RowLayout::Dense(5, 3));
@@ -255,7 +255,7 @@ TEST_CASE("Native-only edits preserve namespace IDs named definitions and immuta
                 write.View()(row, component) = 1;
     }
     owned.namedRelations.emplace(G::Adj::Cell2Cell, *owned.relations[size_t(G::MeshRelation::CellCells)]);
-    state = G::NativeMeshAssembler::Build(mpi, std::move(owned));
+    state = G::AssembleNativeMesh(mpi, std::move(owned));
     const auto name = state->MeshNamespace();
     const auto highWater = state->IdHighWater();
     const auto keys = state->RelationKeys();

@@ -197,7 +197,7 @@ for (index i = 0; i < u.Size(); i++)  // iterates father + son
 everything from `ArrayEigenMatrixPair` (father + son + transformer +
 per-row `Eigen::Map<Matrix>` access) and adds MPI-collective vector-space
 operations.
-(Source: `DNDS/ArrayDOF.hpp:134`.)
+(Source: `DNDS/Legacy/ArrayDOF.hpp`.)
 
 ```cpp
 #include "CFV/VRDefines.hpp"

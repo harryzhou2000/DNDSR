@@ -38,23 +38,41 @@ Runtime/CUDAExecution.cpp
 Runtime/Exchange.cpp
 Runtime/ElementSchema.cpp
 Runtime/RowTransfer.cpp
+Algebra/DofAlgebra.cpp
 Profiling.cpp
 HardEigen.cpp
 Serializer/SerializerBase.cpp
 Serializer/SerializerJSON.cpp
 Serializer/SerializerH5.cpp
 ExprtkWrapper.cpp
-Vector.cpp
+Legacy/Vector.cpp
+Legacy/ArrayDOF_inst/ArrayDOF_op_1.cpp
+Legacy/ArrayDOF_inst/ArrayDOF_op_2.cpp
+Legacy/ArrayDOF_inst/ArrayDOF_op_3.cpp
+Legacy/ArrayDOF_inst/ArrayDOF_op_4.cpp
+Legacy/ArrayDOF_inst/ArrayDOF_op_5.cpp
+Legacy/ArrayDOF_inst/ArrayDOF_op_6.cpp
+Legacy/ArrayDOF_inst/ArrayDOF_op_7.cpp
+Legacy/ArrayDOF_inst/ArrayDOF_op_8.cpp
+Legacy/ArrayDOF_inst/ArrayDOF_op_D.cpp
+Legacy/ArrayDOF_inst/ArrayDOF_op_I.cpp
 )
 
-file(GLOB ARRAYDOF_OP_SOURCES CONFIGURE_DEPENDS "ArrayDOF_inst/*.cpp")
-list(APPEND CPPS ${ARRAYDOF_OP_SOURCES})
-
 if (DNDS_USE_CUDA)
+    list(APPEND CPPS Algebra/DofAlgebra_CUDA.cu)
     list(APPEND CPPS Runtime/RowTransfer_CUDA.cu)
     list(APPEND CPPS Device/DeviceStorage_CUDA.cu)
-    file(GLOB ARRAYDOF_OP_SOURCES_CUDA CONFIGURE_DEPENDS "ArrayDOF_inst/*.cu")
-    list(APPEND CPPS ${ARRAYDOF_OP_SOURCES_CUDA})
+    list(APPEND CPPS
+        Legacy/ArrayDOF_inst/ArrayDOF_op_1.cu
+        Legacy/ArrayDOF_inst/ArrayDOF_op_2.cu
+        Legacy/ArrayDOF_inst/ArrayDOF_op_3.cu
+        Legacy/ArrayDOF_inst/ArrayDOF_op_4.cu
+        Legacy/ArrayDOF_inst/ArrayDOF_op_5.cu
+        Legacy/ArrayDOF_inst/ArrayDOF_op_6.cu
+        Legacy/ArrayDOF_inst/ArrayDOF_op_7.cu
+        Legacy/ArrayDOF_inst/ArrayDOF_op_8.cu
+        Legacy/ArrayDOF_inst/ArrayDOF_op_D.cu
+        Legacy/ArrayDOF_inst/ArrayDOF_op_I.cu)
 endif()
 
 message(STATUS "DNDS_PCH_TARGETS ${DNDS_PCH_TARGETS}")
@@ -89,29 +107,56 @@ install(TARGETS ${LIBNAME}_shared
 set(CPPS_BIND
 dnds_pybind11.cpp
 Runtime/Runtime_bind.cpp
+Algebra/Algebra_bind.cpp
 Runtime/Eager_bind.cpp
 Runtime/MPI_bind.cpp
 Runtime/DLPack_bind.cpp
 Defines_bind.cpp
 MPI_bind.cpp
-Array_bind.cpp
-ArrayDerived/ArrayAdjacency_bind.cpp
-ArrayDerived/ArrayEigenMatrix_bind.cpp
-ArrayDerived/ArrayEigenUniMatrixBatch_bind.cpp
-ArrayDerived/ArrayEigenVector_bind.cpp
-ArrayDOF_bind.cpp
+Legacy/Array_bind.cpp
+Legacy/ArrayDerived/ArrayAdjacency_bind.cpp
+Legacy/ArrayDerived/ArrayEigenMatrix_bind.cpp
+Legacy/ArrayDerived/ArrayEigenUniMatrixBatch_bind.cpp
+Legacy/ArrayDerived/ArrayEigenVector_bind.cpp
+Legacy/ArrayDOF_bind.cpp
+Legacy/Array_bind_offset/Array_bind_1.cpp
+Legacy/Array_bind_offset/Array_bind_2.cpp
+Legacy/Array_bind_offset/Array_bind_3.cpp
+Legacy/Array_bind_offset/Array_bind_4.cpp
+Legacy/Array_bind_offset/Array_bind_5.cpp
+Legacy/Array_bind_offset/Array_bind_6.cpp
+Legacy/Array_bind_offset/Array_bind_7.cpp
+Legacy/ArrayDerived/ArrayEigenMatrix_bind_cols/ArrayEigenMatrix_bind_n1.cpp
+Legacy/ArrayDerived/ArrayEigenMatrix_bind_cols/ArrayEigenMatrix_bind_n2.cpp
+Legacy/ArrayDerived/ArrayEigenMatrix_bind_cols/ArrayEigenMatrix_bind_n3.cpp
+Legacy/ArrayDerived/ArrayEigenMatrix_bind_cols/ArrayEigenMatrix_bind_n4.cpp
+Legacy/ArrayDerived/ArrayEigenMatrix_bind_cols/ArrayEigenMatrix_bind_n5.cpp
+Legacy/ArrayDerived/ArrayEigenMatrix_bind_cols/ArrayEigenMatrix_bind_n6.cpp
+Legacy/ArrayDerived/ArrayEigenMatrix_bind_cols/ArrayEigenMatrix_bind_n7.cpp
+Legacy/ArrayDerived/ArrayEigenMatrix_bind_cols/ArrayEigenMatrix_bind_n8.cpp
+Legacy/ArrayDerived/ArrayEigenMatrix_bind_cols/ArrayEigenMatrix_bind_nD.cpp
+Legacy/ArrayDerived/ArrayEigenMatrix_bind_cols/ArrayEigenMatrix_bind_nI.cpp
+Legacy/ArrayDerived/ArrayEigenUniMatrixBatch_bind_cols/ArrayEigenUniMatrixBatch_bind_n1.cpp
+Legacy/ArrayDerived/ArrayEigenUniMatrixBatch_bind_cols/ArrayEigenUniMatrixBatch_bind_n2.cpp
+Legacy/ArrayDerived/ArrayEigenUniMatrixBatch_bind_cols/ArrayEigenUniMatrixBatch_bind_n3.cpp
+Legacy/ArrayDerived/ArrayEigenUniMatrixBatch_bind_cols/ArrayEigenUniMatrixBatch_bind_n4.cpp
+Legacy/ArrayDerived/ArrayEigenUniMatrixBatch_bind_cols/ArrayEigenUniMatrixBatch_bind_n5.cpp
+Legacy/ArrayDerived/ArrayEigenUniMatrixBatch_bind_cols/ArrayEigenUniMatrixBatch_bind_n6.cpp
+Legacy/ArrayDerived/ArrayEigenUniMatrixBatch_bind_cols/ArrayEigenUniMatrixBatch_bind_n7.cpp
+Legacy/ArrayDerived/ArrayEigenUniMatrixBatch_bind_cols/ArrayEigenUniMatrixBatch_bind_n8.cpp
+Legacy/ArrayDerived/ArrayEigenUniMatrixBatch_bind_cols/ArrayEigenUniMatrixBatch_bind_nD.cpp
+Legacy/ArrayDOF_bind_cols/ArrayDOF_bind_n1.cpp
+Legacy/ArrayDOF_bind_cols/ArrayDOF_bind_n2.cpp
+Legacy/ArrayDOF_bind_cols/ArrayDOF_bind_n3.cpp
+Legacy/ArrayDOF_bind_cols/ArrayDOF_bind_n4.cpp
+Legacy/ArrayDOF_bind_cols/ArrayDOF_bind_n5.cpp
+Legacy/ArrayDOF_bind_cols/ArrayDOF_bind_n6.cpp
+Legacy/ArrayDOF_bind_cols/ArrayDOF_bind_n7.cpp
+Legacy/ArrayDOF_bind_cols/ArrayDOF_bind_n8.cpp
+Legacy/ArrayDOF_bind_cols/ArrayDOF_bind_nD.cpp
+Legacy/ArrayDOF_bind_cols/ArrayDOF_bind_nI.cpp
 Serializer/Serializer_bind.cpp
 )
-
-file(GLOB ARRAY_BIND_OFFSET_SOURCES CONFIGURE_DEPENDS "Array_bind_offset/*.cpp")
-list(APPEND CPPS_BIND ${ARRAY_BIND_OFFSET_SOURCES})
-file(GLOB ARRAYEIGENMATRIX_COLS_SOURCES CONFIGURE_DEPENDS "ArrayDerived/ArrayEigenMatrix_bind_cols/*.cpp")
-list(APPEND CPPS_BIND ${ARRAYEIGENMATRIX_COLS_SOURCES})
-file(GLOB ARRAYEIGENUNIMATRIXBATCH_COLS_SOURCES CONFIGURE_DEPENDS "ArrayDerived/ArrayEigenUniMatrixBatch_bind_cols/*.cpp")
-list(APPEND CPPS_BIND ${ARRAYEIGENUNIMATRIXBATCH_COLS_SOURCES})
-
-file(GLOB ARRAYDOF_COLS_SOURCES CONFIGURE_DEPENDS "ArrayDOF_bind_cols/*.cpp")
-list(APPEND CPPS_BIND ${ARRAYDOF_COLS_SOURCES})
 
 
 dnds_add_py_module(${LIBNAME}_pybind11 "${CPPS_BIND}" "${LIBNAME}_shared;${LINKS}" "${DNDS_PCH_TARGETS_FAST}"

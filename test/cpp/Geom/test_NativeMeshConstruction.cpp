@@ -2,6 +2,14 @@
 #include "doctest.h"
 #include "Geom/Mesh/Mesh.hpp"
 #include "Geom/Mesh/NativeConnectivity.hpp"
+#include "Geom/Unstructured/NativeMeshBuilder.hpp"
+#include "Geom/Connectivity/NativeMeshTopology.hpp"
+#include "Geom/Transition/NativeMeshAssembler.hpp"
+#include "Geom/Transition/NativeMeshTransition.hpp"
+#include "Geom/Refinement/NativeMeshRefinement.hpp"
+#include "Geom/Refinement/NativeMeshExtraction.hpp"
+#include "NativeMeshFacadeFixture.hpp"
+#include "NativePeriodicFixtures.hpp"
 
 using namespace DNDS;
 using namespace DNDS::Geom;
@@ -575,6 +583,233 @@ TEST_CASE("Native memory accounting counts retained capacities and shared named 
     auto retained = mesh->AcquireRead();
     CHECK(mesh->getArrayBytes() == DNDS::index(expected) * mpi.size);
     CHECK(mesh->HasNativeState());
+}
+
+TEST_CASE("Publication audit policy defaults full and explicitly trusted IDs remain re-auditable")
+{
+    const auto mpi = NativeMPI();
+    NativeTriangle input(mpi);
+    auto corrupted = input.ids;
+    corrupted.at(EntityKind::Node) = corrupted.at(EntityKind::Node).Clone();
+    {
+        auto write = corrupted.at(EntityKind::Node).Write();
+        if (mpi.rank == 0)
+            write.View()(1, 0) = write.View()(0, 0);
+    }
+    CHECK_THROWS(NativeMeshState::FromNative(mpi, input.data, input.spaces, corrupted, MeshReadRequirements::Primary()));
+    input.data.audit = {false, false};
+    auto trusted = NativeMeshState::FromNative(mpi, input.data, input.spaces, corrupted, MeshReadRequirements::Primary());
+    CHECK_FALSE(trusted->AuditOptions().persistentIdentity);
+    CHECK_FALSE(trusted->AuditOptions().closure);
+    CHECK_NOTHROW(trusted->Audit({false, false}));
+    CHECK_THROWS(trusted->Audit());
+    CHECK_NOTHROW(trusted->Validate());
+    // Trust only removes diagnostics: invalid ID values remain forbidden.
+    auto invalid = input.ids;
+    invalid.at(EntityKind::Node) = invalid.at(EntityKind::Node).Clone();
+    {
+        auto write = invalid.at(EntityKind::Node).Write();
+        if (mpi.rank == 0)
+            write.View()(0, 0) = -1;
+    }
+    CHECK_THROWS(NativeMeshState::FromNative(mpi, input.data, input.spaces, invalid, MeshReadRequirements::Primary()));
+    auto valid = NativeMeshState::FromNative(mpi, input.data, input.spaces, input.ids, MeshReadRequirements::Primary());
+    CHECK_NOTHROW(valid->Audit());
+    CHECK_FALSE(valid->AuditOptions().persistentIdentity); // Auditing does not silently change construction policy.
+    CHECK_NOTHROW(valid->Snapshot(R::Device::Host()).AcquireRead().HostView());
+}
+
+TEST_CASE("Publication identity diagnostics detect cross-rank duplicate and owner-inconsistent ghost IDs")
+{
+    const auto mpi = NativeMPI();
+    if (mpi.size == 1)
+        return;
+    NativeTriangle input(mpi);
+    SUBCASE("owned IDs duplicated across ranks")
+    {
+        auto corrupt = input.ids;
+        corrupt.at(EntityKind::Cell) = corrupt.at(EntityKind::Cell).Clone();
+        {
+            auto write = corrupt.at(EntityKind::Cell).Write();
+            write.View()(0, 0) = 731;
+        }
+        CHECK_THROWS(NativeMeshState::FromNative(mpi, input.data, input.spaces, corrupt, MeshReadRequirements::Primary()));
+        input.data.audit.persistentIdentity = false;
+        auto trusted = NativeMeshState::FromNative(mpi, input.data, input.spaces, corrupt, MeshReadRequirements::Primary());
+        CHECK_THROWS(trusted->Audit());
+        CHECK_NOTHROW(trusted->Audit({false, true}));
+    }
+    SUBCASE("ghost IDs disagree with their actual owner")
+    {
+        const auto nodes = input.spaces.at(EntityKind::Node).WithGhosts({3 * ((mpi.rank + 1) % mpi.size)});
+        input.spaces.at(EntityKind::Node) = nodes;
+        input.data.coords->ghost = R::Array<DNDS::real>(R::RowLayout::Dense(1, 3));
+        R::Array<DNDS::index> ids(R::RowLayout::Dense(4, 1));
+        {
+            auto write = ids.Write();
+            for (DNDS::index row = 0; row < 4; ++row)
+                write.View()(size_t(row), 0) = 1000000000000LL + 17 * nodes.LocalToGlobal(row) + int(EntityKind::Node);
+            if (mpi.rank == 0)
+                write.View()(3, 0) += 1;
+        }
+        input.ids.at(EntityKind::Node) = ids;
+        CHECK_THROWS(NativeMeshState::FromNative(mpi, input.data, input.spaces, input.ids, MeshReadRequirements::Primary()));
+        input.data.audit.persistentIdentity = false;
+        auto trusted = NativeMeshState::FromNative(mpi, input.data, input.spaces, input.ids, MeshReadRequirements::Primary());
+        CHECK_THROWS(trusted->Audit());
+        CHECK_NOTHROW(trusted->Validate());
+    }
+}
+
+TEST_CASE("Trusted closure skips reciprocity diagnostics while preserving mandatory shape range and sentinels")
+{
+    const auto mpi = NativeMPI();
+    auto input = NativeFacadeFixture::Make(mpi);
+    input.spaces.at(EntityKind::Cell) = input.spaces.at(EntityKind::Node).CreateSibling(EntityKind::Cell, 2);
+    input.ids.at(EntityKind::Cell) = R::Array<DNDS::index>(R::RowLayout::Dense(2, 1));
+    {
+        auto write = input.ids.at(EntityKind::Cell).Write();
+        for (size_t row = 0; row < 2; ++row)
+            write.View()(row, 0) = 2 * mpi.rank + DNDS::index(row);
+    }
+    input.data.cellInfo = NativeFacadeFixture::Rows<ElemInfo>({{{Elem::Tri3, INTERNAL_ZONE}}, {{Elem::Tri3, INTERNAL_ZONE}}}, 1);
+    input.data.relations[size_t(MeshRelation::CellNodes)] = NativeFacadeFixture::Rows<DNDS::index>({{0, 1, 2}, {0, 1, 2}});
+    input.data.relations[size_t(MeshRelation::CellCells)] = NativeFacadeFixture::Rows<DNDS::index>({{1}, {0}});
+    input.data.relations[size_t(MeshRelation::CellFaces)] = NativeFacadeFixture::Rows<DNDS::index>({{0, 1, 2}, {0, 1, 2}});
+    // Cell one incorrectly names faces whose first side is cell zero. All
+    // indices/shapes/sentinels are valid, isolating the optional reciprocity audit.
+    for (auto relation : {MeshRelation::NodeCells, MeshRelation::NodeBoundaries, MeshRelation::CellEdges,
+                          MeshRelation::EdgeNodes, MeshRelation::EdgeCells, MeshRelation::CellFaceCells})
+        input.data.relations[size_t(relation)].reset();
+    input.data.nodeWallDist.reset();
+    input.data.edgeInfo.reset();
+    input.spaces.erase(EntityKind::Edge);
+    input.ids.erase(EntityKind::Edge);
+    auto publish = [&]
+    { return NativeMeshState::FromNative(mpi, input.data, input.spaces, input.ids, MeshReadRequirements::CellFlux()); };
+    CHECK_THROWS(publish());
+    input.data.audit.closure = false;
+    auto trusted = publish();
+    CHECK_NOTHROW(trusted->Audit({true, false}));
+    CHECK_THROWS(trusted->Audit());
+    CHECK_NOTHROW(trusted->Validate());
+    SUBCASE("out of range owned face still rejected")
+    {
+        input.data.relations[size_t(MeshRelation::CellFaces)]->owned = input.data.relations[size_t(MeshRelation::CellFaces)]->owned.Clone();
+        {
+            auto write = input.data.relations[size_t(MeshRelation::CellFaces)]->owned.Write();
+            if (mpi.rank == 0)
+                write.View()(0, 0) = 99;
+        }
+        CHECK_THROWS(publish());
+    }
+    SUBCASE("invalid external second-cell sentinel still rejected")
+    {
+        input.data.relations[size_t(MeshRelation::FaceCells)]->owned = input.data.relations[size_t(MeshRelation::FaceCells)]->owned.Clone();
+        {
+            auto write = input.data.relations[size_t(MeshRelation::FaceCells)]->owned.Write();
+            if (mpi.rank == 0)
+                write.View()(0, 1) = 1;
+        }
+        CHECK_THROWS(publish());
+    }
+}
+
+TEST_CASE("Audit policy flags agree collectively during construction and checkpoint audit")
+{
+    const auto mpi = NativeMPI();
+    NativeTriangle input(mpi);
+    auto valid = NativeMeshState::FromNative(mpi, input.data, input.spaces, input.ids, MeshReadRequirements::Primary());
+    CHECK(valid->AuditOptions().persistentIdentity);
+    CHECK(valid->AuditOptions().closure);
+    for (bool identity : {true, false})
+    {
+        MeshAuditOptions options;
+        if (identity)
+            options.persistentIdentity = mpi.rank != 0;
+        else
+            options.closure = mpi.rank != 0;
+        input.data.audit = options;
+        if (mpi.size > 1)
+        {
+            CHECK_THROWS(NativeMeshState::FromNative(mpi, input.data, input.spaces, input.ids, MeshReadRequirements::Primary()));
+            CHECK_THROWS(valid->Audit(options));
+        }
+    }
+    CHECK_NOTHROW(valid->Audit());
+}
+
+TEST_CASE("Effective construction audit policy propagates through native setup and can be overridden for derivation")
+{
+    const auto mpi = NativeMPI();
+    NativeMeshBuildOptions trusted;
+    trusted.audit = MeshAuditOptions{false, false};
+    auto primary = ConstructNativeMesh(NativePeriodicFixtures::TwoCells(mpi), trusted);
+    auto checkPolicy = [](const auto &state)
+    {
+        CHECK_FALSE(state->AuditOptions().persistentIdentity);
+        CHECK_FALSE(state->AuditOptions().closure);
+        CHECK_NOTHROW(state->Audit());
+    };
+    checkPolicy(primary);
+    auto captured = NativeMeshAssembler::CaptureOwned(*primary, mpi);
+    CHECK_FALSE(captured.audit.persistentIdentity);
+    CHECK_FALSE(captured.audit.closure);
+    checkPolicy(AssembleNativeMesh(mpi, std::move(captured)));
+    auto geometry = NativeMeshAssembler::CaptureOwned(*primary, mpi);
+    R::Array<DNDS::real> ghostCoordinates(R::RowLayout::Dense(size_t(primary->NumGhost(EntityKind::Node)), 3));
+    {
+        auto write = ghostCoordinates.Write();
+        const auto view = primary->BorrowHostView();
+        for (size_t row = 0; row < ghostCoordinates.Rows(); ++row)
+            for (size_t component = 0; component < 3; ++component)
+                write.View()(row, component) = view.Coord(primary->NumOwned(EntityKind::Node) + DNDS::index(row))[component];
+    }
+    checkPolicy(primary->WithGeometry({*geometry.coords, ghostCoordinates}, {}, geometry.periodicInfo));
+    CHECK_FALSE(primary->Snapshot(R::Device::Host()).To(R::Device::Host()).AuditOptions().closure);
+    auto facial = PrepareNativeMeshTopology(*primary, mpi);
+    checkPolicy(facial);
+    auto moved = NativeMeshTransition::ReorderLocalCells(*facial, mpi).state;
+    checkPolicy(moved);
+    auto elevated = NativeMeshRefinement::Elevate(*primary, mpi).state;
+    checkPolicy(elevated);
+    checkPolicy(NativeMeshRefinement::Bisect(*elevated, mpi).state);
+    checkPolicy(NativeMeshExtraction::ExtractBoundary(*facial, mpi).state);
+    NativeMeshBuildOptions full;
+    full.audit = MeshAuditOptions{};
+    auto audited = NativeMeshRefinement::Elevate(*primary, mpi, full).state;
+    CHECK(audited->AuditOptions().persistentIdentity);
+    CHECK(audited->AuditOptions().closure);
+    CHECK_NOTHROW(audited->Audit());
+    auto mismatch = trusted;
+    if (mpi.size > 1)
+    {
+        mismatch.audit = MeshAuditOptions{mpi.rank != 0, false};
+        CHECK_THROWS(ConstructNativeMesh(NativePeriodicFixtures::TwoCells(mpi), mismatch));
+    }
+    checkPolicy(ConstructNativeMesh(NativePeriodicFixtures::TwoCells(mpi), trusted));
+}
+
+TEST_CASE("Checkpoint audits collectively reject mixed publication inventory or namespace before identity routes")
+{
+    const auto mpi = NativeMPI();
+    NativeTriangle input(mpi);
+    auto primary = NativeMeshState::FromNative(mpi, input.data, input.spaces, input.ids, MeshReadRequirements::Primary());
+    auto facial = PrepareNativeMeshTopology(*primary, mpi);
+    auto otherNamespace = NativeMeshState::FromNative(mpi, input.data, input.spaces, input.ids, MeshReadRequirements::Primary());
+    CHECK(facial->MeshNamespace() == primary->MeshNamespace());
+    CHECK(otherNamespace->MeshNamespace() != primary->MeshNamespace());
+    if (mpi.size > 1)
+    {
+        auto mixedInventory = mpi.rank == 0 ? primary : facial;
+        CHECK_THROWS(mixedInventory->Audit());
+        CHECK_THROWS(mixedInventory->Audit({false, false}));
+        auto mixedNamespace = mpi.rank == 0 ? primary : otherNamespace;
+        CHECK_THROWS(mixedNamespace->Audit());
+    }
+    CHECK_NOTHROW(primary->Audit());
+    CHECK_NOTHROW(facial->Audit());
+    CHECK_NOTHROW(otherNamespace->Audit());
 }
 
 int main(int argc, char **argv)

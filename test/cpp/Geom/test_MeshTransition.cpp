@@ -45,7 +45,7 @@ static ssp<UnstructuredMesh> TransitionFixture(const MPIInfo &mpi, bool periodic
                                   { return names(name); }, 0, {1, true}, periodicOptions);
     auto prepared = NativeMeshPreparation::Partition(*primary, mpi, {"KWAY", 30, 42, 0, 1, 1}).state;
     if (dim == 3)
-        prepared = NativeMeshTopology::Build(*prepared, mpi, false, true);
+        prepared = PrepareNativeMeshTopology(*prepared, mpi, false, true);
     return UnstructuredMesh::FromNative(mpi, std::move(prepared));
 }
 

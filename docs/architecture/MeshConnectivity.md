@@ -1,19 +1,32 @@
 # Native mesh connectivity and ghost closure {#mesh_connectivity}
 
-`UnstructuredMesh` owns a published `NativeMeshState`. Mesh values, topology and
+`UnstructuredMesh` owns a published `UnstructuredMeshState`
+(`NativeMeshState` remains a source alias). Mesh values, topology and
 row metadata live in Runtime Arrays; the facade has no legacy construction
 workspace. Readonly compatibility spellings such as `cell2node` resolve native
 rows. They are not mutable adjacency arrays.
 
 ## Ownership and setup
 
+**Construction correction, 2026-10-28:** primary and face/edge builders now
+produce owned topology; finalization belongs to the assembler and takes an
+explicit GhostSpec. Owned ingress, partition, local permutation and refinement
+operations are available. The [semantic audit](../dev/mesh_construction_semantics_2026-10-28.md)
+and [fixture/purpose ledger](../dev/mesh_connectivity_test_port_2026-10-28.md)
+record regression coverage and the explicit legacy periodic-frame exception.
+
 ```mermaid
 flowchart LR
     input[Owned Runtime arrays / file decoder] --> builder[NativeMeshBuilder]
-    builder --> primary[Primary native state]
-    primary --> topology[NativeMeshTopology: faces / 3D edges]
-    topology --> assembler[NativeMeshAssembler: sparse closure and companions]
-    assembler --> state[Immutable NativeMeshState]
+    builder --> primary[Owned primary topology]
+    primary --> placement[Owned partition / redistribution]
+    placement --> derivation[Optional owned elevation / bisection]
+    derivation --> permutation[Owned local permutation]
+    permutation --> topology[NativeMeshTopology: faces / 3D edges]
+    topology --> owned[Owned face/edge topology]
+    recipe[Explicit GhostSpec from setup caller] --> assembler
+    owned --> assembler[NativeMeshAssembler: final ghosts and companions]
+    assembler --> state[Immutable UnstructuredMeshState]
     facade[UnstructuredMesh] --> state
     state --> spaces[Canonical EntitySpaces and persistent IDs]
     state --> registry[Full-key named relations]
@@ -24,10 +37,158 @@ flowchart LR
 ```
 
 `NativeMeshBuilder` consumes sibling owned Cell, Node and Boundary spaces,
-global-index cell/boundary node cones, coordinates and typed companions.
+global-index cell/boundary node cones, coordinates and typed companions. It
+returns `NativeOwnedMeshData`, not a finalized mesh state. Primary denotes the
+node/cell topology; owned versus ghost is a separate distinction applying to
+all families, including generated faces and edges.
 `NativeMeshAssembler::CaptureOwned` exports native owned rows in global
-numbering; `Build` discovers requested closure, routes payloads and publishes
+numbering; `Build` executes the supplied GhostSpec, routes payloads and creates
 local-index compute data. Neither needs a legacy mesh candidate.
+
+## Construction, closure and finalization
+
+| Operation | Inputs | Outputs and effects |
+| --- | --- | --- |
+| Owned primary construction | Owned CellNodes/BoundaryNodes in current global numbering, metadata and coordinates | Inverse node supports, cell neighbors, physical boundary incidence, IDs and owned arrays. Temporary remote support may be fetched. No final ghost state. |
+| Owned face/edge construction | Authoritative owned global cones and companions | Owned generated families, parent/subentity relations, physical face slots, periodic companions and IDs. Construction closure is independent of compute ghosts. |
+| Owned partition/permutation | Authoritative owned global cones and companions | Exact temporary facial graph, placement/permutation maps and transferred owned payload. No intermediate mesh state or persistent Face family for the graph. |
+| Owned elevation/bisection | Authoritative owned primary arrays | New namespace, owned higher/lower-order topology and durable source-ID ancestry. Shared spans/coordinates are fetched sparsely as construction inputs. |
+| Traversal compilation | Declarative GhostSpec paths | Validated prefix forest, collect flags, node/parent IDs and breadth-first lists. No adjacency lookup or MPI. |
+| Traversal evaluation | Compiled paths and registered distributed relations | Required ghost-ID sets per family. Reads local rows and fetches remote intermediate rows as scratch. Does not construct per-source composed adjacency. |
+| Ghost materialization | Selected ghost IDs and registered owned payloads | Owned/appended maps, shared routes and fetched rows/companions. Detached storage. |
+| Final assembly | Owned topology and explicit GhostSpec | A validated mesh state with local-index compute views. |
+| Live publication | Completed state and coordinated mutation boundary | Installs the state and advances versions after successful construction. |
+
+`ConstructNativeMesh` is a completed-primary-operation frontend for a caller
+requesting a state immediately. It constructs owned data and finalizes once.
+A pipeline still needing partition, permutation or face construction must keep
+owned data and assemble at its end; using that completed frontend as an
+intermediate would reintroduce premature assembly. `PrepareNativeMeshTopology`
+is a completed operation on an existing publication; the underlying
+`NativeMeshTopology::Build` consumes and returns owned data.
+
+For an entire construction pipeline use `ReadNativeCGNSOwned` or
+`ReadNativeOpenFOAMOwned`, `NativeMeshPreparation::PartitionOwned`, optional
+`NativeMeshRefinement::{ElevateOwned,BisectOwned}`,
+`NativeMeshTransition::ReorderOwnedCells`, then `NativeMeshTopology::Build`.
+All intermediate EntitySpaces are owned-only; global relation entries may refer
+to another rank. Partition and permutation use exact temporary face incidence
+without creating a persistent Face family. The assembler is the first stage
+that creates the final compute ghosts and publishes a read state. Local cell
+partition ranges travel in `NativeOwnedMeshData::localPartitionStarts` and are
+installed at final assembly; redistribution resets them.
+
+The completed C++ read helper retains owned data through partition/refinement
+before returning its requested readable mesh. `PrepareMesh` similarly captures
+owned data once, permutes, constructs faces and assembles once. Separate calls
+to completed-state APIs are separate operations: the Python debugging interface
+can request a readable intermediate mesh, but that is not an owned construction
+stage or a prerequisite for the native builders. Native and compatible archive
+decoders also expose owned-only reads; legacy-primary import calls the owned
+builder directly. File loading with repartition keeps that owned result through
+redistribution before its one final assembly. The completed partition API keeps
+any required face completion owned as well, while retaining original external
+field source associations.
+
+Temporary construction closure provides algorithm inputs. Final compute closure
+promises which rows applications can dereference after finalization. They share
+sparse routing machinery, but temporary fetched rows do not automatically become
+canonical mesh ghosts. Primary construction inverts CellNodes/BoundaryNodes,
+fetches inverse support for referenced remote nodes, composes neighbors and
+containment, and resolves physical boundary sides. Face construction obtains
+Cell→Node→Cell support and complete parent cones from authoritative owned rows;
+it cannot rely on an earlier solver ghost ring being sufficient.
+
+## GhostSpec is a coverage contract
+
+Each GhostChain names an anchor family, a sequence of full AdjKind descriptors,
+and the family to collect. Each root starts with this rank's owned entities of
+its anchor family. Intermediate entities may belong to any rank; ownership
+determines routing, not topology or path membership.
+
+```text
+owned Bnd --Bnd2Node--> Node --Node2Bnd--> Bnd [collect remote IDs]
+```
+
+This is not equivalent to separate Bnd→Node and owned-Node→Bnd requests.
+Reached nodes do not join another root's seeds. Compilation merges shared
+anchor/hop prefixes, not all positions having the same entity kind. It does not
+invent continuations from other registered relations. The boundary default also
+requests Bnd→Node→Bnd→Node for the new boundary cones. Final sets union the
+collected results; temporary intermediate fetches need not all survive.
+
+The assembler accepts the recipe explicitly. Defaults are selected by setup
+frontends, not recreated inside assembly. Preserve the declarative policy
+through reorder/redistribution and explicitly extend it for requested topology.
+Recompile against current definitions; old pointers, local row numbers and MPI
+bindings are not a recipe. All ranks must supply matching path semantics and
+invoke collective stages in the same order. Missing required relations and
+invalid paths are errors, agreed collectively before the next communication.
+
+The exact assembler never edits its supplied recipe. The completed-operation
+helper `AssembleNativeMesh(..., 0)` preserves a retained policy, selecting a
+one-ring default only if none exists. A positive explicit depth replaces standard
+Cell2Cell prefixes, or adds the requested cell ring when absent, while retaining
+other custom paths. This allows a restart/preparation request to change cell
+depth without dropping boundary or named traversals. All ranks agree on this
+option even when it would not otherwise change the resulting tree.
+
+## Composition versus distributed traversal
+
+`Compose(AB, BC)` returns one adjacency row per owned A. Its current local
+interface requires the necessary BC rows to be available and throws if a row is
+missing; it does not fetch them automatically. `ComposeAll` selects candidates
+containing every intermediate incidence. Custom/exact filters retain full
+named/versioned semantics.
+
+`Evaluate(tree)` discovers unions of reachable entities and automatically
+fetches remote intermediate rows along the declared paths. It does not retain
+separate final neighbor rows per starting entity. A correct ghost set therefore
+does not establish that a composed relation was constructed. An AdjKind
+descriptor alone is not a materialized adjacency array.
+
+## Semantic validation requirements
+
+The default setup policy matches legacy coverage: the configured cell ring,
+the connected owned-boundary ring, and optionally complete owned-node stars.
+It does not include every boundary incident to every reached cell's nodes. Such
+a broader request must be an explicit chain; it can otherwise add a second
+boundary ring and conceal the coverage contract in inflated ghost sets.
+
+Periodic `Adj::Bnd2Cell` follows the legacy owning-cell/self convention; an
+external nonperiodic boundary keeps an absent second slot. The distinct
+`Adj::Bnd2CellCoupled` definition stores the physical owning/partner slots. The
+physical-frame containment relation remains a separate sorted-set definition.
+An operator requiring local partner cells requests the coupled traversal in
+its GhostSpec rather than relying on registration to fetch more ghosts.
+
+Owned-node stars provide all incident cell/boundary candidates and their node
+cones. A node-centered algorithm needing additional faces/edges must declare
+those traversals too; the cell-centered default does not promise every face of
+every remote incident cell. Inverses have sorted entity-set semantics. Recover
+multiple periodic occurrences from each parent's ordered cone and image bits,
+rather than interpreting one support entry as one physical occurrence.
+
+Independently derive expected per-rank reachability from authoritative global
+topology, then compare IDs and local dereferenceability after construction,
+topology completion, permutation and redistribution. Include remotely owned
+intermediate nodes and empty ranks. Periodic node images and physical face slots
+are part of the answer; canonical node equality alone is insufficient.
+
+Periodic cell-to-face flags are relative to the generated face owner's stored
+node frame. Ownership exchange must transfer that transform together with the
+face ID. A peer's local first-parent frame may differ, so its provisional XOR
+cannot be retained after installing the owner's face ID. The frozen legacy
+interpolation exchanged only ID triplets and produced two inconsistent flags
+on the two-rank periodic 32-cube probe. Native interpolation exchanges the owner
+transform as a fourth word; tests compare the complete image-labeled face at
+each parent slot, including remotely owned faces. The semantic audit records
+this legacy defect explicitly rather than reporting byte identity.
+
+Owned geometry/numerical comparisons exclude duplicate ghost storage and cannot
+prove local coverage. Explain count differences with exact expected sets and
+the recipe. Preserve legacy test purposes and independent oracles rather than
+weakening assertions to reproduce a passing case count.
 
 Cell-node cones always have local coordinates. The builder's `cellLayers`
 controls cell rings; `completeNodeStar` includes all cells and boundaries
@@ -134,6 +295,28 @@ entities retain zone labels separately from physical faces. Boundary extraction
 creates a new lower-dimensional native mesh with durable source-ID ancestry.
 
 ## Callers and field transfers
+
+`MeshAuditOptions` controls per-publication diagnostics separately from
+`MeshReadRequirements`. Both `persistentIdentity` and `closure` default to true.
+The identity switch controls duplicate-ID audits and owner/ghost-ID comparisons.
+The closure switch controls the diagnostic owned CellFaces-to-FaceCells
+reciprocity pass. It does not disable required ghost construction, local
+dereference validation, shape/type/index/sentinel checks, periodic side-bit
+validation, higher-order node matching, or collective schedule agreement.
+
+Disabling an audit is an explicit caller assertion that the immutable producer
+has established that invariant. It can admit duplicate IDs or inconsistent
+incidence, so it is not an alternative validity test. The effective policy is
+retained by a state and propagated through capture, assembly, transitions,
+geometry replacement, topology construction and derivation. Fresh
+`NativeMeshBuildOptions::audit` defaults to full when unset; derivation inherits
+the source policy when unset, or honors an explicitly supplied override. Archive
+decoding starts with full audits; audit settings are not checkpoint metadata.
+
+At a checkpoint, `state.Audit()` collectively reruns full identity and incidence
+audits of that exact immutable publication without rebuilding, reordering or
+changing its retained policy. `state.Audit(options)` selects diagnostic passes
+explicitly. All ranks must supply matching flags, including empty ranks.
 
 Construction, ghost evaluation and publication are setup collectives. All ranks
 use the same communicator, options, relation signatures and call order, including

@@ -1,5 +1,12 @@
 # Mesh DAG Connectivity: Design Proposal {#mesh_dag_design}
 
+> **Historical proposal:** the container/state details below describe the 2026-04
+> design. The runtime-array migration retired ConeAdj/SupportAdj/AdjVariant and
+> in-place whole-mesh index-state flags. Current construction uses owned global
+> topology, sparse temporary closure and explicit final GhostSpec assembly; see
+> [Mesh connectivity](MeshConnectivity.md). Do not implement against this older
+> proposal's container API or treat it as current acceptance evidence.
+
 **Status:** Proposal (partially implemented — see notes below)
 **Date:** 2026-04-21 (updated 2026-04-26)
 **Depends on:** [Mesh Connectivity Architecture](MeshConnectivity.md)

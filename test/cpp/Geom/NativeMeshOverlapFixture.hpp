@@ -132,8 +132,8 @@ namespace DNDS::Geom::OverlapTest
             }
             input.ids.emplace(space.Kind(), std::move(ids));
         }
-        auto state = NativeMeshBuilder::Build(std::move(input), {1, true});
-        state = NativeMeshTopology::Build(*state, mpi, true, false);
+        auto state = ConstructNativeMesh(std::move(input), {1, true});
+        state = PrepareNativeMeshTopology(*state, mpi, true, false);
         result.mesh = UnstructuredMesh::FromNative(mpi, std::move(state));
         DNDS_check_throw_info(result.mesh->HasNativeState(), "native overlap fixture was not published");
         result.expected.resize(size_t(width * width), 0);

@@ -159,7 +159,7 @@ static DNDS::ssp<G::UnstructuredMesh> NativeGeometryFixture(DNDS::MPIInfo mpi,
             bndInfo.Write().View()(0, 0) = G::ElemInfo{G::Elem::Line2, 24};
     }
     G::NativeMeshInput input{mpi, 2, cells, nodes, boundaries, cone(ownsCell, {0, 1, 2}), cone(ownsBoundary, {0, 1}), points, cellInfo, bndInfo, {}};
-    auto source = G::NativeMeshBuilder::Build(input, {1, true});
+    auto source = G::ConstructNativeMesh(input, {1, true});
     const auto view = source->BorrowHostView();
     auto pair = [&](bool wall)
     {
@@ -320,6 +320,12 @@ TEST_CASE("Native rectification reduces masks across independent owners and reje
         // retains its source. Never enter a collective from selected callbacks.
         CHECK_THROWS(mesh->versions.BeginMutation(R::Change::Geometry));
         return 1; }));
+    const auto rectified = mesh->CurrentNativeState();
+    const auto rectifiedStamp = mesh->versions.Stamp();
+    mesh->RectifyBoundaryCoordinates([](G::t_index)
+                                     { return 1; });
+    CHECK(mesh->CurrentNativeState() == rectified);
+    CHECK(rectifiedStamp.Valid());
     CHECK(nodes.SameOrder(mesh->Entities(G::EntityKind::Node)));
     CHECK_FALSE(mesh->CurrentNativeRequirements().wallDistance);
     auto read = mesh->AcquireRead(mesh->CurrentNativeRequirements());
@@ -429,7 +435,7 @@ static DNDS::ssp<G::UnstructuredMesh> NativeAffineFixture(const DNDS::MPIInfo &m
         if (ownsCell)
             input.cellInfo.Write().View()(0, 0) = G::ElemInfo{dimension == 2 ? G::Elem::Quad4 : G::Elem::Hex8, G::INTERNAL_ZONE};
     }
-    auto state = G::NativeMeshBuilder::Build(std::move(input), {1, true});
+    auto state = G::ConstructNativeMesh(std::move(input), {1, true});
     const auto view = state->BorrowHostView();
     auto pair = [&](bool walls)
     {
@@ -632,7 +638,7 @@ static DNDS::ssp<G::UnstructuredMesh> PeriodicPlaneFixture(const DNDS::MPIInfo &
         if (ownsCell)
             input.cellInfo.Write().View()(0, 0) = G::ElemInfo{G::Elem::Quad4, G::INTERNAL_ZONE};
     }
-    return G::UnstructuredMesh::FromNative(mpi, G::NativeMeshBuilder::Build(std::move(input), {1, true}));
+    return G::UnstructuredMesh::FromNative(mpi, G::ConstructNativeMesh(std::move(input), {1, true}));
 }
 
 TEST_CASE("Near-plane native snapping edits canonical periodic owners and preserves physical images")

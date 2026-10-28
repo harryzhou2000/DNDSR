@@ -19,43 +19,44 @@ message(STATUS "DNDS_PCH_TARGETS: ${DNDS_PCH_TARGETS}")
 set(CPPS
 Elements.cpp
 PeriodicInfo.cpp
-Mesh/MeshConnectivity.cpp
-Mesh/MeshConnectivity_Native.cpp
-Mesh/NativeConnectivity.cpp
-Mesh/MeshConnectivity_Ghost.cpp
-Mesh/Mesh.cpp
-Mesh/Mesh_Access.cpp
-Mesh/Mesh_GeometryEdit.cpp
-Mesh/MeshEdit.cpp
-Mesh/NativeMeshSnapshot.cpp
-Mesh/NativeMeshState.cpp
-Mesh/NativeMeshBuilder.cpp
-Mesh/NativeMeshTransition.cpp
-Mesh/NativeMeshPreparation.cpp
-Mesh/NativeMeshAssembler.cpp
-Mesh/NativeMeshArchive.cpp
-Mesh/NativeMeshLegacyArchive.cpp
-Mesh/NativeMeshCGNS.cpp
-Mesh/NativeMeshOpenFOAM.cpp
-Mesh/NativeMeshPeriodicImport.cpp
-Mesh/NativeMeshTopology.cpp
-Mesh/NativeMeshClosure.cpp
-Mesh/NativeMeshRefinement.cpp
-Mesh/NativeMeshElevation.cpp
-Mesh/NativeMeshExtraction.cpp
-Mesh/NativeMeshSmoothing.cpp
-Mesh/NativeMeshOutput.cpp
-Mesh/NativeMeshSerialOutput.cpp
-Mesh/MeshTransition.cpp
-Mesh/Mesh_EntitySpace.cpp
-Mesh/Mesh_Plts.cpp
-Mesh/Mesh_Serial_Partition.cpp
-Mesh/Mesh_Elevation.cpp
-Mesh/Mesh_Elevation_SmoothSolver.cpp
-Mesh/Mesh_Elevation_SmoothV2.cpp
-Mesh/Mesh_WallDist.cpp
-Mesh/Mesh_Reorder.cpp
-Mesh/SerialAdjReordering.cpp
+Connectivity/MeshConnectivity.cpp
+Connectivity/MeshConnectivity_Native.cpp
+Connectivity/NativeConnectivity.cpp
+Connectivity/MeshConnectivity_Ghost.cpp
+Unstructured/UnstructuredMesh.cpp
+Access/MeshAccess.cpp
+Geometry/MeshGeometryEdit.cpp
+Geometry/MeshEdit.cpp
+Unstructured/UnstructuredMeshSnapshot.cpp
+Unstructured/UnstructuredMeshState.cpp
+Unstructured/NativeMeshBuilder.cpp
+Transition/NativeMeshTransition.cpp
+Unstructured/NativeMeshPreparation.cpp
+Unstructured/OwnedMeshPreparation.cpp
+Transition/NativeMeshAssembler.cpp
+IO/NativeMeshArchive.cpp
+Compat/NativeMeshLegacyArchive.cpp
+IO/NativeMeshCGNS.cpp
+IO/NativeMeshOpenFOAM.cpp
+IO/NativeMeshPeriodicImport.cpp
+Connectivity/NativeMeshTopology.cpp
+Connectivity/NativeMeshClosure.cpp
+Refinement/NativeMeshRefinement.cpp
+Refinement/NativeMeshElevation.cpp
+Refinement/NativeMeshExtraction.cpp
+Geometry/NativeMeshSmoothing.cpp
+IO/NativeMeshOutput.cpp
+IO/NativeMeshSerialOutput.cpp
+Transition/MeshTransition.cpp
+Access/EntitySpace.cpp
+IO/UnstructuredMeshOutput.cpp
+Compat/UnstructuredMeshSerialPartition.cpp
+Refinement/Mesh_Elevation.cpp
+Refinement/Mesh_Elevation_SmoothSolver.cpp
+Refinement/Mesh_Elevation_SmoothV2.cpp
+Geometry/MeshWallDistance.cpp
+Transition/MeshReorder.cpp
+Transition/SerialAdjReordering.cpp
 )
 
 if (DNDS_USE_CUDA)
@@ -89,11 +90,13 @@ install(TARGETS ${LIBNAME}_shared
 set(CPPS_BIND
 geom_pybind11.cpp
 Elements_bind.cpp
-Mesh/Mesh_bind.cpp
+Unstructured/UnstructuredMesh_bind.cpp
 )
 
-file(GLOB ADJPAIRTRACKED_BIND_SOURCES CONFIGURE_DEPENDS "Mesh/AdjPairTracked_bind_inst/*.cpp")
-list(APPEND CPPS_BIND ${ADJPAIRTRACKED_BIND_SOURCES})
+list(APPEND CPPS_BIND
+    Compat/AdjPairTracked_bind_inst/AdjPairTracked_bind_1_1_N.cpp
+    Compat/AdjPairTracked_bind_inst/AdjPairTracked_bind_2_2_N.cpp
+    Compat/AdjPairTracked_bind_inst/AdjPairTracked_bind_I_I_N.cpp)
 
 dnds_add_py_module(${LIBNAME}_pybind11 "${CPPS_BIND}" "${LIBNAME}_shared;${LINKS_SHARED}" "${DNDS_PCH_TARGETS_FAST}"
     ON ON ON)  # SHARED,FAST, EXCLUDE

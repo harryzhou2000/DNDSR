@@ -138,7 +138,7 @@ namespace
     }
 }
 
-TEST_CASE("Native serial periodic canonicalization preserves high-order image geometry and reserves removed IDs")
+TEST_CASE("Native serial periodic canonicalization preserves high-order image geometry with compact canonical IDs")
 {
     bool quadratic = true, volume = false;
     SUBCASE("quad9 doubly periodic") {}
@@ -150,9 +150,14 @@ TEST_CASE("Native serial periodic canonicalization preserves high-order image ge
     REQUIRE(result.periodic);
     CHECK(result.coordinates.Rows() == (volume ? 4 : quadratic ? 4
                                                                : 1));
-    CHECK(result.identity.nextIds.at(G::EntityKind::Node) == 1001 + 7 * I(input.coordinates.Rows() - 1));
+    CHECK(result.identity.nextIds.at(G::EntityKind::Node) == I(result.coordinates.Rows()));
     CHECK(input.coordinates.Rows() == (volume ? 8 : quadratic ? 9
                                                               : 4));
+    {
+        auto compactIds = result.nodeIds.Read();
+        for (size_t row = 0; row < result.nodeIds.Rows(); ++row)
+            CHECK(compactIds.View()(row, 0) == I(row));
+    }
     auto nodes = result.cellNodes.Read();
     auto bits = result.cellNodesPbi->Read();
     auto coords = result.coordinates.Read();
@@ -170,11 +175,23 @@ TEST_CASE("Native serial periodic canonicalization preserves high-order image ge
         for (size_t slot = 0; slot < 9; ++slot)
             CHECK(uint8_t(bits.View()(0, slot)) == expected[slot]);
         auto ids = result.nodeIds.Read();
-        CHECK(ids.View()(0, 0) == 1000);
-        CHECK(ids.View()(1, 0) == 1028);
-        CHECK(ids.View()(2, 0) == 1049);
-        CHECK(ids.View()(3, 0) == 1056);
+        CHECK(ids.View()(0, 0) == 0);
+        CHECK(ids.View()(1, 0) == 1);
+        CHECK(ids.View()(2, 0) == 2);
+        CHECK(ids.View()(3, 0) == 3);
     }
+}
+
+TEST_CASE("Periodic ingress preserves an explicit ID reservation without reserving discarded source labels")
+{
+    auto source = Fixture();
+    source.identity.nextIds[G::EntityKind::Node] = 4096;
+    auto result = G::CanonicalizeNativePeriodic(source, {});
+    CHECK(result.identity.nextIds.at(G::EntityKind::Node) == 4096);
+    auto ids = result.nodeIds.Read();
+    for (size_t row = 0; row < result.nodeIds.Rows(); ++row)
+        CHECK(ids.View()(row, 0) == I(row));
+    CHECK(source.nodeIds.Read().View()(0, 0) == 1000);
 }
 
 TEST_CASE("Native serial periodic identification rejects incomplete ambiguous and fixed-point pairings without changing source")
@@ -232,14 +249,21 @@ TEST_CASE("Native periodic canonicalization uses rigid rotations and labels all 
     for (size_t slot = 0; slot < 4; ++slot)
         CHECK(uint8_t(bits.View()(0, slot)) == expected[slot]);
     // A half-turn can reconstruct either side geometrically. The source main
-    // side remains canonical even when donor IDs precede its IDs.
+    // side remains canonical even when donor input rows precede its rows.
     source.coordinates = Rows<DNDS::real>({{-1, 0, 0}, {-2, 0, 0}, {2, 0, 0}, {1, 0, 0}}, 3);
     source.boundaryInfo = Rows<G::ElemInfo>({{{G::Elem::Line2, -4}}, {{G::Elem::Line2, 12}}, {{G::Elem::Line2, -1}}, {{G::Elem::Line2, 12}}}, 1);
     options.frames.rotation[1].map() << -1, 0, 0, 0, -1, 0, 0, 0, 1;
     auto halfTurn = G::CanonicalizeNativePeriodic(source, options);
     auto ids = halfTurn.nodeIds.Read();
-    CHECK(ids.View()(0, 0) == 1014);
-    CHECK(ids.View()(1, 0) == 1021);
+    CHECK(ids.View()(0, 0) == 0);
+    CHECK(ids.View()(1, 0) == 1);
+    auto mainCoords = halfTurn.coordinates.Read();
+    CHECK(mainCoords.View()(0, 0) == 2);
+    CHECK(mainCoords.View()(1, 0) == 1);
+    auto halfTurnBits = halfTurn.cellNodesPbi->Read();
+    const uint8_t expectedHalfTurn[]{1, 1, 0, 0};
+    for (size_t slot = 0; slot < 4; ++slot)
+        CHECK(uint8_t(halfTurnBits.View()(0, slot)) == expectedHalfTurn[slot]);
 }
 
 TEST_CASE("Native periodic CGNS import builds directly on a nonzero reader and retains frames through transition and archive")
@@ -254,9 +278,9 @@ TEST_CASE("Native periodic CGNS import builds directly on a nonzero reader and r
     const int reader = mpi.size - 1;
     auto state = G::ReadNativeCGNS(mpi, path, 2, Zone, reader, {}, G::NativePeriodicImportOptions{});
     CHECK(state->NumGlobal(G::EntityKind::Node) == 4);
-    CHECK(state->NextEntityId(G::EntityKind::Node) == 9);
+    CHECK(state->NextEntityId(G::EntityKind::Node) == 4);
     CHECK(state->BorrowHostView().IsPeriodic());
-    state = G::NativeMeshTopology::Build(*state, mpi);
+    state = G::PrepareNativeMeshTopology(*state, mpi);
     CHECK(state->NumGlobal(G::EntityKind::Face) == 2);
     G::ReorderInput reorder;
     for (auto kind : {G::EntityKind::Node, G::EntityKind::Cell, G::EntityKind::Bnd, G::EntityKind::Face})
@@ -273,7 +297,7 @@ TEST_CASE("Native periodic CGNS import builds directly on a nonzero reader and r
     state = G::ReadNativeMeshArchive(mpi, serializer, "mesh");
     serializer->CloseFile();
     CHECK(state->MeshNamespace() == name);
-    CHECK(state->NextEntityId(G::EntityKind::Node) == 9);
+    CHECK(state->NextEntityId(G::EntityKind::Node) == 4);
     CHECK(state->NumGlobal(G::EntityKind::Face) == 2);
     auto bad = G::NativePeriodicImportOptions{};
     if (mpi.rank == reader)

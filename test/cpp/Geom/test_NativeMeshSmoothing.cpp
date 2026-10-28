@@ -98,9 +98,9 @@ namespace
         }
         G::NativeMeshInput input{mpi, dimension, cells, nodes, boundaries, Rows(cones), Rows(bndCones), coords, info, bndInfo, {}};
         input.ids.emplace(G::EntityKind::Node, std::move(ids));
-        auto primary = G::NativeMeshBuilder::Build(std::move(input));
+        auto primary = G::ConstructNativeMesh(std::move(input));
         auto elevated = G::NativeMeshRefinement::Elevate(*primary, mpi);
-        return G::NativeMeshTopology::Build(*elevated.state, mpi);
+        return G::PrepareNativeMeshTopology(*elevated.state, mpi);
     }
 }
 
@@ -293,9 +293,9 @@ TEST_CASE("Native periodic flat smoothing retains exact physical images in all t
 {
     DNDS::MPIInfo mpi;
     mpi.setWorld();
-    auto primary = G::NativeMeshBuilder::Build(NativePeriodicFixtures::TwoCells(mpi));
+    auto primary = G::ConstructNativeMesh(NativePeriodicFixtures::TwoCells(mpi));
     auto elevated = G::NativeMeshRefinement::Elevate(*primary, mpi);
-    auto source = G::NativeMeshTopology::Build(*elevated.state, mpi);
+    auto source = G::PrepareNativeMeshTopology(*elevated.state, mpi);
     G::NativeSmoothingOptions options;
     auto workspace = G::NativeMeshSmoothing::PrepareBoundary(source, mpi, options, [](auto zone)
                                                              { return zone == 12 || zone == 13; });

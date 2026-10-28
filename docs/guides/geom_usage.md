@@ -34,14 +34,14 @@ B--D add the CFV layer.
 
 ### C++ Pipeline (Phase A)
 
-Use the helpers in `Geom/Mesh/Mesh_Helpers.hpp` for new C++ code. They keep
+Use the helpers in `Geom/Unstructured/UnstructuredMeshHelpers.hpp` for new C++ code. They keep
 the CGNS/H5 read paths, ghost-building sequence, and solver-preparation steps
 in one place.
 
 The common source-CGNS path is:
 
 ```cpp
-#include "Geom/Mesh/Mesh_Helpers.hpp"
+#include "Geom/Unstructured/UnstructuredMeshHelpers.hpp"
 using namespace DNDS;
 using namespace DNDS::Geom;
 
@@ -63,11 +63,30 @@ ReadMeshFromCGNS(mesh, reader, "mesh.cgns", opts,
 PrepareMesh(*mesh, *reader);
 ```
 
+Native setup enables identity and closure diagnostics by default. Repeated
+producer-validated input can explicitly pass `MeshAuditOptions{false, false}`
+through `NativeMeshBuildOptions::audit` or the final argument of
+`ReadNativeMeshFromCGNS` / `ReadNativeMeshFromOpenFOAM`. Derived states inherit
+the policy. `mesh->CurrentNativeState()->Audit()` performs a full collective
+checkpoint audit without rebuilding or changing that policy. Every rank must
+supply matching options and call order. These switches skip duplicate/ghost-ID
+and cell-face reciprocity diagnostics; they retain required ghost construction,
+shape/index/sentinel validation, periodic matching and lease checks.
+
+The existing Euler source-mesh frontend exposes the same controls as
+`dataIOControl.meshAuditPersistentIdentity` and `meshAuditClosure`, both `true`
+by default. Archive decoding always starts with full diagnostics. Disabling
+checks asserts that the producer established the invariant; it can otherwise
+admit duplicate IDs or inconsistent incidence. Use full audits at checkpoints.
+
 `ReadMeshFromCGNS` performs serial CGNS read, optional periodic
 deduplication, cell graph construction, METIS partitioning, distribution,
-primary ghost construction, optional O1-to-O2 elevation, and optional
-bisection. `PrepareMesh` then performs optional cell reorder, face
-interpolation, ghost N2CB construction, and optional serial-output setup.
+optional O1-to-O2 elevation and optional bisection on owned data, then final
+ghost construction. `PrepareMesh` captures owned data, performs optional cell
+reorder and face interpolation, then finalizes facial and owned-node support
+once before optional serial-output setup. The temporary rows used by these
+algorithms are separate from the final compute ghosts. For explicit owned-stage
+APIs and coverage recipes see [mesh connectivity](../architecture/MeshConnectivity.md).
 
 For pre-partitioned H5 meshes, use `ReadMeshFromH5Parallel` for exact MPI-size
 matches and `ReadMeshFromH5` for even-split read plus ParMetis repartition.
@@ -104,7 +123,7 @@ stores owned entities; son stores ghosts from neighboring ranks.
 
 ### Primary Connectivity
 
-(Source: `Geom/Mesh/Mesh.hpp`.)
+(Source: `Geom/Unstructured/UnstructuredMesh.hpp`.)
 
 | Array | Row entity | Column content | Row width |
 |---|---|---|---|
@@ -116,7 +135,7 @@ stores owned entities; son stores ghosts from neighboring ranks.
 
 ### Face Connectivity (After `InterpolateFace`)
 
-(Source: `Geom/Mesh/Mesh.hpp`.)
+(Source: `Geom/Unstructured/UnstructuredMesh.hpp`.)
 
 | Array | Row entity | Column content | Row width |
 |---|---|---|---|
@@ -127,7 +146,7 @@ stores owned entities; son stores ghosts from neighboring ranks.
 
 ### Size Queries
 
-(Source: `Geom/Mesh/Mesh.hpp`.)
+(Source: `Geom/Unstructured/UnstructuredMesh.hpp`.)
 
 ```cpp
 mesh->NumCell()        // owned cells
@@ -209,7 +228,7 @@ int nFaces = elem.GetNumFaces();     // 4 for Quad, 6 for Hex
 ### Node Coordinates
 
 Coordinates are always 3D (`Eigen::Vector3d`), even for 2D meshes
-(z=0).  `GetCoordsOnCell` (in `Geom/Mesh/Mesh.hpp`) applies periodic
+(z=0).  `GetCoordsOnCell` (in `Geom/Unstructured/UnstructuredMesh.hpp`) applies periodic
 coordinate transformations when a cell straddles a periodic boundary;
 always use it instead of manually reading `coords[cell2node[iCell][j]]`
 unless you know the mesh is not periodic.

@@ -26,7 +26,7 @@ writers consume scoped current geometry. Maps-only adapters connect solver-owned
 output arrays. Native primary checkpoint output preserves the old wire schema
 without exporting a legacy mesh; full native archives retain their richer
 identity and provenance. The old primary archive decoder builds Runtime arrays
-directly. It rejects historical duplicate original IDs rather than repairing
+directly. It rejects duplicate original IDs rather than repairing
 them silently. Reconstruction-matrix diagnostics preserve exact face slots and
 pull owners' complete ghost rows before serialization.
 
