@@ -28,14 +28,46 @@
 namespace DNDS::Geom
 {
 
+    /// Options for the face-complete solver preparation stage.
+    struct PrepareMeshOptions
+    {
+        int reorderCells = 0;       ///< 0 = natural, 1 = reorder
+        int reorderParts = 1;       ///< nParts for ReorderLocalCells
+        bool buildSerialOut = true; ///< build serial output arrays
+        int reorderPartsInner = 1;  ///< nested local partitioning
+        int ghostLayers = 1;        ///< explicit final cell-ring depth
+        bool buildEdges = false;    ///< additionally construct 3D edges
+    };
+
+    inline NativeOwnedMeshData DeriveAndPartitionNativeMeshOwned(
+        NativeOwnedMeshData owned, const MPIInfo &mpi,
+        const PartitionOptions &partOpts, int elevation, int bisect);
+
+    inline std::shared_ptr<const UnstructuredMeshState> PrepareNativeMeshForSolverOwned(
+        NativeOwnedMeshData owned, const MPIInfo &mpi, const PrepareMeshOptions &opts);
+
+    /// Read and partition without publishing an intermediate primary state.
+    inline NativeOwnedMeshData ReadAndDeriveNativeMeshFromCGNSOwned(
+        const MPIInfo &mpi, int dimension, const std::string &meshFile,
+        const PartitionOptions &partOpts, const t_FBCName_2_ID &nameMapper,
+        std::optional<NativePeriodicImportOptions> periodic = {},
+        int elevation = 0, int bisect = 0, int readerRank = 0,
+        MeshAuditOptions audit = {});
+    inline NativeOwnedMeshData ReadAndDeriveNativeMeshFromOpenFOAMOwned(
+        const MPIInfo &mpi, const std::string &meshFile, const PartitionOptions &partOpts,
+        const std::map<std::string, std::string> &nameMapping,
+        const t_FBCName_2_ID &nameMapper, std::optional<NativePeriodicImportOptions> periodic = {},
+        int elevation = 0, int bisect = 0, int readerRank = 0,
+        MeshAuditOptions audit = {});
+
     /// Partition the source before optional order derivation, matching source
     /// mesh setup. Refinement retains parent ownership without repartitioning;
     /// all metadata comes from native publications and existing O2 is retained.
     /// Elevation retains Cell IDs for Euler legacy restart compatibility;
     /// bisection establishes fresh rank-prefix child IDs as in source setup.
-    inline std::shared_ptr<const UnstructuredMeshState> DeriveAndPartitionNativeMesh(
+    inline NativeOwnedMeshData DeriveAndPartitionNativeMeshOwned(
         NativeOwnedMeshData owned, const MPIInfo &mpi,
-        const PartitionOptions &partOpts, int elevation, int bisect, bool deferNewFacesUntilPreparation = false)
+        const PartitionOptions &partOpts, int elevation, int bisect)
     {
         FieldTransferDetail::LocalStage(mpi, [&]
                                         { DNDS_check_throw_info((elevation == 0 || elevation == 1) && bisect >= 0 && bisect <= 4,
@@ -67,8 +99,14 @@ namespace DNDS::Geom
                 owned = NativeMeshRefinement::ElevateOwned(owned, mpi, build, true).owned;
             owned = NativeMeshRefinement::BisectOwned(owned, mpi, build).owned;
         }
-        // Match the completed read helper's historical groups. Derivation
-        // returns primary topology; plain nondeferred reads complete faces.
+        return owned;
+    }
+
+    inline std::shared_ptr<const UnstructuredMeshState> DeriveAndPartitionNativeMesh(
+        NativeOwnedMeshData owned, const MPIInfo &mpi,
+        const PartitionOptions &partOpts, int elevation, int bisect, bool deferNewFacesUntilPreparation = false)
+    {
+        owned = DeriveAndPartitionNativeMeshOwned(std::move(owned), mpi, partOpts, elevation, bisect);
         if (!elevation && !bisect && !deferNewFacesUntilPreparation)
             owned = NativeMeshTopology::Build(std::move(owned), mpi);
         GhostSpec recipe;
@@ -101,6 +139,52 @@ namespace DNDS::Geom
         auto owned = ReadNativeCGNSOwned(mpi, meshFile, dimension, nameMapper, readerRank, {1, true, audit}, periodic, distribution);
         return UnstructuredMesh::FromNative(mpi, DeriveAndPartitionNativeMesh(std::move(owned), mpi, partOpts, elevation, bisect,
                                                                               deferNewFacesUntilPreparation));
+    }
+
+    inline NativeOwnedMeshData ReadAndDeriveNativeMeshFromCGNSOwned(
+        const MPIInfo &mpi, int dimension, const std::string &meshFile,
+        const PartitionOptions &partOpts, const t_FBCName_2_ID &nameMapper,
+        std::optional<NativePeriodicImportOptions> periodic, int elevation, int bisect,
+        int readerRank, MeshAuditOptions audit)
+    {
+        auto owned = ReadNativeCGNSOwned(mpi, meshFile, dimension, nameMapper, readerRank,
+                                         {1, true, audit}, periodic, NativeSerialDistribution::ReaderOwned);
+        return DeriveAndPartitionNativeMeshOwned(std::move(owned), mpi, partOpts, elevation, bisect);
+    }
+
+    inline NativeOwnedMeshData ReadAndDeriveNativeMeshFromOpenFOAMOwned(
+        const MPIInfo &mpi, const std::string &meshFile, const PartitionOptions &partOpts,
+        const std::map<std::string, std::string> &nameMapping,
+        const t_FBCName_2_ID &nameMapper, std::optional<NativePeriodicImportOptions> periodic,
+        int elevation, int bisect, int readerRank, MeshAuditOptions audit)
+    {
+        auto owned = ReadNativeOpenFOAMOwned(mpi, meshFile, nameMapping, nameMapper, readerRank,
+                                             {1, true, audit}, periodic, NativeSerialDistribution::ReaderOwned);
+        return DeriveAndPartitionNativeMeshOwned(std::move(owned), mpi, partOpts, elevation, bisect);
+    }
+
+    inline std::shared_ptr<const UnstructuredMeshState> PrepareNativeMeshForSolverOwned(
+        NativeOwnedMeshData owned, const MPIInfo &mpi, const PrepareMeshOptions &opts)
+    {
+        std::array<int, 6> settings{opts.reorderCells, opts.reorderParts, int(opts.buildSerialOut),
+                                    opts.reorderPartsInner, opts.ghostLayers, int(opts.buildEdges)},
+            expected = settings;
+        MPI_Bcast(expected.data(), int(expected.size()), MPI_INT, 0, mpi.comm);
+        FieldTransferDetail::LocalStage(mpi, [&]
+                                        { DNDS_check_throw_info(settings == expected && opts.ghostLayers > 0 &&
+                                                                    (opts.reorderCells == 0 || opts.reorderCells == 1),
+                                                                "native preparation options differ across ranks or invalid depth"); });
+        if (opts.reorderCells == 1)
+            owned = NativeMeshTransition::ReorderOwnedCells(owned, mpi, opts.reorderParts, opts.reorderPartsInner).owned;
+        owned = NativeMeshTopology::Build(std::move(owned), mpi, true, opts.buildEdges);
+        GhostSpec recipe;
+        FieldTransferDetail::LocalStage(mpi, [&]
+                                        {
+            recipe = DefaultNativeMeshGhostSpec(owned, opts.ghostLayers, true);
+            if (owned.ghostSpec)
+                recipe.chains.insert(recipe.chains.end(), owned.ghostSpec->chains.begin(), owned.ghostSpec->chains.end());
+            owned.ghostSpec = recipe; });
+        return NativeMeshAssembler::Build(mpi, std::move(owned), recipe);
     }
 
     inline ssp<UnstructuredMesh> ReadNativeMeshFromOpenFOAM(
@@ -289,17 +373,6 @@ namespace DNDS::Geom
     // PrepareMesh
     // -----------------------------------------------------------------------
 
-    /** @brief Options for PrepareMesh. */
-    struct PrepareMeshOptions
-    {
-        int reorderCells = 0;       ///< 0 = natural, 1 = reorder
-        int reorderParts = 1;       ///< nParts for ReorderLocalCells
-        bool buildSerialOut = true; ///< build serial output arrays
-        int reorderPartsInner = 1;  ///< nested local partitioning
-        int ghostLayers = 1;        ///< explicit final cell-ring depth
-        bool buildEdges = false;    ///< additionally construct 3D edges
-    };
-
     /** @brief Prepare a distributed mesh for solver use.
      *
      *  Steps: cell reorder, face interpolation, ghost N2CB, optional serial output.
@@ -321,26 +394,9 @@ namespace DNDS::Geom
                                         { DNDS_check_throw_info(mesh.HasNativeState() && reader.mesh.get() == &mesh &&
                                                                     (opts.reorderCells == 0 || opts.reorderCells == 1),
                                                                 "native preparation requires the bound output adapter and supported reorder option"); });
-        std::array<int, 6> settings{opts.reorderCells, opts.reorderParts, int(opts.buildSerialOut),
-                                    opts.reorderPartsInner, opts.ghostLayers, int(opts.buildEdges)},
-            expected = settings;
-        MPI_Bcast(expected.data(), int(expected.size()), MPI_INT, 0, mpi.comm);
-        FieldTransferDetail::LocalStage(mpi, [&]
-                                        { DNDS_check_throw_info(settings == expected && opts.ghostLayers > 0, "native preparation options differ across ranks or invalid depth"); });
         mesh.CheckCollectiveMutationAvailable();
-        auto owned = NativeMeshAssembler::CaptureOwned(*mesh.CurrentNativeState(), mpi);
-        if (opts.reorderCells == 1)
-            owned = NativeMeshTransition::ReorderOwnedCells(owned, mpi, opts.reorderParts, opts.reorderPartsInner).owned;
-        owned = NativeMeshTopology::Build(std::move(owned), mpi, true, opts.buildEdges);
-        FieldTransferDetail::LocalStage(mpi, [&]
-                                        {
-            // Solver preparation explicitly requires complete owned-node stars
-            // as well as facial closure. Retain any additional caller paths.
-            auto recipe = DefaultNativeMeshGhostSpec(owned, opts.ghostLayers, true);
-            if (owned.ghostSpec)
-                recipe.chains.insert(recipe.chains.end(), owned.ghostSpec->chains.begin(), owned.ghostSpec->chains.end());
-            owned.ghostSpec = std::move(recipe); });
-        auto prepared = AssembleNativeMesh(mpi, std::move(owned), opts.ghostLayers);
+        auto prepared = PrepareNativeMeshForSolverOwned(
+            NativeMeshAssembler::CaptureOwned(*mesh.CurrentNativeState(), mpi), mpi, opts);
         mesh.ReplaceNativeForSetup(std::move(prepared));
         if (opts.buildSerialOut)
             reader.BuildSerialOut();

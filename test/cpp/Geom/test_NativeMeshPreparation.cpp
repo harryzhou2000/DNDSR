@@ -10,6 +10,7 @@
 #include "NativeReorderChecks.hpp"
 #include "Geom/Connectivity/NativeMeshTopology.hpp"
 
+#include <algorithm>
 #include <iterator>
 
 namespace G = DNDS::Geom;
@@ -76,6 +77,11 @@ TEST_CASE("Owned CGNS partition permutation and faces need only one final assemb
                 auto partition = G::NativeMeshPreparation::PartitionOwned(owned, mpi, options);
                 checkOwned(partition.owned);
                 CHECK_FALSE(partition.owned.spaces.count(G::EntityKind::Face));
+                const auto unfinalized = G::NativeMeshAssembler::Build(
+                    mpi, partition.owned, G::DefaultNativeMeshGhostSpec(partition.owned, 1, true));
+                const auto unfinalizedKeys = unfinalized->RelationKeys();
+                CHECK(std::find(unfinalizedKeys.begin(), unfinalizedKeys.end(),
+                                G::NativeSetupFacialCellNeighborsKey()) == unfinalizedKeys.end());
                 reference = G::NativeMeshPreparation::Partition(*reference, mpi, options).state;
                 auto permutation = G::NativeMeshTransition::ReorderOwnedCells(partition.owned, mpi, 2, 1);
                 checkOwned(permutation.owned);

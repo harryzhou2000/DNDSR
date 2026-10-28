@@ -485,6 +485,30 @@ namespace DNDS::Geom
         FieldTransferDetail::LocalStage(mpi, [&]
                                         { DNDS_check_throw_info(options.metisType != "RB" || active <= 1, "owned RB partition requires one reader cell rank"); });
         auto graph = detail::BuildOwnedPartitionGraph(source, mpi, options.edgeWeightMethod);
+        auto carried = source;
+        FieldTransferDetail::LocalStage(mpi, [&]
+                                        {
+            std::vector<size_t> sizes(size_t(graph.offsets.empty() ? 0 : graph.offsets.size() - 1));
+            for (size_t row = 0; row < sizes.size(); ++row)
+                sizes[row] = size_t(graph.offsets[row + 1] - graph.offsets[row]);
+            carried.namedRelations.insert_or_assign(
+                NativeSetupFacialCellNeighborsKey(),
+                Runtime::BuildArrayRows<index>(sizes.size(), [&](size_t row) { return sizes[row]; },
+                                               [&](size_t row, auto output)
+                                               {
+                                                   for (size_t slot = 0; slot < output.size(); ++slot)
+                                                       output[slot] = index(graph.adjacency[size_t(graph.offsets[row]) + slot]);
+                                               })); });
+        if (mpi.size == 1)
+        {
+            // One rank already owns every row. Keep the reader's established
+            // family order and IDs; the graph cache is retained for the local
+            // reorder that follows. There is no field or topology migration.
+            NativeOwnedMeshTransitionResult result;
+            result.sourceSpaces = source.spaces;
+            result.owned = std::move(carried);
+            return result;
+        }
         auto targets = detail::PartitionNativeGraph(source.spaces.at(EntityKind::Cell), mpi, std::move(graph), options);
         ReorderInput input;
         FieldTransferDetail::LocalStage(mpi, [&]
@@ -499,7 +523,7 @@ namespace DNDS::Geom
                 input.follows = {{EntityKind::Node, EntityKind::Cell, Adj::Node2Cell},
                                  {EntityKind::Bnd, EntityKind::Cell, side}};
             } });
-        return NativeMeshTransition::BuildOwned(source, mpi, input);
+        return NativeMeshTransition::BuildOwned(carried, mpi, input);
     }
 
     NativeMeshTransitionResult NativeMeshPreparation::Partition(

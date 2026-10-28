@@ -1,6 +1,7 @@
 #include "Geom/Transition/NativeMeshAssembler.hpp"
 #include "Geom/Connectivity/NativeConnectivity.hpp"
 #include "Geom/Transition/FieldTransfer.hpp"
+#include "Geom/Transition/NativeMeshPartitionGraph.hpp"
 #include <set>
 #include <iomanip>
 #include <sstream>
@@ -39,6 +40,34 @@ namespace DNDS::Geom
             if (!owned.Layout().IsVariable())
                 ghost = Runtime::Array<T>::FromStorage(Runtime::RowLayout::Dense(ghost.Rows(), owned.Layout().Width()), ghost.Storage());
             return {owned, std::move(ghost)};
+        }
+        template <class T>
+        Runtime::Array<T> EmptyGhostFor(const Runtime::Array<T> &owned)
+        {
+            const auto &layout = owned.Layout();
+            return layout.IsVariable()
+                       ? Runtime::Array<T>(Runtime::RowLayout::Ragged(std::vector<size_t>{}))
+                       : Runtime::Array<T>(Runtime::RowLayout::Dense(0, layout.Width(), layout.Stride()));
+        }
+        template <class T>
+        Runtime::ArrayPair<T> PairWithoutGhosts(Runtime::Array<T> owned)
+        {
+            auto ghost = EmptyGhostFor(owned);
+            return {std::move(owned), std::move(ghost)};
+        }
+        template <class T>
+        Runtime::Array<T> DenseSingleColumn(Runtime::Array<T> source)
+        {
+            // Owned transitions preserve arbitrary source row layouts. Native
+            // IDs have a publication-level one-column contract, so normalize
+            // the shape without copying an already contiguous payload.
+            const auto layout = source.Layout();
+            if (!layout.IsVariable())
+                return source;
+            for (size_t row = 0; row < layout.Rows(); ++row)
+                DNDS_check_throw_info(layout.RowSize(row) == 1, "native persistent IDs must have exactly one column");
+            return Runtime::Array<T>::FromStorage(
+                Runtime::RowLayout::Dense(layout.Rows(), 1), source.Storage());
         }
         void Agree(const MPIInfo &mpi, const std::string &signature)
         {
@@ -257,6 +286,8 @@ namespace DNDS::Geom
                 }
             for (const auto &[key, values] : owned.namedRelations)
             {
+                if (key == NativeSetupFacialCellNeighborsKey())
+                    continue;
                 key.Validate();
                 CheckRows(values, owned.spaces.at(key.from));
                 DNDS_check_throw_info(owned.spaces.count(key.to), "native assembly named relation target missing");
@@ -311,6 +342,68 @@ namespace DNDS::Geom
             }
             DNDS_check_throw_info(schedule.size() <= size_t(INT_MAX), "native assembly schedule exceeds MPI range"); });
         Agree(mpi, schedule);
+        if (mpi.size == 1)
+        {
+            NativeMeshData data;
+            FieldTransferDetail::LocalStage(mpi, [&]
+                                            {
+                for (const auto &[kind, space] : owned.spaces)
+                {
+                    DNDS_check_throw_info(space.NumGlobal() == space.NumOwned() && space.NumGhost() == 0,
+                                          "single-rank native assembly requires identity global numbering");
+                    if (space.NumOwned())
+                    {
+                        const auto first = space.GlobalToLocal(0);
+                        const auto last = space.GlobalToLocal(space.NumOwned() - 1);
+                        DNDS_check_throw_info(first && *first == 0 && last && *last == space.NumOwned() - 1,
+                                              "single-rank native assembly global mapping is not zero-based");
+                    }
+                }
+                for (size_t slot = 0; slot < owned.relations.size(); ++slot)
+                    if (owned.relations[slot])
+                        data.relations[slot] = PairWithoutGhosts(std::move(*owned.relations[slot]));
+                for (auto &[key, rows] : owned.namedRelations)
+                    if (!(key == NativeSetupFacialCellNeighborsKey()))
+                        data.namedRelations.emplace(key, NativeNamedRelation{PairWithoutGhosts(std::move(rows)), Adj_PointToLocal});
+                auto companion = [&](auto &destination, auto &source)
+                { if (source) destination = PairWithoutGhosts(std::move(*source)); };
+                companion(data.coords, owned.coords);
+                companion(data.nodeWallDist, owned.nodeWallDist);
+                companion(data.cellInfo, owned.cellInfo);
+                companion(data.bndInfo, owned.bndInfo);
+                companion(data.faceInfo, owned.faceInfo);
+                companion(data.edgeInfo, owned.edgeInfo);
+                companion(data.cellNodesPbi, owned.cellNodesPbi);
+                companion(data.bndNodesPbi, owned.bndNodesPbi);
+                companion(data.cellFacesPbi, owned.cellFacesPbi);
+                companion(data.faceNodesPbi, owned.faceNodesPbi);
+                companion(data.cellEdgesPbi, owned.cellEdgesPbi);
+                companion(data.edgeNodesPbi, owned.edgeNodesPbi);
+                data.identity = owned.identity;
+                data.provenance = std::move(owned.provenance);
+                data.dimension = owned.dimension;
+                data.periodic = owned.periodic;
+                data.periodicInfo = owned.periodicInfo;
+                data.audit = owned.audit;
+                data.ghostSpec = specification; });
+            for (auto &[kind, rows] : owned.ids)
+            {
+                (void)kind;
+                rows = DenseSingleColumn(std::move(rows));
+            }
+            DNDS_check_throw_info(data.relations[size_t(MeshRelation::CellNodes)] &&
+                                      data.relations[size_t(MeshRelation::BoundaryNodes)] &&
+                                      data.relations[size_t(MeshRelation::BoundaryCells)] &&
+                                      data.relations[size_t(MeshRelation::CellCells)],
+                                  "single-rank native assembly primary topology missing");
+            auto result = UnstructuredMeshState::FromNative(
+                mpi, std::move(data), std::move(owned.spaces), std::move(owned.ids), owned.requirements);
+            FieldTransferDetail::LocalStage(mpi, [&]
+                                            {
+                if (!owned.localPartitionStarts.empty())
+                    result = result->WithLocalPartitions(std::move(owned.localPartitionStarts)); });
+            return result;
+        }
         NativeConnectivity connectivity(mpi);
         std::map<AdjKind, RArray> relations;
         FieldTransferDetail::LocalStage(mpi, [&]
@@ -318,7 +411,8 @@ namespace DNDS::Geom
             for (size_t slot = 0; slot < owned.relations.size(); ++slot)
                 if (owned.relations[slot]) relations.emplace(FacadeKey(slot), *owned.relations[slot]);
             for (const auto &[key, values] : owned.namedRelations)
-                DNDS_check_throw_info(relations.emplace(key, values).second, "native assembly reserved descriptor collision");
+                if (key != NativeSetupFacialCellNeighborsKey())
+                    DNDS_check_throw_info(relations.emplace(key, values).second, "native assembly reserved descriptor collision");
             for (const auto &[key, values] : relations)
             {
                 auto validate = RelationReadAccess(key, owned.spaces.at(key.from), owned.spaces.at(key.to), Adj_PointToGlobal, values);
@@ -420,7 +514,8 @@ namespace DNDS::Geom
                     data.relations[slot] = localRows(publication.relations.at(FacadeKey(slot)), shape.IsVariable() ? std::optional<size_t>{} : shape.Width());
                 }
             for (const auto &[key, unused] : owned.namedRelations)
-                data.namedRelations.emplace(key, NativeNamedRelation{localRows(publication.relations.at(key), {}), Adj_PointToLocal}); });
+                if (key != NativeSetupFacialCellNeighborsKey())
+                    data.namedRelations.emplace(key, NativeNamedRelation{localRows(publication.relations.at(key), {}), Adj_PointToLocal}); });
         auto companion = [&](auto &destination, const auto &values, EntityKind kind, const Runtime::ElementSchema &schema)
         { if (values) destination = Ghost(*values, kind, publication, schema); };
         companion(data.coords, owned.coords, EntityKind::Node, Runtime::ElementSchema::Arithmetic<real>());
