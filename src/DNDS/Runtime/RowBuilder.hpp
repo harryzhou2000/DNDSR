@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Array.hpp"
+#include <atomic>
 #include <cstring>
 #include <exception>
 #include <mutex>
@@ -85,12 +86,14 @@ namespace DNDS::Runtime
             struct Slab
             {
                 Buffer buffer;
-                size_t used = 0;
+                std::atomic<size_t> used = 0;
+                explicit Slab(Buffer storage) : buffer(std::move(storage)) {}
             };
-            std::vector<Slab> slabs;
+            std::vector<std::shared_ptr<Slab>> slabs;
+            std::atomic<Slab *> currentSlab = nullptr;
             std::vector<std::byte *> rowPointers;
             std::vector<size_t> rowCapacity;
-            std::mutex allocationMutex;
+            std::mutex slabMutex;
 
             State(size_t n, size_t bytes, RowLayoutKind layout, size_t cap, Buffer values = {}, WriteAccess access = {})
                 : rows(n), elementBytes(bytes), capacity(cap), width(cap), kind(layout)
@@ -120,6 +123,31 @@ namespace DNDS::Runtime
                 auto *base = denseAccess.View<std::byte>().data;
                 return base ? base + row * capacity * elementBytes : nullptr;
             }
+            static std::byte *ReserveInSlab(Slab &slab, size_t request)
+            {
+                auto *base = static_cast<std::byte *>(slab.buffer.LegacyPointer());
+                size_t observed = slab.used.load(std::memory_order_relaxed);
+                for (;;)
+                {
+                    const auto address = reinterpret_cast<uintptr_t>(base + observed);
+                    const auto padding = (64 - address % 64) % 64;
+                    const auto needed = padding + request;
+                    if (needed > slab.buffer.Bytes() || observed > slab.buffer.Bytes() - needed)
+                        return nullptr;
+                    if (slab.used.compare_exchange_weak(observed, observed + needed,
+                                                        std::memory_order_acq_rel,
+                                                        std::memory_order_relaxed))
+                        return base + observed + padding;
+                }
+            }
+            Slab *NewSlab(size_t wanted)
+            {
+                auto slab = std::make_shared<Slab>(Buffer::Allocate(wanted));
+                auto *live = slab.get();
+                slabs.push_back(std::move(slab));
+                currentSlab.store(live, std::memory_order_release);
+                return live;
+            }
             std::byte *AllocateRow(size_t row, size_t bytes)
             {
                 // CSR construction often creates thousands of tiny rows. One
@@ -131,33 +159,23 @@ namespace DNDS::Runtime
                 constexpr size_t alignment = 64;
                 const size_t request = std::max(bytes, size_t(1));
                 const size_t wanted = std::max(slabBytes, request + alignment);
-                // Distinct rows can be filled by independent workers. The
-                // per-row pointers are private, but the slab bump frontier and
-                // slab vector are shared by all allocations.
-                std::lock_guard<std::mutex> lock(allocationMutex);
-                std::byte *pointer = nullptr;
-                if (!slabs.empty())
-                {
-                    auto &slab = slabs.back();
-                    auto *base = static_cast<std::byte *>(slab.buffer.LegacyPointer());
-                    const auto address = reinterpret_cast<uintptr_t>(base + slab.used);
-                    const auto padding = (alignment - address % alignment) % alignment;
-                    if (slab.used + padding + request <= slab.buffer.Bytes())
-                    {
-                        slab.used += padding;
-                        pointer = base + slab.used;
-                        slab.used += request;
-                    }
-                }
+                Slab *slab = currentSlab.load(std::memory_order_acquire);
+                std::byte *pointer = slab ? ReserveInSlab(*slab, request) : nullptr;
                 if (!pointer)
                 {
-                    slabs.push_back({Buffer::Allocate(wanted), 0});
-                    auto &slab = slabs.back();
-                    auto *base = static_cast<std::byte *>(slab.buffer.LegacyPointer());
-                    const auto address = reinterpret_cast<uintptr_t>(base);
-                    slab.used = (alignment - address % alignment) % alignment;
-                    pointer = base + slab.used;
-                    slab.used += request;
+                    // Distinct rows can be allocated concurrently. The common
+                    // path reserves through the active slab's atomic frontier;
+                    // the mutex is reached only when a new slab is published.
+                    std::lock_guard<std::mutex> lock(slabMutex);
+                    slab = currentSlab.load(std::memory_order_acquire);
+                    if (slab)
+                        pointer = ReserveInSlab(*slab, request);
+                    if (!pointer)
+                    {
+                        slab = NewSlab(wanted);
+                        pointer = ReserveInSlab(*slab, request);
+                        DNDS_check_throw_info(pointer, "row builder could not reserve a slab row");
+                    }
                 }
                 rowPointers[row] = pointer;
                 rowCapacity[row] = bytes;
