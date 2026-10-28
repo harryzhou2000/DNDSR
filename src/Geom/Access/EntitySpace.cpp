@@ -209,18 +209,34 @@ namespace DNDS::Geom
         int kindRange[]{int(_kind), -int(_kind)};
         MPI_Allreduce(MPI_IN_PLACE, kindRange, 2, MPI_INT, MPI_MIN, _mpi.comm);
         DNDS_check_throw_info(kindRange[0] == -kindRange[1], "row route entity kind differs between ranks");
-        std::vector<Runtime::RowRequest> requests;
-        requests.reserve(size_t(_ghost));
-        for (index row = 0; row < _ghost; ++row)
+        // The ghost map already contains the peer-grouped request/send order;
+        // rebuilding it through a generic request all-to-all repeats setup work
+        // for every relation and companion transferred through this route.
+        std::vector<std::vector<size_t>> send(size_t(_mpi.size)), receive(size_t(_mpi.size));
+        for (int peer = 0; peer < _mpi.size; ++peer)
         {
-            MPI_int rank = -1;
-            index local = -1;
-            // Validated global IDs and ownership come from the retained map.
-            const bool found = _global->search(_ghostMap->ghostIndex[row], rank, local);
-            DNDS_check_throw_info(found, "entity-space ghost global index is invalid");
-            requests.push_back({rank, local, size_t(row)});
+            const auto first = _ghostMap->ghostStart[size_t(peer)];
+            const auto end = _ghostMap->ghostStart[size_t(peer + 1)];
+            receive[size_t(peer)].reserve(size_t(end - first));
+            for (index row = first; row < end; ++row)
+                receive[size_t(peer)].push_back(size_t(row));
+
+            const auto pushFirst = _ghostMap->pushIndexStarts[size_t(peer)];
+            const auto pushEnd = _ghostMap->pushIndexStarts[size_t(peer + 1)];
+            send[size_t(peer)].reserve(size_t(pushEnd - pushFirst));
+            for (index slot = pushFirst; slot < pushEnd; ++slot)
+            {
+                MPI_int owner = -1;
+                index local = -1;
+                const auto global = _ghostMap->pushingIndexGlobal[size_t(slot)];
+                DNDS_check_throw_info(_global->search(global, owner, local) && owner == _mpi.rank,
+                                      "entity-space peer route contains a row outside the sending rank");
+                send[size_t(peer)].push_back(size_t(local));
+            }
         }
-        return Runtime::RowTransferPlan(_mpi.comm, size_t(_owned), size_t(_ghost), requests, {_stamp});
+        auto context = std::make_shared<Runtime::CommunicationContext>(_mpi.comm);
+        return Runtime::RowTransferPlan::Known(std::move(context), size_t(_owned), size_t(_ghost),
+                                               std::move(send), std::move(receive), {_stamp});
     }
 
     EntitySpace UnstructuredMesh::Entities(EntityKind kind) const

@@ -5,8 +5,6 @@
 
 #    include <iostream>
 #    include <map>
-#    include <set>
-#    include <unordered_set>
 #    include <exception>
 #    include <cstdint>
 #    include <vector>
@@ -47,30 +45,41 @@ namespace CorrectRCM
 
         [[nodiscard]] int CheckAdj(bool checkParallel = true, bool checkSymmetry = true) const
         {
-            std::unordered_multiset<std::pair<index, index>, hash_pair> edges;
-            std::unordered_multiset<std::pair<index, index>, hash_pair> edgesDirected;
-            edges.reserve(2 * nVertices);
-            edgesDirected.reserve(2 * nVertices);
-            for (index i = 0; i < nVertices; i++)
+            int invalid = 0;
+#    pragma omp parallel for if (nVertices >= 4096) schedule(static) reduction(| : invalid)
+            for (index i = 0; i < nVertices; ++i)
             {
-                auto adj = GetAdj(i);
-                for (auto j : adj)
+                const auto row = GetAdj(i);
+                for (auto entry : row)
                 {
-                    if (i == j)
+                    const index j = index(entry);
+                    if (j == i)
                         continue;
-                    index k = std::min(index(j), i), l = std::max(index(j), i);
-                    edges.insert(std::make_pair(k, l));
-                    edgesDirected.insert(std::make_pair(i, index(j)));
+                    if (checkParallel)
+                    {
+                        size_t multiplicity = 0;
+                        for (auto other : row)
+                            multiplicity += index(other) == j;
+                        if (multiplicity != 1)
+                        {
+                            invalid |= 1;
+                            continue;
+                        }
+                    }
+                    if (checkSymmetry)
+                    {
+                        bool reverse = false;
+                        for (auto other : GetAdj(j))
+                            reverse = reverse || index(other) == i;
+                        if (!reverse)
+                            invalid |= 2;
+                    }
                 }
             }
-            if (checkParallel)
-                for (auto e : edgesDirected)
-                    if (edgesDirected.count(e) != 1)
-                        throw std::runtime_error("Graph not having unique directed edges");
-            if (checkSymmetry)
-                for (auto e : edges)
-                    if (edges.count(e) != 2)
-                        throw std::runtime_error("Graph not having symmetric edge pairs");
+            if (invalid & 1)
+                throw std::runtime_error("Graph not having unique directed edges");
+            if (invalid & 2)
+                throw std::runtime_error("Graph not having symmetric edge pairs");
             return 0;
         }
 
@@ -133,14 +142,17 @@ namespace CorrectRCM
         if (os.has_value())
             os.value().get() << "CorrectRCM::CuthillMcKeeOrdering: Start" << std::endl;
         using index = typename std::remove_reference_t<TGraph>::index;
-        std::set<index> unvisited;
-        for (index i = 0; i < G.GetNVertices(); i++)
-            unvisited.insert(i);
+        const index vertices = G.GetNVertices();
+        if (vertices < 0)
+            throw std::range_error("RCM graph has a negative vertex count");
+        std::vector<uint8_t> unvisited(size_t(vertices), 1);
+        index remaining = vertices;
+        index nextUnvisited = 0;
 
         index cTop{0};
         index nextRoot = root;
 
-        for (index iIter = 0; iIter < G.GetNVertices(); iIter++)
+        for (index iIter = 0; iIter < vertices; iIter++)
         {
             auto cRootDegree = G.GetAdj(nextRoot).size();
             auto cRootLayer = 0;
@@ -159,8 +171,10 @@ namespace CorrectRCM
                 [&](auto i, auto iLayer)
                 {
                     FFiller(i) = cTop++;
-                    if (unvisited.erase(i) != 1)
+                    if (i < 0 || i >= vertices || !unvisited[size_t(i)])
                         throw std::logic_error("unvisited set not correct");
+                    unvisited[size_t(i)] = 0;
+                    --remaining;
                 },
                 std::forward<TIndex>(nextRoot),
                 [&](index i, index j, const std::vector<index> &layer) -> bool
@@ -178,9 +192,13 @@ namespace CorrectRCM
                 });
             if (os.has_value())
                 os.value().get() << "  Part [" << iIter << "], " << "processed [" << cTop << "/" << G.GetNVertices() << "]" << std::endl;
-            if (unvisited.empty())
+            if (!remaining)
                 break;
-            nextRoot = *unvisited.begin(); // we handle disjoint graphs
+            while (nextUnvisited < vertices && !unvisited[size_t(nextUnvisited)])
+                ++nextUnvisited;
+            if (nextUnvisited >= vertices)
+                throw std::logic_error("unvisited cursor incomplete");
+            nextRoot = nextUnvisited; // we handle disjoint graphs
         }
         if (os.has_value())
             os.value().get() << "CorrectRCM::CuthillMcKeeOrdering: Finished" << std::endl;

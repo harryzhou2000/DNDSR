@@ -7,6 +7,9 @@
 
 namespace DNDS::Geom
 {
+    struct NativeCellClosure;
+    struct NativeOwnedMeshData;
+    NativeCellClosure BuildNativeCellClosure(const NativeOwnedMeshData &source, const MPIInfo &mpi);
     template <class Pair>
     struct AdjPairTracked;
     /// Retained host setup scope. Values and row metadata share their original
@@ -18,6 +21,7 @@ namespace DNDS::Geom
         friend class NativeRelation;
         friend class NativeConnectivity;
         friend class RelationPeriodicBits;
+        friend NativeCellClosure BuildNativeCellClosure(const NativeOwnedMeshData &source, const MPIInfo &mpi);
         EntitySpace _source, _target;
         Runtime::VersionTracker::ReadLease _sourceLease, _targetLease;
         struct Hold
@@ -248,6 +252,18 @@ namespace DNDS::Geom
         /// before a subsequent collective setup operation.
         static NativeRelation Convert(const RelationReadAccess &source, MeshAdjState targetState,
                                       bool allowUnavailable = true);
+        /// Attach already materialized source-ordered ghost rows. Used when a
+        /// setup traversal needed those rows for discovery and must not fetch
+        /// the same payload a second time during publication.
+        static NativeRelation WithGhostValues(AdjKind kind, EntitySpace source, EntitySpace target,
+                                              Runtime::Array<index> owned,
+                                              Runtime::Array<index> ghost)
+        {
+            NativeRelation result(kind, std::move(source), std::move(target), std::move(owned));
+            result._ghost.emplace(std::move(ghost));
+            auto validated = result.Read();
+            return result;
+        }
         /// Collective transient direct transfer using a route explicitly bound
         /// to this source identity/order. The original owned relation is retained.
         /// Local-index payloads require target-map translation across ranks;

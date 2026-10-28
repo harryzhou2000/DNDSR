@@ -273,6 +273,8 @@ namespace DNDS::Geom
         std::vector<std::vector<NodePeriodicBits>> nodeBits, parentBits;
 
         std::vector<bool> owned;
+        std::vector<index> parentGlobal;
+        std::vector<MPI_int> parentOwner;
         setup.ValidateCollectively([&]
                                    {
             cone.Validate();
@@ -294,13 +296,56 @@ namespace DNDS::Geom
                     DNDS_check_throw_info(desc.nVertices > 0 && desc.nVertices <= desc.nNodes && desc.nNodes <= 10,
                                           "invalid subentity node/vertex count");
                 }
-                for (size_t slot = 0; slot < cone.RowSize(row); ++slot)
-                {
-                    auto entry = cone.ReadEntry(row, slot);
-                    DNDS_check_throw_info(!entry.absent && !entry.unavailable,
-                                          "interpolation requires local node closure");
-                }
             }
+            // Relation construction already validated raw encodings under the
+            // retained source/target leases. Interpolation additionally needs
+            // every target present in the local closure; check that condition
+            // directly instead of re-entering public random access twice per
+            // node. This is the same predicate as ReadEntry().unavailable.
+            const auto requireLocalTarget = [&](const Runtime::ArrayView<const index> &view)
+            {
+                for (size_t row = 0; row < view.Rows(); ++row)
+                {
+                    const auto count = view.RowSize(row);
+                    const auto *values = count ? view.Row(row) : nullptr;
+                    for (size_t slot = 0; slot < count; ++slot)
+                    {
+                        const auto value = values[slot];
+                        DNDS_check_throw_info(value != UnInitIndex,
+                                              "interpolation requires local node closure");
+                        const index global = cone._state == Adj_PointToLocal && value >= 0
+                                                 ? cone._target.LocalToGlobalPinned(value)
+                                                 : (cone._state == Adj_PointToLocal ? -1 - value : value);
+                        DNDS_check_throw_info(cone._target.GlobalToLocalPinned(global),
+                                              "interpolation requires local node closure");
+                    }
+                }
+            };
+            requireLocalTarget(cone._view.owned);
+            requireLocalTarget(cone._view.ghost);
+            const auto localIndex = [&](index row, size_t slot)
+            {
+                const auto count = cone._view.RowSize(size_t(row));
+                DNDS_check_throw_info(slot < count, "interpolation node slot outside cone");
+                const auto value = cone._view.Row(size_t(row))[slot];
+                if (cone._state == Adj_PointToLocal)
+                {
+                    DNDS_check_throw_info(value >= 0, "interpolation requires local node closure");
+                    return value;
+                }
+                const auto local = cone._target.GlobalToLocalPinned(value);
+                DNDS_check_throw_info(local.has_value(), "interpolation requires local node closure");
+                return *local;
+            };
+            const auto globalIndex = [&](index row, size_t slot)
+            {
+                const auto count = cone._view.RowSize(size_t(row));
+                DNDS_check_throw_info(slot < count, "interpolation node slot outside cone");
+                const auto value = cone._view.Row(size_t(row))[slot];
+                return cone._state == Adj_PointToLocal && value >= 0
+                           ? cone._target.LocalToGlobalPinned(value)
+                           : (cone._state == Adj_PointToLocal ? -1 - value : value);
+            };
             SubEntityQueryPbi enumeration = query;
             if (periodic)
                 enumeration.matchExtra = [&](index parent, int sub, index entity, index originalParent, int originalSub)
@@ -311,7 +356,7 @@ namespace DNDS::Geom
                         const auto desc = query.describe(p, slot);
                         std::vector<index> nodes(size_t(desc.nNodes));
                         std::vector<NodePeriodicBits> bits(size_t(desc.nNodes));
-                        query.extractNodes(p, slot, [&](int j) { return cone.ConvertedIndex(p, size_t(j), Adj_PointToGlobal); }, nodes.data());
+                        query.extractNodes(p, slot, [&](int j) { return globalIndex(p, size_t(j)); }, nodes.data());
                         query.extractPbi(p, slot, [&](int j) { return (*periodic)(p, size_t(j)); }, bits.data());
                         std::vector<std::pair<index, uint8_t>> result;
                         for (size_t j = 0; j < nodes.size(); ++j) result.emplace_back(nodes[j], uint8_t(bits[j]));
@@ -323,7 +368,7 @@ namespace DNDS::Geom
             rows.emplace(ConnectivityRows::EnumerateSubEntities([&](index row, int slot)
             {
                 DNDS_check_throw_info(slot >= 0 && size_t(slot) < cone.RowSize(row), "node extraction slot outside cone");
-                return cone.ConvertedIndex(row, size_t(slot), Adj_PointToLocal, false);
+                return localIndex(row, size_t(slot));
             }, enumeration, cone.Rows(), cone.Target().NumLocal()));
             nodeBits.resize(size_t(rows->nEntities));
             parentBits.resize(size_t(cone.Rows()));
@@ -344,7 +389,7 @@ namespace DNDS::Geom
                             return (*periodic)(parent, size_t(slot));
                         }, bits.data());
                         query.extractNodes(parent, int(sub), [&](int slot)
-                        { return cone.ConvertedIndex(parent, size_t(slot), Adj_PointToLocal, false); }, nodes.data());
+                        { return localIndex(parent, size_t(slot)); }, nodes.data());
                         auto &stored = nodeBits[size_t(entity)];
                         if (stored.empty()) stored = bits;
                         const auto &entityNodes = rows->entity2node[size_t(entity)];
@@ -363,15 +408,24 @@ namespace DNDS::Geom
                     }
                 }
             }
+            parentGlobal.resize(size_t(cone.Rows()));
+            parentOwner.resize(size_t(cone.Rows()));
+            for (index parent = 0; parent < cone.Rows(); ++parent)
+            {
+                parentGlobal[size_t(parent)] = cone.Source().LocalToGlobal(parent);
+                parentOwner[size_t(parent)] = cone.Source().Owner(parentGlobal[size_t(parent)]);
+            }
             owned.resize(size_t(rows->nEntities));
+            std::vector<MPI_int> ranks;
+            ranks.reserve(4);
             for (index entity = 0; entity < rows->nEntities; ++entity)
             {
                 const auto &parents = rows->entity2parent[size_t(entity)];
-                std::vector<MPI_int> ranks;
+                ranks.clear();
                 bool anyOwned = false, anyGhost = false;
                 for (auto parent : parents)
                 {
-                    ranks.push_back(cone.Source().Owner(cone.Source().LocalToGlobal(parent)));
+                    ranks.push_back(parentOwner[size_t(parent)]);
                     anyOwned = anyOwned || parent < cone.NumOwned();
                     anyGhost = anyGhost || parent >= cone.NumOwned();
                 }
@@ -393,6 +447,9 @@ namespace DNDS::Geom
         std::vector<std::vector<NodePeriodicBits>> e2nBits(static_cast<size_t>(nOwned));
         std::vector<std::vector<ElemInfo>> info(static_cast<size_t>(nOwned));
         std::vector<std::vector<index>> messages(size_t(mpi.size));
+        std::vector<index> nodeGlobal(size_t(cone.Target().NumLocal()));
+        for (index node = 0; node < cone.Target().NumLocal(); ++node)
+            nodeGlobal[size_t(node)] = cone.Target().LocalToGlobal(node);
         for (index entity = 0; entity < rows->nEntities; ++entity)
         {
             auto output = oldToOwned[size_t(entity)];
@@ -400,19 +457,18 @@ namespace DNDS::Geom
                 continue;
             const auto global = entities.LocalToGlobal(output);
             for (auto node : rows->entity2node[size_t(entity)])
-                e2n[size_t(output)].push_back(cone.Target().LocalToGlobal(node));
+                e2n[size_t(output)].push_back(nodeGlobal[size_t(node)]);
             for (auto parent : rows->entity2parent[size_t(entity)])
             {
-                auto parentGlobal = cone.Source().LocalToGlobal(parent);
-                e2p[size_t(output)].push_back(parentGlobal);
+                e2p[size_t(output)].push_back(parentGlobal[size_t(parent)]);
                 if (parent >= cone.NumOwned())
                 {
                     const auto &slots = rows->parent2entity[size_t(parent)];
                     for (size_t slot = 0; slot < slots.size(); ++slot)
                         if (slots[slot] == entity)
                         {
-                            auto &message = messages[size_t(cone.Source().Owner(parentGlobal))];
-                            message.insert(message.end(), {parentGlobal, global, index(slot), periodic ? index(uint8_t(parentBits[size_t(parent)][slot])) : 0});
+                            auto &message = messages[size_t(parentOwner[size_t(parent)])];
+                            message.insert(message.end(), {parentGlobal[size_t(parent)], global, index(slot), periodic ? index(uint8_t(parentBits[size_t(parent)][slot])) : 0});
                         }
                 }
             }
@@ -420,23 +476,26 @@ namespace DNDS::Geom
             info[size_t(output)].push_back(rows->entityElemInfo[size_t(entity)]);
         }
         // One ragged batch per peer, owner-directed and direct typed MPI.
-        auto batches = BuildRows(messages, 0, messages.size());
-        std::vector<int> sendPresence(size_t(mpi.size)), receivePresence(size_t(mpi.size));
-        for (int peer = 0; peer < mpi.size; ++peer)
-            sendPresence[size_t(peer)] = !messages[size_t(peer)].empty();
-        MPI_Alltoall(sendPresence.data(), 1, MPI_INT, receivePresence.data(), 1, MPI_INT, mpi.comm);
-        std::vector<std::vector<size_t>> send(size_t(mpi.size)), receive(size_t(mpi.size));
+        std::vector<int> sendCounts(size_t(mpi.size)), receiveCounts(size_t(mpi.size));
         for (int peer = 0; peer < mpi.size; ++peer)
         {
-            if (sendPresence[size_t(peer)])
-                send[size_t(peer)].push_back(size_t(peer));
-            if (receivePresence[size_t(peer)])
-                receive[size_t(peer)].push_back(size_t(peer));
+            DNDS_check_throw_info(messages[size_t(peer)].size() <= size_t(INT_MAX),
+                                  "interpolation owner message exceeds MPI count range");
+            sendCounts[size_t(peer)] = int(messages[size_t(peer)].size());
         }
-        auto context = std::make_shared<Runtime::CommunicationContext>(mpi.comm);
-        auto route = Runtime::RowTransferPlan::Known(context, size_t(mpi.size), size_t(mpi.size), std::move(send), std::move(receive),
-                                                     {cone.Source().Stamp(), cone.Target().Stamp()});
-        auto incoming = Transfer(route, batches, context);
+        MPI_Alltoall(sendCounts.data(), 1, MPI_INT, receiveCounts.data(), 1, MPI_INT, mpi.comm);
+        std::vector<int> sendOffsets(size_t(mpi.size) + 1, 0), receiveOffsets(size_t(mpi.size) + 1, 0);
+        for (int peer = 0; peer < mpi.size; ++peer)
+        {
+            sendOffsets[size_t(peer + 1)] = sendOffsets[size_t(peer)] + sendCounts[size_t(peer)];
+            receiveOffsets[size_t(peer + 1)] = receiveOffsets[size_t(peer)] + receiveCounts[size_t(peer)];
+        }
+        std::vector<index> outgoing(size_t(sendOffsets.back())), incoming(size_t(receiveOffsets.back()));
+        for (int peer = 0; peer < mpi.size; ++peer)
+            std::copy(messages[size_t(peer)].begin(), messages[size_t(peer)].end(),
+                      outgoing.begin() + sendOffsets[size_t(peer)]);
+        MPI_Alltoallv(outgoing.data(), sendCounts.data(), sendOffsets.data(), DNDS_MPI_INDEX,
+                      incoming.data(), receiveCounts.data(), receiveOffsets.data(), DNDS_MPI_INDEX, mpi.comm);
         std::vector<std::vector<index>> p2e(size_t(cone.Rows()));
         for (index parent = 0; parent < cone.Rows(); ++parent)
             for (auto entity : rows->parent2entity[size_t(parent)])
@@ -446,15 +505,14 @@ namespace DNDS::Geom
             }
         setup.ValidateCollectively([&]
                                    {
-            auto read = incoming.Read();
-            auto view = read.View();
-            for (size_t peer = 0; peer < view.Rows(); ++peer)
+            for (size_t peer = 0; peer < size_t(mpi.size); ++peer)
             {
-                DNDS_check_throw_info(view.RowSize(peer) % 4 == 0, "malformed interpolation owner message");
-                for (size_t slot = 0; slot < view.RowSize(peer); slot += 4)
+                const auto first = receiveOffsets[peer], end = receiveOffsets[peer + 1];
+                DNDS_check_throw_info((end - first) % 4 == 0, "malformed interpolation owner message");
+                for (int slot = first; slot < end; slot += 4)
                 {
-                    const auto parent = cone.Source().GlobalToLocal(view(peer, slot));
-                    const auto entity = view(peer, slot + 1), sub = view(peer, slot + 2);
+                    const auto parent = cone.Source().GlobalToLocal(incoming[size_t(slot)]);
+                    const auto entity = incoming[size_t(slot + 1)], sub = incoming[size_t(slot + 2)];
                     DNDS_check_throw_info(parent && *parent < cone.NumOwned() && entity >= 0 && entity < entities.NumGlobal() &&
                                               entities.Owner(entity) == int(peer) && sub >= 0 && size_t(sub) < p2e[size_t(*parent)].size(),
                                           "interpolation owner message outside entity domain");
@@ -469,7 +527,7 @@ namespace DNDS::Geom
                         // published parent->entity transform. Send/install the
                         // owner's XOR with the entity ID (legacy triplets sent
                         // only the ID and could leave wrong cross-rank flags).
-                        const auto bits = view(peer, slot + 3);
+                        const auto bits = incoming[size_t(slot + 3)];
                         DNDS_check_throw_info(bits >= 0 && bits <= 255, "invalid interpolation periodic frame bits");
                         parentBits[size_t(*parent)][size_t(sub)] = NodePeriodicBits{uint8_t(bits)};
                     }
