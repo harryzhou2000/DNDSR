@@ -3,6 +3,9 @@
 #include "Geom/Metis.hpp"
 #include "Geom/Connectivity/MeshRelationTypes.hpp"
 #include "DNDS/MPI.hpp"
+#include <algorithm>
+#include <utility>
+#include <vector>
 
 namespace DNDS::Geom
 {
@@ -27,6 +30,34 @@ namespace DNDS::Geom
     }
     namespace detail
     {
+        using NativeNeighborWeight = std::pair<index, real>;
+
+        /// Small adjacency rows are sorted in place. Callers build with
+        /// push_back, then compact once instead of paying tree allocation per
+        /// neighbor.
+        inline void CompactAdjacencyRow(std::vector<index> &row)
+        {
+            std::sort(row.begin(), row.end());
+            row.erase(std::unique(row.begin(), row.end()), row.end());
+        }
+
+        /// Merge duplicate face incidences to one row entry and retain the
+        /// largest diameter, matching the historical map update policy.
+        inline void CompactAdjacencyRow(std::vector<NativeNeighborWeight> &row)
+        {
+            std::sort(row.begin(), row.end(), [](const auto &lhs, const auto &rhs)
+                      { return lhs.first < rhs.first; });
+            size_t output = 0;
+            for (size_t input = 0; input < row.size(); ++input)
+            {
+                if (output && row[output - 1].first == row[input].first)
+                    row[output - 1].second = std::max(row[output - 1].second, row[input].second);
+                else
+                    row[output++] = row[input];
+            }
+            row.resize(output);
+        }
+
         /// Setup scratch passed directly to METIS/ParMETIS: owned CSR rows,
         /// current global cell targets, and optional parallel integer weights.
         /// Duplicate faces for one neighbor use the maximum physical diameter.

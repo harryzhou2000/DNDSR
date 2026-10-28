@@ -56,7 +56,7 @@ namespace DNDS::Geom
 
             //! Build partition-level adjacency (which partitions neighbor which).
             //! Only intra-sub-graph edges matter for partition adjacency.
-            std::vector<std::set<int>> localPartsAdjV(nParts);
+            tLocalMatStruct localPartsAdj{static_cast<size_t>(nParts)};
             for (index iC = 0; iC < n_elem; iC++)
             {
                 auto iP = partition_local.at(iC);
@@ -67,18 +67,14 @@ namespace DNDS::Geom
                     {
                         auto iPOther = partition_local.at(iLocal);
                         if (iPOther != iP)
-                            localPartsAdjV.at(iP).insert(iPOther);
+                            localPartsAdj.at(size_t(iP)).push_back(iPOther);
                     }
                 }
             }
-            tLocalMatStruct localPartsAdj;
-            localPartsAdj.reserve(nParts);
-            for (auto &row : localPartsAdjV)
+            for (auto &row : localPartsAdj)
             {
-                localPartsAdj.emplace_back();
-                localPartsAdj.back().reserve(row.size());
-                for (const auto &v : row)
-                    localPartsAdj.back().emplace_back(v);
+                std::sort(row.begin(), row.end());
+                row.erase(std::unique(row.begin(), row.end()), row.end());
             }
 
             index bwOld, bwNew;

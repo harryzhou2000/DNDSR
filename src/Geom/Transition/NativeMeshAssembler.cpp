@@ -2,7 +2,6 @@
 #include "Geom/Connectivity/NativeConnectivity.hpp"
 #include "Geom/Transition/FieldTransfer.hpp"
 #include "Geom/Transition/NativeMeshPartitionGraph.hpp"
-#include <set>
 #include <iomanip>
 #include <sstream>
 
@@ -455,8 +454,15 @@ namespace DNDS::Geom
             int changed = 0;
             FieldTransferDetail::LocalStage(mpi, [&]
                                             {
-                std::map<EntityKind, std::set<index>> known;
-                for (const auto &[kind, values] : discovery.ghostIndices) known[kind].insert(values.begin(), values.end());
+                std::map<EntityKind, std::vector<index>> known;
+                for (const auto &[kind, values] : discovery.ghostIndices)
+                {
+                    auto &rows = known[kind];
+                    rows = values;
+                    std::sort(rows.begin(), rows.end());
+                    rows.erase(std::unique(rows.begin(), rows.end()), rows.end());
+                }
+                std::map<EntityKind, std::vector<index>> additional;
                 auto collect = [&](MeshRelation slot)
                 {
                     if (!owned.relations[size_t(slot)]) return;
@@ -464,11 +470,19 @@ namespace DNDS::Geom
                     const auto kind = Bindings()[size_t(slot)].to;
                     for (index row = 0; row < read.Rows(); ++row)
                         for (auto global : read.GlobalRow(row))
-                            if (global != UnInitIndex && owned.spaces.at(kind).Owner(global) != mpi.rank && known[kind].insert(global).second)
-                            { discovery.ghostIndices[kind].push_back(global); changed = 1; }
+                            if (global != UnInitIndex && owned.spaces.at(kind).Owner(global) != mpi.rank &&
+                                !std::binary_search(known[kind].begin(), known[kind].end(), global))
+                                additional[kind].push_back(global);
                 };
                 for (auto slot : {MeshRelation::CellNodes, MeshRelation::BoundaryNodes, MeshRelation::FaceNodes, MeshRelation::EdgeNodes}) collect(slot);
-                if (owned.requirements.allFaceCellsLocal) collect(MeshRelation::FaceCells); });
+                if (owned.requirements.allFaceCellsLocal) collect(MeshRelation::FaceCells);
+                for (auto &[kind, rows] : additional)
+                {
+                    std::sort(rows.begin(), rows.end());
+                    rows.erase(std::unique(rows.begin(), rows.end()), rows.end());
+                    if (!rows.empty()) changed = 1;
+                    discovery.ghostIndices[kind].insert(discovery.ghostIndices[kind].end(), rows.begin(), rows.end());
+                } });
             MPI_Allreduce(MPI_IN_PLACE, &changed, 1, MPI_INT, MPI_MAX, mpi.comm);
             if (!changed)
                 break;

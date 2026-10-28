@@ -244,7 +244,7 @@ namespace DNDS::Geom
                 const auto view = read->HostView();
                 const index firstCell = cells->LocalToGlobal(0);
                 const auto rows = PrimaryFaces(view, *nodes, cells->NumOwned());
-                std::vector<std::set<index>> neighbors(size_t(cells->NumOwned()));
+                std::vector<std::vector<index>> neighbors(size_t(cells->NumOwned()));
                 for (const auto &parents : rows.entity2parent)
                 {
                     DNDS_check_throw_info(!parents.empty() && parents.size() <= 2 &&
@@ -252,12 +252,13 @@ namespace DNDS::Geom
                                           "native face has missing, repeated or nonmanifold parent incidences");
                     if (parents.size() == 2 && parents[0] != parents[1])
                     {
-                        neighbors[size_t(parents[0])].insert(firstCell + parents[1]);
-                        neighbors[size_t(parents[1])].insert(firstCell + parents[0]);
+                        neighbors[size_t(parents[0])].push_back(firstCell + parents[1]);
+                        neighbors[size_t(parents[1])].push_back(firstCell + parents[0]);
                     }
                 }
-                for (const auto &row : neighbors)
+                for (auto &row : neighbors)
                 {
+                    CompactAdjacencyRow(row);
                     for (auto neighbor : row) graph.adjacency.push_back(METIS::indexToIdx(neighbor));
                     graph.offsets.push_back(METIS::indexToIdx(size_t_to_signed<index>(graph.adjacency.size())));
                 } });
@@ -321,7 +322,7 @@ namespace DNDS::Geom
                 graph.offsets.push_back(0);
                 for (index cell = 0; cell < cells->NumOwned(); ++cell)
                 {
-                    std::map<index, real> neighbors;
+                    std::vector<NativeNeighborWeight> neighbors;
                     for (auto face : view.CellFaces(cell))
                     {
                         DNDS_check_throw_info(face >= 0 && face < view.NumFaceProc(), "partition facial cone is unavailable");
@@ -349,10 +350,10 @@ namespace DNDS::Geom
                                 }
                                 DNDS_check_throw_info(diameter > 0, "weighted partition face has no positive diameter");
                             }
-                            auto [entry, inserted] = neighbors.emplace(target, diameter);
-                            if (!inserted) entry->second = std::max(entry->second, diameter);
+                            neighbors.emplace_back(target, diameter);
                         }
                     }
+                    CompactAdjacencyRow(neighbors);
                     for (const auto &[neighbor, diameter] : neighbors)
                     {
                         graph.adjacency.push_back(METIS::indexToIdx(neighbor));

@@ -481,6 +481,14 @@ namespace DNDS::Geom
             // Build node-to-boundary index for linear complexity
             std::vector<std::vector<DNDS::index>> node2bnd(coordSerial->Size());
             std::vector<DNDS::rowsize> node2bndSiz(coordSerial->Size(), 0);
+            std::vector<std::vector<DNDS::index>> bnd2nodeSorted(size_t(bnd2nodeSerial->Size()));
+            for (DNDS::index iBFace = 0; iBFace < bnd2nodeSerial->Size(); iBFace++)
+            {
+                const auto vertices = Elem::Element{(*bndElemInfoSerial)(iBFace, 0).getElemType()}.GetNumVertices();
+                auto &row = bnd2nodeSorted[size_t(iBFace)];
+                row.assign((*bnd2nodeSerial)[iBFace].begin(), (*bnd2nodeSerial)[iBFace].begin() + vertices);
+                std::sort(row.begin(), row.end());
+            }
             for (DNDS::index iBFace = 0; iBFace < bnd2nodeSerial->Size(); iBFace++)
                 for (DNDS::rowsize iN = 0; iN < Elem::Element{(*bndElemInfoSerial)(iBFace, 0).getElemType()}.GetNumVertices(); iN++)
                     node2bndSiz[(*bnd2nodeSerial)(iBFace, iN)]++;
@@ -491,18 +499,18 @@ namespace DNDS::Geom
                     node2bnd[(*bnd2nodeSerial)(iBFace, iN)].push_back(iBFace);
 
             // Search each cell for matching boundary faces
+            std::vector<DNDS::index> cell2nodeRow;
+            cell2nodeRow.reserve(8);
             for (DNDS::index iCell = 0; iCell < cell2nodeSerial->Size(); iCell++)
             {
                 auto CellElem = Elem::Element{(*cellElemInfoSerial)[iCell]->getElemType()};
-                std::vector<DNDS::index> cell2nodeRow{(*cell2nodeSerial)[iCell].begin(), (*cell2nodeSerial)[iCell].begin() + CellElem.GetNumVertices()};
+                cell2nodeRow.assign((*cell2nodeSerial)[iCell].begin(), (*cell2nodeSerial)[iCell].begin() + CellElem.GetNumVertices());
                 std::sort(cell2nodeRow.begin(), cell2nodeRow.end());
                 for (auto iNode : cell2nodeRow)
                 {
                     for (auto iB : node2bnd[iNode])
                     {
-                        auto BndElem = Elem::Element{(*bndElemInfoSerial)(iB, 0).getElemType()};
-                        std::vector<DNDS::index> bnd2nodeRow{(*bnd2nodeSerial)[iB].begin(), (*bnd2nodeSerial)[iB].begin() + BndElem.GetNumVertices()};
-                        std::sort(bnd2nodeRow.begin(), bnd2nodeRow.end());
+                        const auto &bnd2nodeRow = bnd2nodeSorted[size_t(iB)];
                         if (std::includes(cell2nodeRow.begin(), cell2nodeRow.end(), bnd2nodeRow.begin(), bnd2nodeRow.end()))
                         {
                             DNDS_check_throw_info(
