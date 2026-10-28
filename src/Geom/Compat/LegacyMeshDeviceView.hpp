@@ -1,0 +1,485 @@
+#pragma once
+#include "Geom/Elements.hpp"
+#include "Geom/Unstructured/MeshTypes.hpp"
+#include "DNDS/Array.hpp"
+#include "DNDS/ArrayDerived/ArrayAdjacency.hpp"
+#include "DNDS/ArrayDerived/ArrayEigenVector.hpp"
+#include "Geom/BoundaryCondition.hpp"
+#include "DNDS/ArrayPair.hpp"
+#include "Geom/PeriodicInfo.hpp"
+#include "Geom/RadialBasisFunction.hpp"
+#include "DNDS/ObjectUtils.hpp"
+#include "DNDS/Device/DeviceStorage.hpp"
+
+namespace DNDS::Geom
+{
+
+    using tAdjPair = DNDS::ArrayAdjacencyPair<DNDS::NonUniformSize>;
+    using tAdj = decltype(tAdjPair::father);
+    using tPbiPair = ArrayPair<ArrayNodePeriodicBits<DNDS::NonUniformSize>>;
+    using tPbi = decltype(tPbiPair::father);
+    using tAdj1Pair = DNDS::ArrayAdjacencyPair<1>;
+    using tAdj1 = decltype(tAdj1Pair::father);
+    using tAdj2Pair = DNDS::ArrayAdjacencyPair<2>;
+    using tAdj2 = decltype(tAdj2Pair::father);
+    using tAdj3Pair = DNDS::ArrayAdjacencyPair<3>;
+    using tAdj3 = decltype(tAdj3Pair::father);
+    using tAdj4Pair = DNDS::ArrayAdjacencyPair<4>;
+    using tAdj4 = decltype(tAdj4Pair::father);
+    using tAdj8Pair = DNDS::ArrayAdjacencyPair<8>;
+    using tAdj8 = decltype(tAdj8Pair::father);
+    using tCoordPair = DNDS::ArrayPair<DNDS::ArrayEigenVector<3>>;
+    using tCoord = decltype(tCoordPair::father);
+    using tElemInfoArrayPair = DNDS::ArrayPair<DNDS::ParArray<ElemInfo>>;
+    using tElemInfoArray = DNDS::ssp<DNDS::ParArray<ElemInfo>>;
+    using tIndPair = DNDS::ArrayPair<DNDS::ArrayIndex>;
+    using tInd = decltype(tIndPair::father);
+
+    using tFGetName = std::function<std::string(int)>;
+    using tFGetData = std::function<DNDS::real(int, DNDS::index)>;
+    using tFGetVecData = std::function<DNDS::real(int, DNDS::index, DNDS::rowsize)>;
+
+    // =================================================================
+    // Device-side views for AdjPairTracked (trivially copyable)
+    // =================================================================
+    // Defined here (not in AdjIndexInfo.hpp) because they only depend on
+    // MeshAdjState and ArrayPairDeviceView, both available at this point.
+    // AdjIndexInfo.hpp includes this header, so AdjPairTracked can use them.
+
+    /// \brief Device-side state for an adjacency (trivially copyable).
+    struct AdjIndexInfoDeviceView
+    {
+        MeshAdjState state{Adj_Unknown};
+
+        DNDS_DEVICE_TRIVIAL_COPY_DEFINE(AdjIndexInfoDeviceView, AdjIndexInfoDeviceView)
+
+        DNDS_DEVICE_CALLABLE [[nodiscard]] bool isLocal() const { return state == Adj_PointToLocal; }
+        DNDS_DEVICE_CALLABLE [[nodiscard]] bool isGlobal() const { return state == Adj_PointToGlobal; }
+        DNDS_DEVICE_CALLABLE [[nodiscard]] bool isBuilt() const { return state != Adj_Unknown; }
+    };
+
+    /// \brief Mutable device view for AdjPairTracked.
+    ///
+    /// Inherits from ArrayPairDeviceView (providing operator[], operator(),
+    /// Size(), RowSize()) and adds per-adj state.
+    template <DeviceBackend B, class TArray>
+    struct AdjPairTrackedDeviceView : public ArrayPairDeviceView<B, TArray>
+    {
+        using t_base = ArrayPairDeviceView<B, TArray>;
+        using t_arrayDeviceView = typename t_base::t_arrayDeviceView;
+        AdjIndexInfoDeviceView idx;
+
+        using t_self = AdjPairTrackedDeviceView<B, TArray>;
+        DNDS_DEVICE_TRIVIAL_COPY_DEFINE(AdjPairTrackedDeviceView, t_self)
+
+        DNDS_DEVICE_CALLABLE AdjPairTrackedDeviceView(
+            const t_arrayDeviceView &n_father,
+            const t_arrayDeviceView &n_son,
+            AdjIndexInfoDeviceView n_idx)
+            : t_base(n_father, n_son), idx(n_idx) {}
+    };
+
+    /// \brief Const device view for AdjPairTracked.
+    template <DeviceBackend B, class TArray>
+    struct AdjPairTrackedDeviceViewConst : public ArrayPairDeviceViewConst<B, TArray>
+    {
+        using t_base = ArrayPairDeviceViewConst<B, TArray>;
+        using t_arrayDeviceView = typename t_base::t_arrayDeviceView;
+        AdjIndexInfoDeviceView idx;
+
+        using t_self = AdjPairTrackedDeviceViewConst<B, TArray>;
+        DNDS_DEVICE_TRIVIAL_COPY_DEFINE(AdjPairTrackedDeviceViewConst, t_self)
+
+        DNDS_DEVICE_CALLABLE AdjPairTrackedDeviceViewConst(
+            const t_arrayDeviceView &n_father,
+            const t_arrayDeviceView &n_son,
+            AdjIndexInfoDeviceView n_idx)
+            : t_base(n_father, n_son), idx(n_idx) {}
+    };
+
+#define DNDS_COPY_MEMBER_VIEW(obj, member) \
+    member = (obj).member.template deviceView<B>();
+#define DNDS_COPY_MEMBER(obj, member) \
+    member = (obj).member;
+
+    template <DeviceBackend B>
+    struct UnstructuredMeshDeviceView
+    {
+        int dim = -1;
+        bool isPeriodic{false};
+        MeshAdjState adjPrimaryState{Adj_Unknown};
+        // state of: face2cell, face2node, face2bnd
+        MeshAdjState adjFacialState{Adj_Unknown};
+        MeshAdjState adjC2FState{Adj_Unknown};
+        MeshAdjState adjN2CBState{Adj_Unknown};
+        MeshAdjState adjEdgeState{Adj_Unknown};
+        bool hasNodeWallDist{false};
+        // state of: cell2cellFace
+        // MeshAdjState adjC2CFaceState{Adj_Unknown};
+
+        Periodicity periodicInfo;
+
+        /// reader
+        tCoordPair::t_deviceView<B> coords;
+        AdjPairTrackedDeviceView<B, tAdjPair::t_arr> cell2node;
+        AdjPairTrackedDeviceView<B, tAdjPair::t_arr> bnd2node;
+        AdjPairTrackedDeviceView<B, tAdj2Pair::t_arr> bnd2cell;
+        AdjPairTrackedDeviceView<B, tAdjPair::t_arr> cell2cell;
+        tElemInfoArrayPair::t_deviceView<B> cellElemInfo;
+        tElemInfoArrayPair::t_deviceView<B> bndElemInfo;
+        /// periodic only, after reader
+        tPbiPair::t_deviceView<B> cell2nodePbi;
+        tPbiPair::t_deviceView<B> bnd2nodePbi;
+        tCoordPair::t_deviceView<B> nodeWallDist;
+
+        auto device_array_list_primary()
+        {
+            return std::make_tuple(
+                DNDS_MAKE_1_MEMBER_REF(coords),
+                DNDS_MAKE_1_MEMBER_REF(cell2node),
+                DNDS_MAKE_1_MEMBER_REF(bnd2node),
+                DNDS_MAKE_1_MEMBER_REF(bnd2cell),
+                DNDS_MAKE_1_MEMBER_REF(cell2cell),
+                DNDS_MAKE_1_MEMBER_REF(cellElemInfo),
+                DNDS_MAKE_1_MEMBER_REF(bndElemInfo),
+                DNDS_MAKE_1_MEMBER_REF(cell2nodePbi),
+                DNDS_MAKE_1_MEMBER_REF(bnd2nodePbi),
+                DNDS_MAKE_1_MEMBER_REF(nodeWallDist));
+        }
+
+        template <class TMain>
+        void create_view_primary(TMain &&m_obj)
+        {
+            DNDS_COPY_MEMBER_VIEW(m_obj, coords);
+            DNDS_COPY_MEMBER_VIEW(m_obj, cell2node);
+            DNDS_COPY_MEMBER_VIEW(m_obj, bnd2node);
+            DNDS_COPY_MEMBER_VIEW(m_obj, bnd2cell);
+            DNDS_COPY_MEMBER_VIEW(m_obj, cell2cell);
+            DNDS_COPY_MEMBER_VIEW(m_obj, cellElemInfo);
+            DNDS_COPY_MEMBER_VIEW(m_obj, bndElemInfo);
+            if (isPeriodic)
+            {
+                DNDS_COPY_MEMBER_VIEW(m_obj, cell2nodePbi);
+                DNDS_COPY_MEMBER_VIEW(m_obj, bnd2nodePbi);
+            }
+            if (hasNodeWallDist)
+                DNDS_COPY_MEMBER_VIEW(m_obj, nodeWallDist);
+        }
+
+        AdjPairTrackedDeviceView<B, tAdjPair::t_arr> node2cell;
+        AdjPairTrackedDeviceView<B, tAdjPair::t_arr> node2bnd;
+
+        auto device_array_list_N2CB()
+        {
+            return std::make_tuple(
+                DNDS_MAKE_1_MEMBER_REF(node2cell),
+                DNDS_MAKE_1_MEMBER_REF(node2bnd));
+        }
+
+        template <class TMain>
+        void create_view_N2CB(TMain &&m_obj)
+        {
+            DNDS_COPY_MEMBER_VIEW(m_obj, node2cell);
+            DNDS_COPY_MEMBER_VIEW(m_obj, node2bnd);
+        }
+
+        /// interpolated
+        AdjPairTrackedDeviceView<B, tAdjPair::t_arr> cell2face;
+        AdjPairTrackedDeviceView<B, tAdjPair::t_arr> face2node;
+        AdjPairTrackedDeviceView<B, tAdj2Pair::t_arr> face2cell;
+        tElemInfoArrayPair::t_deviceView<B> faceElemInfo;
+        AdjPairTrackedDeviceView<B, tAdj1Pair::t_arr> face2bnd;
+        AdjPairTrackedDeviceView<B, tAdj1Pair::t_arr> bnd2face;
+        // std::vector<index> bnd2faceV; // no device
+        // std::unordered_map<index, index> face2bndM; // no device
+        /// periodic only, after interpolated
+        tPbiPair::t_deviceView<B> cell2facePbi;
+        tPbiPair::t_deviceView<B> face2nodePbi;
+
+        /// Edge arrays (interpolated, after BuildGhostEdge / InterpolateEdge)
+        AdjPairTrackedDeviceView<B, tAdjPair::t_arr> cell2edge;
+        AdjPairTrackedDeviceView<B, tAdjPair::t_arr> edge2node;
+        AdjPairTrackedDeviceView<B, tAdjPair::t_arr> edge2cell;
+        tElemInfoArrayPair::t_deviceView<B> edgeElemInfo;
+        /// periodic only
+        tPbiPair::t_deviceView<B> cell2edgePbi;
+        tPbiPair::t_deviceView<B> edge2nodePbi;
+
+        DNDS_HOST auto device_array_list_facial()
+        {
+            return std::make_tuple(
+                DNDS_MAKE_1_MEMBER_REF(face2cell),
+                DNDS_MAKE_1_MEMBER_REF(face2node),
+                DNDS_MAKE_1_MEMBER_REF(cell2facePbi),
+                DNDS_MAKE_1_MEMBER_REF(face2nodePbi),
+                DNDS_MAKE_1_MEMBER_REF(faceElemInfo),
+                DNDS_MAKE_1_MEMBER_REF(face2bnd));
+        }
+
+        template <class TMain>
+        DNDS_HOST void create_view_facial(TMain &&m_obj)
+        {
+            DNDS_COPY_MEMBER_VIEW(m_obj, face2cell);
+            DNDS_COPY_MEMBER_VIEW(m_obj, face2node);
+            if (isPeriodic)
+            {
+                DNDS_COPY_MEMBER_VIEW(m_obj, cell2facePbi);
+                DNDS_COPY_MEMBER_VIEW(m_obj, face2nodePbi);
+            }
+            DNDS_COPY_MEMBER_VIEW(m_obj, faceElemInfo);
+            DNDS_COPY_MEMBER_VIEW(m_obj, face2bnd);
+        }
+
+        DNDS_HOST auto device_array_list_C2F()
+        {
+            return std::make_tuple(
+                DNDS_MAKE_1_MEMBER_REF(cell2face),
+                DNDS_MAKE_1_MEMBER_REF(bnd2face));
+        }
+
+        template <class TMain>
+        DNDS_HOST void create_view_C2F(TMain &&m_obj)
+        {
+            DNDS_COPY_MEMBER_VIEW(m_obj, cell2face);
+            DNDS_COPY_MEMBER_VIEW(m_obj, bnd2face);
+        }
+
+        DNDS_HOST auto device_array_list_edge()
+        {
+            return std::make_tuple(
+                DNDS_MAKE_1_MEMBER_REF(cell2edge),
+                DNDS_MAKE_1_MEMBER_REF(edge2node),
+                DNDS_MAKE_1_MEMBER_REF(edge2cell),
+                DNDS_MAKE_1_MEMBER_REF(cell2edgePbi),
+                DNDS_MAKE_1_MEMBER_REF(edge2nodePbi),
+                DNDS_MAKE_1_MEMBER_REF(edgeElemInfo));
+        }
+
+        template <class TMain>
+        DNDS_HOST void create_view_edge(TMain &&m_obj)
+        {
+            DNDS_COPY_MEMBER_VIEW(m_obj, cell2edge);
+            DNDS_COPY_MEMBER_VIEW(m_obj, edge2node);
+            DNDS_COPY_MEMBER_VIEW(m_obj, edge2cell);
+            DNDS_COPY_MEMBER_VIEW(m_obj, edgeElemInfo);
+            if (isPeriodic)
+            {
+                DNDS_COPY_MEMBER_VIEW(m_obj, cell2edgePbi);
+                DNDS_COPY_MEMBER_VIEW(m_obj, edge2nodePbi);
+            }
+        }
+
+        template <class TMain>
+        DNDS_DEVICE_CALLABLE UnstructuredMeshDeviceView(TMain &mesh, index placeholder)
+        {
+            DNDS_assert(placeholder == UnInitIndex);
+
+            DNDS_COPY_MEMBER(mesh, dim);
+            DNDS_COPY_MEMBER(mesh, isPeriodic); //! this is needed after
+            DNDS_COPY_MEMBER(mesh, adjPrimaryState);
+            DNDS_COPY_MEMBER(mesh, adjFacialState);
+            DNDS_COPY_MEMBER(mesh, adjC2FState);
+            DNDS_COPY_MEMBER(mesh, adjN2CBState);
+            DNDS_COPY_MEMBER(mesh, adjEdgeState);
+            hasNodeWallDist = bool(mesh.nodeWallDist.father) && bool(mesh.nodeWallDist.son);
+            // DNDS_COPY_MEMBER(mesh, adjC2CFaceState);
+
+            if (adjPrimaryState && mesh.cell2node.isBuilt())
+                create_view_primary(mesh);
+            if (adjFacialState && mesh.face2cell.isBuilt())
+                create_view_facial(mesh);
+            if (adjC2FState && mesh.cell2face.isBuilt())
+                create_view_C2F(mesh);
+            if (adjEdgeState && mesh.cell2edge.isBuilt())
+                create_view_edge(mesh);
+        }
+
+        DNDS_DEVICE_TRIVIAL_COPY_DEFINE_NO_EMPTY_CTOR(UnstructuredMeshDeviceView, UnstructuredMeshDeviceView)
+
+        DNDS_DEVICE_CALLABLE [[nodiscard]] index NumNode() const { return coords.father.Size(); }
+        DNDS_DEVICE_CALLABLE [[nodiscard]] index NumCell() const { return cell2node.father.Size(); }
+        DNDS_DEVICE_CALLABLE [[nodiscard]] index NumFace() const { return face2node.father.Size(); }
+        DNDS_DEVICE_CALLABLE [[nodiscard]] index NumBnd() const { return bnd2node.father.Size(); }
+
+        DNDS_DEVICE_CALLABLE [[nodiscard]] index NumNodeGhost() const { return coords.son.Size(); }
+        DNDS_DEVICE_CALLABLE [[nodiscard]] index NumCellGhost() const { return cell2node.son.Size(); }
+        DNDS_DEVICE_CALLABLE [[nodiscard]] index NumFaceGhost() const { return face2node.son.Size(); }
+        DNDS_DEVICE_CALLABLE [[nodiscard]] index NumBndGhost() const { return bnd2node.son.Size(); }
+
+        DNDS_DEVICE_CALLABLE [[nodiscard]] index NumNodeProc() const { return coords.Size(); }
+        DNDS_DEVICE_CALLABLE [[nodiscard]] index NumCellProc() const { return cell2node.Size(); }
+        DNDS_DEVICE_CALLABLE [[nodiscard]] index NumFaceProc() const { return face2node.Size(); }
+        DNDS_DEVICE_CALLABLE [[nodiscard]] index NumBndProc() const { return bnd2node.Size(); }
+
+        DNDS_DEVICE_CALLABLE Elem::Element GetCellElement(index iC) { return Elem::Element{cellElemInfo(iC, 0).getElemType()}; }
+        DNDS_DEVICE_CALLABLE Elem::Element GetFaceElement(index iF) { return Elem::Element{faceElemInfo(iF, 0).getElemType()}; }
+        DNDS_DEVICE_CALLABLE Elem::Element GetBndElement(index iB) { return Elem::Element{bndElemInfo(iB, 0).getElemType()}; }
+
+        DNDS_DEVICE_CALLABLE t_index GetCellZone(index iC) { return cellElemInfo(iC, 0).zone; }
+        DNDS_DEVICE_CALLABLE t_index GetFaceZone(index iF) { return faceElemInfo(iF, 0).zone; }
+        DNDS_DEVICE_CALLABLE t_index GetBndZone(index iB) { return bndElemInfo(iB, 0).zone; }
+
+        /**
+         * @brief fA executes when if2c points to the donor side; fB the main side
+         *
+         * @tparam FA
+         * @tparam FB
+         * @tparam F0
+         * @param iFace
+         * @param if2c
+         * @param fA
+         * @param fB
+         * @param f0
+         * @return auto
+         */
+        template <class FA, class FB, class F0>
+        DNDS_DEVICE_CALLABLE auto CellOtherCellPeriodicHandle(
+            index iFace, rowsize if2c, FA &&fA, FB &&fB, F0 &&f0 = []() {})
+        {
+            if (!this->isPeriodic)
+                return f0();
+            auto faceID = this->GetFaceZone(iFace);
+            if (!Geom::FaceIDIsPeriodic(faceID))
+                return f0();
+            if ((if2c == 1 && Geom::FaceIDIsPeriodicMain(faceID)) ||
+                (if2c == 0 && Geom::FaceIDIsPeriodicDonor(faceID))) // I am donor
+                return fA();
+            if ((if2c == 1 && Geom::FaceIDIsPeriodicDonor(faceID)) ||
+                (if2c == 0 && Geom::FaceIDIsPeriodicMain(faceID))) // I am main
+                return fB();
+        }
+
+        /**
+         * @brief directly load coords; gets faulty if isPeriodic!
+         */
+        template <class tC2n>
+        DNDS_DEVICE_CALLABLE void _detail_GetCoords(const tC2n &c2n, tSmallCoords &cs)
+        {
+            cs.resize(Eigen::NoChange, c2n.size());
+            for (rowsize i = 0; i < c2n.size(); i++)
+            {
+                index iNode = c2n[i];
+                DNDS_HD_assert(adjPrimaryState == Adj_PointToLocal);
+                cs(EigenAll, i) = coords[iNode];
+            }
+        }
+
+        /**
+         * @brief directly load coords; gets faulty if isPeriodic!
+         */
+        template <class tC2n, class tCoordExt>
+        DNDS_DEVICE_CALLABLE void _detail_GetCoords(const tC2n &c2n, tSmallCoords &cs, tCoordExt &coo)
+        {
+            cs.resize(Eigen::NoChange, c2n.size());
+            for (rowsize i = 0; i < c2n.size(); i++)
+            {
+                index iNode = c2n[i];
+                DNDS_HD_assert(adjPrimaryState == Adj_PointToLocal);
+                cs(EigenAll, i) = coo[iNode];
+            }
+        }
+
+        /**
+         * @brief specially for periodicity
+         */
+        template <class tC2n, class tC2nPbi>
+        DNDS_DEVICE_CALLABLE void _detail_GetCoordsOnElem(const tC2n &c2n, const tC2nPbi &c2nPbi, tSmallCoords &cs)
+        {
+            cs.resize(Eigen::NoChange, c2n.size());
+            for (rowsize i = 0; i < c2n.size(); i++)
+            {
+                index iNode = c2n[i];
+                DNDS_HD_assert(adjPrimaryState == Adj_PointToLocal);
+                cs(EigenAll, i) = periodicInfo.GetCoordByBits(coords[iNode], c2nPbi[i]);
+            }
+        }
+
+        /**
+         * @brief specially for periodicity
+         */
+        template <class tC2n, class tC2nPbi, class tCoordExt>
+        DNDS_DEVICE_CALLABLE void _detail_GetCoordsOnElem(const tC2n &c2n, const tC2nPbi &c2nPbi, tSmallCoords &cs, tCoordExt &coo)
+        {
+            cs.resize(Eigen::NoChange, c2n.size());
+            for (rowsize i = 0; i < c2n.size(); i++)
+            {
+                index iNode = c2n[i];
+                DNDS_HD_assert(adjPrimaryState == Adj_PointToLocal);
+                cs(EigenAll, i) = periodicInfo.GetCoordByBits(coo[iNode], c2nPbi[i]);
+            }
+        }
+
+        DNDS_DEVICE_CALLABLE void GetCoordsOnCell(index iCell, tSmallCoords &cs)
+        {
+            if (!isPeriodic)
+                _detail_GetCoords(cell2node[iCell], cs);
+            else
+                _detail_GetCoordsOnElem(cell2node[iCell], cell2nodePbi[iCell], cs);
+        }
+
+        DNDS_DEVICE_CALLABLE void GetCoordsOnCell(index iCell, tSmallCoords &cs, tCoordPair &coo)
+        {
+            if (!isPeriodic)
+                _detail_GetCoords(cell2node[iCell], cs, coo);
+            else
+                _detail_GetCoordsOnElem(cell2node[iCell], cell2nodePbi[iCell], cs, coo);
+        }
+
+        DNDS_DEVICE_CALLABLE void GetCoordsOnFace(index iFace, tSmallCoords &cs)
+        {
+            if (!isPeriodic)
+                _detail_GetCoords(face2node[iFace], cs);
+            else
+                _detail_GetCoordsOnElem(face2node[iFace], face2nodePbi[iFace], cs);
+        }
+
+        DNDS_DEVICE_CALLABLE tPoint GetCoordNodeOnCell(index iCell, rowsize ic2n)
+        {
+            if (!isPeriodic)
+                return coords[cell2node(iCell, ic2n)];
+            return periodicInfo.GetCoordByBits(coords[cell2node(iCell, ic2n)], cell2nodePbi(iCell, ic2n));
+        }
+
+        DNDS_DEVICE_CALLABLE tPoint GetCoordNodeOnFace(index iFace, rowsize if2n)
+        {
+            if (!isPeriodic)
+                return coords[face2node(iFace, if2n)];
+            return periodicInfo.GetCoordByBits(coords[face2node(iFace, if2n)], face2nodePbi(iFace, if2n));
+        }
+
+        DNDS_DEVICE_CALLABLE tPoint GetCoordWallDistOnCell(index iCell, rowsize ic2n)
+        {
+            DNDS_assert(hasNodeWallDist);
+            if (!isPeriodic)
+                return nodeWallDist[cell2node(iCell, ic2n)];
+            return periodicInfo.GetVectorByBits<3, 1>(nodeWallDist[cell2node(iCell, ic2n)], cell2nodePbi(iCell, ic2n));
+        }
+
+        DNDS_DEVICE_CALLABLE tPoint GetCoordWallDistOnFace(index iFace, rowsize if2n)
+        {
+            DNDS_assert(hasNodeWallDist);
+            if (!isPeriodic)
+                return nodeWallDist[face2node(iFace, if2n)];
+            return periodicInfo.GetVectorByBits<3, 1>(nodeWallDist[face2node(iFace, if2n)], face2nodePbi(iFace, if2n));
+        }
+
+        DNDS_DEVICE_CALLABLE [[nodiscard]] bool CellIsFaceBack(index iCell, index iFace, rowsize ic2f) const
+        {
+            DNDS_assert(face2cell(iFace, 0) == iCell || face2cell(iFace, 1) == iCell);
+            if (face2cell(iFace, 0) == iCell && face2cell(iFace, 1) == iCell)
+            {
+                DNDS_assert(ic2f >= 0);
+                DNDS_assert(isPeriodic);
+                return !bool(cell2facePbi(iCell, ic2f));
+            }
+            return face2cell(iFace, 0) == iCell;
+        }
+
+        DNDS_DEVICE_CALLABLE [[nodiscard]] index CellFaceOther(index iCell, index iFace, rowsize ic2f) const
+        {
+            return CellIsFaceBack(iCell, iFace, ic2f)
+                       ? face2cell(iFace, 1)
+                       : face2cell(iFace, 0);
+        }
+    };
+}

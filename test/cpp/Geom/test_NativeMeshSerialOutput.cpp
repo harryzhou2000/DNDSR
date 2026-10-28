@@ -49,7 +49,7 @@ namespace
                 for (size_t slot = 0; slot < 3; ++slot)
                     bits.View()(row, slot) = G::nodePB1;
         }
-        return G::NativeMeshBuilder::Build(std::move(input));
+        return G::ConstructNativeMesh(std::move(input));
     }
 
     void CheckField(const G::NativeMeshSerialOutput &output, const DNDS::MPIInfo &mpi, bool node, I owned)

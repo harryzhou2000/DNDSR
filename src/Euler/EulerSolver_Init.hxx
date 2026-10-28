@@ -190,13 +190,15 @@ namespace DNDS::Euler
                     mpi, config.dataIOControl.meshFile,
                     config.dataIOControl.meshPartitionOptions, config.bcNameMapping,
                     nameMapper, periodic, config.dataIOControl.meshElevation,
-                    config.dataIOControl.meshDirectBisect);
+                    config.dataIOControl.meshDirectBisect, 0, true,
+                    {config.dataIOControl.meshAuditPersistentIdentity, config.dataIOControl.meshAuditClosure});
             else
                 mesh = Geom::ReadNativeMeshFromCGNS(
                     mpi, gDimLocal, config.dataIOControl.meshFile,
                     config.dataIOControl.meshPartitionOptions, nameMapper,
                     periodic, config.dataIOControl.meshElevation,
-                    config.dataIOControl.meshDirectBisect);
+                    config.dataIOControl.meshDirectBisect, 0, true,
+                    {config.dataIOControl.meshAuditPersistentIdentity, config.dataIOControl.meshAuditClosure});
         }
         else
             mesh = Geom::ReadNativeMeshFromArchive(

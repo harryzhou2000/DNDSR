@@ -592,7 +592,12 @@ TEST_CASE("Mesh dependency stamps reject stale reconstruction and permit explici
             it = primary.namedRelations.erase(it);
         else
             ++it;
-    mesh->ReplaceNativeForSetup(NativeMeshAssembler::Build(g_mpi, std::move(primary), 1));
+    // This fixture deliberately removes the Face family. Retaining its old
+    // face traversal recipe is an invalid coverage contract and must fail;
+    // select primary coverage explicitly before publishing the new fixture.
+    CHECK_THROWS(AssembleNativeMesh(g_mpi, primary, 1));
+    primary.ghostSpec = DefaultNativeMeshGhostSpec(primary, 1, true);
+    mesh->ReplaceNativeForSetup(AssembleNativeMesh(g_mpi, std::move(primary), 1));
     CHECK_THROWS(vr->ConstructMetrics());
     mesh->ReplaceNativeForSetup(full);
     CHECK_THROWS(vr->ValidateMetricsDependencies());
@@ -671,7 +676,7 @@ TEST_CASE("Native reconstruction matrix export preserves mesh state and exact fa
     auto state = ReadNativeCGNS(g_mpi, meshPath("Uniform_3x3_wall.cgns"), 2,
                                 [](const std::string &)
                                 { return BC_ID_DEFAULT_WALL; }, 0, {2, true});
-    state = NativeMeshTopology::Build(*state, g_mpi, true, false, 2);
+    state = PrepareNativeMeshTopology(*state, g_mpi, true, false, 2);
     auto mesh = UnstructuredMesh::FromNative(g_mpi, state);
     auto vr = buildVR(mesh, RecMethod::VFV_P2_Default);
     const auto stamp = mesh->versions.Stamp();
@@ -722,7 +727,7 @@ TEST_CASE("Finite-volume scoped query views retain native topology and reject st
     auto state = ReadNativeCGNS(g_mpi, meshPath("Uniform_3x3_wall.cgns"), 2,
                                 [](const std::string &)
                                 { return BC_ID_DEFAULT_WALL; });
-    state = NativeMeshTopology::Build(*state, g_mpi);
+    state = PrepareNativeMeshTopology(*state, g_mpi);
     auto mesh = UnstructuredMesh::FromNative(g_mpi, state);
     auto vr = buildVR(mesh, RecMethod::VFV_P2_Default);
     CHECK(mesh->HasNativeState());

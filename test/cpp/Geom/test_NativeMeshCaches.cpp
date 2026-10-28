@@ -49,7 +49,7 @@ namespace
         }
         G::NativeMeshInput input{mpi, 2, cells, nodes, boundaries, R::Array<I>::FromSharedStorage(cones.Commit()),
                                  R::Array<I>(), coordinates, metadata, R::Array<G::ElemInfo>(R::RowLayout::Dense(0, 1))};
-        return G::NativeMeshBuilder::Build(std::move(input), {1, true});
+        return G::ConstructNativeMesh(std::move(input), {1, true});
     }
 
     // Independent numerical inputs: the graph below is hand-authored from
@@ -116,7 +116,7 @@ TEST_CASE("Native face graph and direct ordering match exact face slots and gene
     auto primary = Strip(mpi);
     auto missingFaces = G::UnstructuredMesh::FromNative(mpi, primary);
     CHECK_THROWS(missingFaces->GetCell2CellFaceVLocal());
-    auto state = G::NativeMeshTopology::Build(*primary, mpi);
+    auto state = G::PrepareNativeMeshTopology(*primary, mpi);
     auto mesh = G::UnstructuredMesh::FromNative(mpi, state);
     auto decoded = G::TestFixtureCodec::DecodePrimaryReference(*mesh);
     const G::tLocalMatStruct expected{{1}, {2, 0}, {1}};
@@ -192,7 +192,7 @@ TEST_CASE("Native face graph and direct ordering match exact face slots and gene
 TEST_CASE("Native direct setup keeps empty cell owners in RCM collectives")
 {
     const DNDS::MPIInfo mpi(MPI_COMM_WORLD);
-    auto state = G::NativeMeshTopology::Build(*Strip(mpi, true), mpi);
+    auto state = G::PrepareNativeMeshTopology(*Strip(mpi, true), mpi);
     auto mesh = G::UnstructuredMesh::FromNative(mpi, state);
     auto decoded = G::TestFixtureCodec::DecodePrimaryReference(*mesh);
     const G::tLocalMatStruct expected = mpi.rank == 0 ? G::tLocalMatStruct{{1}, {2, 0}, {1}} : G::tLocalMatStruct{};

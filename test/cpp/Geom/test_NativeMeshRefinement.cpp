@@ -89,7 +89,7 @@ namespace
                 }
                 input.ids.emplace(space.Kind(), std::move(ids));
             }
-        return G::NativeMeshBuilder::Build(std::move(input), {1, true});
+        return G::ConstructNativeMesh(std::move(input), {1, true});
     }
     double Measure(const G::UnstructuredMeshView &view, I cell)
     {
@@ -106,6 +106,41 @@ namespace
         REQUIRE(type == G::Elem::Quad4);
         const G::tPoint d = view.Coord(row[3]);
         return ((b - a).cross(c - a)[2] + (c - a).cross(d - a)[2]) / 2;
+    }
+}
+
+TEST_CASE("Owned elevation retains legacy original labels independently of current global row numbering")
+{
+    DNDS::MPIInfo mpi(MPI_COMM_WORLD);
+    for (const bool sparse : {false, true})
+    {
+        auto source = Fixture(mpi, {G::Elem::Quad4}, true, false, sparse);
+        auto owned = G::NativeMeshAssembler::CaptureOwned(*source, mpi);
+        auto elevated = G::NativeMeshRefinement::ElevateOwned(owned, mpi, {1, true}, true);
+        const auto first = source->IdHighWater().at(G::EntityKind::Node);
+        const I additions = elevated.owned.spaces.at(G::EntityKind::Node).NumOwned() - source->NumOwned(G::EntityKind::Node);
+        I offset = 0;
+        MPI_Exscan(&additions, &offset, 1, DNDS::DNDS_MPI_INDEX, MPI_SUM, mpi.comm);
+        if (mpi.rank == 0)
+            offset = 0;
+        for (const auto kind : {G::EntityKind::Cell, G::EntityKind::Bnd, G::EntityKind::Node})
+        {
+            CHECK(elevated.owned.spaces.at(kind).NumGhost() == 0);
+            auto actual = elevated.owned.ids.at(kind).Read();
+            for (I row = 0; row < source->NumOwned(kind); ++row)
+                CHECK(actual.View()(size_t(row), 0) == source->OriginalEntityId(kind, row));
+            if (kind == G::EntityKind::Node)
+                for (I row = 0; row < additions; ++row)
+                    CHECK(actual.View()(size_t(source->NumOwned(kind) + row), 0) == first + offset + row);
+        }
+        CHECK(elevated.owned.identity.meshNamespace != source->MeshNamespace());
+        auto bisected = G::NativeMeshRefinement::BisectOwned(elevated.owned, mpi, {1, true});
+        for (const auto &[kind, space] : bisected.owned.spaces)
+            CHECK(space.NumGhost() == 0);
+        const auto recipe = G::DefaultNativeMeshGhostSpec(bisected.owned, 1, true);
+        auto final = G::NativeMeshAssembler::Build(mpi, std::move(bisected.owned), recipe);
+        CHECK(final->NumOwned(G::EntityKind::Cell) == 4);
+        CHECK(final->NumOwned(G::EntityKind::Bnd) == 2);
     }
 }
 
@@ -337,7 +372,7 @@ TEST_CASE("Native bisection ancestry rejects malformed rank-local publication in
         if (mpi.rank == 0)
             owned.provenance->sourceKinds.at(G::EntityKind::Cell) = G::EntityKind::Bnd;
     }
-    CHECK_THROWS(G::NativeMeshAssembler::Build(mpi, std::move(owned)));
+    CHECK_THROWS(G::AssembleNativeMesh(mpi, std::move(owned)));
     CHECK(derived.state->NumOwned(G::EntityKind::Cell) == 4);
 }
 
@@ -363,13 +398,13 @@ TEST_CASE("CSR zero and multiple source ancestry retains aliases and roundtrips 
             rows[i] = {read.View()(i, 0)};
         captured.provenance->sourceIds.at(G::EntityKind::Node) = Rows(rows);
     }
-    auto state = G::NativeMeshAssembler::Build(mpi, std::move(captured));
+    auto state = G::AssembleNativeMesh(mpi, std::move(captured));
     auto retained = G::NativeMeshAssembler::CaptureOwned(*state, mpi);
     source.reset();
     derived.state.reset();
     state.reset();
     CHECK_THROWS(ancestry.Write());
-    state = G::NativeMeshAssembler::Build(mpi, std::move(retained));
+    state = G::AssembleNativeMesh(mpi, std::move(retained));
     G::ReorderInput reorder;
     for (auto kind : {G::EntityKind::Node, G::EntityKind::Cell, G::EntityKind::Bnd})
         reorder.explicitMaps.push_back({kind, std::vector<DNDS::MPI_int>(size_t(state->NumOwned(kind)), mpi.size - 1)});
@@ -459,7 +494,7 @@ TEST_CASE("Native elevation deduplicates shared quadratic spans and preserves ex
         }
         input.ids.emplace(space.Kind(), std::move(ids));
     }
-    auto source = G::NativeMeshBuilder::Build(std::move(input), {1, true});
+    auto source = G::ConstructNativeMesh(std::move(input), {1, true});
     auto elevated = G::NativeMeshRefinement::Elevate(*source, mpi, {1, true});
     {
         auto o1 = G::UnstructuredMesh::FromNative(mpi, source);
@@ -522,7 +557,7 @@ TEST_CASE("Native elevation deduplicates shared quadratic spans and preserves ex
         CHECK(o1->IsO1());
         CHECK_FALSE(o1->IsO2());
     }
-    auto topology = G::NativeMeshTopology::Build(*bisected.state, mpi, true, dimension == 3);
+    auto topology = G::PrepareNativeMeshTopology(*bisected.state, mpi, true, dimension == 3);
     CHECK(topology->NumGlobal(G::EntityKind::Cell) == (dimension == 2 ? 8 : 16));
     auto topologyRead = topology->Snapshot(R::Device::Host()).AcquireRead();
     double volume = 0;

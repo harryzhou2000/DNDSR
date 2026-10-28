@@ -104,9 +104,10 @@ def test_native_cgns_topology_archive_and_retained_source(tmp_path):
     restored = Geom.UnstructuredMesh.read_native_archive(mpi, serializer, "mesh")
     serializer.CloseFile()
     assert _check(restored) == expected
-    # Repeating an already completed family is an agreed setup error.
-    with pytest.raises(RuntimeError):
-        Geom.with_native_topology(restored)
+    # Refresh retains exact IDs and geometry in a detached publication.
+    refreshed = Geom.with_native_topology(restored)
+    assert _check(refreshed) == expected
+    assert _check(restored) == expected
     # Reader-only IO failure must not poison the next collective operation.
     with pytest.raises(RuntimeError):
         Geom.read_native_cgns(mpi, path + ".missing", 2, reader_rank=mpi.size - 1)

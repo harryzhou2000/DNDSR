@@ -1,0 +1,9 @@
+old_qualified_name	canonical_qualified_name	compatibility
+DNDS::Array	DNDS::Legacy::Array	Same class through namespace using-declaration; Runtime::Array remains separate
+DNDS::ParArray	DNDS::Legacy::ParArray	Same class through namespace using-declaration
+DNDS::ArrayPair	DNDS::Legacy::ArrayPair	Same class through namespace using-declaration
+DNDS::ArrayTransformer	DNDS::Legacy::ArrayTransformer	Same class through namespace using-declaration
+DNDS::ArrayDof	DNDS::Legacy::ArrayDof	Same class through namespace using-declaration
+DNDS::Geom::NativeMeshState	DNDS::Geom::UnstructuredMeshState	Old name is a source alias
+DNDS::Geom::NativeMeshSnapshot	DNDS::Geom::UnstructuredMeshSnapshot	Old name is a source alias
+DNDSR.Geom.NativeMeshSnapshot	DNDSR.Geom.UnstructuredMeshSnapshot	Old Python module attribute aliases the same class

@@ -7,6 +7,8 @@
 #include "Geom/Mesh/MeshTransition.hpp"
 #include "Geom/Mesh/EntityField.hpp"
 #include "DNDS/Runtime/RowBuilder.hpp"
+#include "NativeMeshFacadeFixture.hpp"
+#include "NativePeriodicFixtures.hpp"
 #include <set>
 
 namespace G = DNDS::Geom;
@@ -85,7 +87,7 @@ TEST_CASE("Owned native capture assembles after source release with retained com
     auto input = RotatedTriangles(mpi, true);
     G::NativeMeshBuildOptions options;
     options.completeNodeStar = true;
-    auto source = G::NativeMeshBuilder::Build(input, options);
+    auto source = G::ConstructNativeMesh(input, options);
     auto captured = G::NativeMeshAssembler::CaptureOwned(*source, mpi);
     const auto identity = captured.identity;
     const auto keys = source->RelationKeys();
@@ -97,7 +99,7 @@ TEST_CASE("Owned native capture assembles after source release with retained com
     CHECK(nodes.View()(0, 0) == 3 * ((mpi.rank + 1) % mpi.size));
     source.reset();
     CHECK_THROWS(coordinates.Write());
-    auto rebuilt = G::NativeMeshAssembler::Build(mpi, std::move(captured), 2);
+    auto rebuilt = G::AssembleNativeMesh(mpi, std::move(captured), 2);
     CHECK(rebuilt->MeshNamespace() == identity.meshNamespace);
     CHECK(rebuilt->IdHighWater() == identity.nextIds);
     CHECK(rebuilt->RelationKeys() == keys);
@@ -115,19 +117,30 @@ TEST_CASE("Native assembler rejects rank-local ID schema and closure schedule er
 {
     const auto mpi = MPI();
     auto input = RotatedTriangles(mpi, true);
-    auto source = G::NativeMeshBuilder::Build(input);
+    auto source = G::ConstructNativeMesh(input);
     auto captured = G::NativeMeshAssembler::CaptureOwned(*source, mpi);
     SUBCASE("persistent ID extra columns")
     {
         if (mpi.rank == 0)
             captured.ids.at(G::EntityKind::Cell) = R::Array<I>(R::RowLayout::Dense(1, 2));
-        CHECK_THROWS(G::NativeMeshAssembler::Build(mpi, std::move(captured)));
+        CHECK_THROWS(G::AssembleNativeMesh(mpi, std::move(captured)));
     }
     SUBCASE("different closure depth")
     {
         if (mpi.size == 1)
             return;
-        CHECK_THROWS(G::NativeMeshAssembler::Build(mpi, std::move(captured), mpi.rank == 0 ? 2 : 1));
+        CHECK_THROWS(G::AssembleNativeMesh(mpi, std::move(captured), mpi.rank == 0 ? 2 : 1));
+    }
+    SUBCASE("different explicit connected recipe")
+    {
+        if (mpi.size == 1)
+            return;
+        auto recipe = G::DefaultNativeMeshGhostSpec(captured);
+        if (mpi.rank == 0)
+            recipe.chains.push_back({G::EntityKind::Bnd,
+                                     {G::Adj::Bnd2Node, G::Adj::Node2Cell, G::Adj::Cell2Node, G::Adj::Node2Bnd},
+                                     G::EntityKind::Bnd});
+        CHECK_THROWS(G::NativeMeshAssembler::Build(mpi, std::move(captured), recipe));
     }
     CHECK(source->OriginalEntityId(G::EntityKind::Cell, 0) == mpi.rank);
 }
@@ -137,8 +150,8 @@ TEST_CASE("Owned native capture collectively rejects mismatched source inventory
     const auto mpi = MPI();
     if (mpi.size == 1)
         return;
-    auto first = G::NativeMeshBuilder::Build(RotatedTriangles(mpi, false));
-    auto second = G::NativeMeshBuilder::Build(RotatedTriangles(mpi, true));
+    auto first = G::ConstructNativeMesh(RotatedTriangles(mpi, false));
+    auto second = G::ConstructNativeMesh(RotatedTriangles(mpi, true));
     CHECK_THROWS(G::NativeMeshAssembler::CaptureOwned(mpi.rank == 0 ? *first : *second, mpi));
     CHECK(first->OriginalEntityId(G::EntityKind::Cell, 0) == mpi.rank);
     CHECK(second->OriginalEntityId(G::EntityKind::Cell, 0) == mpi.rank);
@@ -150,7 +163,7 @@ TEST_CASE("Native transition preserves exact persistent topology and coordinate 
     auto input = RotatedTriangles(mpi, true);
     G::NativeMeshBuildOptions options;
     options.completeNodeStar = true;
-    auto source = G::NativeMeshBuilder::Build(input, options);
+    auto source = G::ConstructNativeMesh(input, options);
     G::ReorderInput reorder;
     reorder.explicitMaps = {{G::EntityKind::Cell, {int((mpi.rank + 1) % mpi.size)}},
                             {G::EntityKind::Node, std::vector<DNDS::MPI_int>(3, (mpi.rank + 2) % mpi.size)},
@@ -215,7 +228,7 @@ TEST_CASE("Native transition follows complete remote node stars and retains unch
     auto input = RotatedTriangles(mpi, true);
     G::NativeMeshBuildOptions options;
     options.completeNodeStar = true;
-    auto source = G::NativeMeshBuilder::Build(input, options);
+    auto source = G::ConstructNativeMesh(input, options);
     G::ReorderInput reorder;
     reorder.explicitMaps = {{G::EntityKind::Cell, {int((mpi.rank + 1) % mpi.size)}}};
     auto result = G::NativeMeshTransition::Build(*source, mpi, reorder);
@@ -242,7 +255,7 @@ TEST_CASE("Native transition routes empty owners and rank-skewed payload without
                        owner ? std::vector<std::vector<I>>{{0, 1, 2}, {3, 4, 5}} : std::vector<std::vector<I>>{}, {});
     G::NativeMeshBuildOptions options;
     options.completeNodeStar = true;
-    auto source = G::NativeMeshBuilder::Build(input, options);
+    auto source = G::ConstructNativeMesh(input, options);
     G::ReorderInput reorder;
     for (auto kind : {G::EntityKind::Cell, G::EntityKind::Node, G::EntityKind::Bnd})
         reorder.explicitMaps.push_back({kind, std::vector<DNDS::MPI_int>(size_t(source->NumOwned(kind)), mpi.size - 1)});
@@ -267,7 +280,7 @@ TEST_CASE("Native prepared transition stages field histories atomically and bind
     auto input = RotatedTriangles(mpi, true);
     G::NativeMeshBuildOptions options;
     options.completeNodeStar = true;
-    auto native = G::NativeMeshBuilder::Build(input, options);
+    auto native = G::ConstructNativeMesh(input, options);
     auto source = G::UnstructuredMesh::FromNative(mpi, native);
     G::MeshTransitionHandle handle(source);
     R::Field<int64_t> history({1, 4, 4}, {52, 7, 1, 0}, "cell");
@@ -318,6 +331,162 @@ TEST_CASE("Native prepared transition stages field histories atomically and bind
     CHECK(values.Read().View()(0, 0) == 1000 + mpi.rank);
     CHECK(source->OriginalEntityId(G::EntityKind::Cell, 0) == mpi.rank);
     CHECK_THROWS(prepared.Publish());
+}
+
+TEST_CASE("Native transition distinguishes exact aliases from rank-local candidate shape state and order differences")
+{
+    const auto mpi = MPI();
+    auto input = NativeFacadeFixture::Make(mpi);
+    auto key = [](const std::string &name, G::EntityKind target = G::EntityKind::Node,
+                  G::RelationOrder order = G::RelationOrder::Topological)
+    {
+        G::AdjKind result(G::EntityKind::Cell, target);
+        result.path = {G::EntityKind::Cell, target};
+        result.selection = G::RelationSelection::Custom;
+        result.order = order;
+        result.periodic = G::RelationPeriodicPolicy::EntityIdentity;
+        result.semanticName = "transition.alias." + name;
+        result.semanticVersion = 1;
+        return result;
+    };
+    const auto a = key("a"), b = key("b"), c = key("c"), exact = key("d"), materialized = key("e"), view = key("f");
+    const auto globalState = key("global"), localState = key("local"), cellTarget = key("cell", G::EntityKind::Cell);
+    const auto ordered = key("ordered"), sorted = key("sorted", G::EntityKind::Node, G::RelationOrder::SortedUnique);
+    const auto unavailable = key("unavailable");
+    const I start = 3 * mpi.rank;
+    const auto first = NativeFacadeFixture::Rows<I>({{start + 1, DNDS::UnInitIndex, start, start + 1}});
+    const auto second = NativeFacadeFixture::Rows<I>({{start + 2, DNDS::UnInitIndex, start, start + 2}});
+    auto add = [&](const G::AdjKind &descriptor, R::ArrayPair<I> rows, G::MeshAdjState state = G::Adj_PointToGlobal)
+    { input.data.namedRelations.emplace(descriptor, G::NativeNamedRelation{std::move(rows), state}); };
+    add(a, first);
+    add(b, second); // Same row sizes, different values: never a payload alias.
+    add(c, mpi.rank % 2 == 0 ? first : second);
+    add(exact, first);
+    add(materialized, mpi.rank == 0 ? NativeFacadeFixture::Rows<I>({{start + 1, DNDS::UnInitIndex, start, start + 1}}) : first);
+    // Same allocation, different complete shape record and logical row length.
+    add(view, {R::Array<I>::FromStorage(R::RowLayout::Dense(1, 3, 4), first.owned.Storage()), first.ghost});
+    const auto zero = NativeFacadeFixture::Rows<I>({{0, DNDS::UnInitIndex, 0, 0}});
+    add(globalState, zero);
+    add(localState, zero, G::Adj_PointToLocal);
+    add(cellTarget, zero, G::Adj_PointToLocal);
+    const auto ascending = NativeFacadeFixture::Rows<I>({{start, start + 1}});
+    add(ordered, ascending);
+    add(sorted, ascending);
+    const I remote = 3 * ((mpi.rank + std::max(1, mpi.size / 2)) % mpi.size) + 2;
+    add(unavailable, NativeFacadeFixture::Rows<I>({{remote, DNDS::UnInitIndex}}));
+    auto source = G::UnstructuredMeshState::FromNative(mpi, std::move(input.data), input.spaces, input.ids,
+                                                       NativeFacadeFixture::Requirements());
+    if (mpi.size > 1)
+        CHECK(source->Relation(unavailable).ReadEntry(0, 0).unavailable);
+    G::ReorderInput placement;
+    placement.explicitMaps = {{G::EntityKind::Cell, {(mpi.rank + 1) % mpi.size}},
+                              {G::EntityKind::Node, {(mpi.rank + 1) % mpi.size, mpi.rank, (mpi.rank + 1) % mpi.size}}};
+    auto moved = G::NativeMeshTransition::Build(*source, mpi, placement).state;
+    REQUIRE(moved);
+    const I oldRank = (mpi.rank + mpi.size - 1) % mpi.size;
+    // Independent oracle: gather persistent owner IDs in the destination's
+    // current global order, then compare each named row to its source formula.
+    auto globalIds = [&](G::EntityKind kind)
+    {
+        const int count = int(moved->NumOwned(kind));
+        std::vector<int> counts(size_t(mpi.size)), offsets(size_t(mpi.size));
+        MPI_Allgather(&count, 1, MPI_INT, counts.data(), 1, MPI_INT, mpi.comm);
+        for (int rank = 1; rank < mpi.size; ++rank)
+            offsets[size_t(rank)] = offsets[size_t(rank - 1)] + counts[size_t(rank - 1)];
+        std::vector<I> local(size_t(count), I(0)), result(size_t(offsets.back() + counts.back()));
+        for (int row = 0; row < count; ++row)
+            local[size_t(row)] = moved->OriginalEntityId(kind, row);
+        MPI_Allgatherv(local.data(), count, MPI_INT64_T, result.data(), counts.data(), offsets.data(), MPI_INT64_T, mpi.comm);
+        return result;
+    };
+    const auto nodeIds = globalIds(G::EntityKind::Node), cellIds = globalIds(G::EntityKind::Cell);
+    auto check = [&](const G::AdjKind &descriptor, const std::vector<I> &oldGlobals)
+    {
+        auto read = moved->Relation(descriptor);
+        const auto &ids = descriptor.to == G::EntityKind::Node ? nodeIds : cellIds;
+        std::vector<I> expected;
+        for (auto global : oldGlobals)
+        {
+            if (global == DNDS::UnInitIndex)
+            {
+                expected.push_back(global);
+                continue;
+            }
+            const I persistent = 10000 + 17 * global + I(descriptor.to);
+            const auto found = std::find(ids.begin(), ids.end(), persistent);
+            REQUIRE(found != ids.end());
+            expected.push_back(I(found - ids.begin()));
+        }
+        if (descriptor.order == G::RelationOrder::SortedUnique)
+            std::sort(expected.begin(), expected.end());
+        CHECK(read.GlobalRow(0) == expected);
+        for (size_t slot = 0; slot < expected.size(); ++slot)
+        {
+            const auto entry = read.ReadEntry(0, slot);
+            CHECK(entry.absent == (expected[slot] == DNDS::UnInitIndex));
+            if (!entry.absent)
+            {
+                const auto local = read.Target().GlobalToLocal(expected[slot]);
+                CHECK(entry.unavailable == !local.has_value());
+                CHECK(read.Raw(0, slot) == (local ? *local : -1 - expected[slot]));
+            }
+        }
+    };
+    const std::vector<I> expectedA{3 * oldRank + 1, DNDS::UnInitIndex, 3 * oldRank, 3 * oldRank + 1};
+    const std::vector<I> expectedB{3 * oldRank + 2, DNDS::UnInitIndex, 3 * oldRank, 3 * oldRank + 2};
+    check(a, expectedA);
+    check(b, expectedB);
+    // Every rank has a local cache hit for c, but those hits identify different
+    // earlier collectives. Reusing either output would corrupt remote rows.
+    check(c, oldRank % 2 == 0 ? expectedA : expectedB);
+    check(exact, expectedA);
+    check(materialized, expectedA);
+    check(view, std::vector<I>(expectedA.begin(), expectedA.begin() + 3));
+    check(globalState, {0, DNDS::UnInitIndex, 0, 0});
+    check(localState, {3 * oldRank, DNDS::UnInitIndex, 3 * oldRank, 3 * oldRank});
+    check(cellTarget, {oldRank, DNDS::UnInitIndex, oldRank, oldRank});
+    check(ordered, {3 * oldRank, 3 * oldRank + 1});
+    check(sorted, {3 * oldRank, 3 * oldRank + 1});
+    check(unavailable, {3 * ((oldRank + std::max(1, mpi.size / 2)) % mpi.size) + 2, DNDS::UnInitIndex});
+    CHECK(source->Relation(a).GlobalRow(0) == std::vector<I>{start + 1, DNDS::UnInitIndex, start, start + 1});
+}
+
+TEST_CASE("Native aliased transition retains repeated periodic IDs and ordered frames")
+{
+    const auto mpi = MPI();
+    auto source = G::ConstructNativeMesh(NativePeriodicFixtures::QuadraticTorus(mpi));
+    auto owned = G::NativeMeshAssembler::CaptureOwned(*source, mpi);
+    G::AdjKind ordered(G::EntityKind::Cell, G::EntityKind::Node);
+    ordered.path = {G::EntityKind::Cell, G::EntityKind::Node};
+    ordered.selection = G::RelationSelection::Custom;
+    ordered.order = G::RelationOrder::Topological;
+    ordered.periodic = G::RelationPeriodicPolicy::FrameMatched;
+    ordered.semanticName = "transition.periodic.ordered";
+    ordered.semanticVersion = 1;
+    owned.namedRelations.emplace(ordered, *owned.relations[size_t(G::MeshRelation::CellNodes)]);
+    source = G::AssembleNativeMesh(mpi, std::move(owned));
+    G::ReorderInput placement;
+    placement.explicitMaps.push_back({G::EntityKind::Cell, std::vector<DNDS::MPI_int>(size_t(source->NumOwned(G::EntityKind::Cell)), (mpi.rank + 1) % mpi.size)});
+    auto moved = G::NativeMeshTransition::Build(*source, mpi, placement).state;
+    auto read = moved->Snapshot(R::Device::Host()).AcquireRead();
+    const auto view = read.HostView();
+    const I expectedNodes[]{0, 0, 0, 0, 1, 2, 1, 2, 3};
+    const uint32_t expectedBits[]{0, 1, 3, 2, 0, 1, 2, 0, 0};
+    auto relation = moved->Relation(ordered);
+    for (I cell = 0; cell < moved->NumOwned(G::EntityKind::Cell); ++cell)
+    {
+        REQUIRE(view.CellNodes(cell).size() == 9);
+        REQUIRE(relation.RowSize(cell) == 9);
+        for (size_t slot = 0; slot < 9; ++slot)
+        {
+            const auto node = view.CellNodes(cell)[slot];
+            CHECK(moved->OriginalEntityId(G::EntityKind::Node, node) == expectedNodes[slot]);
+            CHECK(uint8_t(view.CellNodePeriodicBits(cell)[slot]) == expectedBits[slot]);
+            CHECK(relation.ReadEntry(cell, slot).global == moved->Entities(G::EntityKind::Node).LocalToGlobal(node));
+        }
+    }
+    CHECK(moved->MeshNamespace() == source->MeshNamespace());
+    CHECK(moved->IdHighWater() == source->IdHighWater());
 }
 
 int main(int argc, char **argv)

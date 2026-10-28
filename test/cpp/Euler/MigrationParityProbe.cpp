@@ -95,6 +95,12 @@ namespace
             return;
         }
         auto mesh = solver.getMesh();
+        const auto audit = mesh->CurrentNativeState()->AuditOptions();
+        output["mesh_audit"] = {{"persistent_identity", audit.persistentIdentity}, {"closure", audit.closure}};
+        // Validate a trusted construction at a checkpoint outside its setup
+        // timing; audit omission must not hide a changed physical mesh.
+        output["timings"]["checkpoint_audit_seconds"] = Timed(mpi, [&]
+                                                              { mesh->CurrentNativeState()->Audit(); });
         auto fv = solver.getVFV();
         auto &eval = solver.getEval();
         auto &u = solver.getU();

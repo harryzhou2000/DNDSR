@@ -119,7 +119,7 @@ TEST_CASE("Source setup partitions parents before refinement and retains parent-
         }
         owned.ids[G::EntityKind::Cell] = std::move(keys);
         owned.identity = {};
-        source = G::NativeMeshAssembler::Build(mpi, std::move(owned));
+        source = G::AssembleNativeMesh(mpi, std::move(owned));
     }
     if (mpi.size > 1)
         CHECK_THROWS(G::NativeMeshRefinement::Elevate(*source, mpi, {1, true}, mpi.rank == 0));

@@ -82,7 +82,7 @@ TEST_CASE("High valence all-remote owned node has exact closure and SUM gather s
 {
     DNDS::MPIInfo mpi;
     mpi.setWorld();
-    auto state = G::NativeMeshBuilder::Build(Fan(mpi), {2, true});
+    auto state = G::ConstructNativeMesh(Fan(mpi), {2, true});
     auto access = state->Snapshot(R::Device::Host()).AcquireRead();
     auto v = access.HostView();
     auto nodes = state->Entities(G::EntityKind::Node), cells = state->Entities(G::EntityKind::Cell);
@@ -312,7 +312,7 @@ TEST_CASE("Unrelated remote components do not grow rank0 traversal C++ scratch")
     std::vector<size_t> peaks;
     for (int extra : {1, 128, 4096})
     {
-        auto state = G::NativeMeshBuilder::Build(Fan(mpi, extra), {2, true});
+        auto state = G::ConstructNativeMesh(Fan(mpi, extra), {2, true});
         G::NativeConnectivity registry(mpi);
         auto source = G::UnstructuredMesh::FromNative(mpi, state);
         auto requirements = G::MeshReadRequirements::Primary();

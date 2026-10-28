@@ -112,10 +112,55 @@ not build serial output caches. `Geom.prepare_native_topology`,
 setup functions. `mesh.PrepareNativeTopology(...)` and `mesh.ReorderLocalCells(...)`
 are tracked in-place setup methods.
 
+Both preparation helpers now use `Geom.prepare_native_mesh_setup`: owned cell
+permutation precedes face/edge construction, then one final assembly provides
+facial closure and complete owned-node stars. Its default returns a detached
+facade; `in_place=True` replaces the source and rejects active read scopes.
+Keep the returned detached mesh. All ranks must agree on options, including
+the in-place flag; errors are coordinated before publication. Extra custom
+ghost paths survive setup. Coordinate transforms precede optional wall distance.
+
+High-level CGNS `read_mesh` uses reader-owned ingress for KWAY and RB, retaining
+the C++ helper's serial METIS policy. Partition occurs before optional elevation
+and bisection. Setup elevation preserves Cell/Boundary/original Node labels,
+with new span labels above the source high-water; current row numbers are a
+different quantity. The low-level `elevate_native_mesh` keeps fresh labels by
+default and exposes `preserve_original_ids=True` for this setup policy.
+Canonical periodic inputs are supported by both elevation and bisection.
+
+Low-level `read_native_cgns`, `prepare_native_topology`, partition and reorder
+return readable completed states. Calling them separately can intentionally
+materialize intermediate ghosts for inspection. Native C++ construction instead
+offers owned-only ingress/partition/refinement/permutation APIs; see the
+[construction guide](../architecture/MeshConnectivity.md) for the single final
+assembly sequence. An intermediate readable state is never a builder dependency.
+
 The deprecated `create_mesh_from_CGNS` and `create_bnd_mesh` preserve their tuple
 contracts by delegating native helpers. Their historical names do not select
 another storage backend. SerialRW's former read/deduplicate/partition methods
 have been removed.
+
+Low-level native construction and CGNS import accept a trailing `audit` option.
+Full diagnostics are enabled by default. For repeated input whose identity and
+incidence consistency were established by its producer:
+
+```python
+audit = Geom.MeshAuditOptions()
+audit.persistent_identity = False
+audit.closure = False
+mesh = Geom.read_native_cgns(mpi, path, 2, audit=audit)
+Geom.audit_native_mesh(mesh)  # explicit full collective checkpoint audit
+effective = Geom.native_mesh_audit_options(mesh)
+```
+
+All ranks must agree on audit flags and calls. Disabling identity diagnostics
+can admit duplicate persistent IDs or incorrect ghost IDs. Disabling closure
+diagnostics skips the owned cell-face reciprocity pass. Shape, index/sentinel
+safety, required local closure and ghost construction, periodic/higher-order
+matching, and leases remain enforced. Derived meshes inherit the policy;
+archive reads enable full audits. A checkpoint audit does not change the
+retained policy. See [MeshConnectivity](../architecture/MeshConnectivity.md)
+for the C++ contract.
 
 ## Periodic import and derivation
 
@@ -370,8 +415,9 @@ are separate checkpoint data. `mesh.write_native_archive(serializer, name)` /
 
 Old primary-wire input is decoded directly into Runtime arrays. It preserves
 valid original IDs and generates a fresh namespace because that schema had none.
-It does not reconstruct a legacy mesh. Historical derived periodic archives
-with duplicate original IDs reject explicitly; no silent renumbering occurs.
+It does not reconstruct a legacy mesh. Malformed archives with duplicate
+original IDs reject explicitly; no silent renumbering occurs. The frozen legacy
+periodic/elevation fixture itself has unique compact IDs.
 `WriteCurrentPrimaryMeshSnapshot` (and `WriteCurrentMeshSnapshot`) exports only
 primary topology with a rebuild marker. It does not preserve optional-family
 field numbering; wall vectors require explicit `DropAuxiliary` policy. Use a
@@ -412,5 +458,5 @@ Current test logs, not this guide, establish their validation status.
 - [Scoped query lifetime](../architecture/MeshFacade.md)
 - [Managed edits](../architecture/ManagedMeshEdit.md)
 - [Connectivity and ghost closure](../architecture/MeshConnectivity.md)
-- `python/DNDSR/Geom/utils.py` and `src/Geom/Mesh/Mesh_bind.hpp`
+- `python/DNDSR/Geom/utils.py` and `src/Geom/Unstructured/UnstructuredMesh_bind.hpp`
 - `test/Geom/test_native_mesh_helpers.py` and `test/EulerP/test_native_solver.py`

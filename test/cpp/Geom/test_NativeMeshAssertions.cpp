@@ -173,8 +173,8 @@ TEST_CASE("Native face assertions permit unavailable outer ghost cell faces and 
     }
     CHECK_NOTHROW(outer->AssertOnFaces());
     CHECK_NOTHROW(outer->AssertOnN2CB());
-    auto primary = G::NativeMeshBuilder::Build(NativePeriodicFixtures::QuadraticTorus(mpi), {1, true});
-    auto state = G::NativeMeshTopology::Build(*primary, mpi);
+    auto primary = G::ConstructNativeMesh(NativePeriodicFixtures::QuadraticTorus(mpi), {1, true});
+    auto state = G::PrepareNativeMeshTopology(*primary, mpi);
     auto periodic = G::UnstructuredMesh::FromNative(mpi, state);
     auto read = periodic->AcquireRead(state->Requirements());
     if (periodic->NumCell())

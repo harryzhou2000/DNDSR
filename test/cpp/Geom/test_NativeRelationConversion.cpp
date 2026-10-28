@@ -68,6 +68,7 @@ TEST_CASE("Native conversion preserves owned and ghost shape slots and unavailab
         const auto missingLocal = nodes.GlobalToLocal(missing);
         REQUIRE_FALSE(missingLocal.has_value());
         CHECK(localRead.ReadEntry(0, mpi.rank == 0 ? 0 : 2).unavailable);
+        CHECK_THROWS(localRead.ConvertedIndex(0, mpi.rank == 0 ? 0 : 2, G::Adj_PointToLocal, false));
     }
     CHECK_THROWS(G::RelationReadAccess(G::Adj::Cell2Node, cells, nodes, G::Adj_Unknown, owned, &ghost));
     const auto wrongGlobal = NativePeriodicFixtures::Rows<I>({{-1}, {0}});
@@ -77,6 +78,110 @@ TEST_CASE("Native conversion preserves owned and ghost shape slots and unavailab
     CHECK_THROWS(G::RelationReadAccess(G::Adj::Cell2Node, ownedCells, nodes, G::Adj_PointToLocal, wrongUnavailable));
     const auto outOfRange = NativePeriodicFixtures::Rows<I>({{nodes.NumLocal()}, {0}});
     CHECK_THROWS(G::RelationReadAccess(G::Adj::Cell2Node, ownedCells, nodes, G::Adj_PointToLocal, outOfRange));
+}
+
+TEST_CASE("Local relation validation checks ghost bounds global ordering and ghost source self incidences")
+{
+    DNDS::MPIInfo mpi;
+    mpi.setWorld();
+    auto ownedNodes = G::EntitySpace::CreateOwned(G::EntityKind::Node, mpi, 3);
+    auto ownedCells = ownedNodes.CreateSibling(G::EntityKind::Cell, 2);
+    const I remoteNode = 3 * ((mpi.rank + mpi.size - 1) % mpi.size);
+    const I remoteCell = 2 * ((mpi.rank + 1) % mpi.size);
+    auto nodes = ownedNodes.WithGhosts(mpi.size > 1 ? std::vector<I>{remoteNode} : std::vector<I>{});
+    auto cells = ownedCells.WithGhosts(mpi.size > 1 ? std::vector<I>{remoteCell} : std::vector<I>{});
+    const I own = nodes.LocalToGlobal(0);
+    const I other = mpi.size > 1 ? remoteNode : nodes.LocalToGlobal(1);
+    const I lower = std::min(own, other), upper = std::max(own, other);
+    const I lowerLocal = *nodes.GlobalToLocal(lower), upperLocal = *nodes.GlobalToLocal(upper);
+    const auto sortedOwned = NativePeriodicFixtures::Rows<I>({{lowerLocal, upperLocal}, {}});
+    const auto sortedGhost = NativePeriodicFixtures::Rows<I>(mpi.size > 1 ? std::vector<std::vector<I>>{{lowerLocal, upperLocal}} : std::vector<std::vector<I>>{});
+    G::AdjKind sorted{G::EntityKind::Cell, G::EntityKind::Node};
+    sorted.path = {G::EntityKind::Cell, G::EntityKind::Node};
+    sorted.selection = G::RelationSelection::Incidence;
+    sorted.order = G::RelationOrder::SortedUnique;
+    sorted.periodic = G::RelationPeriodicPolicy::EntityIdentity;
+    G::RelationReadAccess ordered(sorted, cells, nodes, G::Adj_PointToLocal, sortedOwned, &sortedGhost);
+    CHECK(ordered.GlobalRow(0) == std::vector<I>{lower, upper});
+    const auto reversed = NativePeriodicFixtures::Rows<I>({{upperLocal, lowerLocal}, {}});
+    CHECK_THROWS(G::RelationReadAccess(sorted, cells, nodes, G::Adj_PointToLocal, reversed, &sortedGhost));
+    const auto duplicate = NativePeriodicFixtures::Rows<I>({{lowerLocal, lowerLocal}, {}});
+    CHECK_THROWS(G::RelationReadAccess(sorted, cells, nodes, G::Adj_PointToLocal, duplicate, &sortedGhost));
+    const auto absent = NativePeriodicFixtures::Rows<I>({{DNDS::UnInitIndex}, {}});
+    CHECK_THROWS(G::RelationReadAccess(sorted, cells, nodes, G::Adj_PointToLocal, absent, &sortedGhost));
+    const auto unordered = NativePeriodicFixtures::Rows<I>({{upperLocal, DNDS::UnInitIndex, lowerLocal, upperLocal}, {}});
+    G::RelationReadAccess slots(G::Adj::Cell2Node, cells, nodes, G::Adj_PointToLocal, unordered, &sortedGhost);
+    CHECK(slots.GlobalRow(0) == std::vector<I>{upper, DNDS::UnInitIndex, lower, upper});
+    CHECK(slots.ReadEntry(0, 1).absent);
+
+    const auto noSelf = G::AdjKind::Composition(G::Adj::Cell2Node, G::Adj::Cell2Node.Inverted(), G::RelationSelection::Any, true);
+    const auto distinctOwned = NativePeriodicFixtures::Rows<I>({{1}, {0}});
+    const auto distinctGhost = NativePeriodicFixtures::Rows<I>(mpi.size > 1 ? std::vector<std::vector<I>>{{0}} : std::vector<std::vector<I>>{});
+    G::RelationReadAccess distinct(noSelf, cells, cells, G::Adj_PointToLocal, distinctOwned, &distinctGhost);
+    CHECK(distinct.GlobalRow(0) == std::vector<I>{cells.LocalToGlobal(1)});
+    const auto selfOwned = NativePeriodicFixtures::Rows<I>({{0}, {}});
+    CHECK_THROWS(G::RelationReadAccess(noSelf, cells, cells, G::Adj_PointToLocal, selfOwned, &distinctGhost));
+    if (mpi.size > 1)
+    {
+        CHECK(ordered.GlobalRow(2) == std::vector<I>{lower, upper});
+        if (mpi.rank > 0)
+            CHECK(ordered.Raw(2, 0) > ordered.Raw(2, 1));
+        const auto reversedGhost = NativePeriodicFixtures::Rows<I>({{upperLocal, lowerLocal}});
+        CHECK_THROWS(G::RelationReadAccess(sorted, cells, nodes, G::Adj_PointToLocal, sortedOwned, &reversedGhost));
+        for (I invalid : {nodes.NumLocal(), -1 - remoteNode, -1 - nodes.NumGlobal()})
+        {
+            const auto invalidGhost = NativePeriodicFixtures::Rows<I>({{invalid}});
+            CHECK_THROWS(G::RelationReadAccess(G::Adj::Cell2Node, cells, nodes, G::Adj_PointToLocal, unordered, &invalidGhost));
+        }
+        // A different remote node remains genuinely unavailable; the ghost
+        // mapping contains only remoteNode, and absence has its own sentinel.
+        const I missing = remoteNode + 1;
+        REQUIRE_FALSE(nodes.GlobalToLocal(missing).has_value());
+        const auto unavailableGhost = NativePeriodicFixtures::Rows<I>({{-1 - missing, DNDS::UnInitIndex}});
+        G::RelationReadAccess unavailable(G::Adj::Cell2Node, cells, nodes, G::Adj_PointToLocal, unordered, &unavailableGhost);
+        CHECK(unavailable.ReadEntry(2, 0).unavailable);
+        CHECK(unavailable.ReadEntry(2, 0).global == missing);
+        CHECK(unavailable.ReadEntry(2, 1).absent);
+        CHECK(distinct.GlobalRow(2) == std::vector<I>{cells.LocalToGlobal(0)});
+        const auto selfGhost = NativePeriodicFixtures::Rows<I>({{cells.NumOwned()}});
+        CHECK_THROWS(G::RelationReadAccess(noSelf, cells, cells, G::Adj_PointToLocal, distinctOwned, &selfGhost));
+    }
+}
+
+TEST_CASE("Retained relation validation follows its read scope and fresh reads validate changed values")
+{
+    DNDS::MPIInfo mpi;
+    mpi.setWorld();
+    auto nodes = G::EntitySpace::CreateOwned(G::EntityKind::Node, mpi, 2);
+    auto cells = nodes.CreateSibling(G::EntityKind::Cell, 1);
+    const I global = nodes.LocalToGlobal(0);
+    auto values = NativePeriodicFixtures::Rows<I>({{global, DNDS::UnInitIndex}});
+    G::NativeRelation relation(G::Adj::Cell2Node, cells, nodes, values);
+    CHECK(relation.Kind() == G::Adj::Cell2Node);
+    {
+        auto original = relation.Read();
+        auto moved = std::move(original);
+        CHECK_THROWS(original.ConvertedIndex(0, 0, G::Adj_PointToGlobal));
+        CHECK(moved.ConvertedIndex(0, 0, G::Adj_PointToGlobal) == global);
+        CHECK(moved.ConvertedIndex(0, 0, G::Adj_PointToLocal, false) == 0);
+        CHECK(moved.ConvertedIndex(0, 1, G::Adj_PointToLocal, false) == DNDS::UnInitIndex);
+        CHECK_THROWS(values.Write());
+        CHECK_THROWS(moved.ConvertedIndex(0, 2, G::Adj_PointToGlobal));
+    }
+    // NativeRelation does not retain a lifetime content cache: an alias can
+    // change after the previous scope releases, and a new scope must rescan it.
+    {
+        auto write = values.Write();
+        write.View()(0, 0) = -1;
+    }
+    CHECK_THROWS(relation.Read());
+    {
+        auto write = values.Write();
+        write.View()(0, 0) = global + 1;
+    }
+    auto current = relation.Read();
+    CHECK(current.ConvertedIndex(0, 0, G::Adj_PointToGlobal) == global + 1);
+    CHECK(current.ConvertedIndex(0, 0, G::Adj_PointToLocal, false) == 1);
 }
 
 TEST_CASE("Native conversion preserves dense stride and logical padded CSR rows on empty owners")
@@ -140,7 +245,7 @@ TEST_CASE("Native current numbering conversion survives local reorder redistribu
     placement.explicitMaps.push_back({G::EntityKind::Cell, std::vector<DNDS::MPI_int>(size_t(reordered->NumOwned(G::EntityKind::Cell)), (mpi.rank + 1) % mpi.size)});
     auto moved = G::NativeMeshTransition::Build(*reordered, mpi, placement, 2).state;
     CheckCurrent(moved, mpi);
-    auto rebuilt = G::NativeMeshAssembler::Build(mpi, G::NativeMeshAssembler::CaptureOwned(*moved, mpi), 1);
+    auto rebuilt = G::AssembleNativeMesh(mpi, G::NativeMeshAssembler::CaptureOwned(*moved, mpi), 1);
     CheckCurrent(rebuilt, mpi);
     CHECK(state->MeshNamespace() == rebuilt->MeshNamespace());
 }
@@ -192,8 +297,8 @@ TEST_CASE("Periodic conversion keeps repeated canonical IDs ordered frames and d
         }
         input.ids.emplace(space.Kind(), std::move(ids));
     }
-    auto state = G::NativeMeshBuilder::Build(std::move(input), {1, true});
-    state = G::NativeMeshTopology::Build(*state, mpi, true, false);
+    auto state = G::ConstructNativeMesh(std::move(input), {1, true});
+    state = G::PrepareNativeMeshTopology(*state, mpi, true, false);
     CheckTorus(state, mpi);
     auto reordered = G::NativeMeshTransition::ReorderLocalCells(*state, mpi, 2, 1).state;
     CheckTorus(reordered, mpi);
@@ -201,7 +306,7 @@ TEST_CASE("Periodic conversion keeps repeated canonical IDs ordered frames and d
     placement.explicitMaps.push_back({G::EntityKind::Cell, std::vector<DNDS::MPI_int>(size_t(reordered->NumOwned(G::EntityKind::Cell)), (mpi.rank + 1) % mpi.size)});
     auto moved = G::NativeMeshTransition::Build(*reordered, mpi, placement, 2).state;
     CheckTorus(moved, mpi);
-    auto rebuilt = G::NativeMeshAssembler::Build(mpi, G::NativeMeshAssembler::CaptureOwned(*moved, mpi), 1);
+    auto rebuilt = G::AssembleNativeMesh(mpi, G::NativeMeshAssembler::CaptureOwned(*moved, mpi), 1);
     CheckTorus(rebuilt, mpi);
     CHECK(state->MeshNamespace() == rebuilt->MeshNamespace());
     CHECK(state->IdHighWater() == rebuilt->IdHighWater());

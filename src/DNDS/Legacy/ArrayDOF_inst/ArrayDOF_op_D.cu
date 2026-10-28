@@ -1,0 +1,9 @@
+#include "DNDS/Legacy/ArrayDOF.hpp"
+#include "DNDS/Legacy/ArrayDOF_op_CUDA.cuh"
+#include "DNDS/Device/DeviceStorage.hxx"
+#include "DNDS/Device/DeviceStorage_CUDA.cuh"
+namespace DNDS
+{
+    DNDS_ARRAY_DOF_OP_FUNC_SEQ_INST(DeviceBackend::CUDA, DynamicSize - 1, template)
+    // DNDS_ARRAYDOF_INST_STORAGE(DeviceBackend::CUDA, DynamicSize - 1, )
+}

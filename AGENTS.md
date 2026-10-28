@@ -9,6 +9,12 @@
 DNDSR is a C++17 / Python CFD (Computational Fluid Dynamics) research code implementing
 Compact Finite Volume methods with MPI parallelism and optional CUDA GPU support.
 
+Start with the [documentation index](docs/index.md), then the
+[mesh connectivity and construction guide](docs/architecture/MeshConnectivity.md)
+before editing mesh setup, relation operations, closure or ownership. The guide
+distinguishes owned construction, temporary algorithm closure and final ghost
+assembly; test counts alone do not establish legacy semantic compatibility.
+
 ## CodeGraph in Separate Checkouts
 
 When working in a standalone checkout or linked Git worktree, an agent may
@@ -35,9 +41,19 @@ directory; edit the shared source, not separate harness-specific copies.
     - `Config/` — Runtime configuration enums, parameters, registry
     - `Device/` — Host-device memory transfer, CUDA utilities
     - `Serializer/` — JSON and HDF5 serialization framework
-    - `ArrayDerived/` — Specialized array types (adjacency, Eigen matrices)
+    - `Runtime/` — Native shared arrays, layouts, access leases, and communication
+    - `Algebra/` — Native DOF ownership and numerical operators
+    - `Legacy/` — Historical arrays, transformers, DOFs, and `ArrayDerived/` wrappers
   - `Geom/` — Unstructured mesh, CGNS I/O, partitioning (Metis/ParMetis)
-    - `Mesh/` — Mesh data structures, connectivity, ghost management, state tracking
+    - `Unstructured/` — Mesh owner, immutable state/snapshot, builders, and preparation
+    - `Access/` — Read leases, mesh views, entity spaces, and fields
+    - `Connectivity/` — Incidence operations, topology, and ghost closure
+    - `Transition/` — Assembly, transitions, and reordering
+    - `Geometry/` — Geometry edits, wall distance, and smoothing
+    - `Refinement/` — Elevation, refinement, and extraction
+    - `IO/` — Archives, CGNS/OpenFOAM import, and output
+    - `Compat/` — Legacy views and adapters
+    - `Mesh/` — Forwarding headers for historical include paths
     - `Elements/` — Per-element-type shape functions
     - `Quadratures/` — Numerical integration rules
   - `CFV/` — Compact Finite Volume, variational reconstruction

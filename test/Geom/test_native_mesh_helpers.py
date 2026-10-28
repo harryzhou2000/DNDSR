@@ -65,6 +65,10 @@ def test_native_helpers_names_prepare_extract_and_restart(tmp_path):
     assert result.mesh.has_native_state
     assert result.mesh.NumCellGlobal() == 4
     assert result.mesh.NumNodeGlobal() == 9
+    source_groups = Geom.native_mesh_requirements(result.mesh)
+    # Partition precedes refinement, matching C++/legacy setup. Derivation
+    # returns primary topology; faces are constructed during preparation.
+    assert not source_groups["faces"]
     label = result.name_to_id.n2id_map[NAME]
     with result.mesh.acquire_read():
         with pytest.raises(RuntimeError):
@@ -78,7 +82,7 @@ def test_native_helpers_names_prepare_extract_and_restart(tmp_path):
     with result.mesh.acquire_read() as source_read:
         for row in range(result.mesh.NumNodeProc()):
             assert np.max(source_read.coord(row)[:2]) <= 1.0
-    assert Geom.native_mesh_requirements(result.mesh)["faces"]
+    assert Geom.native_mesh_requirements(result.mesh) == source_groups
     assert not Geom.native_mesh_requirements(result.mesh)["wall_distance"]
     assert Geom.native_mesh_requirements(prepared)["wall_distance"]
     # Repeating preparation retains published numbering instead of overwriting
@@ -126,9 +130,12 @@ def test_native_partition_prepare_matches_cfv_metrics_and_preserves_source(tmp_p
     result = read_mesh(_fixture(tmp_path), mpi, 2, native=True, bisect=1)
     imported = read_mesh(_fixture(tmp_path), mpi, 2, native=True, bisect=1,
         partition_options={"metisType": "KWAY", "metisSeed": 11, "metisNcuts": 2, "metisUfactor": 30})
+    source_groups = Geom.native_mesh_requirements(imported.mesh)
+    assert not source_groups["faces"]
     prepared = prepare_native_mesh(imported.mesh, reorder_parts=1)
     assert result.mesh.NumCellGlobal() == prepared.NumCellGlobal() == 4
-    assert Geom.native_mesh_requirements(result.mesh)["faces"]
+    assert Geom.native_mesh_requirements(imported.mesh) == source_groups
+    assert Geom.native_mesh_requirements(prepared)["faces"]
     fv = CFV.FiniteVolume(mpi, prepared)
     fv.ParseSettings({})
     fv.SetCellAtrBasic()

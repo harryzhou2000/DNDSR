@@ -22,7 +22,7 @@ clang-format -i src/DNDS/SomeFile.hpp
 1. Project macros (`"DNDS/Macros.hpp"`, `"DNDS/Defines.hpp"`)
 2. Standard library headers
 3. External library headers (Eigen, fmt, nlohmann_json, etc.)
-4. Project headers (quoted, relative to `src/`): `"DNDS/Array.hpp"`, `"Geom/Mesh.hpp"`
+4. Project headers (quoted, relative to `src/`): `"DNDS/Runtime/Array.hpp"`, `"Geom/Unstructured/UnstructuredMesh.hpp"`
 
 ### Naming Conventions
 
@@ -90,7 +90,7 @@ Run the checkers via the scripts in `scripts/`:
 # clang-tidy
 scripts/run_clang_tidy.py                  # all default modules
 scripts/run_clang_tidy.py Geom CFV         # selected modules
-scripts/run_clang_tidy.py src/Geom/Mesh    # any path
+scripts/run_clang_tidy.py src/Geom/Connectivity # any path
 scripts/run_clang_tidy.py --changed        # only files dirty vs HEAD
 scripts/run_clang_tidy.py --summary        # just the per-check totals
 scripts/run_clang_tidy.py --fix src/DNDS   # apply .clang-tidy-fix

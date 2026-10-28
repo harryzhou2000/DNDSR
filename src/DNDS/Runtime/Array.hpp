@@ -439,6 +439,18 @@ namespace DNDS::Runtime
             CheckPublished();
             return _layout->rows;
         }
+        size_t Rows() const
+        {
+            std::lock_guard<std::mutex> lock(_shapeMutex);
+            CheckPublished();
+            return _layout->rows.Rows();
+        }
+        size_t RowSize(size_t row) const
+        {
+            std::lock_guard<std::mutex> lock(_shapeMutex);
+            CheckPublished();
+            return _layout->rows.RowSize(row);
+        }
         std::shared_ptr<const Detail::ArrayLayout> SharedLayout() const
         {
             std::lock_guard<std::mutex> lock(_shapeMutex);
@@ -608,8 +620,8 @@ namespace DNDS::Runtime
         ExclusiveRows EditRows(); // Defined by RowBuilder.hpp; exclusive CPU setup.
         uint64_t ShapeVersion() const { return _storage->ShapeVersion(); }
         RowLayout Layout() const { return _storage->Layout(); }
-        size_t Rows() const { return Layout().Rows(); }
-        size_t RowSize(size_t row) const { return Layout().RowSize(row); }
+        size_t Rows() const { return _storage->Rows(); }
+        size_t RowSize(size_t row) const { return _storage->RowSize(row); }
         Device GetDevice() const { return Storage().GetDevice(); }
         uint64_t Identity() const { return Storage().Identity(); }
         uint64_t Version() const { return Storage().Version(); }

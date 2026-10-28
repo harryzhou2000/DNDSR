@@ -1,0 +1,8 @@
+#include "DNDS/Legacy/ArrayDOF.hpp"
+#include "DNDS/Legacy/ArrayDOF_op.hxx"
+#include "DNDS/Device/DeviceStorage.hxx"
+namespace DNDS
+{
+    DNDS_ARRAY_DOF_OP_FUNC_SEQ_INST(DeviceBackend::Host, 4, template)
+    // DNDS_ARRAYDOF_INST_STORAGE(DeviceBackend::Host, 4, )
+}

@@ -76,10 +76,10 @@ namespace
             input.cellNodesPbi = Rows(cells.NumOwned() ? std::vector<std::vector<G::NodePeriodicBits>>{images} : std::vector<std::vector<G::NodePeriodicBits>>{});
             input.boundaryNodesPbi = Rows(boundaryImages);
         }
-        auto source = G::NativeMeshBuilder::Build(std::move(input), {1, true});
+        auto source = G::ConstructNativeMesh(std::move(input), {1, true});
         if (derived)
             source = G::NativeMeshRefinement::Elevate(*source, mpi, {1, true}).state;
-        return complete ? G::NativeMeshTopology::Build(*source, mpi, true, true) : source;
+        return complete ? G::PrepareNativeMeshTopology(*source, mpi, true, true) : source;
     }
     void CheckOutput(const G::NativeMeshOutput &out, const DNDS::MPIInfo &mpi)
     {
@@ -266,18 +266,18 @@ TEST_CASE("Generated native ID floors agree collectively and never modify retain
     const DNDS::MPIInfo mpi(MPI_COMM_WORLD);
     auto primary = Cube(mpi, false, false, false);
     const auto oldNodes = primary->Entities(G::EntityKind::Node);
-    CHECK_THROWS(G::NativeMeshTopology::Build(*primary, mpi, true, false, 1, {{G::EntityKind::Node, 10}}));
-    CHECK_THROWS(G::NativeMeshTopology::Build(*primary, mpi, true, false, 1, {{G::EntityKind::Edge, 10}}));
-    CHECK_THROWS(G::NativeMeshTopology::Build(*primary, mpi, true, false, 1, {{G::EntityKind::Face, std::numeric_limits<I>::max()}}));
+    CHECK_THROWS(G::PrepareNativeMeshTopology(*primary, mpi, true, false, 1, {{G::EntityKind::Node, 10}}));
+    CHECK_THROWS(G::PrepareNativeMeshTopology(*primary, mpi, true, false, 1, {{G::EntityKind::Edge, 10}}));
+    CHECK_THROWS(G::PrepareNativeMeshTopology(*primary, mpi, true, false, 1, {{G::EntityKind::Face, std::numeric_limits<I>::max()}}));
     if (mpi.size > 1)
-        CHECK_THROWS(G::NativeMeshTopology::Build(*primary, mpi, true, false, 1, {{G::EntityKind::Face, 100 + mpi.rank}}));
-    auto large = G::NativeMeshTopology::Build(*primary, mpi, true, true, 1, {{G::EntityKind::Face, 1000000000000LL}, {G::EntityKind::Edge, 2000000000000LL}});
+        CHECK_THROWS(G::PrepareNativeMeshTopology(*primary, mpi, true, false, 1, {{G::EntityKind::Face, 100 + mpi.rank}}));
+    auto large = G::PrepareNativeMeshTopology(*primary, mpi, true, true, 1, {{G::EntityKind::Face, 1000000000000LL}, {G::EntityKind::Edge, 2000000000000LL}});
     CHECK(large->NextEntityId(G::EntityKind::Face) == 1000000000006LL);
     CHECK(large->NextEntityId(G::EntityKind::Edge) == 2000000000012LL);
     for (auto kind : {G::EntityKind::Node, G::EntityKind::Cell, G::EntityKind::Bnd})
         CHECK(large->NextEntityId(kind) == primary->NextEntityId(kind));
-    CHECK_THROWS(G::NativeMeshTopology::Build(*large, mpi, true, false, 1, {{G::EntityKind::Face, 0}}));
-    auto retry = G::NativeMeshTopology::Build(*primary, mpi, true, true);
+    CHECK_THROWS(G::PrepareNativeMeshTopology(*large, mpi, true, false, 1, {{G::EntityKind::Face, 0}}));
+    auto retry = G::PrepareNativeMeshTopology(*primary, mpi, true, true);
     CHECK(retry->NextEntityId(G::EntityKind::Face) == 6);
     CHECK(retry->NextEntityId(G::EntityKind::Edge) == 12);
     CHECK(oldNodes.Valid());

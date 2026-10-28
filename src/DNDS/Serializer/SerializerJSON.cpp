@@ -302,7 +302,7 @@ namespace DNDS::Serializer
                                            const std::vector<ByteMemorySegment> &segments, ArrayGlobalOffset offset)
     {
         const auto total = ValidateByteSegments(data, memoryBytes, segments);
-        DNDS_check_throw_info(!reading && offset == ArrayGlobalOffset_Unknown,
+        DNDS_check_throw_info((!fileStream.is_open() || !reading) && offset == ArrayGlobalOffset_Unknown,
                               "JSON byte segments require a writable per-rank record");
         // The DOM is the encoding buffer. Do not concatenate rows into another
         // byte vector or invoke the legacy whole-buffer compression path.
@@ -326,7 +326,7 @@ namespace DNDS::Serializer
                                           const std::vector<ByteMemorySegment> &segments, ArrayGlobalOffset &offset)
     {
         const auto total = ValidateByteSegments(data, memoryBytes, segments);
-        DNDS_check_throw_info(reading && offset == ArrayGlobalOffset_Unknown,
+        DNDS_check_throw_info((!fileStream.is_open() || reading) && offset == ArrayGlobalOffset_Unknown,
                               "JSON byte segments require a readable per-rank record");
         const auto &stored = jObj.at(nlohmann::json::json_pointer(cP)).at(name);
         if (stored.is_object())

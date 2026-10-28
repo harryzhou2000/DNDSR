@@ -31,6 +31,7 @@
 #include "Geom/Mesh/NativeMeshCGNS.hpp"
 #include "Geom/Mesh/NativeMeshPreparation.hpp"
 #include "Geom/Mesh/NativeConnectivity.hpp"
+#include "Geom/Transition/NativeMeshAssembler.hpp"
 #include <string>
 #include <vector>
 #include <numeric>
@@ -93,22 +94,25 @@ static std::string meshPath(const std::string &name)
 
 static ssp<UnstructuredMesh> buildMesh(int meshId, const MeshConfig &cfg)
 {
-    std::optional<NativePeriodicImportOptions> periodic;
+    NativePeriodicImportOptions periodic;
+    periodic.tolerance = 1e-8;
     if (cfg.periodic)
     {
-        periodic.emplace();
-        periodic->tolerance = 1e-8;
-        periodic->frames.translation[1].map() = cfg.translation1;
-        periodic->frames.translation[2].map() = cfg.translation2;
-        periodic->frames.translation[3].map() = cfg.translation3;
+        periodic.frames.translation[1].map() = cfg.translation1;
+        periodic.frames.translation[2].map() = cfg.translation2;
+        periodic.frames.translation[3].map() = cfg.translation3;
     }
-    auto state = ReadNativeCGNS(g_mpi, meshPath(cfg.file), cfg.dim, FBC_Name_2_ID_Default, 0, {1, true}, periodic);
+    AutoAppendName2ID names;
+    auto owned = ReadNativeCGNSOwned(g_mpi, meshPath(cfg.file), cfg.dim, [&](const std::string &name)
+                                     { return names(name); }, 0, {1, true}, periodic, NativeSerialDistribution::ReaderOwned);
     NativePartitionOptions options;
     options.metisType = "KWAY";
     options.metisUfactor = 30;
     options.metisSeed = 42;
     options.metisNcuts = 1;
-    state = NativeMeshPreparation::Partition(*state, g_mpi, options).state;
+    owned = NativeMeshPreparation::PartitionOwned(owned, g_mpi, options).owned;
+    const auto recipe = DefaultNativeMeshGhostSpec(owned, 1, true);
+    auto state = NativeMeshAssembler::Build(g_mpi, std::move(owned), recipe);
     return UnstructuredMesh::FromNative(g_mpi, std::move(state));
 }
 
@@ -205,11 +209,11 @@ int main(int argc, char **argv)
 // ===========================================================================
 // Mesh sanity checks (parameterized over all configs)
 // ===========================================================================
-TEST_CASE("Mesh setup: every cell-owning rank has locally dereferenceable node closure"){
+TEST_CASE("Mesh setup: every rank has cells and nodes"){
     FOR_EACH_MESH_CONFIG({
         CHECK(m->NumCell() >= 1);
         CHECK(m->NumNodeProc() >= 1);
-        CHECK(m->NumNode() >= 0);
+        CHECK(m->NumNode() >= 1);
         CHECK(m->NumNode() <= m->NumNodeProc());
         CHECK(m->Entities(EntityKind::Node).NumOwned() == m->NumNode());
         CHECK(m->Entities(EntityKind::Node).NumLocal() == m->NumNodeProc());
@@ -517,7 +521,7 @@ TEST_CASE("AdjPrimary: cell2cell local entries are valid or not-found"){
                     CHECK(other < totalCells);
     })}
 
-TEST_CASE("AdjPrimary: independently owned boundary has a locally dereferenceable adjacent cell"){
+TEST_CASE("AdjPrimary: bnd2cell owner cell is a local father cell"){
     FOR_EACH_MESH_CONFIG({
         auto access = m->AcquireRead(MeshReadRequirements::Primary());
         const auto view = access.HostView();
@@ -526,7 +530,7 @@ TEST_CASE("AdjPrimary: independently owned boundary has a locally dereferenceabl
         {
             const DNDS::index owner = view.BoundaryCells(boundary)[0];
             CHECK(owner >= 0);
-            CHECK(owner < view.NumCellProc());
+            CHECK(owner < view.NumCell());
         }
     })}
 

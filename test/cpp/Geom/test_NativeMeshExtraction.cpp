@@ -75,7 +75,7 @@ namespace
             bndIds.push_back({2000 + 13 * I(row)});
         input.ids.emplace(G::EntityKind::Node, Rows(nodeIds));
         input.ids.emplace(G::EntityKind::Bnd, Rows(bndIds));
-        return G::NativeMeshBuilder::Build(std::move(input));
+        return G::ConstructNativeMesh(std::move(input));
     }
     void CheckExtracted(const G::NativeMeshState &state, const std::string &sourceNamespace, int dimension, bool faces)
     {
@@ -135,7 +135,7 @@ TEST_CASE("Native boundary extraction compacts owner nodes and preserves ordered
     }
     auto source = Fixture(mpi, dimension);
     if (faces)
-        source = G::NativeMeshTopology::Build(*source, mpi);
+        source = G::PrepareNativeMeshTopology(*source, mpi);
     const auto sourceNamespace = source->MeshNamespace();
     auto extracted = G::NativeMeshExtraction::ExtractBoundary(*source, mpi);
     CHECK(source->NumGlobal(G::EntityKind::Node) == (dimension == 2 ? 7 : 11));
@@ -144,7 +144,7 @@ TEST_CASE("Native boundary extraction compacts owner nodes and preserves ordered
     CheckExtracted(*extracted.state, sourceNamespace, dimension, faces);
     if (dimension == 2)
     {
-        CHECK_THROWS(G::NativeMeshTopology::Build(*extracted.state, mpi));
+        CHECK_THROWS(G::PrepareNativeMeshTopology(*extracted.state, mpi));
         CHECK_THROWS(G::NativeMeshExtraction::ExtractBoundary(*extracted.state, mpi));
     }
     G::ReorderInput reorder;
@@ -203,7 +203,7 @@ TEST_CASE("Native boundary extraction retains periodic tangential images and rej
     };
     owned.cellNodesPbi = bits(*owned.relations[size_t(G::MeshRelation::CellNodes)]);
     owned.bndNodesPbi = bits(*owned.relations[size_t(G::MeshRelation::BoundaryNodes)]);
-    auto periodic = G::NativeMeshAssembler::Build(mpi, std::move(owned));
+    auto periodic = G::AssembleNativeMesh(mpi, std::move(owned));
     auto extracted = G::NativeMeshExtraction::ExtractBoundary(*periodic, mpi);
     CHECK(extracted.state->NumGlobal(G::EntityKind::Cell) == 2);
     CHECK(extracted.state->BorrowHostView().IsPeriodic());
@@ -220,7 +220,7 @@ TEST_CASE("Native boundary extraction retains periodic tangential images and rej
         }
     }
     inconsistent.bndInfo = std::move(metadata);
-    auto badZones = G::NativeMeshAssembler::Build(mpi, std::move(inconsistent));
+    auto badZones = G::AssembleNativeMesh(mpi, std::move(inconsistent));
     CHECK_THROWS(G::NativeMeshExtraction::ExtractBoundary(*badZones, mpi));
     CHECK_NOTHROW(G::NativeMeshExtraction::ExtractBoundary(*source, mpi));
 }

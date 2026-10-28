@@ -235,7 +235,7 @@ return a typed view instead of a raw `T*`.
 
 ### ArrayAdjacency
 
-**Source:** `DNDS/ArrayDerived/ArrayAdjacency.hpp`.
+**Source:** `DNDS/Legacy/ArrayDerived/ArrayAdjacency.hpp` (old include path forwards).
 
 Stores index connectivity (cell-to-node, cell-to-cell, etc.).
 `operator[](i)` returns an `AdjacencyRow` -- a lightweight span that
@@ -244,7 +244,7 @@ This is the workhorse for all mesh topology arrays.
 
 ### ArrayEigenVector
 
-**Source:** `DNDS/ArrayDerived/ArrayEigenVector.hpp`.
+**Source:** `DNDS/Legacy/ArrayDerived/ArrayEigenVector.hpp` (old include path forwards).
 
 Each row is an `Eigen::Vector<real, N>`.  `operator[](i)` returns
 `Eigen::Map<Vector>`, so Eigen operations work directly on the array's
@@ -252,7 +252,7 @@ memory.  Used for node coordinates (`ArrayEigenVectorPair<3>`).
 
 ### ArrayEigenMatrix
 
-**Source:** `DNDS/ArrayDerived/ArrayEigenMatrix.hpp`.
+**Source:** `DNDS/Legacy/ArrayDerived/ArrayEigenMatrix.hpp` (old include path forwards).
 
 Each row stores an `M x N` matrix.  The underlying `ParArray` row size
 is `M * N`.  `operator[](i)` returns `Eigen::Map<Matrix>`.  Used for
@@ -261,7 +261,7 @@ per-cell Jacobians, gradient matrices, and the DOF arrays (via
 
 ### ArrayEigenUniMatrixBatch
 
-**Source:** `DNDS/ArrayDerived/ArrayEigenUniMatrixBatch.hpp`.
+**Source:** `DNDS/Legacy/ArrayDerived/ArrayEigenUniMatrixBatch.hpp` (old include path forwards).
 
 A CSR array where each row stores a *batch* of identically-sized
 `M x N` matrices.  `RowSize(i)` returns the batch count (not the raw
@@ -272,7 +272,7 @@ basis function coefficients inside `FiniteVolume` and
 
 ## ArrayDof -- DOF Arrays with Vector-Space Operations
 
-**Source:** `DNDS/ArrayDOF.hpp`.
+**Source:** `DNDS/Legacy/ArrayDOF.hpp` (old include path forwards).
 
 ```cpp
 template <int n_m, int n_n>
@@ -283,7 +283,7 @@ class ArrayDof : public ArrayEigenMatrixPair<n_m, n_n>;
 the father/son/transformer machinery from `ArrayEigenMatrixPair` and adds
 **MPI-collective vector-space operations**: `norm2()`, `dot()`, `+=`,
 `addTo(R, alpha)` (AXPY), `setConstant()`.  These are implemented in
-`DNDS/ArrayDOF_op.hxx` with specializations for both CPU and CUDA
+`DNDS/Legacy/ArrayDOF_op.hxx` with specializations for both CPU and CUDA
 backends.
 
 ### CFV DOF Typedefs

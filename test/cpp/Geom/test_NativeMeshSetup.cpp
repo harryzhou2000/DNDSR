@@ -100,7 +100,7 @@ TEST_CASE("Archive helper repartition retains requested second ghost ring")
     partition.metisSeed = 13;
     auto second = G::ReadNativeMeshFromArchive(mpi, factory, base, true, partition, 2);
     auto owned = G::NativeMeshAssembler::CaptureOwned(*second->CurrentNativeState(), mpi);
-    auto first = G::UnstructuredMesh::FromNative(mpi, G::NativeMeshAssembler::Build(mpi, std::move(owned), 1));
+    auto first = G::UnstructuredMesh::FromNative(mpi, G::AssembleNativeMesh(mpi, std::move(owned), 1));
     REQUIRE(first->NumCell() == second->NumCell());
     for (I row = 0; row < second->NumCell(); ++row)
         CHECK(first->OriginalEntityId(G::EntityKind::Cell, row) == second->OriginalEntityId(G::EntityKind::Cell, row));

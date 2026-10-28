@@ -5,6 +5,35 @@
 
 namespace R = DNDS::Runtime;
 
+TEST_CASE("Known shape rows fill one final table or CSR and reject failed publication")
+{
+    for (bool table : {false, true})
+    {
+        size_t sizeCalls = 0, fillCalls = 0;
+        auto array = R::BuildArrayRows<int64_t>(257, [&](size_t row)
+                                                { ++sizeCalls; return table ? size_t(6) : row % 9; }, [&](size_t row, auto output)
+                                                {
+            ++fillCalls;
+            for (size_t slot = 0; slot < output.size(); ++slot)
+                output[slot] = int64_t(100 * row + slot); }, table ? std::optional<size_t>(6) : std::nullopt);
+        CHECK(sizeCalls == 257);
+        CHECK(fillCalls == 257);
+        CHECK(array.Layout().Kind() == (table ? R::RowLayoutKind::Table : R::RowLayoutKind::CSR));
+        auto read = array.Read();
+        for (size_t row = 0; row < read.View().Rows(); ++row)
+            for (size_t slot = 0; slot < read.View().RowSize(row); ++slot)
+                CHECK(read.View()(row, slot) == int64_t(100 * row + slot));
+    }
+    auto empty = R::BuildArrayRows<double>(0, [](size_t)
+                                           { return size_t(0); }, [](size_t, auto) {});
+    CHECK(empty.Rows() == 0);
+    CHECK_THROWS(R::BuildArrayRows<double>(3, [](size_t row)
+                                           { return row; }, [](size_t, auto) {}, 2));
+    CHECK_THROWS(R::BuildArrayRows<double>(3, [](size_t)
+                                           { return size_t(2); }, [](size_t, auto)
+                                           { DNDS_check_throw_info(false, "mock fill failure"); }));
+}
+
 TEST_CASE("Exclusive padded edits block sharing and retain value addresses across Commit")
 {
     R::Array<double> array(R::RowLayout::Padded({5, 0, 7, 2}, 12));

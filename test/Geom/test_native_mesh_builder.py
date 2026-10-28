@@ -79,6 +79,30 @@ def _variable_uniform(source, width, padded):
 
 
 @pytest.mark.mpi
+def test_explicit_setup_audits_and_checkpoint():
+    options = Geom.MeshAuditOptions()
+    assert options.persistent_identity and options.closure
+    options.persistent_identity = False
+    options.closure = False
+    mesh = Geom.build_native_mesh(**_input(), audit=options)
+    effective = Geom.native_mesh_audit_options(mesh)
+    assert not effective.persistent_identity and not effective.closure
+    # Checkpoint diagnostics do not change the selected repeated-setup policy.
+    Geom.audit_native_mesh(mesh)
+    prepared = Geom.with_native_topology(mesh)
+    effective = Geom.native_mesh_audit_options(prepared)
+    assert not effective.persistent_identity and not effective.closure
+    Geom.audit_native_mesh(prepared)
+    if MPI.COMM_WORLD.size > 1:
+        data = _input()
+        ids = R.Array(R.RowLayout.dense(1, 1), np.dtype(np.int64))
+        ids.assign(np.array([[17]], dtype=np.int64))
+        unchecked = Geom.build_native_mesh(**data, cell_ids=ids, audit=options)
+        with pytest.raises(RuntimeError):
+            Geom.audit_native_mesh(unchecked)
+
+
+@pytest.mark.mpi
 @pytest.mark.parametrize("complete", [False, True])
 def test_remote_node_star_and_owned_global_csr(complete):
     data = _input()
