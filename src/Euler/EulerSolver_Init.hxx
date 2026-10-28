@@ -62,7 +62,7 @@ namespace DNDS::Euler
                 invalid |= !std::isfinite(value);
                 selected = std::isfinite(value) && value != 0;
             }
-            for (auto iFace : mesh->cell2face[iCell])
+            for (auto iFace : mesh->CellFaces(iCell))
                 selected = selected || boundaryIDs.count(mesh->GetFaceZone(iFace)) != 0;
             reconstructionMask_[iCell](0) = selected ? 1.0 : 0.0;
             nSelected += selected;
@@ -159,6 +159,15 @@ namespace DNDS::Euler
             }
             return meshInput;
         };
+        Geom::PrepareMeshOptions prepOpts;
+        prepOpts.reorderCells = config.dataIOControl.meshReorderCells;
+#ifdef DNDS_USE_OMP
+        prepOpts.reorderParts = std::max(get_env_DNDS_DIST_OMP_NUM_THREADS(), 1);
+#else
+        prepOpts.reorderParts = 1;
+#endif
+        prepOpts.buildSerialOut = (config.dataIOControl.outPltMode == 0);
+        std::optional<Geom::NativeOwnedMeshData> ownedForPrepare;
         if (config.dataIOControl.readMeshMode == 0)
         {
             Geom::Periodicity frames;
@@ -185,37 +194,34 @@ namespace DNDS::Euler
                 frames, config.boundaryDefinition.periodicTolerance};
             auto nameMapper = [&](const std::string &name) -> Geom::t_index
             { return BCHandler.GetIDFromName(name); };
-            if (config.dataIOControl.meshFormat == 1)
-                mesh = Geom::ReadNativeMeshFromOpenFOAM(
-                    mpi, config.dataIOControl.meshFile,
-                    config.dataIOControl.meshPartitionOptions, config.bcNameMapping,
-                    nameMapper, periodic, config.dataIOControl.meshElevation,
-                    config.dataIOControl.meshDirectBisect, 0, true,
-                    {config.dataIOControl.meshAuditPersistentIdentity, config.dataIOControl.meshAuditClosure});
-            else
-                mesh = Geom::ReadNativeMeshFromCGNS(
-                    mpi, gDimLocal, config.dataIOControl.meshFile,
-                    config.dataIOControl.meshPartitionOptions, nameMapper,
-                    periodic, config.dataIOControl.meshElevation,
-                    config.dataIOControl.meshDirectBisect, 0, true,
-                    {config.dataIOControl.meshAuditPersistentIdentity, config.dataIOControl.meshAuditClosure});
+            const Geom::MeshAuditOptions audit{config.dataIOControl.meshAuditPersistentIdentity, config.dataIOControl.meshAuditClosure};
+            ownedForPrepare.emplace(config.dataIOControl.meshFormat == 1
+                                        ? Geom::ReadAndDeriveNativeMeshFromOpenFOAMOwned(
+                                              mpi, config.dataIOControl.meshFile, config.dataIOControl.meshPartitionOptions,
+                                              config.bcNameMapping, nameMapper, periodic, config.dataIOControl.meshElevation,
+                                              config.dataIOControl.meshDirectBisect, 0, audit)
+                                        : Geom::ReadAndDeriveNativeMeshFromCGNSOwned(
+                                              mpi, gDimLocal, config.dataIOControl.meshFile, config.dataIOControl.meshPartitionOptions,
+                                              nameMapper, periodic, config.dataIOControl.meshElevation,
+                                              config.dataIOControl.meshDirectBisect, 0, audit));
         }
         else
             mesh = Geom::ReadNativeMeshFromArchive(
                 mpi, Serializer::SerializerFactory(config.dataIOControl.meshPartitionedReaderType),
                 getPartitionedMeshInput(), config.dataIOControl.readMeshMode == 2,
                 config.dataIOControl.meshPartitionOptions);
-        reader->mesh = mesh;
         OMP::set_full_parallel_OMP();
+        if (ownedForPrepare)
         {
-            Geom::PrepareMeshOptions prepOpts;
-            prepOpts.reorderCells = config.dataIOControl.meshReorderCells;
-#ifdef DNDS_USE_OMP
-            prepOpts.reorderParts = std::max(get_env_DNDS_DIST_OMP_NUM_THREADS(), 1);
-#else
-            prepOpts.reorderParts = 1;
-#endif
-            prepOpts.buildSerialOut = (config.dataIOControl.outPltMode == 0);
+            auto prepared = Geom::PrepareNativeMeshForSolverOwned(std::move(*ownedForPrepare), mpi, prepOpts);
+            mesh = Geom::UnstructuredMesh::FromNative(mpi, std::move(prepared));
+            reader->mesh = mesh;
+            if (prepOpts.buildSerialOut)
+                reader->BuildSerialOut();
+        }
+        else
+        {
+            reader->mesh = mesh;
             Geom::PrepareMesh(*mesh, *reader, prepOpts);
         }
 

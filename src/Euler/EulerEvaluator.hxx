@@ -3685,12 +3685,10 @@ namespace DNDS::Euler
                             remainingPoint -= nq;
                         }
                     }
-                    index originalCell = mesh->cell2cellOrig.father && iCell < mesh->cell2cellOrig.father->Size()
-                                             ? mesh->cell2cellOrig(iCell, 0)
-                                             : UnInitIndex;
+                    index originalCell = this->mesh->OriginalEntityId(Geom::EntityKind::Cell, iCell);
                     std::ostringstream spatial;
                     spatial << std::scientific << std::setprecision(17)
-                            << "PP_REC_FAILURE_LOCATION rank=" << mesh->getMPI().rank
+                            << "PP_REC_FAILURE_LOCATION rank=" << this->mesh->getMPI().rank
                             << " localCell=" << iCell << " originalCell=" << originalCell
                             << " quadratureIndex=" << iG << " localFace=" << failedFace
                             << " faceQuadratureIndex=" << failedFacePoint

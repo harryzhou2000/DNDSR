@@ -835,6 +835,7 @@ TEST_CASE("EulerSolver static reconstruction mask survives limiter paths and tim
         for (DNDS::index i = 0; i < solver.getMesh()->NumCell(); ++i)
             CHECK(std::get<1>(field[0])(i) == 1);
     }
+}
 
 static std::vector<double> OutputDataset(const std::string &fileName, const char *datasetName)
 {

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Geom/Metis.hpp"
+#include "Geom/Connectivity/MeshRelationTypes.hpp"
 #include "DNDS/MPI.hpp"
 
 namespace DNDS::Geom
@@ -9,6 +10,21 @@ namespace DNDS::Geom
     class EntitySpace;
     struct NativeOwnedMeshData;
     struct NativePartitionOptions;
+
+    /// Private setup descriptor for exact face-neighbor cell rows. Partition
+    /// construction computes these rows for METIS; retaining them across the
+    /// owned transition avoids rebuilding the same closure for local reorder.
+    inline AdjKind NativeSetupFacialCellNeighborsKey()
+    {
+        auto key = Adj::Cell2Cell;
+        key.path = {EntityKind::Cell, EntityKind::Cell};
+        key.selection = RelationSelection::Exact;
+        key.order = RelationOrder::SortedUnique;
+        key.periodic = RelationPeriodicPolicy::EntityIdentity;
+        key.semanticName = "geom.setup.exact-facial-neighbors";
+        key.semanticVersion = 1;
+        return key;
+    }
     namespace detail
     {
         /// Setup scratch passed directly to METIS/ParMETIS: owned CSR rows,

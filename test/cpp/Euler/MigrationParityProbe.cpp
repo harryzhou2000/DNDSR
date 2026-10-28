@@ -95,12 +95,14 @@ namespace
             return;
         }
         auto mesh = solver.getMesh();
+#if DNDS_MIGRATION_NATIVE
         const auto audit = mesh->CurrentNativeState()->AuditOptions();
         output["mesh_audit"] = {{"persistent_identity", audit.persistentIdentity}, {"closure", audit.closure}};
         // Validate a trusted construction at a checkpoint outside its setup
         // timing; audit omission must not hide a changed physical mesh.
         output["timings"]["checkpoint_audit_seconds"] = Timed(mpi, [&]
                                                               { mesh->CurrentNativeState()->Audit(); });
+#endif
         auto fv = solver.getVFV();
         auto &eval = solver.getEval();
         auto &u = solver.getU();
@@ -109,10 +111,11 @@ namespace
         auto &source = solver.getJSource();
         auto &beta = solver.getBetaPP();
         auto &config = solver.getConfiguration();
-        ArrayDOFV<width> rhs, increment, incrementNew;
+        ArrayDOFV<width> rhs, rhsNoSource, increment, incrementNew;
         ArrayDOFV<1> dt, alpha;
         JacobianDiagBlock<width> diagonal;
         fv->BuildUDof(rhs, variables);
+        fv->BuildUDof(rhsNoSource, variables);
         fv->BuildUDof(increment, variables);
         fv->BuildUDof(incrementNew, variables);
         fv->BuildUDof(dt, 1);
@@ -168,6 +171,17 @@ namespace
             times["minimum_dt_bits"] = Bits(minimumDt);
             output["timings"]["repeats"].push_back(std::move(times));
         }
+
+        // Separate the cell source contribution from the accumulated face
+        // fluxes. This diagnostic runs after the timing loop and does not
+        // change the setup/evaluator observations above.
+        const bool savedIgnoreSource = eval.settings.ignoreSourceTerm;
+        eval.settings.ignoreSourceTerm = true;
+        eval.EvaluateRHS(rhsNoSource, source, u, rec, rec, beta, alpha, false, 0.0,
+                         Eval::RHS_Dont_Update_Integration | Eval::RHS_Dont_Record_Bud_Flux);
+        rhsNoSource.trans.startPersistentPull();
+        rhsNoSource.trans.waitPersistentPull();
+        eval.settings.ignoreSourceTerm = savedIgnoreSource;
 
         // Scope the native lease to dumping; an optional advance may mutate mesh
         // or rebuild caches and must not inherit a retained read from this probe.
@@ -239,16 +253,22 @@ namespace
                     output["cells"].back()["pbi"] = periodicBits(view.cell2nodePbi[cell]);
                 if (cell >= view.NumCell())
                     continue;
-                output["state"].push_back({{"id", original(Kind::Cell, cell)}, {"u_bits", MatrixBits(u[cell])}, {"rec_bits", MatrixBits(rec[cell])}, {"dt_bits", Bits(dt[cell](0))}, {"rhs_bits", MatrixBits(rhs[cell])}, {"inc_bits", MatrixBits(increment[cell])}, {"vol_bits", Bits(fv->GetCellVol(cell))}, {"bary_bits", MatrixBits(fv->GetCellBary(cell))}});
+                Json stateValue{{"id", original(Kind::Cell, cell)}, {"u_bits", MatrixBits(u[cell])}, {"rec_bits", MatrixBits(rec[cell])}, {"dt_bits", Bits(dt[cell](0))}, {"rhs_bits", MatrixBits(rhs[cell])}, {"rhs_no_source_bits", MatrixBits(rhsNoSource[cell])}, {"inc_bits", MatrixBits(increment[cell])}, {"vol_bits", Bits(fv->GetCellVol(cell))}, {"bary_bits", MatrixBits(fv->GetCellBary(cell))}};
+                if (size_t(cell) < eval.dWall.size())
+                    stateValue["dwall_bits"] = MatrixBits(eval.dWall[size_t(cell)]);
+                output["state"].push_back(std::move(stateValue));
             }
             for (Index face = 0; face < view.NumFaceProc(); ++face)
             {
-                output["faces"].push_back({{"owned", face < view.NumFace()},
-                                           {"nodes", ids(view.face2node[face], Kind::Node)},
-                                           {"cells", ids(view.face2cell[face], Kind::Cell)},
-                                           {"zone", view.GetFaceZone(face)},
-                                           {"area_bits", Bits(fv->GetFaceArea(face))},
-                                           {"normal_bits", MatrixBits(fv->GetFaceNorm(face, -1))}});
+                Json faceValue{{"owned", face < view.NumFace()},
+                               {"nodes", ids(view.face2node[face], Kind::Node)},
+                               {"cells", ids(view.face2cell[face], Kind::Cell)},
+                               {"zone", view.GetFaceZone(face)},
+                               {"area_bits", Bits(fv->GetFaceArea(face))},
+                               {"normal_bits", MatrixBits(fv->GetFaceNorm(face, -1))}};
+                if (size_t(face) < eval.dWallFace.size())
+                    faceValue["dwallface_bits"] = Bits(eval.dWallFace[size_t(face)]);
+                output["faces"].push_back(std::move(faceValue));
                 if (view.isPeriodic)
                     output["faces"].back()["pbi"] = periodicBits(view.face2nodePbi[face]);
             }
