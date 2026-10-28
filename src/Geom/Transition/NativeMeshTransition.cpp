@@ -433,10 +433,12 @@ namespace DNDS::Geom
                 DNDS_check_throw_info(found != original.end(), "native follow relation is unavailable");
                 relation.emplace(found->first, oldSpaces.at(follow.follower), oldSpaces.at(follow.leader), found->second.state,
                                  found->second.rows.owned, &found->second.rows.ghost);
-                std::set<index> globals;
+                std::vector<index> globals;
                 for (index row = 0; row < relation->NumOwned(); ++row)
-                    for (auto value : relation->GlobalRow(row)) if (value != UnInitIndex) globals.insert(value);
-                requested.assign(globals.begin(), globals.end());
+                    for (auto value : relation->GlobalRow(row)) if (value != UnInitIndex) globals.push_back(value);
+                std::sort(globals.begin(), globals.end());
+                globals.erase(std::unique(globals.begin(), globals.end()), globals.end());
+                requested = globals;
                 const auto &leader = oldSpaces.at(follow.leader);
                 for (size_t row = 0; row < requested.size(); ++row)
                     requests.push_back({leader.Owner(requested[row]), leader.OwnerLocalRow(requested[row]), row}); });
@@ -451,13 +453,21 @@ namespace DNDS::Geom
             FieldTransferDetail::LocalStage(mpi, [&]
                                             {
                 auto read = received.Read();
-                std::map<index, MPI_int> targets;
-                for (size_t i = 0; i < requested.size(); ++i) targets.emplace(requested[i], MPI_int(read.View()(i, 0)));
+                std::vector<MPI_int> targets(requested.size());
+                for (size_t i = 0; i < requested.size(); ++i)
+                    targets[i] = MPI_int(read.View()(i, 0));
                 std::vector<MPI_int> assignment(size_t(relation->NumOwned()), mpi.rank);
                 for (index row = 0; row < relation->NumOwned(); ++row)
                 {
                     int target = mpi.size;
-                    for (auto global : relation->GlobalRow(row)) if (global != UnInitIndex) target = std::min(target, int(targets.at(global)));
+                    for (auto global : relation->GlobalRow(row))
+                        if (global != UnInitIndex)
+                        {
+                            const auto found = std::lower_bound(requested.begin(), requested.end(), global);
+                            DNDS_check_throw_info(found != requested.end() && *found == global,
+                                                  "native follow target fetch lost a leader row");
+                            target = std::min(target, int(targets[size_t(found - requested.begin())]));
+                        }
                     if (target < mpi.size) assignment[size_t(row)] = target;
                 }
                 placements.emplace(follow.follower, std::move(assignment)); });
@@ -495,7 +505,7 @@ namespace DNDS::Geom
                               reinterpret_cast<uintptr_t>(values.rows.ghost.SharedStorage().get()),
                               key.from, key.to, values.state};
         };
-        std::map<EntityKind, std::map<index, index>> remap;
+        std::map<EntityKind, std::vector<std::pair<index, index>>> remap;
         for (const auto &[kind, old] : oldSpaces)
         {
             // Only Cell numbering changes during a local cell permutation.
@@ -507,7 +517,7 @@ namespace DNDS::Geom
             std::vector<Runtime::RowRequest> requests;
             FieldTransferDetail::LocalStage(mpi, [&]
                                             {
-                std::set<index> referenced;
+                std::vector<index> referenced;
                 std::set<PayloadKey> scanned;
                 for (const auto &[key, values] : original) if (key.to == kind)
                 {
@@ -519,15 +529,17 @@ namespace DNDS::Geom
                         for (size_t slot = 0; slot < read.RowSize(row); ++slot)
                         {
                             const auto global = read.ConvertedIndex(row, slot, Adj_PointToGlobal);
-                            if (global != UnInitIndex) referenced.insert(global);
+                            if (global != UnInitIndex) referenced.push_back(global);
                         }
                 }
+                std::sort(referenced.begin(), referenced.end());
+                referenced.erase(std::unique(referenced.begin(), referenced.end()), referenced.end());
                 const auto first = (*old._global)(mpi.rank, 0);
                 const auto &newGlobals = allTransfers.at(kind).newGlobalIndices;
                 for (auto global : referenced)
                 {
                     if (global >= first && global - first < old.NumOwned())
-                        remap[kind].emplace(global, newGlobals[size_t(global - first)]);
+                        remap[kind].emplace_back(global, newGlobals[size_t(global - first)]);
                     else
                     {
                         requests.push_back({old.Owner(global), old.OwnerLocalRow(global), globals.size()});
@@ -544,7 +556,12 @@ namespace DNDS::Geom
             auto received = Move(values, route, Runtime::ElementSchema::Arithmetic<index>(), mpi, false);
             auto read = received.Read();
             for (size_t i = 0; i < globals.size(); ++i)
-                remap[kind].emplace(globals[i], read.View()(i, 0));
+                remap[kind].emplace_back(globals[i], read.View()(i, 0));
+            std::sort(remap[kind].begin(), remap[kind].end());
+            DNDS_check_throw_info(std::adjacent_find(remap[kind].begin(), remap[kind].end(),
+                                                     [](const auto &lhs, const auto &rhs)
+                                                     { return lhs.first == rhs.first; }) == remap[kind].end(),
+                                  "native transition remap contains duplicate globals");
         }
         std::map<AdjKind, RArray> movedRelations;
         using MoveKey = std::pair<PayloadKey, bool>;
@@ -582,8 +599,18 @@ namespace DNDS::Geom
                         for (size_t slot = 0; slot < output.size(); ++slot)
                         {
                             const auto entry = read->ConvertedIndex(index(row), slot, Adj_PointToGlobal);
-                            output[slot] = entry == UnInitIndex || (cellOld2New && key.to != EntityKind::Cell)
-                                               ? entry : remap.at(key.to).at(entry);
+                            if (entry == UnInitIndex || (cellOld2New && key.to != EntityKind::Cell))
+                                output[slot] = entry;
+                            else
+                            {
+                                const auto &mapping = remap.at(key.to);
+                                const auto found = std::lower_bound(mapping.begin(), mapping.end(), entry,
+                                                                    [](const auto &value, index target)
+                                                                    { return value.first < target; });
+                                DNDS_check_throw_info(found != mapping.end() && found->first == entry,
+                                                      "native transition remap is incomplete");
+                                output[slot] = found->second;
+                            }
                         }
                         if (key.order == RelationOrder::SortedUnique && output.size() > 1) std::sort(output.begin(), output.end()); })); });
             auto moved = cellOld2New && key.from != EntityKind::Cell

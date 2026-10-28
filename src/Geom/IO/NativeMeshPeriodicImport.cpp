@@ -2,8 +2,6 @@
 #include "DNDS/Runtime/RowBuilder.hpp"
 #include "Geom/PointCloud.hpp"
 #include <nanoflann.hpp>
-#include <set>
-#include <map>
 #include <queue>
 
 namespace DNDS::Geom
@@ -53,14 +51,19 @@ namespace DNDS::Geom
         if (!hasPeriodicLabels)
             return source;
         std::vector<tPoint> points(source.coordinates.Rows());
-        std::set<index> uniqueIds;
+        std::vector<index> persistedIds;
+        persistedIds.reserve(points.size());
         for (size_t node = 0; node < points.size(); ++node)
         {
             DNDS_check_throw_info(coords.View().RowSize(node) == 3 && nodeIds.View().RowSize(node) == 1, "invalid serial periodic node data shape");
             points[node] = tPoint{coords.View()(node, 0), coords.View()(node, 1), coords.View()(node, 2)};
             const auto id = nodeIds.View()(node, 0);
-            DNDS_check_throw_info(points[node].allFinite() && id >= 0 && id < INT64_MAX && uniqueIds.insert(id).second, "invalid serial periodic point or persistent ID");
+            DNDS_check_throw_info(points[node].allFinite() && id >= 0 && id < INT64_MAX, "invalid serial periodic point or persistent ID");
+            persistedIds.push_back(id);
         }
+        std::sort(persistedIds.begin(), persistedIds.end());
+        DNDS_check_throw_info(std::adjacent_find(persistedIds.begin(), persistedIds.end()) == persistedIds.end(),
+                              "serial periodic persistent IDs are duplicated");
         std::array<PointCloudKDTree, 3> donors;
         std::array<std::vector<index>, 3> donorRows, mainRows;
         auto cone = [&](size_t row)
@@ -102,8 +105,11 @@ namespace DNDS::Geom
         }
         bool periodic = false;
         std::vector<std::vector<std::pair<index, uint8_t>>> graph(points.size());
-        std::array<std::map<index, index>, 3> donorToMain;
-        std::array<std::map<index, index>, 3> mainToDonor;
+        std::array<std::vector<index>, 3> donorToMain, mainToDonor;
+        for (auto &mapping : donorToMain)
+            mapping.assign(points.size(), UnInitIndex);
+        for (auto &mapping : mainToDonor)
+            mapping.assign(points.size(), UnInitIndex);
         using Tree = nanoflann::KDTreeSingleIndexAdaptor<nanoflann::L2_Simple_Adaptor<real, PointCloudKDTree>, PointCloudKDTree, 3, index>;
         const real squaredTolerance = tolerance * tolerance;
         for (size_t group = 0; group < 3; ++group)
@@ -113,7 +119,7 @@ namespace DNDS::Geom
                 continue;
             periodic = true;
             Tree tree(3, donors[group]);
-            std::set<index> used;
+            std::vector<uint8_t> used(donorRows[group].size(), 0);
             for (auto main : mainRows[group])
             {
                 const auto zone = t_index(-1 - int(group));
@@ -124,10 +130,12 @@ namespace DNDS::Geom
                 DNDS_check_throw_info(count && distances[0] <= squaredTolerance && (count < 2 || distances[1] > squaredTolerance),
                                       "periodic boundary center pairing is missing or ambiguous");
                 const auto donor = donorRows[group].at(size_t(indices[0]));
-                DNDS_check_throw_info(used.insert(donor).second && boundaryInfo.View()(size_t(main), 0).type == boundaryInfo.View()(size_t(donor), 0).type,
+                DNDS_check_throw_info(!used[size_t(indices[0])] && boundaryInfo.View()(size_t(main), 0).type == boundaryInfo.View()(size_t(donor), 0).type,
                                       "periodic face pairing is not a one-to-one equal-type mapping");
+                used[size_t(indices[0])] = 1;
                 const auto mainNodes = cone(size_t(main)), donorNodes = cone(size_t(donor));
-                std::set<index> usedNodes;
+                std::vector<index> usedNodes;
+                usedNodes.reserve(donorNodes.size());
                 for (auto node : mainNodes)
                 {
                     const tPoint transformed = frames.TransCoord(points[size_t(node)], zone);
@@ -138,19 +146,27 @@ namespace DNDS::Geom
                             DNDS_check_throw_info(match == UnInitIndex, "periodic face node pairing is ambiguous");
                             match = candidate;
                         }
-                    DNDS_check_throw_info(match != UnInitIndex && usedNodes.insert(match).second, "periodic face node pairing is missing or nonbijective");
+                    DNDS_check_throw_info(match != UnInitIndex && std::find(usedNodes.begin(), usedNodes.end(), match) == usedNodes.end(),
+                                          "periodic face node pairing is missing or nonbijective");
+                    usedNodes.push_back(match);
                     DNDS_check_throw_info(match != node, "periodic main/donor share an original node; fixed-point image labels require an explicit occurrence policy");
-                    auto [entry, inserted] = donorToMain[group].emplace(match, node);
-                    DNDS_check_throw_info(inserted || entry->second == node, "periodic donor node maps to inconsistent main nodes");
-                    auto [mainEntry, mainInserted] = mainToDonor[group].emplace(node, match);
-                    DNDS_check_throw_info(mainInserted || mainEntry->second == match, "periodic main node maps to inconsistent donor nodes");
+                    auto &donorMain = donorToMain[group][size_t(match)];
+                    auto &mainDonor = mainToDonor[group][size_t(node)];
+                    DNDS_check_throw_info((donorMain == UnInitIndex || donorMain == node) &&
+                                              (mainDonor == UnInitIndex || mainDonor == match),
+                                          "periodic boundary node maps are inconsistent");
+                    const bool firstMapping = donorMain == UnInitIndex;
+                    DNDS_check_throw_info(firstMapping == (mainDonor == UnInitIndex),
+                                          "periodic boundary node maps have mismatched insertion state");
+                    donorMain = node;
+                    mainDonor = match;
+                    if (firstMapping)
+                    {
+                        const auto mask = uint8_t(1U << group);
+                        graph[size_t(node)].emplace_back(match, mask);
+                        graph[size_t(match)].emplace_back(node, mask);
+                    }
                 }
-            }
-            const auto mask = uint8_t(1U << group);
-            for (const auto &[donor, main] : donorToMain[group])
-            {
-                graph[size_t(main)].emplace_back(donor, mask);
-                graph[size_t(donor)].emplace_back(main, mask);
             }
         }
         if (!periodic)
@@ -177,17 +193,20 @@ namespace DNDS::Geom
                         DNDS_check_throw_info(labels[size_t(other)] == expected, "inconsistent periodic image cycle");
                 }
             std::sort(component.begin(), component.end());
-            std::set<uint8_t> images;
+            uint8_t images = 0;
             for (auto node : component)
-                DNDS_check_throw_info(images.insert(labels[size_t(node)]).second,
-                                      "periodic component has multiple original nodes in the same image");
+            {
+                const auto bit = uint8_t(1U << labels[size_t(node)]);
+                DNDS_check_throw_info(!(images & bit), "periodic component has multiple original nodes in the same image");
+                images |= bit;
+            }
             DNDS_check_throw_info(component.size() <= 8, "periodic component exceeds the three-bit image model");
             index root = UnInitIndex;
             for (auto candidate : component)
             {
                 bool donor = false;
                 for (const auto &mapping : donorToMain)
-                    donor |= mapping.count(candidate) != 0;
+                    donor |= mapping[size_t(candidate)] != UnInitIndex;
                 if (donor)
                     continue;
                 bool valid = true;

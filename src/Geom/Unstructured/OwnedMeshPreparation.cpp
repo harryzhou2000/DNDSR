@@ -5,7 +5,6 @@
 #include "Geom/Connectivity/ConnectivityInterpolateRows.hpp"
 #include "Geom/Transition/FieldTransfer.hpp"
 #include <cmath>
-#include <map>
 
 namespace DNDS::Geom::detail
 {
@@ -42,7 +41,7 @@ namespace DNDS::Geom::detail
             auto rows = ConnectivityRows::EnumerateSubEntities(
                 [&](index cell, int slot) { return cone.ConvertedIndex(cell, size_t(slot), Adj_PointToLocal, false); },
                 query, cone.Rows(), cone.Target().NumLocal());
-            std::vector<std::map<index, real>> neighbors(size_t(cone.NumOwned()));
+            std::vector<std::vector<NativeNeighborWeight>> neighbors(size_t(cone.NumOwned()));
             for (size_t entity = 0; entity < rows.entity2parent.size(); ++entity)
             {
                 const auto &parents = rows.entity2parent[entity];
@@ -79,13 +78,13 @@ namespace DNDS::Geom::detail
                     if (parents[side] < cone.NumOwned())
                     {
                         const auto target = cone.Source().LocalToGlobal(parents[1 - side]);
-                        auto [entry, inserted] = neighbors[size_t(parents[side])].emplace(target, diameter);
-                        if (!inserted) entry->second = std::max(entry->second, diameter);
+                        neighbors[size_t(parents[side])].emplace_back(target, diameter);
                     }
             }
             graph.offsets.push_back(0);
-            for (const auto &row : neighbors)
+            for (auto &row : neighbors)
             {
+                CompactAdjacencyRow(row);
                 for (const auto &[target, diameter] : row)
                 {
                     graph.adjacency.push_back(METIS::indexToIdx(target));

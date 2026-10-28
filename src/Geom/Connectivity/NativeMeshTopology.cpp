@@ -120,11 +120,11 @@ namespace DNDS::Geom
             std::vector<index> globals;
             FieldTransferDetail::LocalStage(mpi, [&]
                                             {
-                std::set<index> unique;
                 auto read = cone.Read();
                 for (size_t row = 0; row < cone.Rows(); ++row)
-                    for (index global : read.View()[row]) unique.insert(global);
-                globals.assign(unique.begin(), unique.end()); });
+                    for (index global : read.View()[row]) globals.push_back(global);
+                std::sort(globals.begin(), globals.end());
+                globals.erase(std::unique(globals.begin(), globals.end()), globals.end()); });
             auto fetched = Fetch(mpi, nodes, nodeIds, globals);
             std::vector<std::vector<index>> keys;
             FieldTransferDetail::LocalStage(mpi, [&]
@@ -133,16 +133,20 @@ namespace DNDS::Geom
                 auto info = information.Read();
                 std::optional<R::Array<NodePeriodicBits>::ReadLease> bits;
                 if (periodic) bits.emplace(periodic->Read());
-                std::map<index, index> idByGlobal;
-                for (size_t row = 0; row < globals.size(); ++row)
-                    idByGlobal.emplace(globals[row], ids.View()(row, 0));
                 DNDS_check_throw_info(information.Rows() == cone.Rows(), "native topology identity information extent mismatch");
                 keys.resize(cone.Rows());
                 for (size_t row = 0; row < keys.size(); ++row)
                 {
                     NativePeriodicNodes pattern;
                     for (size_t slot = 0; slot < rows.View().RowSize(row); ++slot)
-                        pattern.emplace_back(idByGlobal.at(rows.View()(row, slot)), bits ? uint8_t(bits->View()(row, slot)) : 0);
+                    {
+                        const auto global = rows.View()(row, slot);
+                        const auto found = std::lower_bound(globals.begin(), globals.end(), global);
+                        DNDS_check_throw_info(found != globals.end() && *found == global,
+                                              "native topology identity fetch lost a node row");
+                        pattern.emplace_back(ids.View()(size_t(found - globals.begin()), 0),
+                                             bits ? uint8_t(bits->View()(row, slot)) : 0);
+                    }
                     // Same full-node/image equivalence as NativePeriodicFrame:
                     // orientation may change, and a uniform XOR frame is free.
                     keys[row] = CanonicalRoleKey(Elem::Element{info.View()(row, 0).getElemType()}, pattern, bool(periodic));
@@ -293,27 +297,34 @@ namespace DNDS::Geom
             std::vector<index> globals;
             FieldTransferDetail::LocalStage(mpi, [&]
                                             {
-                std::set<index> unique;
                 auto read = values.Read();
                 for (size_t row = 0; row < values.Rows(); ++row)
-                    for (auto global : read.View()[row]) if (global != UnInitIndex) unique.insert(global);
-                globals.assign(unique.begin(), unique.end()); });
+                    for (auto global : read.View()[row]) if (global != UnInitIndex) globals.push_back(global);
+                std::sort(globals.begin(), globals.end());
+                globals.erase(std::unique(globals.begin(), globals.end()), globals.end()); });
             auto fetched = Fetch(mpi, mapping.oldSpace, mapping.oldToNew, globals);
             std::vector<std::vector<index>> rows;
             FieldTransferDetail::LocalStage(mpi, [&]
                                             {
-                std::map<index, index> targets;
                 auto read = fetched.Read();
-                for (size_t row = 0; row < globals.size(); ++row)
-                {
-                    DNDS_check_throw_info(read.View()(row, 0) != UnInitIndex, "named relation references a removed topology key");
-                    targets.emplace(globals[row], read.View()(row, 0));
-                }
                 auto original = values.Read();
                 rows.resize(values.Rows());
                 for (size_t row = 0; row < rows.size(); ++row)
                 {
-                    for (auto global : original.View()[row]) rows[row].push_back(global == UnInitIndex ? global : targets.at(global));
+                    for (auto global : original.View()[row])
+                    {
+                        if (global == UnInitIndex)
+                        {
+                            rows[row].push_back(global);
+                            continue;
+                        }
+                        const auto found = std::lower_bound(globals.begin(), globals.end(), global);
+                        DNDS_check_throw_info(found != globals.end() && *found == global,
+                                              "named relation target fetch lost a topology row");
+                        const auto target = read.View()(size_t(found - globals.begin()), 0);
+                        DNDS_check_throw_info(target != UnInitIndex, "named relation references a removed topology key");
+                        rows[row].push_back(target);
+                    }
                     if (sortedUnique)
                     {
                         std::sort(rows[row].begin(), rows[row].end());
@@ -568,11 +579,11 @@ namespace DNDS::Geom
             std::vector<index> remote;
             FieldTransferDetail::LocalStage(mpi, [&]
                                             {
-                std::set<index> unique;
                 for (index cell = 0; cell < parentFaces.NumOwned(); ++cell)
                     for (auto face : parentFaces.GlobalRow(cell))
-                        if (faces.entities.Owner(face) != mpi.rank) unique.insert(face);
-                remote.assign(unique.begin(), unique.end()); });
+                        if (faces.entities.Owner(face) != mpi.rank) remote.push_back(face);
+                std::sort(remote.begin(), remote.end());
+                remote.erase(std::unique(remote.begin(), remote.end()), remote.end()); });
             auto closure = faces.entities.WithGhosts(std::move(remote));
             NativeRelation physicalRelation(Adj::Face2Cell, closure, cells, physical);
             RelationGhostRoute faceRoute(closure);

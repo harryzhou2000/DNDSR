@@ -1,7 +1,6 @@
 #include "Geom/Unstructured/NativeMeshBuilder.hpp"
 #include "Geom/Connectivity/NativePeriodicMatch.hpp"
 #include "Geom/Connectivity/NativeConnectivity.hpp"
-#include <set>
 
 namespace DNDS::Geom
 {
@@ -85,6 +84,7 @@ namespace DNDS::Geom
                 CheckRows(*periodic, source.NumOwned());
                 bits.emplace(periodic->Read());
             }
+            std::vector<std::pair<index, uint8_t>> seen;
             for (size_t row = 0; row < entries.View().Rows(); ++row)
             {
                 const auto elementInfo = elements.View()(row, 0);
@@ -97,14 +97,19 @@ namespace DNDS::Geom
                 DNDS_check_throw_info(!boundary || FaceIDIsExternalBC(elementInfo.zone) || (periodic && FaceIDIsPeriodic(elementInfo.zone)),
                                       "native boundary requires an external or periodic zone");
                 DNDS_check_throw_info(!bits || bits->View().RowSize(row) == entries.View().RowSize(row), "periodic cone slots differ from node slots");
-                std::set<std::pair<index, uint8_t>> unique;
+                seen.clear();
+                seen.reserve(entries.View().RowSize(row));
                 for (size_t slot = 0; slot < entries.View().RowSize(row); ++slot)
                 {
                     const auto node = entries.View()(row, slot);
                     const auto frame = bits ? uint8_t(bits->View()(row, slot)) : uint8_t(0);
-                    DNDS_check_throw_info(node >= 0 && node < nodes.NumGlobal() && frame < 8 && unique.emplace(node, frame).second,
-                                          "native input node/image is invalid or repeated in an ordered cone");
+                    DNDS_check_throw_info(node >= 0 && node < nodes.NumGlobal() && frame < 8,
+                                          "native input node/image is invalid in an ordered cone");
+                    seen.emplace_back(node, frame);
                 }
+                std::sort(seen.begin(), seen.end());
+                DNDS_check_throw_info(std::adjacent_find(seen.begin(), seen.end()) == seen.end(),
+                                      "native input node/image is repeated in an ordered cone");
             }
         }
 
@@ -288,16 +293,19 @@ namespace DNDS::Geom
 
         std::vector<index> ReferencedGhostNodes(const NativeMeshInput &input)
         {
-            std::set<index> ghosts;
+            std::vector<index> ghosts;
             for (const auto *array : {&input.cellNodes, &input.boundaryNodes})
             {
                 auto read = array->Read();
+                ghosts.reserve(ghosts.size() + read.View().Rows() * 2);
                 for (size_t row = 0; row < read.View().Rows(); ++row)
                     for (auto global : read.View()[row])
                         if (input.nodes.Owner(global) != input.mpi.rank)
-                            ghosts.insert(global);
+                            ghosts.push_back(global);
             }
-            return {ghosts.begin(), ghosts.end()};
+            std::sort(ghosts.begin(), ghosts.end());
+            ghosts.erase(std::unique(ghosts.begin(), ghosts.end()), ghosts.end());
+            return ghosts;
         }
 
         Runtime::Array<index> PadBoundaryCells(const RelationReadAccess &relation,
@@ -366,12 +374,21 @@ namespace DNDS::Geom
                 const auto &space = kind == EntityKind::Cell ? input.cells : kind == EntityKind::Node ? input.nodes : input.boundaries;
                 CheckRows(ids, space.NumOwned(), 1);
                 auto read = ids.Read();
-                std::set<index> unique;
+                std::vector<index> listed;
+                if (audit.persistentIdentity)
+                    listed.reserve(ids.Rows());
                 for (size_t row = 0; row < ids.Rows(); ++row)
                 {
                     const auto id = read.View()(row, 0);
-                    DNDS_check_throw_info(id >= 0 && id != UnInitIndex && (!audit.persistentIdentity || unique.insert(id).second),
-                                          "native input IDs are invalid or locally duplicated");
+                    DNDS_check_throw_info(id >= 0 && id != UnInitIndex, "native input ID is invalid");
+                    if (audit.persistentIdentity)
+                        listed.push_back(id);
+                }
+                if (audit.persistentIdentity)
+                {
+                    std::sort(listed.begin(), listed.end());
+                    DNDS_check_throw_info(std::adjacent_find(listed.begin(), listed.end()) == listed.end(),
+                                          "native input IDs are locally duplicated");
                 }
             }
             return true; });
