@@ -243,6 +243,11 @@ the corresponding executable and regenerate the schema with `--emit-schema`.
 
 Tests use **pytest** with **pytest-mpi** and **pytest-timeout**. Test files live under `test/`. A default 120-second timeout is configured in `pyproject.toml` to prevent hung MPI tests from blocking CI.
 
+MPI-marked Python tests require `--with-mpi`, including when pytest is launched
+under `mpirun`. Multiple processes alone do not enable those tests. Inspect
+skip reasons (`-rs`) before crediting MPI coverage; rank-count-specific skips
+can still be expected at np=1.
+
 ```bash
 # Run all tests
 pytest test/
@@ -254,7 +259,7 @@ pytest test/DNDS/test_basic.py
 pytest test/DNDS/test_basic.py::test_all_reduce_scalar
 
 # Run with MPI (multiple ranks)
-mpirun -np 4 python -m pytest test/DNDS/test_basic.py
+mpirun -np 4 python -m pytest --with-mpi test/DNDS/test_basic.py
 
 # Run a test file as a script (some tests support this)
 python test/DNDS/test_basic.py
