@@ -1136,8 +1136,17 @@ namespace DNDS::Geom
                 {
                     auto input = source.Read();
                     auto destination = output.Write();
-                    for (size_t row = 0; row < input.View().Rows(); ++row)
-                        std::copy_n(input.View().Row(row), input.View().RowSize(row), destination.View().Row(row));
+                    const auto &layout = input.Layout();
+                    if (!layout.IsVariable() && layout.Width() == layout.Stride())
+                    {
+                        const auto elements = layout.Elements();
+                        DNDS_check_throw_info(destination.Layout().Elements() == elements,
+                                              "native serial dense-to-ragged copy extent mismatch");
+                        std::copy_n(input.View().data, elements, destination.View().data);
+                    }
+                    else
+                        for (size_t row = 0; row < input.View().Rows(); ++row)
+                            std::copy_n(input.View().Row(row), input.View().RowSize(row), destination.View().Row(row));
                 }
                 return output;
             };

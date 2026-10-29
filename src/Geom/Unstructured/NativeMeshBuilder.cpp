@@ -438,8 +438,15 @@ namespace DNDS::Geom
         if (anyNodeGhost)
         {
             RelationGhostRoute initialNodeRoute(nodes);
-            nodeCells = nodeCells.WithGhostRows(initialNodeRoute);
-            nodeBoundaries = nodeBoundaries.WithGhostRows(initialNodeRoute);
+            const auto schema = Runtime::ElementSchema::Arithmetic<index>();
+            auto pendingCells = initialNodeRoute.BeginRows(nodes, nodeCells.Owned(), schema);
+            auto pendingBoundaries = initialNodeRoute.BeginRows(nodes, nodeBoundaries.Owned(), schema);
+            pendingCells.operation.Wait();
+            pendingBoundaries.operation.Wait();
+            nodeCells = NativeRelation::WithGhostValues(nodeCells.Kind(), nodes, input.cells, nodeCells.Owned(),
+                                                        std::move(pendingCells.ghost));
+            nodeBoundaries = NativeRelation::WithGhostValues(nodeBoundaries.Kind(), nodes, input.boundaries,
+                                                             nodeBoundaries.Owned(), std::move(pendingBoundaries.ghost));
         }
         auto cellCells = LocalStage(mpi, "cell neighbor composition", [&]
                                     { return NativeConnectivity::Compose(cellNodes.Read(), nodeCells.Read(), true); });
