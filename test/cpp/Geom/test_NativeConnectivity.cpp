@@ -682,6 +682,143 @@ TEST_CASE("Native periodic distributed interpolation preserves owner frames and 
     CHECK(run() == expected);
 }
 
+TEST_CASE("Traversal scratch preserves independent publications and exact rows after tree growth")
+{
+    const auto mpi = MPI();
+    const I peer = (mpi.rank + 1) % mpi.size;
+    auto cells = G::EntitySpace::CreateOwned(G::EntityKind::Cell, mpi, 1);
+    auto nodes = cells.CreateSibling(G::EntityKind::Node, 4);
+    G::MeshAdjacency neighbors(G::Adj::Cell2Cell, cells, cells, Rows(std::vector<std::vector<I>>{{peer}}));
+    G::MeshAdjacency cones(G::Adj::Cell2Node, cells, nodes,
+                           Rows(std::vector<std::vector<I>>{{mpi.rank * 4, mpi.rank * 4 + 1, mpi.rank * 4 + 2, mpi.rank * 4 + 3}}));
+    G::AdjacencyRegistry registry(mpi);
+    registry.Register(neighbors.Read());
+    registry.Register(cones.Read());
+    G::GhostSpec spec{{{G::EntityKind::Cell, {G::Adj::Cell2Cell}, G::EntityKind::Cell},
+                       {G::EntityKind::Cell, {G::Adj::Cell2Cell, G::Adj::Cell2Node}, G::EntityKind::Node}}};
+    auto discovery = registry.Evaluate(G::CompiledGhostTree::compile(spec));
+    auto first = registry.BuildGhosted(discovery, {G::Adj::Cell2Node});
+    auto second = registry.BuildGhosted(discovery, {G::Adj::Cell2Node});
+    const auto verify = [&](const auto &publication)
+    {
+        auto rows = publication.relations.at(G::Adj::Cell2Node).Read();
+        for (I iRow = rows.NumOwned(); iRow < rows.RowCount(); ++iRow)
+        {
+            const I global = rows.Source().LocalToGlobal(iRow);
+            CHECK(rows.GlobalRow(iRow) == std::vector<I>{global * 4, global * 4 + 1, global * 4 + 2, global * 4 + 3});
+        }
+    };
+    verify(first);
+    verify(second);
+    if (mpi.size > 1)
+    {
+        CHECK(first.relations.at(G::Adj::Cell2Node).Ghost()->Identity() !=
+              second.relations.at(G::Adj::Cell2Node).Ghost()->Identity());
+    }
+    // Published output may be written after its read scopes end. An active or
+    // completed write must exclude reuse without contaminating publication.
+    std::optional<R::Array<I>::WriteLease> writer;
+    if (mpi.size > 1 && mpi.rank == 0)
+    {
+        auto alias = *first.relations.at(G::Adj::Cell2Node).Ghost();
+        writer.emplace(alias.Write());
+        writer->At(0, 0) = peer * 4 + 2;
+    }
+    auto whileWriting = registry.BuildGhosted(discovery, {G::Adj::Cell2Node});
+    verify(second);
+    verify(whileWriting);
+    writer.reset();
+    auto repaired = registry.BuildGhosted(discovery, {G::Adj::Cell2Node});
+    verify(repaired);
+    auto differentFrontier = spec;
+    differentFrontier.chains.push_back({G::EntityKind::Cell,
+                                        {G::Adj::Cell2Cell, G::Adj::Cell2Cell, G::Adj::Cell2Node},
+                                        G::EntityKind::Node});
+    auto differentDiscovery = registry.Evaluate(G::CompiledGhostTree::compile(differentFrontier));
+    auto sameCountDifferentIds = registry.BuildGhosted(differentDiscovery, {G::Adj::Cell2Node});
+    CHECK(sameCountDifferentIds.spaces.at(G::EntityKind::Cell).NumGhost() == (mpi.size > 1 ? 1 : 0));
+    verify(sameCountDifferentIds);
+    // The larger recipe still uses the same registered relations. Its union
+    // can be larger than the last individual fetched frontier, so row counts
+    // or element layouts alone cannot justify scratch reuse.
+    spec.chains.push_back({G::EntityKind::Cell, {G::Adj::Cell2Cell, G::Adj::Cell2Cell}, G::EntityKind::Cell});
+    spec.chains.push_back({G::EntityKind::Cell, {G::Adj::Cell2Cell, G::Adj::Cell2Cell, G::Adj::Cell2Node}, G::EntityKind::Node});
+    auto expanded = registry.Evaluate(G::CompiledGhostTree::compile(spec));
+    auto grown = registry.BuildGhosted(expanded, {G::Adj::Cell2Node});
+    CHECK(grown.spaces.at(G::EntityKind::Cell).NumGhost() == (mpi.size > 2 ? 2 : mpi.size > 1 ? 1
+                                                                                              : 0));
+    verify(grown);
+}
+
+TEST_CASE("Entity ghost mapping rejects rank-local unpublished shapes and remains reusable")
+{
+    const auto mpi = MPI();
+    auto cells = G::EntitySpace::CreateOwned(G::EntityKind::Cell, mpi, 3);
+    const I peer = (mpi.rank + 1) % mpi.size;
+    std::vector<I> globals;
+    if (mpi.size > 1)
+        globals = {peer * 3, peer * 3 + 2};
+    cells = cells.WithGhosts(globals);
+    G::EntityGhostMapping mapping(cells);
+    const auto schema = R::ElementSchema::Arithmetic<I>();
+    R::Array<I> owned(R::RowLayout::Dense(3, 5, 7));
+    const auto fill = [&]
+    {
+        auto write = owned.Write();
+        for (I iRow = 0; iRow < 3; ++iRow)
+            for (I iCol = 0; iCol < 5; ++iCol)
+                write.At(iRow, iCol) = 1000 + 16 * (mpi.rank * 3 + iRow) + iCol;
+    };
+    const auto transfer = [&](bool asynchronous)
+    {
+        if (!asynchronous)
+            return mapping.TransferRows(cells, owned, schema);
+        auto pending = mapping.BeginRows(cells, owned, schema);
+        pending.operation.Wait();
+        return std::move(pending.ghost);
+    };
+    const auto verify = [&]
+    {
+        for (bool asynchronous : {false, true})
+        {
+            auto ghost = transfer(asynchronous);
+            auto read = ghost.Read();
+            CHECK(read.View().RowCount() == I(globals.size()));
+            for (I iRow = 0; iRow < I(globals.size()); ++iRow)
+                for (I iCol = 0; iCol < 5; ++iCol)
+                    CHECK(read.At(iRow, iCol) == 1000 + 16 * globals[iRow] + iCol);
+        }
+    };
+    fill();
+    verify();
+    std::optional<R::ExclusiveRows> editor;
+    if (mpi.rank == 0)
+        editor.emplace(owned.EditRows());
+    CHECK_THROWS(transfer(false));
+    CHECK_THROWS(transfer(true));
+    if (editor)
+        editor->Commit();
+    editor.reset();
+    verify();
+    if (mpi.rank == 0)
+    {
+        auto abandoned = owned.EditRows();
+    }
+    CHECK_THROWS(transfer(false));
+    CHECK_THROWS(transfer(true));
+    owned.Reset(R::RowLayout::Dense(3, 5, 7));
+    fill();
+    verify();
+    std::optional<R::Array<I>> retained;
+    if (mpi.rank == 0)
+        retained.emplace(std::move(owned));
+    CHECK_THROWS(transfer(false));
+    CHECK_THROWS(transfer(true));
+    owned.Reset(R::RowLayout::Dense(3, 5, 7));
+    fill();
+    verify();
+}
+
 TEST_CASE("Named native relations distinguish incidence any all exact and face versus node neighbors")
 {
     const auto mpi = MPI();

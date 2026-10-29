@@ -215,6 +215,28 @@ namespace DNDS::Geom
         EntitySpace _source;
         Runtime::RowTransferPlan _route;
 
+        template <class T>
+        Runtime::ArrayStorage::Shared CaptureSource(const EntitySpace &source, const Runtime::Array<T> &owned) const
+        {
+            Runtime::ArrayStorage::Shared storage;
+            int valid = 0;
+            try
+            {
+                // Sharing pins the published shape through payload binding.
+                // Active/abandoned edits and consumed handles must reach the
+                // same rejection collective as their healthy peers.
+                storage = owned.SharedStorage();
+                valid = storage && Valid() && _source.SameOrder(source) &&
+                        storage->Layout().RowCount() == _source.NumOwned();
+            }
+            catch (...)
+            {
+            }
+            MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, _route.Communicator());
+            DNDS_check_throw_info(valid, "companion halo route has stale/wrong source order, row extent or unpublished Array shape");
+            return storage;
+        }
+
     public:
         template <class T>
         struct PendingRows
@@ -238,14 +260,14 @@ namespace DNDS::Geom
         bool Valid() const { return _source.Valid() && _route.Valid(); }
         /// Transfer an ordered companion with the same route. The caller names
         /// its source entity order and explicit wire schema; no map escapes.
+        /// Invalid/unpublished Array shapes are rejected collectively. The
+        /// published shape is retained through binding, preventing shape edits.
         template <class T>
         Runtime::Array<T> TransferRows(const EntitySpace &source, const Runtime::Array<T> &owned,
                                        const Runtime::ElementSchema &schema) const
         {
-            int valid = Valid() && _source.SameOrder(source) && owned.Layout().RowCount() == _source.NumOwned();
-            MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, _route.Communicator());
-            DNDS_check_throw_info(valid, "companion halo route has stale/wrong source order or row extent");
-            Runtime::PayloadPlan payload(_route, owned.Layout(), schema);
+            const auto storage = CaptureSource(source, owned);
+            Runtime::PayloadPlan payload(_route, storage->Layout(), schema);
             Runtime::Array<T> ghost(payload.DestinationLayout());
             Runtime::TransferOptions options;
             options.mode = Runtime::TransferMode::Transient;
@@ -259,14 +281,13 @@ namespace DNDS::Geom
         /// Start a companion transfer without waiting. Keep PendingRows alive
         /// until its operation completes; callers may start several transfers
         /// over one route to overlap transport before observing completion.
+        /// Uses the same collective shape preflight as TransferRows.
         template <class T>
         PendingRows<T> BeginRows(const EntitySpace &source, const Runtime::Array<T> &owned,
                                  const Runtime::ElementSchema &schema) const
         {
-            int valid = Valid() && _source.SameOrder(source) && owned.Layout().RowCount() == _source.NumOwned();
-            MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, _route.Communicator());
-            DNDS_check_throw_info(valid, "companion halo route has stale/wrong source order or row extent");
-            Runtime::PayloadPlan payload(_route, owned.Layout(), schema);
+            const auto storage = CaptureSource(source, owned);
+            Runtime::PayloadPlan payload(_route, storage->Layout(), schema);
             Runtime::Array<T> ghost(payload.DestinationLayout());
             Runtime::TransferOptions options;
             options.mode = Runtime::TransferMode::Transient;

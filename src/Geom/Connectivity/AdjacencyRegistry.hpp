@@ -59,6 +59,16 @@ namespace DNDS::Geom
         std::unordered_map<AdjacencyDescriptor, std::shared_ptr<MeshAdjacencyRead>, AdjacencyDescriptorHash> _relations;
         std::unordered_map<EntityKind, EntitySpace> _spaces;
         mutable std::unordered_map<AdjacencyDescriptor, Runtime::Array<index>, AdjacencyDescriptorHash> _fetchValues;
+        struct FetchedRows
+        {
+            std::vector<index> globals;
+            std::optional<Runtime::Array<index>> values;
+            uint64_t version = 0;
+        };
+        // Only the last remote frontier per descriptor is retained. A final
+        // canonical ghost set may reuse it after exact ID/version agreement;
+        // a union or another branch is never assumed to be the same frontier.
+        mutable std::unordered_map<AdjacencyDescriptor, FetchedRows, AdjacencyDescriptorHash> _fetchedRows;
         void ValidateCollectively(const std::function<void()> &validate) const;
         Runtime::Array<index> Fetch(const MeshAdjacencyRead &relation, const std::vector<index> &globals,
                                     const Runtime::RowTransferPlan *reusedRoute = nullptr,

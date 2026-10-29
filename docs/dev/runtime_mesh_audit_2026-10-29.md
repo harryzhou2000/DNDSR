@@ -158,8 +158,10 @@ construction and FV initialization.
     8/8 and the full CPU/MPI selection 204/204 in 232.08 s. The np4 high-lift SA
     no-advance probe agrees exactly with the preceding native candidate in
     topology, representation and tested finite numerical fields. Source hashes
-    remain unchanged after testing. Rebuilt Python validation and matched
-    performance are pending; no time-evolved solver-history claim is made.
+    remain unchanged after testing. The rebuilt/installed CUDA Python profile
+    passes all 44 tests in five Geom modules at np1 and on each np2 rank, with
+    no skips. Matched performance is pending; no time-evolved solver-history
+    claim is made.
 27. Follow placement, remote-number lookup and payload remapping separately
     acquired the same input descriptor's read scope during one transition.
     The transition now retains one normal MeshAdjacencyRead per descriptor
@@ -168,14 +170,30 @@ construction and FV initialization.
     aliases under different descriptors still acquire distinct scopes. No
     validation rules or unchecked view are introduced in transition code.
     This change is included in the validated closure-tree CPU candidate above.
-28. **Open collective-error audit item:** EntityGhostMapping's TransferRows and
+28. EntityGhostMapping's TransferRows and
     BeginRows query the supplied Array layout before entering their failure
     Allreduce. An unpublished shape edit on one rank can throw locally while
     peers enter that collective. The typed PayloadPlan binding was already
-    hardened, but these Geom preflights need the same retained published-shape
-    capture inside a catch/agreement boundary. Add rank-local active/abandoned
-    shape-edit and consumed-handle tests, preserving direct device-capable
-    transport. This is not included in the frozen closure-tree candidate.
+    hardened. The new candidate captures published shared storage inside a
+    catch/agreement boundary and retains it through binding. Both entry points
+    have rank-local active/abandoned shape-edit and consumed-handle rejection
+    tests, followed by successful strided-row transfers to prove recovery.
+    This is not included in the frozen closure-tree candidate; validation of
+    the new candidate passes the full CPU/MPI selection 204/204 in 222.79 s and
+    focused native connectivity np1/2/4/8. The np4 SA smoke matches the
+    closure-tree checkpoint exactly in topology, representation and tested
+    finite numerical fields. Python rebuild/validation is in progress.
+29. Tree evaluation transferred remote adjacency rows, then publication could
+    transfer the exact same rows again. The registry now retains the last
+    fetched frontier per descriptor. Reuse requires the exact ordered canonical
+    ghost IDs plus an unchanged value version under a new read lease, agreed
+    across ranks. Input scopes already pin the immutable source/target order.
+    Successful reuse consumes scratch into a single publication; later
+    publications get independent ghost buffers. Writes to earlier output,
+    different equal-sized frontiers and larger endpoint unions are covered by
+    independent row expectations. No input-mesh ghost
+    buffers or inferred route-tree identities are reused. This bounded sparse
+    scratch optimization passes the CPU checks above; no speedup is claimed yet.
 
 ## Responsibility and abstraction review
 

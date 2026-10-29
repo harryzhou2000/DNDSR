@@ -112,6 +112,9 @@ namespace DNDS::Geom
             relation.CheckActive();
             relation.Source().Validate();
             relation.Target().Validate();
+            auto &scratch = _fetchedRows[relation.Kind()];
+            scratch.globals = globals;
+            scratch.values.reset();
             if (!_fetchValues.count(relation.Kind()))
             {
                 // Registration retains immutable input leases. Share globally
@@ -134,15 +137,22 @@ namespace DNDS::Geom
                     requests.push_back({relation.Source().Owner(globals[row]),
                                         relation.Source().OwnerLocalRow(globals[row]), row}); });
         const auto &values = _fetchValues.at(relation.Kind());
+        const auto retain = [&](Runtime::Array<index> fetched)
+        {
+            auto &scratch = _fetchedRows.at(relation.Kind());
+            scratch.values.emplace(std::move(fetched));
+            scratch.version = scratch.values->Version();
+            return *scratch.values;
+        };
         if (reusedRoute)
         {
             DNDS_check_throw_info(context, "reused native fetch route requires its communication context");
-            return Transfer(*reusedRoute, values, context);
+            return retain(Transfer(*reusedRoute, values, context));
         }
         context = std::make_shared<Runtime::CommunicationContext>(_mpi.comm);
         Runtime::RowTransferPlan route(context, size_t(relation.NumOwned()), globals.size(), requests,
                                        {relation.Source().Stamp(), relation.Target().Stamp()});
-        return Transfer(route, values, context);
+        return retain(Transfer(route, values, context));
     }
     GhostResult AdjacencyRegistry::Evaluate(const CompiledGhostTree &tree) const
     {
@@ -946,8 +956,34 @@ namespace DNDS::Geom
                         {
                             input.ConvertRowTo(index(row), Adj_PointToGlobal, output.data());
                         }, {}, true); });
-            MeshAdjacency owned(kind, result.spaces.at(kind.from), result.spaces.at(kind.to), std::move(*values));
-            auto completed = owned.WithGhostRows(result.routes.at(kind.from));
+            auto fetched = _fetchedRows.find(kind);
+            std::optional<Runtime::Array<index>::ReadLease> scratchRead;
+            int reuse = 0;
+            try
+            {
+                if (fetched != _fetchedRows.end() && fetched->second.values &&
+                    fetched->second.globals == result.spaces.at(kind.from)._ghostMap->ghostIndex)
+                {
+                    // Pin before observing the version: a writer may have
+                    // changed a previously published alias of this scratch.
+                    scratchRead.emplace(fetched->second.values->Read());
+                    reuse = fetched->second.version == fetched->second.values->Version();
+                }
+            }
+            catch (...)
+            {
+            } // Active writers or invalid scratch take the normal route.
+            MPI_Allreduce(MPI_IN_PLACE, &reuse, 1, MPI_INT, MPI_MIN, _mpi.comm);
+            auto completed = reuse
+                                 ? MeshAdjacency::WithGhostValues(kind, result.spaces.at(kind.from), result.spaces.at(kind.to),
+                                                                  std::move(*values), *fetched->second.values)
+                                 : MeshAdjacency(kind, result.spaces.at(kind.from), result.spaces.at(kind.to), std::move(*values))
+                                       .WithGhostRows(result.routes.at(kind.from));
+            // Transfer scratch ownership into this publication. A later
+            // publication gets independent ghost values; descriptor aliases
+            // inside this one still share through the payload table below.
+            if (reuse)
+                fetched->second.values.reset();
             payloads.insert_or_assign(key, Payload{int(ordinal), completed.Owned(), *completed.Ghost()});
             result.relations.emplace(kind, std::move(completed));
         }

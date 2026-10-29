@@ -10,6 +10,12 @@ Both default to direct MPI datatypes; HostPacked remains an explicit option.
 Neither mode physically permutes the source. Sender reordering is an upstream
 mesh/data operation, after which adjacent typemap sections coalesce as before.
 
+Geom's `EntityGhostMapping::{TransferRows,BeginRows}` capture published Array
+storage inside their collective preflight. An active or abandoned shape edit,
+consumed handle, stale entity order or wrong row extent on one rank rejects the
+call on all ranks before payload setup. The captured storage pins shape through
+binding; ordinary transfer leases then protect values through completion.
+
 ```cpp
 auto channel = std::make_shared<R::CommunicationContext>(mpi.comm);
 R::RowTransferPlan route(channel, owned.RowCount(), ghost.RowCount(), requests);
