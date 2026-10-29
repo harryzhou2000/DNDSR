@@ -2,6 +2,7 @@
 #include "Geom/Connectivity/ConnectivityComposeRows.hpp"
 #include <algorithm>
 #include <limits>
+#include <type_traits>
 
 namespace DNDS::Geom
 {
@@ -25,38 +26,47 @@ namespace DNDS::Geom
         if (_contentsValidated)
             return;
         const bool sorted = ContentChecks(_kind) & 1U;
-        const bool needsGlobal = sorted || _kind.removeSelf;
-        const auto scan = [&](const Runtime::ArrayView<const index> &view, index first)
+        const bool removeSelf = _kind.removeSelf;
+        const bool needsGlobal = sorted || removeSelf;
+        const bool globalState = _state == Adj_PointToGlobal;
+        const auto targetGlobalCount = _target.NumGlobal(), targetLocalCount = _target.NumLocal();
+        const auto sourceOwned = _source.NumOwned();
+        const auto sourceFirst = removeSelf && sourceOwned ? _source.LocalToGlobalPinned(0) : 0;
+        unsigned errors = 0;
+        const auto scan = [&](const Runtime::ArrayView<const index> &view, auto ownedRows)
         {
             // The scope and both mappings are pinned above. Internal validation
             // can traverse raw rows without re-entering public access checks
             // for every incidence. Public random access remains checked.
-            for (size_t row = 0; row < view.RowCount(); ++row)
+            for (index iRow = 0; iRow < view.RowCount(); ++iRow)
             {
                 index previous = -1;
-                const auto sourceGlobal = _kind.removeSelf ? _source.LocalToGlobalPinned(first + index(row)) : -1;
-                const auto count = view.RowSize(row);
-                const auto *values = count ? view.Row(row) : nullptr;
-                for (size_t slot = 0; slot < count; ++slot)
+                // Owned rows occupy the validated contiguous global interval.
+                // Ghost rows still use their exact retained numbering map.
+                const auto sourceGlobal = !removeSelf                  ? index(-1)
+                                          : decltype(ownedRows)::value ? sourceFirst + iRow
+                                                                       : _source.LocalToGlobalPinned(sourceOwned + iRow);
+                const auto count = view.RowSize(iRow);
+                const auto *values = count ? view.Row(iRow) : nullptr;
+                for (index iSlot = 0; iSlot < count; ++iSlot)
                 {
-                    const auto value = values[slot];
+                    const auto value = values[iSlot];
                     const bool absent = value == UnInitIndex;
                     index global = value;
                     if (!absent)
                     {
-                        if (_state == Adj_PointToGlobal)
-                            DNDS_check_throw_info(value >= 0 && value < _target.NumGlobal(),
-                                                  "relation global target is outside its entity space");
+                        if (globalState)
+                            errors |= unsigned(value < 0 || value >= targetGlobalCount);
                         else if (value >= 0)
                         {
-                            DNDS_check_throw_info(value < _target.NumLocal(), "relation local target is outside its entity space");
+                            DNDS_check_throw_info(value < targetLocalCount, "relation local target is outside its entity space");
                             if (needsGlobal)
                                 global = _target.LocalToGlobalPinned(value);
                         }
                         else
                         {
                             global = -1 - value;
-                            DNDS_check_throw_info(global >= 0 && global < _target.NumGlobal(),
+                            DNDS_check_throw_info(global >= 0 && global < targetGlobalCount,
                                                   "relation global target is outside its entity space");
                             DNDS_check_throw_info(!_target.GlobalToLocalPinned(global),
                                                   "encoded unavailable target is present in the supplied local target mapping");
@@ -66,17 +76,21 @@ namespace DNDS::Geom
                     {
                         // Ordering is in global IDs, including local encodings
                         // whose appended ghost globals precede owned globals.
-                        DNDS_check_throw_info(!absent && global > previous,
-                                              "SortedUnique relation has absent, duplicate or unordered targets");
+                        errors |= unsigned(absent || global <= previous) << 1;
                         previous = global;
                     }
-                    DNDS_check_throw_info(!_kind.removeSelf || absent || global != sourceGlobal,
-                                          "removeSelf relation contains its source entity");
+                    errors |= unsigned(removeSelf && !absent && global == sourceGlobal) << 2;
                 }
             }
         };
-        scan(_view.owned, 0);
-        scan(_view.ghost, _source.NumOwned());
+        scan(_view.owned, std::true_type{});
+        scan(_view.ghost, std::false_type{});
+        // No indexed target lookup uses unchecked global input. Deferring these
+        // read-only content errors lets the global scan remain a plain loop;
+        // local lookup bounds/encoding checks above still precede each lookup.
+        DNDS_check_throw_info(!(errors & 1U), "relation global target is outside its entity space");
+        DNDS_check_throw_info(!(errors & 2U), "SortedUnique relation has absent, duplicate or unordered targets");
+        DNDS_check_throw_info(!(errors & 4U), "removeSelf relation contains its source entity");
         _contentsValidated = true;
     }
 
