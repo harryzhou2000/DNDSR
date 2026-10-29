@@ -394,7 +394,8 @@ while `FixedRows<N,S>` carries both constants. Compatibility aliases and
 forwarding headers still exist and own no alternative payload storage.
 
 Source review confirms closure candidates are appended and sorted once per
-stage; row-route collision checks also append request-sized scratch and sort
+stage. Row-route collision checks use request-sized scratch: complete in-range
+lists use the exact linear-time permutation proof, while sparse lists sort
 once, since no dynamic membership query is needed during route construction.
 Neither allocates a bitmap by global entity count. MPI metadata all-to-all
 exchanges remain separate from canonical direct h-indexed payload traffic.
