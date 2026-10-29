@@ -339,10 +339,12 @@ namespace DNDS::Geom
             R::Array<ElemInfo> result(R::RowLayout::Dense(original.RowCount(), 1));
             auto read = original.Read();
             auto write = result.Write();
-            for (size_t row = 0; row < original.RowCount(); ++row)
+            const auto input = read.View();
+            const auto output = write.View();
+            for (index iRow = 0; iRow < input.RowCount(); ++iRow)
             {
-                write.View()(row, 0) = read.View()(row, 0);
-                write.View()(row, 0).zone = zones[row];
+                output(iRow, 0) = input(iRow, 0);
+                output(iRow, 0).zone = zones[iRow];
             }
             return result;
         }
@@ -428,22 +430,34 @@ namespace DNDS::Geom
             auto inverse = AdjacencyRegistry::Inverse(faces.parent2entity.Read(), mpi);
             auto support = inverse.Read();
             auto occurrences = faces.entity2parent.Read();
-            std::vector<std::vector<index>> faceCells(size_t(faces.entities.NumOwned()));
+            std::optional<Array> physicalStorage;
             std::vector<t_index> zones(size_t(faces.entities.NumOwned()));
             FieldTransferDetail::LocalStage(mpi, [&]
                                             {
+                DNDS_check_throw_info(occurrences.State() == Adj_PointToGlobal && support.State() == Adj_PointToGlobal,
+                                      "native face incidence requires global construction rows");
+                physicalStorage.emplace(R::RowLayout::Dense(size_t(faces.entities.NumOwned()), 2));
+                auto write = physicalStorage->Write();
+                const auto output = write.View<R::FixedRows<2, 2>>();
+                const auto occurrenceRows = occurrences.View(), supportRows = support.View();
                 for (index face = 0; face < faces.entities.NumOwned(); ++face)
                 {
-                    auto parents = occurrences.GlobalRow(face), unique = parents;
-                    std::sort(unique.begin(), unique.end());
-                    unique.erase(std::unique(unique.begin(), unique.end()), unique.end());
-                    DNDS_check_throw_info(parents.size() >= 1 && parents.size() <= 2 &&
-                                              (data.periodic || parents.size() == unique.size()) && unique == support.GlobalRow(face),
+                    const auto parents = occurrenceRows[face], complete = supportRows[face];
+                    DNDS_check_throw_info(parents.size() >= 1 && parents.size() <= 2,
+                                          "native face has missing or nonmanifold parent incidences");
+                    const auto first = parents[0], second = parents.size() == 2 ? parents[1] : first;
+                    const index uniqueCount = parents.size() == 2 && first != second ? 2 : 1;
+                    DNDS_check_throw_info((data.periodic || parents.size() == uniqueCount) &&
+                                              complete.size() == uniqueCount && complete[0] == std::min(first, second) &&
+                                              (uniqueCount == 1 || complete[1] == std::max(first, second)),
                                           "native face has missing, repeated or nonmanifold parent incidences");
                     zones[size_t(face)] = parents.size() == 1 ? BC_ID_NULL : BC_ID_INTERNAL;
-                    if (parents.size() == 1) parents.push_back(UnInitIndex);
-                    faceCells[size_t(face)] = std::move(parents);
+                    output(face, 0) = first;
+                    output(face, 1) = parents.size() == 1 ? UnInitIndex : second;
                 } });
+            auto physical = std::move(*physicalStorage);
+            auto physicalRowsRead = physical.Read();
+            const auto faceCells = physicalRowsRead.View<R::FixedRows<2, 2>>();
 
             // Resolve each independently owned boundary through its containing
             // cell's exact face slots. Candidate cells may be entirely remote.
@@ -574,7 +588,6 @@ namespace DNDS::Geom
                     faceBoundaries[face][0] = selected->boundary;
                     zones[face] = selected->zone;
                 } });
-            auto physical = BuildIndexRows(faceCells, 2);
             auto parentFaces = faces.parent2entity.Read();
             std::vector<index> remote;
             FieldTransferDetail::LocalStage(mpi, [&]
@@ -592,16 +605,25 @@ namespace DNDS::Geom
             std::vector<std::vector<index>> neighbors(size_t(cells.NumOwned()));
             FieldTransferDetail::LocalStage(mpi, [&]
                                             {
+                DNDS_check_throw_info(parentFaces.State() == Adj_PointToGlobal && physicalRead.State() == Adj_PointToGlobal,
+                                      "native neighbor construction requires global face rows");
+                const auto parentRows = parentFaces.View(), physicalRows = physicalRead.View();
                 for (index cell = 0; cell < cells.NumOwned(); ++cell)
-                    for (auto face : parentFaces.GlobalRow(cell))
+                {
+                    const auto global = cells.LocalToGlobal(cell);
+                    const auto facesOfCell = parentRows[cell];
+                    auto &cellNeighbors = neighbors[size_t(cell)];
+                    cellNeighbors.reserve(size_t(facesOfCell.size()));
+                    for (auto face : facesOfCell)
                     {
                         const auto row = closure.GlobalToLocal(face);
                         DNDS_check_throw_info(row, "owned cell face missing from native local closure");
-                        const auto pair = physicalRead.GlobalRow(*row);
-                        const auto global = cells.LocalToGlobal(cell);
+                        const auto pair = physicalRows[*row];
+                        DNDS_check_throw_info(pair.size() == 2, "native physical face must have two parent slots");
                         DNDS_check_throw_info(pair[0] == global || pair[1] == global, "native physical face omits its parent cell");
-                        neighbors[size_t(cell)].push_back(pair[0] == global ? pair[1] : pair[0]);
+                        cellNeighbors.push_back(pair[0] == global ? pair[1] : pair[0]);
                     }
+                }
                 data.relations[size_t(MeshRelation::CellFaces)] = faces.parent2entity.Owned();
                 data.relations[size_t(MeshRelation::FaceNodes)] = faces.entity2node.Owned();
                 data.relations[size_t(MeshRelation::FaceCells)] = physical;
