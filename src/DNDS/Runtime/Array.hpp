@@ -60,14 +60,16 @@ namespace DNDS::Runtime
             RowLayout layout;
             layout._kind = RowLayoutKind::CSR;
             layout._rows = lengths.size();
-            std::vector<size_t> offsets{0};
-            offsets.reserve(CheckedSize::Add(lengths.size(), size_t(1)));
-            for (auto n : lengths)
-            {
-                DNDS_check_throw_info(n <= size_t(INT64_MAX) - offsets.back(), "row offsets exceed signed index range");
-                offsets.push_back(offsets.back() + n);
-            }
-            layout._offsets = MetadataBuffer<size_t>(offsets);
+            size_t offset = 0;
+            layout._offsets = MetadataBuffer<size_t>::Generate(CheckedSize::Add(lengths.size(), size_t(1)), [&](index i)
+                                                               {
+                if (i)
+                {
+                    const auto n = lengths[size_t(i - 1)];
+                    DNDS_check_throw_info(n <= size_t(INT64_MAX) - offset, "row offsets exceed signed index range");
+                    offset += n;
+                }
+                return offset; });
             return layout;
         }
         index RowCount() const { return index(_rows); }

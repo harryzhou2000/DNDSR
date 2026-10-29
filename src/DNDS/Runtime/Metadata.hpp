@@ -42,6 +42,23 @@ namespace DNDS::Runtime
                 std::copy(values.begin(), values.end(), view.data);
             _data = view.data;
         }
+        /// Fill the final allocation in ordinal order, then publish read-only
+        /// metadata. The generator returns values; no mutable pointer escapes.
+        /// An exception abandons the unpublished allocation.
+        template <class F>
+        static MetadataBuffer Generate(size_t count, F &&valueAt)
+        {
+            DNDS_check_throw_info(count <= size_t(INT64_MAX), "metadata element count exceeds signed index range");
+            MetadataBuffer result;
+            result._buffer = Buffer::Allocate(CheckedSize::Multiply(count, sizeof(T)));
+            result._size = count;
+            auto write = result._buffer.Write();
+            auto view = write.template View<T>();
+            for (index i = 0; i < index(count); ++i)
+                view.data[i] = valueAt(i);
+            result._data = view.data;
+            return result;
+        }
         const T *data() const { return _data; }
         size_t size() const { return _size; }
         bool empty() const { return !_size; }
