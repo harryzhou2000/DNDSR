@@ -887,10 +887,20 @@ namespace DNDS::Geom
             schedule += cellOld2New ? "local" : "partition";
             for (const auto &[key, unused] : original) schedule += key.Signature(); });
         Agree(mpi, schedule);
+        // SharedStorage identifies the complete immutable shape/value record,
+        // unlike the allocation identity, which can back distinct row views.
+        using PayloadKey = std::tuple<uintptr_t, uintptr_t, EntityKind, EntityKind, MeshAdjState>;
+        auto payloadKey = [](const AdjacencyDescriptor &key, const NativeNamedRelation &values)
+        {
+            return PayloadKey{reinterpret_cast<uintptr_t>(values.rows.owned.SharedStorage().get()),
+                              reinterpret_cast<uintptr_t>(values.rows.ghost.SharedStorage().get()),
+                              key.from, key.to, values.state};
+        };
         // Keep one validated adjacency scope per descriptor for this complete
         // transition. Follow placement, remote-map discovery and remapping all
         // consume immutable input rows; reacquiring the same scope would rescan
-        // unchanged values. Semantic aliases still get independent validation.
+        // unchanged values. The adjacency layer proves shared content checks;
+        // every descriptor still receives its own checked retained scope.
         std::map<AdjacencyDescriptor, std::unique_ptr<MeshAdjacencyRead>> inputReads;
         auto acquireInput = [&](const AdjacencyDescriptor &key) -> const MeshAdjacencyRead &
         {
@@ -898,9 +908,16 @@ namespace DNDS::Geom
             if (found == inputReads.end())
             {
                 const auto &values = original.at(key);
-                auto read = std::make_unique<MeshAdjacencyRead>(key, oldSpaces.at(key.from), oldSpaces.at(key.to),
-                                                                values.state, values.rows.owned, &values.rows.ghost);
-                found = inputReads.emplace(key, std::move(read)).first;
+                const auto identity = payloadKey(key, values);
+                std::vector<AdjacencyDescriptor> aliases;
+                for (const auto &[candidate, payload] : original)
+                    if (payloadKey(candidate, payload) == identity)
+                        aliases.push_back(candidate);
+                auto reads = MeshAdjacencyRead::AcquireAliases(aliases, oldSpaces.at(key.from), oldSpaces.at(key.to),
+                                                               values.state, values.rows.owned, &values.rows.ghost);
+                for (index iAlias = 0; iAlias < index(aliases.size()); ++iAlias)
+                    inputReads.emplace(aliases[iAlias], std::make_unique<MeshAdjacencyRead>(std::move(reads[iAlias])));
+                found = inputReads.find(key);
             }
             return *found->second;
         };
@@ -1088,15 +1105,6 @@ namespace DNDS::Geom
                 result.transfers.emplace(kind, transfer);
             allTransfers.emplace(kind, std::move(transfer));
         }
-        // SharedStorage identifies the complete immutable shape/value record,
-        // unlike the allocation identity, which can back distinct row views.
-        using PayloadKey = std::tuple<uintptr_t, uintptr_t, EntityKind, EntityKind, MeshAdjState>;
-        auto payloadKey = [](const AdjacencyDescriptor &key, const NativeNamedRelation &values)
-        {
-            return PayloadKey{reinterpret_cast<uintptr_t>(values.rows.owned.SharedStorage().get()),
-                              reinterpret_cast<uintptr_t>(values.rows.ghost.SharedStorage().get()),
-                              key.from, key.to, values.state};
-        };
         std::map<EntityKind, EntityRemap> remap;
         std::map<EntityKind, EntityRemap> serialRemaps;
         if (serialOwned)

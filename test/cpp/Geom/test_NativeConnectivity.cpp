@@ -424,6 +424,132 @@ TEST_CASE("Exact payload aliases preserve named descriptors with rank-local alia
     }
 }
 
+TEST_CASE("Aliased adjacency reads preserve constraints order and independent lease lifetimes")
+{
+    const auto mpi = MPI();
+    auto cells = G::EntitySpace::CreateOwned(G::EntityKind::Cell, mpi, 3);
+    const I first = 3 * mpi.rank;
+    std::vector<I> ghostIds;
+    if (mpi.size > 1)
+        ghostIds.push_back(3 * ((mpi.rank + 1) % mpi.size));
+    cells = cells.WithGhosts(ghostIds);
+    auto descriptor = [](const char *name, bool sorted, bool removeSelf)
+    {
+        auto key = G::Adj::Cell2Cell;
+        key.path = {G::EntityKind::Cell, G::EntityKind::Cell};
+        key.selection = G::RelationSelection::Custom;
+        key.order = sorted ? G::RelationOrder::SortedUnique : G::RelationOrder::Topological;
+        key.periodic = G::RelationPeriodicPolicy::EntityIdentity;
+        key.removeSelf = removeSelf;
+        key.semanticName = name;
+        key.semanticVersion = 1;
+        return key;
+    };
+    const auto ordered = descriptor("read.ordered", false, false),
+               sorted = descriptor("read.sorted", true, false),
+               self = descriptor("read.self", false, true),
+               strict = descriptor("read.strict", true, true);
+    auto expected = [&](I global)
+    {
+        std::vector<I> row{(global + 1) % cells.NumGlobal(), (global + 2) % cells.NumGlobal()};
+        std::sort(row.begin(), row.end());
+        return row;
+    };
+    for (auto state : {G::Adj_PointToGlobal, G::Adj_PointToLocal})
+    {
+        auto encode = [&](I global)
+        {
+            auto row = expected(global);
+            if (state == G::Adj_PointToLocal)
+                for (auto &value : row)
+                {
+                    const auto local = cells.GlobalToLocal(value);
+                    value = local ? *local : -1 - value;
+                }
+            return row;
+        };
+        std::vector<std::vector<I>> ownedRows, ghostRows;
+        for (I iRow = 0; iRow < 3; ++iRow)
+            ownedRows.push_back(encode(first + iRow));
+        for (auto global : ghostIds)
+            ghostRows.push_back(encode(global));
+        auto owned = Rows(ownedRows), ghost = Rows(ghostRows);
+        // Every descriptor order must retain the caller's order, regardless
+        // of which descriptor is chosen as the content-proof basis.
+        std::vector<int> permutation{0, 1, 2, 3};
+        const std::vector<G::AdjacencyDescriptor> descriptors{ordered, sorted, self, strict};
+        do
+        {
+            std::vector<G::AdjacencyDescriptor> keys;
+            for (auto item : permutation)
+                keys.push_back(descriptors[item]);
+            auto reads = G::MeshAdjacencyRead::AcquireAliases(keys, cells, cells, state, owned, &ghost);
+            REQUIRE(reads.size() == keys.size());
+            for (I iRead = 0; iRead < I(reads.size()); ++iRead)
+            {
+                CHECK(reads[iRead].Kind() == keys[iRead]);
+                for (I iRow = 0; iRow < cells.NumLocal(); ++iRow)
+                    CHECK(reads[iRead].GlobalRow(iRow) == expected(cells.LocalToGlobal(iRow)));
+            }
+            {
+                auto retained = std::move(reads.back());
+                reads.clear();
+                CHECK_THROWS(owned.Write());
+                if (!ghostIds.empty())
+                    CHECK_THROWS(ghost.Write());
+                CHECK(retained.GlobalRow(0) == expected(first));
+            }
+            CHECK_NOTHROW(owned.Write());
+            CHECK_NOTHROW(ghost.Write());
+        } while (std::next_permutation(permutation.begin(), permutation.end()));
+        // No descriptor in this set proves both constraints: the factory must
+        // scan any constraint not implied by the already validated basis.
+        auto independent = G::MeshAdjacencyRead::AcquireAliases({ordered, sorted, self}, cells, cells, state, owned, &ghost);
+        CHECK(independent.size() == 3);
+    }
+    auto owned = Rows<I>({expected(first), expected(first + 1), expected(first + 2)});
+    auto ghost = Rows<I>(ghostIds.empty() ? std::vector<std::vector<I>>{} : std::vector<std::vector<I>>{expected(ghostIds.front())});
+    auto malformed = owned.Clone();
+    {
+        auto write = malformed.Write();
+        auto row = write.View()[0];
+        std::reverse(row.begin(), row.end());
+    }
+    // Self-only passes; sorted-only must still scan and reject after weaker
+    // scopes have been acquired. Failed acquisition must release every lease.
+    CHECK_THROWS(G::MeshAdjacencyRead::AcquireAliases({ordered, sorted, self}, cells, cells,
+                                                      G::Adj_PointToGlobal, malformed, &ghost));
+    CHECK_NOTHROW(malformed.Write());
+    {
+        auto write = malformed.Write();
+        write.View()(0, 0) = first;
+        write.View()(0, 1) = first;
+    }
+    CHECK_THROWS(G::MeshAdjacencyRead::AcquireAliases({ordered, self}, cells, cells,
+                                                      G::Adj_PointToGlobal, malformed, &ghost));
+    {
+        auto write = malformed.Write();
+        write.View()(0, 0) = cells.NumGlobal();
+    }
+    CHECK_THROWS(G::MeshAdjacencyRead::AcquireAliases({ordered}, cells, cells,
+                                                      G::Adj_PointToGlobal, malformed, &ghost));
+    CHECK_NOTHROW(malformed.Write());
+    auto wrongFamily = ordered;
+    wrongFamily.to = G::EntityKind::Node;
+    wrongFamily.path.back() = G::EntityKind::Node;
+    CHECK_THROWS(G::MeshAdjacencyRead::AcquireAliases({strict, wrongFamily}, cells, cells,
+                                                      G::Adj_PointToGlobal, owned, &ghost));
+    CHECK_NOTHROW(owned.Write());
+    if (!ghostIds.empty())
+    {
+        auto badGhost = Rows<I>({{0, 0}});
+        CHECK_THROWS(G::MeshAdjacencyRead::AcquireAliases({ordered, sorted}, cells, cells,
+                                                          G::Adj_PointToGlobal, owned, &badGhost));
+        CHECK_NOTHROW(badGhost.Write());
+    }
+    CHECK(G::MeshAdjacencyRead::AcquireAliases({}, cells, cells, G::Adj_PointToGlobal, owned).empty());
+}
+
 TEST_CASE("Native 3D edge interpolation retains four-parent incidence and empty owners")
 {
     auto mpi = MPI();

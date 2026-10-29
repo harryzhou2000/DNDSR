@@ -72,6 +72,14 @@ namespace DNDS::Geom
             return view;
         }
         void Validate() const;
+        // These are the content constraints enforced by Validate, independent
+        // of descriptor identity/provenance. Never infer adjacency equivalence
+        // or derivation semantics from this mask.
+        static unsigned ContentChecks(const AdjacencyDescriptor &kind)
+        {
+            return unsigned(!kind.IsLegacy() && kind.order == RelationOrder::SortedUnique) |
+                   (unsigned(kind.removeSelf) << 1);
+        }
         const ssp<GlobalOffsetsMapping> &TargetMapping() const { return _target._global; }
         const MPIInfo &MPI() const { return _source._mpi; }
         static MPIInfo SourceMPI(const EntitySpace &source) { return source._mpi; }
@@ -119,6 +127,16 @@ namespace DNDS::Geom
 
     public:
         static MeshAdjacencyRead Current(UnstructuredMesh &mesh, AdjacencyDescriptor kind, MeshReadRequirements requirements);
+        /// Acquire distinct descriptors over exactly the supplied value/shape
+        /// storage, index state and entity spaces. Every descriptor and
+        /// association is checked. A pinned content scan may prove weaker
+        /// aliases; unproved sorted/self constraints still require a scan.
+        /// Returned scopes independently retain normal read/order leases.
+        /// This is local setup work; callers coordinate failures before MPI.
+        static std::vector<MeshAdjacencyRead> AcquireAliases(const std::vector<AdjacencyDescriptor> &kinds,
+                                                             EntitySpace source, EntitySpace target, MeshAdjState state,
+                                                             const Runtime::Array<index> &owned,
+                                                             const Runtime::Array<index> *ghost = nullptr);
         MeshAdjacencyRead(const MeshAdjacencyRead &) = delete;
         MeshAdjacencyRead &operator=(const MeshAdjacencyRead &) = delete;
         MeshAdjacencyRead(MeshAdjacencyRead &&other) noexcept
