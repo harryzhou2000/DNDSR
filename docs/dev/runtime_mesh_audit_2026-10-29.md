@@ -6,18 +6,19 @@ been established. The plan/evidence repository contains
 tools. The 5% target applies to parallel mesh setup, excluding serial reader
 construction and FV initialization.
 
-Latest implementation checkpoint: `909ac6c0`, after the consumed-handle safety
-fix `335416d7`. It passes CPU 204/204, focused mesh 20/20, exact np4 SA
-topology/raw/finite-field comparison, rebuilt/installed Python 57/57 at np1
-and each np2 rank, and the CFV device-transferable test. The preceding safety
-checkpoint additionally passes two-GPU transfer 28/28 per rank and CUDA
-runtime/engine 2/2. See findings 32–34 for boundaries and evidence limits.
+Latest implementation checkpoint: `b56a83b9` reuses immutable row metadata
+only when a validated permutation preserves its complete row-length vector.
+CPU 204/204, focused mesh 16/16, exact np4 SA topology/raw/finite-field
+comparison, rebuilt/installed Python 57/57 at np1 and each np2 rank, and CFV
+device-transferable 1/1 pass. The unchanged Runtime safety checkpoint also has
+two-GPU transfer 28/28 per rank and CUDA runtime/engine 2/2 evidence; those
+low-level tests were not repeated for this host-only transition edit.
 
-The last completed alias-read benchmark (`12403361`) has high-lift paired
-median 1.013x legacy, but individual order ratios differ substantially. It
-does not establish robust 5% performance. Job `12403390` measures the current
-source with three normal/reverse pairs. Earlier checkpoint measurements below
-remain historical evidence rather than current acceptance claims.
+The six-sample face-table benchmark (`12403390`, source `909ac6c0`) completed:
+high-lift parallel setup is 0.132607/0.139860 s legacy/native (1.054694x),
+outside the 5% target; cube is 0.765189/0.649108 s (0.848298x). All semantic
+and tested finite numerical gates pass. The new metadata checkpoint is not
+yet benchmarked. Earlier measurements below remain historical evidence.
 
 ## Findings
 
@@ -284,7 +285,12 @@ remain historical evidence rather than current acceptance claims.
     kind, capacity, route validation and row-shape checks are preserved. This
     introduces no new API or global scratch and applies at every rank count.
     Existing uniform/variable/padded, periodic and empty-rank transition
-    scenarios will verify the result; candidate validation/timing are pending.
+    scenarios pass in focused 16/16 and full 204/204 CPU registrations
+    (211.21 s). Exact np4 SA comparison, rebuilt/installed Python 57/57 at np1
+    and each np2 rank, and CFV device-transferable 1/1 also pass. Matched timing
+    is pending. Shared metadata remains immutable: ExclusiveRows already
+    rejects shared or pinned shape buffers and requires explicit detachment;
+    independent value allocations do not imply unique row metadata.
 
 ## Responsibility and abstraction review
 
