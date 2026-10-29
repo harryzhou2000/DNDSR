@@ -16,6 +16,7 @@ report family; the schema's `enum` lists the accepted configuration strings.
 | `TransportBalance` | 3 | Balance; B-E2 adds its chain filters |
 | `MatchedRateRatio` | 4 | localRXX family |
 | `ChemicalResponse` | 5 | Kinetic chemical directional-response ratio |
+| `GradientRateRatio` | — | GR: timestep-independent gradient diffusion / chemical activity |
 
 Posterior accuracy evidence is maintained separately in the independent RRI
 repository, not in this implementation guide. Its `2026-10-19_REPORT.md`
@@ -40,6 +41,41 @@ The enum selects only the indicator formula; it does not change
 `timeMarchControl.sourceStrangSplitting` or `odeCode`. Physical source splitting
 (`sourceStrangSplitting` 1 or 2) requires `eulerSettings.ignoreSourceTerm=false`;
 contradictory configurations are rejected rather than partially omitting chemistry.
+
+## Experimental timestep-independent gradient-rate ratio
+
+`indicatorMode="GradientRateRatio"` reuses the activity family's physical
+rates $A$ and $B$ defined below. In particular, $B=D_{\max}/L_{\rm grad}^2$
+uses temperature and active-species gradients; it is not the divergence of
+the diffusive flux used by `MatchedRateRatio`. Both rates have units of
+inverse seconds. For positive rates, this strategy uses just one Hill map:
+
+$$
+r=\frac{B}{A},\qquad f_c=\frac{r^{p_r}}{r^{p_r}+r_0^{p_r}},\qquad
+\chi=\operatorname{snap}(1-f_c).
+$$
+
+Zero $A$ or $B$ selects Strang. No magnitude cutoff is applied to a small
+positive rate. There is no physical timestep, activity saturation, shock gate,
+chemical Jacobian or spatial pass in this map. `ratioThreshold` is $r_0$ and
+`ratioExponent` is $p_r$; both must be positive. The research recipes GR1P2
+and GR1P4 use $r_0=1$, $p_r=2$ or 4, and endpoint tolerances 0.01/0.05.
+The solver's default indicator remains `Activity`.
+
+At fixed resolved fields, the map is independent of timestep and invariant
+under a common change of the rate unit. Its gradient construction has a
+continuous-field limit, while the inherited cell-length cap and species
+activity floor remain discrete/modeling safeguards. A tiny chemical rate can
+produce high coupled share in a quiet downstream tail. This is a known cost
+and conditioning limitation, not proof that tail coupling improves accuracy.
+The source activity retains broadA's enthalpy-release/cv proxy for continuity;
+it must not be described as an exact constant-volume temperature derivative.
+
+Output diagnostics `reactiveSplitChemicalStep` and `reactiveSplitDiffusiveStep`
+still contain $\Delta t A$ and $\Delta t B$, so their values depend on timestep
+even though this selector does not. `reactiveSplitCoupledScore` contains the
+raw $f_c$ for this mode; `reactiveSplitShockSensor` is diagnostic only.
+Their owning-cell validity and held-step output semantics are unchanged.
 
 ## Experimental local matched-rate ratio (mode 4)
 

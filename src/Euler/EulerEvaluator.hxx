@@ -2122,14 +2122,19 @@ namespace DNDS::Euler
                                       ? std::max(1.0 / maxNormalizedGradient * settings.idealGasProperty.L0, cellLength)
                                       : veryLargeReal;
             real chemicalActivity = dtPhysical * chemicalRate[static_cast<size_t>(iCell)];
+            real diffusionRate = maxDiffusivity[static_cast<size_t>(iCell)] / sqr(gradientLength);
             real diffusionActivity = dtPhysical * maxDiffusivity[static_cast<size_t>(iCell)] / sqr(gradientLength);
-            real coupledScore = ReactiveSplitCoupledScore(
-                chemicalActivity, diffusionActivity, shockSensor, indicatorSettings);
+            const bool useGradientRatio = indicatorSettings.indicatorMode == ReactiveSplitIndicatorMode::GradientRateRatio;
+            real coupledScore = useGradientRatio
+                                    ? ReactiveSplitGradientRateFraction(chemicalRate[static_cast<size_t>(iCell)], diffusionRate, indicatorSettings)
+                                    : ReactiveSplitCoupledScore(chemicalActivity, diffusionActivity, shockSensor, indicatorSettings);
             reactiveSplitChemicalStep[iCell](0) = chemicalActivity;   // a_i
             reactiveSplitDiffusiveStep[iCell](0) = diffusionActivity; // b_i
             reactiveSplitShockSensor[iCell](0) = shockSensor;         // h_i
-            reactiveSplitCoupledScore[iCell](0) = coupledScore;       // C_i
-            if (useStiffnessRatio)
+            reactiveSplitCoupledScore[iCell](0) = coupledScore;       // C_i; GR stores the raw coupled fraction.
+            if (useGradientRatio)
+                reactiveSplitChi[iCell](0) = ReactiveSplitSnapChi(1.0 - coupledScore, indicatorSettings);
+            else if (useStiffnessRatio)
             {
                 real chemicalStiffness = dtPhysical * maxStiffnessRate[static_cast<size_t>(iCell)]; // s_i
                 (*reactiveSplit.stiffnessStep)[iCell](0) = chemicalStiffness;

@@ -8,7 +8,7 @@ TEST_CASE("Reactive split strategy names round trip and reject invalid configura
 {
     using DNDS::Euler::ReactiveSplitIndicatorSettings;
     const auto names = DNDS_ENUM_ALLOWED_VALUES(ReactiveSplitIndicatorMode);
-    REQUIRE(names.size() == 6);
+    REQUIRE(names.size() == 7);
     const auto schema = ReactiveSplitIndicatorSettings::schema();
     const auto &modeSchema = schema["properties"]["indicatorMode"];
     CHECK(modeSchema["enum"] == nlohmann::ordered_json(names));
@@ -61,6 +61,32 @@ TEST_CASE("Chemical response ratio is step independent and has no auxiliary gate
     settings.balanceSmoothingPasses = 1;
     CHECK_FALSE(settings.validate().empty());
     settings.balanceSmoothingPasses = 0;
+    settings.ratioThreshold = 0;
+    CHECK_FALSE(settings.validate().empty());
+}
+
+TEST_CASE("Gradient-rate ratio uses physical rates and preserves simple limits")
+{
+    using namespace DNDS::Euler;
+    ReactiveSplitIndicatorSettings settings;
+    settings.indicatorMode = ReactiveSplitIndicatorMode::GradientRateRatio;
+    settings.ratioThreshold = 1;
+    settings.ratioExponent = 2;
+    CHECK(settings.validate().empty());
+    CHECK(ReactiveSplitGradientRateFraction(0, 1, settings) == 0);
+    CHECK(ReactiveSplitGradientRateFraction(1, 0, settings) == 0);
+    CHECK(ReactiveSplitGradientRateFraction(1, 1, settings) == doctest::Approx(.5));
+    CHECK(ReactiveSplitGradientRateFraction(1, 2, settings) == doctest::Approx(.8));
+    CHECK(ReactiveSplitGradientRateFraction(1e-100, 2e-100, settings) == doctest::Approx(.8));
+    CHECK(ReactiveSplitGradientRateFraction(1e100, 2e100, settings) == doctest::Approx(.8));
+    settings.chemicalActivityThreshold = 1e8;
+    settings.diffusiveActivityThreshold = 1e8;
+    settings.shockScale = 1e-8;
+    CHECK(ReactiveSplitGradientRateFraction(1, 2, settings) == doctest::Approx(.8));
+    CHECK_THROWS(ReactiveSplitGradientRateFraction(-1, 1, settings));
+    settings.spatialPasses = 1;
+    CHECK_FALSE(settings.validate().empty());
+    settings.spatialPasses = 0;
     settings.ratioThreshold = 0;
     CHECK_FALSE(settings.validate().empty());
 }

@@ -12,18 +12,20 @@ namespace DNDS::Euler
      * dimensionless activities, shock gate and maps. Activity is the original
      * activity-product family (including broadA); StiffnessRatio is legacy v2;
      * ChemistryEscape is the BA-CE6 family; TransportBalance is Balance/B-E2;
-     * MatchedRateRatio is localRXX; ChemicalResponse is Kinetic/H01P2.
+     * MatchedRateRatio is localRXX; ChemicalResponse is Kinetic/H01P2;
+     * GradientRateRatio is the timestep-independent GR family.
      * These names select formula families, not their tuned parameter recipes.
      */
     enum class ReactiveSplitIndicatorMode
     {
         Invalid = -1,
-        Activity,         ///< Original/broadA: C=H(a;a0,p) H(b;b0,p) gh, coupled share M(C).
-        StiffnessRatio,   ///< Legacy v2: Strang share H(b/s;r0,pr), with a shock floor.
-        ChemistryEscape,  ///< BA-CE6: coupled share M(C)(1-E), with a chemistry-escape gate E.
-        TransportBalance, ///< Balance/B-E2: C=gh a d/(1+a)^2, with optional chain filters.
-        MatchedRateRatio, ///< localRXX: coupled share H(a;a0,1) H(d/a;r0,pr) gh.
-        ChemicalResponse, ///< Kinetic/H01P2: coupled share H(||Js d||/||Js s||;r0,pr).
+        Activity,          ///< Original/broadA: C=H(a;a0,p) H(b;b0,p) gh, coupled share M(C).
+        StiffnessRatio,    ///< Legacy v2: Strang share H(b/s;r0,pr), with a shock floor.
+        ChemistryEscape,   ///< BA-CE6: coupled share M(C)(1-E), with a chemistry-escape gate E.
+        TransportBalance,  ///< Balance/B-E2: C=gh a d/(1+a)^2, with optional chain filters.
+        MatchedRateRatio,  ///< localRXX: coupled share H(a;a0,1) H(d/a;r0,pr) gh.
+        ChemicalResponse,  ///< Kinetic/H01P2: coupled share H(||Js d||/||Js s||;r0,pr).
+        GradientRateRatio, ///< GR: coupled share H(B/A;r0,pr), using the broadA gradient rate B.
     };
 
     DNDS_DEFINE_ENUM_JSON(ReactiveSplitIndicatorMode,
@@ -33,7 +35,8 @@ namespace DNDS::Euler
                            {ReactiveSplitIndicatorMode::ChemistryEscape, "ChemistryEscape"},
                            {ReactiveSplitIndicatorMode::TransportBalance, "TransportBalance"},
                            {ReactiveSplitIndicatorMode::MatchedRateRatio, "MatchedRateRatio"},
-                           {ReactiveSplitIndicatorMode::ChemicalResponse, "ChemicalResponse"}})
+                           {ReactiveSplitIndicatorMode::ChemicalResponse, "ChemicalResponse"},
+                           {ReactiveSplitIndicatorMode::GradientRateRatio, "GradientRateRatio"}})
 
     /**
      * @brief Configuration of the dimensionless mixed reactive-source selector.
@@ -76,8 +79,8 @@ namespace DNDS::Euler
         real chemicalActivityThreshold = 1.0;  ///< Chemical saturation threshold @f$a_0@f$.
         real diffusiveActivityThreshold = 1.0; ///< Diffusion saturation threshold @f$b_0@f$.
         real activitySaturationExponent = 1.0; ///< Shared activity-saturation exponent @f$p@f$.
-        real ratioThreshold = 1e-1;            ///< v2 switch midpoint @f$r_0@f$ on @f$b/s@f$.
-        real ratioExponent = 2.0;              ///< v2 switch exponent @f$p_r@f$ on @f$b/s@f$.
+        real ratioThreshold = 1e-1;            ///< Ratio midpoint @f$r_0@f$; ratio depends on the named strategy.
+        real ratioExponent = 2.0;              ///< Ratio Hill power @f$p_r@f$.
         real escapeStiffnessThreshold = 100.0;
         real escapeStiffnessExponent = 2.0;
         real escapeRatioThreshold = 1e-6;
@@ -106,6 +109,7 @@ namespace DNDS::Euler
                        "TransportBalance = Balance/B-E2 matched-rate balance; "
                        "MatchedRateRatio = localRXX matched diffusion/chemistry ratio; "
                        "ChemicalResponse = Kinetic/H01P2, coupled share H(||Js d||/||Js s||;r0,pr). "
+                        "GradientRateRatio = GR, coupled share H(B/A;r0,pr), independent of dt, with broadA's gradient-based B. "
                        "See docs/guides/reactive_split_method.md for formulas and recipe parameters. "
                        "Use a string, not a legacy integer.",
                        DNDS::Config::enum_values(DNDS_ENUM_ALLOWED_VALUES(ReactiveSplitIndicatorMode)));
@@ -116,8 +120,8 @@ namespace DNDS::Euler
             DNDS_FIELD(chemicalActivityThreshold,  "Chemical activity threshold a0 in sat(a;a0,p)", DNDS::Config::range(0.0));
             DNDS_FIELD(diffusiveActivityThreshold, "Diffusion activity threshold b0 in sat(b;b0,p)", DNDS::Config::range(0.0));
             DNDS_FIELD(activitySaturationExponent, "Shared activity-saturation exponent p in sat(z;z0,p)", DNDS::Config::range(0.0));
-            DNDS_FIELD(ratioThreshold,             "Ratio midpoint r0 for modes 1, 4 and 5", DNDS::Config::range(0.0));
-            DNDS_FIELD(ratioExponent,              "Ratio Hill exponent pr for modes 1, 4 and 5", DNDS::Config::range(0.0));
+            DNDS_FIELD(ratioThreshold,             "Ratio midpoint r0 for StiffnessRatio, MatchedRateRatio, ChemicalResponse and GradientRateRatio", DNDS::Config::range(0.0));
+            DNDS_FIELD(ratioExponent,              "Ratio Hill power pr for StiffnessRatio, MatchedRateRatio, ChemicalResponse and GradientRateRatio", DNDS::Config::range(0.0));
             DNDS_FIELD(coupledThreshold,           "Coupled-score midpoint C0", DNDS::Config::range(0.0));
             DNDS_FIELD(transitionWidth,            "Logistic coupled-fraction width w", DNDS::Config::range(0.0));
             DNDS_FIELD(shockScale,                 "Pressure-jump scale h0 in shock gate gh", DNDS::Config::range(0.0));
@@ -158,6 +162,8 @@ namespace DNDS::Euler
                          { return s.indicatorMode != ReactiveSplitIndicatorMode::MatchedRateRatio || (s.ratioThreshold > 0 && s.ratioExponent > 0 && s.spatialPasses == 0); });
             config.check("chemical response requires positive ratio controls and no spatial passes", [](const T &s)
                          { return s.indicatorMode != ReactiveSplitIndicatorMode::ChemicalResponse || (s.ratioThreshold > 0 && s.ratioExponent > 0 && s.spatialPasses == 0); });
+            config.check("gradient-rate ratio requires positive ratio controls and no spatial passes", [](const T &s)
+                         { return s.indicatorMode != ReactiveSplitIndicatorMode::GradientRateRatio || (s.ratioThreshold > 0 && s.ratioExponent > 0 && s.spatialPasses == 0); });
         }
     };
 
@@ -250,6 +256,25 @@ namespace DNDS::Euler
                                                         std::log(settings.ratioThreshold));
         return argument >= 0 ? 1.0 / (1.0 + std::exp(-argument))
                              : std::exp(argument) / (1.0 + std::exp(argument));
+    }
+
+    /**
+     * @brief GR coupled share @f$H(B/A;r_0,p_r)@f$, without a physical-step factor.
+     * @details A is broadA's species/enthalpy-release activity and B its gradient
+     * diffusion rate, both in inverse seconds. No activity or shock gate, chemical
+     * Jacobian, spatial expansion or smoothing is used. Zero A or B selects Strang;
+     * a small positive A is not rounded to zero. Quiet tails can therefore select
+     * coupled treatment. Endpoint snapping is applied separately by the caller.
+     */
+    inline real ReactiveSplitGradientRateFraction(real chemicalRate, real diffusionRate,
+                                                  const ReactiveSplitIndicatorSettings &settings)
+    {
+        DNDS_check_throw_info(std::isfinite(chemicalRate) && chemicalRate >= 0 &&
+                                  std::isfinite(diffusionRate) && diffusionRate >= 0,
+                              "gradient-rate ratio requires finite nonnegative rates");
+        if (chemicalRate == 0 || diffusionRate == 0)
+            return 0;
+        return ReactiveSplitChemicalResponseFraction(chemicalRate, diffusionRate, settings);
     }
 
     inline real ReactiveSplitBalanceSmooth(real localFraction, real neighborSum, int neighborCount)
