@@ -1,4 +1,5 @@
 #include "RowTransfer.hpp"
+#include <algorithm>
 #include <climits>
 #include <numeric>
 #include <optional>
@@ -69,14 +70,15 @@ namespace DNDS::Runtime
             return result;
         }
         /// Collision detection needs one answer after route construction, not
-        /// dynamic membership. Append request-sized scratch and sort once; no
-        /// per-row hash allocation and never a global/entity-sized bitmap.
+        /// dynamic membership. Check complete permutations in-place, or sort
+        /// sparse request scratch; never allocate a global/entity-sized bitmap.
         class SeenRows
         {
             std::vector<index> _rows;
+            index _extent;
 
         public:
-            SeenRows(index extent, size_t expected)
+            SeenRows(index extent, size_t expected) : _extent(extent)
             {
                 DNDS_check_throw_info(extent >= 0, "route row extent is negative");
                 _rows.reserve(expected);
@@ -84,6 +86,25 @@ namespace DNDS::Runtime
             void Append(index row) { _rows.push_back(row); }
             bool HasDuplicates()
             {
+                if (index(_rows.size()) == _extent &&
+                    std::all_of(_rows.begin(), _rows.end(), [&](index row)
+                                { return row >= 0 && row < _extent; }))
+                {
+                    // A complete in-range row list is a permutation iff every
+                    // value can be placed at its own index. Each swap fixes a
+                    // new slot; finding that slot already fixed proves a
+                    // duplicate. This is linear and uses only request scratch,
+                    // including for migrations whose source extent is large.
+                    for (index iRow = 0; iRow < _extent; ++iRow)
+                        while (_rows[iRow] != iRow)
+                        {
+                            const auto iTarget = _rows[iRow];
+                            if (_rows[iTarget] == iTarget)
+                                return true;
+                            std::swap(_rows[iRow], _rows[iTarget]);
+                        }
+                    return false;
+                }
                 std::sort(_rows.begin(), _rows.end());
                 return std::adjacent_find(_rows.begin(), _rows.end()) != _rows.end();
             }

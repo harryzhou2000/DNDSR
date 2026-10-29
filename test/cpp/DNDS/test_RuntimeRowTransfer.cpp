@@ -16,6 +16,101 @@ int main(int argc, char **argv)
     return result;
 }
 
+TEST_CASE("Large permuted routes preserve row order padding and rank-local collision flags")
+{
+    int rank = 0, size = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+    constexpr DNDS::index rows = 8193, width = 3, step = 4099;
+    const int previous = (rank + size - 1) % size, next = (rank + 1) % size;
+    const auto context = std::make_shared<CommunicationContext>(MPI_COMM_WORLD);
+    Array<int64_t> source(RowLayout::Dense(rows, width, 5)), destination(RowLayout::Dense(rows, width, 6));
+    {
+        auto write = source.Storage().Write();
+        std::fill_n(write.View<int64_t>().data, rows * 5, int64_t(-999));
+        for (DNDS::index iRow = 0; iRow < rows; ++iRow)
+            for (DNDS::index iCol = 0; iCol < width; ++iCol)
+                write.View<int64_t>()[iRow * 5 + iCol] = rank * 1000000 + iRow * 16 + iCol;
+    }
+    for (bool duplicate : {false, true})
+    {
+        std::vector<std::vector<DNDS::index>> send(size), receive(size);
+        for (DNDS::index iRow = 0; iRow < rows; ++iRow)
+        {
+            send[next].push_back(iRow * step % rows);
+            receive[previous].push_back(iRow);
+        }
+        if (duplicate && rank == 0)
+            send[next].back() = send[next].front();
+        auto route = RowTransferPlan::Known(context, rows, rows, send, receive);
+        CHECK_FALSE(route.HasCollisions());
+        CHECK(route.Reverse().HasCollisions() == (duplicate && rank == 0));
+        {
+            auto write = destination.Storage().Write();
+            std::fill_n(write.View<int64_t>().data, rows * 6, int64_t(-777));
+        }
+        const auto schema = ElementSchema::Arithmetic<int64_t>();
+        PayloadPlan payload(route, source.Layout(), destination.Layout(), schema);
+        payload.Bind(source, destination).Begin().Wait();
+        const auto verify = [&]
+        {
+            auto input = source.Storage().Read(), output = destination.Storage().Read();
+            const auto in = input.View<int64_t>(), out = output.View<int64_t>();
+            for (DNDS::index iRow = 0; iRow < rows; ++iRow)
+            {
+                const auto original = duplicate && previous == 0 && iRow == rows - 1 ? 0 : iRow * step % rows;
+                for (DNDS::index iCol = 0; iCol < width; ++iCol)
+                    CHECK(out[iRow * 6 + iCol] == previous * 1000000 + original * 16 + iCol);
+                for (DNDS::index iCol = width; iCol < 6; ++iCol)
+                    CHECK(out[iRow * 6 + iCol] == -777);
+                for (DNDS::index iCol = width; iCol < 5; ++iCol)
+                    CHECK(in[iRow * 5 + iCol] == -999);
+            }
+        };
+        verify();
+        if (duplicate)
+        {
+            PayloadPlan reverse(route.Reverse(), destination.Layout(), source.Layout(), schema);
+            CHECK_THROWS(reverse.Bind(destination, source));
+            // A failed reverse admission must leave the matching namespace
+            // reusable and must not alter the forward row correspondence.
+            payload.Bind(source, destination).Begin().Wait();
+            verify();
+        }
+    }
+}
+
+TEST_CASE("Complete small row relations agree with independent sorted collision oracle")
+{
+    int rank = 0, size = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+    const auto context = std::make_shared<CommunicationContext>(MPI_COMM_WORLD);
+    for (DNDS::index rows = 0; rows <= 4; ++rows)
+    {
+        DNDS::index combinations = 1;
+        for (DNDS::index iRow = 0; iRow < rows; ++iRow)
+            combinations *= rows;
+        for (DNDS::index pattern = 0; pattern < combinations; ++pattern)
+        {
+            std::vector<std::vector<DNDS::index>> send(size), receive(size);
+            auto value = pattern;
+            for (DNDS::index iRow = 0; iRow < rows; ++iRow)
+            {
+                send[rank].push_back(value % rows);
+                value /= rows;
+                receive[rank].push_back(iRow);
+            }
+            auto oracle = send[rank];
+            std::sort(oracle.begin(), oracle.end());
+            const bool duplicate = std::adjacent_find(oracle.begin(), oracle.end()) != oracle.end();
+            auto route = RowTransferPlan::Known(context, rows, rows, send, receive);
+            CHECK_FALSE(route.HasCollisions());
+            CHECK(route.Reverse().HasCollisions() == duplicate);
+        }
+    }
+}
+
 TEST_CASE("Typed binding rejects same-size arithmetic schema confusion")
 {
     int rank;
