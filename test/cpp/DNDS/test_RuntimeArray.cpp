@@ -308,6 +308,69 @@ TEST_CASE("Array allocation accounting retains capacity and deduplicates aliased
     CHECK(total == 128 + 2 * 5 * sizeof(double) + 4 * sizeof(size_t) + 2 * 5 * sizeof(int) + 2 * sizeof(size_t));
 }
 
+TEST_CASE("Consumed Array handles reject queries while retained access survives move and release")
+{
+    const auto host = R::ExecutionContext::Host();
+    for (const auto &shape : {R::RowLayout::Dense(3, 2, 4), R::RowLayout::Padded({0, 2, 1}, 4),
+                              R::RowLayout::Ragged({0, 2, 1})})
+        for (bool release : {false, true})
+        {
+            R::Array<int> array(shape), other(shape);
+            {
+                auto write = array.Write();
+                write.View()(1, 0) = 173;
+            }
+            auto access = array.Read();
+            auto retained = std::move(access);
+            CHECK_FALSE(access.Active());
+            CHECK_THROWS(access.Layout());
+            CHECK_THROWS(access.View());
+            std::optional<R::Array<int>> moved;
+            if (release)
+                array.ReleaseOn(host);
+            else
+                moved.emplace(std::move(array));
+            CHECK_FALSE(array.IsValid());
+            CHECK_FALSE(array.SharedStorage());
+            CHECK_THROWS(array.ShapeVersion());
+            CHECK_THROWS(array.Layout());
+            CHECK_THROWS(array.RowCount());
+            CHECK_THROWS(array.RowSize(0));
+            CHECK_THROWS(array.GetDevice());
+            CHECK_THROWS(array.Identity());
+            CHECK_THROWS(array.Version());
+            CHECK_THROWS(array.Storage());
+            CHECK_THROWS(array.Read());
+            CHECK_THROWS(array.Write());
+            CHECK_THROWS(array.EditRows());
+            CHECK_THROWS(array.Clone());
+            CHECK_THROWS(array.To(R::Device::Host()));
+            CHECK_THROWS(array.CopyFrom(other));
+            CHECK_THROWS(other.CopyFrom(array));
+            CHECK(other.IsValid());
+            CHECK_NOTHROW(other.Write());
+            auto copiedInvalid = array;
+            CHECK_FALSE(copiedInvalid.IsValid());
+            CHECK_THROWS(copiedInvalid.Read());
+            CHECK(array.CanReleaseOrdered(host));
+            CHECK_NOTHROW(array.ReleaseOn(host));
+            CHECK_NOTHROW(array.ReleaseOn(host));
+            CHECK(retained.At(1, 0) == 173);
+            array.Reset(shape);
+            CHECK(array.IsValid());
+            CHECK(retained.At(1, 0) == 173);
+            {
+                auto write = array.Write();
+                auto active = std::move(write);
+                CHECK_FALSE(write.Active());
+                CHECK_THROWS(write.Layout());
+                CHECK_THROWS(write.View());
+                active.View()(1, 0) = 24;
+            }
+            CHECK(array.Read().At(1, 0) == 24);
+        }
+}
+
 TEST_CASE("Native failed write scope invalidates its aliases")
 {
     R::Array<double> array(R::RowLayout::Dense(1, 1));

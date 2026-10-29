@@ -584,7 +584,11 @@ namespace DNDS::Runtime
         }
         bool Active() const { return _lease.Active(); }
         Device GetDevice() const { return _lease.GetDevice(); }
-        const RowLayout &Layout() const { return _layout->rows; }
+        const RowLayout &Layout() const
+        {
+            DNDS_check_throw_info(_layout, "Array access was moved");
+            return _layout->rows;
+        }
         template <bool Checked = false>
         ArrayView<Value, Checked> View() const
         {
@@ -615,6 +619,9 @@ namespace DNDS::Runtime
 
     /// Native shallow handle. Layout replacement retains existing aliases/leases.
     /// Legacy DNDS::Array remains a separate deep-copy facade over shared facilities.
+    /// A moved/released handle is invalid: IsValid returns false, SharedStorage
+    /// returns null, and storage-dependent operations throw. Reset or assignment
+    /// restores it; existing retained access scopes keep their own allocation.
     template <class T>
     class ArrayHandle
     {
@@ -622,6 +629,11 @@ namespace DNDS::Runtime
         static_assert(alignof(T) <= 64, "native Array supports alignment up to 64 bytes");
         ArrayStorage::Shared _storage;
         explicit ArrayHandle(ArrayStorage::Shared storage) : _storage(std::move(storage)) {}
+        const ArrayStorage &RequireStorage() const
+        {
+            DNDS_check_throw_info(_storage, "Array handle was moved or released");
+            return *_storage;
+        }
 
     public:
         using value_type = T;
@@ -662,23 +674,31 @@ namespace DNDS::Runtime
         }
         ArrayStorage::Shared SharedStorage() const { return ArrayStorage::Share(_storage); }
         ExclusiveRows EditRows(); // Defined by RowBuilder.hpp; exclusive CPU setup.
-        uint64_t ShapeVersion() const { return _storage->ShapeVersion(); }
-        RowLayout Layout() const { return _storage->Layout(); }
-        index RowCount() const { return _storage->RowCount(); }
+        uint64_t ShapeVersion() const { return RequireStorage().ShapeVersion(); }
+        RowLayout Layout() const { return RequireStorage().Layout(); }
+        index RowCount() const { return RequireStorage().RowCount(); }
         index Rows() const { return RowCount(); }
-        index RowSize(index row) const { return _storage->RowSize(row); }
+        index RowSize(index row) const { return RequireStorage().RowSize(row); }
         Device GetDevice() const { return Storage().GetDevice(); }
         uint64_t Identity() const { return Storage().Identity(); }
         uint64_t Version() const { return Storage().Version(); }
-        bool IsValid() const { return _storage->IsValid(); }
-        Buffer Storage() const { return _storage->Values(); }
+        bool IsValid() const { return _storage && _storage->IsValid(); }
+        Buffer Storage() const { return RequireStorage().Values(); }
         bool CanReleaseOrdered(ExecutionContext context) const { return !_storage || _storage->CanReleaseOrdered(context); }
         void ReleaseOn(ExecutionContext context) { ArrayStorage::ReleaseHandle(_storage, context); }
-        ReadLease Read(ExecutionContext context = ExecutionContext::Host()) const { return {_storage->Read(context), _storage->SharedLayout()}; }
-        WriteLease Write(ExecutionContext context = ExecutionContext::Host()) { return {_storage->Write(context), _storage->SharedLayout()}; }
+        ReadLease Read(ExecutionContext context = ExecutionContext::Host()) const
+        {
+            const auto &storage = RequireStorage();
+            return {storage.Read(context), storage.SharedLayout()};
+        }
+        WriteLease Write(ExecutionContext context = ExecutionContext::Host())
+        {
+            const auto &storage = RequireStorage();
+            return {storage.Write(context), storage.SharedLayout()};
+        }
         CopyOperation CopyFrom(const ArrayHandle &other, ExecutionContext context = ExecutionContext::Host())
         {
-            return _storage->CopyFrom(*other._storage, context);
+            return RequireStorage().CopyFrom(other.RequireStorage(), context);
         }
         /// Synchronous explicit snapshot/placement conversion. CopyFrom is async.
         ArrayHandle To(Device device, ExecutionContext context) const

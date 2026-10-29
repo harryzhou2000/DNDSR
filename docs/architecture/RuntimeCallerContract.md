@@ -42,6 +42,13 @@ to inline CPU, worker CPU and CUDA execution.
    other live owners. The final decrement determines the actual release. Releasing
    aliases on different streams is safe only if whichever can be final is ordered
    after all uses. Reference counting supplies ownership, not this ordering proof.
+   A moved-from or released Array handle has `IsValid() == false` and null
+   `SharedStorage()`. Storage queries, reads/writes, copies and placement
+   conversions reject that handle; reset or assign it before reuse. Repeated
+   `ReleaseOn` is harmless. Already retained access scopes/aliases keep their
+   allocation and shape independently. A moved access scope rejects layout/view
+   queries; its destination owns the lease. These checks occur at the host
+   access boundary, not inside borrowed CPU/GPU kernel views.
 6. Observe errors with `WaitHost`, operation `Wait`/`Test`, or engine `Synchronize`.
    Destructor cleanup is a safety fallback and cannot reliably report errors.
    Check failure before publishing results; coordinate rank-local recovery before
