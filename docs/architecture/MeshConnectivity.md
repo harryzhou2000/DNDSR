@@ -195,6 +195,21 @@ the descriptors, spaces and mappings remain distinct objects. Input ghost rows
 are not reused. Descriptor ordinals are local to one `BuildGhosted` call and
 are recomputed from the current sorted registry.
 
+Separately, the registry retains the last temporary remote-row fetch per
+descriptor. Publication may reuse that scratch only when its exact ordered
+global row-ID list equals the final canonical source ghost list and its value
+version is unchanged under a newly acquired read lease. All ranks agree on
+that decision before choosing reuse or the ordinary EntityGhostMapping transfer.
+An active writer, a completed alias write, a different branch frontier or a
+larger endpoint union causes a miss. Scratch is bounded by locally requested
+rows; comparing those sparse ID lists does not allocate global-sized data.
+Successful reuse consumes the scratch entry into one publication. Separate
+publications therefore own independent ghost values; semantic descriptor
+aliases inside one publication still share its payload. Writes to an earlier
+publication cannot change a later publication's ghosts.
+This check is separate from the O(1) mapping-identity key used for descriptor
+aliases. Arbitrary ghost buffers from an input mesh are still not reused.
+
 ## Semantic validation requirements
 
 The default setup policy matches legacy coverage: the configured cell ring,
