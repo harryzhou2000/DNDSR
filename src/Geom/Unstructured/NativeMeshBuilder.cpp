@@ -157,14 +157,13 @@ namespace DNDS::Geom
             Runtime::RowTransferPlan route(context, size_t(input.cells.NumOwned()), candidateCells.size(), requests);
             auto fetch = [&](const Runtime::Array<index> &values)
             {
-                auto layout = route.DestinationLayout(values.Layout());
+                Runtime::PayloadPlan payload(route, values.Layout(), Runtime::ElementSchema::Arithmetic<index>());
                 auto output = LocalStage(mpi, "periodic boundary payload allocation", [&]
-                                         { return Runtime::Array<index>(layout); });
+                                         { return Runtime::Array<index>(payload.DestinationLayout()); });
                 Runtime::TransferOptions options;
                 options.mode = Runtime::TransferMode::Transient;
                 options.context = context;
-                Runtime::PayloadPlan(route, values.Layout(), output.Layout(), Runtime::ElementSchema::Arithmetic<index>())
-                    .Bind(values, output, Runtime::TransferTransport::Direct, options)
+                payload.Bind(values, output, Runtime::TransferTransport::Direct, options)
                     .Begin()
                     .Wait();
                 return output;
@@ -250,12 +249,12 @@ namespace DNDS::Geom
                                            requests, {input.cells.Stamp(), input.boundaries.Stamp()});
             auto fetch = [&](const Runtime::Array<index> &source)
             {
-                Runtime::Array<index> received(route.DestinationLayout(source.Layout()));
+                Runtime::PayloadPlan payload(route, source.Layout(), Runtime::ElementSchema::Arithmetic<index>());
+                Runtime::Array<index> received(payload.DestinationLayout());
                 Runtime::TransferOptions options;
                 options.mode = Runtime::TransferMode::Transient;
                 options.context = context;
-                Runtime::PayloadPlan(route, source.Layout(), received.Layout(), Runtime::ElementSchema::Arithmetic<index>())
-                    .Bind(source, received, Runtime::TransferTransport::Direct, options)
+                payload.Bind(source, received, Runtime::TransferTransport::Direct, options)
                     .Begin()
                     .Wait();
                 return received;

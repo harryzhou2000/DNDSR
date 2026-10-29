@@ -25,12 +25,12 @@ namespace DNDS::Geom
 
         Array Transfer(const R::RowTransferPlan &route, const Array &values, const std::shared_ptr<R::CommunicationContext> &context)
         {
-            Array result(route.DestinationLayout(values.Layout()));
+            R::PayloadPlan payload(route, values.Layout(), R::ElementSchema::Arithmetic<index>());
+            Array result(payload.DestinationLayout());
             R::TransferOptions options;
             options.mode = R::TransferMode::Transient;
             options.context = context;
-            R::PayloadPlan(route, values.Layout(), result.Layout(), R::ElementSchema::Arithmetic<index>())
-                .Bind(values, result, R::TransferTransport::Direct, options)
+            payload.Bind(values, result, R::TransferTransport::Direct, options)
                 .Begin()
                 .Wait();
             return result;

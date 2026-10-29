@@ -362,14 +362,20 @@ namespace DNDS::Geom
             batches.resize(size_t(mpi.size));
             for (index source = 0; source < cone.NumOwned(); ++source)
             {
-                const auto sourceGlobal = cone.Source().LocalToGlobal(source);
+                const auto sourceGlobal = cone.Source().LocalToGlobalPinned(source);
                 for (size_t slot = 0; slot < cone.RowSize(source); ++slot)
                 {
                     const auto entry = cone.ReadEntry(source, slot);
                     if (entry.absent)
                         continue;
-                    const auto owner = cone.Target().Owner(entry.global);
-                    batches[size_t(owner)].push_back(cone.Target().OwnerLocalRow(entry.global));
+                    // The retained adjacency scope pins both immutable maps.
+                    // Find owner and row together; public descriptor queries
+                    // would each repeat the epoch lock and binary search.
+                    MPI_int owner = -1;
+                    index ownerRow = -1;
+                    DNDS_check_throw_info(cone.Target()._global->search(entry.global, owner, ownerRow),
+                                          "inverse target is outside its entity space");
+                    batches[size_t(owner)].push_back(ownerRow);
                     batches[size_t(owner)].push_back(sourceGlobal);
                 }
             }
@@ -402,11 +408,11 @@ namespace DNDS::Geom
         auto route = Runtime::RowTransferPlan::Known(context, size_t(mpi.size), size_t(mpi.size),
                                                      std::move(send), std::move(receive),
                                                      {cone.Source().Stamp(), cone.Target().Stamp()});
-        Runtime::Array<index> incoming(route.DestinationLayout(source.Layout()));
+        Runtime::PayloadPlan payload(route, source.Layout(), Runtime::ElementSchema::Arithmetic<index>());
+        Runtime::Array<index> incoming(payload.DestinationLayout());
         Runtime::TransferOptions options;
         options.mode = Runtime::TransferMode::Transient;
         options.context = context;
-        Runtime::PayloadPlan payload(route, source.Layout(), incoming.Layout(), Runtime::ElementSchema::Arithmetic<index>());
         payload.Bind(source, incoming, Runtime::TransferTransport::Direct, options).Begin().Wait();
 
         std::vector<std::vector<index>> support(size_t(cone.Target().NumOwned()));
@@ -417,12 +423,13 @@ namespace DNDS::Geom
         {
             const auto length = view.RowSize(size_t(peer));
             valid = valid && length % 2 == 0;
+            const auto &sourceOffsets = cone.Source()._global->ROffsets();
             for (size_t slot = 0; slot + 1 < length; slot += 2)
             {
                 const auto targetRow = view(size_t(peer), slot), sourceGlobal = view(size_t(peer), slot + 1);
                 const bool entryValid = targetRow >= 0 && size_t(targetRow) < support.size() &&
-                                        sourceGlobal >= 0 && sourceGlobal < cone.Source().NumGlobal() &&
-                                        cone.Source().Owner(sourceGlobal) == peer;
+                                        sourceGlobal >= sourceOffsets[size_t(peer)] &&
+                                        sourceGlobal < sourceOffsets[size_t(peer + 1)];
                 valid = valid && entryValid;
                 if (entryValid)
                     support[size_t(targetRow)].push_back(sourceGlobal);
@@ -459,12 +466,11 @@ namespace DNDS::Geom
         }
         MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, mpi.comm);
         DNDS_check_throw_info(valid, "native halo route has stale/wrong source order or nonglobal relation payload");
-        Runtime::Array<index> ghosts(halo._route.DestinationLayout(_owned.Layout()));
+        Runtime::PayloadPlan payload(halo._route, _owned.Layout(), Runtime::ElementSchema::Arithmetic<index>());
+        Runtime::Array<index> ghosts(payload.DestinationLayout());
         Runtime::TransferOptions options;
         options.mode = Runtime::TransferMode::Transient;
-        auto context = std::make_shared<Runtime::CommunicationContext>(mpi.comm);
-        options.context = context;
-        Runtime::PayloadPlan payload(halo._route, _owned.Layout(), ghosts.Layout(), Runtime::ElementSchema::Arithmetic<index>());
+        options.context = halo._route.Context();
         payload.Bind(_owned, ghosts, Runtime::TransferTransport::Direct, options).Begin().Wait();
         MeshAdjacency result(_kind, _source, _target, _owned, _state);
         result._ghost.emplace(std::move(ghosts));

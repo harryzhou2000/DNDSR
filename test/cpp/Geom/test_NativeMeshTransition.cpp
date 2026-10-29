@@ -449,6 +449,17 @@ TEST_CASE("Native transition distinguishes exact aliases from rank-local candida
     check(sorted, {3 * oldRank, 3 * oldRank + 1});
     check(unavailable, {3 * ((oldRank + std::max(1, mpi.size / 2)) % mpi.size) + 2, DNDS::UnInitIndex});
     CHECK(source->Relation(a).GlobalRow(0) == std::vector<I>{start + 1, DNDS::UnInitIndex, start, start + 1});
+
+    // Payload reuse may share the transfer, but must not hide an invalid
+    // descriptor on one rank. Exercise owned construction directly so a
+    // publication validator cannot reject this before the transition does.
+    auto owned = G::NativeMeshAssembler::CaptureOwned(*source, mpi);
+    auto malformed = Rows({mpi.rank == 0 ? std::vector<I>{start + 1, start}
+                                         : std::vector<I>{start, start + 1}});
+    owned.namedRelations.insert_or_assign(ordered, malformed);
+    owned.namedRelations.insert_or_assign(sorted, malformed);
+    CHECK_THROWS(G::NativeMeshTransition::BuildOwned(owned, mpi, placement));
+    CHECK(source->Relation(sorted).GlobalRow(0) == std::vector<I>{start, start + 1});
 }
 
 TEST_CASE("Native aliased transition retains repeated periodic IDs and ordered frames")
@@ -487,6 +498,35 @@ TEST_CASE("Native aliased transition retains repeated periodic IDs and ordered f
     }
     CHECK(moved->MeshNamespace() == source->MeshNamespace());
     CHECK(moved->IdHighWater() == source->IdHighWater());
+}
+
+TEST_CASE("Owned primary reorder retains IDs and cones when other ranks own no cells")
+{
+    const auto mpi = MPI();
+    auto source = G::NativeMeshBuilder::Build(RotatedTriangles(mpi, true));
+    G::ReorderInput placement;
+    placement.explicitMaps.push_back({G::EntityKind::Cell, {0}});
+    auto gathered = G::NativeMeshTransition::BuildOwned(source, mpi, placement);
+    REQUIRE(gathered.owned.spaces.at(G::EntityKind::Cell).NumOwned() == (mpi.rank == 0 ? mpi.size : 0));
+    auto reordered = G::NativeMeshTransition::ReorderOwnedCells(gathered.owned, mpi);
+    auto result = G::AssembleNativeMesh(mpi, std::move(reordered.owned));
+    const auto read = result->Snapshot(R::Device::Host()).AcquireRead();
+    const auto view = read.HostView();
+    std::set<I> ids;
+    for (I iCell = 0; iCell < result->NumOwned(G::EntityKind::Cell); ++iCell)
+    {
+        const auto id = result->OriginalEntityId(G::EntityKind::Cell, iCell);
+        ids.insert(id);
+        REQUIRE(view.CellNodes(iCell).size() == 3);
+        for (I iSlot = 0; iSlot < 3; ++iSlot)
+            CHECK(result->OriginalEntityId(G::EntityKind::Node, view.CellNodes(iCell)[iSlot]) ==
+                  3 * ((id + 1) % mpi.size) + iSlot);
+    }
+    CHECK(ids.size() == size_t(mpi.rank == 0 ? mpi.size : 0));
+    if (mpi.rank == 0)
+        for (I id = 0; id < mpi.size; ++id)
+            CHECK(ids.count(id) == 1);
+    CHECK(source.spaces.at(G::EntityKind::Cell).NumOwned() == 1);
 }
 
 int main(int argc, char **argv)

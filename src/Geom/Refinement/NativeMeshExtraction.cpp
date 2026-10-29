@@ -24,60 +24,17 @@ namespace DNDS::Geom
         Runtime::Array<T> Fetch(const Runtime::RowTransferPlan &route, const Runtime::Array<T> &source, const MPIInfo &mpi,
                                 const std::shared_ptr<Runtime::CommunicationContext> &context)
         {
-            auto layout = route.DestinationLayout(source.Layout());
+            Runtime::PayloadPlan payload(route, source.Layout(), Runtime::ElementSchema::For<T>());
             std::optional<Runtime::Array<T>> result;
             FieldTransferDetail::LocalStage(mpi, [&]
-                                            { result.emplace(std::move(layout)); });
+                                            { result.emplace(payload.DestinationLayout()); });
             Runtime::TransferOptions options;
             options.mode = Runtime::TransferMode::Transient;
             options.context = context;
-            Runtime::PayloadPlan(route, source.Layout(), result->Layout(), Runtime::ElementSchema::For<T>())
-                .Bind(source, *result, Runtime::TransferTransport::Direct, options)
+            payload.Bind(source, *result, Runtime::TransferTransport::Direct, options)
                 .Begin()
                 .Wait();
             return std::move(*result);
-        }
-        Array StageFaceRows(const UnstructuredMeshView &view, const EntitySpace &nodes,
-                            const Runtime::RowTransferPlan &route)
-        {
-            DNDS_check_throw_info(route.SourceRows() == size_t(view.NumFace()),
-                                  "face staging route has the wrong source extent");
-            std::vector<size_t> rows;
-            for (const auto &peer : route.SendRows())
-                rows.insert(rows.end(), peer.begin(), peer.end());
-            std::sort(rows.begin(), rows.end());
-            rows.erase(std::unique(rows.begin(), rows.end()), rows.end());
-            Runtime::RowBuilder builder(route.SourceRows(), sizeof(index));
-            for (const auto row : rows)
-            {
-                const auto values = view.FaceNodes(index(row));
-                builder.ResizeRow(row, values.size());
-                auto output = builder.Row<index>(row);
-                for (size_t slot = 0; slot < values.size(); ++slot)
-                    output.data[slot] = nodes.LocalToGlobal(values[slot]);
-            }
-            return Array::FromSharedStorage(builder.Commit());
-        }
-        Runtime::Array<NodePeriodicBits> StagePeriodicRows(
-            const UnstructuredMeshView &view, const Runtime::RowTransferPlan &route)
-        {
-            DNDS_check_throw_info(route.SourceRows() == size_t(view.NumFace()),
-                                  "periodic staging route has the wrong source extent");
-            std::vector<size_t> rows;
-            for (const auto &peer : route.SendRows())
-                rows.insert(rows.end(), peer.begin(), peer.end());
-            std::sort(rows.begin(), rows.end());
-            rows.erase(std::unique(rows.begin(), rows.end()), rows.end());
-            Runtime::RowBuilder builder(route.SourceRows(), sizeof(NodePeriodicBits));
-            for (const auto row : rows)
-            {
-                const auto values = view.FaceNodePeriodicBits(index(row));
-                DNDS_check_throw_info(values.size() == view.FaceNodes(index(row)).size(),
-                                      "face periodic metadata has the wrong row width");
-                builder.ResizeRow(row, values.size());
-                std::copy(values.begin(), values.end(), builder.Row<NodePeriodicBits>(row).data);
-            }
-            return Runtime::Array<NodePeriodicBits>::FromSharedStorage(builder.Commit());
         }
     }
 
@@ -125,52 +82,46 @@ namespace DNDS::Geom
             } });
         if (source.Requirements().faces)
         {
-            const auto faces = source.Entities(EntityKind::Face);
-            std::vector<Runtime::RowRequest> requests;
+            // Published boundary-to-face indices already address the retained
+            // owned/ghost face pair. Read its oriented cone directly; fetching
+            // the same face from its owner adds a route and payload transfers
+            // without supplying any information absent from this snapshot.
             FieldTransferDetail::LocalStage(mpi, [&]
                                             {
-                for (size_t row = 0; row < cones.size(); ++row)
+                for (index iRow = 0; iRow < index(cones.size()); ++iRow)
                 {
-                    const auto boundary = selectedBoundaries[row];
+                    const auto boundary = selectedBoundaries[iRow];
                     const auto mappedFaces = sourceView.BoundaryFaces(index(boundary));
                     DNDS_check_throw_info(mappedFaces.size() <= 1, "boundary extraction requires at most one mapped physical face");
                     if (mappedFaces.size() == 0 || mappedFaces[0] == UnInitIndex) continue;
-                    const auto face = faces.LocalToGlobal(mappedFaces[0]);
-                    requests.push_back({faces.Owner(face), faces.OwnerLocalRow(face), index(row)});
-                } });
-            Runtime::RowTransferPlan route(context, size_t(faces.NumOwned()), cones.size(), requests);
-            auto faceRows = StageFaceRows(sourceView, oldNodes, route);
-            auto orderedFaces = Fetch(route, faceRows, mpi, context);
-            std::optional<Runtime::Array<NodePeriodicBits>> faceFrames;
-            if (sourceView.IsPeriodic())
-                faceFrames = Fetch(route, StagePeriodicRows(sourceView, route), mpi, context);
-            FieldTransferDetail::LocalStage(mpi, [&]
-                                            {
-                auto read = orderedFaces.Read();
-                std::optional<Runtime::Array<NodePeriodicBits>::ReadLease> frames;
-                if (faceFrames) frames.emplace(faceFrames->Read());
-                for (size_t row = 0; row < cones.size(); ++row)
-                {
-                    const auto values = read.View()[row];
-                    if (!values.size()) continue;
-                    std::vector<index> expected = cones[row], actual(values.begin(), values.end());
+                    const auto iFace = mappedFaces[0];
+                    DNDS_check_throw_info(iFace >= 0 && iFace < sourceView.NumFaceProc(),
+                                          "boundary extraction mapped face is absent from the source closure");
+                    const auto faceNodes = sourceView.FaceNodes(iFace);
+                    std::vector<index> values;
+                    values.reserve(faceNodes.size());
+                    for (const auto iNode : faceNodes) values.push_back(oldNodes.LocalToGlobal(iNode));
+                    std::vector<index> expected = cones[iRow], actual = values;
                     std::sort(expected.begin(), expected.end());
                     std::sort(actual.begin(), actual.end());
                     DNDS_check_throw_info(actual == expected, "mapped boundary face has different nodes");
-                    if (frames)
+                    if (sourceView.IsPeriodic())
                     {
+                        const auto frames = sourceView.FaceNodePeriodicBits(iFace);
+                        DNDS_check_throw_info(frames.size() == index(values.size()),
+                                              "face periodic metadata has the wrong row width");
                         NativePeriodicNodes facePattern, boundaryPattern;
-                        for (size_t slot = 0; slot < values.size(); ++slot)
+                        for (index slot = 0; slot < index(values.size()); ++slot)
                         {
-                            facePattern.emplace_back(values[slot], uint8_t(frames->View()(row, slot)));
-                            boundaryPattern.emplace_back(cones[row][slot], uint8_t(images[row][slot]));
+                            facePattern.emplace_back(values[slot], uint8_t(frames[slot]));
+                            boundaryPattern.emplace_back(cones[iRow][slot], uint8_t(images[iRow][slot]));
                         }
                         const auto delta = NativePeriodicFrame(std::move(facePattern), std::move(boundaryPattern));
                         DNDS_check_throw_info(delta, "mapped boundary face images disagree with physical boundary");
-                        for (size_t slot = 0; slot < values.size(); ++slot)
-                            images[row][slot] = NodePeriodicBits{uint8_t(uint8_t(frames->View()(row, slot)) ^ uint8_t(*delta))};
+                        for (index slot = 0; slot < index(values.size()); ++slot)
+                            images[iRow][slot] = NodePeriodicBits{uint8_t(uint8_t(frames[slot]) ^ uint8_t(*delta))};
                     }
-                    cones[row].assign(values.begin(), values.end());
+                    cones[iRow] = std::move(values);
                 } });
         }
         std::vector<index> requested;

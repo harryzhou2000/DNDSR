@@ -1,6 +1,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "DNDS/Runtime/RowTransfer.hpp"
+#include "DNDS/Runtime/RowBuilder.hpp"
 #include <optional>
 
 using namespace DNDS::Runtime;
@@ -82,6 +83,219 @@ TEST_CASE("Native direct ragged halo retains leases and reusable routing")
         .Bind(second, secondGhost)
         .Begin()
         .Wait();
+}
+
+TEST_CASE("Inferred payload shapes retain sparse holes widths and collective policy checks")
+{
+    int rank = 0, size = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+    const int next = (rank + 1) % size;
+    auto context = std::make_shared<CommunicationContext>(MPI_COMM_WORLD);
+    Array<int64_t> source(RowLayout::Ragged({0, size_t(rank + 2), 3}));
+    {
+        auto write = source.Write();
+        auto view = write.View();
+        for (DNDS::index iRow = 0; iRow < view.RowCount(); ++iRow)
+            for (DNDS::index iCol = 0; iCol < view.RowSize(iRow); ++iCol)
+                view(iRow, iCol) = rank * 1000 + iRow * 10 + iCol;
+    }
+    RowTransferPlan route(context, 3, 4, {{next, 1, 3}, {next, 0, 1}, {rank, 2, 0}});
+    CHECK(route.Context() == context);
+    PayloadPlan payload(route, source.Layout(), ElementSchema::Arithmetic<int64_t>());
+    CHECK(payload.DestinationLayout() == route.DestinationLayout(source.Layout()));
+    Array<int64_t> destination(payload.DestinationLayout());
+    for (auto mode : {TransferMode::Transient, TransferMode::Persistent})
+    {
+        auto binding = payload.Bind(source, destination, TransferTransport::Direct, {mode, context, 7});
+        binding.Begin().Wait();
+        auto read = destination.Read();
+        CHECK(read.View().RowSize(1) == 0);
+        CHECK(read.View().RowSize(2) == 0);
+        CHECK(read.View().RowSize(3) == next + 2);
+        CHECK(read.At(0, 2) == rank * 1000 + 22);
+        CHECK(read.At(3, next + 1) == next * 1000 + 10 + next + 1);
+    }
+    RowTransferPlan collision(context, 3, 1, {{rank, 0, 0}, {rank, 2, 0}});
+    CHECK_THROWS(PayloadPlan(collision, source.Layout(), ElementSchema::Arithmetic<int64_t>()));
+    if (size > 1)
+    {
+        CHECK_THROWS(payload.Bind(source, destination, rank == 0 ? TransferTransport::HostPacked : TransferTransport::Direct,
+                                  {TransferMode::Transient, context, 8}));
+        auto mixed = [&]
+        {
+            if (rank == 0)
+                return PayloadPlan(route, source.Layout(), ElementSchema::Arithmetic<int64_t>());
+            return PayloadPlan(route, source.Layout(), destination.Layout(), ElementSchema::Arithmetic<int64_t>());
+        }();
+        mixed.Bind(source, destination, TransferTransport::Direct, {TransferMode::Transient, context, 8}).Begin().Wait();
+        CHECK_THROWS([&]
+                     {
+            if (rank == 0)
+                return PayloadPlan(route, source.Layout(), RowLayout::Dense(4, 9), ElementSchema::Arithmetic<int64_t>());
+            return PayloadPlan(route, source.Layout(), ElementSchema::Arithmetic<int64_t>()); }());
+    }
+    payload.Bind(source, destination, TransferTransport::Direct, {TransferMode::Transient, context, 7}).Begin().Wait();
+}
+
+TEST_CASE("Table width agreement preserves sparse rows and handles rank-varying layouts")
+{
+    int rank = 0, size = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+    const int next = (rank + 1) % size;
+    RowTransferPlan route(MPI_COMM_WORLD, 3, 4, {{next, 2, 3}, {rank, 1, 0}});
+    for (int scenario = 0; scenario < 3; ++scenario)
+    {
+        const DNDS::index width = scenario == 1 ? rank + 2 : 5;
+        // Common-width tables, different widths on different ranks, and a
+        // CSR/table mixture all follow one compatible collective protocol.
+        const auto shape = scenario == 2 && rank == 0
+                               ? RowLayout::Ragged({5, 5, 5})
+                               : RowLayout::Dense(3, width, width + 2);
+        Array<int64_t> source(shape);
+        {
+            auto write = source.Write();
+            const auto view = write.View();
+            for (DNDS::index iRow = 0; iRow < 3; ++iRow)
+                for (DNDS::index iCol = 0; iCol < width; ++iCol)
+                    view(iRow, iCol) = 1000 * rank + 100 * iRow + iCol;
+        }
+        PayloadPlan payload(route, source.Layout(), ElementSchema::Arithmetic<int64_t>());
+        Array<int64_t> output(payload.DestinationLayout());
+        payload.Bind(source, output).Begin().Wait();
+        auto read = output.Read();
+        const auto view = read.View();
+        CHECK(view.RowSize(0) == width);
+        CHECK(view.RowSize(1) == 0);
+        CHECK(view.RowSize(2) == 0);
+        const DNDS::index remoteWidth = scenario == 1 ? next + 2 : 5;
+        CHECK(view.RowSize(3) == remoteWidth);
+        for (DNDS::index iCol = 0; iCol < width; ++iCol)
+            CHECK(view(0, iCol) == 1000 * rank + 100 + iCol);
+        for (DNDS::index iCol = 0; iCol < remoteWidth; ++iCol)
+            CHECK(view(3, iCol) == 1000 * next + 200 + iCol);
+    }
+}
+
+TEST_CASE("Binding rejects reordered communicator and rank-local tag reservation failure")
+{
+    int rank = 0, size = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+    auto context = std::make_shared<CommunicationContext>(MPI_COMM_WORLD);
+    RowTransferPlan route(context, 1, 1, {{(rank + 1) % size, 0, 0}});
+    Array<int64_t> source(RowLayout::Dense(1, 1)), destination(RowLayout::Dense(1, 1));
+    {
+        auto write = source.Write();
+        write.At(0, 0) = rank + 19;
+    }
+    PayloadPlan payload(route, source.Layout(), destination.Layout(), ElementSchema::Arithmetic<int64_t>());
+    if (size > 1)
+    {
+        MPI_Comm reordered = MPI_COMM_NULL;
+        MPI_Comm_split(MPI_COMM_WORLD, 0, size - rank, &reordered);
+        {
+            auto wrong = std::make_shared<CommunicationContext>(reordered);
+            CHECK_THROWS(payload.Bind(source, destination, TransferTransport::Direct,
+                                      {TransferMode::Transient, wrong, 12}));
+        }
+        MPI_Comm_free(&reordered);
+    }
+    std::shared_ptr<const int> held;
+    if (rank == 0)
+        held = context->Reserve(12);
+    CHECK_THROWS(payload.Bind(source, destination, TransferTransport::Direct,
+                              {TransferMode::Transient, context, 12}));
+    held.reset();
+    // Failed ranks must retire any successful local reservations, so the
+    // identical tag remains usable after the collectively rejected binding.
+    payload.Bind(source, destination, TransferTransport::Direct,
+                 {TransferMode::Transient, context, 12})
+        .Begin()
+        .Wait();
+    CHECK(destination.Read().At(0, 0) == (rank + 1) % size + 19);
+}
+
+TEST_CASE("Combined payload and binding preflight reject rank-local mismatches before requests")
+{
+    int rank = 0, size = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+    auto context = std::make_shared<CommunicationContext>(MPI_COMM_WORLD);
+    VersionTracker versions;
+    RowTransferPlan route(context, 3, 2, {{(rank + 1) % size, 2, 0}, {rank, 0, 1}}, {versions.Stamp()});
+    Array<int64_t> source(RowLayout::Dense(3, 5, 7)), destination(RowLayout::Dense(2, 5, 8));
+    {
+        auto write = source.Write();
+        for (DNDS::index iRow = 0; iRow < 3; ++iRow)
+            for (DNDS::index iCol = 0; iCol < 5; ++iCol)
+                write.At(iRow, iCol) = rank * 100 + iRow * 10 + iCol;
+    }
+    CHECK_THROWS(PayloadPlan(route, RowLayout::Dense(rank == 0 ? 2 : 3, 5), ElementSchema::Arithmetic<int64_t>()));
+    PayloadPlan payload(route, source.Layout(), destination.Layout(), ElementSchema::Arithmetic<int64_t>());
+    // Same logical widths, different physical strides only on
+    // one rank. Both typed copy and reduction must fail collectively.
+    auto wrong = rank == 0 ? Array<int64_t>(RowLayout::Dense(2, 5, 9)) : destination;
+    CHECK_THROWS(payload.Bind(source, wrong, TransferTransport::Direct, {TransferMode::Transient, context, 19}));
+    CHECK_THROWS(payload.Bind(source, wrong, Reducer::Builtin<int64_t>(Reduction::Sum),
+                              TransferTransport::Direct, {TransferMode::Transient, context, 19}));
+    CHECK(source.Storage().IsIdle());
+    CHECK(destination.Storage().IsIdle());
+    // A rejected preflight must not retain the matching tag or any leases.
+    payload.Bind(source, destination, TransferTransport::Direct, {TransferMode::Transient, context, 19}).Begin().Wait();
+    CHECK(destination.Read().At(0, 4) == ((rank + 1) % size) * 100 + 24);
+    if (rank == 0)
+    {
+        auto mutation = versions.BeginMutation(Change::Distribution);
+        mutation.Commit();
+    }
+    CHECK_THROWS(PayloadPlan(route, source.Layout(), ElementSchema::Arithmetic<int64_t>()));
+}
+
+TEST_CASE("Typed MPI bindings reject one unpublished shape collectively and recover after commit")
+{
+    int rank = 0, size = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+    auto context = std::make_shared<CommunicationContext>(MPI_COMM_WORLD);
+    RowTransferPlan route(context, 3, 2, {{(rank + 1) % size, 2, 0}, {rank, 0, 1}});
+    Array<int64_t> source(RowLayout::Dense(3, 5, 7)), destination(RowLayout::Dense(2, 5, 8));
+    {
+        auto write = source.Write();
+        for (DNDS::index iRow = 0; iRow < 3; ++iRow)
+            for (DNDS::index iCol = 0; iCol < 5; ++iCol)
+                write.At(iRow, iCol) = rank * 100 + iRow * 10 + iCol;
+    }
+    PayloadPlan payload(route, source.Layout(), destination.Layout(), ElementSchema::Arithmetic<int64_t>());
+    std::optional<ExclusiveRows> editor;
+    if (rank == 0)
+        editor.emplace(destination.EditRows());
+    CHECK_THROWS(payload.Bind(source, destination, TransferTransport::Direct, {TransferMode::Transient, context, 23}));
+    CHECK_THROWS(payload.Bind(source, destination, Reducer::Builtin<int64_t>(Reduction::Sum),
+                              TransferTransport::Direct, {TransferMode::Transient, context, 23}));
+    if (editor)
+        editor->Commit();
+    payload.Bind(source, destination, TransferTransport::Direct, {TransferMode::Transient, context, 23}).Begin().Wait();
+    {
+        auto read = destination.Read();
+        for (DNDS::index iCol = 0; iCol < 5; ++iCol)
+        {
+            CHECK(read.At(0, iCol) == ((rank + 1) % size) * 100 + 20 + iCol);
+            CHECK(read.At(1, iCol) == rank * 100 + iCol);
+        }
+    }
+    // Abandoned edits and consumed handles take the same collective path.
+    if (rank == 0)
+    {
+        auto abandoned = destination.EditRows();
+    }
+    CHECK_THROWS(payload.Bind(source, destination));
+    destination.Reset(RowLayout::Dense(2, 5, 8));
+    std::optional<Array<int64_t>> retained;
+    if (rank == 0)
+        retained.emplace(std::move(source));
+    CHECK_THROWS(payload.Bind(source, destination));
 }
 
 TEST_CASE("Direct permutation honors imported buffer origins and padded state strides")

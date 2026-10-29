@@ -8,6 +8,22 @@
 
 namespace R = DNDS::Runtime;
 
+TEST_CASE("Runtime row layouts reject unsigned shapes that cannot be indexed by signed views")
+{
+    const auto tooLarge = size_t(INT64_MAX) + 1;
+    CHECK_THROWS(R::RowLayout::Dense(tooLarge, 0));
+    CHECK_THROWS(R::RowLayout::Dense(0, tooLarge));
+    CHECK_THROWS(R::RowLayout::Dense(2, 0, size_t(INT64_MAX)));
+    CHECK_THROWS(R::RowLayout::Padded({}, tooLarge));
+    CHECK_THROWS(R::RowLayout::Padded({0, 0}, size_t(INT64_MAX)));
+    CHECK_THROWS(R::RowLayout::Ragged({size_t(INT64_MAX), 1}));
+    const auto emptyRows = R::RowLayout::Dense(size_t(INT64_MAX), 0);
+    CHECK(emptyRows.RowCount() == INT64_MAX);
+    CHECK(emptyRows.Offset(INT64_MAX - 1) == 0);
+    CHECK_THROWS(emptyRows.RowSize(-1));
+    CHECK_THROWS(emptyRows.Offset(-1));
+}
+
 template <class Policy>
 static void CheckEagerTypedCPU(const R::RowLayout &shape)
 {
@@ -113,6 +129,20 @@ TEST_CASE("Five layout policies produce distinct typed views and share dynamic s
     R::Array<int> irregularCSR(R::RowLayout::Ragged({1, 2}));
     CHECK_THROWS(irregularPadded.Read().template View<R::TableRows>());
     CHECK_THROWS(irregularCSR.Read().template View<R::TableRows>());
+}
+
+TEST_CASE("Uniform variable layouts project to typed tables in direct and eager access")
+{
+    for (const auto &shape : {R::RowLayout::Ragged({3, 3, 3}), R::RowLayout::Padded({3, 3, 3}, 3)})
+    {
+        CheckLayoutSpecificAccess<R::FixedRows<3, 3>>(shape);
+        CheckEagerTypedCPU<R::TableRows>(shape);
+        CheckEagerTypedCPU<R::FixedRows<3, 3>>(shape);
+    }
+    R::Array<int> padded(R::RowLayout::Padded({2, 2}, 3));
+    CHECK_THROWS(padded.Read().template View<R::TableRows>());
+    R::Array<int> empty(R::RowLayout::Ragged({0, 0}));
+    CHECK(empty.Read().template View<R::FixedRows<0, 0>>()[1].empty());
 }
 
 TEST_CASE("Static row policy reaches typed access and preserves dynamic interoperability")

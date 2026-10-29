@@ -32,6 +32,39 @@ rank-local tag sequence. All collective preparation and Begin preflights must
 occur in matching participant order, including for independent fields.
 Default options preserve an isolated communicator and persistent requests.
 
+For an unknown receive shape, compile and infer once:
+
+```cpp
+R::PayloadPlan payload(route, owned.Layout(), R::ElementSchema::For<double>());
+R::Array<double> ghost(payload.DestinationLayout());
+auto binding = payload.Bind(owned, ghost, R::TransferTransport::Direct,
+                            {R::TransferMode::Transient, route.Context(), 37});
+binding.Begin().Wait();
+```
+
+This uses at most one row-length exchange. When all sources are tables of the
+same width, the existing schema agreement also proves that width and no
+per-edge length exchange is needed. Mixed layouts or unequal widths use the
+ordinary exchange; unrequested destination rows still have zero length.
+The older two-step
+`route.DestinationLayout(...)` followed by an explicitly shaped payload remains
+supported, but can exchange lengths twice for variable layouts. Explicit and inferred
+destination shapes may differ between ranks; both use the same collective
+schedule and validate every received width. `route.Context()` shares the route's
+matching namespace. Keep distinct tags for overlapping bindings, and destroy
+the binding as well as its operation before reusing a tag. Blocking Geom ghost
+transfers reuse this namespace; independently started `BeginRows` transfers
+retain separate namespaces so existing overlap remains valid.
+
+Typed `payload.Bind(array, array, ...)` pins published storage before comparing
+its shape and capturing buffers. An unpublished or abandoned shape edit,
+moved-from handle, incompatible element schema, or changed physical stride on
+one rank rejects the binding collectively before requests are created. Commit
+the shape edit (or reset an abandoned array), then compile/reuse a payload that
+matches the published shape. This protection covers arguments inspected inside
+`Bind`; callers must still coordinate any rank-local exception while preparing
+arguments before entering a collective API.
+
 Known(context, sources, destinations, sendRowsByPeer, receiveRowsByPeer)
 accepts pre-established matching per-peer row order. It skips owner and row-ID
 discovery but still checks peer counts with an all-to-all. General request

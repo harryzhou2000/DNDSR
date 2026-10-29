@@ -51,17 +51,16 @@ namespace DNDS::Runtime
                 valid = false;
             }
             CheckAll(valid, route.Communicator(), "dynamic transfer source reservation failed on a rank");
-            const auto shape = route.DestinationLayout(_source->Layout());
+            PayloadPlan payload(route, _source->Layout(), schema);
             try
             {
-                _destination = ArrayStorage::Allocate(shape, schema.Extent(), destinationDevice);
+                _destination = ArrayStorage::Allocate(payload.DestinationLayout(), schema.Extent(), destinationDevice);
             }
             catch (...)
             {
                 valid = false;
             }
             CheckAll(valid, route.Communicator(), "dynamic transfer destination allocation failed on a rank");
-            PayloadPlan payload(std::move(route), _source->Layout(), shape, std::move(schema));
             auto binding = reducer ? payload.Bind(_source->Values(), _destination->Values(), std::move(*reducer), transport, options)
                                    : payload.Bind(_source->Values(), _destination->Values(), transport, options);
             _operation = binding.Begin(context);

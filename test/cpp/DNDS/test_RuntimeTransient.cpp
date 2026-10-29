@@ -11,6 +11,19 @@
 
 using namespace DNDS::Runtime;
 
+TEST_CASE("Known route rejects negative extents on every rank before publishing")
+{
+    int rank = 0, size = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+    auto context = std::make_shared<CommunicationContext>(MPI_COMM_WORLD);
+    std::vector<std::vector<DNDS::index>> peers(size);
+    CHECK_THROWS(RowTransferPlan::Known(context, rank == 0 ? -1 : 0, 0, peers, peers));
+    CHECK_THROWS(RowTransferPlan::Known(context, 0, rank == 0 ? -1 : 0, peers, peers));
+    auto route = RowTransferPlan::Known(context, 0, 0, peers, peers);
+    CHECK(route.Valid());
+}
+
 int main(int argc, char **argv)
 {
     int provided = 0;

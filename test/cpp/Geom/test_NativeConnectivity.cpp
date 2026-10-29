@@ -273,6 +273,29 @@ TEST_CASE("Branched ghost tree keeps frontiers separate and unions endpoint kind
     }
 }
 
+TEST_CASE("Collected intermediate owned nodes remain available to downstream ghost branches")
+{
+    const auto mpi = MPI();
+    auto nodes = G::EntitySpace::CreateOwned(G::EntityKind::Node, mpi, 1);
+    auto cells = nodes.CreateSibling(G::EntityKind::Cell, 1);
+    const I next = (mpi.rank + 1) % mpi.size;
+    G::MeshAdjacency c2n(G::Adj::Cell2Node, cells, nodes, Rows<I>({{mpi.rank}}));
+    G::MeshAdjacency n2c(G::Adj::Node2Cell, nodes, cells, Rows<I>({{next}}));
+    G::AdjacencyRegistry registry(mpi);
+    registry.Register(c2n.Read());
+    registry.Register(n2c.Read());
+    G::GhostSpec spec{{{G::EntityKind::Cell, {G::Adj::Cell2Node}, G::EntityKind::Node},
+                       {G::EntityKind::Cell, {G::Adj::Cell2Node, G::Adj::Node2Cell}, G::EntityKind::Cell},
+                       {G::EntityKind::Cell, {G::Adj::Cell2Node, G::Adj::Node2Cell, G::Adj::Cell2Node}, G::EntityKind::Node}}};
+    const auto result = registry.Evaluate(G::CompiledGhostTree::compile(spec));
+    for (const auto kind : {G::EntityKind::Cell, G::EntityKind::Node})
+    {
+        const auto found = result.ghostIndices.find(kind);
+        const auto actual = found == result.ghostIndices.end() ? std::vector<I>{} : found->second;
+        CHECK(actual == (mpi.size > 1 ? std::vector<I>{next} : std::vector<I>{}));
+    }
+}
+
 TEST_CASE("Native ghost publication agrees complete same-level relation schedules")
 {
     auto mesh = Fixture();

@@ -249,11 +249,14 @@ namespace DNDS::Geom
             int valid = Valid() && _source.SameOrder(source) && owned.Layout().RowCount() == _source.NumOwned();
             MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, _route.Communicator());
             DNDS_check_throw_info(valid, "companion halo route has stale/wrong source order or row extent");
-            Runtime::Array<T> ghost(_route.DestinationLayout(owned.Layout()));
+            Runtime::PayloadPlan payload(_route, owned.Layout(), schema);
+            Runtime::Array<T> ghost(payload.DestinationLayout());
             Runtime::TransferOptions options;
             options.mode = Runtime::TransferMode::Transient;
-            options.context = std::make_shared<Runtime::CommunicationContext>(_route.Communicator());
-            Runtime::PayloadPlan payload(_route, owned.Layout(), ghost.Layout(), schema);
+            // This blocking call retires its binding before returning. Reuse
+            // the route namespace; BeginRows keeps independent namespaces for
+            // callers overlapping several payloads on the same mapping.
+            options.context = _route.Context();
             payload.Bind(owned, ghost, Runtime::TransferTransport::Direct, options).Begin().Wait();
             return ghost;
         }
@@ -267,11 +270,11 @@ namespace DNDS::Geom
             int valid = Valid() && _source.SameOrder(source) && owned.Layout().RowCount() == _source.NumOwned();
             MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, _route.Communicator());
             DNDS_check_throw_info(valid, "companion halo route has stale/wrong source order or row extent");
-            Runtime::Array<T> ghost(_route.DestinationLayout(owned.Layout()));
+            Runtime::PayloadPlan payload(_route, owned.Layout(), schema);
+            Runtime::Array<T> ghost(payload.DestinationLayout());
             Runtime::TransferOptions options;
             options.mode = Runtime::TransferMode::Transient;
             options.context = std::make_shared<Runtime::CommunicationContext>(_route.Communicator());
-            Runtime::PayloadPlan payload(_route, owned.Layout(), ghost.Layout(), schema);
             auto binding = payload.Bind(owned, ghost, Runtime::TransferTransport::Direct, options);
             return PendingRows<T>(std::move(ghost), binding.Begin());
         }
@@ -319,16 +322,22 @@ namespace DNDS::Geom
         const EntitySpace &Target() const { return _target; }
         MeshAdjacencyRead Read() const
         {
-            const auto ownedVersion = _owned.Version();
-            const bool current = _validatedVersions->owned.load(std::memory_order_acquire) == ownedVersion &&
-                                 (!_ghost || _validatedVersions->ghost.load(std::memory_order_acquire) == _ghost->Version());
+            // Acquire the actual value leases before observing generations.
+            // Otherwise an alias writer could finish between the version read
+            // and lease acquisition, making a stale scan look current.
             MeshAdjacencyRead result(_kind, _source, _target, _state, _owned,
-                                     _ghost ? &*_ghost : nullptr, current);
+                                     _ghost ? &*_ghost : nullptr, true);
+            const auto ownedVersion = _owned.Version();
+            const auto ghostVersion = _ghost ? _ghost->Version() : 0;
+            const bool current = _validatedVersions->owned.load(std::memory_order_acquire) == ownedVersion &&
+                                 (!_ghost || _validatedVersions->ghost.load(std::memory_order_acquire) == ghostVersion);
             if (!current)
             {
+                result._contentsValidated = false;
+                result.Validate();
                 _validatedVersions->owned.store(ownedVersion, std::memory_order_release);
                 if (_ghost)
-                    _validatedVersions->ghost.store(_ghost->Version(), std::memory_order_release);
+                    _validatedVersions->ghost.store(ghostVersion, std::memory_order_release);
             }
             return result;
         }

@@ -82,6 +82,41 @@ static AdjacencyDescriptor RegistryInverse()
     return Adj::Cell2Face.Inverted();
 }
 
+TEST_CASE("Adjacency registry comparison preserves wire identity without serialization")
+{
+    std::vector<AdjacencyDescriptor> keys{Adj::Cell2Node, Adj::Cell2Cell, Adj::Cell2CellFace,
+                                          Adj::Cell2Node.Inverted(), RegistryInverse()};
+    auto direct = Adj::Cell2Node;
+    direct.via = EntityKind::Face; // Ignored by the legacy direct slot.
+    keys.push_back(direct);
+    auto native = Adj::Cell2Node.Inverted();
+    native.via = EntityKind::Edge; // Native identity is the full path.
+    keys.push_back(native);
+    for (const auto &name : {"a", "a:1", "longer:semantic:name"})
+        for (uint32_t version : {1u, 2u, 10u})
+        {
+            auto key = native;
+            key.semanticName = name;
+            key.semanticVersion = version;
+            keys.push_back(key);
+            key.provenance += ":different";
+            keys.push_back(key);
+            key.order = RelationOrder::Topological;
+            keys.push_back(key);
+        }
+    for (const auto &a : keys)
+        for (const auto &b : keys)
+        {
+            const bool sameWireIdentity = a.Signature() == b.Signature();
+            CHECK((a == b) == sameWireIdentity);
+            CHECK((!(a < b) && !(b < a)) == sameWireIdentity);
+        }
+    std::sort(keys.begin(), keys.end());
+    for (DNDS::index iRow = 0; iRow < DNDS::index(keys.size()); ++iRow)
+        for (DNDS::index jRow = iRow; jRow < DNDS::index(keys.size()); ++jRow)
+            CHECK_FALSE(keys[jRow] < keys[iRow]);
+}
+
 static AdjacencyDescriptor RegistryComposition(RelationSelection selection)
 {
     return AdjacencyDescriptor::Composition(Adj::Face2Node, Adj::Cell2Node.Inverted(), selection, false, "registry.selection", 1);
@@ -375,6 +410,36 @@ TEST_CASE("Native removeSelf descriptor rejects self incidences")
     auto key = AdjacencyDescriptor::Composition(Adj::Cell2Node, Adj::Cell2Node.Inverted(), RelationSelection::Any, true);
     auto rows = IndexRows({{cells.LocalToGlobal(0)}});
     CHECK_THROWS(MeshAdjacencyRead(key, cells, cells, Adj_PointToGlobal, rows));
+}
+
+TEST_CASE("Adjacency scan cache follows alias writes and retains read authority")
+{
+    const auto mpi = RegistryMPI();
+    auto nodes = EntitySpace::CreateOwned(EntityKind::Node, mpi, 3);
+    auto cells = nodes.CreateSibling(EntityKind::Cell, 1);
+    const auto first = nodes.LocalToGlobal(0);
+    auto rows = IndexRows({{first, first + 1}});
+    MeshAdjacency adjacency(Adj::Cell2Node, cells, nodes, rows);
+    auto alias = adjacency;
+    for (int pass = 0; pass < 3; ++pass)
+    {
+        {
+            auto read = alias.Read();
+            CHECK(read.GlobalRow(0) == std::vector<DNDS::index>{first, first + 1});
+            CHECK_THROWS(rows.Write());
+        }
+        {
+            auto write = rows.Write();
+            write.At(0, 1) = nodes.NumGlobal();
+        }
+        CHECK_THROWS(adjacency.Read());
+        CHECK_THROWS(alias.Read());
+        {
+            auto write = rows.Write();
+            write.At(0, 1) = first + 1;
+        }
+        CHECK_NOTHROW(adjacency.Read());
+    }
 }
 
 int main(int argc, char **argv)

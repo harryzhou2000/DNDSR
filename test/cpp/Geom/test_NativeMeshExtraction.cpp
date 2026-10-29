@@ -135,7 +135,23 @@ TEST_CASE("Native boundary extraction compacts owner nodes and preserves ordered
     }
     auto source = Fixture(mpi, dimension);
     if (faces)
+    {
         source = G::PrepareNativeMeshTopology(*source, mpi);
+        auto read = source->Snapshot(R::Device::Host()).AcquireRead();
+        const auto view = read.HostView();
+        for (I iBnd = 0; iBnd < view.NumBnd(); ++iBnd)
+        {
+            const auto mapped = view.BoundaryFaces(iBnd);
+            REQUIRE(mapped.size() == 1);
+            REQUIRE(mapped[0] >= 0);
+            REQUIRE(mapped[0] < view.NumFaceProc());
+            // The fixture gives the cell/face to rank zero and boundaries
+            // to another rank. Extraction must read this ghost face's
+            // published orientation, not the boundary's input slot order.
+            if (mpi.size > 1)
+                CHECK(mapped[0] >= view.NumFace());
+        }
+    }
     const auto sourceNamespace = source->MeshNamespace();
     auto extracted = G::NativeMeshExtraction::ExtractBoundary(*source, mpi);
     CHECK(source->NumGlobal(G::EntityKind::Node) == (dimension == 2 ? 7 : 11));
