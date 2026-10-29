@@ -46,8 +46,9 @@ should retain route, payload and binding separately to reuse setup.
 The detailed contracts and ownership graphs are in
 [row editing](ArrayRowEditing.md), [eager execution](EagerExecution.md),
 [allocation lifetime](ArrayAllocationLifetime.md), and
-[transient MPI](ArrayTransientMPI.md). Geom migration remains optional; the
-new runtime and its tests do not require replacing existing mesh fields.
+[transient MPI](ArrayTransientMPI.md). The unstructured mesh now owns Runtime
+arrays; legacy solver fields continue to use their historical containers.
+Runtime Array itself does not depend on Geom or the solver.
 The [2026-10-22 audit](../dev/array_runtime_audit_2026-10-22.md) summarizes
 coverage, reviewed contracts and the retained-transfer-error correction.
 
@@ -85,7 +86,7 @@ with a matching extent; a custom reduction supplies the appropriate callback.
 
 Python uses a runtime dtype/POD codec over the exact native ArrayStorage record.
 The public `Runtime/Array_bind.hpp` converter shares values, row metadata and
-the controller with any bound `Array<T,L>`; no byte-Array intermediary or
+the controller with any bound `Array<T>`; no byte-Array intermediary or
 width-specific Python class is needed. Numeric and structured POD dtypes are
 supported. Bound POD classes can register a class-value codec once per type,
 independent of Array widths. Object-reference NumPy dtypes remain rejected.
@@ -216,12 +217,12 @@ The native-array communication inventory is:
 | Work | Construction | Payload transport |
 |---|---|---|
 | generic owner-request discovery | `Alltoall` counts and `Alltoallv` source-row IDs | Direct P2P after route construction |
-| known halo/ghost route | precomputed peer row lists from an entity/permutation map | Direct P2P; no discovery collectives |
+| known halo/ghost route | precomputed peer row lists; Alltoall validates peer counts, no row-ID discovery | Direct P2P |
 | transient field/relation transfer | retained `RowTransferPlan` and `PayloadPlan` | `Isend`/`Irecv`, one h-indexed datatype message per peer |
 | persistent solver ring | requests initialized once per peer | `Startall` with one direct h-indexed message per peer |
 | explicit host packing | host staging buffers | packed P2P through the same binding state machine |
 | ragged row lengths | `Alltoallv` of row lengths | metadata only |
-| alias agreement | dynamically sized `Allreduce(MPI_BOR)` | metadata only |
+| alias agreement | compact `Allreduce(MPI_BOR)` or scalar min/max for a large descriptor registry | metadata only |
 | reduction destination | contribution workspace and host/device/custom reducer | direct P2P contribution transfer plus local combine |
 
 Direct datatypes merge adjacent physical ranges. Sparse rows remain multiple
@@ -292,7 +293,7 @@ is outside this phase.
 
 ## Checkpoints and shared element schemas
 
-`WriteArray` / `ReadArray<T,L>` use the existing Serializer backend through
+`WriteArray` / `ReadArray<T>` use the existing Serializer backend through
 native direct-memory row selections. No legacy Array or whole-payload packing
 allocation is made. H5 uses memory hyperslabs over the source or final output
 allocation; JSON uses its required document representation. Metadata scratch

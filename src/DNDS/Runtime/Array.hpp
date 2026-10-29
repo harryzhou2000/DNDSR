@@ -28,21 +28,27 @@ namespace DNDS::Runtime
         RowLayout() = default;
         static RowLayout Dense(size_t rows, size_t width, size_t stride = 0)
         {
+            DNDS_check_throw_info(rows <= size_t(INT64_MAX) && width <= size_t(INT64_MAX) && stride <= size_t(INT64_MAX),
+                                  "row shape exceeds signed index range");
             RowLayout layout;
             layout._rows = rows;
             layout._width = width;
             layout._stride = stride ? stride : width;
             DNDS_check_throw_info(layout._stride >= width, "row stride is smaller than width");
-            CheckedSize::Multiply(rows, layout._stride);
+            DNDS_check_throw_info(CheckedSize::Multiply(rows, layout._stride) <= size_t(INT64_MAX),
+                                  "row offsets exceed signed index range");
             return layout;
         }
         static RowLayout Padded(const std::vector<size_t> &lengths, size_t capacity)
         {
+            DNDS_check_throw_info(lengths.size() <= size_t(INT64_MAX) && capacity <= size_t(INT64_MAX),
+                                  "row shape exceeds signed index range");
             RowLayout layout;
             layout._kind = RowLayoutKind::Padded;
             layout._rows = lengths.size();
             layout._stride = capacity;
-            CheckedSize::Multiply(layout._rows, capacity);
+            DNDS_check_throw_info(CheckedSize::Multiply(layout._rows, capacity) <= size_t(INT64_MAX),
+                                  "row offsets exceed signed index range");
             for (auto n : lengths)
                 DNDS_check_throw_info(n <= capacity, "row size exceeds padded capacity");
             layout._sizes = MetadataBuffer<size_t>(lengths);
@@ -50,6 +56,7 @@ namespace DNDS::Runtime
         }
         static RowLayout Ragged(const std::vector<size_t> &lengths)
         {
+            DNDS_check_throw_info(lengths.size() <= size_t(INT64_MAX), "row count exceeds signed index range");
             RowLayout layout;
             layout._kind = RowLayoutKind::CSR;
             layout._rows = lengths.size();
@@ -57,7 +64,7 @@ namespace DNDS::Runtime
             offsets.reserve(CheckedSize::Add(lengths.size(), size_t(1)));
             for (auto n : lengths)
             {
-                DNDS_check_throw_info(n <= SIZE_MAX - offsets.back(), "row offsets overflow");
+                DNDS_check_throw_info(n <= size_t(INT64_MAX) - offsets.back(), "row offsets exceed signed index range");
                 offsets.push_back(offsets.back() + n);
             }
             layout._offsets = MetadataBuffer<size_t>(offsets);
@@ -76,13 +83,13 @@ namespace DNDS::Runtime
         const MetadataBuffer<size_t> &Sizes() const { return _sizes; }
         index RowSize(index row) const
         {
-            DNDS_check_throw_info(row < _rows, "row outside layout");
+            DNDS_check_throw_info(row >= 0 && size_t(row) < _rows, "row outside layout");
             return IsRagged() ? _offsets[row + 1] - _offsets[row] : IsPadded() ? _sizes[row]
                                                                                : _width;
         }
         index Offset(index row) const
         {
-            DNDS_check_throw_info(row < _rows, "row outside layout");
+            DNDS_check_throw_info(row >= 0 && size_t(row) < _rows, "row outside layout");
             return IsRagged() ? _offsets[row] : row * _stride;
         }
         bool operator==(const RowLayout &other) const
@@ -284,7 +291,7 @@ namespace DNDS::Runtime
         /// be exposed as a table/fixed view only when every row is uniform and
         /// physically contiguous. Metadata and values remain borrowed.
         template <class T, bool Checked, class Policy>
-        ArrayView<T, Checked, Policy> ProjectView(ArrayView<T, Checked> source)
+        ArrayView<T, Checked, Policy> ProjectView(ArrayView<T, Checked> source, const RowLayout &shape)
         {
             if constexpr (std::is_same_v<Policy, RowLayout>)
                 return source;
@@ -302,10 +309,12 @@ namespace DNDS::Runtime
                 offsets = source.offsets;
             else if (!sourceTable)
             {
-                width = source.rows ? source.RowSize(0) : 0;
+                // Projection runs on the submitting host. The view may contain
+                // CUDA metadata pointers; only the retained host shape is read.
+                width = shape.RowCount() ? shape.RowSize(0) : 0;
                 for (index row = 0; row < source.rows; ++row)
-                    DNDS_check_throw_info(source.RowSize(row) == width &&
-                                              source.Row(row) == source.data + row * width,
+                    DNDS_check_throw_info(shape.RowSize(row) == width &&
+                                              shape.Offset(row) == row * width,
                                           "row view projection requires uniform contiguous rows");
                 stride = width;
             }
@@ -586,7 +595,7 @@ namespace DNDS::Runtime
         template <class LayoutPolicy, bool Checked = false>
         ArrayView<Value, Checked, LayoutPolicy> View() const
         {
-            return Detail::ProjectView<Value, Checked, LayoutPolicy>(View<Checked>());
+            return Detail::ProjectView<Value, Checked, LayoutPolicy>(View<Checked>(), _layout->rows);
         }
         template <bool Checked = false>
         ArrayView<Value, Checked> DynamicView() const { return View<Checked>().DynamicView(); }

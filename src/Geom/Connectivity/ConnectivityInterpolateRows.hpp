@@ -44,6 +44,11 @@ namespace DNDS::Geom::ConnectivityRows
                       "maxSubEntityNodes must be >= 10 (Quad9 face = 9 nodes); "
                       "bump if adding richer elements");
         std::array<index, maxSubEntityNodes> subNodesBuf{};
+        // An entity's vertex key is immutable after creation. Cache its small
+        // sorted key once instead of sorting it again for every candidate in
+        // the reverse-node lists. Storage scales with local enumerated entities.
+        std::vector<std::array<index, maxSubEntityNodes>> entityVertices;
+        std::vector<int> entityVertexCounts;
 
         const bool hasMatchExtra = bool(query.matchExtra);
 
@@ -92,15 +97,18 @@ namespace DNDS::Geom::ConnectivityRows
                             continue;
 
                         // Compare sorted vertices
-                        auto &entNodes = ent2nodeVec[iEnt];
-                        int nEntVerts = desc.nVertices;
-
-                        DNDS_assert(entNodes.size() >= size_t(nEntVerts));
-                        std::array<index, maxSubEntityNodes> entVerts{};
-                        std::copy_n(entNodes.begin(), nEntVerts, entVerts.begin());
-                        std::sort(entVerts.begin(), entVerts.begin() + nEntVerts);
-
-                        if (!std::equal(subVerts.begin(), vertexEnd, entVerts.begin()))
+                        DNDS_assert(ent2nodeVec[iEnt].size() >= size_t(desc.nVertices));
+                        const index *candidateVertices = entityVertices[iEnt].data();
+                        std::array<index, maxSubEntityNodes> candidateScratch;
+                        // Custom queries may reuse a type tag with a different
+                        // vertex count. Preserve the original prefix comparison.
+                        if (entityVertexCounts[iEnt] != desc.nVertices)
+                        {
+                            std::copy_n(ent2nodeVec[iEnt].begin(), desc.nVertices, candidateScratch.begin());
+                            std::sort(candidateScratch.begin(), candidateScratch.begin() + desc.nVertices);
+                            candidateVertices = candidateScratch.data();
+                        }
+                        if (!std::equal(subVerts.begin(), vertexEnd, candidateVertices))
                             continue;
 
                         // Vertex match found. Apply optional extra predicate.
@@ -127,6 +135,8 @@ namespace DNDS::Geom::ConnectivityRows
                     ent2parentVec.push_back({iParent});
                     entityElemInfoV.emplace_back(ElemInfo{desc.typeTag, 0});
                     ent2origin.push_back({iParent, iSub});
+                    entityVertices.push_back(subVerts);
+                    entityVertexCounts.push_back(desc.nVertices);
 
                     // Register in reverse index (vertices only)
                     for (auto it = subVerts.begin(); it != vertexEnd; ++it)

@@ -10,6 +10,7 @@
 #include <cstring>
 #include <cmath>
 #include <typeinfo>
+#include <optional>
 
 namespace DNDS::Runtime
 {
@@ -46,6 +47,9 @@ namespace DNDS::Runtime
                                      std::vector<VersionStamp> dependencies = {});
         RowTransferPlan Reverse() const;
         MPI_Comm Communicator() const;
+        /// Shared matching namespace for sequential payload bindings. Concurrent
+        /// bindings must reserve distinct explicit tags or use separate contexts.
+        std::shared_ptr<CommunicationContext> Context() const;
         index SourceRows() const;
         index DestinationRows() const;
         const std::vector<std::vector<index>> &SendRows() const;
@@ -188,9 +192,36 @@ namespace DNDS::Runtime
         std::shared_ptr<const State> _state;
         friend class TransferBinding;
         friend class TransferOperation;
+        PayloadPlan(RowTransferPlan route, RowLayout source, std::optional<RowLayout> destination, ElementSchema schema);
+        bool LayoutsMatch(const RowLayout &source, const RowLayout &destination, size_t elementBytes, bool elementCompatible) const;
+        template <class T>
+        bool CaptureBuffers(const Array<T> &source, const Array<T> &destination, Buffer &input, Buffer &output) const
+        {
+            try
+            {
+                // Pin the published shapes while checking and obtaining their
+                // value buffers. An unpublished/failed shape on one rank must
+                // reach binding's collective rejection, not strand its peers.
+                const auto sourceStorage = source.SharedStorage(), destinationStorage = destination.SharedStorage();
+                DNDS_check_throw_info(sourceStorage && destinationStorage, "binding requires live Array handles");
+                const bool valid = LayoutsMatch(sourceStorage->Layout(), destinationStorage->Layout(), sizeof(T),
+                                                Compatible(ElementSchema::TypeIdentity<T>()));
+                input = sourceStorage->Values();
+                output = destinationStorage->Values();
+                return valid;
+            }
+            catch (...)
+            {
+                return false;
+            }
+        }
 
     public:
         PayloadPlan(RowTransferPlan route, RowLayout source, RowLayout destination, ElementSchema schema);
+        /// Infer destination rows from one owner-width exchange, compiling the
+        /// payload in the same operation. Avoids a second identical shape exchange.
+        PayloadPlan(RowTransferPlan route, RowLayout source, ElementSchema schema);
+        RowLayout DestinationLayout() const;
         void CheckLayouts(const RowLayout &source, const RowLayout &destination, size_t elementBytes, bool elementCompatible = true) const;
         bool Compatible(const std::string &type) const;
         size_t SendSegments() const;
@@ -210,7 +241,8 @@ namespace DNDS::Runtime
         friend class PayloadPlan;
         friend class TransferOperation;
         TransferBinding(std::shared_ptr<const PayloadPlan::State> plan, Buffer source, Buffer destination,
-                        std::shared_ptr<const Reducer> reducer, TransferTransport transport, TransferOptions options);
+                        std::shared_ptr<const Reducer> reducer, TransferTransport transport, TransferOptions options,
+                        bool layoutsValid = true);
         TransferOperation Start(ExecutionContext context, bool scheduled) const;
 
     public:
@@ -256,13 +288,16 @@ namespace DNDS::Runtime
     template <class T>
     TransferBinding PayloadPlan::Bind(const Array<T> &source, const Array<T> &destination, TransferTransport transport, TransferOptions options) const
     {
-        CheckLayouts(source.Layout(), destination.Layout(), sizeof(T), Compatible(ElementSchema::TypeIdentity<T>()));
-        return Bind(source.Storage(), destination.Storage(), transport, std::move(options));
+        Buffer input, output;
+        const bool valid = CaptureBuffers(source, destination, input, output);
+        return TransferBinding(_state, std::move(input), std::move(output), {}, transport, std::move(options), valid);
     }
     template <class T>
     TransferBinding PayloadPlan::Bind(const Array<T> &source, const Array<T> &destination, Reducer reducer, TransferTransport transport, TransferOptions options) const
     {
-        CheckLayouts(source.Layout(), destination.Layout(), sizeof(T), Compatible(ElementSchema::TypeIdentity<T>()));
-        return Bind(source.Storage(), destination.Storage(), std::move(reducer), transport, std::move(options));
+        Buffer input, output;
+        const bool valid = CaptureBuffers(source, destination, input, output);
+        return TransferBinding(_state, std::move(input), std::move(output), std::make_shared<const Reducer>(std::move(reducer)),
+                               transport, std::move(options), valid);
     }
 }

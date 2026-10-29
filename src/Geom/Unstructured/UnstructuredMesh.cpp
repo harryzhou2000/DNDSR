@@ -225,8 +225,10 @@ namespace DNDS::Geom
                                         {
             std::unordered_map<index, index> sourceRows;
             sourceRows.reserve(size_t(NumNodeProc()));
+            const auto nodeIds = source->ReadOriginalEntityIds(EntityKind::Node);
+            const auto nodeIdView = nodeIds->View();
             for (index row = 0; row < NumNodeProc(); ++row)
-                sourceRows.emplace(OriginalEntityId(EntityKind::Node, row), row);
+                sourceRows.emplace(nodeIdView(row, 0), row);
             sourceToBoundary.assign(size_t(NumNodeProc()), UnInitIndex);
             boundaryToSource.assign(size_t(nodes.NumLocal()), UnInitIndex);
             auto read = parents.ReadCombined();
@@ -242,8 +244,10 @@ namespace DNDS::Geom
             cellParents.resize(size_t(state->NumOwned(EntityKind::Cell)));
             sourceRows.clear();
             sourceRows.reserve(size_t(NumBnd()));
+            const auto boundaryIds = source->ReadOriginalEntityIds(EntityKind::Bnd);
+            const auto boundaryIdView = boundaryIds->View();
             for (index row = 0; row < NumBnd(); ++row)
-                sourceRows.emplace(OriginalEntityId(EntityKind::Bnd, row), row);
+                sourceRows.emplace(boundaryIdView(row, 0), row);
             auto cellAncestry = state->Provenance()->sourceIds.at(EntityKind::Cell).Read();
             for (size_t row = 0; row < cellParents.size(); ++row)
             {

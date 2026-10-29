@@ -407,20 +407,28 @@ namespace DNDS::Geom
                     DNDS_check_throw_info(read.State() == Adj_PointToGlobal,
                                           "ghost publication completion requires global target state");
                     const auto view = read.View();
+                    // The adjacency lease pins the validated global target
+                    // numbering. Ownership membership is a range test, not an
+                    // owner search/version lock for every cone incidence.
+                    const auto &target = read.Target();
+                    const index firstOwned = target._global->ROffsets()[size_t(mpi.rank)];
+                    const index endOwned = firstOwned + target.NumOwned();
+                    const auto &knownRows = known[kind];
+                    auto &extraRows = additional[kind];
                     const auto scan = [&](const Runtime::ArrayView<const index> &part)
                     {
-                        for (size_t row = 0; row < part.RowCount(); ++row)
+                        for (index iRow = 0; iRow < part.RowCount(); ++iRow)
                         {
-                            const auto count = part.RowSize(row);
-                            const auto *values = count ? part.Row(row) : nullptr;
-                            for (size_t entrySlot = 0; entrySlot < count; ++entrySlot)
+                            const auto count = part.RowSize(iRow);
+                            const auto *values = count ? part.Row(iRow) : nullptr;
+                            for (index entrySlot = 0; entrySlot < count; ++entrySlot)
                             {
                                 const auto global = values[entrySlot];
                                 if (global == UnInitIndex)
                                     continue;
-                                if (owned.spaces.at(kind).Owner(global) != mpi.rank &&
-                                    !std::binary_search(known[kind].begin(), known[kind].end(), global))
-                                    additional[kind].push_back(global);
+                                if ((global < firstOwned || global >= endOwned) &&
+                                    !std::binary_search(knownRows.begin(), knownRows.end(), global))
+                                    extraRows.push_back(global);
                             }
                         }
                     };

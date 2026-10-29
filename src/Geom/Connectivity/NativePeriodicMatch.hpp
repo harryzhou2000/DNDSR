@@ -22,7 +22,26 @@ namespace DNDS::Geom
         for (const auto &entry : reference)
             if (entry.second >= 8)
                 return {};
+        std::sort(current.begin(), current.end());
         std::sort(reference.begin(), reference.end());
+        bool uniqueNodes = true;
+        for (index iNode = 0; iNode < index(current.size()); ++iNode)
+        {
+            if (current[iNode].first != reference[iNode].first)
+                return {};
+            uniqueNodes = uniqueNodes && (iNode == 0 || current[iNode - 1].first != current[iNode].first);
+        }
+        if (uniqueNodes)
+        {
+            // With distinct IDs the correspondence fixes exactly one mask.
+            // Most faces have this form, including faces touching a periodic
+            // seam. Repeated IDs still need the full multiset search below.
+            const uint8_t mask = current.front().second ^ reference.front().second;
+            for (index iNode = 0; iNode < index(current.size()); ++iNode)
+                if ((current[iNode].second ^ reference[iNode].second) != mask)
+                    return {};
+            return mask;
+        }
         uint8_t previousMask = 0;
         for (uint8_t mask = 0; mask < 8; ++mask)
         {

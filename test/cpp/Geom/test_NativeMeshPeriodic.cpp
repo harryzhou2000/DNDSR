@@ -289,7 +289,7 @@ TEST_CASE("Periodic frame matching agrees with independent full image search")
             const uint8_t mask = uint8_t(random() % 8);
             for (size_t node = 0; node < width; ++node)
             {
-                const I id = (I(1) << 44) + I(random() % 4);
+                const I id = (I(1) << 44) + (trial % 2 ? I(node) : I(random() % 4));
                 const auto bits = uint8_t(random() % 8);
                 input.emplace_back(id, bits);
                 expected.emplace_back(id, uint8_t(bits ^ mask));

@@ -503,16 +503,6 @@ namespace DNDS::Geom
                                                    for (size_t slot = 0; slot < output.size(); ++slot)
                                                        output[slot] = index(graph.adjacency[size_t(graph.offsets[row]) + slot]);
                                                })); });
-        if (mpi.size == 1)
-        {
-            // One rank already owns every row. Keep the reader's established
-            // family order and IDs; the graph cache is retained for the local
-            // reorder that follows. There is no field or topology migration.
-            NativeOwnedMeshTransitionResult result;
-            result.sourceSpaces = source.spaces;
-            result.owned = std::move(carried);
-            return result;
-        }
         auto targets = detail::PartitionNativeGraph(source.spaces.at(EntityKind::Cell), mpi, std::move(graph), options);
         ReorderInput input;
         FieldTransferDetail::LocalStage(mpi, [&]

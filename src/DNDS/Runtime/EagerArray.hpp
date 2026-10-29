@@ -95,7 +95,7 @@ namespace DNDS::Runtime
                 auto *pointer = static_cast<Value *>(access.Pointer(alignof(Value), sizeof(Value)));
                 const auto &rows = layout->rows;
                 ArrayView<Value, false> dynamic{pointer, layout->Offsets(device), rows.RowCount(), rows.Width(), rows.Stride(), layout->Sizes(device)};
-                view = ProjectView<Value, false, Policy>(dynamic);
+                view = ProjectView<Value, false, Policy>(dynamic, rows);
             }
             void Handoff(ExecutionContext context)
             {

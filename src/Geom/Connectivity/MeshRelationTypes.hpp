@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <tuple>
 #include <vector>
 
 namespace DNDS::Geom
@@ -139,9 +140,32 @@ namespace DNDS::Geom
         /// Native mathematical inverse with sorted unique output and complete
         /// input provenance; legacy physical-slot adapters remain explicit.
         [[nodiscard]] AdjacencyDescriptor Inverted() const;
-        bool operator==(const AdjacencyDescriptor &other) const { return Signature() == other.Signature(); }
+        // Registry lookup compares semantic fields, not serialized temporary
+        // strings. Signature remains the canonical wire representation. The
+        // map order is deterministic but need not match wire-text ordering.
+        bool operator==(const AdjacencyDescriptor &other) const
+        {
+            if (from != other.from || to != other.to || IsLegacy() != other.IsLegacy())
+                return false;
+            if (IsLegacy())
+                return !isIntraLevel() || via == other.via;
+            return std::tie(path, selection, removeSelf, order, periodic, semanticName, semanticVersion, provenance) ==
+                   std::tie(other.path, other.selection, other.removeSelf, other.order, other.periodic,
+                            other.semanticName, other.semanticVersion, other.provenance);
+        }
         bool operator!=(const AdjacencyDescriptor &other) const { return !(*this == other); }
-        bool operator<(const AdjacencyDescriptor &other) const { return Signature() < other.Signature(); }
+        bool operator<(const AdjacencyDescriptor &other) const
+        {
+            if (from != other.from || to != other.to)
+                return std::tie(from, to) < std::tie(other.from, other.to);
+            if (IsLegacy() != other.IsLegacy())
+                return IsLegacy();
+            if (IsLegacy())
+                return isIntraLevel() && via < other.via;
+            return std::tie(path, selection, removeSelf, order, periodic, semanticName, semanticVersion, provenance) <
+                   std::tie(other.path, other.selection, other.removeSelf, other.order, other.periodic,
+                            other.semanticName, other.semanticVersion, other.provenance);
+        }
     };
 
     struct AdjacencyDescriptorHash

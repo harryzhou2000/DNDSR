@@ -72,12 +72,12 @@ namespace DNDS::Geom
             if (!remapValues && !sortValues)
             {
                 int invalid = 0;
-#pragma omp parallel for if (source.RowCount() >= 4096) schedule(static) reduction(| : invalid)
-                for (size_t oldRow = 0; oldRow < source.RowCount(); ++oldRow)
+#pragma omp parallel for if (inputView.RowCount() >= 4096) schedule(static) reduction(| : invalid)
+                for (index oldRow = 0; oldRow < inputView.RowCount(); ++oldRow)
                 {
                     const size_t newRow = reorderRows ? size_t(oldToNew[oldRow]) : oldRow;
                     const auto count = inputView.RowSize(oldRow);
-                    if (newRow >= result.RowCount() || count != outputView.RowSize(newRow))
+                    if (newRow >= outputView.RowCount() || count != outputView.RowSize(newRow))
                     {
                         invalid = 1;
                         continue;
@@ -88,11 +88,11 @@ namespace DNDS::Geom
                 return result;
             }
             int invalid = 0;
-#pragma omp parallel for if (source.RowCount() >= 4096) schedule(static) reduction(| : invalid)
-            for (size_t oldRow = 0; oldRow < source.RowCount(); ++oldRow)
+#pragma omp parallel for if (inputView.RowCount() >= 4096) schedule(static) reduction(| : invalid)
+            for (index oldRow = 0; oldRow < inputView.RowCount(); ++oldRow)
             {
                 const size_t newRow = reorderRows ? size_t(oldToNew[oldRow]) : oldRow;
-                if (newRow >= result.RowCount() || inputView.RowSize(oldRow) != outputView.RowSize(newRow))
+                if (newRow >= outputView.RowCount() || inputView.RowSize(oldRow) != outputView.RowSize(newRow))
                 {
                     invalid = 1;
                     continue;
@@ -307,13 +307,13 @@ namespace DNDS::Geom
             return graph;
         }
         /// Move row payloads. allowLocalPermutation must be rank-uniform and is
-        /// true only for a full local permutation (or a one-rank route). The
+        /// true only for an explicitly requested full local permutation. The
         /// local branch preserves independent output storage while avoiding
         /// self-MPI and payload-plan construction.
         template <class T>
         Runtime::Array<T> Move(const Runtime::Array<T> &source, const Runtime::RowTransferPlan &route,
                                const Runtime::ElementSchema &schema, const MPIInfo &mpi,
-                               bool allowLocalPermutation)
+                               bool allowLocalPermutation, std::vector<Runtime::TransferOperation> *pending = nullptr)
         {
             const auto &send = route.SendRows(), &receive = route.ReceiveRows();
             bool localOnly = allowLocalPermutation && source.GetDevice() == Runtime::Device::Host() && !route.HasCollisions() &&
@@ -355,18 +355,33 @@ namespace DNDS::Geom
                 }
             }
 
-            auto layout = route.DestinationLayout(source.Layout());
-            if (!source.Layout().IsVariable())
-                layout = Runtime::RowLayout::Dense(route.DestinationRows(), source.Layout().Width());
-            Runtime::Array<T> output(layout);
+            const auto shape = source.Layout();
+            auto payload = shape.IsVariable()
+                               ? Runtime::PayloadPlan(route, shape, schema)
+                               : Runtime::PayloadPlan(route, shape, Runtime::RowLayout::Dense(route.DestinationRows(), shape.Width()), schema);
+            Runtime::Array<T> output(payload.DestinationLayout());
             Runtime::TransferOptions options;
             options.mode = Runtime::TransferMode::Transient;
-            options.context = std::make_shared<Runtime::CommunicationContext>(route.Communicator());
-            Runtime::PayloadPlan(route, source.Layout(), output.Layout(), schema)
-                .Bind(source, output, Runtime::TransferTransport::Direct, options)
-                .Begin()
-                .Wait();
+            options.context = route.Context();
+            if (pending)
+            {
+                // The transition visits the same payload sequence on every
+                // rank. Distinct tags permit retained direct transfers to
+                // overlap the next payload's CPU remap without communicator
+                // duplication or a pack buffer. The operation owns all leases.
+                DNDS_check_throw_info(pending->size() < size_t(INT_MAX), "too many concurrent transition payloads");
+                options.tag = int(pending->size()) + 1;
+                pending->push_back(payload.Bind(source, output, Runtime::TransferTransport::Direct, options).Begin());
+            }
+            else
+                payload.Bind(source, output, Runtime::TransferTransport::Direct, options).Begin().Wait();
             return output;
+        }
+        void FinishMoves(std::vector<Runtime::TransferOperation> &pending)
+        {
+            for (auto &operation : pending)
+                operation.Wait();
+            pending.clear(); // Retire binding tags as well as completed leases.
         }
         struct EntityRemap
         {
@@ -386,8 +401,28 @@ namespace DNDS::Geom
                 return found->second;
             }
         };
+        /// Most aliases remain ordered after numbering changes. Preserve their
+        /// shared payload when possible; otherwise sort an independent receiver
+        /// copy so topological slot order is never modified through an alias.
+        RArray SortOwnedTargets(const RArray &values)
+        {
+            auto read = values.Read();
+            const auto view = read.View();
+            bool sorted = true;
+            for (index iRow = 0; sorted && iRow < view.RowCount(); ++iRow)
+            {
+                const auto row = view[iRow];
+                sorted = std::is_sorted(row.begin(), row.end());
+            }
+            if (sorted)
+                return values;
+            const std::vector<index> noPermutation;
+            return ReorderOwnedRows(values, noPermutation, false, false, true, [](index value)
+                                    { return value; });
+        }
         NativeOwnedMeshTransitionResult ReorderOwnedPrimaryRows(
-            const NativeOwnedMeshData &source, const MPIInfo &mpi, const std::vector<index> &cellOld2New)
+            const NativeOwnedMeshData &source, const MPIInfo &mpi, const std::vector<index> &cellOld2New,
+            index first)
         {
             const auto oldCells = source.spaces.at(EntityKind::Cell);
             DNDS_check_throw_info(oldCells.NumGhost() == 0 && cellOld2New.size() == size_t(oldCells.NumOwned()),
@@ -401,9 +436,12 @@ namespace DNDS::Geom
                 if (!scannedTargets.insert(reinterpret_cast<uintptr_t>(rows.SharedStorage().get())).second)
                     return;
                 auto read = rows.Read();
-                for (size_t row = 0; row < read.View().RowCount(); ++row)
-                    for (auto global : read.View()[row])
-                        if (global != UnInitIndex)
+                const auto view = read.View();
+                for (index iRow = 0; iRow < view.RowCount(); ++iRow)
+                    for (auto global : view[iRow])
+                        // Only remote numbering needs a closure transfer.
+                        // Keep invalid remote IDs for checked owner lookup.
+                        if (global != UnInitIndex && (global < first || global - first >= oldCells.NumOwned()))
                             referenced.push_back(global);
             };
             for (size_t slot = 0; slot < source.relations.size(); ++slot)
@@ -415,7 +453,6 @@ namespace DNDS::Geom
             std::sort(referenced.begin(), referenced.end());
             referenced.erase(std::unique(referenced.begin(), referenced.end()), referenced.end());
 
-            const index first = oldCells.LocalToGlobal(0);
             std::vector<index> remote;
             std::vector<Runtime::RowRequest> requests;
             for (auto global : referenced)
@@ -427,10 +464,16 @@ namespace DNDS::Geom
             int anyRemote = remote.empty() ? 0 : 1;
             MPI_Allreduce(MPI_IN_PLACE, &anyRemote, 1, MPI_INT, MPI_MAX, mpi.comm);
             RArray newGlobals(Runtime::RowLayout::Dense(size_t(oldCells.NumOwned()), 1));
+            std::vector<index> newGlobalValues(size_t(oldCells.NumOwned()));
             {
                 auto write = newGlobals.Write();
-                for (size_t row = 0; row < newGlobals.RowCount(); ++row)
-                    write.View()(row, 0) = oldCells.LocalToGlobal(cellOld2New[row]);
+                const auto view = write.View<Runtime::FixedRows<1, 1>>();
+                for (index iRow = 0; iRow < view.RowCount(); ++iRow)
+                {
+                    DNDS_check_throw_info(cellOld2New[iRow] >= 0 && cellOld2New[iRow] < oldCells.NumOwned(),
+                                          "owned cell permutation target is out of range");
+                    view(iRow, 0) = newGlobalValues[iRow] = first + cellOld2New[iRow];
+                }
             }
             RArray remoteNewGlobals(Runtime::RowLayout::Dense(0, 1));
             if (anyRemote)
@@ -440,18 +483,16 @@ namespace DNDS::Geom
                 auto read = remoteNewGlobals.Read();
                 DNDS_check_throw_info(read.View().RowCount() == remote.size(), "primary owned reorder lost remote cell targets");
             }
-            std::vector<index> newGlobalValues(size_t(oldCells.NumOwned()));
-            for (index oldRow = 0; oldRow < oldCells.NumOwned(); ++oldRow)
-                newGlobalValues[size_t(oldRow)] = oldCells.LocalToGlobal(cellOld2New[size_t(oldRow)]);
             EntityRemap remap;
             remap.first = first;
             remap.newGlobals = &newGlobalValues;
             if (anyRemote)
             {
                 auto read = remoteNewGlobals.Read();
+                const auto view = read.View();
                 remap.remote.reserve(remote.size());
                 for (size_t row = 0; row < remote.size(); ++row)
-                    remap.remote.emplace_back(remote[row], read.View()(row, 0));
+                    remap.remote.emplace_back(remote[row], view(row, 0));
             }
             auto mappedCell = [&](index value)
             { return value == UnInitIndex ? value : remap(value); };
@@ -696,12 +737,14 @@ namespace DNDS::Geom
         {
             facial.emplace();
             auto rows = cachedFacial->second.Read();
-            DNDS_check_throw_info(rows.View().RowCount() == size_t(source.spaces.at(EntityKind::Cell).NumOwned()),
+            const auto view = rows.View();
+            const auto nGlobal = source.spaces.at(EntityKind::Cell).NumGlobal();
+            DNDS_check_throw_info(view.RowCount() == source.spaces.at(EntityKind::Cell).NumOwned(),
                                   "cached facial graph row count differs from owned cells");
-            facial->offsets.resize(rows.View().RowCount() + 1, 0);
-            for (size_t row = 0; row < rows.View().RowCount(); ++row)
+            facial->offsets.resize(view.RowCount() + 1, 0);
+            for (index row = 0; row < view.RowCount(); ++row)
             {
-                const auto count = rows.View().RowSize(row);
+                const auto count = view.RowSize(row);
                 DNDS_check_throw_info(facial->offsets[row] <= std::numeric_limits<idx_t>::max() - idx_t(count),
                                       "cached facial graph adjacency exceeds METIS extent");
                 facial->offsets[row + 1] = facial->offsets[row] + METIS::indexToIdx(count);
@@ -709,9 +752,9 @@ namespace DNDS::Geom
             facial->adjacency.resize(size_t(facial->offsets.back()));
             int invalid = 0;
 #pragma omp parallel for schedule(static) reduction(| : invalid)
-            for (std::ptrdiff_t row = 0; row < static_cast<std::ptrdiff_t>(rows.View().RowCount()); ++row)
+            for (index row = 0; row < view.RowCount(); ++row)
             {
-                const auto sourceRow = rows.View()[size_t(row)];
+                const auto sourceRow = view[row];
                 auto *target = facial->adjacency.data() + facial->offsets[size_t(row)];
                 // The private descriptor is SortedUnique. Relation validation
                 // has already proved strictly increasing rows under its lease;
@@ -719,7 +762,7 @@ namespace DNDS::Geom
                 for (size_t slot = 0; slot < sourceRow.size(); ++slot)
                 {
                     const auto global = sourceRow[slot];
-                    if (global < 0 || global >= source.spaces.at(EntityKind::Cell).NumGlobal())
+                    if (global < 0 || global >= nGlobal)
                     {
                         invalid = 1;
                         break;
@@ -738,6 +781,7 @@ namespace DNDS::Geom
             tLocalMatStruct graph(size_t(cells.NumOwned()));
             std::vector<uint8_t> hasRemote(size_t(cells.NumOwned()), 0);
             auto all = source.relations.at(size_t(MeshRelation::CellCells))->Read();
+            const auto allView = all.View();
             if (cachedFacial == source.namedRelations.end() && !source.requirements.faces)
                 graph = PrimaryFaceNeighborsFromCellGraph(source);
             else
@@ -757,7 +801,7 @@ namespace DNDS::Geom
 #pragma omp parallel for reduction(| : invalid) schedule(static)
                 for (index cell = 0; cell < cells.NumOwned(); ++cell)
                 {
-                    const auto row = all.View()[size_t(cell)];
+                    const auto row = allView[cell];
                     for (auto global : row)
                     {
                         if (global < 0 || global >= cells.NumGlobal())
@@ -781,7 +825,8 @@ namespace DNDS::Geom
                                                              &hasRemote);
             } });
         auto result = !source.requirements.faces && !source.spaces.count(EntityKind::Face)
-                          ? ReorderOwnedPrimaryRows(source, mpi, permutation.cellOld2New)
+                          ? ReorderOwnedPrimaryRows(source, mpi, permutation.cellOld2New,
+                                                    source.spaces.at(EntityKind::Cell)._global->ROffsets()[size_t(mpi.rank)])
                           : BuildOwnedImpl(source, mpi, {}, &permutation.cellOld2New);
         result.owned.namedRelations.erase(NativeSetupFacialCellNeighborsKey());
         result.owned.localPartitionStarts = std::move(permutation.localPartitionStarts);
@@ -988,6 +1033,8 @@ namespace DNDS::Geom
                 placements.emplace(follow.follower, std::move(assignment)); });
         }
         std::map<EntityKind, Runtime::RowTransferPlan> routes;
+        std::map<EntityKind, Runtime::RowTransferPlan> adjacencyRoutes;
+        std::map<EntityKind, std::vector<index>> sendOld2New;
         std::map<EntityKind, PermutationTransfer> allTransfers;
         const auto anchor = oldSpaces.begin()->second;
         for (const auto &[kind, old] : oldSpaces)
@@ -1006,6 +1053,32 @@ namespace DNDS::Geom
                 transfer = PermutationTransfer::fromPartition(targets, old._global, mpi);
             auto route = NativeRowTransfer(transfer, mpi);
             spaces.emplace(kind, anchor.CreateSibling(kind, index(route.DestinationRows())));
+            if (!cellOld2New)
+            {
+                // Remapping already creates independent owned adjacency data.
+                // Give that array the sender's partition-bucket row order in
+                // the same pass, so each peer reads contiguous rows through
+                // direct MPI datatypes. This is an explicit row permutation,
+                // not a byte-packing workspace or a different transport.
+                auto &permutation = sendOld2New[kind];
+                std::vector<std::vector<index>> send;
+                FieldTransferDetail::LocalStage(mpi, [&]
+                                                {
+                    permutation.assign(size_t(old.NumOwned()), -1);
+                    send = route.SendRows();
+                    index next = 0;
+                    for (auto &peer : send)
+                        for (auto &row : peer)
+                        {
+                            DNDS_check_throw_info(row >= 0 && row < old.NumOwned() && permutation[size_t(row)] < 0,
+                                                  "migration source rows must form one complete permutation");
+                            permutation[size_t(row)] = next;
+                            row = next++;
+                        }
+                    DNDS_check_throw_info(next == old.NumOwned(), "migration source row permutation is incomplete"); });
+                adjacencyRoutes.emplace(kind, Runtime::RowTransferPlan::Known(route.Context(), route.SourceRows(),
+                                                                              route.DestinationRows(), std::move(send), route.ReceiveRows()));
+            }
             routes.emplace(kind, std::move(route));
             if (cellOld2New || assigned != placements.end())
                 result.transfers.emplace(kind, transfer);
@@ -1091,9 +1164,16 @@ namespace DNDS::Geom
                     remap.at(kind).remote.emplace_back(globals[i], read.View()(i, 0));
             }
         std::map<AdjacencyDescriptor, RArray> movedRelations;
-        using MoveKey = std::pair<PayloadKey, bool>;
-        std::map<MoveKey, int> movedPayloads;
+        std::vector<Runtime::TransferOperation> pendingMoves;
+        FieldTransferDetail::LocalStage(mpi, [&]
+                                        { pendingMoves.reserve(original.size() + source.spaces.size() * 3 + 12); });
+        auto *pending = cellOld2New ? nullptr : &pendingMoves;
+        // Routing preserves row slots. Sorting belongs to the destination's
+        // semantic descriptor, not the wire payload: sorted and topological
+        // aliases can share one remap/transfer without changing either order.
+        std::map<PayloadKey, int> movedPayloads;
         std::vector<RArray> movedByOrdinal;
+        std::map<uintptr_t, RArray> sortedPayloads;
         std::vector<index> cellNew2Old;
         if (cellOld2New)
         {
@@ -1113,7 +1193,23 @@ namespace DNDS::Geom
         }
         for (const auto &[key, values] : original)
         {
-            const MoveKey identity{payloadKey(key, values), key.order == RelationOrder::SortedUnique};
+            const auto identity = payloadKey(key, values);
+            std::optional<MeshAdjacencyRead> read;
+            FieldTransferDetail::LocalStage(mpi, [&]
+                                            {
+                // A byte alias does not establish this descriptor's semantic
+                // constraints (e.g. SortedUnique or removeSelf).
+                read.emplace(key, oldSpaces.at(key.from), oldSpaces.at(key.to), values.state,
+                             values.rows.owned, &values.rows.ghost);
+                DNDS_check_throw_info(read->State() == Adj_PointToGlobal, "owned transition requires global adjacency rows"); });
+            auto publish = [&](RArray moved)
+            {
+                movedPayloads.emplace(identity, int(movedByOrdinal.size()));
+                movedByOrdinal.push_back(moved);
+                // Retain handles while receives are active. Reading/sorting
+                // occurs only after the explicit join below.
+                movedRelations.emplace(key, std::move(moved));
+            };
             int candidate = -1;
             if (auto found = movedPayloads.find(identity); found != movedPayloads.end())
                 candidate = found->second;
@@ -1127,61 +1223,49 @@ namespace DNDS::Geom
             if (candidate >= 0)
             {
                 FieldTransferDetail::LocalStage(mpi, [&]
-                                                {
-                    auto moved = movedByOrdinal.at(size_t(candidate));
-                    movedRelations.emplace(key, moved);
-                    movedByOrdinal.push_back(std::move(moved)); });
+                                                { publish(movedByOrdinal.at(size_t(candidate))); });
                 continue;
             }
             if (cellOld2New && key.from != EntityKind::Cell && key.to != EntityKind::Cell)
             {
                 FieldTransferDetail::LocalStage(mpi, [&]
-                                                {
-                    auto moved = values.rows.owned;
-                    movedPayloads.emplace(identity, int(movedByOrdinal.size()));
-                    movedRelations.emplace(key, moved);
-                    movedByOrdinal.push_back(std::move(moved)); });
+                                                { publish(values.rows.owned); });
                 continue;
             }
-            std::optional<MeshAdjacencyRead> read;
-            FieldTransferDetail::LocalStage(mpi, [&]
-                                            { read.emplace(key, oldSpaces.at(key.from), oldSpaces.at(key.to), values.state,
-                                                           values.rows.owned, &values.rows.ghost); });
             std::optional<RArray> globalRows;
             FieldTransferDetail::LocalStage(mpi, [&]
-                                            { const bool reorderSource = cellOld2New && key.from == EntityKind::Cell;
-                                              const auto destinationRows = reorderSource ? cellNew2Old.size() : size_t(read->NumOwned());
-                                              const auto &shape = values.rows.owned.Layout();
-                                              globalRows.emplace(Runtime::BuildArrayRows<index>(destinationRows, [&](size_t row)
-                                                                                                { return read->RowSize(reorderSource ? cellNew2Old[row] : index(row)); }, [&](size_t row, auto output)
-                                                                                                {
-                        const EntityRemap *mapping = cellOld2New && key.to != EntityKind::Cell
-                                                         ? nullptr
-                                                         : serialOwned ? &serialRemaps.at(key.to)
-                                                                       : &remap.at(key.to);
-                        const auto oldRow = reorderSource ? cellNew2Old[row] : index(row);
-                        read->ConvertRowTo(oldRow, Adj_PointToGlobal, output.data());
-                        for (size_t slot = 0; slot < output.size(); ++slot)
-                        {
-                            const auto entry = output[slot];
-                            if (entry == UnInitIndex || (cellOld2New && key.to != EntityKind::Cell))
-                                output[slot] = entry;
-                            else
-                                output[slot] = (*mapping)(entry);
-                        }
-                        if (key.order == RelationOrder::SortedUnique && output.size() > 1) std::sort(output.begin(), output.end()); },
-                                                                                                shape.IsVariable() ? std::optional<size_t>{} : std::optional<size_t>(shape.Width()),
-                                                                                                true)); });
+                                            {
+                // Owned transition inputs are global and the retained scope
+                // above has already validated their encodings. Reuse the row
+                // layout and fuse remapping with copying, instead of rebuilding
+                // CSR offsets and making a separate conversion pass per row.
+                const EntityRemap *mapping = cellOld2New && key.to != EntityKind::Cell
+                                                 ? nullptr
+                                                 : serialOwned ? &serialRemaps.at(key.to) : &remap.at(key.to);
+                const auto &permutation = cellOld2New ? *cellOld2New : sendOld2New.at(key.from);
+                globalRows.emplace(ReorderOwnedRows(values.rows.owned, permutation,
+                                                     !cellOld2New || key.from == EntityKind::Cell, bool(mapping),
+                                                     false,
+                                                     [&](index value) { return value == UnInitIndex ? value : (*mapping)(value); })); });
             auto moved = cellOld2New
                              ? *globalRows
-                             : Move(*globalRows, routes.at(key.from), Runtime::ElementSchema::Arithmetic<index>(), mpi,
-                                    mpi.size == 1);
+                             : Move(*globalRows, adjacencyRoutes.at(key.from), Runtime::ElementSchema::Arithmetic<index>(), mpi,
+                                    false, pending);
             FieldTransferDetail::LocalStage(mpi, [&]
-                                            {
-                movedPayloads.emplace(identity, int(movedByOrdinal.size()));
-                movedRelations.emplace(key, moved);
-                movedByOrdinal.push_back(std::move(moved)); });
+                                            { publish(std::move(moved)); });
         }
+        FinishMoves(pendingMoves);
+        FieldTransferDetail::LocalStage(mpi, [&]
+                                        {
+            for (auto &[key, moved] : movedRelations)
+                if (key.order == RelationOrder::SortedUnique)
+                {
+                    const auto storage = reinterpret_cast<uintptr_t>(moved.SharedStorage().get());
+                    auto found = sortedPayloads.find(storage);
+                    if (found == sortedPayloads.end())
+                        found = sortedPayloads.emplace(storage, SortOwnedTargets(moved)).first;
+                    moved = found->second;
+                } });
         NativeOwnedMeshData owned;
         owned.identity = source.identity;
         owned.requirements = source.requirements;
@@ -1198,7 +1282,7 @@ namespace DNDS::Geom
             for (auto &[kind, values] : owned.provenance->sourceIds)
                 if (!cellOld2New || kind == EntityKind::Cell)
                     values = Move(values, routes.at(kind), Runtime::ElementSchema::Arithmetic<index>(), mpi,
-                                  cellOld2New || mpi.size == 1);
+                                  bool(cellOld2New), pending);
         }
         FieldTransferDetail::LocalStage(mpi, [&]
                                         {
@@ -1218,7 +1302,7 @@ namespace DNDS::Geom
             if (originalPair)
                 destination = cellOld2New && kind != EntityKind::Cell ? *originalPair
                                                                       : Move(*originalPair, routes.at(kind), schema, mpi,
-                                                                             cellOld2New || mpi.size == 1);
+                                                                             bool(cellOld2New), pending);
         };
         companion(owned.coords, source.coords, EntityKind::Node, Runtime::ElementSchema::Arithmetic<real>());
         companion(owned.nodeWallDist, source.nodeWallDist, EntityKind::Node, Runtime::ElementSchema::Arithmetic<real>());
@@ -1249,11 +1333,16 @@ namespace DNDS::Geom
                 continue;
             }
             const auto &baseRoute = routes.at(kind);
-            auto idRoute = Runtime::RowTransferPlan::Known(std::make_shared<Runtime::CommunicationContext>(mpi.comm),
-                                                           originalIds.RowCount(), baseRoute.DestinationRows(), baseRoute.SendRows(), baseRoute.ReceiveRows());
+            // IDs normally have precisely the same owned source rows as all
+            // other companions. Share that validated route; only snapshots
+            // with an additional retained ID suffix need an adjusted extent.
+            int sameExtent = originalIds.RowCount() == baseRoute.SourceRows();
+            MPI_Allreduce(MPI_IN_PLACE, &sameExtent, 1, MPI_INT, MPI_MIN, mpi.comm);
+            auto idRoute = sameExtent ? baseRoute : Runtime::RowTransferPlan::Known(baseRoute.Context(), originalIds.RowCount(), baseRoute.DestinationRows(), baseRoute.SendRows(), baseRoute.ReceiveRows());
             owned.ids.emplace(kind, Move(originalIds, idRoute, Runtime::ElementSchema::Arithmetic<index>(), mpi,
-                                         cellOld2New || mpi.size == 1));
+                                         bool(cellOld2New), pending));
         }
+        FinishMoves(pendingMoves);
         owned.retainedRead = source.retainedRead;
         owned.retainedProvenance = source.retainedProvenance;
         result.owned = std::move(owned);

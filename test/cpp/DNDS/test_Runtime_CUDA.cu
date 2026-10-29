@@ -107,6 +107,14 @@ TEST_CASE("CUDA five layout policies static width stride and capacity reach actu
     CheckStaticCUDAAccess<PaddedRows>(RowLayout::Padded({}, 7));
     CheckStaticCUDAAccess<StaticMaxRows<7>>(RowLayout::Padded({}, 7));
     CheckStaticCUDAAccess<CSRRows>(RowLayout::Ragged({}));
+    // These projections must inspect the host shape, never dereference CUDA
+    // offsets/sizes during host-side view construction.
+    CheckStaticCUDAAccess<FixedRows<3, 3>>(RowLayout::Ragged({3, 3, 3}));
+    CheckStaticCUDAAccess<TableRows>(RowLayout::Padded({3, 3, 3}, 3));
+    Array<double> ragged(RowLayout::Ragged({2, 3}), Device::CUDA(0));
+    Array<double> padded(RowLayout::Padded({2, 2}, 3), Device::CUDA(0));
+    CHECK_THROWS(ragged.Read(ExecutionContext::CUDA(0)).template View<TableRows>());
+    CHECK_THROWS(padded.Read(ExecutionContext::CUDA(0)).template View<TableRows>());
 }
 
 template <class Policy>
@@ -153,6 +161,8 @@ TEST_CASE("CUDA eager submissions preserve all five layout policies in launcher 
     CheckEagerTypedCUDA<PaddedRows>(RowLayout::Padded({0, 2, 5}, 5));
     CheckEagerTypedCUDA<StaticMaxRows<5>>(RowLayout::Padded({0, 2, 5}, 5));
     CheckEagerTypedCUDA<CSRRows>(RowLayout::Ragged({0, 2, 5}));
+    CheckEagerTypedCUDA<FixedRows<3, 3>>(RowLayout::Ragged({3, 3, 3}));
+    CheckEagerTypedCUDA<TableRows>(RowLayout::Padded({3, 3, 3}, 3));
 }
 
 TEST_CASE("CUDA array allocation accounting includes host and device row metadata without alias duplication")

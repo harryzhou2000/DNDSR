@@ -2,7 +2,6 @@
 #include <climits>
 #include <numeric>
 #include <optional>
-#include <unordered_set>
 #include <mutex>
 
 namespace DNDS::Runtime
@@ -15,18 +14,28 @@ namespace DNDS::Runtime
             MPI_Allreduce(MPI_IN_PLACE, &all, 1, MPI_INT, MPI_MIN, comm);
             DNDS_check_throw_info(all, message);
         }
-        void Agree(const std::string &value, MPI_Comm comm)
+        void Agree(const std::string &value, MPI_Comm comm, bool valid = true, index *uniformWidth = nullptr)
         {
             int rank = 0;
             MPI_Comm_rank(comm, &rank);
-            CheckAll(value.size() <= INT_MAX, comm, "transfer schema identifier too long");
-            int size = rank == 0 ? int(value.size()) : 0;
+            // Root publishes an error sentinel instead of narrowing an invalid
+            // length. Non-root oversized values fail the final exact comparison.
+            int size = rank == 0 ? (value.size() <= INT_MAX ? int(value.size()) : -1) : 0;
             MPI_Bcast(&size, 1, MPI_INT, 0, comm);
+            DNDS_check_throw_info(size >= 0, "transfer schema identifier too long");
             std::string reference(size, '\0');
             if (rank == 0)
                 reference = value;
             MPI_Bcast(reference.data(), size, MPI_CHAR, 0, comm);
-            CheckAll(value == reference, comm, "transfer schema/policy differs between ranks");
+            // Payload construction can prove a common table width in this
+            // existing agreement. Unknown/mixed shapes use -1 and retain the
+            // ordinary per-edge width exchange; no new collective is added.
+            int64_t controls[]{valid && value == reference, uniformWidth ? *uniformWidth : -1,
+                               uniformWidth ? -*uniformWidth : 1};
+            MPI_Allreduce(MPI_IN_PLACE, controls, uniformWidth ? 3 : 1, MPI_INT64_T, MPI_MIN, comm);
+            DNDS_check_throw_info(controls[0], "transfer schema/policy or source layout/epoch differs between ranks");
+            if (uniformWidth)
+                *uniformWidth = controls[1] >= 0 && controls[1] == -controls[2] ? controls[1] : -1;
         }
         bool MPIAlive()
         {
@@ -59,26 +68,30 @@ namespace DNDS::Runtime
                 result[i + 1] = result[i] + counts[i];
             return result;
         }
-        /// Collision detection for row routes. Reserve from the local request
-        /// cardinality so sparse routes never allocate by global entity count.
+        /// Collision detection needs one answer after route construction, not
+        /// dynamic membership. Append request-sized scratch and sort once; no
+        /// per-row hash allocation and never a global/entity-sized bitmap.
         class SeenRows
         {
-            std::unordered_set<index> _hash;
+            std::vector<index> _rows;
 
         public:
             SeenRows(index extent, size_t expected)
             {
                 DNDS_check_throw_info(extent >= 0, "route row extent is negative");
-                _hash.reserve(expected);
+                _rows.reserve(expected);
             }
-            bool Insert(index row)
+            void Append(index row) { _rows.push_back(row); }
+            bool HasDuplicates()
             {
-                return _hash.insert(row).second;
+                std::sort(_rows.begin(), _rows.end());
+                return std::adjacent_find(_rows.begin(), _rows.end()) != _rows.end();
             }
         };
-        std::vector<uint64_t> ExchangeLengths(const RowTransferPlan &route, const RowLayout &source)
+        std::vector<uint64_t> ExchangeLengths(const RowTransferPlan &route, const RowLayout &source, bool preflightDone = false)
         {
-            CheckAll(source.RowCount() == route.SourceRows() && route.Valid(), route.Communicator(), "row transfer source layout or epoch mismatch");
+            if (!preflightDone)
+                CheckAll(source.RowCount() == route.SourceRows() && route.Valid(), route.Communicator(), "row transfer source layout or epoch mismatch");
             const auto sendCounts = Counts(route.SendRows()), receiveCounts = Counts(route.ReceiveRows());
             const auto sendOffsets = Offsets(sendCounts), receiveOffsets = Offsets(receiveCounts);
             std::vector<uint64_t> send, receive(receiveOffsets.back());
@@ -89,10 +102,28 @@ namespace DNDS::Runtime
                           receive.data(), receiveCounts.data(), receiveOffsets.data(), MPI_UINT64_T, route.Communicator());
             return receive;
         }
-        Type MakeType(const std::vector<index> &rows, const RowLayout &layout, const ElementSchema &schema, size_t &segments)
+        RowLayout InferredLayout(const RowTransferPlan &route, const std::vector<uint64_t> &received)
+        {
+            std::vector<size_t> lengths(size_t(route.DestinationRows()), SIZE_MAX);
+            size_t edge = 0;
+            bool valid = true;
+            for (const auto &peer : route.ReceiveRows())
+                for (auto row : peer)
+                {
+                    valid = valid && (lengths[row] == SIZE_MAX || lengths[row] == received[edge]);
+                    lengths[row] = received[edge++];
+                }
+            DNDS_check_throw_info(valid, "fan-in contributions have incompatible row widths");
+            for (auto &n : lengths)
+                if (n == SIZE_MAX)
+                    n = 0;
+            return RowLayout::Ragged(lengths);
+        }
+        Type MakeType(const std::vector<index> &rows, const RowLayout &layout, const ElementSchema &schema, size_t &segments, Type &emptyType)
         {
             std::vector<int> lengths;
             std::vector<MPI_Aint> displacements;
+            const auto extent = schema.Extent();
             for (auto row : rows)
             {
                 auto remaining = layout.RowSize(row);
@@ -101,11 +132,11 @@ namespace DNDS::Runtime
                 {
                     const auto n = int(std::min(remaining, index(INT_MAX)));
                     DNDS_check_throw_info(offset >= 0 && size_t(offset) <=
-                                                             size_t(std::numeric_limits<MPI_Aint>::max()) / schema.Extent(),
+                                                             size_t(std::numeric_limits<MPI_Aint>::max()) / extent,
                                           "MPI displacement overflow");
-                    auto displacement = MPI_Aint(size_t(offset) * schema.Extent());
+                    auto displacement = MPI_Aint(size_t(offset) * extent);
                     if (!lengths.empty() && n <= INT_MAX - lengths.back() &&
-                        displacement - displacements.back() == MPI_Aint(lengths.back()) * MPI_Aint(schema.Extent()))
+                        displacement - displacements.back() == MPI_Aint(lengths.back()) * MPI_Aint(extent))
                         lengths.back() += n;
                     else
                     {
@@ -118,9 +149,15 @@ namespace DNDS::Runtime
             }
             DNDS_check_throw_info(lengths.size() <= INT_MAX, "MPI datatype has too many segments");
             segments += lengths.size();
+            // Empty peers share one committed zero-payload type per plan. A
+            // sparse halo must not compile three identical types per idle rank.
+            if (lengths.empty() && emptyType)
+                return emptyType;
             auto type = std::make_shared<Datatype>();
             MPI_Type_create_hindexed(int(lengths.size()), lengths.data(), displacements.data(), schema.Type(), &type->value);
             MPI_Type_commit(&type->value);
+            if (lengths.empty())
+                emptyType = type;
             return type;
         }
     }
@@ -164,8 +201,9 @@ namespace DNDS::Runtime
         for (auto request : requests)
         {
             grouped[request.sourceRank].emplace_back(request.sourceRow, request.destinationRow);
-            state->collisions |= !targets.Insert(request.destinationRow);
+            targets.Append(request.destinationRow);
         }
+        state->collisions = targets.HasDuplicates();
         // Pair order defines the positional direct-MPI correspondence. Sorting
         // each peer's pairs by source row keeps both endpoints aligned while
         // collapsing contiguous source rows into one hindexed type segment.
@@ -195,8 +233,9 @@ namespace DNDS::Runtime
             {
                 valid = valid && incoming[j] >= 0 && uint64_t(incoming[j]) < sourceRows;
                 state->send[peer].push_back(index(incoming[j]));
-                state->reverseCollisions |= !sourcesSeen.Insert(index(incoming[j]));
+                sourcesSeen.Append(index(incoming[j]));
             }
+        state->reverseCollisions = sourcesSeen.HasDuplicates();
         CheckAll(valid, state->comm, "row transfer source index does not exist");
         _state = std::move(state);
     }
@@ -208,7 +247,8 @@ namespace DNDS::Runtime
         const auto comm = context->Communicator();
         int size = 0;
         MPI_Comm_size(comm, &size);
-        bool valid = send.size() == size_t(size) && receive.size() == size_t(size);
+        bool valid = sourceRows >= 0 && destinationRows >= 0 &&
+                     send.size() == size_t(size) && receive.size() == size_t(size);
         size_t ns = 0, nr = 0;
         for (const auto &peer : send)
         {
@@ -240,10 +280,12 @@ namespace DNDS::Runtime
         SeenRows sourceSeen(sourceRows, ns), destinationSeen(destinationRows, nr);
         for (const auto &peer : state->send)
             for (auto row : peer)
-                state->reverseCollisions |= !sourceSeen.Insert(row);
+                sourceSeen.Append(row);
         for (const auto &peer : state->receive)
             for (auto row : peer)
-                state->collisions |= !destinationSeen.Insert(row);
+                destinationSeen.Append(row);
+        state->reverseCollisions = sourceSeen.HasDuplicates();
+        state->collisions = destinationSeen.HasDuplicates();
         RowTransferPlan result;
         result._state = std::move(state);
         return result;
@@ -255,6 +297,7 @@ namespace DNDS::Runtime
         return result;
     }
     MPI_Comm RowTransferPlan::Communicator() const { return _state->comm; }
+    std::shared_ptr<CommunicationContext> RowTransferPlan::Context() const { return _state->context; }
     index RowTransferPlan::SourceRows() const { return _reverse ? _state->destinations : _state->sources; }
     index RowTransferPlan::DestinationRows() const { return _reverse ? _state->sources : _state->destinations; }
     const std::vector<std::vector<index>> &RowTransferPlan::SendRows() const { return _reverse ? _state->receive : _state->send; }
@@ -269,95 +312,151 @@ namespace DNDS::Runtime
     }
     RowLayout RowTransferPlan::DestinationLayout(const RowLayout &source) const
     {
-        const auto received = ExchangeLengths(*this, source);
-        std::vector<size_t> lengths(size_t(DestinationRows()), SIZE_MAX);
-        size_t edge = 0;
-        bool valid = true;
-        for (const auto &peer : ReceiveRows())
-            for (auto row : peer)
-            {
-                valid = valid && (lengths[row] == SIZE_MAX || lengths[row] == received[edge]);
-                lengths[row] = received[edge++];
-            }
-        CheckAll(valid, Communicator(), "fan-in contributions have incompatible row widths");
-        for (auto &n : lengths)
-            if (n == SIZE_MAX)
-                n = 0;
-        return RowLayout::Ragged(lengths);
+        const auto lengths = ExchangeLengths(*this, source);
+        std::optional<RowLayout> destination;
+        try
+        {
+            destination = InferredLayout(*this, lengths);
+        }
+        catch (...)
+        {
+        }
+        CheckAll(bool(destination), Communicator(), "cannot infer destination row layout");
+        return *destination;
     }
 
     struct PayloadPlan::State
     {
         RowTransferPlan route;
-        RowLayout source, destination, contributions;
+        RowLayout source, destination;
         ElementSchema schema;
-        std::vector<Type> sendTypes, receiveTypes, contributionTypes;
-        std::vector<Contribution> groups;
+        std::vector<Type> sendTypes, receiveTypes;
         size_t sendSegments = 0, receiveSegments = 0;
         State(RowTransferPlan r, RowLayout s, RowLayout d, ElementSchema e)
             : route(std::move(r)), source(std::move(s)), destination(std::move(d)), schema(std::move(e)) {}
-    };
-    PayloadPlan::PayloadPlan(RowTransferPlan route, RowLayout source, RowLayout destination, ElementSchema schema)
-    {
-        auto state = std::make_shared<State>(std::move(route), std::move(source), std::move(destination), std::move(schema));
-        const auto comm = state->route.Communicator();
-        Agree(state->schema.Identity() + ":" + state->schema.Definition(), comm);
-        CheckAll(state->destination.RowCount() == state->route.DestinationRows(), comm, "row transfer destination shape mismatch");
-        const auto lengths = ExchangeLengths(state->route, state->source);
-        size_t edge = 0;
-        bool valid = true;
-        std::vector<size_t> widths;
-        for (const auto &peer : state->route.ReceiveRows())
-            for (auto row : peer)
-            {
-                valid = valid && state->destination.RowSize(row) == lengths[edge];
-                widths.push_back(size_t(lengths[edge++]));
-            }
-        CheckAll(valid, comm, "row transfer edge width mismatch");
-        state->contributions = RowLayout::Ragged(widths);
-        edge = 0;
-        try
+
+        struct ReductionLayout
         {
-            for (size_t peer = 0; peer < state->route.SendRows().size(); ++peer)
+            RowLayout contributions;
+            std::vector<Type> receiveTypes;
+            std::vector<Contribution> groups;
+        };
+        /// Reduction-only packing is a local derivation from the checked edge
+        /// widths. Ordinary halo/migration copies must not allocate a second
+        /// CSR, sort contribution groups or commit unused reduction datatypes.
+        ReductionLayout CompileReduction() const
+        {
+            ReductionLayout result;
+            std::vector<size_t> widths;
+            for (const auto &peer : route.ReceiveRows())
+                for (auto iRow : peer)
+                    widths.push_back(size_t(destination.RowSize(iRow)));
+            result.contributions = RowLayout::Ragged(widths);
+            index edge = 0;
+            Type emptyType;
+            for (const auto &peer : route.ReceiveRows())
             {
-                state->sendTypes.push_back(MakeType(state->route.SendRows()[peer], state->source, state->schema, state->sendSegments));
-                // Colliding final destinations are never used as receive types.
-                if (!state->route.HasCollisions())
-                    state->receiveTypes.push_back(MakeType(state->route.ReceiveRows()[peer], state->destination, state->schema, state->receiveSegments));
                 std::vector<index> slots;
-                for (auto row : state->route.ReceiveRows()[peer])
+                slots.reserve(peer.size());
+                for (auto iRow : peer)
                 {
-                    slots.push_back(index(edge));
+                    slots.push_back(edge);
                     if (widths[edge])
-                        state->groups.push_back({size_t(state->contributions.Offset(edge)),
-                                                 size_t(state->destination.Offset(row)), widths[edge]});
+                        result.groups.push_back({size_t(result.contributions.Offset(edge)),
+                                                 size_t(destination.Offset(iRow)), widths[edge]});
                     ++edge;
                 }
                 size_t segments = 0;
-                state->contributionTypes.push_back(MakeType(slots, state->contributions, state->schema, segments));
+                result.receiveTypes.push_back(MakeType(slots, result.contributions, schema, segments, emptyType));
             }
-            std::stable_sort(state->groups.begin(), state->groups.end(), [](auto a, auto b)
+            std::stable_sort(result.groups.begin(), result.groups.end(), [](auto a, auto b)
                              { return a.destinationElement < b.destinationElement; });
+            return result;
+        }
+    };
+    PayloadPlan::PayloadPlan(RowTransferPlan route, RowLayout source, RowLayout destination, ElementSchema schema)
+        : PayloadPlan(std::move(route), std::move(source), std::optional<RowLayout>(std::move(destination)), std::move(schema)) {}
+    PayloadPlan::PayloadPlan(RowTransferPlan route, RowLayout source, ElementSchema schema)
+        : PayloadPlan(std::move(route), std::move(source), std::nullopt, std::move(schema)) {}
+    PayloadPlan::PayloadPlan(RowTransferPlan route, RowLayout source, std::optional<RowLayout> destination, ElementSchema schema)
+    {
+        auto state = std::make_shared<State>(std::move(route), std::move(source), destination.value_or(RowLayout{}), std::move(schema));
+        const auto comm = state->route.Communicator();
+        // Both checks precede the same width exchange. Carry source validity in
+        // exact schema agreement instead of a second consecutive Allreduce.
+        index uniformWidth = state->source.Kind() == RowLayoutKind::Table ? state->source.Width() : -1;
+        Agree(state->schema.Identity() + ":" + state->schema.Definition(), comm,
+              state->source.RowCount() == state->route.SourceRows() && state->route.Valid(), &uniformWidth);
+        std::vector<uint64_t> lengths;
+        if (uniformWidth >= 0)
+        {
+            size_t count = 0;
+            for (const auto &peer : state->route.ReceiveRows())
+                count = CheckedSize::Add(count, peer.size());
+            lengths.assign(count, uint64_t(uniformWidth));
+        }
+        else
+            lengths = ExchangeLengths(state->route, state->source, true);
+        bool valid = true;
+        try
+        {
+            if (!destination)
+                state->destination = InferredLayout(state->route, lengths);
+            valid = state->destination.RowCount() == state->route.DestinationRows();
         }
         catch (...)
         {
             valid = false;
         }
-        CheckAll(valid, comm, "cannot compile row payload MPI layout");
+        // Everything below is local (MPI datatype constructors are not
+        // collective). Accumulate failures and agree once before publication,
+        // instead of three collective barriers around the same local work.
+        try
+        {
+            if (valid)
+            {
+                size_t edge = 0;
+                for (const auto &peer : state->route.ReceiveRows())
+                    for (auto row : peer)
+                        valid = (state->destination.RowSize(row) == lengths[edge++]) && valid;
+            }
+            if (valid)
+            {
+                Type emptyType;
+                for (size_t peer = 0; peer < state->route.SendRows().size(); ++peer)
+                {
+                    state->sendTypes.push_back(MakeType(state->route.SendRows()[peer], state->source, state->schema, state->sendSegments, emptyType));
+                    // Colliding final destinations are never used as receive types.
+                    if (!state->route.HasCollisions())
+                        state->receiveTypes.push_back(MakeType(state->route.ReceiveRows()[peer], state->destination, state->schema, state->receiveSegments, emptyType));
+                }
+            }
+        }
+        catch (...)
+        {
+            valid = false;
+        }
+        CheckAll(valid, comm, "row payload destination/edge width mismatch or MPI layout compilation failure");
         _state = std::move(state);
     }
+    RowLayout PayloadPlan::DestinationLayout() const { return _state->destination; }
     size_t PayloadPlan::SendSegments() const { return _state->sendSegments; }
     size_t PayloadPlan::ReceiveSegments() const { return _state->receiveSegments; }
     bool PayloadPlan::Compatible(const std::string &type) const { return _state->schema.Compatible(type); }
     void PayloadPlan::CheckLayouts(const RowLayout &source, const RowLayout &destination, size_t bytes, bool elementCompatible) const
     {
-        CheckAll(elementCompatible && source == _state->source && destination == _state->destination && bytes == _state->schema.Extent(),
+        CheckAll(LayoutsMatch(source, destination, bytes, elementCompatible),
                  _state->route.Communicator(), "Array layout differs from compiled payload");
+    }
+    bool PayloadPlan::LayoutsMatch(const RowLayout &source, const RowLayout &destination, size_t bytes, bool elementCompatible) const
+    {
+        return elementCompatible && source == _state->source && destination == _state->destination && bytes == _state->schema.Extent();
     }
 
     struct TransferBinding::State
     {
         std::shared_ptr<const PayloadPlan::State> plan;
+        std::optional<PayloadPlan::State::ReductionLayout> reductionLayout;
         Buffer source, destination, workspace, deviceGroups;
         Buffer hostSource, hostDestination;
         TransferTransport transport = TransferTransport::Direct;
@@ -394,7 +493,8 @@ namespace DNDS::Runtime
         return TransferBinding(_state, std::move(source), std::move(destination), std::make_shared<const Reducer>(std::move(reducer)), transport, std::move(options));
     }
     TransferBinding::TransferBinding(std::shared_ptr<const PayloadPlan::State> plan, Buffer source, Buffer destination,
-                                     std::shared_ptr<const Reducer> reducer, TransferTransport transport, TransferOptions options)
+                                     std::shared_ptr<const Reducer> reducer, TransferTransport transport, TransferOptions options,
+                                     bool layoutsValid)
     {
         auto state = std::make_shared<State>();
         state->plan = std::move(plan);
@@ -404,23 +504,42 @@ namespace DNDS::Runtime
         state->transport = transport;
         state->options = std::move(options);
         const auto routeComm = state->plan->route.Communicator();
-        Agree(std::to_string(int(state->options.mode)) + ":" + std::to_string(bool(state->options.context)) + ":" + std::to_string(state->options.tag), routeComm);
+        // Fixed control fields need no string broadcast. Min(x,-x) proves
+        // exact agreement in one collective; widen before negating INT_MIN.
+        const int64_t controls[]{int(state->options.mode), bool(state->options.context), state->options.tag,
+                                 bool(state->reducer), int(transport),
+                                 state->reducer ? int(state->reducer->initialization) : 0};
+        int64_t agreed[13];
+        for (index i = 0; i < 6; ++i)
+        {
+            agreed[2 * i] = controls[i];
+            agreed[2 * i + 1] = -controls[i];
+        }
+        agreed[12] = layoutsValid;
+        MPI_Allreduce(MPI_IN_PLACE, agreed, 13, MPI_INT64_T, MPI_MIN, routeComm);
+        bool controlsAgree = true;
+        for (index i = 0; i < 6; ++i)
+            controlsAgree = controlsAgree && agreed[2 * i] == -agreed[2 * i + 1];
+        DNDS_check_throw_info(controlsAgree, "transfer binding policy differs between ranks");
+        DNDS_check_throw_info(agreed[12], "Array layout differs from compiled payload");
+        if (state->reducer)
+            Agree(state->reducer->identity, routeComm);
+        bool valid = true;
         if (state->options.context)
         {
             int comparison = MPI_UNEQUAL;
             MPI_Comm_compare(routeComm, state->options.context->Communicator(), &comparison);
-            CheckAll(comparison == MPI_IDENT || comparison == MPI_CONGRUENT, routeComm, "transfer context rank ordering differs from route");
+            valid = comparison == MPI_IDENT || comparison == MPI_CONGRUENT;
             state->comm = state->options.context->Communicator();
-            bool reserved = true;
             try
             {
-                state->tag = state->options.context->Reserve(state->options.tag);
+                if (valid)
+                    state->tag = state->options.context->Reserve(state->options.tag);
             }
             catch (...)
             {
-                reserved = false;
+                valid = false;
             }
-            CheckAll(reserved, routeComm, "MPI tag unavailable on a rank");
         }
         else
         {
@@ -428,9 +547,7 @@ namespace DNDS::Runtime
             MPI_Comm_dup(routeComm, &state->comm);
         }
         const auto &p = *state->plan;
-        const auto policy = state->reducer ? state->reducer->identity + ":" + std::to_string(int(state->reducer->initialization)) : "copy";
-        Agree(policy + ":" + std::to_string(int(transport)), state->comm);
-        bool valid = state->source.Identity() && state->destination.Identity() && state->source.Identity() != state->destination.Identity();
+        valid = valid && state->source.Identity() && state->destination.Identity() && state->source.Identity() != state->destination.Identity();
         valid = valid && state->source.Bytes() / p.schema.Extent() == p.source.Elements() && state->source.Bytes() % p.schema.Extent() == 0;
         valid = valid && state->destination.Bytes() / p.schema.Extent() == p.destination.Elements() && state->destination.Bytes() % p.schema.Extent() == 0;
         valid = valid && (!p.route.HasCollisions() || state->reducer);
@@ -439,19 +556,23 @@ namespace DNDS::Runtime
         if (state->reducer)
             valid = valid && state->reducer->schema == p.schema.Identity() && state->reducer->elementBytes == p.schema.Extent() &&
                     (transport == TransferTransport::HostPacked || state->destination.GetDevice().space == MemorySpace::Host ? bool(state->reducer->host) : bool(state->reducer->device));
-        CheckAll(valid, state->comm, "invalid transfer binding: collision, schema, placement, size or alias");
+        // A rejected context can have a different rank order, so always agree
+        // on the route communicator before using the selected context.
+        CheckAll(valid, routeComm, "invalid transfer binding: context/tag, collision, schema, placement, size or alias");
         try
         {
             if (state->reducer)
             {
-                state->workspace = Buffer::Allocate(CheckedSize::Multiply(p.contributions.Elements(), p.schema.Extent()),
+                state->reductionLayout.emplace(p.CompileReduction());
+                const auto &reduction = *state->reductionLayout;
+                state->workspace = Buffer::Allocate(CheckedSize::Multiply(reduction.contributions.Elements(), p.schema.Extent()),
                                                     transport == TransferTransport::HostPacked ? Device::Host() : state->destination.GetDevice());
                 if (transport == TransferTransport::Direct && state->destination.GetDevice().space == MemorySpace::CUDA)
                 {
-                    auto host = Buffer::Allocate(CheckedSize::Multiply(p.groups.size(), sizeof(Contribution)));
+                    auto host = Buffer::Allocate(CheckedSize::Multiply(reduction.groups.size(), sizeof(Contribution)));
                     {
                         auto w = host.Write();
-                        std::copy(p.groups.begin(), p.groups.end(), w.View<Contribution>().data);
+                        std::copy(reduction.groups.begin(), reduction.groups.end(), w.View<Contribution>().data);
                     }
                     state->deviceGroups = Buffer::Allocate(host.Bytes(), state->destination.GetDevice());
                     Copy(host, state->deviceGroups, {state->destination.GetDevice(), nullptr}).Wait();
@@ -467,7 +588,7 @@ namespace DNDS::Runtime
                 state->packedSendSizes.resize(peers);
                 for (size_t peer = 0; peer < peers; ++peer)
                 {
-                    auto receiveType = state->reducer ? p.contributionTypes[peer] : p.receiveTypes[peer];
+                    auto receiveType = state->reducer ? state->reductionLayout->receiveTypes[peer] : p.receiveTypes[peer];
                     MPI_Count sendBytes = 0, receiveBytes = 0;
                     MPI_Type_size_x(p.sendTypes[peer]->value, &sendBytes);
                     MPI_Type_size_x(receiveType->value, &receiveBytes);
@@ -489,7 +610,10 @@ namespace DNDS::Runtime
         {
             valid = false;
         }
-        CheckAll(valid, state->comm, "cannot allocate/compile transfer workspace");
+        // Copy/direct bindings do not allocate a workspace. Reducer/transport
+        // policy was agreed above, so all ranks take the same branch here.
+        if (state->reducer || transport == TransferTransport::HostPacked)
+            CheckAll(valid, state->comm, "cannot allocate/compile transfer workspace");
         state->receives.reserve(p.route.ReceiveRows().size());
         state->sends.reserve(p.route.SendRows().size());
         auto *receiveBase = state->reducer ? state->workspace.LegacyPointer() : state->destination.LegacyPointer();
@@ -499,7 +623,7 @@ namespace DNDS::Runtime
                 if (!p.route.ReceiveRows()[peer].empty())
                 {
                     state->receives.push_back(MPI_REQUEST_NULL);
-                    auto type = state->reducer ? p.contributionTypes[peer] : p.receiveTypes[peer];
+                    auto type = state->reducer ? state->reductionLayout->receiveTypes[peer] : p.receiveTypes[peer];
                     if (transport == TransferTransport::Direct)
                         MPI_Recv_init(receiveBase, 1, type->value, peer, state->options.tag, state->comm, &state->receives.back());
                     else
@@ -624,9 +748,9 @@ namespace DNDS::Runtime
             std::lock_guard<std::mutex> lock(_state->mutex);
             valid = valid && !_state->active;
         }
-        CheckAll(valid, _state->comm, "transfer binding is active or routing is stale");
         try
         {
+            DNDS_check_throw_info(valid, "transfer binding is active or routing is stale");
             auto ctx = [context](const Buffer &b)
             { return b.GetDevice() == Device::Host() ? ExecutionContext::Host() : context; };
             op->source.Acquire(_state->source, ctx(_state->source), false, scheduled);
@@ -690,7 +814,7 @@ namespace DNDS::Runtime
                 if (!p.route.ReceiveRows()[peer].empty())
                 {
                     b.receives.push_back(MPI_REQUEST_NULL);
-                    auto type = b.reducer ? p.contributionTypes[peer] : p.receiveTypes[peer];
+                    auto type = b.reducer ? b.reductionLayout->receiveTypes[peer] : p.receiveTypes[peer];
                     if (b.transport == TransferTransport::Direct)
                         MPI_Irecv(b.reducer ? b.workspace.LegacyPointer() : b.destination.LegacyPointer(), 1,
                                   type->value, peer, b.options.tag, b.comm, &b.receives.back());
@@ -768,7 +892,7 @@ namespace DNDS::Runtime
                     if (b.plan->route.ReceiveRows()[peer].empty())
                         continue;
                     int position = 0;
-                    auto type = b.reducer ? b.plan->contributionTypes[peer] : b.plan->receiveTypes[peer];
+                    auto type = b.reducer ? b.reductionLayout->receiveTypes[peer] : b.plan->receiveTypes[peer];
                     MPI_Count bytes = 0;
                     MPI_Type_size_x(type->value, &bytes);
                     if (!bytes)
@@ -781,10 +905,10 @@ namespace DNDS::Runtime
             {
                 if (packed || b.destination.GetDevice() == Device::Host())
                     b.reducer->host(s.workspace.View<std::byte>().data, packed ? b.hostDestination.LegacyPointer() : s.destination.View<std::byte>().data,
-                                    b.plan->groups, ExecutionContext::Host());
+                                    b.reductionLayout->groups, ExecutionContext::Host());
                 else
                     b.reducer->device(s.workspace.View<std::byte>().data, s.destination.View<std::byte>().data,
-                                      static_cast<const Contribution *>(b.deviceGroups.LegacyPointer()), b.plan->groups.size(), s.context);
+                                      static_cast<const Contribution *>(b.deviceGroups.LegacyPointer()), b.reductionLayout->groups.size(), s.context);
                 if (!packed && b.destination.GetDevice().space == MemorySpace::CUDA)
                 {
                     auto done = Completion::Record(s.context);

@@ -114,6 +114,12 @@ Endpoint sets of the same entity kind are sorted and unioned only at the final
 result. A node can therefore both contribute to the result and feed descendant
 branches without changing either role.
 
+An implementation may discard owned targets immediately at a terminal node:
+they cannot enter the ghost result and have no descendants to seed. It must
+retain them at every node with children, including a node that also collects.
+This avoids sorting large local incidence expansions without changing any
+branch frontier used for propagation.
+
 ```text
 owned Bnd --Bnd2Node--> Node --Node2Bnd--> Bnd [collect remote IDs]
 ```

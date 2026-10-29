@@ -21,11 +21,11 @@ namespace DNDS::Geom
         Runtime::Array<index> Transfer(const Runtime::RowTransferPlan &route, const Runtime::Array<index> &source,
                                        const std::shared_ptr<Runtime::CommunicationContext> &context)
         {
-            Runtime::Array<index> output(route.DestinationLayout(source.Layout()));
+            Runtime::PayloadPlan payload(route, source.Layout(), Runtime::ElementSchema::Arithmetic<index>());
+            Runtime::Array<index> output(payload.DestinationLayout());
             Runtime::TransferOptions options;
             options.mode = Runtime::TransferMode::Transient;
             options.context = context;
-            Runtime::PayloadPlan payload(route, source.Layout(), output.Layout(), Runtime::ElementSchema::Arithmetic<index>());
             payload.Bind(source, output, Runtime::TransferTransport::Direct, options).Begin().Wait();
             return output;
         }
@@ -186,8 +186,13 @@ namespace DNDS::Geom
                     continue;
                 const auto &space = _spaces.at(entry.kind);
                 auto &output = result.ghostIndices[entry.kind];
+                // Registered adjacency scopes retain the numbering leases.
+                // Collected values are validated global IDs; identifying the
+                // remote subset only needs the owned rank-offset interval.
+                const auto firstOwned = space._global->ROffsets()[size_t(_mpi.rank)];
+                const auto endOwned = firstOwned + space.NumOwned();
                 for (auto global : sets[size_t(entry.nodeId)])
-                    if (space.Owner(global) != _mpi.rank)
+                    if (global < firstOwned || global >= endOwned)
                         output.push_back(global);
                 SortUnique(output);
             }
@@ -198,6 +203,8 @@ namespace DNDS::Geom
             {
                 size_t entry, relation;
                 std::vector<index> remote;
+                index targetBegin = 0, targetEnd = 0;
+                bool retainOwnedTargets = true;
             };
             std::vector<PendingHop> pending(hops.size());
             std::vector<size_t> hopRelation(hops.size(), SIZE_MAX);
@@ -232,7 +239,21 @@ namespace DNDS::Geom
                         auto &candidate = pending[size_t(hopEntry)];
                         candidate.entry = size_t(hopEntry);
                         candidate.relation = hopRelation[size_t(hopEntry)];
+                        const auto &targetSpace = relation.Target();
+                        candidate.targetBegin = targetSpace._global->ROffsets()[size_t(_mpi.rank)];
+                        candidate.targetEnd = candidate.targetBegin + targetSpace.NumOwned();
+                        candidate.retainOwnedTargets = entry.hasChildren;
                         auto &output = sets[size_t(entry.nodeId)];
+                        const auto appendTarget = [&](index value)
+                        {
+                            // A terminal node only contributes remote entities
+                            // to the final ghost set. Intermediate frontiers
+                            // retain all targets, even when also collected, so
+                            // descendants still evaluate the exact branch.
+                            if (value != UnInitIndex && (candidate.retainOwnedTargets ||
+                                                         value < candidate.targetBegin || value >= candidate.targetEnd))
+                                output.push_back(value);
+                        };
                         const auto &parentValues = sets[size_t(entry.parentId)];
                         const auto &sourceView = relation._view.owned;
                         const size_t sourceElements = sourceView.offsets ? sourceView.offsets[sourceView.RowCount()]
@@ -248,6 +269,7 @@ namespace DNDS::Geom
                         output.reserve(CheckedSize::Add(output.size(), reserveRows));
                         const auto &source = relation.Source();
                         const auto first = (*source._global)(_mpi.rank, 0);
+                        const bool globalState = relation._state == Adj_PointToGlobal;
                         // Local incidence is already retained and validated. A DSL
                         // traversal needs its union, not another transferred copy
                         // of every local row. Only remote parents need a route.
@@ -256,22 +278,20 @@ namespace DNDS::Geom
                             if (global >= first && global - first < source.NumOwned())
                             {
                                 const auto row = global - first;
-                                if (relation.State() == Adj_PointToGlobal)
+                                if (globalState)
                                 {
                                     const auto &view = relation._view.owned;
                                     const auto count = view.RowSize(size_t(row));
                                     const auto *values = count ? view.Row(size_t(row)) : nullptr;
                                     for (size_t slot = 0; slot < count; ++slot)
-                                        if (values[slot] != UnInitIndex)
-                                            output.push_back(values[slot]);
+                                        appendTarget(values[slot]);
                                 }
                                 else
                                 {
                                     for (size_t slot = 0; slot < relation.RowSize(row); ++slot)
                                     {
                                         const auto value = relation.ConvertedIndex(row, slot, Adj_PointToGlobal);
-                                        if (value != UnInitIndex)
-                                            output.push_back(value);
+                                        appendTarget(value);
                                     }
                                 }
                             }
@@ -385,8 +405,12 @@ namespace DNDS::Geom
                                               "native ghost traversal lost a remote source row");
                         const auto row = size_t(found - requested[hop.relation].begin());
                         for (size_t slot = 0; slot < fetchView.RowSize(row); ++slot)
-                            if (fetchView(row, slot) != UnInitIndex)
-                                output.push_back(fetchView(row, slot));
+                        {
+                            const auto value = fetchView(row, slot);
+                            if (value != UnInitIndex && (hop.retainOwnedTargets ||
+                                                         value < hop.targetBegin || value >= hop.targetEnd))
+                                output.push_back(value);
+                        }
                     }
                 }
                 SortUnique(output);
@@ -503,6 +527,18 @@ namespace DNDS::Geom
                            ? cone._target.LocalToGlobalPinned(value)
                            : (cone._state == Adj_PointToLocal ? -1 - value : value);
             };
+            // Extract each parent-node mapping once. Face enumeration revisits
+            // a vertex for every adjacent subentity and candidate match. The
+            // retained cone leases keep this local-sized cache valid throughout
+            // enumeration; periodic identity still uses the original globals.
+            std::vector<size_t> localStarts(size_t(cone.RowCount()) + 1, 0);
+            std::vector<index> localNodes;
+            for (index iRow = 0; iRow < cone.RowCount(); ++iRow)
+                localStarts[size_t(iRow) + 1] = CheckedSize::Add(localStarts[size_t(iRow)], size_t(cone._view.RowSize(iRow)));
+            localNodes.resize(localStarts.back());
+            for (index iRow = 0; iRow < cone.RowCount(); ++iRow)
+                for (index iSlot = 0; iSlot < cone._view.RowSize(iRow); ++iSlot)
+                    localNodes[localStarts[size_t(iRow)] + size_t(iSlot)] = localIndex(iRow, size_t(iSlot));
             SubEntityQueryPbi enumeration = query;
             if (periodic)
                 enumeration.matchExtra = [&](index parent, int sub, index entity, index originalParent, int originalSub)
@@ -524,8 +560,9 @@ namespace DNDS::Geom
                 };
             rows.emplace(ConnectivityRows::EnumerateSubEntities([&](index row, int slot)
             {
-                DNDS_check_throw_info(slot >= 0 && size_t(slot) < cone.RowSize(row), "node extraction slot outside cone");
-                return localIndex(row, size_t(slot));
+                const auto first = localStarts[size_t(row)], end = localStarts[size_t(row) + 1];
+                DNDS_check_throw_info(slot >= 0 && size_t(slot) < end - first, "node extraction slot outside cone");
+                return localNodes[first + size_t(slot)];
             }, enumeration, cone.RowCount(), cone.Target().NumLocal()));
             nodeBits.resize(size_t(rows->nEntities));
             parentBits.resize(size_t(cone.RowCount()));

@@ -94,13 +94,12 @@ namespace DNDS::Geom
                 auto context = std::make_shared<Runtime::CommunicationContext>(mpi.comm);
                 Runtime::RowTransferPlan nodeRoute(context, size_t(nodes.NumOwned()), referencedNodes.size(), nodeRequests);
                 const auto &ownedNodeCells = *source.relations[size_t(MeshRelation::NodeCells)];
-                Runtime::Array<index> fetchedNodeCells(nodeRoute.DestinationLayout(ownedNodeCells.Layout()));
+                Runtime::PayloadPlan payload(nodeRoute, ownedNodeCells.Layout(), Runtime::ElementSchema::Arithmetic<index>());
+                Runtime::Array<index> fetchedNodeCells(payload.DestinationLayout());
                 Runtime::TransferOptions transferOptions;
                 transferOptions.mode = Runtime::TransferMode::Transient;
                 transferOptions.context = context;
-                Runtime::PayloadPlan(nodeRoute, ownedNodeCells.Layout(), fetchedNodeCells.Layout(),
-                                     Runtime::ElementSchema::Arithmetic<index>())
-                    .Bind(ownedNodeCells, fetchedNodeCells, Runtime::TransferTransport::Direct, transferOptions)
+                payload.Bind(ownedNodeCells, fetchedNodeCells, Runtime::TransferTransport::Direct, transferOptions)
                     .Begin()
                     .Wait();
                 FieldTransferDetail::LocalStage(mpi, [&]
