@@ -117,8 +117,10 @@ namespace DNDS::Geom
             return _nativeState;
         }
         MeshReadRequirements CurrentNativeRequirements() const { return Native().Requirements(); }
-        std::vector<AdjKind> NativeRelationKeys() const { return Native().RelationKeys(); }
-        RelationReadAccess ReadNativeRelation(const AdjKind &key) const { return Native().Relation(key); }
+        std::vector<AdjacencyDescriptor> AdjacencyKeys() const { return Native().RelationKeys(); }
+        MeshAdjacencyRead ReadAdjacency(const AdjacencyDescriptor &key) const { return Native().Relation(key); }
+        std::vector<AdjacencyDescriptor> NativeRelationKeys() const { return Native().RelationKeys(); }
+        MeshAdjacencyRead ReadNativeRelation(const AdjacencyDescriptor &key) const { return Native().Relation(key); }
         void ReplaceNativeForSetup(std::shared_ptr<const UnstructuredMeshState> source);
         static std::shared_ptr<UnstructuredMesh> FromNative(const MPIInfo &, std::shared_ptr<const UnstructuredMeshState>);
         void PrepareNativeTopology(bool faces = true, bool edges = false, int ghostLayers = 1);

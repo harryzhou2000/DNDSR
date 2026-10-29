@@ -39,7 +39,7 @@ TEST_CASE("Native direct ragged halo retains leases and reusable routing")
     Array<double> owned(RowLayout::Ragged({2, 0, 3}));
     {
         auto write = owned.Write();
-        for (size_t i = 0; i < owned.Rows(); ++i)
+        for (size_t i = 0; i < owned.RowCount(); ++i)
             for (size_t j = 0; j < owned.RowSize(i); ++j)
                 write.At(i, j) = rank * 100 + i * 10 + j;
     }
@@ -174,7 +174,7 @@ TEST_CASE("Native reverse fan-in rejects copy and supports reductions")
     MPI_Comm_size(MPI_COMM_WORLD, &size);
     Array<int32_t> root(RowLayout::Dense(rank == 0 ? 1 : 0, 2));
     Array<int32_t> leaves(RowLayout::Dense(2, 2));
-    RowTransferPlan halo(MPI_COMM_WORLD, root.Rows(), 2, {{0, 0, 0}, {0, 0, 1}});
+    RowTransferPlan halo(MPI_COMM_WORLD, root.RowCount(), 2, {{0, 0, 0}, {0, 0, 1}});
     PayloadPlan reverse(halo.Reverse(), leaves.Layout(), root.Layout(), ElementSchema::Arithmetic<int32_t>());
     CHECK_THROWS(reverse.Bind(leaves, root));
     {
@@ -316,7 +316,7 @@ TEST_CASE_TEMPLATE("Native CUDA reduction dispatch covers wide rows without requ
     std::vector<Contribution> groups;
     {
         auto w = source.Write();
-        for (size_t i = 0; i < source.Rows(); ++i)
+        for (size_t i = 0; i < source.RowCount(); ++i)
         {
             groups.push_back({source.Layout().Offset(i), i < 3 ? size_t(0) : size_t(526), source.RowSize(i)});
             for (size_t j = 0; j < source.RowSize(i); ++j)

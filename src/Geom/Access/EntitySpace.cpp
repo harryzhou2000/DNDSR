@@ -212,14 +212,14 @@ namespace DNDS::Geom
         // The ghost map already contains the peer-grouped request/send order;
         // rebuilding it through a generic request all-to-all repeats setup work
         // for every relation and companion transferred through this route.
-        std::vector<std::vector<size_t>> send(size_t(_mpi.size)), receive(size_t(_mpi.size));
+        std::vector<std::vector<index>> send(size_t(_mpi.size)), receive(size_t(_mpi.size));
         for (int peer = 0; peer < _mpi.size; ++peer)
         {
             const auto first = _ghostMap->ghostStart[size_t(peer)];
             const auto end = _ghostMap->ghostStart[size_t(peer + 1)];
             receive[size_t(peer)].reserve(size_t(end - first));
             for (index row = first; row < end; ++row)
-                receive[size_t(peer)].push_back(size_t(row));
+                receive[size_t(peer)].push_back(row);
 
             const auto pushFirst = _ghostMap->pushIndexStarts[size_t(peer)];
             const auto pushEnd = _ghostMap->pushIndexStarts[size_t(peer + 1)];
@@ -231,7 +231,7 @@ namespace DNDS::Geom
                 const auto global = _ghostMap->pushingIndexGlobal[size_t(slot)];
                 DNDS_check_throw_info(_global->search(global, owner, local) && owner == _mpi.rank,
                                       "entity-space peer route contains a row outside the sending rank");
-                send[size_t(peer)].push_back(size_t(local));
+                send[size_t(peer)].push_back(local);
             }
         }
         auto context = std::make_shared<Runtime::CommunicationContext>(_mpi.comm);

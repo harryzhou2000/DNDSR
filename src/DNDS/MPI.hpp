@@ -16,6 +16,7 @@
 
 #include <vector>
 #include <fstream>
+#include <optional>
 
 #include <mutex>
 
@@ -730,6 +731,58 @@ namespace DNDS::MPI
         // whose internal C-style cast is outside project control.
         // NOLINTNEXTLINE(cppcoreguidelines-pro-type-cstyle-cast)
         Allreduce(MPI_IN_PLACE, &v, 1, DNDS_MPI_INDEX, op, mpi.comm);
+    }
+
+    enum class IntegerAgreementPolicy : uint8_t
+    {
+        Automatic,
+        Bitmask,
+        MinMax
+    };
+
+    /// Exact all-rank agreement for an optional bounded integer. Every rank
+    /// must pass the same bound and policy. Values must lie in
+    /// [0, exclusiveUpperBound).
+    inline std::optional<int> AgreeOptionalInteger(
+        const MPIInfo &mpi, std::optional<int> localValue, int exclusiveUpperBound,
+        IntegerAgreementPolicy policy = IntegerAgreementPolicy::Automatic)
+    {
+        DNDS_check_throw_info(mpi.comm != MPI_COMM_NULL, "integer agreement needs a communicator");
+        DNDS_check_throw_info(exclusiveUpperBound >= 0 && exclusiveUpperBound <= INT_MAX - 2,
+                              "integer agreement bound is outside MPI range");
+        DNDS_check_throw_info(!localValue || (*localValue >= 0 && *localValue < exclusiveUpperBound),
+                              "integer agreement value is outside its bound");
+        constexpr int bitmaskCrossover = 128;
+        if (policy == IntegerAgreementPolicy::Automatic)
+            policy = exclusiveUpperBound <= bitmaskCrossover ? IntegerAgreementPolicy::Bitmask
+                                                             : IntegerAgreementPolicy::MinMax;
+        const int encoded = localValue ? *localValue + 1 : 0;
+        if (policy == IntegerAgreementPolicy::Bitmask)
+        {
+            const size_t bits = size_t(exclusiveUpperBound) + 2;
+            const size_t words = (bits + 63) / 64;
+            DNDS_check_throw_info(words <= size_t(INT_MAX), "integer agreement mask exceeds MPI count range");
+            std::vector<uint64_t> mask(words, 0);
+            const auto slot = size_t(encoded);
+            mask[slot / 64] |= uint64_t(1) << (slot % 64);
+            MPI_Allreduce(MPI_IN_PLACE, mask.data(), int(words), MPI_UINT64_T, MPI_BOR, mpi.comm);
+            int agreed = -1;
+            size_t occurrences = 0;
+            for (size_t word = 0; word < words; ++word)
+                while (mask[word])
+                {
+                    const auto bit = size_t(__builtin_ctzll(mask[word]));
+                    agreed = int(word * 64 + bit) - 1;
+                    ++occurrences;
+                    mask[word] &= mask[word] - 1;
+                }
+            return occurrences == 1 && agreed >= 0 ? std::optional<int>(agreed) : std::nullopt;
+        }
+        DNDS_check_throw_info(policy == IntegerAgreementPolicy::MinMax, "unknown integer agreement policy");
+        int minimum = encoded, maximum = encoded;
+        MPI_Allreduce(MPI_IN_PLACE, &minimum, 1, MPI_INT, MPI_MIN, mpi.comm);
+        MPI_Allreduce(MPI_IN_PLACE, &maximum, 1, MPI_INT, MPI_MAX, mpi.comm);
+        return minimum == maximum && minimum > 0 ? std::optional<int>(minimum - 1) : std::nullopt;
     }
 
 }

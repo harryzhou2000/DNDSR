@@ -20,19 +20,20 @@ namespace DNDS::Geom
         using namespace Adj;
         DNDS_assert(nLayers >= 1);
 
-        // Cell chain: nLayers hops of Cell2Cell
-        std::vector<AdjKind> cellHops(nLayers, Cell2Cell);
-
-        // Node chain: nLayers hops of Cell2Cell + Cell2Node
-        std::vector<AdjKind> nodeHops(nLayers, Cell2Cell);
-        nodeHops.push_back(Cell2Node);
-
-        return GhostSpec{{
-            {EntityKind::Cell, cellHops, EntityKind::Cell},
-            {EntityKind::Cell, nodeHops, EntityKind::Node},
-            {EntityKind::Bnd, {Bnd2Node, Node2Bnd}, EntityKind::Bnd},
-            {EntityKind::Bnd, {Bnd2Node, Node2Bnd, Bnd2Node}, EntityKind::Node},
-        }};
+        GhostSpec result;
+        // Collection is endpoint-only. Emit one explicit chain per requested
+        // depth to retain cumulative ring semantics in the default pipeline.
+        for (int depth = 1; depth <= nLayers; ++depth)
+        {
+            std::vector<AdjacencyDescriptor> cellHops(size_t(depth), Cell2Cell);
+            result.chains.push_back({EntityKind::Cell, cellHops, EntityKind::Cell});
+            cellHops.push_back(Cell2Node);
+            result.chains.push_back({EntityKind::Cell, std::move(cellHops), EntityKind::Node});
+        }
+        result.chains.push_back({EntityKind::Bnd, {Bnd2Node}, EntityKind::Node});
+        result.chains.push_back({EntityKind::Bnd, {Bnd2Node, Node2Bnd}, EntityKind::Bnd});
+        result.chains.push_back({EntityKind::Bnd, {Bnd2Node, Node2Bnd, Bnd2Node}, EntityKind::Node});
+        return result;
     }
 
     // =================================================================
@@ -87,7 +88,7 @@ namespace DNDS::Geom
         // Walk down the trie, creating nodes as needed.
         for (size_t hi = 0; hi < chain.hops.size(); hi++)
         {
-            const AdjKind &hop = chain.hops[hi];
+            const AdjacencyDescriptor &hop = chain.hops[hi];
             int childLevel = current->level + 1;
             EntityKind childKind = hop.to;
 
@@ -108,11 +109,10 @@ namespace DNDS::Geom
                 child = &current->children.back();
             }
 
-            // If this is the last hop, mark as collect.
-            // Also mark intermediate hops whose entity kind matches the
-            // chain target -- this enables cumulative ghost collection for
-            // multi-hop same-kind chains (e.g., Cell2Cell -> Cell2Cell).
-            if (hi + 1 == chain.hops.size() || childKind == chain.target)
+            // Only the exact endpoint of this input chain collects. A node can
+            // be an endpoint for one chain and an intermediate node for another;
+            // the aggregate marker is therefore independent of leaf-ness.
+            if (hi + 1 == chain.hops.size())
                 child->collect = true;
 
             current = child;
@@ -188,7 +188,7 @@ namespace DNDS::Geom
 
     static void collectRequiredAdjsHelper(
         const GhostTreeNode &node,
-        std::unordered_set<AdjKind, AdjKindHash> &out)
+        std::unordered_set<AdjacencyDescriptor, AdjacencyDescriptorHash> &out)
     {
         for (const auto &child : node.children)
         {
@@ -197,9 +197,9 @@ namespace DNDS::Geom
         }
     }
 
-    std::unordered_set<AdjKind, AdjKindHash> CompiledGhostTree::requiredAdjs() const
+    std::unordered_set<AdjacencyDescriptor, AdjacencyDescriptorHash> CompiledGhostTree::requiredAdjs() const
     {
-        std::unordered_set<AdjKind, AdjKindHash> result;
+        std::unordered_set<AdjacencyDescriptor, AdjacencyDescriptorHash> result;
         for (const auto &root : roots)
             collectRequiredAdjsHelper(root, result);
         return result;

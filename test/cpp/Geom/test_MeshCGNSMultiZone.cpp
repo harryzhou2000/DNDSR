@@ -65,13 +65,13 @@ static void checkGeneratedOneSidedBlocks(int blocks)
     std::string name = fmt::format("GeneratedMultiBlock{}x{}_OneSided.cgns", blocks, blocks);
     auto serial = ReadNativeCGNSSerial(meshPath(name).string(), 2, FBC_Name_2_ID_Default);
 
-    CHECK(serial.cellNodes.Rows() == blocks * blocks);
-    CHECK(serial.coordinates.Rows() == (blocks + 1) * (blocks + 1));
+    CHECK(serial.cellNodes.RowCount() == blocks * blocks);
+    CHECK(serial.coordinates.RowCount() == (blocks + 1) * (blocks + 1));
 
     // Every assembled node coordinate should be initialized exactly once after
     // union deduplication of the one-sided block interfaces.
     auto coordinates = serial.coordinates.Read();
-    for (size_t iNode = 0; iNode < serial.coordinates.Rows(); iNode++)
+    for (size_t iNode = 0; iNode < serial.coordinates.RowCount(); iNode++)
     {
         CHECK(!DNDS::IsUnInitReal(coordinates.View()(iNode, 0)));
         CHECK(!DNDS::IsUnInitReal(coordinates.View()(iNode, 1)));
@@ -109,11 +109,11 @@ TEST_CASE("Audit regression: CGNS single-entry boundary PointList")
     MPIInfo mpi;
     mpi.setWorld();
     auto serial = ReadNativeCGNSSerial(path.string(), 2, FBC_Name_2_ID_Default);
-    REQUIRE(serial.cellNodes.Rows() == 1);
-    REQUIRE(serial.boundaryNodes.Rows() == 4);
+    REQUIRE(serial.cellNodes.RowCount() == 1);
+    REQUIRE(serial.boundaryNodes.RowCount() == 4);
     int walls = 0, farfields = 0;
     auto info = serial.boundaryInfo.Read();
-    for (size_t i = 0; i < serial.boundaryInfo.Rows(); ++i)
+    for (size_t i = 0; i < serial.boundaryInfo.RowCount(); ++i)
     {
         auto code = info.View()(i, 0).zone;
         walls += code == BC_ID_DEFAULT_WALL;

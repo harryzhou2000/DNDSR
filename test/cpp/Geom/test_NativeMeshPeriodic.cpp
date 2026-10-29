@@ -323,7 +323,7 @@ TEST_CASE("One-cell doubly periodic native torus retains two distinct self faces
     input.boundaryNodesPbi = Rows<G::NodePeriodicBits>(boundaries.NumOwned() ? std::vector<std::vector<G::NodePeriodicBits>>{{{0}, {1}}, {{1}, {3}}, {{3}, {2}}, {{2}, {0}}} : std::vector<std::vector<G::NodePeriodicBits>>{});
     {
         auto write = input.coordinates.Write();
-        for (size_t row = 0; row < input.coordinates.Rows(); ++row)
+        for (size_t row = 0; row < input.coordinates.RowCount(); ++row)
             for (size_t component = 0; component < 3; ++component)
                 write.View()(row, component) = 0;
     }
@@ -398,7 +398,7 @@ TEST_CASE("Partitioned native periodic cells distinguish internal physical and p
         }
     }
     auto bad = NativePeriodicFixtures::TwoCells(mpi);
-    if (bad.boundaryInfo.Rows())
+    if (bad.boundaryInfo.RowCount())
     {
         auto write = bad.boundaryInfo.Write();
         write.View()(1, 0).zone = G::BC_ID_PERIODIC_1;
@@ -436,7 +436,7 @@ TEST_CASE("Native periodic construction retains a rigid rotation in physical cel
     input.periodicInfo.rotation[1].map() << 0, -1, 0, 1, 0, 0, 0, 0, 1;
     {
         auto write = input.coordinates.Write();
-        for (size_t row = 0; row < input.coordinates.Rows(); ++row)
+        for (size_t row = 0; row < input.coordinates.RowCount(); ++row)
         {
             write.View()(row, 0) = 1 + DNDS::real(row);
             write.View()(row, 1) = 0;
@@ -555,7 +555,7 @@ TEST_CASE("One-cell periodic elevation separates tangent spans with repeated can
     input.boundaryNodesPbi = Rows(bits);
     {
         auto write = input.boundaryInfo.Write();
-        for (size_t row = 0; row < input.boundaryInfo.Rows(); ++row)
+        for (size_t row = 0; row < input.boundaryInfo.RowCount(); ++row)
             write.View()(row, 0).setElemType(G::Elem::Line2);
     }
     auto linear = G::ConstructNativeMesh(std::move(input));
@@ -665,7 +665,7 @@ TEST_CASE("Periodic parent-face flags use the published owner frame across ranks
     input.boundaryNodesPbi = R::Array<G::NodePeriodicBits>(R::RowLayout::Ragged({}));
     {
         auto info = input.cellInfo.Write();
-        for (size_t row = 0; row < input.cellInfo.Rows(); ++row)
+        for (size_t row = 0; row < input.cellInfo.RowCount(); ++row)
             info.View()(row, 0) = G::ElemInfo{G::Elem::Hex8, G::INTERNAL_ZONE};
     }
     auto owned = G::NativeMeshBuilder::Build(std::move(input));

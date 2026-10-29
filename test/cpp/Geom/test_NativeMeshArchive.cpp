@@ -2,7 +2,7 @@
 #include "doctest.h"
 #include "Geom/Mesh/NativeMeshArchive.hpp"
 #include "Geom/Mesh/NativeMeshBuilder.hpp"
-#include "Geom/Mesh/NativeConnectivity.hpp"
+#include "Geom/Mesh/AdjacencyRegistry.hpp"
 #include "Geom/Mesh/EntityField.hpp"
 #include "Geom/Mesh/Mesh.hpp"
 #include "Geom/Mesh/MeshTransition.hpp"
@@ -33,15 +33,15 @@ namespace
     DNDS::MPIInfo MPI(MPI_Comm communicator = MPI_COMM_WORLD) { return DNDS::MPIInfo(communicator); }
     I PersistentId(G::EntityKind kind, I global) { return 1000000000000LL + 1000000 * int(kind) + 17 * global; }
     I HighWater(G::EntityKind kind) { return 2000000000000LL + 1000000 * int(kind); }
-    G::AdjKind AnyKey()
+    G::AdjacencyDescriptor AnyKey()
     {
-        return G::AdjKind::Composition(G::Adj::Cell2Node, G::Adj::Cell2Node.Inverted(),
-                                       G::RelationSelection::Any, false, "archive.cell-node-cell.any", 1);
+        return G::AdjacencyDescriptor::Composition(G::Adj::Cell2Node, G::Adj::Cell2Node.Inverted(),
+                                                   G::RelationSelection::Any, false, "archive.cell-node-cell.any", 1);
     }
-    G::AdjKind AllKey()
+    G::AdjacencyDescriptor AllKey()
     {
-        return G::AdjKind::Composition(G::Adj::Cell2Node, G::Adj::Cell2Node.Inverted(),
-                                       G::RelationSelection::All, false, "archive.cell-node-cell.all", 1);
+        return G::AdjacencyDescriptor::Composition(G::Adj::Cell2Node, G::Adj::Cell2Node.Inverted(),
+                                                   G::RelationSelection::All, false, "archive.cell-node-cell.all", 1);
     }
     R::Array<I> Rows(const G::EntitySpace &space, const std::vector<std::vector<I>> &globalRows)
     {
@@ -115,7 +115,7 @@ namespace
         return result;
     }
     void CheckState(const std::shared_ptr<const G::NativeMeshState> &state, const DNDS::MPIInfo &mpi,
-                    const std::vector<G::AdjKind> &expectedKeys)
+                    const std::vector<G::AdjacencyDescriptor> &expectedKeys)
     {
         CHECK(state->MeshNamespace() == Namespace);
         CHECK(state->RelationKeys() == expectedKeys);
@@ -157,11 +157,11 @@ namespace
             CHECK(view.GetBndInfo(row).getElemType() == G::Elem::Line2);
             CHECK(view.GetBndInfo(row).zone == 20 + global);
         }
-        for (const auto &[key, expected] : std::vector<std::pair<G::AdjKind, const std::vector<std::vector<I>> *>>{
+        for (const auto &[key, expected] : std::vector<std::pair<G::AdjacencyDescriptor, const std::vector<std::vector<I>> *>>{
                  {AnyKey(), &AnyRows}, {AllKey(), &AllRows}})
         {
             auto relation = state->Relation(key);
-            for (I row = 0; row < relation.Rows(); ++row)
+            for (I row = 0; row < relation.RowCount(); ++row)
                 CHECK(relation.GlobalRow(row) == expected->at(size_t(cells.LocalToGlobal(row))));
         }
         // Reconstructed distributions must drive a real owner-to-ghost field

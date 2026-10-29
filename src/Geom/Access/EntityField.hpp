@@ -13,16 +13,18 @@ namespace DNDS::Geom
         struct State
         {
             EntitySpace space;
-            Runtime::Array<T, L> values;
+            Runtime::Array<T> values;
             Runtime::ElementSchema schema;
             Runtime::ExecutionContext context;
             uint64_t allocation, shape;
-            State(EntitySpace entity, Runtime::Array<T, L> array, Runtime::ElementSchema elementSchema, Runtime::ExecutionContext execution)
+            State(EntitySpace entity, Runtime::Array<T> array, Runtime::ElementSchema elementSchema, Runtime::ExecutionContext execution)
                 : space(std::move(entity)), values(std::move(array)), schema(std::move(elementSchema)), context(execution),
                   allocation(values.Identity()), shape(values.ShapeVersion())
             {
                 space.Validate();
-                DNDS_check_throw_info(values.IsValid() && values.Rows() == size_t(space.NumOwned()) && schema.Extent() == sizeof(T) &&
+                if constexpr (!std::is_same_v<L, Runtime::RowLayout>)
+                    L::Validate(values.Layout());
+                DNDS_check_throw_info(values.IsValid() && values.RowCount() == size_t(space.NumOwned()) && schema.Extent() == sizeof(T) &&
                                           schema.Compatible(Runtime::ElementSchema::TypeIdentity<T>()) && context.device == values.GetDevice() &&
                                           (context.device != Runtime::Device::Host() || !context.stream),
                                       "entity field requires exact owned rows and matching schema/context");
@@ -30,7 +32,7 @@ namespace DNDS::Geom
             void Validate(const EntitySpace &expected) const
             {
                 DNDS_check_throw_info(space.SameOrder(expected) && values.IsValid() && values.Identity() == allocation &&
-                                          values.ShapeVersion() == shape && values.Rows() == size_t(space.NumOwned()),
+                                          values.ShapeVersion() == shape && values.RowCount() == size_t(space.NumOwned()),
                                       "entity field mesh/domain/order or allocation/layout changed");
             }
         };
@@ -44,13 +46,13 @@ namespace DNDS::Geom
         struct Prepared final : PreparedCompanion
         {
             std::shared_ptr<Slot> destination;
-            Runtime::Array<T, L> values;
+            Runtime::Array<T> values;
             Runtime::ElementSchema schema;
             Runtime::ExecutionContext context;
-            std::shared_ptr<typename Runtime::Array<T, L>::ReadLease> sourceRead;
+            std::shared_ptr<typename Runtime::Array<T>::ReadLease> sourceRead;
             std::shared_ptr<State> next;
-            Prepared(std::shared_ptr<Slot> target, Runtime::Array<T, L> array, Runtime::ElementSchema elementSchema, Runtime::ExecutionContext execution,
-                     std::shared_ptr<typename Runtime::Array<T, L>::ReadLease> retained)
+            Prepared(std::shared_ptr<Slot> target, Runtime::Array<T> array, Runtime::ElementSchema elementSchema, Runtime::ExecutionContext execution,
+                     std::shared_ptr<typename Runtime::Array<T>::ReadLease> retained)
                 : destination(std::move(target)), values(std::move(array)), schema(std::move(elementSchema)), context(execution), sourceRead(std::move(retained)) {}
             void BindEntitySpace(const EntitySpace &space) override
             {
@@ -64,7 +66,7 @@ namespace DNDS::Geom
         {
             std::shared_ptr<State> _state;
             Runtime::VersionTracker::ReadLease _mesh;
-            typename Runtime::Array<T, L>::ReadLease _read;
+            typename Runtime::Array<T>::ReadLease _read;
             bool _sealed = false;
             friend class EntityField;
             ReadScope(std::shared_ptr<State> state, const EntitySpace &expected, Runtime::ExecutionContext context)
@@ -77,7 +79,7 @@ namespace DNDS::Geom
             auto View() const
             {
                 DNDS_check_throw_info(_state && !_sealed, "entity field read is moved or sealed");
-                return _read.View();
+                return _read.template View<L>();
             }
             void Validate(const EntitySpace &space) const
             {
@@ -103,7 +105,7 @@ namespace DNDS::Geom
         {
             std::shared_ptr<State> _state;
             Runtime::VersionTracker::ReadLease _mesh;
-            typename Runtime::Array<T, L>::WriteLease _write;
+            typename Runtime::Array<T>::WriteLease _write;
             bool _sealed = false;
             friend class EntityField;
             WriteScope(std::shared_ptr<State> state, const EntitySpace &space, Runtime::ExecutionContext context)
@@ -113,7 +115,7 @@ namespace DNDS::Geom
             auto View() const
             {
                 DNDS_check_throw_info(_state && !_sealed, "entity field write is moved or sealed");
-                return _write.View();
+                return _write.template View<L>();
             }
             void Complete(const Runtime::Completion &completion)
             {
@@ -210,7 +212,7 @@ namespace DNDS::Geom
             }
         };
 
-        EntityField(EntitySpace space, Runtime::Array<T, L> values,
+        EntityField(EntitySpace space, Runtime::Array<T> values,
                     Runtime::ElementSchema schema = Runtime::ElementSchema::Arithmetic<T>(),
                     Runtime::ExecutionContext context = Runtime::ExecutionContext::Host())
             : _slot(std::make_shared<Slot>(Slot{std::make_shared<State>(std::move(space), std::move(values), std::move(schema), context)})) {}
@@ -237,7 +239,7 @@ namespace DNDS::Geom
         }
         /// Explicit generic escape. Retains values but loses Geom association;
         /// using it with arbitrary lower-level routes is a caller contract.
-        Runtime::Array<T, L> UntypedValues(const EntitySpace &space) const
+        Runtime::Array<T> UntypedValues(const EntitySpace &space) const
         {
             Validate(space);
             return _slot->current->values;
@@ -250,11 +252,11 @@ namespace DNDS::Geom
             auto state = slot->current;
             // Descriptor construction is local. Defer semantic checks to the
             // collectively guarded preparation stages, before any payload.
-            auto entry = RegisterArray(state->values, state->space.Kind(), std::move(name), state->schema, state->context);
+            auto entry = RegisterArray<T, L>(state->values, state->space.Kind(), std::move(name), state->schema, state->context);
             entry.preflight = [state](const PermutationTransfer &transfer)
             {
                 state->Validate(state->space);
-                DNDS_check_throw_info(state->values.Rows() == size_t(transfer.size()), "entity field migration requires owned rows");
+                DNDS_check_throw_info(state->values.RowCount() == size_t(transfer.size()), "entity field migration requires owned rows");
                 auto read = state->values.Read(state->context);
             };
             entry.attachment = [slot, state]
@@ -272,18 +274,18 @@ namespace DNDS::Geom
                                            state->values.Identity(),
                                            state->values.Version(),
                                            state->values.ShapeVersion(),
-                                           state->values.Rows(),
-                                           state->values.Rows(),
+                                           size_t(state->values.RowCount()),
+                                           size_t(state->values.RowCount()),
                                            0};
             };
             auto prepare = entry.prepare;
             entry.prepare = [slot, state, prepare](const PermutationTransfer &transfer, const MPIInfo &mpi)
             {
-                std::shared_ptr<typename Runtime::Array<T, L>::ReadLease> retained;
+                std::shared_ptr<typename Runtime::Array<T>::ReadLease> retained;
                 FieldTransferDetail::LocalStage(mpi, [&]
-                                                { retained = std::make_shared<typename Runtime::Array<T, L>::ReadLease>(state->values.Read(state->context)); });
+                                                { retained = std::make_shared<typename Runtime::Array<T>::ReadLease>(state->values.Read(state->context)); });
                 auto old = prepare(transfer, mpi);
-                auto *array = dynamic_cast<FieldTransferDetail::Prepared<Runtime::Array<T, L>> *>(old.get());
+                auto *array = dynamic_cast<FieldTransferDetail::Prepared<Runtime::Array<T>> *>(old.get());
                 DNDS_check_throw_info(array, "entity field adapter preparation type mismatch");
                 return std::make_unique<Prepared>(slot, std::move(array->next), state->schema, state->context, std::move(retained));
             };
@@ -295,7 +297,7 @@ namespace DNDS::Geom
             };
             entry.prepareUnchanged = [slot, state]
             {
-                auto retained = std::make_shared<typename Runtime::Array<T, L>::ReadLease>(state->values.Read(state->context));
+                auto retained = std::make_shared<typename Runtime::Array<T>::ReadLease>(state->values.Read(state->context));
                 return std::make_unique<Prepared>(slot, state->values, state->schema, state->context, std::move(retained));
             };
             entry.fn = [](const PermutationTransfer &, const MPIInfo &)

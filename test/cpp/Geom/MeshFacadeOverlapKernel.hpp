@@ -12,7 +12,7 @@ namespace DNDS::Geom::OverlapTest
         R::ArrayView<const real> owned;
         DNDS_DEVICE_CALLABLE real operator[](index cell) const
         {
-            DNDS_HD_assert(cell >= 0 && size_t(cell) < owned.Rows());
+            DNDS_HD_assert(cell >= 0 && size_t(cell) < owned.RowCount());
             return owned(size_t(cell), 0);
         }
     };
@@ -21,7 +21,7 @@ namespace DNDS::Geom::OverlapTest
         R::ArrayView<const real> owned, ghost;
         DNDS_DEVICE_CALLABLE real operator[](index cell) const
         {
-            return size_t(cell) < owned.Rows() ? owned(size_t(cell), 0) : ghost(size_t(cell) - owned.Rows(), 0);
+            return size_t(cell) < owned.RowCount() ? owned(size_t(cell), 0) : ghost(size_t(cell) - owned.RowCount(), 0);
         }
     };
 
@@ -53,13 +53,13 @@ namespace DNDS::Geom::OverlapTest
     inline void CoreHost(UnstructuredMeshView mesh, R::ArrayView<const index> rows,
                          R::ArrayView<const real> owned, R::ArrayView<real> output)
     {
-        for (size_t i = 0; i < rows.Rows(); ++i)
+        for (size_t i = 0; i < rows.RowCount(); ++i)
             output(i, 0) = NeighborSum(mesh, rows(i, 0), OwnedSolution{owned});
     }
     inline void RingHost(UnstructuredMeshView mesh, R::ArrayView<const index> rows,
                          R::ArrayView<const real> owned, R::ArrayView<const real> ghost, R::ArrayView<real> output)
     {
-        for (size_t i = 0; i < rows.Rows(); ++i)
+        for (size_t i = 0; i < rows.RowCount(); ++i)
             output(i, 0) = NeighborSum(mesh, rows(i, 0), SplitSolution{owned, ghost});
     }
 

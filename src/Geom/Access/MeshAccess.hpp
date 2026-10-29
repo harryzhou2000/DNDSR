@@ -55,7 +55,7 @@ namespace DNDS::Geom
     class MeshReadAccess
     {
         friend struct UnstructuredMesh;
-        friend class RelationReadAccess;
+        friend class MeshAdjacencyRead;
         friend class RelationPeriodicBits;
         friend class UnstructuredMeshSnapshot;
         friend class UnstructuredMeshState;

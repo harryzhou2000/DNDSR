@@ -217,7 +217,7 @@ TEST_CASE("Native O2 bisection preserves independent exact child cones volume an
     CHECK(view.NumCell() == child);
     source.reset();
     CHECK(result.provenance.sourceNamespace == sourceNamespace);
-    CHECK(parentRead.View().Rows() == size_t(child));
+    CHECK(parentRead.View().RowCount() == size_t(child));
 }
 
 TEST_CASE("Native bisection retains boundary labels ancestry and empty-rank participation")
@@ -291,7 +291,7 @@ TEST_CASE("Bisection sparse persistent ancestry survives source destruction redi
         {
             CHECK(state->Provenance()->sourceKinds.at(kind) == kind);
             auto read = state->Provenance()->sourceIds.at(kind).Read();
-            CHECK(read.View().Rows() == size_t(state->NumOwned(kind)));
+            CHECK(read.View().RowCount() == size_t(state->NumOwned(kind)));
             for (I row = 0; row < state->NumOwned(kind); ++row)
             {
                 const auto id = state->OriginalEntityId(kind, row);
@@ -393,7 +393,7 @@ TEST_CASE("CSR zero and multiple source ancestry retains aliases and roundtrips 
     {
         auto original = captured.provenance->sourceIds.at(G::EntityKind::Node);
         auto read = original.Read();
-        std::vector<std::vector<I>> rows(original.Rows());
+        std::vector<std::vector<I>> rows(original.RowCount());
         for (size_t i = 0; i < rows.size(); ++i)
             rows[i] = {read.View()(i, 0)};
         captured.provenance->sourceIds.at(G::EntityKind::Node) = Rows(rows);

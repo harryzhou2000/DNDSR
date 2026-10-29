@@ -18,7 +18,7 @@ using I = DNDS::index;
 
 namespace
 {
-    G::AdjKind OrderedConeKey()
+    G::AdjacencyDescriptor OrderedConeKey()
     {
         auto key = G::Adj::Cell2Node;
         key.path = key.Path();
@@ -61,7 +61,7 @@ namespace
         R::Array<G::ElemInfo> info(R::RowLayout::Dense(cones.size(), 1)), bndInfo(R::RowLayout::Dense(bnd.size(), 1));
         {
             auto write = points.Write();
-            for (size_t node = 0; node < points.Rows(); ++node)
+            for (size_t node = 0; node < points.RowCount(); ++node)
             {
                 write.View()(node, 0) = 8 * mpi.rank + double(node < 10 ? node % 5 : node - 10);
                 write.View()(node, 1) = node < 10 ? double(node / 5) : -2.0;
@@ -79,10 +79,10 @@ namespace
             return primary;
         auto topology = G::PrepareNativeMeshTopology(*primary, mpi);
         auto owned = G::NativeMeshAssembler::CaptureOwned(*topology, mpi);
-        owned.nodeWallDist.emplace(R::RowLayout::Dense(points.Rows(), 3));
+        owned.nodeWallDist.emplace(R::RowLayout::Dense(points.RowCount(), 3));
         {
             auto write = owned.nodeWallDist->Write();
-            for (size_t row = 0; row < points.Rows(); ++row)
+            for (size_t row = 0; row < points.RowCount(); ++row)
                 for (size_t component = 0; component < 3; ++component)
                     write.View()(row, component) = 10 + row + component;
         }
@@ -94,7 +94,7 @@ namespace
         {
             R::Array<G::NodePeriodicBits> output(cone.Layout());
             auto write = output.Write();
-            for (size_t row = 0; row < output.Rows(); ++row)
+            for (size_t row = 0; row < output.RowCount(); ++row)
                 for (size_t slot = 0; slot < write.View().RowSize(row); ++slot)
                     write.View()(row, slot) = G::NodePeriodicBits{value};
             return output;
@@ -206,7 +206,7 @@ namespace
         R::Array<I> fieldValues(R::RowLayout::Dense(size_t(before.NumOwned(G::EntityKind::Cell)), 1));
         {
             auto write = fieldValues.Write();
-            for (size_t row = 0; row < fieldValues.Rows(); ++row)
+            for (size_t row = 0; row < fieldValues.RowCount(); ++row)
                 write.View()(row, 0) = before.OriginalEntityId(G::EntityKind::Cell, I(row));
         }
         G::EntityField<I> field(oldCells, fieldValues);
@@ -220,7 +220,7 @@ namespace
             .Begin()
             .Wait();
         auto movedRead = moved.Read();
-        for (size_t row = 0; row < moved.Rows(); ++row)
+        for (size_t row = 0; row < moved.RowCount(); ++row)
             CHECK(movedRead.View()(row, 0) == after.OriginalEntityId(G::EntityKind::Cell, I(row)));
         G::EntityField<I> destination(cells, moved);
         auto halo = destination.BuildHaloRoute(cells);

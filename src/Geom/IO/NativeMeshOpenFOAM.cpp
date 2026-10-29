@@ -13,7 +13,7 @@ namespace DNDS::Geom
     {
         void Require(bool value, const char *message) { DNDS_check_throw_info(value, message); }
         template <class T>
-        Runtime::Array<T> Rows(const std::vector<std::vector<T>> &rows)
+        Runtime::Array<T> BuildRows(const std::vector<std::vector<T>> &rows)
         {
             Runtime::RowBuilder builder(rows.size(), sizeof(T));
             for (size_t row = 0; row < rows.size(); ++row)
@@ -140,14 +140,14 @@ namespace DNDS::Geom
                 for (size_t component = 0; component < 3; ++component)
                     write.View()(row, component) = reader.points[row][Eigen::Index(component)];
         }
-        result.cellNodes = Rows(converter.cell2node);
-        result.boundaryNodes = Rows(boundaryRows);
-        result.boundaryCells = Rows(boundaryCells);
+        result.cellNodes = BuildRows(converter.cell2node);
+        result.boundaryNodes = BuildRows(boundaryRows);
+        result.boundaryCells = BuildRows(boundaryCells);
         std::vector<std::vector<ElemInfo>> cellInfo;
         for (auto info : converter.cellElemInfo)
             cellInfo.push_back({info});
-        result.cellInfo = Rows(cellInfo);
-        result.boundaryInfo = Rows(boundaryInfo);
+        result.cellInfo = BuildRows(cellInfo);
+        result.boundaryInfo = BuildRows(boundaryInfo);
         result.cellIds = Ids(converter.cell2node.size());
         result.nodeIds = Ids(reader.points.size());
         result.boundaryIds = Ids(boundaryCount);

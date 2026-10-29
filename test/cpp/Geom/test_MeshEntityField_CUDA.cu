@@ -25,14 +25,14 @@ namespace
                                R::ArrayView<const DNDS::index> original,
                                R::ArrayView<double> difference, int phase)
     {
-        for (size_t row = blockIdx.x * blockDim.x + threadIdx.x; row < values.Rows(); row += blockDim.x * gridDim.x)
+        for (size_t row = blockIdx.x * blockDim.x + threadIdx.x; row < values.RowCount(); row += blockDim.x * gridDim.x)
             for (size_t component = 0; component < 5; ++component)
                 difference(row, component) = values(row, component) - Expected(original(row, 0), component, phase);
     }
 
     __global__ void UpdateState(R::ArrayView<double> values)
     {
-        for (size_t row = blockIdx.x * blockDim.x + threadIdx.x; row < values.Rows(); row += blockDim.x * gridDim.x)
+        for (size_t row = blockIdx.x * blockDim.x + threadIdx.x; row < values.RowCount(); row += blockDim.x * gridDim.x)
             for (size_t component = 0; component < 5; ++component)
                 values(row, component) += 0.5 * double(component + 1);
     }
@@ -124,7 +124,7 @@ namespace
     {
         const auto host = difference.To(R::Device::Host(), context);
         const auto read = host.Read();
-        for (size_t row = 0; row < host.Rows(); ++row)
+        for (size_t row = 0; row < host.RowCount(); ++row)
             for (size_t component = 0; component < 5; ++component)
                 CHECK(read.View()(row, component) == 0.0);
     }
@@ -166,10 +166,10 @@ namespace
                      const std::vector<DNDS::index> &globalOriginal, R::ExecutionContext context)
     {
         const auto space = mesh.Entities(G::EntityKind::Cell);
-        REQUIRE(ghost.Rows() == size_t(space.NumGhost()));
+        REQUIRE(ghost.RowCount() == size_t(space.NumGhost()));
         auto host = ghost.To(R::Device::Host(), context);
         auto read = host.Read();
-        for (size_t row = 0; row < ghost.Rows(); ++row)
+        for (size_t row = 0; row < ghost.RowCount(); ++row)
         {
             const auto global = space.LocalToGlobal(space.NumOwned() + DNDS::index(row));
             const auto original = globalOriginal.at(size_t(global));

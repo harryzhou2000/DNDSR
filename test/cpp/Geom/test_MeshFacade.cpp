@@ -443,7 +443,7 @@ TEST_CASE("Native facade construction rejects mismatched shapes and owned closur
             auto &pair = *input.data.relations[size_t(G::MeshRelation::BoundaryCells)];
             pair.owned = R::Array<I>(R::RowLayout::Dense(2, 2));
             pair.ghost = R::Array<I>(R::RowLayout::Dense(1, 2));
-            CHECK(pair.owned.Rows() + pair.ghost.Rows() == 3); });
+            CHECK(pair.owned.RowCount() + pair.ghost.RowCount() == 3); });
     }
     SUBCASE("element companion split differs despite identical total")
     {
@@ -458,7 +458,7 @@ TEST_CASE("Native facade construction rejects mismatched shapes and owned closur
             reject([&](auto &input)
                    {
                 auto &pair = *input.data.relations[size_t(relation)];
-                pair.owned = NativeFacadeFixture::Rows<I>(std::vector<std::vector<I>>(pair.owned.Rows(), {0})).owned; });
+                pair.owned = NativeFacadeFixture::Rows<I>(std::vector<std::vector<I>>(pair.owned.RowCount(), {0})).owned; });
     }
     SUBCASE("entity family equal extents cannot substitute a foreign domain")
     {

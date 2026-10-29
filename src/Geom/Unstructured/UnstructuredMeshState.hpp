@@ -7,7 +7,7 @@
 
 namespace DNDS::Geom
 {
-    class RelationReadAccess;
+    class MeshAdjacencyRead;
 
     /// Immutable native query authority owned by the public mesh facade.
     /// All map/array ownership is private and immutable after publication.
@@ -29,7 +29,7 @@ namespace DNDS::Geom
             NativeNamedRelation data;
             std::shared_ptr<Runtime::Array<index>::ReadLease> owned, ghost;
         };
-        std::map<AdjKind, NamedRelation> _namedRelations;
+        std::map<AdjacencyDescriptor, NamedRelation> _namedRelations;
         MeshReadRequirements _requirements;
         MeshAuditOptions _audit;
         std::optional<GhostSpec> _ghostSpec;
@@ -116,8 +116,8 @@ namespace DNDS::Geom
         size_t ArrayBytes() const;
         /// Exact descriptor lookup over host setup storage. Device placement
         /// does not move this registry or change its canonical entity spaces.
-        RelationReadAccess Relation(const AdjKind &key) const;
-        std::vector<AdjKind> RelationKeys() const;
+        MeshAdjacencyRead Relation(const AdjacencyDescriptor &key) const;
+        std::vector<AdjacencyDescriptor> RelationKeys() const;
         void CheckRequirements(MeshReadRequirements requested) const;
         const UnstructuredMeshSnapshot &Snapshot(Runtime::Device device) const;
         const UnstructuredMeshView &BorrowHostView() const { return _hostView; }

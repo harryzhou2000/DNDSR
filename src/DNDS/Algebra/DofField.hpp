@@ -101,7 +101,7 @@ namespace DNDS::Algebra
         {
             const auto owned = _owned.Layout(), ghost = _ghost.Layout();
             DNDS_check_throw_info(!owned.IsVariable() && !ghost.IsVariable() && owned.Width() && owned.Width() == ghost.Width() &&
-                                      owned.Rows() == _space.OwnedRows() && ghost.Rows() == _space.GhostRows() &&
+                                      owned.RowCount() == _space.OwnedRows() && ghost.RowCount() == _space.GhostRows() &&
                                       _owned.GetDevice() == _ghost.GetDevice() && _owned.IsValid(),
                                   "DOF field shape, placement or owned values are invalid");
             DNDS_check_throw_info(!Detail::Overlaps(_owned.Storage(), _ghost.Storage()), "DOF owned and ghost storage overlap");

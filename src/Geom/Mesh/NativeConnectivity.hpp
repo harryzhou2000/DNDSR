@@ -1,4 +1,3 @@
 #pragma once
-#include "Geom/Unstructured/UnstructuredMeshFwd.hpp"
-// Compatibility include; use the responsibility-specific canonical path.
-#include "Geom/Connectivity/NativeConnectivity.hpp"
+// Compatibility include; use AdjacencyRegistry.hpp.
+#include "Geom/Mesh/AdjacencyRegistry.hpp"

@@ -183,7 +183,7 @@ namespace DNDS::Geom
                     const auto &array = py::cast<const Runtime::PythonArray &>(object);
                     auto native = array.template AsArray<T>();
                     DNDS_check_throw_info(native.GetDevice() == Runtime::Device::Host() &&
-                                              native.Rows() <= size_t(std::numeric_limits<index>::max()),
+                                              native.RowCount() <= size_t(std::numeric_limits<index>::max()),
                                           "native Python mesh inputs require host storage and supported row counts");
                     auto read = native.Read();
                     return native;
@@ -197,27 +197,27 @@ namespace DNDS::Geom
                 auto width = [](const auto &array, size_t expected)
                 {
                     const auto shape = array.Layout();
-                    for (size_t row = 0; row < shape.Rows(); ++row)
+                    for (size_t row = 0; row < shape.RowCount(); ++row)
                         DNDS_check_throw_info(shape.RowSize(row) == expected, "native Python mesh input row width mismatch");
                 };
                 width(values.coordinates, 3);
                 width(values.cellInfo, 1);
                 width(values.boundaryInfo, 1);
-                DNDS_check_throw_info(values.cellNodes.Rows() == values.cellInfo.Rows() &&
-                                          values.boundaryNodes.Rows() == values.boundaryInfo.Rows(),
+                DNDS_check_throw_info(values.cellNodes.RowCount() == values.cellInfo.RowCount() &&
+                                          values.boundaryNodes.RowCount() == values.boundaryInfo.RowCount(),
                                       "native Python element information and cone row counts differ");
                 auto optionalIds = [&](py::handle object, EntityKind kind, size_t count)
                 {
                     if (object.is_none()) return;
                     auto ids = convert(object, static_cast<index *>(nullptr));
                     width(ids, 1);
-                    DNDS_check_throw_info(!ids.Layout().IsVariable() && ids.Layout().Width() == 1 && ids.Rows() == count,
+                    DNDS_check_throw_info(!ids.Layout().IsVariable() && ids.Layout().Width() == 1 && ids.RowCount() == count,
                                           "native Python persistent IDs require one dense owned column");
                     values.ids.emplace(kind, std::move(ids));
                 };
-                optionalIds(nodeIds, EntityKind::Node, values.coordinates.Rows());
-                optionalIds(cellIds, EntityKind::Cell, values.cellNodes.Rows());
-                optionalIds(boundaryIds, EntityKind::Bnd, values.boundaryNodes.Rows());
+                optionalIds(nodeIds, EntityKind::Node, values.coordinates.RowCount());
+                optionalIds(cellIds, EntityKind::Cell, values.cellNodes.RowCount());
+                optionalIds(boundaryIds, EntityKind::Bnd, values.boundaryNodes.RowCount());
                 owned.emplace(std::move(values));
             }
             catch (const std::exception &error)
@@ -233,9 +233,9 @@ namespace DNDS::Geom
             DNDS_check_throw_info(valid, "native Python mesh input validation failed on a rank" +
                                             (detail.empty() ? std::string{} : "; " + detail));
             py::gil_scoped_release release;
-            auto nodes = EntitySpace::CreateOwned(EntityKind::Node, mpi, index(owned->coordinates.Rows()));
-            auto cells = nodes.CreateSibling(EntityKind::Cell, index(owned->cellNodes.Rows()));
-            auto boundaries = nodes.CreateSibling(EntityKind::Bnd, index(owned->boundaryNodes.Rows()));
+            auto nodes = EntitySpace::CreateOwned(EntityKind::Node, mpi, index(owned->coordinates.RowCount()));
+            auto cells = nodes.CreateSibling(EntityKind::Cell, index(owned->cellNodes.RowCount()));
+            auto boundaries = nodes.CreateSibling(EntityKind::Bnd, index(owned->boundaryNodes.RowCount()));
             NativeMeshInput input{mpi, dimension, cells, nodes, boundaries,
                                    std::move(owned->cellNodes), std::move(owned->boundaryNodes),
                                    std::move(owned->coordinates), std::move(owned->cellInfo),

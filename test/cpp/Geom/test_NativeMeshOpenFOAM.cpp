@@ -167,8 +167,8 @@ TEST_CASE("Source setup partitions parents before refinement and retains parent-
     {
         auto observed = actual->Provenance()->sourceIds.at(kind).Read();
         auto reference = expected->Provenance()->sourceIds.at(kind).Read();
-        REQUIRE(observed.View().Rows() == reference.View().Rows());
-        for (size_t row = 0; row < observed.View().Rows(); ++row)
+        REQUIRE(observed.View().RowCount() == reference.View().RowCount());
+        for (size_t row = 0; row < observed.View().RowCount(); ++row)
         {
             CHECK(observed.View()(row, 0) == reference.View()(row, 0));
             CHECK(actual->OriginalEntityId(kind, I(row)) == expected->OriginalEntityId(kind, I(row)));

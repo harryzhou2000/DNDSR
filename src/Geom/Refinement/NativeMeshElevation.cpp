@@ -1,7 +1,7 @@
 #include "Geom/Refinement/NativeMeshRefinement.hpp"
 #include "Geom/Transition/NativeMeshAssembler.hpp"
 #include "Geom/Connectivity/NativeMeshClosure.hpp"
-#include "Geom/Connectivity/NativeConnectivity.hpp"
+#include "Geom/Connectivity/AdjacencyRegistry.hpp"
 #include "Geom/Connectivity/NativePeriodicMatch.hpp"
 #include "Geom/Transition/FieldTransfer.hpp"
 
@@ -54,7 +54,7 @@ namespace DNDS::Geom
             for (const auto *metadata : {&*owned.cellInfo, &*owned.bndInfo})
             {
                 auto read = metadata->Read();
-                for (size_t row = 0; row < metadata->Rows(); ++row)
+                for (size_t row = 0; row < metadata->RowCount(); ++row)
                 {
                     const auto element = Elem::Element{read.View()(row, 0).getElemType()};
                     DNDS_check_throw_info(element.GetOrder() == 1 && element.GetNumElev_O1O2() > 0 &&
@@ -101,8 +101,8 @@ namespace DNDS::Geom
         // Temporary construction spans reuse subentity deduplication. This
         // scratch Edge space includes edge/face/cell spans and is never exposed
         // as the new mesh's edge family; every span becomes one new node.
-        auto spans = NativeConnectivity::Interpolate(cone, EntityKind::Edge, query, [mpi](const std::vector<index> &, const std::vector<MPI_int> &ranks, index)
-                                                     { return OwnershipDecision{*std::min_element(ranks.begin(), ranks.end()) == mpi.rank, {}}; }, periodic ? &*periodic : nullptr);
+        auto spans = AdjacencyRegistry::Interpolate(cone, EntityKind::Edge, query, [mpi](const std::vector<index> &, const std::vector<MPI_int> &ranks, index)
+                                                    { return OwnershipDecision{*std::min_element(ranks.begin(), ranks.end()) == mpi.rank, {}}; }, periodic ? &*periodic : nullptr);
         const auto oldNodes = source.spaces.at(EntityKind::Node);
         const index nOld = oldNodes.NumOwned();
         index nNew = 0;
@@ -130,7 +130,7 @@ namespace DNDS::Geom
         const auto cells = nodes.CreateSibling(EntityKind::Cell, source.spaces.at(EntityKind::Cell).NumOwned());
         const auto boundaries = nodes.CreateSibling(EntityKind::Bnd, source.spaces.at(EntityKind::Bnd).NumOwned());
         const auto expandedNodes = closure.cellNodes.Target();
-        RelationGhostRoute nodeRoute(expandedNodes);
+        EntityGhostMapping nodeRoute(expandedNodes);
         auto ghostCoords = nodeRoute.TransferRows(expandedNodes, *owned.coords, Runtime::ElementSchema::Arithmetic<real>());
         auto ghostIds = nodeRoute.TransferRows(expandedNodes, owned.ids.at(EntityKind::Node), Runtime::ElementSchema::Arithmetic<index>());
         Runtime::ArrayPair<real> coordinates{*owned.coords, std::move(ghostCoords)};
@@ -233,7 +233,7 @@ namespace DNDS::Geom
             FieldTransferDetail::LocalStage(mpi, [&]
                                             {
                 auto read = owned.cellNodesPbi->Read();
-                std::vector<std::vector<index>> rows(owned.cellNodesPbi->Rows());
+                std::vector<std::vector<index>> rows(owned.cellNodesPbi->RowCount());
                 for (size_t row = 0; row < rows.size(); ++row) for (auto bits : read.View()[row]) rows[row].push_back(uint8_t(bits));
                 frames = ElevationRows(rows); });
             candidateFrames = ElevationFetch(boundaryRoute, *frames, mpi, context);

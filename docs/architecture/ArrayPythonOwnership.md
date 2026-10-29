@@ -149,17 +149,18 @@ type caster connects native signatures to the one registered Python Array
 class. Import `DNDSR.DNDS.Runtime` before using a separate extension.
 
 ```cpp
-using State = DNDS::Runtime::Array<double, DNDS::Runtime::FixedRows<5>>;
+using State = DNDS::Runtime::Array<double>;
 m.def("state", [&solver] { return solver.state; }); // shallow native export
 m.def("update", [](State a) { /* leased element updates */ });
 m.def("replace_state", [&solver](State a) { solver.state = std::move(a); });
 ```
 
-Template conversion glue compiles for native signatures actually used by the
-application. There is no binding/instantiation list for widths 1, 2, 3, etc.,
-nor a separate suite of Python Array methods per width. The converter checks
-dtype, element size/alignment and the C++ layout constraint. It never silently
-casts values or transfers devices. Runtime operators still validate placement.
+The converter accepts the one `Array<T>` handle type; its optional historical
+second alias argument does not create a second storage type. There is no
+binding/instantiation list for widths 1, 2, 3, etc., nor a separate suite of
+Python Array methods per width. The converter checks dtype, element size and
+alignment. It never silently casts values or transfers devices. Runtime view
+acquisition performs the separate table/padded/CSR/fixed-width policy check.
 
 Converted arguments are shallow handles, including reference signatures.
 Element writes propagate through shared storage; `Reset` on such a temporary

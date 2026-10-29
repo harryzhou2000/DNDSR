@@ -33,7 +33,7 @@ namespace DNDS::Runtime
                 : storage(array.SharedStorage()), access(storage->Write(context))
             {
                 auto layout = storage->Layout();
-                shape = {int64_t(layout.Rows()), int64_t(layout.Width())};
+                shape = {int64_t(layout.RowCount()), int64_t(layout.Width())};
                 strides = {int64_t(layout.Stride()), 1};
                 tensor.dl_tensor = {access.View<uint8_t>().data,
                                     {context.device.space == MemorySpace::Host ? kDLCPU : kDLCUDA,
@@ -53,7 +53,7 @@ namespace DNDS::Runtime
         {
             const auto layout = array.Layout();
             DNDS_check_throw_info(!layout.IsVariable(), "DLPack export requires table layout");
-            DNDS_check_throw_info(layout.Rows() <= INT64_MAX && layout.Width() <= INT64_MAX && layout.Stride() <= INT64_MAX,
+            DNDS_check_throw_info(layout.RowCount() <= INT64_MAX && layout.Width() <= INT64_MAX && layout.Stride() <= INT64_MAX,
                                   "DLPack shape exceeds int64");
             const auto dtype = Dtype(array);
             if (!copy.is_none() && py::cast<bool>(copy))

@@ -2,7 +2,7 @@
 #include "Geom/Connectivity/TopologySubEntityQuery.hpp"
 #include <limits>
 #include "Geom/Connectivity/NativeMeshClosure.hpp"
-#include "Geom/Connectivity/NativeConnectivity.hpp"
+#include "Geom/Connectivity/AdjacencyRegistry.hpp"
 #include "Geom/Connectivity/NativePeriodicMatch.hpp"
 #include "Geom/Transition/FieldTransfer.hpp"
 #include "Geom/BoundaryCondition.hpp"
@@ -16,7 +16,7 @@ namespace DNDS::Geom
         namespace R = Runtime;
         using Array = R::Array<index>;
 
-        Array Rows(const std::vector<std::vector<index>> &rows, std::optional<size_t> width = {})
+        Array BuildIndexRows(const std::vector<std::vector<index>> &rows, std::optional<size_t> width = {})
         {
             return R::BuildArrayRows<index>(rows.size(), [&](size_t row)
                                             { return rows[row].size(); }, [&](size_t row, auto output)
@@ -39,27 +39,27 @@ namespace DNDS::Geom
         Array BitRows(const R::Array<NodePeriodicBits> &values)
         {
             auto read = values.Read();
-            std::vector<std::vector<index>> rows(values.Rows());
+            std::vector<std::vector<index>> rows(values.RowCount());
             for (size_t row = 0; row < rows.size(); ++row)
                 for (auto bits : read.View()[row])
                     rows[row].push_back(uint8_t(bits));
-            return Rows(rows);
+            return BuildIndexRows(rows);
         }
 
         Array Exchange(const MPIInfo &mpi, const std::vector<std::vector<index>> &messages)
         {
-            auto values = Rows(messages);
+            auto values = BuildIndexRows(messages);
             std::vector<int> outgoing(size_t(mpi.size)), incoming(size_t(mpi.size));
             for (int peer = 0; peer < mpi.size; ++peer)
                 outgoing[size_t(peer)] = !messages[size_t(peer)].empty();
             MPI_Alltoall(outgoing.data(), 1, MPI_INT, incoming.data(), 1, MPI_INT, mpi.comm);
-            std::vector<std::vector<size_t>> send(size_t(mpi.size)), receive(size_t(mpi.size));
+            std::vector<std::vector<index>> send(size_t(mpi.size)), receive(size_t(mpi.size));
             for (int peer = 0; peer < mpi.size; ++peer)
             {
                 if (outgoing[size_t(peer)])
-                    send[size_t(peer)].push_back(size_t(peer));
+                    send[size_t(peer)].push_back(index(peer));
                 if (incoming[size_t(peer)])
-                    receive[size_t(peer)].push_back(size_t(peer));
+                    receive[size_t(peer)].push_back(index(peer));
             }
             auto context = std::make_shared<R::CommunicationContext>(mpi.comm);
             auto route = R::RowTransferPlan::Known(context, size_t(mpi.size), size_t(mpi.size), std::move(send), std::move(receive));
@@ -105,7 +105,7 @@ namespace DNDS::Geom
                 {
                     DNDS_check_throw_info(globals[row] >= 0 && globals[row] < space.NumGlobal(),
                                           "native topology refresh references an unavailable source row");
-                    requests.push_back({space.Owner(globals[row]), space.OwnerLocalRow(globals[row]), row});
+                    requests.push_back({space.Owner(globals[row]), space.OwnerLocalRow(globals[row]), index(row)});
                 } });
             auto context = std::make_shared<R::CommunicationContext>(mpi.comm);
             R::RowTransferPlan route(context, size_t(space.NumOwned()), globals.size(), requests);
@@ -121,7 +121,7 @@ namespace DNDS::Geom
             FieldTransferDetail::LocalStage(mpi, [&]
                                             {
                 auto read = cone.Read();
-                for (size_t row = 0; row < cone.Rows(); ++row)
+                for (size_t row = 0; row < cone.RowCount(); ++row)
                     for (index global : read.View()[row]) globals.push_back(global);
                 std::sort(globals.begin(), globals.end());
                 globals.erase(std::unique(globals.begin(), globals.end()), globals.end()); });
@@ -133,8 +133,8 @@ namespace DNDS::Geom
                 auto info = information.Read();
                 std::optional<R::Array<NodePeriodicBits>::ReadLease> bits;
                 if (periodic) bits.emplace(periodic->Read());
-                DNDS_check_throw_info(information.Rows() == cone.Rows(), "native topology identity information extent mismatch");
-                keys.resize(cone.Rows());
+                DNDS_check_throw_info(information.RowCount() == cone.RowCount(), "native topology identity information extent mismatch");
+                keys.resize(cone.RowCount());
                 for (size_t row = 0; row < keys.size(); ++row)
                 {
                     NativePeriodicNodes pattern;
@@ -264,7 +264,7 @@ namespace DNDS::Geom
                 for (auto &id : ids) if (id == UnInitIndex) id = next++;
                 std::vector<std::vector<index>> idRows;
                 for (auto id : ids) idRows.push_back({id});
-                data.ids[kind] = Rows(idRows, 1);
+                data.ids[kind] = BuildIndexRows(idRows, 1);
                 data.identity.nextIds[kind] = first + total; });
             std::optional<RefreshMap> result;
             FieldTransferDetail::LocalStage(mpi, [&]
@@ -273,7 +273,7 @@ namespace DNDS::Geom
                 for (auto global : newGlobals) forward.push_back({global});
                 for (auto global : oldGlobals) reverse.push_back({global});
                 data.spaces.emplace(kind, space);
-                result.emplace(RefreshMap{old, space, Rows(forward, 1), Rows(reverse, 1)}); });
+                result.emplace(RefreshMap{old, space, BuildIndexRows(forward, 1), BuildIndexRows(reverse, 1)}); });
             return std::move(*result);
         }
 
@@ -283,7 +283,7 @@ namespace DNDS::Geom
             FieldTransferDetail::LocalStage(mpi, [&]
                                             {
                 auto read = mapping.newToOld.Read();
-                for (size_t row = 0; row < mapping.newToOld.Rows(); ++row)
+                for (size_t row = 0; row < mapping.newToOld.RowCount(); ++row)
                 {
                     const auto global = read.View()(row, 0);
                     DNDS_check_throw_info(global != UnInitIndex, "new topology rows have no inferable named-relation or ancestry payload");
@@ -298,7 +298,7 @@ namespace DNDS::Geom
             FieldTransferDetail::LocalStage(mpi, [&]
                                             {
                 auto read = values.Read();
-                for (size_t row = 0; row < values.Rows(); ++row)
+                for (size_t row = 0; row < values.RowCount(); ++row)
                     for (auto global : read.View()[row]) if (global != UnInitIndex) globals.push_back(global);
                 std::sort(globals.begin(), globals.end());
                 globals.erase(std::unique(globals.begin(), globals.end()), globals.end()); });
@@ -308,7 +308,7 @@ namespace DNDS::Geom
                                             {
                 auto read = fetched.Read();
                 auto original = values.Read();
-                rows.resize(values.Rows());
+                rows.resize(values.RowCount());
                 for (size_t row = 0; row < rows.size(); ++row)
                 {
                     for (auto global : original.View()[row])
@@ -331,15 +331,15 @@ namespace DNDS::Geom
                         rows[row].erase(std::unique(rows[row].begin(), rows[row].end()), rows[row].end());
                     }
                 } });
-            return Rows(rows);
+            return BuildIndexRows(rows);
         }
 
         R::Array<ElemInfo> Information(const R::Array<ElemInfo> &original, const std::vector<t_index> &zones)
         {
-            R::Array<ElemInfo> result(R::RowLayout::Dense(original.Rows(), 1));
+            R::Array<ElemInfo> result(R::RowLayout::Dense(original.RowCount(), 1));
             auto read = original.Read();
             auto write = result.Write();
-            for (size_t row = 0; row < original.Rows(); ++row)
+            for (size_t row = 0; row < original.RowCount(); ++row)
             {
                 write.View()(row, 0) = read.View()(row, 0);
                 write.View()(row, 0).zone = zones[row];
@@ -380,7 +380,7 @@ namespace DNDS::Geom
                                         { previousStorage.emplace(data); });
         const auto &previous = *previousStorage;
         std::map<EntityKind, RefreshMap> refresh;
-        std::set<AdjKind> regenerated;
+        std::set<AdjacencyDescriptor> regenerated;
         FieldTransferDetail::LocalStage(mpi, [&]
                                         {
             for (auto kind : {EntityKind::Face, EntityKind::Edge})
@@ -424,8 +424,8 @@ namespace DNDS::Geom
 
         if (buildFaces)
         {
-            auto faces = NativeConnectivity::Interpolate(coneRead, EntityKind::Face, Query(cellTypes, coneRead, false, periodic ? &*periodic : nullptr), owner, periodic ? &*periodic : nullptr);
-            auto inverse = NativeConnectivity::Inverse(faces.parent2entity.Read(), mpi);
+            auto faces = AdjacencyRegistry::Interpolate(coneRead, EntityKind::Face, Query(cellTypes, coneRead, false, periodic ? &*periodic : nullptr), owner, periodic ? &*periodic : nullptr);
+            auto inverse = AdjacencyRegistry::Inverse(faces.parent2entity.Read(), mpi);
             auto support = inverse.Read();
             auto occurrences = faces.entity2parent.Read();
             std::vector<std::vector<index>> faceCells(size_t(faces.entities.NumOwned()));
@@ -459,7 +459,7 @@ namespace DNDS::Geom
                     DNDS_check_throw_info(boundaryCells.View().RowSize(size_t(boundary)) == 2,
                                           "native topology boundary must have two physical slots");
                     const auto cell = boundaryCells.View()(size_t(boundary), 0);
-                    requests.push_back({cells.Owner(cell), cells.OwnerLocalRow(cell), size_t(boundary)});
+                    requests.push_back({cells.Owner(cell), cells.OwnerLocalRow(cell), boundary});
                 } });
             auto context = std::make_shared<R::CommunicationContext>(mpi.comm);
             const auto nBoundary = data.spaces.at(EntityKind::Bnd).NumOwned();
@@ -574,7 +574,7 @@ namespace DNDS::Geom
                     faceBoundaries[face][0] = selected->boundary;
                     zones[face] = selected->zone;
                 } });
-            auto physical = Rows(faceCells, 2);
+            auto physical = BuildIndexRows(faceCells, 2);
             auto parentFaces = faces.parent2entity.Read();
             std::vector<index> remote;
             FieldTransferDetail::LocalStage(mpi, [&]
@@ -585,8 +585,8 @@ namespace DNDS::Geom
                 std::sort(remote.begin(), remote.end());
                 remote.erase(std::unique(remote.begin(), remote.end()), remote.end()); });
             auto closure = faces.entities.WithGhosts(std::move(remote));
-            NativeRelation physicalRelation(Adj::Face2Cell, closure, cells, physical);
-            RelationGhostRoute faceRoute(closure);
+            MeshAdjacency physicalRelation(Adj::Face2Cell, closure, cells, physical);
+            EntityGhostMapping faceRoute(closure);
             auto physicalComplete = physicalRelation.WithGhostRows(faceRoute);
             auto physicalRead = physicalComplete.Read();
             std::vector<std::vector<index>> neighbors(size_t(cells.NumOwned()));
@@ -605,9 +605,9 @@ namespace DNDS::Geom
                 data.relations[size_t(MeshRelation::CellFaces)] = faces.parent2entity.Owned();
                 data.relations[size_t(MeshRelation::FaceNodes)] = faces.entity2node.Owned();
                 data.relations[size_t(MeshRelation::FaceCells)] = physical;
-                data.relations[size_t(MeshRelation::FaceBoundaries)] = Rows(faceBoundaries, 1);
-                data.relations[size_t(MeshRelation::BoundaryFaces)] = Rows(boundaryFaces, 1);
-                data.relations[size_t(MeshRelation::CellFaceCells)] = Rows(neighbors);
+                data.relations[size_t(MeshRelation::FaceBoundaries)] = BuildIndexRows(faceBoundaries, 1);
+                data.relations[size_t(MeshRelation::BoundaryFaces)] = BuildIndexRows(boundaryFaces, 1);
+                data.relations[size_t(MeshRelation::CellFaceCells)] = BuildIndexRows(neighbors);
                 data.namedRelations.emplace(inverse.Kind(), inverse.Owned());
                 data.faceInfo = Information(faces.entityElemInfo, zones);
                 if (data.periodic)
@@ -634,8 +634,8 @@ namespace DNDS::Geom
         }
         if (buildEdges)
         {
-            auto edges = NativeConnectivity::Interpolate(coneRead, EntityKind::Edge, Query(cellTypes, coneRead, true, periodic ? &*periodic : nullptr), owner, periodic ? &*periodic : nullptr);
-            auto inverse = NativeConnectivity::Inverse(edges.parent2entity.Read(), mpi);
+            auto edges = AdjacencyRegistry::Interpolate(coneRead, EntityKind::Edge, Query(cellTypes, coneRead, true, periodic ? &*periodic : nullptr), owner, periodic ? &*periodic : nullptr);
+            auto inverse = AdjacencyRegistry::Inverse(edges.parent2entity.Read(), mpi);
             FieldTransferDetail::LocalStage(mpi, [&]
                                             {
                 data.relations[size_t(MeshRelation::CellEdges)] = edges.parent2entity.Owned();
@@ -673,7 +673,7 @@ namespace DNDS::Geom
             bool fixedAlias = false;
             FieldTransferDetail::LocalStage(mpi, [&]
                                             {
-                for (const auto &[alias, slot] : std::initializer_list<std::pair<AdjKind, MeshRelation>>{
+                for (const auto &[alias, slot] : std::initializer_list<std::pair<AdjacencyDescriptor, MeshRelation>>{
                     {Adj::Cell2Face, MeshRelation::CellFaces}, {Adj::Face2Node, MeshRelation::FaceNodes},
                     {Adj::Face2Cell, MeshRelation::FaceCells}, {Adj::Face2Bnd, MeshRelation::FaceBoundaries},
                     {Adj::Bnd2Face, MeshRelation::BoundaryFaces}, {Adj::Cell2CellFace, MeshRelation::CellFaceCells},
@@ -696,11 +696,11 @@ namespace DNDS::Geom
                         std::find(path.begin(), path.end(), kind) != path.end())
                     {
                         auto read = refresh.at(kind).oldToNew.Read();
-                        for (size_t row = 0; row < refresh.at(kind).oldToNew.Rows(); ++row)
+                        for (size_t row = 0; row < refresh.at(kind).oldToNew.RowCount(); ++row)
                             DNDS_check_throw_info(read.View()(row, 0) != UnInitIndex,
                                                   "named relation through a removed topology key cannot be inferred");
                         auto reverse = refresh.at(kind).newToOld.Read();
-                        for (size_t row = 0; row < refresh.at(kind).newToOld.Rows(); ++row)
+                        for (size_t row = 0; row < refresh.at(kind).newToOld.RowCount(); ++row)
                             DNDS_check_throw_info(reverse.View()(row, 0) != UnInitIndex,
                                                   "named relation through an added topology key cannot be inferred");
                     }

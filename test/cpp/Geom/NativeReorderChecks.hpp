@@ -217,8 +217,8 @@ namespace NativeReorderChecks
     inline void Equal(const R::Array<I> &a, const R::Array<I> &b)
     {
         auto x = a.Read(), y = b.Read();
-        REQUIRE(x.View().Rows() == y.View().Rows());
-        for (size_t row = 0; row < x.View().Rows(); ++row)
+        REQUIRE(x.View().RowCount() == y.View().RowCount());
+        for (size_t row = 0; row < x.View().RowCount(); ++row)
         {
             REQUIRE(x.View().RowSize(row) == y.View().RowSize(row));
             for (size_t slot = 0; slot < x.View().RowSize(row); ++slot)
@@ -281,7 +281,7 @@ namespace NativeReorderChecks
                 .Begin()
                 .Wait();
             auto read = moved.Read();
-            for (size_t row = 0; row < moved.Rows(); ++row)
+            for (size_t row = 0; row < moved.RowCount(); ++row)
                 CHECK(read.View()(row, 0) == mpi.rank);
         }
         // All output compute groups stay local, including optional topology.
@@ -303,18 +303,18 @@ namespace NativeReorderChecks
         input.explicitMaps.push_back({kind, std::move(destinations)});
         return input;
     }
-    inline void RoundTrip(const State &state, const DNDS::MPIInfo &mpi, const std::vector<G::AdjKind> &keys)
+    inline void RoundTrip(const State &state, const DNDS::MPIInfo &mpi, const std::vector<G::AdjacencyDescriptor> &keys)
     {
         auto facade = G::UnstructuredMesh::FromNative(mpi, state);
         auto requirements = state->Requirements();
         for (const auto &key : keys)
         {
-            auto source = G::RelationReadAccess::Current(*facade, key, requirements);
-            auto global = G::NativeRelation::Convert(source, G::Adj_PointToGlobal);
-            auto local = G::NativeRelation::Convert(global.Read(), G::Adj_PointToLocal);
+            auto source = G::MeshAdjacencyRead::Current(*facade, key, requirements);
+            auto global = G::MeshAdjacency::Convert(source, G::Adj_PointToGlobal);
+            auto local = G::MeshAdjacency::Convert(global.Read(), G::Adj_PointToLocal);
             auto read = local.Read();
-            CHECK(source.Rows() == read.Rows());
-            for (I row = 0; row < source.Rows(); ++row)
+            CHECK(source.RowCount() == read.RowCount());
+            for (I row = 0; row < source.RowCount(); ++row)
             {
                 REQUIRE(source.RowSize(row) == read.RowSize(row));
                 for (size_t slot = 0; slot < source.RowSize(row); ++slot)
@@ -335,7 +335,7 @@ namespace NativeReorderChecks
         return result;
     }
     inline void Follow(const State &source, const DNDS::MPIInfo &mpi, G::EntityKind leader,
-                       const std::vector<std::pair<G::EntityKind, G::AdjKind>> &followers)
+                       const std::vector<std::pair<G::EntityKind, G::AdjacencyDescriptor>> &followers)
     {
         auto input = Place(source, leader, mpi, 1);
         auto leaderSpace = source->Entities(leader);
@@ -356,7 +356,7 @@ namespace NativeReorderChecks
         for (const auto &[kind, key] : followers)
         {
             input.follows.push_back({kind, leader, key});
-            auto support = G::RelationReadAccess::Current(*facade, key, source->Requirements());
+            auto support = G::MeshAdjacencyRead::Current(*facade, key, source->Requirements());
             R::Array<I> ranks(R::RowLayout::Dense(size_t(support.NumOwned()), 1));
             {
                 auto write = ranks.Write();
@@ -389,7 +389,7 @@ namespace NativeReorderChecks
                 .Begin()
                 .Wait();
             auto read = moved.Read();
-            for (size_t row = 0; row < moved.Rows(); ++row)
+            for (size_t row = 0; row < moved.RowCount(); ++row)
                 CHECK(read.View()(row, 0) == mpi.rank);
         }
     }

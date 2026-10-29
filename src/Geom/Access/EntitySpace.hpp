@@ -9,7 +9,7 @@ namespace DNDS::Geom
 {
     struct UnstructuredMesh;
     class LegacyFieldBridge;
-    class RelationReadAccess;
+    class MeshAdjacencyRead;
     template <class T, class L>
     class EntityField;
 
@@ -24,7 +24,7 @@ namespace DNDS::Geom
     {
         friend struct UnstructuredMesh;
         friend class LegacyFieldBridge;
-        friend class RelationReadAccess;
+        friend class MeshAdjacencyRead;
         template <class T, class L>
         friend class EntityField;
         friend class UnstructuredMeshState;
@@ -32,7 +32,7 @@ namespace DNDS::Geom
         friend class NativeMeshAssembler;
         friend struct NativeMeshOutput;
         friend struct NativeMeshSerialOutput;
-        friend class NativeConnectivity;
+        friend class AdjacencyRegistry;
         friend class RelationPeriodicBits;
 
         EntityKind _kind{};
@@ -51,7 +51,7 @@ namespace DNDS::Geom
                     std::shared_ptr<OffsetAscendIndexMapping> ghostMap,
                     Runtime::VersionTracker versions);
         static void CheckCommunicator(MPI_Comm actual, MPI_Comm expected);
-        // RelationReadAccess owns read leases for both numbering epochs, so
+        // MeshAdjacencyRead owns read leases for both numbering epochs, so
         // these private map operations need no generation mutex per incidence.
         // Public descriptor queries still validate on every call.
         index LocalToGlobalPinned(index local) const;

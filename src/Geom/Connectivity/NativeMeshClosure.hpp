@@ -10,7 +10,7 @@ namespace DNDS::Geom
     /// node support even when the source CellCells graph is incomplete.
     struct NativeCellClosure
     {
-        NativeRelation cellNodes;
+        MeshAdjacency cellNodes;
         Runtime::ArrayPair<ElemInfo> cellInfo;
         std::optional<Runtime::ArrayPair<NodePeriodicBits>> cellNodesPbi;
     };

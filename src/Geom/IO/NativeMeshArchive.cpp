@@ -87,7 +87,7 @@ namespace DNDS::Geom
             return EntityKind(kind);
         }
 
-        Json Describe(const AdjKind &key)
+        Json Describe(const AdjacencyDescriptor &key)
         {
             key.Validate();
             std::vector<int> path;
@@ -96,10 +96,10 @@ namespace DNDS::Geom
             return Json{{"from", int(key.from)}, {"to", int(key.to)}, {"via", int(key.via)}, {"path", path}, {"selection", int(key.selection)}, {"remove_self", key.removeSelf}, {"order", int(key.order)}, {"periodic", int(key.periodic)}, {"name", key.semanticName}, {"version", key.semanticVersion}, {"provenance", key.provenance}};
         }
 
-        AdjKind Definition(const Json &value)
+        AdjacencyDescriptor Definition(const Json &value)
         {
             DNDS_check_throw_info(value.is_object() && value.at("path").is_array(), "native archive relation definition is malformed");
-            AdjKind result(Kind(value.at("from")), Kind(value.at("to")), Kind(value.at("via")));
+            AdjacencyDescriptor result(Kind(value.at("from")), Kind(value.at("to")), Kind(value.at("via")));
             for (const auto &kind : value.at("path"))
                 result.path.push_back(Kind(kind));
             const int selection = int(Integer(value.at("selection"), 0, int(RelationSelection::Custom))),
@@ -211,10 +211,11 @@ namespace DNDS::Geom
                 // The enclosing read stage agrees after both I/O and shape
                 // checks. No nested collective here: a per-rank codec error
                 // must not skip a collective entered by successful peers.
-                for (size_t row = 0; row < array.Rows(); ++row)
-                    DNDS_check_throw_info(array.RowSize(row) == size_t(width), "native archive uniform row shape mismatch");
-                DNDS_check_throw_info(array.Layout().Elements() == CheckedSize::Multiply(array.Rows(), size_t(width)), "native archive uniform storage extent mismatch");
-                return R::Array<T>::FromStorage(R::RowLayout::Dense(array.Rows(), size_t(width)), array.Storage());
+                for (index row = 0; row < array.RowCount(); ++row)
+                    DNDS_check_throw_info(array.RowSize(row) == width, "native archive uniform row shape mismatch");
+                DNDS_check_throw_info(array.Layout().Elements() == size_t(CheckedSize::Multiply(array.RowCount(), width)),
+                                      "native archive uniform storage extent mismatch");
+                return R::Array<T>::FromStorage(R::RowLayout::Dense(array.RowCount(), size_t(width)), array.Storage());
             }
             return array;
         }
@@ -346,7 +347,7 @@ namespace DNDS::Geom
         NativeOwnedMeshData owned;
         std::map<EntityKind, index> totals;
         std::map<EntityKind, std::vector<index>> writerRows;
-        std::vector<AdjKind> named;
+        std::vector<AdjacencyDescriptor> named;
         std::map<EntityKind, index> provenanceWidths;
         ArchiveStage(mpi, [&]
                      {
@@ -408,7 +409,7 @@ namespace DNDS::Geom
             DNDS_check_throw_info(metadata.at("fixed").is_array() && metadata.at("fixed").size() == owned.relations.size(), "native archive fixed relation inventory is malformed");
             for (const auto &width : metadata.at("fixed")) if (!width.is_null()) (void)Integer(width, -1);
             DNDS_check_throw_info(metadata.at("named").is_array() && metadata.at("companions").is_object(), "native archive relation/companion inventory is malformed");
-            std::set<AdjKind> distinct;
+            std::set<AdjacencyDescriptor> distinct;
             for (const auto &relation : metadata.at("named"))
             {
                 DNDS_check_throw_info(relation.is_object(), "native archive named relation is malformed");
@@ -464,7 +465,7 @@ namespace DNDS::Geom
             ArchiveStage(mpi, [&]
                          {
                 auto values = ReadRows<index>(serializer, "ancestry_" + std::to_string(int(kind)), mpi, partition, width, R::ArraySchema<index>());
-                DNDS_check_throw_info(values.Rows() == owned.ids.at(kind).Rows(), "native archive ancestry partition differs from its entity family");
+                DNDS_check_throw_info(values.RowCount() == owned.ids.at(kind).RowCount(), "native archive ancestry partition differs from its entity family");
                 owned.provenance->sourceIds.emplace(kind, std::move(values)); });
         std::map<EntityKind, index> localMaxima;
         ArchiveStage(mpi, [&]
@@ -475,10 +476,10 @@ namespace DNDS::Geom
                 // Avoid rank*total overflow when rejecting malicious counts.
                 const index evenRows = total / mpi.size + index(mpi.rank + 1) * remainder / mpi.size - index(mpi.rank) * remainder / mpi.size;
                 const index expectedRows = partition == S::ArrayGlobalOffset_Unknown ? writerRows.at(kind).at(size_t(mpi.rank)) : evenRows;
-                DNDS_check_throw_info(ids.Rows() == size_t(expectedRows), "native archive restored family partition differs from saved ownership");
+                DNDS_check_throw_info(ids.RowCount() == size_t(expectedRows), "native archive restored family partition differs from saved ownership");
                 auto values = ids.Read();
                 index maximum = -1;
-                for (size_t row = 0; row < ids.Rows(); ++row)
+                for (size_t row = 0; row < ids.RowCount(); ++row)
                 {
                     const auto value = values.View()(row, 0);
                     DNDS_check_throw_info(value >= 0 && value < INT64_MAX, "native archive persistent ID is invalid or exhausted");
@@ -488,11 +489,11 @@ namespace DNDS::Geom
             } });
         owned.identity = PrepareMeshIdentity(mpi, std::move(owned.identity), localMaxima);
         const auto &nodeIds = owned.ids.at(EntityKind::Node);
-        auto nodes = EntitySpace::CreateOwned(EntityKind::Node, mpi, index(nodeIds.Rows()));
+        auto nodes = EntitySpace::CreateOwned(EntityKind::Node, mpi, index(nodeIds.RowCount()));
         owned.spaces.emplace(EntityKind::Node, nodes);
         for (const auto &[kind, ids] : owned.ids)
             if (kind != EntityKind::Node)
-                owned.spaces.emplace(kind, nodes.CreateSibling(kind, index(ids.Rows())));
+                owned.spaces.emplace(kind, nodes.CreateSibling(kind, index(ids.RowCount())));
         ArchiveStage(mpi, [&]
                      {
             for (const auto &[kind, space] : owned.spaces)

@@ -204,12 +204,12 @@ namespace DNDS::Runtime
         static RowBuilder FromStorage(const ArrayStorage &source)
         {
             const auto &shape = source.Layout();
-            RowBuilder draft(shape.Rows(), source.ElementBytes(), shape.Kind(),
+            RowBuilder draft(shape.RowCount(), source.ElementBytes(), shape.Kind(),
                              shape.IsVariable() ? shape.Stride() : shape.Width());
             const auto device = source.Values().GetDevice();
             auto read = source.Read({device, nullptr});
             const auto *values = read.View<std::byte>().data;
-            for (size_t i = 0; i < shape.Rows(); ++i)
+            for (size_t i = 0; i < shape.RowCount(); ++i)
             {
                 draft.ResizeRow(i, shape.RowSize(i), false);
                 auto row = draft.RowBytes(i);
@@ -220,7 +220,8 @@ namespace DNDS::Runtime
             }
             return draft;
         }
-        size_t Rows() const { return Live().rows; }
+        index RowCount() const { return index(Live().rows); }
+        index Rows() const { return RowCount(); }
         size_t ElementBytes() const { return Live().elementBytes; }
         size_t RowSize(size_t row) const
         {
@@ -336,9 +337,9 @@ namespace DNDS::Runtime
                 const auto bytes = source->_elementBytes;
                 if (shape.IsRagged())
                 {
-                    _draft = std::make_unique<RowBuilder>(shape.Rows(), bytes);
+                    _draft = std::make_unique<RowBuilder>(shape.RowCount(), bytes);
                     auto *values = write.View<std::byte>().data;
-                    for (size_t i = 0; i < shape.Rows(); ++i)
+                    for (size_t i = 0; i < shape.RowCount(); ++i)
                     {
                         _draft->ResizeRow(i, shape.RowSize(i));
                         auto row = _draft->RowBytes(i);
@@ -349,13 +350,13 @@ namespace DNDS::Runtime
                 }
                 else
                 {
-                    auto state = std::make_unique<RowBuilder::State>(shape.Rows(), bytes, shape.Kind(),
+                    auto state = std::make_unique<RowBuilder::State>(shape.RowCount(), bytes, shape.Kind(),
                                                                      shape.IsPadded() ? shape.Stride() : shape.Width(),
                                                                      source->_values, std::move(write));
                     // Preserve physical table stride, even when width < capacity.
                     state->capacity = shape.Stride();
                     state->width = shape.Width();
-                    for (size_t i = 0; i < shape.Rows(); ++i)
+                    for (size_t i = 0; i < shape.RowCount(); ++i)
                         state->sizes[i] = shape.RowSize(i);
                     _draft.reset(new RowBuilder(std::move(state)));
                 }
@@ -402,6 +403,6 @@ namespace DNDS::Runtime
         }
     };
 
-    template <class T, class LayoutPolicy>
-    ExclusiveRows Array<T, LayoutPolicy>::EditRows() { return ExclusiveRows(_storage); }
+    template <class T>
+    ExclusiveRows ArrayHandle<T>::EditRows() { return ExclusiveRows(_storage); }
 }

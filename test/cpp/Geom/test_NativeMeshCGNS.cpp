@@ -143,9 +143,9 @@ namespace
 
     void CheckSerial(const G::NativeSerialMeshData &mesh, const Oracle &expected)
     {
-        CHECK(mesh.coordinates.Rows() == 6);
-        CHECK(mesh.cellNodes.Rows() == 2);
-        CHECK(mesh.boundaryNodes.Rows() == 6);
+        CHECK(mesh.coordinates.RowCount() == 6);
+        CHECK(mesh.cellNodes.RowCount() == 2);
+        CHECK(mesh.boundaryNodes.RowCount() == 6);
         auto coordinates = mesh.coordinates.Read();
         auto cells = mesh.cellNodes.Read();
         auto boundaries = mesh.boundaryNodes.Read();

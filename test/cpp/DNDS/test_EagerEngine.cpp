@@ -59,7 +59,7 @@ TEST_CASE("Active mock communication overlaps inline and worker core kernels")
                             {
                 commEntered = true;
                 Await(coreEntered);
-                for (size_t i = 0; i < g.Rows(); ++i)
+                for (size_t i = 0; i < g.RowCount(); ++i)
                     for (size_t j = 0; j < g.RowSize(i); ++j) g(i, j) = u(13 * i, j);
                 Await(coreFinished); }, R::Read(owned), R::Write(ghost));
             auto received = comm.Record();
@@ -67,14 +67,14 @@ TEST_CASE("Active mock communication overlaps inline and worker core kernels")
                             {
                 coreEntered = true;
                 Await(commEntered);
-                for (size_t i = 0; i < rhs.Rows(); ++i)
+                for (size_t i = 0; i < rhs.RowCount(); ++i)
                     for (size_t j = 0; j < rhs.RowSize(i); ++j) rhs(i, j) = 2 * u(i, j);
                 coreFinished = true; }, R::Read(owned), R::Write(output));
             ring.WaitFor(core.Record());
             ring.WaitFor(received);
             R::SubmitArrays(engine, ring, [](R::ExecutionContext, auto g, auto rhs)
                             {
-                for (size_t i = 0; i < g.Rows(); ++i)
+                for (size_t i = 0; i < g.RowCount(); ++i)
                     for (size_t j = 0; j < g.RowSize(i); ++j) rhs(i, j) += g(i, j); }, R::Read(ghost), R::ReadWrite(output));
             engine.Synchronize();
             transport.Synchronize();
@@ -100,10 +100,10 @@ TEST_CASE("Missing eager join produces a deterministic stale result without a da
         auto gate = std::make_shared<Gate>();
         comm.WaitFor(R::StreamEvent(gate));
         R::SubmitArrays(engine, comm, [](R::ExecutionContext, auto g)
-                        { for (size_t i = 0; i < g.Rows(); ++i) for (size_t j = 0; j < 7; ++j) g(i, j) = 100 + i + j; }, R::Write(ghost));
+                        { for (size_t i = 0; i < g.RowCount(); ++i) for (size_t j = 0; j < 7; ++j) g(i, j) = 100 + i + j; }, R::Write(ghost));
         CHECK_THROWS(ghost.Read()); // Immediate access catches the pending writer.
         auto copy = [](R::ExecutionContext, auto g, auto r)
-        { for (size_t i = 0; i < g.Rows(); ++i) for (size_t j = 0; j < 7; ++j) r(i, j) = 2 * g(i, j); };
+        { for (size_t i = 0; i < g.RowCount(); ++i) for (size_t j = 0; j < 7; ++j) r(i, j) = 2 * g(i, j); };
         // Scheduled reads intentionally trust caller ordering. Keep the writer
         // gated until this read completes so the negative case has no C++ UB.
         R::SubmitArrays(engine, compute, copy, R::Read(ghost), R::Write(stale));
@@ -141,10 +141,10 @@ TEST_CASE("Manufactured triangular sweeps preserve in-place ordering and eager s
                 auto rhs = R::AllocateLikeAsync(engine, stream, increment);
                 R::SubmitArrays(engine, stream, [backward](R::ExecutionContext, auto r)
                                 {
-                    for (size_t i = 0; i < r.Rows(); ++i)
+                    for (size_t i = 0; i < r.RowCount(); ++i)
                         for (size_t j = 0; j < r.RowSize(i); ++j)
                         {
-                            const bool boundary = backward ? i + 1 == r.Rows() : i == 0;
+                            const bool boundary = backward ? i + 1 == r.RowCount() : i == 0;
                             const double neighbor = boundary ? 0 : double(i) + (backward ? 1 : -1) + j + 1;
                             r(i, j) = 2 * (i + j + 1) - 0.25 * neighbor;
                         } }, R::Write(rhs));
@@ -154,9 +154,9 @@ TEST_CASE("Manufactured triangular sweeps preserve in-place ordering and eager s
                     ++iterations;
                     R::SubmitArrays(engine, stream, [backward](R::ExecutionContext, auto r, auto x)
                                     {
-                        for (size_t k = 0; k < x.Rows(); ++k)
+                        for (size_t k = 0; k < x.RowCount(); ++k)
                         {
-                            const size_t i = backward ? x.Rows() - 1 - k : k;
+                            const size_t i = backward ? x.RowCount() - 1 - k : k;
                             for (size_t j = 0; j < x.RowSize(i); ++j)
                                 x(i, j) = (r(i, j) + (k ? 0.25 * x(backward ? i + 1 : i - 1, j) : 0)) / 2;
                         } }, R::Read(rhs), R::ReadWrite(increment));
@@ -402,7 +402,7 @@ TEST_CASE("Array reservations publish at execution and preserve same stream read
         for (int iteration = 0; iteration < 31; ++iteration)
             R::SubmitArrays(engine, stream, [](R::ExecutionContext, R::ArrayView<double> u)
                             {
-                for (size_t row = 0; row < u.Rows(); ++row)
+                for (size_t row = 0; row < u.RowCount(); ++row)
                     for (size_t col = 0; col < u.RowSize(row); ++col)
                         u(row, col) += double(row + col + 1); }, R::ReadWrite(state));
         CHECK(state.Version() == initial);
@@ -417,7 +417,7 @@ TEST_CASE("Array reservations publish at execution and preserve same stream read
         auto read = state.Read();
         auto flatAccess = state.Storage().Read();
         auto flat = flatAccess.View<double>();
-        for (size_t row = 0; row < state.Rows(); ++row)
+        for (size_t row = 0; row < state.RowCount(); ++row)
         {
             CHECK(read.At(row, 5) == 31 * double(row + 6));
             CHECK(flat.data[row * 8 + 6] == 0);
@@ -457,11 +457,11 @@ TEST_CASE("Owned only CSR stencil can complete while ghost receives remain pendi
         comm.WaitFor(R::StreamEvent(gate));
         R::SubmitArrays(engine, comm, [](R::ExecutionContext, R::ArrayView<double> ghost)
                         {
-            for (size_t row = 0; row < ghost.Rows(); ++row)
+            for (size_t row = 0; row < ghost.RowCount(); ++row)
                 for (size_t col = 0; col < ghost.RowSize(row); ++col) ghost(row, col) = 1000 + row + col; }, R::Write(state.ghost));
         R::SubmitArrays(engine, compute, [](R::ExecutionContext, R::ArrayView<const double> owned, R::ArrayView<const size_t> c2c, R::ArrayView<double> rhs)
                         {
-                for (size_t row = 0; row < rhs.Rows(); ++row)
+                for (size_t row = 0; row < rhs.RowCount(); ++row)
                     for (size_t col = 0; col < rhs.RowSize(row); ++col)
                         for (size_t n = 0; n < c2c.RowSize(row); ++n) rhs(row, col) += owned(c2c(row, n), col); }, R::Read(state.owned), R::Read(adjacency), R::Write(residual));
         compute.Record().WaitHost();
@@ -480,8 +480,8 @@ TEST_CASE("Owned only CSR stencil can complete while ghost receives remain pendi
         R::SubmitArrays(engine, compute, [](R::ExecutionContext, R::ArrayView<const double> owned, R::ArrayView<const double> ghost, R::ArrayView<double> rhs)
                         {
                 R::PairReadView<double> u{owned, ghost};
-                for (size_t row = 0; row < rhs.Rows(); ++row)
-                    for (size_t col = 0; col < rhs.RowSize(row); ++col) rhs(row, col) = u(row, col) + u(owned.Rows() + row, col); }, R::Read(state.owned), R::Read(state.ghost), R::Write(ring));
+                for (size_t row = 0; row < rhs.RowCount(); ++row)
+                    for (size_t col = 0; col < rhs.RowSize(row); ++col) rhs(row, col) = u(row, col) + u(owned.RowCount() + row, col); }, R::Read(state.owned), R::Read(state.ghost), R::Write(ring));
         engine.Synchronize();
         CHECK(ring.Read().At(18, 4) == 1044);
     }
@@ -508,7 +508,7 @@ TEST_CASE("Pending operands retain old values and buffered row sizes across hand
     R::Array<int64_t> output(R::RowLayout::Ragged(lengths));
     R::SubmitArrays(engine, stream, [](R::ExecutionContext, R::ArrayView<const int64_t> in, R::ArrayView<int64_t> out)
                     {
-        for (size_t i = 0; i < out.Rows(); ++i)
+        for (size_t i = 0; i < out.RowCount(); ++i)
             for (size_t j = 0; j < out.RowSize(i); ++j) out(i, j) = in(i, j) + 1; }, R::Read(input), R::Write(output));
     input.Reset(R::RowLayout::Dense(1, 2));
     CHECK_FALSE(storage.expired());

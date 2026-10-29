@@ -12,6 +12,10 @@ Eigen interoperability.
 This page explains the design from bottom to top.  For working code
 examples, see @ref array_usage.
 
+This page describes the retained legacy `DNDS::Array` family. New code should
+use `DNDS::Runtime::Array<T>`; see @ref array_runtime for the policy-on-view
+handle, row views, access leases and native communication contracts.
+
 **TL;DR:** DNDSR stores all mesh and solver data in a single `Array<T,rs,rm>`
 template family. The hierarchy is: `Array` (local storage) → `ParArray` (+MPI)
 → `ArrayPair` (+ghost son + transformer) → derived types (`ArrayAdjacency`,

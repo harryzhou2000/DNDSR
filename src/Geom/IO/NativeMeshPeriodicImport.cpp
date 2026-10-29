@@ -9,7 +9,7 @@ namespace DNDS::Geom
     namespace
     {
         template <class T>
-        Runtime::Array<T> Rows(const std::vector<std::vector<T>> &rows)
+        Runtime::Array<T> BuildRows(const std::vector<std::vector<T>> &rows)
         {
             Runtime::RowBuilder builder(rows.size(), sizeof(T));
             for (size_t row = 0; row < rows.size(); ++row)
@@ -35,22 +35,22 @@ namespace DNDS::Geom
                                       (rotation.transpose() * rotation - tGPoint::Identity()).norm() < 1e-10 && std::abs(rotation.determinant() - 1) < 1e-10,
                                   "periodic import requires finite rigid transforms");
         }
-        DNDS_check_throw_info(source.coordinates.GetDevice() == Runtime::Device::Host() && source.nodeIds.Rows() == source.coordinates.Rows() &&
-                                  source.cellInfo.Rows() == source.cellNodes.Rows() && source.boundaryInfo.Rows() == source.boundaryNodes.Rows(),
+        DNDS_check_throw_info(source.coordinates.GetDevice() == Runtime::Device::Host() && source.nodeIds.RowCount() == source.coordinates.RowCount() &&
+                                  source.cellInfo.RowCount() == source.cellNodes.RowCount() && source.boundaryInfo.RowCount() == source.boundaryNodes.RowCount(),
                               "invalid serial periodic input row inventory");
         auto coords = source.coordinates.Read();
         auto nodeIds = source.nodeIds.Read();
         auto boundaryNodes = source.boundaryNodes.Read();
         auto boundaryInfo = source.boundaryInfo.Read();
         bool hasPeriodicLabels = false;
-        for (size_t row = 0; row < source.boundaryInfo.Rows(); ++row)
+        for (size_t row = 0; row < source.boundaryInfo.RowCount(); ++row)
         {
             DNDS_check_throw_info(boundaryInfo.View().RowSize(row) == 1, "invalid serial boundary info shape");
             hasPeriodicLabels |= FaceIDIsPeriodic(boundaryInfo.View()(row, 0).zone);
         }
         if (!hasPeriodicLabels)
             return source;
-        std::vector<tPoint> points(source.coordinates.Rows());
+        std::vector<tPoint> points(source.coordinates.RowCount());
         std::vector<index> persistedIds;
         persistedIds.reserve(points.size());
         for (size_t node = 0; node < points.size(); ++node)
@@ -89,7 +89,7 @@ namespace DNDS::Geom
                 result += points[size_t(node)];
             return tPoint(result / real(nodes.size()));
         };
-        for (size_t row = 0; row < source.boundaryNodes.Rows(); ++row)
+        for (size_t row = 0; row < source.boundaryNodes.RowCount(); ++row)
         {
             const auto zone = boundaryInfo.View()(row, 0).zone;
             if (!FaceIDIsPeriodic(zone))
@@ -255,17 +255,17 @@ namespace DNDS::Geom
         auto remap = [&](const Runtime::Array<index> &input, Runtime::Array<index> &output, std::optional<Runtime::Array<NodePeriodicBits>> &bits)
         {
             auto read = input.Read();
-            std::vector<std::vector<index>> nodes(input.Rows());
-            std::vector<std::vector<NodePeriodicBits>> images(input.Rows());
-            for (size_t row = 0; row < input.Rows(); ++row)
+            std::vector<std::vector<index>> nodes(input.RowCount());
+            std::vector<std::vector<NodePeriodicBits>> images(input.RowCount());
+            for (size_t row = 0; row < input.RowCount(); ++row)
                 for (auto node : read.View()[row])
                 {
                     DNDS_check_throw_info(node >= 0 && size_t(node) < points.size(), "periodic cone node is out of range");
                     nodes[row].push_back(compact[size_t(node)]);
                     images[row].push_back(NodePeriodicBits{labels[size_t(node)]});
                 }
-            output = Rows(nodes);
-            bits = Rows(images);
+            output = BuildRows(nodes);
+            bits = BuildRows(images);
         };
         remap(source.cellNodes, result.cellNodes, result.cellNodesPbi);
         remap(source.boundaryNodes, result.boundaryNodes, result.boundaryNodesPbi);

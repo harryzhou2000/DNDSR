@@ -390,8 +390,10 @@ def test_static_width_conversion_needs_no_python_class_instantiation():
         bridge.scale(a, 2)
     with pytest.raises(TypeError):
         bridge.scale(R.Array(R.RowLayout.dense(3, 5), np.dtype("int64")), 2)
-    with pytest.raises(RuntimeError, match="fixed row width"):
-        bridge.scale(R.Array(R.RowLayout.ragged([5, 5]), np.dtype("float64")), 2)
+    uniform_ragged = R.Array(R.RowLayout.ragged([5, 5]), np.dtype("float64"))
+    bridge.scale(uniform_ragged, 2)
+    with pytest.raises(RuntimeError, match="uniform contiguous rows"):
+        bridge.scale(R.Array(R.RowLayout.ragged([5, 4]), np.dtype("float64")), 2)
     # Same object size does not make a different struct layout compatible.
     wrong_pod = np.dtype([("other", "i8"), ("weight", "f8")])
     with pytest.raises(TypeError):

@@ -1,9 +1,8 @@
 #include "Geom/Connectivity/NativeMeshClosure.hpp"
-#include "Geom/Connectivity/NativeConnectivity.hpp"
+#include "Geom/Connectivity/AdjacencyRegistry.hpp"
 #include "Geom/Transition/FieldTransfer.hpp"
 #include "DNDS/Runtime/RowBuilder.hpp"
 #include "Geom/Transition/NativeMeshAssembler.hpp"
-#include <unordered_set>
 
 namespace DNDS::Geom
 {
@@ -28,51 +27,40 @@ namespace DNDS::Geom
             // The following scans validate each incidence while consuming it,
             // avoiding a complete second payload pass in the hot construction
             // path. Scope identity, layouts and target mappings remain checked.
-            RelationReadAccess cellNodesCheck(Adj::Cell2Node, cells, nodes, Adj_PointToGlobal,
-                                              *source.relations[size_t(MeshRelation::CellNodes)], nullptr, true);
+            MeshAdjacencyRead cellNodesCheck(Adj::Cell2Node, cells, nodes, Adj_PointToGlobal,
+                                             *source.relations[size_t(MeshRelation::CellNodes)], nullptr, true);
             DNDS_check_throw_info(cellNodesCheck.State() == Adj_PointToGlobal,
                                   "construction closure requires global cell-node values");
-            constexpr index denseNodeLimit = 64ll * 1024 * 1024;
-            const bool denseNodes = nodes.NumGlobal() <= denseNodeLimit;
-            std::vector<uint8_t> nodeFlags(denseNodes ? size_t(nodes.NumGlobal()) : 0, 0);
             std::vector<index> referencedNodes;
             FieldTransferDetail::LocalStage(mpi, [&]
                                             {
                 auto rows = cellNodesCheck._view.owned;
-                referencedNodes.reserve(rows.Rows() * 8);
-                for (size_t row = 0; row < rows.Rows(); ++row)
+                referencedNodes.reserve(size_t(CheckedSize::Multiply(rows.RowCount(), index(8))));
+                for (index row = 0; row < rows.RowCount(); ++row)
                 {
                     const auto count = rows.RowSize(row);
                     const auto *values = count ? rows.Row(row) : nullptr;
-                    for (size_t slot = 0; slot < count; ++slot)
+                    for (index slot = 0; slot < count; ++slot)
                     {
                         const auto global = values[slot];
                         DNDS_check_throw_info(global >= 0 && global < nodes.NumGlobal(),
                                               "cell closure requires complete cell-node rows");
-                        if (denseNodes)
-                            nodeFlags[size_t(global)] = 1;
-                        else
-                            referencedNodes.push_back(global);
+                        referencedNodes.push_back(global);
                     }
                 } });
             std::vector<index> ghostCells;
             if (source.cellCellsComplete)
             {
-                RelationReadAccess cellCellsCheck(Adj::Cell2Cell, cells, cells, Adj_PointToGlobal,
-                                                  *source.relations[size_t(MeshRelation::CellCells)], nullptr, true);
+                MeshAdjacencyRead cellCellsCheck(Adj::Cell2Cell, cells, cells, Adj_PointToGlobal,
+                                                 *source.relations[size_t(MeshRelation::CellCells)], nullptr, true);
                 DNDS_check_throw_info(cellCellsCheck.State() == Adj_PointToGlobal,
                                       "construction closure requires global cell-neighbor values");
-                constexpr index denseGhostLimit = 64ll * 1024 * 1024;
-                const bool denseGhosts = cells.NumGlobal() <= denseGhostLimit;
-                std::vector<uint8_t> ghostFlags(denseGhosts ? size_t(cells.NumGlobal()) : 0, 0);
-                std::unordered_set<index> uniqueGhosts;
-                if (!denseGhosts)
-                    uniqueGhosts.reserve(size_t(cells.NumOwned()) / 8 + 1);
+                ghostCells.reserve(size_t(cells.NumOwned()) / 2 + 1);
                 FieldTransferDetail::LocalStage(mpi, [&]
                                                 {
                     const auto first = cells.NumOwned() ? cells.LocalToGlobal(0) : 0;
                     auto rows = cellCellsCheck._view.owned;
-                    for (size_t cell = 0; cell < rows.Rows(); ++cell)
+                    for (size_t cell = 0; cell < rows.RowCount(); ++cell)
                     {
                         const auto count = rows.RowSize(cell);
                         const auto *neighbors = count ? rows.Row(cell) : nullptr;
@@ -84,45 +72,23 @@ namespace DNDS::Geom
                             DNDS_check_throw_info(globalCell >= 0 && globalCell < cells.NumGlobal(),
                                                   "cell closure contains an invalid neighbor cell");
                             if (globalCell < first || globalCell - first >= cells.NumOwned())
-                            {
-                                if (denseGhosts)
-                                    ghostFlags[size_t(globalCell)] = 1;
-                                else
-                                    uniqueGhosts.insert(globalCell);
-                            }
+                                ghostCells.push_back(globalCell);
                         }
-                    }
-                    if (denseGhosts)
-                    {
-                        for (size_t global = 0; global < ghostFlags.size(); ++global)
-                            if (ghostFlags[global])
-                                ghostCells.push_back(index(global));
-                    }
-                    else
-                        ghostCells.assign(uniqueGhosts.begin(), uniqueGhosts.end()); });
+                    } });
             }
             else
             {
-                RelationReadAccess nodeCellsCheck(Adj::Node2Cell, nodes, cells, Adj_PointToGlobal,
-                                                  *source.relations[size_t(MeshRelation::NodeCells)]);
+                MeshAdjacencyRead nodeCellsCheck(Adj::Node2Cell, nodes, cells, Adj_PointToGlobal,
+                                                 *source.relations[size_t(MeshRelation::NodeCells)]);
                 FieldTransferDetail::LocalStage(mpi, [&]
                                                 {
-                    if (denseNodes)
-                    {
-                        for (size_t global = 0; global < nodeFlags.size(); ++global)
-                            if (nodeFlags[global])
-                                referencedNodes.push_back(index(global));
-                    }
-                    else
-                    {
-                        std::sort(referencedNodes.begin(), referencedNodes.end());
-                        referencedNodes.erase(std::unique(referencedNodes.begin(), referencedNodes.end()), referencedNodes.end());
-                    } });
+                    std::sort(referencedNodes.begin(), referencedNodes.end());
+                    referencedNodes.erase(std::unique(referencedNodes.begin(), referencedNodes.end()), referencedNodes.end()); });
                 std::vector<Runtime::RowRequest> nodeRequests;
                 nodeRequests.reserve(referencedNodes.size());
                 FieldTransferDetail::LocalStage(mpi, [&]
                                                 {
-                    for (size_t row = 0; row < referencedNodes.size(); ++row)
+                    for (index row = 0; row < index(referencedNodes.size()); ++row)
                         nodeRequests.push_back({nodes.Owner(referencedNodes[row]),
                                                 nodes.OwnerLocalRow(referencedNodes[row]), row}); });
                 auto context = std::make_shared<Runtime::CommunicationContext>(mpi.comm);
@@ -142,7 +108,7 @@ namespace DNDS::Geom
                     const auto first = cells.NumOwned() ? cells.LocalToGlobal(0) : 0;
                     auto fetched = fetchedNodeCells.Read();
                     auto rows = cellNodesCheck._view.owned;
-                    for (size_t cell = 0; cell < rows.Rows(); ++cell)
+                    for (size_t cell = 0; cell < rows.RowCount(); ++cell)
                     {
                         const auto count = rows.RowSize(cell);
                         const auto *cellNodes = count ? rows.Row(cell) : nullptr;
@@ -168,7 +134,7 @@ namespace DNDS::Geom
                     DNDS_check_throw_info(cells.Owner(global) != mpi.rank && global >= 0 && global < cells.NumGlobal(),
                                           "cell closure discovered an invalid ghost cell"); });
             auto closedCells = cells.WithGhosts(ghostCells);
-            RelationGhostRoute route(closedCells);
+            EntityGhostMapping route(closedCells);
             auto ghostCellNodes = route.TransferRows(closedCells,
                                                      *source.relations[size_t(MeshRelation::CellNodes)],
                                                      Runtime::ElementSchema::Arithmetic<index>());
@@ -176,40 +142,26 @@ namespace DNDS::Geom
             FieldTransferDetail::LocalStage(mpi, [&]
                                             {
                 auto ghosts = ghostCellNodes.Read();
-                for (size_t row = 0; row < ghosts.View().Rows(); ++row)
+                for (size_t row = 0; row < ghosts.View().RowCount(); ++row)
                     for (auto global : ghosts.View()[row])
                     {
                         DNDS_check_throw_info(global >= 0 && global < nodes.NumGlobal(),
                                               "closed cell contains an invalid node reference");
-                        if (denseNodes)
-                            nodeFlags[size_t(global)] = 1;
-                        else
-                            referencedNodes.push_back(global);
+                        referencedNodes.push_back(global);
                     }
-                if (denseNodes)
-                {
-                    referencedNodes.clear();
-                    referencedNodes.reserve(std::count(nodeFlags.begin(), nodeFlags.end(), uint8_t(1)));
-                    for (size_t global = 0; global < nodeFlags.size(); ++global)
-                        if (nodeFlags[global])
-                            referencedNodes.push_back(index(global));
-                }
-                else
-                {
-                    std::sort(referencedNodes.begin(), referencedNodes.end());
-                    referencedNodes.erase(std::unique(referencedNodes.begin(), referencedNodes.end()), referencedNodes.end());
-                }
+                std::sort(referencedNodes.begin(), referencedNodes.end());
+                referencedNodes.erase(std::unique(referencedNodes.begin(), referencedNodes.end()), referencedNodes.end());
                 const auto first = nodes.NumOwned() ? nodes.LocalToGlobal(0) : 0;
                 for (auto global : referencedNodes)
                     if (global < first || global - first >= nodes.NumOwned())
                         remoteNodes.push_back(global); });
             auto closedNodes = nodes.WithGhosts(std::move(remoteNodes));
-            NativeRelation completed = NativeRelation::WithGhostValues(
+            MeshAdjacency completed = MeshAdjacency::WithGhostValues(
                 Adj::Cell2Node, closedCells, closedNodes,
                 *source.relations[size_t(MeshRelation::CellNodes)], std::move(ghostCellNodes));
             const auto schema = Runtime::ElementSchema::For<ElemInfo>();
             auto metadata = route.TransferRows(closedCells, *source.cellInfo, schema);
-            metadata = Runtime::Array<ElemInfo>::FromStorage(Runtime::RowLayout::Dense(metadata.Rows(), 1), metadata.Storage());
+            metadata = Runtime::Array<ElemInfo>::FromStorage(Runtime::RowLayout::Dense(metadata.RowCount(), 1), metadata.Storage());
             NativeCellClosure result{std::move(completed), {*source.cellInfo, std::move(metadata)}};
             if (source.periodic)
             {
@@ -220,7 +172,7 @@ namespace DNDS::Geom
             }
             return result;
         }
-        std::optional<NativeRelation> initial;
+        std::optional<MeshAdjacency> initial;
         std::optional<Runtime::Array<ElemInfo>> metadata;
         std::optional<Runtime::Array<NodePeriodicBits>> periodic;
         FieldTransferDetail::LocalStage(mpi, [&]
@@ -242,10 +194,10 @@ namespace DNDS::Geom
         int periodicFlags[]{int(bool(periodic)), -int(bool(periodic))};
         MPI_Allreduce(MPI_IN_PLACE, periodicFlags, 2, MPI_INT, MPI_MIN, mpi.comm);
         DNDS_check_throw_info(periodicFlags[0] == -periodicFlags[1], "native cell closure periodic metadata differs between ranks");
-        NativeConnectivity setup(mpi);
+        AdjacencyRegistry setup(mpi);
         FieldTransferDetail::LocalStage(mpi, [&]
                                         { setup.Register(initial->Read()); });
-        auto support = NativeConnectivity::Inverse(initial->Read(), mpi);
+        auto support = AdjacencyRegistry::Inverse(initial->Read(), mpi);
         FieldTransferDetail::LocalStage(mpi, [&]
                                         { setup.Register(support.Read()); });
         GhostSpec spec{{{EntityKind::Cell, {Adj::Cell2Node, support.Kind()}, EntityKind::Cell},
@@ -253,7 +205,7 @@ namespace DNDS::Geom
         auto publication = setup.BuildGhosted(setup.Evaluate(CompiledGhostTree::compile(spec)));
         const auto schema = Runtime::ElementSchema::For<ElemInfo>();
         auto ghosts = publication.routes.at(EntityKind::Cell).TransferRows(publication.spaces.at(EntityKind::Cell), *metadata, schema);
-        ghosts = Runtime::Array<ElemInfo>::FromStorage(Runtime::RowLayout::Dense(ghosts.Rows(), 1), ghosts.Storage());
+        ghosts = Runtime::Array<ElemInfo>::FromStorage(Runtime::RowLayout::Dense(ghosts.RowCount(), 1), ghosts.Storage());
         NativeCellClosure result{std::move(publication.relations.at(Adj::Cell2Node)), {std::move(*metadata), std::move(ghosts)}};
         if (periodic)
         {

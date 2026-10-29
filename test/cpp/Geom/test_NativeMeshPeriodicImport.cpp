@@ -87,12 +87,12 @@ namespace
             ~Guard() { cg_close(file); }
         } guard{file};
         CG(cg_base_write(file, "Base", 2, 2, &base));
-        cgsize_t sizes[]{cgsize_t(data.coordinates.Rows()), 1, 0};
+        cgsize_t sizes[]{cgsize_t(data.coordinates.RowCount()), 1, 0};
         CG(cg_zone_write(file, base, "Zone", sizes, Unstructured, &zone));
         auto coords = data.coordinates.Read();
         for (size_t component = 0; component < 2; ++component)
         {
-            std::vector<double> values(data.coordinates.Rows());
+            std::vector<double> values(data.coordinates.RowCount());
             for (size_t row = 0; row < values.size(); ++row)
                 values[row] = coords.View()(row, component);
             CG(cg_coord_write(file, base, zone, RealDouble, component == 0 ? "CoordinateX" : "CoordinateY", values.data(), &coordinate));
@@ -103,7 +103,7 @@ namespace
             nodes.push_back(cgsize_t(node + 1));
         CG(cg_section_write(file, base, zone, "Cell", QUAD_9, 1, 1, 0, nodes.data(), &section));
         nodes.clear();
-        for (size_t row = 0; row < data.boundaryNodes.Rows(); ++row)
+        for (size_t row = 0; row < data.boundaryNodes.RowCount(); ++row)
             for (auto node : boundaryNodes.View()[row])
                 nodes.push_back(cgsize_t(node + 1));
         CG(cg_section_write(file, base, zone, "Boundary", BAR_3, 2, 5, 0, nodes.data(), &section));
@@ -148,20 +148,20 @@ TEST_CASE("Native serial periodic canonicalization preserves high-order image ge
     auto original = input.coordinates.Read();
     auto result = G::CanonicalizeNativePeriodic(input, {});
     REQUIRE(result.periodic);
-    CHECK(result.coordinates.Rows() == (volume ? 4 : quadratic ? 4
-                                                               : 1));
-    CHECK(result.identity.nextIds.at(G::EntityKind::Node) == I(result.coordinates.Rows()));
-    CHECK(input.coordinates.Rows() == (volume ? 8 : quadratic ? 9
-                                                              : 4));
+    CHECK(result.coordinates.RowCount() == (volume ? 4 : quadratic ? 4
+                                                                   : 1));
+    CHECK(result.identity.nextIds.at(G::EntityKind::Node) == I(result.coordinates.RowCount()));
+    CHECK(input.coordinates.RowCount() == (volume ? 8 : quadratic ? 9
+                                                                  : 4));
     {
         auto compactIds = result.nodeIds.Read();
-        for (size_t row = 0; row < result.nodeIds.Rows(); ++row)
+        for (size_t row = 0; row < result.nodeIds.RowCount(); ++row)
             CHECK(compactIds.View()(row, 0) == I(row));
     }
     auto nodes = result.cellNodes.Read();
     auto bits = result.cellNodesPbi->Read();
     auto coords = result.coordinates.Read();
-    for (size_t slot = 0; slot < input.coordinates.Rows(); ++slot)
+    for (size_t slot = 0; slot < input.coordinates.RowCount(); ++slot)
     {
         const auto node = size_t(nodes.View()(0, slot));
         auto point = result.periodicInfo.GetCoordByBits(G::tPoint{coords.View()(node, 0), coords.View()(node, 1), coords.View()(node, 2)}, bits.View()(0, slot));
@@ -189,7 +189,7 @@ TEST_CASE("Periodic ingress preserves an explicit ID reservation without reservi
     auto result = G::CanonicalizeNativePeriodic(source, {});
     CHECK(result.identity.nextIds.at(G::EntityKind::Node) == 4096);
     auto ids = result.nodeIds.Read();
-    for (size_t row = 0; row < result.nodeIds.Rows(); ++row)
+    for (size_t row = 0; row < result.nodeIds.RowCount(); ++row)
         CHECK(ids.View()(row, 0) == I(row));
     CHECK(source.nodeIds.Read().View()(0, 0) == 1000);
 }
@@ -243,7 +243,7 @@ TEST_CASE("Native periodic canonicalization uses rigid rotations and labels all 
     options.frames.translation[1].map().setZero();
     options.frames.rotation[1].map() << 0, -1, 0, 1, 0, 0, 0, 0, 1;
     const auto result = G::CanonicalizeNativePeriodic(source, options);
-    CHECK(result.coordinates.Rows() == 2);
+    CHECK(result.coordinates.RowCount() == 2);
     auto bits = result.cellNodesPbi->Read();
     const uint8_t expected[]{0, 0, 1, 1};
     for (size_t slot = 0; slot < 4; ++slot)

@@ -198,10 +198,10 @@ TEST_CASE("Transient and persistent contexts transfer permuted SoA rows")
     const int next = (rank + 1) % size, previous = (rank + size - 1) % size;
     constexpr size_t rows = 193;
     auto context = std::make_shared<CommunicationContext>(MPI_COMM_WORLD);
-    std::vector<std::vector<size_t>> send(size), receive(size);
-    for (size_t i = 0; i < rows; ++i)
+    std::vector<std::vector<DNDS::index>> send(size), receive(size);
+    for (DNDS::index i = 0; i < DNDS::index(rows); ++i)
     {
-        send[previous].push_back(i * 17 % rows);
+        send[previous].push_back(i * 17 % DNDS::index(rows));
         receive[next].push_back(i);
     }
     auto route = RowTransferPlan::Known(context, rows, rows, send, receive);
@@ -378,7 +378,7 @@ TEST_CASE("MPI completes while a core worker is active across Euler field widths
                         SubmitArrays(engine, core, [&](ExecutionContext, auto u, auto r)
                                      {
                             entered = true;
-                            for (size_t i = 0; i < r.Rows(); ++i)
+                            for (size_t i = 0; i < r.RowCount(); ++i)
                                 for (size_t j = 0; j < r.RowSize(i); ++j) r(i, j) = u(i, j) + u((17 * i + 3) % 67, j);
                             const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
                             while (!mpiDone.load())
@@ -391,7 +391,7 @@ TEST_CASE("MPI completes while a core worker is active across Euler field widths
                         ring.WaitFor(received);
                         ring.WaitFor(coreDone);
                         SubmitArrays(engine, ring, [](ExecutionContext, auto g, auto r)
-                                     { for (size_t i = 0; i < g.Rows(); ++i) for (size_t j = 0; j < g.RowSize(i); ++j) r(i, j) += g(i, j); }, Read(ghost), ReadWrite(rhs));
+                                     { for (size_t i = 0; i < g.RowCount(); ++i) for (size_t j = 0; j < g.RowSize(i); ++j) r(i, j) += g(i, j); }, Read(ghost), ReadWrite(rhs));
                         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
                         while (!entered.load() && std::chrono::steady_clock::now() < deadline)
                             std::this_thread::yield();
@@ -602,7 +602,7 @@ TEST_CASE("Uneven empty-rank field bundles migrate out and back with epoch inval
         DynamicRowTransfer back(route.Reverse(), newRec.SharedStorage(), ElementSchema::Arithmetic<double>(), Device::Host(), TransferTransport::HostPacked, {TransferMode::Transient, context, 114});
         auto original = Array<double>::FromSharedStorage(back.Commit());
         auto read = original.Read();
-        REQUIRE(original.Rows() == rows);
+        REQUIRE(original.RowCount() == rows);
         for (size_t i = 0; i < rows; ++i)
         {
             REQUIRE(original.RowSize(i) == (i + rank + epoch) % 5 * 19);

@@ -33,7 +33,7 @@ static DNDS::ssp<G::UnstructuredMesh> Fixture(DNDS::MPIInfo mpi, bool curved = f
     {
         auto write = points.Write();
         const std::vector<G::tPoint> coordinates = curved ? std::vector<G::tPoint>{{0, 0, 0}, {2, 0, 0}, {0, 2, 0}, {1, -0.5, 0}, {1, 1, 0}, {0, 1, 0}, {1, 0.5, 0}} : std::vector<G::tPoint>{{0, 0, 0}, {2, 0, 0}, {0, 1, 0}};
-        for (size_t row = 0; row < points.Rows(); ++row)
+        for (size_t row = 0; row < points.RowCount(); ++row)
             for (size_t component = 0; component < 3; ++component)
                 write.View()(row, component) = coordinates[row][component];
         if (ownsCell)

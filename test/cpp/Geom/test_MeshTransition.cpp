@@ -448,9 +448,9 @@ TEST_CASE("Native output preparation and primary checkpoint preserve authoritati
             write.View()(size_t(node), 2) = 3;
         }
     }
-    RelationGhostRoute route(nodes);
+    EntityGhostMapping route(nodes);
     auto ghost = route.TransferRows(nodes, owned, R::ElementSchema::Arithmetic<DNDS::real>());
-    ghost = R::Array<DNDS::real>::FromStorage(R::RowLayout::Dense(ghost.Rows(), 3), ghost.Storage());
+    ghost = R::Array<DNDS::real>::FromStorage(R::RowLayout::Dense(ghost.RowCount(), 3), ghost.Storage());
     source = UnstructuredMesh::FromNative(source->mpi, source->CurrentNativeState()->WithWallDistance({owned, ghost}));
     const auto requirements = source->CurrentNativeRequirements();
     auto retained = source->AcquireRead(requirements);
@@ -468,7 +468,7 @@ TEST_CASE("Native output preparation and primary checkpoint preserve authoritati
     REQUIRE(output);
     CHECK(output->offsets.size() == size_t(view.NumCell() + 1));
     CHECK(output->globalCells == source->NumCellGlobal());
-    CHECK(output->pointSourceRows.size() == output->coordinates.Rows());
+    CHECK(output->pointSourceRows.size() == output->coordinates.RowCount());
     {
         auto coordinates = output->coordinates.Read();
         for (size_t row = 0; row < output->pointSourceRows.size(); ++row)
@@ -508,7 +508,7 @@ TEST_CASE("Native output preparation and primary checkpoint preserve authoritati
     CHECK(stamp.Valid());
     // The retained descriptor remains usable independently of source owners.
     auto detached = output->coordinates.Read();
-    CHECK(detached.View().Rows() == output->pointSourceRows.size());
+    CHECK(detached.View().RowCount() == output->pointSourceRows.size());
 }
 
 TEST_CASE("Detached transition reconstructs 3D edges under an explicit cache policy")
@@ -627,9 +627,9 @@ TEST_CASE("Detached transition preserves independently placed edges with exact n
     auto read = next->AcquireRead(requirements);
     auto view = read.HostView();
     REQUIRE(ids.Layout().rows == size_t(view.NumEdge()));
-    REQUIRE(exact.Rows() == ids.Layout().rows);
+    REQUIRE(exact.RowCount() == ids.Layout().rows);
     auto rows = exact.Read();
-    for (size_t edge = 0; edge < exact.Rows(); ++edge)
+    for (size_t edge = 0; edge < exact.RowCount(); ++edge)
     {
         auto e = DNDS::index(edge);
         size_t slot = 0;
@@ -649,7 +649,7 @@ TEST_CASE("Detached transition preserves independently placed edges with exact n
     }
     auto currentEdges = next->Entities(EntityKind::Edge);
     auto cellRows = exactCells.Read();
-    REQUIRE(exactCells.Rows() == size_t(next->NumCell()));
+    REQUIRE(exactCells.RowCount() == size_t(next->NumCell()));
     for (DNDS::index cell = 0; cell < next->NumCell(); ++cell)
     {
         REQUIRE(exactCells.Layout().RowSize(size_t(cell)) == size_t(view.CellEdges(cell).size()) * 2);

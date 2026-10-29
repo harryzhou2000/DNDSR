@@ -198,7 +198,7 @@ TEST_CASE("Native VTKHDF owns output buffers without legacy mesh conversion")
     CHECK(layout.globalCells == 100);
     CHECK(layout.globalConnectivity == 400);
     auto coordinates = layout.coordinates.Read();
-    for (size_t row = 0; row < layout.coordinates.Rows(); ++row)
+    for (size_t row = 0; row < layout.coordinates.RowCount(); ++row)
         for (size_t component = 0; component < 3; ++component)
             CHECK(coordinates.View()(row, component) == view.Coord(DNDS::index(row))[component]);
     for (DNDS::index cell = 0; cell < mesh->NumCell(); ++cell)

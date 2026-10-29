@@ -24,9 +24,9 @@ namespace DNDS::Geom
     ///   - at least one hop
     struct GhostChain
     {
-        EntityKind anchor;         ///< Owned entities to start from.
-        std::vector<AdjKind> hops; ///< Sequence of adjacency lookups.
-        EntityKind target;         ///< Entity kind to ghost (must == hops.back().to).
+        EntityKind anchor;                     ///< Owned entities to start from.
+        std::vector<AdjacencyDescriptor> hops; ///< Sequence of adjacency lookups.
+        EntityKind target;                     ///< Entity kind to ghost (must == hops.back().to).
     };
 
     /// Full ghost specification: multiple chains, possibly targeting the same
@@ -38,11 +38,13 @@ namespace DNDS::Geom
         /// The default pipeline specification for 1 ghost layer.
         /// Cell ghost: owned cells -> Cell2Cell -> cells
         /// Node ghost: owned cells -> Cell2Cell -> Cell2Node -> nodes
+        /// Boundary-node ghost: owned bnds -> Bnd2Node -> nodes
         /// Bnd ghost:  owned bnds  -> Bnd2Node -> Node2Bnd -> bnds
         /// Bnd-node ghost: owned bnds -> Bnd2Node -> Node2Bnd -> Bnd2Node -> nodes
         static GhostSpec defaultPrimary() { return defaultPrimary(1); }
 
-        /// Parameterized default: nLayers hops of Cell2Cell for ghost cells.
+        /// Parameterized default: explicit cumulative 1..nLayers Cell2Cell
+        /// endpoint chains for cells and their nodes.
         static GhostSpec defaultPrimary(int nLayers);
     };
 
@@ -53,13 +55,13 @@ namespace DNDS::Geom
     /// One node in the compiled ghost tree.
     struct GhostTreeNode
     {
-        EntityKind kind;     ///< Entity kind at this node.
-        AdjKind hop;         ///< Adjacency used to reach this node from parent.
-                             ///< Undefined (default-constructed) for root nodes.
-        bool collect{false}; ///< If true, non-owned entities here become ghosts.
-        int level{0};        ///< BFS depth (root = 0).
-        int id{-1};          ///< Unique ID within the tree (assigned by compile).
-        int parentId{-1};    ///< Parent node ID (-1 for roots).
+        EntityKind kind;         ///< Entity kind at this node.
+        AdjacencyDescriptor hop; ///< Adjacency used to reach this node from parent.
+                                 ///< Undefined (default-constructed) for root nodes.
+        bool collect{false};     ///< True when at least one input chain ends here; non-owned entities become ghosts.
+        int level{0};            ///< BFS depth (root = 0).
+        int id{-1};              ///< Unique ID within the tree (assigned by compile).
+        int parentId{-1};        ///< Parent node ID (-1 for roots).
         std::vector<GhostTreeNode> children;
     };
 
@@ -67,12 +69,12 @@ namespace DNDS::Geom
     /// Used by the precomputed per-level lists.
     struct LevelEntry
     {
-        int nodeId{};       ///< ID of the tree node.
-        int parentId{};     ///< ID of the parent node (-1 for roots).
-        EntityKind kind{};  ///< Entity kind of this node.
-        AdjKind hop;        ///< Hop used to reach this node.
-        bool collect{};     ///< Whether to collect at this node.
-        bool hasChildren{}; ///< Whether this node has children (needs pull).
+        int nodeId{};            ///< ID of the tree node.
+        int parentId{};          ///< ID of the parent node (-1 for roots).
+        EntityKind kind{};       ///< Entity kind of this node.
+        AdjacencyDescriptor hop; ///< Hop used to reach this node.
+        bool collect{};          ///< Whether to collect at this node.
+        bool hasChildren{};      ///< Whether this node has children (needs pull).
     };
 
     /// Compiled forest of ghost traversal chains.
@@ -101,10 +103,10 @@ namespace DNDS::Geom
         /// Throws std::runtime_error on invalid chains.
         static CompiledGhostTree compile(const GhostSpec &spec);
 
-        /// Collect all distinct AdjKind values used by any hop in the tree.
-        [[nodiscard]] std::unordered_set<AdjKind, AdjKindHash> requiredAdjs() const;
+        /// Collect all distinct AdjacencyDescriptor values used by any hop in the tree.
+        [[nodiscard]] std::unordered_set<AdjacencyDescriptor, AdjacencyDescriptorHash> requiredAdjs() const;
 
-        // NativeConnectivity::Evaluate validates required definitions collectively.
+        // AdjacencyRegistry::Evaluate validates required definitions collectively.
 
         /// Collect all EntityKind values that appear at COLLECT nodes.
         [[nodiscard]] std::unordered_set<EntityKind> collectedKinds() const;

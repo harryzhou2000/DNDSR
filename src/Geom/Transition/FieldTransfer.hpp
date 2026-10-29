@@ -14,32 +14,12 @@ namespace DNDS::Geom
     namespace FieldTransferDetail
     {
         /// Agree on a canonical earlier payload without assuming every rank's
-        /// local alias inventory is the same. Each rank contributes one bit for
-        /// its local candidate (-1 is the no-candidate bit); more than one set
-        /// bit means no common candidate.
+        /// local alias inventory is the same.
         inline int AgreeAliasCandidate(const MPIInfo &mpi, int candidate, size_t relationCount)
         {
-            const size_t bits = CheckedSize::Add(relationCount, size_t(2));
-            const size_t words = CheckedSize::Add(bits, size_t(63)) / 64;
-            DNDS_check_throw_info(words <= size_t(INT_MAX), "alias agreement mask exceeds MPI count range");
-            DNDS_check_throw_info(candidate >= -1 && size_t(candidate + 1) < bits,
-                                  "alias candidate exceeds collective agreement range");
-            std::vector<uint64_t> mask(words, 0);
-            const auto slot = size_t(candidate + 1);
-            mask[slot / 64] |= uint64_t(1) << (slot % 64);
-            MPI_Allreduce(MPI_IN_PLACE, mask.data(), int(words), MPI_UNSIGNED_LONG_LONG,
-                          MPI_BOR, mpi.comm);
-            int agreed = -1;
-            size_t occurrences = 0;
-            for (size_t word = 0; word < words; ++word)
-                while (mask[word])
-                {
-                    const auto bit = size_t(__builtin_ctzll(mask[word]));
-                    agreed = int(word * 64 + bit) - 1;
-                    ++occurrences;
-                    mask[word] &= mask[word] - 1;
-                }
-            return occurrences == 1 ? std::max(agreed, -1) : -1;
+            DNDS_check_throw_info(relationCount <= size_t(INT_MAX), "alias agreement range exceeds MPI int range");
+            const auto local = candidate >= 0 ? std::optional<int>(candidate) : std::nullopt;
+            return MPI::AgreeOptionalInteger(mpi, local, int(relationCount)).value_or(-1);
         }
 
         /// Every rank runs local work before agreement and enters the next
@@ -90,12 +70,12 @@ namespace DNDS::Geom
         MPI_Allreduce(&mode, &minMode, 1, MPI_INT, MPI_MIN, mpi.comm);
         MPI_Allreduce(&mode, &maxMode, 1, MPI_INT, MPI_MAX, mpi.comm);
         DNDS_check_throw_info(minMode == maxMode, "native row transfer modes disagree");
-        std::vector<std::vector<size_t>> send, receive;
+        std::vector<std::vector<index>> send, receive;
         std::vector<int> sendCounts, receiveCounts;
-        size_t destinationRows = 0;
+        index destinationRows = 0;
         FieldTransferDetail::LocalStage(mpi, [&]
                                         {
-            const size_t rows = size_t(transfer.size());
+            const index rows = index(transfer.size());
             send.resize(mpi.size);
             receive.resize(mpi.size);
             if (transfer.isLocalOnly)
@@ -104,13 +84,13 @@ namespace DNDS::Geom
                 std::vector<bool> seen(rows, false);
                 send[mpi.rank].reserve(rows);
                 receive[mpi.rank].reserve(rows);
-                for (size_t i = 0; i < rows; ++i)
+                for (index i = 0; i < rows; ++i)
                 {
                     const auto target = transfer.localOld2New[i];
                     DNDS_check_throw_info(target >= 0 && size_t(target) < rows && !seen[size_t(target)], "invalid native local permutation");
                     seen[size_t(target)] = true;
                     send[mpi.rank].push_back(i);
-                    receive[mpi.rank].push_back(size_t(target));
+                    receive[mpi.rank].push_back(target);
                 }
                 destinationRows = rows;
             }
@@ -122,7 +102,7 @@ namespace DNDS::Geom
                                           transfer.pushStart.back() == transfer.size(), "invalid native distributed route extent");
                 sendCounts.resize(mpi.size);
                 receiveCounts.resize(mpi.size);
-                std::vector<bool> seen(rows, false);
+                std::vector<bool> seen(size_t(rows), false);
                 for (int peer = 0; peer < mpi.size; ++peer)
                 {
                     const auto first = transfer.pushStart[peer], last = transfer.pushStart[peer + 1];
@@ -139,10 +119,10 @@ namespace DNDS::Geom
                         DNDS_check_throw_info(row >= 0 && size_t(row) < rows && !seen[size_t(row)] &&
                                                   transfer.targetRanks[size_t(row)] == peer, "invalid native push row");
                         seen[size_t(row)] = true;
-                        send[peer].push_back(size_t(row));
+                        send[peer].push_back(row);
                     }
                 }
-                destinationRows = size_t(transfer.newGlobalOffsets[mpi.rank + 1] - transfer.newGlobalOffsets[mpi.rank]);
+                destinationRows = transfer.newGlobalOffsets[mpi.rank + 1] - transfer.newGlobalOffsets[mpi.rank];
             } });
         if (!transfer.isLocalOnly)
         {
@@ -151,7 +131,7 @@ namespace DNDS::Geom
                                             {
                 // ArrayTransformer push receives contiguous sender-rank buckets,
                 // retaining each sender's pushIndex order within its bucket.
-                size_t next = 0;
+                index next = 0;
                 for (int peer = 0; peer < mpi.size; ++peer)
                 {
                     receive[peer].reserve(size_t(receiveCounts[peer]));
@@ -161,11 +141,11 @@ namespace DNDS::Geom
                 DNDS_check_throw_info(next == destinationRows, "native destination offsets disagree with received rows"); });
         }
         return Runtime::RowTransferPlan::Known(std::make_shared<Runtime::CommunicationContext>(mpi.comm),
-                                               size_t(transfer.size()), destinationRows, std::move(send), std::move(receive));
+                                               index(transfer.size()), destinationRows, std::move(send), std::move(receive));
     }
 
-    template <class T, class L>
-    CompanionEntry RegisterArray(Runtime::Array<T, L> &array, EntityKind kind, std::string name,
+    template <class T, class L = Runtime::RowLayout>
+    CompanionEntry RegisterArray(Runtime::Array<T> &array, EntityKind kind, std::string name,
                                  Runtime::ElementSchema schema = Runtime::ElementSchema::Arithmetic<T>(),
                                  Runtime::ExecutionContext context = Runtime::ExecutionContext::Host(),
                                  CompanionDisposition disposition = CompanionDisposition::TransferIfReordered)
@@ -174,7 +154,7 @@ namespace DNDS::Geom
         entry.disposition = disposition;
         entry.preflight = [&array, schema, context](const PermutationTransfer &transfer)
         {
-            DNDS_check_throw_info(array.Rows() == size_t(transfer.size()) && array.Storage().IsIdle() && array.IsValid() &&
+            DNDS_check_throw_info(array.RowCount() == size_t(transfer.size()) && array.Storage().IsIdle() && array.IsValid() &&
                                       schema.Extent() == sizeof(T) && schema.Compatible(Runtime::ElementSchema::TypeIdentity<T>()) &&
                                       context.device == array.GetDevice() &&
                                       (context.device != Runtime::Device::Host() || !context.stream),
@@ -193,8 +173,8 @@ namespace DNDS::Geom
                                        array.Identity(),
                                        array.Version(),
                                        array.ShapeVersion(),
-                                       array.Rows(),
-                                       array.Rows(),
+                                       size_t(array.RowCount()),
+                                       size_t(array.RowCount()),
                                        0};
         };
         entry.prepare = [&array, schema, context](const PermutationTransfer &transfer, const MPIInfo &mpi)
@@ -205,7 +185,7 @@ namespace DNDS::Geom
                                             {
                         layout.emplace(route.DestinationLayout(array.Layout()));
                         if constexpr (!std::is_same_v<L, Runtime::RowLayout>)
-                            layout = Runtime::RowLayout::Dense(layout->Rows(), L::Default().Width()); });
+                            layout = Runtime::RowLayout::Dense(layout->RowCount(), L::Default().Width()); });
             std::unique_ptr<FieldTransferDetail::Prepared<Runtime::Array<T, L>>> next;
             FieldTransferDetail::LocalStage(mpi, [&]
                                             { next = std::make_unique<FieldTransferDetail::Prepared<Runtime::Array<T, L>>>(array,

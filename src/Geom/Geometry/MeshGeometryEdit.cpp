@@ -1,6 +1,6 @@
 #include "Geom/Unstructured/UnstructuredMesh.hpp"
 #include "Geom/Transition/FieldTransfer.hpp"
-#include "Geom/Connectivity/NativeConnectivity.hpp"
+#include "Geom/Connectivity/AdjacencyRegistry.hpp"
 
 namespace DNDS::Geom
 {
@@ -64,11 +64,11 @@ namespace DNDS::Geom
                     for (size_t component = 0; component < 3; ++component) write.View()(size_t(node), component) = point[component];
                 } });
             const auto nodes = Entities(EntityKind::Node);
-            RelationGhostRoute route(nodes);
+            EntityGhostMapping route(nodes);
             auto ghost = route.TransferRows(nodes, *coordinates, Runtime::ElementSchema::Arithmetic<real>());
             FieldTransferDetail::LocalStage(mpi, [&]
                                             {
-                ghost = Runtime::Array<real>::FromStorage(Runtime::RowLayout::Dense(ghost.Rows(), 3), ghost.Storage());
+                ghost = Runtime::Array<real>::FromStorage(Runtime::RowLayout::Dense(ghost.RowCount(), 3), ghost.Storage());
                 prepared = _nativeState->WithGeometry({std::move(*coordinates), std::move(ghost)}, {}, view.Periodic()); });
         }
         PublishNativeGeometry(std::move(prepared), stamp);
@@ -218,11 +218,11 @@ namespace DNDS::Geom
             // Canonical coordinates have one authority per node. Images are
             // evaluated using the unchanged PBI/frame after owner-row cleanup.
             const auto nodes = Entities(EntityKind::Node);
-            RelationGhostRoute route(nodes);
+            EntityGhostMapping route(nodes);
             auto ghost = route.TransferRows(nodes, *coordinates, Runtime::ElementSchema::Arithmetic<real>());
             FieldTransferDetail::LocalStage(mpi, [&]
                                             {
-                ghost = Runtime::Array<real>::FromStorage(Runtime::RowLayout::Dense(ghost.Rows(), 3), ghost.Storage());
+                ghost = Runtime::Array<real>::FromStorage(Runtime::RowLayout::Dense(ghost.RowCount(), 3), ghost.Storage());
                 prepared = _nativeState->WithGeometry({std::move(*coordinates), std::move(ghost)}, {}, view.Periodic()); });
         }
         PublishNativeGeometry(std::move(prepared), stamp);
@@ -250,8 +250,8 @@ namespace DNDS::Geom
                 owned.emplace(Runtime::RowLayout::Dense(size_t(nodes.NumOwned()), 1));
                 ghost.emplace(Runtime::RowLayout::Dense(size_t(nodes.NumGhost()), 1));
                 auto local = owned->Write(), remote = ghost->Write();
-                for (size_t row = 0; row < owned->Rows(); ++row) local.View()(row, 0) = 0;
-                for (size_t row = 0; row < ghost->Rows(); ++row) remote.View()(row, 0) = 0;
+                for (size_t row = 0; row < owned->RowCount(); ++row) local.View()(row, 0) = 0;
+                for (size_t row = 0; row < ghost->RowCount(); ++row) remote.View()(row, 0) = 0;
                 const auto count = volumeBoundary ? view.NumBnd() : view.NumCell();
                 for (index row = 0; row < count; ++row)
                 {

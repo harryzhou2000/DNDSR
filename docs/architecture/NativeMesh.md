@@ -212,7 +212,7 @@ preserve their ordered slots and permitted boundary sentinels.
 `NativeMeshState::Relation(key)` is a retained host setup query. Its named
 registry is independent of fixed solver-facing slots; extra named variants are
 not silently substituted into those slots. The fixed `UnstructuredMeshView`
-continues to provide CUDA-callable direct row access. Native setup headers use Runtime arrays and explicit entity spaces. `MeshConnectivity` retains forwarding names for native mathematics, not a second storage backend. Live compute data remain local; `NativeRelation::Convert` creates detached global/local data without changing the source publication.
+continues to provide CUDA-callable direct row access. Native setup headers use Runtime arrays and explicit entity spaces. `MeshConnectivity` retains forwarding names for native mathematics, not a second storage backend. Live compute data remain local; `MeshAdjacency::Convert` creates detached global/local data without changing the source publication.
 
 ## Python
 

@@ -17,7 +17,7 @@ namespace DNDS::Geom
     /// Private setup descriptor for exact face-neighbor cell rows. Partition
     /// construction computes these rows for METIS; retaining them across the
     /// owned transition avoids rebuilding the same closure for local reorder.
-    inline AdjKind NativeSetupFacialCellNeighborsKey()
+    inline AdjacencyDescriptor NativeSetupFacialCellNeighborsKey()
     {
         auto key = Adj::Cell2Cell;
         key.path = {EntityKind::Cell, EntityKind::Cell};

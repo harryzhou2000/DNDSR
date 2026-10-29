@@ -45,7 +45,7 @@ namespace DNDS::Runtime
         };
         using Type = std::shared_ptr<Datatype>;
 
-        std::vector<int> Counts(const std::vector<std::vector<size_t>> &rows)
+        std::vector<int> Counts(const std::vector<std::vector<index>> &rows)
         {
             std::vector<int> counts;
             for (const auto &peer : rows)
@@ -59,41 +59,26 @@ namespace DNDS::Runtime
                 result[i + 1] = result[i] + counts[i];
             return result;
         }
-        /// Collision detection for row routes. Dense membership is faster and
-        /// allocation-free during insertion for solver-sized entity families;
-        /// a hash fallback preserves bounded memory for unusually large routes.
+        /// Collision detection for row routes. Reserve from the local request
+        /// cardinality so sparse routes never allocate by global entity count.
         class SeenRows
         {
-            std::vector<uint8_t> _dense;
-            std::unordered_set<size_t> _hash;
-            size_t _extent = 0;
+            std::unordered_set<index> _hash;
 
         public:
-            SeenRows(size_t extent, size_t expected)
-                : _extent(extent)
+            SeenRows(index extent, size_t expected)
             {
-                constexpr size_t denseLimit = size_t(64) << 20;
-                if (extent <= denseLimit && expected >= extent / 16)
-                    _dense.assign(extent, 0);
-                else
-                    _hash.reserve(expected);
+                DNDS_check_throw_info(extent >= 0, "route row extent is negative");
+                _hash.reserve(expected);
             }
-            bool Insert(size_t row)
+            bool Insert(index row)
             {
-                if (!_dense.empty())
-                {
-                    DNDS_check_throw_info(row < _extent, "route collision row outside destination extent");
-                    if (_dense[row])
-                        return false;
-                    _dense[row] = 1;
-                    return true;
-                }
                 return _hash.insert(row).second;
             }
         };
         std::vector<uint64_t> ExchangeLengths(const RowTransferPlan &route, const RowLayout &source)
         {
-            CheckAll(source.Rows() == route.SourceRows() && route.Valid(), route.Communicator(), "row transfer source layout or epoch mismatch");
+            CheckAll(source.RowCount() == route.SourceRows() && route.Valid(), route.Communicator(), "row transfer source layout or epoch mismatch");
             const auto sendCounts = Counts(route.SendRows()), receiveCounts = Counts(route.ReceiveRows());
             const auto sendOffsets = Offsets(sendCounts), receiveOffsets = Offsets(receiveCounts);
             std::vector<uint64_t> send, receive(receiveOffsets.back());
@@ -104,19 +89,21 @@ namespace DNDS::Runtime
                           receive.data(), receiveCounts.data(), receiveOffsets.data(), MPI_UINT64_T, route.Communicator());
             return receive;
         }
-        Type MakeType(const std::vector<size_t> &rows, const RowLayout &layout, const ElementSchema &schema, size_t &segments)
+        Type MakeType(const std::vector<index> &rows, const RowLayout &layout, const ElementSchema &schema, size_t &segments)
         {
             std::vector<int> lengths;
             std::vector<MPI_Aint> displacements;
             for (auto row : rows)
             {
                 auto remaining = layout.RowSize(row);
-                size_t offset = layout.Offset(row);
+                index offset = layout.Offset(row);
                 while (remaining)
                 {
-                    const auto n = int(std::min(remaining, size_t(INT_MAX)));
-                    DNDS_check_throw_info(offset <= size_t(std::numeric_limits<MPI_Aint>::max()) / schema.Extent(), "MPI displacement overflow");
-                    auto displacement = MPI_Aint(offset * schema.Extent());
+                    const auto n = int(std::min(remaining, index(INT_MAX)));
+                    DNDS_check_throw_info(offset >= 0 && size_t(offset) <=
+                                                             size_t(std::numeric_limits<MPI_Aint>::max()) / schema.Extent(),
+                                          "MPI displacement overflow");
+                    auto displacement = MPI_Aint(size_t(offset) * schema.Extent());
                     if (!lengths.empty() && n <= INT_MAX - lengths.back() &&
                         displacement - displacements.back() == MPI_Aint(lengths.back()) * MPI_Aint(schema.Extent()))
                         lengths.back() += n;
@@ -142,17 +129,17 @@ namespace DNDS::Runtime
     {
         std::shared_ptr<CommunicationContext> context;
         MPI_Comm comm = MPI_COMM_NULL;
-        size_t sources = 0, destinations = 0;
-        std::vector<std::vector<size_t>> send, receive;
+        index sources = 0, destinations = 0;
+        std::vector<std::vector<index>> send, receive;
         bool collisions = false, reverseCollisions = false;
         std::vector<VersionStamp> dependencies;
     };
 
-    RowTransferPlan::RowTransferPlan(MPI_Comm comm, size_t sourceRows, size_t destinationRows,
+    RowTransferPlan::RowTransferPlan(MPI_Comm comm, index sourceRows, index destinationRows,
                                      const std::vector<RowRequest> &requests, std::vector<VersionStamp> dependencies)
         : RowTransferPlan(std::make_shared<CommunicationContext>(comm), sourceRows, destinationRows, requests, std::move(dependencies)) {}
 
-    RowTransferPlan::RowTransferPlan(std::shared_ptr<CommunicationContext> context, size_t sourceRows, size_t destinationRows,
+    RowTransferPlan::RowTransferPlan(std::shared_ptr<CommunicationContext> context, index sourceRows, index destinationRows,
                                      const std::vector<RowRequest> &requests, std::vector<VersionStamp> dependencies)
     {
         DNDS_check_throw_info(context, "row transfer needs a communication context");
@@ -162,16 +149,17 @@ namespace DNDS::Runtime
         state->comm = comm;
         int size = 0;
         MPI_Comm_size(comm, &size);
-        bool valid = sourceRows <= INT64_MAX && requests.size() <= INT_MAX;
+        bool valid = sourceRows >= 0 && destinationRows >= 0 && requests.size() <= INT_MAX;
         for (auto request : requests)
-            valid = valid && request.sourceRank >= 0 && request.sourceRank < size && request.sourceRow >= 0 && request.destinationRow < destinationRows;
+            valid = valid && request.sourceRank >= 0 && request.sourceRank < size && request.sourceRow >= 0 &&
+                    request.destinationRow >= 0 && request.destinationRow < destinationRows;
         CheckAll(valid, state->comm, "invalid row transfer request");
         state->sources = sourceRows;
         state->destinations = destinationRows;
         state->dependencies = std::move(dependencies);
         state->send.resize(size);
         state->receive.resize(size);
-        std::vector<std::vector<std::pair<size_t, size_t>>> grouped(size);
+        std::vector<std::vector<std::pair<index, index>>> grouped(size);
         SeenRows targets(destinationRows, requests.size());
         for (auto request : requests)
         {
@@ -206,14 +194,14 @@ namespace DNDS::Runtime
             for (int j = incomingOffsets[peer]; j < incomingOffsets[peer + 1]; ++j)
             {
                 valid = valid && incoming[j] >= 0 && uint64_t(incoming[j]) < sourceRows;
-                state->send[peer].push_back(size_t(incoming[j]));
-                state->reverseCollisions |= !sourcesSeen.Insert(size_t(incoming[j]));
+                state->send[peer].push_back(index(incoming[j]));
+                state->reverseCollisions |= !sourcesSeen.Insert(index(incoming[j]));
             }
         CheckAll(valid, state->comm, "row transfer source index does not exist");
         _state = std::move(state);
     }
-    RowTransferPlan RowTransferPlan::Known(std::shared_ptr<CommunicationContext> context, size_t sourceRows, size_t destinationRows,
-                                           std::vector<std::vector<size_t>> send, std::vector<std::vector<size_t>> receive,
+    RowTransferPlan RowTransferPlan::Known(std::shared_ptr<CommunicationContext> context, index sourceRows, index destinationRows,
+                                           std::vector<std::vector<index>> send, std::vector<std::vector<index>> receive,
                                            std::vector<VersionStamp> dependencies)
     {
         DNDS_check_throw_info(context, "known route needs a communication context");
@@ -227,14 +215,14 @@ namespace DNDS::Runtime
             valid = valid && peer.size() <= INT_MAX;
             ns = CheckedSize::Add(ns, peer.size());
             for (auto row : peer)
-                valid = valid && row < sourceRows;
+                valid = valid && row >= 0 && row < sourceRows;
         }
         for (const auto &peer : receive)
         {
             valid = valid && peer.size() <= INT_MAX;
             nr = CheckedSize::Add(nr, peer.size());
             for (auto row : peer)
-                valid = valid && row < destinationRows;
+                valid = valid && row >= 0 && row < destinationRows;
         }
         CheckAll(valid && ns <= INT_MAX && nr <= INT_MAX, comm, "invalid known row route");
         auto sc = Counts(send), rc = Counts(receive);
@@ -267,10 +255,10 @@ namespace DNDS::Runtime
         return result;
     }
     MPI_Comm RowTransferPlan::Communicator() const { return _state->comm; }
-    size_t RowTransferPlan::SourceRows() const { return _reverse ? _state->destinations : _state->sources; }
-    size_t RowTransferPlan::DestinationRows() const { return _reverse ? _state->sources : _state->destinations; }
-    const std::vector<std::vector<size_t>> &RowTransferPlan::SendRows() const { return _reverse ? _state->receive : _state->send; }
-    const std::vector<std::vector<size_t>> &RowTransferPlan::ReceiveRows() const { return _reverse ? _state->send : _state->receive; }
+    index RowTransferPlan::SourceRows() const { return _reverse ? _state->destinations : _state->sources; }
+    index RowTransferPlan::DestinationRows() const { return _reverse ? _state->sources : _state->destinations; }
+    const std::vector<std::vector<index>> &RowTransferPlan::SendRows() const { return _reverse ? _state->receive : _state->send; }
+    const std::vector<std::vector<index>> &RowTransferPlan::ReceiveRows() const { return _reverse ? _state->send : _state->receive; }
     bool RowTransferPlan::HasCollisions() const { return _reverse ? _state->reverseCollisions : _state->collisions; }
     bool RowTransferPlan::Valid() const
     {
@@ -282,7 +270,7 @@ namespace DNDS::Runtime
     RowLayout RowTransferPlan::DestinationLayout(const RowLayout &source) const
     {
         const auto received = ExchangeLengths(*this, source);
-        std::vector<size_t> lengths(DestinationRows(), SIZE_MAX);
+        std::vector<size_t> lengths(size_t(DestinationRows()), SIZE_MAX);
         size_t edge = 0;
         bool valid = true;
         for (const auto &peer : ReceiveRows())
@@ -314,7 +302,7 @@ namespace DNDS::Runtime
         auto state = std::make_shared<State>(std::move(route), std::move(source), std::move(destination), std::move(schema));
         const auto comm = state->route.Communicator();
         Agree(state->schema.Identity() + ":" + state->schema.Definition(), comm);
-        CheckAll(state->destination.Rows() == state->route.DestinationRows(), comm, "row transfer destination shape mismatch");
+        CheckAll(state->destination.RowCount() == state->route.DestinationRows(), comm, "row transfer destination shape mismatch");
         const auto lengths = ExchangeLengths(state->route, state->source);
         size_t edge = 0;
         bool valid = true;
@@ -336,12 +324,13 @@ namespace DNDS::Runtime
                 // Colliding final destinations are never used as receive types.
                 if (!state->route.HasCollisions())
                     state->receiveTypes.push_back(MakeType(state->route.ReceiveRows()[peer], state->destination, state->schema, state->receiveSegments));
-                std::vector<size_t> slots;
+                std::vector<index> slots;
                 for (auto row : state->route.ReceiveRows()[peer])
                 {
-                    slots.push_back(edge);
+                    slots.push_back(index(edge));
                     if (widths[edge])
-                        state->groups.push_back({state->contributions.Offset(edge), state->destination.Offset(row), widths[edge]});
+                        state->groups.push_back({size_t(state->contributions.Offset(edge)),
+                                                 size_t(state->destination.Offset(row)), widths[edge]});
                     ++edge;
                 }
                 size_t segments = 0;

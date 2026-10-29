@@ -16,7 +16,7 @@ static MPIInfo g_mpi;
 
 struct NativeHandCrafted
 {
-    NativeRelation cone;
+    MeshAdjacency cone;
     std::vector<Elem::ElemType> types;
 };
 
@@ -33,7 +33,7 @@ static NativeHandCrafted makeNativeHandCrafted(
             types.push_back(item.first);
             rows.push_back(item.second);
         }
-    return {NativeRelation(Adj::Cell2Node, cells, nodes, NativePeriodicFixtures::Rows(rows)), std::move(types)};
+    return {MeshAdjacency(Adj::Cell2Node, cells, nodes, NativePeriodicFixtures::Rows(rows)), std::move(types)};
 }
 
 static SubEntityQueryPbi queryFor(const std::vector<Elem::ElemType> &types, bool edges)
@@ -82,7 +82,7 @@ static OwnershipResolverMulti owner()
     { return OwnershipDecision{*std::min_element(ranks.begin(), ranks.end()) == g_mpi.rank, {}}; };
 }
 
-static std::set<DNDS::index> getEntityVertexSet(const NativeRelation &nodes, const R::Array<ElemInfo> &info, DNDS::index row)
+static std::set<DNDS::index> getEntityVertexSet(const MeshAdjacency &nodes, const R::Array<ElemInfo> &info, DNDS::index row)
 {
     auto metadata = info.Read();
     const auto count = Elem::Element{metadata.View()(size_t(row), 0).getElemType()}.GetNumVertices();
@@ -119,7 +119,7 @@ TEST_CASE("Interpolate: 4-quad faces (2D)")
                                    9);
 
     auto query = queryFor(m.types, false);
-    auto res = NativeConnectivity::Interpolate(m.cone.Read(), EntityKind::Face, query, owner());
+    auto res = AdjacencyRegistry::Interpolate(m.cone.Read(), EntityKind::Face, query, owner());
 
     if (g_mpi.rank == 0)
     {
@@ -210,7 +210,7 @@ TEST_CASE("Interpolate: 2-tri faces (2D)")
                                    4);
 
     auto query = queryFor(m.types, false);
-    auto res = NativeConnectivity::Interpolate(m.cone.Read(), EntityKind::Face, query, owner());
+    auto res = AdjacencyRegistry::Interpolate(m.cone.Read(), EntityKind::Face, query, owner());
 
     if (g_mpi.rank == 0)
     {
@@ -248,7 +248,7 @@ TEST_CASE("Interpolate: single tet faces (3D)")
                                    4);
 
     auto query = queryFor(m.types, false);
-    auto res = NativeConnectivity::Interpolate(m.cone.Read(), EntityKind::Face, query, owner());
+    auto res = AdjacencyRegistry::Interpolate(m.cone.Read(), EntityKind::Face, query, owner());
 
     if (g_mpi.rank == 0)
     {
@@ -290,7 +290,7 @@ TEST_CASE("Interpolate: two tets sharing a face (3D)")
                                    5);
 
     auto query = queryFor(m.types, false);
-    auto res = NativeConnectivity::Interpolate(m.cone.Read(), EntityKind::Face, query, owner());
+    auto res = AdjacencyRegistry::Interpolate(m.cone.Read(), EntityKind::Face, query, owner());
 
     if (g_mpi.rank == 0)
     {
@@ -326,7 +326,7 @@ TEST_CASE("Interpolate: single hex faces (3D)")
                                    8);
 
     auto query = queryFor(m.types, false);
-    auto res = NativeConnectivity::Interpolate(m.cone.Read(), EntityKind::Face, query, owner());
+    auto res = AdjacencyRegistry::Interpolate(m.cone.Read(), EntityKind::Face, query, owner());
 
     if (g_mpi.rank == 0)
     {
@@ -361,7 +361,7 @@ TEST_CASE("Interpolate: single tet edges (3D)")
                                    4);
 
     auto query = queryFor(m.types, true);
-    auto res = NativeConnectivity::Interpolate(m.cone.Read(), EntityKind::Edge, query, owner());
+    auto res = AdjacencyRegistry::Interpolate(m.cone.Read(), EntityKind::Edge, query, owner());
 
     if (g_mpi.rank == 0)
     {
@@ -405,7 +405,7 @@ TEST_CASE("Interpolate: two-tet shared edges (3D)")
                                    5);
 
     auto query = queryFor(m.types, true);
-    auto res = NativeConnectivity::Interpolate(m.cone.Read(), EntityKind::Edge, query, owner());
+    auto res = AdjacencyRegistry::Interpolate(m.cone.Read(), EntityKind::Edge, query, owner());
 
     if (g_mpi.rank == 0)
     {
@@ -463,7 +463,7 @@ TEST_CASE("Interpolate: mixed tri+quad faces (2D)")
                                    6);
 
     auto query = queryFor(m.types, false);
-    auto res = NativeConnectivity::Interpolate(m.cone.Read(), EntityKind::Face, query, owner());
+    auto res = AdjacencyRegistry::Interpolate(m.cone.Read(), EntityKind::Face, query, owner());
 
     if (g_mpi.rank == 0)
     {
@@ -515,7 +515,7 @@ TEST_CASE("InterpolateGlobal: 4x4x4 distributed hex faces (non-periodic)")
 
     auto cone = mesh.cone.Read();
     RelationPeriodicBits bits(cone, mesh.ownedBits, mesh.ghostBits);
-    auto result = NativeConnectivity::Interpolate(cone, EntityKind::Face, query, resolver, nullptr);
+    auto result = AdjacencyRegistry::Interpolate(cone, EntityKind::Face, query, resolver, nullptr);
 
     // Check global face count: sum of owned faces across all ranks.
     DNDS::index localOwned = result.entities.NumOwned();
@@ -612,7 +612,7 @@ TEST_CASE("InterpolateGlobal: 4x4x4 distributed hex faces (X-periodic)")
 
     auto cone = mesh.cone.Read();
     RelationPeriodicBits bits(cone, mesh.ownedBits, mesh.ghostBits);
-    auto result = NativeConnectivity::Interpolate(cone, EntityKind::Face, query, resolver, &bits);
+    auto result = AdjacencyRegistry::Interpolate(cone, EntityKind::Face, query, resolver, &bits);
 
     DNDS::index localOwned = result.entities.NumOwned();
     DNDS::index globalOwned = 0;
@@ -689,7 +689,7 @@ TEST_CASE("InterpolateGlobal: 4x4x4 distributed hex edges (non-periodic)")
 
     auto cone = mesh.cone.Read();
     RelationPeriodicBits bits(cone, mesh.ownedBits, mesh.ghostBits);
-    auto result = NativeConnectivity::Interpolate(cone, EntityKind::Edge, query, resolver, nullptr);
+    auto result = AdjacencyRegistry::Interpolate(cone, EntityKind::Edge, query, resolver, nullptr);
 
     // Check global edge count.
     DNDS::index localOwned = result.entities.NumOwned();
@@ -774,7 +774,7 @@ TEST_CASE("InterpolateGlobal: 4x4x4 distributed hex edges (X-periodic)")
 
     auto cone = mesh.cone.Read();
     RelationPeriodicBits bits(cone, mesh.ownedBits, mesh.ghostBits);
-    auto result = NativeConnectivity::Interpolate(cone, EntityKind::Edge, query, resolver, &bits);
+    auto result = AdjacencyRegistry::Interpolate(cone, EntityKind::Edge, query, resolver, &bits);
 
     DNDS::index localOwned = result.entities.NumOwned();
     DNDS::index globalOwned = 0;
@@ -818,7 +818,7 @@ TEST_CASE("InterpolateGlobal: 4x4x4 distributed hex edges (X-periodic)")
     }
 }
 
-static void checkFrames(const NativeInterpolation &result, const RelationReadAccess &cone,
+static void checkFrames(const NativeInterpolation &result, const MeshAdjacencyRead &cone,
                         const RelationPeriodicBits &bits, const SubEntityQueryPbi &query,
                         DNDS::index nx, DNDS::index ny, DNDS::index nz)
 {
@@ -866,8 +866,8 @@ static void checkFrames(const NativeInterpolation &result, const RelationReadAcc
                 remote.insert(global);
         }
     auto entities = entity.Source().WithGhosts({remote.begin(), remote.end()});
-    NativeRelation owned(entity.Kind(), entities, entity.Target(), result.entity2node.Owned());
-    RelationGhostRoute route(entities);
+    MeshAdjacency owned(entity.Kind(), entities, entity.Target(), result.entity2node.Owned());
+    EntityGhostMapping route(entities);
     auto full = owned.WithGhostRows(route);
     auto ghostBits = route.TransferRows(entities, *result.entity2nodePbi,
                                         R::ElementSchema(NodePeriodicBits::CommType(), sizeof(NodePeriodicBits), "Geom.NodePeriodicBits", R::ElementSchema::TypeIdentity<NodePeriodicBits>()));
@@ -940,7 +940,7 @@ TEST_CASE("InterpolateGlobal: 4x4x4 distributed hex faces (triply-periodic)")
     for (const bool edges : {false, true})
     {
         auto query = queryFor(mesh.types, edges);
-        auto result = NativeConnectivity::Interpolate(cone, edges ? EntityKind::Edge : EntityKind::Face, query, owner(), &bits);
+        auto result = AdjacencyRegistry::Interpolate(cone, edges ? EntityKind::Edge : EntityKind::Face, query, owner(), &bits);
         CHECK(result.entities.NumGlobal() == 3 * g_mpi.size * N * N * N);
         auto support = result.entity2parent.Read();
         for (DNDS::index row = 0; row < support.NumOwned(); ++row)
@@ -964,7 +964,7 @@ TEST_CASE("Regression: Interpolate matches InterpolateFace on UniformSquare_10")
     // Preserve the original regression's separate DSL call over owned AND
     // appended parents. Topology's own builder result alone is insufficient.
     auto cone = state->Relation(Adj::Cell2Node);
-    const auto query = queryFor(std::vector<Elem::ElemType>(size_t(cone.Rows()), Elem::Quad4), false);
+    const auto query = queryFor(std::vector<Elem::ElemType>(size_t(cone.RowCount()), Elem::Quad4), false);
     auto resolver = [&](const std::vector<DNDS::index> &parents, const std::vector<MPI_int> &ranks, DNDS::index)
     {
         bool ownsParent = false;
@@ -978,19 +978,19 @@ TEST_CASE("Regression: Interpolate matches InterpolateFace on UniformSquare_10")
                 peers.insert(ranks[i]);
         return OwnershipDecision{true, {peers.begin(), peers.end()}};
     };
-    auto interpolated = NativeConnectivity::Interpolate(cone, EntityKind::Face, query, resolver);
+    auto interpolated = AdjacencyRegistry::Interpolate(cone, EntityKind::Face, query, resolver);
     auto parentFaces = interpolated.parent2entity.Read();
-    REQUIRE(parentFaces.Rows() == cone.Rows());
+    REQUIRE(parentFaces.RowCount() == cone.RowCount());
     std::set<DNDS::index> remoteFaces;
-    for (DNDS::index cell = 0; cell < parentFaces.Rows(); ++cell)
+    for (DNDS::index cell = 0; cell < parentFaces.RowCount(); ++cell)
         for (const auto face : parentFaces.GlobalRow(cell))
             if (!interpolated.entities.GlobalToLocal(face))
                 remoteFaces.insert(face);
     auto faceSpace = interpolated.entities.WithGhosts({remoteFaces.begin(), remoteFaces.end()});
-    NativeRelation faceNodes(Adj::Face2Node, faceSpace, cone.Target(), interpolated.entity2node.Owned());
-    auto fullFaceNodes = faceNodes.WithGhostRows(RelationGhostRoute(faceSpace));
+    MeshAdjacency faceNodes(Adj::Face2Node, faceSpace, cone.Target(), interpolated.entity2node.Owned());
+    auto fullFaceNodes = faceNodes.WithGhostRows(EntityGhostMapping(faceSpace));
     auto faceRead = fullFaceNodes.Read();
-    for (DNDS::index cell = 0; cell < cone.Rows(); ++cell)
+    for (DNDS::index cell = 0; cell < cone.RowCount(); ++cell)
     {
         const auto nodes = cone.GlobalRow(cell);
         REQUIRE(nodes.size() == 4);
@@ -1046,18 +1046,18 @@ TEST_CASE("Interpolate: 2x2 periodic quad mesh — collaborating check required"
                     frames.back()[size_t(slot)] = NodePeriodicBits{uint8_t((px == 2 ? 1 : 0) | (py == 2 ? 2 : 0))};
                 }
             }
-    NativeRelation cone(Adj::Cell2Node, cells, nodes, NativePeriodicFixtures::Rows(rows));
+    MeshAdjacency cone(Adj::Cell2Node, cells, nodes, NativePeriodicFixtures::Rows(rows));
     auto read = cone.Read();
     RelationPeriodicBits bits(read, NativePeriodicFixtures::Rows(frames));
     auto query = queryFor(std::vector<Elem::ElemType>(size_t(cells.NumOwned()), Elem::Quad4), false);
-    auto falseMerge = NativeConnectivity::Interpolate(read, EntityKind::Face, query, owner());
+    auto falseMerge = AdjacencyRegistry::Interpolate(read, EntityKind::Face, query, owner());
     bool multiParent = false;
     for (DNDS::index face = 0; face < falseMerge.entities.NumOwned(); ++face)
         multiParent |= falseMerge.entity2parent.Read().RowSize(face) > 2;
     int observed = multiParent;
     MPI_Allreduce(MPI_IN_PLACE, &observed, 1, MPI_INT, MPI_MAX, g_mpi.comm);
     CHECK(observed == 1);
-    auto result = NativeConnectivity::Interpolate(read, EntityKind::Face, query, owner(), &bits);
+    auto result = AdjacencyRegistry::Interpolate(read, EntityKind::Face, query, owner(), &bits);
     CHECK(result.entities.NumGlobal() == 8);
     std::map<std::set<DNDS::index>, int> pairCount;
     const auto support = result.entity2parent.Read();
@@ -1087,7 +1087,7 @@ TEST_CASE("Periodic 2x2x2: face interpolation (3D, collaborating check)")
     auto read = mesh.cone.Read();
     RelationPeriodicBits bits(read, mesh.ownedBits, mesh.ghostBits);
     auto query = queryFor(mesh.types, false);
-    auto falseMerge = NativeConnectivity::Interpolate(read, EntityKind::Face, query, owner());
+    auto falseMerge = AdjacencyRegistry::Interpolate(read, EntityKind::Face, query, owner());
     if (g_mpi.rank == 0)
     {
         bool hasMultiParent = false;
@@ -1098,7 +1098,7 @@ TEST_CASE("Periodic 2x2x2: face interpolation (3D, collaborating check)")
     // With collaborating check: expect 24 faces, all internal
     {
         auto q = queryFor(mesh.types, false);
-        auto res = NativeConnectivity::Interpolate(read, EntityKind::Face, q, owner(), &bits);
+        auto res = AdjacencyRegistry::Interpolate(read, EntityKind::Face, q, owner(), &bits);
         if (g_mpi.rank == 0)
         {
             CHECK(res.entities.NumGlobal() == 24);
@@ -1168,7 +1168,7 @@ TEST_CASE("Periodic 2x2x2: edge interpolation (3D, collaborating check)")
     auto read = mesh.cone.Read();
     RelationPeriodicBits bits(read, mesh.ownedBits, mesh.ghostBits);
     auto query = queryFor(mesh.types, true);
-    auto falseMerge = NativeConnectivity::Interpolate(read, EntityKind::Edge, query, owner());
+    auto falseMerge = AdjacencyRegistry::Interpolate(read, EntityKind::Edge, query, owner());
     if (g_mpi.rank == 0)
     {
         bool hasMultiParent = false;
@@ -1179,7 +1179,7 @@ TEST_CASE("Periodic 2x2x2: edge interpolation (3D, collaborating check)")
     // With collaborating check: expect 24 edges, all shared by 4 cells
     {
         auto q = queryFor(mesh.types, true);
-        auto res = NativeConnectivity::Interpolate(read, EntityKind::Edge, q, owner(), &bits);
+        auto res = AdjacencyRegistry::Interpolate(read, EntityKind::Edge, q, owner(), &bits);
         if (g_mpi.rank == 0)
         {
             CHECK(res.entities.NumGlobal() == 24);

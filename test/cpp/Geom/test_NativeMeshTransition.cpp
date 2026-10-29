@@ -93,7 +93,7 @@ TEST_CASE("Owned native capture assembles after source release with retained com
     const auto keys = source->RelationKeys();
     for (const auto &[kind, space] : captured.spaces)
         CHECK(space.NumGhost() == 0);
-    CHECK(captured.ids.at(G::EntityKind::Cell).Rows() == 1);
+    CHECK(captured.ids.at(G::EntityKind::Cell).RowCount() == 1);
     auto coordinates = *captured.coords;
     const auto nodes = captured.relations[size_t(G::MeshRelation::CellNodes)]->Read();
     CHECK(nodes.View()(0, 0) == 3 * ((mpi.rank + 1) % mpi.size));
@@ -205,7 +205,7 @@ TEST_CASE("Native transition preserves exact persistent topology and coordinate 
     for (const auto &key : result.state->RelationKeys())
     {
         auto read = result.state->Relation(key);
-        for (I row = 0; row < read.Rows(); ++row)
+        for (I row = 0; row < read.RowCount(); ++row)
             if (key.order == G::RelationOrder::SortedUnique)
             {
                 const auto values = read.GlobalRow(row);
@@ -340,7 +340,7 @@ TEST_CASE("Native transition distinguishes exact aliases from rank-local candida
     auto key = [](const std::string &name, G::EntityKind target = G::EntityKind::Node,
                   G::RelationOrder order = G::RelationOrder::Topological)
     {
-        G::AdjKind result(G::EntityKind::Cell, target);
+        G::AdjacencyDescriptor result(G::EntityKind::Cell, target);
         result.path = {G::EntityKind::Cell, target};
         result.selection = G::RelationSelection::Custom;
         result.order = order;
@@ -356,7 +356,7 @@ TEST_CASE("Native transition distinguishes exact aliases from rank-local candida
     const I start = 3 * mpi.rank;
     const auto first = NativeFacadeFixture::Rows<I>({{start + 1, DNDS::UnInitIndex, start, start + 1}});
     const auto second = NativeFacadeFixture::Rows<I>({{start + 2, DNDS::UnInitIndex, start, start + 2}});
-    auto add = [&](const G::AdjKind &descriptor, R::ArrayPair<I> rows, G::MeshAdjState state = G::Adj_PointToGlobal)
+    auto add = [&](const G::AdjacencyDescriptor &descriptor, R::ArrayPair<I> rows, G::MeshAdjState state = G::Adj_PointToGlobal)
     { input.data.namedRelations.emplace(descriptor, G::NativeNamedRelation{std::move(rows), state}); };
     add(a, first);
     add(b, second); // Same row sizes, different values: never a payload alias.
@@ -400,7 +400,7 @@ TEST_CASE("Native transition distinguishes exact aliases from rank-local candida
         return result;
     };
     const auto nodeIds = globalIds(G::EntityKind::Node), cellIds = globalIds(G::EntityKind::Cell);
-    auto check = [&](const G::AdjKind &descriptor, const std::vector<I> &oldGlobals)
+    auto check = [&](const G::AdjacencyDescriptor &descriptor, const std::vector<I> &oldGlobals)
     {
         auto read = moved->Relation(descriptor);
         const auto &ids = descriptor.to == G::EntityKind::Node ? nodeIds : cellIds;
@@ -456,7 +456,7 @@ TEST_CASE("Native aliased transition retains repeated periodic IDs and ordered f
     const auto mpi = MPI();
     auto source = G::ConstructNativeMesh(NativePeriodicFixtures::QuadraticTorus(mpi));
     auto owned = G::NativeMeshAssembler::CaptureOwned(*source, mpi);
-    G::AdjKind ordered(G::EntityKind::Cell, G::EntityKind::Node);
+    G::AdjacencyDescriptor ordered(G::EntityKind::Cell, G::EntityKind::Node);
     ordered.path = {G::EntityKind::Cell, G::EntityKind::Node};
     ordered.selection = G::RelationSelection::Custom;
     ordered.order = G::RelationOrder::Topological;

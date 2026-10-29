@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Geom/Connectivity/NativeConnectivity.hpp"
+#include "Geom/Connectivity/AdjacencyRegistry.hpp"
 #include "Geom/Connectivity/NativePeriodicMatch.hpp"
 
 // Shared exact subentity matching for topology publication and reader-only

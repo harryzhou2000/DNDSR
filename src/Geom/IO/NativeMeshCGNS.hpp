@@ -16,6 +16,17 @@ namespace DNDS::Geom
         ReaderOwned
     };
 
+    /// Process-local work counters for the reader-owned conversion from dense
+    /// CGNS rows to native ragged rows. They measure code-path selection only;
+    /// no per-read atomic is touched by ordinary distributed ranks.
+    struct NativeSerialCopyCounters
+    {
+        uint64_t bulkCalls = 0, bulkRows = 0;
+        uint64_t rowCalls = 0, rowRows = 0;
+    };
+    NativeSerialCopyCounters GetNativeSerialCopyCounters();
+    void ResetNativeSerialCopyCounters();
+
     /// Explicit serial import result, held entirely in Runtime arrays. Global
     /// serial scratch is confined to the reader rank; it is not ghost storage.
     /// Numbering follows zone-major, node-major deterministic deduplication.

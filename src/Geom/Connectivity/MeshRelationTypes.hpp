@@ -71,7 +71,7 @@ namespace DNDS::Geom
     }
 
     // =================================================================
-    // AdjKind: named adjacency hop
+    // AdjacencyDescriptor: named adjacency hop
     // =================================================================
 
     enum class RelationSelection : uint8_t
@@ -99,7 +99,7 @@ namespace DNDS::Geom
     /// Comparable setup descriptor. Legacy constructors are explicit adapters
     /// for historical mesh slots; native construction retains its full path,
     /// selection and provenance rather than guessing from endpoint kinds.
-    struct AdjKind
+    struct AdjacencyDescriptor
     {
         EntityKind from{EntityKind::Cell};
         EntityKind to{EntityKind::Node};
@@ -114,13 +114,13 @@ namespace DNDS::Geom
         /// Construction records input definitions separately from row semantics.
         std::string provenance;
 
-        AdjKind() = default;
+        AdjacencyDescriptor() = default;
         /// Historical direct slot adapter. New composed relations must use
         /// Composition(), including when their endpoint kinds differ.
-        AdjKind(EntityKind from_, EntityKind to_) : from(from_), to(to_) {}
+        AdjacencyDescriptor(EntityKind from_, EntityKind to_) : from(from_), to(to_) {}
         /// Historical same-level adapter. For unequal endpoints `via` remains
         /// ignored, preserving old keys; use Composition() for native paths.
-        AdjKind(EntityKind from_, EntityKind to_, EntityKind via_) : from(from_), to(to_), via(via_) {}
+        AdjacencyDescriptor(EntityKind from_, EntityKind to_, EntityKind via_) : from(from_), to(to_), via(via_) {}
         [[nodiscard]] bool isIntraLevel() const { return from == to; }
         [[nodiscard]] bool isDirect() const { return from != to; }
         [[nodiscard]] bool IsLegacy() const { return selection == RelationSelection::Legacy; }
@@ -132,69 +132,72 @@ namespace DNDS::Geom
         /// equality as well when identity must be collision-free.
         [[nodiscard]] uint64_t DescriptorId() const;
         void Validate() const;
-        static AdjKind Composition(const AdjKind &ab, const AdjKind &bc,
-                                   RelationSelection selection = RelationSelection::Any, bool removeSelf = false,
-                                   std::string name = {}, uint32_t version = 0,
-                                   RelationPeriodicPolicy periodic = RelationPeriodicPolicy::EntityIdentity);
+        static AdjacencyDescriptor Composition(const AdjacencyDescriptor &ab, const AdjacencyDescriptor &bc,
+                                               RelationSelection selection = RelationSelection::Any, bool removeSelf = false,
+                                               std::string name = {}, uint32_t version = 0,
+                                               RelationPeriodicPolicy periodic = RelationPeriodicPolicy::EntityIdentity);
         /// Native mathematical inverse with sorted unique output and complete
         /// input provenance; legacy physical-slot adapters remain explicit.
-        [[nodiscard]] AdjKind Inverted() const;
-        bool operator==(const AdjKind &other) const { return Signature() == other.Signature(); }
-        bool operator!=(const AdjKind &other) const { return !(*this == other); }
-        bool operator<(const AdjKind &other) const { return Signature() < other.Signature(); }
+        [[nodiscard]] AdjacencyDescriptor Inverted() const;
+        bool operator==(const AdjacencyDescriptor &other) const { return Signature() == other.Signature(); }
+        bool operator!=(const AdjacencyDescriptor &other) const { return !(*this == other); }
+        bool operator<(const AdjacencyDescriptor &other) const { return Signature() < other.Signature(); }
     };
 
-    struct AdjKindHash
+    struct AdjacencyDescriptorHash
     {
-        std::size_t operator()(const AdjKind &kind) const
+        std::size_t operator()(const AdjacencyDescriptor &kind) const
         {
             return std::size_t(kind.DescriptorId());
         }
     };
 
+    using AdjKind = AdjacencyDescriptor;         // compatibility name
+    using AdjKindHash = AdjacencyDescriptorHash; // compatibility name
+
     /// Convenience constants for common adjacency kinds.
     namespace Adj
     {
         // Direct cones (downward)
-        inline const AdjKind Cell2Node{EntityKind::Cell, EntityKind::Node};
-        inline const AdjKind Cell2Face{EntityKind::Cell, EntityKind::Face};
-        inline const AdjKind Cell2Edge{EntityKind::Cell, EntityKind::Edge};
-        inline const AdjKind Face2Node{EntityKind::Face, EntityKind::Node};
-        inline const AdjKind Face2Edge{EntityKind::Face, EntityKind::Edge};
-        inline const AdjKind Edge2Node{EntityKind::Edge, EntityKind::Node};
-        inline const AdjKind Bnd2Node{EntityKind::Bnd, EntityKind::Node};
+        inline const AdjacencyDescriptor Cell2Node{EntityKind::Cell, EntityKind::Node};
+        inline const AdjacencyDescriptor Cell2Face{EntityKind::Cell, EntityKind::Face};
+        inline const AdjacencyDescriptor Cell2Edge{EntityKind::Cell, EntityKind::Edge};
+        inline const AdjacencyDescriptor Face2Node{EntityKind::Face, EntityKind::Node};
+        inline const AdjacencyDescriptor Face2Edge{EntityKind::Face, EntityKind::Edge};
+        inline const AdjacencyDescriptor Edge2Node{EntityKind::Edge, EntityKind::Node};
+        inline const AdjacencyDescriptor Bnd2Node{EntityKind::Bnd, EntityKind::Node};
 
         // Direct supports (upward)
-        inline const AdjKind Node2Cell{EntityKind::Node, EntityKind::Cell};
-        inline const AdjKind Node2Face{EntityKind::Node, EntityKind::Face};
-        inline const AdjKind Node2Edge{EntityKind::Node, EntityKind::Edge};
-        inline const AdjKind Node2Bnd{EntityKind::Node, EntityKind::Bnd};
-        inline const AdjKind Face2Cell{EntityKind::Face, EntityKind::Cell};
-        inline const AdjKind Edge2Face{EntityKind::Edge, EntityKind::Face};
-        inline const AdjKind Edge2Cell{EntityKind::Edge, EntityKind::Cell};
-        inline const AdjKind Bnd2Cell{EntityKind::Bnd, EntityKind::Cell};
+        inline const AdjacencyDescriptor Node2Cell{EntityKind::Node, EntityKind::Cell};
+        inline const AdjacencyDescriptor Node2Face{EntityKind::Node, EntityKind::Face};
+        inline const AdjacencyDescriptor Node2Edge{EntityKind::Node, EntityKind::Edge};
+        inline const AdjacencyDescriptor Node2Bnd{EntityKind::Node, EntityKind::Bnd};
+        inline const AdjacencyDescriptor Face2Cell{EntityKind::Face, EntityKind::Cell};
+        inline const AdjacencyDescriptor Edge2Face{EntityKind::Edge, EntityKind::Face};
+        inline const AdjacencyDescriptor Edge2Cell{EntityKind::Edge, EntityKind::Cell};
+        inline const AdjacencyDescriptor Bnd2Cell{EntityKind::Bnd, EntityKind::Cell};
         /// Ordered physical own/partner slots, distinct from the legacy
         /// Bnd2Cell facade's periodic own/self convention.
-        inline const AdjKind Bnd2CellCoupled = []
+        inline const AdjacencyDescriptor Bnd2CellCoupled = []
         {
-            auto key = AdjKind::Composition(Bnd2Node, Cell2Node.Inverted(), RelationSelection::Custom, false,
-                                            "geom.boundary.coupled-physical-slots", 1, RelationPeriodicPolicy::FrameMatched);
+            auto key = AdjacencyDescriptor::Composition(Bnd2Node, Cell2Node.Inverted(), RelationSelection::Custom, false,
+                                                        "geom.boundary.coupled-physical-slots", 1, RelationPeriodicPolicy::FrameMatched);
             key.order = RelationOrder::Topological;
             return key;
         }();
-        inline const AdjKind Bnd2Face{EntityKind::Bnd, EntityKind::Face};
-        inline const AdjKind Face2Bnd{EntityKind::Face, EntityKind::Bnd};
+        inline const AdjacencyDescriptor Bnd2Face{EntityKind::Bnd, EntityKind::Face};
+        inline const AdjacencyDescriptor Face2Bnd{EntityKind::Face, EntityKind::Bnd};
 
         // Intra-level (composed), default via Node
-        inline const AdjKind Cell2Cell{EntityKind::Cell, EntityKind::Cell, EntityKind::Node};
-        inline const AdjKind Bnd2Bnd{EntityKind::Bnd, EntityKind::Bnd, EntityKind::Node};
-        inline const AdjKind Face2Face{EntityKind::Face, EntityKind::Face, EntityKind::Node};
+        inline const AdjacencyDescriptor Cell2Cell{EntityKind::Cell, EntityKind::Cell, EntityKind::Node};
+        inline const AdjacencyDescriptor Bnd2Bnd{EntityKind::Bnd, EntityKind::Bnd, EntityKind::Node};
+        inline const AdjacencyDescriptor Face2Face{EntityKind::Face, EntityKind::Face, EntityKind::Node};
 
         // Intra-level with explicit intermediary
-        inline const AdjKind Cell2CellFace{EntityKind::Cell, EntityKind::Cell, EntityKind::Face};
+        inline const AdjacencyDescriptor Cell2CellFace{EntityKind::Cell, EntityKind::Cell, EntityKind::Face};
     } // namespace Adj
 
-    /// Format an AdjKind as a diagnostic string, e.g. "Cell2Node", "Cell2Cell(Node)".
-    std::string adjKindName(const AdjKind &kind);
+    /// Format an AdjacencyDescriptor as a diagnostic string, e.g. "Cell2Node", "Cell2Cell(Node)".
+    std::string adjKindName(const AdjacencyDescriptor &kind);
 
 }

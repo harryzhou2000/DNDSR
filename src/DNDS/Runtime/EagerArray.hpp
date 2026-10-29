@@ -17,12 +17,18 @@ namespace DNDS::Runtime
         AccessMode mode;
     };
 
-    template <class T, class L>
-    ArrayOperand<T, false, L> Read(const Array<T, L> &array) { return {array.SharedStorage(), AccessMode::Read}; }
-    template <class T, class L>
-    ArrayOperand<T, true, L> Write(Array<T, L> &array) { return {array.SharedStorage(), AccessMode::Write}; }
-    template <class T, class L>
-    ArrayOperand<T, true, L> ReadWrite(Array<T, L> &array) { return {array.SharedStorage(), AccessMode::ReadWrite}; }
+    template <class T>
+    ArrayOperand<T, false, RowLayout> Read(const Array<T> &array) { return {array.SharedStorage(), AccessMode::Read}; }
+    template <class T>
+    ArrayOperand<T, true, RowLayout> Write(Array<T> &array) { return {array.SharedStorage(), AccessMode::Write}; }
+    template <class T>
+    ArrayOperand<T, true, RowLayout> ReadWrite(Array<T> &array) { return {array.SharedStorage(), AccessMode::ReadWrite}; }
+    template <class Policy, class T>
+    ArrayOperand<T, false, Policy> ReadAs(const Array<T> &array) { return {array.SharedStorage(), AccessMode::Read}; }
+    template <class Policy, class T>
+    ArrayOperand<T, true, Policy> WriteAs(Array<T> &array) { return {array.SharedStorage(), AccessMode::Write}; }
+    template <class Policy, class T>
+    ArrayOperand<T, true, Policy> ReadWriteAs(Array<T> &array) { return {array.SharedStorage(), AccessMode::ReadWrite}; }
 
     /// Values are initialized in stream order. New GPU tables need no metadata
     /// upload. For variable GPU shapes, prepare/upload metadata during setup and
@@ -49,8 +55,8 @@ namespace DNDS::Runtime
             throw;
         }
     }
-    template <class T, class L>
-    Array<T, L> AllocateLikeAsync(EagerEngine &engine, const ExecutionStream &stream, const Array<T, L> &prototype)
+    template <class T>
+    Array<T> AllocateLikeAsync(EagerEngine &engine, const ExecutionStream &stream, const Array<T> &prototype)
     {
         auto storage = prototype.SharedStorage();
         auto values = storage->Values();
@@ -58,7 +64,7 @@ namespace DNDS::Runtime
         auto fresh = engine.AllocateBuffer(stream, values.Bytes());
         try
         {
-            auto result = Array<T, L>::FromSharedStorage(storage->WithValues(fresh, sizeof(T)));
+            auto result = Array<T>::FromSharedStorage(storage->WithValues(fresh, sizeof(T)));
             fresh.ReleaseOn(stream.Context());
             return result;
         }
@@ -86,11 +92,10 @@ namespace DNDS::Runtime
                   access(storage->Values().Reserve(operand.mode, device))
             {
                 DNDS_check_throw_info(storage->ElementBytes() == sizeof(Value), "eager operand element size mismatch");
-                if constexpr (!std::is_same_v<Policy, RowLayout>)
-                    Policy::Validate(layout->rows);
                 auto *pointer = static_cast<Value *>(access.Pointer(alignof(Value), sizeof(Value)));
                 const auto &rows = layout->rows;
-                view = {pointer, layout->Offsets(device), rows.Rows(), rows.Width(), rows.Stride(), layout->Sizes(device)};
+                ArrayView<Value, false> dynamic{pointer, layout->Offsets(device), rows.RowCount(), rows.Width(), rows.Stride(), layout->Sizes(device)};
+                view = ProjectView<Value, false, Policy>(dynamic);
             }
             void Handoff(ExecutionContext context)
             {

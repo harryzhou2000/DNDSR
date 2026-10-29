@@ -1,11 +1,11 @@
-#include "Geom/Connectivity/NativeConnectivity.hpp"
+#include "Geom/Connectivity/AdjacencyRegistry.hpp"
 #include "Geom/Connectivity/ConnectivityComposeRows.hpp"
 #include <algorithm>
 #include <limits>
 
 namespace DNDS::Geom
 {
-    void RelationReadAccess::Validate() const
+    void MeshAdjacencyRead::Validate() const
     {
         CheckActive();
         _kind.Validate();
@@ -17,8 +17,8 @@ namespace DNDS::Geom
                               "relation association differs from its source/target entity spaces");
         DNDS_check_throw_info(_state == Adj_PointToGlobal || _state == Adj_PointToLocal,
                               "relation setup requires an explicit global/local index state");
-        DNDS_check_throw_info(_view.owned.Rows() == size_t(_source.NumOwned()) &&
-                                  (_view.ghost.Rows() == 0 || _view.ghost.Rows() == size_t(_source.NumGhost())),
+        DNDS_check_throw_info(_view.owned.RowCount() == size_t(_source.NumOwned()) &&
+                                  (_view.ghost.RowCount() == 0 || _view.ghost.RowCount() == size_t(_source.NumGhost())),
                               "relation owned/ghost rows differ from its source space");
         DNDS_check_throw_info(!_kind.removeSelf || _source.SameOrder(_target),
                               "removeSelf relation requires identical source/target entity order");
@@ -31,7 +31,7 @@ namespace DNDS::Geom
             // The scope and both mappings are pinned above. Internal validation
             // can traverse raw rows without re-entering public access checks
             // for every incidence. Public random access remains checked.
-            for (size_t row = 0; row < view.Rows(); ++row)
+            for (size_t row = 0; row < view.RowCount(); ++row)
             {
                 index previous = -1;
                 const auto sourceGlobal = _kind.removeSelf ? _source.LocalToGlobalPinned(first + index(row)) : -1;
@@ -80,7 +80,7 @@ namespace DNDS::Geom
         _contentsValidated = true;
     }
 
-    RelationReadAccess::Entry RelationReadAccess::ReadEntry(index row, size_t slot) const
+    MeshAdjacencyRead::Entry MeshAdjacencyRead::ReadEntry(index row, size_t slot) const
     {
         const auto value = Raw(row, slot);
         if (value == UnInitIndex)
@@ -106,8 +106,8 @@ namespace DNDS::Geom
         return {false, unavailable, global};
     }
 
-    index RelationReadAccess::ConvertedIndex(index row, size_t slot, MeshAdjState targetState,
-                                             bool allowUnavailable) const
+    index MeshAdjacencyRead::ConvertedIndex(index row, size_t slot, MeshAdjState targetState,
+                                            bool allowUnavailable) const
     {
         DNDS_check_throw_info(targetState == Adj_PointToGlobal || targetState == Adj_PointToLocal,
                               "relation conversion requires an explicit global/local destination state");
@@ -135,8 +135,8 @@ namespace DNDS::Geom
         return encoded;
     }
 
-    void RelationReadAccess::ConvertRowTo(index row, MeshAdjState targetState, index *output,
-                                          bool allowUnavailable) const
+    void MeshAdjacencyRead::ConvertRowTo(index row, MeshAdjState targetState, index *output,
+                                         bool allowUnavailable) const
     {
         DNDS_check_throw_info(targetState == Adj_PointToGlobal || targetState == Adj_PointToLocal,
                               "relation conversion requires an explicit global/local destination state");
@@ -180,8 +180,8 @@ namespace DNDS::Geom
         }
     }
 
-    NativeRelation NativeRelation::Convert(const RelationReadAccess &source, MeshAdjState targetState,
-                                           bool allowUnavailable)
+    MeshAdjacency MeshAdjacency::Convert(const MeshAdjacencyRead &source, MeshAdjState targetState,
+                                         bool allowUnavailable)
     {
         source.Validate();
         DNDS_check_throw_info(targetState == Adj_PointToGlobal || targetState == Adj_PointToLocal,
@@ -191,24 +191,24 @@ namespace DNDS::Geom
             std::vector<size_t> lengths;
             if (view.offsets || view.sizes)
             {
-                lengths.resize(view.Rows());
-                for (size_t row = 0; row < view.Rows(); ++row)
+                lengths.resize(view.RowCount());
+                for (size_t row = 0; row < view.RowCount(); ++row)
                     lengths[row] = view.RowSize(row);
             }
             const auto shape = view.offsets ? Runtime::RowLayout::Ragged(lengths) : view.sizes ? Runtime::RowLayout::Padded(lengths, view.stride)
-                                                                                               : Runtime::RowLayout::Dense(view.Rows(), view.width, view.stride);
+                                                                                               : Runtime::RowLayout::Dense(view.RowCount(), view.width, view.stride);
             Runtime::Array<index> output(shape);
             {
                 auto write = output.Write();
-                for (size_t row = 0; row < view.Rows(); ++row)
+                for (size_t row = 0; row < view.RowCount(); ++row)
                     source.ConvertRowTo(first + index(row), targetState, write.View().Row(row), allowUnavailable);
             }
             return output;
         };
-        NativeRelation result(source.Kind(), source.Source(), source.Target(), convert(source._view.owned, 0), targetState);
+        MeshAdjacency result(source.Kind(), source.Source(), source.Target(), convert(source._view.owned, 0), targetState);
         // A mesh scope retains both portions in one MeshHold; it need not have
         // a separate ghost holder even though ghost rows are present.
-        if (source._ghost || source._view.ghost.Rows())
+        if (source._ghost || source._view.ghost.RowCount())
             result._ghost.emplace(convert(source._view.ghost, source.NumOwned()));
         auto check = result.Read();
         return result;
@@ -223,18 +223,18 @@ namespace DNDS::Geom
                 std::copy(rows[row].begin(), rows[row].end(), target.data()); });
     }
 
-    NativeRelation NativeConnectivity::ComposeFiltered(const RelationReadAccess &AB, const RelationReadAccess &BC,
-                                                       const AdjKind &resultKind,
-                                                       const std::function<bool(index, index, int)> &predicate,
-                                                       const std::function<bool(index, index, const std::vector<index> &)> &matchExtra)
+    MeshAdjacency AdjacencyRegistry::ComposeFiltered(const MeshAdjacencyRead &AB, const MeshAdjacencyRead &BC,
+                                                     const AdjacencyDescriptor &resultKind,
+                                                     const std::function<bool(index, index, int)> &predicate,
+                                                     const std::function<bool(index, index, const std::vector<index> &)> &matchExtra)
     {
         AB.Validate();
         BC.Validate();
         DNDS_check_throw_info(AB.Target().SameOrder(BC.Source()), "composition intermediate entity/map order mismatch");
         DNDS_check_throw_info(bool(predicate), "composition predicate is missing");
         resultKind.Validate();
-        DNDS_check_throw_info(!resultKind.IsLegacy() && resultKind == AdjKind::Composition(AB.Kind(), BC.Kind(),
-                                                                                           resultKind.selection, resultKind.removeSelf, resultKind.semanticName, resultKind.semanticVersion, resultKind.periodic),
+        DNDS_check_throw_info(!resultKind.IsLegacy() && resultKind == AdjacencyDescriptor::Composition(AB.Kind(), BC.Kind(),
+                                                                                                       resultKind.selection, resultKind.removeSelf, resultKind.semanticName, resultKind.semanticVersion, resultKind.periodic),
                               "composition output descriptor differs from its input definitions");
         DNDS_check_throw_info(!resultKind.removeSelf || AB.Source().SameOrder(BC.Target()),
                               "removeSelf requires identical source and final target spaces");
@@ -257,10 +257,10 @@ namespace DNDS::Geom
         // Node support is revisited by every incident cell. Normalize each
         // retained row once instead of allocating/sorting it at every hop.
         // These caches scale with local owned/appended rows, never global size.
-        std::vector<std::vector<index>> sourceRows(size_t(AB.NumOwned())), intermediateRows(size_t(BC.Rows()));
+        std::vector<std::vector<index>> sourceRows(size_t(AB.NumOwned())), intermediateRows(size_t(BC.RowCount()));
         for (index row = 0; row < AB.NumOwned(); ++row)
             sourceRows[size_t(row)] = unique(AB.GlobalRow(row));
-        for (index row = 0; row < BC.Rows(); ++row)
+        for (index row = 0; row < BC.RowCount(); ++row)
             intermediateRows[size_t(row)] = unique(BC.GlobalRow(row));
         auto selected = [&](index a, index c, int count)
         {
@@ -282,29 +282,29 @@ namespace DNDS::Geom
                                   { return intermediateRows[size_t(row)]; }, [&](index global)
                                   {
                 auto row = BC.Source().GlobalToLocalPinned(global);
-                DNDS_check_throw_info(row && *row < BC.Rows(), "composition intermediate row is unavailable; transfer it explicitly");
+                DNDS_check_throw_info(row && *row < BC.RowCount(), "composition intermediate row is unavailable; transfer it explicitly");
                 return *row; }, [&](index row)
                                   { return AB.Source().LocalToGlobalPinned(row); }, selected, [&](index row, const std::vector<index> &entries)
                                   { rows[size_t(row)] = entries; }, matchExtra);
-        return NativeRelation(resultKind, AB.Source(), BC.Target(),
-                              BuildNativeRows(rows));
+        return MeshAdjacency(resultKind, AB.Source(), BC.Target(),
+                             BuildNativeRows(rows));
     }
 
-    NativeRelation NativeConnectivity::Compose(const RelationReadAccess &AB, const RelationReadAccess &BC, bool removeSelf)
+    MeshAdjacency AdjacencyRegistry::Compose(const MeshAdjacencyRead &AB, const MeshAdjacencyRead &BC, bool removeSelf)
     {
         DNDS_check_throw_info(!removeSelf || AB.Source().SameOrder(BC.Target()),
                               "removeSelf requires identical source and final target spaces");
-        return ComposeFiltered(AB, BC, AdjKind::Composition(AB.Kind(), BC.Kind(), RelationSelection::Any, removeSelf),
+        return ComposeFiltered(AB, BC, AdjacencyDescriptor::Composition(AB.Kind(), BC.Kind(), RelationSelection::Any, removeSelf),
                                SharedCountPredicate{1, removeSelf});
     }
 
-    NativeRelation NativeConnectivity::ComposeAll(const RelationReadAccess &AB, const RelationReadAccess &BC, bool removeSelf)
+    MeshAdjacency AdjacencyRegistry::ComposeAll(const MeshAdjacencyRead &AB, const MeshAdjacencyRead &BC, bool removeSelf)
     {
-        return ComposeFiltered(AB, BC, AdjKind::Composition(AB.Kind(), BC.Kind(), RelationSelection::All, removeSelf),
+        return ComposeFiltered(AB, BC, AdjacencyDescriptor::Composition(AB.Kind(), BC.Kind(), RelationSelection::All, removeSelf),
                                SharedCountPredicate{1, removeSelf});
     }
 
-    NativeRelation NativeConnectivity::Inverse(const RelationReadAccess &cone, const MPIInfo &mpi)
+    MeshAdjacency AdjacencyRegistry::Inverse(const MeshAdjacencyRead &cone, const MPIInfo &mpi)
     {
         int sourceOwnerLocal = cone.Source().NumOwned() ? mpi.rank : -1;
         int sourceOwner = -1;
@@ -348,7 +348,7 @@ namespace DNDS::Geom
             }
             MPI_Allreduce(MPI_IN_PLACE, &validLocal, 1, MPI_INT, MPI_MIN, mpi.comm);
             DNDS_check_throw_info(validLocal, "local inverse relation/communicator validation failed on a rank");
-            return NativeRelation(cone.Kind().Inverted(), cone.Target(), cone.Source(), BuildNativeRows(support));
+            return MeshAdjacency(cone.Kind().Inverted(), cone.Target(), cone.Source(), BuildNativeRows(support));
         }
         int valid = 1;
         std::vector<std::vector<index>> batches;
@@ -390,13 +390,13 @@ namespace DNDS::Geom
         }
         auto source = BuildNativeRows(batches);
         MPI_Alltoall(sendPresence.data(), 1, MPI_INT, receivePresence.data(), 1, MPI_INT, mpi.comm);
-        std::vector<std::vector<size_t>> send(size_t(mpi.size)), receive(size_t(mpi.size));
+        std::vector<std::vector<index>> send(size_t(mpi.size)), receive(size_t(mpi.size));
         for (int peer = 0; peer < mpi.size; ++peer)
         {
             if (sendPresence[size_t(peer)])
-                send[size_t(peer)].push_back(size_t(peer));
+                send[size_t(peer)].push_back(index(peer));
             if (receivePresence[size_t(peer)])
-                receive[size_t(peer)].push_back(size_t(peer));
+                receive[size_t(peer)].push_back(index(peer));
         }
         auto context = std::make_shared<Runtime::CommunicationContext>(mpi.comm);
         auto route = Runtime::RowTransferPlan::Known(context, size_t(mpi.size), size_t(mpi.size),
@@ -436,14 +436,14 @@ namespace DNDS::Geom
             std::sort(entries.begin(), entries.end());
             entries.erase(std::unique(entries.begin(), entries.end()), entries.end());
         }
-        return NativeRelation(cone.Kind().Inverted(), cone.Target(), cone.Source(),
-                              BuildNativeRows(support));
+        return MeshAdjacency(cone.Kind().Inverted(), cone.Target(), cone.Source(),
+                             BuildNativeRows(support));
     }
 
-    NativeRelation NativeRelation::WithGhostRows(const RelationGhostRoute &halo) const
+    MeshAdjacency MeshAdjacency::WithGhostRows(const EntityGhostMapping &halo) const
     {
-        const auto mpi = RelationReadAccess::SourceMPI(_source);
-        std::optional<RelationReadAccess> read;
+        const auto mpi = MeshAdjacencyRead::SourceMPI(_source);
+        std::optional<MeshAdjacencyRead> read;
         int valid = 1;
         try
         {
@@ -466,7 +466,7 @@ namespace DNDS::Geom
         options.context = context;
         Runtime::PayloadPlan payload(halo._route, _owned.Layout(), ghosts.Layout(), Runtime::ElementSchema::Arithmetic<index>());
         payload.Bind(_owned, ghosts, Runtime::TransferTransport::Direct, options).Begin().Wait();
-        NativeRelation result(_kind, _source, _target, _owned, _state);
+        MeshAdjacency result(_kind, _source, _target, _owned, _state);
         result._ghost.emplace(std::move(ghosts));
         auto validated = result.Read();
         return result;

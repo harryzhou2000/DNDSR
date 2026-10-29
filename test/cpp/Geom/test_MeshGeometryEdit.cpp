@@ -150,7 +150,7 @@ static DNDS::ssp<G::UnstructuredMesh> NativeGeometryFixture(DNDS::MPIInfo mpi,
     {
         auto write = points.Write();
         const G::tPoint coordinates[]{{1, 1, 1}, {2, 1, 1}, {1, 2, 1}};
-        for (size_t row = 0; row < points.Rows(); ++row)
+        for (size_t row = 0; row < points.RowCount(); ++row)
             for (size_t component = 0; component < 3; ++component)
                 write.View()(row, component) = values ? (*values)[row][component] : coordinates[row][component];
         if (ownsCell)
@@ -426,7 +426,7 @@ static DNDS::ssp<G::UnstructuredMesh> NativeAffineFixture(const DNDS::MPIInfo &m
     input.periodicInfo.rotationCenter[1].map() = G::tPoint{0.2, 0.3, 0.4};
     {
         auto write = input.coordinates.Write();
-        for (size_t node = 0; node < input.coordinates.Rows(); ++node)
+        for (size_t node = 0; node < input.coordinates.RowCount(); ++node)
         {
             write.View()(node, 0) = 0;
             write.View()(node, 1) = DNDS::real(node % 2);
@@ -629,7 +629,7 @@ static DNDS::ssp<G::UnstructuredMesh> PeriodicPlaneFixture(const DNDS::MPIInfo &
     }
     {
         auto write = input.coordinates.Write();
-        for (size_t node = 0; node < input.coordinates.Rows(); ++node)
+        for (size_t node = 0; node < input.coordinates.RowCount(); ++node)
         {
             write.View()(node, 0) = rotational ? 1 + DNDS::real(node) : 1e-8;
             write.View()(node, 1) = rotational ? 1e-8 : DNDS::real(node);

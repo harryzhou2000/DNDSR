@@ -4,17 +4,17 @@
 #include <functional>
 namespace DNDS::Geom
 {
-    class RelationReadAccess;
-    class NativeRelation;
+    class MeshAdjacencyRead;
+    class MeshAdjacency;
     /// Compatibility spelling for the native setup mathematics. Storage ownership,
-    /// relation registration and sparse ghost evaluation belong to NativeConnectivity.
+    /// relation registration and sparse ghost evaluation belong to AdjacencyRegistry.
     struct MeshConnectivity
     {
-        static NativeRelation Inverse(const RelationReadAccess &, const MPIInfo &);
-        static NativeRelation Compose(const RelationReadAccess &, const RelationReadAccess &, bool removeSelf = false);
-        static NativeRelation ComposeAll(const RelationReadAccess &, const RelationReadAccess &, bool removeSelf = false);
-        static NativeRelation ComposeFiltered(const RelationReadAccess &, const RelationReadAccess &, const AdjKind &,
-                                              const std::function<bool(index, index, int)> &,
-                                              const std::function<bool(index, index, const std::vector<index> &)> &extra = {});
+        static MeshAdjacency Inverse(const MeshAdjacencyRead &, const MPIInfo &);
+        static MeshAdjacency Compose(const MeshAdjacencyRead &, const MeshAdjacencyRead &, bool removeSelf = false);
+        static MeshAdjacency ComposeAll(const MeshAdjacencyRead &, const MeshAdjacencyRead &, bool removeSelf = false);
+        static MeshAdjacency ComposeFiltered(const MeshAdjacencyRead &, const MeshAdjacencyRead &, const AdjacencyDescriptor &,
+                                             const std::function<bool(index, index, int)> &,
+                                             const std::function<bool(index, index, const std::vector<index> &)> &extra = {});
     };
 }

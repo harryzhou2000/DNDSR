@@ -1,7 +1,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "Geom/Mesh/NativeMeshBuilder.hpp"
-#include "Geom/Mesh/NativeConnectivity.hpp"
+#include "Geom/Mesh/AdjacencyRegistry.hpp"
 #include "Geom/Mesh/NativePeriodicMatch.hpp"
 #include "Geom/Mesh/Mesh.hpp"
 #include "DNDS/Runtime/RowBuilder.hpp"
@@ -61,7 +61,7 @@ static G::NativeMeshInput Fan(const DNDS::MPIInfo &mpi, int extra = 0)
     }
     {
         auto w = input.cellInfo.Write();
-        for (size_t r = 0; r < input.cellInfo.Rows(); ++r)
+        for (size_t r = 0; r < input.cellInfo.RowCount(); ++r)
             w.View()(r, 0) = G::ElemInfo{G::Elem::Tri3, G::INTERNAL_ZONE};
     }
     for (auto kind : {G::EntityKind::Node, G::EntityKind::Cell, G::EntityKind::Bnd})
@@ -110,9 +110,9 @@ TEST_CASE("High valence all-remote owned node has exact closure and SUM gather s
     R::Array<DNDS::real> owned(R::RowLayout::Dense(size_t(nodes.NumOwned()), 1)), ghost(R::RowLayout::Dense(size_t(nodes.NumGhost()), 1));
     {
         auto a = owned.Write(), b = ghost.Write();
-        for (size_t i = 0; i < owned.Rows(); ++i)
+        for (size_t i = 0; i < owned.RowCount(); ++i)
             a.View()(i, 0) = 0;
-        for (size_t i = 0; i < ghost.Rows(); ++i)
+        for (size_t i = 0; i < ghost.RowCount(); ++i)
             b.View()(i, 0) = 0;
         for (I c = 0; c < cells.NumOwned(); ++c)
             for (auto n : v.CellNodes(c))
@@ -148,9 +148,9 @@ TEST_CASE("Node cell node and node edge node have independent Hex8 bridge closur
         cones = {{0, 1, 2, 3, 4, 5, 6, 7}};
         edgeCones = {{0, 1}, {1, 2}, {2, 3}, {3, 0}, {4, 5}, {5, 6}, {6, 7}, {7, 4}, {0, 4}, {1, 5}, {2, 6}, {3, 7}};
     }
-    G::NativeRelation c2n(G::Adj::Cell2Node, cells, nodes, Rows(cones)), e2n(G::Adj::Edge2Node, edges, nodes, Rows(edgeCones));
-    auto n2c = G::NativeConnectivity::Inverse(c2n.Read(), mpi), n2e = G::NativeConnectivity::Inverse(e2n.Read(), mpi);
-    G::NativeConnectivity registry(mpi);
+    G::MeshAdjacency c2n(G::Adj::Cell2Node, cells, nodes, Rows(cones)), e2n(G::Adj::Edge2Node, edges, nodes, Rows(edgeCones));
+    auto n2c = G::AdjacencyRegistry::Inverse(c2n.Read(), mpi), n2e = G::AdjacencyRegistry::Inverse(e2n.Read(), mpi);
+    G::AdjacencyRegistry registry(mpi);
     registry.Register(c2n.Read());
     registry.Register(e2n.Read());
     registry.Register(n2c.Read());
@@ -172,15 +172,15 @@ TEST_CASE("Node cell node and node edge node have independent Hex8 bridge closur
     // Complete only the intermediate support required for exact row composition.
     const auto fullCells = cells.WithGhosts(mpi.rank == 0 && mpi.size > 1 ? std::vector<I>{0} : std::vector<I>{});
     const auto fullEdges = edges.WithGhosts(mpi.rank == 0 && mpi.size > 1 ? std::vector<I>{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11} : std::vector<I>{});
-    G::NativeRelation expandedCells(G::Adj::Cell2Node, fullCells, nodes, c2n.Owned());
-    G::NativeRelation expandedEdges(G::Adj::Edge2Node, fullEdges, nodes, e2n.Owned());
-    auto cellRows = expandedCells.WithGhostRows(G::RelationGhostRoute(fullCells));
-    auto edgeRows = expandedEdges.WithGhostRows(G::RelationGhostRoute(fullEdges));
+    G::MeshAdjacency expandedCells(G::Adj::Cell2Node, fullCells, nodes, c2n.Owned());
+    G::MeshAdjacency expandedEdges(G::Adj::Edge2Node, fullEdges, nodes, e2n.Owned());
+    auto cellRows = expandedCells.WithGhostRows(G::EntityGhostMapping(fullCells));
+    auto edgeRows = expandedEdges.WithGhostRows(G::EntityGhostMapping(fullEdges));
     // Rebind inverse targets to the expanded intermediate canonical orders.
-    G::NativeRelation nc(n2c.Read().Kind(), nodes, fullCells, n2c.Owned());
-    G::NativeRelation ne(n2e.Read().Kind(), nodes, fullEdges, n2e.Owned());
-    auto throughCell = G::NativeConnectivity::Compose(nc.Read(), cellRows.Read(), true);
-    auto throughEdge = G::NativeConnectivity::Compose(ne.Read(), edgeRows.Read(), true);
+    G::MeshAdjacency nc(n2c.Read().Kind(), nodes, fullCells, n2c.Owned());
+    G::MeshAdjacency ne(n2e.Read().Kind(), nodes, fullEdges, n2e.Owned());
+    auto throughCell = G::AdjacencyRegistry::Compose(nc.Read(), cellRows.Read(), true);
+    auto throughEdge = G::AdjacencyRegistry::Compose(ne.Read(), edgeRows.Read(), true);
     if (mpi.rank == 0)
     {
         CHECK(throughCell.Read().GlobalRow(0) == std::vector<I>{1, 2, 3, 4, 5, 6, 7});
@@ -200,8 +200,8 @@ TEST_CASE("Physical periodic face variants traverse direct any all exact ordered
         for (I j = 0; j < 4; ++j)
             ghosts.push_back(next * 4 + j);
     nodes = nodes.WithGhosts(ghosts);
-    G::NativeRelation cn(G::Adj::Cell2Node, cells, nodes, Rows({{mpi.rank * 4, mpi.rank * 4 + 1}, {mpi.rank * 4, mpi.rank * 4 + 2}, {mpi.rank * 4, mpi.rank * 4 + 1, mpi.rank * 4 + 3}, {mpi.rank * 4, mpi.rank * 4 + 1}}));
-    G::NativeRelation fn(G::Adj::Face2Node, faces, nodes, Rows({{next * 4 + 1, next * 4}}));
+    G::MeshAdjacency cn(G::Adj::Cell2Node, cells, nodes, Rows({{mpi.rank * 4, mpi.rank * 4 + 1}, {mpi.rank * 4, mpi.rank * 4 + 2}, {mpi.rank * 4, mpi.rank * 4 + 1, mpi.rank * 4 + 3}, {mpi.rank * 4, mpi.rank * 4 + 1}}));
+    G::MeshAdjacency fn(G::Adj::Face2Node, faces, nodes, Rows({{next * 4 + 1, next * 4}}));
     // The physical oriented face at x=[11,10] uses canonical x=[1,0]
     // plus one translation image; every topology variant shares these slots.
     G::Periodicity frames;
@@ -222,11 +222,11 @@ TEST_CASE("Physical periodic face variants traverse direct any all exact ordered
             CHECK(frames.GetCoordByBits(canonical, r.View()(0, slot))[0] == (slot == 0 ? 11 : 10));
         }
     }
-    auto nc = G::NativeConnectivity::Inverse(cn.Read(), mpi);
-    auto support = nc.WithGhostRows(G::RelationGhostRoute(nodes));
-    auto any = G::NativeConnectivity::Compose(fn.Read(), support.Read());
-    auto all = G::NativeConnectivity::ComposeAll(fn.Read(), support.Read());
-    auto key = G::AdjKind::Composition(fn.Read().Kind(), support.Read().Kind(), G::RelationSelection::Exact, false, "physical.periodic.incidence", 1, G::RelationPeriodicPolicy::FrameMatched);
+    auto nc = G::AdjacencyRegistry::Inverse(cn.Read(), mpi);
+    auto support = nc.WithGhostRows(G::EntityGhostMapping(nodes));
+    auto any = G::AdjacencyRegistry::Compose(fn.Read(), support.Read());
+    auto all = G::AdjacencyRegistry::ComposeAll(fn.Read(), support.Read());
+    auto key = G::AdjacencyDescriptor::Composition(fn.Read().Kind(), support.Read().Kind(), G::RelationSelection::Exact, false, "physical.periodic.incidence", 1, G::RelationPeriodicPolicy::FrameMatched);
     // This explicit globally indexed fixture definition is the input oracle,
     // not a lookup into the result being tested. Cell3 has the same corners as
     // cell0 but a nonuniform image change, so only the real frame matcher can
@@ -250,21 +250,21 @@ TEST_CASE("Physical periodic face variants traverse direct any all exact ordered
     CHECK(G::NativePeriodicFrame(candidatePattern(next * 4), facePattern) == std::optional<uint8_t>{1});
     CHECK_FALSE(G::NativePeriodicFrame(candidatePattern(next * 4 + 2), facePattern));
     CHECK_FALSE(G::NativePeriodicFrame(candidatePattern(next * 4 + 3), facePattern));
-    auto exact = G::NativeConnectivity::ComposeFiltered(fn.Read(), support.Read(), key, [](I, I, int count)
-                                                        { return count == 2; }, [candidatePattern, facePattern](I, I cell, const std::vector<I> &)
-                                                        { return G::NativePeriodicFrame(candidatePattern(cell), facePattern).has_value(); });
+    auto exact = G::AdjacencyRegistry::ComposeFiltered(fn.Read(), support.Read(), key, [](I, I, int count)
+                                                       { return count == 2; }, [candidatePattern, facePattern](I, I cell, const std::vector<I> &)
+                                                       { return G::NativePeriodicFrame(candidatePattern(cell), facePattern).has_value(); });
     auto directKey = key;
     directKey.semanticName = "physical.periodic.direct";
     directKey.path = {G::EntityKind::Face, G::EntityKind::Cell};
     directKey.order = G::RelationOrder::Topological;
-    G::NativeRelation direct(directKey, faces, cells, Rows({{next * 4}}));
+    G::MeshAdjacency direct(directKey, faces, cells, Rows({{next * 4}}));
     auto orderedKey = all.Read().Kind();
     orderedKey.semanticName = "physical.periodic.ordered";
     orderedKey.order = G::RelationOrder::Topological;
     orderedKey.periodic = G::RelationPeriodicPolicy::FrameMatched;
-    G::NativeRelation ordered(orderedKey, faces, cells, Rows({{next * 4 + 3, next * 4 + 2, next * 4}}));
-    G::NativeConnectivity registry(mpi);
-    std::vector<G::NativeRelation *> variants{&direct, &any, &all, &exact, &ordered};
+    G::MeshAdjacency ordered(orderedKey, faces, cells, Rows({{next * 4 + 3, next * 4 + 2, next * 4}}));
+    G::AdjacencyRegistry registry(mpi);
+    std::vector<G::MeshAdjacency *> variants{&direct, &any, &all, &exact, &ordered};
     const std::vector<std::vector<I>> expected{{next * 4}, {next * 4, next * 4 + 1, next * 4 + 2, next * 4 + 3}, {next * 4, next * 4 + 2, next * 4 + 3}, {next * 4}, {next * 4 + 3, next * 4 + 2, next * 4}};
     for (size_t j = 0; j < variants.size(); ++j)
     {
@@ -284,7 +284,7 @@ TEST_CASE("Physical periodic face variants traverse direct any all exact ordered
         else
             CHECK(result.ghostIndices.empty());
     }
-    auto reverse = G::NativeConnectivity::Inverse(exact.Read(), mpi);
+    auto reverse = G::AdjacencyRegistry::Inverse(exact.Read(), mpi);
     registry.Register(reverse.Read());
     G::GhostSpec reverseSpec{{{G::EntityKind::Cell, {reverse.Read().Kind()}, G::EntityKind::Face}}};
     auto discovered = registry.Evaluate(G::CompiledGhostTree::compile(reverseSpec));
@@ -313,7 +313,7 @@ TEST_CASE("Unrelated remote components do not grow rank0 traversal C++ scratch")
     for (int extra : {1, 128, 4096})
     {
         auto state = G::ConstructNativeMesh(Fan(mpi, extra), {2, true});
-        G::NativeConnectivity registry(mpi);
+        G::AdjacencyRegistry registry(mpi);
         auto source = G::UnstructuredMesh::FromNative(mpi, state);
         auto requirements = G::MeshReadRequirements::Primary();
         requirements.inverse = true;

@@ -226,8 +226,8 @@ namespace DNDS::Runtime
             DNDS_check_throw_info(!a.Layout().IsVariable(), "variable-row Array uses access.row() snapshots");
             auto host = To(a, Device::Host(), 0);
             auto read = host.Read(ExecutionContext::Host());
-            py::array result(a.Dtype(), {py::ssize_t(a.Layout().Rows()), py::ssize_t(a.Layout().Width())});
-            for (size_t i = 0; i < a.Layout().Rows(); ++i)
+            py::array result(a.Dtype(), {py::ssize_t(a.Layout().RowCount()), py::ssize_t(a.Layout().Width())});
+            for (size_t i = 0; i < a.Layout().RowCount(); ++i)
                 if (a.Layout().Width())
                     std::memcpy(result.mutable_data(i, 0), read.View<uint8_t>().data + host.Layout().Offset(i) * host.Dtype().itemsize(), a.Layout().Width() * a.Dtype().itemsize());
             return result;
@@ -236,12 +236,12 @@ namespace DNDS::Runtime
         {
             input = py::array::ensure(input, py::array::c_style);
             DNDS_check_throw_info(input && !a.Layout().IsVariable() && input.dtype().equal(a.Dtype()) && input.ndim() == 2 &&
-                                      size_t(input.shape(0)) == a.Layout().Rows() && size_t(input.shape(1)) == a.Layout().Width(),
+                                      size_t(input.shape(0)) == a.Layout().RowCount() && size_t(input.shape(1)) == a.Layout().Width(),
                                   "Array assignment dtype/shape mismatch");
             auto host = a.New(a.Layout(), Device::Host());
             {
                 auto write = host.Write(ExecutionContext::Host());
-                for (size_t i = 0; i < a.Layout().Rows(); ++i)
+                for (size_t i = 0; i < a.Layout().RowCount(); ++i)
                     if (a.Layout().Width())
                         std::memcpy(write.View<uint8_t>().data + host.Layout().Offset(i) * host.Dtype().itemsize(), input.data(i, 0), a.Layout().Width() * a.Dtype().itemsize());
             }
@@ -255,9 +255,9 @@ namespace DNDS::Runtime
         {
             for (auto row : rows)
             {
-                DNDS_check_throw_info(row < a.Layout().Rows(), "row outside Array");
+                DNDS_check_throw_info(row >= 0 && row < a.Layout().RowCount(), "row outside Array");
                 for (auto column : columns)
-                    DNDS_check_throw_info(column < a.Layout().RowSize(row), "column outside row");
+                    DNDS_check_throw_info(column >= 0 && column < a.Layout().RowSize(row), "column outside row");
             }
         }
         py::array ReadElements(PythonArray &a, const std::vector<size_t> &rows, const std::vector<size_t> &columns)
@@ -353,7 +353,8 @@ namespace DNDS::Runtime
             .def_static("ragged", &RowLayout::Ragged)
             .def_static("padded", &RowLayout::Padded, py::arg("lengths"), py::arg("capacity"))
             .def_property_readonly("kind", &RowLayout::Kind)
-            .def_property_readonly("rows", &RowLayout::Rows)
+            .def_property_readonly("row_count", &RowLayout::RowCount)
+            .def_property_readonly("rows", &RowLayout::RowCount)
             .def_property_readonly("width", &RowLayout::Width)
             .def_property_readonly("stride", &RowLayout::Stride)
             .def_property_readonly("is_ragged", &RowLayout::IsRagged)
@@ -402,6 +403,8 @@ namespace DNDS::Runtime
             .def(py::init<RowLayout, py::object, Device>(), py::arg("layout"), py::arg("dtype") = py::dtype::of<double>(), py::arg("device") = Device::Host())
             .def_property_readonly("layout", [](const PythonArray &a)
                                    { return a.Layout(); })
+            .def_property_readonly("row_count", [](const PythonArray &a)
+                                   { return a.Layout().RowCount(); })
             .def_property_readonly("dtype", [](const PythonArray &a)
                                    { return a.Dtype(); })
             .def_property_readonly("element_type", &PythonArray::ElementType)
@@ -478,14 +481,14 @@ namespace DNDS::Runtime
                      return prototype.WithStorage(ArrayStorage::FromBuffer(std::move(archive.layout), std::move(archive.storage), prototype.Dtype().itemsize())); }, py::arg("serializer"), py::arg("name"), py::arg("mpi"), py::arg("dtype") = py::dtype::of<double>(), py::arg("partition") = Serializer::ArrayGlobalOffset_Unknown, py::arg("device") = Device::Host(), py::arg("schema") = "", "Read directly into host storage, dynamically validate logical shape, and swap declared words when file endian differs. Device destinations require a direct I/O backend and are currently rejected; match collective calls and mesh/field identities.");
         BindMPIOptions(m);
         py::class_<RowRequest>(m, "RowRequest")
-            .def(py::init([](int rank, int64_t row, size_t destination)
+            .def(py::init([](int rank, int64_t row, index destination)
                           { return RowRequest{rank, row, destination}; }));
         py::class_<RowTransferPlan>(m, "RowTransferPlan", "Collective immutable row correspondence. Match construction/setup order on all ranks, including empty ranks. Rebuild after row numbering changes.")
-            .def(py::init([](const MPIInfo &mpi, size_t sources, size_t destinations, const std::vector<RowRequest> &requests)
+            .def(py::init([](const MPIInfo &mpi, index sources, index destinations, const std::vector<RowRequest> &requests)
                           { return RowTransferPlan(mpi.comm, sources, destinations, requests); }))
-            .def(py::init([](std::shared_ptr<CommunicationContext> context, size_t sources, size_t destinations, const std::vector<RowRequest> &requests)
+            .def(py::init([](std::shared_ptr<CommunicationContext> context, index sources, index destinations, const std::vector<RowRequest> &requests)
                           { return RowTransferPlan(std::move(context), sources, destinations, requests); }))
-            .def_static("known", [](std::shared_ptr<CommunicationContext> context, size_t sources, size_t destinations, std::vector<std::vector<size_t>> send, std::vector<std::vector<size_t>> receive)
+            .def_static("known", [](std::shared_ptr<CommunicationContext> context, index sources, index destinations, std::vector<std::vector<index>> send, std::vector<std::vector<index>> receive)
                         { return RowTransferPlan::Known(std::move(context), sources, destinations, std::move(send), std::move(receive)); }, "Caller supplies corresponding peer send/receive row order. Matching counts cannot prove semantic permutation correctness.")
             .def("reverse", &RowTransferPlan::Reverse)
             .def("destination_layout", &RowTransferPlan::DestinationLayout)

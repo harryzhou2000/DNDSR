@@ -1,6 +1,6 @@
 #include "Geom/Unstructured/NativeMeshBuilder.hpp"
 #include "Geom/Connectivity/NativePeriodicMatch.hpp"
-#include "Geom/Connectivity/NativeConnectivity.hpp"
+#include "Geom/Connectivity/AdjacencyRegistry.hpp"
 
 namespace DNDS::Geom
 {
@@ -36,11 +36,11 @@ namespace DNDS::Geom
         template <class T>
         void CheckRows(const Runtime::Array<T> &values, index count, std::optional<size_t> width = {})
         {
-            DNDS_check_throw_info(values.GetDevice() == Runtime::Device::Host() && values.Rows() == size_t(count),
+            DNDS_check_throw_info(values.GetDevice() == Runtime::Device::Host() && values.RowCount() == size_t(count),
                                   "native input host placement or owned row count mismatch");
             auto read = values.Read();
             if (width)
-                for (size_t row = 0; row < read.View().Rows(); ++row)
+                for (size_t row = 0; row < read.View().RowCount(); ++row)
                     DNDS_check_throw_info(read.View().RowSize(row) == *width, "native input logical row width mismatch");
         }
 
@@ -48,7 +48,7 @@ namespace DNDS::Geom
         /// metadata-only reinterpretation preserves the original value buffer
         /// and access controller, including aliases held by Python callers.
         template <class T>
-        Runtime::Array<T> UniformTable(Runtime::Array<T> values, size_t width)
+        Runtime::Array<T> UniformTable(Runtime::Array<T> values, index width)
         {
             const auto layout = values.Layout();
             if (!layout.IsVariable())
@@ -56,7 +56,7 @@ namespace DNDS::Geom
                 DNDS_check_throw_info(layout.Width() == width, "native uniform input table width mismatch");
                 return values;
             }
-            for (size_t row = 0; row < layout.Rows(); ++row)
+            for (index row = 0; row < layout.RowCount(); ++row)
             {
                 DNDS_check_throw_info(layout.RowSize(row) == width, "native uniform input logical width mismatch");
                 if (layout.IsRagged())
@@ -64,10 +64,10 @@ namespace DNDS::Geom
                                           "native uniform CSR input is not tightly contiguous");
             }
             if (layout.IsRagged())
-                DNDS_check_throw_info(layout.Elements() == CheckedSize::Multiply(layout.Rows(), width),
+                DNDS_check_throw_info(layout.Elements() == CheckedSize::Multiply(layout.RowCount(), width),
                                       "native uniform CSR input has an invalid terminal offset");
-            const auto stride = layout.IsPadded() && layout.Rows() ? layout.Stride() : width;
-            return Runtime::Array<T>::FromStorage(Runtime::RowLayout::Dense(layout.Rows(), width, stride), values.Storage());
+            const auto stride = layout.IsPadded() && layout.RowCount() ? layout.Stride() : width;
+            return Runtime::Array<T>::FromStorage(Runtime::RowLayout::Dense(layout.RowCount(), width, stride), values.Storage());
         }
 
         void CheckCone(const Runtime::Array<index> &cone, const Runtime::Array<ElemInfo> &info,
@@ -85,7 +85,7 @@ namespace DNDS::Geom
                 bits.emplace(periodic->Read());
             }
             std::array<std::pair<index, uint8_t>, Elem::CellNumNodeMax> seen{};
-            for (size_t row = 0; row < entries.View().Rows(); ++row)
+            for (size_t row = 0; row < entries.View().RowCount(); ++row)
             {
                 const auto elementInfo = elements.View()(row, 0);
                 DNDS_check_throw_info(elementInfo.type > Elem::UnknownElem && elementInfo.type < Elem::ElemType_NUM,
@@ -122,8 +122,8 @@ namespace DNDS::Geom
                     std::copy(rows[row].begin(), rows[row].end(), output.data()); }, width);
         }
 
-        std::pair<NativeRelation, NativeRelation> PeriodicBoundaryRelations(
-            const NativeMeshInput &input, const RelationReadAccess &candidates, const AdjKind &exactKind)
+        std::pair<MeshAdjacency, MeshAdjacency> PeriodicBoundaryRelations(
+            const NativeMeshInput &input, const MeshAdjacencyRead &candidates, const AdjacencyDescriptor &exactKind)
         {
             const auto mpi = input.mpi;
             std::vector<Runtime::RowRequest> requests;
@@ -217,11 +217,11 @@ namespace DNDS::Geom
                         physical[boundary][1] = other.cell;
                     }
                 }
-                return std::make_pair(NativeRelation(exactKind, input.boundaries, input.cells, IndexRows(exact)),
-                                      NativeRelation(Adj::Bnd2CellCoupled, input.boundaries, input.cells, IndexRows(physical, 2))); });
+                return std::make_pair(MeshAdjacency(exactKind, input.boundaries, input.cells, IndexRows(exact)),
+                                      MeshAdjacency(Adj::Bnd2CellCoupled, input.boundaries, input.cells, IndexRows(physical, 2))); });
         }
 
-        void ValidateBoundaryFaces(const NativeMeshInput &input, const RelationReadAccess &containment)
+        void ValidateBoundaryFaces(const NativeMeshInput &input, const MeshAdjacencyRead &containment)
         {
             if (!input.boundaries.NumGlobal())
                 return;
@@ -297,8 +297,8 @@ namespace DNDS::Geom
             for (const auto *array : {&input.cellNodes, &input.boundaryNodes})
             {
                 auto read = array->Read();
-                ghosts.reserve(ghosts.size() + read.View().Rows() * 2);
-                for (size_t row = 0; row < read.View().Rows(); ++row)
+                ghosts.reserve(ghosts.size() + read.View().RowCount() * 2);
+                for (size_t row = 0; row < read.View().RowCount(); ++row)
                     for (auto global : read.View()[row])
                         if (input.nodes.Owner(global) != input.mpi.rank)
                             ghosts.push_back(global);
@@ -308,7 +308,7 @@ namespace DNDS::Geom
             return ghosts;
         }
 
-        Runtime::Array<index> PadBoundaryCells(const RelationReadAccess &relation,
+        Runtime::Array<index> PadBoundaryCells(const MeshAdjacencyRead &relation,
                                                const Runtime::Array<ElemInfo> *boundaryInfo = nullptr)
         {
             Runtime::Array<index> rows(Runtime::RowLayout::Dense(size_t(relation.NumOwned()), 2));
@@ -364,9 +364,9 @@ namespace DNDS::Geom
             input.boundaryInfo = UniformTable(std::move(input.boundaryInfo), 1);
             // Register validates each space's communicator against the caller
             // before WithGhosts enters that descriptor's own collectives.
-            NativeConnectivity validate(mpi);
-            validate.Register(RelationReadAccess(Adj::Cell2Node, input.cells, input.nodes, Adj_PointToGlobal, input.cellNodes));
-            validate.Register(RelationReadAccess(Adj::Bnd2Node, input.boundaries, input.nodes, Adj_PointToGlobal, input.boundaryNodes));
+            AdjacencyRegistry validate(mpi);
+            validate.Register(MeshAdjacencyRead(Adj::Cell2Node, input.cells, input.nodes, Adj_PointToGlobal, input.cellNodes));
+            validate.Register(MeshAdjacencyRead(Adj::Bnd2Node, input.boundaries, input.nodes, Adj_PointToGlobal, input.boundaryNodes));
             for (const auto &[kind, ids] : input.ids)
             {
                 DNDS_check_throw_info(kind == EntityKind::Cell || kind == EntityKind::Node || kind == EntityKind::Bnd,
@@ -376,8 +376,8 @@ namespace DNDS::Geom
                 auto read = ids.Read();
                 std::vector<index> listed;
                 if (audit.persistentIdentity)
-                    listed.reserve(ids.Rows());
-                for (size_t row = 0; row < ids.Rows(); ++row)
+                    listed.reserve(ids.RowCount());
+                for (size_t row = 0; row < ids.RowCount(); ++row)
                 {
                     const auto id = read.View()(row, 0);
                     DNDS_check_throw_info(id >= 0 && id != UnInitIndex, "native input ID is invalid");
@@ -428,36 +428,36 @@ namespace DNDS::Geom
                                      { return ReferencedGhostNodes(input); });
         const auto nodes = input.nodes.WithGhosts(std::move(referenced));
         auto cellNodes = LocalStage(mpi, "cell cone", [&]
-                                    { return NativeRelation(Adj::Cell2Node, input.cells, nodes, input.cellNodes); });
+                                    { return MeshAdjacency(Adj::Cell2Node, input.cells, nodes, input.cellNodes); });
         auto boundaryNodes = LocalStage(mpi, "boundary cone", [&]
-                                        { return NativeRelation(Adj::Bnd2Node, input.boundaries, nodes, input.boundaryNodes); });
-        auto nodeCells = NativeConnectivity::Inverse(cellNodes.Read(), mpi);
-        auto nodeBoundaries = NativeConnectivity::Inverse(boundaryNodes.Read(), mpi);
+                                        { return MeshAdjacency(Adj::Bnd2Node, input.boundaries, nodes, input.boundaryNodes); });
+        auto nodeCells = AdjacencyRegistry::Inverse(cellNodes.Read(), mpi);
+        auto nodeBoundaries = AdjacencyRegistry::Inverse(boundaryNodes.Read(), mpi);
         int anyNodeGhost = nodes.NumGhost() > 0;
         MPI_Allreduce(MPI_IN_PLACE, &anyNodeGhost, 1, MPI_INT, MPI_MAX, mpi.comm);
         if (anyNodeGhost)
         {
-            RelationGhostRoute initialNodeRoute(nodes);
+            EntityGhostMapping initialNodeRoute(nodes);
             const auto schema = Runtime::ElementSchema::Arithmetic<index>();
             auto pendingCells = initialNodeRoute.BeginRows(nodes, nodeCells.Owned(), schema);
             auto pendingBoundaries = initialNodeRoute.BeginRows(nodes, nodeBoundaries.Owned(), schema);
             pendingCells.operation.Wait();
             pendingBoundaries.operation.Wait();
-            nodeCells = NativeRelation::WithGhostValues(nodeCells.Kind(), nodes, input.cells, nodeCells.Owned(),
-                                                        std::move(pendingCells.ghost));
-            nodeBoundaries = NativeRelation::WithGhostValues(nodeBoundaries.Kind(), nodes, input.boundaries,
-                                                             nodeBoundaries.Owned(), std::move(pendingBoundaries.ghost));
+            nodeCells = MeshAdjacency::WithGhostValues(nodeCells.Kind(), nodes, input.cells, nodeCells.Owned(),
+                                                       std::move(pendingCells.ghost));
+            nodeBoundaries = MeshAdjacency::WithGhostValues(nodeBoundaries.Kind(), nodes, input.boundaries,
+                                                            nodeBoundaries.Owned(), std::move(pendingBoundaries.ghost));
         }
         auto cellCells = LocalStage(mpi, "cell neighbor composition", [&]
-                                    { return NativeConnectivity::Compose(cellNodes.Read(), nodeCells.Read(), true); });
+                                    { return AdjacencyRegistry::Compose(cellNodes.Read(), nodeCells.Read(), true); });
         auto containment = LocalStage(mpi, "boundary cell containment", [&]
-                                      { return NativeConnectivity::ComposeAll(boundaryNodes.Read(), nodeCells.Read()); });
+                                      { return AdjacencyRegistry::ComposeAll(boundaryNodes.Read(), nodeCells.Read()); });
         const auto boundaryCellKind = containment.Kind();
-        std::optional<NativeRelation> periodicExact, physicalBoundary;
+        std::optional<MeshAdjacency> periodicExact, physicalBoundary;
         if (input.periodic)
         {
-            const auto exactKind = AdjKind::Composition(boundaryNodes.Kind(), nodeCells.Kind(), RelationSelection::Exact, false,
-                                                        "geom.boundary.physical-frame-face", 1, RelationPeriodicPolicy::FrameMatched);
+            const auto exactKind = AdjacencyDescriptor::Composition(boundaryNodes.Kind(), nodeCells.Kind(), RelationSelection::Exact, false,
+                                                                    "geom.boundary.physical-frame-face", 1, RelationPeriodicPolicy::FrameMatched);
             auto matched = PeriodicBoundaryRelations(input, containment.Read(), exactKind);
             periodicExact.emplace(std::move(matched.first));
             physicalBoundary.emplace(std::move(matched.second));
@@ -481,7 +481,7 @@ namespace DNDS::Geom
             result.dimension = input.dimension;
             result.periodic = input.periodic;
             result.periodicInfo = input.periodicInfo;
-            auto relation = [&](MeshRelation slot, const NativeRelation &relation)
+            auto relation = [&](MeshRelation slot, const MeshAdjacency &relation)
             {
                 result.namedRelations.emplace(relation.Kind(), relation.Owned());
                 result.relations[size_t(slot)] = relation.Owned();

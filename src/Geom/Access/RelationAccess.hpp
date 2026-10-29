@@ -17,11 +17,11 @@ namespace DNDS::Geom
     /// Retained host setup scope. Values and row metadata share their original
     /// controllers; source/target version leases pin the numbering. Global
     /// sparse relations need not have local target closure.
-    class RelationReadAccess
+    class MeshAdjacencyRead
     {
         friend struct MeshConnectivity;
-        friend class NativeRelation;
-        friend class NativeConnectivity;
+        friend class MeshAdjacency;
+        friend class AdjacencyRegistry;
         friend class RelationPeriodicBits;
         friend NativeCellClosure BuildNativeCellClosure(const NativeOwnedMeshData &source, const MPIInfo &mpi);
         EntitySpace _source, _target;
@@ -52,7 +52,7 @@ namespace DNDS::Geom
         };
         std::unique_ptr<Hold> _owned, _ghost;
         Runtime::PairReadView<index> _view;
-        AdjKind _kind;
+        AdjacencyDescriptor _kind;
         MeshAdjState _state;
         bool _active = true;
         // Set only by construction, before this scope escapes. Retained Array
@@ -88,9 +88,9 @@ namespace DNDS::Geom
             bool unavailable = false;
             index global = UnInitIndex;
         };
-        RelationReadAccess(AdjKind kind, EntitySpace source, EntitySpace target,
-                           MeshAdjState state, const Runtime::Array<index> &owned,
-                           const Runtime::Array<index> *ghost = nullptr)
+        MeshAdjacencyRead(AdjacencyDescriptor kind, EntitySpace source, EntitySpace target,
+                          MeshAdjState state, const Runtime::Array<index> &owned,
+                          const Runtime::Array<index> *ghost = nullptr)
             : _source(std::move(source)), _target(std::move(target)),
               _sourceLease(_source._versions.Read()), _targetLease(_target._versions.Read()),
               _kind(kind), _state(state)
@@ -103,14 +103,14 @@ namespace DNDS::Geom
 
         /// Legacy adapter definition is provided by RelationAccessLegacy.hpp.
         template <class Pair>
-        RelationReadAccess(AdjKind kind, const AdjPairTracked<Pair> &pair, EntitySpace source, EntitySpace target);
+        MeshAdjacencyRead(AdjacencyDescriptor kind, const AdjPairTracked<Pair> &pair, EntitySpace source, EntitySpace target);
 
     private:
         /// Used only with a scope acquired from the same mesh by Current/RegisterMesh.
-        RelationReadAccess(AdjKind kind, std::shared_ptr<MeshReadAccess> meshRead, EntitySpace source, EntitySpace target);
-        RelationReadAccess(AdjKind kind, EntitySpace source, EntitySpace target,
-                           MeshAdjState state, const Runtime::Array<index> &owned,
-                           const Runtime::Array<index> *ghost, bool contentsValidated)
+        MeshAdjacencyRead(AdjacencyDescriptor kind, std::shared_ptr<MeshReadAccess> meshRead, EntitySpace source, EntitySpace target);
+        MeshAdjacencyRead(AdjacencyDescriptor kind, EntitySpace source, EntitySpace target,
+                          MeshAdjState state, const Runtime::Array<index> &owned,
+                          const Runtime::Array<index> *ghost, bool contentsValidated)
             : _source(std::move(source)), _target(std::move(target)),
               _sourceLease(_source._versions.Read()), _targetLease(_target._versions.Read()),
               _kind(kind), _state(state), _contentsValidated(contentsValidated)
@@ -122,10 +122,10 @@ namespace DNDS::Geom
         }
 
     public:
-        static RelationReadAccess Current(UnstructuredMesh &mesh, AdjKind kind, MeshReadRequirements requirements);
-        RelationReadAccess(const RelationReadAccess &) = delete;
-        RelationReadAccess &operator=(const RelationReadAccess &) = delete;
-        RelationReadAccess(RelationReadAccess &&other) noexcept
+        static MeshAdjacencyRead Current(UnstructuredMesh &mesh, AdjacencyDescriptor kind, MeshReadRequirements requirements);
+        MeshAdjacencyRead(const MeshAdjacencyRead &) = delete;
+        MeshAdjacencyRead &operator=(const MeshAdjacencyRead &) = delete;
+        MeshAdjacencyRead(MeshAdjacencyRead &&other) noexcept
             : _source(std::move(other._source)), _target(std::move(other._target)),
               _sourceLease(std::move(other._sourceLease)), _targetLease(std::move(other._targetLease)),
               _owned(std::move(other._owned)), _ghost(std::move(other._ghost)),
@@ -135,7 +135,7 @@ namespace DNDS::Geom
             other._active = false;
             other._view = {};
         }
-        RelationReadAccess &operator=(RelationReadAccess &&) = delete;
+        MeshAdjacencyRead &operator=(MeshAdjacencyRead &&) = delete;
         const EntitySpace &Source() const
         {
             CheckActive();
@@ -146,7 +146,7 @@ namespace DNDS::Geom
             CheckActive();
             return _target;
         }
-        AdjKind Kind() const
+        AdjacencyDescriptor Kind() const
         {
             CheckActive();
             return _kind;
@@ -159,22 +159,23 @@ namespace DNDS::Geom
         index NumOwned() const
         {
             CheckActive();
-            return index(_view.owned.Rows());
+            return index(_view.owned.RowCount());
         }
-        index Rows() const
+        index RowCount() const
         {
             CheckActive();
-            return index(_view.owned.Rows() + _view.ghost.Rows());
+            return index(_view.owned.RowCount() + _view.ghost.RowCount());
         }
-        size_t RowSize(index row) const
+        index Rows() const { return RowCount(); }
+        index RowSize(index row) const
         {
-            DNDS_check_throw_info(row >= 0 && row < Rows(), "relation row is not present locally");
-            return _view.RowSize(size_t(row));
+            DNDS_check_throw_info(row >= 0 && row < RowCount(), "relation row is not present locally");
+            return _view.RowSize(row);
         }
         index Raw(index row, size_t slot) const
         {
             DNDS_check_throw_info(slot < RowSize(row), "relation slot is out of range");
-            return _view(size_t(row), slot);
+            return _view(row, index(slot));
         }
         /// Row-wise setup view for builders that already retain this relation
         /// and perform their own family/state checks. Element access here has
@@ -207,11 +208,14 @@ namespace DNDS::Geom
         }
     };
 
+    using RelationReadAccess = MeshAdjacencyRead; // compatibility name
+
     /// Typed collectively created halo route. Copies share its native route;
     /// the retained entity identity/order prevents same-sized route confusion.
-    class RelationGhostRoute
+    class EntityGhostMapping
     {
-        friend class NativeRelation;
+        friend class MeshAdjacency;
+        std::shared_ptr<const uint8_t> _identity = std::make_shared<const uint8_t>(0);
         EntitySpace _source;
         Runtime::RowTransferPlan _route;
 
@@ -229,9 +233,12 @@ namespace DNDS::Geom
             PendingRows &operator=(const PendingRows &) = delete;
         };
 
-        explicit RelationGhostRoute(EntitySpace source)
+        explicit EntityGhostMapping(EntitySpace source)
             : _source(std::move(source)), _route(_source.BuildRowTransferPlan()) {}
         const EntitySpace &Source() const { return _source; }
+        /// Stable identity shared by copies of this exact mapping. It is valid
+        /// only in-process and may be used as an O(1) payload-cache key.
+        uint64_t Identity() const { return static_cast<uint64_t>(reinterpret_cast<uintptr_t>(_identity.get())); }
         bool Valid() const { return _source.Valid() && _route.Valid(); }
         /// Transfer an ordered companion with the same route. The caller names
         /// its source entity order and explicit wire schema; no map escapes.
@@ -239,7 +246,7 @@ namespace DNDS::Geom
         Runtime::Array<T> TransferRows(const EntitySpace &source, const Runtime::Array<T> &owned,
                                        const Runtime::ElementSchema &schema) const
         {
-            int valid = Valid() && _source.SameOrder(source) && owned.Layout().Rows() == size_t(_source.NumOwned());
+            int valid = Valid() && _source.SameOrder(source) && owned.Layout().RowCount() == _source.NumOwned();
             MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, _route.Communicator());
             DNDS_check_throw_info(valid, "companion halo route has stale/wrong source order or row extent");
             Runtime::Array<T> ghost(_route.DestinationLayout(owned.Layout()));
@@ -257,7 +264,7 @@ namespace DNDS::Geom
         PendingRows<T> BeginRows(const EntitySpace &source, const Runtime::Array<T> &owned,
                                  const Runtime::ElementSchema &schema) const
         {
-            int valid = Valid() && _source.SameOrder(source) && owned.Layout().Rows() == size_t(_source.NumOwned());
+            int valid = Valid() && _source.SameOrder(source) && owned.Layout().RowCount() == _source.NumOwned();
             MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, _route.Communicator());
             DNDS_check_throw_info(valid, "companion halo route has stale/wrong source order or row extent");
             Runtime::Array<T> ghost(_route.DestinationLayout(owned.Layout()));
@@ -270,12 +277,14 @@ namespace DNDS::Geom
         }
     };
 
+    using RelationGhostRoute = EntityGhostMapping; // compatibility name
+
     /// Native CSR relation produced by setup mathematics. Owned output is
     /// published first; explicit WithGhostRows transfers missing source rows.
-    class NativeRelation
+    class MeshAdjacency
     {
-        friend class NativeConnectivity;
-        AdjKind _kind;
+        friend class AdjacencyRegistry;
+        AdjacencyDescriptor _kind;
         EntitySpace _source, _target;
         Runtime::Array<index> _owned;
         std::optional<Runtime::Array<index>> _ghost;
@@ -291,8 +300,8 @@ namespace DNDS::Geom
         mutable std::shared_ptr<ValidatedVersions> _validatedVersions = std::make_shared<ValidatedVersions>();
 
     public:
-        NativeRelation(AdjKind kind, EntitySpace source, EntitySpace target,
-                       Runtime::Array<index> owned, MeshAdjState state = Adj_PointToGlobal)
+        MeshAdjacency(AdjacencyDescriptor kind, EntitySpace source, EntitySpace target,
+                      Runtime::Array<index> owned, MeshAdjState state = Adj_PointToGlobal)
             : _kind(kind), _source(std::move(source)), _target(std::move(target)),
               _owned(std::move(owned)), _state(state)
         {
@@ -300,7 +309,7 @@ namespace DNDS::Geom
         }
         const Runtime::Array<index> &Owned() const { return _owned; }
         const std::optional<Runtime::Array<index>> &Ghost() const { return _ghost; }
-        AdjKind Kind() const
+        AdjacencyDescriptor Kind() const
         {
             _source.Validate();
             _target.Validate();
@@ -308,13 +317,13 @@ namespace DNDS::Geom
         }
         const EntitySpace &Source() const { return _source; }
         const EntitySpace &Target() const { return _target; }
-        RelationReadAccess Read() const
+        MeshAdjacencyRead Read() const
         {
             const auto ownedVersion = _owned.Version();
             const bool current = _validatedVersions->owned.load(std::memory_order_acquire) == ownedVersion &&
                                  (!_ghost || _validatedVersions->ghost.load(std::memory_order_acquire) == _ghost->Version());
-            RelationReadAccess result(_kind, _source, _target, _state, _owned,
-                                      _ghost ? &*_ghost : nullptr, current);
+            MeshAdjacencyRead result(_kind, _source, _target, _state, _owned,
+                                     _ghost ? &*_ghost : nullptr, current);
             if (!current)
             {
                 _validatedVersions->owned.store(ownedVersion, std::memory_order_release);
@@ -329,16 +338,16 @@ namespace DNDS::Geom
         /// returns independent values. Live compute mesh publications stay local.
         /// No MPI is issued; wrap in the caller's collective failure boundary
         /// before a subsequent collective setup operation.
-        static NativeRelation Convert(const RelationReadAccess &source, MeshAdjState targetState,
-                                      bool allowUnavailable = true);
+        static MeshAdjacency Convert(const MeshAdjacencyRead &source, MeshAdjState targetState,
+                                     bool allowUnavailable = true);
         /// Attach already materialized source-ordered ghost rows. Used when a
         /// setup traversal needed those rows for discovery and must not fetch
         /// the same payload a second time during publication.
-        static NativeRelation WithGhostValues(AdjKind kind, EntitySpace source, EntitySpace target,
-                                              Runtime::Array<index> owned,
-                                              Runtime::Array<index> ghost)
+        static MeshAdjacency WithGhostValues(AdjacencyDescriptor kind, EntitySpace source, EntitySpace target,
+                                             Runtime::Array<index> owned,
+                                             Runtime::Array<index> ghost)
         {
-            NativeRelation result(kind, std::move(source), std::move(target), std::move(owned));
+            MeshAdjacency result(kind, std::move(source), std::move(target), std::move(owned));
             result._ghost.emplace(std::move(ghost));
             auto validated = result.Read();
             return result;
@@ -347,12 +356,14 @@ namespace DNDS::Geom
         /// to this source identity/order. The original owned relation is retained.
         /// Local-index payloads require target-map translation across ranks;
         /// publish global entries before invoking this setup transfer.
-        NativeRelation WithGhostRows(const RelationGhostRoute &route) const;
-        RelationReadAccess Read(const EntitySpace &source, const EntitySpace &target) const
+        MeshAdjacency WithGhostRows(const EntityGhostMapping &route) const;
+        MeshAdjacencyRead Read(const EntitySpace &source, const EntitySpace &target) const
         {
             DNDS_check_throw_info(_source.SameOrder(source) && _target.SameOrder(target),
                                   "native relation does not belong to the requested entity orders");
             return Read();
         }
     };
+
+    using NativeRelation = MeshAdjacency; // compatibility name
 }

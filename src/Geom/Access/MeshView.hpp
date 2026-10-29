@@ -84,9 +84,9 @@ namespace DNDS::Geom
         DNDS_DEVICE_CALLABLE Runtime::RowSpan<const index, false, Width> CellPairRow(MeshRelation relation, index row) const
         {
             const auto &pair = RelationData(relation);
-            const bool owned = row < index(pair.owned.Rows());
+            const bool owned = row < index(pair.owned.RowCount());
             const auto &segment = owned ? pair.owned : pair.ghost;
-            const auto local = owned ? row : row - index(pair.owned.Rows());
+            const auto local = owned ? row : row - index(pair.owned.RowCount());
             // Publication validates the fixed table shape. Kernel access uses
             // its stride directly, with no CSR/padded metadata dispatch.
             const Runtime::ArrayView<const index, false, Runtime::FixedRows<Width>> view{
@@ -188,20 +188,20 @@ namespace DNDS::Geom
         DNDS_DEVICE_CALLABLE tPeriodicRow CellEdgePeriodicBits(index row) const { return Row(_storage.cell2edgePbi, row); }
         DNDS_DEVICE_CALLABLE tPeriodicRow EdgeNodePeriodicBits(index row) const { return Row(_storage.edge2nodePbi, row); }
 
-        DNDS_DEVICE_CALLABLE index NumNode() const { return _storage.coords.owned.Rows(); }
-        DNDS_DEVICE_CALLABLE index NumNodeGhost() const { return _storage.coords.ghost.Rows(); }
+        DNDS_DEVICE_CALLABLE index NumNode() const { return _storage.coords.owned.RowCount(); }
+        DNDS_DEVICE_CALLABLE index NumNodeGhost() const { return _storage.coords.ghost.RowCount(); }
         DNDS_DEVICE_CALLABLE index NumNodeProc() const { return NumNode() + NumNodeGhost(); }
-        DNDS_DEVICE_CALLABLE index NumCell() const { return RelationData(MeshRelation::CellNodes).owned.Rows(); }
-        DNDS_DEVICE_CALLABLE index NumCellGhost() const { return RelationData(MeshRelation::CellNodes).ghost.Rows(); }
+        DNDS_DEVICE_CALLABLE index NumCell() const { return RelationData(MeshRelation::CellNodes).owned.RowCount(); }
+        DNDS_DEVICE_CALLABLE index NumCellGhost() const { return RelationData(MeshRelation::CellNodes).ghost.RowCount(); }
         DNDS_DEVICE_CALLABLE index NumCellProc() const { return NumCell() + NumCellGhost(); }
-        DNDS_DEVICE_CALLABLE index NumFace() const { return RelationData(MeshRelation::FaceNodes).owned.Rows(); }
-        DNDS_DEVICE_CALLABLE index NumFaceGhost() const { return RelationData(MeshRelation::FaceNodes).ghost.Rows(); }
+        DNDS_DEVICE_CALLABLE index NumFace() const { return RelationData(MeshRelation::FaceNodes).owned.RowCount(); }
+        DNDS_DEVICE_CALLABLE index NumFaceGhost() const { return RelationData(MeshRelation::FaceNodes).ghost.RowCount(); }
         DNDS_DEVICE_CALLABLE index NumFaceProc() const { return NumFace() + NumFaceGhost(); }
-        DNDS_DEVICE_CALLABLE index NumBnd() const { return RelationData(MeshRelation::BoundaryNodes).owned.Rows(); }
-        DNDS_DEVICE_CALLABLE index NumBndGhost() const { return RelationData(MeshRelation::BoundaryNodes).ghost.Rows(); }
+        DNDS_DEVICE_CALLABLE index NumBnd() const { return RelationData(MeshRelation::BoundaryNodes).owned.RowCount(); }
+        DNDS_DEVICE_CALLABLE index NumBndGhost() const { return RelationData(MeshRelation::BoundaryNodes).ghost.RowCount(); }
         DNDS_DEVICE_CALLABLE index NumBndProc() const { return NumBnd() + NumBndGhost(); }
-        DNDS_DEVICE_CALLABLE index NumEdge() const { return RelationData(MeshRelation::EdgeNodes).owned.Rows(); }
-        DNDS_DEVICE_CALLABLE index NumEdgeGhost() const { return RelationData(MeshRelation::EdgeNodes).ghost.Rows(); }
+        DNDS_DEVICE_CALLABLE index NumEdge() const { return RelationData(MeshRelation::EdgeNodes).owned.RowCount(); }
+        DNDS_DEVICE_CALLABLE index NumEdgeGhost() const { return RelationData(MeshRelation::EdgeNodes).ghost.RowCount(); }
         DNDS_DEVICE_CALLABLE index NumEdgeProc() const { return NumEdge() + NumEdgeGhost(); }
 
         DNDS_DEVICE_CALLABLE Eigen::Map<const tPoint> Coord(index node) const { return Eigen::Map<const tPoint>(_storage.coords.Row(node)); }

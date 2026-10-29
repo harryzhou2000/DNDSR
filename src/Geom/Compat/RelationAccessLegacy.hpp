@@ -7,7 +7,7 @@
 namespace DNDS::Geom
 {
     template <class Pair>
-    RelationReadAccess::RelationReadAccess(AdjKind kind, const AdjPairTracked<Pair> &pair, EntitySpace source, EntitySpace target)
+    MeshAdjacencyRead::MeshAdjacencyRead(AdjacencyDescriptor kind, const AdjPairTracked<Pair> &pair, EntitySpace source, EntitySpace target)
         : _source(std::move(source)), _target(std::move(target)),
           _sourceLease(_source._versions.Read()), _targetLease(_target._versions.Read()),
           _kind(kind), _state(pair.idx.state())

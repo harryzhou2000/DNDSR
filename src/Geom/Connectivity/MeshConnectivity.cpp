@@ -1,5 +1,5 @@
 #include "Geom/Connectivity/MeshConnectivity.hpp"
-#include "Geom/Connectivity/NativeConnectivity.hpp"
+#include "Geom/Connectivity/AdjacencyRegistry.hpp"
 
 #include <unordered_map>
 #include <unordered_set>
@@ -13,14 +13,14 @@ namespace DNDS::Geom
     // adjKindName
     // -----------------------------------------------------------------
 
-    std::vector<EntityKind> AdjKind::Path() const
+    std::vector<EntityKind> AdjacencyDescriptor::Path() const
     {
         if (!path.empty())
             return path;
         return isIntraLevel() ? std::vector<EntityKind>{from, via, to} : std::vector<EntityKind>{from, to};
     }
 
-    std::string AdjKind::Signature() const
+    std::string AdjacencyDescriptor::Signature() const
     {
         std::string result = std::to_string(int(from)) + ":" + std::to_string(int(to)) + ":";
         if (IsLegacy())
@@ -33,7 +33,7 @@ namespace DNDS::Geom
         return result + std::to_string(provenance.size()) + ":" + provenance;
     }
 
-    uint64_t AdjKind::DescriptorId() const
+    uint64_t AdjacencyDescriptor::DescriptorId() const
     {
         uint64_t value = 14695981039346656037ULL;
         for (unsigned char byte : Signature())
@@ -44,7 +44,7 @@ namespace DNDS::Geom
         return value;
     }
 
-    void AdjKind::Validate() const
+    void AdjacencyDescriptor::Validate() const
     {
         auto valid = [](EntityKind kind)
         { return kind >= EntityKind::Cell && kind < EntityKind::NUM_KINDS; };
@@ -69,13 +69,13 @@ namespace DNDS::Geom
                               "custom/exact selection requires a stable semantic name and positive version");
     }
 
-    AdjKind AdjKind::Composition(const AdjKind &ab, const AdjKind &bc, RelationSelection selection_,
-                                 bool removeSelf_, std::string name, uint32_t version, RelationPeriodicPolicy periodic_)
+    AdjacencyDescriptor AdjacencyDescriptor::Composition(const AdjacencyDescriptor &ab, const AdjacencyDescriptor &bc, RelationSelection selection_,
+                                                         bool removeSelf_, std::string name, uint32_t version, RelationPeriodicPolicy periodic_)
     {
         ab.Validate();
         bc.Validate();
         DNDS_check_throw_info(ab.to == bc.from, "relation descriptor composition endpoint mismatch");
-        AdjKind result(ab.from, bc.to, ab.to);
+        AdjacencyDescriptor result(ab.from, bc.to, ab.to);
         result.path = ab.Path();
         const auto tail = bc.Path();
         result.path.insert(result.path.end(), tail.begin() + 1, tail.end());
@@ -96,13 +96,13 @@ namespace DNDS::Geom
         return result;
     }
 
-    AdjKind AdjKind::Inverted() const
+    AdjacencyDescriptor AdjacencyDescriptor::Inverted() const
     {
         Validate();
         // Mathematical inversion produces sorted set-valued rows. It never
         // claims an ordered legacy physical slot, even for direct cones.
         // The complete input definition remains explicit construction provenance.
-        AdjKind result = *this;
+        AdjacencyDescriptor result = *this;
         result.from = to;
         result.to = from;
         result.path = Path();
@@ -120,7 +120,7 @@ namespace DNDS::Geom
         return result;
     }
 
-    std::string adjKindName(const AdjKind &kind)
+    std::string adjKindName(const AdjacencyDescriptor &kind)
     {
         if (!kind.IsLegacy())
             return fmt::format("{}2{}[{}]", entityKindName(kind.from), entityKindName(kind.to), kind.Signature());
@@ -136,27 +136,27 @@ namespace DNDS::Geom
 
 namespace DNDS::Geom
 {
-    NativeRelation MeshConnectivity::Inverse(const RelationReadAccess &cone, const MPIInfo &mpi)
+    MeshAdjacency MeshConnectivity::Inverse(const MeshAdjacencyRead &cone, const MPIInfo &mpi)
     {
-        return NativeConnectivity::Inverse(cone, mpi);
+        return AdjacencyRegistry::Inverse(cone, mpi);
     }
 
-    NativeRelation MeshConnectivity::Compose(const RelationReadAccess &AB, const RelationReadAccess &BC, bool removeSelf)
+    MeshAdjacency MeshConnectivity::Compose(const MeshAdjacencyRead &AB, const MeshAdjacencyRead &BC, bool removeSelf)
     {
-        return NativeConnectivity::Compose(AB, BC, removeSelf);
+        return AdjacencyRegistry::Compose(AB, BC, removeSelf);
     }
 
-    NativeRelation MeshConnectivity::ComposeAll(const RelationReadAccess &AB, const RelationReadAccess &BC, bool removeSelf)
+    MeshAdjacency MeshConnectivity::ComposeAll(const MeshAdjacencyRead &AB, const MeshAdjacencyRead &BC, bool removeSelf)
     {
-        return NativeConnectivity::ComposeAll(AB, BC, removeSelf);
+        return AdjacencyRegistry::ComposeAll(AB, BC, removeSelf);
     }
 
-    NativeRelation MeshConnectivity::ComposeFiltered(const RelationReadAccess &AB, const RelationReadAccess &BC,
-                                                     const AdjKind &resultKind,
-                                                     const std::function<bool(index, index, int)> &predicate,
-                                                     const std::function<bool(index, index, const std::vector<index> &)> &matchExtra)
+    MeshAdjacency MeshConnectivity::ComposeFiltered(const MeshAdjacencyRead &AB, const MeshAdjacencyRead &BC,
+                                                    const AdjacencyDescriptor &resultKind,
+                                                    const std::function<bool(index, index, int)> &predicate,
+                                                    const std::function<bool(index, index, const std::vector<index> &)> &matchExtra)
     {
-        return NativeConnectivity::ComposeFiltered(AB, BC, resultKind, predicate, matchExtra);
+        return AdjacencyRegistry::ComposeFiltered(AB, BC, resultKind, predicate, matchExtra);
     }
 
 }

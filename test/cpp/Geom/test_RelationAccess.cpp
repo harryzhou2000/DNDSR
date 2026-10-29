@@ -1,6 +1,6 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
-#include "Geom/Mesh/NativeConnectivity.hpp"
+#include "Geom/Mesh/AdjacencyRegistry.hpp"
 #include "Geom/Mesh/MeshConnectivity.hpp"
 #include "NativeMeshOverlapFixture.hpp"
 
@@ -37,7 +37,7 @@ struct RelationFixture
         nodes = nodes.WithGhosts(mpi.size > 1 ? std::vector<I>{remote} : std::vector<I>{});
         values = Rows({{3 * mpi.rank, 3 * mpi.rank + 1}, {}, {remote, UnInitIndex}});
     }
-    RelationReadAccess Read() const { return {Adj::Cell2Node, cells, nodes, Adj_PointToGlobal, values}; }
+    MeshAdjacencyRead Read() const { return {Adj::Cell2Node, cells, nodes, Adj_PointToGlobal, values}; }
 };
 
 TEST_CASE("Storage-neutral inverse and compose preserve sorted incidence and empty rows")
@@ -68,11 +68,15 @@ TEST_CASE("Storage-neutral inverse and compose preserve sorted incidence and emp
     CHECK(reversed.GlobalRow(0) == std::vector<I>{3 * mpi.rank, 3 * mpi.rank + 1});
     if (mpi.size > 1)
         CHECK_THROWS(MeshConnectivity::Compose(read, support));
-    RelationGhostRoute route(nodes);
+    EntityGhostMapping route(nodes);
+    const auto routeCopy = route;
+    EntityGhostMapping independentRoute(nodes);
+    CHECK(routeCopy.Identity() == route.Identity());
+    CHECK(independentRoute.Identity() != route.Identity());
     auto completeRelation = inverse.WithGhostRows(route);
     auto complete = completeRelation.Read();
-    CHECK(complete.Rows() == nodes.NumLocal());
-    CHECK(inverse.Read().Rows() == nodes.NumOwned());
+    CHECK(complete.RowCount() == nodes.NumLocal());
+    CHECK(inverse.Read().RowCount() == nodes.NumOwned());
     auto composed = MeshConnectivity::Compose(read, complete, true);
     auto composition = composed.Read();
     CHECK(composition.Kind().Path() == std::vector<EntityKind>{EntityKind::Cell, EntityKind::Node, EntityKind::Cell});
@@ -103,13 +107,13 @@ TEST_CASE("Relation reader distinguishes absence unavailable globals and wrong e
     RelationFixture fixture(mpi), other(mpi);
     const auto &cells = fixture.cells;
     const auto &nodes = fixture.nodes;
-    CHECK_THROWS(RelationReadAccess(Adj::Cell2Node, nodes, cells, Adj_PointToGlobal, fixture.values));
-    CHECK_THROWS(RelationReadAccess(Adj::Cell2Node, cells, other.nodes, Adj_PointToGlobal, fixture.values));
+    CHECK_THROWS(MeshAdjacencyRead(Adj::Cell2Node, nodes, cells, Adj_PointToGlobal, fixture.values));
+    CHECK_THROWS(MeshAdjacencyRead(Adj::Cell2Node, cells, other.nodes, Adj_PointToGlobal, fixture.values));
     {
         auto source = fixture.Read();
-        NativeRelation native(Adj::Cell2Node, cells, nodes, fixture.values);
+        MeshAdjacency native(Adj::Cell2Node, cells, nodes, fixture.values);
         CHECK_THROWS(native.Read(cells, other.nodes));
-        RelationGhostRoute wrongDomain(other.cells), wrongKind(nodes);
+        EntityGhostMapping wrongDomain(other.cells), wrongKind(nodes);
         CHECK_THROWS(native.WithGhostRows(wrongDomain));
         CHECK_THROWS(native.WithGhostRows(wrongKind));
     }
@@ -121,7 +125,7 @@ TEST_CASE("Relation reader distinguishes absence unavailable globals and wrong e
             write.View()(2, 0) = remote;
         }
         auto global = fixture.Read();
-        auto converted = NativeRelation::Convert(global, Adj_PointToLocal);
+        auto converted = MeshAdjacency::Convert(global, Adj_PointToLocal);
         auto local = converted.Read();
         CHECK(local.ReadEntry(2, 0).unavailable);
         CHECK(local.ReadEntry(2, 0).global == remote);
@@ -130,7 +134,7 @@ TEST_CASE("Relation reader distinguishes absence unavailable globals and wrong e
         CHECK(local.Raw(2, 0) == -1 - remote);
     }
     else
-        CHECK_THROWS(RelationReadAccess(Adj::Cell2Node, cells, other.nodes, Adj_PointToLocal, fixture.values));
+        CHECK_THROWS(MeshAdjacencyRead(Adj::Cell2Node, cells, other.nodes, Adj_PointToLocal, fixture.values));
 }
 
 TEST_CASE("Moved relation reader rejects access while destination retains values and metadata")
@@ -159,16 +163,16 @@ TEST_CASE("Native inverse routes incidence owners with empty source and target r
     const auto cells = ownedNodes.CreateSibling(EntityKind::Cell, mpi.rank == mpi.size - 1 ? 1 : 0);
     auto nodes = ownedNodes.WithGhosts(mpi.size > 1 && mpi.rank == mpi.size - 1 ? std::vector<I>{0, 1} : std::vector<I>{});
     auto values = Rows(mpi.rank == mpi.size - 1 ? std::vector<std::vector<I>>{{0, 1, 1, UnInitIndex}} : std::vector<std::vector<I>>{});
-    RelationReadAccess cone(Adj::Cell2Node, cells, nodes, Adj_PointToGlobal, values);
+    MeshAdjacencyRead cone(Adj::Cell2Node, cells, nodes, Adj_PointToGlobal, values);
     auto inverse = MeshConnectivity::Inverse(cone, mpi);
     auto support = inverse.Read();
     CHECK(support.NumOwned() == (mpi.rank == 0 ? 2 : 0));
     for (I row = 0; row < support.NumOwned(); ++row)
         CHECK(support.GlobalRow(row) == std::vector<I>{0});
-    RelationGhostRoute route(nodes);
+    EntityGhostMapping route(nodes);
     auto ghosted = inverse.WithGhostRows(route);
-    CHECK(ghosted.Read().Rows() == nodes.NumLocal());
-    for (I row = 0; row < ghosted.Read().Rows(); ++row)
+    CHECK(ghosted.Read().RowCount() == nodes.NumLocal());
+    for (I row = 0; row < ghosted.Read().RowCount(); ++row)
         CHECK(ghosted.Read().GlobalRow(row) == std::vector<I>{0});
 }
 
@@ -201,15 +205,15 @@ TEST_CASE("Pinned setup mapping retains bounds conversion and moved-scope errors
     auto read = std::move(original);
     CHECK_THROWS(original.ReadEntry(0, 0));
     CHECK_THROWS(read.ReadEntry(-1, 0));
-    CHECK_THROWS(read.ReadEntry(read.Rows(), 0));
+    CHECK_THROWS(read.ReadEntry(read.RowCount(), 0));
     CHECK_THROWS(read.ReadEntry(1, 0));
     CHECK_THROWS(read.ConvertedIndex(0, 0, Adj_Unknown));
     CHECK_THROWS(fixture.nodes.LocalToGlobal(-1));
     CHECK_FALSE(fixture.nodes.GlobalToLocal(-1));
     CHECK_FALSE(fixture.nodes.GlobalToLocal(fixture.nodes.NumGlobal()));
-    auto local = NativeRelation::Convert(read, Adj_PointToLocal);
+    auto local = MeshAdjacency::Convert(read, Adj_PointToLocal);
     auto localRead = local.Read();
-    for (I row = 0; row < read.Rows(); ++row)
+    for (I row = 0; row < read.RowCount(); ++row)
         for (size_t slot = 0; slot < read.RowSize(row); ++slot)
         {
             const auto a = read.ReadEntry(row, slot), b = localRead.ReadEntry(row, slot);
@@ -225,14 +229,14 @@ TEST_CASE("Typed native halo route rejects stale entity orders")
     const auto mpi = RelationMPI();
     auto mesh = OverlapTest::BuildNativeFixture(mpi).mesh;
     const auto cells = mesh->Entities(EntityKind::Cell), nodes = mesh->Entities(EntityKind::Node);
-    std::optional<NativeRelation> native;
+    std::optional<MeshAdjacency> native;
     {
-        auto source = RelationReadAccess::Current(*mesh, Adj::Cell2Node, MeshReadRequirements::Primary());
-        native.emplace(NativeRelation::Convert(source, Adj_PointToGlobal));
+        auto source = MeshAdjacencyRead::Current(*mesh, Adj::Cell2Node, MeshReadRequirements::Primary());
+        native.emplace(MeshAdjacency::Convert(source, Adj_PointToGlobal));
         CHECK_FALSE(mesh->versions.CanMutate());
         CHECK_THROWS(mesh->versions.BeginMutation(R::Change::Distribution));
     }
-    RelationGhostRoute route(cells);
+    EntityGhostMapping route(cells);
     CHECK(route.Valid());
     {
         auto mutation = mesh->versions.BeginMutation(R::Change::Layout);

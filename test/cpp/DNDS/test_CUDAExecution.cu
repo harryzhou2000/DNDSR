@@ -30,19 +30,19 @@ struct Gate
 
 __global__ void Add(R::ArrayView<double> u, double value)
 {
-    for (size_t row = blockIdx.x; row < u.Rows(); row += gridDim.x)
+    for (size_t row = blockIdx.x; row < u.RowCount(); row += gridDim.x)
         for (size_t col = threadIdx.x; col < u.RowSize(row); col += blockDim.x)
             u(row, col) += value;
 }
 __global__ void Scale(R::ArrayView<const double> in, R::ArrayView<double> out, double factor)
 {
-    for (size_t row = blockIdx.x; row < out.Rows(); row += gridDim.x)
+    for (size_t row = blockIdx.x; row < out.RowCount(); row += gridDim.x)
         for (size_t col = threadIdx.x; col < out.RowSize(row); col += blockDim.x)
             out(row, col) = in(row, col) * factor;
 }
 __global__ void CoreStencil(R::ArrayView<const int64_t> neighbors, R::ArrayView<const double> owned, R::ArrayView<double> out)
 {
-    for (size_t row = blockIdx.x; row < neighbors.Rows(); row += gridDim.x)
+    for (size_t row = blockIdx.x; row < neighbors.RowCount(); row += gridDim.x)
         for (size_t col = threadIdx.x; col < out.RowSize(row); col += blockDim.x)
         {
             double sum = 0;
@@ -53,9 +53,9 @@ __global__ void CoreStencil(R::ArrayView<const int64_t> neighbors, R::ArrayView<
 }
 __global__ void RingUpdate(R::ArrayView<const double> ghost, R::ArrayView<double> out)
 {
-    for (size_t row = blockIdx.x; row < ghost.Rows(); row += gridDim.x)
+    for (size_t row = blockIdx.x; row < ghost.RowCount(); row += gridDim.x)
         for (size_t col = threadIdx.x; col < ghost.RowSize(row); col += blockDim.x)
-            out(out.Rows() - ghost.Rows() + row, col) = ghost(row, col);
+            out(out.RowCount() - ghost.RowCount() + row, col) = ghost(row, col);
 }
 
 __device__ bool Rendezvous(int *flag, int *failure)
@@ -81,7 +81,7 @@ __global__ void ConcurrentMock(R::ArrayView<const double> owned, R::ArrayView<do
         Rendezvous(&flags(0, communication ? 1 : 0), &flags(0, 3));
     }
     __syncthreads();
-    for (size_t i = threadIdx.x; i < output.Rows() * output.width; i += blockDim.x)
+    for (size_t i = threadIdx.x; i < output.RowCount() * output.width; i += blockDim.x)
     {
         const auto row = i / output.width, col = i % output.width;
         output(row, col) = communication ? owned(13 * row, col) : 2 * owned(row, col);
@@ -103,17 +103,17 @@ static void LaunchAdd(R::ExecutionContext context, R::ArrayView<double> u)
 
 __global__ void RestrictLevel(R::ArrayView<const double> fine, R::ArrayView<double> coarse)
 {
-    for (size_t row = blockIdx.x; row < coarse.Rows(); row += gridDim.x)
+    for (size_t row = blockIdx.x; row < coarse.RowCount(); row += gridDim.x)
         for (size_t col = threadIdx.x; col < coarse.RowSize(row); col += blockDim.x)
         {
-            const auto left = 2 * row, right = left + 1 < fine.Rows() ? left + 1 : left;
+            const auto left = 2 * row, right = left + 1 < fine.RowCount() ? left + 1 : left;
             coarse(row, col) = 0.25 * (fine(left, col) + fine(right, col));
         }
 }
 
 __global__ void ProlongLevel(R::ArrayView<const double> coarse, R::ArrayView<double> fine)
 {
-    for (size_t row = blockIdx.x; row < fine.Rows(); row += gridDim.x)
+    for (size_t row = blockIdx.x; row < fine.RowCount(); row += gridDim.x)
         for (size_t col = threadIdx.x; col < fine.RowSize(row); col += blockDim.x)
             fine(row, col) += coarse(row / 2, col);
 }
@@ -145,7 +145,7 @@ TEST_CASE("CUDA dynamic multilevel temporaries join independent readers before f
         R::Array<double> host(R::RowLayout::Dense(257, 7, 9));
         {
             auto w = host.Write();
-            for (size_t i = 0; i < host.Rows(); ++i)
+            for (size_t i = 0; i < host.RowCount(); ++i)
                 for (size_t j = 0; j < 7; ++j)
                     w.At(i, j) = j + 1;
         }
@@ -175,7 +175,7 @@ TEST_CASE("CUDA dynamic multilevel temporaries join independent readers before f
                 auto consumer = level % 2 ? second : first;
                 consumer.WaitFor(producer.Record());
                 levels.push_back(R::AllocateArrayAsync<double>(engine, consumer,
-                                                               R::RowLayout::Dense((levels.back().Rows() + 1) / 2, 7, 9)));
+                                                               R::RowLayout::Dense((levels.back().RowCount() + 1) / 2, 7, 9)));
                 R::SubmitArrays(engine, consumer, [](R::ExecutionContext c, auto fine, auto coarse)
                                 {
                     RestrictLevel<<<7, 32, 0, static_cast<cudaStream_t>(c.stream)>>>(fine, coarse);
@@ -219,10 +219,10 @@ TEST_CASE("CUDA dynamic multilevel temporaries join independent readers before f
             auto result = outputs[cycle].To(R::Device::Host()), observed = diagnostics[cycle].To(R::Device::Host());
             auto r = result.Read(), d = observed.Read();
             const double factor = 2.0 - 1.0 / (size_t(1) << (depth - 1));
-            for (size_t i = 0; i < result.Rows(); ++i)
+            for (size_t i = 0; i < result.RowCount(); ++i)
                 for (size_t j = 0; j < 7; ++j)
                     CHECK(r.At(i, j) == factor * (j + 1) * (cycle + 1));
-            for (size_t i = 0; i < observed.Rows(); ++i)
+            for (size_t i = 0; i < observed.RowCount(); ++i)
                 for (size_t j = 0; j < 7; ++j)
                     CHECK(d.At(i, j) == double((j + 1) * (cycle + 1)) / (size_t(1) << (depth - 2)));
         }
@@ -714,7 +714,7 @@ TEST_CASE("Backend allocation resources receive the final selected free stream a
     gate.Enqueue(engine, a);
     R::SubmitArrays(engine, a, [](R::ExecutionContext c, R::ArrayView<double> u)
                     {
-        DNDS_check_throw_info(cudaMemsetAsync(u.data, 0, u.Rows() * u.stride * sizeof(double), static_cast<cudaStream_t>(c.stream)) == cudaSuccess,
+        DNDS_check_throw_info(cudaMemsetAsync(u.data, 0, u.RowCount() * u.stride * sizeof(double), static_cast<cudaStream_t>(c.stream)) == cudaSuccess,
                               "test initialization failed");
         LaunchAdd(c, u); }, R::Write(array));
     engine.ReleaseOn(std::move(array), a);

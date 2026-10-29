@@ -64,12 +64,12 @@ namespace DNDS::Runtime
         inline std::vector<Serializer::ByteMemorySegment> IOSegments(const RowLayout &layout, size_t bytes)
         {
             std::vector<Serializer::ByteMemorySegment> segments;
-            for (size_t row = 0; row < layout.Rows(); ++row)
+            for (index row = 0; row < layout.RowCount(); ++row)
             {
-                const auto count = CheckedSize::Multiply(layout.RowSize(row), bytes);
+                const auto count = CheckedSize::Multiply(size_t(layout.RowSize(row)), bytes);
                 if (!count)
                     continue;
-                const auto start = CheckedSize::Multiply(layout.Offset(row), bytes);
+                const auto start = CheckedSize::Multiply(size_t(layout.Offset(row)), bytes);
                 if (!segments.empty() && segments.back().offset + segments.back().size == DNDS::index(start))
                     segments.back().size += DNDS::index(count);
                 else
@@ -160,11 +160,11 @@ namespace DNDS::Runtime
         const bool perRank = serializer->IsPerRank();
         const auto bytes = schema.Extent();
         Detail::IOAgree(name + ":" + schema.Identity() + ":" + schema.Definition() + ":" + std::to_string(Detail::NativeByteOrder()), mpi, perRank);
-        bool valid = bytes && layout.Rows() <= size_t(INT64_MAX) && storage.Bytes() <= size_t(INT64_MAX) && storage.GetDevice() == Device::Host();
+        bool valid = bytes && layout.RowCount() <= size_t(INT64_MAX) && storage.Bytes() <= size_t(INT64_MAX) && storage.GetDevice() == Device::Host();
         valid = valid && (layout.IsVariable() || layout.Width() <= size_t(INT64_MAX) / bytes);
         valid = valid && storage.Bytes() / bytes == layout.Elements() && storage.Bytes() % bytes == 0;
         size_t elements = 0;
-        for (size_t row = 0; row < layout.Rows(); ++row)
+        for (size_t row = 0; row < layout.RowCount(); ++row)
         {
             valid = valid && layout.RowSize(row) <= size_t(INT64_MAX) / bytes && layout.RowSize(row) <= SIZE_MAX - elements;
             if (valid)
@@ -187,7 +187,7 @@ namespace DNDS::Runtime
             MPI_Allreduce(MPI_IN_PLACE, &dense, 1, MPI_INT, MPI_MIN, mpi.comm);
         if (dense)
             Detail::IOAgree(std::to_string(layout.Width()), mpi, perRank);
-        const auto rows = Detail::IOCounts(DNDS::index(layout.Rows()), mpi, perRank);
+        const auto rows = Detail::IOCounts(DNDS::index(layout.RowCount()), mpi, perRank);
         const auto counts = Detail::IOCounts(DNDS::index(elements), mpi, perRank);
         const auto globalRows = Detail::IOSum(rows, rows.size()), globalElements = Detail::IOSum(counts, counts.size());
         Detail::IOCheck(globalElements <= INT64_MAX / DNDS::index(bytes) && globalRows < INT64_MAX, mpi, perRank, "native Array file size overflow");
@@ -208,13 +208,13 @@ namespace DNDS::Runtime
         serializer->WriteIndex("row_width", dense ? DNDS::index(layout.Width()) : -1);
         serializer->WriteIndex("rows_global", globalRows);
         serializer->WriteIndex("elements_global", globalElements);
-        serializer->WriteIndexVector("row_counts", {DNDS::index(layout.Rows())}, Serializer::ArrayGlobalOffset_Parts);
+        serializer->WriteIndexVector("row_counts", {DNDS::index(layout.RowCount())}, Serializer::ArrayGlobalOffset_Parts);
         if (!dense)
         {
             std::vector<DNDS::index> offsets;
-            offsets.reserve(layout.Rows() + 1);
+            offsets.reserve(layout.RowCount() + 1);
             DNDS::index cursor = elementStart;
-            for (size_t row = 0; row < layout.Rows(); ++row)
+            for (size_t row = 0; row < layout.RowCount(); ++row)
             {
                 offsets.push_back(cursor);
                 cursor += DNDS::index(layout.RowSize(row));
@@ -226,8 +226,8 @@ namespace DNDS::Runtime
         serializer->WriteByteSegments("values", read->View<uint8_t>().data, DNDS::index(storage.Bytes()), segments,
                                       perRank ? Serializer::ArrayGlobalOffset_Unknown : Serializer::ArrayGlobalOffset_Parts);
     }
-    template <class T, class L>
-    void WriteArray(const Array<T, L> &array, Serializer::SerializerBaseSSP serializer,
+    template <class T>
+    void WriteArray(const Array<T> &array, Serializer::SerializerBaseSSP serializer,
                     const std::string &name, const MPIInfo &mpi, const std::string &requestedSchema = {})
     {
         DNDS_check_throw_info(serializer, "null Array serializer");
@@ -373,8 +373,8 @@ namespace DNDS::Runtime
         try
         {
             layout = selectLayout ? selectLayout(logical) : logical;
-            valid = layout.Rows() == logical.Rows();
-            for (size_t row = 0; valid && row < layout.Rows(); ++row)
+            valid = layout.RowCount() == logical.RowCount();
+            for (size_t row = 0; valid && row < layout.RowCount(); ++row)
                 valid = layout.RowSize(row) == logical.RowSize(row);
             valid = valid && CheckedSize::Multiply(layout.Elements(), bytes) <= size_t(INT64_MAX);
             if (valid)
@@ -392,7 +392,7 @@ namespace DNDS::Runtime
             auto region = perRank ? Serializer::ArrayGlobalOffset_Unknown : data;
             serializer->ReadByteSegments(dataPath, pointer, DNDS::index(result->Bytes()), segments, region);
             if (endian != Detail::NativeByteOrder())
-                for (size_t row = 0; row < layout.Rows(); ++row)
+                for (size_t row = 0; row < layout.RowCount(); ++row)
                     schema.SwapWords(pointer + layout.Offset(row) * bytes, layout.RowSize(row));
         }
         return {std::move(layout), std::move(*result)};
@@ -410,7 +410,7 @@ namespace DNDS::Runtime
                 return logical;
             else
             {
-                std::vector<size_t> lengths(logical.Rows());
+                std::vector<size_t> lengths(logical.RowCount());
                 for (size_t row = 0; row < lengths.size(); ++row)
                     lengths[row] = logical.RowSize(row);
                 RowLayout result;
@@ -422,7 +422,7 @@ namespace DNDS::Runtime
                     DNDS_check_throw_info(logical.IsVariable() || logical.Width() == width, "native Array saved row width differs");
                     for (auto length : lengths)
                         DNDS_check_throw_info(length == width, "native Array rows are not the requested uniform width");
-                    result = RowLayout::Dense(logical.Rows(), width, L::row_stride == DynamicExtent ? width : L::row_stride);
+                    result = RowLayout::Dense(logical.RowCount(), width, L::row_stride == DynamicExtent ? width : L::row_stride);
                 }
                 else if constexpr (L::layout_kind == RowLayoutKind::Padded)
                 {

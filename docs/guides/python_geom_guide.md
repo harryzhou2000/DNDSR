@@ -443,7 +443,7 @@ The removed APIs include `publish_native`, `use_legacy_workspace`, mutable raw
 mesh topology, in-place `AdjGlobal2Local*` / `AdjLocal2Global*`, the SerialRW
 input/partition chain, `SetPeriodicGeometry`, and writable bulk `TransformCoords`.
 Use native construction, tracked geometry/edit operations, or C++ detached
-`NativeRelation::Convert`; live compute topology stays local.
+`MeshAdjacency::Convert`; live compute topology stays local.
 
 EulerP's intentional Roe entropy-threshold correction uses total Roe speed,
 matching the existing Euler convention, rather than signed normal velocity.

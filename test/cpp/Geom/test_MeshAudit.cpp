@@ -78,7 +78,7 @@ TEST_CASE("Audit batch 2: native smoothers preserve zero displacement and coordi
     CHECK(workspace->TotalMoved() == 0);
     auto displacement = workspace->Displacement().owned.Read();
     DNDS::real normSquared = 0;
-    for (size_t row = 0; row < displacement.View().Rows(); ++row)
+    for (size_t row = 0; row < displacement.View().RowCount(); ++row)
         for (size_t component = 0; component < 3; ++component)
             normSquared += std::pow(displacement.View()(row, component), 2);
     MPI_Allreduce(MPI_IN_PLACE, &normSquared, 1, DNDS_MPI_REAL, MPI_SUM, mpi.comm);
@@ -94,7 +94,7 @@ TEST_CASE("Audit batch 2: native smoothers preserve zero displacement and coordi
         CHECK(mesh->Coord(row) == before[size_t(row)]);
     // Escaped value leases retain the old diagnostic allocation even after the
     // workspace's source association has been superseded by publication.
-    for (size_t row = 0; row < displacement.View().Rows(); ++row)
+    for (size_t row = 0; row < displacement.View().RowCount(); ++row)
         for (size_t component = 0; component < 3; ++component)
             CHECK(displacement.View()(row, component) == 0);
 }

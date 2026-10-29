@@ -16,10 +16,10 @@ namespace DNDS::Geom
     void MeshReadAccess::Validate(const MeshReadRequirements &requirements, MeshAuditOptions audit) const
     {
         auto total = [](const auto &pair)
-        { return pair.owned.Rows() + pair.ghost.Rows(); };
+        { return pair.owned.RowCount() + pair.ghost.RowCount(); };
         auto sameRows = [](const auto &a, const auto &b)
         {
-            return a.owned.Rows() == b.owned.Rows() && a.ghost.Rows() == b.ghost.Rows();
+            return a.owned.RowCount() == b.owned.RowCount() && a.ghost.RowCount() == b.ghost.RowCount();
         };
         auto width = [](const auto &pair, size_t expected)
         {
@@ -103,14 +103,14 @@ namespace DNDS::Geom
             if (requirements.edges)
                 elementRows(_storage.edgeElemInfo, edgeRows, 1);
         }
-        const size_t sourceOwned[]{cellRows.owned.Rows(), bndRows.owned.Rows(), bndRows.owned.Rows(), cellRows.owned.Rows(),
-                                   _storage.coords.owned.Rows(), _storage.coords.owned.Rows(), cellRows.owned.Rows(),
-                                   faceRows.owned.Rows(), faceRows.owned.Rows(), faceRows.owned.Rows(), bndRows.owned.Rows(),
-                                   cellRows.owned.Rows(), edgeRows.owned.Rows(), edgeRows.owned.Rows(), cellRows.owned.Rows()};
-        const size_t sourceGhost[]{cellRows.ghost.Rows(), bndRows.ghost.Rows(), bndRows.ghost.Rows(), cellRows.ghost.Rows(),
-                                   _storage.coords.ghost.Rows(), _storage.coords.ghost.Rows(), cellRows.ghost.Rows(),
-                                   faceRows.ghost.Rows(), faceRows.ghost.Rows(), faceRows.ghost.Rows(), bndRows.ghost.Rows(),
-                                   cellRows.ghost.Rows(), edgeRows.ghost.Rows(), edgeRows.ghost.Rows(), cellRows.ghost.Rows()};
+        const size_t sourceOwned[]{cellRows.owned.RowCount(), bndRows.owned.RowCount(), bndRows.owned.RowCount(), cellRows.owned.RowCount(),
+                                   _storage.coords.owned.RowCount(), _storage.coords.owned.RowCount(), cellRows.owned.RowCount(),
+                                   faceRows.owned.RowCount(), faceRows.owned.RowCount(), faceRows.owned.RowCount(), bndRows.owned.RowCount(),
+                                   cellRows.owned.RowCount(), edgeRows.owned.RowCount(), edgeRows.owned.RowCount(), cellRows.owned.RowCount()};
+        const size_t sourceGhost[]{cellRows.ghost.RowCount(), bndRows.ghost.RowCount(), bndRows.ghost.RowCount(), cellRows.ghost.RowCount(),
+                                   _storage.coords.ghost.RowCount(), _storage.coords.ghost.RowCount(), cellRows.ghost.RowCount(),
+                                   faceRows.ghost.RowCount(), faceRows.ghost.RowCount(), faceRows.ghost.RowCount(), bndRows.ghost.RowCount(),
+                                   cellRows.ghost.RowCount(), edgeRows.ghost.RowCount(), edgeRows.ghost.RowCount(), cellRows.ghost.RowCount()};
         const size_t targetCounts[]{nodeCount, nodeCount, cellCount, cellCount, cellCount, bndCount,
                                     faceCount, nodeCount, cellCount, bndCount, faceCount,
                                     edgeCount, nodeCount, cellCount, cellCount};
@@ -122,10 +122,10 @@ namespace DNDS::Geom
                 DNDS_check_throw_info((_storage.isPeriodic && FaceIDIsPeriodic(_storage.faceElemInfo(face, 0).zone)) || faceCells(face, 0) < 0 ||
                                           faceCells(face, 0) != faceCells(face, 1),
                                       "only a periodic face can reference the same cell on both sides");
-            for (size_t i = 0; i < (requirements.allFaceCellsLocal ? faceCount : faceRows.owned.Rows()); ++i)
+            for (size_t i = 0; i < (requirements.allFaceCellsLocal ? faceCount : faceRows.owned.RowCount()); ++i)
                 requiredFaces[i] = true;
             const auto &cellFaces = _storage.relations[static_cast<size_t>(MeshRelation::CellFaces)];
-            for (size_t i = 0; i < cellFaces.owned.Rows(); ++i)
+            for (size_t i = 0; i < cellFaces.owned.RowCount(); ++i)
                 for (size_t j = 0; j < cellFaces.RowSize(i); ++j)
                 {
                     const auto face = cellFaces(i, j);
@@ -142,7 +142,7 @@ namespace DNDS::Geom
             if (!_storage.relationPresent[r])
                 continue;
             const auto &relation = _storage.relations[r];
-            DNDS_check_throw_info(relation.owned.Rows() == sourceOwned[r] && relation.ghost.Rows() == sourceGhost[r],
+            DNDS_check_throw_info(relation.owned.RowCount() == sourceOwned[r] && relation.ghost.RowCount() == sourceGhost[r],
                                   "mesh relation owned/ghost rows differ from source entity space");
             if (_context.device != Runtime::Device::Host())
                 continue;
@@ -158,7 +158,7 @@ namespace DNDS::Geom
                     // convention. Inverse support lists can be incomplete even
                     // for owned nodes unless a wider cell closure was requested.
                     bool unavailableAllowed = !requireLocal &&
-                                              (i >= relation.owned.Rows() || kind == MeshRelation::NodeCells ||
+                                              (i >= relation.owned.RowCount() || kind == MeshRelation::NodeCells ||
                                                kind == MeshRelation::NodeBoundaries);
                     bool absentAllowed = kind == MeshRelation::FaceBoundaries ||
                                          kind == MeshRelation::BoundaryFaces ||
@@ -172,15 +172,18 @@ namespace DNDS::Geom
                         DNDS_check_throw_info(j != 1 || external == (target == UnInitIndex),
                                               "mesh face second-cell sentinel disagrees with its boundary zone");
                     }
-                    DNDS_check_throw_info(validLocal || (target == UnInitIndex && absentAllowed) ||
-                                              (target < 0 && unavailableAllowed),
-                                          "mesh relation target is not a valid local entity or permitted sentinel");
+                    if (!(validLocal || (target == UnInitIndex && absentAllowed) ||
+                          (target < 0 && unavailableAllowed)))
+                        DNDS_check_throw_info(false, fmt::format(
+                                                         "mesh relation {} row {}/{} slot {} target {} is not a valid local entity "
+                                                         "(local count {}) or permitted sentinel",
+                                                         static_cast<int>(kind), i, total(relation), j, target, targetCounts[r]));
                 }
         }
         auto periodicShape = [&](const auto &bits, MeshRelation kind)
         {
             const auto &relation = _storage.relations[static_cast<size_t>(kind)];
-            DNDS_check_throw_info(bits.owned.Rows() == relation.owned.Rows() && bits.ghost.Rows() == relation.ghost.Rows(),
+            DNDS_check_throw_info(bits.owned.RowCount() == relation.owned.RowCount() && bits.ghost.RowCount() == relation.ghost.RowCount(),
                                   "mesh periodic row distribution mismatch");
             if (_context.device == Runtime::Device::Host())
                 for (size_t i = 0; i < total(relation); ++i)
@@ -198,7 +201,7 @@ namespace DNDS::Geom
                 {
                     const auto &cellFaces = _storage.relations[static_cast<size_t>(MeshRelation::CellFaces)];
                     const auto &faceCells = _storage.relations[static_cast<size_t>(MeshRelation::FaceCells)];
-                    for (size_t cell = 0; cell < cellFaces.owned.Rows(); ++cell)
+                    for (size_t cell = 0; cell < cellFaces.owned.RowCount(); ++cell)
                         for (size_t slot = 0; slot < cellFaces.RowSize(cell); ++slot)
                         {
                             const auto face = cellFaces(cell, slot);

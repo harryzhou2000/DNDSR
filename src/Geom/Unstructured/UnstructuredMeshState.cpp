@@ -103,13 +103,13 @@ namespace DNDS::Geom
             }
             auto outgoing = Runtime::Array<index>::FromSharedStorage(builder.Commit());
             MPI_Alltoall(presence.data(), 1, MPI_INT, incoming.data(), 1, MPI_INT, mpi.comm);
-            std::vector<std::vector<size_t>> send(size_t(mpi.size)), receive(size_t(mpi.size));
+            std::vector<std::vector<index>> send(size_t(mpi.size)), receive(size_t(mpi.size));
             for (int peer = 0; peer < mpi.size; ++peer)
             {
                 if (presence[size_t(peer)])
-                    send[size_t(peer)].push_back(size_t(peer));
+                    send[size_t(peer)].push_back(index(peer));
                 if (incoming[size_t(peer)])
-                    receive[size_t(peer)].push_back(size_t(peer));
+                    receive[size_t(peer)].push_back(index(peer));
             }
             auto context = std::make_shared<Runtime::CommunicationContext>(mpi.comm);
             auto route = Runtime::RowTransferPlan::Known(context, size_t(mpi.size), size_t(mpi.size), std::move(send), std::move(receive));
@@ -123,7 +123,7 @@ namespace DNDS::Geom
                              {
                 std::unordered_set<index> unique;
                 auto values = received.Read();
-                for (size_t row = 0; row < values.View().Rows(); ++row)
+                for (size_t row = 0; row < values.View().RowCount(); ++row)
                     for (size_t slot = 0; slot < values.View().RowSize(row); ++slot)
                         DNDS_check_throw_info(unique.insert(values.View()(row, slot)).second,
                                               "duplicate persistent ID owned by different ranks"); });
@@ -133,7 +133,7 @@ namespace DNDS::Geom
                 auto global = space.LocalToGlobal(space.NumOwned() + row);
                 requests.push_back({space.Owner(global), space.OwnerLocalRow(global), size_t(row)});
             }
-            Runtime::RowTransferPlan ghostRoute(context, ids.Rows(), size_t(space.NumGhost()), requests);
+            Runtime::RowTransferPlan ghostRoute(context, ids.RowCount(), size_t(space.NumGhost()), requests);
             Runtime::Array<index> expected(Runtime::RowLayout::Dense(size_t(space.NumGhost()), 1));
             Runtime::PayloadPlan(ghostRoute, ids.Layout(), expected.Layout(), Runtime::ElementSchema::Arithmetic<index>())
                 .Bind(ids, expected, Runtime::TransferTransport::Direct, options)
@@ -179,13 +179,13 @@ namespace DNDS::Geom
             space.Validate();
             EntitySpace::CheckCommunicator(space._mpi.comm, mpi.comm);
             DNDS_check_throw_info(space.Kind() == kind && space.MeshIdentity() == nodes->second.MeshIdentity() &&
-                                      pair->owned.Layout().Rows() == size_t(space.NumOwned()) &&
-                                      pair->ghost.Layout().Rows() == size_t(space.NumGhost()),
+                                      pair->owned.Layout().RowCount() == size_t(space.NumOwned()) &&
+                                      pair->ghost.Layout().RowCount() == size_t(space.NumGhost()),
                                   "native publication entity order or row extent mismatch");
             auto id = ids.find(kind);
             DNDS_check_throw_info(id != ids.end() && id->second.GetDevice() == Runtime::Device::Host() &&
                                       !id->second.Layout().IsVariable() && id->second.Layout().Width() == 1 &&
-                                      id->second.Layout().Rows() == size_t(space.NumLocal()),
+                                      id->second.Layout().RowCount() == size_t(space.NumLocal()),
                                   "native persistent-ID rows do not match their entity family");
             auto read = id->second.Read();
             std::unordered_set<index> ownedIds;
@@ -213,9 +213,9 @@ namespace DNDS::Geom
             for (const auto &[kind, values] : data.provenance->sourceIds)
             {
                 DNDS_check_throw_info(spaces.count(kind) && values.GetDevice() == Runtime::Device::Host() &&
-                                          values.Rows() == size_t(spaces.at(kind).NumOwned()), "provenance rows differ from owned destination family");
+                                          values.RowCount() == size_t(spaces.at(kind).NumOwned()), "provenance rows differ from owned destination family");
                 auto read = std::make_shared<Runtime::Array<index>::ReadLease>(values.Read());
-                for (size_t row = 0; row < values.Rows(); ++row)
+                for (size_t row = 0; row < values.RowCount(); ++row)
                     for (auto value : read->View()[row])
                         DNDS_check_throw_info(value >= 0 && value != UnInitIndex, "invalid source persistent ID in provenance");
                 result->_provenanceReads.push_back(std::move(read));
@@ -227,15 +227,15 @@ namespace DNDS::Geom
             key.Validate();
             const auto source = spaces.find(key.from), target = spaces.find(key.to);
             DNDS_check_throw_info(source != spaces.end() && target != spaces.end(), "named relation entity family is missing");
-            DNDS_check_throw_info(relation.rows.owned.Rows() == size_t(source->second.NumOwned()) &&
-                                      relation.rows.ghost.Rows() == size_t(source->second.NumGhost()),
+            DNDS_check_throw_info(relation.rows.owned.RowCount() == size_t(source->second.NumOwned()) &&
+                                      relation.rows.ghost.RowCount() == size_t(source->second.NumGhost()),
                                   "named relation rows differ from canonical source space");
-            auto read = RelationReadAccess(key, source->second, target->second, relation.state,
+            auto read = MeshAdjacencyRead(key, source->second, target->second, relation.state,
                                            relation.rows.owned, &relation.rows.ghost);
             // A legacy descriptor names one fixed facade definition. A named
             // copy may use different storage/index encoding, but may not change
             // ordered slots or absent sentinels behind that same exact key.
-            const std::pair<AdjKind, MeshRelation> aliases[]{
+            const std::pair<AdjacencyDescriptor, MeshRelation> aliases[]{
                 {Adj::Cell2Node, MeshRelation::CellNodes}, {Adj::Bnd2Node, MeshRelation::BoundaryNodes},
                 {Adj::Bnd2Cell, MeshRelation::BoundaryCells}, {Adj::Cell2Cell, MeshRelation::CellCells},
                 {Adj::Node2Cell, MeshRelation::NodeCells}, {Adj::Node2Bnd, MeshRelation::NodeBoundaries},
@@ -252,11 +252,11 @@ namespace DNDS::Geom
                         relation.rows.owned.SharedStorage() == fixed.owned.SharedStorage() &&
                         relation.rows.ghost.SharedStorage() == fixed.ghost.SharedStorage())
                         break; // Exact retained layout/value aliases already checked above.
-                    auto fixedRead = RelationReadAccess(key, source->second, target->second, Adj_PointToLocal,
+                    auto fixedRead = MeshAdjacencyRead(key, source->second, target->second, Adj_PointToLocal,
                                                         fixed.owned, &fixed.ghost);
-                    DNDS_check_throw_info(read.Rows() == fixedRead.Rows(),
+                    DNDS_check_throw_info(read.RowCount() == fixedRead.RowCount(),
                                           "named relation duplicates a facade definition with different source rows");
-                    for (index row = 0; row < read.Rows(); ++row)
+                    for (index row = 0; row < read.RowCount(); ++row)
                     {
                         DNDS_check_throw_info(read.RowSize(row) == fixedRead.RowSize(row),
                                               "named relation contradicts ordered facade slots for the same definition");
@@ -467,14 +467,14 @@ namespace DNDS::Geom
         const auto &old = Snapshot(Runtime::Device::Host()).Live();
         auto check = [&](const Runtime::ArrayPair<real> &pair)
         {
-            DNDS_check_throw_info(pair.owned.Rows() == size_t(NumOwned(EntityKind::Node)) &&
-                                      pair.ghost.Rows() == size_t(NumGhost(EntityKind::Node)),
+            DNDS_check_throw_info(pair.owned.RowCount() == size_t(NumOwned(EntityKind::Node)) &&
+                                      pair.ghost.RowCount() == size_t(NumGhost(EntityKind::Node)),
                                   "native geometry replacement changes node extent");
             for (const auto *array : {&pair.owned, &pair.ghost})
             {
                 DNDS_check_throw_info(array->GetDevice() == Runtime::Device::Host(), "native geometry requires host buffers");
                 auto read = array->Read();
-                for (size_t row = 0; row < array->Rows(); ++row)
+                for (size_t row = 0; row < array->RowCount(); ++row)
                 {
                     DNDS_check_throw_info(read.View().RowSize(row) == 3, "native geometry row requires three components");
                     for (size_t component = 0; component < 3; ++component)
@@ -520,20 +520,20 @@ namespace DNDS::Geom
         return result;
     }
 
-    RelationReadAccess UnstructuredMeshState::Relation(const AdjKind &key) const
+    MeshAdjacencyRead UnstructuredMeshState::Relation(const AdjacencyDescriptor &key) const
     {
         Validate();
         const auto found = _namedRelations.find(key);
         DNDS_check_throw_info(found != _namedRelations.end(), "named relation definition is not published");
         const auto &relation = found->second.data;
-        return RelationReadAccess(key, Entities(key.from), Entities(key.to), relation.state,
-                                  relation.rows.owned, &relation.rows.ghost);
+        return MeshAdjacencyRead(key, Entities(key.from), Entities(key.to), relation.state,
+                                 relation.rows.owned, &relation.rows.ghost);
     }
 
-    std::vector<AdjKind> UnstructuredMeshState::RelationKeys() const
+    std::vector<AdjacencyDescriptor> UnstructuredMeshState::RelationKeys() const
     {
         Validate();
-        std::vector<AdjKind> result;
+        std::vector<AdjacencyDescriptor> result;
         result.reserve(_namedRelations.size());
         for (const auto &[key, unused] : _namedRelations)
             result.push_back(key);
@@ -586,7 +586,7 @@ namespace DNDS::Geom
     index UnstructuredMeshState::OriginalEntityId(EntityKind kind, index row) const
     {
         auto found = _originalReads.find(kind);
-        DNDS_check_throw_info(found != _originalReads.end() && row >= 0 && size_t(row) < found->second->Layout().Rows(),
+        DNDS_check_throw_info(found != _originalReads.end() && row >= 0 && size_t(row) < found->second->Layout().RowCount(),
                               "original entity ID outside published family");
         return found->second->View()(size_t(row), 0);
     }
