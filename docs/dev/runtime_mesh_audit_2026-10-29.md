@@ -303,6 +303,17 @@ yet benchmarked. Earlier measurements below remain historical evidence.
     no unit registrations and is not credited; the corrected exact filter uses
     `--no-tests=error`.
 
+37. A local GCC 13.3 code-generation check compares literal pointer loops with
+    borrowed FixedRows<5,5> and dynamic-width TableRows views under this build's
+    release flags. Neither view loop reads CSR/shape metadata or ownership/lease
+    state. Whole functions are not byte-identical: the nullable-base handling
+    adds an entry branch which this compiler hoists before the loops. Fixed
+    raw/view functions are 343/370 bytes; table raw/view are 269/326 bytes.
+    This supports the hot-loop boundary, not a claim of zero total wrapper cost,
+    universal compiler equivalence, GPU code generation or measured speedup.
+    Source, compiler command, function-section hashes and disassembly provenance
+    are retained in the plan repository and local audit data.
+
 ## Responsibility and abstraction review
 
 Performance acceptance also requires preserving these boundaries. Do not move
