@@ -125,6 +125,25 @@ TEST_CASE("Five layout policies produce distinct typed views and share dynamic s
     R::Array<int> dense(R::RowLayout::Dense(2, 2, 3));
     CHECK(dense.Read().template View<R::PaddedRows>().RowSize(1) == 2);
     CHECK(dense.Read().template View<R::CSRRows>().RowSize(1) == 2);
+    {
+        auto write = dense.Write();
+        const auto table = write.View<R::TableRows, true>();
+        const auto csr = write.View<R::CSRRows, true>();
+        std::fill_n(table.data, 6, -91);
+        for (DNDS::index iRow = 0; iRow < 2; ++iRow)
+        {
+            CHECK(csr[iRow].size() == 2);
+            CHECK(csr[iRow].data() == table.data + iRow * 3);
+            csr[iRow][0] = int(10 + iRow);
+            csr(iRow, 1) = int(20 + iRow);
+        }
+        CHECK(table(0, 0) == 10);
+        CHECK(table(0, 1) == 20);
+        CHECK(table(1, 0) == 11);
+        CHECK(table(1, 1) == 21);
+        CHECK(table.data[2] == -91);
+        CHECK(table.data[5] == -91);
+    }
     R::Array<int> irregularPadded(R::RowLayout::Padded({1, 2}, 2));
     R::Array<int> irregularCSR(R::RowLayout::Ragged({1, 2}));
     CHECK_THROWS(irregularPadded.Read().template View<R::TableRows>());

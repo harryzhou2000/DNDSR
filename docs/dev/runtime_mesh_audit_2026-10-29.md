@@ -292,6 +292,17 @@ yet benchmarked. Earlier measurements below remain historical evidence.
     rejects shared or pinned shape buffers and requires explicit detachment;
     independent value allocations do not imply unique row metadata.
 
+36. Plan 25 described table-to-CSR access as using computed offsets
+    `iRow * width`. A table can have a larger physical stride. The implementation
+    already preserves that stride and exposes only the logical row width;
+    the plan now describes this correctly. The typed-view test additionally
+    writes a strided two-by-two table through checked CSR spans and direct
+    indexing, verifies independent row values and leaves both padding canaries
+    intact. The rebuilt Runtime Array unit registration passes; no production
+    code or benchmark snapshot changes. An initial `_np1` CTest filter matched
+    no unit registrations and is not credited; the corrected exact filter uses
+    `--no-tests=error`.
+
 ## Responsibility and abstraction review
 
 Performance acceptance also requires preserving these boundaries. Do not move
