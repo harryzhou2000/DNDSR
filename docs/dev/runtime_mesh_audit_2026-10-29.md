@@ -21,9 +21,15 @@ high-lift parallel setup is 0.121258/0.127253 s legacy/native (1.049443x),
 cube 0.705614/0.596028 s (0.844694x). All twelve case gates pass, including
 every high-lift rank's ordered original-cell-ID state records. High-lift's
 normal-order median is 1.037332x but reverse order remains 1.078315x; robust
-performance acceptance stays open. Lower controls `12403617` are running.
-The new scan candidate has no matched timing result yet. Earlier measurements
-remain historical; no individual optimization gain is inferred across jobs.
+performance acceptance stays open. Lower controls `12403617` completed 0:0:
+all twelve gates pass; native/legacy high-lift ratios at np2/4/16 are
+0.523490/0.643794/0.918376, cube 0.656960/0.667069/0.779906. Those controls
+use the preceding direct-metadata binary. Pinned-scan job `12403744` is running
+on n1814 with all source/mesh hashes verified, the changed CPP recompiled and
+a distinct native binary (`1de5a6da` prefix). Its first high-lift pair passes
+the strict logical gate; the complete matched timing result is pending.
+Earlier measurements remain historical; no individual optimization gain is
+inferred across jobs.
 
 ## Findings
 
