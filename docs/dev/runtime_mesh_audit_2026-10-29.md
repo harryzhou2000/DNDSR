@@ -351,6 +351,19 @@ measurements remain historical.
     complete native settings now separate fixture validity from payload tests.
     No production implementation changes are made by this checkpoint.
 
+41. The remaining adjacency scan re-read invariant state/bounds and called the
+    owned source-number mapping per row. It now caches those facts within the
+    existing pinned scope and uses the validated contiguous owned interval;
+    ghost rows retain their exact mapping lookup. Global range, sorted and self
+    errors accumulate during the read-only scan, then reject before setting the
+    validated flag. Local bounds/encoding checks still precede indexed lookups.
+    This changes error reporting order when multiple different errors coexist,
+    not which inputs are accepted. Public random access, every descriptor and
+    association/extent check, and independent leases remain unchanged. No
+    unchecked public path or caller-side copy of validation rules is added.
+    The previously passing scalar/ghost-only oracles and existing alias cases
+    also pass this candidate at np1/2/4/8 (4/4). Broad checks/timing are pending.
+
 ## Responsibility and abstraction review
 
 Performance acceptance also requires preserving these boundaries. Do not move
