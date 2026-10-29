@@ -182,7 +182,8 @@ construction and FV initialization.
     the new candidate passes the full CPU/MPI selection 204/204 in 222.79 s and
     focused native connectivity np1/2/4/8. The np4 SA smoke matches the
     closure-tree checkpoint exactly in topology, representation and tested
-    finite numerical fields. Python rebuild/validation is in progress.
+    finite numerical fields. Rebuilt/installed CUDA Python passes all 44 Geom
+    tests at np1 and on each np2 rank, with no skips.
 29. Tree evaluation transferred remote adjacency rows, then publication could
     transfer the exact same rows again. The registry now retains the last
     fetched frontier per descriptor. Reuse requires the exact ordered canonical
@@ -229,8 +230,21 @@ construction and FV initialization.
     rules and exposes no unchecked-access flag. New tests exercise all 24
     descriptor permutations in global/local states, ghost rows, independent
     retained-scope lifetime, invalid sorted/self/range/association constraints
-    and failed-acquisition cleanup. Validation and timing are pending for this
-    candidate; the frozen cycle/remap benchmark is a separate checkpoint.
+    and failed-acquisition cleanup. Checkpoint `b6470cff` passes CPU 204/204,
+    focused 16/16, exact np4 SA topology/representation/finite-field parity,
+    rebuilt/installed Python Geom+transient 57/57 at np1 and on each np2 rank,
+    CUDA runtime/engine 2/2 and two-GPU transfer 28/28 per rank, with no skips.
+    Timing is pending; the completed cycle/remap benchmark is separate.
+
+33. Direct Array handle queries still dereferenced null storage after move or
+    explicit ordered release, although MPI binding preflight already rejected
+    these handles. `ArrayHandle` now checks storage at its host boundary;
+    `IsValid()` returns false, while read/write/layout/copy/placement queries
+    throw. Repeated release stays idempotent and Reset restores a usable handle.
+    Moved access scopes also reject a null layout. Borrowed views gain no
+    checks. Tests cover table/padded/CSR handles, both move and explicit release,
+    retained read lifetime, rejected source/destination copies, cleanup and
+    successful reset. Validation is pending for this separate safety checkpoint.
 
 ## Responsibility and abstraction review
 
