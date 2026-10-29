@@ -58,11 +58,21 @@ namespace DNDS::Geom
             auto layout = source.Layout();
             if (reorderRows && layout.IsVariable())
             {
-                std::vector<size_t> sizes(layout.RowCount());
-                for (size_t oldRow = 0; oldRow < layout.RowCount(); ++oldRow)
-                    sizes[size_t(oldToNew[oldRow])] = layout.RowSize(oldRow);
-                layout = layout.IsPadded() ? Runtime::RowLayout::Padded(sizes, layout.Stride())
-                                           : Runtime::RowLayout::Ragged(sizes);
+                // The caller supplies a validated permutation. When every row
+                // keeps the destination's existing length, the complete shape
+                // is unchanged (including uniform CSR/padded rows). Share its
+                // immutable metadata; values are still moved independently.
+                bool sameShape = true;
+                for (index iRow = 0; sameShape && iRow < layout.RowCount(); ++iRow)
+                    sameShape = layout.RowSize(iRow) == layout.RowSize(oldToNew[size_t(iRow)]);
+                if (!sameShape)
+                {
+                    std::vector<size_t> sizes(layout.RowCount());
+                    for (index iRow = 0; iRow < layout.RowCount(); ++iRow)
+                        sizes[size_t(oldToNew[size_t(iRow)])] = size_t(layout.RowSize(iRow));
+                    layout = layout.IsPadded() ? Runtime::RowLayout::Padded(sizes, layout.Stride())
+                                               : Runtime::RowLayout::Ragged(sizes);
+                }
             }
             Runtime::Array<T> result(layout);
             auto input = source.Read();

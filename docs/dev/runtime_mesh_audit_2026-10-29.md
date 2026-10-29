@@ -275,6 +275,17 @@ remain historical evidence rather than current acceptance claims.
     Python 57/57 at np1 and each np2 rank, and CFV device-transferable 1/1.
     Matched timing is pending; the preceding safety checkpoint is unchanged.
 
+35. The remap profile measures about 5 ms of row-layout work on reader rank
+    zero. A permutation often leaves the complete logical row-length vector
+    unchanged, especially uniform CSR cones. The row-movement helper now tests
+    that exact property through RowLayout queries and shares the existing
+    immutable metadata on a match. Changed shapes use the previous rebuild.
+    Values are still independently allocated, permuted and remapped; layout
+    kind, capacity, route validation and row-shape checks are preserved. This
+    introduces no new API or global scratch and applies at every rank count.
+    Existing uniform/variable/padded, periodic and empty-rank transition
+    scenarios will verify the result; candidate validation/timing are pending.
+
 ## Responsibility and abstraction review
 
 Performance acceptance also requires preserving these boundaries. Do not move
