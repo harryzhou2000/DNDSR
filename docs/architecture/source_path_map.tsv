@@ -144,8 +144,8 @@ src/Geom/Mesh/Mesh_Serial_Partition.cpp	src/Geom/Compat/UnstructuredMeshSerialPa
 src/Geom/Mesh/Mesh_WallDist.cpp	src/Geom/Geometry/MeshWallDistance.cpp
 src/Geom/Mesh/Mesh_bind.cpp	src/Geom/Unstructured/UnstructuredMesh_bind.cpp
 src/Geom/Mesh/Mesh_bind.hpp	src/Geom/Unstructured/UnstructuredMesh_bind.hpp
-src/Geom/Mesh/NativeConnectivity.cpp	src/Geom/Connectivity/NativeConnectivity.cpp
-src/Geom/Mesh/NativeConnectivity.hpp	src/Geom/Connectivity/NativeConnectivity.hpp
+src/Geom/Mesh/AdjacencyRegistry.cpp	src/Geom/Connectivity/AdjacencyRegistry.cpp
+src/Geom/Mesh/AdjacencyRegistry.hpp	src/Geom/Connectivity/AdjacencyRegistry.hpp
 src/Geom/Mesh/NativeMeshArchive.cpp	src/Geom/IO/NativeMeshArchive.cpp
 src/Geom/Mesh/NativeMeshArchive.hpp	src/Geom/IO/NativeMeshArchive.hpp
 src/Geom/Mesh/NativeMeshAssembler.cpp	src/Geom/Transition/NativeMeshAssembler.cpp

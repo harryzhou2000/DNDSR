@@ -1,4 +1,4 @@
-#include "Geom/Connectivity/NativeConnectivity.hpp"
+#include "Geom/Connectivity/AdjacencyRegistry.hpp"
 #include "Geom/Connectivity/NativePeriodicMatch.hpp"
 #include "Geom/Connectivity/ConnectivityInterpolateRows.hpp"
 #include "Geom/Transition/FieldTransfer.hpp"
@@ -36,7 +36,7 @@ namespace DNDS::Geom
         }
     }
 
-    RelationPeriodicBits::RelationPeriodicBits(const RelationReadAccess &relation, Runtime::Array<NodePeriodicBits> owned,
+    RelationPeriodicBits::RelationPeriodicBits(const MeshAdjacencyRead &relation, Runtime::Array<NodePeriodicBits> owned,
                                                std::optional<Runtime::Array<NodePeriodicBits>> ghost)
         : _source(relation.Source()), _target(relation.Target()), _kind(relation.Kind()),
           _owned(std::move(owned)), _ghost(std::move(ghost)), _ownedRead(_owned.Read())
@@ -52,20 +52,20 @@ namespace DNDS::Geom
         }
         Validate(relation);
     }
-    void RelationPeriodicBits::Validate(const RelationReadAccess &relation) const
+    void RelationPeriodicBits::Validate(const MeshAdjacencyRead &relation) const
     {
         if (_meshRead)
             (void)_meshRead->HostView();
         DNDS_check_throw_info(_source.SameOrder(relation.Source()) && _target.SameOrder(relation.Target()) && _kind == relation.Kind(),
                               "periodic companion belongs to another relation/order");
-        DNDS_check_throw_info(_view.owned.Rows() == size_t(relation.NumOwned()) &&
-                                  _view.owned.Rows() + _view.ghost.Rows() == size_t(relation.Rows()),
+        DNDS_check_throw_info(_view.owned.RowCount() == size_t(relation.NumOwned()) &&
+                                  _view.owned.RowCount() + _view.ghost.RowCount() == size_t(relation.RowCount()),
                               "periodic companion row extent differs from relation");
-        for (index row = 0; row < relation.Rows(); ++row)
+        for (index row = 0; row < relation.RowCount(); ++row)
             DNDS_check_throw_info(_view.RowSize(size_t(row)) == relation.RowSize(row), "periodic companion slots differ from relation");
     }
 
-    void NativeConnectivity::ValidateCollectively(const std::function<void()> &validate) const
+    void AdjacencyRegistry::ValidateCollectively(const std::function<void()> &validate) const
     {
         int valid = 1;
         try
@@ -79,7 +79,7 @@ namespace DNDS::Geom
         MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, _mpi.comm);
         DNDS_check_throw_info(valid, "native connectivity setup validation failed on a rank");
     }
-    void NativeConnectivity::Register(RelationReadAccess relation)
+    void AdjacencyRegistry::Register(MeshAdjacencyRead relation)
     {
         relation.Validate();
         relation.CheckCommunicator(_mpi.comm);
@@ -93,18 +93,18 @@ namespace DNDS::Geom
         }
         _spaces.emplace(relation.Source().Kind(), relation.Source());
         _spaces.emplace(relation.Target().Kind(), relation.Target());
-        _relations.emplace(kind, std::make_shared<RelationReadAccess>(std::move(relation)));
+        _relations.emplace(kind, std::make_shared<MeshAdjacencyRead>(std::move(relation)));
     }
-    std::shared_ptr<const RelationReadAccess> NativeConnectivity::Find(const AdjKind &kind) const
+    std::shared_ptr<const MeshAdjacencyRead> AdjacencyRegistry::Find(const AdjacencyDescriptor &kind) const
     {
         kind.Validate();
         const auto found = _relations.find(kind);
         return found == _relations.end() ? nullptr : found->second;
     }
 
-    Runtime::Array<index> NativeConnectivity::Fetch(const RelationReadAccess &relation, const std::vector<index> &globals,
-                                                    const Runtime::RowTransferPlan *reusedRoute,
-                                                    std::shared_ptr<Runtime::CommunicationContext> context) const
+    Runtime::Array<index> AdjacencyRegistry::Fetch(const MeshAdjacencyRead &relation, const std::vector<index> &globals,
+                                                   const Runtime::RowTransferPlan *reusedRoute,
+                                                   std::shared_ptr<Runtime::CommunicationContext> context) const
     {
         std::vector<Runtime::RowRequest> requests;
         ValidateCollectively([&]
@@ -117,7 +117,7 @@ namespace DNDS::Geom
                 // Registration retains immutable input leases. Share globally
                 // indexed native storage; convert local numbering once per
                 // relation, rather than rebuilding every owned row per hop.
-                const auto *owned = dynamic_cast<const RelationReadAccess::ArrayHold *>(relation._owned.get());
+                const auto *owned = dynamic_cast<const MeshAdjacencyRead::ArrayHold *>(relation._owned.get());
                 if (relation.State() == Adj_PointToGlobal && owned)
                     _fetchValues.emplace(relation.Kind(), owned->array);
                 else
@@ -144,7 +144,7 @@ namespace DNDS::Geom
                                        {relation.Source().Stamp(), relation.Target().Stamp()});
         return Transfer(route, values, context);
     }
-    GhostResult NativeConnectivity::Evaluate(const CompiledGhostTree &tree) const
+    GhostResult AdjacencyRegistry::Evaluate(const CompiledGhostTree &tree) const
     {
         // Compare the compiled schedule before entering its per-hop collectives.
         // Equal schedules are a collective caller requirement, checked here.
@@ -201,7 +201,7 @@ namespace DNDS::Geom
             };
             std::vector<PendingHop> pending(hops.size());
             std::vector<size_t> hopRelation(hops.size(), SIZE_MAX);
-            std::vector<const RelationReadAccess *> relations;
+            std::vector<const MeshAdjacencyRead *> relations;
             int valid = 1;
             try
             {
@@ -235,11 +235,11 @@ namespace DNDS::Geom
                         auto &output = sets[size_t(entry.nodeId)];
                         const auto &parentValues = sets[size_t(entry.parentId)];
                         const auto &sourceView = relation._view.owned;
-                        const size_t sourceElements = sourceView.offsets ? sourceView.offsets[sourceView.Rows()]
-                                                                         : sourceView.Rows() * sourceView.stride;
-                        const size_t averageRow = sourceView.Rows()
-                                                      ? std::max<size_t>(1, (sourceElements + sourceView.Rows() - 1) /
-                                                                                sourceView.Rows())
+                        const size_t sourceElements = sourceView.offsets ? sourceView.offsets[sourceView.RowCount()]
+                                                                         : sourceView.RowCount() * sourceView.stride;
+                        const size_t averageRow = sourceView.RowCount()
+                                                      ? std::max<size_t>(1, (sourceElements + sourceView.RowCount() - 1) /
+                                                                                sourceView.RowCount())
                                                       : 1;
                         // Each branch starts empty. Reserve for local and remote
                         // expansions once; SortUnique later owns the exact shape.
@@ -408,7 +408,7 @@ namespace DNDS::Geom
         return result;
     }
 
-    EntitySpace NativeConnectivity::MakeSpace(EntityKind kind, index owned, const EntitySpace &anchor)
+    EntitySpace AdjacencyRegistry::MakeSpace(EntityKind kind, index owned, const EntitySpace &anchor)
     {
         auto global = std::make_shared<GlobalOffsetsMapping>();
         global->setMPIAlignBcast(anchor._mpi, owned);
@@ -420,12 +420,12 @@ namespace DNDS::Geom
         return result;
     }
 
-    NativeInterpolation NativeConnectivity::Interpolate(const RelationReadAccess &cone, EntityKind entityKind,
-                                                        const SubEntityQueryPbi &query, const OwnershipResolverMulti &resolver,
-                                                        const RelationPeriodicBits *periodic)
+    NativeInterpolation AdjacencyRegistry::Interpolate(const MeshAdjacencyRead &cone, EntityKind entityKind,
+                                                       const SubEntityQueryPbi &query, const OwnershipResolverMulti &resolver,
+                                                       const RelationPeriodicBits *periodic)
     {
         const auto mpi = cone.MPI();
-        NativeConnectivity setup(mpi);
+        AdjacencyRegistry setup(mpi);
         std::optional<ConnectivityRows::SubEntityRows> rows;
         std::vector<std::vector<NodePeriodicBits>> nodeBits, parentBits;
 
@@ -438,13 +438,13 @@ namespace DNDS::Geom
             DNDS_check_throw_info(cone.Target().Kind() == EntityKind::Node && entityKind != cone.Source().Kind() &&
                                       (entityKind == EntityKind::Face || entityKind == EntityKind::Edge) && bool(query.numSubEntities) && bool(query.describe) &&
                                       bool(query.extractNodes) && bool(resolver), "invalid native interpolation query/kinds");
-            DNDS_check_throw_info(cone.Rows() == cone.Source().NumLocal(), "interpolation requires every parent ghost row");
+            DNDS_check_throw_info(cone.RowCount() == cone.Source().NumLocal(), "interpolation requires every parent ghost row");
             if (periodic)
             {
                 periodic->Validate(cone);
                 DNDS_check_throw_info(bool(query.extractPbi), "periodic interpolation requires ordered bit extraction");
             }
-            for (index row = 0; row < cone.Rows(); ++row)
+            for (index row = 0; row < cone.RowCount(); ++row)
             {
                 DNDS_check_throw_info(query.numSubEntities(row) >= 0, "negative subentity count");
                 for (int sub = 0; sub < query.numSubEntities(row); ++sub)
@@ -461,7 +461,7 @@ namespace DNDS::Geom
             // node. This is the same predicate as ReadEntry().unavailable.
             const auto requireLocalTarget = [&](const Runtime::ArrayView<const index> &view)
             {
-                for (size_t row = 0; row < view.Rows(); ++row)
+                for (size_t row = 0; row < view.RowCount(); ++row)
                 {
                     const auto count = view.RowSize(row);
                     const auto *values = count ? view.Row(row) : nullptr;
@@ -526,12 +526,12 @@ namespace DNDS::Geom
             {
                 DNDS_check_throw_info(slot >= 0 && size_t(slot) < cone.RowSize(row), "node extraction slot outside cone");
                 return localIndex(row, size_t(slot));
-            }, enumeration, cone.Rows(), cone.Target().NumLocal()));
+            }, enumeration, cone.RowCount(), cone.Target().NumLocal()));
             nodeBits.resize(size_t(rows->nEntities));
-            parentBits.resize(size_t(cone.Rows()));
+            parentBits.resize(size_t(cone.RowCount()));
             if (periodic)
             {
-                for (index parent = 0; parent < cone.Rows(); ++parent)
+                for (index parent = 0; parent < cone.RowCount(); ++parent)
                 {
                     parentBits[size_t(parent)].resize(rows->parent2entity[size_t(parent)].size());
                     for (size_t sub = 0; sub < rows->parent2entity[size_t(parent)].size(); ++sub)
@@ -565,9 +565,9 @@ namespace DNDS::Geom
                     }
                 }
             }
-            parentGlobal.resize(size_t(cone.Rows()));
-            parentOwner.resize(size_t(cone.Rows()));
-            for (index parent = 0; parent < cone.Rows(); ++parent)
+            parentGlobal.resize(size_t(cone.RowCount()));
+            parentOwner.resize(size_t(cone.RowCount()));
+            for (index parent = 0; parent < cone.RowCount(); ++parent)
             {
                 parentGlobal[size_t(parent)] = cone.Source().LocalToGlobal(parent);
                 parentOwner[size_t(parent)] = cone.Source().Owner(parentGlobal[size_t(parent)]);
@@ -653,8 +653,8 @@ namespace DNDS::Geom
                       outgoing.begin() + sendOffsets[size_t(peer)]);
         MPI_Alltoallv(outgoing.data(), sendCounts.data(), sendOffsets.data(), DNDS_MPI_INDEX,
                       incoming.data(), receiveCounts.data(), receiveOffsets.data(), DNDS_MPI_INDEX, mpi.comm);
-        std::vector<std::vector<index>> p2e(size_t(cone.Rows()));
-        for (index parent = 0; parent < cone.Rows(); ++parent)
+        std::vector<std::vector<index>> p2e(size_t(cone.RowCount()));
+        for (index parent = 0; parent < cone.RowCount(); ++parent)
             for (auto entity : rows->parent2entity[size_t(parent)])
             {
                 const auto output = oldToOwned[size_t(entity)];
@@ -693,13 +693,13 @@ namespace DNDS::Geom
             for (index parent = 0; parent < cone.NumOwned(); ++parent)
                 for (auto entity : p2e[size_t(parent)])
                     DNDS_check_throw_info(entity != UnInitIndex, "interpolation owner did not resolve an owned parent slot"); });
-        NativeRelation parentRelation({cone.Source().Kind(), entityKind}, cone.Source(), entities, BuildRows(p2e, 0, size_t(cone.NumOwned())));
+        MeshAdjacency parentRelation({cone.Source().Kind(), entityKind}, cone.Source(), entities, BuildRows(p2e, 0, size_t(cone.NumOwned())));
         // Complete appended parent rows from their owners, including entities
         // seen only through ghost parents. An exposed row never carries a
         // fabricated boundary sentinel for a merely unresolved remote entity.
-        RelationGhostRoute parentRoute(cone.Source());
+        EntityGhostMapping parentRoute(cone.Source());
         parentRelation = parentRelation.WithGhostRows(parentRoute);
-        NativeInterpolation result{entities, std::move(parentRelation), NativeRelation({entityKind, cone.Target().Kind()}, entities, cone.Target(), BuildRows(e2n, 0, e2n.size())), NativeRelation({entityKind, cone.Source().Kind()}, entities, cone.Source(), BuildRows(e2p, 0, e2p.size())), {}, {}, {}, BuildRows(info, 0, info.size())};
+        NativeInterpolation result{entities, std::move(parentRelation), MeshAdjacency({entityKind, cone.Target().Kind()}, entities, cone.Target(), BuildRows(e2n, 0, e2n.size())), MeshAdjacency({entityKind, cone.Source().Kind()}, entities, cone.Source(), BuildRows(e2p, 0, e2p.size())), {}, {}, {}, BuildRows(info, 0, info.size())};
         if (periodic)
         {
             result.parent2entityPbi.emplace(BuildRows(parentBits, 0, size_t(cone.NumOwned())));
@@ -715,13 +715,13 @@ namespace DNDS::Geom
 {
     namespace
     {
-        const std::vector<std::pair<AdjKind, MeshRelation>> &MeshRelations()
+        const std::vector<std::pair<AdjacencyDescriptor, MeshRelation>> &MeshRelations()
         {
-            static const std::vector<std::pair<AdjKind, MeshRelation>> bindings{
+            static const std::vector<std::pair<AdjacencyDescriptor, MeshRelation>> bindings{
                 {Adj::Cell2Node, MeshRelation::CellNodes}, {Adj::Bnd2Node, MeshRelation::BoundaryNodes}, {Adj::Bnd2Cell, MeshRelation::BoundaryCells}, {Adj::Cell2Cell, MeshRelation::CellCells}, {Adj::Cell2CellFace, MeshRelation::CellFaceCells}, {Adj::Node2Cell, MeshRelation::NodeCells}, {Adj::Node2Bnd, MeshRelation::NodeBoundaries}, {Adj::Cell2Face, MeshRelation::CellFaces}, {Adj::Face2Node, MeshRelation::FaceNodes}, {Adj::Face2Cell, MeshRelation::FaceCells}, {Adj::Face2Bnd, MeshRelation::FaceBoundaries}, {Adj::Bnd2Face, MeshRelation::BoundaryFaces}, {Adj::Cell2Edge, MeshRelation::CellEdges}, {Adj::Edge2Node, MeshRelation::EdgeNodes}, {Adj::Edge2Cell, MeshRelation::EdgeCells}};
             return bindings;
         }
-        MeshRelation QueryRelation(AdjKind kind)
+        MeshRelation QueryRelation(AdjacencyDescriptor kind)
         {
             for (auto binding : MeshRelations())
                 if (binding.first == kind)
@@ -730,8 +730,8 @@ namespace DNDS::Geom
             return MeshRelation::Count;
         }
     }
-    RelationReadAccess::RelationReadAccess(AdjKind kind, std::shared_ptr<MeshReadAccess> meshRead,
-                                           EntitySpace source, EntitySpace target)
+    MeshAdjacencyRead::MeshAdjacencyRead(AdjacencyDescriptor kind, std::shared_ptr<MeshReadAccess> meshRead,
+                                         EntitySpace source, EntitySpace target)
         : _source(std::move(source)), _target(std::move(target)),
           _sourceLease(_source._versions.Read()), _targetLease(_target._versions.Read()), _kind(kind)
     {
@@ -744,12 +744,12 @@ namespace DNDS::Geom
         _owned = std::make_unique<MeshHold>(std::move(meshRead));
         Validate();
     }
-    RelationReadAccess RelationReadAccess::Current(UnstructuredMesh &mesh, AdjKind kind, MeshReadRequirements requirements)
+    MeshAdjacencyRead MeshAdjacencyRead::Current(UnstructuredMesh &mesh, AdjacencyDescriptor kind, MeshReadRequirements requirements)
     {
         auto read = std::make_shared<MeshReadAccess>(mesh.AcquireRead(requirements));
-        return RelationReadAccess(kind, std::move(read), mesh.Entities(kind.from), mesh.Entities(kind.to));
+        return MeshAdjacencyRead(kind, std::move(read), mesh.Entities(kind.from), mesh.Entities(kind.to));
     }
-    void NativeConnectivity::RegisterMesh(UnstructuredMesh &mesh, MeshReadRequirements requirements)
+    void AdjacencyRegistry::RegisterMesh(UnstructuredMesh &mesh, MeshReadRequirements requirements)
     {
         std::shared_ptr<MeshReadAccess> read;
         ValidateCollectively([&]
@@ -762,16 +762,16 @@ namespace DNDS::Geom
             auto view = read->HostView();
             for (auto binding : MeshRelations())
                 if (view.HasRelation(binding.second))
-                    Register(RelationReadAccess(binding.first, read, mesh.Entities(binding.first.from), mesh.Entities(binding.first.to)));
+                    Register(MeshAdjacencyRead(binding.first, read, mesh.Entities(binding.first.from), mesh.Entities(binding.first.to)));
             if (mesh.HasNativeState())
                 for (const auto &key : mesh.NativeRelationKeys())
                     if (!_relations.count(key))
                         Register(mesh.ReadNativeRelation(key)); });
     }
-    RelationPeriodicBits::RelationPeriodicBits(const RelationReadAccess &relation)
+    RelationPeriodicBits::RelationPeriodicBits(const MeshAdjacencyRead &relation)
         : _source(relation.Source()), _target(relation.Target()), _kind(relation.Kind())
     {
-        const auto *hold = dynamic_cast<const RelationReadAccess::MeshHold *>(relation._owned.get());
+        const auto *hold = dynamic_cast<const MeshAdjacencyRead::MeshHold *>(relation._owned.get());
         DNDS_check_throw_info(hold, "periodic companion requires a current-mesh relation scope");
         _meshRead = hold->read;
         DNDS_check_throw_info(_meshRead && _meshRead->HostView().IsPeriodic(), "periodic metadata needs a retained periodic mesh scope");
@@ -792,13 +792,13 @@ namespace DNDS::Geom
 
 namespace DNDS::Geom
 {
-    NativeGhostPublication NativeConnectivity::BuildGhosted(const GhostResult &discovery) const
+    AdjacencyGhostPublication AdjacencyRegistry::BuildGhosted(const GhostResult &discovery) const
     {
-        NativeGhostPublication result;
+        AdjacencyGhostPublication result;
         // The registry schedule, not local nonempty discovery, determines MPI
         // participation. Empty owners/requesters execute every route stage.
         std::vector<EntityKind> kinds;
-        std::vector<AdjKind> relations;
+        std::vector<AdjacencyDescriptor> relations;
         for (auto &entry : _spaces)
             kinds.push_back(entry.first);
         for (auto &entry : _relations)
@@ -842,9 +842,9 @@ namespace DNDS::Geom
                              space._global, std::move(ghosts), space._versions);
             next._publishedMaps = true;
             result.spaces.emplace(kind, std::move(next));
-            result.routes.emplace(kind, RelationGhostRoute(result.spaces.at(kind)));
+            result.routes.emplace(kind, EntityGhostMapping(result.spaces.at(kind)));
         }
-        using PayloadKey = std::tuple<EntityKind, EntityKind, MeshAdjState, uintptr_t, size_t, size_t, size_t, uintptr_t, uintptr_t>;
+        using PayloadKey = std::tuple<EntityKind, EntityKind, MeshAdjState, uintptr_t, size_t, size_t, size_t, uintptr_t, uintptr_t, uint64_t>;
         struct Payload
         {
             int ordinal;
@@ -858,8 +858,10 @@ namespace DNDS::Geom
             const auto kind = relations[ordinal];
             const auto &input = *_relations.at(kind);
             const auto &view = input._view.owned;
+            const auto &ghostMapping = result.routes.at(kind.from);
             const PayloadKey key{kind.from, kind.to, input.State(), reinterpret_cast<uintptr_t>(view.data), view.rows,
-                                 view.width, view.stride, reinterpret_cast<uintptr_t>(view.offsets), reinterpret_cast<uintptr_t>(view.sizes)};
+                                 view.width, view.stride, reinterpret_cast<uintptr_t>(view.offsets), reinterpret_cast<uintptr_t>(view.sizes),
+                                 ghostMapping.Identity()};
             auto cached = payloads.find(key);
             int candidate = cached != payloads.end() ? cached->second.ordinal : -1;
             // Every rank must reuse the SAME earlier transfer. Local hits on
@@ -869,7 +871,7 @@ namespace DNDS::Geom
             {
                 ValidateCollectively([&]
                                      {
-                    NativeRelation alias(kind, result.spaces.at(kind.from), result.spaces.at(kind.to), cached->second.owned);
+                    MeshAdjacency alias(kind, result.spaces.at(kind.from), result.spaces.at(kind.to), cached->second.owned);
                     alias._ghost.emplace(cached->second.ghost);
                     auto checked = alias.Read();
                     result.relations.emplace(kind, std::move(alias)); });
@@ -878,7 +880,7 @@ namespace DNDS::Geom
             std::optional<Runtime::Array<index>> values;
             ValidateCollectively([&]
                                  {
-                const auto *hold = dynamic_cast<const RelationReadAccess::ArrayHold *>(input._owned.get());
+                const auto *hold = dynamic_cast<const MeshAdjacencyRead::ArrayHold *>(input._owned.get());
                 if (input.State() == Adj_PointToGlobal && hold)
                     values = hold->array;
                 else
@@ -887,7 +889,7 @@ namespace DNDS::Geom
                         {
                             input.ConvertRowTo(index(row), Adj_PointToGlobal, output.data());
                         }, {}, true); });
-            NativeRelation owned(kind, result.spaces.at(kind.from), result.spaces.at(kind.to), std::move(*values));
+            MeshAdjacency owned(kind, result.spaces.at(kind.from), result.spaces.at(kind.to), std::move(*values));
             auto completed = owned.WithGhostRows(result.routes.at(kind.from));
             payloads.insert_or_assign(key, Payload{int(ordinal), completed.Owned(), *completed.Ghost()});
             result.relations.emplace(kind, std::move(completed));

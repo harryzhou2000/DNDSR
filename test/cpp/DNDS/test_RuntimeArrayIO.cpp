@@ -59,15 +59,15 @@ TEST_CASE("Native parallel checkpoint matching partitions and direct read")
     serializer->CloseFile();
     serializer->OpenFile(file, true);
     auto matching = ReadArray<double>(serializer, "state", mpi);
-    CHECK(matching.Rows() == localRows);
+    CHECK(matching.RowCount() == localRows);
     if (localRows)
         CHECK(matching.Read().At(2, 2) == 22);
     auto matchingState = ReadArray<double, FixedRows<7>>(serializer, "imported_state", mpi);
-    CHECK(matchingState.Rows() == localRows);
+    CHECK(matchingState.RowCount() == localRows);
     if (localRows)
         CHECK(matchingState.Read().At(2, 6) == 206);
     auto matchingPadded = ReadArray<double>(serializer, "padded", mpi);
-    CHECK(matchingPadded.Rows() == localRows);
+    CHECK(matchingPadded.RowCount() == localRows);
     if (localRows)
     {
         CHECK(matchingPadded.RowSize(1) == 0);
@@ -80,10 +80,10 @@ TEST_CASE("Native parallel checkpoint matching partitions and direct read")
     serializer->OpenFile(file, true);
     // Each rank may directly request any contiguous row partition, including overlap.
     auto direct = ReadArray<double>(serializer, "state", mpi, {1, 2});
-    CHECK(direct.Rows() == 1);
+    CHECK(direct.RowCount() == 1);
     CHECK(direct.Read().At(0, 2) == 22);
     auto directState = ReadArray<double, FixedRows<7>>(serializer, "imported_state", mpi, {1, 2});
-    CHECK(directState.Rows() == 1);
+    CHECK(directState.RowCount() == 1);
     CHECK(directState.Read().At(0, 6) == 206);
     auto directPadded = ReadArray<double>(serializer, "padded", mpi, {1, 2});
     CHECK(directPadded.RowSize(0) == 7);
@@ -91,7 +91,7 @@ TEST_CASE("Native parallel checkpoint matching partitions and direct read")
     serializer->CloseFile();
     serializer->OpenFile(file, true);
     auto even = ReadArray<double>(serializer, "state", mpi, S::ArrayGlobalOffset_EvenSplit);
-    int64_t total = even.Rows();
+    int64_t total = even.RowCount();
     MPI_Allreduce(MPI_IN_PLACE, &total, 1, MPI_INT64_T, MPI_SUM, mpi.comm);
     CHECK(total == 3);
     CHECK_THROWS(ReadArray<int32_t>(serializer, "state", mpi));
@@ -104,7 +104,7 @@ TEST_CASE("Native parallel checkpoint matching partitions and direct read")
         auto reader = std::make_shared<S::SerializerH5>(single);
         reader->OpenFile(file, true);
         auto all = ReadArray<double>(reader, "state", single, S::ArrayGlobalOffset_EvenSplit);
-        CHECK(all.Rows() == 3);
+        CHECK(all.RowCount() == 3);
         CHECK(all.Read().At(2, 1) == 21);
         if (mpi.size > 1)
             CHECK_THROWS(ReadArray<double>(reader, "state", single));
@@ -157,12 +157,12 @@ TEST_CASE("Parallel field bundle restores uneven reversed partitions with variab
         serializer->OpenFile(file, true);
         auto restored = ReadArray<double, FixedRows<6>>(serializer, "flow", mpi, partition);
         auto restoredStencil = ReadArray<int64_t>(serializer, "stencil", mpi, partition);
-        REQUIRE(restored.Rows() == size_t(counts[from]));
-        REQUIRE(restoredStencil.Rows() == restored.Rows());
+        REQUIRE(restored.RowCount() == size_t(counts[from]));
+        REQUIRE(restoredStencil.RowCount() == restored.RowCount());
         CHECK(restored.Layout().Stride() == 6); // Checkpoints carry logical rows, not capacity padding.
         auto u = restored.Read();
         auto c2c = restoredStencil.Read();
-        for (size_t i = 0; i < restored.Rows(); ++i)
+        for (size_t i = 0; i < restored.RowCount(); ++i)
         {
             const size_t global = offsets[from] + i;
             CHECK(restoredStencil.RowSize(i) == (global * 17) % 9);

@@ -1,5 +1,5 @@
 #include "Geom/Transition/NativeMeshAssembler.hpp"
-#include "Geom/Connectivity/NativeConnectivity.hpp"
+#include "Geom/Connectivity/AdjacencyRegistry.hpp"
 #include "Geom/Transition/FieldTransfer.hpp"
 #include "Geom/Transition/NativeMeshPartitionGraph.hpp"
 #include <iomanip>
@@ -10,16 +10,16 @@ namespace DNDS::Geom
     namespace
     {
         using RArray = Runtime::Array<index>;
-        const std::array<AdjKind, size_t(MeshRelation::Count)> &Bindings()
+        const std::array<AdjacencyDescriptor, size_t(MeshRelation::Count)> &Bindings()
         {
-            static const std::array<AdjKind, size_t(MeshRelation::Count)> result{
+            static const std::array<AdjacencyDescriptor, size_t(MeshRelation::Count)> result{
                 Adj::Cell2Node, Adj::Bnd2Node, Adj::Bnd2Cell, Adj::Cell2Cell,
                 Adj::Node2Cell, Adj::Node2Bnd, Adj::Cell2Face, Adj::Face2Node,
                 Adj::Face2Cell, Adj::Face2Bnd, Adj::Bnd2Face, Adj::Cell2Edge,
                 Adj::Edge2Node, Adj::Edge2Cell, Adj::Cell2CellFace};
             return result;
         }
-        AdjKind FacadeKey(size_t slot)
+        AdjacencyDescriptor FacadeKey(size_t slot)
         {
             auto key = Bindings()[slot];
             key.path = key.Path();
@@ -32,12 +32,12 @@ namespace DNDS::Geom
         }
         template <class T>
         Runtime::ArrayPair<T> Ghost(const Runtime::Array<T> &owned, EntityKind kind,
-                                    const NativeGhostPublication &publication, const Runtime::ElementSchema &schema)
+                                    const AdjacencyGhostPublication &publication, const Runtime::ElementSchema &schema)
         {
             const auto &space = publication.spaces.at(kind);
             auto ghost = publication.routes.at(kind).TransferRows(space, owned, schema);
             if (!owned.Layout().IsVariable())
-                ghost = Runtime::Array<T>::FromStorage(Runtime::RowLayout::Dense(ghost.Rows(), owned.Layout().Width()), ghost.Storage());
+                ghost = Runtime::Array<T>::FromStorage(Runtime::RowLayout::Dense(ghost.RowCount(), owned.Layout().Width()), ghost.Storage());
             return {owned, std::move(ghost)};
         }
         void Agree(const MPIInfo &mpi, const std::string &signature)
@@ -54,7 +54,7 @@ namespace DNDS::Geom
         template <class T>
         void CheckRows(const Runtime::Array<T> &array, const EntitySpace &space)
         {
-            DNDS_check_throw_info(array.GetDevice() == Runtime::Device::Host() && array.Rows() == size_t(space.NumOwned()),
+            DNDS_check_throw_info(array.GetDevice() == Runtime::Device::Host() && array.RowCount() == size_t(space.NumOwned()),
                                   "native assembly requires matching owned host rows");
             auto read = array.Read();
         }
@@ -65,7 +65,7 @@ namespace DNDS::Geom
     {
         DNDS_check_throw_info(cellLayers > 0, "mesh default requires a positive cell ring");
         auto spec = GhostSpec::defaultPrimary(cellLayers);
-        auto append = [&](EntityKind anchor, std::vector<AdjKind> hops)
+        auto append = [&](EntityKind anchor, std::vector<AdjacencyDescriptor> hops)
         { spec.chains.push_back({anchor, hops, hops.back().to}); };
         append(EntityKind::Cell, {Adj::Cell2Node});
         append(EntityKind::Bnd, {Adj::Bnd2Node});
@@ -95,23 +95,47 @@ namespace DNDS::Geom
             if (owned.ghostSpec && cellLayers > 0)
             {
                 bool collectsCells = false;
+                std::vector<GhostChain> expanded;
+                std::set<std::string> seen;
+                auto append = [&](GhostChain chain)
+                {
+                    std::string key = std::to_string(int(chain.anchor)) + "|" + std::to_string(int(chain.target)) + "|";
+                    for (const auto &hop : chain.hops)
+                        key += hop.Signature() + ";";
+                    if (seen.insert(std::move(key)).second)
+                        expanded.push_back(std::move(chain));
+                };
                 for (auto &chain : recipe.chains)
                 {
-                    if (chain.anchor != EntityKind::Cell) continue;
                     size_t prefix = 0;
-                    while (prefix < chain.hops.size() && chain.hops[prefix] == Adj::Cell2Cell) ++prefix;
-                    if (!prefix) continue;
-                    chain.hops.erase(chain.hops.begin(), chain.hops.begin() + prefix);
-                    chain.hops.insert(chain.hops.begin(), size_t(cellLayers), Adj::Cell2Cell);
-                    collectsCells |= chain.target == EntityKind::Cell;
+                    if (chain.anchor == EntityKind::Cell)
+                        while (prefix < chain.hops.size() && chain.hops[prefix] == Adj::Cell2Cell) ++prefix;
+                    if (!prefix)
+                    {
+                        collectsCells |= chain.anchor == EntityKind::Cell && chain.target == EntityKind::Cell;
+                        append(std::move(chain));
+                        continue;
+                    }
+                    std::vector<AdjacencyDescriptor> tail(chain.hops.begin() + std::ptrdiff_t(prefix), chain.hops.end());
+                    for (int depth = 1; depth <= cellLayers; ++depth)
+                    {
+                        std::vector<AdjacencyDescriptor> hops(size_t(depth), Adj::Cell2Cell);
+                        hops.insert(hops.end(), tail.begin(), tail.end());
+                        collectsCells |= chain.target == EntityKind::Cell;
+                        append({EntityKind::Cell, std::move(hops), chain.target});
+                    }
                 }
                 if (!collectsCells)
                 {
-                    std::vector<AdjKind> hops(size_t(cellLayers), Adj::Cell2Cell);
-                    recipe.chains.push_back({EntityKind::Cell, hops, EntityKind::Cell});
-                    hops.push_back(Adj::Cell2Node);
-                    recipe.chains.push_back({EntityKind::Cell, std::move(hops), EntityKind::Node});
+                    for (int depth = 1; depth <= cellLayers; ++depth)
+                    {
+                        std::vector<AdjacencyDescriptor> hops(size_t(depth), Adj::Cell2Cell);
+                        append({EntityKind::Cell, hops, EntityKind::Cell});
+                        hops.push_back(Adj::Cell2Node);
+                        append({EntityKind::Cell, std::move(hops), EntityKind::Node});
+                    }
                 }
+                recipe.chains = std::move(expanded);
             } });
         // All ranks must agree even if this recipe needs no depth override.
         Agree(mpi, std::to_string(cellLayers));
@@ -145,9 +169,9 @@ namespace DNDS::Geom
             // Validate each descriptor, but convert one retained payload once.
             using CaptureKey = std::tuple<uintptr_t, EntityKind, EntityKind, MeshAdjState>;
             std::map<CaptureKey, RArray> converted;
-            auto global = [&](const AdjKind &key, const Runtime::ArrayPair<index> &rows, MeshAdjState state)
+            auto global = [&](const AdjacencyDescriptor &key, const Runtime::ArrayPair<index> &rows, MeshAdjState state)
             {
-                RelationReadAccess read(key, source.Entities(key.from), source.Entities(key.to), state, rows.owned, &rows.ghost);
+                MeshAdjacencyRead read(key, source.Entities(key.from), source.Entities(key.to), state, rows.owned, &rows.ghost);
                 const CaptureKey identity{reinterpret_cast<uintptr_t>(rows.owned.SharedStorage().get()), key.from, key.to, state};
                 auto found = converted.find(identity);
                 if (found != converted.end()) return found->second;
@@ -231,7 +255,7 @@ namespace DNDS::Geom
                 CheckRows(owned.ids.at(kind), space);
                 {
                     auto ids = owned.ids.at(kind).Read();
-                    for (size_t row = 0; row < ids.View().Rows(); ++row)
+                    for (size_t row = 0; row < ids.View().RowCount(); ++row)
                         DNDS_check_throw_info(ids.View().RowSize(row) == 1, "native assembly IDs must have exactly one column");
                 }
                 schedule += "k" + std::to_string(int(kind)) + ":";
@@ -285,7 +309,7 @@ namespace DNDS::Geom
                 if (!bits) return;
                 auto read = bits->Read();
                 const auto shape = cone->Layout();
-                for (size_t row = 0; row < read.View().Rows(); ++row)
+                for (size_t row = 0; row < read.View().RowCount(); ++row)
                 {
                     DNDS_check_throw_info(read.View().RowSize(row) == shape.RowSize(row), "native assembly periodic cone slot count differs");
                     for (auto value : read.View()[row]) DNDS_check_throw_info(uint8_t(value) < 8, "native assembly periodic frame bits exceed three groups");
@@ -312,8 +336,8 @@ namespace DNDS::Geom
             }
             DNDS_check_throw_info(schedule.size() <= size_t(INT_MAX), "native assembly schedule exceeds MPI range"); });
         Agree(mpi, schedule);
-        NativeConnectivity connectivity(mpi);
-        std::map<AdjKind, RArray> relations;
+        AdjacencyRegistry connectivity(mpi);
+        std::map<AdjacencyDescriptor, RArray> relations;
         FieldTransferDetail::LocalStage(mpi, [&]
                                         {
             for (size_t slot = 0; slot < owned.relations.size(); ++slot)
@@ -326,8 +350,8 @@ namespace DNDS::Geom
             {
                 const auto coneSlot = slot == MeshRelation::NodeCells ? MeshRelation::CellNodes : MeshRelation::BoundaryNodes;
                 const auto &key = Bindings()[size_t(coneSlot)];
-                RelationReadAccess read(key, owned.spaces.at(key.from), owned.spaces.at(key.to), Adj_PointToGlobal, *owned.relations[size_t(coneSlot)]);
-                auto inverse = NativeConnectivity::Inverse(read, mpi);
+                MeshAdjacencyRead read(key, owned.spaces.at(key.from), owned.spaces.at(key.to), Adj_PointToGlobal, *owned.relations[size_t(coneSlot)]);
+                auto inverse = AdjacencyRegistry::Inverse(read, mpi);
                 relations.emplace(FacadeKey(size_t(slot)), inverse.Owned());
             }
         FieldTransferDetail::LocalStage(mpi, [&]
@@ -335,7 +359,7 @@ namespace DNDS::Geom
             for (const auto &[key, values] : relations)
                 try
                 {
-                    connectivity.Register(RelationReadAccess(key, owned.spaces.at(key.from), owned.spaces.at(key.to), Adj_PointToGlobal, values));
+                    connectivity.Register(MeshAdjacencyRead(key, owned.spaces.at(key.from), owned.spaces.at(key.to), Adj_PointToGlobal, values));
                 }
                 catch (const std::exception &error)
                 {
@@ -385,7 +409,7 @@ namespace DNDS::Geom
                     const auto view = read.View();
                     const auto scan = [&](const Runtime::ArrayView<const index> &part)
                     {
-                        for (size_t row = 0; row < part.Rows(); ++row)
+                        for (size_t row = 0; row < part.RowCount(); ++row)
                         {
                             const auto count = part.RowSize(row);
                             const auto *values = count ? part.Row(row) : nullptr;
@@ -427,7 +451,7 @@ namespace DNDS::Geom
         data.periodicInfo = owned.periodicInfo;
         using LocalKey = std::tuple<uintptr_t, uintptr_t, EntityKind, EntityKind, std::optional<size_t>>;
         std::map<LocalKey, Runtime::ArrayPair<index>> localized;
-        auto localRows = [&](const NativeRelation &relation, std::optional<size_t> uniform)
+        auto localRows = [&](const MeshAdjacency &relation, std::optional<size_t> uniform)
         {
             auto read = relation.Read();
             const LocalKey key{reinterpret_cast<uintptr_t>(relation.Owned().SharedStorage().get()),
@@ -442,7 +466,7 @@ namespace DNDS::Geom
                                                       { return read.RowSize(first + index(row)); }, [&](size_t row, auto output)
                                                       { read.ConvertRowTo(first + index(row), Adj_PointToLocal, output.data()); }, uniform, true);
             };
-            Runtime::ArrayPair<index> result{convert(0, read.NumOwned()), convert(read.NumOwned(), read.Rows() - read.NumOwned())};
+            Runtime::ArrayPair<index> result{convert(0, read.NumOwned()), convert(read.NumOwned(), read.RowCount() - read.NumOwned())};
             localized.emplace(key, result);
             return result;
         };
@@ -481,8 +505,8 @@ namespace DNDS::Geom
             FieldTransferDetail::LocalStage(mpi, [&]
                                             {
                 auto read = pair.ReadCombined();
-                RArray combined(Runtime::RowLayout::Dense(read.View().Rows(), 1));
-                { auto write = combined.Write(); for (size_t row = 0; row < read.View().Rows(); ++row) write.View()(row, 0) = read.View()(row, 0); }
+                RArray combined(Runtime::RowLayout::Dense(read.View().RowCount(), 1));
+                { auto write = combined.Write(); for (size_t row = 0; row < read.View().RowCount(); ++row) write.View()(row, 0) = read.View()(row, 0); }
                 ids.emplace(kind, std::move(combined));
                 spaces.emplace(kind, publication.spaces.at(kind)); });
         }

@@ -8,11 +8,15 @@
 #include "DNDS/Runtime/RowBuilder.hpp"
 #include <limits>
 #include <set>
+#include <atomic>
 
 namespace DNDS::Geom
 {
     namespace
     {
+        std::atomic<uint64_t> nativeCopyBulkCalls{0}, nativeCopyBulkRows{0};
+        std::atomic<uint64_t> nativeCopyRowCalls{0}, nativeCopyRowRows{0};
+
         void NativeRequire(bool condition)
         {
             DNDS_check_throw_info(condition, "invalid or unsupported native CGNS input");
@@ -60,7 +64,7 @@ namespace DNDS::Geom
 
         public:
             Draft() { Resize(0); }
-            index Size() const { return index(_draft ? _draft->Rows() : _view.Rows()); }
+            index Size() const { return index(_draft ? _draft->RowCount() : _view.RowCount()); }
             rowsize RowSize(index row) const
             {
                 DNDS_check_throw_info(row >= 0 && row < Size(), "native CGNS row out of bounds");
@@ -524,6 +528,23 @@ namespace DNDS::Geom
                 NativeRequire((*bnd2cellSerial)[iB][0] != DNDS::UnInitIndex);
         }
     } // anonymous namespace
+
+    NativeSerialCopyCounters GetNativeSerialCopyCounters()
+    {
+        return {nativeCopyBulkCalls.load(std::memory_order_relaxed),
+                nativeCopyBulkRows.load(std::memory_order_relaxed),
+                nativeCopyRowCalls.load(std::memory_order_relaxed),
+                nativeCopyRowRows.load(std::memory_order_relaxed)};
+    }
+
+    void ResetNativeSerialCopyCounters()
+    {
+        nativeCopyBulkCalls.store(0, std::memory_order_relaxed);
+        nativeCopyBulkRows.store(0, std::memory_order_relaxed);
+        nativeCopyRowCalls.store(0, std::memory_order_relaxed);
+        nativeCopyRowRows.store(0, std::memory_order_relaxed);
+    }
+
     NativeSerialMeshData ReadNativeCGNSSerial(const std::string &fName, int dimension, const t_FBCName_2_ID &FBCName_2_ID)
     {
         DNDS_check_throw_info(dimension == 2 || dimension == 3, "native CGNS dimension must be 2 or 3");
@@ -1063,16 +1084,16 @@ namespace DNDS::Geom
         FieldTransferDetail::LocalStage(mpi, [&]
                                         {
             DNDS_check_throw_info(!serial.periodic, "native serial ingress requires raw records before periodic canonicalization");
-            const auto nc = serial.cellNodes.Rows(), nn = serial.coordinates.Rows(), nb = serial.boundaryNodes.Rows();
+            const auto nc = serial.cellNodes.RowCount(), nn = serial.coordinates.RowCount(), nb = serial.boundaryNodes.RowCount();
             DNDS_check_throw_info(mpi.rank == readerRank || (nc == 0 && nn == 0 && nb == 0), "nonreader supplied native serial payload");
             if (mpi.rank != readerRank) return;
             DNDS_check_throw_info(nc <= size_t(INT64_MAX) && nn <= size_t(INT64_MAX) && nb <= size_t(INT64_MAX) &&
-                serial.cellInfo.Rows() == nc && serial.boundaryInfo.Rows() == nb && serial.cellIds.Rows() == nc &&
-                serial.nodeIds.Rows() == nn && serial.boundaryIds.Rows() == nb, "native serial row counts differ");
+                serial.cellInfo.RowCount() == nc && serial.boundaryInfo.RowCount() == nb && serial.cellIds.RowCount() == nc &&
+                serial.nodeIds.RowCount() == nn && serial.boundaryIds.RowCount() == nb, "native serial row counts differ");
             auto check = [&](const auto &array, size_t width)
             {
                 auto read = array.Read();
-                for (size_t row = 0; row < array.Rows(); ++row)
+                for (size_t row = 0; row < array.RowCount(); ++row)
                     DNDS_check_throw_info(read.View().RowSize(row) == width, "native serial companion width invalid");
             };
             check(serial.coordinates, 3); check(serial.cellInfo, 1); check(serial.boundaryInfo, 1);
@@ -1080,7 +1101,7 @@ namespace DNDS::Geom
             for (const auto *cone : {&serial.cellNodes, &serial.boundaryNodes})
             {
                 auto read = cone->Read();
-                for (size_t row = 0; row < cone->Rows(); ++row)
+                for (size_t row = 0; row < cone->RowCount(); ++row)
                     for (auto node : read.View()[row])
                         DNDS_check_throw_info(node >= 0 && uint64_t(node) < nn, "native serial cone node outside global range");
             }
@@ -1114,7 +1135,7 @@ namespace DNDS::Geom
         MPI_Bcast(&isPeriodic, 1, MPI_INT, readerRank, mpi.comm);
         index nodeHighWater = mpi.rank == readerRank && serial.identity.nextIds.count(EntityKind::Node) ? serial.identity.nextIds.at(EntityKind::Node) : 0;
         MPI_Bcast(&nodeHighWater, 1, DNDS_MPI_INDEX, readerRank, mpi.comm);
-        index counts[]{index(serial.cellNodes.Rows()), index(serial.coordinates.Rows()), index(serial.boundaryNodes.Rows())};
+        index counts[]{index(serial.cellNodes.RowCount()), index(serial.coordinates.RowCount()), index(serial.boundaryNodes.RowCount())};
         MPI_Bcast(counts, 3, MPI_INT64_T, readerRank, mpi.comm);
         auto context = std::make_shared<Runtime::CommunicationContext>(mpi.comm);
         if (distribution == NativeSerialDistribution::ReaderOwned)
@@ -1124,11 +1145,11 @@ namespace DNDS::Geom
                 using Array = std::decay_t<decltype(source)>;
                 if (mpi.rank == readerRank && source.Layout().IsRagged())
                     return std::move(source);
-                std::vector<size_t> lengths(mpi.rank == readerRank ? source.Rows() : 0, 0);
+                std::vector<size_t> lengths(mpi.rank == readerRank ? source.RowCount() : 0, 0);
                 if (mpi.rank == readerRank)
                 {
                     auto input = source.Read();
-                    for (size_t row = 0; row < input.View().Rows(); ++row)
+                    for (size_t row = 0; row < input.View().RowCount(); ++row)
                         lengths[row] = input.View().RowSize(row);
                 }
                 Array output(Runtime::RowLayout::Ragged(lengths));
@@ -1142,11 +1163,17 @@ namespace DNDS::Geom
                         const auto elements = layout.Elements();
                         DNDS_check_throw_info(destination.Layout().Elements() == elements,
                                               "native serial dense-to-ragged copy extent mismatch");
+                        nativeCopyBulkCalls.fetch_add(1, std::memory_order_relaxed);
+                        nativeCopyBulkRows.fetch_add(uint64_t(layout.RowCount()), std::memory_order_relaxed);
                         std::copy_n(input.View().data, elements, destination.View().data);
                     }
                     else
-                        for (size_t row = 0; row < input.View().Rows(); ++row)
+                    {
+                        nativeCopyRowCalls.fetch_add(1, std::memory_order_relaxed);
+                        nativeCopyRowRows.fetch_add(uint64_t(layout.RowCount()), std::memory_order_relaxed);
+                        for (size_t row = 0; row < input.View().RowCount(); ++row)
                             std::copy_n(input.View().Row(row), input.View().RowSize(row), destination.View().Row(row));
+                    }
                 }
                 return output;
             };

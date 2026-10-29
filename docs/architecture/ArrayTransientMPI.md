@@ -12,7 +12,7 @@ mesh/data operation, after which adjacent typemap sections coalesce as before.
 
 ```cpp
 auto channel = std::make_shared<R::CommunicationContext>(mpi.comm);
-R::RowTransferPlan route(channel, owned.Rows(), ghost.Rows(), requests);
+R::RowTransferPlan route(channel, owned.RowCount(), ghost.RowCount(), requests);
 R::PayloadPlan payload(route, owned.Layout(), ghost.Layout(),
                        R::ElementSchema::Arithmetic<double>());
 auto binding = payload.Bind(owned, ghost, R::TransferTransport::Direct,

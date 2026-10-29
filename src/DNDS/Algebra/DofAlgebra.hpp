@@ -42,27 +42,27 @@ namespace DNDS::Algebra
                 ApplyCUDA(context, operation, output, x, y, a, b);
                 return;
             }
-            for (size_t row = 0; row < output.Rows(); ++row)
-                for (size_t component = 0; component < output.RowSize(row); ++component)
+            for (index iRow = 0; iRow < output.RowCount(); ++iRow)
+                for (index iCol = 0; iCol < output.RowSize(iRow); ++iCol)
                 {
                     switch (operation)
                     {
                     case Pointwise::Fill:
-                        output(row, component) = T(a);
+                        output(iRow, iCol) = T(a);
                         break;
                     case Pointwise::Copy:
-                        output(row, component) = x(row, component);
+                        output(iRow, iCol) = x(iRow, iCol);
                         break;
                     case Pointwise::Scale:
-                        output(row, component) *= T(a);
+                        output(iRow, iCol) *= T(a);
                         break;
                     case Pointwise::Axpy:
-                        output(row, component) += T(a) * x(row, component);
+                        output(iRow, iCol) += T(a) * x(iRow, iCol);
                         break;
                     case Pointwise::Combination:
                     {
-                        const auto left = x(row, component), right = y(row, component);
-                        output(row, component) = T(a) * left + T(b) * right;
+                        const auto left = x(iRow, iCol), right = y(iRow, iCol);
+                        output(iRow, iCol) = T(a) * left + T(b) * right;
                         break;
                     }
                     }
@@ -77,23 +77,23 @@ namespace DNDS::Algebra
                 ReduceCUDA(context, operation, x, y, result);
                 return;
             }
-            for (size_t component = 0; component < result.width; ++component)
-                result(0, component) = operation == Reduction::Min ? std::numeric_limits<double>::infinity() : operation == Reduction::Max ? -std::numeric_limits<double>::infinity()
-                                                                                                                                           : 0;
-            for (size_t row = 0; row < x.Rows(); ++row)
-                for (size_t component = 0; component < x.width; ++component)
+            for (index iCol = 0; iCol < result.width; ++iCol)
+                result(0, iCol) = operation == Reduction::Min ? std::numeric_limits<double>::infinity() : operation == Reduction::Max ? -std::numeric_limits<double>::infinity()
+                                                                                                                                      : 0;
+            for (index iRow = 0; iRow < x.RowCount(); ++iRow)
+                for (index iCol = 0; iCol < x.width; ++iCol)
                 {
-                    const double value = x(row, component);
+                    const double value = x(iRow, iCol);
                     if (operation == Reduction::Dot)
-                        result(0, 0) += value * double(y(row, component));
+                        result(0, 0) += value * double(y(iRow, iCol));
                     else if (operation == Reduction::Sum)
-                        result(0, component) += value;
+                        result(0, iCol) += value;
                     else if (operation == Reduction::Squares)
-                        result(0, component) += value * value;
+                        result(0, iCol) += value * value;
                     else if (operation == Reduction::Min)
-                        result(0, component) = std::fmin(result(0, component), value);
+                        result(0, iCol) = std::fmin(result(0, iCol), value);
                     else
-                        result(0, component) = std::fmax(result(0, component), value);
+                        result(0, iCol) = std::fmax(result(0, iCol), value);
                 }
         }
         template <class Field>

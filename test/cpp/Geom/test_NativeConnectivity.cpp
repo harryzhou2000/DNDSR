@@ -1,7 +1,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "Geom/Mesh/Mesh.hpp"
-#include "Geom/Mesh/NativeConnectivity.hpp"
+#include "Geom/Mesh/AdjacencyRegistry.hpp"
 #include "NativeMeshOverlapFixture.hpp"
 #include "Geom/Mesh/NativeMeshCGNS.hpp"
 #include "Geom/Mesh/NativeMeshTopology.hpp"
@@ -36,7 +36,7 @@ namespace
     struct RelationFixture
     {
         DNDS::MPIInfo mpi;
-        G::NativeRelation cellNodes;
+        G::MeshAdjacency cellNodes;
         G::EntitySpace Entities(G::EntityKind kind) const
         {
             return kind == G::EntityKind::Cell ? cellNodes.Source() : cellNodes.Target();
@@ -54,7 +54,7 @@ namespace
             const I offset = nodes.LocalToGlobal(0);
             rows.push_back({offset, offset + (periodic ? 0 : 1), offset + (periodic ? 1 : 2), offset + (periodic ? 1 : 3)});
         }
-        return std::make_unique<RelationFixture>(RelationFixture{mpi, G::NativeRelation(G::Adj::Cell2Node, cells, nodes, Rows(rows))});
+        return std::make_unique<RelationFixture>(RelationFixture{mpi, G::MeshAdjacency(G::Adj::Cell2Node, cells, nodes, Rows(rows))});
     }
     G::SubEntityQueryPbi QuadFaces()
     {
@@ -90,7 +90,7 @@ TEST_CASE("Native interpolation retains ordered cones and periodic self incidenc
             std::vector<std::vector<I>> values;
             for (I row = 0; row < original.NumOwned(); ++row)
                 values.push_back(original.GlobalRow(row));
-            G::NativeRelation native(G::Adj::Cell2Node, cells, nodes, Rows(values));
+            G::MeshAdjacency native(G::Adj::Cell2Node, cells, nodes, Rows(values));
             auto read = native.Read();
             std::optional<G::RelationPeriodicBits> bits;
             if (periodic)
@@ -99,8 +99,8 @@ TEST_CASE("Native interpolation retains ordered cones and periodic self incidenc
                                                                   {G::NodePeriodicBits{0}, G::NodePeriodicBits{1}, G::NodePeriodicBits{1}, G::NodePeriodicBits{0}});
                 bits.emplace(read, Rows(pbi));
             }
-            auto result = G::NativeConnectivity::Interpolate(read, G::EntityKind::Face, QuadFaces(), Owner(), bits ? &*bits : nullptr);
-            auto oracle = G::NativeConnectivity::Interpolate(original, G::EntityKind::Face, QuadFaces(), Owner(), bits ? &*bits : nullptr);
+            auto result = G::AdjacencyRegistry::Interpolate(read, G::EntityKind::Face, QuadFaces(), Owner(), bits ? &*bits : nullptr);
+            auto oracle = G::AdjacencyRegistry::Interpolate(original, G::EntityKind::Face, QuadFaces(), Owner(), bits ? &*bits : nullptr);
             CHECK(result.entities.NumOwned() == cells.NumOwned() * (periodic ? 3 : 4));
             CHECK(result.entities.NumGlobal() == (emptyRanks ? 1 : mesh->mpi.size) * (periodic ? 3 : 4));
             auto p2e = result.parent2entity.Read();
@@ -141,9 +141,9 @@ TEST_CASE("Native GhostSpec discovers multilayer remote rows and publishes share
     auto cells = mesh->Entities(G::EntityKind::Cell), nodes = mesh->Entities(G::EntityKind::Node);
     const I next = (mpi.rank + 1) % mpi.size;
     std::vector<std::vector<I>> neighbors{{next, DNDS::UnInitIndex}};
-    G::NativeRelation c2c(G::Adj::Cell2Cell, cells, cells, Rows(neighbors));
+    G::MeshAdjacency c2c(G::Adj::Cell2Cell, cells, cells, Rows(neighbors));
     auto c2n = mesh->cellNodes.Read();
-    G::NativeConnectivity setup(mpi);
+    G::AdjacencyRegistry setup(mpi);
     setup.Register(c2c.Read());
     setup.Register(std::move(c2n));
     G::GhostSpec spec{{{G::EntityKind::Cell,
@@ -153,13 +153,10 @@ TEST_CASE("Native GhostSpec discovers multilayer remote rows and publishes share
     auto discovered = setup.Evaluate(G::CompiledGhostTree::compile(spec));
     const I second = (mpi.rank + 2) % mpi.size;
     std::vector<I> expectedCells;
-    // CompiledGhostTree marks same-kind intermediate hops COLLECT: two
-    // layers are cumulative, even when layer two loops back to the owner.
-    for (auto cell : {next, second})
-        if (cell != mpi.rank)
-            expectedCells.push_back(cell);
-    std::sort(expectedCells.begin(), expectedCells.end());
-    expectedCells.erase(std::unique(expectedCells.begin(), expectedCells.end()), expectedCells.end());
+    // The Cell2Cell chain ends after its second hop. The first hop is branch
+    // state for the longer node chain, not an implicit endpoint collection.
+    if (second != mpi.rank)
+        expectedCells.push_back(second);
     auto indices = [&](G::EntityKind kind)
     {
         auto found = discovered.ghostIndices.find(kind);
@@ -175,16 +172,16 @@ TEST_CASE("Native GhostSpec discovers multilayer remote rows and publishes share
     // checks local numbering, including encoded unavailable remote targets.
     auto repeated = setup.Evaluate(G::CompiledGhostTree::compile(spec));
     CHECK(repeated.ghostIndices == discovered.ghostIndices);
-    auto localCells = G::NativeRelation::Convert(c2c.Read(), G::Adj_PointToLocal);
-    auto localNodes = G::NativeRelation::Convert(mesh->cellNodes.Read(), G::Adj_PointToLocal);
-    G::NativeConnectivity localSetup(mpi);
+    auto localCells = G::MeshAdjacency::Convert(c2c.Read(), G::Adj_PointToLocal);
+    auto localNodes = G::MeshAdjacency::Convert(mesh->cellNodes.Read(), G::Adj_PointToLocal);
+    G::AdjacencyRegistry localSetup(mpi);
     localSetup.Register(localCells.Read());
     localSetup.Register(localNodes.Read());
     for (int repeat = 0; repeat < 2; ++repeat)
         CHECK(localSetup.Evaluate(G::CompiledGhostTree::compile(spec)).ghostIndices == discovered.ghostIndices);
     auto publication = setup.BuildGhosted(discovered);
     auto ghosted = publication.relations.at(G::Adj::Cell2Node).Read();
-    CHECK(ghosted.Rows() == 1 + I(expectedCells.size()));
+    CHECK(ghosted.RowCount() == 1 + I(expectedCells.size()));
     for (size_t row = 0; row < expectedCells.size(); ++row)
     {
         std::vector<I> expected;
@@ -195,8 +192,85 @@ TEST_CASE("Native GhostSpec discovers multilayer remote rows and publishes share
     // Independently reconstructed exact expectations above replace old live
     // mesh parity. A fresh equal-shape domain must still be rejected.
     auto foreign = Fixture();
-    CHECK_THROWS(setup.Register(G::RelationReadAccess(G::Adj::Node2Cell, foreign->Entities(G::EntityKind::Node),
-                                                      foreign->Entities(G::EntityKind::Cell), G::Adj_PointToGlobal, Rows(std::vector<std::vector<I>>(4)))));
+    CHECK_THROWS(setup.Register(G::MeshAdjacencyRead(G::Adj::Node2Cell, foreign->Entities(G::EntityKind::Node),
+                                                     foreign->Entities(G::EntityKind::Cell), G::Adj_PointToGlobal, Rows(std::vector<std::vector<I>>(4)))));
+}
+
+TEST_CASE("Branched ghost tree keeps frontiers separate and unions endpoint kinds")
+{
+    auto mesh = Fixture();
+    const auto mpi = mesh->mpi;
+    const auto cells = mesh->Entities(G::EntityKind::Cell), nodes = mesh->Entities(G::EntityKind::Node);
+    const I next = (mpi.size == 1) ? 0 : (mpi.rank + 1) % mpi.size;
+    std::vector<std::vector<I>> neighbors(size_t(cells.NumOwned()));
+    if (mpi.size > 1)
+        for (auto &row : neighbors)
+            row = {next, DNDS::UnInitIndex};
+    G::MeshAdjacency c2c(G::Adj::Cell2Cell, cells, cells, Rows(neighbors));
+    auto c2n = mesh->cellNodes.Read();
+    auto n2c = G::AdjacencyRegistry::Inverse(c2n, mpi);
+    G::AdjacencyRegistry registry(mpi);
+    registry.Register(std::move(c2n));
+    registry.Register(n2c.Read());
+    registry.Register(c2c.Read());
+
+    const G::GhostChain shortNode{G::EntityKind::Cell,
+                                  {G::Adj::Cell2Cell, G::Adj::Cell2Node},
+                                  G::EntityKind::Node};
+    const G::GhostChain longNode{G::EntityKind::Cell,
+                                 {G::Adj::Cell2Cell, G::Adj::Cell2Node, n2c.Kind(), G::Adj::Cell2Node},
+                                 G::EntityKind::Node};
+    const G::GhostChain cellBranch{G::EntityKind::Cell,
+                                   {G::Adj::Cell2Cell, G::Adj::Cell2Node, n2c.Kind(), G::Adj::Cell2Cell},
+                                   G::EntityKind::Cell};
+    auto evaluate = [&](const std::vector<G::GhostChain> &chains)
+    { return registry.Evaluate(G::CompiledGhostTree::compile({chains})); };
+    const auto shortOnly = evaluate({shortNode});
+    const auto longOnly = evaluate({longNode});
+    const auto cellOnly = evaluate({cellBranch});
+    const auto combined = evaluate({shortNode, longNode, cellBranch});
+
+    std::vector<I> expectedNodes;
+    for (const auto *part : {&shortOnly, &longOnly})
+    {
+        const auto found = part->ghostIndices.find(G::EntityKind::Node);
+        if (found != part->ghostIndices.end())
+            expectedNodes.insert(expectedNodes.end(), found->second.begin(), found->second.end());
+    }
+    std::sort(expectedNodes.begin(), expectedNodes.end());
+    expectedNodes.erase(std::unique(expectedNodes.begin(), expectedNodes.end()), expectedNodes.end());
+    const auto combinedNodes = combined.ghostIndices.find(G::EntityKind::Node);
+    CHECK((combinedNodes == combined.ghostIndices.end() ? std::vector<I>{} : combinedNodes->second) == expectedNodes);
+
+    const auto cellFound = cellOnly.ghostIndices.find(G::EntityKind::Cell);
+    const auto combinedCells = combined.ghostIndices.find(G::EntityKind::Cell);
+    CHECK((combinedCells == combined.ghostIndices.end() ? std::vector<I>{} : combinedCells->second) ==
+          (cellFound == cellOnly.ghostIndices.end() ? std::vector<I>{} : cellFound->second));
+
+    // The shared Cell2Node endpoint is explicitly collected by shortNode even
+    // though longer chains continue through it. Its state remains the parent
+    // for both child branches.
+    auto combinedTree = G::CompiledGhostTree::compile(G::GhostSpec{{shortNode, longNode, cellBranch}});
+    REQUIRE(combinedTree.roots.size() == 1);
+    REQUIRE(combinedTree.roots[0].children.size() == 1);
+    const auto &cellHop = combinedTree.roots[0].children[0];
+    REQUIRE(cellHop.children.size() == 1);
+    const auto &nodeEndpoint = cellHop.children[0];
+    CHECK(nodeEndpoint.hop == G::Adj::Cell2Node);
+    CHECK(nodeEndpoint.collect);
+    REQUIRE(nodeEndpoint.children.size() == 1);
+    const auto &nodeToCell = nodeEndpoint.children[0];
+    REQUIRE(nodeToCell.children.size() == 2);
+    for (const auto &terminal : nodeToCell.children)
+        CHECK(terminal.collect);
+
+    if (mpi.size > 1)
+    {
+        const auto shortNodes = shortOnly.ghostIndices.find(G::EntityKind::Node);
+        const auto longNodes = longOnly.ghostIndices.find(G::EntityKind::Node);
+        CHECK(shortNodes != shortOnly.ghostIndices.end());
+        CHECK(longNodes != longOnly.ghostIndices.end());
+    }
 }
 
 TEST_CASE("Native ghost publication agrees complete same-level relation schedules")
@@ -204,12 +278,12 @@ TEST_CASE("Native ghost publication agrees complete same-level relation schedule
     auto mesh = Fixture();
     auto mpi = mesh->mpi;
     auto cells = mesh->Entities(G::EntityKind::Cell);
-    const G::AdjKind viaNode{G::EntityKind::Cell, G::EntityKind::Cell, G::EntityKind::Node};
-    const G::AdjKind viaFace{G::EntityKind::Cell, G::EntityKind::Cell, G::EntityKind::Face};
+    const G::AdjacencyDescriptor viaNode{G::EntityKind::Cell, G::EntityKind::Cell, G::EntityKind::Node};
+    const G::AdjacencyDescriptor viaFace{G::EntityKind::Cell, G::EntityKind::Cell, G::EntityKind::Face};
     const I next = (mpi.rank + 1) % mpi.size;
-    G::NativeRelation nodeRelation(viaNode, cells, cells, Rows(std::vector<std::vector<I>>{{next}}));
-    G::NativeRelation faceRelation(viaFace, cells, cells, Rows(std::vector<std::vector<I>>{{mpi.rank, next}}));
-    G::NativeConnectivity setup(mpi);
+    G::MeshAdjacency nodeRelation(viaNode, cells, cells, Rows(std::vector<std::vector<I>>{{next}}));
+    G::MeshAdjacency faceRelation(viaFace, cells, cells, Rows(std::vector<std::vector<I>>{{mpi.rank, next}}));
+    G::AdjacencyRegistry setup(mpi);
     // Different insertion order must compile the same sorted collective order.
     if (mpi.rank % 2)
     {
@@ -236,7 +310,7 @@ TEST_CASE("Native ghost publication agrees complete same-level relation schedule
     }
     if (mpi.size > 1)
     {
-        G::NativeConnectivity mismatch(mpi);
+        G::AdjacencyRegistry mismatch(mpi);
         if (mpi.rank == 0)
             mismatch.Register(faceRelation.Read());
         else
@@ -272,14 +346,14 @@ TEST_CASE("Exact payload aliases preserve named descriptors with rank-local alia
         auto row = write.View()[0];
         std::reverse(row.begin(), row.end());
     }
-    G::NativeRelation first(a, base.Source(), base.Target(), base.Owned());
-    G::NativeRelation second(b, base.Source(), base.Target(), independent);
-    G::NativeRelation third(c, base.Source(), base.Target(), base.Owned());
-    G::NativeRelation fourth(d, base.Source(), base.Target(), reversed);
+    G::MeshAdjacency first(a, base.Source(), base.Target(), base.Owned());
+    G::MeshAdjacency second(b, base.Source(), base.Target(), independent);
+    G::MeshAdjacency third(c, base.Source(), base.Target(), base.Owned());
+    G::MeshAdjacency fourth(d, base.Source(), base.Target(), reversed);
     // Every rank has a cache hit, but on different prior transfers. Reusing
     // each local hit would silently give the ghost its donor's wrong row.
-    G::NativeRelation fifth(e, base.Source(), base.Target(), mpi.rank % 2 ? reversed : base.Owned());
-    G::NativeConnectivity setup(mpi);
+    G::MeshAdjacency fifth(e, base.Source(), base.Target(), mpi.rank % 2 ? reversed : base.Owned());
+    G::AdjacencyRegistry setup(mpi);
     setup.Register(first.Read());
     setup.Register(second.Read());
     setup.Register(third.Read());
@@ -339,8 +413,8 @@ TEST_CASE("Native 3D edge interpolation retains four-parent incidence and empty 
         if (cell < first || cell >= first + count)
             ghostCells.push_back(cell);
     cells = cells.WithGhosts(std::move(ghostCells));
-    G::NativeRelation initial(G::Adj::Cell2Node, cells, nodes, Rows(owned));
-    auto native = initial.WithGhostRows(G::RelationGhostRoute(cells));
+    G::MeshAdjacency initial(G::Adj::Cell2Node, cells, nodes, Rows(owned));
+    auto native = initial.WithGhostRows(G::EntityGhostMapping(cells));
     auto cone = native.Read();
     G::SubEntityQueryPbi query;
     query.numSubEntities = [](I)
@@ -358,7 +432,7 @@ TEST_CASE("Native 3D edge interpolation retains four-parent incidence and empty 
         G::Elem::Element{G::Elem::Hex8}.ExtractEdgeNodes(sub, parent, edge);
         std::copy(edge.begin(), edge.end(), out);
     };
-    auto result = G::NativeConnectivity::Interpolate(cone, G::EntityKind::Edge, query, Owner());
+    auto result = G::AdjacencyRegistry::Interpolate(cone, G::EntityKind::Edge, query, Owner());
     // Four unit hexes in a 2x2x1 block have 33 axis-aligned edges. The
     // central vertical edge (4,13) has all four parents, rather than width 2.
     constexpr int pairs[12][2]{{0, 1}, {1, 2}, {2, 3}, {3, 0}, {4, 5}, {5, 6}, {6, 7}, {7, 4}, {0, 4}, {1, 5}, {2, 6}, {3, 7}};
@@ -389,14 +463,14 @@ TEST_CASE("Native 3D edge interpolation retains four-parent incidence and empty 
     MPI_Allreduce(MPI_IN_PLACE, occurrences.data(), int(occurrences.size()), MPI_INT, MPI_SUM, mpi.comm);
     for (auto count : occurrences)
         CHECK(count == 1);
-    G::NativeConnectivity generated(mpi);
+    G::AdjacencyRegistry generated(mpi);
     generated.Register(result.parent2entity.Read());
     generated.Register(result.entity2node.Read());
     G::GhostSpec spec{{{G::EntityKind::Cell, {G::Adj::Cell2Edge}, G::EntityKind::Edge}}};
     auto detached = generated.BuildGhosted(generated.Evaluate(G::CompiledGhostTree::compile(spec)));
     auto completeEdges = detached.relations.at(G::Adj::Edge2Node).Read();
     auto p2e = result.parent2entity.Read();
-    for (I parent = 0; parent < p2e.Rows(); ++parent)
+    for (I parent = 0; parent < p2e.RowCount(); ++parent)
     {
         CHECK(p2e.RowSize(parent) == 12);
         for (size_t slot = 0; slot < p2e.RowSize(parent); ++slot)
@@ -424,7 +498,7 @@ TEST_CASE("Current authority feeds native setup without aliasing detached native
     const auto tree = G::CompiledGhostTree::compile(G::GhostSpec{{{G::EntityKind::Cell, {G::Adj::Cell2Cell, G::Adj::Cell2Node}, G::EntityKind::Node}}});
     auto evaluate = [&]
     {
-        G::NativeConnectivity setup(mesh.mpi);
+        G::AdjacencyRegistry setup(mesh.mpi);
         setup.RegisterMesh(mesh, G::MeshReadRequirements::Primary());
         return setup.Evaluate(tree);
     };
@@ -433,7 +507,7 @@ TEST_CASE("Current authority feeds native setup without aliasing detached native
     {
         auto owner = mesh.AcquireRead(G::MeshReadRequirements::Primary());
         auto view = owner.HostView();
-        auto cone = G::RelationReadAccess::Current(mesh, G::Adj::Cell2Node, G::MeshReadRequirements::Primary());
+        auto cone = G::MeshAdjacencyRead::Current(mesh, G::Adj::Cell2Node, G::MeshReadRequirements::Primary());
         G::SubEntityQueryPbi query;
         query.numSubEntities = [view](I parent)
         { return view.GetCellElement(parent).GetNumFaces(); };
@@ -452,14 +526,14 @@ TEST_CASE("Current authority feeds native setup without aliasing detached native
             element.ExtractFaceNodes(sub, parentNodes, faceNodes);
             std::copy(faceNodes.begin(), faceNodes.end(), out);
         };
-        auto result = G::NativeConnectivity::Interpolate(cone, G::EntityKind::Face, query, Owner());
+        auto result = G::AdjacencyRegistry::Interpolate(cone, G::EntityKind::Face, query, Owner());
         auto e2n = result.entity2node.Read();
         auto p2e = result.parent2entity.Read();
-        CHECK(p2e.Rows() == view.NumCellProc());
+        CHECK(p2e.RowCount() == view.NumCellProc());
         std::vector<std::vector<I>> output;
         for (I row = 0; row < e2n.NumOwned(); ++row)
             output.push_back(e2n.GlobalRow(row));
-        G::NativeConnectivity generated(mesh.mpi);
+        G::AdjacencyRegistry generated(mesh.mpi);
         generated.Register(result.parent2entity.Read());
         generated.Register(result.entity2node.Read());
         G::GhostSpec closure{{{G::EntityKind::Cell, {{G::EntityKind::Cell, G::EntityKind::Face}}, G::EntityKind::Face},
@@ -486,7 +560,7 @@ TEST_CASE("Current authority feeds native setup without aliasing detached native
     auto copy = detached.relations[size_t(G::MeshRelation::CellNodes)]->To(R::Device::Host());
     {
         auto write = copy.Write();
-        for (size_t cell = 0; cell < copy.Rows(); ++cell)
+        for (size_t cell = 0; cell < copy.RowCount(); ++cell)
             for (size_t slot = 0; slot < write.View().RowSize(cell); ++slot)
                 write.View()(cell, slot) = DNDS::UnInitIndex;
     }
@@ -509,11 +583,11 @@ TEST_CASE("Native periodic distributed interpolation preserves owner frames and 
     {
         auto owner = mesh->AcquireRead(G::MeshReadRequirements::CellFlux());
         auto view = owner.HostView();
-        auto cone = G::RelationReadAccess::Current(*mesh, G::Adj::Cell2Node, G::MeshReadRequirements::Primary());
+        auto cone = G::MeshAdjacencyRead::Current(*mesh, G::Adj::Cell2Node, G::MeshReadRequirements::Primary());
         G::RelationPeriodicBits periodic(cone);
-        auto result = G::NativeConnectivity::Interpolate(cone, G::EntityKind::Face, QuadFaces(), Owner(), &periodic);
+        auto result = G::AdjacencyRegistry::Interpolate(cone, G::EntityKind::Face, QuadFaces(), Owner(), &periodic);
         auto parents = result.parent2entity.Read();
-        G::NativeConnectivity generated(mpi);
+        G::AdjacencyRegistry generated(mpi);
         generated.Register(result.parent2entity.Read());
         generated.Register(result.entity2node.Read());
         G::GhostSpec spec{{{G::EntityKind::Cell, {G::Adj::Cell2Face}, G::EntityKind::Face}}};
@@ -562,7 +636,7 @@ TEST_CASE("Native periodic distributed interpolation preserves owner frames and 
     auto copy = detached.relations[size_t(G::MeshRelation::CellNodes)]->To(R::Device::Host());
     {
         auto write = copy.Write();
-        for (size_t row = 0; row < copy.Rows(); ++row)
+        for (size_t row = 0; row < copy.RowCount(); ++row)
             for (size_t slot = 0; slot < write.View().RowSize(row); ++slot)
                 write.View()(row, slot) = DNDS::UnInitIndex;
     }
@@ -587,30 +661,30 @@ TEST_CASE("Named native relations distinguish incidence any all exact and face v
     // c1 touches one face vertex; c2 contains every vertex but is not an
     // element-face incidence. Repeated n0 models a periodic self incidence.
     const I n = mpi.rank * 5;
-    G::NativeRelation cellNodes(G::Adj::Cell2Node, cells, nodes,
-                                Rows(std::vector<std::vector<I>>{{n + 2, n, n + 1, n}, {n + 3, n}, {n + 4, n + 1, n}}));
-    G::NativeRelation faceNodes(G::Adj::Face2Node, faces, nodes,
-                                Rows(std::vector<std::vector<I>>{{next * 5 + 1, next * 5, next * 5}, {}}));
-    G::NativeRelation cellFaces(G::Adj::Cell2Face, cells, faces,
-                                Rows(std::vector<std::vector<I>>{{previous * 2}, {}, {}}));
+    G::MeshAdjacency cellNodes(G::Adj::Cell2Node, cells, nodes,
+                               Rows(std::vector<std::vector<I>>{{n + 2, n, n + 1, n}, {n + 3, n}, {n + 4, n + 1, n}}));
+    G::MeshAdjacency faceNodes(G::Adj::Face2Node, faces, nodes,
+                               Rows(std::vector<std::vector<I>>{{next * 5 + 1, next * 5, next * 5}, {}}));
+    G::MeshAdjacency cellFaces(G::Adj::Cell2Face, cells, faces,
+                               Rows(std::vector<std::vector<I>>{{previous * 2}, {}, {}}));
     auto c2n = cellNodes.Read(), f2n = faceNodes.Read(), c2f = cellFaces.Read();
-    auto inverse = G::NativeConnectivity::Inverse(c2n, mpi);
-    G::RelationGhostRoute nodeRoute(nodes);
+    auto inverse = G::AdjacencyRegistry::Inverse(c2n, mpi);
+    G::EntityGhostMapping nodeRoute(nodes);
     auto nodeSupport = inverse.WithGhostRows(nodeRoute);
     auto n2c = nodeSupport.Read();
-    auto direct = G::NativeConnectivity::Inverse(c2f, mpi);
-    auto any = G::NativeConnectivity::Compose(f2n, n2c);
-    auto all = G::NativeConnectivity::ComposeAll(f2n, n2c);
-    CHECK_THROWS(G::AdjKind::Composition(f2n.Kind(), n2c.Kind(), G::RelationSelection::Custom));
-    const auto exactKind = G::AdjKind::Composition(f2n.Kind(), n2c.Kind(), G::RelationSelection::Exact,
-                                                   false, "fixture.oriented-element-face", 1);
-    auto exact = G::NativeConnectivity::ComposeFiltered(f2n, n2c, exactKind, [](I, I, int count)
-                                                        { return count == 2; }, [](I, I target, const std::vector<I> &)
-                                                        { return target % 3 == 0; });
-    const std::vector<G::NativeRelation *> variants{&direct, &any, &all, &exact};
+    auto direct = G::AdjacencyRegistry::Inverse(c2f, mpi);
+    auto any = G::AdjacencyRegistry::Compose(f2n, n2c);
+    auto all = G::AdjacencyRegistry::ComposeAll(f2n, n2c);
+    CHECK_THROWS(G::AdjacencyDescriptor::Composition(f2n.Kind(), n2c.Kind(), G::RelationSelection::Custom));
+    const auto exactKind = G::AdjacencyDescriptor::Composition(f2n.Kind(), n2c.Kind(), G::RelationSelection::Exact,
+                                                               false, "fixture.oriented-element-face", 1);
+    auto exact = G::AdjacencyRegistry::ComposeFiltered(f2n, n2c, exactKind, [](I, I, int count)
+                                                       { return count == 2; }, [](I, I target, const std::vector<I> &)
+                                                       { return target % 3 == 0; });
+    const std::vector<G::MeshAdjacency *> variants{&direct, &any, &all, &exact};
     const std::vector<std::vector<I>> expected{{next * 3}, {next * 3, next * 3 + 1, next * 3 + 2}, {next * 3, next * 3 + 2}, {next * 3}};
-    std::unordered_set<G::AdjKind, G::AdjKindHash> kinds;
-    G::NativeConnectivity registry(mpi);
+    std::unordered_set<G::AdjacencyDescriptor, G::AdjacencyDescriptorHash> kinds;
+    G::AdjacencyRegistry registry(mpi);
     for (size_t variant = 0; variant < variants.size(); ++variant)
     {
         auto read = variants[variant]->Read();
@@ -642,7 +716,7 @@ TEST_CASE("Named native relations distinguish incidence any all exact and face v
     CHECK(published.relations.size() == 4);
     // Inversion of the face cone provides a genuine node-centered distributed
     // traversal: each owned n0/n1 sees the previous rank's face.
-    auto n2f = G::NativeConnectivity::Inverse(f2n, mpi);
+    auto n2f = G::AdjacencyRegistry::Inverse(f2n, mpi);
     registry.Register(n2f.Read());
     CHECK(n2f.Read().Kind() != G::Adj::Node2Face);
     G::GhostSpec nodeSpec{{{G::EntityKind::Node, {n2f.Read().Kind()}, G::EntityKind::Face}}};
@@ -654,21 +728,21 @@ TEST_CASE("Named native relations distinguish incidence any all exact and face v
     for (auto *variant : variants)
         CHECK(published.relations.at(variant->Read().Kind()).Read().GlobalRow(0) == variant->Read().GlobalRow(0));
 
-    auto nodeNeighbors = G::NativeConnectivity::Compose(c2n, n2c, true);
-    G::RelationGhostRoute faceRoute(faces);
+    auto nodeNeighbors = G::AdjacencyRegistry::Compose(c2n, n2c, true);
+    G::EntityGhostMapping faceRoute(faces);
     auto faceSupport = direct.WithGhostRows(faceRoute);
-    auto faceNeighbors = G::NativeConnectivity::Compose(c2f, faceSupport.Read(), true);
+    auto faceNeighbors = G::AdjacencyRegistry::Compose(c2f, faceSupport.Read(), true);
     CHECK(nodeNeighbors.Read().Kind() != faceNeighbors.Read().Kind());
     CHECK(nodeNeighbors.Read().GlobalRow(0) == std::vector<I>{mpi.rank * 3 + 1, mpi.rank * 3 + 2});
     CHECK(nodeNeighbors.Read().GlobalRow(1) == std::vector<I>{mpi.rank * 3, mpi.rank * 3 + 2});
     CHECK(faceNeighbors.Read().GlobalRow(0).empty());
     CHECK(faceNeighbors.Read().GlobalRow(1).empty());
-    auto includeSelf = G::NativeConnectivity::Compose(c2n, n2c);
+    auto includeSelf = G::AdjacencyRegistry::Compose(c2n, n2c);
     CHECK(includeSelf.Read().Kind() != nodeNeighbors.Read().Kind());
     CHECK(includeSelf.Read().GlobalRow(0) == std::vector<I>{mpi.rank * 3, mpi.rank * 3 + 1, mpi.rank * 3 + 2});
-    auto nodeFaces = G::NativeConnectivity::Compose(n2c, c2f);
+    auto nodeFaces = G::AdjacencyRegistry::Compose(n2c, c2f);
     auto completeNodeFaces = nodeFaces.WithGhostRows(nodeRoute);
-    auto longerPath = G::NativeConnectivity::Compose(f2n, completeNodeFaces.Read());
+    auto longerPath = G::AdjacencyRegistry::Compose(f2n, completeNodeFaces.Read());
     CHECK(longerPath.Read().Kind().Path() == std::vector<G::EntityKind>{G::EntityKind::Face, G::EntityKind::Node,
                                                                         G::EntityKind::Cell, G::EntityKind::Face});
     CHECK(longerPath.Read().GlobalRow(0) == std::vector<I>{mpi.rank * 2});
@@ -680,7 +754,7 @@ TEST_CASE("Named native relations distinguish incidence any all exact and face v
     auto topologicalKind = exactKind;
     topologicalKind.order = G::RelationOrder::Topological;
     CHECK(topologicalKind != exactKind);
-    auto allInverse = G::NativeConnectivity::Inverse(all.Read(), mpi);
+    auto allInverse = G::AdjacencyRegistry::Inverse(all.Read(), mpi);
     CHECK(allInverse.Read().Kind().selection == G::RelationSelection::All);
     CHECK(allInverse.Read().Kind().Path() == std::vector<G::EntityKind>{G::EntityKind::Cell, G::EntityKind::Node, G::EntityKind::Face});
     CHECK(allInverse.Read().GlobalRow(0) == std::vector<I>{previous * 2});
@@ -690,11 +764,11 @@ TEST_CASE("Named native relations distinguish incidence any all exact and face v
     // mismatch before publication/traversal enters its payload collectives.
     auto version2 = exactKind;
     version2.semanticVersion = 2;
-    G::NativeRelation other(version2, faces, cells, Rows(std::vector<std::vector<I>>{expected[3], {}}));
+    G::MeshAdjacency other(version2, faces, cells, Rows(std::vector<std::vector<I>>{expected[3], {}}));
     CHECK(other.Read().Kind() != exact.Read().Kind());
     if (mpi.size > 1)
     {
-        G::NativeConnectivity mismatch(mpi);
+        G::AdjacencyRegistry mismatch(mpi);
         mismatch.Register(mpi.rank == 0 ? exact.Read() : other.Read());
         CHECK_THROWS(mismatch.BuildGhosted({}));
         auto kind = mpi.rank == 0 ? exactKind : version2;
@@ -710,7 +784,7 @@ TEST_CASE("Native interpolation matches repeated canonical IDs after XOR permute
     auto cells = nodes.CreateSibling(G::EntityKind::Cell, mpi.rank == 0 ? 2 : 0);
     auto cones = Rows<I>(mpi.rank == 0 ? std::vector<std::vector<I>>{{0, 0, 0}, {0, 0, 0}} : std::vector<std::vector<I>>{});
     auto bits = Rows<G::NodePeriodicBits>(mpi.rank == 0 ? std::vector<std::vector<G::NodePeriodicBits>>{{{0}, {1}, {2}}, {{1}, {0}, {3}}} : std::vector<std::vector<G::NodePeriodicBits>>{});
-    G::NativeRelation relation(G::Adj::Cell2Node, cells, nodes, std::move(cones));
+    G::MeshAdjacency relation(G::Adj::Cell2Node, cells, nodes, std::move(cones));
     auto read = relation.Read();
     G::RelationPeriodicBits periodic(read, std::move(bits));
     G::SubEntityQueryPbi query;
@@ -722,8 +796,8 @@ TEST_CASE("Native interpolation matches repeated canonical IDs after XOR permute
     { for (int slot = 0; slot < 3; ++slot) output[slot] = get(slot); };
     query.extractPbi = [](I, int, const std::function<G::NodePeriodicBits(int)> &get, G::NodePeriodicBits *output)
     { for (int slot = 0; slot < 3; ++slot) output[slot] = get(slot); };
-    auto result = G::NativeConnectivity::Interpolate(read, G::EntityKind::Face, query, [mpi](const std::vector<I> &, const std::vector<DNDS::MPI_int> &owners, I)
-                                                     { return G::OwnershipDecision{*std::min_element(owners.begin(), owners.end()) == mpi.rank, {}}; }, &periodic);
+    auto result = G::AdjacencyRegistry::Interpolate(read, G::EntityKind::Face, query, [mpi](const std::vector<I> &, const std::vector<DNDS::MPI_int> &owners, I)
+                                                    { return G::OwnershipDecision{*std::min_element(owners.begin(), owners.end()) == mpi.rank, {}}; }, &periodic);
     CHECK(result.entities.NumGlobal() == 1);
     if (mpi.rank == 0)
     {

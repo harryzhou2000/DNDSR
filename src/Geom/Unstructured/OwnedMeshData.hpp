@@ -23,7 +23,7 @@ namespace DNDS::Geom
         Periodicity periodicInfo;
         std::map<EntityKind, EntitySpace> spaces;
         std::array<std::optional<Runtime::Array<index>>, size_t(MeshRelation::Count)> relations;
-        std::map<AdjKind, Runtime::Array<index>> namedRelations;
+        std::map<AdjacencyDescriptor, Runtime::Array<index>> namedRelations;
         std::optional<Runtime::Array<real>> coords, nodeWallDist;
         std::optional<Runtime::Array<ElemInfo>> cellInfo, bndInfo, faceInfo, edgeInfo;
         std::optional<Runtime::Array<NodePeriodicBits>> cellNodesPbi, bndNodesPbi, cellFacesPbi, faceNodesPbi, cellEdgesPbi, edgeNodesPbi;

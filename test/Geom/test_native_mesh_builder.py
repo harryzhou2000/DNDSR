@@ -68,7 +68,7 @@ def _ids(count, first, family):
 
 
 def _variable_uniform(source, width, padded):
-    count = source.layout.rows
+    count = source.layout.row_count
     layout = R.RowLayout.padded([width] * count, width + 2) if padded else R.RowLayout.ragged([width] * count)
     target = R.Array(layout, source.element_type or source.dtype)
     with target.write() as write:

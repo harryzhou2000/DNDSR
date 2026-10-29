@@ -79,6 +79,54 @@ TEST_CASE("MPIInfo basics")
     }
 }
 
+TEST_CASE("AgreeOptionalInteger is exact across automatic and explicit policies")
+{
+    MPIInfo mpi;
+    mpi.setWorld();
+    const DNDS::MPI::IntegerAgreementPolicy policies[]{
+        DNDS::MPI::IntegerAgreementPolicy::Automatic,
+        DNDS::MPI::IntegerAgreementPolicy::Bitmask,
+        DNDS::MPI::IntegerAgreementPolicy::MinMax};
+
+    // Equal values must agree even with an even rank count, where XOR would
+    // cancel the result.
+    for (auto policy : policies)
+    {
+        CHECK(DNDS::MPI::AgreeOptionalInteger(mpi, 7, 200, policy) == std::optional<int>(7));
+        CHECK_FALSE(DNDS::MPI::AgreeOptionalInteger(mpi, std::nullopt, 200, policy).has_value());
+    }
+
+    if (mpi.size > 1)
+    {
+        for (auto policy : policies)
+        {
+            const auto mixed = mpi.rank % 2 ? std::optional<int>(3) : std::nullopt;
+            CHECK_FALSE(DNDS::MPI::AgreeOptionalInteger(mpi, mixed, 200, policy).has_value());
+        }
+    }
+    for (auto policy : policies)
+    {
+        const auto conflicting = std::optional<int>(mpi.rank % 3);
+        const auto agreed = DNDS::MPI::AgreeOptionalInteger(mpi, conflicting, 200, policy);
+        if (mpi.size == 1)
+            CHECK(agreed == std::optional<int>(0));
+        else
+            CHECK_FALSE(agreed.has_value());
+    }
+
+    // Exercise both automatic branches independently of the compiled default.
+    for (int bound : {128, 129})
+    {
+        const int value = bound - 1;
+        CHECK(DNDS::MPI::AgreeOptionalInteger(mpi, value, bound, DNDS::MPI::IntegerAgreementPolicy::Bitmask) ==
+              std::optional<int>(value));
+        CHECK(DNDS::MPI::AgreeOptionalInteger(mpi, value, bound, DNDS::MPI::IntegerAgreementPolicy::MinMax) ==
+              std::optional<int>(value));
+        CHECK(DNDS::MPI::AgreeOptionalInteger(mpi, value, bound, DNDS::MPI::IntegerAgreementPolicy::Automatic) ==
+              std::optional<int>(value));
+    }
+}
+
 // ---------------------------------------------------------------------------
 // MPI Allreduce
 // ---------------------------------------------------------------------------
@@ -175,7 +223,7 @@ TEST_CASE("MPI Allgather")
         std::vector<DNDS::index> recvBuf(mpi.size, -1);
 
         MPI::Allgather(&sendVal, 1, DNDS_MPI_INDEX,
-                        recvBuf.data(), 1, DNDS_MPI_INDEX, mpi.comm);
+                       recvBuf.data(), 1, DNDS_MPI_INDEX, mpi.comm);
 
         for (int i = 0; i < mpi.size; ++i)
         {
@@ -191,7 +239,7 @@ TEST_CASE("MPI Allgather")
         std::vector<DNDS::real> recvBuf(mpi.size * 2, -1.0);
 
         MPI::Allgather(sendBuf.data(), 2, DNDS_MPI_REAL,
-                        recvBuf.data(), 2, DNDS_MPI_REAL, mpi.comm);
+                       recvBuf.data(), 2, DNDS_MPI_REAL, mpi.comm);
 
         for (int i = 0; i < mpi.size; ++i)
         {
@@ -337,7 +385,7 @@ TEST_CASE("MPI Alltoall")
         std::vector<DNDS::index> recvBuf(mpi.size, -1);
 
         MPI::Alltoall(sendBuf.data(), 1, DNDS_MPI_INDEX,
-                       recvBuf.data(), 1, DNDS_MPI_INDEX, mpi.comm);
+                      recvBuf.data(), 1, DNDS_MPI_INDEX, mpi.comm);
 
         // recvBuf[i] should be i (received from rank i, which sent its rank).
         for (int i = 0; i < mpi.size; ++i)
@@ -359,7 +407,7 @@ TEST_CASE("MPI Alltoall")
         }
 
         MPI::Alltoall(sendBuf.data(), perPeer, DNDS_MPI_REAL,
-                       recvBuf.data(), perPeer, DNDS_MPI_REAL, mpi.comm);
+                      recvBuf.data(), perPeer, DNDS_MPI_REAL, mpi.comm);
 
         for (int i = 0; i < mpi.size; ++i)
         {
@@ -385,8 +433,8 @@ TYPE_TO_STRING(MPITypeTag<int32_t>);
 TYPE_TO_STRING(MPITypeTag<uint16_t>);
 
 TEST_CASE_TEMPLATE("Parametric Allreduce MPI_SUM", Tag,
-                    MPITypeTag<DNDS::real>, MPITypeTag<DNDS::index>,
-                    MPITypeTag<int32_t>, MPITypeTag<uint16_t>)
+                   MPITypeTag<DNDS::real>, MPITypeTag<DNDS::index>,
+                   MPITypeTag<int32_t>, MPITypeTag<uint16_t>)
 {
     using T = typename Tag::type;
 
@@ -413,8 +461,8 @@ TEST_CASE_TEMPLATE("Parametric Allreduce MPI_SUM", Tag,
 // ---------------------------------------------------------------------------
 
 TEST_CASE_TEMPLATE("Parametric Allgather rank values", Tag,
-                    MPITypeTag<DNDS::real>, MPITypeTag<DNDS::index>,
-                    MPITypeTag<int32_t>, MPITypeTag<uint16_t>)
+                   MPITypeTag<DNDS::real>, MPITypeTag<DNDS::index>,
+                   MPITypeTag<int32_t>, MPITypeTag<uint16_t>)
 {
     using T = typename Tag::type;
 
@@ -426,7 +474,7 @@ TEST_CASE_TEMPLATE("Parametric Allgather rank values", Tag,
 
     auto [mpiType, mpiMult] = BasicType_To_MPIIntType<T>();
     MPI::Allgather(&sendVal, mpiMult, mpiType,
-                    recvBuf.data(), mpiMult, mpiType, mpi.comm);
+                   recvBuf.data(), mpiMult, mpiType, mpi.comm);
 
     for (int i = 0; i < mpi.size; ++i)
     {

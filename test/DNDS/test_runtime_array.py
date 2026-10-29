@@ -261,7 +261,8 @@ def test_runtime_parallel_checkpoint(device):
         with pytest.raises(RuntimeError, match="device|staging"):
             R.Array.read_serializer(s, "field", world(), device=device)
     b = R.Array.read_serializer(s, "field", world()).to(device)
-    assert b.layout.rows == a.layout.rows
+    assert b.layout.row_count == a.layout.row_count
+    assert b.layout.rows == b.layout.row_count
     if comm.rank == 0:
         with b.read() as read:
             assert read[2, 0] == 5

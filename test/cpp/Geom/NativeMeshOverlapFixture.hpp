@@ -277,7 +277,7 @@ namespace DNDS::Geom::OverlapTest
         serializer->CloseFile();
         FieldTransferDetail::LocalStage(mpi, [&]
                                         {
-            DNDS_check_throw_info(loaded.Rows() == size_t(restored->NumCell()) && loadedIds.Rows() == loaded.Rows(),
+            DNDS_check_throw_info(loaded.RowCount() == size_t(restored->NumCell()) && loadedIds.RowCount() == loaded.RowCount(),
                                   "restart solution/identity extents differ from mesh");
             auto values = loaded.Read();
             auto identity = loadedIds.Read();

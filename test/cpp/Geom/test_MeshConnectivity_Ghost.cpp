@@ -9,7 +9,7 @@ using namespace DNDS::Geom;
 namespace T = NativeRelationSynthetic;
 static MPIInfo g_mpi;
 
-static NativeRelation conesWithManualGhostRows()
+static MeshAdjacency conesWithManualGhostRows()
 {
     auto original = T::FourQuadCones(g_mpi);
     std::vector<DNDS::index> ghosts;
@@ -18,10 +18,10 @@ static NativeRelation conesWithManualGhostRows()
     if (g_mpi.rank == 1)
         ghosts = {0, 1};
     auto source = original.Source().WithGhosts(ghosts);
-    NativeRelation cone(Adj::Cell2Node, source, original.Target(), original.Owned());
-    auto full = cone.WithGhostRows(RelationGhostRoute(source));
+    MeshAdjacency cone(Adj::Cell2Node, source, original.Target(), original.Owned());
+    auto full = cone.WithGhostRows(EntityGhostMapping(source));
     CHECK(full.Source().NumGhost() == (g_mpi.size > 1 && g_mpi.rank < 2 ? 2 : 0));
-    CHECK(full.Read().Rows() == full.Source().NumOwned() + full.Source().NumGhost());
+    CHECK(full.Read().RowCount() == full.Source().NumOwned() + full.Source().NumGhost());
     return full;
 }
 
@@ -32,7 +32,7 @@ TEST_CASE("evaluateGhostTree: single hop cell2cell")
 
     auto cone = T::FourQuadCones(g_mpi);
     auto c2c = T::AllNeighbors(cone);
-    NativeConnectivity dag(g_mpi);
+    AdjacencyRegistry dag(g_mpi);
     dag.Register(c2c.Read());
 
     GhostSpec spec{{
@@ -79,7 +79,7 @@ TEST_CASE("evaluateGhostTree: two-hop cell2cell2node with manual ghost")
 
     auto cone = conesWithManualGhostRows();
     auto c2c = T::AllNeighbors(cone);
-    NativeConnectivity dag(g_mpi);
+    AdjacencyRegistry dag(g_mpi);
     dag.Register(c2c.Read());
     dag.Register(cone.Read());
 
@@ -134,7 +134,7 @@ TEST_CASE("evaluateGhostTree: 2-ring cell chain")
 
     auto cone = conesWithManualGhostRows();
     auto c2c = T::AllNeighbors(cone);
-    NativeConnectivity dag(g_mpi);
+    AdjacencyRegistry dag(g_mpi);
     dag.Register(c2c.Read());
 
     GhostSpec spec1{{{EntityKind::Cell, {Adj::Cell2Cell}, EntityKind::Cell}}};
@@ -161,7 +161,7 @@ TEST_CASE("evaluateGhostTree: union of multiple chains")
 
     auto cone = conesWithManualGhostRows();
     auto c2c = T::AllNeighbors(cone);
-    NativeConnectivity dag(g_mpi);
+    AdjacencyRegistry dag(g_mpi);
     dag.Register(c2c.Read());
     dag.Register(cone.Read());
 
@@ -217,7 +217,7 @@ TEST_CASE("evaluateGhostTree: np=1 produces no ghosts")
 
     auto cone = T::FourQuadCones(g_mpi);
     auto c2c = T::AllNeighbors(cone);
-    NativeConnectivity dag(g_mpi);
+    AdjacencyRegistry dag(g_mpi);
     dag.Register(c2c.Read());
 
     GhostSpec spec{{{EntityKind::Cell, {Adj::Cell2Cell}, EntityKind::Cell}}};
@@ -235,7 +235,7 @@ struct SyntheticTiledGrid
     DNDS::index colStart, colEnd, rowStart, rowEnd;
     DNDS::index rankCol, rankRow, ranksPerRow, ranksPerCol;
     std::vector<DNDS::index> ownerNodeOffsets; // pre-computed, no MPI
-    std::optional<NativeRelation> cell2cell, cell2node;
+    std::optional<MeshAdjacency> cell2cell, cell2node;
     std::optional<EntitySpace> cells, nodes;
 
     DNDS::index cellGlobal(DNDS::index rank, DNDS::index localRow, DNDS::index localCol) const
@@ -361,8 +361,8 @@ struct SyntheticTiledGrid
         cell2node.emplace(Adj::Cell2Node, *cells, *nodes, NativePeriodicFixtures::Rows(cones));
         cell2cell.emplace(Adj::Cell2Cell, *cells, *cells, NativePeriodicFixtures::Rows(neighborsRows));
         // Fixture storage is local cones + local neighbor incidences + P offsets.
-        CHECK(cell2node->Owned().Rows() == size_t(N * N));
-        CHECK(cell2cell->Owned().Rows() == size_t(N * N));
+        CHECK(cell2node->Owned().RowCount() == size_t(N * N));
+        CHECK(cell2cell->Owned().RowCount() == size_t(N * N));
         CHECK(ownerNodeOffsets.size() == size_t(mpi.size));
     }
 
@@ -443,7 +443,7 @@ TEST_CASE("evaluateGhostTree: performance benchmark")
         SyntheticTiledGrid grid;
         grid.build(N, g_mpi);
 
-        NativeConnectivity dag(g_mpi);
+        AdjacencyRegistry dag(g_mpi);
         dag.Register(grid.cell2cell->Read());
         dag.Register(grid.cell2node->Read());
 
@@ -499,8 +499,8 @@ TEST_CASE("evaluateGhostTree: performance benchmark")
         CHECK(ghostCells.size() <= size_t(8 * N + 4));
         CHECK(ghostNodes.size() <= size_t(8 * N + 8));
         // Only local owned topology and requested halo rows are retained.
-        CHECK(grid.cell2node->Owned().Rows() == size_t(N * N));
-        CHECK(grid.cell2cell->Owned().Rows() == size_t(N * N));
+        CHECK(grid.cell2node->Owned().RowCount() == size_t(N * N));
+        CHECK(grid.cell2cell->Owned().RowCount() == size_t(N * N));
     }
 }
 
@@ -514,21 +514,21 @@ TEST_CASE("evaluateGhostTree: doubly-periodic tiled grid")
     grid.periodic = true;
     grid.build(N, g_mpi);
 
-    NativeConnectivity dag(g_mpi);
+    AdjacencyRegistry dag(g_mpi);
     dag.Register(grid.cell2cell->Read());
     dag.Register(grid.cell2node->Read());
 
     // --- Cell + node ghost via defaultPrimary-style unified spec ---
     for (int nL = 1; nL <= 4; nL++)
     {
-        std::vector<AdjKind> cellHops(nL, Adj::Cell2Cell);
-        std::vector<AdjKind> nodeHops(nL, Adj::Cell2Cell);
-        nodeHops.push_back(Adj::Cell2Node);
-
-        GhostSpec spec{{
-            {EntityKind::Cell, cellHops, EntityKind::Cell},
-            {EntityKind::Cell, nodeHops, EntityKind::Node},
-        }};
+        GhostSpec spec;
+        for (int depth = 1; depth <= nL; ++depth)
+        {
+            std::vector<AdjacencyDescriptor> hops(size_t(depth), Adj::Cell2Cell);
+            spec.chains.push_back({EntityKind::Cell, hops, EntityKind::Cell});
+            hops.push_back(Adj::Cell2Node);
+            spec.chains.push_back({EntityKind::Cell, std::move(hops), EntityKind::Node});
+        }
         auto result = dag.Evaluate(CompiledGhostTree::compile(spec));
 
         auto &gcL = result.ghostIndices[EntityKind::Cell];
@@ -550,8 +550,11 @@ TEST_CASE("evaluateGhostTree: doubly-periodic tiled grid")
     // --- n-layer cell ghost ---
     for (int nL = 2; nL <= 4; nL++)
     {
-        std::vector<AdjKind> hops(nL, Adj::Cell2Cell);
-        GhostSpec specML{{{EntityKind::Cell, hops, EntityKind::Cell}}};
+        GhostSpec specML;
+        for (int depth = 1; depth <= nL; ++depth)
+            specML.chains.push_back({EntityKind::Cell,
+                                     std::vector<AdjacencyDescriptor>(size_t(depth), Adj::Cell2Cell),
+                                     EntityKind::Cell});
         auto resultML = dag.Evaluate(CompiledGhostTree::compile(specML));
         auto &gcL = resultML.ghostIndices[EntityKind::Cell];
         CHECK(gcL.size() == grid.expectedGhostCellsN(nL));
@@ -571,7 +574,7 @@ TEST_CASE("evaluateGhostTree: small periodic tiled grid")
     grid.periodic = true;
     grid.build(N, g_mpi);
 
-    NativeConnectivity dag(g_mpi);
+    AdjacencyRegistry dag(g_mpi);
     dag.Register(grid.cell2cell->Read());
     dag.Register(grid.cell2node->Read());
 
@@ -587,7 +590,10 @@ TEST_CASE("evaluateGhostTree: small periodic tiled grid")
 
     // 2-hop cell ghost: check via brute-force expected set.
     {
-        GhostSpec spec2{{{EntityKind::Cell, {Adj::Cell2Cell, Adj::Cell2Cell}, EntityKind::Cell}}};
+        GhostSpec spec2{{
+            {EntityKind::Cell, {Adj::Cell2Cell}, EntityKind::Cell},
+            {EntityKind::Cell, {Adj::Cell2Cell, Adj::Cell2Cell}, EntityKind::Cell},
+        }};
         auto result2 = dag.Evaluate(CompiledGhostTree::compile(spec2));
         auto &gc2 = result2.ghostIndices[EntityKind::Cell];
         CHECK(gc2.size() == grid.expectedGhostCellsN(2));
@@ -652,7 +658,7 @@ TEST_CASE("GhostChain: defaultPrimary compiles")
     auto &b2nNode = bndRoot->children[0];
     CHECK(b2nNode.kind == EntityKind::Node);
     CHECK(b2nNode.hop == Adj::Bnd2Node);
-    CHECK(b2nNode.collect); // chain 4 marks intermediate Node as collect
+    CHECK(b2nNode.collect); // explicit direct Bnd2Node chain ends here
     CHECK(b2nNode.level == 1);
 
     REQUIRE(b2nNode.children.size() == 1);
@@ -776,20 +782,20 @@ TEST_CASE("GhostChain: face ghost chain")
     CHECK(adjs.size() == 1);
 }
 
-TEST_CASE("GhostChain: AdjKind equality and hash")
+TEST_CASE("GhostChain: AdjacencyDescriptor equality and hash")
 {
-    AdjKind a(EntityKind::Cell, EntityKind::Node);
-    AdjKind b(EntityKind::Cell, EntityKind::Node, EntityKind::Face);
+    AdjacencyDescriptor a(EntityKind::Cell, EntityKind::Node);
+    AdjacencyDescriptor b(EntityKind::Cell, EntityKind::Node, EntityKind::Face);
     CHECK(a == b); // direct: via ignored
 
-    AdjKind c(EntityKind::Cell, EntityKind::Cell, EntityKind::Node);
-    AdjKind d(EntityKind::Cell, EntityKind::Cell, EntityKind::Face);
+    AdjacencyDescriptor c(EntityKind::Cell, EntityKind::Cell, EntityKind::Node);
+    AdjacencyDescriptor d(EntityKind::Cell, EntityKind::Cell, EntityKind::Face);
     CHECK(c != d); // intra-level: via matters
 
-    AdjKind e(EntityKind::Cell, EntityKind::Cell, EntityKind::Node);
+    AdjacencyDescriptor e(EntityKind::Cell, EntityKind::Cell, EntityKind::Node);
     CHECK(c == e);
 
-    AdjKindHash h;
+    AdjacencyDescriptorHash h;
     CHECK(h(a) == h(b));
     CHECK(h(c) == h(e));
     (void)h(d);
@@ -823,12 +829,12 @@ TEST_CASE("GhostChain: checkAvailable native registry rejects omitted required r
 {
     auto cone = T::FourQuadCones(g_mpi);
     auto adjacent = T::AllNeighbors(cone);
-    NativeConnectivity registry(g_mpi);
+    AdjacencyRegistry registry(g_mpi);
     registry.Register(cone.Read());
     registry.Register(adjacent.Read());
     // The same two required boundary relations are deliberately omitted.
     const auto required = CompiledGhostTree::compile(GhostSpec::defaultPrimary()).requiredAdjs();
-    std::unordered_set<AdjKind, AdjKindHash> missing;
+    std::unordered_set<AdjacencyDescriptor, AdjacencyDescriptorHash> missing;
     for (const auto &key : required)
         if (!registry.Find(key))
             missing.insert(key);

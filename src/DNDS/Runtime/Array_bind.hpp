@@ -262,8 +262,8 @@ namespace DNDS::Runtime
             DNDS_check_throw_info(reinterpret_cast<uintptr_t>(Storage().LegacyPointer()) % alignment == 0,
                                   "Array dtype alignment mismatch");
         }
-        template <class T, class L>
-        static PythonArray Share(const Array<T, L> &array)
+        template <class T>
+        static PythonArray Share(const Array<T> &array)
         {
             if constexpr (!std::is_arithmetic_v<T>)
             {
@@ -358,10 +358,10 @@ namespace pybind11::detail
     /// converted argument rebinds that handle only, just like a C++ Array copy.
     /// Pass Arrays by value for element updates; use explicit setters to replace
     /// a solver-owned Array. The shared allocation outlives either language owner.
-    template <class T, class L>
-    struct type_caster<DNDS::Runtime::Array<T, L>>
+    template <class T>
+    struct type_caster<DNDS::Runtime::ArrayHandle<T>>
     {
-        using Native = DNDS::Runtime::Array<T, L>;
+        using Native = DNDS::Runtime::ArrayHandle<T>;
         PYBIND11_TYPE_CASTER(Native, const_name("DNDSR.DNDS.Runtime.Array"));
 
         bool load(handle source, bool)
@@ -372,7 +372,7 @@ namespace pybind11::detail
             const auto &array = pybind11::cast<const Facade &>(source);
             if (!array.template MatchesType<T>())
                 return false;
-            value = array.template AsArray<T, L>();
+            value = array.template AsArray<T>();
             return true;
         }
         static handle cast(const Native &array, return_value_policy, handle)

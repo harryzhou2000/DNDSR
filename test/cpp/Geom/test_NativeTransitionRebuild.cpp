@@ -40,7 +40,7 @@ namespace
         {
             auto write = coords.Write();
             const int xyz[8][3]{{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}, {0, 0, 1}, {1, 0, 1}, {1, 1, 1}, {0, 1, 1}};
-            for (size_t node = 0; node < coords.Rows(); ++node)
+            for (size_t node = 0; node < coords.RowCount(); ++node)
                 for (size_t component = 0; component < 3; ++component)
                     write.View()(node, component) = periodic ? (component == 0 ? 0 : component == 1 ? int(node % 2)
                                                                                                     : int(node / 2))
@@ -106,7 +106,7 @@ namespace
             CHECK(out.offsets[cell] == 8 * (precedingCells + I(cell)));
         auto coordinates = out.coordinates.Read();
         std::vector<DNDS::real> local;
-        for (size_t node = 0; node < out.coordinates.Rows(); ++node)
+        for (size_t node = 0; node < out.coordinates.RowCount(); ++node)
             for (size_t component = 0; component < 3; ++component)
                 local.push_back(coordinates.View()(node, component));
         int count = int(local.size());
@@ -193,8 +193,8 @@ TEST_CASE("Native transition reconstruction retains surviving derived ancestry t
     {
         auto before = source->Provenance()->sourceIds.at(kind).Read();
         auto after = result.state->Provenance()->sourceIds.at(kind).Read();
-        REQUIRE(before.View().Rows() == after.View().Rows());
-        for (size_t row = 0; row < before.View().Rows(); ++row)
+        REQUIRE(before.View().RowCount() == after.View().RowCount());
+        for (size_t row = 0; row < before.View().RowCount(); ++row)
         {
             REQUIRE(before.View()[row].size() == after.View()[row].size());
             for (size_t slot = 0; slot < before.View()[row].size(); ++slot)

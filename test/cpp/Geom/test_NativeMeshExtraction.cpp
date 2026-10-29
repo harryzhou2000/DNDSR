@@ -177,7 +177,7 @@ TEST_CASE("Native boundary extraction handles an empty selection without retaini
     auto result = G::NativeMeshExtraction::ExtractBoundary(*source, mpi);
     CHECK(result.state->NumGlobal(G::EntityKind::Node) == 0);
     CHECK(result.state->NumGlobal(G::EntityKind::Cell) == 0);
-    CHECK(result.state->Provenance()->sourceIds.at(G::EntityKind::Node).Rows() == 0);
+    CHECK(result.state->Provenance()->sourceIds.at(G::EntityKind::Node).RowCount() == 0);
     CHECK(source->NumGlobal(G::EntityKind::Node) == 7);
     auto invalidOptions = G::NativeMeshBuildOptions{};
     if (mpi.rank == 0)
@@ -196,7 +196,7 @@ TEST_CASE("Native boundary extraction retains periodic tangential images and rej
     {
         auto result = R::Array<G::NodePeriodicBits>(cones.Layout());
         auto write = result.Write();
-        for (size_t row = 0; row < result.Rows(); ++row)
+        for (size_t row = 0; row < result.RowCount(); ++row)
             for (size_t slot = 0; slot < write.View().RowSize(row); ++slot)
                 write.View()(row, slot) = G::NodePeriodicBits{0};
         return result;
@@ -212,7 +212,7 @@ TEST_CASE("Native boundary extraction retains periodic tangential images and rej
     {
         auto read = inconsistent.bndInfo->Read();
         auto write = metadata.Write();
-        for (size_t row = 0; row < metadata.Rows(); ++row)
+        for (size_t row = 0; row < metadata.RowCount(); ++row)
         {
             write.View()(row, 0) = read.View()(row, 0);
             if (row == 0)
@@ -306,7 +306,7 @@ TEST_CASE("Native boundary parent cache marks newly introduced ghosts absent fro
     {
         auto write = part->Write();
         const I start = part == &data.coords->owned ? 0 : nodes.NumOwned();
-        for (size_t row = 0; row < part->Rows(); ++row)
+        for (size_t row = 0; row < part->RowCount(); ++row)
             for (size_t component = 0; component < 3; ++component)
                 write.View()(row, component) = component == 0 ? DNDS::real(nodes.LocalToGlobal(start + I(row))) : 0.;
     }

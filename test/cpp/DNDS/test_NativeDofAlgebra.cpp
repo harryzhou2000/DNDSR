@@ -22,7 +22,7 @@ static void CheckSentinels(const Field &field)
     using T = typename Field::value_type;
     const auto owned = field.Owned().Storage().Read(), ghost = field.Ghost().Storage().Read();
     const auto shape = field.Owned().Layout();
-    for (size_t row = 0; row < shape.Rows(); ++row)
+    for (size_t row = 0; row < shape.RowCount(); ++row)
         for (size_t component = shape.Width(); component < shape.Stride(); ++component)
             CHECK(owned.template View<T>().data[row * shape.Stride() + component] == T(-919));
     for (size_t entry = 0; entry < field.Ghost().Layout().Elements(); ++entry)
@@ -134,7 +134,7 @@ TEST_CASE("Native DOF algebra validates semantic spaces, immutable shape and ove
     using Array = A::DofField<>::Array;
     CHECK_THROWS(A::DofField<>(space, Array(R::RowLayout::Dense(3, 5)), Array(R::RowLayout::Dense(0, 5))));
     R::Array<double> ragged(R::RowLayout::Ragged({5, 5, 5, 5}));
-    CHECK_THROWS(Array::FromSharedStorage(ragged.SharedStorage()));
+    CHECK_THROWS(A::DofField<>(space, ragged, Array(R::RowLayout::Dense(0, 5))));
     auto bytes = R::Buffer::Allocate((4 * 7 + 1) * sizeof(double));
     auto a = Array::FromStorage(R::RowLayout::Dense(4, 5, 7), bytes.Subspan(0, 4 * 7 * sizeof(double)));
     auto b = Array::FromStorage(R::RowLayout::Dense(4, 5, 7), bytes.Subspan(sizeof(double), 4 * 7 * sizeof(double)));
@@ -308,7 +308,7 @@ TEST_CASE("Native DOF operators support a manufactured diagonal Krylov solve")
     {
         R::SubmitArrays(engine, stream, [](R::ExecutionContext, auto input, auto output)
                         {
-                            for (size_t row = 0; row < input.Rows(); ++row)
+                            for (size_t row = 0; row < input.RowCount(); ++row)
                                 for (size_t component = 0; component < 7; ++component)
                                     output(row, component) = double(component + 1) * input(row, component); }, R::Read(direction.Owned()), R::Write(product.Owned()));
         const double alpha = square / A::DotGlobal(engine, stream, direction, product);

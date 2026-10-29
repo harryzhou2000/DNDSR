@@ -68,8 +68,8 @@ namespace
         return value;
     }
 
-    template <class T, class L, class Backend>
-    void WriteDirect(const R::Array<T, L> &source, const std::shared_ptr<DirectSpy<Backend>> &serializer,
+    template <class T, class Backend>
+    void WriteDirect(const R::Array<T> &source, const std::shared_ptr<DirectSpy<Backend>> &serializer,
                      const std::string &name, const DNDS::MPIInfo &mpi)
     {
         auto retained = source.Storage().Read();
@@ -82,8 +82,8 @@ namespace
     }
 
     template <class T, class L = R::RowLayout, class Backend>
-    R::Array<T, L> ReadDirect(const std::shared_ptr<DirectSpy<Backend>> &serializer, const std::string &name,
-                              const DNDS::MPIInfo &mpi, S::ArrayGlobalOffset partition = S::ArrayGlobalOffset_Unknown)
+    R::Array<T> ReadDirect(const std::shared_ptr<DirectSpy<Backend>> &serializer, const std::string &name,
+                           const DNDS::MPIInfo &mpi, S::ArrayGlobalOffset partition = S::ArrayGlobalOffset_Unknown)
     {
         const auto before = serializer->restored.size();
         auto result = R::ReadArray<T, L>(serializer, name, mpi, partition);
@@ -94,20 +94,18 @@ namespace
         return result;
     }
 
-    template <class L>
-    void Fill(R::Array<double, L> &array, I first)
+    void Fill(R::Array<double> &array, I first)
     {
         auto values = array.Write();
-        for (size_t row = 0; row < array.Rows(); ++row)
+        for (size_t row = 0; row < array.RowCount(); ++row)
             for (size_t slot = 0; slot < array.RowSize(row); ++slot)
                 values.At(row, slot) = double((first + I(row)) * 100 + I(slot)) + 0.25;
     }
 
-    template <class L>
-    void CheckValues(const R::Array<double, L> &array, I first, bool variable)
+    void CheckValues(const R::Array<double> &array, I first, bool variable)
     {
         auto values = array.Read();
-        for (size_t row = 0; row < array.Rows(); ++row)
+        for (size_t row = 0; row < array.RowCount(); ++row)
         {
             CHECK(array.RowSize(row) == (variable ? size_t((first + I(row)) % 4) : 3));
             for (size_t slot = 0; slot < array.RowSize(row); ++slot)
@@ -191,7 +189,7 @@ namespace
         CHECK_THROWS((R::ReadArray<double, R::FixedRows<2>>(serializer, "dense", mpi)));
         CHECK(serializer->restored.size() == before);
         auto emptyRead = ReadDirect<double, R::FixedRows<3, 5>>(serializer, "empty", mpi);
-        CHECK(emptyRead.Rows() == 0);
+        CHECK(emptyRead.RowCount() == 0);
         CHECK(emptyRead.Layout().Width() == 3);
         CHECK_THROWS((R::ReadArray<double, R::FixedRows<2>>(serializer, "empty", mpi)));
         CHECK_THROWS(R::ReadArray<double>(serializer, "dense", mpi, S::ArrayGlobalOffset_Unknown, R::Device::CUDA(0)));
@@ -214,7 +212,7 @@ namespace
             CheckValues(ReadDirect<double>(serializer, "csr", mpi, {1, total - 1}), total - 1, true);
             const auto interval = DNDS::EvenSplitRange(mpi.rank, mpi.size, total);
             auto even = ReadDirect<double>(serializer, "maximum", mpi, S::ArrayGlobalOffset_EvenSplit);
-            CHECK(even.Rows() == size_t(interval.second - interval.first));
+            CHECK(even.RowCount() == size_t(interval.second - interval.first));
             CheckValues(even, interval.first, true);
             serializer->CloseFile();
             if (mpi.rank == 0)
@@ -223,7 +221,7 @@ namespace
                 auto reader = std::make_shared<DirectSpy<S::SerializerH5>>(single);
                 reader->OpenFile(file, true);
                 auto gathered = ReadDirect<double>(reader, "dense", single, S::ArrayGlobalOffset_EvenSplit);
-                CHECK(gathered.Rows() == size_t(total));
+                CHECK(gathered.RowCount() == size_t(total));
                 CheckValues(gathered, 0, false);
                 if (mpi.size > 1)
                     CHECK_THROWS(R::ReadArray<double>(reader, "dense", single));
@@ -337,7 +335,7 @@ namespace
         for (const auto &name : {"dense", "csr"})
         {
             auto result = ReadDirect<Mixed>(serializer, name, mpi);
-            REQUIRE(result.Rows() == rows);
+            REQUIRE(result.RowCount() == rows);
             auto read = result.Read();
             for (size_t row = 0; row < rows; ++row)
             {
@@ -397,7 +395,7 @@ TEST_CASE("JSON byte segments support in-memory DOM and retain file mode checks"
     }
     R::WriteArray(source, memory, "array", mpi);
     const auto restarted = R::ReadArray<double>(memory, "array", mpi);
-    CHECK(restarted.Rows() == 3);
+    CHECK(restarted.RowCount() == 3);
     CHECK(restarted.RowSize(0) == 2);
     CHECK(restarted.RowSize(1) == 0);
     CHECK(restarted.RowSize(2) == 1);
@@ -451,7 +449,7 @@ TEST_CASE("Malformed native records reject before payload fill and permit pristi
     R::Array<Mixed> source(R::RowLayout::Ragged({2, 0, 3}));
     {
         auto write = source.Write();
-        for (size_t row = 0; row < source.Rows(); ++row)
+        for (size_t row = 0; row < source.RowCount(); ++row)
             for (size_t slot = 0; slot < source.RowSize(row); ++slot)
                 FillMixed(write.At(row, slot), I(row), slot);
     }
@@ -500,7 +498,7 @@ TEST_CASE("Malformed native records reject before payload fill and permit pristi
         }
         serializer->OpenFile(file, true);
         auto restored = ReadDirect<Mixed>(serializer, "record", mpi);
-        CHECK(restored.Rows() == 3);
+        CHECK(restored.RowCount() == 3);
         CHECK(restored.RowSize(2) == 3);
         serializer->CloseFile();
     }
@@ -584,8 +582,8 @@ TEST_CASE("Malformed H5 native metadata rejects collectively without truncated C
     {
         auto restored = ReadDirect<double>(serializer, "record", mpi);
         auto read = restored.Read();
-        REQUIRE(restored.Rows() == 3);
-        for (size_t row = 0; row < restored.Rows(); ++row)
+        REQUIRE(restored.RowCount() == 3);
+        for (size_t row = 0; row < restored.RowCount(); ++row)
             for (size_t column = 0; column < restored.RowSize(row); ++column)
                 CHECK(read.At(row, column) == double((3 * mpi.rank + I(row)) * 100 + I(column)) + 0.25);
     }
@@ -640,7 +638,7 @@ TEST_CASE("Version two legacy byte CSR remains readable through direct native al
         serializer->CloseFile();
         serializer->OpenFile(file, true);
         auto result = R::ReadArray<double>(serializer, "legacy", mpi, S::ArrayGlobalOffset_Unknown, R::Device::Host(), legacyIdentity);
-        CHECK(result.Rows() == rows);
+        CHECK(result.RowCount() == rows);
         CheckValues(result, first, true);
         serializer->CloseFile();
         MPI_Barrier(mpi.comm);

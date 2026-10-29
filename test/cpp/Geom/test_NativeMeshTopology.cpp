@@ -369,8 +369,8 @@ TEST_CASE("Native topology repairs missing parent ghosts from authoritative owne
         CHECK(ownedMetadata.View()(size_t(row), 0).zone == sourceView.GetCellInfo(row).zone);
     }
     auto metadata = closure.cellInfo.ReadCombined();
-    CHECK(metadata.View().Rows() == size_t(parents.Rows()));
-    for (size_t row = 0; row < metadata.View().Rows(); ++row)
+    CHECK(metadata.View().RowCount() == size_t(parents.RowCount()));
+    for (size_t row = 0; row < metadata.View().RowCount(); ++row)
         CHECK(metadata.View()(row, 0).type == G::Elem::Tri3);
     auto complete = G::PrepareNativeMeshTopology(*source, mpi);
     CHECK(complete->NumGlobal(G::EntityKind::Face) == 5);
@@ -561,9 +561,9 @@ namespace
         }
         return result;
     }
-    G::AdjKind RefreshVariant(G::EntityKind kind, bool sorted = false)
+    G::AdjacencyDescriptor RefreshVariant(G::EntityKind kind, bool sorted = false)
     {
-        G::AdjKind key{kind, kind};
+        G::AdjacencyDescriptor key{kind, kind};
         key.path = {kind, kind};
         key.selection = G::RelationSelection::Custom;
         key.order = sorted ? G::RelationOrder::SortedUnique : G::RelationOrder::Topological;
@@ -929,7 +929,7 @@ TEST_CASE("Intermediate-only named definitions reject added topology keys withou
     auto slots = data.relations[size_t(G::MeshRelation::CellFaces)]->Clone();
     {
         auto write = slots.Write();
-        for (size_t row = 0; row < slots.Rows(); ++row)
+        for (size_t row = 0; row < slots.RowCount(); ++row)
             for (size_t slot = 0; slot < write.View().RowSize(row); ++slot)
                 if (write.View()(row, slot) == removed)
                     write.View()(row, slot) = 0;
@@ -944,8 +944,8 @@ TEST_CASE("Intermediate-only named definitions reject added topology keys withou
         else
             ++item;
     }
-    auto composed = G::AdjKind::Composition(G::Adj::Cell2Face, G::Adj::Face2Cell, G::RelationSelection::Custom,
-                                            false, "test.refresh.intermediate-only", 1);
+    auto composed = G::AdjacencyDescriptor::Composition(G::Adj::Cell2Face, G::Adj::Face2Cell, G::RelationSelection::Custom,
+                                                        false, "test.refresh.intermediate-only", 1);
     composed.order = G::RelationOrder::Topological;
     data.namedRelations.emplace(composed, *data.relations[size_t(G::MeshRelation::CellFaceCells)]);
     auto partial = G::AssembleNativeMesh(mpi, data);

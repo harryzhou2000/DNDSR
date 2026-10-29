@@ -11,7 +11,7 @@ namespace NativeStructuredInterpolation
 
     struct Hex
     {
-        G::NativeRelation cone;
+        G::MeshAdjacency cone;
         R::Array<G::NodePeriodicBits> ownedBits, ghostBits;
         I nCellLocal;
         std::vector<G::Elem::ElemType> types;
@@ -66,19 +66,19 @@ namespace NativeStructuredInterpolation
         std::sort(ghosts.begin(), ghosts.end());
         ghosts.erase(std::unique(ghosts.begin(), ghosts.end()), ghosts.end());
         source = source.WithGhosts(std::move(ghosts));
-        G::NativeRelation original(G::Adj::Cell2Node, source, nodes, NativePeriodicFixtures::Rows(rows));
-        G::RelationGhostRoute route(source);
+        G::MeshAdjacency original(G::Adj::Cell2Node, source, nodes, NativePeriodicFixtures::Rows(rows));
+        G::EntityGhostMapping route(source);
         auto fetched = original.WithGhostRows(route);
         std::set<I> remoteNodes;
         {
             auto read = fetched.Read();
-            for (I row = 0; row < read.Rows(); ++row)
+            for (I row = 0; row < read.RowCount(); ++row)
                 for (const auto global : read.GlobalRow(row))
                     if (!nodes.GlobalToLocal(global))
                         remoteNodes.insert(global);
         }
         nodes = nodes.WithGhosts({remoteNodes.begin(), remoteNodes.end()});
-        G::NativeRelation withNodes(G::Adj::Cell2Node, source, nodes, original.Owned());
+        G::MeshAdjacency withNodes(G::Adj::Cell2Node, source, nodes, original.Owned());
         auto cone = withNodes.WithGhostRows(route);
         auto ownedBits = NativePeriodicFixtures::Rows(bits);
         auto ghostBits = route.TransferRows(source, ownedBits, R::ElementSchema(G::NodePeriodicBits::CommType(), sizeof(G::NodePeriodicBits), "Geom.NodePeriodicBits", R::ElementSchema::TypeIdentity<G::NodePeriodicBits>()));

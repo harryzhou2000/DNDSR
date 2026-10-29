@@ -33,9 +33,9 @@ TEST_CASE("Managed public mutations reject retained readers while detached conve
         CHECK_THROWS(mesh->PrepareNativeTopology());
         CHECK_THROWS(mesh->ApplyGeometryTransform(Eigen::Matrix3d::Identity(), 2));
         CHECK_THROWS(mesh->ReorderLocalCells());
-        auto relation = RelationReadAccess::Current(*mesh, Adj::Cell2Node, MeshReadRequirements::Primary());
-        auto globals = NativeRelation::Convert(relation, Adj_PointToGlobal);
-        auto locals = NativeRelation::Convert(globals.Read(), Adj_PointToLocal, false);
+        auto relation = MeshAdjacencyRead::Current(*mesh, Adj::Cell2Node, MeshReadRequirements::Primary());
+        auto globals = MeshAdjacency::Convert(relation, Adj_PointToGlobal);
+        auto locals = MeshAdjacency::Convert(globals.Read(), Adj_PointToLocal, false);
         CHECK(locals.Read().GlobalRow(0) == relation.GlobalRow(0));
         CHECK(before.Valid());
         CHECK(read.HostView().RelationState(MeshRelation::CellNodes) == Adj_PointToLocal);

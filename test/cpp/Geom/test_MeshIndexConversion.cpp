@@ -30,7 +30,7 @@
 #include "Geom/Mesh/Mesh.hpp"
 #include "Geom/Mesh/NativeMeshCGNS.hpp"
 #include "Geom/Mesh/NativeMeshPreparation.hpp"
-#include "Geom/Mesh/NativeConnectivity.hpp"
+#include "Geom/Mesh/AdjacencyRegistry.hpp"
 #include "Geom/Transition/NativeMeshAssembler.hpp"
 #include <string>
 #include <vector>
@@ -116,15 +116,15 @@ static ssp<UnstructuredMesh> buildMesh(int meshId, const MeshConfig &cfg)
     return UnstructuredMesh::FromNative(g_mpi, std::move(state));
 }
 
-static RelationReadAccess readAdj(UnstructuredMesh &mesh, AdjKind key)
+static MeshAdjacencyRead readAdj(UnstructuredMesh &mesh, AdjacencyDescriptor key)
 {
-    return RelationReadAccess::Current(mesh, key, MeshReadRequirements::Primary());
+    return MeshAdjacencyRead::Current(mesh, key, MeshReadRequirements::Primary());
 }
 
-static std::vector<std::vector<DNDS::index>> snapshotAdj(const RelationReadAccess &adj)
+static std::vector<std::vector<DNDS::index>> snapshotAdj(const MeshAdjacencyRead &adj)
 {
-    std::vector<std::vector<DNDS::index>> out(size_t(adj.Rows()));
-    for (DNDS::index row = 0; row < adj.Rows(); ++row)
+    std::vector<std::vector<DNDS::index>> out(size_t(adj.RowCount()));
+    for (DNDS::index row = 0; row < adj.RowCount(); ++row)
         for (size_t slot = 0; slot < adj.RowSize(row); ++slot)
             out[size_t(row)].push_back(adj.Raw(row, slot));
     return out;
@@ -138,24 +138,24 @@ static DNDS::index firstGlobalOnRank(const EntitySpace &space, int rank)
     return std::accumulate(counts.begin(), counts.begin() + rank, DNDS::index(0));
 }
 
-static void roundTrip(UnstructuredMesh &mesh, AdjKind key, int repeats)
+static void roundTrip(UnstructuredMesh &mesh, AdjacencyDescriptor key, int repeats)
 {
     auto original = readAdj(mesh, key);
     REQUIRE(original.State() == Adj_PointToLocal);
     const auto snapshot = snapshotAdj(original);
-    auto round = NativeRelation::Convert(original, Adj_PointToLocal);
+    auto round = MeshAdjacency::Convert(original, Adj_PointToLocal);
     for (int trip = 0; trip < repeats; ++trip)
     {
-        auto global = NativeRelation::Convert(round.Read(), Adj_PointToGlobal);
+        auto global = MeshAdjacency::Convert(round.Read(), Adj_PointToGlobal);
         auto globalRead = global.Read();
         CHECK(globalRead.State() == Adj_PointToGlobal);
-        for (DNDS::index row = 0; row < original.Rows(); ++row)
+        for (DNDS::index row = 0; row < original.RowCount(); ++row)
             for (size_t slot = 0; slot < original.RowSize(row); ++slot)
             {
                 const auto entry = original.ReadEntry(row, slot);
                 CHECK(globalRead.Raw(row, slot) == (entry.absent ? UnInitIndex : entry.global));
             }
-        round = NativeRelation::Convert(globalRead, Adj_PointToLocal);
+        round = MeshAdjacency::Convert(globalRead, Adj_PointToLocal);
         CHECK(round.Read().State() == Adj_PointToLocal);
         CHECK(snapshotAdj(round.Read()) == snapshot);
     }

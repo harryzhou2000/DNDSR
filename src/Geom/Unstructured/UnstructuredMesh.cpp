@@ -89,13 +89,13 @@ namespace DNDS::Geom
         requirements.inverse = true;
         auto read = AcquireRead(requirements);
         const auto view = read.HostView();
-        auto cells = RelationReadAccess::Current(*this, Adj::Node2Cell, requirements);
-        auto boundaries = RelationReadAccess::Current(*this, Adj::Node2Bnd, requirements);
+        auto cells = MeshAdjacencyRead::Current(*this, Adj::Node2Cell, requirements);
+        auto boundaries = MeshAdjacencyRead::Current(*this, Adj::Node2Bnd, requirements);
         auto contains = [](auto row, index target)
         { return std::find(row.begin(), row.end(), target) != row.end(); };
         for (index node = 0; node < view.NumNodeProc(); ++node)
         {
-            auto checkSupport = [&](const RelationReadAccess &support, bool boundary)
+            auto checkSupport = [&](const MeshAdjacencyRead &support, bool boundary)
             {
                 for (size_t slot = 0; slot < support.RowSize(node); ++slot)
                 {
@@ -111,7 +111,7 @@ namespace DNDS::Geom
             checkSupport(cells, false);
             checkSupport(boundaries, true);
         }
-        auto checkOwnedCones = [&](index count, const RelationReadAccess &support, bool boundary)
+        auto checkOwnedCones = [&](index count, const MeshAdjacencyRead &support, bool boundary)
         {
             for (index parent = 0; parent < count; ++parent)
             {
@@ -140,8 +140,8 @@ namespace DNDS::Geom
         const auto view = read.HostView();
         // Typed scopes validate local/encoded-global targets against the
         // exact entity maps, including unavailable outer ghost references.
-        auto faceCells = RelationReadAccess::Current(*this, Adj::Face2Cell, requirements);
-        auto cellFaces = RelationReadAccess::Current(*this, Adj::Cell2Face, requirements);
+        auto faceCells = MeshAdjacencyRead::Current(*this, Adj::Face2Cell, requirements);
+        auto cellFaces = MeshAdjacencyRead::Current(*this, Adj::Cell2Face, requirements);
         std::vector<std::map<index, size_t>> incoming(size_t(view.NumCell()));
         for (index face = 0; face < view.NumFaceProc(); ++face)
         {
@@ -218,7 +218,7 @@ namespace DNDS::Geom
         const auto state = std::move(extracted.state);
         const auto nodes = state->Entities(EntityKind::Node);
         const auto &ancestry = state->Provenance()->sourceIds.at(EntityKind::Node);
-        RelationGhostRoute route(nodes);
+        EntityGhostMapping route(nodes);
         Runtime::ArrayPair<index> parents{ancestry, route.TransferRows(nodes, ancestry, Runtime::ElementSchema::Arithmetic<index>())};
         std::vector<index> sourceToBoundary, boundaryToSource, cellParents;
         FieldTransferDetail::LocalStage(mpi, [&]

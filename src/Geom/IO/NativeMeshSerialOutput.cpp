@@ -82,14 +82,14 @@ namespace DNDS::Geom
         auto context = std::make_shared<Runtime::CommunicationContext>(mpi.comm);
         auto route = [&](const std::shared_ptr<GlobalOffsetsMapping> &global)
         {
-            std::vector<std::vector<size_t>> send, receive;
+            std::vector<std::vector<index>> send, receive;
             std::vector<index> pull;
             FieldTransferDetail::LocalStage(mpi, [&]
                                             {
                 send.resize(size_t(mpi.size));
                 receive.resize(size_t(mpi.size));
                 send[size_t(reader)].resize(size_t(global->RLengths()[size_t(mpi.rank)]));
-                std::iota(send[size_t(reader)].begin(), send[size_t(reader)].end(), size_t(0));
+                std::iota(send[size_t(reader)].begin(), send[size_t(reader)].end(), index(0));
                 if (mpi.rank == reader)
                 {
                     pull.resize(size_t(global->globalSize()));
@@ -98,7 +98,7 @@ namespace DNDS::Geom
                     {
                         auto &rows = receive[size_t(rank)];
                         rows.resize(size_t(global->RLengths()[size_t(rank)]));
-                        std::iota(rows.begin(), rows.end(), size_t(global->ROffsets()[size_t(rank)]));
+                        std::iota(rows.begin(), rows.end(), global->ROffsets()[size_t(rank)]);
                     }
                 } });
             auto transfer = Runtime::RowTransferPlan::Known(context, size_t(global->RLengths()[size_t(mpi.rank)]),

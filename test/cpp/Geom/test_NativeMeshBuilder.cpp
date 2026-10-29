@@ -68,11 +68,11 @@ namespace
     template <class T>
     R::Array<T> VariableUniform(const R::Array<T> &source, size_t width, bool padded)
     {
-        std::vector<size_t> lengths(source.Rows(), width);
+        std::vector<size_t> lengths(source.RowCount(), width);
         R::Array<T> result(padded ? R::RowLayout::Padded(lengths, width + 2) : R::RowLayout::Ragged(lengths));
         auto read = source.Read();
         auto write = result.Write();
-        for (size_t row = 0; row < source.Rows(); ++row)
+        for (size_t row = 0; row < source.RowCount(); ++row)
             for (size_t column = 0; column < width; ++column)
                 write.View()(row, column) = read.View()(row, column);
         return result;
@@ -116,7 +116,7 @@ TEST_CASE("Owned primary redistribution and face construction finalize once with
     // Remote boundary owners can only obtain the other edges through the
     // explicit connected Bnd→Node→Bnd path, never by inventing another root.
     G::GhostSpec recipe;
-    auto append = [&](G::EntityKind anchor, std::vector<G::AdjKind> hops)
+    auto append = [&](G::EntityKind anchor, std::vector<G::AdjacencyDescriptor> hops)
     { recipe.chains.push_back({anchor, hops, hops.back().to}); };
     for (const auto key : {G::Adj::Cell2Node, G::Adj::Bnd2Node, G::Adj::Bnd2Cell,
                            G::Adj::Cell2Cell, G::Adj::Cell2Face, G::Adj::Face2Node,

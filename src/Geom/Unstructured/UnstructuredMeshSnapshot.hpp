@@ -11,7 +11,7 @@
 
 namespace DNDS::Geom
 {
-    /// Host setup relation, keyed separately by its complete AdjKind definition.
+    /// Host setup relation, keyed separately by its complete AdjacencyDescriptor definition.
     /// Fixed facade slots may share these allocations without duplicating rows.
     struct NativeNamedRelation
     {
@@ -26,7 +26,7 @@ namespace DNDS::Geom
     {
         /// Consumed by UnstructuredMeshState; setup relations remain host-only even
         /// when facade placements are prepared on a device.
-        std::map<AdjKind, NativeNamedRelation> namedRelations;
+        std::map<AdjacencyDescriptor, NativeNamedRelation> namedRelations;
         int dimension = -1;
         bool periodic = false;
         Periodicity periodicInfo;

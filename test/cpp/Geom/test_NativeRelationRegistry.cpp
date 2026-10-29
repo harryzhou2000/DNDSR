@@ -1,7 +1,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "Geom/Mesh/Mesh.hpp"
-#include "Geom/Mesh/NativeConnectivity.hpp"
+#include "Geom/Mesh/AdjacencyRegistry.hpp"
 
 using namespace DNDS;
 using namespace DNDS::Geom;
@@ -77,14 +77,14 @@ struct RegistryTriangle
     }
 };
 
-static AdjKind RegistryInverse()
+static AdjacencyDescriptor RegistryInverse()
 {
     return Adj::Cell2Face.Inverted();
 }
 
-static AdjKind RegistryComposition(RelationSelection selection)
+static AdjacencyDescriptor RegistryComposition(RelationSelection selection)
 {
-    return AdjKind::Composition(Adj::Face2Node, Adj::Cell2Node.Inverted(), selection, false, "registry.selection", 1);
+    return AdjacencyDescriptor::Composition(Adj::Face2Node, Adj::Cell2Node.Inverted(), selection, false, "registry.selection", 1);
 }
 
 static void AddRegistry(RegistryTriangle &input, const MPIInfo &mpi)
@@ -187,7 +187,7 @@ TEST_CASE("Native mesh registration retains named inverse and selection variants
     CHECK(mesh->ReadNativeRelation(RegistryInverse()).GlobalRow(0) == std::vector<DNDS::index>{mpi.rank});
     CHECK(RegistryInverse() != Adj::Face2Cell);
     CHECK(RegistryInverse().provenance == "inverse:" + Adj::Cell2Face.Signature());
-    NativeConnectivity setup(mpi);
+    AdjacencyRegistry setup(mpi);
     setup.RegisterMesh(*mesh, RegistryRequirements());
     mesh.reset();
     state.reset();
@@ -206,12 +206,12 @@ TEST_CASE("Native mesh registration retains named inverse and selection variants
 
 TEST_CASE("Mathematical inverse definitions never alias legacy physical slots")
 {
-    const std::vector<AdjKind> cones{Adj::Cell2Node, Adj::Cell2Face, Adj::Cell2Edge, Adj::Face2Node,
-                                     Adj::Face2Edge, Adj::Edge2Node, Adj::Bnd2Node};
+    const std::vector<AdjacencyDescriptor> cones{Adj::Cell2Node, Adj::Cell2Face, Adj::Cell2Edge, Adj::Face2Node,
+                                                 Adj::Face2Edge, Adj::Edge2Node, Adj::Bnd2Node};
     for (const auto &cone : cones)
     {
         const auto inverse = cone.Inverted();
-        CHECK(inverse != AdjKind(cone.to, cone.from));
+        CHECK(inverse != AdjacencyDescriptor(cone.to, cone.from));
         CHECK(inverse.selection == RelationSelection::Incidence);
         CHECK(inverse.order == RelationOrder::SortedUnique);
         CHECK(inverse.Path() == std::vector<EntityKind>{cone.to, cone.from});
@@ -354,27 +354,27 @@ TEST_CASE("Sorted native relation order uses globals across owned and ghost loca
     const DNDS::index remote = 3 * ((mpi.rank + mpi.size - 1) % mpi.size);
     nodes = nodes.WithGhosts({remote});
     const auto lower = std::min(own, remote), upper = std::max(own, remote);
-    AdjKind key{EntityKind::Cell, EntityKind::Node};
+    AdjacencyDescriptor key{EntityKind::Cell, EntityKind::Node};
     key.path = {EntityKind::Cell, EntityKind::Node};
     key.selection = RelationSelection::Incidence;
     key.order = RelationOrder::SortedUnique;
     key.periodic = RelationPeriodicPolicy::EntityIdentity;
     auto rows = IndexRows({{*nodes.GlobalToLocal(lower), *nodes.GlobalToLocal(upper)}});
-    RelationReadAccess read(key, cells, nodes, Adj_PointToLocal, rows);
+    MeshAdjacencyRead read(key, cells, nodes, Adj_PointToLocal, rows);
     CHECK(read.GlobalRow(0) == std::vector<DNDS::index>{lower, upper});
     if (mpi.rank > 0)
         CHECK(read.Raw(0, 0) > read.Raw(0, 1));
     auto reversed = IndexRows({{upper, lower}});
-    CHECK_THROWS(RelationReadAccess(key, cells, nodes, Adj_PointToGlobal, reversed));
+    CHECK_THROWS(MeshAdjacencyRead(key, cells, nodes, Adj_PointToGlobal, reversed));
 }
 
 TEST_CASE("Native removeSelf descriptor rejects self incidences")
 {
     const auto mpi = RegistryMPI();
     auto cells = EntitySpace::CreateOwned(EntityKind::Cell, mpi, 1);
-    auto key = AdjKind::Composition(Adj::Cell2Node, Adj::Cell2Node.Inverted(), RelationSelection::Any, true);
+    auto key = AdjacencyDescriptor::Composition(Adj::Cell2Node, Adj::Cell2Node.Inverted(), RelationSelection::Any, true);
     auto rows = IndexRows({{cells.LocalToGlobal(0)}});
-    CHECK_THROWS(RelationReadAccess(key, cells, cells, Adj_PointToGlobal, rows));
+    CHECK_THROWS(MeshAdjacencyRead(key, cells, cells, Adj_PointToGlobal, rows));
 }
 
 int main(int argc, char **argv)

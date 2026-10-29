@@ -1,6 +1,6 @@
-# Native Array runtime and gradual Geom migration
+# Runtime Array and gradual Geom migration
 
-`DNDS::Runtime::Array<T, LayoutPolicy>` is the native interface. `DNDS::Array`
+`DNDS::Runtime::Array<T>` is the runtime storage handle. `DNDS::Array`
 continues to provide its existing interface and deep-copy semantics; its host
 allocation uses the common Buffer facility. Euler, CFV, ArrayPair and
 ArrayTransformer can migrate incrementally. This runtime adds no PETSc, hypre,
@@ -20,10 +20,10 @@ raw-view lifetime, MPI participation, migration rebinding and checkpoint discipl
 | RowLayout | Immutable table, variable-length padded, or CSR row shape in element units |
 | MetadataBuffer | Shared Buffer containing published host offsets, exposed only for reading |
 | ArrayStorage | Shared record with a guarded publication boundary for values and immutable row metadata |
-| Runtime::Array | Typed handle to ArrayStorage; optional compile-time table/padded/CSR access policy |
+| Runtime::Array | Typed storage handle carrying only element type `T` |
 | PythonArray | Runtime dtype/POD codec and the same ArrayStorage as C++ |
-| ArrayAccess | Move-only read/write lease retaining both allocation and layout |
-| ArrayView | Borrowed plain pointer/offsets for kernels; no tracking per element |
+| ArrayAccess | Move-only read/write lease retaining allocation and layout; typed views are acquired from it |
+| ArrayView / GenericRowView | Borrowed typed or fully dynamic row view; no tracking per element |
 | RowBuilder / ExclusiveRows | Unpublished CPU row construction or unique shape edit; Commit publishes metadata |
 | ArrayPair | Separate owned and ghost Arrays; optional combined read indexing |
 | RowTransferPlan | Immutable distributed row relation, reversible and reusable across fields |
@@ -57,8 +57,9 @@ The [Euler workload and overlap audit](../dev/array_runtime_scenarios_2026-10-22
 maps production data patterns to CPU/MPI/CUDA tests, including detected type
 mismatches and deliberately unchecked eager ordering mistakes.
 
-The C++ interface is still templated: `Array<T, LayoutPolicy>` and its leased
-`ArrayView<T>` preserve typed element access. For example:
+The handle is templated only on element type. A compile-time layout belongs to
+the borrowed view acquired from its lease, so table, padded, CSR and
+fixed-size policies share one storage type. For example:
 
 ```cpp
 using namespace DNDS::Runtime;
@@ -91,7 +92,8 @@ independent of Array widths. Object-reference NumPy dtypes remain rejected.
 See [Python ownership and binding](ArrayPythonOwnership.md) for class/object
 diagrams, the generic converter and tracked POD field editing.
 
-`FixedRows<N>` adds a C++ width constraint; it does not require a new Python
+`FixedRows<N>` adds a C++ view-width constraint; it does not change the handle
+type and does not require a new Python
 Array class. `Dense(rows,width,stride)` is a uniform-width strided table, not
 the legacy padded layout with variable row lengths and uniform capacity.
 `Padded(lengths,capacity)` now provides that variable-size representation;
@@ -99,8 +101,10 @@ CSR remains available for packed variable rows. See [row construction and
 exclusive edits](ArrayRowEditing.md) for Commit, retained snapshots and Python.
 Existing legacy Array layouts remain available.
 
-The access policy propagates through `ArrayAccess<T,...,Policy>`,
-`ArrayView<T,...,Policy>`, pair views and `RowSpan<T,...,Width,Capacity>`.
+The access policy appears only at view acquisition, for example
+`read.View<TableRows>()`, `read.View<FixedRows<5>>()` or
+`read.View<CSRRows>()`. It propagates through the returned
+`ArrayView<T,...,Policy>`, pair view and `RowSpan<T,...,Width,Capacity>`.
 Unchecked views select indexing with `if constexpr`, without per-element
 layout detection or ownership operations:
 
@@ -112,12 +116,18 @@ layout detection or ownership operations:
 | `StaticMaxRows<C>` | row times compile-time C | Per-row size, static capacity C |
 | `CSRRows` | Per-row offset buffer | Offset difference |
 
-`RowLayout` remains a dynamic compatibility policy. `DynamicView()` converts
-typed descriptors for generic kernels without copying payloads. Static
-assumptions are checked on host construction/adoption, including empty arrays;
-raw row views retain no ownership and need the enclosing lease. Python remains
-one dynamic class and needs no width/capacity instantiation list. There are no
-Eigen maps or multidimensional numerical views in this API.
+`GenericRowView<T>` is the identity alias of `ArrayView<T, false, RowLayout>`.
+It accepts table, padded and CSR storage through one runtime layout and is the
+fallback for setup, serialization, Python/debug adapters and generic
+algorithms. `DynamicView()` converts a typed view without copying payloads.
+Static assumptions are checked once when a typed view is acquired, including
+empty arrays; raw row views retain no ownership and need the enclosing lease.
+Python remains one dynamic class and needs no width/capacity instantiation
+list. There are no Eigen maps or multidimensional numerical views in this API.
+
+Every layout supports `view[iRow]`, returning a device-callable `RowSpan`, and
+the development-checked `view(iRow, iCol)`. `RowCount()` is the canonical row
+count method; `Rows()` remains temporarily as a compatibility spelling.
 
 ## Ownership, access and failure
 
@@ -137,12 +147,12 @@ publishing a value change. There are no row-mask checks in production views.
 
 ```cpp
 using namespace DNDS::Runtime;
-Array<double, FixedRows<5>> u(RowLayout::Dense(nCells, 5));
+Array<double> u(RowLayout::Dense(nCells, 5));
 {
     auto write = u.Write();
-    auto view = write.View();             // unchecked kernel view
-    for (size_t i = 0; i < view.Rows(); ++i)
-        view(i, 0) = 1;
+    auto view = write.View<FixedRows<5>>(); // unchecked kernel view
+    for (DNDS::index iRow = 0; iRow < view.RowCount(); ++iRow)
+        view(iRow, 0) = 1;
 }
 auto independent = u.Clone();
 auto gpu = u.To(Device::CUDA(0));
@@ -201,8 +211,26 @@ tag; see [the transfer policy guide](ArrayTransientMPI.md). Only one operation m
 active on a binding. Multiple bindings can share the same immutable route and
 payload while retaining independent allocations and requests.
 
+The native-array communication inventory is:
+
+| Work | Construction | Payload transport |
+|---|---|---|
+| generic owner-request discovery | `Alltoall` counts and `Alltoallv` source-row IDs | Direct P2P after route construction |
+| known halo/ghost route | precomputed peer row lists from an entity/permutation map | Direct P2P; no discovery collectives |
+| transient field/relation transfer | retained `RowTransferPlan` and `PayloadPlan` | `Isend`/`Irecv`, one h-indexed datatype message per peer |
+| persistent solver ring | requests initialized once per peer | `Startall` with one direct h-indexed message per peer |
+| explicit host packing | host staging buffers | packed P2P through the same binding state machine |
+| ragged row lengths | `Alltoallv` of row lengths | metadata only |
+| alias agreement | dynamically sized `Allreduce(MPI_BOR)` | metadata only |
+| reduction destination | contribution workspace and host/device/custom reducer | direct P2P contribution transfer plus local combine |
+
+Direct datatypes merge adjacent physical ranges. Sparse rows remain multiple
+h-indexed segments within one message; they do not create one MPI message per
+segment. The payload path never switches to all-to-all. Metadata discovery,
+schema agreement and reductions are separate collective mechanisms.
+
 ```cpp
-RowTransferPlan route(mpi.comm, owned.Rows(), requests.size(), requests);
+RowTransferPlan route(mpi.comm, owned.RowCount(), requests.size(), requests);
 Array<double> ghost(route.DestinationLayout(owned.Layout()));
 PayloadPlan payload(route, owned.Layout(), ghost.Layout(),
                     ElementSchema::Arithmetic<double>());

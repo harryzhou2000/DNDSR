@@ -1,7 +1,7 @@
 #include "Geom/Geometry/NativeMeshSmoothing.hpp"
 #include "Geom/Geometry/NativeMeshSmoothingMath.hpp"
 #include "Geom/Transition/NativeMeshAssembler.hpp"
-#include "Geom/Connectivity/NativeConnectivity.hpp"
+#include "Geom/Connectivity/AdjacencyRegistry.hpp"
 #include "Geom/Transition/FieldTransfer.hpp"
 #include "Geom/Quadrature.hpp"
 #include "Geom/PointCloud.hpp"
@@ -18,10 +18,10 @@ namespace DNDS::Geom
         template <class T>
         Runtime::ArrayPair<T> Halo(const EntitySpace &space, const Runtime::Array<T> &owned, const Runtime::ElementSchema &schema)
         {
-            RelationGhostRoute route(space);
+            EntityGhostMapping route(space);
             auto ghosts = route.TransferRows(space, owned, schema);
             if (!owned.Layout().IsVariable())
-                ghosts = Runtime::Array<T>::FromStorage(Runtime::RowLayout::Dense(ghosts.Rows(), owned.Layout().Width()), ghosts.Storage());
+                ghosts = Runtime::Array<T>::FromStorage(Runtime::RowLayout::Dense(ghosts.RowCount(), owned.Layout().Width()), ghosts.Storage());
             return {owned, std::move(ghosts)};
         }
         void Options(const MPIInfo &mpi, const NativeSmoothingOptions &options)
@@ -110,7 +110,7 @@ namespace DNDS::Geom
             requests.reserve(size_t(offsets.back()));
             for (int rank = 0; rank < mpi.size; ++rank)
                 for (index row = 0; row < counts[size_t(rank)]; ++row)
-                    requests.push_back({rank,row,size_t(offsets[size_t(rank)]+row)}); });
+                    requests.push_back({rank,row,offsets[size_t(rank)] + row}); });
             auto context = std::make_shared<Runtime::CommunicationContext>(mpi.comm);
             Runtime::RowTransferPlan route(context, selected.size(), size_t(offsets.back()), requests);
             Runtime::Array<real> points(Runtime::RowLayout::Dense(size_t(offsets.back()), 6));
@@ -136,7 +136,7 @@ namespace DNDS::Geom
         }
         Runtime::Array<real> Replicate(const BoundaryCloud &cloud, const Runtime::Array<real> &owned)
         {
-            Runtime::Array<real> global(Runtime::RowLayout::Dense(cloud.values.Rows(), owned.Layout().Width()));
+            Runtime::Array<real> global(Runtime::RowLayout::Dense(cloud.values.RowCount(), owned.Layout().Width()));
             Runtime::TransferOptions options;
             options.context = cloud.context;
             options.mode = Runtime::TransferMode::Transient;
@@ -159,7 +159,7 @@ namespace DNDS::Geom
             void SetConstant(real value)
             {
                 auto write = values.Write();
-                for (size_t row = 0; row < values.Rows(); ++row)
+                for (size_t row = 0; row < values.RowCount(); ++row)
                     for (size_t component = 0; component < 3; ++component)
                         write.View()(row, component) = value;
             }
@@ -169,7 +169,7 @@ namespace DNDS::Geom
                     return;
                 auto read = other.values.Read();
                 auto write = values.Write();
-                for (size_t row = 0; row < values.Rows(); ++row)
+                for (size_t row = 0; row < values.RowCount(); ++row)
                     for (size_t component = 0; component < 3; ++component)
                         write.View()(row, component) = read.View()(row, component);
             }
@@ -177,14 +177,14 @@ namespace DNDS::Geom
             {
                 auto read = other.values.Read();
                 auto write = values.Write();
-                for (size_t row = 0; row < values.Rows(); ++row)
+                for (size_t row = 0; row < values.RowCount(); ++row)
                     for (size_t component = 0; component < 3; ++component)
                         write.View()(row, component) += factor * read.View()(row, component);
             }
             void operator*=(real factor)
             {
                 auto write = values.Write();
-                for (size_t row = 0; row < values.Rows(); ++row)
+                for (size_t row = 0; row < values.RowCount(); ++row)
                     for (size_t component = 0; component < 3; ++component)
                         write.View()(row, component) *= factor;
             }
@@ -196,7 +196,7 @@ namespace DNDS::Geom
                 auto a = values.Read();
                 auto b = other.values.Read();
                 real result = 0;
-                for (size_t row = 0; row < values.Rows(); ++row)
+                for (size_t row = 0; row < values.RowCount(); ++row)
                     for (size_t component = 0; component < 3; ++component)
                         result += a.View()(row, component) * b.View()(row, component);
                 MPI_Allreduce(MPI_IN_PLACE, &result, 1, DNDS_MPI_REAL, MPI_SUM, mpi.comm);
@@ -220,9 +220,9 @@ namespace DNDS::Geom
                                         { DNDS_check_throw_info((owned.dimension == 2 || owned.dimension == 3) && owned.faceInfo && owned.relations[size_t(MeshRelation::FaceNodes)],
                                                                 "native smoothing requires two- or three-dimensional face topology"); });
         const auto sourceNodes = source->Entities(EntityKind::Node);
-        NativeRelation faces(Adj::Face2Node, owned.spaces.at(EntityKind::Face), owned.spaces.at(EntityKind::Node), *owned.relations[size_t(MeshRelation::FaceNodes)]);
-        auto nodeFaces = NativeConnectivity::Inverse(faces.Read(), mpi);
-        NativeConnectivity setup(mpi);
+        MeshAdjacency faces(Adj::Face2Node, owned.spaces.at(EntityKind::Face), owned.spaces.at(EntityKind::Node), *owned.relations[size_t(MeshRelation::FaceNodes)]);
+        auto nodeFaces = AdjacencyRegistry::Inverse(faces.Read(), mpi);
+        AdjacencyRegistry setup(mpi);
         setup.Register(faces.Read());
         setup.Register(nodeFaces.Read());
         GhostSpec spec{{{EntityKind::Node, {nodeFaces.Kind()}, EntityKind::Face},
@@ -411,8 +411,8 @@ namespace DNDS::Geom
         PointCloudKDTree cloud;
         FieldTransferDetail::LocalStage(mpi, [&]
                                         {
-            cloud.pts.resize(points.Rows());
-            for (size_t row = 0; row < points.Rows(); ++row) cloud.pts[row] = tPoint{data.View()(row,0),data.View()(row,1),data.View()(row,2)}; });
+            cloud.pts.resize(points.RowCount());
+            for (size_t row = 0; row < points.RowCount(); ++row) cloud.pts[row] = tPoint{data.View()(row,0),data.View()(row,1),data.View()(row,2)}; });
         using Tree = nanoflann::KDTreeSingleIndexAdaptor<nanoflann::L2_Simple_Adaptor<real, PointCloudKDTree>, PointCloudKDTree, 3, index>;
         Tree tree(3, cloud);
         Runtime::Array<real> coordinates(Runtime::RowLayout::Dense(size_t(nodes.NumOwned()), 3));
@@ -486,7 +486,7 @@ namespace DNDS::Geom
         PointCloudKDTree cloud;
         FieldTransferDetail::LocalStage(mpi, [&]
                                         {
-            for (size_t row = 0; row < problem.values.Rows(); ++row)
+            for (size_t row = 0; row < problem.values.RowCount(); ++row)
                 cloud.pts.push_back(tPoint{data.View()(row,0),data.View()(row,1),data.View()(row,2)}); });
         using Tree = nanoflann::KDTreeSingleIndexAdaptor<nanoflann::L2_Simple_Adaptor<real, PointCloudKDTree>, PointCloudKDTree, 3, index>;
         Tree tree(3, cloud);
@@ -527,7 +527,7 @@ namespace DNDS::Geom
                 local = coefficientRequests.size();
                 const int owner = int(std::upper_bound(problem.offsets.begin(),problem.offsets.end(),global)-problem.offsets.begin())-1;
                 DNDS_check_throw_info(owner >= 0 && owner < mpi.size,"native RBF coefficient owner is unavailable");
-                coefficientRequests.push_back({owner,global-problem.offsets[size_t(owner)],local});
+                coefficientRequests.push_back({owner,global-problem.offsets[size_t(owner)],index(local)});
             }
             for (auto &row : matrix) for (auto &[column,value] : row) column = index(compactColumns.at(column)); });
         Runtime::RowTransferPlan coefficientRoute(problem.context, problem.nodes.size(), coefficientRequests.size(), coefficientRequests);
@@ -634,9 +634,9 @@ namespace DNDS::Geom
         auto source = workspace.Source();
         auto owned = NativeMeshAssembler::CaptureOwned(*source, mpi);
         const auto sourceNodes = source->Entities(EntityKind::Node);
-        NativeRelation cells(Adj::Cell2Node, owned.spaces.at(EntityKind::Cell), owned.spaces.at(EntityKind::Node), *owned.relations[size_t(MeshRelation::CellNodes)]);
-        auto support = NativeConnectivity::Inverse(cells.Read(), mpi);
-        NativeConnectivity setup(mpi);
+        MeshAdjacency cells(Adj::Cell2Node, owned.spaces.at(EntityKind::Cell), owned.spaces.at(EntityKind::Node), *owned.relations[size_t(MeshRelation::CellNodes)]);
+        auto support = AdjacencyRegistry::Inverse(cells.Read(), mpi);
+        AdjacencyRegistry setup(mpi);
         setup.Register(cells.Read());
         setup.Register(support.Read());
         GhostSpec spec{{{EntityKind::Node, {support.Kind()}, EntityKind::Cell},
@@ -736,7 +736,7 @@ namespace DNDS::Geom
                 auto &row = matrix[size_t(node)];
                 if (row.empty()) row.emplace(node,tJacobi::Identity());
             } });
-        RelationGhostRoute nodeRoute(nodes);
+        EntityGhostMapping nodeRoute(nodes);
         Linear::GMRES_LeftPreconditioned<SmoothingField> solver(5, [&](auto &field)
                                                                 { field.Init(size_t(nodes.NumOwned()), mpi); });
         solver.solve(

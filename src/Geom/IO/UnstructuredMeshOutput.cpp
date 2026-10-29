@@ -87,8 +87,8 @@ namespace DNDS::Geom
                     _serialInfo.emplace(_serial->cellInfo.Read());
                     if (_periodic)
                         _serialBits.emplace(_serial->cellNodesPbi->Read());
-                    nCell = index(_serial->cellNodes.Rows());
-                    nNode = index(_serial->coordinates.Rows());
+                    nCell = index(_serial->cellNodes.RowCount());
+                    nNode = index(_serial->coordinates.RowCount());
                 }
             }
             int Dimension() const { return _dimension; }
@@ -1399,7 +1399,7 @@ namespace DNDS::Geom
             if (!seriesName.empty())
                 updateVTKSeries(seriesName + ".vtkhdf.series", getStringForcePath(outFile.filename()), t);
 
-        const index outputNodeCount = index(nativeOutput.coordinates.Rows());
+        const index outputNodeCount = index(nativeOutput.coordinates.RowCount());
         const index outputCellCount = index(nativeOutput.types.size());
         const real *outputCoordinates = nativeCoordinates.View().data;
         const auto &vtkCell2nodeOffsets = nativeOutput.offsets;

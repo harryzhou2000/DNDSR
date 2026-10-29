@@ -67,7 +67,7 @@ TEST_CASE("Legacy bridge retains exact allocations through replacement and deep 
         CHECK(retained.Read().View()(0, 0) == 31);
         legacy.Resize(4, 3);
         CHECK(legacy.HostDataIdentity() != retained.Identity());
-        CHECK(retained.Rows() == 2);
+        CHECK(retained.RowCount() == 2);
         CHECK(retained.RowSize(0) == 2);
         legacy = copy;
         CHECK(retained.Read().View()(0, 0) == 31);
@@ -152,15 +152,15 @@ TEST_CASE("Legacy bridge snapshots empty publication and escaped padded row size
     DNDS::Array<double, DNDS::DynamicSize> dynamic;
     DNDS::Array<double, DNDS::NonUniformSize, 4> paddedStatic;
     DNDS::Array<double, DNDS::NonUniformSize, DNDS::DynamicSize> paddedDynamic;
-    CHECK(R::ShareLegacyHost(fixed).Rows() == 0);
-    CHECK(R::ShareLegacyHost(dynamic).Rows() == 0);
+    CHECK(R::ShareLegacyHost(fixed).RowCount() == 0);
+    CHECK(R::ShareLegacyHost(dynamic).RowCount() == 0);
     CHECK(R::ShareLegacyHost(paddedStatic).Layout().Stride() == 4);
-    CHECK(R::ShareLegacyHost(paddedDynamic).Rows() == 0);
+    CHECK(R::ShareLegacyHost(paddedDynamic).RowCount() == 0);
     DNDS::Array<double, DNDS::NonUniformSize> csr;
     CHECK_THROWS(R::HostRowsRead(std::as_const(csr)));
     csr.Compress();
     auto publishedEmpty = R::ShareLegacyHost(csr);
-    CHECK(publishedEmpty.Rows() == 0);
+    CHECK(publishedEmpty.RowCount() == 0);
     CHECK(publishedEmpty.Layout().Offsets().size() == 1);
     CHECK(publishedEmpty.Layout().Offsets()[0] == 0);
     csr.Decompress();
@@ -201,14 +201,14 @@ TEST_CASE("Legacy bridge validates actual shape byte range type schema and host 
     legacy.Resize(2);
     CHECK_THROWS(R::ShareLegacyHost(legacy, R::Device::CUDA(0)));
     CHECK_THROWS(R::ShareLegacyHost(legacy, R::ElementSchema::Arithmetic<int64_t>()));
-    CHECK(R::ShareLegacyHost(legacy, R::ElementSchema::Arithmetic<double>()).Rows() == 2);
+    CHECK(R::ShareLegacyHost(legacy, R::ElementSchema::Arithmetic<double>()).RowCount() == 2);
     CHECK_THROWS(R::Detail::LegacyExtent(DNDS::index(-1)));
     auto oversized = R::Array<double>(R::RowLayout::Dense(0, size_t(std::numeric_limits<DNDS::rowsize>::max()) + 1));
     CHECK_THROWS(R::HostRowsWrite(oversized));
     CHECK(oversized.IsValid());
     // Empty published layouts still have a real tracked zero-byte allocation.
     DNDS::Array<double, 3> empty;
-    CHECK(R::ShareLegacyHost(empty).Rows() == 0);
+    CHECK(R::ShareLegacyHost(empty).RowCount() == 0);
     static_assert(std::is_trivially_copyable_v<R::LegacyRowsView<const double>>);
 }
 

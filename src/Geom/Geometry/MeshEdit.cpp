@@ -1,6 +1,6 @@
 #include "Geom/Geometry/MeshEdit.hpp"
 #include "Geom/Transition/FieldTransfer.hpp"
-#include "Geom/Connectivity/NativeConnectivity.hpp"
+#include "Geom/Connectivity/AdjacencyRegistry.hpp"
 
 namespace DNDS::Geom
 {
@@ -26,12 +26,12 @@ namespace DNDS::Geom
         template <class T>
         void Refresh(Runtime::ArrayPair<T> &pair, const EntitySpace &space, const Runtime::ElementSchema &schema, const MPIInfo &mpi)
         {
-            RelationGhostRoute route(space);
+            EntityGhostMapping route(space);
             auto ghost = route.TransferRows(space, pair.owned, schema);
             FieldTransferDetail::LocalStage(mpi, [&]
                                             {
                 if (!pair.owned.Layout().IsVariable())
-                    ghost = Runtime::Array<T>::FromStorage(Runtime::RowLayout::Dense(ghost.Rows(), pair.owned.Layout().Width()), ghost.Storage());
+                    ghost = Runtime::Array<T>::FromStorage(Runtime::RowLayout::Dense(ghost.RowCount(), pair.owned.Layout().Width()), ghost.Storage());
                 pair.ghost = std::move(ghost); });
         }
 
@@ -96,12 +96,12 @@ namespace DNDS::Geom
     index MeshEdit::NumNode() const
     {
         Check();
-        return index(_nativeCandidate->coords->owned.Rows());
+        return index(_nativeCandidate->coords->owned.RowCount());
     }
     index MeshEdit::NumCell() const
     {
         Check();
-        return index(_nativeCandidate->cellInfo->owned.Rows());
+        return index(_nativeCandidate->cellInfo->owned.RowCount());
     }
     tPoint MeshEdit::Coord(index row) const
     {
@@ -195,7 +195,7 @@ namespace DNDS::Geom
             std::optional<Runtime::Array<index>> globals;
             FieldTransferDetail::LocalStage(mesh.mpi, [&]
                                             {
-                RelationReadAccess read(Adj::Cell2Cell, cells, cells, Adj_PointToLocal, pair.owned, &pair.ghost);
+                MeshAdjacencyRead read(Adj::Cell2Cell, cells, cells, Adj_PointToLocal, pair.owned, &pair.ghost);
                 Runtime::RowBuilder rows(size_t(cells.NumOwned()), sizeof(index));
                 for (index row = 0; row < cells.NumOwned(); ++row)
                 {
@@ -208,13 +208,13 @@ namespace DNDS::Geom
                     }
                 }
                 globals.emplace(Runtime::Array<index>::FromSharedStorage(rows.Commit())); });
-            RelationGhostRoute route(cells);
+            EntityGhostMapping route(cells);
             auto ghost = route.TransferRows(cells, *globals, Runtime::ElementSchema::Arithmetic<index>());
             FieldTransferDetail::LocalStage(mesh.mpi, [&]
                                             {
                 auto read = ghost.Read();
-                Runtime::RowBuilder rows(ghost.Rows(), sizeof(index));
-                for (size_t row = 0; row < ghost.Rows(); ++row)
+                Runtime::RowBuilder rows(ghost.RowCount(), sizeof(index));
+                for (size_t row = 0; row < ghost.RowCount(); ++row)
                 {
                     rows.ResizeRow(row, read.View().RowSize(row));
                     auto output = rows.Row<index>(row);

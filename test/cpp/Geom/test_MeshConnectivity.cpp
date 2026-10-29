@@ -24,7 +24,7 @@ TEST_CASE("Inverse: 4-quad serial correctness")
     CHECK(cone.Target().NumOwned() == (mpi.size == 1 ? 9 : mpi.rank == 0 ? 5
                                                        : mpi.rank == 1   ? 4
                                                                          : 0));
-    auto inverse = G::NativeConnectivity::Inverse(cone.Read(), mpi);
+    auto inverse = G::AdjacencyRegistry::Inverse(cone.Read(), mpi);
     const std::vector<std::set<I>> expected{{0}, {0, 1}, {1}, {0, 2}, {0, 1, 2, 3}, {1, 3}, {2}, {2, 3}, {3}};
     const auto actual = T::GatherTiny(inverse.Read(), mpi);
     for (I node = 0; node < 9; ++node)
@@ -34,8 +34,8 @@ TEST_CASE("Inverse: 4-quad serial correctness")
 TEST_CASE("Inverse: round-trip covers original cell2node")
 {
     auto cone = T::FourQuadCones(mpi);
-    auto inverse = G::NativeConnectivity::Inverse(cone.Read(), mpi);
-    auto round = G::NativeConnectivity::Inverse(inverse.Read(), mpi);
+    auto inverse = G::AdjacencyRegistry::Inverse(cone.Read(), mpi);
+    auto round = G::AdjacencyRegistry::Inverse(inverse.Read(), mpi);
     const auto source = cone.Read(), result = round.Read();
     for (I cell = 0; cell < source.NumOwned(); ++cell)
     {
@@ -48,9 +48,9 @@ TEST_CASE("Inverse: round-trip covers original cell2node")
 TEST_CASE("ComposeFiltered: 4-quad cell2cell via node-neighbor")
 {
     auto cone = T::FourQuadCones(mpi);
-    auto inverse = G::NativeConnectivity::Inverse(cone.Read(), mpi);
-    auto support = inverse.WithGhostRows(G::RelationGhostRoute(inverse.Source()));
-    auto result = G::NativeConnectivity::Compose(cone.Read(), support.Read(), true);
+    auto inverse = G::AdjacencyRegistry::Inverse(cone.Read(), mpi);
+    auto support = inverse.WithGhostRows(G::EntityGhostMapping(inverse.Source()));
+    auto result = G::AdjacencyRegistry::Compose(cone.Read(), support.Read(), true);
     const auto global = T::GatherTiny(result.Read(), mpi);
     for (I cell = 0; cell < 4; ++cell)
     {
@@ -64,13 +64,13 @@ TEST_CASE("ComposeFiltered: 4-quad cell2cell via node-neighbor")
 TEST_CASE("ComposeFiltered: face-share filter (minShared=dim)")
 {
     auto cone = T::FourQuadCones(mpi);
-    auto inverse = G::NativeConnectivity::Inverse(cone.Read(), mpi);
-    auto support = inverse.WithGhostRows(G::RelationGhostRoute(inverse.Source()));
+    auto inverse = G::AdjacencyRegistry::Inverse(cone.Read(), mpi);
+    auto support = inverse.WithGhostRows(G::EntityGhostMapping(inverse.Source()));
     const auto left = cone.Read(), right = support.Read();
-    const auto key = G::AdjKind::Composition(left.Kind(), right.Kind(), G::RelationSelection::Custom, true, "shared-two", 1);
-    auto result = G::NativeConnectivity::ComposeFiltered(left, right, key,
-                                                         [](I a, I b, int count)
-                                                         { return a != b && count >= 2; });
+    const auto key = G::AdjacencyDescriptor::Composition(left.Kind(), right.Kind(), G::RelationSelection::Custom, true, "shared-two", 1);
+    auto result = G::AdjacencyRegistry::ComposeFiltered(left, right, key,
+                                                        [](I a, I b, int count)
+                                                        { return a != b && count >= 2; });
     const std::vector<std::set<I>> expected{{1, 2}, {0, 3}, {0, 3}, {1, 2}};
     const auto actual = T::GatherTiny(result.Read(), mpi);
     for (I cell = 0; cell < 4; ++cell)
@@ -115,8 +115,8 @@ TEST_CASE("Regression: Inverse matches independent lattice node stars on Uniform
     SUBCASE("additional native direct even partition") { legacyPartition = false; }
     auto state = importedGrid(legacyPartition);
     auto mesh = G::UnstructuredMesh::FromNative(mpi, state);
-    auto cone = G::RelationReadAccess::Current(*mesh, G::Adj::Cell2Node, G::MeshReadRequirements::Primary());
-    auto inverse = G::NativeConnectivity::Inverse(cone, mpi);
+    auto cone = G::MeshAdjacencyRead::Current(*mesh, G::Adj::Cell2Node, G::MeshReadRequirements::Primary());
+    auto inverse = G::AdjacencyRegistry::Inverse(cone, mpi);
     const auto actual = inverse.Read();
     const auto globals = gridCells(*state);
     auto access = mesh->AcquireRead();
@@ -141,10 +141,10 @@ TEST_CASE("Regression: ComposeFiltered matches independent lattice neighbors on 
     SUBCASE("additional native direct even partition") { legacyPartition = false; }
     auto state = importedGrid(legacyPartition);
     auto mesh = G::UnstructuredMesh::FromNative(mpi, state);
-    auto cone = G::RelationReadAccess::Current(*mesh, G::Adj::Cell2Node, G::MeshReadRequirements::Primary());
-    auto inverse = G::NativeConnectivity::Inverse(cone, mpi);
-    auto support = inverse.WithGhostRows(G::RelationGhostRoute(inverse.Source()));
-    auto neighbors = G::NativeConnectivity::Compose(cone, support.Read(), true);
+    auto cone = G::MeshAdjacencyRead::Current(*mesh, G::Adj::Cell2Node, G::MeshReadRequirements::Primary());
+    auto inverse = G::AdjacencyRegistry::Inverse(cone, mpi);
+    auto support = inverse.WithGhostRows(G::EntityGhostMapping(inverse.Source()));
+    auto neighbors = G::AdjacencyRegistry::Compose(cone, support.Read(), true);
     const auto actual = neighbors.Read();
     const auto globals = gridCells(*state);
     auto access = mesh->AcquireRead();
@@ -167,7 +167,7 @@ TEST_CASE("Regression: ComposeFiltered matches independent lattice neighbors on 
 TEST_CASE("Native registry cone management rejects duplicate and omitted definitions")
 {
     auto cone = T::FourQuadCones(mpi);
-    G::NativeConnectivity registry(mpi);
+    G::AdjacencyRegistry registry(mpi);
     CHECK(registry.RegisteredCount() == 0);
     CHECK_FALSE(registry.Find(G::Adj::Cell2Node));
     CHECK_FALSE(registry.Find(G::Adj::Node2Cell));
@@ -178,8 +178,8 @@ TEST_CASE("Native registry cone management rejects duplicate and omitted definit
     CHECK(found->Kind().to == G::EntityKind::Node);
     CHECK(registry.Find(G::Adj::Cell2Node).get() == found.get());
     auto faces = cone.Source().CreateSibling(G::EntityKind::Face, 0);
-    G::NativeRelation other(G::Adj::Face2Node, faces, cone.Target(),
-                            DNDS::Runtime::Array<I>(DNDS::Runtime::RowLayout::Ragged(std::vector<size_t>{})));
+    G::MeshAdjacency other(G::Adj::Face2Node, faces, cone.Target(),
+                           DNDS::Runtime::Array<I>(DNDS::Runtime::RowLayout::Ragged(std::vector<size_t>{})));
     registry.Register(other.Read());
     CHECK(registry.Find(G::Adj::Face2Node));
     CHECK(registry.RegisteredCount() == 2);
@@ -193,10 +193,10 @@ TEST_CASE("Native registry cone management rejects duplicate and omitted definit
 TEST_CASE("Native registry support management preserves semantic inverse identity")
 {
     auto cone = T::FourQuadCones(mpi);
-    auto inverse = G::NativeConnectivity::Inverse(cone.Read(), mpi);
+    auto inverse = G::AdjacencyRegistry::Inverse(cone.Read(), mpi);
     CHECK(inverse.Read().Kind() == cone.Read().Kind().Inverted());
     CHECK(inverse.Read().Kind() != G::Adj::Node2Cell);
-    G::NativeConnectivity registry(mpi);
+    G::AdjacencyRegistry registry(mpi);
     registry.Register(cone.Read());
     registry.Register(inverse.Read());
     auto found = registry.Find(inverse.Read().Kind());
@@ -213,8 +213,8 @@ TEST_CASE("Native registry support management preserves semantic inverse identit
 
 TEST_CASE("Native cone typed access validates family state and ordered companions")
 {
-    static_assert(!std::is_default_constructible_v<G::NativeRelation>);
-    static_assert(!std::is_default_constructible_v<G::RelationReadAccess>);
+    static_assert(!std::is_default_constructible_v<G::MeshAdjacency>);
+    static_assert(!std::is_default_constructible_v<G::MeshAdjacencyRead>);
     auto cone = T::FourQuadCones(mpi);
     auto read = cone.Read();
     std::vector<std::vector<G::NodePeriodicBits>> labels(size_t(read.NumOwned()), std::vector<G::NodePeriodicBits>(4));
@@ -236,7 +236,7 @@ TEST_CASE("Native cone typed access validates family state and ordered companion
         write.View()(0, 0) = 0;
         write.View()(0, 1) = DNDS::UnInitIndex;
     }
-    G::NativeRelation fixedSupport(G::Adj::Face2Cell, faces, cone.Source(), fixed);
+    G::MeshAdjacency fixedSupport(G::Adj::Face2Cell, faces, cone.Source(), fixed);
     auto fixedRead = fixedSupport.Read();
     if (faces.NumOwned())
     {
@@ -244,8 +244,8 @@ TEST_CASE("Native cone typed access validates family state and ordered companion
         CHECK(fixedRead.ReadEntry(0, 0).global == 0);
         CHECK(fixedRead.ReadEntry(0, 1).absent);
     }
-    CHECK_THROWS(G::RelationReadAccess(G::Adj::Face2Node, cone.Source(), cone.Target(), G::Adj_PointToGlobal, cone.Owned()));
-    CHECK_THROWS(G::RelationReadAccess(G::Adj::Cell2Node, cone.Source(), cone.Target(), G::Adj_Unknown, cone.Owned()));
+    CHECK_THROWS(G::MeshAdjacencyRead(G::Adj::Face2Node, cone.Source(), cone.Target(), G::Adj_PointToGlobal, cone.Owned()));
+    CHECK_THROWS(G::MeshAdjacencyRead(G::Adj::Cell2Node, cone.Source(), cone.Target(), G::Adj_Unknown, cone.Owned()));
     DNDS::Runtime::Array<G::NodePeriodicBits> wrong(DNDS::Runtime::RowLayout::Dense(size_t(cone.Source().NumOwned()) + 1, 3));
     CHECK_THROWS(G::RelationPeriodicBits(read, wrong));
     auto moved = std::move(read);
@@ -257,14 +257,14 @@ TEST_CASE("Native registry lookup retains the exact typed row lease after regist
 {
     auto cone = T::FourQuadCones(mpi);
     auto alias = cone.Owned();
-    std::shared_ptr<const G::RelationReadAccess> retained;
+    std::shared_ptr<const G::MeshAdjacencyRead> retained;
     {
-        G::NativeConnectivity registry(mpi);
+        G::AdjacencyRegistry registry(mpi);
         registry.Register(cone.Read());
         retained = registry.Find(G::Adj::Cell2Node);
         REQUIRE(retained);
     }
-    if (alias.Rows())
+    if (alias.RowCount())
         CHECK_THROWS(alias.Write());
     for (I row = 0; row < retained->NumOwned(); ++row)
     {
@@ -278,7 +278,7 @@ TEST_CASE("Native registry lookup retains the exact typed row lease after regist
 TEST_CASE("Native support has explicit sorted entity semantics independent of node image companions")
 {
     auto cone = T::FourQuadCones(mpi);
-    auto inverse = G::NativeConnectivity::Inverse(cone.Read(), mpi);
+    auto inverse = G::AdjacencyRegistry::Inverse(cone.Read(), mpi);
     auto read = inverse.Read();
     CHECK(read.Kind().order == G::RelationOrder::SortedUnique);
     for (I row = 0; row < read.NumOwned(); ++row)
@@ -302,8 +302,8 @@ TEST_CASE("Inverse: fixed-width face2cell input keeps exact sentinel semantics")
             for (size_t slot = 0; slot < 2; ++slot)
                 write.View()(row, slot) = expected[row][slot];
     }
-    G::NativeRelation physical(G::Adj::Face2Cell, faces, cells, values);
-    auto inverse = G::NativeConnectivity::Inverse(physical.Read(), mpi);
+    G::MeshAdjacency physical(G::Adj::Face2Cell, faces, cells, values);
+    auto inverse = G::AdjacencyRegistry::Inverse(physical.Read(), mpi);
     if (mpi.rank == 0)
     {
         const auto a = inverse.Read().GlobalRow(0), b = inverse.Read().GlobalRow(1);
@@ -316,11 +316,11 @@ TEST_CASE("Periodic 2x2x2: node-count composition cannot replace physical face n
 {
     auto mesh = NativeStructuredInterpolation::BuildHex(mpi, 2, 7, true);
     auto cone = mesh.cone.Read();
-    auto inverse = G::NativeConnectivity::Inverse(cone, mpi);
-    auto support = inverse.WithGhostRows(G::RelationGhostRoute(inverse.Source()));
-    const auto key = G::AdjKind::Composition(cone.Kind(), support.Read().Kind(), G::RelationSelection::Custom, true, "three-shared", 1);
-    auto wrong = G::NativeConnectivity::ComposeFiltered(cone, support.Read(), key, [](I a, I b, int shared)
-                                                        { return a != b && shared >= 3; });
+    auto inverse = G::AdjacencyRegistry::Inverse(cone, mpi);
+    auto support = inverse.WithGhostRows(G::EntityGhostMapping(inverse.Source()));
+    const auto key = G::AdjacencyDescriptor::Composition(cone.Kind(), support.Read().Kind(), G::RelationSelection::Custom, true, "three-shared", 1);
+    auto wrong = G::AdjacencyRegistry::ComposeFiltered(cone, support.Read(), key, [](I a, I b, int shared)
+                                                       { return a != b && shared >= 3; });
     for (I cell = 0; cell < cone.NumOwned(); ++cell)
         CHECK(wrong.Read().RowSize(cell) == 7);
     // The independent geometric oracle for 2x2x2 torus is only 3 distinct

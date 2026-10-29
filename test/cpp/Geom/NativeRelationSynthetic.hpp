@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Geom/Mesh/NativeConnectivity.hpp"
+#include "Geom/Mesh/AdjacencyRegistry.hpp"
 #include "NativePeriodicFixtures.hpp"
 #include <set>
 
@@ -12,7 +12,7 @@ namespace NativeRelationSynthetic
 
     // Keep the historical rank0/rank1 ownership exactly, including all empty
     // ranks beyond rank1; synthetic expectations are independent fixed tables.
-    inline G::NativeRelation FourQuadCones(const DNDS::MPIInfo &mpi)
+    inline G::MeshAdjacency FourQuadCones(const DNDS::MPIInfo &mpi)
     {
         const I count = mpi.size == 1 ? 9 : mpi.rank == 0 ? 5
                                         : mpi.rank == 1   ? 4
@@ -35,7 +35,7 @@ namespace NativeRelationSynthetic
         return {G::Adj::Cell2Node, cells, nodes, NativePeriodicFixtures::Rows(rows)};
     }
 
-    inline G::NativeRelation AllNeighbors(const G::NativeRelation &cone)
+    inline G::MeshAdjacency AllNeighbors(const G::MeshAdjacency &cone)
     {
         std::vector<std::vector<I>> rows(size_t(cone.Source().NumOwned()));
         for (I row = 0; row < cone.Source().NumOwned(); ++row)
@@ -45,7 +45,7 @@ namespace NativeRelationSynthetic
         return {G::Adj::Cell2Cell, cone.Source(), cone.Source(), NativePeriodicFixtures::Rows(rows)};
     }
 
-    inline std::vector<std::set<I>> GatherTiny(const G::RelationReadAccess &read, const DNDS::MPIInfo &mpi)
+    inline std::vector<std::set<I>> GatherTiny(const G::MeshAdjacencyRead &read, const DNDS::MPIInfo &mpi)
     {
         // A bounded 9x9 synthetic oracle, not global mesh indexing/scratch.
         int values[81]{};

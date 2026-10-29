@@ -1,7 +1,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "Geom/Mesh/Mesh.hpp"
-#include "Geom/Mesh/NativeConnectivity.hpp"
+#include "Geom/Mesh/AdjacencyRegistry.hpp"
 #include "Geom/Unstructured/NativeMeshBuilder.hpp"
 #include "Geom/Connectivity/NativeMeshTopology.hpp"
 #include "Geom/Transition/NativeMeshAssembler.hpp"
@@ -501,10 +501,10 @@ TEST_CASE("Native entity spaces support remote node-star discovery without a leg
     const auto nodes = EntitySpace::CreateOwned(EntityKind::Node, mpi, 1);
     const auto cells = nodes.CreateSibling(EntityKind::Cell, 1);
     const DNDS::index next = (mpi.rank + 1) % mpi.size;
-    NativeRelation c2n(Adj::Cell2Node, cells, nodes, IndexRows({{next}}));
-    auto n2c = NativeConnectivity::Inverse(c2n.Read(), mpi);
+    MeshAdjacency c2n(Adj::Cell2Node, cells, nodes, IndexRows({{next}}));
+    auto n2c = AdjacencyRegistry::Inverse(c2n.Read(), mpi);
     CHECK(n2c.Read().GlobalRow(0) == std::vector<DNDS::index>{(mpi.rank + mpi.size - 1) % mpi.size});
-    NativeConnectivity connectivity(mpi);
+    AdjacencyRegistry connectivity(mpi);
     connectivity.Register(c2n.Read());
     connectivity.Register(n2c.Read());
     const auto support = n2c.Read().Kind();
@@ -531,7 +531,7 @@ TEST_CASE("Replacing an entity descriptor does not mutate retained source contro
     const auto mpi = NativeMPI();
     const auto nodes = EntitySpace::CreateOwned(EntityKind::Node, mpi, 1);
     const auto cells = nodes.CreateSibling(EntityKind::Cell, 1);
-    RelationReadAccess read(Adj::Node2Cell, nodes, cells, Adj_PointToGlobal, IndexRows({{mpi.rank}}));
+    MeshAdjacencyRead read(Adj::Node2Cell, nodes, cells, Adj_PointToGlobal, IndexRows({{mpi.rank}}));
     auto handle = nodes;
     const auto other = nodes.CreateSibling(EntityKind::Node, 2);
     CHECK_NOTHROW(handle = other);
@@ -761,7 +761,7 @@ TEST_CASE("Effective construction audit policy propagates through native setup a
     {
         auto write = ghostCoordinates.Write();
         const auto view = primary->BorrowHostView();
-        for (size_t row = 0; row < ghostCoordinates.Rows(); ++row)
+        for (size_t row = 0; row < ghostCoordinates.RowCount(); ++row)
             for (size_t component = 0; component < 3; ++component)
                 write.View()(row, component) = view.Coord(primary->NumOwned(EntityKind::Node) + DNDS::index(row))[component];
     }

@@ -21,7 +21,7 @@ Elements.cpp
 PeriodicInfo.cpp
 Connectivity/MeshConnectivity.cpp
 Connectivity/MeshConnectivity_Native.cpp
-Connectivity/NativeConnectivity.cpp
+Connectivity/AdjacencyRegistry.cpp
 Connectivity/MeshConnectivity_Ghost.cpp
 Unstructured/UnstructuredMesh.cpp
 Access/MeshAccess.cpp

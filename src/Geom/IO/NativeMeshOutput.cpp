@@ -52,8 +52,8 @@ namespace DNDS::Geom
             ownedMask = Runtime::Array<uint8_t>(Runtime::RowLayout::Dense(size_t(nodes->NumOwned()), 1));
             ghostMask = Runtime::Array<uint8_t>(Runtime::RowLayout::Dense(size_t(nodes->NumGhost()), 1));
             auto owned = ownedMask.Write(), ghost = ghostMask.Write();
-            for (size_t row = 0; row < ownedMask.Rows(); ++row) owned.View()(row, 0) = 1;
-            for (size_t row = 0; row < ghostMask.Rows(); ++row) ghost.View()(row, 0) = 0;
+            for (size_t row = 0; row < ownedMask.RowCount(); ++row) owned.View()(row, 0) = 1;
+            for (size_t row = 0; row < ghostMask.RowCount(); ++row) ghost.View()(row, 0) = 0;
             if (view.IsPeriodic())
                 for (index cell = 0; cell < cells->NumOwned(); ++cell)
                 {
@@ -78,7 +78,7 @@ namespace DNDS::Geom
                 for (index row = nodes->NumOwned(); row < nodes->NumLocal(); ++row)
                 {
                     const auto global = nodes->LocalToGlobal(row);
-                    requests.push_back({nodes->Owner(global), nodes->OwnerLocalRow(global), size_t(row - nodes->NumOwned())});
+                    requests.push_back({nodes->Owner(global), nodes->OwnerLocalRow(global), row - nodes->NumOwned()});
                 } });
             // Output may run on an isolated congruent communicator. The
             // immutable maps describe rank/row addresses, not the MPI context.
@@ -95,7 +95,7 @@ namespace DNDS::Geom
                                         {
             if (!view.IsPeriodic()) return;
             auto mask = ownedMask.Read();
-            for (size_t row = 0; row < ownedMask.Rows(); ++row)
+            for (size_t row = 0; row < ownedMask.RowCount(); ++row)
                 for (uint8_t image = 1; image < 8; ++image)
                     if (mask.View()(row, 0) & (1u << image)) localNodes = CheckedSize::Add(localNodes, index(1)); });
         auto points = EntitySpace::CreateOwned(EntityKind::Node, mpi, localNodes);

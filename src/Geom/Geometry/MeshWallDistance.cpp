@@ -1,7 +1,7 @@
 #include "Geom/Unstructured/UnstructuredMesh.hpp"
 #include "Geom/Quadrature.hpp"
 #include "Geom/Transition/FieldTransfer.hpp"
-#include "Geom/Connectivity/NativeConnectivity.hpp"
+#include "Geom/Connectivity/AdjacencyRegistry.hpp"
 
 #define CGAL_DISABLE_ROUNDING_MATH_CHECK // for valgrind
 #include <CGAL/Simple_cartesian.h>
@@ -183,9 +183,9 @@ namespace DNDS::Geom
             selectedOwned = Runtime::Array<uint8_t>(Runtime::RowLayout::Dense(size_t(NumNode()), 1));
             selectedGhost = Runtime::Array<uint8_t>(Runtime::RowLayout::Dense(size_t(NumNodeGhost()), 1));
             auto local = selectedOwned.Write(), remote = selectedGhost.Write();
-            for (size_t row = 0; row < selectedOwned.Rows(); ++row)
+            for (size_t row = 0; row < selectedOwned.RowCount(); ++row)
                 local.View()(row, 0) = 0;
-            for (size_t row = 0; row < selectedGhost.Rows(); ++row)
+            for (size_t row = 0; row < selectedGhost.RowCount(); ++row)
                 remote.View()(row, 0) = 0;
             for (auto node : wallNodes)
                 (node < NumNode() ? local.View()(size_t(node), 0) : remote.View()(size_t(node - NumNode()), 0)) = 1; });
@@ -280,12 +280,12 @@ namespace DNDS::Geom
 
         // Release the writer before transfer leases are acquired.
         wallWrite.reset();
-        RelationGhostRoute nodeRoute(nodeSpace);
+        EntityGhostMapping nodeRoute(nodeSpace);
         auto wallGhost = nodeRoute.TransferRows(nodeSpace, wallOwned, Runtime::ElementSchema::Arithmetic<real>());
         std::shared_ptr<const UnstructuredMeshState> prepared;
         FieldTransferDetail::LocalStage(mpi, [&]
                                         {
-            wallGhost = Runtime::Array<real>::FromStorage(Runtime::RowLayout::Dense(wallGhost.Rows(), 3), wallGhost.Storage());
+            wallGhost = Runtime::Array<real>::FromStorage(Runtime::RowLayout::Dense(wallGhost.RowCount(), 3), wallGhost.Storage());
             prepared = _nativeState->WithWallDistance({wallOwned, wallGhost}); });
         retained.reset();
         PublishNativeGeometry(std::move(prepared), stamp, Runtime::Change::Values | Runtime::Change::Interface | Runtime::Change::Allocation);

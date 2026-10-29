@@ -20,13 +20,13 @@ TEST_CASE("Known shape rows fill one final table or CSR and reject failed public
         CHECK(fillCalls == 257);
         CHECK(array.Layout().Kind() == (table ? R::RowLayoutKind::Table : R::RowLayoutKind::CSR));
         auto read = array.Read();
-        for (size_t row = 0; row < read.View().Rows(); ++row)
+        for (size_t row = 0; row < read.View().RowCount(); ++row)
             for (size_t slot = 0; slot < read.View().RowSize(row); ++slot)
                 CHECK(read.View()(row, slot) == int64_t(100 * row + slot));
     }
     auto empty = R::BuildArrayRows<double>(0, [](size_t)
                                            { return size_t(0); }, [](size_t, auto) {});
-    CHECK(empty.Rows() == 0);
+    CHECK(empty.RowCount() == 0);
     CHECK_THROWS(R::BuildArrayRows<double>(3, [](size_t row)
                                            { return row; }, [](size_t, auto) {}, 2));
     CHECK_THROWS(R::BuildArrayRows<double>(3, [](size_t)
@@ -174,7 +174,7 @@ TEST_CASE("Parallel incremental CSR construction packs once at publication")
 TEST_CASE("Padded row builder updates logical sizes within fixed capacity")
 {
     R::RowBuilder builder(33, sizeof(int64_t), R::RowLayoutKind::Padded, 12);
-    for (size_t i = 0; i < builder.Rows(); ++i)
+    for (size_t i = 0; i < builder.RowCount(); ++i)
     {
         builder.ResizeRow(i, 12);
         std::fill_n(builder.Row<int64_t>(i).data, 12, int64_t(i + 1));
@@ -193,7 +193,7 @@ TEST_CASE("Padded row builder updates logical sizes within fixed capacity")
     CHECK(array.Read().View().Row(1) - array.Read().View().Row(0) == 12);
     CHECK_THROWS(array.Read().At(0, 0));
     CHECK_THROWS(R::RowLayout::Padded({0, 13}, 12));
-    CHECK_THROWS((R::Array<int64_t, R::FixedRows<12>>::FromSharedStorage(array.SharedStorage())));
+    CHECK_THROWS(array.Read().template View<R::FixedRows<12>>());
 }
 
 TEST_CASE("Detached shape drafts preserve old aliases and abandon without publication")
@@ -243,7 +243,7 @@ TEST_CASE("Builder empty shapes and POD values keep element alignment")
     {
         R::RowBuilder empty(0, sizeof(double), kind, 5);
         auto result = R::Array<double>::FromSharedStorage(empty.Commit());
-        CHECK(result.Rows() == 0);
+        CHECK(result.RowCount() == 0);
         CHECK(result.Layout().Kind() == kind);
     }
     R::RowBuilder widths(3, sizeof(double), R::RowLayoutKind::CSR);

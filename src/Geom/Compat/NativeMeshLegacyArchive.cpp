@@ -274,10 +274,10 @@ namespace DNDS::Geom
                           data.periodicInfo.translation[size_t(frame)].map().allFinite(), "legacy periodic frame nonfinite"); });
             }
         }
-        const auto nodes = EntitySpace::CreateOwned(EntityKind::Node, mpi, index(data.coords->Rows()));
+        const auto nodes = EntitySpace::CreateOwned(EntityKind::Node, mpi, index(data.coords->RowCount()));
         data.spaces.emplace(EntityKind::Node, nodes);
-        data.spaces.emplace(EntityKind::Cell, nodes.CreateSibling(EntityKind::Cell, index(data.cellInfo->Rows())));
-        data.spaces.emplace(EntityKind::Bnd, nodes.CreateSibling(EntityKind::Bnd, index(data.bndInfo->Rows())));
+        data.spaces.emplace(EntityKind::Cell, nodes.CreateSibling(EntityKind::Cell, index(data.cellInfo->RowCount())));
+        data.spaces.emplace(EntityKind::Bnd, nodes.CreateSibling(EntityKind::Bnd, index(data.bndInfo->RowCount())));
         NativeMeshInput input{mpi, data.dimension, data.spaces.at(EntityKind::Cell), nodes, data.spaces.at(EntityKind::Bnd),
                               *data.relations[size_t(MeshRelation::CellNodes)], *data.relations[size_t(MeshRelation::BoundaryNodes)],
                               *data.coords, *data.cellInfo, *data.bndInfo, data.ids};

@@ -77,7 +77,7 @@ void ScaleAsync(R::EagerEngine &engine, const R::ExecutionStream &stream, State 
 #endif
     R::SubmitArrays(engine, stream, [factor](R::ExecutionContext, R::ArrayView<double> values)
                     {
-        for (size_t i = 0; i < values.Rows(); ++i)
+        for (size_t i = 0; i < values.RowCount(); ++i)
             for (size_t j = 0; j < values.RowSize(i); ++j) values(i, j) *= factor; }, R::ReadWrite(array));
 }
 
@@ -95,10 +95,10 @@ struct NativeOwner
           classMetadata(R::RowLayout::Ragged({1, 0, 2}), device) {}
 };
 
-template <class T, class L>
-T ReadElement(const R::Array<T, L> &array, size_t row, size_t column)
+template <class T>
+T ReadElement(const R::Array<T> &array, size_t row, size_t column)
 {
-    DNDS_check_throw_info(row < array.Rows() && column < array.RowSize(row), "test element out of range");
+    DNDS_check_throw_info(row < array.RowCount() && column < array.RowSize(row), "test element out of range");
     auto context = R::ExecutionContext{array.GetDevice(), nullptr};
     auto access = array.Read(context);
     T value;
@@ -118,8 +118,8 @@ void Scale(State array, double factor)
     }
 #endif
     auto access = array.Write();
-    auto view = access.View();
-    for (size_t i = 0; i < view.Rows(); ++i)
+    auto view = access.View<R::FixedRows<5>>();
+    for (size_t i = 0; i < view.RowCount(); ++i)
         for (size_t j = 0; j < view.RowSize(i); ++j)
             view(i, j) *= factor;
 }

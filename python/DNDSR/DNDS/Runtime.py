@@ -135,7 +135,7 @@ class ArrayView:
 
 def _array_selection(array, key):
     row_key, column_key = _indices(key, 2)
-    rows, row_scalar = _select_range(range(array.layout.rows), row_key)
+    rows, row_scalar = _select_range(range(array.layout.row_count), row_key)
     if array.layout.is_variable:
         widths = {array.layout.row_size(row) for row in rows}
         if len(widths) > 1:
@@ -200,9 +200,9 @@ class ElementRef:
 # return this same class. Views retain storage, not the replaceable Python handle.
 Array.__getitem__ = _array_getitem
 Array.__setitem__ = _array_setitem
-Array.__len__ = lambda self: self.layout.rows
+Array.__len__ = lambda self: self.layout.row_count
 Array.view = lambda self: _array_selection(self, (slice(None), slice(None)))
-Array.shape = property(lambda self: (self.layout.rows, None if self.layout.is_variable else self.layout.width))
+Array.shape = property(lambda self: (self.layout.row_count, None if self.layout.is_variable else self.layout.width))
 Array.element = lambda self, row, column=0: ElementRef(self, row, column)
 
 
@@ -227,7 +227,7 @@ class _PairRead:
         try:
             self._owned = self._stack.enter_context(pair.owned.read(stream))
             self._ghost = self._stack.enter_context(pair.ghost.read(stream))
-            self._n_owned = pair.owned.layout.rows
+            self._n_owned = pair.owned.layout.row_count
         except BaseException:
             self._stack.close()
             raise

@@ -11,12 +11,12 @@ namespace DNDS::Geom
     /// Bnd2CellCoupled relation carries the periodic partner in its second slot;
     /// that support must not change which side owns the boundary. The legacy
     /// Bnd2Cell facade retains own/self slots for a periodic boundary.
-    inline AdjKind NativeBoundaryPlacementRelation(const UnstructuredMeshState &source)
+    inline AdjacencyDescriptor NativeBoundaryPlacementRelation(const UnstructuredMeshState &source)
     {
         if (!source.BorrowHostView().IsPeriodic())
             return Adj::Bnd2Cell;
-        return AdjKind::Composition(Adj::Bnd2Node, Adj::Cell2Node.Inverted(), RelationSelection::Exact, false,
-                                    "geom.boundary.physical-frame-face", 1, RelationPeriodicPolicy::FrameMatched);
+        return AdjacencyDescriptor::Composition(Adj::Bnd2Node, Adj::Cell2Node.Inverted(), RelationSelection::Exact, false,
+                                                "geom.boundary.physical-frame-face", 1, RelationPeriodicPolicy::FrameMatched);
     }
 
     struct NativeMeshTransitionResult

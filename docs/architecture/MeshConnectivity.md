@@ -101,10 +101,18 @@ it cannot rely on an earlier solver ghost ring being sufficient.
 
 ## GhostSpec is a coverage contract
 
-Each GhostChain names an anchor family, a sequence of full AdjKind descriptors,
+Each GhostChain names an anchor family, a sequence of full adjacency descriptors,
 and the family to collect. Each root starts with this rank's owned entities of
 its anchor family. Intermediate entities may belong to any rank; ownership
 determines routing, not topology or path membership.
+
+Only the exact endpoint of each input chain is a collection endpoint. It may be
+a leaf or may have children contributed by another chain. Evaluation keeps a
+separate reached set for every compiled node and expands a child only from that
+node's own parent state; sibling frontiers are never merged for propagation.
+Endpoint sets of the same entity kind are sorted and unioned only at the final
+result. A node can therefore both contribute to the result and feed descendant
+branches without changing either role.
 
 ```text
 owned Bnd --Bnd2Node--> Node --Node2Bnd--> Bnd [collect remote IDs]
@@ -115,7 +123,10 @@ Reached nodes do not join another root's seeds. Compilation merges shared
 anchor/hop prefixes, not all positions having the same entity kind. It does not
 invent continuations from other registered relations. The boundary default also
 requests Bnd→Node→Bnd→Node for the new boundary cones. Final sets union the
-collected results; temporary intermediate fetches need not all survive.
+collected endpoint results; temporary intermediate fetches need not all
+survive. The default cumulative ring policy is expressed explicitly as one
+chain per depth from one through `cellLayers`; a single deep chain requests
+only its terminal depth.
 
 The assembler accepts the recipe explicitly. Defaults are selected by setup
 frontends, not recreated inside assembly. Preserve the declarative policy
@@ -128,10 +139,12 @@ invalid paths are errors, agreed collectively before the next communication.
 The exact assembler never edits its supplied recipe. The completed-operation
 helper `AssembleNativeMesh(..., 0)` preserves a retained policy, selecting a
 one-ring default only if none exists. A positive explicit depth replaces standard
-Cell2Cell prefixes, or adds the requested cell ring when absent, while retaining
-other custom paths. This allows a restart/preparation request to change cell
-depth without dropping boundary or named traversals. All ranks agree on this
-option even when it would not otherwise change the resulting tree.
+Cell2Cell prefixes with explicit endpoint chains for every depth from one
+through the requested value. If no Cell2Cell-rooted cell chain exists, it adds
+cumulative cell and cell-node chains while retaining other custom paths. This
+allows a restart/preparation request to change cell depth without dropping
+boundary or named traversals. All ranks agree on this option even when it would
+not otherwise change the resulting tree.
 
 ## Composition versus distributed traversal
 
@@ -144,8 +157,20 @@ named/versioned semantics.
 `Evaluate(tree)` discovers unions of reachable entities and automatically
 fetches remote intermediate rows along the declared paths. It does not retain
 separate final neighbor rows per starting entity. A correct ghost set therefore
-does not establish that a composed relation was constructed. An AdjKind
+does not establish that a composed relation was constructed. An AdjacencyDescriptor
 descriptor alone is not a materialized adjacency array.
+
+Final ghost publication constructs one immutable `EntityGhostMapping` per
+source entity space. It records the source owned/ghost order and reusable
+`RowTransferPlan`, not adjacency semantics or a route tree. `BuildGhosted`
+resolves descriptor aliases only after those mappings exist. Its O(1) payload
+identity includes source/target kinds, global/local state, exact owned
+view/layout and the `EntityGhostMapping` identity. Across ranks, each descriptor
+must agree on the same earlier descriptor ordinal through the adaptive optional
+integer agreement helper. A match shares the completed owned+ghost payload;
+the descriptors, spaces and mappings remain distinct objects. Input ghost rows
+are not reused. Descriptor ordinals are local to one `BuildGhosted` call and
+are recomputed from the current sorted registry.
 
 ## Semantic validation requirements
 
@@ -198,24 +223,24 @@ or edges, so incomplete incoming ghosts cannot create duplicate entities.
 
 ## Relation identity and the setup DSL
 
-An `AdjKind` is a full semantic key: source/target families, path, selection,
+An `AdjacencyDescriptor` is a full semantic key: source/target families, path, selection,
 self policy, ordering, periodic policy and named/versioned definition. Endpoint
 pairs alone do not identify a relation. Direct FaceCells, FaceNodes followed by
 NodeCells with any-node selection, and all-node containment can coexist.
 
 ```mermaid
 flowchart TD
-    key[Full AdjKind descriptor] --> access[RelationReadAccess + canonical spaces]
-    access --> inverse[NativeConnectivity::Inverse]
+    key[Full AdjacencyDescriptor descriptor] --> access[MeshAdjacencyRead + canonical spaces]
+    access --> inverse[AdjacencyRegistry::Inverse]
     access --> compose[Compose / ComposeAll / ComposeFiltered]
     access --> tree[Compiled ghost traversal]
     tree --> discover[Evaluate: sparse owner row requests]
     discover --> publish[BuildGhosted: shared routes and typed payloads]
-    inverse --> named[Distinct named NativeRelation]
+    inverse --> named[Distinct named MeshAdjacency]
     compose --> named
 ```
 
-`NativeConnectivity` supplies native inverse, composition, interpolation and
+`AdjacencyRegistry` supplies native inverse, composition, interpolation and
 sparse ghost evaluation. `MeshConnectivity` retains compatibility spellings for
 the setup mathematics, forwarding to this native implementation. It does not
 own mesh storage. `RegisterMesh` uses the explicitly requested native groups;
@@ -245,13 +270,13 @@ variables or in-place `AdjGlobal2Local*` / `AdjLocal2Global*` mesh operations.
 For setup inspection or independent transformation, convert a detached relation:
 
 ```cpp
-auto relation = mesh->ReadNativeRelation(Adj::Cell2Node);
-auto global = NativeRelation::Convert(relation, Adj_PointToGlobal);
-auto local = NativeRelation::Convert(global.Read(), Adj_PointToLocal);
+auto relation = mesh->ReadAdjacency(Adj::Cell2Node);
+auto global = MeshAdjacency::Convert(relation, Adj_PointToGlobal);
+auto local = MeshAdjacency::Convert(global.Read(), Adj_PointToLocal);
 // The source publication and its generations have not changed.
 ```
 
-`RelationReadAccess` retains its values, row metadata and source/target
+`MeshAdjacencyRead` retains its values, row metadata and source/target
 association. Conversion preserves row shape and slots; it uses the explicit
 canonical target space rather than guessing a map from endpoints. See
 [the conversion contract](../dev/geom_native_index_conversion.md).

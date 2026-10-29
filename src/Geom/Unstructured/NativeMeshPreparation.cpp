@@ -19,7 +19,7 @@ namespace DNDS::Geom
     GhostSpec ExtendNativeMeshGhostSpecForTopology(const NativeOwnedMeshData &owned, bool faces, bool edges, int ghostLayers)
     {
         auto recipe = owned.ghostSpec ? *owned.ghostSpec : DefaultNativeMeshGhostSpec(owned, ghostLayers);
-        auto append = [&](EntityKind anchor, std::vector<AdjKind> hops)
+        auto append = [&](EntityKind anchor, std::vector<AdjacencyDescriptor> hops)
         { recipe.chains.push_back({anchor, hops, hops.back().to}); };
         // Requested new topology explicitly extends its caller's coverage.
         // Existing custom rings/named paths are retained unchanged.
@@ -521,7 +521,7 @@ namespace DNDS::Geom
             if (!source.spaces.count(EntityKind::Face))
             {
                 const auto side = source.periodic
-                    ? AdjKind::Composition(Adj::Bnd2Node, Adj::Cell2Node.Inverted(), RelationSelection::Exact, false,
+                    ? AdjacencyDescriptor::Composition(Adj::Bnd2Node, Adj::Cell2Node.Inverted(), RelationSelection::Exact, false,
                                            "geom.boundary.physical-frame-face", 1, RelationPeriodicPolicy::FrameMatched)
                     : Adj::Bnd2Cell;
                 input.follows = {{EntityKind::Node, EntityKind::Cell, Adj::Node2Cell},

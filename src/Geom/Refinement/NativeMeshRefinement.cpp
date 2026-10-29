@@ -1,6 +1,6 @@
 #include "Geom/Refinement/NativeMeshRefinement.hpp"
 #include "Geom/Transition/NativeMeshAssembler.hpp"
-#include "Geom/Connectivity/NativeConnectivity.hpp"
+#include "Geom/Connectivity/AdjacencyRegistry.hpp"
 #include "Geom/Transition/FieldTransfer.hpp"
 #include "DNDS/Runtime/RowBuilder.hpp"
 
@@ -38,14 +38,14 @@ namespace DNDS::Geom
         auto owned = source;
         if (!options.audit)
             options.audit = owned.audit;
-        NativeConnectivity closure(mpi);
+        AdjacencyRegistry closure(mpi);
         FieldTransferDetail::LocalStage(mpi, [&]
                                         {
             for (const auto &[kind, space] : owned.spaces)
                 DNDS_check_throw_info(space.Valid() && space.NumGhost() == 0, "owned bisection requires owned-only entity spaces");
-            for (const auto &[key, slot] : std::initializer_list<std::pair<AdjKind, MeshRelation>>{
+            for (const auto &[key, slot] : std::initializer_list<std::pair<AdjacencyDescriptor, MeshRelation>>{
                      {Adj::Cell2Node, MeshRelation::CellNodes}, {Adj::Bnd2Node, MeshRelation::BoundaryNodes}})
-                closure.Register(RelationReadAccess(key, owned.spaces.at(key.from), owned.spaces.at(key.to),
+                closure.Register(MeshAdjacencyRead(key, owned.spaces.at(key.from), owned.spaces.at(key.to),
                     Adj_PointToGlobal, *owned.relations[size_t(slot)])); });
         const GhostSpec needed{{{EntityKind::Cell, {Adj::Cell2Node}, EntityKind::Node},
                                 {EntityKind::Bnd, {Adj::Bnd2Node}, EntityKind::Node}}};
@@ -72,7 +72,7 @@ namespace DNDS::Geom
                 auto ids = owned.ids.at(kind).Read();
                 std::optional<Runtime::Array<NodePeriodicBits>::ReadLease> images;
                 if (owned.periodic) images.emplace((kind == EntityKind::Cell ? *owned.cellNodesPbi : *owned.bndNodesPbi).Read());
-                for (size_t row = 0; row < cones.Rows(); ++row)
+                for (size_t row = 0; row < cones.RowCount(); ++row)
                 {
                     auto parentInfo = info.View()(row, 0);
                     const Elem::Element element{parentInfo.getElemType()};

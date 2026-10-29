@@ -13,31 +13,31 @@ static void CheckEagerTypedCPU(const R::RowLayout &shape)
 {
     R::EagerEngine engine(2);
     auto stream = engine.CreateCPUStream();
-    R::Array<int, Policy> input(shape), output(shape);
+    R::Array<int> input(shape), output(shape);
     auto retained = input;
     R::SubmitArrays(engine, stream, [](R::ExecutionContext, auto values)
                     {
         static_assert(std::is_same_v<decltype(values), R::ArrayView<int, false, Policy>>);
-        for (size_t row = 0; row < values.Rows(); ++row)
-            for (size_t column = 0; column < values[row].size(); ++column)
-                values(row, column) = int(10 * row + column); }, R::Write(input));
+        for (DNDS::index row = 0; row < values.RowCount(); ++row)
+            for (DNDS::index column = 0; column < values[row].size(); ++column)
+                values(row, column) = int(10 * row + column); }, R::WriteAs<Policy>(input));
     R::SubmitArrays(engine, stream, [](R::ExecutionContext, auto source, auto target)
                     {
         static_assert(std::is_same_v<decltype(source), R::ArrayView<const int, false, Policy>>);
         static_assert(std::is_same_v<decltype(target), R::ArrayView<int, false, Policy>>);
-        for (size_t row = 0; row < source.Rows(); ++row)
-            for (size_t column = 0; column < source[row].size(); ++column)
-                target(row, column) = 3 * source(row, column); }, R::Read(input), R::Write(output));
+        for (DNDS::index row = 0; row < source.RowCount(); ++row)
+            for (DNDS::index column = 0; column < source[row].size(); ++column)
+                target(row, column) = 3 * source(row, column); }, R::ReadAs<Policy>(input), R::WriteAs<Policy>(output));
     // Existing concrete dynamic-view launchers remain valid conversion targets.
     R::SubmitArrays(engine, stream, [](R::ExecutionContext, R::ArrayView<int> values)
                     {
-        for (size_t row = 0; row < values.Rows(); ++row)
+        for (DNDS::index row = 0; row < values.RowCount(); ++row)
             for (auto &value : values[row]) ++value; }, R::ReadWrite(output));
-    input.Reset(Policy::Default());
+    input.Reset(shape);
     stream.Record().WaitHost();
     auto source = retained.Read(), actual = output.Read();
-    for (size_t row = 0; row < shape.Rows(); ++row)
-        for (size_t column = 0; column < shape.RowSize(row); ++column)
+    for (DNDS::index row = 0; row < shape.RowCount(); ++row)
+        for (DNDS::index column = 0; column < shape.RowSize(row); ++column)
         {
             CHECK(source.View()(row, column) == int(10 * row + column));
             CHECK(actual.View()(row, column) == int(3 * (10 * row + column) + 1));
@@ -56,35 +56,39 @@ TEST_CASE("Worker eager submissions retain all five typed policies and generic l
 template <class Policy>
 static void CheckLayoutSpecificAccess(const R::RowLayout &shape)
 {
-    R::Array<int> generic(shape);
-    auto values = R::Array<int, Policy>::FromSharedStorage(generic.SharedStorage());
-    CHECK(values.Identity() == generic.Identity());
+    R::Array<int> values(shape);
     {
         auto write = values.Write();
-        const auto view = write.template View<true>();
+        const auto view = write.template View<Policy, true>();
         static_assert(!decltype(view)::is_dynamic);
         static_assert(decltype(view)::layout_kind == Policy::layout_kind);
-        for (size_t row = 0; row < shape.Rows(); ++row)
+        for (DNDS::index row = 0; row < shape.RowCount(); ++row)
         {
             CHECK(view.Row(row) == view.data + shape.Offset(row));
             CHECK(view[row].size() == shape.RowSize(row));
-            for (size_t column = 0; column < shape.RowSize(row); ++column)
+            for (DNDS::index column = 0; column < shape.RowSize(row); ++column)
                 view[row][column] = int(20 * row + column);
         }
     }
-    auto read = generic.Read();
-    auto typed = values.Read();
-    for (size_t row = 0; row < shape.Rows(); ++row)
+    auto read = values.Read();
+    auto typed = read.template View<Policy>();
+    for (DNDS::index row = 0; row < shape.RowCount(); ++row)
     {
-        CHECK(typed.View().Row(row) == read.View().Row(row));
-        CHECK(typed.View().RowSize(row) == shape.RowSize(row));
-        for (size_t column = 0; column < shape.RowSize(row); ++column)
+        CHECK(typed.Row(row) == read.View().Row(row));
+        CHECK(typed.RowSize(row) == shape.RowSize(row));
+        for (DNDS::index column = 0; column < shape.RowSize(row); ++column)
             CHECK(read.View()(row, column) == int(20 * row + column));
     }
 }
 
 TEST_CASE("Five layout policies produce distinct typed views and share dynamic storage")
 {
+    static_assert(std::is_same_v<R::Array<int>, R::Array<int, R::FixedRows<3>>>);
+    static_assert(std::is_same_v<R::ArrayPair<int>, R::ArrayPair<int, R::FixedRows<3>>>);
+    static_assert(std::is_same_v<R::GenericRowView<int>, R::ArrayView<int>>);
+    static_assert(std::is_same_v<decltype(std::declval<R::RowLayout>().RowCount()), DNDS::index>);
+    static_assert(std::is_same_v<decltype(std::declval<R::RowSpan<int>>().size()), DNDS::index>);
+    static_assert(std::is_same_v<decltype(std::declval<R::ArrayView<int>>().RowCount()), DNDS::index>);
     using Table = R::ArrayView<int, false, R::TableRows>;
     using Fixed = R::ArrayView<int, false, R::FixedRows<3>>;
     using Padded = R::ArrayView<int, false, R::PaddedRows>;
@@ -102,30 +106,26 @@ TEST_CASE("Five layout policies produce distinct typed views and share dynamic s
     CheckLayoutSpecificAccess<R::TableRows>(R::RowLayout::Dense(0, 3, 5));
     CheckLayoutSpecificAccess<R::PaddedRows>(R::RowLayout::Padded({}, 5));
     CheckLayoutSpecificAccess<R::CSRRows>(R::RowLayout::Ragged({}));
-    for (const auto &shape : {R::RowLayout::Dense(0, 2), R::RowLayout::Padded({}, 2), R::RowLayout::Ragged({})})
-    {
-        R::Array<int> dynamic(shape);
-        if (shape.Kind() != R::RowLayoutKind::Table)
-            CHECK_THROWS((R::Array<int, R::TableRows>::FromSharedStorage(dynamic.SharedStorage())));
-        if (shape.Kind() != R::RowLayoutKind::Padded)
-            CHECK_THROWS((R::Array<int, R::PaddedRows>::FromSharedStorage(dynamic.SharedStorage())));
-        if (shape.Kind() != R::RowLayoutKind::CSR)
-            CHECK_THROWS((R::Array<int, R::CSRRows>::FromSharedStorage(dynamic.SharedStorage())));
-    }
+    R::Array<int> dense(R::RowLayout::Dense(2, 2, 3));
+    CHECK(dense.Read().template View<R::PaddedRows>().RowSize(1) == 2);
+    CHECK(dense.Read().template View<R::CSRRows>().RowSize(1) == 2);
+    R::Array<int> irregularPadded(R::RowLayout::Padded({1, 2}, 2));
+    R::Array<int> irregularCSR(R::RowLayout::Ragged({1, 2}));
+    CHECK_THROWS(irregularPadded.Read().template View<R::TableRows>());
+    CHECK_THROWS(irregularCSR.Read().template View<R::TableRows>());
 }
 
 TEST_CASE("Static row policy reaches typed access and preserves dynamic interoperability")
 {
-    using Fixed = R::Array<double, R::FixedRows<3>>;
-    using StaticStride = R::Array<double, R::FixedRows<3, 5>>;
-    using WriteView = decltype(std::declval<Fixed::WriteLease>().View());
-    using ReadView = decltype(std::declval<Fixed::ReadLease>().View());
+    using Fixed = R::Array<double>;
+    using WriteView = decltype(std::declval<Fixed::WriteLease>().template View<R::FixedRows<3>>());
+    using ReadView = decltype(std::declval<Fixed::ReadLease>().template View<R::FixedRows<3>>());
     using ReadRow = decltype(std::declval<ReadView>()[0]);
     static_assert(WriteView::row_width == 3 && ReadView::row_width == 3);
     static_assert(ReadRow::row_width == 3);
     static_assert(ReadView::row_stride == R::DynamicExtent);
-    static_assert(decltype(std::declval<StaticStride::WriteLease>().View())::row_stride == 5);
-    static_assert(decltype(std::declval<StaticStride::WriteLease>().View()[0])::row_capacity == 5);
+    static_assert(decltype(std::declval<Fixed::WriteLease>().template View<R::FixedRows<3, 5>>())::row_stride == 5);
+    static_assert(decltype(std::declval<Fixed::WriteLease>().template View<R::FixedRows<3, 5>>()[0])::row_capacity == 5);
     static_assert(std::is_same_v<decltype(std::declval<ReadView>()(0, 0)), const double &>);
     static_assert(std::is_same_v<decltype(std::declval<WriteView>()[0][0]), double &>);
     static_assert(std::is_trivially_copyable_v<WriteView> && std::is_trivially_copyable_v<ReadRow>);
@@ -134,9 +134,9 @@ TEST_CASE("Static row policy reaches typed access and preserves dynamic interope
     Fixed values(R::RowLayout::Dense(2, 3, 5));
     {
         auto write = values.Write();
-        const auto view = write.View<true>();
-        for (size_t row = 0; row < view.Rows(); ++row)
-            for (size_t column = 0; column < decltype(view)::row_width; ++column)
+        const auto view = write.View<R::FixedRows<3>, true>();
+        for (DNDS::index row = 0; row < view.RowCount(); ++row)
+            for (DNDS::index column = 0; column < decltype(view)::row_width; ++column)
                 view[row][column] = 100 * row + column;
         R::ArrayView<double, true> dynamic = view;
         CHECK(dynamic.RowSize(1) == 3);
@@ -146,7 +146,7 @@ TEST_CASE("Static row policy reaches typed access and preserves dynamic interope
         CHECK(row[2] == 102);
         CHECK(write.DynamicView().Row(1) == view.Row(1));
     }
-    auto staticAlias = StaticStride::FromSharedStorage(values.SharedStorage());
+    auto staticAlias = R::Array<double>::FromSharedStorage(values.SharedStorage());
     CHECK(staticAlias.Identity() == values.Identity());
     {
         R::Array<double>::ReadLease generic = staticAlias.Read();
@@ -154,13 +154,15 @@ TEST_CASE("Static row policy reaches typed access and preserves dynamic interope
         CHECK(generic.Layout().Stride() == 5);
     }
     auto read = staticAlias.Read();
-    const auto view = read.View();
+    const auto view = read.View<R::FixedRows<3, 5>>();
     staticAlias.Reset(R::RowLayout::Dense(0, 3, 5));
     values.Reset(R::RowLayout::Dense(0, 3));
     CHECK(view[1].size() == 3);
     CHECK(view[1][2] == 102);
     CHECK(view.Row(1) - view.Row(0) == 5);
     CHECK_THROWS(read.At(0, 3));
+    CHECK_THROWS(read.At(-1, 0));
+    CHECK_THROWS(read.At(0, -1));
     const auto raw = read.DynamicView();
     CHECK(raw.width == 3);
     CHECK(raw.stride == 5);
@@ -168,36 +170,36 @@ TEST_CASE("Static row policy reaches typed access and preserves dynamic interope
 
 TEST_CASE("Static width and capacity policies validate empty layouts and physical stride")
 {
-    using Fixed = R::Array<int, R::FixedRows<2, 4>>;
-    using Max = R::Array<int, R::StaticMaxRows<4>>;
-    Fixed fixed;
-    Max padded;
-    CHECK(fixed.Rows() == 0);
+    using Fixed = R::Array<int>;
+    using Max = R::Array<int>;
+    Fixed fixed(R::RowLayout::Dense(0, 2, 4));
+    Max padded(R::RowLayout::Padded({}, 4));
+    CHECK(fixed.RowCount() == 0);
     CHECK(fixed.Layout().Width() == 2);
     CHECK(fixed.Layout().Stride() == 4);
-    CHECK(padded.Rows() == 0);
+    CHECK(padded.RowCount() == 0);
     CHECK(padded.Layout().IsPadded());
     CHECK(padded.Layout().Stride() == 4);
-    CHECK(fixed.Read().View().Rows() == 0);
-    CHECK(padded.Read().View().Rows() == 0);
-    CHECK_THROWS(Fixed(R::RowLayout::Dense(0, 3, 4)));
-    CHECK_THROWS(Fixed(R::RowLayout::Dense(0, 2, 3)));
-    CHECK_THROWS(Fixed(R::RowLayout::Ragged({})));
-    CHECK_THROWS(Max(R::RowLayout::Padded({}, 5)));
-    CHECK_THROWS(Max(R::RowLayout::Dense(0, 4)));
+    CHECK(fixed.Read().View<R::FixedRows<2, 4>>().RowCount() == 0);
+    CHECK(padded.Read().View<R::StaticMaxRows<4>>().RowCount() == 0);
+    CHECK_THROWS(Fixed(R::RowLayout::Dense(0, 3, 4)).Read().View<R::FixedRows<2, 4>>());
+    CHECK_THROWS(Fixed(R::RowLayout::Dense(0, 2, 3)).Read().View<R::FixedRows<2, 4>>());
+    CHECK_THROWS(Fixed(R::RowLayout::Ragged({})).Read().View<R::FixedRows<2, 4>>());
+    CHECK_THROWS(Max(R::RowLayout::Padded({}, 5)).Read().View<R::StaticMaxRows<4>>());
+    CHECK_THROWS(Max(R::RowLayout::Dense(0, 4, 5)).Read().View<R::StaticMaxRows<4>>());
     R::Array<int> wrong(R::RowLayout::Padded({1, 3}, 5));
-    CHECK_THROWS(Max::FromSharedStorage(wrong.SharedStorage()));
-    R::Array<int, R::FixedRows<0, 4>> zeroWidth(R::RowLayout::Dense(2, 0, 4));
+    CHECK_THROWS(wrong.Read().View<R::StaticMaxRows<4>>());
+    R::Array<int> zeroWidth(R::RowLayout::Dense(2, 0, 4));
     auto zero = zeroWidth.Read();
-    CHECK(zero.View()[1].empty());
-    CHECK(zero.View()[1].begin() == zero.View()[1].end());
-    CHECK(zero.View().Row(1) - zero.View().Row(0) == 4);
+    CHECK(zero.View<R::FixedRows<0, 4>>()[1].empty());
+    CHECK(zero.View<R::FixedRows<0, 4>>()[1].begin() == zero.View<R::FixedRows<0, 4>>()[1].end());
+    CHECK(zero.View<R::FixedRows<0, 4>>().Row(1) - zero.View<R::FixedRows<0, 4>>().Row(0) == 4);
 }
 
 TEST_CASE("Static maximum capacity retains variable logical widths and untouched padding")
 {
-    using Max = R::Array<int, R::StaticMaxRows<5>>;
-    using View = decltype(std::declval<Max::WriteLease>().View());
+    using Max = R::Array<int>;
+    using View = decltype(std::declval<Max::WriteLease>().template View<R::StaticMaxRows<5>>());
     using Row = decltype(std::declval<View>()[0]);
     static_assert(View::row_width == R::DynamicExtent && View::row_capacity == 5 && View::row_stride == 5);
     static_assert(Row::row_width == R::DynamicExtent && Row::row_capacity == 5);
@@ -211,10 +213,10 @@ TEST_CASE("Static maximum capacity retains variable logical widths and untouched
     }
     {
         auto write = values.Write();
-        auto view = write.View<true>();
+        auto view = write.View<R::StaticMaxRows<5>, true>();
         CHECK(view[0].empty());
-        for (size_t row = 0; row < view.Rows(); ++row)
-            for (size_t column = 0; column < view[row].size(); ++column)
+        for (DNDS::index row = 0; row < view.RowCount(); ++row)
+            for (DNDS::index column = 0; column < view[row].size(); ++column)
                 view(row, column) = int(row * 10 + column);
         CHECK_THROWS(write.At(1, 2));
     }
@@ -225,8 +227,8 @@ TEST_CASE("Static maximum capacity retains variable logical widths and untouched
         CHECK(read.View()[2][4] == 24);
         auto raw = values.Storage().Read();
         const auto flat = raw.View<int>();
-        for (size_t row = 0; row < values.Rows(); ++row)
-            for (size_t column = values.RowSize(row); column < 5; ++column)
+        for (DNDS::index row = 0; row < values.RowCount(); ++row)
+            for (DNDS::index column = values.RowSize(row); column < 5; ++column)
                 CHECK(flat[row * 5 + column] == -23);
     }
     {
@@ -237,12 +239,12 @@ TEST_CASE("Static maximum capacity retains variable logical widths and untouched
     }
     CHECK(values.Read().View()[1].size() == 4);
     CHECK(values.Read().View()(1, 1) == 11);
-    R::ArrayPair<int, R::StaticMaxRows<5>> pair{std::move(values), Max(R::RowLayout::Padded({1}, 5))};
+    R::ArrayPair<int> pair{std::move(values), Max(R::RowLayout::Padded({1}, 5))};
     pair.ghost.Write().View()(0, 0) = 73;
     auto combined = pair.ReadCombined();
-    static_assert(decltype(combined.View())::row_capacity == 5);
-    CHECK(combined.View()[3].size() == 1);
-    CHECK(combined.View()(3, 0) == 73);
+    static_assert(decltype(combined.View<R::StaticMaxRows<5>>())::row_capacity == 5);
+    CHECK(combined.View<R::StaticMaxRows<5>>()[3].size() == 1);
+    CHECK(combined.View<R::StaticMaxRows<5>>()(3, 0) == 73);
     R::PairReadView<int> generic = combined.View();
     CHECK(generic.RowSize(1) == 4);
     CHECK(generic(3, 0) == 73);
@@ -327,18 +329,19 @@ TEST_CASE("native ArrayPair core only needs owned access")
         auto incoming = pair.ghost.Write();
         auto core = pair.ReadOwned();
         auto send = pair.owned.Read();
-        CHECK(core.View().Rows() == 4);
+        CHECK(core.View().RowCount() == 4);
         CHECK_THROWS(pair.ReadCombined());
         CHECK_THROWS(pair.Read());
         incoming.At(0, 1) = 7;
     }
     auto ring = pair.ReadCombined();
-    CHECK(ring.View().Rows() == 6);
+    CHECK(ring.View().RowCount() == 6);
     CHECK(ring.View()[4].size() == 2);
     CHECK(ring.View().Row(4)[1] == 7);
-    R::Array<double, R::FixedRows<5>> fixed;
+    R::Array<double> fixed(R::RowLayout::Dense(0, 5));
     CHECK(fixed.Layout().Width() == 5);
-    CHECK_THROWS(fixed.Reset(R::RowLayout::Dense(2, 3)));
+    fixed.Reset(R::RowLayout::Dense(2, 3));
+    CHECK_THROWS(fixed.Read().template View<R::FixedRows<5>>());
 }
 
 TEST_CASE("Native sized row views preserve logical extents and retained metadata")
@@ -357,7 +360,7 @@ TEST_CASE("Native sized row views preserve logical extents and retained metadata
         {
             auto write = values.Write();
             auto view = write.View<true>();
-            for (size_t row = 0; row < view.Rows(); ++row)
+            for (DNDS::index row = 0; row < view.RowCount(); ++row)
             {
                 auto span = view[row];
                 CHECK(span.size() == shape.RowSize(row));
@@ -370,11 +373,11 @@ TEST_CASE("Native sized row views preserve logical extents and retained metadata
         auto read = values.Read();
         auto view = read.View<true>();
         values.Reset(R::RowLayout::Dense(0, 0));
-        for (size_t row = 0; row < view.Rows(); ++row)
+        for (DNDS::index row = 0; row < view.RowCount(); ++row)
         {
             const auto span = view[row];
             CHECK(span.size() == shape.RowSize(row));
-            for (size_t column = 0; column < span.size(); ++column)
+            for (DNDS::index column = 0; column < span.size(); ++column)
                 CHECK(span[column] == int(10 * row + column));
             CHECK(span.empty() == (span.size() == 0));
         }
@@ -388,17 +391,17 @@ TEST_CASE("Native fixed POD rows share read and write span access")
         int64_t id;
         double weight;
     };
-    R::Array<Entry, R::FixedRows<2>> values(R::RowLayout::Dense(2, 2, 3));
+    R::Array<Entry> values(R::RowLayout::Dense(2, 2, 3));
     {
         auto write = values.Write();
-        write.View()[1][0] = {71, 1.5};
-        write.View()[1][1] = {72, 2.5};
+        write.View<R::FixedRows<2>>()[1][0] = {71, 1.5};
+        write.View<R::FixedRows<2>>()[1][1] = {72, 2.5};
     }
     auto read = values.Read();
-    CHECK(read.View()[1].size() == 2);
-    CHECK(read.View()[1][0].id == 71);
-    CHECK(read.View()[1][1].weight == 2.5);
-    CHECK(read.View()[1].data() - read.View()[0].data() == 3);
+    CHECK(read.View<R::FixedRows<2>>()[1].size() == 2);
+    CHECK(read.View<R::FixedRows<2>>()[1][0].id == 71);
+    CHECK(read.View<R::FixedRows<2>>()[1][1].weight == 2.5);
+    CHECK(read.View<R::FixedRows<2>>()[1].data() - read.View<R::FixedRows<2>>()[0].data() == 3);
 }
 
 TEST_CASE("native layout zero rows padding and overflow validation")
@@ -416,7 +419,7 @@ TEST_CASE("native layout zero rows padding and overflow validation")
 
 TEST_CASE("native typed handles share one allocation and logical metadata record")
 {
-    R::Array<double, R::FixedRows<5>> fixed(R::RowLayout::Dense(3, 5, 8));
+    R::Array<double> fixed(R::RowLayout::Dense(3, 5, 8));
     auto dynamic = R::Array<double>::FromSharedStorage(fixed.SharedStorage());
     CHECK(dynamic.SharedStorage() == fixed.SharedStorage());
     CHECK(dynamic.SharedStorage()->SharedLayout() == fixed.SharedStorage()->SharedLayout());
@@ -427,7 +430,7 @@ TEST_CASE("native typed handles share one allocation and logical metadata record
         auto read = fixed.Read();
         CHECK_THROWS(dynamic.Write());
     }
-    CHECK_THROWS((R::Array<double, R::FixedRows<7>>::FromSharedStorage(dynamic.SharedStorage())));
+    CHECK_THROWS(dynamic.Read().template View<R::FixedRows<7>>());
     CHECK_THROWS(R::Array<int32_t>::FromSharedStorage(dynamic.SharedStorage()));
     fixed.Reset(R::RowLayout::Dense(2, 5));
     CHECK(fixed.SharedStorage() != dynamic.SharedStorage());
@@ -500,7 +503,7 @@ TEST_CASE("Imported read-only storage rejects writes without invalidating reader
 TEST_CASE("Independent reconstruction fields share buffered CSR metadata and retain old shape")
 {
     std::vector<size_t> lengths;
-    for (size_t row = 0; row < 97; ++row)
+    for (DNDS::index row = 0; row < 97; ++row)
         lengths.push_back(row % 11 == 0 ? 0 : (row % 3 + 1) * 5);
     auto shape = R::RowLayout::Ragged(lengths);
     auto copiedShape = shape;
@@ -531,8 +534,8 @@ TEST_CASE("Known-row construction fills independently and reports worker failure
                                                  { return size_t(1); }, [](size_t row, auto output)
                                                  { output[0] = DNDS::index(3 * row); }, size_t(1), true);
     auto read = values.Read();
-    REQUIRE(read.View().Rows() == rows);
-    for (size_t row : {size_t(0), size_t(1), rows / 2, rows - 1})
+    REQUIRE(read.View().RowCount() == rows);
+    for (DNDS::index row : {DNDS::index(0), DNDS::index(1), DNDS::index(rows / 2), DNDS::index(rows - 1)})
     {
         CHECK(read.View().RowSize(row) == 1);
         CHECK(read.View()(row, 0) == DNDS::index(3 * row));

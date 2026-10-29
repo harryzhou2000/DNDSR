@@ -178,7 +178,7 @@ namespace DNDS::Geom::detail
         {
             FieldTransferDetail::LocalStage(mpi, [&]
                                             { DNDS_check_throw_info(source.coords, "weighted owned partition requires coordinates"); });
-            RelationGhostRoute route(cone.Target());
+            EntityGhostMapping route(cone.Target());
             coordinates.emplace(Runtime::ArrayPair<real>{*source.coords,
                                                          route.TransferRows(cone.Target(), *source.coords, Runtime::ElementSchema::Arithmetic<real>())});
             points.emplace(coordinates->ReadCombined());
@@ -189,7 +189,7 @@ namespace DNDS::Geom::detail
                                         {
             auto rows = ConnectivityRows::EnumerateSubEntities(
                 [&](index cell, int slot) { return cone.ConvertedIndex(cell, size_t(slot), Adj_PointToLocal, false); },
-                query, cone.Rows(), cone.Target().NumLocal());
+                query, cone.RowCount(), cone.Target().NumLocal());
             std::vector<std::vector<NativeNeighborWeight>> neighbors(size_t(cone.NumOwned()));
             for (size_t entity = 0; entity < rows.entity2parent.size(); ++entity)
             {

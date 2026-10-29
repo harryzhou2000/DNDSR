@@ -76,7 +76,7 @@ def _save(mesh, mpi, path):
 def _catalog(mesh, provenance):
     nodes = mesh.entities(NODE)
     parents = provenance["source_ids"][NODE]
-    assert parents.layout.rows == nodes.owned
+    assert parents.layout.row_count == nodes.owned
     local = {}
     with mesh.acquire_read(inverse=True) as read, parents.read() as ancestry:
         for row in range(nodes.owned):
@@ -169,7 +169,7 @@ def test_native_elevation_bisection_exact_cones_ancestry_and_restart(tmp_path, q
     assert replay["source_kinds"] == child_provenance["source_kinds"]
     for kind, array in child_provenance["source_ids"].items():
         with array.read() as before, replay["source_ids"][kind].read() as after:
-            for row in range(array.layout.rows):
+            for row in range(array.layout.row_count):
                 np.testing.assert_array_equal(before.row(row), after.row(row))
     del source, elevated, bisected, restored, provenance, replay, child_provenance
     gc.collect()
@@ -189,7 +189,7 @@ def test_provenance_array_independently_retains_shared_owner_after_mesh_release(
     second = Geom.native_mesh_provenance(mesh)["source_ids"][CELL]
     with array.read() as first_read, second.read() as second_read:
         assert first_read.unsafe_address() == second_read.unsafe_address()
-        expected = [first_read.row(row) for row in range(array.layout.rows)]
+        expected = [first_read.row(row) for row in range(array.layout.row_count)]
     del metadata, second, mesh, elevated, source
     gc.collect()
     with array.read() as read:

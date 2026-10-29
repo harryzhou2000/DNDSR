@@ -63,23 +63,24 @@ namespace DNDS::Runtime
             layout._offsets = MetadataBuffer<size_t>(offsets);
             return layout;
         }
-        size_t Rows() const { return _rows; }
+        index RowCount() const { return index(_rows); }
+        index Rows() const { return RowCount(); }
         RowLayoutKind Kind() const { return _kind; }
         bool IsRagged() const { return _kind == RowLayoutKind::CSR; }
         bool IsPadded() const { return _kind == RowLayoutKind::Padded; }
         bool IsVariable() const { return _kind != RowLayoutKind::Table; }
-        size_t Width() const { return _width; }
-        size_t Stride() const { return _stride; }
+        index Width() const { return index(_width); }
+        index Stride() const { return index(_stride); }
         size_t Elements() const { return IsRagged() ? _offsets.back() : _rows * _stride; }
         const MetadataBuffer<size_t> &Offsets() const { return _offsets; }
         const MetadataBuffer<size_t> &Sizes() const { return _sizes; }
-        size_t RowSize(size_t row) const
+        index RowSize(index row) const
         {
             DNDS_check_throw_info(row < _rows, "row outside layout");
             return IsRagged() ? _offsets[row + 1] - _offsets[row] : IsPadded() ? _sizes[row]
                                                                                : _width;
         }
-        size_t Offset(size_t row) const
+        index Offset(index row) const
         {
             DNDS_check_throw_info(row < _rows, "row outside layout");
             return IsRagged() ? _offsets[row] : row * _stride;
@@ -183,20 +184,20 @@ namespace DNDS::Runtime
     class RowSpan
     {
         T *_data = nullptr;
-        size_t _size = 0;
+        index _size = 0;
 
     public:
         static constexpr size_t row_width = Width, row_capacity = Capacity;
         DNDS_DEVICE_CALLABLE RowSpan() = default;
-        DNDS_DEVICE_CALLABLE RowSpan(T *data, size_t size) : _data(data), _size(size) {}
-        DNDS_DEVICE_CALLABLE T &operator[](size_t column) const
+        DNDS_DEVICE_CALLABLE RowSpan(T *data, index size) : _data(data), _size(size) {}
+        DNDS_DEVICE_CALLABLE T &operator[](index column) const
         {
             if constexpr (Checked)
-                DNDS_HD_assert(column < this->size());
+                DNDS_HD_assert(column >= 0 && column < this->size());
             return _data[column];
         }
         DNDS_DEVICE_CALLABLE T *data() const { return _data; }
-        DNDS_DEVICE_CALLABLE size_t size() const
+        DNDS_DEVICE_CALLABLE index size() const
         {
             if constexpr (Width != DynamicExtent)
                 return Width;
@@ -228,52 +229,97 @@ namespace DNDS::Runtime
         using RowType = RowSpan<T, Checked, row_width, row_capacity>;
         T *data = nullptr;
         const size_t *offsets = nullptr;
-        size_t rows = 0, width = 0, stride = 0;
+        index rows = 0, width = 0, stride = 0;
         const size_t *sizes = nullptr;
 
-        DNDS_DEVICE_CALLABLE size_t Rows() const { return rows; }
-        DNDS_DEVICE_CALLABLE size_t RowSize(size_t row) const
+        DNDS_DEVICE_CALLABLE index RowCount() const { return rows; }
+        DNDS_DEVICE_CALLABLE index Rows() const { return RowCount(); }
+        DNDS_DEVICE_CALLABLE index RowSize(index row) const
         {
             if constexpr (Checked)
-                DNDS_HD_assert(row < rows);
+                DNDS_HD_assert(row >= 0 && row < rows);
             if constexpr (row_width != DynamicExtent)
                 return row_width;
             else if constexpr (!is_dynamic && layout_kind == RowLayoutKind::Table)
                 return width;
             else if constexpr (!is_dynamic && layout_kind == RowLayoutKind::Padded)
-                return sizes[row];
+                return sizes ? sizes[row] : width;
             else if constexpr (!is_dynamic && layout_kind == RowLayoutKind::CSR)
-                return offsets[row + 1] - offsets[row];
+                return offsets ? offsets[row + 1] - offsets[row] : width;
             else
                 return offsets ? offsets[row + 1] - offsets[row] : sizes ? sizes[row]
                                                                          : width;
         }
-        DNDS_DEVICE_CALLABLE T *Row(size_t row) const
+        DNDS_DEVICE_CALLABLE T *Row(index row) const
         {
             if constexpr (Checked)
-                DNDS_HD_assert(row < rows);
-            size_t offset;
+                DNDS_HD_assert(row >= 0 && row < rows);
+            index offset;
             if constexpr (row_stride != DynamicExtent)
                 offset = row * row_stride;
             else if constexpr (!is_dynamic && layout_kind != RowLayoutKind::CSR)
                 offset = row * stride;
             else if constexpr (!is_dynamic && layout_kind == RowLayoutKind::CSR)
-                offset = offsets[row];
+                offset = offsets ? offsets[row] : row * stride;
             else
                 offset = offsets ? offsets[row] : row * stride;
             return data ? data + offset : nullptr;
         }
-        DNDS_DEVICE_CALLABLE T &operator()(size_t row, size_t component) const
+        DNDS_DEVICE_CALLABLE T &operator()(index row, index component) const
         {
             if constexpr (Checked)
-                DNDS_HD_assert(row < rows && component < RowSize(row));
+                DNDS_HD_assert(row >= 0 && row < rows && component >= 0 && component < RowSize(row));
             return Row(row)[component];
         }
-        DNDS_DEVICE_CALLABLE RowType operator[](size_t row) const { return {Row(row), RowSize(row)}; }
+        DNDS_DEVICE_CALLABLE RowType operator[](index row) const { return {Row(row), RowSize(row)}; }
         DNDS_DEVICE_CALLABLE ArrayView<T, Checked> DynamicView() const { return {data, offsets, rows, width, stride, sizes}; }
         template <class P = LayoutPolicy, std::enable_if_t<!std::is_same_v<P, RowLayout>, int> = 0>
         DNDS_DEVICE_CALLABLE operator ArrayView<T, Checked>() const { return DynamicView(); }
     };
+
+    namespace Detail
+    {
+        /// Construct a typed view with a one-time projection check. Table
+        /// storage may be exposed as padded/uniform CSR; variable storage may
+        /// be exposed as a table/fixed view only when every row is uniform and
+        /// physically contiguous. Metadata and values remain borrowed.
+        template <class T, bool Checked, class Policy>
+        ArrayView<T, Checked, Policy> ProjectView(ArrayView<T, Checked> source)
+        {
+            if constexpr (std::is_same_v<Policy, RowLayout>)
+                return source;
+            using Traits = RowPolicyTraits<Policy>;
+            const bool sourceTable = !source.offsets && !source.sizes;
+            const bool sourcePadded = source.sizes;
+            const bool sourceCSR = source.offsets;
+            const bool keepPadded = Traits::layout_kind == RowLayoutKind::Padded && sourcePadded;
+            const bool keepCSR = Traits::layout_kind == RowLayoutKind::CSR && sourceCSR;
+            index width = source.width, stride = source.stride;
+            const size_t *offsets = nullptr, *sizes = nullptr;
+            if (keepPadded)
+                sizes = source.sizes;
+            else if (keepCSR)
+                offsets = source.offsets;
+            else if (!sourceTable)
+            {
+                width = source.rows ? source.RowSize(0) : 0;
+                for (index row = 0; row < source.rows; ++row)
+                    DNDS_check_throw_info(source.RowSize(row) == width &&
+                                              source.Row(row) == source.data + row * width,
+                                          "row view projection requires uniform contiguous rows");
+                stride = width;
+            }
+            if constexpr (Traits::row_width != DynamicExtent)
+                DNDS_check_throw_info(width == Traits::row_width, "fixed row width view mismatch");
+            if constexpr (Traits::row_stride != DynamicExtent)
+                DNDS_check_throw_info(stride == Traits::row_stride, "fixed row stride view mismatch");
+            return {source.data, offsets, source.rows, width, stride, sizes};
+        }
+    }
+
+    /// Layout-generic debugging/setup view over table, padded or CSR storage.
+    template <class T, bool Checked = false>
+    using GenericRowView = ArrayView<T, Checked, RowLayout>;
 
     namespace Detail
     {
@@ -439,13 +485,14 @@ namespace DNDS::Runtime
             CheckPublished();
             return _layout->rows;
         }
-        size_t Rows() const
+        index RowCount() const
         {
             std::lock_guard<std::mutex> lock(_shapeMutex);
             CheckPublished();
-            return _layout->rows.Rows();
+            return _layout->rows.RowCount();
         }
-        size_t RowSize(size_t row) const
+        index Rows() const { return RowCount(); }
+        index RowSize(index row) const
         {
             std::lock_guard<std::mutex> lock(_shapeMutex);
             CheckPublished();
@@ -499,10 +546,10 @@ namespace DNDS::Runtime
         }
     };
 
-    template <class T, bool Writable, class LayoutPolicy = RowLayout>
+    template <class T, bool Writable>
     class ArrayAccess
     {
-        template <class, bool, class>
+        template <class, bool>
         friend class ArrayAccess;
         using Lease = std::conditional_t<Writable, WriteAccess, ReadAccess>;
         using Value = std::conditional_t<Writable, T, const T>;
@@ -513,12 +560,7 @@ namespace DNDS::Runtime
         ArrayAccess(Lease lease, std::shared_ptr<const Detail::ArrayLayout> layout)
             : _layout(std::move(layout)), _lease(std::move(lease))
         {
-            if constexpr (!std::is_same_v<LayoutPolicy, RowLayout>)
-                LayoutPolicy::Validate(_layout->rows);
         }
-        template <class OtherPolicy, std::enable_if_t<std::is_same_v<LayoutPolicy, RowLayout> && !std::is_same_v<OtherPolicy, RowLayout>, int> = 0>
-        ArrayAccess(ArrayAccess<T, Writable, OtherPolicy> &&other) noexcept
-            : _layout(std::move(other._layout)), _lease(std::move(other._lease)) {}
         ArrayAccess(const ArrayAccess &) = delete;
         ArrayAccess &operator=(const ArrayAccess &) = delete;
         ArrayAccess(ArrayAccess &&) noexcept = default;
@@ -535,19 +577,26 @@ namespace DNDS::Runtime
         Device GetDevice() const { return _lease.GetDevice(); }
         const RowLayout &Layout() const { return _layout->rows; }
         template <bool Checked = false>
-        ArrayView<Value, Checked, LayoutPolicy> View() const
+        ArrayView<Value, Checked> View() const
         {
             auto flat = _lease.template View<T>();
             const auto &r = _layout->rows;
-            return {flat.data, _layout->Offsets(_lease.GetDevice()), r.Rows(), r.Width(), r.Stride(), _layout->Sizes(_lease.GetDevice())};
+            return {flat.data, _layout->Offsets(_lease.GetDevice()), r.RowCount(), r.Width(), r.Stride(), _layout->Sizes(_lease.GetDevice())};
+        }
+        template <class LayoutPolicy, bool Checked = false>
+        ArrayView<Value, Checked, LayoutPolicy> View() const
+        {
+            return Detail::ProjectView<Value, Checked, LayoutPolicy>(View<Checked>());
         }
         template <bool Checked = false>
         ArrayView<Value, Checked> DynamicView() const { return View<Checked>().DynamicView(); }
         /// Checked host access for frontends, never used inside native kernels.
-        Value &At(size_t row, size_t component) const
+        Value &At(index row, index component) const
         {
             DNDS_check_throw_info(GetDevice() == Device::Host(), "host indexing requires a host Array");
-            DNDS_check_throw_info(row < Layout().Rows() && component < Layout().RowSize(row), "Array index outside row");
+            DNDS_check_throw_info(row >= 0 && component >= 0 && row < Layout().RowCount() &&
+                                      component < Layout().RowSize(row),
+                                  "Array index outside row");
             return View()(row, component);
         }
         void Complete(Completion completion) { _lease.Complete(std::move(completion)); }
@@ -557,42 +606,32 @@ namespace DNDS::Runtime
 
     /// Native shallow handle. Layout replacement retains existing aliases/leases.
     /// Legacy DNDS::Array remains a separate deep-copy facade over shared facilities.
-    template <class T, class LayoutPolicy = RowLayout>
-    class Array
+    template <class T>
+    class ArrayHandle
     {
         static_assert(std::is_trivially_copyable_v<T> && std::is_standard_layout_v<T>);
         static_assert(alignof(T) <= 64, "native Array supports alignment up to 64 bytes");
         ArrayStorage::Shared _storage;
-        explicit Array(ArrayStorage::Shared storage) : _storage(std::move(storage)) {}
+        explicit ArrayHandle(ArrayStorage::Shared storage) : _storage(std::move(storage)) {}
 
     public:
         using value_type = T;
-        using layout_policy = LayoutPolicy;
-        static constexpr size_t row_width = Detail::RowPolicyTraits<LayoutPolicy>::row_width;
-        static constexpr size_t row_capacity = Detail::RowPolicyTraits<LayoutPolicy>::row_capacity;
-        static constexpr size_t row_stride = Detail::RowPolicyTraits<LayoutPolicy>::row_stride;
-        using ReadLease = ArrayAccess<T, false, LayoutPolicy>;
-        using WriteLease = ArrayAccess<T, true, LayoutPolicy>;
-        Array(const Array &other) : _storage(ArrayStorage::Share(other._storage)) {}
-        Array &operator=(const Array &other)
+        using ReadLease = ArrayAccess<T, false>;
+        using WriteLease = ArrayAccess<T, true>;
+        ArrayHandle(const ArrayHandle &other) : _storage(ArrayStorage::Share(other._storage)) {}
+        ArrayHandle &operator=(const ArrayHandle &other)
         {
             if (this != &other)
                 _storage = ArrayStorage::Share(other._storage);
             return *this;
         }
-        Array(Array &&) noexcept = default;
-        Array &operator=(Array &&) noexcept = default;
-        Array()
-        {
-            if constexpr (std::is_same_v<LayoutPolicy, RowLayout>)
-                Reset(RowLayout{});
-            else
-                Reset(LayoutPolicy::Default());
-        }
-        explicit Array(RowLayout layout, Device device = Device::Host()) { Reset(std::move(layout), device); }
+        ArrayHandle(ArrayHandle &&) noexcept = default;
+        ArrayHandle &operator=(ArrayHandle &&) noexcept = default;
+        ArrayHandle() { Reset(RowLayout{}); }
+        explicit ArrayHandle(RowLayout layout, Device device = Device::Host()) { Reset(std::move(layout), device); }
         /// Reinterpret owned storage with an explicit row/type layout. This
         /// retains the original allocation's controller; it never wraps raw pointers.
-        static Array FromStorage(RowLayout layout, Buffer storage)
+        static ArrayHandle FromStorage(RowLayout layout, Buffer storage)
         {
             return FromSharedStorage(ArrayStorage::FromBuffer(std::move(layout), std::move(storage), sizeof(T)));
         }
@@ -601,27 +640,24 @@ namespace DNDS::Runtime
         /// @pre T describes the actual stored values and their ABI. Size and
         /// alignment checks alone cannot establish semantic type compatibility
         /// for this deliberately type-erased native storage boundary.
-        static Array FromSharedStorage(ArrayStorage::Shared storage)
+        static ArrayHandle FromSharedStorage(ArrayStorage::Shared storage)
         {
             DNDS_check_throw_info(storage && storage->ElementBytes() == sizeof(T), "Array element size mismatch");
-            if constexpr (!std::is_same_v<LayoutPolicy, RowLayout>)
-                LayoutPolicy::Validate(storage->Layout());
             DNDS_check_throw_info(reinterpret_cast<uintptr_t>(storage->Values().LegacyPointer()) % alignof(T) == 0,
                                   "Array storage alignment mismatch");
-            return Array(std::move(storage));
+            return ArrayHandle(std::move(storage));
         }
         void Reset(RowLayout layout, Device device = Device::Host())
         {
-            if constexpr (!std::is_same_v<LayoutPolicy, RowLayout>)
-                LayoutPolicy::Validate(layout);
             _storage = ArrayStorage::Allocate(std::move(layout), sizeof(T), device);
         }
         ArrayStorage::Shared SharedStorage() const { return ArrayStorage::Share(_storage); }
         ExclusiveRows EditRows(); // Defined by RowBuilder.hpp; exclusive CPU setup.
         uint64_t ShapeVersion() const { return _storage->ShapeVersion(); }
         RowLayout Layout() const { return _storage->Layout(); }
-        size_t Rows() const { return _storage->Rows(); }
-        size_t RowSize(size_t row) const { return _storage->RowSize(row); }
+        index RowCount() const { return _storage->RowCount(); }
+        index Rows() const { return RowCount(); }
+        index RowSize(index row) const { return _storage->RowSize(row); }
         Device GetDevice() const { return Storage().GetDevice(); }
         uint64_t Identity() const { return Storage().Identity(); }
         uint64_t Version() const { return Storage().Version(); }
@@ -631,21 +667,26 @@ namespace DNDS::Runtime
         void ReleaseOn(ExecutionContext context) { ArrayStorage::ReleaseHandle(_storage, context); }
         ReadLease Read(ExecutionContext context = ExecutionContext::Host()) const { return {_storage->Read(context), _storage->SharedLayout()}; }
         WriteLease Write(ExecutionContext context = ExecutionContext::Host()) { return {_storage->Write(context), _storage->SharedLayout()}; }
-        CopyOperation CopyFrom(const Array &other, ExecutionContext context = ExecutionContext::Host())
+        CopyOperation CopyFrom(const ArrayHandle &other, ExecutionContext context = ExecutionContext::Host())
         {
             return _storage->CopyFrom(*other._storage, context);
         }
         /// Synchronous explicit snapshot/placement conversion. CopyFrom is async.
-        Array To(Device device, ExecutionContext context) const
+        ArrayHandle To(Device device, ExecutionContext context) const
         {
-            Array result(Layout(), device);
+            ArrayHandle result(Layout(), device);
             result.CopyFrom(*this, context).Wait();
             return result;
         }
-        Array To(Device device) const { return To(device, {device == Device::Host() ? GetDevice() : device, nullptr}); }
-        Array Clone(ExecutionContext context) const { return To(GetDevice(), context); }
-        Array Clone() const { return To(GetDevice()); }
+        ArrayHandle To(Device device) const { return To(device, {device == Device::Host() ? GetDevice() : device, nullptr}); }
+        ArrayHandle Clone(ExecutionContext context) const { return To(GetDevice(), context); }
+        ArrayHandle Clone() const { return To(GetDevice()); }
     };
+
+    /// Public storage handle. Layout policy belongs to an acquired view.
+    /// The optional second alias argument is a migration spelling only.
+    template <class T, class LayoutPolicy = RowLayout>
+    using Array = ArrayHandle<T>;
 
     /// Logical combined indexing without combining storage or access controllers.
     template <class T, bool Checked = false, class LayoutPolicy = RowLayout>
@@ -655,39 +696,46 @@ namespace DNDS::Runtime
         static constexpr size_t row_capacity = Detail::RowPolicyTraits<LayoutPolicy>::row_capacity;
         using RowType = RowSpan<const T, Checked, row_width, row_capacity>;
         ArrayView<const T, Checked, LayoutPolicy> owned, ghost;
-        DNDS_DEVICE_CALLABLE size_t Rows() const { return owned.Rows() + ghost.Rows(); }
-        DNDS_DEVICE_CALLABLE const T *Row(size_t row) const
-        {
-            return row < owned.Rows() ? owned.Row(row) : ghost.Row(row - owned.Rows());
-        }
-        DNDS_DEVICE_CALLABLE size_t RowSize(size_t row) const
-        {
-            return row < owned.Rows() ? owned.RowSize(row) : ghost.RowSize(row - owned.Rows());
-        }
-        DNDS_DEVICE_CALLABLE const T &operator()(size_t row, size_t column) const
+        DNDS_DEVICE_CALLABLE index RowCount() const { return owned.RowCount() + ghost.RowCount(); }
+        DNDS_DEVICE_CALLABLE index Rows() const { return RowCount(); }
+        DNDS_DEVICE_CALLABLE const T *Row(index row) const
         {
             if constexpr (Checked)
-                DNDS_HD_assert(column < RowSize(row));
+                DNDS_HD_assert(row >= 0 && row < RowCount());
+            return row < owned.RowCount() ? owned.Row(row) : ghost.Row(row - owned.RowCount());
+        }
+        DNDS_DEVICE_CALLABLE index RowSize(index row) const
+        {
+            if constexpr (Checked)
+                DNDS_HD_assert(row >= 0 && row < RowCount());
+            return row < owned.RowCount() ? owned.RowSize(row) : ghost.RowSize(row - owned.RowCount());
+        }
+        DNDS_DEVICE_CALLABLE const T &operator()(index row, index column) const
+        {
+            if constexpr (Checked)
+                DNDS_HD_assert(row >= 0 && row < RowCount() && column >= 0 && column < RowSize(row));
             return Row(row)[column];
         }
-        DNDS_DEVICE_CALLABLE RowType operator[](size_t row) const { return {Row(row), RowSize(row)}; }
+        DNDS_DEVICE_CALLABLE RowType operator[](index row) const { return {Row(row), RowSize(row)}; }
         DNDS_DEVICE_CALLABLE PairReadView<T, Checked> DynamicView() const { return {owned.DynamicView(), ghost.DynamicView()}; }
         template <class P = LayoutPolicy, std::enable_if_t<!std::is_same_v<P, RowLayout>, int> = 0>
         DNDS_DEVICE_CALLABLE operator PairReadView<T, Checked>() const { return DynamicView(); }
     };
 
-    template <class T, class LayoutPolicy = RowLayout>
-    struct ArrayPair
+    template <class T>
+    struct ArrayPairHandle
     {
-        Array<T, LayoutPolicy> owned, ghost;
+        Array<T> owned, ghost;
         /// Core kernels receive owned.Read().View(), never a full pair view.
         struct ReadLease
         {
-            typename Array<T, LayoutPolicy>::ReadLease owned, ghost;
+            typename Array<T>::ReadLease owned, ghost;
             template <bool Checked = false>
-            PairReadView<T, Checked, LayoutPolicy> View() const { return {owned.template View<Checked>(), ghost.template View<Checked>()}; }
+            PairReadView<T, Checked> View() const { return {owned.template View<Checked>(), ghost.template View<Checked>()}; }
+            template <class Policy, bool Checked = false>
+            PairReadView<T, Checked, Policy> View() const { return {owned.template View<Policy, Checked>(), ghost.template View<Policy, Checked>()}; }
             template <bool Checked = false>
-            PairReadView<T, Checked> DynamicView() const { return View<Checked>().DynamicView(); }
+            PairReadView<T, Checked> DynamicView() const { return View<Checked>(); }
             void Complete(Completion done)
             {
                 owned.Complete(done);
@@ -699,9 +747,12 @@ namespace DNDS::Runtime
                 ghost.Wait();
             }
         };
-        typename Array<T, LayoutPolicy>::ReadLease ReadOwned(ExecutionContext context = ExecutionContext::Host()) const { return owned.Read(context); }
+        typename Array<T>::ReadLease ReadOwned(ExecutionContext context = ExecutionContext::Host()) const { return owned.Read(context); }
         /// Acquire only after ghost readiness. This never combines the writers.
         ReadLease ReadCombined(ExecutionContext context = ExecutionContext::Host()) const { return {owned.Read(context), ghost.Read(context)}; }
         ReadLease Read(ExecutionContext context = ExecutionContext::Host()) const { return ReadCombined(context); }
     };
+
+    template <class T, class LayoutPolicy = RowLayout>
+    using ArrayPair = ArrayPairHandle<T>;
 }

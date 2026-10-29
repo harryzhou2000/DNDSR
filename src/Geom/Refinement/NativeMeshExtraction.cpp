@@ -10,7 +10,7 @@ namespace DNDS::Geom
     namespace
     {
         using Array = Runtime::Array<index>;
-        Array Rows(const std::vector<std::vector<index>> &rows)
+        Array BuildIndexRows(const std::vector<std::vector<index>> &rows)
         {
             Runtime::RowBuilder builder(rows.size(), sizeof(index));
             for (size_t row = 0; row < rows.size(); ++row)
@@ -136,7 +136,7 @@ namespace DNDS::Geom
                     DNDS_check_throw_info(mappedFaces.size() <= 1, "boundary extraction requires at most one mapped physical face");
                     if (mappedFaces.size() == 0 || mappedFaces[0] == UnInitIndex) continue;
                     const auto face = faces.LocalToGlobal(mappedFaces[0]);
-                    requests.push_back({faces.Owner(face), faces.OwnerLocalRow(face), row});
+                    requests.push_back({faces.Owner(face), faces.OwnerLocalRow(face), index(row)});
                 } });
             Runtime::RowTransferPlan route(context, size_t(faces.NumOwned()), cones.size(), requests);
             auto faceRows = StageFaceRows(sourceView, oldNodes, route);
@@ -181,10 +181,10 @@ namespace DNDS::Geom
             std::sort(requested.begin(), requested.end());
             requested.erase(std::unique(requested.begin(), requested.end()), requested.end());
             for (size_t row = 0; row < requested.size(); ++row)
-                requests.push_back({oldNodes.Owner(requested[row]), oldNodes.OwnerLocalRow(requested[row]), row}); });
+                requests.push_back({oldNodes.Owner(requested[row]), oldNodes.OwnerLocalRow(requested[row]), index(row)}); });
         Runtime::RowTransferPlan discovery(context, size_t(oldNodes.NumOwned()), requested.size(), requests);
-        std::vector<size_t> selected;
-        std::vector<std::vector<size_t>> send;
+        std::vector<index> selected;
+        std::vector<std::vector<index>> send;
         FieldTransferDetail::LocalStage(mpi, [&]
                                         {
             for (const auto &peer : discovery.SendRows()) selected.insert(selected.end(), peer.begin(), peer.end());
@@ -193,7 +193,7 @@ namespace DNDS::Geom
             send = discovery.SendRows();
             for (auto &peer : send)
                 for (auto &row : peer)
-                    row = size_t(std::lower_bound(selected.begin(), selected.end(), row) - selected.begin()); });
+                    row = index(std::lower_bound(selected.begin(), selected.end(), row) - selected.begin()); });
         const auto nodes = EntitySpace::CreateOwned(EntityKind::Node, mpi, index(selected.size()));
         const auto cells = nodes.CreateSibling(EntityKind::Cell, index(selectedBoundaries.size()));
         const auto boundaries = nodes.CreateSibling(EntityKind::Bnd, 0);
@@ -242,7 +242,7 @@ namespace DNDS::Geom
                 }
             Runtime::Array<ElemInfo> info(Runtime::RowLayout::Dense(selectedBoundaries.size(), 1));
             { auto write = info.Write(); for (size_t row = 0; row < selectedBoundaries.size(); ++row) write.View()(row, 0) = sourceView.GetBndInfo(index(selectedBoundaries[row])); }
-            input.emplace(NativeMeshInput{mpi, sourceView.Dimension() - 1, cells, nodes, boundaries, Rows(cones), Rows({}),
+            input.emplace(NativeMeshInput{mpi, sourceView.Dimension() - 1, cells, nodes, boundaries, BuildIndexRows(cones), BuildIndexRows({}),
                                          std::move(*coordinates), std::move(info),
                                          Runtime::Array<ElemInfo>(Runtime::RowLayout::Dense(0, 1))});
             input->provenance = result.provenance;

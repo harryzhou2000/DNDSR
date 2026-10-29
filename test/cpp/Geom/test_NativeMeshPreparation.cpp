@@ -49,8 +49,14 @@ TEST_CASE("Owned CGNS partition permutation and faces need only one final assemb
                 const auto path = (NativeReorderChecks::Root() / "data/mesh" /
                                    (periodic ? "IV10_10.cgns" : "UniformSquare_10.cgns"))
                                       .string();
+                G::ResetNativeSerialCopyCounters();
                 auto owned = G::ReadNativeCGNSOwned(mpi, path, 2, G::FBC_Name_2_ID_Default, mpi.size - 1,
                                                     {1, true}, frames, readerOwned ? G::NativeSerialDistribution::ReaderOwned : G::NativeSerialDistribution::Even);
+                const auto copyCounters = G::GetNativeSerialCopyCounters();
+                if (readerOwned && mpi.rank == mpi.size - 1)
+                    CHECK(copyCounters.bulkCalls + copyCounters.rowCalls > 0);
+                if (!readerOwned || mpi.rank != mpi.size - 1)
+                    CHECK(copyCounters.bulkCalls + copyCounters.rowCalls == 0);
                 auto checkOwned = [&](const G::NativeOwnedMeshData &data)
                 {
                     CHECK_FALSE(data.retainedRead);
@@ -186,7 +192,7 @@ TEST_CASE("Source helpers retain exact legacy serial METIS graph policy and cell
         auto serial = G::ReadNativeCGNSSerial(path, 2, name);
         auto nodes = serial.cellNodes.Read();
         auto info = serial.cellInfo.Read();
-        std::vector<std::vector<I>> vertices(serial.cellNodes.Rows());
+        std::vector<std::vector<I>> vertices(serial.cellNodes.RowCount());
         for (size_t cell = 0; cell < vertices.size(); ++cell)
         {
             const auto count = G::Elem::Element{info.View()(cell,0).getElemType()}.GetNumVertices();
@@ -442,7 +448,7 @@ TEST_CASE("Native facial partition retains ID-derived fields geometry and sparse
     R::Array<I> field(R::RowLayout::Dense(size_t(source->NumOwned(G::EntityKind::Cell)), 1));
     {
         auto write = field.Write();
-        for (size_t row = 0; row < field.Rows(); ++row)
+        for (size_t row = 0; row < field.RowCount(); ++row)
             write.View()(row, 0) = 3 * source->OriginalEntityId(G::EntityKind::Cell, I(row)) + 7;
     }
     G::EntityField<I> bound(source->Entities(G::EntityKind::Cell), field);
@@ -519,7 +525,7 @@ TEST_CASE("Native primary partition adds facial IDs while retaining exact origin
     R::Array<I> values(R::RowLayout::Dense(size_t(original.NumOwned()), 1));
     {
         auto write = values.Write();
-        for (size_t row = 0; row < values.Rows(); ++row)
+        for (size_t row = 0; row < values.RowCount(); ++row)
             write.View()(row, 0) = 7 * source->OriginalEntityId(G::EntityKind::Cell, I(row)) + 5;
     }
     G::EntityField<I> field(original, values);
@@ -641,9 +647,9 @@ TEST_CASE("Partition preserves independent existing Face ownership and exact sou
     R::Array<I> cellValues(R::RowLayout::Dense(size_t(source->NumOwned(G::EntityKind::Cell)), 1));
     {
         auto faces = faceValues.Write(), cells = cellValues.Write();
-        for (size_t row = 0; row < faceValues.Rows(); ++row)
+        for (size_t row = 0; row < faceValues.RowCount(); ++row)
             faces.View()(row, 0) = 2 * source->OriginalEntityId(G::EntityKind::Face, I(row)) + 17;
-        for (size_t row = 0; row < cellValues.Rows(); ++row)
+        for (size_t row = 0; row < cellValues.RowCount(); ++row)
             cells.View()(row, 0) = 3 * source->OriginalEntityId(G::EntityKind::Cell, I(row)) + 7;
     }
     G::EntityField<I> faceField(source->Entities(G::EntityKind::Face), faceValues);
@@ -668,7 +674,7 @@ TEST_CASE("Partition preserves independent existing Face ownership and exact sou
     CHECK_THROWS(faceEntry.validateSourceSpace(result.state->Entities(G::EntityKind::Face)));
     CHECK(records(*result.state) == expectedFaces); // Ordered nodes AND physical parent slots, not a set/count comparison.
     CHECK(records(*source) == expectedFaces);
-    for (size_t row = 0; row < faceValues.Rows(); ++row)
+    for (size_t row = 0; row < faceValues.RowCount(); ++row)
         CHECK(oldFaceRead.View()(row, 0) == 2 * result.state->OriginalEntityId(G::EntityKind::Face, I(row)) + 17);
     cellEntry.preflight(result.transfers.at(G::EntityKind::Cell));
     auto prepared = cellEntry.prepare(result.transfers.at(G::EntityKind::Cell), mpi);

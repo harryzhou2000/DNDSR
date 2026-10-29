@@ -5,7 +5,7 @@
 #include "Geom/Mesh/NativeMeshOutput.hpp"
 #include "Geom/Mesh/NativeMeshSmoothing.hpp"
 #include "Geom/Mesh/NativeMeshTopology.hpp"
-#include "Geom/Mesh/NativeConnectivity.hpp"
+#include "Geom/Mesh/AdjacencyRegistry.hpp"
 #include "DNDS/Runtime/RowBuilder.hpp"
 #include <filesystem>
 #include <set>
@@ -182,7 +182,7 @@ static void CheckRequiredBoundaryCoverage(UnstructuredMesh &mesh)
     for (I face = 0; face < view.NumFace(); ++face)
         requireStored(Global(boundaries, view.Relation(MeshRelation::FaceBoundaries, face)));
 }
-static std::array<AdjKind, size_t(MeshRelation::Count)> Bindings()
+static std::array<AdjacencyDescriptor, size_t(MeshRelation::Count)> Bindings()
 {
     return {Adj::Cell2Node, Adj::Bnd2Node, Adj::Bnd2Cell, Adj::Cell2Cell, Adj::Node2Cell, Adj::Node2Bnd, Adj::Cell2Face, Adj::Face2Node, Adj::Face2Cell, Adj::Face2Bnd, Adj::Bnd2Face, Adj::Cell2Edge, Adj::Edge2Node, Adj::Edge2Cell, Adj::Cell2CellFace};
 }
@@ -209,10 +209,10 @@ static void Roundtrip(UnstructuredMesh &mesh, std::initializer_list<MeshRelation
             local[size_t(row)] = {r.begin(), r.end()};
         }
         auto values = Rows(rows);
-        RelationReadAccess original(key, from, to, Adj_PointToGlobal, values);
-        auto localized = NativeRelation::Convert(original, Adj_PointToLocal);
+        MeshAdjacencyRead original(key, from, to, Adj_PointToGlobal, values);
+        auto localized = MeshAdjacency::Convert(original, Adj_PointToLocal);
         auto localizedRead = localized.Read();
-        auto restored = NativeRelation::Convert(localizedRead, Adj_PointToGlobal);
+        auto restored = MeshAdjacency::Convert(localizedRead, Adj_PointToGlobal);
         auto restoredRead = restored.Read();
         for (I row = 0; row < from.NumOwned(); ++row)
         {
@@ -328,7 +328,7 @@ TEST_CASE("Periodic: native output image count matches independent node-frame ke
     std::vector<tPoint> expected,actual;
     for(const auto &[global,bits]:keys)if(nodes.Owner(global)==g_mpi.rank)
     {auto row=nodes.GlobalToLocal(global);REQUIRE(row);expected.push_back(m->Periodic().GetCoordByBits(m->Coord(*row),NodePeriodicBits{bits}));}
-    for(size_t row=0;row<output.coordinates.Rows();++row){tPoint p;for(int d=0;d<3;++d)p[d]=read.View()(row,size_t(d));actual.push_back(p);}
+    for(size_t row=0;row<output.coordinates.RowCount();++row){tPoint p;for(int d=0;d<3;++d)p[d]=read.View()(row,size_t(d));actual.push_back(p);}
     auto order=[](const tPoint&a,const tPoint&b){return std::array<DNDS::real,3>{a[0],a[1],a[2]}<std::array<DNDS::real,3>{b[0],b[1],b[2]};};
     std::sort(expected.begin(),expected.end(),order);std::sort(actual.begin(),actual.end(),order);REQUIRE(expected.size()==actual.size());for(size_t j=0;j<actual.size();++j)CHECK(actual[j].isApprox(expected[j],1e-13)); })} TEST_CASE("Periodic: ordered incidence PBI and physical geometry survive native reassembly"){
     FOR_EACH_MESH_CONFIG({if(!cfg.periodic)continue;auto data=NativeMeshAssembler::CaptureOwned(*m->CurrentNativeState(),g_mpi);auto next=AssembleNativeMesh(g_mpi,std::move(data),1);
@@ -373,10 +373,10 @@ TEST_CASE("Benchmark: native inverse compose and face topology with verified res
         auto cone = sourceMesh->ReadNativeRelation(Adj::Cell2Node);
         MPI_Barrier(g_mpi.comm);
         const auto t0 = MPI_Wtime();
-        auto inverse = NativeConnectivity::Inverse(cone, g_mpi);
+        auto inverse = AdjacencyRegistry::Inverse(cone, g_mpi);
         MPI_Barrier(g_mpi.comm);
         inverseTime += MPI_Wtime() - t0;
-        auto complete = inverse.WithGhostRows(RelationGhostRoute(source->Entities(EntityKind::Node)));
+        auto complete = inverse.WithGhostRows(EntityGhostMapping(source->Entities(EntityKind::Node)));
         auto inverseRead = inverse.Read();
         auto retained = sourceMesh->AcquireRead();
         auto v = retained.HostView();
@@ -386,7 +386,7 @@ TEST_CASE("Benchmark: native inverse compose and face topology with verified res
             CHECK(Set(inverseRead.GlobalRow(node)) == stars.at(nodes.LocalToGlobal(node)));
         MPI_Barrier(g_mpi.comm);
         const auto t1 = MPI_Wtime();
-        auto adjacency = NativeConnectivity::Compose(cone, complete.Read(), true);
+        auto adjacency = AdjacencyRegistry::Compose(cone, complete.Read(), true);
         MPI_Barrier(g_mpi.comm);
         composeTime += MPI_Wtime() - t1;
         auto adjacencyRead = adjacency.Read();
@@ -459,24 +459,24 @@ TEST_CASE("Boundary adjacency round-trip: native detached local and global state
         const auto stamp = bMesh.versions.Stamp();
         auto original = bMesh.ReadNativeRelation(Adj::Cell2Node);
         REQUIRE(original.State() == Adj_PointToLocal);
-        std::vector<std::vector<DNDS::index>> snapshot(size_t(original.Rows()));
-        for (DNDS::index row = 0; row < original.Rows(); ++row) for (size_t slot = 0; slot < original.RowSize(row); ++slot)
+        std::vector<std::vector<DNDS::index>> snapshot(size_t(original.RowCount()));
+        for (DNDS::index row = 0; row < original.RowCount(); ++row) for (size_t slot = 0; slot < original.RowSize(row); ++slot)
             snapshot[size_t(row)]
                 .push_back(original.Raw(row, slot));
-        auto globals = NativeRelation::Convert(original, Adj_PointToGlobal);
+        auto globals = MeshAdjacency::Convert(original, Adj_PointToGlobal);
         auto globalRead = globals.Read();
         CHECK(globalRead.State() == Adj_PointToGlobal);
-        for (DNDS::index row = 0; row < globalRead.Rows(); ++row) for (size_t slot = 0; slot < globalRead.RowSize(row); ++slot) {
+        for (DNDS::index row = 0; row < globalRead.RowCount(); ++row) for (size_t slot = 0; slot < globalRead.RowSize(row); ++slot) {
             const auto global = globalRead.Raw(row, slot);
             CHECK(global >= 0);
             CHECK(global < globalRead.Target().NumGlobal());
-        } auto locals = NativeRelation::Convert(globalRead, Adj_PointToLocal, false);
+        } auto locals = MeshAdjacency::Convert(globalRead, Adj_PointToLocal, false);
         auto localRead = locals.Read();
         CHECK(localRead.State() == Adj_PointToLocal);
-        CHECK(localRead.Rows() == original.Rows());
+        CHECK(localRead.RowCount() == original.RowCount());
         CHECK(stamp.Valid()); // Detached conversion never toggles live query storage.
         CHECK(bMesh.ReadNativeRelation(Adj::Cell2Node).State() == Adj_PointToLocal);
-        for (DNDS::index row = 0; row < localRead.Rows(); ++row) {
+        for (DNDS::index row = 0; row < localRead.RowCount(); ++row) {
             REQUIRE(localRead.RowSize(row) == snapshot[size_t(row)].size());
             for (size_t slot = 0; slot < localRead.RowSize(row); ++slot)
                 CHECK(localRead.Raw(row, slot) == snapshot[size_t(row)][slot]);
@@ -583,7 +583,7 @@ TEST_CASE("Ball2: mixed 3D element types")
 
 TEST_CASE("Native output connectivity: arrays populated correctly"){
     FOR_EACH_MESH_CONFIG({auto output=NativeMeshOutput::Build(*m->CurrentNativeState(),g_mpi);CHECK(output.offsets.size()==size_t(m->NumCell()+1));CHECK(output.types.size()==size_t(m->NumCell()));const I local=I(output.connectivity.size());I prefix=0;MPI_Exscan(&local,&prefix,1,MPI_INT64_T,MPI_SUM,g_mpi.comm);if(g_mpi.rank==0)prefix=0;CHECK(output.offsets.front()==prefix);CHECK(output.offsets.back()==prefix+local);for(size_t j=1;j<output.offsets.size();++j)CHECK(output.offsets[j]>=output.offsets[j-1]);for(auto type:output.types)CHECK(type!=0);for(auto point:output.connectivity){CHECK(point>=0);CHECK(point<output.globalNodes);}CHECK(output.globalCells==cfg.expectedCells); })} TEST_CASE("Native output connectivity: repeat build replaces buffers without accumulating entries"){
-    FOR_EACH_MESH_CONFIG({auto a=NativeMeshOutput::Build(*m->CurrentNativeState(),g_mpi),b=NativeMeshOutput::Build(*m->CurrentNativeState(),g_mpi);CHECK(a.connectivity==b.connectivity);CHECK(a.offsets==b.offsets);CHECK(a.types==b.types);CHECK(a.pointSourceRows==b.pointSourceRows);CHECK(a.coordinates.Rows()==b.coordinates.Rows());auto ar=a.coordinates.Read(),br=b.coordinates.Read();for(size_t row=0;row<a.coordinates.Rows();++row)for(size_t d=0;d<3;++d)CHECK(ar.View()(row,d)==br.View()(row,d)); })} TEST_CASE("ReorderLocalCells: all published relation groups remain local"){
+    FOR_EACH_MESH_CONFIG({auto a=NativeMeshOutput::Build(*m->CurrentNativeState(),g_mpi),b=NativeMeshOutput::Build(*m->CurrentNativeState(),g_mpi);CHECK(a.connectivity==b.connectivity);CHECK(a.offsets==b.offsets);CHECK(a.types==b.types);CHECK(a.pointSourceRows==b.pointSourceRows);CHECK(a.coordinates.RowCount()==b.coordinates.RowCount());auto ar=a.coordinates.Read(),br=b.coordinates.Read();for(size_t row=0;row<a.coordinates.RowCount();++row)for(size_t d=0;d<3;++d)CHECK(ar.View()(row,d)==br.View()(row,d)); })} TEST_CASE("ReorderLocalCells: all published relation groups remain local"){
     FOR_EACH_MESH_CONFIG({m->ReorderLocalCells(2);auto r=m->AcquireRead(FullRequirements());auto v=r.HostView();for(size_t slot=0;slot<size_t(MeshRelation::Count);++slot)if(v.HasRelation(MeshRelation(slot)))CHECK(v.RelationState(MeshRelation(slot))==Adj_PointToLocal); })} TEST_CASE("ReorderLocalCells: cell count preserved"){FOR_EACH_MESH_CONFIG({const auto old=m->NumCellGlobal();m->ReorderLocalCells(2);CHECK(m->NumCellGlobal()==old);CHECK(old==cfg.expectedCells); })} TEST_CASE("ReorderLocalCells: partition starts valid"){FOR_EACH_MESH_CONFIG({m->ReorderLocalCells(2);CHECK(m->NLocalParts()==2);CHECK(m->LocalPartStart(0)==0);CHECK(m->LocalPartEnd(1)==m->NumCell());for(int part=0;part<2;++part)CHECK(m->LocalPartStart(part)<=m->LocalPartEnd(part)); })} TEST_CASE("ReorderLocalCells: cell2node still valid"){FOR_EACH_MESH_CONFIG({m->ReorderLocalCells(2);auto r=m->AcquireRead(FullRequirements());auto v=r.HostView();for(I c=0;c<v.NumCell();++c)for(auto n:v.CellNodes(c)){CHECK(n>=0);CHECK(n<v.NumNodeProc());}FaceIncidence(*m); })} TEST_CASE("ReorderLocalCells: face count preserved"){FOR_EACH_MESH_CONFIG({const auto old=m->NumFaceGlobal();m->ReorderLocalCells(2);CHECK(m->NumFaceGlobal()==old); })} TEST_CASE("AdjFacial detached round-trip: face2node and face2cell identity"){FOR_EACH_MESH_CONFIG({ Roundtrip(*m, {MeshRelation::FaceNodes, MeshRelation::FaceCells}); })} TEST_CASE("AdjC2F detached round-trip: cell2face and bnd2face identity"){FOR_EACH_MESH_CONFIG({ Roundtrip(*m, {MeshRelation::CellFaces, MeshRelation::BoundaryFaces}); })} TEST_CASE("AdjN2CB detached round-trip: node2cell and node2bnd identity"){FOR_EACH_MESH_CONFIG({ Roundtrip(*m, {MeshRelation::NodeCells, MeshRelation::NodeBoundaries}); })} TEST_CASE("AdjC2CFace detached round-trip: ordered face-neighbor identity"){FOR_EACH_MESH_CONFIG({ Roundtrip(*m, {MeshRelation::CellFaceCells}); })} TEST_CASE("AdjPrimary detached round-trip and serial output preserve source publication")
 {
     FOR_EACH_MESH_CONFIG({const auto stamp=m->versions.Stamp();Roundtrip(*m,{MeshRelation::CellNodes,MeshRelation::CellCells,MeshRelation::BoundaryNodes,MeshRelation::BoundaryCells});UnstructuredMeshSerialRW output(m,0);output.BuildSerialOut();CHECK(output.dataIsSerialOut);CHECK(output.nativeSerialOutput);CHECK(stamp.Valid()); })
@@ -785,7 +785,7 @@ TEST_CASE("BoundarySmooth: NACA0012 moves boundary O2 nodes")
     CHECK(mO2->BoundarySmoothingWorkspace()->TotalMoved() > 0);
 
     // The displacement array covers every owned node.
-    CHECK(mO2->BoundarySmoothingWorkspace()->Displacement().owned.Rows() == size_t(mO2->NumNode()));
+    CHECK(mO2->BoundarySmoothingWorkspace()->Displacement().owned.RowCount() == size_t(mO2->NumNode()));
 
     // All coordinates must be finite (no NaN/Inf)
     for (DNDS::index i = 0; i < mO2->NumNode(); i++)
@@ -963,19 +963,19 @@ static ssp<UnstructuredMesh> TinyEdges()
     {
         auto w = xyz.Write();
         const std::array<tPoint, 5> values{tPoint{0, 0, 0}, tPoint{1, 0, 0}, tPoint{0, 1, 0}, tPoint{0, 0, 1}, tPoint{0, 0, -1}};
-        for (size_t row = 0; row < xyz.Rows(); ++row)
+        for (size_t row = 0; row < xyz.RowCount(); ++row)
             for (size_t d = 0; d < 3; ++d)
                 w.View()(row, d) = values[row][Eigen::Index(d)];
     }
     R::Array<ElemInfo> ci(R::RowLayout::Dense(size_t(nc), 1)), bi(R::RowLayout::Dense(size_t(bnds.NumOwned()), 1));
     {
         auto w = ci.Write();
-        for (size_t row = 0; row < ci.Rows(); ++row)
+        for (size_t row = 0; row < ci.RowCount(); ++row)
             w.View()(row, 0) = ElemInfo{Elem::Tet4, INTERNAL_ZONE};
     }
     {
         auto w = bi.Write();
-        for (size_t row = 0; row < bi.Rows(); ++row)
+        for (size_t row = 0; row < bi.RowCount(); ++row)
             w.View()(row, 0) = ElemInfo{Elem::Tri3, BC_ID_DEFAULT_WALL};
     }
     NativeMeshInput input{g_mpi, 3, cells, nodes, bnds, Rows(cr), Rows(br), xyz, ci, bi, {}};

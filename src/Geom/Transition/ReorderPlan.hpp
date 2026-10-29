@@ -36,7 +36,7 @@ namespace DNDS::Geom
     };
 
     /// Classify an adjacency given the set of reordered entity kinds.
-    inline AdjAction classifyAdj(AdjKind adj, const std::unordered_set<EntityKind> &reorderedKinds)
+    inline AdjAction classifyAdj(AdjacencyDescriptor adj, const std::unordered_set<EntityKind> &reorderedKinds)
     {
         if (adj.isIntraLevel())
             return reorderedKinds.count(adj.from) ? AdjAction::SELF : AdjAction::SKIP;
@@ -96,7 +96,7 @@ namespace DNDS::Geom
     /// One registered adjacency entry.
     struct AdjEntry
     {
-        AdjKind kind;
+        AdjacencyDescriptor kind;
         AdjRemapFn remapFn;       ///< Remap entries (null if not needed).
         AdjRelocateFn relocateFn; ///< Relocate rows (null if not needed).
         std::string name;
@@ -153,7 +153,7 @@ namespace DNDS::Geom
         std::unordered_map<EntityKind, std::vector<index>> pullSets;
 
         /// Register an adjacency with type-erased callbacks.
-        void registerAdj(AdjKind kind, AdjRemapFn remap, AdjRelocateFn relocate,
+        void registerAdj(AdjacencyDescriptor kind, AdjRemapFn remap, AdjRelocateFn relocate,
                          std::string name = {})
         {
             adjs.push_back(AdjEntry{kind, std::move(remap), std::move(relocate), std::move(name)});

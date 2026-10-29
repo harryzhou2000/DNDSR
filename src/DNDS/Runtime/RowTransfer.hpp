@@ -17,8 +17,8 @@ namespace DNDS::Runtime
     struct RowRequest
     {
         int sourceRank = 0;
-        int64_t sourceRow = 0;
-        size_t destinationRow = 0;
+        index sourceRow = 0;
+        index destinationRow = 0;
     };
 
     /// Collective immutable row relation. Caller serializes setup/Begin in the
@@ -33,23 +33,23 @@ namespace DNDS::Runtime
         RowTransferPlan() = default;
 
     public:
-        RowTransferPlan(MPI_Comm comm, size_t sourceRows, size_t destinationRows,
+        RowTransferPlan(MPI_Comm comm, index sourceRows, index destinationRows,
                         const std::vector<RowRequest> &requests, std::vector<VersionStamp> dependencies = {});
-        RowTransferPlan(std::shared_ptr<CommunicationContext> context, size_t sourceRows, size_t destinationRows,
+        RowTransferPlan(std::shared_ptr<CommunicationContext> context, index sourceRows, index destinationRows,
                         const std::vector<RowRequest> &requests, std::vector<VersionStamp> dependencies = {});
         /// Peer row lists in matching per-peer order bypass owner/row discovery.
         /// Counts, bounds and collisions are checked collectively.
         /// Caller guarantees that corresponding send/receive entries mean the
         /// same row; equal counts cannot detect a semantically wrong permutation.
-        static RowTransferPlan Known(std::shared_ptr<CommunicationContext> context, size_t sourceRows, size_t destinationRows,
-                                     std::vector<std::vector<size_t>> send, std::vector<std::vector<size_t>> receive,
+        static RowTransferPlan Known(std::shared_ptr<CommunicationContext> context, index sourceRows, index destinationRows,
+                                     std::vector<std::vector<index>> send, std::vector<std::vector<index>> receive,
                                      std::vector<VersionStamp> dependencies = {});
         RowTransferPlan Reverse() const;
         MPI_Comm Communicator() const;
-        size_t SourceRows() const;
-        size_t DestinationRows() const;
-        const std::vector<std::vector<size_t>> &SendRows() const;
-        const std::vector<std::vector<size_t>> &ReceiveRows() const;
+        index SourceRows() const;
+        index DestinationRows() const;
+        const std::vector<std::vector<index>> &SendRows() const;
+        const std::vector<std::vector<index>> &ReceiveRows() const;
         bool HasCollisions() const;
         bool Valid() const;
         /// Setup exchange only: values are not moved. Unrequested rows have width 0.
@@ -197,10 +197,10 @@ namespace DNDS::Runtime
         size_t ReceiveSegments() const;
         TransferBinding Bind(Buffer source, Buffer destination, TransferTransport transport = TransferTransport::Direct, TransferOptions options = {}) const;
         TransferBinding Bind(Buffer source, Buffer destination, Reducer reducer, TransferTransport transport = TransferTransport::Direct, TransferOptions options = {}) const;
-        template <class T, class L, class M>
-        TransferBinding Bind(const Array<T, L> &source, const Array<T, M> &destination, TransferTransport transport = TransferTransport::Direct, TransferOptions options = {}) const;
-        template <class T, class L, class M>
-        TransferBinding Bind(const Array<T, L> &source, const Array<T, M> &destination, Reducer reducer, TransferTransport transport = TransferTransport::Direct, TransferOptions options = {}) const;
+        template <class T>
+        TransferBinding Bind(const Array<T> &source, const Array<T> &destination, TransferTransport transport = TransferTransport::Direct, TransferOptions options = {}) const;
+        template <class T>
+        TransferBinding Bind(const Array<T> &source, const Array<T> &destination, Reducer reducer, TransferTransport transport = TransferTransport::Direct, TransferOptions options = {}) const;
     };
 
     class TransferBinding
@@ -253,14 +253,14 @@ namespace DNDS::Runtime
         bool Test();
     };
 
-    template <class T, class L, class M>
-    TransferBinding PayloadPlan::Bind(const Array<T, L> &source, const Array<T, M> &destination, TransferTransport transport, TransferOptions options) const
+    template <class T>
+    TransferBinding PayloadPlan::Bind(const Array<T> &source, const Array<T> &destination, TransferTransport transport, TransferOptions options) const
     {
         CheckLayouts(source.Layout(), destination.Layout(), sizeof(T), Compatible(ElementSchema::TypeIdentity<T>()));
         return Bind(source.Storage(), destination.Storage(), transport, std::move(options));
     }
-    template <class T, class L, class M>
-    TransferBinding PayloadPlan::Bind(const Array<T, L> &source, const Array<T, M> &destination, Reducer reducer, TransferTransport transport, TransferOptions options) const
+    template <class T>
+    TransferBinding PayloadPlan::Bind(const Array<T> &source, const Array<T> &destination, Reducer reducer, TransferTransport transport, TransferOptions options) const
     {
         CheckLayouts(source.Layout(), destination.Layout(), sizeof(T), Compatible(ElementSchema::TypeIdentity<T>()));
         return Bind(source.Storage(), destination.Storage(), std::move(reducer), transport, std::move(options));

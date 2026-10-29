@@ -65,7 +65,7 @@ namespace DNDS::Geom
         required(MeshRelation::CellCells);
         DNDS_check_throw_info(data.coords && data.cellInfo && data.bndInfo, "native primary mesh values are missing");
         DNDS_check_throw_info(data.dimension != 1 || (!requirements.faces && !requirements.edges && !requirements.cellFaceNeighbors &&
-                                                      data.bndInfo->owned.Rows() == 0 && data.bndInfo->ghost.Rows() == 0),
+                                                      data.bndInfo->owned.RowCount() == 0 && data.bndInfo->ghost.RowCount() == 0),
                               "native one-dimensional meshes support primary curves without point boundaries or facial/edge topology");
         if (requirements.faces)
         {
@@ -101,26 +101,26 @@ namespace DNDS::Geom
         auto cellPairTable = [](Runtime::Array<index> values)
         {
             const auto layout = values.Layout();
-            if (!layout.Rows() && (layout.IsVariable() || layout.Width() != 2))
-                return Runtime::Array<index>::FromStorage(Runtime::RowLayout::Dense(0, 2, std::max(layout.Stride(), size_t(2))), values.Storage());
+            if (!layout.RowCount() && (layout.IsVariable() || layout.Width() != 2))
+                return Runtime::Array<index>::FromStorage(Runtime::RowLayout::Dense(0, 2, std::max(layout.Stride(), index(2))), values.Storage());
             if (!layout.IsVariable())
             {
                 DNDS_check_throw_info(layout.Width() == 2, "physical cell incidence requires two ordered slots");
                 return values;
             }
-            for (size_t row = 0; row < layout.Rows(); ++row)
+            for (index row = 0; row < layout.RowCount(); ++row)
             {
                 DNDS_check_throw_info(layout.RowSize(row) == 2, "physical cell incidence requires two ordered slots");
                 if (layout.IsRagged())
-                    DNDS_check_throw_info(layout.Offset(row) == CheckedSize::Multiply(row, size_t(2)),
+                    DNDS_check_throw_info(layout.Offset(row) == CheckedSize::Multiply(row, index(2)),
                                           "physical cell incidence CSR is not tightly contiguous");
             }
             if (layout.IsRagged())
-                DNDS_check_throw_info(layout.Elements() == CheckedSize::Multiply(layout.Rows(), size_t(2)),
+                DNDS_check_throw_info(layout.Elements() == size_t(CheckedSize::Multiply(layout.RowCount(), index(2))),
                                       "physical cell incidence CSR terminal offset is invalid");
-            const auto stride = layout.IsPadded() ? layout.Stride() : size_t(2);
-            DNDS_check_throw_info(!layout.Rows() || stride >= 2, "physical cell incidence stride is too small");
-            return Runtime::Array<index>::FromStorage(Runtime::RowLayout::Dense(layout.Rows(), 2, std::max(stride, size_t(2))), values.Storage());
+            const auto stride = layout.IsPadded() ? layout.Stride() : index(2);
+            DNDS_check_throw_info(!layout.RowCount() || stride >= 2, "physical cell incidence stride is too small");
+            return Runtime::Array<index>::FromStorage(Runtime::RowLayout::Dense(layout.RowCount(), 2, std::max(stride, index(2))), values.Storage());
         };
         for (auto relation : {MeshRelation::BoundaryCells, MeshRelation::FaceCells})
             if (auto &pair = data.relations[size_t(relation)]; pair)

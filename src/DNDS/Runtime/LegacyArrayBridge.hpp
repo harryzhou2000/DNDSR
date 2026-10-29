@@ -83,11 +83,11 @@ namespace DNDS::Runtime
         inline void ValidateLegacyRows(const RowLayout &layout, Device device)
         {
             DNDS_check_throw_info(device == Device::Host(), "legacy host rows require host storage");
-            DNDS_check_throw_info(layout.Rows() <= size_t(std::numeric_limits<index>::max()), "native row count exceeds legacy index");
+            DNDS_check_throw_info(layout.RowCount() <= size_t(std::numeric_limits<index>::max()), "native row count exceeds legacy index");
             if (!layout.IsVariable())
                 DNDS_check_throw_info(layout.Width() <= size_t(std::numeric_limits<rowsize>::max()), "native row width exceeds legacy rowsize");
             else
-                for (size_t i = 0; i < layout.Rows(); ++i)
+                for (size_t i = 0; i < layout.RowCount(); ++i)
                     DNDS_check_throw_info(layout.RowSize(i) <= size_t(std::numeric_limits<rowsize>::max()), "native row width exceeds legacy rowsize");
         }
     }
@@ -119,7 +119,7 @@ namespace DNDS::Runtime
     struct LegacyRowsView
     {
         ArrayView<T> values;
-        DNDS_DEVICE_CALLABLE index Size() const { return index(values.Rows()); }
+        DNDS_DEVICE_CALLABLE index Size() const { return index(values.RowCount()); }
         DNDS_DEVICE_CALLABLE rowsize RowSize(index row) const { return rowsize(values.RowSize(size_t(row))); }
         DNDS_DEVICE_CALLABLE T *operator[](index row) const { return values.Row(size_t(row)); }
         DNDS_DEVICE_CALLABLE Runtime::RowSpan<T> RowSpan(index row) const { return values[size_t(row)]; }
@@ -145,14 +145,14 @@ namespace DNDS::Runtime
         void Wait() { _access.Wait(); }
     };
 
-    template <class T, class Policy>
-    LegacyRowsAccess<T, false> HostRowsRead(const Array<T, Policy> &source)
+    template <class T>
+    LegacyRowsAccess<T, false> HostRowsRead(const Array<T> &source)
     {
         Detail::ValidateLegacyRows(source.Layout(), source.GetDevice());
         return LegacyRowsAccess<T, false>(source.Read());
     }
-    template <class T, class Policy>
-    LegacyRowsAccess<T, true> HostRowsWrite(Array<T, Policy> &source)
+    template <class T>
+    LegacyRowsAccess<T, true> HostRowsWrite(Array<T> &source)
     {
         Detail::ValidateLegacyRows(source.Layout(), source.GetDevice());
         return LegacyRowsAccess<T, true>(source.Write());

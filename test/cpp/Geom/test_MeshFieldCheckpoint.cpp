@@ -107,7 +107,7 @@ TEST_CASE("Retained mesh and multi-history field form a coherent matching-partit
         WriteCurrentPrimaryMeshSnapshot(*mesh, serializer, "mesh");
         R::WriteArray(field, serializer, "flow_histories", mpi);
         serializer->CloseFile();
-        CHECK(fieldRead.View().Rows() == size_t(meshRead.HostView().NumCell()));
+        CHECK(fieldRead.View().RowCount() == size_t(meshRead.HostView().NumCell()));
     }
     CHECK(meshStamp.Valid());
     CHECK(field.Identity() == fieldIdentity);
@@ -133,7 +133,7 @@ TEST_CASE("Retained mesh and multi-history field form a coherent matching-partit
     CHECK(savedHistories == DNDS::index(histories));
     FieldTransferDetail::LocalStage(mpi, [&]
                                     {
-        DNDS_check_throw_info(restartedField.Rows() == size_t(restored->NumCell()) &&
+        DNDS_check_throw_info(restartedField.RowCount() == size_t(restored->NumCell()) &&
                                   restored->NumCell() == mesh->NumCell() && restored->NumNode() == mesh->NumNode(),
                               "checkpoint mesh and field owned partitions differ");
         auto values = restartedField.Read();
@@ -149,7 +149,7 @@ TEST_CASE("Retained mesh and multi-history field form a coherent matching-partit
             CHECK(restored->CurrentNativeState()->BorrowHostView().Coord(node).isApprox(coordinates.at(restored->OriginalEntityId(EntityKind::Node, node)))); });
     restored->PrepareNativeTopology();
     auto read = restored->AcquireRead(MeshReadRequirements::CellFlux());
-    CHECK(read.HostView().NumCell() == DNDS::index(restartedField.Rows()));
+    CHECK(read.HostView().NumCell() == DNDS::index(restartedField.RowCount()));
     MPI_Barrier(mpi.comm);
     if (mpi.rank == 0)
     {

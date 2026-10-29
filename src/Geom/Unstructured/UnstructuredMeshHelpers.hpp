@@ -85,7 +85,7 @@ namespace DNDS::Geom
             FieldTransferDetail::LocalStage(mpi, [&]
                                             {
                 auto info = owned.cellInfo->Read();
-                for (size_t row = 0; row < owned.cellInfo->Rows(); ++row)
+                for (size_t row = 0; row < owned.cellInfo->RowCount(); ++row)
                     local = local && Elem::Element{info.View()(row, 0).getElemType()}.GetOrder() == 2; });
             MPI_Allreduce(MPI_IN_PLACE, &local, 1, MPI_INT, MPI_MIN, mpi.comm);
             return bool(local);

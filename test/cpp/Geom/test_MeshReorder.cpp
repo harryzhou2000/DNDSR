@@ -712,12 +712,12 @@ TEST_CASE("NativeRowTransfer exact native routes with empty ranks and skew")
 
 namespace T = NativeReorderChecks;
 
-static void checkSparseTargets(const T::State &source, const MPIInfo &mpi, const std::vector<AdjKind> &keys)
+static void checkSparseTargets(const T::State &source, const MPIInfo &mpi, const std::vector<AdjacencyDescriptor> &keys)
 {
     auto mesh = UnstructuredMesh::FromNative(mpi, source);
     for (const auto &key : keys)
     {
-        auto read = RelationReadAccess::Current(*mesh, key, source->Requirements());
+        auto read = MeshAdjacencyRead::Current(*mesh, key, source->Requirements());
         std::set<DNDS::index> required;
         for (DNDS::index row = 0; row < read.NumOwned(); ++row)
             for (size_t slot = 0; slot < read.RowSize(row); ++slot)
@@ -864,7 +864,7 @@ TEST_CASE("ReorderEntities with external companion array (solver-like)")
     }
     CHECK(oldDof.Identity() == oldDofIdentity);
     CHECK(oldRagged.Identity() == oldRaggedIdentity);
-    CHECK(oldDof.Rows() == count);
+    CHECK(oldDof.RowCount() == count);
     CHECK(oldHistory.GetDistribution().epoch == 0);
 }
 
@@ -995,11 +995,11 @@ TEST_CASE("buildReorderRegistry rejects non-global face adj after face interpola
     auto mpi = worldMPI();
     auto source = T::Fixture(mpi, true);
     auto mesh = UnstructuredMesh::FromNative(mpi, source);
-    auto local = RelationReadAccess::Current(*mesh, Adj::Face2Node, source->Requirements());
-    auto detached = NativeRelation::Convert(local, Adj_PointToLocal);
-    CHECK_THROWS(detached.WithGhostRows(RelationGhostRoute(detached.Source())));
-    auto global = NativeRelation::Convert(local, Adj_PointToGlobal);
-    CHECK_NOTHROW(global.WithGhostRows(RelationGhostRoute(global.Source())));
+    auto local = MeshAdjacencyRead::Current(*mesh, Adj::Face2Node, source->Requirements());
+    auto detached = MeshAdjacency::Convert(local, Adj_PointToLocal);
+    CHECK_THROWS(detached.WithGhostRows(EntityGhostMapping(detached.Source())));
+    auto global = MeshAdjacency::Convert(local, Adj_PointToGlobal);
+    CHECK_NOTHROW(global.WithGhostRows(EntityGhostMapping(global.Source())));
     T::RoundTrip(source, mpi, {Adj::Face2Node});
 }
 
@@ -1049,8 +1049,8 @@ TEST_CASE("ReorderEntities: bnd2faceV and face2bndM reconstructed on Face destro
     input.destroyKinds = {EntityKind::Face};
     auto result = T::Move(source, input, mpi);
     auto mesh = UnstructuredMesh::FromNative(mpi, result.state);
-    auto boundaries = RelationReadAccess::Current(*mesh, Adj::Bnd2Face, result.state->Requirements());
-    auto faces = RelationReadAccess::Current(*mesh, Adj::Face2Bnd, result.state->Requirements());
+    auto boundaries = MeshAdjacencyRead::Current(*mesh, Adj::Bnd2Face, result.state->Requirements());
+    auto faces = MeshAdjacencyRead::Current(*mesh, Adj::Face2Bnd, result.state->Requirements());
     CHECK(boundaries.NumOwned() == result.state->NumOwned(EntityKind::Bnd));
     for (DNDS::index row = 0; row < boundaries.NumOwned(); ++row)
     {

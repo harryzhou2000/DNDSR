@@ -9,10 +9,10 @@ namespace G = DNDS::Geom;
 namespace R = DNDS::Runtime;
 using I = DNDS::index;
 
-static void CheckRoundTrip(const G::RelationReadAccess &source)
+static void CheckRoundTrip(const G::MeshAdjacencyRead &source)
 {
-    auto global = G::NativeRelation::Convert(source, G::Adj_PointToGlobal);
-    auto local = G::NativeRelation::Convert(global.Read(), G::Adj_PointToLocal);
+    auto global = G::MeshAdjacency::Convert(source, G::Adj_PointToGlobal);
+    auto local = G::MeshAdjacency::Convert(global.Read(), G::Adj_PointToLocal);
     const auto globalRead = global.Read(), localRead = local.Read();
     CHECK(globalRead.State() == G::Adj_PointToGlobal);
     CHECK(localRead.State() == G::Adj_PointToLocal);
@@ -20,9 +20,9 @@ static void CheckRoundTrip(const G::RelationReadAccess &source)
     CHECK(source.Source().SameOrder(localRead.Source()));
     CHECK(source.Target().SameOrder(localRead.Target()));
     REQUIRE(source.NumOwned() == globalRead.NumOwned());
-    REQUIRE(source.Rows() == globalRead.Rows());
-    REQUIRE(source.Rows() == localRead.Rows());
-    for (I row = 0; row < source.Rows(); ++row)
+    REQUIRE(source.RowCount() == globalRead.RowCount());
+    REQUIRE(source.RowCount() == localRead.RowCount());
+    for (I row = 0; row < source.RowCount(); ++row)
     {
         REQUIRE(source.RowSize(row) == globalRead.RowSize(row));
         REQUIRE(source.RowSize(row) == localRead.RowSize(row));
@@ -41,7 +41,7 @@ static void CheckRoundTrip(const G::RelationReadAccess &source)
             }
         }
     }
-    CHECK_THROWS(G::NativeRelation::Convert(source, G::Adj_Unknown));
+    CHECK_THROWS(G::MeshAdjacency::Convert(source, G::Adj_Unknown));
 }
 
 TEST_CASE("Native conversion preserves owned and ghost shape slots and unavailable negative encodings")
@@ -55,29 +55,29 @@ TEST_CASE("Native conversion preserves owned and ghost shape slots and unavailab
     const I last = nodes.NumGlobal() - 1;
     const auto owned = NativePeriodicFixtures::Rows<I>({{last, DNDS::UnInitIndex, 0, last}, {1}});
     const auto ghost = NativePeriodicFixtures::Rows<I>(mpi.size > 1 ? std::vector<std::vector<I>>{{0, last, DNDS::UnInitIndex}} : std::vector<std::vector<I>>{});
-    G::RelationReadAccess input(G::Adj::Cell2Node, cells, nodes, G::Adj_PointToGlobal, owned, &ghost);
+    G::MeshAdjacencyRead input(G::Adj::Cell2Node, cells, nodes, G::Adj_PointToGlobal, owned, &ghost);
     CheckRoundTrip(input);
-    auto local = G::NativeRelation::Convert(input, G::Adj_PointToLocal);
+    auto local = G::MeshAdjacency::Convert(input, G::Adj_PointToLocal);
     auto localRead = local.Read();
     CHECK(localRead.Raw(0, 1) == DNDS::UnInitIndex);
     CHECK(input.Raw(0, 0) == last);
     if (mpi.size > 1)
     {
-        CHECK_THROWS(G::NativeRelation::Convert(input, G::Adj_PointToLocal, false));
+        CHECK_THROWS(G::MeshAdjacency::Convert(input, G::Adj_PointToLocal, false));
         const I missing = mpi.rank == 0 ? last : 0;
         const auto missingLocal = nodes.GlobalToLocal(missing);
         REQUIRE_FALSE(missingLocal.has_value());
         CHECK(localRead.ReadEntry(0, mpi.rank == 0 ? 0 : 2).unavailable);
         CHECK_THROWS(localRead.ConvertedIndex(0, mpi.rank == 0 ? 0 : 2, G::Adj_PointToLocal, false));
     }
-    CHECK_THROWS(G::RelationReadAccess(G::Adj::Cell2Node, cells, nodes, G::Adj_Unknown, owned, &ghost));
+    CHECK_THROWS(G::MeshAdjacencyRead(G::Adj::Cell2Node, cells, nodes, G::Adj_Unknown, owned, &ghost));
     const auto wrongGlobal = NativePeriodicFixtures::Rows<I>({{-1}, {0}});
-    CHECK_THROWS(G::RelationReadAccess(G::Adj::Cell2Node, ownedCells, nodes, G::Adj_PointToGlobal, wrongGlobal));
+    CHECK_THROWS(G::MeshAdjacencyRead(G::Adj::Cell2Node, ownedCells, nodes, G::Adj_PointToGlobal, wrongGlobal));
     const I present = nodes.LocalToGlobal(0);
     const auto wrongUnavailable = NativePeriodicFixtures::Rows<I>({{-1 - present}, {0}});
-    CHECK_THROWS(G::RelationReadAccess(G::Adj::Cell2Node, ownedCells, nodes, G::Adj_PointToLocal, wrongUnavailable));
+    CHECK_THROWS(G::MeshAdjacencyRead(G::Adj::Cell2Node, ownedCells, nodes, G::Adj_PointToLocal, wrongUnavailable));
     const auto outOfRange = NativePeriodicFixtures::Rows<I>({{nodes.NumLocal()}, {0}});
-    CHECK_THROWS(G::RelationReadAccess(G::Adj::Cell2Node, ownedCells, nodes, G::Adj_PointToLocal, outOfRange));
+    CHECK_THROWS(G::MeshAdjacencyRead(G::Adj::Cell2Node, ownedCells, nodes, G::Adj_PointToLocal, outOfRange));
 }
 
 TEST_CASE("Local relation validation checks ghost bounds global ordering and ghost source self incidences")
@@ -96,55 +96,55 @@ TEST_CASE("Local relation validation checks ghost bounds global ordering and gho
     const I lowerLocal = *nodes.GlobalToLocal(lower), upperLocal = *nodes.GlobalToLocal(upper);
     const auto sortedOwned = NativePeriodicFixtures::Rows<I>({{lowerLocal, upperLocal}, {}});
     const auto sortedGhost = NativePeriodicFixtures::Rows<I>(mpi.size > 1 ? std::vector<std::vector<I>>{{lowerLocal, upperLocal}} : std::vector<std::vector<I>>{});
-    G::AdjKind sorted{G::EntityKind::Cell, G::EntityKind::Node};
+    G::AdjacencyDescriptor sorted{G::EntityKind::Cell, G::EntityKind::Node};
     sorted.path = {G::EntityKind::Cell, G::EntityKind::Node};
     sorted.selection = G::RelationSelection::Incidence;
     sorted.order = G::RelationOrder::SortedUnique;
     sorted.periodic = G::RelationPeriodicPolicy::EntityIdentity;
-    G::RelationReadAccess ordered(sorted, cells, nodes, G::Adj_PointToLocal, sortedOwned, &sortedGhost);
+    G::MeshAdjacencyRead ordered(sorted, cells, nodes, G::Adj_PointToLocal, sortedOwned, &sortedGhost);
     CHECK(ordered.GlobalRow(0) == std::vector<I>{lower, upper});
     const auto reversed = NativePeriodicFixtures::Rows<I>({{upperLocal, lowerLocal}, {}});
-    CHECK_THROWS(G::RelationReadAccess(sorted, cells, nodes, G::Adj_PointToLocal, reversed, &sortedGhost));
+    CHECK_THROWS(G::MeshAdjacencyRead(sorted, cells, nodes, G::Adj_PointToLocal, reversed, &sortedGhost));
     const auto duplicate = NativePeriodicFixtures::Rows<I>({{lowerLocal, lowerLocal}, {}});
-    CHECK_THROWS(G::RelationReadAccess(sorted, cells, nodes, G::Adj_PointToLocal, duplicate, &sortedGhost));
+    CHECK_THROWS(G::MeshAdjacencyRead(sorted, cells, nodes, G::Adj_PointToLocal, duplicate, &sortedGhost));
     const auto absent = NativePeriodicFixtures::Rows<I>({{DNDS::UnInitIndex}, {}});
-    CHECK_THROWS(G::RelationReadAccess(sorted, cells, nodes, G::Adj_PointToLocal, absent, &sortedGhost));
+    CHECK_THROWS(G::MeshAdjacencyRead(sorted, cells, nodes, G::Adj_PointToLocal, absent, &sortedGhost));
     const auto unordered = NativePeriodicFixtures::Rows<I>({{upperLocal, DNDS::UnInitIndex, lowerLocal, upperLocal}, {}});
-    G::RelationReadAccess slots(G::Adj::Cell2Node, cells, nodes, G::Adj_PointToLocal, unordered, &sortedGhost);
+    G::MeshAdjacencyRead slots(G::Adj::Cell2Node, cells, nodes, G::Adj_PointToLocal, unordered, &sortedGhost);
     CHECK(slots.GlobalRow(0) == std::vector<I>{upper, DNDS::UnInitIndex, lower, upper});
     CHECK(slots.ReadEntry(0, 1).absent);
 
-    const auto noSelf = G::AdjKind::Composition(G::Adj::Cell2Node, G::Adj::Cell2Node.Inverted(), G::RelationSelection::Any, true);
+    const auto noSelf = G::AdjacencyDescriptor::Composition(G::Adj::Cell2Node, G::Adj::Cell2Node.Inverted(), G::RelationSelection::Any, true);
     const auto distinctOwned = NativePeriodicFixtures::Rows<I>({{1}, {0}});
     const auto distinctGhost = NativePeriodicFixtures::Rows<I>(mpi.size > 1 ? std::vector<std::vector<I>>{{0}} : std::vector<std::vector<I>>{});
-    G::RelationReadAccess distinct(noSelf, cells, cells, G::Adj_PointToLocal, distinctOwned, &distinctGhost);
+    G::MeshAdjacencyRead distinct(noSelf, cells, cells, G::Adj_PointToLocal, distinctOwned, &distinctGhost);
     CHECK(distinct.GlobalRow(0) == std::vector<I>{cells.LocalToGlobal(1)});
     const auto selfOwned = NativePeriodicFixtures::Rows<I>({{0}, {}});
-    CHECK_THROWS(G::RelationReadAccess(noSelf, cells, cells, G::Adj_PointToLocal, selfOwned, &distinctGhost));
+    CHECK_THROWS(G::MeshAdjacencyRead(noSelf, cells, cells, G::Adj_PointToLocal, selfOwned, &distinctGhost));
     if (mpi.size > 1)
     {
         CHECK(ordered.GlobalRow(2) == std::vector<I>{lower, upper});
         if (mpi.rank > 0)
             CHECK(ordered.Raw(2, 0) > ordered.Raw(2, 1));
         const auto reversedGhost = NativePeriodicFixtures::Rows<I>({{upperLocal, lowerLocal}});
-        CHECK_THROWS(G::RelationReadAccess(sorted, cells, nodes, G::Adj_PointToLocal, sortedOwned, &reversedGhost));
+        CHECK_THROWS(G::MeshAdjacencyRead(sorted, cells, nodes, G::Adj_PointToLocal, sortedOwned, &reversedGhost));
         for (I invalid : {nodes.NumLocal(), -1 - remoteNode, -1 - nodes.NumGlobal()})
         {
             const auto invalidGhost = NativePeriodicFixtures::Rows<I>({{invalid}});
-            CHECK_THROWS(G::RelationReadAccess(G::Adj::Cell2Node, cells, nodes, G::Adj_PointToLocal, unordered, &invalidGhost));
+            CHECK_THROWS(G::MeshAdjacencyRead(G::Adj::Cell2Node, cells, nodes, G::Adj_PointToLocal, unordered, &invalidGhost));
         }
         // A different remote node remains genuinely unavailable; the ghost
         // mapping contains only remoteNode, and absence has its own sentinel.
         const I missing = remoteNode + 1;
         REQUIRE_FALSE(nodes.GlobalToLocal(missing).has_value());
         const auto unavailableGhost = NativePeriodicFixtures::Rows<I>({{-1 - missing, DNDS::UnInitIndex}});
-        G::RelationReadAccess unavailable(G::Adj::Cell2Node, cells, nodes, G::Adj_PointToLocal, unordered, &unavailableGhost);
+        G::MeshAdjacencyRead unavailable(G::Adj::Cell2Node, cells, nodes, G::Adj_PointToLocal, unordered, &unavailableGhost);
         CHECK(unavailable.ReadEntry(2, 0).unavailable);
         CHECK(unavailable.ReadEntry(2, 0).global == missing);
         CHECK(unavailable.ReadEntry(2, 1).absent);
         CHECK(distinct.GlobalRow(2) == std::vector<I>{cells.LocalToGlobal(0)});
         const auto selfGhost = NativePeriodicFixtures::Rows<I>({{cells.NumOwned()}});
-        CHECK_THROWS(G::RelationReadAccess(noSelf, cells, cells, G::Adj_PointToLocal, distinctOwned, &selfGhost));
+        CHECK_THROWS(G::MeshAdjacencyRead(noSelf, cells, cells, G::Adj_PointToLocal, distinctOwned, &selfGhost));
     }
 }
 
@@ -156,7 +156,7 @@ TEST_CASE("Retained relation validation follows its read scope and fresh reads v
     auto cells = nodes.CreateSibling(G::EntityKind::Cell, 1);
     const I global = nodes.LocalToGlobal(0);
     auto values = NativePeriodicFixtures::Rows<I>({{global, DNDS::UnInitIndex}});
-    G::NativeRelation relation(G::Adj::Cell2Node, cells, nodes, values);
+    G::MeshAdjacency relation(G::Adj::Cell2Node, cells, nodes, values);
     CHECK(relation.Kind() == G::Adj::Cell2Node);
     {
         auto original = relation.Read();
@@ -168,7 +168,7 @@ TEST_CASE("Retained relation validation follows its read scope and fresh reads v
         CHECK_THROWS(values.Write());
         CHECK_THROWS(moved.ConvertedIndex(0, 2, G::Adj_PointToGlobal));
     }
-    // NativeRelation reuses only a validation tied to the current storage value
+    // MeshAdjacency reuses only a validation tied to the current storage value
     // version: an alias write after the previous scope releases forces a rescan.
     {
         auto write = values.Write();
@@ -206,9 +206,9 @@ TEST_CASE("Native conversion preserves dense stride and logical padded CSR rows 
                     for (size_t slot = 0; slot < write.View().RowSize(size_t(row)); ++slot)
                         write.View()(size_t(row), slot) = slot == 1 ? DNDS::UnInitIndex : 0;
             }
-            G::RelationReadAccess read(G::Adj::Cell2Node, cells, nodes, G::Adj_PointToGlobal, values);
+            G::MeshAdjacencyRead read(G::Adj::Cell2Node, cells, nodes, G::Adj_PointToGlobal, values);
             CheckRoundTrip(read);
-            auto converted = G::NativeRelation::Convert(read, G::Adj_PointToGlobal);
+            auto converted = G::MeshAdjacency::Convert(read, G::Adj_PointToGlobal);
             CHECK(converted.Owned().Identity() != values.Identity());
             if (shape == 0)
                 CHECK(converted.Owned().Layout().Stride() == 7);
@@ -223,9 +223,9 @@ static void CheckCurrent(const std::shared_ptr<const G::NativeMeshState> &state,
     auto facade = G::UnstructuredMesh::FromNative(mpi, state);
     for (const auto &key : {G::Adj::Cell2Node, G::Adj::Cell2Face, G::Adj::Face2Node, G::Adj::Face2Cell})
     {
-        auto current = G::RelationReadAccess::Current(*facade, key, G::MeshReadRequirements::CellFlux());
+        auto current = G::MeshAdjacencyRead::Current(*facade, key, G::MeshReadRequirements::CellFlux());
         CHECK(current.State() == G::Adj_PointToLocal);
-        CHECK(current.Rows() == facade->Entities(key.from).NumLocal());
+        CHECK(current.RowCount() == facade->Entities(key.from).NumLocal());
         CheckRoundTrip(current);
     }
     for (const auto &key : state->RelationKeys())
@@ -253,7 +253,7 @@ TEST_CASE("Native current numbering conversion survives local reorder redistribu
 static void CheckTorus(const std::shared_ptr<const G::NativeMeshState> &state, const DNDS::MPIInfo &mpi)
 {
     auto facade = G::UnstructuredMesh::FromNative(mpi, state);
-    auto read = G::RelationReadAccess::Current(*facade, G::Adj::Cell2Node, G::MeshReadRequirements::CellFlux());
+    auto read = G::MeshAdjacencyRead::Current(*facade, G::Adj::Cell2Node, G::MeshReadRequirements::CellFlux());
     CheckRoundTrip(read);
     const auto access = state->Snapshot(R::Device::Host()).AcquireRead();
     const auto view = access.HostView();

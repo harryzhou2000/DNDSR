@@ -16,7 +16,7 @@ namespace DNDS::Geom
         DNDS_DEVICE_TRIVIAL_COPY_DEFINE(MeshLegacyArrayRead, MeshLegacyArrayRead)
         DNDS_DEVICE_CALLABLE MeshLegacyArrayRead(Runtime::ArrayView<const T> view, bool present)
             : _view(view), _present(present) {}
-        DNDS_DEVICE_CALLABLE index Size() const { return index(_view.Rows()); }
+        DNDS_DEVICE_CALLABLE index Size() const { return index(_view.RowCount()); }
         DNDS_DEVICE_CALLABLE rowsize RowSize(index row) const { return rowsize(_view.RowSize(row)); }
         DNDS_DEVICE_CALLABLE bool isBuilt() const { return _present; }
         DNDS_DEVICE_CALLABLE explicit operator bool() const { return _present; }
@@ -69,11 +69,11 @@ namespace DNDS::Geom
     public:
         DNDS_DEVICE_TRIVIAL_COPY_DEFINE(MeshLegacyColumnRead, MeshLegacyColumnRead)
         DNDS_DEVICE_CALLABLE explicit MeshLegacyColumnRead(Runtime::PairReadView<index> view) : _view(view) {}
-        DNDS_DEVICE_CALLABLE size_t size() const { return _view.Rows(); }
+        DNDS_DEVICE_CALLABLE size_t size() const { return _view.RowCount(); }
         DNDS_DEVICE_CALLABLE const index &operator[](index row) const { return _view(row, 0); }
         DNDS_HOST const index &at(index row) const
         {
-            DNDS_check_throw_info(row >= 0 && size_t(row) < _view.Rows(), "boundary face row is outside the retained view");
+            DNDS_check_throw_info(row >= 0 && size_t(row) < _view.RowCount(), "boundary face row is outside the retained view");
             return _view(row, 0);
         }
     };

@@ -15,7 +15,7 @@ __global__ void FillStaticRows(ArrayView<double, false, Policy> values)
 {
     static_assert(!decltype(values)::is_dynamic);
     static_assert(std::is_trivially_copyable_v<decltype(values)>);
-    for (size_t row = blockIdx.x; row < values.Rows(); row += gridDim.x)
+    for (size_t row = blockIdx.x; row < values.RowCount(); row += gridDim.x)
     {
         auto entries = values[row];
         for (size_t column = threadIdx.x; column < entries.size(); column += blockDim.x)
@@ -29,7 +29,7 @@ __global__ void ReadStaticRows(ArrayView<const double, false, Policy> values, Ar
     static_assert(std::is_same_v<decltype(values[0][0]), const double &>);
     if (threadIdx.x)
         return;
-    for (size_t row = blockIdx.x; row < values.Rows(); row += gridDim.x)
+    for (size_t row = blockIdx.x; row < values.RowCount(); row += gridDim.x)
     {
         double sum = 0;
         for (auto value : values[row])
@@ -53,17 +53,17 @@ static void CheckStaticCUDAAccess(RowLayout shape)
     auto retained = device;
     {
         auto write = device.Write(context);
-        FillStaticRows<Policy><<<3, 32>>>(write.View());
+        FillStaticRows<Policy><<<3, 32>>>(write.template View<Policy>());
         REQUIRE(cudaGetLastError() == cudaSuccess);
         write.Complete(Completion::Record(context));
         device.Reset(Policy::Default());
         write.Wait();
     }
-    Array<double, FixedRows<1>> sums(RowLayout::Dense(shape.Rows(), 1), Device::CUDA(0));
+    Array<double, FixedRows<1>> sums(RowLayout::Dense(shape.RowCount(), 1), Device::CUDA(0));
     {
         auto read = retained.Read(context);
         auto write = sums.Write(context);
-        ReadStaticRows<Policy><<<3, 32>>>(read.View(), write.View());
+        ReadStaticRows<Policy><<<3, 32>>>(read.template View<Policy>(), write.template View<FixedRows<1>>());
         REQUIRE(cudaGetLastError() == cudaSuccess);
         const auto done = Completion::Record(context);
         read.Complete(done);
@@ -77,7 +77,7 @@ static void CheckStaticCUDAAccess(RowLayout shape)
     auto logical = actual.Read();
     auto totals = hostSums.Read();
     const auto flat = raw.template View<double>();
-    for (size_t row = 0; row < shape.Rows(); ++row)
+    for (size_t row = 0; row < shape.RowCount(); ++row)
     {
         double sum = 0;
         CHECK(logical.View()[row].size() == shape.RowSize(row));
@@ -116,25 +116,25 @@ static void CheckEagerTypedCUDA(RowLayout shape)
     auto stream = engine.CreateStream(std::make_shared<CUDALauncher>(0));
     Array<double, Policy> values(shape, Device::CUDA(0));
     auto retained = values;
-    Array<double, FixedRows<1>> sums(RowLayout::Dense(shape.Rows(), 1), Device::CUDA(0));
+    Array<double, FixedRows<1>> sums(RowLayout::Dense(shape.RowCount(), 1), Device::CUDA(0));
     SubmitArrays(engine, stream, [](ExecutionContext context, auto output)
                  {
         static_assert(std::is_same_v<decltype(output), ArrayView<double, false, Policy>>);
         FillStaticRows<Policy><<<3, 32, 0, static_cast<cudaStream_t>(context.stream)>>>(output);
-        DNDS_check_throw_info(cudaGetLastError() == cudaSuccess, "typed eager fill launch failed"); }, Write(values));
+        DNDS_check_throw_info(cudaGetLastError() == cudaSuccess, "typed eager fill launch failed"); }, WriteAs<Policy>(values));
     SubmitArrays(engine, stream, [](ExecutionContext context, auto input, auto output)
                  {
         static_assert(std::is_same_v<decltype(input), ArrayView<const double, false, Policy>>);
         static_assert(decltype(output)::row_width == 1);
         ReadStaticRows<Policy><<<3, 32, 0, static_cast<cudaStream_t>(context.stream)>>>(input, output);
-        DNDS_check_throw_info(cudaGetLastError() == cudaSuccess, "typed eager read launch failed"); }, Read(values), Write(sums));
+        DNDS_check_throw_info(cudaGetLastError() == cudaSuccess, "typed eager read launch failed"); }, ReadAs<Policy>(values), WriteAs<FixedRows<1>>(sums));
     values.Reset(Policy::Default());
     stream.Record().WaitHost();
     auto actual = sums.To(Device::Host(), stream.Context());
     auto source = retained.To(Device::Host(), stream.Context());
     auto read = actual.Read();
     auto input = source.Read();
-    for (size_t row = 0; row < shape.Rows(); ++row)
+    for (size_t row = 0; row < shape.RowCount(); ++row)
     {
         double expected = 0;
         for (size_t column = 0; column < shape.RowSize(row); ++column)
@@ -179,7 +179,7 @@ TEST_CASE("CUDA array allocation accounting includes host and device row metadat
 
 __global__ void FillRows(ArrayView<double> values)
 {
-    for (size_t i = blockIdx.x; i < values.Rows(); i += gridDim.x)
+    for (size_t i = blockIdx.x; i < values.RowCount(); i += gridDim.x)
     {
         auto row = values[i];
         for (size_t j = threadIdx.x; j < row.size(); j += blockDim.x)
@@ -233,7 +233,7 @@ TEST_CASE("Padded CUDA views use logical row sizes and preserve capacity padding
         CHECK_THROWS(host.Read().At(3, 33));
         auto raw = host.Storage().Read();
         auto flat = raw.View<double>();
-        for (size_t i = 0; i < host.Rows(); ++i)
+        for (size_t i = 0; i < host.RowCount(); ++i)
             for (size_t j = host.RowSize(i); j < 40; ++j)
                 CHECK(flat[i * 40 + j] == 0);
     }
@@ -250,7 +250,7 @@ __global__ void CopyPairRows(PairReadView<RowEntry, true, FixedRows<2>> input, A
 {
     static_assert(decltype(input)::row_width == 2 && decltype(output)::row_width == 2);
     static_assert(decltype(input[0])::row_width == 2);
-    for (size_t row = blockIdx.x; row < input.Rows(); row += gridDim.x)
+    for (size_t row = blockIdx.x; row < input.RowCount(); row += gridDim.x)
     {
         const auto source = input[row];
         auto target = output[row];
@@ -280,7 +280,7 @@ TEST_CASE("Fixed POD CUDA rows use sized owned and combined read spans")
     Array<RowEntry, FixedRows<2>> output(RowLayout::Dense(2, 2, 4), Device::CUDA(0));
     auto read = device.ReadCombined(context);
     auto write = output.Write(context);
-    CopyPairRows<<<2, 32>>>(read.View<true>(), write.View<true>());
+    CopyPairRows<<<2, 32>>>(read.View<FixedRows<2>, true>(), write.View<FixedRows<2>, true>());
     REQUIRE(cudaGetLastError() == cudaSuccess);
     auto done = Completion::Record(context);
     read.Complete(done);

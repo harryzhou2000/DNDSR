@@ -265,7 +265,7 @@ TEST_CASE("Native-only edits preserve namespace IDs named definitions and immuta
     {
         auto read = state->Relation(key);
         expected.emplace_back();
-        for (DNDS::index row = 0; row < read.Rows(); ++row)
+        for (DNDS::index row = 0; row < read.RowCount(); ++row)
             expected.back().push_back(read.GlobalRow(row));
     }
     auto edit = G::MeshEdit::Begin(mesh);
@@ -287,7 +287,7 @@ TEST_CASE("Native-only edits preserve namespace IDs named definitions and immuta
     for (size_t i = 0; i < keys.size(); ++i)
     {
         auto read = mesh->ReadNativeRelation(keys[i]);
-        for (DNDS::index row = 0; row < read.Rows(); ++row)
+        for (DNDS::index row = 0; row < read.RowCount(); ++row)
         {
             auto values = expected[i][size_t(row)];
             if (keys[i] == G::Adj::Cell2Cell)

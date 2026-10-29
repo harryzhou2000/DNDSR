@@ -52,8 +52,8 @@ static PipelineFixture BuildFacadePipeline(DNDS::MPIInfo mpi, bool periodic)
             const auto cones = serial.cellNodes.Read();
             const auto coordinates = serial.coordinates.Read();
             const auto info = serial.cellInfo.Read();
-            packed.push_back(DNDS::real(serial.cellNodes.Rows()));
-            for (size_t cell = 0; cell < serial.cellNodes.Rows(); ++cell)
+            packed.push_back(DNDS::real(serial.cellNodes.RowCount()));
+            for (size_t cell = 0; cell < serial.cellNodes.RowCount(); ++cell)
             {
                 packed.insert(packed.end(), {DNDS::real(cones.View().RowSize(cell)), DNDS::real(info.View()(cell, 0).type), DNDS::real(info.View()(cell, 0).zone)});
                 for (auto node : cones.View()[cell])

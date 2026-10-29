@@ -93,16 +93,16 @@ TEST_CASE("Native serial output gathers exact global rows to a selectable reader
             auto setup = source->BindEpoch(R::VersionTracker{});
             CHECK_NOTHROW(output.ValidateSource(*setup));
             const I globalCells = emptyPeers ? 1 : mpi.size, globalNodes = 3 * globalCells;
-            REQUIRE(output.cellNodes.Rows() == (mpi.rank == reader ? size_t(globalCells) : 0));
-            REQUIRE(output.coordinates.Rows() == (mpi.rank == reader ? size_t(globalNodes) : 0));
-            CHECK(output.cellInfo.Rows() == output.cellNodes.Rows());
+            REQUIRE(output.cellNodes.RowCount() == (mpi.rank == reader ? size_t(globalCells) : 0));
+            REQUIRE(output.coordinates.RowCount() == (mpi.rank == reader ? size_t(globalNodes) : 0));
+            CHECK(output.cellInfo.RowCount() == output.cellNodes.RowCount());
             CHECK(bool(output.cellNodesPbi) == periodic);
             CHECK(output.periodic == periodic);
             if (periodic)
             {
                 CHECK(output.periodicInfo.translation[0].map() == G::tPoint(2, 3, 4));
                 auto bits = output.cellNodesPbi->Read();
-                for (size_t row = 0; row < output.cellNodesPbi->Rows(); ++row)
+                for (size_t row = 0; row < output.cellNodesPbi->RowCount(); ++row)
                     for (size_t slot = 0; slot < 3; ++slot)
                         CHECK(bits.View()(row, slot) == G::nodePB1);
             }
@@ -130,12 +130,12 @@ TEST_CASE("Native serial output gathers exact global rows to a selectable reader
                 CHECK_THROWS(G::NativeMeshSerialOutput::Build(*source, mpi, mpi.rank));
             CHECK_THROWS(G::NativeMeshSerialOutput::Build(*source, mpi, mpi.rank == 0 ? -1 : reader));
             auto retry = G::NativeMeshSerialOutput::Build(*source, mpi, reader);
-            CHECK(retry.cellNodes.Rows() == output.cellNodes.Rows());
+            CHECK(retry.cellNodes.RowCount() == output.cellNodes.RowCount());
             auto retained = output;
             setup.reset();
             source.reset();
             output = {};
-            CHECK(retained.coordinates.Read().View().Rows() == (mpi.rank == reader ? size_t(globalNodes) : 0));
+            CHECK(retained.coordinates.Read().View().RowCount() == (mpi.rank == reader ? size_t(globalNodes) : 0));
         }
 }
 
@@ -150,8 +150,8 @@ TEST_CASE("Native serial output retains old geometry and explicitly refreshes af
     CHECK_THROWS(before.ValidateSource(*mesh->CurrentNativeState()));
     CHECK_NOTHROW(after.ValidateSource(*mesh->CurrentNativeState()));
     auto oldPoints = before.coordinates.Read(), newPoints = after.coordinates.Read();
-    REQUIRE(oldPoints.View().Rows() == newPoints.View().Rows());
-    for (size_t row = 0; row < oldPoints.View().Rows(); ++row)
+    REQUIRE(oldPoints.View().RowCount() == newPoints.View().RowCount());
+    for (size_t row = 0; row < oldPoints.View().RowCount(); ++row)
         for (size_t j = 0; j < 3; ++j)
             CHECK(newPoints.View()(row, j) == oldPoints.View()(row, j) + 2 + j);
     // Geometry changes leave numbering associations valid for field schedules.
@@ -192,7 +192,7 @@ TEST_CASE("Serial output facade rejects absent native authority and retains succ
     CHECK_FALSE(reader.dataIsSerialIn);
     const auto prepared = reader.nativeSerialOutput;
     const auto nodes = prepared->coordinates.Read();
-    CHECK(nodes.View().Rows() == (mpi.rank == reader.mRank ? size_t(3 * mpi.size) : 0));
+    CHECK(nodes.View().RowCount() == (mpi.rank == reader.mRank ? size_t(3 * mpi.size) : 0));
     reader.mRank = mpi.rank == 0 ? -1 : mpi.size - 1;
     CHECK_THROWS(reader.BuildSerialOut());
     CHECK(reader.nativeSerialOutput == prepared);
