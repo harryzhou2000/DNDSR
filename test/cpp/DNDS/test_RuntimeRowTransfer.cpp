@@ -31,6 +31,78 @@ TEST_CASE("Typed binding rejects same-size arithmetic schema confusion")
     CHECK(destination.Storage().IsIdle());
 }
 
+TEST_CASE("Sender ordering derives a checked route without changing peer row correspondence")
+{
+    int rank = 0, size = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+    const int next = (rank + 1) % size, previous = (rank + size - 1) % size;
+    const std::vector<DNDS::index> sourceOrder{4, 1, 5, 0, 3, 2}, destinationOrder{3, 0, 5, 2, 1, 4};
+    std::vector<std::vector<DNDS::index>> send(size), receive(size);
+    send[next] = sourceOrder;
+    receive[previous] = destinationOrder;
+    auto context = std::make_shared<CommunicationContext>(MPI_COMM_WORLD);
+    VersionTracker epoch;
+    auto route = RowTransferPlan::Known(context, 6, 6, send, receive, {epoch.Stamp(Change::Distribution)});
+    auto ordered = route.ReorderSourceByPeer();
+    CHECK(ordered.first.Context() == context);
+    CHECK(route.SendRows() == send);
+    CHECK(ordered.first.ReceiveRows() == receive);
+    CHECK_FALSE(ordered.first.HasCollisions());
+    CHECK(ordered.first.SendRows()[next] == std::vector<DNDS::index>{0, 1, 2, 3, 4, 5});
+    Array<int64_t> original(RowLayout::Ragged({1, 2, 3, 1, 2, 3}));
+    std::vector<size_t> widths(6);
+    {
+        auto write = original.Write();
+        const auto view = write.View();
+        for (DNDS::index iRow = 0; iRow < 6; ++iRow)
+        {
+            widths[size_t(ordered.second[size_t(iRow)])] = size_t(view.RowSize(iRow));
+            for (DNDS::index iSlot = 0; iSlot < view.RowSize(iRow); ++iSlot)
+                view(iRow, iSlot) = rank * 100 + iRow * 10 + iSlot;
+        }
+    }
+    Array<int64_t> permuted(RowLayout::Ragged(widths));
+    {
+        auto read = original.Read();
+        auto write = permuted.Write();
+        for (DNDS::index iRow = 0; iRow < 6; ++iRow)
+            std::copy(read.View()[iRow].begin(), read.View()[iRow].end(), write.View()[ordered.second[size_t(iRow)]].begin());
+    }
+    PayloadPlan payload(ordered.first, permuted.Layout(), ElementSchema::Arithmetic<int64_t>());
+    Array<int64_t> destination(payload.DestinationLayout());
+    payload.Bind(permuted, destination).Begin().Wait();
+    auto read = destination.Read();
+    for (DNDS::index iEdge = 0; iEdge < 6; ++iEdge)
+    {
+        const auto iRow = destinationOrder[size_t(iEdge)], sourceRow = sourceOrder[size_t(iEdge)];
+        CHECK(read.View().RowSize(iRow) == 1 + sourceRow % 3);
+        for (DNDS::index iSlot = 0; iSlot < read.View().RowSize(iRow); ++iSlot)
+            CHECK(read.View()(iRow, iSlot) == previous * 100 + sourceRow * 10 + iSlot);
+    }
+    const auto reverse = route.Reverse().ReorderSourceByPeer();
+    CHECK(reverse.first.ReceiveRows() == send);
+    if (size > 1)
+        CHECK_THROWS((rank == 0 ? route.Reverse() : route).ReorderSourceByPeer());
+    auto mutation = epoch.BeginMutation(Change::Distribution);
+    mutation.Commit();
+    CHECK_FALSE(ordered.first.Valid());
+    CHECK_FALSE(reverse.first.Valid());
+    CHECK_THROWS(route.ReorderSourceByPeer());
+
+    auto incomplete = RowTransferPlan::Known(context, rank == 0 ? 7 : 6, 6, send, receive);
+    CHECK_THROWS(incomplete.ReorderSourceByPeer());
+    if (rank == 0)
+        send[next].back() = send[next].front();
+    auto duplicate = RowTransferPlan::Known(context, 6, 6, send, receive);
+    CHECK_THROWS(duplicate.ReorderSourceByPeer());
+    send[next] = {1, 0};
+    receive[previous] = {0, 0};
+    auto fanIn = RowTransferPlan::Known(context, 2, 1, send, receive).ReorderSourceByPeer();
+    CHECK(fanIn.first.HasCollisions());
+    CHECK_THROWS(fanIn.first.Reverse().ReorderSourceByPeer());
+}
+
 TEST_CASE("Native direct ragged halo retains leases and reusable routing")
 {
     int rank, size;

@@ -388,6 +388,32 @@ TEST_CASE("Native topology repairs missing parent ghosts from authoritative owne
     CHECK(source->NumGhost(G::EntityKind::Cell) == 0);
 }
 
+TEST_CASE("Construction closure tree agrees across complete graph and node-star inputs")
+{
+    const auto mpi = MPI();
+    auto source = Fixture(mpi, 2);
+    const std::vector<std::vector<I>> expected{{0, 1, 2}, {1, 3, 2}};
+    for (int mode = 0; mode < 3; ++mode)
+    {
+        auto owned = G::NativeMeshAssembler::CaptureOwned(*source, mpi);
+        owned.cellCellsComplete = mode == 0;
+        if (mode == 2)
+            owned.relations[size_t(G::MeshRelation::NodeCells)].reset();
+        auto closure = G::BuildNativeCellClosure(owned, mpi);
+        auto rows = closure.cellNodes.Read();
+        const I expectedRows = rows.NumOwned() ? 2 : 0;
+        CHECK(rows.RowCount() == expectedRows);
+        for (I iCell = 0; iCell < rows.RowCount(); ++iCell)
+            CHECK(rows.GlobalRow(iCell) == expected.at(size_t(rows.Source().LocalToGlobal(iCell))));
+        const auto &nodes = rows.Target();
+        CHECK(nodes.NumGhost() == (rows.NumOwned() && mpi.rank != 0 ? 4 : 0));
+        auto metadata = closure.cellInfo.ReadCombined();
+        CHECK(metadata.View().RowCount() == expectedRows);
+        for (I iCell = 0; iCell < expectedRows; ++iCell)
+            CHECK(metadata.View()(iCell, 0).type == G::Elem::Tri3);
+    }
+}
+
 TEST_CASE("Three tetrahedra retain a shared edge with three incident parents")
 {
     const auto mpi = MPI();

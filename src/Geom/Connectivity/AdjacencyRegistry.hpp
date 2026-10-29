@@ -90,6 +90,12 @@ namespace DNDS::Geom
         /// Collective detached publication: resolve all requested entity maps
         /// before compiling one shared native payload route per source family.
         AdjacencyGhostPublication BuildGhosted(const GhostResult &discovery) const;
+        /// Publish only these adjacency payloads, while retaining all discovered
+        /// entity maps. Traversal-only supports stay registered and validated.
+        /// All ranks must select the same descriptors; duplicates/unknown keys
+        /// are rejected collectively. An empty selection publishes maps only.
+        AdjacencyGhostPublication BuildGhosted(const GhostResult &discovery,
+                                               const std::vector<AdjacencyDescriptor> &payloads) const;
         static NativeInterpolation Interpolate(const MeshAdjacencyRead &parent2node, EntityKind entityKind,
                                                const SubEntityQueryPbi &query, const OwnershipResolverMulti &resolver,
                                                const RelationPeriodicBits *periodic = nullptr);

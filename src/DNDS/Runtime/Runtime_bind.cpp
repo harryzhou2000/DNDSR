@@ -491,6 +491,7 @@ namespace DNDS::Runtime
             .def_static("known", [](std::shared_ptr<CommunicationContext> context, index sources, index destinations, std::vector<std::vector<index>> send, std::vector<std::vector<index>> receive)
                         { return RowTransferPlan::Known(std::move(context), sources, destinations, std::move(send), std::move(receive)); }, "Caller supplies corresponding peer send/receive row order. Matching counts cannot prove semantic permutation correctness.")
             .def("reverse", &RowTransferPlan::Reverse)
+            .def("reorder_source_by_peer", &RowTransferPlan::ReorderSourceByPeer, "Collective: returns (route, old-to-new source rows). Requires every source row exactly once. Apply that permutation to arrays before binding; values are not moved here.")
             .def("destination_layout", &RowTransferPlan::DestinationLayout)
             .def_property_readonly("has_collisions", &RowTransferPlan::HasCollisions)
             .def_property_readonly("source_rows", &RowTransferPlan::SourceRows)

@@ -72,6 +72,16 @@ discovery and length exchange currently have O(number of ranks) tables. A
 sparse discovery implementation remains replaceable; this is not a claim of
 scalable sparse rendezvous at arbitrary rank counts.
 
+`route.ReorderSourceByPeer()` derives a route plus an old-to-new source-row
+permutation when every source row is sent exactly once. It uses the route's
+already-validated bounds and collision information, preserving receive slots,
+peer correspondence, context and epoch dependencies. This needs collective
+admission/allocation checks, but no count/row-ID exchange or repeated sorting.
+The caller must physically permute its ordinary arrays before compiling a
+payload against the new route. A halo that sends one source to several peers,
+or leaves source rows unused, is rejected. The original route is unchanged.
+Python exposes the same pair as `route.reorder_source_by_peer()`.
+
 ```mermaid
 flowchart TD
   context[Shared communication context] --> binding[Binding plus reserved tag]

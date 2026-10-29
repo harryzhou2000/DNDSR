@@ -124,8 +124,70 @@ construction and FV initialization.
     width across ranks. Only that proven case omits the width exchange;
     mixed layouts and unequal widths retain it. Tests cover sparse destination
     holes, physical strides, rank-dependent widths and mixed CSR/table input.
+24. Sender ordering covered adjacency values but left coordinates, metadata,
+    provenance and IDs scattered. A subsequent candidate applies the same
+    explicit row permutation to these companion arrays before direct MPI.
+    This allocates an independent ordered array and copies its logical rows;
+    that cost is included in setup timing. It does not change Runtime's direct
+    transport default or introduce MPI pack/unpack. ID allocations retaining a
+    ghost suffix keep their checked original route. A gather/reverse-scatter
+    oracle covers nontrivial order, strided values, coordinates and POD zones.
+    Focused mesh tests and the np4 SA exact comparison passed. Matched job
+    12403115 passed both orders: high-lift parallel setup was 0.129150/0.155137 s
+    legacy/native (1.2012x), cube 0.747558/0.713718 s (0.9547x). High-lift still
+    fails the target; this is not an isolated attribution of every improvement.
+25. Geom rebuilt a Known route after reordering already-validated send rows,
+    repeating peer-count exchange and collision sorting. DNDS now derives that
+    schedule through `RowTransferPlan::ReorderSourceByPeer`. Unique in-range
+    source rows with complete coverage prove a bijection; the returned route
+    retains receive slots, collision flags, context and epoch dependencies.
+    Geom applies the separately returned permutation to arrays. CPU MPI tests
+    pass at np1/2/4/8, and the CUDA transfer build passes 26 cases per GPU rank.
+    Rebuilt/installed CUDA Python modules pass all 13 transient tests at np1
+    and on each np2 rank. Full CPU/Geom validation passes 204 registrations;
+    high-lift np4 agrees exactly with the preceding native candidate. Final
+    direction-agreement checks also pass CPU np1/2/4/8 and two-GPU 26/26.
+26. Construction closure manually expanded complete CellCells or node-star
+    rows outside the ghost tree. It now registers those adjacencies and
+    compiles/evaluates the actual recipe. Registry publication can select only
+    required payloads while retaining all discovered entity maps. Unknown,
+    duplicate and rank-inconsistent selection is rejected collectively. The
+    closure no longer has privileged access to adjacency internals. Independent
+    two-triangle expectations exercise complete-graph, retained-node-star and
+    newly-inverted support, including empty ranks. Final focused tests pass
+    8/8 and the full CPU/MPI selection 204/204 in 232.08 s. The np4 high-lift SA
+    no-advance probe agrees exactly with the preceding native candidate in
+    topology, representation and tested finite numerical fields. Source hashes
+    remain unchanged after testing. Rebuilt Python validation and matched
+    performance are pending; no time-evolved solver-history claim is made.
+27. Follow placement, remote-number lookup and payload remapping separately
+    acquired the same input descriptor's read scope during one transition.
+    The transition now retains one normal MeshAdjacencyRead per descriptor
+    through completion. Its leases keep values and numbering immutable; all
+    descriptor-specific validation remains in the adjacency class, and byte
+    aliases under different descriptors still acquire distinct scopes. No
+    validation rules or unchecked view are introduced in transition code.
+    This change is included in the validated closure-tree CPU candidate above.
+28. **Open collective-error audit item:** EntityGhostMapping's TransferRows and
+    BeginRows query the supplied Array layout before entering their failure
+    Allreduce. An unpublished shape edit on one rank can throw locally while
+    peers enter that collective. The typed PayloadPlan binding was already
+    hardened, but these Geom preflights need the same retained published-shape
+    capture inside a catch/agreement boundary. Add rank-local active/abandoned
+    shape-edit and consumed-handle tests, preserving direct device-capable
+    transport. This is not included in the frozen closure-tree candidate.
 
 ## Responsibility and abstraction review
+
+Performance acceptance also requires preserving these boundaries. Do not move
+mesh semantics into DNDS, bypass lease/schema/epoch validation, expose storage
+details to consumers, or discard published adjacencies to improve the timer.
+Any reuse of adjacency-validation results belongs in the adjacency access
+layer; transition code must not maintain a second copy of those rules.
+Specialized paths within these facilities are allowed. The DSL, ghost tree,
+adjacency objects and EntityGhostMapping remain the authority and the route
+through setup; a specialization must implement their contracts rather than
+introduce an independent replacement mesh pipeline.
 
 The basic separation is sound: Buffer owns allocation and exclusion, ArrayStorage
 owns shape publication, ArrayAccess retains leases, and ArrayView exposes raw
@@ -315,3 +377,16 @@ The frozen overlap-width candidate then passed the complete 204-registration
 CPU/MPI selection in 221.92 s (`ctest-overlap-width-full.log`). Python bindings
 were not rebuilt for this later candidate; the earlier Python/Torch results
 above apply to their explicitly recorded source checkpoint.
+
+The companion-order normal sample gives a more comparable stage diagnosis.
+Rank-zero intervals (milliseconds, legacy/native) are: parallel-window start
+through PrepareMesh start 83.170/86.047, PrepareMesh 43.602/59.095, boundary
+extraction 1.317/9.161, and the complete parallel window 128.803/154.887.
+The initial interval includes legacy primary ghosts; comparing only legacy
+distribution with native transition would omit that work. The remaining
+difference is concentrated in preparation and extraction. Native preparation
+includes 24.056 ms owned topology and 28.842 ms final assembly; these are
+nested diagnostics, not extra terms to add to PrepareMesh. Within assembly,
+tree evaluation is 7.593 ms, ghost publication 6.778 ms and localization
+4.045 ms. These values are one rank/sample, not the repeated max-rank
+acceptance statistic. No isolated gain is attributed to a new optimization.
