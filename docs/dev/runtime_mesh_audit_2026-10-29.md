@@ -6,6 +6,19 @@ been established. The plan/evidence repository contains
 tools. The 5% target applies to parallel mesh setup, excluding serial reader
 construction and FV initialization.
 
+Latest implementation checkpoint: `909ac6c0`, after the consumed-handle safety
+fix `335416d7`. It passes CPU 204/204, focused mesh 20/20, exact np4 SA
+topology/raw/finite-field comparison, rebuilt/installed Python 57/57 at np1
+and each np2 rank, and the CFV device-transferable test. The preceding safety
+checkpoint additionally passes two-GPU transfer 28/28 per rank and CUDA
+runtime/engine 2/2. See findings 32–34 for boundaries and evidence limits.
+
+The last completed alias-read benchmark (`12403361`) has high-lift paired
+median 1.013x legacy, but individual order ratios differ substantially. It
+does not establish robust 5% performance. Job `12403390` measures the current
+source with three normal/reverse pairs. Earlier checkpoint measurements below
+remain historical evidence rather than current acceptance claims.
+
 ## Findings
 
 1. Typed projections from uniform CSR/padded arrays inspected metadata through
@@ -257,8 +270,10 @@ construction and FV initialization.
     inverse comparison, ghost lookup and membership checks remain. Global cell
     identity is queried once per cell rather than once per face; ElemInfo views
     are acquired once before their loop. No DSL/tree/mapping operation is
-    skipped. This is a contained CPU setup change; validation and timing are
-    pending, and the previously recorded safety checkpoint is unchanged.
+    skipped. This contained CPU setup checkpoint passes focused 20/20, full
+    CPU 204/204, exact np4 SA topology/raw/finite-field parity, rebuilt/installed
+    Python 57/57 at np1 and each np2 rank, and CFV device-transferable 1/1.
+    Matched timing is pending; the preceding safety checkpoint is unchanged.
 
 ## Responsibility and abstraction review
 
@@ -384,7 +399,7 @@ cross-stream dependencies, and MPI collective setup must occur in matching order
 These limitations are not replaced with per-element checks or a scheduler that
 claims to infer arbitrary kernel dependencies.
 
-## Latest measured checkpoint
+## Recorded checkpoint history
 
 BSSCA `12402055` (sender permutation and exact binding controls, old timer
 formatting) completed one order at np=32, OMP=1. The parallel windows were
