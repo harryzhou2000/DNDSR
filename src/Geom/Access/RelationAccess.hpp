@@ -216,6 +216,19 @@ namespace DNDS::Geom
         Runtime::RowTransferPlan _route;
 
     public:
+        template <class T>
+        struct PendingRows
+        {
+            Runtime::Array<T> ghost;
+            Runtime::TransferOperation operation;
+            PendingRows(Runtime::Array<T> values, Runtime::TransferOperation pending)
+                : ghost(std::move(values)), operation(std::move(pending)) {}
+            PendingRows(PendingRows &&) noexcept = default;
+            PendingRows &operator=(PendingRows &&) noexcept = default;
+            PendingRows(const PendingRows &) = delete;
+            PendingRows &operator=(const PendingRows &) = delete;
+        };
+
         explicit RelationGhostRoute(EntitySpace source)
             : _source(std::move(source)), _route(_source.BuildRowTransferPlan()) {}
         const EntitySpace &Source() const { return _source; }
@@ -236,6 +249,24 @@ namespace DNDS::Geom
             Runtime::PayloadPlan payload(_route, owned.Layout(), ghost.Layout(), schema);
             payload.Bind(owned, ghost, Runtime::TransferTransport::Direct, options).Begin().Wait();
             return ghost;
+        }
+        /// Start a companion transfer without waiting. Keep PendingRows alive
+        /// until its operation completes; callers may start several transfers
+        /// over one route to overlap transport before observing completion.
+        template <class T>
+        PendingRows<T> BeginRows(const EntitySpace &source, const Runtime::Array<T> &owned,
+                                 const Runtime::ElementSchema &schema) const
+        {
+            int valid = Valid() && _source.SameOrder(source) && owned.Layout().Rows() == size_t(_source.NumOwned());
+            MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, _route.Communicator());
+            DNDS_check_throw_info(valid, "companion halo route has stale/wrong source order or row extent");
+            Runtime::Array<T> ghost(_route.DestinationLayout(owned.Layout()));
+            Runtime::TransferOptions options;
+            options.mode = Runtime::TransferMode::Transient;
+            options.context = std::make_shared<Runtime::CommunicationContext>(_route.Communicator());
+            Runtime::PayloadPlan payload(_route, owned.Layout(), ghost.Layout(), schema);
+            auto binding = payload.Bind(owned, ghost, Runtime::TransferTransport::Direct, options);
+            return PendingRows<T>(std::move(ghost), binding.Begin());
         }
     };
 
