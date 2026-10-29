@@ -102,6 +102,9 @@ namespace DNDS::Geom
         std::vector<std::vector<index>> cones;
         std::vector<std::vector<NodePeriodicBits>> images;
         std::vector<size_t> selectedBoundaries;
+        selectedBoundaries.reserve(size_t(oldBoundaries.NumOwned()));
+        cones.reserve(size_t(oldBoundaries.NumOwned()));
+        images.reserve(size_t(oldBoundaries.NumOwned()));
         FieldTransferDetail::LocalStage(mpi, [&]
                                         {
             for (size_t row = 0; row < size_t(oldBoundaries.NumOwned()); ++row)
@@ -204,21 +207,24 @@ namespace DNDS::Geom
             auto writeLabels = labels->Write();
             auto writeCoords = coordinates->Write();
             const auto originalIds = source.ReadOriginalEntityIds(EntityKind::Node);
-            std::vector<std::vector<index>> parentNodes(selected.size());
+            Runtime::Array<index> parentNodes(Runtime::RowLayout::Dense(selected.size(), 1));
+            auto writeParentNodes = parentNodes.Write();
             for (size_t row = 0; row < selected.size(); ++row)
             {
                 writeLabels.View()(row, 0) = nodes.LocalToGlobal(index(row));
                 for (size_t component = 0; component < 3; ++component)
                     writeCoords.View()(row, component) = sourceView.Coord(index(selected[row]))[component];
-                parentNodes[row] = {originalIds->View()(selected[row], 0)};
+                writeParentNodes.View()(row, 0) = originalIds->View()(selected[row], 0);
             }
             result.provenance.sourceNamespace = source.MeshNamespace();
             result.provenance.sourceKinds = {{EntityKind::Node, EntityKind::Node}, {EntityKind::Cell, EntityKind::Bnd}};
-            result.provenance.sourceIds.emplace(EntityKind::Node, Rows(parentNodes));
+            result.provenance.sourceIds.emplace(EntityKind::Node, std::move(parentNodes));
             const auto boundaryIds = source.ReadOriginalEntityIds(EntityKind::Bnd);
-            std::vector<std::vector<index>> parentBoundaries;
-            for (auto boundary : selectedBoundaries) parentBoundaries.push_back({boundaryIds->View()(boundary, 0)});
-            result.provenance.sourceIds.emplace(EntityKind::Cell, Rows(parentBoundaries)); });
+            Runtime::Array<index> parentBoundaries(Runtime::RowLayout::Dense(selectedBoundaries.size(), 1));
+            auto writeParentBoundaries = parentBoundaries.Write();
+            for (size_t row = 0; row < selectedBoundaries.size(); ++row)
+                writeParentBoundaries.View()(row, 0) = boundaryIds->View()(selectedBoundaries[row], 0);
+            result.provenance.sourceIds.emplace(EntityKind::Cell, std::move(parentBoundaries)); });
         // Discovery names original owner rows. Remap only its send rows into
         // compact owned order; the per-peer correspondence remains exact.
         auto route = Runtime::RowTransferPlan::Known(context, selected.size(), requested.size(), std::move(send), discovery.ReceiveRows());

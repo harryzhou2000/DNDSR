@@ -1,6 +1,7 @@
 #include "Geom/Connectivity/NativeConnectivity.hpp"
 #include "Geom/Connectivity/NativePeriodicMatch.hpp"
 #include "Geom/Connectivity/ConnectivityInterpolateRows.hpp"
+#include "Geom/Transition/FieldTransfer.hpp"
 #include "Geom/Unstructured/UnstructuredMesh.hpp"
 #include <set>
 
@@ -367,8 +368,10 @@ namespace DNDS::Geom
                                                         &*group.route, group.context));
                     fetchViews[relationSlot].emplace(fetched[relationSlot]->Read());
                 }
-            for (const auto &hop : pending)
+#pragma omp parallel for if (pending.size() >= 2) schedule(static)
+            for (std::ptrdiff_t hopIndex = 0; hopIndex < static_cast<std::ptrdiff_t>(pending.size()); ++hopIndex)
             {
+                const auto &hop = pending[size_t(hopIndex)];
                 const auto &entry = hops[hop.entry];
                 auto &output = sets[size_t(entry.nodeId)];
                 if (!hop.remote.empty())
@@ -858,12 +861,11 @@ namespace DNDS::Geom
             const PayloadKey key{kind.from, kind.to, input.State(), reinterpret_cast<uintptr_t>(view.data), view.rows,
                                  view.width, view.stride, reinterpret_cast<uintptr_t>(view.offsets), reinterpret_cast<uintptr_t>(view.sizes)};
             auto cached = payloads.find(key);
-            const int candidate = cached != payloads.end() ? cached->second.ordinal : -1;
-            int range[]{candidate, -candidate};
+            int candidate = cached != payloads.end() ? cached->second.ordinal : -1;
             // Every rank must reuse the SAME earlier transfer. Local hits on
             // different descriptors do not prove their remote payloads match.
-            MPI_Allreduce(MPI_IN_PLACE, range, 2, MPI_INT, MPI_MIN, _mpi.comm);
-            if (range[0] >= 0 && range[0] == -range[1])
+            candidate = FieldTransferDetail::AgreeAliasCandidate(_mpi, candidate, relations.size());
+            if (candidate >= 0)
             {
                 ValidateCollectively([&]
                                      {

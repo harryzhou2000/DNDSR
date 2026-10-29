@@ -6,12 +6,42 @@
 #include "DNDS/Runtime/RowTransfer.hpp"
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <optional>
 
 namespace DNDS::Geom
 {
     namespace FieldTransferDetail
     {
+        /// Agree on a canonical earlier payload without assuming every rank's
+        /// local alias inventory is the same. Each rank contributes one bit for
+        /// its local candidate (-1 is the no-candidate bit); more than one set
+        /// bit means no common candidate.
+        inline int AgreeAliasCandidate(const MPIInfo &mpi, int candidate, size_t relationCount)
+        {
+            const size_t bits = CheckedSize::Add(relationCount, size_t(2));
+            const size_t words = CheckedSize::Add(bits, size_t(63)) / 64;
+            DNDS_check_throw_info(words <= size_t(INT_MAX), "alias agreement mask exceeds MPI count range");
+            DNDS_check_throw_info(candidate >= -1 && size_t(candidate + 1) < bits,
+                                  "alias candidate exceeds collective agreement range");
+            std::vector<uint64_t> mask(words, 0);
+            const auto slot = size_t(candidate + 1);
+            mask[slot / 64] |= uint64_t(1) << (slot % 64);
+            MPI_Allreduce(MPI_IN_PLACE, mask.data(), int(words), MPI_UNSIGNED_LONG_LONG,
+                          MPI_BOR, mpi.comm);
+            int agreed = -1;
+            size_t occurrences = 0;
+            for (size_t word = 0; word < words; ++word)
+                while (mask[word])
+                {
+                    const auto bit = size_t(__builtin_ctzll(mask[word]));
+                    agreed = int(word * 64 + bit) - 1;
+                    ++occurrences;
+                    mask[word] &= mask[word] - 1;
+                }
+            return occurrences == 1 ? std::max(agreed, -1) : -1;
+        }
+
         /// Every rank runs local work before agreement and enters the next
         /// collective only after all ranks succeeded. Payload/route constructors
         /// retain their own collective schema and extent checks.
