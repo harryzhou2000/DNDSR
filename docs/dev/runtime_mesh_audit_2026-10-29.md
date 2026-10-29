@@ -338,6 +338,19 @@ measurements remain historical.
     explicitly requires the flag and skip-reason inspection. Required
     Torch/DLPack independently passes 32 tests per GPU rank without skips.
 
+40. Before changing the remaining content-validation scan, an independent
+    scalar oracle checks all 156 length-zero-through-three lists from a
+    five-value pool against four sorted/self policies (624 cases per rank).
+    Standard algorithms determine expected range/order/self acceptance; rejected
+    reads must leave the input bytes and Array validity unchanged. A separate
+    fixture exercises valid, self-invalid and repaired ghost-only source rows
+    on empty owners. These tests pass the existing implementation at np1/2/4/8
+    (4/4 registrations, 2.08 s). Initial fixture attempts mixed legacy periodic
+    policy/native descriptors and used a legacy descriptor without a self
+    constraint; those logs are uncredited. Explicit descriptor validation and
+    complete native settings now separate fixture validity from payload tests.
+    No production implementation changes are made by this checkpoint.
+
 ## Responsibility and abstraction review
 
 Performance acceptance also requires preserving these boundaries. Do not move
