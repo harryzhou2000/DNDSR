@@ -7,6 +7,7 @@
 
 #include "DNDS/Defines.hpp" // for correct  DNDS_SWITCH_INTELLISENSE
 #include "EulerEvaluator.hpp"
+#include "ReactiveSplitGradient.hpp"
 #include "DNDS/HardEigen.hpp"
 #include <sstream>
 #include <iomanip>
@@ -2078,6 +2079,8 @@ namespace DNDS::Euler
         }
 
         real dtPhysical = dt * settings.idealGasProperty.L0 / settings.idealGasProperty.U0;
+        const bool useCenteredGradient = indicatorSettings.indicatorMode == ReactiveSplitIndicatorMode::GradientRateRatioCentered;
+        const bool useGradientRatio = indicatorSettings.indicatorMode == ReactiveSplitIndicatorMode::GradientRateRatio || useCenteredGradient;
         std::vector<real> localShockSensor;
         if (indicatorSettings.spatialPasses > 0)
             localShockSensor.resize(static_cast<size_t>(mesh->NumCell()));
@@ -2088,6 +2091,13 @@ namespace DNDS::Euler
         {
             real maxNormalizedGradient = 0;
             real shockSensor = 0;
+            Eigen::Matrix<real, 3, 3> gradientNormal;
+            Eigen::Matrix<real, 3, Eigen::Dynamic> gradientMoments;
+            if (useCenteredGradient)
+            {
+                gradientNormal.setZero();
+                gradientMoments.setZero(3, Ns + 1);
+            }
             auto c2f = mesh->cell2face[iCell];
             for (rowsize ic2f = 0; ic2f < c2f.size(); ++ic2f)
             {
@@ -2096,27 +2106,38 @@ namespace DNDS::Euler
                 if (iCellOther == UnInitIndex)
                     continue;
                 rowsize if2c = mesh->CellIsFaceBack(iCell, iFace, ic2f) ? 0 : 1;
-                real distance = (vfv->GetOtherCellBaryFromCell(iCell, iCellOther, iFace, if2c) -
-                                 vfv->GetCellBary(iCell))
-                                    .norm();
+                Geom::tPoint separation = vfv->GetOtherCellBaryFromCell(iCell, iCellOther, iFace, if2c) -
+                                          vfv->GetCellBary(iCell);
+                real distance = separation.norm();
                 if (!(distance > 0))
                     continue;
                 real Ti = temperature[static_cast<size_t>(iCell)];
                 real Tj = temperature[static_cast<size_t>(iCellOther)];
                 real normalizedGradientSquared = sqr((Tj - Ti) / (distance * std::max({Ti, Tj, temperatureFloor})));
+                if (useCenteredGradient)
+                {
+                    gradientNormal.noalias() += separation * separation.transpose();
+                    gradientMoments.col(0).noalias() += separation * ((Tj - Ti) / std::max({Ti, Tj, temperatureFloor}));
+                }
                 for (int k = 0; k < Ns; ++k)
                 {
                     real Yi = massFractions[static_cast<size_t>(iCell) * Ns + k];
                     real Yj = massFractions[static_cast<size_t>(iCellOther) * Ns + k];
                     real speciesScale = std::max({Yi, Yj, real(1e-3)});
                     if (std::max(Yi, Yj) >= 1e-3)
+                    {
                         normalizedGradientSquared += sqr((Yj - Yi) / (distance * speciesScale));
+                        if (useCenteredGradient)
+                            gradientMoments.col(k + 1).noalias() += separation * ((Yj - Yi) / speciesScale);
+                    }
                 }
                 maxNormalizedGradient = std::max(maxNormalizedGradient, std::sqrt(normalizedGradientSquared));
                 real pi = pressure[static_cast<size_t>(iCell)];
                 real pj = pressure[static_cast<size_t>(iCellOther)];
                 shockSensor = std::max(shockSensor, std::abs(pj - pi) / std::max({std::abs(pi), std::abs(pj), real(1e-30)}));
             }
+            if (useCenteredGradient)
+                maxNormalizedGradient = std::sqrt(ReactiveSplitCenteredGradientSquared(gradientNormal, gradientMoments));
             real cellLength = vfv->GetCellMaxLenScale(iCell) * settings.idealGasProperty.L0;
             real gradientLength = maxNormalizedGradient > 0
                                       ? std::max(1.0 / maxNormalizedGradient * settings.idealGasProperty.L0, cellLength)
@@ -2124,7 +2145,6 @@ namespace DNDS::Euler
             real chemicalActivity = dtPhysical * chemicalRate[static_cast<size_t>(iCell)];
             real diffusionRate = maxDiffusivity[static_cast<size_t>(iCell)] / sqr(gradientLength);
             real diffusionActivity = dtPhysical * maxDiffusivity[static_cast<size_t>(iCell)] / sqr(gradientLength);
-            const bool useGradientRatio = indicatorSettings.indicatorMode == ReactiveSplitIndicatorMode::GradientRateRatio;
             real coupledScore = useGradientRatio
                                     ? ReactiveSplitGradientRateFraction(chemicalRate[static_cast<size_t>(iCell)], diffusionRate, indicatorSettings)
                                     : ReactiveSplitCoupledScore(chemicalActivity, diffusionActivity, shockSensor, indicatorSettings);

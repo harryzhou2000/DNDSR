@@ -13,19 +13,21 @@ namespace DNDS::Euler
      * activity-product family (including broadA); StiffnessRatio is legacy v2;
      * ChemistryEscape is the BA-CE6 family; TransportBalance is Balance/B-E2;
      * MatchedRateRatio is localRXX; ChemicalResponse is Kinetic/H01P2;
-     * GradientRateRatio is the timestep-independent GR family.
+     * GradientRateRatio is the timestep-independent GR family; its Centered
+     * variant changes only the normalized-gradient estimator.
      * These names select formula families, not their tuned parameter recipes.
      */
     enum class ReactiveSplitIndicatorMode
     {
         Invalid = -1,
-        Activity,          ///< Original/broadA: C=H(a;a0,p) H(b;b0,p) gh, coupled share M(C).
-        StiffnessRatio,    ///< Legacy v2: Strang share H(b/s;r0,pr), with a shock floor.
-        ChemistryEscape,   ///< BA-CE6: coupled share M(C)(1-E), with a chemistry-escape gate E.
-        TransportBalance,  ///< Balance/B-E2: C=gh a d/(1+a)^2, with optional chain filters.
-        MatchedRateRatio,  ///< localRXX: coupled share H(a;a0,1) H(d/a;r0,pr) gh.
-        ChemicalResponse,  ///< Kinetic/H01P2: coupled share H(||Js d||/||Js s||;r0,pr).
-        GradientRateRatio, ///< GR: coupled share H(B/A;r0,pr), using the broadA gradient rate B.
+        Activity,                  ///< Original/broadA: C=H(a;a0,p) H(b;b0,p) gh, coupled share M(C).
+        StiffnessRatio,            ///< Legacy v2: Strang share H(b/s;r0,pr), with a shock floor.
+        ChemistryEscape,           ///< BA-CE6: coupled share M(C)(1-E), with a chemistry-escape gate E.
+        TransportBalance,          ///< Balance/B-E2: C=gh a d/(1+a)^2, with optional chain filters.
+        MatchedRateRatio,          ///< localRXX: coupled share H(a;a0,1) H(d/a;r0,pr) gh.
+        ChemicalResponse,          ///< Kinetic/H01P2: coupled share H(||Js d||/||Js s||;r0,pr).
+        GradientRateRatio,         ///< GR: coupled share H(B/A;r0,pr), using the broadA gradient rate B.
+        GradientRateRatioCentered, ///< GR-C: same ratio with a least-squares centered gradient rate B.
     };
 
     DNDS_DEFINE_ENUM_JSON(ReactiveSplitIndicatorMode,
@@ -36,7 +38,8 @@ namespace DNDS::Euler
                            {ReactiveSplitIndicatorMode::TransportBalance, "TransportBalance"},
                            {ReactiveSplitIndicatorMode::MatchedRateRatio, "MatchedRateRatio"},
                            {ReactiveSplitIndicatorMode::ChemicalResponse, "ChemicalResponse"},
-                           {ReactiveSplitIndicatorMode::GradientRateRatio, "GradientRateRatio"}})
+                           {ReactiveSplitIndicatorMode::GradientRateRatio, "GradientRateRatio"},
+                           {ReactiveSplitIndicatorMode::GradientRateRatioCentered, "GradientRateRatioCentered"}})
 
     /**
      * @brief Configuration of the dimensionless mixed reactive-source selector.
@@ -110,6 +113,7 @@ namespace DNDS::Euler
                        "MatchedRateRatio = localRXX matched diffusion/chemistry ratio; "
                        "ChemicalResponse = Kinetic/H01P2, coupled share H(||Js d||/||Js s||;r0,pr). "
                         "GradientRateRatio = GR, coupled share H(B/A;r0,pr), independent of dt, with broadA's gradient-based B. "
+                       "GradientRateRatioCentered = GR-C, the same map with a least-squares normalized gradient in B. "
                        "See docs/guides/reactive_split_method.md for formulas and recipe parameters. "
                        "Use a string, not a legacy integer.",
                        DNDS::Config::enum_values(DNDS_ENUM_ALLOWED_VALUES(ReactiveSplitIndicatorMode)));
@@ -120,8 +124,8 @@ namespace DNDS::Euler
             DNDS_FIELD(chemicalActivityThreshold,  "Chemical activity threshold a0 in sat(a;a0,p)", DNDS::Config::range(0.0));
             DNDS_FIELD(diffusiveActivityThreshold, "Diffusion activity threshold b0 in sat(b;b0,p)", DNDS::Config::range(0.0));
             DNDS_FIELD(activitySaturationExponent, "Shared activity-saturation exponent p in sat(z;z0,p)", DNDS::Config::range(0.0));
-            DNDS_FIELD(ratioThreshold,             "Ratio midpoint r0 for StiffnessRatio, MatchedRateRatio, ChemicalResponse and GradientRateRatio", DNDS::Config::range(0.0));
-            DNDS_FIELD(ratioExponent,              "Ratio Hill power pr for StiffnessRatio, MatchedRateRatio, ChemicalResponse and GradientRateRatio", DNDS::Config::range(0.0));
+            DNDS_FIELD(ratioThreshold,             "Ratio midpoint r0 for StiffnessRatio, MatchedRateRatio, ChemicalResponse and both GradientRateRatio variants", DNDS::Config::range(0.0));
+            DNDS_FIELD(ratioExponent,              "Ratio Hill power pr for StiffnessRatio, MatchedRateRatio, ChemicalResponse and both GradientRateRatio variants", DNDS::Config::range(0.0));
             DNDS_FIELD(coupledThreshold,           "Coupled-score midpoint C0", DNDS::Config::range(0.0));
             DNDS_FIELD(transitionWidth,            "Logistic coupled-fraction width w", DNDS::Config::range(0.0));
             DNDS_FIELD(shockScale,                 "Pressure-jump scale h0 in shock gate gh", DNDS::Config::range(0.0));
@@ -163,7 +167,8 @@ namespace DNDS::Euler
             config.check("chemical response requires positive ratio controls and no spatial passes", [](const T &s)
                          { return s.indicatorMode != ReactiveSplitIndicatorMode::ChemicalResponse || (s.ratioThreshold > 0 && s.ratioExponent > 0 && s.spatialPasses == 0); });
             config.check("gradient-rate ratio requires positive ratio controls and no spatial passes", [](const T &s)
-                         { return s.indicatorMode != ReactiveSplitIndicatorMode::GradientRateRatio || (s.ratioThreshold > 0 && s.ratioExponent > 0 && s.spatialPasses == 0); });
+                         { return (s.indicatorMode != ReactiveSplitIndicatorMode::GradientRateRatio && s.indicatorMode != ReactiveSplitIndicatorMode::GradientRateRatioCentered) ||
+                                  (s.ratioThreshold > 0 && s.ratioExponent > 0 && s.spatialPasses == 0); });
         }
     };
 

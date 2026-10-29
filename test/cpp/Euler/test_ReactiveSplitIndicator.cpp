@@ -1,5 +1,6 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "Euler/ReactiveSplitIndicator.hpp"
+#include "Euler/ReactiveSplitGradient.hpp"
 #include "doctest.h"
 
 using DNDS::Euler::ReactiveSplitIndicatorMode;
@@ -8,7 +9,7 @@ TEST_CASE("Reactive split strategy names round trip and reject invalid configura
 {
     using DNDS::Euler::ReactiveSplitIndicatorSettings;
     const auto names = DNDS_ENUM_ALLOWED_VALUES(ReactiveSplitIndicatorMode);
-    REQUIRE(names.size() == 7);
+    REQUIRE(names.size() == 8);
     const auto schema = ReactiveSplitIndicatorSettings::schema();
     const auto &modeSchema = schema["properties"]["indicatorMode"];
     CHECK(modeSchema["enum"] == nlohmann::ordered_json(names));
@@ -88,6 +89,38 @@ TEST_CASE("Gradient-rate ratio uses physical rates and preserves simple limits")
     CHECK_FALSE(settings.validate().empty());
     settings.spatialPasses = 0;
     settings.ratioThreshold = 0;
+    CHECK_FALSE(settings.validate().empty());
+}
+
+TEST_CASE("Centered thermochemical gradient resolves affine fields and cancels a symmetric extremum")
+{
+    using Matrix3 = Eigen::Matrix<DNDS::real, 3, 3>;
+    using Moments = Eigen::Matrix<DNDS::real, 3, Eigen::Dynamic>;
+    using DNDS::Euler::ReactiveSplitCenteredGradientSquared;
+    const Eigen::Vector3d direction = Eigen::Vector3d(1, 2, 3).normalized();
+    const Matrix3 normal = 2 * direction * direction.transpose();
+    Moments moments(3, 2);
+    moments.col(0) = 4 * direction;
+    moments.col(1) = -6 * direction;
+    CHECK(ReactiveSplitCenteredGradientSquared(normal, moments) == doctest::Approx(13));
+    // Equal normalized increments at opposite neighbors cancel at an extremum.
+    moments.setZero();
+    CHECK(ReactiveSplitCenteredGradientSquared(normal, moments) == 0);
+
+    Matrix3 plane = Matrix3::Zero();
+    plane(0, 0) = 2;
+    plane(1, 1) = 8;
+    Moments gradient(3, 2);
+    gradient << 2, 0, -1, 3, 0, 0;
+    moments = plane * gradient;
+    CHECK(ReactiveSplitCenteredGradientSquared(plane, moments) == doctest::Approx(14));
+    CHECK(ReactiveSplitCenteredGradientSquared(plane * 1e6, moments * 1e3) == doctest::Approx(14e-6));
+    CHECK(ReactiveSplitCenteredGradientSquared(Matrix3::Zero(), Moments::Zero(3, 2)) == 0);
+
+    DNDS::Euler::ReactiveSplitIndicatorSettings settings;
+    settings.indicatorMode = ReactiveSplitIndicatorMode::GradientRateRatioCentered;
+    CHECK(settings.validate().empty());
+    settings.spatialPasses = 1;
     CHECK_FALSE(settings.validate().empty());
 }
 

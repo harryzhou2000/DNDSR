@@ -17,6 +17,7 @@ report family; the schema's `enum` lists the accepted configuration strings.
 | `MatchedRateRatio` | 4 | localRXX family |
 | `ChemicalResponse` | 5 | Kinetic chemical directional-response ratio |
 | `GradientRateRatio` | — | GR: timestep-independent gradient diffusion / chemical activity |
+| `GradientRateRatioCentered` | — | GR-C: the same ratio using a least-squares centered gradient |
 
 Posterior accuracy evidence is maintained separately in the independent RRI
 repository, not in this implementation guide. Its `2026-10-19_REPORT.md`
@@ -76,6 +77,39 @@ still contain $\Delta t A$ and $\Delta t B$, so their values depend on timestep
 even though this selector does not. `reactiveSplitCoupledScore` contains the
 raw $f_c$ for this mode; `reactiveSplitShockSensor` is diagnostic only.
 Their owning-cell validity and held-step output semantics are unchanged.
+
+### Centered-gradient experimental variant
+
+`indicatorMode="GradientRateRatioCentered"` keeps the same $A$, Hill map,
+ratio parameters, species cutoff, cell-length cap and endpoint snapping.
+It replaces the maximum neighbor-slope norm in $B$ by a least-squares norm.
+For the physical center separation $\boldsymbol r_{ij}$ and the vector of
+normalized temperature/species increments $\boldsymbol z_{ij}$, define
+
+$$
+\boldsymbol M_i=\sum_j\boldsymbol r_{ij}\boldsymbol r_{ij}^{T},\qquad
+\boldsymbol Q_i=\sum_j\boldsymbol r_{ij}\boldsymbol z_{ij}^{T},\qquad
+G_{c,i}^{2}=\left\|\boldsymbol M_i^{+}\boldsymbol Q_i\right\|_F^{2}.
+$$
+
+The temperature increment is $(T_j-T_i)/\max(T_i,T_j,T_{\rm floor})$.
+Each retained species increment is $(Y_{k,j}-Y_{k,i})/\max(Y_{k,i},Y_{k,j},10^{-3})$;
+it is zero if both fractions are below $10^{-3}$. The superscript $+$ denotes
+the minimum-norm pseudoinverse, so a one-dimensional cell chain embedded in
+two or three dimensions remains well defined. Physical boundary faces are
+skipped; a cell with one interior neighbor has a one-sided estimate.
+
+On a uniform one-dimensional mesh this averages the signed left/right
+normalized slopes before squaring. Opposite slopes at a symmetric extremum
+can cancel; monotone smooth gradients retain their continuous-field limit.
+The diffusion rate is $B_c=D_{\max}\min(G_c^2,\ell_i^{-2})$, with the original
+maximum-cell-dimension safeguard $\ell_i$. No extra physical coefficient,
+neighbor expansion, stored field or communication is introduced.
+
+This is a candidate motivated by the fixed-state screen in RRI's
+`studies/dt_independent_selector_20261029`. Neither the screen nor the basic
+gradient tests establish posterior accuracy or multidimensional robustness.
+Existing strategies continue to use their original gradient definition.
 
 ## Experimental local matched-rate ratio (mode 4)
 
