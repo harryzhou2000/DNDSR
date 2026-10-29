@@ -550,6 +550,84 @@ TEST_CASE("Aliased adjacency reads preserve constraints order and independent le
     CHECK(G::MeshAdjacencyRead::AcquireAliases({}, cells, cells, G::Adj_PointToGlobal, owned).empty());
 }
 
+TEST_CASE("Global adjacency validation agrees with an independent scalar oracle")
+{
+    const auto mpi = MPI();
+    const auto cells = G::EntitySpace::CreateOwned(G::EntityKind::Cell, mpi, 1);
+    const auto self = cells.LocalToGlobal(0);
+    const std::array<I, 5> pool{DNDS::UnInitIndex, -1, self, (self + 1) % cells.NumGlobal(), cells.NumGlobal()};
+    for (bool sorted : {false, true})
+        for (bool removeSelf : {false, true})
+        {
+            auto key = G::Adj::Cell2Cell;
+            key.path = {G::EntityKind::Cell, G::EntityKind::Cell};
+            key.selection = G::RelationSelection::Custom;
+            key.order = sorted ? G::RelationOrder::SortedUnique : G::RelationOrder::Topological;
+            key.periodic = G::RelationPeriodicPolicy::EntityIdentity;
+            key.removeSelf = removeSelf;
+            key.semanticName = "validation.scalar-oracle";
+            key.semanticVersion = 1;
+            REQUIRE_NOTHROW(key.Validate());
+            for (I length = 0, combinations = 1; length <= 3; ++length, combinations *= I(pool.size()))
+                for (I code = 0; code < combinations; ++code)
+                {
+                    std::vector<I> values(size_t(length), 0);
+                    auto remaining = code;
+                    for (I iSlot = 0; iSlot < length; ++iSlot)
+                    {
+                        values[size_t(iSlot)] = pool[size_t(remaining % I(pool.size()))];
+                        remaining /= I(pool.size());
+                    }
+                    bool expected = std::all_of(values.begin(), values.end(), [&](I value)
+                                                { return value == DNDS::UnInitIndex || (value >= 0 && value < cells.NumGlobal()); });
+                    if (sorted)
+                        expected = expected && std::find(values.begin(), values.end(), DNDS::UnInitIndex) == values.end() &&
+                                   std::adjacent_find(values.begin(), values.end(), std::greater_equal<I>{}) == values.end();
+                    if (removeSelf)
+                        expected = expected && std::find(values.begin(), values.end(), self) == values.end();
+                    auto data = Rows(std::vector<std::vector<I>>{values});
+                    bool accepted = true;
+                    try
+                    {
+                        G::MeshAdjacencyRead read(key, cells, cells, G::Adj_PointToGlobal, data);
+                    }
+                    catch (const std::exception &)
+                    {
+                        accepted = false;
+                    }
+                    CHECK(accepted == expected);
+                    CHECK(data.IsValid());
+                    const auto read = data.Read();
+                    const auto row = read.View()[0];
+                    CHECK(std::vector<I>(row.begin(), row.end()) == values);
+                }
+        }
+}
+
+TEST_CASE("Adjacency self checks retain ghost-only source numbering on empty owners")
+{
+    const auto mpi = MPI();
+    const auto ownedCells = G::EntitySpace::CreateOwned(G::EntityKind::Cell, mpi, mpi.rank == 0 ? 2 : 0);
+    const auto cells = ownedCells.WithGhosts(mpi.rank == 0 ? std::vector<I>{} : std::vector<I>{0, 1});
+    auto owned = Rows(mpi.rank == 0 ? std::vector<std::vector<I>>{{1}, {0}} : std::vector<std::vector<I>>{});
+    auto ghost = Rows(mpi.rank == 0 ? std::vector<std::vector<I>>{} : std::vector<std::vector<I>>{{1}, {0}});
+    auto key = G::Adj::Cell2Cell;
+    key.path = {G::EntityKind::Cell, G::EntityKind::Cell};
+    key.selection = G::RelationSelection::Custom;
+    key.order = G::RelationOrder::SortedUnique;
+    key.periodic = G::RelationPeriodicPolicy::EntityIdentity;
+    key.removeSelf = true;
+    key.semanticName = "validation.ghost-only";
+    key.semanticVersion = 1;
+    REQUIRE_NOTHROW(key.Validate());
+    CHECK_NOTHROW(G::MeshAdjacencyRead(key, cells, cells, G::Adj_PointToGlobal, owned, &ghost));
+    auto &changed = mpi.rank == 0 ? owned : ghost;
+    changed.Write().At(0, 0) = 0;
+    CHECK_THROWS(G::MeshAdjacencyRead(key, cells, cells, G::Adj_PointToGlobal, owned, &ghost));
+    changed.Write().At(0, 0) = 1;
+    CHECK_NOTHROW(G::MeshAdjacencyRead(key, cells, cells, G::Adj_PointToGlobal, owned, &ghost));
+}
+
 TEST_CASE("Native 3D edge interpolation retains four-parent incidence and empty owners")
 {
     auto mpi = MPI();
