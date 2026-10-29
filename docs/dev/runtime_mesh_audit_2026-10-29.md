@@ -244,7 +244,21 @@ construction and FV initialization.
     Moved access scopes also reject a null layout. Borrowed views gain no
     checks. Tests cover table/padded/CSR handles, both move and explicit release,
     retained read lifetime, rejected source/destination copies, cleanup and
-    successful reset. Validation is pending for this separate safety checkpoint.
+    successful reset. Checkpoint `335416d7` passes CPU 204/204, focused Array/I/O
+    5/5, exact np4 SA topology/representation/finite-field parity, rebuilt and
+    installed Python 57/57 at np1 and on each np2 rank, CUDA runtime/engine
+    2/2 and two-GPU transfer 28/28 per rank, with no skips.
+34. Face construction staged its fixed two-parent slots through per-face
+    vectors and repeatedly allocated GlobalRow vectors while deriving physical
+    neighbors. It now fills a native fixed-width Runtime table under one writer,
+    compares its one/two-parent support directly with the DSL inverse, and uses
+    the existing pinned global adjacency views for neighbor rows. The owner's
+    parent slot order, boundary sentinel, periodic self-incidence rule, complete
+    inverse comparison, ghost lookup and membership checks remain. Global cell
+    identity is queried once per cell rather than once per face; ElemInfo views
+    are acquired once before their loop. No DSL/tree/mapping operation is
+    skipped. This is a contained CPU setup change; validation and timing are
+    pending, and the previously recorded safety checkpoint is unchanged.
 
 ## Responsibility and abstraction review
 
