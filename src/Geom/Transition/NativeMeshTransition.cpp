@@ -92,7 +92,11 @@ namespace DNDS::Geom
             for (index oldRow = 0; oldRow < inputView.RowCount(); ++oldRow)
             {
                 const size_t newRow = reorderRows ? size_t(oldToNew[oldRow]) : oldRow;
-                if (newRow >= outputView.RowCount() || inputView.RowSize(oldRow) != outputView.RowSize(newRow))
+                // The read lease pins row metadata. Keep its bound outside the
+                // element loop; output writes may otherwise inhibit compiler
+                // hoisting of the generic CSR/padded row-size loads.
+                const auto count = inputView.RowSize(oldRow);
+                if (newRow >= outputView.RowCount() || count != outputView.RowSize(newRow))
                 {
                     invalid = 1;
                     continue;
@@ -101,11 +105,11 @@ namespace DNDS::Geom
                 const auto *sourceRow = inputView.Row(oldRow);
                 try
                 {
-                    for (size_t slot = 0; slot < inputView.RowSize(oldRow); ++slot)
+                    for (index slot = 0; slot < count; ++slot)
                         target[slot] = remapValues ? mapValue(sourceRow[slot]) : sourceRow[slot];
                     if constexpr (std::is_same_v<T, index>)
                         if (sortValues)
-                            std::sort(target, target + outputView.RowSize(newRow));
+                            std::sort(target, target + count);
                 }
                 catch (...)
                 {

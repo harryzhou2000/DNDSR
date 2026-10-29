@@ -194,6 +194,29 @@ construction and FV initialization.
     independent row expectations. No input-mesh ghost
     buffers or inferred route-tree identities are reused. This bounded sparse
     scratch optimization passes the CPU checks above; no speedup is claimed yet.
+30. Generic route collision checking sorted every copied request list. Complete
+    migrations commonly supply every local source row once. When request count
+    equals the row extent and all indices are in range, the checker can place
+    each index in its matching slot in its existing private scratch. Each swap
+    fixes a slot; an already-fixed target proves a duplicate. This is exact
+    O(n) validation with no bitmap, hash allocation or new dependency. Sparse
+    and irregular lists retain the prior sorting path. Routing lists themselves
+    are never modified. A new 8193-row MPI oracle first passed the old checker,
+    then the new one, including padding and rank-zero fan-out/reverse rejection.
+    An exhaustive independent sorted oracle covers all 289 lists of lengths
+    zero through four. The cycle candidate passed the full 204-registration
+    CPU selection and the final row oracle at np1/2/4/8. CUDA transfer tests
+    pass 28/28 on each GPU rank, runtime/engine 2/2, and rebuilt transient Python
+    tests 13/13 at np1 and on each np2 rank. Speedup is not yet measured. This
+    specialization depends on route shape, never np=1.
+31. The remap kernel queried generic CSR/padded RowSize in its inner element
+    loop. Its existing read lease pins metadata, so the row bound is now cached
+    once before the loop and reused by the same row-shape check and optional
+    sort. This avoids depending on compiler alias analysis to hoist metadata
+    loads past output stores. Final focused row/transition/preparation tests
+    pass 16/16 and the np4 SA probe is bit-exact against scratch-preflight.
+    The full 204 run above preceded this final bound-hoisting edit; it is not
+    presented as a full rerun of that final source.
 
 ## Responsibility and abstraction review
 
