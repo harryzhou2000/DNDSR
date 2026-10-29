@@ -218,6 +218,20 @@ construction and FV initialization.
     The full 204 run above preceded this final bound-hoisting edit; it is not
     presented as a full rerun of that final source.
 
+32. The scratch-v2 profile measured 12.849 ms across 13 transition input
+    content scans on rank zero, including exact storage aliases. A new
+    adjacency-owned `AcquireAliases` factory validates all descriptors and
+    associations, choosing a strict content-proof basis over one supplied
+    storage pair/order/state. It reuses only proved sorted/self constraints,
+    scanning incomparable constraints separately. Every result acquires its
+    own normal read/order leases. Transition groups exact ArrayStorage
+    identities and delegates; it contains no second copy of the validation
+    rules and exposes no unchecked-access flag. New tests exercise all 24
+    descriptor permutations in global/local states, ghost rows, independent
+    retained-scope lifetime, invalid sorted/self/range/association constraints
+    and failed-acquisition cleanup. Validation and timing are pending for this
+    candidate; the frozen cycle/remap benchmark is a separate checkpoint.
+
 ## Responsibility and abstraction review
 
 Performance acceptance also requires preserving these boundaries. Do not move

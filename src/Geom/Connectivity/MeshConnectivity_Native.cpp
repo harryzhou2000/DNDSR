@@ -24,7 +24,7 @@ namespace DNDS::Geom
                               "removeSelf relation requires identical source/target entity order");
         if (_contentsValidated)
             return;
-        const bool sorted = !_kind.IsLegacy() && _kind.order == RelationOrder::SortedUnique;
+        const bool sorted = ContentChecks(_kind) & 1U;
         const bool needsGlobal = sorted || _kind.removeSelf;
         const auto scan = [&](const Runtime::ArrayView<const index> &view, index first)
         {
@@ -78,6 +78,41 @@ namespace DNDS::Geom
         scan(_view.owned, 0);
         scan(_view.ghost, _source.NumOwned());
         _contentsValidated = true;
+    }
+
+    std::vector<MeshAdjacencyRead> MeshAdjacencyRead::AcquireAliases(const std::vector<AdjacencyDescriptor> &kinds,
+                                                                     EntitySpace source, EntitySpace target, MeshAdjState state,
+                                                                     const Runtime::Array<index> &owned,
+                                                                     const Runtime::Array<index> *ghost)
+    {
+        std::vector<MeshAdjacencyRead> result;
+        if (kinds.empty())
+            return result;
+        // Prefer the strictest available content contract before admitting any
+        // weaker alias. Sorted-only and self-only are incomparable: a second
+        // full scan still proves whichever constraint the basis did not check.
+        index basis = 0;
+        for (index iKind = 1; iKind < index(kinds.size()); ++iKind)
+            if (ContentChecks(kinds[iKind]) > ContentChecks(kinds[basis]))
+                basis = iKind;
+        result.reserve(kinds.size());
+        auto validated = MeshAdjacencyRead(kinds[basis], source, target, state, owned, ghost);
+        unsigned proved = ContentChecks(kinds[basis]);
+        for (index iKind = 0; iKind < index(kinds.size()); ++iKind)
+        {
+            if (iKind == basis)
+                result.push_back(std::move(validated));
+            else
+            {
+                const auto required = ContentChecks(kinds[iKind]);
+                result.push_back(MeshAdjacencyRead(kinds[iKind], source, target, state, owned, ghost,
+                                                   (required & proved) == required));
+                proved |= required;
+            }
+        }
+        // The basis scope remains alive throughout construction, either in
+        // validated or result; each result has its own acquired value leases.
+        return result;
     }
 
     MeshAdjacencyRead::Entry MeshAdjacencyRead::ReadEntry(index row, size_t slot) const

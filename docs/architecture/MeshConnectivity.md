@@ -99,6 +99,25 @@ containment, and resolves physical boundary sides. Face construction obtains
 Cell→Node→Cell support and complete parent cones from authoritative owned rows;
 it cannot rely on an earlier solver ghost ring being sufficient.
 
+`MeshAdjacencyRead::AcquireAliases` acquires distinct named descriptors over one
+explicit owned/ghost storage pair, source/target spaces and index state. The
+adjacency layer validates each descriptor, association, row extent and lease.
+It first scans an available strict descriptor, then reuses only the content
+constraints already proved under those retained leases. Sorted-unique and
+remove-self constraints are separate; if neither implies the other, the
+unproved constraint is scanned as well. Names, provenance and mathematical
+derivations remain distinct. This is not a way to claim two independently
+stored adjacencies are equivalent.
+
+Transition groups candidate aliases by exact complete ArrayStorage identities
+for both owned and ghost rows, endpoint families and index state, using its
+canonical source/target spaces. It asks the adjacency layer for read scopes;
+it does not interpret descriptor constraints itself. Every returned scope has
+its own normal read/order leases and can outlive the others. Acquisition is
+local work; distributed callers must agree on failures before entering their
+next MPI operation. This local proof does not replace rank-wide agreement for
+reusing an actual transferred payload or EntityGhostMapping.
+
 Construction closure also runs a compiled GhostSpec. When a complete owned
 Cell2Cell adjacency is available, the registry traverses that precomputed
 composition; otherwise it traverses Cell2Node and authoritative Node2Cell
