@@ -24,6 +24,41 @@ TEST_CASE("Runtime row layouts reject unsigned shapes that cannot be indexed by 
     CHECK_THROWS(emptyRows.Offset(-1));
 }
 
+TEST_CASE("Generated immutable metadata preserves ordinal values and abandons failed construction")
+{
+    std::vector<DNDS::index> visited;
+    auto metadata = R::MetadataBuffer<uint64_t>::Generate(4, [&](DNDS::index i)
+                                                          {
+        visited.push_back(i);
+        return uint64_t(100 + 7 * i); });
+    CHECK(visited == std::vector<DNDS::index>{0, 1, 2, 3});
+    CHECK(std::vector<uint64_t>(metadata.begin(), metadata.end()) == std::vector<uint64_t>{100, 107, 114, 121});
+    const auto alias = metadata;
+    CHECK(alias.Identity() == metadata.Identity());
+    CHECK(alias.data() == metadata.data());
+    auto retained = metadata.Read();
+    CHECK(retained.View<uint64_t>().data[3] == 121);
+    const auto empty = R::MetadataBuffer<uint64_t>::Generate(0, [](DNDS::index) -> uint64_t
+                                                             { throw std::runtime_error("empty generator must not run"); });
+    CHECK(empty.empty());
+    CHECK_THROWS(R::MetadataBuffer<uint64_t>::Generate(size_t(INT64_MAX) + 1, [](DNDS::index)
+                                                       { return uint64_t(0); }));
+    visited.clear();
+    CHECK_THROWS(R::MetadataBuffer<uint64_t>::Generate(4, [&](DNDS::index i) -> uint64_t
+                                                       {
+        visited.push_back(i);
+        if (i == 2) throw std::runtime_error("generator failure");
+        return uint64_t(i); }));
+    CHECK(visited == std::vector<DNDS::index>{0, 1, 2});
+    CHECK(alias[3] == 121);
+    CHECK(R::MetadataBuffer<uint64_t>::Generate(1, [](DNDS::index)
+                                                { return uint64_t(9); })[0] == 9);
+    const auto shape = R::RowLayout::Ragged({0, 3, 0, 2, 1});
+    CHECK(std::vector<size_t>(shape.Offsets().begin(), shape.Offsets().end()) == std::vector<size_t>{0, 0, 3, 3, 5, 6});
+    CHECK(shape.RowSize(2) == 0);
+    CHECK(shape.Elements() == 6);
+}
+
 template <class Policy>
 static void CheckEagerTypedCPU(const R::RowLayout &shape)
 {

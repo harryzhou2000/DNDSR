@@ -14,11 +14,12 @@ device-transferable 1/1 pass. The unchanged Runtime safety checkpoint also has
 two-GPU transfer 28/28 per rank and CUDA runtime/engine 2/2 evidence; those
 low-level tests were not repeated for this host-only transition edit.
 
-The six-sample face-table benchmark (`12403390`, source `909ac6c0`) completed:
-high-lift parallel setup is 0.132607/0.139860 s legacy/native (1.054694x),
-outside the 5% target; cube is 0.765189/0.649108 s (0.848298x). All semantic
-and tested finite numerical gates pass. The new metadata checkpoint is not
-yet benchmarked. Earlier measurements below remain historical evidence.
+Six-sample metadata benchmark `12403492` completed: high-lift parallel setup
+is 0.120024/0.124055 s legacy/native (1.033583x), cube 0.700886/0.602584 s
+(0.859747x). Every semantic/tested finite numerical gate passes, but high-lift's
+reverse-order median remains 1.071165x, so order sensitivity keeps performance
+acceptance open. The new direct-metadata-construction candidate in finding 38
+awaits broad validation and timing. Earlier measurements remain historical.
 
 ## Findings
 
@@ -313,6 +314,16 @@ yet benchmarked. Earlier measurements below remain historical evidence.
     universal compiler equivalence, GPU code generation or measured speedup.
     Source, compiler command, function-section hashes and disassembly provenance
     are retained in the plan repository and local audit data.
+
+38. CSR shape construction still built a temporary offsets vector, then copied
+    it into the immutable metadata allocation. MetadataBuffer now supports an
+    ordinal value generator which fills its final tracked buffer without
+    exposing a mutable pointer. RowLayout::Ragged generates prefix offsets
+    directly there, preserving row-count/offset overflow validation and exact
+    metadata sharing semantics. A throwing generator abandons unpublished
+    storage. No mesh, DSL, ghost or routing operation is bypassed. New tests
+    cover literal prefix offsets, ordinal order, empty generation, aliases and
+    failure/recovery. This new candidate's broad validation/timing are pending.
 
 ## Responsibility and abstraction review
 
