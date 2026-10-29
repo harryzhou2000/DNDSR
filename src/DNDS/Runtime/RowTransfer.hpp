@@ -11,6 +11,7 @@
 #include <cmath>
 #include <typeinfo>
 #include <optional>
+#include <utility>
 
 namespace DNDS::Runtime
 {
@@ -46,6 +47,13 @@ namespace DNDS::Runtime
                                      std::vector<std::vector<index>> send, std::vector<std::vector<index>> receive,
                                      std::vector<VersionStamp> dependencies = {});
         RowTransferPlan Reverse() const;
+        /// Collective schedule derivation for a complete source permutation.
+        /// Every source row must occur exactly once across the send lists.
+        /// Returns {adjusted route, old-to-new source row permutation}; caller
+        /// applies the permutation to its ordinary arrays before binding.
+        /// Peer correspondence and receive slots are unchanged. No payload,
+        /// row-ID/count exchange or communicator duplication is performed.
+        std::pair<RowTransferPlan, std::vector<index>> ReorderSourceByPeer() const;
         MPI_Comm Communicator() const;
         /// Shared matching namespace for sequential payload bindings. Concurrent
         /// bindings must reserve distinct explicit tags or use separate contexts.

@@ -99,6 +99,23 @@ containment, and resolves physical boundary sides. Face construction obtains
 Cell→Node→Cell support and complete parent cones from authoritative owned rows;
 it cannot rely on an earlier solver ghost ring being sufficient.
 
+Construction closure also runs a compiled GhostSpec. When a complete owned
+Cell2Cell adjacency is available, the registry traverses that precomputed
+composition; otherwise it traverses Cell2Node and authoritative Node2Cell
+support (building the inverse if absent). The complete-graph recipe explicitly
+collects owned cells' nodes as well as neighbor cells' nodes, so isolated cells
+retain their remote node cones. It does not use a separate hand-written ghost
+discovery loop. `BuildGhosted(discovery, payloads)` can materialize only the
+Cell2Node adjacency needed by construction while preserving all discovered
+entity mappings. Traversal supports remain registered and validated. The
+default overload still publishes every registered adjacency; an explicit empty
+payload list builds mappings only. Selection must agree across ranks.
+
+Specializations are allowed inside the DSL, tree evaluator, adjacency and
+EntityGhostMapping facilities. Those facilities remain responsible for
+semantics, leases, numbering and routing; a consumer must not substitute its own
+unchecked storage walk or transfer policy for them to improve timing.
+
 ## GhostSpec is a coverage contract
 
 Each GhostChain names an anchor family, a sequence of full adjacency descriptors,

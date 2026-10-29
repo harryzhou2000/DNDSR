@@ -180,6 +180,21 @@ TEST_CASE("Native GhostSpec discovers multilayer remote rows and publishes share
     for (int repeat = 0; repeat < 2; ++repeat)
         CHECK(localSetup.Evaluate(G::CompiledGhostTree::compile(spec)).ghostIndices == discovered.ghostIndices);
     auto publication = setup.BuildGhosted(discovered);
+    // Traversal supports need not be published. The same registry/tree and
+    // canonical mappings still determine the selected adjacency's ghosts.
+    auto selected = setup.BuildGhosted(discovered, {G::Adj::Cell2Node});
+    REQUIRE(selected.relations.size() == 1);
+    CHECK(selected.spaces.at(G::EntityKind::Cell).NumGhost() == I(expectedCells.size()));
+    auto selectedRead = selected.relations.at(G::Adj::Cell2Node).Read();
+    auto mapsOnly = setup.BuildGhosted(discovered, {});
+    CHECK(mapsOnly.relations.empty());
+    CHECK(mapsOnly.spaces.at(G::EntityKind::Cell).NumGhost() == I(expectedCells.size()));
+    CHECK_THROWS(setup.BuildGhosted(discovered, {G::Adj::Cell2Node, G::Adj::Cell2Node}));
+    CHECK_THROWS(setup.BuildGhosted(discovered, {G::Adj::Node2Cell}));
+    if (mpi.size > 1)
+        CHECK_THROWS(setup.BuildGhosted(discovered,
+                                        mpi.rank == 0 ? std::vector<G::AdjacencyDescriptor>{G::Adj::Cell2Node}
+                                                      : std::vector<G::AdjacencyDescriptor>{}));
     auto ghosted = publication.relations.at(G::Adj::Cell2Node).Read();
     CHECK(ghosted.RowCount() == 1 + I(expectedCells.size()));
     for (size_t row = 0; row < expectedCells.size(); ++row)
@@ -188,6 +203,7 @@ TEST_CASE("Native GhostSpec discovers multilayer remote rows and publishes share
         for (int j = 0; j < 4; ++j)
             expected.push_back(expectedCells[row] * 4 + j);
         CHECK(ghosted.GlobalRow(I(row) + 1) == expected);
+        CHECK(selectedRead.GlobalRow(I(row) + 1) == expected);
     }
     // Independently reconstructed exact expectations above replace old live
     // mesh parity. A fresh equal-shape domain must still be rejected.

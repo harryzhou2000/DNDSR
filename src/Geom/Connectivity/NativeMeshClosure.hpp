@@ -17,6 +17,9 @@ namespace DNDS::Geom
 
     /// Temporary construction inputs from owned authoritative global cones.
     /// Does not assemble/publish a mesh or depend on existing compute ghosts.
+    /// Compiles/evaluates a GhostSpec through AdjacencyRegistry, using complete
+    /// CellCells when available or the node-star path otherwise; only CellNodes
+    /// payloads are materialized, through the resulting EntityGhostMappings.
     NativeCellClosure BuildNativeCellClosure(const NativeOwnedMeshData &source, const MPIInfo &mpi);
     /// Adapter for a construction operation starting from an existing mesh.
     /// Captures owned inputs only, then uses the same temporary closure path.

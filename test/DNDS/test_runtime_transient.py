@@ -80,6 +80,32 @@ def test_shared_context_known_route_and_tag_reuse(mode, transport):
     plan.bind(source, target, transport=transport, options=options).begin().wait()
 
 
+def test_sender_ordering_returns_route_and_explicit_array_permutation():
+    rank, size = MPI.COMM_WORLD.rank, MPI.COMM_WORLD.size
+    rows, width = 193, 5
+    ctx = channel()
+    send, receive = [[] for _ in range(size)], [[] for _ in range(size)]
+    send_order = [(i * 17) % rows for i in range(rows)]
+    send[(rank - 1) % size] = send_order
+    receive[(rank + 1) % size] = list(range(rows))
+    route = R.RowTransferPlan.known(ctx, rows, rows, send, receive)
+    ordered_route, old_to_new = route.reorder_source_by_peer()
+    assert sorted(old_to_new) == list(range(rows))
+    values = np.arange(rows * width).reshape(rows, width) + rank * 10000
+    permuted = np.empty_like(values)
+    permuted[old_to_new] = values
+    source = R.Array(R.RowLayout.dense(rows, width, 7), np.dtype("int64"))
+    source[:] = permuted
+    target = R.Array(R.RowLayout.dense(rows, width, 8), source.dtype)
+    plan = R.PayloadPlan(ordered_route, source.layout, target.layout, source.element_schema())
+    plan.bind(source, target).begin().wait()
+    expected = np.arange(rows * width).reshape(rows, width)[send_order] + ((rank + 1) % size) * 10000
+    np.testing.assert_array_equal(target.numpy(), expected)
+    incomplete = R.RowTransferPlan.known(ctx, rows + (rank == 0), rows, send, receive)
+    with pytest.raises(RuntimeError, match="each source row exactly once"):
+        incomplete.reorder_source_by_peer()
+
+
 @pytest.mark.parametrize("cuda", [False, True])
 def test_private_dynamic_csr_migration_and_retained_views(cuda):
     if cuda and not R.cuda_enabled:

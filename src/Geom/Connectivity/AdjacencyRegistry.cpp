@@ -831,18 +831,34 @@ namespace DNDS::Geom
 {
     AdjacencyGhostPublication AdjacencyRegistry::BuildGhosted(const GhostResult &discovery) const
     {
+        std::vector<AdjacencyDescriptor> payloads;
+        for (const auto &entry : _relations)
+            payloads.push_back(entry.first);
+        return BuildGhosted(discovery, payloads);
+    }
+    AdjacencyGhostPublication AdjacencyRegistry::BuildGhosted(const GhostResult &discovery,
+                                                              const std::vector<AdjacencyDescriptor> &payloadsToPublish) const
+    {
         AdjacencyGhostPublication result;
         // The registry schedule, not local nonempty discovery, determines MPI
         // participation. Empty owners/requesters execute every route stage.
         std::vector<EntityKind> kinds;
-        std::vector<AdjacencyDescriptor> relations;
+        auto relations = payloadsToPublish;
+        std::vector<AdjacencyDescriptor> registered;
         for (auto &entry : _spaces)
             kinds.push_back(entry.first);
         for (auto &entry : _relations)
-            relations.push_back(entry.first);
+            registered.push_back(entry.first);
         std::sort(kinds.begin(), kinds.end());
+        std::sort(registered.begin(), registered.end());
         std::sort(relations.begin(), relations.end());
         std::string schedule;
+        for (auto kind : registered)
+        {
+            const auto descriptor = kind.Signature();
+            schedule += std::to_string(descriptor.size()) + ":" + descriptor;
+        }
+        schedule += "|payloads|";
         for (auto kind : relations)
         {
             const auto descriptor = kind.Signature();
@@ -857,6 +873,10 @@ namespace DNDS::Geom
         ValidateCollectively([&]
                              {
             DNDS_check_throw_info(schedule == canonical, "ghost publication registry differs between ranks");
+            DNDS_check_throw_info(std::adjacent_find(relations.begin(), relations.end()) == relations.end(),
+                                  "ghost publication repeats a payload descriptor");
+            for (const auto &kind : relations)
+                DNDS_check_throw_info(_relations.count(kind), "ghost publication requests an unregistered payload");
             for (auto &entry : _relations) entry.second->Validate();
             for (auto &entry : discovery.ghostIndices)
             {

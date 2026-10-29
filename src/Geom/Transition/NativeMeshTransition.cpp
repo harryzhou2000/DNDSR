@@ -883,6 +883,23 @@ namespace DNDS::Geom
             schedule += cellOld2New ? "local" : "partition";
             for (const auto &[key, unused] : original) schedule += key.Signature(); });
         Agree(mpi, schedule);
+        // Keep one validated adjacency scope per descriptor for this complete
+        // transition. Follow placement, remote-map discovery and remapping all
+        // consume immutable input rows; reacquiring the same scope would rescan
+        // unchanged values. Semantic aliases still get independent validation.
+        std::map<AdjacencyDescriptor, std::unique_ptr<MeshAdjacencyRead>> inputReads;
+        auto acquireInput = [&](const AdjacencyDescriptor &key) -> const MeshAdjacencyRead &
+        {
+            auto found = inputReads.find(key);
+            if (found == inputReads.end())
+            {
+                const auto &values = original.at(key);
+                auto read = std::make_unique<MeshAdjacencyRead>(key, oldSpaces.at(key.from), oldSpaces.at(key.to),
+                                                                values.state, values.rows.owned, &values.rows.ghost);
+                found = inputReads.emplace(key, std::move(read)).first;
+            }
+            return *found->second;
+        };
         FieldTransferDetail::LocalStage(mpi, [&]
                                         { result.sourceSpaces = oldSpaces; });
         const int cellOwnerLocal = oldSpaces.at(EntityKind::Cell).NumOwned() ? mpi.rank : -1;
@@ -941,7 +958,7 @@ namespace DNDS::Geom
         {
             if (serialOwned)
             {
-                std::optional<MeshAdjacencyRead> relation;
+                const MeshAdjacencyRead *relation = nullptr;
                 FieldTransferDetail::LocalStage(mpi, [&]
                                                 {
                     DNDS_check_throw_info(placements.count(follow.leader) && !placements.count(follow.follower) &&
@@ -952,8 +969,7 @@ namespace DNDS::Geom
                         for (size_t slot = 0; slot < Bindings().size(); ++slot)
                             if (Bindings()[slot] == follow.follower2leader) { found = original.find(FacadeKey(slot)); break; }
                     DNDS_check_throw_info(found != original.end(), "native follow relation is unavailable");
-                    relation.emplace(found->first, oldSpaces.at(follow.follower), oldSpaces.at(follow.leader),
-                                     found->second.state, found->second.rows.owned, &found->second.rows.ghost); });
+                    relation = &acquireInput(found->first); });
                 const auto &leaderPlacements = placements.at(follow.leader);
                 const auto leaderFirst = (*oldSpaces.at(follow.leader)._global)(mpi.rank, 0);
                 std::vector<MPI_int> assignment(size_t(relation->NumOwned()), mpi.rank);
@@ -978,7 +994,7 @@ namespace DNDS::Geom
                 placements.emplace(follow.follower, std::move(assignment));
                 continue;
             }
-            std::optional<MeshAdjacencyRead> relation;
+            const MeshAdjacencyRead *relation = nullptr;
             std::vector<index> requested;
             std::vector<Runtime::RowRequest> requests;
             FieldTransferDetail::LocalStage(mpi, [&]
@@ -991,8 +1007,7 @@ namespace DNDS::Geom
                     for (size_t slot = 0; slot < Bindings().size(); ++slot)
                         if (Bindings()[slot] == follow.follower2leader) { found = original.find(FacadeKey(slot)); break; }
                 DNDS_check_throw_info(found != original.end(), "native follow relation is unavailable");
-                relation.emplace(found->first, oldSpaces.at(follow.follower), oldSpaces.at(follow.leader), found->second.state,
-                                 found->second.rows.owned, &found->second.rows.ghost);
+                relation = &acquireInput(found->first);
                 std::vector<index> globals;
                 for (index row = 0; row < relation->NumOwned(); ++row)
                     for (auto value : relation->GlobalRow(row)) if (value != UnInitIndex) globals.push_back(value);
@@ -1060,24 +1075,9 @@ namespace DNDS::Geom
                 // the same pass, so each peer reads contiguous rows through
                 // direct MPI datatypes. This is an explicit row permutation,
                 // not a byte-packing workspace or a different transport.
-                auto &permutation = sendOld2New[kind];
-                std::vector<std::vector<index>> send;
-                FieldTransferDetail::LocalStage(mpi, [&]
-                                                {
-                    permutation.assign(size_t(old.NumOwned()), -1);
-                    send = route.SendRows();
-                    index next = 0;
-                    for (auto &peer : send)
-                        for (auto &row : peer)
-                        {
-                            DNDS_check_throw_info(row >= 0 && row < old.NumOwned() && permutation[size_t(row)] < 0,
-                                                  "migration source rows must form one complete permutation");
-                            permutation[size_t(row)] = next;
-                            row = next++;
-                        }
-                    DNDS_check_throw_info(next == old.NumOwned(), "migration source row permutation is incomplete"); });
-                adjacencyRoutes.emplace(kind, Runtime::RowTransferPlan::Known(route.Context(), route.SourceRows(),
-                                                                              route.DestinationRows(), std::move(send), route.ReceiveRows()));
+                auto ordered = route.ReorderSourceByPeer();
+                adjacencyRoutes.emplace(kind, std::move(ordered.first));
+                sendOld2New.emplace(kind, std::move(ordered.second));
             }
             routes.emplace(kind, std::move(route));
             if (cellOld2New || assigned != placements.end())
@@ -1118,7 +1118,7 @@ namespace DNDS::Geom
                 std::set<PayloadKey> scanned;
                 for (const auto &[key, values] : original) if (key.to == kind)
                 {
-                    MeshAdjacencyRead read(key, oldSpaces.at(key.from), old, values.state, values.rows.owned, &values.rows.ghost);
+                    const auto &read = acquireInput(key);
                     // Validate every descriptor even when its exact payload was
                     // already scanned under another semantic name.
                     if (!scanned.insert(payloadKey(key, values)).second) continue;
@@ -1194,13 +1194,12 @@ namespace DNDS::Geom
         for (const auto &[key, values] : original)
         {
             const auto identity = payloadKey(key, values);
-            std::optional<MeshAdjacencyRead> read;
+            const MeshAdjacencyRead *read = nullptr;
             FieldTransferDetail::LocalStage(mpi, [&]
                                             {
                 // A byte alias does not establish this descriptor's semantic
                 // constraints (e.g. SortedUnique or removeSelf).
-                read.emplace(key, oldSpaces.at(key.from), oldSpaces.at(key.to), values.state,
-                             values.rows.owned, &values.rows.ghost);
+                read = &acquireInput(key);
                 DNDS_check_throw_info(read->State() == Adj_PointToGlobal, "owned transition requires global adjacency rows"); });
             auto publish = [&](RArray moved)
             {
@@ -1276,13 +1275,28 @@ namespace DNDS::Geom
         owned.periodic = source.periodic;
         owned.periodicInfo = source.periodicInfo;
         owned.spaces = spaces;
+        auto moveCompanion = [&](const auto &values, EntityKind kind, const Runtime::ElementSchema &schema)
+        {
+            if (cellOld2New)
+                return Move(values, routes.at(kind), schema, mpi, true, pending);
+            // Apply the same explicit sender permutation used by adjacency
+            // arrays. These are ordinary independent arrays in partition-row
+            // order, not an MPI packing workspace. Direct datatypes then see
+            // contiguous peer intervals for coordinates, POD metadata and IDs.
+            using Array = std::decay_t<decltype(values)>;
+            std::optional<Array> ordered;
+            FieldTransferDetail::LocalStage(mpi, [&]
+                                            { ordered.emplace(ReorderOwnedRows(values, sendOld2New.at(kind), true, false, false,
+                                                                               [](auto value)
+                                                                               { return value; })); });
+            return Move(*ordered, adjacencyRoutes.at(kind), schema, mpi, false, pending);
+        };
         if (source.provenance)
         {
             owned.provenance = *source.provenance;
             for (auto &[kind, values] : owned.provenance->sourceIds)
                 if (!cellOld2New || kind == EntityKind::Cell)
-                    values = Move(values, routes.at(kind), Runtime::ElementSchema::Arithmetic<index>(), mpi,
-                                  bool(cellOld2New), pending);
+                    values = moveCompanion(values, kind, Runtime::ElementSchema::Arithmetic<index>());
         }
         FieldTransferDetail::LocalStage(mpi, [&]
                                         {
@@ -1301,8 +1315,7 @@ namespace DNDS::Geom
         {
             if (originalPair)
                 destination = cellOld2New && kind != EntityKind::Cell ? *originalPair
-                                                                      : Move(*originalPair, routes.at(kind), schema, mpi,
-                                                                             bool(cellOld2New), pending);
+                                                                      : moveCompanion(*originalPair, kind, schema);
         };
         companion(owned.coords, source.coords, EntityKind::Node, Runtime::ElementSchema::Arithmetic<real>());
         companion(owned.nodeWallDist, source.nodeWallDist, EntityKind::Node, Runtime::ElementSchema::Arithmetic<real>());
@@ -1339,8 +1352,9 @@ namespace DNDS::Geom
             int sameExtent = originalIds.RowCount() == baseRoute.SourceRows();
             MPI_Allreduce(MPI_IN_PLACE, &sameExtent, 1, MPI_INT, MPI_MIN, mpi.comm);
             auto idRoute = sameExtent ? baseRoute : Runtime::RowTransferPlan::Known(baseRoute.Context(), originalIds.RowCount(), baseRoute.DestinationRows(), baseRoute.SendRows(), baseRoute.ReceiveRows());
-            owned.ids.emplace(kind, Move(originalIds, idRoute, Runtime::ElementSchema::Arithmetic<index>(), mpi,
-                                         bool(cellOld2New), pending));
+            owned.ids.emplace(kind, sameExtent ? moveCompanion(originalIds, kind, Runtime::ElementSchema::Arithmetic<index>())
+                                               : Move(originalIds, idRoute, Runtime::ElementSchema::Arithmetic<index>(), mpi,
+                                                      bool(cellOld2New), pending));
         }
         FinishMoves(pendingMoves);
         owned.retainedRead = source.retainedRead;

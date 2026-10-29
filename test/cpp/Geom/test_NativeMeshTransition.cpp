@@ -529,6 +529,54 @@ TEST_CASE("Owned primary reorder retains IDs and cones when other ranks own no c
     CHECK(source.spaces.at(G::EntityKind::Cell).NumOwned() == 1);
 }
 
+TEST_CASE("Sender partition ordering preserves strided companions through gather and reverse scatter")
+{
+    const auto mpi = MPI();
+    auto source = G::NativeMeshBuilder::Build(RotatedTriangles(mpi, true));
+    source.nodeWallDist.emplace(R::RowLayout::Dense(3, 1, 3));
+    {
+        auto write = source.nodeWallDist->Write();
+        const auto view = write.View();
+        for (I iNode = 0; iNode < 3; ++iNode)
+            view(iNode, 0) = DNDS::real(3 * mpi.rank + iNode) + 0.25;
+    }
+    G::ReorderInput gather;
+    gather.explicitMaps.push_back({G::EntityKind::Cell, {0}});
+    auto gathered = G::NativeMeshTransition::BuildOwned(source, mpi, gather);
+    G::ReorderInput scatter;
+    std::vector<DNDS::MPI_int> targets;
+    {
+        auto read = gathered.owned.ids.at(G::EntityKind::Cell).Read();
+        const auto view = read.View();
+        for (I iCell = 0; iCell < view.RowCount(); ++iCell)
+            targets.push_back(DNDS::MPI_int(mpi.size - 1 - view(iCell, 0)));
+    }
+    scatter.explicitMaps.push_back({G::EntityKind::Cell, std::move(targets)});
+    auto moved = G::NativeMeshTransition::BuildOwned(gathered.owned, mpi, scatter);
+    const auto &owned = moved.owned;
+    REQUIRE(owned.spaces.at(G::EntityKind::Cell).NumOwned() == 1);
+    auto cells = owned.ids.at(G::EntityKind::Cell).Read();
+    CHECK(cells.View()(0, 0) == mpi.size - 1 - mpi.rank);
+    auto nodes = owned.ids.at(G::EntityKind::Node).Read();
+    auto coords = owned.coords->Read();
+    auto wall = owned.nodeWallDist->Read();
+    for (I iNode = 0; iNode < nodes.View().RowCount(); ++iNode)
+    {
+        const auto id = nodes.View()(iNode, 0);
+        CHECK(coords.View()(iNode, 0) == DNDS::real(id));
+        CHECK(coords.View()(iNode, 1) == DNDS::real(id % 3 == 2));
+        CHECK(wall.View()(iNode, 0) == DNDS::real(id) + 0.25);
+    }
+    auto boundaries = owned.ids.at(G::EntityKind::Bnd).Read();
+    auto info = owned.bndInfo->Read();
+    for (I iBnd = 0; iBnd < boundaries.View().RowCount(); ++iBnd)
+        CHECK(info.View()(iBnd, 0).zone == G::BC_ID_DEFAULT_WALL + boundaries.View()(iBnd, 0));
+    // The original strided allocation remains unchanged and usable.
+    auto original = source.nodeWallDist->Read();
+    for (I iNode = 0; iNode < 3; ++iNode)
+        CHECK(original.View()(iNode, 0) == DNDS::real(3 * mpi.rank + iNode) + 0.25);
+}
+
 int main(int argc, char **argv)
 {
     MPI_Init(&argc, &argv);

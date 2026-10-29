@@ -26,6 +26,9 @@ in the validation ledger below. Earlier infrastructure acceptance was withdrawn
 after detecting an omitted boundary ring; see the
 [evidence correction](dev/infrastructure_finish_2026-10-27.md). Test totals and
 owned numerical parity do not prove per-rank ghost completeness.
+The [Runtime/mesh audit](dev/runtime_mesh_audit_2026-10-29.md) records the
+current abstraction and safety review, fixes, validation checkpoints and the
+still-open parallel setup performance target.
 The [source comparison and validation ledger](dev/mesh_construction_semantics_2026-10-28.md)
 records the final checks, explicit legacy periodic-frame differences and limits.
 The [legacy connectivity test-purpose ledger](dev/mesh_connectivity_test_port_2026-10-28.md)

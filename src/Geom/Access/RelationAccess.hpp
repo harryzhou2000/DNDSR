@@ -9,9 +9,6 @@
 
 namespace DNDS::Geom
 {
-    struct NativeCellClosure;
-    struct NativeOwnedMeshData;
-    NativeCellClosure BuildNativeCellClosure(const NativeOwnedMeshData &source, const MPIInfo &mpi);
     template <class Pair>
     struct AdjPairTracked;
     /// Retained host setup scope. Values and row metadata share their original
@@ -23,7 +20,6 @@ namespace DNDS::Geom
         friend class MeshAdjacency;
         friend class AdjacencyRegistry;
         friend class RelationPeriodicBits;
-        friend NativeCellClosure BuildNativeCellClosure(const NativeOwnedMeshData &source, const MPIInfo &mpi);
         EntitySpace _source, _target;
         Runtime::VersionTracker::ReadLease _sourceLease, _targetLease;
         struct Hold

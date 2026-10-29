@@ -296,6 +296,51 @@ namespace DNDS::Runtime
         result._reverse = !result._reverse;
         return result;
     }
+    std::pair<RowTransferPlan, std::vector<index>> RowTransferPlan::ReorderSourceByPeer() const
+    {
+        index sent = 0;
+        for (const auto &peer : SendRows())
+            sent += index(peer.size());
+        // The immutable route already proved bounds and collision flags.
+        // Unique in-range rows whose count equals the source extent are a
+        // complete permutation; do not sort/check the same indices again.
+        const bool sourceCollisions = _reverse ? _state->collisions : _state->reverseCollisions;
+        int controls[]{int(Valid() && !sourceCollisions && sent == SourceRows()), int(_reverse), -int(_reverse)};
+        MPI_Allreduce(MPI_IN_PLACE, controls, 3, MPI_INT, MPI_MIN, Communicator());
+        DNDS_check_throw_info(controls[0] && controls[1] == -controls[2],
+                              "sender ordering requires uniform route direction and each source row exactly once");
+        std::shared_ptr<State> state;
+        std::vector<index> oldToNew;
+        bool valid = true;
+        try
+        {
+            state = std::make_shared<State>();
+            state->context = Context();
+            state->comm = Communicator();
+            state->sources = SourceRows();
+            state->destinations = DestinationRows();
+            state->send = SendRows();
+            state->receive = ReceiveRows();
+            state->collisions = HasCollisions();
+            state->dependencies = _state->dependencies;
+            oldToNew.resize(size_t(SourceRows()));
+            index next = 0;
+            for (auto &peer : state->send)
+                for (auto &row : peer)
+                {
+                    oldToNew[size_t(row)] = next;
+                    row = next++;
+                }
+        }
+        catch (...)
+        {
+            valid = false;
+        }
+        CheckAll(valid, Communicator(), "cannot allocate sender-ordered route");
+        RowTransferPlan result;
+        result._state = std::move(state);
+        return {std::move(result), std::move(oldToNew)};
+    }
     MPI_Comm RowTransferPlan::Communicator() const { return _state->comm; }
     std::shared_ptr<CommunicationContext> RowTransferPlan::Context() const { return _state->context; }
     index RowTransferPlan::SourceRows() const { return _reverse ? _state->destinations : _state->sources; }
