@@ -1119,13 +1119,22 @@ namespace DNDS::Geom
                 candidate = found->second;
             // Local alias inventories can differ. All ranks must reuse the
             // SAME earlier collective output, not merely find some local hit.
-            int candidates[2]{candidate, -candidate};
-            MPI_Allreduce(MPI_IN_PLACE, candidates, 2, MPI_INT, MPI_MIN, mpi.comm);
-            if (candidates[0] >= 0 && candidates[0] == -candidates[1])
+            // A local cell permutation has no collective payload output: every
+            // rank completes its local relation loop before the next assembly
+            // collective, so no cross-rank selection is needed here.
+            if (!cellOld2New)
+            {
+                int candidates[2]{candidate, -candidate};
+                MPI_Allreduce(MPI_IN_PLACE, candidates, 2, MPI_INT, MPI_MIN, mpi.comm);
+                candidate = candidates[0] >= 0 && candidates[0] == -candidates[1]
+                                ? candidates[0]
+                                : -1;
+            }
+            if (candidate >= 0)
             {
                 FieldTransferDetail::LocalStage(mpi, [&]
                                                 {
-                    auto moved = movedByOrdinal.at(size_t(candidates[0]));
+                    auto moved = movedByOrdinal.at(size_t(candidate));
                     movedRelations.emplace(key, moved);
                     movedByOrdinal.push_back(std::move(moved)); });
                 continue;
