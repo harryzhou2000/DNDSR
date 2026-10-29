@@ -6,21 +6,24 @@ been established. The plan/evidence repository contains
 tools. The 5% target applies to parallel mesh setup, excluding serial reader
 construction and FV initialization.
 
-Latest validated code checkpoint `2a51bae5` directly generates immutable CSR
-offsets, following `b56a83b9`'s unchanged-shape metadata reuse. CPU Runtime/Geom
-204/204, additional consumers 22/22, focused Array 1/1, exact np4 SA
-topology/raw/finite-field comparison, CUDA runtime/engine 2/2, CFV device 1/1,
-and two-GPU transfer 28/28 per rank pass. Rebuilt/installed Python with MPI
-tests enabled passes 159/1 expected skip at np1 and 160/0 per np2 rank;
-required Torch/DLPack passes 32/0 per GPU rank. See findings 38–39.
+Latest validated code checkpoint `0de1cf0a` specializes the pinned adjacency
+content scan inside its owning access object. CPU Runtime/Geom 204/204 and
+additional consumers 22/22 pass, as do exact np4 SA topology/raw/finite-field
+comparison and CUDA geometry/CFV 4/4. Rebuilt/installed Python with MPI tests
+enabled passes 159/1 expected skip at np1 and 160/0 per np2 rank. Source hashes
+remain unchanged. Earlier `2a51bae5` separately established CUDA runtime/engine
+2/2, direct two-GPU transfer 28/28 and required Torch/DLPack 32/0 per GPU rank;
+those checks are not claimed as repeated for this CPP-only change. See
+findings 38–41 and the plan's pinned-validation-local-checkpoint.json.
 
-Six-sample metadata benchmark `12403492` completed: high-lift parallel setup
-is 0.120024/0.124055 s legacy/native (1.033583x), cube 0.700886/0.602584 s
-(0.859747x). Every semantic/tested finite numerical gate passes, but high-lift's
-reverse-order median remains 1.071165x, so order sensitivity keeps performance
-acceptance open. Direct-metadata build-only job `12403610` completed with
-verified sources; six-capture timing job `12403612` is running. Earlier
-measurements remain historical.
+Six-sample direct-metadata benchmark `12403612` completed 0:0 in 39:47:
+high-lift parallel setup is 0.121258/0.127253 s legacy/native (1.049443x),
+cube 0.705614/0.596028 s (0.844694x). All twelve case gates pass, including
+every high-lift rank's ordered original-cell-ID state records. High-lift's
+normal-order median is 1.037332x but reverse order remains 1.078315x; robust
+performance acceptance stays open. Lower controls `12403617` are running.
+The new scan candidate has no matched timing result yet. Earlier measurements
+remain historical; no individual optimization gain is inferred across jobs.
 
 ## Findings
 
@@ -328,7 +331,8 @@ measurements remain historical.
     (223.27 s), additional consumers 22/22 (191.74 s), the focused Array unit,
     exact np4 SA comparison, CUDA runtime/engine 2/2, CFV device 1/1, two-GPU
     transfer 28/28 per rank, rebuilt/installed Python and required Torch checks
-    above. Source/header hashes remain unchanged. Matched timing is pending.
+    above. Source/header hashes remain unchanged. Its completed matched timing
+    and order sensitivity are recorded at the top of this report.
 
 39. The broader Python invocation initially omitted pytest-mpi's `--with-mpi`,
     giving 113 passes and 47 skipped MPI-marked tests even under mpirun. The
@@ -362,7 +366,11 @@ measurements remain historical.
     association/extent check, and independent leases remain unchanged. No
     unchecked public path or caller-side copy of validation rules is added.
     The previously passing scalar/ghost-only oracles and existing alias cases
-    also pass this candidate at np1/2/4/8 (4/4). Broad checks/timing are pending.
+    also pass this candidate at np1/2/4/8 (4/4). Full CPU Runtime/Geom 204/204
+    (229.33 s), consumers 22/22 (193.76 s), exact np4 SA topology/raw/all nine
+    finite fields, CUDA geometry/CFV 4/4 and rebuilt/installed Python 159/1
+    expected skip at np1 and 160/0 per np2 rank pass. Both runners retain
+    identical HEAD and source hashes. Matched timing remains pending.
 
 ## Responsibility and abstraction review
 
