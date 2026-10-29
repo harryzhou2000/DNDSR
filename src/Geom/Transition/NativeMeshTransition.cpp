@@ -1123,13 +1123,7 @@ namespace DNDS::Geom
             // rank completes its local relation loop before the next assembly
             // collective, so no cross-rank selection is needed here.
             if (!cellOld2New)
-            {
-                int candidates[2]{candidate, -candidate};
-                MPI_Allreduce(MPI_IN_PLACE, candidates, 2, MPI_INT, MPI_MIN, mpi.comm);
-                candidate = candidates[0] >= 0 && candidates[0] == -candidates[1]
-                                ? candidates[0]
-                                : -1;
-            }
+                candidate = FieldTransferDetail::AgreeAliasCandidate(mpi, candidate, original.size());
             if (candidate >= 0)
             {
                 FieldTransferDetail::LocalStage(mpi, [&]

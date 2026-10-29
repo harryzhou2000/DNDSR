@@ -224,6 +224,7 @@ namespace DNDS::Geom
         FieldTransferDetail::LocalStage(mpi, [&]
                                         {
             std::unordered_map<index, index> sourceRows;
+            sourceRows.reserve(size_t(NumNodeProc()));
             for (index row = 0; row < NumNodeProc(); ++row)
                 sourceRows.emplace(OriginalEntityId(EntityKind::Node, row), row);
             sourceToBoundary.assign(size_t(NumNodeProc()), UnInitIndex);
@@ -240,6 +241,7 @@ namespace DNDS::Geom
             }
             cellParents.resize(size_t(state->NumOwned(EntityKind::Cell)));
             sourceRows.clear();
+            sourceRows.reserve(size_t(NumBnd()));
             for (index row = 0; row < NumBnd(); ++row)
                 sourceRows.emplace(OriginalEntityId(EntityKind::Bnd, row), row);
             auto cellAncestry = state->Provenance()->sourceIds.at(EntityKind::Cell).Read();

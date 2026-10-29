@@ -23,6 +23,17 @@ static MPIInfo TransitionMPI()
     return mpi;
 }
 
+TEST_CASE("Alias candidates require one common earlier payload across ranks")
+{
+    const auto mpi = TransitionMPI();
+    CHECK(FieldTransferDetail::AgreeAliasCandidate(mpi, -1, 8) == -1);
+    CHECK(FieldTransferDetail::AgreeAliasCandidate(mpi, 2, 8) == 2);
+    const int mixed = mpi.rank % 2 ? 2 : 3;
+    CHECK(FieldTransferDetail::AgreeAliasCandidate(mpi, mixed, 8) == (mpi.size == 1 ? mixed : -1));
+    const int absent = mpi.rank == 0 ? -1 : 2;
+    CHECK(FieldTransferDetail::AgreeAliasCandidate(mpi, absent, 8) == -1);
+}
+
 static ssp<UnstructuredMesh> TransitionFixture(const MPIInfo &mpi, bool periodic = false, int dim = 2)
 {
     std::optional<NativePeriodicImportOptions> periodicOptions;
