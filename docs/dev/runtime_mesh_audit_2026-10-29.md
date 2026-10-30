@@ -1,7 +1,7 @@
 # Runtime and mesh audit, 2026-10-29
 
-Audit baseline: `1fdc3f33`. Work is in progress; performance acceptance has not
-been established. The plan/evidence repository contains
+Audit baseline: `1fdc3f33`. The audit and recorded parallel median acceptance
+are complete for checkpoint `0de1cf0a`. The plan/evidence repository contains
 `docs/26-runtime-mesh-audit-parallel-performance.md` and reproducible profiling
 tools. The 5% target applies to parallel mesh setup, excluding serial reader
 construction and FV initialization.
@@ -16,20 +16,32 @@ remain unchanged. Earlier `2a51bae5` separately established CUDA runtime/engine
 those checks are not claimed as repeated for this CPP-only change. See
 findings 38–41 and the plan's pinned-validation-local-checkpoint.json.
 
-Six-sample direct-metadata benchmark `12403612` completed 0:0 in 39:47:
-high-lift parallel setup is 0.121258/0.127253 s legacy/native (1.049443x),
-cube 0.705614/0.596028 s (0.844694x). All twelve case gates pass, including
-every high-lift rank's ordered original-cell-ID state records. High-lift's
-normal-order median is 1.037332x but reverse order remains 1.078315x; robust
-performance acceptance stays open. Lower controls `12403617` completed 0:0:
+Six-sample pinned-scan benchmark `12403744` completed 0:0 in 40:22 on n1814,
+np32, OMP=1, one exclusive node and one pinned physical core per rank:
+
+| Fixture | Legacy parallel seconds | Native parallel seconds | Native/legacy |
+| --- | ---: | ---: | ---: |
+| 125,828-cell high-lift | 0.120328 | 0.124008 | 1.030583 |
+| 262,144-cell periodic cube | 0.712855 | 0.590372 | 0.828179 |
+
+All twelve case gates pass. High-lift normal/native-first ratios of medians
+are 1.017227/1.047976; cube 0.848862/0.823305. The individual high-lift
+1.053613 sample is retained. Both order medians meet 5% on this node; this
+is not an every-run or other-hardware guarantee. Every high-lift rank's counts
+and ordered original-cell-ID state rows match in all six captures. Raw cell
+records remain different; logical and exact tested finite numerical gates
+pass. Serial/pre-distribution and FV initialization remain separate: native
+pre-distribution wall time is still slower (high-lift 0.591893/0.657321 s,
+cube 2.824605/2.974323 s legacy/native). No arbitrary time-evolved history
+parity is claimed. The plan report retains all phase timings and provenance.
+
+Earlier direct-metadata controls `12403617` completed 0:0:
 all twelve gates pass; native/legacy high-lift ratios at np2/4/16 are
 0.523490/0.643794/0.918376, cube 0.656960/0.667069/0.779906. Those controls
-use the preceding direct-metadata binary. Pinned-scan job `12403744` is running
-on n1814 with all source/mesh hashes verified, the changed CPP recompiled and
-a distinct native binary (`1de5a6da` prefix). Its first high-lift pair passes
-the strict logical gate; the complete matched timing result is pending.
-Earlier measurements remain historical; no individual optimization gain is
-inferred across jobs.
+use the preceding direct-metadata binary. The final source/mesh inventories,
+CPP recompilation and distinct binary (`1de5a6da` prefix) are verified. Earlier
+measurements remain historical; no individual optimization gain is inferred
+by subtracting different-node jobs.
 
 ## Findings
 
@@ -338,7 +350,7 @@ inferred across jobs.
     exact np4 SA comparison, CUDA runtime/engine 2/2, CFV device 1/1, two-GPU
     transfer 28/28 per rank, rebuilt/installed Python and required Torch checks
     above. Source/header hashes remain unchanged. Its completed matched timing
-    and order sensitivity are recorded at the top of this report.
+    and order sensitivity are retained as job 12403612 in the plan report.
 
 39. The broader Python invocation initially omitted pytest-mpi's `--with-mpi`,
     giving 113 passes and 47 skipped MPI-marked tests even under mpirun. The
@@ -376,7 +388,9 @@ inferred across jobs.
     (229.33 s), consumers 22/22 (193.76 s), exact np4 SA topology/raw/all nine
     finite fields, CUDA geometry/CFV 4/4 and rebuilt/installed Python 159/1
     expected skip at np1 and 160/0 per np2 rank pass. Both runners retain
-    identical HEAD and source hashes. Matched timing remains pending.
+    identical HEAD and source hashes. The completed six-capture matched timing
+    meets the median target in both orders as recorded above. No DSL, ghost
+    tree, adjacency or EntityGhostMapping facility is bypassed.
 
 ## Responsibility and abstraction review
 
