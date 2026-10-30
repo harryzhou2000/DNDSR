@@ -15,6 +15,35 @@ def world():
     return mpi
 
 
+def test_collective_checkpoint_rejects_one_rank_shape_edit_and_recovers():
+    comm = MPI.COMM_WORLD
+    mpi = world()
+    values = R.Array(R.RowLayout.dense(3, 2))
+    expected = np.arange(6, dtype=np.float64).reshape(3, 2) + 100 * comm.rank
+    values.assign(expected)
+    edit = values.edit_rows(exclusive=True) if comm.rank == 0 else None
+    name = comm.bcast(f"/tmp/dnds_unpublished_io_{os.getpid()}.h5" if comm.rank == 0 else None)
+    serializer = DNDS.Serializer.SerializerH5(mpi)
+    serializer.OpenFile(name, False)
+    with pytest.raises(RuntimeError, match="live published source"):
+        values.write_serializer(serializer, "rejected", mpi)
+    assert "rejected" not in serializer.ListCurrentPath()
+    if edit is not None:
+        edit.commit()
+    values.write_serializer(serializer, "accepted", mpi)
+    serializer.CloseFile()
+    serializer.OpenFile(name, True)
+    with pytest.raises(RuntimeError, match="valid registered dtype"):
+        R.Array.read_serializer(serializer, "accepted", mpi,
+                                dtype=np.dtype(object) if comm.rank == 0 else np.dtype(np.float64))
+    restored = R.Array.read_serializer(serializer, "accepted", mpi)
+    serializer.CloseFile()
+    np.testing.assert_array_equal(restored.numpy(), expected)
+    comm.Barrier()
+    if comm.rank == 0:
+        os.remove(name)
+
+
 @pytest.mark.parametrize("source_type,bound_type", [
     (np.float64, np.int64),
     (np.dtype([("id", "i4"), ("flag", "i4")]), np.dtype([("x", "f8")])),

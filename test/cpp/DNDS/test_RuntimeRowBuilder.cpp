@@ -5,6 +5,25 @@
 
 namespace R = DNDS::Runtime;
 
+TEST_CASE("Row builder rejects overflowing requests before changing existing rows")
+{
+    CHECK_THROWS(R::RowBuilder(size_t(INT64_MAX) + 1, 1));
+    CHECK_THROWS(R::RowBuilder(0, 1, R::RowLayoutKind::Padded, size_t(INT64_MAX) + 1));
+    R::RowBuilder draft(2, 1);
+    draft.ResizeRow(0, 1);
+    draft.Row<uint8_t>(0)[0] = 73;
+    // An almost-SIZE_MAX request used to wrap slab alignment arithmetic.
+    CHECK_THROWS(draft.ResizeRow(1, SIZE_MAX - 1));
+    CHECK(draft.RowSize(1) == 0);
+    CHECK(draft.Row<uint8_t>(0)[0] == 73);
+    draft.ResizeRow(1, 2);
+    draft.Row<uint8_t>(1)[1] = 29;
+    auto result = R::Array<uint8_t>::FromSharedStorage(draft.Commit());
+    CHECK(result.Read().At(0, 0) == 73);
+    CHECK(result.Read().At(1, 0) == 0);
+    CHECK(result.Read().At(1, 1) == 29);
+}
+
 TEST_CASE("Known shape rows fill one final table or CSR and reject failed publication")
 {
     for (bool table : {false, true})

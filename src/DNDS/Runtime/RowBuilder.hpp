@@ -98,6 +98,8 @@ namespace DNDS::Runtime
             State(size_t n, size_t bytes, RowLayoutKind layout, size_t cap, Buffer values = {}, WriteAccess access = {})
                 : rows(n), elementBytes(bytes), capacity(cap), width(cap), kind(layout)
             {
+                DNDS_check_throw_info(n <= size_t(INT64_MAX) && cap <= size_t(INT64_MAX),
+                                      "row builder shape exceeds signed index range");
                 DNDS_check_throw_info(bytes && (layout == RowLayoutKind::CSR || layout == RowLayoutKind::Padded || layout == RowLayoutKind::Table),
                                       "invalid row builder element size/layout");
                 lengths = Buffer::Allocate(CheckedSize::Multiply(n, sizeof(size_t)));
@@ -131,7 +133,7 @@ namespace DNDS::Runtime
                 {
                     const auto address = reinterpret_cast<uintptr_t>(base + observed);
                     const auto padding = (64 - address % 64) % 64;
-                    const auto needed = padding + request;
+                    const auto needed = CheckedSize::Add(padding, request);
                     if (needed > slab.buffer.Bytes() || observed > slab.buffer.Bytes() - needed)
                         return nullptr;
                     if (slab.used.compare_exchange_weak(observed, observed + needed,
@@ -158,7 +160,7 @@ namespace DNDS::Runtime
                 constexpr size_t slabBytes = 64 * 1024;
                 constexpr size_t alignment = 64;
                 const size_t request = std::max(bytes, size_t(1));
-                const size_t wanted = std::max(slabBytes, request + alignment);
+                const size_t wanted = std::max(slabBytes, CheckedSize::Add(request, alignment));
                 Slab *slab = currentSlab.load(std::memory_order_acquire);
                 std::byte *pointer = slab ? ReserveInSlab(*slab, request) : nullptr;
                 if (!pointer)
@@ -233,6 +235,7 @@ namespace DNDS::Runtime
         {
             auto &s = Live();
             const auto previous = RowSize(row);
+            DNDS_check_throw_info(length <= size_t(INT64_MAX), "builder row length exceeds signed index range");
             const auto bytes = CheckedSize::Multiply(length, s.elementBytes);
             DNDS_check_throw_info(s.kind == RowLayoutKind::CSR || length <= s.capacity, "row size exceeds padded capacity");
             DNDS_check_throw_info(s.kind != RowLayoutKind::Table || length == s.width, "table row width is fixed");

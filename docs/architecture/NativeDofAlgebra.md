@@ -21,6 +21,15 @@ values are exposed for application-managed halo exchange, never consumed by the
 operators below. Copying a field shares its Array handles; numerical `Copy`
 writes existing destination values and allocates no hidden history.
 
+The Array handle itself erases row policies. A statically sized `DofField<T, N>`
+therefore revalidates its logical component width on import and at every algebra
+entry point, including after replacement of its owned/ghost handles. Equal
+owned and ghost widths alone do not satisfy a different compile-time `N`.
+This is a constant-time operation-prologue check: `Detail::Check`/`Pair` call
+`Validate` before `SubmitArrays`. Neither the CPU `Apply` loop nor the CUDA
+`PointwiseKernel` calls it. The loops, stores and kernel parameter layout are
+unchanged; very small operations still pay the host-side validation overhead.
+
 ```cpp
 namespace A = DNDS::Algebra;
 namespace R = DNDS::Runtime;

@@ -763,6 +763,34 @@ TEST_CASE("Finite-volume scoped query views retain native topology and reject st
     }
 }
 
+TEST_CASE("Wall-distance replacement invalidates only reconstruction that depends on it")
+{
+    auto mesh = buildMesh("Uniform_3x3_wall.cgns", false, 0, 0);
+    auto isWall = [](t_index zone)
+    { return FaceIDIsExternalBC(zone); };
+    mesh->BuildNodeWallDist(isWall);
+    auto ordinary = buildVR(mesh, RecMethod::VFV_P2_Default);
+    auto wall = buildVR(mesh, RecMethod::VFV_P2_Default);
+    auto settings = wall->getSettings();
+    settings.functionalSettings.useAnisotropicFunctional = true;
+    settings.functionalSettings.anisotropicType = CFV::VRSettings::FunctionalSettings::AnisotropicType::WallDist;
+    wall->parseSettings(settings);
+    wall->ConstructMetrics();
+    wall->ConstructBaseAndWeight();
+    wall->ConstructRecCoeff();
+    REQUIRE_NOTHROW(wall->ValidateMeshDependencies());
+    UnstructuredMesh::WallDistOptions options;
+    options.minWallDist = 0.25;
+    mesh->BuildNodeWallDist(isWall, options);
+    CHECK_NOTHROW(ordinary->ValidateMeshDependencies());
+    CHECK_NOTHROW(wall->ValidateMetricsDependencies());
+    CHECK_THROWS(wall->ValidateBaseDependencies());
+    CHECK_THROWS(wall->ConstructRecCoeff());
+    wall->ConstructBaseAndWeight();
+    wall->ConstructRecCoeff();
+    CHECK_NOTHROW(wall->ValidateMeshDependencies());
+}
+
 TEST_CASE("CFV native authority preserves metrics and anisotropic reconstruction")
 {
     bool wallDistance = false;
@@ -833,6 +861,9 @@ TEST_CASE("CFV native authority preserves metrics and anisotropic reconstruction
         }
         return values;
     };
+    // Metamorphic restoration check, not an independent legacy numerical
+    // oracle: both samples use this implementation. Polynomial/reference
+    // fixtures elsewhere provide the independent mathematical comparisons.
     const auto expected = sample(makeVR());
     auto retained = NativeMeshSnapshot::Capture(*mesh, MeshReadRequirements::CellFlux());
     const auto beforeState = mesh->CurrentNativeState()->BindEpoch(Runtime::VersionTracker{});

@@ -11,7 +11,7 @@
 namespace G = DNDS::Geom;
 namespace R = DNDS::Runtime;
 using FixedState = R::Array<double, R::FixedRows<5>>;
-using TypedState = G::EntityField<double, R::FixedRows<5>>;
+using TypedState = G::EntityField<double>;
 
 namespace
 {
@@ -21,7 +21,7 @@ namespace
                double(phase) * 0.5 * double(component + 1);
     }
 
-    __global__ void CheckState(R::ArrayView<const double> values,
+    __global__ void CheckState(R::ArrayView<const double, false, R::FixedRows<5>> values,
                                R::ArrayView<const DNDS::index> original,
                                R::ArrayView<double> difference, int phase)
     {
@@ -30,7 +30,7 @@ namespace
                 difference(row, component) = values(row, component) - Expected(original(row, 0), component, phase);
     }
 
-    __global__ void UpdateState(R::ArrayView<double> values)
+    __global__ void UpdateState(R::ArrayView<double, false, R::FixedRows<5>> values)
     {
         for (size_t row = blockIdx.x * blockDim.x + threadIdx.x; row < values.RowCount(); row += blockDim.x * gridDim.x)
             for (size_t component = 0; component < 5; ++component)
@@ -145,7 +145,7 @@ namespace
             CHECK_THROWS(mesh.versions.BeginMutation(R::Change::Geometry));
             if (gated)
                 REQUIRE(cudaLaunchHostFunc(gate.stream, Gate::Wait, &gate) == cudaSuccess);
-            CheckState<<<4, 64, 0, gate.stream>>>(read.View(), ids.View(), output.View(), phase);
+            CheckState<<<4, 64, 0, gate.stream>>>(read.View<R::FixedRows<5>>(), ids.View(), output.View(), phase);
             REQUIRE(cudaGetLastError() == cudaSuccess);
             done = R::Completion::Record(context);
             read.Complete(done);
@@ -219,7 +219,7 @@ TEST_CASE("Native EntityField CUDA scopes and direct multi-GPU halo retain check
         CHECK_THROWS(field.Read(space, context));
         CHECK_THROWS(mesh->versions.BeginMutation(R::Change::Geometry));
         REQUIRE(cudaLaunchHostFunc(compute.value, Gate::Wait, &gate) == cudaSuccess);
-        UpdateState<<<4, 64, 0, compute.value>>>(write.View());
+        UpdateState<<<4, 64, 0, compute.value>>>(write.View<R::FixedRows<5>>());
         REQUIRE(cudaGetLastError() == cudaSuccess);
         done = R::Completion::Record(context);
         write.Complete(done);

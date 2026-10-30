@@ -137,6 +137,15 @@ unchecked storage walk or transfer policy for them to improve timing.
 
 ## GhostSpec is a coverage contract
 
+`CompiledGhostTree::compile(spec)` publishes an immutable shared program. Only
+const `Roots()`/`Levels()` inspection is exposed; there is no public partially
+initialized program. `NodeCount()`/`MaxLevel()` describe that same publication.
+Copies share the program, while modifying the input GhostSpec cannot change it.
+The collective `Signature()` includes the actual executable entries, parent IDs,
+collection flags and complete length-prefixed adjacency descriptors. Diagnostics
+from `dump()` are not used as the execution agreement. Recompile a changed recipe.
+
+
 Each GhostChain names an anchor family, a sequence of full adjacency descriptors,
 and the family to collect. Each root starts with this rank's owned entities of
 its anchor family. Intermediate entities may belong to any rank; ownership

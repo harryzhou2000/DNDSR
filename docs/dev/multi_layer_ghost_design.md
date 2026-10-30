@@ -1,10 +1,13 @@
 # Multi-Layer Ghost Cell Support {#multi_layer_ghost_design}
 
-> **Status:** Implemented. `evaluateGhostTree` supports multi-hop chains
-> with scratch pulls between BFS levels. `BuildGhostPrimary(nGhostLayers)`
-> passes through to `GhostSpec::defaultPrimary(nLayers)`.
+> **Historical design notes.** The current authoritative contract is
+> [mesh connectivity](../architecture/MeshConnectivity.md). Defaults now emit
+> explicit cumulative endpoint chains for each requested depth; boundary closure
+> also includes the reached boundary-node cones. Compiled programs are immutable
+> and expose const inspection accessors. Code below records the earlier design,
+> not the current public C++ representation or complete default recipe.
 
-## Current State
+## Earlier design
 
 `BuildGhostPrimary` supports N layers of ghost cells by traversing
 `cell2cell` N times via `evaluateGhostTree`:

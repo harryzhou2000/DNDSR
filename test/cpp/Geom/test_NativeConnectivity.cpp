@@ -267,9 +267,9 @@ TEST_CASE("Branched ghost tree keeps frontiers separate and unions endpoint kind
     // though longer chains continue through it. Its state remains the parent
     // for both child branches.
     auto combinedTree = G::CompiledGhostTree::compile(G::GhostSpec{{shortNode, longNode, cellBranch}});
-    REQUIRE(combinedTree.roots.size() == 1);
-    REQUIRE(combinedTree.roots[0].children.size() == 1);
-    const auto &cellHop = combinedTree.roots[0].children[0];
+    REQUIRE(combinedTree.Roots().size() == 1);
+    REQUIRE(combinedTree.Roots()[0].children.size() == 1);
+    const auto &cellHop = combinedTree.Roots()[0].children[0];
     REQUIRE(cellHop.children.size() == 1);
     const auto &nodeEndpoint = cellHop.children[0];
     CHECK(nodeEndpoint.hop == G::Adj::Cell2Node);

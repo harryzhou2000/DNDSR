@@ -1,7 +1,7 @@
 #include "Geom/Connectivity/AdjacencyRegistry.hpp"
 #include "Geom/Connectivity/NativePeriodicMatch.hpp"
 #include "Geom/Connectivity/ConnectivityInterpolateRows.hpp"
-#include "Geom/Transition/FieldTransfer.hpp"
+#include "DNDS/MPI/CollectiveStage.hpp"
 #include "Geom/Unstructured/UnstructuredMesh.hpp"
 #include <set>
 
@@ -158,9 +158,10 @@ namespace DNDS::Geom
     {
         // Compare the compiled schedule before entering its per-hop collectives.
         // Equal schedules are a collective caller requirement, checked here.
-        auto schedule = tree.dump();
-        int length = _mpi.rank == 0 ? int(schedule.size()) : 0;
+        const auto &schedule = tree.Signature();
+        int length = _mpi.rank == 0 ? (schedule.size() <= INT_MAX ? int(schedule.size()) : -1) : 0;
         MPI_Bcast(&length, 1, MPI_INT, 0, _mpi.comm);
+        DNDS_check_throw_info(length >= 0, "ghost program signature exceeds MPI count range");
         std::string canonical(size_t(length), ' ');
         if (_mpi.rank == 0)
             canonical = schedule;
@@ -174,10 +175,10 @@ namespace DNDS::Geom
                 DNDS_check_throw_info(found != _relations.end(), "native ghost traversal relation is missing");
                 found->second->Validate();
             } });
-        if (tree.levels.empty())
+        if (tree.Levels().empty())
             return {};
-        std::vector<std::vector<index>> sets(size_t(tree.totalNodes));
-        for (const auto &root : tree.levels.front())
+        std::vector<std::vector<index>> sets(size_t(tree.NodeCount()));
+        for (const auto &root : tree.Levels().front())
         {
             const auto &space = _spaces.at(root.kind);
             auto &output = sets[size_t(root.nodeId)];
@@ -188,9 +189,9 @@ namespace DNDS::Geom
                 output[size_t(row)] = first + index(row);
         }
         GhostResult result;
-        for (int level = 0; level <= tree.maxLevel; ++level)
+        for (int level = 0; level <= tree.MaxLevel(); ++level)
         {
-            for (const auto &entry : tree.levels[size_t(level)])
+            for (const auto &entry : tree.Levels()[size_t(level)])
             {
                 if (!entry.collect)
                     continue;
@@ -206,9 +207,9 @@ namespace DNDS::Geom
                         output.push_back(global);
                 SortUnique(output);
             }
-            if (level == tree.maxLevel)
+            if (level == tree.MaxLevel())
                 break;
-            const auto &hops = tree.levels[size_t(level + 1)];
+            const auto &hops = tree.Levels()[size_t(level + 1)];
             struct PendingHop
             {
                 size_t entry, relation;
@@ -222,7 +223,7 @@ namespace DNDS::Geom
             int valid = 1;
             try
             {
-                std::vector<uint8_t> seenNodes(size_t(tree.totalNodes), 0);
+                std::vector<uint8_t> seenNodes(size_t(tree.NodeCount()), 0);
                 for (size_t hopEntry = 0; hopEntry < hops.size(); ++hopEntry)
                 {
                     const auto &entry = hops[hopEntry];
@@ -933,7 +934,7 @@ namespace DNDS::Geom
             int candidate = cached != payloads.end() ? cached->second.ordinal : -1;
             // Every rank must reuse the SAME earlier transfer. Local hits on
             // different descriptors do not prove their remote payloads match.
-            candidate = FieldTransferDetail::AgreeAliasCandidate(_mpi, candidate, relations.size());
+            candidate = MPI::AgreeCandidate(_mpi, candidate, relations.size());
             if (candidate >= 0)
             {
                 ValidateCollectively([&]

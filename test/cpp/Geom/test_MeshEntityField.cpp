@@ -299,6 +299,78 @@ TEST_CASE("Entity field collective setup rejects rank-local stale/shape/schema a
                                                  { descriptor.attachment(); }));
 }
 
+TEST_CASE("Entity fields migrate table padded and CSR storage independently of view policy")
+{
+    const auto mpi = EntityFieldMPI();
+    for (int kind = 0; kind < 3; ++kind)
+        for (bool preserve : {false, true})
+        {
+            CAPTURE(kind);
+            CAPTURE(preserve);
+            auto source = EntityFieldMesh(mpi);
+            const auto original = source->Entities(EntityKind::Cell);
+            std::vector<size_t> lengths(size_t(original.NumOwned()));
+            for (DNDS::index iCell = 0; iCell < original.NumOwned(); ++iCell)
+                lengths[size_t(iCell)] = kind == 0 ? 3 : size_t(source->OriginalEntityId(EntityKind::Cell, iCell) % 4);
+            auto shape = kind == 0 ? R::RowLayout::Dense(original.NumOwned(), 3, 5)
+                                   : (kind == 1 ? R::RowLayout::Padded(lengths, 5) : R::RowLayout::Ragged(lengths));
+            EntityField<double> field(original, R::Array<double>(shape));
+            {
+                auto write = field.Write(original);
+                const auto view = write.View();
+                for (DNDS::index iCell = 0; iCell < original.NumOwned(); ++iCell)
+                    for (DNDS::index j = 0; j < view[iCell].size(); ++j)
+                        view(iCell, j) = 100 * source->OriginalEntityId(EntityKind::Cell, iCell) + double(j);
+                if (kind == 0)
+                {
+                    const auto fixed = write.View<R::FixedRows<3, 5>, true>();
+                    static_assert(std::is_same_v<decltype(fixed), const R::ArrayView<double, true, R::FixedRows<3, 5>>>);
+                    CHECK(fixed.RowCount() == original.NumOwned());
+                }
+                else if (kind == 1)
+                    CHECK(write.View<R::StaticMaxRows<5>>().RowCount() == original.NumOwned());
+                else
+                    CHECK(write.View<R::CSRRows>().RowCount() == original.NumOwned());
+            }
+            auto oldRead = field.Read(original);
+            MeshTransitionHandle handle(source);
+            ReorderInput input;
+            input.explicitMaps.push_back({EntityKind::Cell, std::vector<MPI_int>(size_t(original.NumOwned()), (mpi.rank + 1) % mpi.size)});
+            const auto layout = preserve ? R::TransferLayout::PreserveStorage() : R::TransferLayout::Compact();
+            auto prepared = PreparedMeshTransition::Prepare(handle, input, {field.Register("variable-history", layout)});
+            prepared.Publish();
+            const auto current = handle.Get()->Entities(EntityKind::Cell);
+            auto read = field.Read(current);
+            auto values = field.UntypedValues(current);
+            CHECK(values.Layout().Kind() == (preserve ? shape.Kind() : R::RowLayoutKind::CSR));
+            if (preserve && kind < 2)
+                CHECK(values.Layout().Stride() == 5);
+            for (DNDS::index iCell = 0; iCell < current.NumOwned(); ++iCell)
+            {
+                const auto id = handle.Get()->OriginalEntityId(EntityKind::Cell, iCell);
+                CHECK(read.View()[iCell].size() == (kind == 0 ? 3 : id % 4));
+                for (DNDS::index j = 0; j < read.View()[iCell].size(); ++j)
+                    CHECK(read.View()(iCell, j) == 100 * id + double(j));
+            }
+            if (preserve && kind == 0)
+                CHECK(read.View<R::FixedRows<3, 5>>().RowCount() == current.NumOwned());
+            for (DNDS::index iCell = 0; iCell < original.NumOwned(); ++iCell)
+                for (DNDS::index j = 0; j < oldRead.View()[iCell].size(); ++j)
+                    CHECK(oldRead.View()(iCell, j) == 100 * source->OriginalEntityId(EntityKind::Cell, iCell) + double(j));
+            auto route = field.BuildHaloRoute(current);
+            auto binding = route.Bind(field, current, layout);
+            binding.Begin().Wait();
+            auto ghost = binding.GhostValues().Read();
+            for (DNDS::index iCell = 0; iCell < current.NumGhost(); ++iCell)
+            {
+                const auto id = handle.Get()->OriginalEntityId(EntityKind::Cell, current.NumOwned() + iCell);
+                CHECK(ghost.View()[iCell].size() == (kind == 0 ? 3 : id % 4));
+                for (DNDS::index j = 0; j < ghost.View()[iCell].size(); ++j)
+                    CHECK(ghost.View()(iCell, j) == 100 * id + double(j));
+            }
+        }
+}
+
 TEST_CASE("Entity CSR fields preserve variable row shape values and source leases across empty owners")
 {
     const auto mpi = EntityFieldMPI();

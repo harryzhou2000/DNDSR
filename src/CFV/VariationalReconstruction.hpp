@@ -132,16 +132,6 @@ namespace DNDS::CFV
         InverseDiagnostics _inverseDiagnostics;
         Runtime::VersionStamp _baseMeshStamp, _coefficientMeshStamp;
         uint64_t _baseMetricsGeneration = 0;
-        std::array<uint64_t, 4> _baseWallDistanceIdentity{};
-
-        std::array<uint64_t, 4> WallDistanceIdentity() const
-        {
-            // Published native wall distances are immutable for this mesh
-            // epoch. The base stamp rejects a change of query authority.
-            DNDS_check_throw_info(mesh->HasNativeState() && mesh->HasNodeWallDist(),
-                                  "wall-distance reconstruction requires prepared node wall distances");
-            return {};
-        }
 
     public:
         const InverseDiagnostics &GetInverseDiagnostics() const { return _inverseDiagnostics; }
@@ -151,9 +141,6 @@ namespace DNDS::CFV
             this->ValidateMetricsDependencies();
             DNDS_check_throw_info(_baseMeshStamp.Valid() && _baseMetricsGeneration == this->_metricsGeneration,
                                   "reconstruction bases are missing or stale; rebuild ConstructBaseAndWeight");
-            if (settings.functionalSettings.anisotropicType == VRSettings::FunctionalSettings::AnisotropicType::WallDist)
-                DNDS_check_throw_info(_baseWallDistanceIdentity == WallDistanceIdentity(),
-                                      "wall distances changed; rebuild reconstruction bases and coefficients");
         }
         void ValidateMeshDependencies() const
         {

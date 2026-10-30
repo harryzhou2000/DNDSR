@@ -18,6 +18,7 @@ small-mode cutoff change, setup diagnostics and affected nonzero-tolerance cases
 | Historical Array/ParArray interface | [Legacy Array infrastructure](architecture/array_infrastructure.md) |
 | Runtime ordering and lifetime responsibilities | [Runtime caller contract](architecture/RuntimeCallerContract.md) |
 | Native field algebra | [Native DOF algebra](architecture/NativeDofAlgebra.md) |
+| Entity-associated fields and migration layouts | [EntityField](architecture/EntityField.md) |
 | Canonical and compatibility source paths | [Source organization](architecture/source_organization.md) |
 | Mesh Python access and operations | [Python mesh guide](guides/python_geom_guide.md) |
 
@@ -27,8 +28,15 @@ after detecting an omitted boundary ring; see the
 [evidence correction](dev/infrastructure_finish_2026-10-27.md). Test totals and
 owned numerical parity do not prove per-rank ghost completeness.
 The [Runtime/mesh audit](dev/runtime_mesh_audit_2026-10-29.md) records the
-current abstraction and safety review, fixes, validation checkpoints and the
-still-open parallel setup performance target.
+abstraction and safety review, fixes, validation checkpoints and the completed
+parallel setup median target; serial import and later FV work are separate.
+The [2026-10-30 retrospective](dev/refactor_retrospective_2026-10-30.md) records
+the next audit's local fixes, remaining design decisions, test limitations and
+CFV/sliding-interface planning boundary. Earlier validation is not evidence for
+these new changes.
+The [accepted-fixes follow-up](dev/accepted_audit_fixes_2026-10-30.md) resolves
+the field-layout and compiled-program decisions and records the next FV/Geom
+work orders.
 The [source comparison and validation ledger](dev/mesh_construction_semantics_2026-10-28.md)
 records the final checks, explicit legacy periodic-frame differences and limits.
 The [legacy connectivity test-purpose ledger](dev/mesh_connectivity_test_port_2026-10-28.md)

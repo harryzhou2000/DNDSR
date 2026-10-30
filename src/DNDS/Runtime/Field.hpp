@@ -28,8 +28,10 @@ namespace DNDS::Runtime
         }
     };
 
-    /// Initial contiguous field representation. Ragged topology stays in Array;
-    /// future SoA/chunked views can coexist without changing Buffer or routing.
+    /// Compatibility field from the first Runtime prototype. New code should
+    /// compose Array storage, DNDS::Algebra numerical fields, and (when needed)
+    /// Geom entity association. This class's string/epoch metadata is not an
+    /// EntitySpace identity check; it remains for existing prototype consumers.
     template <class T>
     class Field
     {

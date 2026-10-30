@@ -11,12 +11,15 @@ timeout. The final two-GPU gate passes in
 records the built source and exact boundary.
 
 The real CGNS mesh fixture publishes native authority before creating
-`EntityField<double, FixedRows<5>>` from CUDA values. Its five-component state uses
+`EntityField<double>` from CUDA values. Its five-component state uses
 an exactly representable formula of original cell ID and component. A separate
 MPI gather of owned original IDs constructs the current-global-ID oracle; ghost
 expectations do not read received values or reuse the payload route.
 
-Device kernels consume `field.Read(...).View()` and `field.Write(...).View()`.
+Device kernels consume `scope.View<FixedRows<5>>()` from retained field read/write
+scopes. Their kernel parameters also retain the static policy; it is not erased
+into a generic view at launch. This API was updated and rerun in
+[the 2026-10-30 follow-up](accepted_audit_fixes_2026-10-30.md).
 Pinned callback gates prove completions remain pending and mesh mutation leases
 remain held until the using prefix completes. The gate owner opens/synchronizes
 before lease/completion destruction, including on exceptions. Kernel functions

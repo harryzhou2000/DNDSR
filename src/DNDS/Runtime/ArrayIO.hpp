@@ -20,6 +20,25 @@ namespace DNDS::Runtime
                 MPI_Allreduce(MPI_IN_PLACE, &all, 1, MPI_INT, MPI_MIN, mpi.comm);
             DNDS_check_throw_info(all, message);
         }
+        /// Pin the published shape before entering collective I/O. A moved
+        /// handle or exclusive shape edit on one rank must reject every rank
+        /// before any checkpoint group or payload is written. Shared by the
+        /// typed C++ and dynamic Python frontends.
+        template <class ArrayHandle>
+        ArrayStorage::Shared IOPublishedStorage(const ArrayHandle &array, const MPIInfo &mpi, bool perRank)
+        {
+            ArrayStorage::Shared storage;
+            try
+            {
+                storage = array.SharedStorage();
+            }
+            catch (...)
+            {
+            }
+            IOCheck(bool(storage), mpi, perRank,
+                    "Array checkpoint requires a live published source on every rank");
+            return storage;
+        }
         inline void IOAgree(const std::string &value, const MPIInfo &mpi, bool perRank)
         {
             if (perRank)
@@ -232,7 +251,8 @@ namespace DNDS::Runtime
     {
         DNDS_check_throw_info(serializer, "null Array serializer");
         const auto schema = Detail::IOSchema<T>(requestedSchema, mpi, serializer->IsPerRank());
-        WriteArrayStorage(array.Storage(), array.Layout(), schema, serializer, name, mpi);
+        auto storage = Detail::IOPublishedStorage(array, mpi, serializer->IsPerRank());
+        WriteArrayStorage(storage->Values(), storage->Layout(), schema, serializer, name, mpi);
     }
     struct ArrayArchive
     {

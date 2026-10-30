@@ -27,7 +27,10 @@ to inline CPU, worker CPU and CUDA execution.
    access lease or submitted operation alive through the actual use, including
    device completion. Do not retain a raw pointer for later independent work.
    Bounds, stencil validity and matching device placement are caller obligations;
-   there is no per-element lease or bounds check in the hot path. Select a typed
+   there is no per-element lease check. Default kernel views omit bounds checks;
+   `View<true>()` or `View<FixedRows<N>, true>()` enables host/device assertions
+   for diagnostic kernels. Bounds checks do not validate stencil semantics or
+   cross-stream ordering. Select a typed
    layout when acquiring the view (`View<FixedRows<N>>()`, `TableRows`,
    `PaddedRows`, `CSRRows` or the runtime `GenericRowView`). The policy is checked
    once when the view is created; kernels must retain the declared row assumptions.

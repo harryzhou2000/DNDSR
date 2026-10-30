@@ -471,6 +471,46 @@ TEST_CASE("Native field uses exact local permutation and preserves old aliases")
     CHECK(old.Read().View<int64_t>()[0] == 100 * mpi.rank);
 }
 
+TEST_CASE("Explicit transfer layout preserves static stride and rejects one-rank capacity errors before publication")
+{
+    namespace R = Runtime;
+    const auto mpi = worldMPI();
+    auto mapping = std::make_shared<GlobalOffsetsMapping>();
+    mapping->setMPIAlignBcast(mpi, 3);
+    for (bool distributed : {false, true})
+    {
+        auto transfer = distributed ? PermutationTransfer::fromPartition(std::vector<MPI_int>(3, (mpi.rank + 1) % mpi.size), mapping, mpi)
+                                    : PermutationTransfer::fromLocalPermutation({2, 0, 1}, mapping, mpi);
+        R::Array<double> field(R::RowLayout::Dense(3, 3, 5));
+        {
+            auto write = field.Write();
+            for (DNDS::index iRow = 0; iRow < 3; ++iRow)
+                for (DNDS::index j = 0; j < 3; ++j)
+                    write.View<R::FixedRows<3, 5>>()(iRow, j) = 1000 * mpi.rank + 10 * iRow + j;
+        }
+        const auto identity = field.Identity();
+        auto bad = RegisterArray(field, EntityKind::Cell, "bad-capacity", R::ElementSchema::Arithmetic<double>(),
+                                 R::ExecutionContext::Host(), CompanionDisposition::TransferIfReordered,
+                                 R::TransferLayout::Padded(mpi.rank == 0 ? 2 : 5));
+        CHECK_THROWS(bad.fn(transfer, mpi));
+        CHECK(field.Identity() == identity);
+        CHECK(field.Read().View()(1, 2) == 1000 * mpi.rank + 12);
+        auto good = RegisterArray(field, EntityKind::Cell, "strided-state", R::ElementSchema::Arithmetic<double>(),
+                                  R::ExecutionContext::Host(), CompanionDisposition::TransferIfReordered,
+                                  R::TransferLayout::Table(3, 5));
+        good.fn(transfer, mpi);
+        auto read = field.Read();
+        const auto view = read.View<R::FixedRows<3, 5>, true>();
+        for (DNDS::index iRow = 0; iRow < 3; ++iRow)
+            for (DNDS::index j = 0; j < 3; ++j)
+            {
+                const auto owner = distributed ? (mpi.rank + mpi.size - 1) % mpi.size : mpi.rank;
+                const auto oldRow = distributed ? iRow : (iRow + 1) % 3;
+                CHECK(view(iRow, j) == 1000 * owner + 10 * oldRow + j);
+            }
+    }
+}
+
 TEST_CASE("Staged field bundle preserves every source when a later preparation fails")
 {
     auto mpi = worldMPI();

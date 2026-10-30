@@ -43,6 +43,7 @@ namespace DNDS::Runtime
             try
             {
                 _source = ArrayStorage::Share(source);
+                DNDS_check_throw_info(_source, "dynamic transfer requires live source storage");
                 DNDS_check_throw_info(_source->ElementBytes() == schema.Extent(), "dynamic transfer element stride mismatch");
                 _sourcePin = _source->Read(_source->Values().GetDevice() == Device::Host() ? ExecutionContext::Host() : context);
             }
