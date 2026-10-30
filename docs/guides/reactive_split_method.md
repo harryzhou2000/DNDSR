@@ -25,6 +25,14 @@ repository, not in this implementation guide. Its `2026-10-19_REPORT.md`
 (normally under `workspace/reaction_region_indicator/` in the main checkout)
 collects the available broadA and candidate matrices, including failed rows,
 inner caps, reference-refinement qualifications and CFL-clipped Kinetic runs.
+The later `2026-10-30_REPORT.md` and
+`studies/dt_independent_selector_20261029/THERMAL_POSTERIOR_REPORT.md` record
+the GR, centered-gradient and TWR comparisons. TWR03P4 is a useful simple
+candidate: it retains ESDIRK2 flame accuracy and improves the smaller-step
+two-scale compromise, with modestly weaker usable U2R1 flame accuracy.
+Larger-step interface errors, irregular flame fits and wall-bound U2R1
+continuations limit its transfer; it is not established as a reliable
+replacement for broadA throughout the tested matrix.
 A supported strategy name is not a recommendation of a universally validated
 recipe; keep those evidence boundaries when comparing or reproducing results.
 
