@@ -14,7 +14,8 @@ namespace DNDS::Euler
      * ChemistryEscape is the BA-CE6 family; TransportBalance is Balance/B-E2;
      * MatchedRateRatio is localRXX; ChemicalResponse is Kinetic/H01P2;
      * GradientRateRatio is the timestep-independent GR family; its Centered
-     * variant changes only the normalized-gradient estimator.
+     * variant changes only the normalized-gradient estimator. ThermalRateRatio
+     * is TWR, using exact CV temperature activity and thermal diffusivity.
      * These names select formula families, not their tuned parameter recipes.
      */
     enum class ReactiveSplitIndicatorMode
@@ -28,6 +29,7 @@ namespace DNDS::Euler
         ChemicalResponse,          ///< Kinetic/H01P2: coupled share H(||Js d||/||Js s||;r0,pr).
         GradientRateRatio,         ///< GR: coupled share H(B/A;r0,pr), using the broadA gradient rate B.
         GradientRateRatioCentered, ///< GR-C: same ratio with a least-squares centered gradient rate B.
+        ThermalRateRatio,          ///< TWR: coupled share H(B_T/A_T;r0,pr), with A_T=|dot(T)/T| and B_T=kappa|grad ln T|^2/(rho cv).
     };
 
     DNDS_DEFINE_ENUM_JSON(ReactiveSplitIndicatorMode,
@@ -39,7 +41,8 @@ namespace DNDS::Euler
                            {ReactiveSplitIndicatorMode::MatchedRateRatio, "MatchedRateRatio"},
                            {ReactiveSplitIndicatorMode::ChemicalResponse, "ChemicalResponse"},
                            {ReactiveSplitIndicatorMode::GradientRateRatio, "GradientRateRatio"},
-                           {ReactiveSplitIndicatorMode::GradientRateRatioCentered, "GradientRateRatioCentered"}})
+                           {ReactiveSplitIndicatorMode::GradientRateRatioCentered, "GradientRateRatioCentered"},
+                           {ReactiveSplitIndicatorMode::ThermalRateRatio, "ThermalRateRatio"}})
 
     /**
      * @brief Configuration of the dimensionless mixed reactive-source selector.
@@ -114,6 +117,7 @@ namespace DNDS::Euler
                        "ChemicalResponse = Kinetic/H01P2, coupled share H(||Js d||/||Js s||;r0,pr). "
                         "GradientRateRatio = GR, coupled share H(B/A;r0,pr), independent of dt, with broadA's gradient-based B. "
                        "GradientRateRatioCentered = GR-C, the same map with a least-squares normalized gradient in B. "
+                       "ThermalRateRatio = TWR, coupled share H(B_T/A_T;r0,pr), where A_T=|dot(T)/T| at constant volume and B_T=kappa*|grad ln T|^2/(rho*cv). "
                        "See docs/guides/reactive_split_method.md for formulas and recipe parameters. "
                        "Use a string, not a legacy integer.",
                        DNDS::Config::enum_values(DNDS_ENUM_ALLOWED_VALUES(ReactiveSplitIndicatorMode)));
@@ -124,8 +128,8 @@ namespace DNDS::Euler
             DNDS_FIELD(chemicalActivityThreshold,  "Chemical activity threshold a0 in sat(a;a0,p)", DNDS::Config::range(0.0));
             DNDS_FIELD(diffusiveActivityThreshold, "Diffusion activity threshold b0 in sat(b;b0,p)", DNDS::Config::range(0.0));
             DNDS_FIELD(activitySaturationExponent, "Shared activity-saturation exponent p in sat(z;z0,p)", DNDS::Config::range(0.0));
-            DNDS_FIELD(ratioThreshold,             "Ratio midpoint r0 for StiffnessRatio, MatchedRateRatio, ChemicalResponse and both GradientRateRatio variants", DNDS::Config::range(0.0));
-            DNDS_FIELD(ratioExponent,              "Ratio Hill power pr for StiffnessRatio, MatchedRateRatio, ChemicalResponse and both GradientRateRatio variants", DNDS::Config::range(0.0));
+            DNDS_FIELD(ratioThreshold,             "Ratio midpoint r0 for StiffnessRatio, MatchedRateRatio, ChemicalResponse, GradientRateRatio variants and ThermalRateRatio", DNDS::Config::range(0.0));
+            DNDS_FIELD(ratioExponent,              "Ratio Hill power pr for StiffnessRatio, MatchedRateRatio, ChemicalResponse, GradientRateRatio variants and ThermalRateRatio", DNDS::Config::range(0.0));
             DNDS_FIELD(coupledThreshold,           "Coupled-score midpoint C0", DNDS::Config::range(0.0));
             DNDS_FIELD(transitionWidth,            "Logistic coupled-fraction width w", DNDS::Config::range(0.0));
             DNDS_FIELD(shockScale,                 "Pressure-jump scale h0 in shock gate gh", DNDS::Config::range(0.0));
@@ -168,6 +172,9 @@ namespace DNDS::Euler
                          { return s.indicatorMode != ReactiveSplitIndicatorMode::ChemicalResponse || (s.ratioThreshold > 0 && s.ratioExponent > 0 && s.spatialPasses == 0); });
             config.check("gradient-rate ratio requires positive ratio controls and no spatial passes", [](const T &s)
                          { return (s.indicatorMode != ReactiveSplitIndicatorMode::GradientRateRatio && s.indicatorMode != ReactiveSplitIndicatorMode::GradientRateRatioCentered) ||
+                                  (s.ratioThreshold > 0 && s.ratioExponent > 0 && s.spatialPasses == 0); });
+            config.check("thermal-rate ratio requires positive ratio controls and no spatial passes", [](const T &s)
+                         { return s.indicatorMode != ReactiveSplitIndicatorMode::ThermalRateRatio ||
                                   (s.ratioThreshold > 0 && s.ratioExponent > 0 && s.spatialPasses == 0); });
         }
     };
@@ -280,6 +287,21 @@ namespace DNDS::Euler
         if (chemicalRate == 0 || diffusionRate == 0)
             return 0;
         return ReactiveSplitChemicalResponseFraction(chemicalRate, diffusionRate, settings);
+    }
+
+    /**
+     * @brief TWR coupled share @f$H(B_T/A_T;r_0,p_r)@f$ from inverse-second thermal rates.
+     * @details @f$A_T=|Q_v|/(\rho c_vT)@f$ uses internal-energy release and
+     * @f$B_T=\kappa|\nabla\ln(T/T_{\rm ref})|^2/(\rho c_v)@f$.
+     * Zero B_T selects Strang, including both-zero states; positive B_T with
+     * zero A_T selects coupled. No activity/shock/spatial gate or timestep is
+     * included. Inactive thermal gradients can therefore couple. The caller
+     * applies endpoint snapping; this is not a chemical entropy-production map.
+     */
+    inline real ReactiveSplitThermalRateFraction(real chemicalTemperatureRate, real thermalDiffusionRate,
+                                                 const ReactiveSplitIndicatorSettings &settings)
+    {
+        return ReactiveSplitChemicalResponseFraction(chemicalTemperatureRate, thermalDiffusionRate, settings);
     }
 
     inline real ReactiveSplitBalanceSmooth(real localFraction, real neighborSum, int neighborCount)

@@ -18,6 +18,7 @@ report family; the schema's `enum` lists the accepted configuration strings.
 | `ChemicalResponse` | 5 | Kinetic chemical directional-response ratio |
 | `GradientRateRatio` | — | GR: timestep-independent gradient diffusion / chemical activity |
 | `GradientRateRatioCentered` | — | GR-C: the same ratio using a least-squares centered gradient |
+| `ThermalRateRatio` | — | TWR: exact CV temperature activity versus thermal-gradient diffusion rate |
 
 Posterior accuracy evidence is maintained separately in the independent RRI
 repository, not in this implementation guide. Its `2026-10-19_REPORT.md`
@@ -110,6 +111,85 @@ This is a candidate motivated by the fixed-state screen in RRI's
 `studies/dt_independent_selector_20261029`. Neither the screen nor the basic
 gradient tests establish posterior accuracy or multidimensional robustness.
 Existing strategies continue to use their original gradient definition.
+
+## Experimental matched thermal-rate ratio
+
+`indicatorMode="ThermalRateRatio"` replaces GR's full thermochemical norm
+and maximum species diffusivity with two matched scalar thermal rates:
+
+$$
+Q_v=-\alpha_{\rm debug}\sum_k e_k\dot m_k,\qquad
+A_T=\frac{|Q_v|}{\rho c_vT},\qquad
+B_T=\frac{\kappa}{\rho c_v}|\nabla\ln(T/T_{\rm ref})|^2,
+$$
+
+$$
+r_T=\frac{B_T}{A_T},\qquad
+f_c=\frac{r_T^{p_r}}{r_T^{p_r}+r_0^{p_r}},\qquad
+\chi=\operatorname{snap}(1-f_c).
+$$
+
+$T$ is physical kelvin, $\rho$ is kg/m³, $c_v$ is J/(kg K), and
+$\kappa$ is conductivity in W/(m K). The specific internal energy
+$e_k=h_k-R_kT$ is in J/kg, and $\dot m_k$ is the full net species mass
+production in kg/(m³ s), before chi partitioning. The independent debugging
+factor $\alpha_{\rm debug}$ is `reactiveSourceScale`; it is not replaced by
+chi. Both rates are in inverse seconds. $T_{\rm ref}$ is an arbitrary fixed
+positive reference temperature; it makes the logarithm dimensionless and
+cancels from the gradient. Ideal-gas species thermodynamics and the supported
+mixture-averaged transport model are required.
+
+The scalar gradient uses the same centered geometry as GR-C, but different
+moments:
+
+$$
+\boldsymbol m_i=\sum_j\boldsymbol r_{ij}\ln(T_j/T_i),\qquad
+|\nabla\ln T|_i^2=\|\boldsymbol M_i^+\boldsymbol m_i\|_2^2.
+$$
+
+It contains no species moments, maximum-temperature normalization or
+cell-length cap. Physical boundary faces are skipped. On a uniform cell
+chain it is the centered signed log-temperature derivative; a lone interior
+neighbor gives a one-sided value. The construction assumes resolved fields;
+no claim of grid convergence follows from its continuous-field limit.
+
+Zero $B_T$ selects Strang, including both-zero rates. Positive $B_T$ with
+zero $A_T$ selects coupled. There is no timestep, shock/activity gate,
+chemical Jacobian, spatial expansion or smoothing in this strategy.
+`ratioThreshold` and `ratioExponent` set $r_0$ and $p_r$. The test candidate
+**TWR03P4** uses $r_0=0.03$, $p_r=4$, coupled snap tolerance 0.01 and
+Strang snap tolerance 0.05. This selects one recipe, not a new solver default:
+
+```sh
+  -k /eulerSettings/reactiveSplitIndicator/indicatorMode -v '"ThermalRateRatio"' \
+  -k /eulerSettings/reactiveSplitIndicator/ratioThreshold -v 0.03 \
+  -k /eulerSettings/reactiveSplitIndicator/ratioExponent -v 4 \
+  -k /eulerSettings/reactiveSplitIndicator/spatialPasses -v 0 \
+  -k /eulerSettings/reactiveSplitIndicator/coupledSnapTolerance -v 0.01 \
+  -k /eulerSettings/reactiveSplitIndicator/strangSnapTolerance -v 0.05
+```
+
+As in every strategy, enable mixed integration separately with
+`sourceStrangSplitting=2`. TWR uses the existing solver-owned chi field, held
+over one physical step. It adds no communication or persistent evaluator
+state. The caller must supply current u ghosts. Thermochemistry/transport is
+evaluated on owning cells; neighboring temperatures suffice for the gradient.
+Temperature recovery uses UV tolerance $10^{-12}$ in this mode. Existing
+modes retain their previous calculations and defaults.
+
+For output, `reactiveSplitChemicalStep` and `reactiveSplitDiffusiveStep`
+contain $\Delta t_{\rm physical}A_T$ and $\Delta t_{\rm physical}B_T$;
+`reactiveSplitCoupledScore` contains $f_c$. The shock sensor is diagnostic
+only. These intermediate fields are valid only on owning cells, and the
+usual held-entry-chi versus saved-exit-state distinction remains.
+
+The equivalent ratio compares heat-conduction entropy production with
+$|Q_v|/T$, but **$|Q_v|/T$ is not chemical entropy production**. No chemical
+potential or entropy inequality is used in the implementation. Quiet thermal
+gradients can couple even with negligible chemistry, and isothermal species
+diffusion is missed. The RRI study `dt_independent_selector_20261029`
+records the whole-trace a-priori screen and limitations. A favorable screen
+does not establish posterior accuracy, cost savings or detonation robustness.
 
 ## Experimental local matched-rate ratio (mode 4)
 

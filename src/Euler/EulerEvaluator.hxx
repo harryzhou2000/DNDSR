@@ -1807,6 +1807,7 @@ namespace DNDS::Euler
         auto &reactiveSplitShockSensor = reactiveSplit.shockSensor;
         auto &reactiveSplitCoupledScore = reactiveSplit.coupledScore;
         const auto &indicatorSettings = settings.reactiveSplitIndicator;
+        const bool useThermalRatio = indicatorSettings.indicatorMode == ReactiveSplitIndicatorMode::ThermalRateRatio;
         const bool useMatchedTransport = indicatorSettings.indicatorMode == ReactiveSplitIndicatorMode::TransportBalance ||
                                          indicatorSettings.indicatorMode == ReactiveSplitIndicatorMode::MatchedRateRatio ||
                                          indicatorSettings.indicatorMode == ReactiveSplitIndicatorMode::ChemicalResponse;
@@ -1842,7 +1843,7 @@ namespace DNDS::Euler
             auto state = u[iCell];
             real TGuess = cellTWarm && iCell < mesh->NumCell() ? (*cellTWarm)[iCell](0) : real(0);
             auto [T, p, asqr, H, gammaEq, gamma] = phys_.conservativeThermal(
-                state, TGuess, useMatchedTransport ? real(1e-12) : real(1e-8));
+                state, TGuess, (useMatchedTransport || useThermalRatio) ? real(1e-12) : real(1e-8));
             (void)asqr;
             (void)H;
             (void)gammaEq;
@@ -1853,6 +1854,77 @@ namespace DNDS::Euler
             Chemistry::RepairMassFractions(state(0), {state.data() + Isp, Ns1}, Y);
             if (cellTWarm && iCell < mesh->NumCell())
                 (*cellTWarm)[iCell](0) = T;
+        }
+
+        if (useThermalRatio)
+        {
+            DNDS_check_throw_info(phys_.chem().isIdealGas(), "thermal-rate ratio requires ideal-gas species thermodynamics");
+            DNDS_check_throw_info(std::isfinite(settings.reactiveSourceScale) && settings.reactiveSourceScale >= 0,
+                                  "thermal-rate ratio requires finite nonnegative reactiveSourceScale");
+            const real dtPhysical = dt * settings.idealGasProperty.L0 / settings.idealGasProperty.U0;
+            const real inverseLengthSquared = 1.0 / sqr(settings.idealGasProperty.L0);
+#if defined(DNDS_DIST_MT_USE_OMP)
+#    pragma omp parallel
+#endif
+            {
+                std::vector<double> omega(static_cast<size_t>(Ns));
+                std::vector<double> enthalpy(static_cast<size_t>(Ns));
+#if defined(DNDS_DIST_MT_USE_OMP)
+#    pragma omp for schedule(guided)
+#endif
+                for (index iCell = 0; iCell < mesh->NumCell(); ++iCell)
+                {
+                    auto &chem = phys_.chem();
+                    Chemistry::ConstSpeciesBufferView Y{massFractions.data() + static_cast<size_t>(iCell) * Ns, Ns};
+                    const real T = temperature[static_cast<size_t>(iCell)];
+                    const real p = pressure[static_cast<size_t>(iCell)];
+                    chem.productionRates(T, p, Y, {omega.data(), Ns});
+                    chem.speciesEnthalpies(T, p, Y, {enthalpy.data(), Ns});
+                    real heatReleaseCV = 0;
+                    for (int k = 0; k < Ns; ++k)
+                    {
+                        const real massRate = omega[static_cast<size_t>(k)] * chem.molecularWeights()[static_cast<size_t>(k)] * settings.reactiveSourceScale;
+                        const real internalEnergy = enthalpy[static_cast<size_t>(k)] - chem.speciesGasConstants()[static_cast<size_t>(k)] * T;
+                        heatReleaseCV -= massRate * internalEnergy;
+                    }
+                    const real rhoPhysical = u[iCell](0) * settings.idealGasProperty.rho0;
+                    const real cv = chem.mixtureCv(T, Y, p);
+                    const real conductivity = chem.thermalConductivity(T, p, Y);
+                    DNDS_assert(std::isfinite(cv) && cv > 0 && std::isfinite(conductivity) && conductivity >= 0);
+                    const real chemicalTemperatureRate = std::abs(heatReleaseCV) / (rhoPhysical * cv * T);
+                    Eigen::Matrix<real, 3, 3> normal = Eigen::Matrix<real, 3, 3>::Zero();
+                    Eigen::Matrix<real, 3, 1> moments = Eigen::Matrix<real, 3, 1>::Zero();
+                    real shockSensor = 0;
+                    auto c2f = mesh->cell2face[iCell];
+                    for (rowsize ic2f = 0; ic2f < c2f.size(); ++ic2f)
+                    {
+                        const index iFace = c2f[ic2f];
+                        const index other = mesh->CellFaceOther(iCell, iFace, ic2f);
+                        if (other == UnInitIndex)
+                            continue;
+                        const rowsize if2c = mesh->CellIsFaceBack(iCell, iFace, ic2f) ? 0 : 1;
+                        const Geom::tPoint separation = vfv->GetOtherCellBaryFromCell(iCell, other, iFace, if2c) - vfv->GetCellBary(iCell);
+                        if (!(separation.squaredNorm() > 0))
+                            continue;
+                        const real otherT = temperature[static_cast<size_t>(other)];
+                        normal.noalias() += separation * separation.transpose();
+                        moments.noalias() += separation * (std::log(otherT) - std::log(T)); // log(T_j/T_i)
+                        const real otherP = pressure[static_cast<size_t>(other)];
+                        shockSensor = std::max(shockSensor, std::abs(otherP - p) / std::max({std::abs(p), std::abs(otherP), real(1e-30)}));
+                    }
+                    const real thermalDiffusionRate = conductivity / (rhoPhysical * cv) *
+                                                      ReactiveSplitLogTemperatureGradientSquared(normal, moments) * inverseLengthSquared;
+                    const real coupledFraction = ReactiveSplitThermalRateFraction(chemicalTemperatureRate, thermalDiffusionRate, indicatorSettings);
+                    // Owning cells only. No chi, activity/shock gate, spatial pass
+                    // or timestep enters the thermal-rate ratio itself.
+                    reactiveSplitChemicalStep[iCell](0) = dtPhysical * chemicalTemperatureRate;
+                    reactiveSplitDiffusiveStep[iCell](0) = dtPhysical * thermalDiffusionRate;
+                    reactiveSplitShockSensor[iCell](0) = shockSensor;
+                    reactiveSplitCoupledScore[iCell](0) = coupledFraction;
+                    reactiveSplitChi[iCell](0) = ReactiveSplitSnapChi(1.0 - coupledFraction, indicatorSettings);
+                }
+            }
+            return;
         }
 
         if (useMatchedTransport)

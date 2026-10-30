@@ -9,7 +9,7 @@ TEST_CASE("Reactive split strategy names round trip and reject invalid configura
 {
     using DNDS::Euler::ReactiveSplitIndicatorSettings;
     const auto names = DNDS_ENUM_ALLOWED_VALUES(ReactiveSplitIndicatorMode);
-    REQUIRE(names.size() == 8);
+    REQUIRE(names.size() == 9);
     const auto schema = ReactiveSplitIndicatorSettings::schema();
     const auto &modeSchema = schema["properties"]["indicatorMode"];
     CHECK(modeSchema["enum"] == nlohmann::ordered_json(names));
@@ -122,6 +122,33 @@ TEST_CASE("Centered thermochemical gradient resolves affine fields and cancels a
     CHECK(settings.validate().empty());
     settings.spatialPasses = 1;
     CHECK_FALSE(settings.validate().empty());
+}
+
+TEST_CASE("Thermal-rate ratio preserves zero limits, common units and its named recipe")
+{
+    using namespace DNDS::Euler;
+    ReactiveSplitIndicatorSettings settings;
+    settings.indicatorMode = ReactiveSplitIndicatorMode::ThermalRateRatio;
+    settings.ratioThreshold = .03;
+    settings.ratioExponent = 4;
+    CHECK(settings.validate().empty());
+    CHECK(ReactiveSplitThermalRateFraction(0, 0, settings) == 0);
+    CHECK(ReactiveSplitThermalRateFraction(1, 0, settings) == 0);
+    CHECK(ReactiveSplitThermalRateFraction(0, 1, settings) == 1);
+    CHECK(ReactiveSplitThermalRateFraction(1, .03, settings) == doctest::Approx(.5));
+    CHECK(ReactiveSplitThermalRateFraction(17, .51, settings) == doctest::Approx(.5));
+    CHECK(ReactiveSplitThermalRateFraction(1e-200, 3e-202, settings) == doctest::Approx(.5));
+    CHECK_THROWS(ReactiveSplitThermalRateFraction(-1, 1, settings));
+    settings.spatialPasses = 1;
+    CHECK_FALSE(settings.validate().empty());
+
+    using Matrix3 = Eigen::Matrix<DNDS::real, 3, 3>;
+    const Eigen::Vector3d direction = Eigen::Vector3d(1, 2, 3).normalized();
+    const Matrix3 normal = 2 * direction * direction.transpose();
+    // log T = 2*x along the chain gives gradient norm squared four.
+    CHECK(ReactiveSplitLogTemperatureGradientSquared(normal, 4 * direction) == doctest::Approx(4));
+    CHECK(ReactiveSplitLogTemperatureGradientSquared(normal, Eigen::Vector3d::Zero()) == 0);
+    CHECK(ReactiveSplitLogTemperatureGradientSquared(normal * 1e6, 4e3 * direction) == doctest::Approx(4e-6));
 }
 
 TEST_CASE("Local matched-rate ratio guards activity and forbids spatial expansion")

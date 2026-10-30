@@ -21,4 +21,18 @@ namespace DNDS::Euler
     {
         return normal.completeOrthogonalDecomposition().solve(moments).squaredNorm();
     }
+
+    /**
+     * @brief Squared scalar log-temperature gradient from caller-owned LSQ moments.
+     * @details moments=sum_j r_ij*log(T_j/T_i); normal=sum_j r_ij*r_ij^T.
+     * Only geometry and positive cell temperatures enter. No species scaling,
+     * cell-length cap, stored field or communication is applied. Length units
+     * follow the supplied separations; the evaluator converts to physical units.
+     */
+    inline real ReactiveSplitLogTemperatureGradientSquared(
+        const Eigen::Matrix<real, 3, 3> &normal,
+        const Eigen::Matrix<real, 3, 1> &moments)
+    {
+        return normal.completeOrthogonalDecomposition().solve(moments).squaredNorm();
+    }
 }
