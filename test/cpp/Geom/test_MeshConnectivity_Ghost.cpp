@@ -25,6 +25,46 @@ static MeshAdjacency conesWithManualGhostRows()
     return full;
 }
 
+TEST_CASE("Compiled ghost programs expose immutable inspection and own an exact execution signature")
+{
+    using Tree = CompiledGhostTree;
+    static_assert(!std::is_default_constructible_v<Tree>);
+    static_assert(std::is_same_v<decltype(std::declval<Tree &>().Roots()), const std::vector<GhostTreeNode> &>);
+    static_assert(std::is_same_v<decltype(std::declval<Tree &>().Levels()), const std::vector<std::vector<LevelEntry>> &>);
+    GhostSpec spec{{{EntityKind::Cell, {Adj::Cell2Node}, EntityKind::Node},
+                    {EntityKind::Cell, {Adj::Cell2Node, Adj::Node2Cell}, EntityKind::Cell}}};
+    const auto tree = Tree::compile(spec);
+    auto copy = tree;
+    CHECK(&copy.Levels() == &tree.Levels());
+    const auto signature = tree.Signature();
+    spec.chains.erase(spec.chains.begin());
+    const auto other = Tree::compile(spec);
+    CHECK(tree.Signature() == signature);
+    CHECK(other.NodeCount() == tree.NodeCount());
+    CHECK(other.Signature() != signature); // Same hops, different collection endpoint.
+    CHECK(tree.Levels()[1][0].collect);
+    CHECK_FALSE(other.Levels()[1][0].collect);
+    copy = other;
+    CHECK(tree.Signature() == signature);
+    CHECK(copy.Signature() == other.Signature());
+}
+
+TEST_CASE("Ghost program agreement rejects different endpoint markers before traversal")
+{
+    if (g_mpi.size == 1)
+        return;
+    auto cone = T::FourQuadCones(g_mpi);
+    auto c2c = T::AllNeighbors(cone);
+    AdjacencyRegistry registry(g_mpi);
+    registry.Register(c2c.Read());
+    GhostSpec spec{{{EntityKind::Cell, {Adj::Cell2Cell, Adj::Cell2Cell}, EntityKind::Cell}}};
+    if (g_mpi.rank == 0)
+        spec.chains.push_back({EntityKind::Cell, {Adj::Cell2Cell}, EntityKind::Cell});
+    CHECK_THROWS(registry.Evaluate(CompiledGhostTree::compile(spec)));
+    auto common = CompiledGhostTree::compile(GhostSpec{{{EntityKind::Cell, {Adj::Cell2Cell}, EntityKind::Cell}}});
+    CHECK_NOTHROW(registry.Evaluate(common));
+}
+
 TEST_CASE("evaluateGhostTree: single hop cell2cell")
 {
     if (g_mpi.size < 2)
@@ -619,11 +659,11 @@ TEST_CASE("GhostChain: defaultPrimary compiles")
     auto spec = GhostSpec::defaultPrimary();
     auto tree = CompiledGhostTree::compile(spec);
 
-    CHECK(tree.roots.size() == 2);
+    CHECK(tree.Roots().size() == 2);
 
     const GhostTreeNode *cellRoot = nullptr;
     const GhostTreeNode *bndRoot = nullptr;
-    for (auto &r : tree.roots)
+    for (auto &r : tree.Roots())
     {
         if (r.kind == EntityKind::Cell)
             cellRoot = &r;
@@ -676,7 +716,7 @@ TEST_CASE("GhostChain: defaultPrimary compiles")
     CHECK(b2n2Node.level == 3);
     CHECK(b2n2Node.children.empty());
 
-    CHECK(tree.maxLevel == 3);
+    CHECK(tree.MaxLevel() == 3);
 
     auto kinds = tree.collectedKinds();
     CHECK(kinds.count(EntityKind::Cell) == 1);
@@ -700,8 +740,8 @@ TEST_CASE("GhostChain: prefix merging")
     }};
     auto tree = CompiledGhostTree::compile(spec);
 
-    REQUIRE(tree.roots.size() == 1);
-    auto &root = tree.roots[0];
+    REQUIRE(tree.Roots().size() == 1);
+    auto &root = tree.Roots()[0];
     CHECK(root.kind == EntityKind::Cell);
     REQUIRE(root.children.size() == 1);
 
@@ -717,7 +757,7 @@ TEST_CASE("GhostChain: prefix merging")
     CHECK(ring2.level == 2);
     CHECK(ring2.children.empty());
 
-    CHECK(tree.maxLevel == 2);
+    CHECK(tree.MaxLevel() == 2);
 }
 
 TEST_CASE("GhostChain: invalid chain detection")
@@ -766,8 +806,8 @@ TEST_CASE("GhostChain: face ghost chain")
     }};
     auto tree = CompiledGhostTree::compile(spec);
 
-    REQUIRE(tree.roots.size() == 1);
-    auto &root = tree.roots[0];
+    REQUIRE(tree.Roots().size() == 1);
+    auto &root = tree.Roots()[0];
     CHECK(root.kind == EntityKind::Cell);
     REQUIRE(root.children.size() == 1);
 

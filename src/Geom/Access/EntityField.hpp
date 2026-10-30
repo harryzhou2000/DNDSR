@@ -7,7 +7,9 @@ namespace DNDS::Geom
 {
     /// Geom-side owned field association. Runtime Arrays remain generic;
     /// callers opt into checked mesh/domain/order boundaries through this owner.
-    template <class T, class L = Runtime::RowLayout>
+    /// Storage may be table, padded or CSR. Select a checked layout projection
+    /// at ReadScope/WriteScope::View<Policy>(), independently of migration layout.
+    template <class T>
     class EntityField
     {
         struct State
@@ -22,8 +24,6 @@ namespace DNDS::Geom
                   allocation(values.Identity()), shape(values.ShapeVersion())
             {
                 space.Validate();
-                if constexpr (!std::is_same_v<L, Runtime::RowLayout>)
-                    L::Validate(values.Layout());
                 DNDS_check_throw_info(values.IsValid() && values.RowCount() == size_t(space.NumOwned()) && schema.Extent() == sizeof(T) &&
                                           schema.Compatible(Runtime::ElementSchema::TypeIdentity<T>()) && context.device == values.GetDevice() &&
                                           (context.device != Runtime::Device::Host() || !context.stream),
@@ -76,10 +76,11 @@ namespace DNDS::Geom
             }
 
         public:
+            template <class Policy = Runtime::RowLayout, bool Checked = false>
             auto View() const
             {
                 DNDS_check_throw_info(_state && !_sealed, "entity field read is moved or sealed");
-                return _read.template View<L>();
+                return _read.template View<Policy, Checked>();
             }
             void Validate(const EntitySpace &space) const
             {
@@ -112,10 +113,11 @@ namespace DNDS::Geom
                 : _state(std::move(state)), _mesh(Retain(_state->space)), _write(_state->values.Write(context)) { _state->Validate(space); }
 
         public:
+            template <class Policy = Runtime::RowLayout, bool Checked = false>
             auto View() const
             {
                 DNDS_check_throw_info(_state && !_sealed, "entity field write is moved or sealed");
-                return _write.template View<L>();
+                return _write.template View<Policy, Checked>();
             }
             void Complete(const Runtime::Completion &completion)
             {
@@ -194,7 +196,7 @@ namespace DNDS::Geom
                 Runtime::Array<T> GhostValues() const { return _ghost; }
             };
 
-            Binding Bind(EntityField &field, const EntitySpace &expected) const
+            Binding Bind(EntityField &field, const EntitySpace &expected, Runtime::TransferLayout destinationLayout = {}) const
             {
                 FieldTransferDetail::LocalStage(_space._mpi, [&]
                                                 {
@@ -202,10 +204,10 @@ namespace DNDS::Geom
                     DNDS_check_throw_info(_space.SameOrder(expected), "entity field route belongs to another mesh/order"); });
                 auto state = field._slot->current;
                 auto mesh = Retain(_space);
-                auto layout = _route.DestinationLayout(state->values.Layout());
+                auto received = _route.DestinationLayout(state->values.Layout());
                 std::optional<Runtime::Array<T>> ghost;
                 FieldTransferDetail::LocalStage(_space._mpi, [&]
-                                                { ghost.emplace(layout, state->values.GetDevice()); });
+                                                { ghost.emplace(destinationLayout.Apply(state->values.Layout(), received), state->values.GetDevice()); });
                 auto binding = Runtime::PayloadPlan(_route, state->values.Layout(), ghost->Layout(), state->schema)
                                    .Bind(state->values, *ghost, Runtime::TransferTransport::Direct);
                 return Binding(field._slot, std::move(state), std::move(*ghost), std::move(binding));
@@ -245,14 +247,18 @@ namespace DNDS::Geom
             return _slot->current->values;
         }
 
-        CompanionEntry Register(std::string name)
+        /// Register this association for detached migration. Compact CSR is the
+        /// default; request PreserveStorage or an explicit table/padded shape
+        /// when physical stride/capacity matters to subsequent accessors.
+        CompanionEntry Register(std::string name, Runtime::TransferLayout destinationLayout = {})
         {
             DNDS_check_throw_info(_slot && _slot->current, "entity field registration requires a live field");
             auto slot = _slot;
             auto state = slot->current;
             // Descriptor construction is local. Defer semantic checks to the
             // collectively guarded preparation stages, before any payload.
-            auto entry = RegisterArray<T, L>(state->values, state->space.Kind(), std::move(name), state->schema, state->context);
+            auto entry = RegisterArray<T>(state->values, state->space.Kind(), std::move(name), state->schema, state->context,
+                                          CompanionDisposition::TransferIfReordered, destinationLayout);
             entry.preflight = [state](const PermutationTransfer &transfer)
             {
                 state->Validate(state->space);

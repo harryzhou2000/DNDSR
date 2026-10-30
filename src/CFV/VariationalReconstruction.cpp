@@ -509,10 +509,13 @@ namespace DNDS::CFV
         if (mpi.rank == mRank)
             log()
                 << "VariationalReconstruction<dim>::ConstructBaseAndWeight() done" << std::endl;
-        if (settings.functionalSettings.anisotropicType == VRSettings::FunctionalSettings::AnisotropicType::WallDist)
-            _baseWallDistanceIdentity = WallDistanceIdentity();
         _baseMetricsGeneration = this->_metricsGeneration;
-        _baseMeshStamp = this->mesh->versions.Stamp(this->MeshDependencyMask());
+        auto dependencies = this->MeshDependencyMask();
+        // Replacing derived wall distances advances Values, not Geometry:
+        // geometric metrics stay valid, but wall-dependent bases must rebuild.
+        if (meshRequirements.wallDistance)
+            dependencies = dependencies | Runtime::Change::Values;
+        _baseMeshStamp = this->mesh->versions.Stamp(dependencies);
     }
 
     template void

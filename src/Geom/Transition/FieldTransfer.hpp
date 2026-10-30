@@ -4,6 +4,8 @@
 #include "DNDS/Runtime/Field.hpp"
 #include "DNDS/Runtime/Exchange.hpp"
 #include "DNDS/Runtime/RowTransfer.hpp"
+#include "DNDS/Runtime/TransferLayout.hpp"
+#include "DNDS/MPI/CollectiveStage.hpp"
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
@@ -17,9 +19,7 @@ namespace DNDS::Geom
         /// local alias inventory is the same.
         inline int AgreeAliasCandidate(const MPIInfo &mpi, int candidate, size_t relationCount)
         {
-            DNDS_check_throw_info(relationCount <= size_t(INT_MAX), "alias agreement range exceeds MPI int range");
-            const auto local = candidate >= 0 ? std::optional<int>(candidate) : std::nullopt;
-            return MPI::AgreeOptionalInteger(mpi, local, int(relationCount)).value_or(-1);
+            return MPI::AgreeCandidate(mpi, candidate, relationCount);
         }
 
         /// Every rank runs local work before agreement and enters the next
@@ -28,23 +28,7 @@ namespace DNDS::Geom
         template <class F>
         void LocalStage(const MPIInfo &mpi, F &&action)
         {
-            int valid = 1;
-            std::exception_ptr failure;
-            try
-            {
-                action();
-            }
-            catch (...)
-            {
-                valid = 0;
-                failure = std::current_exception();
-            }
-            MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, mpi.comm);
-            // Preserve the originating error after collective agreement. Other
-            // ranks still fail before entering the next payload operation.
-            if (failure)
-                std::rethrow_exception(failure);
-            DNDS_check_throw_info(valid, "field preparation failed before collective payload; source retained");
+            MPI::LocalStage(mpi, std::forward<F>(action), "field preparation failed before collective payload; source retained");
         }
 
         template <class Value>
@@ -144,11 +128,17 @@ namespace DNDS::Geom
                                                index(transfer.size()), destinationRows, std::move(send), std::move(receive));
     }
 
-    template <class T, class L = Runtime::RowLayout>
+    /// Register owned rows for detached preparation and publication. The default
+    /// policy infers compact CSR destination rows from the routing. Registration
+    /// does not itself move data; the caller must keep the referenced handle alive.
+    /// The destination storage policy is explicit and never inferred from a
+    /// static accessor. Padding is not copied. Failed preparation retains source.
+    template <class T>
     CompanionEntry RegisterArray(Runtime::Array<T> &array, EntityKind kind, std::string name,
                                  Runtime::ElementSchema schema = Runtime::ElementSchema::Arithmetic<T>(),
                                  Runtime::ExecutionContext context = Runtime::ExecutionContext::Host(),
-                                 CompanionDisposition disposition = CompanionDisposition::TransferIfReordered)
+                                 CompanionDisposition disposition = CompanionDisposition::TransferIfReordered,
+                                 Runtime::TransferLayout destinationLayout = {})
     {
         CompanionEntry entry{kind, {}, std::move(name)};
         entry.disposition = disposition;
@@ -177,19 +167,17 @@ namespace DNDS::Geom
                                        size_t(array.RowCount()),
                                        0};
         };
-        entry.prepare = [&array, schema, context](const PermutationTransfer &transfer, const MPIInfo &mpi)
+        entry.prepare = [&array, schema, context, destinationLayout](const PermutationTransfer &transfer, const MPIInfo &mpi)
         {
             auto route = NativeRowTransfer(transfer, mpi);
+            const auto received = route.DestinationLayout(array.Layout());
             std::optional<Runtime::RowLayout> layout;
             FieldTransferDetail::LocalStage(mpi, [&]
-                                            {
-                        layout.emplace(route.DestinationLayout(array.Layout()));
-                        if constexpr (!std::is_same_v<L, Runtime::RowLayout>)
-                            layout = Runtime::RowLayout::Dense(layout->RowCount(), L::Default().Width()); });
-            std::unique_ptr<FieldTransferDetail::Prepared<Runtime::Array<T, L>>> next;
+                                            { layout.emplace(destinationLayout.Apply(array.Layout(), received)); });
+            std::unique_ptr<FieldTransferDetail::Prepared<Runtime::Array<T>>> next;
             FieldTransferDetail::LocalStage(mpi, [&]
-                                            { next = std::make_unique<FieldTransferDetail::Prepared<Runtime::Array<T, L>>>(array,
-                                                                                                                           Runtime::Array<T, L>(*layout, array.GetDevice())); });
+                                            { next = std::make_unique<FieldTransferDetail::Prepared<Runtime::Array<T>>>(array,
+                                                                                                                        Runtime::Array<T>(*layout, array.GetDevice())); });
             Runtime::PayloadPlan(route, array.Layout(), next->next.Layout(), schema).Bind(array, next->next).Begin(context).Wait();
             return next;
         };

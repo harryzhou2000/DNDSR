@@ -6,6 +6,7 @@
 #include <functional>
 #include <unordered_map>
 #include <unordered_set>
+#include <memory>
 
 namespace DNDS::Geom
 {
@@ -83,17 +84,32 @@ namespace DNDS::Geom
     /// avoid redundant traversals. The tree is evaluated BFS level-by-level
     /// with pull barriers between levels.
     ///
-    /// After compilation, `levels[L]` contains all tree nodes at BFS depth L,
-    /// with parent references for efficient evaluation (no recursive scans).
-    struct CompiledGhostTree
+    /// Compilation publishes one immutable program, shared by copies. Roots
+    /// are diagnostic; Levels() is the execution schedule and Signature() is
+    /// derived from that exact schedule. Change GhostSpec and recompile instead
+    /// of editing a compiled node. Inspection references borrow this program.
+    class CompiledGhostTree
     {
-        std::vector<GhostTreeNode> roots;
-        int maxLevel{0};   ///< Maximum BFS depth across all nodes.
-        int totalNodes{0}; ///< Total number of nodes (for flat array sizing).
+        struct Data
+        {
+            std::vector<GhostTreeNode> roots;
+            int maxLevel{0}, totalNodes{0};
+            std::vector<std::vector<LevelEntry>> levels;
+            std::string signature;
+        };
+        std::shared_ptr<const Data> _data;
+        explicit CompiledGhostTree(Data data) : _data(std::make_shared<const Data>(std::move(data))) {}
 
-        /// Precomputed per-level node lists. `levels[L]` contains all tree
-        /// nodes at BFS depth L. Level 0 = roots.
-        std::vector<std::vector<LevelEntry>> levels;
+    public:
+        // Copy-only handle semantics also keep an rvalue source usable; there
+        // is no publicly constructible partial or null compiled program.
+        CompiledGhostTree(const CompiledGhostTree &) = default;
+        CompiledGhostTree &operator=(const CompiledGhostTree &) = default;
+        const std::vector<GhostTreeNode> &Roots() const { return _data->roots; }
+        const std::vector<std::vector<LevelEntry>> &Levels() const { return _data->levels; }
+        int MaxLevel() const { return _data->maxLevel; }
+        int NodeCount() const { return _data->totalNodes; }
+        const std::string &Signature() const { return _data->signature; }
 
         /// Compile a GhostSpec into a forest. Validates chain consistency.
         /// Assigns node IDs, builds per-level lists.

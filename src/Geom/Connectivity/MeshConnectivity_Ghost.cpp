@@ -121,7 +121,7 @@ namespace DNDS::Geom
 
     CompiledGhostTree CompiledGhostTree::compile(const GhostSpec &spec)
     {
-        CompiledGhostTree tree;
+        Data tree;
         for (const auto &chain : spec.chains)
             insertChainIntoTrie(tree.roots, chain);
 
@@ -148,6 +148,7 @@ namespace DNDS::Geom
             auto [node, pid] = q.front();
             q.pop();
 
+            DNDS_check_throw_info(nextId < INT_MAX, "compiled ghost program exceeds node ID range");
             node->id = nextId++;
             node->parentId = pid;
 
@@ -179,7 +180,22 @@ namespace DNDS::Geom
         for (const auto &root : tree.roots)
             buildLevels(root);
 
-        return tree;
+        // Length-prefix complete descriptor signatures so diagnostic names and
+        // user-defined descriptors cannot make different programs agree.
+        std::ostringstream signature;
+        signature << "ghost-program-v1:" << tree.totalNodes << ':' << tree.maxLevel << ':';
+        for (const auto &level : tree.levels)
+        {
+            signature << level.size() << ':';
+            for (const auto &entry : level)
+            {
+                const auto hop = entry.parentId < 0 ? std::string{} : entry.hop.Signature();
+                signature << entry.nodeId << ':' << entry.parentId << ':' << int(entry.kind) << ':'
+                          << entry.collect << ':' << entry.hasChildren << ':' << hop.size() << ':' << hop;
+            }
+        }
+        tree.signature = signature.str();
+        return CompiledGhostTree(std::move(tree));
     }
 
     // =================================================================
@@ -200,7 +216,7 @@ namespace DNDS::Geom
     std::unordered_set<AdjacencyDescriptor, AdjacencyDescriptorHash> CompiledGhostTree::requiredAdjs() const
     {
         std::unordered_set<AdjacencyDescriptor, AdjacencyDescriptorHash> result;
-        for (const auto &root : roots)
+        for (const auto &root : Roots())
             collectRequiredAdjsHelper(root, result);
         return result;
     }
@@ -218,7 +234,7 @@ namespace DNDS::Geom
     std::unordered_set<EntityKind> CompiledGhostTree::collectedKinds() const
     {
         std::unordered_set<EntityKind> result;
-        for (const auto &root : roots)
+        for (const auto &root : Roots())
             collectCollectedKindsHelper(root, result);
         return result;
     }
@@ -248,7 +264,7 @@ namespace DNDS::Geom
     std::string CompiledGhostTree::dump() const
     {
         std::ostringstream oss;
-        for (const auto &root : roots)
+        for (const auto &root : Roots())
             dumpNode(root, oss, 0);
         return oss.str();
     }

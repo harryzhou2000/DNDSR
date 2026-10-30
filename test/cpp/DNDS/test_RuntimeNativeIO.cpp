@@ -1,6 +1,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "DNDS/Runtime/ArrayIO.hpp"
+#include "DNDS/Runtime/RowBuilder.hpp"
 #include "DNDS/ArrayTransformer.hpp"
 #include "DNDS/Serializer/SerializerH5.hpp"
 #include "DNDS/Serializer/SerializerJSON.hpp"
@@ -587,6 +588,46 @@ TEST_CASE("Malformed H5 native metadata rejects collectively without truncated C
             for (size_t column = 0; column < restored.RowSize(row); ++column)
                 CHECK(read.At(row, column) == double((3 * mpi.rank + I(row)) * 100 + I(column)) + 0.25);
     }
+    serializer->CloseFile();
+    MPI_Barrier(mpi.comm);
+    if (mpi.rank == 0)
+        std::filesystem::remove(file);
+}
+
+TEST_CASE("Native collective checkpoint rejects one rank's moved or unpublished Array before file mutation")
+{
+    const DNDS::MPIInfo mpi(MPI_COMM_WORLD);
+    auto serializer = std::make_shared<DirectSpy<S::SerializerH5>>(mpi);
+    serializer->SetCollectiveRW(true, true);
+    const auto file = File(mpi, "unpublished-source", false);
+    R::Array<double> source(R::RowLayout::Dense(3, 3));
+    Fill(source, 3 * mpi.rank);
+    serializer->OpenFile(file, false);
+    for (bool editing : {false, true})
+    {
+        std::optional<R::Array<double>> saved;
+        std::optional<R::ExclusiveRows> editor;
+        if (mpi.rank == 0)
+        {
+            if (editing)
+                editor.emplace(source.EditRows());
+            else
+                saved.emplace(std::move(source));
+        }
+        CHECK_THROWS_WITH(R::WriteArray(source, serializer, "rejected", mpi),
+                          doctest::Contains("live published source on every rank"));
+        CHECK(serializer->written.empty());
+        CHECK(serializer->ListCurrentPath().count("rejected") == 0);
+        if (editor)
+            editor->Commit();
+        if (saved)
+            source = std::move(*saved);
+    }
+    WriteDirect(source, serializer, "valid", mpi);
+    serializer->CloseFile();
+    serializer->OpenFile(file, true);
+    const auto restored = ReadDirect<double>(serializer, "valid", mpi);
+    CheckValues(restored, 3 * mpi.rank, false);
     serializer->CloseFile();
     MPI_Barrier(mpi.comm);
     if (mpi.rank == 0)

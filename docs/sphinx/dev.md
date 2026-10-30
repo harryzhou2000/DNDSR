@@ -11,6 +11,8 @@ These documents describe implemented or in-progress architecture:
 :maxdepth: 2
 
 /dev/TODO
+/dev/refactor_retrospective_2026-10-30
+/dev/accepted_audit_fixes_2026-10-30
 /dev/mesh_connectivity_impl_plan
 /dev/mesh_helpers_design
 /dev/multi_layer_ghost_design

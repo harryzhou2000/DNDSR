@@ -10,7 +10,7 @@ namespace DNDS::Geom
     struct UnstructuredMesh;
     class LegacyFieldBridge;
     class MeshAdjacencyRead;
-    template <class T, class L>
+    template <class T>
     class EntityField;
 
     /// Immutable snapshot of one entity family's numbering and distribution.
@@ -25,7 +25,7 @@ namespace DNDS::Geom
         friend struct UnstructuredMesh;
         friend class LegacyFieldBridge;
         friend class MeshAdjacencyRead;
-        template <class T, class L>
+        template <class T>
         friend class EntityField;
         friend class UnstructuredMeshState;
         friend class NativeMeshTransition;

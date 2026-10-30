@@ -4,7 +4,7 @@
 #include "Geom/Connectivity/NativeMeshClosure.hpp"
 #include "Geom/Connectivity/AdjacencyRegistry.hpp"
 #include "Geom/Connectivity/NativePeriodicMatch.hpp"
-#include "Geom/Transition/FieldTransfer.hpp"
+#include "DNDS/MPI/CollectiveStage.hpp"
 #include "Geom/BoundaryCondition.hpp"
 #include "DNDS/Runtime/RowBuilder.hpp"
 #include <set>
@@ -98,8 +98,8 @@ namespace DNDS::Geom
                     const std::vector<index> &globals)
         {
             std::vector<R::RowRequest> requests;
-            FieldTransferDetail::LocalStage(mpi, [&]
-                                            {
+            MPI::LocalStage(mpi, [&]
+                            {
                 requests.reserve(globals.size());
                 for (size_t row = 0; row < globals.size(); ++row)
                 {
@@ -118,8 +118,8 @@ namespace DNDS::Geom
                                                      const std::optional<R::Array<NodePeriodicBits>> &periodic)
         {
             std::vector<index> globals;
-            FieldTransferDetail::LocalStage(mpi, [&]
-                                            {
+            MPI::LocalStage(mpi, [&]
+                            {
                 auto read = cone.Read();
                 for (size_t row = 0; row < cone.RowCount(); ++row)
                     for (index global : read.View()[row]) globals.push_back(global);
@@ -127,8 +127,8 @@ namespace DNDS::Geom
                 globals.erase(std::unique(globals.begin(), globals.end()), globals.end()); });
             auto fetched = Fetch(mpi, nodes, nodeIds, globals);
             std::vector<std::vector<index>> keys;
-            FieldTransferDetail::LocalStage(mpi, [&]
-                                            {
+            MPI::LocalStage(mpi, [&]
+                            {
                 auto ids = fetched.Read(), rows = cone.Read();
                 auto info = information.Read();
                 std::optional<R::Array<NodePeriodicBits>::ReadLease> bits;
@@ -170,8 +170,8 @@ namespace DNDS::Geom
             auto newKeys = IdentityKeys(mpi, previous.spaces.at(EntityKind::Node), previous.ids.at(EntityKind::Node),
                                         *data.relations[size_t(coneSlot)], information, bits);
             std::vector<std::vector<index>> messages(size_t(mpi.size));
-            FieldTransferDetail::LocalStage(mpi, [&]
-                                            {
+            MPI::LocalStage(mpi, [&]
+                            {
                 auto ids = previous.ids.at(kind).Read();
                 auto append = [&](const std::vector<std::vector<index>> &keys, const EntitySpace &family, bool isNew)
                 {
@@ -192,8 +192,8 @@ namespace DNDS::Geom
                 append(newKeys, space, true); });
             auto incoming = Exchange(mpi, messages);
             std::vector<std::vector<index>> replies(size_t(mpi.size));
-            FieldTransferDetail::LocalStage(mpi, [&]
-                                            {
+            MPI::LocalStage(mpi, [&]
+                            {
                 struct Entry { int rank; index row, global, id; };
                 std::map<std::vector<index>, Entry> oldByKey, newByKey;
                 auto read = incoming.Read();
@@ -230,8 +230,8 @@ namespace DNDS::Geom
             auto returned = Exchange(mpi, replies);
             std::vector<index> ids(size_t(space.NumOwned()), UnInitIndex), oldGlobals(ids.size(), UnInitIndex), newGlobals(size_t(old.NumOwned()), UnInitIndex);
             index missing = 0;
-            FieldTransferDetail::LocalStage(mpi, [&]
-                                            {
+            MPI::LocalStage(mpi, [&]
+                            {
                 std::vector<bool> seenOld(newGlobals.size()), seenNew(ids.size());
                 auto read = returned.Read();
                 for (int peer = 0; peer < mpi.size; ++peer)
@@ -257,8 +257,8 @@ namespace DNDS::Geom
                 prefix = 0;
             MPI_Allreduce(&missing, &total, 1, DNDS_MPI_INDEX, MPI_SUM, mpi.comm);
             const index first = generatedFloor.value_or(previous.identity.nextIds.at(kind));
-            FieldTransferDetail::LocalStage(mpi, [&]
-                                            {
+            MPI::LocalStage(mpi, [&]
+                            {
                 DNDS_check_throw_info(total <= std::numeric_limits<index>::max() - first, "refreshed native persistent IDs exceed high-water range");
                 index next = first + prefix;
                 for (auto &id : ids) if (id == UnInitIndex) id = next++;
@@ -267,8 +267,8 @@ namespace DNDS::Geom
                 data.ids[kind] = BuildIndexRows(idRows, 1);
                 data.identity.nextIds[kind] = first + total; });
             std::optional<RefreshMap> result;
-            FieldTransferDetail::LocalStage(mpi, [&]
-                                            {
+            MPI::LocalStage(mpi, [&]
+                            {
                 std::vector<std::vector<index>> forward, reverse;
                 for (auto global : newGlobals) forward.push_back({global});
                 for (auto global : oldGlobals) reverse.push_back({global});
@@ -280,8 +280,8 @@ namespace DNDS::Geom
         Array RefreshSourceRows(const MPIInfo &mpi, const Array &values, const RefreshMap &mapping)
         {
             std::vector<index> globals;
-            FieldTransferDetail::LocalStage(mpi, [&]
-                                            {
+            MPI::LocalStage(mpi, [&]
+                            {
                 auto read = mapping.newToOld.Read();
                 for (size_t row = 0; row < mapping.newToOld.RowCount(); ++row)
                 {
@@ -295,8 +295,8 @@ namespace DNDS::Geom
         Array RefreshTargetRows(const MPIInfo &mpi, const Array &values, const RefreshMap &mapping, bool sortedUnique)
         {
             std::vector<index> globals;
-            FieldTransferDetail::LocalStage(mpi, [&]
-                                            {
+            MPI::LocalStage(mpi, [&]
+                            {
                 auto read = values.Read();
                 for (size_t row = 0; row < values.RowCount(); ++row)
                     for (auto global : read.View()[row]) if (global != UnInitIndex) globals.push_back(global);
@@ -304,8 +304,8 @@ namespace DNDS::Geom
                 globals.erase(std::unique(globals.begin(), globals.end()), globals.end()); });
             auto fetched = Fetch(mpi, mapping.oldSpace, mapping.oldToNew, globals);
             std::vector<std::vector<index>> rows;
-            FieldTransferDetail::LocalStage(mpi, [&]
-                                            {
+            MPI::LocalStage(mpi, [&]
+                            {
                 auto read = fetched.Read();
                 auto original = values.Read();
                 rows.resize(values.RowCount());
@@ -354,13 +354,13 @@ namespace DNDS::Geom
                                                   bool buildFaces, bool buildEdges, const std::map<EntityKind, index> &generatedIdStarts)
     {
         DNDS_check_throw_info(mpi.comm != MPI_COMM_NULL, "native topology requires a communicator");
-        FieldTransferDetail::LocalStage(mpi, [&]
-                                        {
+        MPI::LocalStage(mpi, [&]
+                        {
             DNDS_check_throw_info(data.dimension >= 2 && data.dimension <= 3, "native topology construction requires dimension two or three");
             DNDS_check_throw_info(!buildEdges || data.dimension == 3, "native edge completion currently requires three dimensions"); });
         std::array<index, 2> idStarts{-1, -1}, expectedStarts;
-        FieldTransferDetail::LocalStage(mpi, [&]
-                                        {
+        MPI::LocalStage(mpi, [&]
+                        {
             for (const auto &[kind,first] : generatedIdStarts)
             {
                 DNDS_check_throw_info(first >= 0 && ((kind == EntityKind::Face && buildFaces) || (kind == EntityKind::Edge && buildEdges)),
@@ -371,20 +371,20 @@ namespace DNDS::Geom
             } });
         expectedStarts = idStarts;
         MPI_Bcast(expectedStarts.data(), 2, DNDS_MPI_INDEX, 0, mpi.comm);
-        FieldTransferDetail::LocalStage(mpi, [&]
-                                        { DNDS_check_throw_info(idStarts == expectedStarts, "generated native ID floors differ across ranks"); });
+        MPI::LocalStage(mpi, [&]
+                        { DNDS_check_throw_info(idStarts == expectedStarts, "generated native ID floors differ across ranks"); });
         int flags[]{int(buildFaces), int(buildEdges)}, minimum[2], maximum[2];
         MPI_Allreduce(flags, minimum, 2, MPI_INT, MPI_MIN, mpi.comm);
         MPI_Allreduce(flags, maximum, 2, MPI_INT, MPI_MAX, mpi.comm);
         DNDS_check_throw_info(std::equal(minimum, minimum + 2, maximum), "native topology options differ between ranks");
         std::optional<NativeOwnedMeshData> previousStorage;
-        FieldTransferDetail::LocalStage(mpi, [&]
-                                        { previousStorage.emplace(data); });
+        MPI::LocalStage(mpi, [&]
+                        { previousStorage.emplace(data); });
         const auto &previous = *previousStorage;
         std::map<EntityKind, RefreshMap> refresh;
         std::set<AdjacencyDescriptor> regenerated;
-        FieldTransferDetail::LocalStage(mpi, [&]
-                                        {
+        MPI::LocalStage(mpi, [&]
+                        {
             for (auto kind : {EntityKind::Face, EntityKind::Edge})
             {
                 if (!(kind == EntityKind::Face ? buildFaces : buildEdges) || !data.spaces.count(kind)) continue;
@@ -432,8 +432,8 @@ namespace DNDS::Geom
             auto occurrences = faces.entity2parent.Read();
             std::optional<Array> physicalStorage;
             std::vector<t_index> zones(size_t(faces.entities.NumOwned()));
-            FieldTransferDetail::LocalStage(mpi, [&]
-                                            {
+            MPI::LocalStage(mpi, [&]
+                            {
                 DNDS_check_throw_info(occurrences.State() == Adj_PointToGlobal && support.State() == Adj_PointToGlobal,
                                       "native face incidence requires global construction rows");
                 physicalStorage.emplace(R::RowLayout::Dense(size_t(faces.entities.NumOwned()), 2));
@@ -463,8 +463,8 @@ namespace DNDS::Geom
             // cell's exact face slots. Candidate cells may be entirely remote.
             std::vector<R::RowRequest> requests;
             Array types(R::RowLayout::Dense(size_t(cells.NumOwned()), 1));
-            FieldTransferDetail::LocalStage(mpi, [&]
-                                            {
+            MPI::LocalStage(mpi, [&]
+                            {
                 auto write = types.Write();
                 for (index cell = 0; cell < cells.NumOwned(); ++cell) write.View()(size_t(cell), 0) = cellTypes(size_t(cell), 0).type;
                 auto boundaryCells = data.relations[size_t(MeshRelation::BoundaryCells)]->Read();
@@ -489,8 +489,8 @@ namespace DNDS::Geom
             }
             std::vector<std::vector<index>> boundaryFaces(static_cast<size_t>(nBoundary));
             std::vector<std::vector<index>> assignments(size_t(mpi.size));
-            FieldTransferDetail::LocalStage(mpi, [&]
-                                            {
+            MPI::LocalStage(mpi, [&]
+                            {
                 auto foundFaces = candidateFaces.Read(), foundNodes = candidateNodes.Read(), foundTypes = candidateTypes.Read();
                 auto boundaryNodes = data.relations[size_t(MeshRelation::BoundaryNodes)]->Read();
                 auto boundaryCells = data.relations[size_t(MeshRelation::BoundaryCells)]->Read();
@@ -547,8 +547,8 @@ namespace DNDS::Geom
                 } });
             auto received = Exchange(mpi, assignments);
             std::vector<std::vector<index>> faceBoundaries(size_t(faces.entities.NumOwned()), {UnInitIndex});
-            FieldTransferDetail::LocalStage(mpi, [&]
-                                            {
+            MPI::LocalStage(mpi, [&]
+                            {
                 struct Assignment { index boundary, cell, frame; t_index zone; };
                 std::vector<std::vector<Assignment>> labels(faceBoundaries.size());
                 auto messages = received.Read();
@@ -590,8 +590,8 @@ namespace DNDS::Geom
                 } });
             auto parentFaces = faces.parent2entity.Read();
             std::vector<index> remote;
-            FieldTransferDetail::LocalStage(mpi, [&]
-                                            {
+            MPI::LocalStage(mpi, [&]
+                            {
                 for (index cell = 0; cell < parentFaces.NumOwned(); ++cell)
                     for (auto face : parentFaces.GlobalRow(cell))
                         if (faces.entities.Owner(face) != mpi.rank) remote.push_back(face);
@@ -603,8 +603,8 @@ namespace DNDS::Geom
             auto physicalComplete = physicalRelation.WithGhostRows(faceRoute);
             auto physicalRead = physicalComplete.Read();
             std::vector<std::vector<index>> neighbors(size_t(cells.NumOwned()));
-            FieldTransferDetail::LocalStage(mpi, [&]
-                                            {
+            MPI::LocalStage(mpi, [&]
+                            {
                 DNDS_check_throw_info(parentFaces.State() == Adj_PointToGlobal && physicalRead.State() == Adj_PointToGlobal,
                                       "native neighbor construction requires global face rows");
                 const auto parentRows = parentFaces.View(), physicalRows = physicalRead.View();
@@ -640,26 +640,26 @@ namespace DNDS::Geom
                 data.requirements.faces = true;
                 data.requirements.cellFaceNeighbors = true;
                 data.requirements.allFaceCellsLocal = true; });
-            FieldTransferDetail::LocalStage(mpi, [&]
-                                            { regenerated.insert(inverse.Kind()); });
+            MPI::LocalStage(mpi, [&]
+                            { regenerated.insert(inverse.Kind()); });
             if (previous.spaces.count(EntityKind::Face))
             {
                 auto recovered = RecoverIdentity(mpi, previous, data, faces.entities,
                                                  MeshRelation::FaceNodes, *data.faceInfo, data.faceNodesPbi,
                                                  generatedIdStarts.count(EntityKind::Face) ? std::optional<index>{generatedIdStarts.at(EntityKind::Face)} : std::optional<index>{});
-                FieldTransferDetail::LocalStage(mpi, [&]
-                                                { refresh.emplace(EntityKind::Face, std::move(recovered)); });
+                MPI::LocalStage(mpi, [&]
+                                { refresh.emplace(EntityKind::Face, std::move(recovered)); });
             }
             else
-                FieldTransferDetail::LocalStage(mpi, [&]
-                                                { AddIdentity(data, faces.entities, generatedIdStarts); });
+                MPI::LocalStage(mpi, [&]
+                                { AddIdentity(data, faces.entities, generatedIdStarts); });
         }
         if (buildEdges)
         {
             auto edges = AdjacencyRegistry::Interpolate(coneRead, EntityKind::Edge, Query(cellTypes, coneRead, true, periodic ? &*periodic : nullptr), owner, periodic ? &*periodic : nullptr);
             auto inverse = AdjacencyRegistry::Inverse(edges.parent2entity.Read(), mpi);
-            FieldTransferDetail::LocalStage(mpi, [&]
-                                            {
+            MPI::LocalStage(mpi, [&]
+                            {
                 data.relations[size_t(MeshRelation::CellEdges)] = edges.parent2entity.Owned();
                 data.relations[size_t(MeshRelation::EdgeNodes)] = edges.entity2node.Owned();
                 data.relations[size_t(MeshRelation::EdgeCells)] = inverse.Owned();
@@ -671,19 +671,19 @@ namespace DNDS::Geom
                     data.edgeNodesPbi = *edges.entity2nodePbi;
                 }
                 data.requirements.edges = true; });
-            FieldTransferDetail::LocalStage(mpi, [&]
-                                            { regenerated.insert(inverse.Kind()); });
+            MPI::LocalStage(mpi, [&]
+                            { regenerated.insert(inverse.Kind()); });
             if (previous.spaces.count(EntityKind::Edge))
             {
                 auto recovered = RecoverIdentity(mpi, previous, data, edges.entities,
                                                  MeshRelation::EdgeNodes, *data.edgeInfo, data.edgeNodesPbi,
                                                  generatedIdStarts.count(EntityKind::Edge) ? std::optional<index>{generatedIdStarts.at(EntityKind::Edge)} : std::optional<index>{});
-                FieldTransferDetail::LocalStage(mpi, [&]
-                                                { refresh.emplace(EntityKind::Edge, std::move(recovered)); });
+                MPI::LocalStage(mpi, [&]
+                                { refresh.emplace(EntityKind::Edge, std::move(recovered)); });
             }
             else
-                FieldTransferDetail::LocalStage(mpi, [&]
-                                                { AddIdentity(data, edges.entities, generatedIdStarts); });
+                MPI::LocalStage(mpi, [&]
+                                { AddIdentity(data, edges.entities, generatedIdStarts); });
         }
         for (const auto &[key, original] : previous.namedRelations)
         {
@@ -693,8 +693,8 @@ namespace DNDS::Geom
             // relation, whose first-parent orientation may have changed.
             // Regenerate these aliases instead of preserving an obsolete frame.
             bool fixedAlias = false;
-            FieldTransferDetail::LocalStage(mpi, [&]
-                                            {
+            MPI::LocalStage(mpi, [&]
+                            {
                 for (const auto &[alias, slot] : std::initializer_list<std::pair<AdjacencyDescriptor, MeshRelation>>{
                     {Adj::Cell2Face, MeshRelation::CellFaces}, {Adj::Face2Node, MeshRelation::FaceNodes},
                     {Adj::Face2Cell, MeshRelation::FaceCells}, {Adj::Face2Bnd, MeshRelation::FaceBoundaries},
@@ -710,8 +710,8 @@ namespace DNDS::Geom
             if (fixedAlias)
                 continue;
             const auto path = key.Path();
-            FieldTransferDetail::LocalStage(mpi, [&]
-                                            {
+            MPI::LocalStage(mpi, [&]
+                            {
                 for (auto kind : {EntityKind::Face, EntityKind::Edge})
                 {
                     if (refresh.count(kind) && key.from != kind && key.to != kind &&
@@ -732,8 +732,8 @@ namespace DNDS::Geom
                 values = RefreshSourceRows(mpi, values, refresh.at(key.from));
             if (refresh.count(key.to))
                 values = RefreshTargetRows(mpi, values, refresh.at(key.to), key.order == RelationOrder::SortedUnique);
-            FieldTransferDetail::LocalStage(mpi, [&]
-                                            { data.namedRelations.emplace(key, std::move(values)); });
+            MPI::LocalStage(mpi, [&]
+                            { data.namedRelations.emplace(key, std::move(values)); });
         }
         if (data.provenance)
             for (auto &[kind, values] : data.provenance->sourceIds)

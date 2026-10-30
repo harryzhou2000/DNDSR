@@ -365,7 +365,7 @@ namespace DNDS::Geom
                 {
                     throw std::runtime_error("native assembly registration [" + key.Signature() + "]: " + error.what());
                 } });
-        CompiledGhostTree tree;
+        std::optional<CompiledGhostTree> tree;
         FieldTransferDetail::LocalStage(mpi, [&]
                                         {
             auto resolved = specification;
@@ -381,7 +381,7 @@ namespace DNDS::Geom
                                 break;
                             }
             tree = CompiledGhostTree::compile(resolved); });
-        auto discovery = connectivity.Evaluate(tree);
+        auto discovery = connectivity.Evaluate(*tree);
         auto publication = connectivity.BuildGhosted(discovery);
         // Complete cones, and (when requested) cells of EVERY discovered face.
         // Only Cell and Node sets can grow here, so no extra cell rings arise.

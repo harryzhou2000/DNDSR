@@ -312,6 +312,27 @@ TEST_CASE("Dynamic CSR migration privately prepares shapes and publishes once")
     }
 }
 
+TEST_CASE("Dynamic migration rejects a missing source collectively and leaves the route usable")
+{
+    int rank = 0, size = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+    Array<int64_t> source(RowLayout::Dense(1, 2));
+    source.Write().At(0, 0) = 100 + rank;
+    source.Write().At(0, 1) = 200 + rank;
+    RowTransferPlan route(MPI_COMM_WORLD, 1, 1, {{(rank + 1) % size, 0, 0}});
+    const auto schema = ElementSchema::Arithmetic<int64_t>();
+    auto storage = rank == 0 ? ArrayStorage::Shared{} : source.SharedStorage();
+    CHECK_THROWS_WITH(DynamicRowTransfer(route, storage, schema),
+                      doctest::Contains("dynamic transfer source reservation failed on a rank"));
+    CHECK(source.Storage().IsIdle());
+    CHECK(source.Read().At(0, 0) == 100 + rank);
+    DynamicRowTransfer retry(route, source.SharedStorage(), schema);
+    auto result = Array<int64_t>::FromSharedStorage(retry.Commit());
+    CHECK(result.Read().At(0, 0) == 100 + (rank + 1) % size);
+    CHECK(result.Read().At(0, 1) == 200 + (rank + 1) % size);
+}
+
 TEST_CASE("Main-thread MPI progression joins worker computation with scheduled leases")
 {
     int rank, size;

@@ -100,6 +100,10 @@ namespace DNDS::Algebra
         void Validate() const
         {
             const auto owned = _owned.Layout(), ghost = _ghost.Layout();
+            // Array handles erase row policy. Recheck this field's component
+            // contract after imports and after callers replace either handle.
+            DNDS_check_throw_info(Components == Runtime::DynamicExtent || owned.Width() == Components,
+                                  "DOF field width differs from its static component contract");
             DNDS_check_throw_info(!owned.IsVariable() && !ghost.IsVariable() && owned.Width() && owned.Width() == ghost.Width() &&
                                       owned.RowCount() == _space.OwnedRows() && ghost.RowCount() == _space.GhostRows() &&
                                       _owned.GetDevice() == _ghost.GetDevice() && _owned.IsValid(),

@@ -472,13 +472,24 @@ namespace DNDS::Runtime
             .def("write_serializer", [](const PythonArray &a, Serializer::SerializerBaseSSP s, const std::string &name, const MPIInfo &mpi, const std::string &schema)
                  { DNDS_check_throw_info(s, "null Array serializer");
                    Detail::IOCheck(schema.empty() || schema == a.Schema().Identity(), mpi, s->IsPerRank(), "Python I/O identity differs from its element registration");
-                   WriteArrayStorage(a.Storage(), a.Layout(), a.Schema(), s, name, mpi); }, py::arg("serializer"), py::arg("name"), py::arg("mpi"), py::arg("schema") = "", "Native host-only row I/O without a payload staging allocation. Finish producers and match collective calls. Uses the same registered schema as MPI/Python; device buffers are rejected. Separate fields are not a transaction.")
+                   auto storage = Detail::IOPublishedStorage(a, mpi, s->IsPerRank());
+                   WriteArrayStorage(storage->Values(), storage->Layout(), a.Schema(), s, name, mpi); }, py::arg("serializer"), py::arg("name"), py::arg("mpi"), py::arg("schema") = "", "Native host-only row I/O without a payload staging allocation. Finish producers, commit shape edits and match collective calls. A rank-local unpublished shape rejects the collective write before file mutation. Uses the same registered schema as MPI/Python; device buffers are rejected. Separate fields are not a transaction.")
             .def_static("read_serializer", [](Serializer::SerializerBaseSSP s, const std::string &name, const MPIInfo &mpi, py::object dtype, Serializer::ArrayGlobalOffset partition, Device device, const std::string &schema)
                         {
-                     PythonArray prototype(RowLayout{}, dtype);
                      DNDS_check_throw_info(s, "null Array serializer");
-                     auto archive = ReadArrayStorage(s, name, mpi, partition, device, prototype.Schema(), {}, schema);
-                     return prototype.WithStorage(ArrayStorage::FromBuffer(std::move(archive.layout), std::move(archive.storage), prototype.Dtype().itemsize())); }, py::arg("serializer"), py::arg("name"), py::arg("mpi"), py::arg("dtype") = py::dtype::of<double>(), py::arg("partition") = Serializer::ArrayGlobalOffset_Unknown, py::arg("device") = Device::Host(), py::arg("schema") = "", "Read directly into host storage, dynamically validate logical shape, and swap declared words when file endian differs. Device destinations require a direct I/O backend and are currently rejected; match collective calls and mesh/field identities.");
+                     std::optional<PythonArray> prototype;
+                     // Dtype/class lookup is local and may fail on only one rank.
+                     // Agree before entering collective schema or file operations.
+                     try
+                     {
+                         prototype.emplace(RowLayout{}, dtype);
+                     }
+                     catch (...)
+                     {
+                     }
+                     Detail::IOCheck(bool(prototype), mpi, s->IsPerRank(), "Array checkpoint read requires a valid registered dtype on every rank");
+                     auto archive = ReadArrayStorage(s, name, mpi, partition, device, prototype->Schema(), {}, schema);
+                     return prototype->WithStorage(ArrayStorage::FromBuffer(std::move(archive.layout), std::move(archive.storage), prototype->Dtype().itemsize())); }, py::arg("serializer"), py::arg("name"), py::arg("mpi"), py::arg("dtype") = py::dtype::of<double>(), py::arg("partition") = Serializer::ArrayGlobalOffset_Unknown, py::arg("device") = Device::Host(), py::arg("schema") = "", "Read directly into host storage, dynamically validate logical shape, and swap declared words when file endian differs. Invalid dtype/class registration is rejected collectively before reading. Device destinations require a direct I/O backend and are currently rejected; match collective calls and mesh/field identities.");
         BindMPIOptions(m);
         py::class_<RowRequest>(m, "RowRequest")
             .def(py::init([](int rank, int64_t row, index destination)

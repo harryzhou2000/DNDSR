@@ -152,6 +152,24 @@ TEST_CASE("Native DOF algebra validates semantic spaces, immutable shape and ove
     CHECK_THROWS(A::NormGlobal(unrelated));
 }
 
+TEST_CASE("Fixed DOF component contract survives dynamic Array imports and replacement")
+{
+    A::DofSpace space(3, 1);
+    R::Array<double> owned(R::RowLayout::Dense(3, 6, 8));
+    R::Array<double> ghost(R::RowLayout::Dense(1, 6, 9));
+    using Fixed = A::DofField<double, 5>;
+    CHECK_THROWS(Fixed(space, owned, ghost));
+    A::DofField<> dynamic(space, owned, ghost);
+    CHECK_NOTHROW(dynamic.Validate());
+
+    Fixed field(space, 5, 8);
+    field.Owned() = owned;
+    field.Ghost() = ghost;
+    CHECK_THROWS(field.Validate());
+    CHECK_THROWS(A::Fill(field, 7.));
+    CHECK(owned.Read().At(0, 0) == 0.); // Rejection precedes any numerical write.
+}
+
 struct AlgebraGate : R::StreamEvent::State
 {
     std::atomic<bool> open{false};

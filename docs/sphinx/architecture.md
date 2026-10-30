@@ -11,5 +11,6 @@ Design documents describing the internal structure of DNDSR.
 /architecture/Serialization
 /architecture/MeshConnectivity
 /architecture/NativeMesh
+/architecture/EntityField
 /architecture/MeshDAGDesign
 ```
