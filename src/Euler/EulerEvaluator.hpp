@@ -195,7 +195,11 @@ namespace DNDS::Euler
         std::vector<real> lambdaFace123;   ///< Per-face eigenvalue |u·n + a| (acoustic wave).
         std::vector<real> lambdaFace4;     ///< Per-face eigenvalue |u·n - a| (acoustic wave).
         std::vector<real> deltaLambdaFace; ///< Per-face spectral radius difference for implicit diagonal.
-        ArrayDOFV<1> deltaLambdaCell;      ///< Per-cell accumulated spectral radius difference.
+        /// Component 0: H-correction dLambda; optional component 1: PW+ pressure minimum.
+        /// Width stays one unless primary/auxiliary/wall flux selects AUSMPW+.
+        ArrayDOFV<DynamicSize> deltaLambdaCell;
+        bool usesAUSMPWStencil = false;        ///< Enable the extra component of the existing dLambda halo exchange.
+        std::vector<real> ausmFacePressureMin; ///< Face minima from EvaluateDt; allocated only for PW+.
         // grad fix
         std::vector<TDiffU> gradUFix; ///< Green-Gauss gradient correction buffer for source term stabilization.
 
@@ -278,7 +282,16 @@ namespace DNDS::Euler
             lambdaFace4.resize(mesh->NumFaceProc(), 0.);
 
             deltaLambdaFace.resize(lambdaFace.size());
-            vfv->BuildUDof(deltaLambdaCell, 1);
+            usesAUSMPWStencil = settings.rsType == Gas::AUSMPWPlus || settings.rsTypeAux == Gas::AUSMPWPlus ||
+                                settings.rsTypeWall == Gas::AUSMPWPlus;
+            vfv->BuildUDof(deltaLambdaCell, usesAUSMPWStencil ? 2 : 1);
+            deltaLambdaCell.setConstant(0);
+            if (usesAUSMPWStencil)
+            {
+                ausmFacePressureMin.resize(mesh->NumFaceProc(), veryLargeReal);
+                for (index iCell = 0; iCell < mesh->NumCellProc(); ++iCell)
+                    deltaLambdaCell[iCell](1) = veryLargeReal;
+            }
             if (settings.useSourceGradFixGG)
             {
                 gradUFix.resize(mesh->NumCell());

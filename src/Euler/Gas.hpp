@@ -20,6 +20,7 @@
 #pragma once
 #include "DNDS/Defines.hpp"
 #include "DNDS/IdealGasPhysics.hpp"
+#include "AUSM.hpp"
 
 #include "DNDS/Serializer/JsonUtil.hpp"
 #include "DNDS/Config/ConfigEnum.hpp"
@@ -57,6 +58,9 @@ namespace DNDS::Euler::Gas
      * | Roe_M7     | Roe + Harten-Yee fix only, no H-correction (eigScheme 7).    |
      * | Roe_M8     | Roe + H-correction + Harten-Yee fix (eigScheme 8).           |
      * | Roe_M9     | Roe_M8 with max(aL,aR) replacing Roe-average sound speed.     |
+     * | AUSMPWPlus | Pressure-weighted AUSMPW+ (Kim, Kim & Rho).                 |
+     * | AUSMPlusUp | All-speed AUSM+-up (Liou).                                  |
+     * | AUSMPlusUp2| AUSM+-up mass flux with Kitamura-Shima pressure flux.        |
      */
     enum RiemannSolverType
     {
@@ -74,6 +78,9 @@ namespace DNDS::Euler::Gas
         Roe_M7 = 17,
         Roe_M8 = 18,
         Roe_M9 = 19,
+        AUSMPWPlus = 31,
+        AUSMPlusUp = 32,
+        AUSMPlusUp2 = 33,
     };
 
     DNDS_DEFINE_ENUM_JSON(
@@ -93,7 +100,16 @@ namespace DNDS::Euler::Gas
             {Roe_M7, "Roe_M7"},
             {Roe_M8, "Roe_M8"},
             {Roe_M9, "Roe_M9"},
+            {AUSMPWPlus, "AUSMPWPlus"},
+            {AUSMPlusUp, "AUSMPlusUp"},
+            {AUSMPlusUp2, "AUSMPlusUp2"},
         })
+
+    /// @brief Whether the selected face flux belongs to the AUSM family.
+    inline bool IsAUSM(RiemannSolverType type)
+    {
+        return type == AUSMPWPlus || type == AUSMPlusUp || type == AUSMPlusUp2;
+    }
 
     /**
      * @brief Fills the right eigenvector matrix for the 1-D Euler system in the
@@ -1721,7 +1737,8 @@ namespace DNDS::Euler::Gas
         real gammaEqL = 0, real gammaEqR = 0,
         real gammaEqLm = 0, real gammaEqRm = 0,
         real gammaL = 0, real gammaR = 0,
-        real gammaLm = 0, real gammaRm = 0)
+        real gammaLm = 0, real gammaRm = 0,
+        real ausmReferenceMach = 0.1, real ausmPressureStencilMin = veryLargeReal)
     {
 #define DNDS_GAS_CALL_ROE(type)                                                   \
     RoeFlux_IdealGas_HartenYee<dim, type, variableGamma>(                         \
@@ -1754,6 +1771,35 @@ namespace DNDS::Euler::Gas
             DNDS_GAS_CALL_ROE(8);
         else if (type == Roe_M9)
             DNDS_GAS_CALL_ROE(9);
+        else if (IsAUSM(type))
+        {
+            AUSMVariant variant = type == AUSMPWPlus ? AUSMVariant::PWPlus : type == AUSMPlusUp ? AUSMVariant::PlusUp
+                                                                                                : AUSMVariant::PlusUp2;
+            AUSMFlux<dim>(variant, UL, UR, vg, n,
+                          variableGamma ? gammaEqL : gammaEq, variableGamma ? gammaEqR : gammaEq,
+                          variableGamma ? gammaL : gamma, variableGamma ? gammaR : gamma,
+                          rhoE_base_L, rhoE_base_R, ausmReferenceMach, ausmPressureStencilMin,
+                          F, dumpInfo, lam0, lam123, lam4);
+            // Preserve the dispatcher contract: flux uses facial states, while
+            // the implicit wave estimates use the supplied mean states.
+            Eigen::Vector<real, dim> vLm = ULm.template segment<dim>(1) / ULm(0);
+            Eigen::Vector<real, dim> vRm = URm.template segment<dim>(1) / URm(0);
+            real pLm, pRm, aLmSqr, aRmSqr, HLm, HRm;
+            IdealGasThermal(ULm(dim + 1), ULm(0), vLm.squaredNorm(),
+                            variableGamma ? gammaEqLm : gammaEq, variableGamma ? gammaLm : gamma,
+                            pLm, aLmSqr, HLm, rhoE_base_Lm);
+            IdealGasThermal(URm(dim + 1), URm(0), vRm.squaredNorm(),
+                            variableGamma ? gammaEqRm : gammaEq, variableGamma ? gammaRm : gamma,
+                            pRm, aRmSqr, HRm, rhoE_base_Rm);
+            if (!(aLmSqr > 0 && aRmSqr > 0))
+                dumpInfo();
+            DNDS_assert(aLmSqr > 0 && aRmSqr > 0);
+            real unMean = (0.5 * (vLm + vRm) - vg).dot(n);
+            real aMeanBound = std::sqrt(std::max(aLmSqr, aRmSqr));
+            lam0 = std::abs(unMean - aMeanBound);
+            lam123 = std::abs(unMean);
+            lam4 = std::abs(unMean + aMeanBound);
+        }
         else if (type == HLLEP)
             HLLEPFlux_IdealGas<dim, 0, variableGamma>(
                 UL, UR, ULm, URm, vg, n, gammaEq, gamma, F, dLambda, fixScale,

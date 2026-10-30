@@ -149,6 +149,169 @@ static Eigen::Vector<real, 5> callDispatcher(
     return F;
 }
 
+TEST_CASE("AUSM family: consistency, face reversal, ALE and untouched passive entries")
+{
+    for (auto rs : {AUSMPWPlus, AUSMPlusUp, AUSMPlusUp2})
+    {
+        CAPTURE(rs);
+        CHECK(nlohmann::json(rs).get<RiemannSolverType>() == rs);
+        auto UL = prim2cons(1.2, 2.1, -0.7, 0.3, 1.3);
+        auto UR = prim2cons(0.4, -0.8, 0.2, -0.9, 0.07);
+        Eigen::Vector3d n = Eigen::Vector3d(0.3, -0.4, 0.5).normalized();
+        CHECK((callDispatcher(rs, UL, UL, n) - exactNormalFlux(UL, n)).norm() < 1e-12);
+        CHECK((callDispatcher(rs, UL, UR, n) + callDispatcher(rs, UR, UL, -n)).norm() < 1e-12);
+
+        Eigen::Vector3d vg(0.5, 0.1, -0.2);
+        Eigen::Vector<real, 5> flux;
+        real lam0, lam123, lam4;
+        InviscidFlux_IdealGas_Dispatcher<3>(rs, UL, UL, UL, UL, vg, n, g_gamma, g_gamma,
+                                            flux, 0., 0., 0., noDump, lam0, lam123, lam4);
+        Eigen::Vector<real, 5> exactALE = exactNormalFlux(UL, n) - vg.dot(n) * UL;
+        CHECK((flux - exactALE).norm() < 1e-12);
+        InviscidFlux_IdealGas_Dispatcher<3>(rs, UR, UL, UR, UL, vg, -n, g_gamma, g_gamma,
+                                            flux, 0., 0., 0., noDump, lam0, lam123, lam4);
+        Eigen::Vector<real, 5> reverse = flux;
+        InviscidFlux_IdealGas_Dispatcher<3>(rs, UL, UR, UL, UR, vg, n, g_gamma, g_gamma,
+                                            flux, 0., 0., 0., noDump, lam0, lam123, lam4);
+        CHECK((flux + reverse).norm() < 1e-12);
+
+        Eigen::Vector<real, 5> state2;
+        state2 << 1., 0.4, -0.3, 2.625, 0.25; // 2-D gas plus rho*Y
+        Eigen::Vector<real, 5> other2 = state2 * 0.5;
+        Eigen::Vector2d n2(1, 0), vg2(0.1, 0.2);
+        flux.setConstant(0.54321);
+        InviscidFlux_IdealGas_Dispatcher<2>(rs, state2, other2, state2, other2, vg2, n2, g_gamma, g_gamma,
+                                            flux, 0., 0., 0., noDump, lam0, lam123, lam4);
+        CHECK(flux.allFinite());
+        CHECK(flux(4) == 0.54321);
+    }
+}
+
+TEST_CASE("AUSM family: contacts and supersonic upwind flux")
+{
+    Eigen::Vector3d n(1, 0, 0);
+    for (auto rs : {AUSMPWPlus, AUSMPlusUp, AUSMPlusUp2})
+        for (DNDS::real speed : {0., 0.3, -0.3, 20., -20.})
+        {
+            CAPTURE(rs);
+            CAPTURE(speed);
+            auto UL = prim2cons(1., speed, 0.2, -0.4, 1.);
+            auto UR = prim2cons(10., speed, -0.1, 0.7, 1.);
+            auto donor = speed >= 0 ? UL : UR;
+            CHECK((callDispatcher(rs, UL, UR, n) - exactNormalFlux(donor, n)).norm() < 1e-10);
+        }
+}
+
+TEST_CASE("AUSM family: exact stationary Mach-20 normal shock")
+{
+    DNDS::real mach = 20, p = 1 / g_gamma;
+    DNDS::real ratio = (g_gamma + 1) * mach * mach / ((g_gamma - 1) * mach * mach + 2);
+    auto UL = prim2cons(1, mach, 0, 0, p);
+    auto UR = prim2cons(ratio, mach / ratio, 0, 0, p * (2 * g_gamma * mach * mach - (g_gamma - 1)) / (g_gamma + 1));
+    Eigen::Vector3d n(1, 0, 0);
+    REQUIRE((exactNormalFlux(UL, n) - exactNormalFlux(UR, n)).norm() < 1e-10);
+    for (auto rs : {AUSMPWPlus, AUSMPlusUp, AUSMPlusUp2})
+    {
+        CAPTURE(rs);
+        CHECK((callDispatcher(rs, UL, UR, n) - exactNormalFlux(UL, n)).norm() < 1e-9);
+    }
+}
+
+TEST_CASE("AUSMPW+ zero-velocity pressure jump matches independent closed form")
+{
+    // For this datum: a_face^2=21/20, ps=11/20, w=999/1000.
+    // Mbar_L=909/2000 and Mbar_R=-999/22000 (from paper eqs. 15-22).
+    auto UL = prim2cons(1, 0, 0, 0, 1);
+    auto UR = prim2cons(0.125, 0, 0, 0, 0.1);
+    Eigen::Vector3d n(1, 0, 0);
+    auto F = callDispatcher(AUSMPWPlus, UL, UR, n);
+    DNDS::real a = std::sqrt(21. / 20);
+    CHECK(F(0) == doctest::Approx(a * (909. / 2000 - 999. / 22000 * 0.125)).epsilon(1e-12));
+    CHECK(F(1) == doctest::Approx(0.55).epsilon(1e-12));
+    CHECK(F(4) == doctest::Approx(a * (909. / 2000 * 3.5 - 999. / 22000 * 0.35)).epsilon(1e-12));
+
+    // Lower transverse pressure multiplies f_L and f_R by (0.05/0.1)^2.
+    Eigen::Vector<real, 5> transverseF;
+    DNDS::real lam0, lam123, lam4;
+    AUSMFlux<3>(AUSMVariant::PWPlus, UL, UR, Eigen::Vector3d::Zero(), n,
+                g_gamma, g_gamma, g_gamma, g_gamma, 0, 0, 0.1, 0.05,
+                transverseF, noDump, lam0, lam123, lam4);
+    CHECK(transverseF(0) != doctest::Approx(F(0)).epsilon(1e-6));
+    CHECK(transverseF(1) == doctest::Approx(F(1)).epsilon(1e-12));
+}
+
+TEST_CASE("AUSM family: split-gamma and base-energy consistency")
+{
+    DNDS::real gammaEq = 1.3, gammaCpCv = 1.45, base = 7.2;
+    auto U = prim2consSplit(1.2, 0.3, -0.2, 0.5, 1.4, gammaEq, base);
+    Eigen::Vector3d n = Eigen::Vector3d(1, 2, -1).normalized();
+    for (auto rs : {AUSMPWPlus, AUSMPlusUp, AUSMPlusUp2})
+    {
+        Eigen::Vector<real, 5> F;
+        DNDS::real lam0, lam123, lam4;
+        InviscidFlux_IdealGas_Dispatcher<3, true>(rs, U, U, U, U, Eigen::Vector3d::Zero(), n,
+                                                  gammaEq, gammaCpCv, F, 0., 0., 0., noDump, lam0, lam123, lam4,
+                                                  base, base, base, base, gammaEq, gammaEq, gammaEq, gammaEq,
+                                                  gammaCpCv, gammaCpCv, gammaCpCv, gammaCpCv);
+        CHECK((F - exactNormalFluxSplit(U, n, gammaEq, base)).norm() < 1e-12);
+    }
+}
+
+TEST_CASE("AUSM dispatcher: facial flux and mean-state wave estimates are separate")
+{
+    auto UL = prim2cons(1, 0.3, 0, 0, 1);
+    auto UR = prim2cons(0.2, -0.2, 0, 0, 0.1);
+    auto mean = prim2cons(1, 4, 0, 0, 1 / g_gamma);
+    Eigen::Vector3d n(1, 0, 0);
+    for (auto rs : {AUSMPWPlus, AUSMPlusUp, AUSMPlusUp2})
+    {
+        Eigen::Vector<real, 5> F;
+        DNDS::real lam0, lam123, lam4;
+        InviscidFlux_IdealGas_Dispatcher<3>(rs, UL, UR, mean, mean, Eigen::Vector3d::Zero(), n,
+                                            g_gamma, g_gamma, F, 0., 0., 0., noDump, lam0, lam123, lam4);
+        CHECK((F - callDispatcher(rs, UL, UR, n)).norm() < 1e-12);
+        CHECK(lam0 == doctest::Approx(3));
+        CHECK(lam123 == doctest::Approx(4));
+        CHECK(lam4 == doctest::Approx(5));
+    }
+}
+
+TEST_CASE("AUSMPW+ has no growing linear acoustic mode near the Sod plateau")
+{
+    // This is an independent semidiscrete stability condition, not a mirror of
+    // the flux algebra. At theta=pi, L(theta)=-2*(dF/dUL-dF/dUR)/dx.
+    // The former alphaPressure=3/16 implementation has a +0.052/dx eigenvalue
+    // at Mach 0.92957; using the robust cubic pressure split removes that mode.
+    Eigen::Vector3d n(1, 0, 0);
+    const std::array<int, 3> variables{0, 1, 4};
+    for (DNDS::real mach : {0.5, 0.8, 0.9295669827947116, 0.99, 1.01})
+    {
+        CAPTURE(mach);
+        auto U = prim2cons(1, mach, 0, 0, 1 / g_gamma);
+        Eigen::Matrix3d left, right;
+        for (int j = 0; j < 3; ++j)
+        {
+            DNDS::real h = 1e-6 * std::max(DNDS::real(1), std::abs(U(variables[j])));
+            auto plus = U, minus = U;
+            plus(variables[j]) += h;
+            minus(variables[j]) -= h;
+            Eigen::Vector<real, 5> dLeft = (callDispatcher(AUSMPWPlus, plus, U, n) -
+                                            callDispatcher(AUSMPWPlus, minus, U, n)) /
+                                           (2 * h);
+            Eigen::Vector<real, 5> dRight = (callDispatcher(AUSMPWPlus, U, plus, n) -
+                                             callDispatcher(AUSMPWPlus, U, minus, n)) /
+                                            (2 * h);
+            for (int i = 0; i < 3; ++i)
+            {
+                left(i, j) = dLeft(variables[i]);
+                right(i, j) = dRight(variables[i]);
+            }
+        }
+        Eigen::EigenSolver<Eigen::Matrix3d> modes(-2 * (left - right));
+        CHECK(modes.eigenvalues().real().maxCoeff() <= 1e-6);
+    }
+}
+
 // ===================================================================
 // CONSISTENCY: F(U, U, n) = exact physical flux
 // ===================================================================

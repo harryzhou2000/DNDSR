@@ -1813,6 +1813,12 @@
                     "default": 0,
                     "description": "Riemann solver rotation scheme"
                 },
+                "ausmReferenceMach": {
+                    "type": "number",
+                    "default": 0.1,
+                    "description": "AUSM+-up/up2 reference Mach cutoff M_infinity; PW+ and Roe/HLL ignore it",
+                    "minimum": 1e-06
+                },
                 "minWallDist": {
                     "type": "number",
                     "default": 1e-12,

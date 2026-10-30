@@ -384,6 +384,7 @@ namespace DNDS::Euler
         real rsIncFScale = 1;                               ///< Incremental flux scaling factor.
         int rsMeanValueEig = 0;                             ///< Mean-value eigenvalue computation mode.
         int rsRotateScheme = 0;                             ///< Riemann solver rotation scheme selector.
+        real ausmReferenceMach = 0.1;                       ///< Positive low-Mach cutoff M_infinity for AUSM+-up/up2; ignored by AUSMPW+ and Roe/HLL.
         /// @}
 
         /// @name Wall-Distance Computation
@@ -767,6 +768,8 @@ namespace DNDS::Euler
             DNDS_FIELD(rsIncFScale,             "Riemann solver increment flux scale");
             DNDS_FIELD(rsMeanValueEig,          "Riemann solver mean-value eigenvalue mode");
             DNDS_FIELD(rsRotateScheme,          "Riemann solver rotation scheme");
+            DNDS_FIELD(ausmReferenceMach,       "AUSM+-up/up2 reference Mach cutoff M_infinity; PW+ and Roe/HLL ignore it",
+                       DNDS::Config::range(1e-6));
             DNDS_FIELD(minWallDist,             "Minimum wall distance clamp",
                        DNDS::Config::range(0.0));
             DNDS_FIELD(wallDistExection,        "Wall distance execution mode: 0=parallel, 1=serial");

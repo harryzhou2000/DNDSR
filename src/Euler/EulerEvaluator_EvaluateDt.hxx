@@ -906,6 +906,8 @@ namespace DNDS::Euler
                 thermalR = phys_.conservativeThermal(UR,
                                                      cellTWarm ? (*cellTWarm)[iCellR](0) : real(0));
             }
+            if (usesAUSMPWStencil)
+                ausmFacePressureMin[iFace] = std::min(thermalL.p, thermalR.p);
             GradULxy.resize(Eigen::NoChange, nVars);
             GradURxy.resize(Eigen::NoChange, nVars);
             GradULxy.setZero(), GradURxy.setZero();
@@ -1040,6 +1042,15 @@ namespace DNDS::Euler
             deltaLambdaCell[iCell](0) = 0;
             for (auto iFace : mesh->cell2face[iCell])
                 deltaLambdaCell[iCell](0) = std::max(deltaLambdaCell[iCell](0), deltaLambdaFace[iFace]);
+            if (usesAUSMPWStencil)
+            {
+                // Unstructured counterpart of PW+'s transverse pressure minimum.
+                // Pack beside dLambda and reuse its existing persistent halo pull.
+                real pressureMin = veryLargeReal;
+                for (auto iFace : mesh->cell2face[iCell])
+                    pressureMin = std::min(pressureMin, ausmFacePressureMin[iFace]);
+                deltaLambdaCell[iCell](1) = pressureMin;
+            }
             // if (iCell == 10756)
             // {
             //     std::cout << std::endl;
@@ -1314,6 +1325,13 @@ namespace DNDS::Euler
                 real gammaEq, real gamma, auto &&finc, real dLambda, real fixScale, real incFScale,
                 real &lam0, real &lam123, real &lam4)
         {
+            real pressureStencilMin = veryLargeReal;
+            if (rsType == Gas::AUSMPWPlus && usesAUSMPWStencil)
+            {
+                pressureStencilMin = deltaLambdaCell[f2c[0]](1);
+                if (f2c[1] != UnInitIndex)
+                    pressureStencilMin = std::min(pressureStencilMin, deltaLambdaCell[f2c[1]](1));
+            }
             if (phys_.hasChemicalSource())
             {
                 real TL = phys_.temperature(UL);
@@ -1326,12 +1344,15 @@ namespace DNDS::Euler
                     phys_.mixtureBaseInternalRhoE(UL), phys_.mixtureBaseInternalRhoE(UR),
                     phys_.mixtureBaseInternalRhoE(ULm), phys_.mixtureBaseInternalRhoE(URm),
                     gammaEqL, gammaEqR, gammaEqLm_rs, gammaEqRm_rs,
-                    gammaL, gammaR, gammaLm_rs, gammaRm_rs);
+                    gammaL, gammaR, gammaLm_rs, gammaRm_rs,
+                    settings.ausmReferenceMach, pressureStencilMin);
             }
             else
                 Gas::InviscidFlux_IdealGas_Dispatcher<dim>(rsType, UL, UR, ULm, URm, vg, n, gammaEq, gamma, finc, dLambda, fixScale, incFScale, exitFun, lam0, lam123, lam4,
                     phys_.mixtureBaseInternalRhoE(UL), phys_.mixtureBaseInternalRhoE(UR),
-                    phys_.mixtureBaseInternalRhoE(ULm), phys_.mixtureBaseInternalRhoE(URm));
+                    phys_.mixtureBaseInternalRhoE(ULm), phys_.mixtureBaseInternalRhoE(URm),
+                    0, 0, 0, 0, 0, 0, 0, 0,
+                    settings.ausmReferenceMach, pressureStencilMin);
         };
 
         // TU_Batch finc1;
