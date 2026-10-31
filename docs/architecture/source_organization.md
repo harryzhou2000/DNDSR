@@ -46,6 +46,8 @@ serializers and PCH files stays at its existing path.
 | `Geom/Connectivity` | Incidence operations, topology construction and sparse closure |
 | `Geom/Transition` | Detached transitions/assembly, reorder plans and coordinated publication |
 | `Geom/Geometry` | Geometry editing, wall distance and smoothing |
+| `Geom/Spatial` | Mesh-independent element geometry, switchable CPU box indexes and local/distributed point-to-surface location |
+| `Geom/Interface` | Selected mesh-boundary geometry, volume links and stencil adapters over Spatial/Connectivity |
 | `Geom/Refinement` | Elevation, refinement and boundary extraction |
 | `Geom/IO` | Native archive, CGNS/OpenFOAM import and output |
 | `Geom/Compat` | Legacy read/device views, field-index adapters and legacy archive/serial operations |
@@ -61,6 +63,15 @@ phase to avoid unrelated API churn.
 The Python snapshot class is named `UnstructuredMeshSnapshot` and the historical
 `NativeMeshSnapshot` module attribute aliases that same class. Existing Python
 mesh/read APIs retain their behavior.
+
+Spatial search transports generic element records and query/proposal tables;
+it does not know volume-cell numbering or equations. Interface adapters attach
+volume links after geometric donor selection through the locator's canonical
+Runtime element-data route. CFV then samples on the actual cell owners. CGAL
+types are private to `Spatial/BoundingBoxTree.cpp`; the public index/element
+interfaces and mesh storage do not depend on CGAL primitives. See
+[surface geometry and location](SurfaceLocation.md) for ownership, frames,
+backend selection, collective and callback contracts.
 
 Canonical `Geom/Access/MeshAccess.hpp` exposes the native read/query API without
 defining the legacy mesh read owner. That owner lives in

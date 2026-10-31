@@ -315,6 +315,11 @@ invalidate plans; rebuild rather than matching fields by equal row counts.
 
 ## Geom matching and CFV sampling
 
+The geometry-only projection, immutable surface storage and distributed search
+are described in [Surface geometry and location](SurfaceLocation.md). Boundary
+interfaces are adapters over that reusable facility; they attach volume-cell
+links after geometric donor selection.
+
 ```mermaid
 flowchart LR
     mesh[Donor mesh] --> patch[BoundaryPatch: selected surface coordinates and volume slots]
@@ -335,7 +340,7 @@ IDs, cell-face slot and persistent boundary ID. No boundary volume copy is made.
 the existing registry/compiled tree, and builds a detached adjacency/ghost
 publication. It neither changes the mesh's compute halo nor bypasses the DSL.
 
-The initial search accepts Line2/Tri3/Quad4 surfaces on one rank. A BVH finds
+The search accepts Line2/Tri3/bilinear Quad4 surfaces, including warped quads. A BVH finds
 candidates; element-coordinate projection, reference containment and explicit
 gap tolerances decide acceptance. Query order and IDs survive search ordering.
 Shared seams use the smallest persistent donor boundary ID. Coincident accepted
@@ -343,14 +348,17 @@ interiors are rejected as ambiguous. Uncovered queries, nonfinite coordinates,
 duplicate query IDs, degenerate surfaces and nonrigid poses produce errors.
 High-order surface geometry and periodic image selection fail explicitly.
 
-`WithPose` returns a new patch/index sharing the selected reference coordinates.
-It rebuilds the index (no incremental refit claim). Old maps keep their old pose.
+`WithPose` returns a new pose sharing selected reference coordinates and their
+immutable reference-space BVH. Queries transform into that frame, so rigid
+motion needs no local BVH rebuild. Old maps keep their old pose.
 A fixed receiver query can change donor element/cell after sliding. For separate
 domains, retain each patch independently and construct each directional map
 separately; a reverse map is not an inverse or conservative transpose.
 
 `InterfaceSamplingPlan` checks donor entity/order identity and stores donor-local
-sample points. Its output is in query order and **donor physical frame**. The
+sample points **after projection onto the donor boundary**, so an allowed
+normal offset in the receiver query does not become a polynomial extrapolation
+off that boundary. Its output is in query order and **donor physical frame**. The
 equation adapter handles vector rotation and moving-frame velocity conversion.
 Choosing limited/unlimited values means passing the corresponding coefficient
 field. No conservative flux, ALE/GCL, FSI force transfer or flow coupling iteration

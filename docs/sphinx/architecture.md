@@ -13,6 +13,7 @@ Design documents describing the internal structure of DNDSR.
 /architecture/NativeMesh
 /architecture/EntityField
 /architecture/FVFacility
+/architecture/SurfaceLocation
 /architecture/SparseBatchExchange
 /architecture/MeshDAGDesign
 ```

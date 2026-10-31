@@ -1,13 +1,14 @@
 #pragma once
 
 #include "Geom/Geometric.hpp"
-#include <numeric>
+#include <memory>
 
 namespace DNDS::Geom
 {
     struct SpatialBox
     {
-        tPoint lower = tPoint::Constant(veryLargeReal), upper = tPoint::Constant(-veryLargeReal);
+        tPoint lower = tPoint::Constant(std::numeric_limits<real>::infinity()),
+               upper = tPoint::Constant(-std::numeric_limits<real>::infinity());
         void Add(const tPoint &point)
         {
             lower = lower.cwiseMin(point);
@@ -22,72 +23,50 @@ namespace DNDS::Geom
         {
             return (lower - point).cwiseMax(0.).squaredNorm() + (point - upper).cwiseMax(0.).squaredNorm();
         }
+        bool Contains(const tPoint &point, real tolerance = 0) const
+        {
+            return (point.array() >= lower.array() - tolerance).all() && (point.array() <= upper.array() + tolerance).all();
+        }
+        bool Intersects(const SpatialBox &other, real tolerance = 0) const
+        {
+            return (lower.array() <= other.upper.array() + tolerance).all() && (other.lower.array() <= upper.array() + tolerance).all();
+        }
     };
-    /// Local spatial candidate search, independent of mesh entity types. Boxes
-    /// and tree nodes are allocated once. Exact acceptance belongs to the caller.
+    enum class BoundingBoxBackend
+    {
+        Native,
+        CGAL
+    };
+    /// Immutable CPU candidate index, independent of mesh entity types. Both
+    /// backends own their boxes and emit input ordinals with the same inclusive
+    /// squared point/box-gap predicate. Traversal order is unspecified. Exact
+    /// element projection/containment belongs to the caller, not this index.
+    /// Copies share a fully built read-only index and permit concurrent queries.
+    /// CGAL implementation/types remain private; no device execution is implied.
     class BoundingBoxTree
     {
-        struct Node
-        {
-            SpatialBox box;
-            index left = -1, right = -1, item = -1;
-        };
-        std::vector<Node> _nodes;
-        index _used = 0;
-        index Build(std::vector<index> &order, index first, index end, const std::vector<SpatialBox> &boxes)
-        {
-            const index node = _used++;
-            for (index i = first; i < end; ++i)
-                _nodes[node].box.Add(boxes[order[i]]);
-            if (end - first == 1)
-                _nodes[node].item = order[first];
-            else
-            {
-                int axis = 0;
-                (_nodes[node].box.upper - _nodes[node].box.lower).maxCoeff(&axis);
-                const index middle = first + (end - first) / 2;
-                std::nth_element(order.begin() + first, order.begin() + middle, order.begin() + end,
-                                 [&](index a, index b)
-                                 {
-                                     const real ca = boxes[a].lower[axis] + boxes[a].upper[axis], cb = boxes[b].lower[axis] + boxes[b].upper[axis];
-                                     return ca == cb ? a < b : ca < cb;
-                                 });
-                _nodes[node].left = Build(order, first, middle, boxes);
-                _nodes[node].right = Build(order, middle, end, boxes);
-            }
-            return node;
-        }
+        struct Data;
+        std::shared_ptr<const Data> _data;
+        using Visitor = void (*)(void *, index);
+        void QueryImpl(const tPoint &point, real gap, void *context, Visitor visit) const;
 
     public:
-        explicit BoundingBoxTree(const std::vector<SpatialBox> &boxes) : _nodes(boxes.empty() ? 0 : 2 * boxes.size() - 1)
-        {
-            std::vector<index> order(boxes.size());
-            std::iota(order.begin(), order.end(), index(0));
-            if (!boxes.empty())
-                Build(order, 0, index(order.size()), boxes);
-        }
-        /// Depth-first traversal with a bounded stack: median splits bound depth
-        /// by signed-index bits. Callback gets each box within the stated gap.
+        explicit BoundingBoxTree(const std::vector<SpatialBox> &boxes, BoundingBoxBackend backend = BoundingBoxBackend::CGAL);
+        index Size() const;
+        BoundingBoxBackend Backend() const;
+        /// Synchronous visit, no output allocation and no retained callback.
+        /// Query inputs must be finite with gap >= 0; invalid boxes/backends
+        /// fail during construction. Point/line/planar boxes are supported.
+        /// Exceptions from visit propagate; no shared tree state is modified.
+        /// The operation pins its index through all callbacks. Replacing a
+        /// handle on another thread still requires ordinary synchronization.
         template <class F>
         void Query(const tPoint &point, real gap, F &&visit) const
         {
-            if (_nodes.empty())
-                return;
-            std::array<index, 128> stack{};
-            int size = 1;
-            while (size)
-            {
-                const auto &node = _nodes[stack[--size]];
-                if (node.box.SquaredDistance(point) > gap * gap)
-                    continue;
-                if (node.item >= 0)
-                    visit(node.item);
-                else
-                {
-                    DNDS_assert(size + 2 <= int(stack.size()));
-                    stack[size++] = node.left, stack[size++] = node.right;
-                }
-            }
+            auto callback = [&](index item)
+            { visit(item); };
+            QueryImpl(point, gap, &callback, [](void *context, index item)
+                      { (*static_cast<decltype(callback) *>(context))(item); });
         }
     };
 }
