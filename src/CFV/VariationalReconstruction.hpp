@@ -118,10 +118,21 @@ namespace DNDS::CFV
         int getDim() const { return dim; }
         using t_base = FiniteVolume;
 
+        /// Global owned-cell diagnostics from the last successful coefficient
+        /// setup. Counts are reduced across MPI and exclude ghost duplicates.
+        struct InverseDiagnostics
+        {
+            index cells = 0, filteredCells = 0, discardedModes = 0, rankZeroCells = 0;
+            real maxCondition = 0;
+        };
+
     private:
         VRSettings settings = VRSettings{dim};
+        InverseDiagnostics _inverseDiagnostics;
 
     public:
+        const InverseDiagnostics &GetInverseDiagnostics() const { return _inverseDiagnostics; }
+
         [[nodiscard]] const VRSettings &getSettings() const
         {
             return settings;

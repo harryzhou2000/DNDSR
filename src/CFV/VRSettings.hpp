@@ -48,7 +48,7 @@ namespace DNDS::CFV
         int limiterBiwayAlter = 0;    /// @brief 0=wbap-L2-biway, 1=minmod-biway
         int subs2ndOrder = 0;         /// @brief 0: vfv; 1: gauss rule; 2: least square; 11: GGMP;
         int subs2ndOrderGGScheme = 1; /// @brief 1: gauss rule using distance for interpolation; 0: no interpolation
-        real svdTolerance = 0;        /// @brief tolerance used in svd
+        real svdTolerance = 0;        /// @brief relative small-mode cutoff against sigma_max; zero uses Eigen's default
 
         real bcWeight = 1;
 

@@ -5,6 +5,9 @@ DNDSR is a C++17 / Python CFD (Computational Fluid Dynamics) research code
 implementing Compact Finite Volume methods with MPI parallelism and optional
 CUDA GPU support.
 
+The [2026-10-31 VR SVD correction](dev/vr_svd_cutoff_2026-10-31.md) documents the
+small-mode cutoff change, setup diagnostics and affected nonzero-tolerance cases.
+
 ## Core Modules
 
 | Module     | Directory    | Description                                              |

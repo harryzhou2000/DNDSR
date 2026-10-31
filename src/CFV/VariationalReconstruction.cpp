@@ -527,8 +527,9 @@ namespace DNDS::CFV
         if (c_.needMatrixACholeskyL)
             c_.matrixACholeskyL.resize(mesh->NumCellProc());
         real maxCond = 0.0;
+        index filteredCells = 0, discardedModes = 0, rankZeroCells = 0;
 #ifdef DNDS_USE_OMP
-#    pragma omp parallel for
+#    pragma omp parallel for reduction(max : maxCond) reduction(+ : filteredCells, discardedModes, rankZeroCells)
 #endif
         for (index iCell = 0; iCell < mesh->NumCell(); iCell++) // only non-ghost
         {
@@ -792,17 +793,22 @@ namespace DNDS::CFV
             // * get AInv and fill A, AInv
 
             decltype(A) AInv;
-            real aCond{0};
+            HardEigen::SVDInverseDiagnostics inverseDiagnostics;
             if (settings.svdTolerance)
-                aCond = HardEigen::EigenLeastSquareInverse_Filtered(A, AInv, settings.svdTolerance, 1);
+                // Remove weakly constrained modes, relative to sigma_max.
+                // Mode 1 instead removes large modes relative to sigma_min.
+                HardEigen::EigenLeastSquareInverse_Filtered(A, AInv, settings.svdTolerance, 0, &inverseDiagnostics);
             else
-                aCond = HardEigen::EigenLeastSquareInverse(A, AInv, settings.svdTolerance);
+                HardEigen::EigenLeastSquareInverse(A, AInv, settings.svdTolerance, &inverseDiagnostics);
             if (c_.needOriginalMatrix)
                 c_.matrixAB(iCell, 0) = A;
             c_.matrixAAInvB(iCell, 0) = AInv;
             c_.matrixA[iCell] = A;
 
-            maxCond = std::max(aCond, maxCond);
+            maxCond = std::max(inverseDiagnostics.rawCondition, maxCond);
+            filteredCells += inverseDiagnostics.rank < inverseDiagnostics.modes;
+            discardedModes += inverseDiagnostics.modes - inverseDiagnostics.rank;
+            rankZeroCells += inverseDiagnostics.rank == 0;
             if (c_.needMatrixACholeskyL)
                 c_.matrixACholeskyL.at(iCell) = A.llt().matrixL();
             DNDS_assert(AInv.allFinite());
@@ -867,9 +873,14 @@ namespace DNDS::CFV
 
         real maxCondAll = 0;
         MPI::Allreduce(&maxCond, &maxCondAll, 1, DNDS_MPI_REAL, MPI_MAX, mesh->getMPI().comm);
+        index localCounts[]{mesh->NumCell(), filteredCells, discardedModes, rankZeroCells}, globalCounts[4]{};
+        MPI::Allreduce(localCounts, globalCounts, 4, DNDS_MPI_INDEX, MPI_SUM, mesh->getMPI().comm);
+        _inverseDiagnostics = {globalCounts[0], globalCounts[1], globalCounts[2], globalCounts[3], maxCondAll};
         if (mesh->getMPI().rank == 0)
             log() << std::scientific << std::setprecision(3)
-                  << "VariationalReconstruction<dim>::ConstructRecCoeff() === A cond Max: [ " << maxCondAll << "] " << std::endl;
+                  << "VariationalReconstruction<dim>::ConstructRecCoeff() === A cond Max: [ " << maxCondAll
+                  << "] filtered cells/modes/rank-zero/total: [ " << globalCounts[1] << ", " << globalCounts[2]
+                  << ", " << globalCounts[3] << ", " << globalCounts[0] << "] " << std::endl;
     }
 
     template void

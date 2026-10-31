@@ -186,6 +186,7 @@ add_dependencies(all_unit_tests dnds_unit_tests geom_unit_tests)
 # ===================================================================
 dnds_add_unit_test(array "DNDS/test_Array.cpp" "dnds")
 dnds_add_unit_test(config "DNDS/test_Config.cpp" "dnds")
+dnds_add_unit_test(hard_eigen "DNDS/test_HardEigen.cpp" "dnds")
 dnds_add_mpi_test(object_contracts "DNDS/test_ObjectContracts.cpp" "dnds")
 target_sources(dnds_test_object_contracts PRIVATE DNDS/test_LocalChecks.cpp)
 

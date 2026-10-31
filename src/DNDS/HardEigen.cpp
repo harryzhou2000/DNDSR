@@ -5,12 +5,39 @@
 
 #include "HardEigen.hpp"
 #include <iostream>
+#include <limits>
 
 namespace DNDS::HardEigen
 {
     /// @todo test these eigen solvers !!
     // #define EIGEN_USE_LAPACKE
-    real EigenLeastSquareInverse(const Eigen::MatrixXd &A, Eigen::MatrixXd &AI, real svdTol)
+    namespace
+    {
+        void DescribeInverse(const Eigen::VectorXd &singular, const Eigen::VectorXd &inverse,
+                             real cutoff, SVDInverseDiagnostics *diagnostics)
+        {
+            if (!diagnostics)
+                return;
+            SVDInverseDiagnostics result;
+            result.modes = singular.size();
+            result.relativeCutoff = cutoff;
+            const real infinity = std::numeric_limits<real>::infinity();
+            result.rawCondition = singular.minCoeff() > 0 ? singular.maxCoeff() / singular.minCoeff() : infinity;
+            real smallest = infinity, largest = 0;
+            for (Eigen::Index iMode = 0; iMode < singular.size(); ++iMode)
+                if (inverse[iMode] != 0)
+                {
+                    ++result.rank;
+                    smallest = std::min(smallest, singular[iMode]);
+                    largest = std::max(largest, singular[iMode]);
+                }
+            result.retainedCondition = result.rank ? largest / smallest : infinity;
+            *diagnostics = result;
+        }
+    }
+
+    real EigenLeastSquareInverse(const Eigen::MatrixXd &A, Eigen::MatrixXd &AI, real svdTol,
+                                 SVDInverseDiagnostics *diagnostics)
     {
         // static const double sVmin = 1e-12;
         // auto SVDResult = A.bdcSvd(Eigen::ComputeThinU | Eigen::ComputeThinV);
@@ -19,10 +46,20 @@ namespace DNDS::HardEigen
             SVDResult.setThreshold(svdTol);
         AI = SVDResult.solve(Eigen::MatrixXd::Identity(A.rows(), A.rows()));
         Eigen::VectorXd svs = SVDResult.singularValues().array().abs();
+        // Eigen's solve uses rank(), including its default threshold when zero
+        // requests automatic tolerance. Match that exact decision in reporting.
+        if (diagnostics)
+        {
+            Eigen::VectorXd inverse = Eigen::VectorXd::Zero(svs.size());
+            for (Eigen::Index iMode = 0; iMode < SVDResult.rank(); ++iMode)
+                inverse[iMode] = 1 / svs[iMode];
+            DescribeInverse(svs, inverse, SVDResult.threshold(), diagnostics);
+        }
         return svs.maxCoeff() / (svs.minCoeff() + verySmallReal);
     }
 
-    real EigenLeastSquareInverse_Filtered(const Eigen::MatrixXd &A, Eigen::MatrixXd &AI, real svdTol, int mode)
+    real EigenLeastSquareInverse_Filtered(const Eigen::MatrixXd &A, Eigen::MatrixXd &AI, real svdTol, int mode,
+                                          SVDInverseDiagnostics *diagnostics)
     {
         double sVmin = svdTol == 0 ? Eigen::NumTraits<real>::epsilon() : svdTol;
         double sVminInv = 1. / (sVmin + verySmallReal);
@@ -51,6 +88,7 @@ namespace DNDS::HardEigen
         }
         AI = SVDResult.matrixV() * sVs.asDiagonal() * SVDResult.matrixU().transpose();
         Eigen::VectorXd svs = SVDResult.singularValues().array().abs();
+        DescribeInverse(svs, sVs, sVmin, diagnostics);
         DNDS_assert_info(AI.allFinite() && !AI.hasNaN(), [&]() -> std::string
                          {
             log() << sVmin << " " << sVminInv << std::endl;

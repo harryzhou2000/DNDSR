@@ -449,6 +449,55 @@ static ScalarFunc sinCos = [](const tPoint &p)
 static ScalarFunc cosPlusCos = [](const tPoint &p)
 { return std::cos(g_k * p[0]) + std::cos(g_k * p[1]); };
 
+TEST_CASE("VR setup uses the small-mode cutoff and reduces owned-cell diagnostics")
+{
+    auto vr = buildVR(g_wall_mesh, RecMethod::VFV_P2_Default);
+    auto settings = vr->getSettings();
+    std::vector<Eigen::MatrixXd> expected;
+    DNDS::index discarded = 0;
+    for (DNDS::index iCell = 0; iCell < g_wall_mesh->NumCell(); ++iCell)
+    {
+        // Independently recover the positive local system from its unfiltered
+        // inverse, then use its symmetric eigensystem as the spectral oracle.
+        const Eigen::MatrixXd A = vr->get_matrixAAInvB()(iCell, 0).inverse();
+        Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> spectrum(A);
+        REQUIRE(spectrum.info() == Eigen::Success);
+        auto values = spectrum.eigenvalues().eval();
+        const DNDS::real cutoff = 0.8 * values.maxCoeff();
+        REQUIRE(values.minCoeff() < cutoff); // must distinguish min/max filtering
+        for (Eigen::Index iMode = 0; iMode < values.size(); ++iMode)
+            if (values[iMode] > cutoff)
+                values[iMode] = 1 / values[iMode];
+            else
+            {
+                values[iMode] = 0;
+                ++discarded;
+            }
+        expected.push_back(spectrum.eigenvectors() * values.asDiagonal() * spectrum.eigenvectors().transpose());
+    }
+    settings.svdTolerance = 0.8;
+    vr->parseSettings(settings);
+    vr->ConstructRecCoeff();
+    for (DNDS::index iCell = 0; iCell < g_wall_mesh->NumCell(); ++iCell)
+        CHECK(vr->get_matrixAAInvB()(iCell, 0).isApprox(expected[iCell], 1e-10));
+    DNDS::index discardedGlobal = 0;
+    MPI::Allreduce(&discarded, &discardedGlobal, 1, DNDS_MPI_INDEX, MPI_SUM, g_mpi.comm);
+    CHECK(vr->GetInverseDiagnostics().filteredCells == 9);
+    CHECK(vr->GetInverseDiagnostics().discardedModes == discardedGlobal);
+    // A relative threshold of one discards every mode, including equality.
+    settings.svdTolerance = 1;
+    vr->parseSettings(settings);
+    vr->ConstructRecCoeff();
+    const auto &summary = vr->GetInverseDiagnostics();
+    CHECK(summary.cells == 9);
+    CHECK(summary.filteredCells == 9);
+    CHECK(summary.rankZeroCells == 9);
+    CHECK(summary.discardedModes == 45); // five nonconstant P2 modes per cell
+    for (DNDS::index iCell = 0; iCell < g_wall_mesh->NumCell(); ++iCell)
+        CHECK(vr->get_matrixAAInvB()(iCell, 0).isZero());
+    CHECK(std::isfinite(summary.maxCondition));
+}
+
 // ===================================================================
 // POLYNOMIAL EXACTNESS on wall mesh (Uniform_3x3_wall, [-1,2]^2)
 // ===================================================================

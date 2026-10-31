@@ -11,11 +11,20 @@
 
 namespace DNDS::HardEigen
 {
+    /// Setup diagnostics from the same SVD used to form the inverse.
+    /// Conditions describe the raw and retained spectra respectively; rank
+    /// zero and an exactly singular raw matrix report infinity.
+    struct SVDInverseDiagnostics
+    {
+        Eigen::Index modes = 0, rank = 0;
+        real relativeCutoff = 0, rawCondition = 0, retainedCondition = 0;
+    };
 
     /// @brief Moore-Penrose pseudoinverse via SVD, dropping singular values below
     /// `svdTol` (relative to the largest). Returns the largest / smallest ratio
     /// (condition number).
-    real EigenLeastSquareInverse(const Eigen::MatrixXd &A, Eigen::MatrixXd &AI, real svdTol = 0);
+    real EigenLeastSquareInverse(const Eigen::MatrixXd &A, Eigen::MatrixXd &AI, real svdTol = 0,
+                                 SVDInverseDiagnostics *diagnostics = nullptr);
 
     /**
      * @brief Pseudoinverse with a choice of singular-value filter.
@@ -28,10 +37,11 @@ namespace DNDS::HardEigen
      *                  below the tolerance (stabilises rank-deficient systems);
      *                - `1`: drop *largest* singular values above `1/svdTol` relative
      *                  to the smallest (inverse filtering, rarely needed).
-     * @return Condition number of `A` (ratio of largest to smallest
-     *         post-filter singular value).
+     * @return Legacy regularized raw condition estimate, before filtering.
+     * Optional diagnostics report unregularized raw/retained conditions.
      */
-    real EigenLeastSquareInverse_Filtered(const Eigen::MatrixXd &A, Eigen::MatrixXd &AI, real svdTol = 0, int mode = 0);
+    real EigenLeastSquareInverse_Filtered(const Eigen::MatrixXd &A, Eigen::MatrixXd &AI, real svdTol = 0, int mode = 0,
+                                          SVDInverseDiagnostics *diagnostics = nullptr);
 
     /// @brief Least-squares solve `A * AIB ~= B` via a rank-revealing QR-style
     /// decomposition; returns the computed rank of `A`.
