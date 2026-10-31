@@ -7,6 +7,7 @@
 
 namespace DNDS::Geom
 {
+    struct LocalCellOrderingSettings;
     /// Boundary placement follows the cell in its physical image. The public
     /// Bnd2CellCoupled relation carries the periodic partner in its second slot;
     /// that support must not change which side owns the boundary. The legacy
@@ -67,5 +68,10 @@ namespace DNDS::Geom
         /// family (identity maps included) for explicit external field transfer.
         static NativeMeshTransitionResult ReorderLocalCells(const UnstructuredMeshState &source, const MPIInfo &mpi,
                                                             int nParts = 1, int nPartsInner = 1, int ghostLayers = 1);
+        /// New explicit conservative-core policy. subregion -> optional
+        /// node-star core/noncore -> optional sender grouping -> RCM. The
+        /// existing integer overload retains its historical ordering semantics.
+        static NativeMeshTransitionResult ReorderLocalCells(UnstructuredMesh &source,
+                                                            const struct LocalCellOrderingSettings &settings, int ghostLayers = 1);
     };
 }

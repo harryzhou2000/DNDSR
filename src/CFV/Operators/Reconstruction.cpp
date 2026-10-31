@@ -27,6 +27,19 @@ namespace DNDS::CFV
     const FiniteVolumePlan &VariationalReconstructionPlan::Metrics() const { return _data->metrics; }
     const ReconstructionSettings &VariationalReconstructionPlan::Settings() const { return _data->settings; }
     int VariationalReconstructionPlan::NRecDOF() const { return _data->n; }
+    ReconstructionInverseDiagnostics VariationalReconstructionPlan::GetInverseDiagnostics() const
+    {
+        Validate();
+        return _data->inverseDiagnostics;
+    }
+    HardEigen::SVDInverseDiagnostics VariationalReconstructionPlan::GetCellInverseDiagnostics(index iCell) const
+    {
+        Validate();
+        DNDS_check_throw_info(iCell >= 0 && iCell < Metrics().NumCell(), "inverse diagnostic cell is not owned");
+        auto read = _data->inverseConditions.Read();
+        const auto values = read.View<Runtime::FixedRows<4>>();
+        return {_data->n, Eigen::Index(values(iCell, 0)), values(iCell, 3), values(iCell, 1), values(iCell, 2)};
+    }
     void VariationalReconstructionPlan::Validate() const { Metrics().Validate(); }
     ReconstructionWorkspace VariationalReconstructionPlan::BuildWorkspace(index components) const
     {

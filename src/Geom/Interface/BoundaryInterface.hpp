@@ -43,6 +43,7 @@ namespace DNDS::Geom
         std::shared_ptr<const Detail::BoundaryPatchData> _data;
         explicit BoundaryPatch(std::shared_ptr<const Detail::BoundaryPatchData> data) : _data(std::move(data)) {}
         friend class InterfacePointMap;
+        friend class DistributedInterfacePointMap;
 
     public:
         static BoundaryPatch Create(ssp<UnstructuredMesh> mesh, const std::vector<index> &boundaries, RigidPose pose = {});
@@ -79,6 +80,48 @@ namespace DNDS::Geom
         void Validate() const;
         index Size() const;
         InterfacePointMatch Get(index iQuery) const;
+        const BoundaryPatch &Donor() const;
+    };
+
+    enum class InterfaceRoutingMode
+    {
+        CoarseBoxes,
+        AllGatherBoundary
+    };
+    struct DistributedInterfaceMatch
+    {
+        InterfacePointMatch geometry;
+        int geometryRank = 0, donorRank = 0;
+        index donorOwnedCell = 0;
+    };
+    namespace Detail
+    {
+        struct DistributedInterfaceMapData;
+    }
+
+    /// Collective distributed boundary point matching. Coarse boxes only route
+    /// candidates; exact proposals return to the query origin for arbitration.
+    /// AllGatherBoundary replicates selected surface geometry as an independent
+    /// routing baseline. Mesh coordinates always remain in their reference frame.
+    /// Query IDs are unique per origin rank. Every rank calls with the same mode
+    /// and settings, including empty query/patch ranks. Retain MPI until disposal.
+    class DistributedInterfacePointMap
+    {
+        std::shared_ptr<const Detail::DistributedInterfaceMapData> _data;
+        explicit DistributedInterfacePointMap(std::shared_ptr<const Detail::DistributedInterfaceMapData> data)
+            : _data(std::move(data)) {}
+
+    public:
+        static DistributedInterfacePointMap Match(BoundaryPatch donor, const Runtime::Array<real> &points,
+                                                  const Runtime::Array<index> &queryIds, InterfaceRoutingMode mode = InterfaceRoutingMode::CoarseBoxes,
+                                                  InterfaceSearchSettings settings = {});
+        void Validate() const;
+        index Size() const;
+        DistributedInterfaceMatch Get(index iQuery) const;
+        /// Explicitly reject a retained map when the active immutable pose or
+        /// patch selection has been replaced. Version validity alone describes
+        /// the old patch, which can still be internally valid.
+        void ValidateFor(const BoundaryPatch &active) const;
         const BoundaryPatch &Donor() const;
     };
 }

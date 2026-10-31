@@ -6,6 +6,7 @@
 #include "Geom/Access/EntitySpace.hpp"
 #include "Geom/Geometric.hpp"
 #include "Geom/Unstructured/UnstructuredMeshFwd.hpp"
+#include "DNDS/HardEigen.hpp"
 
 namespace DNDS::Geom
 {
@@ -22,7 +23,7 @@ namespace DNDS::CFV
         int maxOrder = 2, intOrder = 5;
         real jacobiRelax = 1., WBAP_nStd = 10.;
         bool SORInstead = false, HQMWeights = false;
-        real bcWeight = 1., rankTolerance = 1e-13;
+        real bcWeight = 1., svdTolerance = 1e-13, svdAbsoluteTolerance = 0;
         std::array<real, 4> boundaryDerivativeWeights{1, 0, 0, 0};
         DNDS_DECLARE_CONFIG(ReconstructionSettings)
         {
@@ -33,7 +34,8 @@ namespace DNDS::CFV
             DNDS_FIELD(HQMWeights, "Legacy HQM_OPT derivative and HQM_SD geometry weights");
             DNDS_FIELD(bcWeight, "Dirichlet boundary value weight");
             DNDS_FIELD(boundaryDerivativeWeights, "Boundary weights by derivative order; nonzero derivatives impose homogeneous derivative targets");
-            DNDS_FIELD(rankTolerance, "Relative pivot tolerance for local systems");
+            DNDS_FIELD(svdTolerance, "Relative small-mode SVD cutoff against sigma_max");
+            DNDS_FIELD(svdAbsoluteTolerance, "Absolute SVD cutoff, zero by default");
             DNDS_FIELD(WBAP_nStd, "WBAP center weight");
         }
         void Validate() const;
@@ -45,6 +47,13 @@ namespace DNDS::CFV
         struct ReconstructionData;
     }
     using FVField = Algebra::DofField<real>;
+
+    /// MPI-global owned-cell setup diagnostics; no ghost double counting.
+    struct ReconstructionInverseDiagnostics
+    {
+        index cells = 0, filteredCells = 0, discardedModes = 0, rankZeroCells = 0;
+        real maxCondition = 0;
+    };
 
     /// Borrowed metric spans for numerical loops. Retain FiniteVolumeRead through
     /// every use. These initial pointers address host storage; device placement
@@ -111,6 +120,7 @@ namespace DNDS::CFV
         /// Collective binding, retained by caller for persistent repeated pulls.
         Runtime::TransferBinding BindHalo(FVField &field) const;
         void ValidateField(const FVField &field, index width) const;
+        MPI_Comm Communicator() const;
         real GetCellVol(index iCell) const;
         Geom::tPoint GetCellCent(index iCell) const;
     };
@@ -163,6 +173,9 @@ namespace DNDS::CFV
         const FiniteVolumePlan &Metrics() const;
         const ReconstructionSettings &Settings() const;
         int NRecDOF() const;
+        ReconstructionInverseDiagnostics GetInverseDiagnostics() const;
+        /// Owned-cell spectrum diagnostics from setup, without refactorization.
+        HardEigen::SVDInverseDiagnostics GetCellInverseDiagnostics(index iCell) const;
         void Validate() const;
         ReconstructionWorkspace BuildWorkspace(index components) const;
         ReconstructionBoundaryValues BuildBoundaryValues(index components) const;

@@ -45,3 +45,26 @@ TEST_CASE("SVD diagnostics match automatic Eigen cutoff and rank-zero matrices")
     CHECK(diagnostics.rank == 0);
     CHECK(inverse.isZero());
 }
+
+TEST_CASE("Explicit SVD cutoffs are scale relative with optional absolute threshold")
+{
+    using Matrix = Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic, 0, 20, 20>;
+    Matrix A = Eigen::Vector3d(1, 1e-8, 1e-14).asDiagonal(), inverse;
+    auto diagnostics = DNDS::HardEigen::EigenSVDInverse(A, inverse, 1e-12);
+    CHECK(diagnostics.rank == 2);
+    CHECK(inverse(0, 0) == doctest::Approx(1));
+    CHECK(inverse(1, 1) == doctest::Approx(1e8));
+    CHECK(inverse(2, 2) == 0);
+    A *= 1e-100;
+    diagnostics = DNDS::HardEigen::EigenSVDInverse(A, inverse, 1e-12);
+    CHECK(diagnostics.rank == 2);
+    CHECK(inverse(1, 1) == doctest::Approx(1e108));
+    diagnostics = DNDS::HardEigen::EigenSVDInverse(A, inverse, 1e-12, 1e-105);
+    CHECK(diagnostics.rank == 1);
+    diagnostics = DNDS::HardEigen::EigenSVDInverse(A, inverse, 1);
+    CHECK(diagnostics.rank == 0);
+    CHECK(inverse.isZero());
+    CHECK_THROWS(DNDS::HardEigen::EigenSVDInverse(A, inverse, -1));
+    A(0, 0) = std::numeric_limits<double>::quiet_NaN();
+    CHECK_THROWS(DNDS::HardEigen::EigenSVDInverse(A, inverse, 1e-12));
+}

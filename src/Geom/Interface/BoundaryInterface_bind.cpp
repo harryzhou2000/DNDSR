@@ -51,5 +51,21 @@ namespace DNDS::Geom
             .def("Validate", &InterfacePointMap::Validate)
             .def("Size", &InterfacePointMap::Size)
             .def("Get", &InterfacePointMap::Get);
+        py::enum_<InterfaceRoutingMode>(m, "InterfaceRoutingMode")
+            .value("CoarseBoxes", InterfaceRoutingMode::CoarseBoxes)
+            .value("AllGatherBoundary", InterfaceRoutingMode::AllGatherBoundary);
+        py::class_<DistributedInterfaceMatch>(m, "DistributedInterfaceMatch")
+            .def_readonly("geometry", &DistributedInterfaceMatch::geometry)
+            .def_readonly("geometryRank", &DistributedInterfaceMatch::geometryRank)
+            .def_readonly("donorRank", &DistributedInterfaceMatch::donorRank)
+            .def_readonly("donorOwnedCell", &DistributedInterfaceMatch::donorOwnedCell);
+        py::class_<DistributedInterfacePointMap>(m, "DistributedInterfacePointMap")
+            .def_static("Match", &DistributedInterfacePointMap::Match, py::arg("donor"), py::arg("points"), py::arg("queryIds"),
+                        py::arg("mode") = InterfaceRoutingMode::CoarseBoxes, py::arg("settings") = InterfaceSearchSettings{},
+                        "Collective fixed-record candidate/proposal matching; all ranks participate, including empty owners.")
+            .def("Size", &DistributedInterfacePointMap::Size)
+            .def("Get", &DistributedInterfacePointMap::Get)
+            .def("Validate", &DistributedInterfacePointMap::Validate)
+            .def("ValidateFor", &DistributedInterfacePointMap::ValidateFor);
     }
 }

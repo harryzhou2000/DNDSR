@@ -4,6 +4,7 @@
 #include "DNDS/MPI.hpp"
 #include <unordered_set>
 #include <vector>
+#include <map>
 
 namespace DNDS::Geom
 {
@@ -61,6 +62,12 @@ namespace DNDS::Geom
         /// Entity kinds whose adjacencies should be destroyed before reorder
         /// (not reordered, not remapped -- just wiped). Typically {Face}.
         std::unordered_set<EntityKind> destroyKinds;
+
+        /// Optional local old-to-new row permutations, with ownership fixed.
+        /// Mutually exclusive with rank-placement/follow/reconstruction inputs.
+        /// Every rank names the same kinds; local row extents can differ. Native
+        /// transitions remap all registered references and companions normally.
+        std::map<EntityKind, std::vector<index>> localPermutations;
     };
 
 }

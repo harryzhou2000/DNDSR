@@ -6,6 +6,24 @@ row metadata live in Runtime Arrays; the facade has no legacy construction
 workspace. Readonly compatibility spellings such as `cell2node` resolve native
 rows. They are not mutable adjacency arrays.
 
+## Rank-local core and dependent work sets
+
+`Geom/Access/EntityWorkPartition.hpp` classifies owned output entities through
+explicit adjacency paths. `CellNodeCell(mesh)` uses the canonical node-star
+`Cell2Cell` adjacency, matching the conservative cell halo policy. Generic
+`Build(mesh, outputKind, paths)` can describe nodal inputs or multiple dependency
+paths. A terminal ghost input makes the output dependent; unavailable mappings
+or missing intermediate rows throw without fetching data. Physical boundary
+sentinels contribute no input. The producer must publish complete rows: a short
+but otherwise valid row cannot reveal an accidentally omitted incidence.
+
+The immutable lists retain entity order and topology/distribution/layout/interface
+stamps. They do not block mutation. Call `Validate()` and retain the normal mesh
+and field read scopes through computation; topology classification cannot prove
+the caller's actual kernel I/O, freshness of BC values or safety of writes to
+owned rows that are active direct MPI sends. Pure geometry changes preserve the
+work sets. No per-element generation checks are needed in the numerical loop.
+
 ## Ownership and setup
 
 **Construction correction, 2026-10-28:** primary and face/edge builders now

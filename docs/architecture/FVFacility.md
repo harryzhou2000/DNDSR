@@ -53,9 +53,16 @@ The basis is `phi_j(x)=monomial_j((x-center)/scale)-cell_mean(monomial_j)`.
 Stored coefficients have row width `NRecDOF()*components` in **column-major
 mode-by-component order**: `row[component*NRecDOF()+mode]`. Cell means are never
 modified by reconstruction or limiting. The functional includes derivative
-tensor multiplicities and the selected per-order weights. Preparation checks
-the local system's numerical rank before inverting it; a deficient stencil is
-an explicit error, not an automatic lower-degree fallback.
+tensor multiplicities and the selected per-order weights. Preparation uses SVD
+on every local system and discards modes at or below
+`max(svdAbsoluteTolerance, svdTolerance*sigma_max)`. Relative tolerance defaults
+to `1e-13`, absolute tolerance to zero. Deficient systems have a minimum-norm
+truncated solution; no automatic polynomial-degree reduction is performed.
+`GetInverseDiagnostics()` reports global owned-cell filtered/rank-zero counts,
+discarded modes and maximum raw condition. `GetCellInverseDiagnostics(iCell)`
+reports local effective rank and raw/retained spectral conditions from setup,
+without repeating the factorization. Exact zero matrices report rank zero and
+infinite conditions. These methods and tolerance controls are exposed in Python.
 
 Rotated periodic state/derivative transforms, anisotropic/GG penalties,
 axisymmetric integration, variable per-cell degree, alternative legacy limiter
@@ -208,21 +215,55 @@ Choosing limited/unlimited values means passing the corresponding coefficient
 field. No conservative flux, ALE/GCL, FSI force transfer or flow coupling iteration
 is implied by point interpolation.
 
-Distributed matching explicitly fails when the mesh communicator has more than
-one rank. The later backend must route query batches to candidate owners and
-evaluate/sample there, preserving query IDs and using Runtime row/payload
-transfers. It must not gather the global surface. Existing single-domain field
-halos and per-interface query transport remain distinct mappings.
+`InterfacePointMap` remains the local API. `DistributedInterfacePointMap::Match`
+is the collective distributed API, with all ranks participating even when a
+rank has no queries or selected boundaries. `CoarseBoxes` all-gathers one
+conservative world-space box per rank, sends queries to candidate geometry
+ranks, evaluates exact projections there, returns all proposals and selects on
+the query origin. It rejects ambiguous accepted interiors and uses persistent
+boundary IDs at seams. `AllGatherBoundary` replicates the selected surface
+geometry as an explicit correctness baseline; it does not replicate volume
+mesh data or solution fields. Both use fixed integer/floating tables and the
+same exact projection kernel, so the baseline independently checks routing,
+not the projection mathematics.
+
+Matches distinguish the boundary-geometry rank from the donor-cell rank and
+owned donor row. `geometry.donorCell` is in the geometry rank's mesh order;
+distributed consumers must use `donorRank`/`donorOwnedCell`. Query IDs are unique
+per origin and output order follows the original local query order. Poses do
+not change internal mesh coordinates. `ValidateFor(activePatch)` rejects a
+retained map when the active immutable patch/pose object changes. Collective
+motion/deformation updates require new maps on every rank: rank-local validation
+cannot independently discover an unannounced update on another rank.
+
+`DistributedInterfaceSamplingPlan` routes selected query points to the actual
+donor-cell owners once, then evaluates their reference-frame polynomials and
+returns values to the receivers through the reversed canonical row route.
+Allocate a `DistributedSamplingWorkspace` with `BuildWorkspace(components)`.
+`Evaluate` provides synchronous collective evaluation/return; alternatively
+`EvaluateDonors` and `BindResult` separate compute from a reusable persistent
+result binding. The workspace is private to one active evaluation. Callers
+finish producers, release conflicting Python views, retain all handles through
+completion and arrange halo readiness under the polynomial evaluator's contract.
+Drain/rebuild result bindings after changing output storage or query/donor order.
+Field halos and interface sample routes are separate mappings. There is still
+no fluid-domain orchestrator, conservative flux or moving-mesh flow solver.
 
 ## Validation and reproducible performance
 
 `cfv_test_fv_facility` compares each sweep with legacy VR, independently recovers
 polynomials from quadrature cell means, compares six-component characteristic
 WBAP, exercises periodic triangles/quads and SOR/Jacobi, empty ranks, stale
-plans, invalid shapes and collectively rejected deficient systems.
+plans, invalid shapes and SVD minimum-norm solutions for deficient systems.
 `geom_test_boundary_interface` checks geometric positions, seams, gap failures,
 3D triangles/quads, relative sliding, ambiguous interiors, immutable old maps
-and explicit DSL stencil publication. Python tests exercise shared ownership,
+and explicit DSL stencil publication. `geom_test_distributed_boundary_interface`
+uses generated Cartesian boundary meshes and independent ownership/ID/point
+oracles at np=1/2/4/8, including empty ranks, seams, sliding across rank ownership,
+different geometry/cell owners and agreement with replicated-boundary matching.
+`cfv_test_distributed_interface_sampling` checks two manufactured polynomials,
+owner-dependent values, moving poses, query ordering and persistent result
+transfer updates at np=1/2/4/8. Python tests exercise shared ownership,
 DNDS algebra reuse, two domain identities and the sampling chain.
 
 `cfv_benchmark_fv_facility` takes `mesh dim degree sweeps trials periodicLength`.

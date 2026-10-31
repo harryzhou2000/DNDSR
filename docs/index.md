@@ -18,6 +18,7 @@ records the NS_EX/NS_EX_3D absolute-velocity source convention and focused tests
 | Mesh ownership, relation semantics, construction closure and ghost assembly | [Mesh connectivity and construction](architecture/MeshConnectivity.md) |
 | Owned construction API and mesh access examples | [Native mesh construction](architecture/NativeMesh.md) |
 | Shared Runtime arrays, placement, access and transfers | [Runtime Array](architecture/ArrayRuntime.md) |
+| Fixed-record setup request/reply routing | [Sparse batch exchange](architecture/SparseBatchExchange.md) |
 | Historical Array/ParArray interface | [Legacy Array infrastructure](architecture/array_infrastructure.md) |
 | Runtime ordering and lifetime responsibilities | [Runtime caller contract](architecture/RuntimeCallerContract.md) |
 | Native field algebra | [Native DOF algebra](architecture/NativeDofAlgebra.md) |

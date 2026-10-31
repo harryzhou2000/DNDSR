@@ -11,6 +11,9 @@ namespace DNDS::Geom
         const MPIInfo &mpi)
     {
         ReorderPlan plan;
+        int nativeOnly = !input.localPermutations.empty();
+        MPI_Allreduce(MPI_IN_PLACE, &nativeOnly, 1, MPI_INT, MPI_MAX, mpi.comm);
+        DNDS_check_throw_info(!nativeOnly, "local entity permutations require NativeMeshTransition");
 
         // --- Step 1: Merge explicit maps into allMaps ---
         std::unordered_map<EntityKind, std::vector<MPI_int>> allMaps;
