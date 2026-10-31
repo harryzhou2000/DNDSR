@@ -5,6 +5,11 @@
 #include "Mesh/AdjPairTracked_bind.hpp"
 #include "Mesh/AdjPairTracked_bind_inst/AdjPairTracked_bind_fwd.hpp"
 
+namespace DNDS::Geom
+{
+    void pybind11_BoundaryInterface_define(py::module_ &m);
+}
+
 PYBIND11_MODULE(geom_pybind11, m)
 {
     //! hard coded dependency here
@@ -29,4 +34,5 @@ PYBIND11_MODULE(geom_pybind11, m)
     pybind11_MeshLocDefine(m);
     pybind11_UnstructuredMesh_define(m);
     pybind11_UnstructuredMeshSerialRW_define(m);
+    pybind11_BoundaryInterface_define(m);
 }

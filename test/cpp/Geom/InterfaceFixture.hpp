@@ -1,0 +1,72 @@
+#pragma once
+#include "Geom/Unstructured/NativeMeshBuilder.hpp"
+#include "Geom/Unstructured/UnstructuredMesh.hpp"
+
+namespace InterfaceFixture
+{
+    namespace G = DNDS::Geom;
+    namespace R = DNDS::Runtime;
+    using I = DNDS::index;
+    inline R::Array<I> Rows(const std::vector<std::vector<I>> &rows)
+    {
+        std::vector<size_t> lengths;
+        for (const auto &row : rows)
+            lengths.push_back(row.size());
+        R::Array<I> result(R::RowLayout::Ragged(lengths));
+        auto write = result.Write();
+        for (I i = 0; i < I(rows.size()); ++i)
+            std::copy(rows[i].begin(), rows[i].end(), write.View()[i].begin());
+        return result;
+    }
+    inline std::shared_ptr<G::UnstructuredMesh> SingleCell(const DNDS::MPIInfo &mpi, bool hex, bool overlappingCopy = false)
+    {
+        std::vector<G::tPoint> points = hex
+                                            ? std::vector<G::tPoint>{{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}, {0, 0, 1}, {1, 0, 1}, {1, 1, 1}, {0, 1, 1}}
+                                            : std::vector<G::tPoint>{{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+        G::Elem::Element element{hex ? G::Elem::Hex8 : G::Elem::Tet4};
+        const I nodesPerCell = I(points.size()), copies = overlappingCopy ? 2 : 1;
+        if (overlappingCopy)
+        {
+            const auto extra = points;
+            points.insert(points.end(), extra.begin(), extra.end());
+        }
+        const bool active = mpi.rank == 0;
+        auto nodes = G::EntitySpace::CreateOwned(G::EntityKind::Node, mpi, active ? I(points.size()) : 0);
+        auto cells = nodes.CreateSibling(G::EntityKind::Cell, active ? copies : 0);
+        auto boundaries = nodes.CreateSibling(G::EntityKind::Bnd, active ? copies * element.GetNumFaces() : 0);
+        std::vector<I> cone(size_t(nodesPerCell), 0);
+        std::iota(cone.begin(), cone.end(), I(0));
+        std::vector<std::vector<I>> faces, cellCones;
+        if (active)
+            for (I copy = 0; copy < copies; ++copy)
+            {
+                std::iota(cone.begin(), cone.end(), copy * nodesPerCell);
+                cellCones.push_back(cone);
+                for (int i = 0; i < element.GetNumFaces(); ++i)
+                {
+                    const auto face = element.ObtainFace(i);
+                    faces.emplace_back(face.GetNumNodes());
+                    element.ExtractFaceNodes(i, cone, faces.back());
+                }
+            }
+        G::NativeMeshInput input{mpi, 3, cells, nodes, boundaries,
+                                 Rows(cellCones), Rows(faces),
+                                 R::Array<DNDS::real>(R::RowLayout::Dense(nodes.NumOwned(), 3)),
+                                 R::Array<G::ElemInfo>(R::RowLayout::Dense(cells.NumOwned(), 1)),
+                                 R::Array<G::ElemInfo>(R::RowLayout::Dense(boundaries.NumOwned(), 1))};
+        {
+            auto coordinate = input.coordinates.Write();
+            for (I i = 0; i < nodes.NumOwned(); ++i)
+                for (int d = 0; d < 3; ++d)
+                    coordinate.View()(i, d) = points[i][d];
+            auto cellInfo = input.cellInfo.Write(), bndInfo = input.boundaryInfo.Write();
+            for (I i = 0; i < cells.NumOwned(); ++i)
+                cellInfo.View()(i, 0) = G::ElemInfo{element.type, G::INTERNAL_ZONE};
+            for (I i = 0; i < boundaries.NumOwned(); ++i)
+                bndInfo.View()(i, 0) = G::ElemInfo{element.ObtainFace(i % element.GetNumFaces()).type, 7};
+        }
+        auto mesh = G::UnstructuredMesh::FromNative(mpi, G::ConstructNativeMesh(std::move(input)));
+        mesh->PrepareNativeTopology();
+        return mesh;
+    }
+}
