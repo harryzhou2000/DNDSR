@@ -156,9 +156,24 @@ void Run(DNDS::MPIInfo mpi, const char *file, int degree, int sweeps, int trials
             { plan->DoLimiterWBAP_3Order(work, order); halo.Begin().Wait(); } });
         const double legacyLimiter = measure([&]
                                              { legacy.template DoLimiterWBAP_3<5>(oldMean, oldRec, limited, scratch, indicator, true, identity, identity, true); });
+        double limiterDifference = 0, maxLimiterDifference = 0;
+        {
+            auto read = work.coefficients.Owned().Read();
+            const auto values = read.template View<R::TableRows>();
+            for (I iCell = 0; iCell < metrics->NumCell(); ++iCell)
+                for (int component = 0; component < 5; ++component)
+                    for (int mode = 0; mode < plan->NRecDOF(); ++mode)
+                    {
+                        const double delta = values(iCell, component * plan->NRecDOF() + mode) - limited[iCell](mode, component);
+                        DNDS_check_throw_info(std::isfinite(delta), "nonfinite benchmark limiter difference");
+                        limiterDifference = std::max(limiterDifference, std::abs(delta));
+                    }
+        }
+        MPI_Allreduce(&limiterDifference, &maxLimiterDifference, 1, MPI_DOUBLE, MPI_MAX, mpi.comm);
+        DNDS_check_throw_info(maxLimiterDifference < 1e-8, "benchmark WBAP methods disagree");
         if (mpi.rank == 0)
         {
-            nlohmann::ordered_json report{{"cells", global}, {"np", mpi.size}, {"degree", degree}, {"trial", trial}, {"sweeps", sweeps}, {"native_metrics", nativeMetric}, {"legacy_metrics", legacyMetric}, {"native_prepare", nativePrepare}, {"legacy_prepare", legacyPrepare}, {"native_iteration", nativeIteration}, {"legacy_iteration", legacyIteration}, {"native_wbap", nativeLimiter}, {"legacy_wbap", legacyLimiter}, {"max_coefficient_error", maximum}};
+            nlohmann::ordered_json report{{"cells", global}, {"np", mpi.size}, {"degree", degree}, {"trial", trial}, {"sweeps", sweeps}, {"native_metrics", nativeMetric}, {"legacy_metrics", legacyMetric}, {"native_prepare", nativePrepare}, {"legacy_prepare", legacyPrepare}, {"native_iteration", nativeIteration}, {"legacy_iteration", legacyIteration}, {"native_wbap", nativeLimiter}, {"legacy_wbap", legacyLimiter}, {"max_coefficient_error", maximum}, {"max_limiter_error", maxLimiterDifference}};
             std::cout << "FV_BENCH " << report.dump() << std::endl;
         }
     }
