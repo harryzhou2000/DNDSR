@@ -24,7 +24,9 @@ ModelEvaluator.cpp
 BenchmarkFiniteVolume.cpp
 Prepare/FiniteVolumePlan.cpp
 Prepare/VariationalReconstructionPlan.cpp
+Prepare/PolynomialSamplingPlan.cpp
 Operators/Reconstruction.cpp
+Operators/ReconstructionLinear.cpp
 )
 if (DNDS_USE_CUDA)
 list(APPEND CPPS VRDefines.cu BenchmarkFiniteVolume.cu)

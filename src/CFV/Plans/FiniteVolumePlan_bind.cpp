@@ -15,6 +15,33 @@ namespace DNDS::CFV
             .value("All", ReconstructionRegion::All)
             .value("Core", ReconstructionRegion::Core)
             .value("HaloDependent", ReconstructionRegion::HaloDependent);
+        using F = ReconstructionFunctionalSettings;
+        py::enum_<F::DirectionalWeight>(m, "ReconstructionDirectionalWeight")
+            .value("Factorial", F::DirectionalWeight::Factorial)
+            .value("HQM_OPT", F::DirectionalWeight::HQM_OPT)
+            .value("TEST_OPT", F::DirectionalWeight::TEST_OPT)
+            .value("ManualDirWeight", F::DirectionalWeight::ManualDirWeight);
+        py::enum_<F::GeometricWeight>(m, "ReconstructionGeometricWeight")
+            .value("GWNone", F::GeometricWeight::GWNone)
+            .value("HQM_SD", F::GeometricWeight::HQM_SD)
+            .value("SD_Power", F::GeometricWeight::SD_Power);
+        py::enum_<F::LengthScale>(m, "ReconstructionLengthScale")
+            .value("BaryDiff", F::LengthScale::BaryDiff)
+            .value("MeanAACBB", F::LengthScale::MeanAACBB)
+            .value("CellMax", F::LengthScale::CellMax);
+        py::class_<F>(m, "ReconstructionFunctionalSettings")
+            .def(py::init<>())
+            .def_readwrite("dirWeightScheme", &F::dirWeightScheme)
+            .def_readwrite("geomWeightScheme", &F::geomWeightScheme)
+            .def_readwrite("scaleType", &F::scaleType)
+            .def_readwrite("manualDirWeights", &F::manualDirWeights)
+            .def_readwrite("scaleMultiplier", &F::scaleMultiplier)
+            .def_readwrite("geomWeightBias", &F::geomWeightBias)
+            .def_readwrite("geomWeightPower", &F::geomWeightPower)
+            .def_readwrite("geomWeightPower1", &F::geomWeightPower1)
+            .def_readwrite("geomWeightPower2", &F::geomWeightPower2)
+            .def_readwrite("dirWeightCombPowV", &F::dirWeightCombPowV)
+            .def("Validate", &F::Validate);
         py::class_<ReconstructionSettings>(m, "ReconstructionSettings")
             .def(py::init<>())
             .def_readwrite("maxOrder", &ReconstructionSettings::maxOrder)
@@ -23,8 +50,11 @@ namespace DNDS::CFV
             .def_readwrite("SORInstead", &ReconstructionSettings::SORInstead)
             .def_readwrite("coreFirst", &ReconstructionSettings::coreFirst)
             .def_readwrite("HQMWeights", &ReconstructionSettings::HQMWeights)
+            .def_readwrite("cacheDiffBase", &ReconstructionSettings::cacheDiffBase)
+            .def_readwrite("functional", &ReconstructionSettings::functional)
             .def_readwrite("bcWeight", &ReconstructionSettings::bcWeight)
             .def_readwrite("boundaryDerivativeWeights", &ReconstructionSettings::boundaryDerivativeWeights)
+            .def_readwrite("boundaryZoneWeights", &ReconstructionSettings::boundaryZoneWeights)
             .def_readwrite("svdTolerance", &ReconstructionSettings::svdTolerance)
             .def_readwrite("svdAbsoluteTolerance", &ReconstructionSettings::svdAbsoluteTolerance)
             .def_readwrite("WBAP_nStd", &ReconstructionSettings::WBAP_nStd)
@@ -37,7 +67,9 @@ namespace DNDS::CFV
             .def_readonly("filteredCells", &ReconstructionInverseDiagnostics::filteredCells)
             .def_readonly("discardedModes", &ReconstructionInverseDiagnostics::discardedModes)
             .def_readonly("rankZeroCells", &ReconstructionInverseDiagnostics::rankZeroCells)
-            .def_readonly("maxCondition", &ReconstructionInverseDiagnostics::maxCondition);
+            .def_readonly("maxCondition", &ReconstructionInverseDiagnostics::maxCondition)
+            .def_readonly("maxConditionCell", &ReconstructionInverseDiagnostics::maxConditionCell)
+            .def_readonly("rankCounts", &ReconstructionInverseDiagnostics::rankCounts);
         py::class_<HardEigen::SVDInverseDiagnostics>(m, "SVDInverseDiagnostics")
             .def_readonly("modes", &HardEigen::SVDInverseDiagnostics::modes)
             .def_readonly("rank", &HardEigen::SVDInverseDiagnostics::rank)
@@ -45,12 +77,13 @@ namespace DNDS::CFV
             .def_readonly("rawCondition", &HardEigen::SVDInverseDiagnostics::rawCondition)
             .def_readonly("retainedCondition", &HardEigen::SVDInverseDiagnostics::retainedCondition);
         py::class_<FiniteVolumePlan>(m, "FiniteVolumePlan")
-            .def_static("ConstructMetrics", &FiniteVolumePlan::ConstructMetrics, py::arg("mesh"), py::arg("intOrder") = 5,
+            .def_static("ConstructMetrics", &FiniteVolumePlan::ConstructMetrics, py::arg("mesh"), py::arg("intOrder") = 5, py::arg("axisymmetric") = false,
                         "Collective CPU preparation. All ranks must call with matching settings.")
             .def("Validate", &FiniteVolumePlan::Validate)
             .def("NumCell", &FiniteVolumePlan::NumCell)
             .def("NumCellProc", &FiniteVolumePlan::NumCellProc)
             .def("NumFaceProc", &FiniteVolumePlan::NumFaceProc)
+            .def("Axisymmetric", &FiniteVolumePlan::Axisymmetric)
             .def("BuildField", &FiniteVolumePlan::BuildField)
             .def("BindHalo", &FiniteVolumePlan::BindHalo, "Collective persistent direct MPI binding; explicitly begin/wait on each field stage.")
             .def("GetCellVol", &FiniteVolumePlan::GetCellVol)
@@ -77,6 +110,12 @@ namespace DNDS::CFV
         py::class_<DistributedSamplingWorkspace>(m, "DistributedSamplingWorkspace")
             .def_property_readonly("donorValues", [](DistributedSamplingWorkspace &work)
                                    { return Runtime::PythonArray::Share(work.donorValues); });
+        py::class_<PolynomialSamplingPlan>(m, "PolynomialSamplingPlan")
+            .def(py::init<VariationalReconstructionPlan, const Runtime::Array<index> &, const Runtime::Array<real> &>())
+            .def("Size", &PolynomialSamplingPlan::Size)
+            .def("Validate", &PolynomialSamplingPlan::Validate)
+            .def("Evaluate", &PolynomialSamplingPlan::Evaluate, py::arg("mean"), py::arg("coefficients"),
+                 py::arg("output"), py::arg("derivative") = 0);
         py::class_<VariationalReconstructionPlan>(m, "VariationalReconstructionPlan")
             .def_static("ConstructRecCoeff", &VariationalReconstructionPlan::ConstructRecCoeff,
                         py::arg("metrics"), py::arg("settings") = ReconstructionSettings{})
@@ -84,7 +123,8 @@ namespace DNDS::CFV
             .def("GetInverseDiagnostics", &VariationalReconstructionPlan::GetInverseDiagnostics)
             .def("GetCellInverseDiagnostics", &VariationalReconstructionPlan::GetCellInverseDiagnostics)
             .def("Validate", &VariationalReconstructionPlan::Validate)
-            .def("BuildWorkspace", &VariationalReconstructionPlan::BuildWorkspace)
+            .def("BuildWorkspace", &VariationalReconstructionPlan::BuildWorkspace,
+                 py::arg("components"), py::arg("periodicVectorStarts") = std::vector<index>{})
             .def("BuildBoundaryValues", &VariationalReconstructionPlan::BuildBoundaryValues)
             .def("NumBoundaryQuadrature", &VariationalReconstructionPlan::NumBoundaryQuadrature)
             .def("GetBoundaryQuadrature", &VariationalReconstructionPlan::GetBoundaryQuadrature)
@@ -103,7 +143,16 @@ namespace DNDS::CFV
                  py::arg("workspace"), py::arg("order"), py::arg("transform") = nullptr,
                  py::arg("region") = ReconstructionRegion::All,
                  py::arg("indicator") = nullptr, py::arg("threshold") = 0)
-            .def("Evaluate", &VariationalReconstructionPlan::Evaluate);
+            .def("Evaluate", &VariationalReconstructionPlan::Evaluate)
+            .def("EvaluateDerivative", &VariationalReconstructionPlan::EvaluateDerivative)
+            .def("GetCachedFaceBasis", &VariationalReconstructionPlan::GetCachedFaceBasis)
+            .def("ApplyLinearOperator", &VariationalReconstructionPlan::ApplyLinearOperator,
+                 py::arg("coefficients"), py::arg("output"), py::arg("periodicVectorStarts") = std::vector<index>{})
+            .def("BuildRightHandSide", &VariationalReconstructionPlan::BuildRightHandSide,
+                 py::arg("mean"), py::arg("boundary"), py::arg("output"), py::arg("periodicVectorStarts") = std::vector<index>{})
+            .def("ComputeResidual", &VariationalReconstructionPlan::ComputeResidual,
+                 py::arg("rhs"), py::arg("coefficients"), py::arg("output"), py::arg("periodicVectorStarts") = std::vector<index>{})
+            .def("ApplyLocalPreconditioner", &VariationalReconstructionPlan::ApplyLocalPreconditioner);
         py::class_<InterfaceSamplingPlan>(m, "InterfaceSamplingPlan")
             .def(py::init<VariationalReconstructionPlan, Geom::InterfacePointMap>())
             .def("Size", &InterfaceSamplingPlan::Size)
@@ -120,7 +169,8 @@ namespace DNDS::CFV
             .def("GetBoundaryQuadrature", &GradientPlan::GetBoundaryQuadrature)
             .def("BuildBoundaryValues", [](const GradientPlan &plan, index components)
                  { return Runtime::PythonArray::Share(plan.BuildBoundaryValues(components)); })
-            .def("Evaluate", &GradientPlan::Evaluate)
+            .def("Evaluate", &GradientPlan::Evaluate, py::arg("mean"), py::arg("boundaryValues"), py::arg("gradient"),
+                 py::arg("periodicVectorStarts") = std::vector<index>{})
             .def("ConvertToCoefficients", &GradientPlan::ConvertToCoefficients);
         py::class_<DistributedInterfaceSamplingPlan>(m, "DistributedInterfaceSamplingPlan")
             .def(py::init<VariationalReconstructionPlan, Geom::DistributedInterfacePointMap>())

@@ -30,6 +30,7 @@ def test_reconstruction_shared_buffers_explicit_halo_and_point_sampling():
     metrics = CFV.FiniteVolumePlan.ConstructMetrics(grid)
     settings = CFV.ReconstructionSettings()
     settings.maxOrder = 1
+    settings.boundaryDerivativeWeights = [1, 0, 0, 0]
     plan = CFV.VariationalReconstructionPlan.ConstructRecCoeff(metrics, settings)
     diagnostics = plan.GetInverseDiagnostics()
     assert diagnostics.cells == MPI.COMM_WORLD.allreduce(metrics.NumCell())
@@ -64,6 +65,18 @@ def test_reconstruction_shared_buffers_explicit_halo_and_point_sampling():
     points.assign(centers + [.017, -.011, 0])
     plan.Evaluate(mean, work.coefficients, ids, points, output)
     np.testing.assert_allclose(output.numpy(), expected + 2*.017 + .5*.011, atol=1e-9, rtol=1e-9)
+    cache = CFV.PolynomialSamplingPlan(plan, ids, points)
+    points.assign(np.full((metrics.NumCell(), 3), 100.0))
+    cache.Evaluate(mean, work.coefficients, output, 1)
+    np.testing.assert_allclose(output.numpy(), 2, atol=1e-9)
+    rhs = metrics.BuildField(plan.NRecDOF())
+    residual = metrics.BuildField(plan.NRecDOF())
+    correction = metrics.BuildField(plan.NRecDOF())
+    halo.begin().wait()
+    plan.BuildRightHandSide(mean, bc, rhs)
+    plan.ComputeResidual(rhs, work.coefficients, residual)
+    plan.ApplyLocalPreconditioner(residual, correction)
+    np.testing.assert_allclose(correction.owned.numpy(), 0, atol=1e-9)
     # An active input writer is rejected before a numerical sweep can run.
     with mean.owned.write():
         with pytest.raises(RuntimeError):
@@ -94,7 +107,7 @@ def test_two_domains_interface_sampling_and_transform_publication():
     plan.FinalizeFaceTransform(transform)
     plan.DoLimiterWBAP_3Order(work, 2, transform)
     if MPI.COMM_WORLD.size != 1:
-        return  # C++ MPI tests exercise the explicit distributed-search rejection
+        return  # The distributed API is exercised separately below and in C++.
     donor_patch = Geom.BoundaryPatch.Create(donor, list(range(donor.NumBnd())))
     target_patch = Geom.BoundaryPatch.Create(receiver, list(reversed(range(receiver.NumBnd()))))
     query = []

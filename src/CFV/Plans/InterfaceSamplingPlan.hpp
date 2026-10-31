@@ -1,6 +1,7 @@
 #pragma once
 
 #include "FiniteVolumePlan.hpp"
+#include "PolynomialSamplingPlan.hpp"
 #include "Geom/Interface/BoundaryInterface.hpp"
 
 namespace DNDS::CFV
@@ -15,6 +16,7 @@ namespace DNDS::CFV
         Geom::InterfacePointMap _map;
         Runtime::Array<index> _cells;
         Runtime::Array<real> _points;
+        std::optional<PolynomialSamplingPlan> _sampling;
 
     public:
         InterfaceSamplingPlan(VariationalReconstructionPlan reconstruction, Geom::InterfacePointMap map)
@@ -25,23 +27,26 @@ namespace DNDS::CFV
             _reconstruction.Validate();
             DNDS_check_throw_info(_map.Donor().Cells().SameOrder(_reconstruction.Metrics().Cells()),
                                   "interface donors and reconstruction belong to different mesh/order");
-            auto cells = _cells.Write();
-            auto points = _points.Write();
-            const auto c = cells.View<Runtime::FixedRows<1>>();
-            const auto p = points.View<Runtime::FixedRows<3>>();
-            for (index i = 0; i < _map.Size(); ++i)
             {
-                const auto match = _map.Get(i);
-                c(i, 0) = match.donorCell;
-                for (int d = 0; d < 3; ++d)
-                    p(i, d) = match.donorPoint[d];
+                auto cells = _cells.Write();
+                auto points = _points.Write();
+                const auto c = cells.View<Runtime::FixedRows<1>>();
+                const auto p = points.View<Runtime::FixedRows<3>>();
+                for (index i = 0; i < _map.Size(); ++i)
+                {
+                    const auto match = _map.Get(i);
+                    c(i, 0) = match.donorCell;
+                    for (int d = 0; d < 3; ++d)
+                        p(i, d) = match.donorPoint[d];
+                }
             }
+            _sampling.emplace(_reconstruction, _cells, _points);
         }
         index Size() const { return _map.Size(); }
         void Evaluate(const FVField &mean, const FVField &coefficients, Runtime::Array<real> &values) const
         {
             _map.Validate();
-            _reconstruction.Evaluate(mean, coefficients, _cells, _points, values);
+            _sampling->Evaluate(mean, coefficients, values);
         }
     };
 }

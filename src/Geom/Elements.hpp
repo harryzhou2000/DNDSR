@@ -568,7 +568,7 @@ namespace DNDS::Geom::Elem
         auto decRet = HardEigen::Eigen3x3RealSymEigenDecompositionNormalized(inertia);
         coordsC = decRet.transpose() * coordsC;
         tPoint ret = coordsC.rowwise().maxCoeff() - coordsC.rowwise().minCoeff();
-        std::sort(ret.begin(), ret.end(), std::greater_equal<real>());
+        std::sort(ret.begin(), ret.end(), std::greater<real>());
         return ret;
     }
 

@@ -13,6 +13,7 @@ These documents describe implemented or in-progress architecture:
 /dev/TODO
 /dev/refactor_retrospective_2026-10-30
 /dev/accepted_audit_fixes_2026-10-30
+/dev/fv_completion_2026-10-31
 /dev/mesh_connectivity_impl_plan
 /dev/mesh_helpers_design
 /dev/multi_layer_ghost_design

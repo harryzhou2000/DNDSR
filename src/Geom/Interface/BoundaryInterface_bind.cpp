@@ -33,7 +33,8 @@ namespace DNDS::Geom
             .def_readwrite("maxGap", &InterfaceSearchSettings::maxGap)
             .def_readwrite("referenceTolerance", &InterfaceSearchSettings::referenceTolerance)
             .def_readwrite("projectionTolerance", &InterfaceSearchSettings::projectionTolerance)
-            .def_readwrite("maxIterations", &InterfaceSearchSettings::maxIterations);
+            .def_readwrite("maxIterations", &InterfaceSearchSettings::maxIterations)
+            .def_readwrite("coarseBoxesPerRank", &InterfaceSearchSettings::coarseBoxesPerRank);
         py::class_<InterfacePointMatch>(m, "InterfacePointMatch")
             .def_readonly("queryId", &InterfacePointMatch::queryId)
             .def_readonly("donorElement", &InterfacePointMatch::donorElement)

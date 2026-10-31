@@ -41,12 +41,13 @@ namespace DNDS::CFV
         return {_data->n, Eigen::Index(values(iCell, 0)), values(iCell, 3), values(iCell, 1), values(iCell, 2)};
     }
     void VariationalReconstructionPlan::Validate() const { Metrics().Validate(); }
-    ReconstructionWorkspace VariationalReconstructionPlan::BuildWorkspace(index components) const
+    ReconstructionWorkspace VariationalReconstructionPlan::BuildWorkspace(index components, std::vector<index> periodicVectorStarts) const
     {
         Validate();
         DNDS_check_throw_info(components > 0 && components <= INT_MAX / _data->n, "invalid reconstruction component count");
+        Detail::ValidateVectorBlocks(components, periodicVectorStarts);
         return {Metrics().BuildField(_data->n * components), Metrics().BuildField(_data->n * components),
-                R::Array<real>(R::RowLayout::Dense(6, _data->n * components)), components, _data};
+                R::Array<real>(R::RowLayout::Dense(6, _data->n * components)), components, _data, std::move(periodicVectorStarts)};
     }
     ReconstructionBoundaryValues VariationalReconstructionPlan::BuildBoundaryValues(index components) const
     {
@@ -112,6 +113,7 @@ namespace DNDS::CFV
         Validate();
         CheckWorkspace(_data.get(), work);
         const index nv = work.components, n = _data->n;
+        Detail::ValidateVectorBlocks(nv, work.periodicVectorStarts);
         Metrics().ValidateField(mean, nv);
         DNDS_check_throw_info(boundary.plan == _data, "boundary quadrature values belong to another plan");
         CheckArray(boundary.values, NumBoundaryQuadrature(), nv);
@@ -156,6 +158,9 @@ namespace DNDS::CFV
         const auto offsets = oRead.View<R::FixedRows<1>>(), neighbors = nbRead.View<R::FixedRows<1>>(), bOffsets = boRead.View<R::FixedRows<1>>();
         const auto matrices = mRead.View<R::TableRows>(), vectors = vRead.View<R::TableRows>(), injection = injectionRead.View<R::TableRows>();
         const real relax = _data->settings.jacobiRelax;
+        Math::SmallMatrix rotatedRec;
+        auto rotationRead = _data->neighborRotation.Read();
+        const auto rotations = rotationRead.View<R::FixedRows<9>>();
         auto compute = [&](index iCell)
         {
             Map output(next[iCell].data(), n, nv);
@@ -166,9 +171,31 @@ namespace DNDS::CFV
                 if (other != UnInitIndex)
                 {
                     const real *otherCoefficients = other < Metrics().NumCell() ? current[other].data() : ghost[other - Metrics().NumCell()].data();
+                    // Component rotation is independent of spatial derivative
+                    // pullback, already included in the prepared B block.
+                    // Apply scalar columns directly, then correct vector blocks.
                     output.noalias() += relax * ConstMap(matrices[iEntry].data(), n, n) * ConstMap(otherCoefficients, n, nv);
+                    if (_data->hasRotatedPeriodicity)
+                        for (auto first : work.periodicVectorStarts)
+                        {
+                            const Eigen::Map<const Geom::tGPoint> rotation(rotations[iEntry].data());
+                            rotatedRec = ConstMap(otherCoefficients, n, nv).middleCols(first, 3) * (rotation.transpose() - Geom::tGPoint::Identity());
+                            output.middleCols(first, 3).noalias() += relax * ConstMap(matrices[iEntry].data(), n, n) * rotatedRec;
+                        }
                     for (index variable = 0; variable < nv; ++variable)
-                        output.col(variable).noalias() += Eigen::Map<const Eigen::VectorXd>(vectors[iEntry].data(), n) * (relax * (u(other, variable) - u(iCell, variable)));
+                    {
+                        real value = u(other, variable);
+                        if (_data->hasRotatedPeriodicity)
+                            for (auto first : work.periodicVectorStarts)
+                                if (variable >= first && variable < first + 3)
+                                {
+                                    const Eigen::Map<const Geom::tGPoint> rotation(rotations[iEntry].data());
+                                    value = 0;
+                                    for (int d = 0; d < 3; ++d)
+                                        value += rotation(variable - first, d) * u(other, first + d);
+                                }
+                        output.col(variable).noalias() += Eigen::Map<const Eigen::VectorXd>(vectors[iEntry].data(), n) * (relax * (value - u(iCell, variable)));
+                    }
                 }
                 else
                     for (index iQ = bOffsets(iEntry, 0); iQ < bOffsets(iEntry + 1, 0); ++iQ)
@@ -216,6 +243,7 @@ namespace DNDS::CFV
         CheckWorkspace(_data.get(), work);
         DNDS_check_throw_info(order >= 1 && order <= Settings().maxOrder, "invalid WBAP polynomial order");
         const index n = NRecDOF(), nv = work.components;
+        Detail::ValidateVectorBlocks(nv, work.periodicVectorStarts);
         _data->workPartition->Validate();
         DNDS_check_throw_info(region == ReconstructionRegion::All || region == ReconstructionRegion::Core || region == ReconstructionRegion::HaloDependent,
                               "invalid limiter region");
@@ -257,6 +285,8 @@ namespace DNDS::CFV
             auto secondaryRead = _data->secondary.Read();
             const auto offsets = offsetRead.View<R::FixedRows<1>>(), neighbors = neighborRead.View<R::FixedRows<1>>(), faces = faceRead.View<R::FixedRows<1>>();
             const auto secondary = secondaryRead.View<R::TableRows>();
+            auto rotationRead = _data->neighborRotation.Read();
+            const auto rotations = rotationRead.View<R::FixedRows<9>>();
             std::optional<R::Array<real>::ReadLease> forward, inverse;
             if (transform)
                 forward.emplace(transform->forward.Read()), inverse.emplace(transform->inverse.Read());
@@ -280,6 +310,12 @@ namespace DNDS::CFV
                     center = out.middleRows(begin, modes);
                     other.noalias() = ConstMap(secondary[iEntry].data(), n, n).middleRows(begin, modes) * ConstMap(rec.Row(neighbor), n, nv);
                     const auto iFace = faces(iEntry, 0);
+                    if (_data->hasRotatedPeriodicity)
+                        for (auto first : work.periodicVectorStarts)
+                        {
+                            const Eigen::Map<const Geom::tGPoint> rotation(rotations[iEntry].data());
+                            other.middleCols(first, 3) = (other.middleCols(first, 3) * rotation.transpose()).eval();
+                        }
                     if (transform)
                     {
                         const index start = transform->first, count = transform->count;
@@ -335,9 +371,16 @@ namespace DNDS::CFV
     void VariationalReconstructionPlan::Evaluate(const FVField &mean, const FVField &coefficients,
                                                  const R::Array<index> &cells, const R::Array<real> &points, R::Array<real> &values) const
     {
+        EvaluateDerivative(mean, coefficients, cells, points, values, 0);
+    }
+    void VariationalReconstructionPlan::EvaluateDerivative(const FVField &mean, const FVField &coefficients,
+                                                           const R::Array<index> &cells, const R::Array<real> &points,
+                                                           R::Array<real> &values, int derivative) const
+    {
         auto meshRead = Metrics()._data->mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
         Validate();
         const index nv = mean.Width(), n = NRecDOF();
+        DNDS_check_throw_info(derivative >= 0 && derivative <= n, "polynomial derivative ordinal outside basis");
         Metrics().ValidateField(mean, nv), Metrics().ValidateField(coefficients, n * nv);
         CheckArray(points, cells.RowCount(), 3), CheckArray(values, cells.RowCount(), nv);
         DNDS_check_throw_info(cells.GetDevice() == R::Device::Host() && !cells.Layout().IsVariable() && cells.Layout().Width() == 1, "sampling cell index shape");
@@ -361,11 +404,44 @@ namespace DNDS::CFV
                                         {geom(cell, 1), geom(cell, 2), geom(cell, 3)}, geom(cell, 7));
             for (index v = 0; v < nv; ++v)
             {
-                real value = u(cell, v);
+                real value = derivative == 0 ? u(cell, v) : 0;
                 for (index mode = 0; mode < n; ++mode)
-                    value += (basis(0, mode + 1) - moment(cell, mode + 1)) * rec(cell, v * n + mode);
+                    value += (basis(derivative, mode + 1) - (derivative == 0 ? moment(cell, mode + 1) : 0)) * rec(cell, v * n + mode);
                 out(i, v) = value;
             }
         }
+    }
+    Eigen::MatrixXd VariationalReconstructionPlan::GetCachedFaceBasis(index iFace, int side, int iQuadrature) const
+    {
+        auto meshRead = Metrics()._data->mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
+        Validate();
+        DNDS_check_throw_info(Settings().cacheDiffBase && iFace >= 0 && iFace < Metrics().NumFaceProc() && (side == 0 || side == 1),
+                              "basis cache disabled or face/side outside prepared data");
+        DNDS_check_throw_info(meshRead.HostView().FaceCells(iFace)[side] != UnInitIndex, "exterior face parent has no basis cache");
+        const auto parents = meshRead.HostView().FaceCells(iFace);
+        DNDS_check_throw_info(parents[0] < Metrics().NumCell() || (parents[1] != UnInitIndex && parents[1] < Metrics().NumCell()),
+                              "face basis outside owned cell stencils was not prepared");
+        auto offsets = Metrics()._data->faceOffsets.Read();
+        const auto offset = offsets.View<R::FixedRows<1>>();
+        const index begin = offset(iFace, 0), end = offset(iFace + 1, 0);
+        DNDS_check_throw_info(iQuadrature >= 0 && iQuadrature < end - begin, "basis cache quadrature outside face");
+        auto read = _data->faceBasis.Read();
+        const auto view = read.View<R::TableRows>();
+        return ConstMap(view[2 * (begin + iQuadrature) + side].data(), NRecDOF() + 1, NRecDOF());
+    }
+    ReconstructionBasisRead::ReconstructionBasisRead(std::shared_ptr<const Detail::ReconstructionData> data)
+        : _data(std::move(data)), _geometry(_data->metrics.AcquireRead())
+    {
+        DNDS_check_throw_info(_data->settings.cacheDiffBase, "face basis caching was disabled");
+        _basis.emplace(_data->faceBasis.Read());
+    }
+    ReconstructionBasisHostView ReconstructionBasisRead::HostView() const
+    {
+        return {_basis->View<R::TableRows>(), _geometry.HostView().faceOffsets, _data->n};
+    }
+    ReconstructionBasisRead VariationalReconstructionPlan::AcquireBasisRead() const
+    {
+        Validate();
+        return ReconstructionBasisRead(_data);
     }
 }

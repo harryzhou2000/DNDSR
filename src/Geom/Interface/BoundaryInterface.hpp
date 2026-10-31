@@ -58,6 +58,9 @@ namespace DNDS::Geom
     {
         real maxGap = 1e-10, referenceTolerance = 1e-10, projectionTolerance = 1e-12;
         int maxIterations = 20;
+        /// 1..10 conservative boxes per rank, clustered in the longest world
+        /// direction. This changes candidate routing only, never arbitration.
+        int coarseBoxesPerRank = 1;
         void Validate() const;
     };
     struct InterfacePointMatch

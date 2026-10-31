@@ -42,6 +42,7 @@ void Run(DNDS::MPIInfo mpi, const char *file, int degree, int sweeps, int trials
     {
         C::ReconstructionSettings settings;
         settings.maxOrder = degree, settings.intOrder = degree + 2;
+        settings.boundaryDerivativeWeights = {1, 0, 0, 0}; // Matched physical-value BC with the legacy callback below.
         std::optional<C::FiniteVolumePlan> metrics;
         std::optional<C::VariationalReconstructionPlan> plan;
         C::VariationalReconstruction<dim> legacy(mpi, mesh);

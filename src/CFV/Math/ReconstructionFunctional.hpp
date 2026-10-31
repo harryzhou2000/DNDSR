@@ -59,7 +59,8 @@ namespace DNDS::CFV
                                       int(scaleType) >= int(LengthScale::BaryDiff) && int(scaleType) <= int(LengthScale::CellMax) &&
                                       std::isfinite(scaleMultiplier) && scaleMultiplier > 0 &&
                                       std::isfinite(geomWeightBias) && std::isfinite(geomWeightPower) &&
-                                      std::isfinite(geomWeightPower1) && std::isfinite(geomWeightPower2),
+                                      std::isfinite(geomWeightPower1) && std::isfinite(geomWeightPower2) &&
+                                      dirWeightCombPowV >= 0 && dirWeightCombPowV <= 2,
                                   "invalid isotropic functional configuration");
             for (auto weight : manualDirWeights)
                 DNDS_check_throw_info(std::isfinite(weight) && weight >= 0, "invalid manual derivative weight");
