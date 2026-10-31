@@ -15,6 +15,12 @@ namespace DNDS::Geom
 
 namespace DNDS::CFV
 {
+    enum class ReconstructionRegion
+    {
+        All,
+        Core,
+        HaloDependent
+    };
     /// CPU preparation settings. Degree is polynomial degree (degree 1 is O2).
     /// Initial functional is the isotropic legacy VFV family; unsupported
     /// anisotropic/GG penalties are not silently translated to this method.
@@ -23,6 +29,7 @@ namespace DNDS::CFV
         int maxOrder = 2, intOrder = 5;
         real jacobiRelax = 1., WBAP_nStd = 10.;
         bool SORInstead = false, HQMWeights = false;
+        bool coreFirst = false;
         real bcWeight = 1., svdTolerance = 1e-13, svdAbsoluteTolerance = 0;
         std::array<real, 4> boundaryDerivativeWeights{1, 0, 0, 0};
         DNDS_DECLARE_CONFIG(ReconstructionSettings)
@@ -31,6 +38,7 @@ namespace DNDS::CFV
             DNDS_FIELD(intOrder, "Integration degree, at least polynomial degree plus one");
             DNDS_FIELD(jacobiRelax, "Jacobi/SOR relaxation");
             DNDS_FIELD(SORInstead, "Use ordered in-place SOR");
+            DNDS_FIELD(coreFirst, "Use conservative node-star core before dependent cells for ordered SOR");
             DNDS_FIELD(HQMWeights, "Legacy HQM_OPT derivative and HQM_SD geometry weights");
             DNDS_FIELD(bcWeight, "Dirichlet boundary value weight");
             DNDS_FIELD(boundaryDerivativeWeights, "Boundary weights by derivative order; nonzero derivatives impose homogeneous derivative targets");
@@ -190,10 +198,28 @@ namespace DNDS::CFV
         /// cell order. No implicit MPI, allocation in the cell loop, or callbacks.
         void DoReconstructionIter(const FVField &mean, ReconstructionWorkspace &work,
                                   const ReconstructionBoundaryValues &boundary) const;
+        /// Writes selected rows of temporary only; Jacobi reads input without
+        /// modifying it. SOR uses work.coefficients as its separate working
+        /// owned iterate, and input's ghost rows as the frozen remote iterate.
+        /// Core acquires no input ghost leases. Finish both phases before
+        /// CommitReconstruction; never update a live direct MPI send buffer.
+        void DoReconstructionIterTo(const FVField &mean, const FVField &input, ReconstructionWorkspace &work,
+                                    const ReconstructionBoundaryValues &boundary,
+                                    ReconstructionRegion region = ReconstructionRegion::All) const;
+        /// Copy the completed temporary into owned coefficients. The caller
+        /// certifies every owned row was produced and all old sends completed.
+        void CommitReconstruction(ReconstructionWorkspace &work) const;
         /// One descending-order 3WBAP pass. Call degree..1 and exchange the
         /// coefficient halo after EACH pass, matching the legacy schedule.
         void DoLimiterWBAP_3Order(ReconstructionWorkspace &work, int order,
                                   const FaceCharacteristicTransform *transform = nullptr) const;
+        /// Out-of-place selected-row pass. Call Core and HaloDependent against
+        /// the same immutable coefficients, then commit/exchange before the
+        /// next descending order. Inactive rows copy input unchanged.
+        void DoLimiterWBAP_3OrderTo(ReconstructionWorkspace &work, int order,
+                                    const FaceCharacteristicTransform *transform = nullptr,
+                                    ReconstructionRegion region = ReconstructionRegion::All,
+                                    const Runtime::Array<real> *indicator = nullptr, real threshold = 0) const;
         /// Arbitrary physical point sampling from cell means plus zero-mean
         /// coefficients. Cell IDs are current local IDs, including ready ghosts.
         void Evaluate(const FVField &mean, const FVField &coefficients,

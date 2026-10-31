@@ -55,8 +55,36 @@ order and changed donor values through a persistent result binding. The
 all-gather baseline validates routing independently of the boxes but shares the
 projection kernel; physical point oracles independently check that kernel.
 
-Python extensions are being rebuilt/installed before Python validation. No new
+Fresh Python extensions built and installed successfully; all four facility
+tests pass in explicit MPI mode at np=1/2/4. No new
 matched cluster performance result is recorded yet. The prior LU timings do not
 establish SVD setup performance. Core/halo numerical splitting, locality reorder,
 expanded FV gradients/functional/weights, full periodic/axisymmetric support,
-limiter activation and Krylov operator interfaces remain outstanding.
+and Krylov operator interfaces remain outstanding.
+
+## Second numerical checkpoint
+
+Selected-row reconstruction and WBAP entry points now keep Jacobi input
+immutable, omit ghost leases for core work and require an explicit completed
+output commit. Core-first SOR uses a distinct frozen exchange snapshot and an
+owned working iterate. Scalar activation uses `indicator >= threshold`, with
+inactive passthrough and finite-value validation.
+
+Standalone Green–Gauss, inverse-distance-squared/face-measure weighted LS and
+GGMP gradient plans use physical BC sample buffers. Explicit gradient-to-VR
+conversion scales linear modes and zeros higher modes. Regular/sheared 2D and
+3D manufactured linear fields test their intended exactness envelope. Periodic
+and axisymmetric gradient support is still pending.
+
+The overlap tests use real direct MPI operations and both inline and worker
+eager CPU launchers, checking split/unsplit results and illegal early commit.
+All eight overlap/gradient registrations pass np=1/2/4/8. A ninth math test
+independently checks Taylor chain-rule pullbacks, tensor Frobenius invariance
+through degree three and legacy directional/geometric weight formulas. These
+central math helpers are tested building blocks; public native VR weight-option
+integration and rotated-periodic kernels remain work in progress.
+
+The local matched benchmark target builds and its 9-cell degree-one smoke
+passes, with maximum coefficient difference `8.33e-17`. This smoke validates
+the executable/gate, not setup performance. Matched one-node cluster timing is
+planned separately in the standalone plan repository.
