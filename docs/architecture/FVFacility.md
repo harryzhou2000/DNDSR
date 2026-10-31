@@ -44,10 +44,14 @@ No solver or CFV dependency is introduced into Geom.
 * Cell-centered planar 2D and volumetric 3D unstructured cells, scalar or multiple
   components, polynomial degree 1–3 (formal second through fourth order).
 * Legacy monomial ordering, scalar aligned-box scaling, zero-cell-mean basis,
-  isotropic variational functional, factorial or HQM weights.
+  isotropic variational functional; independent factorial/HQM_OPT/TEST_OPT/manual
+  directional weights, none/HQM_SD/SD_Power geometric weights and length controls.
 * Explicit relaxed Jacobi and ordered SOR sweeps; order-wise 3WBAP limiting;
   arbitrary physical-point polynomial evaluation.
-* Translational periodic frames; retained original face/cell incidence order.
+* Rigid periodic frames, including derivative-tensor and declared vector-block
+  rotations; retained original face/cell incidence order.
+* Radius-weighted axisymmetric metrics, moments, reconstruction and gradients
+  on 2D geometry, with radius=y and no 2*pi factor.
 
 The basis is `phi_j(x)=monomial_j((x-center)/scale)-cell_mean(monomial_j)`.
 Stored coefficients have row width `NRecDOF()*components` in **column-major
@@ -59,17 +63,17 @@ on every local system and discards modes at or below
 to `1e-13`, absolute tolerance to zero. Deficient systems have a minimum-norm
 truncated solution; no automatic polynomial-degree reduction is performed.
 `GetInverseDiagnostics()` reports global owned-cell filtered/rank-zero counts,
-discarded modes and maximum raw condition. `GetCellInverseDiagnostics(iCell)`
+discarded modes, effective-rank histogram and maximum raw condition with its
+persistent cell ID (ties choose the smallest ID). `GetCellInverseDiagnostics(iCell)`
 reports local effective rank and raw/retained spectral conditions from setup,
 without repeating the factorization. Exact zero matrices report rank zero and
 infinite conditions. These methods and tolerance controls are exposed in Python.
 
-Rotated periodic state/derivative transforms, anisotropic/GG penalties,
-axisymmetric integration, variable per-cell degree and alternative legacy limiter
-variants remain pending. Standalone FV gradients and explicit conversion to VR
-coefficients are described below; they do not import every legacy
-`subs2ndOrder` convention automatically. There is no automatic legacy-config
-translation or claim that every old VR option is supported.
+Anisotropic functionals/bases, LVR penalties, variable per-cell degree and
+alternative legacy limiter variants remain deferred. Standalone FV gradients,
+explicit conversion, caches and linear operators are described below; they do
+not import every legacy `subs2ndOrder` convention automatically. There is no
+automatic legacy-config translation or new flow solver in this facility.
 
 ### Boundary quadrature protocol
 
@@ -79,12 +83,15 @@ physical point and normal. Fill the values before a sweep, refreshing them when
 the BC depends on the current nonlinear/reconstruction stage. The numerical
 operator reads these arrays and invokes no boundary callback.
 
-The default `boundaryDerivativeWeights={1,0,0,0}` imposes the supplied Dirichlet
-values. Nonzero higher derivative weights impose **homogeneous derivative
-targets**; there are no derivative target arrays in this first API. Legacy
-`ConstructBaseAndWeight()` defaults to weighting all derivative orders. Numerical
-comparisons therefore explicitly configure its callback to `order==0 ? 1 : 0`.
-Do not compare the two default BC functionals as if they were identical.
+The default `boundaryDerivativeWeights={1,1,1,1}` matches legacy's all-order
+penalty. Nonzero higher derivative weights impose **homogeneous derivative
+targets**; only order zero has nonhomogeneous target values in this API.
+`boundaryZoneWeights[zone]` replaces the unsquared per-order multipliers for
+one BC zone. `bcWeight` multiplies them before squaring in the functional.
+Choose `{1,0,0,0}` when a manufactured polynomial supplies physical values
+without homogeneous derivative targets. Tests and benchmarks state that choice
+explicitly; the all-order/zone-weight tests compare with the matched legacy
+callback. Separate nonhomogeneous-derivative quadrature controls remain deferred.
 
 ### Characteristic WBAP protocol
 
@@ -111,6 +118,81 @@ constructing a physical smoothness indicator remains the equation adapter's job.
 Call the WBAP API in **descending degree**, exchanging the coefficient halo
 after **each** order. This is required by the legacy order-wise secondary-map
 algorithm; one exchange after all orders changes its distributed result.
+
+## Basis, functional, frame and cache contracts
+
+`Math::TaylorBasis` defines mode/derivative ordering, derivative degree and
+rigid-frame pullback in one place. Setup, limiting and sampling use that
+definition. With scalar length scaling, the functional contracts each symmetric
+derivative tensor with multiplicity `order!/alpha!`. This is its Frobenius norm;
+`functional.dirWeightCombPowV=1` is rotationally invariant. Compatibility powers
+0/2 are available but are rejected for rotated periodic reconstruction.
+Anisotropic tensor metrics remain a separate future policy, not another switch
+inside the isotropic basis.
+
+`functional` configures the four directional schemes, three geometric schemes,
+their coefficients, scale multiplier and length policy. `HQMWeights` remains a
+compatibility shorthand for HQM_OPT + HQM_SD with bias one. `BaryDiff` uses the
+mapped barycenter separation (reflected normal separation on an external face).
+`MeanAACBB` uses the RMS of the arithmetic mean aligned half-box vectors.
+`CellMax` uses the symmetric maximum aligned half-box length; it deliberately
+does not import the old inertia-oriented/asymmetric parent-slot formula.
+TEST_OPT reuses the geometry-only face-span helper. No anisotropic basis or LVR
+penalty is implied by these options.
+
+`cacheDiffBase` retains values and all derivatives on the face quadrature
+points used by owned stencils. `GetCachedFaceBasis` provides a diagnostic copy;
+unprepared exterior or ghost-only face stencils fail explicitly. The cache is
+in Runtime buffers, with basis/config/metric identity retained by the immutable
+plan. `AcquireBasisRead().HostView()` exposes borrowed pointer/shape views for
+hot loops; retain the scope and use only real parents in owned-cell stencils.
+`PolynomialSamplingPlan(plan,cells,points)` snapshots arbitrary query
+cell IDs and caches the basis/derivatives there. Both interface samplers use
+this cache. Query-array edits do not silently change its meaning; construct a
+new cache for new locations. Geometry/order mutations invalidate it through
+the metric stamp. `Evaluate(...,derivative)` samples the central derivative-mode
+ordinal (0=value, 1..dimension=gradient, higher modes include Hessians). Its
+input ghost reads are omitted when all selected cells are owned.
+
+Rigid periodicity transforms both sample locations and derivative tensors during
+setup. `BuildWorkspace(components,periodicVectorStarts)` declares sorted disjoint
+three-component polar-vector blocks, e.g. `{1}` for `[rho,rhou,rhov,rhow,E]`.
+Unlisted components are scalars. Neighbor components are rotated into the output
+cell's frame before reconstruction/WBAP; characteristic transformation is a
+separate subsequent operation. Three-component vectors work on 2D geometry.
+Sampling returns donor-reference components; it does not apply a domain pose or
+moving-frame velocity correction. Taylor neighbor coefficient changes are
+analytic changes of center/scale/frame, with no SVD truncation in that coordinate
+map. Every numerical local reconstruction inverse still uses full SVD.
+
+`ConstructMetrics(mesh,intOrder,true)` selects axisymmetric integration with
+`r=y>=0`, `r*dA` volume and `r*ds` face measure, excluding `2*pi`. Moments and
+cell averages use the same convention. The integrated unweighted radial moment
+supplies the weighted Green-Gauss correction, including cells touching the axis.
+No pointwise `1/r` is needed. Negative radii, zero radial cell volume, 3D geometry
+or periodic transforms that change radius are errors. Equation source terms and
+cylindrical component connections belong to the equation adapter.
+
+## Reconstruction linear-system operators
+
+`ApplyLinearOperator`, `BuildRightHandSide`, `ComputeResidual` and
+`ApplyLocalPreconditioner` expose the unscaled system separately from relaxation.
+They do not perform halo communication or own a Krylov solver. Refresh input
+halos before the stencil operator and supply distinct output arrays. Homogeneous
+perturbations use the operator without boundary forcing. Raw A/B/forcing blocks
+are retained separately from `Aplus*B`, so choosing a strong SVD cutoff does not
+silently replace the original operator with its projected version. The local
+preconditioner is the truncated SVD inverse and may be semidefinite when modes
+were removed. Its null modes are not restored by iteration.
+
+These interfaces can feed existing GMRES/FGMRES drivers with DNDS field algebra.
+Flexible PCG additionally requires a symmetric positive system/subspace and an
+admissible positive preconditioner. The default isotropic raw operator passes
+bilinear symmetry and positive-form tests, but that is not a universal SPD
+certificate for arbitrary weights, boundary penalties, cutoffs or null spaces.
+The caller must freeze the plan/linearization and handle compatible nullspace
+projection. Ordered SOR and left preconditioning must not be advertised as
+symmetric merely because the unscaled functional is symmetric.
 
 ## Count, allocate, fill and execute
 
@@ -158,7 +240,12 @@ rather than forming normal equations. GGMP eliminates the face unknowns from
 the corrected Green–Gauss system before SVD inversion. Uncorrected Green–Gauss
 does not promise linear exactness on general skew cells. Current tests establish
 regular-grid linear exactness for all three methods and sheared-grid exactness
-for LS/GGMP; periodic and axisymmetric gradient variants remain pending.
+for LS/GGMP. Periodic geometry is mapped into the output cell's frame during
+preparation. `Evaluate(...,periodicVectorStarts)` declares nonoverlapping
+three-component polar-vector blocks; other components are scalars.
+Normal distances determine Green-Gauss face interpolation. Axisymmetric GG/GGMP
+also include the integrated radial divergence correction, using integral moments
+rather than division by point radius; zero-measure axis faces are valid.
 
 `ConvertToCoefficients` explicitly overwrites a VR field with scaled linear
 Taylor modes and zeros the higher modes. Its zero-mean basis preserves the cell
@@ -271,11 +358,15 @@ is implied by point interpolation.
 
 `InterfacePointMap` remains the local API. `DistributedInterfacePointMap::Match`
 is the collective distributed API, with all ranks participating even when a
-rank has no queries or selected boundaries. `CoarseBoxes` all-gathers one
-conservative world-space box per rank, sends queries to candidate geometry
+rank has no queries or selected boundaries. `CoarseBoxes` all-gathers
+`coarseBoxesPerRank` (1..10, default one) conservative world-space boxes per
+rank, sends queries to candidate geometry
 ranks, evaluates exact projections there, returns all proposals and selects on
 the query origin. It rejects ambiguous accepted interiors and uses persistent
-boundary IDs at seams. `AllGatherBoundary` replicates the selected surface
+boundary IDs at seams. Bounds include the reference-tolerance extrapolation
+envelope as well as the physical gap, so accepted endpoint projections cannot
+be lost before exact matching. Multiple boxes never duplicate a query to the
+same rank. `AllGatherBoundary` replicates the selected surface
 geometry as an explicit correctness baseline; it does not replicate volume
 mesh data or solution fields. Both use fixed integer/floating tables and the
 same exact projection kernel, so the baseline independently checks routing,
@@ -296,7 +387,9 @@ returns values to the receivers through the reversed canonical row route.
 Allocate a `DistributedSamplingWorkspace` with `BuildWorkspace(components)`.
 `Evaluate` provides synchronous collective evaluation/return; alternatively
 `EvaluateDonors` and `BindResult` separate compute from a reusable persistent
-result binding. The workspace is private to one active evaluation. Callers
+result binding. Concurrent bindings sharing a route context use distinct `tag`
+arguments; the default tag zero is for non-overlapping bindings. The workspace
+is private to one active evaluation. Callers
 finish producers, release conflicting Python views, retain all handles through
 completion and arrange halo readiness under the polynomial evaluator's contract.
 Drain/rebuild result bindings after changing output storage or query/donor order.

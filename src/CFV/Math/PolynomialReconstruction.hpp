@@ -27,7 +27,7 @@ namespace DNDS::CFV::Math
     }
     /// Diagonal weights of the isotropic variational functional, including
     /// symmetric-tensor multiplicities. Inputs are unsquared per-order weights.
-    inline void FunctionalWeights(real *out, int dim, int degree, real length, const real *weights)
+    inline void FunctionalWeights(real *out, int dim, int degree, real length, const real *weights, int multiplicityPower = 1)
     {
         using Geom::Base::factorials;
         const int n = PolynomialSize(dim, degree);
@@ -36,7 +36,7 @@ namespace DNDS::CFV::Math
             const auto &a = dim == 2 ? Geom::Base::diffOperatorOrderList2D[i] : Geom::Base::diffOperatorOrderList[i];
             const int order = a[0] + a[1] + a[2];
             const real multiplicity = factorials[order] / (factorials[a[0]] * factorials[a[1]] * factorials[a[2]]);
-            out[i] = sqr(weights[order]) * std::pow(length, 2 * order) * multiplicity;
+            out[i] = sqr(weights[order]) * std::pow(length, 2 * order) * std::pow(multiplicity, multiplicityPower);
         }
     }
     /// Scalar version of legacy WBAP L2 biway. Zero neighbors suppress a mode.

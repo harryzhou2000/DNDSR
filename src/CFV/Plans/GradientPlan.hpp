@@ -4,6 +4,7 @@
 #include "Geom/Unstructured/UnstructuredMesh.hpp"
 #include "Geom/Access/EntityWorkPartition.hpp"
 #include "CFV/Math/PolynomialReconstruction.hpp"
+#include "CFV/Math/PeriodicFrame.hpp"
 
 namespace DNDS::CFV
 {
@@ -25,7 +26,7 @@ namespace DNDS::CFV
         {
             FiniteVolumePlan metrics;
             Runtime::Array<index> offsets, neighbors, boundaryIds;
-            Runtime::Array<real> weights;
+            Runtime::Array<real> weights, rotations;
             std::vector<BoundaryQuadraturePoint> boundary;
             Data(FiniteVolumePlan plan) : metrics(std::move(plan)) {}
         };
@@ -47,9 +48,6 @@ namespace DNDS::CFV
             const auto view = meshRead.HostView();
             const auto geometry = metricRead.HostView();
             const int dim = metrics.Dimension();
-            // Component/frame rotation policy is explicit future input; scalar
-            // geometric periodic handling must not silently rotate vector data.
-            DNDS_check_throw_info(!view.IsPeriodic(), "FV gradient periodic component transforms require explicit frame data");
             auto data = std::make_shared<Data>(metrics);
             index entries = 0, boundaryCount = 0;
             for (index iCell = 0; iCell < metrics.NumCell(); ++iCell)
@@ -65,9 +63,12 @@ namespace DNDS::CFV
             data->neighbors = R::Array<index>(R::RowLayout::Dense(entries, 1));
             data->boundaryIds = R::Array<index>(R::RowLayout::Dense(entries, 1));
             data->weights = R::Array<real>(R::RowLayout::Dense(entries, 3));
+            data->rotations = R::Array<real>(R::RowLayout::Dense(entries, 9));
             data->boundary.resize(size_t(boundaryCount));
             auto offsetWrite = data->offsets.Write(), neighborWrite = data->neighbors.Write(), boundaryWrite = data->boundaryIds.Write();
             auto weightWrite = data->weights.Write();
+            auto rotationWrite = data->rotations.Write();
+            const auto rotations = rotationWrite.View<R::FixedRows<9>>();
             const auto offsets = offsetWrite.View<R::FixedRows<1>>(), neighbors = neighborWrite.View<R::FixedRows<1>>(), boundaries = boundaryWrite.View<R::FixedRows<1>>();
             const auto weights = weightWrite.View<R::FixedRows<3>>();
             index next = 0, nextBoundary = 0;
@@ -81,17 +82,26 @@ namespace DNDS::CFV
                 Eigen::MatrixXd design(count, dim), initial(dim, count);
                 Eigen::VectorXd lengths(count);
                 Eigen::MatrixXd correction = Eigen::MatrixXd::Identity(dim, dim);
+                if (metrics.Axisymmetric())
+                    for (int d = 0; d < dim; ++d)
+                        correction(1, d) += geometry.radialMoment(iCell, d);
                 index local = 0;
                 for (index slot = 0; slot < view.CellFaces(iCell).size(); ++slot)
                 {
                     const index face = view.CellFaces(iCell)[slot];
                     const index other = view.CellFaceOther(iCell, face, rowsize(slot));
                     const bool back = view.CellIsFaceBack(iCell, face, rowsize(slot));
+                    const int side = back ? 0 : 1;
+                    const tGPoint rotation = Detail::OtherFrameInCell(view, face, side);
                     for (index q = geometry.FaceQuadratureBegin(face); q < geometry.FaceQuadratureEnd(face); ++q, ++next, ++local)
                     {
-                        const auto point = geometry.GetFacePoint(q);
-                        const tPoint areaNormal = geometry.GetFaceNorm(q) * ((back ? 1 : -1) * geometry.GetFaceWeight(q) / geometry.GetCellVol(iCell));
-                        const tPoint displacement = (other == UnInitIndex ? point : geometry.GetCellBary(other)) - center;
+                        const tPoint point = Detail::FacePointInCell(view, face, side, geometry.GetFacePoint(q));
+                        const tPoint normal = Detail::OtherFrameInCell(view, face, 1) * geometry.GetFaceNorm(q);
+                        // Face quadrature normals are in parent's0 frame.
+                        const tPoint ownNormal = (side == 0 ? geometry.GetFaceNorm(q) : normal) * (back ? 1 : -1);
+                        const tPoint areaNormal = ownNormal * (geometry.GetFaceWeight(q) / geometry.GetCellVol(iCell));
+                        const tPoint otherCenter = other == UnInitIndex ? point : Detail::OtherPointInCell(view, face, side, geometry.GetCellBary(other));
+                        const tPoint displacement = otherCenter - center;
                         const real length = displacement.head(dim).norm();
                         DNDS_check_throw_info(length > 0 && std::isfinite(length), "degenerate FV gradient sample displacement");
                         // Boundary quadrature is multiple physical samples. For
@@ -101,19 +111,21 @@ namespace DNDS::CFV
                         design.row(local) = displacement.head(dim).transpose() / length * quadratureScale;
                         lengths[local] = quadratureScale / length;
                         neighbors(next, 0) = other;
+                        Eigen::Map<tGPoint>(rotations[next].data()) = rotation;
                         boundaries(next, 0) = UnInitIndex;
                         if (other == UnInitIndex)
                         {
                             boundaries(next, 0) = nextBoundary;
-                            data->boundary[nextBoundary++] = {iCell, face, int(q - geometry.FaceQuadratureBegin(face)), point, areaNormal.normalized()};
+                            data->boundary[nextBoundary++] = {iCell, face, int(q - geometry.FaceQuadratureBegin(face)), point, ownNormal};
                         }
                         real fraction = 1;
                         if (other != UnInitIndex)
                         {
-                            const real ownDistance = (point - center).norm(), otherDistance = (geometry.GetCellBary(other) - point).norm();
+                            const real ownDistance = std::abs((point - center).dot(ownNormal)), otherDistance = std::abs((otherCenter - point).dot(ownNormal));
+                            DNDS_check_throw_info(ownDistance + otherDistance > 0, "gradient face centers have zero normal separation");
                             fraction = method == GradientMethod::GGMP ? 0.5 : ownDistance / (ownDistance + otherDistance);
                             if (method == GradientMethod::GGMP)
-                                correction.noalias() -= areaNormal.head(dim) * (point - (center + geometry.GetCellBary(other)) * 0.5).head(dim).transpose();
+                                correction.noalias() -= areaNormal.head(dim) * (point - (center + otherCenter) * 0.5).head(dim).transpose();
                         }
                         initial.col(local) = areaNormal.head(dim) * fraction;
                     }
@@ -125,7 +137,7 @@ namespace DNDS::CFV
                     for (index i = 0; i < count; ++i)
                         initial.col(i) = inverse.col(i) * lengths[i];
                 }
-                else if (method == GradientMethod::GGMP)
+                else if (method == GradientMethod::GGMP || metrics.Axisymmetric())
                 {
                     HardEigen::EigenSVDInverse(correction, inverse, relativeCutoff);
                     initial = (inverse * initial).eval();
@@ -180,11 +192,13 @@ namespace DNDS::CFV
         /// Owned output rows hold [component*dimension+direction]. Release input
         /// writers and finish input halo/BC producers first. Output must be
         /// distinct from inputs; ordinary Runtime leases reject alias conflicts.
-        void Evaluate(const FVField &mean, const Runtime::Array<real> &boundaryValues, FVField &gradient) const
+        void Evaluate(const FVField &mean, const Runtime::Array<real> &boundaryValues, FVField &gradient,
+                      const std::vector<index> &periodicVectorStarts = {}) const
         {
             namespace R = Runtime;
             auto geometry = _data->metrics.AcquireRead();
             const index components = mean.Width(), dim = _data->metrics.Dimension();
+            Detail::ValidateVectorBlocks(components, periodicVectorStarts);
             _data->metrics.ValidateField(mean, components);
             _data->metrics.ValidateField(gradient, dim * components);
             DNDS_check_throw_info(boundaryValues.GetDevice() == R::Device::Host() && boundaryValues.Layout().Kind() == R::RowLayoutKind::Table &&
@@ -195,6 +209,8 @@ namespace DNDS::CFV
             auto outWrite = gradient.Owned().Write();
             auto offsets = _data->offsets.Read(), neighbors = _data->neighbors.Read(), boundaryIds = _data->boundaryIds.Read();
             auto weights = _data->weights.Read();
+            auto rotationRead = _data->rotations.Read();
+            const auto rotations = rotationRead.View<R::FixedRows<9>>();
             const auto offset = offsets.View<R::FixedRows<1>>(), neighbor = neighbors.View<R::FixedRows<1>>(), bnd = boundaryIds.View<R::FixedRows<1>>();
             const auto w = weights.View<R::FixedRows<3>>();
             const auto bv = boundary.View<R::TableRows>();
@@ -205,7 +221,17 @@ namespace DNDS::CFV
                 for (index entry = offset(iCell, 0); entry < offset(iCell + 1, 0); ++entry)
                     for (index component = 0; component < components; ++component)
                     {
-                        const real difference = (neighbor(entry, 0) == UnInitIndex ? bv(bnd(entry, 0), component) : u(neighbor(entry, 0), component)) - u(iCell, component);
+                        real value = neighbor(entry, 0) == UnInitIndex ? bv(bnd(entry, 0), component) : u(neighbor(entry, 0), component);
+                        if (neighbor(entry, 0) != UnInitIndex)
+                            for (auto first : periodicVectorStarts)
+                                if (component >= first && component < first + 3)
+                                {
+                                    const Eigen::Map<const Geom::tGPoint> rotation(rotations[entry].data());
+                                    value = 0;
+                                    for (int d = 0; d < 3; ++d)
+                                        value += rotation(component - first, d) * u(neighbor(entry, 0), first + d);
+                                }
+                        const real difference = value - u(iCell, component);
                         for (index d = 0; d < dim; ++d)
                             output(iCell, component * dim + d) += w(entry, d) * difference;
                     }

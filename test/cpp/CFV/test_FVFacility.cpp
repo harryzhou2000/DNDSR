@@ -51,6 +51,7 @@ TEST_CASE("Runtime FV matches legacy VR sweeps and reproduces cell-average polyn
             CAPTURE(hqm);
             C::ReconstructionSettings settings;
             settings.maxOrder = degree, settings.intOrder = 6, settings.HQMWeights = hqm;
+            settings.boundaryDerivativeWeights = {1, 0, 0, 0}; // Physical polynomial BC values, without homogeneous derivative penalties.
             auto metrics = C::FiniteVolumePlan::ConstructMetrics(mesh, 6);
             auto plan = C::VariationalReconstructionPlan::ConstructRecCoeff(metrics, settings);
             auto u = metrics.BuildField(1);
@@ -172,6 +173,113 @@ TEST_CASE("Runtime FV matches legacy VR sweeps and reproduces cell-average polyn
             }
         }
 }
+TEST_CASE("Independent functional weights and all-order boundary penalties match configured legacy sweeps")
+{
+    auto mesh = Mesh();
+    auto metrics = C::FiniteVolumePlan::ConstructMetrics(mesh, 6);
+    using F = C::ReconstructionFunctionalSettings;
+    for (int scenario = 0; scenario < 6; ++scenario)
+    {
+        CAPTURE(scenario);
+        C::ReconstructionSettings settings;
+        settings.maxOrder = 3, settings.intOrder = 6, settings.bcWeight = .7;
+        settings.boundaryDerivativeWeights = {1, 1, 1, 1};
+        if (scenario == 0)
+        {
+            int localZone = INT_MAX, zone = INT_MAX;
+            auto read = mesh->AcquireRead(MeshReadRequirements::CellFlux());
+            if (mesh->NumBnd())
+                localZone = read.HostView().GetBndInfo(0).zone;
+            MPI_Allreduce(&localZone, &zone, 1, MPI_INT, MPI_MIN, mpi.comm);
+            settings.boundaryZoneWeights[zone] = {.9, .3, 0, 0};
+        }
+        settings.cacheDiffBase = scenario % 2 == 0;
+        auto &f = settings.functional;
+        if (scenario == 1)
+            f.dirWeightScheme = F::DirectionalWeight::HQM_OPT;
+        if (scenario == 2)
+            f.dirWeightScheme = F::DirectionalWeight::ManualDirWeight, f.manualDirWeights = {1.1, .8, .3, .1};
+        if (scenario == 3)
+            f.dirWeightScheme = F::DirectionalWeight::TEST_OPT;
+        if (scenario == 4)
+            f.geomWeightScheme = F::GeometricWeight::SD_Power, f.geomWeightPower1 = .3, f.geomWeightPower2 = -.2, f.geomWeightBias = .1;
+        if (scenario == 5)
+            f.scaleType = F::LengthScale::MeanAACBB, f.scaleMultiplier = .8;
+        auto plan = C::VariationalReconstructionPlan::ConstructRecCoeff(metrics, settings);
+        auto work = plan.BuildWorkspace(1);
+        auto mean = metrics.BuildField(1);
+        auto boundary = plan.BuildBoundaryValues(1);
+        C::VariationalReconstruction<2> legacy(mpi, mesh);
+        C::VRSettings old(2);
+        nlohmann::ordered_json json, functional;
+        old.WriteIntoJson(json);
+        to_json(functional, f);
+        for (const auto &[key, value] : functional.items())
+            json["functionalSettings"][key] = value;
+        // Legacy's unused degree-four entry is outside this degree-three API.
+        json["functionalSettings"]["manualDirWeights"].push_back(0.);
+        json["maxOrder"] = 3, json["intOrder"] = 6, json["SORInstead"] = false, json["bcWeight"] = settings.bcWeight;
+        legacy.parseSettings(json);
+        legacy.ConstructMetrics();
+        legacy.ConstructBaseAndWeight([&](t_index zone, int order)
+                                      {
+            const auto found=settings.boundaryZoneWeights.find(zone);
+            return found==settings.boundaryZoneWeights.end() ? settings.boundaryDerivativeWeights[order] : found->second[order]; });
+        legacy.ConstructRecCoeff();
+        C::tUDof<1> oldMean;
+        C::tURec<1> oldRec, oldNext;
+        legacy.BuildUDof(oldMean, 1);
+        legacy.BuildURec(oldRec, 1);
+        legacy.BuildURec(oldNext, 1);
+        oldRec.setConstant(0), oldNext.setConstant(0);
+        {
+            auto u = mean.Owned().Write();
+            auto b = boundary.values.Write();
+            for (DNDS::index iCell = 0; iCell < metrics.NumCell(); ++iCell)
+                u.View()(iCell, 0) = oldMean[iCell](0) = std::sin(.7 * mesh->OriginalEntityId(EntityKind::Cell, iCell));
+            for (DNDS::index iPoint = 0; iPoint < plan.NumBoundaryQuadrature(); ++iPoint)
+            {
+                const auto p = plan.GetBoundaryQuadrature(iPoint).point;
+                b.View()(iPoint, 0) = 1 + p[0] * p[1];
+            }
+        }
+        auto halo = metrics.BindHalo(work.coefficients);
+        metrics.BindHalo(mean).Begin().Wait();
+        oldMean.trans.startPersistentPull();
+        oldMean.trans.waitPersistentPull();
+        C::VariationalReconstruction<2>::TFBoundary<1> bc = [](const auto &, const auto &, DNDS::index, DNDS::index, int, const tPoint &, const tPoint &p, t_index)
+        { return Eigen::Vector<DNDS::real, 1>{1 + p[0] * p[1]}; };
+        for (int iteration = 0; iteration < 4; ++iteration)
+        {
+            halo.Begin().Wait();
+            oldRec.trans.startPersistentPull();
+            oldRec.trans.waitPersistentPull();
+            plan.DoReconstructionIter(mean, work, boundary);
+            legacy.DoReconstructionIter<1>(oldRec, oldNext, oldMean, bc, true);
+            std::swap(oldRec, oldNext);
+            auto read = work.coefficients.Owned().Read();
+            for (DNDS::index iCell = 0; iCell < metrics.NumCell(); ++iCell)
+                for (int mode = 0; mode < plan.NRecDOF(); ++mode)
+                    CHECK(read.View()(iCell, mode) == doctest::Approx(oldRec[iCell](mode, 0)).epsilon(2e-9).scale(1));
+        }
+        if (metrics.NumCell())
+        {
+            auto read = mesh->AcquireRead(MeshReadRequirements::CellFlux());
+            const auto iFace = read.HostView().CellFaces(0)[0];
+            const auto side = read.HostView().CellIsFaceBack(0, iFace, 0) ? 0 : 1;
+            if (settings.cacheDiffBase)
+            {
+                const auto basis = plan.GetCachedFaceBasis(iFace, side, 0);
+                CHECK(basis.rows() == plan.NRecDOF() + 1);
+                CHECK(basis.cols() == plan.NRecDOF());
+                CHECK(basis.allFinite());
+            }
+            else
+                CHECK_THROWS(plan.GetCachedFaceBasis(iFace, side, 0));
+        }
+    }
+}
+
 TEST_CASE("WBAP explicit five-component face transforms match legacy and preserve a passive sixth field")
 {
     auto mesh = Mesh();
@@ -382,6 +490,7 @@ TEST_CASE("Three-dimensional FV reproduces cubic cell-average polynomials on tet
         auto mesh = InterfaceFixture::SingleCell(mpi, hex);
         C::ReconstructionSettings settings;
         settings.maxOrder = 3, settings.intOrder = 6;
+        settings.boundaryDerivativeWeights = {1, 0, 0, 0};
         auto metrics = C::FiniteVolumePlan::ConstructMetrics(mesh, 6);
         auto plan = C::VariationalReconstructionPlan::ConstructRecCoeff(metrics, settings);
         auto mean = metrics.BuildField(1);
@@ -441,6 +550,8 @@ TEST_CASE("SVD removes unconstrained modes and invalid settings fail collectivel
     CHECK(summary.cells == totalCells);
     CHECK(summary.filteredCells == totalCells);
     CHECK(summary.rankZeroCells == totalCells);
+    CHECK(summary.rankCounts[0] == totalCells);
+    CHECK(std::accumulate(summary.rankCounts.begin(), summary.rankCounts.end(), DNDS::index(0)) == totalCells);
     CHECK(summary.discardedModes == totalCells * zero.NRecDOF());
     CHECK(std::isinf(summary.maxCondition));
     for (DNDS::index iCell = 0; iCell < metrics.NumCell(); ++iCell)

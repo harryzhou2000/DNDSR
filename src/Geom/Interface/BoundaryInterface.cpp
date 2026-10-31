@@ -6,6 +6,24 @@
 namespace DNDS::Geom
 {
     namespace R = Runtime;
+    namespace
+    {
+        // Line/triangle/bilinear-quad reference extrapolation can project
+        // outside the corner box while still passing Inside(tolerance).
+        // Bound that envelope before either coarse routing or BVH rejection.
+        real ReferencePadding(real diameter, real tolerance)
+        {
+            const real padding = 4 * tolerance * (1 + tolerance) * diameter;
+            DNDS_check_throw_info(std::isfinite(padding), "interface reference envelope is not representable");
+            return padding;
+        }
+        void PadReferenceBox(SpatialBox &box, real tolerance)
+        {
+            const real padding = ReferencePadding((box.upper - box.lower).norm(), tolerance);
+            box.lower.array() -= padding;
+            box.upper.array() += padding;
+        }
+    }
     namespace Detail
     {
         struct BoundaryPatchData
@@ -17,6 +35,7 @@ namespace DNDS::Geom
             std::vector<BoundaryElementRecord> elements;
             R::Array<real> coordinates;
             std::shared_ptr<const BoundingBoxTree> search;
+            real maxElementDiameter = 0;
             BoundaryPatchData(ssp<UnstructuredMesh> m, RigidPose p)
                 : mesh(std::move(m)), stamp(mesh->versions.Stamp(R::Change::Topology | R::Change::Geometry | R::Change::Distribution | R::Change::Layout)),
                   cells(mesh->Entities(EntityKind::Cell)), pose(std::move(p)) {}
@@ -26,8 +45,11 @@ namespace DNDS::Geom
                 const auto coords = read.View<R::CSRRows>();
                 std::vector<SpatialBox> boxes(elements.size());
                 for (index i = 0; i < index(elements.size()); ++i)
+                {
                     for (index j = 0; j < coords[i].size(); j += 3)
                         boxes[i].Add(pose.Apply({coords(i, j), coords(i, j + 1), coords(i, j + 2)}));
+                    maxElementDiameter = std::max(maxElementDiameter, (boxes[i].upper - boxes[i].lower).norm());
+                }
                 search = std::make_shared<BoundingBoxTree>(boxes);
             }
         };
@@ -48,7 +70,8 @@ namespace DNDS::Geom
     void InterfaceSearchSettings::Validate() const
     {
         DNDS_check_throw_info(std::isfinite(maxGap) && maxGap >= 0 && std::isfinite(referenceTolerance) && referenceTolerance >= 0 &&
-                                  std::isfinite(projectionTolerance) && projectionTolerance > 0 && maxIterations > 0,
+                                  std::isfinite(projectionTolerance) && projectionTolerance > 0 && maxIterations > 0 &&
+                                  coarseBoxesPerRank >= 1 && coarseBoxesPerRank <= 10,
                               "invalid interface search tolerances");
     }
     BoundaryStencilPlan BoundaryStencilPlan::Prepare(UnstructuredMesh &mesh, const GhostSpec &spec, MeshReadRequirements requirements)
@@ -231,9 +254,9 @@ namespace DNDS::Geom
         {
             const tPoint query{queries(i, 0), queries(i, 1), queries(i, 2)};
             DNDS_check_throw_info(query.allFinite(), "interface query contains nonfinite coordinates");
-            bool found = false, interior = false;
+            std::vector<std::pair<InterfacePointMatch, bool>> candidates;
             auto &best = data->matches[i];
-            donor._data->search->Query(query, settings.maxGap, [&](index candidate)
+            donor._data->search->Query(query, settings.maxGap + ReferencePadding(donor._data->maxElementDiameter, settings.referenceTolerance), [&](index candidate)
                                        {
                 const auto &element = donor._data->elements[candidate];
                 placed.resize(3, coords[candidate].size() / 3);
@@ -246,14 +269,22 @@ namespace DNDS::Geom
                 // shared edge/vertex from overlapping element interiors.
                 const bool candidateInterior = Inside(element.type, reference,
                     -std::max(settings.referenceTolerance, 32 * std::numeric_limits<real>::epsilon()));
-                const bool tied = found && std::abs(distance - best.distance) <= settings.projectionTolerance;
-                DNDS_check_throw_info(!(tied && interior && candidateInterior), "ambiguous overlapping interface element interiors");
-                if (!found || distance < best.distance - settings.projectionTolerance || (tied && element.originalId < best.donorOriginalId))
-                {
-                    best = {ids(i, 0), candidate, element.boundary, element.cell, element.originalId,
-                            reference, projected, donor._data->pose.Inverse(projected), distance};
-                    found = true, interior = candidateInterior;
-                } });
+                candidates.push_back({{ids(i, 0), candidate, element.boundary, element.cell, element.originalId,
+                                        reference, projected, donor._data->pose.Inverse(projected), distance}, candidateInterior}); });
+            real closest = std::numeric_limits<real>::infinity();
+            for (const auto &candidate : candidates)
+                closest = std::min(closest, candidate.first.distance);
+            bool found = false;
+            index interiors = 0;
+            for (const auto &[candidate, interior] : candidates)
+            {
+                if (candidate.distance > closest + settings.projectionTolerance)
+                    continue;
+                interiors += interior;
+                DNDS_check_throw_info(interiors <= 1, "ambiguous overlapping interface element interiors");
+                if (!found || candidate.donorOriginalId < best.donorOriginalId)
+                    best = candidate, found = true;
+            }
             DNDS_check_throw_info(found, "uncovered interface query ID " + std::to_string(ids(i, 0)));
         }
         return InterfacePointMap(std::move(data));
@@ -302,11 +333,11 @@ namespace DNDS::Geom
                                       points.RowCount() == queryIds.RowCount(), "distributed interface requires host point/ID tables"); });
         // Both ranks' branch choice and geometric tolerances affect protocol
         // behavior, so prove agreement before selecting either path.
-        real controls[]{real(int(mode)), settings.maxGap, settings.referenceTolerance, settings.projectionTolerance, real(settings.maxIterations)};
-        real minimum[5], maximum[5];
-        MPI_Allreduce(controls, minimum, 5, DNDS_MPI_REAL, MPI_MIN, mpi.comm);
-        MPI_Allreduce(controls, maximum, 5, DNDS_MPI_REAL, MPI_MAX, mpi.comm);
-        for (int i = 0; i < 5; ++i)
+        real controls[]{real(int(mode)), settings.maxGap, settings.referenceTolerance, settings.projectionTolerance, real(settings.maxIterations), real(settings.coarseBoxesPerRank)};
+        real minimum[6], maximum[6];
+        MPI_Allreduce(controls, minimum, 6, DNDS_MPI_REAL, MPI_MIN, mpi.comm);
+        MPI_Allreduce(controls, maximum, 6, DNDS_MPI_REAL, MPI_MAX, mpi.comm);
+        for (int i = 0; i < 6; ++i)
             DNDS_check_throw_info(minimum[i] == maximum[i], "distributed interface settings differ across ranks");
         std::optional<R::Array<real>::ReadLease> pointRead;
         std::optional<R::Array<index>::ReadLease> idRead;
@@ -335,10 +366,12 @@ namespace DNDS::Geom
         R::Array<index> elements;
         R::Array<real> geometry;
         SpatialBox coarse;
+        std::vector<SpatialBox> localBounds;
         MPI::LocalStage(mpi, [&]
                         {
             elements = R::Array<index>(R::RowLayout::Dense(donor.Size(), 9));
             geometry = R::Array<real>(R::RowLayout::Dense(donor.Size(), 24));
+            localBounds.resize(size_t(donor.Size()));
             auto eWrite = elements.Write();
             auto gWrite = geometry.Write();
             auto coordinateRead = donor._data->coordinates.Read();
@@ -362,39 +395,68 @@ namespace DNDS::Geom
                         g(iElement, 12 + 3 * row + col) = donor._data->pose.rotation(row, col);
                 }
                 for (index node = 0; node < coords[iElement].size() / 3; ++node)
-                    coarse.Add(donor._data->pose.Apply({coords(iElement, 3 * node), coords(iElement, 3 * node + 1), coords(iElement, 3 * node + 2)}));
+                    localBounds[size_t(iElement)].Add(donor._data->pose.Apply({coords(iElement, 3 * node), coords(iElement, 3 * node + 1), coords(iElement, 3 * node + 2)}));
+                PadReferenceBox(localBounds[size_t(iElement)], settings.referenceTolerance);
+                coarse.Add(localBounds[size_t(iElement)]);
             } });
         R::Array<real> candidatePoints;
         R::Array<index> candidateKeys;
         std::vector<int> origins;
         if (mode == InterfaceRoutingMode::AllGatherBoundary)
         {
-            std::vector<std::vector<index>> all(size_t(mpi.size));
-            for (auto &peer : all)
-            {
-                peer.resize(size_t(donor.Size()));
-                std::iota(peer.begin(), peer.end(), index(0));
-            }
+            std::vector<std::vector<index>> all;
+            MPI::LocalStage(mpi, [&]
+                            {
+                all.resize(size_t(mpi.size));
+                for (auto &peer : all)
+                {
+                    peer.resize(size_t(donor.Size()));
+                    std::iota(peer.begin(), peer.end(), index(0));
+                } });
             const auto route = R::SparseBatchExchange::Build(context, donor.Size(), std::move(all));
             elements = route.Exchange(elements);
             geometry = route.Exchange(geometry);
-            candidatePoints = points;
-            candidateKeys = R::Array<index>(R::RowLayout::Dense(points.RowCount(), 2));
-            auto write = candidateKeys.Write();
-            for (index iQuery = 0; iQuery < points.RowCount(); ++iQuery)
-                write.View()(iQuery, 0) = iQuery, write.View()(iQuery, 1) = ids(iQuery, 0);
-            origins.assign(size_t(points.RowCount()), mpi.rank);
+            MPI::LocalStage(mpi, [&]
+                            {
+                candidatePoints = points;
+                candidateKeys = R::Array<index>(R::RowLayout::Dense(points.RowCount(), 2));
+                auto write = candidateKeys.Write();
+                for (index iQuery = 0; iQuery < points.RowCount(); ++iQuery)
+                    write.View()(iQuery, 0) = iQuery, write.View()(iQuery, 1) = ids(iQuery, 0);
+                origins.assign(size_t(points.RowCount()), mpi.rank); });
         }
         else
         {
-            std::vector<real> boxes(size_t(mpi.size) * 6);
-            real local[6];
-            for (int d = 0; d < 3; ++d)
-                local[d] = coarse.lower[d], local[d + 3] = coarse.upper[d];
-            MPI_Allgather(local, 6, DNDS_MPI_REAL, boxes.data(), 6, DNDS_MPI_REAL, mpi.comm);
-            std::vector<std::vector<index>> destinations(size_t(mpi.size));
-            R::Array<index> keys(R::RowLayout::Dense(points.RowCount(), 2));
-            {
+            const int count = settings.coarseBoxesPerRank;
+            std::vector<real> boxes, local;
+            MPI::LocalStage(mpi, [&]
+                            {
+                boxes.resize(size_t(mpi.size) * 6 * count);
+                local.resize(size_t(6 * count));
+                std::vector<index> order(size_t(donor.Size()));
+                std::iota(order.begin(), order.end(), index(0));
+                int axis = 0;
+                (coarse.upper - coarse.lower).maxCoeff(&axis);
+                std::sort(order.begin(), order.end(), [&](index a, index b)
+                {
+                    const real x = localBounds[size_t(a)].lower[axis] + localBounds[size_t(a)].upper[axis];
+                    const real y = localBounds[size_t(b)].lower[axis] + localBounds[size_t(b)].upper[axis];
+                    return x == y ? a < b : x < y;
+                });
+                for (int iBox = 0; iBox < count; ++iBox)
+                {
+                    SpatialBox box;
+                    const auto [begin, end] = EvenSplitRange(iBox, count, donor.Size());
+                    for (index i = begin; i < end; ++i) box.Add(localBounds[size_t(order[size_t(i)])]);
+                    for (int d = 0; d < 3; ++d) local[6 * iBox + d] = box.lower[d], local[6 * iBox + d + 3] = box.upper[d];
+                } });
+            MPI_Allgather(local.data(), 6 * count, DNDS_MPI_REAL, boxes.data(), 6 * count, DNDS_MPI_REAL, mpi.comm);
+            std::vector<std::vector<index>> destinations;
+            R::Array<index> keys;
+            MPI::LocalStage(mpi, [&]
+                            {
+                destinations.resize(size_t(mpi.size));
+                keys = R::Array<index>(R::RowLayout::Dense(points.RowCount(), 2));
                 auto write = keys.Write();
                 for (index iQuery = 0; iQuery < points.RowCount(); ++iQuery)
                 {
@@ -402,20 +464,27 @@ namespace DNDS::Geom
                     const tPoint point{queries(iQuery, 0), queries(iQuery, 1), queries(iQuery, 2)};
                     for (int peer = 0; peer < mpi.size; ++peer)
                     {
-                        SpatialBox box;
-                        for (int d = 0; d < 3; ++d)
-                            box.lower[d] = boxes[6 * peer + d], box.upper[d] = boxes[6 * peer + d + 3];
-                        if ((box.lower.array() <= box.upper.array()).all() && box.SquaredDistance(point) <= sqr(settings.maxGap))
-                            destinations[peer].push_back(iQuery);
+                        for (int iBox = 0; iBox < count; ++iBox)
+                        {
+                            SpatialBox box;
+                            const int offset = 6 * (peer * count + iBox);
+                            for (int d = 0; d < 3; ++d) box.lower[d] = boxes[offset + d], box.upper[d] = boxes[offset + d + 3];
+                            if ((box.lower.array() <= box.upper.array()).all() && box.SquaredDistance(point) <= sqr(settings.maxGap))
+                            {
+                                destinations[peer].push_back(iQuery);
+                                break; // One query per candidate rank, even if boxes overlap.
+                            }
+                        }
                     }
-                }
-            }
+                } });
             const auto route = R::SparseBatchExchange::Build(context, points.RowCount(), std::move(destinations));
             candidatePoints = route.Exchange(points);
             candidateKeys = route.Exchange(keys);
-            origins.resize(size_t(candidatePoints.RowCount()));
-            for (int peer = 0; peer < mpi.size; ++peer)
-                std::fill(origins.begin() + route.ReceiveOffsets()[peer], origins.begin() + route.ReceiveOffsets()[peer + 1], peer);
+            MPI::LocalStage(mpi, [&]
+                            {
+                origins.resize(size_t(candidatePoints.RowCount()));
+                for (int peer = 0; peer < mpi.size; ++peer)
+                    std::fill(origins.begin() + route.ReceiveOffsets()[peer], origins.begin() + route.ReceiveOffsets()[peer + 1], peer); });
         }
 
         struct Proposal
@@ -435,6 +504,7 @@ namespace DNDS::Geom
             const auto q = qRead.View<R::FixedRows<3>>();
             std::vector<SpatialBox> bounds(size_t(elements.RowCount()));
             for (index iElement = 0; iElement < elements.RowCount(); ++iElement)
+            {
                 for (index node = 0; node < e(iElement, 5); ++node)
                 {
                     tPoint world;
@@ -446,6 +516,8 @@ namespace DNDS::Geom
                     }
                     bounds[iElement].Add(world);
                 }
+                PadReferenceBox(bounds[iElement], settings.referenceTolerance);
+            }
             BoundingBoxTree tree(bounds);
             tSmallCoords coordinates;
             for (DNDS::index iQuery = 0; iQuery < candidatePoints.RowCount(); ++iQuery)
@@ -475,10 +547,14 @@ namespace DNDS::Geom
                                           donorPoint[0], donorPoint[1], donorPoint[2], (world - projected).norm()}, origins[iQuery]});
                 });
             } });
-        R::Array<index> proposalKeys(R::RowLayout::Dense(proposals.size(), 10));
-        R::Array<real> proposalValues(R::RowLayout::Dense(proposals.size(), 10));
-        std::vector<std::vector<index>> replies(size_t(mpi.size));
-        {
+        R::Array<index> proposalKeys;
+        R::Array<real> proposalValues;
+        std::vector<std::vector<index>> replies;
+        MPI::LocalStage(mpi, [&]
+                        {
+            proposalKeys = R::Array<index>(R::RowLayout::Dense(proposals.size(), 10));
+            proposalValues = R::Array<real>(R::RowLayout::Dense(proposals.size(), 10));
+            replies.resize(size_t(mpi.size));
             auto keyWrite = proposalKeys.Write();
             auto valueWrite = proposalValues.Write();
             for (index iProposal = 0; iProposal < index(proposals.size()); ++iProposal)
@@ -486,14 +562,14 @@ namespace DNDS::Geom
                 std::copy(proposals[iProposal].keys.begin(), proposals[iProposal].keys.end(), keyWrite.View()[iProposal].begin());
                 std::copy(proposals[iProposal].values.begin(), proposals[iProposal].values.end(), valueWrite.View()[iProposal].begin());
                 replies[proposals[iProposal].origin].push_back(iProposal);
-            }
-        }
+            } });
         const auto replyRoute = R::SparseBatchExchange::Build(context, index(proposals.size()), std::move(replies));
         auto returnedKeys = replyRoute.Exchange(proposalKeys);
         auto returnedValues = replyRoute.Exchange(proposalValues);
-        auto data = std::make_shared<Detail::DistributedInterfaceMapData>(donor);
+        std::shared_ptr<Detail::DistributedInterfaceMapData> data;
         MPI::LocalStage(mpi, [&]
                         {
+            data = std::make_shared<Detail::DistributedInterfaceMapData>(donor);
             data->matches.resize(size_t(points.RowCount()));
             std::vector<bool> found(size_t(points.RowCount()), false);
             std::vector<index> interiors(size_t(points.RowCount()), 0);

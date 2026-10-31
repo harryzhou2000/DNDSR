@@ -7,6 +7,8 @@
 #include "Geom/Geometric.hpp"
 #include "Geom/Unstructured/UnstructuredMeshFwd.hpp"
 #include "DNDS/HardEigen.hpp"
+#include "CFV/Math/ReconstructionFunctional.hpp"
+#include <map>
 
 namespace DNDS::Geom
 {
@@ -30,8 +32,13 @@ namespace DNDS::CFV
         real jacobiRelax = 1., WBAP_nStd = 10.;
         bool SORInstead = false, HQMWeights = false;
         bool coreFirst = false;
+        bool cacheDiffBase = true;
+        ReconstructionFunctionalSettings functional;
         real bcWeight = 1., svdTolerance = 1e-13, svdAbsoluteTolerance = 0;
-        std::array<real, 4> boundaryDerivativeWeights{1, 0, 0, 0};
+        std::array<real, 4> boundaryDerivativeWeights{1, 1, 1, 1};
+        /// Optional zone-specific replacement for the unsquared per-order
+        /// boundary weights. Higher orders impose homogeneous derivative data.
+        std::map<int, std::array<real, 4>> boundaryZoneWeights;
         DNDS_DECLARE_CONFIG(ReconstructionSettings)
         {
             DNDS_FIELD(maxOrder, "Polynomial degree, 1..3");
@@ -40,8 +47,11 @@ namespace DNDS::CFV
             DNDS_FIELD(SORInstead, "Use ordered in-place SOR");
             DNDS_FIELD(coreFirst, "Use conservative node-star core before dependent cells for ordered SOR");
             DNDS_FIELD(HQMWeights, "Legacy HQM_OPT derivative and HQM_SD geometry weights");
+            DNDS_FIELD(functional, "Independent isotropic functional weights and length policy");
+            DNDS_FIELD(cacheDiffBase, "Retain basis values and derivatives on face quadrature points");
             DNDS_FIELD(bcWeight, "Dirichlet boundary value weight");
             DNDS_FIELD(boundaryDerivativeWeights, "Boundary weights by derivative order; nonzero derivatives impose homogeneous derivative targets");
+            DNDS_FIELD(boundaryZoneWeights, "Optional BC-zone per-order weight overrides");
             DNDS_FIELD(svdTolerance, "Relative small-mode SVD cutoff against sigma_max");
             DNDS_FIELD(svdAbsoluteTolerance, "Absolute SVD cutoff, zero by default");
             DNDS_FIELD(WBAP_nStd, "WBAP center weight");
@@ -61,6 +71,8 @@ namespace DNDS::CFV
     {
         index cells = 0, filteredCells = 0, discardedModes = 0, rankZeroCells = 0;
         real maxCondition = 0;
+        index maxConditionCell = UnInitIndex;
+        std::array<index, 20> rankCounts{}; // Degree-three 3D has at most 19 modes.
     };
 
     /// Borrowed metric spans for numerical loops. Retain FiniteVolumeRead through
@@ -71,6 +83,7 @@ namespace DNDS::CFV
         Runtime::ArrayView<const real, false, Runtime::FixedRows<8>> cells;
         Runtime::ArrayView<const index, false, Runtime::FixedRows<1>> faceOffsets;
         Runtime::ArrayView<const real, false, Runtime::FixedRows<7>> quadrature;
+        Runtime::ArrayView<const real, false, Runtime::FixedRows<3>> radialMoment;
         DNDS_DEVICE_CALLABLE real GetCellVol(index iCell) const { return cells(iCell, 0); }
         DNDS_DEVICE_CALLABLE Geom::tPoint GetCellCent(index iCell) const
         {
@@ -98,7 +111,7 @@ namespace DNDS::CFV
     {
         std::shared_ptr<const Detail::FiniteVolumeData> _data;
         std::shared_ptr<Geom::MeshReadAccess> _meshRead;
-        Runtime::Array<real>::ReadLease _cells, _quadrature;
+        Runtime::Array<real>::ReadLease _cells, _quadrature, _radialMoment;
         Runtime::Array<index>::ReadLease _offsets;
         explicit FiniteVolumeRead(std::shared_ptr<const Detail::FiniteVolumeData> data);
         friend class FiniteVolumePlan;
@@ -116,13 +129,17 @@ namespace DNDS::CFV
         friend class VariationalReconstructionPlan;
 
     public:
-        static FiniteVolumePlan ConstructMetrics(ssp<Geom::UnstructuredMesh> mesh, int intOrder = 5);
+        /// axisymmetric uses radius=y>=0 and measures r*dA/r*ds, without 2*pi.
+        /// Equation source terms and cylindrical component connections remain
+        /// with the equation adapter; this option changes integration only.
+        static FiniteVolumePlan ConstructMetrics(ssp<Geom::UnstructuredMesh> mesh, int intOrder = 5, bool axisymmetric = false);
         void Validate() const;
         FiniteVolumeRead AcquireRead() const;
         index NumCell() const;
         index NumCellProc() const;
         index NumFaceProc() const;
         int Dimension() const;
+        bool Axisymmetric() const;
         const Geom::EntitySpace &Cells() const;
         FVField BuildField(index width) const;
         /// Collective binding, retained by caller for persistent repeated pulls.
@@ -150,7 +167,8 @@ namespace DNDS::CFV
     /// Matrices act on column vectors in [first,first+count); all other fields
     /// are limited componentwise. Fill forward/inverse from CELL MEANS once per
     /// field stage. Geometry periodic transforms and characteristic transforms
-    /// are different operations. Initially rotated periodic state is rejected.
+    /// are different operations. Declare vector triples in BuildWorkspace so
+    /// the periodic component map precedes characteristic limiting.
     struct FaceCharacteristicTransform
     {
         index first = 0, count = 0;
@@ -167,12 +185,46 @@ namespace DNDS::CFV
         Runtime::Array<real> scratch;
         index components;
         std::shared_ptr<const Detail::ReconstructionData> plan;
+        /// Non-overlapping triples of polar-vector components. Other components
+        /// are scalars. Periodic rotations act on these triples, independently
+        /// of the geometric dimension (three-component flow on 2D geometry).
+        std::vector<index> periodicVectorStarts;
+    };
+
+    /// Borrowed cache pointers for owned-cell face stencils. All derivatives
+    /// are in the selected parent's reference frame. Retain the read scope.
+    struct ReconstructionBasisHostView
+    {
+        Runtime::ArrayView<const real, false, Runtime::TableRows> face;
+        Runtime::ArrayView<const index, false, Runtime::FixedRows<1>> faceOffsets;
+        int modes;
+        DNDS_DEVICE_CALLABLE const real *FaceMatrix(index iPoint, int side) const { return face[2 * iPoint + side].data(); }
+        /// Column-major (modes+1)-by-modes matrix; derivative includes order0.
+        DNDS_DEVICE_CALLABLE real FaceDerivative(index iPoint, int side, int derivative, int mode) const
+        {
+            return FaceMatrix(iPoint, side)[mode * (modes + 1) + derivative];
+        }
+    };
+    /// Pins the geometry generation and Runtime cache allocations once outside
+    /// a hot loop. Face queries must be in an owned-cell stencil and select a
+    /// real parent. Generic/debug access can use checked GetCachedFaceBasis.
+    class ReconstructionBasisRead
+    {
+        std::shared_ptr<const Detail::ReconstructionData> _data;
+        FiniteVolumeRead _geometry;
+        std::optional<Runtime::Array<real>::ReadLease> _basis;
+        explicit ReconstructionBasisRead(std::shared_ptr<const Detail::ReconstructionData> data);
+        friend class VariationalReconstructionPlan;
+
+    public:
+        ReconstructionBasisHostView HostView() const;
     };
 
     /// Composition of metrics, basis/moments and factored VR systems on Runtime
     /// storage. CPU kernels consume explicit arrays; no legacy VR owner exists.
     class VariationalReconstructionPlan
     {
+        friend class PolynomialSamplingPlan;
         std::shared_ptr<const Detail::ReconstructionData> _data;
         explicit VariationalReconstructionPlan(std::shared_ptr<const Detail::ReconstructionData> data) : _data(std::move(data)) {}
 
@@ -185,7 +237,7 @@ namespace DNDS::CFV
         /// Owned-cell spectrum diagnostics from setup, without refactorization.
         HardEigen::SVDInverseDiagnostics GetCellInverseDiagnostics(index iCell) const;
         void Validate() const;
-        ReconstructionWorkspace BuildWorkspace(index components) const;
+        ReconstructionWorkspace BuildWorkspace(index components, std::vector<index> periodicVectorStarts = {}) const;
         ReconstructionBoundaryValues BuildBoundaryValues(index components) const;
         index NumBoundaryQuadrature() const;
         BoundaryQuadraturePoint GetBoundaryQuadrature(index iPoint) const;
@@ -225,5 +277,33 @@ namespace DNDS::CFV
         void Evaluate(const FVField &mean, const FVField &coefficients,
                       const Runtime::Array<index> &cells, const Runtime::Array<real> &points,
                       Runtime::Array<real> &values) const;
+        /// Spatial derivative of the polynomial, in the cell reference frame.
+        /// derivative is a central Taylor multi-index ordinal (0 means value).
+        /// For derivative>0 the cell mean contributes zero.
+        void EvaluateDerivative(const FVField &mean, const FVField &coefficients,
+                                const Runtime::Array<index> &cells, const Runtime::Array<real> &points,
+                                Runtime::Array<real> &values, int derivative) const;
+        /// Diagnostic copy of one cached basis matrix, rows=derivative modes,
+        /// columns=nonconstant polynomial modes, in that parent's own frame.
+        /// Throws when caching was disabled, the parent is exterior, or the
+        /// face lies outside every owned cell stencil.
+        Eigen::MatrixXd GetCachedFaceBasis(index iFace, int side, int iQuadrature) const;
+        ReconstructionBasisRead AcquireBasisRead() const;
+        /// Unscaled assembled linear system A*x - sum(B*x_neighbor). Callers
+        /// refresh coefficient ghosts explicitly. Distinct output is required.
+        /// Geometry/BC weights are frozen with this plan; no relaxation enters
+        /// these operators. General GMRES is valid; symmetry/SPD and nullspace
+        /// conditions for PCG must be established by the caller.
+        void ApplyLinearOperator(const FVField &coefficients, FVField &output,
+                                 const std::vector<index> &periodicVectorStarts = {}) const;
+        /// Affine mean/Dirichlet forcing in unscaled coordinates. Homogeneous
+        /// perturbations use ApplyLinearOperator without injecting BC values.
+        void BuildRightHandSide(const FVField &mean, const ReconstructionBoundaryValues &boundary, FVField &output,
+                                const std::vector<index> &periodicVectorStarts = {}) const;
+        void ComputeResidual(const FVField &rhs, const FVField &coefficients, FVField &output,
+                             const std::vector<index> &periodicVectorStarts = {}) const;
+        /// Cell-diagonal truncated SVD inverse, including its minimum-norm
+        /// projection when the local matrix has a null space. Owned rows only.
+        void ApplyLocalPreconditioner(const FVField &input, FVField &output) const;
     };
 }

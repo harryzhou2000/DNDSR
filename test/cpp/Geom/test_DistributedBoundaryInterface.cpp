@@ -79,6 +79,49 @@ TEST_CASE("Distributed sliding matches exact Cartesian donors across geometry an
     }
 }
 
+TEST_CASE("Coarse boxes retain reference-tolerance projections outside physical endpoints")
+{
+    auto mesh = OverlapTest::BuildNativeFixture(mpi, true).mesh;
+    std::vector<I> selected;
+    {
+        auto read = mesh->AcquireRead(MeshReadRequirements::CellFlux());
+        const auto view = read.HostView();
+        for (I iBnd = 0; iBnd < mesh->NumBnd(); ++iBnd)
+        {
+            bool left = true;
+            for (auto node : view.BoundaryNodes(iBnd))
+                left = left && std::abs(view.Coord(node)[0]) < 1e-12;
+            if (left)
+                selected.push_back(iBnd);
+        }
+    }
+    const auto patch = BoundaryPatch::Create(mesh, selected);
+    R::Array<double> points(R::RowLayout::Dense(1, 3));
+    R::Array<I> ids(R::RowLayout::Dense(1, 1));
+    {
+        auto p = points.Write();
+        auto key = ids.Write();
+        p.View()(0, 0) = 0;
+        p.View()(0, 1) = -.0001;
+        p.View()(0, 2) = 0;
+        key.View()(0, 0) = 42;
+    }
+    InterfaceSearchSettings settings;
+    settings.referenceTolerance = .01;
+    settings.maxGap = 1e-12;
+    for (int count : {1, 3, 10})
+    {
+        settings.coarseBoxesPerRank = count;
+        const auto match = DistributedInterfacePointMap::Match(patch, points, ids, InterfaceRoutingMode::CoarseBoxes, settings).Get(0);
+        CHECK(match.geometry.donorOriginalId == 39);
+        CHECK((match.geometry.donorPoint - tPoint{0, -.0001, 0}).norm() < 1e-12);
+    }
+    const auto baseline = DistributedInterfacePointMap::Match(patch, points, ids, InterfaceRoutingMode::AllGatherBoundary, settings).Get(0);
+    CHECK(baseline.geometry.donorOriginalId == 39);
+    if (mpi.size == 1)
+        CHECK(InterfacePointMap::Match(patch, points, ids, settings).Get(0).donorOriginalId == 39);
+}
+
 TEST_CASE("Distributed matching rejects overlapping interiors and inconsistent settings collectively")
 {
     auto mesh = NativeFacadeFixture::Make(mpi).Publish(mpi);

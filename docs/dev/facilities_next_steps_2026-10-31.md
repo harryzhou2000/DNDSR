@@ -5,6 +5,11 @@ implementation or validation. Current numerical/performance evidence is in
 [the CPU facility ledger](fv_interface_2026-10-30.md); current APIs and limitations
 are in [FVFacility](../architecture/FVFacility.md).
 
+**Historical discussion:** implementation has since advanced. Read
+[the completion ledger](fv_completion_2026-10-31.md) for the executed scope and
+remaining limits. Statements below such as “LU” and “single-rank only” describe
+the pre-execution snapshot, not the current implementation.
+
 Later accepted decisions in the standalone plan repository, documents 31/32,
 supersede proposals here: use node-star cell core classification consistently,
 use full SVD without a LU fast path, correct the legacy filter first, and allow

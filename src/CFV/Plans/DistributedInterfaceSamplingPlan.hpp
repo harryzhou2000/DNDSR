@@ -1,6 +1,7 @@
 #pragma once
 
 #include "FiniteVolumePlan.hpp"
+#include "PolynomialSamplingPlan.hpp"
 #include "Geom/Interface/BoundaryInterface.hpp"
 #include "DNDS/Runtime/SparseBatchExchange.hpp"
 
@@ -28,10 +29,11 @@ namespace DNDS::CFV
             Runtime::Array<index> cells;
             Runtime::Array<real> points;
             Runtime::RowTransferPlan returnRoute;
+            PolynomialSamplingPlan sampling;
             Data(VariationalReconstructionPlan rec, Geom::DistributedInterfacePointMap correspondence,
                  Runtime::Array<index> rows, Runtime::Array<real> locations, Runtime::RowTransferPlan route)
                 : reconstruction(std::move(rec)), map(std::move(correspondence)), cells(std::move(rows)),
-                  points(std::move(locations)), returnRoute(std::move(route)) {}
+                  points(std::move(locations)), returnRoute(std::move(route)), sampling(reconstruction, cells, points) {}
         };
         std::shared_ptr<const Data> _data;
 
@@ -99,12 +101,13 @@ namespace DNDS::CFV
         {
             Validate();
             DNDS_check_throw_info(workspace.plan == _data, "sampling workspace belongs to another plan");
-            _data->reconstruction.Evaluate(mean, coefficients, _data->cells, _data->points, workspace.donorValues);
+            _data->sampling.Evaluate(mean, coefficients, workspace.donorValues);
         }
         /// Collective setup. Reuse this binding for repeated fixed-buffer
         /// sampling; wait for donors before Begin and before reading receivers.
         Runtime::TransferBinding BindResult(const DistributedSamplingWorkspace &workspace,
-                                            Runtime::Array<real> &values, Runtime::TransferMode mode = Runtime::TransferMode::Persistent) const
+                                            Runtime::Array<real> &values, Runtime::TransferMode mode = Runtime::TransferMode::Persistent,
+                                            int tag = 0) const
         {
             MPIInfo mpi;
             mpi.comm = _data->returnRoute.Communicator();
@@ -118,7 +121,7 @@ namespace DNDS::CFV
                                       "sampling output/workspace mismatch or non-host output"); });
             Runtime::PayloadPlan payload(_data->returnRoute, workspace.donorValues.Layout(), values.Layout(), Runtime::ElementSchema::Arithmetic<real>());
             return payload.Bind(workspace.donorValues, values, Runtime::TransferTransport::Direct,
-                                {mode, _data->returnRoute.Context(), 0});
+                                {mode, _data->returnRoute.Context(), tag});
         }
         /// Collective synchronous convenience. Preparation failures agree before
         /// payload communication. The caller owns workspace/output lifetimes and
