@@ -317,4 +317,9 @@ namespace DNDS::Geom
                                         { source = CurrentNativeState(); });
         ReplaceNativeForSetup(NativeMeshTransition::ReorderLocalCells(*source, mpi, parts, inner, ghostLayers).state);
     }
+    void UnstructuredMesh::ReorderLocalCells(const LocalCellOrderingSettings &settings, int ghostLayers)
+    {
+        CheckCollectiveMutationAvailable();
+        ReplaceNativeForSetup(NativeMeshTransition::ReorderLocalCells(*this, settings, ghostLayers).state);
+    }
 }

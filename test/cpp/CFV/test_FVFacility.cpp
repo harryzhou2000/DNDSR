@@ -428,13 +428,45 @@ TEST_CASE("Three-dimensional FV reproduces cubic cell-average polynomials on tet
     }
 }
 
-TEST_CASE("Rank-deficient boundary functional and rank-local invalid settings fail collectively")
+TEST_CASE("SVD removes unconstrained modes and invalid settings fail collectively")
 {
     auto mesh = InterfaceFixture::SingleCell(mpi, true);
     auto metrics = C::FiniteVolumePlan::ConstructMetrics(mesh);
     C::ReconstructionSettings settings;
     settings.boundaryDerivativeWeights = {0, 0, 0, 0};
-    CHECK_THROWS(C::VariationalReconstructionPlan::ConstructRecCoeff(metrics, settings));
+    auto zero = C::VariationalReconstructionPlan::ConstructRecCoeff(metrics, settings);
+    const auto summary = zero.GetInverseDiagnostics();
+    DNDS::index localCells = metrics.NumCell(), totalCells = 0;
+    MPI::Allreduce(&localCells, &totalCells, 1, DNDS_MPI_INDEX, MPI_SUM, mpi.comm);
+    CHECK(summary.cells == totalCells);
+    CHECK(summary.filteredCells == totalCells);
+    CHECK(summary.rankZeroCells == totalCells);
+    CHECK(summary.discardedModes == totalCells * zero.NRecDOF());
+    CHECK(std::isinf(summary.maxCondition));
+    for (DNDS::index iCell = 0; iCell < metrics.NumCell(); ++iCell)
+    {
+        const auto cell = zero.GetCellInverseDiagnostics(iCell);
+        CHECK(cell.rank == 0);
+        CHECK(std::isinf(cell.rawCondition));
+    }
+    CHECK_THROWS(zero.GetCellInverseDiagnostics(-1));
+    auto mean = metrics.BuildField(1);
+    auto work = zero.BuildWorkspace(1);
+    auto boundary = zero.BuildBoundaryValues(1);
+    {
+        auto values = boundary.values.Write();
+        for (DNDS::index iRow = 0; iRow < values.View().RowCount(); ++iRow)
+            values.View()(iRow, 0) = 3;
+        auto coefficients = work.coefficients.Owned().Write();
+        for (DNDS::index iCell = 0; iCell < metrics.NumCell(); ++iCell)
+            std::fill(coefficients.View()[iCell].begin(), coefficients.View()[iCell].end(), 2);
+    }
+    // Zero is the minimum-norm solution when the entire functional is zero.
+    zero.DoReconstructionIter(mean, work, boundary);
+    auto read = work.coefficients.Owned().Read();
+    for (DNDS::index iCell = 0; iCell < metrics.NumCell(); ++iCell)
+        for (auto value : read.View()[iCell])
+            CHECK(value == 0);
     settings = C::ReconstructionSettings{};
     if (mpi.rank == 0)
         settings.maxOrder = 4;

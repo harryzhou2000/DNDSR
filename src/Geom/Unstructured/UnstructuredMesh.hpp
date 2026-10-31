@@ -23,6 +23,7 @@ namespace DNDS::Direct
 }
 namespace DNDS::Geom
 {
+    struct LocalCellOrderingSettings;
     class NativeSmoothingWorkspace;
     struct PartitionOptions;
     enum class MeshLoc : uint8_t
@@ -264,6 +265,7 @@ namespace DNDS::Geom
         void ObtainLocalFactFillOrdering(Direct::SerialSymLUStructure &, Direct::DirectPrecControl);
         void ObtainSymmetricSymbolicFactorization(Direct::SerialSymLUStructure &, Direct::DirectPrecControl) const;
         void ReorderLocalCells(int nParts = 1, int nPartsInner = 1, int ghostLayers = 1);
+        void ReorderLocalCells(const struct LocalCellOrderingSettings &settings, int ghostLayers = 1);
         int NLocalParts() const { return Native().NLocalParts(); }
         index LocalPartStart(int part) const { return Native().LocalPartStart(part); }
         index LocalPartEnd(int part) const { return Native().LocalPartEnd(part); }

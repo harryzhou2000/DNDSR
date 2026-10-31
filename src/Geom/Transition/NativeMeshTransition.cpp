@@ -4,6 +4,7 @@
 #include "Geom/Connectivity/AdjacencyRegistry.hpp"
 #include "Geom/Transition/FieldTransfer.hpp"
 #include "Geom/Transition/CellPermutation.hpp"
+#include "Geom/Transition/LocalCellOrdering.hpp"
 #include "Geom/Unstructured/ReaderPartitionGraph.hpp"
 #include "Geom/Transition/NativeMeshPartitionGraph.hpp"
 #include <algorithm>
@@ -672,6 +673,20 @@ namespace DNDS::Geom
         return result;
     }
 
+    NativeMeshTransitionResult NativeMeshTransition::ReorderLocalCells(UnstructuredMesh &source,
+                                                                       const LocalCellOrderingSettings &settings, int ghostLayers)
+    {
+        std::optional<Runtime::VersionTracker::ReadLease> pin;
+        FieldTransferDetail::LocalStage(source.getMPI(), [&]
+                                        { pin.emplace(source.versions.Read()); });
+        const auto ordering = BuildLocalCellOrdering(source, settings);
+        ReorderInput input;
+        input.localPermutations.emplace(EntityKind::Cell, ordering.oldToNew);
+        auto result = Build(*source.CurrentNativeState(), source.getMPI(), input, ghostLayers);
+        result.state = result.state->WithLocalPartitions(ordering.subregionStarts);
+        return result;
+    }
+
     NativeMeshTransitionResult NativeMeshTransition::ReorderLocalCells(const UnstructuredMeshState &source, const MPIInfo &mpi,
                                                                        int nParts, int nPartsInner, int ghostLayers)
     {
@@ -892,6 +907,22 @@ namespace DNDS::Geom
                 for (auto target : map.targetRanks) DNDS_check_throw_info(target >= 0 && target < mpi.size, "invalid native placement rank");
                 schedule += "m" + std::to_string(int(map.kind)) + ";";
             }
+            DNDS_check_throw_info(input.localPermutations.empty() ||
+                                      (input.explicitMaps.empty() && input.follows.empty() && !cellOld2New),
+                                  "local entity permutations cannot mix with placement/follow or cell-specialized ordering");
+            for (const auto &[kind, permutation] : input.localPermutations)
+            {
+                DNDS_check_throw_info(oldSpaces.count(kind) && permutation.size() == size_t(oldSpaces.at(kind).NumOwned()),
+                                      "local entity permutation extent or kind differs");
+                std::vector<uint8_t> seen(permutation.size(), 0);
+                for (auto target : permutation)
+                {
+                    DNDS_check_throw_info(target >= 0 && target < index(permutation.size()) && !seen[target],
+                                          "local entity permutation is not bijective");
+                    seen[target] = 1;
+                }
+                schedule += "l" + std::to_string(int(kind)) + ";";
+            }
             for (const auto &follow : input.follows)
                 schedule += "f" + std::to_string(int(follow.follower)) + ":" + std::to_string(int(follow.leader)) + ":" + follow.follower2leader.Signature();
             schedule += cellOld2New ? "local" : "partition";
@@ -1088,11 +1119,15 @@ namespace DNDS::Geom
             auto assigned = placements.find(kind);
             const auto targets = assigned == placements.end() ? std::vector<MPI_int>(size_t(old.NumOwned()), mpi.rank) : assigned->second;
             PermutationTransfer transfer;
-            if (cellOld2New)
+            if (cellOld2New || !input.localPermutations.empty())
             {
                 std::vector<index> identity(size_t(old.NumOwned()));
                 std::iota(identity.begin(), identity.end(), index(0));
-                transfer = PermutationTransfer::fromLocalPermutation(kind == EntityKind::Cell ? *cellOld2New : identity,
+                const auto selected = input.localPermutations.find(kind);
+                const auto &permutation = cellOld2New                                 ? (kind == EntityKind::Cell ? *cellOld2New : identity)
+                                          : selected == input.localPermutations.end() ? identity
+                                                                                      : selected->second;
+                transfer = PermutationTransfer::fromLocalPermutation(permutation,
                                                                      old._global, mpi);
             }
             else
@@ -1111,7 +1146,7 @@ namespace DNDS::Geom
                 sendOld2New.emplace(kind, std::move(ordered.second));
             }
             routes.emplace(kind, std::move(route));
-            if (cellOld2New || assigned != placements.end())
+            if (cellOld2New || assigned != placements.end() || !input.localPermutations.empty())
                 result.transfers.emplace(kind, transfer);
             allTransfers.emplace(kind, std::move(transfer));
         }

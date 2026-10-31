@@ -31,6 +31,8 @@ namespace DNDS::CFV::Detail
     {
         FiniteVolumePlan metrics;
         ReconstructionSettings settings;
+        ReconstructionInverseDiagnostics inverseDiagnostics;
+        Runtime::Array<real> inverseConditions;
         int n;
         Runtime::Array<real> moments;
         // One row per owned cell-face incidence, preallocated from cell2face.

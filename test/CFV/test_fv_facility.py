@@ -31,6 +31,14 @@ def test_reconstruction_shared_buffers_explicit_halo_and_point_sampling():
     settings = CFV.ReconstructionSettings()
     settings.maxOrder = 1
     plan = CFV.VariationalReconstructionPlan.ConstructRecCoeff(metrics, settings)
+    diagnostics = plan.GetInverseDiagnostics()
+    assert diagnostics.cells == MPI.COMM_WORLD.allreduce(metrics.NumCell())
+    assert diagnostics.rankZeroCells == 0
+    assert settings.svdAbsoluteTolerance == 0
+    for i_cell in range(metrics.NumCell()):
+        cell = plan.GetCellInverseDiagnostics(i_cell)
+        assert cell.rank == plan.NRecDOF()
+        assert np.isfinite(cell.rawCondition)
     mean = metrics.BuildField(1)
     work = plan.BuildWorkspace(1)
     bc = plan.BuildBoundaryValues(1)
@@ -108,3 +116,38 @@ def test_two_domains_interface_sampling_and_transform_publication():
     wrong_plan = CFV.VariationalReconstructionPlan.ConstructRecCoeff(wrong_metrics)
     with pytest.raises(RuntimeError, match="different mesh"):
         CFV.InterfaceSamplingPlan(wrong_plan, mapping)
+
+
+@pytest.mark.mpi
+def test_distributed_interface_owner_sampling_and_query_order():
+    donor = mesh()
+    receiver = mesh()
+    metrics = CFV.FiniteVolumePlan.ConstructMetrics(donor)
+    plan = CFV.VariationalReconstructionPlan.ConstructRecCoeff(metrics)
+    mean = metrics.BuildField(1)
+    work = plan.BuildWorkspace(1)
+    mean.owned.assign(np.full((metrics.NumCell(), 1), MPI.COMM_WORLD.rank + 1.0))
+    metrics.BindHalo(mean).begin().wait()
+    metrics.BindHalo(work.coefficients).begin().wait()
+    patch = Geom.BoundaryPatch.Create(donor, list(range(donor.NumBnd())))
+    target = Geom.BoundaryPatch.Create(receiver, list(range(receiver.NumBnd())))
+    query = []
+    with receiver.acquire_read(faces=True) as read:
+        for i in range(target.Size()):
+            nodes = read.face_nodes(target.Element(i).face)
+            query.append(.37 * read.coord(int(nodes[0])) + .63 * read.coord(int(nodes[1])))
+    points = R.Array(R.RowLayout.dense(len(query), 3))
+    keys = R.Array(R.RowLayout.dense(len(query), 1), np.int64)
+    points.assign(np.asarray(query).reshape(-1, 3))
+    keys.assign((100 - 7 * np.arange(len(query), dtype=np.int64)).reshape(-1, 1))
+    maps = [Geom.DistributedInterfacePointMap.Match(patch, points, keys, mode)
+            for mode in (Geom.InterfaceRoutingMode.CoarseBoxes, Geom.InterfaceRoutingMode.AllGatherBoundary)]
+    for mapping in maps:
+        sampler = CFV.DistributedInterfaceSamplingPlan(plan, mapping)
+        scratch = sampler.BuildWorkspace(1)
+        output = R.Array(R.RowLayout.dense(len(query), 1))
+        sampler.Evaluate(mean, work.coefficients, scratch, output)
+        expected = np.array([mapping.Get(i).donorRank + 1.0 for i in range(len(query))]).reshape(-1, 1)
+        np.testing.assert_array_equal(output.numpy(), expected)
+    assert [maps[0].Get(i).geometry.donorOriginalId for i in range(len(query))] == [
+        maps[1].Get(i).geometry.donorOriginalId for i in range(len(query))]

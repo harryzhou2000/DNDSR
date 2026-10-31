@@ -1,4 +1,5 @@
 #pragma once
+#include "Geom/Transition/LocalCellOrdering.hpp"
 
 #include "DNDS/Defines_bind.hpp"
 #include "DNDS/Array_bind.hpp"
@@ -203,22 +204,13 @@ namespace DNDS::Geom
         UnstructuredMesh_
             .def("PrepareNativeTopology", &UnstructuredMesh::PrepareNativeTopology, py::arg("faces") = true, py::arg("edges") = false, py::arg("ghost_layers") = 1,
                  "Collectively prepare native topology on this same facade. Release retained reads and rebuild dependent metrics afterward.")
-            .def("ReorderLocalCells", &UnstructuredMesh::ReorderLocalCells, py::arg("nParts") = 1, py::arg("nPartsInner") = 1, py::arg("ghost_layers") = 1)
-            .def("write_native_archive", &UnstructuredMesh::WriteNativeArchive,
-                 py::arg("serializer"), py::arg("name"),
-                 "Collective native checkpoint of all published topology, IDs and companions. Finish async producers first; external solver fields are separate.")
-            .def_static("read_native_archive", &UnstructuredMesh::ReadNativeArchive,
-                        py::arg("mpi"), py::arg("serializer"), py::arg("name"),
-                        py::arg("partition") = Serializer::ArrayGlobalOffset_Unknown, py::arg("ghost_layers") = 1,
-                        "Collective native restart with saved or even ownership partitions. All ranks participate, including empty ranks; per-rank JSON supports saved partitions only.")
-            .def("WriteCurrentPrimaryMeshSnapshot", &WriteCurrentPrimaryMeshSnapshot,
-                 py::arg("serializer"), py::arg("name"), py::arg("ghostLayers") = 1,
-                 py::arg("policy") = CurrentMeshCheckpointPolicy::RequireNoAuxiliaryValues,
-                 "Collective primary-only checkpoint. Rebuild optional topology on restart; wall values require explicit DropAuxiliary.")
-            .def("WriteCurrentMeshSnapshot", &WriteCurrentMeshSnapshot,
-                 py::arg("serializer"), py::arg("name"), py::arg("ghostLayers") = 1,
-                 py::arg("policy") = CurrentMeshCheckpointPolicy::RequireNoAuxiliaryValues,
-                 "Compatibility spelling for collective WriteCurrentPrimaryMeshSnapshot; registered fields and auxiliary values are not saved.");
+            .def("ReorderLocalCells", py::overload_cast<int, int, int>(&UnstructuredMesh::ReorderLocalCells), py::arg("nParts") = 1, py::arg("nPartsInner") = 1, py::arg("ghost_layers") = 1)
+            .def("reorder_local_cells", [](UnstructuredMesh &mesh, int subregions, bool coreSplit, bool aggregate, int ghostLayers)
+                 { mesh.ReorderLocalCells(LocalCellOrderingSettings{subregions, coreSplit ? CellCoreSplit::CellNodeCell : CellCoreSplit::None, aggregate}, ghostLayers); }, py::arg("subregions") = 1, py::arg("core_split") = false, py::arg("aggregate_send_regions") = false, py::arg("ghost_layers") = 1, "Collective subregion/core/RCM ordering; core_split uses conservative cell-node-cell dependencies.")
+            .def("write_native_archive", &UnstructuredMesh::WriteNativeArchive, py::arg("serializer"), py::arg("name"), "Collective native checkpoint of all published topology, IDs and companions. Finish async producers first; external solver fields are separate.")
+            .def_static("read_native_archive", &UnstructuredMesh::ReadNativeArchive, py::arg("mpi"), py::arg("serializer"), py::arg("name"), py::arg("partition") = Serializer::ArrayGlobalOffset_Unknown, py::arg("ghost_layers") = 1, "Collective native restart with saved or even ownership partitions. All ranks participate, including empty ranks; per-rank JSON supports saved partitions only.")
+            .def("WriteCurrentPrimaryMeshSnapshot", &WriteCurrentPrimaryMeshSnapshot, py::arg("serializer"), py::arg("name"), py::arg("ghostLayers") = 1, py::arg("policy") = CurrentMeshCheckpointPolicy::RequireNoAuxiliaryValues, "Collective primary-only checkpoint. Rebuild optional topology on restart; wall values require explicit DropAuxiliary.")
+            .def("WriteCurrentMeshSnapshot", &WriteCurrentMeshSnapshot, py::arg("serializer"), py::arg("name"), py::arg("ghostLayers") = 1, py::arg("policy") = CurrentMeshCheckpointPolicy::RequireNoAuxiliaryValues, "Compatibility spelling for collective WriteCurrentPrimaryMeshSnapshot; registered fields and auxiliary values are not saved.");
 
         UnstructuredMesh_
             .def(

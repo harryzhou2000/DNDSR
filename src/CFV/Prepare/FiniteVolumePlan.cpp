@@ -13,7 +13,8 @@ namespace DNDS::CFV
         DNDS_check_throw_info(maxOrder >= 1 && maxOrder <= 3 && intOrder >= maxOrder + 1 && intOrder <= INT_ORDER_MAX &&
                                   std::isfinite(jacobiRelax) && jacobiRelax > 0 && jacobiRelax < 2 &&
                                   std::isfinite(bcWeight) && bcWeight > 0 &&
-                                  std::isfinite(rankTolerance) && rankTolerance > 0 && rankTolerance < 1 &&
+                                  std::isfinite(svdTolerance) && svdTolerance >= 0 && svdTolerance <= 1 &&
+                                  std::isfinite(svdAbsoluteTolerance) && svdAbsoluteTolerance >= 0 &&
                                   std::isfinite(WBAP_nStd) && WBAP_nStd > 0,
                               "invalid finite-volume reconstruction settings");
         for (const auto weight : boundaryDerivativeWeights)
@@ -122,6 +123,7 @@ namespace DNDS::CFV
         return FiniteVolumeRead(_data);
     }
     index FiniteVolumePlan::NumCell() const { return _data->cells.NumOwned(); }
+    MPI_Comm FiniteVolumePlan::Communicator() const { return _data->mesh->getMPI().comm; }
     index FiniteVolumePlan::NumCellProc() const { return _data->cells.NumLocal(); }
     index FiniteVolumePlan::NumFaceProc() const { return _data->faceOffsets.RowCount() - 1; }
     int FiniteVolumePlan::Dimension() const { return _data->dim; }

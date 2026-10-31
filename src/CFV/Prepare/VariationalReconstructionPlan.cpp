@@ -170,6 +170,10 @@ namespace DNDS::CFV
             const auto bPoints = bPointsWrite.View<R::FixedRows<4>>();
             const auto matrices = matrixWrite.View<R::TableRows>(), vectors = vectorWrite.View<R::TableRows>(), secondaries = secondaryWrite.View<R::TableRows>(), injections = injectionWrite.View<R::TableRows>();
             index iEntry = 0, iBoundary = 0;
+            data->inverseConditions = R::Array<real>(R::RowLayout::Dense(nCell, 4));
+            auto conditionsWrite = data->inverseConditions.Write();
+            const auto conditions = conditionsWrite.View<R::FixedRows<4>>();
+            data->inverseDiagnostics.cells = nCell;
             SmallMatrix A, inverse, product;
             for (index iCell = 0; iCell < nCell; ++iCell)
             {
@@ -187,10 +191,16 @@ namespace DNDS::CFV
                         if (side == 0) A -= B; else A -= B.transpose();
                     }
                 }
-                Eigen::FullPivLU<SmallMatrix> factor(A);
-                factor.setThreshold(settings.rankTolerance);
-                DNDS_check_throw_info(factor.rank() == n, "rank-deficient variational reconstruction stencil");
-                inverse = factor.inverse();
+                const auto spectrum = HardEigen::EigenSVDInverse(A, inverse, settings.svdTolerance, settings.svdAbsoluteTolerance);
+                auto &summary = data->inverseDiagnostics;
+                summary.filteredCells += spectrum.rank < n;
+                summary.discardedModes += n - spectrum.rank;
+                summary.rankZeroCells += spectrum.rank == 0;
+                summary.maxCondition = std::max(summary.maxCondition, spectrum.rawCondition);
+                conditions(iCell, 0) = spectrum.rank;
+                conditions(iCell, 1) = spectrum.rawCondition;
+                conditions(iCell, 2) = spectrum.retainedCondition;
+                conditions(iCell, 3) = spectrum.relativeCutoff;
                 for (index slot = 0; slot < c2f.size(); ++slot, ++iEntry)
                 {
                     const index iFace = c2f[slot], other = mesh.CellFaceOther(iCell, iFace, rowsize(slot));
@@ -222,6 +232,12 @@ namespace DNDS::CFV
                 }
             }
             offsets(nCell, 0) = iEntry, bOffsets(iEntry, 0) = iBoundary; });
+        auto &summary = data->inverseDiagnostics;
+        index local[]{summary.cells, summary.filteredCells, summary.discardedModes, summary.rankZeroCells}, global[4]{};
+        MPI::Allreduce(local, global, 4, DNDS_MPI_INDEX, MPI_SUM, geometry->mesh->getMPI().comm);
+        real condition = 0;
+        MPI::Allreduce(&summary.maxCondition, &condition, 1, DNDS_MPI_REAL, MPI_MAX, geometry->mesh->getMPI().comm);
+        summary = {global[0], global[1], global[2], global[3], condition};
         return VariationalReconstructionPlan(std::move(data));
     }
 }

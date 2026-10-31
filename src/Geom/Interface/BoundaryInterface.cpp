@@ -1,6 +1,7 @@
 #include "BoundaryInterface.hpp"
 #include "Geom/Quadrature.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
+#include "DNDS/Runtime/SparseBatchExchange.hpp"
 
 namespace DNDS::Geom
 {
@@ -270,4 +271,286 @@ namespace DNDS::Geom
         return _data->matches[i];
     }
     const BoundaryPatch &InterfacePointMap::Donor() const { return _data->donor; }
+
+    namespace Detail
+    {
+        struct DistributedInterfaceMapData
+        {
+            BoundaryPatch donor;
+            std::vector<DistributedInterfaceMatch> matches;
+            explicit DistributedInterfaceMapData(BoundaryPatch patch) : donor(std::move(patch)) {}
+        };
+    }
+
+    DistributedInterfacePointMap DistributedInterfacePointMap::Match(BoundaryPatch donor,
+                                                                     const R::Array<real> &points, const R::Array<index> &queryIds, InterfaceRoutingMode mode,
+                                                                     InterfaceSearchSettings settings)
+    {
+        const auto mpi = donor._data->mesh->getMPI();
+        auto context = std::make_shared<R::CommunicationContext>(mpi.comm);
+        std::shared_ptr<MeshReadAccess> meshRead;
+        MPI::LocalStage(mpi, [&]
+                        {
+            donor.Validate();
+            settings.Validate();
+            meshRead = std::make_shared<MeshReadAccess>(donor._data->mesh->AcquireRead(MeshReadRequirements::CellFlux()));
+            DNDS_check_throw_info(mode == InterfaceRoutingMode::CoarseBoxes || mode == InterfaceRoutingMode::AllGatherBoundary,
+                                  "unknown interface routing mode");
+            DNDS_check_throw_info(points.GetDevice() == R::Device::Host() && queryIds.GetDevice() == R::Device::Host() &&
+                                      points.Layout().Kind() == R::RowLayoutKind::Table && points.Layout().Width() == 3 &&
+                                      queryIds.Layout().Kind() == R::RowLayoutKind::Table && queryIds.Layout().Width() == 1 &&
+                                      points.RowCount() == queryIds.RowCount(), "distributed interface requires host point/ID tables"); });
+        // Both ranks' branch choice and geometric tolerances affect protocol
+        // behavior, so prove agreement before selecting either path.
+        real controls[]{real(int(mode)), settings.maxGap, settings.referenceTolerance, settings.projectionTolerance, real(settings.maxIterations)};
+        real minimum[5], maximum[5];
+        MPI_Allreduce(controls, minimum, 5, DNDS_MPI_REAL, MPI_MIN, mpi.comm);
+        MPI_Allreduce(controls, maximum, 5, DNDS_MPI_REAL, MPI_MAX, mpi.comm);
+        for (int i = 0; i < 5; ++i)
+            DNDS_check_throw_info(minimum[i] == maximum[i], "distributed interface settings differ across ranks");
+        std::optional<R::Array<real>::ReadLease> pointRead;
+        std::optional<R::Array<index>::ReadLease> idRead;
+        MPI::LocalStage(mpi, [&]
+                        {
+            pointRead.emplace(points.Read());
+            idRead.emplace(queryIds.Read()); });
+        const auto queries = pointRead->View<R::FixedRows<3>>();
+        const auto ids = idRead->View<R::FixedRows<1>>();
+        MPI::LocalStage(mpi, [&]
+                        {
+            std::vector<index> keys;
+            keys.reserve(size_t(queryIds.RowCount()));
+            for (index iQuery = 0; iQuery < queryIds.RowCount(); ++iQuery)
+            {
+                DNDS_check_throw_info(tPoint(queries(iQuery, 0), queries(iQuery, 1), queries(iQuery, 2)).allFinite(),
+                                      "nonfinite distributed interface query");
+                keys.push_back(ids(iQuery, 0));
+            }
+            std::sort(keys.begin(), keys.end());
+            DNDS_check_throw_info(std::adjacent_find(keys.begin(), keys.end()) == keys.end(), "duplicate local interface query ID"); });
+
+        // Fixed record schemas, expressed as two SOA tables sharing one route:
+        // integer metadata preserves exact IDs; floating geometry never encodes
+        // an integer ID as a double. Only selected boundary coordinates travel.
+        R::Array<index> elements;
+        R::Array<real> geometry;
+        SpatialBox coarse;
+        MPI::LocalStage(mpi, [&]
+                        {
+            elements = R::Array<index>(R::RowLayout::Dense(donor.Size(), 9));
+            geometry = R::Array<real>(R::RowLayout::Dense(donor.Size(), 24));
+            auto eWrite = elements.Write();
+            auto gWrite = geometry.Write();
+            auto coordinateRead = donor._data->coordinates.Read();
+            const auto coords = coordinateRead.View<R::CSRRows>();
+            const auto e = eWrite.View<R::FixedRows<9>>();
+            const auto g = gWrite.View<R::FixedRows<24>>();
+            for (index iElement = 0; iElement < donor.Size(); ++iElement)
+            {
+                const auto record = donor.Element(iElement);
+                const auto global = donor.Cells().LocalToGlobal(record.cell);
+                const index values[]{iElement, record.boundary, record.cell, record.originalId, index(record.type),
+                                     coords[iElement].size() / 3, donor.Cells().Owner(global),
+                                     donor.Cells().OwnerLocalRow(global), mpi.rank};
+                std::copy_n(values, 9, e[iElement].data());
+                std::fill(g[iElement].begin(), g[iElement].end(), 0);
+                std::copy(coords[iElement].begin(), coords[iElement].end(), g[iElement].begin());
+                for (int row = 0; row < 3; ++row)
+                {
+                    g(iElement, 21 + row) = donor._data->pose.translation[row];
+                    for (int col = 0; col < 3; ++col)
+                        g(iElement, 12 + 3 * row + col) = donor._data->pose.rotation(row, col);
+                }
+                for (index node = 0; node < coords[iElement].size() / 3; ++node)
+                    coarse.Add(donor._data->pose.Apply({coords(iElement, 3 * node), coords(iElement, 3 * node + 1), coords(iElement, 3 * node + 2)}));
+            } });
+        R::Array<real> candidatePoints;
+        R::Array<index> candidateKeys;
+        std::vector<int> origins;
+        if (mode == InterfaceRoutingMode::AllGatherBoundary)
+        {
+            std::vector<std::vector<index>> all(size_t(mpi.size));
+            for (auto &peer : all)
+            {
+                peer.resize(size_t(donor.Size()));
+                std::iota(peer.begin(), peer.end(), index(0));
+            }
+            const auto route = R::SparseBatchExchange::Build(context, donor.Size(), std::move(all));
+            elements = route.Exchange(elements);
+            geometry = route.Exchange(geometry);
+            candidatePoints = points;
+            candidateKeys = R::Array<index>(R::RowLayout::Dense(points.RowCount(), 2));
+            auto write = candidateKeys.Write();
+            for (index iQuery = 0; iQuery < points.RowCount(); ++iQuery)
+                write.View()(iQuery, 0) = iQuery, write.View()(iQuery, 1) = ids(iQuery, 0);
+            origins.assign(size_t(points.RowCount()), mpi.rank);
+        }
+        else
+        {
+            std::vector<real> boxes(size_t(mpi.size) * 6);
+            real local[6];
+            for (int d = 0; d < 3; ++d)
+                local[d] = coarse.lower[d], local[d + 3] = coarse.upper[d];
+            MPI_Allgather(local, 6, DNDS_MPI_REAL, boxes.data(), 6, DNDS_MPI_REAL, mpi.comm);
+            std::vector<std::vector<index>> destinations(size_t(mpi.size));
+            R::Array<index> keys(R::RowLayout::Dense(points.RowCount(), 2));
+            {
+                auto write = keys.Write();
+                for (index iQuery = 0; iQuery < points.RowCount(); ++iQuery)
+                {
+                    write.View()(iQuery, 0) = iQuery, write.View()(iQuery, 1) = ids(iQuery, 0);
+                    const tPoint point{queries(iQuery, 0), queries(iQuery, 1), queries(iQuery, 2)};
+                    for (int peer = 0; peer < mpi.size; ++peer)
+                    {
+                        SpatialBox box;
+                        for (int d = 0; d < 3; ++d)
+                            box.lower[d] = boxes[6 * peer + d], box.upper[d] = boxes[6 * peer + d + 3];
+                        if ((box.lower.array() <= box.upper.array()).all() && box.SquaredDistance(point) <= sqr(settings.maxGap))
+                            destinations[peer].push_back(iQuery);
+                    }
+                }
+            }
+            const auto route = R::SparseBatchExchange::Build(context, points.RowCount(), std::move(destinations));
+            candidatePoints = route.Exchange(points);
+            candidateKeys = route.Exchange(keys);
+            origins.resize(size_t(candidatePoints.RowCount()));
+            for (int peer = 0; peer < mpi.size; ++peer)
+                std::fill(origins.begin() + route.ReceiveOffsets()[peer], origins.begin() + route.ReceiveOffsets()[peer + 1], peer);
+        }
+
+        struct Proposal
+        {
+            std::array<index, 10> keys;
+            std::array<real, 10> values;
+            int origin;
+        };
+        std::vector<Proposal> proposals;
+        MPI::LocalStage(mpi, [&]
+                        {
+            auto eRead = elements.Read(), keyRead = candidateKeys.Read();
+            auto gRead = geometry.Read(), qRead = candidatePoints.Read();
+            const auto e = eRead.View<R::FixedRows<9>>();
+            const auto keys = keyRead.View<R::FixedRows<2>>();
+            const auto g = gRead.View<R::FixedRows<24>>();
+            const auto q = qRead.View<R::FixedRows<3>>();
+            std::vector<SpatialBox> bounds(size_t(elements.RowCount()));
+            for (index iElement = 0; iElement < elements.RowCount(); ++iElement)
+                for (index node = 0; node < e(iElement, 5); ++node)
+                {
+                    tPoint world;
+                    for (int row = 0; row < 3; ++row)
+                    {
+                        world[row] = g(iElement, 21 + row);
+                        for (int col = 0; col < 3; ++col)
+                            world[row] += g(iElement, 12 + 3 * row + col) * g(iElement, 3 * node + col);
+                    }
+                    bounds[iElement].Add(world);
+                }
+            BoundingBoxTree tree(bounds);
+            tSmallCoords coordinates;
+            for (DNDS::index iQuery = 0; iQuery < candidatePoints.RowCount(); ++iQuery)
+            {
+                const tPoint world{q(iQuery, 0), q(iQuery, 1), q(iQuery, 2)};
+                tree.Query(world, settings.maxGap, [&](DNDS::index iElement)
+                {
+                    RigidPose pose;
+                    for (int row = 0; row < 3; ++row)
+                    {
+                        pose.translation[row] = g(iElement, 21 + row);
+                        for (int col = 0; col < 3; ++col)
+                            pose.rotation(row, col) = g(iElement, 12 + 3 * row + col);
+                    }
+                    coordinates.resize(3, e(iElement, 5));
+                    for (DNDS::index node = 0; node < coordinates.cols(); ++node)
+                        coordinates.col(node) = tPoint{g(iElement, 3 * node), g(iElement, 3 * node + 1), g(iElement, 3 * node + 2)};
+                    tPoint reference, donorPoint;
+                    const auto type = Elem::ElemType(e(iElement, 4));
+                    if (!Project(type, coordinates, pose.Inverse(world), settings, reference, donorPoint))
+                        return;
+                    const auto projected = pose.Apply(donorPoint);
+                    const bool interior = Inside(type, reference, -std::max(settings.referenceTolerance, 32 * std::numeric_limits<real>::epsilon()));
+                    proposals.push_back({{keys(iQuery, 0), keys(iQuery, 1), e(iElement, 0), e(iElement, 1), e(iElement, 2),
+                                          e(iElement, 3), e(iElement, 8), e(iElement, 6), e(iElement, 7), index(interior)},
+                                         {reference[0], reference[1], reference[2], projected[0], projected[1], projected[2],
+                                          donorPoint[0], donorPoint[1], donorPoint[2], (world - projected).norm()}, origins[iQuery]});
+                });
+            } });
+        R::Array<index> proposalKeys(R::RowLayout::Dense(proposals.size(), 10));
+        R::Array<real> proposalValues(R::RowLayout::Dense(proposals.size(), 10));
+        std::vector<std::vector<index>> replies(size_t(mpi.size));
+        {
+            auto keyWrite = proposalKeys.Write();
+            auto valueWrite = proposalValues.Write();
+            for (index iProposal = 0; iProposal < index(proposals.size()); ++iProposal)
+            {
+                std::copy(proposals[iProposal].keys.begin(), proposals[iProposal].keys.end(), keyWrite.View()[iProposal].begin());
+                std::copy(proposals[iProposal].values.begin(), proposals[iProposal].values.end(), valueWrite.View()[iProposal].begin());
+                replies[proposals[iProposal].origin].push_back(iProposal);
+            }
+        }
+        const auto replyRoute = R::SparseBatchExchange::Build(context, index(proposals.size()), std::move(replies));
+        auto returnedKeys = replyRoute.Exchange(proposalKeys);
+        auto returnedValues = replyRoute.Exchange(proposalValues);
+        auto data = std::make_shared<Detail::DistributedInterfaceMapData>(donor);
+        MPI::LocalStage(mpi, [&]
+                        {
+            data->matches.resize(size_t(points.RowCount()));
+            std::vector<bool> found(size_t(points.RowCount()), false);
+            std::vector<index> interiors(size_t(points.RowCount()), 0);
+            std::vector<real> closest(size_t(points.RowCount()), std::numeric_limits<real>::infinity());
+            auto keyRead = returnedKeys.Read();
+            auto valueRead = returnedValues.Read();
+            const auto keys = keyRead.View<R::FixedRows<10>>();
+            const auto values = valueRead.View<R::FixedRows<10>>();
+            // Determine the nearest distance first. Counting interior matches
+            // independently of the selected seam ID avoids traversal-order
+            // dependence when a seam proposal precedes two interior proposals.
+            for (index iProposal = 0; iProposal < returnedKeys.RowCount(); ++iProposal)
+            {
+                const index iQuery = keys(iProposal, 0);
+                DNDS_check_throw_info(iQuery >= 0 && iQuery < points.RowCount() && keys(iProposal, 1) == ids(iQuery, 0), "interface proposal/query key mismatch");
+                closest[iQuery] = std::min(closest[iQuery], values(iProposal, 9));
+            }
+            for (index iProposal = 0; iProposal < returnedKeys.RowCount(); ++iProposal)
+            {
+                const index iQuery = keys(iProposal, 0);
+                DNDS_check_throw_info(iQuery >= 0 && iQuery < points.RowCount() && keys(iProposal, 1) == ids(iQuery, 0), "interface proposal/query key mismatch");
+                auto &best = data->matches[iQuery];
+                if (values(iProposal, 9) > closest[iQuery] + settings.projectionTolerance)
+                    continue;
+                interiors[iQuery] += keys(iProposal, 9) != 0;
+                DNDS_check_throw_info(interiors[iQuery] <= 1, "ambiguous distributed interface interiors");
+                if (!found[iQuery] || keys(iProposal, 5) < best.geometry.donorOriginalId)
+                {
+                    best = {{ids(iQuery, 0), keys(iProposal, 2), keys(iProposal, 3), keys(iProposal, 4), keys(iProposal, 5),
+                             {values(iProposal, 0), values(iProposal, 1), values(iProposal, 2)},
+                             {values(iProposal, 3), values(iProposal, 4), values(iProposal, 5)},
+                             {values(iProposal, 6), values(iProposal, 7), values(iProposal, 8)}, values(iProposal, 9)},
+                            int(keys(iProposal, 6)), int(keys(iProposal, 7)), keys(iProposal, 8)};
+                    found[iQuery] = true;
+                }
+            }
+            for (index iQuery = 0; iQuery < points.RowCount(); ++iQuery)
+                DNDS_check_throw_info(found[iQuery], "uncovered distributed interface query " + std::to_string(ids(iQuery, 0))); });
+        return DistributedInterfacePointMap(std::move(data));
+    }
+    void DistributedInterfacePointMap::Validate() const
+    {
+        DNDS_check_throw_info(_data, "unprepared distributed interface map");
+        _data->donor.Validate();
+    }
+    void DistributedInterfacePointMap::ValidateFor(const BoundaryPatch &active) const
+    {
+        Validate();
+        active.Validate();
+        DNDS_check_throw_info(active._data == _data->donor._data, "active interface patch or pose differs from map");
+    }
+    index DistributedInterfacePointMap::Size() const { return index(_data->matches.size()); }
+    const BoundaryPatch &DistributedInterfacePointMap::Donor() const { return _data->donor; }
+    DistributedInterfaceMatch DistributedInterfacePointMap::Get(index iQuery) const
+    {
+        Validate();
+        DNDS_check_throw_info(iQuery >= 0 && iQuery < Size(), "distributed interface query outside map");
+        return _data->matches[iQuery];
+    }
 }
