@@ -459,6 +459,8 @@ TEST_CASE("VR setup uses the small-mode cutoff and reduces owned-cell diagnostic
     }
     settings.svdTolerance = 0.8;
     vr->parseSettings(settings);
+    vr->ConstructMetrics();
+    vr->ConstructBaseAndWeight();
     vr->ConstructRecCoeff();
     for (DNDS::index iCell = 0; iCell < g_wall_mesh->NumCell(); ++iCell)
         CHECK(vr->get_matrixAAInvB()(iCell, 0).isApprox(expected[iCell], 1e-10));
@@ -469,6 +471,8 @@ TEST_CASE("VR setup uses the small-mode cutoff and reduces owned-cell diagnostic
     // A relative threshold of one discards every mode, including equality.
     settings.svdTolerance = 1;
     vr->parseSettings(settings);
+    vr->ConstructMetrics();
+    vr->ConstructBaseAndWeight();
     vr->ConstructRecCoeff();
     const auto &summary = vr->GetInverseDiagnostics();
     CHECK(summary.cells == 9);

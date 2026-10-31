@@ -19,6 +19,7 @@ message(STATUS "DNDS_PCH_TARGETS: ${DNDS_PCH_TARGETS}")
 set(CPPS
 Elements.cpp
 PeriodicInfo.cpp
+Interface/BoundaryInterface.cpp
 Connectivity/MeshConnectivity.cpp
 Connectivity/MeshConnectivity_Native.cpp
 Connectivity/AdjacencyRegistry.cpp
@@ -88,6 +89,7 @@ install(TARGETS ${LIBNAME}_shared
 )
 
 set(CPPS_BIND
+Interface/BoundaryInterface_bind.cpp
 geom_pybind11.cpp
 Elements_bind.cpp
 Unstructured/UnstructuredMesh_bind.cpp

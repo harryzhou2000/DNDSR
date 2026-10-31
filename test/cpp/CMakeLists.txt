@@ -213,6 +213,7 @@ endif()
 set_target_properties(runtime_array_bridge_test PROPERTIES LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
 dnds_add_unit_test(config "DNDS/test_Config.cpp" "dnds")
 dnds_add_unit_test(hard_eigen "DNDS/test_HardEigen.cpp" "dnds")
+add_dependencies(dnds_unit_tests dnds_test_hard_eigen)
 dnds_add_mpi_test(object_contracts "DNDS/test_ObjectContracts.cpp" "dnds")
 target_sources(dnds_test_object_contracts PRIVATE DNDS/test_LocalChecks.cpp)
 
@@ -272,6 +273,8 @@ geom_add_unit_test(quadrature "Geom/test_Quadrature.cpp" "geom;dnds")
 target_sources(geom_test_quadrature PRIVATE Geom/test_QuadratureCachePeer.cpp Geom/test_LocalPerformance.cpp)
 geom_add_mpi_test(mesh_index_conversion "Geom/test_MeshIndexConversion.cpp" "geom;dnds")
 geom_add_mpi_test(mesh_pipeline "Geom/test_MeshPipeline.cpp" "geom;dnds")
+geom_add_mpi_test(boundary_interface "Geom/test_BoundaryInterface.cpp" "geom;dnds")
+add_dependencies(geom_unit_tests geom_test_boundary_interface)
 geom_add_mpi_test(mesh_distributed_read "Geom/test_MeshDistributedRead.cpp" "geom;dnds")
 geom_add_mpi_test(mesh_connectivity "Geom/test_MeshConnectivity.cpp" "geom;dnds")
 geom_add_mpi_test(mesh_connectivity_ghost "Geom/test_MeshConnectivity_Ghost.cpp" "geom;dnds")
@@ -459,10 +462,15 @@ add_custom_target(cfv_unit_tests)
 add_dependencies(all_unit_tests cfv_unit_tests)
 
 cfv_add_mpi_test(reconstruction "CFV/test_Reconstruction.cpp" "cfv;geom;dnds")
+cfv_add_mpi_test(fv_facility "CFV/test_FVFacility.cpp" "cfv;geom;dnds")
+add_executable(cfv_benchmark_fv_facility EXCLUDE_FROM_ALL CFV/benchmark_FVFacility.cpp)
+target_include_directories(cfv_benchmark_fv_facility PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
+target_link_libraries(cfv_benchmark_fv_facility PRIVATE cfv geom dnds ${DNDS_EXTERNAL_LIBS})
 cfv_add_unit_test(limiters "CFV/test_Limiters.cpp" "cfv;geom;dnds")
 cfv_add_mpi_test(reconstruction3d "CFV/test_Reconstruction3D.cpp" "cfv;geom;dnds")
 
 set(CFV_TEST_TARGETS
+    cfv_test_fv_facility
     cfv_test_reconstruction
     cfv_test_limiters
     cfv_test_reconstruction3d

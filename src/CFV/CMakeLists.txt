@@ -22,6 +22,9 @@ VRDefines.cpp
 VariationalReconstruction.cpp
 ModelEvaluator.cpp
 BenchmarkFiniteVolume.cpp
+Prepare/FiniteVolumePlan.cpp
+Prepare/VariationalReconstructionPlan.cpp
+Operators/Reconstruction.cpp
 )
 if (DNDS_USE_CUDA)
 list(APPEND CPPS VRDefines.cu BenchmarkFiniteVolume.cu)
@@ -50,6 +53,7 @@ install(TARGETS ${LIBNAME}_shared
 )
 
 set(CPPS_BIND
+Plans/FiniteVolumePlan_bind.cpp
 cfv_pybind11.cpp
 FiniteVolume_bind.cpp
 ModelEvaluator_bind.cpp

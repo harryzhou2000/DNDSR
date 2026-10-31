@@ -18,6 +18,7 @@ small-mode cutoff change, setup diagnostics and affected nonzero-tolerance cases
 | Historical Array/ParArray interface | [Legacy Array infrastructure](architecture/array_infrastructure.md) |
 | Runtime ordering and lifetime responsibilities | [Runtime caller contract](architecture/RuntimeCallerContract.md) |
 | Native field algebra | [Native DOF algebra](architecture/NativeDofAlgebra.md) |
+| Native CPU FV/VR, explicit WBAP and boundary point interfaces | [FV and interface facilities](architecture/FVFacility.md) |
 | Entity-associated fields and migration layouts | [EntityField](architecture/EntityField.md) |
 | Canonical and compatibility source paths | [Source organization](architecture/source_organization.md) |
 | Mesh Python access and operations | [Python mesh guide](guides/python_geom_guide.md) |
@@ -37,6 +38,12 @@ these new changes.
 The [accepted-fixes follow-up](dev/accepted_audit_fixes_2026-10-30.md) resolves
 the field-layout and compiled-program decisions and records the next FV/Geom
 work orders.
+The [CPU FV/interface validation](dev/fv_interface_2026-10-30.md) records the
+implemented numerical/geometric scope, focused tests and matched legacy VR
+performance evidence.
+The [2026-10-31 facility next steps](dev/facilities_next_steps_2026-10-31.md)
+separates current DNDS/Geom/CFV support from accepted overlap, numerical and
+distributed-interface work, including explicit deferred features.
 The [source comparison and validation ledger](dev/mesh_construction_semantics_2026-10-28.md)
 records the final checks, explicit legacy periodic-frame differences and limits.
 The [legacy connectivity test-purpose ledger](dev/mesh_connectivity_test_port_2026-10-28.md)

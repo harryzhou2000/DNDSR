@@ -5,6 +5,11 @@
 #include "ModelEvaluator_bind.hpp"
 #include "BenchmarkFiniteVolume_bind.hpp"
 
+namespace DNDS::CFV
+{
+    void pybind11_FiniteVolumePlan_define(py::module_ &m);
+}
+
 PYBIND11_MODULE(cfv_pybind11, m)
 {
     //! hard coded dependency here
@@ -18,6 +23,7 @@ PYBIND11_MODULE(cfv_pybind11, m)
     pybind11_VRDefines_define(m, m_dnds);
 
     pybind11_FiniteVolume_define(m);
+    pybind11_FiniteVolumePlan_define(m);
 
     pybind11_VariationalReconstruction_define<2>(m);
     pybind11_VariationalReconstruction_define<3>(m);
