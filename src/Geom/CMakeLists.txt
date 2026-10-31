@@ -20,6 +20,9 @@ set(CPPS
 Elements.cpp
 PeriodicInfo.cpp
 Interface/BoundaryInterface.cpp
+Spatial/ElementGeometry.cpp
+Spatial/BoundingBoxTree.cpp
+Spatial/SurfacePointMap.cpp
 Connectivity/MeshConnectivity.cpp
 Connectivity/MeshConnectivity_Native.cpp
 Connectivity/AdjacencyRegistry.cpp

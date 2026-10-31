@@ -1,19 +1,11 @@
 #pragma once
 
-#include "Geom/Spatial/BoundingBoxTree.hpp"
+#include "Geom/Spatial/SurfacePointMap.hpp"
 #include "Geom/Connectivity/AdjacencyRegistry.hpp"
 #include "Geom/Unstructured/UnstructuredMesh.hpp"
 
 namespace DNDS::Geom
 {
-    struct RigidPose
-    {
-        tGPoint rotation = tGPoint::Identity();
-        tPoint translation = tPoint::Zero();
-        void Validate() const;
-        tPoint Apply(const tPoint &point) const { return rotation * point + translation; }
-        tPoint Inverse(const tPoint &point) const { return rotation.transpose() * (point - translation); }
-    };
     /// Explicit stencil preparation uses the ordinary DSL and ghost mapping;
     /// it does not mutate or assume the mesh's default compute halo.
     class BoundaryStencilPlan
@@ -46,23 +38,22 @@ namespace DNDS::Geom
         friend class DistributedInterfacePointMap;
 
     public:
-        static BoundaryPatch Create(ssp<UnstructuredMesh> mesh, const std::vector<index> &boundaries, RigidPose pose = {});
+        static BoundaryPatch Create(ssp<UnstructuredMesh> mesh, const std::vector<index> &boundaries, RigidPose pose = {},
+                                    BoundingBoxBackend backend = BoundingBoxBackend::CGAL);
         BoundaryPatch WithPose(RigidPose pose) const;
+        BoundaryPatch WithBackend(BoundingBoxBackend backend) const;
+        BoundingBoxBackend Backend() const;
         void Validate() const;
         index Size() const;
         BoundaryElementRecord Element(index iElement) const;
         const EntitySpace &Cells() const;
         RigidPose Pose() const;
+        /// Detached immutable reference-geometry snapshot. Generic geometric
+        /// clients need no mesh/cell API. Validate this boundary adapter before
+        /// coupling its rows to a live mesh; the snapshot itself stays alive.
+        SurfacePatch SurfaceGeometry() const;
     };
-    struct InterfaceSearchSettings
-    {
-        real maxGap = 1e-10, referenceTolerance = 1e-10, projectionTolerance = 1e-12;
-        int maxIterations = 20;
-        /// 1..10 conservative boxes per rank, clustered in the longest world
-        /// direction. This changes candidate routing only, never arbitration.
-        int coarseBoxesPerRank = 1;
-        void Validate() const;
-    };
+    using InterfaceSearchSettings = SurfaceSearchSettings;
     struct InterfacePointMatch
     {
         index queryId, donorElement, donorBoundary, donorCell, donorOriginalId;
