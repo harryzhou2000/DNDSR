@@ -65,9 +65,10 @@ without repeating the factorization. Exact zero matrices report rank zero and
 infinite conditions. These methods and tolerance controls are exposed in Python.
 
 Rotated periodic state/derivative transforms, anisotropic/GG penalties,
-axisymmetric integration, variable per-cell degree, alternative legacy limiter
-variants and special `subs2ndOrder` formulas are not implemented here. Degree-one
-VR provides the current second-order path. There is no automatic legacy-config
+axisymmetric integration, variable per-cell degree and alternative legacy limiter
+variants remain pending. Standalone FV gradients and explicit conversion to VR
+coefficients are described below; they do not import every legacy
+`subs2ndOrder` convention automatically. There is no automatic legacy-config
 translation or claim that every old VR option is supported.
 
 ### Boundary quadrature protocol
@@ -104,13 +105,66 @@ callbacks. Euler computes the eigenvectors from the arithmetic mean of those
 states, with face-frame momentum rotation and an identity extension for passive
 components. Reconstructed states enter the separate smoothness indicator, not
 that characteristic mean. The new operator limits all selected cell modes; it
-does not yet implement a smoothness-indicator activation mask.
+accepts a supplied scalar activation indicator through the out-of-place pass;
+constructing a physical smoothness indicator remains the equation adapter's job.
 
 Call the WBAP API in **descending degree**, exchanging the coefficient halo
 after **each** order. This is required by the legacy order-wise secondary-map
 algorithm; one exchange after all orders changes its distributed result.
 
 ## Count, allocate, fill and execute
+
+### Split reconstruction/limiting and scalar activation
+
+`DoReconstructionIterTo(mean,input,workspace,boundary,region)` writes selected
+rows of `workspace.temporary`. Jacobi leaves input unchanged. Use `Core` while
+input ghosts are being written, then `HaloDependent` after completion, and call
+`CommitReconstruction` after both phases. The core entry acquires no input ghost
+leases; its work set uses conservative cell–node–cell adjacency. Commit is an
+explicit copy into owned coefficients and must wait for old sends to finish.
+No regional lease or per-access ownership test is introduced inside cell loops.
+
+For SOR, `workspace.coefficients` is the owned working iterate; `input.Ghost()`
+is the frozen remote iterate. Initialize the working iterate from the desired
+old iterate yourself. If sends overlap, exchange a **separate snapshot** so SOR
+can write the working iterate without modifying live send buffers. `coreFirst`
+selects stable core-first SOR order. Split versus unsplit results must use that
+same logical order; changing SOR order can change the result.
+
+`DoLimiterWBAP_3OrderTo` reads coefficients and writes selected temporary rows.
+Complete both regions against the same input, commit, and exchange before the
+next descending polynomial order. Its optional owned scalar indicator activates
+cells when `indicator >= threshold`; inactive rows copy input unchanged.
+Nonfinite thresholds/indicators are errors. Inactive neighbors still participate
+as stencil inputs. Characteristic transforms retain their existing data protocol.
+
+Direct MPI/core overlap tests pass np=1/2/4/8 for Jacobi, each WBAP order and
+core-first SOR with a separate snapshot. They also verify early commit rejects
+writing an active send input. These are correctness/protocol checks, not measured
+speedup evidence; MPI may finish payloads early while leases remain active.
+
+### Standalone second-order FV gradients
+
+`GradientPlan::Prepare(mesh,metrics,method)` prepares Green–Gauss, weighted
+least squares or GGMP without constructing a legacy VR object. It counts and
+allocates Runtime incidence tables, then fills per-sample gradient weights.
+The boundary buffer contains **physical boundary values** at the points exposed
+by `GetBoundaryQuadrature`; it never expects reflected ghost states. Output
+holds `[component*dimension+direction]` in an ordinary DNDS numerical field.
+
+Least squares uses inverse-distance-squared residual weighting with face
+quadrature measure weighting; it factors the weighted design matrix using SVD
+rather than forming normal equations. GGMP eliminates the face unknowns from
+the corrected Green–Gauss system before SVD inversion. Uncorrected Green–Gauss
+does not promise linear exactness on general skew cells. Current tests establish
+regular-grid linear exactness for all three methods and sheared-grid exactness
+for LS/GGMP; periodic and axisymmetric gradient variants remain pending.
+
+`ConvertToCoefficients` explicitly overwrites a VR field with scaled linear
+Taylor modes and zeros the higher modes. Its zero-mean basis preserves the cell
+average. The gradient facility remains useful independently of VR. Normal
+Runtime read/write leases reject aliases; callers refresh halo/BC producers
+before evaluation. Preparation/evaluation currently run on the host.
 
 Preparation first counts face quadrature rows, cell-face incidences and boundary
 quadrature rows, allocates dense Runtime tables, then fills them. Face-local

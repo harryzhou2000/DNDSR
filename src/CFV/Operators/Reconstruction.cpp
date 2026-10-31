@@ -105,8 +105,8 @@ namespace DNDS::CFV
         transform.forwardIdentity = transform.forward.Identity();
         transform.inverseIdentity = transform.inverse.Identity();
     }
-    void VariationalReconstructionPlan::DoReconstructionIter(const FVField &mean, ReconstructionWorkspace &work,
-                                                             const ReconstructionBoundaryValues &boundary) const
+    void VariationalReconstructionPlan::DoReconstructionIterTo(const FVField &mean, const FVField &input, ReconstructionWorkspace &work,
+                                                               const ReconstructionBoundaryValues &boundary, ReconstructionRegion region) const
     {
         auto meshRead = Metrics()._data->mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
         Validate();
@@ -116,12 +116,39 @@ namespace DNDS::CFV
         DNDS_check_throw_info(boundary.plan == _data, "boundary quadrature values belong to another plan");
         CheckArray(boundary.values, NumBoundaryQuadrature(), nv);
         // All leases and layout projection happen before the numerical loops.
-        auto meanOwned = mean.Owned().Read(), meanGhost = mean.Ghost().Read();
-        R::PairReadView<real, false, R::TableRows> u{meanOwned.View<R::TableRows>(), meanGhost.View<R::TableRows>()};
-        auto recWrite = work.coefficients.Owned().Write(), nextWrite = work.temporary.Owned().Write();
-        auto recGhost = work.coefficients.Ghost().Read();
-        auto current = recWrite.View<R::TableRows>(), next = nextWrite.View<R::TableRows>();
-        const auto ghost = recGhost.View<R::TableRows>();
+        Metrics().ValidateField(input, n * nv);
+        _data->workPartition->Validate();
+        DNDS_check_throw_info(region == ReconstructionRegion::All || region == ReconstructionRegion::Core || region == ReconstructionRegion::HaloDependent,
+                              "invalid reconstruction region");
+        DNDS_check_throw_info(!Algebra::Detail::Overlaps(input.Owned().Storage(), work.temporary.Owned().Storage()) &&
+                                  !Algebra::Detail::Overlaps(input.Ghost().Storage(), work.temporary.Owned().Storage()),
+                              "reconstruction output aliases input");
+        auto meanOwned = mean.Owned().Read();
+        std::optional<R::Array<real>::ReadLease> meanGhost, recGhost, recOwned;
+        std::optional<R::Array<real>::WriteLease> recWrite;
+        if (region != ReconstructionRegion::Core)
+        {
+            meanGhost.emplace(mean.Ghost().Read());
+            recGhost.emplace(input.Ghost().Read());
+        }
+        if (Settings().SORInstead)
+            recWrite.emplace(work.coefficients.Owned().Write());
+        else
+            recOwned.emplace(input.Owned().Read());
+        R::ArrayView<const real, false, R::TableRows> current;
+        R::ArrayView<real, false, R::TableRows> mutableCurrent;
+        if (recWrite)
+        {
+            mutableCurrent = recWrite->View<R::TableRows>();
+            current = {mutableCurrent.data, mutableCurrent.offsets, mutableCurrent.rows,
+                       mutableCurrent.width, mutableCurrent.stride, mutableCurrent.sizes};
+        }
+        else
+            current = recOwned->View<R::TableRows>();
+        auto nextWrite = work.temporary.Owned().Write();
+        auto next = nextWrite.View<R::TableRows>();
+        R::PairReadView<real, false, R::TableRows> u{meanOwned.View<R::TableRows>(), meanGhost ? meanGhost->View<R::TableRows>() : R::ArrayView<const real, false, R::TableRows>{}};
+        const auto ghost = recGhost ? recGhost->View<R::TableRows>() : R::ArrayView<const real, false, R::TableRows>{};
         auto bRead = boundary.values.Read();
         const auto bValues = bRead.View<R::TableRows>();
         auto oRead = _data->offsets.Read(), nbRead = _data->neighbors.Read(), boRead = _data->boundaryOffsets.Read();
@@ -129,7 +156,7 @@ namespace DNDS::CFV
         const auto offsets = oRead.View<R::FixedRows<1>>(), neighbors = nbRead.View<R::FixedRows<1>>(), bOffsets = boRead.View<R::FixedRows<1>>();
         const auto matrices = mRead.View<R::TableRows>(), vectors = vRead.View<R::TableRows>(), injection = injectionRead.View<R::TableRows>();
         const real relax = _data->settings.jacobiRelax;
-        for (index iCell = 0; iCell < Metrics().NumCell(); ++iCell)
+        auto compute = [&](index iCell)
         {
             Map output(next[iCell].data(), n, nv);
             output = ConstMap(current[iCell].data(), n, nv) * (1 - relax);
@@ -149,20 +176,60 @@ namespace DNDS::CFV
                             output.col(variable).noalias() += Eigen::Map<const Eigen::VectorXd>(injection[iQ].data(), n) * (relax * (bValues(iQ, variable) - u(iCell, variable)));
             }
             if (_data->settings.SORInstead)
-                Map(current[iCell].data(), n, nv) = output;
-        }
-        if (!_data->settings.SORInstead)
+                Map(mutableCurrent[iCell].data(), n, nv) = output;
+        };
+        if (region == ReconstructionRegion::Core || (region == ReconstructionRegion::All && Settings().coreFirst))
+            for (auto iCell : _data->workPartition->Core())
+                compute(iCell);
+        if (region == ReconstructionRegion::HaloDependent || (region == ReconstructionRegion::All && Settings().coreFirst))
+            for (auto iCell : _data->workPartition->HaloDependent())
+                compute(iCell);
+        if (region == ReconstructionRegion::All && !Settings().coreFirst)
             for (index iCell = 0; iCell < Metrics().NumCell(); ++iCell)
-                std::copy(next[iCell].begin(), next[iCell].end(), current[iCell].begin());
+                compute(iCell);
     }
-    void VariationalReconstructionPlan::DoLimiterWBAP_3Order(ReconstructionWorkspace &work, int order,
-                                                             const FaceCharacteristicTransform *transform) const
+    void VariationalReconstructionPlan::DoReconstructionIter(const FVField &mean, ReconstructionWorkspace &work,
+                                                             const ReconstructionBoundaryValues &boundary) const
+    {
+        DoReconstructionIterTo(mean, work.coefficients, work, boundary);
+        if (!Settings().SORInstead)
+            CommitReconstruction(work);
+    }
+    void VariationalReconstructionPlan::CommitReconstruction(ReconstructionWorkspace &work) const
+    {
+        auto meshRead = Metrics()._data->mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
+        Validate();
+        CheckWorkspace(_data.get(), work);
+        auto source = work.temporary.Owned().Read();
+        auto destination = work.coefficients.Owned().Write();
+        const auto src = source.View<R::TableRows>();
+        const auto dst = destination.View<R::TableRows>();
+        for (index iCell = 0; iCell < Metrics().NumCell(); ++iCell)
+            std::copy(src[iCell].begin(), src[iCell].end(), dst[iCell].begin());
+    }
+    void VariationalReconstructionPlan::DoLimiterWBAP_3OrderTo(ReconstructionWorkspace &work, int order,
+                                                               const FaceCharacteristicTransform *transform, ReconstructionRegion region,
+                                                               const R::Array<real> *indicator, real threshold) const
     {
         auto meshRead = Metrics()._data->mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
         Validate();
         CheckWorkspace(_data.get(), work);
         DNDS_check_throw_info(order >= 1 && order <= Settings().maxOrder, "invalid WBAP polynomial order");
         const index n = NRecDOF(), nv = work.components;
+        _data->workPartition->Validate();
+        DNDS_check_throw_info(region == ReconstructionRegion::All || region == ReconstructionRegion::Core || region == ReconstructionRegion::HaloDependent,
+                              "invalid limiter region");
+        DNDS_check_throw_info(std::isfinite(threshold), "limiter threshold must be finite");
+        std::optional<R::Array<real>::ReadLease> indicatorRead;
+        R::ArrayView<const real, false, R::FixedRows<1>> activation;
+        if (indicator)
+        {
+            CheckArray(*indicator, Metrics().NumCell(), 1);
+            indicatorRead.emplace(indicator->Read());
+            activation = indicatorRead->View<R::FixedRows<1>>();
+            for (index iCell = 0; iCell < Metrics().NumCell(); ++iCell)
+                DNDS_check_throw_info(std::isfinite(activation(iCell, 0)), "limiter indicator must be finite");
+        }
         if (transform)
         {
             DNDS_check_throw_info(transform->plan == _data && transform->first >= 0 && transform->count > 0 &&
@@ -179,8 +246,11 @@ namespace DNDS::CFV
         const int begin = order == 1 ? 0 : Math::PolynomialSize(Metrics().Dimension(), order - 1) - 1;
         const int end = Math::PolynomialSize(Metrics().Dimension(), order) - 1, modes = end - begin;
         {
-            auto owned = work.coefficients.Owned().Read(), ghostRead = work.coefficients.Ghost().Read();
-            R::PairReadView<real, false, R::TableRows> rec{owned.View<R::TableRows>(), ghostRead.View<R::TableRows>()};
+            auto owned = work.coefficients.Owned().Read();
+            std::optional<R::Array<real>::ReadLease> ghostRead;
+            if (region != ReconstructionRegion::Core)
+                ghostRead.emplace(work.coefficients.Ghost().Read());
+            R::PairReadView<real, false, R::TableRows> rec{owned.View<R::TableRows>(), ghostRead ? ghostRead->View<R::TableRows>() : R::ArrayView<const real, false, R::TableRows>{}};
             auto outputWrite = work.temporary.Owned().Write(), scratchWrite = work.scratch.Write();
             const auto output = outputWrite.View<R::TableRows>(), scratch = scratchWrite.View<R::TableRows>();
             auto offsetRead = _data->offsets.Read(), neighborRead = _data->neighbors.Read(), faceRead = _data->faces.Read();
@@ -195,10 +265,12 @@ namespace DNDS::CFV
             Map center(scratch[0].data(), modes, nv), other(scratch[1].data(), modes, nv), limited(scratch[2].data(), modes, nv);
             Map up(scratch[3].data(), modes, nv), down(scratch[4].data(), modes, nv), valid(scratch[5].data(), modes, nv);
             const real epsilon = std::pow(verySmallReal, .25);
-            for (index iCell = 0; iCell < Metrics().NumCell(); ++iCell)
+            auto compute = [&](index iCell)
             {
                 Map out(output[iCell].data(), n, nv);
                 out = ConstMap(rec.Row(iCell), n, nv);
+                if (indicator && activation(iCell, 0) < threshold)
+                    return;
                 up.setConstant(Settings().WBAP_nStd), down.setConstant(Settings().WBAP_nStd), valid.setOnes();
                 for (index iEntry = offsets(iCell, 0); iEntry < offsets(iCell + 1, 0); ++iEntry)
                 {
@@ -242,15 +314,23 @@ namespace DNDS::CFV
                 for (index v = 0; v < nv; ++v)
                     for (int mode = 0; mode < modes; ++mode)
                         out(begin + mode, v) *= valid(mode, v) * up(mode, v) / down(mode, v);
-            }
+            };
+            if (region == ReconstructionRegion::All)
+                for (index iCell = 0; iCell < Metrics().NumCell(); ++iCell)
+                    compute(iCell);
+            else if (region == ReconstructionRegion::Core)
+                for (auto iCell : _data->workPartition->Core())
+                    compute(iCell);
+            else
+                for (auto iCell : _data->workPartition->HaloDependent())
+                    compute(iCell);
         }
-        // Release old readers before copying the completed pass back.
-        auto nextRead = work.temporary.Owned().Read();
-        auto writeBack = work.coefficients.Owned().Write();
-        const auto source = nextRead.View<R::TableRows>();
-        const auto destination = writeBack.View<R::TableRows>();
-        for (index iCell = 0; iCell < Metrics().NumCell(); ++iCell)
-            std::copy(source[iCell].begin(), source[iCell].end(), destination[iCell].begin());
+    }
+    void VariationalReconstructionPlan::DoLimiterWBAP_3Order(ReconstructionWorkspace &work, int order,
+                                                             const FaceCharacteristicTransform *transform) const
+    {
+        DoLimiterWBAP_3OrderTo(work, order, transform);
+        CommitReconstruction(work);
     }
     void VariationalReconstructionPlan::Evaluate(const FVField &mean, const FVField &coefficients,
                                                  const R::Array<index> &cells, const R::Array<real> &points, R::Array<real> &values) const

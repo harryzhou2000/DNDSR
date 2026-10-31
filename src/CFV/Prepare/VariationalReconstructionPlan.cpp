@@ -26,6 +26,7 @@ namespace DNDS::CFV
                     DNDS_check_throw_info(rotation.map().isApprox(tGPoint::Identity(), 1e-14),
                                           "rotated periodic FV needs an explicit state/derivative transform backend");
             data = std::make_shared<Detail::ReconstructionData>(metrics, settings);
+            data->workPartition.emplace(Geom::EntityWorkPartition::CellNodeCell(*geometry->mesh));
             const int n = data->n, dim = geometry->dim, degree = settings.maxOrder;
             const index nCell = mesh.NumCell(), nFace = mesh.NumFaceProc();
             auto cellRead = geometry->cell.Read();

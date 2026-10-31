@@ -151,3 +151,24 @@ def test_distributed_interface_owner_sampling_and_query_order():
         np.testing.assert_array_equal(output.numpy(), expected)
     assert [maps[0].Get(i).geometry.donorOriginalId for i in range(len(query))] == [
         maps[1].Get(i).geometry.donorOriginalId for i in range(len(query))]
+
+
+@pytest.mark.mpi
+def test_standalone_fv_gradients_and_vr_conversion():
+    grid = mesh()
+    metrics = CFV.FiniteVolumePlan.ConstructMetrics(grid)
+    mean = metrics.BuildField(1)
+    mean.owned.assign(np.asarray([function(metrics.GetCellCent(i)) for i in range(metrics.NumCell())]).reshape(-1, 1))
+    metrics.BindHalo(mean).begin().wait()
+    reconstruction = CFV.VariationalReconstructionPlan.ConstructRecCoeff(metrics)
+    for method in (CFV.GradientMethod.GreenGauss, CFV.GradientMethod.LeastSquares, CFV.GradientMethod.GGMP):
+        plan = CFV.GradientPlan.Prepare(grid, metrics, method)
+        boundary = plan.BuildBoundaryValues(1)
+        boundary.assign(np.asarray([function(plan.GetBoundaryQuadrature(i).point)
+                                    for i in range(plan.NumBoundaryQuadrature())]).reshape(-1, 1))
+        gradient = metrics.BuildField(2)
+        plan.Evaluate(mean, boundary, gradient)
+        np.testing.assert_allclose(gradient.owned.numpy(), np.tile([2, -.5], (metrics.NumCell(), 1)), atol=1e-12)
+        coefficients = metrics.BuildField(reconstruction.NRecDOF())
+        plan.ConvertToCoefficients(gradient, reconstruction, coefficients)
+        np.testing.assert_array_equal(coefficients.owned.numpy()[:, 2:], 0)

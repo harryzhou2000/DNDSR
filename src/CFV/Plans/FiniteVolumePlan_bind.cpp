@@ -1,6 +1,7 @@
 #include "FiniteVolumePlan.hpp"
 #include "InterfaceSamplingPlan.hpp"
 #include "DistributedInterfaceSamplingPlan.hpp"
+#include "GradientPlan.hpp"
 #include "DNDS/Runtime/Array_bind.hpp"
 #include <pybind11/eigen.h>
 #include <pybind11/stl.h>
@@ -10,12 +11,17 @@ namespace DNDS::CFV
     void pybind11_FiniteVolumePlan_define(pybind11::module_ &m)
     {
         namespace py = pybind11;
+        py::enum_<ReconstructionRegion>(m, "ReconstructionRegion")
+            .value("All", ReconstructionRegion::All)
+            .value("Core", ReconstructionRegion::Core)
+            .value("HaloDependent", ReconstructionRegion::HaloDependent);
         py::class_<ReconstructionSettings>(m, "ReconstructionSettings")
             .def(py::init<>())
             .def_readwrite("maxOrder", &ReconstructionSettings::maxOrder)
             .def_readwrite("intOrder", &ReconstructionSettings::intOrder)
             .def_readwrite("jacobiRelax", &ReconstructionSettings::jacobiRelax)
             .def_readwrite("SORInstead", &ReconstructionSettings::SORInstead)
+            .def_readwrite("coreFirst", &ReconstructionSettings::coreFirst)
             .def_readwrite("HQMWeights", &ReconstructionSettings::HQMWeights)
             .def_readwrite("bcWeight", &ReconstructionSettings::bcWeight)
             .def_readwrite("boundaryDerivativeWeights", &ReconstructionSettings::boundaryDerivativeWeights)
@@ -87,15 +93,35 @@ namespace DNDS::CFV
                  "Validate and publish matrices after filling from cell means; any later write requires re-finalization.")
             .def("DoReconstructionIter", &VariationalReconstructionPlan::DoReconstructionIter,
                  "One synchronous CPU sweep. Release Python array views and refresh input halos first.")
+            .def("DoReconstructionIterTo", &VariationalReconstructionPlan::DoReconstructionIterTo,
+                 py::arg("mean"), py::arg("input"), py::arg("workspace"), py::arg("boundary"), py::arg("region") = ReconstructionRegion::All)
+            .def("CommitReconstruction", &VariationalReconstructionPlan::CommitReconstruction)
             .def("DoLimiterWBAP_3Order", &VariationalReconstructionPlan::DoLimiterWBAP_3Order,
                  py::arg("workspace"), py::arg("order"), py::arg("transform") = nullptr,
                  "Call in descending order with a coefficient halo exchange after each order.")
+            .def("DoLimiterWBAP_3OrderTo", &VariationalReconstructionPlan::DoLimiterWBAP_3OrderTo,
+                 py::arg("workspace"), py::arg("order"), py::arg("transform") = nullptr,
+                 py::arg("region") = ReconstructionRegion::All,
+                 py::arg("indicator") = nullptr, py::arg("threshold") = 0)
             .def("Evaluate", &VariationalReconstructionPlan::Evaluate);
         py::class_<InterfaceSamplingPlan>(m, "InterfaceSamplingPlan")
             .def(py::init<VariationalReconstructionPlan, Geom::InterfacePointMap>())
             .def("Size", &InterfaceSamplingPlan::Size)
             .def("Evaluate", &InterfaceSamplingPlan::Evaluate,
                  "Sample donor-frame values in map query order. The equation adapter transforms vector components.");
+        py::enum_<GradientMethod>(m, "GradientMethod")
+            .value("GreenGauss", GradientMethod::GreenGauss)
+            .value("LeastSquares", GradientMethod::LeastSquares)
+            .value("GGMP", GradientMethod::GGMP);
+        py::class_<GradientPlan>(m, "GradientPlan")
+            .def_static("Prepare", &GradientPlan::Prepare, py::arg("mesh"), py::arg("metrics"),
+                        py::arg("method") = GradientMethod::LeastSquares, py::arg("relativeCutoff") = 1e-13)
+            .def("NumBoundaryQuadrature", &GradientPlan::NumBoundaryQuadrature)
+            .def("GetBoundaryQuadrature", &GradientPlan::GetBoundaryQuadrature)
+            .def("BuildBoundaryValues", [](const GradientPlan &plan, index components)
+                 { return Runtime::PythonArray::Share(plan.BuildBoundaryValues(components)); })
+            .def("Evaluate", &GradientPlan::Evaluate)
+            .def("ConvertToCoefficients", &GradientPlan::ConvertToCoefficients);
         py::class_<DistributedInterfaceSamplingPlan>(m, "DistributedInterfaceSamplingPlan")
             .def(py::init<VariationalReconstructionPlan, Geom::DistributedInterfacePointMap>())
             .def("Size", &DistributedInterfaceSamplingPlan::Size)

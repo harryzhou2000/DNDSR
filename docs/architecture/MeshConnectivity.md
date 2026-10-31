@@ -24,6 +24,32 @@ the caller's actual kernel I/O, freshness of BC values or safety of writes to
 owned rows that are active direct MPI sends. Pure geometry changes preserve the
 work sets. No per-element generation checks are needed in the numerical loop.
 
+## Explicit local ordering
+
+`LocalCellOrderingSettings` selects subregions, optional conservative node-star
+core splitting and optional send-region aggregation. The settings overload of
+`ReorderLocalCells` uses subregion -> core/noncore -> destination-set groups ->
+RCM, retaining subregion boundaries. Its default has no split or sender grouping.
+The historical integer overload keeps its previous setup ordering for consumer
+compatibility. Python exposes the new choice as `reorder_local_cells` with
+`core_split` and `aggregate_send_regions` keyword arguments.
+
+Sender groups derive from canonical halo send lists. A multi-peer row has one
+authoritative location, so one contiguous interval per destination is not
+guaranteed. Core dependencies and export destinations remain separate contracts;
+in-place computation must not overwrite active send inputs. The permutation
+result exposes subregion starts and core ends for independent work scheduling.
+
+`MeshLocalityOrdering::Build(mesh,anchorKind,adjacencies)` plans first-touch
+owned target order for arbitrary anchor kinds. Cell anchors can reorder nodes
+and faces; node anchors can reorder boundary/cell entities through the specified
+adjacency. Untouched targets append stably. `Input()` feeds ordinary
+`NativeMeshTransition` local permutations, preserving ownership and remapping
+all fixed/named references, IDs, metadata and companion arrays. External fields
+use the returned transfer maps. Element-local node order and cell-face slots
+retain their physical meaning. Caches and old bindings follow the existing
+transition invalidation contract.
+
 ## Ownership and setup
 
 **Construction correction, 2026-10-28:** primary and face/edge builders now

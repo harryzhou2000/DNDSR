@@ -3,6 +3,7 @@
 #include "FiniteVolumePlan.hpp"
 #include "Geom/Unstructured/UnstructuredMesh.hpp"
 #include "CFV/Math/PolynomialReconstruction.hpp"
+#include "Geom/Access/EntityWorkPartition.hpp"
 
 namespace DNDS::CFV::Detail
 {
@@ -33,6 +34,7 @@ namespace DNDS::CFV::Detail
         ReconstructionSettings settings;
         ReconstructionInverseDiagnostics inverseDiagnostics;
         Runtime::Array<real> inverseConditions;
+        std::optional<Geom::EntityWorkPartition> workPartition;
         int n;
         Runtime::Array<real> moments;
         // One row per owned cell-face incidence, preallocated from cell2face.
