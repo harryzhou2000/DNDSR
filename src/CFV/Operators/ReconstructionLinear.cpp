@@ -19,7 +19,7 @@ namespace DNDS::CFV
         Detail::ValidateVectorBlocks(components, periodicVectorStarts);
         Metrics().ValidateField(coefficients, n * components), Metrics().ValidateField(output, n * components);
         auto owned = coefficients.Owned().Read(), ghost = coefficients.Ghost().Read();
-        R::PairReadView<real, false, R::UniformTableRows> x{owned.View<R::UniformTableRows>(), ghost.View<R::UniformTableRows>()};
+        R::PairReadView<real, R::AccessBoundsChecks, R::UniformTableRows> x{owned.View<R::UniformTableRows>(), ghost.View<R::UniformTableRows>()};
         auto write = output.Owned().Write();
         const auto y = write.View<R::UniformTableRows>();
         auto offsetRead = _data->offsets.Read(), neighborRead = _data->neighbors.Read();
@@ -64,7 +64,7 @@ namespace DNDS::CFV
                                   boundary.values.Layout().Width() == components,
                               "linear boundary shape/plan mismatch");
         auto owned = mean.Owned().Read(), ghost = mean.Ghost().Read(), boundaryRead = boundary.values.Read();
-        R::PairReadView<real, false, R::UniformTableRows> u{owned.View<R::UniformTableRows>(), ghost.View<R::UniformTableRows>()};
+        R::PairReadView<real, R::AccessBoundsChecks, R::UniformTableRows> u{owned.View<R::UniformTableRows>(), ghost.View<R::UniformTableRows>()};
         const auto bc = boundaryRead.View<R::TableRows>();
         auto write = output.Owned().Write();
         const auto y = write.View<R::UniformTableRows>();

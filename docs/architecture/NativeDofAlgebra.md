@@ -144,3 +144,10 @@ These checks establish behavior and lifetime contracts, not performance claims.
 GPU MPI sizes above two were not run on this two-GPU machine; larger MPI sizes
 used CPU fields. The CUDA reduction implementation remains the functional
 baseline described above.
+
+Uniform DOF fields also accept an explicit physical RowLayout prototype. Python
+`DoubleDofField(space, prototype, device)` / `FloatDofField(...)` allocate AoS,
+column-major or tiled tables; owned and ghost pitches are derived separately.
+The existing `(space, owned, ghost)` constructor shares all supported uniform
+physical tables. Async algebra traverses logical components, leaves ghosts and
+physical padding untouched, and retains the same caller-supplied stream ordering.

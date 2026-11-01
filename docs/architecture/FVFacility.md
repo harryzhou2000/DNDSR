@@ -4,7 +4,7 @@ The new `CFV::FiniteVolumePlan` and `CFV::VariationalReconstructionPlan` compose
 native Runtime storage, Geom entity identity, prepared metric/matrix buffers,
 and explicit numerical operators. They do not wrap the legacy VR owner. The
 existing `FiniteVolume` and `VariationalReconstruction<dim>` remain available.
-This page describes the implemented CPU envelope, not a complete new flow solver.
+This page describes the CPU envelope. The explicit [CUDA publication and Jacobi/WBAP baseline](DeviceReconstruction.md) uses these same prepared numerical buffers. Neither facility is a complete flow solver.
 The [2026-10-31 next-step decisions](../dev/facilities_next_steps_2026-10-31.md)
 record planned extensions; those features are not implied by this implemented API.
 

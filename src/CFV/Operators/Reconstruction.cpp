@@ -149,8 +149,8 @@ namespace DNDS::CFV
             recWrite.emplace(work.coefficients.Owned().Write());
         else
             recOwned.emplace(input.Owned().Read());
-        R::ArrayView<const real, false, R::UniformTableRows> current;
-        R::ArrayView<real, false, R::UniformTableRows> mutableCurrent;
+        R::ArrayView<const real, R::AccessBoundsChecks, R::UniformTableRows> current;
+        R::ArrayView<real, R::AccessBoundsChecks, R::UniformTableRows> mutableCurrent;
         if (recWrite)
         {
             mutableCurrent = recWrite->View<R::UniformTableRows>();
@@ -161,8 +161,8 @@ namespace DNDS::CFV
             current = recOwned->View<R::UniformTableRows>();
         auto nextWrite = work.temporary.Owned().Write();
         auto next = nextWrite.View<R::UniformTableRows>();
-        R::PairReadView<real, false, R::UniformTableRows> u{meanOwned.View<R::UniformTableRows>(), meanGhost ? meanGhost->View<R::UniformTableRows>() : R::ArrayView<const real, false, R::UniformTableRows>{}};
-        const auto ghost = recGhost ? recGhost->View<R::UniformTableRows>() : R::ArrayView<const real, false, R::UniformTableRows>{};
+        R::PairReadView<real, R::AccessBoundsChecks, R::UniformTableRows> u{meanOwned.View<R::UniformTableRows>(), meanGhost ? meanGhost->View<R::UniformTableRows>() : R::ArrayView<const real, R::AccessBoundsChecks, R::UniformTableRows>{}};
+        const auto ghost = recGhost ? recGhost->View<R::UniformTableRows>() : R::ArrayView<const real, R::AccessBoundsChecks, R::UniformTableRows>{};
         auto bRead = boundary.values.Read();
         const auto bValues = bRead.View<R::TableRows>();
         auto oRead = _data->offsets.Read(), nbRead = _data->neighbors.Read(), boRead = _data->boundaryOffsets.Read();
@@ -294,7 +294,7 @@ namespace DNDS::CFV
             std::optional<R::Array<real>::ReadLease> ghostRead;
             if (region != ReconstructionRegion::Core)
                 ghostRead.emplace(work.coefficients.Ghost().Read());
-            R::PairReadView<real, false, R::UniformTableRows> rec{owned.View<R::UniformTableRows>(), ghostRead ? ghostRead->View<R::UniformTableRows>() : R::ArrayView<const real, false, R::UniformTableRows>{}};
+            R::PairReadView<real, R::AccessBoundsChecks, R::UniformTableRows> rec{owned.View<R::UniformTableRows>(), ghostRead ? ghostRead->View<R::UniformTableRows>() : R::ArrayView<const real, R::AccessBoundsChecks, R::UniformTableRows>{}};
             auto outputWrite = work.temporary.Owned().Write(), scratchWrite = work.scratch.Write();
             const auto output = outputWrite.View<R::UniformTableRows>();
             const auto scratch = scratchWrite.View<R::TableRows>();
@@ -307,8 +307,8 @@ namespace DNDS::CFV
             std::optional<R::Array<real>::ReadLease> forward, inverse;
             if (transform)
                 forward.emplace(transform->forward.Read()), inverse.emplace(transform->inverse.Read());
-            const auto forwardView = transform ? forward->View<R::TableRows>() : R::ArrayView<const real, false, R::TableRows>{};
-            const auto inverseView = transform ? inverse->View<R::TableRows>() : R::ArrayView<const real, false, R::TableRows>{};
+            const auto forwardView = transform ? forward->View<R::TableRows>() : R::ArrayView<const real, R::AccessBoundsChecks, R::TableRows>{};
+            const auto inverseView = transform ? inverse->View<R::TableRows>() : R::ArrayView<const real, R::AccessBoundsChecks, R::TableRows>{};
             const auto scratchMatrices = Algebra::MakeEigenRowMatrices(scratch, modes, nv);
             auto center = scratchMatrices[0], other = scratchMatrices[1], limited = scratchMatrices[2];
             auto up = scratchMatrices[3], down = scratchMatrices[4], valid = scratchMatrices[5];
@@ -409,7 +409,7 @@ namespace DNDS::CFV
         for (index i = 0; i < cells.RowCount(); ++i)
             DNDS_check_throw_info(ids(i, 0) >= 0 && ids(i, 0) < Metrics().NumCellProc(), "sampling cell outside prepared closure");
         auto mo = mean.Owned().Read(), mg = mean.Ghost().Read(), co = coefficients.Owned().Read(), cg = coefficients.Ghost().Read();
-        R::PairReadView<real, false, R::UniformTableRows> u{mo.View<R::UniformTableRows>(), mg.View<R::UniformTableRows>()}, rec{co.View<R::UniformTableRows>(), cg.View<R::UniformTableRows>()};
+        R::PairReadView<real, R::AccessBoundsChecks, R::UniformTableRows> u{mo.View<R::UniformTableRows>(), mg.View<R::UniformTableRows>()}, rec{co.View<R::UniformTableRows>(), cg.View<R::UniformTableRows>()};
         auto pRead = points.Read(), geomRead = Metrics()._data->cell.Read(), momentRead = _data->moments.Read();
         auto output = values.Write();
         const auto p = pRead.View<R::FixedRows<3>>();

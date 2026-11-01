@@ -273,37 +273,46 @@ namespace DNDS::Geom::Elem
             return Element{Geom::Elem::GetEdgeType(type, iEdge)};
         }
 
-        /// Extract the global node indices of edge iEdge from a cell's node list.
-        /// @warning Assumes edgeNodesOut has sufficient size.
+        // A named capture layout is intentional. GCC and NVCC can emit the
+        // same weak template symbol for a capturing generic lambda while using
+        // different closure-member order. Mixed C++/CUDA setup then reads the
+        // wrong captured Element. Keep the member order explicit across both
+        // compilers; the CUDA/C++ reconstruction fixture exercises this case.
+        template <class TIn, class TOut, bool Edges>
+        struct ExtractSubentityNodes
+        {
+            const Element &element;
+            t_index subentity;
+            const TIn &nodes;
+            TOut &output;
+            template <class Traits>
+            void operator()(Traits) const
+            {
+                if constexpr (Edges && Traits::dim >= 3)
+                {
+                    for (t_index i = 0; i < element.ObtainEdge(subentity).GetNumNodes(); ++i)
+                        output[i] = nodes[Traits::edgeNodes[subentity][i]];
+                }
+                else if constexpr (!Edges && Traits::numFaces > 0)
+                {
+                    for (t_index i = 0; i < element.ObtainFace(subentity).GetNumNodes(); ++i)
+                        output[i] = nodes[Traits::faceNodes[subentity][i]];
+                }
+            }
+        };
+        /// Extract global node indices of one edge. Output must have sufficient size.
         template <class TIn, class TOut>
         void ExtractEdgeNodes(t_index iEdge, const TIn &nodes, TOut &edgeNodesOut)
         {
-            DNDS_assert(iEdge < this->GetNumEdges());
-            DispatchElementType(type, [&](auto tr)
-                                {
-                using T = decltype(tr);
-                if constexpr (T::dim >= 3)
-                {
-                    for (t_index i = 0; i < ObtainEdge(iEdge).GetNumNodes(); i++)
-                        edgeNodesOut[i] = nodes[T::edgeNodes[iEdge][i]];
-                } });
+            DNDS_assert(iEdge >= 0 && iEdge < this->GetNumEdges());
+            DispatchElementType(type, ExtractSubentityNodes<TIn, TOut, true>{*this, iEdge, nodes, edgeNodesOut});
         }
-
-        /**
-         * @warning assuming Out has correct size
-         */
+        /// Extract global node indices of one face. Output must have sufficient size.
         template <class TIn, class TOut>
         void ExtractFaceNodes(t_index iFace, const TIn &nodes, TOut &faceNodesOut)
         {
-            DNDS_assert(iFace < this->GetNumFaces());
-            DispatchElementType(type, [&](auto tr)
-                                {
-                using T = decltype(tr);
-                if constexpr (T::numFaces > 0)
-                {
-                    for (t_index i = 0; i < ObtainFace(iFace).GetNumNodes(); i++)
-                        faceNodesOut[i] = nodes[T::faceNodes[iFace][i]];
-                } });
+            DNDS_assert(iFace >= 0 && iFace < this->GetNumFaces());
+            DispatchElementType(type, ExtractSubentityNodes<TIn, TOut, false>{*this, iFace, nodes, faceNodesOut});
         }
 
         [[nodiscard]] constexpr Element ObtainElevNodeSpan(t_index iNodeElev) const

@@ -1,4 +1,5 @@
 #include "DNDS/Runtime/Communication/RowTransfer.hpp"
+#include "DNDS/Runtime/Communication/DevicePacking.hpp"
 #include <cuda_runtime.h>
 
 namespace DNDS::Runtime
@@ -115,5 +116,44 @@ namespace DNDS::Runtime
             DNDS_DEVICE_REDUCE(8, int64_t, uint64_t)
 #undef DNDS_DEVICE_REDUCE
         }
+    }
+}
+
+namespace DNDS::Runtime::Detail
+{
+    __global__ void PackRows(const uint8_t *source, uint8_t *destination, const DevicePackRow *rows, index rowCount,
+                             const DevicePackField *fields, index fieldCount, index extent, bool unpack)
+    {
+        for (index iRow = blockIdx.x; iRow < rowCount; iRow += gridDim.x)
+        {
+            const auto row = rows[iRow];
+            for (index iField = 0; iField < fieldCount; ++iField)
+            {
+                const auto field = fields[iField];
+                for (index item = threadIdx.x; item < row.width * field.bytes; item += blockDim.x)
+                {
+                    const index component = item / field.bytes, byte = field.offset + item % field.bytes;
+                    const index arrayByte = (row.base + component * row.stride) * extent + byte;
+                    const index packedByte = (row.packed + component) * extent + byte;
+                    if (unpack)
+                        destination[arrayByte] = source[packedByte];
+                    else
+                        destination[packedByte] = source[arrayByte];
+                }
+            }
+        }
+    }
+    void LaunchDevicePacking(ExecutionContext context, const void *source, void *destination, const DevicePackRow *rows,
+                             index rowCount, const DevicePackField *fields, index fieldCount, index extent, bool unpack)
+    {
+        if (!rowCount)
+            return;
+        int previous = 0;
+        DNDS_check_throw_info(context.device.space == MemorySpace::CUDA && cudaGetDevice(&previous) == cudaSuccess, "CUDA packing context unavailable");
+        DNDS_check_throw_info(cudaSetDevice(context.device.ordinal) == cudaSuccess, "CUDA packing device selection failed");
+        PackRows<<<unsigned(std::min<index>(rowCount, 65535)), 128, 0, static_cast<cudaStream_t>(context.stream)>>>(
+            static_cast<const uint8_t *>(source), static_cast<uint8_t *>(destination), rows, rowCount, fields, fieldCount, extent, unpack);
+        const auto launched = cudaGetLastError(), restored = cudaSetDevice(previous);
+        DNDS_check_throw_info(launched == cudaSuccess && restored == cudaSuccess, "CUDA packing launch failed");
     }
 }

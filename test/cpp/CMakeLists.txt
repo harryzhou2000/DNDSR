@@ -239,6 +239,14 @@ dnds_add_mpi_test(index_mapping "DNDS/test_IndexMapping.cpp" "dnds")
 dnds_add_mpi_test(permutation_transfer "DNDS/test_PermutationTransfer.cpp" "dnds")
 
 if(DNDS_USE_CUDA)
+    add_executable(dnds_test_device_packing EXCLUDE_FROM_ALL DNDS/test_DevicePacking.cu)
+    target_include_directories(dnds_test_device_packing PRIVATE ${DNDS_EXTERNAL_INCLUDE_DOCTEST} ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
+    target_link_libraries(dnds_test_device_packing PRIVATE dnds ${DNDS_EXTERNAL_LIBS})
+    add_test(NAME dnds_device_packing_np1 COMMAND $<TARGET_FILE:dnds_test_device_packing>)
+    add_test(NAME dnds_device_packing_np2 COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2 ${MPIEXEC_PREFLAGS}
+        ${Python_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/demos/one_rank_per_gpu.py $<TARGET_FILE:dnds_test_device_packing> ${MPIEXEC_POSTFLAGS})
+    set_tests_properties(dnds_device_packing_np1 dnds_device_packing_np2 PROPERTIES TIMEOUT 120 ENVIRONMENT "OMP_NUM_THREADS=1")
+    add_dependencies(dnds_unit_tests dnds_test_device_packing)
     dnds_add_unit_test(runtime_cuda "DNDS/test_Runtime_CUDA.cu" "dnds")
     dnds_add_unit_test(native_dof_algebra_cuda "DNDS/test_NativeDofAlgebra_CUDA.cu" "dnds")
     add_dependencies(dnds_unit_tests dnds_test_native_dof_algebra_cuda)
@@ -529,8 +537,17 @@ if(DNDS_USE_CUDA)
             ENVIRONMENT "OMP_NUM_THREADS=${DNDS_TEST_OMP_THREADS}")
     endfunction()
 
+    add_executable(cfv_benchmark_reconstruction_cuda EXCLUDE_FROM_ALL CFV/benchmark_ReconstructionCUDA.cpp)
+    target_include_directories(cfv_benchmark_reconstruction_cuda PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
+    target_link_libraries(cfv_benchmark_reconstruction_cuda PRIVATE cfv geom dnds ${DNDS_EXTERNAL_LIBS})
+    cfv_add_cuda_mpi_test(reconstruction_cuda "CFV/test_ReconstructionCUDA.cu" "cfv;geom;dnds")
     cfv_add_cuda_mpi_test(device_transferable "CFV/test_DeviceTransferable.cu" "cfv;geom;dnds")
-    list(APPEND CFV_TEST_TARGETS cfv_test_device_transferable)
+    add_test(NAME cfv_reconstruction_cuda_np2
+        COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2 ${MPIEXEC_PREFLAGS}
+            ${Python_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/demos/one_rank_per_gpu.py
+            $<TARGET_FILE:cfv_test_reconstruction_cuda> ${MPIEXEC_POSTFLAGS})
+    set_tests_properties(cfv_reconstruction_cuda_np2 PROPERTIES PROCESSORS 2 TIMEOUT 180 ENVIRONMENT "OMP_NUM_THREADS=1")
+    list(APPEND CFV_TEST_TARGETS cfv_test_device_transferable cfv_test_reconstruction_cuda)
 endif()
 
 foreach(T ${CFV_TEST_TARGETS})

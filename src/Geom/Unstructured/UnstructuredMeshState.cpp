@@ -23,26 +23,8 @@ namespace DNDS::Geom
             array(values.owned);
             array(values.ghost);
         };
-        auto optional = [&](const auto &values)
-        { if (values) pair(*values); };
         for (const auto &[key, snapshot] : _placements)
-        {
-            const auto &state = snapshot.Live();
-            for (const auto &relation : state.relations)
-                optional(relation);
-            optional(state.coords);
-            optional(state.nodeWallDist);
-            optional(state.cellInfo);
-            optional(state.bndInfo);
-            optional(state.faceInfo);
-            optional(state.edgeInfo);
-            optional(state.cellNodesPbi);
-            optional(state.bndNodesPbi);
-            optional(state.cellFacesPbi);
-            optional(state.faceNodesPbi);
-            optional(state.cellEdgesPbi);
-            optional(state.edgeNodesPbi);
-        }
+            snapshot.VisitAllocations(visit);
         for (const auto &[key, relation] : _namedRelations)
             pair(relation.data.rows);
         for (const auto &[kind, ids] : _originalIds)

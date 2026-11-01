@@ -1,4 +1,5 @@
 #include "CFV/Plans/FiniteVolumePlan.hpp"
+#include "CFV/Plans/ReconstructionDevicePlan.hpp"
 #include "CFV/Plans/InterfaceSamplingPlan.hpp"
 #include "CFV/Plans/DistributedInterfaceSamplingPlan.hpp"
 #include "CFV/Plans/GradientPlan.hpp"
@@ -109,6 +110,55 @@ namespace DNDS::CFV
         py::class_<ReconstructionWorkspace>(m, "ReconstructionWorkspace")
             .def_readonly("coefficients", &ReconstructionWorkspace::coefficients)
             .def_readonly("temporary", &ReconstructionWorkspace::temporary);
+        py::class_<ReconstructionResidencyOptions>(m, "ReconstructionResidencyOptions")
+            .def(py::init<>())
+            .def_readwrite("mesh", &ReconstructionResidencyOptions::mesh)
+            .def_readwrite("metrics", &ReconstructionResidencyOptions::metrics)
+            .def_readwrite("basis", &ReconstructionResidencyOptions::basis);
+        py::class_<ResidentBufferInfo>(m, "ResidentBufferInfo")
+            .def_readonly("name", &ResidentBufferInfo::name)
+            .def_readonly("bytes", &ResidentBufferInfo::bytes)
+            .def_readonly("device", &ResidentBufferInfo::device);
+        py::class_<DeviceFaceCharacteristicTransform>(m, "DeviceFaceCharacteristicTransform")
+            .def_readonly("first", &DeviceFaceCharacteristicTransform::first)
+            .def_readonly("count", &DeviceFaceCharacteristicTransform::count)
+            .def_property_readonly("forward", [](const DeviceFaceCharacteristicTransform &value)
+                                   { return Runtime::PythonArray::Share(value.forward); })
+            .def_property_readonly("inverse", [](const DeviceFaceCharacteristicTransform &value)
+                                   { return Runtime::PythonArray::Share(value.inverse); });
+        py::class_<ReconstructionDeviceWorkspace>(m, "ReconstructionDeviceWorkspace")
+            .def_readonly("coefficients", &ReconstructionDeviceWorkspace::coefficients)
+            .def_readonly("temporary", &ReconstructionDeviceWorkspace::temporary);
+        py::class_<ReconstructionDevicePlan>(m, "ReconstructionDevicePlan")
+            .def_static("Prepare", &ReconstructionDevicePlan::Prepare,
+                        py::arg("source"), py::arg("device"), py::arg("context"), py::arg("options") = ReconstructionResidencyOptions{},
+                        "Explicit synchronous CUDA publication. CPU-only builds and SOR fail before a usable publication is returned.")
+            .def("Validate", &ReconstructionDevicePlan::Validate)
+            .def("Device", &ReconstructionDevicePlan::Device)
+            .def("Buffers", &ReconstructionDevicePlan::Buffers)
+            .def("BuildField", &ReconstructionDevicePlan::BuildField)
+            .def("BuildWorkspace", &ReconstructionDevicePlan::BuildWorkspace,
+                 py::arg("components"), py::arg("prototype"), py::arg("periodicVectorStarts") = std::vector<index>{})
+            .def("BindHalo", &ReconstructionDevicePlan::BindHalo, py::arg("field"), py::arg("transport") = Runtime::TransferTransport::Direct,
+                 "Collective CUDA-aware MPI; DevicePacked explicitly queues device gather/scatter. Pass this device's ExecutionContext to begin; wait before dependent work.")
+            .def("PrepareBoundary", &ReconstructionDevicePlan::PrepareBoundary)
+            .def("PrepareTransform", &ReconstructionDevicePlan::PrepareTransform)
+            .def("DoReconstructionIter", &ReconstructionDevicePlan::DoReconstructionIter,
+                 "Synchronous CUDA Jacobi. Refresh mean/coefficient halos first; release all Python write/export aliases.")
+            .def("DoLimiterWBAP_3Order", &ReconstructionDevicePlan::DoLimiterWBAP_3Order,
+                 py::arg("workspace"), py::arg("order"), py::arg("transform") = nullptr,
+                 "Synchronous CUDA limiter. Exchange coefficients between descending orders.")
+            .def("DoReconstructionIterTo", &ReconstructionDevicePlan::DoReconstructionIterTo,
+                 py::arg("engine"), py::arg("stream"), py::arg("mean"), py::arg("input"), py::arg("workspace"), py::arg("boundary"),
+                 py::arg("region") = ReconstructionRegion::All,
+                 "Enqueue CUDA Jacobi into temporary output. Caller orders all stream/halo dependencies; no inferred dependency checks.")
+            .def("DoLimiterWBAP_3OrderTo", &ReconstructionDevicePlan::DoLimiterWBAP_3OrderTo,
+                 py::arg("engine"), py::arg("stream"), py::arg("workspace"), py::arg("order"), py::arg("transform") = nullptr,
+                 py::arg("region") = ReconstructionRegion::All, py::arg("indicator") = nullptr, py::arg("threshold") = 0,
+                 "Enqueue one limiter order. Reuse of scratch across streams needs an explicit join.")
+            .def("CommitReconstruction", &ReconstructionDevicePlan::CommitReconstruction,
+                 "Enqueue temporary-to-coefficient commit on the given stream; synchronize before a host/MPI observation.")
+            .def("CheckStatus", &ReconstructionDevicePlan::CheckStatus);
         py::class_<DistributedSamplingWorkspace>(m, "DistributedSamplingWorkspace")
             .def_property_readonly("donorValues", [](DistributedSamplingWorkspace &work)
                                    { return Runtime::PythonArray::Share(work.donorValues); });

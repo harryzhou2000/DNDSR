@@ -59,8 +59,8 @@ namespace DNDS::CFV
         std::optional<R::Array<real>::ReadLease> meanGhost, recGhost;
         if (_needsGhost)
             meanGhost.emplace(mean.Ghost().Read()), recGhost.emplace(coefficients.Ghost().Read());
-        R::PairReadView<real, false, R::UniformTableRows> u{meanRead.View<R::UniformTableRows>(), meanGhost ? meanGhost->View<R::UniformTableRows>() : R::ArrayView<const real, false, R::UniformTableRows>{}};
-        R::PairReadView<real, false, R::UniformTableRows> rec{recRead.View<R::UniformTableRows>(), recGhost ? recGhost->View<R::UniformTableRows>() : R::ArrayView<const real, false, R::UniformTableRows>{}};
+        R::PairReadView<real, R::AccessBoundsChecks, R::UniformTableRows> u{meanRead.View<R::UniformTableRows>(), meanGhost ? meanGhost->View<R::UniformTableRows>() : R::ArrayView<const real, R::AccessBoundsChecks, R::UniformTableRows>{}};
+        R::PairReadView<real, R::AccessBoundsChecks, R::UniformTableRows> rec{recRead.View<R::UniformTableRows>(), recGhost ? recGhost->View<R::UniformTableRows>() : R::ArrayView<const real, R::AccessBoundsChecks, R::UniformTableRows>{}};
         auto idsRead = _cells.Read();
         auto basisRead = _basis.Read();
         const auto ids = idsRead.View<R::FixedRows<1>>();

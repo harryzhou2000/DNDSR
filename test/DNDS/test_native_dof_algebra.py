@@ -129,3 +129,30 @@ def test_cuda_global_reductions_wait_for_local_device_results_before_mpi():
     np.testing.assert_array_equal(A.component_min_global(engine, stream, x), np.ones(6))
     np.testing.assert_array_equal(A.component_max_global(engine, stream, x), np.full(6, comm.size))
     engine.synchronize()
+
+
+@pytest.mark.parametrize("device", [R.Device.host(), R.Device.cuda(0)])
+@pytest.mark.parametrize("dtype", [np.dtype("float32"), np.dtype("float64")])
+def test_physical_tables_share_native_fields_and_async_mixed_layout_algebra(device, dtype):
+    if device.space == R.MemorySpace.CUDA and not R.cuda_enabled:
+        pytest.skip("CPU profile has no CUDA algebra")
+    width, rows = 37, 259
+    space = A.DofSpace(rows, 3)
+    cls = A.FloatDofField if dtype == np.dtype("float32") else A.DoubleDofField
+    x = cls(space, R.RowLayout.col_major(0, width, 32, 1), device)
+    y = cls(space, R.RowLayout.tiled_col_major(0, width, 16), device)
+    values = (1 + np.arange(rows)[:, None] / 4 + np.arange(width)[None, :] / 8).astype(dtype)
+    x.owned.assign(values)
+    y.ghost.assign(np.full((3, width), -99, dtype=dtype))
+    alias = cls(space, x.owned, x.ghost)
+    assert alias.owned.identity == x.owned.identity
+    engine = R.EagerEngine(2)
+    stream = engine.cuda_stream(0) if device.space == R.MemorySpace.CUDA else engine.cpu_stream()
+    A.copy_async(engine, stream, y, alias)
+    A.axpy_async(engine, stream, y, 2, x)
+    expected = values * 3
+    np.testing.assert_array_equal(A.component_sum_local_async(engine, stream, y).get(), expected.sum(axis=0, dtype=np.float64))
+    engine.synchronize()
+    np.testing.assert_array_equal(y.owned.numpy(), expected)
+    np.testing.assert_array_equal(y.ghost.numpy(), np.full((3, width), -99, dtype=dtype))
+    np.testing.assert_array_equal(x.owned.numpy(), values)

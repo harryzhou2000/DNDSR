@@ -18,9 +18,11 @@ namespace DNDS::Runtime
         using Field = A::DofField<T>;
         py::class_<Field>(m, name, FieldDoc)
             .def(py::init<A::DofSpace, size_t, size_t, Device>(), py::arg("space"), py::arg("components"), py::arg("stride") = 0, py::arg("device") = Device::Host(), "Allocate owned and ghost tables for this space; stride=0 selects the logical width.")
+            .def(py::init<A::DofSpace, RowLayout, Device>(), py::arg("space"), py::arg("prototype"), py::arg("device") = Device::Host(),
+                 "Allocate uniform logical rows with an explicit physical layout; derive owned and ghost pitches independently.")
             .def(py::init([](A::DofSpace space, const PythonArray &owned, const PythonArray &ghost)
-                          { return Field(std::move(space), owned.AsArray<T, TableRows>(), ghost.AsArray<T, TableRows>()); }),
-                 py::arg("space"), py::arg("owned"), py::arg("ghost"), "Share existing typed Runtime tables without copying. Their rows must match the space, widths and placements must agree, and owned/ghost ranges must be disjoint.")
+                          { return Field(std::move(space), owned.AsArray<T, UniformTableRows>(), ghost.AsArray<T, UniformTableRows>()); }),
+                 py::arg("space"), py::arg("owned"), py::arg("ghost"), "Share existing typed Runtime uniform tables in any supported physical layout without copying. Their rows must match the space, widths and placements must agree, and owned/ghost ranges must be disjoint.")
             .def_property_readonly("owned", [](const Field &field)
                                    { return PythonArray::Share(field.Owned()); }, "Runtime Array sharing the native owned allocation; a NumPy snapshot remains a copy.")
             .def_property_readonly("ghost", [](const Field &field)

@@ -1066,3 +1066,14 @@ TEST_CASE("Strided receive collisions use scalar contribution groups for builtin
         }
     }
 }
+
+TEST_CASE("DevicePacked is explicit and rejects host endpoints collectively")
+{
+    int rank = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    Array<double> source(RowLayout::Dense(3, 5)), destination(RowLayout::Dense(2, 5));
+    PayloadPlan payload(RowTransferPlan(MPI_COMM_WORLD, 3, 2, {{rank, 2, 1}}), source.Layout(), destination.Layout(), ElementSchema::For<double>());
+    CHECK_THROWS(payload.Bind(source, destination, TransferTransport::DevicePacked));
+    // Failed backend selection does not poison the default direct path.
+    payload.Bind(source, destination).Begin().Wait();
+}

@@ -1,0 +1,168 @@
+// Actual resident VR wrappers, not synthetic layout arithmetic. CPU operations
+// supply numerical oracles; local CPU time is not a cluster performance claim.
+#include "CFV/Plans/ReconstructionDevicePlan.hpp"
+#include "DNDS/Runtime/Execution/CUDAExecution.hpp"
+#include "../Geom/NativeMeshOverlapFixture.hpp"
+#include <iostream>
+
+namespace C = DNDS::CFV;
+namespace R = DNDS::Runtime;
+using I = DNDS::index;
+static void Fill(C::FVField &field, double offset)
+{
+    auto host = field.Owned().To(R::Device::Host());
+    {
+        auto w = host.Write();
+        for (I iRow = 0; iRow < host.RowCount(); ++iRow)
+            for (I j = 0; j < I(field.Width()); ++j)
+                w.View()(iRow, j) = offset + .001 * ((iRow * 17 + j * 7) % 101);
+    }
+    field.Owned().CopyFrom(host, {field.Device(), nullptr}).Wait();
+}
+static double Error(const C::FVField &cpu, const C::FVField &gpu, DNDS::MPIInfo mpi)
+{
+    const auto host = gpu.Owned().To(R::Device::Host());
+    const auto a = cpu.Owned().Read(), b = host.Read();
+    double error = 0, result = 0;
+    for (I iRow = 0; iRow < host.RowCount(); ++iRow)
+        for (I j = 0; j < I(cpu.Width()); ++j)
+            error = std::max(error, std::abs(a.View()(iRow, j) - b.View()(iRow, j)));
+    MPI_Allreduce(&error, &result, 1, MPI_DOUBLE, MPI_MAX, mpi.comm);
+    return result;
+}
+int main(int argc, char **argv)
+{
+    MPI_Init(&argc, &argv);
+    DNDS::MPIInfo mpi(MPI_COMM_WORLD);
+    int result = 0;
+    try
+    {
+        DNDS_check_throw_info(argc == 5 || argc == 6, "arguments: grid-width degree components repetitions [direct|packed]");
+        const I width = std::stoll(argv[1]), components = std::stoll(argv[3]);
+        const int degree = std::stoi(argv[2]), repeats = std::stoi(argv[4]);
+        DNDS_check_throw_info(components > 0 && components <= 64 && repeats > 0, "invalid benchmark shape");
+        const auto transport = argc == 6 && std::string(argv[5]) == "packed" ? R::TransferTransport::DevicePacked : R::TransferTransport::Direct;
+        DNDS_check_throw_info(argc == 5 || std::string(argv[5]) == "packed" || std::string(argv[5]) == "direct", "unknown transfer backend");
+        const auto device = R::Device::CUDA(0);
+        const auto context = R::ExecutionContext::CUDA(0);
+        auto measure = [&](auto &&action)
+        {
+            MPI_Barrier(mpi.comm);
+            const auto start = MPI_Wtime();
+            action();
+            const double elapsed = MPI_Wtime() - start;
+            double maximum = 0;
+            MPI_Allreduce(&elapsed, &maximum, 1, MPI_DOUBLE, MPI_MAX, mpi.comm);
+            return maximum;
+        };
+        std::shared_ptr<DNDS::Geom::UnstructuredMesh> mesh;
+        const double meshTime = measure([&]
+                                        { mesh = DNDS::Geom::OverlapTest::BuildNativeFixture(mpi, false, width).mesh; });
+        std::optional<C::FiniteVolumePlan> metrics;
+        const double metricTime = measure([&]
+                                          { metrics = C::FiniteVolumePlan::ConstructMetrics(mesh); });
+        C::ReconstructionSettings settings;
+        settings.maxOrder = degree;
+        std::optional<C::VariationalReconstructionPlan> plan;
+        const double prepareTime = measure([&]
+                                           { plan = C::VariationalReconstructionPlan::ConstructRecCoeff(*metrics, settings); });
+        std::optional<C::ReconstructionDevicePlan> resident;
+        const double uploadTime = measure([&]
+                                          { resident = C::ReconstructionDevicePlan::Prepare(*plan, device, context); });
+        const I recWidth = components * plan->NRecDOF();
+        auto mean = metrics->BuildField(components);
+        Fill(mean, 1);
+        auto cpu = plan->BuildWorkspace(components);
+        auto bc = plan->BuildBoundaryValues(components);
+        {
+            auto write = bc.values.Write();
+            for (I iRow = 0; iRow < bc.values.RowCount(); ++iRow)
+                for (I j = 0; j < components; ++j)
+                    write.View()(iRow, j) = 1 + .01 * j;
+        }
+        auto deviceBC = resident->PrepareBoundary(bc);
+        metrics->BindHalo(mean).Begin().Wait();
+        for (auto kind : {R::RowLayoutKind::Table, R::RowLayoutKind::ColMajorTable, R::RowLayoutKind::TiledColMajorTable})
+        {
+            const auto shape = [&](I count)
+            { return kind == R::RowLayoutKind::Table ? R::RowLayout::Dense(0, count) : kind == R::RowLayoutKind::ColMajorTable ? R::RowLayout::ColMajor(0, count, {32, 1})
+                                                                                                                               : R::RowLayout::TiledColMajor(0, count, 32); };
+            auto gpuMean = resident->BuildField(shape(components));
+            Fill(gpuMean, 1);
+            auto gpu = resident->BuildWorkspace(components, shape(recWidth));
+            Fill(cpu.coefficients, .02);
+            Fill(gpu.coefficients, .02);
+            auto gpuMeanHalo = resident->BindHalo(gpuMean, transport), gpuHalo = resident->BindHalo(gpu.coefficients, transport), cpuHalo = metrics->BindHalo(cpu.coefficients);
+            gpuMeanHalo.Begin(context).Wait();
+            cpuHalo.Begin().Wait();
+            gpuHalo.Begin(context).Wait();
+            plan->DoReconstructionIter(mean, cpu, bc);
+            resident->DoReconstructionIter(gpuMean, gpu, deviceBC);
+            const double jacobiError = Error(cpu.coefficients, gpu.coefficients, mpi);
+            for (int order = degree; order >= 1; --order)
+            {
+                cpuHalo.Begin().Wait();
+                gpuHalo.Begin(context).Wait();
+                plan->DoLimiterWBAP_3Order(cpu, order);
+                resident->DoLimiterWBAP_3Order(gpu, order);
+            }
+            const double limiterError = Error(cpu.coefficients, gpu.coefficients, mpi);
+            DNDS_check_throw_info(jacobiError < 1e-8 && limiterError < 1e-8, "GPU benchmark numerical oracle failed");
+            gpuHalo.Begin(context).Wait();
+            R::EagerEngine engine;
+            auto stream = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
+            for (int warm = 0; warm < 3; ++warm)
+                resident->DoReconstructionIterTo(engine, stream, gpuMean, gpu.coefficients, gpu, deviceBC);
+            engine.Synchronize();
+            // A separate, untimed overlap probe extends real owned-only work.
+            // Observe a started but unfinished compute prefix at MPI completion;
+            // do not mix these extra event/launch costs into operator timings.
+            int overlapStarted = 0, overlapPending = 0;
+            if (mpi.size > 1)
+            {
+                MPI_Barrier(mpi.comm);
+                auto transfer = gpuHalo.Begin(context);
+                const auto begin = stream.Record();
+                for (int repeat = 0; repeat < 32; ++repeat)
+                    resident->DoReconstructionIterTo(engine, stream, gpuMean, gpu.coefficients, gpu, deviceBC, C::ReconstructionRegion::Core);
+                const auto end = stream.Record();
+                transfer.Wait();
+                overlapStarted = int(begin.Ready());
+                overlapPending = int(!end.Ready());
+                engine.Synchronize();
+            }
+            for (int trial = 0; trial < 3; ++trial)
+            {
+                const double jacobi = measure([&]
+                                              {for(int step=0;step<repeats;++step)resident->DoReconstructionIterTo(engine,stream,gpuMean,gpu.coefficients,gpu,deviceBC);engine.Synchronize(); }) /
+                                      repeats;
+                const double wbap = measure([&]
+                                            {for(int step=0;step<repeats;++step)resident->DoLimiterWBAP_3OrderTo(engine,stream,gpu,degree);engine.Synchronize(); }) /
+                                    repeats;
+                const double comm = measure([&]
+                                            {for(int step=0;step<repeats;++step)gpuHalo.Begin(context).Wait(); }) /
+                                    repeats;
+                const double integrated = measure([&]
+                                                  {for(int step=0;step<repeats;++step)
+                {
+                    auto exchange=gpuHalo.Begin(context);
+                    resident->DoReconstructionIterTo(engine,stream,gpuMean,gpu.coefficients,gpu,deviceBC,C::ReconstructionRegion::Core);
+                    exchange.Wait();
+                    resident->DoReconstructionIterTo(engine,stream,gpuMean,gpu.coefficients,gpu,deviceBC,C::ReconstructionRegion::HaloDependent);
+                    resident->CommitReconstruction(engine,stream,gpu);engine.Synchronize();
+                } }) /
+                                          repeats;
+                resident->CheckStatus(gpu);
+                if (mpi.rank == 0)
+                    std::cout << "CUDA_VR_BENCH " << nlohmann::ordered_json{{"np", mpi.size}, {"cells", width * width}, {"degree", degree}, {"components", components}, {"layout", int(kind)}, {"transport", transport == R::TransferTransport::DevicePacked ? "packed" : "direct"}, {"trial", trial}, {"mesh", meshTime}, {"metrics", metricTime}, {"prepare", prepareTime}, {"upload", uploadTime}, {"jacobi", jacobi}, {"wbap_highest_order", wbap}, {"communication", comm}, {"integrated", integrated}, {"core_prefix_started_at_mpi_completion", overlapStarted}, {"core_prefix_pending_at_mpi_completion", overlapPending}, {"jacobi_error", jacobiError}, {"limiter_error", limiterError}}.dump() << std::endl;
+            }
+        }
+    }
+    catch (const std::exception &error)
+    {
+        std::cerr << error.what() << std::endl;
+        result = 1;
+    }
+    MPI_Finalize();
+    return result;
+}

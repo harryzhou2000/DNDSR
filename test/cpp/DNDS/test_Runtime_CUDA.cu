@@ -2,6 +2,7 @@
 #include "doctest.h"
 #include "DNDS/Runtime/Storage/Buffer.hpp"
 #include "DNDS/Runtime/Array/Array.hpp"
+#include "DNDS/Runtime/Array/ArrayCopy.hpp"
 #include "DNDS/Runtime/Execution/EagerArray.hpp"
 #include "DNDS/Runtime/Execution/CUDAExecution.hpp"
 #include "DNDS/Legacy/Array.hpp"
@@ -475,4 +476,42 @@ TEST_CASE("CUDA column and tiled row views preserve physical padding and static 
     CheckStaticCUDAAccess<TiledColMajorTable<8>>(RowLayout::TiledColMajor(0, 21, 8));
     CheckEagerTypedCUDA<ColMajorTable>(RowLayout::ColMajor(33, 5, {32, 1}));
     CheckEagerTypedCUDA<TiledColMajorTable<8>>(RowLayout::TiledColMajor(33, 21, 8));
+}
+
+TEST_CASE("CUDA explicit format conversion never reads device row metadata on the host")
+{
+    using I = DNDS::index;
+    const auto context = ExecutionContext::CUDA(0);
+    Array<double> source(RowLayout::Dense(9, 5));
+    {
+        auto write = source.Write();
+        for (I iRow = 0; iRow < 9; ++iRow)
+            for (I j = 0; j < 5; ++j)
+                write.View()(iRow, j) = 100 * iRow + j + 1;
+    }
+    auto current = source.To(Device::CUDA(0));
+    for (const auto &shape : std::vector<RowLayout>{RowLayout::ColMajor(9, 5, {8, 1}), RowLayout::TiledColMajor(9, 5, 8),
+                                                    RowLayout::Ragged(std::vector<size_t>(9, 5)), RowLayout::Padded(std::vector<size_t>(9, 5), 7), RowLayout::Dense(9, 5, 8)})
+    {
+        current = ConvertLayout(current, shape);
+        const auto host = current.To(Device::Host());
+        const auto read = host.Read();
+        for (I iRow = 0; iRow < 9; ++iRow)
+            for (I j = 0; j < 5; ++j)
+                CHECK(read.View()(iRow, j) == 100 * iRow + j + 1);
+    }
+    Array<double> ragged(RowLayout::Ragged({0, 2, 5}));
+    {
+        auto write = ragged.Write();
+        for (I iRow = 0; iRow < 3; ++iRow)
+            for (I j = 0; j < I(ragged.RowSize(iRow)); ++j)
+                write.View()(iRow, j) = 10 * iRow + j;
+    }
+    auto device = ConvertLayout(ragged, RowLayout::Padded({0, 2, 5}, 7), Device::CUDA(0), context);
+    auto packed = ConvertLayout(device, RowLayout::Ragged({0, 2, 5}));
+    const auto host = ConvertLayout(packed, RowLayout::Padded({0, 2, 5}, 8), Device::Host(), context);
+    const auto read = host.Read();
+    for (I iRow = 0; iRow < 3; ++iRow)
+        for (I j = 0; j < I(host.RowSize(iRow)); ++j)
+            CHECK(read.View()(iRow, j) == 10 * iRow + j);
 }

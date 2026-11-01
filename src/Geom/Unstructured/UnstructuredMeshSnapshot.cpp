@@ -4,6 +4,31 @@
 
 namespace DNDS::Geom
 {
+    void UnstructuredMeshSnapshot::VisitAllocations(const std::function<void(uint64_t, size_t, Runtime::Device)> &visitor) const
+    {
+        const auto &state = Live();
+        const auto pair = [&](const auto &values)
+        {
+            if (!values)
+                return;
+            values->owned.SharedStorage()->VisitAllocations(visitor);
+            values->ghost.SharedStorage()->VisitAllocations(visitor);
+        };
+        for (const auto &adjacency : state.relations)
+            pair(adjacency);
+        pair(state.coords);
+        pair(state.nodeWallDist);
+        pair(state.cellInfo);
+        pair(state.bndInfo);
+        pair(state.faceInfo);
+        pair(state.edgeInfo);
+        pair(state.cellNodesPbi);
+        pair(state.bndNodesPbi);
+        pair(state.cellFacesPbi);
+        pair(state.faceNodesPbi);
+        pair(state.cellEdgesPbi);
+        pair(state.edgeNodesPbi);
+    }
     UnstructuredMeshSnapshot UnstructuredMeshSnapshot::FromNative(NativeMeshData data, MeshReadRequirements requirements)
     {
         DNDS_check_throw_info(data.namedRelations.empty(), "named setup relations require UnstructuredMeshState publication");

@@ -42,11 +42,11 @@ namespace DNDS::Geom::OverlapTest
 
     /// Independent Cartesian input and edge-length oracle; no file reader or
     /// legacy mesh allocation participates in this fixture.
-    inline Fixture BuildNativeFixture(MPIInfo mpi, bool emptyPeers = false)
+    inline Fixture BuildNativeFixture(MPIInfo mpi, bool emptyPeers = false, Index width = 10)
     {
         Fixture result;
-        constexpr Index width = 10;
-        constexpr real h = 0.1;
+        DNDS_check_throw_info(width > 0 && width <= 1024, "Cartesian fixture width must be in 1..1024");
+        const real h = real(1) / width;
         const int active = emptyPeers && mpi.size > 1 ? mpi.size - 1 : mpi.size;
         const auto split = [&](Index size)
         { return mpi.rank < active ? EvenSplitRange(mpi.rank, active, size) : std::pair<Index, Index>{size, size}; };
@@ -56,7 +56,7 @@ namespace DNDS::Geom::OverlapTest
         auto nodes = EntitySpace::CreateOwned(EntityKind::Node, mpi, nodeRows.second - nodeRows.first);
         auto cells = nodes.CreateSibling(EntityKind::Cell, width * (rows.second - rows.first));
         auto boundaries = nodes.CreateSibling(EntityKind::Bnd, boundaryRows.second - boundaryRows.first);
-        auto node = [](Index x, Index y)
+        auto node = [width](Index x, Index y)
         { return (width + 1) * y + x; };
         Runtime::RowBuilder cones(size_t(cells.NumOwned()), sizeof(Index));
         for (Index y = rows.first; y < rows.second; ++y)

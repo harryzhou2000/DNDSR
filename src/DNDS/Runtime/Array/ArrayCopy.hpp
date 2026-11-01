@@ -36,8 +36,12 @@ namespace DNDS::Runtime
                 const auto count = shape.RowSize(iRow);
                 const bool contiguous = shape.IsContiguousRows() && destination.IsContiguousRows();
                 for (index iComp = 0; iComp < count; iComp += contiguous ? count : 1)
-                    Detail::EnqueueCopyBytes(input[iRow].data() + iComp * input.ElementStride(), inputDevice,
-                                             output[iRow].data() + iComp * output.ElementStride(), device,
+                    // Address selection runs on the host. CSR offset/size
+                    // pointers in a CUDA view are device addresses; use the
+                    // retained authoritative host layout instead of reading
+                    // device metadata through view[iRow].
+                    Detail::EnqueueCopyBytes(input.data + shape.ElementOffset(iRow, iComp), inputDevice,
+                                             output.data + destination.ElementOffset(iRow, iComp), device,
                                              size_t(contiguous ? count : 1) * sizeof(T), context);
             }
             const auto done = Completion::Record(context);

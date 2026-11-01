@@ -23,12 +23,15 @@ Legacy/VariationalReconstruction.cpp
 Legacy/ModelEvaluator.cpp
 Prepare/FiniteVolumePlan.cpp
 Prepare/VariationalReconstructionPlan.cpp
+Prepare/ReconstructionDevicePlan.cpp
+Prepare/GradientPlan.cpp
+Operators/Gradient.cpp
 Prepare/PolynomialSamplingPlan.cpp
 Operators/Reconstruction.cpp
 Operators/ReconstructionLinear.cpp
 )
 if (DNDS_USE_CUDA)
-list(APPEND CPPS Legacy/VRDefines.cu)
+list(APPEND CPPS Legacy/VRDefines.cu Operators/CUDA/ReconstructionDevice.cu)
 endif()
 
 file(GLOB EXPLICIT_INST_CPP_FILES CONFIGURE_DEPENDS "Legacy/ExplicitInstantiations/*.cpp")

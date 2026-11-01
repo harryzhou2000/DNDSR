@@ -16,7 +16,7 @@ namespace DNDS::Algebra
         using Scalar = std::remove_const_t<typename ArrayView::value_type>;
         using Matrix = Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic>;
         using QualifiedMatrix = std::conditional_t<std::is_const_v<typename ArrayView::value_type>, const Matrix, Matrix>;
-        static constexpr int Inner = ArrayView::component_stride == Runtime::DynamicExtent ? Eigen::Dynamic : int(ArrayView::component_stride);
+        static constexpr int Inner = ArrayView::component_stride == Runtime::DynamicExtent || ArrayView::component_stride > INT_MAX ? Eigen::Dynamic : int(ArrayView::component_stride);
         using Stride = Eigen::Stride<Eigen::Dynamic, Inner>;
 
     public:
@@ -27,6 +27,9 @@ namespace DNDS::Algebra
                                   "Eigen row matrices require host placement and nonnegative dimensions");
             const auto extent = CheckedSize::Multiply(size_t(rows), size_t(columns));
             DNDS_check_throw_info(extent <= size_t(INT64_MAX), "local matrix extent exceeds signed index range");
+            const auto componentStride = view.ElementStride();
+            DNDS_check_throw_info(componentStride >= 0 && (!rows || componentStride <= INT64_MAX / std::max<index>(1, rows)),
+                                  "local matrix stride exceeds signed index range");
             // This adapter is intended for uniform tables. Variable-row callers
             // construct an explicitly checked row adapter instead of rescanning
             // CSR lengths during every matrix access.

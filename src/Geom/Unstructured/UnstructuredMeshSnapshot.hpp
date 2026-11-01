@@ -8,6 +8,7 @@
 #include "Geom/Connectivity/MeshTopologyTypes.hpp"
 #include <optional>
 #include <map>
+#include <functional>
 
 namespace DNDS::Geom
 {
@@ -96,6 +97,10 @@ namespace DNDS::Geom
         static UnstructuredMeshSnapshot Capture(UnstructuredMesh &source, MeshReadRequirements requirements = MeshReadRequirements::Primary());
         UnstructuredMeshSnapshot To(Runtime::Device device, Runtime::ExecutionContext context) const;
         UnstructuredMeshSnapshot To(Runtime::Device device) const { return To(device, {device == Runtime::Device::Host() ? GetDevice() : device, nullptr}); }
+        /// Enumerate retained payload and metadata allocations. Aliases may
+        /// repeat an identity; consumers deduplicate when computing totals.
+        /// Capacities exclude native allocator bookkeeping/alignment overhead.
+        void VisitAllocations(const std::function<void(uint64_t, size_t, Runtime::Device)> &visitor) const;
         Runtime::Device GetDevice() const { return Live().device; }
         Runtime::VersionStamp SourceStamp() const { return Live().source; }
         MeshAuditOptions AuditOptions() const { return Live().audit; }

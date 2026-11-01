@@ -87,7 +87,12 @@ namespace DNDS::Runtime
     enum class TransferTransport
     {
         Direct,
-        HostPacked
+        HostPacked,
+        /// Explicit CUDA pack/contiguous CUDA-aware MPI/unpack. Begin enqueues
+        /// packing and posts receives without waiting for the GPU; Test/Wait on
+        /// the MPI thread advances sends after packing and publishes receives
+        /// only after unpack/reduction. Both endpoints must share a CUDA device.
+        DevicePacked
     };
 
     struct Contribution
@@ -269,6 +274,9 @@ namespace DNDS::Runtime
         /// on the supplied stream before portable MPI is posted.
         /// Caller joins consumers explicitly and finishes CPU producers first;
         /// eager reservations permit conflicts but do not make races safe.
+        /// DevicePacked queues pack in this context and posts receives; call
+        /// Test/Wait on the MPI-permitted thread to advance sends/unpack. Its
+        /// CUDA inputs may have prior scheduled producers on this same stream.
         TransferOperation BeginScheduled(ExecutionContext context = ExecutionContext::Host()) const;
     };
 
@@ -278,6 +286,8 @@ namespace DNDS::Runtime
         std::unique_ptr<State> _state;
         friend class TransferBinding;
         explicit TransferOperation(std::unique_ptr<State> state);
+        bool PostPackedSends(bool wait);
+        bool CompleteDestination(bool wait);
 
     public:
         TransferOperation();

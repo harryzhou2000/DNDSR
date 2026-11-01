@@ -75,9 +75,10 @@ namespace DNDS::CFV
         std::array<index, 20> rankCounts{}; // Degree-three 3D has at most 19 modes.
     };
 
-    /// Borrowed metric spans for numerical loops. Retain FiniteVolumeRead through
-    /// every use. These initial pointers address host storage; device placement
-    /// is a later backend responsibility, not implied by callable accessors.
+    /// Plain metric spans for numerical loops. FiniteVolumeRead supplies host
+    /// pointers; ReconstructionDeviceRead supplies CUDA pointers. Retain the
+    /// corresponding scope through every use and execute on its declared device.
+    /// The historical HostView type name is retained for source compatibility.
     struct FiniteVolumeHostView
     {
         Runtime::ArrayView<const real, false, Runtime::FixedRows<8>> cells;
@@ -124,6 +125,7 @@ namespace DNDS::CFV
     /// identity. Mesh edits invalidate it. No solution or time-loop ownership.
     class FiniteVolumePlan
     {
+        friend class ReconstructionDevicePlan;
         std::shared_ptr<const Detail::FiniteVolumeData> _data;
         explicit FiniteVolumePlan(std::shared_ptr<const Detail::FiniteVolumeData> data) : _data(std::move(data)) {}
         friend class VariationalReconstructionPlan;
@@ -226,6 +228,7 @@ namespace DNDS::CFV
     /// storage. CPU kernels consume explicit arrays; no legacy VR owner exists.
     class VariationalReconstructionPlan
     {
+        friend class ReconstructionDevicePlan;
         friend class PolynomialSamplingPlan;
         std::shared_ptr<const Detail::ReconstructionData> _data;
         explicit VariationalReconstructionPlan(std::shared_ptr<const Detail::ReconstructionData> data) : _data(std::move(data)) {}

@@ -217,3 +217,60 @@ def test_stride_aware_reconstruction_uses_shared_runtime_physical_fields(format)
     expected = np.array([function(p + [0.01, -0.02, 0]) for p in centers]).reshape(-1, 1)
     np.testing.assert_allclose(values.numpy(), expected, atol=1e-9, rtol=1e-9)
     assert work.coefficients.owned.layout.kind == prototype.kind
+
+
+@pytest.mark.mpi
+def test_device_reconstruction_publication_layouts_and_python_shared_buffers():
+    grid = mesh()
+    metrics = CFV.FiniteVolumePlan.ConstructMetrics(grid)
+    settings = CFV.ReconstructionSettings()
+    settings.maxOrder = 2
+    plan = CFV.VariationalReconstructionPlan.ConstructRecCoeff(metrics, settings)
+    device = R.Device.cuda(0)
+    context = R.ExecutionContext(device)
+    if not R.cuda_enabled:
+        with pytest.raises(RuntimeError):
+            CFV.ReconstructionDevicePlan.Prepare(plan, device, context)
+        return
+    resident = CFV.ReconstructionDevicePlan.Prepare(plan, device, context)
+    assert sum(item.bytes for item in resident.Buffers()) > 0
+    components = 5
+    width = components * plan.NRecDOF()
+    cpu = plan.BuildWorkspace(components)
+    gpu = resident.BuildWorkspace(components, R.RowLayout.tiled_col_major(0, width, 8))
+    mean = metrics.BuildField(components)
+    gpu_mean = resident.BuildField(R.RowLayout.col_major(0, components, 32, 1))
+    values = 1 + .01 * np.arange(metrics.NumCell() * components).reshape(-1, components)
+    mean.owned.assign(values)
+    gpu_mean.owned.assign(values)
+    coefficients = .02 + .001 * np.arange(metrics.NumCell() * width).reshape(-1, width)
+    cpu.coefficients.owned.assign(coefficients)
+    gpu.coefficients.owned.assign(coefficients)
+    boundary = plan.BuildBoundaryValues(components)
+    boundary.values.assign(np.ones((plan.NumBoundaryQuadrature(), components)))
+    gpu_boundary = resident.PrepareBoundary(boundary)
+    metrics.BindHalo(mean).begin().wait()
+    resident.BindHalo(gpu_mean).begin(context).wait()
+    cpu_halo, gpu_halo = metrics.BindHalo(cpu.coefficients), resident.BindHalo(gpu.coefficients, R.TransferTransport.DevicePacked)
+    engine = R.EagerEngine()
+    stream = engine.cuda_stream(0)
+    for _ in range(3):
+        cpu_halo.begin().wait()
+        gpu_halo.begin(context).wait()
+        plan.DoReconstructionIter(mean, cpu, boundary)
+        resident.DoReconstructionIterTo(engine, stream, gpu_mean, gpu.coefficients, gpu, gpu_boundary)
+        resident.CommitReconstruction(engine, stream, gpu)
+        engine.synchronize()
+        resident.CheckStatus(gpu)
+        np.testing.assert_allclose(gpu.coefficients.owned.numpy(), cpu.coefficients.owned.numpy(), rtol=1e-9, atol=1e-10)
+    for order in (2, 1):
+        cpu_halo.begin().wait()
+        gpu_halo.begin(context).wait()
+        plan.DoLimiterWBAP_3Order(cpu, order)
+        resident.DoLimiterWBAP_3Order(gpu, order)
+        np.testing.assert_allclose(gpu.coefficients.owned.numpy(), cpu.coefficients.owned.numpy(), rtol=1e-8, atol=1e-9)
+    retained = gpu.coefficients.owned
+    expected = retained.numpy()
+    del gpu, resident, gpu_halo
+    gc.collect()
+    np.testing.assert_array_equal(retained.numpy(), expected)
