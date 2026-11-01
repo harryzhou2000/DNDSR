@@ -37,7 +37,7 @@ def test_nccl_queued_copies_and_retained_shared_arrays(packed):
     source = R.Array(shape, np.dtype("float64"), device)
     produced = R.Array(shape, source.dtype, device)
     destination = R.Array(R.RowLayout.tiled_col_major(rows, width, 8) if packed else shape, source.dtype, device)
-    checkpoint = R.Array(shape, source.dtype, device)
+    checkpoint = R.Array(destination.layout, source.dtype, device)
     values = np.arange(rows * width, dtype=np.float64).reshape(rows, width) + rank * 10000
     source.assign(values)
     mapping = list(reversed(range(rows))) if packed else list(range(rows))
