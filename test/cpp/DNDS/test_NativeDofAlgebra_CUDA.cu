@@ -1,7 +1,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
 #include "DNDS/Algebra/DofAlgebra.hpp"
-#include "DNDS/Runtime/CUDAExecution.hpp"
+#include "DNDS/Runtime/Execution/CUDAExecution.hpp"
 #include <cuda_runtime.h>
 
 namespace A = DNDS::Algebra;

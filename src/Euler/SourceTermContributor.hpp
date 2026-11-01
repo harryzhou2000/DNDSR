@@ -10,13 +10,13 @@
 
 #pragma once
 
-#include "Euler.hpp"
-#include "Gas.hpp"
-#include "RANS_ke.hpp"
-#include "Chemistry/ChemicalSource.hpp"
-#include "EulerEvaluatorSettings.hpp"
-#include "Physics/PhysicsProperties.hpp"
-#include "DNDS/EnvReader.hpp"
+#include "Euler/Euler.hpp"
+#include "Euler/Gas.hpp"
+#include "Euler/RANS_ke.hpp"
+#include "Euler/Chemistry/ChemicalSource.hpp"
+#include "Euler/EulerEvaluatorSettings.hpp"
+#include "Euler/Physics/PhysicsProperties.hpp"
+#include "DNDS/Config/EnvReader.hpp"
 #include <Eigen/Eigenvalues>
 #include <filesystem>
 #ifdef DNDS_DIST_MT_USE_OMP

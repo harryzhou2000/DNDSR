@@ -4,7 +4,7 @@
 #include "NativeMeshFacadeFixture.hpp"
 #include "InterfaceFixture.hpp"
 #include "Geom/IO/NativeMeshCGNS.hpp"
-#include "Geom/Mesh/Mesh_Helpers.hpp"
+#include "Geom/Unstructured/UnstructuredMeshHelpers.hpp"
 
 namespace G = DNDS::Geom;
 namespace R = DNDS::Runtime;

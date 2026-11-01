@@ -1,9 +1,9 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
-#include "Geom/Mesh/Mesh.hpp"
-#include "Geom/Mesh/NativeMeshBuilder.hpp"
-#include "Geom/Mesh/NativeMeshCGNS.hpp"
-#include "DNDS/Runtime/RowBuilder.hpp"
+#include "Geom/Unstructured/UnstructuredMesh.hpp"
+#include "Geom/Unstructured/NativeMeshBuilder.hpp"
+#include "Geom/IO/NativeMeshCGNS.hpp"
+#include "DNDS/Runtime/Array/RowBuilder.hpp"
 #include <array>
 #include <cstdint>
 #include <cstring>

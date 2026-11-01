@@ -13,7 +13,7 @@
 
 #include "DNDS/Legacy/ArrayTransformer.hpp"
 #include "DNDS/Legacy/ArrayDerived/ArrayEigenMatrix_DeviceView.hpp"
-#include "DNDS/Defines.hpp"
+#include "DNDS/Core/Defines.hpp"
 #include "DNDS/Device/DeviceStorage.hpp"
 
 namespace DNDS

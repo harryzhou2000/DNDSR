@@ -1,8 +1,8 @@
 #pragma once
 
 #include "Geom/Connectivity/MeshRelationTypes.hpp"
-#include "DNDS/IndexMapping.hpp"
-#include "DNDS/Runtime/RowTransfer.hpp"
+#include "DNDS/MPI/IndexMapping.hpp"
+#include "DNDS/Runtime/Communication/RowTransfer.hpp"
 #include <optional>
 
 namespace DNDS::Geom

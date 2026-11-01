@@ -9,7 +9,7 @@
 
 #pragma once
 
-#include "DNDS/Errors.hpp"
+#include "DNDS/Core/Errors.hpp"
 
 #include <algorithm>
 #include <cmath>

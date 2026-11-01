@@ -5,14 +5,14 @@
  */
 #pragma once
 
-#include "DNDS/Defines.hpp" // for correct  DNDS_SWITCH_INTELLISENSE
-#include "EulerEvaluator.hpp"
-#include "Geom/Mesh/MeshAccess.hpp"
-#include "DNDS/HardEigen.hpp"
+#include "DNDS/Core/Defines.hpp" // for correct  DNDS_SWITCH_INTELLISENSE
+#include "Euler/EulerEvaluator.hpp"
+#include "Geom/Compat/LegacyMeshRead.hpp"
+#include "DNDS/Math/HardEigen.hpp"
 #include <sstream>
 #include <iomanip>
-#include "SpecialFields.hpp"
-#include "DNDS/ExprtkWrapper.hpp"
+#include "Euler/SpecialFields.hpp"
+#include "DNDS/Config/ExprtkWrapper.hpp"
 
 namespace DNDS::Euler
 {

@@ -1,12 +1,12 @@
-#include "DNDS/Array.hpp"
+#include "DNDS/Legacy/Array.hpp"
 
 // #include "array_cuda_Test.hpp"
-#include "DNDS/ArrayDerived/ArrayAdjacency.hpp"
-#include "DNDS/ArrayDerived/ArrayEigenVector.hpp"
-#include "DNDS/ArrayDerived/ArrayEigenMatrix.hpp"
-#include "DNDS/ArrayDerived/ArrayEigenMatrixBatch.hpp"
-#include "DNDS/ArrayDerived/ArrayEigenUniMatrixBatch.hpp"
-#include "DNDS/ArrayPair.hpp"
+#include "DNDS/Legacy/ArrayDerived/ArrayAdjacency.hpp"
+#include "DNDS/Legacy/ArrayDerived/ArrayEigenVector.hpp"
+#include "DNDS/Legacy/ArrayDerived/ArrayEigenMatrix.hpp"
+#include "DNDS/Legacy/ArrayDerived/ArrayEigenMatrixBatch.hpp"
+#include "DNDS/Legacy/ArrayDerived/ArrayEigenUniMatrixBatch.hpp"
+#include "DNDS/Legacy/ArrayPair.hpp"
 #include "DNDS/Device/DeviceStorage.hpp"
 
 #include <iostream>

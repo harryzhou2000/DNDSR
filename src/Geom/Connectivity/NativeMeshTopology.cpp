@@ -5,8 +5,8 @@
 #include "Geom/Connectivity/AdjacencyRegistry.hpp"
 #include "Geom/Connectivity/NativePeriodicMatch.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
-#include "Geom/BoundaryCondition.hpp"
-#include "DNDS/Runtime/RowBuilder.hpp"
+#include "Geom/Interface/BoundaryCondition.hpp"
+#include "DNDS/Runtime/Array/RowBuilder.hpp"
 #include <set>
 
 namespace DNDS::Geom

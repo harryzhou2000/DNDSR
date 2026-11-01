@@ -2,10 +2,10 @@
 // cell means, boundary values and communication schedule in one MPI executable.
 // Run on one allocated node with OMP_NUM_THREADS=1; timings are max-rank seconds.
 #include "CFV/Plans/FiniteVolumePlan.hpp"
-#include "CFV/VariationalReconstruction.hpp"
-#include "CFV/VariationalReconstruction_LimiterProcedure.hxx"
+#include "CFV/Legacy/VariationalReconstruction.hpp"
+#include "CFV/Legacy/VariationalReconstruction_LimiterProcedure.hxx"
 #include "Geom/IO/NativeMeshCGNS.hpp"
-#include "Geom/Mesh/Mesh_Helpers.hpp"
+#include "Geom/Unstructured/UnstructuredMeshHelpers.hpp"
 #include <iostream>
 
 namespace C = DNDS::CFV;

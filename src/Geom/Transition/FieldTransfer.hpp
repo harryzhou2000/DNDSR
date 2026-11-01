@@ -1,10 +1,10 @@
 #pragma once
 
 #include "Geom/Transition/ReorderPlan.hpp"
-#include "DNDS/Runtime/Field.hpp"
-#include "DNDS/Runtime/Exchange.hpp"
-#include "DNDS/Runtime/RowTransfer.hpp"
-#include "DNDS/Runtime/TransferLayout.hpp"
+#include "DNDS/Runtime/Array/Field.hpp"
+#include "DNDS/Runtime/Communication/Exchange.hpp"
+#include "DNDS/Runtime/Communication/RowTransfer.hpp"
+#include "DNDS/Runtime/Communication/TransferLayout.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
 #include <algorithm>
 #include <cctype>

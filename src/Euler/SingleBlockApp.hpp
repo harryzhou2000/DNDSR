@@ -11,7 +11,7 @@
 
 #include <argparse.hpp>
 
-#include "EulerSolver.hpp"
+#include "Euler/EulerSolver.hpp"
 
 namespace DNDS::Euler
 {

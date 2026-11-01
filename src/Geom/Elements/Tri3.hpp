@@ -3,10 +3,10 @@
 // Element: Tri3
 // Regenerate: /usr/bin/python3 -m tools.gen_shape_functions.generate
 
-#include "DNDS/Defines.hpp"
-#include "Geom/Geometric.hpp"
-#include "Geom/ElemEnum.hpp"
-#include "Geom/ElementTraitsBase.hpp"
+#include "DNDS/Core/Defines.hpp"
+#include "Geom/Geometry/Geometric.hpp"
+#include "Geom/Elements/ElemEnum.hpp"
+#include "Geom/Elements/ElementTraitsBase.hpp"
 
 namespace DNDS::Geom::Elem
 {

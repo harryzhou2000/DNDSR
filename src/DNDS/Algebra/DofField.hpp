@@ -1,7 +1,7 @@
 #pragma once
 
-#include "DNDS/Runtime/Array.hpp"
-#include "DNDS/Runtime/CommunicationContext.hpp"
+#include "DNDS/Runtime/Array/Array.hpp"
+#include "DNDS/Runtime/Communication/CommunicationContext.hpp"
 #include <string>
 
 namespace DNDS::Algebra

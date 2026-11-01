@@ -2,8 +2,8 @@
 /// @file DeviceStorage_bind.hpp
 /// @brief pybind11 binding of the @ref DNDS::DeviceBackend "DeviceBackend" enum into the Python module.
 
-#include "DNDS/Defines_bind.hpp"
-#include "DeviceStorage.hpp"
+#include "DNDS/Bindings/Defines_bind.hpp"
+#include "DNDS/Device/DeviceStorage.hpp"
 
 namespace DNDS
 {

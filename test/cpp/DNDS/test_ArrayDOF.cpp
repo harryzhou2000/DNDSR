@@ -16,7 +16,7 @@
 
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
-#include "DNDS/ArrayDOF.hpp"
+#include "DNDS/Legacy/ArrayDOF.hpp"
 #include <cmath>
 
 using namespace DNDS;

@@ -1,13 +1,13 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
-#include "Geom/Mesh/NativeMeshPeriodicImport.hpp"
-#include "Geom/Mesh/NativeMeshTopology.hpp"
-#include "Geom/Mesh/NativeMeshTransition.hpp"
-#include "Geom/Mesh/NativeMeshArchive.hpp"
-#include "Geom/Mesh/RelationAccess.hpp"
-#include "DNDS/Runtime/RowBuilder.hpp"
+#include "Geom/IO/NativeMeshPeriodicImport.hpp"
+#include "Geom/Connectivity/NativeMeshTopology.hpp"
+#include "Geom/Transition/NativeMeshTransition.hpp"
+#include "Geom/IO/NativeMeshArchive.hpp"
+#include "Geom/Access/RelationAccess.hpp"
+#include "DNDS/Runtime/Array/RowBuilder.hpp"
 #include "DNDS/Serializer/SerializerJSON.hpp"
-#include "Geom/CGNS.hpp"
+#include "Geom/IO/CGNS.hpp"
 #include <filesystem>
 #include <unistd.h>
 

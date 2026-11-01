@@ -1,9 +1,9 @@
 #pragma once
 
 #include "Geom/Unstructured/MeshTypes.hpp"
-#include "Geom/Elements.hpp"
-#include "Geom/PeriodicTypes.hpp"
-#include "DNDS/Runtime/Array.hpp"
+#include "Geom/Elements/Elements.hpp"
+#include "Geom/Periodic/PeriodicTypes.hpp"
+#include "DNDS/Runtime/Array/Array.hpp"
 #include <type_traits>
 
 namespace DNDS::Geom

@@ -5,7 +5,7 @@
 
 #include "DNDS/Legacy/ArrayDerived/AdjacencyRow.hpp"
 #include "DNDS/Device/DeviceView.hpp"
-#include "DNDS/Defines.hpp"
+#include "DNDS/Core/Defines.hpp"
 #include "DNDS/Device/DeviceStorage.hpp"
 
 namespace DNDS

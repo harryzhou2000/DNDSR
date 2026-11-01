@@ -5,8 +5,8 @@
 ///        for_each_device_member(F&&).
 
 #include "DNDS/Device/DeviceStorage.hpp"
-#include "DNDS/Errors.hpp"
-#include "DNDS/ObjectUtils.hpp"
+#include "DNDS/Core/Errors.hpp"
+#include "DNDS/Core/ObjectUtils.hpp"
 
 #include <fmt/format.h>
 

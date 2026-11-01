@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Geom/Unstructured/UnstructuredMeshState.hpp"
-#include "Geom/RadialBasisFunction.hpp"
+#include "Geom/Math/RadialBasisFunction.hpp"
 #include <functional>
 
 namespace DNDS::Geom

@@ -5,7 +5,7 @@
 /// Extracted from Mesh.cpp for use by both the legacy ReorderLocalCellsLegacy
 /// and the new ReorderLocalCells (in Mesh_Reorder.cpp).
 
-#include "DNDS/Defines.hpp"
+#include "DNDS/Core/Defines.hpp"
 #include "Geom/Transition/SerialAdjReordering.hpp"
 
 #include <vector>

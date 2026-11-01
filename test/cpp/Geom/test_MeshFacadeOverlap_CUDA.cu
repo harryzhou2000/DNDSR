@@ -2,7 +2,7 @@
 #include "doctest.h"
 #include "MeshFacadeOverlapFixture.hpp"
 #include "MeshFacadeOverlapKernel.hpp"
-#include "DNDS/Runtime/CUDAExecution.hpp"
+#include "DNDS/Runtime/Execution/CUDAExecution.hpp"
 #include <cuda_runtime.h>
 #include <cstdlib>
 #include <iostream>

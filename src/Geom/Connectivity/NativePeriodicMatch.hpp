@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Geom/PeriodicTypes.hpp"
+#include "Geom/Periodic/PeriodicTypes.hpp"
 #include <algorithm>
 #include <optional>
 #include <vector>

@@ -1,4 +1,4 @@
-#include "Geom/OpenFOAMMesh.hpp"
+#include "Geom/IO/OpenFOAMMesh.hpp"
 #include <fstream>
 
 void test()

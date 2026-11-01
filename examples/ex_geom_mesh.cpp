@@ -12,7 +12,7 @@
  */
 
 #include "Geom/Mesh.hpp"
-#include "Geom/Quadrature.hpp"
+#include "Geom/Quadratures/Quadrature.hpp"
 
 #include <fmt/core.h>
 #include <iostream>

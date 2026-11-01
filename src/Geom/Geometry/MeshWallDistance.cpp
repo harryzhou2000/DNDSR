@@ -1,5 +1,5 @@
 #include "Geom/Unstructured/UnstructuredMesh.hpp"
-#include "Geom/Quadrature.hpp"
+#include "Geom/Quadratures/Quadrature.hpp"
 #include "Geom/Transition/FieldTransfer.hpp"
 #include "Geom/Connectivity/AdjacencyRegistry.hpp"
 

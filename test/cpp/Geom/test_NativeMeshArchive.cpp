@@ -1,11 +1,11 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
-#include "Geom/Mesh/NativeMeshArchive.hpp"
-#include "Geom/Mesh/NativeMeshBuilder.hpp"
-#include "Geom/Mesh/AdjacencyRegistry.hpp"
-#include "Geom/Mesh/EntityField.hpp"
-#include "Geom/Mesh/Mesh.hpp"
-#include "Geom/Mesh/MeshTransition.hpp"
+#include "Geom/IO/NativeMeshArchive.hpp"
+#include "Geom/Unstructured/NativeMeshBuilder.hpp"
+#include "Geom/Connectivity/AdjacencyRegistry.hpp"
+#include "Geom/Access/EntityField.hpp"
+#include "Geom/Unstructured/UnstructuredMesh.hpp"
+#include "Geom/Transition/MeshTransition.hpp"
 #include "DNDS/Serializer/SerializerH5.hpp"
 #include "DNDS/Serializer/SerializerJSON.hpp"
 #include <filesystem>

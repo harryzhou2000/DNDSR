@@ -1,7 +1,7 @@
 #include "Geom/Refinement/NativeMeshExtraction.hpp"
 #include "Geom/Transition/FieldTransfer.hpp"
 #include "Geom/Connectivity/NativePeriodicMatch.hpp"
-#include "DNDS/Runtime/RowBuilder.hpp"
+#include "DNDS/Runtime/Array/RowBuilder.hpp"
 #include <algorithm>
 #include <optional>
 

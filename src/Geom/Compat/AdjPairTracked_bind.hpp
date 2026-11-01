@@ -10,7 +10,7 @@
 ///   AdjPairTracked<tAdj1Pair>  (row_size=1)
 
 #include "Geom/Compat/AdjIndexInfo.hpp"
-#include "DNDS/ArrayDerived/ArrayAdjacency_bind.hpp"
+#include "DNDS/Legacy/ArrayDerived/ArrayAdjacency_bind.hpp"
 
 namespace DNDS::Geom
 {

@@ -8,7 +8,7 @@
 /// headers so each row can self-describe its matrix shapes.
 
 #include "DNDS/Device/DeviceView.hpp"
-#include "DNDS/Defines.hpp"
+#include "DNDS/Core/Defines.hpp"
 #include "DNDS/Device/DeviceStorage.hpp"
 #include "Eigen/src/Core/Matrix.h"
 #include "Eigen/src/Core/util/Constants.h"

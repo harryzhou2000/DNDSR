@@ -7,12 +7,12 @@
  *  device backend, constructs the corresponding Evaluator_impl<B> args, and calls
  *  the backend-specific kernel methods.
  */
-#include "EulerP_Evaluator.hpp"
+#include "EulerP/EulerP_Evaluator.hpp"
 #include "DNDS/Device/DeviceStorage.hpp"
-#include "DNDS/Errors.hpp"
+#include "DNDS/Core/Errors.hpp"
 #include "DNDS/Device/DeviceStorageHelper.hpp"
 #include "EulerP/EulerP.hpp"
-#include "EulerP_Evaluator_impl.hpp"
+#include "EulerP/EulerP_Evaluator_impl.hpp"
 #include <type_traits>
 
 namespace DNDS::EulerP

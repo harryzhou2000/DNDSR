@@ -1,4 +1,4 @@
-#include "CFV/Plans/ReconstructionData.hpp"
+#include "CFV/Detail/ReconstructionData.hpp"
 
 namespace DNDS::CFV
 {

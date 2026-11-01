@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Geom/Mesh/AdjacencyRegistry.hpp"
+#include "Geom/Connectivity/AdjacencyRegistry.hpp"
 #include "NativePeriodicFixtures.hpp"
 #include <set>
 

@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Geom/Connectivity/MeshRelationTypes.hpp"
-#include "DNDS/Runtime/Array.hpp"
+#include "DNDS/Runtime/Array/Array.hpp"
 #include <map>
 
 namespace DNDS::Geom

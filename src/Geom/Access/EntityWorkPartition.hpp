@@ -1,6 +1,6 @@
 #pragma once
 
-#include "PublishedAdjacency.hpp"
+#include "Geom/Access/PublishedAdjacency.hpp"
 
 namespace DNDS::Geom
 {

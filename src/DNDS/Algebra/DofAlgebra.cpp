@@ -1,4 +1,4 @@
-#include "DofAlgebra.hpp"
+#include "DNDS/Algebra/DofAlgebra.hpp"
 #include <array>
 #include <climits>
 

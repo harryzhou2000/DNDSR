@@ -2,8 +2,8 @@
 
 #include <cmath>
 
-#include "DNDS/HardEigen.hpp"
-#include "DNDS/Defines.hpp"
+#include "DNDS/Math/HardEigen.hpp"
+#include "DNDS/Core/Defines.hpp"
 
 namespace DNDS::Linear
 {

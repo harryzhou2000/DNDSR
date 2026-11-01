@@ -16,7 +16,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
 
-#include "DNDS/Array.hpp"
+#include "DNDS/Legacy/Array.hpp"
 
 #include <cstdint>
 #include <cstdio>

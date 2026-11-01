@@ -39,7 +39,7 @@
 /// - WriteIndexVectorPerRank
 /// - ArrayGlobalOffset_One semantics (rank-0-only write)
 /// - ArrayGlobalOffset_Parts auto-offset
-#include "SerializerBase.hpp"
+#include "DNDS/Serializer/SerializerBase.hpp"
 
 #include <hdf5.h>
 #include <fstream>

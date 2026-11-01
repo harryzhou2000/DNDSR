@@ -1,6 +1,6 @@
 #pragma once
 
-#include "PhysicsProperties.hpp"
+#include "Euler/Physics/PhysicsProperties.hpp"
 
 #ifdef DNDS_USE_CANTERA
 #    include "cantera/zerodim.h"

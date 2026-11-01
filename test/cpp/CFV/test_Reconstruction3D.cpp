@@ -18,8 +18,8 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 
-#include "CFV/VariationalReconstruction.hpp"
-#include "Geom/Mesh/Mesh_Helpers.hpp"
+#include "CFV/Legacy/VariationalReconstruction.hpp"
+#include "Geom/Unstructured/UnstructuredMeshHelpers.hpp"
 
 #include <array>
 #include <cmath>

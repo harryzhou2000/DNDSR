@@ -2,8 +2,8 @@
 /// @file DeviceStorage.hpp
 /// @brief Device memory abstraction layer with backend-specific storage and factory creation.
 
-#include "DNDS/Errors.hpp"
-#include "DNDS/Defines.hpp"
+#include "DNDS/Core/Errors.hpp"
+#include "DNDS/Core/Defines.hpp"
 #include <cstddef>
 #include <cstdint>
 #include <memory>

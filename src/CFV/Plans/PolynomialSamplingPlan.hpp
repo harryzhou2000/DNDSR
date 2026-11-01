@@ -1,6 +1,6 @@
 #pragma once
 
-#include "FiniteVolumePlan.hpp"
+#include "CFV/Plans/FiniteVolumePlan.hpp"
 
 namespace DNDS::CFV
 {

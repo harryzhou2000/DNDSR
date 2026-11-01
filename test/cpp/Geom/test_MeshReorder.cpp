@@ -2,9 +2,9 @@
 // test fields and maps, never legacy mesh authority or geometry storage.
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
-#include "Geom/Mesh/ReorderPlan.hpp"
-#include "Geom/Mesh/FieldTransfer.hpp"
-#include "Geom/Mesh/Mesh.hpp"
+#include "Geom/Transition/ReorderPlan.hpp"
+#include "Geom/Transition/FieldTransfer.hpp"
+#include "Geom/Unstructured/UnstructuredMesh.hpp"
 #include "NativeReorderChecks.hpp"
 #include <numeric>
 #include <set>

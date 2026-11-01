@@ -1,9 +1,9 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
-#include "DNDS/Runtime/ElementSchema.hpp"
-#include "DNDS/Runtime/RowTransfer.hpp"
-#include "Geom/Mesh/MeshTypes.hpp"
-#include "Geom/PeriodicTypes.hpp"
+#include "DNDS/Runtime/Storage/ElementSchema.hpp"
+#include "DNDS/Runtime/Communication/RowTransfer.hpp"
+#include "Geom/Unstructured/MeshTypes.hpp"
+#include "Geom/Periodic/PeriodicTypes.hpp"
 #include <array>
 #include <cstring>
 #include <iostream>

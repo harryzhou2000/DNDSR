@@ -8,7 +8,7 @@
 /// - WriteSerializer / ReadSerializer, device views
 
 #include "DNDS/Legacy/ArrayTransformer.hpp"
-#include "DNDS/Defines.hpp"
+#include "DNDS/Core/Defines.hpp"
 #include "DNDS/Legacy/ArrayDerived/ArrayEigenMatrixBatch_DeviceView.hpp"
 #include "DNDS/Device/DeviceStorage.hpp"
 

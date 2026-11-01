@@ -1,7 +1,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "MeshFacadeOverlapFixture.hpp"
-#include "Geom/Mesh/EntityField.hpp"
+#include "Geom/Access/EntityField.hpp"
 #include <cuda_runtime.h>
 #include <atomic>
 #include <cstdlib>

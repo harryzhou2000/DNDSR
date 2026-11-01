@@ -1,5 +1,5 @@
-#include "DNDS/Profiling.hpp"
-#include "DNDS/MPI.hpp"
+#include "DNDS/Diagnostics/Profiling.hpp"
+#include "DNDS/MPI/MPI.hpp"
 #include "fmt/core.h"
 #include <algorithm>
 #include <random>

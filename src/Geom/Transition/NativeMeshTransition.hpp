@@ -2,7 +2,7 @@
 #include "Geom/Unstructured/UnstructuredMeshState.hpp"
 #include "Geom/Unstructured/OwnedMeshData.hpp"
 #include "Geom/Transition/MeshReorderTypes.hpp"
-#include "DNDS/PermutationTransfer.hpp"
+#include "DNDS/Legacy/PermutationTransfer.hpp"
 #include <unordered_map>
 
 namespace DNDS::Geom

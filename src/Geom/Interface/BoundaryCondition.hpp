@@ -1,0 +1,164 @@
+#pragma once
+#include "Geom/Geometry/Geometric.hpp"
+#include "DNDS/MPI/MPI.hpp"
+#include <map>
+#include <functional>
+#include <unordered_map>
+
+namespace DNDS::Geom
+{
+    class BCName_2_ID
+    {
+        std::map<std::string, t_index> name_2_id;
+
+        void clear() { name_2_id.clear(); }
+
+        t_index operator[](const std::string &name)
+        {
+            auto found = name_2_id.find(name);
+            if (found == name_2_id.end())
+                return name_2_id[name] = static_cast<t_index>(name_2_id.size());
+            else
+                return (*found).second;
+        }
+    };
+
+    static const t_index BC_ID_INTERNAL = 0;    // do not change
+    static const t_index BC_ID_PERIODIC_1 = -1; // * periodic-s do not count as external face
+    static const t_index BC_ID_PERIODIC_2 = -2; // but should be identified also
+    static const t_index BC_ID_PERIODIC_3 = -3;
+
+    static const t_index BC_ID_PERIODIC_1_DONOR = -4;
+    static const t_index BC_ID_PERIODIC_2_DONOR = -5;
+    static const t_index BC_ID_PERIODIC_3_DONOR = -6;
+
+    static const t_index BC_ID_NULL = 1;
+    static const t_index BC_ID_DEFAULT_WALL = 2;
+    static const t_index BC_ID_DEFAULT_FAR = 3;
+    static const t_index BC_ID_DEFAULT_WALL_INVIS = 4;
+
+    static const t_index BC_ID_DEFAULT_SPECIAL_DMR_FAR = 11;
+    static const t_index BC_ID_DEFAULT_SPECIAL_RT_FAR = 12;
+    static const t_index BC_ID_DEFAULT_SPECIAL_IV_FAR = 13;
+    static const t_index BC_ID_DEFAULT_SPECIAL_2DRiemann_FAR = 14;
+    static const t_index BC_ID_DEFAULT_MAX = 20;
+
+    using t_FBCName_2_ID = std::function<t_index(const std::string &)>;
+    using t_FBCID_2_Name = std::function<std::string(t_index)>;
+
+    inline auto GetFaceName2IDDefault()
+    {
+        std::unordered_map<std::string, t_index> ret = {
+            {"PERIODIC_1", BC_ID_PERIODIC_1},
+            {"PERIODIC_2", BC_ID_PERIODIC_2},
+            {"PERIODIC_3", BC_ID_PERIODIC_3},
+            {"PERIODIC_1_DONOR", BC_ID_PERIODIC_1_DONOR},
+            {"PERIODIC_2_DONOR", BC_ID_PERIODIC_2_DONOR},
+            {"PERIODIC_3_DONOR", BC_ID_PERIODIC_3_DONOR},
+            {"WALL", BC_ID_DEFAULT_WALL},
+            {"bc-4", BC_ID_DEFAULT_WALL},
+            {"FAR", BC_ID_DEFAULT_FAR},
+            {"bc-2", BC_ID_DEFAULT_FAR},
+            {"WALL_INVIS", BC_ID_DEFAULT_WALL_INVIS},
+            {"bc-3", BC_ID_DEFAULT_WALL_INVIS},
+            {"bc-DMRFar", BC_ID_DEFAULT_SPECIAL_DMR_FAR},
+            {"bc-IVFar", BC_ID_DEFAULT_SPECIAL_IV_FAR},
+            {"bc-RTFar", BC_ID_DEFAULT_SPECIAL_RT_FAR},
+            {"bc-2DRiemannFar", BC_ID_DEFAULT_SPECIAL_2DRiemann_FAR}};
+        return ret;
+    }
+
+    static const t_FBCName_2_ID FBC_Name_2_ID_Default = [](const std::string &name) -> t_index
+    {
+        // if (name == "PERIODI
+        static const auto n2id_map = GetFaceName2IDDefault();
+        if (auto found = n2id_map.find(name); found != n2id_map.end())
+            return found->second;
+        return BC_ID_NULL;
+    };
+
+    DNDS_DEVICE_CALLABLE inline bool FaceIDIsExternalBC(t_index id)
+    {
+        return id > 0;
+    }
+
+    DNDS_DEVICE_CALLABLE inline bool FaceIDIsInternal(t_index id)
+    {
+        return id <= 0;
+    }
+
+    DNDS_DEVICE_CALLABLE inline bool FaceIDIsTrueInternal(t_index id)
+    {
+        return id == 0;
+    }
+
+    DNDS_DEVICE_CALLABLE inline bool FaceIDIsPeriodic(t_index id)
+    {
+        return id == BC_ID_PERIODIC_1 ||
+               id == BC_ID_PERIODIC_2 ||
+               id == BC_ID_PERIODIC_3 ||
+               id == BC_ID_PERIODIC_1_DONOR ||
+               id == BC_ID_PERIODIC_2_DONOR ||
+               id == BC_ID_PERIODIC_3_DONOR;
+    }
+
+    DNDS_DEVICE_CALLABLE inline bool FaceIDIsPeriodic1(t_index id)
+    {
+        return id == BC_ID_PERIODIC_1 ||
+               id == BC_ID_PERIODIC_1_DONOR;
+    }
+
+    DNDS_DEVICE_CALLABLE inline bool FaceIDIsPeriodic2(t_index id)
+    {
+        return id == BC_ID_PERIODIC_2 ||
+               id == BC_ID_PERIODIC_2_DONOR;
+    }
+
+    DNDS_DEVICE_CALLABLE inline bool FaceIDIsPeriodic3(t_index id)
+    {
+        return id == BC_ID_PERIODIC_3 ||
+               id == BC_ID_PERIODIC_3_DONOR;
+    }
+
+    DNDS_DEVICE_CALLABLE inline bool FaceIDIsPeriodicMain(t_index id)
+    {
+        return id == BC_ID_PERIODIC_1 ||
+               id == BC_ID_PERIODIC_2 ||
+               id == BC_ID_PERIODIC_3;
+    }
+
+    DNDS_DEVICE_CALLABLE inline bool FaceIDIsPeriodicDonor(t_index id)
+    {
+        return id == BC_ID_PERIODIC_1_DONOR ||
+               id == BC_ID_PERIODIC_2_DONOR ||
+               id == BC_ID_PERIODIC_3_DONOR;
+    }
+
+} // namespace DNDS::Geom
+
+namespace DNDS::Geom
+{
+    struct AutoAppendName2ID
+    {
+        std::unordered_map<std::string, t_index> n2id_map = GetFaceName2IDDefault();
+        t_index id_cap = BC_ID_DEFAULT_MAX;
+
+        AutoAppendName2ID()
+        {
+            for (const auto &[k, v] : n2id_map)
+                id_cap = std::max(v + 1, id_cap);
+        }
+
+        t_index operator()(const std::string name)
+        {
+            if (n2id_map.count(name))
+                return n2id_map.at(name);
+            else
+            {
+                n2id_map[name] = id_cap;
+                id_cap++;
+                return id_cap - 1;
+            }
+        }
+    };
+}

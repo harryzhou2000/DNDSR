@@ -1,5 +1,5 @@
-#include "CFV/Plans/ReconstructionData.hpp"
-#include "Geom/Quadrature.hpp"
+#include "CFV/Detail/ReconstructionData.hpp"
+#include "Geom/Quadratures/Quadrature.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
 
 namespace DNDS::CFV

@@ -1,5 +1,5 @@
 #include "CFV/Plans/PolynomialSamplingPlan.hpp"
-#include "CFV/Plans/ReconstructionData.hpp"
+#include "CFV/Detail/ReconstructionData.hpp"
 
 namespace DNDS::CFV
 {

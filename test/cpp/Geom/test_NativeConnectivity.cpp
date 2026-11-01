@@ -1,11 +1,11 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
-#include "Geom/Mesh/Mesh.hpp"
-#include "Geom/Mesh/AdjacencyRegistry.hpp"
+#include "Geom/Unstructured/UnstructuredMesh.hpp"
+#include "Geom/Connectivity/AdjacencyRegistry.hpp"
 #include "NativeMeshOverlapFixture.hpp"
-#include "Geom/Mesh/NativeMeshCGNS.hpp"
-#include "Geom/Mesh/NativeMeshTopology.hpp"
-#include "Geom/Mesh/NativeMeshAssembler.hpp"
+#include "Geom/IO/NativeMeshCGNS.hpp"
+#include "Geom/Connectivity/NativeMeshTopology.hpp"
+#include "Geom/Transition/NativeMeshAssembler.hpp"
 #include <set>
 #include <filesystem>
 

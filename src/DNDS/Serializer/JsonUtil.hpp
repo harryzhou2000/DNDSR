@@ -2,12 +2,12 @@
 /// @file JsonUtil.hpp
 /// @brief JSON-to-Eigen conversion utilities and nlohmann_json helper macros.
 
-#include "DNDS/Defines.hpp"
+#include "DNDS/Core/Defines.hpp"
 #define JSON_ASSERT DNDS_assert
 #include <nlohmann/json.hpp>
-#include "DNDS/EigenUtil.hpp"
+#include "DNDS/Math/EigenUtil.hpp"
 #include "DNDS/Device/DeviceStorage.hpp"
-#include "DNDS/Vector.hpp"
+#include "DNDS/Legacy/Vector.hpp"
 
 namespace DNDS
 {

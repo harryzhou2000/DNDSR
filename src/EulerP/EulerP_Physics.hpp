@@ -13,14 +13,14 @@
  *       NOT pressure. This differs from the Euler module convention.
  */
 #pragma once
-#include "DNDS/Defines.hpp"
+#include "DNDS/Core/Defines.hpp"
 #include "DNDS/Device/DeviceStorage.hpp"
-#include "DNDS/Errors.hpp"
-#include "DNDS/IdealGasPhysics.hpp"
-#include "EulerP.hpp"
+#include "DNDS/Core/Errors.hpp"
+#include "DNDS/Physics/IdealGasPhysics.hpp"
+#include "EulerP/EulerP.hpp"
 #include "DNDS/Serializer/JsonUtil.hpp"
 #include <cmath>
-#include "Geom/Geometric.hpp"
+#include "Geom/Geometry/Geometric.hpp"
 
 namespace DNDS::EulerP
 {
@@ -34,14 +34,14 @@ namespace DNDS::EulerP
     struct PhysicsParams
     {
         //! only simple data here allowed
-        real gamma = 1.4;    ///< Ratio of specific heats (Cp/Cv). Default: 1.4 for air.
-        real mu0 = 1e-100;   ///< Dynamic viscosity coefficient. Default: effectively inviscid.
-        real cp = 1.;        ///< Specific heat at constant pressure.
-        real cv = 1.;        ///< Specific heat at constant volume.
-        real Rg = 1.;        ///< Specific gas constant (Cp - Cv).
-        real TRef = 273.15;  ///< Reference temperature [K] for viscosity models.
+        real gamma = 1.4;   ///< Ratio of specific heats (Cp/Cv). Default: 1.4 for air.
+        real mu0 = 1e-100;  ///< Dynamic viscosity coefficient. Default: effectively inviscid.
+        real cp = 1.;       ///< Specific heat at constant pressure.
+        real cv = 1.;       ///< Specific heat at constant volume.
+        real Rg = 1.;       ///< Specific gas constant (Cp - Cv).
+        real TRef = 273.15; ///< Reference temperature [K] for viscosity models.
 
-        int muModel = 0;     ///< Viscosity model selector (0 = constant viscosity).
+        int muModel = 0; ///< Viscosity model selector (0 = constant viscosity).
         DNDS_NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_ORDERED_AND_UNORDERED_JSON(
             PhysicsParams,
             gamma, mu0, cp, Rg, TRef,
@@ -63,7 +63,7 @@ namespace DNDS::EulerP
     struct PhysicsDeviceView
     {
         vector_DeviceView<B, real, int32_t> reference_values; ///< Device-resident reference values (e.g., freestream quantities).
-        PhysicsParams params;                                  ///< Gas physical parameters (copied to device).
+        PhysicsParams params;                                 ///< Gas physical parameters (copied to device).
 
         DNDS_DEVICE_TRIVIAL_COPY_DEFINE_NO_EMPTY_CTOR(PhysicsDeviceView, PhysicsDeviceView)
 
@@ -339,7 +339,7 @@ namespace DNDS::EulerP
     struct Physics
     {
         host_device_vector<real> reference_values; ///< Reference values (e.g., freestream state) for non-dimensionalization.
-        PhysicsParams params;                       ///< Gas physical parameters.
+        PhysicsParams params;                      ///< Gas physical parameters.
         DNDS_NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_ORDERED_AND_UNORDERED_JSON(
             Physics,
             reference_values,

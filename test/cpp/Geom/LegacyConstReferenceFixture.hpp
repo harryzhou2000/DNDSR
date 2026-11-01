@@ -1,7 +1,7 @@
 #pragma once
 // TEST ONLY: independent DNDS Array payloads for the established const-view
 // kernel comparison. This is not an UnstructuredMesh or a production backend.
-#include "Geom/Mesh/Mesh_DeviceView.hpp"
+#include "Geom/Compat/LegacyMeshDeviceView.hpp"
 template <class Pair>
 static void PublishRows(Pair &pair, const std::string &name, DNDS::MPIInfo mpi,
                         const std::vector<std::vector<typename Pair::t_arr::value_type>> &rows)

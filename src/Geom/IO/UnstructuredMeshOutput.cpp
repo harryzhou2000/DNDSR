@@ -1,9 +1,9 @@
-#include "Geom/Quadrature.hpp"
+#include "Geom/Quadratures/Quadrature.hpp"
 #include "Geom/Unstructured/UnstructuredMesh.hpp"
 #include "Geom/IO/NativeMeshOutput.hpp"
 #include "Geom/Transition/FieldTransfer.hpp"
-#include "Geom/CGNS.hpp"
-#include "DNDS/OutputDir.hpp"
+#include "Geom/IO/CGNS.hpp"
+#include "DNDS/IO/OutputDir.hpp"
 #include <array>
 #include <thread>
 #include <filesystem>
@@ -11,7 +11,7 @@
 #include <zlib.h>
 
 #include <nanoflann.hpp>
-#include "Geom/PointCloud.hpp"
+#include "Geom/Spatial/PointCloud.hpp"
 
 #include <hdf5.h>
 #include <cgnslib.h>

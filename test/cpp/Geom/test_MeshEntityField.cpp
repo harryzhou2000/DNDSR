@@ -1,10 +1,10 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "NativeMeshOverlapFixture.hpp"
-#include "Geom/Mesh/NativeMeshState.hpp"
-#include "DNDS/Runtime/RowBuilder.hpp"
-#include "Geom/Mesh/EntityField.hpp"
-#include "Geom/Mesh/MeshTransition.hpp"
+#include "Geom/Unstructured/UnstructuredMeshState.hpp"
+#include "DNDS/Runtime/Array/RowBuilder.hpp"
+#include "Geom/Access/EntityField.hpp"
+#include "Geom/Transition/MeshTransition.hpp"
 #include <filesystem>
 
 using namespace DNDS;

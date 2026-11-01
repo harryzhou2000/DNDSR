@@ -1,9 +1,9 @@
 #pragma once
 
-#include "FiniteVolumePlan.hpp"
-#include "PolynomialSamplingPlan.hpp"
+#include "CFV/Plans/FiniteVolumePlan.hpp"
+#include "CFV/Plans/PolynomialSamplingPlan.hpp"
 #include "Geom/Interface/BoundaryInterface.hpp"
-#include "DNDS/Runtime/SparseBatchExchange.hpp"
+#include "DNDS/Runtime/Communication/SparseBatchExchange.hpp"
 
 namespace DNDS::CFV
 {

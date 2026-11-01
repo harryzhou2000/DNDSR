@@ -1,6 +1,6 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
-#include "DNDS/HardEigen.hpp"
+#include "DNDS/Math/HardEigen.hpp"
 
 TEST_CASE("SVD cutoff retains constrained modes and reports the actual rank")
 {

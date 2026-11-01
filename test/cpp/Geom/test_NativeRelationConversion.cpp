@@ -2,8 +2,8 @@
 #include "doctest.h"
 #include "MeshFacadeOverlapFixture.hpp"
 #include "NativePeriodicFixtures.hpp"
-#include "Geom/Mesh/NativeMeshAssembler.hpp"
-#include "Geom/Mesh/NativeMeshTransition.hpp"
+#include "Geom/Transition/NativeMeshAssembler.hpp"
+#include "Geom/Transition/NativeMeshTransition.hpp"
 
 namespace G = DNDS::Geom;
 namespace R = DNDS::Runtime;

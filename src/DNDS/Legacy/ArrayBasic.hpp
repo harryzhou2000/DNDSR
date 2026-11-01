@@ -2,9 +2,9 @@
 /// @file ArrayBasic.hpp
 /// @brief Array layout descriptors, non-owning views, row views, and iterator base.
 
-#include "DNDS/Defines.hpp"
-#include "DNDS/Errors.hpp"
-#include "DNDS/RowStorage.hpp"
+#include "DNDS/Core/Defines.hpp"
+#include "DNDS/Core/Errors.hpp"
+#include "DNDS/Memory/RowStorage.hpp"
 
 namespace DNDS
 {

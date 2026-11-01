@@ -1,4 +1,4 @@
-#include "DofAlgebra.hpp"
+#include "DNDS/Algebra/DofAlgebra.hpp"
 #include <cuda_runtime.h>
 #include <math_constants.h>
 

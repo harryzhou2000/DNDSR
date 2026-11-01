@@ -1,8 +1,8 @@
 #pragma once
-#include "Geom/Elements.hpp"
-#include "Geom/BoundaryCondition.hpp"
-#include "Geom/PeriodicInfo.hpp"
-#include "Geom/RadialBasisFunction.hpp"
+#include "Geom/Elements/Elements.hpp"
+#include "Geom/Interface/BoundaryCondition.hpp"
+#include "Geom/Periodic/PeriodicInfo.hpp"
+#include "Geom/Math/RadialBasisFunction.hpp"
 #include "DNDS/Config/ConfigParam.hpp"
 #include "Geom/Transition/ReorderPlan.hpp"
 #include "Geom/Access/MeshAccess.hpp"

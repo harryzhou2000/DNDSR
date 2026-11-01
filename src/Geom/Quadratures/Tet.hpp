@@ -1,7 +1,7 @@
 #pragma once
 
 #include <array>
-#include "QuadratureBase.hpp"
+#include "Geom/Quadratures/QuadratureBase.hpp"
 
 namespace DNDS::Geom::Elem
 {

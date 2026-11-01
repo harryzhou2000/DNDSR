@@ -1,9 +1,9 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
-#include "Geom/CGNS.hpp"
-#include "Geom/Mesh/NativeMeshCGNS.hpp"
-#include "Geom/Mesh/EntityField.hpp"
-#include "Geom/Mesh/Mesh.hpp"
+#include "Geom/IO/CGNS.hpp"
+#include "Geom/IO/NativeMeshCGNS.hpp"
+#include "Geom/Access/EntityField.hpp"
+#include "Geom/Unstructured/UnstructuredMesh.hpp"
 #include <algorithm>
 #include <array>
 #include <filesystem>

@@ -9,18 +9,18 @@
  */
 #pragma once
 
-#include "CFV/FiniteVolume.hpp"
-#include "DNDS/ArrayDOF.hpp"
-#include "DNDS/Defines.hpp"
+#include "CFV/Legacy/FiniteVolume.hpp"
+#include "DNDS/Legacy/ArrayDOF.hpp"
+#include "DNDS/Core/Defines.hpp"
 #include "DNDS/Device/DeviceStorage.hpp"
-#include "DNDS/Errors.hpp"
-#include "EulerP.hpp"
-#include "EulerP_BC.hpp"
-#include "EulerP_Physics.hpp"
+#include "DNDS/Core/Errors.hpp"
+#include "EulerP/EulerP.hpp"
+#include "EulerP/EulerP_BC.hpp"
+#include "EulerP/EulerP_Physics.hpp"
 #include <vector>
 #include "DNDS/Device/DeviceStorageHelper.hpp"
-#include "DNDS/ObjectUtils.hpp"
-#include "Geom/Mesh/NativeMeshSnapshot.hpp"
+#include "DNDS/Core/ObjectUtils.hpp"
+#include "Geom/Unstructured/UnstructuredMeshSnapshot.hpp"
 #include <map>
 #include <optional>
 

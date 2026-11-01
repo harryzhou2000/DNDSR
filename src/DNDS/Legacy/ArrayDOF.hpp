@@ -23,7 +23,7 @@
 #include "DNDS/Legacy/ArrayDerived/ArrayEigenVector.hpp"
 
 #include "DNDS/Legacy/ArrayPair.hpp"
-#include "DNDS/Defines.hpp"
+#include "DNDS/Core/Defines.hpp"
 #include "DNDS/Device/DeviceStorage.hpp"
 
 namespace DNDS

@@ -1,15 +1,15 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "LegacyMeshFixtureCodec.hpp"
-#include "Geom/Mesh/NativeMeshBuilder.hpp"
-#include "Geom/Mesh/NativeMeshTopology.hpp"
-#include "Geom/Mesh/NativeMeshTransition.hpp"
-#include "Geom/Mesh/MeshTransition.hpp"
-#include "DNDS/Runtime/RowBuilder.hpp"
+#include "Geom/Unstructured/NativeMeshBuilder.hpp"
+#include "Geom/Connectivity/NativeMeshTopology.hpp"
+#include "Geom/Transition/NativeMeshTransition.hpp"
+#include "Geom/Transition/MeshTransition.hpp"
+#include "DNDS/Runtime/Array/RowBuilder.hpp"
 #include "Solver/Direct.hpp"
-#include "Geom/Mesh/SerialAdjReordering.hpp"
-#include "DNDS/ArrayDerived/ArrayEigenVector.hpp"
-#include "DNDS/ArrayPair.hpp"
+#include "Geom/Transition/SerialAdjReordering.hpp"
+#include "DNDS/Legacy/ArrayDerived/ArrayEigenVector.hpp"
+#include "DNDS/Legacy/ArrayPair.hpp"
 
 namespace G = DNDS::Geom;
 namespace R = DNDS::Runtime;

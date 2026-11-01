@@ -1,9 +1,9 @@
 #pragma once
 // TEST ONLY: one-way historical primary wire decoding into Runtime ownership.
 // Derived groups may be reconstructed natively; no legacy mesh exists here.
-#include "Geom/Mesh/MeshTransition.hpp"
-#include "Geom/Mesh/NativeMeshLegacyArchive.hpp"
-#include "Geom/Mesh/NativeMeshPreparation.hpp"
+#include "Geom/Transition/MeshTransition.hpp"
+#include "Geom/Compat/NativeMeshLegacyArchive.hpp"
+#include "Geom/Unstructured/NativeMeshPreparation.hpp"
 #include "DNDS/Serializer/SerializerJSON.hpp"
 namespace DNDS::Geom::TestFixtureCodec
 {

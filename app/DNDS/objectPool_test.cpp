@@ -1,4 +1,4 @@
-#include "DNDS/ObjectPool.hpp"
+#include "DNDS/Memory/ObjectPool.hpp"
 
 void testObjectPool()
 {

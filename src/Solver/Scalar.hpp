@@ -1,7 +1,7 @@
 #pragma once
 
-#include "DNDS/HardEigen.hpp"
-#include "DNDS/Defines.hpp"
+#include "DNDS/Math/HardEigen.hpp"
+#include "DNDS/Core/Defines.hpp"
 #include "fmt/core.h"
 
 namespace DNDS::Scalar

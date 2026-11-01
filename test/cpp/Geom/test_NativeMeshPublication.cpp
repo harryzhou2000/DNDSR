@@ -1,11 +1,11 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
-#include "DNDS/ArrayPair.hpp"
-#include "DNDS/Array.hpp"
+#include "DNDS/Legacy/ArrayPair.hpp"
+#include "DNDS/Legacy/Array.hpp"
 #include "NativeMeshFacadeFixture.hpp"
 #include "NativeMeshOverlapFixture.hpp"
-#include "Geom/Mesh/NativeMeshAssembler.hpp"
-#include "Geom/Mesh/NativeMeshTransition.hpp"
+#include "Geom/Transition/NativeMeshAssembler.hpp"
+#include "Geom/Transition/NativeMeshTransition.hpp"
 #include "Solver/Direct.hpp"
 #include <optional>
 

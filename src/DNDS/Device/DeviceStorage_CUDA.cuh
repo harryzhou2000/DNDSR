@@ -1,6 +1,6 @@
 #pragma once
 
-#include "DeviceStorage.hpp"
+#include "DNDS/Device/DeviceStorage.hpp"
 
 #ifdef DNDS_USE_CUDA
 #    include <thrust/host_vector.h>

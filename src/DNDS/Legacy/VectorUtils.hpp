@@ -2,8 +2,8 @@
 /// @file VectorUtils.hpp
 /// @brief Small utilities for MPI-indexed type layouts (hindexed optimisation).
 
-#include "DNDS/Defines.hpp"
-#include "DNDS/MPI.hpp"
+#include "DNDS/Core/Defines.hpp"
+#include "DNDS/MPI/MPI.hpp"
 
 namespace DNDS
 {

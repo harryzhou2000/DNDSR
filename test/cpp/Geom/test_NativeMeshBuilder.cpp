@@ -1,7 +1,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
-#include "Geom/Mesh/NativeMeshBuilder.hpp"
-#include "DNDS/Runtime/RowBuilder.hpp"
+#include "Geom/Unstructured/NativeMeshBuilder.hpp"
+#include "DNDS/Runtime/Array/RowBuilder.hpp"
 #include "Geom/Transition/NativeMeshAssembler.hpp"
 #include "Geom/Connectivity/NativeMeshTopology.hpp"
 #include "Geom/Transition/NativeMeshTransition.hpp"

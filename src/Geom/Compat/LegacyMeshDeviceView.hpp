@@ -1,14 +1,14 @@
 #pragma once
-#include "Geom/Elements.hpp"
+#include "Geom/Elements/Elements.hpp"
 #include "Geom/Unstructured/MeshTypes.hpp"
-#include "DNDS/Array.hpp"
-#include "DNDS/ArrayDerived/ArrayAdjacency.hpp"
-#include "DNDS/ArrayDerived/ArrayEigenVector.hpp"
-#include "Geom/BoundaryCondition.hpp"
-#include "DNDS/ArrayPair.hpp"
-#include "Geom/PeriodicInfo.hpp"
-#include "Geom/RadialBasisFunction.hpp"
-#include "DNDS/ObjectUtils.hpp"
+#include "DNDS/Legacy/Array.hpp"
+#include "DNDS/Legacy/ArrayDerived/ArrayAdjacency.hpp"
+#include "DNDS/Legacy/ArrayDerived/ArrayEigenVector.hpp"
+#include "Geom/Interface/BoundaryCondition.hpp"
+#include "DNDS/Legacy/ArrayPair.hpp"
+#include "Geom/Periodic/PeriodicInfo.hpp"
+#include "Geom/Math/RadialBasisFunction.hpp"
+#include "DNDS/Core/ObjectUtils.hpp"
 #include "DNDS/Device/DeviceStorage.hpp"
 
 namespace DNDS::Geom

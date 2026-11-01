@@ -19,8 +19,8 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 
-#include "DNDS/Defines.hpp"
-#include "DNDS/MPI.hpp"
+#include "DNDS/Core/Defines.hpp"
+#include "DNDS/MPI/MPI.hpp"
 #include "Solver/Direct.hpp"
 #include <Eigen/Dense>
 #include <iostream>

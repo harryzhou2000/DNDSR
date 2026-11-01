@@ -1,6 +1,6 @@
 #include "Geom/IO/NativeMeshPeriodicImport.hpp"
-#include "DNDS/Runtime/RowBuilder.hpp"
-#include "Geom/PointCloud.hpp"
+#include "DNDS/Runtime/Array/RowBuilder.hpp"
+#include "Geom/Spatial/PointCloud.hpp"
 #include <nanoflann.hpp>
 #include <queue>
 

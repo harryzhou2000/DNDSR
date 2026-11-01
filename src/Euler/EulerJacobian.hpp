@@ -15,10 +15,10 @@
  */
 #pragma once
 
-#include "DNDS/Defines.hpp" // for correct  DNDS_SWITCH_INTELLISENSE
-#include "Euler.hpp"
-#include "DNDS/ArrayDerived/ArrayEigenUniMatrixBatch.hpp"
-#include "DNDS/HardEigen.hpp"
+#include "DNDS/Core/Defines.hpp" // for correct  DNDS_SWITCH_INTELLISENSE
+#include "Euler/Euler.hpp"
+#include "DNDS/Legacy/ArrayDerived/ArrayEigenUniMatrixBatch.hpp"
+#include "DNDS/Math/HardEigen.hpp"
 #include "Solver/Direct.hpp"
 
 namespace DNDS::Euler

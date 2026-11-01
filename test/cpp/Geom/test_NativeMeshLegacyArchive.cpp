@@ -1,11 +1,11 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "NativeMeshOverlapFixture.hpp"
-#include "Geom/Mesh/NativeMeshCGNS.hpp"
-#include "Geom/Mesh/NativeMeshPreparation.hpp"
-#include "Geom/Mesh/NativeMeshRefinement.hpp"
-#include "Geom/Mesh/NativeMeshLegacyArchive.hpp"
-#include "Geom/Mesh/Mesh_Helpers.hpp"
+#include "Geom/IO/NativeMeshCGNS.hpp"
+#include "Geom/Unstructured/NativeMeshPreparation.hpp"
+#include "Geom/Refinement/NativeMeshRefinement.hpp"
+#include "Geom/Compat/NativeMeshLegacyArchive.hpp"
+#include "Geom/Unstructured/UnstructuredMeshHelpers.hpp"
 #include "DNDS/Serializer/SerializerJSON.hpp"
 #include <fstream>
 #include <limits>

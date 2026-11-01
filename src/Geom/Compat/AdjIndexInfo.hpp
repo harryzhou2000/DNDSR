@@ -1,6 +1,6 @@
 #pragma once
 #include "Geom/Compat/LegacyMeshDeviceView.hpp"
-#include "DNDS/ArrayTransformer.hpp"
+#include "DNDS/Legacy/ArrayTransformer.hpp"
 
 namespace DNDS::Geom
 {

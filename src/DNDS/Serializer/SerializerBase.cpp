@@ -2,7 +2,7 @@
 /// @brief Out-of-line definition of the virtual destructor of @ref DNDS::SerializerBase "SerializerBase";
 /// separated so the vtable has a single translation-unit home.
 
-#include "SerializerBase.hpp"
+#include "DNDS/Serializer/SerializerBase.hpp"
 #include <algorithm>
 
 namespace DNDS::Serializer

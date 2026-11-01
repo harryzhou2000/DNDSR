@@ -1,9 +1,9 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
-#include "Geom/Mesh/Mesh.hpp"
-#include "Geom/Mesh/NativeMeshBuilder.hpp"
-#include "Geom/Mesh/NativeMeshTopology.hpp"
-#include "DNDS/Runtime/RowBuilder.hpp"
+#include "Geom/Unstructured/UnstructuredMesh.hpp"
+#include "Geom/Unstructured/NativeMeshBuilder.hpp"
+#include "Geom/Connectivity/NativeMeshTopology.hpp"
+#include "DNDS/Runtime/Array/RowBuilder.hpp"
 #include "NativePeriodicFixtures.hpp"
 
 namespace G = DNDS::Geom;

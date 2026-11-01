@@ -13,7 +13,7 @@
 /// - WriteIndexVectorPerRank
 /// - SetDeflateLevel impact verification
 /// - Error handling (nonexistent file, duplicate paths)
-#include "SerializerBase.hpp"
+#include "DNDS/Serializer/SerializerBase.hpp"
 
 #include "DNDS/Serializer/JsonUtil.hpp"
 #include <fstream>

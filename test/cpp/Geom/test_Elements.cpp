@@ -23,10 +23,10 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
 
-#include "Geom/Elements.hpp"
-#include "Geom/Quadrature.hpp"
-#include "Geom/PeriodicInfo.hpp"
-#include "Geom/OpenFOAMMesh.hpp"
+#include "Geom/Elements/Elements.hpp"
+#include "Geom/Quadratures/Quadrature.hpp"
+#include "Geom/Periodic/PeriodicInfo.hpp"
+#include "Geom/IO/OpenFOAMMesh.hpp"
 
 #include <cmath>
 #include <random>

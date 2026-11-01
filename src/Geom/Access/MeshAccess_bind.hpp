@@ -3,7 +3,7 @@
 #include "Geom/Unstructured/UnstructuredMesh.hpp"
 #include "Geom/Compat/LegacyFieldBridge.hpp"
 #include "Geom/Unstructured/UnstructuredMeshSnapshot.hpp"
-#include "DNDS/Defines_bind.hpp"
+#include "DNDS/Bindings/Defines_bind.hpp"
 #include <pybind11/numpy.h>
 
 namespace DNDS::Geom

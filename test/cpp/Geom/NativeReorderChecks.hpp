@@ -1,12 +1,12 @@
 #pragma once
 
-#include "Geom/Mesh/NativeMeshCGNS.hpp"
-#include "Geom/Mesh/NativeMeshPreparation.hpp"
-#include "Geom/Mesh/NativeMeshTransition.hpp"
-#include "Geom/Mesh/NativeMeshTopology.hpp"
-#include "Geom/Mesh/NativeMeshAssembler.hpp"
-#include "Geom/Mesh/MeshTransition.hpp"
-#include "Geom/Mesh/EntityField.hpp"
+#include "Geom/IO/NativeMeshCGNS.hpp"
+#include "Geom/Unstructured/NativeMeshPreparation.hpp"
+#include "Geom/Transition/NativeMeshTransition.hpp"
+#include "Geom/Connectivity/NativeMeshTopology.hpp"
+#include "Geom/Transition/NativeMeshAssembler.hpp"
+#include "Geom/Transition/MeshTransition.hpp"
+#include "Geom/Access/EntityField.hpp"
 #include "NativePeriodicFixtures.hpp"
 #include <cstring>
 #include <filesystem>

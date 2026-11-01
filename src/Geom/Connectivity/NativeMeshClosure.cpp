@@ -1,7 +1,7 @@
 #include "Geom/Connectivity/NativeMeshClosure.hpp"
 #include "Geom/Connectivity/AdjacencyRegistry.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
-#include "DNDS/Runtime/RowBuilder.hpp"
+#include "DNDS/Runtime/Array/RowBuilder.hpp"
 #include "Geom/Transition/NativeMeshAssembler.hpp"
 
 namespace DNDS::Geom

@@ -1,8 +1,8 @@
 #pragma once
 
-#include "Geom/Metis.hpp"
+#include "Geom/IO/Metis.hpp"
 #include "Geom/Connectivity/MeshRelationTypes.hpp"
-#include "DNDS/MPI.hpp"
+#include "DNDS/MPI/MPI.hpp"
 #include <algorithm>
 #include <utility>
 #include <vector>

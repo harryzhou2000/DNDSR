@@ -28,7 +28,7 @@
 #include <functional>
 #include <tuple>
 #include <filesystem>
-#include "DNDS/OutputDir.hpp"
+#include "DNDS/IO/OutputDir.hpp"
 #include <mutex>
 #include <future>
 
@@ -38,17 +38,17 @@
 // #endif
 #include "DNDS/Serializer/JsonUtil.hpp"
 #include "DNDS/Config/ConfigParam.hpp"
-#include "DNDS/EnvReader.hpp"
+#include "DNDS/Config/EnvReader.hpp"
 #include "DNDS/Serializer/SerializerFactory.hpp"
-#include "DNDS/CsvLog.hpp"
-#include "DNDS/ObjectPool.hpp"
+#include "DNDS/IO/CsvLog.hpp"
+#include "DNDS/Memory/ObjectPool.hpp"
 #include "Solver/Linear.hpp"
-#include "Geom/Mesh/Mesh.hpp"
-#include "CFV/VariationalReconstruction.hpp"
-#include "Gas.hpp"
-#include "EulerEvaluator.hpp"
-#include "EulerBC.hpp"
-#include "LimitedVR.hpp"
+#include "Geom/Unstructured/UnstructuredMesh.hpp"
+#include "CFV/Legacy/VariationalReconstruction.hpp"
+#include "Euler/Gas.hpp"
+#include "Euler/EulerEvaluator.hpp"
+#include "Euler/EulerBC.hpp"
+#include "Euler/LimitedVR.hpp"
 // #ifdef __DNDS_REALLY_COMPILING__HEADER_ON__
 // #undef __DNDS_REALLY_COMPILING__
 // #endif

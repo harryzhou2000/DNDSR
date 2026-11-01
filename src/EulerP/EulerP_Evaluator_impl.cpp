@@ -7,11 +7,11 @@
  *
  *  For the CUDA backend specializations, see the separate CUDA compilation unit.
  */
-#include "DNDS/Defines.hpp"
+#include "DNDS/Core/Defines.hpp"
 #include "DNDS/Device/DeviceStorage.hpp"
 #include "EulerP/EulerP.hpp"
-#include "EulerP_Evaluator_impl.hpp"
-#include "EulerP_Evaluator_impl_common.hxx"
+#include "EulerP/EulerP_Evaluator_impl.hpp"
+#include "EulerP/EulerP_Evaluator_impl_common.hxx"
 
 namespace DNDS::EulerP
 {

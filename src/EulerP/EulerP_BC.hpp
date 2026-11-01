@@ -16,10 +16,10 @@
 #pragma once
 #include "DNDS/Device/DeviceStorage.hpp"
 #include "DNDS/Config/ConfigEnum.hpp"
-#include "EulerP.hpp"
-#include "EulerP_Physics.hpp"
-#include "Geom/BoundaryCondition.hpp"
-#include "Geom/Geometric.hpp"
+#include "EulerP/EulerP.hpp"
+#include "EulerP/EulerP_Physics.hpp"
+#include "Geom/Interface/BoundaryCondition.hpp"
+#include "Geom/Geometry/Geometric.hpp"
 
 namespace DNDS::EulerP
 {
@@ -30,17 +30,17 @@ namespace DNDS::EulerP
      */
     enum class BCType : uint8_t
     {
-        Unknown = 0,      ///< Uninitialized or unrecognized BC type.
-        Far,              ///< Farfield BC (characteristic-based).
-        Wall,             ///< No-slip viscous wall (adiabatic).
-        WallInvis,        ///< Inviscid (slip) wall BC.
-        WallIsothermal,   ///< No-slip viscous wall with fixed temperature.
-        Out,              ///< Supersonic/subsonic outflow BC.
-        OutP,             ///< Outflow with specified back-pressure.
-        In,               ///< Supersonic/subsonic inflow BC.
-        InPsTs,           ///< Inflow with specified stagnation pressure and temperature.
-        Sym,              ///< Symmetry plane BC.
-        Special,          ///< Special-purpose BC for benchmark cases (e.g., DMR, Riemann).
+        Unknown = 0,    ///< Uninitialized or unrecognized BC type.
+        Far,            ///< Farfield BC (characteristic-based).
+        Wall,           ///< No-slip viscous wall (adiabatic).
+        WallInvis,      ///< Inviscid (slip) wall BC.
+        WallIsothermal, ///< No-slip viscous wall with fixed temperature.
+        Out,            ///< Supersonic/subsonic outflow BC.
+        OutP,           ///< Outflow with specified back-pressure.
+        In,             ///< Supersonic/subsonic inflow BC.
+        InPsTs,         ///< Inflow with specified stagnation pressure and temperature.
+        Sym,            ///< Symmetry plane BC.
+        Special,        ///< Special-purpose BC for benchmark cases (e.g., DMR, Riemann).
     };
 
     DNDS_DEFINE_ENUM_JSON(
@@ -209,9 +209,9 @@ namespace DNDS::EulerP
     template <DeviceBackend B>
     class BC_DeviceView
     {
-        BCStorageVecDeviceView<B> values; ///< Device-resident BC parameter values.
+        BCStorageVecDeviceView<B> values;    ///< Device-resident BC parameter values.
         Geom::t_index id = Geom::BC_ID_NULL; ///< Boundary zone identifier.
-        BCType type = BCType::Unknown;        ///< Type of boundary condition.
+        BCType type = BCType::Unknown;       ///< Type of boundary condition.
 
     public:
         DNDS_DEVICE_TRIVIAL_COPY_DEFINE(BC_DeviceView, BC_DeviceView)
@@ -228,8 +228,8 @@ namespace DNDS::EulerP
             BCType n_type)
             : values(n_values), id(n_id), type(n_type) {}
 
-        DNDS_DEVICE_CALLABLE Geom::t_index getId() const { return id; }   ///< Returns the boundary zone ID.
-        DNDS_DEVICE_CALLABLE BCType getType() const { return type; }       ///< Returns the boundary condition type.
+        DNDS_DEVICE_CALLABLE Geom::t_index getId() const { return id; }           ///< Returns the boundary zone ID.
+        DNDS_DEVICE_CALLABLE BCType getType() const { return type; }              ///< Returns the boundary condition type.
         DNDS_DEVICE_CALLABLE int32_t getNValues() const { return values.size(); } ///< Returns the number of BC parameter values.
         DNDS_DEVICE_CALLABLE real value(int32_t i) const { return values[i]; }    ///< Returns the i-th BC parameter value.
 
@@ -288,19 +288,19 @@ namespace DNDS::EulerP
      */
     class BC
     {
-        host_device_vector<real> values; ///< BC parameter values (e.g., freestream state, wall temperature).
+        host_device_vector<real> values;     ///< BC parameter values (e.g., freestream state, wall temperature).
         Geom::t_index id = Geom::BC_ID_NULL; ///< Boundary zone identifier.
-        BCType type = BCType::Unknown;        ///< Boundary condition type.
+        BCType type = BCType::Unknown;       ///< Boundary condition type.
 
     public:
-        [[nodiscard]] Geom::t_index getId() const { return id; }            ///< Returns the boundary zone ID.
-        void setId(Geom::t_index n_id) { id = n_id; }                      ///< Sets the boundary zone ID.
-        [[nodiscard]] BCType getType() const { return type; }               ///< Returns the BC type.
-        void setType(BCType n_type) { type = n_type; }                      ///< Sets the BC type.
+        [[nodiscard]] Geom::t_index getId() const { return id; }                                      ///< Returns the boundary zone ID.
+        void setId(Geom::t_index n_id) { id = n_id; }                                                 ///< Sets the boundary zone ID.
+        [[nodiscard]] BCType getType() const { return type; }                                         ///< Returns the BC type.
+        void setType(BCType n_type) { type = n_type; }                                                ///< Sets the BC type.
         [[nodiscard]] int32_t getNValues() const { return size_t_to_signed<int32_t>(values.size()); } ///< Returns the number of parameter values.
-        [[nodiscard]] real value(int i) const { return values.at(i); }      ///< Returns the i-th parameter value (bounds-checked).
-        void setValues(const std::vector<real> &v) { values = v; }          ///< Sets BC parameter values from a vector.
-        [[nodiscard]] auto getValues() const { return std::vector<real>(values); } ///< Returns a copy of BC parameter values as std::vector.
+        [[nodiscard]] real value(int i) const { return values.at(i); }                                ///< Returns the i-th parameter value (bounds-checked).
+        void setValues(const std::vector<real> &v) { values = v; }                                    ///< Sets BC parameter values from a vector.
+        [[nodiscard]] auto getValues() const { return std::vector<real>(values); }                    ///< Returns a copy of BC parameter values as std::vector.
 
         /// @brief Transfers BC values to host memory.
         void to_host()
@@ -376,9 +376,9 @@ namespace DNDS::EulerP
      */
     struct BCInput
     {
-        BCType type;              ///< Boundary condition type.
-        std::string name;         ///< Boundary zone name (must match mesh zone names).
-        std::vector<real> value;  ///< BC parameter values (meaning depends on BC type).
+        BCType type;             ///< Boundary condition type.
+        std::string name;        ///< Boundary zone name (must match mesh zone names).
+        std::vector<real> value; ///< BC parameter values (meaning depends on BC type).
         DNDS_NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_ORDERED_AND_UNORDERED_JSON(
             BCInput,
             type, name, value)
@@ -507,7 +507,7 @@ namespace DNDS::EulerP
         struct t_deviceView
         {
             host_device_vector<BC_DeviceView<B>> bcs_device_view; ///< Owned device storage of BC views.
-            BCHandlerDeviceView<B> view;                           ///< The handler device view referencing bcs_device_view.
+            BCHandlerDeviceView<B> view;                          ///< The handler device view referencing bcs_device_view.
 
             t_deviceView(host_device_vector<BC_DeviceView<B>> &&n_bcs_device_view)
                 : bcs_device_view(n_bcs_device_view),

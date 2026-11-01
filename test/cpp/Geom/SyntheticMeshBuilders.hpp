@@ -2,8 +2,8 @@
 /// @file SyntheticMeshBuilders.hpp
 /// @brief Shared synthetic mesh builders for MeshConnectivity unit tests.
 
-#include "Geom/Mesh/MeshConnectivity.hpp"
-#include "Geom/Mesh/Mesh.hpp"
+#include "Geom/Connectivity/MeshConnectivity.hpp"
+#include "Geom/Unstructured/UnstructuredMesh.hpp"
 #include <string>
 #include <vector>
 #include <set>
@@ -269,8 +269,8 @@ static inline SubEntityQuery makeFaceQuery(const tElemInfoArrayPair &parentElemI
                              static_cast<t_index>(eFace.type)};
     };
     q.extractNodes = [&parentElemInfo](DNDS::index iParent, int iSub,
-                                        const std::function<DNDS::index(int)> &parentNodes,
-                                        DNDS::index *out)
+                                       const std::function<DNDS::index(int)> &parentNodes,
+                                       DNDS::index *out)
     {
         auto eParent = Elem::Element{parentElemInfo[iParent]->getElemType()};
         auto eFace = eParent.ObtainFace(iSub);
@@ -304,8 +304,8 @@ static inline SubEntityQuery makeEdgeQuery(const tElemInfoArrayPair &parentElemI
                              static_cast<t_index>(eEdge.type)};
     };
     q.extractNodes = [&parentElemInfo](DNDS::index iParent, int iSub,
-                                        const std::function<DNDS::index(int)> &parentNodes,
-                                        DNDS::index *out)
+                                       const std::function<DNDS::index(int)> &parentNodes,
+                                       DNDS::index *out)
     {
         auto eParent = Elem::Element{parentElemInfo[iParent]->getElemType()};
         auto eEdge = eParent.ObtainEdge(iSub);
@@ -421,10 +421,10 @@ static inline Periodic2x2Mesh makePeriodic2x2Mesh(const MPIInfo &mpi)
         {3, 2, 0, 1}, // cell 3 (corner wraps)
     };
     uint8_t pbi[4][4] = {
-        {0, 0, 0, 0},                   // cell 0: all main
-        {0, 0x01, 0x01, 0},             // cell 1: nodes 1,2 have P1
-        {0, 0, 0x02, 0x02},             // cell 2: nodes 2,3 have P2
-        {0, 0x01, 0x01 | 0x02, 0x02},   // cell 3: mixed
+        {0, 0, 0, 0},                 // cell 0: all main
+        {0, 0x01, 0x01, 0},           // cell 1: nodes 1,2 have P1
+        {0, 0, 0x02, 0x02},           // cell 2: nodes 2,3 have P2
+        {0, 0x01, 0x01 | 0x02, 0x02}, // cell 3: mixed
     };
 
     ElemInfo qi;
@@ -543,8 +543,10 @@ makePeriodicMatchExtra(const tElemInfoArrayPair &cellElemInfo,
         {
             auto eEdge = eParentA.ObtainEdge(iSub);
             nFN = eEdge.GetNumNodes();
-            nodesA.resize(nFN); nodesB.resize(nFN);
-            pbiA.resize(nFN); pbiB.resize(nFN);
+            nodesA.resize(nFN);
+            nodesB.resize(nFN);
+            pbiA.resize(nFN);
+            pbiB.resize(nFN);
             eParentA.ExtractEdgeNodes(iSub, cell2node[iParent], nodesA);
             eParentA.ExtractEdgeNodes(iSub, cell2nodePbi[iParent], pbiA);
             eParentB.ExtractEdgeNodes(candidateSub, cell2node[candidateParent], nodesB);
@@ -554,8 +556,10 @@ makePeriodicMatchExtra(const tElemInfoArrayPair &cellElemInfo,
         {
             auto eFace = eParentA.ObtainFace(iSub);
             nFN = eFace.GetNumNodes();
-            nodesA.resize(nFN); nodesB.resize(nFN);
-            pbiA.resize(nFN); pbiB.resize(nFN);
+            nodesA.resize(nFN);
+            nodesB.resize(nFN);
+            pbiA.resize(nFN);
+            pbiB.resize(nFN);
             eParentA.ExtractFaceNodes(iSub, cell2node[iParent], nodesA);
             eParentA.ExtractFaceNodes(iSub, cell2nodePbi[iParent], pbiA);
             eParentB.ExtractFaceNodes(candidateSub, cell2node[candidateParent], nodesB);
@@ -587,7 +591,6 @@ makePeriodicMatchExtra(const tElemInfoArrayPair &cellElemInfo,
 // Distributed 3D hex mesh
 // ===========================================================================
 
-
 /// Build a distributed NxNxN hex mesh. Each rank owns one NxNxN block.
 /// Blocks are stacked in the X direction: rank p has X in [p*N, (p+1)*N].
 /// Node ownership: rank p owns nodes with X in [p*N, (p+1)*N), except
@@ -606,13 +609,13 @@ struct DistributedHex3D
     DNDS::index N;
     DNDS::MPI_int np;
     DNDS::index nCellLocal;
-    DNDS::index nNodeOwned;   // nodes owned by this rank
-    DNDS::index nNodeGhost;   // ghost nodes from neighbor ranks
-    DNDS::index nNodeTotal;   // owned + ghost
+    DNDS::index nNodeOwned; // nodes owned by this rank
+    DNDS::index nNodeGhost; // ghost nodes from neighbor ranks
+    DNDS::index nNodeTotal; // owned + ghost
 
-    tAdjPair cell2node;       // father = local cells, son = ghost cells (1-layer)
+    tAdjPair cell2node; // father = local cells, son = ghost cells (1-layer)
     tElemInfoArrayPair cellElemInfo;
-    tPbiPair cell2nodePbi;    // only if periodic
+    tPbiPair cell2nodePbi; // only if periodic
 
     ssp<GlobalOffsetsMapping> cellGM, nodeGM;
     ssp<OffsetAscendIndexMapping> cellGhostMapping, nodeGhostMapping;
@@ -863,9 +866,9 @@ struct DistributedHex3D
                 DNDS::index &ng = cell2node.son->operator()(ig, k);
                 auto [found, r, la] = nodeGhostMapping->search_indexAppend(ng);
                 DNDS_assert_info(found, fmt::format("ghost cell {} (global {}) node {} global {} not found "
-                    "(rank {}, nNodeOwned {}, nNodeGhost {}, expected from ghostCellNodes {})",
-                    ig, ghostCellGlobals[ig], k, ng, mpi.rank, nNodeOwned, nNodeGhost,
-                    ghostCellNodes[ig][k]));
+                                                    "(rank {}, nNodeOwned {}, nNodeGhost {}, expected from ghostCellNodes {})",
+                                                    ig, ghostCellGlobals[ig], k, ng, mpi.rank, nNodeOwned, nNodeGhost,
+                                                    ghostCellNodes[ig][k]));
                 ng = la;
             }
     }
@@ -890,8 +893,8 @@ static inline SubEntityQueryPbi makeHex8FaceQueryPbi(const tElemInfoArrayPair &c
         return SubEntityDesc{f.GetNumVertices(), f.GetNumNodes(), static_cast<t_index>(f.type)};
     };
     q.extractNodes = [&](DNDS::index iP, int iSub,
-                          const std::function<DNDS::index(int)> &pN,
-                          DNDS::index *out)
+                         const std::function<DNDS::index(int)> &pN,
+                         DNDS::index *out)
     {
         auto e = Elem::Element{cellElemInfo[iP]->getElemType()};
         auto f = e.ObtainFace(iSub);
@@ -905,7 +908,6 @@ static inline SubEntityQueryPbi makeHex8FaceQueryPbi(const tElemInfoArrayPair &c
     };
     return q;
 }
-
 
 // Helper: build SubEntityQueryPbi for edge extraction from Hex8
 static inline SubEntityQueryPbi makeHex8EdgeQueryPbi(const tElemInfoArrayPair &cellElemInfo)
@@ -922,8 +924,8 @@ static inline SubEntityQueryPbi makeHex8EdgeQueryPbi(const tElemInfoArrayPair &c
         return SubEntityDesc{ed.GetNumVertices(), ed.GetNumNodes(), static_cast<t_index>(ed.type)};
     };
     q.extractNodes = [&](DNDS::index iP, int iSub,
-                          const std::function<DNDS::index(int)> &pN,
-                          DNDS::index *out)
+                         const std::function<DNDS::index(int)> &pN,
+                         DNDS::index *out)
     {
         auto e = Elem::Element{cellElemInfo[iP]->getElemType()};
         auto ed = e.ObtainEdge(iSub);
@@ -937,4 +939,3 @@ static inline SubEntityQueryPbi makeHex8EdgeQueryPbi(const tElemInfoArrayPair &c
     };
     return q;
 }
-

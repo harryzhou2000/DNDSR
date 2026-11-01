@@ -12,10 +12,10 @@
  *    accumulation, MPI reduction, interpolation, and CSV output.
  */
 #pragma once
-#include "Euler.hpp"
-#include "EulerEvaluatorSettings.hpp"
-#include "Geom/BoundaryCondition.hpp"
-#include "Geom/Grid.hpp"
+#include "Euler/Euler.hpp"
+#include "Euler/EulerEvaluatorSettings.hpp"
+#include "Geom/Interface/BoundaryCondition.hpp"
+#include "Geom/Unstructured/Grid.hpp"
 
 #include <unordered_map>
 

@@ -28,7 +28,7 @@
 
 #    include <fmt/core.h>
 
-#    include "DNDS/Defines.hpp"
+#    include "DNDS/Core/Defines.hpp"
 #    include "DNDS/Legacy/ArrayBasic.hpp"
 #    include "DNDS/Device/DeviceStorage.hpp"
 #    include "DNDS/Device/DeviceView.hpp"

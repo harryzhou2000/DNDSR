@@ -2,7 +2,7 @@
 
 #include "DNDS/Config/ConfigParam.hpp"
 #include "DNDS/Config/ConfigEnum.hpp"
-#include "Geom/Geometric.hpp"
+#include "Geom/Geometry/Geometric.hpp"
 
 namespace DNDS::CFV
 {

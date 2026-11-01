@@ -1,7 +1,7 @@
 #pragma once
-#include "Geom/Mesh/Mesh.hpp"
-#include "Geom/Mesh/NativeMeshState.hpp"
-#include "DNDS/Runtime/RowBuilder.hpp"
+#include "Geom/Unstructured/UnstructuredMesh.hpp"
+#include "Geom/Unstructured/UnstructuredMeshState.hpp"
+#include "DNDS/Runtime/Array/RowBuilder.hpp"
 
 namespace NativeFacadeFixture
 {

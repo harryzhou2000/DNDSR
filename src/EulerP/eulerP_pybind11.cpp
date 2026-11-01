@@ -1,7 +1,7 @@
-#include "DNDS/Defines_bind.hpp"
-#include "EulerP_Physics_bind.hpp"
-#include "EulerP_BC_bind.hpp"
-#include "EulerP_Evaluator_bind.hpp"
+#include "DNDS/Bindings/Defines_bind.hpp"
+#include "EulerP/EulerP_Physics_bind.hpp"
+#include "EulerP/EulerP_BC_bind.hpp"
+#include "EulerP/EulerP_Evaluator_bind.hpp"
 
 PYBIND11_MODULE(eulerP_pybind11, m)
 {

@@ -1,4 +1,4 @@
-#include "BoundaryInterface.hpp"
+#include "Geom/Interface/BoundaryInterface.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
 
 namespace DNDS::Geom

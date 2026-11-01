@@ -1,6 +1,6 @@
 #pragma once
 
-#include "DNDS/MPI.hpp"
+#include "DNDS/MPI/MPI.hpp"
 #include <exception>
 
 namespace DNDS::MPI

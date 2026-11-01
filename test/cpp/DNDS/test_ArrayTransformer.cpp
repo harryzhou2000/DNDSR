@@ -14,8 +14,8 @@
 
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
-#include "DNDS/Array.hpp"
-#include "DNDS/ArrayTransformer.hpp"
+#include "DNDS/Legacy/Array.hpp"
+#include "DNDS/Legacy/ArrayTransformer.hpp"
 #include <cstdint>
 #include <memory>
 #include <vector>

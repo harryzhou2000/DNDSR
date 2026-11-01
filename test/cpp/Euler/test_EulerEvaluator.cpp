@@ -25,9 +25,9 @@
 #include "doctest.h"
 
 #include "Euler/EulerSolver.hpp"
-#include "Geom/Mesh/Mesh_Helpers.hpp"
-#include "Geom/Mesh/NativeMeshAssembler.hpp"
-#include "Geom/Mesh/NativeMeshTopology.hpp"
+#include "Geom/Unstructured/UnstructuredMeshHelpers.hpp"
+#include "Geom/Transition/NativeMeshAssembler.hpp"
+#include "Geom/Connectivity/NativeMeshTopology.hpp"
 
 #include <fstream>
 #include <iostream>

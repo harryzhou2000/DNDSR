@@ -1,4 +1,4 @@
-#include "DNDS/Array.hpp"
+#include "DNDS/Legacy/Array.hpp"
 
 #include "DNDS/Serializer/SerializerBase.hpp"
 #include "DNDS/Serializer/SerializerJSON.hpp"

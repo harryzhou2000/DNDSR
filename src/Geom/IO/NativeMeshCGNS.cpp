@@ -3,9 +3,9 @@
 #include "Geom/Transition/NativeMeshTransition.hpp"
 #include "Geom/Transition/NativeMeshAssembler.hpp"
 #include "Geom/Transition/FieldTransfer.hpp"
-#include "Geom/CGNS.hpp"
+#include "Geom/IO/CGNS.hpp"
 #include <pcgnslib.h>
-#include "DNDS/Runtime/RowBuilder.hpp"
+#include "DNDS/Runtime/Array/RowBuilder.hpp"
 #include <limits>
 #include <set>
 #include <atomic>

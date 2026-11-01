@@ -1,9 +1,9 @@
 #include "doctest.h"
-#include "DNDS/Array.hpp"
-#include "DNDS/ArrayDerived/ArrayEigenUniMatrixBatch.hpp"
-#include "DNDS/ArrayDerived/ArrayEigenMatrix.hpp"
-#include "DNDS/ArrayRedistributor.hpp"
-#include "DNDS/ArrayPair.hpp"
+#include "DNDS/Legacy/Array.hpp"
+#include "DNDS/Legacy/ArrayDerived/ArrayEigenUniMatrixBatch.hpp"
+#include "DNDS/Legacy/ArrayDerived/ArrayEigenMatrix.hpp"
+#include "DNDS/Legacy/ArrayRedistributor.hpp"
+#include "DNDS/Legacy/ArrayPair.hpp"
 #include "DNDS/Serializer/SerializerH5.hpp"
 #include <filesystem>
 #include <limits>

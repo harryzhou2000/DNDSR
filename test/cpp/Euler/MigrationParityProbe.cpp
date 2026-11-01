@@ -10,7 +10,7 @@
  */
 #include "Euler/EulerSolver.hpp"
 #if __has_include("Geom/Mesh/NativeMeshState.hpp")
-#    include "Geom/Mesh/NativeMeshState.hpp"
+#    include "Geom/Unstructured/UnstructuredMeshState.hpp"
 #    define DNDS_MIGRATION_NATIVE 1
 #else
 #    define DNDS_MIGRATION_NATIVE 0

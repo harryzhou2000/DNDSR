@@ -15,11 +15,11 @@
  * conflicts with POSIX index() from <strings.h> under nvcc.
  */
 
-#include "CFV/FiniteVolume.hpp"
-#include "Geom/Mesh/Mesh.hpp"
-#include "Geom/Mesh/NativeMeshCGNS.hpp"
-#include "Geom/Mesh/NativeMeshTopology.hpp"
-#include "Geom/Mesh/Mesh_Helpers.hpp"
+#include "CFV/Legacy/FiniteVolume.hpp"
+#include "Geom/Unstructured/UnstructuredMesh.hpp"
+#include "Geom/IO/NativeMeshCGNS.hpp"
+#include "Geom/Connectivity/NativeMeshTopology.hpp"
+#include "Geom/Unstructured/UnstructuredMeshHelpers.hpp"
 #include "../Geom/LegacyMeshFixtureCodec.hpp"
 #include "DNDS/Device/CUDA_Utils.hpp"
 

@@ -1,7 +1,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
-#include "DNDS/Runtime/LegacyArrayBridge.hpp"
-#include "DNDS/Runtime/RowBuilder.hpp"
+#include "DNDS/Compat/LegacyArrayBridge.hpp"
+#include "DNDS/Runtime/Array/RowBuilder.hpp"
 #include <array>
 
 namespace R = DNDS::Runtime;

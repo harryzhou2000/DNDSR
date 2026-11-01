@@ -11,8 +11,8 @@
  */
 #pragma once
 
-#include "DNDS/Defines_bind.hpp"
-#include "EulerP_BC.hpp"
+#include "DNDS/Bindings/Defines_bind.hpp"
+#include "EulerP/EulerP_BC.hpp"
 
 #include <pybind11_json/pybind11_json.hpp>
 #include <pybind11/stl.h>

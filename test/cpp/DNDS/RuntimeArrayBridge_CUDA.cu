@@ -1,5 +1,5 @@
-#include "DNDS/Runtime/Array.hpp"
-#include "DNDS/Runtime/EagerArray.hpp"
+#include "DNDS/Runtime/Array/Array.hpp"
+#include "DNDS/Runtime/Execution/EagerArray.hpp"
 #include <cuda_runtime.h>
 #include <atomic>
 #include <thread>

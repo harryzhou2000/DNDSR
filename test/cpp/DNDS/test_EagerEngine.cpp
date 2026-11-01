@@ -1,10 +1,10 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
-#include "DNDS/Runtime/EagerEngine.hpp"
-#include "DNDS/Runtime/EagerArray.hpp"
-#include "DNDS/Runtime/EagerCopy.hpp"
-#include "DNDS/Runtime/CUDAExecution.hpp"
-#include "DNDS/Runtime/RowBuilder.hpp"
+#include "DNDS/Runtime/Execution/EagerEngine.hpp"
+#include "DNDS/Runtime/Execution/EagerArray.hpp"
+#include "DNDS/Runtime/Execution/EagerCopy.hpp"
+#include "DNDS/Runtime/Execution/CUDAExecution.hpp"
+#include "DNDS/Runtime/Array/RowBuilder.hpp"
 #include <atomic>
 #include <thread>
 #include <stdexcept>

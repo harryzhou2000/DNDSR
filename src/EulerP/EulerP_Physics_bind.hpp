@@ -9,8 +9,8 @@
  */
 #pragma once
 
-#include "EulerP_Physics.hpp"
-#include "DNDS/Defines_bind.hpp"
+#include "EulerP/EulerP_Physics.hpp"
+#include "DNDS/Bindings/Defines_bind.hpp"
 #include <pybind11_json/pybind11_json.hpp>
 
 namespace DNDS::EulerP

@@ -1,4 +1,4 @@
-#include "ElementGeometry.hpp"
+#include "Geom/Spatial/ElementGeometry.hpp"
 
 namespace DNDS::Geom
 {

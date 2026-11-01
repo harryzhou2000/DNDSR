@@ -1,7 +1,7 @@
 #pragma once
 
-#include "DofField.hpp"
-#include "DNDS/Runtime/EagerArray.hpp"
+#include "DNDS/Algebra/DofField.hpp"
+#include "DNDS/Runtime/Execution/EagerArray.hpp"
 #include <cmath>
 #include <array>
 #include <functional>

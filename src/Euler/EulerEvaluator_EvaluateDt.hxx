@@ -5,9 +5,9 @@
  *         boundary value generation, and output variable registration.
  */
 #pragma once
-#include "EulerEvaluator.hpp"
-#include "Geom/Mesh/MeshAccess.hpp"
-#include "RANS_ke.hpp"
+#include "Euler/EulerEvaluator.hpp"
+#include "Geom/Compat/LegacyMeshRead.hpp"
+#include "Euler/RANS_ke.hpp"
 #include "Solver/Linear.hpp"
 
 #define CGAL_DISABLE_ROUNDING_MATH_CHECK // for valgrind

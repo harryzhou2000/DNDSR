@@ -21,11 +21,11 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 
-#include "CFV/VariationalReconstruction.hpp"
-#include "Geom/Mesh/NativeMeshCGNS.hpp"
-#include "Geom/Mesh/Mesh_Helpers.hpp"
-#include "Geom/Mesh/NativeMeshAssembler.hpp"
-#include "Geom/Mesh/NativeMeshTopology.hpp"
+#include "CFV/Legacy/VariationalReconstruction.hpp"
+#include "Geom/IO/NativeMeshCGNS.hpp"
+#include "Geom/Unstructured/UnstructuredMeshHelpers.hpp"
+#include "Geom/Transition/NativeMeshAssembler.hpp"
+#include "Geom/Connectivity/NativeMeshTopology.hpp"
 #include "DNDS/Serializer/SerializerJSON.hpp"
 #include "Solver/Direct.hpp"
 
@@ -1165,7 +1165,7 @@ TEST_CASE("Native periodic face slots match independent Quad4 vertex and neighbo
 // check non-negative".
 // ===================================================================
 
-#include "CFV/VariationalReconstruction_LimiterProcedure.hxx"
+#include "CFV/Legacy/VariationalReconstruction_LimiterProcedure.hxx"
 
 /// Identity eigenvalue transform for nVarsFixed==1 (scalar).
 static tVR::tLimitBatch<g_nv> identityFM(

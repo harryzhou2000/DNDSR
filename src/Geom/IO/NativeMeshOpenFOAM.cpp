@@ -1,6 +1,6 @@
 #include "Geom/IO/NativeMeshOpenFOAM.hpp"
-#include "Geom/OpenFOAMMesh.hpp"
-#include "DNDS/Runtime/RowBuilder.hpp"
+#include "Geom/IO/OpenFOAMMesh.hpp"
+#include "DNDS/Runtime/Array/RowBuilder.hpp"
 #include "Geom/Transition/FieldTransfer.hpp"
 #include "Geom/Transition/NativeMeshAssembler.hpp"
 #include <fstream>

@@ -1,5 +1,36 @@
 # Runtime, algebra, legacy storage and unstructured mesh sources
 
+## Cauchy preliminary source cleanup
+
+The current canonical relocation list is [source_paths.json](source_paths.json).
+Module roots `DNDS/`, `Geom/` and `CFV/` now contain only their CMake files.
+Implementation headers live with their responsibility; all in-repository
+includes use those canonical paths. This stage changes includes/source lists,
+not public namespaces, storage formats or numerical algorithms.
+
+Historical includes live in the explicit `Compat/Include` overlay of each
+module. `dnds_compat_headers` is an INTERFACE include target, not a compiled
+library. `DNDS_ENABLE_LEGACY_INCLUDES=ON` exposes that overlay to existing
+project targets; switch it off to check canonical-only consumers. External
+users can opt in by linking the compatibility header target or adding those
+include roots. Old names keep the same class definitions and access contracts.
+
+| Group | Canonical responsibility |
+|---|---|
+| DNDS `Core`, `Memory`, `Math`, `IO`, `Diagnostics`, `Config`, `Support/PCH` | Types/errors, ownership helpers, numerical utilities, output/profiling and configuration |
+| Runtime `Storage`, `Array`, `Execution`, `Communication`, `Interop` | Allocation/schema, layout/access, eager scheduling, transfer/progress and language bridges |
+| DNDS `Algebra`, `Legacy`, `Compat` | Native numerical DOFs, historical storage/numerics and explicit bridges |
+| Geom `Elements`, `Quadratures`, `Periodic`, `Math` | Previously root-level element, rule, frame and numerical helpers |
+| Geom existing mesh/access/connectivity/transition/spatial folders | Unchanged native mesh authority and algorithms |
+| CFV `Plans`, `Prepare`, `Detail`, `Operators`, `Math` | Native compositional frontend and its numerical implementation |
+| CFV `Legacy` | Historical owners/settings/instantiations and compatibility benchmarks |
+
+The historical FV benchmark remains available to Python, but its translation
+units are part of the binding target rather than mandatory core CFV library
+sources. The legacy class namespaces and Python spellings are preserved.
+The earlier relocation description below records the preceding phase; its TSV
+is historical where superseded by the JSON manifest.
+
 The infrastructure finish phase separates implementation responsibilities without
 changing numerical behavior or promoting Runtime symbols into the root DNDS
 namespace. The exact relocation manifest is
@@ -17,7 +48,7 @@ the aliases preserve source compatibility, not the old compiled ABI.
 | `src/DNDS/Algebra` | Composed native DOF ownership and numerical operators | Explicit native algebra API |
 | `src/DNDS/Legacy` | Old Array/ParArray, ArrayPair, ArrayTransformer, redistribution, derived arrays and DOF operations | `DNDS::Legacy::*` and identical historical `DNDS::*` names |
 | `src/DNDS/Legacy/ArrayDerived` | Legacy adjacency and Eigen row adapters | Existing `DNDS::*` names |
-| `src/DNDS/Runtime/LegacyArrayBridge.hpp` | Explicit shared-allocation bridge between the two storage contracts | `DNDS::Runtime` bridge functions |
+| `src/DNDS/Compat/LegacyArrayBridge.hpp` | Explicit shared-allocation bridge between the two storage contracts | `DNDS::Runtime` bridge functions |
 
 `DNDS::Array` continues to mean the legacy class. New code names
 `DNDS::Runtime::Array` explicitly. This phase does not introduce a competing
@@ -34,8 +65,10 @@ host/device-vector primitive also lives under `Legacy`; old serializer and
 device-helper clients retain its original include path through a forwarder.
 The serializer still depends on that Legacy vector plumbing; this relocation
 does not claim an independent serializer storage implementation.
-Shared support such as index maps, permutation transfer, device providers,
-serializers and PCH files stays at its existing path.
+Shared support stays outside Legacy where its dependencies permit: index maps
+are in MPI, low-level providers in Device/Runtime, and PCH files in Support/PCH.
+The old PermutationTransfer implementation depends on the old ArrayPair and
+Transformer, so it belongs in Legacy until replaced by a native implementation.
 
 ## Unstructured mesh responsibilities
 
@@ -58,7 +91,7 @@ serializers and PCH files stays at its existing path.
 `Geom/Unstructured/UnstructuredMeshFwd.hpp`; they introduce no second storage
 authority. `UnstructuredMesh` and `MeshReadAccess` retain their names. The
 remaining Native-prefixed service classes keep their existing names in this
-phase to avoid unrelated API churn.
+mechanical phase; enduring service names are a separate reviewed API cleanup.
 
 The Python snapshot class is named `UnstructuredMeshSnapshot` and the historical
 `NativeMeshSnapshot` module attribute aliases that same class. Existing Python

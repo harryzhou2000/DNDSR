@@ -2,7 +2,7 @@
 
 #include "DNDS/Config/ConfigParam.hpp"
 #include "DNDS/Config/ConfigEnum.hpp"
-#include "DNDS/Defines.hpp"
+#include "DNDS/Core/Defines.hpp"
 
 namespace DNDS::Euler
 {

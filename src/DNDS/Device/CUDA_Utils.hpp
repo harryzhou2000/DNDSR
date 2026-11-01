@@ -6,8 +6,8 @@
 /// The whole file is gated on @ref DNDS_USE_CUDA; a no-op stub is exposed when
 /// CUDA is not compiled in so callers can include it unconditionally.
 
-#include "DNDS/Defines.hpp"
-#include "DNDS/ArrayBasic.hpp"
+#include "DNDS/Core/Defines.hpp"
+#include "DNDS/Legacy/ArrayBasic.hpp"
 #include <cstdint>
 #include <limits>
 #include <string>

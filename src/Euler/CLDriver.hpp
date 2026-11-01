@@ -11,9 +11,9 @@
 #include "DNDS/Serializer/JsonUtil.hpp"
 #include "DNDS/Config/ConfigParam.hpp"
 #include <set>
-#include "DNDS/Defines.hpp"
-#include "DNDS/MPI.hpp"
-#include "Geom/Geometric.hpp"
+#include "DNDS/Core/Defines.hpp"
+#include "DNDS/MPI/MPI.hpp"
+#include "Geom/Geometry/Geometric.hpp"
 
 namespace DNDS::Euler
 {

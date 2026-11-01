@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Geom/Mesh/MeshView.hpp"
+#include "Geom/Access/MeshView.hpp"
 #include <cmath>
 
 namespace DNDS::Geom::OverlapTest

@@ -1,11 +1,11 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
-#include "DNDS/Runtime/Buffer.hpp"
-#include "DNDS/Runtime/AllocationResource.hpp"
-#include "DNDS/Runtime/EagerArray.hpp"
-#include "DNDS/Array.hpp"
-#include "DNDS/Runtime/Version.hpp"
-#include "DNDS/Runtime/Field.hpp"
+#include "DNDS/Runtime/Storage/Buffer.hpp"
+#include "DNDS/Runtime/Storage/AllocationResource.hpp"
+#include "DNDS/Runtime/Execution/EagerArray.hpp"
+#include "DNDS/Legacy/Array.hpp"
+#include "DNDS/Runtime/Storage/Version.hpp"
+#include "DNDS/Runtime/Array/Field.hpp"
 #include <thread>
 
 using namespace DNDS::Runtime;

@@ -4,7 +4,7 @@
 /// an `Eigen::Map<Matrix<real, Ni, Nj>>`.
 
 #include "DNDS/Device/DeviceView.hpp"
-#include "DNDS/EigenUtil.hpp"
+#include "DNDS/Math/EigenUtil.hpp"
 
 namespace DNDS
 {

@@ -1,10 +1,10 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
-#include "Geom/Mesh/NativeMeshBuilder.hpp"
-#include "Geom/Mesh/AdjacencyRegistry.hpp"
-#include "Geom/Mesh/NativePeriodicMatch.hpp"
-#include "Geom/Mesh/Mesh.hpp"
-#include "DNDS/Runtime/RowBuilder.hpp"
+#include "Geom/Unstructured/NativeMeshBuilder.hpp"
+#include "Geom/Connectivity/AdjacencyRegistry.hpp"
+#include "Geom/Connectivity/NativePeriodicMatch.hpp"
+#include "Geom/Unstructured/UnstructuredMesh.hpp"
+#include "DNDS/Runtime/Array/RowBuilder.hpp"
 #include <set>
 #include <cmath>
 #include <cstddef>

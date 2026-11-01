@@ -1,6 +1,6 @@
 #include "Geom/IO/NativeMeshSerialOutput.hpp"
 #include "Geom/Transition/FieldTransfer.hpp"
-#include "DNDS/Runtime/RowBuilder.hpp"
+#include "DNDS/Runtime/Array/RowBuilder.hpp"
 #include <iomanip>
 #include <numeric>
 #include <sstream>

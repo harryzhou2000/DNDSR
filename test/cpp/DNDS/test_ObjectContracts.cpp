@@ -1,8 +1,8 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
-#include "DNDS/ArrayPair.hpp"
-#include "DNDS/ArrayDerived/ArrayEigenUniMatrixBatch.hpp"
-#include "DNDS/ArrayDerived/ArrayEigenMatrixBatch.hpp"
+#include "DNDS/Legacy/ArrayPair.hpp"
+#include "DNDS/Legacy/ArrayDerived/ArrayEigenUniMatrixBatch.hpp"
+#include "DNDS/Legacy/ArrayDerived/ArrayEigenMatrixBatch.hpp"
 #include <utility>
 
 using namespace DNDS;

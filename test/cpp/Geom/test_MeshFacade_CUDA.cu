@@ -2,9 +2,9 @@
 #define DNDS_MESH_FACADE_TEST_EMBEDDED
 #include "test_MeshFacade.cpp"
 #include "LegacyConstReferenceFixture.hpp"
-#include "Geom/Mesh/NativeMeshSnapshot.hpp"
-#include "Geom/Mesh/NativeMeshBuilder.hpp"
-#include "DNDS/Runtime/RowBuilder.hpp"
+#include "Geom/Unstructured/UnstructuredMeshSnapshot.hpp"
+#include "Geom/Unstructured/NativeMeshBuilder.hpp"
+#include "DNDS/Runtime/Array/RowBuilder.hpp"
 #include <cuda_runtime.h>
 #include <cstdlib>
 #include <atomic>

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Geom/Geometric.hpp"
+#include "Geom/Geometry/Geometric.hpp"
 
 namespace DNDS::Geom::Elem
 {

@@ -1,8 +1,8 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "CFV/Plans/FiniteVolumePlan.hpp"
-#include "DNDS/Runtime/EagerEngine.hpp"
-#include "DNDS/Runtime/MPIProgress.hpp"
+#include "DNDS/Runtime/Execution/EagerEngine.hpp"
+#include "DNDS/Runtime/Communication/MPIProgress.hpp"
 #include "../Geom/NativeMeshOverlapFixture.hpp"
 
 namespace C = DNDS::CFV;

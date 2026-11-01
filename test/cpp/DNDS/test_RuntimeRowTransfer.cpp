@@ -1,7 +1,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
-#include "DNDS/Runtime/RowTransfer.hpp"
-#include "DNDS/Runtime/RowBuilder.hpp"
+#include "DNDS/Runtime/Communication/RowTransfer.hpp"
+#include "DNDS/Runtime/Array/RowBuilder.hpp"
 #include <optional>
 
 using namespace DNDS::Runtime;

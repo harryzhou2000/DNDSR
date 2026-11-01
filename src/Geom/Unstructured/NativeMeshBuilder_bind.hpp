@@ -1,6 +1,6 @@
 #pragma once
 
-#include "DNDS/Defines_bind.hpp"
+#include "DNDS/Bindings/Defines_bind.hpp"
 #include "Geom/Unstructured/NativeMeshBuilder.hpp"
 #include "Geom/IO/NativeMeshCGNS.hpp"
 #include "Geom/Connectivity/NativeMeshTopology.hpp"
@@ -8,7 +8,7 @@
 #include "Geom/Refinement/NativeMeshExtraction.hpp"
 #include "Geom/Transition/FieldTransfer.hpp"
 #include "Geom/Unstructured/UnstructuredMesh.hpp"
-#include "DNDS/Runtime/Array_bind.hpp"
+#include "DNDS/Runtime/Interop/Array_bind.hpp"
 #include <limits>
 #include <set>
 

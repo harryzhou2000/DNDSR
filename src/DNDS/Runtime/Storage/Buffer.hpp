@@ -1,0 +1,293 @@
+#pragma once
+
+#include "DNDS/Core/Errors.hpp"
+#include "DNDS/Core/Defines.hpp"
+#include "DNDS/Core/CheckedSize.hpp"
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <type_traits>
+
+namespace DNDS::Runtime
+{
+    enum class MemorySpace
+    {
+        Host,
+        CUDA
+    };
+
+    /// Explicit placement; CUDA remains a valid descriptor in CPU-only builds,
+    /// where attempting to allocate it reports an unsupported capability.
+    struct Device
+    {
+        MemorySpace space = MemorySpace::Host;
+        int ordinal = -1;
+        static Device Host() { return {}; }
+        static Device CUDA(int ordinal) { return {MemorySpace::CUDA, ordinal}; }
+        bool operator==(Device r) const { return space == r.space && ordinal == r.ordinal; }
+        bool operator!=(Device r) const { return !(*this == r); }
+    };
+
+    /// Borrowed execution stream. The caller keeps the stream alive until all
+    /// leases using it have completed. No implicit host/device movement.
+    /// Caller keeps the native stream alive through completion/free and reports
+    /// the actual device ordinal. External kernels must use this stream or join
+    /// their other streams before publishing completion or releasing storage.
+    struct ExecutionContext
+    {
+        Device device;
+        void *stream = nullptr;
+        static ExecutionContext Host() { return {}; }
+        static ExecutionContext CUDA(int ordinal, void *stream = nullptr) { return {Device::CUDA(ordinal), stream}; }
+    };
+
+    class Completion
+    {
+        struct State;
+        std::shared_ptr<State> _state;
+        explicit Completion(std::shared_ptr<State> state) : _state(std::move(state)) {}
+
+    public:
+        Completion() = default;
+        static Completion Record(ExecutionContext context);
+        void Wait() const;
+        bool Ready() const;
+        Device GetDevice() const;
+        bool Matches(ExecutionContext context) const;
+    };
+
+    namespace Detail
+    {
+        /// Backend primitive for operation implementations holding all required
+        /// leases. It does not acquire/release access or publish generations.
+        Completion CopyBytes(const void *source, Device sourceDevice, void *destination, Device destinationDevice,
+                             size_t bytes, ExecutionContext context);
+        /// Same primitive without an event. The enclosing launcher owns actual
+        /// completion and both operands; callers must not drop DMA owners early.
+        void EnqueueCopyBytes(const void *source, Device sourceDevice, void *destination, Device destinationDevice,
+                              size_t bytes, ExecutionContext context);
+    }
+
+    template <class T>
+    struct Span
+    {
+        T *data = nullptr;
+        size_t size = 0;
+        MemorySpace space = MemorySpace::Host;
+
+        DNDS_DEVICE_CALLABLE T &operator[](size_t i) const
+        {
+#ifdef __CUDA_ARCH__
+            DNDS_HD_assert(space == MemorySpace::CUDA && i < size);
+#else
+            DNDS_check_throw_info(space == MemorySpace::Host && i < size, "runtime span: invalid host access or index");
+#endif
+            return data[i];
+        }
+    };
+
+    struct BufferState;
+    class Buffer;
+    class CopyOperation;
+    class AllocationResource;
+    enum class AccessMode
+    {
+        Read,
+        Write,
+        ReadWrite
+    };
+
+    /// A declared eager access, not an exclusive execution lock. The caller
+    /// orders pending accesses through streams. Immediate accesses still check
+    /// these reservations. The launcher retires them at actual completion.
+    class ScheduledAccess
+    {
+        friend class Buffer;
+        std::shared_ptr<BufferState> _state;
+        std::weak_ptr<BufferState> _issued;
+        size_t _offset = 0, _bytes = 0;
+        bool _write = false;
+        ScheduledAccess(std::shared_ptr<BufferState>, size_t, size_t, Device, AccessMode);
+
+    public:
+        ScheduledAccess() = default;
+        ScheduledAccess(const ScheduledAccess &) = delete;
+        ScheduledAccess &operator=(const ScheduledAccess &) = delete;
+        ScheduledAccess(ScheduledAccess &&) noexcept = default;
+        ScheduledAccess &operator=(ScheduledAccess &&) noexcept;
+        ~ScheduledAccess(); // Unaccepted reservation: cancel without publication.
+        void Validate() const;
+        void *Pointer(size_t alignment, size_t elementBytes) const;
+        /// Native provider handoff after successful GPU submission. Publication
+        /// retains a weak controller; ordered allocation release replaces the
+        /// strong execution pin. Foreign/DMA owners must stay retained instead.
+        void Handoff(ExecutionContext context);
+        void Complete(bool success) noexcept;
+        void Cancel() noexcept;
+    };
+
+    /// Shared allocation and access domain. Import once, then create Buffer
+    /// ranges from copied handles so overlapping views share exclusion/versioning.
+    /// The provider guarantees capacity, placement and readiness before import;
+    /// owner may be an aliasing shared_ptr retaining a tensor or foreign allocator.
+    class Allocation
+    {
+        friend class Buffer;
+        std::shared_ptr<BufferState> _state;
+        explicit Allocation(std::shared_ptr<BufferState> state) : _state(std::move(state)) {}
+
+    public:
+        Allocation() = default;
+        /// @pre owner retains the allocation (aliasing shared_ptr is supported),
+        /// whose address, capacity, placement and readiness match this descriptor.
+        /// Import each allocation once and derive Buffer ranges from that handle;
+        /// importing aliases separately creates independent access controllers.
+        /// External writers must obey the same leases and stream dependencies.
+        static Allocation Import(std::shared_ptr<void> owner, size_t bytes,
+                                 Device device = Device::Host(), bool writable = true);
+        size_t Bytes() const;
+        Device GetDevice() const;
+    };
+
+    /// Optional allocator policy for pools/pinned memory. Returned ownership
+    /// must free on the named device and remain valid until its last lease ends.
+    /// Implementations return zero-initialized storage before publication.
+    class Allocator
+    {
+    public:
+        virtual ~Allocator() = default;
+        virtual std::shared_ptr<void> Allocate(size_t bytes, Device device) = 0;
+    };
+
+    /// Move-only access owns its allocation until completion. Complete records
+    /// a launch event; Wait releases access. Destruction waits as a safe fallback.
+    /// A CUDA lease without Complete fences its stream before releasing storage.
+    class Access
+    {
+        friend class Buffer;
+        friend CopyOperation Copy(const Buffer &, Buffer &, ExecutionContext);
+        std::shared_ptr<BufferState> _state;
+        ExecutionContext _context;
+        Completion _completion;
+        bool _hasCompletion = false;
+        bool _write = false;
+        size_t _offset = 0, _bytes = 0;
+        int _uncaughtOnAcquire = 0;
+        Access(std::shared_ptr<BufferState> state, size_t offset, size_t bytes, ExecutionContext context, bool write);
+
+    protected:
+        void *Pointer(size_t alignment, size_t elementSize) const;
+
+    public:
+        Access() = default;
+        Access(const Access &) = delete;
+        Access &operator=(const Access &) = delete;
+        Access(Access &&other) noexcept;
+        Access &operator=(Access &&other) noexcept;
+        ~Access();
+        void Complete(Completion completion);
+        void Wait();
+        /// Discard an unissued access after collective preflight failed. The
+        /// caller guarantees no read/write work has used this lease.
+        void CancelUnmodified();
+        /// Drain submitted work, then make a potentially partial write unreadable.
+        /// Recovery requires replacing the allocation, not accepting stale values.
+        void Fail();
+        bool Active() const { return bool(_state); }
+        size_t Bytes() const;
+        Device GetDevice() const;
+    };
+
+    class ReadAccess : public Access
+    {
+        friend class Buffer;
+        explicit ReadAccess(Access access) : Access(std::move(access)) {}
+
+    public:
+        ReadAccess() = default;
+        template <class T>
+        Span<const T> View() const
+        {
+            static_assert(std::is_trivially_copyable_v<T>);
+            auto *p = static_cast<const T *>(Pointer(alignof(T), sizeof(T)));
+            return {p, Bytes() / sizeof(T), GetDevice().space};
+        }
+    };
+
+    class WriteAccess : public Access
+    {
+        friend class Buffer;
+        explicit WriteAccess(Access access) : Access(std::move(access)) {}
+
+    public:
+        WriteAccess() = default;
+        template <class T>
+        Span<T> View() const
+        {
+            static_assert(std::is_trivially_copyable_v<T>);
+            auto *p = static_cast<T *>(Pointer(alignof(T), sizeof(T)));
+            return {p, Bytes() / sizeof(T), GetDevice().space};
+        }
+    };
+
+    /// A shallow, shared handle to exactly one allocation and access controller.
+    /// Allocate creates independent storage; Copy creates independent values.
+    /// Layout, mesh association and distributed routing belong in other objects.
+    class Buffer
+    {
+        friend class CUDALauncher;
+        std::shared_ptr<BufferState> _state;
+        size_t _offset = 0, _bytes = 0;
+        explicit Buffer(std::shared_ptr<BufferState> state);
+        static Buffer AllocateCUDAAsync(size_t bytes, ExecutionContext context);
+
+    public:
+        Buffer() = default;
+        static Buffer Allocate(size_t bytes, Device device = Device::Host());
+        static Buffer Allocate(size_t bytes, Device device, std::shared_ptr<Allocator> allocator);
+        /// Ready allocation import for backend providers. Include
+        /// AllocationResource.hpp when implementing/importing a provider.
+        static Buffer FromResource(std::unique_ptr<AllocationResource> resource);
+        static Buffer FromAllocation(const Allocation &allocation, size_t offset, size_t bytes);
+        Allocation AllocationHandle() const { return Allocation(_state); }
+        Buffer Subspan(size_t offset, size_t bytes) const;
+        size_t Bytes() const;
+        Device GetDevice() const;
+        uint64_t Identity() const;
+        uint64_t Version() const;
+        bool IsIdle() const;
+        bool IsUnique() const;
+        bool IsValid() const;
+        bool CanReleaseOrdered(ExecutionContext context) const;
+        /// Consume this handle, preserving aliases. Final resource release
+        /// receives this explicit context; ordinary destruction is conservative.
+        void ReleaseOn(ExecutionContext context);
+        ReadAccess Read(ExecutionContext context = ExecutionContext::Host()) const;
+        WriteAccess Write(ExecutionContext context = ExecutionContext::Host());
+        ScheduledAccess Reserve(AccessMode mode, Device device) const;
+
+        /// Compatibility boundary only. Raw pointers cannot enforce future
+        /// writes, synchronization or lifetimes. Native kernels use access leases.
+        void *LegacyPointer() const;
+    };
+
+    class CopyOperation
+    {
+        friend CopyOperation Copy(const Buffer &, Buffer &, ExecutionContext);
+        ReadAccess _source;
+        WriteAccess _destination;
+
+    public:
+        CopyOperation() = default;
+        CopyOperation(const CopyOperation &) = delete;
+        CopyOperation &operator=(const CopyOperation &) = delete;
+        CopyOperation(CopyOperation &&) noexcept = default;
+        CopyOperation &operator=(CopyOperation &&) noexcept = default;
+        void Wait();
+    };
+
+    /// Explicit equal-size copy. CUDA copies require a context matching every
+    /// CUDA allocation involved; cross-device transfers are rejected for now.
+    CopyOperation Copy(const Buffer &source, Buffer &destination,
+                       ExecutionContext context = ExecutionContext::Host());
+}

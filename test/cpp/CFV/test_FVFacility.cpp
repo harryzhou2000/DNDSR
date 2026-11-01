@@ -1,11 +1,11 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "CFV/Plans/FiniteVolumePlan.hpp"
-#include "CFV/VariationalReconstruction.hpp"
-#include "CFV/VariationalReconstruction_LimiterProcedure.hxx"
+#include "CFV/Legacy/VariationalReconstruction.hpp"
+#include "CFV/Legacy/VariationalReconstruction_LimiterProcedure.hxx"
 #include "CFV/Plans/InterfaceSamplingPlan.hpp"
 #include "Geom/IO/NativeMeshCGNS.hpp"
-#include "Geom/Mesh/Mesh_Helpers.hpp"
+#include "Geom/Unstructured/UnstructuredMeshHelpers.hpp"
 #include "Geom/Interface/BoundaryInterface.hpp"
 #include "../Geom/InterfaceFixture.hpp"
 

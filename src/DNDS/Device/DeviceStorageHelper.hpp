@@ -3,9 +3,9 @@
 /// @brief Helpers for shipping an array-of-views (e.g., `ArrayDeviceView`)
 /// to the device in one contiguous buffer.
 
-#include "DeviceStorage.hpp"
+#include "DNDS/Device/DeviceStorage.hpp"
 #include <type_traits>
-#include "DNDS/Vector.hpp"
+#include "DNDS/Legacy/Vector.hpp"
 
 namespace DNDS
 {

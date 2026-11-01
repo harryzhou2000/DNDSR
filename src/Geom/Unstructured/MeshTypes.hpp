@@ -1,9 +1,9 @@
 #pragma once
 
-#include "Geom/Geometric.hpp"
-#include "Geom/ElemEnum.hpp"
-#include "DNDS/MPI.hpp"
-#include "DNDS/Runtime/ElementSchema.hpp"
+#include "Geom/Geometry/Geometric.hpp"
+#include "Geom/Elements/ElemEnum.hpp"
+#include "DNDS/MPI/MPI.hpp"
+#include "DNDS/Runtime/Storage/ElementSchema.hpp"
 
 namespace DNDS::Geom
 {

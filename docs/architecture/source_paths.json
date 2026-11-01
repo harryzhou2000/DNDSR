@@ -1,0 +1,1236 @@
+{
+  "stage": "Cauchy preliminary P1",
+  "namespace_changes": false,
+  "paths": [
+    {
+      "old": "CFV/BenchmarkFiniteVolume.cpp",
+      "canonical": "CFV/Legacy/Benchmarks/BenchmarkFiniteVolume.cpp",
+      "physical": "CFV/Legacy/Benchmarks/BenchmarkFiniteVolume.cpp"
+    },
+    {
+      "old": "CFV/BenchmarkFiniteVolume.cu",
+      "canonical": "CFV/Legacy/Benchmarks/BenchmarkFiniteVolume.cu",
+      "physical": "CFV/Legacy/Benchmarks/BenchmarkFiniteVolume.cu"
+    },
+    {
+      "old": "CFV/BenchmarkFiniteVolume.hpp",
+      "canonical": "CFV/Legacy/Benchmarks/BenchmarkFiniteVolume.hpp",
+      "physical": "CFV/Legacy/Benchmarks/BenchmarkFiniteVolume.hpp"
+    },
+    {
+      "old": "CFV/BenchmarkFiniteVolume_bind.hpp",
+      "canonical": "CFV/Legacy/Benchmarks/BenchmarkFiniteVolume_bind.hpp",
+      "physical": "CFV/Legacy/Benchmarks/BenchmarkFiniteVolume_bind.hpp"
+    },
+    {
+      "old": "CFV/DOFFactory.hpp",
+      "canonical": "CFV/Legacy/DOFFactory.hpp",
+      "physical": "CFV/Legacy/DOFFactory.hpp"
+    },
+    {
+      "old": "CFV/FiniteVolume.cpp",
+      "canonical": "CFV/Legacy/FiniteVolume.cpp",
+      "physical": "CFV/Legacy/FiniteVolume.cpp"
+    },
+    {
+      "old": "CFV/FiniteVolume.hpp",
+      "canonical": "CFV/Legacy/FiniteVolume.hpp",
+      "physical": "CFV/Legacy/FiniteVolume.hpp"
+    },
+    {
+      "old": "CFV/FiniteVolumeSettings.hpp",
+      "canonical": "CFV/Legacy/FiniteVolumeSettings.hpp",
+      "physical": "CFV/Legacy/FiniteVolumeSettings.hpp"
+    },
+    {
+      "old": "CFV/FiniteVolume_DeviceView.hpp",
+      "canonical": "CFV/Legacy/FiniteVolume_DeviceView.hpp",
+      "physical": "CFV/Legacy/FiniteVolume_DeviceView.hpp"
+    },
+    {
+      "old": "CFV/FiniteVolume_bind.cpp",
+      "canonical": "CFV/Legacy/FiniteVolume_bind.cpp",
+      "physical": "CFV/Legacy/FiniteVolume_bind.cpp"
+    },
+    {
+      "old": "CFV/FiniteVolume_bind.hpp",
+      "canonical": "CFV/Legacy/FiniteVolume_bind.hpp",
+      "physical": "CFV/Legacy/FiniteVolume_bind.hpp"
+    },
+    {
+      "old": "CFV/Limiters.hpp",
+      "canonical": "CFV/Math/Limiters.hpp",
+      "physical": "CFV/Math/Limiters.hpp"
+    },
+    {
+      "old": "CFV/ModelEvaluator.cpp",
+      "canonical": "CFV/Legacy/ModelEvaluator.cpp",
+      "physical": "CFV/Legacy/ModelEvaluator.cpp"
+    },
+    {
+      "old": "CFV/ModelEvaluator.hpp",
+      "canonical": "CFV/Legacy/ModelEvaluator.hpp",
+      "physical": "CFV/Legacy/ModelEvaluator.hpp"
+    },
+    {
+      "old": "CFV/ModelEvaluator_bind.cpp",
+      "canonical": "CFV/Legacy/ModelEvaluator_bind.cpp",
+      "physical": "CFV/Legacy/ModelEvaluator_bind.cpp"
+    },
+    {
+      "old": "CFV/ModelEvaluator_bind.hpp",
+      "canonical": "CFV/Legacy/ModelEvaluator_bind.hpp",
+      "physical": "CFV/Legacy/ModelEvaluator_bind.hpp"
+    },
+    {
+      "old": "CFV/Plans/ReconstructionData.hpp",
+      "canonical": "CFV/Detail/ReconstructionData.hpp",
+      "physical": "CFV/Detail/ReconstructionData.hpp"
+    },
+    {
+      "old": "CFV/VRDefines.cpp",
+      "canonical": "CFV/Legacy/VRDefines.cpp",
+      "physical": "CFV/Legacy/VRDefines.cpp"
+    },
+    {
+      "old": "CFV/VRDefines.cu",
+      "canonical": "CFV/Legacy/VRDefines.cu",
+      "physical": "CFV/Legacy/VRDefines.cu"
+    },
+    {
+      "old": "CFV/VRDefines.hpp",
+      "canonical": "CFV/Legacy/VRDefines.hpp",
+      "physical": "CFV/Legacy/VRDefines.hpp"
+    },
+    {
+      "old": "CFV/VRDefines_bind.hpp",
+      "canonical": "CFV/Legacy/VRDefines_bind.hpp",
+      "physical": "CFV/Legacy/VRDefines_bind.hpp"
+    },
+    {
+      "old": "CFV/VRSettings.hpp",
+      "canonical": "CFV/Legacy/VRSettings.hpp",
+      "physical": "CFV/Legacy/VRSettings.hpp"
+    },
+    {
+      "old": "CFV/VariationalReconstruction.cpp",
+      "canonical": "CFV/Legacy/VariationalReconstruction.cpp",
+      "physical": "CFV/Legacy/VariationalReconstruction.cpp"
+    },
+    {
+      "old": "CFV/VariationalReconstruction.hpp",
+      "canonical": "CFV/Legacy/VariationalReconstruction.hpp",
+      "physical": "CFV/Legacy/VariationalReconstruction.hpp"
+    },
+    {
+      "old": "CFV/VariationalReconstruction_LimiterProcedure.hxx",
+      "canonical": "CFV/Legacy/VariationalReconstruction_LimiterProcedure.hxx",
+      "physical": "CFV/Legacy/VariationalReconstruction_LimiterProcedure.hxx"
+    },
+    {
+      "old": "CFV/VariationalReconstruction_Reconstruction.hxx",
+      "canonical": "CFV/Legacy/VariationalReconstruction_Reconstruction.hxx",
+      "physical": "CFV/Legacy/VariationalReconstruction_Reconstruction.hxx"
+    },
+    {
+      "old": "CFV/VariationalReconstruction_bind.cpp",
+      "canonical": "CFV/Legacy/VariationalReconstruction_bind.cpp",
+      "physical": "CFV/Legacy/VariationalReconstruction_bind.cpp"
+    },
+    {
+      "old": "CFV/VariationalReconstruction_bind.hpp",
+      "canonical": "CFV/Legacy/VariationalReconstruction_bind.hpp",
+      "physical": "CFV/Legacy/VariationalReconstruction_bind.hpp"
+    },
+    {
+      "old": "CFV/_explicit_instantiation/VariationalReconstruction_LimiterProcedure_2_1.cpp",
+      "canonical": "CFV/Legacy/ExplicitInstantiations/VariationalReconstruction_LimiterProcedure_2_1.cpp",
+      "physical": "CFV/Legacy/ExplicitInstantiations/VariationalReconstruction_LimiterProcedure_2_1.cpp"
+    },
+    {
+      "old": "CFV/_explicit_instantiation/VariationalReconstruction_LimiterProcedure_2_4.cpp",
+      "canonical": "CFV/Legacy/ExplicitInstantiations/VariationalReconstruction_LimiterProcedure_2_4.cpp",
+      "physical": "CFV/Legacy/ExplicitInstantiations/VariationalReconstruction_LimiterProcedure_2_4.cpp"
+    },
+    {
+      "old": "CFV/_explicit_instantiation/VariationalReconstruction_LimiterProcedure_2_5.cpp",
+      "canonical": "CFV/Legacy/ExplicitInstantiations/VariationalReconstruction_LimiterProcedure_2_5.cpp",
+      "physical": "CFV/Legacy/ExplicitInstantiations/VariationalReconstruction_LimiterProcedure_2_5.cpp"
+    },
+    {
+      "old": "CFV/_explicit_instantiation/VariationalReconstruction_LimiterProcedure_2_6.cpp",
+      "canonical": "CFV/Legacy/ExplicitInstantiations/VariationalReconstruction_LimiterProcedure_2_6.cpp",
+      "physical": "CFV/Legacy/ExplicitInstantiations/VariationalReconstruction_LimiterProcedure_2_6.cpp"
+    },
+    {
+      "old": "CFV/_explicit_instantiation/VariationalReconstruction_LimiterProcedure_2_7.cpp",
+      "canonical": "CFV/Legacy/ExplicitInstantiations/VariationalReconstruction_LimiterProcedure_2_7.cpp",
+      "physical": "CFV/Legacy/ExplicitInstantiations/VariationalReconstruction_LimiterProcedure_2_7.cpp"
+    },
+    {
+      "old": "CFV/_explicit_instantiation/VariationalReconstruction_LimiterProcedure_2_D.cpp",
+      "canonical": "CFV/Legacy/ExplicitInstantiations/VariationalReconstruction_LimiterProcedure_2_D.cpp",
+      "physical": "CFV/Legacy/ExplicitInstantiations/VariationalReconstruction_LimiterProcedure_2_D.cpp"
+    },
+    {
+      "old": "CFV/_explicit_instantiation/VariationalReconstruction_LimiterProcedure_3_1.cpp",
+      "canonical": "CFV/Legacy/ExplicitInstantiations/VariationalReconstruction_LimiterProcedure_3_1.cpp",
+      "physical": "CFV/Legacy/ExplicitInstantiations/VariationalReconstruction_LimiterProcedure_3_1.cpp"
+    },
+    {
+      "old": "CFV/_explicit_instantiation/VariationalReconstruction_LimiterProcedure_3_5.cpp",
+      "canonical": "CFV/Legacy/ExplicitInstantiations/VariationalReconstruction_LimiterProcedure_3_5.cpp",
+      "physical": "CFV/Legacy/ExplicitInstantiations/VariationalReconstruction_LimiterProcedure_3_5.cpp"
+    },
+    {
+      "old": "CFV/_explicit_instantiation/VariationalReconstruction_LimiterProcedure_3_6.cpp",
+      "canonical": "CFV/Legacy/ExplicitInstantiations/VariationalReconstruction_LimiterProcedure_3_6.cpp",
+      "physical": "CFV/Legacy/ExplicitInstantiations/VariationalReconstruction_LimiterProcedure_3_6.cpp"
+    },
+    {
+      "old": "CFV/_explicit_instantiation/VariationalReconstruction_LimiterProcedure_3_7.cpp",
+      "canonical": "CFV/Legacy/ExplicitInstantiations/VariationalReconstruction_LimiterProcedure_3_7.cpp",
+      "physical": "CFV/Legacy/ExplicitInstantiations/VariationalReconstruction_LimiterProcedure_3_7.cpp"
+    },
+    {
+      "old": "CFV/_explicit_instantiation/VariationalReconstruction_LimiterProcedure_3_D.cpp",
+      "canonical": "CFV/Legacy/ExplicitInstantiations/VariationalReconstruction_LimiterProcedure_3_D.cpp",
+      "physical": "CFV/Legacy/ExplicitInstantiations/VariationalReconstruction_LimiterProcedure_3_D.cpp"
+    },
+    {
+      "old": "CFV/_explicit_instantiation/VariationalReconstruction_Reconstruction_2_1.cpp",
+      "canonical": "CFV/Legacy/ExplicitInstantiations/VariationalReconstruction_Reconstruction_2_1.cpp",
+      "physical": "CFV/Legacy/ExplicitInstantiations/VariationalReconstruction_Reconstruction_2_1.cpp"
+    },
+    {
+      "old": "CFV/_explicit_instantiation/VariationalReconstruction_Reconstruction_2_4.cpp",
+      "canonical": "CFV/Legacy/ExplicitInstantiations/VariationalReconstruction_Reconstruction_2_4.cpp",
+      "physical": "CFV/Legacy/ExplicitInstantiations/VariationalReconstruction_Reconstruction_2_4.cpp"
+    },
+    {
+      "old": "CFV/_explicit_instantiation/VariationalReconstruction_Reconstruction_2_5.cpp",
+      "canonical": "CFV/Legacy/ExplicitInstantiations/VariationalReconstruction_Reconstruction_2_5.cpp",
+      "physical": "CFV/Legacy/ExplicitInstantiations/VariationalReconstruction_Reconstruction_2_5.cpp"
+    },
+    {
+      "old": "CFV/_explicit_instantiation/VariationalReconstruction_Reconstruction_2_6.cpp",
+      "canonical": "CFV/Legacy/ExplicitInstantiations/VariationalReconstruction_Reconstruction_2_6.cpp",
+      "physical": "CFV/Legacy/ExplicitInstantiations/VariationalReconstruction_Reconstruction_2_6.cpp"
+    },
+    {
+      "old": "CFV/_explicit_instantiation/VariationalReconstruction_Reconstruction_2_7.cpp",
+      "canonical": "CFV/Legacy/ExplicitInstantiations/VariationalReconstruction_Reconstruction_2_7.cpp",
+      "physical": "CFV/Legacy/ExplicitInstantiations/VariationalReconstruction_Reconstruction_2_7.cpp"
+    },
+    {
+      "old": "CFV/_explicit_instantiation/VariationalReconstruction_Reconstruction_2_D.cpp",
+      "canonical": "CFV/Legacy/ExplicitInstantiations/VariationalReconstruction_Reconstruction_2_D.cpp",
+      "physical": "CFV/Legacy/ExplicitInstantiations/VariationalReconstruction_Reconstruction_2_D.cpp"
+    },
+    {
+      "old": "CFV/_explicit_instantiation/VariationalReconstruction_Reconstruction_3_1.cpp",
+      "canonical": "CFV/Legacy/ExplicitInstantiations/VariationalReconstruction_Reconstruction_3_1.cpp",
+      "physical": "CFV/Legacy/ExplicitInstantiations/VariationalReconstruction_Reconstruction_3_1.cpp"
+    },
+    {
+      "old": "CFV/_explicit_instantiation/VariationalReconstruction_Reconstruction_3_5.cpp",
+      "canonical": "CFV/Legacy/ExplicitInstantiations/VariationalReconstruction_Reconstruction_3_5.cpp",
+      "physical": "CFV/Legacy/ExplicitInstantiations/VariationalReconstruction_Reconstruction_3_5.cpp"
+    },
+    {
+      "old": "CFV/_explicit_instantiation/VariationalReconstruction_Reconstruction_3_6.cpp",
+      "canonical": "CFV/Legacy/ExplicitInstantiations/VariationalReconstruction_Reconstruction_3_6.cpp",
+      "physical": "CFV/Legacy/ExplicitInstantiations/VariationalReconstruction_Reconstruction_3_6.cpp"
+    },
+    {
+      "old": "CFV/_explicit_instantiation/VariationalReconstruction_Reconstruction_3_7.cpp",
+      "canonical": "CFV/Legacy/ExplicitInstantiations/VariationalReconstruction_Reconstruction_3_7.cpp",
+      "physical": "CFV/Legacy/ExplicitInstantiations/VariationalReconstruction_Reconstruction_3_7.cpp"
+    },
+    {
+      "old": "CFV/_explicit_instantiation/VariationalReconstruction_Reconstruction_3_D.cpp",
+      "canonical": "CFV/Legacy/ExplicitInstantiations/VariationalReconstruction_Reconstruction_3_D.cpp",
+      "physical": "CFV/Legacy/ExplicitInstantiations/VariationalReconstruction_Reconstruction_3_D.cpp"
+    },
+    {
+      "old": "CFV/cfv_pybind11.cpp",
+      "canonical": "CFV/Bindings/cfv_pybind11.cpp",
+      "physical": "CFV/Bindings/cfv_pybind11.cpp"
+    },
+    {
+      "old": "DNDS/Array.hpp",
+      "canonical": "DNDS/Legacy/Array.hpp",
+      "physical": "DNDS/Compat/Include/DNDS/Array.hpp"
+    },
+    {
+      "old": "DNDS/ArrayBasic.hpp",
+      "canonical": "DNDS/Legacy/ArrayBasic.hpp",
+      "physical": "DNDS/Compat/Include/DNDS/ArrayBasic.hpp"
+    },
+    {
+      "old": "DNDS/ArrayDOF.hpp",
+      "canonical": "DNDS/Legacy/ArrayDOF.hpp",
+      "physical": "DNDS/Compat/Include/DNDS/ArrayDOF.hpp"
+    },
+    {
+      "old": "DNDS/ArrayDOFPack.hpp",
+      "canonical": "DNDS/Legacy/ArrayDOFPack.hpp",
+      "physical": "DNDS/Compat/Include/DNDS/ArrayDOFPack.hpp"
+    },
+    {
+      "old": "DNDS/ArrayDOF_bind.hpp",
+      "canonical": "DNDS/Legacy/ArrayDOF_bind.hpp",
+      "physical": "DNDS/Compat/Include/DNDS/ArrayDOF_bind.hpp"
+    },
+    {
+      "old": "DNDS/ArrayDOF_op.hxx",
+      "canonical": "DNDS/Legacy/ArrayDOF_op.hxx",
+      "physical": "DNDS/Compat/Include/DNDS/ArrayDOF_op.hxx"
+    },
+    {
+      "old": "DNDS/ArrayDOF_op_CUDA.cuh",
+      "canonical": "DNDS/Legacy/ArrayDOF_op_CUDA.cuh",
+      "physical": "DNDS/Compat/Include/DNDS/ArrayDOF_op_CUDA.cuh"
+    },
+    {
+      "old": "DNDS/ArrayDerived/AdjacencyRow.hpp",
+      "canonical": "DNDS/Legacy/ArrayDerived/AdjacencyRow.hpp",
+      "physical": "DNDS/Compat/Include/DNDS/ArrayDerived/AdjacencyRow.hpp"
+    },
+    {
+      "old": "DNDS/ArrayDerived/ArrayAdjacency.hpp",
+      "canonical": "DNDS/Legacy/ArrayDerived/ArrayAdjacency.hpp",
+      "physical": "DNDS/Compat/Include/DNDS/ArrayDerived/ArrayAdjacency.hpp"
+    },
+    {
+      "old": "DNDS/ArrayDerived/ArrayAdjacency_DeviceView.hpp",
+      "canonical": "DNDS/Legacy/ArrayDerived/ArrayAdjacency_DeviceView.hpp",
+      "physical": "DNDS/Compat/Include/DNDS/ArrayDerived/ArrayAdjacency_DeviceView.hpp"
+    },
+    {
+      "old": "DNDS/ArrayDerived/ArrayAdjacency_bind.hpp",
+      "canonical": "DNDS/Legacy/ArrayDerived/ArrayAdjacency_bind.hpp",
+      "physical": "DNDS/Compat/Include/DNDS/ArrayDerived/ArrayAdjacency_bind.hpp"
+    },
+    {
+      "old": "DNDS/ArrayDerived/ArrayEigenMatrix.hpp",
+      "canonical": "DNDS/Legacy/ArrayDerived/ArrayEigenMatrix.hpp",
+      "physical": "DNDS/Compat/Include/DNDS/ArrayDerived/ArrayEigenMatrix.hpp"
+    },
+    {
+      "old": "DNDS/ArrayDerived/ArrayEigenMatrixBatch.hpp",
+      "canonical": "DNDS/Legacy/ArrayDerived/ArrayEigenMatrixBatch.hpp",
+      "physical": "DNDS/Compat/Include/DNDS/ArrayDerived/ArrayEigenMatrixBatch.hpp"
+    },
+    {
+      "old": "DNDS/ArrayDerived/ArrayEigenMatrixBatch_DeviceView.hpp",
+      "canonical": "DNDS/Legacy/ArrayDerived/ArrayEigenMatrixBatch_DeviceView.hpp",
+      "physical": "DNDS/Compat/Include/DNDS/ArrayDerived/ArrayEigenMatrixBatch_DeviceView.hpp"
+    },
+    {
+      "old": "DNDS/ArrayDerived/ArrayEigenMatrixBatch_bind.hpp",
+      "canonical": "DNDS/Legacy/ArrayDerived/ArrayEigenMatrixBatch_bind.hpp",
+      "physical": "DNDS/Compat/Include/DNDS/ArrayDerived/ArrayEigenMatrixBatch_bind.hpp"
+    },
+    {
+      "old": "DNDS/ArrayDerived/ArrayEigenMatrix_DeviceView.hpp",
+      "canonical": "DNDS/Legacy/ArrayDerived/ArrayEigenMatrix_DeviceView.hpp",
+      "physical": "DNDS/Compat/Include/DNDS/ArrayDerived/ArrayEigenMatrix_DeviceView.hpp"
+    },
+    {
+      "old": "DNDS/ArrayDerived/ArrayEigenMatrix_bind.hpp",
+      "canonical": "DNDS/Legacy/ArrayDerived/ArrayEigenMatrix_bind.hpp",
+      "physical": "DNDS/Compat/Include/DNDS/ArrayDerived/ArrayEigenMatrix_bind.hpp"
+    },
+    {
+      "old": "DNDS/ArrayDerived/ArrayEigenUniMatrixBatch.hpp",
+      "canonical": "DNDS/Legacy/ArrayDerived/ArrayEigenUniMatrixBatch.hpp",
+      "physical": "DNDS/Compat/Include/DNDS/ArrayDerived/ArrayEigenUniMatrixBatch.hpp"
+    },
+    {
+      "old": "DNDS/ArrayDerived/ArrayEigenUniMatrixBatch_DeviceView.hpp",
+      "canonical": "DNDS/Legacy/ArrayDerived/ArrayEigenUniMatrixBatch_DeviceView.hpp",
+      "physical": "DNDS/Compat/Include/DNDS/ArrayDerived/ArrayEigenUniMatrixBatch_DeviceView.hpp"
+    },
+    {
+      "old": "DNDS/ArrayDerived/ArrayEigenUniMatrixBatch_bind.hpp",
+      "canonical": "DNDS/Legacy/ArrayDerived/ArrayEigenUniMatrixBatch_bind.hpp",
+      "physical": "DNDS/Compat/Include/DNDS/ArrayDerived/ArrayEigenUniMatrixBatch_bind.hpp"
+    },
+    {
+      "old": "DNDS/ArrayDerived/ArrayEigenVector.hpp",
+      "canonical": "DNDS/Legacy/ArrayDerived/ArrayEigenVector.hpp",
+      "physical": "DNDS/Compat/Include/DNDS/ArrayDerived/ArrayEigenVector.hpp"
+    },
+    {
+      "old": "DNDS/ArrayDerived/ArrayEigenVector_DeviceView.hpp",
+      "canonical": "DNDS/Legacy/ArrayDerived/ArrayEigenVector_DeviceView.hpp",
+      "physical": "DNDS/Compat/Include/DNDS/ArrayDerived/ArrayEigenVector_DeviceView.hpp"
+    },
+    {
+      "old": "DNDS/ArrayDerived/ArrayEigenVector_bind.hpp",
+      "canonical": "DNDS/Legacy/ArrayDerived/ArrayEigenVector_bind.hpp",
+      "physical": "DNDS/Compat/Include/DNDS/ArrayDerived/ArrayEigenVector_bind.hpp"
+    },
+    {
+      "old": "DNDS/ArrayPair.hpp",
+      "canonical": "DNDS/Legacy/ArrayPair.hpp",
+      "physical": "DNDS/Compat/Include/DNDS/ArrayPair.hpp"
+    },
+    {
+      "old": "DNDS/ArrayRedistributor.hpp",
+      "canonical": "DNDS/Legacy/ArrayRedistributor.hpp",
+      "physical": "DNDS/Compat/Include/DNDS/ArrayRedistributor.hpp"
+    },
+    {
+      "old": "DNDS/ArrayTransformer.hpp",
+      "canonical": "DNDS/Legacy/ArrayTransformer.hpp",
+      "physical": "DNDS/Compat/Include/DNDS/ArrayTransformer.hpp"
+    },
+    {
+      "old": "DNDS/Array_bind.hpp",
+      "canonical": "DNDS/Legacy/Array_bind.hpp",
+      "physical": "DNDS/Compat/Include/DNDS/Array_bind.hpp"
+    },
+    {
+      "old": "DNDS/Array_bind_offset/Array_bind_x.hxx",
+      "canonical": "DNDS/Legacy/Array_bind_offset/Array_bind_x.hxx",
+      "physical": "DNDS/Compat/Include/DNDS/Array_bind_offset/Array_bind_x.hxx"
+    },
+    {
+      "old": "DNDS/CheckedSize.hpp",
+      "canonical": "DNDS/Core/CheckedSize.hpp",
+      "physical": "DNDS/Core/CheckedSize.hpp"
+    },
+    {
+      "old": "DNDS/CppUtils/ScopedValueAlternator.hpp",
+      "canonical": "DNDS/Core/ScopedValueAlternator.hpp",
+      "physical": "DNDS/Core/ScopedValueAlternator.hpp"
+    },
+    {
+      "old": "DNDS/CsvLog.hpp",
+      "canonical": "DNDS/IO/CsvLog.hpp",
+      "physical": "DNDS/IO/CsvLog.hpp"
+    },
+    {
+      "old": "DNDS/Defines.cpp",
+      "canonical": "DNDS/Core/Defines.cpp",
+      "physical": "DNDS/Core/Defines.cpp"
+    },
+    {
+      "old": "DNDS/Defines.hpp",
+      "canonical": "DNDS/Core/Defines.hpp",
+      "physical": "DNDS/Core/Defines.hpp"
+    },
+    {
+      "old": "DNDS/Defines_bind.cpp",
+      "canonical": "DNDS/Bindings/Defines_bind.cpp",
+      "physical": "DNDS/Bindings/Defines_bind.cpp"
+    },
+    {
+      "old": "DNDS/Defines_bind.hpp",
+      "canonical": "DNDS/Bindings/Defines_bind.hpp",
+      "physical": "DNDS/Bindings/Defines_bind.hpp"
+    },
+    {
+      "old": "DNDS/EigenPCH.cpp",
+      "canonical": "DNDS/Support/PCH/EigenPCH.cpp",
+      "physical": "DNDS/Support/PCH/EigenPCH.cpp"
+    },
+    {
+      "old": "DNDS/EigenPCH.hpp",
+      "canonical": "DNDS/Support/PCH/EigenPCH.hpp",
+      "physical": "DNDS/Support/PCH/EigenPCH.hpp"
+    },
+    {
+      "old": "DNDS/EigenUtil.hpp",
+      "canonical": "DNDS/Math/EigenUtil.hpp",
+      "physical": "DNDS/Math/EigenUtil.hpp"
+    },
+    {
+      "old": "DNDS/EnvReader.cpp",
+      "canonical": "DNDS/Config/EnvReader.cpp",
+      "physical": "DNDS/Config/EnvReader.cpp"
+    },
+    {
+      "old": "DNDS/EnvReader.hpp",
+      "canonical": "DNDS/Config/EnvReader.hpp",
+      "physical": "DNDS/Config/EnvReader.hpp"
+    },
+    {
+      "old": "DNDS/Errors.hpp",
+      "canonical": "DNDS/Core/Errors.hpp",
+      "physical": "DNDS/Core/Errors.hpp"
+    },
+    {
+      "old": "DNDS/Experimentals.hpp",
+      "canonical": "DNDS/Config/Experimentals.hpp",
+      "physical": "DNDS/Config/Experimentals.hpp"
+    },
+    {
+      "old": "DNDS/ExprtkPCH.cpp",
+      "canonical": "DNDS/Support/PCH/ExprtkPCH.cpp",
+      "physical": "DNDS/Support/PCH/ExprtkPCH.cpp"
+    },
+    {
+      "old": "DNDS/ExprtkPCH.hpp",
+      "canonical": "DNDS/Support/PCH/ExprtkPCH.hpp",
+      "physical": "DNDS/Support/PCH/ExprtkPCH.hpp"
+    },
+    {
+      "old": "DNDS/ExprtkWrapper.cpp",
+      "canonical": "DNDS/Config/ExprtkWrapper.cpp",
+      "physical": "DNDS/Config/ExprtkWrapper.cpp"
+    },
+    {
+      "old": "DNDS/ExprtkWrapper.hpp",
+      "canonical": "DNDS/Config/ExprtkWrapper.hpp",
+      "physical": "DNDS/Config/ExprtkWrapper.hpp"
+    },
+    {
+      "old": "DNDS/HardEigen.cpp",
+      "canonical": "DNDS/Math/HardEigen.cpp",
+      "physical": "DNDS/Math/HardEigen.cpp"
+    },
+    {
+      "old": "DNDS/HardEigen.hpp",
+      "canonical": "DNDS/Math/HardEigen.hpp",
+      "physical": "DNDS/Math/HardEigen.hpp"
+    },
+    {
+      "old": "DNDS/IdealGasPhysics.hpp",
+      "canonical": "DNDS/Physics/IdealGasPhysics.hpp",
+      "physical": "DNDS/Physics/IdealGasPhysics.hpp"
+    },
+    {
+      "old": "DNDS/IndexMapping.hpp",
+      "canonical": "DNDS/MPI/IndexMapping.hpp",
+      "physical": "DNDS/MPI/IndexMapping.hpp"
+    },
+    {
+      "old": "DNDS/IndexMapping_bind.hpp",
+      "canonical": "DNDS/Bindings/IndexMapping_bind.hpp",
+      "physical": "DNDS/Bindings/IndexMapping_bind.hpp"
+    },
+    {
+      "old": "DNDS/MPI.cpp",
+      "canonical": "DNDS/MPI/MPI.cpp",
+      "physical": "DNDS/MPI/MPI.cpp"
+    },
+    {
+      "old": "DNDS/MPI.hpp",
+      "canonical": "DNDS/MPI/MPI.hpp",
+      "physical": "DNDS/MPI/MPI.hpp"
+    },
+    {
+      "old": "DNDS/MPI_bind.cpp",
+      "canonical": "DNDS/Bindings/MPI_bind.cpp",
+      "physical": "DNDS/Bindings/MPI_bind.cpp"
+    },
+    {
+      "old": "DNDS/MPI_bind.hpp",
+      "canonical": "DNDS/Bindings/MPI_bind.hpp",
+      "physical": "DNDS/Bindings/MPI_bind.hpp"
+    },
+    {
+      "old": "DNDS/Macros.hpp",
+      "canonical": "DNDS/Core/Macros.hpp",
+      "physical": "DNDS/Core/Macros.hpp"
+    },
+    {
+      "old": "DNDS/OMP.hpp",
+      "canonical": "DNDS/Core/OMP.hpp",
+      "physical": "DNDS/Core/OMP.hpp"
+    },
+    {
+      "old": "DNDS/ObjectPool.hpp",
+      "canonical": "DNDS/Memory/ObjectPool.hpp",
+      "physical": "DNDS/Memory/ObjectPool.hpp"
+    },
+    {
+      "old": "DNDS/ObjectUtils.hpp",
+      "canonical": "DNDS/Core/ObjectUtils.hpp",
+      "physical": "DNDS/Core/ObjectUtils.hpp"
+    },
+    {
+      "old": "DNDS/OptionalRef.hpp",
+      "canonical": "DNDS/Core/OptionalRef.hpp",
+      "physical": "DNDS/Core/OptionalRef.hpp"
+    },
+    {
+      "old": "DNDS/OutputDir.hpp",
+      "canonical": "DNDS/IO/OutputDir.hpp",
+      "physical": "DNDS/IO/OutputDir.hpp"
+    },
+    {
+      "old": "DNDS/PermutationTransfer.hpp",
+      "canonical": "DNDS/Legacy/PermutationTransfer.hpp",
+      "physical": "DNDS/Legacy/PermutationTransfer.hpp"
+    },
+    {
+      "old": "DNDS/Profiling.cpp",
+      "canonical": "DNDS/Diagnostics/Profiling.cpp",
+      "physical": "DNDS/Diagnostics/Profiling.cpp"
+    },
+    {
+      "old": "DNDS/Profiling.hpp",
+      "canonical": "DNDS/Diagnostics/Profiling.hpp",
+      "physical": "DNDS/Diagnostics/Profiling.hpp"
+    },
+    {
+      "old": "DNDS/RowStorage.hpp",
+      "canonical": "DNDS/Memory/RowStorage.hpp",
+      "physical": "DNDS/Memory/RowStorage.hpp"
+    },
+    {
+      "old": "DNDS/Runtime/AllocationResource.hpp",
+      "canonical": "DNDS/Runtime/Storage/AllocationResource.hpp",
+      "physical": "DNDS/Runtime/Storage/AllocationResource.hpp"
+    },
+    {
+      "old": "DNDS/Runtime/Array.hpp",
+      "canonical": "DNDS/Runtime/Array/Array.hpp",
+      "physical": "DNDS/Runtime/Array/Array.hpp"
+    },
+    {
+      "old": "DNDS/Runtime/ArrayIO.hpp",
+      "canonical": "DNDS/Runtime/Array/ArrayIO.hpp",
+      "physical": "DNDS/Runtime/Array/ArrayIO.hpp"
+    },
+    {
+      "old": "DNDS/Runtime/Array_bind.hpp",
+      "canonical": "DNDS/Runtime/Interop/Array_bind.hpp",
+      "physical": "DNDS/Runtime/Interop/Array_bind.hpp"
+    },
+    {
+      "old": "DNDS/Runtime/Buffer.cpp",
+      "canonical": "DNDS/Runtime/Storage/Buffer.cpp",
+      "physical": "DNDS/Runtime/Storage/Buffer.cpp"
+    },
+    {
+      "old": "DNDS/Runtime/Buffer.hpp",
+      "canonical": "DNDS/Runtime/Storage/Buffer.hpp",
+      "physical": "DNDS/Runtime/Storage/Buffer.hpp"
+    },
+    {
+      "old": "DNDS/Runtime/CUDAExecution.cpp",
+      "canonical": "DNDS/Runtime/Execution/CUDAExecution.cpp",
+      "physical": "DNDS/Runtime/Execution/CUDAExecution.cpp"
+    },
+    {
+      "old": "DNDS/Runtime/CUDAExecution.hpp",
+      "canonical": "DNDS/Runtime/Execution/CUDAExecution.hpp",
+      "physical": "DNDS/Runtime/Execution/CUDAExecution.hpp"
+    },
+    {
+      "old": "DNDS/Runtime/CommunicationContext.hpp",
+      "canonical": "DNDS/Runtime/Communication/CommunicationContext.hpp",
+      "physical": "DNDS/Runtime/Communication/CommunicationContext.hpp"
+    },
+    {
+      "old": "DNDS/Runtime/DLPack_bind.cpp",
+      "canonical": "DNDS/Runtime/Interop/DLPack_bind.cpp",
+      "physical": "DNDS/Runtime/Interop/DLPack_bind.cpp"
+    },
+    {
+      "old": "DNDS/Runtime/DynamicRowTransfer.hpp",
+      "canonical": "DNDS/Runtime/Communication/DynamicRowTransfer.hpp",
+      "physical": "DNDS/Runtime/Communication/DynamicRowTransfer.hpp"
+    },
+    {
+      "old": "DNDS/Runtime/EagerArray.hpp",
+      "canonical": "DNDS/Runtime/Execution/EagerArray.hpp",
+      "physical": "DNDS/Runtime/Execution/EagerArray.hpp"
+    },
+    {
+      "old": "DNDS/Runtime/EagerCopy.hpp",
+      "canonical": "DNDS/Runtime/Execution/EagerCopy.hpp",
+      "physical": "DNDS/Runtime/Execution/EagerCopy.hpp"
+    },
+    {
+      "old": "DNDS/Runtime/EagerEngine.cpp",
+      "canonical": "DNDS/Runtime/Execution/EagerEngine.cpp",
+      "physical": "DNDS/Runtime/Execution/EagerEngine.cpp"
+    },
+    {
+      "old": "DNDS/Runtime/EagerEngine.hpp",
+      "canonical": "DNDS/Runtime/Execution/EagerEngine.hpp",
+      "physical": "DNDS/Runtime/Execution/EagerEngine.hpp"
+    },
+    {
+      "old": "DNDS/Runtime/Eager_bind.cpp",
+      "canonical": "DNDS/Runtime/Execution/Eager_bind.cpp",
+      "physical": "DNDS/Runtime/Execution/Eager_bind.cpp"
+    },
+    {
+      "old": "DNDS/Runtime/ElementSchema.cpp",
+      "canonical": "DNDS/Runtime/Storage/ElementSchema.cpp",
+      "physical": "DNDS/Runtime/Storage/ElementSchema.cpp"
+    },
+    {
+      "old": "DNDS/Runtime/ElementSchema.hpp",
+      "canonical": "DNDS/Runtime/Storage/ElementSchema.hpp",
+      "physical": "DNDS/Runtime/Storage/ElementSchema.hpp"
+    },
+    {
+      "old": "DNDS/Runtime/Exchange.cpp",
+      "canonical": "DNDS/Runtime/Communication/Exchange.cpp",
+      "physical": "DNDS/Runtime/Communication/Exchange.cpp"
+    },
+    {
+      "old": "DNDS/Runtime/Exchange.hpp",
+      "canonical": "DNDS/Runtime/Communication/Exchange.hpp",
+      "physical": "DNDS/Runtime/Communication/Exchange.hpp"
+    },
+    {
+      "old": "DNDS/Runtime/Field.hpp",
+      "canonical": "DNDS/Runtime/Array/Field.hpp",
+      "physical": "DNDS/Runtime/Array/Field.hpp"
+    },
+    {
+      "old": "DNDS/Runtime/LegacyArrayBridge.hpp",
+      "canonical": "DNDS/Compat/LegacyArrayBridge.hpp",
+      "physical": "DNDS/Compat/LegacyArrayBridge.hpp"
+    },
+    {
+      "old": "DNDS/Runtime/MPIProgress.hpp",
+      "canonical": "DNDS/Runtime/Communication/MPIProgress.hpp",
+      "physical": "DNDS/Runtime/Communication/MPIProgress.hpp"
+    },
+    {
+      "old": "DNDS/Runtime/MPI_bind.cpp",
+      "canonical": "DNDS/Runtime/Interop/MPI_bind.cpp",
+      "physical": "DNDS/Runtime/Interop/MPI_bind.cpp"
+    },
+    {
+      "old": "DNDS/Runtime/Metadata.hpp",
+      "canonical": "DNDS/Runtime/Storage/Metadata.hpp",
+      "physical": "DNDS/Runtime/Storage/Metadata.hpp"
+    },
+    {
+      "old": "DNDS/Runtime/RowBuilder.hpp",
+      "canonical": "DNDS/Runtime/Array/RowBuilder.hpp",
+      "physical": "DNDS/Runtime/Array/RowBuilder.hpp"
+    },
+    {
+      "old": "DNDS/Runtime/RowTransfer.cpp",
+      "canonical": "DNDS/Runtime/Communication/RowTransfer.cpp",
+      "physical": "DNDS/Runtime/Communication/RowTransfer.cpp"
+    },
+    {
+      "old": "DNDS/Runtime/RowTransfer.hpp",
+      "canonical": "DNDS/Runtime/Communication/RowTransfer.hpp",
+      "physical": "DNDS/Runtime/Communication/RowTransfer.hpp"
+    },
+    {
+      "old": "DNDS/Runtime/RowTransfer_CUDA.cu",
+      "canonical": "DNDS/Runtime/Communication/RowTransfer_CUDA.cu",
+      "physical": "DNDS/Runtime/Communication/RowTransfer_CUDA.cu"
+    },
+    {
+      "old": "DNDS/Runtime/Runtime_bind.cpp",
+      "canonical": "DNDS/Runtime/Interop/Runtime_bind.cpp",
+      "physical": "DNDS/Runtime/Interop/Runtime_bind.cpp"
+    },
+    {
+      "old": "DNDS/Runtime/SparseBatchExchange.hpp",
+      "canonical": "DNDS/Runtime/Communication/SparseBatchExchange.hpp",
+      "physical": "DNDS/Runtime/Communication/SparseBatchExchange.hpp"
+    },
+    {
+      "old": "DNDS/Runtime/TransferLayout.hpp",
+      "canonical": "DNDS/Runtime/Communication/TransferLayout.hpp",
+      "physical": "DNDS/Runtime/Communication/TransferLayout.hpp"
+    },
+    {
+      "old": "DNDS/Runtime/Version.hpp",
+      "canonical": "DNDS/Runtime/Storage/Version.hpp",
+      "physical": "DNDS/Runtime/Storage/Version.hpp"
+    },
+    {
+      "old": "DNDS/Runtime/third_party/dlpack/.clang-format",
+      "canonical": "DNDS/Runtime/Interop/third_party/dlpack/.clang-format",
+      "physical": "DNDS/Runtime/Interop/third_party/dlpack/.clang-format"
+    },
+    {
+      "old": "DNDS/Runtime/third_party/dlpack/LICENSE",
+      "canonical": "DNDS/Runtime/Interop/third_party/dlpack/LICENSE",
+      "physical": "DNDS/Runtime/Interop/third_party/dlpack/LICENSE"
+    },
+    {
+      "old": "DNDS/Runtime/third_party/dlpack/README.md",
+      "canonical": "DNDS/Runtime/Interop/third_party/dlpack/README.md",
+      "physical": "DNDS/Runtime/Interop/third_party/dlpack/README.md"
+    },
+    {
+      "old": "DNDS/Runtime/third_party/dlpack/dlpack.h",
+      "canonical": "DNDS/Runtime/Interop/third_party/dlpack/dlpack.h",
+      "physical": "DNDS/Runtime/Interop/third_party/dlpack/dlpack.h"
+    },
+    {
+      "old": "DNDS/Vector.hpp",
+      "canonical": "DNDS/Legacy/Vector.hpp",
+      "physical": "DNDS/Compat/Include/DNDS/Vector.hpp"
+    },
+    {
+      "old": "DNDS/VectorUtils.hpp",
+      "canonical": "DNDS/Legacy/VectorUtils.hpp",
+      "physical": "DNDS/Compat/Include/DNDS/VectorUtils.hpp"
+    },
+    {
+      "old": "DNDS/Warnings.hpp",
+      "canonical": "DNDS/Core/Warnings.hpp",
+      "physical": "DNDS/Core/Warnings.hpp"
+    },
+    {
+      "old": "DNDS/dnds_pybind11.cpp",
+      "canonical": "DNDS/Bindings/dnds_pybind11.cpp",
+      "physical": "DNDS/Bindings/dnds_pybind11.cpp"
+    },
+    {
+      "old": "Geom/BaseFunction.hpp",
+      "canonical": "Geom/Math/BaseFunction.hpp",
+      "physical": "Geom/Math/BaseFunction.hpp"
+    },
+    {
+      "old": "Geom/BoundaryCondition.hpp",
+      "canonical": "Geom/Interface/BoundaryCondition.hpp",
+      "physical": "Geom/Interface/BoundaryCondition.hpp"
+    },
+    {
+      "old": "Geom/Boundary_bind.hpp",
+      "canonical": "Geom/Bindings/Boundary_bind.hpp",
+      "physical": "Geom/Bindings/Boundary_bind.hpp"
+    },
+    {
+      "old": "Geom/CGNS.hpp",
+      "canonical": "Geom/IO/CGNS.hpp",
+      "physical": "Geom/IO/CGNS.hpp"
+    },
+    {
+      "old": "Geom/DiffTensors.hpp",
+      "canonical": "Geom/Math/DiffTensors.hpp",
+      "physical": "Geom/Math/DiffTensors.hpp"
+    },
+    {
+      "old": "Geom/EigenTensor.hpp",
+      "canonical": "Geom/Math/EigenTensor.hpp",
+      "physical": "Geom/Math/EigenTensor.hpp"
+    },
+    {
+      "old": "Geom/ElemEnum.hpp",
+      "canonical": "Geom/Elements/ElemEnum.hpp",
+      "physical": "Geom/Elements/ElemEnum.hpp"
+    },
+    {
+      "old": "Geom/ElementTraits.hpp",
+      "canonical": "Geom/Elements/ElementTraits.hpp",
+      "physical": "Geom/Elements/ElementTraits.hpp"
+    },
+    {
+      "old": "Geom/ElementTraitsBase.hpp",
+      "canonical": "Geom/Elements/ElementTraitsBase.hpp",
+      "physical": "Geom/Elements/ElementTraitsBase.hpp"
+    },
+    {
+      "old": "Geom/Elements.cpp",
+      "canonical": "Geom/Elements/Elements.cpp",
+      "physical": "Geom/Elements/Elements.cpp"
+    },
+    {
+      "old": "Geom/Elements.hpp",
+      "canonical": "Geom/Elements/Elements.hpp",
+      "physical": "Geom/Elements/Elements.hpp"
+    },
+    {
+      "old": "Geom/Elements_bind.cpp",
+      "canonical": "Geom/Elements/Elements_bind.cpp",
+      "physical": "Geom/Elements/Elements_bind.cpp"
+    },
+    {
+      "old": "Geom/Elements_bind.hpp",
+      "canonical": "Geom/Elements/Elements_bind.hpp",
+      "physical": "Geom/Elements/Elements_bind.hpp"
+    },
+    {
+      "old": "Geom/Geometric.hpp",
+      "canonical": "Geom/Geometry/Geometric.hpp",
+      "physical": "Geom/Geometry/Geometric.hpp"
+    },
+    {
+      "old": "Geom/Grid.hpp",
+      "canonical": "Geom/Unstructured/Grid.hpp",
+      "physical": "Geom/Unstructured/Grid.hpp"
+    },
+    {
+      "old": "Geom/Mesh/AdjIndexInfo.hpp",
+      "canonical": "Geom/Compat/AdjIndexInfo.hpp",
+      "physical": "Geom/Compat/Include/Geom/Mesh/AdjIndexInfo.hpp"
+    },
+    {
+      "old": "Geom/Mesh/AdjPairTracked_bind.hpp",
+      "canonical": "Geom/Compat/AdjPairTracked_bind.hpp",
+      "physical": "Geom/Compat/Include/Geom/Mesh/AdjPairTracked_bind.hpp"
+    },
+    {
+      "old": "Geom/Mesh/AdjPairTracked_bind_inst/AdjPairTracked_bind_fwd.hpp",
+      "canonical": "Geom/Compat/AdjPairTracked_bind_inst/AdjPairTracked_bind_fwd.hpp",
+      "physical": "Geom/Compat/Include/Geom/Mesh/AdjPairTracked_bind_inst/AdjPairTracked_bind_fwd.hpp"
+    },
+    {
+      "old": "Geom/Mesh/AdjacencyRegistry.hpp",
+      "canonical": "Geom/Connectivity/AdjacencyRegistry.hpp",
+      "physical": "Geom/Compat/Include/Geom/Mesh/AdjacencyRegistry.hpp"
+    },
+    {
+      "old": "Geom/Mesh/ConnectivityComposeRows.hpp",
+      "canonical": "Geom/Connectivity/ConnectivityComposeRows.hpp",
+      "physical": "Geom/Compat/Include/Geom/Mesh/ConnectivityComposeRows.hpp"
+    },
+    {
+      "old": "Geom/Mesh/ConnectivityInterpolateRows.hpp",
+      "canonical": "Geom/Connectivity/ConnectivityInterpolateRows.hpp",
+      "physical": "Geom/Compat/Include/Geom/Mesh/ConnectivityInterpolateRows.hpp"
+    },
+    {
+      "old": "Geom/Mesh/CorrectRCM.hpp",
+      "canonical": "Geom/Transition/CorrectRCM.hpp",
+      "physical": "Geom/Compat/Include/Geom/Mesh/CorrectRCM.hpp"
+    },
+    {
+      "old": "Geom/Mesh/EntityField.hpp",
+      "canonical": "Geom/Access/EntityField.hpp",
+      "physical": "Geom/Compat/Include/Geom/Mesh/EntityField.hpp"
+    },
+    {
+      "old": "Geom/Mesh/EntitySpace.hpp",
+      "canonical": "Geom/Compat/LegacyFieldBridge.hpp",
+      "physical": "Geom/Compat/Include/Geom/Mesh/EntitySpace.hpp"
+    },
+    {
+      "old": "Geom/Mesh/FieldTransfer.hpp",
+      "canonical": "Geom/Transition/FieldTransfer.hpp",
+      "physical": "Geom/Compat/Include/Geom/Mesh/FieldTransfer.hpp"
+    },
+    {
+      "old": "Geom/Mesh/Mesh.hpp",
+      "canonical": "Geom/Unstructured/UnstructuredMesh.hpp",
+      "physical": "Geom/Compat/Include/Geom/Mesh/Mesh.hpp"
+    },
+    {
+      "old": "Geom/Mesh/MeshAccess.hpp",
+      "canonical": "Geom/Compat/LegacyMeshRead.hpp",
+      "physical": "Geom/Compat/Include/Geom/Mesh/MeshAccess.hpp"
+    },
+    {
+      "old": "Geom/Mesh/MeshAccess_bind.hpp",
+      "canonical": "Geom/Access/MeshAccess_bind.hpp",
+      "physical": "Geom/Compat/Include/Geom/Mesh/MeshAccess_bind.hpp"
+    },
+    {
+      "old": "Geom/Mesh/MeshConnectivity.hpp",
+      "canonical": "Geom/Connectivity/MeshConnectivity.hpp",
+      "physical": "Geom/Compat/Include/Geom/Mesh/MeshConnectivity.hpp"
+    },
+    {
+      "old": "Geom/Mesh/MeshConnectivity_Interpolate.hxx",
+      "canonical": "Geom/Connectivity/MeshConnectivity_Interpolate.hxx",
+      "physical": "Geom/Compat/Include/Geom/Mesh/MeshConnectivity_Interpolate.hxx"
+    },
+    {
+      "old": "Geom/Mesh/MeshEdit.hpp",
+      "canonical": "Geom/Geometry/MeshEdit.hpp",
+      "physical": "Geom/Compat/Include/Geom/Mesh/MeshEdit.hpp"
+    },
+    {
+      "old": "Geom/Mesh/MeshEdit_bind.hpp",
+      "canonical": "Geom/Geometry/MeshEdit_bind.hpp",
+      "physical": "Geom/Compat/Include/Geom/Mesh/MeshEdit_bind.hpp"
+    },
+    {
+      "old": "Geom/Mesh/MeshIdentity.hpp",
+      "canonical": "Geom/Unstructured/MeshIdentity.hpp",
+      "physical": "Geom/Compat/Include/Geom/Mesh/MeshIdentity.hpp"
+    },
+    {
+      "old": "Geom/Mesh/MeshLegacyView.hpp",
+      "canonical": "Geom/Compat/MeshLegacyView.hpp",
+      "physical": "Geom/Compat/Include/Geom/Mesh/MeshLegacyView.hpp"
+    },
+    {
+      "old": "Geom/Mesh/MeshMutation.hpp",
+      "canonical": "Geom/Access/MeshMutation.hpp",
+      "physical": "Geom/Compat/Include/Geom/Mesh/MeshMutation.hpp"
+    },
+    {
+      "old": "Geom/Mesh/MeshRelationTypes.hpp",
+      "canonical": "Geom/Connectivity/MeshRelationTypes.hpp",
+      "physical": "Geom/Compat/Include/Geom/Mesh/MeshRelationTypes.hpp"
+    },
+    {
+      "old": "Geom/Mesh/MeshReorderTypes.hpp",
+      "canonical": "Geom/Transition/MeshReorderTypes.hpp",
+      "physical": "Geom/Compat/Include/Geom/Mesh/MeshReorderTypes.hpp"
+    },
+    {
+      "old": "Geom/Mesh/MeshTopologyTypes.hpp",
+      "canonical": "Geom/Connectivity/MeshTopologyTypes.hpp",
+      "physical": "Geom/Compat/Include/Geom/Mesh/MeshTopologyTypes.hpp"
+    },
+    {
+      "old": "Geom/Mesh/MeshTransition.hpp",
+      "canonical": "Geom/Transition/MeshTransition.hpp",
+      "physical": "Geom/Compat/Include/Geom/Mesh/MeshTransition.hpp"
+    },
+    {
+      "old": "Geom/Mesh/MeshTypes.hpp",
+      "canonical": "Geom/Unstructured/MeshTypes.hpp",
+      "physical": "Geom/Compat/Include/Geom/Mesh/MeshTypes.hpp"
+    },
+    {
+      "old": "Geom/Mesh/MeshView.hpp",
+      "canonical": "Geom/Access/MeshView.hpp",
+      "physical": "Geom/Compat/Include/Geom/Mesh/MeshView.hpp"
+    },
+    {
+      "old": "Geom/Mesh/Mesh_CellPermutation.hpp",
+      "canonical": "Geom/Transition/CellPermutation.hpp",
+      "physical": "Geom/Compat/Include/Geom/Mesh/Mesh_CellPermutation.hpp"
+    },
+    {
+      "old": "Geom/Mesh/Mesh_DeviceView.hpp",
+      "canonical": "Geom/Compat/LegacyMeshDeviceView.hpp",
+      "physical": "Geom/Compat/Include/Geom/Mesh/Mesh_DeviceView.hpp"
+    },
+    {
+      "old": "Geom/Mesh/Mesh_Helpers.hpp",
+      "canonical": "Geom/Unstructured/UnstructuredMeshHelpers.hpp",
+      "physical": "Geom/Compat/Include/Geom/Mesh/Mesh_Helpers.hpp"
+    },
+    {
+      "old": "Geom/Mesh/Mesh_NativeSmoothingHelpers.hpp",
+      "canonical": "Geom/Geometry/NativeSmoothingHelpers.hpp",
+      "physical": "Geom/Compat/Include/Geom/Mesh/Mesh_NativeSmoothingHelpers.hpp"
+    },
+    {
+      "old": "Geom/Mesh/Mesh_bind.hpp",
+      "canonical": "Geom/Unstructured/UnstructuredMesh_bind.hpp",
+      "physical": "Geom/Compat/Include/Geom/Mesh/Mesh_bind.hpp"
+    },
+    {
+      "old": "Geom/Mesh/NativeConnectivity.hpp",
+      "canonical": "Geom/Connectivity/AdjacencyRegistry.hpp",
+      "physical": "Geom/Compat/Include/Geom/Mesh/NativeConnectivity.hpp"
+    },
+    {
+      "old": "Geom/Mesh/NativeMeshArchive.hpp",
+      "canonical": "Geom/IO/NativeMeshArchive.hpp",
+      "physical": "Geom/Compat/Include/Geom/Mesh/NativeMeshArchive.hpp"
+    },
+    {
+      "old": "Geom/Mesh/NativeMeshAssembler.hpp",
+      "canonical": "Geom/Transition/NativeMeshAssembler.hpp",
+      "physical": "Geom/Compat/Include/Geom/Mesh/NativeMeshAssembler.hpp"
+    },
+    {
+      "old": "Geom/Mesh/NativeMeshBuilder.hpp",
+      "canonical": "Geom/Unstructured/NativeMeshBuilder.hpp",
+      "physical": "Geom/Compat/Include/Geom/Mesh/NativeMeshBuilder.hpp"
+    },
+    {
+      "old": "Geom/Mesh/NativeMeshBuilder_bind.hpp",
+      "canonical": "Geom/Unstructured/NativeMeshBuilder_bind.hpp",
+      "physical": "Geom/Compat/Include/Geom/Mesh/NativeMeshBuilder_bind.hpp"
+    },
+    {
+      "old": "Geom/Mesh/NativeMeshCGNS.hpp",
+      "canonical": "Geom/IO/NativeMeshCGNS.hpp",
+      "physical": "Geom/Compat/Include/Geom/Mesh/NativeMeshCGNS.hpp"
+    },
+    {
+      "old": "Geom/Mesh/NativeMeshClosure.hpp",
+      "canonical": "Geom/Connectivity/NativeMeshClosure.hpp",
+      "physical": "Geom/Compat/Include/Geom/Mesh/NativeMeshClosure.hpp"
+    },
+    {
+      "old": "Geom/Mesh/NativeMeshExtraction.hpp",
+      "canonical": "Geom/Refinement/NativeMeshExtraction.hpp",
+      "physical": "Geom/Compat/Include/Geom/Mesh/NativeMeshExtraction.hpp"
+    },
+    {
+      "old": "Geom/Mesh/NativeMeshLegacyArchive.hpp",
+      "canonical": "Geom/Compat/NativeMeshLegacyArchive.hpp",
+      "physical": "Geom/Compat/Include/Geom/Mesh/NativeMeshLegacyArchive.hpp"
+    },
+    {
+      "old": "Geom/Mesh/NativeMeshOpenFOAM.hpp",
+      "canonical": "Geom/IO/NativeMeshOpenFOAM.hpp",
+      "physical": "Geom/Compat/Include/Geom/Mesh/NativeMeshOpenFOAM.hpp"
+    },
+    {
+      "old": "Geom/Mesh/NativeMeshOutput.hpp",
+      "canonical": "Geom/IO/NativeMeshOutput.hpp",
+      "physical": "Geom/Compat/Include/Geom/Mesh/NativeMeshOutput.hpp"
+    },
+    {
+      "old": "Geom/Mesh/NativeMeshPairRead_bind.hpp",
+      "canonical": "Geom/Access/NativeMeshPairRead_bind.hpp",
+      "physical": "Geom/Compat/Include/Geom/Mesh/NativeMeshPairRead_bind.hpp"
+    },
+    {
+      "old": "Geom/Mesh/NativeMeshPartitionGraph.hpp",
+      "canonical": "Geom/Transition/NativeMeshPartitionGraph.hpp",
+      "physical": "Geom/Compat/Include/Geom/Mesh/NativeMeshPartitionGraph.hpp"
+    },
+    {
+      "old": "Geom/Mesh/NativeMeshPeriodicImport.hpp",
+      "canonical": "Geom/IO/NativeMeshPeriodicImport.hpp",
+      "physical": "Geom/Compat/Include/Geom/Mesh/NativeMeshPeriodicImport.hpp"
+    },
+    {
+      "old": "Geom/Mesh/NativeMeshPreparation.hpp",
+      "canonical": "Geom/Unstructured/NativeMeshPreparation.hpp",
+      "physical": "Geom/Compat/Include/Geom/Mesh/NativeMeshPreparation.hpp"
+    },
+    {
+      "old": "Geom/Mesh/NativeMeshPreparation_bind.hpp",
+      "canonical": "Geom/Unstructured/NativeMeshPreparation_bind.hpp",
+      "physical": "Geom/Compat/Include/Geom/Mesh/NativeMeshPreparation_bind.hpp"
+    },
+    {
+      "old": "Geom/Mesh/NativeMeshProvenance.hpp",
+      "canonical": "Geom/Unstructured/NativeMeshProvenance.hpp",
+      "physical": "Geom/Compat/Include/Geom/Mesh/NativeMeshProvenance.hpp"
+    },
+    {
+      "old": "Geom/Mesh/NativeMeshRefinement.hpp",
+      "canonical": "Geom/Refinement/NativeMeshRefinement.hpp",
+      "physical": "Geom/Compat/Include/Geom/Mesh/NativeMeshRefinement.hpp"
+    },
+    {
+      "old": "Geom/Mesh/NativeMeshSerialOutput.hpp",
+      "canonical": "Geom/IO/NativeMeshSerialOutput.hpp",
+      "physical": "Geom/Compat/Include/Geom/Mesh/NativeMeshSerialOutput.hpp"
+    },
+    {
+      "old": "Geom/Mesh/NativeMeshSmoothing.hpp",
+      "canonical": "Geom/Geometry/NativeMeshSmoothing.hpp",
+      "physical": "Geom/Compat/Include/Geom/Mesh/NativeMeshSmoothing.hpp"
+    },
+    {
+      "old": "Geom/Mesh/NativeMeshSmoothingMath.hpp",
+      "canonical": "Geom/Geometry/NativeMeshSmoothingMath.hpp",
+      "physical": "Geom/Compat/Include/Geom/Mesh/NativeMeshSmoothingMath.hpp"
+    },
+    {
+      "old": "Geom/Mesh/NativeMeshSnapshot.hpp",
+      "canonical": "Geom/Unstructured/UnstructuredMeshSnapshot.hpp",
+      "physical": "Geom/Compat/Include/Geom/Mesh/NativeMeshSnapshot.hpp"
+    },
+    {
+      "old": "Geom/Mesh/NativeMeshState.hpp",
+      "canonical": "Geom/Unstructured/UnstructuredMeshState.hpp",
+      "physical": "Geom/Compat/Include/Geom/Mesh/NativeMeshState.hpp"
+    },
+    {
+      "old": "Geom/Mesh/NativeMeshTopology.hpp",
+      "canonical": "Geom/Connectivity/NativeMeshTopology.hpp",
+      "physical": "Geom/Compat/Include/Geom/Mesh/NativeMeshTopology.hpp"
+    },
+    {
+      "old": "Geom/Mesh/NativeMeshTransition.hpp",
+      "canonical": "Geom/Transition/NativeMeshTransition.hpp",
+      "physical": "Geom/Compat/Include/Geom/Mesh/NativeMeshTransition.hpp"
+    },
+    {
+      "old": "Geom/Mesh/NativePeriodicMatch.hpp",
+      "canonical": "Geom/Connectivity/NativePeriodicMatch.hpp",
+      "physical": "Geom/Compat/Include/Geom/Mesh/NativePeriodicMatch.hpp"
+    },
+    {
+      "old": "Geom/Mesh/RelationAccess.hpp",
+      "canonical": "Geom/Access/RelationAccess.hpp",
+      "physical": "Geom/Compat/Include/Geom/Mesh/RelationAccess.hpp"
+    },
+    {
+      "old": "Geom/Mesh/RelationAccessLegacy.hpp",
+      "canonical": "Geom/Compat/RelationAccessLegacy.hpp",
+      "physical": "Geom/Compat/Include/Geom/Mesh/RelationAccessLegacy.hpp"
+    },
+    {
+      "old": "Geom/Mesh/ReorderPlan.hpp",
+      "canonical": "Geom/Transition/ReorderPlan.hpp",
+      "physical": "Geom/Compat/Include/Geom/Mesh/ReorderPlan.hpp"
+    },
+    {
+      "old": "Geom/Mesh/SerialAdjReordering.hpp",
+      "canonical": "Geom/Transition/SerialAdjReordering.hpp",
+      "physical": "Geom/Compat/Include/Geom/Mesh/SerialAdjReordering.hpp"
+    },
+    {
+      "old": "Geom/Metis.hpp",
+      "canonical": "Geom/IO/Metis.hpp",
+      "physical": "Geom/IO/Metis.hpp"
+    },
+    {
+      "old": "Geom/NativeArray.hpp",
+      "canonical": "Geom/Access/AdjacencyStorage.hpp",
+      "physical": "Geom/Access/AdjacencyStorage.hpp"
+    },
+    {
+      "old": "Geom/Octree.hpp",
+      "canonical": "Geom/Spatial/Octree.hpp",
+      "physical": "Geom/Spatial/Octree.hpp"
+    },
+    {
+      "old": "Geom/OpenFOAMMesh.hpp",
+      "canonical": "Geom/IO/OpenFOAMMesh.hpp",
+      "physical": "Geom/IO/OpenFOAMMesh.hpp"
+    },
+    {
+      "old": "Geom/PeriodicInfo.cpp",
+      "canonical": "Geom/Periodic/PeriodicInfo.cpp",
+      "physical": "Geom/Periodic/PeriodicInfo.cpp"
+    },
+    {
+      "old": "Geom/PeriodicInfo.cu",
+      "canonical": "Geom/Periodic/PeriodicInfo.cu",
+      "physical": "Geom/Periodic/PeriodicInfo.cu"
+    },
+    {
+      "old": "Geom/PeriodicInfo.hpp",
+      "canonical": "Geom/Periodic/PeriodicInfo.hpp",
+      "physical": "Geom/Periodic/PeriodicInfo.hpp"
+    },
+    {
+      "old": "Geom/PeriodicTypes.hpp",
+      "canonical": "Geom/Periodic/PeriodicTypes.hpp",
+      "physical": "Geom/Periodic/PeriodicTypes.hpp"
+    },
+    {
+      "old": "Geom/PointCloud.hpp",
+      "canonical": "Geom/Spatial/PointCloud.hpp",
+      "physical": "Geom/Spatial/PointCloud.hpp"
+    },
+    {
+      "old": "Geom/Quadrature.hpp",
+      "canonical": "Geom/Quadratures/Quadrature.hpp",
+      "physical": "Geom/Quadratures/Quadrature.hpp"
+    },
+    {
+      "old": "Geom/QuadratureHub.hpp",
+      "canonical": "Geom/Quadratures/QuadratureHub.hpp",
+      "physical": "Geom/Quadratures/QuadratureHub.hpp"
+    },
+    {
+      "old": "Geom/RadialBasisFunction.hpp",
+      "canonical": "Geom/Math/RadialBasisFunction.hpp",
+      "physical": "Geom/Math/RadialBasisFunction.hpp"
+    },
+    {
+      "old": "Geom/geom_pybind11.cpp",
+      "canonical": "Geom/Bindings/geom_pybind11.cpp",
+      "physical": "Geom/Bindings/geom_pybind11.cpp"
+    }
+  ]
+}

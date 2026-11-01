@@ -17,11 +17,10 @@ ${DNDS_EXTERNAL_LIBS}
 )
 
 set(CPPS
-FiniteVolume.cpp
-VRDefines.cpp
-VariationalReconstruction.cpp
-ModelEvaluator.cpp
-BenchmarkFiniteVolume.cpp
+Legacy/FiniteVolume.cpp
+Legacy/VRDefines.cpp
+Legacy/VariationalReconstruction.cpp
+Legacy/ModelEvaluator.cpp
 Prepare/FiniteVolumePlan.cpp
 Prepare/VariationalReconstructionPlan.cpp
 Prepare/PolynomialSamplingPlan.cpp
@@ -29,10 +28,10 @@ Operators/Reconstruction.cpp
 Operators/ReconstructionLinear.cpp
 )
 if (DNDS_USE_CUDA)
-list(APPEND CPPS VRDefines.cu BenchmarkFiniteVolume.cu)
+list(APPEND CPPS Legacy/VRDefines.cu)
 endif()
 
-file(GLOB EXPLICIT_INST_CPP_FILES CONFIGURE_DEPENDS "_explicit_instantiation/*.cpp")
+file(GLOB EXPLICIT_INST_CPP_FILES CONFIGURE_DEPENDS "Legacy/ExplicitInstantiations/*.cpp")
 
 list(APPEND CPPS ${EXPLICIT_INST_CPP_FILES})
 
@@ -55,12 +54,17 @@ install(TARGETS ${LIBNAME}_shared
 )
 
 set(CPPS_BIND
+Legacy/Benchmarks/BenchmarkFiniteVolume.cpp
 Plans/FiniteVolumePlan_bind.cpp
-cfv_pybind11.cpp
-FiniteVolume_bind.cpp
-ModelEvaluator_bind.cpp
-VariationalReconstruction_bind.cpp
+Bindings/cfv_pybind11.cpp
+Legacy/FiniteVolume_bind.cpp
+Legacy/ModelEvaluator_bind.cpp
+Legacy/VariationalReconstruction_bind.cpp
 )
+
+if(DNDS_USE_CUDA)
+    list(APPEND CPPS_BIND Legacy/Benchmarks/BenchmarkFiniteVolume.cu)
+endif()
 
 dnds_add_py_module(${LIBNAME}_pybind11 "${CPPS_BIND}" "${LIBNAME}_shared;${LINKS_SHARED}" "${DNDS_PCH_TARGETS_FAST}"
     ON ON ON)  # SHARED,FAST, EXCLUDE

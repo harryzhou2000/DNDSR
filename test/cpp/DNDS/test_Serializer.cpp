@@ -27,8 +27,8 @@
 #include "doctest.h"
 #include "DNDS/Serializer/SerializerJSON.hpp"
 #include "DNDS/Serializer/SerializerH5.hpp"
-#include "DNDS/ArrayPair.hpp"
-#include "DNDS/MPI.hpp"
+#include "DNDS/Legacy/ArrayPair.hpp"
+#include "DNDS/MPI/MPI.hpp"
 #include <filesystem>
 #include <numeric>
 #include <algorithm>

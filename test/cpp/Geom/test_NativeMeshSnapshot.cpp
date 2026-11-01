@@ -1,8 +1,8 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "NativeMeshOverlapFixture.hpp"
-#include "Geom/Mesh/NativeMeshSnapshot.hpp"
-#include "Geom/Mesh/NativeMeshAssembler.hpp"
+#include "Geom/Unstructured/UnstructuredMeshSnapshot.hpp"
+#include "Geom/Transition/NativeMeshAssembler.hpp"
 #include "NativePeriodicFixtures.hpp"
 #include <optional>
 

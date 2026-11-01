@@ -19,9 +19,9 @@
 
 #include "DNDS/Legacy/Array.hpp"
 #include "DNDS/Device/DeviceStorage.hpp"
-#include "DNDS/Errors.hpp"
-#include "DNDS/IndexMapping.hpp"
-#include "DNDS/Profiling.hpp"
+#include "DNDS/Core/Errors.hpp"
+#include "DNDS/MPI/IndexMapping.hpp"
+#include "DNDS/Diagnostics/Profiling.hpp"
 #include <utility>
 #include "DNDS/Legacy/VectorUtils.hpp"
 

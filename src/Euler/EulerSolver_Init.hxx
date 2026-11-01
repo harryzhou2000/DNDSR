@@ -10,12 +10,12 @@
  */
 #pragma once
 
-#include "EulerSolver.hpp"
-#include "SpecialFields.hpp"
-#include "DNDS/OMP.hpp"
-#include "DNDS/ExprtkWrapper.hpp"
-#include "Geom/Mesh/Mesh_Helpers.hpp"
-#include "Geom/Mesh/EntitySpace.hpp"
+#include "Euler/EulerSolver.hpp"
+#include "Euler/SpecialFields.hpp"
+#include "DNDS/Core/OMP.hpp"
+#include "DNDS/Config/ExprtkWrapper.hpp"
+#include "Geom/Unstructured/UnstructuredMeshHelpers.hpp"
+#include "Geom/Compat/LegacyFieldBridge.hpp"
 
 namespace DNDS::Euler
 {

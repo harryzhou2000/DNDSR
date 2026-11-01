@@ -1,8 +1,8 @@
-#include "DNDS/ArrayDerived/ArrayAdjacency.hpp"
-#include "DNDS/ArrayDerived/ArrayEigenVector.hpp"
-#include "DNDS/ArrayDerived/ArrayEigenMatrix.hpp"
-#include "DNDS/ArrayDerived/ArrayEigenUniMatrixBatch.hpp"
-#include "DNDS/ArrayDerived/ArrayEigenMatrixBatch.hpp"
+#include "DNDS/Legacy/ArrayDerived/ArrayAdjacency.hpp"
+#include "DNDS/Legacy/ArrayDerived/ArrayEigenVector.hpp"
+#include "DNDS/Legacy/ArrayDerived/ArrayEigenMatrix.hpp"
+#include "DNDS/Legacy/ArrayDerived/ArrayEigenUniMatrixBatch.hpp"
+#include "DNDS/Legacy/ArrayDerived/ArrayEigenMatrixBatch.hpp"
 #include "DNDS/Serializer/SerializerJSON.hpp"
 
 #include <cstdlib>

@@ -1,10 +1,10 @@
-#include "DeviceStorage_CUDA.cuh"
+#include "DNDS/Device/DeviceStorage_CUDA.cuh"
 #include <cstddef>
 #include <cstdint>
 #include <cuda.h>
 #include <string>
-#include "CUDA_Utils.hpp"
-#include "DNDS/Errors.hpp"
+#include "DNDS/Device/CUDA_Utils.hpp"
+#include "DNDS/Core/Errors.hpp"
 #include <thrust/copy.h>
 #include <thrust/extrema.h>
 #include <thrust/device_vector.h>

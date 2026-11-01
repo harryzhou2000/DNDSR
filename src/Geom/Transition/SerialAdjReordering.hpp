@@ -1,10 +1,10 @@
 #pragma once
 
-#include "Geom/Geometric.hpp"
+#include "Geom/Geometry/Geometric.hpp"
 
 #include "Geom/Transition/CorrectRCM.hpp"
 
-#include "Geom/Metis.hpp"
+#include "Geom/IO/Metis.hpp"
 
 #include <array>
 #include <unordered_set>

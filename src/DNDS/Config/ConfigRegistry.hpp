@@ -69,9 +69,9 @@
 /// auto errors = DNDS::ConfigRegistry<TimeMarchControl>::validate(myConfig);
 /// @endcode
 
-#include "DNDS/Defines.hpp"
+#include "DNDS/Core/Defines.hpp"
 #include "DNDS/Serializer/JsonUtil.hpp"
-#include "DNDS/Errors.hpp"
+#include "DNDS/Core/Errors.hpp"
 
 #include <string>
 #include <vector>

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "DNDS/Runtime/RowTransfer.hpp"
+#include "DNDS/Runtime/Communication/RowTransfer.hpp"
 #include "Geom/Access/RelationAccess.hpp"
 #include "Geom/Connectivity/MeshTopologyTypes.hpp"
 

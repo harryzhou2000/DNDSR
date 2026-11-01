@@ -19,12 +19,12 @@
  *   Eigen sequence objects for efficient sub-vector indexing into conservative state vectors.
  */
 #pragma once
-#include "DNDS/Defines.hpp"
+#include "DNDS/Core/Defines.hpp"
 #include "DNDS/Device/DeviceStorage.hpp"
-#include "DNDS/EigenUtil.hpp"
+#include "DNDS/Math/EigenUtil.hpp"
 #include "DNDS/Config/ConfigEnum.hpp"
-#include "CFV/VRDefines.hpp"
-#include "DNDS/Errors.hpp"
+#include "CFV/Legacy/VRDefines.hpp"
+#include "DNDS/Core/Errors.hpp"
 
 namespace DNDS::Euler
 {

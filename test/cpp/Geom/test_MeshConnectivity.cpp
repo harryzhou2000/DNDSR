@@ -1,12 +1,12 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "NativeRelationSynthetic.hpp"
-#include "Geom/Mesh/MeshConnectivity.hpp"
-#include "Geom/Mesh/RelationAccessLegacy.hpp"
+#include "Geom/Connectivity/MeshConnectivity.hpp"
+#include "Geom/Compat/RelationAccessLegacy.hpp"
 #include "NativeStructuredInterpolation.hpp"
 #include "NativeConnectivityLegacyConditions.hpp"
-#include "Geom/Mesh/NativeMeshCGNS.hpp"
-#include "Geom/Mesh/Mesh.hpp"
+#include "Geom/IO/NativeMeshCGNS.hpp"
+#include "Geom/Unstructured/UnstructuredMesh.hpp"
 #include <array>
 #include <cmath>
 #include <filesystem>

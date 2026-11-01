@@ -2,8 +2,8 @@
 
 #include "DNDS/Legacy/ArrayDOF.hpp"
 // #include "DNDS/Device/CUDA_Utils.hpp"
-#include "DNDS/Defines.hpp"
-#include "DNDS/Errors.hpp"
+#include "DNDS/Core/Defines.hpp"
+#include "DNDS/Core/Errors.hpp"
 #include "mpi.h"
 
 #include <thrust/device_ptr.h>

@@ -15,8 +15,8 @@
 
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
-#include "DNDS/IndexMapping.hpp"
-#include "DNDS/MPI.hpp"
+#include "DNDS/MPI/IndexMapping.hpp"
+#include "DNDS/MPI/MPI.hpp"
 #include <numeric>
 
 using namespace DNDS;
@@ -516,7 +516,7 @@ TYPE_TO_STRING(SizeTag<200>);
 TYPE_TO_STRING(SizeTag<1000>);
 
 TEST_CASE_TEMPLATE("Parametric GlobalOffsetsMapping", Tag,
-                    SizeTag<10>, SizeTag<50>, SizeTag<200>, SizeTag<1000>)
+                   SizeTag<10>, SizeTag<50>, SizeTag<200>, SizeTag<1000>)
 {
     MPIInfo mpi = worldMPI();
     constexpr DNDS::index nLocal = Tag::n;
@@ -552,7 +552,7 @@ TEST_CASE_TEMPLATE("Parametric GlobalOffsetsMapping", Tag,
 }
 
 TEST_CASE_TEMPLATE("Parametric OffsetAscendIndexMapping", Tag,
-                    SizeTag<10>, SizeTag<50>, SizeTag<200>, SizeTag<1000>)
+                   SizeTag<10>, SizeTag<50>, SizeTag<200>, SizeTag<1000>)
 {
     MPIInfo mpi = worldMPI();
     constexpr DNDS::index nLocal = Tag::n;

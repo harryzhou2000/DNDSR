@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Geom/Connectivity/MeshRelationTypes.hpp"
-#include "DNDS/MPI.hpp"
+#include "DNDS/MPI/MPI.hpp"
 #include <limits>
 #include <map>
 #include <random>

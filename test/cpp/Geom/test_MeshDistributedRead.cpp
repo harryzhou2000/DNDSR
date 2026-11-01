@@ -92,11 +92,11 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 
-#include "Geom/Mesh/Mesh.hpp"
-#include "Geom/Mesh/Mesh_Helpers.hpp"
-#include "Geom/Mesh/NativeMeshCGNS.hpp"
-#include "Geom/Mesh/NativeMeshPreparation.hpp"
-#include "Geom/Mesh/NativeMeshArchive.hpp"
+#include "Geom/Unstructured/UnstructuredMesh.hpp"
+#include "Geom/Unstructured/UnstructuredMeshHelpers.hpp"
+#include "Geom/IO/NativeMeshCGNS.hpp"
+#include "Geom/Unstructured/NativeMeshPreparation.hpp"
+#include "Geom/IO/NativeMeshArchive.hpp"
 #include "DNDS/Serializer/SerializerH5.hpp"
 #include <string>
 #include <filesystem>

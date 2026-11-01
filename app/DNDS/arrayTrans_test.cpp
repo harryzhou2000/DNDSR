@@ -1,5 +1,5 @@
-#include "DNDS/Array.hpp"
-#include "DNDS/ArrayTransformer.hpp"
+#include "DNDS/Legacy/Array.hpp"
+#include "DNDS/Legacy/ArrayTransformer.hpp"
 
 #include <cstdlib>
 using namespace DNDS;

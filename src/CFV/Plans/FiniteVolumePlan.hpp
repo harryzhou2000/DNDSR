@@ -2,11 +2,11 @@
 
 #include "DNDS/Algebra/DofField.hpp"
 #include "DNDS/Config/ConfigParam.hpp"
-#include "DNDS/Runtime/RowTransfer.hpp"
+#include "DNDS/Runtime/Communication/RowTransfer.hpp"
 #include "Geom/Access/EntitySpace.hpp"
-#include "Geom/Geometric.hpp"
+#include "Geom/Geometry/Geometric.hpp"
 #include "Geom/Unstructured/UnstructuredMeshFwd.hpp"
-#include "DNDS/HardEigen.hpp"
+#include "DNDS/Math/HardEigen.hpp"
 #include "CFV/Math/ReconstructionFunctional.hpp"
 #include <map>
 

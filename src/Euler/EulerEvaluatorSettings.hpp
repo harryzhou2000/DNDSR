@@ -21,11 +21,11 @@
 #include "DNDS/Serializer/JsonUtil.hpp"
 #include "DNDS/Config/ConfigParam.hpp"
 
-#include "Euler.hpp"
-#include "Gas.hpp"
-#include "CLDriver.hpp"
-#include "RANS_ke.hpp"
-#include "ReactiveSplitIndicator.hpp"
+#include "Euler/Euler.hpp"
+#include "Euler/Gas.hpp"
+#include "Euler/CLDriver.hpp"
+#include "Euler/RANS_ke.hpp"
+#include "Euler/ReactiveSplitIndicator.hpp"
 #include <cmath>
 #include <unordered_set>
 #include <string>

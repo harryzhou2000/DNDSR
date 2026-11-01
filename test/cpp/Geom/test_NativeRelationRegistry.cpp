@@ -1,7 +1,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
-#include "Geom/Mesh/Mesh.hpp"
-#include "Geom/Mesh/AdjacencyRegistry.hpp"
+#include "Geom/Unstructured/UnstructuredMesh.hpp"
+#include "Geom/Connectivity/AdjacencyRegistry.hpp"
 
 using namespace DNDS;
 using namespace DNDS::Geom;

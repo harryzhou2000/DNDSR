@@ -7,8 +7,8 @@
  *  boundary integration recording, and optional direct 2nd-order reconstruction modes.
  */
 #pragma once
-#include "EulerEvaluator.hpp"
-#include "DNDS/CppUtils/ScopedValueAlternator.hpp"
+#include "Euler/EulerEvaluator.hpp"
+#include "DNDS/Core/ScopedValueAlternator.hpp"
 #include <fmt/core.h>
 
 namespace DNDS::Euler

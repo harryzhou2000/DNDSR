@@ -6,6 +6,7 @@
 #include "DNDS/Legacy/Array.hpp"
 #include "DNDS/Legacy/ArrayPair.hpp"
 #include "DNDS/Legacy/ArrayDOF.hpp"
+#include "DNDS/Runtime/Array/Array.hpp"
 #include "DNDS/Runtime/Array.hpp"
 #include <type_traits>
 

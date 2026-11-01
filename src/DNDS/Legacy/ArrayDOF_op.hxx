@@ -12,8 +12,8 @@
 /// build-time decision.
 
 #include "DNDS/Legacy/ArrayDOF.hpp"
-#include "DNDS/Defines.hpp"
-#include "DNDS/Errors.hpp"
+#include "DNDS/Core/Defines.hpp"
+#include "DNDS/Core/Errors.hpp"
 
 namespace DNDS
 {

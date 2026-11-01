@@ -1,6 +1,6 @@
 #pragma once
 
-#include "PolynomialReconstruction.hpp"
+#include "CFV/Math/PolynomialReconstruction.hpp"
 
 namespace DNDS::CFV::Math
 {

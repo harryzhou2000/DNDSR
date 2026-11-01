@@ -1,5 +1,5 @@
-#include "DofAlgebra.hpp"
-#include "DNDS/Runtime/Array_bind.hpp"
+#include "DNDS/Algebra/DofAlgebra.hpp"
+#include "DNDS/Runtime/Interop/Array_bind.hpp"
 #include <pybind11/stl.h>
 
 namespace DNDS::Runtime

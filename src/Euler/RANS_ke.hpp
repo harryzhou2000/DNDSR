@@ -25,7 +25,7 @@
  */
 #pragma once
 
-#include "Euler.hpp"
+#include "Euler/Euler.hpp"
 #include "DNDS/Config/ConfigParam.hpp"
 
 /** @brief When set to 1, cap turbulent viscosity at 1e5 * mu_laminar for k-epsilon. */

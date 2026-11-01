@@ -3,8 +3,8 @@
  * @brief PIMPL implementation: Cantera is only compiled here.
  */
 
-#include "ChemicalSource.hpp"
-#include "DNDS/Errors.hpp"
+#include "Euler/Chemistry/ChemicalSource.hpp"
+#include "DNDS/Core/Errors.hpp"
 
 // #undef DNDS_USE_CANTERA
 #ifdef DNDS_USE_CANTERA

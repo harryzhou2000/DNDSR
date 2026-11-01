@@ -9,10 +9,10 @@
  * Run:    mpirun -np 2 build/examples/ex_array_basic
  */
 
-#include "DNDS/Array.hpp"
-#include "DNDS/ArrayTransformer.hpp"
-#include "DNDS/ArrayPair.hpp"
-#include "DNDS/Defines.hpp"
+#include "DNDS/Legacy/Array.hpp"
+#include "DNDS/Legacy/ArrayTransformer.hpp"
+#include "DNDS/Legacy/ArrayPair.hpp"
+#include "DNDS/Core/Defines.hpp"
 
 #include <fmt/core.h>
 #include <iostream>
@@ -65,7 +65,8 @@ int main(int argc, char *argv[])
         // ============================================================
         {
             Array<DNDS::index, NonUniformSize, NonUniformSize> adj;
-            adj.Resize(4, [](DNDS::index i) -> rowsize { return static_cast<rowsize>(i + 2); });
+            adj.Resize(4, [](DNDS::index i) -> rowsize
+                       { return static_cast<rowsize>(i + 2); });
             // Row 0: 2, Row 1: 3, Row 2: 4, Row 3: 5
 
             DNDS_assert(adj.RowSize(0) == 2);

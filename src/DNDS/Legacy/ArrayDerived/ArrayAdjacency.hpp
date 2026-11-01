@@ -13,7 +13,7 @@
 #ifndef DNDS_ARRAY_PAIR_HPP
 #    define DNDS_ARRAY_PAIR_HPP
 #    include "DNDS/Legacy/ArrayDerived/ArrayAdjacency_DeviceView.hpp"
-#    include "DNDS/Defines.hpp"
+#    include "DNDS/Core/Defines.hpp"
 #    include "DNDS/Device/DeviceStorage.hpp"
 #    include "DNDS/Legacy/ArrayTransformer.hpp"
 

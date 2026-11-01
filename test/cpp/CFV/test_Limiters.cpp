@@ -21,7 +21,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
 
-#include "CFV/Limiters.hpp"
+#include "CFV/Math/Limiters.hpp"
 
 #include <Eigen/Core>
 #include <cmath>
@@ -38,7 +38,7 @@ TEST_CASE("PolynomialSquaredNorm<2> with 2 rows (P1)")
 {
     Eigen::ArrayXXd theta(2, 3);
     theta << 1.0, 2.0, 3.0,
-             4.0, 5.0, 6.0;
+        4.0, 5.0, 6.0;
     // weight: all 1.0 for nRows=2
     // result[j] = theta(0,j)^2 + theta(1,j)^2
     auto result = PolynomialSquaredNorm<2>(theta);
@@ -52,8 +52,8 @@ TEST_CASE("PolynomialSquaredNorm<2> with 3 rows (P2)")
 {
     Eigen::ArrayXXd theta(3, 2);
     theta << 2.0, 1.0,
-             3.0, 4.0,
-             5.0, 6.0;
+        3.0, 4.0,
+        5.0, 6.0;
     // result[j] = theta(0,j)^2 + theta(1,j)^2 * 0.5 + theta(2,j)^2
     auto result = PolynomialSquaredNorm<2>(theta);
     CHECK(result.size() == 2);
@@ -75,8 +75,8 @@ TEST_CASE("PolynomialSquaredNorm<3> with 3 rows (P1)")
 {
     Eigen::ArrayXXd theta(3, 2);
     theta << 1.0, 2.0,
-             3.0, 4.0,
-             5.0, 6.0;
+        3.0, 4.0,
+        5.0, 6.0;
     // uniform weight 1 for nRows=3
     auto result = PolynomialSquaredNorm<3>(theta);
     CHECK(result.size() == 2);
@@ -92,7 +92,7 @@ TEST_CASE("PolynomialSquaredNorm<3> with 6 rows (P2)")
     auto result = PolynomialSquaredNorm<3>(theta);
     CHECK(result.size() == 1);
     CHECK(result(0) == doctest::Approx(
-        1.0 + 4.0 + 9.0 + 16.0 * 0.5 + 25.0 * 0.5 + 36.0 * 0.5));
+                           1.0 + 4.0 + 9.0 + 16.0 * 0.5 + 25.0 * 0.5 + 36.0 * 0.5));
 }
 
 TEST_CASE("PolynomialSquaredNorm<3> with 10 rows (P3)")
@@ -137,11 +137,11 @@ TEST_CASE("PolynomialDotProduct<2> linearity")
     int nRows = 3;
     Eigen::ArrayXXd a(nRows, 2), b(nRows, 2);
     a << 1.0, 2.0,
-         3.0, 4.0,
-         5.0, 6.0;
+        3.0, 4.0,
+        5.0, 6.0;
     b << 0.5, 1.5,
-         2.5, 3.5,
-         4.5, 5.5;
+        2.5, 3.5,
+        4.5, 5.5;
     real alpha = 2.5;
     // dot(alpha*a, b) == alpha * dot(a, b)
     Eigen::ArrayXXd alphaA = alpha * a;
@@ -162,9 +162,9 @@ TEST_CASE("FMINMOD_Biway: same-sign inputs")
 {
     Eigen::ArrayXXd u1(2, 3), u2(2, 3), out(2, 3);
     u1 << 1.0, 2.0, 5.0,
-          3.0, 4.0, 6.0;
+        3.0, 4.0, 6.0;
     u2 << 2.0, 1.0, 10.0,
-          6.0, 2.0, 3.0;
+        6.0, 2.0, 3.0;
     FMINMOD_Biway(u1, u2, out, 1.0);
     // minmod(a,b) = sign(a)*min(|a|,|b|) when signs agree
     CHECK(out(0, 0) == doctest::Approx(1.0));
@@ -391,7 +391,7 @@ TEST_CASE("FMEMM_Multiway_Polynomial2D: center input unchanged when smallest")
     // If center has the smallest polynomial norm, MEMM should leave it alone
     Eigen::ArrayXXd center(2, 2);
     center << 0.1, 0.2,
-              0.1, 0.2;
+        0.1, 0.2;
     std::vector<Eigen::ArrayXXd> uOthers(3);
     for (auto &u : uOthers)
     {
@@ -510,9 +510,9 @@ TEST_CASE("FMEMM_Biway_PolynomialNorm<2,Eigen::Dynamic>: u2 smaller returns u2")
     // When u2 has smaller polynomial norm, MEMM should return u2
     Eigen::ArrayXXd u1(2, 2), u2(2, 2), out(2, 2);
     u1 << 10.0, 20.0,
-           10.0, 20.0;
+        10.0, 20.0;
     u2 << 0.1, 0.2,
-          0.1, 0.2;
+        0.1, 0.2;
     FMEMM_Biway_PolynomialNorm<2, Eigen::Dynamic>(u1, u2, out, 1.0);
     CHECK_FALSE(out.hasNaN());
     // When u1 is much larger, the limiter should reduce toward u2

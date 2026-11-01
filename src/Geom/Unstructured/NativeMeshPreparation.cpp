@@ -2,7 +2,7 @@
 #include "Geom/Connectivity/NativeMeshTopology.hpp"
 #include "Geom/Unstructured/UnstructuredMesh.hpp"
 #include "Geom/Transition/FieldTransfer.hpp"
-#include "Geom/Metis.hpp"
+#include "Geom/IO/Metis.hpp"
 #include "Geom/Transition/NativeMeshPartitionGraph.hpp"
 #include "Geom/Unstructured/ReaderPartitionGraph.hpp"
 #include "Geom/Connectivity/TopologySubEntityQuery.hpp"

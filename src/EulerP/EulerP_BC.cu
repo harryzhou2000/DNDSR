@@ -1,4 +1,4 @@
-#include "EulerP_BC.hpp"
+#include "EulerP/EulerP_BC.hpp"
 
 #include "DNDS/Device/DeviceStorage_CUDA.cuh"
 #include "DNDS/Device/DeviceStorage.hxx"

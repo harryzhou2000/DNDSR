@@ -8,8 +8,8 @@
 
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
-#include "DNDS/PermutationTransfer.hpp"
-#include "DNDS/ArrayDerived/ArrayAdjacency.hpp"
+#include "DNDS/Legacy/PermutationTransfer.hpp"
+#include "DNDS/Legacy/ArrayDerived/ArrayAdjacency.hpp"
 #include <numeric>
 #include <algorithm>
 

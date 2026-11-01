@@ -1,15 +1,15 @@
 #pragma once
 
-#include "Geom/Mesh/Mesh.hpp"
-#include "Geom/Mesh/EntitySpace.hpp"
-#include "Geom/Mesh/MeshTransition.hpp"
-#include "Geom/Mesh/FieldTransfer.hpp"
-#include "Geom/Mesh/NativeMeshBuilder.hpp"
-#include "Geom/Mesh/NativeMeshTopology.hpp"
-#include "Geom/Mesh/NativeMeshArchive.hpp"
-#include "DNDS/Runtime/EagerArray.hpp"
-#include "DNDS/Runtime/MPIProgress.hpp"
-#include "DNDS/Runtime/ArrayIO.hpp"
+#include "Geom/Unstructured/UnstructuredMesh.hpp"
+#include "Geom/Compat/LegacyFieldBridge.hpp"
+#include "Geom/Transition/MeshTransition.hpp"
+#include "Geom/Transition/FieldTransfer.hpp"
+#include "Geom/Unstructured/NativeMeshBuilder.hpp"
+#include "Geom/Connectivity/NativeMeshTopology.hpp"
+#include "Geom/IO/NativeMeshArchive.hpp"
+#include "DNDS/Runtime/Execution/EagerArray.hpp"
+#include "DNDS/Runtime/Communication/MPIProgress.hpp"
+#include "DNDS/Runtime/Array/ArrayIO.hpp"
 #include "DNDS/Serializer/SerializerH5.hpp"
 #include <algorithm>
 #include <array>

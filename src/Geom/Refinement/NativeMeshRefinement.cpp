@@ -2,7 +2,7 @@
 #include "Geom/Transition/NativeMeshAssembler.hpp"
 #include "Geom/Connectivity/AdjacencyRegistry.hpp"
 #include "Geom/Transition/FieldTransfer.hpp"
-#include "DNDS/Runtime/RowBuilder.hpp"
+#include "DNDS/Runtime/Array/RowBuilder.hpp"
 
 namespace DNDS::Geom
 {

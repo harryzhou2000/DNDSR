@@ -1,11 +1,11 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
-#include "DNDS/Runtime/DynamicRowTransfer.hpp"
-#include "DNDS/Runtime/MPIProgress.hpp"
-#include "DNDS/Runtime/EagerArray.hpp"
-#include "DNDS/Runtime/EagerCopy.hpp"
-#include "DNDS/Runtime/CUDAExecution.hpp"
-#include "DNDS/Runtime/RowBuilder.hpp"
+#include "DNDS/Runtime/Communication/DynamicRowTransfer.hpp"
+#include "DNDS/Runtime/Communication/MPIProgress.hpp"
+#include "DNDS/Runtime/Execution/EagerArray.hpp"
+#include "DNDS/Runtime/Execution/EagerCopy.hpp"
+#include "DNDS/Runtime/Execution/CUDAExecution.hpp"
+#include "DNDS/Runtime/Array/RowBuilder.hpp"
 #include <chrono>
 #include <optional>
 

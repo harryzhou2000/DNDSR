@@ -1,6 +1,6 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
-#include "DNDS/Runtime/ArrayIO.hpp"
+#include "DNDS/Runtime/Array/ArrayIO.hpp"
 #include "DNDS/Serializer/SerializerH5.hpp"
 #include "DNDS/Serializer/SerializerJSON.hpp"
 #include <filesystem>

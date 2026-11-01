@@ -2,10 +2,10 @@
 #    define DOCTEST_CONFIG_IMPLEMENT
 #endif
 #include "doctest.h"
-#include "DNDS/ArrayPair.hpp"
-#include "DNDS/Array.hpp"
-#include "Geom/Mesh/Mesh.hpp"
-#include "Geom/Mesh/EntitySpace.hpp"
+#include "DNDS/Legacy/ArrayPair.hpp"
+#include "DNDS/Legacy/Array.hpp"
+#include "Geom/Unstructured/UnstructuredMesh.hpp"
+#include "Geom/Compat/LegacyFieldBridge.hpp"
 #include "MeshViewKernel.hpp"
 #include <memory>
 #include <optional>

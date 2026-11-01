@@ -1,6 +1,6 @@
 #include "Geom/Compat/NativeMeshLegacyArchive.hpp"
 #include "Geom/Transition/FieldTransfer.hpp"
-#include "DNDS/Runtime/RowBuilder.hpp"
+#include "DNDS/Runtime/Array/RowBuilder.hpp"
 #include "Geom/Unstructured/NativeMeshBuilder.hpp"
 #include "Geom/IO/NativeMeshArchive.hpp"
 #include "DNDS/Serializer/SerializerJSON.hpp"

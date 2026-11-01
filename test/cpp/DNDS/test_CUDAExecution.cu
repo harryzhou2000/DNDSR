@@ -1,9 +1,9 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
-#include "DNDS/Runtime/CUDAExecution.hpp"
-#include "DNDS/Runtime/EagerArray.hpp"
-#include "DNDS/Runtime/EagerCopy.hpp"
-#include "DNDS/Runtime/AllocationResource.hpp"
+#include "DNDS/Runtime/Execution/CUDAExecution.hpp"
+#include "DNDS/Runtime/Execution/EagerArray.hpp"
+#include "DNDS/Runtime/Execution/EagerCopy.hpp"
+#include "DNDS/Runtime/Storage/AllocationResource.hpp"
 #include <cuda_runtime.h>
 #include <atomic>
 #include <thread>

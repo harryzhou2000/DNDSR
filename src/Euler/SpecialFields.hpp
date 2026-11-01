@@ -18,7 +18,7 @@
  */
 #pragma once
 
-#include "EulerEvaluator.hpp"
+#include "Euler/EulerEvaluator.hpp"
 
 namespace DNDS::Euler::SpecialFields
 {

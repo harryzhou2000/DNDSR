@@ -1,6 +1,6 @@
 #pragma once
 
-#include "DNDS/Defines.hpp"
+#include "DNDS/Core/Defines.hpp"
 #include <algorithm>
 #include <functional>
 #include <unordered_map>

@@ -1,7 +1,7 @@
 #pragma once
 
-#include "Geom/BaseFunction.hpp"
-#include "DNDS/Errors.hpp"
+#include "Geom/Math/BaseFunction.hpp"
+#include "DNDS/Core/Errors.hpp"
 
 namespace DNDS::CFV::Math
 {

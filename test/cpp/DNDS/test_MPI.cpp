@@ -13,8 +13,8 @@
 
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
-#include "DNDS/MPI.hpp"
-#include "DNDS/Defines.hpp"
+#include "DNDS/MPI/MPI.hpp"
+#include "DNDS/Core/Defines.hpp"
 
 #include <array>
 #include <cstdint>

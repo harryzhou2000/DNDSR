@@ -23,14 +23,14 @@
  *  - Flux2nd_Kernel_FluxFace — Roe inviscid flux computation (per-face)
  *  - Flux2nd_Kernel_Face2Cell — face flux scatter to cell RHS (per-cell)
  */
-#include "DNDS/Defines.hpp"
+#include "DNDS/Core/Defines.hpp"
 #include "DNDS/Device/DeviceStorage.hpp"
-#include "DNDS/Errors.hpp"
+#include "DNDS/Core/Errors.hpp"
 #include "EulerP/EulerP.hpp"
-#include "EulerP_ARS.hpp"
-#include "EulerP_Evaluator_impl.hpp"
-#include "Geom/Geometric.hpp"
-#include "EulerP_Evaluator_impl_utils.hpp"
+#include "EulerP/EulerP_ARS.hpp"
+#include "EulerP/EulerP_Evaluator_impl.hpp"
+#include "Geom/Geometry/Geometric.hpp"
+#include "EulerP/EulerP_Evaluator_impl_utils.hpp"
 namespace DNDS::EulerP
 {
     /**

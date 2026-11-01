@@ -2,7 +2,7 @@
 
 #include "Geom/Access/EntitySpace.hpp"
 #include "Geom/Access/MeshAccess.hpp"
-#include "DNDS/Runtime/RowBuilder.hpp"
+#include "DNDS/Runtime/Array/RowBuilder.hpp"
 #include <atomic>
 #include <limits>
 #include <optional>

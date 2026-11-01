@@ -1,7 +1,7 @@
 #pragma once
 
-#include "Geom/Geometric.hpp"
-#include "Geom/Quadrature.hpp"
+#include "Geom/Geometry/Geometric.hpp"
+#include "Geom/Quadratures/Quadrature.hpp"
 
 namespace DNDS::Geom::NativeSmoothingDetail
 {

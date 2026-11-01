@@ -1,8 +1,8 @@
 #pragma once
 #include "Geom/Transition/LocalCellOrdering.hpp"
 
-#include "DNDS/Defines_bind.hpp"
-#include "DNDS/Array_bind.hpp"
+#include "DNDS/Bindings/Defines_bind.hpp"
+#include "DNDS/Legacy/Array_bind.hpp"
 #include "Geom/Unstructured/UnstructuredMesh.hpp"
 #include "Geom/Access/MeshAccess_bind.hpp"
 #include "Geom/Access/NativeMeshPairRead_bind.hpp"

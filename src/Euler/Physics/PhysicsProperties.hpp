@@ -31,8 +31,8 @@
 
 #pragma once
 
-#include "../EulerEvaluatorSettings.hpp"
-#include "../Chemistry/ChemicalSource.hpp"
+#include "Euler/EulerEvaluatorSettings.hpp"
+#include "Euler/Chemistry/ChemicalSource.hpp"
 
 #include <algorithm>
 #include <cmath>

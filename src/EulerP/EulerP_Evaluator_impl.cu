@@ -1,9 +1,9 @@
 #define DNDS_NDEBUG_DEVICE
-#include "DNDS/Defines.hpp"
+#include "DNDS/Core/Defines.hpp"
 #include "DNDS/Device/DeviceStorage.hpp"
 #include "EulerP/EulerP.hpp"
-#include "EulerP_Evaluator_impl.hpp"
-#include "EulerP_Evaluator_impl_common.hxx"
+#include "EulerP/EulerP_Evaluator_impl.hpp"
+#include "EulerP/EulerP_Evaluator_impl_common.hxx"
 #include "DNDS/Device/CUDA_Utils.hpp"
 #include "cuda_runtime.h"
 

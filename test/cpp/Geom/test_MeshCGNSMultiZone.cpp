@@ -5,8 +5,8 @@
 
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
-#include "Geom/Mesh/NativeMeshCGNS.hpp"
-#include "Geom/CGNS.hpp"
+#include "Geom/IO/NativeMeshCGNS.hpp"
+#include "Geom/IO/CGNS.hpp"
 
 #include <cstdlib>
 #include <filesystem>

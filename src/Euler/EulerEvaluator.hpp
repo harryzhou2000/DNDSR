@@ -30,22 +30,22 @@
 // #define __DNDS_REALLY_COMPILING__HEADER_ON__
 // #endif
 
-#include "Gas.hpp"
-#include "Geom/Mesh/MeshAccess.hpp"
-#include "Geom/Mesh/Mesh.hpp"
-#include "CFV/VariationalReconstruction.hpp"
+#include "Euler/Gas.hpp"
+#include "Geom/Compat/LegacyMeshRead.hpp"
+#include "Geom/Unstructured/UnstructuredMesh.hpp"
+#include "CFV/Legacy/VariationalReconstruction.hpp"
 #include "DNDS/Serializer/JsonUtil.hpp"
-#include "Euler.hpp"
-#include "EulerBC.hpp"
-#include "EulerJacobian.hpp"
-#include "EulerEvaluatorSettings.hpp"
-#include "SourceTermContributor.hpp"
-#include "Physics/PhysicsProperties.hpp"
-#include "LimitedVR.hpp"
+#include "Euler/Euler.hpp"
+#include "Euler/EulerBC.hpp"
+#include "Euler/EulerJacobian.hpp"
+#include "Euler/EulerEvaluatorSettings.hpp"
+#include "Euler/SourceTermContributor.hpp"
+#include "Euler/Physics/PhysicsProperties.hpp"
+#include "Euler/LimitedVR.hpp"
 #include "DNDS/Serializer/SerializerBase.hpp"
-#include "DNDS/OutputDir.hpp"
-#include "DNDS/OptionalRef.hpp"
-#include "RANS_ke.hpp"
+#include "DNDS/IO/OutputDir.hpp"
+#include "DNDS/Core/OptionalRef.hpp"
+#include "Euler/RANS_ke.hpp"
 
 // #ifdef __DNDS_REALLY_COMPILING__HEADER_ON__
 // #undef __DNDS_REALLY_COMPILING__

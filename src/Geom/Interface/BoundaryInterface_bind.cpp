@@ -1,5 +1,5 @@
-#include "BoundaryInterface.hpp"
-#include "DNDS/Runtime/Array_bind.hpp"
+#include "Geom/Interface/BoundaryInterface.hpp"
+#include "DNDS/Runtime/Interop/Array_bind.hpp"
 #include <pybind11/eigen.h>
 #include <pybind11/stl.h>
 

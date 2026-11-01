@@ -3,11 +3,11 @@
 # project(DNDS LANGUAGES CXX)
 
 set(DNDS_PCH_CPPS
-EigenPCH.cpp
-ExprtkPCH.cpp)
+Support/PCH/EigenPCH.cpp
+Support/PCH/ExprtkPCH.cpp)
 set(DNDS_PCH_HPPS
-EigenPCH.hpp
-ExprtkPCH.hpp)
+Support/PCH/EigenPCH.hpp
+Support/PCH/ExprtkPCH.hpp)
 
 dnds_add_lib_pch(dnds_PCHs "${DNDS_PCH_CPPS}" "${DNDS_PCH_HPPS}" "" 
     OFF OFF) # SHARED,FAST
@@ -28,23 +28,23 @@ Threads::Threads
 )
 
 set(CPPS
-MPI.cpp
-Defines.cpp
-EnvReader.cpp
+MPI/MPI.cpp
+Core/Defines.cpp
+Config/EnvReader.cpp
 Device/DeviceStorage.cpp
-Runtime/Buffer.cpp
-Runtime/EagerEngine.cpp
-Runtime/CUDAExecution.cpp
-Runtime/Exchange.cpp
-Runtime/ElementSchema.cpp
-Runtime/RowTransfer.cpp
+Runtime/Storage/Buffer.cpp
+Runtime/Execution/EagerEngine.cpp
+Runtime/Execution/CUDAExecution.cpp
+Runtime/Communication/Exchange.cpp
+Runtime/Storage/ElementSchema.cpp
+Runtime/Communication/RowTransfer.cpp
 Algebra/DofAlgebra.cpp
-Profiling.cpp
-HardEigen.cpp
+Diagnostics/Profiling.cpp
+Math/HardEigen.cpp
 Serializer/SerializerBase.cpp
 Serializer/SerializerJSON.cpp
 Serializer/SerializerH5.cpp
-ExprtkWrapper.cpp
+Config/ExprtkWrapper.cpp
 Legacy/Vector.cpp
 Legacy/ArrayDOF_inst/ArrayDOF_op_1.cpp
 Legacy/ArrayDOF_inst/ArrayDOF_op_2.cpp
@@ -60,7 +60,7 @@ Legacy/ArrayDOF_inst/ArrayDOF_op_I.cpp
 
 if (DNDS_USE_CUDA)
     list(APPEND CPPS Algebra/DofAlgebra_CUDA.cu)
-    list(APPEND CPPS Runtime/RowTransfer_CUDA.cu)
+    list(APPEND CPPS Runtime/Communication/RowTransfer_CUDA.cu)
     list(APPEND CPPS Device/DeviceStorage_CUDA.cu)
     list(APPEND CPPS
         Legacy/ArrayDOF_inst/ArrayDOF_op_1.cu
@@ -105,14 +105,14 @@ install(TARGETS ${LIBNAME}_shared
 
 
 set(CPPS_BIND
-dnds_pybind11.cpp
-Runtime/Runtime_bind.cpp
+Bindings/dnds_pybind11.cpp
+Runtime/Interop/Runtime_bind.cpp
 Algebra/Algebra_bind.cpp
-Runtime/Eager_bind.cpp
-Runtime/MPI_bind.cpp
-Runtime/DLPack_bind.cpp
-Defines_bind.cpp
-MPI_bind.cpp
+Runtime/Execution/Eager_bind.cpp
+Runtime/Interop/MPI_bind.cpp
+Runtime/Interop/DLPack_bind.cpp
+Bindings/Defines_bind.cpp
+Bindings/MPI_bind.cpp
 Legacy/Array_bind.cpp
 Legacy/ArrayDerived/ArrayAdjacency_bind.cpp
 Legacy/ArrayDerived/ArrayEigenMatrix_bind.cpp

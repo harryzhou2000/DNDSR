@@ -3,8 +3,8 @@
 /// @brief Helper for constructing a single ArrayDof with father, son, and transformer.
 
 #include "DNDS/Legacy/ArrayDOF.hpp"
-#include "DNDS/Defines.hpp"
-#include "DNDS/MPI.hpp"
+#include "DNDS/Core/Defines.hpp"
+#include "DNDS/MPI/MPI.hpp"
 #include <vector>
 
 namespace DNDS

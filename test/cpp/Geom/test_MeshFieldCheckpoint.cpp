@@ -1,11 +1,11 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "MeshFacadeOverlapFixture.hpp"
-#include "Geom/Mesh/MeshTransition.hpp"
-#include "Geom/Mesh/FieldTransfer.hpp"
-#include "Geom/Mesh/NativeMeshLegacyArchive.hpp"
-#include "Geom/Mesh/NativeMeshPreparation.hpp"
-#include "DNDS/Runtime/ArrayIO.hpp"
+#include "Geom/Transition/MeshTransition.hpp"
+#include "Geom/Transition/FieldTransfer.hpp"
+#include "Geom/Compat/NativeMeshLegacyArchive.hpp"
+#include "Geom/Unstructured/NativeMeshPreparation.hpp"
+#include "DNDS/Runtime/Array/ArrayIO.hpp"
 #include "DNDS/Serializer/SerializerH5.hpp"
 #include <filesystem>
 #include <map>

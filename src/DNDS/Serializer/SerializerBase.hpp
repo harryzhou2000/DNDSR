@@ -2,13 +2,13 @@
 /// @file SerializerBase.hpp
 /// @brief Base types and abstract interface for array serialization.
 
-#include "DNDS/Defines.hpp"
-#include "DNDS/MPI.hpp"
+#include "DNDS/Core/Defines.hpp"
+#include "DNDS/MPI/MPI.hpp"
 #include <limits>
 #include <set>
 #include <variant>
 #include "DNDS/Device/DeviceStorage.hpp"
-#include "DNDS/Vector.hpp"
+#include "DNDS/Legacy/Vector.hpp"
 
 namespace DNDS::Serializer
 {

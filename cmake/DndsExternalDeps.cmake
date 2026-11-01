@@ -413,6 +413,23 @@ endif()
 
 set(DNDS_INCLUDES ${PROJECT_SOURCE_DIR}/src  CACHE INTERNAL "Project Public Includes")
 
+# Historical includes are an explicit overlay, not forwarding files at module
+# roots. Native code uses canonical paths and can disable this compatibility
+# layer to verify that it has no accidental dependency on the old spellings.
+option(DNDS_ENABLE_LEGACY_INCLUDES "Expose historical DNDS/Geom/CFV include paths" ON)
+add_library(dnds_compat_headers INTERFACE)
+target_include_directories(dnds_compat_headers INTERFACE
+    ${PROJECT_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/src/DNDS/Compat/Include
+    ${PROJECT_SOURCE_DIR}/src/Geom/Compat/Include
+    ${PROJECT_SOURCE_DIR}/src/CFV/Compat/Include)
+if(DNDS_ENABLE_LEGACY_INCLUDES)
+    list(APPEND DNDS_INCLUDES
+        ${PROJECT_SOURCE_DIR}/src/DNDS/Compat/Include
+        ${PROJECT_SOURCE_DIR}/src/Geom/Compat/Include
+        ${PROJECT_SOURCE_DIR}/src/CFV/Compat/Include)
+endif()
+
 # -------------------------------------------------------------------
 # Compile definitions for external-dep-related features
 # -------------------------------------------------------------------

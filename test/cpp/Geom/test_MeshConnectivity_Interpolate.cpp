@@ -1,11 +1,11 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "NativeRelationSynthetic.hpp"
-#include "Geom/Elements.hpp"
+#include "Geom/Elements/Elements.hpp"
 #include "NativeStructuredInterpolation.hpp"
 #include "NativeConnectivityLegacyConditions.hpp"
-#include "Geom/Mesh/NativeMeshCGNS.hpp"
-#include "Geom/Mesh/NativeMeshTopology.hpp"
+#include "Geom/IO/NativeMeshCGNS.hpp"
+#include "Geom/Connectivity/NativeMeshTopology.hpp"
 #include <filesystem>
 
 using namespace DNDS;

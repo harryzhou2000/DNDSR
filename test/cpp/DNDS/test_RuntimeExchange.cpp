@@ -1,6 +1,6 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
-#include "DNDS/Runtime/Exchange.hpp"
+#include "DNDS/Runtime/Communication/Exchange.hpp"
 #include <optional>
 
 using namespace DNDS::Runtime;

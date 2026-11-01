@@ -13,8 +13,8 @@
 #include <future>
 #include <unordered_set>
 #include <hdf5.h>
-#include "EulerSolver.hpp"
-#include "Geom/Mesh/MeshAccess.hpp"
+#include "Euler/EulerSolver.hpp"
+#include "Geom/Compat/LegacyMeshRead.hpp"
 
 namespace DNDS::Euler
 {

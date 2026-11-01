@@ -2,10 +2,10 @@
 /// @file DeviceView.hpp
 /// @brief Non-owning device-side views of Array objects for host and CUDA backends.
 
-#include "DNDS/ArrayBasic.hpp"
-#include "DNDS/Defines.hpp"
+#include "DNDS/Legacy/ArrayBasic.hpp"
+#include "DNDS/Core/Defines.hpp"
 #include "DNDS/Device/DeviceStorage.hpp"
-#include "DNDS/Errors.hpp"
+#include "DNDS/Core/Errors.hpp"
 
 namespace DNDS
 {

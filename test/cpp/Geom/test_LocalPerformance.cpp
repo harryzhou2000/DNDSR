@@ -1,6 +1,6 @@
 #include "doctest.h"
-#include "Geom/Quadrature.hpp"
-#include "Geom/BoundaryCondition.hpp"
+#include "Geom/Quadratures/Quadrature.hpp"
+#include "Geom/Interface/BoundaryCondition.hpp"
 
 const void *QuadratureCachePeer();
 

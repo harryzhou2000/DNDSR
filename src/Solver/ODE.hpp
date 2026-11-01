@@ -1,7 +1,7 @@
 #pragma once
-#include "DNDS/Defines.hpp"
-#include "DNDS/MPI.hpp"
-#include "Scalar.hpp"
+#include "DNDS/Core/Defines.hpp"
+#include "DNDS/MPI/MPI.hpp"
+#include "Solver/Scalar.hpp"
 #include "DNDS/Serializer/JsonUtil.hpp"
 
 namespace DNDS::ODE

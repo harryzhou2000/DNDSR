@@ -2,7 +2,7 @@
 /// @file HDF5.hpp
 /// @brief HDF5 native type mappings for DNDS index, rowsize, and real types.
 
-#include "DNDS/Defines.hpp"
+#include "DNDS/Core/Defines.hpp"
 #include <hdf5.h>
 
 namespace DNDS

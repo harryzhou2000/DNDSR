@@ -1,7 +1,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
-#include "Geom/Mesh/AdjacencyRegistry.hpp"
-#include "Geom/Mesh/MeshConnectivity.hpp"
+#include "Geom/Connectivity/AdjacencyRegistry.hpp"
+#include "Geom/Connectivity/MeshConnectivity.hpp"
 #include "NativeMeshOverlapFixture.hpp"
 
 using namespace DNDS;

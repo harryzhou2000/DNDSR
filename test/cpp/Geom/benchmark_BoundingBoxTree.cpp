@@ -1,7 +1,7 @@
 // Opt-in broad-phase benchmark. Exact element projection/containment is
 // deliberately identical downstream work and is excluded from these timings.
 #include "Geom/Spatial/BoundingBoxTree.hpp"
-#include "DNDS/MPI.hpp"
+#include "DNDS/MPI/MPI.hpp"
 #include <CGAL/AABB_tree.h>
 #include <CGAL/AABB_traits_3.h>
 #include <CGAL/Simple_cartesian.h>

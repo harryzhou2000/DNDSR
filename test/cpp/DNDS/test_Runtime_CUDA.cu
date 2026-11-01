@@ -1,10 +1,10 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
-#include "DNDS/Runtime/Buffer.hpp"
-#include "DNDS/Runtime/Array.hpp"
-#include "DNDS/Runtime/EagerArray.hpp"
-#include "DNDS/Runtime/CUDAExecution.hpp"
-#include "DNDS/Array.hpp"
+#include "DNDS/Runtime/Storage/Buffer.hpp"
+#include "DNDS/Runtime/Array/Array.hpp"
+#include "DNDS/Runtime/Execution/EagerArray.hpp"
+#include "DNDS/Runtime/Execution/CUDAExecution.hpp"
+#include "DNDS/Legacy/Array.hpp"
 #include <cuda_runtime.h>
 #include <map>
 

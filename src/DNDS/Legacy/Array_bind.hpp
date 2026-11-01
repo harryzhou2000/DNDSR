@@ -11,9 +11,9 @@
 #include "DNDS/Legacy/ArrayTransformer.hpp"
 #include "DNDS/Legacy/ArrayPair.hpp"
 #include "DNDS/Serializer/SerializerBase.hpp"
-#include "DNDS/Defines.hpp"
+#include "DNDS/Core/Defines.hpp"
 #include "DNDS/Device/DeviceStorage.hpp"
-#include "DNDS/Defines_bind.hpp"
+#include "DNDS/Bindings/Defines_bind.hpp"
 
 #include <pybind11/numpy.h>
 #include <pybind11/stl.h>

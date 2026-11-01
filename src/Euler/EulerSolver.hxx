@@ -14,12 +14,12 @@
 // #define __DNDS_REALLY_COMPILING__
 // #define __DNDS_REALLY_COMPILING__HEADER_ON__
 // #endif
-#include "EulerSolver.hpp"
-#include "DNDS/EigenUtil.hpp"
+#include "Euler/EulerSolver.hpp"
+#include "DNDS/Math/EigenUtil.hpp"
 #include "Solver/ODE.hpp"
 #include "Solver/Linear.hpp"
-#include "SpecialFields.hpp"
-#include "Geom/Mesh/Mesh_Helpers.hpp"
+#include "Euler/SpecialFields.hpp"
+#include "Geom/Unstructured/UnstructuredMeshHelpers.hpp"
 // #ifdef __DNDS_REALLY_COMPILING__HEADER_ON__
 // #undef __DNDS_REALLY_COMPILING__
 // #endif

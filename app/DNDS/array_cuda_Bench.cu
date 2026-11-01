@@ -1,14 +1,14 @@
 // #define DNDS_NDEBUG_DEVICE
-#include "DNDS/ArrayDerived/ArrayAdjacency.hpp"
-#include "DNDS/ArrayDerived/ArrayEigenVector.hpp"
-#include "DNDS/ArrayDerived/ArrayEigenMatrix.hpp"
-#include "DNDS/ArrayDerived/ArrayEigenMatrixBatch.hpp"
-#include "DNDS/ArrayDerived/ArrayEigenUniMatrixBatch.hpp"
-#include "DNDS/ArrayPair.hpp"
-#include "DNDS/Defines.hpp"
+#include "DNDS/Legacy/ArrayDerived/ArrayAdjacency.hpp"
+#include "DNDS/Legacy/ArrayDerived/ArrayEigenVector.hpp"
+#include "DNDS/Legacy/ArrayDerived/ArrayEigenMatrix.hpp"
+#include "DNDS/Legacy/ArrayDerived/ArrayEigenMatrixBatch.hpp"
+#include "DNDS/Legacy/ArrayDerived/ArrayEigenUniMatrixBatch.hpp"
+#include "DNDS/Legacy/ArrayPair.hpp"
+#include "DNDS/Core/Defines.hpp"
 #include "DNDS/Device/DeviceStorage.hpp"
 
-#include "DNDS/MPI.hpp"
+#include "DNDS/MPI/MPI.hpp"
 
 #include <ios>
 #include <iostream>
@@ -277,7 +277,7 @@ namespace DNDS
             auto ij_to_ind = [n_x, n_y](int i, int j)
             { return i + j * n_x; };
 #ifdef DNDS_USE_OMP
-#pragma omp parallel for
+#    pragma omp parallel for
 #endif
             for (index i = 0; i < adj.father->Size(); i++)
             {
@@ -338,7 +338,7 @@ namespace DNDS
             // randCore.resize(3, 3);
 
 #ifdef DNDS_USE_OMP
-#pragma omp parallel for
+#    pragma omp parallel for
 #endif
             for (index i = 0; i < adj.father->Size(); i++)
             {
@@ -375,7 +375,7 @@ namespace DNDS
                     [&]()
                     {
 #ifdef DNDS_USE_OMP
-#pragma omp parallel for
+#    pragma omp parallel for
 #endif
                         for (index i = 0; i < adj.father->Size(); i++)
                             block_mat_vec_product_one_row(

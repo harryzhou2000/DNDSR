@@ -1,6 +1,6 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
-#include "DNDS/Runtime/SparseBatchExchange.hpp"
+#include "DNDS/Runtime/Communication/SparseBatchExchange.hpp"
 
 namespace R = DNDS::Runtime;
 using I = DNDS::index;

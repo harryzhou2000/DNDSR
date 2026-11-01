@@ -86,7 +86,7 @@
 /// introduced by the macro.  `DNDS_DECLARE_CONFIG` only generates static
 /// methods and friend functions.
 
-#include "ConfigRegistry.hpp"
+#include "DNDS/Config/ConfigRegistry.hpp"
 #include <type_traits>
 #include <utility>
 #include <cmath>

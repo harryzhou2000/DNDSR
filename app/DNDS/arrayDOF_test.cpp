@@ -1,7 +1,7 @@
-#include "DNDS/ArrayDOF.hpp"
-#include "DNDS/Defines.hpp"
+#include "DNDS/Legacy/ArrayDOF.hpp"
+#include "DNDS/Core/Defines.hpp"
 #include "DNDS/Device/DeviceStorage.hpp"
-#include "DNDS/MPI.hpp"
+#include "DNDS/MPI/MPI.hpp"
 
 namespace DNDS::arrayDOF_test
 {

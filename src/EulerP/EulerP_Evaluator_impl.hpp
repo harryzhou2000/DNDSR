@@ -10,7 +10,7 @@
  */
 #pragma once
 
-#include "EulerP_Evaluator.hpp"
+#include "EulerP/EulerP_Evaluator.hpp"
 #include <memory>
 #include <type_traits>
 
@@ -61,7 +61,7 @@ namespace DNDS::EulerP
         portable.member = (member_v)->deviceView();                                       \
     }
 
-/** @} */ // end of argument construction macros
+    /** @} */ // end of argument construction macros
 
     /**
      * @brief Backend-specific implementation of EulerP Evaluator kernels.
@@ -97,20 +97,20 @@ namespace DNDS::EulerP
             struct Portable
             {
                 // buffer
-                TUDof::t_deviceView<B> faceBCBuffer;                                      /**< @brief Face BC ghost DOF buffer (device view). */
-                vector_DeviceView<B, TUScalar::t_deviceView<B>> faceBCScalarBuffer;       /**< @brief Face BC ghost scalar buffers (device view). */
+                TUDof::t_deviceView<B> faceBCBuffer;                                /**< @brief Face BC ghost DOF buffer (device view). */
+                vector_DeviceView<B, TUScalar::t_deviceView<B>> faceBCScalarBuffer; /**< @brief Face BC ghost scalar buffers (device view). */
 
-                TUDof::t_deviceView<B> u;                                                 /**< @brief Conservative state (device view). */
-                TUGrad::t_deviceView<B> uGrad;                                            /**< @brief Gradient of conservative state (device view). */
-                vector_DeviceView<B, TUScalar::t_deviceView<B>> uScalar;                  /**< @brief Transported scalar fields (device view). */
-                vector_DeviceView<B, TUScalarGrad::t_deviceView<B>> uScalarGrad;          /**< @brief Gradients of transported scalars (device view). */
+                TUDof::t_deviceView<B> u;                                        /**< @brief Conservative state (device view). */
+                TUGrad::t_deviceView<B> uGrad;                                   /**< @brief Gradient of conservative state (device view). */
+                vector_DeviceView<B, TUScalar::t_deviceView<B>> uScalar;         /**< @brief Transported scalar fields (device view). */
+                vector_DeviceView<B, TUScalarGrad::t_deviceView<B>> uScalarGrad; /**< @brief Gradients of transported scalars (device view). */
             } portable;
             static_assert(std::is_trivially_copyable_v<Portable>);
 
-            t_Scalar_deviceViewVector_sup faceBCScalarBuffer_v;  /**< @brief Owning storage for face BC scalar buffer device views. */
+            t_Scalar_deviceViewVector_sup faceBCScalarBuffer_v; /**< @brief Owning storage for face BC scalar buffer device views. */
             // out
-            t_Scalar_deviceViewVector_sup uScalar_v;               /**< @brief Owning storage for scalar field device views. */
-            t_ScalarGrad_deviceViewVector_sup uScalarGrad_v;       /**< @brief Owning storage for scalar gradient device views. */
+            t_Scalar_deviceViewVector_sup uScalar_v;         /**< @brief Owning storage for scalar field device views. */
+            t_ScalarGrad_deviceViewVector_sup uScalarGrad_v; /**< @brief Owning storage for scalar gradient device views. */
 
             /**
              * @brief Constructs device views from the host-side RecGradient_Arg.
@@ -156,20 +156,20 @@ namespace DNDS::EulerP
             /** @brief Trivially-copyable payload for Cons2PrimMu kernel data. */
             struct Portable
             {
-                TUDof::t_deviceView<B> u;                                                 /**< @brief Conservative state (device view). */
-                TUGrad::t_deviceView<B> uGrad;                                            /**< @brief Gradient of conservative state (device view). */
-                vector_DeviceView<B, TUScalar::t_deviceView<B>> uScalar;                  /**< @brief Transported scalars (device view). */
-                vector_DeviceView<B, TUScalarGrad::t_deviceView<B>> uScalarGrad;          /**< @brief Scalar gradients (device view). */
-                TUDof::t_deviceView<B> uPrim;                                             /**< @brief Primitive state output (device view). */
-                TUGrad::t_deviceView<B> uGradPrim;                                        /**< @brief Primitive gradient output (device view). */
-                vector_DeviceView<B, TUScalar::t_deviceView<B>> uScalarPrim;              /**< @brief Primitive scalars output (device view). */
-                vector_DeviceView<B, TUScalarGrad::t_deviceView<B>> uScalarGradPrim;      /**< @brief Primitive scalar gradients output (device view). */
-                TUScalar::t_deviceView<B> p;                                              /**< @brief Pressure output (device view). */
-                TUScalar::t_deviceView<B> T;                                              /**< @brief Temperature output (device view). */
-                TUScalar::t_deviceView<B> a;                                              /**< @brief Speed of sound output (device view). */
-                TUScalar::t_deviceView<B> gamma;                                          /**< @brief Gamma output (device view). */
-                TUScalar::t_deviceView<B> mu;                                             /**< @brief Total viscosity output (device view). */
-                vector_DeviceView<B, TUScalar::t_deviceView<B>> muComp;                   /**< @brief Component viscosities output (device view). */
+                TUDof::t_deviceView<B> u;                                            /**< @brief Conservative state (device view). */
+                TUGrad::t_deviceView<B> uGrad;                                       /**< @brief Gradient of conservative state (device view). */
+                vector_DeviceView<B, TUScalar::t_deviceView<B>> uScalar;             /**< @brief Transported scalars (device view). */
+                vector_DeviceView<B, TUScalarGrad::t_deviceView<B>> uScalarGrad;     /**< @brief Scalar gradients (device view). */
+                TUDof::t_deviceView<B> uPrim;                                        /**< @brief Primitive state output (device view). */
+                TUGrad::t_deviceView<B> uGradPrim;                                   /**< @brief Primitive gradient output (device view). */
+                vector_DeviceView<B, TUScalar::t_deviceView<B>> uScalarPrim;         /**< @brief Primitive scalars output (device view). */
+                vector_DeviceView<B, TUScalarGrad::t_deviceView<B>> uScalarGradPrim; /**< @brief Primitive scalar gradients output (device view). */
+                TUScalar::t_deviceView<B> p;                                         /**< @brief Pressure output (device view). */
+                TUScalar::t_deviceView<B> T;                                         /**< @brief Temperature output (device view). */
+                TUScalar::t_deviceView<B> a;                                         /**< @brief Speed of sound output (device view). */
+                TUScalar::t_deviceView<B> gamma;                                     /**< @brief Gamma output (device view). */
+                TUScalar::t_deviceView<B> mu;                                        /**< @brief Total viscosity output (device view). */
+                vector_DeviceView<B, TUScalar::t_deviceView<B>> muComp;              /**< @brief Component viscosities output (device view). */
             } portable;
             static_assert(std::is_trivially_copyable_v<Portable>);
             t_Scalar_deviceViewVector_sup uScalar_v;

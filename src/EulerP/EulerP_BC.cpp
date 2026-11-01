@@ -1,4 +1,4 @@
-#include "EulerP_BC.hpp"
+#include "EulerP/EulerP_BC.hpp"
 #include "DNDS/Device/DeviceStorage.hxx" // we use this for device storage code
 
 namespace DNDS::EulerP

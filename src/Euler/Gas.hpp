@@ -18,9 +18,9 @@
  *  matrices are handled without copies.
  */
 #pragma once
-#include "DNDS/Defines.hpp"
-#include "DNDS/IdealGasPhysics.hpp"
-#include "AUSM.hpp"
+#include "DNDS/Core/Defines.hpp"
+#include "DNDS/Physics/IdealGasPhysics.hpp"
+#include "Euler/AUSM.hpp"
 
 #include "DNDS/Serializer/JsonUtil.hpp"
 #include "DNDS/Config/ConfigEnum.hpp"

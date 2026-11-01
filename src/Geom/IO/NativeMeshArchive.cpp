@@ -1,6 +1,6 @@
 #include "Geom/IO/NativeMeshArchive.hpp"
 #include "Geom/Unstructured/UnstructuredMesh.hpp"
-#include "DNDS/Runtime/ArrayIO.hpp"
+#include "DNDS/Runtime/Array/ArrayIO.hpp"
 #include <nlohmann/json.hpp>
 #include <cmath>
 #include <limits>

@@ -1,7 +1,7 @@
 #pragma once
 
-#include "ElementGeometry.hpp"
-#include "DNDS/Runtime/RowTransfer.hpp"
+#include "Geom/Spatial/ElementGeometry.hpp"
+#include "DNDS/Runtime/Communication/RowTransfer.hpp"
 #include <memory>
 
 namespace DNDS::Geom

@@ -1,10 +1,10 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
-#include "DNDS/MPI.hpp"
+#include "DNDS/MPI/MPI.hpp"
 
 namespace py = pybind11;
 
-using namespace pybind11::literals; 
+using namespace pybind11::literals;
 
 namespace DNDS::Python
 {
@@ -30,7 +30,7 @@ namespace DNDS::Python
 #ifndef _WIN32
                                        return intptr_t(static_cast<void *>(mpi.comm));
 #else
-                    return intptr_t(mpi.comm);
+                                       return intptr_t(mpi.comm);
 #endif
                                    })
             .def_property_readonly("size", [](const MPIInfo &mpi)
@@ -43,9 +43,9 @@ namespace DNDS::Python
 #ifndef _WIN32
                           " comm: " + std::to_string(intptr_t(static_cast<void *>(mpi.comm))) + "\n" +
 #else
-                         " comm: " + std::to_string(intptr_t((mpi.comm))) + "\n" +
+                          " comm: " + std::to_string(intptr_t((mpi.comm))) + "\n" +
 #endif
-                         " size: " + std::to_string(mpi.size) + "\n" +
-                         " rank: " + std::to_string(mpi.rank) + "\n"; });
+                          " size: " + std::to_string(mpi.size) + "\n" +
+                          " rank: " + std::to_string(mpi.rank) + "\n"; });
     }
 }

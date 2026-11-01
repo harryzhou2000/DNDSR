@@ -1,8 +1,8 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
-#include "Geom/Mesh/Mesh_Helpers.hpp"
-#include "Geom/Mesh/EntityField.hpp"
-#include "Geom/Mesh/NativeMeshAssembler.hpp"
+#include "Geom/Unstructured/UnstructuredMeshHelpers.hpp"
+#include "Geom/Access/EntityField.hpp"
+#include "Geom/Transition/NativeMeshAssembler.hpp"
 #include "NativeMeshOverlapFixture.hpp"
 #include <filesystem>
 #include <set>

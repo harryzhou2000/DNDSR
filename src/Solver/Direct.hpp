@@ -6,7 +6,7 @@
 // #endif
 #include "DNDS/Serializer/JsonUtil.hpp"
 #include "DNDS/Config/ConfigParam.hpp"
-#include "DNDS/Defines.hpp"
+#include "DNDS/Core/Defines.hpp"
 // #ifdef __DNDS_REALLY_COMPILING__HEADER_ON__
 // #undef __DNDS_REALLY_COMPILING__
 // #endif

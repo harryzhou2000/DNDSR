@@ -1,8 +1,8 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
-#include "DNDS/Runtime/Array.hpp"
-#include "DNDS/Runtime/RowBuilder.hpp"
-#include "DNDS/Runtime/EagerArray.hpp"
+#include "DNDS/Runtime/Array/Array.hpp"
+#include "DNDS/Runtime/Array/RowBuilder.hpp"
+#include "DNDS/Runtime/Execution/EagerArray.hpp"
 #include <map>
 #include <stdexcept>
 

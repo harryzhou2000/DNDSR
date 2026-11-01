@@ -1,16 +1,16 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
-#include "Geom/Mesh/NativeMeshRefinement.hpp"
-#include "Geom/Mesh/NativeMeshAssembler.hpp"
-#include "Geom/Mesh/NativeMeshTransition.hpp"
-#include "Geom/Mesh/NativeMeshArchive.hpp"
-#include "Geom/Mesh/NativeMeshTopology.hpp"
-#include "Geom/Mesh/Mesh.hpp"
+#include "Geom/Refinement/NativeMeshRefinement.hpp"
+#include "Geom/Transition/NativeMeshAssembler.hpp"
+#include "Geom/Transition/NativeMeshTransition.hpp"
+#include "Geom/IO/NativeMeshArchive.hpp"
+#include "Geom/Connectivity/NativeMeshTopology.hpp"
+#include "Geom/Unstructured/UnstructuredMesh.hpp"
 #include "DNDS/Serializer/SerializerJSON.hpp"
 #include "DNDS/Serializer/SerializerH5.hpp"
 #include <filesystem>
 #include <chrono>
-#include "DNDS/Runtime/RowBuilder.hpp"
+#include "DNDS/Runtime/Array/RowBuilder.hpp"
 
 namespace G = DNDS::Geom;
 namespace R = DNDS::Runtime;

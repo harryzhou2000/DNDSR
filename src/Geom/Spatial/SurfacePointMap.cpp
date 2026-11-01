@@ -1,6 +1,6 @@
-#include "SurfacePointMap.hpp"
+#include "Geom/Spatial/SurfacePointMap.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
-#include "DNDS/Runtime/SparseBatchExchange.hpp"
+#include "DNDS/Runtime/Communication/SparseBatchExchange.hpp"
 
 namespace DNDS::Geom
 {

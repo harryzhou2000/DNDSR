@@ -1,8 +1,8 @@
-#include "FiniteVolumePlan.hpp"
-#include "InterfaceSamplingPlan.hpp"
-#include "DistributedInterfaceSamplingPlan.hpp"
-#include "GradientPlan.hpp"
-#include "DNDS/Runtime/Array_bind.hpp"
+#include "CFV/Plans/FiniteVolumePlan.hpp"
+#include "CFV/Plans/InterfaceSamplingPlan.hpp"
+#include "CFV/Plans/DistributedInterfaceSamplingPlan.hpp"
+#include "CFV/Plans/GradientPlan.hpp"
+#include "DNDS/Runtime/Interop/Array_bind.hpp"
 #include <pybind11/eigen.h>
 #include <pybind11/stl.h>
 

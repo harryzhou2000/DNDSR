@@ -1,6 +1,6 @@
 #pragma once
 
-#include "FiniteVolumePlan.hpp"
+#include "CFV/Plans/FiniteVolumePlan.hpp"
 #include "Geom/Unstructured/UnstructuredMesh.hpp"
 #include "Geom/Access/EntityWorkPartition.hpp"
 #include "CFV/Math/PolynomialReconstruction.hpp"

@@ -3,9 +3,9 @@
 #include "Geom/Transition/NativeMeshAssembler.hpp"
 #include "Geom/Connectivity/AdjacencyRegistry.hpp"
 #include "Geom/Transition/FieldTransfer.hpp"
-#include "Geom/Quadrature.hpp"
-#include "Geom/PointCloud.hpp"
-#include "DNDS/Runtime/RowBuilder.hpp"
+#include "Geom/Quadratures/Quadrature.hpp"
+#include "Geom/Spatial/PointCloud.hpp"
+#include "DNDS/Runtime/Array/RowBuilder.hpp"
 #include <nanoflann.hpp>
 #include <set>
 #include <sstream>

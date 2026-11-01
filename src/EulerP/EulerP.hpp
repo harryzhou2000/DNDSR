@@ -15,8 +15,8 @@
  * - CRTP base class for packed kernel argument structs with MPI ghost exchange
  */
 #pragma once
-#include "DNDS/ArrayDOF.hpp"
-#include "DNDS/Defines.hpp"
+#include "DNDS/Legacy/ArrayDOF.hpp"
+#include "DNDS/Core/Defines.hpp"
 #include "Eigen/Core"
 
 /**
@@ -30,13 +30,13 @@ namespace DNDS::EulerP
     static constexpr int nVarsFlow = 5; ///< Number of flow variables: rho, rhoU, rhoV, rhoW, E.
     static constexpr int I4 = 4;        ///< Index of the energy variable in the conservative state vector.
 
-    using TU = Eigen::Vector<real, nVarsFlow>;         ///< Fixed-size 5-component conservative state vector (rho, rhoU, rhoV, rhoW, E).
-    using TDiffU = Eigen::Matrix<real, 3, nVarsFlow>;  ///< Fixed-size 3x5 spatial gradient of the conservative state (one row per spatial dimension).
+    using TU = Eigen::Vector<real, nVarsFlow>;        ///< Fixed-size 5-component conservative state vector (rho, rhoU, rhoV, rhoW, E).
+    using TDiffU = Eigen::Matrix<real, 3, nVarsFlow>; ///< Fixed-size 3x5 spatial gradient of the conservative state (one row per spatial dimension).
 
     using TUFull = Eigen::Vector<real, Eigen::Dynamic>;        ///< Dynamic-size state vector for extended variables (flow + turbulence model variables).
     using TDiffUFull = Eigen::Matrix<real, 3, Eigen::Dynamic>; ///< Dynamic-size 3xN spatial gradient for extended variables.
 
-    using TUFullMap = Eigen::Map<TUFull>;        ///< Eigen::Map wrapper for non-owning access to a dynamic-size state vector.
+    using TUFullMap = Eigen::Map<TUFull>;         ///< Eigen::Map wrapper for non-owning access to a dynamic-size state vector.
     using TDiffUFullMap = Eigen::Map<TDiffUFull>; ///< Eigen::Map wrapper for non-owning access to a dynamic-size gradient matrix.
 
     using TUDof = ArrayDof<nVarsFlow, 1>;  ///< Distributed array of 5-component flow state vectors (one per DOF).

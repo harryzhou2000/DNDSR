@@ -1,7 +1,7 @@
-#include "DNDS/Runtime/Array_bind.hpp"
-#include "DNDS/Runtime/ArrayIO.hpp"
-#include "DNDS/Runtime/EagerArray.hpp"
-#include "DNDS/Runtime/RowTransfer.hpp"
+#include "DNDS/Runtime/Interop/Array_bind.hpp"
+#include "DNDS/Runtime/Array/ArrayIO.hpp"
+#include "DNDS/Runtime/Execution/EagerArray.hpp"
+#include "DNDS/Runtime/Communication/RowTransfer.hpp"
 #include <pybind11/stl.h>
 #include <atomic>
 #include <thread>

@@ -1,0 +1,103 @@
+#include "DNDS/Runtime/Interop/Array_bind.hpp"
+#include "DNDS/Runtime/Execution/EagerCopy.hpp"
+#include "DNDS/Runtime/Execution/CUDAExecution.hpp"
+#include <pybind11/stl.h>
+
+namespace DNDS::Runtime
+{
+    namespace py = pybind11;
+    namespace
+    {
+        // Keep Python dtype/codec objects on the Python side. Queued ownership
+        // contains only native storage, so worker retirement needs no GIL.
+        struct StorageOwner
+        {
+            ArrayStorage::Shared storage;
+            bool CanReleaseOrdered(ExecutionContext context) const { return !storage || storage->CanReleaseOrdered(context); }
+            void ReleaseOn(ExecutionContext context) { ArrayStorage::ReleaseHandle(storage, context); }
+        };
+
+        PythonArray Allocate(EagerEngine &engine, const ExecutionStream &stream, RowLayout layout, py::object dtype)
+        {
+            const auto context = stream.Context();
+            DNDS_check_throw_info(context.device == Device::Host() || !layout.IsVariable(),
+                                  "new variable GPU metadata needs setup; use allocate_like with a prepared Array");
+            PythonArray prototype(RowLayout{}, std::move(dtype));
+            auto values = engine.AllocateBuffer(stream, CheckedSize::Multiply(layout.Elements(), size_t(prototype.Dtype().itemsize())));
+            try
+            {
+                auto result = prototype.WithStorage(ArrayStorage::FromBuffer(std::move(layout), values, prototype.Dtype().itemsize()));
+                values.ReleaseOn(context);
+                return result;
+            }
+            catch (...)
+            {
+                values.ReleaseOn(context);
+                throw;
+            }
+        }
+
+        PythonArray AllocateLike(EagerEngine &engine, const ExecutionStream &stream, const PythonArray &prototype)
+        {
+            auto storage = prototype.SharedStorage();
+            const auto context = stream.Context();
+            DNDS_check_throw_info(storage->Values().GetDevice() == context.device, "async prototype placement mismatch");
+            auto values = engine.AllocateBuffer(stream, storage->Values().Bytes());
+            try
+            {
+                auto result = prototype.WithStorage(storage->WithValues(values, prototype.Dtype().itemsize()));
+                values.ReleaseOn(context);
+                return result;
+            }
+            catch (...)
+            {
+                values.ReleaseOn(context);
+                throw;
+            }
+        }
+
+        void ReleaseArray(EagerEngine &engine, PythonArray &array, const ExecutionStream &stream)
+        {
+            auto empty = array.New(RowLayout{}, array.Storage().GetDevice());
+            StorageOwner owner{array.SharedStorage()};
+            array = std::move(empty);
+            try
+            {
+                engine.ReleaseOn(std::move(owner), stream);
+            }
+            catch (...)
+            {
+                array = array.WithStorage(std::move(owner.storage));
+                throw;
+            }
+        }
+    }
+
+    void BindEagerPython(py::module_ &m)
+    {
+        py::class_<StreamEvent>(m, "StreamEvent", "Fixed submitted prefix. Observe errors with wait(); later submissions are not covered.")
+            .def("ready", &StreamEvent::Ready, py::call_guard<py::gil_scoped_release>())
+            .def("wait", &StreamEvent::WaitHost, py::call_guard<py::gil_scoped_release>());
+        py::class_<ExecutionStream>(m, "ExecutionStream", "Ordered lane, not a dedicated CPU thread. Caller supplies all cross-stream dependencies.")
+            .def("record", &ExecutionStream::Record, py::call_guard<py::gil_scoped_release>(), "Record only the already submitted prefix; record again for later work.")
+            .def("wait_for", &ExecutionStream::WaitFor, py::call_guard<py::gil_scoped_release>(), "Enqueue a dependency. Caller must provide all conflicting-use edges. CUDA rejects unfinished portable CPU/MPI events.")
+            .def_property_readonly("context", &ExecutionStream::Context);
+        // Draining can retire a foreign owner on a worker. Its DLPack/Python
+        // deleter may acquire the GIL; never hold it while joining that worker.
+        py::class_<EagerEngine>(m, "EagerEngine", py::release_gil_before_calling_cpp_dtor(), "Fully eager execution: no dependency proof. Caller orders conflicting uses and final release, and observes errors with synchronize(). See RuntimeCallerContract.md.")
+            .def(py::init<size_t>(), py::arg("host_threads") = 0)
+            .def("cpu_stream", &EagerEngine::CreateCPUStream)
+            .def("cuda_stream", [](EagerEngine &engine, int ordinal)
+                 { return engine.CreateStream(std::make_shared<CUDALauncher>(ordinal)); }, py::arg("ordinal") = 0)
+            .def("synchronize", &EagerEngine::Synchronize, py::call_guard<py::gil_scoped_release>(), "Drain all registered streams and report errors; destructor cleanup cannot substitute for error observation.")
+            .def("allocate", &Allocate, py::arg("stream"), py::arg("layout"), py::arg("dtype") = py::dtype::of<double>(), "Allocate with stream-ordered readiness. Join this stream before cross-stream use or synchronous access; use allocate_like for prepared variable GPU metadata.")
+            .def("allocate_like", &AllocateLike, py::arg("stream"), py::arg("prototype"), "Share prepared immutable metadata, allocate new values on stream. Caller joins allocation readiness before other-stream access.")
+            .def("copy", [](EagerEngine &engine, const ExecutionStream &stream, const PythonArray &source, PythonArray &destination)
+                 {
+                     DNDS_check_throw_info(source.SameElement(destination) && source.Layout() == destination.Layout(),
+                                           "eager Array copy requires identical dtype and physical layout");
+                     auto target = destination.Storage();
+                     CopyAsync(engine, stream, source.Storage(), target); }, py::arg("stream"), py::arg("source"), py::arg("destination"), "Scheduled copy; caller orders source producers and destination consumers, then waits before synchronous indexing.")
+            .def("release_on", &ReleaseArray, py::arg("array"), py::arg("stream"), "Consume this facade and replace it with an empty Array; aliases/views remain owners. Join all uses before possible final release. Releases of aliases on different streams require that whichever is final is safe; reference counting does not infer dependencies.");
+    }
+}

@@ -1,7 +1,7 @@
 #pragma once
 
-#include "BoundingBoxTree.hpp"
-#include "Geom/Elements.hpp"
+#include "Geom/Spatial/BoundingBoxTree.hpp"
+#include "Geom/Elements/Elements.hpp"
 
 namespace DNDS::Geom
 {

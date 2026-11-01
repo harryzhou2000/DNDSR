@@ -2,7 +2,7 @@
 /// @file AdjacencyRow.hpp
 /// @brief Non-owning row view for adjacency arrays.
 
-#include "DNDS/Defines.hpp"
+#include "DNDS/Core/Defines.hpp"
 
 namespace DNDS
 {

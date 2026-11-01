@@ -2,8 +2,8 @@
 /// @brief Host-backend implementation of @ref DNDS::DeviceStorage "DeviceStorage" and the
 /// #deviceStorageBase_deleter helper.
 
-#include "DeviceStorage.hpp"
-#include "DeviceStorage.hxx"
+#include "DNDS/Device/DeviceStorage.hpp"
+#include "DNDS/Device/DeviceStorage.hxx"
 
 namespace DNDS
 {

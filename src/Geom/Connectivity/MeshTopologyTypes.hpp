@@ -2,7 +2,7 @@
 
 #include "Geom/Connectivity/MeshRelationTypes.hpp"
 #include "Geom/Unstructured/MeshTypes.hpp"
-#include "Geom/PeriodicTypes.hpp"
+#include "Geom/Periodic/PeriodicTypes.hpp"
 #include <functional>
 #include <unordered_map>
 #include <unordered_set>

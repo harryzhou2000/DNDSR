@@ -13,8 +13,8 @@
  */
 
 #include "Geom/Mesh.hpp"
-#include "CFV/VariationalReconstruction.hpp"
-#include "CFV/ModelEvaluator.hpp"
+#include "CFV/Legacy/VariationalReconstruction.hpp"
+#include "CFV/Legacy/ModelEvaluator.hpp"
 
 #include <fmt/core.h>
 #include <cmath>
@@ -103,7 +103,8 @@ int main(int argc, char *argv[])
         // ============================================================
         // Phase D: Base and weight (periodic mesh: all weights = 1)
         // ============================================================
-        vfv->ConstructBaseAndWeight([](Geom::t_index, int) -> real { return 1.0; });
+        vfv->ConstructBaseAndWeight([](Geom::t_index, int) -> real
+                                    { return 1.0; });
         if (mpi.rank == 0)
             fmt::print("Base and weight constructed.\n");
 

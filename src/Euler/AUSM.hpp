@@ -8,8 +8,8 @@
  *  See docs/guides/ausm_fluxes.md for public equation sources and the explicitly
  *  identified unstructured pressure-stencil, frozen-thermodynamics and ALE extensions.
  */
-#include "DNDS/Defines.hpp"
-#include "DNDS/IdealGasPhysics.hpp"
+#include "DNDS/Core/Defines.hpp"
+#include "DNDS/Physics/IdealGasPhysics.hpp"
 
 namespace DNDS::Euler::Gas
 {

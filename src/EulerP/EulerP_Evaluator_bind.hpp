@@ -11,10 +11,10 @@
  */
 #pragma once
 
-#include "DNDS/Defines_bind.hpp"
+#include "DNDS/Bindings/Defines_bind.hpp"
 #include "DNDS/Device/DeviceStorage.hpp"
-#include "DNDS/ObjectUtils.hpp"
-#include "EulerP_Evaluator.hpp"
+#include "DNDS/Core/ObjectUtils.hpp"
+#include "EulerP/EulerP_Evaluator.hpp"
 #include <pybind11/pytypes.h>
 
 namespace DNDS::EulerP

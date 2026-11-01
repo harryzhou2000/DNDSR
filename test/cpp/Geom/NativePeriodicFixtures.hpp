@@ -1,7 +1,7 @@
 #pragma once
 
-#include "Geom/Mesh/NativeMeshBuilder.hpp"
-#include "DNDS/Runtime/RowBuilder.hpp"
+#include "Geom/Unstructured/NativeMeshBuilder.hpp"
+#include "DNDS/Runtime/Array/RowBuilder.hpp"
 
 namespace NativePeriodicFixtures
 {

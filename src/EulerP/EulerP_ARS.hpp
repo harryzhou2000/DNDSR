@@ -10,7 +10,7 @@
  * The Roe flux formula is F = 0.5 * (F_L + F_R - |A_Roe| * (U_R - U_L)),
  * where |A_Roe| is the Roe-averaged absolute flux Jacobian.
  */
-#include "EulerP_Physics.hpp"
+#include "EulerP/EulerP_Physics.hpp"
 
 namespace DNDS::EulerP
 {

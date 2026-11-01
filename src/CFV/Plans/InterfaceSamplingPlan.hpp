@@ -1,7 +1,7 @@
 #pragma once
 
-#include "FiniteVolumePlan.hpp"
-#include "PolynomialSamplingPlan.hpp"
+#include "CFV/Plans/FiniteVolumePlan.hpp"
+#include "CFV/Plans/PolynomialSamplingPlan.hpp"
 #include "Geom/Interface/BoundaryInterface.hpp"
 
 namespace DNDS::CFV

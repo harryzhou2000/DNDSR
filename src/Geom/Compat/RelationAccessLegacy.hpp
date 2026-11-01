@@ -2,7 +2,7 @@
 
 #include "Geom/Access/RelationAccess.hpp"
 #include "Geom/Compat/AdjIndexInfo.hpp"
-#include "DNDS/Runtime/LegacyArrayBridge.hpp"
+#include "DNDS/Compat/LegacyArrayBridge.hpp"
 
 namespace DNDS::Geom
 {

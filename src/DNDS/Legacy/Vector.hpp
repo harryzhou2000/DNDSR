@@ -2,10 +2,10 @@
 /// @file Vector.hpp
 /// @brief Host-device vector types with optional GPU storage and device-side views.
 
-#include "DNDS/Errors.hpp"
-#include "DNDS/CheckedSize.hpp"
+#include "DNDS/Core/Errors.hpp"
+#include "DNDS/Core/CheckedSize.hpp"
 #include "DNDS/Device/DeviceStorage.hpp"
-#include "DNDS/Runtime/Buffer.hpp"
+#include "DNDS/Runtime/Storage/Buffer.hpp"
 #include <cstring>
 #include <algorithm>
 #include <cstddef>

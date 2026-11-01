@@ -17,8 +17,8 @@ ${DNDS_EXTERNAL_LIBS}
 message(STATUS "DNDS_PCH_TARGETS: ${DNDS_PCH_TARGETS}")
 
 set(CPPS
-Elements.cpp
-PeriodicInfo.cpp
+Elements/Elements.cpp
+Periodic/PeriodicInfo.cpp
 Interface/BoundaryInterface.cpp
 Spatial/ElementGeometry.cpp
 Spatial/BoundingBoxTree.cpp
@@ -64,7 +64,7 @@ Transition/SerialAdjReordering.cpp
 )
 
 if (DNDS_USE_CUDA)
-list(APPEND CPPS PeriodicInfo.cu)
+list(APPEND CPPS Periodic/PeriodicInfo.cu)
 endif()
 
 dnds_add_lib(${LIBNAME} "${CPPS}" "${LINKS}" "${DNDS_PCH_TARGETS}"
@@ -93,8 +93,8 @@ install(TARGETS ${LIBNAME}_shared
 
 set(CPPS_BIND
 Interface/BoundaryInterface_bind.cpp
-geom_pybind11.cpp
-Elements_bind.cpp
+Bindings/geom_pybind11.cpp
+Elements/Elements_bind.cpp
 Unstructured/UnstructuredMesh_bind.cpp
 )
 

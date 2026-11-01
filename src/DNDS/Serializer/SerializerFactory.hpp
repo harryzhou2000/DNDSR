@@ -3,12 +3,12 @@
 /// @brief Configurable factory that builds either a @ref DNDS::SerializerJSON "SerializerJSON" or a
 /// @ref DNDS::SerializerH5 "SerializerH5" with all tunables exposed through the DNDS config system.
 
-#include "SerializerBase.hpp"
-#include "SerializerJSON.hpp"
-#include "SerializerH5.hpp"
-#include "JsonUtil.hpp"
+#include "DNDS/Serializer/SerializerBase.hpp"
+#include "DNDS/Serializer/SerializerJSON.hpp"
+#include "DNDS/Serializer/SerializerH5.hpp"
+#include "DNDS/Serializer/JsonUtil.hpp"
 #include "DNDS/Config/ConfigParam.hpp"
-#include "DNDS/OutputDir.hpp"
+#include "DNDS/IO/OutputDir.hpp"
 
 #include <utility>
 
