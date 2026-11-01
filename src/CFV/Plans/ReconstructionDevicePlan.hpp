@@ -18,10 +18,15 @@ namespace DNDS::CFV
     {
         bool mesh = false, metrics = false, basis = false;
     };
+    /// Explicit numerical kernel selection, resolved outside device loops.
+    /// Shared uses concurrent component tiles; Async additionally pipelines
+    /// neighbor copies. These are measured alternatives, not universal winners.
     enum class ReconstructionDeviceKernel
     {
         FP64,
-        FP64TensorCore
+        FP64TensorCore,
+        FP64TensorCoreShared,
+        FP64TensorCoreAsync
     };
     struct ResidentBufferInfo
     {

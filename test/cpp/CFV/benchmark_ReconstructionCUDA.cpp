@@ -38,15 +38,17 @@ int main(int argc, char **argv)
     int result = 0;
     try
     {
-        DNDS_check_throw_info(argc >= 5 && argc <= 7, "arguments: grid-width degree components repetitions [direct|packed|nccl] [fp64|tensor]");
+        DNDS_check_throw_info(argc >= 5 && argc <= 7, "arguments: grid-width degree components repetitions [direct|packed|nccl] [fp64|tensor|shared|async]");
         const I width = std::stoll(argv[1]), components = std::stoll(argv[3]);
         const int degree = std::stoi(argv[2]), repeats = std::stoi(argv[4]);
         DNDS_check_throw_info(components > 0 && components <= 64 && repeats > 0, "invalid benchmark shape");
         const std::string transportName = argc >= 6 ? argv[5] : "direct", kernelName = argc >= 7 ? argv[6] : "fp64";
         DNDS_check_throw_info(transportName == "direct" || transportName == "packed" || transportName == "nccl", "unknown transfer backend");
-        DNDS_check_throw_info(kernelName == "fp64" || kernelName == "tensor", "unknown reconstruction kernel");
+        DNDS_check_throw_info(kernelName == "fp64" || kernelName == "tensor" || kernelName == "shared" || kernelName == "async", "unknown reconstruction kernel");
         const auto transport = transportName == "direct" ? R::TransferTransport::Direct : R::TransferTransport::DevicePacked;
-        const auto kernel = kernelName == "tensor" ? C::ReconstructionDeviceKernel::FP64TensorCore : C::ReconstructionDeviceKernel::FP64;
+        const auto kernel = kernelName == "shared" ? C::ReconstructionDeviceKernel::FP64TensorCoreShared : kernelName == "async" ? C::ReconstructionDeviceKernel::FP64TensorCoreAsync
+                                                                                                       : kernelName == "tensor"  ? C::ReconstructionDeviceKernel::FP64TensorCore
+                                                                                                                                 : C::ReconstructionDeviceKernel::FP64;
         const auto device = R::Device::CUDA(0);
         const auto context = R::ExecutionContext::CUDA(0);
         R::TransferOptions transferOptions;

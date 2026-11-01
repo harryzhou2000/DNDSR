@@ -92,6 +92,36 @@ Different summation order is allowed within validated FP64 tolerances; byte
 identity is not promised. Padding/staging cost can outweigh MMA gains for small
 shapes, so explicit selection does not change the default or promise a speedup.
 
+`FP64TensorCoreShared` assigns one block to a cell and separate warps to
+eight-component tiles. It stages the neighbor matrix once for all four warps,
+with coalesced component/mode loads into shared storage. Mode counts2/3/5/9/19
+and common component counts5/21 have simple static dispatch; other component
+counts keep a generic path. The owned/ghost and physical-layout contracts stay
+the same. Shared staging does not change the mesh or CFV publication formats.
+
+`FP64TensorCoreAsync` uses the same mapping with two raw shared-memory slots.
+It issues eight-byte `cp.async` copies of the next neighbor while processing
+the current product. Every consumer waits for its copy group and block barrier;
+every slot overwrite follows the previous block-wide reads. No per-call device
+allocation, dynamic host pointer or host wait is introduced. Periodic vector
+transforms preserve their mathematical input, including triples crossing a tile.
+Kernel selection is explicit in C++/Python; keep ordinary FP64 as the default.
+The optimization assessment in the independent plan repository records measured
+shape/layout winners and losers rather than inferring them from tensor usage.
+
+On the measured local two-A10065536-cell cases, the original tensor mapping
+remains best for5 components. Async is the measured choice for21-component
+degree-one AoS/column and degree-two column, while ordinary FP64 remains faster
+for degree-two21-component AoS/tiled. The degree-one tiled margin is small.
+At degree-two21-component column, Jacobi oldtensor/ordinary/async is
+3.180/2.391/2.242ms; integrated iteration is3.350/2.610/2.478ms. These are
+explicit choices, not a hidden autotuner or universal backend policy.
+The final shared/async implementation passes CPU CFV30/30, CUDA4/4 np1/2,
+all6 kernel sanitizer checks and rebuilt Python8 tests at np1 and per np2 rank.
+Sanitizer API reporting retains the existing external MPI limitation.
+Source, binaries and three successive timing controls are recorded in the plan
+repository's `experiments/cauchy-preliminary/nccl-fp64/TENSOR_OPTIMIZATION.md`.
+
 ## Execution and caller responsibilities
 
 The synchronous wrappers construct a CUDA stream, enqueue the operator and

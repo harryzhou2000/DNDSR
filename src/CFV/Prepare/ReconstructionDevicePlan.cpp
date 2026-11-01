@@ -296,7 +296,10 @@ namespace DNDS::CFV
         auto pin = std::make_shared<ReconstructionDeviceRead>(AcquireRead());
         auto launch = [pin, selection, kernel](R::ExecutionContext context, auto mo, auto mg, auto ro, auto rg, auto bc, auto output, auto blocks, auto status)
         {
-            if (kernel == ReconstructionDeviceKernel::FP64TensorCore)
+            if (kernel == ReconstructionDeviceKernel::FP64TensorCoreShared || kernel == ReconstructionDeviceKernel::FP64TensorCoreAsync)
+                Detail::LaunchJacobiTensorCoreShared(context, pin->DeviceView(), selection, {blocks}, {mo, mg}, {ro, rg}, bc, output, status,
+                                                     kernel == ReconstructionDeviceKernel::FP64TensorCoreAsync);
+            else if (kernel == ReconstructionDeviceKernel::FP64TensorCore)
                 Detail::LaunchJacobiTensorCore(context, pin->DeviceView(), selection, {blocks}, {mo, mg}, {ro, rg}, bc, output, status);
             else
                 Detail::LaunchJacobi(context, pin->DeviceView(), selection, {blocks}, {mo, mg}, {ro, rg}, bc, output, status);
@@ -376,7 +379,10 @@ namespace DNDS::CFV
     bool ReconstructionDevicePlan::SupportsKernel(ReconstructionDeviceKernel kernel) const
     {
         DNDS_check_throw_info(_data, "device reconstruction publication is empty");
-        return kernel == ReconstructionDeviceKernel::FP64 || (kernel == ReconstructionDeviceKernel::FP64TensorCore && _data->fp64TensorCore);
+        return kernel == ReconstructionDeviceKernel::FP64 ||
+               ((kernel == ReconstructionDeviceKernel::FP64TensorCore || kernel == ReconstructionDeviceKernel::FP64TensorCoreShared ||
+                 kernel == ReconstructionDeviceKernel::FP64TensorCoreAsync) &&
+                _data->fp64TensorCore);
     }
     void ReconstructionDevicePlan::DoReconstructionIter(const FVField &mean, ReconstructionDeviceWorkspace &work,
                                                         const ReconstructionBoundaryValues &boundary, ReconstructionDeviceKernel kernel) const
@@ -401,6 +407,10 @@ namespace DNDS::CFV
     namespace Detail
     {
         bool FP64TensorCoreAvailable(R::Device) { return false; }
+        void LaunchJacobiTensorCoreShared(R::ExecutionContext, ReconstructionDeviceView, DeviceWorkSelection, DevicePeriodicBlocks, R::PairReadView<real>, R::PairReadView<real>, R::ArrayView<const real>, R::ArrayView<real>, R::ArrayView<const int>, bool)
+        {
+            DNDS_check_throw_info(false, "CUDA shared tensor-core Jacobi unavailable");
+        }
         void LaunchJacobiTensorCore(R::ExecutionContext, ReconstructionDeviceView, DeviceWorkSelection, DevicePeriodicBlocks, R::PairReadView<real>, R::PairReadView<real>, R::ArrayView<const real>, R::ArrayView<real>, R::ArrayView<const int>)
         {
             DNDS_check_throw_info(false, "CUDA FP64 tensor-core Jacobi unavailable");
