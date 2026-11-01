@@ -4,6 +4,7 @@
 #include <mpi.h>
 #ifdef __CUDACC__
 #    include <cuda_runtime.h>
+#    include <cuda_pipeline.h>
 #    define HD __host__ __device__
 #else
 #    define HD
@@ -25,6 +26,9 @@
 namespace
 {
     using Index = int64_t;
+    int gpuAccessVariant = 0;             // Host-only CLI policy; no production dispatch API.
+    size_t exclusiveBlockSharedBytes = 0; // Optional one-resident-block/SM probe.
+    Index componentPlanePadding = 0;
     void Check(bool ok, const char *message)
     {
         if (!ok)
@@ -65,12 +69,13 @@ namespace
         double *data;
         Index rows;
         int components;
+        Index planePitch = 0;
         HD Index Offset(Index iRow, int iComp) const
         {
             if constexpr (Layout == 0)
                 return iRow * components + iComp;
             if constexpr (Layout == 1)
-                return Index(iComp) * rows + iRow;
+                return Index(iComp) * (planePitch ? planePitch : rows) + iRow;
             if constexpr (Layout == 8 || Layout == 32)
                 return (iRow / Layout) * (components * Layout) + iComp * Layout + iRow % Layout;
             if constexpr (Layout >= 100)
@@ -78,7 +83,7 @@ namespace
                 if (iComp < 5)
                     return iRow * 5 + iComp;
                 if constexpr (Layout == 101)
-                    return rows * 5 + Index(iComp - 5) * rows + iRow;
+                    return rows * 5 + Index(iComp - 5) * (planePitch ? planePitch : rows) + iRow;
                 return rows * 5 + (iRow / 32) * ((components - 5) * 32) + (iComp - 5) * 32 + iRow % 32;
             }
             return 0;
@@ -87,6 +92,10 @@ namespace
         HD void Set(Index iRow, int iComp, double value) const { data[Offset(iRow, iComp)] = value; }
         Index Elements() const
         {
+            if constexpr (Layout == 1)
+                return (planePitch ? planePitch : rows) * components;
+            if constexpr (Layout == 101)
+                return rows * 5 + (planePitch ? planePitch : rows) * (components - 5);
             if constexpr (Layout == 8 || Layout == 32)
                 return ((rows + Layout - 1) / Layout) * Layout * components;
             if constexpr (Layout == 132)
@@ -196,6 +205,7 @@ namespace
         if (i < count * u.components)
             u.Set(i / u.components, int(i % u.components), packet[i]);
     }
+#    include "gpu_access.cuh"
 #endif
     template <int L>
     void Launch(bool gpu, int kernel, View<L> u, View<L> out, Index begin, Index end, void *stream = nullptr)
@@ -203,8 +213,7 @@ namespace
 #ifdef __CUDACC__
         if (gpu)
         {
-            Numeric<<<unsigned((end - begin + 255) / 256), 256, 0, static_cast<cudaStream_t>(stream)>>>(kernel, u, out, begin, end);
-            CUDA(cudaGetLastError());
+            LaunchAccess(gpuAccessVariant, kernel, u, out, begin, end, static_cast<cudaStream_t>(stream));
             return;
         }
 #else
@@ -271,11 +280,11 @@ namespace
     template <int L>
     void Compute(bool gpu, Index n, int nc, int samples)
     {
-        View<L> shape{nullptr, n, nc};
+        View<L> shape{nullptr, n, nc, n + componentPlanePadding};
         Memory source(shape.Elements(), gpu), destination(shape.Elements(), gpu);
-        View<L> u{source.data, n, nc}, out{destination.data, n, nc};
+        View<L> u{source.data, n, nc, shape.planePitch}, out{destination.data, n, nc, shape.planePitch};
         std::vector<double> host(size_t(shape.Elements()), -12345.);
-        View<L> h{host.data(), n, nc};
+        View<L> h{host.data(), n, nc, shape.planePitch};
         for (Index iRow = 0; iRow < n; ++iRow)
             for (int iComp = 0; iComp < nc; ++iComp)
                 h.Set(iRow, iComp, Initial(iRow, iComp));
@@ -283,6 +292,10 @@ namespace
         destination.Upload(host);
         for (int kernel = 0; kernel < 3; ++kernel)
         {
+#ifdef __CUDACC__
+            if (gpu)
+                ReportAccessResources<L>(gpuAccessVariant, kernel, nc);
+#endif
             Launch(gpu, kernel, u, out, 0, n);
             Fence(gpu);
             std::vector<double> values;
@@ -316,6 +329,25 @@ namespace
                 }
             }
             Check(error < 5e-12, "kernel reference mismatch");
+            if (n <= 257)
+            {
+                // Full small-shape checks also protect padding inside a valid
+                // allocation, which an out-of-bounds sanitizer cannot detect.
+                std::vector<double> physical(size_t(shape.Elements()));
+#ifdef __CUDACC__
+                if (gpu)
+                    CUDA(cudaMemcpy(physical.data(), out.data, physical.size() * sizeof(double), cudaMemcpyDeviceToHost));
+                else
+#endif
+                    std::copy(out.data, out.data + shape.Elements(), physical.begin());
+                std::vector<unsigned char> logical(size_t(shape.Elements()), 0);
+                for (Index iRow = 0; iRow < n; ++iRow)
+                    for (int iComp = 0; iComp < nc; ++iComp)
+                        logical[size_t(shape.Offset(iRow, iComp))] = 1;
+                for (Index position = 0; position < shape.Elements(); ++position)
+                    if (!logical[size_t(position)])
+                        Check(physical[size_t(position)] == -12345., "kernel overwrote layout padding");
+            }
 #ifdef __CUDACC__
             cudaEvent_t eventStart{}, eventStop{};
             if (gpu)
@@ -346,7 +378,8 @@ namespace
                 }
 #endif
                 const double elapsed = (Clock() - start) / repetitions;
-                std::printf("compute,%s,%s,%lld,%d,k%d,%d,%.9g,%.3g,%lld,%.9g\n", gpu ? "cuda" : "cpu", Name(L), (long long)n, nc, kernel + 1, sample, elapsed, error, (long long)(shape.Elements() * 16), deviceSeconds);
+                std::printf("compute,%s,%s,%lld,%d,k%d,%d,%.9g,%.3g,%lld,%.9g,%d,%lld\n", gpu ? "cuda" : "cpu", Name(L), (long long)n, nc, kernel + 1, sample, elapsed, error, (long long)(shape.Elements() * 16), deviceSeconds, gpuAccessVariant,
+                            (long long)((L == 1 || L == 101) ? componentPlanePadding : 0));
                 std::fflush(stdout);
             }
 #ifdef __CUDACC__
@@ -668,6 +701,13 @@ int main(int argc, char **argv)
         const bool gpu = std::string(argv[2]) == "cuda";
         const Index n = std::stoll(argv[3]);
         const int nc = std::stoi(argv[4]), samples = std::stoi(argv[5]), selected = std::stoi(argv[6]);
+        gpuAccessVariant = argc > 8 ? std::stoi(argv[8]) : 0;
+        componentPlanePadding = argc > 9 ? std::stoll(argv[9]) : 0;
+        Check(componentPlanePadding >= 0 && componentPlanePadding <= 4096 && (componentPlanePadding == 0 || mode == "compute"), "invalid component-plane padding");
+        Check(gpuAccessVariant == 0 || gpuAccessVariant == 1 || gpuAccessVariant == 2 || gpuAccessVariant == 3 || gpuAccessVariant == 8 || gpuAccessVariant == 32 ||
+                  gpuAccessVariant == 64 || gpuAccessVariant == 128 || gpuAccessVariant == 256 || gpuAccessVariant == 1256,
+              "invalid GPU access variant");
+        Check(gpuAccessVariant == 0 || (gpu && mode == "compute"), "optimized variants require CUDA compute");
         Check(n > 0 && nc >= 5 && nc <= 64 && samples > 0, "invalid dimensions");
 #ifdef __CUDACC__
         if (gpu)
@@ -676,6 +716,9 @@ int main(int argc, char **argv)
             CUDA(cudaSetDevice(device));
             cudaDeviceProp prop;
             CUDA(cudaGetDeviceProperties(&prop, device));
+            exclusiveBlockSharedBytes = size_t(prop.sharedMemPerMultiprocessor) / 2 + 256;
+            if (gpuAccessVariant == 1256)
+                Check(exclusiveBlockSharedBytes <= size_t(prop.sharedMemPerBlockOptin), "one-resident-block/SM shared-memory reservation unsupported");
             std::fprintf(stderr, "rank=%d device=%d name=%s\n", rank, device, prop.name);
         }
 #else

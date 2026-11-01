@@ -21,6 +21,8 @@ p.add_argument("--layouts", default="0,1,8,32,101,132")
 p.add_argument("--rows", type=int, default=1048576)
 p.add_argument("--components", default="7,32")
 p.add_argument("--timeout", type=int, default=240)
+p.add_argument("--variants", help="CUDA access: 0 direct,1 shared,2 cp.async,3 sync pipeline,8/32 subgroup,64/128/256 block,1256 one resident block/SM")
+p.add_argument("--padding", help="SoA component-plane padding values at fixed logical N")
 a = p.parse_args()
 out = Path(a.output)
 out.mkdir(parents=True, exist_ok=False)
@@ -29,16 +31,26 @@ record = {"args": vars(a), "exe_sha256": hashlib.sha256(exe.read_bytes()).hexdig
           "start": time.time(), "rows": []}
 (out / "manifest.json").write_text(json.dumps(record, indent=2))
 layouts = [int(x) for x in a.layouts.split(",")]
+variants = [int(x) for x in a.variants.split(",")] if a.variants else [0]
+if a.variants and (a.phase != "compute" or a.backend != "cuda" or a.device is None):
+    raise ValueError("access variants require CUDA compute with an explicit device")
+paddings = [int(x) for x in a.padding.split(",")] if a.padding else [0]
+cases = [(layout, variant, pad) for layout in layouts for variant in variants
+         for pad in (paddings if layout in (1, 101) else [0])]
 print(f"records={out.resolve()}", flush=True)
 with (out / "results.csv").open("w") as csv:
     for rep in range(a.repeats):
-        order = layouts[rep % len(layouts):] + layouts[:rep % len(layouts)]
+        order = cases[rep % len(cases):] + cases[:rep % len(cases)]
         for nc in [int(x) for x in a.components.split(",")]:
-            for layout in order:
+            for layout, variant, pad in order:
                 cmd = shlex.split(a.launcher) + [str(exe), a.phase, a.backend, str(a.rows), str(nc), "1", str(layout)]
-                if a.device is not None:
-                    cmd.append(str(a.device))
-                name = f"r{rep}-c{nc}-l{layout}"
+                if a.device is not None or a.padding:
+                    cmd.append(str(a.device or 0))
+                if a.variants or a.padding:
+                    cmd.append(str(variant))
+                if a.padding:
+                    cmd.append(str(pad))
+                name = f"r{rep}-c{nc}-l{layout}" + (f"-v{variant}" if a.variants else "") + (f"-p{pad}" if a.padding else "")
                 print(name + ": " + shlex.join(cmd), flush=True)
                 start = time.time()
                 with (out / f"{name}.stderr").open("w") as err:
