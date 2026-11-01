@@ -77,7 +77,6 @@ namespace DNDS::Geom
         auto publication = setup.BuildGhosted(discovery, {Adj::Cell2Node});
         const auto schema = Runtime::ElementSchema::For<ElemInfo>();
         auto ghosts = publication.routes.at(EntityKind::Cell).TransferRows(publication.spaces.at(EntityKind::Cell), *metadata, schema);
-        ghosts = Runtime::Array<ElemInfo>::FromStorage(Runtime::RowLayout::Dense(ghosts.RowCount(), 1), ghosts.Storage());
         NativeCellClosure result{std::move(publication.relations.at(Adj::Cell2Node)), {std::move(*metadata), std::move(ghosts)}};
         if (periodic)
         {

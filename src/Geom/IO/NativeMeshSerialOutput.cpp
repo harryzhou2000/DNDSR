@@ -113,17 +113,14 @@ namespace DNDS::Geom
         auto gather = [&](const auto &values, const Runtime::RowTransferPlan &transfer, const Runtime::ElementSchema &schema)
         {
             using Array = std::decay_t<decltype(values)>;
-            auto layout = transfer.DestinationLayout(values.Layout());
-            if (!values.Layout().IsVariable())
-                layout = Runtime::RowLayout::Dense(transfer.DestinationRows(), values.Layout().Width());
+            Runtime::PayloadPlan payload(transfer, values.Layout(), schema);
             std::optional<Array> output;
             FieldTransferDetail::LocalStage(mpi, [&]
-                                            { output.emplace(layout); });
+                                            { output.emplace(payload.DestinationLayout()); });
             Runtime::TransferOptions options;
             options.mode = Runtime::TransferMode::Transient;
             options.context = context;
-            Runtime::PayloadPlan(transfer, values.Layout(), output->Layout(), schema)
-                .Bind(values, *output, Runtime::TransferTransport::Direct, options)
+            payload.Bind(values, *output, Runtime::TransferTransport::Direct, options)
                 .Begin()
                 .Wait();
             return std::move(*output);

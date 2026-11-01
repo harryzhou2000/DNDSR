@@ -204,12 +204,11 @@ namespace DNDS::Geom
                     DNDS_check_throw_info(_space.SameOrder(expected), "entity field route belongs to another mesh/order"); });
                 auto state = field._slot->current;
                 auto mesh = Retain(_space);
-                auto received = _route.DestinationLayout(state->values.Layout());
+                Runtime::PayloadPlan payload(_route, state->values.Layout(), state->schema, destinationLayout);
                 std::optional<Runtime::Array<T>> ghost;
                 FieldTransferDetail::LocalStage(_space._mpi, [&]
-                                                { ghost.emplace(destinationLayout.Apply(state->values.Layout(), received), state->values.GetDevice()); });
-                auto binding = Runtime::PayloadPlan(_route, state->values.Layout(), ghost->Layout(), state->schema)
-                                   .Bind(state->values, *ghost, Runtime::TransferTransport::Direct);
+                                                { ghost.emplace(payload.DestinationLayout(), state->values.GetDevice()); });
+                auto binding = payload.Bind(state->values, *ghost, Runtime::TransferTransport::Direct);
                 return Binding(field._slot, std::move(state), std::move(*ghost), std::move(binding));
             }
         };

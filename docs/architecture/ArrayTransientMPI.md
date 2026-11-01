@@ -122,10 +122,13 @@ DynamicRowTransfer adds collective success checking at Commit.
 ## Dynamic receive shapes
 
 DynamicRowTransfer pins a source storage/shape/value snapshot, discovers row
-lengths, allocates a private CSR destination, then begins the payload. Test/Wait
+lengths, allocates a private destination preserving table stride, padded capacity
+or CSR storage by default, then begins the payload. `TransferLayout::Compact()`
+explicitly requests CSR (`TransferLayout.compact()` in Python). Test/Wait
 advance payload completion. Commit collectively verifies success and returns
 the completed storage exactly once. Until then no destination handle escapes.
-Zero-length rows and unrequested destinations remain valid empty rows. A
+Zero-length rows remain valid. Unrequested padded/CSR rows are empty; unrequested
+table rows retain their declared width with untouched values. A
 reduction failure on any rank prevents publication on all ranks at Commit.
 
 Preparation is currently synchronous and collective. Payload progression is

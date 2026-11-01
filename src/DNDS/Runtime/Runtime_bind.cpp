@@ -491,6 +491,12 @@ namespace DNDS::Runtime
                      auto archive = ReadArrayStorage(s, name, mpi, partition, device, prototype->Schema(), {}, schema);
                      return prototype->WithStorage(ArrayStorage::FromBuffer(std::move(archive.layout), std::move(archive.storage), prototype->Dtype().itemsize())); }, py::arg("serializer"), py::arg("name"), py::arg("mpi"), py::arg("dtype") = py::dtype::of<double>(), py::arg("partition") = Serializer::ArrayGlobalOffset_Unknown, py::arg("device") = Device::Host(), py::arg("schema") = "", "Read directly into host storage, dynamically validate logical shape, and swap declared words when file endian differs. Invalid dtype/class registration is rejected collectively before reading. Device destinations require a direct I/O backend and are currently rejected; match collective calls and mesh/field identities.");
         BindMPIOptions(m);
+        py::class_<TransferLayout>(m, "TransferLayout", "Destination storage policy. Preserve the local table width/stride, padded capacity or CSR family by default, including empty ranks. Incompatible incoming rows reject collectively; compact CSR is explicit.")
+            .def(py::init<>())
+            .def_static("preserve_storage", &TransferLayout::PreserveStorage)
+            .def_static("compact", &TransferLayout::Compact)
+            .def_static("table", &TransferLayout::Table, py::arg("width"), py::arg("stride") = 0)
+            .def_static("padded", &TransferLayout::Padded, py::arg("capacity"));
         py::class_<RowRequest>(m, "RowRequest")
             .def(py::init([](int rank, int64_t row, index destination)
                           { return RowRequest{rank, row, destination}; }));
@@ -503,7 +509,7 @@ namespace DNDS::Runtime
                         { return RowTransferPlan::Known(std::move(context), sources, destinations, std::move(send), std::move(receive)); }, "Caller supplies corresponding peer send/receive row order. Matching counts cannot prove semantic permutation correctness.")
             .def("reverse", &RowTransferPlan::Reverse)
             .def("reorder_source_by_peer", &RowTransferPlan::ReorderSourceByPeer, "Collective: returns (route, old-to-new source rows). Requires every source row exactly once. Apply that permutation to arrays before binding; values are not moved here.")
-            .def("destination_layout", &RowTransferPlan::DestinationLayout)
+            .def("destination_layout", &RowTransferPlan::DestinationLayout, py::arg("source"), py::arg("layout") = TransferLayout{})
             .def_property_readonly("has_collisions", &RowTransferPlan::HasCollisions)
             .def_property_readonly("source_rows", &RowTransferPlan::SourceRows)
             .def_property_readonly("destination_rows", &RowTransferPlan::DestinationRows);
@@ -575,6 +581,9 @@ namespace DNDS::Runtime
                      return reducer; }, py::arg("schema"), py::arg("dtype"), py::arg("name"), py::arg("combine"), py::arg("identity"), py::arg("initialization") = DestinationInit::Preserve);
         py::class_<PayloadPlan>(m, "PayloadPlan", "Collective layout/schema plan. bind pins specific allocations; reset/migration requires rebuilding layout-dependent plans and bindings.")
             .def(py::init<RowTransferPlan, RowLayout, RowLayout, ElementSchema>())
+            .def(py::init<RowTransferPlan, RowLayout, ElementSchema, TransferLayout>(),
+                 py::arg("route"), py::arg("source"), py::arg("schema"), py::arg("layout") = TransferLayout{})
+            .def_property_readonly("destination_layout", &PayloadPlan::DestinationLayout)
             .def_property_readonly("send_segments", &PayloadPlan::SendSegments)
             .def_property_readonly("receive_segments", &PayloadPlan::ReceiveSegments)
             .def("bind", [](const PayloadPlan &p, const PythonArray &src, const PythonArray &dst, std::optional<Reducer> reducer, TransferTransport transport, TransferOptions options)

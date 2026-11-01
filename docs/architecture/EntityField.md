@@ -65,8 +65,8 @@ row lengths. `Runtime::TransferLayout` chooses storage independently:
 
 | Choice | Destination |
 | --- | --- |
-| Default / Compact() | Compact CSR, including uniform or empty results |
-| PreserveStorage() | Local source family; table width/stride or padded capacity retained; CSR compacted |
+| Default / PreserveStorage() | Local source family; table width/stride or padded capacity retained, including empty results; CSR remains compact CSR |
+| Compact() | Explicit compact CSR, including uniform or empty results |
 | Table(width,stride) | Dense rows with that logical width and physical stride; every received row must match |
 | Padded(capacity) | Variable logical lengths with explicit capacity; every row must fit |
 
@@ -74,6 +74,10 @@ row lengths. `Runtime::TransferLayout` chooses storage independently:
 `route.Bind(field, space, layout)` supplies the halo destination choice. Generic
 `RegisterArray` accepts the same policy as its last argument. No accessor policy
 is used to invent a destination width. Physical padding is not transferred.
+The inferred `PayloadPlan` constructs that final shape directly in its one
+width-validation step: table destinations allocate no CSR offsets, and padded
+destinations allocate only their row sizes. No intermediate compact Array or
+second identical width exchange is required.
 
 Destination capacities/strides may differ by rank: they are local storage
 choices, not a change in row correspondence or logical values. An incoming row

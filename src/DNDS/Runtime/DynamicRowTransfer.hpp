@@ -6,7 +6,7 @@
 namespace DNDS::Runtime
 {
     /// Collective preparation, then nonblocking payload progression. The new
-    /// CSR field stays private until Commit; source storage/shape and its read
+    /// field preserves storage by default and stays private until Commit; source shape/read
     /// lease span both preparation and transfer. No partial destination escapes.
     /// @pre Every rank participates in matching construction/Commit order, even
     /// with zero rows. Caller supplies the real source element schema (native
@@ -36,7 +36,8 @@ namespace DNDS::Runtime
                            ElementSchema schema, Device destinationDevice = Device::Host(),
                            TransferTransport transport = TransferTransport::Direct,
                            TransferOptions options = {TransferMode::Transient, {}, 0},
-                           std::optional<Reducer> reducer = {}, ExecutionContext context = ExecutionContext::Host())
+                           std::optional<Reducer> reducer = {}, ExecutionContext context = ExecutionContext::Host(),
+                           TransferLayout destinationLayout = {})
             : _comm(route.Communicator()), _routeOwner(route)
         {
             bool valid = true;
@@ -52,7 +53,7 @@ namespace DNDS::Runtime
                 valid = false;
             }
             CheckAll(valid, route.Communicator(), "dynamic transfer source reservation failed on a rank");
-            PayloadPlan payload(route, _source->Layout(), schema);
+            PayloadPlan payload(route, _source->Layout(), schema, destinationLayout);
             try
             {
                 _destination = ArrayStorage::Allocate(payload.DestinationLayout(), schema.Extent(), destinationDevice);

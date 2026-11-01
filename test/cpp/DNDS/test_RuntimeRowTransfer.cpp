@@ -328,7 +328,7 @@ TEST_CASE("Table width agreement preserves sparse rows and handles rank-varying 
                 for (DNDS::index iCol = 0; iCol < width; ++iCol)
                     view(iRow, iCol) = 1000 * rank + 100 * iRow + iCol;
         }
-        PayloadPlan payload(route, source.Layout(), ElementSchema::Arithmetic<int64_t>());
+        PayloadPlan payload(route, source.Layout(), ElementSchema::Arithmetic<int64_t>(), TransferLayout::Compact());
         Array<int64_t> output(payload.DestinationLayout());
         payload.Bind(source, output).Begin().Wait();
         auto read = output.Read();
@@ -343,6 +343,156 @@ TEST_CASE("Table width agreement preserves sparse rows and handles rank-varying 
         for (DNDS::index iCol = 0; iCol < remoteWidth; ++iCol)
             CHECK(view(3, iCol) == 1000 * next + 200 + iCol);
     }
+}
+
+TEST_CASE("Default inferred transfers preserve table stride padded capacity and CSR through repeated halos")
+{
+    int rank = 0, size = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+    const int next = (rank + 1) % size;
+    RowTransferPlan route(MPI_COMM_WORLD, 3, 3, {{next, 2, 0}, {next, 0, 1}, {next, 1, 2}});
+    for (int kind = 0; kind < 3; ++kind)
+    {
+        CAPTURE(kind);
+        const auto shape = kind == 0   ? RowLayout::Dense(3, 3, 5 + rank)
+                           : kind == 1 ? RowLayout::Padded({0, 2, 3}, 6 + rank)
+                                       : RowLayout::Ragged({0, 2, 3});
+        Array<int64_t> source(shape);
+        {
+            auto write = source.Storage().Write();
+            std::fill_n(write.View<int64_t>().data, shape.Elements(), int64_t(-777));
+        }
+        PayloadPlan payload(route, shape, ElementSchema::Arithmetic<int64_t>());
+        const auto targetShape = payload.DestinationLayout();
+        CHECK(targetShape.Kind() == shape.Kind());
+        if (!shape.IsRagged())
+            CHECK(targetShape.Stride() == shape.Stride());
+        if (kind == 0)
+        {
+            CHECK(targetShape.Width() == 3);
+            CHECK(targetShape.Offsets().empty());
+            CHECK(targetShape.Sizes().empty());
+        }
+        CHECK(targetShape == route.DestinationLayout(shape));
+        Array<int64_t> destination(targetShape);
+        for (auto mode : {TransferMode::Transient, TransferMode::Persistent})
+        {
+            auto binding = payload.Bind(source, destination, TransferTransport::Direct, {mode});
+            for (int stage = 0; stage < 2; ++stage)
+            {
+                {
+                    auto write = source.Write();
+                    for (DNDS::index iRow = 0; iRow < 3; ++iRow)
+                        for (DNDS::index j = 0; j < source.RowSize(iRow); ++j)
+                            write.View()(iRow, j) = 10000 * stage + 1000 * rank + 10 * iRow + j;
+                }
+                {
+                    auto write = destination.Storage().Write();
+                    std::fill_n(write.View<int64_t>().data, targetShape.Elements(), int64_t(-999));
+                }
+                binding.Begin().Wait();
+                auto read = destination.Storage().Read();
+                const auto flat = read.View<int64_t>();
+                for (DNDS::index iRow = 0; iRow < 3; ++iRow)
+                {
+                    const DNDS::index oldRow = (iRow + 2) % 3;
+                    const DNDS::index width = kind == 0 ? 3 : oldRow == 0 ? 0
+                                                          : oldRow == 1   ? 2
+                                                                          : 3;
+                    CHECK(targetShape.RowSize(iRow) == width);
+                    for (DNDS::index j = 0; j < width; ++j)
+                        CHECK(flat[targetShape.Offset(iRow) + j] == 10000 * stage + 1000 * next + 10 * oldRow + j);
+                    if (!targetShape.IsRagged())
+                        for (DNDS::index j = width; j < targetShape.Stride(); ++j)
+                            CHECK(flat[targetShape.Offset(iRow) + j] == -999);
+                }
+            }
+        }
+#ifdef DNDS_USE_CUDA
+        if (DNDS::MPI::isCudaAware())
+        {
+            // Run the same preserved shapes through direct device MPI too.
+            // Each MPI rank may select its local GPU with CUDA_VISIBLE_DEVICES.
+            const auto context = ExecutionContext::CUDA(0);
+            auto deviceSource = source.To(Device::CUDA(0), context);
+            auto deviceDestination = destination.To(Device::CUDA(0), context);
+            for (auto mode : {TransferMode::Transient, TransferMode::Persistent})
+            {
+                payload.Bind(deviceSource, deviceDestination, TransferTransport::Direct, {mode}).Begin(context).Wait();
+                auto hostResult = deviceDestination.To(Device::Host(), context);
+                auto read = hostResult.Storage().Read();
+                const auto flat = read.View<int64_t>();
+                for (DNDS::index iRow = 0; iRow < 3; ++iRow)
+                {
+                    const DNDS::index oldRow = (iRow + 2) % 3;
+                    const auto width = targetShape.RowSize(iRow);
+                    for (DNDS::index j = 0; j < width; ++j)
+                        CHECK(flat[targetShape.Offset(iRow) + j] == 10000 + 1000 * next + 10 * oldRow + j);
+                    if (!targetShape.IsRagged())
+                        for (DNDS::index j = width; j < targetShape.Stride(); ++j)
+                            CHECK(flat[targetShape.Offset(iRow) + j] == -999);
+                }
+            }
+        }
+        else
+            MESSAGE("Direct device MPI unavailable; preserved-layout GPU transfer is not exercised");
+#endif
+    }
+}
+
+TEST_CASE("Preserved inference retains typed empty ranks and rejects remote rows that do not fit")
+{
+    int rank = 0, size = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+    const DNDS::index owned = rank == 0 ? 2 : 0;
+    const DNDS::index ghosts = rank == 0 ? 0 : 1;
+    RowTransferPlan route(MPI_COMM_WORLD, owned, ghosts, rank == 0 ? std::vector<RowRequest>{} : std::vector<RowRequest>{{0, 1, 0}});
+    for (int kind = 0; kind < 2; ++kind)
+    {
+        const auto shape = kind == 0 ? RowLayout::Dense(owned, 3, 5 + rank)
+                                     : RowLayout::Padded(rank == 0 ? std::vector<size_t>{1, 3} : std::vector<size_t>{}, 5 + rank);
+        Array<int64_t> source(shape);
+        {
+            auto write = source.Write();
+            for (DNDS::index iRow = 0; iRow < owned; ++iRow)
+                for (DNDS::index j = 0; j < shape.RowSize(iRow); ++j)
+                    write.View()(iRow, j) = iRow * 10 + j;
+        }
+        PayloadPlan payload(route, shape, ElementSchema::Arithmetic<int64_t>());
+        CHECK(payload.DestinationLayout().Kind() == shape.Kind());
+        CHECK(payload.DestinationLayout().Stride() == shape.Stride());
+        Array<int64_t> destination(payload.DestinationLayout());
+        payload.Bind(source, destination).Begin().Wait();
+        if (rank != 0)
+            CHECK(destination.Read().At(0, 2) == 12);
+    }
+    if (size > 1)
+    {
+        // One receiver has insufficient local capacity. All ranks must reject
+        // before any data binding; the following valid transfer must still work.
+        const auto bad = RowLayout::Padded(rank == 0 ? std::vector<size_t>{1, 3} : std::vector<size_t>{}, rank == 1 ? 2 : 5);
+        CHECK_THROWS(PayloadPlan(route, bad, ElementSchema::Arithmetic<int64_t>()));
+        CHECK_THROWS(route.DestinationLayout(bad));
+        CHECK_NOTHROW(PayloadPlan(route, bad, ElementSchema::Arithmetic<int64_t>(), TransferLayout::Compact()));
+        const auto badTable = RowLayout::Dense(owned, rank == 1 ? 2 : 3, 5);
+        CHECK_THROWS(PayloadPlan(route, badTable, ElementSchema::Arithmetic<int64_t>()));
+        CHECK_THROWS(route.DestinationLayout(badTable));
+        CHECK_NOTHROW(PayloadPlan(route, badTable, ElementSchema::Arithmetic<int64_t>(), TransferLayout::Compact()));
+    }
+}
+
+TEST_CASE("Preserved sparse table slots keep width and explicit compact retains zero-length holes")
+{
+    int rank = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    const auto shape = RowLayout::Dense(2, 3, 7);
+    RowTransferPlan route(MPI_COMM_WORLD, 2, 4, {{rank, 1, 3}});
+    PayloadPlan table(route, shape, ElementSchema::Arithmetic<int64_t>());
+    CHECK(table.DestinationLayout() == RowLayout::Dense(4, 3, 7));
+    PayloadPlan compact(route, shape, ElementSchema::Arithmetic<int64_t>(), TransferLayout::Compact());
+    CHECK(compact.DestinationLayout() == RowLayout::Ragged({0, 0, 0, 3}));
 }
 
 TEST_CASE("Binding rejects reordered communicator and rank-local tag reservation failure")
@@ -531,7 +681,7 @@ TEST_CASE("One route transfers padded reconstruction rows into a packed CSR dest
                 write.At(i, j) = rank * 10000 + i * 100 + j;
     }
     RowTransferPlan route(MPI_COMM_WORLD, count, count, requests);
-    Array<double> destination(route.DestinationLayout(source.Layout()));
+    Array<double> destination(route.DestinationLayout(source.Layout(), TransferLayout::Compact()));
     CHECK(destination.Layout().IsRagged());
     auto payload = PayloadPlan(route, source.Layout(), destination.Layout(), ElementSchema::Arithmetic<double>());
     for (auto transport : {TransferTransport::Direct, TransferTransport::HostPacked})

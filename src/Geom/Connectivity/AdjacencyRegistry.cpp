@@ -125,11 +125,14 @@ namespace DNDS::Geom
                     _fetchValues.emplace(relation.Kind(), owned->array);
                 else
                 {
-                    _fetchValues.emplace(relation.Kind(), Runtime::BuildArrayRows<index>(size_t(relation.NumOwned()),
-                        [&](size_t row) { return relation.RowSize(index(row)); }, [&](size_t row, auto output)
+                    const auto *mesh = dynamic_cast<const MeshAdjacencyRead::MeshHold *>(relation._owned.get());
+                    DNDS_check_throw_info(owned || mesh, "adjacency fetch requires retained storage metadata");
+                    const auto &shape = owned ? owned->read.Layout() : mesh->ownedLayout;
+                    _fetchValues.emplace(relation.Kind(), Runtime::BuildArrayRows<index>(shape,
+                        [&](size_t row, auto output)
                         {
                             relation.ConvertRowTo(index(row), Adj_PointToGlobal, output.data());
-                        }, {}, true));
+                        }, true));
                 }
             }
             if (!reusedRoute)
@@ -789,7 +792,12 @@ namespace DNDS::Geom
         DNDS_check_throw_info(view.HasRelation(relation), "mesh scope does not contain requested setup relation");
         _view = meshRead->_storage.relations[size_t(relation)];
         _state = view.RelationState(relation);
-        _owned = std::make_unique<MeshHold>(std::move(meshRead));
+        auto hold = std::make_unique<MeshHold>(std::move(meshRead));
+        DNDS_check_throw_info(hold->read->_nativeOwner, "mesh adjacency requires retained native storage metadata");
+        const auto &rows = *hold->read->_nativeOwner->Snapshot(Runtime::Device::Host()).Live().relations[size_t(relation)];
+        hold->ownedLayout = rows.owned.Layout();
+        hold->ghostLayout = rows.ghost.Layout();
+        _owned = std::move(hold);
         Validate();
     }
     MeshAdjacencyRead MeshAdjacencyRead::Current(UnstructuredMesh &mesh, AdjacencyDescriptor kind, MeshReadRequirements requirements)
@@ -912,7 +920,7 @@ namespace DNDS::Geom
             result.spaces.emplace(kind, std::move(next));
             result.routes.emplace(kind, EntityGhostMapping(result.spaces.at(kind)));
         }
-        using PayloadKey = std::tuple<EntityKind, EntityKind, MeshAdjState, uintptr_t, size_t, size_t, size_t, uintptr_t, uintptr_t, uint64_t>;
+        using PayloadKey = std::tuple<EntityKind, EntityKind, MeshAdjState, Runtime::RowLayoutKind, uintptr_t, size_t, size_t, size_t, uintptr_t, uintptr_t, uint64_t>;
         struct Payload
         {
             int ordinal;
@@ -927,7 +935,12 @@ namespace DNDS::Geom
             const auto &input = *_relations.at(kind);
             const auto &view = input._view.owned;
             const auto &ghostMapping = result.routes.at(kind.from);
-            const PayloadKey key{kind.from, kind.to, input.State(), reinterpret_cast<uintptr_t>(view.data), view.rows,
+            const auto *hold = dynamic_cast<const MeshAdjacencyRead::ArrayHold *>(input._owned.get());
+            const auto *mesh = dynamic_cast<const MeshAdjacencyRead::MeshHold *>(input._owned.get());
+            const auto storageKind = hold ? hold->read.Layout().Kind() : mesh->ownedLayout.Kind();
+            // Empty tables and padded arrays can have identical null pointers,
+            // width and stride. Their physical family must still distinguish aliases.
+            const PayloadKey key{kind.from, kind.to, input.State(), storageKind, reinterpret_cast<uintptr_t>(view.data), view.rows,
                                  view.width, view.stride, reinterpret_cast<uintptr_t>(view.offsets), reinterpret_cast<uintptr_t>(view.sizes),
                                  ghostMapping.Identity()};
             auto cached = payloads.find(key);
@@ -948,15 +961,15 @@ namespace DNDS::Geom
             std::optional<Runtime::Array<index>> values;
             ValidateCollectively([&]
                                  {
-                const auto *hold = dynamic_cast<const MeshAdjacencyRead::ArrayHold *>(input._owned.get());
                 if (input.State() == Adj_PointToGlobal && hold)
                     values = hold->array;
                 else
-                    values = Runtime::BuildArrayRows<index>(size_t(input.NumOwned()), [&](size_t row) { return input.RowSize(index(row)); },
-                        [&](size_t row, auto output)
-                        {
-                            input.ConvertRowTo(index(row), Adj_PointToGlobal, output.data());
-                        }, {}, true); });
+                {
+                    DNDS_check_throw_info(hold || mesh, "adjacency publication requires retained storage metadata");
+                    const auto &shape = hold ? hold->read.Layout() : mesh->ownedLayout;
+                    values = Runtime::BuildArrayRows<index>(shape, [&](index iRow, auto output)
+                        { input.ConvertRowTo(iRow, Adj_PointToGlobal, output.data()); }, true);
+                } });
             auto fetched = _fetchedRows.find(kind);
             std::optional<Runtime::Array<index>::ReadLease> scratchRead;
             int reuse = 0;
@@ -968,7 +981,14 @@ namespace DNDS::Geom
                     // Pin before observing the version: a writer may have
                     // changed a previously published alias of this scratch.
                     scratchRead.emplace(fetched->second.values->Read());
-                    reuse = fetched->second.version == fetched->second.values->Version();
+                    const auto &ownedLayout = values->Layout(), &ghostLayout = fetched->second.values->Layout();
+                    // Discovery scratch may have compacted a table/padded
+                    // payload. Reuse only a shape that preserves this source's
+                    // storage contract; otherwise fetch directly into it.
+                    reuse = fetched->second.version == fetched->second.values->Version() &&
+                            ownedLayout.Kind() == ghostLayout.Kind() &&
+                            (ownedLayout.IsRagged() || ownedLayout.Stride() == ghostLayout.Stride()) &&
+                            (ownedLayout.IsVariable() || ownedLayout.Width() == ghostLayout.Width());
                 }
             }
             catch (...)

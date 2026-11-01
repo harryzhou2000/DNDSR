@@ -235,30 +235,25 @@ namespace DNDS::Geom
         source.Validate();
         DNDS_check_throw_info(targetState == Adj_PointToGlobal || targetState == Adj_PointToLocal,
                               "relation conversion requires an explicit global/local destination state");
-        auto convert = [&](const Runtime::ArrayView<const index> &view, index first)
+        const auto *mesh = dynamic_cast<const MeshAdjacencyRead::MeshHold *>(source._owned.get());
+        auto convert = [&](index first, const MeshAdjacencyRead::Hold *hold, bool ghost)
         {
-            std::vector<size_t> lengths;
-            if (view.offsets || view.sizes)
-            {
-                lengths.resize(view.RowCount());
-                for (size_t row = 0; row < view.RowCount(); ++row)
-                    lengths[row] = view.RowSize(row);
-            }
-            const auto shape = view.offsets ? Runtime::RowLayout::Ragged(lengths) : view.sizes ? Runtime::RowLayout::Padded(lengths, view.stride)
-                                                                                               : Runtime::RowLayout::Dense(view.RowCount(), view.width, view.stride);
-            Runtime::Array<index> output(shape);
-            {
-                auto write = output.Write();
-                for (size_t row = 0; row < view.RowCount(); ++row)
-                    source.ConvertRowTo(first + index(row), targetState, write.View().Row(row), allowUnavailable);
-            }
-            return output;
+            // Empty padded arrays legitimately have a null row-size pointer.
+            // Their retained storage, rather than pointer presence, determines
+            // the physical family. This also shares immutable row metadata.
+            const auto *array = dynamic_cast<const MeshAdjacencyRead::ArrayHold *>(hold);
+            const auto *layout = array  ? &array->read.Layout()
+                                 : mesh ? (ghost ? &mesh->ghostLayout : &mesh->ownedLayout)
+                                        : nullptr;
+            DNDS_check_throw_info(layout, "adjacency conversion requires retained storage metadata");
+            return Runtime::BuildArrayRows<index>(*layout, [&](index iRow, auto output)
+                                                  { source.ConvertRowTo(first + iRow, targetState, output.data(), allowUnavailable); }, true);
         };
-        MeshAdjacency result(source.Kind(), source.Source(), source.Target(), convert(source._view.owned, 0), targetState);
+        MeshAdjacency result(source.Kind(), source.Source(), source.Target(), convert(0, source._owned.get(), false), targetState);
         // A mesh scope retains both portions in one MeshHold; it need not have
         // a separate ghost holder even though ghost rows are present.
-        if (source._ghost || source._view.ghost.RowCount())
-            result._ghost.emplace(convert(source._view.ghost, source.NumOwned()));
+        if (source._ghost || mesh)
+            result._ghost.emplace(convert(source.NumOwned(), source._ghost.get(), true));
         auto check = result.Read();
         return result;
     }
@@ -496,7 +491,7 @@ namespace DNDS::Geom
                              BuildNativeRows(support));
     }
 
-    MeshAdjacency MeshAdjacency::WithGhostRows(const EntityGhostMapping &halo) const
+    MeshAdjacency MeshAdjacency::WithGhostRows(const EntityGhostMapping &halo, Runtime::TransferLayout layout) const
     {
         const auto mpi = MeshAdjacencyRead::SourceMPI(_source);
         std::optional<MeshAdjacencyRead> read;
@@ -515,7 +510,7 @@ namespace DNDS::Geom
         }
         MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, mpi.comm);
         DNDS_check_throw_info(valid, "native halo route has stale/wrong source order or nonglobal relation payload");
-        Runtime::PayloadPlan payload(halo._route, _owned.Layout(), Runtime::ElementSchema::Arithmetic<index>());
+        Runtime::PayloadPlan payload(halo._route, _owned.Layout(), Runtime::ElementSchema::Arithmetic<index>(), layout);
         Runtime::Array<index> ghosts(payload.DestinationLayout());
         Runtime::TransferOptions options;
         options.mode = Runtime::TransferMode::Transient;

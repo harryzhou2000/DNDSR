@@ -137,11 +137,14 @@ adjacency and core/ring classifications. Attach relevant mesh version stamps and
 commit mutations; version checking detects stale declared dependencies but is not
 a lock. Drain old operations before mutating their dependencies.
 
-`DynamicRowTransfer` pins its source and privately builds a CSR destination;
+`DynamicRowTransfer` pins its source and privately builds a destination preserving
+the local table width/stride, padded capacity or CSR family by default;
 construction and `Commit()` must follow matched collective order. It publishes
 only after successful payload completion. Multiple fields are separate operations:
 the application must commit and validate the complete field bundle before
 publishing a new mesh epoch. There is no atomic multi-field transaction.
+Incoming rows that do not fit the receiving rank's declared shape reject
+collectively. Request `TransferLayout::Compact()` explicitly for compact scratch.
 
 ## Shape editing, Python and restart
 

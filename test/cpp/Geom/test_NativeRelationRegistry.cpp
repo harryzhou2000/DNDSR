@@ -82,6 +82,115 @@ static AdjacencyDescriptor RegistryInverse()
     return Adj::Cell2Face.Inverted();
 }
 
+TEST_CASE("Generic adjacency ghost routes and named publications preserve storage including empty ghosts")
+{
+    const auto mpi = RegistryMPI();
+    const auto nodes = EntitySpace::CreateOwned(EntityKind::Node, mpi, 3);
+    const auto cells = nodes.CreateSibling(EntityKind::Cell, 1);
+    const int next = (mpi.rank + 1) % mpi.size;
+    const auto ghostIds = mpi.size > 1 ? std::vector<DNDS::index>{next} : std::vector<DNDS::index>{};
+    const auto withGhost = cells.WithGhosts(ghostIds);
+    EntityGhostMapping route(withGhost);
+    for (int kind = 0; kind < 3; ++kind)
+    {
+        CAPTURE(kind);
+        const size_t length = kind == 0 ? 2 : size_t(mpi.rank % 2 + 1);
+        const auto shape = kind == 0   ? R::RowLayout::Dense(1, 2, 5 + mpi.rank)
+                           : kind == 1 ? R::RowLayout::Padded({length}, 5 + mpi.rank)
+                                       : R::RowLayout::Ragged({length});
+        R::Array<DNDS::index> values(shape);
+        {
+            auto write = values.Write();
+            for (DNDS::index j = 0; j < DNDS::index(length); ++j)
+                write.View()(0, j) = 3 * mpi.rank + j;
+        }
+        auto key = Adj::Cell2Node;
+        key.path = {EntityKind::Cell, EntityKind::Node};
+        key.selection = RelationSelection::Custom;
+        key.order = RelationOrder::Topological;
+        key.periodic = RelationPeriodicPolicy::EntityIdentity;
+        key.semanticName = "preserved.cell.nodes";
+        key.semanticVersion = 1;
+        auto alias = key;
+        alias.semanticName += ".alias";
+        MeshAdjacency adjacency(key, withGhost, nodes, values);
+        const auto check = [&](const R::Array<DNDS::index> &ghost)
+        {
+            CHECK(ghost.Layout().Kind() == shape.Kind());
+            CHECK(ghost.RowCount() == DNDS::index(ghostIds.size()));
+            if (!shape.IsRagged())
+                CHECK(ghost.Layout().Stride() == shape.Stride());
+            if (kind == 0)
+            {
+                CHECK(ghost.Layout().Width() == 2);
+                CHECK(ghost.Layout().Offsets().empty());
+            }
+            auto read = ghost.Read();
+            for (DNDS::index iRow = 0; iRow < ghost.RowCount(); ++iRow)
+            {
+                const DNDS::index width = kind == 0 ? 2 : next % 2 + 1;
+                CHECK(read.View().RowSize(iRow) == width);
+                for (DNDS::index j = 0; j < width; ++j)
+                    CHECK(read.View()(iRow, j) == 3 * next + j);
+            }
+        };
+        check(route.TransferRows(withGhost, values, R::ElementSchema::Arithmetic<DNDS::index>()));
+        auto pending = route.BeginRows(withGhost, values, R::ElementSchema::Arithmetic<DNDS::index>());
+        pending.operation.Wait();
+        check(pending.ghost);
+        check(*adjacency.WithGhostRows(route).Ghost());
+
+        AdjacencyRegistry registry(mpi);
+        auto local = MeshAdjacency::Convert(adjacency.Read(), Adj_PointToLocal);
+        registry.Register(local.Read());
+        registry.Register(MeshAdjacency(alias, withGhost, nodes, local.Owned(), Adj_PointToLocal).Read());
+        R::Array<DNDS::index> nextCells(R::RowLayout::Dense(3, 1, 3));
+        {
+            auto write = nextCells.Write();
+            for (DNDS::index iNode = 0; iNode < 3; ++iNode)
+                write.View()(iNode, 0) = next;
+        }
+        registry.Register(MeshAdjacency(Adj::Node2Cell, nodes, withGhost, nextCells).Read());
+        GhostSpec spec;
+        spec.chains.push_back({EntityKind::Node, {Adj::Node2Cell, key}, EntityKind::Node});
+        auto discovery = registry.Evaluate(CompiledGhostTree::compile(spec));
+        if (mpi.size > 1)
+            CHECK(discovery.ghostIndices.at(EntityKind::Node).size() == (kind == 0 ? 2 : size_t(next % 2 + 1)));
+        discovery.ghostIndices[EntityKind::Cell] = ghostIds;
+        auto publication = registry.BuildGhosted(discovery);
+        const auto &first = publication.relations.at(key), &second = publication.relations.at(alias);
+        check(*first.Ghost());
+        CHECK(first.Ghost()->Identity() == second.Ghost()->Identity());
+    }
+}
+
+TEST_CASE("Empty table and padded adjacency publications retain distinct storage families")
+{
+    const auto mpi = RegistryMPI();
+    const auto cells = EntitySpace::CreateOwned(EntityKind::Cell, mpi, 0);
+    const auto nodes = cells.CreateSibling(EntityKind::Node, 0);
+    auto named = Adj::Cell2Node;
+    named.path = {EntityKind::Cell, EntityKind::Node};
+    named.selection = RelationSelection::Custom;
+    named.order = RelationOrder::Topological;
+    named.periodic = RelationPeriodicPolicy::EntityIdentity;
+    named.semanticName = "empty.padded.nodes";
+    named.semanticVersion = 1;
+    R::Array<DNDS::index> table(R::RowLayout::Dense(0, 0, 4));
+    R::Array<DNDS::index> padded(R::RowLayout::Padded({}, 4));
+    AdjacencyRegistry registry(mpi);
+    registry.Register(MeshAdjacency(Adj::Cell2Node, cells, nodes, table).Read());
+    registry.Register(MeshAdjacency(named, cells, nodes, padded).Read());
+    auto publication = registry.BuildGhosted({});
+    const auto &tableRows = publication.relations.at(Adj::Cell2Node), &paddedRows = publication.relations.at(named);
+    CHECK(tableRows.Owned().Layout().Kind() == R::RowLayoutKind::Table);
+    CHECK(tableRows.Ghost()->Layout().Kind() == R::RowLayoutKind::Table);
+    CHECK(paddedRows.Owned().Layout().Kind() == R::RowLayoutKind::Padded);
+    CHECK(paddedRows.Ghost()->Layout().Kind() == R::RowLayoutKind::Padded);
+    CHECK(tableRows.Ghost()->Layout().Stride() == 4);
+    CHECK(paddedRows.Ghost()->Layout().Stride() == 4);
+}
+
 TEST_CASE("Adjacency registry comparison preserves wire identity without serialization")
 {
     std::vector<AdjacencyDescriptor> keys{Adj::Cell2Node, Adj::Cell2Cell, Adj::Cell2CellFace,

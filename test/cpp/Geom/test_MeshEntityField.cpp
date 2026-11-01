@@ -336,8 +336,9 @@ TEST_CASE("Entity fields migrate table padded and CSR storage independently of v
             MeshTransitionHandle handle(source);
             ReorderInput input;
             input.explicitMaps.push_back({EntityKind::Cell, std::vector<MPI_int>(size_t(original.NumOwned()), (mpi.rank + 1) % mpi.size)});
-            const auto layout = preserve ? R::TransferLayout::PreserveStorage() : R::TransferLayout::Compact();
-            auto prepared = PreparedMeshTransition::Prepare(handle, input, {field.Register("variable-history", layout)});
+            const auto layout = preserve ? R::TransferLayout{} : R::TransferLayout::Compact();
+            auto entry = preserve ? field.Register("variable-history") : field.Register("variable-history", layout);
+            auto prepared = PreparedMeshTransition::Prepare(handle, input, {entry});
             prepared.Publish();
             const auto current = handle.Get()->Entities(EntityKind::Cell);
             auto read = field.Read(current);
@@ -361,6 +362,9 @@ TEST_CASE("Entity fields migrate table padded and CSR storage independently of v
             auto binding = route.Bind(field, current, layout);
             binding.Begin().Wait();
             auto ghost = binding.GhostValues().Read();
+            CHECK(ghost.Layout().Kind() == (preserve ? shape.Kind() : R::RowLayoutKind::CSR));
+            if (preserve && kind < 2)
+                CHECK(ghost.Layout().Stride() == 5);
             for (DNDS::index iCell = 0; iCell < current.NumGhost(); ++iCell)
             {
                 const auto id = handle.Get()->OriginalEntityId(EntityKind::Cell, current.NumOwned() + iCell);

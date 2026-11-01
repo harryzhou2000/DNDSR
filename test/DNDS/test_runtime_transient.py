@@ -106,8 +106,42 @@ def test_sender_ordering_returns_route_and_explicit_array_permutation():
         incomplete.reorder_source_by_peer()
 
 
+@pytest.mark.parametrize("kind", ["table", "padded", "csr"])
+def test_preserved_transfer_layout_defaults_and_explicit_compaction(kind):
+    rank, size = MPI.COMM_WORLD.rank, MPI.COMM_WORLD.size
+    lengths = [2, 2, 2] if kind == "table" else [rank % 2, 0, 2]
+    shape = (R.RowLayout.dense(3, 2, 5 + rank) if kind == "table" else
+             R.RowLayout.padded(lengths, 5 + rank) if kind == "padded" else R.RowLayout.ragged(lengths))
+    source = R.Array(shape, np.dtype("int64"))
+    for i_row, width in enumerate(lengths):
+        source[i_row] = np.arange(width) + 100 * rank + 10 * i_row
+    route = R.RowTransferPlan(channel(), 3, 3, [R.RowRequest((rank + 1) % size, 2 - i, i) for i in range(3)])
+    assert route.destination_layout(shape).kind == shape.kind  # Existing one-argument call.
+    for compact in (False, True):
+        policy = R.TransferLayout.compact() if compact else R.TransferLayout()
+        plan = R.PayloadPlan(route, shape, source.element_schema(), policy)
+        expected_kind = R.RowLayoutKind.CSR if compact else shape.kind
+        assert plan.destination_layout.kind == expected_kind
+        assert route.destination_layout(shape, policy).kind == expected_kind
+        if not compact and kind != "csr":
+            assert plan.destination_layout.stride == shape.stride
+        target = R.Array(plan.destination_layout, source.dtype)
+        plan.bind(source, target).begin().wait()
+        moved = R.DynamicRowTransfer(source, route, source.element_schema(), layout=policy).commit()
+        assert moved.layout.kind == expected_kind
+        if not compact and kind != "csr":
+            assert moved.layout.stride == shape.stride
+        peer = (rank + 1) % size
+        for i_row in range(3):
+            old_row = 2 - i_row
+            width = 2 if kind == "table" or old_row == 2 else peer % 2 if old_row == 0 else 0
+            expected = np.arange(width) + 100 * peer + 10 * old_row
+            np.testing.assert_array_equal(target[i_row].numpy(), expected)
+            np.testing.assert_array_equal(moved[i_row].numpy(), expected)
+
+
 @pytest.mark.parametrize("cuda", [False, True])
-def test_private_dynamic_csr_migration_and_retained_views(cuda):
+def test_private_dynamic_storage_migration_and_retained_views(cuda):
     if cuda and not R.cuda_enabled:
         pytest.skip("this build has no CUDA backend")
     rank, size = MPI.COMM_WORLD.rank, MPI.COMM_WORLD.size
@@ -129,6 +163,8 @@ def test_private_dynamic_csr_migration_and_retained_views(cuda):
             source.write()
         source.reset(R.RowLayout.dense(1, 1), device)
         result = operation.commit()
+        assert result.layout.kind == R.RowLayoutKind.Padded
+        assert result.layout.stride == 11
         with pytest.raises(RuntimeError, match="committed"):
             operation.commit()
         peer = (rank + 1) % size

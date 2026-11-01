@@ -15,14 +15,14 @@ namespace DNDS::Runtime
             std::unique_ptr<DynamicRowTransfer> operation;
             PythonDynamicTransfer(const PythonArray &source, RowTransferPlan route, ElementSchema schema,
                                   Device destination, TransferTransport transport, TransferOptions options,
-                                  std::optional<Reducer> reducer, ExecutionContext context)
+                                  std::optional<Reducer> reducer, ExecutionContext context, TransferLayout layout)
                 : prototype(source.New(RowLayout{}, destination))
             {
                 int compatible = schema.Compatible(ArrayTypeIdentity(source));
                 MPI_Allreduce(MPI_IN_PLACE, &compatible, 1, MPI_INT, MPI_MIN, route.Communicator());
                 DNDS_check_throw_info(compatible, "dynamic transfer source dtype differs from schema on a rank");
                 operation = std::make_unique<DynamicRowTransfer>(std::move(route), source.SharedStorage(), std::move(schema),
-                                                                 destination, transport, std::move(options), std::move(reducer), context);
+                                                                 destination, transport, std::move(options), std::move(reducer), context, layout);
             }
             PythonArray Commit() { return prototype.WithStorage(operation->Commit()); }
         };
@@ -50,13 +50,13 @@ namespace DNDS::Runtime
                  { return progress.Import(std::move(operation)); }, "Consume the operation and return a portable event. Caller must poll/drain on the creating thread; no background progress is promised.")
             .def("poll", &MPIProgress::Poll, py::call_guard<py::gil_scoped_release>())
             .def("drain", &MPIProgress::Drain, py::call_guard<py::gil_scoped_release>());
-        py::class_<PythonDynamicTransfer>(m, "DynamicRowTransfer", "Collectively pin source and build private CSR destination. Caller completes producers, matches construction/commit order including empty ranks, drains before mesh mutation, and rebuilds layout-dependent bindings. Field bundles are not atomic transactions.")
+        py::class_<PythonDynamicTransfer>(m, "DynamicRowTransfer", "Collectively pin source and build a private destination preserving storage by default. Caller declares the width/capacity even on empty ranks, completes producers, matches construction/commit order, drains before mesh mutation, and rebuilds layout-dependent bindings. Field bundles are not atomic transactions.")
             .def(py::init<const PythonArray &, RowTransferPlan, ElementSchema, Device, TransferTransport, TransferOptions,
-                          std::optional<Reducer>, ExecutionContext>(),
+                          std::optional<Reducer>, ExecutionContext, TransferLayout>(),
                  py::arg("source"), py::arg("route"), py::arg("schema"), py::arg("device") = Device::Host(),
                  py::arg("transport") = TransferTransport::Direct,
                  py::arg("options") = TransferOptions{TransferMode::Transient, {}, 0},
-                 py::arg("reducer") = py::none(), py::arg("context") = ExecutionContext::Host())
+                 py::arg("reducer") = py::none(), py::arg("context") = ExecutionContext::Host(), py::arg("layout") = TransferLayout{})
             .def("test", [](PythonDynamicTransfer &self)
                  { return self.operation->Test(); }, py::call_guard<py::gil_scoped_release>())
             .def("wait", [](PythonDynamicTransfer &self)

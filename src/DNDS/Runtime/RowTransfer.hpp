@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Array.hpp"
+#include "TransferLayout.hpp"
 #include "ElementSchema.hpp"
 #include "Version.hpp"
 #include "DNDS/MPI.hpp"
@@ -64,8 +65,9 @@ namespace DNDS::Runtime
         const std::vector<std::vector<index>> &ReceiveRows() const;
         bool HasCollisions() const;
         bool Valid() const;
-        /// Setup exchange only: values are not moved. Unrequested rows have width 0.
-        RowLayout DestinationLayout(const RowLayout &source) const;
+        /// Setup exchange only: preserve local storage by default. Unrequested
+        /// variable rows have length zero; table slots keep their declared width.
+        RowLayout DestinationLayout(const RowLayout &source, TransferLayout layout = {}) const;
     };
 
     enum class Reduction
@@ -200,7 +202,7 @@ namespace DNDS::Runtime
         std::shared_ptr<const State> _state;
         friend class TransferBinding;
         friend class TransferOperation;
-        PayloadPlan(RowTransferPlan route, RowLayout source, std::optional<RowLayout> destination, ElementSchema schema);
+        PayloadPlan(RowTransferPlan route, RowLayout source, std::optional<RowLayout> destination, ElementSchema schema, TransferLayout layout);
         bool LayoutsMatch(const RowLayout &source, const RowLayout &destination, size_t elementBytes, bool elementCompatible) const;
         template <class T>
         bool CaptureBuffers(const Array<T> &source, const Array<T> &destination, Buffer &input, Buffer &output) const
@@ -226,9 +228,10 @@ namespace DNDS::Runtime
 
     public:
         PayloadPlan(RowTransferPlan route, RowLayout source, RowLayout destination, ElementSchema schema);
-        /// Infer destination rows from one owner-width exchange, compiling the
-        /// payload in the same operation. Avoids a second identical shape exchange.
-        PayloadPlan(RowTransferPlan route, RowLayout source, ElementSchema schema);
+        /// Infer and preserve destination storage from one owner-width exchange.
+        /// Explicit Compact is available for setup scratch with varying widths.
+        /// Rank-local fit failures reject collectively before payload binding.
+        PayloadPlan(RowTransferPlan route, RowLayout source, ElementSchema schema, TransferLayout layout = {});
         RowLayout DestinationLayout() const;
         void CheckLayouts(const RowLayout &source, const RowLayout &destination, size_t elementBytes, bool elementCompatible = true) const;
         bool Compatible(const std::string &type) const;

@@ -51,6 +51,7 @@ namespace DNDS::Geom
     class UnstructuredMeshSnapshot
     {
         friend class MeshReadAccess;
+        friend class MeshAdjacencyRead;
         friend class NativeMeshTransition;
         friend class NativeMeshAssembler;
         friend class UnstructuredMeshState;

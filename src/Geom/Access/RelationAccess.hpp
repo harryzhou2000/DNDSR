@@ -30,6 +30,8 @@ namespace DNDS::Geom
         struct MeshHold final : Hold
         {
             std::shared_ptr<MeshReadAccess> read;
+            // Physical metadata cannot be recovered from empty view pointers.
+            Runtime::RowLayout ownedLayout, ghostLayout;
             explicit MeshHold(std::shared_ptr<MeshReadAccess> owner) : read(std::move(owner)) {}
             void ValidateScope() const override
             {
@@ -282,10 +284,10 @@ namespace DNDS::Geom
         /// published shape is retained through binding, preventing shape edits.
         template <class T>
         Runtime::Array<T> TransferRows(const EntitySpace &source, const Runtime::Array<T> &owned,
-                                       const Runtime::ElementSchema &schema) const
+                                       const Runtime::ElementSchema &schema, Runtime::TransferLayout layout = {}) const
         {
             const auto storage = CaptureSource(source, owned);
-            Runtime::PayloadPlan payload(_route, storage->Layout(), schema);
+            Runtime::PayloadPlan payload(_route, storage->Layout(), schema, layout);
             Runtime::Array<T> ghost(payload.DestinationLayout());
             Runtime::TransferOptions options;
             options.mode = Runtime::TransferMode::Transient;
@@ -302,10 +304,10 @@ namespace DNDS::Geom
         /// Uses the same collective shape preflight as TransferRows.
         template <class T>
         PendingRows<T> BeginRows(const EntitySpace &source, const Runtime::Array<T> &owned,
-                                 const Runtime::ElementSchema &schema) const
+                                 const Runtime::ElementSchema &schema, Runtime::TransferLayout layout = {}) const
         {
             const auto storage = CaptureSource(source, owned);
-            Runtime::PayloadPlan payload(_route, storage->Layout(), schema);
+            Runtime::PayloadPlan payload(_route, storage->Layout(), schema, layout);
             Runtime::Array<T> ghost(payload.DestinationLayout());
             Runtime::TransferOptions options;
             options.mode = Runtime::TransferMode::Transient;
@@ -317,8 +319,9 @@ namespace DNDS::Geom
 
     using RelationGhostRoute = EntityGhostMapping; // compatibility name
 
-    /// Native CSR relation produced by setup mathematics. Owned output is
-    /// published first; explicit WithGhostRows transfers missing source rows.
+    /// Mesh adjacency backed by a table, padded array or CSR. Owned output is
+    /// published first; explicit WithGhostRows transfers missing source rows
+    /// while preserving the owned storage family and stride/capacity by default.
     class MeshAdjacency
     {
         friend class AdjacencyRegistry;
@@ -400,7 +403,7 @@ namespace DNDS::Geom
         /// to this source identity/order. The original owned relation is retained.
         /// Local-index payloads require target-map translation across ranks;
         /// publish global entries before invoking this setup transfer.
-        MeshAdjacency WithGhostRows(const EntityGhostMapping &route) const;
+        MeshAdjacency WithGhostRows(const EntityGhostMapping &route, Runtime::TransferLayout layout = {}) const;
         MeshAdjacencyRead Read(const EntitySpace &source, const EntitySpace &target) const
         {
             DNDS_check_throw_info(_source.SameOrder(source) && _target.SameOrder(target),

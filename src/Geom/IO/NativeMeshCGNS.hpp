@@ -16,8 +16,8 @@ namespace DNDS::Geom
         ReaderOwned
     };
 
-    /// Process-local work counters for the reader-owned conversion from dense
-    /// CGNS rows to native ragged rows. They measure code-path selection only;
+    /// Process-local work counters for reader-owned copies that retain the
+    /// CGNS storage family and stride. They measure code-path selection only;
     /// no per-read atomic is touched by ordinary distributed ranks.
     struct NativeSerialCopyCounters
     {

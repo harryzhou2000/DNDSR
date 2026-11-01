@@ -370,10 +370,7 @@ namespace DNDS::Geom
                 }
             }
 
-            const auto shape = source.Layout();
-            auto payload = shape.IsVariable()
-                               ? Runtime::PayloadPlan(route, shape, schema)
-                               : Runtime::PayloadPlan(route, shape, Runtime::RowLayout::Dense(route.DestinationRows(), shape.Width()), schema);
+            auto payload = Runtime::PayloadPlan(route, source.Layout(), schema);
             Runtime::Array<T> output(payload.DestinationLayout());
             Runtime::TransferOptions options;
             options.mode = Runtime::TransferMode::Transient;
@@ -1360,11 +1357,7 @@ namespace DNDS::Geom
             for (size_t slot = 0; slot < source.relations.size(); ++slot)
                 if (source.relations[slot])
                 {
-                    auto rows = movedRelations.at(FacadeKey(slot));
-                    const auto &shape = source.relations[slot]->Layout();
-                    if (!shape.IsVariable())
-                        rows = RArray::FromStorage(Runtime::RowLayout::Dense(rows.RowCount(), shape.Width()), rows.Storage());
-                    owned.relations[slot] = std::move(rows);
+                    owned.relations[slot] = movedRelations.at(FacadeKey(slot));
                 }
             for (const auto &[key, unused] : source.namedRelations)
                 owned.namedRelations.emplace(key, movedRelations.at(key)); });

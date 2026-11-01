@@ -129,7 +129,7 @@ namespace DNDS::Geom
     }
 
     /// Register owned rows for detached preparation and publication. The default
-    /// policy infers compact CSR destination rows from the routing. Registration
+    /// policy preserves the source storage family and stride/capacity. Registration
     /// does not itself move data; the caller must keep the referenced handle alive.
     /// The destination storage policy is explicit and never inferred from a
     /// static accessor. Padding is not copied. Failed preparation retains source.
@@ -170,15 +170,12 @@ namespace DNDS::Geom
         entry.prepare = [&array, schema, context, destinationLayout](const PermutationTransfer &transfer, const MPIInfo &mpi)
         {
             auto route = NativeRowTransfer(transfer, mpi);
-            const auto received = route.DestinationLayout(array.Layout());
-            std::optional<Runtime::RowLayout> layout;
-            FieldTransferDetail::LocalStage(mpi, [&]
-                                            { layout.emplace(destinationLayout.Apply(array.Layout(), received)); });
+            Runtime::PayloadPlan payload(route, array.Layout(), schema, destinationLayout);
             std::unique_ptr<FieldTransferDetail::Prepared<Runtime::Array<T>>> next;
             FieldTransferDetail::LocalStage(mpi, [&]
                                             { next = std::make_unique<FieldTransferDetail::Prepared<Runtime::Array<T>>>(array,
-                                                                                                                        Runtime::Array<T>(*layout, array.GetDevice())); });
-            Runtime::PayloadPlan(route, array.Layout(), next->next.Layout(), schema).Bind(array, next->next).Begin(context).Wait();
+                                                                                                                        Runtime::Array<T>(payload.DestinationLayout(), array.GetDevice())); });
+            payload.Bind(array, next->next).Begin(context).Wait();
             return next;
         };
         auto validate = entry.preflight;

@@ -1138,21 +1138,34 @@ namespace DNDS::Geom
         index counts[]{index(serial.cellNodes.RowCount()), index(serial.coordinates.RowCount()), index(serial.boundaryNodes.RowCount())};
         MPI_Bcast(counts, 3, MPI_INT64_T, readerRank, mpi.comm);
         auto context = std::make_shared<Runtime::CommunicationContext>(mpi.comm);
+        // Empty ranks must carry the reader's physical layout too. A default
+        // empty Array has no table width; it is not a valid receiver prototype
+        // for a fixed-width source (nor a declaration of compact CSR storage).
+        auto storagePrototype = [&](auto source)
+        {
+            using Array = std::decay_t<decltype(source)>;
+            const auto &shape = source.Layout();
+            index storage[]{shape.IsRagged() ? 2 : shape.IsPadded() ? 1
+                                                                    : 0,
+                            shape.Width(), shape.Stride()};
+            MPI_Bcast(storage, 3, DNDS_MPI_INDEX, readerRank, mpi.comm);
+            FieldTransferDetail::LocalStage(mpi, [&]
+                                            {
+                if (mpi.rank != readerRank)
+                    source = Array(storage[0] == 2 ? Runtime::RowLayout::Ragged({}) :
+                                   storage[0] == 1 ? Runtime::RowLayout::Padded({}, size_t(storage[2])) :
+                                                    Runtime::RowLayout::Dense(0, size_t(storage[1]), size_t(storage[2]))); });
+            return source;
+        };
         if (distribution == NativeSerialDistribution::ReaderOwned)
         {
             auto localCopy = [&](auto source)
             {
                 using Array = std::decay_t<decltype(source)>;
+                source = storagePrototype(std::move(source));
                 if (mpi.rank == readerRank && source.Layout().IsRagged())
                     return std::move(source);
-                std::vector<size_t> lengths(mpi.rank == readerRank ? source.RowCount() : 0, 0);
-                if (mpi.rank == readerRank)
-                {
-                    auto input = source.Read();
-                    for (size_t row = 0; row < input.View().RowCount(); ++row)
-                        lengths[row] = input.View().RowSize(row);
-                }
-                Array output(Runtime::RowLayout::Ragged(lengths));
+                Array output(source.Layout());
                 if (mpi.rank == readerRank)
                 {
                     auto input = source.Read();
@@ -1162,7 +1175,7 @@ namespace DNDS::Geom
                     {
                         const auto elements = layout.Elements();
                         DNDS_check_throw_info(destination.Layout().Elements() == elements,
-                                              "native serial dense-to-ragged copy extent mismatch");
+                                              "native serial copy extent mismatch");
                         nativeCopyBulkCalls.fetch_add(1, std::memory_order_relaxed);
                         nativeCopyBulkRows.fetch_add(uint64_t(layout.RowCount()), std::memory_order_relaxed);
                         std::copy_n(input.View().data, elements, destination.View().data);
@@ -1215,18 +1228,18 @@ namespace DNDS::Geom
             return Runtime::RowTransferPlan(context, mpi.rank == readerRank ? size_t(total) : 0, size_t(length), requests);
         };
         auto cells = route(counts[0]), nodes = route(counts[1]), boundaries = route(counts[2]);
-        auto transfer = [&](const auto &source, const Runtime::RowTransferPlan &plan, const Runtime::ElementSchema &schema)
+        auto transfer = [&](auto source, const Runtime::RowTransferPlan &plan, const Runtime::ElementSchema &schema)
         {
             using Array = std::decay_t<decltype(source)>;
-            auto layout = plan.DestinationLayout(source.Layout());
+            source = storagePrototype(std::move(source));
+            Runtime::PayloadPlan payload(plan, source.Layout(), schema);
             std::optional<Array> output;
             FieldTransferDetail::LocalStage(mpi, [&]
-                                            { output.emplace(std::move(layout)); });
+                                            { output.emplace(payload.DestinationLayout()); });
             Runtime::TransferOptions transferOptions;
             transferOptions.context = context;
             transferOptions.mode = Runtime::TransferMode::Transient;
-            Runtime::PayloadPlan(plan, source.Layout(), output->Layout(), schema)
-                .Bind(source, *output, Runtime::TransferTransport::Direct, transferOptions)
+            payload.Bind(source, *output, Runtime::TransferTransport::Direct, transferOptions)
                 .Begin()
                 .Wait();
             return std::move(*output);

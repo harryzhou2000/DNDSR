@@ -36,8 +36,6 @@ namespace DNDS::Geom
         {
             const auto &space = publication.spaces.at(kind);
             auto ghost = publication.routes.at(kind).TransferRows(space, owned, schema);
-            if (!owned.Layout().IsVariable())
-                ghost = Runtime::Array<T>::FromStorage(Runtime::RowLayout::Dense(ghost.RowCount(), owned.Layout().Width()), ghost.Storage());
             return {owned, std::move(ghost)};
         }
         void Agree(const MPIInfo &mpi, const std::string &signature)
@@ -176,11 +174,11 @@ namespace DNDS::Geom
                 auto found = converted.find(identity);
                 if (found != converted.end()) return found->second;
                 const auto &shape = rows.owned.Layout();
-                auto result = Runtime::BuildArrayRows<index>(size_t(read.NumOwned()), [&](size_t row) { return read.RowSize(index(row)); },
+                auto result = Runtime::BuildArrayRows<index>(shape,
                                                              [&](size_t row, auto output)
                                                              {
                     read.ConvertRowTo(index(row), Adj_PointToGlobal, output.data());
-                }, shape.IsVariable() ? std::optional<size_t>{} : std::optional<size_t>(shape.Width()), true);
+                }, true);
                 converted.emplace(identity, result);
                 return result;
             };
@@ -457,24 +455,22 @@ namespace DNDS::Geom
         data.dimension = owned.dimension;
         data.periodic = owned.periodic;
         data.periodicInfo = owned.periodicInfo;
-        using LocalKey = std::tuple<uintptr_t, uintptr_t, EntityKind, EntityKind, std::optional<size_t>>;
+        using LocalKey = std::tuple<uintptr_t, uintptr_t, EntityKind, EntityKind>;
         std::map<LocalKey, Runtime::ArrayPair<index>> localized;
-        auto localRows = [&](const MeshAdjacency &relation, std::optional<size_t> uniform)
+        auto localRows = [&](const MeshAdjacency &relation)
         {
             auto read = relation.Read();
             const LocalKey key{reinterpret_cast<uintptr_t>(relation.Owned().SharedStorage().get()),
                                relation.Ghost() ? reinterpret_cast<uintptr_t>(relation.Ghost()->SharedStorage().get()) : 0,
-                               relation.Source().Kind(), relation.Target().Kind(), uniform};
+                               relation.Source().Kind(), relation.Target().Kind()};
             auto found = localized.find(key);
             if (found != localized.end())
                 return found->second;
-            auto convert = [&](index first, index count)
-            {
-                return Runtime::BuildArrayRows<index>(size_t(count), [&](size_t row)
-                                                      { return read.RowSize(first + index(row)); }, [&](size_t row, auto output)
-                                                      { read.ConvertRowTo(first + index(row), Adj_PointToLocal, output.data()); }, uniform, true);
-            };
-            Runtime::ArrayPair<index> result{convert(0, read.NumOwned()), convert(read.NumOwned(), read.RowCount() - read.NumOwned())};
+            // Conversion changes indices, not physical row storage. Named and
+            // facade aliases retain the same preserved table/padded/CSR shape.
+            auto converted = MeshAdjacency::Convert(read, Adj_PointToLocal);
+            DNDS_check_throw_info(converted.Ghost(), "published adjacency is missing ghost storage");
+            Runtime::ArrayPair<index> result{converted.Owned(), *converted.Ghost()};
             localized.emplace(key, result);
             return result;
         };
@@ -483,12 +479,11 @@ namespace DNDS::Geom
             for (size_t slot = 0; slot < owned.relations.size(); ++slot)
                 if (owned.relations[slot])
                 {
-                    const auto &shape = owned.relations[slot]->Layout();
-                    data.relations[slot] = localRows(publication.relations.at(FacadeKey(slot)), shape.IsVariable() ? std::optional<size_t>{} : shape.Width());
+                    data.relations[slot] = localRows(publication.relations.at(FacadeKey(slot)));
                 }
             for (const auto &[key, unused] : owned.namedRelations)
                 if (key != NativeSetupFacialCellNeighborsKey())
-                    data.namedRelations.emplace(key, NativeNamedRelation{localRows(publication.relations.at(key), {}), Adj_PointToLocal}); });
+                    data.namedRelations.emplace(key, NativeNamedRelation{localRows(publication.relations.at(key)), Adj_PointToLocal}); });
         auto companion = [&](auto &destination, const auto &values, EntityKind kind, const Runtime::ElementSchema &schema)
         { if (values) destination = Ghost(*values, kind, publication, schema); };
         companion(data.coords, owned.coords, EntityKind::Node, Runtime::ElementSchema::Arithmetic<real>());

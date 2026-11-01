@@ -123,8 +123,15 @@ namespace DNDS::Runtime
                           receive.data(), receiveCounts.data(), receiveOffsets.data(), MPI_UINT64_T, route.Communicator());
             return receive;
         }
-        RowLayout InferredLayout(const RowTransferPlan &route, const std::vector<uint64_t> &received)
+        RowLayout InferredLayout(const RowTransferPlan &route, const RowLayout &source,
+                                 const std::vector<uint64_t> &received, TransferLayout policy)
         {
+            if (auto table = policy.TableLayout(source, route.DestinationRows()))
+            {
+                for (auto width : received)
+                    DNDS_check_throw_info(width == uint64_t(table->Width()), "received row does not fit transfer destination table");
+                return *table;
+            }
             std::vector<size_t> lengths(size_t(route.DestinationRows()), SIZE_MAX);
             size_t edge = 0;
             bool valid = true;
@@ -138,7 +145,7 @@ namespace DNDS::Runtime
             for (auto &n : lengths)
                 if (n == SIZE_MAX)
                     n = 0;
-            return RowLayout::Ragged(lengths);
+            return policy.Apply(source, lengths);
         }
         Type MakeType(const std::vector<index> &rows, const RowLayout &layout, const ElementSchema &schema, size_t &segments, Type &emptyType)
         {
@@ -376,13 +383,13 @@ namespace DNDS::Runtime
                 return false;
         return true;
     }
-    RowLayout RowTransferPlan::DestinationLayout(const RowLayout &source) const
+    RowLayout RowTransferPlan::DestinationLayout(const RowLayout &source, TransferLayout layout) const
     {
         const auto lengths = ExchangeLengths(*this, source);
         std::optional<RowLayout> destination;
         try
         {
-            destination = InferredLayout(*this, lengths);
+            destination = InferredLayout(*this, source, lengths, layout);
         }
         catch (...)
         {
@@ -441,10 +448,10 @@ namespace DNDS::Runtime
         }
     };
     PayloadPlan::PayloadPlan(RowTransferPlan route, RowLayout source, RowLayout destination, ElementSchema schema)
-        : PayloadPlan(std::move(route), std::move(source), std::optional<RowLayout>(std::move(destination)), std::move(schema)) {}
-    PayloadPlan::PayloadPlan(RowTransferPlan route, RowLayout source, ElementSchema schema)
-        : PayloadPlan(std::move(route), std::move(source), std::nullopt, std::move(schema)) {}
-    PayloadPlan::PayloadPlan(RowTransferPlan route, RowLayout source, std::optional<RowLayout> destination, ElementSchema schema)
+        : PayloadPlan(std::move(route), std::move(source), std::optional<RowLayout>(std::move(destination)), std::move(schema), {}) {}
+    PayloadPlan::PayloadPlan(RowTransferPlan route, RowLayout source, ElementSchema schema, TransferLayout layout)
+        : PayloadPlan(std::move(route), std::move(source), std::nullopt, std::move(schema), layout) {}
+    PayloadPlan::PayloadPlan(RowTransferPlan route, RowLayout source, std::optional<RowLayout> destination, ElementSchema schema, TransferLayout layout)
     {
         auto state = std::make_shared<State>(std::move(route), std::move(source), destination.value_or(RowLayout{}), std::move(schema));
         const auto comm = state->route.Communicator();
@@ -467,7 +474,7 @@ namespace DNDS::Runtime
         try
         {
             if (!destination)
-                state->destination = InferredLayout(state->route, lengths);
+                state->destination = InferredLayout(state->route, state->source, lengths, layout);
             valid = state->destination.RowCount() == state->route.DestinationRows();
         }
         catch (...)

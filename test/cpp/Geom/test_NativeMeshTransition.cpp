@@ -529,6 +529,102 @@ TEST_CASE("Owned primary reorder retains IDs and cones when other ranks own no c
     CHECK(source.spaces.at(G::EntityKind::Cell).NumOwned() == 1);
 }
 
+TEST_CASE("Canonical and named adjacency storage survives capture assembly migration and local conversion")
+{
+    const auto mpi = MPI();
+    G::NativeMeshBuildOptions options;
+    options.completeNodeStar = true;
+    auto initial = G::ConstructNativeMesh(RotatedTriangles(mpi, true), options);
+    for (int kind = 0; kind < 3; ++kind)
+    {
+        CAPTURE(kind);
+        auto owned = G::NativeMeshAssembler::CaptureOwned(*initial, mpi);
+        auto &cone = *owned.relations[size_t(G::MeshRelation::CellNodes)];
+        const auto shape = kind == 0   ? R::RowLayout::Dense(cone.RowCount(), 3, 5 + mpi.rank)
+                           : kind == 1 ? R::RowLayout::Padded(std::vector<size_t>(size_t(cone.RowCount()), 3), 6 + mpi.rank)
+                                       : R::RowLayout::Ragged(std::vector<size_t>(size_t(cone.RowCount()), 3));
+        {
+            auto read = cone.Read();
+            const auto view = read.View();
+            cone = R::BuildArrayRows<I>(shape, [&](size_t row, auto output)
+                                        { std::copy_n(view.Row(I(row)), 3, output.data()); });
+        }
+        auto key = G::Adj::Cell2Node;
+        key.path = {G::EntityKind::Cell, G::EntityKind::Node};
+        key.selection = G::RelationSelection::Custom;
+        key.order = G::RelationOrder::Topological;
+        key.periodic = G::RelationPeriodicPolicy::EntityIdentity;
+        key.semanticName = "storage.preserved.nodes";
+        key.semanticVersion = 1;
+        owned.namedRelations.insert_or_assign(key, cone);
+        const auto oldCoordinates = *owned.coords;
+        {
+            auto read = oldCoordinates.Read();
+            owned.coords = R::BuildArrayRows<DNDS::real>(R::RowLayout::Dense(oldCoordinates.RowCount(), 3, 7 + mpi.rank),
+                                                         [&](size_t row, auto output)
+                                                         { std::copy_n(read.View().Row(I(row)), 3, output.data()); });
+        }
+        const auto check = [&](const G::UnstructuredMeshState &state)
+        {
+            auto read = state.Snapshot(R::Device::Host()).AcquireRead();
+            const auto view = read.HostView();
+            auto relation = state.Relation(key);
+            const auto pair = relation.View();
+            for (const auto &part : {pair.owned, pair.ghost})
+            {
+                CHECK(bool(part.offsets) == shape.IsRagged());
+                if (part.RowCount())
+                    CHECK(bool(part.sizes) == shape.IsPadded());
+                if (!shape.IsRagged())
+                    CHECK(part.stride == shape.Stride());
+                if (kind == 0)
+                    CHECK(part.width == 3);
+            }
+            auto global = G::MeshAdjacency::Convert(relation, G::Adj_PointToGlobal);
+            REQUIRE(global.Ghost());
+            CHECK(global.Owned().Layout().Kind() == shape.Kind());
+            CHECK(global.Ghost()->Layout().Kind() == shape.Kind());
+            for (I iCell = 0; iCell < state.Entities(G::EntityKind::Cell).NumLocal(); ++iCell)
+            {
+                const I id = state.OriginalEntityId(G::EntityKind::Cell, iCell);
+                REQUIRE(view.CellNodes(iCell).size() == 3);
+                REQUIRE(relation.RowSize(iCell) == 3);
+                for (I j = 0; j < 3; ++j)
+                {
+                    const I expected = 3 * ((id + 1) % mpi.size) + j;
+                    CHECK(state.OriginalEntityId(G::EntityKind::Node, view.CellNodes(iCell)[j]) == expected);
+                    const auto entry = relation.ReadEntry(iCell, size_t(j));
+                    CHECK(entry.global == state.Entities(G::EntityKind::Node).LocalToGlobal(view.CellNodes(iCell)[j]));
+                }
+            }
+            auto captured = G::NativeMeshAssembler::CaptureOwned(state, mpi);
+            CHECK(captured.relations[size_t(G::MeshRelation::CellNodes)]->Layout().Kind() == shape.Kind());
+            CHECK(captured.namedRelations.at(key).Layout().Kind() == shape.Kind());
+            if (!shape.IsRagged())
+            {
+                CHECK(captured.relations[size_t(G::MeshRelation::CellNodes)]->Layout().Stride() == shape.Stride());
+                CHECK(captured.namedRelations.at(key).Layout().Stride() == shape.Stride());
+            }
+            CHECK(captured.coords->Layout().Stride() == 7 + mpi.rank);
+        };
+        auto source = G::AssembleNativeMesh(mpi, owned);
+        check(*source);
+        G::ReorderInput gather;
+        gather.explicitMaps.push_back({G::EntityKind::Cell, {0}});
+        auto migrated = G::NativeMeshTransition::Build(*source, mpi, gather).state;
+        check(*migrated);
+        auto facade = G::UnstructuredMesh::FromNative(mpi, migrated);
+        auto current = G::MeshAdjacencyRead::Current(*facade, G::Adj::Cell2Node, G::MeshReadRequirements::Primary());
+        auto converted = G::MeshAdjacency::Convert(current, G::Adj_PointToGlobal);
+        CHECK(converted.Owned().Layout().Kind() == shape.Kind());
+        REQUIRE(converted.Ghost());
+        CHECK(converted.Ghost()->Layout().Kind() == shape.Kind());
+        CHECK(migrated->NumOwned(G::EntityKind::Cell) == (mpi.rank == 0 ? mpi.size : 0));
+        // Read the original after detached migration: its shapes/values survive.
+        check(*source);
+    }
+}
+
 TEST_CASE("Sender partition ordering preserves strided companions through gather and reverse scatter")
 {
     const auto mpi = MPI();

@@ -32,7 +32,7 @@ raw-view lifetime, MPI participation, migration rebinding and checkpoint discipl
 | CommunicationContext | Shared communicator and explicit matched-tag reservations |
 | TransferBinding | Allocation identities, transport/reducer/workspace and transient or persistent request policy |
 | TransferOperation | Active requests and leases; separate destination-ready and all-complete boundaries |
-| DynamicRowTransfer | Pinned source and private CSR destination; collective publication after payload success |
+| DynamicRowTransfer | Pinned source and private storage-preserving destination; collective publication after payload success |
 | EagerEngine / StreamLauncher | Common ordered submission contract with inline/worker CPU and native CUDA providers |
 | MPIProgress | Main-thread MPI retirement and explicit events observed by eager streams |
 | ArrayIO | Schema-tagged row checkpoint adapter over the existing parallel serializer |
@@ -232,9 +232,8 @@ schema agreement and reductions are separate collective mechanisms.
 
 ```cpp
 RowTransferPlan route(mpi.comm, owned.RowCount(), requests.size(), requests);
-Array<double> ghost(route.DestinationLayout(owned.Layout()));
-PayloadPlan payload(route, owned.Layout(), ghost.Layout(),
-                    ElementSchema::Arithmetic<double>());
+PayloadPlan payload(route, owned.Layout(), ElementSchema::Arithmetic<double>());
+Array<double> ghost(payload.DestinationLayout()); // Preserve family and stride/capacity.
 auto binding = payload.Bind(owned, ghost); // Direct is the default
 auto transfer = binding.Begin();
 // owned.Read().View() can feed a core kernel here
@@ -249,6 +248,25 @@ including empty rows and empty ranks. Copy destinations must be disjoint;
 collisions are detected before starting requests. Shape replacement requires
 a new payload/binding; an old binding intentionally continues to target its
 retained allocations.
+
+Inferred destinations preserve the receiving rank's local source layout family:
+table logical width and physical stride, padded capacity with received logical
+sizes, or compact CSR. Empty ranks retain their declared table/padded shape.
+Serial mesh ingress communicates the reader's storage prototype to empty ranks;
+zero owned rows never implies zero table width. A default zero-width handle is
+not a substitute for an empty field with a known common width.
+This is the default for generic entity halos, named/canonical adjacency ghost
+publication, registered field migration and `DynamicRowTransfer`. Fixed-width
+payloads construct tables directly without temporary CSR offsets or compaction.
+Only logical values travel through MPI; stride/capacity padding is untouched.
+
+Pass `TransferLayout::Compact()` as the inferred payload's fourth argument (or
+the route shape method's second argument) to request compact setup scratch.
+Rank-local capacities/strides can differ; each incoming row must fit. Default
+preservation never silently changes family when it cannot fit: setup rejects
+collectively before binding. For sparse routes, unrequested table slots keep
+their declared width and their values are not written; unrequested padded/CSR
+rows have zero logical length. Callers initialize any holes they intend to read.
 
 The supplied MPI datatype's **extent** is the element stride, and must match
 the stored POD size. Its typemap must fit inside that extent. Schema identity

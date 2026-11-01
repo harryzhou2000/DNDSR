@@ -67,6 +67,19 @@ namespace DNDS::Runtime
         return result;
     }
 
+    /// Fill an already known physical shape, preserving table stride, padded
+    /// capacity and shared immutable row metadata. Only logical slots are filled.
+    template <class T, class Fill>
+    Array<T> BuildArrayRows(const RowLayout &shape, Fill &&fill, bool parallel = false)
+    {
+        Array<T> result(shape);
+        auto write = result.Write();
+        const auto view = write.View();
+        FillKnownRows(size_t(shape.RowCount()), parallel, [&](size_t row)
+                      { fill(row, view[index(row)]); });
+        return result;
+    }
+
     /// Exclusive CPU construction form. Distinct rows may be resized/filled by
     /// different workers; Commit follows their join. Borrowed row pointers expire
     /// on that row's resize or on Commit. No published Array aliases this draft.

@@ -179,6 +179,24 @@ EntityGhostMapping facilities. Those facilities remain responsible for
 semantics, leases, numbering and routing; a consumer must not substitute its own
 unchecked storage walk or transfer policy for them to improve timing.
 
+## Adjacency storage through halo and migration
+
+Generic ghost fetching and named/canonical adjacency publication preserve the
+local source's table width/stride, padded capacity, or CSR family by default.
+Capture, global/local index conversion and redistribution retain those physical
+row contracts; they never compact a fixed-width payload into temporary CSR.
+Named descriptors may alias the same owned/ghost allocations without losing
+the shared shape. Discovery scratch is reused only if its family and physical
+stride/capacity match the required destination contract as well as the mapping
+and value version. Otherwise the payload transfers into the final shape.
+
+Rank-local strides/capacities may differ, but every incoming logical row must
+fit the receiving rank's declared shape. Incompatible widths/capacities reject
+collectively before payload binding or mesh publication. `TransferLayout::Compact()`
+is an explicit opt-in for compact scratch. Only logical slots are sent; unused
+padding is not payload. Physical face/boundary-to-cell incidence still enforces
+its two ordered slots at publication, including empty ranks.
+
 ## GhostSpec is a coverage contract
 
 `CompiledGhostTree::compile(spec)` publishes an immutable shared program. Only

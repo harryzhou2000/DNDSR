@@ -62,6 +62,14 @@ TEST_CASE("Owned CGNS partition permutation and faces need only one final assemb
                     CHECK_FALSE(data.retainedRead);
                     for (const auto &[kind, space] : data.spaces)
                         CHECK(space.NumGhost() == 0);
+                    // Zero-owned ranks retain the same declared widths too.
+                    CHECK(data.coords->Layout().Kind() == R::RowLayoutKind::Table);
+                    CHECK(data.coords->Layout().Width() == 3);
+                    for (const auto *info : {&*data.cellInfo, &*data.bndInfo})
+                    {
+                        CHECK(info->Layout().Kind() == R::RowLayoutKind::Table);
+                        CHECK(info->Layout().Width() == 1);
+                    }
                 };
                 checkOwned(owned);
                 CHECK_FALSE(owned.spaces.count(G::EntityKind::Face));

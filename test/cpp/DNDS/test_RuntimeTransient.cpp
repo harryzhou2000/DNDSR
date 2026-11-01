@@ -312,6 +312,48 @@ TEST_CASE("Dynamic CSR migration privately prepares shapes and publishes once")
     }
 }
 
+TEST_CASE("Dynamic migration preserves a strided table instead of publishing temporary CSR")
+{
+    int rank = 0, size = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+    Array<int64_t> source(RowLayout::Dense(3, 2, 5 + rank));
+    {
+        auto write = source.Write();
+        for (DNDS::index iRow = 0; iRow < 3; ++iRow)
+            for (DNDS::index j = 0; j < 2; ++j)
+                write.View()(iRow, j) = 100 * rank + 10 * iRow + j;
+    }
+    RowTransferPlan route(MPI_COMM_WORLD, 3, 3, {{(rank + 1) % size, 2, 0}, {(rank + 1) % size, 1, 1}, {(rank + 1) % size, 0, 2}});
+    DynamicRowTransfer transfer(route, source.SharedStorage(), ElementSchema::Arithmetic<int64_t>());
+    auto result = Array<int64_t>::FromSharedStorage(transfer.Commit());
+    CHECK(result.Layout() == RowLayout::Dense(3, 2, 5 + rank));
+    auto read = result.Read();
+    for (DNDS::index iRow = 0; iRow < 3; ++iRow)
+        for (DNDS::index j = 0; j < 2; ++j)
+            CHECK(read.View<FixedRows<2>>()(iRow, j) == 100 * ((rank + 1) % size) + 10 * (2 - iRow) + j);
+#ifdef DNDS_USE_CUDA
+    if (DNDS::MPI::isCudaAware())
+    {
+        const auto context = ExecutionContext::CUDA(0);
+        auto deviceSource = source.To(Device::CUDA(0), context);
+        DynamicRowTransfer deviceTransfer(route, deviceSource.SharedStorage(), ElementSchema::Arithmetic<int64_t>(),
+                                          Device::CUDA(0), TransferTransport::Direct,
+                                          {TransferMode::Transient, {}, 0}, {}, context);
+        auto deviceResult = Array<int64_t>::FromSharedStorage(deviceTransfer.Commit());
+        CHECK(deviceResult.GetDevice() == Device::CUDA(0));
+        CHECK(deviceResult.Layout() == source.Layout());
+        auto hostResult = deviceResult.To(Device::Host(), context);
+        auto hostRead = hostResult.Read();
+        for (DNDS::index iRow = 0; iRow < 3; ++iRow)
+            for (DNDS::index j = 0; j < 2; ++j)
+                CHECK(hostRead.View<FixedRows<2>>()(iRow, j) == read.View<FixedRows<2>>()(iRow, j));
+    }
+    else
+        MESSAGE("Direct device MPI unavailable; preserved-layout GPU migration is not exercised");
+#endif
+}
+
 TEST_CASE("Dynamic migration rejects a missing source collectively and leaves the route usable")
 {
     int rank = 0, size = 0;
