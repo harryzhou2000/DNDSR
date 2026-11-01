@@ -11,8 +11,11 @@ namespace R = DNDS::Runtime;
 using I = DNDS::index;
 __global__ void ScalarProduct(R::ArrayView<const double> a, R::ArrayView<const double> b, R::ArrayView<double> c, I n, I components)
 {
-    for (I iCell = blockIdx.x; iCell < c.rows; iCell += gridDim.x)
-        for (I i = threadIdx.x; i < c.width; i += blockDim.x)
+    // Match the tensor kernel's warp/cell mapping, so the comparison does not
+    // credit MMA for merely processing four cells rather than one per block.
+    const I lane = threadIdx.x % 32, warp = threadIdx.x / 32;
+    for (I iCell = I(blockIdx.x) * 4 + warp; iCell < c.rows; iCell += I(gridDim.x) * 4)
+        for (I i = lane; i < c.width; i += 32)
         {
             const I mode = i / components, component = i % components;
             double value = 0;

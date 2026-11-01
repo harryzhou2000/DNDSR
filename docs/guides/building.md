@@ -93,7 +93,8 @@ installation together. Set the option back to `OFF` to restore the guard.
 
 C++ libraries (managed via `external/cfd_externals` submodule):
 Eigen, Boost, CGAL, nlohmann_json, fmt, pybind11, HDF5, CGNS,
-Metis, ParMetis, ZLIB.  Optional: CUDA toolkit, SuperLU_dist.
+Metis, ParMetis, ZLIB. Optional: CUDA toolkit, SuperLU_dist. CUDA builds enable
+NCCL by default; provide its headers/runtime or explicitly opt out as below.
 
 ## Building External Dependencies
 
@@ -245,6 +246,7 @@ Key options (set via `-D<OPTION>=<VALUE>` or in a preset):
 |------------------------------|---------|----------------------------------------|
 | `DNDS_BUILD_TESTS`          | OFF     | Build C++ unit tests (doctest)         |
 | `DNDS_USE_CUDA`             | OFF     | Enable CUDA GPU support                |
+| `DNDS_USE_NCCL`             | CUDA setting | Enable NCCL payload provider; explicit OFF supported |
 | `DNDS_USE_OMP`              | ON      | Enable OpenMP                          |
 | `DNDS_FAST_BUILD_FAST`      | ON      | Use -O3 -g0 on core library modules   |
 | `DNDS_LTO`                  | OFF     | Link-time optimization                 |
@@ -381,6 +383,14 @@ without running stubgen themselves.
 ## CUDA Support
 
 ### Enabling CUDA
+
+NCCL is enabled by default with CUDA. Point `NCCL_ROOT` at an installation with
+`include/nccl.h` and `lib/libnccl.so` (a versioned `libnccl.so.2` also works), or
+set `DNDS_NCCL_INCLUDE_DIR` and `DNDS_NCCL_LIBRARY` directly. No Torch dependency
+or automatic SDK download is introduced. Missing enabled NCCL dependencies are
+a configuration error. To build CUDA without NCCL, pass `-DDNDS_USE_NCCL=OFF`.
+An existing cached choice is preserved; clear that cache entry to apply the new
+default. See [NCCL transfers](../architecture/NCCLTransfer.md) for runtime selection.
 
 ```bash
 cmake -S . -B build-cuda -G Ninja -DDNDS_USE_CUDA=ON
