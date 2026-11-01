@@ -21,6 +21,7 @@ namespace DNDS::Runtime
         StreamEvent Record() override;
         void Drain() override;
         Buffer Allocate(size_t bytes) override;
+        Buffer Allocate(size_t bytes, AllocationOptions options) override;
         /// Diagnostics for event-boundary tests, not an execution dependency.
         uint64_t NativeEventsRecorded() const;
     };

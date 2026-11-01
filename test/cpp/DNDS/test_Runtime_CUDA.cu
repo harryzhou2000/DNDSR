@@ -11,7 +11,7 @@
 using namespace DNDS::Runtime;
 
 template <class Policy>
-__global__ void FillStaticRows(ArrayView<double, false, Policy> values)
+__global__ void FillStaticRows(ArrayView<double, AccessBoundsChecks, Policy> values)
 {
     static_assert(!decltype(values)::is_dynamic);
     static_assert(std::is_trivially_copyable_v<decltype(values)>);
@@ -24,7 +24,7 @@ __global__ void FillStaticRows(ArrayView<double, false, Policy> values)
 }
 
 template <class Policy>
-__global__ void ReadStaticRows(ArrayView<const double, false, Policy> values, ArrayView<double> sums)
+__global__ void ReadStaticRows(ArrayView<const double, AccessBoundsChecks, Policy> values, ArrayView<double> sums)
 {
     static_assert(std::is_same_v<decltype(values[0][0]), const double &>);
     if (threadIdx.x)
@@ -87,11 +87,18 @@ static void CheckStaticCUDAAccess(RowLayout shape)
             CHECK(logical.View()(row, column) == expected);
             sum += expected;
         }
-        if (!shape.IsRagged())
+        if (shape.IsContiguousRows() && !shape.IsRagged())
             for (size_t column = shape.RowSize(row); column < shape.Stride(); ++column)
                 CHECK(flat[row * shape.Stride() + column] == -51);
         CHECK(totals.View()(row, 0) == sum);
     }
+    if (!shape.IsContiguousRows())
+        for (DNDS::index iElement = 0; iElement < DNDS::index(shape.Elements()); ++iElement)
+        {
+            const auto iRow = shape.Kind() == RowLayoutKind::ColMajorTable ? iElement % shape.Stride() : (iElement / (shape.Width() * shape.Stride())) * shape.Stride() + iElement % shape.Stride();
+            if (iRow >= shape.RowCount())
+                CHECK(flat.data[iElement] == -51);
+        }
 }
 
 TEST_CASE("CUDA five layout policies static width stride and capacity reach actual kernels")
@@ -127,12 +134,12 @@ static void CheckEagerTypedCUDA(RowLayout shape)
     Array<double, FixedRows<1>> sums(RowLayout::Dense(shape.RowCount(), 1), Device::CUDA(0));
     SubmitArrays(engine, stream, [](ExecutionContext context, auto output)
                  {
-        static_assert(std::is_same_v<decltype(output), ArrayView<double, false, Policy>>);
+        static_assert(std::is_same_v<decltype(output), ArrayView<double, AccessBoundsChecks, Policy>>);
         FillStaticRows<Policy><<<3, 32, 0, static_cast<cudaStream_t>(context.stream)>>>(output);
         DNDS_check_throw_info(cudaGetLastError() == cudaSuccess, "typed eager fill launch failed"); }, WriteAs<Policy>(values));
     SubmitArrays(engine, stream, [](ExecutionContext context, auto input, auto output)
                  {
-        static_assert(std::is_same_v<decltype(input), ArrayView<const double, false, Policy>>);
+        static_assert(std::is_same_v<decltype(input), ArrayView<const double, AccessBoundsChecks, Policy>>);
         static_assert(decltype(output)::row_width == 1);
         ReadStaticRows<Policy><<<3, 32, 0, static_cast<cudaStream_t>(context.stream)>>>(input, output);
         DNDS_check_throw_info(cudaGetLastError() == cudaSuccess, "typed eager read launch failed"); }, ReadAs<Policy>(values), WriteAs<FixedRows<1>>(sums));
@@ -457,4 +464,15 @@ TEST_CASE("Runtime CUDA destructor fences an unsubmitted launch")
     auto empty = Buffer::Allocate(0, Device::CUDA(0));
     auto emptyHost = Buffer::Allocate(0);
     Copy(empty, emptyHost, context).Wait();
+}
+
+TEST_CASE("CUDA column and tiled row views preserve physical padding and static strides")
+{
+    CheckStaticCUDAAccess<ColMajorTable>(RowLayout::ColMajor(33, 5, {32, 1}));
+    CheckStaticCUDAAccess<FixedWidthRows<ColMajorTable, 5>>(RowLayout::ColMajor(9, 5, {8, 1}));
+    CheckStaticCUDAAccess<TiledColMajorTable<8>>(RowLayout::TiledColMajor(33, 21, 8));
+    CheckStaticCUDAAccess<ColMajorTable>(RowLayout::ColMajor(0, 5, {32, 1}));
+    CheckStaticCUDAAccess<TiledColMajorTable<8>>(RowLayout::TiledColMajor(0, 21, 8));
+    CheckEagerTypedCUDA<ColMajorTable>(RowLayout::ColMajor(33, 5, {32, 1}));
+    CheckEagerTypedCUDA<TiledColMajorTable<8>>(RowLayout::TiledColMajor(33, 21, 8));
 }

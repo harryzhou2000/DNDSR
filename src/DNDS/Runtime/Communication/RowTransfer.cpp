@@ -149,6 +149,7 @@ namespace DNDS::Runtime
         }
         Type MakeType(const std::vector<index> &rows, const RowLayout &layout, const ElementSchema &schema, size_t &segments, Type &emptyType)
         {
+            DNDS_check_throw_info(layout.IsContiguousRows(), "column/tiled MPI payload support is not enabled yet");
             std::vector<int> lengths;
             std::vector<MPI_Aint> displacements;
             const auto extent = schema.Extent();

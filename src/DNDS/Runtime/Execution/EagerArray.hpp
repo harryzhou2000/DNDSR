@@ -34,13 +34,16 @@ namespace DNDS::Runtime
     /// upload. For variable GPU shapes, prepare/upload metadata during setup and
     /// use AllocateLikeAsync to share it without allocation or upload per field.
     template <class T, class L = RowLayout>
-    Array<T, L> AllocateArrayAsync(EagerEngine &engine, const ExecutionStream &stream, RowLayout layout)
+    Array<T, L> AllocateArrayAsync(EagerEngine &engine, const ExecutionStream &stream, RowLayout layout, AllocationOptions options = {})
     {
         if constexpr (!std::is_same_v<L, RowLayout>)
             L::Validate(layout);
         DNDS_check_throw_info(stream.Context().device == Device::Host() || !layout.IsVariable(),
                               "new variable GPU metadata needs setup; use AllocateLikeAsync with a prepared Array");
-        auto values = engine.AllocateBuffer(stream, CheckedSize::Multiply(layout.Elements(), sizeof(T)));
+        DNDS_check_throw_info(!options.alignmentBytes || !(options.alignmentBytes & (options.alignmentBytes - 1)),
+                              "allocation alignment must be a power of two");
+        options.alignmentBytes = std::max(options.alignmentBytes, size_t(alignof(T)));
+        auto values = engine.AllocateBuffer(stream, CheckedSize::Multiply(layout.Elements(), sizeof(T)), options);
         try
         {
             auto result = Array<T, L>::FromStorage(std::move(layout), values);
@@ -61,7 +64,7 @@ namespace DNDS::Runtime
         auto storage = prototype.SharedStorage();
         auto values = storage->Values();
         DNDS_check_throw_info(values.GetDevice() == stream.Context().device, "async prototype placement mismatch");
-        auto fresh = engine.AllocateBuffer(stream, values.Bytes());
+        auto fresh = engine.AllocateBuffer(stream, values.Bytes(), AllocationOptions{alignof(T)});
         try
         {
             auto result = Array<T>::FromSharedStorage(storage->WithValues(fresh, sizeof(T)));
@@ -85,7 +88,7 @@ namespace DNDS::Runtime
             ArrayStorage::Shared storage;
             std::shared_ptr<const ArrayLayout> layout;
             ScheduledAccess access;
-            ArrayView<Value, false, Policy> view;
+            ArrayView<Value, AccessBoundsChecks, Policy> view;
 
             PreparedOperand(Operand operand, Device device)
                 : storage(std::move(operand.storage)), layout(storage->SharedLayout()),
@@ -94,8 +97,8 @@ namespace DNDS::Runtime
                 DNDS_check_throw_info(storage->ElementBytes() == sizeof(Value), "eager operand element size mismatch");
                 auto *pointer = static_cast<Value *>(access.Pointer(alignof(Value), sizeof(Value)));
                 const auto &rows = layout->rows;
-                ArrayView<Value, false> dynamic{pointer, layout->Offsets(device), rows.RowCount(), rows.Width(), rows.Stride(), layout->Sizes(device)};
-                view = ProjectView<Value, false, Policy>(dynamic, rows);
+                ArrayView<Value, AccessBoundsChecks> dynamic{pointer, layout->Offsets(device), rows.RowCount(), rows.Width(), rows.Stride(), layout->Sizes(device), rows.Kind()};
+                view = ProjectView<Value, AccessBoundsChecks, Policy>(dynamic, rows);
             }
             void Handoff(ExecutionContext context)
             {

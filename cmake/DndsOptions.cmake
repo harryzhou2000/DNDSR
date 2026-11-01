@@ -14,6 +14,8 @@ set(DNDS_NODEBUG_MODULES "" CACHE STRING "List of modules to exclude from debugg
 set(DNDS_USE_DNDS_NDEBUG_MACRO OFF CACHE BOOL "use DNDS_NDEBUG macro")
 set(DNDS_USE_NDEBUG_MACRO OFF CACHE BOOL "use NDEBUG macro for eigen output and cassert etc") # performance impact is small so off by default(without -DNDEBUG)
 set(DNDS_USE_PARALLEL_MACRO OFF CACHE BOOL "for auto multi-thread?")
+option(DNDS_RUNTIME_ARRAY_BOUNDS_CHECKS "Enable element bounds assertions in default Runtime Array views" OFF)
+add_compile_definitions(DNDS_RUNTIME_ARRAY_BOUNDS_CHECKS=$<BOOL:${DNDS_RUNTIME_ARRAY_BOUNDS_CHECKS}>)
 set(DNDS_USE_OMP ON CACHE BOOL "enables openmp functionality")
 set(DNDS_USE_CUDA OFF CACHE BOOL "enables cuda functionality")
 set(DNDS_USE_CANTERA ON CACHE BOOL "enable Cantera chemistry for reactive flow")

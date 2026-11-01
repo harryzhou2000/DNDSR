@@ -728,3 +728,32 @@ TEST_CASE("Backend allocation resources receive the final selected free stream a
     engine.Synchronize();
     CHECK(observed.releases == 1);
 }
+
+TEST_CASE("CUDA aligned physical tables cross streams and release after the final use")
+{
+    for (const auto &shape : {R::RowLayout::ColMajor(33, 21, {32, 1}), R::RowLayout::TiledColMajor(33, 21, 8)})
+    {
+        R::EagerEngine engine;
+        auto first = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
+        auto last = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
+        auto temporary = R::AllocateArrayAsync<double>(engine, first, shape, R::AllocationOptions{4096});
+        CHECK(reinterpret_cast<uintptr_t>(temporary.Storage().LegacyPointer()) % 4096 == 0);
+        auto alias = temporary;
+        R::Array<double> result(R::RowLayout::Dense(33, 21), R::Device::CUDA(0));
+        for (int step = 0; step < 3; ++step)
+            R::SubmitArrays(engine, first, LaunchAdd, R::ReadWrite(temporary));
+        engine.ReleaseOn(std::move(temporary), first);
+        last.WaitFor(first.Record());
+        R::SubmitArrays(engine, last, [](R::ExecutionContext context, auto input, auto output)
+                        {
+            Scale<<<7, 32, 0, static_cast<cudaStream_t>(context.stream)>>>(input, output, 7);
+            DNDS_check_throw_info(cudaGetLastError() == cudaSuccess, "aligned table scale failed"); }, R::Read(alias), R::Write(result));
+        engine.ReleaseOn(std::move(alias), last);
+        engine.Synchronize();
+        const auto host = result.To(R::Device::Host());
+        const auto read = host.Read();
+        for (DNDS::index iRow = 0; iRow < 33; ++iRow)
+            for (DNDS::index iComp = 0; iComp < 21; ++iComp)
+                CHECK(read.View()(iRow, iComp) == 21);
+    }
+}

@@ -76,6 +76,19 @@ namespace DNDS::Runtime
             DNDS_check_throw_info(false, "stream provider has no allocation capability");
             return {};
         }
+        /// Provider extension for requested alignment. Existing custom launchers
+        /// keep their allocation hook; this fallback fails if it cannot honor
+        /// the requested address alignment. Native providers override it.
+        virtual Buffer Allocate(size_t bytes, AllocationOptions options)
+        {
+            DNDS_check_throw_info(!options.alignmentBytes || !(options.alignmentBytes & (options.alignmentBytes - 1)),
+                                  "allocation alignment must be a power of two");
+            auto result = Allocate(bytes);
+            DNDS_check_throw_info(!options.alignmentBytes ||
+                                      reinterpret_cast<uintptr_t>(result.LegacyPointer()) % options.alignmentBytes == 0,
+                                  "stream allocator cannot satisfy requested alignment");
+            return result;
+        }
     };
 
     class ExecutionStream
@@ -121,7 +134,7 @@ namespace DNDS::Runtime
         ExecutionStream CreateStream(std::shared_ptr<StreamLauncher> launcher);
         /// CPU allocation is ready immediately; CUDA allocation/zeroing follows
         /// this stream. Record/Wait exports readiness when another stream needs it.
-        Buffer AllocateBuffer(const ExecutionStream &stream, size_t bytes);
+        Buffer AllocateBuffer(const ExecutionStream &stream, size_t bytes, AllocationOptions options = {});
         void Submit(const ExecutionStream &stream, StreamLauncher::Work work);
         /// Backend/operator integration; no per-kernel public completion token.
         void SubmitOperation(const ExecutionStream &stream, StreamLauncher::Work work, StreamLauncher::Retirement retire);

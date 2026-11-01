@@ -243,12 +243,14 @@ namespace DNDS::Runtime
             if (_element)
                 _elementType = std::move(dtypeOrClass);
             ValidateDtype(_dtype);
+            DNDS_check_throw_info(layout.IsContiguousRows(), "column/tiled Python Array access is not enabled yet");
             _schema = _element ? _element->schema : PythonDtypeSchema(_dtype);
             _storage = ArrayStorage::Allocate(std::move(layout), _dtype.itemsize(), device);
         }
         PythonArray(RowLayout layout, pybind11::dtype dtype, Device device = Device::Host()) : _dtype(std::move(dtype))
         {
             ValidateDtype(_dtype);
+            DNDS_check_throw_info(layout.IsContiguousRows(), "column/tiled Python Array access is not enabled yet");
             _schema = PythonDtypeSchema(_dtype);
             _storage = ArrayStorage::Allocate(std::move(layout), _dtype.itemsize(), device);
         }
@@ -258,6 +260,7 @@ namespace DNDS::Runtime
             ValidateDtype(_dtype);
             _schema = PythonDtypeSchema(_dtype);
             DNDS_check_throw_info(_storage && _storage->ElementBytes() == size_t(_dtype.itemsize()), "Array dtype size mismatch");
+            DNDS_check_throw_info(_storage->Layout().IsContiguousRows(), "column/tiled Python Array access is not enabled yet");
             const auto alignment = std::max<size_t>(1, pybind11::cast<size_t>(_dtype.attr("alignment")));
             DNDS_check_throw_info(reinterpret_cast<uintptr_t>(Storage().LegacyPointer()) % alignment == 0,
                                   "Array dtype alignment mismatch");

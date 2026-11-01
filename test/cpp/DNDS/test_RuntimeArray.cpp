@@ -3,6 +3,7 @@
 #include "DNDS/Runtime/Array/Array.hpp"
 #include "DNDS/Runtime/Array/RowBuilder.hpp"
 #include "DNDS/Runtime/Execution/EagerArray.hpp"
+#include "DNDS/Algebra/EigenView.hpp"
 #include <map>
 #include <stdexcept>
 
@@ -68,14 +69,14 @@ static void CheckEagerTypedCPU(const R::RowLayout &shape)
     auto retained = input;
     R::SubmitArrays(engine, stream, [](R::ExecutionContext, auto values)
                     {
-        static_assert(std::is_same_v<decltype(values), R::ArrayView<int, false, Policy>>);
+        static_assert(std::is_same_v<decltype(values), R::ArrayView<int, R::AccessBoundsChecks, Policy>>);
         for (DNDS::index row = 0; row < values.RowCount(); ++row)
             for (DNDS::index column = 0; column < values[row].size(); ++column)
                 values(row, column) = int(10 * row + column); }, R::WriteAs<Policy>(input));
     R::SubmitArrays(engine, stream, [](R::ExecutionContext, auto source, auto target)
                     {
-        static_assert(std::is_same_v<decltype(source), R::ArrayView<const int, false, Policy>>);
-        static_assert(std::is_same_v<decltype(target), R::ArrayView<int, false, Policy>>);
+        static_assert(std::is_same_v<decltype(source), R::ArrayView<const int, R::AccessBoundsChecks, Policy>>);
+        static_assert(std::is_same_v<decltype(target), R::ArrayView<int, R::AccessBoundsChecks, Policy>>);
         for (DNDS::index row = 0; row < source.RowCount(); ++row)
             for (DNDS::index column = 0; column < source[row].size(); ++column)
                 target(row, column) = 3 * source(row, column); }, R::ReadAs<Policy>(input), R::WriteAs<Policy>(output));
@@ -694,4 +695,135 @@ TEST_CASE("Known-row construction fills independently and reports worker failure
                                                if (row == 4097)
                                                    throw std::runtime_error("worker failure"); }, size_t(1), true)),
                     std::runtime_error);
+}
+
+TEST_CASE("Physical tables preserve logical rows across padding and tile boundaries")
+{
+    for (DNDS::index nRow : std::vector<DNDS::index>{0, 1, 8, 9, 33})
+        for (DNDS::index width : std::vector<DNDS::index>{1, 3, 5, 21, 37})
+            for (const auto &shape : {R::RowLayout::Dense(nRow, width, width + 2),
+                                      R::RowLayout::ColMajor(nRow, width, {8, 1}),
+                                      R::RowLayout::TiledColMajor(nRow, width, 8)})
+            {
+                R::Array<double> values(shape);
+                {
+                    auto write = values.Write();
+                    const auto view = write.View<true>();
+                    auto flat = write.Layout().Elements();
+                    std::fill_n(view.data, flat, -901.0);
+                    for (DNDS::index iRow = 0; iRow < nRow; ++iRow)
+                        for (DNDS::index iComp = 0; iComp < width; ++iComp)
+                            view[iRow][iComp] = 1000 * iRow + iComp;
+                }
+                const auto read = values.Read();
+                const auto generic = read.View();
+                const auto uniform = read.View<R::UniformTableRows>();
+                std::vector<bool> touched(shape.Elements(), false);
+                for (DNDS::index iRow = 0; iRow < nRow; ++iRow)
+                {
+                    CHECK(generic[iRow].ElementStride() == shape.ComponentStride());
+                    const std::vector<double> copied(generic[iRow].begin(), generic[iRow].end());
+                    CHECK(copied.size() == size_t(width));
+                    for (DNDS::index iComp = 0; iComp < width; ++iComp)
+                    {
+                        CHECK(generic(iRow, iComp) == 1000 * iRow + iComp);
+                        CHECK(uniform[iRow][iComp] == copied[size_t(iComp)]);
+                        touched[size_t(shape.ElementOffset(iRow, iComp))] = true;
+                    }
+                }
+                for (DNDS::index iElement = 0; iElement < DNDS::index(shape.Elements()); ++iElement)
+                    if (!touched[size_t(iElement)])
+                        CHECK(generic.data[iElement] == -901.0);
+            }
+    CHECK(R::RowLayout::ColMajor(32, 5, {32, 0}).Stride() == 32);
+    CHECK(R::RowLayout::ColMajor(32, 5, {32, 1}).Stride() == 64);
+    CHECK(R::RowLayout::ColMajor(33, 5, {8, 0}).WithRowCount(2).Stride() == 8);
+    CHECK(R::RowLayout::TiledColMajor(9, 5, 8).Elements() == 80);
+    CHECK_THROWS(R::RowLayout::ColMajor(1, 5, {0, 0}));
+    CHECK_THROWS(R::RowLayout::ColMajor(1, 5, {8, -1}));
+    CHECK_THROWS(R::RowLayout::ColMajor(size_t(INT64_MAX), 5, {32, 1}));
+    CHECK_THROWS(R::RowLayout::TiledColMajor(1, 5, 0));
+    CHECK_THROWS(R::RowLayout::TiledColMajor(size_t(INT64_MAX), 5, 32));
+    CHECK_THROWS(R::RowLayout::ColMajorWithPitch(9, 5, 8));
+}
+
+TEST_CASE("Physical projections are checked once and retain specialized component strides")
+{
+    R::Array<int> soa(R::RowLayout::ColMajor(9, 5, {8, 0}));
+    R::Array<int> tiled(R::RowLayout::TiledColMajor(9, 5, 8));
+    auto write = tiled.Write();
+    const auto view = write.View<R::FixedWidthRows<R::TiledColMajorTable<8>, 5>, true>();
+    static_assert(decltype(view)::row_width == 5);
+    static_assert(decltype(view)::component_stride == 8);
+    static_assert(decltype(view[0])::component_stride == 8);
+    static_assert(std::is_trivially_copyable_v<decltype(view)>);
+    view(8, 4) = 71;
+    CHECK(write.At(8, 4) == 71);
+    CHECK_THROWS(write.View<R::TiledColMajorTable<4>>());
+    CHECK_THROWS(write.View<R::TableRows>());
+    CHECK_THROWS(write.View<R::FixedWidthRows<R::TiledColMajorTable<8>, 4>>());
+    CHECK(soa.Read().View<R::ColMajorTable>().ElementStride() == 16);
+    CHECK_THROWS(soa.Read().View<R::FixedRows<5>>());
+}
+
+TEST_CASE("Pair views keep independent column pitches and eager workers retain physical layout")
+{
+    R::ArrayPair<int> pair{R::Array<int>(R::RowLayout::ColMajor(33, 5, {32, 0})), R::Array<int>(R::RowLayout::ColMajor(3, 5, {8, 0}))};
+    {
+        auto write = pair.owned.Write();
+        write.At(32, 4) = 812;
+    }
+    {
+        auto write = pair.ghost.Write();
+        write.At(2, 4) = 713;
+    }
+    const auto read = pair.Read();
+    CHECK(read.View()(32, 4) == 812);
+    CHECK(read.View()[35][4] == 713);
+    CheckEagerTypedCPU<R::ColMajorTable>(R::RowLayout::ColMajor(9, 5, {8, 1}));
+    CheckEagerTypedCPU<R::TiledColMajorTable<8>>(R::RowLayout::TiledColMajor(9, 5, 8));
+}
+
+TEST_CASE("Allocation alignment is provider-enforced and over-aligned POD survives placement snapshots")
+{
+    struct alignas(256) Record
+    {
+        double value;
+    };
+    R::Array<Record> values(R::RowLayout::Dense(3, 2));
+    CHECK(reinterpret_cast<uintptr_t>(values.Storage().LegacyPointer()) % 256 == 0);
+    {
+        auto write = values.Write();
+        write.At(1, 1).value = 41;
+    }
+    auto snapshot = values.To(R::Device::Host());
+    CHECK(snapshot.Read().At(1, 1).value == 41);
+    CHECK(reinterpret_cast<uintptr_t>(snapshot.Storage().LegacyPointer()) % 256 == 0);
+    R::Array<double> aligned(R::RowLayout::ColMajor(33, 5, {32, 0}), R::Device::Host(), R::AllocationOptions{4096});
+    CHECK(reinterpret_cast<uintptr_t>(aligned.Storage().LegacyPointer()) % 4096 == 0);
+    CHECK_THROWS(R::Buffer::Allocate(10, R::Device::Host(), R::AllocationOptions{3}));
+    CHECK_THROWS(R::Array<double>(R::RowLayout::Dense(1, 1), R::Device::Host(), R::AllocationOptions{3}));
+}
+
+TEST_CASE("Local Eigen matrices honor physical component stride without packing")
+{
+    for (const auto &shape : {R::RowLayout::Dense(9, 6, 8), R::RowLayout::ColMajor(9, 6, {8, 0}), R::RowLayout::TiledColMajor(9, 6, 8)})
+    {
+        R::Array<double> values(shape);
+        {
+            auto write = values.Write();
+            const auto matrices = DNDS::Algebra::MakeEigenRowMatrices(write.View<R::UniformTableRows>(), 2, 3);
+            for (DNDS::index iRow = 0; iRow < 9; ++iRow)
+                for (DNDS::index i = 0; i < 2; ++i)
+                    for (DNDS::index j = 0; j < 3; ++j)
+                        matrices[iRow](i, j) = 100 * iRow + i + 2 * j;
+        }
+        const auto read = values.Read();
+        const auto matrices = DNDS::Algebra::MakeEigenRowMatrices(read.View<R::UniformTableRows>(), 2, 3);
+        static_assert(std::is_const_v<std::remove_pointer_t<decltype(matrices[0].data())>>);
+        for (DNDS::index iRow = 0; iRow < 9; ++iRow)
+            CHECK(matrices[iRow].sum() == 600 * iRow + 15);
+        CHECK_THROWS(DNDS::Algebra::MakeEigenRowMatrices(read.View(), 3, 3));
+        CHECK_THROWS(DNDS::Algebra::MakeEigenRowMatrices(read.View(), 2, 3, R::Device::CUDA(0)));
+    }
 }

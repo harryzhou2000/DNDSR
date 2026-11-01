@@ -249,14 +249,15 @@ namespace DNDS::Runtime
     }
     ExecutionContext CUDALauncher::Context() const { return _state->native->Context(); }
     uint64_t CUDALauncher::NativeEventsRecorded() const { return _state->events; }
-    Buffer CUDALauncher::Allocate(size_t bytes)
+    Buffer CUDALauncher::Allocate(size_t bytes) { return Allocate(bytes, {}); }
+    Buffer CUDALauncher::Allocate(size_t bytes, AllocationOptions options)
     {
         State::Issue issue(*_state);
         _state->Poll();
         if (_state->error)
             std::rethrow_exception(_state->error);
         const auto context = Context();
-        auto result = Buffer::AllocateCUDAAsync(bytes, context);
+        auto result = Buffer::AllocateCUDAAsync(bytes, context, options);
         std::shared_ptr<ScheduledAccess> initialization;
         try
         {
@@ -397,7 +398,8 @@ namespace DNDS::Runtime
         return {};
     }
     void CUDALauncher::Drain() {}
-    Buffer CUDALauncher::Allocate(size_t)
+    Buffer CUDALauncher::Allocate(size_t bytes) { return Allocate(bytes, {}); }
+    Buffer CUDALauncher::Allocate(size_t, AllocationOptions)
     {
         DNDS_check_throw_info(false, "runtime CUDA allocation unavailable");
         return {};

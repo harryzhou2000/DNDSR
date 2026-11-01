@@ -178,6 +178,7 @@ namespace DNDS::Runtime
         DNDS_check_throw_info(serializer, "null Array serializer");
         const bool perRank = serializer->IsPerRank();
         const auto bytes = schema.Extent();
+        Detail::IOCheck(layout.IsContiguousRows(), mpi, perRank, "column/tiled native Array I/O is not enabled yet");
         Detail::IOAgree(name + ":" + schema.Identity() + ":" + schema.Definition() + ":" + std::to_string(Detail::NativeByteOrder()), mpi, perRank);
         bool valid = bytes && layout.RowCount() <= size_t(INT64_MAX) && storage.Bytes() <= size_t(INT64_MAX) && storage.GetDevice() == Device::Host();
         valid = valid && (layout.IsVariable() || layout.Width() <= size_t(INT64_MAX) / bytes);
@@ -393,7 +394,7 @@ namespace DNDS::Runtime
         try
         {
             layout = selectLayout ? selectLayout(logical) : logical;
-            valid = layout.RowCount() == logical.RowCount();
+            valid = layout.IsContiguousRows() && layout.RowCount() == logical.RowCount();
             for (size_t row = 0; valid && row < layout.RowCount(); ++row)
                 valid = layout.RowSize(row) == logical.RowSize(row);
             valid = valid && CheckedSize::Multiply(layout.Elements(), bytes) <= size_t(INT64_MAX);

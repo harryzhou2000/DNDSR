@@ -41,6 +41,14 @@ namespace DNDS::Runtime
         static ExecutionContext CUDA(int ordinal, void *stream = nullptr) { return {Device::CUDA(ordinal), stream}; }
     };
 
+    /// Base-address alignment is independent of table pitch. Zero requests the
+    /// provider default; a nonzero request must be a power of two. A provider
+    /// either honors the request or throws before publishing the allocation.
+    struct AllocationOptions
+    {
+        size_t alignmentBytes = 0;
+    };
+
     class Completion
     {
         struct State;
@@ -157,6 +165,17 @@ namespace DNDS::Runtime
     public:
         virtual ~Allocator() = default;
         virtual std::shared_ptr<void> Allocate(size_t bytes, Device device) = 0;
+        /// Compatibility default validates the returned address. Providers with
+        /// stronger alignment support may override without changing old clients.
+        virtual std::shared_ptr<void> Allocate(size_t bytes, Device device, AllocationOptions options)
+        {
+            auto owner = Allocate(bytes, device);
+            const auto alignment = options.alignmentBytes;
+            DNDS_check_throw_info(!alignment || (!(alignment & (alignment - 1)) &&
+                                                 reinterpret_cast<uintptr_t>(owner.get()) % alignment == 0),
+                                  "allocator cannot satisfy requested alignment");
+            return owner;
+        }
     };
 
     /// Move-only access owns its allocation until completion. Complete records
@@ -239,12 +258,12 @@ namespace DNDS::Runtime
         std::shared_ptr<BufferState> _state;
         size_t _offset = 0, _bytes = 0;
         explicit Buffer(std::shared_ptr<BufferState> state);
-        static Buffer AllocateCUDAAsync(size_t bytes, ExecutionContext context);
+        static Buffer AllocateCUDAAsync(size_t bytes, ExecutionContext context, AllocationOptions options = {});
 
     public:
         Buffer() = default;
-        static Buffer Allocate(size_t bytes, Device device = Device::Host());
-        static Buffer Allocate(size_t bytes, Device device, std::shared_ptr<Allocator> allocator);
+        static Buffer Allocate(size_t bytes, Device device = Device::Host(), AllocationOptions options = {});
+        static Buffer Allocate(size_t bytes, Device device, std::shared_ptr<Allocator> allocator, AllocationOptions options = {});
         /// Ready allocation import for backend providers. Include
         /// AllocationResource.hpp when implementing/importing a provider.
         static Buffer FromResource(std::unique_ptr<AllocationResource> resource);

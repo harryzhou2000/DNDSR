@@ -239,6 +239,7 @@ namespace DNDS::Runtime
             }
             void Drain() override { _executor->Wait(_lane, _executor->Tail(_lane)); }
             Buffer Allocate(size_t bytes) override { return Buffer::Allocate(bytes); }
+            Buffer Allocate(size_t bytes, AllocationOptions options) override { return Buffer::Allocate(bytes, Device::Host(), options); }
         };
     }
 
@@ -274,10 +275,10 @@ namespace DNDS::Runtime
         DNDS_check_throw_info(stream._launcher && stream._owner == _state->identity && work, "invalid eager submission or foreign stream");
         stream._launcher->Submit(std::move(work), CommandKind::Compute);
     }
-    Buffer EagerEngine::AllocateBuffer(const ExecutionStream &stream, size_t bytes)
+    Buffer EagerEngine::AllocateBuffer(const ExecutionStream &stream, size_t bytes, AllocationOptions options)
     {
         DNDS_check_throw_info(stream._launcher && stream._owner == _state->identity, "invalid allocation stream");
-        return stream._launcher->Allocate(bytes);
+        return stream._launcher->Allocate(bytes, options);
     }
     void EagerEngine::SubmitOperation(const ExecutionStream &stream, StreamLauncher::Work work, StreamLauncher::Retirement retire)
     {

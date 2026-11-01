@@ -219,6 +219,7 @@ namespace DNDS::Runtime
         static RowBuilder FromStorage(const ArrayStorage &source)
         {
             const auto &shape = source.Layout();
+            DNDS_check_throw_info(shape.IsContiguousRows(), "incremental row builder requires contiguous rows; convert explicitly");
             RowBuilder draft(shape.RowCount(), source.ElementBytes(), shape.Kind(),
                              shape.IsVariable() ? shape.Stride() : shape.Width());
             const auto device = source.Values().GetDevice();
@@ -341,6 +342,7 @@ namespace DNDS::Runtime
             DNDS_check_throw_info(source, "exclusive edit requires storage");
             std::lock_guard<std::mutex> lock(source->_shapeMutex);
             source->CheckPublished();
+            DNDS_check_throw_info(source->_layout->rows.IsContiguousRows(), "exclusive shape edit requires contiguous rows");
             DNDS_check_throw_info(source->_values.GetDevice() == Device::Host(), "exclusive row editing requires host storage");
             DNDS_check_throw_info(source.use_count() == 1 && source->_layout.use_count() == 1 &&
                                       source->_layout->rows.Offsets().IsUnique() && source->_layout->rows.Sizes().IsUnique() &&

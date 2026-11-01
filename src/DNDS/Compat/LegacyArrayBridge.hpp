@@ -83,6 +83,7 @@ namespace DNDS::Runtime
         inline void ValidateLegacyRows(const RowLayout &layout, Device device)
         {
             DNDS_check_throw_info(device == Device::Host(), "legacy host rows require host storage");
+            DNDS_check_throw_info(layout.IsContiguousRows(), "legacy rows cannot alias column-major or tiled storage");
             DNDS_check_throw_info(layout.RowCount() <= size_t(std::numeric_limits<index>::max()), "native row count exceeds legacy index");
             if (!layout.IsVariable())
                 DNDS_check_throw_info(layout.Width() <= size_t(std::numeric_limits<rowsize>::max()), "native row width exceeds legacy rowsize");

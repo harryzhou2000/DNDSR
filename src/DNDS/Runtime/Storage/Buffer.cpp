@@ -1,6 +1,7 @@
 #include "DNDS/Runtime/Storage/Buffer.hpp"
 #include "DNDS/Runtime/Storage/AllocationResource.hpp"
 #include <atomic>
+#include <algorithm>
 #include <cstring>
 #include <mutex>
 #include <new>
@@ -98,9 +99,18 @@ namespace DNDS::Runtime
             }
         };
 
+        size_t ValidateAlignment(AllocationOptions options)
+        {
+            const auto alignment = options.alignmentBytes;
+            DNDS_check_throw_info(!alignment || !(alignment & (alignment - 1)),
+                                  "allocation alignment must be a power of two");
+            return std::max(size_t(64), alignment);
+        }
+
         class NativeResource final : public AllocationResource
         {
-            void *_pointer = nullptr;
+            void *_pointer = nullptr, *_allocation = nullptr;
+            size_t _alignment;
             size_t _bytes;
             Device _device;
             bool _orderedCUDA = false;
@@ -108,21 +118,29 @@ namespace DNDS::Runtime
             ExecutionContext _construction;
 
         public:
-            NativeResource(size_t bytes, Device device, const ExecutionContext *async = nullptr)
-                : _bytes(bytes), _device(device), _asyncAllocation(async != nullptr), _unpublished(async != nullptr),
+            NativeResource(size_t bytes, Device device, AllocationOptions options = {}, const ExecutionContext *async = nullptr)
+                : _alignment(ValidateAlignment(options)), _bytes(bytes), _device(device), _asyncAllocation(async != nullptr), _unpublished(async != nullptr),
                   _construction(async ? *async : ExecutionContext{})
             {
                 if (!bytes)
                     return;
                 if (device == Device::Host())
                 {
-                    _pointer = ::operator new(bytes, std::align_val_t(64));
+                    _allocation = _pointer = ::operator new(bytes, std::align_val_t(_alignment));
                     std::memset(_pointer, 0, bytes);
                 }
 #ifdef DNDS_USE_CUDA
                 else
                 {
                     DeviceScope scope(device.ordinal);
+                    // Keep the provider base for cudaFree[Async]; a stronger
+                    // requested alignment may expose an interior payload address.
+                    const auto allocatedBytes = CheckedSize::Add(bytes, _alignment - 1);
+                    auto exposeAligned = [&]()
+                    {
+                        auto address = reinterpret_cast<uintptr_t>(_allocation);
+                        _pointer = reinterpret_cast<void *>((address + _alignment - 1) & ~uintptr_t(_alignment - 1));
+                    };
                     try
                     {
 #    if CUDART_VERSION >= 11020
@@ -135,7 +153,8 @@ namespace DNDS::Runtime
 #    if CUDART_VERSION >= 11020
                             DNDS_check_throw_info(_orderedCUDA, "device does not support stream ordered allocation");
                             auto stream = static_cast<cudaStream_t>(async->stream);
-                            CheckCUDA(cudaMallocAsync(&_pointer, bytes, stream));
+                            CheckCUDA(cudaMallocAsync(&_allocation, allocatedBytes, stream));
+                            exposeAligned();
                             CheckCUDA(cudaMemsetAsync(_pointer, 0, bytes, stream));
 #    else
                             DNDS_check_throw_info(false, "CUDA runtime lacks stream ordered allocation");
@@ -143,7 +162,8 @@ namespace DNDS::Runtime
                         }
                         else
                         {
-                            CheckCUDA(cudaMalloc(&_pointer, bytes));
+                            CheckCUDA(cudaMalloc(&_allocation, allocatedBytes));
+                            exposeAligned();
                             CheckCUDA(cudaMemset(_pointer, 0, bytes));
                             CheckCUDA(cudaStreamSynchronize(nullptr));
                         }
@@ -168,11 +188,12 @@ namespace DNDS::Runtime
             }
             void Release(const ExecutionContext *context) noexcept override
             {
-                auto *pointer = std::exchange(_pointer, nullptr);
+                _pointer = nullptr;
+                auto *pointer = std::exchange(_allocation, nullptr);
                 if (!pointer)
                     return;
                 if (_device == Device::Host())
-                    ::operator delete(pointer, std::align_val_t(64));
+                    ::operator delete(pointer, std::align_val_t(_alignment));
 #ifdef DNDS_USE_CUDA
                 else
                 {
@@ -330,28 +351,32 @@ namespace DNDS::Runtime
         return FromAllocation(AllocationHandle(), _offset + offset, bytes);
     }
 
-    Buffer Buffer::Allocate(size_t bytes, Device device)
+    Buffer Buffer::Allocate(size_t bytes, Device device, AllocationOptions options)
     {
         ValidateDevice(device);
-        return FromResource(std::make_unique<NativeResource>(bytes, device));
+        return FromResource(std::make_unique<NativeResource>(bytes, device, options));
     }
 
-    Buffer Buffer::Allocate(size_t bytes, Device device, std::shared_ptr<Allocator> allocator)
+    Buffer Buffer::Allocate(size_t bytes, Device device, std::shared_ptr<Allocator> allocator, AllocationOptions options)
     {
         ValidateDevice(device);
         DNDS_check_throw_info(allocator, "runtime: null allocator policy");
-        auto owner = allocator->Allocate(bytes, device);
+        ValidateAlignment(options);
+        auto owner = allocator->Allocate(bytes, device, options);
+        DNDS_check_throw_info(!bytes || (owner && (!options.alignmentBytes ||
+                                                   reinterpret_cast<uintptr_t>(owner.get()) % options.alignmentBytes == 0)),
+                              "allocator returned a misaligned allocation");
         return FromResource(std::make_unique<SharedResource>(std::move(owner), bytes, device, std::move(allocator)));
     }
     Buffer Buffer::FromResource(std::unique_ptr<AllocationResource> resource) { return Buffer(MakeState(std::move(resource))); }
-    Buffer Buffer::AllocateCUDAAsync(size_t bytes, ExecutionContext context)
+    Buffer Buffer::AllocateCUDAAsync(size_t bytes, ExecutionContext context, AllocationOptions options)
     {
         ValidateDevice(context.device);
         DNDS_check_throw_info(context.device.space == MemorySpace::CUDA, "async device allocation requires CUDA");
 #ifdef DNDS_USE_CUDA
         ValidateStream(context);
 #endif
-        auto resource = std::make_unique<NativeResource>(bytes, context.device, &context);
+        auto resource = std::make_unique<NativeResource>(bytes, context.device, options, &context);
         auto *native = resource.get();
         auto result = FromResource(std::move(resource));
         native->Published();

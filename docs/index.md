@@ -26,6 +26,7 @@ records the NS_EX/NS_EX_3D absolute-velocity source convention and focused tests
 | Reusable element projection and distributed surface location | [Surface geometry and location](architecture/SurfaceLocation.md) |
 | Completed CFV/Geom work orders and validation limits | [Facility completion ledger](dev/fv_completion_2026-10-31.md) |
 | Entity-associated fields and migration layouts | [EntityField](architecture/EntityField.md) |
+| Physical table formats, strides and local dense adapters | [Physical Array layouts](architecture/PhysicalArrayLayouts.md) |
 | Canonical and compatibility source paths | [Source organization](architecture/source_organization.md) |
 | Mesh Python access and operations | [Python mesh guide](guides/python_geom_guide.md) |
 
