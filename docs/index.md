@@ -15,6 +15,10 @@ The [Cauchy preliminary completion record](dev/cauchy_preliminary_2026-11-01.md)
 records physical layouts, resident CUDA reconstruction, explicit device-packed
 transfers, completed gates and performance limits.
 
+The [NCCL/FP64 complement record](dev/nccl_fp64_2026-11-01.md) documents the
+CUDA-default NCCL build option, explicit provider/kernel selection, final
+distributed gates and the measured gains and regressions by shape.
+
 ## Architecture entry points
 
 | Topic | Guide |
