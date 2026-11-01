@@ -86,6 +86,9 @@ namespace DNDS::Serializer
         void ReadByteSegments(const std::string &name, uint8_t *data, index memoryBytes,
                               const std::vector<ByteMemorySegment> &segments, ArrayGlobalOffset &offset) override;
 
+        void ReadBytePattern(const std::string &name, uint8_t *data, index memoryBytes,
+                             const std::vector<ByteMemorySegment> &segments, const ByteFilePattern &pattern) override;
+
         void WriteIndexVectorPerRank(const std::string &name, const std::vector<index> &v) override
         {
             this->WriteIndexVector(name, v, ArrayGlobalOffset_Unknown);

@@ -64,7 +64,7 @@ namespace DNDS::CFV::Detail
         for (auto *array : {&field.Owned(), &field.Ghost()})
         {
             auto write = array->Write();
-            const auto view = write.View<Runtime::TableRows>();
+            const auto view = write.View<Runtime::UniformTableRows>();
             for (index iRow = 0; iRow < view.RowCount(); ++iRow)
                 std::fill(view[iRow].begin(), view[iRow].end(), 0.);
         }

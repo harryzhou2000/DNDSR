@@ -89,9 +89,9 @@ namespace DNDS::Runtime
             return layout;
         }
         /// Import an existing physical pitch without deriving a new one.
-        static RowLayout ColMajorWithPitch(size_t rows, size_t width, size_t pitch)
+        static RowLayout ColMajorWithPitch(size_t rows, size_t width, size_t pitch, ColMajorTableOptions options = {})
         {
-            auto layout = ColMajor(rows, width);
+            auto layout = ColMajor(rows, width, options);
             DNDS_check_throw_info(pitch >= rows && pitch <= size_t(INT64_MAX) &&
                                       CheckedSize::Multiply(width, pitch) <= size_t(INT64_MAX),
                                   "invalid column-major physical pitch");
@@ -107,7 +107,9 @@ namespace DNDS::Runtime
             layout._rows = rows;
             layout._width = width;
             layout._stride = tile;
-            DNDS_check_throw_info(layout.Elements() <= size_t(INT64_MAX), "tiled table extent overflow");
+            DNDS_check_throw_info(CheckedSize::Multiply(width, tile) <= size_t(INT64_MAX) &&
+                                      layout.Elements() <= size_t(INT64_MAX),
+                                  "tiled table extent overflow");
             return layout;
         }
         static RowLayout Ragged(const std::vector<size_t> &lengths)

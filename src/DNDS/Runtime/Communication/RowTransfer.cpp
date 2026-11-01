@@ -149,21 +149,22 @@ namespace DNDS::Runtime
         }
         Type MakeType(const std::vector<index> &rows, const RowLayout &layout, const ElementSchema &schema, size_t &segments, Type &emptyType)
         {
-            DNDS_check_throw_info(layout.IsContiguousRows(), "column/tiled MPI payload support is not enabled yet");
             std::vector<int> lengths;
             std::vector<MPI_Aint> displacements;
             const auto extent = schema.Extent();
-            for (auto row : rows)
+            // Row-major logical wire order is independent of either endpoint's
+            // physical format. Non-unit component stride contributes individual
+            // elements; adjacent blocks are merged before committing MPI types.
+            // No payload staging is introduced for ordinary copies.
+            auto append = [&](index offset, index count)
             {
-                auto remaining = layout.RowSize(row);
-                index offset = layout.Offset(row);
-                while (remaining)
+                while (count)
                 {
-                    const auto n = int(std::min(remaining, index(INT_MAX)));
+                    const auto n = int(std::min(count, index(INT_MAX)));
                     DNDS_check_throw_info(offset >= 0 && size_t(offset) <=
                                                              size_t(std::numeric_limits<MPI_Aint>::max()) / extent,
                                           "MPI displacement overflow");
-                    auto displacement = MPI_Aint(size_t(offset) * extent);
+                    const auto displacement = MPI_Aint(size_t(offset) * extent);
                     if (!lengths.empty() && n <= INT_MAX - lengths.back() &&
                         displacement - displacements.back() == MPI_Aint(lengths.back()) * MPI_Aint(extent))
                         lengths.back() += n;
@@ -173,9 +174,15 @@ namespace DNDS::Runtime
                         displacements.push_back(displacement);
                     }
                     offset += n;
-                    remaining -= n;
+                    count -= n;
                 }
-            }
+            };
+            for (auto iRow : rows)
+                if (layout.IsContiguousRows())
+                    append(layout.Offset(iRow), layout.RowSize(iRow));
+                else
+                    for (index iComp = 0; iComp < layout.RowSize(iRow); ++iComp)
+                        append(layout.ElementOffset(iRow, iComp), 1);
             DNDS_check_throw_info(lengths.size() <= INT_MAX, "MPI datatype has too many segments");
             segments += lengths.size();
             // Empty peers share one committed zero-payload type per plan. A
@@ -435,9 +442,16 @@ namespace DNDS::Runtime
                 for (auto iRow : peer)
                 {
                     slots.push_back(edge);
-                    if (widths[edge])
+                    if (widths[edge] && destination.IsContiguousRows())
                         result.groups.push_back({size_t(result.contributions.Offset(edge)),
                                                  size_t(destination.Offset(iRow)), widths[edge]});
+                    else
+                        // Custom reducers keep their contiguous contribution
+                        // contract. A strided destination is split into scalar
+                        // contributions, sorted/grouped by actual destination.
+                        for (index iComp = 0; iComp < index(widths[edge]); ++iComp)
+                            result.groups.push_back({size_t(result.contributions.Offset(edge) + iComp),
+                                                     size_t(destination.ElementOffset(iRow, iComp)), 1});
                     ++edge;
                 }
                 size_t segments = 0;

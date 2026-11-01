@@ -88,6 +88,11 @@ namespace DNDS::Algebra
                  Runtime::Device device = Runtime::Device::Host())
             : _space(std::move(space)), _owned(Layout(_space.OwnedRows(), width, stride), device),
               _ghost(Layout(_space.GhostRows(), width, stride), device) {}
+        /// Uniform physical layout prototype. Owned/ghost row counts and pitches
+        /// are derived independently while retaining the selected format/padding.
+        DofField(DofSpace space, Runtime::RowLayout prototype, Runtime::Device device = Runtime::Device::Host())
+            : _space(std::move(space)), _owned(prototype.WithRowCount(_space.OwnedRows()), device),
+              _ghost(prototype.WithRowCount(_space.GhostRows()), device) { Validate(); }
         DofField(DofSpace space, Array owned, Array ghost)
             : _space(std::move(space)), _owned(std::move(owned)), _ghost(std::move(ghost)) { Validate(); }
         const DofSpace &Space() const { return _space; }

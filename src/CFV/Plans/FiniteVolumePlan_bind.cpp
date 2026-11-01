@@ -84,7 +84,9 @@ namespace DNDS::CFV
             .def("NumCellProc", &FiniteVolumePlan::NumCellProc)
             .def("NumFaceProc", &FiniteVolumePlan::NumFaceProc)
             .def("Axisymmetric", &FiniteVolumePlan::Axisymmetric)
-            .def("BuildField", &FiniteVolumePlan::BuildField)
+            .def("BuildField", py::overload_cast<index>(&FiniteVolumePlan::BuildField, py::const_))
+            .def("BuildFieldWithLayout", py::overload_cast<Runtime::RowLayout, Runtime::Device>(&FiniteVolumePlan::BuildField, py::const_),
+                 py::arg("prototype"), py::arg("device") = Runtime::Device::Host())
             .def("BindHalo", &FiniteVolumePlan::BindHalo, "Collective persistent direct MPI binding; explicitly begin/wait on each field stage.")
             .def("GetCellVol", &FiniteVolumePlan::GetCellVol)
             .def("GetCellCent", &FiniteVolumePlan::GetCellCent);
@@ -123,8 +125,10 @@ namespace DNDS::CFV
             .def("GetInverseDiagnostics", &VariationalReconstructionPlan::GetInverseDiagnostics)
             .def("GetCellInverseDiagnostics", &VariationalReconstructionPlan::GetCellInverseDiagnostics)
             .def("Validate", &VariationalReconstructionPlan::Validate)
-            .def("BuildWorkspace", &VariationalReconstructionPlan::BuildWorkspace,
+            .def("BuildWorkspace", py::overload_cast<index, std::vector<index>>(&VariationalReconstructionPlan::BuildWorkspace, py::const_),
                  py::arg("components"), py::arg("periodicVectorStarts") = std::vector<index>{})
+            .def("BuildWorkspaceWithLayout", py::overload_cast<index, Runtime::RowLayout, std::vector<index>>(&VariationalReconstructionPlan::BuildWorkspace, py::const_),
+                 py::arg("components"), py::arg("prototype"), py::arg("periodicVectorStarts") = std::vector<index>{})
             .def("BuildBoundaryValues", &VariationalReconstructionPlan::BuildBoundaryValues)
             .def("NumBoundaryQuadrature", &VariationalReconstructionPlan::NumBoundaryQuadrature)
             .def("GetBoundaryQuadrature", &VariationalReconstructionPlan::GetBoundaryQuadrature)

@@ -85,3 +85,43 @@ Element assertions are a compile-time policy. `View<Policy,true>()` is checked;
 by `DNDS_RUNTIME_ARRAY_BOUNDS_CHECKS`; structural/placement/lease validation is
 never removed by that switch. Unchecked callers prove stencil bounds and stream
 ordering. The view carries no cross-stream dependency ledger.
+
+## Communication, archives and Python
+
+A RowTransferPlan still describes logical rows. PayloadPlan emits MPI datatype
+blocks at actual element offsets in row-major logical wire order, merging
+adjacent blocks. Direct MPI remains the default, with explicit HostPacked as an
+alternative. Strided receive collisions are broken into scalar contributions
+in the normal receiver reduction workspace, preserving the custom-POD element
+operator contract. Preserving transfer layout recomputes owned/ghost pitches
+for their separate row counts; it does not copy a large owned pitch into a tiny
+halo unnecessarily.
+
+Native host archive version4 is selected when any writer has a column/tiled
+table. All writers then have uniform logical widths. Each component has a byte
+dataset `values_j`; rank-local physical descriptors record family, pitch/tile
+and padding options. Matching-rank reads restore those descriptors. Repartitioned
+reads use dense logical rows by default or an explicit requested physical policy.
+AoS/CSR/padded writes retain version3. Old row-major byte datasets can be read
+into strided tables through direct regular file selections, without a payload
+transpose buffer. Per-rank legacy compressed JSON requires its original read
+layout followed by an explicit conversion; native JSON byte arrays support the
+direct pattern. The one element schema and root byte-order flag remain shared
+by arithmetic/POD I/O and MPI/Python. Device archives still reject until a direct
+backend is provided.
+
+Python element, row snapshot, assignment and retained slices use actual logical
+offsets. `numpy()` is an explicit logical2D copy. Numeric DLPack export exposes
+logical2D `(N,C)` with strides `(1,pitch)` for column tables, or physical3D
+`(ceil(N/W),C,W)` with strides `(C*W,W,1)` for tiled tables. Tiled tail values are
+visible in this physical export; the logical row count remains on `array.layout`.
+No general2D affine view is fabricated across tile boundaries. Exported tensors
+retain the same storage/controller and exclusive write lease until the last
+foreign alias dies. Import retains the existing strict contiguous1D/2D contract;
+other foreign strides/shapes fail explicitly rather than guessing capacity or
+logical tiled tail length.
+
+`ConvertLayout` is an explicit setup/interop operation. It allocates the final
+destination once, copies logical values and preserves source aliases. Repeated
+solver operations use layout-aware native kernels rather than this potentially
+fine-grained copy path.

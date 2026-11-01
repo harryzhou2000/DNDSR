@@ -1,4 +1,5 @@
 #include "CFV/Detail/ReconstructionData.hpp"
+#include "DNDS/Algebra/EigenView.hpp"
 
 namespace DNDS::CFV
 {
@@ -47,6 +48,17 @@ namespace DNDS::CFV
         DNDS_check_throw_info(components > 0 && components <= INT_MAX / _data->n, "invalid reconstruction component count");
         Detail::ValidateVectorBlocks(components, periodicVectorStarts);
         return {Metrics().BuildField(_data->n * components), Metrics().BuildField(_data->n * components),
+                R::Array<real>(R::RowLayout::Dense(6, _data->n * components)), components, _data, std::move(periodicVectorStarts)};
+    }
+    ReconstructionWorkspace VariationalReconstructionPlan::BuildWorkspace(index components, R::RowLayout prototype,
+                                                                          std::vector<index> periodicVectorStarts) const
+    {
+        Validate();
+        DNDS_check_throw_info(components > 0 && components <= INT_MAX / _data->n && !prototype.IsVariable() &&
+                                  prototype.Width() == _data->n * components,
+                              "reconstruction physical prototype width mismatch");
+        Detail::ValidateVectorBlocks(components, periodicVectorStarts);
+        return {Metrics().BuildField(prototype), Metrics().BuildField(prototype),
                 R::Array<real>(R::RowLayout::Dense(6, _data->n * components)), components, _data, std::move(periodicVectorStarts)};
     }
     ReconstructionBoundaryValues VariationalReconstructionPlan::BuildBoundaryValues(index components) const
@@ -137,20 +149,20 @@ namespace DNDS::CFV
             recWrite.emplace(work.coefficients.Owned().Write());
         else
             recOwned.emplace(input.Owned().Read());
-        R::ArrayView<const real, false, R::TableRows> current;
-        R::ArrayView<real, false, R::TableRows> mutableCurrent;
+        R::ArrayView<const real, false, R::UniformTableRows> current;
+        R::ArrayView<real, false, R::UniformTableRows> mutableCurrent;
         if (recWrite)
         {
-            mutableCurrent = recWrite->View<R::TableRows>();
+            mutableCurrent = recWrite->View<R::UniformTableRows>();
             current = {mutableCurrent.data, mutableCurrent.offsets, mutableCurrent.rows,
-                       mutableCurrent.width, mutableCurrent.stride, mutableCurrent.sizes};
+                       mutableCurrent.width, mutableCurrent.stride, mutableCurrent.sizes, mutableCurrent.kind};
         }
         else
-            current = recOwned->View<R::TableRows>();
+            current = recOwned->View<R::UniformTableRows>();
         auto nextWrite = work.temporary.Owned().Write();
-        auto next = nextWrite.View<R::TableRows>();
-        R::PairReadView<real, false, R::TableRows> u{meanOwned.View<R::TableRows>(), meanGhost ? meanGhost->View<R::TableRows>() : R::ArrayView<const real, false, R::TableRows>{}};
-        const auto ghost = recGhost ? recGhost->View<R::TableRows>() : R::ArrayView<const real, false, R::TableRows>{};
+        auto next = nextWrite.View<R::UniformTableRows>();
+        R::PairReadView<real, false, R::UniformTableRows> u{meanOwned.View<R::UniformTableRows>(), meanGhost ? meanGhost->View<R::UniformTableRows>() : R::ArrayView<const real, false, R::UniformTableRows>{}};
+        const auto ghost = recGhost ? recGhost->View<R::UniformTableRows>() : R::ArrayView<const real, false, R::UniformTableRows>{};
         auto bRead = boundary.values.Read();
         const auto bValues = bRead.View<R::TableRows>();
         auto oRead = _data->offsets.Read(), nbRead = _data->neighbors.Read(), boRead = _data->boundaryOffsets.Read();
@@ -161,25 +173,29 @@ namespace DNDS::CFV
         Math::SmallMatrix rotatedRec;
         auto rotationRead = _data->neighborRotation.Read();
         const auto rotations = rotationRead.View<R::FixedRows<9>>();
+        const auto nextMatrices = Algebra::MakeEigenRowMatrices(next, n, nv);
+        const auto currentMatrices = Algebra::MakeEigenRowMatrices(current, n, nv);
+        const auto mutableMatrices = Algebra::MakeEigenRowMatrices(mutableCurrent, n, nv);
+        const auto ghostMatrices = Algebra::MakeEigenRowMatrices(ghost, n, nv);
         auto compute = [&](index iCell)
         {
-            Map output(next[iCell].data(), n, nv);
-            output = ConstMap(current[iCell].data(), n, nv) * (1 - relax);
+            auto output = nextMatrices[iCell];
+            output = currentMatrices[iCell] * (1 - relax);
             for (index iEntry = offsets(iCell, 0); iEntry < offsets(iCell + 1, 0); ++iEntry)
             {
                 const index other = neighbors(iEntry, 0);
                 if (other != UnInitIndex)
                 {
-                    const real *otherCoefficients = other < Metrics().NumCell() ? current[other].data() : ghost[other - Metrics().NumCell()].data();
+                    const auto otherCoefficients = other < Metrics().NumCell() ? currentMatrices[other] : ghostMatrices[other - Metrics().NumCell()];
                     // Component rotation is independent of spatial derivative
                     // pullback, already included in the prepared B block.
                     // Apply scalar columns directly, then correct vector blocks.
-                    output.noalias() += relax * ConstMap(matrices[iEntry].data(), n, n) * ConstMap(otherCoefficients, n, nv);
+                    output.noalias() += relax * ConstMap(matrices[iEntry].data(), n, n) * otherCoefficients;
                     if (_data->hasRotatedPeriodicity)
                         for (auto first : work.periodicVectorStarts)
                         {
                             const Eigen::Map<const Geom::tGPoint> rotation(rotations[iEntry].data());
-                            rotatedRec = ConstMap(otherCoefficients, n, nv).middleCols(first, 3) * (rotation.transpose() - Geom::tGPoint::Identity());
+                            rotatedRec = otherCoefficients.middleCols(first, 3) * (rotation.transpose() - Geom::tGPoint::Identity());
                             output.middleCols(first, 3).noalias() += relax * ConstMap(matrices[iEntry].data(), n, n) * rotatedRec;
                         }
                     for (index variable = 0; variable < nv; ++variable)
@@ -203,7 +219,7 @@ namespace DNDS::CFV
                             output.col(variable).noalias() += Eigen::Map<const Eigen::VectorXd>(injection[iQ].data(), n) * (relax * (bValues(iQ, variable) - u(iCell, variable)));
             }
             if (_data->settings.SORInstead)
-                Map(mutableCurrent[iCell].data(), n, nv) = output;
+                mutableMatrices[iCell] = output;
         };
         if (region == ReconstructionRegion::Core || (region == ReconstructionRegion::All && Settings().coreFirst))
             for (auto iCell : _data->workPartition->Core())
@@ -229,8 +245,8 @@ namespace DNDS::CFV
         CheckWorkspace(_data.get(), work);
         auto source = work.temporary.Owned().Read();
         auto destination = work.coefficients.Owned().Write();
-        const auto src = source.View<R::TableRows>();
-        const auto dst = destination.View<R::TableRows>();
+        const auto src = source.View<R::UniformTableRows>();
+        const auto dst = destination.View<R::UniformTableRows>();
         for (index iCell = 0; iCell < Metrics().NumCell(); ++iCell)
             std::copy(src[iCell].begin(), src[iCell].end(), dst[iCell].begin());
     }
@@ -278,9 +294,10 @@ namespace DNDS::CFV
             std::optional<R::Array<real>::ReadLease> ghostRead;
             if (region != ReconstructionRegion::Core)
                 ghostRead.emplace(work.coefficients.Ghost().Read());
-            R::PairReadView<real, false, R::TableRows> rec{owned.View<R::TableRows>(), ghostRead ? ghostRead->View<R::TableRows>() : R::ArrayView<const real, false, R::TableRows>{}};
+            R::PairReadView<real, false, R::UniformTableRows> rec{owned.View<R::UniformTableRows>(), ghostRead ? ghostRead->View<R::UniformTableRows>() : R::ArrayView<const real, false, R::UniformTableRows>{}};
             auto outputWrite = work.temporary.Owned().Write(), scratchWrite = work.scratch.Write();
-            const auto output = outputWrite.View<R::TableRows>(), scratch = scratchWrite.View<R::TableRows>();
+            const auto output = outputWrite.View<R::UniformTableRows>();
+            const auto scratch = scratchWrite.View<R::TableRows>();
             auto offsetRead = _data->offsets.Read(), neighborRead = _data->neighbors.Read(), faceRead = _data->faces.Read();
             auto secondaryRead = _data->secondary.Read();
             const auto offsets = offsetRead.View<R::FixedRows<1>>(), neighbors = neighborRead.View<R::FixedRows<1>>(), faces = faceRead.View<R::FixedRows<1>>();
@@ -292,13 +309,16 @@ namespace DNDS::CFV
                 forward.emplace(transform->forward.Read()), inverse.emplace(transform->inverse.Read());
             const auto forwardView = transform ? forward->View<R::TableRows>() : R::ArrayView<const real, false, R::TableRows>{};
             const auto inverseView = transform ? inverse->View<R::TableRows>() : R::ArrayView<const real, false, R::TableRows>{};
-            Map center(scratch[0].data(), modes, nv), other(scratch[1].data(), modes, nv), limited(scratch[2].data(), modes, nv);
-            Map up(scratch[3].data(), modes, nv), down(scratch[4].data(), modes, nv), valid(scratch[5].data(), modes, nv);
+            const auto scratchMatrices = Algebra::MakeEigenRowMatrices(scratch, modes, nv);
+            auto center = scratchMatrices[0], other = scratchMatrices[1], limited = scratchMatrices[2];
+            auto up = scratchMatrices[3], down = scratchMatrices[4], valid = scratchMatrices[5];
+            const auto outputMatrices = Algebra::MakeEigenRowMatrices(output, n, nv);
+            const auto recMatrices = Algebra::MakeEigenRowMatrices(rec, n, nv);
             const real epsilon = std::pow(verySmallReal, .25);
             auto compute = [&](index iCell)
             {
-                Map out(output[iCell].data(), n, nv);
-                out = ConstMap(rec.Row(iCell), n, nv);
+                auto out = outputMatrices[iCell];
+                out = recMatrices[iCell];
                 if (indicator && activation(iCell, 0) < threshold)
                     return;
                 up.setConstant(Settings().WBAP_nStd), down.setConstant(Settings().WBAP_nStd), valid.setOnes();
@@ -308,7 +328,7 @@ namespace DNDS::CFV
                     if (neighbor == UnInitIndex)
                         continue;
                     center = out.middleRows(begin, modes);
-                    other.noalias() = ConstMap(secondary[iEntry].data(), n, n).middleRows(begin, modes) * ConstMap(rec.Row(neighbor), n, nv);
+                    other.noalias() = ConstMap(secondary[iEntry].data(), n, n).middleRows(begin, modes) * recMatrices[neighbor];
                     const auto iFace = faces(iEntry, 0);
                     if (_data->hasRotatedPeriodicity)
                         for (auto first : work.periodicVectorStarts)
@@ -389,13 +409,13 @@ namespace DNDS::CFV
         for (index i = 0; i < cells.RowCount(); ++i)
             DNDS_check_throw_info(ids(i, 0) >= 0 && ids(i, 0) < Metrics().NumCellProc(), "sampling cell outside prepared closure");
         auto mo = mean.Owned().Read(), mg = mean.Ghost().Read(), co = coefficients.Owned().Read(), cg = coefficients.Ghost().Read();
-        R::PairReadView<real, false, R::TableRows> u{mo.View<R::TableRows>(), mg.View<R::TableRows>()}, rec{co.View<R::TableRows>(), cg.View<R::TableRows>()};
+        R::PairReadView<real, false, R::UniformTableRows> u{mo.View<R::UniformTableRows>(), mg.View<R::UniformTableRows>()}, rec{co.View<R::UniformTableRows>(), cg.View<R::UniformTableRows>()};
         auto pRead = points.Read(), geomRead = Metrics()._data->cell.Read(), momentRead = _data->moments.Read();
         auto output = values.Write();
         const auto p = pRead.View<R::FixedRows<3>>();
         const auto geom = geomRead.View<R::FixedRows<8>>();
         const auto moment = momentRead.View<R::TableRows>();
-        const auto out = output.View<R::TableRows>();
+        const auto out = output.View<R::UniformTableRows>();
         Math::SmallMatrix basis;
         for (index i = 0; i < cells.RowCount(); ++i)
         {

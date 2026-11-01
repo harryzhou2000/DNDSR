@@ -3,6 +3,7 @@
 /// @brief Base types and abstract interface for array serialization.
 
 #include "DNDS/Core/Defines.hpp"
+#include "DNDS/Core/CheckedSize.hpp"
 #include "DNDS/MPI/MPI.hpp"
 #include <limits>
 #include <set>
@@ -130,6 +131,26 @@ namespace DNDS::Serializer
     {
         index offset = 0;
         index size = 0;
+    };
+
+    /// Regular file selection, in bytes. Selected blocks are traversed in
+    /// increasing file order and copied directly into the supplied memory
+    /// intervals. This lets old row-major checkpoints populate strided tables
+    /// without a payload-sized transpose buffer.
+    struct ByteFilePattern
+    {
+        index offset = 0, blockBytes = 0, strideBytes = 0, count = 0;
+        index SelectedBytes() const
+        {
+            DNDS_check_throw_info(offset >= 0 && blockBytes >= 0 && strideBytes >= blockBytes && count >= 0,
+                                  "invalid byte file pattern");
+            return CheckedSize::Multiply(blockBytes, count);
+        }
+        index End() const
+        {
+            SelectedBytes();
+            return count && blockBytes ? CheckedSize::Add(CheckedSize::Add(offset, CheckedSize::Multiply(count - 1, strideBytes)), blockBytes) : offset;
+        }
     };
 
     /// @brief Abstract interface for reading/writing scalars, vectors, and byte arrays.
@@ -378,6 +399,13 @@ namespace DNDS::Serializer
                                       const std::vector<ByteMemorySegment> &, ArrayGlobalOffset &)
         {
             DNDS_check_throw_info(false, "Serializer does not support direct byte segments");
+        }
+        /// Direct strided file read. Counted selected bytes must equal memory
+        /// interval bytes; no hidden payload transpose or host staging.
+        virtual void ReadBytePattern(const std::string &, uint8_t *, index,
+                                     const std::vector<ByteMemorySegment> &, const ByteFilePattern &)
+        {
+            DNDS_check_throw_info(false, "Serializer does not support strided byte file reads");
         }
         /// Physical metadata extent without materializing its values. Used to
         /// reject malformed row windows before a legacy backend slice can abort.

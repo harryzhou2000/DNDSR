@@ -171,7 +171,7 @@ namespace DNDS::Runtime
     void RegisterArrayElement(pybind11::class_<T, Options...> &type, ElementSchema schema,
                               pybind11::object numpyDtype = pybind11::none())
     {
-        static_assert(std::is_trivially_copyable_v<T> && std::is_standard_layout_v<T> && alignof(T) <= 64);
+        static_assert(std::is_trivially_copyable_v<T> && std::is_standard_layout_v<T>);
         DNDS_check_throw_info(!pybind11::hasattr(type, "_dnds_array_element"), "duplicate POD Array registration");
         schema = ElementSchema::Register<T>(schema);
         auto dtype = numpyDtype.is_none() ? PythonSchemaDtype(schema) : pybind11::dtype::from_args(numpyDtype);
@@ -213,9 +213,8 @@ namespace DNDS::Runtime
         static void ValidateDtype(const pybind11::dtype &dtype)
         {
             DNDS_check_throw_info(dtype.itemsize() > 0 && !pybind11::cast<bool>(dtype.attr("hasobject")) &&
-                                      pybind11::cast<bool>(dtype.attr("isnative")) &&
-                                      pybind11::cast<size_t>(dtype.attr("alignment")) <= 64,
-                                  "Array requires a native POD dtype with alignment <= 64");
+                                      pybind11::cast<bool>(dtype.attr("isnative")),
+                                  "Array requires a native POD dtype");
         }
 
     public:
@@ -236,23 +235,27 @@ namespace DNDS::Runtime
         }
         PythonArray(PythonArray &&) noexcept = default;
         PythonArray &operator=(PythonArray &&) noexcept = default;
-        PythonArray(RowLayout layout, pybind11::object dtypeOrClass, Device device = Device::Host())
+        PythonArray(RowLayout layout, pybind11::object dtypeOrClass, Device device = Device::Host(), AllocationOptions options = {})
         {
             _element = GetPythonElement(dtypeOrClass);
             _dtype = _element ? _element->dtype : pybind11::dtype::from_args(dtypeOrClass);
             if (_element)
                 _elementType = std::move(dtypeOrClass);
             ValidateDtype(_dtype);
-            DNDS_check_throw_info(layout.IsContiguousRows(), "column/tiled Python Array access is not enabled yet");
             _schema = _element ? _element->schema : PythonDtypeSchema(_dtype);
-            _storage = ArrayStorage::Allocate(std::move(layout), _dtype.itemsize(), device);
+            DNDS_check_throw_info(!options.alignmentBytes || !(options.alignmentBytes & (options.alignmentBytes - 1)),
+                                  "allocation alignment must be a power of two");
+            options.alignmentBytes = std::max(options.alignmentBytes, _schema->Alignment());
+            _storage = ArrayStorage::Allocate(std::move(layout), _dtype.itemsize(), device, options);
         }
-        PythonArray(RowLayout layout, pybind11::dtype dtype, Device device = Device::Host()) : _dtype(std::move(dtype))
+        PythonArray(RowLayout layout, pybind11::dtype dtype, Device device = Device::Host(), AllocationOptions options = {}) : _dtype(std::move(dtype))
         {
             ValidateDtype(_dtype);
-            DNDS_check_throw_info(layout.IsContiguousRows(), "column/tiled Python Array access is not enabled yet");
             _schema = PythonDtypeSchema(_dtype);
-            _storage = ArrayStorage::Allocate(std::move(layout), _dtype.itemsize(), device);
+            DNDS_check_throw_info(!options.alignmentBytes || !(options.alignmentBytes & (options.alignmentBytes - 1)),
+                                  "allocation alignment must be a power of two");
+            options.alignmentBytes = std::max(options.alignmentBytes, _schema->Alignment());
+            _storage = ArrayStorage::Allocate(std::move(layout), _dtype.itemsize(), device, options);
         }
         PythonArray(ArrayStorage::Shared storage, pybind11::dtype dtype)
             : _storage(std::move(storage)), _dtype(std::move(dtype))
@@ -260,7 +263,6 @@ namespace DNDS::Runtime
             ValidateDtype(_dtype);
             _schema = PythonDtypeSchema(_dtype);
             DNDS_check_throw_info(_storage && _storage->ElementBytes() == size_t(_dtype.itemsize()), "Array dtype size mismatch");
-            DNDS_check_throw_info(_storage->Layout().IsContiguousRows(), "column/tiled Python Array access is not enabled yet");
             const auto alignment = std::max<size_t>(1, pybind11::cast<size_t>(_dtype.attr("alignment")));
             DNDS_check_throw_info(reinterpret_cast<uintptr_t>(Storage().LegacyPointer()) % alignment == 0,
                                   "Array dtype alignment mismatch");
@@ -326,10 +328,8 @@ namespace DNDS::Runtime
         }
         PythonArray New(RowLayout layout, Device device) const
         {
-            auto result = PythonArray(std::move(layout), _dtype, device);
-            result._element = _element;
-            result._schema = _schema;
-            result._elementType = _elementType;
+            auto result = *this;
+            result._storage = ArrayStorage::Allocate(std::move(layout), _dtype.itemsize(), device, AllocationOptions{_schema->Alignment()});
             return result;
         }
         PythonArray WithStorage(ArrayStorage::Shared storage) const

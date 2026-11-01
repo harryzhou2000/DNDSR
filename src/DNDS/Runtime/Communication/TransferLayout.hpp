@@ -19,10 +19,12 @@ namespace DNDS::Runtime
             Compact,
             Preserve,
             Table,
-            Padded
+            Padded,
+            UniformFormat
         };
         Kind _kind = Kind::Preserve;
         index _width = 0, _stride = 0;
+        RowLayout _prototype;
         TransferLayout(Kind kind, index width, index stride) : _kind(kind), _width(width), _stride(stride) {}
 
     public:
@@ -35,11 +37,31 @@ namespace DNDS::Runtime
         static TransferLayout Table(index width, index stride = 0) { return {Kind::Table, width, stride}; }
         static TransferLayout Padded(index capacity) { return {Kind::Padded, 0, capacity}; }
 
+        static TransferLayout ColMajor(index width, ColMajorTableOptions options = {})
+        {
+            DNDS_check_throw_info(width >= 0, "negative transfer table width");
+            TransferLayout policy{Kind::UniformFormat, width, 0};
+            policy._prototype = RowLayout::ColMajor(0, size_t(width), options);
+            return policy;
+        }
+        static TransferLayout TiledColMajor(index width, index tile)
+        {
+            DNDS_check_throw_info(width >= 0 && tile > 0, "invalid transfer tiled table shape");
+            TransferLayout policy{Kind::UniformFormat, width, tile};
+            policy._prototype = RowLayout::TiledColMajor(0, size_t(width), size_t(tile));
+            return policy;
+        }
+
         /// A fixed-width destination needs no row-length/CSR metadata. Sparse
         /// unrouted slots retain this declared width; their values are untouched.
         std::optional<RowLayout> TableLayout(const RowLayout &source, index rows) const
         {
-            const bool table = _kind == Kind::Table || (_kind == Kind::Preserve && !source.IsVariable());
+            DNDS_check_throw_info(rows >= 0, "negative transfer destination row count");
+            if (_kind == Kind::UniformFormat)
+                return _prototype.WithRowCount(size_t(rows));
+            if (_kind == Kind::Preserve && !source.IsVariable())
+                return source.WithRowCount(size_t(rows));
+            const bool table = _kind == Kind::Table;
             if (!table)
                 return {};
             const index width = _kind == Kind::Preserve ? index(source.Width()) : _width;

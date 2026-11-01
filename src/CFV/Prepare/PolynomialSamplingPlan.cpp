@@ -52,21 +52,21 @@ namespace DNDS::CFV
         _reconstruction.Metrics().ValidateField(mean, components);
         _reconstruction.Metrics().ValidateField(coefficients, components * n);
         DNDS_check_throw_info(derivative >= 0 && derivative <= n && output.GetDevice() == R::Device::Host() &&
-                                  output.Layout().Kind() == R::RowLayoutKind::Table && output.RowCount() == Size() &&
+                                  !output.Layout().IsVariable() && output.RowCount() == Size() &&
                                   output.Layout().Width() == components,
                               "polynomial sample output shape/placement or derivative mismatch");
         auto meanRead = mean.Owned().Read(), recRead = coefficients.Owned().Read();
         std::optional<R::Array<real>::ReadLease> meanGhost, recGhost;
         if (_needsGhost)
             meanGhost.emplace(mean.Ghost().Read()), recGhost.emplace(coefficients.Ghost().Read());
-        R::PairReadView<real, false, R::TableRows> u{meanRead.View<R::TableRows>(), meanGhost ? meanGhost->View<R::TableRows>() : R::ArrayView<const real, false, R::TableRows>{}};
-        R::PairReadView<real, false, R::TableRows> rec{recRead.View<R::TableRows>(), recGhost ? recGhost->View<R::TableRows>() : R::ArrayView<const real, false, R::TableRows>{}};
+        R::PairReadView<real, false, R::UniformTableRows> u{meanRead.View<R::UniformTableRows>(), meanGhost ? meanGhost->View<R::UniformTableRows>() : R::ArrayView<const real, false, R::UniformTableRows>{}};
+        R::PairReadView<real, false, R::UniformTableRows> rec{recRead.View<R::UniformTableRows>(), recGhost ? recGhost->View<R::UniformTableRows>() : R::ArrayView<const real, false, R::UniformTableRows>{}};
         auto idsRead = _cells.Read();
         auto basisRead = _basis.Read();
         const auto ids = idsRead.View<R::FixedRows<1>>();
         const auto basis = basisRead.View<R::TableRows>();
         auto write = output.Write();
-        const auto result = write.View<R::TableRows>();
+        const auto result = write.View<R::UniformTableRows>();
         for (index iPoint = 0; iPoint < Size(); ++iPoint)
         {
             const index iCell = ids(iPoint, 0);

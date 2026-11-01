@@ -185,3 +185,35 @@ def test_standalone_fv_gradients_and_vr_conversion():
         coefficients = metrics.BuildField(reconstruction.NRecDOF())
         plan.ConvertToCoefficients(gradient, reconstruction, coefficients)
         np.testing.assert_array_equal(coefficients.owned.numpy()[:, 2:], 0)
+
+@pytest.mark.parametrize("format", ["col", "tiled"])
+@pytest.mark.mpi
+def test_stride_aware_reconstruction_uses_shared_runtime_physical_fields(format):
+    grid = mesh()
+    metrics = CFV.FiniteVolumePlan.ConstructMetrics(grid)
+    settings = CFV.ReconstructionSettings()
+    settings.maxOrder = 1
+    settings.boundaryDerivativeWeights = [1, 0, 0, 0]
+    plan = CFV.VariationalReconstructionPlan.ConstructRecCoeff(metrics, settings)
+    prototype = R.RowLayout.col_major(0, 2, 8, 1) if format == "col" else R.RowLayout.tiled_col_major(0, 2, 8)
+    mean = metrics.BuildFieldWithLayout(R.RowLayout.col_major(0, 1, 8, 1))
+    work = plan.BuildWorkspaceWithLayout(1, prototype)
+    bc = plan.BuildBoundaryValues(1)
+    centers = np.array([metrics.GetCellCent(i) for i in range(metrics.NumCell())]).reshape(-1, 3)
+    mean.owned.assign(np.array([function(p) for p in centers]).reshape(-1, 1))
+    bc.values.assign(np.array([function(plan.GetBoundaryQuadrature(i).point)
+                              for i in range(plan.NumBoundaryQuadrature())]).reshape(-1, 1))
+    metrics.BindHalo(mean).begin().wait()
+    halo = metrics.BindHalo(work.coefficients)
+    for _ in range(180):
+        halo.begin().wait()
+        plan.DoReconstructionIter(mean, work, bc)
+    ids = R.Array(R.RowLayout.dense(metrics.NumCell(), 1), np.dtype("int64"))
+    points = R.Array(R.RowLayout.dense(metrics.NumCell(), 3))
+    values = R.Array(R.RowLayout.col_major(metrics.NumCell(), 1, 8, 1))
+    ids.assign(np.arange(metrics.NumCell(), dtype=np.int64).reshape(-1, 1))
+    points.assign(centers + [0.01, -0.02, 0])
+    plan.Evaluate(mean, work.coefficients, ids, points, values)
+    expected = np.array([function(p + [0.01, -0.02, 0]) for p in centers]).reshape(-1, 1)
+    np.testing.assert_allclose(values.numpy(), expected, atol=1e-9, rtol=1e-9)
+    assert work.coefficients.owned.layout.kind == prototype.kind

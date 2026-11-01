@@ -4,6 +4,12 @@
 #include "DNDS/Runtime/Array/RowBuilder.hpp"
 #include "DNDS/Runtime/Execution/EagerArray.hpp"
 #include "DNDS/Algebra/EigenView.hpp"
+#include "DNDS/Runtime/Array/ArrayCopy.hpp"
+#ifdef DNDS_UNIX_LIKE
+#    include <sys/wait.h>
+#    include <sys/resource.h>
+#    include <unistd.h>
+#endif
 #include <map>
 #include <stdexcept>
 
@@ -827,3 +833,61 @@ TEST_CASE("Local Eigen matrices honor physical component stride without packing"
         CHECK_THROWS(DNDS::Algebra::MakeEigenRowMatrices(read.View(), 2, 3, R::Device::CUDA(0)));
     }
 }
+
+TEST_CASE("Explicit logical conversion preserves values and retained source views")
+{
+    R::Array<double> source(R::RowLayout::Dense(9, 5, 7));
+    {
+        auto write = source.Write();
+        for (DNDS::index iRow = 0; iRow < 9; ++iRow)
+            for (DNDS::index iComp = 0; iComp < 5; ++iComp)
+                write.View()(iRow, iComp) = 100 * iRow + iComp;
+    }
+    const auto retained = source.Read();
+    for (const auto &shape : {R::RowLayout::ColMajor(9, 5, {8, 1}), R::RowLayout::TiledColMajor(9, 5, 8)})
+    {
+        const auto converted = R::ConvertLayout(source, shape);
+        const auto read = converted.Read();
+        CHECK(converted.Identity() != source.Identity());
+        for (DNDS::index iRow = 0; iRow < 9; ++iRow)
+            for (DNDS::index iComp = 0; iComp < 5; ++iComp)
+                CHECK(read.View()(iRow, iComp) == retained.View()(iRow, iComp));
+    }
+    CHECK_THROWS(R::ConvertLayout(source, R::RowLayout::ColMajor(8, 5)));
+    CHECK_THROWS(R::ConvertLayout(source, R::RowLayout::ColMajor(9, 4)));
+}
+
+#if defined(DNDS_UNIX_LIKE) && !defined(DNDS_NDEBUG)
+TEST_CASE("Checked element projections reject invalid row and component before memory access")
+{
+    for (int failure = 0; failure < 3; ++failure)
+    {
+        const auto child = fork();
+        REQUIRE(child >= 0);
+        if (child == 0)
+        {
+            struct rlimit limit
+            {
+                0, 0
+            };
+            setrlimit(RLIMIT_CORE, &limit);
+            std::signal(SIGABRT, SIG_DFL);
+            (void)std::freopen("/dev/null", "w", stderr);
+            double data[40]{};
+            R::ArrayView<double, true, R::TiledColMajorTable<8>> view{data, nullptr, 3, 5, 8, nullptr, R::RowLayoutKind::TiledColMajorTable};
+            if (failure == 0)
+                view(-1, 0) = 1;
+            if (failure == 1)
+                view(0, 5) = 1;
+            if (failure == 2)
+                view[0][-1] = 1;
+            _exit(0);
+        }
+        int status = 0;
+        REQUIRE(waitpid(child, &status, 0) == child);
+        CHECK(WIFSIGNALED(status));
+        if (WIFSIGNALED(status))
+            CHECK(WTERMSIG(status) == SIGABRT);
+    }
+}
+#endif

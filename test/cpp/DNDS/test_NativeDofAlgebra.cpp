@@ -355,3 +355,50 @@ int main(int argc, char **argv)
     MPI_Finalize();
     return result;
 }
+
+TEST_CASE("Native DOF commands and reductions mix physical formats without touching ghosts or padding")
+{
+    for (DNDS::index workers : {0, 2})
+    {
+        A::DofSpace space(33, 3);
+        A::DofField<double, 5> x(space, R::RowLayout::ColMajor(0, 5, {32, 1}));
+        A::DofField<> y(space, R::RowLayout::TiledColMajor(0, 5, 8));
+        A::DofField<> z(space, 5, 7);
+        Sentinels(x);
+        Sentinels(y);
+        Sentinels(z);
+        {
+            auto write = x.Owned().Write();
+            for (DNDS::index iRow = 0; iRow < 33; ++iRow)
+                for (DNDS::index iComp = 0; iComp < 5; ++iComp)
+                    write.View()(iRow, iComp) = iRow + 0.25 * iComp;
+        }
+        R::EagerEngine engine(workers);
+        const auto stream = engine.CreateCPUStream();
+        A::Fill(engine, stream, y, 3.);
+        A::Copy(engine, stream, z, x);
+        A::Axpy(engine, stream, z, 2., y);
+        const auto sums = A::ComponentSumLocal(engine, stream, z).Get();
+        const auto dot = A::DotLocal(engine, stream, x, y).Get();
+        engine.Synchronize();
+        double expectedDot = 0;
+        const auto read = z.Owned().Read();
+        for (DNDS::index iComp = 0; iComp < 5; ++iComp)
+        {
+            CHECK(sums[size_t(iComp)] == 33 * (22 + 0.25 * iComp));
+            for (DNDS::index iRow = 0; iRow < 33; ++iRow)
+            {
+                CHECK(read.View()(iRow, iComp) == iRow + 0.25 * iComp + 6);
+                expectedDot += 3 * (iRow + 0.25 * iComp);
+            }
+        }
+        CHECK(dot == expectedDot);
+        const auto ghostX = x.Ghost().Read(), ghostY = y.Ghost().Read();
+        for (DNDS::index iRow = 0; iRow < 3; ++iRow)
+            for (DNDS::index iComp = 0; iComp < 5; ++iComp)
+            {
+                CHECK(ghostX.View()(iRow, iComp) == -727);
+                CHECK(ghostY.View()(iRow, iComp) == -727);
+            }
+    }
+}

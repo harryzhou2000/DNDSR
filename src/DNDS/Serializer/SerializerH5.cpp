@@ -1022,7 +1022,7 @@ namespace DNDS::Serializer
         // Even empty ranks enter exactly one dataset payload operation.
         void TransferByteSegments(hid_t dataset, bool read, const void *data, index memoryBytes,
                                   const std::vector<ByteMemorySegment> &segments,
-                                  index fileOffset, index count, hid_t transfer)
+                                  index fileOffset, index count, hid_t transfer, const ByteFilePattern *pattern = nullptr)
         {
             ByteH5Handle fileSpace{H5Dget_space(dataset), H5Sclose};
             const hsize_t memoryExtent = hsize_t(std::max<index>(memoryBytes, 1));
@@ -1039,7 +1039,13 @@ namespace DNDS::Serializer
             if (count)
             {
                 const hsize_t start = hsize_t(fileOffset), length = hsize_t(count);
-                status |= H5Sselect_hyperslab(fileSpace.value, H5S_SELECT_SET, &start, nullptr, &length, nullptr);
+                if (pattern)
+                {
+                    const hsize_t stride = hsize_t(pattern->strideBytes), repeats = hsize_t(pattern->count), block = hsize_t(pattern->blockBytes);
+                    status |= H5Sselect_hyperslab(fileSpace.value, H5S_SELECT_SET, &start, &stride, &repeats, &block);
+                }
+                else
+                    status |= H5Sselect_hyperslab(fileSpace.value, H5S_SELECT_SET, &start, nullptr, &length, nullptr);
             }
             DNDS_assert_info(status >= 0, "byte segment selection failed");
             uint8_t dummy = 0;
@@ -1120,7 +1126,35 @@ namespace DNDS::Serializer
     void SerializerH5::ReadByteSegments(const std::string &name, uint8_t *data, index memoryBytes,
                                         const std::vector<ByteMemorySegment> &segments, ArrayGlobalOffset &offset)
     {
+        ReadByteSelection(name, data, memoryBytes, segments, offset, nullptr);
+    }
+    void SerializerH5::ReadBytePattern(const std::string &name, uint8_t *data, index memoryBytes,
+                                       const std::vector<ByteMemorySegment> &segments, const ByteFilePattern &pattern)
+    {
+        auto region = ArrayGlobalOffset{0, 0};
+        ReadByteSelection(name, data, memoryBytes, segments, region, &pattern);
+    }
+    void SerializerH5::ReadByteSelection(const std::string &name, uint8_t *data, index memoryBytes,
+                                         const std::vector<ByteMemorySegment> &segments, ArrayGlobalOffset &offset,
+                                         const ByteFilePattern *pattern)
+    {
         const index count = ValidateByteSegments(data, memoryBytes, segments);
+        index fileEnd = 0;
+        bool patternValid = true;
+        try
+        {
+            if (pattern)
+            {
+                patternValid = pattern->SelectedBytes() == count;
+                fileEnd = pattern->End();
+                offset = ArrayGlobalOffset{count, pattern->offset};
+            }
+        }
+        catch (...)
+        {
+            patternValid = false;
+        }
+        RowStartCheck(patternValid, "invalid direct byte file pattern or memory count mismatch");
         RowStartCheck(reading && (offset.isDist() || offset == ArrayGlobalOffset_One),
                       "Direct byte segment read requires a resolved byte window");
         RowStartCheck(RowStartSamePath(cP + "/" + name), "Direct byte segment read paths differ between ranks");
@@ -1145,10 +1179,10 @@ namespace DNDS::Serializer
         RowStartCheck(status >= 0 && dimensions == 1 && extent <= hsize_t(std::numeric_limits<index>::max()) &&
                           H5Tget_class(type.value) == H5T_INTEGER && H5Tget_size(type.value) == 1 &&
                           H5Tget_sign(type.value) == H5T_SGN_NONE && hsize_t(start) <= extent &&
-                          hsize_t(count) <= extent - hsize_t(start) && (!(offset == ArrayGlobalOffset_One) || hsize_t(count) == extent),
+                          (pattern ? hsize_t(fileEnd) <= extent : hsize_t(count) <= extent - hsize_t(start)) && (!(offset == ArrayGlobalOffset_One) || hsize_t(count) == extent),
                       "Direct byte segment dataset type, extent or selected window is invalid");
         RowStartCheck(!offset.isDist() || offset.size() == count, "Direct byte segment count differs from the requested window");
-        TransferByteSegments(dataset.value, true, data, memoryBytes, segments, start, count, transfer.value);
+        TransferByteSegments(dataset.value, true, data, memoryBytes, segments, start, count, transfer.value, pattern);
         if (offset.isDist())
             offset = ArrayGlobalOffset{count, start};
     }

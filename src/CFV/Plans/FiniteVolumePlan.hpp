@@ -142,6 +142,8 @@ namespace DNDS::CFV
         bool Axisymmetric() const;
         const Geom::EntitySpace &Cells() const;
         FVField BuildField(index width) const;
+        /// Uniform physical prototype; derive owned/ghost pitches independently.
+        FVField BuildField(Runtime::RowLayout prototype, Runtime::Device device = Runtime::Device::Host()) const;
         /// Collective binding, retained by caller for persistent repeated pulls.
         Runtime::TransferBinding BindHalo(FVField &field) const;
         void ValidateField(const FVField &field, index width) const;
@@ -238,6 +240,8 @@ namespace DNDS::CFV
         HardEigen::SVDInverseDiagnostics GetCellInverseDiagnostics(index iCell) const;
         void Validate() const;
         ReconstructionWorkspace BuildWorkspace(index components, std::vector<index> periodicVectorStarts = {}) const;
+        ReconstructionWorkspace BuildWorkspace(index components, Runtime::RowLayout coefficientPrototype,
+                                               std::vector<index> periodicVectorStarts = {}) const;
         ReconstructionBoundaryValues BuildBoundaryValues(index components) const;
         index NumBoundaryQuadrature() const;
         BoundaryQuadraturePoint GetBoundaryQuadrature(index iPoint) const;

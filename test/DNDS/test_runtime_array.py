@@ -304,3 +304,19 @@ def test_runtime_parallel_checkpoint(device):
     comm.Barrier()
     if comm.rank == 0:
         os.remove(name)
+
+@pytest.mark.parametrize("layout", ["col", "tiled"])
+def test_physical_layout_debug_views_and_element_updates(layout):
+    shape = R.RowLayout.col_major(33, 7, 32, 1) if layout == "col" else R.RowLayout.tiled_col_major(33, 7, 8)
+    a = R.Array(shape, np.dtype("float64"))
+    expected = np.arange(231, dtype=np.float64).reshape(33, 7)
+    a.assign(expected)
+    np.testing.assert_array_equal(a.numpy(), expected)
+    with a.write() as access:
+        access.assign_row(32, np.arange(7, dtype=np.float64) + 900)
+        access[8, 3] = -21
+    expected[32] = np.arange(7) + 900
+    expected[8, 3] = -21
+    np.testing.assert_array_equal(a[::3, ::-2].numpy(), expected[::3, ::-2])
+    with a.read() as access:
+        np.testing.assert_array_equal(access.row(32), expected[32])

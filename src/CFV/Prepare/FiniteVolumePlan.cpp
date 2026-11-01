@@ -166,6 +166,12 @@ namespace DNDS::CFV
         Detail::Zero(field);
         return field;
     }
+    FVField FiniteVolumePlan::BuildField(R::RowLayout prototype, R::Device device) const
+    {
+        Validate();
+        DNDS_check_throw_info(!prototype.IsVariable() && prototype.Width() > 0, "FV fields require a uniform physical table");
+        return FVField(_data->dofs, std::move(prototype), device);
+    }
     void FiniteVolumePlan::ValidateField(const FVField &field, index width) const
     {
         Validate();

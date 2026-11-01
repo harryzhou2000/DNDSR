@@ -204,3 +204,91 @@ TEST_CASE("Native JSON checkpoint padded rows and POD schema")
     serializer->CloseFile();
     std::filesystem::remove(file);
 }
+
+TEST_CASE("Native physical table archives restore placement and read directly into other layouts")
+{
+    DNDS::MPIInfo mpi(MPI_COMM_WORLD);
+    int pid = getpid();
+    MPI_Bcast(&pid, 1, MPI_INT, 0, mpi.comm);
+    const auto file = "__runtime_physical_" + std::to_string(pid) + ".h5";
+    const DNDS::index rows = mpi.rank == 0 ? 0 : mpi.rank + 9;
+    const auto shapes = std::vector<RowLayout>{RowLayout::Dense(rows, 5, 7), RowLayout::ColMajor(rows, 5, {8, 1}), RowLayout::TiledColMajor(rows, 5, 8)};
+    auto serializer = std::make_shared<S::SerializerH5>(mpi);
+    serializer->SetCollectiveRW(true, true);
+    serializer->OpenFile(file, false);
+    for (DNDS::index k = 0; k < 3; ++k)
+    {
+        Array<double> values(shapes[size_t(k)]);
+        {
+            auto write = values.Write();
+            for (DNDS::index iRow = 0; iRow < rows; ++iRow)
+                for (DNDS::index iComp = 0; iComp < 5; ++iComp)
+                    write.View()(iRow, iComp) = 10000 * mpi.rank + 100 * iRow + iComp;
+        }
+        WriteArray(values, serializer, "physical_" + std::to_string(k), mpi);
+    }
+    serializer->CloseFile();
+    serializer->OpenFile(file, true);
+    for (DNDS::index k = 0; k < 3; ++k)
+    {
+        const auto name = "physical_" + std::to_string(k);
+        auto restored = ReadArray<double>(serializer, name, mpi);
+        CHECK(restored.RowCount() == rows);
+        if (k)
+            CHECK(restored.Layout() == shapes[size_t(k)]);
+        const auto check = [&](const auto &array)
+        {
+            const auto read = array.Read();
+            for (DNDS::index iRow = 0; iRow < rows; ++iRow)
+                for (DNDS::index iComp = 0; iComp < 5; ++iComp)
+                    CHECK(read.View()(iRow, iComp) == 10000 * mpi.rank + 100 * iRow + iComp);
+        };
+        check(restored);
+        check(ReadArray<double, ColMajorTable>(serializer, name, mpi));
+        check(ReadArray<double, TiledColMajorTable<8>>(serializer, name, mpi));
+        check(ReadArray<double, TableRows>(serializer, name, mpi));
+        const DNDS::index globalRows = mpi.size == 1 ? 0 : 10;
+        auto partitioned = ReadArray<double, TiledColMajorTable<8>>(serializer, name, mpi, {globalRows, 0});
+        const auto read = partitioned.Read();
+        for (DNDS::index iRow = 0; iRow < globalRows; ++iRow)
+            for (DNDS::index iComp = 0; iComp < 5; ++iComp)
+                CHECK(read.View()(iRow, iComp) == 10000 + 100 * iRow + iComp);
+    }
+    serializer->CloseFile();
+    MPI_Barrier(mpi.comm);
+    if (mpi.rank == 0)
+        std::filesystem::remove(file);
+}
+
+TEST_CASE("Per-rank JSON physical tables retain logical values through direct format conversion")
+{
+    DNDS::MPIInfo mpi(MPI_COMM_WORLD);
+    const auto file = "__runtime_physical_" + std::to_string(getpid()) + ".json";
+    auto serializer = std::make_shared<S::SerializerJSON>();
+    serializer->OpenFile(file, false);
+    for (DNDS::index k = 0; k < 3; ++k)
+    {
+        const auto shape = k == 0 ? RowLayout::Dense(9, 5, 7) : k == 1 ? RowLayout::ColMajor(9, 5, {8, 1})
+                                                                       : RowLayout::TiledColMajor(9, 5, 8);
+        Array<int64_t> values(shape);
+        {
+            auto write = values.Write();
+            for (DNDS::index iRow = 0; iRow < 9; ++iRow)
+                for (DNDS::index iComp = 0; iComp < 5; ++iComp)
+                    write.View()(iRow, iComp) = iRow * 100 + iComp;
+        }
+        WriteArray(values, serializer, "physical_" + std::to_string(k), mpi);
+    }
+    serializer->CloseFile();
+    serializer->OpenFile(file, true);
+    for (DNDS::index k = 0; k < 3; ++k)
+    {
+        auto values = ReadArray<int64_t, ColMajorTable>(serializer, "physical_" + std::to_string(k), mpi);
+        const auto read = values.Read();
+        for (DNDS::index iRow = 0; iRow < 9; ++iRow)
+            for (DNDS::index iComp = 0; iComp < 5; ++iComp)
+                CHECK(read.View()(iRow, iComp) == iRow * 100 + iComp);
+    }
+    serializer->CloseFile();
+    std::filesystem::remove(file);
+}

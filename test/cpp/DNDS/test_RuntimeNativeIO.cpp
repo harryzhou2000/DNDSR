@@ -71,26 +71,28 @@ namespace
 
     template <class T, class Backend>
     void WriteDirect(const R::Array<T> &source, const std::shared_ptr<DirectSpy<Backend>> &serializer,
-                     const std::string &name, const DNDS::MPIInfo &mpi)
+                     const std::string &name, const DNDS::MPIInfo &mpi, size_t calls = 1)
     {
         auto retained = source.Storage().Read();
         const auto pointer = retained.template View<uint8_t>().data;
         const auto before = serializer->written.size();
         R::WriteArray(source, serializer, name, mpi);
-        REQUIRE(serializer->written.size() == before + 1);
-        CHECK(serializer->written.back() == pointer);
+        REQUIRE(serializer->written.size() == before + calls);
+        for (size_t i = before; i < serializer->written.size(); ++i)
+            CHECK(serializer->written[i] == pointer);
         CHECK(serializer->legacyWrites == 0);
     }
 
     template <class T, class L = R::RowLayout, class Backend>
     R::Array<T> ReadDirect(const std::shared_ptr<DirectSpy<Backend>> &serializer, const std::string &name,
-                           const DNDS::MPIInfo &mpi, S::ArrayGlobalOffset partition = S::ArrayGlobalOffset_Unknown)
+                           const DNDS::MPIInfo &mpi, S::ArrayGlobalOffset partition = S::ArrayGlobalOffset_Unknown, size_t calls = 1)
     {
         const auto before = serializer->restored.size();
         auto result = R::ReadArray<T, L>(serializer, name, mpi, partition);
-        REQUIRE(serializer->restored.size() == before + 1);
+        REQUIRE(serializer->restored.size() == before + calls);
         auto retained = result.Storage().Read();
-        CHECK(serializer->restored.back() == retained.template View<uint8_t>().data);
+        for (size_t i = before; i < serializer->restored.size(); ++i)
+            CHECK(serializer->restored[i] == retained.template View<uint8_t>().data);
         CHECK(serializer->legacyWrites == 0);
         return result;
     }
@@ -298,8 +300,9 @@ namespace
         std::vector<size_t> lengths(rows);
         for (size_t row = 0; row < rows; ++row)
             lengths[row] = row % 3 == 1 ? 0 : 2 + row % 2;
-        R::Array<Mixed> dense(R::RowLayout::Dense(rows, 2, 4)), csr(R::RowLayout::Ragged(lengths));
-        for (auto *array : {&dense, &csr})
+        R::Array<Mixed> dense(R::RowLayout::Dense(rows, 2, 4)), csr(R::RowLayout::Ragged(lengths)),
+            col(R::RowLayout::ColMajor(rows, 2, {8, 1})), tiled(R::RowLayout::TiledColMajor(rows, 2, 8));
+        for (auto *array : {&dense, &csr, &col, &tiled})
         {
             auto write = array->Write();
             for (size_t row = 0; row < rows; ++row)
@@ -313,6 +316,8 @@ namespace
         serializer->OpenFile(file, false);
         WriteDirect(dense, serializer, "dense", mpi);
         WriteDirect(csr, serializer, "csr", mpi);
+        WriteDirect(col, serializer, "col", mpi, 2);
+        WriteDirect(tiled, serializer, "tiled", mpi, 2);
         serializer->CloseFile();
         const int opposite = 1 - R::Detail::NativeByteOrder();
         MPI_Barrier(mpi.comm);
@@ -333,14 +338,15 @@ namespace
             SetH5Order(file, opposite);
         MPI_Barrier(mpi.comm);
         serializer->OpenFile(file, true);
-        for (const auto &name : {"dense", "csr"})
+        for (const auto &name : {"dense", "csr", "col", "tiled"})
         {
-            auto result = ReadDirect<Mixed>(serializer, name, mpi);
+            const bool strided = std::string(name) == "col" || std::string(name) == "tiled";
+            auto result = ReadDirect<Mixed>(serializer, name, mpi, S::ArrayGlobalOffset_Unknown, strided ? 2 : 1);
             REQUIRE(result.RowCount() == rows);
             auto read = result.Read();
             for (size_t row = 0; row < rows; ++row)
             {
-                CHECK(result.RowSize(row) == (std::string(name) == "dense" ? 2 : lengths[row]));
+                CHECK(result.RowSize(row) == (std::string(name) == "csr" ? lengths[row] : 2));
                 for (size_t slot = 0; slot < result.RowSize(row); ++slot)
                 {
                     Mixed expected;

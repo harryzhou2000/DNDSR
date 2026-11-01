@@ -207,3 +207,36 @@ def test_capsule_single_consumption_and_runtime_roundtrip(torch):
     del b
     gc.collect()
     assert a[2, 3] == 71
+
+@pytest.mark.parametrize("layout", ["col", "tiled"])
+def test_physical_table_exports_are_truthful_and_retain_lease(torch, device, layout):
+    shape = R.RowLayout.col_major(33, 5, 32, 1) if layout == "col" else R.RowLayout.tiled_col_major(33, 5, 8)
+    a = R.Array(shape, np.dtype("float64"), device, alignment_bytes=4096)
+    expected = np.arange(165).reshape(33, 5).astype(np.float64)
+    a[:] = expected
+    with a.read() as access:
+        address = access.unsafe_address()
+    assert address % 4096 == 0
+    tensor = torch.from_dlpack(a)
+    assert tensor.data_ptr() == address
+    if layout == "col":
+        assert tensor.shape == (33, 5) and tensor.stride() == (1, 64)
+        np.testing.assert_array_equal(tensor.cpu().numpy(), expected)
+        tensor.add_(7)
+        retained = tensor[::2, :]
+    else:
+        assert tensor.shape == (5, 5, 8) and tensor.stride() == (40, 8, 1)
+        logical = tensor.permute(0, 2, 1).reshape(40, 5)[:33]
+        np.testing.assert_array_equal(logical.cpu().numpy(), expected)
+        tensor.add_(7)
+        retained = tensor[4:5]
+    del tensor
+    gc.collect()
+    with pytest.raises(RuntimeError):
+        a.numpy()
+    del retained
+    gc.collect()
+    np.testing.assert_array_equal(a.numpy(), expected + 7)
+    view = a[::2, ::-1]
+    a.reset(R.RowLayout.dense(1, 5), device)
+    np.testing.assert_array_equal(view.numpy(), (expected + 7)[::2, ::-1])

@@ -421,6 +421,31 @@ namespace DNDS::Serializer
                 data[segment.offset + byte] = stored[source++].get<uint8_t>();
     }
 
+    void SerializerJSON::ReadBytePattern(const std::string &name, uint8_t *data, index memoryBytes,
+                                         const std::vector<ByteMemorySegment> &segments, const ByteFilePattern &pattern)
+    {
+        const auto selected = ValidateByteSegments(data, memoryBytes, segments);
+        DNDS_check_throw_info((!fileStream.is_open() || reading) && selected == pattern.SelectedBytes(),
+                              "JSON byte pattern requires readable storage and matching memory count");
+        const auto &stored = jObj.at(nlohmann::json::json_pointer(cP)).at(name);
+        DNDS_check_throw_info(stored.is_array() && size_t(pattern.End()) <= stored.size(),
+                              "strided JSON reads require a native byte array and a valid file span");
+        // Validate before writing. The document already owns encoded bytes; no
+        // second payload buffer is created. Legacy compressed records must be
+        // read in their original logical layout before an explicit conversion.
+        for (const auto &value : stored)
+            DNDS_check_throw_info(value.is_number_integer() &&
+                                      (value.is_number_unsigned() ? value.get<uint64_t>() <= 255 : value.get<int64_t>() >= 0 && value.get<int64_t>() <= 255),
+                                  "JSON byte pattern contains an invalid byte");
+        index ordinal = 0;
+        for (const auto &segment : segments)
+            for (index byte = 0; byte < segment.size; ++byte, ++ordinal)
+            {
+                const auto fileByte = pattern.offset + (ordinal / pattern.blockBytes) * pattern.strideBytes + ordinal % pattern.blockBytes;
+                data[segment.offset + byte] = stored[size_t(fileByte)].get<uint8_t>();
+            }
+    }
+
     void SerializerJSON::WriteUint8Array(const std::string &name, const uint8_t *data, index size, ArrayGlobalOffset offset)
     {
         auto zlibCompressedSize = [&](index sizeC)

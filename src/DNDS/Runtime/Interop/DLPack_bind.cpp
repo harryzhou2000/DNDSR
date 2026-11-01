@@ -27,18 +27,26 @@ namespace DNDS::Runtime
         {
             ArrayStorage::Shared storage;
             WriteAccess access;
-            std::array<int64_t, 2> shape, strides;
+            std::array<int64_t, 3> shape{}, strides{};
             DLManagedTensor tensor{};
             Export(const PythonArray &array, ExecutionContext context, DLDataType dtype)
                 : storage(array.SharedStorage()), access(storage->Write(context))
             {
                 auto layout = storage->Layout();
-                shape = {int64_t(layout.RowCount()), int64_t(layout.Width())};
-                strides = {int64_t(layout.Stride()), 1};
+                int dimensions = 2;
+                shape = {int64_t(layout.RowCount()), int64_t(layout.Width()), 0};
+                strides = layout.Kind() == RowLayoutKind::ColMajorTable ? std::array<int64_t, 3>{1, int64_t(layout.Stride()), 0} : std::array<int64_t, 3>{int64_t(layout.Stride()), 1, 0};
+                if (layout.Kind() == RowLayoutKind::TiledColMajorTable)
+                {
+                    dimensions = 3;
+                    const auto tile = layout.Stride();
+                    shape = {int64_t(layout.RowCount() / tile + (layout.RowCount() % tile != 0)), int64_t(layout.Width()), int64_t(tile)};
+                    strides = {int64_t(layout.Width() * tile), int64_t(tile), 1};
+                }
                 tensor.dl_tensor = {access.View<uint8_t>().data,
                                     {context.device.space == MemorySpace::Host ? kDLCPU : kDLCUDA,
                                      context.device.space == MemorySpace::Host ? 0 : context.device.ordinal},
-                                    2,
+                                    dimensions,
                                     dtype,
                                     shape.data(),
                                     strides.data(),
@@ -152,7 +160,7 @@ namespace DNDS::Runtime
         array.def("__dlpack_device__", [](const PythonArray &a)
                   { auto d = a.Storage().GetDevice(); return py::make_tuple(d.space == MemorySpace::Host ? 1 : 2, d.space == MemorySpace::Host ? 0 : d.ordinal); })
             .def("__dlpack__", [](const PythonArray &a, py::object stream, py::object, py::object device, py::object copy)
-                 { return ExportArray(a, std::move(stream), std::move(copy), std::move(device)); }, py::arg("stream") = py::none(), py::kw_only(), py::arg("max_version") = py::none(), py::arg("dl_device") = py::none(), py::arg("copy") = py::none(), "Zero-copy numeric table export. Holds an exclusive write lease until the consumer's last alias dies; CUDA release fences the passed stream. Finish DNDS producers first; join all other foreign streams into this stream and keep it alive through release. No autograd contract.");
+                 { return ExportArray(a, std::move(stream), std::move(copy), std::move(device)); }, py::arg("stream") = py::none(), py::kw_only(), py::arg("max_version") = py::none(), py::arg("dl_device") = py::none(), py::arg("copy") = py::none(), "Zero-copy numeric table export: logical2D for row/column tables; physical3D (tiles,components,tile) including tails for tiled storage. Logical row count remains array.layout.row_count. Holds an exclusive write lease until the consumer's last alias dies; CUDA release fences the passed stream. Finish DNDS producers first; join all other foreign streams into this stream and keep it alive through release. No autograd contract.");
         m.def("from_dlpack", &ImportArray,
               "Import a writable contiguous 1D/2D numeric producer with shared ownership. CUDA import observes producer readiness on the legacy stream. Import each foreign allocation once and derive DNDS aliases; external owners must obey DNDS leases and explicitly synchronize future foreign work. The producer descriptor is trusted for capacity; no alias discovery or autograd is provided.");
     }

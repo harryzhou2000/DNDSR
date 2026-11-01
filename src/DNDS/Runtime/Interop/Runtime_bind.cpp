@@ -146,9 +146,9 @@ namespace DNDS::Runtime
                 LiveCheck();
                 const auto width = layout.RowSize(row);
                 py::array result(dtype, std::vector<py::ssize_t>{py::ssize_t(width)});
-                if (width)
-                    Detail::CopyBytes(Pointer() + layout.Offset(row) * dtype.itemsize(), Placement(), result.mutable_data(),
-                                      Device::Host(), width * dtype.itemsize(), context)
+                for (index iComp = 0; iComp < width; iComp += layout.IsContiguousRows() ? width : 1)
+                    Detail::CopyBytes(Pointer() + layout.ElementOffset(row, iComp) * dtype.itemsize(), Placement(), result.mutable_data(iComp),
+                                      Device::Host(), (layout.IsContiguousRows() ? width : 1) * dtype.itemsize(), context)
                         .Wait();
                 return result;
             }
@@ -159,9 +159,9 @@ namespace DNDS::Runtime
                 auto input = py::array::ensure(value, py::array::c_style);
                 DNDS_check_throw_info(input && input.dtype().equal(dtype) && input.ndim() == 1 && size_t(input.size()) == layout.RowSize(row),
                                       "row assignment dtype/shape mismatch");
-                if (input.size())
-                    Detail::CopyBytes(input.data(), Device::Host(), write->View<uint8_t>().data + layout.Offset(row) * dtype.itemsize(),
-                                      Placement(), input.nbytes(), context)
+                for (index iComp = 0; iComp < input.size(); iComp += layout.IsContiguousRows() ? input.size() : 1)
+                    Detail::CopyBytes(input.data(iComp), Device::Host(), write->View<uint8_t>().data + layout.ElementOffset(row, iComp) * dtype.itemsize(),
+                                      Placement(), (layout.IsContiguousRows() ? input.size() : 1) * dtype.itemsize(), context)
                         .Wait();
             }
             py::object Get(size_t row, size_t column) const
@@ -171,7 +171,7 @@ namespace DNDS::Runtime
                 if (!element)
                     return Row(row).attr("__getitem__")(column);
                 std::vector<uint8_t> value(dtype.itemsize());
-                Detail::CopyBytes(Pointer() + (layout.Offset(row) + column) * dtype.itemsize(), Placement(), value.data(),
+                Detail::CopyBytes(Pointer() + layout.ElementOffset(row, column) * dtype.itemsize(), Placement(), value.data(),
                                   Device::Host(), value.size(), context)
                     .Wait();
                 return element->load(value.data());
@@ -189,7 +189,7 @@ namespace DNDS::Runtime
                 }
                 std::vector<uint8_t> bytes(dtype.itemsize());
                 element->store(bytes.data(), value);
-                Detail::CopyBytes(bytes.data(), Device::Host(), write->View<uint8_t>().data + (layout.Offset(row) + column) * dtype.itemsize(),
+                Detail::CopyBytes(bytes.data(), Device::Host(), write->View<uint8_t>().data + layout.ElementOffset(row, column) * dtype.itemsize(),
                                   Placement(), bytes.size(), context)
                     .Wait();
             }
@@ -227,9 +227,11 @@ namespace DNDS::Runtime
             auto host = To(a, Device::Host(), 0);
             auto read = host.Read(ExecutionContext::Host());
             py::array result(a.Dtype(), {py::ssize_t(a.Layout().RowCount()), py::ssize_t(a.Layout().Width())});
-            for (size_t i = 0; i < a.Layout().RowCount(); ++i)
-                if (a.Layout().Width())
-                    std::memcpy(result.mutable_data(i, 0), read.View<uint8_t>().data + host.Layout().Offset(i) * host.Dtype().itemsize(), a.Layout().Width() * a.Dtype().itemsize());
+            const auto shape = a.Layout();
+            for (index iRow = 0; iRow < shape.RowCount(); ++iRow)
+                for (index iComp = 0; iComp < shape.Width(); iComp += shape.IsContiguousRows() ? shape.Width() : 1)
+                    std::memcpy(result.mutable_data(iRow, iComp), read.View<uint8_t>().data + shape.ElementOffset(iRow, iComp) * a.Dtype().itemsize(),
+                                (shape.IsContiguousRows() ? shape.Width() : 1) * a.Dtype().itemsize());
             return result;
         }
         void Assign(PythonArray &a, py::array input)
@@ -241,9 +243,11 @@ namespace DNDS::Runtime
             auto host = a.New(a.Layout(), Device::Host());
             {
                 auto write = host.Write(ExecutionContext::Host());
-                for (size_t i = 0; i < a.Layout().RowCount(); ++i)
-                    if (a.Layout().Width())
-                        std::memcpy(write.View<uint8_t>().data + host.Layout().Offset(i) * host.Dtype().itemsize(), input.data(i, 0), a.Layout().Width() * a.Dtype().itemsize());
+                const auto shape = a.Layout();
+                for (index iRow = 0; iRow < shape.RowCount(); ++iRow)
+                    for (index iComp = 0; iComp < shape.Width(); iComp += shape.IsContiguousRows() ? shape.Width() : 1)
+                        std::memcpy(write.View<uint8_t>().data + shape.ElementOffset(iRow, iComp) * a.Dtype().itemsize(), input.data(iRow, iComp),
+                                    (shape.IsContiguousRows() ? shape.Width() : 1) * a.Dtype().itemsize());
             }
             a.CopyFrom(host, a.Context(0)).Wait();
         }
@@ -267,11 +271,11 @@ namespace DNDS::Runtime
             auto read = a.Read(a.Context(0));
             const auto *source = read.View<uint8_t>().data;
             const auto stride = a.Dtype().itemsize();
-            const bool contiguous = std::adjacent_find(columns.begin(), columns.end(), [](size_t x, size_t y)
-                                                       { return y != x + 1; }) == columns.end();
+            const bool contiguous = a.Layout().IsContiguousRows() && std::adjacent_find(columns.begin(), columns.end(), [](size_t x, size_t y)
+                                                                                        { return y != x + 1; }) == columns.end();
             for (size_t i = 0; i < rows.size() && !columns.empty(); ++i)
                 for (size_t j = 0; j < columns.size(); j += contiguous ? columns.size() : 1)
-                    Detail::CopyBytes(source + (a.Layout().Offset(rows[i]) + columns[j]) * stride, a.Storage().GetDevice(),
+                    Detail::CopyBytes(source + a.Layout().ElementOffset(rows[i], columns[j]) * stride, a.Storage().GetDevice(),
                                       result.mutable_data(i, j), Device::Host(), (contiguous ? columns.size() : 1) * stride, a.Context(0))
                         .Wait();
             return result;
@@ -286,11 +290,11 @@ namespace DNDS::Runtime
             auto write = a.Write(a.Context(0));
             auto *destination = write.View<uint8_t>().data;
             const auto stride = a.Dtype().itemsize();
-            const bool contiguous = std::adjacent_find(columns.begin(), columns.end(), [](size_t x, size_t y)
-                                                       { return y != x + 1; }) == columns.end();
+            const bool contiguous = a.Layout().IsContiguousRows() && std::adjacent_find(columns.begin(), columns.end(), [](size_t x, size_t y)
+                                                                                        { return y != x + 1; }) == columns.end();
             for (size_t i = 0; i < rows.size() && !columns.empty(); ++i)
                 for (size_t j = 0; j < columns.size(); j += contiguous ? columns.size() : 1)
-                    Detail::CopyBytes(values.data(i, j), Device::Host(), destination + (a.Layout().Offset(rows[i]) + columns[j]) * stride,
+                    Detail::CopyBytes(values.data(i, j), Device::Host(), destination + a.Layout().ElementOffset(rows[i], columns[j]) * stride,
                                       a.Storage().GetDevice(), (contiguous ? columns.size() : 1) * stride, a.Context(0))
                         .Wait();
         }
@@ -347,9 +351,17 @@ namespace DNDS::Runtime
         py::enum_<RowLayoutKind>(m, "RowLayoutKind")
             .value("Table", RowLayoutKind::Table)
             .value("Padded", RowLayoutKind::Padded)
-            .value("CSR", RowLayoutKind::CSR);
+            .value("CSR", RowLayoutKind::CSR)
+            .value("ColMajorTable", RowLayoutKind::ColMajorTable)
+            .value("TiledColMajorTable", RowLayoutKind::TiledColMajorTable);
         py::class_<RowLayout>(m, "RowLayout")
             .def_static("dense", &RowLayout::Dense, py::arg("rows"), py::arg("width"), py::arg("stride") = 0)
+            .def_static("col_major", [](index rows, index width, index multiple, index extra)
+                        { return RowLayout::ColMajor(rows, width, {multiple, extra}); }, py::arg("rows"), py::arg("width"), py::arg("row_padding_multiple") = 1, py::arg("extra_rows") = 0)
+            .def_static("col_major_with_pitch", [](index rows, index width, index pitch)
+                        { return RowLayout::ColMajorWithPitch(rows, width, pitch); }, py::arg("rows"), py::arg("width"), py::arg("pitch"))
+            .def_static("tiled_col_major", &RowLayout::TiledColMajor, py::arg("rows"), py::arg("width"), py::arg("tile"))
+            .def_property_readonly("component_stride", &RowLayout::ComponentStride)
             .def_static("ragged", &RowLayout::Ragged)
             .def_static("padded", &RowLayout::Padded, py::arg("lengths"), py::arg("capacity"))
             .def_property_readonly("kind", &RowLayout::Kind)
@@ -400,7 +412,10 @@ namespace DNDS::Runtime
         py::class_<CopyOperation>(m, "CopyOperation")
             .def("wait", &CopyOperation::Wait, py::call_guard<py::gil_scoped_release>());
         py::class_<PythonArray>(m, "Array", "Shared native storage with tracked access. Complete pending work before synchronous indexing; reset leaves existing views/bindings on old storage. valid is not a dependency-ordering proof.")
-            .def(py::init<RowLayout, py::object, Device>(), py::arg("layout"), py::arg("dtype") = py::dtype::of<double>(), py::arg("device") = Device::Host())
+            .def(py::init([](RowLayout layout, py::object dtype, Device device, size_t alignment)
+                          { DNDS_check_throw_info(!alignment || !(alignment & (alignment - 1)), "alignment must be a power of two");
+                            return PythonArray(std::move(layout), std::move(dtype), device, AllocationOptions{alignment}); }),
+                 py::arg("layout"), py::arg("dtype") = py::dtype::of<double>(), py::arg("device") = Device::Host(), py::arg("alignment_bytes") = 0)
             .def_property_readonly("layout", [](const PythonArray &a)
                                    { return a.Layout(); })
             .def_property_readonly("row_count", [](const PythonArray &a)
@@ -443,7 +458,7 @@ namespace DNDS::Runtime
                      std::vector<uint8_t> bytes(a.Dtype().itemsize());
                      a.Element()->store(bytes.data(), value);
                      PythonAccess access(a, true, 0);
-                     Detail::CopyBytes(bytes.data(), Device::Host(), access.write->View<uint8_t>().data + (access.layout.Offset(row) + column) * bytes.size(),
+                     Detail::CopyBytes(bytes.data(), Device::Host(), access.write->View<uint8_t>().data + access.layout.ElementOffset(row, column) * bytes.size(),
                                        access.Placement(), bytes.size(), access.context).Wait(); })
             .def("_edit_object", [](PythonArray &a, size_t row, size_t column, py::function edit)
                  {
@@ -462,7 +477,7 @@ namespace DNDS::Runtime
                          access.write->CancelUnmodified(); // Only the host snapshot was edited.
                          throw;
                      }
-                     Detail::CopyBytes(bytes.data(), Device::Host(), access.write->View<uint8_t>().data + (access.layout.Offset(row) + column) * bytes.size(),
+                     Detail::CopyBytes(bytes.data(), Device::Host(), access.write->View<uint8_t>().data + access.layout.ElementOffset(row, column) * bytes.size(),
                                        access.Placement(), bytes.size(), access.context).Wait();
                      return result; })
             .def("copy_from", [](PythonArray &a, const PythonArray &source, uintptr_t stream)
@@ -496,7 +511,10 @@ namespace DNDS::Runtime
             .def_static("preserve_storage", &TransferLayout::PreserveStorage)
             .def_static("compact", &TransferLayout::Compact)
             .def_static("table", &TransferLayout::Table, py::arg("width"), py::arg("stride") = 0)
-            .def_static("padded", &TransferLayout::Padded, py::arg("capacity"));
+            .def_static("padded", &TransferLayout::Padded, py::arg("capacity"))
+            .def_static("col_major", [](index width, index multiple, index extra)
+                        { return TransferLayout::ColMajor(width, {multiple, extra}); }, py::arg("width"), py::arg("row_padding_multiple") = 1, py::arg("extra_rows") = 0)
+            .def_static("tiled_col_major", &TransferLayout::TiledColMajor, py::arg("width"), py::arg("tile"));
         py::class_<RowRequest>(m, "RowRequest")
             .def(py::init([](int rank, int64_t row, index destination)
                           { return RowRequest{rank, row, destination}; }));

@@ -961,3 +961,108 @@ TEST_CASE("Native CUDA direct MPI and device fan-in reduction")
     CHECK(result.Read().At(1, 2) == rank + (rank + 1) % size + 4);
 }
 #endif
+
+TEST_CASE("Mixed physical tables use direct datatype routes and preserve logical rows")
+{
+    int rank = 0, size = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+    const auto context = std::make_shared<CommunicationContext>(MPI_COMM_WORLD);
+    constexpr DNDS::index nRow = 33, width = 7;
+    const auto formats = std::vector<RowLayout>{RowLayout::Dense(nRow, width, 9), RowLayout::ColMajor(nRow, width, {32, 1}), RowLayout::TiledColMajor(nRow, width, 8)};
+    std::vector<RowRequest> requests;
+    for (DNDS::index iRow = 0; iRow < nRow; ++iRow)
+        requests.push_back({(rank + 1) % size, (iRow * 13) % nRow, iRow});
+    RowTransferPlan route(context, nRow, nRow, requests);
+    for (const auto &sourceShape : formats)
+        for (const auto &destinationShape : formats)
+        {
+            Array<int64_t> source(sourceShape), destination(destinationShape);
+            {
+                auto write = source.Write();
+                for (DNDS::index iRow = 0; iRow < nRow; ++iRow)
+                    for (DNDS::index iComp = 0; iComp < width; ++iComp)
+                        write.View()(iRow, iComp) = rank * 100000 + iRow * 100 + iComp;
+            }
+            for (auto mode : {TransferMode::Transient, TransferMode::Persistent})
+                for (auto transport : {TransferTransport::Direct, TransferTransport::HostPacked})
+                {
+                    {
+                        auto write = destination.Storage().Write();
+                        std::fill_n(write.View<int64_t>().data, destinationShape.Elements(), int64_t(-991));
+                    }
+                    PayloadPlan payload(route, sourceShape, destinationShape, ElementSchema::Arithmetic<int64_t>());
+                    payload.Bind(source, destination, transport, {mode, context, 9}).Begin().Wait();
+                    const auto read = destination.Read();
+                    for (DNDS::index iRow = 0; iRow < nRow; ++iRow)
+                        for (DNDS::index iComp = 0; iComp < width; ++iComp)
+                            CHECK(read.View()(iRow, iComp) == ((rank + 1) % size) * 100000 + ((iRow * 13) % nRow) * 100 + iComp);
+                    for (DNDS::index iElement = 0; iElement < DNDS::index(destinationShape.Elements()); ++iElement)
+                    {
+                        bool logical = false;
+                        for (DNDS::index iRow = 0; iRow < nRow && !logical; ++iRow)
+                            for (DNDS::index iComp = 0; iComp < width; ++iComp)
+                                logical = logical || destinationShape.ElementOffset(iRow, iComp) == iElement;
+                        if (!logical)
+                            CHECK(read.View().data[iElement] == -991);
+                    }
+                }
+            PayloadPlan preserving(route, sourceShape, ElementSchema::Arithmetic<int64_t>());
+            CHECK(preserving.DestinationLayout() == sourceShape);
+        }
+    RowTransferPlan small(context, nRow, 3, {{rank, 1, 0}, {rank, 2, 1}, {rank, 3, 2}});
+    PayloadPlan preserving(small, formats[1], ElementSchema::Arithmetic<int64_t>());
+    CHECK(preserving.DestinationLayout().Kind() == RowLayoutKind::ColMajorTable);
+    CHECK(preserving.DestinationLayout().Stride() == 32);
+}
+
+TEST_CASE("Strided receive collisions use scalar contribution groups for builtin and custom POD reductions")
+{
+    int rank = 0, size = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+    const DNDS::index width = 5;
+    std::vector<RowRequest> requests;
+    for (int peer = 0; peer < size; ++peer)
+    {
+        requests.push_back({peer, 0, 0});
+        requests.push_back({peer, 0, 0});
+    }
+    RowTransferPlan route(MPI_COMM_WORLD, 1, 1, requests);
+    struct Record
+    {
+        int64_t tag;
+        double value;
+    };
+    const auto schema = ElementSchema::Register<Record>(ElementSchema::Record("test.physical.Record.v1", sizeof(Record),
+                                                                              {{"tag", offsetof(Record, tag), ElementScalar::I64}, {"value", offsetof(Record, value), ElementScalar::F64}}, "Record", alignof(Record)));
+    for (const auto &shape : {RowLayout::ColMajor(1, width, {8, 0}), RowLayout::TiledColMajor(1, width, 8)})
+    {
+        Array<int64_t> source(shape), destination(shape);
+        Array<Record> podSource(shape), podDestination(shape);
+        {
+            auto write = source.Write();
+            auto pod = podSource.Write();
+            for (DNDS::index iComp = 0; iComp < width; ++iComp)
+            {
+                write.View()(0, iComp) = rank + 1 + iComp;
+                pod.View()(0, iComp) = {rank + 1, double(iComp + rank)};
+            }
+        }
+        PayloadPlan payload(route, shape, shape, ElementSchema::Arithmetic<int64_t>());
+        CHECK_THROWS(payload.Bind(source, destination));
+        payload.Bind(source, destination, Reducer::Builtin<int64_t>(Reduction::Sum, DestinationInit::Identity)).Begin().Wait();
+        auto reducer = Reducer::Custom<Record>(schema, "physical.Record.sum", [](Record &a, const Record &b)
+                                               { a.tag += b.tag; a.value += b.value; }, Record{}, DestinationInit::Identity);
+        PayloadPlan podPayload(route, shape, shape, schema);
+        podPayload.Bind(podSource, podDestination, reducer).Begin().Wait();
+        const auto read = destination.Read();
+        const auto pod = podDestination.Read();
+        for (DNDS::index iComp = 0; iComp < width; ++iComp)
+        {
+            CHECK(read.View()(0, iComp) == size * (size + 1) + 2 * size * iComp);
+            CHECK(pod.View()(0, iComp).tag == size * (size + 1));
+            CHECK(pod.View()(0, iComp).value == 2 * size * iComp + size * (size - 1));
+        }
+    }
+}

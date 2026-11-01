@@ -195,3 +195,73 @@ int main(int argc, char **argv)
     MPI_Finalize();
     return result;
 }
+
+TEST_CASE("CPU FV reconstruction limiter and linear actions agree across mixed DOF physical layouts")
+{
+    auto fixture = G::OverlapTest::BuildNativeFixture(mpi, false);
+    auto metrics = C::FiniteVolumePlan::ConstructMetrics(fixture.mesh);
+    for (bool sor : {false, true})
+    {
+        C::ReconstructionSettings settings;
+        settings.maxOrder = 3;
+        settings.SORInstead = sor;
+        settings.coreFirst = true;
+        auto plan = C::VariationalReconstructionPlan::ConstructRecCoeff(metrics, settings);
+        const I components = 5, width = plan.NRecDOF() * components;
+        auto referenceMean = metrics.BuildField(components);
+        auto reference = plan.BuildWorkspace(components);
+        auto boundary = plan.BuildBoundaryValues(components);
+        Fill(referenceMean, 1.0);
+        Fill(reference.coefficients, .02);
+        {
+            auto write = boundary.values.Write();
+            for (I iRow = 0; iRow < boundary.values.RowCount(); ++iRow)
+                for (I iComp = 0; iComp < components; ++iComp)
+                    write.View()(iRow, iComp) = 1 + .1 * iComp;
+        }
+        for (int format = 0; format < 2; ++format)
+        {
+            CAPTURE(sor);
+            CAPTURE(format);
+            Fill(reference.coefficients, .02);
+            const auto recShape = format == 0 ? R::RowLayout::ColMajor(0, width, {32, 1}) : R::RowLayout::TiledColMajor(0, width, 8);
+            auto mean = metrics.BuildField(format == 0 ? R::RowLayout::TiledColMajor(0, components, 8) : R::RowLayout::ColMajor(0, components, {32, 1}));
+            auto work = plan.BuildWorkspace(components, recShape);
+            Fill(mean, 1.0);
+            Fill(work.coefficients, .02);
+            auto refMeanHalo = metrics.BindHalo(referenceMean), meanHalo = metrics.BindHalo(mean);
+            auto refHalo = metrics.BindHalo(reference.coefficients), halo = metrics.BindHalo(work.coefficients);
+            refMeanHalo.Begin().Wait();
+            meanHalo.Begin().Wait();
+            for (int iteration = 0; iteration < 4; ++iteration)
+            {
+                refHalo.Begin().Wait();
+                halo.Begin().Wait();
+                plan.DoReconstructionIter(referenceMean, reference, boundary);
+                plan.DoReconstructionIter(mean, work, boundary);
+                Equal(reference.coefficients, work.coefficients);
+            }
+            auto transform = plan.BuildFaceTransform(0, components);
+            for (int order = settings.maxOrder; order >= 1; --order)
+            {
+                refHalo.Begin().Wait();
+                halo.Begin().Wait();
+                plan.DoLimiterWBAP_3Order(reference, order, &transform);
+                plan.DoLimiterWBAP_3Order(work, order, &transform);
+                Equal(reference.coefficients, work.coefficients);
+            }
+            refHalo.Begin().Wait();
+            halo.Begin().Wait();
+            auto refResult = metrics.BuildField(width), result = metrics.BuildField(recShape);
+            plan.ApplyLinearOperator(reference.coefficients, refResult);
+            plan.ApplyLinearOperator(work.coefficients, result);
+            Equal(refResult, result);
+            plan.BuildRightHandSide(referenceMean, boundary, refResult);
+            plan.BuildRightHandSide(mean, boundary, result);
+            Equal(refResult, result);
+            plan.ApplyLocalPreconditioner(reference.coefficients, refResult);
+            plan.ApplyLocalPreconditioner(work.coefficients, result);
+            Equal(refResult, result);
+        }
+    }
+}

@@ -32,7 +32,7 @@ namespace DNDS::Algebra
             // CSR lengths during every matrix access.
             DNDS_check_throw_info(!ArrayView::is_dynamic || (!view.offsets && !view.sizes),
                                   "Eigen row matrices require uniform logical rows");
-            DNDS_check_throw_info(view.Width() >= index(extent), "local matrix exceeds logical row width");
+            DNDS_check_throw_info(!view.RowCount() || view.Width() >= index(extent), "local matrix exceeds logical row width");
         }
         auto operator[](index iRow) const
         {
@@ -48,5 +48,26 @@ namespace DNDS::Algebra
     auto MakeEigenRowMatrices(View view, index rows, index columns, Runtime::Device device = Runtime::Device::Host())
     {
         return EigenRowMatrices<View>(view, rows, columns, device);
+    }
+}
+
+namespace DNDS::Algebra
+{
+    template <class T, bool Checked, class Policy>
+    class EigenPairRowMatrices
+    {
+        EigenRowMatrices<Runtime::ArrayView<const T, Checked, Policy>> _owned, _ghost;
+        index _ownedRows;
+
+    public:
+        EigenPairRowMatrices(Runtime::PairReadView<T, Checked, Policy> view, index rows, index columns, Runtime::Device device)
+            : _owned(view.owned, rows, columns, device), _ghost(view.ghost, rows, columns, device), _ownedRows(view.owned.RowCount()) {}
+        auto operator[](index iRow) const { return iRow < _ownedRows ? _owned[iRow] : _ghost[iRow - _ownedRows]; }
+    };
+    template <class T, bool Checked, class Policy>
+    auto MakeEigenRowMatrices(Runtime::PairReadView<T, Checked, Policy> view, index rows, index columns,
+                              Runtime::Device device = Runtime::Device::Host())
+    {
+        return EigenPairRowMatrices<T, Checked, Policy>(view, rows, columns, device);
     }
 }
