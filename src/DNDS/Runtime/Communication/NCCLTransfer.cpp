@@ -341,6 +341,17 @@ namespace DNDS::Runtime
             catch (...)
             {
                 auto error = std::current_exception();
+                // A failed immediate launch may have submitted packing before
+                // producing its completion event. Drain that prefix too before
+                // releasing immediate read/write access. Scheduled Fail also
+                // retains this rule through its supplied context.
+                try
+                {
+                    Completion::Record(context).Wait();
+                }
+                catch (...)
+                {
+                }
                 try
                 {
                     op->source.Fail();

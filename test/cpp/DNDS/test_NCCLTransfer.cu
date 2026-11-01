@@ -183,9 +183,28 @@ TEST_CASE("NCCL direct contiguous copies and explicit unsupported bindings")
     CHECK_THROWS(columnPayload.Bind(colSource, destination, R::TransferTransport::Direct, Options()));
     auto hostSource = source.To(R::Device::Host());
     CHECK_THROWS(payload.Bind(hostSource, destination, R::TransferTransport::Direct, Options()));
+    {
+        auto held = destination.Write(context);
+        CHECK_THROWS(binding.Begin(context));
+    }
+    // A rejected destination lease must cancel the source reservation and
+    // active-binding flag without publishing an unperformed transfer.
+    binding.Begin(context).Wait();
 }
 TEST_CASE("NCCL packed CSR empty ownership and omitted POD bytes preserve receiver contents")
 {
+    for (auto transport : {R::TransferTransport::Direct, R::TransferTransport::DevicePacked})
+    {
+        R::Array<double> emptySource(Shape(0, 0, 5), device), emptyDestination(Shape(0, 0, 5), device);
+        R::PayloadPlan emptyPayload(R::RowTransferPlan(mpi.comm, 0, 0, {}), emptySource.Layout(), emptyDestination.Layout(), R::ElementSchema::For<double>());
+        auto empty = emptyPayload.Bind(emptySource, emptyDestination, transport, Options());
+        empty.Begin(context).Wait();
+        R::EagerEngine engine;
+        auto stream = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
+        empty.Enqueue(engine, stream);
+        engine.Synchronize();
+        CHECK(emptyDestination.RowCount() == 0);
+    }
     R::Array<double> source(mpi.rank == 0 ? R::RowLayout::Ragged({0, 3, 7}) : R::RowLayout::Ragged({}), device);
     R::Array<double> destination(R::RowLayout::Padded({7, 0, 3}, 9), device);
     Fill(source, mpi.rank);
