@@ -33,6 +33,14 @@ two-scale compromise, with modestly weaker usable U2R1 flame accuracy.
 Larger-step interface errors, irregular flame fits and wall-bound U2R1
 continuations limit its transfer; it is not established as a reliable
 replacement for broadA throughout the tested matrix.
+The `2026-11-02_REPORT.md` and
+`studies/thermal_core_selector_20261101/REPORT.md` add a matched broadA
+control. **TWR01P4** is the current strongest robust recipe in that round: it
+improves the ESDIRK2 flame speed and the measured U2R1 ignition errors, and it
+is the only tested recipe that completes every requested row. TWR03P4 is
+retained as the more accurate ESDIRK2 `.0004` interface control. Neither is a
+universal default; the matched broadA result, failed rows and reference limits
+remain part of the evidence.
 A supported strategy name is not a recommendation of a universally validated
 recipe; keep those evidence boundaries when comparing or reproducing results.
 
@@ -164,13 +172,15 @@ no claim of grid convergence follows from its continuous-field limit.
 Zero $B_T$ selects Strang, including both-zero rates. Positive $B_T$ with
 zero $A_T$ selects coupled. There is no timestep, shock/activity gate,
 chemical Jacobian, spatial expansion or smoothing in this strategy.
-`ratioThreshold` and `ratioExponent` set $r_0$ and $p_r$. The test candidate
-**TWR03P4** uses $r_0=0.03$, $p_r=4$, coupled snap tolerance 0.01 and
-Strang snap tolerance 0.05. This selects one recipe, not a new solver default:
+`ratioThreshold` and `ratioExponent` set $r_0$ and $p_r$. The current
+recommended candidate **TWR01P4** uses $r_0=0.01$, $p_r=4$, coupled snap
+tolerance 0.01 and Strang snap tolerance 0.05. **TWR03P4** ($r_0=0.03$)
+retains a slightly smaller coupled region and remains the ESDIRK2 `.0004`
+interface accuracy control. This selects a recipe, not a solver default:
 
 ```sh
   -k /eulerSettings/reactiveSplitIndicator/indicatorMode -v '"ThermalRateRatio"' \
-  -k /eulerSettings/reactiveSplitIndicator/ratioThreshold -v 0.03 \
+  -k /eulerSettings/reactiveSplitIndicator/ratioThreshold -v 0.01 \
   -k /eulerSettings/reactiveSplitIndicator/ratioExponent -v 4 \
   -k /eulerSettings/reactiveSplitIndicator/spatialPasses -v 0 \
   -k /eulerSettings/reactiveSplitIndicator/coupledSnapTolerance -v 0.01 \
@@ -196,8 +206,10 @@ $|Q_v|/T$, but **$|Q_v|/T$ is not chemical entropy production**. No chemical
 potential or entropy inequality is used in the implementation. Quiet thermal
 gradients can couple even with negligible chemistry, and isothermal species
 diffusion is missed. The RRI study `dt_independent_selector_20261029`
-records the whole-trace a-priori screen and limitations. A favorable screen
-does not establish posterior accuracy, cost savings or detonation robustness.
+records the whole-trace a-priori screen and limitations; the
+`thermal_core_selector_20261101` study records the matched TWR01P4/broadA
+posterior comparison. A favorable screen does not establish posterior
+accuracy, cost savings or detonation robustness.
 
 ## Experimental local matched-rate ratio (mode 4)
 
