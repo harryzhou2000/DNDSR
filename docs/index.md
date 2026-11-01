@@ -21,6 +21,9 @@ distributed gates and the measured gains and regressions by shape.
 
 ## Architecture entry points
 
+Cauchy development starts at the [solver contracts and ledger](architecture/Cauchy.md).
+Its current foundation mock is not a completed fluid solver.
+
 | Topic | Guide |
 | --- | --- |
 | Mesh ownership, relation semantics, construction closure and ghost assembly | [Mesh connectivity and construction](architecture/MeshConnectivity.md) |
