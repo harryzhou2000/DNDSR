@@ -1,6 +1,7 @@
 #include "DNDS/Runtime/Array/ArrayIO.hpp"
 #include "DNDS/Runtime/Interop/Array_bind.hpp"
 #include "DNDS/Runtime/Communication/RowTransfer.hpp"
+#include "DNDS/Runtime/Execution/EagerEngine.hpp"
 #include "DNDS/Bindings/Defines_bind.hpp"
 #include <pybind11/numpy.h>
 #include <pybind11/stl.h>
@@ -609,7 +610,9 @@ namespace DNDS::Runtime
                    return reducer ? p.Bind(src.Storage(), dst.Storage(), *reducer, transport, options) : p.Bind(src.Storage(), dst.Storage(), transport, options); }, py::arg("source"), py::arg("destination"), py::arg("reducer") = py::none(), py::arg("transport") = TransferTransport::Direct, py::arg("options") = TransferOptions{});
         py::class_<TransferBinding>(m, "TransferBinding", "Binding pins allocations, not variable names. Match collective begin order/tags, finish producers, and drain before mutation or MPI_Finalize.")
             .def("begin", &TransferBinding::Begin, py::arg("context") = ExecutionContext::Host(), "Collectively begin on all ranks; CPU producers must be complete. Retain/wait the operation and use an MPI-permitted thread.")
-            .def("begin_scheduled", &TransferBinding::BeginScheduled, py::arg("context") = ExecutionContext::Host(), "Collective scheduled reservations permit later consumers but infer no ordering. Complete CPU producers first, explicitly progress MPI and join its event before consumption.");
+            .def("begin_scheduled", &TransferBinding::BeginScheduled, py::arg("context") = ExecutionContext::Host(), "Scheduled reservations infer no ordering. MPI needs explicit host progress; stream-native providers order work on the supplied CUDA context.")
+            .def("enqueue", &TransferBinding::Enqueue, py::arg("engine"), py::arg("stream"), py::call_guard<py::gil_scoped_release>(),
+                 "Stream-native provider only: enqueue pack/transfer/unpack. Caller supplies ready/consumer edges, ordered scratch reuse and matching peer calls; no host completion wait.");
         py::class_<TransferOperation>(m, "TransferOperation", "Active requests/access ownership. Observe errors explicitly; coordinate rank-local failures before the next collective. Cleanup alone does not report errors.")
             .def("wait", &TransferOperation::Wait, py::call_guard<py::gil_scoped_release>(), "Complete both source and destination uses and report retained errors. Call before MPI_Finalize.")
             .def("wait_destination_ready", &TransferOperation::WaitDestinationReady, py::call_guard<py::gil_scoped_release>(), "Make destination readable. Source may still be in use: full wait/test completion is required before reusing it.")

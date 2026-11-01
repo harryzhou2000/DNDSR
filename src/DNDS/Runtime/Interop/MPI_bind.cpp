@@ -1,6 +1,7 @@
 #include "DNDS/Runtime/Interop/Array_bind.hpp"
 #include "DNDS/Runtime/Communication/DynamicRowTransfer.hpp"
 #include "DNDS/Runtime/Communication/MPIProgress.hpp"
+#include "DNDS/Runtime/Communication/NCCLTransfer.hpp"
 #include <pybind11/stl.h>
 
 namespace DNDS::Runtime
@@ -29,18 +30,28 @@ namespace DNDS::Runtime
     }
     void BindMPIOptions(py::module_ &m)
     {
+        py::class_<TransferProvider, std::shared_ptr<TransferProvider>>(m, "TransferProvider");
+        py::class_<NCCLTransferProvider, TransferProvider, std::shared_ptr<NCCLTransferProvider>>(m, "NCCLTransferProvider",
+                                                                                                  "Explicit stream-ordered CUDA payload provider. One rank per GPU; MPI only bootstraps setup. Match per-peer order and retain streams through completion.")
+            .def(py::init([](const MPIInfo &mpi, Device device)
+                          { return NCCLTransferProvider::Create(mpi.comm, device); }),
+                 py::arg("mpi"), py::arg("device"))
+            .def_static("available", &NCCLTransferProvider::Available)
+            .def("check_async_error", &NCCLTransferProvider::CheckAsyncError)
+            .def("abort", &NCCLTransferProvider::Abort);
         py::class_<CommunicationContext, std::shared_ptr<CommunicationContext>>(m, "CommunicationContext", "Collective shared communicator. Match setup order on all ranks and use distinct matched tags for concurrent bindings.")
             .def(py::init([](const MPIInfo &mpi)
                           { return std::make_shared<CommunicationContext>(mpi.comm); }));
         py::enum_<TransferMode>(m, "TransferMode").value("Persistent", TransferMode::Persistent).value("Transient", TransferMode::Transient);
         py::class_<TransferOptions>(m, "TransferOptions", "Persistent/transient request policy, independent of transport. Caller matches context/tag across ranks; transient mode remains collective.")
-            .def(py::init([](TransferMode mode, std::shared_ptr<CommunicationContext> context, int tag)
-                          { return TransferOptions{mode, std::move(context), tag}; }),
+            .def(py::init([](TransferMode mode, std::shared_ptr<CommunicationContext> context, int tag, std::shared_ptr<TransferProvider> provider)
+                          { return TransferOptions{mode, std::move(context), tag, std::move(provider)}; }),
                  py::arg("mode") = TransferMode::Persistent,
-                 py::arg("context") = nullptr, py::arg("tag") = 0)
+                 py::arg("context") = nullptr, py::arg("tag") = 0, py::arg("provider") = nullptr)
             .def_readwrite("mode", &TransferOptions::mode)
             .def_readwrite("context", &TransferOptions::context)
-            .def_readwrite("tag", &TransferOptions::tag);
+            .def_readwrite("tag", &TransferOptions::tag)
+            .def_readwrite("provider", &TransferOptions::provider);
     }
     void BindMPIEagerPython(py::module_ &m)
     {

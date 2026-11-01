@@ -71,6 +71,27 @@ capture and automatic stream-dependency checking are not provided by this API.
 CPU-only operators keep their placement checks and reject GPU input. These are
 explicit unsupported capabilities, never a hidden CPU fallback.
 
+### Explicit FP64 tensor-core Jacobi
+
+The default `ReconstructionDeviceKernel::FP64` remains selectable. Pass
+`FP64TensorCore` as the final argument of the synchronous or `...To` Jacobi
+wrapper to select the alternative matrix-product implementation. Python exposes
+the same enum/default and `SupportsKernel`. Device preparation caches the
+capability; unsupported or unknown explicit requests throw before submission.
+The initial guard permits datacenter SM80/SM90 with a suitable compiled image;
+the validated hardware and shapes are recorded separately.
+
+`DNDS/Algebra/CUDA/FP64Matrix.cuh` provides a small warp-level8x8x4 double-input,
+double-accumulator MMA adapter. The CFV kernel stages padded matrix/coefficient
+tiles in1KiB per warp, processes four independent cells per block and handles
+non-multiple modes/components with zero tails. Mean and boundary terms retain
+the FV formula; periodic vector transformations are applied while loading the
+neighbor coefficients. Internal Geom/CFV matrix storage and WBAP are unchanged.
+This path uses actual FP64 tensor instructions, not TF32/FP32 substitution.
+Different summation order is allowed within validated FP64 tolerances; byte
+identity is not promised. Padding/staging cost can outweigh MMA gains for small
+shapes, so explicit selection does not change the default or promise a speedup.
+
 ## Execution and caller responsibilities
 
 The synchronous wrappers construct a CUDA stream, enqueue the operator and
@@ -108,6 +129,12 @@ order**. Direct CUDA-aware MPI datatype transfer remains the default, one rank p
 device. An explicit [DevicePacked backend](DevicePackedTransfer.md) gathers and
 scatters on a communication stream; select it in `BindHalo(field, transport)`. No claim of stream-native or graph-capturable MPI is made.
 
+`BindHalo(field, transport, options)` also accepts the explicit
+[NCCL provider](NCCLTransfer.md). Its `Enqueue(engine, comm)` uses stream events to
+connect producer, transfer/unpack and dependent kernels, without an intermediate
+host completion wait. The same caller ownership/order rules apply to both
+Jacobi choices and WBAP. Graph capture remains deferred.
+
 Invalid indicators set a persistent status word before the pass. That pass and
 its commit leave output unchanged, and `CheckStatus` throws after an explicit
 completion boundary. Earlier successful queued work is not rolled back. On
@@ -124,13 +151,19 @@ unsupported SOR, invalid indicators, stale publications and optional query data.
 CTest includes one GPU and two ranks with one GPU each. Existing Runtime CUDA
 tests cover array indexing, alignment, async release, algebra and interop.
 
-`cfv_benchmark_reconstruction_cuda width degree components repetitions` measures
+`cfv_benchmark_reconstruction_cuda width degree components repetitions
+[direct|packed|nccl] [fp64|tensor]` measures
 real wrappers on a connected Cartesian quad mesh. It checks CPU numerical
 oracles before timing. Setup/upload are separate from repeated resident Jacobi,
 highest-order WBAP, direct communication and integrated split iteration. Jacobi
 and WBAP microtimings read a fixed iterate; the integrated timing commits each
 iteration. Report these scopes separately. Local CPU timings are not substituted
 for matched, allocated-node CPU evidence.
+
+The NCCL integrated timing queues ordered iterations before its final engine
+observation; portable MPI retains host progress/observation between iterations.
+Report that scheduling difference with communication and operator microtimings.
+Only compare actual completed numerical/timing rows. Graph capture is not used.
 
 The current CUDA baseline uses up to256 blocks,128 threads per block, and
 strides over cells/coefficients. On the sm80 build the compiled Jacobi/WBAP

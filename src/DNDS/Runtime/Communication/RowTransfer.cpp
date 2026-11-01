@@ -1,5 +1,6 @@
 #include "DNDS/Runtime/Communication/RowTransfer.hpp"
 #include "DNDS/Runtime/Communication/DevicePacking.hpp"
+#include "DNDS/Runtime/Communication/TransferAccess.hpp"
 #include <algorithm>
 #include <climits>
 #include <numeric>
@@ -613,20 +614,29 @@ namespace DNDS::Runtime
         // exact agreement in one collective; widen before negating INT_MIN.
         const int64_t controls[]{int(state->options.mode), bool(state->options.context), state->options.tag,
                                  bool(state->reducer), int(transport),
-                                 state->reducer ? int(state->reducer->initialization) : 0};
-        int64_t agreed[13];
-        for (index i = 0; i < 6; ++i)
+                                 state->reducer ? int(state->reducer->initialization) : 0, bool(state->options.provider)};
+        int64_t agreed[15];
+        for (index i = 0; i < 7; ++i)
         {
             agreed[2 * i] = controls[i];
             agreed[2 * i + 1] = -controls[i];
         }
-        agreed[12] = layoutsValid;
-        MPI_Allreduce(MPI_IN_PLACE, agreed, 13, MPI_INT64_T, MPI_MIN, routeComm);
+        agreed[14] = layoutsValid;
+        MPI_Allreduce(MPI_IN_PLACE, agreed, 15, MPI_INT64_T, MPI_MIN, routeComm);
         bool controlsAgree = true;
-        for (index i = 0; i < 6; ++i)
+        for (index i = 0; i < 7; ++i)
             controlsAgree = controlsAgree && agreed[2 * i] == -agreed[2 * i + 1];
         DNDS_check_throw_info(controlsAgree, "transfer binding policy differs between ranks");
-        DNDS_check_throw_info(agreed[12], "Array layout differs from compiled payload");
+        DNDS_check_throw_info(agreed[14], "Array layout differs from compiled payload");
+        if (state->options.provider)
+        {
+            Agree(state->options.provider->Name(), routeComm);
+            const auto &p = *state->plan;
+            _provider = state->options.provider->Bind({p.route, p.source, p.destination, p.schema}, state->source,
+                                                      state->destination, state->reducer, transport, state->options, layoutsValid);
+            DNDS_check_throw_info(_provider, "transfer provider returned no binding");
+            return;
+        }
         if (state->reducer)
             Agree(state->reducer->identity, routeComm);
         bool valid = true;
@@ -812,95 +822,7 @@ namespace DNDS::Runtime
         _state = std::move(state);
     }
 
-    namespace
-    {
-        struct TransferAccess
-        {
-            ReadAccess read;
-            WriteAccess write;
-            ScheduledAccess pending;
-            Completion completion;
-            bool scheduled = false, writable = false;
-            Device device;
-            ExecutionContext context;
-            void Acquire(Buffer &buffer, ExecutionContext execution, bool wr, bool sch)
-            {
-                context = execution;
-                scheduled = sch;
-                writable = wr;
-                device = buffer.GetDevice();
-                if (sch)
-                    pending = buffer.Reserve(wr ? AccessMode::Write : AccessMode::Read, context.device);
-                else if (wr)
-                    write = buffer.Write(context);
-                else
-                    read = buffer.Read(context);
-            }
-            template <class T>
-            Span<T> View()
-            {
-                if (scheduled)
-                    return {static_cast<T *>(pending.Pointer(alignof(T), sizeof(T))), 0, device.space};
-                if (writable)
-                    return write.View<T>();
-                auto view = read.View<T>();
-                return {const_cast<T *>(view.data), view.size, view.space};
-            }
-            void Complete(Completion event)
-            {
-                completion = std::move(event);
-                if (!scheduled && device.space == MemorySpace::CUDA)
-                {
-                    if (writable)
-                        write.Complete(completion);
-                    else
-                        read.Complete(completion);
-                }
-            }
-            void Wait()
-            {
-                completion.Wait();
-                if (scheduled)
-                    pending.Complete(true);
-                else if (writable)
-                    write.Wait();
-                else
-                    read.Wait();
-            }
-            void Fail()
-            {
-                std::exception_ptr error;
-                try
-                {
-                    if (scheduled && device.space == MemorySpace::CUDA)
-                        Completion::Record(context).Wait();
-                    else
-                        completion.Wait();
-                }
-                catch (...)
-                {
-                    error = std::current_exception();
-                }
-                if (scheduled)
-                    pending.Complete(false);
-                else if (writable)
-                    write.Fail();
-                else
-                    read.Wait();
-                if (error)
-                    std::rethrow_exception(error);
-            }
-            void CancelUnmodified()
-            {
-                if (scheduled)
-                    pending.Cancel();
-                else if (writable)
-                    write.CancelUnmodified();
-                else
-                    read.CancelUnmodified();
-            }
-        };
-    }
+    using Detail::TransferAccess;
     struct TransferOperation::State
     {
         std::shared_ptr<TransferBinding::State> binding;
@@ -919,8 +841,15 @@ namespace DNDS::Runtime
     {
         return Start(context, true);
     }
+    void TransferBinding::Enqueue(EagerEngine &engine, const ExecutionStream &stream) const
+    {
+        DNDS_check_throw_info(_provider, "MPI transfer requires explicit host progress; Enqueue needs a stream-native provider");
+        _provider->Enqueue(engine, stream);
+    }
     TransferOperation TransferBinding::Start(ExecutionContext context, bool scheduled) const
     {
+        if (_provider)
+            return TransferOperation(_provider->Begin(context, scheduled));
         auto op = std::make_unique<TransferOperation::State>();
         op->binding = _state;
         op->context = context;
@@ -1038,6 +967,7 @@ namespace DNDS::Runtime
     }
     TransferOperation::TransferOperation() = default;
     TransferOperation::TransferOperation(std::unique_ptr<State> state) : _state(std::move(state)) {}
+    TransferOperation::TransferOperation(std::unique_ptr<Detail::TransferProviderOperation> provider) : _provider(std::move(provider)) {}
     TransferOperation::TransferOperation(TransferOperation &&) noexcept = default;
     TransferOperation &TransferOperation::operator=(TransferOperation &&other) noexcept
     {
@@ -1055,6 +985,7 @@ namespace DNDS::Runtime
                     std::terminate();
             }
             _state = std::move(other._state);
+            _provider = std::move(other._provider);
         }
         return *this;
     }
@@ -1100,7 +1031,13 @@ namespace DNDS::Runtime
         s.sendsStarted = true;
         return true;
     }
-    void TransferOperation::WaitDestinationReady() { CompleteDestination(true); }
+    void TransferOperation::WaitDestinationReady()
+    {
+        if (_provider)
+            _provider->WaitDestinationReady();
+        else
+            CompleteDestination(true);
+    }
     bool TransferOperation::CompleteDestination(bool wait)
     {
         if (_state && _state->error)
@@ -1229,6 +1166,11 @@ namespace DNDS::Runtime
     }
     void TransferOperation::Wait()
     {
+        if (_provider)
+        {
+            _provider->Wait();
+            return;
+        }
         if (_state && _state->error)
             std::rethrow_exception(_state->error);
         if (!_state || !_state->started)
@@ -1255,6 +1197,8 @@ namespace DNDS::Runtime
     }
     bool TransferOperation::Test()
     {
+        if (_provider)
+            return _provider->Test();
         if (_state && _state->error)
             std::rethrow_exception(_state->error);
         if (!_state || !_state->started)

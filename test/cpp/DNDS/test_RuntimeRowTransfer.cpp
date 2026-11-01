@@ -1,6 +1,8 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "DNDS/Runtime/Communication/RowTransfer.hpp"
+#include "DNDS/Runtime/Communication/NCCLTransfer.hpp"
+#include "DNDS/Runtime/Execution/EagerEngine.hpp"
 #include "DNDS/Runtime/Array/RowBuilder.hpp"
 #include <optional>
 
@@ -1076,4 +1078,20 @@ TEST_CASE("DevicePacked is explicit and rejects host endpoints collectively")
     CHECK_THROWS(payload.Bind(source, destination, TransferTransport::DevicePacked));
     // Failed backend selection does not poison the default direct path.
     payload.Bind(source, destination).Begin().Wait();
+}
+TEST_CASE("MPI enqueue and unavailable NCCL capabilities reject explicitly")
+{
+    int rank = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    Array<double> source(RowLayout::Dense(2, 1)), destination(RowLayout::Dense(1, 1));
+    auto binding = PayloadPlan(RowTransferPlan(MPI_COMM_WORLD, 2, 1, {{rank, 1, 0}}), source.Layout(), destination.Layout(), ElementSchema::For<double>()).Bind(source, destination);
+    EagerEngine engine;
+    const auto stream = engine.CreateCPUStream();
+    CHECK_THROWS(binding.Enqueue(engine, stream));
+    binding.Begin().Wait();
+#ifndef DNDS_USE_CUDA
+    CHECK_FALSE(NCCLTransferProvider::Available());
+#endif
+    if (!NCCLTransferProvider::Available())
+        CHECK_THROWS(NCCLTransferProvider::Create(MPI_COMM_WORLD, Device::CUDA(0)));
 }

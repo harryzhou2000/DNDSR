@@ -2,10 +2,12 @@
 #include "doctest.h"
 #include "CFV/Plans/ReconstructionDevicePlan.hpp"
 #include "DNDS/Runtime/Execution/CUDAExecution.hpp"
+#include "DNDS/Runtime/Communication/NCCLTransfer.hpp"
 #include "Geom/Unstructured/UnstructuredMeshSnapshot.hpp"
 #include "../Geom/NativeMeshOverlapFixture.hpp"
 #include <cuda_runtime.h>
 #include <limits>
+#include <cstdlib>
 #include "RotatedSectorFixture.hpp"
 #include "ReconstructionFixture.hpp"
 
@@ -14,6 +16,14 @@ namespace R = DNDS::Runtime;
 namespace G = DNDS::Geom;
 using I = DNDS::index;
 static DNDS::MPIInfo mpi;
+static C::ReconstructionDeviceKernel jacobiKernel = C::ReconstructionDeviceKernel::FP64;
+static std::shared_ptr<R::NCCLTransferProvider> nccl;
+static R::TransferBinding Halo(const C::ReconstructionDevicePlan &plan, C::FVField &field, R::TransferTransport transport = R::TransferTransport::Direct)
+{
+    R::TransferOptions options;
+    options.provider = nccl;
+    return plan.BindHalo(field, nccl ? R::TransferTransport::DevicePacked : transport, options);
+}
 
 static void Fill(C::FVField &field, double offset)
 {
@@ -84,7 +94,7 @@ TEST_CASE("CUDA Jacobi and WBAP agree with CPU for physical DOF layouts and dire
 {
     auto fixture = G::OverlapTest::BuildNativeFixture(mpi, false);
     auto metrics = C::FiniteVolumePlan::ConstructMetrics(fixture.mesh);
-    if (mpi.size > 1)
+    if (mpi.size > 1 && !nccl)
         REQUIRE(DNDS::MPI::isCudaAware());
     for (int degree : {1, 2, 3})
     {
@@ -116,19 +126,33 @@ TEST_CASE("CUDA Jacobi and WBAP agree with CPU for physical DOF layouts and dire
             auto work = resident.BuildWorkspace(components, shape);
             Fill(work.coefficients, .02);
             auto meanHalo = metrics.BindHalo(mean), referenceHalo = metrics.BindHalo(reference.coefficients);
-            auto deviceMeanHalo = resident.BindHalo(deviceMean), deviceHalo = resident.BindHalo(work.coefficients, shape.Kind() == R::RowLayoutKind::Table ? R::TransferTransport::Direct : R::TransferTransport::DevicePacked);
+            auto deviceMeanHalo = Halo(resident, deviceMean), deviceHalo = Halo(resident, work.coefficients, shape.Kind() == R::RowLayoutKind::Table ? R::TransferTransport::Direct : R::TransferTransport::DevicePacked);
             meanHalo.Begin().Wait();
             deviceMeanHalo.Begin(R::ExecutionContext::CUDA(0)).Wait();
             R::EagerEngine engine;
             const auto stream = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
+            const auto comm = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
+            CHECK(resident.SupportsKernel(C::ReconstructionDeviceKernel::FP64));
+            CHECK_FALSE(resident.SupportsKernel(static_cast<C::ReconstructionDeviceKernel>(-1)));
+            CHECK_THROWS(resident.DoReconstructionIter(deviceMean, work, deviceBC, static_cast<C::ReconstructionDeviceKernel>(-1)));
             for (int step = 0; step < 4; ++step)
             {
                 referenceHalo.Begin().Wait();
                 plan.DoReconstructionIter(mean, reference, bc);
-                auto pending = deviceHalo.Begin(R::ExecutionContext::CUDA(0));
-                resident.DoReconstructionIterTo(engine, stream, deviceMean, work.coefficients, work, deviceBC, C::ReconstructionRegion::Core);
-                pending.Wait();
-                resident.DoReconstructionIterTo(engine, stream, deviceMean, work.coefficients, work, deviceBC, C::ReconstructionRegion::HaloDependent);
+                R::TransferOperation pending;
+                if (nccl)
+                {
+                    comm.WaitFor(stream.Record());
+                    deviceHalo.Enqueue(engine, comm);
+                }
+                else
+                    pending = deviceHalo.Begin(R::ExecutionContext::CUDA(0));
+                resident.DoReconstructionIterTo(engine, stream, deviceMean, work.coefficients, work, deviceBC, C::ReconstructionRegion::Core, jacobiKernel);
+                if (nccl)
+                    stream.WaitFor(comm.Record());
+                else
+                    pending.Wait();
+                resident.DoReconstructionIterTo(engine, stream, deviceMean, work.coefficients, work, deviceBC, C::ReconstructionRegion::HaloDependent, jacobiKernel);
                 resident.CommitReconstruction(engine, stream, work);
                 engine.Synchronize();
                 resident.CheckStatus(work);
@@ -149,9 +173,19 @@ TEST_CASE("CUDA Jacobi and WBAP agree with CPU for physical DOF layouts and dire
             {
                 referenceHalo.Begin().Wait();
                 plan.DoLimiterWBAP_3Order(reference, order, &transform);
-                auto pending = deviceHalo.Begin(R::ExecutionContext::CUDA(0));
+                R::TransferOperation pending;
+                if (nccl)
+                {
+                    comm.WaitFor(stream.Record());
+                    deviceHalo.Enqueue(engine, comm);
+                }
+                else
+                    pending = deviceHalo.Begin(R::ExecutionContext::CUDA(0));
                 resident.DoLimiterWBAP_3OrderTo(engine, stream, work, order, &deviceTransform, C::ReconstructionRegion::Core);
-                pending.Wait();
+                if (nccl)
+                    stream.WaitFor(comm.Record());
+                else
+                    pending.Wait();
                 resident.DoLimiterWBAP_3OrderTo(engine, stream, work, order, &deviceTransform, C::ReconstructionRegion::HaloDependent);
                 resident.CommitReconstruction(engine, stream, work);
                 engine.Synchronize();
@@ -189,8 +223,8 @@ TEST_CASE("CUDA preserves rotated periodic vectors and axisymmetric prepared ope
                     write.View()(iRow, j) = 1 + .1 * j;
         }
         auto gpuBoundary = resident.PrepareBoundary(boundary);
-        auto meanHalo = metrics.BindHalo(mean), gpuMeanHalo = resident.BindHalo(gpuMean);
-        auto cpuHalo = metrics.BindHalo(cpu.coefficients), gpuHalo = resident.BindHalo(gpu.coefficients);
+        auto meanHalo = metrics.BindHalo(mean), gpuMeanHalo = Halo(resident, gpuMean);
+        auto cpuHalo = metrics.BindHalo(cpu.coefficients), gpuHalo = Halo(resident, gpu.coefficients);
         meanHalo.Begin().Wait();
         gpuMeanHalo.Begin(R::ExecutionContext::CUDA(0)).Wait();
         for (int iteration = 0; iteration < 3; ++iteration)
@@ -198,7 +232,7 @@ TEST_CASE("CUDA preserves rotated periodic vectors and axisymmetric prepared ope
             cpuHalo.Begin().Wait();
             gpuHalo.Begin(R::ExecutionContext::CUDA(0)).Wait();
             plan.DoReconstructionIter(mean, cpu, boundary);
-            resident.DoReconstructionIter(gpuMean, gpu, gpuBoundary);
+            resident.DoReconstructionIter(gpuMean, gpu, gpuBoundary, jacobiKernel);
             Equal(cpu.coefficients, gpu.coefficients, 2e-9);
         }
         for (int order = 2; order >= 1; --order)
@@ -240,8 +274,8 @@ TEST_CASE("CUDA degree three 3D reconstruction supports 37 coupled components an
                     write.View()(iRow, j) = 1 + .1 * j;
         }
         auto gpuBoundary = resident.PrepareBoundary(boundary);
-        auto meanHalo = metrics.BindHalo(mean), gpuMeanHalo = resident.BindHalo(gpuMean);
-        auto cpuHalo = metrics.BindHalo(cpu.coefficients), gpuHalo = resident.BindHalo(gpu.coefficients);
+        auto meanHalo = metrics.BindHalo(mean), gpuMeanHalo = Halo(resident, gpuMean);
+        auto cpuHalo = metrics.BindHalo(cpu.coefficients), gpuHalo = Halo(resident, gpu.coefficients);
         meanHalo.Begin().Wait();
         gpuMeanHalo.Begin(R::ExecutionContext::CUDA(0)).Wait();
         for (int iteration = 0; iteration < 2; ++iteration)
@@ -249,7 +283,7 @@ TEST_CASE("CUDA degree three 3D reconstruction supports 37 coupled components an
             cpuHalo.Begin().Wait();
             gpuHalo.Begin(R::ExecutionContext::CUDA(0)).Wait();
             plan.DoReconstructionIter(mean, cpu, boundary);
-            resident.DoReconstructionIter(gpuMean, gpu, gpuBoundary);
+            resident.DoReconstructionIter(gpuMean, gpu, gpuBoundary, jacobiKernel);
             Equal(cpu.coefficients, gpu.coefficients, 2e-9);
         }
         for (int order = 3; order >= 1; --order)
@@ -288,7 +322,7 @@ TEST_CASE("Device errors reject unsupported SOR stale publications and invalid i
     }
     auto gpuActivation = activation.To(R::Device::CUDA(0));
     metrics.BindHalo(cpu.coefficients).Begin().Wait();
-    resident.BindHalo(work.coefficients).Begin(R::ExecutionContext::CUDA(0)).Wait();
+    Halo(resident, work.coefficients).Begin(R::ExecutionContext::CUDA(0)).Wait();
     plan.DoLimiterWBAP_3OrderTo(cpu, 1, nullptr, C::ReconstructionRegion::All, &activation, .5);
     plan.CommitReconstruction(cpu);
     R::EagerEngine activeEngine;
@@ -334,9 +368,20 @@ int main(int argc, char **argv)
 {
     MPI_Init(&argc, &argv);
     mpi = DNDS::MPIInfo(MPI_COMM_WORLD);
+    if (const auto *value = std::getenv("DNDS_TEST_RECONSTRUCTION_KERNEL"))
+    {
+        DNDS_check_throw_info(std::string(value) == "tensor", "unknown test reconstruction kernel");
+        jacobiKernel = C::ReconstructionDeviceKernel::FP64TensorCore;
+    }
+    if (const auto *value = std::getenv("DNDS_TEST_TRANSFER_PROVIDER"))
+    {
+        DNDS_check_throw_info(std::string(value) == "nccl", "unknown test transfer provider");
+        nccl = R::NCCLTransferProvider::Create(mpi.comm, R::Device::CUDA(0));
+    }
     doctest::Context context;
     context.applyCommandLine(argc, argv);
     const auto result = context.run();
+    nccl.reset();
     MPI_Finalize();
     return result;
 }

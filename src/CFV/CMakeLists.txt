@@ -31,7 +31,7 @@ Operators/Reconstruction.cpp
 Operators/ReconstructionLinear.cpp
 )
 if (DNDS_USE_CUDA)
-list(APPEND CPPS Legacy/VRDefines.cu Operators/CUDA/ReconstructionDevice.cu)
+list(APPEND CPPS Legacy/VRDefines.cu Operators/CUDA/ReconstructionDevice.cu Operators/CUDA/ReconstructionTensorCore.cu)
 endif()
 
 file(GLOB EXPLICIT_INST_CPP_FILES CONFIGURE_DEPENDS "Legacy/ExplicitInstantiations/*.cpp")

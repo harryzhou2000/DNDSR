@@ -108,6 +108,16 @@ in use until full completion. `Wait()` or successful `Test()` completes both.
 Retain the operation or import it into a live `MPIProgress` owner. Check errors
 explicitly, then coordinate recovery across ranks.
 
+For the optional [NCCL payload provider](NCCLTransfer.md), setup remains collective
+but hot `Enqueue(engine, stream)` uses CUDA stream order through pack/NCCL/unpack.
+Record the transfer stream after unpack and wait on it before dependent kernels.
+No host completion wait is needed between these phases. The caller must order
+producer readiness, consumer readiness, private scratch reuse and per-peer call
+order across bindings sharing a provider. Scheduled reservations are not a
+dependency proof. Immediate access still needs observed completion. Observe
+provider asynchronous errors and coordinate cancellation; do not assume a CUDA
+prefix alone can diagnose a failed remote peer. Default MPI behavior is unchanged.
+
 ## Schemas, reductions and redistribution
 
 An `ElementSchema` describes MPI fields with an extent equal to the POD element

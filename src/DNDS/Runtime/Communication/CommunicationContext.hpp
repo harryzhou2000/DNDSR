@@ -7,6 +7,7 @@
 
 namespace DNDS::Runtime
 {
+    class TransferProvider;
     /// A collectively created namespace shared by short-lived routes/bindings.
     /// Tags are explicit protocol identifiers, matched by the application across
     /// ranks. No rank-local allocation counter determines message matching.
@@ -77,5 +78,8 @@ namespace DNDS::Runtime
         /// a context avoids communicator duplication for each binding.
         std::shared_ptr<CommunicationContext> context;
         int tag = 0;
+        /// Explicit non-MPI payload provider; MPI remains setup/control only.
+        /// Do not combine with an MPI context/tag. Null preserves all defaults.
+        std::shared_ptr<TransferProvider> provider;
     };
 }

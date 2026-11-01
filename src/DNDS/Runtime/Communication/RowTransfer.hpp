@@ -6,6 +6,7 @@
 #include "DNDS/Runtime/Storage/Version.hpp"
 #include "DNDS/MPI/MPI.hpp"
 #include "DNDS/Runtime/Communication/CommunicationContext.hpp"
+#include "DNDS/Runtime/Communication/TransferProvider.hpp"
 #include <functional>
 #include <string>
 #include <cstring>
@@ -88,10 +89,10 @@ namespace DNDS::Runtime
     {
         Direct,
         HostPacked,
-        /// Explicit CUDA pack/contiguous CUDA-aware MPI/unpack. Begin enqueues
-        /// packing and posts receives without waiting for the GPU; Test/Wait on
-        /// the MPI thread advances sends after packing and publishes receives
-        /// only after unpack/reduction. Both endpoints must share a CUDA device.
+        /// Explicit CUDA pack/contiguous transport/unpack. With the default MPI
+        /// provider, Begin posts receives and Test/Wait advances sends/unpack on
+        /// the MPI thread. A stream-native provider instead enqueues the whole
+        /// chain. Both endpoints must share a CUDA device.
         DevicePacked
     };
 
@@ -201,6 +202,15 @@ namespace DNDS::Runtime
     class TransferBinding;
     class TransferOperation;
 
+    /// Immutable setup description shared by payload providers. Layouts include
+    /// physical strides; schemas describe transmitted fields, not POD padding.
+    struct TransferPayload
+    {
+        RowTransferPlan route;
+        RowLayout source, destination;
+        ElementSchema schema;
+    };
+
     class PayloadPlan
     {
         struct State;
@@ -254,6 +264,7 @@ namespace DNDS::Runtime
     {
         struct State;
         std::shared_ptr<State> _state;
+        std::shared_ptr<Detail::TransferProviderBinding> _provider;
         friend class PayloadPlan;
         friend class TransferOperation;
         TransferBinding(std::shared_ptr<const PayloadPlan::State> plan, Buffer source, Buffer destination,
@@ -262,7 +273,7 @@ namespace DNDS::Runtime
         TransferOperation Start(ExecutionContext context, bool scheduled) const;
 
     public:
-        /// One active operation per binding. Default remains isolated persistent
+        /// One active Begin operation per binding. Default remains isolated persistent
         /// requests. Options select shared context/tags and transient requests.
         /// Collective: all ranks call in the same order, including empty ranks.
         /// This binding retains old buffers after Array::Reset; rebuild it after
@@ -278,14 +289,22 @@ namespace DNDS::Runtime
         /// Test/Wait on the MPI-permitted thread to advance sends/unpack. Its
         /// CUDA inputs may have prior scheduled producers on this same stream.
         TransferOperation BeginScheduled(ExecutionContext context = ExecutionContext::Host()) const;
+        /// Stream-native providers enqueue pack/transfer/unpack without host
+        /// completion waits or per-exchange MPI preflight. Caller supplies input
+        /// readiness and joins consumers using stream events. Private scratch
+        /// reuse and shared-provider peer order must be ordered too. Ordinary
+        /// MPI rejects this API; use its Begin/Test/Wait host-progress bridge.
+        void Enqueue(EagerEngine &, const ExecutionStream &) const;
     };
 
     class TransferOperation
     {
         struct State;
         std::unique_ptr<State> _state;
+        std::unique_ptr<Detail::TransferProviderOperation> _provider;
         friend class TransferBinding;
         explicit TransferOperation(std::unique_ptr<State> state);
+        explicit TransferOperation(std::unique_ptr<Detail::TransferProviderOperation> provider);
         bool PostPackedSends(bool wait);
         bool CompleteDestination(bool wait);
 

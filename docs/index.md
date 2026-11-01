@@ -27,6 +27,7 @@ transfers, completed gates and performance limits.
 | Runtime ordering and lifetime responsibilities | [Runtime caller contract](architecture/RuntimeCallerContract.md) |
 | Native field algebra | [Native DOF algebra](architecture/NativeDofAlgebra.md) |
 | Explicit device pack/MPI/unpack and overlap | [Device-packed transfer](architecture/DevicePackedTransfer.md) |
+| Optional stream-ordered NCCL payloads and caller ordering | [NCCL transfers](architecture/NCCLTransfer.md) |
 | Resident CUDA Jacobi/WBAP, placements and caller ordering | [Device reconstruction](architecture/DeviceReconstruction.md) |
 | Native CPU FV/VR, explicit WBAP and boundary point interfaces | [FV and interface facilities](architecture/FVFacility.md) |
 | Reusable element projection and distributed surface location | [Surface geometry and location](architecture/SurfaceLocation.md) |

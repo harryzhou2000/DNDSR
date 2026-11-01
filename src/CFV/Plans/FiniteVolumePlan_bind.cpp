@@ -110,6 +110,9 @@ namespace DNDS::CFV
         py::class_<ReconstructionWorkspace>(m, "ReconstructionWorkspace")
             .def_readonly("coefficients", &ReconstructionWorkspace::coefficients)
             .def_readonly("temporary", &ReconstructionWorkspace::temporary);
+        py::enum_<ReconstructionDeviceKernel>(m, "ReconstructionDeviceKernel")
+            .value("FP64", ReconstructionDeviceKernel::FP64)
+            .value("FP64TensorCore", ReconstructionDeviceKernel::FP64TensorCore);
         py::class_<ReconstructionResidencyOptions>(m, "ReconstructionResidencyOptions")
             .def(py::init<>())
             .def_readwrite("mesh", &ReconstructionResidencyOptions::mesh)
@@ -135,22 +138,25 @@ namespace DNDS::CFV
                         "Explicit synchronous CUDA publication. CPU-only builds and SOR fail before a usable publication is returned.")
             .def("Validate", &ReconstructionDevicePlan::Validate)
             .def("Device", &ReconstructionDevicePlan::Device)
+            .def("SupportsKernel", &ReconstructionDevicePlan::SupportsKernel)
             .def("Buffers", &ReconstructionDevicePlan::Buffers)
             .def("BuildField", &ReconstructionDevicePlan::BuildField)
             .def("BuildWorkspace", &ReconstructionDevicePlan::BuildWorkspace,
                  py::arg("components"), py::arg("prototype"), py::arg("periodicVectorStarts") = std::vector<index>{})
             .def("BindHalo", &ReconstructionDevicePlan::BindHalo, py::arg("field"), py::arg("transport") = Runtime::TransferTransport::Direct,
-                 "Collective CUDA-aware MPI; DevicePacked explicitly queues device gather/scatter. Pass this device's ExecutionContext to begin; wait before dependent work.")
+                 py::arg("options") = Runtime::TransferOptions{},
+                 "Collective payload binding. Null provider uses CUDA-aware MPI; options.provider selects NCCL. DevicePacked gathers/scatters; explicitly order consumers after transfer/unpack.")
             .def("PrepareBoundary", &ReconstructionDevicePlan::PrepareBoundary)
             .def("PrepareTransform", &ReconstructionDevicePlan::PrepareTransform)
             .def("DoReconstructionIter", &ReconstructionDevicePlan::DoReconstructionIter,
+                 py::arg("mean"), py::arg("workspace"), py::arg("boundary"), py::arg("kernel") = ReconstructionDeviceKernel::FP64,
                  "Synchronous CUDA Jacobi. Refresh mean/coefficient halos first; release all Python write/export aliases.")
             .def("DoLimiterWBAP_3Order", &ReconstructionDevicePlan::DoLimiterWBAP_3Order,
                  py::arg("workspace"), py::arg("order"), py::arg("transform") = nullptr,
                  "Synchronous CUDA limiter. Exchange coefficients between descending orders.")
             .def("DoReconstructionIterTo", &ReconstructionDevicePlan::DoReconstructionIterTo,
                  py::arg("engine"), py::arg("stream"), py::arg("mean"), py::arg("input"), py::arg("workspace"), py::arg("boundary"),
-                 py::arg("region") = ReconstructionRegion::All,
+                 py::arg("region") = ReconstructionRegion::All, py::arg("kernel") = ReconstructionDeviceKernel::FP64,
                  "Enqueue CUDA Jacobi into temporary output. Caller orders all stream/halo dependencies; no inferred dependency checks.")
             .def("DoLimiterWBAP_3OrderTo", &ReconstructionDevicePlan::DoLimiterWBAP_3OrderTo,
                  py::arg("engine"), py::arg("stream"), py::arg("workspace"), py::arg("order"), py::arg("transform") = nullptr,

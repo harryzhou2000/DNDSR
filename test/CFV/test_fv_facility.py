@@ -220,7 +220,11 @@ def test_stride_aware_reconstruction_uses_shared_runtime_physical_fields(format)
 
 
 @pytest.mark.mpi
-def test_device_reconstruction_publication_layouts_and_python_shared_buffers():
+@pytest.mark.parametrize("backend", ["mpi", "nccl"])
+@pytest.mark.parametrize("kernel_name", ["FP64", "FP64TensorCore"])
+def test_device_reconstruction_publication_layouts_and_python_shared_buffers(backend, kernel_name):
+    if backend == "nccl" and not R.NCCLTransferProvider.available():
+        pytest.skip("build with NCCL")
     grid = mesh()
     metrics = CFV.FiniteVolumePlan.ConstructMetrics(grid)
     settings = CFV.ReconstructionSettings()
@@ -233,6 +237,14 @@ def test_device_reconstruction_publication_layouts_and_python_shared_buffers():
             CFV.ReconstructionDevicePlan.Prepare(plan, device, context)
         return
     resident = CFV.ReconstructionDevicePlan.Prepare(plan, device, context)
+    kernel = getattr(CFV.ReconstructionDeviceKernel, kernel_name)
+    if not resident.SupportsKernel(kernel):
+        pytest.skip("requested FP64 tensor-core kernel unavailable on this device/build")
+    options = R.TransferOptions()
+    if backend == "nccl":
+        mpi = DNDS.MPIInfo()
+        mpi.setWorld()
+        options.provider = R.NCCLTransferProvider(mpi, device)
     assert sum(item.bytes for item in resident.Buffers()) > 0
     components = 5
     width = components * plan.NRecDOF()
@@ -250,15 +262,25 @@ def test_device_reconstruction_publication_layouts_and_python_shared_buffers():
     boundary.values.assign(np.ones((plan.NumBoundaryQuadrature(), components)))
     gpu_boundary = resident.PrepareBoundary(boundary)
     metrics.BindHalo(mean).begin().wait()
-    resident.BindHalo(gpu_mean).begin(context).wait()
-    cpu_halo, gpu_halo = metrics.BindHalo(cpu.coefficients), resident.BindHalo(gpu.coefficients, R.TransferTransport.DevicePacked)
+    resident.BindHalo(gpu_mean, R.TransferTransport.DevicePacked, options).begin(context).wait()
+    cpu_halo, gpu_halo = metrics.BindHalo(cpu.coefficients), resident.BindHalo(gpu.coefficients, R.TransferTransport.DevicePacked, options)
     engine = R.EagerEngine()
     stream = engine.cuda_stream(0)
+    comm = engine.cuda_stream(0)
     for _ in range(3):
         cpu_halo.begin().wait()
-        gpu_halo.begin(context).wait()
         plan.DoReconstructionIter(mean, cpu, boundary)
-        resident.DoReconstructionIterTo(engine, stream, gpu_mean, gpu.coefficients, gpu, gpu_boundary)
+        if backend == "nccl":
+            comm.wait_for(stream.record())
+            gpu_halo.enqueue(engine, comm)
+            resident.DoReconstructionIterTo(engine, stream, gpu_mean, gpu.coefficients, gpu, gpu_boundary,
+                                            CFV.ReconstructionRegion.Core, kernel)
+            stream.wait_for(comm.record())
+            resident.DoReconstructionIterTo(engine, stream, gpu_mean, gpu.coefficients, gpu, gpu_boundary,
+                                            CFV.ReconstructionRegion.HaloDependent, kernel)
+        else:
+            gpu_halo.begin(context).wait()
+            resident.DoReconstructionIterTo(engine, stream, gpu_mean, gpu.coefficients, gpu, gpu_boundary, kernel=kernel)
         resident.CommitReconstruction(engine, stream, gpu)
         engine.synchronize()
         resident.CheckStatus(gpu)

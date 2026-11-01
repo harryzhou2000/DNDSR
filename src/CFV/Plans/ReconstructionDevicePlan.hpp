@@ -18,6 +18,11 @@ namespace DNDS::CFV
     {
         bool mesh = false, metrics = false, basis = false;
     };
+    enum class ReconstructionDeviceKernel
+    {
+        FP64,
+        FP64TensorCore
+    };
     struct ResidentBufferInfo
     {
         std::string name;
@@ -69,6 +74,8 @@ namespace DNDS::CFV
         static ReconstructionDevicePlan Prepare(const VariationalReconstructionPlan &, Runtime::Device,
                                                 Runtime::ExecutionContext, ReconstructionResidencyOptions = {});
         Runtime::Device Device() const;
+        /// Cached preparation-time capability; no device query in hot kernels.
+        bool SupportsKernel(ReconstructionDeviceKernel) const;
         void Validate() const;
         ReconstructionDeviceRead AcquireRead() const;
         std::vector<ResidentBufferInfo> Buffers() const;
@@ -76,7 +83,8 @@ namespace DNDS::CFV
         FVField BuildField(Runtime::RowLayout prototype) const;
         ReconstructionDeviceWorkspace BuildWorkspace(index components, Runtime::RowLayout prototype,
                                                      std::vector<index> periodicVectorStarts = {}) const;
-        Runtime::TransferBinding BindHalo(FVField &, Runtime::TransferTransport transport = Runtime::TransferTransport::Direct) const;
+        Runtime::TransferBinding BindHalo(FVField &, Runtime::TransferTransport transport = Runtime::TransferTransport::Direct,
+                                          Runtime::TransferOptions options = {}) const;
         ReconstructionBoundaryValues PrepareBoundary(const ReconstructionBoundaryValues &) const;
         DeviceFaceCharacteristicTransform PrepareTransform(const FaceCharacteristicTransform &) const;
         /// Caller orders conflicting cross-stream accesses and input readiness.
@@ -84,7 +92,8 @@ namespace DNDS::CFV
         /// submitting dependent work; output is work.temporary, not the input.
         void DoReconstructionIterTo(Runtime::EagerEngine &, const Runtime::ExecutionStream &,
                                     const FVField &, const FVField &, ReconstructionDeviceWorkspace &,
-                                    const ReconstructionBoundaryValues &, ReconstructionRegion = ReconstructionRegion::All) const;
+                                    const ReconstructionBoundaryValues &, ReconstructionRegion = ReconstructionRegion::All,
+                                    ReconstructionDeviceKernel = ReconstructionDeviceKernel::FP64) const;
         void CommitReconstruction(Runtime::EagerEngine &, const Runtime::ExecutionStream &, ReconstructionDeviceWorkspace &) const;
         /// Reusable per-block scratch has bounded capacity. Different streams
         /// sharing a workspace require explicit joins. Exchange coefficients
@@ -92,7 +101,8 @@ namespace DNDS::CFV
         void DoLimiterWBAP_3OrderTo(Runtime::EagerEngine &, const Runtime::ExecutionStream &, ReconstructionDeviceWorkspace &, int order,
                                     const DeviceFaceCharacteristicTransform * = nullptr, ReconstructionRegion = ReconstructionRegion::All,
                                     const Runtime::Array<real> *indicator = nullptr, real threshold = 0) const;
-        void DoReconstructionIter(const FVField &, ReconstructionDeviceWorkspace &, const ReconstructionBoundaryValues &) const;
+        void DoReconstructionIter(const FVField &, ReconstructionDeviceWorkspace &, const ReconstructionBoundaryValues &,
+                                  ReconstructionDeviceKernel = ReconstructionDeviceKernel::FP64) const;
         void DoLimiterWBAP_3Order(ReconstructionDeviceWorkspace &, int order, const DeviceFaceCharacteristicTransform * = nullptr) const;
         /// Finish the producing engine prefix before observing status. Invalid
         /// indicators prevent every output update and throw here. This explicit

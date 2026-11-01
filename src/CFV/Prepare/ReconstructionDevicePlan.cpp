@@ -17,6 +17,7 @@ namespace DNDS::CFV
             VariationalReconstructionPlan source;
             R::Device device;
             ReconstructionResidencyOptions options;
+            bool fp64TensorCore = false;
             std::optional<Algebra::DofSpace> dofs;
             std::vector<ResidentBufferInfo> buffers;
             std::vector<R::Array<real>> realArrays;
@@ -110,6 +111,7 @@ namespace DNDS::CFV
         source._data->workPartition->Validate();
         auto geometry = source.Metrics().AcquireRead();
         auto result = std::make_shared<Detail::ReconstructionPlacementData>(source, device, options);
+        result->fp64TensorCore = Detail::FP64TensorCoreAvailable(device);
         const auto &host = *source._data;
         auto &view = result->view;
         view.owned = source.Metrics().NumCell();
@@ -242,14 +244,14 @@ namespace DNDS::CFV
         return {BuildField(prototype), BuildField(prototype), R::Array<real>(R::RowLayout::Dense(blocks * 6, prototype.Width()), Device()),
                 std::move(deviceStarts), R::Array<int>(R::RowLayout::Dense(1, 1), Device()), components, blocks, identity, version, _data};
     }
-    R::TransferBinding ReconstructionDevicePlan::BindHalo(FVField &field, R::TransferTransport transport) const
+    R::TransferBinding ReconstructionDevicePlan::BindHalo(FVField &field, R::TransferTransport transport, R::TransferOptions options) const
     {
         Validate();
         const auto &metric = _data->source.Metrics();
         MPI::LocalStage(_data->source.Metrics()._data->mesh->getMPI(), [&]
                         {Validate();ValidateField(*this,field,field.Width());
             DNDS_check_throw_info(field.Space().Same(metric._data->dofs),"device field belongs to another metric space"); });
-        return R::PayloadPlan(*metric._data->halo, field.Owned().Layout(), field.Ghost().Layout(), R::ElementSchema::Arithmetic<real>()).Bind(field.Owned(), field.Ghost(), transport);
+        return R::PayloadPlan(*metric._data->halo, field.Owned().Layout(), field.Ghost().Layout(), R::ElementSchema::Arithmetic<real>()).Bind(field.Owned(), field.Ghost(), transport, std::move(options));
     }
     ReconstructionBoundaryValues ReconstructionDevicePlan::PrepareBoundary(const ReconstructionBoundaryValues &source) const
     {
@@ -274,9 +276,11 @@ namespace DNDS::CFV
         return result;
     }
     void ReconstructionDevicePlan::DoReconstructionIterTo(R::EagerEngine &engine, const R::ExecutionStream &stream, const FVField &mean,
-                                                          const FVField &input, ReconstructionDeviceWorkspace &work, const ReconstructionBoundaryValues &boundary, ReconstructionRegion region) const
+                                                          const FVField &input, ReconstructionDeviceWorkspace &work, const ReconstructionBoundaryValues &boundary,
+                                                          ReconstructionRegion region, ReconstructionDeviceKernel kernel) const
     {
         ValidateStream(*this, stream);
+        DNDS_check_throw_info(SupportsKernel(kernel), "requested CUDA reconstruction kernel is unavailable on this device/build");
         ValidateWorkspace(_data, work);
         ValidateField(*this, mean, work.components);
         ValidateField(*this, input, work.components * _data->view.n);
@@ -290,8 +294,13 @@ namespace DNDS::CFV
                               "device Jacobi aliases its input");
         const auto selection = Selection(*_data, region);
         auto pin = std::make_shared<ReconstructionDeviceRead>(AcquireRead());
-        auto launch = [pin, selection](R::ExecutionContext context, auto mo, auto mg, auto ro, auto rg, auto bc, auto output, auto blocks, auto status)
-        { Detail::LaunchJacobi(context, pin->DeviceView(), selection, {blocks}, {mo, mg}, {ro, rg}, bc, output, status); };
+        auto launch = [pin, selection, kernel](R::ExecutionContext context, auto mo, auto mg, auto ro, auto rg, auto bc, auto output, auto blocks, auto status)
+        {
+            if (kernel == ReconstructionDeviceKernel::FP64TensorCore)
+                Detail::LaunchJacobiTensorCore(context, pin->DeviceView(), selection, {blocks}, {mo, mg}, {ro, rg}, bc, output, status);
+            else
+                Detail::LaunchJacobi(context, pin->DeviceView(), selection, {blocks}, {mo, mg}, {ro, rg}, bc, output, status);
+        };
         if (region == ReconstructionRegion::Core)
             R::SubmitArrays(engine, stream, [launch](R::ExecutionContext c, auto meanOwned, auto recOwned, auto bc, auto output, auto blocks, auto status)
                             { launch(c, meanOwned, R::ArrayView<const real>{}, recOwned, R::ArrayView<const real>{}, bc, output, blocks, status); }, R::Read(mean.Owned()), R::Read(input.Owned()), R::Read(boundary.values), R::Write(work.temporary.Owned()), R::Read(work.periodicVectorStarts), R::Read(work.status));
@@ -364,11 +373,17 @@ namespace DNDS::CFV
         const auto host = work.status.To(R::Device::Host());
         DNDS_check_throw_info(host.Read().View()(0, 0) == 0, "device limiter indicator contains nonfinite values; output was not updated");
     }
-    void ReconstructionDevicePlan::DoReconstructionIter(const FVField &mean, ReconstructionDeviceWorkspace &work, const ReconstructionBoundaryValues &boundary) const
+    bool ReconstructionDevicePlan::SupportsKernel(ReconstructionDeviceKernel kernel) const
+    {
+        DNDS_check_throw_info(_data, "device reconstruction publication is empty");
+        return kernel == ReconstructionDeviceKernel::FP64 || (kernel == ReconstructionDeviceKernel::FP64TensorCore && _data->fp64TensorCore);
+    }
+    void ReconstructionDevicePlan::DoReconstructionIter(const FVField &mean, ReconstructionDeviceWorkspace &work,
+                                                        const ReconstructionBoundaryValues &boundary, ReconstructionDeviceKernel kernel) const
     {
         R::EagerEngine engine;
         auto stream = engine.CreateStream(std::make_shared<R::CUDALauncher>(Device().ordinal));
-        DoReconstructionIterTo(engine, stream, mean, work.coefficients, work, boundary);
+        DoReconstructionIterTo(engine, stream, mean, work.coefficients, work, boundary, ReconstructionRegion::All, kernel);
         CommitReconstruction(engine, stream, work);
         engine.Synchronize();
         CheckStatus(work);
@@ -385,6 +400,11 @@ namespace DNDS::CFV
 #ifndef DNDS_USE_CUDA
     namespace Detail
     {
+        bool FP64TensorCoreAvailable(R::Device) { return false; }
+        void LaunchJacobiTensorCore(R::ExecutionContext, ReconstructionDeviceView, DeviceWorkSelection, DevicePeriodicBlocks, R::PairReadView<real>, R::PairReadView<real>, R::ArrayView<const real>, R::ArrayView<real>, R::ArrayView<const int>)
+        {
+            DNDS_check_throw_info(false, "CUDA FP64 tensor-core Jacobi unavailable");
+        }
         void LaunchJacobi(R::ExecutionContext, ReconstructionDeviceView, DeviceWorkSelection, DevicePeriodicBlocks, R::PairReadView<real>, R::PairReadView<real>, R::ArrayView<const real>, R::ArrayView<real>, R::ArrayView<const int>)
         {
             DNDS_check_throw_info(false, "CUDA Jacobi unavailable");
