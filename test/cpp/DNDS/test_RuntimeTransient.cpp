@@ -166,40 +166,49 @@ TEST_CASE("CUDA eager producer portable packed MPI and consumer retain ordering"
     int rank, size;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
-    EagerEngine engine(2);
-    auto stream = engine.CreateStream(std::make_shared<CUDALauncher>(0));
-    Array<double> host(RowLayout::Dense(67, 6, 8));
+    for (auto transport : {TransferTransport::Direct, TransferTransport::HostPacked, TransferTransport::DevicePacked})
     {
-        auto w = host.Write();
+        EagerEngine engine(2, std::make_shared<AccessTrackingContext>());
+        auto stream = engine.CreateStream(std::make_shared<CUDALauncher>(0));
+        Array<double> host(RowLayout::Dense(67, 6, 8));
+        {
+            auto w = host.Write();
+            for (size_t i = 0; i < 67; ++i)
+                for (size_t j = 0; j < 6; ++j)
+                    w.At(i, j) = rank * 10000 + i * 10 + j;
+        }
+        auto source = transport == TransferTransport::Direct ? Array<double>(host.Layout(), Device::CUDA(0)) : AllocateArrayAsync<double>(engine, stream, host.Layout());
+        auto destination = transport == TransferTransport::Direct ? Array<double>(host.Layout(), Device::CUDA(0)) : AllocateLikeAsync(engine, stream, source);
+        auto sourceBuffer = source.Storage();
+        CopyAsync(engine, stream, host.Storage(), sourceBuffer);
+        std::vector<RowRequest> requests;
+        for (size_t i = 0; i < 67; ++i)
+            requests.push_back({(rank + 1) % size, int64_t(66 - i), i});
+        RowTransferPlan route(MPI_COMM_WORLD, 67, 67, requests);
+        auto binding = PayloadPlan(route, source.Layout(), destination.Layout(), ElementSchema::Arithmetic<double>())
+                           .Bind(source, destination, transport, {TransferMode::Transient, {}, 0});
+        MPIProgress progress;
+        auto event = progress.Import(binding.BeginChecked(stream));
+        event.WaitHost();
+        stream.WaitFor(event);
+        Array<double> output(host.Layout());
+        auto outputBuffer = output.Storage();
+        CopyAsync(engine, stream, destination.Storage(), outputBuffer);
+        stream.Record().WaitHost();
+        progress.Drain();
+        engine.Synchronize();
+        auto read = output.Read();
         for (size_t i = 0; i < 67; ++i)
             for (size_t j = 0; j < 6; ++j)
-                w.At(i, j) = rank * 10000 + i * 10 + j;
+                CHECK(read.At(i, j) == (rank + 1) % size * 10000 + (66 - i) * 10 + j);
     }
-    auto source = AllocateArrayAsync<double>(engine, stream, host.Layout());
-    auto destination = AllocateLikeAsync(engine, stream, source);
-    auto sourceBuffer = source.Storage();
-    CopyAsync(engine, stream, host.Storage(), sourceBuffer);
-    stream.Record().WaitHost(); // Producer observation retires its write reservation.
-    std::vector<RowRequest> requests;
-    for (size_t i = 0; i < 67; ++i)
-        requests.push_back({(rank + 1) % size, int64_t(66 - i), i});
-    RowTransferPlan route(MPI_COMM_WORLD, 67, 67, requests);
-    auto binding = PayloadPlan(route, source.Layout(), destination.Layout(), ElementSchema::Arithmetic<double>())
-                       .Bind(source, destination, TransferTransport::HostPacked, {TransferMode::Transient, {}, 0});
-    MPIProgress progress;
-    auto event = progress.Import(binding.BeginScheduled(stream.Context()));
-    event.WaitHost();
-    stream.WaitFor(event);
-    Array<double> output(host.Layout());
-    auto outputBuffer = output.Storage();
-    CopyAsync(engine, stream, destination.Storage(), outputBuffer);
-    stream.Record().WaitHost();
-    progress.Drain();
+    EagerEngine engine(0, std::make_shared<AccessTrackingContext>());
+    auto stream = engine.CreateStream(std::make_shared<CUDALauncher>(0));
+    auto pooled = AllocateArrayAsync<double>(engine, stream, RowLayout::Dense(3, 5));
+    Array<double> target(pooled.Layout(), Device::CUDA(0));
+    PayloadPlan payload(RowTransferPlan(MPI_COMM_WORLD, 3, 3, {{(rank + 1) % size, 1, 0}}), pooled.Layout(), target.Layout(), ElementSchema::For<double>());
+    CHECK_THROWS(payload.Bind(pooled, target, TransferTransport::Direct));
     engine.Synchronize();
-    auto read = output.Read();
-    for (size_t i = 0; i < 67; ++i)
-        for (size_t j = 0; j < 6; ++j)
-            CHECK(read.At(i, j) == (rank + 1) % size * 10000 + (66 - i) * 10 + j);
 }
 #endif
 
@@ -382,39 +391,76 @@ TEST_CASE("Main-thread MPI progression joins worker computation with scheduled l
     MPI_Comm_size(MPI_COMM_WORLD, &size);
     constexpr size_t rows = 257;
     for (size_t workers : {size_t(0), size_t(2)})
-    {
-        EagerEngine engine(workers);
-        auto core = engine.CreateCPUStream(), ring = engine.CreateCPUStream();
-        Array<double> owned(RowLayout::Dense(rows, 6, 8)), ghost(RowLayout::Dense(19, 6, 8));
-        Array<double> output(RowLayout::Dense(rows, 6));
+        for (bool checking : {false, true})
         {
-            auto w = owned.Write();
+            EagerEngine engine(workers, checking ? std::make_shared<AccessTrackingContext>() : nullptr);
+            auto core = engine.CreateCPUStream(), ring = engine.CreateCPUStream(), bridge = engine.CreateCPUStream();
+            Array<double> owned(RowLayout::Dense(rows, 6, 8)), ghost(RowLayout::Dense(19, 6, 8));
+            Array<double> output(RowLayout::Dense(rows, 6));
+            {
+                auto w = owned.Write();
+                for (size_t i = 0; i < rows; ++i)
+                    for (size_t j = 0; j < 6; ++j)
+                        w.At(i, j) = rank * 10000 + i * 10 + j;
+            }
+            std::vector<RowRequest> requests;
+            for (size_t i = 0; i < 19; ++i)
+                requests.push_back({(rank + 1) % size, int64_t(i * 13), i});
+            RowTransferPlan route(MPI_COMM_WORLD, rows, 19, requests);
+            auto binding = PayloadPlan(route, owned.Layout(), ghost.Layout(), ElementSchema::Arithmetic<double>())
+                               .Bind(owned, ghost, TransferTransport::Direct, {TransferMode::Transient, {}, 0});
+            MPIProgress progress;
+            auto event = progress.Import(checking ? binding.BeginChecked(bridge) : binding.BeginScheduled());
+            CHECK_THROWS(ghost.Read());
+            SubmitArrays(engine, core, [](ExecutionContext, auto u, auto rhs)
+                         { for (size_t i = 0; i < rows; ++i) for (size_t j = 0; j < 6; ++j) rhs(i, j) = 2 * u(i, j); }, Read(owned), Write(output));
+            ring.WaitFor(event);
+            ring.WaitFor(core.Record());
+            SubmitArrays(engine, ring, [](ExecutionContext, auto g, auto rhs)
+                         { for (size_t i = 0; i < 19; ++i) for (size_t j = 0; j < 6; ++j) rhs(i, j) += g(i, j); }, Read(ghost), ReadWrite(output));
+            progress.Drain();
+            engine.Synchronize();
+            auto r = output.Read();
             for (size_t i = 0; i < rows; ++i)
                 for (size_t j = 0; j < 6; ++j)
-                    w.At(i, j) = rank * 10000 + i * 10 + j;
+                    CHECK(r.At(i, j) == 2 * (rank * 10000 + i * 10 + j) + (i < 19 ? (rank + 1) % size * 10000 + i * 130 + j : 0));
         }
-        std::vector<RowRequest> requests;
-        for (size_t i = 0; i < 19; ++i)
-            requests.push_back({(rank + 1) % size, int64_t(i * 13), i});
-        RowTransferPlan route(MPI_COMM_WORLD, rows, 19, requests);
-        auto binding = PayloadPlan(route, owned.Layout(), ghost.Layout(), ElementSchema::Arithmetic<double>())
-                           .Bind(owned, ghost, TransferTransport::Direct, {TransferMode::Transient, {}, 0});
-        MPIProgress progress;
-        auto event = progress.Import(binding.BeginScheduled());
-        CHECK_THROWS(ghost.Read());
-        SubmitArrays(engine, core, [](ExecutionContext, auto u, auto rhs)
-                     { for (size_t i = 0; i < rows; ++i) for (size_t j = 0; j < 6; ++j) rhs(i, j) = 2 * u(i, j); }, Read(owned), Write(output));
-        ring.WaitFor(event);
-        ring.WaitFor(core.Record());
-        SubmitArrays(engine, ring, [](ExecutionContext, auto g, auto rhs)
-                     { for (size_t i = 0; i < 19; ++i) for (size_t j = 0; j < 6; ++j) rhs(i, j) += g(i, j); }, Read(ghost), ReadWrite(output));
-        progress.Drain();
-        engine.Synchronize();
-        auto r = output.Read();
-        for (size_t i = 0; i < rows; ++i)
-            for (size_t j = 0; j < 6; ++j)
-                CHECK(r.At(i, j) == 2 * (rank * 10000 + i * 10 + j) + (i < 19 ? (rank + 1) % size * 10000 + i * 130 + j : 0));
+}
+
+TEST_CASE("Checked MPI rejects a rank-local missing reader edge collectively and permits retry")
+{
+    int rank = 0, size = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+    EagerEngine engine(2, std::make_shared<AccessTrackingContext>());
+    auto reader = engine.CreateCPUStream(), bridge = engine.CreateCPUStream();
+    Array<double> source(RowLayout::Dense(6, 5)), ghost(RowLayout::Dense(1, 5));
+    {
+        auto write = source.Write();
+        for (DNDS::index iRow = 0; iRow < 6; ++iRow)
+            for (DNDS::index j = 0; j < 5; ++j)
+                write.View()(iRow, j) = rank * 100 + iRow * 10 + j;
     }
+    auto binding = PayloadPlan(RowTransferPlan(MPI_COMM_WORLD, 6, 1, {{(rank + 1) % size, 3, 0}}), source.Layout(), ghost.Layout(), ElementSchema::For<double>()).Bind(source, ghost);
+    auto gate = std::make_shared<std::atomic<bool>>(false);
+    struct Release
+    {
+        std::shared_ptr<std::atomic<bool>> gate;
+        ~Release() { *gate = true; }
+    } cleanup{gate};
+    if (rank == 0)
+        SubmitArrays(engine, reader, [gate](auto, auto)
+                     {
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+            while (!gate->load() && std::chrono::steady_clock::now() < deadline) std::this_thread::yield(); }, Read(ghost));
+    CHECK_THROWS(binding.BeginChecked(bridge));
+    *gate = true;
+    engine.Synchronize();
+    auto operation = binding.BeginChecked(bridge);
+    operation.Wait();
+    const auto values = ghost.Read();
+    for (DNDS::index j = 0; j < 5; ++j)
+        CHECK(values.View()(0, j) == ((rank + 1) % size) * 100 + 30 + j);
 }
 
 TEST_CASE("MPI completes while a core worker is active across Euler field widths")

@@ -32,6 +32,7 @@ Its current foundation mock is not a completed fluid solver.
 | Fixed-record setup request/reply routing | [Sparse batch exchange](architecture/SparseBatchExchange.md) |
 | Historical Array/ParArray interface | [Legacy Array infrastructure](architecture/array_infrastructure.md) |
 | Runtime ordering and lifetime responsibilities | [Runtime caller contract](architecture/RuntimeCallerContract.md) |
+| Optional submission-time dependency checking | [Checked eager execution](architecture/CheckedExecution.md) |
 | Native field algebra | [Native DOF algebra](architecture/NativeDofAlgebra.md) |
 | Explicit device pack/MPI/unpack and overlap | [Device-packed transfer](architecture/DevicePackedTransfer.md) |
 | Optional stream-ordered NCCL payloads and caller ordering | [NCCL transfers](architecture/NCCLTransfer.md) |

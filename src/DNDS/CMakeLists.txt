@@ -44,6 +44,7 @@ Config/EnvReader.cpp
 Device/DeviceStorage.cpp
 Runtime/Storage/Buffer.cpp
 Runtime/Execution/EagerEngine.cpp
+Runtime/Execution/AccessTracking.cpp
 Runtime/Execution/CUDAExecution.cpp
 Runtime/Communication/Exchange.cpp
 Runtime/Storage/ElementSchema.cpp

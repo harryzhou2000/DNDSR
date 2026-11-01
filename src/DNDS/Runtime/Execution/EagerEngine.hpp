@@ -1,6 +1,7 @@
 #pragma once
 
 #include "DNDS/Runtime/Storage/Buffer.hpp"
+#include "DNDS/Runtime/Execution/AccessTracking.hpp"
 #include <functional>
 #include <vector>
 #include <optional>
@@ -24,6 +25,14 @@ namespace DNDS::Runtime
                                                 decltype(std::declval<T &>().ReleaseOn(ExecutionContext{}))>> : std::true_type
         {
         };
+        template <class T, class = void>
+        struct HasReleaseBuffers : std::false_type
+        {
+        };
+        template <class T>
+        struct HasReleaseBuffers<T, std::void_t<decltype(std::declval<const T &>().ReleaseBuffers())>> : std::true_type
+        {
+        };
     }
     /// Backend-owned completion for an explicit stream prefix. Ordinary kernel
     /// submission does not create or return one of these objects.
@@ -40,6 +49,10 @@ namespace DNDS::Runtime
 
     private:
         std::shared_ptr<const State> _state;
+        std::shared_ptr<const AccessOrder> _order;
+        friend class ExecutionStream;
+        friend class TransferBinding;
+        friend class MPIProgress;
 
     public:
         StreamEvent() = default;
@@ -89,15 +102,28 @@ namespace DNDS::Runtime
                                   "stream allocator cannot satisfy requested alignment");
             return result;
         }
+        /// Native asynchronous initialization must use checked reservations when
+        /// called by a checked engine. Ready CPU providers use the default.
+        virtual Buffer AllocateChecked(size_t bytes, AllocationOptions options) { return Allocate(bytes, options); }
     };
 
     class ExecutionStream
     {
         friend class EagerEngine;
+        friend class TransferBinding;
         std::shared_ptr<StreamLauncher> _launcher;
         std::shared_ptr<const int> _owner;
-        ExecutionStream(std::shared_ptr<StreamLauncher> launcher, std::shared_ptr<const int> owner)
-            : _launcher(std::move(launcher)), _owner(std::move(owner)) {}
+        std::shared_ptr<AccessTrackingContext> _tracking;
+        uint64_t _lane = 0;
+        std::shared_ptr<void> _laneLifetime;
+        ExecutionStream(std::shared_ptr<StreamLauncher> launcher, std::shared_ptr<const int> owner,
+                        std::shared_ptr<AccessTrackingContext> tracking = {}, uint64_t lane = 0)
+            : _launcher(std::move(launcher)), _owner(std::move(owner)), _tracking(std::move(tracking)), _lane(lane)
+        {
+            if (_tracking)
+                _laneLifetime = std::shared_ptr<void>(_tracking.get(), [tracking = _tracking, lane](void *)
+                                                      { tracking->RetireLane(lane); });
+        }
 
     public:
         ExecutionStream() = default;
@@ -114,8 +140,9 @@ namespace DNDS::Runtime
     /// HostThreads=0 runs ready CPU work inline; >0 shares a bounded worker pool
     /// between all CPU lanes. Waiting lanes never consume blocked workers.
     /// @pre Caller orders all conflicting scheduled accesses and joins every
-    /// independent use before a final release. No eager schedule proof exists:
-    /// omitted edges can silently produce stale values or unsafe memory access.
+    /// independent use before a final release. An optional shared tracking
+    /// context checks declared accesses at submission. Unchecked eager mode
+    /// leaves this proof with the caller; omitted edges can corrupt values.
     /// @pre CPU work must not block waiting for work that needs the same bounded
     /// pool; express dependencies with WaitFor. Synchronize explicitly to observe
     /// failures. Concurrent mutation of one public Array handle is not supported.
@@ -126,21 +153,24 @@ namespace DNDS::Runtime
         std::unique_ptr<State> _state;
 
     public:
-        explicit EagerEngine(size_t hostThreads = 0);
+        explicit EagerEngine(size_t hostThreads = 0, std::shared_ptr<AccessTrackingContext> tracking = {});
         EagerEngine(const EagerEngine &) = delete;
         EagerEngine &operator=(const EagerEngine &) = delete;
         ~EagerEngine();
         ExecutionStream CreateCPUStream();
         ExecutionStream CreateStream(std::shared_ptr<StreamLauncher> launcher);
+        bool ChecksAccess() const;
         /// CPU allocation is ready immediately; CUDA allocation/zeroing follows
         /// this stream. Record/Wait exports readiness when another stream needs it.
         Buffer AllocateBuffer(const ExecutionStream &stream, size_t bytes, AllocationOptions options = {});
         void Submit(const ExecutionStream &stream, StreamLauncher::Work work);
         /// Backend/operator integration; no per-kernel public completion token.
-        void SubmitOperation(const ExecutionStream &stream, StreamLauncher::Work work, StreamLauncher::Retirement retire);
+        void SubmitOperation(const ExecutionStream &stream, StreamLauncher::Work work, StreamLauncher::Retirement retire,
+                             std::vector<ScheduledBufferAccess> accesses = {});
         /// Ordered cleanup still runs after a preceding computation failed.
-        void SubmitCleanup(const ExecutionStream &stream, StreamLauncher::Work work);
-        void SubmitOrderedRelease(const ExecutionStream &stream, StreamLauncher::Work work, StreamLauncher::Retirement retire);
+        void SubmitCleanup(const ExecutionStream &stream, StreamLauncher::Work work, std::vector<ScheduledBufferAccess> accesses = {});
+        void SubmitOrderedRelease(const ExecutionStream &stream, StreamLauncher::Work work, StreamLauncher::Retirement retire,
+                                  std::vector<ScheduledBufferAccess> accesses = {});
         /// Consume one handle, not all aliases. Caller must join every independent
         /// use onto stream before any potentially final release. Different alias
         /// release streams are legal only when the actual final decrement follows
@@ -151,6 +181,18 @@ namespace DNDS::Runtime
             static_assert(!std::is_lvalue_reference_v<T>, "ReleaseOn consumes a moved handle");
             static_assert(std::is_nothrow_move_assignable_v<std::decay_t<T>>, "release handles need noexcept move assignment");
             DNDS_check_throw_info(stream._launcher, "invalid release stream");
+            std::vector<ScheduledBufferAccess> accesses;
+            if (ChecksAccess())
+            {
+                if constexpr (Detail::HasReleaseBuffers<std::decay_t<T>>::value)
+                {
+                    for (const auto &buffer : handle.ReleaseBuffers())
+                        if (buffer.Identity())
+                            accesses.push_back({buffer, AccessMode::Write});
+                }
+                else
+                    DNDS_check_throw_info(false, "checked release needs explicit ReleaseBuffers allocation declarations");
+            }
             bool ordered = false;
             if constexpr (Detail::HasOrderedRelease<std::decay_t<T>>::value)
                 ordered = handle.CanReleaseOrdered(stream.Context());
@@ -162,11 +204,11 @@ namespace DNDS::Runtime
                     {
                         SubmitOrderedRelease(stream, [retained](ExecutionContext context)
                                              { retained->value().ReleaseOn(context); retained->reset(); }, [retained](std::exception_ptr) noexcept
-                                             { retained->reset(); });
+                                             { retained->reset(); }, std::move(accesses));
                         return;
                     }
                 SubmitCleanup(stream, [retained](ExecutionContext)
-                              { retained->reset(); });
+                              { retained->reset(); }, std::move(accesses));
             }
             catch (...)
             {

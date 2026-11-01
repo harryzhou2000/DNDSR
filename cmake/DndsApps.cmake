@@ -138,6 +138,10 @@ ADD_EXE_APP("${DNDS_APPS_Solver}" "app/Solver" "dnds;" ON cpp)
 ADD_EXE_APP("${DNDS_APPS_Geom}" "app/Geom" "geom;dnds;" ON cpp)
 ADD_EXE_APP("${DNDS_APPS_CFV}" "app/CFV" "cfv;geom;dnds;" ON cpp)
 ADD_EXE_APP("${DNDS_APPS_Euler}" "app/Euler" "cfv;geom;dnds;" ON cpp)
+add_executable(cauchy_solver EXCLUDE_FROM_ALL app/Cauchy/cauchy.cpp)
+target_include_directories(cauchy_solver PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
+target_link_libraries(cauchy_solver PRIVATE cauchy cfv geom dnds ${DNDS_EXTERNAL_LIBS})
+set_target_properties(cauchy_solver PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/app RUNTIME_OUTPUT_NAME "cauchy${EXE_SUFFIX}")
 
 
 

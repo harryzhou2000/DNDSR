@@ -248,10 +248,14 @@ namespace DNDS::Runtime
         std::shared_ptr<CPUExecutor> host;
         std::shared_ptr<const int> identity = std::make_shared<const int>(0);
         std::vector<std::shared_ptr<StreamLauncher>> streams;
+        std::shared_ptr<AccessTrackingContext> tracking;
         std::mutex mutex;
         explicit State(size_t threads) : host(std::make_shared<CPUExecutor>(threads)) {}
     };
-    EagerEngine::EagerEngine(size_t threads) : _state(std::make_unique<State>(threads)) {}
+    EagerEngine::EagerEngine(size_t threads, std::shared_ptr<AccessTrackingContext> tracking) : _state(std::make_unique<State>(threads))
+    {
+        _state->tracking = std::move(tracking);
+    }
     EagerEngine::~EagerEngine()
     {
         try
@@ -263,39 +267,70 @@ namespace DNDS::Runtime
         } // Explicit Synchronize reports errors; shutdown still drains.
     }
     ExecutionStream EagerEngine::CreateCPUStream() { return CreateStream(std::make_shared<CPULauncher>(_state->host)); }
+    bool EagerEngine::ChecksAccess() const { return bool(_state->tracking); }
     ExecutionStream EagerEngine::CreateStream(std::shared_ptr<StreamLauncher> launcher)
     {
         DNDS_check_throw_info(launcher, "stream needs a launcher");
         std::lock_guard<std::mutex> lock(_state->mutex);
         _state->streams.push_back(launcher);
-        return ExecutionStream(std::move(launcher), _state->identity);
+        return ExecutionStream(std::move(launcher), _state->identity, _state->tracking,
+                               _state->tracking ? _state->tracking->NewLane() : 0);
     }
     void EagerEngine::Submit(const ExecutionStream &stream, StreamLauncher::Work work)
     {
         DNDS_check_throw_info(stream._launcher && stream._owner == _state->identity && work, "invalid eager submission or foreign stream");
-        stream._launcher->Submit(std::move(work), CommandKind::Compute);
+        SubmitOperation(stream, std::move(work), [](std::exception_ptr) {});
     }
     Buffer EagerEngine::AllocateBuffer(const ExecutionStream &stream, size_t bytes, AllocationOptions options)
     {
         DNDS_check_throw_info(stream._launcher && stream._owner == _state->identity, "invalid allocation stream");
-        return stream._launcher->Allocate(bytes, options);
+        if (!_state->tracking)
+            return stream._launcher->Allocate(bytes, options);
+        auto buffer = stream._launcher->AllocateChecked(bytes, options);
+        // Allocation/zero initialization is itself a producer, even when native
+        // allocation returned a host handle before its device work completed.
+        SubmitOperation(stream, [](ExecutionContext) {}, [](std::exception_ptr) {}, {{buffer, AccessMode::Write}});
+        return buffer;
     }
-    void EagerEngine::SubmitOperation(const ExecutionStream &stream, StreamLauncher::Work work, StreamLauncher::Retirement retire)
+    void EagerEngine::SubmitOperation(const ExecutionStream &stream, StreamLauncher::Work work, StreamLauncher::Retirement retire,
+                                      std::vector<ScheduledBufferAccess> accesses)
     {
         DNDS_check_throw_info(stream._launcher && stream._owner == _state->identity && work && retire,
                               "invalid eager operation or foreign stream");
-        stream._launcher->Submit(std::move(work), CommandKind::Compute, std::move(retire));
+        if (!_state->tracking)
+            stream._launcher->Submit(std::move(work), CommandKind::Compute, std::move(retire));
+        else
+            _state->tracking->Submit(stream._lane, accesses, [&](AccessTrackingContext::Submission submission)
+                                     { stream._launcher->Submit(std::move(work), CommandKind::Compute,
+                                                                [submission, retire = std::move(retire)](std::exception_ptr error) noexcept
+                                                                {
+                                                                    retire(error);
+                                                                    submission.Complete();
+                                                                }); });
     }
-    void EagerEngine::SubmitCleanup(const ExecutionStream &stream, StreamLauncher::Work work)
+    void EagerEngine::SubmitCleanup(const ExecutionStream &stream, StreamLauncher::Work work, std::vector<ScheduledBufferAccess> accesses)
     {
         DNDS_check_throw_info(stream._launcher && stream._owner == _state->identity && work, "invalid eager cleanup or foreign stream");
-        stream._launcher->Submit(std::move(work), CommandKind::Cleanup);
+        if (!_state->tracking)
+            stream._launcher->Submit(std::move(work), CommandKind::Cleanup);
+        else
+            _state->tracking->Submit(stream._lane, accesses, [&](AccessTrackingContext::Submission submission)
+                                     { stream._launcher->Submit(std::move(work), CommandKind::Cleanup,
+                                                                [submission](std::exception_ptr) noexcept
+                                                                { submission.Complete(); }); });
     }
-    void EagerEngine::SubmitOrderedRelease(const ExecutionStream &stream, StreamLauncher::Work work, StreamLauncher::Retirement retire)
+    void EagerEngine::SubmitOrderedRelease(const ExecutionStream &stream, StreamLauncher::Work work, StreamLauncher::Retirement retire,
+                                           std::vector<ScheduledBufferAccess> accesses)
     {
         DNDS_check_throw_info(stream._launcher && stream._owner == _state->identity && work && retire,
                               "invalid eager release or foreign stream");
-        stream._launcher->Submit(std::move(work), CommandKind::OrderedRelease, std::move(retire));
+        if (!_state->tracking)
+            stream._launcher->Submit(std::move(work), CommandKind::OrderedRelease, std::move(retire));
+        else
+            _state->tracking->Submit(stream._lane, accesses, [&](AccessTrackingContext::Submission submission)
+                                     { stream._launcher->Submit(std::move(work), CommandKind::OrderedRelease,
+                                                                [submission, retire = std::move(retire)](std::exception_ptr error) noexcept
+                                                                { retire(error); submission.Complete(); }); });
     }
     void EagerEngine::Synchronize()
     {
@@ -326,11 +361,24 @@ namespace DNDS::Runtime
     void ExecutionStream::WaitFor(StreamEvent event) const
     {
         DNDS_check_throw_info(_launcher, "empty execution stream");
-        _launcher->WaitFor(std::move(event));
+        if (_tracking)
+        {
+            const auto order = event._order;
+            _tracking->WaitFor(_lane, order, [&]
+                               { _launcher->WaitFor(std::move(event)); });
+        }
+        else
+            _launcher->WaitFor(std::move(event));
     }
     StreamEvent ExecutionStream::Record() const
     {
         DNDS_check_throw_info(_launcher, "empty execution stream");
-        return _launcher->Record();
+        if (!_tracking)
+            return _launcher->Record();
+        StreamEvent event;
+        const auto order = _tracking->Record(_lane, [&]
+                                             { event = _launcher->Record(); });
+        event._order = order;
+        return event;
     }
 }

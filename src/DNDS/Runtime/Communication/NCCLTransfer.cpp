@@ -203,7 +203,7 @@ namespace DNDS::Runtime
             Completion completion;
             std::exception_ptr error;
             bool finished = false, manual = false;
-            Operation(std::shared_ptr<const Binding> b, ExecutionContext context, bool scheduled, bool exclusive)
+            Operation(std::shared_ptr<const Binding> b, ExecutionContext context, bool scheduled, bool exclusive, bool checked = false)
                 : binding(std::move(b)), manual(exclusive)
             {
                 DNDS_check_throw_info(context.device == binding->owner->device && binding->payload.route.Valid(), "NCCL execution placement or row mapping mismatch");
@@ -214,13 +214,13 @@ namespace DNDS::Runtime
                 try
                 {
                     auto src = binding->source, dst = binding->destination;
-                    source.Acquire(src, context, false, scheduled);
-                    destination.Acquire(dst, context, true, scheduled);
+                    source.Acquire(src, context, false, scheduled, checked);
+                    destination.Acquire(dst, context, true, scheduled, checked);
                     if (binding->packed)
                     {
                         auto packedSend = binding->send, packedReceive = binding->receive;
-                        send.Acquire(packedSend, context, true, scheduled);
-                        receive.Acquire(packedReceive, context, true, scheduled);
+                        send.Acquire(packedSend, context, true, scheduled, checked);
+                        receive.Acquire(packedReceive, context, true, scheduled, checked);
                     }
                 }
                 catch (...)
@@ -387,13 +387,13 @@ namespace DNDS::Runtime
         }
         void Enqueue(EagerEngine &engine, const ExecutionStream &stream) const override
         {
-            auto op = std::make_shared<Operation>(shared_from_this(), stream.Context(), true, false);
+            auto op = std::make_shared<Operation>(shared_from_this(), stream.Context(), true, false, engine.ChecksAccess());
             engine.SubmitOperation(stream, [op](ExecutionContext context)
                                    {
                                        op->source.pending.Validate();
                                        op->destination.pending.Validate();
                                        op->binding->Launch(context, op->source.View<uint8_t>().data, op->destination.View<uint8_t>().data); }, [op](std::exception_ptr error) noexcept
-                                   { op->Retire(error); });
+                                   { op->Retire(error); }, packed ? std::vector<ScheduledBufferAccess>{{source, AccessMode::Read}, {destination, AccessMode::Write}, {send, AccessMode::Write}, {receive, AccessMode::Write}} : std::vector<ScheduledBufferAccess>{{source, AccessMode::Read}, {destination, AccessMode::Write}});
         }
     };
 

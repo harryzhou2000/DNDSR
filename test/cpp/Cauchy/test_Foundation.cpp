@@ -1,6 +1,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "Cauchy/Core/CoordinatedSchedule.hpp"
+#include "Cauchy/Config/SimulationConfig.hpp"
 #include "DNDS/Algebra/DofBundle.hpp"
 #include <numeric>
 
@@ -14,6 +15,23 @@ static std::vector<int> AllRanks()
     std::vector<int> result(size);
     std::iota(result.begin(), result.end(), 0);
     return result;
+}
+TEST_CASE("Cauchy configuration preflight coordinates invalid or differing rank inputs")
+{
+    const auto config = C::SimulationConfig::ResolveCollective(C::Json::object(), MPI_COMM_WORLD);
+    REQUIRE(config.Domains().size() == 1);
+    CHECK(config.Domains()[0].placement.ranks == AllRanks());
+    C::Json bad = C::Json::object();
+    if (rank == 0)
+        bad["defaults"]["execution"]["device"] = "cuda";
+    CHECK_THROWS(C::SimulationConfig::ResolveCollective(bad, MPI_COMM_WORLD));
+    if (size > 1)
+    {
+        C::Json different = C::Json::object();
+        different["defaults"]["equation"]["gamma"] = rank == 0 ? 1.4 : 1.5;
+        CHECK_THROWS(C::SimulationConfig::ResolveCollective(different, MPI_COMM_WORLD));
+    }
+    CHECK_NOTHROW(C::SimulationConfig::ResolveCollective(C::Json::object(), MPI_COMM_WORLD));
 }
 TEST_CASE("Cauchy domain placement preserves rank namespaces and isolates shared groups")
 {

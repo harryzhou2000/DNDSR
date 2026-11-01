@@ -18,6 +18,7 @@ namespace DNDS::Runtime
             RowLayout rows;
             uint64_t DeviceOffsetIdentity() const { return deviceOffsets.Identity(); }
             uint64_t DeviceSizeIdentity() const { return deviceSizes.Identity(); }
+            std::vector<Buffer> ReleaseBuffers() const { return {deviceOffsets, deviceSizes}; }
             template <class F>
             void VisitAllocations(F &&visit) const
             {
@@ -99,6 +100,14 @@ namespace DNDS::Runtime
 
     public:
         using Shared = std::shared_ptr<const ArrayStorage>;
+        std::vector<Buffer> ReleaseBuffers() const
+        {
+            std::lock_guard<std::mutex> lock(_shapeMutex);
+            CheckPublished();
+            auto buffers = _layout->ReleaseBuffers();
+            buffers.push_back(_values);
+            return buffers;
+        }
         bool CanReleaseOrdered(ExecutionContext context) const
         {
             std::lock_guard<std::mutex> lock(_shapeMutex);
@@ -289,6 +298,9 @@ namespace DNDS::Runtime
         }
         void Complete(Completion completion) { _lease.Complete(std::move(completion)); }
         void Wait() { _lease.Wait(); }
+        /// Cancel an acquired but unused access after preflight rejection.
+        /// No kernel or host read/write may have used the borrowed view.
+        void CancelUnmodified() { _lease.CancelUnmodified(); }
         void Fail() { _lease.Fail(); }
     };
 
@@ -362,6 +374,14 @@ namespace DNDS::Runtime
         bool IsValid() const { return _storage && _storage->IsValid(); }
         Buffer Storage() const { return RequireStorage().Values(); }
         bool CanReleaseOrdered(ExecutionContext context) const { return !_storage || _storage->CanReleaseOrdered(context); }
+        /// Allocation identities consumed by checked ordered release. CPU shape
+        /// buffers are immutable shared metadata, never asynchronous operands.
+        std::vector<Buffer> ReleaseBuffers() const
+        {
+            if (!_storage)
+                return {};
+            return _storage->ReleaseBuffers();
+        }
         void ReleaseOn(ExecutionContext context) { ArrayStorage::ReleaseHandle(_storage, context); }
         ReadLease Read(ExecutionContext context = ExecutionContext::Host()) const
         {

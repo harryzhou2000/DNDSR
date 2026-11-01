@@ -252,6 +252,14 @@ namespace DNDS::Runtime
     Buffer CUDALauncher::Allocate(size_t bytes) { return Allocate(bytes, {}); }
     Buffer CUDALauncher::Allocate(size_t bytes, AllocationOptions options)
     {
+        return AllocateImpl(bytes, options, false);
+    }
+    Buffer CUDALauncher::AllocateChecked(size_t bytes, AllocationOptions options)
+    {
+        return AllocateImpl(bytes, options, true);
+    }
+    Buffer CUDALauncher::AllocateImpl(size_t bytes, AllocationOptions options, bool checked)
+    {
         State::Issue issue(*_state);
         _state->Poll();
         if (_state->error)
@@ -261,7 +269,7 @@ namespace DNDS::Runtime
         std::shared_ptr<ScheduledAccess> initialization;
         try
         {
-            initialization = std::make_shared<ScheduledAccess>(result.Reserve(AccessMode::Write, context.device));
+            initialization = std::make_shared<ScheduledAccess>(result.Reserve(AccessMode::Write, context.device, checked));
             _state->pending.push_back({{}, [initialization](std::exception_ptr error) noexcept
                                        { initialization->Complete(!error); },
                                        false,
@@ -404,5 +412,6 @@ namespace DNDS::Runtime
         DNDS_check_throw_info(false, "runtime CUDA allocation unavailable");
         return {};
     }
+    Buffer CUDALauncher::AllocateChecked(size_t bytes, AllocationOptions options) { return Allocate(bytes, options); }
 #endif
 }

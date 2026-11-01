@@ -81,5 +81,9 @@ namespace DNDS::Runtime
         /// Explicit non-MPI payload provider; MPI remains setup/control only.
         /// Do not combine with an MPI context/tag. Null preserves all defaults.
         std::shared_ptr<TransferProvider> provider;
+        /// Explicit installed-MPI capability, independent of CUDA awareness.
+        /// Default rejects Direct endpoints from cudaMallocAsync/VMM pools;
+        /// select explicit packing or validate the MPI build before opting in.
+        bool allowStreamOrderedDeviceMemory = false;
     };
 }

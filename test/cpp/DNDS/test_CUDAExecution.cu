@@ -312,6 +312,48 @@ TEST_CASE("CUDA missing eager join returns stale values while ordered consumptio
         }
 }
 
+TEST_CASE("Checked CUDA eagerly queues dependent kernels and rejects missing prefixes and free joins")
+{
+    auto tracking = std::make_shared<R::AccessTrackingContext>();
+    R::EagerEngine engine(0, tracking);
+    auto producer = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
+    auto consumer = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
+    R::Array<double> output(R::RowLayout::Dense(19, 7, 9), R::Device::CUDA(0));
+    PreloadKernels();
+    Gate gate;
+    gate.Enqueue(engine, producer);
+    const auto stale = producer.Record();
+    auto temporary = R::AllocateArrayAsync<double>(engine, producer, R::RowLayout::Dense(19, 7, 9));
+    consumer.WaitFor(stale);
+    const auto consume = [](R::ExecutionContext context, auto input, auto result)
+    {
+        Scale<<<3, 32, 0, static_cast<cudaStream_t>(context.stream)>>>(input, result, 3);
+        DNDS_check_throw_info(cudaGetLastError() == cudaSuccess, "checked test Scale launch failed");
+    };
+    // Initialization itself is a pending writer, not ready merely because its
+    // CPU handle exists. The old event precedes both initialization and Add.
+    CHECK_THROWS(R::SubmitArrays(engine, consumer, consume, R::Read(temporary), R::Write(output)));
+    R::SubmitArrays(engine, producer, LaunchAdd, R::ReadWrite(temporary));
+    const auto ready = producer.Record();
+    consumer.WaitFor(ready);
+    R::SubmitArrays(engine, consumer, consume, R::Read(temporary), R::Write(output));
+    CHECK_FALSE(ready.Ready());
+    CHECK_THROWS(engine.ReleaseOn(std::move(temporary), producer));
+    REQUIRE(temporary.IsValid());
+    CHECK_THROWS(output.Read(consumer.Context()));
+    // Enqueue returned while the producer is held. No host observation or
+    // device-wide synchronization was inserted by checking or ReleaseOn.
+    producer.WaitFor(consumer.Record());
+    engine.ReleaseOn(std::move(temporary), producer);
+    *gate.open = true;
+    engine.Synchronize();
+    const auto host = output.To(R::Device::Host());
+    const auto read = host.Read();
+    for (DNDS::index iRow = 0; iRow < 19; ++iRow)
+        for (DNDS::index j = 0; j < 7; ++j)
+            CHECK(read.At(iRow, j) == 3);
+}
+
 static R::Buffer Pinned(size_t bytes, std::atomic<int> &releases)
 {
     void *pointer = nullptr;

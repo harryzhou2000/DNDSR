@@ -47,11 +47,20 @@ namespace DNDS::CFV
             DNDS_FIELD(SORInstead, "Use ordered in-place SOR");
             DNDS_FIELD(coreFirst, "Use conservative node-star core before dependent cells for ordered SOR");
             DNDS_FIELD(HQMWeights, "Legacy HQM_OPT derivative and HQM_SD geometry weights");
-            DNDS_FIELD(functional, "Independent isotropic functional weights and length policy");
+            config.field_section(&T::functional, "functional", "Independent isotropic functional weights and length policy");
             DNDS_FIELD(cacheDiffBase, "Retain basis values and derivatives on face quadrature points");
             DNDS_FIELD(bcWeight, "Dirichlet boundary value weight");
             DNDS_FIELD(boundaryDerivativeWeights, "Boundary weights by derivative order; nonzero derivatives impose homogeneous derivative targets");
-            DNDS_FIELD(boundaryZoneWeights, "Optional BC-zone per-order weight overrides");
+            // Integer-key maps use nlohmann's pair-array wire representation,
+            // not an object with string keys. Declare that shape explicitly.
+            config.field_schema(&T::boundaryZoneWeights, "boundaryZoneWeights", "Optional [zone, weights] pairs",
+                                []() -> nlohmann::ordered_json
+                                {
+                                    using J = nlohmann::ordered_json;
+                                    const J weights{{"type", "array"}, {"minItems", 4}, {"maxItems", 4}, {"items", {{"type", "number"}}}};
+                                    const J pair{{"type", "array"}, {"minItems", 2}, {"maxItems", 2}, {"items", J::array({J{{"type", "integer"}}, weights})}};
+                                    return {{"type", "array"}, {"items", pair}};
+                                });
             DNDS_FIELD(svdTolerance, "Relative small-mode SVD cutoff against sigma_max");
             DNDS_FIELD(svdAbsoluteTolerance, "Absolute SVD cutoff, zero by default");
             DNDS_FIELD(WBAP_nStd, "WBAP center weight");

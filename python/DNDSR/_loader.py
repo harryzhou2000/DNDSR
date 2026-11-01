@@ -114,6 +114,7 @@ _EXTERNAL_LIBS: Sequence[str] = [
 ]
 
 _MODULE_LIBS: dict[str, Sequence[str]] = {
+    "cauchy": ["libdnds_shared.so", "libgeom_shared.so", "libcfv_shared.so", "libcauchy_shared.so"],
     "dnds":  ["libdnds_shared.so"],
     "geom":  ["libgeom_shared.so"],
     "cfv":   ["libcfv_shared.so"],

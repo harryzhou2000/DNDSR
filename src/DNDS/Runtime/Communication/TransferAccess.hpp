@@ -15,14 +15,14 @@ namespace DNDS::Runtime::Detail
         bool scheduled = false, writable = false;
         Device device;
         ExecutionContext context;
-        void Acquire(Buffer &buffer, ExecutionContext execution, bool wr, bool sch)
+        void Acquire(Buffer &buffer, ExecutionContext execution, bool wr, bool sch, bool checked = false)
         {
             context = execution;
             scheduled = sch;
             writable = wr;
             device = buffer.GetDevice();
             if (sch)
-                pending = buffer.Reserve(wr ? AccessMode::Write : AccessMode::Read, context.device);
+                pending = buffer.Reserve(wr ? AccessMode::Write : AccessMode::Read, context.device, checked);
             else if (wr)
                 write = buffer.Write(context);
             else

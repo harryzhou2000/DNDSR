@@ -11,6 +11,7 @@ namespace DNDS::Runtime
     {
         struct State;
         std::unique_ptr<State> _state;
+        Buffer AllocateImpl(size_t bytes, AllocationOptions options, bool checked);
 
     public:
         explicit CUDALauncher(int deviceOrdinal);
@@ -22,6 +23,7 @@ namespace DNDS::Runtime
         void Drain() override;
         Buffer Allocate(size_t bytes) override;
         Buffer Allocate(size_t bytes, AllocationOptions options) override;
+        Buffer AllocateChecked(size_t bytes, AllocationOptions options) override;
         /// Diagnostics for event-boundary tests, not an execution dependency.
         uint64_t NativeEventsRecorded() const;
     };

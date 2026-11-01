@@ -14,15 +14,42 @@ if importlib.util.find_spec("runtime_array_bridge_test") is None:
 import runtime_array_bridge_test as bridge
 
 
-@pytest.fixture(params=[("cpu", 0), ("cpu", 2), ("cuda", 2)])
+@pytest.fixture(params=[(kind, workers, checking)
+                        for kind, workers in [("cpu", 0), ("cpu", 2), ("cuda", 2)]
+                        for checking in [False, True]])
 def execution(request):
-    kind, workers = request.param
+    kind, workers, checking = request.param
     if kind == "cuda" and not R.cuda_enabled:
         pytest.skip("this build has no CUDA backend")
-    engine = R.EagerEngine(workers)
+    engine = R.EagerEngine(workers, R.AccessTrackingContext() if checking else None)
+    assert engine.checks_access == checking
     create = engine.cuda_stream if kind == "cuda" else engine.cpu_stream
     device = R.Device.cuda(0) if kind == "cuda" else R.Device.host()
     return engine, create(), create(), device
+
+
+def test_shared_checker_rejects_unordered_alias_access_and_accepts_an_explicit_join():
+    tracking = R.AccessTrackingContext()
+    producer = R.EagerEngine(2, tracking)
+    consumer = R.EagerEngine(2, tracking)
+    first, last = producer.cpu_stream(), consumer.cpu_stream()
+    values = R.Array(R.RowLayout.dense(17, 5))
+    values[:] = 3
+    alias = values.alias()
+    gate = bridge.hold(producer, first)
+    try:
+        bridge.scale_async(producer, first, values, 2)
+        with pytest.raises(RuntimeError, match="unordered"):
+            bridge.scale_async(consumer, last, alias, 5)
+        last.wait_for(first.record())
+        bridge.scale_async(consumer, last, alias, 5)
+        with pytest.raises(RuntimeError, match="pending"):
+            alias.numpy()
+    finally:
+        gate.open()
+    producer.synchronize()
+    consumer.synchronize()
+    np.testing.assert_array_equal(alias.numpy(), np.full((17, 5), 30))
 
 
 def test_checkpoint_requires_finished_stage_then_restores_shared_debug_snapshot(execution):

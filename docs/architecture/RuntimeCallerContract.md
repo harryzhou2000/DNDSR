@@ -6,8 +6,9 @@ the consumer stream, and the caller joins other streams. Import retains foreign
 ownership but cannot discover repeated imports or intercept later external writes.
 
 The Runtime checks access conflicts, shapes, typed payload compatibility and
-declared versions at API boundaries. Fully eager execution does **not** prove
-dependency ordering. A successful submission or `IsValid()` result is not proof
+declared versions at API boundaries. [Optional checked eager execution](CheckedExecution.md)
+also validates declared allocation dependencies at submission. Unchecked eager
+execution leaves ordering proof with the caller. A successful submission or `IsValid()` result is not proof
 that an operator read the intended time level. These obligations apply equally
 to inline CPU, worker CPU and CUDA execution.
 
@@ -20,8 +21,9 @@ to inline CPU, worker CPU and CUDA execution.
 2. Order conflicting uses on different streams explicitly: record the producer's
    prefix and enqueue `WaitFor` on each consumer. `Record()` covers only work
    already submitted. Scheduled reservations retain/protect storage against
-   immediate access; they intentionally do not reject conflicting scheduled
-   uses or infer a join. Missing joins can produce silently stale values or data
+   immediate access. Unchecked reservations do not prove scheduled ordering;
+   checked engines reject missing declared dependencies without inferring a join.
+   Missing joins in unchecked mode can produce silently stale values or data
    races. A race is outside the API contract, not an expected recovery path.
 3. Kernel `ArrayView` values are borrowed pointer/offset descriptors. Keep their
    access lease or submitted operation alive through the actual use, including
@@ -94,6 +96,10 @@ order on all participating ranks, including ranks with zero rows. Use MPI only o
 threads permitted by the initialized MPI thread level. `MPIProgress` is explicitly
 driven on its creating thread; drain it before `MPI_Finalize`. Do not wait on a
 worker dependent on MPI completion while withholding the required host progress.
+For a checked engine use `BeginChecked(bridgeStream)` and import the operation
+through `MPIProgress`; its portable event carries the access frontier. Full
+operation completion retires the conservative checked footprint. Do not mix a
+pending conflicting checked reservation with an unchecked `BeginScheduled`.
 Use distinct matched tags for concurrently active bindings in a shared
 `CommunicationContext`. Transient requests change setup cost, not these rules.
 

@@ -85,13 +85,15 @@ namespace DNDS::Runtime
             std::shared_ptr<void> _owner;
             size_t _bytes;
             Device _device;
+            bool _streamOrderedMemory;
 
         public:
-            SharedResource(std::shared_ptr<void> owner, size_t bytes, Device device, std::shared_ptr<Allocator> allocator = {})
-                : _allocator(std::move(allocator)), _owner(std::move(owner)), _bytes(bytes), _device(device) {}
+            SharedResource(std::shared_ptr<void> owner, size_t bytes, Device device, std::shared_ptr<Allocator> allocator = {}, bool streamOrderedMemory = false)
+                : _allocator(std::move(allocator)), _owner(std::move(owner)), _bytes(bytes), _device(device), _streamOrderedMemory(streamOrderedMemory) {}
             void *Data() const noexcept override { return _owner.get(); }
             size_t Bytes() const noexcept override { return _bytes; }
             Device GetDevice() const noexcept override { return _device; }
+            bool StreamOrderedMemory() const noexcept override { return _streamOrderedMemory; }
             void Release(const ExecutionContext *) noexcept override
             {
                 _owner.reset();
@@ -178,6 +180,7 @@ namespace DNDS::Runtime
             }
             ~NativeResource() override { Release(_unpublished ? &_construction : nullptr); }
             void Published() { _unpublished = false; }
+            bool StreamOrderedMemory() const noexcept override { return _asyncAllocation; }
             void *Data() const noexcept override { return _pointer; }
             size_t Bytes() const noexcept override { return _bytes; }
             Device GetDevice() const noexcept override { return _device; }
@@ -298,9 +301,11 @@ namespace DNDS::Runtime
         uint64_t version = 0;
         size_t readers = 0;
         size_t pendingReaders = 0, pendingWriters = 0;
+        size_t checkedReaders = 0, checkedWriters = 0;
         bool writer = false;
         bool failed = false;
         bool writable = true;
+        bool streamOrderedMemory = false;
         mutable std::mutex mutex;
     };
 
@@ -316,17 +321,19 @@ namespace DNDS::Runtime
             auto state = std::make_shared<BufferState>();
             state->bytes = resource->Bytes();
             state->device = resource->GetDevice();
+            state->streamOrderedMemory = resource->StreamOrderedMemory();
             state->allocation = Detail::AllocationReference(std::move(resource));
             return state;
         }
     }
 
-    Allocation Allocation::Import(std::shared_ptr<void> owner, size_t bytes, Device device, bool writable)
+    Allocation Allocation::Import(std::shared_ptr<void> owner, size_t bytes, Device device, bool writable, bool streamOrderedMemory)
     {
         ValidateDevice(device);
         DNDS_check_throw_info(owner.use_count() && (!bytes || owner.get()), "runtime: imported allocation requires shared ownership");
         DNDS_check_throw_info(bytes <= UINTPTR_MAX - reinterpret_cast<uintptr_t>(owner.get()), "runtime: imported address range overflow");
-        auto state = MakeState(std::make_unique<SharedResource>(std::move(owner), bytes, device));
+        DNDS_check_throw_info(!streamOrderedMemory || device.space == MemorySpace::CUDA, "pool/VMM memory needs a device allocation");
+        auto state = MakeState(std::make_unique<SharedResource>(std::move(owner), bytes, device, nullptr, streamOrderedMemory));
         state->writable = writable;
         return Allocation(std::move(state));
     }
@@ -366,7 +373,8 @@ namespace DNDS::Runtime
         DNDS_check_throw_info(!bytes || (owner && (!options.alignmentBytes ||
                                                    reinterpret_cast<uintptr_t>(owner.get()) % options.alignmentBytes == 0)),
                               "allocator returned a misaligned allocation");
-        return FromResource(std::make_unique<SharedResource>(std::move(owner), bytes, device, std::move(allocator)));
+        const bool streamOrdered = allocator->StreamOrderedMemory(device);
+        return FromResource(std::make_unique<SharedResource>(std::move(owner), bytes, device, std::move(allocator), streamOrdered));
     }
     Buffer Buffer::FromResource(std::unique_ptr<AllocationResource> resource) { return Buffer(MakeState(std::move(resource))); }
     Buffer Buffer::AllocateCUDAAsync(size_t bytes, ExecutionContext context, AllocationOptions options)
@@ -413,6 +421,7 @@ namespace DNDS::Runtime
         std::lock_guard<std::mutex> lock(_state->mutex);
         return !_state->failed;
     }
+    bool Buffer::StreamOrderedMemory() const { return _state && _state->streamOrderedMemory; }
     bool Buffer::CanReleaseOrdered(ExecutionContext context) const
     {
         return !_state || _state->allocation.CanReleaseOrdered(context);
@@ -437,13 +446,13 @@ namespace DNDS::Runtime
     }
     ReadAccess Buffer::Read(ExecutionContext context) const { return ReadAccess(Access(_state, _offset, _bytes, context, false)); }
     WriteAccess Buffer::Write(ExecutionContext context) { return WriteAccess(Access(_state, _offset, _bytes, context, true)); }
-    ScheduledAccess Buffer::Reserve(AccessMode mode, Device device) const
+    ScheduledAccess Buffer::Reserve(AccessMode mode, Device device, bool checked) const
     {
-        return ScheduledAccess(_state, _offset, _bytes, device, mode);
+        return ScheduledAccess(_state, _offset, _bytes, device, mode, checked);
     }
 
-    ScheduledAccess::ScheduledAccess(std::shared_ptr<BufferState> state, size_t offset, size_t bytes, Device device, AccessMode mode)
-        : _state(std::move(state)), _offset(offset), _bytes(bytes), _write(mode != AccessMode::Read)
+    ScheduledAccess::ScheduledAccess(std::shared_ptr<BufferState> state, size_t offset, size_t bytes, Device device, AccessMode mode, bool checked)
+        : _state(std::move(state)), _offset(offset), _bytes(bytes), _write(mode != AccessMode::Read), _checked(checked)
     {
         DNDS_check_throw_info(mode == AccessMode::Read || mode == AccessMode::Write || mode == AccessMode::ReadWrite,
                               "runtime: invalid scheduled access mode");
@@ -452,9 +461,15 @@ namespace DNDS::Runtime
         DNDS_check_throw_info(!_state->failed, "runtime: failed allocation must be replaced");
         DNDS_check_throw_info(!_write || _state->writable, "runtime: imported allocation is read-only");
         DNDS_check_throw_info(!_state->writer && (!_write || !_state->readers), "runtime: conflicting immediate buffer access");
+        const auto otherWriters = checked ? _state->pendingWriters - _state->checkedWriters : _state->checkedWriters;
+        const auto otherReaders = checked ? _state->pendingReaders - _state->checkedReaders : _state->checkedReaders;
+        DNDS_check_throw_info(!otherWriters && (!_write || !otherReaders),
+                              "runtime: conflicting checked/unchecked access; observe completion at the policy boundary");
         auto &count = _write ? _state->pendingWriters : _state->pendingReaders;
         DNDS_check_throw_info(count < SIZE_MAX, "runtime: scheduled access count overflow");
         ++count;
+        if (_checked)
+            ++(_write ? _state->checkedWriters : _state->checkedReaders);
     }
     ScheduledAccess &ScheduledAccess::operator=(ScheduledAccess &&other) noexcept
     {
@@ -466,6 +481,7 @@ namespace DNDS::Runtime
             _offset = other._offset;
             _bytes = other._bytes;
             _write = other._write;
+            _checked = other._checked;
         }
         return *this;
     }
@@ -505,6 +521,8 @@ namespace DNDS::Runtime
         if (!state)
             return;
         std::lock_guard<std::mutex> lock(state->mutex);
+        if (_checked)
+            --(_write ? state->checkedWriters : state->checkedReaders);
         if (_write)
         {
             --state->pendingWriters;
@@ -524,6 +542,8 @@ namespace DNDS::Runtime
             return;
         std::lock_guard<std::mutex> lock(state->mutex);
         --(_write ? state->pendingWriters : state->pendingReaders);
+        if (_checked)
+            --(_write ? state->checkedWriters : state->checkedReaders);
     }
 
     Access::Access(std::shared_ptr<BufferState> state, size_t offset, size_t bytes, ExecutionContext context, bool write)

@@ -17,6 +17,9 @@ namespace DNDS::Runtime
         virtual void *Data() const noexcept = 0;
         virtual size_t Bytes() const noexcept = 0;
         virtual Device GetDevice() const noexcept = 0;
+        /// Pool/VMM allocations require extra foreign-provider capability (e.g.
+        /// CUDA-aware MPI alone does not imply support for cudaMallocAsync).
+        virtual bool StreamOrderedMemory() const noexcept { return false; }
         virtual bool CanReleaseOrdered(ExecutionContext context) const noexcept
         {
             return GetDevice() == Device::Host() && context.device == Device::Host() && !context.stream;

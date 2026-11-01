@@ -13,6 +13,7 @@ namespace DNDS::Runtime
         struct StorageOwner
         {
             ArrayStorage::Shared storage;
+            std::vector<Buffer> ReleaseBuffers() const { return storage ? storage->ReleaseBuffers() : std::vector<Buffer>{}; }
             bool CanReleaseOrdered(ExecutionContext context) const { return !storage || storage->CanReleaseOrdered(context); }
             void ReleaseOn(ExecutionContext context) { ArrayStorage::ReleaseHandle(storage, context); }
         };
@@ -84,8 +85,12 @@ namespace DNDS::Runtime
             .def_property_readonly("context", &ExecutionStream::Context);
         // Draining can retire a foreign owner on a worker. Its DLPack/Python
         // deleter may acquire the GIL; never hold it while joining that worker.
-        py::class_<EagerEngine>(m, "EagerEngine", py::release_gil_before_calling_cpp_dtor(), "Fully eager execution: no dependency proof. Caller orders conflicting uses and final release, and observes errors with synchronize(). See RuntimeCallerContract.md.")
-            .def(py::init<size_t>(), py::arg("host_threads") = 0)
+        py::class_<AccessTrackingContext, std::shared_ptr<AccessTrackingContext>>(m, "AccessTrackingContext",
+                                                                                  "Optional submission-time check of declared allocation accesses and explicit stream events; inserts no dependencies.")
+            .def(py::init<>());
+        py::class_<EagerEngine>(m, "EagerEngine", py::release_gil_before_calling_cpp_dtor(), "Eager execution with optional declared-access checking. Caller supplies stream dependencies and observes errors with synchronize(). See RuntimeCallerContract.md.")
+            .def(py::init<size_t, std::shared_ptr<AccessTrackingContext>>(), py::arg("host_threads") = 0, py::arg("tracking") = nullptr)
+            .def_property_readonly("checks_access", &EagerEngine::ChecksAccess)
             .def("cpu_stream", &EagerEngine::CreateCPUStream)
             .def("cuda_stream", [](EagerEngine &engine, int ordinal)
                  { return engine.CreateStream(std::make_shared<CUDALauncher>(ordinal)); }, py::arg("ordinal") = 0)

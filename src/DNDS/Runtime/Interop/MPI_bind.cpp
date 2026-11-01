@@ -51,7 +51,8 @@ namespace DNDS::Runtime
             .def_readwrite("mode", &TransferOptions::mode)
             .def_readwrite("context", &TransferOptions::context)
             .def_readwrite("tag", &TransferOptions::tag)
-            .def_readwrite("provider", &TransferOptions::provider);
+            .def_readwrite("provider", &TransferOptions::provider)
+            .def_readwrite("allow_stream_ordered_device_memory", &TransferOptions::allowStreamOrderedDeviceMemory);
     }
     void BindMPIEagerPython(py::module_ &m)
     {

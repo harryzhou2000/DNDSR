@@ -24,13 +24,13 @@ namespace DNDS::Runtime
             const void *src;
             void *dst;
             bool handoffSource, handoffDestination;
-            Pending(const Buffer &in, const Buffer &out, ExecutionContext context)
-                : source(in.Reserve(AccessMode::Read, in.GetDevice())), destination(out.Reserve(AccessMode::Write, out.GetDevice())),
+            Pending(const Buffer &in, const Buffer &out, ExecutionContext context, bool checked)
+                : source(in.Reserve(AccessMode::Read, in.GetDevice(), checked)), destination(out.Reserve(AccessMode::Write, out.GetDevice(), checked)),
                   src(source.Pointer(1, 1)), dst(destination.Pointer(1, 1)),
                   handoffSource(in.GetDevice().space == MemorySpace::CUDA && in.CanReleaseOrdered(context)),
                   handoffDestination(out.GetDevice().space == MemorySpace::CUDA && out.CanReleaseOrdered(context)) {}
         };
-        auto retained = std::make_shared<Pending>(source, destination, context);
+        auto retained = std::make_shared<Pending>(source, destination, context, engine.ChecksAccess());
         engine.SubmitOperation(stream, [retained, srcDevice, dstDevice, bytes = source.Bytes()](ExecutionContext execution)
                                {
                 retained->source.Validate(); retained->destination.Validate();
@@ -39,6 +39,6 @@ namespace DNDS::Runtime
                 if (retained->handoffDestination) retained->destination.Handoff(execution); }, [retained](std::exception_ptr error) noexcept
                                {
                 retained->source.Complete(!error);
-                retained->destination.Complete(!error); });
+                retained->destination.Complete(!error); }, {{source, AccessMode::Read}, {destination, AccessMode::Write}});
     }
 }

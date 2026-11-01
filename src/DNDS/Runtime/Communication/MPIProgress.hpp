@@ -102,9 +102,12 @@ namespace DNDS::Runtime
         {
             CheckThread();
             Poll();
+            auto order = operation.CheckedOrder();
             auto pending = std::make_shared<Pending>(std::move(operation));
             _pending.push_back(pending);
-            return StreamEvent(std::move(pending));
+            StreamEvent event(std::move(pending));
+            event._order = std::move(order);
+            return event;
         }
         void Poll()
         {

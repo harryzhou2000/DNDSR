@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <memory>
 #include <type_traits>
+#include <vector>
 
 namespace DNDS::Runtime
 {
@@ -115,7 +116,8 @@ namespace DNDS::Runtime
         std::weak_ptr<BufferState> _issued;
         size_t _offset = 0, _bytes = 0;
         bool _write = false;
-        ScheduledAccess(std::shared_ptr<BufferState>, size_t, size_t, Device, AccessMode);
+        bool _checked = false;
+        ScheduledAccess(std::shared_ptr<BufferState>, size_t, size_t, Device, AccessMode, bool);
 
     public:
         ScheduledAccess() = default;
@@ -151,8 +153,10 @@ namespace DNDS::Runtime
         /// Import each allocation once and derive Buffer ranges from that handle;
         /// importing aliases separately creates independent access controllers.
         /// External writers must obey the same leases and stream dependencies.
+        /// Mark pool/VMM memory explicitly; foreign MPI capability checks cannot
+        /// infer allocator semantics from a shared_ptr owner.
         static Allocation Import(std::shared_ptr<void> owner, size_t bytes,
-                                 Device device = Device::Host(), bool writable = true);
+                                 Device device = Device::Host(), bool writable = true, bool streamOrderedMemory = false);
         size_t Bytes() const;
         Device GetDevice() const;
     };
@@ -164,6 +168,7 @@ namespace DNDS::Runtime
     {
     public:
         virtual ~Allocator() = default;
+        virtual bool StreamOrderedMemory(Device) const noexcept { return false; }
         virtual std::shared_ptr<void> Allocate(size_t bytes, Device device) = 0;
         /// Compatibility default validates the returned address. Providers with
         /// stronger alignment support may override without changing old clients.
@@ -273,17 +278,24 @@ namespace DNDS::Runtime
         size_t Bytes() const;
         Device GetDevice() const;
         uint64_t Identity() const;
+        /// Weak identity pin for host tracking registries; never retains payload
+        /// storage or exposes its pointer. Buffer ranges share this identity.
+        std::weak_ptr<void> AccessLifetime() const { return _state; }
+        std::vector<Buffer> ReleaseBuffers() const { return {*this}; }
         uint64_t Version() const;
         bool IsIdle() const;
         bool IsUnique() const;
         bool IsValid() const;
+        bool StreamOrderedMemory() const;
         bool CanReleaseOrdered(ExecutionContext context) const;
         /// Consume this handle, preserving aliases. Final resource release
         /// receives this explicit context; ordinary destruction is conservative.
         void ReleaseOn(ExecutionContext context);
         ReadAccess Read(ExecutionContext context = ExecutionContext::Host()) const;
         WriteAccess Write(ExecutionContext context = ExecutionContext::Host());
-        ScheduledAccess Reserve(AccessMode mode, Device device) const;
+        /// Checked and unchecked reservations cannot have simultaneous conflicting
+        /// uses. Drain/import at an execution-policy boundary; read/read is safe.
+        ScheduledAccess Reserve(AccessMode mode, Device device, bool checked = false) const;
 
         /// Compatibility boundary only. Raw pointers cannot enforce future
         /// writes, synchronization or lifetimes. Native kernels use access leases.

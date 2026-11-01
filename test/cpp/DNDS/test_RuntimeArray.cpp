@@ -15,6 +15,40 @@
 
 namespace R = DNDS::Runtime;
 
+TEST_CASE("Unused Array access cancellation preserves values validity and generation")
+{
+    R::Array<int> values(R::RowLayout::Dense(3, 2));
+    {
+        auto write = values.Write();
+        write.View()(1, 1) = 17;
+    }
+    const auto version = values.Version();
+    try
+    {
+        auto unused = values.Write();
+        try
+        {
+            throw std::runtime_error("collective preflight rejected on a peer");
+        }
+        catch (...)
+        {
+            unused.CancelUnmodified();
+            CHECK_FALSE(unused.Active());
+            throw;
+        }
+    }
+    catch (const std::runtime_error &)
+    {
+    }
+    CHECK(values.IsValid());
+    CHECK(values.Version() == version);
+    CHECK(values.Read().View()(1, 1) == 17);
+    auto unusedRead = values.Read();
+    unusedRead.CancelUnmodified();
+    CHECK_FALSE(unusedRead.Active());
+    CHECK_NOTHROW(values.Write());
+}
+
 TEST_CASE("Runtime row layouts reject unsigned shapes that cannot be indexed by signed views")
 {
     const auto tooLarge = size_t(INT64_MAX) + 1;

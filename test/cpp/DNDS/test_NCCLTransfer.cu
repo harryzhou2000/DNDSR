@@ -118,7 +118,7 @@ TEST_CASE("NCCL packed rows match exact values across layouts and queued produce
                 manual.Wait();
                 CHECK(manual.Test());
                 CHECK(destination.Version() == version + 1);
-                R::EagerEngine engine;
+                R::EagerEngine engine(0, std::make_shared<R::AccessTrackingContext>());
                 auto producer = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
                 auto comm = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
                 auto consumer = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
@@ -256,7 +256,7 @@ TEST_CASE("NCCL packed CSR empty ownership and omitted POD bytes preserve receiv
 }
 TEST_CASE("NCCL enqueue overlaps core work with gated transfer and retains leases and workspace")
 {
-    R::EagerEngine engine;
+    R::EagerEngine engine(0, std::make_shared<R::AccessTrackingContext>());
     auto comm = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
     auto compute = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
     R::Array<double> source(Shape(1, 17, 5), device), destination(Shape(2, 17, 5), device), output(Shape(0, 17, 5), device);

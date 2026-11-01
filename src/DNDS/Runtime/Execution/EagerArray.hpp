@@ -90,9 +90,9 @@ namespace DNDS::Runtime
             ScheduledAccess access;
             ArrayView<Value, AccessBoundsChecks, Policy> view;
 
-            PreparedOperand(Operand operand, Device device)
+            PreparedOperand(Operand operand, Device device, bool checked)
                 : storage(std::move(operand.storage)), layout(storage->SharedLayout()),
-                  access(storage->Values().Reserve(operand.mode, device))
+                  access(storage->Values().Reserve(operand.mode, device, checked))
             {
                 DNDS_check_throw_info(storage->ElementBytes() == sizeof(Value), "eager operand element size mismatch");
                 auto *pointer = static_cast<Value *>(access.Pointer(alignof(Value), sizeof(Value)));
@@ -125,8 +125,9 @@ namespace DNDS::Runtime
     void SubmitArrays(EagerEngine &engine, const ExecutionStream &stream, Kernel kernel, Operands... operands)
     {
         using Prepared = std::tuple<Detail::PreparedOperand<Operands>...>;
+        const std::vector<ScheduledBufferAccess> accesses{{operands.storage->Values(), operands.mode}...};
         const auto device = stream.Context().device;
-        auto retained = std::make_shared<Prepared>(Detail::PreparedOperand<Operands>(std::move(operands), device)...);
+        auto retained = std::make_shared<Prepared>(Detail::PreparedOperand<Operands>(std::move(operands), device, engine.ChecksAccess())...);
         engine.SubmitOperation(stream, [retained, kernel = std::move(kernel)](ExecutionContext context) mutable
                                { std::apply([&](auto &...operand)
                                             {
@@ -147,6 +148,6 @@ namespace DNDS::Runtime
                     }
                     (operand.Handoff(context), ...); }, *retained); }, [retained](std::exception_ptr error) noexcept
                                { std::apply([&](auto &...operand)
-                                            { (operand.access.Complete(!error), ...); }, *retained); });
+                                            { (operand.access.Complete(!error), ...); }, *retained); }, accesses);
     }
 }

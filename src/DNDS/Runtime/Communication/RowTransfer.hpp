@@ -17,6 +17,8 @@
 
 namespace DNDS::Runtime
 {
+    class AccessTrackingContext;
+    struct AccessOrder;
     /// One incoming relation edge. Destination rows need not be consecutive.
     struct RowRequest
     {
@@ -270,7 +272,7 @@ namespace DNDS::Runtime
         TransferBinding(std::shared_ptr<const PayloadPlan::State> plan, Buffer source, Buffer destination,
                         std::shared_ptr<const Reducer> reducer, TransferTransport transport, TransferOptions options,
                         bool layoutsValid = true);
-        TransferOperation Start(ExecutionContext context, bool scheduled) const;
+        TransferOperation Start(ExecutionContext context, bool scheduled, std::shared_ptr<AccessTrackingContext> tracking = {}, uint64_t lane = 0) const;
 
     public:
         /// One active Begin operation per binding. Default remains isolated persistent
@@ -289,6 +291,14 @@ namespace DNDS::Runtime
         /// Test/Wait on the MPI-permitted thread to advance sends/unpack. Its
         /// CUDA inputs may have prior scheduled producers on this same stream.
         TransferOperation BeginScheduled(ExecutionContext context = ExecutionContext::Host()) const;
+        /// MPI bridge for a checked stream. Captures its producer frontier but
+        /// gives MPI a distinct lane: later stream commands do not implicitly
+        /// follow outstanding requests. CPU producers are observed on the host;
+        /// CUDA Direct observes this prefix, DevicePacked queues packing on it.
+        /// Full Wait/Test completion makes checked consumers/reuse eligible.
+        /// All ranks call this collectively, including rank-local check errors.
+        /// Stream-native providers use Enqueue instead.
+        TransferOperation BeginChecked(const ExecutionStream &stream) const;
         /// Stream-native providers enqueue pack/transfer/unpack without host
         /// completion waits or per-exchange MPI preflight. Caller supplies input
         /// readiness and joins consumers using stream events. Private scratch
@@ -303,6 +313,8 @@ namespace DNDS::Runtime
         std::unique_ptr<State> _state;
         std::unique_ptr<Detail::TransferProviderOperation> _provider;
         friend class TransferBinding;
+        friend class MPIProgress;
+        std::shared_ptr<const AccessOrder> CheckedOrder() const;
         explicit TransferOperation(std::unique_ptr<State> state);
         explicit TransferOperation(std::unique_ptr<Detail::TransferProviderOperation> provider);
         bool PostPackedSends(bool wait);
