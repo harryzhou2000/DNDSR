@@ -120,6 +120,9 @@ TEST_CASE("P3 implicit periodic transport conserves flow and discard restores th
         {
             CHECK(report.converged);
             CHECK(report.iterations > 0);
+            CHECK(report.reconstructionIterations > 0);
+            CHECK(report.reconstructionIterations <= settings.numerics.reconstructionIterations);
+            CHECK(report.reconstructionRelativeUpdate <= settings.numerics.reconstructionTolerance);
         }
         CHECK(retried.Discretization().Admissible(retried.Flow()));
     }
@@ -141,7 +144,7 @@ TEST_CASE("DITR coupled cap rejects the physical trial even when frozen stage so
     DensityWave(domain);
     const auto before = Integral(domain);
     const auto version = domain.Flow().Owned().Version();
-    CHECK_THROWS(domain.PrepareStep(.01));
+    CHECK_THROWS_WITH_AS(domain.PrepareStep(.01), doctest::Contains("last_residual"), std::exception);
     CHECK(domain.Time() == 0);
     CHECK(domain.Epoch().acceptedStep == 0);
     CHECK(domain.Flow().Owned().Version() == version);

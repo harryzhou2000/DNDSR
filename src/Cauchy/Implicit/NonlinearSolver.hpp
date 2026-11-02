@@ -18,6 +18,10 @@ namespace DNDS::Cauchy
         std::vector<index> levelCorrections;
         FlowState initialResidual{}, residual{};
         real minimumRHSAlpha = 1, minimumIncrementAlpha = 1, pseudoCFL = 0;
+        /// Final equation evaluation's reconstruction, not an observation
+        /// workspace or a sum/max over every inner reconstruction evaluation.
+        int reconstructionIterations = 0;
+        real reconstructionRelativeUpdate = 0;
         Linear::LinearIterationReport lastLinear;
     };
     /// CPU pseudo-time-continuation stage solver. Time equations supply explicit
@@ -45,6 +49,8 @@ namespace DNDS::Cauchy
         /// FAS operator in the same normalized convention as Solve. No input
         /// mean mutation; Evaluate may refresh ghosts and reconstruction scratch.
         void EvaluateEquation(CFV::FVField &state, CFV::FVField &value, real mass, real rhsScale, real time);
+        /// Rank-local snapshot after the most recent equation evaluation.
+        std::pair<int, real> ReconstructionStats() const;
         /// Apply a separate increment using the same Euler flow5 PP policy as
         /// the smoother. Returns global (limited cells, minimum fraction).
         /// Candidate admissibility is agreed before any state values change.

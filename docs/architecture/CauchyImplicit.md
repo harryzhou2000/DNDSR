@@ -348,6 +348,23 @@ requested coreFirst flag at its default false and was proven red before this
 frontend resolution fix.
 
 The Python Domain constructor honors the configured physical time method.
+Stage reports expose the final equation evaluation's reconstruction sweep count
+and relative update. CSV `implicit_final_vr_sweeps`/`implicit_final_vr_update`
+are their maxima across the step's stage reports, distinct from `vr_sweeps`/
+`vr_relative_update` produced by the independent observation workspace. They
+are not cumulative VR work counts or maxima over all inner RHS evaluations.
+Polynomial FAS reports the finest residual evaluation's VR, rather than a
+coarse smoother's last call. Failure-only correction-cap diagnostics include
+the actual initial/final component residuals, work counts, pseudo-CFL and this
+stage VR snapshot; accepted state/time/history remain unchanged on rejection.
+Observation reconstruction is seeded afresh from the accepted numerical guess,
+or its preserved backup during a pending/rejected trial. It neither carries its
+own previous output's polynomial forward nor resets a converged boundary
+polynomial to zero. Repeated diagnostics therefore remain deterministic for
+the same accepted numerical state and cannot change the stepping trajectory.
+Restart without saved coefficients intentionally cold-starts that numerical
+guess, as documented; exact diagnostic/trajectory continuation then need not
+match a warm restart.
 `implicit_stages` returns copied read-only report objects; `flow` remains a
 shared native Array handle with normal lease/lifetime rules. Reports include
 convergence, initial/final component residuals, nonlinear/linear iteration

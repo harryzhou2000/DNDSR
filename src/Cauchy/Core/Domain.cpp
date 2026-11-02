@@ -167,6 +167,9 @@ namespace DNDS::Cauchy
         _lastCharacteristicFallbacks = 0;
         _trialEpoch = _epoch;
         _trialEpoch.trial = ++_nextTrial;
+        // The polynomial guess is numerical state for explicit fixed-sweep VR
+        // too. Preserve it before either time driver can overwrite the trial.
+        PreserveReconstructionGuess();
         if (_timeStepper)
         {
             PrepareImplicitStep(dt);
@@ -306,10 +309,14 @@ namespace DNDS::Cauchy
             _observationWorkspace = _fv.BuildWorkspace(Flow());
             _observationResidual.emplace(_fv.Metrics().BuildField(Flow().Owned().Layout()));
         }
-        // Deterministic diagnostics at a fixed accepted state. Carrying a
-        // diagnostic warm start across calls makes the reported residual/Cp
-        // depend on output history when a fixed sweep cap is used.
-        _fv.ResetReconstruction(*_observationWorkspace);
+        // Start every observation from the accepted numerical guess, not the
+        // last observation and not a cold zero polynomial. This preserves
+        // output-cadence independence while avoiding a much less converged
+        // boundary reconstruction than the one used by the implicit stage.
+        // A pending/rejected trial owns a different polynomial; its backup is
+        // the accepted guess until publication, just as for checkpoint writing.
+        const auto &guess = _restoreReconstruction ? *_reconstructionBackup : _fv.ReconstructionGuess(*_workspace).Owned();
+        _fv.RestoreReconstructionGuess(*_observationWorkspace, guess);
         _fv.Evaluate(Flow(), *_observationResidual, *_observationWorkspace, _engine, _stream, _time);
     }
 }

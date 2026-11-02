@@ -87,7 +87,6 @@ namespace DNDS::Cauchy
     }
     void Domain::PrepareImplicitStep(real dt)
     {
-        PreserveReconstructionGuess();
         _lastImplicit.clear();
         _lastCoupledIterations = 0;
         _lastCoupledTargetRatio = 0;
@@ -135,8 +134,26 @@ namespace DNDS::Cauchy
             }
             return iteration >= control.minIterations && _lastCoupledTargetRatio <= 1;
         };
-        DNDS_check_throw_info(_timeStepper->Prepare(_initial, _trial.Block("flow"), _time, dt, evaluate, solve, coupled),
-                              "Cauchy implicit stage reached its correction cap; accepted state/history unchanged");
+        if (!_timeStepper->Prepare(_initial, _trial.Block("flow"), _time, dt, evaluate, solve, coupled))
+        {
+            // Failure-only diagnostics keep capped inner solves distinct from
+            // accepted stages and make timestep retries auditable. No logging
+            // or extra reduction is added to the successful numerical path.
+            Json details{{"method", _timeStepper->Method()}, {"stage", _trialEpoch.stage}, {"dt", dt}, {"coupled_iterations", _lastCoupledIterations}, {"coupled_target_ratio", _lastCoupledTargetRatio}};
+            if (!_lastImplicit.empty())
+            {
+                const auto &last = _lastImplicit.back();
+                details["last_inner_converged"] = last.converged;
+                details["nonlinear_iterations"] = last.iterations;
+                details["linear_iterations"] = last.linearIterations;
+                details["pseudo_cfl"] = last.pseudoCFL;
+                details["initial_residual"] = last.initialResidual;
+                details["last_residual"] = last.residual;
+                details["vr_sweeps"] = last.reconstructionIterations;
+                details["vr_relative_update"] = last.reconstructionRelativeUpdate;
+            }
+            DNDS_check_throw_info(false, "Cauchy implicit stage reached its correction cap; accepted state/history unchanged; " + details.dump());
+        }
         DNDS_check_throw_info(_fv.Admissible(_trial.Block("flow")), "Cauchy implicit candidate is inadmissible");
     }
 }

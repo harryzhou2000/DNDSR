@@ -1,6 +1,7 @@
 #include "Cauchy/Implicit/NonlinearSolver.hpp"
 #include "Cauchy/Physics/ImplicitPositivity.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
+#include <tuple>
 
 namespace DNDS::Cauchy
 {
@@ -106,6 +107,7 @@ namespace DNDS::Cauchy
         for (index iteration = 0; iteration <= limit; ++iteration)
         {
             data.discrete.Evaluate(state, data.spatial, *data.workspace, *data.engine, data.stream, time);
+            std::tie(report.reconstructionIterations, report.reconstructionRelativeUpdate) = ReconstructionStats();
             std::array<real, 6> norm{};
             data.Stage([&]
                        {
@@ -204,6 +206,10 @@ namespace DNDS::Cauchy
             const auto u = meanRead.View<R::UniformTableRows>(), r = spatialRead.View<R::UniformTableRows>(); const auto output = write.View<R::UniformTableRows>();
             for (index iCell = 0; iCell < output.RowCount(); ++iCell)
                 for (int j = 0; j < 5; ++j) output(iCell, j) = mass * u(iCell, j) - rhsScale * r(iCell, j) / metric.GetCellVol(iCell); });
+    }
+    std::pair<int, real> NonlinearSolver::ReconstructionStats() const
+    {
+        return {_data->discrete.LastReconstructionIterations(*_data->workspace), _data->discrete.LastReconstructionUpdate(*_data->workspace)};
     }
     std::pair<index, real> NonlinearSolver::ApplyCorrection(CFV::FVField &state, const CFV::FVField &increment, real scale)
     {

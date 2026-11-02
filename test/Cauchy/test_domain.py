@@ -82,6 +82,8 @@ def test_configured_implicit_method_and_retained_shared_state(tmp_path, method, 
         assert domain.coupled_iterations == 1
         assert domain.coupled_target_ratio <= 1
     assert all(report.converged for report in domain.implicit_stages)
+    assert all(report.reconstruction_iterations == 0 and report.reconstruction_relative_update == 0
+               for report in domain.implicit_stages)  # Direct gradients do not run iterative VR.
     assert domain.step == 1 and domain.time == .001
     np.testing.assert_allclose(flow.numpy(), before, atol=2e-14)
     path = MPI.COMM_WORLD.bcast(str(tmp_path / "implicit.h5") if MPI.COMM_WORLD.rank == 0 else None, root=0)

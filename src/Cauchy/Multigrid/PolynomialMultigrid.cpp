@@ -1,5 +1,6 @@
 #include "Cauchy/Multigrid/PolynomialMultigrid.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
+#include <tuple>
 
 namespace DNDS::Cauchy
 {
@@ -171,6 +172,9 @@ namespace DNDS::Cauchy
         for (index cycle = 0; cycle <= data.settings.multigrid.cycles; ++cycle)
         {
             report.residual = cycle ? data.Measure(source) : report.initialResidual;
+            // Fine residual acceptance owns this snapshot; a coarse smoother's
+            // last workspace must not be reported as the physical fine VR.
+            std::tie(report.reconstructionIterations, report.reconstructionRelativeUpdate) = data.fineSolver->ReconstructionStats();
             bool converged = report.iterations >= data.settings.minIterations;
             for (int j = 0; j < 5; ++j)
                 converged = converged && report.residual[j] <= std::max(data.settings.absoluteTolerance, data.settings.relativeTolerance * report.initialResidual[j]);

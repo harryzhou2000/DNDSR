@@ -647,6 +647,13 @@ TEST_CASE("Cauchy observation cadence leaves a fixed-sweep P3 trajectory unchang
         observed.Advance(.001);
         control.Advance(.001);
     }
+    const auto accepted = observed.Diagnostics(settings, {});
+    observed.PrepareStep(.002);
+    CHECK(observed.Diagnostics(settings, {}) == accepted);
+    observed.DiscardStep();
+    CHECK(observed.Diagnostics(settings, {}) == accepted);
+    observed.Advance(.001);
+    control.Advance(.001);
     auto a = observed.Flow().Owned().Read(), b = control.Flow().Owned().Read();
     for (DNDS::index iCell = 0; iCell < observed.Discretization().Metrics().NumCell(); ++iCell)
         for (int j = 0; j < 5; ++j)

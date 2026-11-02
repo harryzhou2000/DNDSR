@@ -54,7 +54,7 @@ int main(int argc, char **argv)
                     if (!parent.empty()) std::filesystem::create_directories(parent);
                     history.open(output.prefix + "_history.csv");
                     DNDS_check_throw_info(bool(history), "cannot open Cauchy history");
-                    history << "step,time,dt,wall,mass,energy,rho_min,p_min,residual_l2,force_x,force_y,force_z,vr_sweeps,vr_relative_update,rho_error_l1,rho_error_l2,rho_error_linf,temperature_min,face_fallbacks,retries,pp_rec_cells,pp_beta_min,pp_stage_cells,pp_alpha_min,characteristic_fallbacks,implicit_stages,nonlinear_iterations,linear_iterations,implicit_residual_target_ratio,coupled_iterations,coupled_residual_target_ratio\n" << std::setprecision(17);
+                    history << "step,time,dt,wall,mass,energy,rho_min,p_min,residual_l2,force_x,force_y,force_z,vr_sweeps,vr_relative_update,rho_error_l1,rho_error_l2,rho_error_linf,temperature_min,face_fallbacks,retries,pp_rec_cells,pp_beta_min,pp_stage_cells,pp_alpha_min,characteristic_fallbacks,implicit_stages,nonlinear_iterations,linear_iterations,implicit_residual_target_ratio,coupled_iterations,coupled_residual_target_ratio,implicit_final_vr_sweeps,implicit_final_vr_update\n" << std::setprecision(17);
                     std::ofstream resolved(output.prefix + "_resolved.json"); resolved << config.Root().dump(2) << '\n';
                 } });
             double baseline = 0;
@@ -67,11 +67,15 @@ int main(int argc, char **argv)
                 const auto fallbacks = domain.LastFaceFallbacks();
                 DNDS::index nonlinearIterations = 0, linearIterations = 0;
                 DNDS::real implicitRatio = 0;
+                int implicitFinalVRSweeps = 0;
+                DNDS::real implicitFinalVRUpdate = 0;
                 const auto &implicit = config.Domains()[0].settings.implicit;
                 for (const auto &report : domain.LastImplicitStages())
                 {
                     nonlinearIterations += report.iterations;
                     linearIterations += report.linearIterations;
+                    implicitFinalVRSweeps = std::max(implicitFinalVRSweeps, report.reconstructionIterations);
+                    implicitFinalVRUpdate = std::max(implicitFinalVRUpdate, report.reconstructionRelativeUpdate);
                     for (int j = 0; j < 5; ++j)
                         implicitRatio = std::max(implicitRatio, report.residual[j] / std::max(std::max(implicit.absoluteTolerance, implicit.relativeTolerance * report.initialResidual[j]), DNDS::verySmallReal));
                 }
@@ -84,13 +88,14 @@ int main(int argc, char **argv)
                     for (auto value : domain.LastPositivity())
                         history << ',' << value;
                     history << ',' << domain.LastImplicitStages().size() << ',' << nonlinearIterations << ',' << linearIterations << ',' << implicitRatio
-                            << ',' << domain.LastCoupledIterations() << ',' << domain.LastCoupledTargetRatio();
+                            << ',' << domain.LastCoupledIterations() << ',' << domain.LastCoupledTargetRatio()
+                            << ',' << implicitFinalVRSweeps << ',' << implicitFinalVRUpdate;
                     history << '\n';
                     history.flush();
                     std::cout << std::setprecision(12) << "Cauchy step " << domain.Epoch().acceptedStep << " time " << domain.Time() << " dt " << dt
                               << " residual " << values[4] << " rho_min " << values[2] << " p_min " << values[3] << " VR " << values[8] << ':' << values[9]
                               << " rho L1 " << values[10] << " face fallbacks " << fallbacks << " implicit " << nonlinearIterations << '/' << linearIterations
-                              << " target ratio " << implicitRatio << " wall " << MPI_Wtime() - started << std::endl;
+                              << " target ratio " << implicitRatio << " stage VR " << implicitFinalVRSweeps << ':' << implicitFinalVRUpdate << " wall " << MPI_Wtime() - started << std::endl;
                 }
                 return time.steadyTolerance > 0 && domain.Epoch().acceptedStep >= uint64_t(time.steadyMinSteps) && values[4] / baseline <= time.steadyTolerance;
             };
