@@ -427,9 +427,11 @@ report this call's count and minimum *applied* beta (zero after cutoff).
 pointwise rule, with the original default order/power controls. A pre-control
 checkpoint is interpreted as Segment when PP was enabled, so reading it with
 Euler PP rejects the numerical-policy mismatch. Inactive PP controls do not
-invalidate an older non-PP restart. This reconstruction migration is separate
-from the remaining global alpha variants and physical-dt PP field policy; do
-not claim the entire Euler PP suite is already migrated.
+invalidate an older non-PP restart. The implicit flow5 path also implements
+cell/minimumLimited/minimumAll RHS/dTau alpha reductions, the physical-dt
+policy above, and accepted-correction compression/repair. These are the five
+requested implicit PP measures. SSPRK retains its existing conservative blend;
+species/RANS-specific repairs and other Euler policies are separate extensions.
 
 `Solver/FieldTimeStepper.hpp` owns native-field time scratch and accepted BDF
 history. BDF1/2, Trapz and ESDIRK2/3/4 retain Euler's coefficients; DITR uses
@@ -443,7 +445,9 @@ publication succeeds; discard/retry never changes accepted history. Variable
 BDF2 uses the last accepted timestep, with BDF1 startup or an explicit reset.
 Independent nonautonomous exact-stage tests verify orders and retry semantics.
 Domain now connects these time equations to the nonlinear stage solver below.
-Full physical qualification and the remaining Euler PP measures are outstanding.
+The requested implicit flow5 PP measures have distributed operator/transaction
+tests. Full physical qualification, high-order viscous equivalence and the
+remaining phase implementation/performance work are still outstanding.
 
 ## Nonlinear stage and physical transaction
 
