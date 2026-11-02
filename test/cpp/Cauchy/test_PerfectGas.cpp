@@ -6,11 +6,116 @@
 #include "Cauchy/Physics/FlowProfile.hpp"
 #include "Cauchy/Physics/Positivity.hpp"
 #include "Cauchy/Physics/ImplicitPositivity.hpp"
+#include "Cauchy/Physics/ReconstructionPositivity.hpp"
 #include "Cauchy/Physics/EquationSystem.hpp"
 #include "Euler/Gas.hpp"
 #include <limits>
+#include <vector>
 
 namespace C = DNDS::Cauchy;
+namespace
+{
+    struct PointValues
+    {
+        const std::vector<C::FlowState> *points;
+        double operator()(DNDS::index iPoint, int j) const { return points->at(iPoint)[j]; }
+    };
+    double LegacyQuadratureBeta(const C::FlowState &mean, const std::vector<C::FlowState> &base,
+                                const std::vector<C::FlowState> &high, const C::ThermalBounds &bounds, int power, double cutoff)
+    {
+        using Vector = Eigen::Matrix<double, 5, 1>;
+        Eigen::Matrix<double, Eigen::Dynamic, 5> value(base.size(), 5), increment(base.size(), 5);
+        bool good = true;
+        for (DNDS::index iPoint = 0; iPoint < DNDS::index(base.size()); ++iPoint)
+        {
+            good = good && C::ThermallyAdmissible(high[iPoint], bounds);
+            for (int j = 0; j < 5; ++j)
+            {
+                value(iPoint, j) = base[iPoint][j];
+                increment(iPoint, j) = high[iPoint][j] - base[iPoint][j];
+            }
+        }
+        if (good)
+            return 1;
+        double density = 1;
+        for (Eigen::Index iPoint = 0; iPoint < value.rows(); ++iPoint)
+            if (increment(iPoint, 0) < 0)
+                density = std::min(density, (value(iPoint, 0) - bounds.densityFloor) / (-increment(iPoint, 0) + DNDS::verySmallReal));
+        increment *= density;
+        double energy = 1;
+        for (int constraint = 0; constraint < 2; ++constraint)
+        {
+            if (constraint == 0 && !std::isfinite(bounds.energyDensityFloor))
+                continue;
+            const double floor = constraint == 0 ? bounds.energyDensityFloor : 0;
+            const auto internal = [](const Vector &u)
+            { return u[4] - .5 * u.segment<3>(1).squaredNorm() / u[0]; };
+            Vector center;
+            for (int j = 0; j < 5; ++j)
+                center[j] = mean[j];
+            const double refCenter = constraint == 0 ? 0 : mean[0] * bounds.specificEnergyAtMinimumTemperature;
+            if (internal(center) - refCenter <= 2 * floor)
+            {
+                energy = 0;
+                continue;
+            }
+            for (Eigen::Index iPoint = 0; iPoint < value.rows(); ++iPoint)
+            {
+                const Vector u = value.row(iPoint).transpose(), delta = increment.row(iPoint).transpose(), next = u + delta;
+                const double refOld = constraint == 0 ? 0 : u[0] * bounds.specificEnergyAtMinimumTemperature;
+                const double refNew = constraint == 0 ? 0 : next[0] * bounds.specificEnergyAtMinimumTemperature;
+                if (internal(next) - refNew < 2 * floor)
+                    energy = std::min(energy, DNDS::Euler::Gas::IdealGasGetCompressionRatioPressure<3, 1, 5>(u, delta, floor, refOld, refNew));
+            }
+        }
+        double beta = density * energy;
+        if (beta < 1)
+            beta *= std::pow(beta, power) * (1 - 1e-5);
+        return beta < cutoff ? 0 : beta;
+    }
+}
+TEST_CASE("Quadrature reconstruction compression preserves Euler common fractions and energy references")
+{
+    const C::PerfectGas gas{1.4, 1, 0, .72};
+    const auto mean = gas.Conservative({1, .5, -.2, .3, 1});
+    const C::ThermalBounds bounds{.01, .05, .02};
+    const std::vector<C::FlowState> base{mean, gas.Conservative({.8, .2, .1, -.2, .7})};
+    auto high = base;
+    high[0][0] = -.2;
+    high[1][1] = 3;
+    high[1][2] = -2;
+    for (int power : {0, 1, 3})
+    {
+        const auto beta = C::ReconstructionFraction(mean, PointValues{&base}, PointValues{&high}, 0, 2, bounds, power);
+        CHECK(beta == doctest::Approx(LegacyQuadratureBeta(mean, base, high, bounds, power, 1e-3)).epsilon(3e-14));
+        CHECK(beta >= 0);
+        CHECK(beta < 1);
+        for (int iPoint = 0; iPoint < 2; ++iPoint)
+        {
+            auto point = base[iPoint];
+            for (int j = 0; j < 5; ++j)
+                point[j] += beta * (high[iPoint][j] - point[j]);
+            CHECK(C::ThermallyAdmissible(point, bounds));
+        }
+    }
+    CHECK(C::ReconstructionFraction(mean, PointValues{&base}, PointValues{&base}, 0, 2, bounds) == 1);
+    CHECK(C::ReconstructionFraction(mean, PointValues{&base}, PointValues{&high}, 0, 2, bounds, 1, 1) == 0);
+    const C::ThermalBounds shifted{.01, -3, -std::numeric_limits<double>::infinity()};
+    const C::FlowState shiftedMean{1, .2, -.1, .3, -2.7};
+    const std::vector<C::FlowState> shiftedBase{shiftedMean}, shiftedHigh{{1, .2, -.1, .3, -3.5}};
+    const auto beta = C::ReconstructionFraction(shiftedMean, PointValues{&shiftedBase}, PointValues{&shiftedHigh}, 0, 1, shifted);
+    CHECK(beta == doctest::Approx(LegacyQuadratureBeta(shiftedMean, shiftedBase, shiftedHigh, shifted, 1, 1e-3)).epsilon(3e-14));
+    auto point = shiftedMean;
+    for (int j = 0; j < 5; ++j)
+        point[j] += beta * (shiftedHigh[0][j] - point[j]);
+    CHECK(C::ThermallyAdmissible(point, shifted));
+    const C::ThermalBounds edgeBounds{.01, 1, -std::numeric_limits<double>::infinity()};
+    const C::FlowState edge{1, 0, 0, 0, 1};
+    const std::vector<C::FlowState> edgeBase{edge}, edgeHigh{{1, 1, 0, 0, 1}};
+    CHECK(C::ReconstructionFraction(edge, PointValues{&edgeBase}, PointValues{&edgeHigh}, 0, 1, edgeBounds) == 0);
+    CHECK(C::ReconstructionFraction(edge, PointValues{&edgeBase}, PointValues{&edgeBase}, 0, 1, edgeBounds) == 1);
+    CHECK(C::ReconstructionFraction(mean, PointValues{&base}, PointValues{&high}, 1, 1, bounds) == 1);
+}
 TEST_CASE("Implicit energy compression preserves Euler scheme-one mathematics with explicit energy references")
 {
     const C::PerfectGas gas{1.4, 1, 0, .72};

@@ -255,6 +255,17 @@ check the resulting state, and perform the field/global reductions themselves.
 An exhausted energy repair returns NaN; it must be rejected, never applied.
 These functions do not yet replace the existing explicit flux-blend path.
 
+`Physics/ReconstructionPositivity.hpp` also ports the quadrature-common
+density fraction, active Euler scheme-one energy fraction and beta power/safety
+as a pure view-based rule. It accepts an admissible lower-order reference and
+finite high-order point values, with the same two affine thermal constraints.
+Its matrix-style test oracle calls active Euler Gas compression and covers
+unequal reference points, shifted energy, beta cutoff, good-polynomial identity
+and an exact thermal-bound mean. This is a building block: the current FV
+quadrature orchestration still uses the earlier segment limiter until reference
+order selection/storage and the complete field policy are connected. Do not
+claim that the entire Euler PP suite is already migrated.
+
 `Solver/FieldTimeStepper.hpp` owns native-field time scratch and accepted BDF
 history. BDF1/2, Trapz and ESDIRK2/3/4 retain Euler's coefficients; DITR uses
 its original coupled U2R2 equations and an independent intermediate-stage factory.
