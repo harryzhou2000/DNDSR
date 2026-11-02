@@ -260,6 +260,22 @@ namespace DNDS::Cauchy
     /// both overlap policies. Standalone CFV retains natural-order All support.
     /// Resolve before publishing root config and when constructing FV directly.
     DomainSettings ResolveSweepOrdering(DomainSettings settings);
+    struct DITRTimeSettings
+    {
+        real fraction = .55, theta = .9146;
+        index iterations = 100, minIterations = 0;
+        real relativeTolerance = 1e-8, absoluteTolerance = 1e-10;
+        void Validate() const;
+        DNDS_DECLARE_CONFIG(DITRTimeSettings)
+        {
+            DNDS_FIELD(fraction, "U2R2 intermediate time fraction; CPU positive-scale profile requires (0,2/3)");
+            DNDS_FIELD(theta, "Positive H+theta*I intermediate-equation weight");
+            DNDS_FIELD(iterations, "Maximum coupled outer corrections; both original equations must converge");
+            DNDS_FIELD(minIterations, "Minimum coupled corrections before accepting both equations");
+            DNDS_FIELD(relativeTolerance, "Per-component outer H/I norm target relative to each initial norm");
+            DNDS_FIELD(absoluteTolerance, "Per-component absolute outer H/I norm target");
+        }
+    };
     struct TimeSettings
     {
         std::string method = "ssprk3";
@@ -269,6 +285,7 @@ namespace DNDS::Cauchy
         real steadyTolerance = 0;
         index steadyMinSteps = 100;
         int maxRetries = 0;
+        DITRTimeSettings ditr;
         DNDS_DECLARE_CONFIG(TimeSettings)
         {
             DNDS_FIELD(method, "Coordinated physical-time method");
@@ -280,6 +297,7 @@ namespace DNDS::Cauchy
             DNDS_FIELD(maxRetries, "Maximum timestep halvings after a rejected candidate");
             DNDS_FIELD(steadyTolerance, "Relative accepted-state residual target; zero means physical transient");
             DNDS_FIELD(steadyMinSteps, "Minimum accepted steps before a steady stop");
+            config.field_section(&T::ditr, "ditr", "Coupled U2R2 time equations");
         }
     };
     struct OutputSettings

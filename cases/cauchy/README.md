@@ -3,7 +3,12 @@
 Run from the source root with `build/app/cauchy.exe cases/cauchy/<case>.json`.
 Equation, EOS and transport selection live inside each config. Validate without
 running with `--check-config`. These use the native DNDS/Geom/CFV solver and
-SSPRK3; they do not wrap legacy Euler or use its implicit convergence controls.
+SSPRK3 in the retained initial templates; they do not wrap legacy Euler.
+Native implicit BDF1/2, Trapz, ESDIRK2/3/4 and DITR are available through
+`time.method` and root `implicit` controls. The current implicit qualification
+controls/results are kept separately in the independent plan repository at
+`experiments/cauchy-implicit/`; the cancelled explicit viscous/DMR campaign is
+not resumed merely by the continued presence of its template here.
 
 | Case | Physical specification | Requested evidence |
 | --- | --- | --- |

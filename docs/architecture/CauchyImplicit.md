@@ -1,5 +1,8 @@
 # Cauchy native implicit operator contracts
 
+The coupled DITR method, its independent intermediate-stage workspace and
+accepted/trial history contracts are documented in [DITR.md](DITR.md).
+
 ## Polynomial multigrid
 
 `Cauchy/Multigrid/PolynomialMultigrid` connects the generic
@@ -253,8 +256,9 @@ An exhausted energy repair returns NaN; it must be rejected, never applied.
 These functions do not yet replace the existing explicit flux-blend path.
 
 `Solver/FieldTimeStepper.hpp` owns native-field time scratch and accepted BDF
-history. The supported tableaus BDF1/2, Trapz and ESDIRK2/3/4 retain Euler's
-coefficients. A callback solves `mass*U-rhsScale*F(U,t)=source`; nonlinear/PP,
+history. BDF1/2, Trapz and ESDIRK2/3/4 retain Euler's coefficients; DITR uses
+its original coupled U2R2 equations and an independent intermediate-stage factory.
+A callback solves `mass*U-rhsScale*F(U,t)=source`; nonlinear/PP,
 physical accumulation and MPI orchestration remain its caller's responsibility.
 This initial profile uses identity accumulation in the semidiscrete time
 equations. Different physical mass maps need an explicit adapter. Preparation
@@ -263,7 +267,7 @@ publication succeeds; discard/retry never changes accepted history. Variable
 BDF2 uses the last accepted timestep, with BDF1 startup or an explicit reset.
 Independent nonautonomous exact-stage tests verify orders and retry semantics.
 Domain now connects these time equations to the nonlinear stage solver below.
-DITR and physical qualification remain outstanding.
+Full physical qualification and the remaining Euler PP measures are outstanding.
 
 ## Nonlinear stage and physical transaction
 

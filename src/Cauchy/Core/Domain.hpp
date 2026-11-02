@@ -31,6 +31,9 @@ namespace DNDS::Cauchy
         std::unique_ptr<PolynomialMultigrid> _multigrid;
         std::unique_ptr<ODE::FieldTimeStepper> _timeStepper;
         std::vector<NonlinearIterationReport> _lastImplicit;
+        index _lastCoupledIterations = 0;
+        real _lastCoupledTargetRatio = 0;
+        DITRTimeSettings _ditrControl;
         std::optional<Runtime::Array<real>> _reconstructionBackup;
         bool _restoreReconstruction = false;
         mutable std::optional<AuxiliaryValues> _timeAuxiliary;
@@ -51,6 +54,8 @@ namespace DNDS::Cauchy
         void InitializeImplicit(const DomainSettings &settings, const TimeSettings &time, const ssp<Geom::UnstructuredMesh> &mesh);
         void PrepareImplicitStep(real dt);
         void PreserveReconstructionGuess();
+        void EvaluateImplicitRate(CFV::FVField &state, CFV::FVField &rate, FiniteVolume::Workspace &workspace, real time, int stage);
+        bool RecordImplicitStage(NonlinearIterationReport report);
 
     public:
         Domain(std::string name, ssp<Geom::UnstructuredMesh> mesh, const DomainSettings &settings, const TimeSettings &time = {});
@@ -65,6 +70,8 @@ namespace DNDS::Cauchy
         real Time() const { return _time; }
         const StateEpoch &Epoch() const { return _epoch; }
         const std::vector<NonlinearIterationReport> &LastImplicitStages() const { return _lastImplicit; }
+        index LastCoupledIterations() const { return _lastCoupledIterations; }
+        real LastCoupledTargetRatio() const { return _lastCoupledTargetRatio; }
         index LastFaceFallbacks() const { return _lastFallbacks; }
         std::array<real, 5> LastPositivity() const { return {real(_lastBetaCells), _lastBeta, real(_lastAlphaCells), _lastAlpha, real(_lastCharacteristicFallbacks)}; }
         real StableStep(real cfl) const;

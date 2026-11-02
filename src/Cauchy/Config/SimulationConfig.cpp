@@ -161,6 +161,13 @@ namespace DNDS::Cauchy
             }
         }
     }
+    void DITRTimeSettings::Validate() const
+    {
+        DNDS_check_throw_info(std::isfinite(fraction) && fraction > 0 && fraction < real(2) / 3 &&
+                                  std::isfinite(theta) && theta > 0 && iterations > 0 && minIterations >= 0 && minIterations <= iterations &&
+                                  std::isfinite(relativeTolerance) && relativeTolerance >= 0 && std::isfinite(absoluteTolerance) && absoluteTolerance >= 0,
+                              "invalid/unavailable DITR positive-stage-scale controls");
+    }
     void ImplicitSettings::Validate() const
     {
         const auto nonnegative = [](real value)
@@ -329,12 +336,13 @@ namespace DNDS::Cauchy
         Keys(data->root["output"], OutputSettings::schema(), "/output");
         data->time = data->root["time"].get<TimeSettings>();
         data->output = data->root["output"].get<OutputSettings>();
-        const std::vector<std::string> timeMethods{"ssprk3", "bdf1", "bdf2", "trapz", "esdirk2", "esdirk3", "esdirk4"};
+        const std::vector<std::string> timeMethods{"ssprk3", "bdf1", "bdf2", "trapz", "esdirk2", "esdirk3", "esdirk4", "ditr"};
         DNDS_check_throw_info(std::find(timeMethods.begin(), timeMethods.end(), data->time.method) != timeMethods.end() && std::isfinite(data->time.dt) && data->time.dt > 0 && data->time.steps >= 0 &&
                                   std::isfinite(data->time.finalTime) && data->time.finalTime >= 0 && std::isfinite(data->time.cfl) && data->time.cfl >= 0 &&
                                   std::isfinite(data->time.wallSeconds) && data->time.wallSeconds >= 0 && data->time.maxRetries >= 0,
                               "Cauchy requires an available time method, positive dt and nonnegative steps");
         DNDS_check_throw_info(std::isfinite(data->time.steadyTolerance) && data->time.steadyTolerance >= 0 && data->time.steadyMinSteps >= 0, "invalid steady stopping controls");
+        data->time.ditr.Validate();
         for (const auto &domain : data->domains)
             DNDS_check_throw_info(data->time.method != "ssprk3" || !domain.settings.implicit.multigrid.levels, "polynomial FAS requires an implicit time method");
         DNDS_check_throw_info(data->output.interval >= 0 && data->output.historyInterval > 0 && !data->output.prefix.empty(), "invalid Cauchy output controls");

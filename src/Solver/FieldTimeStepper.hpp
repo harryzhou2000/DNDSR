@@ -1,6 +1,7 @@
 #pragma once
 
 #include "DNDS/Algebra/DofAlgebra.hpp"
+#include "Solver/FieldDITR.hpp"
 #include <functional>
 #include <optional>
 
@@ -30,6 +31,10 @@ namespace DNDS::ODE
         real _previousDt = 0, _pendingDt = 0;
         bool _history = false, _pending = false;
         LocalStage _local;
+        DITRSettings _ditrSettings;
+        FieldDITR::StageFactory _stageFactory;
+        std::unique_ptr<FieldDITR> _ditr;
+        bool _rebuildDITR = false;
         template <class F>
         void RunLocal(F &&run) const
         {
@@ -52,7 +57,7 @@ namespace DNDS::ODE
         }
         void BuildTableau()
         {
-            if (_method == "bdf1" || _method == "bdf2")
+            if (_method == "bdf1" || _method == "bdf2" || _method == "ditr")
                 return;
             if (_method == "trapz")
             {
@@ -83,13 +88,16 @@ namespace DNDS::ODE
         }
 
     public:
-        FieldTimeStepper(const Field &prototype, std::string method, LocalStage local = {})
-            : _method(std::move(method)), _source(NewVector(prototype)), _previous(NewVector(prototype)), _pendingInitial(NewVector(prototype)), _local(std::move(local))
+        FieldTimeStepper(const Field &prototype, std::string method, LocalStage local = {}, DITRSettings ditr = {}, FieldDITR::StageFactory stageFactory = {})
+            : _method(std::move(method)), _source(NewVector(prototype)), _previous(NewVector(prototype)), _pendingInitial(NewVector(prototype)), _local(std::move(local)),
+              _ditrSettings(ditr), _stageFactory(std::move(stageFactory))
         {
             BuildTableau();
             _rates.reserve(_a.size());
             for (index i = 0; i < index(_a.size()); ++i)
                 _rates.push_back(NewVector(prototype));
+            if (_method == "ditr")
+                _ditr = std::make_unique<FieldDITR>(_source, ditr, _stageFactory, _local);
         }
         FieldTimeStepper(const FieldTimeStepper &) = delete;
         FieldTimeStepper &operator=(const FieldTimeStepper &) = delete;
@@ -99,10 +107,11 @@ namespace DNDS::ODE
         /// replacing the live accepted history.
         std::unique_ptr<FieldTimeStepper> Fresh() const
         {
-            return std::make_unique<FieldTimeStepper>(_source, _method, _local);
+            return std::make_unique<FieldTimeStepper>(_source, _method, _local, _ditrSettings, _stageFactory);
         }
         bool HasHistory() const { return _history; }
         bool HasPendingTrial() const { return _pending; }
+        const DITRIterationReport *LastDITRReport() const { return _ditr ? &_ditr->LastReport() : nullptr; }
         real PreviousDt() const { return _previousDt; }
         const Field &PreviousState() const
         {
@@ -115,7 +124,7 @@ namespace DNDS::ODE
         /// Initial and trial must be distinct; only trial/scratch changes here.
         /// False/exception leaves accepted history unchanged. A successful trial
         /// still needs Commit *after* its external accepted-state publication.
-        bool Prepare(const Field &initial, Field &trial, real time, real dt, const Evaluate &evaluate, const SolveStage &solve)
+        bool Prepare(const Field &initial, Field &trial, real time, real dt, const Evaluate &evaluate, const SolveStage &solve, const FieldDITR::Converged &coupled = {})
         {
             _pending = false;
             RunLocal([&]
@@ -128,6 +137,25 @@ namespace DNDS::ODE
                     DNDS_check_throw_info(!Algebra::Detail::Overlaps(input->Storage(), output->Storage()), "time initial/trial fields alias");
             Algebra::Copy(_pendingInitial, initial); });
             _pendingDt = dt;
+            if (_ditr)
+            {
+                if (_rebuildDITR)
+                {
+                    RunLocal([&]
+                             { _ditr = _ditr->Fresh(); });
+                    _rebuildDITR = false;
+                }
+                try
+                {
+                    _pending = _ditr->Prepare(initial, trial, time, dt, evaluate, solve, coupled);
+                }
+                catch (...)
+                {
+                    _rebuildDITR = true;
+                    throw;
+                }
+                return _pending;
+            }
             if (_a.empty())
             {
                 const real ratio = dt / (_history ? _previousDt : dt);

@@ -5,7 +5,7 @@
 namespace C = DNDS::Cauchy;
 TEST_CASE("Cauchy implicit controls resolve through the root and reject contradictory paths")
 {
-    for (const std::string method : {"ssprk3", "bdf1", "bdf2", "trapz", "esdirk2", "esdirk3", "esdirk4"})
+    for (const std::string method : {"ssprk3", "bdf1", "bdf2", "trapz", "esdirk2", "esdirk3", "esdirk4", "ditr"})
     {
         const auto config = C::SimulationConfig::Resolve({{"time", {{"method", method}}}, {"defaults", {{"implicit", {{"linear", {{"preconditioner", "ilu"}}}}}}}}, 2);
         CHECK(config.Time().method == method);
@@ -13,6 +13,9 @@ TEST_CASE("Cauchy implicit controls resolve through the root and reject contradi
         CHECK(config.Domains()[0].settings.implicit.sgs.exchangeBetweenSweeps == false);
     }
     CHECK_THROWS(C::SimulationConfig::Resolve({{"time", {{"method", "unavailable"}}}}, 2));
+    CHECK_THROWS(C::SimulationConfig::Resolve({{"time", {{"method", "ditr"}, {"ditr", {{"fraction", .9}}}}}}, 2));
+    CHECK_THROWS(C::SimulationConfig::Resolve({{"time", {{"method", "ditr"}, {"ditr", {{"iterations", 0}}}}}}, 2));
+    CHECK_THROWS(C::SimulationConfig::Resolve({{"time", {{"method", "ditr"}, {"ditr", {{"absoluteTolerance", -1}}}}}}, 2));
     CHECK_THROWS(C::SimulationConfig::Resolve({{"defaults", {{"implicit", {{"roeDissipation", true}}}}}}, 2));
     CHECK_THROWS(C::SimulationConfig::Resolve({{"defaults", {{"implicit", {{"iterations", 0}}}}}}, 2));
     CHECK_THROWS(C::SimulationConfig::Resolve({{"defaults", {{"implicit", {{"linear", {{"preconditioner", "ilu"}}}, {"sgs", {{"exchangeBetweenSweeps", true}}}}}}}}, 2));

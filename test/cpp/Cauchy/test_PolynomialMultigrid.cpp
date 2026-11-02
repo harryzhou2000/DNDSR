@@ -121,36 +121,41 @@ TEST_CASE("Polynomial FAS fixed points and preflight errors preserve fine means"
 TEST_CASE("Cauchy pMG physical discard and commit retry retain the fine reconstruction transaction")
 {
     const auto mesh = CauchyTest::PeriodicQuads(mpi, 4);
-    auto settings = Controls();
-    const auto equation = C::EquationSystem::Resolve(settings.equation);
-    C::TimeSettings time;
-    time.method = "esdirk2";
-    C::Domain reference("reference", mesh, settings, time), retry("retry", mesh, settings, time);
-    Fill(reference.Discretization(), equation, reference.Flow(), 0);
-    Fill(retry.Discretization(), equation, retry.Flow(), 0);
-    reference.Advance(.001);
-    retry.PrepareStep(.001);
-    retry.DiscardStep();
-    retry.PrepareStep(.001);
+    for (const std::string method : {"esdirk2", "ditr"})
     {
-        std::optional<R::Array<double>::ReadLease> retained;
-        if (mpi.rank == 0)
-            retained.emplace(retry.Flow().Owned().Read());
-        CHECK_THROWS(retry.CommitStep());
-    }
-    retry.CommitStep();
-    CHECK(retry.Time() == .001);
-    CHECK(retry.Epoch().acceptedStep == 1);
-    const auto first = reference.Flow().Owned().Read(), second = retry.Flow().Owned().Read();
-    const auto a = first.View<R::UniformTableRows>(), b = second.View<R::UniformTableRows>();
-    for (DNDS::index iCell = 0; iCell < a.RowCount(); ++iCell)
-        for (int j = 0; j < 5; ++j)
-            CHECK(a(iCell, j) == b(iCell, j));
-    REQUIRE_FALSE(retry.LastImplicitStages().empty());
-    for (const auto &stage : retry.LastImplicitStages())
-    {
-        CHECK(stage.converged);
-        CHECK(stage.multigridCycles > 0);
+        auto settings = Controls();
+        const auto equation = C::EquationSystem::Resolve(settings.equation);
+        C::TimeSettings time;
+        time.method = method;
+        C::Domain reference("reference", mesh, settings, time), retry("retry", mesh, settings, time);
+        Fill(reference.Discretization(), equation, reference.Flow(), 0);
+        Fill(retry.Discretization(), equation, retry.Flow(), 0);
+        reference.Advance(.001);
+        retry.PrepareStep(.001);
+        retry.DiscardStep();
+        retry.PrepareStep(.001);
+        {
+            std::optional<R::Array<double>::ReadLease> retained;
+            if (mpi.rank == 0)
+                retained.emplace(retry.Flow().Owned().Read());
+            CHECK_THROWS(retry.CommitStep());
+        }
+        retry.CommitStep();
+        CHECK(retry.Time() == .001);
+        CHECK(retry.Epoch().acceptedStep == 1);
+        const auto first = reference.Flow().Owned().Read(), second = retry.Flow().Owned().Read();
+        const auto a = first.View<R::UniformTableRows>(), b = second.View<R::UniformTableRows>();
+        for (DNDS::index iCell = 0; iCell < a.RowCount(); ++iCell)
+            for (int j = 0; j < 5; ++j)
+                CHECK(a(iCell, j) == b(iCell, j));
+        REQUIRE_FALSE(retry.LastImplicitStages().empty());
+        for (const auto &stage : retry.LastImplicitStages())
+        {
+            CHECK(stage.converged);
+            CHECK(stage.multigridCycles > 0);
+        }
+        if (method == "ditr")
+            CHECK(retry.LastCoupledTargetRatio() <= 1);
     }
 }
 int main(int argc, char **argv)

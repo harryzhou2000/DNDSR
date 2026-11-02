@@ -38,7 +38,7 @@ namespace
 TEST_CASE("Native physical implicit methods preserve uniform periodic flow and transactional commit")
 {
     const auto mesh = CauchyTest::PeriodicQuads(mpi, 4);
-    for (const std::string method : {"bdf1", "bdf2", "trapz", "esdirk2", "esdirk3", "esdirk4"})
+    for (const std::string method : {"bdf1", "bdf2", "trapz", "esdirk2", "esdirk3", "esdirk4", "ditr"})
     {
         C::DomainSettings settings;
         settings.numerics.reconstruction = "constant";
@@ -73,46 +73,85 @@ TEST_CASE("Native physical implicit methods preserve uniform periodic flow and t
 TEST_CASE("P3 implicit periodic transport conserves flow and discard restores the VR warm guess")
 {
     const auto mesh = CauchyTest::PeriodicQuads(mpi, 6);
+    for (const std::string method : {"esdirk4", "ditr"})
+    {
+        C::DomainSettings settings;
+        settings.numerics.reconstruction = "variational";
+        settings.numerics.cfv.maxOrder = 3;
+        settings.numerics.reconstructionIterations = 120;
+        settings.numerics.reconstructionTolerance = 1e-10;
+        settings.numerics.faceFallback = false;
+        settings.implicit.relativeTolerance = 1e-9;
+        settings.implicit.absoluteTolerance = 1e-11;
+        settings.implicit.linear.relativeTolerance = 1e-3;
+        settings.implicit.minIterations = 0;
+        C::TimeSettings time;
+        time.method = method;
+        C::Domain retried("retry", mesh, settings, time), direct("direct", mesh, settings, time);
+        DensityWave(retried);
+        DensityWave(direct);
+        const auto initial = Integral(retried);
+        retried.PrepareStep(.005);
+        retried.DiscardStep();
+        CHECK(retried.Time() == 0);
+        CHECK(retried.Epoch().acceptedStep == 0);
+        retried.Advance(.005);
+        direct.Advance(.005);
+        CHECK(retried.Time() == .005);
+        CHECK(retried.LastFaceFallbacks() == 0);
+        {
+            const auto a = retried.Flow().Owned().Read(), b = direct.Flow().Owned().Read();
+            for (DNDS::index iCell = 0; iCell < a.View().RowCount(); ++iCell)
+                for (int j = 0; j < 5; ++j)
+                    CHECK(a.View()(iCell, j) == b.View()(iCell, j));
+        }
+        const auto final = Integral(retried);
+        for (int j = 0; j < 5; ++j)
+            CHECK(final[j] == doctest::Approx(initial[j]).epsilon(2e-11));
+        if (method == "ditr")
+        {
+            CHECK(retried.LastCoupledIterations() > 0);
+            CHECK(retried.LastCoupledTargetRatio() <= 1);
+            CHECK(retried.LastImplicitStages().size() == size_t(2 * retried.LastCoupledIterations()));
+        }
+        else
+            CHECK(retried.LastImplicitStages().size() == 5);
+        for (const auto &report : retried.LastImplicitStages())
+        {
+            CHECK(report.converged);
+            CHECK(report.iterations > 0);
+        }
+        CHECK(retried.Discretization().Admissible(retried.Flow()));
+    }
+}
+TEST_CASE("DITR coupled cap rejects the physical trial even when frozen stage solves converge")
+{
+    const auto mesh = CauchyTest::PeriodicQuads(mpi, 4);
     C::DomainSettings settings;
-    settings.numerics.reconstruction = "variational";
-    settings.numerics.cfv.maxOrder = 3;
-    settings.numerics.reconstructionIterations = 120;
-    settings.numerics.reconstructionTolerance = 1e-10;
-    settings.numerics.faceFallback = false;
-    settings.implicit.relativeTolerance = 1e-9;
-    settings.implicit.absoluteTolerance = 1e-11;
-    settings.implicit.linear.relativeTolerance = 1e-3;
+    settings.numerics.reconstruction = "constant";
     settings.implicit.minIterations = 0;
+    settings.implicit.relativeTolerance = 1e-10;
+    settings.implicit.absoluteTolerance = 1e-12;
     C::TimeSettings time;
-    time.method = "esdirk4";
-    C::Domain retried("retry", mesh, settings, time), direct("direct", mesh, settings, time);
-    DensityWave(retried);
-    DensityWave(direct);
-    const auto initial = Integral(retried);
-    retried.PrepareStep(.005);
-    retried.DiscardStep();
-    CHECK(retried.Time() == 0);
-    CHECK(retried.Epoch().acceptedStep == 0);
-    retried.Advance(.005);
-    direct.Advance(.005);
-    CHECK(retried.Time() == .005);
-    CHECK(retried.LastFaceFallbacks() == 0);
-    {
-        const auto a = retried.Flow().Owned().Read(), b = direct.Flow().Owned().Read();
-        for (DNDS::index iCell = 0; iCell < a.View().RowCount(); ++iCell)
-            for (int j = 0; j < 5; ++j)
-                CHECK(a.View()(iCell, j) == b.View()(iCell, j));
-    }
-    const auto final = Integral(retried);
-    for (int j = 0; j < 5; ++j)
-        CHECK(final[j] == doctest::Approx(initial[j]).epsilon(2e-11));
-    CHECK(retried.LastImplicitStages().size() == 5);
-    for (const auto &report : retried.LastImplicitStages())
-    {
-        CHECK(report.converged);
-        CHECK(report.iterations > 0);
-    }
-    CHECK(retried.Discretization().Admissible(retried.Flow()));
+    time.method = "ditr";
+    time.ditr.iterations = 1;
+    time.ditr.relativeTolerance = 1e-10;
+    time.ditr.absoluteTolerance = 1e-12;
+    C::Domain domain("capped", mesh, settings, time);
+    DensityWave(domain);
+    const auto before = Integral(domain);
+    const auto version = domain.Flow().Owned().Version();
+    CHECK_THROWS(domain.PrepareStep(.01));
+    CHECK(domain.Time() == 0);
+    CHECK(domain.Epoch().acceptedStep == 0);
+    CHECK(domain.Flow().Owned().Version() == version);
+    CHECK(Integral(domain) == before);
+    CHECK(domain.LastCoupledIterations() == 1);
+    CHECK(domain.LastCoupledTargetRatio() > 1);
+    REQUIRE(domain.LastImplicitStages().size() == 2);
+    for (const auto &inner : domain.LastImplicitStages())
+        CHECK(inner.converged);
+    CHECK_THROWS(domain.CommitStep());
 }
 int main(int argc, char **argv)
 {

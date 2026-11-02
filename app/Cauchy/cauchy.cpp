@@ -54,7 +54,7 @@ int main(int argc, char **argv)
                     if (!parent.empty()) std::filesystem::create_directories(parent);
                     history.open(output.prefix + "_history.csv");
                     DNDS_check_throw_info(bool(history), "cannot open Cauchy history");
-                    history << "step,time,dt,wall,mass,energy,rho_min,p_min,residual_l2,force_x,force_y,force_z,vr_sweeps,vr_relative_update,rho_error_l1,rho_error_l2,rho_error_linf,temperature_min,face_fallbacks,retries,pp_rec_cells,pp_beta_min,pp_stage_cells,pp_alpha_min,characteristic_fallbacks,implicit_stages,nonlinear_iterations,linear_iterations,implicit_residual_target_ratio\n" << std::setprecision(17);
+                    history << "step,time,dt,wall,mass,energy,rho_min,p_min,residual_l2,force_x,force_y,force_z,vr_sweeps,vr_relative_update,rho_error_l1,rho_error_l2,rho_error_linf,temperature_min,face_fallbacks,retries,pp_rec_cells,pp_beta_min,pp_stage_cells,pp_alpha_min,characteristic_fallbacks,implicit_stages,nonlinear_iterations,linear_iterations,implicit_residual_target_ratio,coupled_iterations,coupled_residual_target_ratio\n" << std::setprecision(17);
                     std::ofstream resolved(output.prefix + "_resolved.json"); resolved << config.Root().dump(2) << '\n';
                 } });
             double baseline = 0;
@@ -83,7 +83,8 @@ int main(int argc, char **argv)
                     history << ',' << fallbacks << ',' << retries;
                     for (auto value : domain.LastPositivity())
                         history << ',' << value;
-                    history << ',' << domain.LastImplicitStages().size() << ',' << nonlinearIterations << ',' << linearIterations << ',' << implicitRatio;
+                    history << ',' << domain.LastImplicitStages().size() << ',' << nonlinearIterations << ',' << linearIterations << ',' << implicitRatio
+                            << ',' << domain.LastCoupledIterations() << ',' << domain.LastCoupledTargetRatio();
                     history << '\n';
                     history.flush();
                     std::cout << std::setprecision(12) << "Cauchy step " << domain.Epoch().acceptedStep << " time " << domain.Time() << " dt " << dt

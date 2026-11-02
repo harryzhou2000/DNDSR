@@ -3,7 +3,7 @@
 `Solver/FieldDITR.hpp` provides the U2R2 (mask0) equations used by the active
 Euler `ImplicitHermite3SimpleJacobianDualStep::Step`. It is a synchronous native
 CPU field component, separate from accepted-state publication and history.
-Cauchy integration is pending. U2R1/U3R1 and the legacy extra temporal multigrid
+FieldTimeStepper/Cauchy connect it through explicit stage callbacks. U2R1/U3R1 and the legacy extra temporal multigrid
 acceleration are not implemented in this component.
 
 For the initial, intermediate and endpoint states `U0,Um,Ue`, rates `F=dU/dt`
@@ -55,4 +55,38 @@ For `a=.55`, an independent exact coupled solve gives errors6.38437e-7,
 2.883,2.945 approach3. The earlier8→16 order test failed its2.8 bound even
 though the implementation matched that independent oracle. The test now uses
 32→64 and the stronger2.9 bound. At `a=.5`, Simpson symmetry yields order4.
-These are building-block results, not a claim of connected Cauchy DITR support.
+Those are building-block results; distributed Cauchy qualification is a separate gate.
+
+## Time workspace and Cauchy integration
+
+`FieldTimeStepper(method="ditr")` retains the independent stage factory and
+requires an explicit coupled stopping callback at Prepare. Accepted-state
+publication still precedes Commit. Discard leaves accepted history unchanged.
+Callback exceptions mark the DITR scratch for reconstruction at the next trial;
+Fresh creates new intermediate storage/bindings lazily. This also handles a
+restart transaction replacing the time workspace without retaining old stage
+pointers. Factory callbacks and their retained resources outlive all stage uses.
+
+Cauchy supplies separate intermediate means, polynomial guess, auxiliary,
+gradient, matrix, linear and optional pMG workspaces, sharing immutable FV
+geometry. Rate scratch may be reused sequentially; the three semidiscrete rate
+fields retained by DITR are distinct. The intermediate polynomial cold-starts
+at each physical trial, including retry. Fine polynomial/history rollback uses
+the existing Domain transaction. Thus a compatible reconstruction checkpoint
+needs no additional persistent intermediate polynomial dataset.
+
+`time.ditr` records fraction, theta, outer cap/minimum and outer relative/
+absolute tolerances. The initial Cauchy stage-solver profile requires
+`0<fraction<2/3`, giving positive implicit endpoint RHS scale; unsupported
+fractions fail during configuration. The generic mathematical component allows
+other fractions for stage solvers supporting signed scales. Inner nonlinear
+tolerances remain under `implicit`: choose them tighter than the requested
+outer H/I accuracy. Their convergence alone never accepts the physical step.
+
+Cauchy tests both original H/I equations with per-component volume-weighted
+norms and a collective decision. Outer tolerances default to1e-8/1e-10; the
+initial inner defaults are1e-8/1e-11. Users requesting substantially tighter
+outer targets should also tighten inner tolerances; an unresolved residual
+floor reaches the cap and rejects the trial. Counters and CSV columns separate
+coupled outer iterations/target ratio from inner stage solves/target ratios.
+The latter count actual solve calls, not distinct physical stage identities.

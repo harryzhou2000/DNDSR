@@ -30,6 +30,8 @@ def build_domain(layout="aos", flux="Roe", workers=0, method="ssprk3"):
         "initialPrimitive": primitive,
         "boundaries": {str(zone): {"kind": "farfield", "primitive": primitive} for zone in zones},
     }, "time": {"method": method}}
+    if method == "ditr":
+        config["time"]["ditr"] = {"minIterations": 1}
     return Domain(mesh, json.dumps(config)), primitive
 
 
@@ -69,13 +71,16 @@ def test_shared_state_real_residual_ssprk3_and_restart(tmp_path, layout, flux, w
 
 
 @pytest.mark.mpi
-@pytest.mark.parametrize("method,stages", [("bdf2", 1), ("esdirk4", 5)])
+@pytest.mark.parametrize("method,stages", [("bdf2", 1), ("esdirk4", 5), ("ditr", 2)])
 def test_configured_implicit_method_and_retained_shared_state(tmp_path, method, stages):
     domain, primitive = build_domain(method=method)
     flow = domain.flow
     before = flow.numpy().copy()
     domain.advance(.001)
     assert len(domain.implicit_stages) == stages
+    if method == "ditr":
+        assert domain.coupled_iterations == 1
+        assert domain.coupled_target_ratio <= 1
     assert all(report.converged for report in domain.implicit_stages)
     assert domain.step == 1 and domain.time == .001
     np.testing.assert_allclose(flow.numpy(), before, atol=2e-14)

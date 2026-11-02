@@ -236,3 +236,49 @@ TEST_CASE("DITR rejects intermediate rebinding and stateful rate callbacks befor
     CHECK_THROWS(O::FieldDITR(state, settings, [](Field &)
                               { return O::FieldDITR::StageOperator{Evaluate(), Solve(), {}}; }));
 }
+TEST_CASE("Native time workspace integrates DITR rejection history and fresh intermediate bindings")
+{
+    const A::DofSpace space(1);
+    Field state(space, 1), trial(space, 1);
+    A::Fill(state, 1.);
+    std::vector<R::ArrayStorage::Shared> bindings;
+    const auto factory = [&](Field &mid)
+    {
+        bindings.push_back(mid.Owned().SharedStorage());
+        return O::FieldDITR::StageOperator{Evaluate(), Solve(), {}};
+    };
+    O::FieldTimeStepper stepper(state, "ditr", {}, {}, factory);
+    const auto check = [](const Field &h, const Field &i, DNDS::index)
+    { return std::max(std::abs(Value(h)), std::abs(Value(i))) < 2e-13; };
+    CHECK_THROWS(stepper.Prepare(state, trial, 0, .1, Evaluate(), Solve())); // explicit coupled checker required
+    REQUIRE(stepper.Prepare(state, trial, 0, .1, Evaluate(), Solve(), check));
+    CHECK(stepper.HasPendingTrial());
+    CHECK_FALSE(stepper.HasHistory());
+    REQUIRE(stepper.LastDITRReport());
+    CHECK(stepper.LastDITRReport()->converged);
+    const double expected = Value(trial);
+    stepper.Discard();
+    CHECK_FALSE(stepper.HasPendingTrial());
+    CHECK_THROWS(stepper.Commit());
+    REQUIRE(stepper.Prepare(state, trial, 0, .1, Evaluate(), Solve(), check));
+    CHECK(Value(trial) == expected);
+    CHECK(bindings.size() == 1);
+    auto fresh = stepper.Fresh();
+    REQUIRE(fresh->Prepare(state, trial, 0, .1, Evaluate(), Solve(), check));
+    REQUIRE(bindings.size() == 2);
+    CHECK(bindings[0] != bindings[1]);
+    CHECK(Value(trial) == expected);
+    A::Copy(state, trial);
+    fresh->Commit();
+    CHECK(fresh->HasHistory());
+    CHECK(fresh->PreviousDt() == .1);
+    CHECK(Value(fresh->PreviousState()) == 1);
+    const auto bad = [](Field &input, Field &output, double, int)
+    { A::Scale(input, 2.); A::Copy(output, input); };
+    CHECK_THROWS(fresh->Prepare(state, trial, .1, .1, bad, Solve(), check));
+    CHECK_FALSE(fresh->HasPendingTrial());
+    CHECK(fresh->PreviousDt() == .1);
+    REQUIRE(fresh->Prepare(state, trial, .1, .1, Evaluate(), Solve(), check));
+    CHECK(bindings.size() == 3);
+    CHECK(Value(state) == expected);
+}

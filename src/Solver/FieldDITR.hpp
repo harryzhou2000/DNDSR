@@ -74,7 +74,7 @@ namespace DNDS::ODE
         LocalStage _local;
         StageFactory _factory;
         std::optional<StageOperator> _middle;
-        Field _mid, _initialRate, _midRate, _endRate, _source, _hermite, _integral;
+        Field _prototype, _mid, _initialRate, _midRate, _endRate, _source, _hermite, _integral;
         Runtime::ArrayStorage::Shared _midOwnedPin, _midGhostPin;
         DITRIterationReport _report;
         bool _failed = false;
@@ -132,7 +132,7 @@ namespace DNDS::ODE
     public:
         FieldDITR(const Field &prototype, DITRSettings settings, StageFactory factory, LocalStage local = {})
             : _settings(settings), _coefficient(settings.fraction), _local(std::move(local)), _factory(std::move(factory)),
-              _mid(NewVector(prototype)), _initialRate(NewVector(prototype)), _midRate(NewVector(prototype)), _endRate(NewVector(prototype)),
+              _prototype(prototype), _mid(NewVector(prototype)), _initialRate(NewVector(prototype)), _midRate(NewVector(prototype)), _endRate(NewVector(prototype)),
               _source(NewVector(prototype)), _hermite(NewVector(prototype)), _integral(NewVector(prototype)),
               _midOwnedPin(_mid.Owned().SharedStorage()), _midGhostPin(_mid.Ghost().SharedStorage())
         {
@@ -142,6 +142,9 @@ namespace DNDS::ODE
         FieldDITR(const FieldDITR &) = delete;
         FieldDITR &operator=(const FieldDITR &) = delete;
         const DITRIterationReport &LastReport() const { return _report; }
+        /// Independent scratch and lazily recreated stage bindings, even when
+        /// a failed callback left the old intermediate allocation unusable.
+        std::unique_ptr<FieldDITR> Fresh() const { return std::make_unique<FieldDITR>(_prototype, _settings, _factory, _local); }
         bool Prepare(const Field &initial, Field &trial, real time, real dt, const Evaluate &evaluate, const SolveStage &solve, const Converged &converged)
         {
             _report = {};

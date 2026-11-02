@@ -13,11 +13,11 @@ namespace R = DNDS::Runtime;
 static DNDS::MPIInfo mpi;
 namespace
 {
-    std::string Path(const char *label)
+    std::string Path(const std::string &label)
     {
         int pid = int(getpid());
         MPI_Bcast(&pid, 1, MPI_INT, 0, mpi.comm);
-        return (std::filesystem::temp_directory_path() / (std::string(label) + std::to_string(pid) + ".h5")).string();
+        return (std::filesystem::temp_directory_path() / (label + std::to_string(pid) + ".h5")).string();
     }
     C::FlowState Wave(const C::Domain &domain, DNDS::index iCell)
     {
@@ -121,43 +121,50 @@ TEST_CASE("Checkpoint changes MPI partition and polynomial degree using persiste
     }
     Remove({plain, polynomial, cold});
 }
-TEST_CASE("Implicit BDF2 restart preserves variable-step history and compatible reconstruction continuation")
+TEST_CASE("Implicit restart preserves variable BDF2 history and rebuilds live DITR stage bindings")
 {
-    const auto path = Path("cauchy-bdf-history-");
-    C::DomainSettings settings;
-    settings.numerics.reconstruction = "variational";
-    settings.numerics.cfv.maxOrder = 2;
-    settings.numerics.reconstructionIterations = 80;
-    settings.numerics.reconstructionTolerance = 1e-11;
-    settings.implicit.minIterations = 0;
-    settings.implicit.relativeTolerance = 1e-9;
-    settings.implicit.linear.relativeTolerance = 1e-3;
-    C::TimeSettings time;
-    time.method = "bdf2";
-    const auto mesh = CauchyTest::PeriodicQuads(mpi, 4);
-    C::Domain source("flow", mesh, settings, time), restored("flow", mesh, settings, time);
-    Initialize(source);
-    source.Advance(.001);
-    source.Advance(.002);
-    const C::Json metadata{{"test", "variable BDF2"}};
-    source.WriteCheckpoint(path, metadata, true);
-    std::optional<R::Array<double>::ReadLease> held;
-    if (mpi.rank == 0)
-        held.emplace(restored.Flow().Owned().Read());
-    CHECK_THROWS(restored.ReadCheckpoint(path, metadata));
-    CHECK(restored.Time() == 0);
-    CHECK(restored.Epoch().acceptedStep == 0);
-    held.reset();
-    restored.ReadCheckpoint(path, metadata);
-    CHECK(restored.Time() == source.Time());
-    CHECK(restored.Epoch().acceptedStep == source.Epoch().acceptedStep);
-    source.Advance(.0015);
-    restored.Advance(.0015);
-    const auto a = source.Flow().Owned().Read(), b = restored.Flow().Owned().Read();
-    for (DNDS::index iCell = 0; iCell < source.Discretization().Metrics().NumCell(); ++iCell)
-        for (int j = 0; j < 5; ++j)
-            CHECK(a.View()(iCell, j) == b.View()(iCell, j));
-    Remove({path});
+    for (const std::string method : {"bdf2", "ditr"})
+    {
+        const auto path = Path("cauchy-" + method + "-history-");
+        C::DomainSettings settings;
+        settings.numerics.reconstruction = "variational";
+        settings.numerics.cfv.maxOrder = 2;
+        settings.numerics.reconstructionIterations = 80;
+        settings.numerics.reconstructionTolerance = 1e-11;
+        settings.implicit.minIterations = 0;
+        settings.implicit.relativeTolerance = 1e-9;
+        settings.implicit.linear.relativeTolerance = 1e-3;
+        C::TimeSettings time;
+        time.method = method;
+        const auto mesh = CauchyTest::PeriodicQuads(mpi, 4);
+        C::Domain source("flow", mesh, settings, time), restored("flow", mesh, settings, time);
+        Initialize(source);
+        source.Advance(.001);
+        source.Advance(.002);
+        const C::Json metadata{{"test", method + " native continuation"}};
+        source.WriteCheckpoint(path, metadata, true);
+        if (method == "ditr")
+            restored.Advance(.0007); // build an old intermediate binding before replacement
+        const auto oldTime = restored.Time();
+        const auto oldStep = restored.Epoch().acceptedStep;
+        std::optional<R::Array<double>::ReadLease> held;
+        if (mpi.rank == 0)
+            held.emplace(restored.Flow().Owned().Read());
+        CHECK_THROWS(restored.ReadCheckpoint(path, metadata));
+        CHECK(restored.Time() == oldTime);
+        CHECK(restored.Epoch().acceptedStep == oldStep);
+        held.reset();
+        restored.ReadCheckpoint(path, metadata);
+        CHECK(restored.Time() == source.Time());
+        CHECK(restored.Epoch().acceptedStep == source.Epoch().acceptedStep);
+        source.Advance(.0015);
+        restored.Advance(.0015);
+        const auto a = source.Flow().Owned().Read(), b = restored.Flow().Owned().Read();
+        for (DNDS::index iCell = 0; iCell < source.Discretization().Metrics().NumCell(); ++iCell)
+            for (int j = 0; j < 5; ++j)
+                CHECK(a.View()(iCell, j) == b.View()(iCell, j));
+        Remove({path});
+    }
 }
 TEST_CASE("CGNS checkpoint remains physical across independently built MPI partitions")
 {

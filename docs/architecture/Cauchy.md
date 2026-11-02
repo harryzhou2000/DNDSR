@@ -1,7 +1,11 @@
 # Cauchy solver: module contracts and implementation ledger
 
-Status2026-11-01: foundation, optional checked eager execution and the initial
-single-domain CPU flow solver are implemented and validated in focused tests.
+Status2026-11-02: foundation, optional checked eager execution and the
+single-domain CPU flow solver include native implicit linear/nonlinear solves,
+BDF/Trapz/ESDIRK/DITR, polynomial FAS and persistent-ID restart in focused tests.
+The complete Euler PP suite, matched performance and physical qualification
+remain in progress. See [implicit contracts](CauchyImplicit.md) and
+[coupled DITR](DITR.md) for the current boundaries.
 Do not treat mocks, flux parity or short smooth-flow tests as broad
 production acceptance. The independent plan repo's document37 defines the full
 C1/C2/C3 work order; document45 records execution status.
@@ -19,7 +23,8 @@ flowchart TD
     FV --> Flux[RiemannFlux: common prepared-state interface]
     FV --> BC[BoundarySystem: quadrature/exterior values]
     Domain --> Engine[EagerEngine + direct MPI + optional access checking]
-    Domain --> IO[Matching-partition HDF5 checkpoint]
+    Domain --> Implicit[Native stage solves + time equations + optional p-FAS]
+    Domain --> IO[Persistent-ID HDF5 checkpoint + redistribution]
 ```
 
 `Cauchy/Core/DomainPlacement` owns immutable simulation/domain communicator
