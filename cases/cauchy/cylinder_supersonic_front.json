@@ -1,0 +1,12 @@
+{
+  "defaults":{
+    "equation":{"system":"compressible","eos":"perfectGas","transport":"inviscid"},
+    "mesh":{"file":"data/mesh/HSCylinderFront_Invis.cgns","dimension":2,"boundaryIds":{"FAR":3,"WALL_INVIS":4}},
+    "initialPrimitive":[1,1,0,0,0.001785714285714286],
+    "boundaries":{"3":{"kind":"farfield","primitive":[1,1,0,0,0.001785714285714286]},"4":{"kind":"slipWall"}},
+    "numerics":{"reconstruction":"variational","flux":"Roe_M9","limiter":"WBAP","reconstructionIterations":12,"positivity":true,"temperatureFloor":1e-10,
+      "cfv":{"maxOrder":3,"intOrder":5,"jacobiRelax":0.5,"HQMWeights":true,"boundaryDerivativeWeights":[1,0,0,0],"WBAP_nStd":10}}
+  },
+  "time":{"method":"ssprk3","dt":0.01,"cfl":0.25,"steps":200000,"steadyTolerance":1e-6,"steadyMinSteps":1000,"wallSeconds":3500,"maxRetries":8},
+  "output":{"prefix":"data/cauchy-p3/cylinder_supersonic_pp/run","interval":1000,"historyInterval":100,"forceZones":[4]}
+}

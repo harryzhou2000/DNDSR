@@ -110,8 +110,10 @@ namespace DNDS::Cauchy
             DNDS_check_throw_info(settings.mesh.dimension == 2 || settings.mesh.dimension == 3, "Cauchy geometric dimension must be 2 or 3");
             DNDS_check_throw_info(settings.execution.hostThreads >= 0 && settings.execution.hostThreads <= 1024, "invalid CPU worker count");
             const auto &numerics = settings.numerics;
+            DNDS_check_throw_info(std::isfinite(numerics.temperatureFloor) && numerics.temperatureFloor > 0, "positive finite temperatureFloor required");
+            DNDS_check_throw_info(std::isfinite(numerics.positivityBetaCutoff) && numerics.positivityBetaCutoff >= 0 && numerics.positivityBetaCutoff < 1, "invalid positivity beta cutoff");
             DNDS_check_throw_info(std::isfinite(numerics.densityFloor) && numerics.densityFloor > 0 && std::isfinite(numerics.pressureFloor) && numerics.pressureFloor > 0 &&
-                                      numerics.reconstructionIterations > 0,
+                                      numerics.reconstructionIterations > 0 && std::isfinite(numerics.reconstructionTolerance) && numerics.reconstructionTolerance >= 0,
                                   "invalid Cauchy numerical controls");
             numerics.cfv.Validate();
             const auto &riemann = numerics.riemann;
@@ -122,6 +124,20 @@ namespace DNDS::Cauchy
                                       std::isfinite(riemann.pressureStencilMin) && riemann.pressureStencilMin > 0,
                                   "invalid Cauchy Riemann controls");
             PrimitiveValid(settings.initialPrimitive);
+            const auto validateProfile = [](const FlowProfileSettings &profile)
+            {
+                DNDS_check_throw_info(profile.kind == "constant" || profile.kind == "isentropicVortex" || profile.kind == "doubleMachReflection" || profile.kind == "cylinderWake", "unknown physical field profile");
+                DNDS_check_throw_info(std::isfinite(profile.period) && profile.period > 0 && std::isfinite(profile.strength) && std::isfinite(profile.perturbation) &&
+                                          std::all_of(profile.center.begin(), profile.center.end(), [](real value)
+                                                      { return std::isfinite(value); }),
+                                      "invalid field profile parameters");
+            };
+            validateProfile(settings.initialProfile);
+            for (auto length : settings.mesh.periodicLengths)
+                DNDS_check_throw_info(std::isfinite(length) && length >= 0, "periodic lengths must be finite and nonnegative");
+            for (const auto &[name, zone] : settings.mesh.boundaryIds)
+                DNDS_check_throw_info(!name.empty() && zone != 0 && zone != 1 && zone >= -6,
+                                      "mesh.boundaryIds reserves 0 for interior, 1 for null, and -1..-6 for periodic boundaries");
             for (const auto &[zone, condition] : settings.boundaries)
             {
                 size_t parsed = 0;
@@ -129,6 +145,12 @@ namespace DNDS::Cauchy
                 DNDS_check_throw_info(parsed == zone.size() && id >= INT_MIN && id <= INT_MAX && std::to_string(id) == zone,
                                       "boundary key must be a canonical integer zone ID");
                 PrimitiveValid(condition.primitive);
+                validateProfile(condition.profile);
+                if (condition.kind == "noSlipWall" && condition.thermal == "isothermal")
+                    DNDS_check_throw_info(condition.temperature >= numerics.temperatureFloor, "wall temperature lies below the configured temperature floor");
+                if (condition.kind == "farfield" && equation.eos == "perfectGas")
+                    DNDS_check_throw_info(condition.primitive[4] / (condition.primitive[0] * equation.gasConstant) >= numerics.temperatureFloor,
+                                          "farfield temperature lies below the configured temperature floor");
                 DNDS_check_throw_info(std::isfinite(condition.temperature) && condition.temperature > 0 &&
                                           std::all_of(condition.velocity.begin(), condition.velocity.end(), [](real v)
                                                       { return std::isfinite(v); }),
@@ -160,7 +182,8 @@ namespace DNDS::Cauchy
         require(s.numerics.cfv.cacheDiffBase, "Cauchy residual requires cached face basis derivatives");
         for (const auto &[zone, condition] : s.boundaries)
         {
-            require(condition.kind == "extrapolate" || condition.kind == "farfield" || condition.kind == "slipWall" || condition.kind == "noSlipWall", "BC zone " + zone + ": " + condition.kind);
+            require(condition.kind == "extrapolate" || condition.kind == "farfield" || condition.kind == "slipWall" || condition.kind == "noSlipWall" || condition.kind == "analytic" || condition.kind == "doubleMachBottom", "BC zone " + zone + ": " + condition.kind);
+            require(condition.kind != "doubleMachBottom" || condition.profile.kind == "doubleMachReflection", "DMR bottom requires its analytic shock profile");
             require(condition.thermal == "adiabatic" || condition.thermal == "isothermal", "thermal BC " + condition.thermal);
             require(condition.kind != "noSlipWall" || s.equation.transport == "NewtonianFourier", "no-slip wall needs viscous transport");
         }
@@ -222,6 +245,17 @@ namespace DNDS::Cauchy
                     if (!original.contains(key))
                         Origin(value, path + "/settings/boundaries/" + Escape(zone) + "/" + key, "schema default", data->provenance);
                 condition.update(original);
+                // A map value is a partial object, including nested profile
+                // sections. Resolve their defaults just like root sections.
+                if (original.contains("profile"))
+                {
+                    Json profile = FlowProfileSettings{};
+                    for (const auto &[key, value] : profile.items())
+                        if (!original["profile"].contains(key))
+                            Origin(value, path + "/settings/boundaries/" + Escape(zone) + "/profile/" + key, "schema default", data->provenance);
+                    profile.update(original["profile"]);
+                    condition["profile"] = std::move(profile);
+                }
             }
             Json resolved{{"name", source.at("name")}, {"ranks", source.value("ranks", allRanks)}, {"settings", std::move(settings)}};
             Origin(resolved["name"], path + "/name", "domain descriptor", data->provenance);
@@ -254,9 +288,13 @@ namespace DNDS::Cauchy
         Keys(data->root["output"], OutputSettings::schema(), "/output");
         data->time = data->root["time"].get<TimeSettings>();
         data->output = data->root["output"].get<OutputSettings>();
-        DNDS_check_throw_info(data->time.method == "ssprk3" && std::isfinite(data->time.dt) && data->time.dt > 0 && data->time.steps >= 0,
+        DNDS_check_throw_info(data->time.method == "ssprk3" && std::isfinite(data->time.dt) && data->time.dt > 0 && data->time.steps >= 0 &&
+                                  std::isfinite(data->time.finalTime) && data->time.finalTime >= 0 && std::isfinite(data->time.cfl) && data->time.cfl >= 0 &&
+                                  std::isfinite(data->time.wallSeconds) && data->time.wallSeconds >= 0 && data->time.maxRetries >= 0,
                               "Cauchy requires SSPRK3, positive dt and nonnegative steps");
-        DNDS_check_throw_info(data->output.interval >= 0 && !data->output.prefix.empty(), "invalid Cauchy output controls");
+        DNDS_check_throw_info(std::isfinite(data->time.steadyTolerance) && data->time.steadyTolerance >= 0 && data->time.steadyMinSteps >= 0, "invalid steady stopping controls");
+        DNDS_check_throw_info(data->output.interval >= 0 && data->output.historyInterval > 0 && !data->output.prefix.empty(), "invalid Cauchy output controls");
+        DNDS_check_throw_info(data->output.hdfDeflateLevel >= 0 && data->output.hdfDeflateLevel <= 9, "Cauchy output hdfDeflateLevel must be in [0,9]");
         return SimulationConfig(std::move(data));
     }
     std::vector<DomainRankGroup> SimulationConfig::RankGroups() const

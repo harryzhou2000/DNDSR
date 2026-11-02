@@ -3,10 +3,141 @@
 #include "Cauchy/Physics/PerfectGas.hpp"
 #include "Cauchy/Riemann/RiemannFlux.hpp"
 #include "Cauchy/Boundary/BoundarySystem.hpp"
+#include "Cauchy/Physics/FlowProfile.hpp"
+#include "Cauchy/Physics/Positivity.hpp"
+#include "Cauchy/Physics/EquationSystem.hpp"
 #include "Euler/Gas.hpp"
 #include <limits>
 
 namespace C = DNDS::Cauchy;
+TEST_CASE("Thermal PP uses an internal-energy temperature bound including shifted energy references")
+{
+    const C::ThermalBounds bounds{.1, -10, -std::numeric_limits<double>::infinity()};
+    const C::FlowState base{1, 3, 0, 0, -2}; // internal=-6.5, above shifted Tmin energy=-10
+    CHECK(C::ThermallyAdmissible(base, bounds));
+    CHECK(C::AdmissibleFraction(C::FlowState{1, 0, 0, 0, 2}, C::FlowState{-1, 0, 0, 0, 2}, bounds) == doctest::Approx(.45).epsilon(2e-9));
+    const C::FlowState target{1, 7, 0, 0, -2};
+    CHECK_FALSE(C::ThermallyAdmissible(target, bounds));
+    const double exact = (4 - 3.) / (7 - 3.); // kinetic <=8, so |momentum|<=4
+    const auto fraction = C::AdmissibleFraction(base, target, bounds);
+    CHECK(fraction == doctest::Approx(exact).epsilon(2e-9));
+    C::FlowState state;
+    for (int j = 0; j < 5; ++j)
+        state[j] = (1 - fraction) * base[j] + fraction * target[j];
+    CHECK(C::ThermallyAdmissible(state, bounds));
+    struct NonlinearBound
+    {
+        double densityFloor = .1;
+        double MinimumInternalEnergyDensity(const C::FlowState &u) const { return u[0] * u[0]; }
+    } nonlinear;
+    const C::FlowState a{1, 0, 0, 0, 2}, b{3, 0, 0, 0, 2};
+    CHECK(C::AdmissibleFraction(a, b, nonlinear) == doctest::Approx((std::sqrt(2.) - 1) / 2).epsilon(2e-9));
+    const C::PerfectGas gas{1.4, 2, 0, .72};
+    const C::ThermalBounds temperature{.1, 2 * .5 / .4, 0};
+    CHECK_FALSE(C::ThermallyAdmissible(gas.Conservative({1, 100, 0, 0, .5}), temperature)); // T=.25 <.5, yet p>0
+    CHECK(C::ThermallyAdmissible(gas.Conservative({1, 100, 0, 0, 2}), temperature));
+    for (int sample = 1; sample < 40; ++sample)
+    {
+        const double momentum = 4 + sample * .2;
+        const C::FlowState point{1, momentum, 0, 0, -2};
+        const double expected = 1 / (momentum - 3);
+        CHECK(C::AdmissibleFraction(base, point, bounds) == doctest::Approx(expected).epsilon(2e-9));
+    }
+    struct MixtureBound
+    {
+        double densityFloor = .1;
+        double MinimumInternalEnergyDensity(const std::array<double, 6> &u) const
+        {
+            return -10 * u[0] + 2 * u[5];
+        } // shifted species energy, affine at Tmin
+    } mixture;
+    CHECK(C::ThermallyAdmissible(std::array<double, 6>{1, 3, 0, 0, -2, .25}, mixture));
+    CHECK_FALSE(C::ThermallyAdmissible(std::array<double, 6>{1, 3, 0, 0, -2, 2}, mixture));
+    const C::ThermalBounds tinyTemperature{1e-12, 2.5e-10, 0};
+    C::FlowState nearlyCold{1, 1, 0, 0, .5 + 2.5e-10 + 8 * std::numeric_limits<double>::epsilon()};
+    CHECK(C::ThermallyAdmissible(nearlyCold, tinyTemperature));
+    CHECK_FALSE(C::ThermallyInterior(nearlyCold, tinyTemperature));
+    auto tooFast = nearlyCold;
+    tooFast[1] += .1;
+    CHECK(C::AdmissibleFraction(nearlyCold, tooFast, tinyTemperature) == 0);
+}
+TEST_CASE("Cold mean limiter characteristics retain a reliable inverse without altering physical sound speed")
+{
+    const auto equation = C::EquationSystem::Resolve(C::EquationSettings{});
+    const auto state = equation.Gas().Conservative({1, 1, .2, .1, 1e-10});
+    const auto physical = equation.PrepareFluxState(state);
+    const auto basis = equation.PrepareCharacteristics(state, state, {1, 0, 0});
+    const Eigen::Map<const Eigen::Matrix<double, 5, 5>> l(basis.forward.data()), r(basis.inverse.data());
+    CHECK((l * r).isApprox(Eigen::Matrix<double, 5, 5>::Identity(), 1e-7));
+    CHECK(basis.componentwiseFallback);
+    CHECK(physical.soundSpeed * physical.soundSpeed == doctest::Approx(1.4 * equation.Gas().Pressure(state)).epsilon(1e-12));
+}
+TEST_CASE("Cauchy prescribed DMR shock and boundary stage times match canonical conservative data")
+{
+    C::FlowProfileSettings profile;
+    profile.kind = "doubleMachReflection";
+    const C::PerfectGas gas;
+    const auto ahead = C::ProfileValue(profile, {1, 0, 0, 0, 1}, gas, {1, .5, 0}, 0);
+    const auto behind = C::ProfileValue(profile, {1, 0, 0, 0, 1}, gas, {1, .5, 0}, .1);
+    const C::FlowState unshocked{1.4, 0, 0, 0, 2.5};
+    for (int j = 0; j < 5; ++j)
+        CHECK(ahead[j] == doctest::Approx(unshocked[j]).epsilon(2e-14));
+    const C::FlowState shocked{8, 57.157676649772960, -33, 0, 563.5};
+    for (int j = 0; j < 5; ++j)
+        CHECK(behind[j] == doctest::Approx(shocked[j]).epsilon(2e-14));
+    C::BoundarySettings settings;
+    settings.kind = "doubleMachBottom";
+    settings.profile = profile;
+    C::BoundarySystem boundaries({{"1", settings}}, gas);
+    const auto &condition = boundaries.At(1);
+    const auto prescribed = condition.Exterior(gas, ahead, {0, -1, 0}, {.1, 0, 0}, .05);
+    for (int j = 0; j < 5; ++j)
+        CHECK(prescribed[j] == doctest::Approx(shocked[j]).epsilon(2e-14));
+    const auto wall = condition.Exterior(gas, shocked, {0, -1, 0}, {.5, 0, 0}, .05);
+    CHECK(wall[2] == -shocked[2]);
+    CHECK(wall[4] == doctest::Approx(shocked[4]));
+}
+TEST_CASE("Cauchy beta-five vortex oracle advects periodically and preserves isentropy")
+{
+    C::FlowProfileSettings profile;
+    profile.kind = "isentropicVortex";
+    const C::PerfectGas gas;
+    const auto a = C::ProfileValue(profile, {1, 1, 1, 0, 1}, gas, {5, 5, 0}, 0);
+    const auto b = C::ProfileValue(profile, {1, 1, 1, 0, 1}, gas, {5, 5, 0}, 10);
+    CHECK(a[0] == doctest::Approx(.49380732389534654));
+    CHECK(gas.Pressure(a) == doctest::Approx(std::pow(a[0], gas.gamma)));
+    CHECK(a == b);
+}
+TEST_CASE("Cauchy farfield respects supersonic directions and subsonic incoming component count")
+{
+    C::PerfectGas gas;
+    C::BoundarySettings settings;
+    settings.kind = "farfield";
+    settings.primitive = {2, -3, .1, .2, 4};
+    C::BoundarySystem boundaries({{"1", settings}}, gas);
+    const auto &bc = boundaries.At(1);
+    const C::Vector3 normal{1, 0, 0};
+    for (double speed : {-4., -.2, .2, 4.})
+    {
+        const auto inside = gas.Conservative({1, speed, .5, -.1, 1});
+        const auto value = gas.Primitive(bc.Exterior(gas, inside, normal));
+        if (speed > 2)
+            CHECK(bc.Exterior(gas, inside, normal) == inside);
+        if (speed < -2)
+            CHECK(value.density == 2);
+        if (speed == .2)
+        {
+            CHECK(value.pressure == doctest::Approx(4));
+            CHECK(value.density == 1);
+        }
+        if (speed == -.2)
+        {
+            CHECK(value.pressure == doctest::Approx(1));
+            CHECK(value.density == 2);
+            CHECK(value.velocity[0] == -3);
+        }
+    }
+}
 static C::Riemann::AcousticState Prepare(const C::PerfectGas &gas, const C::FlowState &state)
 {
     const auto primitive = gas.Primitive(state);

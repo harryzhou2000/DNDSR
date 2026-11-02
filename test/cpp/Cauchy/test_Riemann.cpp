@@ -5,6 +5,21 @@
 
 namespace C = DNDS::Cauchy;
 namespace F = DNDS::Cauchy::Riemann;
+TEST_CASE("Transverse wave jump uses supplied acoustic data and is side-frame invariant")
+{
+    const F::AcousticState left{{{2, 6, -8, 10, 100}, 7}, 11};
+    const F::AcousticState right{{{1, -2, 1, 3, -50}, 19}, 5};
+    CHECK(F::TransverseSignalJump(left, right, {1, 0, 0}) == 11);
+    CHECK(F::TransverseSignalJump(right, left, {-1, 0, 0}) == 11);
+    CHECK(F::TransverseSignalJump(left, left, {0, 1, 0}) == 0);
+    CHECK(F::TransverseSignalJump(left, right, {0, 1, 0}) == 11);
+    for (const auto *name : {"Roe_M6", "Roe_M8", "Roe_M9", "HLLEP", "HLLEP_V1"})
+        CHECK(F::RiemannFlux::Resolve(name).UsesTransverseSignal());
+    for (const auto *name : {"Roe", "Roe_M7", "rusanov", "HLLC", "AUSMPWPlus"})
+        CHECK_FALSE(F::RiemannFlux::Resolve(name).UsesTransverseSignal());
+    CHECK(F::RiemannFlux::Resolve("AUSMPWPlus").UsesPressureStencil());
+    CHECK_FALSE(F::RiemannFlux::Resolve("Roe_M9").UsesPressureStencil());
+}
 TEST_CASE("Riemann module uses supplied pressure and acoustic data independently of energy")
 {
     const F::AcousticState left{{{2, 6, -8, 10, 100}, 7}, 11};

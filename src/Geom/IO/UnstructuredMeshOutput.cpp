@@ -1372,6 +1372,19 @@ namespace DNDS::Geom
     void UnstructuredMesh::PrintParallelVTKHDFDataArray(
         std::string fname, std::string seriesName,
         int arraySiz, int vecArraySiz, int arraySizPoint, int vecArraySizPoint,
+        const tFGetName &names, const tFGetData &data,
+        const tFGetName &vectorNames, const tFGetVecData &vectorData,
+        const tFGetName &namesPoint, const tFGetData &dataPoint,
+        const tFGetName &vectorNamesPoint, const tFGetVecData &vectorDataPoint,
+        double t, MPI_Comm commDup)
+    {
+        PrintParallelVTKHDFDataArray(std::move(fname), std::move(seriesName), arraySiz, vecArraySiz, arraySizPoint, vecArraySizPoint,
+                                     names, data, vectorNames, vectorData, namesPoint, dataPoint, vectorNamesPoint, vectorDataPoint,
+                                     t, commDup, nullptr);
+    }
+    void UnstructuredMesh::PrintParallelVTKHDFDataArray(
+        std::string fname, std::string seriesName,
+        int arraySiz, int vecArraySiz, int arraySizPoint, int vecArraySizPoint,
         const tFGetName &names,
         const tFGetData &data,
         const tFGetName &vectorNames,
@@ -1380,14 +1393,25 @@ namespace DNDS::Geom
         const tFGetData &dataPoint,
         const tFGetName &vectorNamesPoint,
         const tFGetVecData &vectorDataPoint,
-        double t, MPI_Comm commDup)
+        double t, MPI_Comm commDup, const HDF5OutSetting *settings)
     {
+        const auto hdf5OutSetting = settings ? *settings : this->hdf5OutSetting;
         DNDS_check_throw_info(commDup != MPI_COMM_NULL, "VTKHDF output requires its output communicator");
         EntitySpace::CheckCommunicator(mpi.comm, commDup);
         auto outputMPI = mpi;
         outputMPI.comm = commDup;
         FieldTransferDetail::LocalStage(outputMPI, [&]
-                                        { DNDS_check_throw_info(HasNativeState(), "mesh output requires native authority"); });
+                                        {
+            DNDS_check_throw_info(HasNativeState(), "mesh output requires native authority");
+            DNDS_check_throw_info(hdf5OutSetting.chunkSize > 0 && hdf5OutSetting.chunkSize <= size_t(std::numeric_limits<index>::max()) &&
+                                      hdf5OutSetting.deflateLevel >= 0 && hdf5OutSetting.deflateLevel <= 9,
+                                  "invalid VTKHDF chunk/compression settings"); });
+        const index chunkSize = index(hdf5OutSetting.chunkSize), deflateLevel = hdf5OutSetting.deflateLevel;
+        index settingsRange[]{chunkSize, deflateLevel, hdf5OutSetting.coll_on_data, hdf5OutSetting.coll_on_meta,
+                              -chunkSize, -deflateLevel, -index(hdf5OutSetting.coll_on_data), -index(hdf5OutSetting.coll_on_meta)};
+        MPI_Allreduce(MPI_IN_PLACE, settingsRange, 8, DNDS_MPI_INDEX, MPI_MIN, commDup);
+        for (int i = 0; i < 4; ++i)
+            DNDS_check_throw_info(settingsRange[i] == -settingsRange[i + 4], "VTKHDF settings differ between ranks");
         CurrentOutputFieldCounts(*this, arraySiz, vecArraySiz, arraySizPoint, vecArraySizPoint, commDup);
         auto retained = CurrentOutputRead(*this, commDup);
         auto nativeOutput = NativeMeshOutput::Build(*CurrentNativeState(), outputMPI);

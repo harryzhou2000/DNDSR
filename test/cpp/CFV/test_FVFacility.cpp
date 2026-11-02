@@ -4,6 +4,7 @@
 #include "CFV/Legacy/VariationalReconstruction.hpp"
 #include "CFV/Legacy/VariationalReconstruction_LimiterProcedure.hxx"
 #include "CFV/Plans/InterfaceSamplingPlan.hpp"
+#include "CFV/Plans/PolynomialSamplingPlan.hpp"
 #include "Geom/IO/NativeMeshCGNS.hpp"
 #include "Geom/Unstructured/UnstructuredMeshHelpers.hpp"
 #include "Geom/Interface/BoundaryInterface.hpp"
@@ -136,6 +137,17 @@ TEST_CASE("Runtime FV matches legacy VR sweeps and reproduces cell-average polyn
                 }
             }
             plan.Evaluate(u, workspace.coefficients, ids, points, result);
+            {
+                C::PolynomialSamplingPlan valueOnly(plan, ids, points, false);
+                R::Array<DNDS::real> cached(R::RowLayout::Dense(mesh->NumCell(), 1));
+                valueOnly.Evaluate(u, workspace.coefficients, cached);
+                {
+                    auto a = result.Read(), b = cached.Read();
+                    for (DNDS::index iCell = 0; iCell < mesh->NumCell(); ++iCell)
+                        CHECK(a.View()(iCell, 0) == doctest::Approx(b.View()(iCell, 0)).epsilon(2e-14));
+                }
+                CHECK_THROWS(valueOnly.Evaluate(u, workspace.coefficients, cached, 1));
+            }
             auto pointRead = points.Read(), resultRead = result.Read();
             for (DNDS::index iCell = 0; iCell < mesh->NumCell(); ++iCell)
             {

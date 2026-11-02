@@ -1,0 +1,13 @@
+{
+  "defaults":{
+    "equation":{"system":"compressible","eos":"perfectGas","transport":"inviscid","gamma":1.4},
+    "mesh":{"file":"data/mesh/UniformDM240U.cgns","dimension":2,"boundaryIds":{"bc-3":4,"bc-DMRFar":11}},
+    "initialProfile":{"kind":"doubleMachReflection"},
+    "boundaries":{"11":{"kind":"analytic","profile":{"kind":"doubleMachReflection"}},
+      "4":{"kind":"doubleMachBottom","profile":{"kind":"doubleMachReflection"}}},
+    "numerics":{"reconstruction":"variational","flux":"Roe_M9","limiter":"WBAP","characteristicLimiter":true,"reconstructionIterations":8,"positivity":true,"temperatureFloor":1e-10,
+      "cfv":{"maxOrder":3,"intOrder":5,"jacobiRelax":0.5,"HQMWeights":true,"WBAP_nStd":10,"boundaryDerivativeWeights":[1,0,0,0]}}
+  },
+  "time":{"method":"ssprk3","dt":0.0002,"cfl":0.25,"finalTime":0.25,"wallSeconds":28500,"maxRetries":10},
+  "output":{"prefix":"data/cauchy-p3/dmr/run","interval":2000,"historyInterval":25}
+}

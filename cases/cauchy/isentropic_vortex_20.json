@@ -1,0 +1,14 @@
+{
+  "defaults": {
+    "equation": {"system":"compressible","eos":"perfectGas","transport":"inviscid"},
+    "mesh": {"file":"data/mesh/IV10_20.cgns","dimension":2,"periodicLengths":[10,10,0],
+      "boundaryIds":{"PERIODIC_1":-1,"PERIODIC_1_DONOR":-4,"PERIODIC_2":-2,"PERIODIC_2_DONOR":-5}},
+    "initialPrimitive":[1,1,1,0,1],
+    "initialProfile":{"kind":"isentropicVortex","strength":5},
+    "numerics":{"reconstruction":"variational","flux":"Roe","limiter":"none","faceFallback":false,
+      "reconstructionIterations":320,"reconstructionTolerance":1e-11,
+      "cfv":{"maxOrder":3,"intOrder":6,"jacobiRelax":0.8,"boundaryDerivativeWeights":[1,0,0,0]}}
+  },
+  "time":{"method":"ssprk3","dt":0.002,"finalTime":1,"wallSeconds":3500},
+  "output":{"prefix":"data/cauchy-p3/iv20/run","interval":0,"historyInterval":50}
+}

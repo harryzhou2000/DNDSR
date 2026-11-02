@@ -8,7 +8,7 @@ namespace CauchyTest
     /// Independently numbered Cartesian torus. Endpoints use distinct periodic
     /// image bits but the same canonical node IDs; construction is distributed
     /// from owned primary rows, including empty ranks, never a global bitmap.
-    inline std::shared_ptr<DNDS::Geom::UnstructuredMesh> PeriodicQuads(const DNDS::MPIInfo &mpi, DNDS::index width)
+    inline std::shared_ptr<DNDS::Geom::UnstructuredMesh> PeriodicQuads(const DNDS::MPIInfo &mpi, DNDS::index width, DNDS::real length = 1)
     {
         namespace G = DNDS::Geom;
         namespace R = DNDS::Runtime;
@@ -48,6 +48,8 @@ namespace CauchyTest
         G::NativeMeshInput input{mpi, 2, cells, nodes, bnd, NativePeriodicFixtures::Rows(cones), NativePeriodicFixtures::Rows(boundaries),
                                  R::Array<double>(R::RowLayout::Dense(nodes.NumOwned(), 3)), R::Array<G::ElemInfo>(R::RowLayout::Dense(cells.NumOwned(), 1)), R::Array<G::ElemInfo>(R::RowLayout::Dense(bnd.NumOwned(), 1))};
         input.periodic = true;
+        input.periodicInfo.translation[1].map() = G::tPoint{length, 0, 0};
+        input.periodicInfo.translation[2].map() = G::tPoint{0, length, 0};
         input.cellNodesPbi = NativePeriodicFixtures::Rows(bits);
         input.boundaryNodesPbi = NativePeriodicFixtures::Rows(boundaryBits);
         {
@@ -56,8 +58,8 @@ namespace CauchyTest
             for (I iNode = 0; iNode < nodes.NumOwned(); ++iNode)
             {
                 const I global = range.first + iNode;
-                coords.View()(iNode, 0) = double(global % width) / width;
-                coords.View()(iNode, 1) = double(global / width) / width;
+                coords.View()(iNode, 0) = length * double(global % width) / width;
+                coords.View()(iNode, 1) = length * double(global / width) / width;
             }
             for (I iCell = 0; iCell < cells.NumOwned(); ++iCell)
                 info.View()(iCell, 0) = {G::Elem::Quad4, G::INTERNAL_ZONE};

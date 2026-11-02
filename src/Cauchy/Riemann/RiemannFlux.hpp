@@ -117,6 +117,19 @@ namespace DNDS::Cauchy::Riemann
             speed += input.flow.conservative[1 + d] / input.flow.conservative[0] * normal[d];
         return std::abs(speed) + input.soundSpeed;
     }
+    /// Face contribution to the legacy H-correction stencil. The sound speeds
+    /// are equation-provided. This scalar is invariant under swapping sides
+    /// and reversing the normal, and under a common constant grid velocity.
+    DNDS_DEVICE_CALLABLE inline real TransverseSignalJump(const AcousticState &left, const AcousticState &right, const Vector3 &normal)
+    {
+        real jump = 0;
+        for (int d = 0; d < 3; ++d)
+            jump += (right.flow.conservative[1 + d] / right.flow.conservative[0] -
+                     left.flow.conservative[1 + d] / left.flow.conservative[0]) *
+                    normal[d];
+        // max(|du+da|, |du-da|, |da|) = |du|+|da|.
+        return std::abs(jump) + std::abs(right.soundSpeed - left.soundSpeed);
+    }
     DNDS_DEVICE_CALLABLE inline FlowState Rusanov(const AcousticState &left, const AcousticState &right, const Vector3 &normal)
     {
         const auto a = PhysicalFlux(left.flow, normal), b = PhysicalFlux(right.flow, normal);
@@ -141,6 +154,11 @@ namespace DNDS::Cauchy::Riemann
         static bool Available(const std::string &name);
         Solver Kind() const { return _solver; }
         Requirements RequiredInputs() const;
+        /// These optional spatial inputs are prepared by the FV caller, never
+        /// by the pointwise flux. A manual scalar remains valid for unit tests
+        /// and one-dimensional users.
+        bool UsesTransverseSignal() const;
+        bool UsesPressureStencil() const;
         /// Validate optional data once in an outer preparation/operator boundary.
         /// Evaluate assumes that contract; unsupported/missing data never falls
         /// back to another numerical algorithm.

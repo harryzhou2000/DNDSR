@@ -5,8 +5,8 @@ namespace DNDS::CFV
 {
     namespace R = Runtime;
     PolynomialSamplingPlan::PolynomialSamplingPlan(VariationalReconstructionPlan reconstruction,
-                                                   const R::Array<index> &cells, const R::Array<real> &points)
-        : _reconstruction(std::move(reconstruction))
+                                                   const R::Array<index> &cells, const R::Array<real> &points, bool cacheDerivatives)
+        : _reconstruction(std::move(reconstruction)), _cacheDerivatives(cacheDerivatives)
     {
         auto geometry = _reconstruction.Metrics().AcquireRead();
         Validate();
@@ -17,7 +17,7 @@ namespace DNDS::CFV
                               "polynomial sampling input shape/placement mismatch");
         const int n = _reconstruction.NRecDOF();
         _cells = R::Array<index>(R::RowLayout::Dense(cells.RowCount(), 1));
-        _basis = R::Array<real>(R::RowLayout::Dense(cells.RowCount(), n * (n + 1)));
+        _basis = R::Array<real>(R::RowLayout::Dense(cells.RowCount(), n * (_cacheDerivatives ? n + 1 : 1)));
         auto cellRead = cells.Read();
         auto cellWrite = _cells.Write();
         auto pointRead = points.Read(), momentRead = _reconstruction._data->moments.Read();
@@ -38,8 +38,8 @@ namespace DNDS::CFV
             snapshot(iPoint, 0) = iCell;
             _needsGhost |= iCell >= _reconstruction.Metrics().NumCell();
             polynomial.Derivatives(full, p, geom.GetCellCent(iCell), geom.cells(iCell, 7));
-            Eigen::Map<Eigen::MatrixXd> result(basis[iPoint].data(), n + 1, n);
-            result = full.rightCols(n);
+            Eigen::Map<Eigen::MatrixXd> result(basis[iPoint].data(), _cacheDerivatives ? n + 1 : 1, n);
+            result = full.topRows(_cacheDerivatives ? n + 1 : 1).rightCols(n);
             for (int mode = 0; mode < n; ++mode)
                 result(0, mode) -= moment(iCell, mode + 1);
         }
@@ -51,7 +51,7 @@ namespace DNDS::CFV
         const index components = mean.Width(), n = _reconstruction.NRecDOF();
         _reconstruction.Metrics().ValidateField(mean, components);
         _reconstruction.Metrics().ValidateField(coefficients, components * n);
-        DNDS_check_throw_info(derivative >= 0 && derivative <= n && output.GetDevice() == R::Device::Host() &&
+        DNDS_check_throw_info(derivative >= 0 && derivative <= (_cacheDerivatives ? n : 0) && output.GetDevice() == R::Device::Host() &&
                                   !output.Layout().IsVariable() && output.RowCount() == Size() &&
                                   output.Layout().Width() == components,
                               "polynomial sample output shape/placement or derivative mismatch");
@@ -70,7 +70,7 @@ namespace DNDS::CFV
         for (index iPoint = 0; iPoint < Size(); ++iPoint)
         {
             const index iCell = ids(iPoint, 0);
-            const Eigen::Map<const Eigen::MatrixXd> values(basis[iPoint].data(), n + 1, n);
+            const Eigen::Map<const Eigen::MatrixXd> values(basis[iPoint].data(), _cacheDerivatives ? n + 1 : 1, n);
             for (index component = 0; component < components; ++component)
             {
                 real value = derivative == 0 ? u(iCell, component) : 0;

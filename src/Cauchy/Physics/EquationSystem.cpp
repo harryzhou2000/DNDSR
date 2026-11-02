@@ -1,5 +1,6 @@
 #include "Cauchy/Physics/EquationSystem.hpp"
 #include "Cauchy/Config/SimulationConfig.hpp"
+#include <Eigen/LU>
 
 namespace DNDS::Cauchy
 {
@@ -24,17 +25,59 @@ namespace DNDS::Cauchy
         for (const auto &block : _schema.blocks)
             DNDS_check_throw_info(state.Block(block.name).Width() == index(block.components.size()), "equation component count differs");
     }
+    FlowCharacteristics EquationSystem::PrepareCharacteristics(const FlowState &left, const FlowState &right, const Vector3 &faceNormal) const
+    {
+        const real rl = std::sqrt(left[0]), rr = std::sqrt(right[0]);
+        Eigen::Vector3d velocity;
+        for (int d = 0; d < 3; ++d)
+            velocity[d] = (left[1 + d] / rl + right[1 + d] / rr) / (rl + rr);
+        const real enthalpy = ((left[4] + _gas.Pressure(left)) / rl + (right[4] + _gas.Pressure(right)) / rr) / (rl + rr);
+        const real soundSquared = (_gas.gamma - 1) * (enthalpy - .5 * velocity.squaredNorm());
+        DNDS_check_throw_info(std::isfinite(soundSquared) && soundSquared > 0, "invalid mean-state characteristic sound speed");
+        const real sound = std::sqrt(soundSquared);
+        const Eigen::Vector3d normal{faceNormal[0], faceNormal[1], faceNormal[2]};
+        const Eigen::Vector3d tangent = normal.unitOrthogonal(), second = normal.cross(tangent);
+        Eigen::Matrix<real, 5, 5> matrix;
+        matrix.col(0) << 1, velocity, .5 * velocity.squaredNorm();
+        matrix.col(1) << 0, tangent, velocity.dot(tangent);
+        matrix.col(2) << 0, second, velocity.dot(second);
+        matrix.col(3) << 1, velocity + sound * normal, enthalpy + sound * velocity.dot(normal);
+        matrix.col(4) << 1, velocity - sound * normal, enthalpy - sound * velocity.dot(normal);
+        FlowCharacteristics result;
+        Eigen::Map<Eigen::Matrix<real, 5, 5>> inverse(result.inverse.data()), forward(result.forward.data());
+        inverse = matrix;
+        forward = matrix.inverse();
+        // Near Tmin the physical eigenbasis can become numerically singular.
+        // A limiter may use the valid componentwise basis instead; never
+        // change physical EOS/wave speeds or weaken CFV's inverse validation.
+        const auto identity = Eigen::Matrix<real, 5, 5>::Identity();
+        if (!forward.allFinite() || !(forward * inverse).isApprox(identity, 1e-11) || !(inverse * forward).isApprox(identity, 1e-11))
+        {
+            forward.setIdentity();
+            inverse.setIdentity();
+            result.componentwiseFallback = true;
+        }
+        return result;
+    }
     PreparedRiemannData EquationSystem::PrepareRiemann(const Riemann::RiemannFlux &flux,
                                                        const Riemann::AcousticState &left, const Riemann::AcousticState &right,
                                                        const FlowState &leftMean, const FlowState &rightMean,
+                                                       const Vector3 &normal, const Vector3 &gridVelocity) const
+    {
+        return PrepareRiemann(flux, left, right, PrepareFluxState(leftMean), PrepareFluxState(rightMean), normal, gridVelocity);
+    }
+    PreparedRiemannData EquationSystem::PrepareRiemann(const Riemann::RiemannFlux &flux,
+                                                       const Riemann::AcousticState &left, const Riemann::AcousticState &right,
+                                                       const Riemann::AcousticState &leftMeanData, const Riemann::AcousticState &rightMeanData,
                                                        const Vector3 &normal, const Vector3 &gridVelocity) const
     {
         PreparedRiemannData data{};
         data.required = flux.RequiredInputs();
         if (!data.required.meanStates)
             return data;
-        data.leftMean = PrepareFluxState(leftMean);
-        data.rightMean = PrepareFluxState(rightMean);
+        data.leftMean = leftMeanData;
+        data.rightMean = rightMeanData;
+        const auto &leftMean = leftMeanData.flow.conservative, &rightMean = rightMeanData.flow.conservative;
         const auto velocity = [](const FlowState &state)
         { Vector3 value; for (int d=0;d<3;++d) value[d]=state[1+d]/state[0]; return value; };
         const auto dot = [](const Vector3 &a, const Vector3 &b)

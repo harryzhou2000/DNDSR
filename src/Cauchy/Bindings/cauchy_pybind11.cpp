@@ -29,6 +29,7 @@ PYBIND11_MODULE(cauchy_pybind11, m)
         .def_property_readonly("step", [](const C::Domain &domain)
                                { return domain.Epoch().acceptedStep; })
         .def_property_readonly("face_fallbacks", &C::Domain::LastFaceFallbacks)
+        .def_property_readonly("positivity", &C::Domain::LastPositivity, "Last accepted trial: reconstruction cell-stage activations, minimum beta, stage activations, minimum alpha, componentwise characteristic fallbacks.")
         .def("residual", [](C::Domain &domain)
              {
                  const DNDS::CFV::FVField *value;

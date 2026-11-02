@@ -12,7 +12,9 @@ namespace DNDS::Cauchy
         Extrapolate,
         Farfield,
         SlipWall,
-        NoSlipWall
+        NoSlipWall,
+        Analytic,
+        DoubleMachBottom
     };
     /// Resolved numerical BC, independent of mesh storage and time scheduling.
     /// Construction validates names; a kernel receives plain parameters.
@@ -23,12 +25,14 @@ namespace DNDS::Cauchy
         Vector3 velocity{};
         real temperature = 1;
         bool isothermal = false;
+        FlowProfileSettings profile;
+        FlowState prescribedPrimitive{};
         /// Physical face value for reconstruction/gradient input. Wall normal
         /// is outward from the interior parent. Extrapolation leaves U unchanged.
-        FlowState FaceValue(const PerfectGas &gas, const FlowState &inside, const Vector3 &normal) const;
+        FlowState FaceValue(const PerfectGas &gas, const FlowState &inside, const Vector3 &normal, const Vector3 &point = {}, real time = 0) const;
         /// Riemann exterior state. Wall velocity is prescribed; this initial
         /// fixed-grid implementation does not imply ALE geometric conservation.
-        FlowState Exterior(const PerfectGas &gas, const FlowState &inside, const Vector3 &normal) const;
+        FlowState Exterior(const PerfectGas &gas, const FlowState &inside, const Vector3 &normal, const Vector3 &point = {}, real time = 0) const;
     };
     class BoundarySystem
     {

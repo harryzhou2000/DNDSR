@@ -1,0 +1,13 @@
+{
+  "defaults":{
+    "equation":{"system":"compressible","eos":"perfectGas","transport":"NewtonianFourier","viscosity":0.005,"prandtl":0.72},
+    "mesh":{"file":"data/mesh/CylinderB1.cgns","dimension":2,"boundaryIds":{"FAR":3,"WALL":2}},
+    "initialPrimitive":[1,1,0,0,17.857142857142858],
+    "initialProfile":{"kind":"cylinderWake","perturbation":0.001},
+    "boundaries":{"3":{"kind":"farfield","primitive":[1,1,0,0,17.857142857142858]},"2":{"kind":"noSlipWall"}},
+    "numerics":{"reconstruction":"variational","flux":"Roe_M9","limiter":"none","reconstructionIterations":8,
+      "cfv":{"maxOrder":3,"intOrder":5,"jacobiRelax":0.7,"boundaryDerivativeWeights":[1,0,0,0]}}
+  },
+  "time":{"method":"ssprk3","dt":0.01,"cfl":0.5,"finalTime":200,"wallSeconds":3500,"maxRetries":6},
+  "output":{"prefix":"data/cauchy-p3/cylinder_re200/run","interval":0,"historyInterval":20,"forceZones":[2]}
+}

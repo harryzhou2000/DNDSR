@@ -3,6 +3,18 @@
 #include "Cauchy/Config/SimulationConfig.hpp"
 
 namespace C = DNDS::Cauchy;
+TEST_CASE("Cauchy partial analytic boundary profile receives nested schema defaults")
+{
+    const auto config = C::SimulationConfig::Resolve({{"defaults", {{"boundaries", {{"7", {{"kind", "analytic"}, {"profile", {{"kind", "doubleMachReflection"}}}}}}}}}}, 1);
+    const auto &profile = config.Domains()[0].settings.boundaries.at("7").profile;
+    CHECK(profile.kind == "doubleMachReflection");
+    CHECK(profile.strength == 5);
+    CHECK(profile.period == 10);
+    CHECK_THROWS(C::SimulationConfig::Resolve({{"defaults", {{"mesh", {{"boundaryIds", {{"FAR", 1}}}}}}}}, 1));
+    CHECK(C::SimulationConfig::Resolve(C::Json::object(), 1).Output().hdfDeflateLevel == 0);
+    CHECK_THROWS(C::SimulationConfig::Resolve({{"output", {{"hdfDeflateLevel", 10}}}}, 1));
+    CHECK_THROWS(C::SimulationConfig::Resolve({{"output", {{"hdfDeflateLevel", -1}}}}, 1));
+}
 TEST_CASE("Cauchy root resolves profiles overrides CLI and condition defaults with provenance")
 {
     const auto input = C::Json::parse(R"json({

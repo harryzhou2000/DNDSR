@@ -107,7 +107,7 @@ namespace DNDS::Cauchy
         const MPIInfo mpi(_fv.Metrics().Communicator());
         auto serializer = std::make_shared<Serializer::SerializerH5>(mpi);
         serializer->OpenFile(path, false);
-        serializer->WriteInt("cauchy_format", 2);
+        serializer->WriteInt("cauchy_format", 3);
         serializer->WriteString("resolved_config", resolved.dump());
         serializer->WriteString("domain_name", _name);
         serializer->WriteReal("accepted_time", _time);
@@ -120,6 +120,7 @@ namespace DNDS::Cauchy
         Runtime::WriteArray(envelope->coordinates, serializer, "mesh_coordinates", mpi);
         Runtime::WriteArray(envelope->periodicTransforms, serializer, "periodic_transforms", mpi);
         Runtime::WriteArray(Flow().Owned(), serializer, "flow", mpi);
+        Runtime::WriteArray(_fv.ReconstructionGuess(*_workspace).Owned(), serializer, "reconstruction_guess", mpi);
         serializer->CloseFile();
     }
     void Domain::ReadCheckpoint(const std::string &path, const Json &resolved)
@@ -141,8 +142,22 @@ namespace DNDS::Cauchy
         auto coordinates = Runtime::ReadArray<real>(serializer, "mesh_coordinates", mpi);
         auto transforms = Runtime::ReadArray<real>(serializer, "periodic_transforms", mpi);
         auto flow = Runtime::ReadArray<real>(serializer, "flow", mpi);
+        std::optional<Runtime::Array<real>> reconstruction;
+        if (version == 3)
+            reconstruction.emplace(Runtime::ReadArray<real>(serializer, "reconstruction_guess", mpi));
         serializer->CloseFile();
-        int valid = version == 2 && name == _name && Json::parse(config, nullptr, false) == resolved && std::isfinite(time) && time >= 0 && step >= 0 &&
+        auto storedConfig = Json::parse(config, nullptr, false);
+        // Earlier Cauchy archives supplied only manual Riemann correction
+        // scalars. Preserve that numerical behavior when the new option is
+        // absent; loading under automatic stencils still rejects explicitly.
+        if (storedConfig.is_object() && storedConfig.contains("domains") && storedConfig["domains"].is_array())
+            for (auto &domain : storedConfig["domains"])
+            {
+                const Json::json_pointer pointer("/settings/numerics/riemann");
+                if (domain.contains(pointer) && domain.at(pointer).is_object() && !domain.at(pointer).contains("useStencil"))
+                    domain.at(pointer)["useStencil"] = false;
+            }
+        int valid = (version == 2 || version == 3) && name == _name && storedConfig == resolved && std::isfinite(time) && time >= 0 && step >= 0 &&
                     ids.RowCount() == _fv.Metrics().NumCell() && ids.Layout().Width() == 1 && flow.RowCount() == _fv.Metrics().NumCell() && flow.Layout().Width() == 5;
         MPI::LocalStage(mpi, [&]
                         {
@@ -164,9 +179,20 @@ namespace DNDS::Cauchy
                     write.View()(iCell, j) = read.View()(iCell, j);
         }
         DNDS_check_throw_info(_fv.Admissible(trial), "Cauchy restart contains inadmissible states");
+        if (!reconstruction)
+        {
+            // Format2 predates persistent P3 warm starts. Its means remain
+            // readable, but finite-sweep continuation uses a cold initial guess.
+            reconstruction.emplace(_fv.ReconstructionGuess(*_workspace).Owned().Layout());
+            auto write = reconstruction->Write();
+            const auto output = write.View<Runtime::UniformTableRows>();
+            for (index iCell = 0; iCell < output.RowCount(); ++iCell)
+                for (index j = 0; j < output.RowSize(iCell); ++j)
+                    output(iCell, j) = 0;
+        }
         StateEpoch epoch;
         epoch.acceptedStep = uint64_t(step);
-        PublishTrial(time, epoch);
+        PublishTrial(time, epoch, &*reconstruction);
         _nextTrial = 0;
     }
 }

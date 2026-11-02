@@ -42,11 +42,13 @@ namespace DNDS::Cauchy
     {
         std::string file;
         int dimension = 2;
+        std::array<real, 3> periodicLengths{0, 0, 0};
         std::map<std::string, int> boundaryIds;
         DNDS_DECLARE_CONFIG(MeshSettings)
         {
             DNDS_FIELD(file, "CGNS input path; an injected mesh needs no file");
             DNDS_FIELD(dimension, "Geometric dimension, independent of flow component count");
+            DNDS_FIELD(periodicLengths, "Translation from PERIODIC_n to its donor; zero disables that direction");
             config.field_schema(&T::boundaryIds, "boundaryIds", "Explicit CGNS boundary name to integer zone",
                                 []() -> Json
                                 { return {{"type", "object"}, {"additionalProperties", {{"type", "integer"}}}}; });
@@ -55,13 +57,15 @@ namespace DNDS::Cauchy
     struct RiemannSettings
     {
         real fixScale = 1, incrementScale = 1, dLambda = 0, referenceMach = .1, pressureStencilMin = 1e300;
+        bool useStencil = true;
         DNDS_DECLARE_CONFIG(RiemannSettings)
         {
             DNDS_FIELD(fixScale, "Entropy and H-correction scale");
             DNDS_FIELD(incrementScale, "Roe contact dissipation scale");
-            DNDS_FIELD(dLambda, "Explicit transverse H-correction signal estimate");
+            DNDS_FIELD(dLambda, "Transverse H-correction signal floor; exact scalar input when useStencil is false");
             DNDS_FIELD(referenceMach, "Positive AUSM+-up reference Mach cutoff");
-            DNDS_FIELD(pressureStencilMin, "AUSMPW+ explicit stencil minimum; large value selects one-dimensional factor");
+            DNDS_FIELD(pressureStencilMin, "AUSMPW+ stencil pressure upper bound; exact scalar input when useStencil is false");
+            DNDS_FIELD(useStencil, "Supply cell-face-cell wave/pressure stencils to fluxes that use them; false keeps the explicit scalar inputs");
         }
         Riemann::FluxSettings KernelSettings() const { return {dLambda, fixScale, incrementScale, referenceMach, pressureStencilMin}; }
     };
@@ -69,6 +73,12 @@ namespace DNDS::Cauchy
     {
         std::string reconstruction = "gradient", gradient = "leastSquares", flux = "rusanov", limiter = "none";
         int reconstructionIterations = 8;
+        real reconstructionTolerance = 0;
+        bool characteristicLimiter = true, faceFallback = true;
+        bool reconstructionBoundaryFromPolynomial = true;
+        bool positivity = false;
+        real temperatureFloor = 1e-12;
+        real positivityBetaCutoff = 1e-3;
         real densityFloor = 1e-12, pressureFloor = 1e-12;
         CFV::ReconstructionSettings cfv;
         RiemannSettings riemann;
@@ -79,10 +89,32 @@ namespace DNDS::Cauchy
             DNDS_FIELD(flux, "Numerical inviscid flux family");
             DNDS_FIELD(limiter, "none or WBAP; positivity is checked separately");
             DNDS_FIELD(reconstructionIterations, "Fixed local VR sweeps per residual");
-            DNDS_FIELD(densityFloor, "Strict positive density admissibility floor");
-            DNDS_FIELD(pressureFloor, "Strict positive pressure admissibility floor");
+            DNDS_FIELD(reconstructionTolerance, "Relative Jacobi update tolerance; zero uses the fixed sweep count");
+            DNDS_FIELD(characteristicLimiter, "Use equation-provided cell-mean face characteristics for 3WBAP");
+            DNDS_FIELD(faceFallback, "Fall back to the cell mean at inadmissible face values; disable for non-PP accuracy studies");
+            DNDS_FIELD(reconstructionBoundaryFromPolynomial, "Project current face polynomial through BC each VR sweep; false uses mean-based boundary values");
+            DNDS_FIELD(positivity, "Mean-preserving reconstruction and conservative SSPRK flux-blend PP");
+            DNDS_FIELD(temperatureFloor, "Minimum temperature enforced through the equation's internal-energy bound");
+            DNDS_FIELD(positivityBetaCutoff, "Set numerically tiny reconstruction beta to zero; matches legacy's mean fallback");
+            DNDS_FIELD(densityFloor, "Positive inclusive density admissibility floor");
+            DNDS_FIELD(pressureFloor, "Positive inclusive pressure admissibility floor for the initial perfect-gas equation");
             config.field_section(&T::cfv, "cfv", "Independent mathematical CFV configuration");
             config.field_section(&T::riemann, "riemann", "Numerical flux correction controls, independent of EOS");
+        }
+    };
+    struct FlowProfileSettings
+    {
+        std::string kind = "constant";
+        real strength = 5, period = 10;
+        std::array<real, 3> center{5, 5, 0};
+        real perturbation = 0;
+        DNDS_DECLARE_CONFIG(FlowProfileSettings)
+        {
+            DNDS_FIELD(kind, "constant, isentropicVortex, doubleMachReflection, or cylinderWake");
+            DNDS_FIELD(strength, "Isentropic vortex strength; five is the standard non-PP vortex");
+            DNDS_FIELD(period, "Periodic vortex box length");
+            DNDS_FIELD(center, "Initial vortex center");
+            DNDS_FIELD(perturbation, "Localized transverse initial wake perturbation amplitude");
         }
     };
     struct BoundarySettings
@@ -91,13 +123,15 @@ namespace DNDS::Cauchy
         std::array<real, 5> primitive{1, 0, 0, 0, 1};
         std::array<real, 3> velocity{0, 0, 0};
         real temperature = 1;
+        FlowProfileSettings profile;
         DNDS_DECLARE_CONFIG(BoundarySettings)
         {
-            DNDS_FIELD(kind, "extrapolate, farfield, slipWall, or noSlipWall");
+            DNDS_FIELD(kind, "extrapolate, farfield, slipWall, noSlipWall, analytic, or doubleMachBottom");
             DNDS_FIELD(thermal, "Wall thermal law: adiabatic or isothermal");
             DNDS_FIELD(primitive, "Farfield rho,u,v,w,p; three velocities on any geometry");
             DNDS_FIELD(velocity, "Prescribed stationary-boundary wall velocity");
             DNDS_FIELD(temperature, "Positive isothermal wall temperature");
+            config.field_section(&T::profile, "profile", "Space/time input for analytic boundary values");
         }
     };
     struct DomainSettings
@@ -107,6 +141,7 @@ namespace DNDS::Cauchy
         MeshSettings mesh;
         NumericsSettings numerics;
         std::array<real, 5> initialPrimitive{1, 0, 0, 0, 1};
+        FlowProfileSettings initialProfile;
         std::map<std::string, BoundarySettings> boundaries;
         DNDS_DECLARE_CONFIG(DomainSettings)
         {
@@ -115,6 +150,7 @@ namespace DNDS::Cauchy
             config.field_section(&T::mesh, "mesh", "Mesh input");
             config.field_section(&T::numerics, "numerics", "Discrete operators");
             DNDS_FIELD(initialPrimitive, "Constant initial rho,u,v,w,p");
+            config.field_section(&T::initialProfile, "initialProfile", "Quadrature-averaged initial physical field");
             config.field_map_of<BoundarySettings>(&T::boundaries, "boundaries", "Boundary-zone ID to condition");
         }
     };
@@ -123,21 +159,37 @@ namespace DNDS::Cauchy
         std::string method = "ssprk3";
         real dt = 1e-3;
         index steps = 1;
+        real finalTime = 0, cfl = 0, wallSeconds = 0;
+        real steadyTolerance = 0;
+        index steadyMinSteps = 100;
+        int maxRetries = 0;
         DNDS_DECLARE_CONFIG(TimeSettings)
         {
             DNDS_FIELD(method, "Coordinated physical-time method");
             DNDS_FIELD(dt, "Fixed positive physical timestep");
             DNDS_FIELD(steps, "Nonnegative accepted step target");
+            DNDS_FIELD(finalTime, "Positive physical-time target; zero uses the step target");
+            DNDS_FIELD(cfl, "Positive CFL enables adaptive global stepping, capped by dt");
+            DNDS_FIELD(wallSeconds, "Collective graceful wall stop; zero disables it");
+            DNDS_FIELD(maxRetries, "Maximum timestep halvings after a rejected candidate");
+            DNDS_FIELD(steadyTolerance, "Relative accepted-state residual target; zero means physical transient");
+            DNDS_FIELD(steadyMinSteps, "Minimum accepted steps before a steady stop");
         }
     };
     struct OutputSettings
     {
         std::string prefix = "cauchy";
         index interval = 1;
+        index historyInterval = 1;
+        int hdfDeflateLevel = 0;
+        std::vector<int> forceZones;
         DNDS_DECLARE_CONFIG(OutputSettings)
         {
             DNDS_FIELD(prefix, "Output file prefix");
             DNDS_FIELD(interval, "Accepted-step snapshot interval; zero disables periodic output");
+            DNDS_FIELD(historyInterval, "CSV diagnostics cadence in accepted steps");
+            DNDS_FIELD(hdfDeflateLevel, "VTKHDF compression level 0..9; uncompressed is the initial portable baseline");
+            DNDS_FIELD(forceZones, "Boundary zones on which pressure and viscous body force are integrated");
         }
     };
     struct DomainConfig

@@ -20,16 +20,25 @@ namespace DNDS::Cauchy
         Algebra::DofBundle _accepted, _trial;
         CFV::FVField _residual, _initial;
         std::shared_ptr<FiniteVolume::Workspace> _workspace;
+        std::shared_ptr<FiniteVolume::Workspace> _observationWorkspace;
+        std::optional<CFV::FVField> _observationResidual;
         Runtime::EagerEngine _engine;
         Runtime::ExecutionStream _stream;
+        mutable std::optional<AuxiliaryValues> _timeAuxiliary;
+        mutable std::optional<Runtime::TransferBinding> _timeMeanHalo;
         StateEpoch _epoch;
         StateEpoch _trialEpoch;
         uint64_t _nextTrial = 0;
         real _time = 0, _trialTime = 0;
         bool _trialReady = false;
         index _lastFallbacks = 0;
-        void UpdateStage(real dt, real historyWeight, real stageWeight);
-        void PublishTrial(real time, StateEpoch epoch);
+        bool _positivity = false;
+        real _lastAlpha = 1, _lastBeta = 1;
+        index _lastAlphaCells = 0, _lastBetaCells = 0;
+        index _lastCharacteristicFallbacks = 0;
+        void UpdateStage(real dt, real historyWeight, real stageWeight, real stageTime);
+        void PublishTrial(real time, StateEpoch epoch, const Runtime::Array<real> *reconstructionGuess = nullptr);
+        void EvaluateObservation();
 
     public:
         Domain(std::string name, ssp<Geom::UnstructuredMesh> mesh, const DomainSettings &settings);
@@ -44,7 +53,8 @@ namespace DNDS::Cauchy
         real Time() const { return _time; }
         const StateEpoch &Epoch() const { return _epoch; }
         index LastFaceFallbacks() const { return _lastFallbacks; }
-        real StableStep(real cfl) const { return _fv.StableStep(Flow(), cfl); }
+        std::array<real, 5> LastPositivity() const { return {real(_lastBetaCells), _lastBeta, real(_lastAlphaCells), _lastAlpha, real(_lastCharacteristicFallbacks)}; }
+        real StableStep(real cfl) const;
         /// Build an SSPRK3 candidate at this accepted time. Domain ranks enter
         /// together. Inadmissible stages fail collectively without changing the
         /// accepted field/clock. dt may be rejected by the caller and retried.
@@ -61,9 +71,15 @@ namespace DNDS::Cauchy
         /// explicitly if it must outlive that operation. Invalidates any
         /// prepared trial because the reconstruction/trial workspace is reused.
         const CFV::FVField &Residual();
+        /// Collective diagnostics of the accepted state. Recomputes its RHS;
+        /// no state/time update. Returns mass, energy, rho/p minima, residual L2,
+        /// force xyz, VR sweeps/update, density L1/L2/Linf analytic errors, Tmin.
+        std::array<real, 14> Diagnostics(const DomainSettings &settings, const std::vector<int> &forceZones);
+        void WriteVisualization(const std::string &prefix, int hdfDeflateLevel = 0);
         /// Initial restart envelope: exact config, partition, persistent cell
         /// ordering, primary cell geometry/topology and boundary zones. Native
-        /// Array I/O writes the flow allocation directly, preserving layouts.
+        /// Array I/O writes flow and polynomial initial guess directly,
+        /// preserving layouts and fixed-sweep continuation.
         /// Per-cell mesh metadata is recorded separately for exact validation.
         /// Changed partitions/restart remapping belong to a later IO package.
         void WriteCheckpoint(const std::string &path, const Json &resolved) const;

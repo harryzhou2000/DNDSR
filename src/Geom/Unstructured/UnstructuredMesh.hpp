@@ -315,6 +315,16 @@ namespace DNDS::Geom
             const tFGetName &vectorNamesPoint,
             const tFGetVecData &vectorDataPoint,
             double t, MPI_Comm commDup);
+        /// Per-call settings avoid mutating the shared mesh for independent
+        /// output consumers. The historical overload retains its ABI.
+        void PrintParallelVTKHDFDataArray(
+            std::string fname, std::string seriesName,
+            int arraySiz, int vecArraySiz, int arraySizPoint, int vecArraySizPoint,
+            const tFGetName &names, const tFGetData &data,
+            const tFGetName &vectorNames, const tFGetVecData &vectorData,
+            const tFGetName &namesPoint, const tFGetData &dataPoint,
+            const tFGetName &vectorNamesPoint, const tFGetVecData &vectorDataPoint,
+            double t, MPI_Comm commDup, const HDF5OutSetting *settings);
         void PrintMeshCGNS(std::string fname, const t_FBCID_2_Name &fbcid2name, const std::vector<std::string> &allNames);
         void SetHDF5OutSetting(size_t chunkSiz, int deflateLevel, bool coll_on_data, bool coll_on_meta)
         {

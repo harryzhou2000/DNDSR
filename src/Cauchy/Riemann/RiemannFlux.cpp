@@ -247,6 +247,15 @@ namespace DNDS::Cauchy::Riemann
         return {true, true, linearization, _solver != Solver::Rusanov, linearization,
                 _solver == Solver::HLLC, AUSM(_solver)};
     }
+    bool RiemannFlux::UsesTransverseSignal() const
+    {
+        return _solver == Solver::Roe_M6 || _solver == Solver::Roe_M8 || _solver == Solver::Roe_M9 ||
+               _solver == Solver::HLLEP || _solver == Solver::HLLEP_V1;
+    }
+    bool RiemannFlux::UsesPressureStencil() const
+    {
+        return _solver == Solver::AUSMPWPlus;
+    }
     void RiemannFlux::Validate(const FluxInput &input, const FluxSettings &settings) const
     {
         const auto requirements = RequiredInputs();

@@ -16,7 +16,17 @@ namespace DNDS::Cauchy
                 DNDS_check_throw_info(found != ids.end(), "CGNS boundary name is absent from mesh.boundaryIds: " + name);
                 return found->second;
             };
-            auto owned = Geom::ReadAndDeriveNativeMeshFromCGNSOwned(mpi, domain.settings.mesh.dimension, domain.settings.mesh.file, partition, mapper);
+            std::optional<Geom::NativePeriodicImportOptions> periodic;
+            if (domain.settings.mesh.periodicLengths != std::array<real, 3>{0, 0, 0})
+            {
+                periodic.emplace();
+                for (int d = 0; d < 3; ++d)
+                {
+                    periodic->frames.translation[d + 1].map().setZero();
+                    periodic->frames.translation[d + 1].map()[d] = domain.settings.mesh.periodicLengths[d];
+                }
+            }
+            auto owned = Geom::ReadAndDeriveNativeMeshFromCGNSOwned(mpi, domain.settings.mesh.dimension, domain.settings.mesh.file, partition, mapper, periodic);
             Geom::PrepareMeshOptions prepare;
             prepare.buildSerialOut = false;
             prepare.reorderCells = 1;
@@ -70,6 +80,7 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(valid, "invalid coordinated Cauchy timestep");
         MPI_Allreduce(MPI_IN_PLACE, limits, 2, MPI_DOUBLE, MPI_MIN, _placement.Control());
         DNDS_check_throw_info(limits[0] == -limits[1], "simulation ranks requested different timesteps");
+        std::string failure;
         for (auto &domain : _domains)
             if (domain)
                 try
@@ -79,9 +90,10 @@ namespace DNDS::Cauchy
                                                             "domain was advanced outside its Simulation; use the coordinated frontend"); });
                     domain->PrepareStep(dt);
                 }
-                catch (...)
+                catch (const std::exception &exception)
                 {
                     valid = 0;
+                    failure = exception.what();
                 }
         MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, _placement.Control());
         if (!valid)
@@ -89,7 +101,7 @@ namespace DNDS::Cauchy
             for (auto &domain : _domains)
                 if (domain)
                     domain->DiscardStep();
-            DNDS_check_throw_info(false, "Cauchy candidate rejected; simulation clock unchanged");
+            DNDS_check_throw_info(false, "Cauchy candidate rejected; simulation clock unchanged: " + failure);
         }
         // Commit is serialized and collectively preflighted inside each domain.
         // External debug writers/aliases must be released before this call.
