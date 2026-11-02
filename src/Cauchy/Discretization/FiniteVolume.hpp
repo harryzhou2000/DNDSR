@@ -42,10 +42,15 @@ namespace DNDS::Cauchy
         struct Origin
         {
             std::shared_ptr<const void> owner;
-            uint64_t ownedIdentity, ghostIdentity, ownedVersion, ghostVersion, ownedShape, ghostShape;
+            // Allocation identity alone does not identify a row view: distinct
+            // ArrayStorage objects can share one allocation at different offsets.
+            Runtime::ArrayStorage::Shared ownedStorage, ghostStorage;
+            uint64_t ownedVersion, ghostVersion, ownedShape, ghostShape;
             real time;
             std::array<bool, 7> present{};
-            std::array<uint64_t, 7> identities{}, versions{}, shapes{};
+            std::array<Runtime::ArrayStorage::Shared, 7> storage{};
+            std::array<Runtime::ArrayStorage::Shared, 3> ghosts{};
+            std::array<uint64_t, 7> versions{}, shapes{};
         };
         std::optional<Origin> _origin;
     };

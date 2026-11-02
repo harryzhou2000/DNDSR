@@ -13,6 +13,14 @@ scan visits `[core][noncore]`, without permuting physical arrays or communicatio
 mappings. `Apply(Core)` acquires only owned input; All and HaloDependent require
 completed ghost input. Output buffers must be distinct from inputs and matrix
 storage. Array allocation or shape replacement invalidates the fixed stencil.
+Bindings retain the exact `ArrayStorage`, including its payload range and shape
+metadata. Allocation identity alone is insufficient: two disjoint views can
+share an allocation and its mutation epoch. Replacing a bound handle with such
+a view also requires rebuilding the workspace. These O(1) checks run at wrapper
+entry, outside numerical loops. Ordinary shallow handle copies retain the same
+storage and remain valid. Auxiliary provenance uses the same storage pins plus
+state/output versions and time; cell auxiliary halo writes may refresh values,
+but may not replace the bound ghost storage.
 Fill finite coefficients before use; the low-level action does not rescan every
 coefficient or input value on each matrix-vector multiplication.
 

@@ -68,15 +68,15 @@ namespace DNDS::Cauchy
           _diagonal(R::RowLayout::Dense(_pattern->partition->owned, DiagonalWidth(components, diagonal))),
           _inverse(_diagonal.Layout()), _offDiagonal(Counts(_pattern->columns), components)
     {
-        _diagonalIdentity = _diagonal.Identity();
+        _diagonalStoragePin = _diagonal.SharedStorage();
         _diagonalShape = _diagonal.ShapeVersion();
-        _offDiagonalIdentity = _offDiagonal.Values().Identity();
+        _offDiagonalStoragePin = _offDiagonal.Values().SharedStorage();
     }
     void LinearProblemContext::ValidateMatrix() const
     {
         Layout();
-        DNDS_check_throw_info(_diagonal.Identity() == _diagonalIdentity && _diagonal.ShapeVersion() == _diagonalShape &&
-                                  _offDiagonal.Values().Identity() == _offDiagonalIdentity,
+        DNDS_check_throw_info(_diagonal.SharedStorage() == _diagonalStoragePin && _diagonal.ShapeVersion() == _diagonalShape &&
+                                  _offDiagonal.Values().SharedStorage() == _offDiagonalStoragePin,
                               "linear matrix allocation or shape changed");
     }
     void LinearProblemContext::ValidateField(const Field &field) const

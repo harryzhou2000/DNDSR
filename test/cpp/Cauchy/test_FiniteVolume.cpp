@@ -14,6 +14,59 @@ namespace C = DNDS::Cauchy;
 namespace R = DNDS::Runtime;
 namespace A = DNDS::Algebra;
 static DNDS::MPIInfo mpi;
+TEST_CASE("Auxiliary provenance and persistent workspaces reject a different row view of the same allocation")
+{
+    const auto mesh = CauchyTest::PeriodicQuads(mpi, 4);
+    C::DomainSettings settings;
+    settings.numerics.reconstruction = "constant";
+    const auto equation = C::EquationSystem::Resolve(settings.equation);
+    C::FiniteVolume fv(mesh, settings, equation);
+    auto state = fv.Metrics().BuildField(5), residual = fv.Metrics().BuildField(5);
+    const auto layout = R::RowLayout::Dense(fv.Metrics().NumCell(), 5);
+    const size_t bytes = size_t(fv.Metrics().NumCell()) * 5 * sizeof(double);
+    const auto backing = R::Buffer::Allocate(2 * bytes);
+    auto first = R::Array<double>::FromStorage(layout, backing.Subspan(0, bytes));
+    auto second = R::Array<double>::FromStorage(layout, backing.Subspan(bytes, bytes));
+    {
+        auto a = first.Write();
+        const auto value = equation.Gas().Conservative({1, .3, -.1, .2, 1});
+        for (DNDS::index iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+            for (int j = 0; j < 5; ++j)
+                a.View()(iCell, j) = value[j];
+    }
+    {
+        auto b = second.Write();
+        const auto value = equation.Gas().Conservative({2, .3, -.1, .2, 1.2});
+        for (DNDS::index iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+            for (int j = 0; j < 5; ++j)
+                b.View()(iCell, j) = value[j];
+    }
+    REQUIRE(first.Identity() == second.Identity());
+    REQUIRE(first.Version() == second.Version());
+    REQUIRE(first.ShapeVersion() == second.ShapeVersion());
+    REQUIRE(first.SharedStorage() != second.SharedStorage());
+    state.Owned() = first;
+    fv.Metrics().BindHalo(state).Begin().Wait();
+    C::AuxiliaryRequest request;
+    request.meanThermodynamics = true;
+    auto values = fv.BuildAuxiliaryValues(request);
+    fv.PrepareAuxValues(state, values);
+    auto workspace = fv.BuildWorkspace(state);
+    state.Owned() = second;
+    CHECK_THROWS(fv.ValidateAuxValues(state, values));
+    R::EagerEngine engine;
+    const auto stream = engine.CreateCPUStream();
+    CHECK_THROWS(fv.Evaluate(state, residual, *workspace, engine, stream));
+    fv.PrepareAuxValues(state, values);
+    CHECK_NOTHROW(fv.ValidateAuxValues(state, values));
+    const auto auxLayout = values.meanThermodynamics->Layout();
+    const size_t auxBytes = values.meanThermodynamics->Storage().Bytes();
+    const auto auxBacking = R::Buffer::Allocate(2 * auxBytes);
+    values.meanThermodynamics = R::Array<double>::FromStorage(auxLayout, auxBacking.Subspan(0, auxBytes));
+    fv.PrepareAuxValues(state, values);
+    values.meanThermodynamics = R::Array<double>::FromStorage(auxLayout, auxBacking.Subspan(auxBytes, auxBytes));
+    CHECK_THROWS(fv.ValidateAuxValues(state, values));
+}
 TEST_CASE("Native Cauchy flow5 residual preserves constant state across layouts reconstruction and workers")
 {
     const auto mesh = CFVTest::CartesianHexes(mpi, 3);

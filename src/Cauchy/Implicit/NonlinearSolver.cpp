@@ -14,7 +14,7 @@ namespace DNDS::Cauchy
         ImplicitSettings settings;
         bool positivity;
         MPIInfo mpi;
-        uint64_t stateOwned, stateGhost;
+        R::ArrayStorage::Shared stateOwned, stateGhost;
         CFV::FVField spatial, defect, candidate;
         R::Array<real> inversePseudoTime;
         std::shared_ptr<LinearProblemContext> problem;
@@ -22,7 +22,7 @@ namespace DNDS::Cauchy
         Data(const FiniteVolume &fv, CFV::FVField &state, std::shared_ptr<FiniteVolume::Workspace> work,
              R::EagerEngine &executor, R::ExecutionStream lane, const DomainSettings &controls)
             : discrete(fv), workspace(std::move(work)), engine(&executor), stream(std::move(lane)), settings(controls.implicit),
-              positivity(controls.numerics.positivity), mpi(fv.Metrics().Communicator()), stateOwned(state.Owned().Identity()), stateGhost(state.Ghost().Identity()),
+              positivity(controls.numerics.positivity), mpi(fv.Metrics().Communicator()), stateOwned(state.Owned().SharedStorage()), stateGhost(state.Ghost().SharedStorage()),
               spatial(fv.Metrics().BuildField(state.Owned().Layout())), defect(fv.Metrics().BuildField(state.Owned().Layout())), candidate(fv.Metrics().BuildField(state.Owned().Layout())),
               inversePseudoTime(R::RowLayout::Dense(fv.Metrics().NumCell(), 1)),
               problem(fv.BuildLinearProblem(state, settings.diagonal == "block" ? DiagonalStorage::Block : DiagonalStorage::Entries))
@@ -83,7 +83,7 @@ namespace DNDS::Cauchy
         MPI::LocalStage(data.mpi, [&]
                         {
             data.discrete.Metrics().ValidateField(state, 5); data.discrete.Metrics().ValidateField(source, 5);
-            DNDS_check_throw_info(state.Owned().Identity() == data.stateOwned && state.Ghost().Identity() == data.stateGhost &&
+            DNDS_check_throw_info(state.Owned().SharedStorage() == data.stateOwned && state.Ghost().SharedStorage() == data.stateGhost &&
                                       !Algebra::Detail::Overlaps(state.Owned().Storage(), source.Owned().Storage()) &&
                                       std::isfinite(mass) && mass >= 0 && std::isfinite(rhsScale) && rhsScale > 0 && std::isfinite(time),
                                   "invalid implicit stage state/source/coefficients"); });

@@ -174,16 +174,19 @@ namespace DNDS::Cauchy
             }
         for (auto &write : writes)
             write.reset();
-        AuxiliaryValues::Origin origin{_data, state.Owned().Identity(), state.Ghost().Identity(), state.Owned().Version(), state.Ghost().Version(),
+        AuxiliaryValues::Origin origin{_data, state.Owned().SharedStorage(), state.Ghost().SharedStorage(), state.Owned().Version(), state.Ghost().Version(),
                                        state.Owned().ShapeVersion(), state.Ghost().ShapeVersion(), time};
         for (int k = 0; k < 7; ++k)
             if (arrays[k])
             {
                 origin.present[k] = true;
-                origin.identities[k] = arrays[k]->Identity();
+                origin.storage[k] = arrays[k]->SharedStorage();
                 origin.versions[k] = arrays[k]->Version();
                 origin.shapes[k] = arrays[k]->ShapeVersion();
             }
+        int iGhost = 0;
+        for (const auto *field : {&output.cellSpectralSum, &output.cellWaveJump, &output.cellPressureMinimum})
+            origin.ghosts[iGhost++] = *field ? (*field)->Ghost().SharedStorage() : nullptr;
         output._origin = std::move(origin);
     }
     void FiniteVolume::ValidateAuxValues(const CFV::FVField &state, const AuxiliaryValues &values, real time) const
@@ -196,7 +199,7 @@ namespace DNDS::Cauchy
         const auto ownedRead = state.Owned().Read(), ghostRead = state.Ghost().Read();
         const auto &origin = *values._origin;
         DNDS_check_throw_info(origin.owner.get() == _data.get() && time == origin.time &&
-                                  origin.ownedIdentity == state.Owned().Identity() && origin.ghostIdentity == state.Ghost().Identity() &&
+                                  origin.ownedStorage == state.Owned().SharedStorage() && origin.ghostStorage == state.Ghost().SharedStorage() &&
                                   origin.ownedVersion == state.Owned().Version() && origin.ghostVersion == state.Ghost().Version() &&
                                   origin.ownedShape == state.Owned().ShapeVersion() && origin.ghostShape == state.Ghost().ShapeVersion(),
                               "stale auxiliary state, time or plan");
@@ -207,10 +210,13 @@ namespace DNDS::Cauchy
             if (arrays[k])
             {
                 const auto read = arrays[k]->Read();
-                DNDS_check_throw_info(origin.identities[k] == arrays[k]->Identity() && origin.versions[k] == arrays[k]->Version() && origin.shapes[k] == arrays[k]->ShapeVersion(),
+                DNDS_check_throw_info(origin.storage[k] == arrays[k]->SharedStorage() && origin.versions[k] == arrays[k]->Version() && origin.shapes[k] == arrays[k]->ShapeVersion(),
                                       "auxiliary output values changed");
             }
         }
+        int iGhost = 0;
+        for (const auto *field : {&values.cellSpectralSum, &values.cellWaveJump, &values.cellPressureMinimum})
+            DNDS_check_throw_info(origin.ghosts[iGhost++] == (*field ? (*field)->Ghost().SharedStorage() : nullptr), "auxiliary ghost storage was rebound");
     }
     real FiniteVolume::StableStep(const CFV::FVField &state, const AuxiliaryValues &values, real cfl, real time) const
     {

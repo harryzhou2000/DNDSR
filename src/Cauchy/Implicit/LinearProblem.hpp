@@ -50,7 +50,8 @@ namespace DNDS::Cauchy
         Runtime::Array<real> _diagonal, _inverse;
         Algebra::BlockMatrixStorage _offDiagonal;
         uint64_t _diagonalVersion = 0, _inverseVersion = 0;
-        uint64_t _diagonalIdentity = 0, _diagonalShape = 0, _offDiagonalIdentity = 0;
+        Runtime::ArrayStorage::Shared _diagonalStoragePin, _offDiagonalStoragePin;
+        uint64_t _diagonalShape = 0;
         bool _inverseCurrent = false;
         index _inverseFallbacks = 0;
         struct ILUState;

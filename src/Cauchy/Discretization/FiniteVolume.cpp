@@ -48,7 +48,7 @@ namespace DNDS::Cauchy
         AuxiliaryValues auxiliary;
         std::optional<R::TransferBinding> waveHalo, pressureHalo;
         const Data *owner;
-        uint64_t ownedIdentity, ghostIdentity;
+        R::ArrayStorage::Shared ownedStorage, ghostStorage;
         std::atomic<index> fallbacks{0};
         int iterations = 0;
         real relativeUpdate = 0;
@@ -62,7 +62,7 @@ namespace DNDS::Cauchy
               positivityValues(R::RowLayout::Dense(data.positivitySamples ? data.positivitySamples->Size() : 0, 5)), boundary(data.reconstruction.BuildBoundaryValues(5)),
               gradientBoundary(data.gradient.BuildBoundaryValues(5)), meanHalo(data.metrics.BindHalo(state)),
               coefficientHalo(data.metrics.BindHalo(reconstruction.coefficients)), gradientHalo(data.metrics.BindHalo(gradient)), owner(&data),
-              ownedIdentity(state.Owned().Identity()), ghostIdentity(state.Ghost().Identity()), characteristic(data.reconstruction.BuildFaceTransform(0, 5))
+              ownedStorage(state.Owned().SharedStorage()), ghostStorage(state.Ghost().SharedStorage()), characteristic(data.reconstruction.BuildFaceTransform(0, 5))
         {
             Algebra::Fill(reconstruction.coefficients, 0.);
             Algebra::Fill(reconstruction.temporary, 0.);
@@ -289,7 +289,7 @@ namespace DNDS::Cauchy
         Metrics().ValidateField(state, 5);
         Metrics().ValidateField(residual, 5);
         DNDS_check_throw_info(work.owner == _data.get() && stream.Context().device == R::Device::Host() &&
-                                  state.Owned().Identity() == work.ownedIdentity && state.Ghost().Identity() == work.ghostIdentity,
+                                  state.Owned().SharedStorage() == work.ownedStorage && state.Ghost().SharedStorage() == work.ghostStorage,
                               "foreign FV workspace, rebound field, or unavailable execution backend");
         DNDS_check_throw_info(!Algebra::Detail::Overlaps(state.Owned().Storage(), residual.Owned().Storage()) &&
                                   !Algebra::Detail::Overlaps(state.Ghost().Storage(), residual.Owned().Storage()),
