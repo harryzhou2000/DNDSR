@@ -721,6 +721,12 @@ TEST_CASE("Native block LU supports empty owners and counts guarded inverse fall
     zero.Factorize();
     R::Array<DNDS::real> rhs0(R::RowLayout::Dense(0, 5)), middle0(R::RowLayout::Dense(0, 5)), output0(R::RowLayout::Dense(0, 5));
     CHECK_NOTHROW(zero.Solve(rhs0, middle0, output0));
+    for (const std::vector<DNDS::index> &ends : {std::vector<DNDS::index>{0}, std::vector<DNDS::index>{0, 0}})
+    {
+        CHECK_NOTHROW(zero.Factorize(ends));
+        CHECK(zero.FactorsCurrent());
+        CHECK_NOTHROW(zero.Solve(rhs0, middle0, output0));
+    }
 
     auto symbolic = std::make_shared<Direct::SerialSymLUStructure>(g_mpi, 2);
     std::vector<std::vector<DNDS::index>> twoRows(2);

@@ -105,7 +105,7 @@ namespace DNDS::Direct
                     for (index j = 0; j < source.BlockNumber(iCell); ++j)
                         target(iCell, j) = source(iCell, j);
                 Detail::NativeFactorView<real> factor(_symbolic, target, false, &fallbacks);
-                if (pivotEnds.empty())
+                if (pivotEnds.empty() || !_symbolic->Num())
                     factor.InPlaceDecompose();
                 else
                 {
@@ -113,7 +113,7 @@ namespace DNDS::Direct
                     index begin = 0;
                     for (auto end : pivotEnds)
                     {
-                        if (end > begin || !_symbolic->Num())
+                        if (end > begin)
                             factor.DecomposeRange(begin, end);
                         begin = end;
                     }
