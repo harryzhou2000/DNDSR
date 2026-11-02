@@ -1454,6 +1454,12 @@ TEST_CASE("A rank-local Riemann stencil setting rejects collectively before opti
     C::FiniteVolume fv(mesh, settings, C::EquationSystem::Resolve(settings.equation));
     auto state = fv.Metrics().BuildField(5);
     CHECK_THROWS_WITH_AS(fv.BuildWorkspace(state), doctest::Contains("Riemann stencil capability differs"), std::exception);
+    // Explicitly providing the same wave buffer everywhere must not hide
+    // different useStencil policies in the numerical flux itself.
+    C::AuxiliaryRequest requested;
+    requested.cellWaveJump = true;
+    CHECK_THROWS_WITH_AS(fv.BuildWorkspace(state, requested), doctest::Contains("Riemann stencil capability differs"), std::exception);
+    CHECK_THROWS_WITH_AS(fv.BuildMeanWorkspace(state), doctest::Contains("Riemann stencil capability differs"), std::exception);
 }
 TEST_CASE("Cauchy overlap and unsplit orchestration agree across CPU launchers")
 {

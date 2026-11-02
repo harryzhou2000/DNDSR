@@ -275,19 +275,24 @@ namespace DNDS::Cauchy
         MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
                         { Metrics().ValidateField(state, 5); });
         request.meanThermodynamics = true;
-        request.cellWaveJump = request.cellWaveJump || (_data->settings.numerics.riemann.useStencil && _data->flux.UsesTransverseSignal());
-        request.cellPressureMinimum = request.cellPressureMinimum || (_data->settings.numerics.riemann.useStencil && _data->flux.UsesPressureStencil());
+        const bool wave = _data->settings.numerics.riemann.useStencil && _data->flux.UsesTransverseSignal();
+        const bool pressure = _data->settings.numerics.riemann.useStencil && _data->flux.UsesPressureStencil();
+        request.cellWaveJump = request.cellWaveJump || wave;
+        request.cellPressureMinimum = request.cellPressureMinimum || pressure;
         // Agree resolved channels before constructing any differing bindings.
         // One small setup reduction; no additional check in the RHS hot path.
         const bool channels[]{meanOnly, request.meanThermodynamics, request.faceSpectralRadius, request.faceWaveJump,
-                              request.facePressureMinimum, request.cellSpectralSum, request.cellWaveJump, request.cellPressureMinimum};
-        int flags[16]{};
-        for (int j = 0; j < 8; ++j)
+                              request.facePressureMinimum, request.cellSpectralSum, request.cellWaveJump, request.cellPressureMinimum, wave, pressure};
+        int flags[20]{};
+        for (int j = 0; j < 10; ++j)
         {
             flags[2 * j] = int(channels[j]);
             flags[2 * j + 1] = -int(channels[j]);
         }
-        MPI_Allreduce(MPI_IN_PLACE, flags, 16, MPI_INT, MPI_MIN, Metrics().Communicator());
+        MPI_Allreduce(MPI_IN_PLACE, flags, 20, MPI_INT, MPI_MIN, Metrics().Communicator());
+        // Equal requested buffers cannot mask different numerical policies:
+        // one rank may ignore a stencil that another rank uses in its flux.
+        DNDS_check_throw_info(flags[16] == -flags[17] && flags[18] == -flags[19], "Riemann stencil capability differs between domain ranks");
         for (int j = 0; j < 8; ++j)
             DNDS_check_throw_info(flags[2 * j] == -flags[2 * j + 1], "FV workspace mode or auxiliary channels differ between domain ranks");
         auto work = std::make_shared<Workspace>(*_data, state, meanOnly);
