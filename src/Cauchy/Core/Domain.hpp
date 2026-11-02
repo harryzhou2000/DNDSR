@@ -38,10 +38,14 @@ namespace DNDS::Cauchy
         bool _restoreReconstruction = false;
         mutable std::optional<AuxiliaryValues> _timeAuxiliary;
         mutable std::optional<Runtime::TransferBinding> _timeMeanHalo;
+        PhysicalTimePositivitySettings _timePP;
+        int _timeCompressionPower = 1;
+        std::shared_ptr<FiniteVolume::MeanWorkspace> _timePPWorkspace;
+        std::optional<CFV::FVField> _timePPResidual;
         StateEpoch _epoch;
         StateEpoch _trialEpoch;
         uint64_t _nextTrial = 0;
-        real _time = 0, _trialTime = 0;
+        real _time = 0, _trialTime = 0, _trialDt = 0, _lastAcceptedDt = 0;
         bool _trialReady = false;
         index _lastFallbacks = 0;
         bool _positivity = false, _steady = false;
@@ -52,6 +56,7 @@ namespace DNDS::Cauchy
         void PublishTrial(real time, StateEpoch epoch, const Runtime::Array<real> *reconstructionGuess = nullptr);
         void EvaluateObservation();
         void InitializeImplicit(const DomainSettings &settings, const TimeSettings &time, const ssp<Geom::UnstructuredMesh> &mesh);
+        void ConfigureTimeStep(const TimeSettings &time, int compressionPower);
         void PrepareImplicitStep(real dt);
         void PreserveReconstructionGuess();
         void EvaluateImplicitRate(CFV::FVField &state, CFV::FVField &rate, FiniteVolume::Workspace &workspace, real time, int stage);
@@ -68,6 +73,9 @@ namespace DNDS::Cauchy
         CFV::FVField &Flow() { return _accepted.Block("flow"); }
         const CFV::FVField &Flow() const { return _accepted.Block("flow"); }
         real Time() const { return _time; }
+        /// Actual last committed physical step, including retry halving. Zero
+        /// for steady/fresh state or an older restart without this information.
+        real PreviousTimeStep() const { return _lastAcceptedDt; }
         bool Steady() const { return _steady; }
         const StateEpoch &Epoch() const { return _epoch; }
         const std::vector<NonlinearIterationReport> &LastImplicitStages() const { return _lastImplicit; }
@@ -76,6 +84,13 @@ namespace DNDS::Cauchy
         index LastFaceFallbacks() const { return _lastFallbacks; }
         std::array<real, 5> LastPositivity() const { return {real(_lastBetaCells), _lastBeta, real(_lastAlphaCells), _lastAlpha, real(_lastCharacteristicFallbacks)}; }
         real StableStep(real cfl) const;
+        /// Collective physical-step selection before PrepareStep/Advance.
+        /// Uses separate zero-reconstruction scratch, then Euler's growth cap.
+        /// Does not mutate means, accepted VR guess, clock or time history.
+        /// All ranks supply the same finite positive requested step and release
+        /// conflicting views first. Caller advances with the returned dt;
+        /// Advance never silently changes its dt. Steady mode bypasses PP.
+        PhysicalStepLimit LimitPhysicalStep(real requestedDt);
         /// Build the configured time-method candidate at this accepted time. Domain ranks enter
         /// together. Inadmissible stages fail collectively without changing the
         /// accepted field/clock. dt may be rejected by the caller and retried.

@@ -343,6 +343,62 @@ check the resulting state, and perform the field/global reductions themselves.
 An exhausted energy repair returns NaN; it must be rejected, never applied.
 These functions do not yet replace the existing explicit flux-blend path.
 
+`time.positivity.enabled=true` adds Euler's physical-dt bound before any time
+equation or BDF history coefficient is prepared. `relax` defaults0.8, `scale`
+defaults1 and `increaseLimit` defaults2. The compression exponent uses
+`implicit.positivity.compressionPower`, with **compress=1** at physical-step
+selection (the internal/increment path uses compress=2). Defaults leave this
+feature disabled. Steady BDF1 disables it with explicit config provenance.
+
+```text
+fixed/CFL/final-time candidate
+  -> independent mean-only convective RHS
+  -> global Euler admissible fraction
+  -> last-accepted-dt growth cap
+  -> time-equation preparation -> trial/retry -> accepted publication
+```
+
+The source reference is `EulerSolver.hxx`'s `useDtPPLimit` caller and
+`frhsOuter(reconstructionFlag=0)`: the latter explicitly passes
+`RHS_Ignore_Viscosity`. `FiniteVolume::BuildMeanWorkspace/EvaluateMean` matches
+that choice, retaining the configured Riemann, boundary and stencil policies
+with zero reconstruction and viscosity disabled. Its distinct opaque type
+cannot be supplied as the normal nonlinear/VR workspace. It shares immutable
+geometry/plans and allocates scratch once; it never changes the accepted VR
+guess. Unused characteristic matrices, PP samples and low-order blend outputs
+are not allocated there. Normal workspaces also allocate those optional
+channels when their corresponding options are enabled. Workspace mode
+agreement precedes binding setup.
+
+`FiniteVolume::LimitPhysicalStep` consumes explicit ready owned-only means
+and integrated trial residual. It evaluates `dt*scale*R_i/V_i` through the
+existing Euler compression rule and equation-owned thermal constraints, then
+reduces the minimum fraction and trigger count. It neither changes input
+payloads nor needs a ghost read; a real mean halo write may be active.
+Invalid/nonfinite, aliased or rank-inconsistent inputs fail explicitly. A zero
+bound is observable at this low-level interface; the Domain wrapper rejects
+it as no positive representable step. It does not invent another PP rule or
+use the SSPRK Rusanov blend as the physical-dt trial.
+
+The C++/Python caller selects `bound = domain.LimitPhysicalStep(candidate)`
+(`limit_physical_step` in Python), then advances with `bound.dt`. All ranks
+must participate with matching arguments, serialize workspace access and
+release conflicting views. `Advance` retains its exact requested-step
+contract. The production frontend does this after CFL/final-time capping and
+before `Simulation::Advance`. Later retry halvings can only reduce that bound.
+CSV `time_pp_cells/time_pp_alpha/time_growth_limited` describe this selection,
+before retry halving; `dt/retries` describe the actual accepted attempt.
+
+Growth uses the last **committed actual** positive physical step, exposed as
+`PreviousTimeStep()`/`previous_dt`. Preparation, rejection, discard and blocked
+commit cannot change it. A root HDF5 scalar `last_accepted_dt` preserves it for
+all methods, independently of optional BDF history or saved reconstruction.
+Older BDF2 archives use their existing history dt; other older files have an
+unknown zero reference, so the first resumed step has no growth cap. Its next
+accepted step establishes the reference. Nonfinite/negative scalar values,
+values exceeding the physical clock and conflicts with stored BDF history
+reject before accepted-state/history publication. Steady steps retain reference0.
+
 `Physics/ReconstructionPositivity.hpp` also ports the quadrature-common
 density fraction, active Euler scheme-one energy fraction and beta power/safety
 as a pure view-based rule. It accepts an admissible lower-order reference and

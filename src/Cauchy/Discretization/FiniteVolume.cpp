@@ -49,13 +49,14 @@ namespace DNDS::Cauchy
     }
     struct FiniteVolume::Workspace
     {
+        const bool meanOnly;
         CFV::ReconstructionWorkspace reconstruction;
         std::optional<CFV::ReconstructionWorkspace> fluxReconstruction;
         std::optional<R::TransferBinding> fluxHalo;
         bool fluxReady = false;
         CFV::FVField gradient;
         CFV::FVField primitive;
-        CFV::FVField lowResidual;
+        std::optional<CFV::FVField> lowResidual;
         R::Array<real> positivityValues;
         // Only the optional progressive-order policy needs a second sampled
         // polynomial. Buffers are allocated once, never during a PP iteration.
@@ -79,17 +80,21 @@ namespace DNDS::Cauchy
         // Only a handful of physical boundary zones. Kernels accumulate into
         // disjoint atomic counters; no mutable mesh or reconstruction policy.
         std::map<int, std::array<std::atomic<real>, 3>> forces;
-        Workspace(const Data &data, CFV::FVField &state)
-            : reconstruction(data.reconstruction.BuildWorkspace(5, FieldLayout(state.Owned().Layout(), data.metrics.NumCell(), data.reconstruction.NRecDOF() * 5), {1})),
-              gradient(data.metrics.BuildField(5 * data.metrics.Dimension())), primitive(data.metrics.BuildField(5)), lowResidual(data.metrics.BuildField(5)),
-              positivityValues(R::RowLayout::Dense(data.positivitySamples ? data.positivitySamples->Size() : 0, 5)), boundary(data.reconstruction.BuildBoundaryValues(5)),
+        Workspace(const Data &data, CFV::FVField &state, bool meanTrial)
+            : meanOnly(meanTrial), reconstruction(data.reconstruction.BuildWorkspace(5, FieldLayout(state.Owned().Layout(), data.metrics.NumCell(), data.reconstruction.NRecDOF() * 5), {1})),
+              gradient(data.metrics.BuildField(5 * data.metrics.Dimension())), primitive(data.metrics.BuildField(5)),
+              positivityValues(R::RowLayout::Dense(!meanOnly && data.positivitySamples ? data.positivitySamples->Size() : 0, 5)), boundary(data.reconstruction.BuildBoundaryValues(5)),
               gradientBoundary(data.gradient.BuildBoundaryValues(5)), meanHalo(data.metrics.BindHalo(state)),
               coefficientHalo(data.metrics.BindHalo(reconstruction.coefficients)), gradientHalo(data.metrics.BindHalo(gradient)), owner(&data),
-              ownedStorage(state.Owned().SharedStorage()), ghostStorage(state.Ghost().SharedStorage()), characteristic(data.reconstruction.BuildFaceTransform(0, 5))
+              ownedStorage(state.Owned().SharedStorage()), ghostStorage(state.Ghost().SharedStorage())
         {
             Algebra::Fill(reconstruction.coefficients, 0.);
             Algebra::Fill(reconstruction.temporary, 0.);
-            if (data.settings.numerics.limiter == "WBAP" || data.settings.numerics.positivity)
+            if (!meanOnly && data.settings.numerics.positivity)
+                lowResidual.emplace(data.metrics.BuildField(5));
+            if (!meanOnly && data.settings.numerics.limiter == "WBAP" && data.settings.numerics.characteristicLimiter)
+                characteristic = data.reconstruction.BuildFaceTransform(0, 5);
+            if (!meanOnly && (data.settings.numerics.limiter == "WBAP" || data.settings.numerics.positivity))
             {
                 // Keep Euler's unlimited warm guess separate from its filtered
                 // flux polynomial. Immutable plans and temporary/scratch rows
@@ -98,17 +103,12 @@ namespace DNDS::Cauchy
                 fluxReconstruction->coefficients = data.metrics.BuildField(reconstruction.coefficients.Owned().Layout());
                 fluxHalo.emplace(data.metrics.BindHalo(fluxReconstruction->coefficients));
             }
-            if (data.settings.numerics.positivity && !data.settings.numerics.positivityCompressToMean)
+            if (!meanOnly && data.settings.numerics.positivity && !data.settings.numerics.positivityCompressToMean)
             {
                 positivityReference.emplace(data.metrics.BuildField(5 * data.reconstruction.NRecDOF()));
                 positivityReferenceValues = R::Array<real>(R::RowLayout::Dense(positivityValues.RowCount(), 5));
                 positivityReferenceDegree = R::Array<int>(R::RowLayout::Dense(data.metrics.NumCell(), 1));
             }
-            const bool wave = data.settings.numerics.riemann.useStencil && data.flux.UsesTransverseSignal();
-            const bool pressure = data.settings.numerics.riemann.useStencil && data.flux.UsesPressureStencil();
-            int stencilFlags[4]{int(wave), -int(wave), int(pressure), -int(pressure)};
-            MPI_Allreduce(MPI_IN_PLACE, stencilFlags, 4, MPI_INT, MPI_MIN, data.metrics.Communicator());
-            DNDS_check_throw_info(stencilFlags[0] == -stencilFlags[1] && stencilFlags[2] == -stencilFlags[3], "Riemann stencil capability differs between domain ranks");
             for (const auto &[zone, condition] : data.settings.boundaries)
                 forces.try_emplace(std::stoi(zone));
         }
@@ -121,6 +121,10 @@ namespace DNDS::Cauchy
                 CopyOwned(reconstruction.coefficients, fluxReconstruction->coefficients);
             fluxReady = true;
         }
+    };
+    struct FiniteVolume::MeanWorkspace
+    {
+        std::shared_ptr<Workspace> work;
     };
     FiniteVolume::FiniteVolume(ssp<Geom::UnstructuredMesh> mesh, const DomainSettings &settings, const EquationSystem &equation)
     {
@@ -260,11 +264,33 @@ namespace DNDS::Cauchy
     const Geom::UnstructuredMesh &FiniteVolume::Mesh() const { return *_data->mesh; }
     std::shared_ptr<FiniteVolume::Workspace> FiniteVolume::BuildWorkspace(CFV::FVField &state, AuxiliaryRequest request) const
     {
-        Metrics().ValidateField(state, 5);
-        auto work = std::make_shared<Workspace>(*_data, state);
+        return BuildWorkspaceImpl(state, request, false);
+    }
+    std::shared_ptr<FiniteVolume::MeanWorkspace> FiniteVolume::BuildMeanWorkspace(CFV::FVField &state) const
+    {
+        return std::make_shared<MeanWorkspace>(MeanWorkspace{BuildWorkspaceImpl(state, {}, true)});
+    }
+    std::shared_ptr<FiniteVolume::Workspace> FiniteVolume::BuildWorkspaceImpl(CFV::FVField &state, AuxiliaryRequest request, bool meanOnly) const
+    {
+        MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
+                        { Metrics().ValidateField(state, 5); });
         request.meanThermodynamics = true;
         request.cellWaveJump = request.cellWaveJump || (_data->settings.numerics.riemann.useStencil && _data->flux.UsesTransverseSignal());
         request.cellPressureMinimum = request.cellPressureMinimum || (_data->settings.numerics.riemann.useStencil && _data->flux.UsesPressureStencil());
+        // Agree resolved channels before constructing any differing bindings.
+        // One small setup reduction; no additional check in the RHS hot path.
+        const bool channels[]{meanOnly, request.meanThermodynamics, request.faceSpectralRadius, request.faceWaveJump,
+                              request.facePressureMinimum, request.cellSpectralSum, request.cellWaveJump, request.cellPressureMinimum};
+        int flags[16]{};
+        for (int j = 0; j < 8; ++j)
+        {
+            flags[2 * j] = int(channels[j]);
+            flags[2 * j + 1] = -int(channels[j]);
+        }
+        MPI_Allreduce(MPI_IN_PLACE, flags, 16, MPI_INT, MPI_MIN, Metrics().Communicator());
+        for (int j = 0; j < 8; ++j)
+            DNDS_check_throw_info(flags[2 * j] == -flags[2 * j + 1], "FV workspace mode or auxiliary channels differ between domain ranks");
+        auto work = std::make_shared<Workspace>(*_data, state, meanOnly);
         work->auxiliary = BuildAuxiliaryValues(request);
         if (work->auxiliary.cellWaveJump)
             work->waveHalo.emplace(Metrics().BindHalo(*work->auxiliary.cellWaveJump));
@@ -343,6 +369,16 @@ namespace DNDS::Cauchy
     }
     void FiniteVolume::Evaluate(CFV::FVField &state, CFV::FVField &residual, Workspace &work,
                                 R::EagerEngine &engine, const R::ExecutionStream &stream, real time) const
+    {
+        EvaluateImpl(state, residual, work, engine, stream, time);
+    }
+    void FiniteVolume::EvaluateMean(CFV::FVField &state, CFV::FVField &residual, MeanWorkspace &work,
+                                    R::EagerEngine &engine, const R::ExecutionStream &stream, real time) const
+    {
+        EvaluateImpl(state, residual, *work.work, engine, stream, time);
+    }
+    void FiniteVolume::EvaluateImpl(CFV::FVField &state, CFV::FVField &residual, Workspace &work,
+                                    R::EagerEngine &engine, const R::ExecutionStream &stream, real time) const
     {
         MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
                         {
@@ -432,7 +468,7 @@ namespace DNDS::Cauchy
             }
         };
         std::optional<R::TransferOperation> firstCoefficientOperation;
-        if (overlap && _data->settings.numerics.reconstruction == "variational")
+        if (!work.meanOnly && overlap && _data->settings.numerics.reconstruction == "variational")
         {
             if (_data->settings.numerics.reconstructionBoundaryFromPolynomial)
                 updateReconstructionBoundary();
@@ -454,14 +490,14 @@ namespace DNDS::Cauchy
             exchange(*work.pressureHalo);
         // Keep the previous unlimited polynomial as the initial guess.
         // Resetting it every stage turns a fixed sweep cap into a spatial error.
-        if (_data->settings.numerics.reconstruction != "variational")
+        if (work.meanOnly || _data->settings.numerics.reconstruction != "variational")
             Algebra::Fill(work.reconstruction.coefficients, 0.);
-        if (_data->settings.numerics.reconstruction == "gradient")
+        if (!work.meanOnly && _data->settings.numerics.reconstruction == "gradient")
         {
             _data->gradient.Evaluate(state, work.gradientBoundary, work.gradient, {1});
             _data->gradient.ConvertToCoefficients(work.gradient, _data->reconstruction, work.reconstruction.coefficients);
         }
-        else if (_data->settings.numerics.reconstruction == "variational")
+        else if (!work.meanOnly && _data->settings.numerics.reconstruction == "variational")
         {
             // Frozen sends and a separate Jacobi/SOR output. Split SOR uses
             // core-first logical order; core never acquires the ghost destination.
@@ -509,7 +545,7 @@ namespace DNDS::Cauchy
                     break;
             }
         }
-        if (_data->settings.numerics.limiter == "WBAP")
+        if (!work.meanOnly && _data->settings.numerics.limiter == "WBAP")
         {
             MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
                             {
@@ -555,9 +591,9 @@ namespace DNDS::Cauchy
                 _data->reconstruction.CommitReconstruction(work.Flux());
             }
         }
-        if (_data->settings.numerics.positivity)
+        if (!work.meanOnly && _data->settings.numerics.positivity)
             LimitReconstructionPPImpl(state, work, false);
-        if (_data->equation.Viscous())
+        if (!work.meanOnly && _data->equation.Viscous())
         {
             // Viscous gradients are gradients of rho,u,v,w,T, not a facewise
             // linearization of conservative gradients. The latter introduces
@@ -593,14 +629,14 @@ namespace DNDS::Cauchy
         }
         std::optional<R::Array<real>::WriteLease> lowWrite;
         R::ArrayView<real, R::AccessBoundsChecks, R::UniformTableRows> lowOutput;
-        if (_data->settings.numerics.positivity)
+        if (work.lowResidual)
         {
-            lowWrite.emplace(work.lowResidual.Owned().Write());
+            lowWrite.emplace(work.lowResidual->Owned().Write());
             lowOutput = lowWrite->View<R::UniformTableRows>();
         }
         std::optional<R::Array<real>::ReadLease> gradOwned, gradGhost;
         FieldView gradients;
-        if (_data->equation.Viscous())
+        if (!work.meanOnly && _data->equation.Viscous())
         {
             gradOwned.emplace(work.gradient.Owned().Read());
             gradGhost.emplace(work.gradient.Ghost().Read());
@@ -628,7 +664,7 @@ namespace DNDS::Cauchy
             auxiliary.cellWaveJump = wave;
         if (work.auxiliary.cellPressureMinimum)
             auxiliary.cellPressureMinimum = pressure;
-        const auto kernel = [rhs, time, lowOutput, produceLow = _data->settings.numerics.positivity,
+        const auto kernel = [rhs, time, lowOutput, produceLow = bool(work.lowResidual), includeViscosity = !work.meanOnly,
                              forces = &work.forces, diagnostics = &work.fallbacks](CFV::ReconstructionRegion region,
                                                                                    const auto &mean, const auto &coefficient, const auto &gradientInput,
                                                                                    const RHSAuxiliaryViews &auxiliaryInput, auto result)
@@ -636,7 +672,7 @@ namespace DNDS::Cauchy
             RHSWriteViews outputs{result, std::nullopt, diagnostics, forces};
             if (produceLow)
                 outputs.lowOrder = lowOutput;
-            rhs.Apply({mean, coefficient, gradientInput, auxiliaryInput}, outputs, region, time);
+            rhs.Apply({mean, coefficient, gradientInput, auxiliaryInput, includeViscosity}, outputs, region, time);
         };
         const auto &fluxCoefficients = FluxReconstruction(work);
         auto operation = engine.ChecksAccess() ? work.FluxHalo().BeginChecked(stream) : work.FluxHalo().BeginScheduled(stream.Context());
@@ -738,8 +774,8 @@ namespace DNDS::Cauchy
     int FiniteVolume::LastReconstructionIterations(const Workspace &work) const { return work.iterations; }
     const CFV::FVField &FiniteVolume::LowOrderResidual(const Workspace &work) const
     {
-        DNDS_check_throw_info(work.owner == _data.get() && _data->settings.numerics.positivity, "low-order residual requires this plan's PP workspace");
-        return work.lowResidual;
+        DNDS_check_throw_info(work.owner == _data.get() && work.lowResidual, "low-order residual requires this plan's PP workspace");
+        return *work.lowResidual;
     }
     const AuxiliaryValues &FiniteVolume::PreparedAuxValues(const Workspace &work) const
     {

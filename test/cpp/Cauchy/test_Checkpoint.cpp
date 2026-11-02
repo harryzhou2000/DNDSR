@@ -5,8 +5,11 @@
 #include "CartesianFixture.hpp"
 #include "DNDS/Runtime/Array/ArrayIO.hpp"
 #include "DNDS/Serializer/SerializerH5.hpp"
+#include "DNDS/MPI/CollectiveStage.hpp"
+#include <hdf5.h>
 #include <filesystem>
 #include <unistd.h>
+#include <limits>
 
 namespace C = DNDS::Cauchy;
 namespace R = DNDS::Runtime;
@@ -155,16 +158,19 @@ TEST_CASE("Implicit restart preserves variable BDF2 history and rebuilds live DI
         if (method == "ditr")
             restored.Advance(.0007); // build an old intermediate binding before replacement
         const auto oldTime = restored.Time();
+        const auto oldDt = restored.PreviousTimeStep();
         const auto oldStep = restored.Epoch().acceptedStep;
         std::optional<R::Array<double>::ReadLease> held;
         if (mpi.rank == 0)
             held.emplace(restored.Flow().Owned().Read());
         CHECK_THROWS(restored.ReadCheckpoint(path, metadata));
         CHECK(restored.Time() == oldTime);
+        CHECK(restored.PreviousTimeStep() == oldDt);
         CHECK(restored.Epoch().acceptedStep == oldStep);
         held.reset();
         restored.ReadCheckpoint(path, metadata);
         CHECK(restored.Time() == source.Time());
+        CHECK(restored.PreviousTimeStep() == .002);
         CHECK(restored.Epoch().acceptedStep == source.Epoch().acceptedStep);
         source.Advance(.0015);
         restored.Advance(.0015);
@@ -172,6 +178,66 @@ TEST_CASE("Implicit restart preserves variable BDF2 history and rebuilds live DI
         for (DNDS::index iCell = 0; iCell < source.Discretization().Metrics().NumCell(); ++iCell)
             for (int j = 0; j < 5; ++j)
                 CHECK(a.View()(iCell, j) == b.View()(iCell, j));
+        Remove({path});
+    }
+}
+TEST_CASE("Restart dt growth reads the accepted scalar and supports files predating it")
+{
+    for (const std::string method : {"bdf2", "trapz"})
+    {
+        const auto path = Path("cauchy-previous-step-" + method);
+        const C::Json metadata{{"test", "physical timestep history"}};
+        C::DomainSettings settings;
+        settings.numerics.reconstruction = "constant";
+        settings.implicit.minIterations = 0;
+        C::TimeSettings time;
+        time.method = method;
+        time.positivity.enabled = true;
+        auto mesh = CauchyTest::PeriodicQuads(mpi, 4);
+        C::Domain source("flow", mesh, settings, time), restored("flow", mesh, settings, time);
+        source.Advance(.001);
+        source.Advance(.002);
+        source.WriteCheckpoint(path, metadata);
+        restored.ReadCheckpoint(path, metadata);
+        CHECK(restored.PreviousTimeStep() == .002);
+        CHECK(restored.LimitPhysicalStep(.006).dt == .004);
+        DNDS::MPI::LocalStage(mpi, [&]
+                              {
+            if (mpi.rank == 0)
+            {
+                const auto file = H5Fopen(path.c_str(), H5F_ACC_RDWR, H5P_DEFAULT);
+                DNDS_check_throw_info(file >= 0, "cannot open legacy-dt test fixture");
+                const auto removed = H5Adelete(file, "last_accepted_dt");
+                H5Fclose(file);
+                DNDS_check_throw_info(removed >= 0, "cannot remove accepted-dt fixture attribute");
+            } });
+        restored.ReadCheckpoint(path, metadata);
+        CHECK(restored.PreviousTimeStep() == (method == "bdf2" ? .002 : 0));
+        CHECK(restored.LimitPhysicalStep(.006).dt == (method == "bdf2" ? .004 : .006));
+        // Nonfinite, impossible-clock and conflicting-history scalar input
+        // must fail before publishing means or changing accepted history.
+        for (const double invalid : {std::numeric_limits<double>::quiet_NaN(), .1, method == "bdf2" ? .001 : -.001})
+        {
+            source.WriteCheckpoint(path, metadata);
+            DNDS::MPI::LocalStage(mpi, [&]
+                                  {
+                if (mpi.rank == 0)
+                {
+                    const auto file = H5Fopen(path.c_str(), H5F_ACC_RDWR, H5P_DEFAULT);
+                    DNDS_check_throw_info(file >= 0, "cannot open invalid-dt test fixture");
+                    const auto attribute = H5Aopen(file, "last_accepted_dt", H5P_DEFAULT);
+                    DNDS_check_throw_info(attribute >= 0, "missing accepted-dt fixture attribute");
+                    const auto written = H5Awrite(attribute, H5T_NATIVE_DOUBLE, &invalid);
+                    H5Aclose(attribute); H5Fclose(file);
+                    DNDS_check_throw_info(written >= 0, "cannot write invalid accepted-dt fixture");
+                } });
+            const auto version = restored.Flow().Owned().Version();
+            const auto previous = restored.PreviousTimeStep(), clock = restored.Time();
+            CHECK_THROWS(restored.ReadCheckpoint(path, metadata));
+            CHECK(restored.Flow().Owned().Version() == version);
+            CHECK(restored.PreviousTimeStep() == previous);
+            CHECK(restored.Time() == clock);
+        }
         Remove({path});
     }
 }

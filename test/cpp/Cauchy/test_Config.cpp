@@ -3,6 +3,28 @@
 #include "Cauchy/Config/SimulationConfig.hpp"
 
 namespace C = DNDS::Cauchy;
+TEST_CASE("Physical timestep PP has explicit validated controls and is disabled by the steady limit")
+{
+    CHECK_FALSE(C::SimulationConfig::Resolve(C::Json::object(), 2).Time().positivity.enabled);
+    C::Json input{{"time", {{"positivity", {{"enabled", true}, {"relax", .7}, {"scale", 1.5}, {"increaseLimit", 1.25}}}}}};
+    const auto config = C::SimulationConfig::Resolve(input, 2);
+    CHECK(config.Time().positivity.enabled);
+    CHECK(config.Time().positivity.relax == .7);
+    CHECK(config.Time().positivity.scale == 1.5);
+    CHECK(config.Time().positivity.increaseLimit == 1.25);
+    input["time"]["steady"] = true;
+    const auto steady = C::SimulationConfig::Resolve(input, 2);
+    CHECK_FALSE(steady.Time().positivity.enabled);
+    CHECK(steady.Provenance().at("/time/positivity/enabled") == "BDF1 steady limit");
+    for (const auto *name : {"relax", "scale", "increaseLimit"})
+    {
+        auto bad = input;
+        bad["time"]["positivity"][name] = 0;
+        CHECK_THROWS(C::SimulationConfig::Resolve(bad, 2));
+    }
+    input["time"]["positivity"]["relax"] = 1.1;
+    CHECK_THROWS(C::SimulationConfig::Resolve(input, 2));
+}
 TEST_CASE("Strict implicit VR acceptance needs an explicit positive reconstruction tolerance")
 {
     C::Json input{{"defaults", {{"implicit", {{"requireConvergedReconstruction", true}}}, {"numerics", {{"reconstruction", "variational"}}}}}};

@@ -4,6 +4,7 @@
 #include "Geom/Unstructured/UnstructuredMesh.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
 #include "DNDS/Runtime/Communication/IdRowTransfer.hpp"
+#include <limits>
 
 namespace DNDS::Cauchy
 {
@@ -302,6 +303,7 @@ namespace DNDS::Cauchy
         serializer->WriteString("metadata_json", metadata.dump());
         serializer->WriteString("domain_name", _name);
         serializer->WriteReal("accepted_time", _time);
+        serializer->WriteReal("last_accepted_dt", _lastAcceptedDt);
         serializer->WriteIndex("accepted_step", index(_epoch.acceptedStep));
         Runtime::WriteArray(CellIds(*this), serializer, "cell_ids", mpi);
         std::optional<MeshEnvelope> envelope;
@@ -327,7 +329,7 @@ namespace DNDS::Cauchy
         serializer->OpenFile(path, true);
         int version = 0;
         std::string config, name;
-        real time = 0;
+        real time = 0, lastDt = 0;
         index step = 0;
         serializer->ReadInt("cauchy_format", version);
         serializer->ReadString("resolved_config", config);
@@ -352,6 +354,8 @@ namespace DNDS::Cauchy
         }
         std::optional<Runtime::Array<real>> reconstruction;
         const auto entries = serializer->ListCurrentPath();
+        if (entries.count("last_accepted_dt"))
+            serializer->ReadReal("last_accepted_dt", lastDt);
         if (entries.count("reconstruction_guess"))
             reconstruction.emplace(Runtime::ReadArray<real>(serializer, "reconstruction_guess", mpi, shard));
         std::optional<Runtime::Array<real>> history;
@@ -362,6 +366,17 @@ namespace DNDS::Cauchy
             history.emplace(Runtime::ReadArray<real, Runtime::FixedRows<5>>(serializer, "history_flow", mpi, shard));
         }
         serializer->CloseFile();
+        // Older BDF2 files carry the last physical dt with their history.
+        // Other old files leave it unknown (zero): the first resumed step has
+        // no growth cap, then its actual accepted dt establishes the reference.
+        if (!entries.count("last_accepted_dt") && history)
+            lastDt = historyDt;
+        DNDS_check_throw_info(std::isfinite(lastDt) && lastDt >= 0, "invalid stored last accepted timestep");
+        if (std::isfinite(time) && time >= 0 && lastDt > time)
+            DNDS_check_throw_info(lastDt - time <= 1024 * std::numeric_limits<real>::epsilon() * std::max(lastDt, time),
+                                  "stored last accepted timestep exceeds the physical clock");
+        if (entries.count("last_accepted_dt") && history)
+            DNDS_check_throw_info(lastDt == historyDt, "stored last accepted timestep conflicts with BDF history");
         auto storedConfig = Json::parse(config, nullptr, false);
         int valid = name == _name && !storedConfig.is_discarded() && CompatibleConfig(storedConfig) == CompatibleConfig(resolved) && std::isfinite(time) && time >= 0 && step >= 0 &&
                     flow.RowCount() == ids.RowCount() && flow.Layout().Width() == 5;
@@ -450,6 +465,7 @@ namespace DNDS::Cauchy
         PublishTrial(time, epoch, &guess);
         if (restoredStepper)
             _timeStepper.swap(restoredStepper);
+        _lastAcceptedDt = lastDt;
         _nextTrial = 0;
     }
 }

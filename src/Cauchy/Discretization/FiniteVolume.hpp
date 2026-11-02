@@ -14,6 +14,15 @@
 
 namespace DNDS::Cauchy
 {
+    /// Explicit result of physical-step selection. Alpha/count describe the PP
+    /// bound before any independent growth cap or subsequent retry halving.
+    struct PhysicalStepLimit
+    {
+        real dt = 0;
+        index limitedCells = 0;
+        real minimumAlpha = 1;
+        bool growthLimited = false;
+    };
     struct AuxiliaryRequest
     {
         bool meanThermodynamics = false;
@@ -70,6 +79,10 @@ namespace DNDS::Cauchy
     {
         RHSFieldView mean, coefficients, primitiveGradient;
         RHSAuxiliaryViews auxiliary;
+        /// Euler's physical-dt trial ignores viscosity while retaining the
+        /// configured boundary/convective flux policy. Gradients may be absent
+        /// when false; normal production residuals keep the default true.
+        bool includeViscosity = true;
     };
     /// Explicit outputs. Diagnostics accumulate across core/dependent calls;
     /// caller initializes them before an evaluation and reduces them afterwards.
@@ -90,6 +103,7 @@ namespace DNDS::Cauchy
 
     public:
         struct Workspace;
+        struct MeanWorkspace;
         /// Copyable immutable read scope for RHS geometry/basis data. Apply is
         /// stateless: no MPI, reconstruction, cache update or hidden counters.
         /// Raw input/output views require retained/declared Array leases and
@@ -122,8 +136,12 @@ namespace DNDS::Cauchy
         const Geom::UnstructuredMesh &Mesh() const;
         /// Additional channels are allocated once and fused into auxiliary
         /// preparation. Implicit consumers request face/cell spectral values;
-        /// explicit consumers retain the minimal default packet.
+        /// explicit consumers retain the minimal default packet. Collective:
+        /// domain ranks must request the same resolved channels/workspace mode.
         std::shared_ptr<Workspace> BuildWorkspace(CFV::FVField &state, AuxiliaryRequest additional = {}) const;
+        /// Separate typed scratch for Euler's zero-reconstruction physical-dt
+        /// trial. It cannot be supplied to a nonlinear reconstruction solve.
+        std::shared_ptr<MeanWorkspace> BuildMeanWorkspace(CFV::FVField &state) const;
         /// Check allocation capability before the first Evaluate. This does not
         /// certify prepared values or input provenance; PreparedAuxValues does.
         void RequireWorkspaceChannels(const Workspace &workspace, AuxiliaryRequest required) const;
@@ -162,6 +180,21 @@ namespace DNDS::Cauchy
         /// serializes residuals on this workspace and coordinates domain errors.
         void Evaluate(CFV::FVField &state, CFV::FVField &residual, Workspace &workspace,
                       Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, real time = 0) const;
+        /// Euler physical-dt trial: configured convective flux/BC/auxiliary
+        /// policy, zero polynomial and viscosity explicitly ignored. No VR,
+        /// WBAP or reconstruction PP. Uses only its independent typed scratch;
+        /// accepted means, clock and the normal VR workspace are unchanged.
+        void EvaluateMean(CFV::FVField &state, CFV::FVField &residual, MeanWorkspace &workspace,
+                          Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, real time = 0) const;
+        /// Collective Euler compress=1 bound from dt*scale*meanResidual/volume.
+        /// Inputs are owned-only CPU flow5 fields; state ghost writes may be
+        /// active. No input mutation, time advance, growth cap or communication
+        /// of payloads. A zero returned dt means no positive admissible bound.
+        /// All ranks enter with matching finite positive dt/scale, relax in
+        /// (0,1], and positive compressionPower. Mean residual must be ready
+        /// and nonaliased with state. Uses the equation's thermal energy bounds.
+        PhysicalStepLimit LimitPhysicalStep(const CFV::FVField &state, const CFV::FVField &meanResidual,
+                                            real dt, real relax, real scale, int compressionPower = 1) const;
         void Initialize(CFV::FVField &state, const FlowProfileSettings &profile, const FlowState &primitive) const;
         /// Volume-normalized L1/L2/Linf error in conservative cell averages.
         std::array<FlowState, 3> Error(const CFV::FVField &state, const FlowProfileSettings &profile, const FlowState &primitive, real time) const;
@@ -192,6 +225,9 @@ namespace DNDS::Cauchy
         void WriteVisualization(const CFV::FVField &state, const Workspace &workspace, const std::string &prefix, real time, int hdfDeflateLevel = 0) const;
 
     private:
+        std::shared_ptr<Workspace> BuildWorkspaceImpl(CFV::FVField &state, AuxiliaryRequest request, bool meanOnly) const;
+        void EvaluateImpl(CFV::FVField &state, CFV::FVField &residual, Workspace &workspace,
+                          Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, real time) const;
         /// Evaluate preserves its preceding WBAP result; the public standalone
         /// projection always starts afresh from the unlimited guess.
         void LimitReconstructionPPImpl(const CFV::FVField &state, Workspace &workspace, bool refresh) const;

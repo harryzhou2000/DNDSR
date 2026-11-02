@@ -11,10 +11,10 @@ import numpy as np
 import pytest
 from mpi4py import MPI
 from DNDSR import DNDS, Geom
-from DNDSR.Cauchy import Domain
+from DNDSR.Cauchy import Domain, PhysicalStepLimit
 
 
-def build_domain(layout="aos", flux="Roe", workers=0, method="ssprk3", steady=False):
+def build_domain(layout="aos", flux="Roe", workers=0, method="ssprk3", steady=False, time_pp=False):
     mpi = DNDS.MPIInfo()
     mpi.setWorld()
     path = Path(__file__).resolve().parents[2] / "data/mesh/Uniform_3x3_wall.cgns"
@@ -29,7 +29,7 @@ def build_domain(layout="aos", flux="Roe", workers=0, method="ssprk3", steady=Fa
         "numerics": {"flux": flux, "cfv": {"maxOrder": 1}},
         "initialPrimitive": primitive,
         "boundaries": {str(zone): {"kind": "farfield", "primitive": primitive} for zone in zones},
-    }, "time": {"method": method, "steady": steady}}
+    }, "time": {"method": method, "steady": steady, "positivity": {"enabled": time_pp}}}
     if method == "ditr":
         config["time"]["ditr"] = {"minIterations": 1}
     return Domain(mesh, json.dumps(config)), primitive
@@ -115,4 +115,36 @@ def test_steady_bdf1_override_keeps_the_physical_clock_frozen():
     domain.advance(.03)
     assert domain.steady and domain.time == 0 and domain.step == 1
     assert len(domain.implicit_stages) == 1 and domain.implicit_stages[0].converged
+    assert domain.previous_dt == 0
     np.testing.assert_allclose(domain.flow.numpy(), before, atol=3e-14)
+
+
+@pytest.mark.mpi
+@pytest.mark.parametrize("method", ["ssprk3", "bdf2"])
+def test_physical_step_selection_retains_state_and_restores_growth_history(tmp_path, method):
+    domain, _ = build_domain(layout="soa", workers=2, method=method, time_pp=True)
+    flow = domain.flow
+    before = flow.numpy().copy()
+    assert domain.previous_dt == 0
+    initial = domain.limit_physical_step(.01)
+    assert isinstance(initial, PhysicalStepLimit)
+    assert initial.dt == .01 and initial.minimum_alpha == 1
+    domain.advance(.001)
+    with flow.read():
+        bound = domain.limit_physical_step(.1)
+    assert bound.dt == .002 and bound.growth_limited
+    assert bound.limited_cells == 0 and bound.minimum_alpha == 1
+    assert domain.previous_dt == .001 and domain.time == .001 and domain.step == 1
+    np.testing.assert_allclose(flow.numpy(), before, atol=3e-14)
+    domain.prepare_step(.003)
+    domain.discard_step()
+    assert domain.previous_dt == .001
+    assert domain.limit_physical_step(.1).dt == .002
+    path = MPI.COMM_WORLD.bcast(str(tmp_path / "time-step.h5") if MPI.COMM_WORLD.rank == 0 else None, root=0)
+    domain.write_checkpoint(path, '{"test":"physical-step-python"}')
+    domain.advance(.004)
+    assert domain.previous_dt == .004
+    domain.read_checkpoint(path, '{"test":"physical-step-python"}')
+    assert domain.previous_dt == .001
+    assert domain.limit_physical_step(.1).dt == .002
+    np.testing.assert_allclose(flow.numpy(), before, atol=3e-14)

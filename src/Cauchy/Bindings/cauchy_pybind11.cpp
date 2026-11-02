@@ -10,6 +10,11 @@ PYBIND11_MODULE(cauchy_pybind11, m)
     namespace C = DNDS::Cauchy;
     namespace R = DNDS::Runtime;
     py::module_::import("DNDSR.CFV");
+    py::class_<C::PhysicalStepLimit>(m, "PhysicalStepLimit", "Explicit physical-step PP result; caller advances with dt. Counts/alpha precede growth capping and retries.")
+        .def_readonly("dt", &C::PhysicalStepLimit::dt)
+        .def_readonly("limited_cells", &C::PhysicalStepLimit::limitedCells)
+        .def_readonly("minimum_alpha", &C::PhysicalStepLimit::minimumAlpha)
+        .def_readonly("growth_limited", &C::PhysicalStepLimit::growthLimited);
     py::class_<C::NonlinearIterationReport>(m, "NonlinearIterationReport", "Read-only snapshot of one implicit stage's convergence and correction counts.")
         .def_readonly("converged", &C::NonlinearIterationReport::converged)
         .def_readonly("iterations", &C::NonlinearIterationReport::iterations)
@@ -40,6 +45,7 @@ PYBIND11_MODULE(cauchy_pybind11, m)
         .def_property_readonly("flow", [](C::Domain &domain)
                                { return R::PythonArray::Share(domain.Flow().Owned()); }, "Shared owned flow Array; follows normal retained-view/access contracts.")
         .def_property_readonly("time", &C::Domain::Time)
+        .def_property_readonly("previous_dt", &C::Domain::PreviousTimeStep, "Last actual committed physical dt; zero for steady/fresh or unknown old restart history.")
         .def_property_readonly("steady", &C::Domain::Steady)
         .def_property_readonly("coupled_iterations", &C::Domain::LastCoupledIterations)
         .def_property_readonly("coupled_target_ratio", &C::Domain::LastCoupledTargetRatio, "Latest original coupled H/I residual ratio; zero for uncoupled time methods.")
@@ -62,6 +68,7 @@ PYBIND11_MODULE(cauchy_pybind11, m)
         .def("commit_step", &C::Domain::CommitStep, py::call_guard<py::gil_scoped_release>())
         .def("discard_step", &C::Domain::DiscardStep)
         .def("stable_step", &C::Domain::StableStep, py::arg("cfl"), py::call_guard<py::gil_scoped_release>())
+        .def("limit_physical_step", &C::Domain::LimitPhysicalStep, py::arg("dt"), py::call_guard<py::gil_scoped_release>(), "Collective configured Euler PP/growth bound, without advancing state or history. All ranks pass the same positive dt and release conflicting views; advance with result.dt.")
         .def("write_checkpoint", [](const C::Domain &domain, const std::string &path, const std::string &resolved, bool reconstruction)
              {
                  C::Json input;

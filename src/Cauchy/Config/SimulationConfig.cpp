@@ -177,6 +177,12 @@ namespace DNDS::Cauchy
                                   std::isfinite(relativeTolerance) && relativeTolerance >= 0 && std::isfinite(absoluteTolerance) && absoluteTolerance >= 0,
                               "invalid/unavailable DITR positive-stage-scale controls");
     }
+    void PhysicalTimePositivitySettings::Validate() const
+    {
+        DNDS_check_throw_info(std::isfinite(relax) && relax > 0 && relax <= 1 && std::isfinite(scale) && scale > 0 &&
+                                  std::isfinite(increaseLimit) && increaseLimit >= 1,
+                              "invalid Euler physical timestep positivity/growth controls");
+    }
     void ImplicitSettings::Validate() const
     {
         DNDS_check_throw_info((normOrder == 1 || normOrder == 2) &&
@@ -363,8 +369,15 @@ namespace DNDS::Cauchy
                               "Cauchy requires an available time method, positive dt and nonnegative steps");
         DNDS_check_throw_info(std::isfinite(data->time.steadyTolerance) && data->time.steadyTolerance >= 0 && data->time.steadyMinSteps >= 0, "invalid steady stopping controls");
         data->time.ditr.Validate();
+        data->time.positivity.Validate();
         if (data->time.steady)
         {
+            if (data->time.positivity.enabled)
+            {
+                data->time.positivity.enabled = false;
+                data->root["time"]["positivity"]["enabled"] = false;
+                data->provenance["/time/positivity/enabled"] = "BDF1 steady limit";
+            }
             data->time.method = "bdf1";
             data->time.steps = std::min(index(1), data->time.steps);
             data->time.finalTime = data->time.cfl = 0;

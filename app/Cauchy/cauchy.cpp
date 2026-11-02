@@ -54,12 +54,12 @@ int main(int argc, char **argv)
                     if (!parent.empty()) std::filesystem::create_directories(parent);
                     history.open(output.prefix + "_history.csv");
                     DNDS_check_throw_info(bool(history), "cannot open Cauchy history");
-                    history << "step,time,dt,wall,mass,energy,rho_min,p_min,residual_l2,force_x,force_y,force_z,vr_sweeps,vr_relative_update,rho_error_l1,rho_error_l2,rho_error_linf,temperature_min,face_fallbacks,retries,pp_rec_cells,pp_beta_min,pp_stage_cells,pp_alpha_min,characteristic_fallbacks,implicit_stages,nonlinear_iterations,linear_iterations,implicit_residual_target_ratio,coupled_iterations,coupled_residual_target_ratio,implicit_final_vr_sweeps,implicit_final_vr_update\n" << std::setprecision(17);
+                    history << "step,time,dt,wall,mass,energy,rho_min,p_min,residual_l2,force_x,force_y,force_z,vr_sweeps,vr_relative_update,rho_error_l1,rho_error_l2,rho_error_linf,temperature_min,face_fallbacks,retries,pp_rec_cells,pp_beta_min,pp_stage_cells,pp_alpha_min,characteristic_fallbacks,implicit_stages,nonlinear_iterations,linear_iterations,implicit_residual_target_ratio,coupled_iterations,coupled_residual_target_ratio,implicit_final_vr_sweeps,implicit_final_vr_update,time_pp_cells,time_pp_alpha,time_growth_limited\n" << std::setprecision(17);
                     std::ofstream resolved(output.prefix + "_resolved.json"); resolved << config.Root().dump(2) << '\n';
                 } });
             double baseline = 0;
             bool reached = false, wallStop = false;
-            const auto record = [&](DNDS::real dt, int retries)
+            const auto record = [&](DNDS::real dt, int retries, DNDS::Cauchy::PhysicalStepLimit limit = {})
             {
                 const auto values = domain.Diagnostics(config.Domains()[0].settings, output.forceZones);
                 if (baseline == 0)
@@ -87,7 +87,8 @@ int main(int argc, char **argv)
                         history << ',' << value;
                     history << ',' << domain.LastImplicitStages().size() << ',' << nonlinearIterations << ',' << linearIterations << ',' << implicitRatio
                             << ',' << domain.LastCoupledIterations() << ',' << domain.LastCoupledTargetRatio()
-                            << ',' << implicitFinalVRSweeps << ',' << implicitFinalVRUpdate;
+                            << ',' << implicitFinalVRSweeps << ',' << implicitFinalVRUpdate
+                            << ',' << limit.limitedCells << ',' << limit.minimumAlpha << ',' << limit.growthLimited;
                     history << '\n';
                     history.flush();
                     std::cout << std::setprecision(12) << "Cauchy step " << domain.Epoch().acceptedStep << " time " << domain.Time() << " dt " << dt
@@ -115,6 +116,8 @@ int main(int argc, char **argv)
                 DNDS::real dt = time.cfl > 0 ? std::min(time.dt, domain.StableStep(time.cfl)) : time.dt;
                 if (time.finalTime > 0)
                     dt = std::min(dt, time.finalTime - simulation.Time());
+                const auto limit = time.positivity.enabled ? domain.LimitPhysicalStep(dt) : DNDS::Cauchy::PhysicalStepLimit{dt};
+                dt = limit.dt;
                 int retries = 0;
                 for (;;)
                 {
@@ -133,7 +136,7 @@ int main(int argc, char **argv)
                     }
                 }
                 if (time.steady || domain.Epoch().acceptedStep % uint64_t(output.historyInterval) == 0)
-                    reached = record(time.steady ? 0 : dt, retries);
+                    reached = record(time.steady ? 0 : dt, retries, limit);
                 if (output.interval && domain.Epoch().acceptedStep % uint64_t(output.interval) == 0)
                 {
                     domain.WriteCheckpoint(output.prefix + "_" + std::to_string(domain.Epoch().acceptedStep) + ".h5", config.Root(), output.checkpointReconstruction);

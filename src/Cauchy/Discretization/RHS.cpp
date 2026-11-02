@@ -48,6 +48,7 @@ namespace DNDS::Cauchy
         const auto basis = _read->basis.View<R::TableRows>();
         const int modes = data->reconstruction.NRecDOF(), dim = data->metrics.Dimension();
         const auto &gas = data->equation.Gas();
+        const bool viscous = data->equation.Viscous() && input.includeViscosity;
         const auto &mean = input.mean, &coefficient = input.coefficients, &gradientInput = input.primitiveGradient;
         const auto result = output.residual;
         const bool produceLow = bool(output.lowOrder), hasThermo = bool(input.auxiliary.meanThermodynamics);
@@ -72,7 +73,7 @@ namespace DNDS::Cauchy
         };
         checkField(mean, 5);
         checkField(coefficient, 5 * modes);
-        if (data->equation.Viscous())
+        if (viscous)
             checkField(gradientInput, 5 * dim);
         if (useWave)
             checkField(waveInput, 1);
@@ -114,7 +115,7 @@ namespace DNDS::Cauchy
                         state = Load(mean, cell);
                     }
                     FlowGradient primitiveGradient{};
-                    if (data->equation.Viscous())
+                    if (viscous)
                         for (int component = 0; component < 5; ++component)
                             for (int d = 0; d < dim; ++d)
                                 primitiveGradient[component][d] = gradientInput(cell, component * dim + d);
@@ -157,7 +158,7 @@ namespace DNDS::Cauchy
                 FlowState lowFlux{};
                 if (produceLow)
                     lowFlux = Riemann::Rusanov(leftMeanData, rightMeanData, normal);
-                if (data->equation.Viscous())
+                if (viscous)
                 {
                     auto primitive = gas.Primitive(left.first);
                     auto gradient = left.second;

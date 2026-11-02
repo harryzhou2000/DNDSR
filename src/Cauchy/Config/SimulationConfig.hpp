@@ -296,6 +296,19 @@ namespace DNDS::Cauchy
             DNDS_FIELD(absoluteTolerance, "Per-component absolute outer H/I norm target");
         }
     };
+    struct PhysicalTimePositivitySettings
+    {
+        bool enabled = false;
+        real relax = .8, scale = 1, increaseLimit = 2;
+        void Validate() const;
+        DNDS_DECLARE_CONFIG(PhysicalTimePositivitySettings)
+        {
+            DNDS_FIELD(enabled, "Euler physical dt PP bound from a zero-reconstruction trial before time-equation preparation");
+            DNDS_FIELD(relax, "Euler density/internal-energy relaxation in (0,1]");
+            DNDS_FIELD(scale, "Positive trial-increment multiplier dtPPLimitScale");
+            DNDS_FIELD(increaseLimit, "Maximum timestep growth from the last accepted positive step; at least one");
+        }
+    };
     struct TimeSettings
     {
         std::string method = "ssprk3";
@@ -307,6 +320,7 @@ namespace DNDS::Cauchy
         index steadyMinSteps = 100;
         int maxRetries = 0;
         DITRTimeSettings ditr;
+        PhysicalTimePositivitySettings positivity;
         DNDS_DECLARE_CONFIG(TimeSettings)
         {
             DNDS_FIELD(method, "Coordinated physical-time method");
@@ -320,6 +334,7 @@ namespace DNDS::Cauchy
             DNDS_FIELD(steadyTolerance, "Relative accepted-state residual target; zero means physical transient");
             DNDS_FIELD(steadyMinSteps, "Minimum accepted steps before a steady stop");
             config.field_section(&T::ditr, "ditr", "Coupled U2R2 time equations");
+            config.field_section(&T::positivity, "positivity", "Euler physical timestep positivity/growth policy");
         }
     };
     struct OutputSettings

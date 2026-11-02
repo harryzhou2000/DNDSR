@@ -49,6 +49,7 @@ namespace DNDS::Cauchy
         _equation.ValidateStateSchema(_accepted);
         DNDS_check_throw_info(_fv.Metrics().Dimension() == settings.mesh.dimension, "Cauchy config/mesh dimension differs");
         DNDS_check_throw_info(_fv.Admissible(Flow()), "Cauchy initial means violate density or minimum-temperature internal-energy bounds");
+        ConfigureTimeStep(time, settings.implicit.positivity.compressionPower);
         InitializeImplicit(settings, time, mesh);
     }
     real Domain::StableStep(real cfl) const
@@ -166,6 +167,7 @@ namespace DNDS::Cauchy
         _lastAlphaCells = _lastBetaCells = 0;
         _lastCharacteristicFallbacks = 0;
         _trialEpoch = _epoch;
+        _trialDt = _steady ? 0 : dt;
         _trialEpoch.trial = ++_nextTrial;
         // The polynomial guess is numerical state for explicit fixed-sweep VR
         // too. Preserve it before either time driver can overwrite the trial.
@@ -197,6 +199,7 @@ namespace DNDS::Cauchy
         PublishTrial(_trialTime, epoch);
         if (_timeStepper)
             _timeStepper->Commit();
+        _lastAcceptedDt = _trialDt;
     }
     void Domain::PublishTrial(real time, StateEpoch epoch, const R::Array<real> *reconstructionGuess)
     {
