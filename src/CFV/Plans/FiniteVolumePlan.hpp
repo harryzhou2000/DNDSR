@@ -262,13 +262,15 @@ namespace DNDS::CFV
         /// writes invalidate this publication; no matrix validation in hot loops.
         void FinalizeFaceTransform(FaceCharacteristicTransform &transform) const;
         /// One local sweep. Caller refreshes mean/coefficient halos first.
-        /// Jacobi writes temporary then copies owned output; SOR follows local
-        /// cell order. No implicit MPI, allocation in the cell loop, or callbacks.
+        /// Both methods write temporary then publish owned output. SOR follows
+        /// logical cell order using new local predecessors and old other values.
+        /// No implicit MPI, allocation in the cell loop, or callbacks.
         void DoReconstructionIter(const FVField &mean, ReconstructionWorkspace &work,
                                   const ReconstructionBoundaryValues &boundary) const;
-        /// Writes selected rows of temporary only; Jacobi reads input without
-        /// modifying it. SOR uses work.coefficients as its separate working
-        /// owned iterate, and input's ghost rows as the frozen remote iterate.
+        /// Writes selected rows of temporary only; input is immutable for both
+        /// methods. SOR reads already produced local predecessors from temporary.
+        /// Split SOR automatically uses core-first logical ordering; All uses
+        /// that same ordering when settings.coreFirst is enabled.
         /// Core acquires no input ghost leases. Finish both phases before
         /// CommitReconstruction; never update a live direct MPI send buffer.
         void DoReconstructionIterTo(const FVField &mean, const FVField &input, ReconstructionWorkspace &work,

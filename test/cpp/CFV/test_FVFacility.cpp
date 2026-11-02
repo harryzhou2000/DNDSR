@@ -8,6 +8,7 @@
 #include "Geom/IO/NativeMeshCGNS.hpp"
 #include "Geom/Unstructured/UnstructuredMeshHelpers.hpp"
 #include "Geom/Interface/BoundaryInterface.hpp"
+#include "Geom/Access/EntityWorkPartition.hpp"
 #include "../Geom/InterfaceFixture.hpp"
 
 using namespace DNDS;
@@ -595,6 +596,81 @@ TEST_CASE("SVD removes unconstrained modes and invalid settings fail collectivel
         settings.maxOrder = 4;
     CHECK_THROWS(C::VariationalReconstructionPlan::ConstructRecCoeff(metrics, settings));
     CHECK_NOTHROW(C::VariationalReconstructionPlan::ConstructRecCoeff(metrics));
+}
+
+TEST_CASE("Two-buffer SOR preserves its MPI input and split automatically selects core-first order")
+{
+    NativePeriodicImportOptions frames;
+    frames.frames.translation[1].map() = tPoint{10, 0, 0};
+    frames.frames.translation[2].map() = tPoint{0, 10, 0};
+    PartitionOptions partition;
+    partition.metisSeed = 42;
+    AutoAppendName2ID names;
+    auto mesh = ReadNativeMeshFromCGNS(mpi, 2, MeshPath("IV10U_10.cgns"), partition, [&](const std::string &zone)
+                                       { return names(zone); }, frames);
+    mesh->PrepareNativeTopology();
+    C::ReconstructionSettings settings;
+    settings.SORInstead = true;
+    settings.maxOrder = 3;
+    settings.jacobiRelax = .73;
+    const auto metrics = C::FiniteVolumePlan::ConstructMetrics(mesh, settings.intOrder);
+    const auto split = C::VariationalReconstructionPlan::ConstructRecCoeff(metrics, settings);
+    settings.coreFirst = true;
+    const auto full = C::VariationalReconstructionPlan::ConstructRecCoeff(metrics, settings);
+    const auto regions = EntityWorkPartition::CellNodeCell(*mesh);
+    DNDS::index counts[2]{DNDS::index(regions.Core().size()), DNDS::index(regions.HaloDependent().size())};
+    MPI_Allreduce(MPI_IN_PLACE, counts, 2, MPI_INT64_T, MPI_SUM, mpi.comm);
+    CHECK(counts[0] > 0);
+    if (mpi.size > 1)
+        CHECK(counts[1] > 0);
+    for (const auto &shape : {R::RowLayout::Dense(0, 5, 8), R::RowLayout::ColMajor(0, 5, {8, 1}), R::RowLayout::TiledColMajor(0, 5, 32)})
+    {
+        auto mean = metrics.BuildField(shape);
+        const auto coefficientShape = shape.Kind() == R::RowLayoutKind::Table
+                                          ? R::RowLayout::Dense(0, 5 * split.NRecDOF())
+                                      : shape.Kind() == R::RowLayoutKind::ColMajorTable ? R::RowLayout::ColMajor(0, 5 * split.NRecDOF(), {8, 1})
+                                                                                        : R::RowLayout::TiledColMajor(0, 5 * split.NRecDOF(), 32);
+        auto a = split.BuildWorkspace(5, coefficientShape), b = full.BuildWorkspace(5, coefficientShape);
+        const auto boundaryA = split.BuildBoundaryValues(5), boundaryB = full.BuildBoundaryValues(5);
+        CHECK(split.NumBoundaryQuadrature() == 0);
+        {
+            auto u = mean.Owned().Write(), x = a.coefficients.Owned().Write(), y = b.coefficients.Owned().Write();
+            const auto uv = u.View<R::UniformTableRows>(), xv = x.View<R::UniformTableRows>(), yv = y.View<R::UniformTableRows>();
+            for (DNDS::index iCell = 0; iCell < metrics.NumCell(); ++iCell)
+            {
+                const auto id = mesh->OriginalEntityId(EntityKind::Cell, iCell);
+                for (DNDS::index j = 0; j < 5; ++j)
+                    uv(iCell, j) = std::sin(.17 * (id + 1) * (j + 1));
+                for (DNDS::index j = 0; j < xv.RowSize(iCell); ++j)
+                    xv(iCell, j) = yv(iCell, j) = .03 * std::cos(.11 * (id + 1) + j);
+            }
+        }
+        metrics.BindHalo(mean).Begin().Wait();
+        auto haloA = metrics.BindHalo(a.coefficients), haloB = metrics.BindHalo(b.coefficients);
+        for (int iteration = 0; iteration < 3; ++iteration)
+        {
+            haloB.Begin().Wait();
+            full.DoReconstructionIter(mean, b, boundaryB);
+            const auto version = a.coefficients.Owned().Version();
+            // A real direct transfer retains input reads and ghost writes.
+            // Core must neither write that input nor acquire its ghost half.
+            auto transfer = haloA.Begin();
+            split.DoReconstructionIterTo(mean, a.coefficients, a, boundaryA, C::ReconstructionRegion::Core);
+            CHECK(a.coefficients.Owned().Version() == version);
+            transfer.Wait();
+            split.DoReconstructionIterTo(mean, a.coefficients, a, boundaryA, C::ReconstructionRegion::HaloDependent);
+            CHECK(a.coefficients.Owned().Version() == version);
+            split.CommitReconstruction(a);
+            auto x = a.coefficients.Owned().Read(), y = b.coefficients.Owned().Read();
+            const auto xv = x.View<R::UniformTableRows>(), yv = y.View<R::UniformTableRows>();
+            for (DNDS::index iCell = 0; iCell < metrics.NumCell(); ++iCell)
+                for (DNDS::index j = 0; j < xv.RowSize(iCell); ++j)
+                    CHECK(xv(iCell, j) == yv(iCell, j));
+        }
+        auto alias = a;
+        alias.temporary = alias.coefficients;
+        CHECK_THROWS(split.DoReconstructionIterTo(mean, alias.coefficients, alias, boundaryA, C::ReconstructionRegion::Core));
+    }
 }
 
 int main(int argc, char **argv)

@@ -178,7 +178,6 @@ namespace DNDS::Cauchy
         require(s.numerics.gradient == "leastSquares" || s.numerics.gradient == "greenGauss" || s.numerics.gradient == "ggmp", "gradient " + s.numerics.gradient);
         require(s.numerics.limiter == "none" || s.numerics.limiter == "WBAP", "limiter " + s.numerics.limiter);
         require(s.numerics.limiter != "WBAP" || s.numerics.reconstruction != "constant", "WBAP needs polynomial reconstruction");
-        require(!s.numerics.cfv.SORInstead, "Cauchy frozen-iterate reconstruction currently requires Jacobi");
         require(s.numerics.cfv.cacheDiffBase, "Cauchy residual requires cached face basis derivatives");
         for (const auto &[zone, condition] : s.boundaries)
         {

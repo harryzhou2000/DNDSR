@@ -105,9 +105,15 @@ owns reconstruction/primitive-gradient fields and persistent direct MPI bindings
 The CPU residual integrates inviscid flux minus Newtonian/Fourier flux. Viscous
 gradients use primitive `[rho,u,v,w,T]`, including periodic vector transforms;
 they are not recovered by a facewise conservative-gradient linearization.
-Second-order LS/GG/GGMP or Jacobi VR and descending 3WBAP use explicit boundary
+Second-order LS/GG/GGMP or Jacobi/ordered-SOR VR and descending 3WBAP use explicit boundary
 quadrature values. P3 is a cubic polynomial with nominal fourth-order spatial
 accuracy. Each limiter order refreshes neighbor coefficients before the next.
+CPU SOR uses separate immutable input and output buffers. A visited local
+predecessor comes from the output; other neighbors come from the old input.
+The split driver automatically selects logical core-before-dependent ordering,
+prepared once outside the cell loop, while MPI reads the frozen old coefficients.
+Both phases finish before publishing the output. The unsplit CFV API retains
+natural order or explicit core-first order; comparisons must use the same order.
 The perfect-gas equation provides cell-mean characteristic transforms over all
 five flow components. Reconstruction retains its initial guess between stages;
 `reconstructionIterations` is a cap and positive `reconstructionTolerance`

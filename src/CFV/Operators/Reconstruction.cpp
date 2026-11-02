@@ -138,27 +138,14 @@ namespace DNDS::CFV
                                   !Algebra::Detail::Overlaps(input.Ghost().Storage(), work.temporary.Owned().Storage()),
                               "reconstruction output aliases input");
         auto meanOwned = mean.Owned().Read();
-        std::optional<R::Array<real>::ReadLease> meanGhost, recGhost, recOwned;
-        std::optional<R::Array<real>::WriteLease> recWrite;
+        std::optional<R::Array<real>::ReadLease> meanGhost, recGhost;
         if (region != ReconstructionRegion::Core)
         {
             meanGhost.emplace(mean.Ghost().Read());
             recGhost.emplace(input.Ghost().Read());
         }
-        if (Settings().SORInstead)
-            recWrite.emplace(work.coefficients.Owned().Write());
-        else
-            recOwned.emplace(input.Owned().Read());
-        R::ArrayView<const real, R::AccessBoundsChecks, R::UniformTableRows> current;
-        R::ArrayView<real, R::AccessBoundsChecks, R::UniformTableRows> mutableCurrent;
-        if (recWrite)
-        {
-            mutableCurrent = recWrite->View<R::UniformTableRows>();
-            current = {mutableCurrent.data, mutableCurrent.offsets, mutableCurrent.rows,
-                       mutableCurrent.width, mutableCurrent.stride, mutableCurrent.sizes, mutableCurrent.kind};
-        }
-        else
-            current = recOwned->View<R::UniformTableRows>();
+        auto recOwned = input.Owned().Read();
+        const auto current = recOwned.View<R::UniformTableRows>();
         auto nextWrite = work.temporary.Owned().Write();
         auto next = nextWrite.View<R::UniformTableRows>();
         R::PairReadView<real, R::AccessBoundsChecks, R::UniformTableRows> u{meanOwned.View<R::UniformTableRows>(), meanGhost ? meanGhost->View<R::UniformTableRows>() : R::ArrayView<const real, R::AccessBoundsChecks, R::UniformTableRows>{}};
@@ -175,8 +162,13 @@ namespace DNDS::CFV
         const auto rotations = rotationRead.View<R::FixedRows<9>>();
         const auto nextMatrices = Algebra::MakeEigenRowMatrices(next, n, nv);
         const auto currentMatrices = Algebra::MakeEigenRowMatrices(current, n, nv);
-        const auto mutableMatrices = Algebra::MakeEigenRowMatrices(mutableCurrent, n, nv);
+        const R::ArrayView<const real, R::AccessBoundsChecks, R::UniformTableRows> nextRead{
+            next.data, next.offsets, next.rows, next.width, next.stride, next.sizes, next.kind};
+        const auto visitedMatrices = Algebra::MakeEigenRowMatrices(nextRead, n, nv);
         const auto ghostMatrices = Algebra::MakeEigenRowMatrices(ghost, n, nv);
+        const bool coreFirst = region != ReconstructionRegion::All || Settings().coreFirst;
+        const auto position = [&](index iCell)
+        { return coreFirst ? _data->coreFirstPosition[iCell] : iCell; };
         auto compute = [&](index iCell)
         {
             auto output = nextMatrices[iCell];
@@ -186,7 +178,11 @@ namespace DNDS::CFV
                 const index other = neighbors(iEntry, 0);
                 if (other != UnInitIndex)
                 {
-                    const auto otherCoefficients = other < Metrics().NumCell() ? currentMatrices[other] : ghostMatrices[other - Metrics().NumCell()];
+                    // SOR reads completed predecessors from a separate output,
+                    // leaving the whole input immutable for direct MPI sends.
+                    const auto otherCoefficients = other < Metrics().NumCell()
+                                                       ? (Settings().SORInstead && position(other) < position(iCell) ? visitedMatrices[other] : currentMatrices[other])
+                                                       : ghostMatrices[other - Metrics().NumCell()];
                     // Component rotation is independent of spatial derivative
                     // pullback, already included in the prepared B block.
                     // Apply scalar columns directly, then correct vector blocks.
@@ -218,8 +214,6 @@ namespace DNDS::CFV
                         for (index variable = 0; variable < nv; ++variable)
                             output.col(variable).noalias() += Eigen::Map<const Eigen::VectorXd>(injection[iQ].data(), n) * (relax * (bValues(iQ, variable) - u(iCell, variable)));
             }
-            if (_data->settings.SORInstead)
-                mutableMatrices[iCell] = output;
         };
         if (region == ReconstructionRegion::Core || (region == ReconstructionRegion::All && Settings().coreFirst))
             for (auto iCell : _data->workPartition->Core())
@@ -235,8 +229,7 @@ namespace DNDS::CFV
                                                              const ReconstructionBoundaryValues &boundary) const
     {
         DoReconstructionIterTo(mean, work.coefficients, work, boundary);
-        if (!Settings().SORInstead)
-            CommitReconstruction(work);
+        CommitReconstruction(work);
     }
     void VariationalReconstructionPlan::CommitReconstruction(ReconstructionWorkspace &work) const
     {

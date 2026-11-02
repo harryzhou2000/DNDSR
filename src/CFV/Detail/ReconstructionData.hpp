@@ -41,6 +41,8 @@ namespace DNDS::CFV::Detail
         ReconstructionInverseDiagnostics inverseDiagnostics;
         Runtime::Array<real> inverseConditions;
         std::optional<Geom::EntityWorkPartition> workPartition;
+        // Inverse logical order for split SOR. Independent of physical row order.
+        std::vector<index> coreFirstPosition;
         int n;
         Runtime::Array<real> moments;
         Runtime::Array<real> faceBasis;

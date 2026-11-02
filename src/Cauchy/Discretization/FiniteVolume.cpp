@@ -380,8 +380,8 @@ namespace DNDS::Cauchy
         }
         else if (_data->settings.numerics.reconstruction == "variational")
         {
-            // Frozen sends and an out-of-place Jacobi target. Core never
-            // acquires the active ghost destination. SOR is rejected at preflight.
+            // Frozen sends and a separate Jacobi/SOR output. Split SOR uses
+            // core-first logical order; core never acquires the ghost destination.
             for (int iteration = 0; iteration < _data->settings.numerics.reconstructionIterations; ++iteration)
             {
                 // Project the current boundary polynomial onto the physical

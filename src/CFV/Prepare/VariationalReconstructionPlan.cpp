@@ -26,6 +26,13 @@ namespace DNDS::CFV
             const int n = data->n, dim = geometry->dim, degree = settings.maxOrder;
             const Math::TaylorBasis polynomial(dim, degree);
             const index nCell = mesh.NumCell(), nFace = mesh.NumFaceProc();
+            data->coreFirstPosition.resize(nCell);
+            index position = 0;
+            for (auto iCell : data->workPartition->Core())
+                data->coreFirstPosition[iCell] = position++;
+            for (auto iCell : data->workPartition->HaloDependent())
+                data->coreFirstPosition[iCell] = position++;
+            DNDS_check_throw_info(position == nCell, "reconstruction work partition does not cover owned cells");
             auto cellRead = geometry->cell.Read();
             const auto cell = cellRead.View<R::FixedRows<8>>();
             auto faceOffsetRead = geometry->faceOffsets.Read();
