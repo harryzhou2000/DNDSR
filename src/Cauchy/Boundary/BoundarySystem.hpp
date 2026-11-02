@@ -33,6 +33,12 @@ namespace DNDS::Cauchy
         /// Riemann exterior state. Wall velocity is prescribed; this initial
         /// fixed-grid implementation does not imply ALE geometric conservation.
         FlowState Exterior(const PerfectGas &gas, const FlowState &inside, const Vector3 &normal, const Vector3 &point = {}, real time = 0) const;
+        /// Column-major derivative of Exterior with respect to its conservative
+        /// interior state, with branch, normal, prescribed data and time frozen.
+        /// The derivative is one-sided at characteristic/DMR branch switches;
+        /// callers linearize a selected physical state, not the switch itself.
+        /// This model-owned BC derivative is separate from Riemann dissipation.
+        std::array<real, 25> ExteriorJacobian(const PerfectGas &gas, const FlowState &inside, const Vector3 &normal, const Vector3 &point = {}, real time = 0) const;
     };
     class BoundarySystem
     {

@@ -36,6 +36,39 @@ TEST_CASE("Equation-owned physical flux Jacobian differentiates all three moment
     }
 }
 
+TEST_CASE("Physical boundary Jacobians match conservative exterior-state derivatives")
+{
+    for (double gamma : {1.4, 1.67})
+        for (const std::string kind : {"extrapolate", "farfield", "slipWall", "noSlipWall", "analytic", "doubleMachBottom"})
+        {
+            const C::PerfectGas gas{gamma, 1, .02, .72};
+            C::BoundarySettings settings;
+            settings.kind = kind;
+            settings.primitive = {2, -.3, .2, .1, 1.4};
+            settings.velocity = {.04, -.02, .03};
+            C::BoundarySystem boundaries({{"7", settings}}, gas);
+            const auto &boundary = boundaries.At(7);
+            for (const C::Vector3 normal : {C::Vector3{1, 0, 0}, C::Vector3{.6, .8, 0}})
+                for (double speed : {-4., -.2, .2, 4.})
+                    for (double x : {.1, .5})
+                    {
+                        const auto inside = gas.Conservative({1.3, speed * normal[0] - .1 * normal[1], speed * normal[1] + .1 * normal[0], .15, 1.1});
+                        const C::Vector3 point{x, .2, .3};
+                        const auto matrix = boundary.ExteriorJacobian(gas, inside, normal, point, .2);
+                        for (int column = 0; column < 5; ++column)
+                        {
+                            auto plus = inside, minus = inside;
+                            const double h = 1e-6 * std::max(1., std::abs(inside[column]));
+                            plus[column] += h;
+                            minus[column] -= h;
+                            const auto a = boundary.Exterior(gas, plus, normal, point, .2);
+                            const auto b = boundary.Exterior(gas, minus, normal, point, .2);
+                            for (int row = 0; row < 5; ++row)
+                                CHECK(matrix[column * 5 + row] == doctest::Approx((a[row] - b[row]) / (2 * h)).epsilon(3e-8).scale(1));
+                        }
+                    }
+        }
+}
 TEST_CASE("Thermal PP uses an internal-energy temperature bound including shifted energy references")
 {
     const C::ThermalBounds bounds{.1, -10, -std::numeric_limits<double>::infinity()};

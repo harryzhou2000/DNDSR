@@ -379,3 +379,13 @@ the ordering changes the finite-sweep method. CPU inline and worker launchers
 use the same orchestration. Tests compare two retained-guess residual evaluations
 with viscosity, H-correction and WBAP enabled, for both Jacobi and SOR, including
 the resulting reconstruction coefficients.
+
+`BoundaryCondition::ExteriorJacobian` returns the conservative derivative of
+the selected physical exterior-state branch. It covers extrapolation, prescribed
+analytic states, slip reflection, moving-wall velocity reflection, all four
+farfield characteristic-count branches, and either DMR-bottom branch. The
+normal, prescribed data, point and time are frozen; derivatives of branch
+switching decisions are not implied. It is separate from the Riemann flux and
+from viscous wall-temperature treatment. Centered-difference tests use the
+physical `Exterior` function as an independent oracle, away from switch points,
+with oblique normals, two gases and four inward/outward speed regimes.

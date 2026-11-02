@@ -88,6 +88,74 @@ namespace DNDS::Cauchy
         }
         return gas.Conservative(exterior);
     }
+    std::array<real, 25> BoundaryCondition::ExteriorJacobian(const PerfectGas &gas, const FlowState &inside, const Vector3 &normal, const Vector3 &point, real time) const
+    {
+        std::array<real, 25> result{};
+        if (kind == BoundaryKind::Analytic)
+            return result;
+        if (kind == BoundaryKind::DoubleMachBottom)
+        {
+            auto condition = *this;
+            condition.kind = point[0] < 1. / 6 ? BoundaryKind::Analytic : BoundaryKind::SlipWall;
+            return condition.ExteriorJacobian(gas, inside, normal, point, time);
+        }
+        for (int j = 0; j < 5; ++j)
+            result[j * 5 + j] = 1;
+        if (kind == BoundaryKind::Extrapolate)
+            return result;
+        if (kind == BoundaryKind::SlipWall)
+        {
+            // Orthogonal momentum reflection preserves kinetic and total
+            // energy. The pressure recovery cancels in this conservative map.
+            for (int column = 0; column < 3; ++column)
+                for (int row = 0; row < 3; ++row)
+                    result[(1 + column) * 5 + 1 + row] -= 2 * normal[row] * normal[column];
+            return result;
+        }
+        if (kind == BoundaryKind::NoSlipWall)
+        {
+            // m' = 2*rho*v_wall-m; E' = E+2*rho*|v_wall|^2-2*v_wall.m.
+            // Wall temperature belongs to the viscous face law, not Exterior.
+            for (int d = 0; d < 3; ++d)
+            {
+                result[1 + d] = 2 * velocity[d];
+                result[(1 + d) * 5 + 1 + d] = -1;
+                result[4] += 2 * velocity[d] * velocity[d];
+                result[(1 + d) * 5 + 4] = -2 * velocity[d];
+            }
+            return result;
+        }
+        DNDS_check_throw_info(kind == BoundaryKind::Farfield, "boundary Jacobian requires a resolved physical condition");
+        const auto local = gas.Primitive(inside);
+        real normalSpeed = 0, speedSquared = 0;
+        for (int d = 0; d < 3; ++d)
+        {
+            normalSpeed += local.velocity[d] * normal[d];
+            speedSquared += local.velocity[d] * local.velocity[d];
+        }
+        if (normalSpeed >= local.soundSpeed)
+            return result;
+        if (normalSpeed <= -local.soundSpeed)
+            return {};
+        if (normalSpeed > 0)
+        {
+            // Prescribed pressure with unchanged rho,m: E'=p_inf/(gamma-1)+KE.
+            result[4] = -.5 * speedSquared;
+            result[24] = 0;
+            for (int d = 0; d < 3; ++d)
+                result[(1 + d) * 5 + 4] = local.velocity[d];
+        }
+        else
+        {
+            // Prescribed rho,velocity with interior pressure: only E' varies.
+            result.fill(0);
+            result[4] = .5 * speedSquared;
+            result[24] = 1;
+            for (int d = 0; d < 3; ++d)
+                result[(1 + d) * 5 + 4] = -local.velocity[d];
+        }
+        return result;
+    }
     BoundarySystem::BoundarySystem(const std::map<std::string, BoundarySettings> &settings, const PerfectGas &gas)
     {
         for (const auto &[zone, source] : settings)
