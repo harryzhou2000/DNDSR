@@ -3,6 +3,7 @@
 #include "Cauchy/Implicit/LinearProblem.hpp"
 #include "DNDS/Runtime/Communication/RowTransfer.hpp"
 #include <Eigen/LU>
+#include <optional>
 
 namespace C = DNDS::Cauchy;
 namespace R = DNDS::Runtime;
@@ -155,6 +156,87 @@ TEST_CASE("Native linear action overlaps direct MPI with core and preserves froz
                     for (int j = 0; j < 5; ++j)
                         CHECK(actual.View<R::UniformTableRows>()(iCell, j) == doctest::Approx(upper[iCell][j]).epsilon(1e-13));
             }
+            for (bool middleExchange : {false, true})
+            {
+                Field stagedForward(space, format), stagedOutput(space, format);
+                R::PayloadPlan forwardPayload(route, stagedForward.Owned().Layout(), stagedForward.Ghost().Layout(), R::ElementSchema::Arithmetic<double>());
+                const auto forwardBinding = forwardPayload.Bind(stagedForward.Owned(), stagedForward.Ghost());
+                auto transfer = binding.Begin();
+                auto iteration = problem.BeginSGS(b, input, stagedForward, stagedOutput, middleExchange);
+                CHECK_THROWS(iteration.Lower(C::LinearRegion::HaloDependent));
+                iteration.Lower(C::LinearRegion::Core);
+                CHECK_THROWS(stagedForward.Owned().Read());
+                CHECK_THROWS(iteration.Upper());
+                CHECK_THROWS(iteration.Finish());
+                transfer.Wait();
+                iteration.Lower(C::LinearRegion::HaloDependent);
+                {
+                    auto read = stagedForward.Owned().Read();
+                    for (DNDS::index iCell = 0; iCell < 4; ++iCell)
+                        for (int j = 0; j < 5; ++j)
+                            CHECK(read.View<R::UniformTableRows>()(iCell, j) == doctest::Approx(lower[iCell][j]).epsilon(1e-13));
+                }
+                std::vector<double> globalLower;
+                if (middleExchange)
+                {
+                    CHECK_THROWS(iteration.Upper(C::LinearRegion::HaloDependent));
+                    auto exchange = forwardBinding.Begin();
+                    CHECK_THROWS(iteration.Upper(C::LinearRegion::HaloDependent));
+                    exchange.Wait(); // Deliberately exposed inter-scan join.
+                    std::array<double, 20> localLower;
+                    for (DNDS::index iCell = 0; iCell < 4; ++iCell)
+                        for (int j = 0; j < 5; ++j)
+                            localLower[iCell * 5 + j] = lower[iCell][j];
+                    globalLower.resize(size * 20);
+                    MPI_Allgather(localLower.data(), 20, MPI_DOUBLE, globalLower.data(), 20, MPI_DOUBLE, MPI_COMM_WORLD);
+                }
+                CHECK_THROWS(iteration.Upper(C::LinearRegion::Core));
+                iteration.Upper(C::LinearRegion::HaloDependent);
+                CHECK_THROWS(stagedOutput.Owned().Read());
+                iteration.Upper(C::LinearRegion::Core);
+                CHECK_THROWS(stagedOutput.Owned().Read());
+                iteration.Finish();
+                CHECK_THROWS(iteration.Finish());
+                auto actual = stagedOutput.Owned().Read(), complete = result.Owned().Read();
+                std::array<Vector, 4> expectedUpper = upper;
+                if (middleExchange)
+                    for (DNDS::index pos = 4; pos > 0; --pos)
+                    {
+                        const auto iCell = order[pos - 1];
+                        Vector value = RightHandSide(rank, iCell);
+                        for (auto column : columns[iCell])
+                        {
+                            Vector other;
+                            if (column >= 4)
+                                for (int j = 0; j < 5; ++j)
+                                    other[j] = globalLower[previous * 20 + (column - 2) * 5 + j];
+                            else
+                                other = position[column] < position[iCell] ? lower[column] : expectedUpper[column];
+                            value -= OffDiagonal(iCell, column) * other;
+                        }
+                        expectedUpper[iCell] = Diagonal(iCell, mode).fullPivLu().solve(value);
+                    }
+                for (DNDS::index iCell = 0; iCell < 4; ++iCell)
+                    for (int j = 0; j < 5; ++j)
+                    {
+                        CHECK(actual.View<R::UniformTableRows>()(iCell, j) == doctest::Approx(expectedUpper[iCell][j]).epsilon(1e-13));
+                        if (!middleExchange)
+                            CHECK(actual.View<R::UniformTableRows>()(iCell, j) == complete.View<R::UniformTableRows>()(iCell, j));
+                    }
+            }
+            Field abandonedForward(space, format), abandonedOutput(space, format);
+            {
+                auto unused = problem.BeginSGS(b, input, abandonedForward, abandonedOutput);
+            }
+            CHECK(abandonedForward.Owned().IsValid());
+            CHECK(abandonedOutput.Owned().IsValid());
+            {
+                auto abandoned = problem.BeginSGS(b, input, abandonedForward, abandonedOutput);
+                abandoned.Lower(C::LinearRegion::Core);
+            }
+            CHECK_FALSE(abandonedForward.Owned().IsValid());
+            CHECK_FALSE(abandonedOutput.Owned().IsValid());
+            CHECK_THROWS(abandonedOutput.Owned().Read());
             CHECK(input.Owned().Version() == inputVersion);
             CHECK(b.Owned().Version() == rhsVersion);
             CHECK_THROWS(problem.Apply(input, input));
@@ -229,6 +311,30 @@ TEST_CASE("Linear diagonal preparation handles general component counts and repo
     }
     CHECK_THROWS(problem.InvertDiagonal());
     CHECK_THROWS(problem.ApplySGS(rhs, input, forward, output));
+}
+TEST_CASE("Staged SGS retains numeric allocations and row metadata after original owners expire")
+{
+    const A::DofSpace space(1);
+    Field output(space, 2);
+    std::optional<C::LinearProblemContext::SGSIteration> iteration;
+    {
+        auto problem = std::make_unique<C::LinearProblemContext>(space, 2, std::vector<std::vector<DNDS::index>>{{}}, std::vector<DNDS::index>{0}, C::DiagonalStorage::Entries);
+        Field rhs(space, 2), input(space, 2), forward(space, 2);
+        {
+            auto diagonal = problem->Diagonal().Write(), b = rhs.Owned().Write();
+            diagonal.View()(0, 0) = diagonal.View()(0, 1) = 2;
+            b.View()(0, 0) = 3;
+            b.View()(0, 1) = -1;
+        }
+        problem->InvertDiagonal();
+        iteration.emplace(problem->BeginSGS(rhs, input, forward, output));
+    }
+    iteration->Lower();
+    iteration->Upper();
+    iteration->Finish();
+    const auto read = output.Owned().Read();
+    CHECK(read.View()(0, 0) == 1.5);
+    CHECK(read.View()(0, 1) == -.5);
 }
 int main(int argc, char **argv)
 {
