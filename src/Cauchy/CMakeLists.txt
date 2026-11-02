@@ -1,5 +1,5 @@
 set(CPPS Core/DomainPlacement.cpp Core/Domain.cpp Core/Simulation.cpp Config/SimulationConfig.cpp Physics/EquationSystem.cpp
-    Boundary/BoundarySystem.cpp Discretization/FiniteVolume.cpp Discretization/PrepareAuxValues.cpp IO/Checkpoint.cpp Riemann/RiemannFlux.cpp)
+    Boundary/BoundarySystem.cpp Discretization/FiniteVolume.cpp Discretization/PrepareAuxValues.cpp Discretization/RHS.cpp IO/Checkpoint.cpp Riemann/RiemannFlux.cpp)
 dnds_add_lib(cauchy "${CPPS}" "cfv;geom;dnds;${DNDS_EXTERNAL_LIBS}" "${DNDS_PCH_TARGETS_FAST}" OFF ON ON)
 dnds_add_lib(cauchy_shared "${CPPS}" "cfv_shared;geom_shared;dnds_shared;${DNDS_EXTERNAL_LIBS}" "${DNDS_PCH_TARGETS_FAST}" ON ON ON)
 install(TARGETS cauchy_shared LIBRARY DESTINATION "DNDSR/lib" COMPONENT py OPTIONAL)

@@ -8,6 +8,8 @@
 #include "Geom/Access/EntityWorkPartition.hpp"
 #include <array>
 #include <optional>
+#include <atomic>
+#include <map>
 
 namespace DNDS::Cauchy
 {
@@ -46,6 +48,32 @@ namespace DNDS::Cauchy
         };
         std::optional<Origin> _origin;
     };
+    using RHSFieldView = Runtime::PairReadView<real, Runtime::AccessBoundsChecks, Runtime::UniformTableRows>;
+    using RHSScalarView = Runtime::ArrayView<const real, Runtime::AccessBoundsChecks, Runtime::UniformTableRows>;
+    using RHSOutputView = Runtime::ArrayView<real, Runtime::AccessBoundsChecks, Runtime::UniformTableRows>;
+    /// Packed read-only auxiliary inputs, independent of their producer. Current
+    /// fields are mean [p,a,diffusivity], wave jumps and pressure minima. Extend
+    /// this bundle for cached temperature/masks rather than adding positional
+    /// arguments to every kernel. Optional absence is explicit even on empty ranks.
+    struct RHSAuxiliaryViews
+    {
+        std::optional<RHSScalarView> meanThermodynamics;
+        std::optional<RHSFieldView> cellWaveJump, cellPressureMinimum;
+    };
+    struct RHSReadViews
+    {
+        RHSFieldView mean, coefficients, primitiveGradient;
+        RHSAuxiliaryViews auxiliary;
+    };
+    /// Explicit outputs. Diagnostics accumulate across core/dependent calls;
+    /// caller initializes them before an evaluation and reduces them afterwards.
+    struct RHSWriteViews
+    {
+        RHSOutputView residual;
+        std::optional<RHSOutputView> lowOrder;
+        std::atomic<index> *faceFallbacks = nullptr;
+        std::map<int, std::array<std::atomic<real>, 3>> *boundaryForces = nullptr;
+    };
     /// CPU cell-centered discretization. Preparation retains immutable geometry,
     /// incidence, quadrature and polynomial data. Each simultaneous residual
     /// requires a distinct Workspace. No solver clock/history/IO policy here.
@@ -56,6 +84,23 @@ namespace DNDS::Cauchy
 
     public:
         struct Workspace;
+        /// Copyable immutable read scope for RHS geometry/basis data. Apply is
+        /// stateless: no MPI, reconstruction, cache update or hidden counters.
+        /// Raw input/output views require retained/declared Array leases and
+        /// nonoverlapping output storage supplied by the caller. Core input
+        /// views need only owned data. The checked Evaluate wrapper does this.
+        class RHSOperator
+        {
+            struct ReadData;
+            std::shared_ptr<const ReadData> _read;
+            explicit RHSOperator(std::shared_ptr<const ReadData> read) : _read(std::move(read)) {}
+            friend class FiniteVolume;
+
+        public:
+            void Apply(const RHSReadViews &input, const RHSWriteViews &output,
+                       CFV::ReconstructionRegion region = CFV::ReconstructionRegion::All, real time = 0) const;
+        };
+        RHSOperator AcquireRHSOperator() const;
         FiniteVolume(ssp<Geom::UnstructuredMesh> mesh, const DomainSettings &settings, const EquationSystem &equation);
         const CFV::FiniteVolumePlan &Metrics() const;
         const Geom::UnstructuredMesh &Mesh() const;

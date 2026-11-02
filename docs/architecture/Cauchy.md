@@ -322,3 +322,44 @@ The prepared spectral estimate uses both mean-state convective bounds and a
 symmetric face-area/cell-volume diffusion bound, including thermal diffusion;
 this intentionally changes the earlier owned-state-only CFL estimate. Fixed
 dt flux/reconstruction mathematics do not depend on this global selection.
+
+## Stateless spatial residual
+
+`FiniteVolume::AcquireRHSOperator()` acquires an immutable geometry/basis read
+scope. Its `Apply(RHSReadViews, RHSWriteViews, region, time)` performs only the
+spatial residual calculation. It has no workspace, communication, reconstruction
+update, auxiliary publication or implicit diagnostic storage. The `Evaluate`
+convenience wrapper retains the orchestration of those operations.
+
+`RHSReadViews` groups the mean, reconstruction coefficients, optional viscous
+primitive gradients, and one `RHSAuxiliaryViews` bundle. The auxiliary bundle
+currently contains optional mean thermodynamics `[pressure, sound speed,
+diffusivity]`, the cell wave-jump signal used by the H correction, and cell
+pressure minima used by AUSMPW+. New cached temperature, dissipation masks or
+other cell/face fields belong in this bundle with an explicit indexing contract.
+This is argument grouping; it does not pack or copy array payloads. Missing
+optional thermodynamics are calculated from the supplied means. Missing signals
+required by the configured stencil flux are rejected before the cell loop.
+
+Residual, optional low-order residual, fallback count and boundary-force
+accumulators are explicit outputs. Residual rows are overwritten; diagnostic
+accumulators are added to, so the caller initializes them once before a complete
+evaluation and performs any global reductions afterwards. Neither `Apply` nor
+the packed input bundle owns the caller's numerical arrays.
+
+The raw-view interface is the kernel boundary: callers retain the corresponding
+Array leases, validate prepared auxiliary provenance, and ensure output storage
+does not overlap input or other output storage. `Apply` checks required fields
+and shapes; a raw pointer view alone cannot establish its producer's generation.
+The checked `Evaluate` wrapper performs `ValidateAuxValues` and declares its
+Array accesses before invoking the kernel. It passes owned-only paired views
+to Core while coefficient ghost writes are active, then waits and supplies
+complete paired views to HaloDependent. All is also supported. A future queued
+wrapper must declare the same accesses to the execution context rather than
+infer completion from a raw view.
+
+Distributed tests compare the convenience wrapper, raw All, and Core followed
+by HaloDependent with an active coefficient transfer. They check unchanged
+owned input generations, equivalent optional thermodynamic caching, missing
+required-field errors, and sensitivity to separately supplied wave/pressure
+signals. Auxiliary preparation cannot be silently repeated inside this API.

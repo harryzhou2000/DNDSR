@@ -1161,6 +1161,143 @@ TEST_CASE("A rank-local Riemann stencil setting rejects collectively before opti
     auto state = fv.Metrics().BuildField(5);
     CHECK_THROWS_WITH_AS(fv.BuildWorkspace(state), doctest::Contains("Riemann stencil capability differs"), std::exception);
 }
+TEST_CASE("Stateless RHS consumes packed auxiliary views and preserves frozen inputs")
+{
+    const auto mesh = CFVTest::CartesianHexes(mpi, 16);
+    for (const std::string flux : {"rusanov", "Roe_M9", "AUSMPWPlus"})
+    {
+        C::DomainSettings settings;
+        settings.mesh.dimension = 3;
+        settings.boundaries["7"].kind = "extrapolate";
+        settings.numerics.reconstruction = "variational";
+        settings.numerics.reconstructionIterations = 3;
+        settings.numerics.cfv.maxOrder = 1;
+        settings.numerics.flux = flux;
+        const auto equation = C::EquationSystem::Resolve(settings.equation);
+        C::FiniteVolume fv(mesh, settings, equation);
+        auto state = fv.Metrics().BuildField(5), reference = fv.Metrics().BuildField(5);
+        auto full = fv.Metrics().BuildField(5), split = fv.Metrics().BuildField(5);
+        {
+            auto write = state.Owned().Write();
+            const auto values = write.View<R::UniformTableRows>();
+            for (DNDS::index iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+            {
+                const auto point = fv.Metrics().GetCellCent(iCell);
+                const auto u = equation.Gas().Conservative({1 + .01 * std::sin(point[0]), .2, -.1, .05, 1 + .02 * std::cos(point[1])});
+                for (int j = 0; j < 5; ++j)
+                    values(iCell, j) = u[j];
+            }
+        }
+        const auto work = fv.BuildWorkspace(state);
+        R::EagerEngine engine;
+        const auto stream = engine.CreateCPUStream();
+        fv.Evaluate(state, reference, *work, engine, stream);
+        auto coefficients = fv.ReconstructionGuess(*work);
+        const auto &auxiliary = fv.PreparedAuxValues(*work);
+        auto rhs = fv.AcquireRHSOperator();
+        const auto meanVersion = state.Owned().Version(), coefficientVersion = coefficients.Owned().Version();
+        auto mean = state.Owned().Read(), meanGhost = state.Ghost().Read(), rec = coefficients.Owned().Read();
+        auto thermo = auxiliary.meanThermodynamics->Read();
+        C::RHSReadViews input;
+        input.mean = {mean.View<R::UniformTableRows>(), meanGhost.View<R::UniformTableRows>()};
+        input.coefficients.owned = rec.View<R::UniformTableRows>();
+        input.auxiliary.meanThermodynamics = thermo.View<R::UniformTableRows>();
+        std::array<std::optional<R::Array<DNDS::real>::ReadLease>, 4> held;
+        const auto readAuxiliary = [&](const auto &field, int first, auto &destination)
+        {
+            if (!field)
+                return;
+            held[first].emplace(field->Owned().Read());
+            held[first + 1].emplace(field->Ghost().Read());
+            destination = C::RHSFieldView{held[first]->View<R::UniformTableRows>(), held[first + 1]->View<R::UniformTableRows>()};
+        };
+        readAuxiliary(auxiliary.cellWaveJump, 0, input.auxiliary.cellWaveJump);
+        readAuxiliary(auxiliary.cellPressureMinimum, 2, input.auxiliary.cellPressureMinimum);
+        std::atomic<DNDS::index> fallbacks{0};
+        {
+            auto ghost = coefficients.Ghost().Read();
+            input.coefficients.ghost = ghost.View<R::UniformTableRows>();
+            auto output = full.Owned().Write();
+            rhs.Apply(input, {output.View<R::UniformTableRows>(), std::nullopt, &fallbacks});
+            auto uncached = input;
+            uncached.auxiliary.meanThermodynamics.reset();
+            rhs.Apply(uncached, {output.View<R::UniformTableRows>(), std::nullopt, &fallbacks});
+            auto missing = input;
+            if (auxiliary.cellWaveJump)
+            {
+                missing.auxiliary.cellWaveJump.reset();
+                CHECK_THROWS(rhs.Apply(missing, {output.View<R::UniformTableRows>(), std::nullopt, &fallbacks}));
+            }
+            if (auxiliary.cellPressureMinimum)
+            {
+                missing = input;
+                missing.auxiliary.cellPressureMinimum.reset();
+                CHECK_THROWS(rhs.Apply(missing, {output.View<R::UniformTableRows>(), std::nullopt, &fallbacks}));
+            }
+        }
+        {
+            auto output = split.Owned().Write();
+            auto core = input;
+            core.mean.ghost = {};
+            core.coefficients.ghost = {};
+            if (core.auxiliary.cellWaveJump)
+                core.auxiliary.cellWaveJump->ghost = {};
+            if (core.auxiliary.cellPressureMinimum)
+                core.auxiliary.cellPressureMinimum->ghost = {};
+            auto transfer = fv.Metrics().BindHalo(coefficients).Begin();
+            rhs.Apply(core, {output.View<R::UniformTableRows>(), std::nullopt, &fallbacks}, DNDS::CFV::ReconstructionRegion::Core);
+            transfer.Wait();
+            auto ghost = coefficients.Ghost().Read();
+            input.coefficients.ghost = ghost.View<R::UniformTableRows>();
+            rhs.Apply(input, {output.View<R::UniformTableRows>(), std::nullopt, &fallbacks}, DNDS::CFV::ReconstructionRegion::HaloDependent);
+        }
+        auto a = reference.Owned().Read(), b = full.Owned().Read(), c = split.Owned().Read();
+        for (DNDS::index iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+            for (int j = 0; j < 5; ++j)
+            {
+                CHECK(a.View()(iCell, j) == b.View()(iCell, j));
+                CHECK(b.View()(iCell, j) == c.View()(iCell, j));
+            }
+        CHECK(state.Owned().Version() == meanVersion);
+        CHECK(coefficients.Owned().Version() == coefficientVersion);
+        CHECK(fallbacks.load() == 0);
+
+        // A separately supplied wave/pressure field must affect the flux. This
+        // catches an operator that silently re-prepares or ignores the bundle.
+        if (auxiliary.cellWaveJump || auxiliary.cellPressureMinimum)
+        {
+            auto substitute = fv.Metrics().BuildField(1), changed = fv.Metrics().BuildField(5);
+            for (auto *array : {&substitute.Owned(), &substitute.Ghost()})
+            {
+                auto write = array->Write();
+                const auto view = write.View<R::UniformTableRows>();
+                for (DNDS::index iCell = 0; iCell < view.RowCount(); ++iCell)
+                    view(iCell, 0) = auxiliary.cellWaveJump ? 100 : 1e-6;
+            }
+            auto own = substitute.Owned().Read(), ghost = substitute.Ghost().Read(), recGhost = coefficients.Ghost().Read();
+            auto modified = input;
+            modified.coefficients.ghost = recGhost.View<R::UniformTableRows>();
+            const C::RHSFieldView replacement{own.View<R::UniformTableRows>(), ghost.View<R::UniformTableRows>()};
+            if (auxiliary.cellWaveJump)
+                modified.auxiliary.cellWaveJump = replacement;
+            if (auxiliary.cellPressureMinimum)
+                modified.auxiliary.cellPressureMinimum = replacement;
+            {
+                auto output = changed.Owned().Write();
+                rhs.Apply(modified, {output.View<R::UniformTableRows>(), std::nullopt, &fallbacks});
+            }
+            auto changedRead = changed.Owned().Read();
+            int differs = 0;
+            for (DNDS::index iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+                for (int j = 0; j < 5; ++j)
+                    differs |= changedRead.View()(iCell, j) != b.View()(iCell, j);
+            int anyDiffers = 0;
+            MPI_Allreduce(&differs, &anyDiffers, 1, MPI_INT, MPI_MAX, mpi.comm);
+            CHECK(anyDiffers == 1);
+        }
+    }
+}
+
 int main(int argc, char **argv)
 {
     int provided = 0;

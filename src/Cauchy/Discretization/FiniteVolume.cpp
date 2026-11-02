@@ -23,19 +23,6 @@ namespace DNDS::Cauchy
         using FiniteVolumeDetail::Load;
         using FiniteVolumeDetail::RotateState;
         using FiniteVolumeDetail::Sample;
-        FlowGradient RotateGradient(const FlowGradient &gradient, const Geom::tGPoint &rotation)
-        {
-            FlowGradient result{};
-            for (int component = 0; component < 5; ++component)
-                for (int d = 0; d < 3; ++d)
-                    for (int k = 0; k < 3; ++k)
-                        if (component == 0 || component == 4)
-                            result[component][d] += rotation(d, k) * gradient[component][k];
-                        else
-                            for (int v = 0; v < 3; ++v)
-                                result[component][d] += rotation(component - 1, v) * gradient[1 + v][k] * rotation(d, k);
-            return result;
-        }
         R::RowLayout FieldLayout(const R::RowLayout &prototype, index rows, index width)
         {
             if (prototype.Kind() == R::RowLayoutKind::ColMajorTable)
@@ -534,9 +521,6 @@ namespace DNDS::Cauchy
             _data->gradient.Evaluate(work.primitive, work.gradientBoundary, work.gradient, {1});
             exchange(work.gradientHalo);
         }
-        auto basisRead = _data->basis.Read();
-        const auto basis = basisRead.View<R::TableRows>();
-        const int modes = _data->reconstruction.NRecDOF(), dim = Metrics().Dimension();
         std::optional<R::Array<real>::WriteLease> lowWrite;
         R::ArrayView<real, R::AccessBoundsChecks, R::UniformTableRows> lowOutput;
         if (_data->settings.numerics.positivity)
@@ -567,158 +551,34 @@ namespace DNDS::Cauchy
         };
         readAuxiliary(work.auxiliary.cellWaveJump, 0, wave);
         readAuxiliary(work.auxiliary.cellPressureMinimum, 2, pressure);
-        const auto kernel = [data = _data, metric, basis, modes, dim, gas, time, lowOutput, thermo,
-                             useWave = bool(work.auxiliary.cellWaveJump), usePressure = bool(work.auxiliary.cellPressureMinimum),
-                             forces = &work.forces, diagnostics = &work.fallbacks](const std::vector<index> &cells, const auto &mean, const auto &coefficient, const auto &gradientInput, const auto &waveInput, const auto &pressureInput, auto result)
+        const auto rhs = AcquireRHSOperator();
+        RHSAuxiliaryViews auxiliary;
+        auxiliary.meanThermodynamics = thermo;
+        if (work.auxiliary.cellWaveJump)
+            auxiliary.cellWaveJump = wave;
+        if (work.auxiliary.cellPressureMinimum)
+            auxiliary.cellPressureMinimum = pressure;
+        const auto kernel = [rhs, time, lowOutput, produceLow = _data->settings.numerics.positivity,
+                             forces = &work.forces, diagnostics = &work.fallbacks](CFV::ReconstructionRegion region,
+                                                                                   const auto &mean, const auto &coefficient, const auto &gradientInput,
+                                                                                   const RHSAuxiliaryViews &auxiliaryInput, auto result)
         {
-            for (auto iCell : cells)
-            {
-                FlowState integrated{};
-                FlowState integratedLow{};
-                for (index entry = data->offsets[iCell]; entry < data->offsets[iCell + 1]; ++entry)
-                {
-                    const auto &sample = data->samples[entry];
-                    auto reconstruct = [&](index cell, int parent)
-                    {
-                        auto state = Load(mean, cell);
-                        for (int component = 0; component < 5; ++component)
-                            for (int mode = 0; mode < modes; ++mode)
-                            {
-                                const real value = coefficient(cell, component * modes + mode);
-                                state[component] += value * basis(entry, parent * 4 * modes + mode);
-                            }
-                        // Explicit local first-order fallback keeps the mean
-                        // unchanged when a high-order face value is inadmissible.
-                        if (!ThermallyAdmissible(state, data->thermalBounds))
-                        {
-                            diagnostics->fetch_add(1, std::memory_order_relaxed);
-                            state = Load(mean, cell);
-                        }
-                        FlowGradient primitiveGradient{};
-                        if (data->equation.Viscous())
-                            for (int component = 0; component < 5; ++component)
-                                for (int d = 0; d < dim; ++d)
-                                    primitiveGradient[component][d] = gradientInput(cell, component * dim + d);
-                        return std::make_pair(state, primitiveGradient);
-                    };
-                    const auto left = reconstruct(iCell, 0);
-                    FlowState right;
-                    FlowGradient rightGradient{};
-                    if (sample.other != UnInitIndex)
-                    {
-                        auto other = reconstruct(sample.other, 1);
-                        right = RotateState(other.first, sample.rotation);
-                        rightGradient = RotateGradient(other.second, sample.rotation);
-                    }
-                    else
-                        right = sample.boundary.Exterior(gas, left.first, {sample.normal[0], sample.normal[1], sample.normal[2]}, {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, time);
-                    const Vector3 normal{sample.normal[0], sample.normal[1], sample.normal[2]};
-                    const auto leftFlux = data->equation.PrepareFluxState(left.first), rightFlux = data->equation.PrepareFluxState(right);
-                    const Vector3 point{sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]};
-                    const auto leftMean = Load(mean, iCell), rightMean = sample.other == UnInitIndex ? sample.boundary.Exterior(gas, leftMean, normal, point, time) : RotateState(Load(mean, sample.other), sample.rotation);
-                    const Riemann::AcousticState leftMeanData{{leftMean, thermo(iCell, 0)}, thermo(iCell, 1)};
-                    const auto rightMeanData = sample.other == UnInitIndex ? data->equation.PrepareFluxState(rightMean) : Riemann::AcousticState{{rightMean, thermo(sample.other, 0)}, thermo(sample.other, 1)};
-                    const auto prepared = data->equation.PrepareRiemann(data->flux, leftFlux, rightFlux, leftMeanData, rightMeanData, normal);
-                    auto fluxSettings = data->settings.numerics.riemann.KernelSettings();
-                    if (useWave)
-                    {
-                        real jump = waveInput(iCell, 0);
-                        if (sample.other != UnInitIndex)
-                            jump = std::max(jump, waveInput(sample.other, 0));
-                        fluxSettings.dLambda = std::max(fluxSettings.dLambda, jump);
-                    }
-                    if (usePressure)
-                    {
-                        real minimum = pressureInput(iCell, 0);
-                        if (sample.other != UnInitIndex)
-                            minimum = std::min(minimum, pressureInput(sample.other, 0));
-                        fluxSettings.pressureStencilMin = std::min(fluxSettings.pressureStencilMin, minimum);
-                    }
-                    auto flux = data->flux.Evaluate(prepared.Input(leftFlux, rightFlux, normal), fluxSettings).flux;
-                    FlowState lowFlux{};
-                    if (data->settings.numerics.positivity)
-                        lowFlux = Riemann::Rusanov(leftMeanData, rightMeanData, normal);
-                    if (data->equation.Viscous())
-                    {
-                        auto primitive = gas.Primitive(left.first);
-                        auto gradient = left.second;
-                        const auto ownPrimitive = gas.Primitive(Load(mean, iCell));
-                        const auto rightPrimitive = gas.Primitive(sample.other == UnInitIndex ? sample.boundary.FaceValue(gas, Load(mean, iCell), normal, point, time) : RotateState(Load(mean, sample.other), sample.rotation));
-                        // Evaluate into an owning vector: an Eigen expression
-                        // would retain a dangling temporary cell barycenter.
-                        const Geom::tPoint distance = sample.other == UnInitIndex ? Geom::tPoint(sample.ownPoint - metric.GetCellBary(iCell)) : Geom::tPoint(sample.otherPoint - metric.GetCellBary(iCell));
-                        const real lengthSquared = distance.squaredNorm();
-                        DNDS_check_throw_info(lengthSquared > 0, "zero viscous stencil displacement");
-                        const std::array<real, 5> own{ownPrimitive.density, ownPrimitive.velocity[0], ownPrimitive.velocity[1], ownPrimitive.velocity[2], ownPrimitive.temperature};
-                        const std::array<real, 5> neighbor{rightPrimitive.density, rightPrimitive.velocity[0], rightPrimitive.velocity[1], rightPrimitive.velocity[2], rightPrimitive.temperature};
-                        for (int component = 0; component < 5; ++component)
-                        {
-                            real projected = 0;
-                            for (int d = 0; d < 3; ++d)
-                            {
-                                if (sample.other != UnInitIndex)
-                                    gradient[component][d] = .5 * (gradient[component][d] + rightGradient[component][d]);
-                                projected += gradient[component][d] * distance[d];
-                            }
-                            for (int d = 0; d < 3; ++d)
-                                gradient[component][d] += (neighbor[component] - own[component] - projected) * distance[d] / lengthSquared;
-                        }
-                        if (sample.other != UnInitIndex)
-                        {
-                            const auto p = gas.Primitive(right);
-                            for (int d = 0; d < 3; ++d)
-                                primitive.velocity[d] = .5 * (primitive.velocity[d] + p.velocity[d]);
-                        }
-                        else if (sample.boundary.kind == BoundaryKind::SlipWall || sample.boundary.kind == BoundaryKind::NoSlipWall)
-                        {
-                            primitive = gas.Primitive(sample.boundary.FaceValue(gas, left.first, normal, point, time));
-                            if (!sample.boundary.isothermal)
-                            {
-                                real heat = 0;
-                                for (int d = 0; d < 3; ++d)
-                                    heat += gradient[4][d] * normal[d];
-                                for (int d = 0; d < 3; ++d)
-                                    gradient[4][d] -= heat * normal[d];
-                            }
-                        }
-                        const auto viscous = gas.ViscousFlux(primitive, gradient, normal);
-                        for (int component = 0; component < 5; ++component)
-                        {
-                            flux[component] -= viscous[component];
-                            lowFlux[component] -= viscous[component];
-                        }
-                    }
-                    if (sample.other == UnInitIndex && (sample.boundary.kind == BoundaryKind::SlipWall || sample.boundary.kind == BoundaryKind::NoSlipWall))
-                        for (int d = 0; d < 3; ++d)
-                        {
-                            auto &sum = forces->at(sample.zone)[d];
-                            const real contribution = metric.GetFaceWeight(sample.point) * flux[1 + d];
-                            real previous = sum.load(std::memory_order_relaxed);
-                            while (!sum.compare_exchange_weak(previous, previous + contribution, std::memory_order_relaxed))
-                            {
-                            }
-                        }
-                    for (int component = 0; component < 5; ++component)
-                    {
-                        integrated[component] -= metric.GetFaceWeight(sample.point) * flux[component];
-                        if (data->settings.numerics.positivity)
-                            integratedLow[component] -= metric.GetFaceWeight(sample.point) * lowFlux[component];
-                    }
-                }
-                for (int component = 0; component < 5; ++component)
-                {
-                    result(iCell, component) = integrated[component];
-                    if (data->settings.numerics.positivity)
-                        lowOutput(iCell, component) = integratedLow[component];
-                }
-            }
+            RHSWriteViews outputs{result, std::nullopt, diagnostics, forces};
+            if (produceLow)
+                outputs.lowOrder = lowOutput;
+            rhs.Apply({mean, coefficient, gradientInput, auxiliaryInput}, outputs, region, time);
         };
         auto operation = engine.ChecksAccess() ? work.coefficientHalo.BeginChecked(stream) : work.coefficientHalo.BeginScheduled();
-        R::SubmitArrays(engine, stream, [kernel, data = _data, gradientInput = FieldView{gradients.owned, {}}, waveInput = FieldView{wave.owned, {}}, pressureInput = FieldView{pressure.owned, {}}](auto, auto mean, auto rec, auto result)
-                        { kernel(data->partition.Core(), FieldView{mean, {}}, FieldView{rec, {}}, gradientInput, waveInput, pressureInput, result); }, R::ReadAs<R::UniformTableRows>(state.Owned()), R::ReadAs<R::UniformTableRows>(work.reconstruction.coefficients.Owned()), R::WriteAs<R::UniformTableRows>(residual.Owned()));
+        auto coreAuxiliary = auxiliary;
+        if (coreAuxiliary.cellWaveJump)
+            coreAuxiliary.cellWaveJump->ghost = {};
+        if (coreAuxiliary.cellPressureMinimum)
+            coreAuxiliary.cellPressureMinimum->ghost = {};
+        R::SubmitArrays(engine, stream, [kernel, gradientInput = FieldView{gradients.owned, {}}, coreAuxiliary](auto, auto mean, auto rec, auto result)
+                        { kernel(CFV::ReconstructionRegion::Core, FieldView{mean, {}}, FieldView{rec, {}}, gradientInput, coreAuxiliary, result); }, R::ReadAs<R::UniformTableRows>(state.Owned()), R::ReadAs<R::UniformTableRows>(work.reconstruction.coefficients.Owned()), R::WriteAs<R::UniformTableRows>(residual.Owned()));
         operation.Wait();
-        R::SubmitArrays(engine, stream, [kernel, data = _data, gradients, wave, pressure](auto, auto mean, auto meanGhost, auto rec, auto recGhost, auto result)
-                        { kernel(data->partition.HaloDependent(), FieldView{mean, meanGhost}, FieldView{rec, recGhost}, gradients, wave, pressure, result); }, R::ReadAs<R::UniformTableRows>(state.Owned()), R::ReadAs<R::UniformTableRows>(state.Ghost()), R::ReadAs<R::UniformTableRows>(work.reconstruction.coefficients.Owned()), R::ReadAs<R::UniformTableRows>(work.reconstruction.coefficients.Ghost()), R::WriteAs<R::UniformTableRows>(residual.Owned()));
+        R::SubmitArrays(engine, stream, [kernel, gradients, auxiliary](auto, auto mean, auto meanGhost, auto rec, auto recGhost, auto result)
+                        { kernel(CFV::ReconstructionRegion::HaloDependent, FieldView{mean, meanGhost}, FieldView{rec, recGhost}, gradients, auxiliary, result); }, R::ReadAs<R::UniformTableRows>(state.Owned()), R::ReadAs<R::UniformTableRows>(state.Ghost()), R::ReadAs<R::UniformTableRows>(work.reconstruction.coefficients.Owned()), R::ReadAs<R::UniformTableRows>(work.reconstruction.coefficients.Ghost()), R::WriteAs<R::UniformTableRows>(residual.Owned()));
         // Local read scopes pin geometry/cache pointers through both submitted
         // phases. A later async public wrapper can retain these same scopes;
         // this CPU synchronous convenience observes only its own stream prefix.
