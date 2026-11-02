@@ -219,6 +219,7 @@ namespace DNDS::Cauchy
         real relativeTolerance = 1e-8, absoluteTolerance = 1e-11;
         real pseudoCFL = 10, maxPseudoCFL = 1e4, pseudoGrowth = 1.3, relaxation = 1;
         bool roeDissipation = false, collectiveChecks = true;
+        bool requireConvergedReconstruction = false;
         ImplicitLinearSettings linear;
         ImplicitSGSSettings sgs;
         ImplicitILUSettings ilu;
@@ -239,6 +240,7 @@ namespace DNDS::Cauchy
             DNDS_FIELD(relaxation, "Multiplier on each computed correction in (0,1]");
             DNDS_FIELD(roeDissipation, "Use full equation-owned characteristic dissipation; requires block diagonal");
             DNDS_FIELD(collectiveChecks, "Coordinate local failures between implicit kernels; false selects caller-ordered eager execution");
+            DNDS_FIELD(requireConvergedReconstruction, "Require the requested VR tolerance as well as the mean equation target; false preserves Euler-style fixed-sweep acceptance");
             config.field_section(&T::linear, "linear", "Linear solve controls");
             config.field_section(&T::sgs, "sgs", "Symmetric relaxation controls");
             config.field_section(&T::ilu, "ilu", "Rank-local factorization controls");

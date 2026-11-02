@@ -28,10 +28,27 @@ volume-weighted L1 ratio to the running maximum. A baseline comparison must
 record this difference; other components above Euler's density threshold do
 not imply Euler failed its own stopping rule.
 
+`implicit.requireConvergedReconstruction=true` additionally requires the
+finest VR update to meet `numerics.reconstructionTolerance` before accepting
+the equation, including p-FAS. Variational reconstruction then requires a
+positive tolerance. The default false retains Euler-style fixed-sweep mean
+acceptance; a soft VR early-exit threshold alone does not guarantee a settled
+polynomial at the mean stop. Inspect the reported VR update and use the strict
+guard for a settled-VR qualification. It uses the norm already reduced by CFV,
+without another collective or a check inside a numerical kernel. Boundary
+quadrature values are refreshed from the current polynomial on each VR sweep.
+
 The physical frontend uses `FieldTimeStepper::ReachedTimeTarget` to avoid a
 roundoff-sized extra step at a requested endpoint. The tolerance scales with
 the actual times, preserving tiny nonzero physical horizons. Genuine positive
 steps which cannot advance a floating-point clock are rejected explicitly.
+The relative endpoint guard also covers addition error from the tested800-step
+vortex and2500-step cylinder sequences, rather than only one rounded addition.
+
+Restart compatibility allows reconstruction sweep-budget/early-exit changes.
+They do not change stored means or a compatible polynomial coefficient schema;
+physics, flux and active PP policies retain their existing compatibility checks.
+Exact replay still requires compatible numerical controls and stored guesses.
 
 ## Polynomial multigrid
 

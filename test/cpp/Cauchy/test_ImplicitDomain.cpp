@@ -187,6 +187,47 @@ TEST_CASE("A capped steady solve cannot publish means, time or a prepared candid
         for (int j = 0; j < 5; ++j)
             CHECK(actual.View()(iCell, j) == expected.View()(iCell, j));
 }
+TEST_CASE("Strict implicit acceptance requires settled VR in addition to a loose mean target")
+{
+    for (bool fas : {false, true})
+        for (bool strict : {false, true})
+        {
+            C::DomainSettings settings;
+            settings.numerics.reconstruction = "variational";
+            settings.numerics.cfv.maxOrder = 3;
+            settings.numerics.reconstructionIterations = 1;
+            settings.numerics.reconstructionTolerance = 1e-30;
+            settings.implicit.requireConvergedReconstruction = strict;
+            settings.implicit.minIterations = 0;
+            settings.implicit.iterations = 1;
+            // Isolate VR acceptance: every finite mean residual meets this.
+            settings.implicit.absoluteTolerance = 1e100;
+            if (fas)
+            {
+                settings.implicit.multigrid.levels = 2;
+                settings.implicit.multigrid.cycles = 1;
+                settings.implicit.multigrid.coarseSmooth = 1;
+            }
+            C::TimeSettings time;
+            time.steady = true;
+            C::Domain domain("strict-vr", CauchyTest::PeriodicQuads(mpi, 4), settings, time);
+            DensityWave(domain);
+            if (strict)
+            {
+                CHECK_THROWS(domain.Advance(.01));
+                CHECK(domain.Epoch().acceptedStep == 0);
+            }
+            else
+            {
+                domain.Advance(.01);
+                CHECK(domain.Epoch().acceptedStep == 1);
+            }
+            CHECK(domain.Time() == 0);
+            REQUIRE(domain.LastImplicitStages().size() == 1);
+            CHECK(domain.LastImplicitStages()[0].converged == !strict);
+            CHECK(domain.LastImplicitStages()[0].reconstructionRelativeUpdate > settings.numerics.reconstructionTolerance);
+        }
+}
 TEST_CASE("DITR coupled cap rejects the physical trial even when frozen stage solves converge")
 {
     const auto mesh = CauchyTest::PeriodicQuads(mpi, 4);

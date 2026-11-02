@@ -41,6 +41,8 @@ namespace DNDS::Cauchy
         /// on a correction cap; the caller must reject that physical trial.
         /// Nonfinite/unusable linear corrections and inadmissible states throw.
         /// PP uses Euler alpha compression/flow5 repair only when requested.
+        /// Strict reconstruction acceptance, when requested, additionally checks
+        /// the latest global VR update against its positive configured tolerance.
         /// Nonnegative control.correctionLimit selects a bounded FAS smoother;
         /// that cap reports work and does not imply physical-stage acceptance.
         /// All ranks agree the override and initial pseudo-CFL before iteration.
@@ -51,6 +53,9 @@ namespace DNDS::Cauchy
         void EvaluateEquation(CFV::FVField &state, CFV::FVField &value, real mass, real rhsScale, real time);
         /// Rank-local snapshot after the most recent equation evaluation.
         std::pair<int, real> ReconstructionStats() const;
+        /// Already agreed by the FV reconstruction's global norm. No MPI here.
+        /// With strict acceptance disabled, fixed-sweep Euler behavior remains.
+        bool ReconstructionConverged() const;
         /// Apply a separate increment using the same Euler flow5 PP policy as
         /// the smoother. Returns global (limited cells, minimum fraction).
         /// Candidate admissibility is agreed before any state values change.

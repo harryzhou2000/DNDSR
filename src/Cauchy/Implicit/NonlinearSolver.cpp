@@ -16,6 +16,7 @@ namespace DNDS::Cauchy
         R::ExecutionStream stream;
         ImplicitSettings settings;
         bool positivity;
+        real reconstructionTolerance;
         MPIInfo mpi;
         R::ArrayStorage::Shared stateOwned, stateGhost;
         CFV::FVField spatial, defect, candidate;
@@ -27,7 +28,9 @@ namespace DNDS::Cauchy
         Data(const FiniteVolume &fv, CFV::FVField &state, std::shared_ptr<FiniteVolume::Workspace> work,
              R::EagerEngine &executor, R::ExecutionStream lane, const DomainSettings &controls)
             : discrete(fv), workspace(std::move(work)), engine(&executor), stream(std::move(lane)), settings(controls.implicit),
-              positivity(controls.numerics.positivity), mpi(fv.Metrics().Communicator()), stateOwned(state.Owned().SharedStorage()), stateGhost(state.Ghost().SharedStorage()),
+              positivity(controls.numerics.positivity),
+              reconstructionTolerance(controls.implicit.requireConvergedReconstruction && controls.numerics.reconstruction == "variational" ? controls.numerics.reconstructionTolerance : 0),
+              mpi(fv.Metrics().Communicator()), stateOwned(state.Owned().SharedStorage()), stateGhost(state.Ghost().SharedStorage()),
               spatial(fv.Metrics().BuildField(state.Owned().Layout())), defect(fv.Metrics().BuildField(state.Owned().Layout())), candidate(fv.Metrics().BuildField(state.Owned().Layout())),
               inversePseudoTime(R::RowLayout::Dense(fv.Metrics().NumCell(), 1)),
               problem(fv.BuildLinearProblem(state, settings.diagonal == "block" ? DiagonalStorage::Block : DiagonalStorage::Entries))
@@ -70,6 +73,8 @@ namespace DNDS::Cauchy
         MPI::LocalStage(mpi, [&]
                         {
             settings.implicit.Validate(); discrete.Metrics().ValidateField(state, 5);
+            DNDS_check_throw_info(!settings.implicit.requireConvergedReconstruction || settings.numerics.reconstruction != "variational" || settings.numerics.reconstructionTolerance > 0,
+                                  "strict implicit VR acceptance requires a positive reconstructionTolerance");
             DNDS_check_throw_info(workspace && stream.Context().device == R::Device::Host(), "implicit stage needs a CPU workspace and stream");
             AuxiliaryRequest required; required.faceSpectralRadius = required.cellSpectralSum = true;
             discrete.RequireWorkspaceChannels(*workspace, required);
@@ -135,7 +140,7 @@ namespace DNDS::Cauchy
                 } });
             MPI_Allreduce(MPI_IN_PLACE, norm.data(), 6, MPI_DOUBLE, MPI_SUM, data.mpi.comm);
             DNDS_check_throw_info(std::isfinite(norm[5]) && norm[5] > 0, "invalid global stage volume");
-            bool converged = iteration >= std::min(data.settings.minIterations, limit);
+            bool converged = iteration >= std::min(data.settings.minIterations, limit) && ReconstructionConverged();
             for (int j = 0; j < 5; ++j)
             {
                 report.residual[j] = std::sqrt(norm[j] / norm[5]);
@@ -243,6 +248,10 @@ namespace DNDS::Cauchy
     std::pair<int, real> NonlinearSolver::ReconstructionStats() const
     {
         return {_data->discrete.LastReconstructionIterations(*_data->workspace), _data->discrete.LastReconstructionUpdate(*_data->workspace)};
+    }
+    bool NonlinearSolver::ReconstructionConverged() const
+    {
+        return _data->reconstructionTolerance <= 0 || ReconstructionStats().second <= _data->reconstructionTolerance;
     }
     std::pair<index, real> NonlinearSolver::ApplyCorrection(CFV::FVField &state, const CFV::FVField &increment, real scale)
     {

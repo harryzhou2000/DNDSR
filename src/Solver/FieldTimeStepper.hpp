@@ -116,7 +116,9 @@ namespace DNDS::ODE
         /// nonnegative; relative scaling also preserves tiny physical horizons.
         static bool ReachedTimeTarget(real time, real target)
         {
-            return time >= target || target - time <= 64 * std::numeric_limits<real>::epsilon() * std::max(std::abs(time), std::abs(target));
+            // Allow modest accumulated addition error, e.g. 800 IV steps or
+            // 2500 cylinder steps, while scaling down for tiny time horizons.
+            return time >= target || target - time <= 1024 * std::numeric_limits<real>::epsilon() * std::max(std::abs(time), std::abs(target));
         }
         /// Allocate an independent empty-history workspace with identical method
         /// and local-error policy, e.g. to prepare a restart transaction before

@@ -99,6 +99,8 @@ namespace DNDS::Cauchy
         {
             const auto &settings = domain.settings;
             settings.implicit.Validate();
+            DNDS_check_throw_info(!settings.implicit.requireConvergedReconstruction || settings.numerics.reconstruction != "variational" || settings.numerics.reconstructionTolerance > 0,
+                                  "strict implicit VR acceptance requires a positive reconstructionTolerance");
             DNDS_check_throw_info(!domain.placement.name.empty() && !domain.placement.ranks.empty(), "Cauchy domain needs a name and ranks");
             std::set<int> ranks;
             for (int rank : domain.placement.ranks)

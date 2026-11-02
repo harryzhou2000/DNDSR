@@ -3,6 +3,13 @@
 #include "Cauchy/Config/SimulationConfig.hpp"
 
 namespace C = DNDS::Cauchy;
+TEST_CASE("Strict implicit VR acceptance needs an explicit positive reconstruction tolerance")
+{
+    C::Json input{{"defaults", {{"implicit", {{"requireConvergedReconstruction", true}}}, {"numerics", {{"reconstruction", "variational"}}}}}};
+    CHECK_THROWS(C::SimulationConfig::Resolve(input, 1));
+    input["defaults"]["numerics"]["reconstructionTolerance"] = 1e-10;
+    CHECK(C::SimulationConfig::Resolve(input, 1).Domains()[0].settings.implicit.requireConvergedReconstruction);
+}
 TEST_CASE("Steady config resolves Euler's BDF1 infinite timestep override with provenance")
 {
     const auto config = C::SimulationConfig::Resolve({{"time", {{"steady", true}, {"method", "esdirk4"}, {"steps", 123}, {"finalTime", 10}, {"cfl", 1}, {"maxRetries", 3}}}}, 2);

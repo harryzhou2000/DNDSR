@@ -175,7 +175,7 @@ namespace DNDS::Cauchy
             // Fine residual acceptance owns this snapshot; a coarse smoother's
             // last workspace must not be reported as the physical fine VR.
             std::tie(report.reconstructionIterations, report.reconstructionRelativeUpdate) = data.fineSolver->ReconstructionStats();
-            bool converged = report.iterations >= data.settings.minIterations;
+            bool converged = report.iterations >= data.settings.minIterations && data.fineSolver->ReconstructionConverged();
             for (int j = 0; j < 5; ++j)
                 converged = converged && report.residual[j] <= std::max(data.settings.absoluteTolerance, data.settings.relativeTolerance * report.initialResidual[j]);
             if (converged || cycle == data.settings.multigrid.cycles)

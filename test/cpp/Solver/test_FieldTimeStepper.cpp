@@ -121,6 +121,15 @@ TEST_CASE("Native time target comparison excludes only relative roundoff remaind
     CHECK_FALSE(O::FieldTimeStepper::ReachedTimeTarget(299.9, 300));
     CHECK_FALSE(O::FieldTimeStepper::ReachedTimeTarget(0, 1e-20));
     CHECK_FALSE(O::FieldTimeStepper::ReachedTimeTarget(1, 1.00001));
+    for (const auto [steps, dt] : {std::pair<int, double>{800, .00125}, {2500, .1}})
+    {
+        double time = 0;
+        for (int iStep = 0; iStep < steps - 1; ++iStep)
+            time += dt;
+        CHECK_FALSE(O::FieldTimeStepper::ReachedTimeTarget(time, steps * dt));
+        time += dt;
+        CHECK(O::FieldTimeStepper::ReachedTimeTarget(time, steps * dt));
+    }
 }
 TEST_CASE("Native BDF history is committed explicitly and retries use the last accepted step ratio")
 {

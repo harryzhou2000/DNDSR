@@ -59,6 +59,10 @@ namespace DNDS::Cauchy
                 {
                     auto &numerics = settings["numerics"];
                     numerics.erase("cfv");
+                    // Retuning a reconstruction solve changes neither stored
+                    // means nor the compatible polynomial coefficient schema.
+                    numerics.erase("reconstructionIterations");
+                    numerics.erase("reconstructionTolerance");
                     // Earlier Cauchy archives used pointwise segment limiting.
                     // Missing controls must not silently select Euler's newer
                     // common-beta policy. Inactive PP choices do not affect a

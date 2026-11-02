@@ -82,6 +82,10 @@ TEST_CASE("Checkpoint changes MPI partition and polynomial degree using persiste
     }
     MPI_Barrier(mpi.comm);
     input["defaults"]["numerics"]["cfv"]["maxOrder"] = 3;
+    // Iteration budgets/tolerances are restart controls, not stored physics.
+    // Retune them together with the existing degree/layout/partition migration.
+    input["defaults"]["numerics"]["reconstructionIterations"] = 80;
+    input["defaults"]["numerics"]["reconstructionTolerance"] = 1e-12;
     input["defaults"]["execution"]["layout"] = "soa";
     const auto config = C::SimulationConfig::ResolveCollective(input, mpi.comm);
     auto targetMesh = CauchyTest::PeriodicQuads(mpi, 6);
@@ -107,6 +111,11 @@ TEST_CASE("Checkpoint changes MPI partition and polynomial degree using persiste
                 CHECK(values(iCell, j) == expected[j]);
         }
     }
+    auto incompatible = config.Root();
+    incompatible["domains"][0]["settings"]["numerics"]["flux"] = "Roe";
+    const auto version = target.Flow().Owned().Version();
+    CHECK_THROWS(target.ReadCheckpoint(plain, incompatible));
+    CHECK(target.Flow().Owned().Version() == version);
     target.WriteCheckpoint(cold, config.Root(), true);
     auto serializer = std::make_shared<DNDS::Serializer::SerializerH5>(mpi);
     serializer->OpenFile(cold, true);
