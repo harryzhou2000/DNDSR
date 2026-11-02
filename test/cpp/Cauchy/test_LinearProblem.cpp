@@ -268,6 +268,80 @@ TEST_CASE("Linear matrix construction rejects invalid topology and supports empt
     problem.Diagonal() = R::Array<double>(R::RowLayout::Dense(0, 25));
     CHECK_THROWS(problem.Apply(input, output));
 }
+TEST_CASE("Cauchy native ILU copies only local coefficients and validates ordering fill epochs and local parts")
+{
+    auto communication = std::make_shared<R::CommunicationContext>(MPI_COMM_WORLD);
+    const A::DofSpace space(communication, 4, 2);
+    const std::vector<std::vector<DNDS::index>> columns{{1}, {0, 2}, {1, 3, 4}, {2, 5}};
+    for (auto mode : {C::DiagonalStorage::Entries, C::DiagonalStorage::Block})
+        for (bool coreFirst : {false, true})
+            for (bool parts : {false, true})
+                for (int fill : {0, 1, -1})
+                {
+                    INFO("diagonal mode=" << int(mode) << ", coreFirst=" << coreFirst << ", parts=" << parts << ", fill=" << fill);
+                    C::LinearProblemContext problem(space, 5, columns, {1}, mode);
+                    FillMatrix(problem);
+                    Field rhs(space, R::RowLayout::ColMajor(0, 5, {8, 1})), forward(space, R::RowLayout::TiledColMajor(0, 5, 32)), result(space, 5);
+                    Eigen::VectorXd b(20);
+                    {
+                        auto write = rhs.Owned().Write();
+                        for (DNDS::index iCell = 0; iCell < 4; ++iCell)
+                            for (int j = 0; j < 5; ++j)
+                                write.View<R::UniformTableRows>()(iCell, j) = b[iCell * 5 + j] = RightHandSide(0, iCell)[j];
+                    }
+                    CHECK_FALSE(problem.ILUFactorsCurrent());
+                    CHECK_THROWS(problem.ApplyILU(rhs, forward, result));
+                    CHECK_THROWS(problem.PrepareILUStructure(fill, coreFirst, {0, 5}));
+                    CHECK_THROWS(problem.PrepareILUStructure(6, coreFirst));
+                    problem.PrepareILUStructure(fill, coreFirst, parts ? std::vector<DNDS::index>{0, 2, 4} : std::vector<DNDS::index>{});
+                    CHECK_FALSE(problem.ILUFactorsCurrent());
+                    if (fill < 0 || !coreFirst)
+                        CHECK(problem.ILUForwardCore().empty());
+                    else
+                        CHECK(problem.ILUForwardCore() == std::vector<DNDS::index>{1});
+                    CHECK(problem.ILUBackwardCore().empty());
+                    problem.FactorizeILU();
+                    CHECK(problem.ILUFactorsCurrent());
+                    {
+                        auto activeGhost = rhs.Ghost().Write();
+                        problem.ApplyILU(rhs, forward, result); // local solve reads no ghost
+                    }
+                    Eigen::MatrixXd local = Eigen::MatrixXd::Zero(20, 20);
+                    Eigen::VectorXd x(20);
+                    {
+                        const auto read = result.Owned().Read();
+                        for (DNDS::index iCell = 0; iCell < 4; ++iCell)
+                        {
+                            local.block<5, 5>(5 * iCell, 5 * iCell) = Diagonal(iCell, mode);
+                            for (auto column : columns[iCell])
+                                if (column < 4 && (!parts || iCell / 2 == column / 2))
+                                    local.block<5, 5>(5 * iCell, 5 * column) = OffDiagonal(iCell, column);
+                            for (int j = 0; j < 5; ++j)
+                                x[iCell * 5 + j] = read.View()(iCell, j);
+                        }
+                    }
+                    CHECK((local * x - b).norm() < .01 * b.norm());
+                    if (fill != 0 || parts || !coreFirst)
+                        CHECK((x - local.fullPivLu().solve(b)).norm() < 1e-12);
+                    CHECK_THROWS(problem.ApplyILU(rhs, rhs, result));
+                    CHECK_THROWS(problem.ApplyILU(rhs, forward, forward));
+                    {
+                        auto active = problem.OffDiagonal().Write();
+                        CHECK_FALSE(problem.ILUFactorsCurrent());
+                        CHECK_THROWS(problem.ApplyILU(rhs, forward, result));
+                    }
+                    CHECK_FALSE(problem.ILUFactorsCurrent());
+                    CHECK_THROWS(problem.ApplyILU(rhs, forward, result));
+                    problem.FactorizeILU();
+                    CHECK(problem.ILUFactorsCurrent());
+                }
+    const A::DofSpace empty(communication, 0, 0);
+    C::LinearProblemContext zero(empty, 5, {}, {}, C::DiagonalStorage::Block);
+    Field rhs(empty, 5), forward(empty, 5), output(empty, 5);
+    zero.PrepareILUStructure();
+    zero.FactorizeILU();
+    CHECK_NOTHROW(zero.ApplyILU(rhs, forward, output));
+}
 TEST_CASE("Linear diagonal preparation handles general component counts and reports guarded inverse fallback")
 {
     const A::DofSpace space(1);

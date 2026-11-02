@@ -790,6 +790,9 @@ TEST_CASE("Native block LU supports empty owners and counts guarded inverse fall
 TEST_CASE("Native triangular phases retain owners and advance independent local parts")
 {
     namespace R = DNDS::Runtime;
+    auto coupled = std::make_shared<Direct::SerialSymLUStructure>(g_mpi, 2);
+    coupled->ObtainSymmetricSymbolicFactorization(std::vector<std::vector<DNDS::index>>{{1}, {0}}, {0, 1, 2}, 0);
+    CHECK_THROWS(Direct::NativeBlockLU(coupled, 2));
     auto symbolic = std::make_shared<Direct::SerialSymLUStructure>(g_mpi, 2);
     std::vector<std::vector<DNDS::index>> rows(2);
     symbolic->ObtainSymmetricSymbolicFactorization(rows, {0, 1, 2}, 0);

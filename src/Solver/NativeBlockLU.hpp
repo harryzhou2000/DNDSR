@@ -58,6 +58,16 @@ namespace DNDS::Direct
         static std::vector<index> Counts(const ssp<SerialSymLUStructure> &symbolic)
         {
             DNDS_check_throw_info(symbolic && symbolic->hasSymbolicPattern, "native blocks need a published symbolic pattern");
+            const auto &parts = symbolic->localPartStarts;
+            DNDS_check_throw_info(parts.size() >= 2 && parts.front() == 0 && parts.back() == symbolic->Num() && std::is_sorted(parts.begin(), parts.end()),
+                                  "invalid native factor local parts");
+            if (parts.size() > 2)
+                for (index part = 0; part + 1 < index(parts.size()); ++part)
+                    for (index iCell = parts[part]; iCell < parts[part + 1]; ++iCell)
+                        for (const auto *row : {&symbolic->lowerTriStructure[iCell], &symbolic->upperTriStructure[iCell]})
+                            for (auto other : *row)
+                                DNDS_check_throw_info(other >= parts[part] && other < parts[part + 1],
+                                                      "native factor local parts have cross-part dependencies; supply induced part graphs");
             std::vector<index> result(symbolic->Num());
             for (index iCell = 0; iCell < symbolic->Num(); ++iCell)
                 result[iCell] = 1 + index(symbolic->lowerTriStructure[iCell].size()) + index(symbolic->upperTriStructure[iCell].size());

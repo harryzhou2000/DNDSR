@@ -53,6 +53,8 @@ namespace DNDS::Cauchy
         uint64_t _diagonalIdentity = 0, _diagonalShape = 0, _offDiagonalIdentity = 0;
         bool _inverseCurrent = false;
         index _inverseFallbacks = 0;
+        struct ILUState;
+        std::shared_ptr<ILUState> _ilu;
         static std::shared_ptr<const Pattern> BuildPattern(const Algebra::DofSpace &space, std::vector<std::vector<index>> columns, std::vector<index> core);
         const Pattern &Layout() const
         {
@@ -137,5 +139,21 @@ namespace DNDS::Cauchy
         /// is no MPI between lower and upper. This unsplit convenience owns all
         /// leases for the call; staged/communication orchestration is separate.
         void ApplySGS(const Field &rhs, const Field &input, Field &forward, Field &output) const;
+        /// Rank-local incomplete/full factor structure. Off-rank columns stay
+        /// in Apply but are excluded from local factors. Core-first ordering
+        /// is optional and precedes symbolic fill; local parts are independent.
+        void PrepareILUStructure(int fill = 0, bool coreFirst = true, const std::vector<index> &localParts = {});
+        /// Copy current native coefficients into the prepared factor template,
+        /// then factor numerically. No inverse/SGS state or MPI halo is changed.
+        void FactorizeILU();
+        bool ILUFactorsCurrent() const;
+        /// Dependency-safe ready rows from the conservative input core through
+        /// both symbolic scans. Complete LU provides no bounded-core promise.
+        const std::vector<index> &ILUForwardCore() const;
+        const std::vector<index> &ILUBackwardCore() const;
+        /// One full local factor solve, no communication between scans. Parent
+        /// matrix generations are checked while reads are pinned. RHS, forward
+        /// scratch and output are separate native fields on the same row space.
+        void ApplyILU(const Field &rhs, Field &forward, Field &output) const;
     };
 }

@@ -17,6 +17,13 @@ guard, then filtered-SVD fallback. The storage-independent implementation is
 `Solver/BlockInverse.hpp`; native LU and Cauchy diagonal preparation share it.
 Fallback counts are safe across local parts.
 
+Multiple native local parts require independent factor graphs. The native
+constructor rejects cross-part factor edges. Generic symbolic construction
+preserves supplied edges; callers provide induced part graphs before fill.
+Passing part boundaries alone does not remove those couplings. This guard
+prevents independent numeric/triangular scans from silently using cross-part
+dependencies. It does not alter the legacy generic symbolic algorithm.
+
 The caller serializes mutation and execution. A new symbolic generation needs a
 new native storage owner. Matrix writes invalidate factors. Solve pins matrix
 and factor reads before checking versions, rejecting an active unpublished

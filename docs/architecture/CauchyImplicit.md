@@ -56,8 +56,33 @@ and a cube with physical slip boundaries. They include integrated time/pseudo-ti
 scaling, both diagonal representations where applicable, and stale-input errors.
 These validate the approximate operator; convergence of the eventual nonlinear
 solver and equivalence to a full high-order residual derivative are separate
-questions. Local ILU composition, linear/nonlinear drivers and pMG
-remain under implementation.
+questions. Linear/nonlinear drivers and pMG remain under implementation.
+
+## Local ILU composition
+
+`PrepareILUStructure(fill, coreFirst, localParts)` constructs an independent
+rank-local template, then `FactorizeILU` copies current native coefficients and
+factors them. Fill levels0..5 and complete LU(-1) match the generic Solver
+facility. Local factors exclude off-rank columns, which remain in the full
+matrix action. Explicit local parts additionally exclude cross-part columns
+from the preconditioner, giving independent part solves. The Cauchy adapter
+builds these induced graphs before symbolic fill: the generic symbolic routine
+preserves every supplied edge and does not perform that partitioning itself.
+
+Optional core-first ordering precedes fill and stays within each local part.
+Incomplete templates publish dependency-safe forward and backward ready rows;
+the latter account for the actually available forward rows. An upper ready core
+can be empty. Complete LU has no bounded-core promise. No physical field/halo
+mapping is reordered by this setup.
+
+`ApplyILU(rhs, forward, result)` uses separate native fields and the guarded
+local triangular solve. It acquires no RHS ghost lease and posts no MPI between
+scans. Matrix coefficient generations are checked while source reads are pinned;
+changed/active diagonal or off-diagonal values require numeric refactorization.
+Symbolic preparation and numerical factorization are independent of SGS inverse
+preparation. Dense-local reference tests check optional ordering, diagonal modes,
+fill, independent local parts, held ghost writers, empty owners and stale factors.
+The generic legacy factor algorithm and its first-build arithmetic stay intact.
 
 ## Staged symmetric GS and publication
 
