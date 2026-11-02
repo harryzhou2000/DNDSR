@@ -594,6 +594,61 @@ TEST_CASE("Generic ranged factors and separate triangular outputs preserve the f
     }
 }
 
+TEST_CASE("Rebuilding symbolic factors replaces previous row incidences")
+{
+    const std::vector<std::vector<DNDS::index>> adjacency{{1}, {0, 2}, {1, 3}, {2}};
+    for (int fill : {0, 1, -1})
+    {
+        auto symbolic = std::make_shared<Direct::SerialSymLUStructure>(g_mpi, 4);
+        symbolic->ObtainSymmetricSymbolicFactorization(adjacency, {0, 4}, fill);
+        const auto lower = symbolic->lowerTriStructure, upper = symbolic->upperTriStructure;
+        const auto lowerNew = symbolic->lowerTriStructureNew, upperNew = symbolic->upperTriStructureNew;
+        const auto generation = symbolic->generation;
+        symbolic->ObtainSymmetricSymbolicFactorization(adjacency, {0, 4}, fill);
+        CHECK(symbolic->generation == generation + 1);
+        REQUIRE(symbolic->lowerTriStructure == lower);
+        REQUIRE(symbolic->upperTriStructure == upper);
+        REQUIRE(symbolic->lowerTriStructureNew == lowerNew);
+        REQUIRE(symbolic->upperTriStructureNew == upperNew);
+        Direct::NativeBlockLU matrix(symbolic, 2);
+        {
+            auto write = matrix.Matrix().Write();
+            const auto blocks = write.View();
+            for (DNDS::index i = 0; i < 4; ++i)
+            {
+                blocks(i, 0) = Eigen::Matrix2d::Identity() * 4;
+                for (DNDS::index j = 1; j < blocks.BlockNumber(i); ++j)
+                    blocks(i, j) = -Eigen::Matrix2d::Identity();
+            }
+        }
+        matrix.Factorize();
+        Runtime::Array<DNDS::real> rhs(Runtime::RowLayout::Dense(4, 2)), forward(rhs.Layout()), output(rhs.Layout());
+        {
+            auto write = rhs.Write();
+            for (DNDS::index i = 0; i < 4; ++i)
+                for (int j = 0; j < 2; ++j)
+                    write.View()(i, j) = 4 - DNDS::index(adjacency[i].size());
+        }
+        matrix.Solve(rhs, forward, output);
+        const auto read = output.Read();
+        for (DNDS::index i = 0; i < 4; ++i)
+            for (int j = 0; j < 2; ++j)
+                CHECK(read.View()(i, j) == doctest::Approx(1).epsilon(1e-13));
+    }
+}
+TEST_CASE("Unreported symbolic construction is rank local")
+{
+    if (g_mpi.rank == 0)
+    {
+        auto symbolic = std::make_shared<Direct::SerialSymLUStructure>(g_mpi, 2);
+        symbolic->ObtainSymmetricSymbolicFactorization(std::vector<std::vector<DNDS::index>>{{1}, {0}}, {0, 2}, 0, false);
+        CHECK(symbolic->hasSymbolicPattern);
+        CHECK(symbolic->lowerTriStructure[1] == std::vector<DNDS::index>{0});
+    }
+    // Other ranks never enter construction. Its optional diagnostics must not
+    // introduce a hidden collective before this explicit test synchronization.
+    MPI_Barrier(g_mpi.comm);
+}
 TEST_CASE("Native block matrix shares immutable row metadata and retains access lifetime")
 {
     using Storage = DNDS::Algebra::BlockMatrixStorage;

@@ -22,6 +22,8 @@ distributed gates and the measured gains and regressions by shape.
 ## Architecture entry points
 
 Cauchy development starts at the [solver contracts and ledger](architecture/Cauchy.md).
+Native linear operators, Jacobian assembly, staged SGS and local ILU are described
+in [Cauchy implicit operator contracts](architecture/CauchyImplicit.md).
 The initial CPU single-domain flow solver uses native CFV P3/WBAP; numerical
 case qualification and implicit/physical multi-domain execution remain separate
 gates. The placement foundation mock alone is not a fluid validation.

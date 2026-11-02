@@ -24,6 +24,12 @@ Passing part boundaries alone does not remove those couplings. This guard
 prevents independent numeric/triangular scans from silently using cross-part
 dependencies. It does not alter the legacy generic symbolic algorithm.
 
+Rebuilding a generic symbolic object clears its previous incidence rows while
+reusing row capacities. A new generation replaces the old pattern rather than
+appending duplicate entries. Optional `report=false` suppresses the generic
+communicator-synchronized diagnostic output, keeping the construction local;
+the default retains legacy diagnostics. Native Cauchy uses the local mode.
+
 The caller serializes mutation and execution. A new symbolic generation needs a
 new native storage owner. Matrix writes invalidate factors. Solve pins matrix
 and factor reads before checking versions, rejecting an active unpublished

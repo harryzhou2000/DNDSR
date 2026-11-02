@@ -42,7 +42,7 @@ namespace DNDS::Cauchy
         prepared->symbolic = std::make_shared<Direct::SerialSymLUStructure>(MPIInfo(_space.Communicator()), rows);
         if (coreFirst)
             prepared->symbolic->SetCoreFirstOrdering(_pattern->core, parts);
-        prepared->symbolic->ObtainSymmetricSymbolicFactorization(adjacency, parts, fill);
+        prepared->symbolic->ObtainSymmetricSymbolicFactorization(adjacency, parts, fill, false);
         if (fill >= 0)
         {
             prepared->forwardCore = prepared->symbolic->ReadySolveRows(_pattern->core, true);

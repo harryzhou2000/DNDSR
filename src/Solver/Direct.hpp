@@ -161,12 +161,15 @@ namespace DNDS::Direct
          * @tparam TAdj
          * @param cell2cellFaceV is std::vector<std::vector<index>> -like which holds **symmetric** local adjacency
          * @param iluCode -1: full LU, 0,1,2... incomplete LU defined using expanded stencil
+         * @param report Preserve communicator-synchronized legacy diagnostic
+         * output when true. False performs local construction without those
+         * diagnostic MPI collectives. All input rows must already be local.
          */
         template <class TAdj>
         void ObtainSymmetricSymbolicFactorization(
             const TAdj &cell2cellFaceV,
             const std::vector<index> localPartStarts_in,
-            int iluCode)
+            int iluCode, bool report = true)
         {
             hasSymbolicPattern = false;
             localPartStarts = localPartStarts_in;
@@ -274,6 +277,13 @@ namespace DNDS::Direct
             for (index iCellP = 0; iCellP < this->Num(); iCellP++)
             {
                 index iCell = this->FillingReorderNew2Old(iCellP);
+                // resize() preserves existing rows on a rebuild. Clear their
+                // incidences while retaining capacity before publishing the
+                // next symbolic generation; otherwise pushes duplicate them.
+                lowerTriStructure[iCell].clear();
+                upperTriStructure[iCell].clear();
+                lowerTriStructureNew[iCellP].clear();
+                upperTriStructureNew[iCellP].clear();
                 lowerTriStructure[iCell].reserve(triLowRows[iCellP].size());
                 upperTriStructure[iCell].reserve(triUppRows[iCellP].size());
                 lowerTriStructureNew[iCellP].reserve(triLowRows[iCellP].size());
@@ -295,17 +305,20 @@ namespace DNDS::Direct
                 // those of in *New Rows
                 // col indices in *New Rows are sorted
             }
-            if (mpi.rank == 0)
-                log() << "Direct::ObtainSymmetricSymbolicFactorization(): Factorizing Done" << std::endl;
-            MPISerialDo(mpi, [&]()
-                        { log() << fmt::format("  ({}, {}/{})", mpi.rank,
-                                               nnzLower + nnzUpper + this->Num(),
-                                               nnzOrig)
-                                << (((mpi.rank + 1) % 10) ? "" : "\n")
-                                << std::flush; });
-            MPI::Barrier(mpi.comm);
-            if (mpi.rank == 0)
-                log() << std::endl;
+            if (report)
+            {
+                if (mpi.rank == 0)
+                    log() << "Direct::ObtainSymmetricSymbolicFactorization(): Factorizing Done" << std::endl;
+                MPISerialDo(mpi, [&]()
+                            { log() << fmt::format("  ({}, {}/{})", mpi.rank,
+                                                   nnzLower + nnzUpper + this->Num(),
+                                                   nnzOrig)
+                                    << (((mpi.rank + 1) % 10) ? "" : "\n")
+                                    << std::flush; });
+                MPI::Barrier(mpi.comm);
+                if (mpi.rank == 0)
+                    log() << std::endl;
+            }
             DNDS_assert_info(nnzLower == nnzUpper, fmt::format("nnzLower,Upper: [{},{}]", nnzLower, nnzUpper));
 
             // pre-search
