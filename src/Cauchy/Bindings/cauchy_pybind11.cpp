@@ -19,6 +19,8 @@ PYBIND11_MODULE(cauchy_pybind11, m)
         .def_readonly("multigrid_cycles", &C::NonlinearIterationReport::multigridCycles)
         .def_readonly("level_corrections", &C::NonlinearIterationReport::levelCorrections)
         .def_readonly("initial_residual", &C::NonlinearIterationReport::initialResidual)
+        .def_readonly("reference_residual", &C::NonlinearIterationReport::referenceResidual)
+        .def_readonly("residual_target_ratio", &C::NonlinearIterationReport::residualTargetRatio)
         .def_readonly("residual", &C::NonlinearIterationReport::residual)
         .def_readonly("rhs_limited", &C::NonlinearIterationReport::rhsLimited)
         .def_readonly("increment_limited", &C::NonlinearIterationReport::incrementLimited);

@@ -2,6 +2,7 @@
 #include "doctest.h"
 #include "Cauchy/Implicit/NonlinearSolver.hpp"
 #include "Cauchy/Implicit/PositivityReduction.hpp"
+#include "Cauchy/Implicit/ResidualConvergence.hpp"
 #include "CartesianFixture.hpp"
 #include <limits>
 
@@ -9,6 +10,97 @@ namespace C = DNDS::Cauchy;
 namespace R = DNDS::Runtime;
 namespace A = DNDS::Algebra;
 static DNDS::MPIInfo mpi;
+TEST_CASE("Implicit convergence retains initial and running references without hiding unselected components")
+{
+    for (const auto *reference : {"initial", "runningMaximum"})
+    {
+        C::ImplicitSettings settings;
+        settings.relativeTolerance = .1;
+        settings.absoluteTolerance = 0;
+        settings.residualReference = reference;
+        settings.Validate();
+        C::ResidualConvergence policy(settings);
+        CHECK_FALSE(policy.Accepted());
+        policy.Observe({2, 3, 0, 0, 0});
+        policy.Observe({4, 1, 0, 0, 0});
+        policy.Observe({.3, .2, 0, 0, 0});
+        CHECK(policy.Initial() == C::FlowState{2, 3, 0, 0, 0});
+        const bool running = settings.residualReference == "runningMaximum";
+        CHECK(policy.Reference()[0] == (running ? 4 : 2));
+        CHECK(policy.Accepted() == running);
+        CHECK(policy.TargetRatio() == doctest::Approx(running ? .75 : 1.5));
+        CHECK_THROWS(policy.Observe({0, -1, 0, 0, 0}));
+    }
+    C::ImplicitSettings exact;
+    exact.relativeTolerance = exact.absoluteTolerance = 0;
+    exact.residualComponents = {0};
+    C::ResidualConvergence policy(exact);
+    policy.Observe({0, 100, 0, 0, 0});
+    CHECK(policy.Accepted());
+    CHECK(policy.TargetRatio() == 0);
+    CHECK(policy.Initial()[1] == 100);
+    policy.Observe({1e-300, 100, 0, 0, 0});
+    CHECK_FALSE(policy.Accepted());
+    CHECK(std::isfinite(policy.TargetRatio()));
+    for (const std::vector<int> components : {std::vector<int>{}, {0, 0}, {-1}, {5}})
+    {
+        exact.residualComponents = components;
+        CHECK_THROWS(exact.Validate());
+    }
+    exact.residualComponents = {0};
+    exact.normOrder = 3;
+    CHECK_THROWS(exact.Validate());
+    exact.normOrder = 1;
+    exact.residualReference = "unknown";
+    CHECK_THROWS(exact.Validate());
+}
+TEST_CASE("Distributed implicit L1 L2 norms and selected-component stops use the actual manufactured defect")
+{
+    const auto mesh = CauchyTest::PeriodicQuads(mpi, 4);
+    for (int order : {1, 2})
+        for (bool densityOnly : {false, true})
+        {
+            C::DomainSettings settings;
+            settings.numerics.reconstruction = "constant";
+            settings.implicit.minIterations = 0;
+            settings.implicit.normOrder = order;
+            settings.implicit.relativeTolerance = .1;
+            settings.implicit.absoluteTolerance = 1e-12;
+            settings.implicit.residualReference = "runningMaximum";
+            if (densityOnly)
+                settings.implicit.residualComponents = {0};
+            const auto equation = C::EquationSystem::Resolve(settings.equation);
+            C::FiniteVolume fv(mesh, settings, equation);
+            const auto layout = order == 1 ? R::RowLayout::ColMajor(0, 5) : R::RowLayout::TiledColMajor(0, 5, 4);
+            auto state = fv.Metrics().BuildField(layout), source = fv.Metrics().BuildField(layout);
+            fv.Initialize(state, {}, {1, 0, 0, 0, 1});
+            const auto mean = equation.Gas().Conservative({1, 0, 0, 0, 1});
+            {
+                auto write = source.Owned().Write();
+                const auto values = write.View<R::UniformTableRows>();
+                for (DNDS::index iCell = 0; iCell < values.RowCount(); ++iCell)
+                {
+                    for (int j = 0; j < 5; ++j)
+                        values(iCell, j) = 20 * mean[j];
+                    values(iCell, 4) += .1 * (fv.Metrics().Cells().LocalToGlobal(iCell) + 1);
+                }
+            }
+            R::EagerEngine engine;
+            const auto stream = engine.CreateCPUStream();
+            C::AuxiliaryRequest request;
+            request.faceSpectralRadius = request.cellSpectralSum = true;
+            C::NonlinearSolver solver(fv, state, fv.BuildWorkspace(state, request), engine, stream, settings);
+            const auto version = state.Owned().Version();
+            const auto report = solver.Solve(state, source, 20, 1, 0, 0, {0, 0});
+            CHECK(report.iterations == 0);
+            CHECK(report.converged == densityOnly);
+            CHECK(report.residual[0] == 0);
+            CHECK(report.residual[4] == doctest::Approx(order == 1 ? .85 : std::sqrt(.935)).epsilon(1e-12));
+            CHECK(report.initialResidual == report.referenceResidual);
+            CHECK(report.residualTargetRatio == doctest::Approx(densityOnly ? 0 : 10));
+            CHECK(state.Owned().Version() == version);
+        }
+}
 TEST_CASE("Euler alpha reductions agree sparse triggers and reject mismatched policies or statistics")
 {
     for (const auto scope : {C::AlphaReduction::Cell, C::AlphaReduction::MinimumLimited, C::AlphaReduction::MinimumAll})

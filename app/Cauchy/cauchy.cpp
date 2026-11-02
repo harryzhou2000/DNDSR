@@ -69,15 +69,13 @@ int main(int argc, char **argv)
                 DNDS::real implicitRatio = 0;
                 int implicitFinalVRSweeps = 0;
                 DNDS::real implicitFinalVRUpdate = 0;
-                const auto &implicit = config.Domains()[0].settings.implicit;
                 for (const auto &report : domain.LastImplicitStages())
                 {
                     nonlinearIterations += report.iterations;
                     linearIterations += report.linearIterations;
                     implicitFinalVRSweeps = std::max(implicitFinalVRSweeps, report.reconstructionIterations);
                     implicitFinalVRUpdate = std::max(implicitFinalVRUpdate, report.reconstructionRelativeUpdate);
-                    for (int j = 0; j < 5; ++j)
-                        implicitRatio = std::max(implicitRatio, report.residual[j] / std::max(std::max(implicit.absoluteTolerance, implicit.relativeTolerance * report.initialResidual[j]), DNDS::verySmallReal));
+                    implicitRatio = std::max(implicitRatio, report.residualTargetRatio);
                 }
                 if (mpi.rank == 0)
                 {

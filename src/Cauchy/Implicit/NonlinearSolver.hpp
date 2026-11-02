@@ -16,7 +16,10 @@ namespace DNDS::Cauchy
         index iterations = 0, linearIterations = 0, rhsLimited = 0, incrementLimited = 0;
         index multigridCycles = 0;
         std::vector<index> levelCorrections;
-        FlowState initialResidual{}, residual{};
+        /// All component norms remain visible even for a selected-component
+        /// stop. Reference may be a running maximum; initial never changes.
+        FlowState initialResidual{}, referenceResidual{}, residual{};
+        real residualTargetRatio = 0;
         real minimumRHSAlpha = 1, minimumIncrementAlpha = 1, pseudoCFL = 0;
         /// Final equation evaluation's reconstruction, not an observation
         /// workspace or a sum/max over every inner reconstruction evaluation.

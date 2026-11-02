@@ -22,11 +22,27 @@ transient with an outer residual stop is not this steady mode.
 
 `implicit.consoleInterval` enables rank-zero progress at selected nonlinear
 iterations; zero disables it. These norms are the uncompressed equation
-residual, volume-weighted L2 per component, tested against the initial stage
-norm and absolute floor. Euler's current stopping rule instead uses density's
-volume-weighted L1 ratio to the running maximum. A baseline comparison must
-record this difference; other components above Euler's density threshold do
-not imply Euler failed its own stopping rule.
+residual. Defaults remain volume-weighted L2 for all five components, tested
+against each initial stage norm and the absolute floor. Explicit controls are
+`normOrder=1|2`, `residualReference="initial"|"runningMaximum"` and the distinct
+component indices in `residualComponents` (default `[0,1,2,3,4]`). L1 is
+`sum(abs(integratedDefect))/sum(volume)`; L2 is
+`sqrt(sum(integratedDefect^2/volume)/sum(volume))`. Selection only controls
+acceptance: all component norms are still computed and reported. Reference
+norms reset at solve entry and running maxima include the current evaluation.
+Single-level and finest p-FAS acceptance use the same small policy after the
+existing global norm reduction, with no additional collective.
+
+Euler's density/L1/running-maximum criterion is selected with
+`normOrder=1`, `residualReference="runningMaximum"`, `residualComponents=[0]`
+and its relative tolerance (absoluteTolerance0 for a purely relative target).
+This choice does not assert convergence of the other equations. Reports retain
+both `initialResidual` and `referenceResidual`, plus the selected-component
+`residualTargetRatio`; CSV and Python use that ratio rather than recomputing an
+all-component initial-reference ratio. A zero requested target means exact
+zero; an unmet zero target reports the largest finite ratio. The separate
+DITR coupled H/I outer controller retains its own documented controls. Align
+linear relaxation and VR warmup too before calling a baseline matched.
 
 `implicit.requireConvergedReconstruction=true` additionally requires the
 finest VR update to meet `numerics.reconstructionTolerance` before accepting

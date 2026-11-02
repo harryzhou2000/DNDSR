@@ -1,6 +1,7 @@
 #include "Cauchy/Implicit/NonlinearSolver.hpp"
 #include "Cauchy/Physics/ImplicitPositivity.hpp"
 #include "Cauchy/Implicit/PositivityReduction.hpp"
+#include "Cauchy/Implicit/ResidualConvergence.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
 #include <tuple>
 #include <iostream>
@@ -113,6 +114,7 @@ namespace DNDS::Cauchy
         MPI_Allreduce(MPI_IN_PLACE, &maxLimit, 1, MPI_INT64_T, MPI_MAX, data.mpi.comm);
         DNDS_check_throw_info(minimum == maximum && minLimit == maxLimit, "implicit stage coefficients differ between ranks");
         NonlinearIterationReport report;
+        ResidualConvergence convergence(data.settings);
         report.pseudoCFL = control.initialPseudoCFL == 0 ? data.settings.pseudoCFL : control.initialPseudoCFL;
         const index limit = control.correctionLimit < 0 ? data.settings.iterations : control.correctionLimit;
         auto geometry = data.discrete.Metrics().AcquireRead();
@@ -135,20 +137,22 @@ namespace DNDS::Cauchy
                     {
                         const real value = rhsScale * residual(iCell, j) + volume * (constant(iCell, j) - mass * mean(iCell, j));
                         DNDS_check_throw_info(std::isfinite(value), "nonfinite implicit stage defect");
-                        output(iCell, j) = value; norm[j] += value * value / volume;
+                        output(iCell, j) = value;
+                        norm[j] += data.settings.normOrder == 1 ? std::abs(value) : value * value / volume;
                     }
                 } });
             MPI_Allreduce(MPI_IN_PLACE, norm.data(), 6, MPI_DOUBLE, MPI_SUM, data.mpi.comm);
             DNDS_check_throw_info(std::isfinite(norm[5]) && norm[5] > 0, "invalid global stage volume");
-            bool converged = iteration >= std::min(data.settings.minIterations, limit) && ReconstructionConverged();
             for (int j = 0; j < 5; ++j)
             {
-                report.residual[j] = std::sqrt(norm[j] / norm[5]);
+                report.residual[j] = data.settings.normOrder == 1 ? norm[j] / norm[5] : std::sqrt(norm[j] / norm[5]);
                 DNDS_check_throw_info(std::isfinite(report.residual[j]), "nonfinite global stage norm");
-                if (iteration == 0)
-                    report.initialResidual[j] = report.residual[j];
-                converged = converged && report.residual[j] <= std::max(data.settings.absoluteTolerance, data.settings.relativeTolerance * report.initialResidual[j]);
             }
+            convergence.Observe(report.residual);
+            report.initialResidual = convergence.Initial();
+            report.referenceResidual = convergence.Reference();
+            report.residualTargetRatio = convergence.TargetRatio();
+            const bool converged = iteration >= std::min(data.settings.minIterations, limit) && ReconstructionConverged() && convergence.Accepted();
             report.iterations = iteration;
             if (control.correctionLimit < 0 && data.settings.consoleInterval > 0 && data.mpi.rank == 0 && (iteration % data.settings.consoleInterval == 0 || converged || iteration == limit))
                 std::cout << "Cauchy nonlinear stage " << stage << " iteration " << iteration << " residual " << Json(report.residual).dump()

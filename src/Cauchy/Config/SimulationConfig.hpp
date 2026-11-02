@@ -217,6 +217,9 @@ namespace DNDS::Cauchy
         index iterations = 100, minIterations = 1;
         index consoleInterval = 0;
         real relativeTolerance = 1e-8, absoluteTolerance = 1e-11;
+        int normOrder = 2;
+        std::string residualReference = "initial";
+        std::vector<int> residualComponents{0, 1, 2, 3, 4};
         real pseudoCFL = 10, maxPseudoCFL = 1e4, pseudoGrowth = 1.3, relaxation = 1;
         bool roeDissipation = false, collectiveChecks = true;
         bool requireConvergedReconstruction = false;
@@ -232,8 +235,11 @@ namespace DNDS::Cauchy
             DNDS_FIELD(iterations, "Maximum nonlinear corrections per physical stage");
             DNDS_FIELD(minIterations, "Minimum corrections before accepting a stage");
             DNDS_FIELD(consoleInterval, "Rank-zero nonlinear residual/VR progress interval; zero disables it");
-            DNDS_FIELD(relativeTolerance, "Per-component stage residual tolerance relative to its initial norm");
+            DNDS_FIELD(relativeTolerance, "Selected-component stage residual tolerance relative to its configured reference");
             DNDS_FIELD(absoluteTolerance, "Per-component absolute volume-weighted stage residual tolerance");
+            DNDS_FIELD(normOrder, "Volume-weighted residual norm: 1 or 2");
+            DNDS_FIELD(residualReference, "initial or runningMaximum per-component reference within one solve");
+            DNDS_FIELD(residualComponents, "Distinct flow5 component indices required for convergence; all five by default");
             DNDS_FIELD(pseudoCFL, "Initial local pseudo-time CFL for each stage");
             DNDS_FIELD(maxPseudoCFL, "Maximum pseudo-time CFL");
             DNDS_FIELD(pseudoGrowth, "CFL growth factor after each nonlinear correction");

@@ -1,4 +1,5 @@
 #include "Cauchy/Multigrid/PolynomialMultigrid.hpp"
+#include "Cauchy/Implicit/ResidualConvergence.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
 #include <tuple>
 
@@ -88,14 +89,18 @@ namespace DNDS::Cauchy
                 for (index iCell = 0; iCell < f.RowCount(); ++iCell)
                 {
                     const real volume = metric.GetCellVol(iCell); norm[5] += volume;
-                    for (int j = 0; j < 5; ++j) { const real difference = b(iCell, j) - f(iCell, j); norm[j] += volume * difference * difference; }
+                    for (int j = 0; j < 5; ++j)
+                    {
+                        const real difference = b(iCell, j) - f(iCell, j);
+                        norm[j] += settings.normOrder == 1 ? volume * std::abs(difference) : volume * difference * difference;
+                    }
                 } });
             MPI_Allreduce(MPI_IN_PLACE, norm.data(), 6, MPI_DOUBLE, MPI_SUM, mpi.comm);
             DNDS_check_throw_info(norm[5] > 0 && std::isfinite(norm[5]), "invalid FAS global volume");
             FlowState result{};
             for (int j = 0; j < 5; ++j)
             {
-                result[j] = std::sqrt(norm[j] / norm[5]);
+                result[j] = settings.normOrder == 1 ? norm[j] / norm[5] : std::sqrt(norm[j] / norm[5]);
                 DNDS_check_throw_info(std::isfinite(result[j]), "nonfinite FAS finest residual");
             }
             return result;
@@ -166,6 +171,7 @@ namespace DNDS::Cauchy
             data.BuildCycle();
         std::fill(data.smootherCFL.begin(), data.smootherCFL.end(), data.settings.pseudoCFL);
         NonlinearIterationReport report;
+        ResidualConvergence convergence(data.settings);
         data.report = &report;
         report.levelCorrections.assign(data.coarse.size() + 1, 0);
         report.initialResidual = data.Measure(source);
@@ -175,9 +181,11 @@ namespace DNDS::Cauchy
             // Fine residual acceptance owns this snapshot; a coarse smoother's
             // last workspace must not be reported as the physical fine VR.
             std::tie(report.reconstructionIterations, report.reconstructionRelativeUpdate) = data.fineSolver->ReconstructionStats();
-            bool converged = report.iterations >= data.settings.minIterations && data.fineSolver->ReconstructionConverged();
-            for (int j = 0; j < 5; ++j)
-                converged = converged && report.residual[j] <= std::max(data.settings.absoluteTolerance, data.settings.relativeTolerance * report.initialResidual[j]);
+            convergence.Observe(report.residual);
+            report.initialResidual = convergence.Initial();
+            report.referenceResidual = convergence.Reference();
+            report.residualTargetRatio = convergence.TargetRatio();
+            const bool converged = report.iterations >= data.settings.minIterations && data.fineSolver->ReconstructionConverged() && convergence.Accepted();
             if (converged || cycle == data.settings.multigrid.cycles)
             {
                 report.converged = converged;

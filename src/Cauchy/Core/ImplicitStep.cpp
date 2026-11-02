@@ -151,6 +151,8 @@ namespace DNDS::Cauchy
                 details["linear_iterations"] = last.linearIterations;
                 details["pseudo_cfl"] = last.pseudoCFL;
                 details["initial_residual"] = last.initialResidual;
+                details["reference_residual"] = last.referenceResidual;
+                details["residual_target_ratio"] = last.residualTargetRatio;
                 details["last_residual"] = last.residual;
                 details["vr_sweeps"] = last.reconstructionIterations;
                 details["vr_relative_update"] = last.reconstructionRelativeUpdate;

@@ -179,6 +179,16 @@ namespace DNDS::Cauchy
     }
     void ImplicitSettings::Validate() const
     {
+        DNDS_check_throw_info((normOrder == 1 || normOrder == 2) &&
+                                  (residualReference == "initial" || residualReference == "runningMaximum") &&
+                                  !residualComponents.empty(),
+                              "invalid implicit residual norm/reference/components");
+        std::array<bool, 5> selected{};
+        for (const auto component : residualComponents)
+        {
+            DNDS_check_throw_info(component >= 0 && component < 5 && !selected[component], "implicit residual components must be distinct flow5 indices");
+            selected[component] = true;
+        }
         const auto nonnegative = [](real value)
         { return std::isfinite(value) && value >= 0; };
         DNDS_check_throw_info((diagonal == "entries" || diagonal == "block") && (!roeDissipation || diagonal == "block") &&
