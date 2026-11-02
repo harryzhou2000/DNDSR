@@ -44,7 +44,7 @@ namespace DNDS::CFV
             DNDS_FIELD(maxOrder, "Polynomial degree, 1..3");
             DNDS_FIELD(intOrder, "Integration degree, at least polynomial degree plus one");
             DNDS_FIELD(jacobiRelax, "Jacobi/SOR relaxation");
-            DNDS_FIELD(SORInstead, "Use ordered in-place SOR");
+            DNDS_FIELD(SORInstead, "Use ordered two-buffer SOR with completed local predecessors from the output");
             DNDS_FIELD(coreFirst, "Use conservative node-star core before dependent cells for ordered SOR");
             DNDS_FIELD(HQMWeights, "Legacy HQM_OPT derivative and HQM_SD geometry weights");
             config.field_section(&T::functional, "functional", "Independent isotropic functional weights and length policy");

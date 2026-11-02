@@ -29,6 +29,7 @@ namespace DNDS::Cauchy
         std::string device = "cpu", layout = "aos", communication = "mpi-direct";
         int hostThreads = 0;
         bool checkAccess = true;
+        bool overlap = true;
         DNDS_DECLARE_CONFIG(ExecutionSettings)
         {
             DNDS_FIELD(device, "Required numerical backend; no implicit fallback");
@@ -36,6 +37,7 @@ namespace DNDS::Cauchy
             DNDS_FIELD(communication, "Payload transport");
             DNDS_FIELD(hostThreads, "CPU worker count; zero means inline execution");
             DNDS_FIELD(checkAccess, "Validate declared scheduled accesses at submission");
+            DNDS_FIELD(overlap, "Overlap input halo exchanges with owned-only core work; false waits then runs unsplit kernels");
         }
     };
     struct MeshSettings

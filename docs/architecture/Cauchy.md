@@ -363,3 +363,19 @@ by HaloDependent with an active coefficient transfer. They check unchanged
 owned input generations, equivalent optional thermodynamic caching, missing
 required-field errors, and sensitivity to separately supplied wave/pressure
 signals. Auxiliary preparation cannot be silently repeated inside this API.
+
+`execution.overlap` selects the domain's split orchestration. It defaults to
+true. Mean exchange can run while local physical boundary values are built;
+each VR or descending WBAP sweep and the final RHS can compute owned-only core
+rows while its coefficient halo is active. With false, the wrapper waits for
+the same exchange, skips Core and invokes All once. It retains identical transfer
+and publication contracts. Auxiliary preparation and viscous-gradient preparation
+still require completed means; overlapping their own core work is a separate
+phase item.
+
+Split SOR automatically visits core rows first. For an exact comparison with an
+unsplit SOR run, also select `numerics.cfv.coreFirst=true`: otherwise changing
+the ordering changes the finite-sweep method. CPU inline and worker launchers
+use the same orchestration. Tests compare two retained-guess residual evaluations
+with viscosity, H-correction and WBAP enabled, for both Jacobi and SOR, including
+the resulting reconstruction coefficients.

@@ -1161,6 +1161,70 @@ TEST_CASE("A rank-local Riemann stencil setting rejects collectively before opti
     auto state = fv.Metrics().BuildField(5);
     CHECK_THROWS_WITH_AS(fv.BuildWorkspace(state), doctest::Contains("Riemann stencil capability differs"), std::exception);
 }
+TEST_CASE("Cauchy overlap and unsplit orchestration agree across CPU launchers")
+{
+    const auto mesh = CFVTest::CartesianHexes(mpi, 8);
+    for (bool sor : {false, true})
+    {
+        std::vector<DNDS::real> expected;
+        for (bool overlap : {false, true})
+            for (int workers : {0, 2})
+            {
+                C::DomainSettings settings;
+                settings.mesh.dimension = 3;
+                settings.equation.transport = "NewtonianFourier";
+                settings.equation.viscosity = .01;
+                settings.boundaries["7"].kind = "extrapolate";
+                settings.execution.overlap = overlap;
+                settings.numerics.reconstruction = "variational";
+                settings.numerics.reconstructionIterations = 3;
+                settings.numerics.cfv.maxOrder = 2;
+                settings.numerics.cfv.SORInstead = sor;
+                // Split SOR implicitly uses this logical ordering. Select it
+                // explicitly for All so this is an identical-order comparison.
+                settings.numerics.cfv.coreFirst = true;
+                settings.numerics.limiter = "WBAP";
+                settings.numerics.flux = "Roe_M9";
+                const auto equation = C::EquationSystem::Resolve(settings.equation);
+                C::FiniteVolume fv(mesh, settings, equation);
+                auto state = fv.Metrics().BuildField(5), residual = fv.Metrics().BuildField(5);
+                {
+                    auto write = state.Owned().Write();
+                    const auto values = write.View<R::UniformTableRows>();
+                    for (DNDS::index iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+                    {
+                        const auto point = fv.Metrics().GetCellCent(iCell);
+                        const auto u = equation.Gas().Conservative({1 + .03 * std::sin(4 * point[0]), .2 + .02 * point[1], -.1, .05, 1 + .02 * std::cos(3 * point[2])});
+                        for (int j = 0; j < 5; ++j)
+                            values(iCell, j) = u[j];
+                    }
+                }
+                const auto version = state.Owned().Version();
+                auto work = fv.BuildWorkspace(state);
+                R::EagerEngine engine(workers, std::make_shared<R::AccessTrackingContext>());
+                const auto stream = engine.CreateCPUStream();
+                // A second evaluation also exercises the retained VR guess.
+                for (int iteration = 0; iteration < 2; ++iteration)
+                    fv.Evaluate(state, residual, *work, engine, stream);
+                CHECK(state.Owned().Version() == version);
+                CHECK(fv.LastFaceFallbacks(*work) == 0);
+                std::vector<DNDS::real> values;
+                const std::array<const R::Array<DNDS::real> *, 2> outputs{&residual.Owned(), &fv.ReconstructionGuess(*work).Owned()};
+                for (const auto *array : outputs)
+                {
+                    auto read = array->Read();
+                    const auto view = read.View<R::UniformTableRows>();
+                    for (DNDS::index iCell = 0; iCell < view.RowCount(); ++iCell)
+                        for (DNDS::index j = 0; j < view.RowSize(iCell); ++j)
+                            values.push_back(view(iCell, j));
+                }
+                if (!overlap && workers == 0)
+                    expected = values;
+                else
+                    CHECK(values == expected);
+            }
+    }
+}
 TEST_CASE("Stateless RHS consumes packed auxiliary views and preserves frozen inputs")
 {
     const auto mesh = CFVTest::CartesianHexes(mpi, 16);

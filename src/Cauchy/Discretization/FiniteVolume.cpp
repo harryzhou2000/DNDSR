@@ -299,8 +299,18 @@ namespace DNDS::Cauchy
         auto meshRead = _data->mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
         const auto mesh = meshRead.HostView();
         const auto &gas = _data->equation.Gas();
+        const bool overlap = _data->settings.execution.overlap;
+        auto exchange = [&](R::TransferBinding &binding)
+        {
+            auto operation = engine.ChecksAccess() ? binding.BeginChecked(stream) : binding.BeginScheduled(stream.Context());
+            operation.Wait();
+        };
+        std::optional<R::TransferOperation> meanOperation;
+        if (overlap)
+            meanOperation.emplace(engine.ChecksAccess() ? work.meanHalo.BeginChecked(stream) : work.meanHalo.BeginScheduled(stream.Context()));
         // Explicit quadrature values keep BC policy out of CFV kernels. All
-        // stages refresh these values from their own current mean state.
+        // stages refresh these values from their own current mean state. They
+        // read owned means only, so the mean ghost write can remain active.
         {
             auto mean = state.Owned().Read();
             const auto values = mean.View<R::UniformTableRows>();
@@ -320,11 +330,6 @@ namespace DNDS::Cauchy
             fill(work.boundary.values, _data->reconstruction);
             fill(work.gradientBoundary, _data->gradient);
         }
-        auto exchange = [&](R::TransferBinding &binding)
-        {
-            auto operation = engine.ChecksAccess() ? binding.BeginChecked(stream) : binding.BeginScheduled(stream.Context());
-            operation.Wait();
-        };
         const auto updateReconstructionBoundary = [&]
         {
             auto mean = state.Owned().Read(), coefficients = work.reconstruction.coefficients.Owned().Read(), basis = _data->basis.Read();
@@ -349,7 +354,10 @@ namespace DNDS::Cauchy
                     values(iPoint, j) = face[j];
             }
         };
-        exchange(work.meanHalo);
+        if (meanOperation)
+            meanOperation->Wait();
+        else
+            exchange(work.meanHalo);
         MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
                         { PrepareAuxValues(state, work.auxiliary, time); });
         if (work.waveHalo)
@@ -377,9 +385,11 @@ namespace DNDS::Cauchy
                 if (_data->settings.numerics.reconstructionBoundaryFromPolynomial)
                     updateReconstructionBoundary();
                 auto operation = engine.ChecksAccess() ? work.coefficientHalo.BeginChecked(stream) : work.coefficientHalo.BeginScheduled();
-                _data->reconstruction.DoReconstructionIterTo(state, work.reconstruction.coefficients, work.reconstruction, work.boundary, CFV::ReconstructionRegion::Core);
+                if (overlap)
+                    _data->reconstruction.DoReconstructionIterTo(state, work.reconstruction.coefficients, work.reconstruction, work.boundary, CFV::ReconstructionRegion::Core);
                 operation.Wait();
-                _data->reconstruction.DoReconstructionIterTo(state, work.reconstruction.coefficients, work.reconstruction, work.boundary, CFV::ReconstructionRegion::HaloDependent);
+                _data->reconstruction.DoReconstructionIterTo(state, work.reconstruction.coefficients, work.reconstruction, work.boundary,
+                                                             overlap ? CFV::ReconstructionRegion::HaloDependent : CFV::ReconstructionRegion::All);
                 work.iterations = iteration + 1;
                 bool converged = false;
                 if ((_data->settings.numerics.reconstructionTolerance > 0 && iteration % 4 == 3) || iteration + 1 == _data->settings.numerics.reconstructionIterations)
@@ -436,13 +446,16 @@ namespace DNDS::Cauchy
             }
             if (_data->settings.numerics.characteristicLimiter)
                 _data->reconstruction.FinalizeFaceTransform(work.characteristic); });
-            exchange(work.coefficientHalo);
             for (int order = _data->settings.numerics.cfv.maxOrder; order >= 1; --order)
             {
-                _data->reconstruction.DoLimiterWBAP_3OrderTo(work.reconstruction, order, _data->settings.numerics.characteristicLimiter ? &work.characteristic : nullptr);
+                auto operation = engine.ChecksAccess() ? work.coefficientHalo.BeginChecked(stream) : work.coefficientHalo.BeginScheduled(stream.Context());
+                if (overlap)
+                    _data->reconstruction.DoLimiterWBAP_3OrderTo(work.reconstruction, order, _data->settings.numerics.characteristicLimiter ? &work.characteristic : nullptr,
+                                                                 CFV::ReconstructionRegion::Core);
+                operation.Wait();
+                _data->reconstruction.DoLimiterWBAP_3OrderTo(work.reconstruction, order, _data->settings.numerics.characteristicLimiter ? &work.characteristic : nullptr,
+                                                             overlap ? CFV::ReconstructionRegion::HaloDependent : CFV::ReconstructionRegion::All);
                 _data->reconstruction.CommitReconstruction(work.reconstruction);
-                if (order > 1)
-                    exchange(work.coefficientHalo);
             }
         }
         if (_data->settings.numerics.positivity)
@@ -574,11 +587,12 @@ namespace DNDS::Cauchy
             coreAuxiliary.cellWaveJump->ghost = {};
         if (coreAuxiliary.cellPressureMinimum)
             coreAuxiliary.cellPressureMinimum->ghost = {};
-        R::SubmitArrays(engine, stream, [kernel, gradientInput = FieldView{gradients.owned, {}}, coreAuxiliary](auto, auto mean, auto rec, auto result)
-                        { kernel(CFV::ReconstructionRegion::Core, FieldView{mean, {}}, FieldView{rec, {}}, gradientInput, coreAuxiliary, result); }, R::ReadAs<R::UniformTableRows>(state.Owned()), R::ReadAs<R::UniformTableRows>(work.reconstruction.coefficients.Owned()), R::WriteAs<R::UniformTableRows>(residual.Owned()));
+        if (overlap)
+            R::SubmitArrays(engine, stream, [kernel, gradientInput = FieldView{gradients.owned, {}}, coreAuxiliary](auto, auto mean, auto rec, auto result)
+                            { kernel(CFV::ReconstructionRegion::Core, FieldView{mean, {}}, FieldView{rec, {}}, gradientInput, coreAuxiliary, result); }, R::ReadAs<R::UniformTableRows>(state.Owned()), R::ReadAs<R::UniformTableRows>(work.reconstruction.coefficients.Owned()), R::WriteAs<R::UniformTableRows>(residual.Owned()));
         operation.Wait();
-        R::SubmitArrays(engine, stream, [kernel, gradients, auxiliary](auto, auto mean, auto meanGhost, auto rec, auto recGhost, auto result)
-                        { kernel(CFV::ReconstructionRegion::HaloDependent, FieldView{mean, meanGhost}, FieldView{rec, recGhost}, gradients, auxiliary, result); }, R::ReadAs<R::UniformTableRows>(state.Owned()), R::ReadAs<R::UniformTableRows>(state.Ghost()), R::ReadAs<R::UniformTableRows>(work.reconstruction.coefficients.Owned()), R::ReadAs<R::UniformTableRows>(work.reconstruction.coefficients.Ghost()), R::WriteAs<R::UniformTableRows>(residual.Owned()));
+        R::SubmitArrays(engine, stream, [kernel, gradients, auxiliary, overlap](auto, auto mean, auto meanGhost, auto rec, auto recGhost, auto result)
+                        { kernel(overlap ? CFV::ReconstructionRegion::HaloDependent : CFV::ReconstructionRegion::All, FieldView{mean, meanGhost}, FieldView{rec, recGhost}, gradients, auxiliary, result); }, R::ReadAs<R::UniformTableRows>(state.Owned()), R::ReadAs<R::UniformTableRows>(state.Ghost()), R::ReadAs<R::UniformTableRows>(work.reconstruction.coefficients.Owned()), R::ReadAs<R::UniformTableRows>(work.reconstruction.coefficients.Ghost()), R::WriteAs<R::UniformTableRows>(residual.Owned()));
         // Local read scopes pin geometry/cache pointers through both submitted
         // phases. A later async public wrapper can retain these same scopes;
         // this CPU synchronous convenience observes only its own stream prefix.
