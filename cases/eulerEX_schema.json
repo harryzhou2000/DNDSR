@@ -2001,14 +2001,17 @@
                         "indicatorMode": {
                             "type": "string",
                             "default": "Activity",
-                            "description": "Named RRI formula family, not a tuned recipe: Activity = original/broadA activity product; StiffnessRatio = legacy v2 diffusion/stiffness ratio (larger ratio favors Strang); ChemistryEscape = BA-CE6 broadA plus chemistry escape; TransportBalance = Balance/B-E2 matched-rate balance; MatchedRateRatio = localRXX matched diffusion/chemistry ratio; ChemicalResponse = Kinetic/H01P2, coupled share H(||Js d||/||Js s||;r0,pr). See docs/guides/reactive_split_method.md for formulas and recipe parameters. Use a string, not a legacy integer.",
+                            "description": "Named RRI formula family, not a tuned recipe: Activity = original/broadA activity product; StiffnessRatio = legacy v2 diffusion/stiffness ratio (larger ratio favors Strang); ChemistryEscape = BA-CE6 broadA plus chemistry escape; TransportBalance = Balance/B-E2 matched-rate balance; MatchedRateRatio = localRXX matched diffusion/chemistry ratio; ChemicalResponse = Kinetic/H01P2, coupled share H(||Js d||/||Js s||;r0,pr). GradientRateRatio = GR, coupled share H(B/A;r0,pr), independent of dt, with broadA's gradient-based B. GradientRateRatioCentered = GR-C, the same map with a least-squares normalized gradient in B. ThermalRateRatio = TWR, coupled share H(B_T/A_T;r0,pr), where A_T=|dot(T)/T| at constant volume and B_T=kappa*|grad ln T|^2/(rho*cv). See docs/guides/reactive_split_method.md for formulas and recipe parameters. Use a string, not a legacy integer.",
                             "enum": [
                                 "Activity",
                                 "StiffnessRatio",
                                 "ChemistryEscape",
                                 "TransportBalance",
                                 "MatchedRateRatio",
-                                "ChemicalResponse"
+                                "ChemicalResponse",
+                                "GradientRateRatio",
+                                "GradientRateRatioCentered",
+                                "ThermalRateRatio"
                             ]
                         },
                         "escapeStiffnessThreshold": {
@@ -2056,14 +2059,53 @@
                         "ratioThreshold": {
                             "type": "number",
                             "default": 0.1,
-                            "description": "Ratio midpoint r0 for modes 1, 4 and 5",
+                            "description": "Ratio midpoint r0 for StiffnessRatio, MatchedRateRatio, ChemicalResponse, GradientRateRatio variants and ThermalRateRatio",
                             "minimum": 0.0
                         },
                         "ratioExponent": {
                             "type": "number",
                             "default": 2.0,
-                            "description": "Ratio Hill exponent pr for modes 1, 4 and 5",
+                            "description": "Ratio Hill power pr for StiffnessRatio, MatchedRateRatio, ChemicalResponse, GradientRateRatio variants and ThermalRateRatio",
                             "minimum": 0.0
+                        },
+                        "thermalSpeciesRateWeight": {
+                            "type": "number",
+                            "default": 0.0,
+                            "description": "TWR optional species-rate weight beta in A_+=sqrt(A_T^2+beta^2 A_Y^2); 0 keeps thermal-only A_T",
+                            "minimum": 0.0
+                        },
+                        "thermalGradientMode": {
+                            "type": "integer",
+                            "default": 0,
+                            "description": "TWR log-temperature gradient: 0=centered least-squares (default TWR01P4), 1=minimum absolute neighbor slope (bounded, reduces cell-scale chi oscillation)",
+                            "minimum": 0.0,
+                            "maximum": 1.0
+                        },
+                        "thermalChiSmoothingPasses": {
+                            "type": "integer",
+                            "default": 0,
+                            "description": "TWR optional 3-point chi smoothing passes after selection; 0 preserves TWR01P4, 1-4 regularize cell-scale switching",
+                            "minimum": 0.0,
+                            "maximum": 4.0
+                        },
+                        "thermalChiMedianPasses": {
+                            "type": "integer",
+                            "default": 0,
+                            "description": "TWR optional 3-point chi median passes after selection; 0 preserves TWR01P4, 1-4 remove isolated cell flips while preserving 0/1",
+                            "minimum": 0.0,
+                            "maximum": 4.0
+                        },
+                        "thermalChiMaxPasses": {
+                            "type": "integer",
+                            "default": 0,
+                            "description": "TWR optional 3-point chi max passes after selection; 0 preserves TWR01P4, 1-4 remove coupled islands and bias toward Strang",
+                            "minimum": 0.0,
+                            "maximum": 4.0
+                        },
+                        "thermalChiMaxBinary": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "With thermalChiMaxPasses, snap chi to 0/1 before the neighbor max to avoid creating mixed cells"
                         },
                         "coupledThreshold": {
                             "type": "number",

@@ -171,12 +171,54 @@ no claim of grid convergence follows from its continuous-field limit.
 
 Zero $B_T$ selects Strang, including both-zero rates. Positive $B_T$ with
 zero $A_T$ selects coupled. There is no timestep, shock/activity gate,
-chemical Jacobian, spatial expansion or smoothing in this strategy.
+chemical Jacobian or spatial expansion in the base selector; optional
+chi smoothing is described below.
 `ratioThreshold` and `ratioExponent` set $r_0$ and $p_r$. The current
 recommended candidate **TWR01P4** uses $r_0=0.01$, $p_r=4$, coupled snap
 tolerance 0.01 and Strang snap tolerance 0.05. **TWR03P4** ($r_0=0.03$)
 retains a slightly smaller coupled region and remains the ESDIRK2 `.0004`
 interface accuracy control. This selects a recipe, not a solver default:
+
+Three optional TWR controls are available and all default to the original
+TWR01P4 behavior. `thermalSpeciesRateWeight` adds a species mass-production
+term, $A_+=\sqrt{A_T^2+\beta^2A_Y^2}$, with
+$A_Y^2=\sum_k(\dot m_k/\rho)^2$; the default $\beta=0$ keeps thermal-only
+$A_T$. `thermalGradientMode=1` replaces the centered least-squares
+log-temperature gradient with the minimum absolute one-sided neighbor slope,
+which removes the centered cancellation at extrema but is not recommended as
+a universal default. `thermalChiSmoothingPasses=1..4` applies that many
+three-point face-neighbor averages to $\chi$ after selection, followed by the
+normal endpoint snap. The smoothed candidate **TWR01P4S2** (two passes) gave
+the ESDIRK2 `.002` flame error `-0.980%` with zero reaction-zone crossings and
+TV `1.15`, close to TWR01P4's `-0.961%` and much smoother than its `8.57`
+crossings. The full 32 us n-heptane smoothing row remains too costly; a
+one-step pilot kept ignition `chi=0.999` with interface `chi=0.866`. These are
+research options, not new defaults.
+
+`thermalChiMedianPasses=1..4` is the cheaper alternative: each pass replaces a
+cell's $\chi$ by the median of itself and its face neighbors, so isolated
+single-cell flips are removed while exact 0/1 values are preserved. It is
+intended for cases where the mean filter's broad mixed band makes the implicit
+chemistry solve too expensive.
+
+`thermalChiMaxPasses=1..4` is the Strang-preserving option: each pass replaces
+$\chi$ by the maximum of itself and its face neighbors. It removes coupled
+islands and biases isolated cells toward Strang, reducing coupled work rather
+than broadening the mixed band. It is the appropriate choice when the coupled
+step, not switching noise, is the cost bottleneck.
+
+With `thermalChiMaxBinary=true`, the max pass first snaps each cell to 0/1 at
+the 0.5 threshold. This prevents the max pass from turning a mixed neighbor
+into a new mixed value and therefore removes the mixed band instead of widening
+it. It is the cheaper discrete variant for expensive two-scale chemistry.
+
+The bounded candidate **TWR01P4BMAX1** uses one binary max pass. In the
+current ESDIRK2/U2R1 flame rows it removes mixed cells and gives errors
+`-0.957%`, `+0.077%`, `+2.986%` and `+12.467%` (the last with `R2=0.960`). The
+full ESDIRK2 n-heptane 32 us row completes in about five minutes with interface
+`21.18/406.30 K` and ignition `10.89/258.46 K`, better than both TWR01P4 and
+broadA on those regional metrics. The U2R1 n-heptane endpoint is still
+unfinished; it is not part of the validated claim.
 
 ```sh
   -k /eulerSettings/reactiveSplitIndicator/indicatorMode -v '"ThermalRateRatio"' \

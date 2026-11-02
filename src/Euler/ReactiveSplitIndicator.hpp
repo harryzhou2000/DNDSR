@@ -87,6 +87,12 @@ namespace DNDS::Euler
         real activitySaturationExponent = 1.0; ///< Shared activity-saturation exponent @f$p@f$.
         real ratioThreshold = 1e-1;            ///< Ratio midpoint @f$r_0@f$; ratio depends on the named strategy.
         real ratioExponent = 2.0;              ///< Ratio Hill power @f$p_r@f$.
+        real thermalSpeciesRateWeight = 0.0;   ///< Optional beta in TWR's A_+=sqrt(A_T^2+beta^2 A_Y^2); zero keeps thermal-only A.
+        int thermalGradientMode = 0;           ///< TWR gradient: 0=centered least-squares, 1=minimum absolute neighbor slope (bounded/minmod-like).
+        int thermalChiSmoothingPasses = 0;     ///< TWR optional 3-point chi smoothing passes after selection; zero preserves TWR01P4.
+        int thermalChiMedianPasses = 0;        ///< TWR optional 3-point chi median passes after selection; preserves 0/1 and removes isolated flips.
+        int thermalChiMaxPasses = 0;           ///< TWR optional 3-point chi max passes after selection; biases isolated cells toward Strang and reduces coupled work.
+        bool thermalChiMaxBinary = false;      ///< With thermalChiMaxPasses, snap cells to 0/1 before taking the neighbor max; avoids creating a mixed band.
         real escapeStiffnessThreshold = 100.0;
         real escapeStiffnessExponent = 2.0;
         real escapeRatioThreshold = 1e-6;
@@ -130,6 +136,12 @@ namespace DNDS::Euler
             DNDS_FIELD(activitySaturationExponent, "Shared activity-saturation exponent p in sat(z;z0,p)", DNDS::Config::range(0.0));
             DNDS_FIELD(ratioThreshold,             "Ratio midpoint r0 for StiffnessRatio, MatchedRateRatio, ChemicalResponse, GradientRateRatio variants and ThermalRateRatio", DNDS::Config::range(0.0));
             DNDS_FIELD(ratioExponent,              "Ratio Hill power pr for StiffnessRatio, MatchedRateRatio, ChemicalResponse, GradientRateRatio variants and ThermalRateRatio", DNDS::Config::range(0.0));
+            DNDS_FIELD(thermalSpeciesRateWeight,   "TWR optional species-rate weight beta in A_+=sqrt(A_T^2+beta^2 A_Y^2); 0 keeps thermal-only A_T", DNDS::Config::range(0.0));
+            DNDS_FIELD(thermalGradientMode,        "TWR log-temperature gradient: 0=centered least-squares (default TWR01P4), 1=minimum absolute neighbor slope (bounded, reduces cell-scale chi oscillation)", DNDS::Config::range(0, 1));
+            DNDS_FIELD(thermalChiSmoothingPasses,  "TWR optional 3-point chi smoothing passes after selection; 0 preserves TWR01P4, 1-4 regularize cell-scale switching", DNDS::Config::range(0, 4));
+            DNDS_FIELD(thermalChiMedianPasses,     "TWR optional 3-point chi median passes after selection; 0 preserves TWR01P4, 1-4 remove isolated cell flips while preserving 0/1", DNDS::Config::range(0, 4));
+            DNDS_FIELD(thermalChiMaxPasses,        "TWR optional 3-point chi max passes after selection; 0 preserves TWR01P4, 1-4 remove coupled islands and bias toward Strang", DNDS::Config::range(0, 4));
+            DNDS_FIELD(thermalChiMaxBinary,        "With thermalChiMaxPasses, snap chi to 0/1 before the neighbor max to avoid creating mixed cells");
             DNDS_FIELD(coupledThreshold,           "Coupled-score midpoint C0", DNDS::Config::range(0.0));
             DNDS_FIELD(transitionWidth,            "Logistic coupled-fraction width w", DNDS::Config::range(0.0));
             DNDS_FIELD(shockScale,                 "Pressure-jump scale h0 in shock gate gh", DNDS::Config::range(0.0));
@@ -176,6 +188,12 @@ namespace DNDS::Euler
             config.check("thermal-rate ratio requires positive ratio controls and no spatial passes", [](const T &s)
                          { return s.indicatorMode != ReactiveSplitIndicatorMode::ThermalRateRatio ||
                                   (s.ratioThreshold > 0 && s.ratioExponent > 0 && s.spatialPasses == 0); });
+            config.check("thermal-rate ratio options require nonnegative species weight, gradient mode 0/1 and 0-4 chi filter passes", [](const T &s)
+                         { return s.indicatorMode != ReactiveSplitIndicatorMode::ThermalRateRatio ||
+                                  (s.thermalSpeciesRateWeight >= 0 && s.thermalGradientMode >= 0 && s.thermalGradientMode <= 1 &&
+                                   s.thermalChiSmoothingPasses >= 0 && s.thermalChiSmoothingPasses <= 4 &&
+                                   s.thermalChiMedianPasses >= 0 && s.thermalChiMedianPasses <= 4 &&
+                                   s.thermalChiMaxPasses >= 0 && s.thermalChiMaxPasses <= 4); });
         }
     };
 
@@ -293,6 +311,12 @@ namespace DNDS::Euler
      * @brief TWR coupled share @f$H(B_T/A_T;r_0,p_r)@f$ from inverse-second thermal rates.
      * @details @f$A_T=|Q_v|/(\rho c_vT)@f$ uses internal-energy release and
      * @f$B_T=\kappa|\nabla\ln(T/T_{\rm ref})|^2/(\rho c_v)@f$.
+     * `thermalSpeciesRateWeight` optionally adds the species mass-production
+     * norm to A; `thermalGradientMode=1` replaces the centered least-squares
+     * gradient with the minimum absolute one-sided neighbor slope;
+     * `thermalChiSmoothingPasses` optionally applies three-point face-neighbor
+     * chi averages after selection. All options default to the original
+     * TWR01P4 behavior.
      * Zero B_T selects Strang, including both-zero states; positive B_T with
      * zero A_T selects coupled. No activity/shock/spatial gate or timestep is
      * included. Inactive thermal gradients can therefore couple. The caller

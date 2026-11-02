@@ -1808,6 +1808,7 @@ namespace DNDS::Euler
         auto &reactiveSplitCoupledScore = reactiveSplit.coupledScore;
         const auto &indicatorSettings = settings.reactiveSplitIndicator;
         const bool useThermalRatio = indicatorSettings.indicatorMode == ReactiveSplitIndicatorMode::ThermalRateRatio;
+        const bool useThermalMinAbsGradient = useThermalRatio && indicatorSettings.thermalGradientMode == 1;
         const bool useMatchedTransport = indicatorSettings.indicatorMode == ReactiveSplitIndicatorMode::TransportBalance ||
                                          indicatorSettings.indicatorMode == ReactiveSplitIndicatorMode::MatchedRateRatio ||
                                          indicatorSettings.indicatorMode == ReactiveSplitIndicatorMode::ChemicalResponse;
@@ -1878,22 +1879,27 @@ namespace DNDS::Euler
                     Chemistry::ConstSpeciesBufferView Y{massFractions.data() + static_cast<size_t>(iCell) * Ns, Ns};
                     const real T = temperature[static_cast<size_t>(iCell)];
                     const real p = pressure[static_cast<size_t>(iCell)];
+                    const real rhoPhysical = u[iCell](0) * settings.idealGasProperty.rho0;
                     chem.productionRates(T, p, Y, {omega.data(), Ns});
                     chem.speciesEnthalpies(T, p, Y, {enthalpy.data(), Ns});
                     real heatReleaseCV = 0;
+                    real speciesRateSquared = 0;
                     for (int k = 0; k < Ns; ++k)
                     {
                         const real massRate = omega[static_cast<size_t>(k)] * chem.molecularWeights()[static_cast<size_t>(k)] * settings.reactiveSourceScale;
                         const real internalEnergy = enthalpy[static_cast<size_t>(k)] - chem.speciesGasConstants()[static_cast<size_t>(k)] * T;
                         heatReleaseCV -= massRate * internalEnergy;
+                        speciesRateSquared += sqr(massRate / rhoPhysical);
                     }
-                    const real rhoPhysical = u[iCell](0) * settings.idealGasProperty.rho0;
                     const real cv = chem.mixtureCv(T, Y, p);
                     const real conductivity = chem.thermalConductivity(T, p, Y);
                     DNDS_assert(std::isfinite(cv) && cv > 0 && std::isfinite(conductivity) && conductivity >= 0);
                     const real chemicalTemperatureRate = std::abs(heatReleaseCV) / (rhoPhysical * cv * T);
+                    const real chemicalRate = std::sqrt(sqr(chemicalTemperatureRate) +
+                                                        sqr(indicatorSettings.thermalSpeciesRateWeight) * speciesRateSquared);
                     Eigen::Matrix<real, 3, 3> normal = Eigen::Matrix<real, 3, 3>::Zero();
                     Eigen::Matrix<real, 3, 1> moments = Eigen::Matrix<real, 3, 1>::Zero();
+                    real minAbsLogSlope = veryLargeReal;
                     real shockSensor = 0;
                     auto c2f = mesh->cell2face[iCell];
                     for (rowsize ic2f = 0; ic2f < c2f.size(); ++ic2f)
@@ -1902,27 +1908,122 @@ namespace DNDS::Euler
                         const index other = mesh->CellFaceOther(iCell, iFace, ic2f);
                         if (other == UnInitIndex)
                             continue;
+                        if (useThermalMinAbsGradient && other == iCell)
+                            continue;
                         const rowsize if2c = mesh->CellIsFaceBack(iCell, iFace, ic2f) ? 0 : 1;
                         const Geom::tPoint separation = vfv->GetOtherCellBaryFromCell(iCell, other, iFace, if2c) - vfv->GetCellBary(iCell);
                         if (!(separation.squaredNorm() > 0))
                             continue;
                         const real otherT = temperature[static_cast<size_t>(other)];
-                        normal.noalias() += separation * separation.transpose();
-                        moments.noalias() += separation * (std::log(otherT) - std::log(T)); // log(T_j/T_i)
+                        const real distance = separation.norm();
+                        const real logSlope = (std::log(otherT) - std::log(T)) / distance;
+                        if (useThermalMinAbsGradient)
+                            minAbsLogSlope = std::min(minAbsLogSlope, std::abs(logSlope));
+                        else
+                        {
+                            normal.noalias() += separation * separation.transpose();
+                            moments.noalias() += separation * (std::log(otherT) - std::log(T)); // log(T_j/T_i)
+                        }
                         const real otherP = pressure[static_cast<size_t>(other)];
                         shockSensor = std::max(shockSensor, std::abs(otherP - p) / std::max({std::abs(p), std::abs(otherP), real(1e-30)}));
                     }
+                    const real gradientSquared = useThermalMinAbsGradient
+                                                     ? (minAbsLogSlope < veryLargeReal ? sqr(minAbsLogSlope) : real(0))
+                                                     : ReactiveSplitLogTemperatureGradientSquared(normal, moments);
                     const real thermalDiffusionRate = conductivity / (rhoPhysical * cv) *
-                                                      ReactiveSplitLogTemperatureGradientSquared(normal, moments) * inverseLengthSquared;
-                    const real coupledFraction = ReactiveSplitThermalRateFraction(chemicalTemperatureRate, thermalDiffusionRate, indicatorSettings);
+                                                      gradientSquared * inverseLengthSquared;
+                    const real coupledFraction = ReactiveSplitThermalRateFraction(chemicalRate, thermalDiffusionRate, indicatorSettings);
                     // Owning cells only. No chi, activity/shock gate, spatial pass
                     // or timestep enters the thermal-rate ratio itself.
-                    reactiveSplitChemicalStep[iCell](0) = dtPhysical * chemicalTemperatureRate;
+                    reactiveSplitChemicalStep[iCell](0) = dtPhysical * chemicalRate;
                     reactiveSplitDiffusiveStep[iCell](0) = dtPhysical * thermalDiffusionRate;
                     reactiveSplitShockSensor[iCell](0) = shockSensor;
                     reactiveSplitCoupledScore[iCell](0) = coupledFraction;
                     reactiveSplitChi[iCell](0) = ReactiveSplitSnapChi(1.0 - coupledFraction, indicatorSettings);
                 }
+            }
+            for (int pass = 0; pass < indicatorSettings.thermalChiSmoothingPasses; ++pass)
+            {
+                reactiveSplitChi.trans.startPersistentPull();
+                reactiveSplitChi.trans.waitPersistentPull();
+                std::vector<real> smoothed(static_cast<size_t>(nCellProc));
+#if defined(DNDS_DIST_MT_USE_OMP)
+#    pragma omp parallel for schedule(static)
+#endif
+                for (index iCell = 0; iCell < mesh->NumCell(); ++iCell)
+                {
+                    real sum = reactiveSplitChi[iCell](0);
+                    int count = 1;
+                    auto c2f = mesh->cell2face[iCell];
+                    for (rowsize ic2f = 0; ic2f < c2f.size(); ++ic2f)
+                    {
+                        const index iFace = c2f[ic2f];
+                        const index other = mesh->CellFaceOther(iCell, iFace, ic2f);
+                        if (other == UnInitIndex || other == iCell)
+                            continue;
+                        sum += reactiveSplitChi[other](0);
+                        ++count;
+                    }
+                    smoothed[static_cast<size_t>(iCell)] = ReactiveSplitSnapChi(sum / count, indicatorSettings);
+                }
+                for (index iCell = 0; iCell < mesh->NumCell(); ++iCell)
+                    reactiveSplitChi[iCell](0) = smoothed[static_cast<size_t>(iCell)];
+            }
+            for (int pass = 0; pass < indicatorSettings.thermalChiMedianPasses; ++pass)
+            {
+                reactiveSplitChi.trans.startPersistentPull();
+                reactiveSplitChi.trans.waitPersistentPull();
+                std::vector<real> filtered(static_cast<size_t>(nCellProc));
+#if defined(DNDS_DIST_MT_USE_OMP)
+#    pragma omp parallel for schedule(static)
+#endif
+                for (index iCell = 0; iCell < mesh->NumCell(); ++iCell)
+                {
+                    std::vector<real> values;
+                    values.reserve(8);
+                    values.push_back(reactiveSplitChi[iCell](0));
+                    auto c2f = mesh->cell2face[iCell];
+                    for (rowsize ic2f = 0; ic2f < c2f.size(); ++ic2f)
+                    {
+                        const index iFace = c2f[ic2f];
+                        const index other = mesh->CellFaceOther(iCell, iFace, ic2f);
+                        if (other == UnInitIndex || other == iCell)
+                            continue;
+                        values.push_back(reactiveSplitChi[other](0));
+                    }
+                    std::sort(values.begin(), values.end());
+                    const real median = values[values.size() / 2];
+                    filtered[static_cast<size_t>(iCell)] = ReactiveSplitSnapChi(median, indicatorSettings);
+                }
+                for (index iCell = 0; iCell < mesh->NumCell(); ++iCell)
+                    reactiveSplitChi[iCell](0) = filtered[static_cast<size_t>(iCell)];
+            }
+            for (int pass = 0; pass < indicatorSettings.thermalChiMaxPasses; ++pass)
+            {
+                reactiveSplitChi.trans.startPersistentPull();
+                reactiveSplitChi.trans.waitPersistentPull();
+                std::vector<real> filtered(static_cast<size_t>(nCellProc));
+#if defined(DNDS_DIST_MT_USE_OMP)
+#    pragma omp parallel for schedule(static)
+#endif
+                for (index iCell = 0; iCell < mesh->NumCell(); ++iCell)
+                {
+                    auto filterValue = [&](real x)
+                    { return indicatorSettings.thermalChiMaxBinary ? (x >= .5 ? real(1) : real(0)) : x; };
+                    real value = filterValue(reactiveSplitChi[iCell](0));
+                    auto c2f = mesh->cell2face[iCell];
+                    for (rowsize ic2f = 0; ic2f < c2f.size(); ++ic2f)
+                    {
+                        const index iFace = c2f[ic2f];
+                        const index other = mesh->CellFaceOther(iCell, iFace, ic2f);
+                        if (other == UnInitIndex || other == iCell)
+                            continue;
+                        value = std::max(value, filterValue(reactiveSplitChi[other](0)));
+                    }
+                    filtered[static_cast<size_t>(iCell)] = ReactiveSplitSnapChi(value, indicatorSettings);
+                }
+                for (index iCell = 0; iCell < mesh->NumCell(); ++iCell)
+                    reactiveSplitChi[iCell](0) = filtered[static_cast<size_t>(iCell)];
             }
             return;
         }
