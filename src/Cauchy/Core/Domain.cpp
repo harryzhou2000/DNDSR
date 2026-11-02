@@ -26,15 +26,22 @@ namespace DNDS::Cauchy
         }
         EquationSystem ResolveEquation(const std::string &name, const DomainSettings &settings)
         {
+            settings.implicit.Validate();
             ResolvedExecutionPlan::Resolve({{name, {0}}, settings});
             return EquationSystem::Resolve(settings.equation);
         }
+        AuxiliaryRequest TimeAuxiliary(const TimeSettings &time)
+        {
+            AuxiliaryRequest request;
+            request.faceSpectralRadius = request.cellSpectralSum = time.method != "ssprk3";
+            return request;
+        }
     }
-    Domain::Domain(std::string name, ssp<Geom::UnstructuredMesh> mesh, const DomainSettings &settings)
+    Domain::Domain(std::string name, ssp<Geom::UnstructuredMesh> mesh, const DomainSettings &settings, const TimeSettings &time)
         : _name(std::move(name)), _equation(ResolveEquation(_name, settings)), _fv(std::move(mesh), settings, _equation),
           _accepted(BuildState(_fv, settings)), _trial(_accepted.Clone()),
           _residual(_fv.Metrics().BuildField(FlowLayout(settings))), _initial(_fv.Metrics().BuildField(FlowLayout(settings))),
-          _workspace(_fv.BuildWorkspace(_trial.Block("flow"))),
+          _workspace(_fv.BuildWorkspace(_trial.Block("flow"), TimeAuxiliary(time))),
           _engine(size_t(settings.execution.hostThreads), settings.execution.checkAccess ? std::make_shared<R::AccessTrackingContext>() : nullptr),
           _stream(_engine.CreateCPUStream())
     {
@@ -42,6 +49,7 @@ namespace DNDS::Cauchy
         _equation.ValidateStateSchema(_accepted);
         DNDS_check_throw_info(_fv.Metrics().Dimension() == settings.mesh.dimension, "Cauchy config/mesh dimension differs");
         DNDS_check_throw_info(_fv.Admissible(Flow()), "Cauchy initial means violate density or minimum-temperature internal-energy bounds");
+        InitializeImplicit(settings, time);
     }
     real Domain::StableStep(real cfl) const
     {
@@ -159,6 +167,13 @@ namespace DNDS::Cauchy
         _lastCharacteristicFallbacks = 0;
         _trialEpoch = _epoch;
         _trialEpoch.trial = ++_nextTrial;
+        if (_timeStepper)
+        {
+            PrepareImplicitStep(dt);
+            _trialTime = _time + dt;
+            _trialReady = true;
+            return;
+        }
         // Shu-Osher SSPRK(3,3), including its non-monotone physical stage times.
         _trialEpoch.stage = 0;
         UpdateStage(dt, 0, 1, _time);
@@ -172,11 +187,13 @@ namespace DNDS::Cauchy
     void Domain::CommitStep()
     {
         MPI::LocalStage(MPIInfo(_fv.Metrics().Communicator()), [&]
-                        { DNDS_check_throw_info(_trialReady, "no prepared Cauchy candidate"); });
+                        { DNDS_check_throw_info(_trialReady && (!_timeStepper || _timeStepper->HasPendingTrial()), "no prepared Cauchy candidate"); });
         auto epoch = _trialEpoch;
         ++epoch.acceptedStep;
         epoch.stage = 0;
         PublishTrial(_trialTime, epoch);
+        if (_timeStepper)
+            _timeStepper->Commit();
     }
     void Domain::PublishTrial(real time, StateEpoch epoch, const R::Array<real> *reconstructionGuess)
     {
@@ -216,6 +233,7 @@ namespace DNDS::Cauchy
         _time = time;
         _epoch = epoch;
         _trialReady = false;
+        _restoreReconstruction = false;
     }
     const CFV::FVField &Domain::Residual()
     {

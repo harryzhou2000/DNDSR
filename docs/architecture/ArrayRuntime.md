@@ -230,6 +230,21 @@ h-indexed segments within one message; they do not create one MPI message per
 segment. The payload path never switches to all-to-all. Metadata discovery,
 schema agreement and reductions are separate collective mechanisms.
 
+`Communication/IdRowTransfer.hpp::BuildRowTransferById` provides cold persistent-
+ID lookup for restart/migration. It builds a distributed hash directory using
+fixed-record `SparseBatchExchange` messages, compares full IDs, and returns an
+ordinary `RowTransferPlan`. Source IDs must be globally unique. Gathering may
+repeat target IDs; optional bijection mode requires exact one-to-one coverage.
+Missing IDs, duplicates and rank-inconsistent policies reject collectively.
+There is no allocation indexed by the global ID range or a global row bitmap;
+directory memory follows received records. Numerical payloads subsequently use
+the normal direct/transient or persistent binding path, without an extra lookup
+packing layer. Keep ID producers host-visible and retain the communicator.
+The plan snapshots row correspondence: callers rebuild after identity/order
+changes, or supply the owning publication's version dependencies. Tests include
+arbitrary rank distribution/local order, empty owners, large sparse IDs,
+SoA/AoSoA payloads and negative correspondence cases.
+
 ```cpp
 RowTransferPlan route(mpi.comm, owned.RowCount(), requests.size(), requests);
 PayloadPlan payload(route, owned.Layout(), ElementSchema::Arithmetic<double>());

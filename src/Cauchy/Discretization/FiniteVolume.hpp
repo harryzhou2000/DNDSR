@@ -115,7 +115,13 @@ namespace DNDS::Cauchy
         FiniteVolume(ssp<Geom::UnstructuredMesh> mesh, const DomainSettings &settings, const EquationSystem &equation);
         const CFV::FiniteVolumePlan &Metrics() const;
         const Geom::UnstructuredMesh &Mesh() const;
-        std::shared_ptr<Workspace> BuildWorkspace(CFV::FVField &state) const;
+        /// Additional channels are allocated once and fused into auxiliary
+        /// preparation. Implicit consumers request face/cell spectral values;
+        /// explicit consumers retain the minimal default packet.
+        std::shared_ptr<Workspace> BuildWorkspace(CFV::FVField &state, AuxiliaryRequest additional = {}) const;
+        /// Check allocation capability before the first Evaluate. This does not
+        /// certify prepared values or input provenance; PreparedAuxValues does.
+        void RequireWorkspaceChannels(const Workspace &workspace, AuxiliaryRequest required) const;
         /// Allocate precisely the requested members once. Callers may instead
         /// supply compatible buffers themselves, including strided tables.
         AuxiliaryValues BuildAuxiliaryValues(AuxiliaryRequest request) const;

@@ -136,12 +136,94 @@ namespace DNDS::Cauchy
             config.field_section(&T::profile, "profile", "Space/time input for analytic boundary values");
         }
     };
+    struct ImplicitLinearSettings
+    {
+        std::string method = "gmres", preconditioner = "sgs";
+        index iterations = 20;
+        int subspace = 10;
+        real relativeTolerance = .1, absoluteTolerance = 1e-12;
+        DNDS_DECLARE_CONFIG(ImplicitLinearSettings)
+        {
+            DNDS_FIELD(method, "sgs or restarted left-gmres");
+            DNDS_FIELD(preconditioner, "Fixed sgs or rank-local ilu for GMRES");
+            DNDS_FIELD(iterations, "Maximum linear iterations per nonlinear correction");
+            DNDS_FIELD(subspace, "Restarted GMRES subspace size");
+            DNDS_FIELD(relativeTolerance, "Relative true-residual tolerance");
+            DNDS_FIELD(absoluteTolerance, "Absolute true-residual tolerance");
+        }
+    };
+    struct ImplicitSGSSettings
+    {
+        int sweeps = 1;
+        bool exchangeBetweenSweeps = false;
+        DNDS_DECLARE_CONFIG(ImplicitSGSSettings)
+        {
+            DNDS_FIELD(sweeps, "Fixed number of zero-started SGS sweeps per GMRES preconditioner application");
+            DNDS_FIELD(exchangeBetweenSweeps, "Expose a forward-halo exchange between the lower and upper SGS scans");
+        }
+    };
+    struct ImplicitILUSettings
+    {
+        int fill = 0;
+        bool coreFirst = true;
+        DNDS_DECLARE_CONFIG(ImplicitILUSettings)
+        {
+            DNDS_FIELD(fill, "Local ILU stencil expansion 0..5, or -1 for complete LU");
+            DNDS_FIELD(coreFirst, "Order core before dependent cells before symbolic fill");
+        }
+    };
+    struct ImplicitPositivitySettings
+    {
+        std::string rhsMode = "rhs";
+        real rhsScale = 1, rhsRelax = .5, incrementRelax = 1;
+        int compressionPower = 1;
+        DNDS_DECLARE_CONFIG(ImplicitPositivitySettings)
+        {
+            DNDS_FIELD(rhsMode, "none, rhs compression, or dTau compression; active only with numerics.positivity");
+            DNDS_FIELD(rhsScale, "Euler RHS-PP trial increment multiplier");
+            DNDS_FIELD(rhsRelax, "Euler RHS/dTau density and energy relaxation in (0,1]");
+            DNDS_FIELD(incrementRelax, "Euler accepted-correction relaxation in (0,1]");
+            DNDS_FIELD(compressionPower, "Positive integer exponent multiplier in Euler alpha compression");
+        }
+    };
+    struct ImplicitSettings
+    {
+        std::string diagonal = "entries";
+        index iterations = 100, minIterations = 1;
+        real relativeTolerance = 1e-8, absoluteTolerance = 1e-11;
+        real pseudoCFL = 10, maxPseudoCFL = 1e4, pseudoGrowth = 1.3, relaxation = 1;
+        bool roeDissipation = false, collectiveChecks = true;
+        ImplicitLinearSettings linear;
+        ImplicitSGSSettings sgs;
+        ImplicitILUSettings ilu;
+        ImplicitPositivitySettings positivity;
+        void Validate() const;
+        DNDS_DECLARE_CONFIG(ImplicitSettings)
+        {
+            DNDS_FIELD(diagonal, "entries or full block diagonal storage");
+            DNDS_FIELD(iterations, "Maximum nonlinear corrections per physical stage");
+            DNDS_FIELD(minIterations, "Minimum corrections before accepting a stage");
+            DNDS_FIELD(relativeTolerance, "Per-component stage residual tolerance relative to its initial norm");
+            DNDS_FIELD(absoluteTolerance, "Per-component absolute volume-weighted stage residual tolerance");
+            DNDS_FIELD(pseudoCFL, "Initial local pseudo-time CFL for each stage");
+            DNDS_FIELD(maxPseudoCFL, "Maximum pseudo-time CFL");
+            DNDS_FIELD(pseudoGrowth, "CFL growth factor after each nonlinear correction");
+            DNDS_FIELD(relaxation, "Multiplier on each computed correction in (0,1]");
+            DNDS_FIELD(roeDissipation, "Use full equation-owned characteristic dissipation; requires block diagonal");
+            DNDS_FIELD(collectiveChecks, "Coordinate local failures between implicit kernels; false selects caller-ordered eager execution");
+            config.field_section(&T::linear, "linear", "Linear solve controls");
+            config.field_section(&T::sgs, "sgs", "Symmetric relaxation controls");
+            config.field_section(&T::ilu, "ilu", "Rank-local factorization controls");
+            config.field_section(&T::positivity, "positivity", "Euler-derived implicit PP controls");
+        }
+    };
     struct DomainSettings
     {
         EquationSettings equation;
         ExecutionSettings execution;
         MeshSettings mesh;
         NumericsSettings numerics;
+        ImplicitSettings implicit;
         std::array<real, 5> initialPrimitive{1, 0, 0, 0, 1};
         FlowProfileSettings initialProfile;
         std::map<std::string, BoundarySettings> boundaries;
@@ -151,6 +233,7 @@ namespace DNDS::Cauchy
             config.field_section(&T::execution, "execution", "Explicit execution capabilities");
             config.field_section(&T::mesh, "mesh", "Mesh input");
             config.field_section(&T::numerics, "numerics", "Discrete operators");
+            config.field_section(&T::implicit, "implicit", "Nonlinear CPU implicit stage controls");
             DNDS_FIELD(initialPrimitive, "Constant initial rho,u,v,w,p");
             config.field_section(&T::initialProfile, "initialProfile", "Quadrature-averaged initial physical field");
             config.field_map_of<BoundarySettings>(&T::boundaries, "boundaries", "Boundary-zone ID to condition");

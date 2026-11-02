@@ -98,6 +98,7 @@ namespace DNDS::Cauchy
         void Validate(const DomainConfig &domain, int size)
         {
             const auto &settings = domain.settings;
+            settings.implicit.Validate();
             DNDS_check_throw_info(!domain.placement.name.empty() && !domain.placement.ranks.empty(), "Cauchy domain needs a name and ranks");
             std::set<int> ranks;
             for (int rank : domain.placement.ranks)
@@ -159,6 +160,27 @@ namespace DNDS::Cauchy
                                       "wall thermal/velocity parameters supplied to a non-wall condition");
             }
         }
+    }
+    void ImplicitSettings::Validate() const
+    {
+        const auto nonnegative = [](real value)
+        { return std::isfinite(value) && value >= 0; };
+        DNDS_check_throw_info((diagonal == "entries" || diagonal == "block") && (!roeDissipation || diagonal == "block") &&
+                                  iterations > 0 && minIterations >= 0 && minIterations <= iterations &&
+                                  nonnegative(relativeTolerance) && nonnegative(absoluteTolerance) &&
+                                  std::isfinite(pseudoCFL) && pseudoCFL > 0 && std::isfinite(maxPseudoCFL) && maxPseudoCFL >= pseudoCFL &&
+                                  std::isfinite(pseudoGrowth) && pseudoGrowth >= 1 && std::isfinite(relaxation) && relaxation > 0 && relaxation <= 1,
+                              "invalid implicit nonlinear/diagonal/pseudo-time controls");
+        DNDS_check_throw_info((linear.method == "sgs" || linear.method == "gmres") && (linear.preconditioner == "sgs" || linear.preconditioner == "ilu") &&
+                                  linear.iterations > 0 && linear.subspace > 0 && linear.subspace < INT_MAX &&
+                                  nonnegative(linear.relativeTolerance) && nonnegative(linear.absoluteTolerance) && sgs.sweeps > 0 && ilu.fill >= -1 && ilu.fill <= 5 &&
+                                  !(linear.method == "gmres" && linear.preconditioner == "ilu" && sgs.exchangeBetweenSweeps),
+                              "invalid implicit linear/SGS/ILU controls");
+        DNDS_check_throw_info((positivity.rhsMode == "none" || positivity.rhsMode == "rhs" || positivity.rhsMode == "dTau") &&
+                                  nonnegative(positivity.rhsScale) && std::isfinite(positivity.rhsRelax) && positivity.rhsRelax > 0 && positivity.rhsRelax <= 1 &&
+                                  std::isfinite(positivity.incrementRelax) && positivity.incrementRelax > 0 && positivity.incrementRelax <= 1 &&
+                                  positivity.compressionPower > 0 && positivity.compressionPower <= INT_MAX / 2,
+                              "invalid implicit Euler-PP controls");
     }
     ResolvedExecutionPlan ResolvedExecutionPlan::Resolve(const DomainConfig &domain)
     {
@@ -287,10 +309,11 @@ namespace DNDS::Cauchy
         Keys(data->root["output"], OutputSettings::schema(), "/output");
         data->time = data->root["time"].get<TimeSettings>();
         data->output = data->root["output"].get<OutputSettings>();
-        DNDS_check_throw_info(data->time.method == "ssprk3" && std::isfinite(data->time.dt) && data->time.dt > 0 && data->time.steps >= 0 &&
+        const std::vector<std::string> timeMethods{"ssprk3", "bdf1", "bdf2", "trapz", "esdirk2", "esdirk3", "esdirk4"};
+        DNDS_check_throw_info(std::find(timeMethods.begin(), timeMethods.end(), data->time.method) != timeMethods.end() && std::isfinite(data->time.dt) && data->time.dt > 0 && data->time.steps >= 0 &&
                                   std::isfinite(data->time.finalTime) && data->time.finalTime >= 0 && std::isfinite(data->time.cfl) && data->time.cfl >= 0 &&
                                   std::isfinite(data->time.wallSeconds) && data->time.wallSeconds >= 0 && data->time.maxRetries >= 0,
-                              "Cauchy requires SSPRK3, positive dt and nonnegative steps");
+                              "Cauchy requires an available time method, positive dt and nonnegative steps");
         DNDS_check_throw_info(std::isfinite(data->time.steadyTolerance) && data->time.steadyTolerance >= 0 && data->time.steadyMinSteps >= 0, "invalid steady stopping controls");
         DNDS_check_throw_info(data->output.interval >= 0 && data->output.historyInterval > 0 && !data->output.prefix.empty(), "invalid Cauchy output controls");
         DNDS_check_throw_info(data->output.hdfDeflateLevel >= 0 && data->output.hdfDeflateLevel <= 9, "Cauchy output hdfDeflateLevel must be in [0,9]");

@@ -19,6 +19,7 @@ namespace DNDS::ODE
         using Field = Algebra::DofField<real>;
         using Evaluate = std::function<void(Field &, Field &, real, int)>;
         using SolveStage = std::function<bool(Field &, const Field &, real, real, real, int)>;
+        using LocalStage = std::function<void(const std::function<void()> &)>;
 
     private:
         std::string _method;
@@ -28,6 +29,15 @@ namespace DNDS::ODE
         Field _source, _previous, _pendingInitial;
         real _previousDt = 0, _pendingDt = 0;
         bool _history = false, _pending = false;
+        LocalStage _local;
+        template <class F>
+        void RunLocal(F &&run) const
+        {
+            if (_local)
+                _local(std::forward<F>(run));
+            else
+                run();
+        }
         static Field NewVector(const Field &prototype)
         {
             prototype.Validate();
@@ -73,8 +83,8 @@ namespace DNDS::ODE
         }
 
     public:
-        FieldTimeStepper(const Field &prototype, std::string method)
-            : _method(std::move(method)), _source(NewVector(prototype)), _previous(NewVector(prototype)), _pendingInitial(NewVector(prototype))
+        FieldTimeStepper(const Field &prototype, std::string method, LocalStage local = {})
+            : _method(std::move(method)), _source(NewVector(prototype)), _previous(NewVector(prototype)), _pendingInitial(NewVector(prototype)), _local(std::move(local))
         {
             BuildTableau();
             _rates.reserve(_a.size());
@@ -85,6 +95,7 @@ namespace DNDS::ODE
         FieldTimeStepper &operator=(const FieldTimeStepper &) = delete;
         const std::string &Method() const { return _method; }
         bool HasHistory() const { return _history; }
+        bool HasPendingTrial() const { return _pending; }
         real PreviousDt() const { return _previousDt; }
         const Field &PreviousState() const
         {
@@ -100,13 +111,15 @@ namespace DNDS::ODE
         bool Prepare(const Field &initial, Field &trial, real time, real dt, const Evaluate &evaluate, const SolveStage &solve)
         {
             _pending = false;
+            RunLocal([&]
+                     {
             Check(initial);
             Check(trial);
             DNDS_check_throw_info(evaluate && solve && std::isfinite(time) && std::isfinite(dt) && dt > 0 && std::isfinite(time + dt), "invalid time trial controls");
             for (const auto *input : {&initial.Owned(), &initial.Ghost()})
                 for (const auto *output : {&trial.Owned(), &trial.Ghost()})
                     DNDS_check_throw_info(!Algebra::Detail::Overlaps(input->Storage(), output->Storage()), "time initial/trial fields alias");
-            Algebra::Copy(_pendingInitial, initial);
+            Algebra::Copy(_pendingInitial, initial); });
             _pendingDt = dt;
             if (_a.empty())
             {
@@ -117,22 +130,28 @@ namespace DNDS::ODE
                     // stays 1/dt and RHS scale carries (1+r)/(1+2r).
                     DNDS_check_throw_info(std::isfinite(ratio) && ratio > 0 && std::isfinite(ratio * ratio), "invalid BDF step ratio");
                     const real denominator = 1 + 2 * ratio;
+                    RunLocal([&]
+                             {
                     Algebra::LinearCombination(_source, (1 + ratio) * (1 + ratio) / (denominator * dt), initial,
                                                -ratio * ratio / (denominator * dt), _previous);
-                    Algebra::Copy(trial, initial);
+                    Algebra::Copy(trial, initial); });
                     _pending = solve(trial, _source, 1 / dt, (1 + ratio) / denominator, time + dt, 0);
                 }
                 else
                 {
+                    RunLocal([&]
+                             {
                     Algebra::Copy(_source, initial);
                     Algebra::Scale(_source, 1 / dt);
-                    Algebra::Copy(trial, initial);
+                    Algebra::Copy(trial, initial); });
                     _pending = solve(trial, _source, 1 / dt, 1, time + dt, 0);
                 }
                 return _pending;
             }
             for (int stage = 0; stage < int(_a.size()); ++stage)
             {
+                RunLocal([&]
+                         {
                 Algebra::Copy(trial, initial);
                 if (_a[stage][stage] != 0)
                 {
@@ -141,6 +160,9 @@ namespace DNDS::ODE
                     for (int previous = 0; previous < stage; ++previous)
                         if (_a[stage][previous] != 0)
                             Algebra::Axpy(_source, _a[stage][previous], _rates[previous]);
+                } });
+                if (_a[stage][stage] != 0)
+                {
                     if (!solve(trial, _source, 1 / dt, _a[stage][stage], time + _c[stage] * dt, stage))
                         return false;
                 }

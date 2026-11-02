@@ -205,4 +205,42 @@ changes only trial state/scratch. Commit history only after accepted-state
 publication succeeds; discard/retry never changes accepted history. Variable
 BDF2 uses the last accepted timestep, with BDF1 startup or an explicit reset.
 Independent nonautonomous exact-stage tests verify orders and retry semantics.
-DITR, full nonlinear integration and physical qualification remain outstanding.
+Domain now connects these time equations to the nonlinear stage solver below.
+DITR and physical qualification remain outstanding.
+
+## Nonlinear stage and physical transaction
+
+`Implicit/NonlinearSolver` solves the explicit stage equation by pseudo-time
+continuation. Each iteration evaluates the uncompressed physical defect,
+checks per-component volume-weighted norms, prepares local pseudo-time and
+the approximate Jacobian, solves a distinct correction, and publishes a checked
+candidate. Root `implicit` settings separate nonlinear, linear, SGS, ILU and PP
+choices. CPU backend selection is explicit. Exact constructor control agreement
+prevents rank-dependent iteration/PP branches from mismatching MPI calls.
+
+For `numerics.positivity`, the implicit path uses Euler's RHS compression or
+dTau compression, relaxed delta compression and final flow5 increment repair.
+Convergence always uses the uncompressed defect. Reconstruction quadrature PP
+still uses the earlier Cauchy rule; full Euler reconstruction/physical-dt PP and
+its global alpha variants remain phase work. This is not yet the full PP suite.
+
+Corrections are computed into separate candidate storage, then admissibility
+is agreed before any trial-state write. This required safety agreement remains
+enabled when optional per-kernel collective checks are disabled. A bad correction
+therefore rejects without poisoning the bound state allocation. Optional-check
+disablement still transfers handling of unexpected local kernel/access failures
+to the caller; it is not an MPI exception-recovery mechanism.
+
+`Domain` preserves the reconstruction warm guess before an implicit attempt.
+Discarded/rejected attempts restore it before retry. Accepted state and clock
+are published before committing BDF history. An external debug reader can reject
+publication collectively without advancing history; releasing it allows the
+same prepared candidate to commit. A stage correction cap rejects the physical
+candidate, never labels the capped inner solve converged. CSV output records
+stage count, nonlinear/linear iterations and residual-to-target ratio.
+
+Distributed tests recover a manufactured constant solution from nonconstant
+means, check unusable/bad correction handling, and exercise the connected
+BDF1/2, Trapz and ESDIRK2/3/4 paths. The P3 transport test checks periodic
+conservation and exact discard/retry versus fresh-run agreement. They are
+focused implementation gates, not the final IV/cylinder qualification matrix.

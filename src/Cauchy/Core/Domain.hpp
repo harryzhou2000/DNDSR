@@ -2,6 +2,8 @@
 
 #include "Cauchy/Discretization/FiniteVolume.hpp"
 #include "Cauchy/Core/CoordinatedSchedule.hpp"
+#include "Cauchy/Implicit/NonlinearSolver.hpp"
+#include "Solver/FieldTimeStepper.hpp"
 
 namespace DNDS::Cauchy
 {
@@ -24,6 +26,11 @@ namespace DNDS::Cauchy
         std::optional<CFV::FVField> _observationResidual;
         Runtime::EagerEngine _engine;
         Runtime::ExecutionStream _stream;
+        std::unique_ptr<NonlinearSolver> _implicit;
+        std::unique_ptr<ODE::FieldTimeStepper> _timeStepper;
+        std::vector<NonlinearIterationReport> _lastImplicit;
+        std::optional<Runtime::Array<real>> _reconstructionBackup;
+        bool _restoreReconstruction = false;
         mutable std::optional<AuxiliaryValues> _timeAuxiliary;
         mutable std::optional<Runtime::TransferBinding> _timeMeanHalo;
         StateEpoch _epoch;
@@ -39,9 +46,12 @@ namespace DNDS::Cauchy
         void UpdateStage(real dt, real historyWeight, real stageWeight, real stageTime);
         void PublishTrial(real time, StateEpoch epoch, const Runtime::Array<real> *reconstructionGuess = nullptr);
         void EvaluateObservation();
+        void InitializeImplicit(const DomainSettings &settings, const TimeSettings &time);
+        void PrepareImplicitStep(real dt);
+        void PreserveReconstructionGuess();
 
     public:
-        Domain(std::string name, ssp<Geom::UnstructuredMesh> mesh, const DomainSettings &settings);
+        Domain(std::string name, ssp<Geom::UnstructuredMesh> mesh, const DomainSettings &settings, const TimeSettings &time = {});
         const std::string &Name() const { return _name; }
         const EquationSystem &Equation() const { return _equation; }
         const FiniteVolume &Discretization() const { return _fv; }
@@ -52,15 +62,21 @@ namespace DNDS::Cauchy
         const CFV::FVField &Flow() const { return _accepted.Block("flow"); }
         real Time() const { return _time; }
         const StateEpoch &Epoch() const { return _epoch; }
+        const std::vector<NonlinearIterationReport> &LastImplicitStages() const { return _lastImplicit; }
         index LastFaceFallbacks() const { return _lastFallbacks; }
         std::array<real, 5> LastPositivity() const { return {real(_lastBetaCells), _lastBeta, real(_lastAlphaCells), _lastAlpha, real(_lastCharacteristicFallbacks)}; }
         real StableStep(real cfl) const;
-        /// Build an SSPRK3 candidate at this accepted time. Domain ranks enter
+        /// Build the configured time-method candidate at this accepted time. Domain ranks enter
         /// together. Inadmissible stages fail collectively without changing the
         /// accepted field/clock. dt may be rejected by the caller and retried.
         void PrepareStep(real dt);
         void CommitStep();
-        void DiscardStep() noexcept { _trialReady = false; }
+        void DiscardStep() noexcept
+        {
+            _trialReady = false;
+            if (_timeStepper)
+                _timeStepper->Discard();
+        }
         void Advance(real dt)
         {
             PrepareStep(dt);

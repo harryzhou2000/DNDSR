@@ -206,20 +206,30 @@ namespace DNDS::Cauchy
     }
     const CFV::FiniteVolumePlan &FiniteVolume::Metrics() const { return _data->metrics; }
     const Geom::UnstructuredMesh &FiniteVolume::Mesh() const { return *_data->mesh; }
-    std::shared_ptr<FiniteVolume::Workspace> FiniteVolume::BuildWorkspace(CFV::FVField &state) const
+    std::shared_ptr<FiniteVolume::Workspace> FiniteVolume::BuildWorkspace(CFV::FVField &state, AuxiliaryRequest request) const
     {
         Metrics().ValidateField(state, 5);
         auto work = std::make_shared<Workspace>(*_data, state);
-        AuxiliaryRequest request;
         request.meanThermodynamics = true;
-        request.cellWaveJump = _data->settings.numerics.riemann.useStencil && _data->flux.UsesTransverseSignal();
-        request.cellPressureMinimum = _data->settings.numerics.riemann.useStencil && _data->flux.UsesPressureStencil();
+        request.cellWaveJump = request.cellWaveJump || (_data->settings.numerics.riemann.useStencil && _data->flux.UsesTransverseSignal());
+        request.cellPressureMinimum = request.cellPressureMinimum || (_data->settings.numerics.riemann.useStencil && _data->flux.UsesPressureStencil());
         work->auxiliary = BuildAuxiliaryValues(request);
         if (work->auxiliary.cellWaveJump)
             work->waveHalo.emplace(Metrics().BindHalo(*work->auxiliary.cellWaveJump));
         if (work->auxiliary.cellPressureMinimum)
             work->pressureHalo.emplace(Metrics().BindHalo(*work->auxiliary.cellPressureMinimum));
         return work;
+    }
+    void FiniteVolume::RequireWorkspaceChannels(const Workspace &work, AuxiliaryRequest required) const
+    {
+        DNDS_check_throw_info(work.owner == _data.get(), "foreign finite-volume workspace");
+        const auto &values = work.auxiliary;
+        DNDS_check_throw_info((!required.meanThermodynamics || values.meanThermodynamics) &&
+                                  (!required.faceSpectralRadius || values.faceSpectralRadius) &&
+                                  (!required.faceWaveJump || values.faceWaveJump) && (!required.facePressureMinimum || values.facePressureMinimum) &&
+                                  (!required.cellSpectralSum || values.cellSpectralSum) && (!required.cellWaveJump || values.cellWaveJump) &&
+                                  (!required.cellPressureMinimum || values.cellPressureMinimum),
+                              "finite-volume workspace lacks required auxiliary channels");
     }
     void FiniteVolume::ResetReconstruction(Workspace &workspace) const
     {

@@ -44,7 +44,7 @@ namespace DNDS::Cauchy
                 const auto &domain = _config.Domains()[iDomain];
                 const MPIInfo mpi(_placement.Context(iDomain)->Communicator());
                 auto mesh = factory ? factory(iDomain, domain, mpi) : ReadMesh(domain, mpi);
-                _domains[iDomain] = std::make_unique<Domain>(domain.placement.name, std::move(mesh), domain.settings);
+                _domains[iDomain] = std::make_unique<Domain>(domain.placement.name, std::move(mesh), domain.settings, _config.Time());
             }
             catch (const std::exception &exception)
             {

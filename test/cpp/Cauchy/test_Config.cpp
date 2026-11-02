@@ -3,6 +3,21 @@
 #include "Cauchy/Config/SimulationConfig.hpp"
 
 namespace C = DNDS::Cauchy;
+TEST_CASE("Cauchy implicit controls resolve through the root and reject contradictory paths")
+{
+    for (const std::string method : {"ssprk3", "bdf1", "bdf2", "trapz", "esdirk2", "esdirk3", "esdirk4"})
+    {
+        const auto config = C::SimulationConfig::Resolve({{"time", {{"method", method}}}, {"defaults", {{"implicit", {{"linear", {{"preconditioner", "ilu"}}}}}}}}, 2);
+        CHECK(config.Time().method == method);
+        CHECK(config.Domains()[0].settings.implicit.linear.preconditioner == "ilu");
+        CHECK(config.Domains()[0].settings.implicit.sgs.exchangeBetweenSweeps == false);
+    }
+    CHECK_THROWS(C::SimulationConfig::Resolve({{"time", {{"method", "unavailable"}}}}, 2));
+    CHECK_THROWS(C::SimulationConfig::Resolve({{"defaults", {{"implicit", {{"roeDissipation", true}}}}}}, 2));
+    CHECK_THROWS(C::SimulationConfig::Resolve({{"defaults", {{"implicit", {{"iterations", 0}}}}}}, 2));
+    CHECK_THROWS(C::SimulationConfig::Resolve({{"defaults", {{"implicit", {{"linear", {{"preconditioner", "ilu"}}}, {"sgs", {{"exchangeBetweenSweeps", true}}}}}}}}, 2));
+    CHECK_THROWS(C::SimulationConfig::Resolve({{"defaults", {{"implicit", {{"positivity", {{"rhsRelax", 0}}}}}}}}, 2));
+}
 TEST_CASE("Cauchy partial analytic boundary profile receives nested schema defaults")
 {
     const auto config = C::SimulationConfig::Resolve({{"defaults", {{"boundaries", {{"7", {{"kind", "analytic"}, {"profile", {{"kind", "doubleMachReflection"}}}}}}}}}}, 1);
