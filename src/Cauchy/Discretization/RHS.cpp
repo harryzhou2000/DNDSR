@@ -1,4 +1,5 @@
 #include "Cauchy/Discretization/FiniteVolumeInternal.hpp"
+#include "Cauchy/Discretization/ViscousFlux.hpp"
 
 namespace DNDS::Cauchy
 {
@@ -49,6 +50,8 @@ namespace DNDS::Cauchy
         const int modes = data->reconstruction.NRecDOF(), dim = data->metrics.Dimension();
         const auto &gas = data->equation.Gas();
         const bool viscous = data->equation.Viscous() && input.includeViscosity;
+        const bool polynomialViscosity = viscous && data->settings.numerics.viscousGradient == "polynomial";
+        const auto viscousCoefficient = input.viscousCoefficients.value_or(input.coefficients);
         const auto &mean = input.mean, &coefficient = input.coefficients, &gradientInput = input.primitiveGradient;
         const auto result = output.residual;
         const bool produceLow = bool(output.lowOrder), hasThermo = bool(input.auxiliary.meanThermodynamics);
@@ -73,8 +76,10 @@ namespace DNDS::Cauchy
         };
         checkField(mean, 5);
         checkField(coefficient, 5 * modes);
-        if (viscous)
+        if (viscous && !polynomialViscosity)
             checkField(gradientInput, 5 * dim);
+        if (polynomialViscosity)
+            checkField(viscousCoefficient, 5 * modes);
         if (useWave)
             checkField(waveInput, 1);
         if (usePressure)
@@ -100,12 +105,24 @@ namespace DNDS::Cauchy
                 auto reconstruct = [&](index cell, int parent)
                 {
                     auto state = Load(mean, cell);
+                    auto viscousState = state;
+                    FlowGradient gradient{};
                     for (int component = 0; component < 5; ++component)
                         for (int mode = 0; mode < modes; ++mode)
                         {
                             const real value = coefficient(cell, component * modes + mode);
                             state[component] += value * basis(entry, parent * 4 * modes + mode);
+                            if (polynomialViscosity)
+                            {
+                                const real viscousValue = input.viscousCoefficients ? viscousCoefficient(cell, component * modes + mode) : value;
+                                if (input.viscousCoefficients)
+                                    viscousState[component] += viscousValue * basis(entry, parent * 4 * modes + mode);
+                                for (int d = 0; d < dim; ++d)
+                                    gradient[component][d] += viscousValue * basis(entry, (parent * 4 + 1 + d) * modes + mode);
+                            }
                         }
+                    if (!input.viscousCoefficients)
+                        viscousState = state;
                     // Explicit local first-order fallback keeps the mean
                     // unchanged when a high-order face value is inadmissible.
                     if (!ThermallyAdmissible(state, data->thermalBounds))
@@ -114,26 +131,35 @@ namespace DNDS::Cauchy
                             diagnostics->fetch_add(1, std::memory_order_relaxed);
                         state = Load(mean, cell);
                     }
-                    FlowGradient primitiveGradient{};
-                    if (viscous)
+                    if (viscous && !polynomialViscosity)
                         for (int component = 0; component < 5; ++component)
                             for (int d = 0; d < dim; ++d)
-                                primitiveGradient[component][d] = gradientInput(cell, component * dim + d);
-                    return std::make_pair(state, primitiveGradient);
+                                gradient[component][d] = gradientInput(cell, component * dim + d);
+                    struct PointState
+                    {
+                        FlowState state, viscousState;
+                        FlowGradient gradient;
+                    };
+                    return PointState{state, viscousState, gradient};
                 };
                 const auto left = reconstruct(iCell, 0);
-                FlowState right;
+                FlowState right, viscousRight;
                 FlowGradient rightGradient{};
                 if (sample.other != UnInitIndex)
                 {
                     auto other = reconstruct(sample.other, 1);
-                    right = RotateState(other.first, sample.rotation);
-                    rightGradient = RotateGradient(other.second, sample.rotation);
+                    right = RotateState(other.state, sample.rotation);
+                    viscousRight = RotateState(other.viscousState, sample.rotation);
+                    rightGradient = RotateGradient(other.gradient, sample.rotation);
                 }
                 else
-                    right = sample.boundary.Exterior(gas, left.first, {sample.normal[0], sample.normal[1], sample.normal[2]}, {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, time);
+                {
+                    right = sample.boundary.Exterior(gas, left.state, {sample.normal[0], sample.normal[1], sample.normal[2]}, {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, time);
+                    viscousRight = right;
+                    rightGradient = left.gradient;
+                }
                 const Vector3 normal{sample.normal[0], sample.normal[1], sample.normal[2]};
-                const auto leftFlux = data->equation.PrepareFluxState(left.first), rightFlux = data->equation.PrepareFluxState(right);
+                const auto leftFlux = data->equation.PrepareFluxState(left.state), rightFlux = data->equation.PrepareFluxState(right);
                 const Vector3 point{sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]};
                 const auto leftMean = Load(mean, iCell), rightMean = sample.other == UnInitIndex ? sample.boundary.Exterior(gas, leftMean, normal, point, time) : RotateState(Load(mean, sample.other), sample.rotation);
                 const auto leftMeanData = hasThermo ? Riemann::AcousticState{{leftMean, thermo(iCell, 0)}, thermo(iCell, 1)} : data->equation.PrepareFluxState(leftMean);
@@ -158,10 +184,39 @@ namespace DNDS::Cauchy
                 FlowState lowFlux{};
                 if (produceLow)
                     lowFlux = Riemann::Rusanov(leftMeanData, rightMeanData, normal);
-                if (viscous)
+                if (polynomialViscosity && (sample.other != UnInitIndex || sample.boundary.kind == BoundaryKind::NoSlipWall))
                 {
-                    auto primitive = gas.Primitive(left.first);
-                    auto gradient = left.second;
+                    FlowState rightLinearization = right;
+                    if (sample.other == UnInitIndex)
+                    {
+                        // Euler generates the boundary exterior from the
+                        // filtered convective state even for unlimited viscosity.
+                        if (sample.boundary.isothermal)
+                        {
+                            const auto wall = gas.Primitive(sample.boundary.FaceValue(gas, left.state, normal, point, time));
+                            const auto exterior = gas.Primitive(right);
+                            viscousRight = gas.Conservative({wall.density, exterior.velocity[0], exterior.velocity[1], exterior.velocity[2], wall.pressure});
+                            rightLinearization = viscousRight;
+                        }
+                    }
+                    FlowState faceMean{};
+                    for (int j = 0; j < 5; ++j)
+                        faceMean[j] = .5 * (left.state[j] + rightLinearization[j]);
+                    DNDS_check_throw_info(ThermallyAdmissible(faceMean, data->thermalBounds), "inadmissible polynomial viscous linearization");
+                    const bool wall = sample.other == UnInitIndex;
+                    const real inverseDistance = wall && data->settings.numerics.noGRPOnWall ? 0 : 1 / sample.viscousDistance;
+                    const auto diffusion = PolynomialViscousFlux(data->equation, left.state, rightLinearization, left.viscousState, viscousRight,
+                                                                 left.gradient, rightGradient, normal, inverseDistance, wall && !sample.boundary.isothermal);
+                    for (int component = 0; component < 5; ++component)
+                    {
+                        flux[component] -= diffusion[component];
+                        lowFlux[component] -= diffusion[component];
+                    }
+                }
+                else if (viscous && !polynomialViscosity)
+                {
+                    auto primitive = gas.Primitive(left.state);
+                    auto gradient = left.gradient;
                     const auto ownPrimitive = gas.Primitive(Load(mean, iCell));
                     const auto rightPrimitive = gas.Primitive(sample.other == UnInitIndex ? sample.boundary.FaceValue(gas, Load(mean, iCell), normal, point, time) : RotateState(Load(mean, sample.other), sample.rotation));
                     // Evaluate into an owning vector: an Eigen expression
@@ -191,7 +246,7 @@ namespace DNDS::Cauchy
                     }
                     else if (sample.boundary.kind == BoundaryKind::SlipWall || sample.boundary.kind == BoundaryKind::NoSlipWall)
                     {
-                        primitive = gas.Primitive(sample.boundary.FaceValue(gas, left.first, normal, point, time));
+                        primitive = gas.Primitive(sample.boundary.FaceValue(gas, left.state, normal, point, time));
                         if (!sample.boundary.isothermal)
                         {
                             real heat = 0;

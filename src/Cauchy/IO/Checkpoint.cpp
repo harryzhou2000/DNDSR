@@ -64,6 +64,29 @@ namespace DNDS::Cauchy
                     // means nor the compatible polynomial coefficient schema.
                     numerics.erase("reconstructionIterations");
                     numerics.erase("reconstructionTolerance");
+                    // Missing viscous controls in older archives denote the
+                    // original primitive-cell-gradient scheme. Selecting the
+                    // polynomial operator is a visible numerical method change.
+                    if (settings.contains("equation") && settings["equation"].value("transport", "inviscid") == "NewtonianFourier")
+                    {
+                        if (!numerics.contains("viscousGradient"))
+                            numerics["viscousGradient"] = "primitive";
+                        if (numerics["viscousGradient"] == "polynomial")
+                        {
+                            if (!numerics.contains("viscousLimited"))
+                                numerics["viscousLimited"] = true;
+                            if (!numerics.contains("noGRPOnWall"))
+                                numerics["noGRPOnWall"] = false;
+                        }
+                        else
+                        {
+                            numerics.erase("viscousLimited");
+                            numerics.erase("noGRPOnWall");
+                        }
+                    }
+                    else
+                        for (const auto *name : {"viscousGradient", "viscousLimited", "noGRPOnWall"})
+                            numerics.erase(name);
                     // Earlier Cauchy archives used pointwise segment limiting.
                     // Missing controls must not silently select Euler's newer
                     // common-beta policy. Inactive PP choices do not affect a

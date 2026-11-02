@@ -130,9 +130,13 @@ already satisfy its preconditions and retain all optional input records.
 `Discretization/FiniteVolume` prepares immutable geometry, incidence quadratures,
 cached basis data and conservative core/halo cell sets. Its per-run `Workspace`
 owns reconstruction/primitive-gradient fields and persistent direct MPI bindings.
-The CPU residual integrates inviscid flux minus Newtonian/Fourier flux. Viscous
-gradients use primitive `[rho,u,v,w,T]`, including periodic vector transforms;
-they are not recovered by a facewise conservative-gradient linearization.
+The CPU residual integrates inviscid flux minus Newtonian/Fourier flux. The
+existing `numerics.viscousGradient="primitive"` default uses cell gradients
+of `[rho,u,v,w,T]` and the center-displacement correction. The explicit
+`"polynomial"` mode uses cached conservative polynomial derivatives and
+Euler's normal jump penalty, then the equation-owned chain rule to `[rho,u,v,w,T]`.
+Both transform gradients and vector components across periodic frames. See the
+[polynomial viscous contract](CauchyImplicit.md#polynomial-viscous-operator).
 Second-order LS/GG/GGMP or Jacobi/ordered-SOR VR and descending 3WBAP use explicit boundary
 quadrature values. P3 is a cubic polynomial with nominal fourth-order spatial
 accuracy. Each limiter order refreshes neighbor coefficients before the next.
@@ -367,7 +371,10 @@ update, auxiliary publication or implicit diagnostic storage. The `Evaluate`
 convenience wrapper retains the orchestration of those operations.
 
 `RHSReadViews` groups the mean, reconstruction coefficients, optional viscous
-primitive gradients, and one `RHSAuxiliaryViews` bundle. The auxiliary bundle
+primitive gradients or a distinct optional `viscousCoefficients` field, and one
+`RHSAuxiliaryViews` bundle. An absent viscous coefficient view uses the convective
+coefficient view; the primitive scheme requires the primitive-gradient view.
+These alternatives are checked once before the cell loop. The auxiliary bundle
 currently contains optional mean thermodynamics `[pressure, sound speed,
 diffusivity]`, the cell wave-jump signal used by the H correction, and cell
 pressure minima used by AUSMPW+. New cached temperature, dissipation masks or

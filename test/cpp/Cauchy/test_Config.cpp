@@ -3,6 +3,16 @@
 #include "Cauchy/Config/SimulationConfig.hpp"
 
 namespace C = DNDS::Cauchy;
+TEST_CASE("Polynomial viscous reconstruction is explicit and retains the previous primitive default")
+{
+    const auto defaults = C::SimulationConfig::Resolve(C::Json::object(), 2);
+    CHECK(defaults.Domains()[0].settings.numerics.viscousGradient == "primitive");
+    const auto polynomial = C::SimulationConfig::Resolve({{"defaults", {{"numerics", {{"viscousGradient", "polynomial"}, {"viscousLimited", false}, {"noGRPOnWall", true}}}}}}, 2);
+    CHECK(polynomial.Domains()[0].settings.numerics.viscousGradient == "polynomial");
+    CHECK_FALSE(polynomial.Domains()[0].settings.numerics.viscousLimited);
+    CHECK(polynomial.Domains()[0].settings.numerics.noGRPOnWall);
+    CHECK_THROWS(C::SimulationConfig::Resolve({{"defaults", {{"numerics", {{"viscousGradient", "missing"}}}}}}, 2));
+}
 TEST_CASE("Physical timestep PP has explicit validated controls and is disabled by the steady limit")
 {
     CHECK_FALSE(C::SimulationConfig::Resolve(C::Json::object(), 2).Time().positivity.enabled);

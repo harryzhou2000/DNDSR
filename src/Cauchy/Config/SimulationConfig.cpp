@@ -242,6 +242,7 @@ namespace DNDS::Cauchy
         require(Riemann::RiemannFlux::Available(s.numerics.flux), "numerical flux " + s.numerics.flux);
         require(s.numerics.reconstruction == "constant" || s.numerics.reconstruction == "gradient" || s.numerics.reconstruction == "variational", "reconstruction " + s.numerics.reconstruction);
         require(s.numerics.gradient == "leastSquares" || s.numerics.gradient == "greenGauss" || s.numerics.gradient == "ggmp", "gradient " + s.numerics.gradient);
+        require(s.numerics.viscousGradient == "primitive" || s.numerics.viscousGradient == "polynomial", "viscous gradient " + s.numerics.viscousGradient);
         require(s.numerics.limiter == "none" || s.numerics.limiter == "WBAP", "limiter " + s.numerics.limiter);
         require(s.numerics.limiter != "WBAP" || s.numerics.reconstruction != "constant", "WBAP needs polynomial reconstruction");
         require(s.numerics.cfv.cacheDiffBase, "Cauchy residual requires cached face basis derivatives");

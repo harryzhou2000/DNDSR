@@ -78,6 +78,8 @@ namespace DNDS::Cauchy
         real reconstructionTolerance = 0;
         bool characteristicLimiter = true, faceFallback = true;
         bool reconstructionBoundaryFromPolynomial = true;
+        std::string viscousGradient = "primitive";
+        bool viscousLimited = true, noGRPOnWall = false;
         bool positivity = false;
         real temperatureFloor = 1e-12;
         real positivityBetaCutoff = 1e-3;
@@ -99,6 +101,9 @@ namespace DNDS::Cauchy
             DNDS_FIELD(characteristicLimiter, "Use equation-provided cell-mean face characteristics for 3WBAP");
             DNDS_FIELD(faceFallback, "Fall back to the cell mean at inadmissible face values; disable for non-PP accuracy studies");
             DNDS_FIELD(reconstructionBoundaryFromPolynomial, "Project current face polynomial through BC each VR sweep; false uses mean-based boundary values");
+            DNDS_FIELD(viscousGradient, "primitive retains the cell-gradient scheme; polynomial uses cached polynomial derivatives and Euler's normal face-jump penalty");
+            DNDS_FIELD(viscousLimited, "Use the filtered flux polynomial for polynomial viscosity; false uses the unlimited VR guess");
+            DNDS_FIELD(noGRPOnWall, "Disable the polynomial normal jump penalty on no-slip walls, retaining the polynomial gradient");
             DNDS_FIELD(positivity, "Mean-preserving reconstruction and conservative SSPRK flux-blend PP");
             DNDS_FIELD(temperatureFloor, "Minimum temperature enforced through the equation's internal-energy bound");
             DNDS_FIELD(positivityBetaCutoff, "Set numerically tiny reconstruction beta to zero; matches legacy's mean fallback");

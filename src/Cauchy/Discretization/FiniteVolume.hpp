@@ -83,6 +83,9 @@ namespace DNDS::Cauchy
         /// configured boundary/convective flux policy. Gradients may be absent
         /// when false; normal production residuals keep the default true.
         bool includeViscosity = true;
+        /// Optional distinct polynomial for viscosity. Absence uses coefficients.
+        /// Retain its read leases through execution, exactly as for coefficients.
+        std::optional<RHSFieldView> viscousCoefficients;
     };
     /// Explicit outputs. Diagnostics accumulate across core/dependent calls;
     /// caller initializes them before an evaluation and reduces them afterwards.

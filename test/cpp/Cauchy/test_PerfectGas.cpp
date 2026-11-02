@@ -8,11 +8,73 @@
 #include "Cauchy/Physics/ImplicitPositivity.hpp"
 #include "Cauchy/Physics/ReconstructionPositivity.hpp"
 #include "Cauchy/Physics/EquationSystem.hpp"
+#include "Cauchy/Discretization/ViscousFlux.hpp"
 #include "Euler/Gas.hpp"
 #include <limits>
 #include <vector>
 
 namespace C = DNDS::Cauchy;
+TEST_CASE("Polynomial viscous flux reproduces Euler conservative gradient and face-jump formulas")
+{
+    C::EquationSettings settings;
+    settings.transport = "NewtonianFourier";
+    settings.viscosity = .03;
+    settings.gasConstant = 2.5;
+    const auto equation = C::EquationSystem::Resolve(settings);
+    const auto &gas = equation.Gas();
+    const auto left = gas.Conservative({1.2, .4, -.3, .2, 2.1});
+    const auto right = gas.Conservative({.8, -.1, .2, .3, 1.7});
+    C::FlowGradient l{}, r{};
+    C::FlowState vl = left, vr = right;
+    for (int j = 0; j < 5; ++j)
+    {
+        vl[j] += .01 * (j + 1);
+        vr[j] -= .005 * (j + 1);
+        for (int d = 0; d < 3; ++d)
+        {
+            l[j][d] = .02 * (j + 1) * (d + 1);
+            r[j][d] = -.01 * (j + 2) * (d + 1);
+        }
+    }
+    const Eigen::Vector3d normal = Eigen::Vector3d{1, -2, 3}.normalized();
+    for (double inverseDistance : {0., .3, 4.})
+        for (bool adiabatic : {false, true})
+        {
+            Eigen::Matrix<double, 5, 1> mean, legacyFlux;
+            Eigen::Matrix<double, 3, 5> gradient, primitive;
+            for (int j = 0; j < 5; ++j)
+            {
+                mean[j] = .5 * (left[j] + right[j]);
+                for (int d = 0; d < 3; ++d)
+                    gradient(d, j) = .5 * (l[j][d] + r[j][d]) + normal[d] * (vr[j] - vl[j]) * inverseDistance;
+            }
+            const Eigen::VectorXd base;
+            DNDS::Euler::Gas::GradientCons2Prim_IdealGas<3>(mean, gradient, primitive, gas.gamma, base);
+            const double cp = gas.gamma * gas.gasConstant / (gas.gamma - 1);
+            DNDS::Euler::Gas::ViscousFlux_IdealGas<3>(mean, primitive, normal, adiabatic, gas.gamma, gas.gamma, gas.viscosity, 0, false, gas.viscosity * cp / gas.prandtl, cp, legacyFlux);
+            const auto flux = C::PolynomialViscousFlux(equation, left, right, vl, vr, l, r, {normal[0], normal[1], normal[2]}, inverseDistance, adiabatic);
+            for (int j = 0; j < 5; ++j)
+                CHECK(flux[j] == doctest::Approx(legacyFlux[j]).epsilon(5e-14));
+        }
+    // A separate chain-rule oracle from centered differences of physical point
+    // states exercises density, all momenta and a non-unit gas constant.
+    const auto gradient = equation.PreparePrimitiveGradient(left, l);
+    for (int d = 0; d < 3; ++d)
+    {
+        auto minus = left, plus = left;
+        const double h = 1e-5;
+        for (int j = 0; j < 5; ++j)
+        {
+            minus[j] -= h * l[j][d];
+            plus[j] += h * l[j][d];
+        }
+        const auto a = gas.Primitive(minus), b = gas.Primitive(plus);
+        const C::FlowState pa{a.density, a.velocity[0], a.velocity[1], a.velocity[2], a.temperature};
+        const C::FlowState pb{b.density, b.velocity[0], b.velocity[1], b.velocity[2], b.temperature};
+        for (int j = 0; j < 5; ++j)
+            CHECK(gradient[j][d] == doctest::Approx((pb[j] - pa[j]) / (2 * h)).epsilon(2e-8));
+    }
+}
 namespace
 {
     struct PointValues

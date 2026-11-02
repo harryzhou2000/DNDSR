@@ -91,6 +91,34 @@ namespace DNDS::Cauchy
             }
             return result;
         }
+        /// Chain rule from [rho,rho*u,rho*v,rho*w,rho*E] to [rho,u,v,w,T].
+        /// State and gradient are point values, not conservative cell averages.
+        /// The caller validates the linearization state outside this pure kernel.
+        DNDS_DEVICE_CALLABLE FlowGradient PrimitiveGradient(const FlowState &state, const FlowGradient &gradient) const
+        {
+            FlowGradient result{};
+            Vector3 velocity{};
+            real speedSquared = 0;
+            for (int j = 0; j < 3; ++j)
+            {
+                velocity[j] = state[1 + j] / state[0];
+                speedSquared += velocity[j] * velocity[j];
+            }
+            const real pressure = Pressure(state);
+            for (int d = 0; d < 3; ++d)
+            {
+                result[0][d] = gradient[0][d];
+                real pressureGradient = gradient[4][d] + .5 * speedSquared * gradient[0][d];
+                for (int j = 0; j < 3; ++j)
+                {
+                    result[1 + j][d] = (gradient[1 + j][d] - velocity[j] * gradient[0][d]) / state[0];
+                    pressureGradient -= velocity[j] * gradient[1 + j][d];
+                }
+                pressureGradient *= gamma - 1;
+                result[4][d] = (pressureGradient - pressure / state[0] * gradient[0][d]) / (state[0] * gasConstant);
+            }
+            return result;
+        }
         /// Positive viscous flux; FV residual is -div(F_inviscid)+div(F_viscous).
         /// Stokes stress and Fourier heat conduction, with constant mu/Pr. The
         /// energy component is u dot (tau*n) + k grad(T) dot n.

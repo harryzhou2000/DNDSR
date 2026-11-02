@@ -66,6 +66,12 @@ namespace DNDS::Cauchy
         const EquationSchema &Schema() const { return _schema; }
         const PerfectGas &Gas() const { return _gas; }
         bool Viscous() const { return _viscous; }
+        /// Model-owned thermodynamic chain rule. Numerical face penalties stay
+        /// in Discretization; no EOS or energy calculation enters Riemann.
+        FlowGradient PreparePrimitiveGradient(const FlowState &state, const FlowGradient &gradient) const
+        {
+            return _gas.PrimitiveGradient(state, gradient);
+        }
         ThermalBounds PrepareThermalBounds(real densityFloor, real temperatureFloor, real pressureFloor) const
         {
             return {densityFloor, _gas.gasConstant * temperatureFloor / (_gas.gamma - 1), pressureFloor / (_gas.gamma - 1)};

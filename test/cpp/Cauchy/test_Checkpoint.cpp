@@ -46,6 +46,36 @@ namespace
         MPI_Barrier(mpi.comm);
     }
 }
+TEST_CASE("Older viscous archives retain primitive gradients and reject a silent polynomial method change")
+{
+    const auto path = Path("cauchy-viscous-policy-");
+    const C::Json input{{"defaults", {{"equation", {{"transport", "NewtonianFourier"}, {"viscosity", .02}}}}}};
+    const auto config = C::SimulationConfig::ResolveCollective(input, mpi.comm);
+    const auto mesh = CauchyTest::PeriodicQuads(mpi, 2);
+    C::Domain source("flow", mesh, config.Domains()[0].settings);
+    Initialize(source);
+    auto old = config.Root();
+    auto &numerics = old["domains"][0]["settings"]["numerics"];
+    for (const auto *name : {"viscousGradient", "viscousLimited", "noGRPOnWall"})
+        numerics.erase(name);
+    source.WriteCheckpoint(path, old);
+    C::Domain restored("flow", mesh, config.Domains()[0].settings);
+    CHECK_NOTHROW(restored.ReadCheckpoint(path, config.Root()));
+    {
+        const auto a = source.Flow().Owned().Read(), b = restored.Flow().Owned().Read();
+        for (DNDS::index iCell = 0; iCell < mesh->NumCell(); ++iCell)
+            for (int j = 0; j < 5; ++j)
+                CHECK(a.View<R::UniformTableRows>()(iCell, j) == b.View<R::UniformTableRows>()(iCell, j));
+    }
+    auto polynomialInput = input;
+    polynomialInput["defaults"]["numerics"]["viscousGradient"] = "polynomial";
+    const auto polynomial = C::SimulationConfig::ResolveCollective(polynomialInput, mpi.comm);
+    C::Domain changed("flow", mesh, polynomial.Domains()[0].settings);
+    const auto version = changed.Flow().Owned().Version();
+    CHECK_THROWS(changed.ReadCheckpoint(path, polynomial.Root()));
+    CHECK(changed.Flow().Owned().Version() == version);
+    Remove({path});
+}
 TEST_CASE("Checkpoint changes MPI partition and polynomial degree using persistent cell IDs with cold reconstruction")
 {
     const auto plain = Path("cauchy-id-plain-"), polynomial = plain + ".rec.h5", cold = plain + ".cold.h5";

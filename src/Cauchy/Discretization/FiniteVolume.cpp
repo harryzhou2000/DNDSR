@@ -129,7 +129,10 @@ namespace DNDS::Cauchy
     FiniteVolume::FiniteVolume(ssp<Geom::UnstructuredMesh> mesh, const DomainSettings &settings, const EquationSystem &equation)
     {
         MPI::LocalStage(mesh->getMPI(), [&]
-                        { settings.numerics.ValidatePositivity(); });
+                        {
+            settings.numerics.ValidatePositivity();
+            DNDS_check_throw_info(settings.numerics.viscousGradient == "primitive" || settings.numerics.viscousGradient == "polynomial",
+                                  "unknown Cauchy viscous gradient scheme"); });
         auto data = std::make_shared<Data>(std::move(mesh), ResolveSweepOrdering(settings), equation);
         auto meshRead = data->mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
         const auto topology = meshRead.HostView();
@@ -172,6 +175,19 @@ namespace DNDS::Cauchy
                     condition = data->boundary.At(zone);
                     localZones.insert(zone);
                 }
+                real faceArea = 0;
+                Geom::tPoint faceCenter = Geom::tPoint::Zero();
+                for (index q = metric.FaceQuadratureBegin(iFace); q < metric.FaceQuadratureEnd(iFace); ++q)
+                {
+                    faceArea += metric.GetFaceWeight(q);
+                    faceCenter += metric.GetFaceWeight(q) * metric.GetFacePoint(q);
+                }
+                DNDS_check_throw_info(faceArea > 0, "nonpositive viscous face area");
+                faceCenter /= faceArea;
+                const Geom::tPoint viscousDisplacement = other == UnInitIndex
+                    ? Geom::tPoint(2 * (CFV::Detail::FacePointInCell(topology, iFace, side, faceCenter) - metric.GetCellBary(iCell)))
+                    : Geom::tPoint(CFV::Detail::OtherPointInCell(topology, iFace, side, metric.GetCellBary(other)) - metric.GetCellBary(iCell));
+                const real distanceScale = 2 * std::min(metric.GetCellVol(iCell), metric.GetCellVol(other == UnInitIndex ? iCell : other)) / faceArea;
                 for (index q = metric.FaceQuadratureBegin(iFace); q < metric.FaceQuadratureEnd(iFace); ++q)
                 {
                     const int localQ = int(q - metric.FaceQuadratureBegin(iFace));
@@ -183,6 +199,11 @@ namespace DNDS::Cauchy
                     // Cached basis derivatives live in each parent's frame.
                     // Flux and neighbor state are mapped into this cell's frame.
                     if (side) sample.normal = -sample.rotation * metric.GetFaceNorm(q);
+                    // Euler's face-jump length: normal centroid separation,
+                    // clamped by the two-cell volume/area scale. Geometry only;
+                    // evaluate once, not during every residual/linear iteration.
+                    sample.viscousDistance = std::max(.25 * distanceScale, std::min(2 * distanceScale, std::abs(viscousDisplacement.dot(sample.normal))));
+                    DNDS_check_throw_info(std::isfinite(sample.viscousDistance) && sample.viscousDistance > 0, "invalid polynomial viscous distance");
                     for (int parent = 0; parent < 2; ++parent)
                     {
                         if (parent == 1 && other == UnInitIndex) continue;
@@ -282,19 +303,23 @@ namespace DNDS::Cauchy
         // Agree resolved channels before constructing any differing bindings.
         // One small setup reduction; no additional check in the RHS hot path.
         const bool channels[]{meanOnly, request.meanThermodynamics, request.faceSpectralRadius, request.faceWaveJump,
-                              request.facePressureMinimum, request.cellSpectralSum, request.cellWaveJump, request.cellPressureMinimum, wave, pressure};
-        int flags[20]{};
-        for (int j = 0; j < 10; ++j)
+                              request.facePressureMinimum, request.cellSpectralSum, request.cellWaveJump, request.cellPressureMinimum, wave, pressure,
+                              _data->equation.Viscous(), _data->settings.numerics.viscousGradient == "polynomial",
+                              _data->settings.numerics.viscousLimited, _data->settings.numerics.noGRPOnWall};
+        int flags[28]{};
+        for (int j = 0; j < 14; ++j)
         {
             flags[2 * j] = int(channels[j]);
             flags[2 * j + 1] = -int(channels[j]);
         }
-        MPI_Allreduce(MPI_IN_PLACE, flags, 20, MPI_INT, MPI_MIN, Metrics().Communicator());
+        MPI_Allreduce(MPI_IN_PLACE, flags, 28, MPI_INT, MPI_MIN, Metrics().Communicator());
         // Equal requested buffers cannot mask different numerical policies:
         // one rank may ignore a stencil that another rank uses in its flux.
         DNDS_check_throw_info(flags[16] == -flags[17] && flags[18] == -flags[19], "Riemann stencil capability differs between domain ranks");
         for (int j = 0; j < 8; ++j)
             DNDS_check_throw_info(flags[2 * j] == -flags[2 * j + 1], "FV workspace mode or auxiliary channels differ between domain ranks");
+        for (int j = 10; j < 14; ++j)
+            DNDS_check_throw_info(flags[2 * j] == -flags[2 * j + 1], "FV viscous policy differs between domain ranks");
         auto work = std::make_shared<Workspace>(*_data, state, meanOnly);
         work->auxiliary = BuildAuxiliaryValues(request);
         if (work->auxiliary.cellWaveJump)
@@ -598,11 +623,14 @@ namespace DNDS::Cauchy
         }
         if (!work.meanOnly && _data->settings.numerics.positivity)
             LimitReconstructionPPImpl(state, work, false);
-        if (!work.meanOnly && _data->equation.Viscous())
+        const bool polynomialViscosity = !work.meanOnly && _data->equation.Viscous() && _data->settings.numerics.viscousGradient == "polynomial";
+        if (!work.meanOnly && _data->equation.Viscous() && !polynomialViscosity)
         {
-            // Viscous gradients are gradients of rho,u,v,w,T, not a facewise
-            // linearization of conservative gradients. The latter introduces
-            // artificial heat conduction even in exact linear Couette flow.
+            // Retain the original primitive-cell-gradient scheme. A linear
+            // conservative reconstruction cannot represent Couette's quadratic
+            // kinetic energy; differentiating that polynomial as if it were
+            // exact introduces artificial heat conduction. The explicit high-
+            // order polynomial mode above uses sufficient conservative modes.
             auto fillPrimitive = [&](const auto &input, auto &output)
             {
                 const auto read = input.Read();
@@ -641,7 +669,7 @@ namespace DNDS::Cauchy
         }
         std::optional<R::Array<real>::ReadLease> gradOwned, gradGhost;
         FieldView gradients;
-        if (!work.meanOnly && _data->equation.Viscous())
+        if (!work.meanOnly && _data->equation.Viscous() && !polynomialViscosity)
         {
             gradOwned.emplace(work.gradient.Owned().Read());
             gradGhost.emplace(work.gradient.Ghost().Read());
@@ -662,6 +690,18 @@ namespace DNDS::Cauchy
         };
         readAuxiliary(work.auxiliary.cellWaveJump, 0, wave);
         readAuxiliary(work.auxiliary.cellPressureMinimum, 2, pressure);
+        std::optional<R::Array<real>::ReadLease> viscousOwned, viscousGhost;
+        std::optional<FieldView> viscousCoefficients;
+        std::optional<R::TransferOperation> viscousOperation;
+        if (polynomialViscosity && !_data->settings.numerics.viscousLimited && work.fluxReconstruction)
+        {
+            // The final VR commit changes owned coefficients after its last
+            // incoming exchange. Refresh that distinct unlimited polynomial;
+            // the flux-polynomial exchange below cannot refresh these ghosts.
+            viscousOperation.emplace(engine.ChecksAccess() ? work.coefficientHalo.BeginChecked(stream) : work.coefficientHalo.BeginScheduled(stream.Context()));
+            viscousOwned.emplace(work.reconstruction.coefficients.Owned().Read());
+            viscousCoefficients = FieldView{viscousOwned->View<R::UniformTableRows>(), {}};
+        }
         const auto rhs = AcquireRHSOperator();
         RHSAuxiliaryViews auxiliary;
         auxiliary.meanThermodynamics = thermo;
@@ -672,12 +712,12 @@ namespace DNDS::Cauchy
         const auto kernel = [rhs, time, lowOutput, produceLow = bool(work.lowResidual), includeViscosity = !work.meanOnly,
                              forces = &work.forces, diagnostics = &work.fallbacks](CFV::ReconstructionRegion region,
                                                                                    const auto &mean, const auto &coefficient, const auto &gradientInput,
-                                                                                   const RHSAuxiliaryViews &auxiliaryInput, auto result)
+                                                                                   const RHSAuxiliaryViews &auxiliaryInput, const std::optional<FieldView> &viscousInput, auto result)
         {
             RHSWriteViews outputs{result, std::nullopt, diagnostics, forces};
             if (produceLow)
                 outputs.lowOrder = lowOutput;
-            rhs.Apply({mean, coefficient, gradientInput, auxiliaryInput, includeViscosity}, outputs, region, time);
+            rhs.Apply({mean, coefficient, gradientInput, auxiliaryInput, includeViscosity, viscousInput}, outputs, region, time);
         };
         const auto &fluxCoefficients = FluxReconstruction(work);
         auto operation = engine.ChecksAccess() ? work.FluxHalo().BeginChecked(stream) : work.FluxHalo().BeginScheduled(stream.Context());
@@ -687,11 +727,17 @@ namespace DNDS::Cauchy
         if (coreAuxiliary.cellPressureMinimum)
             coreAuxiliary.cellPressureMinimum->ghost = {};
         if (overlap)
-            R::SubmitArrays(engine, stream, [kernel, gradientInput = FieldView{gradients.owned, {}}, coreAuxiliary](auto, auto mean, auto rec, auto result)
-                            { kernel(CFV::ReconstructionRegion::Core, FieldView{mean, {}}, FieldView{rec, {}}, gradientInput, coreAuxiliary, result); }, R::ReadAs<R::UniformTableRows>(state.Owned()), R::ReadAs<R::UniformTableRows>(fluxCoefficients.Owned()), R::WriteAs<R::UniformTableRows>(residual.Owned()));
+            R::SubmitArrays(engine, stream, [kernel, gradientInput = FieldView{gradients.owned, {}}, coreAuxiliary, viscousCoefficients](auto, auto mean, auto rec, auto result)
+                            { kernel(CFV::ReconstructionRegion::Core, FieldView{mean, {}}, FieldView{rec, {}}, gradientInput, coreAuxiliary, viscousCoefficients, result); }, R::ReadAs<R::UniformTableRows>(state.Owned()), R::ReadAs<R::UniformTableRows>(fluxCoefficients.Owned()), R::WriteAs<R::UniformTableRows>(residual.Owned()));
         operation.Wait();
-        R::SubmitArrays(engine, stream, [kernel, gradients, auxiliary, overlap](auto, auto mean, auto meanGhost, auto rec, auto recGhost, auto result)
-                        { kernel(overlap ? CFV::ReconstructionRegion::HaloDependent : CFV::ReconstructionRegion::All, FieldView{mean, meanGhost}, FieldView{rec, recGhost}, gradients, auxiliary, result); }, R::ReadAs<R::UniformTableRows>(state.Owned()), R::ReadAs<R::UniformTableRows>(state.Ghost()), R::ReadAs<R::UniformTableRows>(fluxCoefficients.Owned()), R::ReadAs<R::UniformTableRows>(fluxCoefficients.Ghost()), R::WriteAs<R::UniformTableRows>(residual.Owned()));
+        if (viscousOperation)
+        {
+            viscousOperation->Wait();
+            viscousGhost.emplace(work.reconstruction.coefficients.Ghost().Read());
+            viscousCoefficients->ghost = viscousGhost->View<R::UniformTableRows>();
+        }
+        R::SubmitArrays(engine, stream, [kernel, gradients, auxiliary, overlap, viscousCoefficients](auto, auto mean, auto meanGhost, auto rec, auto recGhost, auto result)
+                        { kernel(overlap ? CFV::ReconstructionRegion::HaloDependent : CFV::ReconstructionRegion::All, FieldView{mean, meanGhost}, FieldView{rec, recGhost}, gradients, auxiliary, viscousCoefficients, result); }, R::ReadAs<R::UniformTableRows>(state.Owned()), R::ReadAs<R::UniformTableRows>(state.Ghost()), R::ReadAs<R::UniformTableRows>(fluxCoefficients.Owned()), R::ReadAs<R::UniformTableRows>(fluxCoefficients.Ghost()), R::WriteAs<R::UniformTableRows>(residual.Owned()));
         // Local read scopes pin geometry/cache pointers through both submitted
         // phases. A later async public wrapper can retain these same scopes;
         // this CPU synchronous convenience observes only its own stream prefix.

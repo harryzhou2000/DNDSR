@@ -304,6 +304,63 @@ SGS/GMRES+SGS/GMRES+ILU and AoS/SoA/AoSoA. They check warm/repeated solves,
 unchanged RHS generations, rank-inconsistent controls and rank-local conflicting
 accesses. These gates validate linear orchestration, not nonlinear CFD acceptance.
 
+## Polynomial viscous operator
+
+`numerics.viscousGradient="polynomial"` selects the high-order viscous path;
+`"primitive"` retains the earlier cell-gradient method and remains the default
+for archive compatibility. P3 inviscid accuracy alone does not qualify viscous
+accuracy. Changing this option is a numerical-method change, not a restart-layout
+conversion. Older archives missing it mean `"primitive"`; readers reject a
+silent change to `"polynomial"`. Inactive viscous controls do not invalidate an
+inviscid restart.
+
+The polynomial path follows `EulerEvaluator_EvaluateRHS.hxx`'s default
+`usePrimGradInVisFlux=0` construction. In a single physical frame,
+
+```text
+G_face = (G_left + G_right)/2 + n * (U_right_vis - U_left_vis)/d_GRP
+primitive_gradient = equation.PreparePrimitiveGradient((U_left + U_right)/2, G_face)
+```
+
+Convective states set the linearization. `viscousLimited=true` selects the
+filtered WBAP/PP polynomial; false selects the unlimited VR polynomial for
+viscous values and derivatives. At boundaries the exterior is generated from
+the convective interior, following Euler even with an unlimited viscous interior.
+No EOS work enters Riemann. `PolynomialViscousFlux` is a pure local numerical
+operator; `EquationSystem` owns the conservative-to-primitive chain rule and
+`PerfectGas` supplies the initial Newtonian/Fourier law.
+
+The length is normal centroid separation clamped to `[0.25,2]` times
+`2*min(V_left,V_right)/A_face`, with doubled center-to-boundary distance for an
+exterior face. Setup caches it per incidence quadrature; no geometry or matrix
+allocation occurs in the residual loop. The boundary centroid is quadrature
+weighted (identical to the reference center for planar affine faces); exact
+curved-face/legacy geometric-center equivalence is not claimed.
+
+Only no-slip walls contribute boundary viscous flux in this mode; extrapolate,
+farfield, analytic, slip and DMR special boundaries use Euler's zero-viscous-flux
+convention. Adiabatic walls remove the normal temperature gradient. Isothermal
+viscous exterior density follows prescribed pressure/temperature without changing
+the inviscid exterior API. `noGRPOnWall=true` sets the no-slip jump coefficient to
+zero while retaining polynomial derivatives. Euler's optional pressure-primitive
+penalty variant (`usePrimGradInVisFlux!=0`) is not implemented here.
+
+```text
+VR -> unlimited owned commit -> own halo refresh (only if separately consumed)
+  \-> copy -> WBAP -> PP -> flux halo refresh
+                              \-> core / dependent RHS
+```
+
+The wrapper refreshes a separately selected unlimited halo after the final VR
+commit. Its read leases, geometry cache and optional raw views remain alive
+through worker execution. Core views omit all ghosts; the dependent call follows
+the exchange wait. `RHSOperator::Apply` does not communicate or acquire leases:
+direct callers supply ready inputs, retain their leases and avoid output aliases.
+The physical-dt PP mean trial still explicitly ignores viscosity in both modes.
+Finite-difference gradient, legacy face-formula, exact P3 conduction/shear,
+limited/unlimited halo, policy-agreement and old-archive tests cover these contracts.
+Physical Re20/Re200 qualification and matched performance are separate gates.
+
 ## Implicit PP and physical time building blocks
 
 The unlimited VR warm guess and the filtered flux polynomial are distinct
