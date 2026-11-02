@@ -77,7 +77,7 @@ namespace DNDS::Cauchy
     };
     FiniteVolume::FiniteVolume(ssp<Geom::UnstructuredMesh> mesh, const DomainSettings &settings, const EquationSystem &equation)
     {
-        auto data = std::make_shared<Data>(std::move(mesh), settings, equation);
+        auto data = std::make_shared<Data>(std::move(mesh), ResolveSweepOrdering(settings), equation);
         auto meshRead = data->mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
         const auto topology = meshRead.HostView();
         auto geometry = data->metrics.AcquireRead();

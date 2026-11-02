@@ -1180,9 +1180,9 @@ TEST_CASE("Cauchy overlap and unsplit orchestration agree across CPU launchers")
                 settings.numerics.reconstructionIterations = 3;
                 settings.numerics.cfv.maxOrder = 2;
                 settings.numerics.cfv.SORInstead = sor;
-                // Split SOR implicitly uses this logical ordering. Select it
-                // explicitly for All so this is an identical-order comparison.
-                settings.numerics.cfv.coreFirst = true;
+                // Cauchy resolves one effective SOR order for both policies;
+                // changing only overlap must not change finite-sweep math.
+                settings.numerics.cfv.coreFirst = false;
                 settings.numerics.limiter = "WBAP";
                 settings.numerics.flux = "Roe_M9";
                 const auto equation = C::EquationSystem::Resolve(settings.equation);

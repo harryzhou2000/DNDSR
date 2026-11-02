@@ -239,6 +239,10 @@ namespace DNDS::Cauchy
             config.field_map_of<BoundarySettings>(&T::boundaries, "boundaries", "Boundary-zone ID to condition");
         }
     };
+    /// Cauchy's ordered reconstruction uses one logical core-first order under
+    /// both overlap policies. Standalone CFV retains natural-order All support.
+    /// Resolve before publishing root config and when constructing FV directly.
+    DomainSettings ResolveSweepOrdering(DomainSettings settings);
     struct TimeSettings
     {
         std::string method = "ssprk3";

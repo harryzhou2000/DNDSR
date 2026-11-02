@@ -245,6 +245,24 @@ BDF1/2, Trapz and ESDIRK2/3/4 paths. The P3 transport test checks periodic
 conservation and exact discard/retry versus fresh-run agreement. They are
 focused implementation gates, not the final IV/cylinder qualification matrix.
 
+Cauchy resolves ordered SOR to the same logical core-first scan for both
+execution policies, including direct C++ FV construction. The resolved root
+records the effective `cfv.coreFirst` and its ordering provenance. Merely
+toggling overlap therefore preserves finite-sweep mathematics. The standalone
+CFV plan still exposes natural-order unsplit SOR. The regression leaves the
+requested coreFirst flag at its default false and was proven red before this
+frontend resolution fix.
+
+The Python Domain constructor honors the configured physical time method.
+`implicit_stages` returns copied read-only report objects; `flow` remains a
+shared native Array handle with normal lease/lifetime rules. Reports include
+convergence, initial/final component residuals, nonlinear/linear iteration
+counts and PP activations. Release array access scopes before conflicting
+updates or publication. Focused MPI Python tests verify BDF2/ESDIRK4 dispatch,
+shared state identity through stepping/restart and retained allocation lifetime.
+They require rebuilding/installing bindings and pytest's `--with-mpi` flag;
+a skipped collection is not validation.
+
 ## Restart correspondence and history
 
 Cauchy checkpoint format4 adds `metadata_json` with the flow schema, energy

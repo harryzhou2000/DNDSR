@@ -182,6 +182,12 @@ namespace DNDS::Cauchy
                                   positivity.compressionPower > 0 && positivity.compressionPower <= INT_MAX / 2,
                               "invalid implicit Euler-PP controls");
     }
+    DomainSettings ResolveSweepOrdering(DomainSettings settings)
+    {
+        if (settings.numerics.cfv.SORInstead)
+            settings.numerics.cfv.coreFirst = true;
+        return settings;
+    }
     ResolvedExecutionPlan ResolvedExecutionPlan::Resolve(const DomainConfig &domain)
     {
         const auto &s = domain.settings;
@@ -295,11 +301,19 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(data->root["schemaVersion"] == 1, "unsupported resolved schema version");
         DNDS_check_throw_info(data->root["domains"].is_array() && !data->root["domains"].empty(), "resolved Cauchy configuration has no domains");
         std::set<std::string> names;
-        for (const auto &resolved : data->root["domains"])
+        for (index iDomain = 0; iDomain < index(data->root["domains"].size()); ++iDomain)
         {
+            auto &resolved = data->root["domains"][iDomain];
             Allowed(resolved, {"name", "ranks", "settings"}, "/domains");
             Keys(resolved.at("settings"), schema, "/domains/settings");
             DomainConfig domain{{resolved.at("name").get<std::string>(), resolved.at("ranks").get<std::vector<int>>()}, resolved.at("settings").get<DomainSettings>()};
+            const bool requestedCoreFirst = domain.settings.numerics.cfv.coreFirst;
+            domain.settings = ResolveSweepOrdering(std::move(domain.settings));
+            if (requestedCoreFirst != domain.settings.numerics.cfv.coreFirst)
+            {
+                resolved["settings"]["numerics"]["cfv"]["coreFirst"] = domain.settings.numerics.cfv.coreFirst;
+                data->provenance["/domains/" + std::to_string(iDomain) + "/settings/numerics/cfv/coreFirst"] = "Cauchy SOR logical ordering";
+            }
             DNDS_check_throw_info(names.insert(domain.placement.name).second, "duplicate Cauchy domain name");
             Validate(domain, size);
             ResolvedExecutionPlan::Resolve(domain);

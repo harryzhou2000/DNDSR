@@ -10,6 +10,14 @@ PYBIND11_MODULE(cauchy_pybind11, m)
     namespace C = DNDS::Cauchy;
     namespace R = DNDS::Runtime;
     py::module_::import("DNDSR.CFV");
+    py::class_<C::NonlinearIterationReport>(m, "NonlinearIterationReport", "Read-only snapshot of one implicit stage's convergence and correction counts.")
+        .def_readonly("converged", &C::NonlinearIterationReport::converged)
+        .def_readonly("iterations", &C::NonlinearIterationReport::iterations)
+        .def_readonly("linear_iterations", &C::NonlinearIterationReport::linearIterations)
+        .def_readonly("initial_residual", &C::NonlinearIterationReport::initialResidual)
+        .def_readonly("residual", &C::NonlinearIterationReport::residual)
+        .def_readonly("rhs_limited", &C::NonlinearIterationReport::rhsLimited)
+        .def_readonly("increment_limited", &C::NonlinearIterationReport::incrementLimited);
     py::class_<C::Domain>(m, "Domain", "CPU compressible flow5 domain. Collective methods use the mesh communicator. Release all debug views before stepping; no CUDA fallback.")
         .def(py::init([](std::shared_ptr<DNDS::Geom::UnstructuredMesh> mesh, const std::string &json, const std::string &name)
                       {
@@ -29,6 +37,8 @@ PYBIND11_MODULE(cauchy_pybind11, m)
         .def_property_readonly("step", [](const C::Domain &domain)
                                { return domain.Epoch().acceptedStep; })
         .def_property_readonly("face_fallbacks", &C::Domain::LastFaceFallbacks)
+        .def_property_readonly("implicit_stages", [](const C::Domain &domain)
+                               { return domain.LastImplicitStages(); }, "Copied diagnostics from the latest implicit attempt; empty for SSPRK3. Inspect converged before interpreting a trial.")
         .def_property_readonly("positivity", &C::Domain::LastPositivity, "Last accepted trial: reconstruction cell-stage activations, minimum beta, stage activations, minimum alpha, componentwise characteristic fallbacks.")
         .def("residual", [](C::Domain &domain)
              {

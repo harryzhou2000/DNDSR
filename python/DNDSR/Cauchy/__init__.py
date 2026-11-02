@@ -4,6 +4,6 @@ from DNDSR._loader import preload
 
 preload("cauchy")
 
-from ._ext.cauchy_pybind11 import Domain
+from ._ext.cauchy_pybind11 import Domain, NonlinearIterationReport
 
-__all__ = ["Domain"]
+__all__ = ["Domain", "NonlinearIterationReport"]

@@ -17,6 +17,10 @@ TEST_CASE("Cauchy implicit controls resolve through the root and reject contradi
     CHECK_THROWS(C::SimulationConfig::Resolve({{"defaults", {{"implicit", {{"iterations", 0}}}}}}, 2));
     CHECK_THROWS(C::SimulationConfig::Resolve({{"defaults", {{"implicit", {{"linear", {{"preconditioner", "ilu"}}}, {"sgs", {{"exchangeBetweenSweeps", true}}}}}}}}, 2));
     CHECK_THROWS(C::SimulationConfig::Resolve({{"defaults", {{"implicit", {{"positivity", {{"rhsRelax", 0}}}}}}}}, 2));
+    const auto sor = C::SimulationConfig::Resolve({{"defaults", {{"execution", {{"overlap", false}}}, {"numerics", {{"cfv", {{"SORInstead", true}, {"coreFirst", false}}}}}}}}, 2);
+    CHECK(sor.Domains()[0].settings.numerics.cfv.coreFirst);
+    CHECK(sor.Root()["domains"][0]["settings"]["numerics"]["cfv"]["coreFirst"].get<bool>());
+    CHECK(sor.Provenance().at("/domains/0/settings/numerics/cfv/coreFirst") == "Cauchy SOR logical ordering");
 }
 TEST_CASE("Cauchy partial analytic boundary profile receives nested schema defaults")
 {

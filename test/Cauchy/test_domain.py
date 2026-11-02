@@ -14,7 +14,7 @@ from DNDSR import DNDS, Geom
 from DNDSR.Cauchy import Domain
 
 
-def build_domain(layout="aos", flux="Roe", workers=0):
+def build_domain(layout="aos", flux="Roe", workers=0, method="ssprk3"):
     mpi = DNDS.MPIInfo()
     mpi.setWorld()
     path = Path(__file__).resolve().parents[2] / "data/mesh/Uniform_3x3_wall.cgns"
@@ -29,7 +29,7 @@ def build_domain(layout="aos", flux="Roe", workers=0):
         "numerics": {"flux": flux, "cfv": {"maxOrder": 1}},
         "initialPrimitive": primitive,
         "boundaries": {str(zone): {"kind": "farfield", "primitive": primitive} for zone in zones},
-    }}
+    }, "time": {"method": method}}
     return Domain(mesh, json.dumps(config)), primitive
 
 
@@ -66,6 +66,29 @@ def test_shared_state_real_residual_ssprk3_and_restart(tmp_path, layout, flux, w
     # A shared Python handle retains its allocation after the domain dies.
     del domain
     np.testing.assert_array_equal(flow.numpy(), saved)
+
+
+@pytest.mark.mpi
+@pytest.mark.parametrize("method,stages", [("bdf2", 1), ("esdirk4", 5)])
+def test_configured_implicit_method_and_retained_shared_state(tmp_path, method, stages):
+    domain, primitive = build_domain(method=method)
+    flow = domain.flow
+    before = flow.numpy().copy()
+    domain.advance(.001)
+    assert len(domain.implicit_stages) == stages
+    assert all(report.converged for report in domain.implicit_stages)
+    assert domain.step == 1 and domain.time == .001
+    np.testing.assert_allclose(flow.numpy(), before, atol=2e-14)
+    path = MPI.COMM_WORLD.bcast(str(tmp_path / "implicit.h5") if MPI.COMM_WORLD.rank == 0 else None, root=0)
+    domain.write_checkpoint(path, '{"test":"implicit-python"}', include_reconstruction=True)
+    domain.advance(.002)
+    domain.read_checkpoint(path, '{"test":"implicit-python"}')
+    assert domain.step == 1 and domain.time == .001
+    domain.advance(.002)
+    assert all(report.converged for report in domain.implicit_stages)
+    # The same Python Array handle continues to reference the bound allocation.
+    assert domain.flow.identity == flow.identity
+    np.testing.assert_allclose(flow.numpy(), before, atol=3e-14)
 
 
 @pytest.mark.mpi
