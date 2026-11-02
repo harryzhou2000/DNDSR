@@ -44,6 +44,9 @@ namespace DNDS::Cauchy
         matrix.col(3) << 1, velocity + sound * normal, enthalpy + sound * velocity.dot(normal);
         matrix.col(4) << 1, velocity - sound * normal, enthalpy - sound * velocity.dot(normal);
         FlowCharacteristics result;
+        for (int d = 0; d < 3; ++d)
+            result.velocity[d] = velocity[d];
+        result.soundSpeed = sound;
         Eigen::Map<Eigen::Matrix<real, 5, 5>> inverse(result.inverse.data()), forward(result.forward.data());
         inverse = matrix;
         forward = matrix.inverse();

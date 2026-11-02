@@ -45,6 +45,8 @@ namespace DNDS::Cauchy
     struct FlowCharacteristics
     {
         std::array<real, 25> forward, inverse;
+        Vector3 velocity{};
+        real soundSpeed = 0;
         bool componentwiseFallback = false;
     };
     /// Coarse physical-model owner. Schema and accumulation choices belong here;
@@ -74,6 +76,12 @@ namespace DNDS::Cauchy
         {
             const real pressure = _gas.Pressure(state);
             return {{state, pressure}, std::sqrt(_gas.gamma * pressure / state[0])};
+        }
+        /// Model-owned physical flux derivative for approximate implicit
+        /// operators. Numerical dissipation and time/mass scaling are separate.
+        std::array<real, 25> PrepareFluxJacobian(const FlowState &state, const Vector3 &normal) const
+        {
+            return _gas.FluxJacobian(state, normal);
         }
         /// Maximum molecular momentum/thermal diffusivity for the initial
         /// Newtonian/Fourier profile. Other transport models supply this bound.

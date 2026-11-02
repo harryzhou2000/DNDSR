@@ -27,6 +27,43 @@ namespace DNDS::Cauchy
                 momentumSquared += state[1 + d] * state[1 + d];
             return (gamma - 1) * (state[4] - 0.5 * momentumSquared / state[0]);
         }
+        /// Column-major derivative of the physical normal flux with respect to
+        /// all five conservative components. Thermodynamic derivatives belong
+        /// to the model, independently of numerical Riemann dissipation.
+        /// Caller checks state admissibility before evaluating a batch.
+        DNDS_DEVICE_CALLABLE std::array<real, 25> FluxJacobian(const FlowState &state, const Vector3 &normal) const
+        {
+            std::array<real, 25> result{};
+            Vector3 velocity{};
+            real normalVelocity = 0, speedSquared = 0;
+            for (int d = 0; d < 3; ++d)
+            {
+                velocity[d] = state[1 + d] / state[0];
+                normalVelocity += velocity[d] * normal[d];
+                speedSquared += velocity[d] * velocity[d];
+            }
+            const real pressure = Pressure(state);
+            for (int column = 0; column < 5; ++column)
+            {
+                const real densityIncrement = column == 0 ? 1 : 0;
+                const real energyIncrement = column == 4 ? 1 : 0;
+                real pressureIncrement = (gamma - 1) * (energyIncrement + .5 * speedSquared * densityIncrement);
+                real normalIncrement = 0, massIncrement = 0;
+                for (int d = 0; d < 3; ++d)
+                {
+                    const real momentumIncrement = column == 1 + d ? 1 : 0;
+                    pressureIncrement -= (gamma - 1) * velocity[d] * momentumIncrement;
+                    normalIncrement += (momentumIncrement - velocity[d] * densityIncrement) / state[0] * normal[d];
+                    massIncrement += momentumIncrement * normal[d];
+                }
+                result[column * 5] = massIncrement;
+                for (int d = 0; d < 3; ++d)
+                    result[column * 5 + 1 + d] = (column == 1 + d ? normalVelocity : 0) +
+                                                 state[1 + d] * normalIncrement + pressureIncrement * normal[d];
+                result[column * 5 + 4] = (energyIncrement + pressureIncrement) * normalVelocity + (state[4] + pressure) * normalIncrement;
+            }
+            return result;
+        }
         DNDS_DEVICE_CALLABLE bool Admissible(const FlowState &state, real densityFloor = 0, real pressureFloor = 0) const
         {
             for (real value : state)

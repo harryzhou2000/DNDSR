@@ -10,6 +10,32 @@
 #include <limits>
 
 namespace C = DNDS::Cauchy;
+TEST_CASE("Equation-owned physical flux Jacobian differentiates all three momentum components")
+{
+    for (double gamma : {1.4, 1.67})
+    {
+        C::EquationSettings settings;
+        settings.gamma = gamma;
+        const auto equation = C::EquationSystem::Resolve(settings);
+        for (const C::Vector3 normal : {C::Vector3{1, 0, 0}, C::Vector3{.6, 0, -.8}, C::Vector3{0, -1, 0}})
+        {
+            const auto state = equation.Gas().Conservative({1.3, .7, -.2, .4, 1.1});
+            const auto matrix = equation.PrepareFluxJacobian(state, normal);
+            for (int column = 0; column < 5; ++column)
+            {
+                auto plus = state, minus = state;
+                const double step = 1e-6 * std::max(1., std::abs(state[column]));
+                plus[column] += step;
+                minus[column] -= step;
+                const auto left = C::Riemann::PhysicalFlux(equation.PrepareFluxState(plus).flow, normal);
+                const auto right = C::Riemann::PhysicalFlux(equation.PrepareFluxState(minus).flow, normal);
+                for (int row = 0; row < 5; ++row)
+                    CHECK(matrix[column * 5 + row] == doctest::Approx((left[row] - right[row]) / (2 * step)).epsilon(2e-8).scale(1));
+            }
+        }
+    }
+}
+
 TEST_CASE("Thermal PP uses an internal-energy temperature bound including shifted energy references")
 {
     const C::ThermalBounds bounds{.1, -10, -std::numeric_limits<double>::infinity()};
