@@ -1,6 +1,8 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
 #include "Solver/FieldTimeStepper.hpp"
+#include "Solver/FieldDITR.hpp"
+#include <Eigen/LU>
 
 namespace A = DNDS::Algebra;
 namespace O = DNDS::ODE;
@@ -108,4 +110,129 @@ TEST_CASE("Native BDF history is committed explicitly and retries use the last a
     CHECK_FALSE(stepper.HasHistory());
     CHECK_THROWS(stepper.Prepare(state, state, .1, .05, Evaluate(), Solve()));
     CHECK_THROWS(O::FieldTimeStepper(state, "unknown"));
+}
+TEST_CASE("Native DITR solves both original coupled equations with an independent dense oracle")
+{
+    const A::DofSpace space(1);
+    Field state(space, R::RowLayout::TiledColMajor(0, 1, 8)), trial(space, 1);
+    A::Fill(state, .7);
+    int factories = 0, resets = 0;
+    const auto factory = [&](Field &mid)
+    {
+        ++factories;
+        CHECK(mid.Owned().SharedStorage() != trial.Owned().SharedStorage());
+        return O::FieldDITR::StageOperator{Evaluate(), Solve(), [&]
+                                           { ++resets; }};
+    };
+    O::FieldDITR ditr(state, {}, factory);
+    const double t = .3, h = .2, a = .55;
+    // Fixed numeric Hermite/integration coefficients, independent of the
+    // production coefficient builder and transformed mid-equation code.
+    const double c0 = .42525, c1 = .57475, c2 = .111375, c3 = -.136125;
+    const double w0 = 13. / 66, w1 = 200. / 297, w2 = 7. / 54;
+    const auto g = [](double x)
+    { return 2 * std::cos(x) - std::sin(x); };
+    Eigen::Matrix2d matrix;
+    matrix << 1 / h, -c1 / h + 2 * c3, 2 * w1, 1 / h + 2 * w2;
+    Eigen::Vector2d forcing;
+    forcing << c0 * .7 / h + c2 * (-2 * .7 + g(t)) + c3 * g(t + h),
+        .7 / h + w0 * (-2 * .7 + g(t)) + w1 * g(t + a * h) + w2 * g(t + h);
+    const Eigen::Vector2d exact = matrix.fullPivLu().solve(forcing);
+    double lastH = 0, lastI = 0;
+    const auto check = [&](const Field &hermite, const Field &integral, DNDS::index)
+    {
+        lastH = Value(hermite);
+        lastI = Value(integral);
+        return std::max(std::abs(lastH), std::abs(lastI)) < 2e-13;
+    };
+    REQUIRE(ditr.Prepare(state, trial, t, h, Evaluate(), Solve(), check));
+    CHECK(Value(trial) == doctest::Approx(exact[1]).epsilon(2e-13));
+    CHECK(Value(state) == .7);
+    CHECK(ditr.LastReport().converged);
+    CHECK(ditr.LastReport().iterations > 0);
+    CHECK(std::abs(lastH) < 2e-13);
+    CHECK(std::abs(lastI) < 2e-13);
+    const double first = Value(trial);
+    REQUIRE(ditr.Prepare(state, trial, t, h, Evaluate(), Solve(), check));
+    CHECK(Value(trial) == first);
+    CHECK(factories == 1);
+    CHECK(resets == 2);
+}
+TEST_CASE("Native DITR nonautonomous convergence and capped retry distinguish physical acceptance")
+{
+    const auto error = [](int steps, double fraction)
+    {
+        const A::DofSpace space(1);
+        Field state(space, 1), trial(space, 1);
+        A::Fill(state, 1.);
+        O::DITRSettings settings;
+        settings.fraction = fraction;
+        O::FieldDITR ditr(state, settings, [](Field &)
+                          { return O::FieldDITR::StageOperator{Evaluate(), Solve(), {}}; });
+        const auto check = [](const Field &h, const Field &i, DNDS::index)
+        { return std::max(std::abs(Value(h)), std::abs(Value(i))) < 2e-13; };
+        for (int step = 0; step < steps; ++step)
+        {
+            REQUIRE(ditr.Prepare(state, trial, double(step) / steps, 1. / steps, Evaluate(), Solve(), check));
+            A::Copy(state, trial);
+        }
+        return std::abs(Value(state) - std::cos(1.));
+    };
+    for (double fraction : {.55, .5})
+    {
+        // At alpha=.55 the independent exact 2x2 method has orders2.736,
+        // 2.883,2.945 on8/16/32/64: the third-order leading coefficient is
+        // small near alpha=.5. Use the asymptotic pair and a stricter bound.
+        const double coarse = error(32, fraction), fine = error(64, fraction);
+        CAPTURE(fraction);
+        CAPTURE(coarse);
+        CAPTURE(fine);
+        CHECK(coarse > 0);
+        CHECK(fine > 0);
+        CHECK(std::log2(coarse / fine) > (fraction == .5 ? 3.7 : 2.9));
+    }
+    const A::DofSpace space(1);
+    Field state(space, 1), trial(space, 1);
+    A::Fill(state, 1.);
+    O::DITRSettings settings;
+    settings.iterations = 5;
+    O::FieldDITR capped(state, settings, [](Field &)
+                        { return O::FieldDITR::StageOperator{Evaluate(), Solve(), {}}; });
+    const auto check = [](const Field &h, const Field &i, DNDS::index)
+    { return std::max(std::abs(Value(h)), std::abs(Value(i))) < 2e-10; };
+    CHECK_FALSE(capped.Prepare(state, trial, 0, .2, Evaluate(), Solve(), check));
+    CHECK_FALSE(capped.LastReport().converged);
+    CHECK(capped.LastReport().iterations == 5);
+    CHECK(Value(state) == 1);
+    CHECK(capped.Prepare(state, trial, 0, .001, Evaluate(), Solve(), check));
+    CHECK(Value(trial) == doctest::Approx(std::cos(.001)).epsilon(2e-10));
+    CHECK_THROWS(capped.Prepare(state, state, 0, .01, Evaluate(), Solve(), check));
+    CHECK_THROWS(O::FieldDITR(state, {}, {}));
+}
+TEST_CASE("DITR rejects intermediate rebinding and stateful rate callbacks before accepted-state mutation")
+{
+    const A::DofSpace space(1);
+    Field state(space, 1), trial(space, 1);
+    A::Fill(state, 1.);
+    const auto check = [](const Field &h, const Field &i, DNDS::index)
+    { return std::max(std::abs(Value(h)), std::abs(Value(i))) < 1e-12; };
+    O::FieldDITR rebound(state, {}, [&](Field &mid)
+                         { mid = state; return O::FieldDITR::StageOperator{Evaluate(), Solve(), {}}; });
+    const auto generation = state.Owned().Version();
+    CHECK_THROWS(rebound.Prepare(state, trial, 0, .1, Evaluate(), Solve(), check));
+    CHECK(state.Owned().Version() == generation);
+    CHECK_THROWS(rebound.Prepare(state, trial, 0, .1, Evaluate(), Solve(), check));
+    O::FieldDITR mutation(state, {}, [](Field &)
+                          { return O::FieldDITR::StageOperator{Evaluate(), Solve(), {}}; });
+    const auto bad = [](Field &input, Field &output, double, int)
+    { A::Scale(input, 2.); A::Copy(output, input); };
+    CHECK_THROWS(mutation.Prepare(state, trial, 0, .1, bad, Solve(), check));
+    CHECK(state.Owned().Version() == generation);
+    CHECK(Value(state) == 1);
+    CHECK_THROWS(O::DITRCoefficients(0));
+    CHECK_THROWS(O::DITRCoefficients(1));
+    O::DITRSettings settings;
+    settings.iterations = 0;
+    CHECK_THROWS(O::FieldDITR(state, settings, [](Field &)
+                              { return O::FieldDITR::StageOperator{Evaluate(), Solve(), {}}; }));
 }

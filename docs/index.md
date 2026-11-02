@@ -39,6 +39,7 @@ gates. The placement foundation mock alone is not a fluid validation.
 | Optional submission-time dependency checking | [Checked eager execution](architecture/CheckedExecution.md) |
 | Native field algebra | [Native DOF algebra](architecture/NativeDofAlgebra.md) |
 | Native multigrid cycles | [FAS ownership, transfer and callback contracts](architecture/FAS.md) |
+| Coupled time equations | [Native DITR equations and callback contracts](architecture/DITR.md) |
 | Native block matrices and local factors | [Native block algebra](architecture/NativeBlockAlgebra.md) |
 | Explicit device pack/MPI/unpack and overlap | [Device-packed transfer](architecture/DevicePackedTransfer.md) |
 | Optional stream-ordered NCCL payloads and caller ordering | [NCCL transfers](architecture/NCCLTransfer.md) |
