@@ -5,11 +5,61 @@
 #include "Cauchy/Boundary/BoundarySystem.hpp"
 #include "Cauchy/Physics/FlowProfile.hpp"
 #include "Cauchy/Physics/Positivity.hpp"
+#include "Cauchy/Physics/ImplicitPositivity.hpp"
 #include "Cauchy/Physics/EquationSystem.hpp"
 #include "Euler/Gas.hpp"
 #include <limits>
 
 namespace C = DNDS::Cauchy;
+TEST_CASE("Implicit energy compression preserves Euler scheme-one mathematics with explicit energy references")
+{
+    const C::PerfectGas gas{1.4, 1, 0, .72};
+    const auto state = gas.Conservative({1.2, 4, -.7, .3, .8});
+    const std::array<C::FlowState, 4> increments{{{-.3, 1, -2, .4, -4}, {.1, 8, 2, -.2, -2}, {0, 0, 0, 0, -.2}, {-.9, -3, 0, 0, -10}}};
+    for (const auto &increment : increments)
+        for (double baseOld : {0., -.5, .2})
+        {
+            const double baseNew = baseOld + .01;
+            Eigen::Matrix<double, 5, 1> u, delta;
+            for (int j = 0; j < 5; ++j)
+            {
+                u[j] = state[j];
+                delta[j] = increment[j];
+            }
+            const double expected = DNDS::Euler::Gas::IdealGasGetCompressionRatioPressure<3, 1, 5>(u, delta, 1e-12, baseOld, baseNew);
+            CHECK(C::InternalEnergyCompression(state, increment, 1e-12, baseOld, baseNew) == doctest::Approx(expected).epsilon(2e-14));
+        }
+}
+TEST_CASE("Implicit flow compression enforces density and both temperature and energy constraints")
+{
+    const C::ThermalBounds bounds{.1, 2., .4};
+    const C::FlowState state{1, 2, -.3, .1, 6};
+    for (const C::FlowState increment : {C::FlowState{-2, 3, 0, 0, -4}, C::FlowState{1, 8, 1, -.4, 0}, C::FlowState{-.7, -1, 0, 0, -5}, C::FlowState{0, 0, 0, 0, -10}})
+        for (double relax : {1., .5, .1})
+        {
+            const double alpha = C::FlowIncrementFraction(state, increment, bounds, relax);
+            CHECK(alpha >= 0);
+            CHECK(alpha < 1);
+            auto updated = state;
+            for (int j = 0; j < 5; ++j)
+                updated[j] += alpha * increment[j];
+            CHECK(C::ThermallyAdmissible(updated, bounds));
+            const auto fixed = C::FixFlowIncrement(state, increment, bounds);
+            updated = state;
+            for (int j = 0; j < 5; ++j)
+                updated[j] += fixed[j];
+            CHECK(C::ThermallyAdmissible(updated, bounds));
+        }
+    const C::FlowState safe{.01, .01, 0, 0, .1};
+    CHECK(C::FlowIncrementFraction(state, safe, bounds) == 1);
+    CHECK(C::FixFlowIncrement(state, safe, bounds) == safe);
+    // A shifted reference energy remains valid; temperature PP is never a
+    // hardcoded positivity check on the stored total/internal energy itself.
+    const C::ThermalBounds shifted{.1, -10, -std::numeric_limits<double>::infinity()};
+    const C::FlowState shiftedState{1, 3, 0, 0, -2}, shiftedIncrement{0, 6, 0, 0, 0};
+    const auto fixed = C::FixFlowIncrement(shiftedState, shiftedIncrement, shifted);
+    CHECK(C::ThermallyAdmissible(C::PositivityDetail::Add(shiftedState, fixed), shifted));
+}
 TEST_CASE("Equation-owned physical flux Jacobian differentiates all three momentum components")
 {
     for (double gamma : {1.4, 1.67})

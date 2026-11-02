@@ -206,9 +206,10 @@ dnds_add_unit_test(cauchy_riemann_legacy "Cauchy/test_RiemannLegacy.cpp" "cauchy
 dnds_add_mpi_test(cauchy_finite_volume "Cauchy/test_FiniteVolume.cpp" "cauchy;cfv;geom;dnds")
 dnds_add_mpi_test(cauchy_foundation "Cauchy/test_Foundation.cpp" "cauchy;cfv;geom;dnds")
 dnds_add_mpi_test(cauchy_linear "Cauchy/test_LinearProblem.cpp" "cauchy;cfv;geom;dnds")
+dnds_add_mpi_test(cauchy_linear_solver "Cauchy/test_LinearSolver.cpp" "cauchy;cfv;geom;dnds")
 dnds_add_mpi_test(cauchy_jacobian "Cauchy/test_Jacobian.cpp" "cauchy;cfv;geom;dnds")
 add_custom_target(cauchy_unit_tests)
-add_dependencies(cauchy_unit_tests dnds_test_cauchy_config dnds_test_cauchy_physics dnds_test_cauchy_riemann dnds_test_cauchy_riemann_legacy dnds_test_cauchy_finite_volume dnds_test_cauchy_foundation dnds_test_cauchy_linear dnds_test_cauchy_jacobian)
+add_dependencies(cauchy_unit_tests dnds_test_cauchy_config dnds_test_cauchy_physics dnds_test_cauchy_riemann dnds_test_cauchy_riemann_legacy dnds_test_cauchy_finite_volume dnds_test_cauchy_foundation dnds_test_cauchy_linear dnds_test_cauchy_linear_solver dnds_test_cauchy_jacobian)
 add_dependencies(all_unit_tests cauchy_unit_tests)
 add_dependencies(dnds_unit_tests dnds_test_access_tracking)
 add_dependencies(dnds_unit_tests dnds_test_runtime_engine)
@@ -751,6 +752,7 @@ endfunction()
 solver_add_unit_test(ode "Solver/test_ODE.cpp" "dnds")
 solver_add_unit_test(linear "Solver/test_Linear.cpp" "dnds")
 solver_add_unit_test(field_gmres "Solver/test_FieldGMRES.cpp" "dnds")
+solver_add_unit_test(field_time_stepper "Solver/test_FieldTimeStepper.cpp" "dnds")
 solver_add_unit_test(direct "Solver/test_Direct.cpp" "dnds")
 solver_add_unit_test(scalar "Solver/test_Scalar.cpp" "dnds")
 
@@ -758,6 +760,7 @@ set(SOLVER_TEST_TARGETS
     solver_test_ode
     solver_test_linear
     solver_test_field_gmres
+    solver_test_field_time_stepper
     solver_test_direct
     solver_test_scalar
 )

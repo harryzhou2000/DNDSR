@@ -68,6 +68,21 @@ namespace DNDS::Linear
             DNDS_check_throw_info(field.Space().Same(_solution.Space()) && field.Width() == _solution.Width() && field.Device() == _solution.Device(),
                                   "GMRES field space, width or backend differs");
         }
+        void CheckSource(const Field &source, bool allowSolution) const
+        {
+            const auto check = [&](const Field &workspace)
+            {
+                if (allowSolution && &workspace == &_solution)
+                    return;
+                for (const auto *input : {&source.Owned(), &source.Ghost()})
+                    for (const auto *output : {&workspace.Owned(), &workspace.Ghost()})
+                        DNDS_check_throw_info(!Algebra::Detail::Overlaps(input->Storage(), output->Storage()), "GMRES input aliases mutable workspace");
+            };
+            for (const auto *field : {&_solution, &_action, &_residual, &_preconditioned, &_work})
+                check(*field);
+            for (const auto &field : _basis)
+                check(field);
+        }
 
     public:
         FieldGMRES(const Field &prototype, int subspace)
@@ -99,8 +114,12 @@ namespace DNDS::Linear
                                     const Products &products, KrylovSettings settings = {}, const Field *initialGuess = nullptr)
         {
             Check(rhs);
+            CheckSource(rhs, false);
             if (initialGuess)
+            {
                 Check(*initialGuess);
+                CheckSource(*initialGuess, true);
+            }
             DNDS_check_throw_info(apply && precondition && products && settings.maxIterations >= 0 &&
                                       std::isfinite(settings.relativeTolerance) && settings.relativeTolerance >= 0 &&
                                       std::isfinite(settings.absoluteTolerance) && settings.absoluteTolerance >= 0,
@@ -136,7 +155,8 @@ namespace DNDS::Linear
             { precondition(input, output); ++report.preconditionerApplications; };
             if (!initialGuess)
                 Algebra::Fill(_solution, real(0));
-            else if (initialGuess != &_solution)
+            else if (initialGuess->Owned().Storage().LegacyPointer() != _solution.Owned().Storage().LegacyPointer() ||
+                     !(initialGuess->Owned().Layout() == _solution.Owned().Layout()))
                 Algebra::Copy(_solution, *initialGuess);
             const real normB = norm(rhs);
             if (!std::isfinite(normB))

@@ -153,3 +153,56 @@ phase/readiness errors, retained lifetimes, output publication, unused scopes an
 abandonment for AoS/SoA/AoSoA. The eventual engine wrapper must declare scheduled
 accesses/events for queued execution. These synchronous CPU entry points do not
 claim CUDA submission or graph support.
+
+## CPU linear orchestration
+
+`Implicit/LinearSolver` owns reusable native vectors and persistent input halo
+bindings, while `LinearProblemContext` owns coefficients and numerical kernels.
+It supports standalone SGS and restarted left-GMRES with a fixed SGS or local
+ILU preconditioner. Every SGS preconditioner application starts from zero and
+uses the configured fixed number of sweeps. ILU never inserts a middle exchange;
+the optional SGS middle exchange is explicitly exposed. Matrix read scopes pin
+coefficients throughout a solve. Both overlapping core/dependent and unsplit
+wait-then-All execution use the same numerical order.
+
+All domain ranks construct/call the solver together with agreed controls.
+Callers serialize access, release conflicting debug/Python views, and bind each
+input to the intended entity ghost mapping. Checked execution coordinates local
+kernel errors before more MPI; disabling those checks is caller-ordered eager
+execution and transfers distributed failure handling to the caller. Control and
+solve-entry checks remain collective. A preflight rejection is reusable; a
+failure after iteration starts invalidates that workspace for reuse. Reports
+distinguish convergence, finite iteration limits and unusable breakdowns. The
+borrowed solution changes at the next solve; it cannot serve as that solve's RHS.
+
+Distributed tests solve an independently assembled global block matrix, using
+real persistent ring transfers, both overlap policies, both SGS middle modes,
+SGS/GMRES+SGS/GMRES+ILU and AoS/SoA/AoSoA. They check warm/repeated solves,
+unchanged RHS generations, rank-inconsistent controls and rank-local conflicting
+accesses. These gates validate linear orchestration, not nonlinear CFD acceptance.
+
+## Implicit PP and physical time building blocks
+
+`Physics/ImplicitPositivity.hpp` ports Euler's active scheme-one internal-energy
+compression, relaxed increment fraction and flow5 increment repair as pure
+functions. Density is handled before energy; the legacy safety, compression
+powers and repair factors are retained. Temperature and pressure constraints are
+an intersection of two affine energy bounds for the initial perfect-gas model.
+The same concave rule applies to both. A future EOS must supply valid energy
+reference/bound information, rather than substituting gamma in numerical code.
+Callers supply finite admissible old states, valid relaxation/power controls,
+check the resulting state, and perform the field/global reductions themselves.
+An exhausted energy repair returns NaN; it must be rejected, never applied.
+These functions do not yet replace the existing explicit flux-blend path.
+
+`Solver/FieldTimeStepper.hpp` owns native-field time scratch and accepted BDF
+history. The supported tableaus BDF1/2, Trapz and ESDIRK2/3/4 retain Euler's
+coefficients. A callback solves `mass*U-rhsScale*F(U,t)=source`; nonlinear/PP,
+physical accumulation and MPI orchestration remain its caller's responsibility.
+This initial profile uses identity accumulation in the semidiscrete time
+equations. Different physical mass maps need an explicit adapter. Preparation
+changes only trial state/scratch. Commit history only after accepted-state
+publication succeeds; discard/retry never changes accepted history. Variable
+BDF2 uses the last accepted timestep, with BDF1 startup or an explicit reset.
+Independent nonautonomous exact-stage tests verify orders and retry semantics.
+DITR, full nonlinear integration and physical qualification remain outstanding.

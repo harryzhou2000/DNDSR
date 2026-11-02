@@ -76,6 +76,9 @@ TEST_CASE("Field GMRES handles first-vector closure true residuals and extreme f
         CHECK(warm.converged);
         CHECK(warm.iterations == 0);
         CHECK(std::isnan(warm.preconditionedResidual)); // no PC evaluation was needed
+        const auto version = solver.Solution().Owned().Version();
+        CHECK_THROWS(solver.Solve(solver.Solution(), op, pc, Products));
+        CHECK(solver.Solution().Owned().Version() == version);
     }
 }
 TEST_CASE("Field GMRES restarts nonnormal systems across layouts with empty local ranks")
