@@ -145,6 +145,10 @@ namespace DNDS::Cauchy
         /// Retain it in a restart for exact continuation; only owned values are
         /// persistent, since Evaluate refreshes ghosts before consuming them.
         const CFV::FVField &ReconstructionGuess(const Workspace &workspace) const;
+        /// Completed flux polynomial, after optional WBAP/PP. Filtering never
+        /// overwrites ReconstructionGuess(), which remains the unlimited guess.
+        /// With filtering disabled these references share the same coefficients.
+        const CFV::FVField &FluxReconstruction(const Workspace &workspace) const;
         /// Interpretation of stored polynomial rows; independent of physical
         /// flow schema. Restart may restore means and cold-start incompatible
         /// coefficients rather than matching a C++ static row type.
@@ -173,7 +177,8 @@ namespace DNDS::Cauchy
         /// refreshed from owners using the field's canonical mapping.
         const AuxiliaryValues &PreparedAuxValues(const Workspace &workspace) const;
         const ThermalBounds &ThermalConstraints() const;
-        /// Collective checked projection of workspace coefficients. Reads only
+        /// Collective checked projection of a fresh copy of the unlimited
+        /// guess into flux coefficients, retaining the unlimited guess. Reads only
         /// owned means and cached owned-cell points; a mean ghost write may be
         /// active. Coefficient transfers must be complete before publication.
         /// Explicit outputs are limited coefficients and per-call beta stats.
@@ -185,5 +190,10 @@ namespace DNDS::Cauchy
         /// Native parallel VTKHDF cell means and rank-local surface quadrature
         /// samples. Does not gather mesh/state to a serial rank.
         void WriteVisualization(const CFV::FVField &state, const Workspace &workspace, const std::string &prefix, real time, int hdfDeflateLevel = 0) const;
+
+    private:
+        /// Evaluate preserves its preceding WBAP result; the public standalone
+        /// projection always starts afresh from the unlimited guess.
+        void LimitReconstructionPPImpl(const CFV::FVField &state, Workspace &workspace, bool refresh) const;
     };
 }

@@ -33,10 +33,26 @@ namespace DNDS::Cauchy
                 return R::RowLayout::TiledColMajor(rows, width, prototype.Stride());
             return R::RowLayout::Dense(rows, width);
         }
+        void CopyOwned(const CFV::FVField &from, CFV::FVField &to)
+        {
+            DNDS_check_throw_info(from.Space().Same(to.Space()) && from.Width() == to.Width() &&
+                                      !Algebra::Detail::Overlaps(from.Owned().Storage(), to.Owned().Storage()),
+                                  "incompatible or aliased reconstruction copy");
+            auto input = from.Owned().Read();
+            auto output = to.Owned().Write();
+            const auto a = input.View<R::UniformTableRows>();
+            const auto b = output.View<R::UniformTableRows>();
+            for (index iCell = 0; iCell < a.RowCount(); ++iCell)
+                for (index j = 0; j < a.RowSize(iCell); ++j)
+                    b(iCell, j) = a(iCell, j);
+        }
     }
     struct FiniteVolume::Workspace
     {
         CFV::ReconstructionWorkspace reconstruction;
+        std::optional<CFV::ReconstructionWorkspace> fluxReconstruction;
+        std::optional<R::TransferBinding> fluxHalo;
+        bool fluxReady = false;
         CFV::FVField gradient;
         CFV::FVField primitive;
         CFV::FVField lowResidual;
@@ -73,6 +89,15 @@ namespace DNDS::Cauchy
         {
             Algebra::Fill(reconstruction.coefficients, 0.);
             Algebra::Fill(reconstruction.temporary, 0.);
+            if (data.settings.numerics.limiter == "WBAP" || data.settings.numerics.positivity)
+            {
+                // Keep Euler's unlimited warm guess separate from its filtered
+                // flux polynomial. Immutable plans and temporary/scratch rows
+                // are shared: reconstruction, WBAP and PP run in serial phases.
+                fluxReconstruction.emplace(reconstruction);
+                fluxReconstruction->coefficients = data.metrics.BuildField(reconstruction.coefficients.Owned().Layout());
+                fluxHalo.emplace(data.metrics.BindHalo(fluxReconstruction->coefficients));
+            }
             if (data.settings.numerics.positivity && !data.settings.numerics.positivityCompressToMean)
             {
                 positivityReference.emplace(data.metrics.BuildField(5 * data.reconstruction.NRecDOF()));
@@ -86,6 +111,15 @@ namespace DNDS::Cauchy
             DNDS_check_throw_info(stencilFlags[0] == -stencilFlags[1] && stencilFlags[2] == -stencilFlags[3], "Riemann stencil capability differs between domain ranks");
             for (const auto &[zone, condition] : data.settings.boundaries)
                 forces.try_emplace(std::stoi(zone));
+        }
+        CFV::ReconstructionWorkspace &Flux() { return fluxReconstruction ? *fluxReconstruction : reconstruction; }
+        const CFV::ReconstructionWorkspace &Flux() const { return fluxReconstruction ? *fluxReconstruction : reconstruction; }
+        R::TransferBinding &FluxHalo() { return fluxHalo ? *fluxHalo : coefficientHalo; }
+        void PrepareFlux()
+        {
+            if (fluxReconstruction && !fluxReady)
+                CopyOwned(reconstruction.coefficients, fluxReconstruction->coefficients);
+            fluxReady = true;
         }
     };
     FiniteVolume::FiniteVolume(ssp<Geom::UnstructuredMesh> mesh, const DomainSettings &settings, const EquationSystem &equation)
@@ -251,17 +285,24 @@ namespace DNDS::Cauchy
     }
     Json FiniteVolume::ReconstructionMetadata() const
     {
-        return {{"dimension", Metrics().Dimension()}, {"coefficient_dofs", _data->reconstruction.NRecDOF()}, {"components", 5}, {"cfv", _data->settings.numerics.cfv}};
+        return {{"dimension", Metrics().Dimension()}, {"coefficient_dofs", _data->reconstruction.NRecDOF()}, {"components", 5}, {"coefficient_role", "unlimitedGuess"}, {"cfv", _data->settings.numerics.cfv}};
     }
     void FiniteVolume::ResetReconstruction(Workspace &workspace) const
     {
         DNDS_check_throw_info(workspace.owner == _data.get(), "foreign FV workspace");
         Algebra::Fill(workspace.reconstruction.coefficients, 0.);
+        workspace.fluxReady = false;
     }
     const CFV::FVField &FiniteVolume::ReconstructionGuess(const Workspace &workspace) const
     {
         DNDS_check_throw_info(workspace.owner == _data.get(), "foreign reconstruction workspace");
         return workspace.reconstruction.coefficients;
+    }
+    const CFV::FVField &FiniteVolume::FluxReconstruction(const Workspace &workspace) const
+    {
+        DNDS_check_throw_info(workspace.owner == _data.get() && (!workspace.fluxReconstruction || workspace.fluxReady),
+                              "flux reconstruction requires this plan's prepared workspace");
+        return workspace.Flux().coefficients;
     }
     void FiniteVolume::RestoreReconstructionGuess(Workspace &workspace, const R::Array<real> &coefficients) const
     {
@@ -298,6 +339,7 @@ namespace DNDS::Cauchy
         for (index iCell = 0; iCell < output.RowCount(); ++iCell)
             for (index j = 0; j < output.RowSize(iCell); ++j)
                 output(iCell, j) = input(iCell, j);
+        workspace.fluxReady = false;
     }
     void FiniteVolume::Evaluate(CFV::FVField &state, CFV::FVField &residual, Workspace &work,
                                 R::EagerEngine &engine, const R::ExecutionStream &stream, real time) const
@@ -318,6 +360,7 @@ namespace DNDS::Cauchy
         auto unused = residual.Owned().Write();
         unused.CancelUnmodified(); });
         work.auxiliary._origin.reset();
+        work.fluxReady = false;
         DNDS_check_throw_info(Admissible(state), "inadmissible Cauchy mean state");
         work.fallbacks = 0;
         work.iterations = 0;
@@ -409,7 +452,7 @@ namespace DNDS::Cauchy
             exchange(*work.waveHalo);
         if (work.pressureHalo)
             exchange(*work.pressureHalo);
-        // Keep the previous converged/limited polynomial as the initial guess.
+        // Keep the previous unlimited polynomial as the initial guess.
         // Resetting it every stage turns a fixed sweep cap into a spatial error.
         if (_data->settings.numerics.reconstruction != "variational")
             Algebra::Fill(work.reconstruction.coefficients, 0.);
@@ -470,6 +513,7 @@ namespace DNDS::Cauchy
         {
             MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
                             {
+            work.PrepareFlux();
             if (_data->settings.numerics.characteristicLimiter)
             {
                 auto owned = state.Owned().Read(), ghost = state.Ghost().Read();
@@ -501,18 +545,18 @@ namespace DNDS::Cauchy
                 _data->reconstruction.FinalizeFaceTransform(work.characteristic); });
             for (int order = _data->settings.numerics.cfv.maxOrder; order >= 1; --order)
             {
-                auto operation = engine.ChecksAccess() ? work.coefficientHalo.BeginChecked(stream) : work.coefficientHalo.BeginScheduled(stream.Context());
+                auto operation = engine.ChecksAccess() ? work.FluxHalo().BeginChecked(stream) : work.FluxHalo().BeginScheduled(stream.Context());
                 if (overlap)
-                    _data->reconstruction.DoLimiterWBAP_3OrderTo(work.reconstruction, order, _data->settings.numerics.characteristicLimiter ? &work.characteristic : nullptr,
+                    _data->reconstruction.DoLimiterWBAP_3OrderTo(work.Flux(), order, _data->settings.numerics.characteristicLimiter ? &work.characteristic : nullptr,
                                                                  CFV::ReconstructionRegion::Core);
                 operation.Wait();
-                _data->reconstruction.DoLimiterWBAP_3OrderTo(work.reconstruction, order, _data->settings.numerics.characteristicLimiter ? &work.characteristic : nullptr,
+                _data->reconstruction.DoLimiterWBAP_3OrderTo(work.Flux(), order, _data->settings.numerics.characteristicLimiter ? &work.characteristic : nullptr,
                                                              overlap ? CFV::ReconstructionRegion::HaloDependent : CFV::ReconstructionRegion::All);
-                _data->reconstruction.CommitReconstruction(work.reconstruction);
+                _data->reconstruction.CommitReconstruction(work.Flux());
             }
         }
         if (_data->settings.numerics.positivity)
-            LimitReconstructionPP(state, work);
+            LimitReconstructionPPImpl(state, work, false);
         if (_data->equation.Viscous())
         {
             // Viscous gradients are gradients of rho,u,v,w,T, not a facewise
@@ -594,7 +638,8 @@ namespace DNDS::Cauchy
                 outputs.lowOrder = lowOutput;
             rhs.Apply({mean, coefficient, gradientInput, auxiliaryInput}, outputs, region, time);
         };
-        auto operation = engine.ChecksAccess() ? work.coefficientHalo.BeginChecked(stream) : work.coefficientHalo.BeginScheduled();
+        const auto &fluxCoefficients = FluxReconstruction(work);
+        auto operation = engine.ChecksAccess() ? work.FluxHalo().BeginChecked(stream) : work.FluxHalo().BeginScheduled(stream.Context());
         auto coreAuxiliary = auxiliary;
         if (coreAuxiliary.cellWaveJump)
             coreAuxiliary.cellWaveJump->ghost = {};
@@ -602,10 +647,10 @@ namespace DNDS::Cauchy
             coreAuxiliary.cellPressureMinimum->ghost = {};
         if (overlap)
             R::SubmitArrays(engine, stream, [kernel, gradientInput = FieldView{gradients.owned, {}}, coreAuxiliary](auto, auto mean, auto rec, auto result)
-                            { kernel(CFV::ReconstructionRegion::Core, FieldView{mean, {}}, FieldView{rec, {}}, gradientInput, coreAuxiliary, result); }, R::ReadAs<R::UniformTableRows>(state.Owned()), R::ReadAs<R::UniformTableRows>(work.reconstruction.coefficients.Owned()), R::WriteAs<R::UniformTableRows>(residual.Owned()));
+                            { kernel(CFV::ReconstructionRegion::Core, FieldView{mean, {}}, FieldView{rec, {}}, gradientInput, coreAuxiliary, result); }, R::ReadAs<R::UniformTableRows>(state.Owned()), R::ReadAs<R::UniformTableRows>(fluxCoefficients.Owned()), R::WriteAs<R::UniformTableRows>(residual.Owned()));
         operation.Wait();
         R::SubmitArrays(engine, stream, [kernel, gradients, auxiliary, overlap](auto, auto mean, auto meanGhost, auto rec, auto recGhost, auto result)
-                        { kernel(overlap ? CFV::ReconstructionRegion::HaloDependent : CFV::ReconstructionRegion::All, FieldView{mean, meanGhost}, FieldView{rec, recGhost}, gradients, auxiliary, result); }, R::ReadAs<R::UniformTableRows>(state.Owned()), R::ReadAs<R::UniformTableRows>(state.Ghost()), R::ReadAs<R::UniformTableRows>(work.reconstruction.coefficients.Owned()), R::ReadAs<R::UniformTableRows>(work.reconstruction.coefficients.Ghost()), R::WriteAs<R::UniformTableRows>(residual.Owned()));
+                        { kernel(overlap ? CFV::ReconstructionRegion::HaloDependent : CFV::ReconstructionRegion::All, FieldView{mean, meanGhost}, FieldView{rec, recGhost}, gradients, auxiliary, result); }, R::ReadAs<R::UniformTableRows>(state.Owned()), R::ReadAs<R::UniformTableRows>(state.Ghost()), R::ReadAs<R::UniformTableRows>(fluxCoefficients.Owned()), R::ReadAs<R::UniformTableRows>(fluxCoefficients.Ghost()), R::WriteAs<R::UniformTableRows>(residual.Owned()));
         // Local read scopes pin geometry/cache pointers through both submitted
         // phases. A later async public wrapper can retain these same scopes;
         // this CPU synchronous convenience observes only its own stream prefix.
@@ -704,15 +749,22 @@ namespace DNDS::Cauchy
     const ThermalBounds &FiniteVolume::ThermalConstraints() const { return _data->thermalBounds; }
     void FiniteVolume::LimitReconstructionPP(const CFV::FVField &state, Workspace &work) const
     {
+        LimitReconstructionPPImpl(state, work, true);
+    }
+    void FiniteVolume::LimitReconstructionPPImpl(const CFV::FVField &state, Workspace &work, bool refresh) const
+    {
         const auto &controls = _data->settings.numerics;
+        auto &flux = work.Flux();
         MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
                         {
             DNDS_check_throw_info(work.owner == _data.get() && controls.positivity && _data->positivitySamples &&
                                   work.ownedStorage == state.Owned().SharedStorage() && work.ghostStorage == state.Ghost().SharedStorage(),
                                   "reconstruction PP requires this plan's bound state and enabled workspace");
+            if (refresh) work.fluxReady = false;
+            work.PrepareFlux();
             // All samples belong to owned cells. No state/coefficient ghost
             // lease is acquired, including during progressive order selection.
-            _data->positivitySamples->Evaluate(state, work.reconstruction.coefficients, work.positivityValues);
+            _data->positivitySamples->Evaluate(state, flux.coefficients, work.positivityValues);
             auto mean = state.Owned().Read();
             const auto u = mean.View<R::UniformTableRows>();
             const auto validatePoints = [&](const R::Array<real> &values, bool admissible)
@@ -728,17 +780,10 @@ namespace DNDS::Cauchy
             validatePoints(work.positivityValues, false);
             for (index iCell = 0; iCell < Metrics().NumCell(); ++iCell)
                 DNDS_check_throw_info(ThermallyAdmissible(Load(u, iCell), _data->thermalBounds), "reconstruction PP requires admissible means");
-            const auto copyOwned = [&](const CFV::FVField &from, CFV::FVField &to)
-            {
-                auto input = from.Owned().Read(); auto output = to.Owned().Write();
-                const auto a = input.View<R::UniformTableRows>(); const auto b = output.View<R::UniformTableRows>();
-                for (index iCell = 0; iCell < a.RowCount(); ++iCell)
-                    for (index j = 0; j < a.RowSize(iCell); ++j) b(iCell, j) = a(iCell, j);
-            };
-            copyOwned(work.reconstruction.coefficients, work.reconstruction.temporary);
+            CopyOwned(flux.coefficients, flux.temporary);
             if (work.positivityReference)
             {
-                copyOwned(work.reconstruction.coefficients, *work.positivityReference);
+                CopyOwned(flux.coefficients, *work.positivityReference);
                 {
                     auto points = work.positivityValues.Read(); auto degree = work.positivityReferenceDegree.Write();
                     const auto p = points.View<R::UniformTableRows>(); const auto d = degree.View<R::FixedRows<1>>();
@@ -769,7 +814,7 @@ namespace DNDS::Cauchy
                     }
                     _data->positivitySamples->Evaluate(state, *work.positivityReference, work.positivityReferenceValues);
                     auto points = work.positivityReferenceValues.Read(), reference = work.positivityReference->Owned().Read();
-                    auto status = work.positivityReferenceDegree.Write(); auto candidate = work.reconstruction.temporary.Owned().Write();
+                    auto status = work.positivityReferenceDegree.Write(); auto candidate = flux.temporary.Owned().Write();
                     const auto p = points.View<R::UniformTableRows>(), r = reference.View<R::UniformTableRows>(); const auto c = candidate.View<R::UniformTableRows>();
                     const auto d = status.View<R::FixedRows<1>>();
                     for (index iCell = 0; iCell < Metrics().NumCell(); ++iCell)
@@ -783,11 +828,11 @@ namespace DNDS::Cauchy
                         }
                 }
                 validatePoints(work.positivityReferenceValues, true);
-                _data->positivitySamples->Evaluate(state, work.reconstruction.temporary, work.positivityValues);
+                _data->positivitySamples->Evaluate(state, flux.temporary, work.positivityValues);
                 validatePoints(work.positivityValues, false);
             }
             work.betaLimited = 0; work.betaMin = 1;
-            auto points = work.positivityValues.Read(); auto coefficients = work.reconstruction.temporary.Owned().Write();
+            auto points = work.positivityValues.Read(); auto coefficients = flux.temporary.Owned().Write();
             const auto p = points.View<R::UniformTableRows>(); const auto rec = coefficients.View<R::UniformTableRows>();
             std::optional<R::Array<real>::ReadLease> reference, referenceValues;
             if (work.positivityReference)
@@ -828,12 +873,12 @@ namespace DNDS::Cauchy
                         for (index j = 0; j < rec.RowSize(iCell); ++j) rec(iCell, j) *= beta;
                 }
             } });
-        _data->reconstruction.CommitReconstruction(work.reconstruction);
+        _data->reconstruction.CommitReconstruction(flux);
         // Check the published polynomial itself, not just algebraically blended
         // samples: this also detects indexing/cancellation mistakes in storage.
         MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
                         {
-            _data->positivitySamples->Evaluate(state, work.reconstruction.coefficients, work.positivityValues);
+            _data->positivitySamples->Evaluate(state, flux.coefficients, work.positivityValues);
             auto points = work.positivityValues.Read(); const auto p = points.View<R::UniformTableRows>();
             for (index q = 0; q < p.RowCount(); ++q)
                 DNDS_check_throw_info(ThermallyAdmissible(Load(p, q), _data->thermalBounds), "scaled reconstruction violates temperature/internal-energy bound"); });
@@ -891,7 +936,7 @@ namespace DNDS::Cauchy
             std::ofstream surface(prefix + "_surface_rank" + std::to_string(_data->mesh->mpi.rank) + ".csv");
             DNDS_check_throw_info(bool(surface), "cannot open Cauchy surface output");
             surface << "cell_id,zone,x,y,z,nx,ny,nz,weight,rho,p,u,v,w\n" << std::setprecision(17);
-            auto rec = work.reconstruction.coefficients.Owned().Read(), basis = _data->basis.Read();
+            auto rec = FluxReconstruction(work).Owned().Read(), basis = _data->basis.Read();
             const auto coefficient = rec.View<R::UniformTableRows>();
             const auto b = basis.View<R::TableRows>();
             auto geometry = Metrics().AcquireRead(); const auto metric = geometry.HostView();

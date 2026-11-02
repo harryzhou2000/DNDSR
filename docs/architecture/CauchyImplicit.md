@@ -290,6 +290,31 @@ accesses. These gates validate linear orchestration, not nonlinear CFD acceptanc
 
 ## Implicit PP and physical time building blocks
 
+The unlimited VR warm guess and the filtered flux polynomial are distinct
+fields when WBAP or reconstruction PP is enabled, as in Euler's default
+`preserveLimited=false` path. `ReconstructionGuess()` is the unlimited field
+retained for the next residual, rollback and optional restart.
+`FluxReconstruction()` is the prepared polynomial consumed by RHS and surface
+sampling. Its independent halo binding follows its own allocation; it is
+invalidated by reset/restore and the next residual entry. Do not use its ghost
+values until the corresponding coefficient exchange completes.
+
+```text
+unlimited guess -> VR sweeps -> next unlimited warm guess / optional restart
+                                  |
+                                  +-> owned copy -> WBAP -> PP -> halo -> RHS
+```
+
+Only coefficient payloads and their halo bindings are separate. Immutable
+plans and temporary/scratch buffers are shared between the serial VR/filter
+phases. Each simultaneous residual still requires its own Workspace. No extra
+coefficient allocation or copy occurs when filtering is disabled. The public
+standalone `LimitReconstructionPP()` starts from a fresh unlimited guess on
+every call; inside Evaluate, PP instead consumes the preceding WBAP result.
+Means remain unchanged. Reconstruction metadata identifies the coefficient
+role: older ambiguous saved guesses cold-start, while compatible means remain
+readable. No byte-identical cross-version continuation is claimed for them.
+
 `Physics/ImplicitPositivity.hpp` ports Euler's active scheme-one internal-energy
 compression, relaxed increment fraction and flow5 increment repair as pure
 functions. Density is handled before energy; the legacy safety, compression

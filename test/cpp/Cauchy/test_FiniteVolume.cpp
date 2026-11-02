@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <unistd.h>
 #include <hdf5.h>
+#include <cstring>
 
 namespace C = DNDS::Cauchy;
 namespace R = DNDS::Runtime;
@@ -66,7 +67,7 @@ TEST_CASE("Euler reconstruction PP selects a mean or progressively truncated ref
                 CHECK(state.Owned().Version() == meanVersion);
                 CHECK(fv.PositivityReconstructionStats(*work) == std::pair<DNDS::index, DNDS::real>{0, 1});
                 {
-                    auto expected = input.Read(), actual = rec.Owned().Read();
+                    auto expected = input.Read(), actual = fv.FluxReconstruction(*work).Owned().Read();
                     for (DNDS::index iCell = 0; iCell < input.RowCount(); ++iCell)
                         for (DNDS::index j = 0; j < rec.Width(); ++j)
                             CHECK(actual.View<R::UniformTableRows>()(iCell, j) == expected.View()(iCell, j));
@@ -84,20 +85,125 @@ TEST_CASE("Euler reconstruction PP selects a mean or progressively truncated ref
                 CHECK(beta > 0);
                 CHECK(beta < 1);
                 CHECK(state.Owned().Version() == meanVersion);
-                auto coefficients = rec.Owned().Read(), means = state.Owned().Read();
-                for (DNDS::index iCell = 0; iCell < input.RowCount(); ++iCell)
                 {
-                    CHECK(coefficients.View<R::UniformTableRows>()(iCell, 0) > 0);
-                    CHECK(coefficients.View<R::UniformTableRows>()(iCell, 0) < 4);
-                    const auto cubic = coefficients.View<R::UniformTableRows>()(iCell, 4 * modes + 5);
-                    if (compressToMean)
-                        CHECK(cubic / -1000 == doctest::Approx(coefficients.View<R::UniformTableRows>()(iCell, 0) / 4));
-                    else
-                        CHECK(cubic == 0);
+                    auto coefficients = fv.FluxReconstruction(*work).Owned().Read(), means = state.Owned().Read();
+                    for (DNDS::index iCell = 0; iCell < input.RowCount(); ++iCell)
+                    {
+                        CHECK(coefficients.View<R::UniformTableRows>()(iCell, 0) > 0);
+                        CHECK(coefficients.View<R::UniformTableRows>()(iCell, 0) < 4);
+                        const auto cubic = coefficients.View<R::UniformTableRows>()(iCell, 4 * modes + 5);
+                        if (compressToMean)
+                            CHECK(cubic / -1000 == doctest::Approx(coefficients.View<R::UniformTableRows>()(iCell, 0) / 4));
+                        else
+                            CHECK(cubic == 0);
+                        for (int j = 0; j < 5; ++j)
+                            CHECK(means.View<R::UniformTableRows>()(iCell, j) == mean[j]);
+                    }
+                }
+                // A second standalone projection starts from the same unlimited
+                // guess, even after the previous flux polynomial was compressed.
+                // Raising the means makes that original polynomial admissible.
+                {
+                    auto write = state.Owned().Write();
+                    const auto values = write.View<R::UniformTableRows>();
+                    for (DNDS::index iCell = 0; iCell < values.RowCount(); ++iCell)
+                    {
+                        values(iCell, 0) = 1000;
+                        values(iCell, 4) = 1e9;
+                    }
+                }
+                fv.LimitReconstructionPP(state, *work);
+                CHECK(fv.PositivityReconstructionStats(*work) == std::pair<DNDS::index, DNDS::real>{0, 1});
+                auto expected = input.Read(), actual = fv.FluxReconstruction(*work).Owned().Read();
+                for (DNDS::index iCell = 0; iCell < input.RowCount(); ++iCell)
+                    for (DNDS::index j = 0; j < rec.Width(); ++j)
+                        CHECK(actual.View<R::UniformTableRows>()(iCell, j) == expected.View()(iCell, j));
+            }
+}
+TEST_CASE("WBAP and PP flux filtering do not overwrite the unlimited VR warm guess")
+{
+    const auto mesh = CauchyTest::PeriodicQuads(mpi, 4);
+    for (int scenario = 0; scenario < 3; ++scenario)
+        for (bool pp : {false, true})
+        {
+            C::DomainSettings settings;
+            settings.execution.overlap = scenario != 1;
+            settings.numerics.reconstruction = "variational";
+            settings.numerics.cfv.maxOrder = 3;
+            settings.numerics.reconstructionIterations = 1;
+            const auto equation = C::EquationSystem::Resolve(settings.equation);
+            C::FiniteVolume reference(mesh, settings, equation);
+            settings.numerics.limiter = pp ? "none" : "WBAP";
+            settings.numerics.positivity = pp;
+            C::FiniteVolume filtered(mesh, settings, equation);
+            const auto layout = scenario == 0 ? R::RowLayout::Dense(0, 5) : scenario == 1 ? R::RowLayout::ColMajor(0, 5)
+                                                                                          : R::RowLayout::TiledColMajor(0, 5, 4);
+            auto mean = reference.Metrics().BuildField(layout), filteredMean = filtered.Metrics().BuildField(layout);
+            for (auto *field : {&mean, &filteredMean})
+            {
+                auto write = field->Owned().Write();
+                for (DNDS::index iCell = 0; iCell < mesh->NumCell(); ++iCell)
+                {
+                    const auto point = reference.Metrics().GetCellCent(iCell);
+                    const auto value = equation.Gas().Conservative({1 + .05 * std::sin(6.283185307179586 * point[0]), .3, .1, 0, 1});
                     for (int j = 0; j < 5; ++j)
-                        CHECK(means.View<R::UniformTableRows>()(iCell, j) == mean[j]);
+                        write.View()(iCell, j) = value[j];
                 }
             }
+            auto plain = reference.BuildWorkspace(mean), limited = filtered.BuildWorkspace(filteredMean);
+            CHECK_THROWS(filtered.FluxReconstruction(*limited));
+            R::Array<DNDS::real> seed(R::RowLayout::Dense(mean.Owned().RowCount(), 45));
+            {
+                auto write = seed.Write();
+                for (DNDS::index iCell = 0; iCell < seed.RowCount(); ++iCell)
+                {
+                    for (int j = 0; j < 45; ++j)
+                        write.View()(iCell, j) = 0;
+                    const auto id = mesh->OriginalEntityId(DNDS::Geom::EntityKind::Cell, iCell);
+                    write.View()(iCell, 0) = .1 * std::cos(id * .7);
+                    if (pp)
+                        write.View()(iCell, 4 * 9 + 5) = -1000 * std::cos(id * .3);
+                }
+            }
+            reference.RestoreReconstructionGuess(*plain, seed);
+            filtered.RestoreReconstructionGuess(*limited, seed);
+            auto a = reference.Metrics().BuildField(5), b = filtered.Metrics().BuildField(5);
+            R::EagerEngine engine(scenario == 2 ? 2 : 0, std::make_shared<R::AccessTrackingContext>());
+            const auto stream = engine.CreateCPUStream();
+            const auto meanVersion = filteredMean.Owned().Version();
+            for (int evaluation = 0; evaluation < 2; ++evaluation)
+            {
+                reference.Evaluate(mean, a, *plain, engine, stream);
+                filtered.Evaluate(filteredMean, b, *limited, engine, stream);
+                const auto expected = reference.ReconstructionGuess(*plain).Owned().Read();
+                const auto actual = filtered.ReconstructionGuess(*limited).Owned().Read();
+                const auto flux = filtered.FluxReconstruction(*limited).Owned().Read();
+                double difference = 0, residualDifference = 0;
+                for (DNDS::index iCell = 0; iCell < seed.RowCount(); ++iCell)
+                    for (int j = 0; j < 45; ++j)
+                    {
+                        const DNDS::real x = actual.View<R::UniformTableRows>()(iCell, j), y = expected.View<R::UniformTableRows>()(iCell, j);
+                        CHECK(std::memcmp(&x, &y, sizeof(x)) == 0);
+                        difference += std::abs(flux.View<R::UniformTableRows>()(iCell, j) - x);
+                    }
+                auto first = a.Owned().Read(), second = b.Owned().Read();
+                for (DNDS::index iCell = 0; iCell < seed.RowCount(); ++iCell)
+                    for (int j = 0; j < 5; ++j)
+                        residualDifference += std::abs(first.View<R::UniformTableRows>()(iCell, j) - second.View<R::UniformTableRows>()(iCell, j));
+                MPI_Allreduce(MPI_IN_PLACE, &difference, 1, MPI_DOUBLE, MPI_SUM, mpi.comm);
+                MPI_Allreduce(MPI_IN_PLACE, &residualDifference, 1, MPI_DOUBLE, MPI_SUM, mpi.comm);
+                if (evaluation == 0)
+                {
+                    CHECK(difference > 1e-8);         // Prove filtering is active, not a zero fixture.
+                    CHECK(residualDifference > 1e-8); // RHS must consume the filtered field.
+                }
+                CHECK(filteredMean.Owned().Version() == meanVersion);
+                if (pp && evaluation == 0)
+                    CHECK(filtered.PositivityReconstructionStats(*limited).first > 0);
+            }
+            filtered.ResetReconstruction(*limited);
+            CHECK_THROWS(filtered.FluxReconstruction(*limited));
+        }
 }
 TEST_CASE("Auxiliary provenance and persistent workspaces reject a different row view of the same allocation")
 {
@@ -1397,7 +1503,7 @@ TEST_CASE("Cauchy overlap and unsplit orchestration agree across CPU launchers")
                 CHECK(state.Owned().Version() == version);
                 CHECK(fv.LastFaceFallbacks(*work) == 0);
                 std::vector<DNDS::real> values;
-                const std::array<const R::Array<DNDS::real> *, 2> outputs{&residual.Owned(), &fv.ReconstructionGuess(*work).Owned()};
+                const std::array<const R::Array<DNDS::real> *, 3> outputs{&residual.Owned(), &fv.ReconstructionGuess(*work).Owned(), &fv.FluxReconstruction(*work).Owned()};
                 for (const auto *array : outputs)
                 {
                     auto read = array->Read();
@@ -1444,7 +1550,7 @@ TEST_CASE("Stateless RHS consumes packed auxiliary views and preserves frozen in
         R::EagerEngine engine;
         const auto stream = engine.CreateCPUStream();
         fv.Evaluate(state, reference, *work, engine, stream);
-        auto coefficients = fv.ReconstructionGuess(*work);
+        auto coefficients = fv.FluxReconstruction(*work);
         const auto &auxiliary = fv.PreparedAuxValues(*work);
         auto rhs = fv.AcquireRHSOperator();
         const auto meanVersion = state.Owned().Version(), coefficientVersion = coefficients.Owned().Version();
