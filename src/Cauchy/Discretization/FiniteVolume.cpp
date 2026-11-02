@@ -356,6 +356,17 @@ namespace DNDS::Cauchy
                     values(iPoint, j) = face[j];
             }
         };
+        std::optional<R::TransferOperation> firstCoefficientOperation;
+        if (overlap && _data->settings.numerics.reconstruction == "variational")
+        {
+            if (_data->settings.numerics.reconstructionBoundaryFromPolynomial)
+                updateReconstructionBoundary();
+            firstCoefficientOperation.emplace(engine.ChecksAccess() ? work.coefficientHalo.BeginChecked(stream) : work.coefficientHalo.BeginScheduled(stream.Context()));
+            // The first VR core consumes only owned means and coefficients.
+            // It is independent of both active ghost writes and of auxiliary
+            // preparation, which remains a separate mean-state operator.
+            _data->reconstruction.DoReconstructionIterTo(state, work.reconstruction.coefficients, work.reconstruction, work.boundary, CFV::ReconstructionRegion::Core);
+        }
         if (meanOperation)
             meanOperation->Wait();
         else
@@ -384,10 +395,18 @@ namespace DNDS::Cauchy
                 // Project the current boundary polynomial onto the physical
                 // BC, rather than clamping unconstrained quantities to a cell
                 // mean. CFV still receives plain quadrature values, no functor.
-                if (_data->settings.numerics.reconstructionBoundaryFromPolynomial)
+                const bool corePrepared = iteration == 0 && bool(firstCoefficientOperation);
+                if (!corePrepared && _data->settings.numerics.reconstructionBoundaryFromPolynomial)
                     updateReconstructionBoundary();
-                auto operation = engine.ChecksAccess() ? work.coefficientHalo.BeginChecked(stream) : work.coefficientHalo.BeginScheduled();
-                if (overlap)
+                R::TransferOperation operation;
+                if (corePrepared)
+                {
+                    operation = std::move(*firstCoefficientOperation);
+                    firstCoefficientOperation.reset();
+                }
+                else
+                    operation = engine.ChecksAccess() ? work.coefficientHalo.BeginChecked(stream) : work.coefficientHalo.BeginScheduled(stream.Context());
+                if (overlap && !corePrepared)
                     _data->reconstruction.DoReconstructionIterTo(state, work.reconstruction.coefficients, work.reconstruction, work.boundary, CFV::ReconstructionRegion::Core);
                 operation.Wait();
                 _data->reconstruction.DoReconstructionIterTo(state, work.reconstruction.coefficients, work.reconstruction, work.boundary,

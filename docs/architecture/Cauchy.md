@@ -373,6 +373,13 @@ and publication contracts. Auxiliary preparation and viscous-gradient preparatio
 still require completed means; overlapping their own core work is a separate
 phase item.
 
+The first VR core sweep starts before waiting for the mean halo, with its
+coefficient halo active too. It consumes owned means/coefficients and ready local
+boundary values, so it does not need the auxiliary preparation that follows the
+mean join. Its dependent sweep runs after both required halos are complete.
+Later VR sweeps retain the same coefficient/core overlap. The disabled-overlap
+path still runs one All call per sweep, with the same selected logical ordering.
+
 Split SOR automatically visits core rows first. For an exact comparison with an
 unsplit SOR run, also select `numerics.cfv.coreFirst=true`: otherwise changing
 the ordering changes the finite-sweep method. CPU inline and worker launchers
