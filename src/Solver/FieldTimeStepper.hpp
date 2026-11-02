@@ -94,6 +94,13 @@ namespace DNDS::ODE
         FieldTimeStepper(const FieldTimeStepper &) = delete;
         FieldTimeStepper &operator=(const FieldTimeStepper &) = delete;
         const std::string &Method() const { return _method; }
+        /// Allocate an independent empty-history workspace with identical method
+        /// and local-error policy, e.g. to prepare a restart transaction before
+        /// replacing the live accepted history.
+        std::unique_ptr<FieldTimeStepper> Fresh() const
+        {
+            return std::make_unique<FieldTimeStepper>(_source, _method, _local);
+        }
         bool HasHistory() const { return _history; }
         bool HasPendingTrial() const { return _pending; }
         real PreviousDt() const { return _previousDt; }

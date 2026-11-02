@@ -267,6 +267,7 @@ namespace DNDS::Cauchy
         index interval = 1;
         index historyInterval = 1;
         int hdfDeflateLevel = 0;
+        bool checkpointReconstruction = false;
         std::vector<int> forceZones;
         DNDS_DECLARE_CONFIG(OutputSettings)
         {
@@ -274,6 +275,7 @@ namespace DNDS::Cauchy
             DNDS_FIELD(interval, "Accepted-step snapshot interval; zero disables periodic output");
             DNDS_FIELD(historyInterval, "CSV diagnostics cadence in accepted steps");
             DNDS_FIELD(hdfDeflateLevel, "VTKHDF compression level 0..9; uncompressed is the initial portable baseline");
+            DNDS_FIELD(checkpointReconstruction, "Store optional compatible polynomial warm guesses for exact finite-sweep continuation; default omits them");
             DNDS_FIELD(forceZones, "Boundary zones on which pressure and viscous body force are integrated");
         }
     };

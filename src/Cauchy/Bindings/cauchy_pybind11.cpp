@@ -21,7 +21,7 @@ PYBIND11_MODULE(cauchy_pybind11, m)
             DNDS_check_throw_info(config.Domains()[0].placement.ranks.size()==size_t(mpi.size),"Python Domain requires every mesh-communicator rank");
             DNDS::MPI::LocalStage(mpi,[&]{DNDS_check_throw_info(!name.empty(),"Python Domain name is empty");});
             auto settings=config.Domains()[0].settings;
-            return std::make_unique<C::Domain>(name,std::move(mesh),settings); }),
+            return std::make_unique<C::Domain>(name,std::move(mesh),settings,config.Time()); }),
              py::arg("mesh"), py::arg("config_json") = "{}", py::arg("name") = "fluid", py::call_guard<py::gil_scoped_release>())
         .def_property_readonly("flow", [](C::Domain &domain)
                                { return R::PythonArray::Share(domain.Flow().Owned()); }, "Shared owned flow Array; follows normal retained-view/access contracts.")
@@ -38,16 +38,16 @@ PYBIND11_MODULE(cauchy_pybind11, m)
                      value = &domain.Residual();
                  }
                  return R::PythonArray::Share(value->Owned()); }, "Collective integrated residual; returned Array aliases overwriteable workspace. Invalidates any prepared candidate.")
-        .def("advance", &C::Domain::Advance, py::arg("dt"), py::call_guard<py::gil_scoped_release>(), "Collective SSPRK3; invalid candidate leaves accepted state/time unchanged.")
+        .def("advance", &C::Domain::Advance, py::arg("dt"), py::call_guard<py::gil_scoped_release>(), "Collective configured time method; invalid candidate leaves accepted state/time/history unchanged.")
         .def("prepare_step", &C::Domain::PrepareStep, py::arg("dt"), py::call_guard<py::gil_scoped_release>())
         .def("commit_step", &C::Domain::CommitStep, py::call_guard<py::gil_scoped_release>())
         .def("discard_step", &C::Domain::DiscardStep)
         .def("stable_step", &C::Domain::StableStep, py::arg("cfl"), py::call_guard<py::gil_scoped_release>())
-        .def("write_checkpoint", [](const C::Domain &domain, const std::string &path, const std::string &resolved)
+        .def("write_checkpoint", [](const C::Domain &domain, const std::string &path, const std::string &resolved, bool reconstruction)
              {
                  C::Json input;
                  DNDS::MPI::LocalStage(DNDS::MPIInfo(domain.Discretization().Metrics().Communicator()), [&] { input = C::Json::parse(resolved); });
-                 domain.WriteCheckpoint(path, input); }, py::arg("path"), py::arg("resolved_json"), py::call_guard<py::gil_scoped_release>())
+                 domain.WriteCheckpoint(path, input, reconstruction); }, py::arg("path"), py::arg("resolved_json"), py::arg("include_reconstruction") = false, py::call_guard<py::gil_scoped_release>())
         .def("read_checkpoint", [](C::Domain &domain, const std::string &path, const std::string &resolved)
              {
                  C::Json input;

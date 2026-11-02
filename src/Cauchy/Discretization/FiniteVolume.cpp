@@ -231,6 +231,10 @@ namespace DNDS::Cauchy
                                   (!required.cellPressureMinimum || values.cellPressureMinimum),
                               "finite-volume workspace lacks required auxiliary channels");
     }
+    Json FiniteVolume::ReconstructionMetadata() const
+    {
+        return {{"dimension", Metrics().Dimension()}, {"coefficient_dofs", _data->reconstruction.NRecDOF()}, {"components", 5}, {"cfv", _data->settings.numerics.cfv}};
+    }
     void FiniteVolume::ResetReconstruction(Workspace &workspace) const
     {
         DNDS_check_throw_info(workspace.owner == _data.get(), "foreign FV workspace");

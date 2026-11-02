@@ -3,11 +3,81 @@
 #include "DNDS/Serializer/SerializerH5.hpp"
 #include "Geom/Unstructured/UnstructuredMesh.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
+#include "DNDS/Runtime/Communication/IdRowTransfer.hpp"
 
 namespace DNDS::Cauchy
 {
     namespace
     {
+        Json FlowSchema(const EquationSystem &equation)
+        {
+            const auto &schema = equation.Schema();
+            Json blocks = Json::array();
+            for (const auto &block : schema.blocks)
+            {
+                Json components = Json::array();
+                for (const auto &component : block.components)
+                    components.push_back({{"name", component.name}, {"units", component.units}, {"conservation_group", component.conservationGroup}});
+                blocks.push_back({{"name", block.name}, {"components", components}, {"vector_starts", block.vectorStarts}});
+            }
+            return {{"family", schema.family}, {"energy_convention", schema.energyConvention}, {"physical_accumulation", schema.physicalAccumulation}, {"blocks", blocks}, {"eos", "perfectGas"}, {"gamma", equation.Gas().gamma}, {"gas_constant", equation.Gas().gasConstant}};
+        }
+        Json CompatibleConfig(Json config)
+        {
+            // Time/output/placement/execution choices and polynomial setup do
+            // not change stored means. Keep other physical/numerical choices
+            // explicit: e.g. an old manual Roe stencil must not silently become
+            // automatic. Raw non-root caller metadata is still compared exactly.
+            if (!config.is_object() || !config.contains("domains") || !config["domains"].is_array())
+                return config;
+            config.erase("time");
+            config.erase("output");
+            for (auto &domain : config["domains"])
+            {
+                domain.erase("ranks");
+                if (!domain.contains("settings") || !domain["settings"].is_object())
+                    continue;
+                auto &settings = domain["settings"];
+                settings.erase("execution");
+                settings.erase("implicit");
+                if (settings.contains("mesh") && settings["mesh"].is_object())
+                    settings["mesh"].erase("file");
+                if (settings.contains("numerics") && settings["numerics"].is_object())
+                {
+                    auto &numerics = settings["numerics"];
+                    numerics.erase("cfv");
+                    if (numerics.contains("riemann") && numerics["riemann"].is_object() && !numerics["riemann"].contains("useStencil"))
+                        numerics["riemann"]["useStencil"] = false;
+                }
+            }
+            return config;
+        }
+        index StoredRows(const Serializer::SerializerBaseSSP &serializer, const std::string &name)
+        {
+            const auto previous = serializer->GetCurrentPath();
+            serializer->GoToPath(name);
+            int format = 0, ranks = 0;
+            serializer->ReadInt("runtime_array_format", format);
+            serializer->ReadInt("writer_ranks", ranks);
+            index rows = 0;
+            if (format >= 3)
+                serializer->ReadIndex("rows_global", rows);
+            else
+            {
+                serializer->GoToPath("rows");
+                std::vector<index> counts;
+                auto region = Serializer::ArrayGlobalOffset{ranks, 0};
+                serializer->ReadIndexVector("size", counts, region);
+                for (const auto count : counts)
+                {
+                    DNDS_check_throw_info(count >= 0 && count <= INT64_MAX - rows, "invalid restart row count");
+                    rows += count;
+                }
+            }
+            serializer->GoToPath(previous);
+            DNDS_check_throw_info(rows >= 0, "negative restart row count");
+            return rows;
+        }
         Runtime::Array<index> CellIds(const Domain &domain)
         {
             const auto &cells = domain.Discretization().Metrics().Cells();
@@ -102,13 +172,19 @@ namespace DNDS::Cauchy
             return true;
         }
     }
-    void Domain::WriteCheckpoint(const std::string &path, const Json &resolved) const
+    void Domain::WriteCheckpoint(const std::string &path, const Json &resolved, bool includeReconstruction) const
     {
         const MPIInfo mpi(_fv.Metrics().Communicator());
+        const bool history = _timeStepper && _timeStepper->Method() == "bdf2" && _timeStepper->HasHistory();
+        int flags[]{int(includeReconstruction), -int(includeReconstruction), int(history), -int(history)};
+        MPI_Allreduce(MPI_IN_PLACE, flags, 4, MPI_INT, MPI_MIN, mpi.comm);
+        DNDS_check_throw_info(flags[0] == -flags[1] && flags[2] == -flags[3], "checkpoint optional sections differ between ranks");
+        const Json metadata{{"schema_version", 1}, {"flow", FlowSchema(_equation)}, {"reconstruction", _fv.ReconstructionMetadata()}, {"time_method", _timeStepper ? _timeStepper->Method() : "ssprk3"}, {"history", history}};
         auto serializer = std::make_shared<Serializer::SerializerH5>(mpi);
         serializer->OpenFile(path, false);
-        serializer->WriteInt("cauchy_format", 3);
+        serializer->WriteInt("cauchy_format", 4);
         serializer->WriteString("resolved_config", resolved.dump());
+        serializer->WriteString("metadata_json", metadata.dump());
         serializer->WriteString("domain_name", _name);
         serializer->WriteReal("accepted_time", _time);
         serializer->WriteIndex("accepted_step", index(_epoch.acceptedStep));
@@ -120,7 +196,13 @@ namespace DNDS::Cauchy
         Runtime::WriteArray(envelope->coordinates, serializer, "mesh_coordinates", mpi);
         Runtime::WriteArray(envelope->periodicTransforms, serializer, "periodic_transforms", mpi);
         Runtime::WriteArray(Flow().Owned(), serializer, "flow", mpi);
-        Runtime::WriteArray(_fv.ReconstructionGuess(*_workspace).Owned(), serializer, "reconstruction_guess", mpi);
+        if (includeReconstruction)
+            Runtime::WriteArray(_restoreReconstruction ? *_reconstructionBackup : _fv.ReconstructionGuess(*_workspace).Owned(), serializer, "reconstruction_guess", mpi);
+        if (history)
+        {
+            serializer->WriteReal("history_dt", _timeStepper->PreviousDt());
+            Runtime::WriteArray(_timeStepper->PreviousState().Owned(), serializer, "history_flow", mpi);
+        }
         serializer->CloseFile();
     }
     void Domain::ReadCheckpoint(const std::string &path, const Json &resolved)
@@ -137,54 +219,85 @@ namespace DNDS::Cauchy
         serializer->ReadString("domain_name", name);
         serializer->ReadReal("accepted_time", time);
         serializer->ReadIndex("accepted_step", step);
-        auto ids = Runtime::ReadArray<index>(serializer, "cell_ids", mpi);
-        auto topology = Runtime::ReadArray<index>(serializer, "mesh_topology", mpi);
-        auto coordinates = Runtime::ReadArray<real>(serializer, "mesh_coordinates", mpi);
-        auto transforms = Runtime::ReadArray<real>(serializer, "periodic_transforms", mpi);
-        auto flow = Runtime::ReadArray<real>(serializer, "flow", mpi);
+        DNDS_check_throw_info(version >= 2 && version <= 4, "unsupported Cauchy checkpoint format");
+        const auto rowCount = StoredRows(serializer, "cell_ids");
+        const auto range = EvenSplitRange(mpi.rank, mpi.size, rowCount);
+        const Serializer::ArrayGlobalOffset shard{range.second - range.first, range.first};
+        auto ids = Runtime::ReadArray<index, Runtime::FixedRows<1>>(serializer, "cell_ids", mpi, shard);
+        auto topology = Runtime::ReadArray<index>(serializer, "mesh_topology", mpi, shard);
+        auto coordinates = Runtime::ReadArray<real>(serializer, "mesh_coordinates", mpi, shard);
+        auto transforms = Runtime::ReadArray<real>(serializer, "periodic_transforms", mpi, {1, 0});
+        auto flow = Runtime::ReadArray<real, Runtime::FixedRows<5>>(serializer, "flow", mpi, shard);
+        Json metadata;
+        if (version == 4)
+        {
+            std::string serialized;
+            serializer->ReadString("metadata_json", serialized);
+            metadata = Json::parse(serialized, nullptr, false);
+        }
         std::optional<Runtime::Array<real>> reconstruction;
-        if (version == 3)
-            reconstruction.emplace(Runtime::ReadArray<real>(serializer, "reconstruction_guess", mpi));
+        const auto entries = serializer->ListCurrentPath();
+        if (entries.count("reconstruction_guess"))
+            reconstruction.emplace(Runtime::ReadArray<real>(serializer, "reconstruction_guess", mpi, shard));
+        std::optional<Runtime::Array<real>> history;
+        real historyDt = 0;
+        if (version == 4 && metadata.is_object() && metadata.value("history", false))
+        {
+            serializer->ReadReal("history_dt", historyDt);
+            history.emplace(Runtime::ReadArray<real, Runtime::FixedRows<5>>(serializer, "history_flow", mpi, shard));
+        }
         serializer->CloseFile();
         auto storedConfig = Json::parse(config, nullptr, false);
-        // Earlier Cauchy archives supplied only manual Riemann correction
-        // scalars. Preserve that numerical behavior when the new option is
-        // absent; loading under automatic stencils still rejects explicitly.
-        if (storedConfig.is_object() && storedConfig.contains("domains") && storedConfig["domains"].is_array())
-            for (auto &domain : storedConfig["domains"])
-            {
-                const Json::json_pointer pointer("/settings/numerics/riemann");
-                if (domain.contains(pointer) && domain.at(pointer).is_object() && !domain.at(pointer).contains("useStencil"))
-                    domain.at(pointer)["useStencil"] = false;
-            }
-        int valid = (version == 2 || version == 3) && name == _name && storedConfig == resolved && std::isfinite(time) && time >= 0 && step >= 0 &&
-                    ids.RowCount() == _fv.Metrics().NumCell() && ids.Layout().Width() == 1 && flow.RowCount() == _fv.Metrics().NumCell() && flow.Layout().Width() == 5;
+        int valid = name == _name && !storedConfig.is_discarded() && CompatibleConfig(storedConfig) == CompatibleConfig(resolved) && std::isfinite(time) && time >= 0 && step >= 0 &&
+                    flow.RowCount() == ids.RowCount() && flow.Layout().Width() == 5;
+        valid = valid && (version < 4 || (metadata.is_object() && metadata.value("schema_version", 0) == 1 && metadata.value("flow", Json()) == FlowSchema(_equation)));
+        MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, mpi.comm);
+        DNDS_check_throw_info(valid, "Cauchy restart config/equation schema mismatch");
+        auto context = std::make_shared<Runtime::CommunicationContext>(mpi.comm);
+        const auto targetIds = CellIds(*this);
+        const auto route = Runtime::BuildRowTransferById(context, ids, targetIds, true);
+        const auto transfer = [&](const auto &source, auto &destination)
+        {
+            using T = typename std::decay_t<decltype(source)>::value_type;
+            Runtime::PayloadPlan(route, source.Layout(), destination.Layout(), Runtime::ElementSchema::For<T>())
+                .Bind(source, destination, Runtime::TransferTransport::Direct, {Runtime::TransferMode::Transient, context, 0})
+                .Begin()
+                .Wait();
+        };
+        std::optional<MeshEnvelope> envelope;
+        std::optional<Runtime::Array<index>> mappedTopology;
+        std::optional<Runtime::Array<real>> mappedCoordinates;
+        MPI::LocalStage(mpi, [&]
+                        { envelope.emplace(DescribeMesh(*this)); });
+        const auto topologyLayout = route.DestinationLayout(topology.Layout());
+        const auto coordinateLayout = route.DestinationLayout(coordinates.Layout());
         MPI::LocalStage(mpi, [&]
                         {
-        if (valid) {
-            const auto envelope = DescribeMesh(*this);
-            valid = SameRows(ids, CellIds(*this)) && SameRows(topology, envelope.topology) && SameRows(coordinates, envelope.coordinates) &&
-                    SameRows(transforms, envelope.periodicTransforms);
-        } });
-        MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, mpi.comm);
-        DNDS_check_throw_info(valid, "Cauchy restart config/schema/partition/persistent IDs/mesh mismatch");
+            mappedTopology.emplace(topologyLayout);
+            mappedCoordinates.emplace(coordinateLayout); });
+        transfer(topology, *mappedTopology);
+        transfer(coordinates, *mappedCoordinates);
+        MPI::LocalStage(mpi, [&]
+                        { DNDS_check_throw_info(SameRows(*mappedTopology, envelope->topology) && SameRows(*mappedCoordinates, envelope->coordinates) && SameRows(transforms, envelope->periodicTransforms),
+                                                "Cauchy restart persistent-cell mesh topology/geometry mismatch"); });
         _trialReady = false;
         // Existing trial allocations and binding identities remain stable.
         auto &trial = _trial.Block("flow");
-        {
-            auto read = flow.Read();
-            auto write = trial.Owned().Write();
-            for (index iCell = 0; iCell < _fv.Metrics().NumCell(); ++iCell)
-                for (int j = 0; j < 5; ++j)
-                    write.View()(iCell, j) = read.View()(iCell, j);
-        }
+        transfer(flow, trial.Owned());
         DNDS_check_throw_info(_fv.Admissible(trial), "Cauchy restart contains inadmissible states");
-        if (!reconstruction)
+        Runtime::Array<real> guess;
+        MPI::LocalStage(mpi, [&]
+                        { guess = Runtime::Array<real>(_fv.ReconstructionGuess(*_workspace).Owned().Layout()); });
+        int compatibleReconstruction = bool(reconstruction) && (version < 4 || metadata.value("reconstruction", Json()) == _fv.ReconstructionMetadata());
+        if (reconstruction)
+            for (index iRow = 0; iRow < reconstruction->RowCount(); ++iRow)
+                compatibleReconstruction = compatibleReconstruction && reconstruction->RowSize(iRow) == guess.Layout().Width();
+        MPI_Allreduce(MPI_IN_PLACE, &compatibleReconstruction, 1, MPI_INT, MPI_MIN, mpi.comm);
+        if (compatibleReconstruction)
+            transfer(*reconstruction, guess);
+        else
         {
-            // Format2 predates persistent P3 warm starts. Its means remain
-            // readable, but finite-sweep continuation uses a cold initial guess.
-            reconstruction.emplace(_fv.ReconstructionGuess(*_workspace).Owned().Layout());
-            auto write = reconstruction->Write();
+            auto write = guess.Write();
             const auto output = write.View<Runtime::UniformTableRows>();
             for (index iCell = 0; iCell < output.RowCount(); ++iCell)
                 for (index j = 0; j < output.RowSize(iCell); ++j)
@@ -192,7 +305,27 @@ namespace DNDS::Cauchy
         }
         StateEpoch epoch;
         epoch.acceptedStep = uint64_t(step);
-        PublishTrial(time, epoch, &*reconstruction);
+        std::unique_ptr<ODE::FieldTimeStepper> restoredStepper;
+        std::optional<CFV::FVField> restoredHistory;
+        if (_timeStepper)
+        {
+            MPI::LocalStage(mpi, [&]
+                            { restoredStepper = _timeStepper->Fresh(); });
+            if (history && metadata.value("time_method", std::string{}) == restoredStepper->Method() && restoredStepper->Method() == "bdf2")
+            {
+                MPI::LocalStage(mpi, [&]
+                                {
+                    DNDS_check_throw_info(std::isfinite(historyDt) && historyDt > 0, "invalid Cauchy restart history timestep");
+                    restoredHistory.emplace(_fv.Metrics().BuildField(Flow().Owned().Layout())); });
+                transfer(*history, restoredHistory->Owned());
+                DNDS_check_throw_info(_fv.Admissible(*restoredHistory), "inadmissible Cauchy restart history");
+                MPI::LocalStage(mpi, [&]
+                                { restoredStepper->RestoreHistory(*restoredHistory, historyDt); });
+            }
+        }
+        PublishTrial(time, epoch, &guess);
+        if (restoredStepper)
+            _timeStepper.swap(restoredStepper);
         _nextTrial = 0;
     }
 }

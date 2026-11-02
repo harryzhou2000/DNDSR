@@ -140,6 +140,10 @@ namespace DNDS::Cauchy
         /// Retain it in a restart for exact continuation; only owned values are
         /// persistent, since Evaluate refreshes ghosts before consuming them.
         const CFV::FVField &ReconstructionGuess(const Workspace &workspace) const;
+        /// Interpretation of stored polynomial rows; independent of physical
+        /// flow schema. Restart may restore means and cold-start incompatible
+        /// coefficients rather than matching a C++ static row type.
+        Json ReconstructionMetadata() const;
         /// Validate shape/finite values collectively, then replace the owned
         /// initial guess. Caller serializes workspace and publication accesses.
         void RestoreReconstructionGuess(Workspace &workspace, const Runtime::Array<real> &coefficients) const;

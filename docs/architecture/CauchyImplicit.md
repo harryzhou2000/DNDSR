@@ -244,3 +244,41 @@ means, check unusable/bad correction handling, and exercise the connected
 BDF1/2, Trapz and ESDIRK2/3/4 paths. The P3 transport test checks periodic
 conservation and exact discard/retry versus fresh-run agreement. They are
 focused implementation gates, not the final IV/cylinder qualification matrix.
+
+## Restart correspondence and history
+
+Cauchy checkpoint format4 adds `metadata_json` with the flow schema, energy
+convention, EOS parameters, polynomial interpretation and time-history method.
+Native Array archives still own their own element/row/physical-layout schemas;
+the Cauchy envelope does not serialize C++ static row types. Formats2/3 remain
+readable. Reads shard file rows across the current communicator, match exact
+canonical `cell_ids`, and use one reusable ordinary transfer plan to redistribute
+flow, mesh records, optional coefficients and history. No global ID-sized array
+or VTK row correspondence is used. Numerical payloads follow native direct I/O
+and canonical direct MPI transfers; the ID directory is separate cold metadata.
+
+The default omits reconstruction. Set `output.checkpointReconstruction=true`,
+pass `includeReconstruction=true` in C++, or `include_reconstruction=True` in
+Python to preserve a compatible warm guess. Missing coefficients or changed
+polynomial metadata cold-start at zero. Mean restoration permits changed MPI
+ownership/local order, execution layout and P-degree. Actual per-cell topology,
+coordinates, periodic frames, equation schema and other retained physical/
+numerical configuration must still match. Time/output/execution choices and
+polynomial setup are excluded from the compatible-config comparison; ordinary
+Riemann/BC/physics changes are not silently accepted. Earlier archives missing
+the Riemann stencil flag retain its explicit manual interpretation.
+
+BDF2 records previous accepted means and dt. Compatible history is remapped;
+absent/incompatible history uses BDF1 startup. A replacement time workspace and
+its restored history are prepared before accepted publication, then swapped
+only after publication succeeds. A failed load leaves accepted clock/history
+unchanged. Caller serializes checkpoint access and releases conflicting views
+before publication. Only ready CPU arrays are supported by the current direct
+I/O backend; device serialization does not silently stage through host memory.
+
+Focused tests change writer/reader rank counts, perform a real mesh RCM
+permutation, change P2 to P3 and AoS to SoA, and inspect the reserialized actual
+coefficients to prove cold-start behavior. They also verify optional nonzero
+warm-guess storage, exact variable-step BDF2 continuation and reader-conflict
+rejection/retry. The legacy matching-partition exact-continuation tests now
+explicitly opt into coefficient storage, preserving their original purpose.

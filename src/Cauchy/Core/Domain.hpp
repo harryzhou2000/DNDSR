@@ -92,13 +92,13 @@ namespace DNDS::Cauchy
         /// force xyz, VR sweeps/update, density L1/L2/Linf analytic errors, Tmin.
         std::array<real, 14> Diagnostics(const DomainSettings &settings, const std::vector<int> &forceZones);
         void WriteVisualization(const std::string &prefix, int hdfDeflateLevel = 0);
-        /// Initial restart envelope: exact config, partition, persistent cell
-        /// ordering, primary cell geometry/topology and boundary zones. Native
-        /// Array I/O writes flow and polynomial initial guess directly,
-        /// preserving layouts and fixed-sweep continuation.
-        /// Per-cell mesh metadata is recorded separately for exact validation.
-        /// Changed partitions/restart remapping belong to a later IO package.
-        void WriteCheckpoint(const std::string &path, const Json &resolved) const;
+        /// Native parallel restart with persistent cell IDs and per-cell mesh
+        /// validation. Default omits reconstruction; opt in for compatible
+        /// fixed-sweep continuation. BDF history is stored when applicable.
+        /// Reads may change rank distribution/order or polynomial degree. Means
+        /// and compatible history are remapped by exact canonical cell IDs;
+        /// missing/incompatible polynomial guesses cold-start at zero.
+        void WriteCheckpoint(const std::string &path, const Json &resolved, bool includeReconstruction = false) const;
         void ReadCheckpoint(const std::string &path, const Json &resolved);
     };
 }

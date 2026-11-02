@@ -127,14 +127,14 @@ int main(int argc, char **argv)
                     reached = record(dt, retries);
                 if (output.interval && domain.Epoch().acceptedStep % uint64_t(output.interval) == 0)
                 {
-                    domain.WriteCheckpoint(output.prefix + "_" + std::to_string(domain.Epoch().acceptedStep) + ".h5", config.Root());
+                    domain.WriteCheckpoint(output.prefix + "_" + std::to_string(domain.Epoch().acceptedStep) + ".h5", config.Root(), output.checkpointReconstruction);
                     domain.WriteVisualization(output.prefix + "_" + std::to_string(domain.Epoch().acceptedStep), output.hdfDeflateLevel);
                 }
                 if (reached)
                     break;
             }
             record(0, 0);
-            domain.WriteCheckpoint(output.prefix + "_final.h5", config.Root());
+            domain.WriteCheckpoint(output.prefix + "_final.h5", config.Root(), output.checkpointReconstruction);
             domain.WriteVisualization(output.prefix + "_final", output.hdfDeflateLevel);
             const bool stepStop = time.steadyTolerance > 0 && !reached && !wallStop;
             if (mpi.rank == 0)

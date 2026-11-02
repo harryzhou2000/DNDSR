@@ -41,9 +41,14 @@ The supersonic front mesh includes exit faces at x=0 in `FAR`. The farfield
 condition respects supersonic inflow/outflow and the subsonic incoming component
 count, instead of clamping an outflow to the freestream.
 
-Output is a compact accepted-state history, native matching-partition restart,
+Output is a compact accepted-state history, native persistent-ID restart,
 parallel VTKHDF means and rank-local boundary quadrature CSVs. Histories/output
 use separate reconstruction scratch so cadence does not affect the trajectory.
+Restart permits changed MPI ownership/order and polynomial degree. It omits
+reconstruction by default; missing or incompatible coefficients cold-start at
+zero. Set `output.checkpointReconstruction=true` for compatible finite-sweep
+continuation. BDF2 includes its accepted previous state/timestep. File metadata
+and physical mesh records validate interpretation before accepted publication.
 Body force is the integrated wall momentum flux; Cd/Cl use `.5*rho*U^2*D`.
 For the upper half body, pressure drag must be doubled for a full-body Cd.
 

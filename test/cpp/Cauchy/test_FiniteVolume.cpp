@@ -361,11 +361,11 @@ TEST_CASE("Cauchy matching-partition restart preserves layouts continuation and 
                     write.View()(iCell, j) = value[j];
             }
         }
-        source.WriteCheckpoint(file, resolved);
+        source.WriteCheckpoint(file, resolved, true);
         restored.ReadCheckpoint(file, resolved);
         CHECK(restored.Epoch().acceptedStep == 0);
         source.Advance(.001);
-        source.WriteCheckpoint(file, resolved);
+        source.WriteCheckpoint(file, resolved, true);
         CHECK_THROWS(restored.ReadCheckpoint(file, C::Json{{"test", "wrong"}}));
         CHECK(restored.Time() == 0);
         restored.ReadCheckpoint(file, resolved);
@@ -663,7 +663,7 @@ TEST_CASE("Cauchy P3 fixed-sweep restart preserves the polynomial warm start and
             for (int step = 0; step < 3; ++step)
                 uninterrupted.Advance(.001);
             const C::Json resolved{{"test", "p3-warm-start"}, {"layout", layout}, {"flux", flux}};
-            uninterrupted.WriteCheckpoint(path, resolved);
+            uninterrupted.WriteCheckpoint(path, resolved, true);
             restored.ReadCheckpoint(path, resolved);
             for (int step = 0; step < 3; ++step)
             {
