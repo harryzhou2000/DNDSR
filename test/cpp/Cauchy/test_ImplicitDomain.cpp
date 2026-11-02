@@ -1,6 +1,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "Cauchy/Core/Domain.hpp"
+#include "Cauchy/Core/Simulation.hpp"
 #include "CartesianFixture.hpp"
 #include <optional>
 
@@ -126,6 +127,65 @@ TEST_CASE("P3 implicit periodic transport conserves flow and discard restores th
         }
         CHECK(retried.Discretization().Admissible(retried.Flow()));
     }
+}
+TEST_CASE("Steady BDF1 infinite-dt mode removes a nonconstant residual without advancing physical time")
+{
+    for (const auto *layout : {"aos", "soa", "aosoa32"})
+    {
+        C::Json input{{"time", {{"steady", true}, {"method", "esdirk4"}}},
+                      {"defaults", {{"execution", {{"layout", layout}}}, {"numerics", {{"reconstruction", "constant"}, {"flux", "rusanov"}}}, {"implicit", {{"iterations", 1000}, {"relativeTolerance", 1e-8}, {"absoluteTolerance", 1e-11}, {"pseudoCFL", 2}, {"maxPseudoCFL", 2}, {"pseudoGrowth", 1}}}}}};
+        const auto config = C::SimulationConfig::ResolveCollective(input, mpi.comm);
+        C::Simulation simulation(config, mpi.comm, [&](auto, const auto &, const auto &domainMPI)
+                                 { return CauchyTest::PeriodicQuads(domainMPI, 4); });
+        auto &domain = simulation.GetDomain(0);
+        DensityWave(domain);
+        const auto before = domain.Diagnostics(config.Domains()[0].settings, {});
+        REQUIRE(before[4] > 1e-3);
+        simulation.Advance(.01); // Irrelevant finite placeholder in steady mode.
+        CHECK(domain.Steady());
+        CHECK(domain.Time() == 0);
+        CHECK(simulation.Time() == 0);
+        CHECK(domain.Epoch().acceptedStep == 1);
+        CHECK(simulation.Step() == 1);
+        REQUIRE(domain.LastImplicitStages().size() == 1);
+        CHECK(domain.LastImplicitStages()[0].converged);
+        const auto after = domain.Diagnostics(config.Domains()[0].settings, {});
+        CHECK(after[4] < before[4] * 1e-6);
+    }
+}
+TEST_CASE("A capped steady solve cannot publish means, time or a prepared candidate")
+{
+    C::DomainSettings settings;
+    settings.numerics.reconstruction = "variational";
+    settings.numerics.cfv.maxOrder = 3;
+    settings.numerics.reconstructionIterations = 3;
+    settings.implicit.iterations = 1;
+    settings.implicit.relativeTolerance = 0;
+    settings.implicit.absoluteTolerance = 1e-14;
+    SUBCASE("Single-level PTC") {}
+    SUBCASE("Polynomial FAS")
+    {
+        settings.implicit.multigrid.levels = 2;
+        settings.implicit.multigrid.cycles = 1;
+        settings.implicit.multigrid.coarseSmooth = 1;
+    }
+    C::TimeSettings time;
+    time.steady = true;
+    time.method = "esdirk4"; // Domain construction also applies the steady override.
+    C::Domain domain("capped-steady", CauchyTest::PeriodicQuads(mpi, 4), settings, time);
+    DensityWave(domain);
+    auto initial = domain.Discretization().Metrics().BuildField(domain.Flow().Owned().Layout());
+    DNDS::Algebra::Copy(initial, domain.Flow());
+    CHECK_THROWS(domain.Advance(.01));
+    CHECK(domain.Time() == 0);
+    CHECK(domain.Epoch().acceptedStep == 0);
+    REQUIRE(domain.LastImplicitStages().size() == 1);
+    CHECK_FALSE(domain.LastImplicitStages()[0].converged);
+    CHECK_THROWS(domain.CommitStep());
+    const auto expected = initial.Owned().Read(), actual = domain.Flow().Owned().Read();
+    for (DNDS::index iCell = 0; iCell < actual.View().RowCount(); ++iCell)
+        for (int j = 0; j < 5; ++j)
+            CHECK(actual.View()(iCell, j) == expected.View()(iCell, j));
 }
 TEST_CASE("DITR coupled cap rejects the physical trial even when frozen stage solves converge")
 {

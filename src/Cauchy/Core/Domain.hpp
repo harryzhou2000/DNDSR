@@ -44,7 +44,7 @@ namespace DNDS::Cauchy
         real _time = 0, _trialTime = 0;
         bool _trialReady = false;
         index _lastFallbacks = 0;
-        bool _positivity = false;
+        bool _positivity = false, _steady = false;
         real _lastAlpha = 1, _lastBeta = 1;
         index _lastAlphaCells = 0, _lastBetaCells = 0;
         index _lastCharacteristicFallbacks = 0;
@@ -68,6 +68,7 @@ namespace DNDS::Cauchy
         CFV::FVField &Flow() { return _accepted.Block("flow"); }
         const CFV::FVField &Flow() const { return _accepted.Block("flow"); }
         real Time() const { return _time; }
+        bool Steady() const { return _steady; }
         const StateEpoch &Epoch() const { return _epoch; }
         const std::vector<NonlinearIterationReport> &LastImplicitStages() const { return _lastImplicit; }
         index LastCoupledIterations() const { return _lastCoupledIterations; }
@@ -78,6 +79,8 @@ namespace DNDS::Cauchy
         /// Build the configured time-method candidate at this accepted time. Domain ranks enter
         /// together. Inadmissible stages fail collectively without changing the
         /// accepted field/clock. dt may be rejected by the caller and retried.
+        /// time.steady instead uses BDF1's infinite-dt limit: finite dt is ignored,
+        /// physical time is frozen, and the steady stage must converge to commit.
         void PrepareStep(real dt);
         void CommitStep();
         void DiscardStep() noexcept

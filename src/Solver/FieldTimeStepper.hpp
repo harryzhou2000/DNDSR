@@ -4,6 +4,7 @@
 #include "Solver/FieldDITR.hpp"
 #include <functional>
 #include <optional>
+#include <limits>
 
 namespace DNDS::ODE
 {
@@ -29,7 +30,7 @@ namespace DNDS::ODE
         std::vector<Field> _rates;
         Field _source, _previous, _pendingInitial;
         real _previousDt = 0, _pendingDt = 0;
-        bool _history = false, _pending = false;
+        bool _history = false, _pending = false, _pendingSteady = false;
         LocalStage _local;
         DITRSettings _ditrSettings;
         FieldDITR::StageFactory _stageFactory;
@@ -54,6 +55,15 @@ namespace DNDS::ODE
             field.Validate();
             DNDS_check_throw_info(field.Space().Same(_source.Space()) && field.Width() == _source.Width() && field.Device() == _source.Device(),
                                   "time field space, components or backend differs");
+        }
+        void BeginInitial(const Field &initial, Field &trial)
+        {
+            Check(initial);
+            Check(trial);
+            for (const auto *input : {&initial.Owned(), &initial.Ghost()})
+                for (const auto *output : {&trial.Owned(), &trial.Ghost()})
+                    DNDS_check_throw_info(!Algebra::Detail::Overlaps(input->Storage(), output->Storage()), "time initial/trial fields alias");
+            Algebra::Copy(_pendingInitial, initial);
         }
         void BuildTableau()
         {
@@ -102,6 +112,12 @@ namespace DNDS::ODE
         FieldTimeStepper(const FieldTimeStepper &) = delete;
         FieldTimeStepper &operator=(const FieldTimeStepper &) = delete;
         const std::string &Method() const { return _method; }
+        /// Avoid a spurious roundoff-sized final step. Times are finite and
+        /// nonnegative; relative scaling also preserves tiny physical horizons.
+        static bool ReachedTimeTarget(real time, real target)
+        {
+            return time >= target || target - time <= 64 * std::numeric_limits<real>::epsilon() * std::max(std::abs(time), std::abs(target));
+        }
         /// Allocate an independent empty-history workspace with identical method
         /// and local-error policy, e.g. to prepare a restart transaction before
         /// replacing the live accepted history.
@@ -127,15 +143,11 @@ namespace DNDS::ODE
         bool Prepare(const Field &initial, Field &trial, real time, real dt, const Evaluate &evaluate, const SolveStage &solve, const FieldDITR::Converged &coupled = {})
         {
             _pending = false;
+            _pendingSteady = false;
             RunLocal([&]
                      {
-            Check(initial);
-            Check(trial);
-            DNDS_check_throw_info(evaluate && solve && std::isfinite(time) && std::isfinite(dt) && dt > 0 && std::isfinite(time + dt), "invalid time trial controls");
-            for (const auto *input : {&initial.Owned(), &initial.Ghost()})
-                for (const auto *output : {&trial.Owned(), &trial.Ghost()})
-                    DNDS_check_throw_info(!Algebra::Detail::Overlaps(input->Storage(), output->Storage()), "time initial/trial fields alias");
-            Algebra::Copy(_pendingInitial, initial); });
+            DNDS_check_throw_info(evaluate && solve && std::isfinite(time) && std::isfinite(dt) && dt > 0 && std::isfinite(time + dt) && time + dt > time, "invalid time trial controls");
+            BeginInitial(initial, trial); });
             _pendingDt = dt;
             if (_ditr)
             {
@@ -206,22 +218,46 @@ namespace DNDS::ODE
             _pending = true;
             return true; // All supported DIRK tableaus are stiffly accurate.
         }
+        /// BDF1 infinite-dt limit: zero physical mass/history source and frozen
+        /// time. No infinity enters arithmetic and no rate callback is needed.
+        /// The same stage solver owns PTC/PP/convergence; a failed stage cannot
+        /// be committed. Caller serializes/co-ordinates callbacks as in Prepare.
+        bool PrepareSteady(const Field &initial, Field &trial, real time, const SolveStage &solve)
+        {
+            _pending = false;
+            _pendingSteady = true;
+            RunLocal([&]
+                     {
+                DNDS_check_throw_info(_method == "bdf1" && solve && std::isfinite(time), "steady limit requires BDF1 and a finite frozen time");
+                BeginInitial(initial, trial);
+                Algebra::Fill(_source, 0.);
+                Algebra::Copy(trial, initial); });
+            _pendingDt = 0;
+            _pending = solve(trial, _source, 0, 1, time, 0);
+            return _pending;
+        }
         /// Only call once the matching physical trial was published. Pure
         /// handle swaps allocate nothing and cannot fail midway through history.
         void Commit()
         {
             DNDS_check_throw_info(_pending, "no complete time trial to commit");
+            if (_pendingSteady)
+            {
+                _history = _pending = _pendingSteady = false;
+                _previousDt = 0; // Infinity is not finite BDF history.
+                return;
+            }
             std::swap(_previous, _pendingInitial);
             _previousDt = _pendingDt;
             _history = true;
             _pending = false;
         }
-        void Discard() noexcept { _pending = false; }
+        void Discard() noexcept { _pending = _pendingSteady = false; }
         /// After an externally replaced state or incompatible restart, take a
         /// BDF1 startup step rather than silently consuming stale history.
         void ResetHistory() noexcept
         {
-            _history = _pending = false;
+            _history = _pending = _pendingSteady = false;
             _previousDt = 0;
         }
         void RestoreHistory(const Field &previous, real dt)
@@ -231,7 +267,7 @@ namespace DNDS::ODE
             Algebra::Copy(_previous, previous);
             _previousDt = dt;
             _history = true;
-            _pending = false;
+            _pending = _pendingSteady = false;
         }
     };
 }

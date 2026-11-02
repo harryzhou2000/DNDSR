@@ -6,7 +6,8 @@ namespace DNDS::Cauchy
     namespace R = Runtime;
     void Domain::InitializeImplicit(const DomainSettings &settings, const TimeSettings &time, const ssp<Geom::UnstructuredMesh> &mesh)
     {
-        if (time.method == "ssprk3")
+        _steady = time.steady;
+        if (time.method == "ssprk3" && !_steady)
         {
             DNDS_check_throw_info(!settings.implicit.multigrid.levels, "polynomial FAS requires an implicit time method");
             return;
@@ -40,7 +41,7 @@ namespace DNDS::Cauchy
                 }};
         };
         MPI::LocalStage(mpi, [&]
-                        { _timeStepper = std::make_unique<ODE::FieldTimeStepper>(_trial.Block("flow"), time.method, [mpi, checks = settings.implicit.collectiveChecks](const auto &run)
+                        { _timeStepper = std::make_unique<ODE::FieldTimeStepper>(_trial.Block("flow"), _steady ? "bdf1" : time.method, [mpi, checks = settings.implicit.collectiveChecks](const auto &run)
                                                                                  { if (checks) MPI::LocalStage(mpi, run); else run(); }, ODE::DITRSettings{time.ditr.fraction, time.ditr.theta, time.ditr.iterations}, factory); });
         _implicit = std::make_unique<NonlinearSolver>(_fv, _trial.Block("flow"), _workspace, _engine, _stream, settings);
         if (settings.implicit.multigrid.levels)
@@ -134,12 +135,14 @@ namespace DNDS::Cauchy
             }
             return iteration >= control.minIterations && _lastCoupledTargetRatio <= 1;
         };
-        if (!_timeStepper->Prepare(_initial, _trial.Block("flow"), _time, dt, evaluate, solve, coupled))
+        const bool prepared = _steady ? _timeStepper->PrepareSteady(_initial, _trial.Block("flow"), _time, solve)
+                                      : _timeStepper->Prepare(_initial, _trial.Block("flow"), _time, dt, evaluate, solve, coupled);
+        if (!prepared)
         {
             // Failure-only diagnostics keep capped inner solves distinct from
             // accepted stages and make timestep retries auditable. No logging
             // or extra reduction is added to the successful numerical path.
-            Json details{{"method", _timeStepper->Method()}, {"stage", _trialEpoch.stage}, {"dt", dt}, {"coupled_iterations", _lastCoupledIterations}, {"coupled_target_ratio", _lastCoupledTargetRatio}};
+            Json details{{"method", _timeStepper->Method()}, {"steady", _steady}, {"stage", _trialEpoch.stage}, {"dt", _steady ? 0 : dt}, {"coupled_iterations", _lastCoupledIterations}, {"coupled_target_ratio", _lastCoupledTargetRatio}};
             if (!_lastImplicit.empty())
             {
                 const auto &last = _lastImplicit.back();

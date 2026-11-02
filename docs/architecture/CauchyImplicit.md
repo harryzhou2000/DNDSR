@@ -3,6 +3,36 @@
 The coupled DITR method, its independent intermediate-stage workspace and
 accepted/trial history contracts are documented in [DITR.md](DITR.md).
 
+## Steady BDF1 limit and physical endpoints
+
+`time.steady=true` uses the analytic infinite-timestep limit of BDF1. The
+existing stage solver receives physical mass zero, history source zero and
+RHS scale one. Pseudo-time continuation, PP, SGS/ILU/GMRES and optional p-FAS
+remain the same operators. Physical time stays frozen; no infinity enters
+floating-point arithmetic or BDF history. This matches Euler's `steadyQuit`
+behavior: its BDF2 driver takes only its first, BDF1 startup step at dt1e200.
+
+Configuration resolution forces `method=bdf1`, at most one outer solve, no
+physical final-time/CFL cap and no timestep-halving retries, recording each
+override's provenance. `dt` remains a required positive finite placeholder
+and is ignored by the steady equation. The nonlinear stage must actually
+converge before publication; reaching its correction cap rejects the candidate
+and leaves accepted means, time and history unchanged. A finite-dt BDF1
+transient with an outer residual stop is not this steady mode.
+
+`implicit.consoleInterval` enables rank-zero progress at selected nonlinear
+iterations; zero disables it. These norms are the uncompressed equation
+residual, volume-weighted L2 per component, tested against the initial stage
+norm and absolute floor. Euler's current stopping rule instead uses density's
+volume-weighted L1 ratio to the running maximum. A baseline comparison must
+record this difference; other components above Euler's density threshold do
+not imply Euler failed its own stopping rule.
+
+The physical frontend uses `FieldTimeStepper::ReachedTimeTarget` to avoid a
+roundoff-sized extra step at a requested endpoint. The tolerance scales with
+the actual times, preserving tiny nonzero physical horizons. Genuine positive
+steps which cannot advance a floating-point clock are rejected explicitly.
+
 ## Polynomial multigrid
 
 `Cauchy/Multigrid/PolynomialMultigrid` connects the generic

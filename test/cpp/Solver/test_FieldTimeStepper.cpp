@@ -66,6 +66,62 @@ TEST_CASE("Native implicit time methods converge with independent nonautonomous 
         CHECK(std::log2(coarse / fine) >= minimumOrder);
     }
 }
+TEST_CASE("Native BDF1 steady limit has zero physical mass and history source at a frozen time")
+{
+    const A::DofSpace space(2);
+    Field initial(space, 2), trial(space, 2);
+    A::Fill(initial, 3.);
+    O::FieldTimeStepper stepper(initial, "bdf1");
+    stepper.RestoreHistory(initial, .125);
+    Eigen::Matrix2d matrix;
+    matrix << -2, 1, .5, -3;
+    const Eigen::Vector2d forcing(1, 2), exact = matrix.fullPivLu().solve(-forcing);
+    const auto version = initial.Owned().Version();
+    int calls = 0;
+    const auto solve = [&](Field &state, const Field &source, double mass, double scale, double time, int stage)
+    {
+        ++calls;
+        CHECK(mass == 0);
+        CHECK(scale == 1);
+        CHECK(time == 2.75);
+        CHECK(stage == 0);
+        const auto read = source.Owned().Read();
+        auto write = state.Owned().Write();
+        for (DNDS::index iRow = 0; iRow < 2; ++iRow)
+            for (int j = 0; j < 2; ++j)
+            {
+                CHECK(read.View()(iRow, j) == 0);
+                write.View()(iRow, j) = exact[j];
+            }
+        return calls != 1; // Rejected preparation must preserve accepted history.
+    };
+    CHECK_FALSE(stepper.PrepareSteady(initial, trial, 2.75, solve));
+    CHECK(stepper.HasHistory());
+    CHECK(stepper.PreviousDt() == .125);
+    CHECK(initial.Owned().Version() == version);
+    CHECK_THROWS(stepper.Commit());
+    stepper.Discard();
+    REQUIRE(stepper.PrepareSteady(initial, trial, 2.75, solve));
+    CHECK(initial.Owned().Version() == version);
+    stepper.Commit();
+    CHECK_FALSE(stepper.HasHistory());
+    CHECK(stepper.PreviousDt() == 0);
+    const auto read = trial.Owned().Read();
+    for (DNDS::index iRow = 0; iRow < 2; ++iRow)
+        for (int j = 0; j < 2; ++j)
+            CHECK(read.View()(iRow, j) == doctest::Approx(exact[j]));
+    O::FieldTimeStepper wrong(initial, "esdirk4");
+    CHECK_THROWS(wrong.PrepareSteady(initial, trial, 2.75, solve));
+    CHECK_THROWS(stepper.PrepareSteady(initial, initial, 2.75, solve));
+}
+TEST_CASE("Native time target comparison excludes only relative roundoff remainders")
+{
+    CHECK(O::FieldTimeStepper::ReachedTimeTarget(300 - 2e-13, 300));
+    CHECK(O::FieldTimeStepper::ReachedTimeTarget(300, 300));
+    CHECK_FALSE(O::FieldTimeStepper::ReachedTimeTarget(299.9, 300));
+    CHECK_FALSE(O::FieldTimeStepper::ReachedTimeTarget(0, 1e-20));
+    CHECK_FALSE(O::FieldTimeStepper::ReachedTimeTarget(1, 1.00001));
+}
 TEST_CASE("Native BDF history is committed explicitly and retries use the last accepted step ratio")
 {
     const A::DofSpace space(1);

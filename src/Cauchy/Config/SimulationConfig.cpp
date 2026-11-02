@@ -180,7 +180,7 @@ namespace DNDS::Cauchy
         const auto nonnegative = [](real value)
         { return std::isfinite(value) && value >= 0; };
         DNDS_check_throw_info((diagonal == "entries" || diagonal == "block") && (!roeDissipation || diagonal == "block") &&
-                                  iterations > 0 && minIterations >= 0 && minIterations <= iterations &&
+                                  iterations > 0 && minIterations >= 0 && minIterations <= iterations && consoleInterval >= 0 &&
                                   nonnegative(relativeTolerance) && nonnegative(absoluteTolerance) &&
                                   std::isfinite(pseudoCFL) && pseudoCFL > 0 && std::isfinite(maxPseudoCFL) && maxPseudoCFL >= pseudoCFL &&
                                   std::isfinite(pseudoGrowth) && pseudoGrowth >= 1 && std::isfinite(relaxation) && relaxation > 0 && relaxation <= 1,
@@ -351,6 +351,21 @@ namespace DNDS::Cauchy
                               "Cauchy requires an available time method, positive dt and nonnegative steps");
         DNDS_check_throw_info(std::isfinite(data->time.steadyTolerance) && data->time.steadyTolerance >= 0 && data->time.steadyMinSteps >= 0, "invalid steady stopping controls");
         data->time.ditr.Validate();
+        if (data->time.steady)
+        {
+            data->time.method = "bdf1";
+            data->time.steps = std::min(index(1), data->time.steps);
+            data->time.finalTime = data->time.cfl = 0;
+            data->time.maxRetries = 0;
+            data->time.steadyMinSteps = std::min(index(1), data->time.steadyMinSteps);
+            const Json effective = data->time;
+            for (const auto *name : {"method", "steps", "finalTime", "cfl", "maxRetries", "steadyMinSteps"})
+                if (data->root["time"][name] != effective[name])
+                {
+                    data->root["time"][name] = effective[name];
+                    data->provenance[std::string("/time/") + name] = "BDF1 steady limit";
+                }
+        }
         for (const auto &domain : data->domains)
             DNDS_check_throw_info(data->time.method != "ssprk3" || !domain.settings.implicit.multigrid.levels, "polynomial FAS requires an implicit time method");
         DNDS_check_throw_info(data->output.interval >= 0 && data->output.historyInterval > 0 && !data->output.prefix.empty(), "invalid Cauchy output controls");

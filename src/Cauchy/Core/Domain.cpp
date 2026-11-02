@@ -33,7 +33,7 @@ namespace DNDS::Cauchy
         AuxiliaryRequest TimeAuxiliary(const TimeSettings &time)
         {
             AuxiliaryRequest request;
-            request.faceSpectralRadius = request.cellSpectralSum = time.method != "ssprk3";
+            request.faceSpectralRadius = request.cellSpectralSum = time.steady || time.method != "ssprk3";
             return request;
         }
     }
@@ -145,7 +145,7 @@ namespace DNDS::Cauchy
     void Domain::PrepareStep(real dt)
     {
         _trialReady = false;
-        int valid = std::isfinite(dt) && dt > 0 && std::isfinite(_time + dt);
+        int valid = std::isfinite(dt) && dt > 0 && (_steady || (std::isfinite(_time + dt) && _time + dt > _time));
         MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, _fv.Metrics().Communicator());
         DNDS_check_throw_info(valid, "invalid Cauchy physical timestep");
         real min = dt, max = dt;
@@ -173,7 +173,7 @@ namespace DNDS::Cauchy
         if (_timeStepper)
         {
             PrepareImplicitStep(dt);
-            _trialTime = _time + dt;
+            _trialTime = _steady ? _time : _time + dt;
             _trialReady = true;
             return;
         }

@@ -14,7 +14,7 @@ from DNDSR import DNDS, Geom
 from DNDSR.Cauchy import Domain
 
 
-def build_domain(layout="aos", flux="Roe", workers=0, method="ssprk3"):
+def build_domain(layout="aos", flux="Roe", workers=0, method="ssprk3", steady=False):
     mpi = DNDS.MPIInfo()
     mpi.setWorld()
     path = Path(__file__).resolve().parents[2] / "data/mesh/Uniform_3x3_wall.cgns"
@@ -29,7 +29,7 @@ def build_domain(layout="aos", flux="Roe", workers=0, method="ssprk3"):
         "numerics": {"flux": flux, "cfv": {"maxOrder": 1}},
         "initialPrimitive": primitive,
         "boundaries": {str(zone): {"kind": "farfield", "primitive": primitive} for zone in zones},
-    }, "time": {"method": method}}
+    }, "time": {"method": method, "steady": steady}}
     if method == "ditr":
         config["time"]["ditr"] = {"minIterations": 1}
     return Domain(mesh, json.dumps(config)), primitive
@@ -106,3 +106,13 @@ def test_rank_local_invalid_config_is_collectively_rejected():
     mesh = Geom.with_native_topology(Geom.read_native_cgns(mpi, str(path), 2))
     with pytest.raises(RuntimeError):
         Domain(mesh, "{" if MPI.COMM_WORLD.rank == 0 else "{}")
+
+
+@pytest.mark.mpi
+def test_steady_bdf1_override_keeps_the_physical_clock_frozen():
+    domain, _ = build_domain(method="esdirk4", steady=True)
+    before = domain.flow.numpy().copy()
+    domain.advance(.03)
+    assert domain.steady and domain.time == 0 and domain.step == 1
+    assert len(domain.implicit_stages) == 1 and domain.implicit_stages[0].converged
+    np.testing.assert_allclose(domain.flow.numpy(), before, atol=3e-14)

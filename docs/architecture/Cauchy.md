@@ -190,12 +190,19 @@ and exact vortex errors use physical-volume-weighted cell averages, not centroid
 point values. There is no positivity limiter in the non-PP vortex cases.
 
 The executable supports fixed dt or a global CFL capped by dt, physical end
-time, bounded timestep-halving retries, steady residual stopping and a collective
+time, bounded timestep-halving retries, an analytic BDF1 steady limit
+(`time.steady=true`; see [implicit contracts](CauchyImplicit.md)), residual
+stopping and a collective
 wall stop, measured from startup including mesh setup. A wall stop writes final
 evidence and returns status 2, rather than
 claiming convergence. `--check-config` resolves capabilities without mesh or
 solver execution. Maintained cases are in `cases/cauchy/`, with paths relative
 to the invocation directory (run these from the source root).
+
+Build the physical executable with target `cauchy_solver` (`cauchy` is the C++
+library). Python changes additionally require rebuilding `cauchy_pybind11` and
+installing the `py` component; rebuilding the DNDS/Geom/CFV/EulerP bindings alone
+does not refresh Cauchy's shared library or its configuration parser.
 
 Diagnostics and output use independent reconstruction scratch, so changing
 history/output cadence cannot change a fixed-sweep solution. CSV history records

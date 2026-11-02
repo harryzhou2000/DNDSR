@@ -215,6 +215,7 @@ namespace DNDS::Cauchy
     {
         std::string diagonal = "entries";
         index iterations = 100, minIterations = 1;
+        index consoleInterval = 0;
         real relativeTolerance = 1e-8, absoluteTolerance = 1e-11;
         real pseudoCFL = 10, maxPseudoCFL = 1e4, pseudoGrowth = 1.3, relaxation = 1;
         bool roeDissipation = false, collectiveChecks = true;
@@ -229,6 +230,7 @@ namespace DNDS::Cauchy
             DNDS_FIELD(diagonal, "entries or full block diagonal storage");
             DNDS_FIELD(iterations, "Maximum nonlinear corrections per physical stage");
             DNDS_FIELD(minIterations, "Minimum corrections before accepting a stage");
+            DNDS_FIELD(consoleInterval, "Rank-zero nonlinear residual/VR progress interval; zero disables it");
             DNDS_FIELD(relativeTolerance, "Per-component stage residual tolerance relative to its initial norm");
             DNDS_FIELD(absoluteTolerance, "Per-component absolute volume-weighted stage residual tolerance");
             DNDS_FIELD(pseudoCFL, "Initial local pseudo-time CFL for each stage");
@@ -289,6 +291,7 @@ namespace DNDS::Cauchy
     struct TimeSettings
     {
         std::string method = "ssprk3";
+        bool steady = false;
         real dt = 1e-3;
         index steps = 1;
         real finalTime = 0, cfl = 0, wallSeconds = 0;
@@ -299,6 +302,7 @@ namespace DNDS::Cauchy
         DNDS_DECLARE_CONFIG(TimeSettings)
         {
             DNDS_FIELD(method, "Coordinated physical-time method");
+            DNDS_FIELD(steady, "Euler steady override: BDF1 infinite-dt limit, one outer solve and frozen physical time");
             DNDS_FIELD(dt, "Fixed positive physical timestep");
             DNDS_FIELD(steps, "Nonnegative accepted step target");
             DNDS_FIELD(finalTime, "Positive physical-time target; zero uses the step target");

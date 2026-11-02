@@ -3,6 +3,19 @@
 #include "Cauchy/Config/SimulationConfig.hpp"
 
 namespace C = DNDS::Cauchy;
+TEST_CASE("Steady config resolves Euler's BDF1 infinite timestep override with provenance")
+{
+    const auto config = C::SimulationConfig::Resolve({{"time", {{"steady", true}, {"method", "esdirk4"}, {"steps", 123}, {"finalTime", 10}, {"cfl", 1}, {"maxRetries", 3}}}}, 2);
+    CHECK(config.Time().steady);
+    CHECK(config.Time().method == "bdf1");
+    CHECK(config.Time().steps == 1);
+    CHECK(config.Time().finalTime == 0);
+    CHECK(config.Time().cfl == 0);
+    CHECK(config.Time().maxRetries == 0);
+    CHECK(config.Root()["time"]["method"] == "bdf1");
+    CHECK(config.Provenance().at("/time/method") == "BDF1 steady limit");
+    CHECK_THROWS(C::SimulationConfig::Resolve({{"defaults", {{"implicit", {{"consoleInterval", -1}}}}}}, 2));
+}
 TEST_CASE("Reconstruction PP controls are explicit and reject unsupported compatibility combinations")
 {
     C::NumericsSettings settings;

@@ -108,7 +108,8 @@ namespace DNDS::Cauchy
         for (auto &domain : _domains)
             if (domain)
                 domain->CommitStep();
-        _time += dt;
+        if (!_config.Time().steady)
+            _time += dt;
         ++_step;
     }
     void Simulation::ReadCheckpoint(const std::string &path)

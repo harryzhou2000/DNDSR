@@ -97,10 +97,15 @@ int main(int argc, char **argv)
                               << " rho L1 " << values[10] << " face fallbacks " << fallbacks << " implicit " << nonlinearIterations << '/' << linearIterations
                               << " target ratio " << implicitRatio << " stage VR " << implicitFinalVRSweeps << ':' << implicitFinalVRUpdate << " wall " << MPI_Wtime() - started << std::endl;
                 }
-                return time.steadyTolerance > 0 && domain.Epoch().acceptedStep >= uint64_t(time.steadyMinSteps) && values[4] / baseline <= time.steadyTolerance;
+                const bool outerTarget = time.steadyTolerance <= 0 || values[4] / baseline <= time.steadyTolerance;
+                if (time.steady)
+                    return !domain.LastImplicitStages().empty() && std::all_of(domain.LastImplicitStages().begin(), domain.LastImplicitStages().end(), [](const auto &stage)
+                                                                               { return stage.converged; }) &&
+                           outerTarget;
+                return time.steadyTolerance > 0 && domain.Epoch().acceptedStep >= uint64_t(time.steadyMinSteps) && outerTarget;
             };
             record(0, 0);
-            for (DNDS::index step = 0; time.finalTime > 0 ? simulation.Time() < time.finalTime : step < time.steps; ++step)
+            for (DNDS::index step = 0; time.finalTime > 0 ? !DNDS::ODE::FieldTimeStepper::ReachedTimeTarget(simulation.Time(), time.finalTime) : step < time.steps; ++step)
             {
                 int stop = time.wallSeconds > 0 && MPI_Wtime() - started >= time.wallSeconds;
                 MPI_Allreduce(MPI_IN_PLACE, &stop, 1, MPI_INT, MPI_MAX, mpi.comm);
@@ -129,8 +134,8 @@ int main(int argc, char **argv)
                         dt *= .5;
                     }
                 }
-                if (domain.Epoch().acceptedStep % uint64_t(output.historyInterval) == 0)
-                    reached = record(dt, retries);
+                if (time.steady || domain.Epoch().acceptedStep % uint64_t(output.historyInterval) == 0)
+                    reached = record(time.steady ? 0 : dt, retries);
                 if (output.interval && domain.Epoch().acceptedStep % uint64_t(output.interval) == 0)
                 {
                     domain.WriteCheckpoint(output.prefix + "_" + std::to_string(domain.Epoch().acceptedStep) + ".h5", config.Root(), output.checkpointReconstruction);
@@ -139,16 +144,17 @@ int main(int argc, char **argv)
                 if (reached)
                     break;
             }
-            record(0, 0);
+            reached = record(0, 0) || reached;
             domain.WriteCheckpoint(output.prefix + "_final.h5", config.Root(), output.checkpointReconstruction);
             domain.WriteVisualization(output.prefix + "_final", output.hdfDeflateLevel);
-            const bool stepStop = time.steadyTolerance > 0 && !reached && !wallStop;
+            const bool stepStop = (time.steady || time.steadyTolerance > 0) && !reached && !wallStop;
             if (mpi.rank == 0)
             {
                 DNDS::Cauchy::Json result{{"time", simulation.Time()}, {"steps", simulation.Step()}, {"wallSeconds", MPI_Wtime() - started}, {"status", wallStop ? "wall-capped" : stepStop ? "step-capped"
                                                                                                                                                                                : reached    ? "steady-converged"
                                                                                                                                                                                             : "target-reached"},
                                           {"steadyTargetMet", reached},
+                                          {"steadyMode", time.steady},
                                           {"physicalTimeTarget", time.finalTime},
                                           {"steadyTolerance", time.steadyTolerance}};
                 std::ofstream summary(output.prefix + "_summary.json");

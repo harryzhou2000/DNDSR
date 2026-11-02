@@ -3,6 +3,7 @@
 #include "Cauchy/Implicit/PositivityReduction.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
 #include <tuple>
+#include <iostream>
 
 namespace DNDS::Cauchy
 {
@@ -85,7 +86,7 @@ namespace DNDS::Cauchy
                         { _data = std::make_shared<Data>(discrete, state, std::move(workspace), engine, std::move(stream), settings); });
         _data->PrepareLinear(state, settings.execution.overlap);
     }
-    NonlinearIterationReport NonlinearSolver::Solve(CFV::FVField &state, const CFV::FVField &source, real mass, real rhsScale, real time, int, NonlinearSolveControl control)
+    NonlinearIterationReport NonlinearSolver::Solve(CFV::FVField &state, const CFV::FVField &source, real mass, real rhsScale, real time, int stage, NonlinearSolveControl control)
     {
         auto &data = *_data;
         MPI::LocalStage(data.mpi, [&]
@@ -144,6 +145,9 @@ namespace DNDS::Cauchy
                 converged = converged && report.residual[j] <= std::max(data.settings.absoluteTolerance, data.settings.relativeTolerance * report.initialResidual[j]);
             }
             report.iterations = iteration;
+            if (control.correctionLimit < 0 && data.settings.consoleInterval > 0 && data.mpi.rank == 0 && (iteration % data.settings.consoleInterval == 0 || converged || iteration == limit))
+                std::cout << "Cauchy nonlinear stage " << stage << " iteration " << iteration << " residual " << Json(report.residual).dump()
+                          << " CFL " << report.pseudoCFL << " VR " << report.reconstructionIterations << ':' << report.reconstructionRelativeUpdate << std::endl;
             if (converged || iteration == limit)
             {
                 report.converged = converged;
