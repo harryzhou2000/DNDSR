@@ -1,5 +1,53 @@
 # Cauchy native implicit operator contracts
 
+## Polynomial multigrid
+
+`Cauchy/Multigrid/PolynomialMultigrid` connects the generic
+[FAS cycle](FAS.md) to same-cell spatial operators. `implicit.multigrid.levels=0`
+disables it. Level1 is direct-gradient second order, level2 additionally uses
+first-order convection; physical viscosity/gradient calculation, equation and
+boundary conditions remain enabled. The finest operator requires variational
+degree2 or3. This follows the supported Euler pMG fidelity hierarchy, without
+copying its recursive orchestration lambda. No spatial coarsening or new mesh
+partition is performed.
+
+```text
+Domain physical trial / time equation
+  PolynomialMultigrid -> finest uncompressed convergence test
+    Solver::FASCycle
+      VR high-order   -> NonlinearSolver bounded PTC/SGS or GMRES smoothing
+      direct O2      -> independent state, FV workspace and matrix/linear solver
+      first-order    -> independent state, FV workspace and matrix/linear solver
+      identity state/residual/correction maps on the same cell identity/order
+```
+
+Every operator uses `mass*U-rhsScale*R(U)/V`. Consequently all three same-cell
+maps are identity in this normalized convention; an integrated-residual or
+different-mesh hierarchy must supply its own transfer. Cell identity/order is
+checked during setup. Means, fine/coarse matrices and mutable auxiliary/gradient
+buffers are distinct. The current Cauchy profile smooths the whole coupled
+flow5 block; generic FAS accepts independent fields of arbitrary component
+width, permitting future selected-block adapters without erasing other fields.
+
+`preSmooth`, `postSmooth` and `coarseSmooth` bound nonlinear corrections, and
+`cycles` caps V-cycles. Each level carries its pseudo-CFL between smooth calls;
+the next physical stage resets it. Coarse correction `damping` and physical PP
+reuse the same candidate-before-publication policy as the fine smoother.
+Convergence checks the original finest equation with its original source,
+per-component norms and configured tolerances. A coarse forcing tolerance or
+a V-cycle count never implies physical stage acceptance. Reports contain
+cycle counts, corrections per level and total corrections/linear work across
+levels. No acceleration claim follows from the correctness tests alone.
+
+Physical discard/retry still restores the fine reconstruction guess. Coarse
+levels have no persistent VR polynomial guesses and restriction overwrites
+their state each cycle. A failed cycle drops its scratch hierarchy; the next
+attempt constructs fresh scratch before reuse. The physical caller still owns
+restoring any changed fine trial. Failed/capped stages never publish accepted
+state or time history. Same-cell pMG tests cover manufactured nonconstant P3
+equations, mixed DOF layouts, active distributed halos, constant fixed points,
+physical discard/retry and commit rejection by a retained debug reader.
+
 
 `Cauchy/Implicit/LinearProblemContext` owns the numerical matrix for one fixed
 native DOF space. Its immutable sparse columns use the same owned-plus-ghost
@@ -64,7 +112,8 @@ and a cube with physical slip boundaries. They include integrated time/pseudo-ti
 scaling, both diagonal representations where applicable, and stale-input errors.
 These validate the approximate operator; convergence of the eventual nonlinear
 solver and equivalence to a full high-order residual derivative are separate
-questions. Linear/nonlinear drivers and pMG remain under implementation.
+questions. Linear/nonlinear drivers and native physical methods are connected;
+the complete implicit-phase qualification remains in progress.
 
 ## Local ILU composition
 

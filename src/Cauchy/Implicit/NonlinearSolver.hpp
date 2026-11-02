@@ -5,10 +5,17 @@
 
 namespace DNDS::Cauchy
 {
+    struct NonlinearSolveControl
+    {
+        index correctionLimit = -1; // -1 uses the configured stage cap
+        real initialPseudoCFL = 0;  // 0 starts at the configured stage CFL
+    };
     struct NonlinearIterationReport
     {
         bool converged = false;
         index iterations = 0, linearIterations = 0, rhsLimited = 0, incrementLimited = 0;
+        index multigridCycles = 0;
+        std::vector<index> levelCorrections;
         FlowState initialResidual{}, residual{};
         real minimumRHSAlpha = 1, minimumIncrementAlpha = 1, pseudoCFL = 0;
         Linear::LinearIterationReport lastLinear;
@@ -30,7 +37,17 @@ namespace DNDS::Cauchy
         /// on a correction cap; the caller must reject that physical trial.
         /// Nonfinite/unusable linear corrections and inadmissible states throw.
         /// PP uses Euler alpha compression/flow5 repair only when requested.
+        /// Nonnegative control.correctionLimit selects a bounded FAS smoother;
+        /// that cap reports work and does not imply physical-stage acceptance.
+        /// All ranks agree the override and initial pseudo-CFL before iteration.
         NonlinearIterationReport Solve(CFV::FVField &state, const CFV::FVField &source,
-                                       real mass, real rhsScale, real time, int stage = 0);
+                                       real mass, real rhsScale, real time, int stage = 0, NonlinearSolveControl control = {});
+        /// FAS operator in the same normalized convention as Solve. No input
+        /// mean mutation; Evaluate may refresh ghosts and reconstruction scratch.
+        void EvaluateEquation(CFV::FVField &state, CFV::FVField &value, real mass, real rhsScale, real time);
+        /// Apply a separate increment using the same Euler flow5 PP policy as
+        /// the smoother. Returns global (limited cells, minimum fraction).
+        /// Candidate admissibility is agreed before any state values change.
+        std::pair<index, real> ApplyCorrection(CFV::FVField &state, const CFV::FVField &correction, real scale = 1);
     };
 }

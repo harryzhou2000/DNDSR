@@ -77,7 +77,7 @@ namespace DNDS::Cauchy
                         { _data = std::make_shared<Data>(discrete, state, std::move(workspace), engine, std::move(stream), settings); });
         _data->PrepareLinear(state, settings.execution.overlap);
     }
-    NonlinearIterationReport NonlinearSolver::Solve(CFV::FVField &state, const CFV::FVField &source, real mass, real rhsScale, real time, int)
+    NonlinearIterationReport NonlinearSolver::Solve(CFV::FVField &state, const CFV::FVField &source, real mass, real rhsScale, real time, int, NonlinearSolveControl control)
     {
         auto &data = *_data;
         MPI::LocalStage(data.mpi, [&]
@@ -85,18 +85,25 @@ namespace DNDS::Cauchy
             data.discrete.Metrics().ValidateField(state, 5); data.discrete.Metrics().ValidateField(source, 5);
             DNDS_check_throw_info(state.Owned().SharedStorage() == data.stateOwned && state.Ghost().SharedStorage() == data.stateGhost &&
                                       !Algebra::Detail::Overlaps(state.Owned().Storage(), source.Owned().Storage()) &&
-                                      std::isfinite(mass) && mass >= 0 && std::isfinite(rhsScale) && rhsScale > 0 && std::isfinite(time),
+                                      !Algebra::Detail::Overlaps(state.Ghost().Storage(), source.Owned().Storage()) &&
+                                      std::isfinite(mass) && mass >= 0 && std::isfinite(rhsScale) && rhsScale > 0 && std::isfinite(time) &&
+                                      control.correctionLimit >= -1 && control.correctionLimit <= data.settings.iterations &&
+                                      (control.initialPseudoCFL == 0 || (std::isfinite(control.initialPseudoCFL) && control.initialPseudoCFL >= data.settings.pseudoCFL && control.initialPseudoCFL <= data.settings.maxPseudoCFL)),
                                   "invalid implicit stage state/source/coefficients"); });
-        const std::array<real, 3> coefficients{mass, rhsScale, time};
+        const std::array<real, 4> coefficients{mass, rhsScale, time, control.initialPseudoCFL};
         auto minimum = coefficients, maximum = coefficients;
-        MPI_Allreduce(MPI_IN_PLACE, minimum.data(), 3, MPI_DOUBLE, MPI_MIN, data.mpi.comm);
-        MPI_Allreduce(MPI_IN_PLACE, maximum.data(), 3, MPI_DOUBLE, MPI_MAX, data.mpi.comm);
-        DNDS_check_throw_info(minimum == maximum, "implicit stage coefficients differ between ranks");
+        MPI_Allreduce(MPI_IN_PLACE, minimum.data(), 4, MPI_DOUBLE, MPI_MIN, data.mpi.comm);
+        MPI_Allreduce(MPI_IN_PLACE, maximum.data(), 4, MPI_DOUBLE, MPI_MAX, data.mpi.comm);
+        index minLimit = control.correctionLimit, maxLimit = minLimit;
+        MPI_Allreduce(MPI_IN_PLACE, &minLimit, 1, MPI_INT64_T, MPI_MIN, data.mpi.comm);
+        MPI_Allreduce(MPI_IN_PLACE, &maxLimit, 1, MPI_INT64_T, MPI_MAX, data.mpi.comm);
+        DNDS_check_throw_info(minimum == maximum && minLimit == maxLimit, "implicit stage coefficients differ between ranks");
         NonlinearIterationReport report;
-        report.pseudoCFL = data.settings.pseudoCFL;
+        report.pseudoCFL = control.initialPseudoCFL == 0 ? data.settings.pseudoCFL : control.initialPseudoCFL;
+        const index limit = control.correctionLimit < 0 ? data.settings.iterations : control.correctionLimit;
         auto geometry = data.discrete.Metrics().AcquireRead();
         const auto metric = geometry.HostView();
-        for (index iteration = 0; iteration <= data.settings.iterations; ++iteration)
+        for (index iteration = 0; iteration <= limit; ++iteration)
         {
             data.discrete.Evaluate(state, data.spatial, *data.workspace, *data.engine, data.stream, time);
             std::array<real, 6> norm{};
@@ -118,7 +125,7 @@ namespace DNDS::Cauchy
                 } });
             MPI_Allreduce(MPI_IN_PLACE, norm.data(), 6, MPI_DOUBLE, MPI_SUM, data.mpi.comm);
             DNDS_check_throw_info(std::isfinite(norm[5]) && norm[5] > 0, "invalid global stage volume");
-            bool converged = iteration >= data.settings.minIterations;
+            bool converged = iteration >= std::min(data.settings.minIterations, limit);
             for (int j = 0; j < 5; ++j)
             {
                 report.residual[j] = std::sqrt(norm[j] / norm[5]);
@@ -128,7 +135,7 @@ namespace DNDS::Cauchy
                 converged = converged && report.residual[j] <= std::max(data.settings.absoluteTolerance, data.settings.relativeTolerance * report.initialResidual[j]);
             }
             report.iterations = iteration;
-            if (converged || iteration == data.settings.iterations)
+            if (converged || iteration == limit)
             {
                 report.converged = converged;
                 return report;
@@ -165,52 +172,82 @@ namespace DNDS::Cauchy
             report.lastLinear = data.linear->Solve(data.defect);
             report.linearIterations += report.lastLinear.iterations;
             DNDS_check_throw_info(report.lastLinear.usable, "implicit linear correction is unusable");
-            index incrementLimited = 0;
-            real incrementAlpha = 1;
-            bool admissible = true;
-            data.Stage([&]
-                       {
-                const auto correctionRead = data.linear->Solution().Owned().Read(), meanRead = state.Owned().Read();
-                auto candidateWrite = data.candidate.Owned().Write();
-                const auto correction = correctionRead.View<R::UniformTableRows>();
-                const auto mean = meanRead.View<R::UniformTableRows>();
-                const auto candidate = candidateWrite.View<R::UniformTableRows>();
-                for (index iCell = 0; iCell < mean.RowCount(); ++iCell)
-                {
-                    FlowState u, delta;
-                    for (int j = 0; j < 5; ++j) { u[j] = mean(iCell, j); delta[j] = data.settings.relaxation * correction(iCell, j); }
-                    if (data.positivity)
-                    {
-                        const real alpha = FlowIncrementFraction(u, delta, data.discrete.ThermalConstraints(), data.settings.positivity.incrementRelax, 2, data.settings.positivity.compressionPower);
-                        admissible = admissible && std::isfinite(alpha) && alpha >= 0 && alpha <= 1;
-                        if (alpha < 1) { ++incrementLimited; incrementAlpha = std::min(incrementAlpha, alpha); }
-                        for (auto &component : delta) component *= alpha;
-                        delta = FixFlowIncrement(u, delta, data.discrete.ThermalConstraints());
-                    }
-                    for (int j = 0; j < 5; ++j) u[j] += delta[j];
-                    admissible = admissible && ThermallyAdmissible(u, data.discrete.ThermalConstraints());
-                    for (int j = 0; j < 5; ++j) candidate(iCell, j) = u[j];
-                } });
-            // Reject before acquiring the state's write lease. A recoverable
-            // bad correction must not poison the bound trial allocation and
-            // turn the next smaller-dt attempt into a storage-lifetime error.
-            MPI::LocalStage(data.mpi, [&]
-                            { DNDS_check_throw_info(admissible, "implicit correction produces an inadmissible mean"); });
-            data.Stage([&]
-                       { Algebra::Copy(state, data.candidate); });
+            const auto [incrementLimited, incrementAlpha] = ApplyCorrection(state, data.linear->Solution(), data.settings.relaxation);
             if (data.positivity)
             {
-                index counts[2]{rhsLimited, incrementLimited};
-                real fractions[2]{rhsAlpha, incrementAlpha};
-                MPI_Allreduce(MPI_IN_PLACE, counts, 2, MPI_INT64_T, MPI_SUM, data.mpi.comm);
-                MPI_Allreduce(MPI_IN_PLACE, fractions, 2, MPI_DOUBLE, MPI_MIN, data.mpi.comm);
-                report.rhsLimited += counts[0];
-                report.incrementLimited += counts[1];
-                report.minimumRHSAlpha = std::min(report.minimumRHSAlpha, fractions[0]);
-                report.minimumIncrementAlpha = std::min(report.minimumIncrementAlpha, fractions[1]);
+                MPI_Allreduce(MPI_IN_PLACE, &rhsLimited, 1, MPI_INT64_T, MPI_SUM, data.mpi.comm);
+                MPI_Allreduce(MPI_IN_PLACE, &rhsAlpha, 1, MPI_DOUBLE, MPI_MIN, data.mpi.comm);
+                report.rhsLimited += rhsLimited;
+                report.incrementLimited += incrementLimited;
+                report.minimumRHSAlpha = std::min(report.minimumRHSAlpha, rhsAlpha);
+                report.minimumIncrementAlpha = std::min(report.minimumIncrementAlpha, incrementAlpha);
             }
             report.pseudoCFL = std::min(data.settings.maxPseudoCFL, report.pseudoCFL * data.settings.pseudoGrowth);
         }
         return report;
+    }
+    void NonlinearSolver::EvaluateEquation(CFV::FVField &state, CFV::FVField &value, real mass, real rhsScale, real time)
+    {
+        auto &data = *_data;
+        MPI::LocalStage(data.mpi, [&]
+                        {
+            data.discrete.Metrics().ValidateField(value, 5);
+            DNDS_check_throw_info(std::isfinite(mass) && mass >= 0 && std::isfinite(rhsScale) && rhsScale > 0 && std::isfinite(time), "invalid FAS equation coefficients");
+            for (const auto *input : {&state.Owned(), &state.Ghost()})
+                DNDS_check_throw_info(!Algebra::Detail::Overlaps(value.Owned().Storage(), input->Storage()), "FAS equation output aliases state");
+            auto check = value.Owned().Write(); check.CancelUnmodified(); });
+        data.discrete.Evaluate(state, data.spatial, *data.workspace, *data.engine, data.stream, time);
+        data.Stage([&]
+                   {
+            const auto geometry = data.discrete.Metrics().AcquireRead(); const auto metric = geometry.HostView();
+            const auto meanRead = state.Owned().Read(), spatialRead = data.spatial.Owned().Read(); auto write = value.Owned().Write();
+            const auto u = meanRead.View<R::UniformTableRows>(), r = spatialRead.View<R::UniformTableRows>(); const auto output = write.View<R::UniformTableRows>();
+            for (index iCell = 0; iCell < output.RowCount(); ++iCell)
+                for (int j = 0; j < 5; ++j) output(iCell, j) = mass * u(iCell, j) - rhsScale * r(iCell, j) / metric.GetCellVol(iCell); });
+    }
+    std::pair<index, real> NonlinearSolver::ApplyCorrection(CFV::FVField &state, const CFV::FVField &increment, real scale)
+    {
+        auto &data = *_data;
+        data.Stage([&]
+                   {
+            data.discrete.Metrics().ValidateField(state, 5); data.discrete.Metrics().ValidateField(increment, 5);
+            DNDS_check_throw_info(state.Owned().SharedStorage() == data.stateOwned && state.Ghost().SharedStorage() == data.stateGhost &&
+                                      std::isfinite(scale) && scale > 0 && scale <= 1, "invalid bound correction state or scale");
+            DNDS_check_throw_info(!Algebra::Detail::Overlaps(state.Owned().Storage(), increment.Owned().Storage()), "implicit correction aliases state"); });
+        index limited = 0;
+        real minimum = 1;
+        bool admissible = true;
+        data.Stage([&]
+                   {
+            const auto correctionRead = increment.Owned().Read(), meanRead = state.Owned().Read(); auto candidateWrite = data.candidate.Owned().Write();
+            const auto correction = correctionRead.View<R::UniformTableRows>(), mean = meanRead.View<R::UniformTableRows>(); const auto candidate = candidateWrite.View<R::UniformTableRows>();
+            for (index iCell = 0; iCell < mean.RowCount(); ++iCell)
+            {
+                FlowState u, delta;
+                for (int j = 0; j < 5; ++j) { u[j] = mean(iCell, j); delta[j] = scale * correction(iCell, j); }
+                if (data.positivity)
+                {
+                    const real alpha = FlowIncrementFraction(u, delta, data.discrete.ThermalConstraints(), data.settings.positivity.incrementRelax, 2, data.settings.positivity.compressionPower);
+                    admissible = admissible && std::isfinite(alpha) && alpha >= 0 && alpha <= 1;
+                    if (alpha < 1) { ++limited; minimum = std::min(minimum, alpha); }
+                    for (auto &component : delta) component *= alpha;
+                    delta = FixFlowIncrement(u, delta, data.discrete.ThermalConstraints());
+                }
+                for (int j = 0; j < 5; ++j) u[j] += delta[j];
+                admissible = admissible && ThermallyAdmissible(u, data.discrete.ThermalConstraints());
+                for (int j = 0; j < 5; ++j) candidate(iCell, j) = u[j];
+            } });
+        // Do not acquire the trial write lease until every rank accepts the
+        // candidate. A rejected correction must leave the bound state usable.
+        MPI::LocalStage(data.mpi, [&]
+                        { DNDS_check_throw_info(admissible, "implicit correction produces an inadmissible mean"); });
+        data.Stage([&]
+                   { Algebra::Copy(state, data.candidate); });
+        if (data.positivity)
+        {
+            MPI_Allreduce(MPI_IN_PLACE, &limited, 1, MPI_INT64_T, MPI_SUM, data.mpi.comm);
+            MPI_Allreduce(MPI_IN_PLACE, &minimum, 1, MPI_DOUBLE, MPI_MIN, data.mpi.comm);
+        }
+        return {limited, minimum};
     }
 }

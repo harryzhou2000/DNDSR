@@ -3,6 +3,7 @@
 #include "Cauchy/Discretization/FiniteVolume.hpp"
 #include "Cauchy/Core/CoordinatedSchedule.hpp"
 #include "Cauchy/Implicit/NonlinearSolver.hpp"
+#include "Cauchy/Multigrid/PolynomialMultigrid.hpp"
 #include "Solver/FieldTimeStepper.hpp"
 
 namespace DNDS::Cauchy
@@ -27,6 +28,7 @@ namespace DNDS::Cauchy
         Runtime::EagerEngine _engine;
         Runtime::ExecutionStream _stream;
         std::unique_ptr<NonlinearSolver> _implicit;
+        std::unique_ptr<PolynomialMultigrid> _multigrid;
         std::unique_ptr<ODE::FieldTimeStepper> _timeStepper;
         std::vector<NonlinearIterationReport> _lastImplicit;
         std::optional<Runtime::Array<real>> _reconstructionBackup;
@@ -46,7 +48,7 @@ namespace DNDS::Cauchy
         void UpdateStage(real dt, real historyWeight, real stageWeight, real stageTime);
         void PublishTrial(real time, StateEpoch epoch, const Runtime::Array<real> *reconstructionGuess = nullptr);
         void EvaluateObservation();
-        void InitializeImplicit(const DomainSettings &settings, const TimeSettings &time);
+        void InitializeImplicit(const DomainSettings &settings, const TimeSettings &time, const ssp<Geom::UnstructuredMesh> &mesh);
         void PrepareImplicitStep(real dt);
         void PreserveReconstructionGuess();
 

@@ -181,6 +181,11 @@ namespace DNDS::Cauchy
                                   std::isfinite(positivity.incrementRelax) && positivity.incrementRelax > 0 && positivity.incrementRelax <= 1 &&
                                   positivity.compressionPower > 0 && positivity.compressionPower <= INT_MAX / 2,
                               "invalid implicit Euler-PP controls");
+        DNDS_check_throw_info(multigrid.levels >= 0 && multigrid.levels <= 2 && multigrid.cycles > 0 &&
+                                  multigrid.preSmooth >= 0 && multigrid.postSmooth >= 0 && multigrid.coarseSmooth > 0 &&
+                                  (!multigrid.levels || (multigrid.preSmooth <= iterations && multigrid.postSmooth <= iterations && multigrid.coarseSmooth <= iterations)) &&
+                                  std::isfinite(multigrid.damping) && multigrid.damping > 0 && multigrid.damping <= 1,
+                              "invalid polynomial FAS controls");
     }
     DomainSettings ResolveSweepOrdering(DomainSettings settings)
     {
@@ -207,6 +212,7 @@ namespace DNDS::Cauchy
         require(s.numerics.limiter == "none" || s.numerics.limiter == "WBAP", "limiter " + s.numerics.limiter);
         require(s.numerics.limiter != "WBAP" || s.numerics.reconstruction != "constant", "WBAP needs polynomial reconstruction");
         require(s.numerics.cfv.cacheDiffBase, "Cauchy residual requires cached face basis derivatives");
+        require(!s.implicit.multigrid.levels || (s.numerics.reconstruction == "variational" && s.numerics.cfv.maxOrder >= 2), "polynomial FAS requires high-order variational reconstruction");
         for (const auto &[zone, condition] : s.boundaries)
         {
             require(condition.kind == "extrapolate" || condition.kind == "farfield" || condition.kind == "slipWall" || condition.kind == "noSlipWall" || condition.kind == "analytic" || condition.kind == "doubleMachBottom", "BC zone " + zone + ": " + condition.kind);
@@ -329,6 +335,8 @@ namespace DNDS::Cauchy
                                   std::isfinite(data->time.wallSeconds) && data->time.wallSeconds >= 0 && data->time.maxRetries >= 0,
                               "Cauchy requires an available time method, positive dt and nonnegative steps");
         DNDS_check_throw_info(std::isfinite(data->time.steadyTolerance) && data->time.steadyTolerance >= 0 && data->time.steadyMinSteps >= 0, "invalid steady stopping controls");
+        for (const auto &domain : data->domains)
+            DNDS_check_throw_info(data->time.method != "ssprk3" || !domain.settings.implicit.multigrid.levels, "polynomial FAS requires an implicit time method");
         DNDS_check_throw_info(data->output.interval >= 0 && data->output.historyInterval > 0 && !data->output.prefix.empty(), "invalid Cauchy output controls");
         DNDS_check_throw_info(data->output.hdfDeflateLevel >= 0 && data->output.hdfDeflateLevel <= 9, "Cauchy output hdfDeflateLevel must be in [0,9]");
         return SimulationConfig(std::move(data));

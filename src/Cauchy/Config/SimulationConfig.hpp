@@ -186,6 +186,21 @@ namespace DNDS::Cauchy
             DNDS_FIELD(compressionPower, "Positive integer exponent multiplier in Euler alpha compression");
         }
     };
+    struct PolynomialMultigridSettings
+    {
+        int levels = 0;
+        index cycles = 50, preSmooth = 1, postSmooth = 1, coarseSmooth = 4;
+        real damping = 1;
+        DNDS_DECLARE_CONFIG(PolynomialMultigridSettings)
+        {
+            DNDS_FIELD(levels, "0 disables pMG; 1 adds direct-gradient O2; 2 also adds first-order convection, retaining viscosity");
+            DNDS_FIELD(cycles, "Maximum FAS V-cycles per physical stage");
+            DNDS_FIELD(preSmooth, "Bounded nonlinear corrections before restriction");
+            DNDS_FIELD(postSmooth, "Bounded nonlinear corrections after prolongation");
+            DNDS_FIELD(coarseSmooth, "Bounded nonlinear corrections at the coarsest level");
+            DNDS_FIELD(damping, "Physical coarse-correction multiplier in (0,1]");
+        }
+    };
     struct ImplicitSettings
     {
         std::string diagonal = "entries";
@@ -197,6 +212,7 @@ namespace DNDS::Cauchy
         ImplicitSGSSettings sgs;
         ImplicitILUSettings ilu;
         ImplicitPositivitySettings positivity;
+        PolynomialMultigridSettings multigrid;
         void Validate() const;
         DNDS_DECLARE_CONFIG(ImplicitSettings)
         {
@@ -215,6 +231,7 @@ namespace DNDS::Cauchy
             config.field_section(&T::sgs, "sgs", "Symmetric relaxation controls");
             config.field_section(&T::ilu, "ilu", "Rank-local factorization controls");
             config.field_section(&T::positivity, "positivity", "Euler-derived implicit PP controls");
+            config.field_section(&T::multigrid, "multigrid", "Same-cell polynomial FAS hierarchy");
         }
     };
     struct DomainSettings

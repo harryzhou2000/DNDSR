@@ -69,6 +69,16 @@ TEST_CASE("Native implicit stage recovers a constant manufactured solution from 
             CHECK(report.residual[j] <= std::max(settings.implicit.absoluteTolerance, settings.implicit.relativeTolerance * report.initialResidual[j]));
         CHECK_THROWS(solver.Solve(state, state, 20, .5, .1));
         CHECK_THROWS(solver.Solve(state, source, -1, .5, .1));
+        int eligible = state.Ghost().Storage().Bytes() >= source.Owned().Storage().Bytes() && source.Owned().Storage().Bytes() > 0;
+        MPI_Allreduce(MPI_IN_PLACE, &eligible, 1, MPI_INT, MPI_MIN, mpi.comm);
+        if (eligible)
+        {
+            auto aliased = source;
+            aliased.Owned() = R::Array<double>::FromStorage(source.Owned().Layout(), state.Ghost().Storage().Subspan(0, source.Owned().Storage().Bytes()));
+            const auto ghostGeneration = state.Ghost().Version();
+            CHECK_THROWS(solver.Solve(state, aliased, 20, .5, .1));
+            CHECK(state.Ghost().Version() == ghostGeneration);
+        }
     }
 }
 TEST_CASE("Implicit stage cap reports unconverged and auxiliary requirements fail before iteration")

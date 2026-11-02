@@ -38,7 +38,7 @@ namespace DNDS::Cauchy
         }
     }
     Domain::Domain(std::string name, ssp<Geom::UnstructuredMesh> mesh, const DomainSettings &settings, const TimeSettings &time)
-        : _name(std::move(name)), _equation(ResolveEquation(_name, settings)), _fv(std::move(mesh), settings, _equation),
+        : _name(std::move(name)), _equation(ResolveEquation(_name, settings)), _fv(mesh, settings, _equation),
           _accepted(BuildState(_fv, settings)), _trial(_accepted.Clone()),
           _residual(_fv.Metrics().BuildField(FlowLayout(settings))), _initial(_fv.Metrics().BuildField(FlowLayout(settings))),
           _workspace(_fv.BuildWorkspace(_trial.Block("flow"), TimeAuxiliary(time))),
@@ -49,7 +49,7 @@ namespace DNDS::Cauchy
         _equation.ValidateStateSchema(_accepted);
         DNDS_check_throw_info(_fv.Metrics().Dimension() == settings.mesh.dimension, "Cauchy config/mesh dimension differs");
         DNDS_check_throw_info(_fv.Admissible(Flow()), "Cauchy initial means violate density or minimum-temperature internal-energy bounds");
-        InitializeImplicit(settings, time);
+        InitializeImplicit(settings, time, mesh);
     }
     real Domain::StableStep(real cfl) const
     {

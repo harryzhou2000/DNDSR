@@ -4,16 +4,21 @@
 namespace DNDS::Cauchy
 {
     namespace R = Runtime;
-    void Domain::InitializeImplicit(const DomainSettings &settings, const TimeSettings &time)
+    void Domain::InitializeImplicit(const DomainSettings &settings, const TimeSettings &time, const ssp<Geom::UnstructuredMesh> &mesh)
     {
         if (time.method == "ssprk3")
+        {
+            DNDS_check_throw_info(!settings.implicit.multigrid.levels, "polynomial FAS requires an implicit time method");
             return;
+        }
         const MPIInfo mpi(_fv.Metrics().Communicator());
         MPI::LocalStage(mpi, [&]
                         { _timeStepper = std::make_unique<ODE::FieldTimeStepper>(_trial.Block("flow"), time.method,
                                                                                  [mpi, checks = settings.implicit.collectiveChecks](const auto &run)
                                                                                  { if (checks) MPI::LocalStage(mpi, run); else run(); }); });
         _implicit = std::make_unique<NonlinearSolver>(_fv, _trial.Block("flow"), _workspace, _engine, _stream, settings);
+        if (settings.implicit.multigrid.levels)
+            _multigrid = std::make_unique<PolynomialMultigrid>(mesh, _fv, _trial.Block("flow"), *_implicit, _engine, _stream, settings);
     }
     void Domain::PreserveReconstructionGuess()
     {
@@ -53,7 +58,7 @@ namespace DNDS::Cauchy
         const auto solve = [&](CFV::FVField &state, const CFV::FVField &source, real mass, real scale, real time, int stage)
         {
             _trialEpoch.stage = stage;
-            auto report = _implicit->Solve(state, source, mass, scale, time, stage);
+            auto report = _multigrid ? _multigrid->Solve(source, mass, scale, time, stage) : _implicit->Solve(state, source, mass, scale, time, stage);
             _lastAlphaCells += report.incrementLimited;
             _lastAlpha = std::min(_lastAlpha, report.minimumIncrementAlpha);
             const bool converged = report.converged;
