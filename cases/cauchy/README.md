@@ -38,9 +38,12 @@ and beta/alpha activity. The vortex cases keep PP disabled.
 symmetry plane. `CylinderB1` has a radius-.5 body and radius-200 farfield;
 its smallest radial layer is about .002. The explicit diffusion and acoustic
 stability constraints can make a one-hour run incomplete. A capped result is
-not a steady solution or a verified vortex street. The current viscous path
-uses primitive least-squares gradients, so P3 inviscid reconstruction alone
-does not establish fourth-order viscous accuracy.
+not a steady solution or a verified vortex street. The compatibility default
+`numerics.viscousGradient="primitive"` uses cell primitive gradients. Select
+`"polynomial"` explicitly for cached polynomial derivatives and Euler's normal
+face-jump construction; the [viscous operator contract](../../docs/architecture/CauchyImplicit.md#polynomial-viscous-operator)
+describes filtered/unlimited selection and boundary behavior. P3 inviscid
+reconstruction alone does not establish fourth-order viscous accuracy.
 
 The supersonic front mesh includes exit faces at x=0 in `FAR`. The farfield
 condition respects supersonic inflow/outflow and the subsonic incoming component
