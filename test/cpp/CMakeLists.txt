@@ -750,12 +750,14 @@ endfunction()
 
 solver_add_unit_test(ode "Solver/test_ODE.cpp" "dnds")
 solver_add_unit_test(linear "Solver/test_Linear.cpp" "dnds")
+solver_add_unit_test(field_gmres "Solver/test_FieldGMRES.cpp" "dnds")
 solver_add_unit_test(direct "Solver/test_Direct.cpp" "dnds")
 solver_add_unit_test(scalar "Solver/test_Scalar.cpp" "dnds")
 
 set(SOLVER_TEST_TARGETS
     solver_test_ode
     solver_test_linear
+    solver_test_field_gmres
     solver_test_direct
     solver_test_scalar
 )

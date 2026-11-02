@@ -76,3 +76,28 @@ all three DOF layouts, empty ownership, inverse fallback, retained lifetimes,
 aliases and stale/active-writer rejection, staged publication, generation changes,
 independent local parts and owner expiration. Cauchy's nonlinear/physical
 integration remains a separate consumer and needs its own distributed gates.
+
+## Native field Krylov iteration
+
+`Solver/FieldGMRES.hpp` provides restarted left-GMRES with native DOF workspaces.
+It uses explicit operator, fixed-preconditioner and batched-inner-product
+callbacks, without owning mesh or communication policy. Preparation visits the
+stable operator-input fields so a caller can bind persistent halos once. Their
+owned and ghost physical layouts are cloned separately from the prototype.
+Callbacks complete synchronously and coordinate distributed errors; callers
+serialize workspace access and release conflicting views before reuse. This is
+the initial CPU profile; device vectors reject rather than fall back to host.
+
+Two-pass orthogonalization batches projections, and Givens rotations track the
+small Hessenberg residual. A small pivoted QR computes the candidate update,
+including first-vector closure; rank-zero projections report breakdown. True
+residual evaluation decides convergence. Extreme fixed preconditioner scaling
+does not make a small left-scaled residual a false success. Usable results also
+pass a finite-iterate check; finite iteration-limited corrections are distinct
+from converged solves. Other failure reasons are not usable nonlinear updates.
+NaN diagnostics mean that quantity was not evaluated before stopping.
+
+Focused tests cover first-step closure, warm guesses, extreme preconditioner
+scaling, restarted nonnormal dense oracles, all three layouts with empty local
+ranks, zero operators/null preconditioners, nonfinite data and explicit iteration
+limits. The legacy `GMRES_LeftPreconditioned` class remains unchanged.
