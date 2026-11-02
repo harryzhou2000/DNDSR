@@ -282,3 +282,21 @@ coefficients to prove cold-start behavior. They also verify optional nonzero
 warm-guess storage, exact variable-step BDF2 continuation and reader-conflict
 rejection/retry. The legacy matching-partition exact-continuation tests now
 explicitly opt into coefficient storage, preserving their original purpose.
+
+Mesh envelope2 stores a periodic face's canonical axis tag and the intrinsic
+frame of its nodes in the owning cell's reference coordinates. Runtime
+`faceInfo.zone` main/donor choice and `cell2facePbi` instead refer to the selected
+stored face image, which can change when a fresh partition chooses the other
+ordered parent. They are not persistent physical mesh identifiers. Older
+envelopes compare exact cell/node IDs, cell-node bits and coordinates, neighbor
+IDs, periodic axis and global transforms; their valid face-image gauge bits
+are not compared to a different partition's gauge. Physical boundary zones
+remain exact. This changes checkpoint interpretation only, not Geom's runtime
+face representation or numerical kernels.
+
+The original strict envelope passed generated-mesh tests but rejected a real
+CGNS IV20 archive when read at np4 after writing at np8. Diagnostics identified
+complementary periodic tags (-1/-4, -2/-5), while coordinates matched exactly.
+A permanent CGNS repartition test was proven failing before this correction.
+It now passes at np1/2/4/8. The actual old format3 archive also loads and takes
+its next ESDIRK4 step after repartition, preserving loaded means and diagnostics.

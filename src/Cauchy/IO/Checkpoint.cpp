@@ -9,6 +9,16 @@ namespace DNDS::Cauchy
 {
     namespace
     {
+        index CanonicalPeriodicZone(index zone)
+        {
+            if (zone == Geom::BC_ID_PERIODIC_1_DONOR)
+                return Geom::BC_ID_PERIODIC_1;
+            if (zone == Geom::BC_ID_PERIODIC_2_DONOR)
+                return Geom::BC_ID_PERIODIC_2;
+            if (zone == Geom::BC_ID_PERIODIC_3_DONOR)
+                return Geom::BC_ID_PERIODIC_3;
+            return zone;
+        }
         Json FlowSchema(const EquationSystem &equation)
         {
             const auto &schema = equation.Schema();
@@ -128,10 +138,12 @@ namespace DNDS::Cauchy
             }
             auto topology = envelope.topology.Write();
             auto coordinates = envelope.coordinates.Write();
+            std::vector<Geom::NodePeriodicBits> faceBits;
             for (index iCell = 0; iCell < view.NumCell(); ++iCell)
             {
                 auto row = topology.View()[iCell];
                 const auto nodes = view.CellNodes(iCell), faces = view.CellFaces(iCell);
+                auto element = view.GetCellElement(iCell);
                 row[0] = index(view.GetCellInfo(iCell).getElemType());
                 row[1] = view.GetCellZone(iCell);
                 row[2] = nodes.size();
@@ -148,9 +160,23 @@ namespace DNDS::Cauchy
                 {
                     const auto iFace = faces[slot], other = view.CellFaceOther(iCell, iFace, slot);
                     const index offset = 4 + 2 * nodes.size() + 3 * slot;
-                    row[offset] = view.GetFaceZone(iFace);
+                    // A periodic face's main/donor zone and cell2face bits
+                    // describe its selected stored image. Native topology
+                    // selects that image from ordered parents; a new partition
+                    // may select the complementary image. Archive physical
+                    // axis identity and the cell's own face-node frame instead.
+                    row[offset] = CanonicalPeriodicZone(view.GetFaceZone(iFace));
                     row[offset + 1] = other == UnInitIndex ? UnInitIndex : mesh.OriginalEntityId(Geom::EntityKind::Cell, other);
-                    row[offset + 2] = view.IsPeriodic() ? index(uint8_t(view.CellFacePeriodicBits(iCell)[slot])) : 0;
+                    uint8_t frame = 0;
+                    if (view.IsPeriodic())
+                    {
+                        faceBits.resize(element.ObtainFace(slot).GetNumNodes());
+                        element.ExtractFaceNodes(slot, view.CellNodePeriodicBits(iCell), faceBits);
+                        frame = 7;
+                        for (const auto bit : faceBits)
+                            frame &= uint8_t(bit);
+                    }
+                    row[offset + 2] = frame;
                 }
             }
             return envelope;
@@ -171,6 +197,62 @@ namespace DNDS::Cauchy
             }
             return true;
         }
+        template <class T>
+        std::string RowDifference(const Runtime::Array<T> &left, const Runtime::Array<T> &right, const Runtime::Array<index> &ids)
+        {
+            if (left.RowCount() != right.RowCount())
+                return fmt::format("row counts {} != {}", left.RowCount(), right.RowCount());
+            const auto a = left.Read(), b = right.Read();
+            const auto labels = ids.Read();
+            for (index iRow = 0; iRow < left.RowCount(); ++iRow)
+            {
+                if (left.RowSize(iRow) != right.RowSize(iRow))
+                    return fmt::format("cell {} widths {} != {}", labels.View()(iRow, 0), left.RowSize(iRow), right.RowSize(iRow));
+                for (index j = 0; j < left.RowSize(iRow); ++j)
+                    if (a.View()(iRow, j) != b.View()(iRow, j))
+                        return fmt::format("cell {} slot {}: {} != {}", labels.View()(iRow, 0), j, a.View()(iRow, j), b.View()(iRow, j));
+            }
+            return {};
+        }
+        std::string TopologyDifference(const Runtime::Array<index> &left, const Runtime::Array<index> &right,
+                                       const Runtime::Array<index> &ids, bool legacyFaceImage)
+        {
+            if (left.RowCount() != right.RowCount())
+                return "topology row counts differ";
+            const auto a = left.Read(), b = right.Read(), labels = ids.Read();
+            for (index iRow = 0; iRow < left.RowCount(); ++iRow)
+            {
+                if (left.RowSize(iRow) != right.RowSize(iRow))
+                    return fmt::format("cell {} topology widths differ", labels.View()(iRow, 0));
+                const index faceStart = 4 + 2 * b.View()(iRow, 2);
+                for (index j = 0; j < left.RowSize(iRow); ++j)
+                {
+                    index stored = a.View()(iRow, j), current = b.View()(iRow, j);
+                    if (j >= faceStart)
+                    {
+                        const index field = (j - faceStart) % 3;
+                        if (field == 0)
+                        {
+                            stored = CanonicalPeriodicZone(stored);
+                            current = CanonicalPeriodicZone(current);
+                        }
+                        if (field == 2 && legacyFaceImage)
+                        {
+                            // Old archives stored a partition-dependent face
+                            // image gauge, not a physical mesh invariant. Cell
+                            // node IDs/bits/coordinates, neighbor IDs, periodic
+                            // axis and global transformations remain exact.
+                            if (stored < 0 || stored > 7)
+                                return "invalid legacy periodic image bits";
+                            continue;
+                        }
+                    }
+                    if (stored != current)
+                        return fmt::format("cell {} slot {}: {} != {}", labels.View()(iRow, 0), j, stored, current);
+                }
+            }
+            return {};
+        }
     }
     void Domain::WriteCheckpoint(const std::string &path, const Json &resolved, bool includeReconstruction) const
     {
@@ -179,7 +261,7 @@ namespace DNDS::Cauchy
         int flags[]{int(includeReconstruction), -int(includeReconstruction), int(history), -int(history)};
         MPI_Allreduce(MPI_IN_PLACE, flags, 4, MPI_INT, MPI_MIN, mpi.comm);
         DNDS_check_throw_info(flags[0] == -flags[1] && flags[2] == -flags[3], "checkpoint optional sections differ between ranks");
-        const Json metadata{{"schema_version", 1}, {"flow", FlowSchema(_equation)}, {"reconstruction", _fv.ReconstructionMetadata()}, {"time_method", _timeStepper ? _timeStepper->Method() : "ssprk3"}, {"history", history}};
+        const Json metadata{{"schema_version", 1}, {"mesh_envelope", 2}, {"flow", FlowSchema(_equation)}, {"reconstruction", _fv.ReconstructionMetadata()}, {"time_method", _timeStepper ? _timeStepper->Method() : "ssprk3"}, {"history", history}};
         auto serializer = std::make_shared<Serializer::SerializerH5>(mpi);
         serializer->OpenFile(path, false);
         serializer->WriteInt("cauchy_format", 4);
@@ -253,6 +335,8 @@ namespace DNDS::Cauchy
         valid = valid && (version < 4 || (metadata.is_object() && metadata.value("schema_version", 0) == 1 && metadata.value("flow", Json()) == FlowSchema(_equation)));
         MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, mpi.comm);
         DNDS_check_throw_info(valid, "Cauchy restart config/equation schema mismatch");
+        const int meshEnvelope = version == 4 ? metadata.value("mesh_envelope", 1) : 1;
+        DNDS_check_throw_info(meshEnvelope == 1 || meshEnvelope == 2, "unsupported Cauchy mesh envelope");
         auto context = std::make_shared<Runtime::CommunicationContext>(mpi.comm);
         const auto targetIds = CellIds(*this);
         const auto route = Runtime::BuildRowTransferById(context, ids, targetIds, true);
@@ -278,8 +362,11 @@ namespace DNDS::Cauchy
         transfer(topology, *mappedTopology);
         transfer(coordinates, *mappedCoordinates);
         MPI::LocalStage(mpi, [&]
-                        { DNDS_check_throw_info(SameRows(*mappedTopology, envelope->topology) && SameRows(*mappedCoordinates, envelope->coordinates) && SameRows(transforms, envelope->periodicTransforms),
-                                                "Cauchy restart persistent-cell mesh topology/geometry mismatch"); });
+                        {
+            const auto topologyDifference = TopologyDifference(*mappedTopology, envelope->topology, targetIds, meshEnvelope == 1);
+            const auto coordinateDifference = RowDifference(*mappedCoordinates, envelope->coordinates, targetIds);
+            DNDS_check_throw_info(topologyDifference.empty() && coordinateDifference.empty() && SameRows(transforms, envelope->periodicTransforms),
+                                  "Cauchy restart persistent-cell mesh topology/geometry mismatch: topology " + topologyDifference + "; coordinates " + coordinateDifference); });
         _trialReady = false;
         // Existing trial allocations and binding identities remain stable.
         auto &trial = _trial.Block("flow");

@@ -1,6 +1,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "Cauchy/Core/Domain.hpp"
+#include "Cauchy/Core/Simulation.hpp"
 #include "CartesianFixture.hpp"
 #include "DNDS/Runtime/Array/ArrayIO.hpp"
 #include "DNDS/Serializer/SerializerH5.hpp"
@@ -156,6 +157,50 @@ TEST_CASE("Implicit BDF2 restart preserves variable-step history and compatible 
     for (DNDS::index iCell = 0; iCell < source.Discretization().Metrics().NumCell(); ++iCell)
         for (int j = 0; j < 5; ++j)
             CHECK(a.View()(iCell, j) == b.View()(iCell, j));
+    Remove({path});
+}
+TEST_CASE("CGNS checkpoint remains physical across independently built MPI partitions")
+{
+    const auto path = Path("cauchy-cgns-repartition-");
+    const C::Json input{{"defaults", {{"mesh", {{"file", std::string(DNDS_TEST_SOURCE_ROOT) + "/data/mesh/IV10_20.cgns"}, {"dimension", 2}, {"periodicLengths", {10, 10, 0}}, {"boundaryIds", {{"PERIODIC_1", -1}, {"PERIODIC_1_DONOR", -4}, {"PERIODIC_2", -2}, {"PERIODIC_2_DONOR", -5}}}}}, {"numerics", {{"reconstruction", "constant"}, {"cfv", {{"maxOrder", 1}}}}}}}};
+    const auto value = [](const C::Domain &domain, DNDS::index iCell)
+    {
+        const auto id = domain.Discretization().Mesh().OriginalEntityId(DNDS::Geom::EntityKind::Cell, iCell);
+        return domain.Equation().Gas().Conservative({1 + .0001 * id, .31, -.12, .07, 1.2});
+    };
+    MPI_Comm writerComm = MPI_COMM_NULL;
+    MPI_Comm_split(mpi.comm, mpi.rank < std::max(1, mpi.size / 2) ? 0 : MPI_UNDEFINED, mpi.rank, &writerComm);
+    if (writerComm != MPI_COMM_NULL)
+    {
+        {
+            const auto config = C::SimulationConfig::ResolveCollective(input, writerComm);
+            C::Simulation simulation(config, writerComm);
+            auto &domain = simulation.GetDomain(0);
+            {
+                auto write = domain.Flow().Owned().Write();
+                for (DNDS::index iCell = 0; iCell < domain.Discretization().Metrics().NumCell(); ++iCell)
+                {
+                    const auto expected = value(domain, iCell);
+                    for (int j = 0; j < 5; ++j)
+                        write.View()(iCell, j) = expected[j];
+                }
+            }
+            domain.WriteCheckpoint(path, config.Root());
+        }
+        MPI_Comm_free(&writerComm);
+    }
+    MPI_Barrier(mpi.comm);
+    const auto config = C::SimulationConfig::ResolveCollective(input, mpi.comm);
+    C::Simulation restored(config, mpi.comm);
+    restored.ReadCheckpoint(path);
+    const auto &domain = restored.GetDomain(0);
+    const auto read = domain.Flow().Owned().Read();
+    for (DNDS::index iCell = 0; iCell < domain.Discretization().Metrics().NumCell(); ++iCell)
+    {
+        const auto expected = value(domain, iCell);
+        for (int j = 0; j < 5; ++j)
+            CHECK(read.View()(iCell, j) == expected[j]);
+    }
     Remove({path});
 }
 int main(int argc, char **argv)

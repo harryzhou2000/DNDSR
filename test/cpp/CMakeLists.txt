@@ -210,6 +210,7 @@ dnds_add_mpi_test(cauchy_linear_solver "Cauchy/test_LinearSolver.cpp" "cauchy;cf
 dnds_add_mpi_test(cauchy_nonlinear "Cauchy/test_NonlinearSolver.cpp" "cauchy;cfv;geom;dnds")
 dnds_add_mpi_test(cauchy_implicit_domain "Cauchy/test_ImplicitDomain.cpp" "cauchy;cfv;geom;dnds")
 dnds_add_mpi_test(cauchy_checkpoint "Cauchy/test_Checkpoint.cpp" "cauchy;cfv;geom;dnds")
+target_compile_definitions(dnds_test_cauchy_checkpoint PRIVATE DNDS_TEST_SOURCE_ROOT="${PROJECT_SOURCE_DIR}")
 dnds_add_mpi_test(cauchy_jacobian "Cauchy/test_Jacobian.cpp" "cauchy;cfv;geom;dnds")
 add_custom_target(cauchy_unit_tests)
 add_dependencies(cauchy_unit_tests dnds_test_cauchy_config dnds_test_cauchy_physics dnds_test_cauchy_riemann dnds_test_cauchy_riemann_legacy dnds_test_cauchy_finite_volume dnds_test_cauchy_foundation dnds_test_cauchy_linear dnds_test_cauchy_linear_solver dnds_test_cauchy_jacobian)
